@@ -2210,6 +2210,35 @@ window.addEventListener('message', async (event: any) => {
 			})();
 			break;
 		
+		case 'changedSections':
+			// Update per-section unsaved-change indicators.
+			try {
+				const changes: Array<{ id: string; status: 'modified' | 'new' }> = Array.isArray(message.changes) ? message.changes : [];
+				const changedById = new Map<string, 'modified' | 'new'>();
+				for (const c of changes) {
+					if (c && typeof c.id === 'string' && c.id) {
+						changedById.set(c.id, c.status === 'new' ? 'new' : 'modified');
+					}
+				}
+				// Update all section elements in the DOM.
+				const container = document.getElementById('queries-container');
+				if (container) {
+					const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_'];
+					for (const child of Array.from(container.children)) {
+						const id = child.id || '';
+						if (!id || !sectionPrefixes.some(p => id.startsWith(p))) continue;
+						const el = child as any;
+						const shell = el.shadowRoot?.querySelector('kw-section-shell');
+						const status = changedById.get(id) || '';
+						if (shell) {
+							shell.hasChanges = status;
+							shell.showDiffBtn = status === 'modified';
+						}
+					}
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+
 		case 'shareContentReady':
 			// Write rich HTML + plain text to the clipboard for Teams / rich-text paste.
 			try {

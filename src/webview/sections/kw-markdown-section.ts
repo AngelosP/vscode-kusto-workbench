@@ -161,7 +161,13 @@ export class KwMarkdownSection extends LitElement {
 			try { removeMarkdownBox(e?.detail?.boxId || id); } catch (err) { console.error('[kusto]', err); }
 		});
 
-		container.appendChild(litEl);
+		const afterBoxId = typeof options.afterBoxId === 'string' ? String(options.afterBoxId) : '';
+		const afterEl = afterBoxId ? document.getElementById(afterBoxId) : null;
+		if (afterEl) {
+			afterEl.insertAdjacentElement('afterend', litEl);
+		} else {
+			container.appendChild(litEl);
+		}
 
 		try {
 			const h = typeof options.editorHeightPx === 'number' ? options.editorHeightPx : undefined;
@@ -193,10 +199,10 @@ export class KwMarkdownSection extends LitElement {
 		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		try {
 			const isPlainMd = String(pState.documentKind || '') === 'md';
-			if (!isPlainMd) {
-				const controls = document.querySelector('.add-controls');
-				if (controls && typeof controls.scrollIntoView === 'function') {
-					controls.scrollIntoView({ block: 'end' });
+			if (!isPlainMd && afterBoxId) {
+				const newEl = document.getElementById(id);
+				if (newEl && typeof newEl.scrollIntoView === 'function') {
+					newEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 				}
 			}
 		} catch (e) { console.error('[kusto]', e); }

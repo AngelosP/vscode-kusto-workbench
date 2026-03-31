@@ -170,4 +170,5 @@ export type IncomingWebviewMessage =
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
 	| { type: 'toolStateResponse'; requestId: string; sections: unknown[] }
 	| { type: 'openCopilotAgent' }
-	| { type: 'copilotChatFirstTimeCheck'; boxId: string };
+	| { type: 'copilotChatFirstTimeCheck'; boxId: string }
+	| { type: 'showSectionDiff'; sectionId: string };

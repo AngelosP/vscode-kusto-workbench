@@ -1,0 +1,97 @@
+/* queryEditor-insert-zone.css — Floating "+" insert button on section bottom edge */
+
+		/* ── The "+" circle — follows the cursor along a section's bottom edge ── */
+		.insert-zone-plus {
+			position: absolute;
+			display: none;
+			align-items: center;
+			justify-content: center;
+			width: 22px;
+			height: 22px;
+			border-radius: 50%;
+			background: var(--vscode-button-background, var(--vscode-focusBorder, #007fd4));
+			color: var(--vscode-button-foreground, #ffffff);
+			border: none;
+			cursor: pointer;
+			font-size: 16px;
+			font-weight: 400;
+			line-height: 1;
+			padding: 0;
+			/* Centered on the edge point; scale lives here so hover grows from center */
+			transform: translate(-50%, -50%) scale(1);
+			transition: transform 120ms ease-out;
+			box-shadow: 0 1px 4px rgba(0,0,0,0.22);
+			z-index: 9000;
+			pointer-events: auto;
+		}
+
+		.insert-zone-plus.visible {
+			display: flex;
+			animation: insert-zone-appear 100ms ease-out;
+		}
+
+		.insert-zone-plus:hover {
+			transform: translate(-50%, -50%) scale(1.2);
+		}
+
+		@keyframes insert-zone-appear {
+			from { opacity: 0; transform: translate(-50%, -50%) scale(0.6); }
+			to   { opacity: 1; transform: translate(-50%, -50%) scale(1); }
+		}
+
+		/* ── Expanded section-kind picker (replaces the "+" on click) ──── */
+		.insert-zone-picker {
+			position: absolute;
+			display: none;
+			align-items: center;
+			gap: 2px;
+			padding: 3px 4px;
+			border-radius: 6px;
+			background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+			border: 1px solid var(--vscode-focusBorder, #007fd4);
+			box-shadow: 0 2px 10px var(--vscode-widget-shadow, rgba(0,0,0,0.18));
+			z-index: 9001;
+			pointer-events: auto;
+			white-space: nowrap;
+		}
+
+		.insert-zone-picker.visible {
+			display: inline-flex;
+			animation: insert-zone-expand 120ms ease-out;
+		}
+
+		@keyframes insert-zone-expand {
+			from { opacity: 0; scale: 0.92; }
+			to   { opacity: 1; scale: 1; }
+		}
+
+		.insert-zone-btn {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			background: transparent;
+			color: var(--vscode-foreground);
+			border: none;
+			border-radius: 4px;
+			padding: 3px 8px;
+			cursor: pointer;
+			font-size: 11px;
+			white-space: nowrap;
+			line-height: 1.2;
+			transition: background 80ms ease-out;
+		}
+
+		.insert-zone-btn:hover {
+			background: var(--vscode-list-hoverBackground);
+		}
+
+		.insert-zone-btn:focus-visible {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: -1px;
+		}
+
+		/* Hide in plain .md mode (single-section files) */
+		body[data-kusto-document-kind="md"] .insert-zone-plus,
+		body[data-kusto-document-kind="md"] .insert-zone-picker {
+			display: none !important;
+		}

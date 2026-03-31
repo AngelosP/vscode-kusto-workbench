@@ -303,7 +303,13 @@ export class KwChartSection extends LitElement {
 			} catch (err) { console.error('[kusto]', err); }
 		});
 
-		container.insertAdjacentElement('beforeend', litEl);
+		const afterBoxId = typeof options.afterBoxId === 'string' ? String(options.afterBoxId) : '';
+		const afterEl = afterBoxId ? document.getElementById(afterBoxId) : null;
+		if (afterEl) {
+			afterEl.insertAdjacentElement('afterend', litEl);
+		} else {
+			container.insertAdjacentElement('beforeend', litEl);
+		}
 
 		resizerEl.addEventListener('dblclick', () => {
 			try { maximizeChartBox(id); } catch (e) { console.error('[kusto]', e); }
@@ -343,12 +349,14 @@ export class KwChartSection extends LitElement {
 		});
 
 		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
-		try {
-			const controls = document.querySelector('.add-controls');
-			if (controls && typeof controls.scrollIntoView === 'function') {
-				controls.scrollIntoView({ block: 'end' });
-			}
-		} catch (e) { console.error('[kusto]', e); }
+		if (afterBoxId) {
+			try {
+				const newEl = document.getElementById(id);
+				if (newEl && typeof newEl.scrollIntoView === 'function') {
+					newEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		}
 
 		return id;
 	}

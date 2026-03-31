@@ -138,7 +138,7 @@ export function __kustoSetCompatibilityMode(enabled: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-export function __kustoRequestAddSection(kind: any) {
+export function __kustoRequestAddSection(kind: any, afterBoxId?: string) {
 	const k = String(kind || '').trim();
 	if (!k) return;
 
@@ -182,13 +182,16 @@ export function __kustoRequestAddSection(kind: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
+	// Build options with insertion position if provided.
+	const opts: Record<string, unknown> = afterBoxId ? { afterBoxId } : {};
+
 	// Normal .kqlx flow.
-	if (k === 'query') return addQueryBox();
-	if (k === 'chart') return addChartBox();
-	if (k === 'transformation') return addTransformationBox();
-	if (k === 'markdown') return addMarkdownBox();
-	if (k === 'python') return addPythonBox();
-	if (k === 'url') return addUrlBox();
+	if (k === 'query') return addQueryBox(opts);
+	if (k === 'chart') return addChartBox(opts);
+	if (k === 'transformation') return addTransformationBox(opts);
+	if (k === 'markdown') return addMarkdownBox(opts);
+	if (k === 'python') return addPythonBox(opts);
+	if (k === 'url') return addUrlBox(opts);
 	// copilotQuery sections are deprecated; Copilot chat is now a per-editor toolbar toggle.
 }
 

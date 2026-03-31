@@ -2,6 +2,7 @@
 @import './queryEditor.css';
 @import './queryEditor-buttons.css';
 @import './queryEditor-add-controls.css';
+@import './queryEditor-insert-zone.css';
 @import './queryEditor-copilot-chat.css';
 @import './queryEditor-chart-builder.css';
 @import './queryEditor-results.css';

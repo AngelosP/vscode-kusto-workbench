@@ -80,6 +80,7 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'toolStateResponse',
 	'openCopilotAgent',
 	'copilotChatFirstTimeCheck',
+	'showSectionDiff',
 ] as const satisfies readonly IncomingType[];
 
 /**
@@ -154,6 +155,9 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'openMarkdownPreview',
 	'openCopilotAgent',
 	'copilotChatFirstTimeCheck',
+
+	// Section diff
+	'showSectionDiff',
 
 	// Debug
 	'debugMdSearchReveal',
@@ -246,6 +250,7 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'toolDelegateToKustoWorkbenchCopilot',
 	'shareContentReady',
 	'resetCopilotModelSelection',
+	'changedSections',
 ] as const;
 
 /**
@@ -314,6 +319,7 @@ const HOST_TO_WEBVIEW_TYPES = [
 	'upgradedToKqlx',
 	'enabledKqlxSidecar',
 	'revealTextRange',
+	'changedSections',
 
 	// extension.ts
 	'resetCopilotModelSelection',

@@ -167,6 +167,9 @@ export type OutgoingWebviewMessage =
 	// Debug
 	| { type: 'debugMdSearchReveal'; phase: string; detail: string }
 
+	// Section diff
+	| { type: 'showSectionDiff'; sectionId: string }
+
 	// Provider messages (kqlx, kqlCompat, mdCompat editors)
 	| { type: 'requestDocument' }
 	| { type: 'persistDocument'; state: unknown; flush?: boolean; reason?: string }

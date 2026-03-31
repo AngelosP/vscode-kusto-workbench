@@ -654,13 +654,13 @@ export function addQueryBox( options: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	
 	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
-	// Scroll to the bottom only for user-initiated "Add Section".
+	// Scroll so the newly created section is visible.
 	// Comparison boxes will be repositioned next to the source and scrolled there instead.
-	if (!isComparison) {
+	if (!isComparison && afterBoxId) {
 		try {
-			const controls = document.querySelector('.add-controls');
-			if (controls && typeof controls.scrollIntoView === 'function') {
-				controls.scrollIntoView({ block: 'end' });
+			const newEl = document.getElementById(id);
+			if (newEl && typeof newEl.scrollIntoView === 'function') {
+				newEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
 			}
 		} catch (e) { console.error('[kusto]', e); }
 	}
@@ -2222,15 +2222,23 @@ export function addPythonBox( options: any) {
 		try { removePythonBox(e.detail.boxId); } catch (e) { console.error('[kusto]', e); }
 	});
 
-	container.appendChild(litEl);
+	const afterBoxId = (options && typeof options.afterBoxId === 'string') ? String(options.afterBoxId) : '';
+	const afterEl = afterBoxId ? document.getElementById(afterBoxId) : null;
+	if (afterEl) {
+		afterEl.insertAdjacentElement('afterend', litEl);
+	} else {
+		container.appendChild(litEl);
+	}
 
 	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
-	try {
-		const controls = document.querySelector('.add-controls');
-		if (controls && typeof controls.scrollIntoView === 'function') {
-			controls.scrollIntoView({ block: 'end' });
-		}
-	} catch (e) { console.error('[kusto]', e); }
+	if (afterBoxId) {
+		try {
+			const newEl = document.getElementById(id);
+			if (newEl && typeof newEl.scrollIntoView === 'function') {
+				newEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
 	return id;
 }
 
@@ -2563,15 +2571,23 @@ export function addUrlBox( options: any) {
 		try { removeUrlBox(e.detail.boxId); } catch (e) { console.error('[kusto]', e); }
 	});
 
-	container.appendChild(litEl);
+	const afterBoxId = (options && typeof options.afterBoxId === 'string') ? String(options.afterBoxId) : '';
+	const afterEl = afterBoxId ? document.getElementById(afterBoxId) : null;
+	if (afterEl) {
+		afterEl.insertAdjacentElement('afterend', litEl);
+	} else {
+		container.appendChild(litEl);
+	}
 
 	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
-	try {
-		const controls = document.querySelector('.add-controls');
-		if (controls && typeof controls.scrollIntoView === 'function') {
-			controls.scrollIntoView({ block: 'end' });
-		}
-	} catch (e) { console.error('[kusto]', e); }
+	if (afterBoxId) {
+		try {
+			const newEl = document.getElementById(id);
+			if (newEl && typeof newEl.scrollIntoView === 'function') {
+				newEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
 
 	return id;
 }

@@ -39,6 +39,7 @@ const CODICON_CHARS: Record<string, number> = {
 	'debug-stop': 0xead7,
 	'discard': 0xeae2,
 	'settings-gear': 0xeb51,
+	'git-compare': 0xeafd,
 };
 
 function buildCss(): string {

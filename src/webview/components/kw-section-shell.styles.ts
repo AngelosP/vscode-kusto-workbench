@@ -11,6 +11,25 @@ export const styles = css`
 			display: contents;
 		}
 
+		/* ── Unsaved-changes indicator borders ───────────────────────────── */
+		:host([has-changes="modified"]) .section-header {
+			border-left: 3px solid var(--vscode-editorGutter-modifiedBackground, #1b81a8);
+			padding-left: 6px;
+		}
+		:host([has-changes="new"]) .section-header {
+			border-left: 3px solid var(--vscode-editorGutter-addedBackground, #2ea043);
+			padding-left: 6px;
+		}
+
+		/* Diff button accent color when changes present */
+		:host([has-changes="modified"]) .diff-btn {
+			color: var(--vscode-editorGutter-modifiedBackground, #1b81a8);
+		}
+		:host([has-changes="new"]) .diff-btn {
+			color: var(--vscode-editorGutter-addedBackground, #2ea043);
+		}
+		.diff-btn .codicon { font-size: 14px; }
+
 		/* ── Header ──────────────────────────────────────────────────────── */
 
 		.section-header {
@@ -154,7 +173,6 @@ export const styles = css`
 		}
 		.md-tab svg { display: block; }
 		.md-tab:hover { background: var(--vscode-list-hoverBackground); }
-		.md-tab.md-max-btn { margin-right: 6px; }
 		.md-tab.is-active {
 			background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)));
 			color: var(--vscode-foreground);

@@ -1,6 +1,7 @@
 import { LitElement, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { styles } from './kw-section-shell.styles.js';
+import { codiconSheet } from '../shared/codicon-styles.js';
 
 // ─── SVG icon constants (matching kw-chart-section.ts) ────────────────────────
 
@@ -42,9 +43,20 @@ export class KwSectionShell extends LitElement {
 	@property({ type: String, attribute: 'name-placeholder' })
 	namePlaceholder = 'Section name';
 
+	/**
+	 * Unsaved-change indicator: '' (none), 'modified', or 'new'.
+	 * Reflected to the `has-changes` attribute for CSS styling.
+	 */
+	@property({ type: String, reflect: true, attribute: 'has-changes' })
+	hasChanges: '' | 'modified' | 'new' = '';
+
+	/** Whether to show the diff button in the header. */
+	@property({ type: Boolean, attribute: 'show-diff-btn' })
+	showDiffBtn = false;
+
 	@state() private _hasHeaderButtons = false;
 
-	static override styles = styles;
+	static override styles = [codiconSheet, styles];
 
 	override render() {
 		return html`
@@ -65,13 +77,22 @@ export class KwSectionShell extends LitElement {
 						${this.expanded ? html`
 						<slot name="header-buttons" @slotchange=${this._onHeaderButtonsSlotChange}></slot>
 						${this._hasHeaderButtons ? html`<span class="md-tabs-divider" aria-hidden="true"></span>` : nothing}
+						` : nothing}
+						${this.showDiffBtn ? html`
+						<button class="unified-btn-secondary md-tab diff-btn"
+							type="button" @click=${this._onDiffClick}
+							title="Show unsaved changes" aria-label="Show unsaved changes">
+							<span class="codicon codicon-git-compare" aria-hidden="true"></span>
+						</button>
+						` : nothing}
+						${this.expanded ? html`
 						<button class="unified-btn-secondary md-tab md-max-btn"
 							type="button" @click=${this._onFitToContents}
 							title="Fit to contents" aria-label="Fit to contents">
 							<span .innerHTML=${SVG_FIT}></span>
 						</button>
 						` : nothing}
-						<button class="unified-btn-secondary md-tab ${this.expanded ? 'is-active' : ''}"
+						<button class="unified-btn-secondary md-tab toggle-btn ${this.expanded ? 'is-active' : ''}"
 							type="button" role="tab"
 							aria-selected=${this.expanded ? 'true' : 'false'}
 							@click=${this._onToggle}
@@ -158,6 +179,14 @@ export class KwSectionShell extends LitElement {
 
 	private _onFitToContents(): void {
 		this.dispatchEvent(new CustomEvent('fit-to-contents', {
+			bubbles: true,
+			composed: true,
+		}));
+	}
+
+	private _onDiffClick(): void {
+		this.dispatchEvent(new CustomEvent('show-section-diff', {
+			detail: { boxId: this.boxId },
 			bubbles: true,
 			composed: true,
 		}));

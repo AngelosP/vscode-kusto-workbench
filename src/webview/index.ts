@@ -15,6 +15,7 @@ import './monaco/diagnostics.js'; // Before monaco — sets utility window bridg
 import './monaco/completions.js'; // Before monaco — sets completion provider bridges
 import './monaco/monaco.js';
 import './core/main.js'; // Must be last — message dispatcher
+import './core/section-insert-zone.js'; // Hover-to-insert between sections
 import './components/kw-search-bar.js';
 import './components/kw-object-viewer.js';
 import './components/kw-cell-viewer.js';

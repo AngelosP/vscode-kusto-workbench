@@ -9,6 +9,8 @@ export interface SectionSummary {
 	name: string;
 	/** 1-based index in the document */
 	index: number;
+	/** Unsaved-change status from the section shell */
+	changeStatus: '' | 'modified' | 'new';
 }
 
 // ─── Icons per section type (small inline SVGs) ──────────────────────────────
@@ -144,6 +146,7 @@ export class KwSectionReorderPopup extends LitElement {
 			border-radius: 6px;
 			background: var(--vscode-list-hoverBackground, rgba(255, 255, 255, 0.04));
 			border: 1px solid transparent;
+			border-left: 3px solid transparent;
 			cursor: grab;
 			user-select: none;
 			/* NOTE: transform is NOT listed here — it is managed exclusively by the
@@ -243,6 +246,14 @@ export class KwSectionReorderPopup extends LitElement {
 			opacity: 1;
 		}
 
+		/* Unsaved-change indicators */
+		.section-card[data-change-status="modified"] {
+			border-left-color: var(--vscode-editorGutter-modifiedBackground, #1b81a8);
+		}
+		.section-card[data-change-status="new"] {
+			border-left-color: var(--vscode-editorGutter-addedBackground, #2ea043);
+		}
+
 		/* Footer hint */
 		.panel-footer {
 			padding: 6px 16px 10px;
@@ -310,11 +321,19 @@ export class KwSectionReorderPopup extends LitElement {
 			const type = this._inferType(id, el);
 			if (!type) continue;
 			idx++;
+			// Read unsaved-change status from the section shell
+			let changeStatus: '' | 'modified' | 'new' = '';
+			try {
+				const shell = el.shadowRoot?.querySelector('kw-section-shell');
+				const attr = shell?.getAttribute('has-changes') || '';
+				if (attr === 'modified' || attr === 'new') changeStatus = attr;
+			} catch { /* ignore */ }
 			results.push({
 				id,
 				type,
 				name: this._inferName(el, type),
 				index: idx,
+				changeStatus,
 			});
 		}
 		return results;
@@ -396,6 +415,7 @@ export class KwSectionReorderPopup extends LitElement {
 				draggable="true"
 				data-section-id="${s.id}"
 				data-arr-index="${arrIndex}"
+				data-change-status="${s.changeStatus}"
 				@dragstart=${(e: DragEvent) => this._onCardDragStart(e, s)}
 				@dragend=${this._onCardDragEnd}
 				@dblclick=${() => this._onCardDoubleClick(s.id)}>

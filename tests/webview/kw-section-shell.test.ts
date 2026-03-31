@@ -48,9 +48,7 @@ function getDragHandle(el: KwSectionShell): HTMLButtonElement {
 }
 
 function getToggleButton(el: KwSectionShell): HTMLButtonElement {
-	const tabs = el.shadowRoot!.querySelectorAll('.md-tab');
-	// Toggle is the last md-tab (after fit-to-contents)
-	return tabs[tabs.length - 1] as HTMLButtonElement;
+	return el.shadowRoot!.querySelector('.toggle-btn')!;
 }
 
 function getFitButton(el: KwSectionShell): HTMLButtonElement {

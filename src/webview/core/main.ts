@@ -251,6 +251,17 @@ document.addEventListener('toggle-type-sections', (e: Event) => {
 	} catch (e) { console.error('[kusto]', e); }
 });
 
+// Diff button click: request the host to open a section diff view.
+document.addEventListener('show-section-diff', (e: Event) => {
+	try {
+		const detail = (e as CustomEvent).detail;
+		const boxId = typeof detail?.boxId === 'string' ? String(detail.boxId) : '';
+		if (boxId) {
+			postMessageToHost({ type: 'showSectionDiff', sectionId: boxId });
+		}
+	} catch (e2) { console.error('[kusto]', e2); }
+});
+
 
 // ── Window bridges for remaining legacy callers ──
 window.__kustoToggleAddSectionDropdown = __kustoToggleAddSectionDropdown;

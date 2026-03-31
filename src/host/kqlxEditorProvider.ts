@@ -258,6 +258,12 @@ export function sanitizeStateForKind(kind: KqlxFileKind, state: KqlxStateV1): Kq
 export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 	public static readonly viewType = 'kusto.kqlxEditor';
 
+	/** In-memory store for section diff virtual documents (saved and current snapshots). */
+	public static readonly sectionDiffContents = new Map<string, string>();
+
+	/** Whether the virtual document provider for section diffs has been registered. */
+	private static sectionDiffProviderRegistered = false;
+
 	private static getDocumentKind(document: vscode.TextDocument): KqlxFileKind {
 		try {
 			const p = String(document.uri?.path || '').toLowerCase();
@@ -298,6 +304,18 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		extensionUri: vscode.Uri,
 		connectionManager: ConnectionManager
 	): vscode.Disposable {
+		// Register the virtual document provider for section diffs (once).
+		if (!KqlxEditorProvider.sectionDiffProviderRegistered) {
+			KqlxEditorProvider.sectionDiffProviderRegistered = true;
+			context.subscriptions.push(
+				vscode.workspace.registerTextDocumentContentProvider('kusto-section-diff', {
+					provideTextDocumentContent(uri: vscode.Uri): string {
+						return KqlxEditorProvider.sectionDiffContents.get(uri.toString()) ?? '';
+					}
+				})
+			);
+		}
+
 		const provider = new KqlxEditorProvider(context, extensionUri, connectionManager);
 		return vscode.window.registerCustomEditorProvider(KqlxEditorProvider.viewType, provider, {
 			// VS Code supports a built-in Find widget for webviews.
@@ -468,6 +486,117 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		let saveTimer: NodeJS.Timeout | undefined;
 		let lastSavedText = document.getText();
 		let lastSavedEol = document.eol;
+
+		// ── Section-level unsaved-changes tracking ──────────────────────────
+		// A cache of normalized sections from the last-saved text, keyed by section id.
+		// Rebuilt on save, load, and reload. Used to detect per-section changes.
+		let savedSectionCache = new Map<string, Record<string, unknown>>();
+		// Track the set of known section IDs on disk, so we can detect new sections.
+		let savedSectionIds = new Set<string>();
+		// Last change set sent to the webview, to avoid redundant posts.
+		let lastPostedChangesJson = '';
+
+		const rebuildSavedSectionCache = (text: string) => {
+			const cache = new Map<string, Record<string, unknown>>();
+			const ids = new Set<string>();
+			try {
+				const parsed = parseKqlxText(text, {
+					allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+					defaultKind: documentKind
+				});
+				if (parsed.ok) {
+					for (const section of parsed.file.state.sections) {
+						const s = section as Record<string, unknown>;
+						const id = typeof s.id === 'string' ? s.id : '';
+						if (!id) continue;
+						const normalized = normalizeSection(section);
+						if (normalized) {
+							cache.set(id, normalized);
+							ids.add(id);
+						}
+					}
+				}
+			} catch {
+				// ignore
+			}
+			savedSectionCache = cache;
+			savedSectionIds = ids;
+		};
+
+		// Build initial cache from the document on disk.
+		rebuildSavedSectionCache(lastSavedText);
+
+		type SectionChangeInfo = { id: string; status: 'modified' | 'new'; contentChanged: boolean; settingsChanged: boolean };
+
+		const computeChangedSections = (incomingState: KqlxStateV1): SectionChangeInfo[] => {
+			const changes: SectionChangeInfo[] = [];
+			const sections = Array.isArray(incomingState.sections) ? incomingState.sections : [];
+			for (const section of sections) {
+				const s = section as Record<string, unknown>;
+				const id = typeof s.id === 'string' ? s.id : '';
+				if (!id) continue;
+
+				const normalized = normalizeSection(section);
+				if (!normalized) continue;
+
+				const saved = savedSectionCache.get(id);
+				if (!saved) {
+					// Section not on disk — it's new.
+					changes.push({ id, status: 'new', contentChanged: true, settingsChanged: true });
+					continue;
+				}
+
+				if (!deepEqual(normalized, saved)) {
+					// Determine what kind of change: content vs settings.
+					const contentKeys = ['query', 'text', 'code', 'url'];
+					let contentChanged = false;
+					let settingsChanged = false;
+					for (const key of Object.keys(normalized)) {
+						if (key === 'type' || key === 'id') continue;
+						if (!deepEqual(normalized[key], saved[key])) {
+							if (contentKeys.includes(key)) {
+								contentChanged = true;
+							} else {
+								settingsChanged = true;
+							}
+						}
+					}
+					// Also check keys present in saved but not in normalized.
+					for (const key of Object.keys(saved)) {
+						if (key === 'type' || key === 'id') continue;
+						if (!(key in normalized) && saved[key] !== undefined) {
+							if (contentKeys.includes(key)) {
+								contentChanged = true;
+							} else {
+								settingsChanged = true;
+							}
+						}
+					}
+					if (contentChanged || settingsChanged) {
+						changes.push({ id, status: 'modified', contentChanged, settingsChanged });
+					}
+				}
+			}
+			return changes;
+		};
+
+		const postChangedSections = (changes: SectionChangeInfo[]) => {
+			try {
+				const json = JSON.stringify(changes);
+				if (json === lastPostedChangesJson) return; // Deduplicate.
+				lastPostedChangesJson = json;
+				void webviewPanel.webview.postMessage({
+					type: 'changedSections',
+					changes
+				});
+			} catch {
+				// ignore
+			}
+		};
+
+		const postChangedSectionsClear = () => {
+			postChangedSections([]);
+		};
 		let linkedQueryUri: vscode.Uri | undefined;
 		let linkedQueryPathRaw = '';
 		let linkedQueryDocument: vscode.TextDocument | undefined;
@@ -745,6 +874,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 					lastSavedText = saved.getText();
 					lastSavedEol = saved.eol;
+					// Rebuild section change cache and notify webview that everything is clean.
+					rebuildSavedSectionCache(lastSavedText);
+					postChangedSectionsClear();
 					// Best-effort: when the notebook metadata file is saved, also save the linked query file.
 					try {
 						if (linkedQueryDocument && linkedQueryDocument.isDirty) {
@@ -889,6 +1021,18 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
 					};
 					const state = sanitizeStateForKind(documentKind, incomingState);
+
+					// ── Section-level change detection ──────────────────────────────
+					// Compute changed sections from the incoming state vs the on-disk cache.
+					// This runs on every persist, before any early return, so the webview always
+					// gets up-to-date change indicators regardless of whether the persist
+					// short-circuits (e.g. state matches disk).
+					try {
+						const changes = computeChangedSections(state);
+						postChangedSections(changes);
+					} catch {
+						// ignore — change indicators are non-critical
+					}
 
 					// If this notebook links its first query to an external file, keep the link stable
 					// and persist query edits into that linked file (so Save can save both).
@@ -1164,6 +1308,109 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					scheduleSave();
 					return;
 				}
+				case 'showSectionDiff': {
+					const sectionId = typeof (message as any).sectionId === 'string' ? String((message as any).sectionId) : '';
+					if (!sectionId) return;
+					try {
+						// Get the saved version of this section from cache.
+						const savedNormalized = savedSectionCache.get(sectionId);
+						// Get the current version from the in-memory state.
+						const currentText = document.getText();
+						const parsedCurrent = parseKqlxText(currentText, {
+							allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+							defaultKind: documentKind
+						});
+						let currentSection: Record<string, unknown> | undefined;
+						if (parsedCurrent.ok) {
+							for (const sec of parsedCurrent.file.state.sections) {
+								const s = sec as Record<string, unknown>;
+								if (s.id === sectionId) {
+									currentSection = normalizeSection(sec) ?? undefined;
+									break;
+								}
+							}
+						}
+
+						const savedText = savedNormalized
+							? JSON.stringify(savedNormalized, null, 2)
+							: '(section does not exist on disk)';
+						const currentSectionText = currentSection
+							? JSON.stringify(currentSection, null, 2)
+							: '(section not found)';
+
+						const savedUri = vscode.Uri.parse(
+							`kusto-section-diff:saved/${encodeURIComponent(sectionId)}-settings.txt`
+						);
+						const currentUri = vscode.Uri.parse(
+							`kusto-section-diff:current/${encodeURIComponent(sectionId)}-settings.txt`
+						);
+
+						KqlxEditorProvider.sectionDiffContents.set(savedUri.toString(), savedText);
+						KqlxEditorProvider.sectionDiffContents.set(currentUri.toString(), currentSectionText);
+
+						const sectionLabel = sectionId.replace(/_/g, ' ');
+
+						// For content-bearing sections, also open a dedicated content diff.
+						const contentKeyByType: Record<string, { key: string; label: string }> = {
+							query: { key: 'query', label: 'Query' },
+							markdown: { key: 'text', label: 'Markdown' },
+							python: { key: 'code', label: 'Code' },
+						};
+						const sectionType = String(currentSection?.type ?? savedNormalized?.type ?? '');
+						const contentInfo = contentKeyByType[sectionType];
+
+						// Pre-compute whether a content diff will follow so we can
+						// pin the settings tab only when needed.
+						let contentChanged = false;
+						let savedContent = '';
+						let currentContent = '';
+						if (contentInfo) {
+							savedContent = typeof savedNormalized?.[contentInfo.key] === 'string'
+								? String(savedNormalized[contentInfo.key])
+								: '';
+							currentContent = typeof currentSection?.[contentInfo.key] === 'string'
+								? String(currentSection[contentInfo.key])
+								: '';
+							contentChanged = savedContent !== currentContent;
+						}
+
+						// Open the settings diff first, pinned (preview: false) so the content
+						// diff that follows doesn't replace it.
+						await vscode.commands.executeCommand(
+							'vscode.diff',
+							savedUri,
+							currentUri,
+							`${sectionLabel} (Saved ↔ Current)`,
+							// Pin this tab only when a content diff will follow.
+							{ preview: !contentChanged } as vscode.TextDocumentShowOptions
+						);
+
+						// Only open the content diff if the content actually changed;
+						// otherwise the JSON settings diff is sufficient.
+						if (contentChanged) {
+							const savedContentUri = vscode.Uri.parse(
+								`kusto-section-diff:saved/${encodeURIComponent(sectionId)}-content.txt`
+							);
+							const currentContentUri = vscode.Uri.parse(
+								`kusto-section-diff:current/${encodeURIComponent(sectionId)}-content.txt`
+							);
+
+							KqlxEditorProvider.sectionDiffContents.set(savedContentUri.toString(), savedContent);
+							KqlxEditorProvider.sectionDiffContents.set(currentContentUri.toString(), currentContent);
+
+							await vscode.commands.executeCommand(
+								'vscode.diff',
+								savedContentUri,
+								currentContentUri,
+								`${sectionLabel} — ${contentInfo!.label} (Saved ↔ Current)`
+							);
+						}
+					} catch (err) {
+						console.error('[kusto] showSectionDiff error:', err);
+					}
+					return;
+				}
+
 				default:
 					// Forward everything else to the existing query editor handler.
 					await queryEditor.handleWebviewMessage(message as any);
