@@ -600,14 +600,16 @@ async function exportQueryToPowerBI(boxId: any): Promise<void> {
 		return;
 	}
 
-	const normalizedQuery = (query || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
-	const escapeMString = (s: any) => String(s).replace(/"/g, '""');
-	const indentedQuery = normalizedQuery.split('\n').map((l: any) => '        ' + escapeMString(l)).join('\n');
+	const trimmedQuery = (query || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
+	const powerBIPrefix = 'set notruncation;\nset maxmemoryconsumptionperiterator=32212254720;\n';
+	const normalizedQuery = powerBIPrefix + trimmedQuery;
+	const escapeMString = (s: string) => s.replace(/"/g, '""');
+	const indentedQuery = normalizedQuery.split('\n').map((l: string) => '        ' + escapeMString(l)).join('\n');
 	const m =
 		'let\n' +
-		'    Query = Text.Combine({"\n' +
+		'    Query = "\n' +
 		indentedQuery + '\n' +
-		'    "}, ""),\n' +
+		'    ",\n' +
 		'    Source = AzureDataExplorer.Contents("' + escapeMString(clusterUrl) + '", "' + escapeMString(database) + '", Query)\n' +
 		'in\n' +
 		'    Source';

@@ -75,8 +75,10 @@ export class KwSectionShell extends LitElement {
 
 	override render() {
 		const showCopilotBadge = this.agentTouched && !!this.hasChanges;
+		const changesTooltip = this.hasChanges === 'new' ? 'Section was added after the last save'
+			: this.hasChanges === 'modified' ? 'Section has unsaved changes' : '';
 		return html`
-			<div class="section-header">
+			<div class="section-header" title=${changesTooltip || nothing}>
 				${showCopilotBadge ? html`
 				<span class="agent-touched-icon" title="Modified by Copilot">
 					${this._copilotLogoUri
