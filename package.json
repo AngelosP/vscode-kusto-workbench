@@ -57,6 +57,16 @@
           "maximum": 120,
           "description": "Maximum time (in minutes) to wait for a query response before timing out. The server's own timeout policy still applies independently. Set to 0 for no client-side limit."
         },
+        "kustoWorkbench.sectionDiffMode": {
+          "type": "string",
+          "default": "contentAndSettings",
+          "enum": ["contentAndSettings", "contentOnly"],
+          "enumDescriptions": [
+            "Show change indicators when either the content or the settings/configuration of a section changed (default).",
+            "Show change indicators only when the content of a section changed. Settings/configuration changes are ignored."
+          ],
+          "description": "Controls what is compared when showing per-section change indicators. 'contentAndSettings' (default) marks a section as changed if either its content or its settings changed. 'contentOnly' only marks a section as changed if its content changed (e.g. the query text, markdown, URL, code, or data source selection)."
+        },
         "kustoWorkbench.debug.mdSearchReveal": {
           "type": "boolean",
           "default": false,
@@ -1317,7 +1327,7 @@
     "watch-tests": "tsc -p tests/integration/tsconfig.json -w",
     "generate:kusto-functions": "node scripts/generate-kusto-functions.mjs",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
-    "check-types": "tsc --noEmit",
+    "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.webview.json",
     "lint": "eslint src/host src/webview",
     "test": "vscode-test",
     "test:webview": "vitest run",

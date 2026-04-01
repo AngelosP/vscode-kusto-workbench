@@ -73,7 +73,7 @@ const buildColumnMappingByName = (state: any, canonicalNormalizedNames: string[]
 	const cols = getColumns(state);
 	const used = new Set<number>();
 	const normName = (n: unknown) => {
-		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(n); } catch (e) { console.error('[kusto]', e); }
+		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(safeString(n)); } catch (e) { console.error('[kusto]', e); }
 		return safeString(n).trim().toLowerCase();
 	};
 	const normalized = cols.map(normName);
@@ -91,7 +91,7 @@ const buildCanonicalColumnsSorted = (aState: any, bState: any): { columns: Canon
 	const aCols = getColumns(aState);
 	const bCols = getColumns(bState);
 	const normName = (n: unknown) => {
-		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(n); } catch (e) { console.error('[kusto]', e); }
+		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(safeString(n)); } catch (e) { console.error('[kusto]', e); }
 		return safeString(n).trim().toLowerCase();
 	};
 	const aNorm = aCols.map(normName);
@@ -194,7 +194,7 @@ const buildDiffModelFromStates = (aState: any, bState: any, labels: any): DiffMo
 
 	const aCols = getColumns(aState), bCols = getColumns(bState);
 	const normName = (n: unknown) => {
-		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(n); } catch (e) { console.error('[kusto]', e); }
+		try { if (typeof (_win.__kustoNormalizeColumnNameForComparison) === 'function') return _win.__kustoNormalizeColumnNameForComparison!(safeString(n)); } catch (e) { console.error('[kusto]', e); }
 		return safeString(n).trim().toLowerCase();
 	};
 	const aSet = new Set(aCols.map(normName)), bSet = new Set(bCols.map(normName));

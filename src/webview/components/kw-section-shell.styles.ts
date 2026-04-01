@@ -30,6 +30,31 @@ export const styles = css`
 		}
 		.diff-btn .codicon { font-size: 14px; }
 
+		/* ── Agent-touched Copilot badge ─────────────────────────────────── */
+		.agent-touched-icon {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			flex: 0 0 auto;
+			width: 14px;
+			height: 14px;
+			margin-right: 2px;
+			opacity: 0.85;
+			color: var(--vscode-foreground);
+		}
+		.agent-touched-icon img {
+			display: block;
+			width: 12px;
+			height: 12px;
+		}
+		.agent-touched-icon svg { display: block; }
+		/* Invert the image logo in dark / high-contrast themes for visibility */
+		:host-context(body.vscode-dark) .agent-touched-icon img,
+		:host-context(body.vscode-high-contrast) .agent-touched-icon img,
+		:host-context(body.vscode-high-contrast-light) .agent-touched-icon img {
+			filter: invert(1);
+		}
+
 		/* ── Header ──────────────────────────────────────────────────────── */
 
 		.section-header {

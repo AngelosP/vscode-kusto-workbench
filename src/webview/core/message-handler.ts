@@ -54,6 +54,20 @@ import {
 
 const _win = window;
 
+// ── Agent-touched helper ─────────────────────────────────────────────────
+// Marks a section's kw-section-shell as agent-touched so it shows the
+// Copilot icon next to the unsaved-changes accent bar.
+
+function markSectionAgentTouched(sectionId: string): void {
+	if (!sectionId) return;
+	const el = document.getElementById(sectionId) as any;
+	if (!el) return;
+	const shell = el.shadowRoot?.querySelector('kw-section-shell');
+	if (shell) {
+		shell.agentTouched = true;
+	}
+}
+
 // --- KQL language service bridge & resource URI resolver ---
 // --- KQL language service bridge (webview -> extension host) ---
 // Used to share a single semantic engine between the webview Monaco editor and VS Code text editors.
@@ -1249,6 +1263,7 @@ window.addEventListener('message', async (event: any) => {
 				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotWriteQuerySetQuery === 'function') {
 					kwEl.copilotWriteQuerySetQuery(message.query || '');
+					markSectionAgentTouched(boxId);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1487,6 +1502,7 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error adding section:', err);
 				}
 				
+				if (success && sectionId) { markSectionAgentTouched(sectionId); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { sectionId, success }, error: success ? undefined : 'Failed to add section' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
@@ -1710,6 +1726,7 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error configuring query section:', err);
 				}
 				
+				if (success) { markSectionAgentTouched(sectionId); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success, resultPreview }, error: success ? undefined : 'Failed to configure query section' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
@@ -1834,6 +1851,7 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error updating markdown section:', err);
 				}
 				
+				if (success) { markSectionAgentTouched(sectionId); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to update markdown section' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
@@ -1878,6 +1896,7 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error configuring chart:', err);
 				}
 				
+				if (success) { markSectionAgentTouched(sectionId); }
 				// Include validation status in response so agent can verify configuration worked
 				const result = { success, ...( validationStatus ? { validation: validationStatus } : {}) };
 				postMessageToHost({ type: 'toolResponse', requestId, result, error: success ? undefined : 'Failed to configure chart' });
@@ -1920,6 +1939,7 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error configuring transformation:', err);
 				}
 				
+				if (success) { markSectionAgentTouched(sectionId); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to configure transformation' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {

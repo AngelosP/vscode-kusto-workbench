@@ -2,10 +2,15 @@
 // KQL keyword/function docs, control command docs, hover resolution.
 // Call initCaretDocsDeps(monaco) from the require callback to provide the AMD reference.
 import { postMessageToHost } from '../shared/webview-messages';
+import { __kustoGetStatementStartAtOffset } from './diagnostics';
 
 // Generated functions merge flag (shared with monaco-completions.ts via re-export from monaco.ts)
 export let __kustoGeneratedFunctionsMerged = false;
 export function setGeneratedFunctionsMerged(v: boolean) { __kustoGeneratedFunctionsMerged = v; }
+
+// Control command doc cache / pending fetch tracking — re-exported by monaco.ts.
+export let __kustoControlCommandDocCache: Record<string, any> = {};
+export let __kustoControlCommandDocPending: Record<string, any> = {};
 
 // AMD reference — set via initCaretDocsDeps().
 let _monacoRange: any = null;

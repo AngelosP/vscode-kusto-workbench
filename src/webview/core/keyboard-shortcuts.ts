@@ -443,9 +443,9 @@ function __kustoGetSelectionOrCurrentLineRange( editor: any) {
 async function __kustoCopyOrCutFocusedMonaco( event: any, isCut: any) {
 	const editor = __kustoGetFocusedMonacoEditor();
 	if (!editor) {
-		return;
+		return false;
 	}
-	await __kustoCopyOrCutMonacoEditorImpl(editor, event, isCut);
+	return await __kustoCopyOrCutMonacoEditorImpl(editor, event, isCut);
 }
 
 async function __kustoCopyOrCutMonacoEditorImpl( editor: any, eventOrNull: any, isCut: any) {

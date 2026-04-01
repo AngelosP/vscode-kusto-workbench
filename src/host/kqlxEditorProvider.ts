@@ -257,10 +257,15 @@ export const deepEqual = (a: unknown, b: unknown): boolean => {
 /**
  * Compute per-section changes between an incoming state and a saved section cache.
  * Pure function — no side effects — suitable for unit testing.
+ *
+ * @param diffMode — `'contentAndSettings'` (default) marks a section as changed
+ *   if either content or settings differ. `'contentOnly'` only marks a section
+ *   as changed if its content differs (new sections are always reported).
  */
 export const computeChangedSections = (
 	incomingSections: unknown[],
-	savedCache: Map<string, Record<string, unknown>>
+	savedCache: Map<string, Record<string, unknown>>,
+	diffMode: 'contentAndSettings' | 'contentOnly' = 'contentAndSettings'
 ): SectionChangeInfo[] => {
 	const changes: SectionChangeInfo[] = [];
 	for (const section of incomingSections) {
@@ -280,7 +285,7 @@ export const computeChangedSections = (
 
 		if (!deepEqual(normalized, saved)) {
 			// Determine what kind of change: content vs settings.
-			const contentKeys = ['query', 'text', 'code', 'url'];
+			const contentKeys = ['query', 'text', 'code', 'url', 'dataSourceId'];
 			let contentChanged = false;
 			let settingsChanged = false;
 			for (const key of Object.keys(normalized)) {
@@ -304,7 +309,11 @@ export const computeChangedSections = (
 					}
 				}
 			}
-			if (contentChanged || settingsChanged) {
+			// In contentOnly mode, only report sections whose content changed.
+			const shouldReport = diffMode === 'contentOnly'
+				? contentChanged
+				: (contentChanged || settingsChanged);
+			if (shouldReport) {
 				changes.push({ id, status: 'modified', contentChanged, settingsChanged });
 			}
 		}
@@ -637,7 +646,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 		const computeChangedSectionsForState = (incomingState: KqlxStateV1): SectionChangeInfo[] => {
 			const sections = Array.isArray(incomingState.sections) ? incomingState.sections : [];
-			return computeChangedSections(sections, savedSectionCache);
+			const diffMode = vscode.workspace.getConfiguration('kustoWorkbench').get<string>('sectionDiffMode', 'contentAndSettings') === 'contentOnly'
+				? 'contentOnly' as const
+				: 'contentAndSettings' as const;
+			return computeChangedSections(sections, savedSectionCache, diffMode);
 		};
 
 		const postChangedSections = (changes: SectionChangeInfo[]) => {
@@ -1434,16 +1446,22 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							contentChanged = savedContent !== currentContent;
 						}
 
-						// Open the settings diff first, pinned (preview: false) so the content
-						// diff that follows doesn't replace it.
-						await vscode.commands.executeCommand(
-							'vscode.diff',
-							savedUri,
-							currentUri,
-							`${sectionLabel} (Saved ↔ Current)`,
-							// Pin this tab only when a content diff will follow.
-							{ preview: !contentChanged } as vscode.TextDocumentShowOptions
-						);
+						// When diffMode is contentOnly, skip the settings JSON diff entirely.
+						const diffMode = vscode.workspace.getConfiguration('kustoWorkbench').get<string>('sectionDiffMode', 'contentAndSettings');
+						const showSettingsDiff = diffMode !== 'contentOnly';
+
+						if (showSettingsDiff) {
+							// Open the settings diff first, pinned (preview: false) so the content
+							// diff that follows doesn't replace it.
+							await vscode.commands.executeCommand(
+								'vscode.diff',
+								savedUri,
+								currentUri,
+								`${sectionLabel} (Saved ↔ Current)`,
+								// Pin this tab only when a content diff will follow.
+								{ preview: !contentChanged } as vscode.TextDocumentShowOptions
+							);
+						}
 
 						// Only open the content diff if the content actually changed;
 						// otherwise the JSON settings diff is sufficient.

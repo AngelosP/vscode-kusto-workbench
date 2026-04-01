@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [3.4.0] - 2026-03-31
+
+* Extension setting to control if the 'diff' logic applies to all sections and their settings, or only to content.
+* New icon that shows which section has been updated / changed by Copilot (any agent via the extension tools) since the last time the file was saved.
+
 ## [3.3.0] - 2026-03-31
 
 * Awesome new change indicators per section, and diff view per section (thanks Leo!)

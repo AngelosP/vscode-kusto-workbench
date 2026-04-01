@@ -16,6 +16,7 @@ declare const monaco: any;
 // Declared here so the moved code compiles without changes.
 let KUSTO_FUNCTION_DOCS: any;
 let __kustoProvideCompletionItemsForDiagnostics: any;
+let __kustoGetColumnsByTable: any;
 
 // --- Live diagnostics (markers) + quick fixes ---
 const KUSTO_DIAGNOSTICS_OWNER = 'kusto-diagnostics';

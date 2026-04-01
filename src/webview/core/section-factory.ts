@@ -89,7 +89,7 @@ export const schemaRequestTokenByBoxId: Record<string, string> = {};
 export function __kustoLog(_boxId?: any, _event?: any, _message?: any, _data?: any, _level?: any) { return; }
 
 function __kustoGetUsedSectionNamesUpper( excludeBoxId: any) {
-	const used = new Set();
+	const used = new Set<string>();
 	try {
 		const container = document.getElementById('queries-container');
 		if (container) {
@@ -268,7 +268,7 @@ export function __kustoClampResultsWrapperHeight(boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-export function addQueryBox( options: any) {
+export function addQueryBox( options?: any) {
 	const isFirstBox = !(Array.isArray(queryBoxes) && queryBoxes.length > 0);
 	const id = (options && options.id) ? String(options.id) : ('query_' + Date.now());
 	const initialQuery = (options && options.initialQuery) ? String(options.initialQuery) : '';
@@ -291,6 +291,7 @@ export function addQueryBox( options: any) {
 	}
 
 	const container = document.getElementById('queries-container');
+	if (!container) return id;
 
 	// ── The light DOM body (toolbar, editor, actions, results) is now created
 	// by the <kw-query-section> Lit component in its connectedCallback.
@@ -2191,13 +2192,13 @@ try {
 	});
 } catch (e) { console.error('[kusto]', e); }
 
-export function addPythonBox( options: any) {
+export function addPythonBox( options?: any) {
 	const id = (options && options.id) ? String(options.id) : ('python_' + Date.now());
 	pythonBoxes.push(id);
 
 	const container = document.getElementById('queries-container');
 	if (!container) {
-		return;
+		return id;
 	}
 
 	const litEl = document.createElement('kw-python-section');
@@ -2538,13 +2539,13 @@ export function onPythonError( message: any) {
 	setPythonOutput(boxId, String(message.error || 'Python execution failed.'));
 }
 
-export function addUrlBox( options: any) {
+export function addUrlBox( options?: any) {
 	const id = (options && options.id) ? String(options.id) : ('url_' + Date.now());
 	urlBoxes.push(id);
 
 	const container = document.getElementById('queries-container');
 	if (!container) {
-		return;
+		return id;
 	}
 
 	const litEl = document.createElement('kw-url-section');

@@ -405,3 +405,97 @@ describe('formatSectionDiffContent', () => {
 		expect(result.content!.text).toBe('');
 	});
 });
+
+// ---------------------------------------------------------------------------
+// computeChangedSections — diffMode
+// ---------------------------------------------------------------------------
+
+describe('computeChangedSections diffMode', () => {
+	it('contentOnly mode ignores settings-only changes', () => {
+		const saved = new Map<string, Record<string, unknown>>([
+			['query_1', { type: 'query', id: 'query_1', query: 'T', database: 'db1' }]
+		]);
+		const incoming = [{ type: 'query', id: 'query_1', query: 'T', database: 'db2' }];
+		const changes = computeChangedSections(incoming, saved, 'contentOnly');
+		expect(changes).toHaveLength(0);
+	});
+
+	it('contentOnly mode still reports content changes', () => {
+		const saved = new Map<string, Record<string, unknown>>([
+			['query_1', { type: 'query', id: 'query_1', query: 'T | take 10' }]
+		]);
+		const incoming = [{ type: 'query', id: 'query_1', query: 'T | take 20' }];
+		const changes = computeChangedSections(incoming, saved, 'contentOnly');
+		expect(changes).toHaveLength(1);
+		expect(changes[0].contentChanged).toBe(true);
+		expect(changes[0].status).toBe('modified');
+	});
+
+	it('contentOnly mode still reports new sections', () => {
+		const saved = new Map<string, Record<string, unknown>>();
+		const incoming = [{ type: 'query', id: 'query_new', query: 'T' }];
+		const changes = computeChangedSections(incoming, saved, 'contentOnly');
+		expect(changes).toHaveLength(1);
+		expect(changes[0].status).toBe('new');
+	});
+
+	it('contentOnly mode ignores settings changes but reports combined content+settings', () => {
+		const saved = new Map<string, Record<string, unknown>>([
+			['query_1', { type: 'query', id: 'query_1', query: 'T', database: 'db1' }]
+		]);
+		const incoming = [{ type: 'query', id: 'query_1', query: 'T | where 1', database: 'db2' }];
+		const changes = computeChangedSections(incoming, saved, 'contentOnly');
+		expect(changes).toHaveLength(1);
+		expect(changes[0].contentChanged).toBe(true);
+		expect(changes[0].settingsChanged).toBe(true);
+	});
+
+	it('contentAndSettings mode reports settings-only changes (default behavior)', () => {
+		const saved = new Map<string, Record<string, unknown>>([
+			['query_1', { type: 'query', id: 'query_1', query: 'T', database: 'db1' }]
+		]);
+		const incoming = [{ type: 'query', id: 'query_1', query: 'T', database: 'db2' }];
+		const changes = computeChangedSections(incoming, saved, 'contentAndSettings');
+		expect(changes).toHaveLength(1);
+		expect(changes[0].settingsChanged).toBe(true);
+	});
+
+	it('default diffMode behaves like contentAndSettings', () => {
+		const saved = new Map<string, Record<string, unknown>>([
+			['query_1', { type: 'query', id: 'query_1', query: 'T', database: 'db1' }]
+		]);
+		const incoming = [{ type: 'query', id: 'query_1', query: 'T', database: 'db2' }];
+		const withDefault = computeChangedSections(incoming, saved);
+		const withExplicit = computeChangedSections(incoming, saved, 'contentAndSettings');
+		expect(withDefault).toEqual(withExplicit);
+	});
+
+	it('contentOnly mode treats dataSourceId as content for chart sections', () => {
+		const saved = new Map<string, Record<string, unknown>>([
+			['chart_1', { type: 'chart', id: 'chart_1', dataSourceId: 'query_1', chartType: 'bar' }]
+		]);
+		const incoming = [{ type: 'chart', id: 'chart_1', dataSourceId: 'query_2', chartType: 'bar' }];
+		const changes = computeChangedSections(incoming, saved, 'contentOnly');
+		expect(changes).toHaveLength(1);
+		expect(changes[0].contentChanged).toBe(true);
+	});
+
+	it('contentOnly mode treats dataSourceId as content for transformation sections', () => {
+		const saved = new Map<string, Record<string, unknown>>([
+			['transformation_1', { type: 'transformation', id: 'transformation_1', dataSourceId: 'query_1' }]
+		]);
+		const incoming = [{ type: 'transformation', id: 'transformation_1', dataSourceId: 'query_2' }];
+		const changes = computeChangedSections(incoming, saved, 'contentOnly');
+		expect(changes).toHaveLength(1);
+		expect(changes[0].contentChanged).toBe(true);
+	});
+
+	it('contentOnly mode ignores chart setting changes like chartType', () => {
+		const saved = new Map<string, Record<string, unknown>>([
+			['chart_1', { type: 'chart', id: 'chart_1', dataSourceId: 'query_1', chartType: 'bar' }]
+		]);
+		const incoming = [{ type: 'chart', id: 'chart_1', dataSourceId: 'query_1', chartType: 'line' }];
+		const changes = computeChangedSections(incoming, saved, 'contentOnly');
+		expect(changes).toHaveLength(0);
+	});
+});

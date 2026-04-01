@@ -387,7 +387,10 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				if (sidecarFile) {
 					// Multi-section: compare against sidecar cache.
 					const sections = Array.isArray(incomingState.sections) ? incomingState.sections : [];
-					const changes = computeChangedSections(sections, savedSidecarSectionCache);
+					const diffMode = vscode.workspace.getConfiguration('kustoWorkbench').get<string>('sectionDiffMode', 'contentAndSettings') === 'contentOnly'
+						? 'contentOnly' as const
+						: 'contentAndSettings' as const;
+					const changes = computeChangedSections(sections, savedSidecarSectionCache, diffMode);
 					postChangedSections(changes);
 				} else {
 					// Single query: compare saved text vs incoming query.
@@ -761,13 +764,19 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						const contentChanged = (saved.content?.text ?? '') !== (current.content?.text ?? '')
 							&& !!(saved.content || current.content);
 
-						await vscode.commands.executeCommand(
-							'vscode.diff',
-							savedUri,
-							currentUri,
-							`${sectionLabel} (Saved ↔ Current)`,
-							{ preview: !contentChanged } as vscode.TextDocumentShowOptions
-						);
+						// When diffMode is contentOnly, skip the settings JSON diff entirely.
+						const diffMode = vscode.workspace.getConfiguration('kustoWorkbench').get<string>('sectionDiffMode', 'contentAndSettings');
+						const showSettingsDiff = diffMode !== 'contentOnly';
+
+						if (showSettingsDiff) {
+							await vscode.commands.executeCommand(
+								'vscode.diff',
+								savedUri,
+								currentUri,
+								`${sectionLabel} (Saved ↔ Current)`,
+								{ preview: !contentChanged } as vscode.TextDocumentShowOptions
+							);
+						}
 
 						if (contentChanged) {
 							const label = current.content?.label ?? saved.content?.label ?? 'Content';

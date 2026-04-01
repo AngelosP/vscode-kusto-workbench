@@ -8,6 +8,7 @@ import { codiconSheet } from '../shared/codicon-styles.js';
 const SVG_CLOSE = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg"><path d="M4 4l8 8"/><path d="M12 4L4 12"/></svg>';
 const SVG_EYE = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M1.5 8c1.8-3.1 4-4.7 6.5-4.7S12.7 4.9 14.5 8c-1.8 3.1-4 4.7-6.5 4.7S3.3 11.1 1.5 8z"/><circle cx="8" cy="8" r="2.1"/></svg>';
 const SVG_FIT = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M3 6V3h3"/><path d="M13 10v3h-3"/><path d="M3 3l4 4"/><path d="M13 13l-4-4"/></svg>';
+const SVG_COPILOT_SMALL = '<svg viewBox="0 0 16 16" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="3" y="3" width="10" height="9" rx="2" /><path d="M6 12v1" /><path d="M10 12v1" /><circle cx="6.5" cy="7" r=".8" fill="currentColor" stroke="none" /><circle cx="9.5" cy="7" r=".8" fill="currentColor" stroke="none" /><path d="M6.2 9.2c.6.5 1.2.8 1.8.8s1.2-.3 1.8-.8" /></svg>';
 
 // ─── Component ────────────────────────────────────────────────────────────────
 
@@ -54,13 +55,35 @@ export class KwSectionShell extends LitElement {
 	@property({ type: Boolean, attribute: 'show-diff-btn' })
 	showDiffBtn = false;
 
+	/**
+	 * Whether this section was modified by Copilot or an agent tool.
+	 * Reflected to the `agent-touched` attribute for CSS styling.
+	 */
+	@property({ type: Boolean, reflect: true, attribute: 'agent-touched' })
+	agentTouched = false;
+
 	@state() private _hasHeaderButtons = false;
+	@state() private _copilotLogoUri = '';
 
 	static override styles = [codiconSheet, styles];
 
+	override connectedCallback(): void {
+		super.connectedCallback();
+		const cfg = (window as any).__kustoQueryEditorConfig;
+		this._copilotLogoUri = (cfg && cfg.copilotLogoUri) ? String(cfg.copilotLogoUri) : '';
+	}
+
 	override render() {
+		const showCopilotBadge = this.agentTouched && !!this.hasChanges;
 		return html`
 			<div class="section-header">
+				${showCopilotBadge ? html`
+				<span class="agent-touched-icon" title="Modified by Copilot">
+					${this._copilotLogoUri
+						? html`<img src=${this._copilotLogoUri} width="12" height="12" alt="" aria-hidden="true" />`
+						: html`<span .innerHTML=${SVG_COPILOT_SMALL}></span>`}
+				</span>
+				` : nothing}
 				<div class="query-name-group">
 					<button type="button" class="section-drag-handle" draggable="true"
 						title="Drag to reorder" aria-label="Reorder section"

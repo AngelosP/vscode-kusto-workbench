@@ -137,30 +137,12 @@ declare global {
 
 		showDistinctCountPicker: (colIdx: number, boxId: string) => void;
 		calculateDistinctCount: (groupByColIdx: number, boxId: string) => void;
-		closeColumnAnalysis: (event: Event | null) => void;
+		closeColumnAnalysis: (event?: Event | null) => void;
 
 		// =====================================================================
 		// core/dropdown.ts (legacy)
 		// =====================================================================
-		__kustoDropdown: {
-			getChevronDownSvg: () => string;
-			renderSelectHtml: (opts: any) => string;
-			renderMenuDropdownHtml: (opts: any) => string;
-			renderMenuItemsHtml: (items: any[], opts: any) => string;
-			closeAllMenus: () => void;
-			closeMenuDropdown: (buttonId: string, menuId: string) => void;
-			toggleMenuDropdown: (opts: any) => void;
-			wireCloseOnFocusOut: (buttonEl: HTMLElement, menuEl: HTMLElement) => void;
-			wireMenuInteractions: (menuEl: HTMLElement) => void;
-			syncSelectBackedDropdown: (selectId: string) => void;
-			selectFromMenu: (selectId: string, keyEnc: string) => void;
-			toggleSelectMenu: (selectId: string) => void;
-			renderCheckboxDropdownHtml: (opts: any) => string;
-			renderCheckboxItemsHtml: (items: any[], opts: any) => string;
-			getCheckboxSelections: (menuId: string) => string[];
-			updateCheckboxButtonText: (buttonTextId: string, selectedValues: string[], placeholder: string) => void;
-			toggleCheckboxMenu: (buttonId: string, menuId: string) => void;
-		};
+		__kustoDropdown: Record<string, any>;
 
 		// =====================================================================
 		// diffView.ts
@@ -286,6 +268,8 @@ declare global {
 		__kustoQueryExpandedByBoxId?: Record<string, boolean>;
 		displayComparisonSummary: (sourceBoxId: string, comparisonBoxId: string) => void;
 		toggleQueryResultsVisibility: (boxId: string) => void;
+		toggleComparisonSummaryVisibility: (boxId: string) => void;
+		__kustoOnResultsVisibilityToggled?: (boxId: string) => void;
 		cancelQuery: (boxId: string) => void;
 		formatElapsed: (ms: number) => string;
 		acceptOptimizations: (comparisonBoxId: string) => void;
@@ -510,7 +494,7 @@ declare global {
 		// =====================================================================
 		// monaco-writable.ts
 		// =====================================================================
-		__kustoNormalizeTextareasWritable: () => void;
+		__kustoNormalizeTextareasWritable: (root?: any) => void;
 		__kustoEnsureAllEditorsWritableSoon: () => void;
 
 		// =====================================================================
@@ -534,9 +518,9 @@ declare global {
 		onPythonError: (message: any) => void;
 		__kustoGetFocusedMonacoEditor: () => any | null;
 		__kustoGetSelectionOrCurrentLineRange: (editor: any) => any;
-		__kustoCopyOrCutFocusedMonaco: (isCut: boolean) => Promise<boolean>;
-		__kustoCopyOrCutMonacoEditorImpl: (editor: any, isCut: boolean) => Promise<boolean>;
-		__kustoToggleAddSectionDropdown: () => void;
+		__kustoCopyOrCutFocusedMonaco: (eventOrIsCut?: any, isCut?: any) => Promise<boolean>;
+		__kustoCopyOrCutMonacoEditorImpl: (editor: any, eventOrNull?: any, isCut?: any) => Promise<boolean>;
+		__kustoToggleAddSectionDropdown: (event?: any) => void;
 		__kustoAddSectionFromDropdown: (sectionType: string) => void;
 		__kustoUpdateAddSectionDropdownVisibility: () => void;
 		__kustoWheelPassthroughInstalled?: boolean;
@@ -608,6 +592,7 @@ declare global {
 		// extraBoxes-transformation.ts
 		// =====================================================================
 		__kustoTransformationBoxes: any[];
+		__kustoNotifyResultsUpdated: (boxId: string) => void;
 		__kustoConfigureTransformation: (boxId: string, config: any) => any;
 		__kustoRenderTransformation: (boxId: string) => void;
 
@@ -620,7 +605,23 @@ declare global {
 		// =====================================================================
 		// main.ts (additional)
 		// =====================================================================
-		__kustoResolveResourceUri?: (args: any) => Promise<string>;
+		__kustoResolveResourceUri?: (args: any) => Promise<string | null>;
+
+		// =====================================================================
+		// sections/kw-chart-section.ts
+		// =====================================================================
+		__kustoUpdateChartBuilderUI: (boxId: any) => void;
+
+		// =====================================================================
+		// sections/kw-markdown-section.ts
+		// =====================================================================
+		__kustoApplyToastUiThemeAll: () => void;
+
+		// =====================================================================
+		// sections/kw-transformation-section.ts
+		// =====================================================================
+		__kustoUpdateTransformationBuilderUI: (boxId: any) => void;
+		__kustoGetTransformationState: (boxId: any) => any;
 
 		// =====================================================================
 		// Browser APIs not in lib.dom.d.ts
@@ -634,6 +635,12 @@ declare global {
 		marked?: any;
 		toastui?: any;
 		DOMPurify?: any;
+
+		// =====================================================================
+		// Late-bound / optional bridges (added by various modules at runtime)
+		// =====================================================================
+		setQueryBoxes?: (ids: string[]) => void;
+		__kustoRefreshAllDataSourceDropdowns?: () => void;
 	}
 }
 

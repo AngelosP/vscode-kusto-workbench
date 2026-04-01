@@ -1607,7 +1607,7 @@ export function renderChart(boxId: any) {
 					// Horizontal spacing check: would this label overlap its neighbors?
 					const fitCount = Math.max(1, Math.floor(chartPlotWidth / estLabelWidthPx));
 					if (total <= fitCount) return true;
-				const interval = Math.max(1, Math.ceil(total / showCount));
+				const interval = Math.max(1, Math.ceil(total / fitCount));
 				return (idx % interval) === 0;
 			};
 
@@ -1654,7 +1654,7 @@ export function renderChart(boxId: any) {
 					let timeLabels: any[] = [];
 					let timeTooltipLabels: any[] = [];
 					let timeShowTime = false;
-					let timePeriodGranularity = 'day';
+					let timePeriodGranularity: import('./chart-utils.js').TimePeriodGranularity = 'day';
 					if (treatAsTime) {
 						try {
 							const all = [];

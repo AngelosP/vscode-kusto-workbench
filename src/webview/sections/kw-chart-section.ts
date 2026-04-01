@@ -1686,7 +1686,7 @@ export class KwChartSection extends LitElement {
 
 	// ── Axis settings handlers ────────────────────────────────────────────────
 
-	private _toggleAxisPopup(axis: 'x' | 'y' | 'labels' | 'legend' | 'heatmap-labels' | 'heatmap-slicer', e: Event): void {
+	private _toggleAxisPopup(axis: 'x' | 'y' | 'labels' | 'legend' | 'heatmap-labels' | 'heatmap-slicer' | 'sankey-orient', e: Event): void {
 		if (this._openAxisPopup === axis) {
 			this._openAxisPopup = '';
 			return;

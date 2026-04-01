@@ -1082,7 +1082,7 @@ function __kustoCancelOptimizeQuery(boxId: any) {
 
 // ── optimizeQueryWithCopilot — cross-box, creates/reuses comparison sections ──
 
-export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverride: any, options: any) {
+export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverride: any, options?: any) {
 	const editor = queryEditors[boxId];
 	if (!editor) return '';
 	const model = editor.getModel();

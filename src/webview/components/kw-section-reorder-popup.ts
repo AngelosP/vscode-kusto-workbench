@@ -12,6 +12,8 @@ export interface SectionSummary {
 	index: number;
 	/** Unsaved-change status from the section shell */
 	changeStatus: '' | 'modified' | 'new';
+	/** Whether this section was modified by Copilot/agent */
+	agentTouched: boolean;
 }
 
 // ─── Icons per section type (small inline SVGs) ──────────────────────────────
@@ -233,7 +235,27 @@ export class KwSectionReorderPopup extends LitElement {
 			flex-shrink: 0;
 			min-width: 18px;
 			text-align: right;
+			display: inline-flex;
+			align-items: center;
+			gap: 10px;
 		}
+		.agent-icon {
+			display: inline-flex;
+			align-items: center;
+			color: var(--vscode-foreground);
+			opacity: 0.85;
+		}
+		.agent-icon img {
+			width: 11px;
+			height: 11px;
+			display: block;
+		}
+		:host-context(body.vscode-dark) .agent-icon img,
+		:host-context(body.vscode-high-contrast) .agent-icon img,
+		:host-context(body.vscode-high-contrast-light) .agent-icon img {
+			filter: invert(1);
+		}
+		.agent-icon svg { display: block; }
 		.drag-grip {
 			flex-shrink: 0;
 			margin-right: 6px;
@@ -292,6 +314,21 @@ export class KwSectionReorderPopup extends LitElement {
 	// Cached card positions for FLIP animation
 	private _cardPositions = new Map<string, DOMRect>();
 
+	private _copilotLogoUri = '';
+
+	override connectedCallback(): void {
+		super.connectedCallback();
+		const cfg = (window as any).__kustoQueryEditorConfig;
+		this._copilotLogoUri = (cfg && cfg.copilotLogoUri) ? String(cfg.copilotLogoUri) : '';
+	}
+
+	private _renderAgentIcon(): TemplateResult {
+		if (this._copilotLogoUri) {
+			return html`<span class="agent-icon" title="Modified by Copilot"><img src=${this._copilotLogoUri} alt="" aria-hidden="true" /></span>`;
+		}
+		return html`<span class="agent-icon" title="Modified by Copilot"><svg viewBox="0 0 16 16" width="11" height="11" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><rect x="3" y="3" width="10" height="9" rx="2" /><path d="M6 12v1" /><path d="M10 12v1" /><circle cx="6.5" cy="7" r=".8" fill="currentColor" stroke="none" /><circle cx="9.5" cy="7" r=".8" fill="currentColor" stroke="none" /><path d="M6.2 9.2c.6.5 1.2.8 1.8.8s1.2-.3 1.8-.8" /></svg></span>`;
+	}
+
 	// ── Public API ───────────────────────────────────────────────────────────
 
 	/**
@@ -336,12 +373,14 @@ export class KwSectionReorderPopup extends LitElement {
 			const type = this._inferType(id, el);
 			if (!type) continue;
 			idx++;
-			// Read unsaved-change status from the section shell
+			// Read unsaved-change status and agent-touched flag from the section shell
 			let changeStatus: '' | 'modified' | 'new' = '';
+			let agentTouched = false;
 			try {
 				const shell = el.shadowRoot?.querySelector('kw-section-shell');
 				const attr = shell?.getAttribute('has-changes') || '';
 				if (attr === 'modified' || attr === 'new') changeStatus = attr;
+				agentTouched = shell?.hasAttribute('agent-touched') ?? false;
 			} catch { /* ignore */ }
 			results.push({
 				id,
@@ -349,6 +388,7 @@ export class KwSectionReorderPopup extends LitElement {
 				name: this._inferName(el, type),
 				index: idx,
 				changeStatus,
+				agentTouched,
 			});
 		}
 		return results;
@@ -444,7 +484,7 @@ export class KwSectionReorderPopup extends LitElement {
 					<div class="section-name">${displayName}</div>
 					<div class="section-type-badge">${sectionTypeLabels[s.type]}${isPinned ? ' (pinned)' : ''}</div>
 				</div>
-				<span class="section-index">#${s.index}</span>
+				<span class="section-index">${s.agentTouched ? this._renderAgentIcon() : nothing}#${s.index}</span>
 			</div>
 			${arrIndex === this._sections.length - 1 ? html`
 				<div class="drop-indicator ${this._dropIndex === this._sections.length ? 'is-visible' : ''}" data-drop-index="${this._sections.length}"></div>
