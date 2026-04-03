@@ -15,6 +15,7 @@ import {
 	__kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoOnConnectionsUpdated,
 	schemaRequestTokenByBoxId,
 	addPythonBox, addUrlBox, removePythonBox, removeUrlBox, onPythonResult, onPythonError,
+	addHtmlBox, removeHtmlBox,
 	__kustoGetChartValidationStatus,
 } from './section-factory';
 import { addMarkdownBox, removeMarkdownBox, __kustoMaximizeMarkdownBox } from '../sections/kw-markdown-section';
@@ -1497,6 +1498,16 @@ window.addEventListener('message', async (event: any) => {
 						if (sectionId && input.name) {
 							__kustoSetSectionName(sectionId, input.name);
 						}
+					} else if (sectionType === 'html') {
+						const htmlOpts: any = {};
+						if (input.code) {
+							htmlOpts.code = String(input.code);
+						}
+						sectionId = addHtmlBox(htmlOpts);
+						success = !!sectionId;
+						if (sectionId && input.name) {
+							__kustoSetSectionName(sectionId, input.name);
+						}
 					}
 				} catch (err: any) {
 					console.error('[Kusto Tools] Error adding section:', err);
@@ -1538,6 +1549,9 @@ window.addEventListener('message', async (event: any) => {
 						success = true;
 					} else if (sectionId.startsWith('url_')) {
 						removeUrlBox(sectionId);
+						success = true;
+					} else if (sectionId.startsWith('html_')) {
+						removeHtmlBox(sectionId);
 						success = true;
 					} else {
 						const sectionEl = document.getElementById(sectionId) as any;
@@ -1941,6 +1955,38 @@ window.addEventListener('message', async (event: any) => {
 				
 				if (success) { markSectionAgentTouched(sectionId); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to configure transformation' });
+				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+			} catch (err: any) {
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+		
+		case 'toolConfigureHtmlSection':
+			try {
+				const requestId = String(message.requestId || '');
+				const sectionId = String(message.sectionId || '');
+				let success = false;
+				
+				try {
+					const el = document.getElementById(sectionId) as any;
+					if (el && typeof el.setCode === 'function') {
+						if (typeof message.name === 'string') {
+							__kustoSetSectionName(sectionId, message.name);
+						}
+						if (typeof message.code === 'string') {
+							el.setCode(message.code);
+						}
+						if (typeof message.mode === 'string') {
+							el.setMode(message.mode);
+						}
+						success = true;
+					}
+				} catch (err: any) {
+					console.error('[Kusto Tools] Error configuring HTML section:', err);
+				}
+				
+				if (success) { markSectionAgentTouched(sectionId); }
+				postMessageToHost({ type: 'toolResponse', requestId, result: { success, sectionId }, error: success ? undefined : 'Failed to configure HTML section' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });

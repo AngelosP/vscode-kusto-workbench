@@ -116,6 +116,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'seeCachedValues' }
 	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
 	| { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string }
+	| { type: 'saveHtmlFile'; boxId?: string; html: string; suggestedFileName?: string }
 
 	// Settings
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }

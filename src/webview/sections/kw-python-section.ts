@@ -127,7 +127,7 @@ export class KwPythonSection extends LitElement {
 				.name=${this._title}
 				.expanded=${this._expanded}
 				box-id=${this.boxId}
-				name-placeholder="Python Name (optional)"
+				name-placeholder="Python name (optional)"
 				@name-change=${this._onShellNameChange}
 				@toggle-visibility=${this._toggleVisibility}
 				@fit-to-contents=${this._fitToContents}>
@@ -506,6 +506,8 @@ export class KwPythonSection extends LitElement {
 		const onUp = () => {
 			document.removeEventListener('mousemove', onMove, true);
 			document.removeEventListener('mouseup', onUp, true);
+			document.removeEventListener('mouseleave', onUp);
+			window.removeEventListener('blur', onUp);
 			resizer.classList.remove('is-dragging');
 			document.body.style.cursor = prevCursor;
 			document.body.style.userSelect = prevSelect;
@@ -514,6 +516,8 @@ export class KwPythonSection extends LitElement {
 
 		document.addEventListener('mousemove', onMove, true);
 		document.addEventListener('mouseup', onUp, true);
+		document.addEventListener('mouseleave', onUp);
+		window.addEventListener('blur', onUp);
 	}
 
 	// ── Message handling ──────────────────────────────────────────────────────

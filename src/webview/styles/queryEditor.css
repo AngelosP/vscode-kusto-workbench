@@ -26,6 +26,9 @@
 			color: var(--vscode-foreground);
 			padding: 16px;
 			overflow-x: hidden;
+
+			/* Shared delay before sash / insert-zone reveal animations */
+			--kw-sash-reveal-delay: 0.5s;
 		}
 
 		/* Plain .md files: maximize usable width and simplify section chrome. */
@@ -1000,6 +1003,7 @@
 		kw-url-section,
 		kw-chart-section,
 		kw-transformation-section,
+		kw-html-section,
 		kw-query-section {
 			margin-bottom: 16px;
 		}
@@ -2021,10 +2025,12 @@
 
 		.query-editor-resizer:hover::before {
 			height: 6px;
+			transition-delay: var(--kw-sash-reveal-delay, 0.5s);
 		}
 
 		.query-editor-resizer.is-dragging::before {
 			height: 6px;
+			transition-delay: 0s;
 		}
 
 		.query-editor-placeholder {

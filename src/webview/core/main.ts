@@ -95,7 +95,7 @@ function __kustoUpdateAddSectionDropdownVisibility() {
 	try {
 		const allowed = Array.isArray(pState.allowedSectionKinds)
 			? pState.allowedSectionKinds.map((v: any) => String(v))
-			: ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
+			: ['query', 'chart', 'transformation', 'markdown', 'python', 'url', 'html'];
 
 		const items = document.querySelectorAll('.add-controls-dropdown-item[data-add-kind]');
 		for (const item of items as any) {

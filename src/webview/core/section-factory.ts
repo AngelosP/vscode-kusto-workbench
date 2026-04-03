@@ -608,6 +608,8 @@ export function addQueryBox( options?: any) {
 				const onUp = () => {
 					document.removeEventListener('mousemove', onMove, true);
 					document.removeEventListener('mouseup', onUp, true);
+					document.removeEventListener('mouseleave', onUp);
+					window.removeEventListener('blur', onUp);
 					resizer.classList.remove('is-dragging');
 					document.body.style.cursor = previousCursor;
 					document.body.style.userSelect = previousUserSelect;
@@ -620,6 +622,8 @@ export function addQueryBox( options?: any) {
 
 				document.addEventListener('mousemove', onMove, true);
 				document.addEventListener('mouseup', onUp, true);
+				document.addEventListener('mouseleave', onUp);
+				window.addEventListener('blur', onUp);
 			});
 
 			// Double-click on the results resizer: auto-size results to fit contents.
@@ -1695,7 +1699,7 @@ export function __kustoGetChartDatasetsInDomOrder() {
 				const id = child && child.id ? String(child.id) : '';
 				if (!id) continue;
 				// Count all section types for consistent numbering
-				if (id.startsWith('query_') || id.startsWith('markdown_') || id.startsWith('python_') || id.startsWith('url_') || id.startsWith('chart_') || id.startsWith('transformation_') || id.startsWith('copilotQuery_')) {
+				if (id.startsWith('query_') || id.startsWith('markdown_') || id.startsWith('python_') || id.startsWith('url_') || id.startsWith('chart_') || id.startsWith('transformation_') || id.startsWith('html_') || id.startsWith('copilotQuery_')) {
 					sectionIndex++;
 				}
 				// Only include sections that can be data sources
@@ -2607,3 +2611,90 @@ window.addPythonBox = addPythonBox;
 window.removePythonBox = removePythonBox;
 window.addUrlBox = addUrlBox;
 window.removeUrlBox = removeUrlBox;
+
+// ─── HTML section creation ──────────────────────────────────────────────────
+
+export let htmlBoxes: any[] = [];
+try { (window as any).__kustoHtmlBoxes = htmlBoxes; } catch (e) { console.error('[kusto]', e); }
+
+export function addHtmlBox(options?: any) {
+	const id = (options && options.id) ? String(options.id) : ('html_' + Date.now());
+	htmlBoxes.push(id);
+
+	const container = document.getElementById('queries-container');
+	if (!container) {
+		return id;
+	}
+
+	const litEl = document.createElement('kw-html-section') as any;
+	litEl.id = id;
+	litEl.setAttribute('box-id', id);
+
+	// Pass initial code if available.
+	const pendingCode = pState.pendingHtmlCodeByBoxId && pState.pendingHtmlCodeByBoxId[id];
+	if (typeof pendingCode === 'string') {
+		litEl.setAttribute('initial-code', pendingCode);
+	}
+
+	// Create the light-DOM editor container that Monaco will render into.
+	const editorDiv = document.createElement('div');
+	editorDiv.className = 'query-editor';
+	editorDiv.id = id + '_html_editor';
+	editorDiv.slot = 'editor';
+	litEl.appendChild(editorDiv);
+
+	// Handle remove event from the Lit component.
+	litEl.addEventListener('section-remove', function (e: any) {
+		try { removeHtmlBox(e.detail.boxId); } catch (e) { console.error('[kusto]', e); }
+	});
+
+	if (options && typeof options.name === 'string') {
+		litEl.setName(options.name);
+	}
+	if (options && typeof options.code === 'string') {
+		litEl.setCode(options.code);
+	}
+	if (options && typeof options.mode === 'string') {
+		litEl.setMode(options.mode);
+	}
+	if (options && typeof options.expanded === 'boolean') {
+		litEl.setExpanded(options.expanded);
+	}
+	if (options && typeof options.editorHeightPx === 'number') {
+		litEl.setAttribute('editor-height-px', String(options.editorHeightPx));
+	}
+	if (options && typeof options.previewHeightPx === 'number') {
+		litEl.setAttribute('preview-height-px', String(options.previewHeightPx));
+	}
+
+	const afterBoxId = (options && typeof options.afterBoxId === 'string') ? String(options.afterBoxId) : '';
+	const afterEl = afterBoxId ? document.getElementById(afterBoxId) : null;
+	if (afterEl) {
+		afterEl.insertAdjacentElement('afterend', litEl);
+	} else {
+		container.appendChild(litEl);
+	}
+
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	if (afterBoxId) {
+		try {
+			const newEl = document.getElementById(id);
+			if (newEl && typeof newEl.scrollIntoView === 'function') {
+				newEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+	return id;
+}
+
+export function removeHtmlBox(boxId: any) {
+	htmlBoxes = htmlBoxes.filter((id: any) => id !== boxId);
+	const box = document.getElementById(boxId) as any;
+	if (box && box.parentNode) {
+		box.parentNode.removeChild(box);
+	}
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+}
+
+window.addHtmlBox = addHtmlBox;
+window.removeHtmlBox = removeHtmlBox;

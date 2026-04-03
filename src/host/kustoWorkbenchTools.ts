@@ -73,7 +73,7 @@ export interface ListSectionsInput {
 }
 
 export interface AddSectionInput {
-	type: 'query' | 'markdown' | 'chart' | 'transformation' | 'url' | 'python';
+	type: 'query' | 'markdown' | 'chart' | 'transformation' | 'url' | 'python' | 'html';
 	/** For query sections: initial query text */
 	query?: string;
 	/** For query sections: cluster URL to connect to */
@@ -86,6 +86,8 @@ export interface AddSectionInput {
 	content?: string;
 	/** For URL sections: the URL to embed */
 	url?: string;
+	/** For HTML sections: initial HTML + JS code */
+	code?: string;
 	/** For chart sections: data source section ID */
 	dataSourceId?: string;
 	/** For chart sections: chart type */
@@ -223,6 +225,16 @@ export interface DelegateToKustoWorkbenchCopilotInput {
 	clusterUrl?: string;
 	/** Optional: Database name to use. If not provided, uses the current database. */
 	database?: string;
+}
+
+export interface ConfigureHtmlSectionInput {
+	sectionId: string;
+	/** Optional name/title for the section */
+	name?: string;
+	/** HTML + JS source code */
+	code?: string;
+	/** Section mode: 'code' for editor, 'preview' for rendered HTML */
+	mode?: 'code' | 'preview';
 }
 
 export interface CreateFileInput {
@@ -581,6 +593,9 @@ export class KustoWorkbenchToolOrchestrator {
 		if (input.query !== undefined) {
 			input = { ...input, query: unescapeLLMText(input.query) };
 		}
+		if (input.code !== undefined) {
+			input = { ...input, code: unescapeLLMText(input.code) };
+		}
 		return this.sendToWebview('toolAddSection', { input });
 	}
 
@@ -619,6 +634,18 @@ export class KustoWorkbenchToolOrchestrator {
 
 	async configureTransformation(input: ConfigureTransformationInput): Promise<{ success: boolean }> {
 		return this.sendToWebview('toolConfigureTransformation', { input });
+	}
+
+	async configureHtmlSection(input: ConfigureHtmlSectionInput): Promise<{ success: boolean; sectionId?: string }> {
+		if (input.code !== undefined) {
+			input = { ...input, code: unescapeLLMText(input.code) };
+		}
+		return this.sendToWebview('toolConfigureHtmlSection', {
+			sectionId: input.sectionId,
+			name: input.name,
+			code: input.code,
+			mode: input.mode,
+		});
 	}
 
 	async delegateToKustoWorkbenchCopilot(input: DelegateToKustoWorkbenchCopilotInput): Promise<{
@@ -1243,6 +1270,37 @@ export class ManageDevelopmentNotesTool implements vscode.LanguageModelTool<Mana
 	}
 }
 
+export class ConfigureHtmlSectionTool implements vscode.LanguageModelTool<ConfigureHtmlSectionInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<ConfigureHtmlSectionInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		try {
+			const result = await this.orchestrator.configureHtmlSection(getToolInput(options));
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+			]);
+		} catch (err) {
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
+			]);
+		}
+	}
+
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<ConfigureHtmlSectionInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.PreparedToolInvocation> {
+		const input = getToolInput(options);
+		const sectionId = input?.sectionId || 'unknown';
+		return {
+			invocationMessage: `Configuring HTML section ${sectionId}…`
+		};
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Registration helper
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1270,6 +1328,7 @@ export function registerKustoWorkbenchTools(
 		vscode.lm.registerTool('kusto-workbench_update-markdown-section', new UpdateMarkdownSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_configure-chart', new ConfigureChartTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_configure-transformation', new ConfigureTransformationTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_configure-html-section', new ConfigureHtmlSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_ask-kusto-copilot', new DelegateToKustoWorkbenchCopilotTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_create-file', new CreateFileTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_manage-development-notes', new ManageDevelopmentNotesTool(orchestrator))

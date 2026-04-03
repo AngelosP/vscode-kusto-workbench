@@ -132,7 +132,7 @@ export const normalizeSection = (section: unknown): Record<string, unknown> | un
 	const type = String(s.type ?? '');
 	
 	// Skip unknown section types
-	const knownTypes = ['query', 'copilotQuery', 'markdown', 'python', 'url', 'chart', 'transformation'];
+	const knownTypes = ['query', 'copilotQuery', 'markdown', 'python', 'url', 'chart', 'transformation', 'html'];
 	if (!knownTypes.includes(type)) {
 		return undefined;
 	}
@@ -340,6 +340,7 @@ export const formatSectionDiffContent = (
 		query: { key: 'query', label: 'Query' },
 		markdown: { key: 'text', label: 'Markdown' },
 		python: { key: 'code', label: 'Code' },
+		html: { key: 'code', label: 'Code' },
 	};
 	const sectionType = String(normalizedSection.type ?? '');
 	const contentInfo = contentKeyByType[sectionType];
@@ -396,12 +397,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 	private static getAllowedSectionKinds(
 		kind: KqlxFileKind
-	): Array<'query' | 'chart' | 'transformation' | 'markdown' | 'python' | 'url'> {
+	): Array<'query' | 'chart' | 'transformation' | 'markdown' | 'python' | 'url' | 'html'> {
 		// .mdx is intended to be "notebook-like markdown"; we still allow URL and Transformations
 		// so users can fetch CSV and reshape it.
 		return kind === 'mdx'
 			? ['markdown', 'url', 'transformation']
-			: ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
+			: ['query', 'chart', 'transformation', 'markdown', 'python', 'url', 'html'];
 	}
 
 	private static pendingAddKindKeyForUri(uri: vscode.Uri): string {

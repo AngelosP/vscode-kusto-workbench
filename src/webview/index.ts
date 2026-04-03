@@ -36,5 +36,6 @@ import './sections/kw-markdown-section.js';
 import './sections/kw-url-section.js';
 import './sections/kw-chart-section.js';
 import './sections/kw-transformation-section.js';
+import './sections/kw-html-section.js';
 import './sections/kw-query-section.js';
 import './sections/kw-query-toolbar.js';

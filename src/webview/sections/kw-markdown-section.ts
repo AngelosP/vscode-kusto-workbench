@@ -303,7 +303,7 @@ export class KwMarkdownSection extends LitElement {
 					.name=${this._title}
 					.expanded=${this._expanded}
 					box-id=${this.boxId}
-					name-placeholder="Markdown Name (optional)"
+					name-placeholder="Markdown name (optional)"
 					@name-change=${this._onShellNameChange}
 					@toggle-visibility=${this._toggleVisibility}
 					@fit-to-contents=${this.fitToContents}>
@@ -1201,6 +1201,8 @@ export class KwMarkdownSection extends LitElement {
 		const onUp = () => {
 			document.removeEventListener('mousemove', onMove, true);
 			document.removeEventListener('mouseup', onUp, true);
+			document.removeEventListener('mouseleave', onUp);
+			window.removeEventListener('blur', onUp);
 			resizer.classList.remove('is-dragging');
 			document.body.style.cursor = prevCursor;
 			document.body.style.userSelect = prevSelect;
@@ -1209,6 +1211,8 @@ export class KwMarkdownSection extends LitElement {
 
 		document.addEventListener('mousemove', onMove, true);
 		document.addEventListener('mouseup', onUp, true);
+		document.addEventListener('mouseleave', onUp);
+		window.addEventListener('blur', onUp);
 	}
 
 	// ── Responsive resize observer ────────────────────────────────────────────

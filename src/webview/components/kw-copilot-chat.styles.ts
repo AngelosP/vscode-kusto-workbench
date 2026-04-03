@@ -384,8 +384,8 @@ export const styles = css`
 		pointer-events: none;
 		z-index: 1;
 	}
-	.input-resizer:hover::before { height: 6px; }
-	.input-resizer.is-dragging::before { height: 6px; }
+	.input-resizer:hover::before { height: 6px; transition-delay: var(--kw-sash-reveal-delay, 0.5s); }
+	.input-resizer.is-dragging::before { height: 6px; transition-delay: 0s; }
 
 	.input-area {
 		display: flex;

@@ -305,10 +305,12 @@
 
 		.kusto-copilot-chat-input-resizer:hover::before {
 			height: 6px;
+			transition-delay: var(--kw-sash-reveal-delay, 0.5s);
 		}
 
 		.kusto-copilot-chat-input-resizer.is-dragging::before {
 			height: 6px;
+			transition-delay: 0s;
 		}
 
 		.kusto-copilot-chat-input {

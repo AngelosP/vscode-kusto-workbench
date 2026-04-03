@@ -28,6 +28,9 @@ export const pState = {
 	/** Pending initial Python code stashed during restore (consumed by kw-python-section). */
 	pendingPythonCodeByBoxId: {} as Record<string, string>,
 
+	/** Pending initial HTML code stashed during restore (consumed by kw-html-section). */
+	pendingHtmlCodeByBoxId: {} as Record<string, string>,
+
 	/** Per-box persisted query result JSON (in-memory, included in getKqlxState). */
 	queryResultJsonByBoxId: {} as Record<string, string>,
 

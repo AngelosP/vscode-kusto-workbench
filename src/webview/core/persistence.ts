@@ -12,6 +12,7 @@ import {
 	__kustoSetAutoEnterFavoritesForBox, __kustoTryAutoEnterFavoritesModeForAllBoxes,
 	__kustoClampResultsWrapperHeight,
 	addPythonBox, addUrlBox, removePythonBox, removeUrlBox, pythonBoxes, urlBoxes,
+	addHtmlBox, removeHtmlBox, htmlBoxes,
 } from './section-factory';
 import {
 	connections, queryBoxes, queryEditors, favoritesModeByBoxId, leaveNoTraceClusters,
@@ -68,7 +69,7 @@ export function __kustoApplyDocumentCapabilities() {
 	try {
 		const allowed = Array.isArray(pState.allowedSectionKinds)
 			? pState.allowedSectionKinds.map((k: any) => String(k))
-			: ['query', 'markdown', 'python', 'url'];
+			: ['query', 'markdown', 'python', 'url', 'html'];
 
 		// If no section kinds are allowed, hide the entire add-controls container.
 		const addControlsContainer = document.querySelector('.add-controls') as HTMLElement | null;
@@ -146,7 +147,7 @@ export function __kustoRequestAddSection(kind: any, afterBoxId?: string) {
 	try {
 		const allowed = Array.isArray(pState.allowedSectionKinds)
 			? pState.allowedSectionKinds.map((v: any) => String(v))
-			: ['query', 'chart', 'markdown', 'python', 'url'];
+			: ['query', 'chart', 'markdown', 'python', 'url', 'html'];
 		if (allowed.length > 0 && !allowed.includes(k)) {
 			return;
 		}
@@ -192,6 +193,7 @@ export function __kustoRequestAddSection(kind: any, afterBoxId?: string) {
 	if (k === 'markdown') return addMarkdownBox(opts);
 	if (k === 'python') return addPythonBox(opts);
 	if (k === 'url') return addUrlBox(opts);
+	if (k === 'html') return addHtmlBox(opts);
 	// copilotQuery sections are deprecated; Copilot chat is now a per-editor toolbar toggle.
 }
 
@@ -478,7 +480,7 @@ export function getKqlxState() {
 	const sections: any[] = [];
 	const container = document.getElementById('queries-container');
 	const children = container ? Array.from(container.children || []) : [];
-	const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_'];
+	const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_', 'html_'];
 	for (const child of children) {
 		const id = child && child.id ? String(child.id) : '';
 		if (!id) continue;
@@ -1131,6 +1133,24 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 						(el as any).triggerFetch();
 					}
 				} catch (e) { console.error('[kusto]', e); }
+				continue;
+			}
+
+			if (t === 'html') {
+				const pendingId = section.id ? String(section.id) : ('html_' + Date.now());
+				// Store pending code so the Lit component can pick it up during Monaco init.
+				try {
+					pState.pendingHtmlCodeByBoxId = pState.pendingHtmlCodeByBoxId || {};
+					pState.pendingHtmlCodeByBoxId[pendingId] = String(section.code || '');
+				} catch (e) { console.error('[kusto]', e); }
+				addHtmlBox({
+					id: pendingId,
+					name: String(section.name || ''),
+					mode: section.mode || 'code',
+					expanded: (typeof section.expanded === 'boolean') ? section.expanded : true,
+					editorHeightPx: section.editorHeightPx,
+					previewHeightPx: section.previewHeightPx
+				});
 				continue;
 			}
 		}

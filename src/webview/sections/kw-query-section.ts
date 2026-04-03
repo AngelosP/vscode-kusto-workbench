@@ -340,7 +340,7 @@ export class KwQuerySection extends LitElement {
 					.name=${this._name}
 					.expanded=${this._expanded}
 					box-id=${this.boxId}
-					name-placeholder="Query Name (optional)"
+					name-placeholder="Query name (optional)"
 					@name-change=${this._onShellNameChange}
 					@toggle-visibility=${this._onToggleClick}
 					@fit-to-contents=${this._onMaximizeClick}

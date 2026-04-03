@@ -73,7 +73,7 @@ async function main() {
 	const monacoDest = path.join(__dirname, 'dist', 'monaco', 'vs');
 	const unusedWorkerPattern = /^(css|html|json|ts)\.worker\.[0-9a-f]+\.js$/i;
 	const unusedLanguageDirs = new Set(['css', 'html', 'json', 'typescript']);
-	const keepBasicLanguages = new Set(['python']);
+	const keepBasicLanguages = new Set(['python', 'html', 'css', 'javascript']);
 	try {
 		await fs.promises.mkdir(path.dirname(monacoDest), { recursive: true });
 		// Node 16+ supports fs.promises.cp with a filter

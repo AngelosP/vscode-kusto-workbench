@@ -112,6 +112,7 @@ function kindLabel(kind: string): string {
 		case 'markdown': return 'Markdown';
 		case 'python': return 'Python';
 		case 'url': return 'URL';
+		case 'html': return 'HTML';
 		default: return kind.charAt(0).toUpperCase() + kind.slice(1);
 	}
 }
@@ -260,6 +261,14 @@ function showPlus(edge: EdgeInfo) {
 	const centerX = sectionRect ? (sectionRect.left + sectionRect.width / 2) : 0;
 	plus.style.left = centerX + 'px';
 	plus.style.top = topY + 'px';
+
+	// Force-restart the CSS animation (and its delay) when switching sections.
+	// Removing + re-adding .visible in the same frame is a no-op for the browser,
+	// so we remove first, force a reflow, then re-add.
+	if (plus.classList.contains('visible')) {
+		plus.classList.remove('visible');
+		void plus.offsetWidth; // reflow — resets the animation
+	}
 	plus.classList.add('visible');
 
 	scrollAtOpen = scrollY;
@@ -273,7 +282,11 @@ function showPlus(edge: EdgeInfo) {
 // ── Event listeners ──────────────────────────────────────────────────────────
 
 function onMouseMove(e: MouseEvent) {
-	if (isResizing) return;
+	if (isResizing) {
+		// During resize, keep the "+" tracking the edge instead of hiding it.
+		if (isPlusVisible || isExpanded) checkEdgeDrift();
+		return;
+	}
 
 	// If the picker is expanded, don't move things around.
 	if (isExpanded) {
@@ -324,7 +337,20 @@ function onScroll() {
 
 // ── Edge-drift detection ─────────────────────────────────────────────────────
 // If the section's bottom edge has moved since we placed the "+", the user is
-// resizing — dismiss immediately so the "+" doesn't float in mid-air.
+// resizing — reposition the "+" to track the new edge so it stays visible.
+
+function repositionToEdge(newBottomY: number): void {
+	if (!plusEl) return;
+	const scrollY = window.scrollY || window.pageYOffset || 0;
+	plusEl.style.top = (newBottomY + scrollY) + 'px';
+	anchoredBottomY = newBottomY;
+	scrollAtOpen = scrollY;
+	// If the picker is expanded, reposition it too.
+	if (isExpanded && pickerEl) {
+		const plusRect = plusEl.getBoundingClientRect();
+		pickerEl.style.top = (plusRect.top + scrollY - pickerEl.offsetHeight / 2) + 'px';
+	}
+}
 
 function checkEdgeDrift(): void {
 	if (anchoredBottomY === null || !activeBoxId) return;
@@ -332,7 +358,7 @@ function checkEdgeDrift(): void {
 	if (!el) { dismiss(); return; }
 	const currentBottom = el.getBoundingClientRect().bottom;
 	if (Math.abs(currentBottom - anchoredBottomY) > 2) {
-		dismiss();
+		repositionToEdge(currentBottom);
 	}
 }
 
@@ -340,7 +366,7 @@ function checkEdgeDrift(): void {
 
 function onResizeStart() {
 	isResizing = true;
-	dismiss();
+	// Keep the "+" visible — it will follow the edge via checkEdgeDrift.
 }
 
 function onResizeEnd() {

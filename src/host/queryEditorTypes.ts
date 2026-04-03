@@ -115,6 +115,7 @@ export type KqlLanguageRequestMessage = {
 export type FetchControlCommandSyntaxMessage = { type: 'fetchControlCommandSyntax'; requestId: string; commandLower: string; href: string };
 
 export type SaveResultsCsvMessage = { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string };
+export type SaveHtmlFileMessage = { type: 'saveHtmlFile'; boxId?: string; html: string; suggestedFileName?: string };
 
 export type IncomingWebviewMessage =
 	| { type: 'getConnections' }
@@ -130,6 +131,7 @@ export type IncomingWebviewMessage =
 	| { type: 'addConnectionsForClusters'; clusterUrls: string[]; boxId?: string }
 	| { type: 'showInfo'; message: string }
 	| SaveResultsCsvMessage
+	| SaveHtmlFileMessage
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
 	| { type: 'setAutoTriggerAutocompleteEnabled'; enabled: boolean }
 	| { type: 'setCopilotInlineCompletionsEnabled'; enabled: boolean }

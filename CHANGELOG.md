@@ -3,8 +3,9 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [3.5.0] - 2026-04-01
+## [3.5.0] - 2026-04-02
 
+* New section type: HTML! Use it to create complex and interactive dashboards that tell the story you want to tell. Just let Copilot do the coding...
 * Exporting query to Power BI now comes pre-configured to override the 500k row soft limit of the connector and maximize the memory used for joins by Kusto.
 * Tooltip for accent colors on hover (newly added section vs changed section since last save)
 

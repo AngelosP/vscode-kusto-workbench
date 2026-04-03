@@ -103,8 +103,8 @@ type IncomingWebviewMessage =
 export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider {
 	public static readonly viewType = 'kusto.kqlCompatEditor';
 
-	private static readonly allowedSectionKinds: Array<'query' | 'chart' | 'transformation' | 'markdown' | 'python' | 'url'> =
-		['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
+	private static readonly allowedSectionKinds: Array<'query' | 'chart' | 'transformation' | 'markdown' | 'python' | 'url' | 'html'> =
+		['query', 'chart', 'transformation', 'markdown', 'python', 'url', 'html'];
 
 	private static getSidecarKqlxUriForCompat(uri: vscode.Uri): vscode.Uri | undefined {
 		return getSidecarKqlxUriForCompat(uri);

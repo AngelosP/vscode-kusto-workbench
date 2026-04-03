@@ -106,6 +106,14 @@ Uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/mona
 
 ![Creating a bar chart from a Kusto query](media/marketplace/chart.png)
 
+## HTML for dashboards and more
+
+* Any HTML you would like, there are no limitations here. 
+* Dashboards do seem like a great usecase though. Use it to create complex and interactive dashboards that tell the story you want to tell. Just let Copilot do the coding...
+* JavaScript is supported so tooltips, filtering, sorting, and all interactivity is up to you. Create the optimal experience for the audience and conversation at hand.
+
+![HTML based dashboard](media/marketplace/html-dashboard.png)
+
 ### Prettify query
 
 Use the query toolbar "Prettify" action to apply Kusto-aware formatting rules (for example, improving layout around common operators such as `where` and `summarize`).

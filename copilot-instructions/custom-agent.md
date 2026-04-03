@@ -4,7 +4,7 @@ name: Kusto Workbench
 
 description: Analyze the usage of productX for the past 30 days and find outliers.
 
-tools: ['vscode', 'execute', 'read', 'memory', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections', 'manageDevelopmentNotes']
+tools: ['vscode', 'execute', 'read', 'memory', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureHtmlSection', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections', 'manageDevelopmentNotes']
 
 model: Claude Opus 4.6
 
@@ -26,7 +26,7 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer. **Use 
 | `#refreshKustoSchema` | Force-refresh schema from Kusto cluster (bypasses cache) |
 | `#searchCachedSchemas` | Search all cached schemas for tables, columns, or functions by regex pattern |
 | `#listSections` | List notebook sections with IDs and validation status |
-| `#addSection` | Add section: `query`, `markdown`, `chart`, `transformation`, `url`, `python` |
+| `#addSection` | Add section: `query`, `markdown`, `chart`, `transformation`, `url`, `python`, `html` |
 | `#removeSection` | Remove a section by ID |
 | `#reorderSections` | Reorder all sections by providing IDs in desired order |
 | `#collapseExpandSection` | Collapse/expand a section |
@@ -34,6 +34,7 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer. **Use 
 | `#updateMarkdownSection` | Update markdown section content |
 | `#configureChart` | Configure chart — returns `validation` object to verify success |
 | `#configureTransformation` | Configure transformation (derive, summarize, pivot, distinct) |
+| `#configureHtmlSection` | Configure HTML section code, name, or mode (code/preview) |
 
 ## Workflow
 
@@ -134,6 +135,64 @@ Example: Move a chart section to appear right after its data source:
 ```
 
 **Important:** You must include ALL section IDs—missing or unknown IDs will cause an error.
+
+### 7\. For HTML dashboards
+
+Use HTML sections to build interactive dashboards from query results. The workflow:
+
+1. Run queries via `#askKustoCopilot` to get data
+2. `#listSections` to get query section IDs and result data
+3. `#addSection` with `type: "html"` (optionally include `code` for initial content)
+4. `#configureHtmlSection` to set the full HTML + JS code, then set `mode: "preview"`
+5. The user can "Save as HTML" from the section toolbar to export to disk
+
+**Data Provenance Protocol:** When generating HTML that uses data from query sections, embed provenance metadata so you can later re-run queries and update values:
+
+**Step 1: Add a provenance block** in the HTML `<head>`:
+
+```html
+<script type="application/kw-provenance">
+{
+  "version": 1,
+  "bindings": {
+    "total-events": {
+      "sectionId": "query_123",
+      "sectionName": "Event Counts",
+      "query": "Events | summarize TotalEvents=count()",
+      "column": "TotalEvents",
+      "row": 0
+    },
+    "daily-table": {
+      "sectionId": "query_456",
+      "sectionName": "Daily Events",
+      "query": "Events | summarize count() by bin(Timestamp, 1d)",
+      "columns": ["Timestamp", "count_"]
+    }
+  }
+}
+</script>
+```
+
+**Step 2: Mark bound elements** with `data-kw-bind` attributes:
+
+```html
+<span data-kw-bind="total-events">42,000</span>
+<table data-kw-bind="daily-table">...</table>
+```
+
+**Provenance rules:**
+* Always include `sectionId` (for programmatic matching) and `sectionName` (for readability)
+* Always include `query` text so provenance is self-contained even if the section is later modified
+* Use `column` + `row` for scalar values, `columns` for tabular data
+* Binding IDs must be kebab-case and descriptive (e.g. `total-events`, `error-rate-chart`)
+
+**Re-run and update workflow:** When asked to refresh or update an HTML dashboard:
+1. `#listSections` to find the HTML section and read its code
+2. Parse the `<script type="application/kw-provenance">` block to find all bindings
+3. For each binding, find the matching query section by `sectionId`
+4. Re-execute each query via `#askKustoCopilot` and collect fresh data
+5. Regenerate the bound elements with updated values
+6. `#configureHtmlSection` to set the updated code
 
 ## ⚠️ Always Verify Tool Responses
 

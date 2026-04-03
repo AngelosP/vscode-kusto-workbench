@@ -186,6 +186,17 @@ export type KqlxSectionV1 =
 		}
 	| {
 			id?: string;
+			type: 'html';
+			name?: string;
+			/** HTML + JS source code. */
+			code?: string;
+			mode?: 'code' | 'preview';
+			expanded?: boolean;
+			editorHeightPx?: number;
+			previewHeightPx?: number;
+		}
+	| {
+			id?: string;
 			type: 'devnotes';
 			entries?: DevNoteEntry[];
 		}

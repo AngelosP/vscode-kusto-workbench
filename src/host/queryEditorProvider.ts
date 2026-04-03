@@ -353,6 +353,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'saveResultsCsv':
 				await this.saveResultsCsvFromWebview(message);
 				return;
+			case 'saveHtmlFile':
+				await this.saveHtmlFileFromWebview(message as any);
+				return;
 			case 'checkCopilotAvailability':
 				await this.copilot.checkCopilotAvailability(message.boxId);
 				return;
@@ -630,6 +633,47 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			vscode.window.showInformationMessage('Copied to clipboard and ready to paste into Teams.');
 		} catch {
 			vscode.window.showErrorMessage('Failed to copy share content to clipboard.');
+		}
+	}
+
+	private async saveHtmlFileFromWebview(message: { html: string; suggestedFileName?: string }): Promise<void> {
+		try {
+			const htmlContent = String(message.html || '');
+			if (!htmlContent.trim()) {
+				vscode.window.showInformationMessage('No HTML content to save.');
+				return;
+			}
+
+			const baseName = String(message.suggestedFileName || '').trim() || 'dashboard';
+			const fileName = baseName.toLowerCase().endsWith('.html') || baseName.toLowerCase().endsWith('.htm')
+				? baseName
+				: baseName + '.html';
+			const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(os.homedir());
+			const defaultUri = vscode.Uri.joinPath(baseDir, fileName);
+
+			const picked = await vscode.window.showSaveDialog({
+				defaultUri,
+				filters: { 'HTML': ['html', 'htm'] }
+			});
+
+			if (!picked) {
+				return;
+			}
+
+			let targetUri = picked;
+			try {
+				const lower = picked.fsPath.toLowerCase();
+				if (!lower.endsWith('.html') && !lower.endsWith('.htm')) {
+					targetUri = vscode.Uri.file(picked.fsPath + '.html');
+				}
+			} catch {
+				// ignore
+			}
+
+			await vscode.workspace.fs.writeFile(targetUri, Buffer.from(htmlContent, 'utf8'));
+			vscode.window.showInformationMessage(`Saved HTML to ${targetUri.fsPath}`);
+		} catch {
+			vscode.window.showErrorMessage('Failed to save HTML file.');
 		}
 	}
 

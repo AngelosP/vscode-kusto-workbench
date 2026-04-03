@@ -514,6 +514,7 @@ declare global {
 		addTransformationBox: (options?: any) => string;
 		addUrlBox: (options?: any) => string;
 		addPythonBox: (options?: any) => string;
+		addHtmlBox: (options?: any) => string;
 		onPythonResult: (message: any) => void;
 		onPythonError: (message: any) => void;
 		__kustoGetFocusedMonacoEditor: () => any | null;
@@ -547,6 +548,7 @@ declare global {
 		// =====================================================================
 		__kustoPythonBoxes: any[];
 		__kustoUrlBoxes: any[];
+		__kustoHtmlBoxes: any[];
 		__kustoMarkdownEditors: Record<string, any>;
 		markdownEditors: Record<string, any>;
 		pythonEditors: Record<string, any>;
@@ -567,6 +569,7 @@ declare global {
 		__kustoCleanupSectionModeResizeObserver: (boxId: string) => void;
 		removePythonBox: (boxId: string) => void;
 		removeUrlBox: (boxId: string) => void;
+		removeHtmlBox: (boxId: string) => void;
 		__kustoRefreshDependentExtraBoxes?: (boxId: string) => void;
 
 		// =====================================================================

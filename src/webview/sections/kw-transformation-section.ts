@@ -1079,6 +1079,8 @@ export class KwTransformationSection extends LitElement {
 		const onUp = () => {
 			document.removeEventListener('mousemove', onMove, true);
 			document.removeEventListener('mouseup', onUp, true);
+			document.removeEventListener('mouseleave', onUp);
+			window.removeEventListener('blur', onUp);
 			resizer.classList.remove('is-dragging');
 			document.body.style.cursor = prevCursor;
 			document.body.style.userSelect = prevSelect;
@@ -1087,6 +1089,8 @@ export class KwTransformationSection extends LitElement {
 
 		document.addEventListener('mousemove', onMove, true);
 		document.addEventListener('mouseup', onUp, true);
+		document.addEventListener('mouseleave', onUp);
+		window.addEventListener('blur', onUp);
 	}
 
 

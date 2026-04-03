@@ -27,7 +27,7 @@
 
 		.insert-zone-plus.visible {
 			display: flex;
-			animation: insert-zone-appear 100ms ease-out;
+			animation: insert-zone-appear 100ms ease-out var(--kw-sash-reveal-delay, 0.5s) backwards;
 		}
 
 		.insert-zone-plus:hover {

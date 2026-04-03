@@ -6,7 +6,7 @@ import { pState } from '../shared/persistence-state.js';
 
 export interface SectionSummary {
 	id: string;
-	type: 'query' | 'markdown' | 'chart' | 'python' | 'url' | 'transformation';
+	type: 'query' | 'markdown' | 'chart' | 'python' | 'url' | 'transformation' | 'html';
 	name: string;
 	/** 1-based index in the document */
 	index: number;
@@ -25,6 +25,7 @@ const sectionIcons: Record<SectionSummary['type'], TemplateResult> = {
 	python: html`<svg viewBox="0 0 16 16" fill="currentColor"><path d="M7.5 1C5.57 1 4 2.12 4 3.5V5h4v1H3.5C2.12 6 1 7.07 1 8.5v2C1 11.88 2.12 13 3.5 13H5v-1.5C5 10.12 6.12 9 7.5 9h3C11.33 9 12 8.33 12 7.5v-4C12 2.12 10.43 1 8.5 1h-1zM6 3.25a.75.75 0 1 1 1.5 0 .75.75 0 0 1-1.5 0zM8.5 15c1.93 0 3.5-1.12 3.5-2.5V11H8v-1h4.5c1.38 0 2.5-1.07 2.5-2.5v-2C15 4.12 13.88 3 12.5 3H11v1.5C11 5.88 9.88 7 8.5 7h-3C4.67 7 4 7.67 4 8.5v4C4 13.88 5.57 15 7.5 15h1zm2.5-2.25a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0z"/></svg>`,
 	url: html`<svg viewBox="0 0 16 16" fill="currentColor"><path d="M6.354 5.354l-2 2a2.5 2.5 0 0 0 3.536 3.536l2-2a2.5 2.5 0 0 0 0-3.536l-.354-.354-.707.707.354.354a1.5 1.5 0 0 1 0 2.122l-2 2a1.5 1.5 0 1 1-2.122-2.122l2-2 .707-.707zM9.646 10.646l2-2a2.5 2.5 0 0 0-3.536-3.536l-2 2a2.5 2.5 0 0 0 0 3.536l.354.354.707-.707-.354-.354a1.5 1.5 0 0 1 0-2.122l2-2a1.5 1.5 0 1 1 2.122 2.122l-2 2-.707.707z"/></svg>`,
 	transformation: html`<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.5 1a.5.5 0 0 0-.5.5v3a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5v-3a.5.5 0 0 0-.5-.5h-3zM2 4V2h2v2H2zm9.5-3a.5.5 0 0 0-.5.5v3a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5v-3a.5.5 0 0 0-.5-.5h-3zM12 4V2h2v2h-2zM1.5 11a.5.5 0 0 0-.5.5v3a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5v-3a.5.5 0 0 0-.5-.5h-3zM2 14v-2h2v2H2zm9.5-3a.5.5 0 0 0-.5.5v3a.5.5 0 0 0 .5.5h3a.5.5 0 0 0 .5-.5v-3a.5.5 0 0 0-.5-.5h-3zm.5 3v-2h2v2h-2zM8 5.5a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5zm-3 3a.5.5 0 0 1 .5-.5h2a.5.5 0 0 1 0 1h-2a.5.5 0 0 1-.5-.5z"/></svg>`,
+	html: html`<svg viewBox="0 0 16 16" fill="currentColor"><path d="M1.344 2.5L3.18 13.5h9.64l1.836-11H1.344zm1.312 1h10.688L11.82 12.5H4.18L2.656 3.5z"/><path d="M5.854 5.646l-2 2a.5.5 0 0 0 0 .708l2 2 .708-.708L4.914 8l1.647-1.646-.707-.708zm4.292 0l-.708.708L11.086 8l-1.647 1.646.707.708 2-2a.5.5 0 0 0 0-.708l-2-2zM7.432 11.31l1.5-6.5-.972-.224-1.5 6.5.972.224z"/></svg>`,
 };
 
 const sectionTypeLabels: Record<SectionSummary['type'], string> = {
@@ -34,6 +35,7 @@ const sectionTypeLabels: Record<SectionSummary['type'], string> = {
 	python: 'Python',
 	url: 'URL',
 	transformation: 'Transformation',
+	html: 'HTML',
 };
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -401,6 +403,7 @@ export class KwSectionReorderPopup extends LitElement {
 		if (id.startsWith('python_')) return 'python';
 		if (id.startsWith('url_')) return 'url';
 		if (id.startsWith('transformation_')) return 'transformation';
+		if (id.startsWith('html_')) return 'html';
 		// Fallback: tag name
 		const tag = el.tagName.toLowerCase();
 		if (tag === 'kw-query-section') return 'query';
@@ -409,6 +412,7 @@ export class KwSectionReorderPopup extends LitElement {
 		if (tag === 'kw-python-section') return 'python';
 		if (tag === 'kw-url-section') return 'url';
 		if (tag === 'kw-transformation-section') return 'transformation';
+		if (tag === 'kw-html-section') return 'html';
 		return null;
 	}
 

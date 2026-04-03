@@ -873,6 +873,10 @@ export class KwUrlSection extends LitElement {
 		document.body.style.cursor = 'ns-resize';
 		document.body.style.userSelect = 'none';
 
+		// Disable pointer-events on iframes so mousemove/mouseup are not swallowed.
+		const iframe = this.shadowRoot?.querySelector('iframe') as HTMLIFrameElement | null;
+		if (iframe) iframe.style.pointerEvents = 'none';
+
 		const startPageY = e.clientY + getScrollY();
 		const startHeight = wrapper.getBoundingClientRect().height;
 		wrapper.style.height = Math.max(0, Math.ceil(startHeight)) + 'px';
@@ -908,14 +912,19 @@ export class KwUrlSection extends LitElement {
 		const onUp = () => {
 			document.removeEventListener('mousemove', onMove, true);
 			document.removeEventListener('mouseup', onUp, true);
+			document.removeEventListener('mouseleave', onUp);
+			window.removeEventListener('blur', onUp);
 			resizer.classList.remove('is-dragging');
 			document.body.style.cursor = prevCursor;
 			document.body.style.userSelect = prevSelect;
+			if (iframe) iframe.style.pointerEvents = '';
 			this._schedulePersist();
 		};
 
 		document.addEventListener('mousemove', onMove, true);
 		document.addEventListener('mouseup', onUp, true);
+		document.addEventListener('mouseleave', onUp);
+		window.addEventListener('blur', onUp);
 	}
 
 	// ── Persistence ───────────────────────────────────────────────────────────

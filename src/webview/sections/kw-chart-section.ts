@@ -207,7 +207,7 @@ export class KwChartSection extends LitElement {
 		st.stackMode = typeof options.stackMode === 'string' ? String(options.stackMode) : (st.stackMode || 'normal');
 		st.labelColumn = typeof options.labelColumn === 'string' ? String(options.labelColumn) : (st.labelColumn || '');
 		st.valueColumn = typeof options.valueColumn === 'string' ? String(options.valueColumn) : (st.valueColumn || '');
-		st.showDataLabels = typeof options.showDataLabels === 'boolean' ? !!options.showDataLabels : (st.showDataLabels || false);
+		st.showDataLabels = typeof options.showDataLabels === 'boolean' ? !!options.showDataLabels : (typeof st.showDataLabels === 'boolean' ? st.showDataLabels : true);
 		st.labelMode = typeof options.labelMode === 'string' ? String(options.labelMode) : (st.labelMode || 'auto');
 		st.labelDensity = typeof options.labelDensity === 'number' ? options.labelDensity : (typeof st.labelDensity === 'number' ? st.labelDensity : 50);
 		st.tooltipColumns = Array.isArray(options.tooltipColumns)
@@ -338,6 +338,8 @@ export class KwChartSection extends LitElement {
 			const onUp = () => {
 				document.removeEventListener('mousemove', onMove, true);
 				document.removeEventListener('mouseup', onUp, true);
+				document.removeEventListener('mouseleave', onUp);
+				window.removeEventListener('blur', onUp);
 				resizerEl.classList.remove('is-dragging');
 				document.body.style.cursor = prevCursor;
 				document.body.style.userSelect = prevUserSelect;
@@ -346,6 +348,8 @@ export class KwChartSection extends LitElement {
 			};
 			document.addEventListener('mousemove', onMove, true);
 			document.addEventListener('mouseup', onUp, true);
+			document.addEventListener('mouseleave', onUp);
+			window.addEventListener('blur', onUp);
 		});
 
 		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
@@ -383,7 +387,7 @@ export class KwChartSection extends LitElement {
 	@state() private _stackMode: StackMode = 'normal';
 	@state() private _labelColumn = '';
 	@state() private _valueColumn = '';
-	@state() private _showDataLabels = false;
+	@state() private _showDataLabels = true;
 	@state() private _labelMode: LabelMode = 'auto';
 	@state() private _labelDensity = 50;
 	@state() private _tooltipColumns: string[] = [];

@@ -188,8 +188,8 @@ export const styles = css`
 			pointer-events: none;
 			z-index: 1;
 		}
-		.resizer:hover::before { height: 6px; }
-		.resizer.is-dragging::before { height: 6px; }
+		.resizer:hover::before { height: 6px; transition-delay: var(--kw-sash-reveal-delay, 0.5s); }
+		.resizer.is-dragging::before { height: 6px; transition-delay: 0s; }
 
 		.python-output {
 			border: 1px solid var(--vscode-input-border);

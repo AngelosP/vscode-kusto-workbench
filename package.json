@@ -523,8 +523,8 @@
         ],
         "toolReferenceName": "addSection",
         "displayName": "Add Section",
-        "modelDescription": "Adds a new section to the Kusto Workbench notebook. Supports query, markdown, chart, transformation, url, and python section types. For query sections, you can specify the initial query text, cluster URL, and database. For charts, specify the data source and chart configuration.",
-        "userDescription": "Add a new section (query, markdown, chart, etc.) to the workbench.",
+        "modelDescription": "Adds a new section to the Kusto Workbench notebook. Supports query, markdown, chart, transformation, url, python, and html section types. For query sections, you can specify the initial query text, cluster URL, and database. For charts, specify the data source and chart configuration. For HTML sections, provide the initial HTML+JS code.",
+        "userDescription": "Add a new section (query, markdown, chart, html, etc.) to the workbench.",
         "canBeReferencedInPrompt": true,
         "icon": "$(add)",
         "inputSchema": {
@@ -538,7 +538,8 @@
                 "chart",
                 "transformation",
                 "url",
-                "python"
+                "python",
+                "html"
               ],
               "description": "The type of section to add"
             },
@@ -565,6 +566,10 @@
             "url": {
               "type": "string",
               "description": "For URL sections: the URL to embed"
+            },
+            "code": {
+              "type": "string",
+              "description": "For HTML sections: the initial HTML + JS code"
             },
             "dataSourceId": {
               "type": "string",
@@ -1119,6 +1124,50 @@
             "joinOmitDuplicateColumns": {
               "type": "boolean",
               "description": "For join: whether to omit duplicate key columns from the right side"
+            }
+          },
+          "required": [
+            "sectionId"
+          ]
+        }
+      },
+      {
+        "name": "kusto-workbench_configure-html-section",
+        "tags": [
+          "kusto",
+          "workbench",
+          "html",
+          "dashboard",
+          "section"
+        ],
+        "toolReferenceName": "configureHtmlSection",
+        "displayName": "Configure HTML Section",
+        "modelDescription": "Configures an HTML section in Kusto Workbench. HTML sections allow writing HTML + JS code that renders as an interactive preview. Use this to set the HTML code, section name, or toggle between code and preview modes. For dashboards, embed a <script type='application/kw-provenance'> block with data bindings to track which query sections produced each value, and use data-kw-bind attributes on DOM elements.",
+        "userDescription": "Configure an HTML section's code, name, or display mode.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(code)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sectionId": {
+              "type": "string",
+              "description": "The ID of the HTML section to configure"
+            },
+            "name": {
+              "type": "string",
+              "description": "Optional name/title for the section"
+            },
+            "code": {
+              "type": "string",
+              "description": "The HTML + JS source code to set"
+            },
+            "mode": {
+              "type": "string",
+              "enum": [
+                "code",
+                "preview"
+              ],
+              "description": "Display mode: 'code' for editor, 'preview' for rendered HTML"
             }
           },
           "required": [
