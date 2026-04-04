@@ -3066,10 +3066,10 @@ function initQueryEditor(boxId: any) {
 			});
 		} catch (e) { console.error('[kusto]', e); }
 
-		// Shift+Space triggers Copilot inline suggestions (ghost text) on demand.
+		// Ctrl+Shift+Space triggers Copilot inline suggestions (ghost text) on demand.
 		try {
-			editor.addCommand(monaco.KeyMod.Shift | monaco.KeyCode.Space, () => {
-				console.log('[Kusto] SHIFT+SPACE pressed');
+			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.Space, () => {
+				console.log('[Kusto] CTRL+SHIFT+SPACE pressed');
 				try {
 					// Try the action runner first (more reliable).
 					const action = editor.getAction('editor.action.inlineSuggest.trigger');
@@ -3079,7 +3079,7 @@ function initQueryEditor(boxId: any) {
 						editor.trigger('keyboard', 'editor.action.inlineSuggest.trigger', {});
 					}
 				} catch (e) {
-					console.error('[Kusto] SHIFT+SPACE trigger failed', e);
+					console.error('[Kusto] CTRL+SHIFT+SPACE trigger failed', e);
 				}
 			});
 		} catch (e) { console.error('[kusto]', e); }

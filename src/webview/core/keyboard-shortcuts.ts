@@ -224,6 +224,10 @@ document.addEventListener('keydown', (event: any) => {
 		if (!(event.ctrlKey || event.metaKey)) {
 			return;
 		}
+		// Ctrl+Shift+Space is the Copilot inline-suggestion shortcut — don't intercept it here.
+		if (event.shiftKey) {
+			return;
+		}
 		// Prefer event.code when available; fall back to key.
 		const isSpace = (event.code === 'Space') || (event.key === ' ');
 		if (!isSpace) {
@@ -263,10 +267,10 @@ document.addEventListener('keydown', (event: any) => {
 	} catch (e) { console.error('[kusto]', e); }
 }, true);
 
-// VS Code can intercept Shift+Space in webviews; provide a reliable inline-suggestion trigger.
+// VS Code can intercept Ctrl+Shift+Space in webviews; provide a reliable inline-suggestion trigger.
 document.addEventListener('keydown', (event: any) => {
 	try {
-		if (!event.shiftKey || event.ctrlKey || event.metaKey || event.altKey) {
+		if (!event.shiftKey || !(event.ctrlKey || event.metaKey) || event.altKey) {
 			return;
 		}
 		const isSpace = (event.code === 'Space') || (event.key === ' ');

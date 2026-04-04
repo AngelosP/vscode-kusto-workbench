@@ -1,7 +1,13 @@
-# Change Log
+```
+Change Log
+```
 
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
+
+## [3.6.0] - Unreleased
+
+* Copilot inline autocomplete now triggered with CTRL + SHIFT + SPACE (it was SHIFT + SPACE before).
 
 ## [3.5.0] - 2026-04-02
 
