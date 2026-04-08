@@ -363,4 +363,120 @@ describe('TableSelectionController', () => {
 			expect(writeSpy).toHaveBeenCalled();
 		});
 	});
+
+	// ── cross-table coordination ──────────────────────────────────────────
+
+	describe('cross-table coordination', () => {
+		let hostA: SelectionHost;
+		let hostB: SelectionHost;
+		let ctrlA: TableSelectionController;
+		let ctrlB: TableSelectionController;
+
+		beforeEach(() => {
+			// Reset static state that may leak from a prior test.
+			(TableSelectionController as any)._activeInstance = null;
+
+			hostA = createMockHost();
+			hostB = createMockHost(
+				[{ name: 'X' }, { name: 'Y' }],
+				[['x1', 'y1'], ['x2', 'y2']],
+			);
+			ctrlA = new TableSelectionController(hostA);
+			ctrlB = new TableSelectionController(hostB);
+		});
+
+		afterEach(() => {
+			ctrlA.hostDisconnected();
+			ctrlB.hostDisconnected();
+		});
+
+		it('clicking in table B clears table A selection', () => {
+			// Simulate mousedown on table A (no cell resolved — just activate).
+			ctrlA.setSelectedCell({ row: 0, col: 0 });
+			(ctrlA as any)._becomeActive();
+
+			expect(ctrlA.selectedCell).toEqual({ row: 0, col: 0 });
+
+			// Now activate table B.
+			(ctrlB as any)._becomeActive();
+
+			expect(ctrlA.selectedCell).toBeNull();
+			expect(ctrlA.selectionRange).toBeNull();
+		});
+
+		it('isSelectionInThisTable returns true only for the active table', () => {
+			ctrlA.setSelectedCell({ row: 0, col: 0 });
+			(ctrlA as any)._becomeActive();
+
+			ctrlB.setSelectedCell({ row: 0, col: 0 });
+			(ctrlB as any)._becomeActive();
+
+			expect(ctrlB.isSelectionInThisTable()).toBe(true);
+			// ctrlA's selection was cleared by _becomeActive, so the
+			// early null-check short-circuits.
+			expect(ctrlA.isSelectionInThisTable()).toBe(false);
+		});
+
+		it('selectRow activates the table and clears the other', () => {
+			ctrlA.setSelectedCell({ row: 1, col: 1 });
+			(ctrlA as any)._becomeActive();
+
+			const e = { shiftKey: false } as MouseEvent;
+			ctrlB.selectRow(e, 0);
+
+			expect(ctrlA.selectedCell).toBeNull();
+			expect(ctrlB.selectedCell).toEqual({ row: 0, col: 0 });
+			expect(ctrlB.isSelectionInThisTable()).toBe(true);
+		});
+
+		it('selectAll activates the table and clears the other', () => {
+			ctrlA.setSelectedCell({ row: 0, col: 0 });
+			(ctrlA as any)._becomeActive();
+
+			ctrlB.selectAll();
+
+			expect(ctrlA.selectedCell).toBeNull();
+			expect(ctrlB.selectionRange).toEqual({ rowMin: 0, rowMax: 1, colMin: 0, colMax: 1 });
+			expect(ctrlB.isSelectionInThisTable()).toBe(true);
+		});
+
+		it('hostDisconnected clears active instance when it is the active one', () => {
+			(ctrlA as any)._becomeActive();
+			expect((TableSelectionController as any)._activeInstance).toBe(ctrlA);
+
+			ctrlA.hostDisconnected();
+			expect((TableSelectionController as any)._activeInstance).toBeNull();
+		});
+
+		it('hostDisconnected does not clear active instance for a different table', () => {
+			(ctrlB as any)._becomeActive();
+			ctrlA.hostDisconnected();
+			expect((TableSelectionController as any)._activeInstance).toBe(ctrlB);
+		});
+
+		it('activating the same table twice is a no-op for the other table', () => {
+			ctrlA.setSelectedCell({ row: 0, col: 0 });
+			(ctrlA as any)._becomeActive();
+			// Activate A again — should NOT clear A.
+			(ctrlA as any)._becomeActive();
+			expect(ctrlA.selectedCell).toEqual({ row: 0, col: 0 });
+		});
+
+		it('isSelectionInThisTable returns false when focus is outside all tables', () => {
+			// Simulate: select rows in table B, then focus a title input outside any table.
+			ctrlB.setSelectedCell({ row: 0, col: 0 });
+			ctrlB.selectionRange = { rowMin: 0, rowMax: 1, colMin: 0, colMax: 1 };
+			(ctrlB as any)._becomeActive();
+
+			// Focus an element outside any table host (e.g. a section title input).
+			const outsideInput = document.createElement('input');
+			document.body.appendChild(outsideInput);
+			outsideInput.focus();
+
+			expect(ctrlB.isSelectionInThisTable()).toBe(false);
+			expect(ctrlA.isSelectionInThisTable()).toBe(false);
+
+			outsideInput.remove();
+		});
+	});
 });

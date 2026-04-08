@@ -41,6 +41,12 @@ export class TableSelectionController implements ReactiveController {
 	private _selectionAnchor: { row: number; col: number } | null = null;
 	private _isDragging = false;
 
+	/**
+	 * The controller whose table the user last interacted with.
+	 * Only this instance is allowed to claim copy / select-all events.
+	 */
+	private static _activeInstance: TableSelectionController | null = null;
+
 	constructor(host: SelectionHost) {
 		this.host = host;
 		host.addController(this);
@@ -52,6 +58,7 @@ export class TableSelectionController implements ReactiveController {
 	}
 
 	hostDisconnected(): void {
+		if (TableSelectionController._activeInstance === this) TableSelectionController._activeInstance = null;
 		document.removeEventListener('mouseup', this._onMouseUp);
 		document.removeEventListener('mousemove', this._onMouseMove);
 		document.removeEventListener('copy', this._onDocumentCopy, true);
@@ -59,6 +66,13 @@ export class TableSelectionController implements ReactiveController {
 	}
 
 	// ── Public API ──
+
+	/** Mark this table as the one the user is interacting with, clearing any stale selection in the previous table. */
+	private _becomeActive(): void {
+		const prev = TableSelectionController._activeInstance;
+		if (prev && prev !== this) prev.clear();
+		TableSelectionController._activeInstance = this;
+	}
 
 	clear(): void {
 		this.selectedCell = null;
@@ -77,6 +91,7 @@ export class TableSelectionController implements ReactiveController {
 	}
 
 	selectAll(): void {
+		this._becomeActive();
 		const rows = this.host.getTableRows();
 		const mr = (rows.length || 1) - 1;
 		const mc = this.host.getColumnCount() - 1;
@@ -87,6 +102,7 @@ export class TableSelectionController implements ReactiveController {
 	}
 
 	selectRow(e: MouseEvent, row: number): void {
+		this._becomeActive();
 		const mc = this.host.getColumnCount() - 1;
 		if (e.shiftKey && this._selectionAnchor) {
 			this.selectionRange = {
@@ -113,6 +129,7 @@ export class TableSelectionController implements ReactiveController {
 
 	onTableMouseDown(e: MouseEvent): void {
 		if (e.button !== 0) return;
+		this._becomeActive();
 		(this.host.shadowRoot?.querySelector('.vscroll') as HTMLElement | null)?.focus();
 		const pos = cellFromEvent(e);
 		if (!pos) return;
@@ -134,6 +151,7 @@ export class TableSelectionController implements ReactiveController {
 	handleKeydown(e: KeyboardEvent): void {
 		if ((e.ctrlKey || e.metaKey) && e.key === 'a') { this.selectAll(); e.preventDefault(); return; }
 		if (!this.selectedCell) return;
+		this._becomeActive();
 		const { row, col } = this.selectedCell;
 		const rows = this.host.getTableRows();
 		const mR = (rows.length || 1) - 1;
@@ -180,7 +198,9 @@ export class TableSelectionController implements ReactiveController {
 		if (!this.selectedCell && !this.selectionRange) return false;
 		const active = document.activeElement as HTMLElement | null;
 		if (active && this.host.contains(active)) return true;
-		return this.host.isConnected;
+		// Focus is on a specific element outside this table — don't claim the event.
+		if (active && active !== document.body && active !== document.documentElement) return false;
+		return TableSelectionController._activeInstance === this;
 	}
 
 	// ── Private ──
@@ -220,6 +240,7 @@ export class TableSelectionController implements ReactiveController {
 		try {
 			e.preventDefault();
 			e.stopPropagation();
+			if (typeof (e as any).stopImmediatePropagation === 'function') (e as any).stopImmediatePropagation();
 			if (e.clipboardData) { e.clipboardData.setData('text/plain', text); return; }
 		} catch (err) { console.error('[kusto]', err); }
 		this._writeTextToClipboard(text);
