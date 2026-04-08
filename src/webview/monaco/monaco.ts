@@ -658,6 +658,36 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 														} catch (readdError) { console.error('[kusto]', readdError); }
 													}
 												}
+
+												// Re-add cross-cluster schemas that were previously loaded.
+												// The replace above wiped the worker schema, but __kustoCrossClusterSchemas
+												// still has the cached rawSchemaJson — re-add them so autocomplete and
+												// diagnostics continue to work for cross-cluster/cross-database references.
+												for (const [ccKey, ccEntry] of Object.entries(__kustoCrossClusterSchemas)) {
+													if (!ccEntry || ccEntry.status !== 'loaded' || !ccEntry.rawSchemaJson) continue;
+													try {
+														const pipeIdx = ccKey.indexOf('|');
+														if (pipeIdx < 0) continue;
+														const ccClusterName = ccKey.slice(0, pipeIdx);
+														const ccDatabase = ccKey.slice(pipeIdx + 1);
+														if (!ccClusterName || !ccDatabase) continue;
+														const ccEngineSchema = await worker.normalizeSchema(ccEntry.rawSchemaJson, ccEntry.clusterUrl, ccDatabase);
+														let ccDbSchema = ccEngineSchema?.database;
+														if (!ccDbSchema && ccEngineSchema?.cluster?.databases) {
+															ccDbSchema = ccEngineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === ccDatabase.toLowerCase());
+														}
+														if (ccDbSchema) {
+															await worker.addDatabaseToSchema(models[0].uri.toString(), ccClusterName, ccDbSchema);
+														} else {
+															ccEntry.status = 'error';
+															ccEntry.error = 'Failed to re-add after replace';
+														}
+													} catch (ccReaddError) {
+														console.error('[kusto] Failed to re-add cross-cluster schema:', ccKey, ccReaddError);
+														ccEntry.status = 'error';
+														ccEntry.error = 'Failed to re-add after replace';
+													}
+												}
 												
 												// Clear markers for boxes that don't match the new context
 												const newClusterNorm = normalizeClusterUrl(clusterUrl);
@@ -1133,81 +1163,101 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 								const models = monaco.editor.getModels();
 								
 								if (models && models.length > 0) {
-													// Convert showSchema format to Database format for addDatabaseToSchema
-													// The raw schema has Databases as object: { "dbname": { Tables: {...}, Functions: {...}, ... } }
-													const dbSchema = schemaObj.Databases[database] || Object.values(schemaObj.Databases)[0];
-													
-													if (dbSchema) {
-														// Convert to the Database interface format expected by addDatabaseToSchema
-														const databaseSchema = {
-												name: database,
-												tables: Object.entries(dbSchema.Tables || {}).map(([name, table]) => ({
-													name,
-													entityType: (table as any).EntityType || 'Table',
-													columns: Object.entries((table as any).OrderedColumns || {}).map(([colName, col]) => ({
-														name: (col as any).Name || colName,
-														type: (col as any).CslType || (col as any).Type || 'string',
-														docstring: (col as any).Docstring || ''
-													})),
-													docstring: (table as any).Docstring || ''
-												})),
-												functions: Object.entries(dbSchema.Functions || {}).map(([name, func]) => ({
-													name,
-													inputParameters: ((func as any).InputParameters || []).map((p: any) => ({
-														name: p.Name || '',
-														type: p.CslType || p.Type || 'string',
-														cslDefaultValue: p.CslDefaultValue
-													})),
-													body: (func as any).Body || '',
-													docstring: (func as any).Docstring || ''
-												})),
-												graphs: [], // Empty for now, could be populated from ExternalTables or similar
-												entityGroups: [], // Empty for now
-												majorVersion: 1,
-												minorVersion: 0
-											};
-												
-// The kusto worker schema is GLOBAL — one addDatabaseToSchema call
-															// applies to all models. Use models[0].uri which is guaranteed to
-															// have its document synced (avoids "document is null" errors).
-															let appliedCount = 0;
-															try {
-																const syncedModel = models[0];
-																const worker2 = await workerAccessor(syncedModel.uri);
-																if (worker2 && typeof worker2.addDatabaseToSchema === 'function') {
-																	await worker2.addDatabaseToSchema(syncedModel.uri.toString(), clusterName, databaseSchema);
-																	appliedCount++;
-																}
-															} catch (e) { console.error('[kusto]', e); }
-															// NOTE: Do NOT update __kustoSchemaTracker.loadedSchemas or
-															// __kustoSchemaTracker.loadedSchemasByModel here. Cross-cluster/
-															// cross-database schemas added via addDatabaseToSchema are
-															// supplementary references only — they must NOT interfere
-															// with the primary schema tracking used by needsReplace and
-															// the alreadyLoaded logic. If we mark them as loaded, the
-															// next focus-switch incorrectly thinks the primary schema
-															// is already set and skips the context switch.
-												
-																if (appliedCount > 0) {
-																	__kustoCrossClusterSchemas[key] = { 
-																		status: 'loaded', 
-																		rawSchemaJson: schemaObj,
-																		clusterUrl
-																	};
-																} else {
-																	__kustoCrossClusterSchemas[key] = { status: 'error', error: 'API not available' };
-																}
-											
-											// Show notification to user that cross-cluster schema was loaded
-											try {
-												postMessageToHost({
-													type: 'showInfo',
-													message: `Schema loaded for cluster('${clusterName}').database('${database}') — autocomplete is now available.`
-												});
-											} catch (e) { console.error('[kusto]', e); }
-													} else {
-														__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Database not found in schema' };
+									// The kusto worker schema is GLOBAL — one addDatabaseToSchema call
+									// applies to all models. Use models[0].uri which is guaranteed to
+									// have its document synced (avoids "document is null" errors).
+									let appliedCount = 0;
+									try {
+										const syncedModel = models[0];
+										const worker2 = await workerAccessor(syncedModel.uri);
+										if (worker2 && typeof worker2.addDatabaseToSchema === 'function') {
+											// Use normalizeSchema (consistent with primary ADD path),
+											// falling back to manual construction if unavailable.
+											let databaseSchema: any = null;
+											if (typeof worker2.normalizeSchema === 'function') {
+												try {
+													const engineSchema = await worker2.normalizeSchema(schemaObj, clusterUrl, database);
+													databaseSchema = engineSchema?.database;
+													if (!databaseSchema && engineSchema?.cluster?.databases) {
+														databaseSchema = engineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === database.toLowerCase());
 													}
+												} catch (e) { console.error('[kusto] normalizeSchema failed for cross-cluster, using fallback:', e); }
+											}
+											if (!databaseSchema) {
+												// Fallback: manual conversion from raw show-schema JSON
+												const dbSchema = schemaObj.Databases[database] || Object.values(schemaObj.Databases)[0];
+												if (dbSchema) {
+													databaseSchema = {
+														name: database,
+														tables: Object.entries(dbSchema.Tables || {}).map(([name, table]) => ({
+															name,
+															entityType: (table as any).EntityType || 'Table',
+															columns: Object.entries((table as any).OrderedColumns || {}).map(([colName, col]) => ({
+																name: (col as any).Name || colName,
+																type: (col as any).CslType || (col as any).Type || 'string',
+																docstring: (col as any).Docstring || ''
+															})),
+															docstring: (table as any).Docstring || ''
+														})),
+														functions: Object.entries(dbSchema.Functions || {}).map(([name, func]) => ({
+															name,
+															inputParameters: ((func as any).InputParameters || []).map((p: any) => ({
+																name: p.Name || '',
+																type: p.CslType || p.Type || 'string',
+																cslDefaultValue: p.CslDefaultValue
+															})),
+															body: (func as any).Body || '',
+															docstring: (func as any).Docstring || ''
+														})),
+														graphs: [],
+														entityGroups: [],
+														majorVersion: 1,
+														minorVersion: 0
+													};
+												}
+											}
+											if (databaseSchema) {
+												await worker2.addDatabaseToSchema(syncedModel.uri.toString(), clusterName, databaseSchema);
+												appliedCount++;
+											} else {
+												__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Database not found in schema' };
+											}
+										}
+									} catch (e) { console.error('[kusto]', e); }
+									// NOTE: Do NOT update __kustoSchemaTracker.loadedSchemas or
+									// __kustoSchemaTracker.loadedSchemasByModel here. Cross-cluster/
+									// cross-database schemas added via addDatabaseToSchema are
+									// supplementary references only — they must NOT interfere
+									// with the primary schema tracking used by needsReplace and
+									// the alreadyLoaded logic. If we mark them as loaded, the
+									// next focus-switch incorrectly thinks the primary schema
+									// is already set and skips the context switch.
+												
+									if (appliedCount > 0) {
+										__kustoCrossClusterSchemas[key] = { 
+											status: 'loaded', 
+											rawSchemaJson: schemaObj,
+											clusterUrl
+										};
+										// Clear stale diagnostics (e.g., KS208 "does not refer to any
+										// known database") so the language service re-validates with
+										// the newly added schema on the next content/cursor change.
+										try {
+											const allModels = monaco.editor.getModels();
+											for (const m of allModels) {
+												monaco.editor.setModelMarkers(m, 'kusto', []);
+											}
+										} catch (e) { console.error('[kusto]', e); }
+										// Show notification to user that cross-cluster schema was loaded
+										try {
+											postMessageToHost({
+												type: 'showInfo',
+												message: `Schema loaded for cluster('${clusterName}').database('${database}') — autocomplete is now available.`
+											});
+										} catch (e) { console.error('[kusto]', e); }
+									} else if (!__kustoCrossClusterSchemas[key] || __kustoCrossClusterSchemas[key].status !== 'error') {
+										__kustoCrossClusterSchemas[key] = { status: 'error', error: 'API not available' };
+									}
 								}
 							}
 						} catch (e) {

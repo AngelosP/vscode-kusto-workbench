@@ -1,6 +1,4 @@
-```
-Change Log
-```
+# Change Log
 
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
@@ -8,6 +6,9 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [3.6.0] - Unreleased
 
 * Copilot inline autocomplete now triggered with CTRL + SHIFT + SPACE (it was SHIFT + SPACE before).
+* Bugs:
+    * Selecting and copying rows / values into the clipboard didn't work reliably when multiple things were selected in the UI (it would pick up the first selected thing, instead of the last thing you interacted with).
+    * Red squiggle would appear telling you that database X is not recognised if you used fully qualified table names like cluster().database().tableName even though that was not true and the schema for the database has been loaded correctly.
 
 ## [3.5.0] - 2026-04-02
 

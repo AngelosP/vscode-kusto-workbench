@@ -75,7 +75,7 @@ import { normalizeLegendSortMode } from '../shared/chart-utils';
 import { __kustoForceEditorWritable, __kustoInstallWritableGuard, __kustoEnsureEditorWritableSoon } from '../monaco/writable';
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize';
 import { tryParseFiniteNumber, tryParseDate } from '../shared/transform-expr';
-import { __kustoMonacoInitRetryCountByBoxId } from '../monaco/monaco';
+import { __kustoMonacoInitRetryCountByBoxId, __kustoCrossClusterSchemas } from '../monaco/monaco';
 
 const _win = window;
 
@@ -927,6 +927,11 @@ export async function fullyQualifyTablesInEditor( boxId: any) {
 }
 
 async function qualifyTablesInTextPriority( text: any, opts: any) {
+	// Normalize CRLF → LF to match the host-side KQL language service which
+	// normalizes before computing offsets. Without this, every \r\n before a
+	// table reference shifts the host's offsets relative to the original text,
+	// causing the replacement to eat preceding characters (e.g., ';').
+	text = String(text ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 	const normalizeClusterForKusto = (clusterUrl: any) => {
 		let s = String(clusterUrl || '')
 			.trim()
@@ -1222,6 +1227,35 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 			if (unresolvedLower.size === 0) break;
 			const cached = getCachedSchemasForConnection(c.cid);
 			scanCachedSchemasForMatches(cached, c.clusterUrl);
+		}
+	}
+
+	// Priority 3.5: cross-cluster schemas already loaded by the language service.
+	// These use rawSchemaJson format (from .show database schema as json), not
+	// DatabaseSchemaIndex — extract table names from the raw JSON structure.
+	if (unresolvedLower.size > 0) {
+		for (const [ccKey, ccEntry] of Object.entries(__kustoCrossClusterSchemas || {})) {
+			if (unresolvedLower.size === 0) break;
+			if (!ccEntry || ccEntry.status !== 'loaded' || !ccEntry.rawSchemaJson) continue;
+			try {
+				const pipeIdx = ccKey.indexOf('|');
+				if (pipeIdx < 0) continue;
+				const ccDatabase = ccKey.slice(pipeIdx + 1);
+				if (!ccDatabase || !ccEntry.clusterUrl) continue;
+				const ccDbs = ccEntry.rawSchemaJson?.Databases;
+				if (!ccDbs) continue;
+				const dbSchema = ccDbs[ccDatabase]
+					|| Object.entries(ccDbs).find(([k]) => k.toLowerCase() === ccDatabase)?.[1]
+					|| Object.values(ccDbs)[0];
+				if (!dbSchema?.Tables) continue;
+				const tableNames = Object.keys(dbSchema.Tables);
+				const tableLowerSet = new Set(tableNames.map((t: string) => t.toLowerCase()));
+				for (const lowerName of Array.from(unresolvedLower) as string[]) {
+					if (tableLowerSet.has(lowerName)) {
+						markResolved(lowerName, ccEntry.clusterUrl, ccDatabase);
+					}
+				}
+			} catch (e) { console.error('[kusto]', e); }
 		}
 	}
 
