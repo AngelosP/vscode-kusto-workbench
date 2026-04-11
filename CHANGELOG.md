@@ -3,6 +3,14 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [3.7.0] - Unreleased
+
+* Added instructions to make use of a wiki if it has access to it.
+* Smart documentation now includes tables, views, and user functions.
+* New tool added to the Kusto section 'Copy as inline function' which is a nice shortcut for when you want a function definition to be pasted inline into another query quickly
+* Bugs
+    * At some point we lost the tooltips on mouse hover inside of the monaco-kusto editor. Probably when we migrated to LIT components.
+
 ## [3.6.0] - 2026-04-08
 
 * Copilot inline autocomplete now triggered with CTRL + SHIFT + SPACE (it was SHIFT + SPACE before).

@@ -22,6 +22,7 @@ import {
 	DEFAULT_SERIES_COLORS,
 	LEGEND_POSITION_CYCLE,
 	normalizeLegendSortMode,
+	breakSankeyCycles,
 } from '../../src/webview/shared/chart-utils';
 
 // ── formatNumber ──────────────────────────────────────────────────────────────
@@ -415,5 +416,111 @@ describe('constants', () => {
 	it('DEFAULT_SERIES_COLORS has 10 colors', () => {
 		expect(DEFAULT_SERIES_COLORS).toHaveLength(10);
 		expect(DEFAULT_SERIES_COLORS[0]).toBe('#5470c6');
+	});
+});
+
+// ── breakSankeyCycles ─────────────────────────────────────────────────────────
+
+describe('breakSankeyCycles', () => {
+	it('returns empty array unchanged', () => {
+		const { links, dropped } = breakSankeyCycles([]);
+		expect(links).toEqual([]);
+		expect(dropped).toBe(0);
+	});
+
+	it('passes through an acyclic graph unchanged', () => {
+		const input = [
+			{ source: 'A', target: 'B', value: 10 },
+			{ source: 'B', target: 'C', value: 5 },
+			{ source: 'A', target: 'C', value: 3 },
+		];
+		const { links, dropped } = breakSankeyCycles(input);
+		expect(dropped).toBe(0);
+		expect(links).toEqual(input);
+	});
+
+	it('removes self-loops', () => {
+		const input = [
+			{ source: 'A', target: 'A', value: 10 },
+			{ source: 'A', target: 'B', value: 5 },
+		];
+		const { links, dropped } = breakSankeyCycles(input);
+		expect(dropped).toBe(1);
+		expect(links).toEqual([{ source: 'A', target: 'B', value: 5 }]);
+	});
+
+	it('breaks a simple two-node cycle', () => {
+		const input = [
+			{ source: 'A', target: 'B', value: 10 },
+			{ source: 'B', target: 'A', value: 3 },
+		];
+		const { links, dropped } = breakSankeyCycles(input);
+		expect(dropped).toBe(1);
+		expect(links).toHaveLength(1);
+	});
+
+	it('breaks a three-node cycle', () => {
+		const input = [
+			{ source: 'A', target: 'B', value: 10 },
+			{ source: 'B', target: 'C', value: 5 },
+			{ source: 'C', target: 'A', value: 2 },
+		];
+		const { links, dropped } = breakSankeyCycles(input);
+		expect(dropped).toBe(1);
+		expect(links).toHaveLength(2);
+		// Verify the result is acyclic by re-running
+		const { dropped: d2 } = breakSankeyCycles(links);
+		expect(d2).toBe(0);
+	});
+
+	it('prefers dropping lower-value edges', () => {
+		const input = [
+			{ source: 'A', target: 'B', value: 100 },
+			{ source: 'B', target: 'C', value: 50 },
+			{ source: 'C', target: 'A', value: 1 },
+		];
+		const { links, dropped } = breakSankeyCycles(input);
+		expect(dropped).toBe(1);
+		// The high-value A→B and B→C edges should be kept
+		const sources = links.map(l => l.source + '→' + l.target);
+		expect(sources).toContain('A→B');
+		expect(sources).toContain('B→C');
+	});
+
+	it('handles multiple independent cycles', () => {
+		const input = [
+			{ source: 'A', target: 'B', value: 10 },
+			{ source: 'B', target: 'A', value: 5 },
+			{ source: 'C', target: 'D', value: 10 },
+			{ source: 'D', target: 'C', value: 5 },
+		];
+		const { links, dropped } = breakSankeyCycles(input);
+		expect(dropped).toBe(2);
+		expect(links).toHaveLength(2);
+		const { dropped: d2 } = breakSankeyCycles(links);
+		expect(d2).toBe(0);
+	});
+
+	it('handles mixed self-loops and cycles', () => {
+		const input = [
+			{ source: 'A', target: 'A', value: 1 },
+			{ source: 'A', target: 'B', value: 10 },
+			{ source: 'B', target: 'A', value: 3 },
+		];
+		const { links, dropped } = breakSankeyCycles(input);
+		expect(dropped).toBe(2);
+		expect(links).toHaveLength(1);
+		const { dropped: d2 } = breakSankeyCycles(links);
+		expect(d2).toBe(0);
+	});
+
+	it('preserves extra properties on links', () => {
+		const input = [
+			{ source: 'A', target: 'B', value: 10, __kustoOrigSource: 'A', __kustoOrigTarget: 'B' },
+			{ source: 'B', target: 'C', value: 5, __kustoOrigSource: 'B', __kustoOrigTarget: 'C' },
+		];
+		const { links } = breakSankeyCycles(input);
+		expect(links[0].__kustoOrigSource).toBe('A');
+		expect(links[1].__kustoOrigTarget).toBe('C');
 	});
 });

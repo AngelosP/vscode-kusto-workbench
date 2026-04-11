@@ -432,6 +432,111 @@ const __kustoEnsureGeneratedFunctionsMerged = () => {
 	} catch (e) { console.error('[kusto]', e); }
 };
 
+// --- Schema function docs — look up user-defined functions from the loaded database schema ---
+const getSchemaFunctionDoc = (boxId: any, fnName: any) => {
+	try {
+		if (!boxId || !fnName) return null;
+		const schema = (_win as any).schemaByBoxId?.[boxId];
+		const functions = schema?.functions;
+		if (!Array.isArray(functions) || functions.length === 0) return null;
+		const needle = String(fnName).toLowerCase();
+		const fn = functions.find((f: any) => f && String(f.name || '').toLowerCase() === needle);
+		if (!fn) return null;
+
+		// Build args list from parsed parameters, falling back to parametersText.
+		let args: string[] = [];
+		if (Array.isArray(fn.parameters) && fn.parameters.length > 0) {
+			args = fn.parameters.map((p: any) => {
+				const name = String(p.name || '');
+				const type = p.type ? String(p.type) : '';
+				const def = p.defaultValue ? `=${p.defaultValue}` : '';
+				return type ? `${name}:${type}${def}` : `${name}${def}`;
+			});
+		} else if (fn.parametersText) {
+			// parametersText is e.g. "(x:long, y:string)" — strip outer parens and split.
+			let pt = String(fn.parametersText).trim();
+			if (pt.startsWith('(') && pt.endsWith(')')) pt = pt.slice(1, -1);
+			if (pt) args = pt.split(',').map((s: string) => s.trim()).filter(Boolean);
+		}
+
+		let description = '';
+		if (fn.docString) {
+			description = String(fn.docString);
+		} else if (fn.body) {
+			const bodyPreview = String(fn.body).slice(0, 120).replace(/\n/g, ' ');
+			description = `\`${bodyPreview}${fn.body.length > 120 ? '\u2026' : ''}\``;
+		}
+
+		return { args, description };
+	} catch (e) {
+		console.error('[kusto]', e);
+		return null;
+	}
+};
+
+// --- Schema table/view docs — look up tables and materialized views from the loaded database schema ---
+const _abbreviateType = (t: any) => {
+	const s = String(t || '').trim();
+	if (!s) return '?';
+	// Map common .NET / Kusto long-form types to short KQL names.
+	const lower = s.toLowerCase();
+	if (lower === 'system.string' || lower === 'string') return 'string';
+	if (lower === 'system.datetime' || lower === 'datetime') return 'datetime';
+	if (lower === 'system.timespan' || lower === 'timespan') return 'timespan';
+	if (lower === 'system.int64' || lower === 'int64' || lower === 'long') return 'long';
+	if (lower === 'system.int32' || lower === 'int32' || lower === 'int') return 'int';
+	if (lower === 'system.double' || lower === 'double' || lower === 'real') return 'real';
+	if (lower === 'system.boolean' || lower === 'boolean' || lower === 'bool') return 'bool';
+	if (lower === 'system.guid' || lower === 'guid' || lower === 'uniqueid') return 'guid';
+	if (lower === 'system.object' || lower === 'dynamic') return 'dynamic';
+	if (lower === 'system.sbyte' || lower === 'sbyte') return 'bool';
+	if (lower === 'system.decimal' || lower === 'decimal') return 'decimal';
+	return s;
+};
+
+const getSchemaTableDoc = (boxId: any, name: any) => {
+	try {
+		if (!boxId || !name) return null;
+		const needle = String(name).toLowerCase();
+
+		// Search the active box's schema first, then fall back to all loaded schemas.
+		const schemas: any[] = [];
+		const primary = (_win as any).schemaByBoxId?.[boxId];
+		if (primary) schemas.push(primary);
+		const byConnDb = (_win as any).schemaByConnDb;
+		if (byConnDb && typeof byConnDb === 'object') {
+			for (const s of Object.values(byConnDb)) {
+				if (s && s !== primary) schemas.push(s);
+			}
+		}
+
+		for (const schema of schemas) {
+			const tables = schema.tables;
+			if (!Array.isArray(tables) || tables.length === 0) continue;
+			const match = tables.find((t: any) => String(t || '').toLowerCase() === needle);
+			if (!match) continue;
+
+			// Build column summary — compact single-line: Col `type` · Col `type` · …
+			const cols = schema.columnTypesByTable?.[match];
+			let columnSummary = '';
+			if (cols && typeof cols === 'object') {
+				const entries = Object.entries(cols);
+				if (entries.length > 0) {
+					columnSummary = entries.map(([c, t]: [string, any]) => `${c} \`${_abbreviateType(t)}\``).join(' \u00b7 ');
+				}
+			}
+
+			const description = schema.tableDocStrings?.[match] || '';
+			return { name: match, columnSummary, description };
+		}
+
+		return null;
+	} catch (e) {
+		console.error('[kusto]', e);
+		return null;
+	}
+};
+
 // --- Kusto control/management commands (dot-prefixed) ---
 // Data is provided by `src/webview/generated/controlCommands.generated.js`.
 const KUSTO_CONTROL_COMMAND_DOCS_BASE_URL = 'https://learn.microsoft.com/en-us/kusto/';
@@ -941,6 +1046,10 @@ const findEnclosingFunctionCall = (model: any, offset: any) => {
 		if (inSingle) {
 			continue;
 		}
+		if (ch === ';' && depth === 0) {
+			// Statement separator — cursor is in a different statement.
+			return null;
+		}
 		if (ch === ')') {
 			depth++;
 			continue;
@@ -999,10 +1108,10 @@ const buildFunctionSignatureMarkdown = (name: any, doc: any, activeArgIndex: any
 	const args = Array.isArray(doc.args) ? doc.args : [];
 	const formattedArgs = args.map((a: any, i: any) => (i === activeArgIndex ? `**${a}**` : a)).join(', ');
 	const ret = doc.returnType ? `: ${doc.returnType}` : '';
-	return `\`${name}(${formattedArgs})${ret}\``;
+	return `{{sig}}${name}(${formattedArgs})${ret}{{/sig}}`;
 };
 
-const getHoverInfoAt = (model: any, position: any) => {
+const getHoverInfoAt = (model: any, position: any, boxId: any) => {
 	try { __kustoEnsureGeneratedFunctionsMerged(); } catch (e) { console.error('[kusto]', e); }
 	let offset;
 	try {
@@ -1039,7 +1148,7 @@ const getHoverInfoAt = (model: any, position: any) => {
 			const opStartIdx = pipeIdx + 1 + leadingWsLen;
 			const opEndIdx = opStartIdx + m[0].trim().length;
 			const range = new _monacoRange(lineNumber, opStartIdx + 1, lineNumber, opEndIdx + 1);
-			const md = `\`${doc.signature}\`\n\n${doc.description || ''}`.trim();
+			const md = `{{sig}}${doc.signature}{{/sig}}\n\n${doc.description || ''}`.trim();
 			return { range, markdown: md };
 		} catch {
 			return null;
@@ -1062,6 +1171,8 @@ const getHoverInfoAt = (model: any, position: any) => {
 				const slice = (ln === position.lineNumber)
 					? line.slice(0, Math.max(0, Math.min(line.length, position.column - 1)))
 					: line;
+				// Stop at statement boundary — ';' terminates the current statement.
+				if (slice.includes(';')) return null;
 				const idx = slice.lastIndexOf('|');
 				if (idx < 0) continue;
 				// Only consider it a pipe clause if everything before the '|' is whitespace.
@@ -1103,7 +1214,7 @@ const getHoverInfoAt = (model: any, position: any) => {
 			const endPos = model.getPositionAt(keywordEnd);
 			const range = new _monacoRange(startPos.lineNumber, startPos.column, endPos.lineNumber, endPos.column);
 
-			const md = `\`${doc.signature}\`\n\n${doc.description || ''}`.trim();
+			const md = `{{sig}}${doc.signature}{{/sig}}\n\n${doc.description || ''}`.trim();
 			return { range, markdown: md };
 		} catch {
 			return null;
@@ -1130,7 +1241,7 @@ const getHoverInfoAt = (model: any, position: any) => {
 	}
 	if (call) {
 		const fnKey = String(call.name || '').toLowerCase();
-		const doc = KUSTO_FUNCTION_DOCS[fnKey];
+		const doc = KUSTO_FUNCTION_DOCS[fnKey] || getSchemaFunctionDoc(boxId, fnKey);
 		if (doc) {
 			let argIndex = computeArgIndex(model, call.openParenOffset, callOffset);
 			try {
@@ -1154,7 +1265,7 @@ const getHoverInfoAt = (model: any, position: any) => {
 	const multi = getMultiWordOperatorAt(model, position);
 	if (multi && multi.key && KUSTO_KEYWORD_DOCS[multi.key]) {
 		const doc = KUSTO_KEYWORD_DOCS[multi.key];
-		const md = `\`${doc.signature}\`\n\n${doc.description || ''}`.trim();
+		const md = `{{sig}}${doc.signature}{{/sig}}\n\n${doc.description || ''}`.trim();
 		return { range: multi.range, markdown: md };
 	}
 
@@ -1170,16 +1281,31 @@ const getHoverInfoAt = (model: any, position: any) => {
 		return inferPipeOperatorHoverFromContext();
 	}
 	const w = String(token.word).toLowerCase();
-	if (KUSTO_FUNCTION_DOCS[w]) {
-		const doc = KUSTO_FUNCTION_DOCS[w];
-		const md =
-			buildFunctionSignatureMarkdown(w, doc, -1) +
-			(doc.description ? `\n\n${doc.description}` : '');
-		return { range: token.range || getWordRangeAt(model, position), markdown: md };
+	{
+		const builtinDoc = KUSTO_FUNCTION_DOCS[w];
+		const schemaDoc = !builtinDoc ? getSchemaFunctionDoc(boxId, w) : null;
+		const doc = builtinDoc || schemaDoc;
+		if (doc) {
+			const md =
+				buildFunctionSignatureMarkdown(w, doc, -1) +
+				(doc.description ? `\n\n${doc.description}` : '');
+			const result: any = { range: token.range || getWordRangeAt(model, position), markdown: md };
+			if (schemaDoc) result.__kustoSkipInHoverWidget = true;
+			return result;
+		}
+	}
+	{
+		const tableDoc = getSchemaTableDoc(boxId, w);
+		if (tableDoc) {
+			let md = `{{sig}}${tableDoc.name}{{/sig}}`;
+			if (tableDoc.columnSummary) md += `\n${tableDoc.columnSummary}`;
+			if (tableDoc.description) md += `\n\n${tableDoc.description}`;
+			return { range: token.range || getWordRangeAt(model, position), markdown: md, __kustoSkipInHoverWidget: true };
+		}
 	}
 	if (KUSTO_KEYWORD_DOCS[w]) {
 		const doc = KUSTO_KEYWORD_DOCS[w];
-		const md = `\`${doc.signature}\`\n\n${doc.description || ''}`.trim();
+		const md = `{{sig}}${doc.signature}{{/sig}}\n\n${doc.description || ''}`.trim();
 		return { range: token.range || getWordRangeAt(model, position), markdown: md };
 	}
 
@@ -1195,7 +1321,7 @@ export function initCaretDocsDeps(monacoRef: any) {
 }
 
 // ── Public API ──
-export { getHoverInfoAt, KUSTO_FUNCTION_DOCS, KUSTO_KEYWORD_DOCS };
+export { getHoverInfoAt, getSchemaFunctionDoc, getSchemaTableDoc, _abbreviateType, KUSTO_FUNCTION_DOCS, KUSTO_KEYWORD_DOCS };
 export { findEnclosingFunctionCall, getTokenAtPosition, getMultiWordOperatorAt };
 export { getWordRangeAt, computeArgIndex, buildFunctionSignatureMarkdown };
 export { __kustoEnsureGeneratedFunctionsMerged };

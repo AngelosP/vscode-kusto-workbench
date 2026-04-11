@@ -8,6 +8,7 @@ import {
 	__kustoPrettifyKusto,
 	__kustoSplitKustoStatementsBySemicolon,
 	__kustoPrettifyKustoTextWithSemicolonStatements,
+	__kustoConvertFunctionToInline,
 } from '../../src/webview/monaco/prettify.js';
 
 // ── __kustoToSingleLineKusto ──────────────────────────────────────────────────
@@ -953,5 +954,137 @@ describe('__kustoPrettifyKusto — summarize comma preservation', () => {
 		const result = __kustoPrettifyKusto(input);
 		expect(result).toMatch(/count\(\)\s*,/);
 		expect(result).toMatch(/avg\(Value\)\s*,/);
+	});
+});
+
+// ── __kustoConvertFunctionToInline ─────────────────────────────────────────────
+
+describe('__kustoConvertFunctionToInline', () => {
+	it('converts basic .create function', () => {
+		const input = '.create function MyFunc(a:string) { T | where x > 1 }';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyFunc');
+		expect(result!.text).toBe('let MyFunc = (a:string) { T | where x > 1 };');
+	});
+
+	it('converts .create-or-alter function with multi-line body', () => {
+		const input = '.create-or-alter function MyFunc(threshold:long, name:string) {\nMyTable\n| where Value > threshold\n| where Name == name\n}';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyFunc');
+		expect(result!.text).toContain('let MyFunc = (threshold:long, name:string) {');
+		expect(result!.text).toContain('| where Value > threshold');
+		expect(result!.text).toContain('| where Name == name');
+		expect(result!.text.endsWith('};')).toBe(true);
+	});
+
+	it('converts .create-or-alter function with with() clause', () => {
+		const input = '.create-or-alter function with (folder="Helpers", docstring="My helper") MyFunc(a:string) { T | count }';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyFunc');
+		expect(result!.text).toBe('let MyFunc = (a:string) { T | count };');
+		// with() clause should be stripped
+		expect(result!.text).not.toContain('folder');
+		expect(result!.text).not.toContain('docstring');
+	});
+
+	it('converts .alter function', () => {
+		const input = '.alter function MyFunc(x:int) { T | take 10 }';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyFunc');
+		expect(result!.text).toBe('let MyFunc = (x:int) { T | take 10 };');
+	});
+
+	it('strips ifnotexists keyword', () => {
+		const input = '.create function ifnotexists MyFunc(x:int) { T }';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyFunc');
+		expect(result!.text).toBe('let MyFunc = (x:int) { T };');
+		expect(result!.text).not.toContain('ifnotexists');
+	});
+
+	it('handles tabular input params with nested parens', () => {
+		const input = '.create function MyView(T:(col1:string, col2:int)) { T | count }';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyView');
+		expect(result!.text).toBe('let MyView = (T:(col1:string, col2:int)) { T | count };');
+	});
+
+	it('preserves default parameter values', () => {
+		const input = '.create function MyFunc(threshold:long = 100, label:string = "default") { T | where v > threshold }';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.text).toContain('threshold:long = 100');
+		expect(result!.text).toContain('label:string = "default"');
+	});
+
+	it('returns null for non-function input', () => {
+		expect(__kustoConvertFunctionToInline('T | where x > 5')).toBeNull();
+		expect(__kustoConvertFunctionToInline('')).toBeNull();
+		expect(__kustoConvertFunctionToInline(null)).toBeNull();
+		expect(__kustoConvertFunctionToInline(undefined)).toBeNull();
+	});
+
+	it('returns null for non-function control commands', () => {
+		expect(__kustoConvertFunctionToInline('.show tables')).toBeNull();
+		expect(__kustoConvertFunctionToInline('.drop function MyFunc')).toBeNull();
+	});
+
+	it('returns null for .alter function docstring / folder', () => {
+		expect(__kustoConvertFunctionToInline('.alter function docstring MyFunc "new docs"')).toBeNull();
+		expect(__kustoConvertFunctionToInline('.alter function folder MyFunc "new/folder"')).toBeNull();
+	});
+
+	it('handles nested braces in body (dynamic)', () => {
+		const input = '.create function MyFunc(a:string) { T | extend obj = dynamic({"key": "val"}) }';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.text).toContain('dynamic({"key": "val"})');
+		expect(result!.text.endsWith('};')).toBe(true);
+	});
+
+	it('preserves comments in body', () => {
+		const input = '.create function MyFunc() {\n// this is a comment\nT | count\n}';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.text).toContain('// this is a comment');
+	});
+
+	it('handles empty parameter list', () => {
+		const input = '.create function MyFunc() { T }';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.text).toBe('let MyFunc = () { T };');
+	});
+
+	it('handles empty body', () => {
+		const input = '.create function MyFunc() { }';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.text).toBe('let MyFunc = () { };');
+	});
+
+	it('returns null when body is missing', () => {
+		expect(__kustoConvertFunctionToInline('.create function MyFunc(a:string)')).toBeNull();
+	});
+
+	it('handles with() clause containing parens in string values', () => {
+		const input = '.create function with (docstring="returns (count)") MyFunc(a:string) { T | count }';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyFunc');
+		expect(result!.text).toBe('let MyFunc = (a:string) { T | count };');
+	});
+
+	it('is case-insensitive for command keywords', () => {
+		const input = '.CREATE-OR-ALTER FUNCTION MyFunc(a:string) { T }';
+		const result = __kustoConvertFunctionToInline(input);
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyFunc');
 	});
 });

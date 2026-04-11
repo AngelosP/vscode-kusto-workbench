@@ -467,6 +467,7 @@ declare global {
 		__kustoPrettifyQueryForBoxId: (boxId: string) => void;
 		__kustoPrettifyKustoText: (text: string) => string;
 		__kustoCopySingleLineQueryForBoxId: (boxId: string) => Promise<void>;
+		__kustoCopyAsInlineFunctionForBoxId: (boxId: string) => Promise<void>;
 		__kustoCopyOrCutMonacoEditor: (editor: any, isCut: boolean) => Promise<boolean>;
 		__kustoRefreshActiveCaretDocs: () => void;
 		__kustoOnQueryValueChanged: (boxId: string, queryText: string) => void;

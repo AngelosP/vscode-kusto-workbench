@@ -35,6 +35,7 @@ import {
 	computeTimeAxisLabelRotation,
 	computeCategoryLabelRotation,
 	measureLabelChars,
+	breakSankeyCycles,
 } from './chart-utils.js';
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -1052,7 +1053,7 @@ export function renderChart(boxId: any) {
 				}
 
 				const nodes = Array.from(nodeSet).map(name => ({ name }));
-				const links = Array.from(linkMap.values()).map(l => ({
+				const rawLinks = Array.from(linkMap.values()).map(l => ({
 					source: reverseFlow ? l.target : l.source,
 					target: reverseFlow ? l.source : l.target,
 					value: l.value,
@@ -1060,6 +1061,12 @@ export function renderChart(boxId: any) {
 					__kustoOrigSource: l.source,
 					__kustoOrigTarget: l.target,
 				}));
+
+				// Sankey requires a DAG — break any cycles in the data.
+				const { links, dropped: droppedLinkCount } = breakSankeyCycles(rawLinks);
+				if (droppedLinkCount > 0) {
+					console.warn(`[kusto] Sankey: removed ${droppedLinkCount} link(s) to break cycles in the data.`);
+				}
 
 				// Get series colors from Y-axis settings if available
 				const seriesColors = (yAxisSettings && yAxisSettings.seriesColors && typeof yAxisSettings.seriesColors === 'object')

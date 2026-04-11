@@ -1714,8 +1714,9 @@
 			pointer-events: none;
 			position: relative;
 			flex: 0 0 auto;
-			/* Keep the editor layout stable: reserve space for two lines of content. */
-			min-height: calc(2 * 1.35em + 12px);
+			/* Fixed height prevents layout jitter when content changes. */
+			height: 50px;
+			overflow: hidden;
 		}
 
 		.qe-caret-docs-text {
@@ -1740,10 +1741,31 @@
 		.qe-caret-docs-text code {
 			font-family: var(--vscode-editor-font-family);
 			font-size: 12px;
+			line-height: inherit;
+			vertical-align: baseline;
+		}
+
+		/* Signature line: clean monospace, no background box */
+		.qe-sig {
+			font-family: var(--vscode-editor-font-family);
+			font-size: 12px;
+			color: var(--vscode-symbolIcon-functionForeground, #b180d7);
+			letter-spacing: 0.01em;
+		}
+		.qe-sig strong {
+			color: var(--vscode-editorInfo-foreground, #75beff);
+			font-weight: 700;
+		}
+
+		.qe-caret-docs-text strong {
+			line-height: inherit;
 		}
 
 		.qe-caret-docs-line {
 			margin-bottom: 2px;
+			line-height: 1.35;
+			/* Prevent inline code/strong from expanding the line box beyond the fixed line-height. */
+			overflow: hidden;
 		}
 
 		.qe-missing-clusters-text {
@@ -1975,6 +1997,11 @@
 			font-family: var(--vscode-editor-font-family);
 			font-size: 12px;
 		}
+
+		/* Hide Monaco hover widget's action bar ("View Problem" etc.) — not useful in this webview.
+		   Also override the default yellow code color to match the surrounding text. */
+		.monaco-hover .hover-row .actions { display: none !important; }
+		.monaco-hover code { color: inherit !important; }
 
 		.query-editor {
 			width: 100%;

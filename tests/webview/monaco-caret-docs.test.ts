@@ -15,6 +15,9 @@ import {
 	__kustoFindWithOptionsParenRange,
 	__kustoFindEnclosingWithOptionsParen,
 	getHoverInfoAt,
+	getSchemaFunctionDoc,
+	getSchemaTableDoc,
+	_abbreviateType,
 	__kustoBuildControlCommandIndex,
 	__kustoEnsureGeneratedFunctionsMerged,
 	__kustoGeneratedFunctionsMerged,
@@ -84,37 +87,37 @@ describe('buildFunctionSignatureMarkdown', () => {
 	it('formats function with no active arg', () => {
 		const doc = { args: ['expr', 'accuracy?'], returnType: 'long' };
 		const result = buildFunctionSignatureMarkdown('dcount', doc, -1);
-		expect(result).toBe('`dcount(expr, accuracy?): long`');
+		expect(result).toBe('{{sig}}dcount(expr, accuracy?): long{{/sig}}');
 	});
 
 	it('bolds the active argument', () => {
 		const doc = { args: ['expr', 'accuracy?'], returnType: 'long' };
 		const result = buildFunctionSignatureMarkdown('dcount', doc, 0);
-		expect(result).toBe('`dcount(**expr**, accuracy?): long`');
+		expect(result).toBe('{{sig}}dcount(**expr**, accuracy?): long{{/sig}}');
 	});
 
 	it('bolds the second argument', () => {
 		const doc = { args: ['expr', 'accuracy?'], returnType: 'long' };
 		const result = buildFunctionSignatureMarkdown('dcount', doc, 1);
-		expect(result).toBe('`dcount(expr, **accuracy?**): long`');
+		expect(result).toBe('{{sig}}dcount(expr, **accuracy?**): long{{/sig}}');
 	});
 
 	it('handles empty args', () => {
 		const doc = { args: [], returnType: 'long' };
 		const result = buildFunctionSignatureMarkdown('count', doc, -1);
-		expect(result).toBe('`count(): long`');
+		expect(result).toBe('{{sig}}count(): long{{/sig}}');
 	});
 
 	it('handles missing returnType', () => {
 		const doc = { args: ['x'] };
 		const result = buildFunctionSignatureMarkdown('f', doc, -1);
-		expect(result).toBe('`f(x)`');
+		expect(result).toBe('{{sig}}f(x){{/sig}}');
 	});
 
 	it('handles undefined args', () => {
 		const doc = { returnType: 'long' };
 		const result = buildFunctionSignatureMarkdown('count', doc, -1);
-		expect(result).toBe('`count(): long`');
+		expect(result).toBe('{{sig}}count(): long{{/sig}}');
 	});
 });
 
@@ -164,6 +167,35 @@ describe('findEnclosingFunctionCall', () => {
 	it('returns null when open paren has no preceding identifier', () => {
 		const model = makeModel('(x + y)');
 		expect(findEnclosingFunctionCall(model, 2)).toBeNull();
+	});
+
+	it('stops at semicolon — does not cross statement boundary', () => {
+		const model = makeModel('f(x)\n;\nlet variable = y');
+		// Cursor on 'variable' (offset 10 = after ';\nlet v')
+		const offset = 'f(x)\n;\nlet v'.length;
+		expect(findEnclosingFunctionCall(model, offset)).toBeNull();
+	});
+
+	it('stops at semicolon on same line', () => {
+		const model = makeModel('f(x); let y = 1');
+		const offset = 'f(x); let y'.length;
+		expect(findEnclosingFunctionCall(model, offset)).toBeNull();
+	});
+
+	it('ignores semicolon inside single-quoted string', () => {
+		const model = makeModel("f('a;b', ");
+		const offset = "f('a;b', ".length;
+		const result = findEnclosingFunctionCall(model, offset);
+		expect(result).toBeTruthy();
+		expect(result!.name).toBe('f');
+	});
+
+	it('still finds function within same statement (no semicolon)', () => {
+		const model = makeModel('f(x,\n y');
+		const offset = 'f(x,\n y'.length;
+		const result = findEnclosingFunctionCall(model, offset);
+		expect(result).toBeTruthy();
+		expect(result!.name).toBe('f');
 	});
 });
 
@@ -530,6 +562,56 @@ describe('getHoverInfoAt', () => {
 		const model = makeModel('myCustomTable');
 		const result = getHoverInfoAt(model, { lineNumber: 1, column: 5 });
 		expect(result).toBeNull();
+	});
+
+	it('does not show function docs across semicolon statement boundary', () => {
+		const model = makeModel('dcount(x)\n;\nlet variable = something');
+		// Cursor on 'variable' in line 3
+		const result = getHoverInfoAt(model, { lineNumber: 3, column: 6 });
+		// Should NOT show dcount docs — semicolon separates statements
+		expect(result).toBeNull();
+	});
+
+	it('does not show schema function docs across semicolon boundary', () => {
+		const boxId = '__test_semicolon_box__';
+		(window as any).schemaByBoxId = { [boxId]: { functions: [{
+			name: 'getAzdEvents',
+			parameters: [
+				{ name: 'startDate', type: 'datetime' },
+				{ name: 'endDate', type: 'datetime' },
+			],
+			docString: 'Get events.',
+		}] } };
+		try {
+			const model = makeModel('getAzdEvents(startDate, endDate)\n;\nlet variable = something');
+			// Cursor on 'variable' in line 3
+			const result = getHoverInfoAt(model, { lineNumber: 3, column: 6 }, boxId);
+			expect(result).toBeNull();
+		} finally {
+			delete (window as any).schemaByBoxId;
+		}
+	});
+
+	it('does not show pipe operator docs across semicolon boundary', () => {
+		const model = makeModel('T\n| where x > 5\n;\nlet variable = something');
+		// Cursor on 'variable' in line 4 — should NOT show 'where' docs from the prior statement
+		const result = getHoverInfoAt(model, { lineNumber: 4, column: 6 });
+		expect(result).toBeNull();
+	});
+
+	it('does not show pipe operator context across semicolon on its own line', () => {
+		const model = makeModel('T\n| summarize count()\n;\nOtherTable');
+		// Cursor on 'OtherTable' line 4 — should NOT show 'summarize' docs
+		const result = getHoverInfoAt(model, { lineNumber: 4, column: 5 });
+		expect(result).toBeNull();
+	});
+
+	it('still shows pipe operator docs within same statement (no semicolon)', () => {
+		const model = makeModel('T\n| where x > 5\n    and y < 10');
+		// Cursor on 'and' in line 3 — should show 'where' docs (same statement)
+		const result = getHoverInfoAt(model, { lineNumber: 3, column: 8 });
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('where');
 	});
 
 	it('detects multi-word "order by" operator', () => {
@@ -961,5 +1043,680 @@ describe('__kustoGetControlCommandHoverAt', () => {
 		const model = makeModel('');
 		const result = __kustoGetControlCommandHoverAt(model, new MockPosition(1, 1));
 		expect(result).toBeNull();
+	});
+});
+
+// ── getSchemaFunctionDoc ──────────────────────────────────────────────────────
+
+describe('getSchemaFunctionDoc', () => {
+	const boxId = '__test_schema_box__';
+
+	function setSchemaFunctions(fns: any[]) {
+		(window as any).schemaByBoxId = { [boxId]: { functions: fns } };
+	}
+
+	afterEach(() => {
+		delete (window as any).schemaByBoxId;
+	});
+
+	it('returns null when boxId is falsy', () => {
+		setSchemaFunctions([{ name: 'foo', parameters: [] }]);
+		expect(getSchemaFunctionDoc('', 'foo')).toBeNull();
+		expect(getSchemaFunctionDoc(null, 'foo')).toBeNull();
+		expect(getSchemaFunctionDoc(undefined, 'foo')).toBeNull();
+	});
+
+	it('returns null when fnName is falsy', () => {
+		setSchemaFunctions([{ name: 'foo', parameters: [] }]);
+		expect(getSchemaFunctionDoc(boxId, '')).toBeNull();
+		expect(getSchemaFunctionDoc(boxId, null)).toBeNull();
+	});
+
+	it('returns null when schema is not loaded', () => {
+		// No schemaByBoxId set
+		expect(getSchemaFunctionDoc(boxId, 'foo')).toBeNull();
+	});
+
+	it('returns null when functions array is empty', () => {
+		setSchemaFunctions([]);
+		expect(getSchemaFunctionDoc(boxId, 'foo')).toBeNull();
+	});
+
+	it('returns null when functions is undefined', () => {
+		(window as any).schemaByBoxId = { [boxId]: {} };
+		expect(getSchemaFunctionDoc(boxId, 'foo')).toBeNull();
+	});
+
+	it('returns null when function name is not found', () => {
+		setSchemaFunctions([{ name: 'bar', parameters: [] }]);
+		expect(getSchemaFunctionDoc(boxId, 'foo')).toBeNull();
+	});
+
+	it('matches function name case-insensitively', () => {
+		setSchemaFunctions([{ name: 'GetAzdEvents', parameters: [{ name: 'x', type: 'long' }] }]);
+		const result = getSchemaFunctionDoc(boxId, 'getazdevents');
+		expect(result).toBeTruthy();
+		expect(result!.args).toEqual(['x:long']);
+	});
+
+	it('builds args from parsed parameters with types', () => {
+		setSchemaFunctions([{
+			name: 'myFunc',
+			parameters: [
+				{ name: 'startDate', type: 'datetime' },
+				{ name: 'endDate', type: 'datetime' },
+				{ name: 'flag', type: 'bool' },
+			],
+		}]);
+		const result = getSchemaFunctionDoc(boxId, 'myfunc');
+		expect(result).toBeTruthy();
+		expect(result!.args).toEqual(['startDate:datetime', 'endDate:datetime', 'flag:bool']);
+	});
+
+	it('builds args from parameters without types', () => {
+		setSchemaFunctions([{
+			name: 'myFunc',
+			parameters: [{ name: 'x' }, { name: 'y' }],
+		}]);
+		const result = getSchemaFunctionDoc(boxId, 'myfunc');
+		expect(result).toBeTruthy();
+		expect(result!.args).toEqual(['x', 'y']);
+	});
+
+	it('builds args with default values', () => {
+		setSchemaFunctions([{
+			name: 'myFunc',
+			parameters: [{ name: 'x', type: 'long', defaultValue: '10' }],
+		}]);
+		const result = getSchemaFunctionDoc(boxId, 'myfunc');
+		expect(result).toBeTruthy();
+		expect(result!.args).toEqual(['x:long=10']);
+	});
+
+	it('handles tabular parameters with column definitions', () => {
+		setSchemaFunctions([{
+			name: 'myFunc',
+			parameters: [{ name: 'T', type: '(col1:string, col2:int)' }],
+		}]);
+		const result = getSchemaFunctionDoc(boxId, 'myfunc');
+		expect(result).toBeTruthy();
+		expect(result!.args).toEqual(['T:(col1:string, col2:int)']);
+	});
+
+	it('falls back to parametersText when parameters array is empty', () => {
+		setSchemaFunctions([{
+			name: 'myFunc',
+			parameters: [],
+			parametersText: '(x:long, y:string)',
+		}]);
+		const result = getSchemaFunctionDoc(boxId, 'myfunc');
+		expect(result).toBeTruthy();
+		expect(result!.args).toEqual(['x:long', 'y:string']);
+	});
+
+	it('falls back to parametersText when parameters is undefined', () => {
+		setSchemaFunctions([{
+			name: 'myFunc',
+			parametersText: '(a:real)',
+		}]);
+		const result = getSchemaFunctionDoc(boxId, 'myfunc');
+		expect(result).toBeTruthy();
+		expect(result!.args).toEqual(['a:real']);
+	});
+
+	it('returns empty args for function with no parameters', () => {
+		setSchemaFunctions([{ name: 'noArgs' }]);
+		const result = getSchemaFunctionDoc(boxId, 'noargs');
+		expect(result).toBeTruthy();
+		expect(result!.args).toEqual([]);
+	});
+
+	it('uses docString for description', () => {
+		setSchemaFunctions([{
+			name: 'myFunc',
+			parameters: [],
+			docString: 'Returns events for a given date range.',
+		}]);
+		const result = getSchemaFunctionDoc(boxId, 'myfunc');
+		expect(result).toBeTruthy();
+		expect(result!.description).toBe('Returns events for a given date range.');
+	});
+
+	it('falls back to body preview when docString is missing', () => {
+		setSchemaFunctions([{
+			name: 'myFunc',
+			parameters: [],
+			body: 'T | where Time > ago(1d) | summarize count()',
+		}]);
+		const result = getSchemaFunctionDoc(boxId, 'myfunc');
+		expect(result).toBeTruthy();
+		expect(result!.description).toContain('T | where Time > ago(1d)');
+	});
+
+	it('truncates long body previews', () => {
+		const longBody = 'T | where x > 0 | '.repeat(20);
+		setSchemaFunctions([{
+			name: 'myFunc',
+			parameters: [],
+			body: longBody,
+		}]);
+		const result = getSchemaFunctionDoc(boxId, 'myfunc');
+		expect(result).toBeTruthy();
+		// Body preview should be capped — description wraps in backticks plus ellipsis
+		expect(result!.description.length).toBeLessThan(200);
+		expect(result!.description).toContain('\u2026'); // ellipsis
+	});
+
+	it('returns empty description when both docString and body are missing', () => {
+		setSchemaFunctions([{ name: 'myFunc', parameters: [] }]);
+		const result = getSchemaFunctionDoc(boxId, 'myfunc');
+		expect(result).toBeTruthy();
+		expect(result!.description).toBe('');
+	});
+
+	it('does not include returnType in result', () => {
+		setSchemaFunctions([{ name: 'myFunc', parameters: [] }]);
+		const result = getSchemaFunctionDoc(boxId, 'myfunc');
+		expect(result).toBeTruthy();
+		// Omit returnType since schema doesn't distinguish scalar vs tabular
+		expect(result!).not.toHaveProperty('returnType');
+	});
+});
+
+// ── _abbreviateType ───────────────────────────────────────────────────────────
+
+describe('_abbreviateType', () => {
+	it('abbreviates .NET System types', () => {
+		expect(_abbreviateType('System.String')).toBe('string');
+		expect(_abbreviateType('System.DateTime')).toBe('datetime');
+		expect(_abbreviateType('System.Int64')).toBe('long');
+		expect(_abbreviateType('System.Int32')).toBe('int');
+		expect(_abbreviateType('System.Double')).toBe('real');
+		expect(_abbreviateType('System.Boolean')).toBe('bool');
+		expect(_abbreviateType('System.TimeSpan')).toBe('timespan');
+		expect(_abbreviateType('System.Guid')).toBe('guid');
+		expect(_abbreviateType('System.Object')).toBe('dynamic');
+		expect(_abbreviateType('System.SByte')).toBe('bool');
+		expect(_abbreviateType('System.Decimal')).toBe('decimal');
+	});
+
+	it('passes through short KQL types unchanged', () => {
+		expect(_abbreviateType('string')).toBe('string');
+		expect(_abbreviateType('datetime')).toBe('datetime');
+		expect(_abbreviateType('long')).toBe('long');
+		expect(_abbreviateType('real')).toBe('real');
+		expect(_abbreviateType('bool')).toBe('bool');
+		expect(_abbreviateType('dynamic')).toBe('dynamic');
+		expect(_abbreviateType('guid')).toBe('guid');
+		expect(_abbreviateType('int')).toBe('int');
+		expect(_abbreviateType('timespan')).toBe('timespan');
+		expect(_abbreviateType('decimal')).toBe('decimal');
+	});
+
+	it('is case-insensitive', () => {
+		expect(_abbreviateType('system.string')).toBe('string');
+		expect(_abbreviateType('SYSTEM.INT64')).toBe('long');
+		expect(_abbreviateType('String')).toBe('string');
+	});
+
+	it('returns ? for empty or falsy input', () => {
+		expect(_abbreviateType('')).toBe('?');
+		expect(_abbreviateType(null)).toBe('?');
+		expect(_abbreviateType(undefined)).toBe('?');
+	});
+
+	it('passes through unknown types as-is', () => {
+		expect(_abbreviateType('custom_type')).toBe('custom_type');
+		expect(_abbreviateType('MyEnum')).toBe('MyEnum');
+	});
+});
+
+// ── getSchemaTableDoc ─────────────────────────────────────────────────────────
+
+describe('getSchemaTableDoc', () => {
+	const boxId = '__test_table_doc_box__';
+
+	function setSchema(schema: any) {
+		(window as any).schemaByBoxId = { [boxId]: schema };
+	}
+
+	afterEach(() => {
+		delete (window as any).schemaByBoxId;
+	});
+
+	it('returns null when boxId is falsy', () => {
+		setSchema({ tables: ['T'], columnTypesByTable: { T: {} } });
+		expect(getSchemaTableDoc('', 'T')).toBeNull();
+		expect(getSchemaTableDoc(null, 'T')).toBeNull();
+		expect(getSchemaTableDoc(undefined, 'T')).toBeNull();
+	});
+
+	it('returns null when name is falsy', () => {
+		setSchema({ tables: ['T'], columnTypesByTable: { T: {} } });
+		expect(getSchemaTableDoc(boxId, '')).toBeNull();
+		expect(getSchemaTableDoc(boxId, null)).toBeNull();
+	});
+
+	it('returns null when schema is not loaded', () => {
+		expect(getSchemaTableDoc(boxId, 'T')).toBeNull();
+	});
+
+	it('returns null when tables array is empty', () => {
+		setSchema({ tables: [], columnTypesByTable: {} });
+		expect(getSchemaTableDoc(boxId, 'T')).toBeNull();
+	});
+
+	it('returns null when table not found', () => {
+		setSchema({ tables: ['StormEvents'], columnTypesByTable: { StormEvents: {} } });
+		expect(getSchemaTableDoc(boxId, 'Unknown')).toBeNull();
+	});
+
+	it('matches table name case-insensitively', () => {
+		setSchema({ tables: ['StormEvents'], columnTypesByTable: { StormEvents: { StartTime: 'datetime' } } });
+		const result = getSchemaTableDoc(boxId, 'stormevents');
+		expect(result).toBeTruthy();
+		expect(result!.name).toBe('StormEvents');
+	});
+
+	it('preserves original-case name in result', () => {
+		setSchema({ tables: ['MyTable'], columnTypesByTable: { MyTable: {} } });
+		const result = getSchemaTableDoc(boxId, 'mytable');
+		expect(result).toBeTruthy();
+		expect(result!.name).toBe('MyTable');
+	});
+
+	it('builds column summary from columnTypesByTable', () => {
+		setSchema({
+			tables: ['T'],
+			columnTypesByTable: { T: { Id: 'long', Name: 'string', Timestamp: 'datetime' } },
+		});
+		const result = getSchemaTableDoc(boxId, 't');
+		expect(result).toBeTruthy();
+		expect(result!.columnSummary).toContain('Id `long`');
+		expect(result!.columnSummary).toContain('Name `string`');
+		expect(result!.columnSummary).toContain('Timestamp `datetime`');
+	});
+
+	it('uses \u00b7 separators between columns on a single line', () => {
+		setSchema({
+			tables: ['T'],
+			columnTypesByTable: { T: { A: 'string', B: 'long' } },
+		});
+		const result = getSchemaTableDoc(boxId, 't');
+		expect(result).toBeTruthy();
+		// Single line, no newlines
+		expect(result!.columnSummary).not.toContain('\n');
+		expect(result!.columnSummary).toContain('\u00b7');
+		expect(result!.columnSummary).toBe('A `string` \u00b7 B `long`');
+	});
+
+	it('abbreviates .NET types in column summary', () => {
+		setSchema({
+			tables: ['T'],
+			columnTypesByTable: {
+				T: { UserType: 'System.String', Day: 'System.DateTime', Users: 'System.Int64' },
+			},
+		});
+		const result = getSchemaTableDoc(boxId, 't');
+		expect(result).toBeTruthy();
+		expect(result!.columnSummary).toContain('UserType `string`');
+		expect(result!.columnSummary).toContain('Day `datetime`');
+		expect(result!.columnSummary).toContain('Users `long`');
+		// Should NOT contain the .NET form
+		expect(result!.columnSummary).not.toContain('System.');
+	});
+
+	it('shows all columns without truncation', () => {
+		const cols: Record<string, string> = {};
+		for (let i = 1; i <= 20; i++) cols[`Col${i}`] = 'string';
+		setSchema({ tables: ['T'], columnTypesByTable: { T: cols } });
+		const result = getSchemaTableDoc(boxId, 't');
+		expect(result).toBeTruthy();
+		// All 20 columns should be present, no truncation
+		expect(result!.columnSummary).toContain('Col1 `string`');
+		expect(result!.columnSummary).toContain('Col20 `string`');
+		expect(result!.columnSummary).not.toContain('\u2026');
+	});
+
+	it('returns empty columnSummary when no columns', () => {
+		setSchema({ tables: ['T'], columnTypesByTable: { T: {} } });
+		const result = getSchemaTableDoc(boxId, 't');
+		expect(result).toBeTruthy();
+		expect(result!.columnSummary).toBe('');
+	});
+
+	it('returns empty columnSummary when columnTypesByTable missing for table', () => {
+		setSchema({ tables: ['T'], columnTypesByTable: {} });
+		const result = getSchemaTableDoc(boxId, 't');
+		expect(result).toBeTruthy();
+		expect(result!.columnSummary).toBe('');
+	});
+
+	it('uses tableDocStrings for description', () => {
+		setSchema({
+			tables: ['T'],
+			columnTypesByTable: { T: {} },
+			tableDocStrings: { T: 'Storm event records from NOAA.' },
+		});
+		const result = getSchemaTableDoc(boxId, 't');
+		expect(result).toBeTruthy();
+		expect(result!.description).toBe('Storm event records from NOAA.');
+	});
+
+	it('returns empty description when tableDocStrings missing', () => {
+		setSchema({ tables: ['T'], columnTypesByTable: { T: {} } });
+		const result = getSchemaTableDoc(boxId, 't');
+		expect(result).toBeTruthy();
+		expect(result!.description).toBe('');
+	});
+
+	it('returns empty description when table has no docstring entry', () => {
+		setSchema({
+			tables: ['T'],
+			columnTypesByTable: { T: {} },
+			tableDocStrings: { Other: 'docs' },
+		});
+		const result = getSchemaTableDoc(boxId, 't');
+		expect(result).toBeTruthy();
+		expect(result!.description).toBe('');
+	});
+
+	it('uses ? for columns with missing type', () => {
+		setSchema({
+			tables: ['T'],
+			columnTypesByTable: { T: { Col1: '', Col2: 'string' } },
+		});
+		const result = getSchemaTableDoc(boxId, 't');
+		expect(result).toBeTruthy();
+		expect(result!.columnSummary).toContain('Col1 `?`');
+		expect(result!.columnSummary).toContain('Col2 `string`');
+	});
+
+	it('finds table from cross-database schema via schemaByConnDb', () => {
+		// Primary schema has no match, but a cross-db schema does
+		(window as any).schemaByBoxId = { [boxId]: { tables: ['LocalT'], columnTypesByTable: { LocalT: {} } } };
+		(window as any).schemaByConnDb = {
+			'conn|otherDb': {
+				tables: ['RemoteTable'],
+				columnTypesByTable: { RemoteTable: { X: 'long' } },
+				tableDocStrings: { RemoteTable: 'From another database.' },
+			},
+		};
+		const result = getSchemaTableDoc(boxId, 'remotetable');
+		expect(result).toBeTruthy();
+		expect(result!.name).toBe('RemoteTable');
+		expect(result!.columnSummary).toContain('X `long`');
+		expect(result!.description).toBe('From another database.');
+	});
+
+	it('prefers primary schema over cross-database for same table name', () => {
+		(window as any).schemaByBoxId = { [boxId]: {
+			tables: ['T'],
+			columnTypesByTable: { T: { A: 'string' } },
+			tableDocStrings: { T: 'Primary.' },
+		} };
+		(window as any).schemaByConnDb = {
+			'conn|otherDb': {
+				tables: ['T'],
+				columnTypesByTable: { T: { B: 'long' } },
+				tableDocStrings: { T: 'Cross-db.' },
+			},
+		};
+		const result = getSchemaTableDoc(boxId, 't');
+		expect(result).toBeTruthy();
+		expect(result!.description).toBe('Primary.');
+		expect(result!.columnSummary).toContain('A `string`');
+	});
+});
+
+// ── getHoverInfoAt — schema tables integration ────────────────────────────────
+
+describe('getHoverInfoAt — schema tables', () => {
+	const boxId = '__test_hover_table_box__';
+
+	function setSchema(schema: any) {
+		(window as any).schemaByBoxId = { [boxId]: schema };
+	}
+
+	afterEach(() => {
+		delete (window as any).schemaByBoxId;
+	});
+
+	it('shows table hover with docstring', () => {
+		setSchema({
+			tables: ['StormEvents'],
+			columnTypesByTable: { StormEvents: { StartTime: 'datetime', State: 'string' } },
+			tableDocStrings: { StormEvents: 'Storm event records.' },
+		});
+		const model = makeModel('StormEvents | where State == "TX"');
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 5 }, boxId);
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('StormEvents');
+		expect(result!.markdown).toContain('StartTime `datetime`');
+		expect(result!.markdown).toContain('Storm event records.');
+	});
+
+	it('shows table hover with columns but no docstring', () => {
+		setSchema({
+			tables: ['T'],
+			columnTypesByTable: { T: { Id: 'long', Name: 'string' } },
+		});
+		const model = makeModel('T | take 10');
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 1 }, boxId);
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('Id `long`');
+		expect(result!.markdown).toContain('Name `string`');
+	});
+
+	it('built-in function name takes precedence over table name', () => {
+		setSchema({
+			tables: ['count'],
+			columnTypesByTable: { count: { x: 'long' } },
+			tableDocStrings: { count: 'Should not show.' },
+		});
+		const model = makeModel('count');
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 3 }, boxId);
+		expect(result).toBeTruthy();
+		// Built-in function 'count' docs should win
+		expect(result!.markdown).not.toContain('Should not show.');
+	});
+
+	it('schema function takes precedence over table with same name', () => {
+		setSchema({
+			tables: ['GetEvents'],
+			columnTypesByTable: { GetEvents: { x: 'long' } },
+			tableDocStrings: { GetEvents: 'Table doc.' },
+			functions: [{ name: 'GetEvents', parameters: [{ name: 'x' }], docString: 'Function doc.' }],
+		});
+		const model = makeModel('GetEvents');
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 3 }, boxId);
+		expect(result).toBeTruthy();
+		// Schema function should win over table
+		expect(result!.markdown).toContain('Function doc.');
+		expect(result!.markdown).not.toContain('Table doc.');
+	});
+
+	it('table doc wins over keyword when table exists in schema', () => {
+		setSchema({
+			tables: ['where'],
+			columnTypesByTable: { where: { x: 'long' } },
+			tableDocStrings: { where: 'A table named where.' },
+		});
+		const model = makeModel('where');
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 3 }, boxId);
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('A table named where.');
+	});
+
+	it('returns null for table token without boxId', () => {
+		setSchema({
+			tables: ['StormEvents'],
+			columnTypesByTable: { StormEvents: {} },
+		});
+		const model = makeModel('StormEvents');
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 5 }, undefined);
+		expect(result).toBeNull();
+	});
+
+	it('falls through to pipe operator context when no table match', () => {
+		setSchema({
+			tables: ['StormEvents'],
+			columnTypesByTable: { StormEvents: {} },
+		});
+		const model = makeModel('StormEvents\n| where SomeCol > 5');
+		// Cursor on 'SomeCol' — not a table, function, or keyword
+		const result = getHoverInfoAt(model, { lineNumber: 2, column: 12 }, boxId);
+		expect(result).toBeTruthy();
+		// Should fall through to pipe operator context and show 'where' docs
+		expect(result!.markdown).toContain('where');
+	});
+});
+
+// ── getHoverInfoAt — schema function integration ──────────────────────────────
+
+describe('getHoverInfoAt — schema functions', () => {
+	const boxId = '__test_hover_schema_box__';
+
+	function setSchemaFunctions(fns: any[]) {
+		(window as any).schemaByBoxId = { [boxId]: { functions: fns } };
+	}
+
+	afterEach(() => {
+		delete (window as any).schemaByBoxId;
+	});
+
+	it('shows schema function hover when cursor is on function name', () => {
+		setSchemaFunctions([{
+			name: 'getAzdEvents',
+			parameters: [
+				{ name: 'startDate', type: 'datetime' },
+				{ name: 'endDate', type: 'datetime' },
+			],
+			docString: 'Get Azure Developer CLI events.',
+		}]);
+		const model = makeModel('getAzdEvents(x, y)');
+		// Cursor on function name
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 5 }, boxId);
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('getazdevents');
+		expect(result!.markdown).toContain('startDate:datetime');
+	});
+
+	it('shows active-arg tracking for schema functions inside parens', () => {
+		setSchemaFunctions([{
+			name: 'getAzdEvents',
+			parameters: [
+				{ name: 'startDate', type: 'datetime' },
+				{ name: 'endDate', type: 'datetime' },
+				{ name: 'flag', type: 'bool' },
+			],
+		}]);
+		const model = makeModel('getAzdEvents(x, y, z)');
+		// Cursor on second arg 'y'
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 17 }, boxId);
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('**endDate:datetime**');
+	});
+
+	it('shows first arg bolded when cursor is in first arg position', () => {
+		setSchemaFunctions([{
+			name: 'getAzdEvents',
+			parameters: [
+				{ name: 'startDate', type: 'datetime' },
+				{ name: 'endDate', type: 'datetime' },
+			],
+		}]);
+		const model = makeModel('getAzdEvents(x, y)');
+		// Cursor on first arg 'x'
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 15 }, boxId);
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('**startDate:datetime**');
+	});
+
+	it('built-in function takes precedence over schema function with same name', () => {
+		setSchemaFunctions([{
+			name: 'dcount',
+			parameters: [{ name: 'overridden' }],
+			docString: 'Should not appear.',
+		}]);
+		const model = makeModel('dcount(x)');
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 3 }, boxId);
+		expect(result).toBeTruthy();
+		// Should show built-in dcount docs, not schema override
+		expect(result!.markdown).not.toContain('overridden');
+		expect(result!.markdown).not.toContain('Should not appear');
+	});
+
+	it('returns null for unknown function when no schema loaded', () => {
+		const model = makeModel('myCustomFunc(x)');
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 5 }, boxId);
+		// No schema loaded, no built-in match  — pipe-operator fallback or null
+		// The function name isn't a pipe operator, so should be null
+		expect(result).toBeNull();
+	});
+
+	it('schema function hover works without boxId (falls through)', () => {
+		setSchemaFunctions([{
+			name: 'getAzdEvents',
+			parameters: [{ name: 'x' }],
+		}]);
+		const model = makeModel('getAzdEvents(x)');
+		// No boxId — should not crash, should fall through to pipe-operator or null
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 5 }, undefined);
+		expect(result).toBeNull();
+	});
+
+	it('shows schema function docs in pipe context', () => {
+		setSchemaFunctions([{
+			name: 'getAzdEvents',
+			parameters: [
+				{ name: 'startDate', type: 'datetime' },
+				{ name: 'endDate', type: 'datetime' },
+			],
+			docString: 'Get events.',
+		}]);
+		const model = makeModel('let x = getAzdEvents(a, b)');
+		// Cursor inside parens on first arg
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 22 }, boxId);
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('getazdevents');
+		expect(result!.markdown).toContain('**startDate:datetime**');
+		expect(result!.markdown).toContain('Get events.');
+	});
+
+	it('shows description from docString in hover', () => {
+		setSchemaFunctions([{
+			name: 'myFunc',
+			parameters: [],
+			docString: 'Custom function docs here.',
+		}]);
+		const model = makeModel('myFunc()');
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 3 }, boxId);
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('Custom function docs here.');
+	});
+
+	it('shows body preview when docString is absent', () => {
+		setSchemaFunctions([{
+			name: 'myFunc',
+			parameters: [],
+			body: 'Events | take 10',
+		}]);
+		const model = makeModel('myFunc()');
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 3 }, boxId);
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('Events | take 10');
+	});
+
+	it('clamps active-arg index to last parameter for excess args', () => {
+		setSchemaFunctions([{
+			name: 'myFunc',
+			parameters: [{ name: 'a', type: 'long' }],
+		}]);
+		const model = makeModel('myFunc(x, y, z)');
+		// Cursor on third arg — function only has 1 param, should clamp to last (index 0)
+		const result = getHoverInfoAt(model, { lineNumber: 1, column: 14 }, boxId);
+		expect(result).toBeTruthy();
+		expect(result!.markdown).toContain('**a:long**');
 	});
 });

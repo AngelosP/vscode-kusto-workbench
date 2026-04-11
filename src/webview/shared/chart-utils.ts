@@ -360,3 +360,89 @@ export function measureLabelChars(labels: string[]): { avgLabelChars: number; ma
 	}
 	return { avgLabelChars: len ? total / len : 6, maxLabelChars: mx || 6 };
 }
+// ── Sankey cycle breaking ─────────────────────────────────────────────────────
+
+export interface SankeyLink {
+	source: string;
+	target: string;
+	value: number;
+}
+
+/**
+ * Remove the minimum set of links (back edges) needed to make a Sankey graph
+ * acyclic.  Uses DFS with adjacency lists sorted by descending value so that
+ * high-value edges are explored first and low-value edges are more likely to
+ * be identified as back edges and removed.
+ *
+ * Self-loops (source === target) are always removed.
+ *
+ * Returns the filtered link array and the count of dropped links.
+ */
+export function breakSankeyCycles<T extends SankeyLink>(links: T[]): { links: T[]; dropped: number } {
+	if (!links || links.length === 0) return { links: links || [], dropped: 0 };
+
+	// Remove self-loops first — they are always invalid in a DAG.
+	const selfLoops: T[] = [];
+	const remaining: T[] = [];
+	for (const l of links) {
+		if (l.source === l.target) selfLoops.push(l);
+		else remaining.push(l);
+	}
+
+	// Build adjacency list, sorted by descending value so DFS prefers keeping
+	// high-value edges and marks low-value edges as back edges.
+	const adj = new Map<string, T[]>();
+	for (const link of remaining) {
+		let list = adj.get(link.source);
+		if (!list) { list = []; adj.set(link.source, list); }
+		list.push(link);
+	}
+	for (const list of adj.values()) {
+		list.sort((a, b) => b.value - a.value);
+	}
+
+	// Collect all node names.
+	const nodes = new Set<string>();
+	for (const link of remaining) {
+		nodes.add(link.source);
+		nodes.add(link.target);
+	}
+
+	// DFS — WHITE=unvisited, GRAY=in current path, BLACK=finished.
+	const WHITE = 0, GRAY = 1, BLACK = 2;
+	const color = new Map<string, number>();
+	for (const n of nodes) color.set(n, WHITE);
+	const backEdges = new Set<T>();
+
+	// Iterative DFS to avoid stack overflow on large graphs.
+	for (const start of nodes) {
+		if (color.get(start) !== WHITE) continue;
+		const stack: { node: string; idx: number }[] = [{ node: start, idx: 0 }];
+		color.set(start, GRAY);
+
+		while (stack.length > 0) {
+			const frame = stack[stack.length - 1];
+			const neighbours = adj.get(frame.node) || [];
+			if (frame.idx < neighbours.length) {
+				const link = neighbours[frame.idx++];
+				const v = link.target;
+				const c = color.get(v);
+				if (c === GRAY) {
+					backEdges.add(link);
+				} else if (c === WHITE) {
+					color.set(v, GRAY);
+					stack.push({ node: v, idx: 0 });
+				}
+			} else {
+				color.set(frame.node, BLACK);
+				stack.pop();
+			}
+		}
+	}
+
+	const totalDropped = selfLoops.length + backEdges.size;
+	if (totalDropped === 0) return { links, dropped: 0 };
+
+	const filtered = remaining.filter(l => !backEdges.has(l));
+	return { links: filtered, dropped: totalDropped };
+}

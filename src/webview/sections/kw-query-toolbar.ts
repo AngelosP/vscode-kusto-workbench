@@ -195,6 +195,15 @@ export function onQueryEditorToolbarAction(boxId: any, action: any): void {
 		} catch (e) { console.error('[kusto]', e); }
 		return;
 	}
+	if (action === 'inlineFunction') {
+		try {
+			if (typeof window.__kustoCopyAsInlineFunctionForBoxId === 'function') {
+				window.__kustoCopyAsInlineFunctionForBoxId(boxId);
+				return;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		return;
+	}
 	if (action === 'autocomplete') {
 		try {
 			if (typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
@@ -782,6 +791,7 @@ const toolsDoubleToSingleIconSvg = '<svg viewBox="0 0 16 16" width="16" height="
 const toolsSingleToDoubleIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M3 9h4v4H3V9zm6-6h4v4H9V3z"/><path d="M7.5 7.5l1 1-1 1-1-1 1-1z"/></svg>';
 const toolsQualifyTablesIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M2 2h12v3H2V2zm0 4h12v3H2V6zm0 4h7v3H2v-3zm8 0h4v3h-4v-3z"/></svg>';
 const toolsSingleLineIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M2 8h12"/></svg>';
+const toolsInlineFunctionIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M5 2C3.5 2 3 3 3 4v2.5C3 7.5 2 8 2 8s1 .5 1 1.5V12c0 1 .5 2 2 2"/><path d="M11 2c1.5 0 2 1 2 2v2.5c0 1 1 1.5 1 1.5s-1 .5-1 1.5V12c0 1-.5 2-2 2"/></svg>';
 const toolsRenameIconSvg = '<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M10.5 2.5l3 3-8 8H2.5v-3l8-8z"/><path d="M8.5 4.5l3 3"/></svg>';
 
 // Overflow checkmark
@@ -1027,6 +1037,7 @@ export class KwQueryToolbar extends LitElement {
 			{ action: 'singleToDouble', label: 'Replace \' with "', iconSvg: toolsSingleToDoubleIconSvg },
 			{ action: 'qualifyTables', label: 'Fully qualify tables', iconSvg: toolsQualifyTablesIconSvg },
 			{ action: 'singleLine', label: 'Copy query as single line', iconSvg: toolsSingleLineIconSvg },
+			{ action: 'inlineFunction', label: 'Copy as inline function', iconSvg: toolsInlineFunctionIconSvg },
 			{ action: 'rename', label: 'Rename (F2)', iconSvg: toolsRenameIconSvg },
 		];
 		return html`
@@ -1150,6 +1161,7 @@ export class KwQueryToolbar extends LitElement {
 			{ action: 'singleToDouble', label: 'Replace \' with "', iconSvg: toolsSingleToDoubleIconSvg },
 			{ action: 'qualifyTables', label: 'Fully qualify tables', iconSvg: toolsQualifyTablesIconSvg },
 			{ action: 'singleLine', label: 'Copy query as single line', iconSvg: toolsSingleLineIconSvg },
+			{ action: 'inlineFunction', label: 'Copy as inline function', iconSvg: toolsInlineFunctionIconSvg },
 			{ action: 'rename', label: 'Rename (F2)', iconSvg: toolsRenameIconSvg },
 		];
 		return html`

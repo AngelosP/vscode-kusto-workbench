@@ -14,6 +14,7 @@ import {
 	__kustoPrettifyKusto,
 	__kustoSplitKustoStatementsBySemicolon,
 	__kustoPrettifyKustoTextWithSemicolonStatements,
+	__kustoConvertFunctionToInline,
 } from './prettify';
 import {
 	isDarkTheme,
@@ -87,7 +88,7 @@ const _win = window;
 // These replace _win.xxx bridge assignments for self-consumed functions.
 let __kustoEnableMarkersForModel: ((modelUri: any) => void) | null = null;
 let __kustoDisableMarkersForModel: ((modelUri: any) => void) | null = null;
-let __kustoGetHoverInfoAt: ((model: any, position: any) => any) | null = null;
+let __kustoGetHoverInfoAt: ((model: any, position: any, boxId?: string) => any) | null = null;
 let __kustoSchemaOperationQueue: Promise<any> = Promise.resolve();
 let __kustoSetMonacoKustoSchemaInternal: ((...args: any[]) => Promise<any>) | null = null;
 let __kustoSetDatabaseInContext: ((...args: any[]) => Promise<boolean>) | null = null;
@@ -291,6 +292,7 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 
 					// ── Caret docs loaded from monaco-caret-docs.ts ──
 					initCaretDocsDeps(monaco);
+
 					monaco.languages.setMonarchTokensProvider('kusto', {
 						keywords: [
 							'and', 'as', 'by', 'case', 'contains', 'count', 'dcount', 'distinct', 'extend', 'externaldata',
@@ -437,42 +439,38 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 					});
 
 
-					// Hover provider for diagnostics (shown on red underline hover).
-					monaco.languages.registerHoverProvider('kusto', {
-						provideHover: function (model: any, position: any) {
-							try {
-								const markers = monaco.editor.getModelMarkers({ owner: 'kusto-diagnostics', resource: model.uri });
-								if (!markers || !markers.length) return null;
-								const line = position.lineNumber;
-								const col = position.column;
-								const hit = markers.filter((m: any) =>
-									m.startLineNumber <= line && m.endLineNumber >= line &&
-									(m.startLineNumber < line || m.startColumn <= col) &&
-									(m.endLineNumber > line || m.endColumn >= col)
-								);
-								if (!hit.length) return null;
-								const m = hit[0];
-								return {
-									range: new monaco.Range(m.startLineNumber, m.startColumn, m.endLineNumber, m.endColumn),
-									contents: [{ value: '**Kusto syntax issue**\n\n' + String(m.message || '') }]
-								};
-							} catch {
-								return null;
-							}
-						}
-					});
-
 					// Hover docs for keywords/functions, including argument tracking for function calls.
 					monaco.languages.registerHoverProvider('kusto', {
 						provideHover: function (model: any, position: any) {
 							try {
-								const info = getHoverInfoAt(model, position);
-								if (!info) {
+								const modelUri = model.uri ? model.uri.toString() : '';
+								const bId = queryEditorBoxByModelUri[modelUri] || '';
+								const info = getHoverInfoAt(model, position, bId);
+								if (!info || info.__kustoSkipInHoverWidget) {
 									return null;
 								}
+								// Strip custom {{sig}}...{{/sig}} markers and render as styled HTML.
+								// Monaco's DOMPurify allows <span style="color:..."> when isTrusted + supportHtml.
+								// Only color, background-color, border-radius are whitelisted (each must end with ;).
+								const sigColor = 'var(--vscode-symbolIcon-functionForeground)';
+								const activeColor = 'var(--vscode-editorInfo-foreground)';
+								const cleaned = String(info.markdown || '')
+									.replace(/\{\{sig\}\}([\s\S]*?)\{\{\/sig\}\}/g, (_: any, inner: any) => {
+										const withActive = String(inner).replace(/\*\*([^*]+)\*\*/g,
+											'<span style="color:' + activeColor + ';">' + '**$1**' + '</span>');
+										return '<span style="color:' + sigColor + ';">' + withActive + '</span>';
+									});
+								// Split signature and description into separate content blocks
+								// so Monaco renders them with a visual separator between them.
+								const parts = cleaned.split(/\n\n/);
+								const contents = parts.filter(Boolean).map((p: string) => ({
+									value: p,
+									supportHtml: true,
+									isTrusted: true,
+								} as any));
 								return {
 									range: info.range || undefined,
-									contents: [{ value: info.markdown }]
+									contents
 								};
 							} catch {
 								return null;
@@ -653,7 +651,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 																databaseSchema = engineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === cached.database.toLowerCase());
 															}
 															if (databaseSchema) {
-																await worker.addDatabaseToSchema(models[0].uri.toString(), cached.clusterUrl, databaseSchema);
+																await worker.addDatabaseToSchema(modelKey, cached.clusterUrl, databaseSchema);
 															}
 														} catch (readdError) { console.error('[kusto]', readdError); }
 													}
@@ -677,7 +675,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 															ccDbSchema = ccEngineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === ccDatabase.toLowerCase());
 														}
 														if (ccDbSchema) {
-															await worker.addDatabaseToSchema(models[0].uri.toString(), ccClusterName, ccDbSchema);
+															await worker.addDatabaseToSchema(modelKey, ccClusterName, ccDbSchema);
 														} else {
 															ccEntry.status = 'error';
 															ccEntry.error = 'Failed to re-add after replace';
@@ -729,7 +727,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 													databaseSchema = engineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === databaseInContext.toLowerCase());
 												}
 												if (databaseSchema) {
-													await worker.addDatabaseToSchema(models[0].uri.toString(), clusterUrl, databaseSchema);
+													await worker.addDatabaseToSchema(modelKey, clusterUrl, databaseSchema);
 													__kustoSchemaTracker.recordAdd(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj, setAsContext);
 													__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
 													// For setAsContext, also try getSchema/setSchema for reliable context switch
@@ -1695,8 +1693,8 @@ function initQueryEditor(boxId: any) {
 			fixedOverflowWidgets: true,
 			// Monaco's built-in hover UI shows multiple stacked hover blocks (markers + providers)
 			// and an action bar ("View Problem") that isn't useful in our webview.
-			// We provide a single custom diagnostics tooltip instead.
-			hover: { enabled: false },
+			// We hide the action bar via CSS and keep our custom diagnostics tooltip for squiggles.
+			hover: { enabled: true, above: true },
 			// Autocomplete should be manual-only (Ctrl+Space / toolbar) unless explicitly triggered by code.
 			suggestOnTriggerCharacters: false,
 			quickSuggestions: false,
@@ -3109,6 +3107,69 @@ function initQueryEditor(boxId: any) {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
+		// Copy as inline function — converts .create[-or-alter] function to let statement.
+		try {
+			if (typeof _win.__kustoCopyAsInlineFunctionForBoxId !== 'function') {
+				_win.__kustoCopyAsInlineFunctionForBoxId = async (id: any) => {
+					try {
+						const ed = (typeof queryEditors !== 'undefined' && queryEditors) ? queryEditors[id] : null;
+						if (!ed) return;
+						let v = ed.getValue ? ed.getValue() : '';
+						// When the editor has multiple statements, operate on the statement under the cursor.
+						try {
+							const model = ed.getModel && ed.getModel();
+							const blocks = (model && typeof __kustoGetStatementBlocksFromModel === 'function')
+								? __kustoGetStatementBlocksFromModel(model)
+								: [];
+							const hasMultipleStatements = blocks && blocks.length > 1;
+							if (hasMultipleStatements && typeof __kustoExtractStatementTextAtCursor === 'function') {
+								const stmt = __kustoExtractStatementTextAtCursor(ed);
+								if (stmt) {
+									v = stmt;
+								} else {
+									try { postMessageToHost({ type: 'showInfo', message: 'Place the cursor inside a function definition to copy it as an inline function.' }); } catch (e) { console.error('[kusto]', e); }
+									return;
+								}
+							}
+						} catch (e) { console.error('[kusto]', e); }
+						const result = __kustoConvertFunctionToInline(v);
+						if (!result) {
+							try { postMessageToHost({ type: 'showInfo', message: 'No function definition found in this section.' }); } catch (e) { console.error('[kusto]', e); }
+							return;
+						}
+
+						// Copy to clipboard without modifying the editor.
+						try {
+							if (navigator.clipboard && typeof navigator.clipboard.writeText === 'function') {
+								await navigator.clipboard.writeText(result.text);
+								try { postMessageToHost({ type: 'showInfo', message: 'Inline function copied to clipboard.' }); } catch (e) { console.error('[kusto]', e); }
+								return;
+							}
+						} catch (e) { console.error('[kusto]', e); }
+
+						// Fallback path.
+						const ta = document.createElement('textarea');
+						ta.value = result.text;
+						ta.setAttribute('readonly', '');
+						ta.style.position = 'fixed';
+						ta.style.left = '-9999px';
+						ta.style.top = '0';
+						(document.body || document.documentElement).appendChild(ta);
+						ta.focus();
+						ta.select();
+						const ok = document.execCommand('copy');
+						try { ta.parentNode && ta.parentNode.removeChild(ta); } catch (e) { console.error('[kusto]', e); }
+						if (!ok) {
+							throw new Error('copy failed');
+						}
+						try { postMessageToHost({ type: 'showInfo', message: 'Inline function copied to clipboard.' }); } catch (e) { console.error('[kusto]', e); }
+					} catch {
+						try { postMessageToHost({ type: 'showInfo', message: 'Failed to copy inline function to clipboard.' }); } catch (e) { console.error('[kusto]', e); }
+					}
+				};
+			}
+		} catch (e) { console.error('[kusto]', e); }
+
 		// Ensure Ctrl+Space always triggers autocomplete inside the webview.
 		try {
 			editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.Space, () => {
@@ -3176,6 +3237,8 @@ function initQueryEditor(boxId: any) {
 			const escaped = escapeHtml(raw);
 			const html = escaped
 				.replace(/\r\n/g, '\n')
+				// Signature blocks: {{sig}}...{{/sig}} → styled span (must run before backtick/bold).
+				.replace(/\{\{sig\}\}([\s\S]*?)\{\{\/sig\}\}/g, '<span class=\"qe-sig\">$1</span>')
 				.replace(/`([^`]+)`/g, '<code>$1</code>')
 				// Show literal **...** markers while also bolding the content.
 				.replace(/\*\*([^*]+)\*\*/g, '<strong>**$1**</strong>');
@@ -3332,30 +3395,33 @@ function initQueryEditor(boxId: any) {
 						try {
 							let hasFocus = false;
 							try {
+								let knownUnfocused = false;
 								// If the overall VS Code/webview is unfocused, freeze regardless of Monaco state.
 								try {
 									if (typeof __kustoWebviewHasFocus === 'boolean' && __kustoWebviewHasFocus === false) {
-										hasFocus = false;
-										throw new Error('webview not focused');
+										knownUnfocused = true;
 									}
 								} catch (e) { console.error('[kusto]', e); }
 
 								// If the VS Code window/webview isn't focused, freeze regardless of Monaco internals.
-								try {
-									if (typeof document !== 'undefined' && typeof document.hasFocus === 'function' && !document.hasFocus()) {
-										hasFocus = false;
-										throw new Error('document not focused');
-									}
-								} catch (e) { console.error('[kusto]', e); }
+								if (!knownUnfocused) {
+									try {
+										if (typeof document !== 'undefined' && typeof document.hasFocus === 'function' && !document.hasFocus()) {
+											knownUnfocused = true;
+										}
+									} catch (e) { console.error('[kusto]', e); }
+								}
 
-								const dom = typeof editor.getDomNode === 'function' ? editor.getDomNode() : null;
-								const ae = (typeof document !== 'undefined') ? document.activeElement : null;
-								if (dom && ae && typeof dom.contains === 'function') {
-									hasFocus = dom.contains(ae);
-								} else {
-									hasFocus =
-									(typeof editor.hasTextFocus === 'function' && editor.hasTextFocus()) ||
-									(typeof editor.hasWidgetFocus === 'function' && editor.hasWidgetFocus());
+								if (!knownUnfocused) {
+									const dom = typeof editor.getDomNode === 'function' ? editor.getDomNode() : null;
+									const ae = (typeof document !== 'undefined') ? document.activeElement : null;
+									if (dom && ae && typeof dom.contains === 'function') {
+										hasFocus = dom.contains(ae);
+									} else {
+										hasFocus =
+										(typeof editor.hasTextFocus === 'function' && editor.hasTextFocus()) ||
+										(typeof editor.hasWidgetFocus === 'function' && editor.hasWidgetFocus());
+									}
 								}
 							} catch {
 								hasFocus =
@@ -3452,7 +3518,7 @@ function initQueryEditor(boxId: any) {
 					let info = null;
 					for (const p of probePositions) {
 						try {
-							info = getter(model, p);
+							info = getter(model, p, boxId);
 							if (info && info.markdown) {
 								// For control commands, do NOT keep docs visible after the caret moves outside
 								// the command/options region, even if probing hits ')' or nearby characters.

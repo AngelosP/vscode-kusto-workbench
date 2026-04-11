@@ -831,3 +831,144 @@ export function __kustoPrettifyKustoTextWithSemicolonStatements(text: any) {
 	return outLines.join('\n');
 }
 
+/**
+ * Converts a `.create[-or-alter] function` / `.alter function` control command
+ * into an inline `let` statement.  Returns `null` when the input is not a
+ * recognised function definition or when the required parts (name, params, body)
+ * cannot be extracted.
+ */
+export function __kustoConvertFunctionToInline(input: any): { name: string; text: string } | null {
+	try {
+		const raw = String(input ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+		const trimmed = raw.trim();
+		if (!trimmed) return null;
+
+		// ── 1. Detect function-defining command ──────────────────────────
+		const cmdMatch = /^\s*\.(create-or-alter|create|alter)\s+function\b/i.exec(trimmed);
+		if (!cmdMatch) return null;
+
+		let rest = trimmed.slice(cmdMatch[0].length);
+
+		// Guard: `.alter function docstring` / `.alter function folder` are
+		// metadata-only commands – they have no (params){body} structure.
+		if (cmdMatch[1].toLowerCase() === 'alter' && /^\s*(docstring|folder)\b/i.test(rest)) return null;
+
+		// ── 2. Strip optional `ifnotexists` ──────────────────────────────
+		rest = rest.replace(/^\s+ifnotexists\b/i, '');
+
+		// ── 3. Split at first top-level `{` ──────────────────────────────
+		let braceIdx = -1;
+		{
+			let inS = false, inD = false, inLC = false, inBC = false, inTB = false;
+			for (let i = 0; i < rest.length; i++) {
+				const ch = rest[i];
+				const next = i + 1 < rest.length ? rest[i + 1] : '';
+				if (inLC) { if (ch === '\n') inLC = false; continue; }
+				if (inBC) { if (ch === '*' && next === '/') { inBC = false; i++; } continue; }
+				if (inTB) { if (ch === '`' && next === '`' && i + 2 < rest.length && rest[i + 2] === '`') { inTB = false; i += 2; } continue; }
+				if (!inS && !inD && ch === '`' && next === '`' && i + 2 < rest.length && rest[i + 2] === '`') { inTB = true; i += 2; continue; }
+				if (!inS && !inD && ch === '/' && next === '/') { inLC = true; i++; continue; }
+				if (!inS && !inD && ch === '/' && next === '*') { inBC = true; i++; continue; }
+				if (!inD && ch === "'") { const p = i > 0 ? rest[i - 1] : ''; if (p !== '\\') inS = !inS; continue; }
+				if (!inS && ch === '"') { const p = i > 0 ? rest[i - 1] : ''; if (p !== '\\') inD = !inD; continue; }
+				if (inS || inD) continue;
+				if (ch === '{') { braceIdx = i; break; }
+			}
+		}
+		if (braceIdx < 0) return null; // no body → not a full function definition
+
+		const beforeBrace = rest.slice(0, braceIdx).trim();
+		const afterBraceRaw = rest.slice(braceIdx + 1); // everything after the opening '{'
+
+		// ── 4. Extract body (balanced brace scan) ────────────────────────
+		let bodyEnd = -1;
+		{
+			let depth = 1, inS = false, inD = false, inLC = false, inBC = false, inTB = false;
+			for (let i = 0; i < afterBraceRaw.length; i++) {
+				const ch = afterBraceRaw[i];
+				const next = i + 1 < afterBraceRaw.length ? afterBraceRaw[i + 1] : '';
+				if (inLC) { if (ch === '\n') inLC = false; continue; }
+				if (inBC) { if (ch === '*' && next === '/') { inBC = false; i++; } continue; }
+				if (inTB) { if (ch === '`' && next === '`' && i + 2 < afterBraceRaw.length && afterBraceRaw[i + 2] === '`') { inTB = false; i += 2; } continue; }
+				if (!inS && !inD && ch === '`' && next === '`' && i + 2 < afterBraceRaw.length && afterBraceRaw[i + 2] === '`') { inTB = true; i += 2; continue; }
+				if (!inS && !inD && ch === '/' && next === '/') { inLC = true; i++; continue; }
+				if (!inS && !inD && ch === '/' && next === '*') { inBC = true; i++; continue; }
+				if (!inD && ch === "'") { const p = i > 0 ? afterBraceRaw[i - 1] : ''; if (p !== '\\') inS = !inS; continue; }
+				if (!inS && ch === '"') { const p = i > 0 ? afterBraceRaw[i - 1] : ''; if (p !== '\\') inD = !inD; continue; }
+				if (inS || inD) continue;
+				if (ch === '{') depth++;
+				else if (ch === '}') { depth--; if (depth === 0) { bodyEnd = i; break; } }
+			}
+		}
+		if (bodyEnd < 0) return null; // unbalanced braces
+
+		const bodyRaw = afterBraceRaw.slice(0, bodyEnd);
+
+		// ── 5. Skip optional `with(...)` in beforeBrace ──────────────────
+		let sigText = beforeBrace;
+		const withIdx = __kustoFindTopLevelKeyword(beforeBrace, 'with');
+		if (withIdx >= 0) {
+			const afterWithWord = beforeBrace.slice(withIdx + 4);
+			const m = afterWithWord.match(/^\s*\(/);
+			if (m) {
+				const parenContent = afterWithWord.slice(m[0].length);
+				let depth = 1, inS = false, inD = false, k = 0;
+				for (; k < parenContent.length; k++) {
+					const c = parenContent[k];
+					const prev = k > 0 ? parenContent[k - 1] : '';
+					if (!inD && c === "'") { if (prev !== '\\') inS = !inS; continue; }
+					if (!inS && c === '"') { if (prev !== '\\') inD = !inD; continue; }
+					if (inS || inD) continue;
+					if (c === '(') depth++;
+					else if (c === ')') { depth--; if (depth === 0) { k++; break; } }
+				}
+				sigText = parenContent.slice(k).trim();
+			}
+		}
+
+		// ── 6. Extract function name and parameter list ──────────────────
+		const openParenIdx = (() => {
+			let inS = false, inD = false;
+			for (let i = 0; i < sigText.length; i++) {
+				const c = sigText[i];
+				const prev = i > 0 ? sigText[i - 1] : '';
+				if (!inD && c === "'") { if (prev !== '\\') inS = !inS; continue; }
+				if (!inS && c === '"') { if (prev !== '\\') inD = !inD; continue; }
+				if (inS || inD) continue;
+				if (c === '(') return i;
+			}
+			return -1;
+		})();
+		if (openParenIdx < 0) return null; // no parameter list
+
+		const funcName = sigText.slice(0, openParenIdx).trim();
+		if (!funcName) return null;
+
+		// Extract params (balanced-paren scan)
+		const afterOpen = sigText.slice(openParenIdx + 1);
+		let paramEnd = -1;
+		{
+			let depth = 1, inS = false, inD = false;
+			for (let k = 0; k < afterOpen.length; k++) {
+				const c = afterOpen[k];
+				const prev = k > 0 ? afterOpen[k - 1] : '';
+				if (!inD && c === "'") { if (prev !== '\\') inS = !inS; continue; }
+				if (!inS && c === '"') { if (prev !== '\\') inD = !inD; continue; }
+				if (inS || inD) continue;
+				if (c === '(') depth++;
+				else if (c === ')') { depth--; if (depth === 0) { paramEnd = k; break; } }
+			}
+		}
+		if (paramEnd < 0) return null; // unbalanced parens
+
+		const params = afterOpen.slice(0, paramEnd);
+
+		// ── 7. Assemble inline let statement ─────────────────────────────
+		// Preserve body formatting verbatim: keep newlines, whitespace, comments as-is.
+		const text = `let ${funcName} = (${params}) {${bodyRaw}};`;
+		return { name: funcName, text };
+	} catch {
+		return null;
+	}
+}
+

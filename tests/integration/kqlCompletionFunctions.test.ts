@@ -224,6 +224,9 @@ suite('KQL completions - functions list', () => {
 		const findCallSrc = extractConstAssignmentStatement(monacoSource, 'findEnclosingFunctionCall');
 		const computeArgIndexSrc = extractConstAssignmentStatement(monacoSource, 'computeArgIndex');
 		const buildSignatureSrc = extractConstAssignmentStatement(monacoSource, 'buildFunctionSignatureMarkdown');
+		const schemaFnDocSrc = extractConstAssignmentStatement(monacoSource, 'getSchemaFunctionDoc');
+		const abbreviateTypeSrc = extractConstAssignmentStatement(monacoSource, '_abbreviateType');
+		const schemaTableDocSrc = extractConstAssignmentStatement(monacoSource, 'getSchemaTableDoc');
 		const getHoverSrc = extractConstAssignmentStatement(monacoSource, 'getHoverInfoAt');
 		const isIdentCharSrc = extractConstAssignmentStatement(monacoSource, 'isIdentChar');
 		const isIdentStartSrc = extractConstAssignmentStatement(monacoSource, 'isIdentStart');
@@ -267,6 +270,9 @@ suite('KQL completions - functions list', () => {
 		vm.runInNewContext(computeArgIndexSrc, sandbox, { filename: 'monaco.computeArgIndex.extract.js' });
 		vm.runInNewContext(buildSignatureSrc, sandbox, { filename: 'monaco.buildFunctionSignatureMarkdown.extract.js' });
 		vm.runInNewContext(ensureMergeSrc, sandbox, { filename: 'monaco.ensureMerge.extract.js' });
+		vm.runInNewContext(schemaFnDocSrc, sandbox, { filename: 'monaco.getSchemaFunctionDoc.extract.js' });
+		vm.runInNewContext(abbreviateTypeSrc, sandbox, { filename: 'monaco._abbreviateType.extract.js' });
+		vm.runInNewContext(schemaTableDocSrc, sandbox, { filename: 'monaco.getSchemaTableDoc.extract.js' });
 
 		const exportedHover = getHoverSrc.replace(/const\s+getHoverInfoAt\s*=\s*/, 'exports.getHoverInfoAt = ');
 		vm.runInNewContext(exportedHover, sandbox, { filename: 'monaco.getHoverInfoAt.extract.js' });
