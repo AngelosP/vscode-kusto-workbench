@@ -20,7 +20,7 @@ import {
 	importConnectionsFromXmlFile,
 	__kustoRefreshAllDataSourceDropdowns,
 } from '../core/section-factory.js';
-import { __kustoOpenShareModal } from './kw-query-toolbar.js';
+import { __kustoOpenShareModal, getRunModeForPersistence } from './kw-query-toolbar.js';
 import { optimizeQueryWithCopilot, acceptOptimizations } from './query-execution.controller.js';
 import { QueryConnectionController } from './query-connection.controller.js';
 import { QueryExecutionController } from './query-execution.controller.js';
@@ -263,6 +263,9 @@ export class KwQuerySection extends LitElement {
 							@click=${(e: Event) => { callGlobal('toggleRunMenu', id); e.stopPropagation(); }}
 							aria-label="Run query options" title="Run query options">${downChevronSvg}</button>
 						<div class="unified-btn-split-menu" id="${id}_run_menu" role="menu">
+							<div class="unified-btn-split-menu-item unified-btn-split-menu-fn" id="${id}_run_menu_runFunction" role="menuitem"
+								style="display:none"
+								@click=${() => callGlobal('__kustoApplyRunModeFromMenu', id, 'runFunction')}>Run Function</div>
 							<div class="unified-btn-split-menu-item" role="menuitem"
 								@click=${() => callGlobal('__kustoApplyRunModeFromMenu', id, 'plain')}>Run Query</div>
 							<div class="unified-btn-split-menu-item" role="menuitem"
@@ -1256,7 +1259,7 @@ export class KwQuerySection extends LitElement {
 		let resultJson = '';
 		try { resultJson = String(pState.queryResultJsonByBoxId?.[b] || ''); } catch (e) { console.error('[kusto]', e); }
 
-		const runMode = (window.runModesByBoxId?.[b]) || 'take100';
+		const runMode = getRunModeForPersistence(b);
 
 		const cacheEnabledEl = document.getElementById(b + '_cache_enabled') as HTMLInputElement | null;
 		const cacheValueEl = document.getElementById(b + '_cache_value') as HTMLInputElement | null;

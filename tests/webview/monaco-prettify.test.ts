@@ -9,6 +9,9 @@ import {
 	__kustoSplitKustoStatementsBySemicolon,
 	__kustoPrettifyKustoTextWithSemicolonStatements,
 	__kustoConvertFunctionToInline,
+	__kustoParseFunction,
+	__kustoHasFunctionDefinition,
+	__kustoParseParamList,
 } from '../../src/webview/monaco/prettify.js';
 
 // ── __kustoToSingleLineKusto ──────────────────────────────────────────────────
@@ -1086,5 +1089,168 @@ describe('__kustoConvertFunctionToInline', () => {
 		const result = __kustoConvertFunctionToInline(input);
 		expect(result).not.toBeNull();
 		expect(result!.name).toBe('MyFunc');
+	});
+});
+
+// ── __kustoParseFunction ──────────────────────────────────────────────────────
+
+describe('__kustoParseFunction', () => {
+	it('parses basic .create function into name, rawParams, body', () => {
+		const result = __kustoParseFunction('.create function MyFunc(a:string) { T | where x > 1 }');
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyFunc');
+		expect(result!.rawParams).toBe('a:string');
+		expect(result!.body).toBe(' T | where x > 1 ');
+	});
+
+	it('parses .create-or-alter function with multi-line body', () => {
+		const result = __kustoParseFunction('.create-or-alter function MyFunc(threshold:long, name:string) {\nMyTable\n| where Value > threshold\n}');
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyFunc');
+		expect(result!.rawParams).toBe('threshold:long, name:string');
+		expect(result!.body).toContain('MyTable');
+		expect(result!.body).toContain('| where Value > threshold');
+	});
+
+	it('strips with() clause and returns clean name/params', () => {
+		const result = __kustoParseFunction('.create-or-alter function with (folder="Helpers", docstring="My helper") MyFunc(a:string) { T | count }');
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyFunc');
+		expect(result!.rawParams).toBe('a:string');
+	});
+
+	it('handles empty parameter list', () => {
+		const result = __kustoParseFunction('.create function MyFunc() { T }');
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyFunc');
+		expect(result!.rawParams).toBe('');
+	});
+
+	it('handles tabular input params with nested parens', () => {
+		const result = __kustoParseFunction('.create function MyView(T:(col1:string, col2:int)) { T | count }');
+		expect(result).not.toBeNull();
+		expect(result!.name).toBe('MyView');
+		expect(result!.rawParams).toBe('T:(col1:string, col2:int)');
+	});
+
+	it('preserves default parameter values in rawParams', () => {
+		const result = __kustoParseFunction('.create function MyFunc(threshold:long = 100) { T }');
+		expect(result).not.toBeNull();
+		expect(result!.rawParams).toBe('threshold:long = 100');
+	});
+
+	it('returns null for non-function input', () => {
+		expect(__kustoParseFunction('T | where x > 5')).toBeNull();
+		expect(__kustoParseFunction('')).toBeNull();
+		expect(__kustoParseFunction(null)).toBeNull();
+		expect(__kustoParseFunction(undefined)).toBeNull();
+	});
+
+	it('returns null for .alter function docstring / folder', () => {
+		expect(__kustoParseFunction('.alter function docstring MyFunc "new docs"')).toBeNull();
+		expect(__kustoParseFunction('.alter function folder MyFunc "new/folder"')).toBeNull();
+	});
+
+	it('returns null when body is missing', () => {
+		expect(__kustoParseFunction('.create function MyFunc(a:string)')).toBeNull();
+	});
+});
+
+// ── __kustoHasFunctionDefinition ──────────────────────────────────────────────
+
+describe('__kustoHasFunctionDefinition', () => {
+	it('returns true for .create function', () => {
+		expect(__kustoHasFunctionDefinition('.create function MyFunc(a:string) { T }')).toBe(true);
+	});
+
+	it('returns true for .create-or-alter function', () => {
+		expect(__kustoHasFunctionDefinition('.create-or-alter function MyFunc(a:string) { T }')).toBe(true);
+	});
+
+	it('returns true for .alter function', () => {
+		expect(__kustoHasFunctionDefinition('.alter function MyFunc(x:int) { T }')).toBe(true);
+	});
+
+	it('returns true for function definition with leading whitespace/newlines', () => {
+		expect(__kustoHasFunctionDefinition('\n  .create function MyFunc() { T }')).toBe(true);
+	});
+
+	it('returns true for multi-line text with function in middle', () => {
+		expect(__kustoHasFunctionDefinition('// comment\n.create function MyFunc() { T }')).toBe(true);
+	});
+
+	it('returns false for .alter function docstring', () => {
+		expect(__kustoHasFunctionDefinition('.alter function docstring MyFunc "new docs"')).toBe(false);
+	});
+
+	it('returns false for .alter function folder', () => {
+		expect(__kustoHasFunctionDefinition('.alter function folder MyFunc "new/folder"')).toBe(false);
+	});
+
+	it('returns false for .show tables', () => {
+		expect(__kustoHasFunctionDefinition('.show tables')).toBe(false);
+	});
+
+	it('returns false for plain query', () => {
+		expect(__kustoHasFunctionDefinition('T | where x > 5')).toBe(false);
+	});
+
+	it('returns false for null/undefined/empty', () => {
+		expect(__kustoHasFunctionDefinition(null)).toBe(false);
+		expect(__kustoHasFunctionDefinition(undefined)).toBe(false);
+		expect(__kustoHasFunctionDefinition('')).toBe(false);
+	});
+
+	it('is case-insensitive', () => {
+		expect(__kustoHasFunctionDefinition('.CREATE-OR-ALTER FUNCTION MyFunc() { T }')).toBe(true);
+	});
+});
+
+// ── __kustoParseParamList ─────────────────────────────────────────────────────
+
+describe('__kustoParseParamList', () => {
+	it('parses simple params', () => {
+		const result = __kustoParseParamList('a:string, b:long');
+		expect(result).toEqual([
+			{ name: 'a', type: 'string' },
+			{ name: 'b', type: 'long' },
+		]);
+	});
+
+	it('parses tabular param with nested parens', () => {
+		const result = __kustoParseParamList('T:(col1:string, col2:int)');
+		expect(result).toEqual([
+			{ name: 'T', type: '(col1:string, col2:int)' },
+		]);
+	});
+
+	it('parses params with default values', () => {
+		const result = __kustoParseParamList('threshold:long = 100, label:string = "default"');
+		expect(result).toEqual([
+			{ name: 'threshold', type: 'long', defaultValue: '100' },
+			{ name: 'label', type: 'string', defaultValue: '"default"' },
+		]);
+	});
+
+	it('returns empty array for empty string', () => {
+		expect(__kustoParseParamList('')).toEqual([]);
+	});
+
+	it('parses single param', () => {
+		const result = __kustoParseParamList('x:int');
+		expect(result).toEqual([{ name: 'x', type: 'int' }]);
+	});
+
+	it('handles mixed simple and tabular params', () => {
+		const result = __kustoParseParamList('T:(col1:string), threshold:long = 50');
+		expect(result).toEqual([
+			{ name: 'T', type: '(col1:string)' },
+			{ name: 'threshold', type: 'long', defaultValue: '50' },
+		]);
+	});
+
+	it('handles null/undefined gracefully', () => {
+		expect(__kustoParseParamList(null as any)).toEqual([]);
+		expect(__kustoParseParamList(undefined as any)).toEqual([]);
 	});
 });

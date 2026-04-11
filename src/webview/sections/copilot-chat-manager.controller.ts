@@ -13,7 +13,7 @@ import {
 	__kustoSetSectionName,
 } from '../core/section-factory.js';
 import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId } from './query-execution.controller.js';
-import { getRunMode } from './kw-query-toolbar.js';
+import { getRunModeForPersistence } from './kw-query-toolbar.js';
 import { __kustoPrettifyKustoTextWithSemicolonStatements } from '../monaco/prettify.js';
 
 // ── Host interface (avoids circular import with kw-query-section.ts) ──────────
@@ -339,7 +339,7 @@ export class CopilotChatManagerController implements ReactiveController {
 					connectionId: String(connectionId || ''), database: String(database || ''),
 					currentQuery: String(currentQuery || ''), request: String(text || ''),
 					modelId: String(modelId || ''), enabledTools,
-					queryMode: getRunMode(boxId) || 'take100',
+					queryMode: getRunModeForPersistence(boxId) || 'take100',
 					requireToolUse: requireToolUse || undefined
 				});
 			} catch { chatEl.setRunning(false, 'Failed to start Copilot request.'); }

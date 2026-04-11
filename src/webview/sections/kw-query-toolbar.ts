@@ -12,6 +12,7 @@ import { LitElement, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { classMap } from 'lit/directives/class-map.js';
 import { getRunModeLabelText } from '../shared/comparisonUtils.js';
+import { __kustoHasFunctionDefinition } from '../monaco/prettify.js';
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { getResultsState } from '../core/results-state.js';
 import {
@@ -695,6 +696,43 @@ export function toggleRunMenu(boxId: any): void {
 	const next = menu.style.display === 'block' ? 'none' : 'block';
 	closeAllRunMenus();
 	menu.style.display = next;
+}
+
+// ── Function definition detection (shared by Copy as Inline Function and Run Function) ──
+
+const functionDetectedByBoxId: Record<string, boolean> = {};
+export const functionRunDialogOpenByBoxId: Record<string, boolean> = {};
+
+/**
+ * Call on every content change (and initial load) for a query section box.
+ * Detects whether the editor text contains a function-defining command and
+ * auto-flips the run mode to `runFunction` on false→true transitions.
+ */
+export function updateFunctionDetection(boxId: any, text: any): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const prev = functionDetectedByBoxId[id] ?? false;
+	const now = __kustoHasFunctionDefinition(text);
+	if (now === prev) return; // no change — skip DOM work
+	functionDetectedByBoxId[id] = now;
+
+	// Show/hide the "Run Function" menu item.
+	const menuItem = document.getElementById(id + '_run_menu_runFunction');
+	if (menuItem) menuItem.style.display = now ? '' : 'none';
+
+	// Auto-flip on state transitions.
+	if (now && !prev) {
+		setRunMode(id, 'runFunction');
+	}
+	if (!now && prev && getRunMode(id) === 'runFunction') {
+		setRunMode(id, 'take100');
+	}
+}
+
+/** Returns the user's "real" run mode for persistence (never `runFunction`). */
+export function getRunModeForPersistence(boxId: any): string {
+	const mode = getRunMode(boxId);
+	return mode === 'runFunction' ? 'take100' : mode;
 }
 
 const __kustoEventIsInsideDropdownUi = (ev: any): boolean => {

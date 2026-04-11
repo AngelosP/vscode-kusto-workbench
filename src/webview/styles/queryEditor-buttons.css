@@ -255,6 +255,10 @@
 			background: var(--vscode-list-hoverBackground);
 		}
 
+		.unified-btn-split-menu-fn {
+			border-bottom: 1px solid var(--vscode-panel-border, rgba(128,128,128,.35));
+		}
+
 		/* ==========================================================================
 		   END UNIFIED BUTTON SYSTEM
 		   ========================================================================== */

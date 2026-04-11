@@ -33,12 +33,15 @@ import {
 	__kustoGetCurrentClusterUrlForBox, __kustoGetCurrentDatabaseForBox, __kustoFindFavorite,
 	__kustoLog,
 } from '../core/section-factory';
-import { getRunMode, setRunMode, closeRunMenu } from './kw-query-toolbar';
+import { getRunMode, setRunMode, closeRunMenu, functionRunDialogOpenByBoxId } from './kw-query-toolbar';
 import { getResultsState, ensureResultsStateMap } from '../core/results-state';
 import {
 	optimizationMetadataByBoxId, queryEditors, pendingFavoriteSelectionByBoxId,
 	queryExecutionTimers, schemaByBoxId, queryBoxes, favoritesModeByBoxId,
 } from '../core/state';
+import { __kustoParseFunction, __kustoParseParamList } from '../monaco/prettify';
+import type { FunctionParam } from '../components/kw-function-params-dialog';
+import '../components/kw-function-params-dialog';
 
 export const lastRunCacheEnabledByBoxId: Record<string, boolean> = {};
 
@@ -1252,6 +1255,11 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 
 export function executeQuery(boxId: any, mode?: any) {
 	const effectiveMode = mode || getRunMode(boxId);
+	// Run Function mode — divert to the dedicated async handler.
+	if (effectiveMode === 'runFunction') {
+		executeRunFunction(String(boxId || '').trim());
+		return;
+	}
 	try { if (typeof _win.__kustoClearAutoFindInQueryEditor === 'function') _win.__kustoClearAutoFindInQueryEditor(boxId); } catch (e) { console.error('[kusto]', e); }
 	const __kustoExtractStatementAtCursor = (editor: any) => {
 		try { if (typeof _win.__kustoExtractStatementTextAtCursor === 'function') return _win.__kustoExtractStatementTextAtCursor(editor); } catch (e) { console.error('[kusto]', e); }
@@ -1374,6 +1382,109 @@ export function executeQuery(boxId: any, mode?: any) {
 	try { lastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled; } catch (e) { console.error('[kusto]', e); }
 	pState.lastExecutedBox = boxId;
 	postMessageToHost({ type: 'executeQuery', query, queryMode: effectiveMode, connectionId, database, boxId, cacheEnabled, cacheValue, cacheUnit });
+}
+
+// ── executeQueryDirect — execute an arbitrary query string for a given box ─────
+
+export function executeQueryDirect(boxId: string, query: string): void {
+	const id = String(boxId || '').trim();
+	if (!id || !query.trim()) return;
+	const connectionId = __kustoGetConnectionId(id);
+	const database = __kustoGetDatabase(id);
+	if (!connectionId) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); } return; }
+	if (!database) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); } return; }
+	__kustoLog(id, 'run.start', 'Executing inline function query', { connectionId, database, queryMode: 'plain' });
+	setQueryExecuting(id, true);
+	closeRunMenu(id);
+	pState.lastExecutedBox = id;
+	postMessageToHost({ type: 'executeQuery', query, queryMode: 'plain', connectionId, database, boxId: id, cacheEnabled: false, cacheValue: 1, cacheUnit: 'h' });
+}
+
+// ── executeRunFunction — parse function def, collect params, assemble, run ─────
+
+const lastParamValuesByBoxId: Record<string, string[]> = {};
+
+function showFunctionParamsDialog(functionName: string, params: FunctionParam[], boxId: string): Promise<string[] | null> {
+	return new Promise(resolve => {
+		const dialog = document.createElement('kw-function-params-dialog') as import('../components/kw-function-params-dialog').KwFunctionParamsDialog;
+		document.body.appendChild(dialog);
+		dialog.show(functionName, params, lastParamValuesByBoxId[boxId]);
+		dialog.addEventListener('function-run', ((e: CustomEvent) => { resolve(e.detail.values); dialog.remove(); }) as EventListener);
+		dialog.addEventListener('function-cancel', () => { resolve(null); dialog.remove(); });
+	});
+}
+
+export async function executeRunFunction(boxId: string): Promise<void> {
+	const id = boxId.trim();
+	if (!id) return;
+	// Guard against re-entrance while the dialog is open.
+	if (functionRunDialogOpenByBoxId[id]) return;
+
+	try { if (typeof _win.__kustoClearAutoFindInQueryEditor === 'function') _win.__kustoClearAutoFindInQueryEditor(id); } catch (e) { console.error('[kusto]', e); }
+
+	const editor = queryEditors[id] ?? null;
+	if (!editor) return;
+	let text = editor.getValue ? editor.getValue() : '';
+
+	// Handle multi-statement editors — extract the statement under the cursor.
+	try {
+		const model = editor.getModel && editor.getModel();
+		const blocks = (model && typeof _win.__kustoGetStatementBlocksFromModel === 'function')
+			? _win.__kustoGetStatementBlocksFromModel(model)
+			: [];
+		if (blocks && blocks.length > 1 && typeof _win.__kustoExtractStatementTextAtCursor === 'function') {
+			const stmt = _win.__kustoExtractStatementTextAtCursor(editor);
+			if (stmt) {
+				text = stmt;
+			} else {
+				try { postMessageToHost({ type: 'showInfo', message: 'Place the cursor inside a function definition to run it.' }); } catch (e) { console.error('[kusto]', e); }
+				return;
+			}
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	const parsed = __kustoParseFunction(text);
+	if (!parsed) {
+		try { postMessageToHost({ type: 'showInfo', message: 'No function definition found in this section.' }); } catch (e) { console.error('[kusto]', e); }
+		return;
+	}
+
+	const rawParams = parsed.rawParams.trim();
+	// No parameters — execute immediately without dialog.
+	if (!rawParams) {
+		const query = `let ${parsed.name} = () {${parsed.body}};\n${parsed.name}()`;
+		executeQueryDirect(id, query);
+		return;
+	}
+
+	// Parse parameter list and show dialog.
+	const paramList = __kustoParseParamList(rawParams);
+	if (!paramList.length) {
+		const query = `let ${parsed.name} = (${rawParams}) {${parsed.body}};\n${parsed.name}()`;
+		executeQueryDirect(id, query);
+		return;
+	}
+
+	functionRunDialogOpenByBoxId[id] = true;
+	try {
+		const values = await showFunctionParamsDialog(parsed.name, paramList, id);
+		if (!values) return; // cancelled
+		lastParamValuesByBoxId[id] = [...values];
+		// Auto-wrap tabular arguments in () if user didn't already.
+		const args = values.map((v, i) => {
+			const isTabular = paramList[i]?.type?.startsWith('(');
+			const trimmed = v.trim();
+			if (isTabular && trimmed && !trimmed.startsWith('(')) return `(${trimmed})`;
+			return v;
+		});
+		const argsStr = args.join(', ');
+		const query = `let ${parsed.name} = (${rawParams}) {${parsed.body}};\n${parsed.name}(${argsStr})`;
+		executeQueryDirect(id, query);
+	} catch (e) {
+		console.error('[kusto]', e);
+	} finally {
+		functionRunDialogOpenByBoxId[id] = false;
+	}
 }
 
 // ── Window bridges (module-scope, assigned at load time) ──────────────────────

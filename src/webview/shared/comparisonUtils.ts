@@ -362,6 +362,7 @@ export function getRunModeLabelText(mode: any): string {
 	switch ((mode || '').toLowerCase()) {
 		case 'plain': return 'Run Query';
 		case 'sample100': return 'Run Query (sample 100)';
+		case 'runfunction': return 'Run Function';
 		case 'take100':
 		default: return 'Run Query (take 100)';
 	}

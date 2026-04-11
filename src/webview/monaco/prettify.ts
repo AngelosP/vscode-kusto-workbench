@@ -832,12 +832,32 @@ export function __kustoPrettifyKustoTextWithSemicolonStatements(text: any) {
 }
 
 /**
- * Converts a `.create[-or-alter] function` / `.alter function` control command
- * into an inline `let` statement.  Returns `null` when the input is not a
- * recognised function definition or when the required parts (name, params, body)
- * cannot be extracted.
+ * Cheap detection: returns `true` when the input text contains a function-defining
+ * command (`.create function`, `.create-or-alter function`, `.alter function`).
+ * Does NOT parse — only regex detection, suitable for content-change listeners.
  */
-export function __kustoConvertFunctionToInline(input: any): { name: string; text: string } | null {
+export function __kustoHasFunctionDefinition(input: any): boolean {
+	try {
+		const text = String(input ?? '');
+		if (!text) return false;
+		const match = /^\s*\.(create-or-alter|create|alter)\s+function\b/im.exec(text);
+		if (!match) return false;
+		// Guard: `.alter function docstring/folder` are metadata-only commands.
+		if (match[1].toLowerCase() === 'alter') {
+			const rest = text.slice(match.index + match[0].length);
+			if (/^\s*(docstring|folder)\b/i.test(rest)) return false;
+		}
+		return true;
+	} catch { return false; }
+}
+
+/**
+ * Parses a `.create[-or-alter] function` / `.alter function` control command
+ * into its constituent parts: name, raw parameter text, and body.
+ * Returns `null` when the input is not a recognised function definition or
+ * when the required parts cannot be extracted.
+ */
+export function __kustoParseFunction(input: any): { name: string; rawParams: string; body: string } | null {
 	try {
 		const raw = String(input ?? '').replace(/\r\n/g, '\n').replace(/\r/g, '\n');
 		const trimmed = raw.trim();
@@ -963,12 +983,73 @@ export function __kustoConvertFunctionToInline(input: any): { name: string; text
 
 		const params = afterOpen.slice(0, paramEnd);
 
-		// ── 7. Assemble inline let statement ─────────────────────────────
-		// Preserve body formatting verbatim: keep newlines, whitespace, comments as-is.
-		const text = `let ${funcName} = (${params}) {${bodyRaw}};`;
-		return { name: funcName, text };
+		return { name: funcName, rawParams: params, body: bodyRaw };
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * Parses a raw Kusto parameter list string into structured param descriptors.
+ * Splits by top-level commas (respecting nested parens for tabular input types),
+ * then extracts name, type, and optional default value from each token.
+ */
+export function __kustoParseParamList(rawParams: string): Array<{ name: string; type: string; defaultValue?: string }> {
+	try {
+		const text = (rawParams ?? '').trim();
+		if (!text) return [];
+		// Split by top-level commas (respecting nested parens).
+		const tokens: string[] = [];
+		let depth = 0, start = 0;
+		for (let i = 0; i <= text.length; i++) {
+			if (i === text.length) { tokens.push(text.slice(start)); break; }
+			const ch = text[i];
+			if (ch === '(') depth++;
+			else if (ch === ')') depth--;
+			else if (ch === ',' && depth === 0) { tokens.push(text.slice(start, i)); start = i + 1; }
+		}
+		const result: Array<{ name: string; type: string; defaultValue?: string }> = [];
+		for (const tok of tokens) {
+			const t = tok.trim();
+			if (!t) continue;
+			// Find first top-level `:` (not inside parens).
+			let colonIdx = -1;
+			let d = 0;
+			for (let i = 0; i < t.length; i++) {
+				if (t[i] === '(') d++;
+				else if (t[i] === ')') d--;
+				else if (t[i] === ':' && d === 0) { colonIdx = i; break; }
+			}
+			if (colonIdx < 0) { result.push({ name: t, type: '' }); continue; }
+			const name = t.slice(0, colonIdx).trim();
+			const typeAndDefault = t.slice(colonIdx + 1).trim();
+			// Find first top-level `=` (not inside parens).
+			let eqIdx = -1;
+			d = 0;
+			for (let i = 0; i < typeAndDefault.length; i++) {
+				if (typeAndDefault[i] === '(') d++;
+				else if (typeAndDefault[i] === ')') d--;
+				else if (typeAndDefault[i] === '=' && d === 0) { eqIdx = i; break; }
+			}
+			if (eqIdx < 0) { result.push({ name, type: typeAndDefault }); continue; }
+			const type = typeAndDefault.slice(0, eqIdx).trim();
+			const defaultValue = typeAndDefault.slice(eqIdx + 1).trim();
+			result.push({ name, type, defaultValue });
+		}
+		return result;
+	} catch { return []; }
+}
+
+/**
+ * Converts a `.create[-or-alter] function` / `.alter function` control command
+ * into an inline `let` statement.  Returns `null` when the input is not a
+ * recognised function definition or when the required parts (name, params, body)
+ * cannot be extracted.  Delegates to `__kustoParseFunction` for parsing.
+ */
+export function __kustoConvertFunctionToInline(input: any): { name: string; text: string } | null {
+	const parsed = __kustoParseFunction(input);
+	if (!parsed) return null;
+	const text = `let ${parsed.name} = (${parsed.rawParams}) {${parsed.body}};`;
+	return { name: parsed.name, text };
 }
 

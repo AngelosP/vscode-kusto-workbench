@@ -16,6 +16,7 @@ import {
 	__kustoPrettifyKustoTextWithSemicolonStatements,
 	__kustoConvertFunctionToInline,
 } from './prettify';
+import { updateFunctionDetection } from '../sections/kw-query-toolbar';
 import {
 	isDarkTheme,
 	getVSCodeEditorBackground,
@@ -3693,6 +3694,7 @@ function initQueryEditor(boxId: any) {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try { __kustoMaybeAutoTriggerAutocomplete(editor, boxId, e); } catch (e) { console.error('[kusto]', e); }
+			try { updateFunctionDetection(boxId, editor.getValue()); } catch (e) { console.error('[kusto]', e); }
 		});
 		editor.onDidFocusEditorText(() => {
 			setActiveQueryEditorBoxId(boxId);
@@ -3841,6 +3843,9 @@ function initQueryEditor(boxId: any) {
 				_win.__kustoOnQueryValueChanged(boxId, editor.getValue());
 			}
 		} catch (e) { console.error('[kusto]', e); }
+
+		// Detect function definitions in the initial editor content.
+		try { updateFunctionDetection(boxId, editor.getValue()); } catch (e) { console.error('[kusto]', e); }
 
 		// Note: we intentionally do NOT auto-trigger Monaco suggestions on typing.
 		// Users can trigger via Ctrl+Space or the toolbar button.
