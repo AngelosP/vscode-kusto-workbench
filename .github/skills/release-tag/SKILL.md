@@ -47,13 +47,19 @@ npx vitest run
 ```
 All tests must pass.
 
-#### Gate 4: Production Build + Bundle Size Gate
+#### Gate 4: Integration Tests
+```
+npm test
+```
+Runs the VS Code extension host integration tests via `vscode-test`. All tests must pass. Report the count (e.g. "67 passing").
+
+#### Gate 5: Production Build + Bundle Size Gate
 ```
 node esbuild.js --production
 ```
 Must exit 0. This includes the integrated bundle size gate — if any bundle exceeds its baseline + buffer, the build will fail.
 
-#### Gate 5: Package VSIX
+#### Gate 6: Package VSIX
 ```
 npm run vsix
 ```
@@ -68,6 +74,7 @@ Present a summary table to the user:
 | TypeScript compilation | ✅ / ❌ |
 | Lint | ✅ / ❌ |
 | Unit tests (count) | ✅ / ❌ |
+| Integration tests (count) | ✅ / ❌ |
 | Production build + bundle gate | ✅ / ❌ |
 | VSIX packaging (size) | ✅ / ❌ |
 
