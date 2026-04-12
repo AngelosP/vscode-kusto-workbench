@@ -21,7 +21,7 @@ const BASELINES = {
 	'webview/webview.bundle.js':                           1223,
 	'queryEditor/vendor/echarts/echarts.webview.js':        586,
 	'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
-	'monaco/':                                            19938,
+	'monaco/':                                            10963,
 };
 const BUFFER_KB = 50; // allow up to 50 KB growth per entry before failing
 

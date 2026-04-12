@@ -331,7 +331,7 @@ async function main() {
 			'webview/webview.bundle.js':                           1380,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
 			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
-			'monaco/':                                            19938,
+			'monaco/':                                            10963,
 		};
 		const BUFFER_KB = 50;
 		const distDir = path.join(__dirname, 'dist');
