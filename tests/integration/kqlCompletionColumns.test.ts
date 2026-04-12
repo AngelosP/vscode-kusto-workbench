@@ -13,6 +13,7 @@ suite('KQL completions - column inference', () => {
 		// Strip TypeScript annotations so the source can run in a JS VM sandbox
 		monacoSource = monacoSource
 			.replace(/:\s*Record<[^>]+>/g, '')
+			.replace(/:\s*\[[^\]]+\]/g, '')
 			.replace(/:\s*(?:any|string|number|boolean)\b(\[\])?/g, '')
 			.replace(/\(\w+ as any\)/g, (m) => m.slice(1, m.indexOf(' ')))
 			.replace(/\b_win\./g, 'window.')
