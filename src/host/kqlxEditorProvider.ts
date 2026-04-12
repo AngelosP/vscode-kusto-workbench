@@ -5,7 +5,7 @@ import * as path from 'path';
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
-import { renderDiffInWebview } from './diffViewerUtils';
+import { renderDiffInWebview, DIFF_NOISE_KEYS } from './diffViewerUtils';
 import type { SectionChangeInfo } from './queryEditorTypes';
 
 
@@ -358,6 +358,20 @@ type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
 	| { type: 'persistDocument'; state: KqlxStateV1; flush?: boolean }
 	| { type: string; [key: string]: unknown };
+
+/**
+ * Return a shallow clone of `section` with noise fields removed.
+ * Does NOT mutate the original.
+ */
+export function stripDiffNoise(section: Record<string, unknown>): Record<string, unknown> {
+	const result: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(section)) {
+		if (!DIFF_NOISE_KEYS.has(k)) {
+			result[k] = v;
+		}
+	}
+	return result;
+}
 
 export function sanitizeStateForKind(kind: KqlxFileKind, state: KqlxStateV1): KqlxStateV1 {
 	if (kind !== 'mdx') {
@@ -1405,10 +1419,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 
 						const savedText = savedNormalized
-							? JSON.stringify(savedNormalized, null, 2)
+							? JSON.stringify(stripDiffNoise(savedNormalized), null, 2)
 							: '(section does not exist on disk)';
 						const currentSectionText = currentSection
-							? JSON.stringify(currentSection, null, 2)
+							? JSON.stringify(stripDiffNoise(currentSection), null, 2)
 							: '(section not found)';
 
 						const savedUri = vscode.Uri.parse(
@@ -1428,6 +1442,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							query: { key: 'query', label: 'Query' },
 							markdown: { key: 'text', label: 'Markdown' },
 							python: { key: 'code', label: 'Code' },
+							html: { key: 'code', label: 'Code' },
 						};
 						const sectionType = String(currentSection?.type ?? savedNormalized?.type ?? '');
 						const contentInfo = contentKeyByType[sectionType];

@@ -6,7 +6,7 @@ import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import { parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview } from './diffViewerUtils';
-import { normalizeSection, computeChangedSections, formatSectionDiffContent, KqlxEditorProvider } from './kqlxEditorProvider';
+import { normalizeSection, computeChangedSections, formatSectionDiffContent, stripDiffNoise, KqlxEditorProvider } from './kqlxEditorProvider';
 import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
 
 /**
@@ -747,8 +747,14 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 							}
 						}
 
-						const saved = formatSectionDiffContent(savedNormalized, 'section does not exist on disk');
-						const current = formatSectionDiffContent(currentSection, 'section not found');
+						const saved = formatSectionDiffContent(
+							savedNormalized ? stripDiffNoise(savedNormalized) : undefined,
+							'section does not exist on disk'
+						);
+						const current = formatSectionDiffContent(
+							currentSection ? stripDiffNoise(currentSection) : undefined,
+							'section not found'
+						);
 
 						const savedUri = vscode.Uri.parse(
 							`kusto-section-diff:saved/${encodeURIComponent(sectionId)}-settings.txt`

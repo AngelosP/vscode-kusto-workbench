@@ -8,6 +8,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Added instructions to make use of a wiki if it has access to it.
 * Smart documentation now includes tables, views, and user functions.
 * New tool added to the Kusto section 'Copy as inline function' which is a nice shortcut for when you want a function definition to be pasted inline into another query quickly
+* New 'Run Function' feature that allows you to execute function definitions and even specify parameters for them.
+* Improved git diff view by adding a 'Smart' diff that formats the raw JSON into something nicer to look at.
 * Bugs
     * At some point we lost the tooltips on mouse hover inside of the monaco-kusto editor. Probably when we migrated to LIT components.
 

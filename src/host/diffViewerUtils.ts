@@ -1,10 +1,276 @@
 import * as vscode from 'vscode';
+import { parseKqlxText, type KqlxSectionV1, type DevNoteEntry } from './kqlxFormat';
+
+// ── Noise fields to strip from diff display ──────────────────────────────────
+
+/** Keys that represent ephemeral UI state / noise — stripped from all diff views. */
+export const DIFF_NOISE_KEYS = new Set([
+	'resultJson',
+	'editorHeightPx', 'resultsHeightPx', 'copilotChatWidthPx',
+	'outputHeightPx', 'previewHeightPx',
+	'copilotChatVisible', 'resultsVisible', 'favoritesMode',
+]);
+
+// ── Smart diff formatter ─────────────────────────────────────────────────────
+
+/**
+ * Transform a raw `.kqlx` JSON string into a human-readable text format
+ * optimised for side-by-side diffing.
+ *
+ * - Noise fields (resultJson, pixel heights, ephemeral UI state) are stripped.
+ * - Query / markdown / code text is rendered as-is (no JSON escaping).
+ * - Falls back to the raw input when parsing fails.
+ *
+ * Pure function — deterministic, no side effects.
+ */
+export function formatKqlxForDiff(raw: string): string {
+	const parsed = parseKqlxText(raw, { allowedKinds: ['kqlx', 'mdx'] });
+	if (!parsed.ok) return raw;
+
+	const { file } = parsed;
+	const sections = Array.isArray(file.state.sections) ? file.state.sections : [];
+	const caretDocs = file.state.caretDocsEnabled !== false ? 'enabled' : 'disabled';
+	const lines: string[] = [
+		`${file.kind} v${file.version} | Caret docs: ${caretDocs} | ${sections.length} section${sections.length !== 1 ? 's' : ''}`,
+		'────────────────────────────────────────────',
+	];
+
+	for (const section of sections) {
+		lines.push('');
+		lines.push(...formatSection(section));
+	}
+
+	// Trailing newline to match stringifyKqlxFile convention.
+	lines.push('');
+	return lines.join('\n');
+}
+
+// ── Per-section formatters ───────────────────────────────────────────────────
+
+function formatSection(section: KqlxSectionV1): string[] {
+	const s = section as Record<string, unknown>;
+	const rawType = String(s.type ?? '');
+	// normalizeSection maps copilotQuery → query; mirror that for display.
+	const displayType = rawType === 'copilotQuery' ? 'query' : rawType;
+
+	switch (displayType) {
+		case 'query': return formatQuerySection(s);
+		case 'markdown': return formatMarkdownSection(s);
+		case 'python': return formatPythonSection(s);
+		case 'html': return formatHtmlSection(s);
+		case 'url': return formatUrlSection(s);
+		case 'chart': return formatChartSection(s);
+		case 'transformation': return formatTransformationSection(s);
+		case 'devnotes': return formatDevnotesSection(s);
+		default: return formatUnknownSection(s, displayType);
+	}
+}
+
+function sectionHeader(type: string, name: unknown): string {
+	const label = typeof name === 'string' && name ? name : '';
+	return label
+		? `══ [${type}] ${label} ══`
+		: `══ [${type}] ══`;
+}
+
+function kvLine(key: string, value: unknown): string | undefined {
+	if (value === undefined || value === null || value === '') return undefined;
+	return `${key}: ${value}`;
+}
+
+function formatQuerySection(s: Record<string, unknown>): string[] {
+	const lines: string[] = [sectionHeader('Query', s.name)];
+
+	pushIfDefined(lines, kvLine('Cluster', s.clusterUrl));
+	pushIfDefined(lines, kvLine('Database', s.database));
+
+	// Run mode + cache on one line when both present.
+	const parts: string[] = [];
+	if (s.runMode) parts.push(`Run mode: ${s.runMode}`);
+	if (s.cacheEnabled) {
+		const v = s.cacheValue ?? '';
+		const u = s.cacheUnit ?? '';
+		parts.push(`Cache: ${v} ${u}`.trim());
+	}
+	if (parts.length) lines.push(parts.join(' | '));
+
+	if (typeof s.linkedQueryPath === 'string' && s.linkedQueryPath) {
+		lines.push(`Linked query: ${s.linkedQueryPath}`);
+	}
+
+	// Show expanded state only when explicitly false (collapsed).
+	if (s.expanded === false) lines.push('Collapsed: yes');
+
+	// Raw query text — the most important part.
+	const query = typeof s.query === 'string' ? s.query : '';
+	if (query) {
+		lines.push('');
+		lines.push(...query.split('\n'));
+	}
+
+	return lines;
+}
+
+function formatMarkdownSection(s: Record<string, unknown>): string[] {
+	const lines: string[] = [sectionHeader('Markdown', s.name ?? s.title)];
+	const text = typeof s.text === 'string' ? s.text : '';
+	if (s.mode) lines.push(`Mode: ${s.mode}`);
+	if (text) {
+		lines.push('');
+		lines.push(...text.split('\n'));
+	}
+	return lines;
+}
+
+function formatPythonSection(s: Record<string, unknown>): string[] {
+	const lines: string[] = [sectionHeader('Python', s.name)];
+	const code = typeof s.code === 'string' ? s.code : '';
+	if (code) {
+		lines.push('');
+		lines.push(...code.split('\n'));
+	}
+	return lines;
+}
+
+function formatHtmlSection(s: Record<string, unknown>): string[] {
+	const lines: string[] = [sectionHeader('HTML', s.name)];
+	if (s.mode) lines.push(`Mode: ${s.mode}`);
+	const code = typeof s.code === 'string' ? s.code : '';
+	if (code) {
+		lines.push('');
+		lines.push(...code.split('\n'));
+	}
+	return lines;
+}
+
+function formatUrlSection(s: Record<string, unknown>): string[] {
+	const lines: string[] = [sectionHeader('URL', s.name)];
+	if (typeof s.url === 'string' && s.url) {
+		lines.push(s.url);
+	}
+	return lines;
+}
+
+function formatChartSection(s: Record<string, unknown>): string[] {
+	const lines: string[] = [sectionHeader('Chart', s.name)];
+	pushIfDefined(lines, kvLine('Type', s.chartType));
+	pushIfDefined(lines, kvLine('Data source', s.dataSourceId));
+
+	// Axis columns on one compact line.
+	const axisParts: string[] = [];
+	if (s.xColumn) axisParts.push(`X: ${s.xColumn}`);
+	if (Array.isArray(s.yColumns) && s.yColumns.length) axisParts.push(`Y: ${s.yColumns.join(', ')}`);
+	else if (s.yColumn) axisParts.push(`Y: ${s.yColumn}`);
+	if (axisParts.length) lines.push(axisParts.join(' | '));
+
+	pushIfDefined(lines, kvLine('Legend', s.legendColumn ?? (s.legendSettings as any)?.position));
+	pushIfDefined(lines, kvLine('Stack', s.stackMode ?? (s.legendSettings as any)?.stackMode));
+	pushIfDefined(lines, kvLine('Label column', s.labelColumn));
+	pushIfDefined(lines, kvLine('Value column', s.valueColumn));
+	pushIfDefined(lines, kvLine('Source column', s.sourceColumn));
+	pushIfDefined(lines, kvLine('Target column', s.targetColumn));
+	pushIfDefined(lines, kvLine('Sort', s.sortColumn ? `${s.sortColumn} ${s.sortDirection ?? ''}`.trim() : undefined));
+	pushIfDefined(lines, kvLine('Title', s.chartTitle));
+	pushIfDefined(lines, kvLine('Subtitle', s.chartSubtitle));
+
+	// Emit nested settings objects as compact key-value groups.
+	emitNestedSettings(lines, 'X-axis', s.xAxisSettings);
+	emitNestedSettings(lines, 'Y-axis', s.yAxisSettings);
+	emitNestedSettings(lines, 'Legend settings', s.legendSettings);
+	emitNestedSettings(lines, 'Heatmap', s.heatmapSettings);
+
+	return lines;
+}
+
+function formatTransformationSection(s: Record<string, unknown>): string[] {
+	const lines: string[] = [sectionHeader('Transformation', s.name)];
+	pushIfDefined(lines, kvLine('Type', s.transformationType));
+	pushIfDefined(lines, kvLine('Data source', s.dataSourceId));
+
+	// Type-specific details.
+	if (s.distinctColumn) lines.push(`Distinct column: ${s.distinctColumn}`);
+	if (Array.isArray(s.groupByColumns) && s.groupByColumns.length) {
+		lines.push(`Group by: ${s.groupByColumns.join(', ')}`);
+	}
+	if (Array.isArray(s.aggregations) && s.aggregations.length) {
+		const aggs = (s.aggregations as Array<Record<string, unknown>>)
+			.map(a => a.name ? `${a.function}(${a.column}) as ${a.name}` : `${a.function}(${a.column})`)
+			.join(', ');
+		lines.push(`Aggregations: ${aggs}`);
+	}
+	if (Array.isArray(s.deriveColumns) && s.deriveColumns.length) {
+		for (const d of s.deriveColumns as Array<Record<string, unknown>>) {
+			lines.push(`Derive: ${d.name} = ${d.expression}`);
+		}
+	}
+	// Back-compat single derive.
+	if (s.deriveColumnName && !Array.isArray(s.deriveColumns)) {
+		lines.push(`Derive: ${s.deriveColumnName} = ${s.deriveExpression ?? ''}`);
+	}
+	// Pivot config.
+	if (s.pivotRowKeyColumn) {
+		lines.push(`Pivot: row=${s.pivotRowKeyColumn}, col=${s.pivotColumnKeyColumn ?? ''}, val=${s.pivotValueColumn ?? ''}, agg=${s.pivotAggregation ?? ''}`);
+		if (s.pivotMaxColumns) lines.push(`Pivot max columns: ${s.pivotMaxColumns}`);
+	}
+	// Join config.
+	if (s.joinKind) {
+		lines.push(`Join: ${s.joinKind} with ${s.joinRightDataSourceId ?? '?'}`);
+		if (Array.isArray(s.joinKeys)) {
+			for (const k of s.joinKeys as Array<Record<string, unknown>>) {
+				lines.push(`  Key: ${k.left} = ${k.right}`);
+			}
+		}
+		if (s.joinOmitDuplicateColumns) lines.push('Omit duplicate columns: yes');
+	}
+
+	return lines;
+}
+
+function formatDevnotesSection(s: Record<string, unknown>): string[] {
+	const lines: string[] = [sectionHeader('Dev Notes', undefined)];
+	const entries = Array.isArray(s.entries) ? s.entries as DevNoteEntry[] : [];
+	for (const e of entries) {
+		const ts = e.updated || e.created || '';
+		lines.push(`[${e.category}] ${ts} — ${e.content}`);
+	}
+	return lines;
+}
+
+function formatUnknownSection(s: Record<string, unknown>, type: string): string[] {
+	const lines: string[] = [sectionHeader(type, s.name)];
+	// Strip noise, pretty-print the rest.
+	const cleaned: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(s)) {
+		if (!DIFF_NOISE_KEYS.has(k)) cleaned[k] = v;
+	}
+	lines.push(JSON.stringify(cleaned, null, 2));
+	return lines;
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
+
+function pushIfDefined(lines: string[], line: string | undefined): void {
+	if (line !== undefined) lines.push(line);
+}
+
+function emitNestedSettings(lines: string[], label: string, obj: unknown): void {
+	if (!obj || typeof obj !== 'object') return;
+	const entries = Object.entries(obj as Record<string, unknown>)
+		.filter(([, v]) => v !== undefined && v !== null && v !== '');
+	if (!entries.length) return;
+	lines.push(`${label}:`);
+	for (const [k, v] of entries) {
+		lines.push(`  ${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`);
+	}
+}
+
+// ── Webview diff renderer ────────────────────────────────────────────────────
 
 /**
  * Renders a Monaco-based diff viewer in a webview panel.
  * 
- * This is a completely isolated utility for rendering text diffs.
- * It uses Monaco Editor's built-in diff editor loaded from CDN.
+ * For `.kqlx` files, provides a human-readable "smart" view by default (with
+ * a toggle to switch to raw JSON). Other file types show raw content only.
  */
 export async function renderDiffInWebview(
 	webviewPanel: vscode.WebviewPanel,
@@ -34,12 +300,24 @@ export async function renderDiffInWebview(
 	const language = getLanguageFromUri(originalUri);
 	const fileName = originalUri.path.split('/').pop() || 'file';
 
+	// For .kqlx files, build a human-readable smart view alongside the raw JSON.
+	const isKqlx = /\.kqlx$/i.test(originalUri.path);
+	const originalSmart = isKqlx ? formatKqlxForDiff(originalContent) : undefined;
+	const modifiedSmart = isKqlx ? formatKqlxForDiff(modifiedContent) : undefined;
+
 	webviewPanel.webview.options = {
 		enableScripts: true,
 		localResourceRoots: [extensionUri]
 	};
 
-	webviewPanel.webview.html = getDiffHtml(originalContent, modifiedContent, language, fileName);
+	webviewPanel.webview.html = getDiffHtml({
+		originalContent,
+		modifiedContent,
+		originalSmart,
+		modifiedSmart,
+		language,
+		fileName,
+	});
 }
 
 function getLanguageFromUri(uri: vscode.Uri): string {
@@ -56,33 +334,34 @@ function getLanguageFromUri(uri: vscode.Uri): string {
 	return 'plaintext';
 }
 
-function getDiffHtml(
-	originalContent: string,
-	modifiedContent: string,
-	language: string,
-	fileName: string
-): string {
-	// Escape content for safe embedding in HTML/JS
-	const escapeForJs = (str: string): string => {
-		return JSON.stringify(str);
-	};
+interface DiffHtmlOptions {
+	originalContent: string;
+	modifiedContent: string;
+	/** Human-readable smart view of the original (`.kqlx` only). */
+	originalSmart?: string;
+	/** Human-readable smart view of the modified (`.kqlx` only). */
+	modifiedSmart?: string;
+	language: string;
+	fileName: string;
+}
 
-	const originalEscaped = escapeForJs(originalContent);
-	const modifiedEscaped = escapeForJs(modifiedContent);
+function getDiffHtml(opts: DiffHtmlOptions): string {
+	const escapeForJs = (str: string): string => JSON.stringify(str);
 
-	// CSP needs to allow:
-	// - script-src: inline scripts and CDN for Monaco
-	// - style-src: inline styles and CDN for Monaco CSS
-	// - font-src: CDN for Monaco fonts
-	// - worker-src: blob: for Monaco's web workers (syntax highlighting, etc.)
-	// - connect-src: CDN for loading Monaco modules
+	const hasSmart = opts.originalSmart !== undefined && opts.modifiedSmart !== undefined;
+
+	// When a smart view is available, start in smart mode.
+	const primaryOriginal = hasSmart ? opts.originalSmart! : opts.originalContent;
+	const primaryModified = hasSmart ? opts.modifiedSmart! : opts.modifiedContent;
+	const primaryLang = hasSmart ? 'plaintext' : opts.language;
+
 	return /* html */ `<!DOCTYPE html>
 <html lang="en">
 <head>
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'unsafe-inline' https://cdn.jsdelivr.net; worker-src blob:; font-src https://cdn.jsdelivr.net data:; connect-src https://cdn.jsdelivr.net; img-src https://cdn.jsdelivr.net data:;">
-	<title>Diff: ${fileName}</title>
+	<title>Diff: ${escapeForJs(opts.fileName).slice(1, -1).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</title>
 	<style>
 		* {
 			margin: 0;
@@ -111,6 +390,12 @@ function getDiffHtml(
 			font-size: 12px;
 			color: var(--vscode-foreground, #cccccc);
 			flex-shrink: 0;
+			align-items: center;
+		}
+		.diff-header-sides {
+			display: flex;
+			flex: 1;
+			min-width: 0;
 		}
 		.diff-header-side {
 			flex: 1;
@@ -126,6 +411,22 @@ function getDiffHtml(
 			background: rgba(100, 255, 100, 0.15);
 			border-radius: 0 4px 4px 0;
 			margin-left: 2px;
+		}
+		#toggle-btn {
+			margin-left: 12px;
+			padding: 3px 10px;
+			border: 1px solid var(--vscode-button-border, rgba(255,255,255,0.12));
+			border-radius: 3px;
+			background: var(--vscode-button-secondaryBackground, #3a3d41);
+			color: var(--vscode-button-secondaryForeground, #cccccc);
+			font-family: inherit;
+			font-size: 11px;
+			cursor: pointer;
+			white-space: nowrap;
+			flex-shrink: 0;
+		}
+		#toggle-btn:hover {
+			background: var(--vscode-button-secondaryHoverBackground, #45494e);
 		}
 		#editor-container {
 			flex: 1;
@@ -150,8 +451,11 @@ function getDiffHtml(
 <body>
 	<div id="diff-container">
 		<div class="diff-header">
-			<div class="diff-header-side original">Original (HEAD)</div>
-			<div class="diff-header-side modified">Working Copy</div>
+			<div class="diff-header-sides">
+				<div class="diff-header-side original">Original (HEAD)</div>
+				<div class="diff-header-side modified">Working Copy</div>
+			</div>
+			${hasSmart ? '<button id="toggle-btn" type="button" title="Switch between smart (human-readable) and raw JSON views">Smart View</button>' : ''}
 		</div>
 		<div id="editor-container">
 			<div class="loading">Loading diff viewer...</div>
@@ -161,30 +465,31 @@ function getDiffHtml(
 	<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
 	<script>
 		(function() {
-			const originalContent = ${originalEscaped};
-			const modifiedContent = ${modifiedEscaped};
-			const language = '${language}';
+			var smartOriginal = ${escapeForJs(primaryOriginal)};
+			var smartModified = ${escapeForJs(primaryModified)};
+			var rawOriginal = ${escapeForJs(opts.originalContent)};
+			var rawModified = ${escapeForJs(opts.modifiedContent)};
+			var smartLang = ${escapeForJs(primaryLang)};
+			var rawLang = 'json';
+			var hasSmart = ${hasSmart ? 'true' : 'false'};
+			var isSmart = hasSmart; // start in smart mode when available
 
-			// Configure Monaco loader
 			require.config({
 				paths: {
 					'vs': 'https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs'
 				}
 			});
 
-			// Load Monaco and create diff editor
 			require(['vs/editor/editor.main'], function() {
-				const container = document.getElementById('editor-container');
+				var container = document.getElementById('editor-container');
 				container.innerHTML = '';
 
-				// Detect VS Code theme based on body class or CSS variables
-				const bodyClasses = document.body.className || '';
-				const isDark = bodyClasses.includes('vscode-dark') || 
+				var bodyClasses = document.body.className || '';
+				var isDark = bodyClasses.includes('vscode-dark') || 
 					bodyClasses.includes('vscode-high-contrast') ||
 					!bodyClasses.includes('vscode-light');
 
-				// Create the diff editor
-				const diffEditor = monaco.editor.createDiffEditor(container, {
+				var diffEditor = monaco.editor.createDiffEditor(container, {
 					theme: isDark ? 'vs-dark' : 'vs',
 					automaticLayout: true,
 					readOnly: true,
@@ -207,21 +512,44 @@ function getDiffHtml(
 					}
 				});
 
-				// Set the models
-				const originalModel = monaco.editor.createModel(originalContent, language);
-				const modifiedModel = monaco.editor.createModel(modifiedContent, language);
+				function setModels(original, modified, lang) {
+					var origModel = monaco.editor.createModel(original, lang);
+					var modModel = monaco.editor.createModel(modified, lang);
+					diffEditor.setModel({ original: origModel, modified: modModel });
+				}
 
-				diffEditor.setModel({
-					original: originalModel,
-					modified: modifiedModel
-				});
+				setModels(
+					isSmart ? smartOriginal : rawOriginal,
+					isSmart ? smartModified : rawModified,
+					isSmart ? smartLang : rawLang
+				);
 
-				// Handle theme changes by observing body class changes
-				const observer = new MutationObserver(function(mutations) {
+				// Toggle button wiring.
+				var toggleBtn = document.getElementById('toggle-btn');
+				if (toggleBtn && hasSmart) {
+					toggleBtn.addEventListener('click', function() {
+						// Dispose previous models to avoid leaks.
+						var prev = diffEditor.getModel();
+						if (prev) {
+							if (prev.original) prev.original.dispose();
+							if (prev.modified) prev.modified.dispose();
+						}
+						isSmart = !isSmart;
+						toggleBtn.textContent = isSmart ? 'Smart View' : 'Raw JSON';
+						setModels(
+							isSmart ? smartOriginal : rawOriginal,
+							isSmart ? smartModified : rawModified,
+							isSmart ? smartLang : rawLang
+						);
+					});
+				}
+
+				// Theme change observer.
+				var observer = new MutationObserver(function(mutations) {
 					mutations.forEach(function(mutation) {
 						if (mutation.attributeName === 'class') {
-							const classes = document.body.className || '';
-							const nowDark = classes.includes('vscode-dark') || 
+							var classes = document.body.className || '';
+							var nowDark = classes.includes('vscode-dark') || 
 								classes.includes('vscode-high-contrast') ||
 								!classes.includes('vscode-light');
 							monaco.editor.setTheme(nowDark ? 'vs-dark' : 'vs');
@@ -231,9 +559,12 @@ function getDiffHtml(
 				observer.observe(document.body, { attributes: true, attributeFilter: ['class'] });
 
 			}, function(err) {
-				// Error loading Monaco
-				const container = document.getElementById('editor-container');
-				container.innerHTML = '<div class="error">Failed to load diff viewer: ' + (err.message || err) + '</div>';
+				var container = document.getElementById('editor-container');
+				var errDiv = document.createElement('div');
+				errDiv.className = 'error';
+				errDiv.textContent = 'Failed to load diff viewer: ' + (err.message || err);
+				container.innerHTML = '';
+				container.appendChild(errDiv);
 				console.error('Monaco load error:', err);
 			});
 		})();

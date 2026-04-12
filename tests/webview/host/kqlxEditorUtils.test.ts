@@ -7,7 +7,8 @@ import {
 	deepEqual,
 	sanitizeStateForKind,
 	computeChangedSections,
-	formatSectionDiffContent
+	formatSectionDiffContent,
+	stripDiffNoise
 } from '../../../src/host/kqlxEditorProvider';
 
 // ---------------------------------------------------------------------------
@@ -497,5 +498,50 @@ describe('computeChangedSections diffMode', () => {
 		const incoming = [{ type: 'chart', id: 'chart_1', dataSourceId: 'query_1', chartType: 'line' }];
 		const changes = computeChangedSections(incoming, saved, 'contentOnly');
 		expect(changes).toHaveLength(0);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// stripDiffNoise
+// ---------------------------------------------------------------------------
+
+describe('stripDiffNoise', () => {
+	it('removes all noise fields', () => {
+		const section = {
+			type: 'query', id: 'query_1', query: 'T | count',
+			resultJson: '{}',
+			editorHeightPx: 200, resultsHeightPx: 300,
+			copilotChatWidthPx: 400,
+			outputHeightPx: 150, previewHeightPx: 250,
+			copilotChatVisible: true, resultsVisible: false,
+			favoritesMode: true,
+		};
+		const result = stripDiffNoise(section);
+		expect(result).toEqual({ type: 'query', id: 'query_1', query: 'T | count' });
+	});
+
+	it('preserves meaningful fields', () => {
+		const section = {
+			type: 'query', id: 'query_1', query: 'T',
+			clusterUrl: 'http://c', database: 'db',
+			runMode: 'default', cacheEnabled: true, cacheValue: 5, cacheUnit: 'minutes',
+		};
+		const result = stripDiffNoise(section);
+		expect(result).toEqual(section);
+	});
+
+	it('does not mutate the original object', () => {
+		const section = {
+			type: 'query', id: 'query_1', resultJson: '{}', query: 'T',
+		};
+		const original = { ...section };
+		stripDiffNoise(section);
+		expect(section).toEqual(original);
+	});
+
+	it('returns empty-ish object when all fields are noise', () => {
+		const section = { resultJson: '{}', editorHeightPx: 100 };
+		const result = stripDiffNoise(section);
+		expect(result).toEqual({});
 	});
 });
