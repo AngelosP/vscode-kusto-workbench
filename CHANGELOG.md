@@ -3,7 +3,7 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [3.7.0] - Unreleased
+## [3.7.0] - 2026-04-11
 
 * Added instructions to make use of a wiki if it has access to it.
 * Smart documentation now includes tables, views, and user functions.
