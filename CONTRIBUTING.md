@@ -45,6 +45,7 @@ For architecture details, file inventories, and design rationale, see [ARCHITECT
 ```
 src/
   host/               Extension host (Node.js, TypeScript)
+    sql/                SQL-specific host modules (dialects, STS process, downloader)
   webview/            Webview UI (browser, TypeScript + Lit)
     core/               Cross-cutting runtime infrastructure (state, persistence, dispatch)
     monaco/             Monaco-specific runtime modules (editor setup, diagnostics, completions)
@@ -57,6 +58,9 @@ tests/
   integration/        VS Code extension-host tests (Mocha, run via npm test)
   webview/            Vitest unit tests for webview code
     host/             Pure host-side logic tests (run via Vitest, no VS Code required)
+  vscode-extension-tester/  E2E tests (Selenium, run via vscode-ext-test)
+    e2e/sql-auth/     SQL feature E2E tests (connection, execution, completions, etc.)
+    e2e/kusto-auth/   Kusto feature E2E tests
 browser-ext/          Chrome/Edge browser extension (separate build, own package.json)
 copilot-instructions/ Prompt files for Copilot and agent integrations (runtime resources)
 ```
@@ -144,8 +148,9 @@ SQL sections follow the same patterns as Kusto query sections. Key differences:
 * **Dialects**: Adding a new SQL backend (e.g. PostgreSQL) requires implementing `SqlDialect` interface, registering in `SqlDialectRegistry`, and adding a Copilot rules file.
 * **Copilot**: Uses flavor system — host-side `sqlCopilotFlavor` in `copilotChatFlavor.ts`, webview-side `sqlWebviewFlavor` in `copilot-chat-flavor.ts`.
 * **File format**: `.sqlx` files use the same JSON schema as `.kqlx` but only allow SQL sections. Mixed `.kqlx` files can contain both Kusto and SQL sections.
+* **IntelliSense**: SQL inline completions are powered by Microsoft's SQL Tools Service (STS), a separate process communicating over JSON-RPC via `vscode-jsonrpc`. The STS binary is downloaded on first use (`stsDownloader.ts`), managed by `StsProcessManager`, and the LSP client layer lives in `StsLanguageService`. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full STS architecture.
 * **Build**: `mssql` is externalized in esbuild. `sql-formatter` is bundled for the webview prettify feature.
-* **Tests**: SQL test files in `tests/webview/host/` (`mssqlDialect.test.ts`, `sqlDialectRegistry.test.ts`, `sqlFormat.test.ts`, `sqlClient.test.ts`, `sqlPrettify.test.ts`).
+* **Tests**: SQL unit tests in `tests/webview/host/` (`mssqlDialect.test.ts`, `sqlDialectRegistry.test.ts`, `sqlFormat.test.ts`, `sqlClient.test.ts`, `sqlPrettify.test.ts`, `sqlAuthState.test.ts`, `sqlFavorites.test.ts`, `sqlEditorUtils.test.ts`). E2E tests in `tests/vscode-extension-tester/e2e/sql-auth/`.
 
 ---
 

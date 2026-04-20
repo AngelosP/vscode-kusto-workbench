@@ -103,7 +103,7 @@ export interface ViewModeTabBarInfo {
 }
 
 /** Supported file extensions (lowercase). */
-export const SUPPORTED_EXTENSIONS = ['.kqlx', '.kql', '.csl', '.kql.json', '.csl.json'] as const;
+export const SUPPORTED_EXTENSIONS = ['.kqlx', '.sqlx', '.kql', '.csl', '.kql.json', '.csl.json'] as const;
 
 /** Check if a filename has a supported extension. */
 export function isSupportedFile(filename: string): boolean {

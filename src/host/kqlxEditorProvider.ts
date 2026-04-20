@@ -581,7 +581,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 		const documentKind = KqlxEditorProvider.getDocumentKind(document);
 		const allowedSectionKinds = KqlxEditorProvider.getAllowedSectionKinds(documentKind);
-		const defaultSectionKind: 'query' | 'markdown' = documentKind === 'mdx' ? 'markdown' : 'query';
+		const defaultSectionKind: 'query' | 'markdown' | 'sql' = documentKind === 'mdx' ? 'markdown' : documentKind === 'sqlx' ? 'sql' : 'query';
 
 		// If we were just upgraded from a single-section format to a rich format as part of an add-section action,
 		// grab the pending add kind now and notify the webview once it is initialized.

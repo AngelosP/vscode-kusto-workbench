@@ -451,6 +451,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		return html`
 			<div class="select-wrapper half-width" title="Kusto Cluster">
 				<kw-dropdown
+					data-testid="cluster-dropdown"
 					.items=${clusterItems}
 					.actions=${clusterActions}
 					.selectedId=${this._connectionId}
@@ -469,6 +470,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		return html`
 			<div class="select-wrapper half-width" title="Kusto Database">
 				<kw-dropdown
+					data-testid="database-dropdown"
 					.items=${dbItems}
 					.selectedId=${this._database}
 					.placeholder=${'Select Database...'}

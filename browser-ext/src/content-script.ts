@@ -2,7 +2,7 @@
  * Content script for the Kusto Workbench browser extension.
  *
  * Injected into pages matching the URL patterns in manifest.json.
- * Detects supported files (.kqlx, .kql, .csl) on the current page.
+ * Detects supported files (.kqlx, .sqlx, .kql, .csl) on the current page.
  *
  * On platforms that have a view-mode tab bar (GitHub: Code | Blame),
  * a "Kusto Workbench" tab is added and automatically selected. The

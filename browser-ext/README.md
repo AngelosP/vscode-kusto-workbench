@@ -1,6 +1,6 @@
 # Kusto Workbench Viewer — Browser Extension
 
-A Chromium browser extension (Chrome / Edge) that renders `.kqlx`, `.kql`, and `.csl` Kusto notebook files inline on **GitHub**, **Azure DevOps**, and **raw file URLs**.
+A Chromium browser extension (Chrome / Edge) that renders `.kqlx`, `.sqlx`, `.kql`, and `.csl` Kusto notebook files inline on **GitHub**, **Azure DevOps**, and **raw file URLs**.
 
 ## What's Included
 

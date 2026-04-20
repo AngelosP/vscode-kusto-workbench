@@ -28,6 +28,7 @@ function getEditorViewType(extension: string): string | undefined {
 	switch (extension) {
 		case '.kqlx':
 		case '.mdx':
+		case '.sqlx':
 			return KqlxEditorProvider.viewType;
 		case '.kql':
 		case '.csl':
@@ -43,7 +44,7 @@ function getEditorViewType(extension: string): string | undefined {
  * Supported file extensions for remote file opening.
  * The order matters for the sidecar detection logic.
  */
-const SUPPORTED_EXTENSIONS = ['.kqlx', '.kql.json', '.csl.json', '.kql', '.csl', '.mdx', '.md'];
+const SUPPORTED_EXTENSIONS = ['.kqlx', '.kql.json', '.csl.json', '.kql', '.csl', '.mdx', '.sqlx', '.md'];
 
 /**
  * Determines whether a URL path represents a supported file type.
@@ -994,7 +995,7 @@ export function registerRemoteFileOpener(context: vscode.ExtensionContext): void
 			const url = await vscode.window.showInputBox({
 				title: 'Open Remote File',
 				prompt: 'Enter the URL of the file to open (direct link or SharePoint / OneDrive sharing link)',
-				placeHolder: 'https://example.com/path/to/file.kqlx  or  SharePoint sharing link',
+				placeHolder: 'https://example.com/path/to/file.kqlx  or  .sqlx  or  SharePoint sharing link',
 				validateInput: validateRemoteUrl
 			});
 

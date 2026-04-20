@@ -502,3 +502,66 @@ _win.__testClearSqlAuthOverride = (accountId: string): string => {
 	postMessageToHost({ type: 'testClearSqlAuthOverride', accountId });
 	return `sql auth override clear requested for ${String(accountId || '').trim()}`;
 };
+
+/**
+ * Open a kw-dropdown by data-testid and disable auto-close so it stays open
+ * for screenshots. The dropdown's close handlers are neutralized until the
+ * next page navigation or reload.
+ *
+ *   __testOpenDropdown('cluster-dropdown')
+ */
+_win.__testOpenDropdown = (testId: string): string => {
+	const el = deepQueryByTestId(document, testId) as any;
+	if (!el) return `not found: ${testId}`;
+	if (typeof el._openMenu !== 'function') return `${testId} is not a kw-dropdown`;
+	// Neutralize all dismiss paths so the menu survives until screenshot
+	el._closeMenu = () => {};
+	el._onDocumentMousedown = () => {};
+	el._onDocumentScroll = () => {};
+	el._dismissMenu = () => {};
+	// Open the menu
+	el._openMenu();
+	return `opened dropdown ${testId}`;
+};
+
+/**
+ * Set the active Monaco editor content to the given text.
+ * Avoids needing escaped quotes in Gherkin evaluate steps.
+ *
+ *   __testSetEditorValue('StormEvents | take 10')
+ */
+_win.__testSetEditorValue = (text: string): string => {
+	// Try window.activeMonacoEditor first
+	let ed = (window as any).activeMonacoEditor;
+	if (!ed || typeof ed.setValue !== 'function') {
+		// Fall back: find the first editor in the global queryEditors map
+		const qe = (window as any).queryEditors;
+		if (qe) {
+			for (const key of Object.keys(qe)) {
+				if (qe[key] && typeof qe[key].setValue === 'function') {
+					ed = qe[key];
+					break;
+				}
+			}
+		}
+	}
+	if (!ed || typeof ed.setValue !== 'function') return 'no active editor';
+	ed.setValue(text);
+	return `set editor value (${text.length} chars)`;
+};
+
+/**
+ * Override the visible text of a kw-dropdown button by data-testid.
+ * Useful for replacing real cluster/database names with fake placeholder
+ * text in marketplace screenshots.
+ *
+ *   __testSetDropdownText('cluster-dropdown', 'Favorite connection #1 (clusterName.databaseName)')
+ */
+_win.__testSetDropdownText = (testId: string, text: string): string => {
+	const el = deepQueryByTestId(document, testId) as any;
+	if (!el) return `not found: ${testId}`;
+	const btn = el.shadowRoot?.querySelector('.kusto-dropdown-btn-text') as HTMLElement | null;
+	if (!btn) return `no button text element in ${testId}`;
+	btn.textContent = text;
+	return `set dropdown text: ${text}`;
+};

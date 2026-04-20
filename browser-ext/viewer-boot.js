@@ -157,7 +157,7 @@
 			var sec = sections[i];
 			if (!sec || typeof sec !== 'object') continue;
 			var t = String(sec.type || '');
-			if (t === 'query' || t === 'copilotQuery') {
+			if (t === 'query' || t === 'copilotQuery' || t === 'sql') {
 				sec.expanded = false;
 			} else if (t === 'markdown') {
 				sec.mode = 'preview';
@@ -184,6 +184,16 @@
 			}
 			state = parsed.file.state;
 			documentKind = parsed.file.kind;
+
+		} else if (lowerFilename.endsWith('.sqlx')) {
+			// .sqlx file: SQL notebook, same JSON schema as .kqlx with kind 'sqlx'
+			var sqlxParsed = parseKqlxText(content, { allowedKinds: ['sqlx'], defaultKind: 'sqlx' });
+			if (!sqlxParsed.ok) {
+				showError('Invalid .sqlx file', sqlxParsed.error);
+				return null;
+			}
+			state = sqlxParsed.file.state;
+			documentKind = sqlxParsed.file.kind;
 
 		} else if (lowerFilename.endsWith('.kql.json') || lowerFilename.endsWith('.csl.json')) {
 			// .kql.json sidecar: parse it
@@ -220,7 +230,7 @@
 			}
 
 		} else {
-			showError('Unsupported file type', 'Supported: .kqlx, .kql, .csl, .kql.json, .csl.json');
+			showError('Unsupported file type', 'Supported: .kqlx, .sqlx, .kql, .csl, .kql.json, .csl.json');
 			return null;
 		}
 

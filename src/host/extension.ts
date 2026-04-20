@@ -510,7 +510,7 @@ export function activate(context: vscode.ExtensionContext) {
 			<div class="card-title">
 				<i class="codicon codicon-cloud-download"></i> Open Remote File
 			</div>
-			<div class="card-desc">Open a .kqlx or .kql file from a URL. Supports GitHub links (public &amp; private repos) and SharePoint sharing links.</div>
+			<div class="card-desc">Open a .kqlx, .sqlx, or .kql file from a URL. Supports GitHub links (public &amp; private repos) and SharePoint sharing links.</div>
 			<button class="button" onclick="sendCommand('openRemoteFile')">Open from URL...</button>
 		</div>
 	</div>

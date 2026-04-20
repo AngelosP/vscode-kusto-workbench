@@ -7,6 +7,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 * T-SQL support ;)
 * E2E Testing via [vscode-extension-tester](http://github.com/AngelosP/vscode-extension-tester)
+* Improved the rendering of markdown tables
 
 ## [3.7.0] - 2026-04-11
 

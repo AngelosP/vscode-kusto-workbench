@@ -2,7 +2,7 @@
   "manifest_version": 3,
   "name": "Kusto Workbench Viewer",
   "version": "1.0.0",
-  "description": "Renders .kqlx, .kql, and .csl Kusto notebook files inline on GitHub, Azure DevOps, and any raw file URL.",
+  "description": "Renders .kqlx, .sqlx, .kql, and .csl Kusto notebook files inline on GitHub, Azure DevOps, and any raw file URL.",
   "icons": {
     "128": "media/images/kusto-workbench-logo.png"
   },

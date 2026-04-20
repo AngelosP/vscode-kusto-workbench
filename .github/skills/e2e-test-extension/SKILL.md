@@ -93,7 +93,7 @@ what the Dev Host looked like at that point in the test.
 
 Example:
 \`\`\`
-view_image("C:/Users/.../tests/vscode-extension-tester/runs/default/<test-id>/1-screenshot.png")
+view_image("C:/Users/.../tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/1-screenshot.png")
 \`\`\`
 
 After viewing each screenshot:
@@ -183,9 +183,10 @@ will use it to build the fix, and you can resume testing once it ships.
    vscode-ext-test run --test-id <test-id>
    ```
    This launches a fresh VS Code, executes all .feature files from
-   `e2e/default/<test-id>/`, and writes artifacts to `runs/default/<test-id>/`.
+   `e2e/default/<test-id>/`, and writes artifacts to `runs/default/<test-id>/<timestamp>/`.
+   Each run uses a unique timestamp so previous results are preserved.
 
-3. **Review artifacts** - artifacts are in `tests/vscode-extension-tester/runs/default/<test-id>/` (gitignored):
+3. **Review artifacts** - artifacts are in `tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/` (gitignored):
    - `report.md` - read this FIRST. It lists all results AND screenshot file paths.
    - `results.json` - structured results with screenshot paths.
    - `console.log` - structured output log per scenario/step.
@@ -232,7 +233,8 @@ vscode-ext-test profile open <profile-name>
 ## Available Gherkin Steps
 
 - `Given the extension is in a clean state` - reset: close all editors, dismiss notifications, clear output channels
-- `When I execute command "<command-id>"` - run any VS Code command
+- `When I execute command "<command-id>"` - run any VS Code command (waits for completion)
+- `When I start command "<command-id>"` - start a VS Code command without waiting (use for commands that show InputBox/QuickPick dialogs, then interact with the dialog in the next step)
 - `When I select "<label>" from the QuickPick` - pick an item from an open QuickPick
 - `When I type "<text>" into the InputBox` - type into a VS Code InputBox prompt
 - `When I click "<button>" on the dialog` - click a button on a modal dialog
@@ -265,8 +267,16 @@ When I click the "File name:" edit
 For complex webviews - multiple sections, tables, panels, custom controls - the
 accessibility-name approach often isn't precise enough. These steps use CSS
 selectors and Chrome DevTools Protocol so you can target *exactly* the element
-you want, including ones that are hidden, off-screen, or nested deep in shadow
-DOM-free trees.
+you want, including ones that are hidden, off-screen, or inside shadow DOM
+(e.g. LitElement, Shoelace, or other Web Component frameworks).
+
+**Shadow DOM is pierced automatically.** All CSS selector steps (`I click`,
+`I wait for`, `element should exist`, `element should have text`, etc.)
+will find elements inside open shadow roots without any extra work. You write
+selectors exactly the same way as for light DOM. The framework tries
+`document.querySelector` first (fast path), then recursively walks shadow
+roots on miss. **Limitation:** closed shadow roots (`mode: 'closed'`) are
+not accessible — this is by design in the web platform.
 
 **You have access to the extension source code when you write tests.** Inspect
 the webview's HTML/Lit/React source to find the right selectors (`data-testid`,
@@ -292,31 +302,18 @@ The pattern:
    - `data-testid="results-section"`
    - `data-testid="status-indicator"`
 
-2. **If the webview uses Shadow DOM**, recommend adding a small set of test
-   helper functions exposed on `window` that deep-search through shadow roots
-   by `data-testid`. These should be included in the webview bundle (guarded
-   behind a dev/test flag if desired) and callable via `I evaluate` steps.
-   A complete set covers every interaction type:
-
-   - `__testFind(id)` - find an element by `data-testid`, traversing shadow roots
-   - `__testClick(id)` - find + click (handles shadow DOM buttons, links, list items)
-   - `__testSet(id, value)` - find + set value on an input/textarea/select
-   - `__testCheck(id, checked?)` - find + toggle a checkbox or radio button
-   - `__testSelect(id, value)` - find + select an option from a dropdown/combobox
-   - `__testText(id)` - find + return the text content (for assertions)
-
-   With these helpers, every E2E interaction becomes a one-liner that works
-   100% through shadow DOM:
+2. **Shadow DOM just works.** CSS selector steps automatically pierce open
+   shadow roots. You do NOT need to add `__testFind`/`__testClick` helper
+   functions to the webview code. Just use `data-testid` selectors as normal:
    \`\`\`gherkin
-   When I evaluate "__testClick('add-connection-btn')" in the webview
-   When I evaluate "__testSet('server-input', 'localhost')" in the webview
-   When I evaluate "__testCheck('remember-me', true)" in the webview
-   When I evaluate "__testSelect('auth-mode', 'windows')" in the webview
-   Then I evaluate "__testText('status-label')" in the webview
+   When I click "[data-testid='add-connection-btn']" in the webview
+   Then element "[data-testid='status-indicator']" should exist
+   Then element "[data-testid='results-section']" should have text "42 rows"
    \`\`\`
 
-   Recommend whatever subset of helpers the extension actually needs - don't
-   add helpers for interaction types that don't exist in the webview.
+   If the webview uses closed shadow roots (`mode: 'closed'`), the framework
+   cannot reach inside them. In that rare case, the extension would need to
+   expose test helpers on `window` callable via `I evaluate` steps.
 
 3. **Then write your E2E tests** using these stable selectors. A test like
    `When I click "[data-testid='add-connection-btn']" in the webview` is
@@ -342,6 +339,7 @@ in the extension source is part of the testing process.
 | `When I scroll "<sel>" to the (top\|bottom\|left\|right)` | Jump to an edge |
 | `When I scroll "<sel>" into view` | Scroll the element itself into view |
 | `When I evaluate "<js>" in the webview` | Run arbitrary JS (escape hatch) |
+| `When I list the webviews` | Log all open webview titles and URLs (debugging aid) |
 | `Then the webview should contain "<text>"` | Substring match in body text |
 | `Then the webview "<title>" should contain "<text>"` | Restrict to a webview |
 | `Then element "<sel>" should exist` | Existence assertion |
@@ -350,9 +348,13 @@ in the extension source is part of the testing process.
 
 **Webview targeting.** When multiple webviews are open at once (walkthroughs,
 panels, sidebar views), pass a `<title>` substring to disambiguate. The match
-is case-insensitive and tested against both the document title and the
-`vscode-webview://` URL. Omit it and the framework tries every webview until
-one matches.
+is case-insensitive and tested against the **HTML `<title>` tag** of the
+webview document and the `vscode-webview://` URL — **not** the VS Code panel
+title (`WebviewPanel.title`). These can be different! If your title isn't
+matching, use the debugging step `When I list the webviews` to see what
+titles and URLs the framework actually sees. Check the extension source for
+the HTML `<title>` set in the webview HTML template. Omit the title and the
+framework tries every webview until one matches.
 
 **Scrolling a specific section or table.** Find a stable selector for the
 container (not the page) - e.g. `section[data-testid="results-table"] .scroll-body`
@@ -441,11 +443,13 @@ loses the activation race, the channel will not be wrapped. The fix is to
 defer channel creation by one tick (`queueMicrotask` / `setImmediate`) inside
 your extension, or to call `createOutputChannel` lazily on first use.
 
-### Native OS Dialogs (Windows)
+### Native OS Automation (Windows)
 - `When I save the file as "<path>"` - handle Save As dialog: type filename, click Save
 - `When I open the file "<path>"` - handle Open File dialog: type filename, click Open
 - `When I click "<button>" on the "<title>" dialog` - click a button on any native dialog
 - `When I cancel the Save As dialog` - dismiss a Save/Open dialog
+- `When I resize the (window|Dev Host) to <width>x<height>` - resize the Dev Host window (also accepts "<width> by <height>")
+- `When I move the (window|Dev Host) to <x>, <y>` - move the Dev Host window (negative coords OK)
 
 ### Screenshots
 - `Then I take a screenshot` - capture the full screen, saved to the run directory

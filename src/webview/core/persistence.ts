@@ -1383,6 +1383,8 @@ export function handleDocumentDataMessage(message: any) {
 				const k = String(pState.defaultSectionKind || 'query');
 				if (k === 'markdown') {
 					addMarkdownBox();
+				} else if (k === 'sql') {
+					addSqlBox();
 				} else {
 					addQueryBox();
 				}
