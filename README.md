@@ -79,9 +79,9 @@ Uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/mona
 
 ![Kusto query editor](./media/marketplace/kusto-query-editor.png)
 
-### SQL Sections
+### The T-SQL editor is powered by the same engine behind the official SQL Server extension
 
-Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files or add SQL sections to any workbook. You get inline completions, schema-aware Copilot chat, query execution with full result rendering, and all the same toolbar actions (run modes, favorites, persistence) you already know from the Kusto side.
+Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files or add SQL sections to any workbook. The auto-complete experience is powered by Microsoft's SQL Tools Service, the same engine behind the official SQL Server extension. so you get reliable, schema-aware IntelliSense as you type. You also get schema-aware Copilot chat, query execution with full result rendering, and all the same toolbar actions (run modes, favorites, persistence) you already know from the Kusto side.
 
 <!-- TODO: Add screenshot here — e.g. ![SQL sections](media/marketplace/sql-sections.png) -->
 
@@ -156,7 +156,7 @@ Sometimes we need to authenticate to different Kusto clusters with different ide
 
 ### Connection Manager and Cluster Explorer
 
-Explore the Kusto clusters you have added connections to with ease. Browse the tables, functions and their definitions. Create new `.kqlx` files with the connection details for a database already prefilled, ready to go.
+Explore the Kusto clusters and SQL Server connections you have added with ease. Browse the tables, functions and their definitions. Create new `.kqlx` or `.sqlx` files with the connection details for a database already prefilled, ready to go.
 
 ![Connection Manager and Cluster Explorer](media/marketplace/connection-manager.png)
 
@@ -187,7 +187,7 @@ Search within query results using simple wildcards or full regex.
 
 ### Open Remote Files
 
-Open `.kqlx` files directly from GitHub or SharePoint using sharing or raw URLs. No need to download first.
+Open `.kqlx` and `.sqlx` files directly from GitHub or SharePoint using sharing or raw URLs. No need to download first.
 
 ### Development Notes
 
@@ -205,17 +205,19 @@ To open a file:
 
 * `.kql` / `.csl`: open it normally (opens in compatibility mode)
 * `.kqlx`: create an empty file and open it normally, or run `Kusto Workbench: Open .kqlx File`
+* `.sql`: open it normally (opens in compatibility mode)
+* `.sqlx`: create an empty file and open it normally, or run `Kusto Workbench: Open .sqlx File`
 * `.mdx`: create an empty file and open it normally
 
 ## File formats (and "no file" mode)
 
-### Open existing `.kql` and `.csl` files
+### Open existing `.kql`, `.csl`, and `.sql` files
 
-You can open existing `.kql` and `.csl` files with no conversion. The file stays plain text, and saving writes back plain text. If you add more stuff to these types of files, you are asked to save a `.json` file with the same filename side-by-side.
+You can open existing `.kql`, `.csl`, and `.sql` files with no conversion. The file stays plain text, and saving writes back plain text. If you add more stuff to these types of files, you are asked to save a `.json` file with the same filename side-by-side.
 
-### Create `.kqlx` files for convenience
+### Create `.kqlx` and `.sqlx` files for convenience
 
-Use `.kqlx` and `.mdx` files to keep everything in a single file (`.kql` and `.csl` files require a sidecar `.json` file for some of the functionality).
+Use `.kqlx`, `.sqlx`, and `.mdx` files to keep everything in a single file (`.kql`, `.csl`, and `.sql` files require a sidecar `.json` file for some of the functionality).
 
 ### "No file" mode (persistent global session)
 
@@ -223,7 +225,7 @@ You don't need to create a file to use the extension. Run `Kusto Workbench: Open
 
 ### Open Remote File
 
-You can open files directly from GitHub or SharePoint using sharing or raw URLs using `Kusto Workbench: Open Remote File` from the command palette or from the Quick Access panel off the Activity Bar icon.
+You can open `.kqlx` and `.sqlx` files directly from GitHub or SharePoint using sharing or raw URLs using `Kusto Workbench: Open Remote File` from the command palette or from the Quick Access panel off the Activity Bar icon.
 
 ## Commands
 
@@ -232,6 +234,7 @@ You can open files directly from GitHub or SharePoint using sharing or raw URLs 
 | `Kusto Workbench: Open Query Editor` | Open the global persistent session |
 | `Kusto Workbench: Open Remote File` | Open a `.kqlx` file from a GitHub or SharePoint URL |
 | `Kusto Workbench: Open .kqlx File` | Create or open a `.kqlx` notebook |
+| `Kusto Workbench: Open .sqlx File` | Create or open a `.sqlx` notebook |
 | `Kusto Workbench: Open .mdx File` | Create or open an `.mdx` notebook |
 | `Kusto Workbench: Save Session As... (.kqlx)` | Save the current session to a file |
 | `Kusto Workbench: Manage Connections` | Open the Connection Manager |
@@ -256,11 +259,12 @@ This extension is designed to keep your work local by default, and only sends da
 
 * **Connections**: Saved in VS Code extension global state on your machine (name + cluster URL + optional default database). This is not synced by the extension itself, but your VS Code settings/profile sync behavior may vary.
 * **Authentication account preferences (per cluster)**: The extension remembers which Microsoft work account was last used successfully per Kusto cluster (account id/label only). This helps avoid repeated sign-in prompts when you use multiple clusters that require different accounts.
-* **`.kqlx` notebooks**: Stored wherever you save them (workspace file), and contain your section content (queries, markdown text, python code/output, URL section settings, etc.).
+* **`.kqlx` / `.sqlx` notebooks**: Stored wherever you save them (workspace file), and contain your section content (queries, markdown text, python code/output, URL section settings, etc.). `.sqlx` files work the same way as `.kqlx` but for T-SQL sections.
 * **Persistent "no file" session**: If you use `Kusto Workbench: Open Query Editor`, the session auto-saves to a `.kqlx` file in VS Code's *global storage* for this extension so it can survive restarts.
-* **Optional persisted query results**: When enabled/available, the extension may embed recent query results into the `.kqlx` state as JSON (capped at \~200KB per section). If you save a `.kqlx`, those embedded results become part of the file.
+* **Optional persisted query results**: When enabled/available, the extension may embed recent query results into the `.kqlx` / `.sqlx` state as JSON (capped at \~200KB per section). If you save a `.kqlx` or `.sqlx`, those embedded results become part of the file.
 * **Schema cache**: Database schemas are cached on disk (in the extension's global storage) to speed up iteration. The cache is versioned and automatically invalidated when the format changes.
-* **Development notes**: AI-generated development notes are stored within the `.kqlx` file alongside your sections.
+* **Development notes**: AI-generated development notes are stored within the `.kqlx` / `.sqlx` file alongside your sections.
+* **SQL Server connections**: Saved in VS Code extension global state on your machine (server hostname, port, database, and authentication mode). Passwords are not stored by the extension; integrated authentication or token-based login is used.
 
 ### What gets sent to your Kusto cluster
 
@@ -273,6 +277,16 @@ When you click **Run** (or any action that executes KQL), the extension sends:
 The extension uses `vscode.authentication.getSession('microsoft', ['https://kusto.kusto.windows.net/.default'], …)` to acquire a token. Token lifecycle and secure storage are handled by VS Code; the extension uses the token in memory to authenticate requests.
 
 If you work with multiple clusters that require different accounts, the extension will try previously-used accounts silently (without prompting) and will only prompt you to sign in when none of the known accounts work for the target cluster.
+
+### What gets sent to your SQL Server
+
+When you click **Run** in a SQL section, the extension sends:
+
+* Your **T-SQL query text**
+* The target **server** and **database**
+* Your **credentials** (Windows integrated authentication or the authentication mode you selected)
+
+The connection is established via Microsoft's SQL Tools Service (the same engine behind the official SQL Server extension for VS Code). The extension does not store passwords on disk.
 
 ### What gets sent to GitHub Copilot
 
@@ -299,7 +313,7 @@ Python sections run **locally** on your machine by spawning a local Python inter
 ### How to remove stored data
 
 * Remove saved connections: use `Kusto Workbench: Manage Connections`.
-* Remove `.kqlx` content (including embedded results): delete or edit the `.kqlx` file.
+* Remove `.kqlx` / `.sqlx` content (including embedded results): delete or edit the file.
 * Clear the persistent session: delete the extension's global storage for Kusto Workbench (this removes the auto-saved session file).
 
 ## Third-party credits
@@ -320,6 +334,9 @@ This extension is built on top of some fantastic open-source projects. Huge than
 | **TanStack Virtual** | MIT | Tanner Linsley | [github.com/TanStack/virtual](https://github.com/TanStack/virtual) |
 | **marked** | MIT | marked contributors | [github.com/markedjs/marked](https://github.com/markedjs/marked) |
 | **DOMPurify** | Apache 2.0 / MPL 2.0 | Cure53 | [github.com/cure53/DOMPurify](https://github.com/cure53/DOMPurify) |
+| **Microsoft SQL Tools Service** | MIT | Microsoft | [github.com/microsoft/sqltoolsservice](https://github.com/microsoft/sqltoolsservice) |
+| **node-mssql** | MIT | Tediousjs contributors | [github.com/tediousjs/node-mssql](https://github.com/tediousjs/node-mssql) |
+| **vscode-jsonrpc** | MIT | Microsoft | [github.com/microsoft/vscode-languageserver-node](https://github.com/microsoft/vscode-languageserver-node) |
 | **esbuild** | MIT | Evan Wallace | [github.com/evanw/esbuild](https://github.com/evanw/esbuild) |
 
 ## License

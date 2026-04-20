@@ -142,6 +142,13 @@
 			padding-top: 0 !important;
 		}
 
+		/* WYSIWYG / raw-MD bottom breathing room — keeps the cursor away from the
+		   very bottom edge when editing at the end of an .md document. */
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .toastui-editor-ww-container .toastui-editor-contents,
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .toastui-editor-md-container .toastui-editor-contents {
+			padding-bottom: 30vh;
+		}
+
 		/* .md Preview mode viewer alignment. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"].is-md-preview .markdown-viewer,
 		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"].is-md-preview .markdown-viewer {
@@ -808,7 +815,7 @@
 		/* Preserve markdown preview-highlight on table cells. */
 		.kusto-markdown-editor .toastui-editor-contents th.toastui-editor-md-preview-highlight,
 		.kusto-markdown-editor .toastui-editor-contents td.toastui-editor-md-preview-highlight {
-			background-color: rgba(255, 245, 131, 0.5) !important;
+			background-color: rgba(255, 245, 131, 0.3) !important;
 		}
 
 		/* Markdown editor (TOAST UI Editor) - keep only the toolbar + editor surface.

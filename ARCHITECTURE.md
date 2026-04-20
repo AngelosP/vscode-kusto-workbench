@@ -2,7 +2,7 @@
 
 ## Overview
 
-Kusto Workbench is a VS Code extension that provides a notebook-like experience for Kusto Query Language (KQL). The extension consists of three major subsystems:
+Kusto Workbench is a VS Code extension that provides a notebook-like experience for Kusto Query Language (KQL) and T-SQL. The extension consists of three major subsystems:
 
 1. **Extension host** (Node.js / TypeScript) — manages the VS Code integration, query execution, authentication, and schema handling.
 2. **Webview UI** (browser / TypeScript / Lit) — the notebook editor rendered inside a VS Code webview panel.
@@ -45,6 +45,10 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `sql/sqlDialect.ts` | SqlDialect interface + shared types for pluggable SQL backends |
 | `sql/mssqlDialect.ts` | MSSQL dialect (pool, execute, schema, error classification) |
 | `sql/sqlDialectRegistry.ts` | Dialect registry: register/get/list SQL dialects |
+| `sql/sqlAuthState.ts` | Per-connection auth state tracking (AAD vs SQL Login) |
+| `sql/stsProcessManager.ts` | SQL Tools Service (STS) process lifecycle: spawn, restart with backoff, JSON-RPC connection |
+| `sql/stsLanguageService.ts` | STS language service client: initialize, completion requests, document sync |
+| `sql/stsDownloader.ts` | Downloads and extracts the STS binary on first use |
 
 ## KQL Language Service (`src/host/kqlLanguageService/`)
 
@@ -176,9 +180,9 @@ Webview modules communicate via window globals declared in `window-bridges.d.ts`
 
 ## File Formats
 
-### `.kqlx` / `.mdx` (Kusto Notebook)
+### `.kqlx` / `.sqlx` / `.mdx` (Notebooks)
 
-JSON format with a `sections` array. Each section has a `type` discriminator and type-specific fields. Type definitions live in `kqlxFormat.ts`.
+JSON format with a `sections` array. Each section has a `type` discriminator and type-specific fields. Type definitions live in `kqlxFormat.ts`. `.kqlx` files can contain any mix of section types (query, sql, chart, markdown, etc.). `.sqlx` files use the same JSON schema but only allow SQL sections. `.mdx` files are markdown-oriented notebooks.
 
 ### Section Types
 
@@ -247,6 +251,14 @@ SQL sections provide a near-identical notebook experience for T-SQL queries agai
 * **`SqlConnectionManager`** — CRUD for SQL connections. IDs use `sql_` prefix. Connections in `globalState`, passwords in `SecretStorage`
 * **`SqlQueryClient`** — pool management with serialization locks, cancelable query execution (deferred race pattern matching `KustoQueryClient`), AAD auth via `vscode.authentication`
 * **`SqlSchemaService`** (`sqlEditorSchema.ts`) — disk + memory schema cache, webview wiring via `prefetchSqlSchema`/`sqlSchemaData` messages
+
+### SQL Tools Service (STS) — IntelliSense Engine
+
+Inline completions for SQL sections are powered by Microsoft's SQL Tools Service, the same engine behind the official SQL Server extension. The STS runs as a separate process communicating over JSON-RPC.
+
+* **`StsDownloader`** (`sql/stsDownloader.ts`) — downloads the platform-specific STS binary on first activation. Stores it in the extension's global storage
+* **`StsProcessManager`** (`sql/stsProcessManager.ts`) — spawns the STS process, establishes a `vscode-jsonrpc` `MessageConnection`, handles restarts with exponential backoff (max 2 restarts), and enforces timeouts (15s initialize, 10s per request)
+* **`StsLanguageService`** (`sql/stsLanguageService.ts`) — LSP client layer: sends `textDocument/completion` requests, manages document open/change/close lifecycle, translates Monaco positions to LSP positions
 
 ### Webview Components
 
@@ -385,7 +397,7 @@ Key files: `core/section-factory.ts`, `monaco/monaco.ts`, `monaco/resize.ts`, `s
 
 ## Copilot Chat Feature
 
-The Copilot Chat feature integrates with an LLM via VS Code's Copilot API. The UX is a chat window alongside the Kusto query editor, inside a Kusto section. It has a main content view for the conversation, a textbox for user input, and Send/Cancel buttons. The header includes a Clear button to reset conversation history.
+The Copilot Chat feature integrates with an LLM via VS Code's Copilot API. The UX is a chat window alongside the query editor (Kusto or SQL), inside a section. It has a main content view for the conversation, a textbox for user input, and Send/Cancel buttons. The header includes a Clear button to reset conversation history.
 
 The LLM has access to two categories of tools:
 
@@ -430,6 +442,9 @@ Registered with `vscode.lm.registerTool()`:
 * `monaco-editor` — Code editor
 * `@toast-ui/editor` — WYSIWYG markdown editor
 * `echarts` — Charting library
+* `mssql` — Node.js SQL Server client (uses tedious). Externalized in esbuild
+* `vscode-jsonrpc` — JSON-RPC protocol for STS communication
+* Microsoft SQL Tools Service — bundled binary for SQL IntelliSense (downloaded on first use)
 
 ## Test Coverage
 
@@ -455,6 +470,14 @@ Tests are organized under `tests/`:
 | `schemaIndexUtils.test.ts` | Schema formatting, column counting, token-budget pruning |
 | `kqlDiagnostics.test.ts` | KQL error detection, pipe operator validation, statement splitting |
 | `message-protocol.test.ts` | Host↔webview message type alignment, payload shape contracts |
+| `mssqlDialect.test.ts` | MSSQL dialect: pool creation, query execution, schema extraction, error classification |
+| `sqlDialectRegistry.test.ts` | Dialect registry: register, get, list, unknown dialect handling |
+| `sqlFormat.test.ts` | `.sqlx` file parsing, serialization, section type validation |
+| `sqlClient.test.ts` | SQL query client: pool management, cancellation, auth flows |
+| `sqlPrettify.test.ts` | SQL formatting via sql-formatter |
+| `sqlAuthState.test.ts` | Per-connection auth state tracking |
+| `sqlFavorites.test.ts` | SQL favorites: add, remove, match, persistence |
+| `sqlEditorUtils.test.ts` | SQL editor utilities: query mode, error formatting |
 
 ### Integration tests (`tests/integration/`)
 
