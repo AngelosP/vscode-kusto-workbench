@@ -214,6 +214,10 @@ export class QueryExecutionController implements ReactiveController {
 
 	setQueryExecuting(executing: any): void {
 		const boxId = this.host.boxId;
+		// Sync test-observable state on the host element.
+		if (typeof (this.host as any)._testExecuting !== 'undefined') {
+			(this.host as any)._testExecuting = !!executing;
+		}
 		const runBtn = document.getElementById(boxId + '_run_btn') as any;
 		const runToggle = document.getElementById(boxId + '_run_toggle') as any;
 		const status = document.getElementById(boxId + '_exec_status') as any;

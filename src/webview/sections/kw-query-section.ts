@@ -188,6 +188,11 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	@state() private _name = '';
 	@state() private _expanded = true;
 
+	// ── E2E test observable state ─────────────────────────────────────────────
+	@state() _testExecuting = false;
+	@state() _testHasResults = false;
+	@state() _testHasError = false;
+
 	// ── ReactiveControllers ──────────────────────────────────────────────────
 	public connectionCtrl = new QueryConnectionController(this as any);
 	public executionCtrl = new QueryExecutionController(this as any);
@@ -214,6 +219,24 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
+	}
+
+	override updated(changedProps: Map<string, unknown>): void {
+		super.updated(changedProps);
+		this._syncTestStateAttrs();
+	}
+
+	private _syncTestStateAttrs(): void {
+		this.dataset.testConnection = this._connectionId ? 'true' : 'false';
+		this.dataset.testDatabasesLoading = this._databasesLoading ? 'true' : 'false';
+		this.dataset.testHasDatabases = this._databases.length > 0 ? 'true' : 'false';
+		this.dataset.testDatabaseCount = String(this._databases.length);
+		this.dataset.testDatabaseSelected = this._database ? 'true' : 'false';
+		if (this._database) this.dataset.testDatabase = this._database;
+		else delete this.dataset.testDatabase;
+		this.dataset.testExecuting = this._testExecuting ? 'true' : 'false';
+		this.dataset.testHasResults = this._testHasResults ? 'true' : 'false';
+		this.dataset.testHasError = this._testHasError ? 'true' : 'false';
 	}
 
 	// ── Light DOM content (created once — never re-rendered) ──────────────────
@@ -996,6 +1019,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		result: { columns?: { name: string; type?: string }[]; rows?: unknown[][]; metadata?: Record<string, unknown> },
 		options?: { label?: string; showExecutionTime?: boolean }
 	): void {
+		this._testExecuting = false;
+		this._testHasError = false;
+		this._testHasResults = true;
 		const columns: DataTableColumn[] = Array.isArray(result?.columns)
 			? result.columns.map(c => {
 				// Columns can be plain strings (from Kusto result) or objects { name, type }.
@@ -1171,6 +1197,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		errorOrModel: unknown,
 		clientActivityId?: string
 	): void {
+		this._testExecuting = false;
+		this._testHasError = true;
+		this._testHasResults = false;
 		const resultsDiv = document.getElementById(this.boxId + '_results');
 		const resultsWrapper = document.getElementById(this.boxId + '_results_wrapper');
 		const resizer = document.getElementById(this.boxId + '_results_resizer');

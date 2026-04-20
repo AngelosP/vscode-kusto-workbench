@@ -2,7 +2,7 @@
 
 A modern, notebook-like workflow for Kusto Query Language (KQL) in VS Code.
 
-Kusto Workbench is built for the tight loop of writing queries, running them, inspecting results, and iterating quickly; without forcing you to abandon existing `.kql` / `.csl` files. It uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/monaco-kusto)) so you will always have a reliable and robust Kusto editing experience and you'll get extra goodies on top that you won't get in the official clients (web or desktop).
+Kusto Workbench is built for the tight loop of writing queries, running them, inspecting results, and iterating quickly; without forcing you to abandon existing `.kql` / `.csl` files. It uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/monaco-kusto)) so you will always have a reliable and robust Kusto editing experience and you'll get extra goodies on top that you won't get in the official clients (web or desktop). It also supports T-SQL and works with exist `.sql` files (if you want support for more types of SQL please just make a request).
 
 It has many power features that accelerate the experts, and empower the newbies. You can search and view results, including complex JSON columns. You can transform data without changing queries. You can create charts and graphs with just a few clicks. You can compare two queries in terms of performance and results to make performance improvements with confidence. All this is just scratching the surface as there is so much more for you to be pleasantly surprised by.
 
@@ -79,6 +79,12 @@ Uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/mona
 
 ![Kusto query editor](./media/marketplace/kusto-query-editor.png)
 
+### SQL Sections
+
+Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files or add SQL sections to any workbook. You get inline completions, schema-aware Copilot chat, query execution with full result rendering, and all the same toolbar actions (run modes, favorites, persistence) you already know from the Kusto side.
+
+<!-- TODO: Add screenshot here — e.g. ![SQL sections](media/marketplace/sql-sections.png) -->
+
 ### Load .csv data directly from the internet
 
 * If you have a URL, then you can load it.
@@ -108,7 +114,7 @@ Uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/mona
 
 ## HTML for dashboards and more
 
-* Any HTML you would like, there are no limitations here. 
+* Any HTML you would like, there are no limitations here.
 * Dashboards do seem like a great usecase though. Use it to create complex and interactive dashboards that tell the story you want to tell. Just let Copilot do the coding...
 * JavaScript is supported so tooltips, filtering, sorting, and all interactivity is up to you. Create the optimal experience for the audience and conversation at hand.
 

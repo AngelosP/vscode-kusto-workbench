@@ -759,6 +759,58 @@
 			font-family: var(--vscode-editor-font-family);
 		}
 
+		/* Toast UI table overrides — theme-aware borders, compact rows, text wrapping.
+		   Uses VS Code CSS variables so it adapts to light/dark/high-contrast automatically. */
+		.kusto-markdown-editor .toastui-editor-contents table,
+		.markdown-viewer .toastui-editor-contents table {
+			border: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,0.25)) !important;
+			border-collapse: collapse !important;
+		}
+
+		.kusto-markdown-editor .toastui-editor-contents table th,
+		.kusto-markdown-editor .toastui-editor-contents table td,
+		.markdown-viewer .toastui-editor-contents table th,
+		.markdown-viewer .toastui-editor-contents table td {
+			border: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,0.25)) !important;
+			padding: 4px 10px !important;
+			height: auto !important;
+			overflow-wrap: break-word !important;
+			word-wrap: break-word !important;
+		}
+
+		.kusto-markdown-editor .toastui-editor-contents table th,
+		.markdown-viewer .toastui-editor-contents table th {
+			background-color: var(--vscode-editorWidget-background, rgba(128,128,128,0.1)) !important;
+			color: var(--vscode-editor-foreground) !important;
+			font-weight: 600 !important;
+		}
+
+		.kusto-markdown-editor .toastui-editor-contents th p,
+		.markdown-viewer .toastui-editor-contents th p {
+			color: inherit !important;
+		}
+
+		.kusto-markdown-editor .toastui-editor-contents table td,
+		.kusto-markdown-editor .toastui-editor-contents table td p,
+		.markdown-viewer .toastui-editor-contents table td,
+		.markdown-viewer .toastui-editor-contents table td p {
+			color: var(--vscode-editor-foreground) !important;
+		}
+
+		/* Preserve cell-selection highlights in the WYSIWYG editor. */
+		.kusto-markdown-editor .toastui-editor-contents td.toastui-editor-cell-selected {
+			background-color: var(--vscode-list-activeSelectionBackground, #d8dfec) !important;
+		}
+		.kusto-markdown-editor .toastui-editor-contents th.toastui-editor-cell-selected {
+			background-color: var(--vscode-list-activeSelectionBackground, rgba(103,204,255,0.3)) !important;
+		}
+
+		/* Preserve markdown preview-highlight on table cells. */
+		.kusto-markdown-editor .toastui-editor-contents th.toastui-editor-md-preview-highlight,
+		.kusto-markdown-editor .toastui-editor-contents td.toastui-editor-md-preview-highlight {
+			background-color: rgba(255, 245, 131, 0.5) !important;
+		}
+
 		/* Markdown editor (TOAST UI Editor) - keep only the toolbar + editor surface.
 		   The section header controls visibility, so hide the editor's internal preview tabs/panes. */
 		.kusto-markdown-editor .toastui-editor-defaultUI {

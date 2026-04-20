@@ -361,13 +361,14 @@ export class KwConnectionManager extends LitElement {
 
 			<div class="picker-actions-row">
 				<kw-kind-picker
+					data-testid="cm-kind-picker"
 					.activeKind=${kind}
 					.kustoCount=${connections.length}
 					.sqlCount=${sqlConnections.length}
 					@kind-changed=${(e: CustomEvent) => this._switchKind(e.detail.kind)}
 				></kw-kind-picker>
 				<div class="title-actions">
-					<button class="header-btn primary" @click=${() => this._openModal('add')}>
+					<button class="header-btn primary" data-testid="cm-add-connection" @click=${() => this._openModal('add')}>
 						${ICONS.add} Add connection
 					</button>
 					${kind === 'kusto' ? html`
@@ -381,7 +382,7 @@ export class KwConnectionManager extends LitElement {
 				</div>
 			</div>
 
-			<div class="explorer-panel">
+			<div class="explorer-panel" data-testid="cm-explorer-panel" data-test-kind=${kind} data-test-connections=${connections.length} data-test-sql-connections=${sqlConnections.length}>
 				${kind === 'kusto' ? this._renderKustoContent() : this._renderSqlContent()}
 			</div>
 
@@ -440,7 +441,7 @@ export class KwConnectionManager extends LitElement {
 	private _renderClusterList(connections: KustoConnection[], favClusterUrls: Set<string>, lntClusters: string[]): TemplateResult {
 		if (connections.length === 0) {
 			const hasFilter = this._filterFavorites || this._filterLnt;
-			return html`<div class="empty-state">
+			return html`<div class="empty-state" data-testid="cm-empty-state">
 				<div class="empty-state-icon">${ICONS.kustoCluster}</div>
 				<div class="empty-state-title">${hasFilter ? 'No matching clusters' : 'No clusters yet'}</div>
 				<div class="empty-state-text">${hasFilter ? 'Try removing the filter.' : 'Add a Kusto cluster to get started.'}</div>
@@ -1249,8 +1250,8 @@ export class KwConnectionManager extends LitElement {
 
 	private _renderKustoModal(): TemplateResult {
 		return html`
-			<div class="modal-overlay" @click=${() => this._closeModal()}>
-				<div class="modal-content" @click=${(e: Event) => e.stopPropagation()}>
+			<div class="modal-overlay" data-testid="cm-modal-overlay" @click=${() => this._closeModal()}>
+				<div class="modal-content" data-testid="cm-modal-content" @click=${(e: Event) => e.stopPropagation()}>
 					<div class="modal-header">
 						<h2>${this._modalMode === 'edit' ? 'Edit Connection' : 'Add Connection'}</h2>
 						<button class="btn-icon" @click=${() => this._closeModal()}>${ICONS.close}</button>

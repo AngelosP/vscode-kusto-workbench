@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.0.0] - 2026-04-20
+
+* T-SQL support ;)
+* E2E Testing via [vscode-extension-tester](http://github.com/AngelosP/vscode-extension-tester)
+
 ## [3.7.0] - 2026-04-11
 
 * Added instructions to make use of a wiki if it has access to it.

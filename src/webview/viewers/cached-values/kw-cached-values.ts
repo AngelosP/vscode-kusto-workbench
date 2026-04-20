@@ -318,9 +318,9 @@ export class KwCachedValues extends LitElement {
 		const sqlCount = snap ? (snap.sqlConnections?.length ?? 0) : 0;
 
 		return html`
-			<h1>Cached Values</h1>
+			<h1 data-testid="cv-title">Cached Values</h1>
 			<div class="small" style="display:flex;align-items:center;gap:6px;">Last updated: ${timestamp}
-				<button class="iconButton" title="Refresh" aria-label="Refresh"
+				<button class="iconButton" data-testid="cv-refresh" title="Refresh" aria-label="Refresh"
 					@click=${() => this._requestSnapshot()}
 					?disabled=${this._requestPending}>
 					${ICONS.refresh}
@@ -329,6 +329,7 @@ export class KwCachedValues extends LitElement {
 
 			<!-- Type selector -->
 			<kw-kind-picker
+				data-testid="cv-kind-picker"
 				.activeKind=${kind}
 				.kustoCount=${kustoCount}
 				.sqlCount=${sqlCount}
