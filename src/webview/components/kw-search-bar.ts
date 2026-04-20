@@ -62,7 +62,7 @@ export class KwSearchBar extends LitElement {
 
 	override render(): TemplateResult {
 		const isRegex = this.mode === 'regex';
-		const navDisabled = this.matchCount < 2;
+		const navDisabled = this.matchCount < 1;
 
 		return html`<div class="search-bar">
 			<div class="search-control">

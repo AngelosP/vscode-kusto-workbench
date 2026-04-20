@@ -2,15 +2,15 @@
 
 		.results-wrapper {
 			position: relative;
-			width: 100%;
-			margin: 0;
+			width: calc(100% + 24px);
+			margin: 0 -12px;
+			padding: 0 12px;
 			min-height: 0;
 			overflow: hidden;
 			display: flex;
 			flex-direction: column;
-			background: transparent;
-			/* Separator line between actions and results header */
-			border-top: 1px solid var(--vscode-panel-border);
+			background: rgba(128, 128, 128, 0.04);
+			border-top: none;
 			border-radius: 0;
 		}
 
@@ -42,11 +42,18 @@
 		}
 
 		/* Results resizer sits outside results-wrapper as a sibling so it can
-		   bleed edge-to-edge without being clipped by overflow:hidden. */
+		   bleed edge-to-edge without being clipped by overflow:hidden.
+		   Background is transparent — the section's own border-bottom provides
+		   the resting visual and follows the border-radius correctly. */
 		.results-wrapper + .query-editor-resizer {
-			margin: 0 -13px -13px;
-			width: calc(100% + 26px);
+			margin: 0 -12px -1px;
+			width: calc(100% + 24px);
 			z-index: 2;
+			background: transparent;
+			border-radius: 0 0 4px 4px;
+		}
+		.results-wrapper + .query-editor-resizer::before {
+			border-radius: 0 0 4px 4px;
 		}
 
 		.results {

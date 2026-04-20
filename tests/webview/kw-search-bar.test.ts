@@ -155,12 +155,20 @@ describe('kw-search-bar', () => {
 		expect(el.shadowRoot!.querySelector('.search-status')).toBeNull();
 	});
 
-	it('nav buttons disabled when matchCount < 2', async () => {
-		const el = createSearchBar({ query: 'foo', matchCount: 1, currentMatch: 0 });
+	it('nav buttons disabled when matchCount < 1', async () => {
+		const el = createSearchBar({ query: 'foo', matchCount: 0, currentMatch: 0 });
 		await el.updateComplete;
 		const { prev, next } = getNavButtons(el);
 		expect(prev.disabled).toBe(true);
 		expect(next.disabled).toBe(true);
+	});
+
+	it('nav buttons enabled when matchCount >= 1', async () => {
+		const el = createSearchBar({ query: 'foo', matchCount: 1, currentMatch: 0 });
+		await el.updateComplete;
+		const { prev, next } = getNavButtons(el);
+		expect(prev.disabled).toBe(false);
+		expect(next.disabled).toBe(false);
 	});
 
 	it('nav buttons enabled when matchCount >= 2', async () => {

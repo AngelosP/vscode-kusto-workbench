@@ -167,6 +167,19 @@ export function defineCustomThemes(monaco: any) {
 	}
 }
 
+/**
+ * Return the Monaco theme name that `applyMonacoTheme` would set right now.
+ * Useful for passing to `monaco.editor.create({ theme })` so a new editor
+ * starts with the correct colours on the very first frame.
+ */
+export function getCurrentMonacoThemeName(): string {
+	const dark = isDarkTheme();
+	if (customThemesDefined) {
+		return dark ? 'kusto-workbench-dark' : 'kusto-workbench-light';
+	}
+	return dark ? 'vs-dark' : 'vs';
+}
+
 export function applyMonacoTheme(monaco: any) {
 	if (!monaco || !monaco.editor || typeof monaco.editor.setTheme !== 'function') {
 		return;

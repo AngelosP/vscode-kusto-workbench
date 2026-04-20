@@ -1,5 +1,7 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-cached-values.styles.js';
+import { ICONS, iconRegistryStyles } from '../../shared/icon-registry.js';
+import { sashSheet } from '../../shared/sash-styles.js';
 import { customElement, state, query } from 'lit/decorators.js';
 import type { KwObjectViewer } from '../../components/kw-object-viewer.js';
 
@@ -22,6 +24,7 @@ interface StoredAuthAccount {
 
 interface Snapshot {
 	timestamp: number;
+	activeKind: 'kusto' | 'sql';
 	auth: {
 		sessions: AuthSession[];
 		knownAccounts: StoredAuthAccount[];
@@ -29,6 +32,18 @@ interface Snapshot {
 	};
 	connections: Array<{ id: string; name: string; clusterUrl: string }>;
 	cachedDatabases: Record<string, string[]>;
+	sqlAuth: {
+		sessions: Array<{
+			account: { id: string; label: string };
+			accessToken?: string;
+			effectiveToken: string;
+			overrideToken?: string;
+		}>;
+	};
+	sqlConnections: Array<{ id: string; name: string; serverUrl: string; authType: string }>;
+	sqlCachedDatabases: Record<string, string[]>;
+	sqlServerAccountMap: Record<string, string>;
+	cachedSchemaKeys: string[];
 }
 
 interface VsCodeApi {
@@ -104,6 +119,42 @@ function getClusterLabelMap(connections: Array<{ clusterUrl: string; name?: stri
 	return labelByCluster;
 }
 
+function shortServerName(serverUrl: string): string {
+	let s = String(serverUrl || '').trim();
+	const suffix = '.database.windows.net';
+	const lower = s.toLowerCase();
+	if (lower.length >= suffix.length && lower.lastIndexOf(suffix) === (lower.length - suffix.length)) {
+		s = s.slice(0, s.length - suffix.length);
+	}
+	return s || String(serverUrl || '');
+}
+
+/** Group SQL cached databases (keyed by connectionId) into a server-keyed map, using connection metadata for labelling. */
+function groupSqlDatabasesByServer(
+	sqlCachedDatabases: Record<string, string[]>,
+	sqlConnections: Array<{ id: string; serverUrl: string }>,
+): { byServer: Record<string, { connectionIds: string[]; databases: string[] }>; serverOrder: string[] } {
+	const connById = new Map(sqlConnections.map(c => [c.id, c]));
+	const byServer: Record<string, { connectionIds: string[]; databases: string[] }> = {};
+	for (const [connId, dbs] of Object.entries(sqlCachedDatabases)) {
+		const conn = connById.get(connId);
+		const serverUrl = conn ? conn.serverUrl : connId;
+		if (!byServer[serverUrl]) {
+			byServer[serverUrl] = { connectionIds: [], databases: [] };
+		}
+		const existing = byServer[serverUrl];
+		if (!existing.connectionIds.includes(connId)) existing.connectionIds.push(connId);
+		const seen = new Set(existing.databases.map(d => d.toLowerCase()));
+		for (const db of dbs) {
+			const lower = db.toLowerCase();
+			if (!seen.has(lower)) { seen.add(lower); existing.databases.push(db); }
+		}
+	}
+	const serverOrder = Object.keys(byServer);
+	serverOrder.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+	return { byServer, serverOrder };
+}
+
 // ─── Change-detection keys (replicate original behavior) ─────────────────────
 
 function buildAccountsKey(snapshot: Snapshot): string {
@@ -173,8 +224,16 @@ export class KwCachedValues extends LitElement {
 	// ── Reactive state ────────────────────────────────────────────────────────
 
 	@state() private _snapshot: Snapshot | null = null;
+	@state() private _activeKind: 'kusto' | 'sql' = 'kusto';
 	@state() private _selectedDbClusterKey = '';
+	@state() private _selectedSqlServerKey = '';
 	@state() private _schemaRequestInFlight = false;
+	/** Database currently being refreshed (for spinner feedback). */
+	@state() private _sqlSchemaRefreshDb = '';
+	/** Kusto database currently being refreshed (for spinner feedback). */
+	@state() private _kustoSchemaRefreshDb = '';
+	/** Set of account IDs whose override input is expanded. */
+	@state() private _expandedOverrides = new Set<string>();
 
 	@query('kw-object-viewer') private _objectViewer!: KwObjectViewer;
 
@@ -189,7 +248,6 @@ export class KwCachedValues extends LitElement {
 
 	private _vscode!: VsCodeApi;
 	private _requestPending = false;
-	private _pollInterval: ReturnType<typeof setInterval> | null = null;
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -198,16 +256,11 @@ export class KwCachedValues extends LitElement {
 		this._vscode = acquireVsCodeApi();
 		window.addEventListener('message', this._onMessage);
 		this._requestSnapshot();
-		this._pollInterval = setInterval(() => this._requestSnapshot(), 2000);
 	}
 
 	disconnectedCallback(): void {
 		super.disconnectedCallback();
 		window.removeEventListener('message', this._onMessage);
-		if (this._pollInterval !== null) {
-			clearInterval(this._pollInterval);
-			this._pollInterval = null;
-		}
 	}
 
 	// ── Message handling ──────────────────────────────────────────────────────
@@ -216,10 +269,24 @@ export class KwCachedValues extends LitElement {
 		const msg = event.data;
 		if (msg?.type === 'snapshot') {
 			this._requestPending = false;
-			this._snapshot = msg.snapshot;
+			const snap = msg.snapshot as Snapshot;
+			this._snapshot = snap;
+
+			// Auto-detect active kind from persisted value + available data (same logic as Connection Manager)
+			if (snap) {
+				const hasKusto = (snap.connections?.length ?? 0) > 0 || (snap.auth?.sessions?.length ?? 0) > 0;
+				const hasSql = (snap.sqlConnections?.length ?? 0) > 0;
+				const persisted = snap.activeKind;
+				if (persisted === 'sql' && hasSql) this._activeKind = 'sql';
+				else if (persisted === 'kusto' && hasKusto) this._activeKind = 'kusto';
+				else if (hasSql && !hasKusto) this._activeKind = 'sql';
+				else this._activeKind = 'kusto';
+			}
 		}
 		if (msg?.type === 'schemaResult') {
 			this._schemaRequestInFlight = false;
+			this._sqlSchemaRefreshDb = '';
+			this._kustoSchemaRefreshDb = '';
 			const db = String(msg.database || '');
 			const title = 'Cached schema for ' + (db || '(unknown db)');
 			const jsonText = String(msg.json || '');
@@ -246,11 +313,44 @@ export class KwCachedValues extends LitElement {
 	protected render(): TemplateResult {
 		const snap = this._snapshot;
 		const timestamp = snap ? new Date(snap.timestamp).toLocaleString() : 'Loading…';
+		const kind = this._activeKind;
+		const kustoCount = snap ? (snap.connections?.length ?? 0) : 0;
+		const sqlCount = snap ? (snap.sqlConnections?.length ?? 0) : 0;
 
 		return html`
-			<h1>Kusto Workbench: Cached Values</h1>
-			<div class="small">Last updated: ${timestamp}</div>
+			<h1>Cached Values</h1>
+			<div class="small" style="display:flex;align-items:center;gap:6px;">Last updated: ${timestamp}
+				<button class="iconButton" title="Refresh" aria-label="Refresh"
+					@click=${() => this._requestSnapshot()}
+					?disabled=${this._requestPending}>
+					${ICONS.refresh}
+				</button>
+			</div>
 
+			<!-- Type selector -->
+			<kw-kind-picker
+				.activeKind=${kind}
+				.kustoCount=${kustoCount}
+				.sqlCount=${sqlCount}
+				@kind-changed=${(e: CustomEvent) => this._switchKind(e.detail.kind)}
+			></kw-kind-picker>
+
+			${kind === 'kusto' ? this._renderKustoContent() : this._renderSqlContent()}
+
+			<kw-object-viewer></kw-object-viewer>
+		`;
+	}
+
+	private _switchKind(kind: 'kusto' | 'sql'): void {
+		if (kind === this._activeKind) return;
+		this._activeKind = kind;
+		this._vscode.postMessage({ type: 'setActiveKind', kind });
+	}
+
+	// ── Kusto content (existing sections) ────────────────────────────────────
+
+	private _renderKustoContent(): TemplateResult {
+		return html`
 			<section>
 				<header>
 					<div>
@@ -280,20 +380,12 @@ export class KwCachedValues extends LitElement {
 					<div class="rowActions">
 						<button class="iconButton" type="button" title="clear all cached schema data" aria-label="clear all cached schema data"
 							@click=${this._onSchemaClearAll}>
-							<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
-								<path d="M6 2.5h4" />
-								<path d="M3.5 4.5h9" />
-								<path d="M5 4.5l.7 9h4.6l.7-9" />
-								<path d="M6.6 7v4.8" />
-								<path d="M9.4 7v4.8" />
-							</svg>
+							${ICONS.trash}
 						</button>
 					</div>
 				</header>
 				<div class="sectionBody" id="dbContent">${this._renderDatabases()}</div>
 			</section>
-
-			<kw-object-viewer></kw-object-viewer>
 		`;
 	}
 
@@ -307,52 +399,56 @@ export class KwCachedValues extends LitElement {
 			return html`<div class="small">No cached Kusto auth sessions found.</div>`;
 		}
 		return html`
-			<table>
-				<thead><tr>
-					<th>Account</th>
-					<th>Account Id</th>
-					<th class="tokenCol">Token</th>
-					<th>Override</th>
-					<th>Actions</th>
-				</tr></thead>
-				<tbody>
-					${sessions.map(s => this._renderAuthRow(s))}
-				</tbody>
-			</table>
+			<div class="authCards">
+				${sessions.map(s => this._renderAuthRow(s))}
+			</div>
 		`;
 	}
 
 	private _renderAuthRow(session: AuthSession): TemplateResult {
 		const account = session.account ?? { id: '', label: '' };
 		const overrideVal = session.overrideToken ? String(session.overrideToken) : '';
+		const hasOverride = !!overrideVal;
+		const isExpanded = this._expandedOverrides.has(account.id);
 		return html`
-			<tr>
-				<td>${account.label}</td>
-				<td class="mono">${account.id}</td>
-				<td class="tokenCol">
-					<div class="rowActions">
-						<button class="iconButton" title="Copy token" aria-label="Copy token"
-							@click=${() => this._copyToken(account.id)}>
-							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v12h2V3h12V1z"/><path d="M20 5H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h12v14z"/></svg>
-						</button>
-						<button class="iconButton" title="Delete token" aria-label="Delete token"
-							@click=${() => this._clearOverride(account.id)}>
-							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12v2H6V7zm2 3h8l-1 10H9L8 10zm3-6h2v2h-2V4z"/></svg>
-						</button>
+			<div class="authCard">
+				<div class="authCardRow">
+					${hasOverride ? html`<div class="overrideDot" title="Token override active"></div>` : nothing}
+					<div class="authCardInfo">
+						<div class="authCardLabel">${account.label}</div>
+						<div class="authCardId" title="${account.id}">${account.id}</div>
 					</div>
-				</td>
-				<td>
-					<textarea data-override-for="${account.id}" placeholder="(empty = use session token)">${overrideVal}</textarea>
-				</td>
-				<td>
-					<div class="rowActions">
+					<div class="authCardActions">
+						<button class="iconButton" title="Copy effective token" aria-label="Copy effective token"
+							@click=${() => this._copyToken(account.id)}>
+							${ICONS.copy}
+						</button>
+						<button class="iconButton" title="${isExpanded ? 'Hide override' : 'Set token override'}" aria-label="Toggle override"
+							@click=${() => this._toggleOverride(account.id)}>
+							${ICONS.edit}
+						</button>
+						${hasOverride ? html`
+							<button class="iconButton" title="Clear override" aria-label="Clear override"
+								@click=${() => this._clearOverride(account.id)}>
+								${ICONS.trash}
+							</button>
+						` : nothing}
+					</div>
+				</div>
+				${isExpanded ? html`
+					<div class="authOverrideRow">
+						<span class="overrideLabel">Override</span>
+						<input type="text" data-override-for="${account.id}"
+							placeholder="Paste token to override"
+							.value=${overrideVal}
+							@keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') this._saveOverride(account.id); }} />
 						<button class="iconButton" title="Save override" aria-label="Save override"
 							@click=${() => this._saveOverride(account.id)}>
-							<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M17 3H5a2 2 0 0 0-2 2v14h18V7l-4-4zm2 14H5V5h11.17L19 7.83V17z"/><path d="M7 5h8v4H7V5z"/></svg>
+							${ICONS.save}
 						</button>
 					</div>
-				</td>
-			</tr>
+				` : nothing}
+			</div>
 		`;
 	}
 
@@ -441,7 +537,7 @@ export class KwCachedValues extends LitElement {
 
 		return html`
 			<div class="twoPane">
-				<div class="pane list scrollPane" tabindex="0" role="listbox" aria-label="Clusters"
+				<div class="pane listPane list scrollPane" tabindex="0" role="listbox" aria-label="Clusters"
 					@keydown=${this._onDbListKeydown}>
 					${clusterKeys.map(ck => {
 						const list = Array.isArray(cached[ck]) ? cached[ck] : [];
@@ -450,37 +546,301 @@ export class KwCachedValues extends LitElement {
 						return html`
 							<div class="listItem ${isSelected ? 'selected' : ''}"
 								@click=${() => this._selectDbCluster(ck)}>
-								<div title="${title}">${shortClusterName(ck)}</div>
+								<div class="listItemName" title="${title}">${shortClusterName(ck)}</div>
 								<div class="count">${list.length}</div>
 							</div>`;
 					})}
 				</div>
-				<div class="pane scrollPane" tabindex="0" aria-label="Databases">
+				<div class="resizer-v" @mousedown=${this._onSplitterMouseDown}></div>
+				<div class="pane detailPane scrollPane" tabindex="0" aria-label="Databases">
 					<div style="padding:10px;">
 						<div class="dbDetailHeader">
-							<div class="small">${selectedTitle}</div>
+							<div class="detailUrl" title="${selectedTitle}">${selectedTitle}</div>
 							<div class="rowActions">
 								<button class="iconButton" title="Refresh the list of cached databases for selected cluster" aria-label="Refresh the list of cached databases for selected cluster"
 									@click=${() => this._refreshDatabases(selected)}>
-									<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a7 7 0 0 1 6.32 4H16v2h6V5h-2v2.1A9 9 0 1 0 21 12h-2a7 7 0 1 1-7-7z"/></svg>
+									${ICONS.refresh}
 								</button>
 								<button class="iconButton" title="Delete the list of cached databases for the selected cluster" aria-label="Delete the list of cached databases for the selected cluster"
 									@click=${() => this._deleteDatabases(selected)}>
-									<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 7h12v2H6V7zm2 3h8l-1 10H9L8 10zm3-6h2v2h-2V4z"/></svg>
+									${ICONS.trash}
 								</button>
 							</div>
 						</div>
-						<table>
-							<thead><tr><th>Database</th></tr></thead>
-							<tbody>
-								${selectedList.filter(Boolean).map(db => html`
-									<tr><td>
-										<button class="linkButton mono" title="View cached schema JSON"
-											@click=${() => this._viewSchema(selected, String(db))}>${db}</button>
-									</td></tr>
-								`)}
-							</tbody>
-						</table>
+						<div class="dbList">
+							${selectedList.filter(Boolean).map(db => {
+								const isRefreshing = this._kustoSchemaRefreshDb === String(db);
+								const hasCachedSchema = snap.cachedSchemaKeys?.includes(`kusto:${selected}|${db}`);
+								return html`
+								<div class="dbItem">
+									<span class="dbIcon">${ICONS.database}</span>
+									${hasCachedSchema
+										? html`<button class="linkButton mono" title="View cached schema JSON"
+											@click=${() => this._viewSchema(selected, String(db))}>${db}</button>`
+										: html`<span class="dbName" title="No cached schema">${db}</span>`
+									}
+									<div class="dbActions">
+										<button class="iconButton${isRefreshing ? ' spinning' : ''}" title="Refresh schema for ${db}" aria-label="Refresh schema for ${db}"
+											?disabled=${isRefreshing}
+											@click=${() => this._refreshKustoSchema(selected, String(db))}>
+											${ICONS.refresh}
+										</button>
+									</div>
+								</div>`;
+							})}
+						</div>
+					</div>
+				</div>
+			</div>
+		`;
+	}
+
+	// ── SQL content ──────────────────────────────────────────────────────────
+
+	private _renderSqlContent(): TemplateResult {
+		return html`
+			<section>
+				<header>
+					<div>
+						<div><strong>Cached SQL authentication tokens</strong></div>
+						<div class="small">Shows VS Code auth sessions for the Azure SQL scope (AAD only).</div>
+					</div>
+				</header>
+				<div class="sectionBody">${this._renderSqlAuth()}</div>
+			</section>
+
+			<section>
+				<header>
+					<div>
+						<div><strong>Cached associations of servers to authentication</strong></div>
+						<div class="small">Server → authentication method (AAD account or SQL Login).</div>
+					</div>
+				</header>
+				<div class="sectionBody">${this._renderSqlServerMap()}</div>
+			</section>
+
+			<section class="dbSection">
+				<header>
+					<div>
+						<div><strong>Cached list of databases (per server)</strong></div>
+						<div class="small">Select a server on the left to view its cached databases.</div>
+					</div>
+					<div class="rowActions">
+						<button class="iconButton" type="button" title="clear all cached SQL schema data" aria-label="clear all cached SQL schema data"
+							@click=${this._onSqlSchemaClearAll}>
+							${ICONS.trash}
+						</button>
+					</div>
+				</header>
+				<div class="sectionBody" id="sqlDbContent">${this._renderSqlDatabases()}</div>
+			</section>
+		`;
+	}
+
+	private _renderSqlAuth(): TemplateResult | typeof nothing {
+		const snap = this._snapshot;
+		if (!snap) return nothing;
+		const sessions = Array.isArray(snap.sqlAuth?.sessions) ? snap.sqlAuth.sessions : [];
+		if (sessions.length === 0) {
+			return html`<div class="small">No cached SQL AAD auth sessions found.</div>`;
+		}
+		return html`
+			<div class="authCards">
+				${sessions.map(s => this._renderSqlAuthRow(s))}
+			</div>
+		`;
+	}
+
+	private _renderSqlAuthRow(session: { account: { id: string; label: string }; accessToken?: string; overrideToken?: string }): TemplateResult {
+		const account = session.account ?? { id: '', label: '' };
+		const overrideVal = session.overrideToken ? String(session.overrideToken) : '';
+		const hasOverride = !!overrideVal;
+		const isExpanded = this._expandedOverrides.has('sql:' + account.id);
+		return html`
+			<div class="authCard">
+				<div class="authCardRow">
+					${hasOverride ? html`<div class="overrideDot" title="Token override active"></div>` : nothing}
+					<div class="authCardInfo">
+						<div class="authCardLabel">${account.label}</div>
+						<div class="authCardId" title="${account.id}">${account.id}</div>
+					</div>
+					<div class="authCardActions">
+						<button class="iconButton" title="Copy effective token" aria-label="Copy effective token"
+							@click=${() => this._copySqlToken(account.id)}>
+							${ICONS.copy}
+						</button>
+						<button class="iconButton" title="${isExpanded ? 'Hide override' : 'Set token override'}" aria-label="Toggle override"
+							@click=${() => this._toggleOverride('sql:' + account.id)}>
+							${ICONS.edit}
+						</button>
+						${hasOverride ? html`
+							<button class="iconButton" title="Clear override" aria-label="Clear override"
+								@click=${() => this._clearSqlOverride(account.id)}>
+								${ICONS.trash}
+							</button>
+						` : nothing}
+					</div>
+				</div>
+				${isExpanded ? html`
+					<div class="authOverrideRow">
+						<span class="overrideLabel">Override</span>
+						<input type="text" data-sql-override-for="${account.id}"
+							placeholder="Paste token to override"
+							.value=${overrideVal}
+							@keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') this._saveSqlOverride(account.id); }} />
+						<button class="iconButton" title="Save override" aria-label="Save override"
+							@click=${() => this._saveSqlOverride(account.id)}>
+							${ICONS.save}
+						</button>
+					</div>
+				` : nothing}
+			</div>
+		`;
+	}
+
+	private _renderSqlServerMap(): TemplateResult | typeof nothing {
+		const snap = this._snapshot;
+		if (!snap) return nothing;
+		const conns = Array.isArray(snap.sqlConnections) ? snap.sqlConnections : [];
+		if (conns.length === 0) {
+			return html`<div class="small">No SQL connections configured.</div>`;
+		}
+
+		// Group by server URL — show one row per unique server
+		const serverMap = this.readSqlServerAccountMap();
+		const seen = new Set<string>();
+		const rows: Array<{ serverUrl: string; authType: string; connectionId: string }> = [];
+		for (const c of conns) {
+			const serverLower = c.serverUrl.toLowerCase();
+			if (seen.has(serverLower)) continue;
+			seen.add(serverLower);
+			rows.push({ serverUrl: c.serverUrl, authType: c.authType, connectionId: c.id });
+		}
+
+		// Build accounts list for AAD dropdowns
+		const accountsById = new Map<string, { id: string; label: string }>();
+		const known = Array.isArray(snap.auth?.knownAccounts) ? snap.auth.knownAccounts : [];
+		const sessions = Array.isArray(snap.auth?.sessions) ? snap.auth.sessions : [];
+		const sqlSessions = Array.isArray(snap.sqlAuth?.sessions) ? snap.sqlAuth.sessions : [];
+		for (const a of known) { if (a?.id) accountsById.set(a.id, { id: a.id, label: a.label || a.id }); }
+		for (const s of sessions) { if (s?.account?.id && !accountsById.has(s.account.id)) accountsById.set(s.account.id, { id: s.account.id, label: s.account.label || s.account.id }); }
+		for (const s of sqlSessions) { if (s?.account?.id && !accountsById.has(s.account.id)) accountsById.set(s.account.id, { id: s.account.id, label: s.account.label || s.account.id }); }
+		const accounts = [...accountsById.values()];
+
+		// For AAD connections, if no explicit serverMap entry, auto-detect from SQL AAD sessions
+		const effectiveServerMap: Record<string, string> = { ...serverMap };
+		for (const row of rows) {
+			if (row.authType === 'aad' && !effectiveServerMap[row.serverUrl] && sqlSessions.length > 0) {
+				effectiveServerMap[row.serverUrl] = sqlSessions[0].account?.id ?? '';
+			}
+		}
+
+		return html`
+			<table>
+				<thead><tr>
+					<th>Server</th>
+					<th>Authentication</th>
+				</tr></thead>
+				<tbody>
+					${rows.map(row => html`
+						<tr>
+							<td class="mono" title="${row.serverUrl}">${shortServerName(row.serverUrl)}</td>
+							<td>
+								${row.authType === 'aad' ? html`
+									<div class="select-wrapper" title="Select account">
+										<select @change=${(e: Event) => this._onSqlServerAccountChange(row.serverUrl, e)}>
+											<option value="">(none)</option>
+											${accounts.map(a => html`
+												<option value="${a.id}" ?selected=${a.id === effectiveServerMap[row.serverUrl]}>${a.label}</option>
+											`)}
+										</select>
+									</div>
+								` : html`
+									<button class="linkButton" title="Edit connection" @click=${() => this._editSqlConnection(row.connectionId)}>SQL authentication</button>
+								`}
+							</td>
+						</tr>
+					`)}
+				</tbody>
+			</table>
+		`;
+	}
+
+	private _renderSqlDatabases(): TemplateResult | typeof nothing {
+		const snap = this._snapshot;
+		if (!snap) return nothing;
+		const sqlCached = snap.sqlCachedDatabases && typeof snap.sqlCachedDatabases === 'object' ? snap.sqlCachedDatabases : {};
+		const sqlConns = Array.isArray(snap.sqlConnections) ? snap.sqlConnections : [];
+		const { byServer, serverOrder } = groupSqlDatabasesByServer(sqlCached, sqlConns);
+
+		if (serverOrder.length === 0) {
+			return html`<div class="small">No cached database lists.</div>`;
+		}
+
+		// Ensure selection is stable
+		let selected = this._selectedSqlServerKey;
+		if (!selected || !serverOrder.includes(selected)) {
+			selected = serverOrder[0];
+			this._selectedSqlServerKey = selected;
+		}
+
+		const entry = byServer[selected];
+		const selectedList = entry ? entry.databases : [];
+		const selectedConnIds = entry ? entry.connectionIds : [];
+
+		return html`
+			<div class="twoPane">
+				<div class="pane listPane list scrollPane" tabindex="0" role="listbox" aria-label="Servers"
+					@keydown=${this._onSqlDbListKeydown}>
+					${serverOrder.map(srv => {
+						const e = byServer[srv];
+						const isSelected = srv === selected;
+						return html`
+							<div class="listItem ${isSelected ? 'selected' : ''}"
+								@click=${() => this._selectSqlServer(srv)}>
+								<div class="listItemName" title="${srv}">${shortServerName(srv)}</div>
+								<div class="count">${e.databases.length}</div>
+							</div>`;
+					})}
+				</div>
+				<div class="resizer-v" @mousedown=${this._onSplitterMouseDown}></div>
+				<div class="pane detailPane scrollPane" tabindex="0" aria-label="Databases">
+					<div style="padding:10px;">
+						<div class="dbDetailHeader">
+							<div class="detailUrl" title="${selected}">${selected}</div>
+							<div class="rowActions">
+								<button class="iconButton" title="Refresh the list of cached databases for selected server" aria-label="Refresh the list of cached databases for selected server"
+									@click=${() => { for (const cid of selectedConnIds) this._refreshSqlDatabases(cid); }}>
+									${ICONS.refresh}
+								</button>
+								<button class="iconButton" title="Delete the list of cached databases for the selected server" aria-label="Delete the list of cached databases for the selected server"
+									@click=${() => { for (const cid of selectedConnIds) this._deleteSqlDatabases(cid); }}>
+									${ICONS.trash}
+								</button>
+							</div>
+						</div>
+						<div class="dbList">
+							${selectedList.filter(Boolean).map(db => {
+								const isRefreshing = this._sqlSchemaRefreshDb === String(db);
+								const hasCachedSchema = snap.cachedSchemaKeys?.includes(`sql:${selected}|${db}`);
+								return html`
+								<div class="dbItem">
+									<span class="dbIcon">${ICONS.database}</span>
+									${hasCachedSchema
+										? html`<button class="linkButton mono" title="View cached SQL schema"
+											@click=${() => this._viewSqlSchema(selected, String(db))}>${db}</button>`
+										: html`<span class="dbName" title="No cached schema">${db}</span>`
+									}
+									<div class="dbActions">
+										<button class="iconButton${isRefreshing ? ' spinning' : ''}" title="Refresh schema for ${db}" aria-label="Refresh schema for ${db}"
+											?disabled=${isRefreshing}
+											@click=${() => this._refreshSqlSchema(selected, String(db), selectedConnIds[0] ?? '')}>
+											${ICONS.refresh}
+										</button>
+									</div>
+								</div>`;
+							})}
+						</div>
 					</div>
 				</div>
 			</div>
@@ -488,6 +848,13 @@ export class KwCachedValues extends LitElement {
 	}
 
 	// ── Event handlers ────────────────────────────────────────────────────────
+
+	private _toggleOverride(key: string): void {
+		const next = new Set(this._expandedOverrides);
+		if (next.has(key)) next.delete(key);
+		else next.add(key);
+		this._expandedOverrides = next;
+	}
 
 	private _copyToken(accountId: string): void {
 		const snap = this._snapshot;
@@ -509,8 +876,8 @@ export class KwCachedValues extends LitElement {
 	}
 
 	private _saveOverride(accountId: string): void {
-		const ta = this.shadowRoot?.querySelector(`textarea[data-override-for="${CSS.escape(accountId)}"]`) as HTMLTextAreaElement | null;
-		const token = ta?.value ?? '';
+		const el = this.shadowRoot?.querySelector(`input[data-override-for="${CSS.escape(accountId)}"]`) as HTMLInputElement | null;
+		const token = el?.value ?? '';
 		this._vscode.postMessage({ type: 'auth.setTokenOverride', accountId, token });
 		this._requestSnapshot();
 	}
@@ -534,6 +901,33 @@ export class KwCachedValues extends LitElement {
 	private _selectDbCluster(clusterKey: string): void {
 		this._selectedDbClusterKey = clusterKey;
 	}
+
+	private _onSplitterMouseDown = (e: MouseEvent): void => {
+		e.preventDefault();
+		const splitter = e.currentTarget as HTMLElement;
+		const twoPane = splitter.parentElement!;
+		const listPane = twoPane.querySelector('.listPane') as HTMLElement;
+		if (!listPane) return;
+		const startX = e.clientX;
+		const startWidth = listPane.getBoundingClientRect().width;
+		splitter.classList.add('is-dragging');
+		document.body.style.cursor = 'col-resize';
+		document.body.style.userSelect = 'none';
+		const onMove = (ev: MouseEvent) => {
+			const delta = ev.clientX - startX;
+			const newWidth = Math.max(120, Math.min(startWidth + delta, twoPane.clientWidth * 0.5));
+			listPane.style.width = newWidth + 'px';
+		};
+		const onUp = () => {
+			splitter.classList.remove('is-dragging');
+			document.body.style.cursor = '';
+			document.body.style.userSelect = '';
+			document.removeEventListener('mousemove', onMove);
+			document.removeEventListener('mouseup', onUp);
+		};
+		document.addEventListener('mousemove', onMove);
+		document.addEventListener('mouseup', onUp);
+	};
 
 	private _onDbListKeydown(e: KeyboardEvent): void {
 		const key = e.key;
@@ -568,9 +962,115 @@ export class KwCachedValues extends LitElement {
 		this._vscode.postMessage({ type: 'schema.get', clusterKey, database });
 	}
 
+	private _refreshKustoSchema(clusterKey: string, database: string): void {
+		if (this._kustoSchemaRefreshDb) return;
+		this._kustoSchemaRefreshDb = database;
+		this._schemaRequestInFlight = true;
+		this._vscode.postMessage({ type: 'schema.refresh', clusterKey, database });
+	}
+
+	// ── SQL event handlers ────────────────────────────────────────────────────
+
+	private _copySqlToken(accountId: string): void {
+		const snap = this._snapshot;
+		let token = '';
+		if (snap?.sqlAuth?.sessions) {
+			for (const s of snap.sqlAuth.sessions) {
+				if (s?.account?.id === accountId) {
+					token = String(s.effectiveToken || '');
+					break;
+				}
+			}
+		}
+		this._vscode.postMessage({ type: 'copyToClipboard', text: token });
+	}
+
+	private _clearSqlOverride(accountId: string): void {
+		this._vscode.postMessage({ type: 'sqlAuth.clearTokenOverride', accountId });
+		this._requestSnapshot();
+	}
+
+	private _saveSqlOverride(accountId: string): void {
+		const el = this.shadowRoot?.querySelector(`input[data-sql-override-for="${CSS.escape(accountId)}"]`) as HTMLInputElement | null;
+		const token = el?.value ?? '';
+		this._vscode.postMessage({ type: 'sqlAuth.setTokenOverride', accountId, token });
+		this._requestSnapshot();
+	}
+
+	private _onSqlSchemaClearAll(): void {
+		this._vscode.postMessage({ type: 'sqlSchema.clearAll' });
+		this._requestSnapshot();
+	}
+
+	private _onSqlServerAccountChange(serverUrl: string, e: Event): void {
+		const target = e.target as HTMLSelectElement;
+		const accountId = target.value;
+		if (accountId) {
+			this._vscode.postMessage({ type: 'sqlServerMap.set', serverUrl, accountId });
+		} else {
+			this._vscode.postMessage({ type: 'sqlServerMap.delete', serverUrl });
+		}
+		this._requestSnapshot();
+	}
+
+	private _editSqlConnection(connectionId: string): void {
+		this._vscode.postMessage({ type: 'sqlAuth.editConnection', connectionId });
+	}
+
+	private _selectSqlServer(serverKey: string): void {
+		this._selectedSqlServerKey = serverKey;
+	}
+
+	private _onSqlDbListKeydown(e: KeyboardEvent): void {
+		const key = e.key;
+		if (key !== 'ArrowUp' && key !== 'ArrowDown') return;
+		const snap = this._snapshot;
+		if (!snap) return;
+		const sqlCached = snap.sqlCachedDatabases && typeof snap.sqlCachedDatabases === 'object' ? snap.sqlCachedDatabases : {};
+		const sqlConns = Array.isArray(snap.sqlConnections) ? snap.sqlConnections : [];
+		const { serverOrder } = groupSqlDatabasesByServer(sqlCached, sqlConns);
+		if (serverOrder.length === 0) return;
+		let idx = serverOrder.indexOf(this._selectedSqlServerKey);
+		if (idx < 0) idx = 0;
+		if (key === 'ArrowUp') idx = Math.max(0, idx - 1);
+		else idx = Math.min(serverOrder.length - 1, idx + 1);
+		this._selectedSqlServerKey = serverOrder[idx];
+		e.preventDefault();
+	}
+
+	private _refreshSqlDatabases(connectionId: string): void {
+		this._vscode.postMessage({ type: 'sqlDatabases.refresh', connectionId });
+		this._requestSnapshot();
+	}
+
+	private _deleteSqlDatabases(connectionId: string): void {
+		this._vscode.postMessage({ type: 'sqlDatabases.delete', connectionId });
+		this._requestSnapshot();
+	}
+
+	private _viewSqlSchema(serverUrl: string, database: string): void {
+		if (this._schemaRequestInFlight) return;
+		this._schemaRequestInFlight = true;
+		this._vscode.postMessage({ type: 'sqlSchema.get', serverUrl, database });
+	}
+
+	private _refreshSqlSchema(serverUrl: string, database: string, connectionId: string): void {
+		if (this._sqlSchemaRefreshDb) return;
+		this._sqlSchemaRefreshDb = database;
+		this._schemaRequestInFlight = true;
+		this._vscode.postMessage({ type: 'sqlSchema.refresh', serverUrl, database, connectionId });
+	}
+
+	/** Read SQL server → account map from snapshot (webview-side helper). */
+	private readSqlServerAccountMap(): Record<string, string> {
+		const snap = this._snapshot;
+		if (!snap?.sqlServerAccountMap || typeof snap.sqlServerAccountMap !== 'object') return {};
+		return snap.sqlServerAccountMap;
+	}
+
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static styles = styles;
+	static styles = [iconRegistryStyles, sashSheet, styles];
 }
 
 declare global {

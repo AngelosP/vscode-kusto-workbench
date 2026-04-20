@@ -6,7 +6,7 @@ export const styles = css`
 		:host {
 			display: block;
 			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
-			border-radius: 0;
+			border-radius: 4px;
 			margin-bottom: 16px;
 			background: var(--vscode-editor-background);
 			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
@@ -683,6 +683,7 @@ export const styles = css`
 			flex: 1 1 auto;
 			min-height: 0;
 			margin-top: 0;
+			padding-bottom: 10px;
 			overflow: hidden;
 			display: flex;
 			flex-direction: column;
@@ -694,46 +695,21 @@ export const styles = css`
 		}
 
 		.error-message {
-			padding: 12px 16px;
-			font-size: 12px;
-			color: var(--vscode-editorWarning-foreground, var(--vscode-foreground));
+			font-family: var(--vscode-font-family);
+			font-size: 13px;
+			color: var(--vscode-foreground);
+			padding: 10px 12px 17px 4px;
 			white-space: pre-wrap;
-			opacity: 0.85;
 		}
 
 		/* ── Resize handle ───────────────────────────────────────────── */
 
 		.resizer {
-			flex: 0 0 1px;
-			height: 1px;
-			cursor: ns-resize;
-			background: var(--vscode-panel-border, rgba(128,128,128,0.35));
-			position: relative;
-			touch-action: none;
-			z-index: 1;
 			margin: 0 -12px -1px -12px;
-		}
-		.resizer::after {
-			content: '';
-			position: absolute;
-			left: 0;
-			right: 0;
-			top: -3px;
-			bottom: -3px;
+			background: transparent;
+			border-radius: 0 0 3px 3px;
 		}
 		.resizer::before {
-			content: '';
-			position: absolute;
-			left: 0;
-			right: 0;
-			top: 50%;
-			height: 0;
-			transform: translateY(-50%);
-			background: var(--vscode-sash-hoverBorder, #007fd4);
-			transition: height 0.1s ease;
-			pointer-events: none;
-			z-index: 1;
+			border-radius: 0 0 3px 3px;
 		}
-		.resizer:hover::before { height: 6px; transition-delay: var(--kw-sash-reveal-delay, 0.5s); }
-		.resizer.is-dragging::before { height: 6px; transition-delay: 0s; }
 `;

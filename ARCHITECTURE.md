@@ -38,6 +38,13 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `kustoClientUtils.ts` | Pure schema parsing (`extractSchemaFromJson`, `finalizeSchema`), cell formatting, error classification |
 | `queryEditorUtils.ts` | Pure query helpers: error formatting, control command detection, query mode, cache directives |
 | `remoteFileOpener.ts` | Remote file opening support |
+| `sqlConnectionManager.ts` | Persists SQL connections in VS Code global state, passwords in SecretStorage |
+| `sqlClient.ts` | SQL query client with pool management, cancelable execution, AAD/SQL Login auth |
+| `sqlEditorSchema.ts` | SQL schema caching + webview wiring (`prefetchSqlSchema`/`sqlSchemaData`) |
+| `copilotChatFlavor.ts` | Flavor configuration for Copilot chat (Kusto vs SQL) |
+| `sql/sqlDialect.ts` | SqlDialect interface + shared types for pluggable SQL backends |
+| `sql/mssqlDialect.ts` | MSSQL dialect (pool, execute, schema, error classification) |
+| `sql/sqlDialectRegistry.ts` | Dialect registry: register/get/list SQL dialects |
 
 ## KQL Language Service (`src/host/kqlLanguageService/`)
 
@@ -183,6 +190,7 @@ JSON format with a `sections` array. Each section has a `type` discriminator and
 | `url` | `kw-url-section` | Embedded web content |
 | `chart` | `kw-chart-section` | Visualization configs (ECharts) |
 | `transformation` | `kw-transformation-section` | Data transformation expressions |
+| `sql` | `kw-sql-section` | T-SQL query cells (SQL Server / Azure SQL) |
 
 > A legacy `copilotQuery` type also exists for backward compatibility. It is treated as `query` at load time and should not be used in new code.
 
@@ -205,6 +213,17 @@ KustoConnection {
   clusterUrl: string;
   database?: string;
 }
+
+SqlConnection {
+  id: string;       // prefix: sql_
+  name: string;
+  dialect: string;   // e.g. 'mssql'
+  serverUrl: string;
+  port?: number;
+  database?: string;
+  authType: string;  // 'aad' | 'sql-login'
+  username?: string;
+}
 ```
 
 ## Schema Caching
@@ -212,6 +231,49 @@ KustoConnection {
 * **In-memory:** `schemaCache` Map in `KustoQueryClient`
 * **On-disk:** SHA1-hashed JSON files in `globalStorageUri/schemaCache/`
 * **Version:** `SCHEMA_CACHE_VERSION` constant triggers cache invalidation on format changes
+
+## SQL Section Architecture
+
+SQL sections provide a near-identical notebook experience for T-SQL queries against SQL Server / Azure SQL databases. The system mirrors the Kusto architecture with full separation.
+
+### Dialect System
+
+* **`SqlDialect`** interface (`sql/sqlDialect.ts`) — pluggable backend contract: `createPool`, `closePool`, `executeQuery`, `getDatabases`, `getDatabaseSchema`, `isAuthError`, `isCancelError`, `formatError`
+* **`MssqlDialect`** (`sql/mssqlDialect.ts`) — first dialect implementation using the `mssql` npm package
+* **`SqlDialectRegistry`** (`sql/sqlDialectRegistry.ts`) — register/get/list dialects. Future backends (PostgreSQL, MySQL) require only a new dialect file + registration
+
+### Host Services
+
+* **`SqlConnectionManager`** — CRUD for SQL connections. IDs use `sql_` prefix. Connections in `globalState`, passwords in `SecretStorage`
+* **`SqlQueryClient`** — pool management with serialization locks, cancelable query execution (deferred race pattern matching `KustoQueryClient`), AAD auth via `vscode.authentication`
+* **`SqlSchemaService`** (`sqlEditorSchema.ts`) — disk + memory schema cache, webview wiring via `prefetchSqlSchema`/`sqlSchemaData` messages
+
+### Webview Components
+
+* **`kw-sql-section`** — hybrid light/shadow DOM Lit component (mirrors `kw-query-section`): Monaco editor, server+database dropdowns, action bar with Run/Cancel, results table (`kw-data-table`), Copilot chat pane
+* **`kw-sql-toolbar`** — light DOM toolbar: Undo, Redo, Comment, Prettify (`sql-formatter`), Search, Replace, Copilot toggle
+* **`sql-copilot-chat-manager.controller.ts`** — ReactiveController managing Copilot chat lifecycle for SQL sections
+
+### Copilot Flavor System
+
+Both Kusto and SQL share the same `CopilotChatManagerController` and `CopilotService` infrastructure. Differences are captured in flavor objects:
+
+* **Host-side:** `CopilotChatFlavor` in `copilotChatFlavor.ts` — `kustoCopilotFlavor` / `sqlCopilotFlavor`. Controls role, language, rules file, feature flags
+* **Webview-side:** `WebviewCopilotFlavor` in `copilot-chat-flavor.ts` — `kustoWebviewFlavor` / `sqlWebviewFlavor`. Controls DOM IDs, message types, tool names, CSS classes
+
+SQL Copilot rules: `copilot-instructions/sql-query-rules.md`, optimization rules: `copilot-instructions/optimize-sql-rules.md`
+
+### Agent Tools
+
+4 SQL-specific tools registered in `kustoWorkbenchTools.ts`: `list-sql-connections`, `configure-sql-section`, `get-sql-schema`, `ask-sql-copilot`. The `add-section` tool also accepts `'sql'` as a type. The `list-sections` tool returns `serverUrl` for SQL sections (instead of `clusterUrl`).
+
+### Key Patterns
+
+* SQL events use `sql-` prefix (e.g. `sql-connection-changed`, `sql-database-changed`)
+* SQL state is separate: `sqlConnections` / `sqlCachedDatabases` in `state.ts`
+* Connection resolution matches by `serverUrl` (lowercase) instead of Kusto's hostname normalization
+* `mssql` is externalized in esbuild (native/complex transitive deps)
+* File format: `.kqlx` supports mixed Kusto+SQL; `.sqlx` allows only SQL sections
 
 ## Diagnostic Codes
 
@@ -280,6 +342,46 @@ The `.is-minimal` and `.is-ultra-compact` classes are still supported in CSS for
 * **Persistence Logic**: Before saving, check if a query section's `clusterUrl` matches a leave-no-trace cluster. If matched, strip `resultJson` from that section. Also strip data from chart/transformation sections that reference such query sections.
 
 Key files: `connectionManagerViewer.ts`, `connectionManager.ts`, `core/persistence.ts`, `queryEditorProvider.ts`.
+
+## Section Resize, Max Height & Fit-to-Contents
+
+Applies to all section types that contain a Monaco editor and show tabular results (Kusto query sections and SQL sections). Three concepts govern the resize behavior:
+
+### Max Heights (Absolute Ceilings)
+
+These ceilings cannot be exceeded by any operation — not manual sash dragging, not fit-to-contents, not auto-resize.
+
+| Concept | Definition |
+| ------- | ---------- |
+| **monaco-editor-max-height** | 750px. The absolute maximum height of the Monaco editor wrapper, regardless of content length. |
+| **section-max-height** (results area) | If tabular results are visible: the height needed to display all data rows plus the 10px gap (`padding-bottom` on `.results-wrapper`). If no tabular results: the results sash is disabled. |
+
+### Fit-to-Contents & Double-Click on Resize Sashes
+
+Fit-to-contents and double-clicking the resize sashes are **different entry points to the same logic**. They always produce the same result.
+
+- **Double-click on the editor sash** → fit the Monaco editor to the height needed to display all rows without a scrollbar, or `monaco-editor-max-height` (750px), whichever is smaller.
+- **Double-click on the results sash** → fit the results area to `section-max-height` or 750px, whichever is smaller.
+- **Fit-to-contents button** (on the section shell) → equivalent to double-clicking the editor sash and then the results sash. When tabular results are hidden, only the editor is adjusted.
+
+### Manual Sash Drag
+
+- **Editor sash**: capped at `monaco-editor-max-height` (750px). The user cannot drag the editor wrapper beyond 750px.
+- **Results sash**: capped at `section-max-height` (content height + 10px gap). The user can drag up to the full content height but not beyond it.
+
+### Auto-Resize (Grow-Only)
+
+The editor wrapper grows automatically as the user types, up to `monaco-editor-max-height` (750px). It never shrinks below the current height (to avoid jarring collapses). Auto-resize is disabled once the user manually resizes via the sash.
+
+### Key Constants
+
+| Constant | Value | Location | Purpose |
+| -------- | ----- | -------- | ------- |
+| `FIT_CAP_PX` | 750 | `section-factory.ts`, `kw-sql-section.ts`, `resize.ts` | `monaco-editor-max-height` and fit-to-contents cap for results |
+| `FIT_SLACK_PX` | 5 | `section-factory.ts`, `resize.ts` | Extra pixels below editor content |
+| `GAP_PX` | 10 | CSS `padding-bottom` on `.results-wrapper` | Gap between table end and section end |
+
+Key files: `core/section-factory.ts`, `monaco/monaco.ts`, `monaco/resize.ts`, `sections/kw-sql-section.ts`, `sections/kw-query-section.ts`.
 
 ## Copilot Chat Feature
 

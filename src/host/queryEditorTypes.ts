@@ -14,10 +14,12 @@ export const STORAGE_KEYS = {
 	cachedSchemasMigratedToDisk: 'kusto.cachedSchemasMigratedToDisk',
 	lastOptimizeCopilotModelId: 'kusto.optimize.lastCopilotModelId',
 	favorites: 'kusto.favorites',
+	sqlFavorites: 'sql.favorites',
 	copilotChatFirstTimeDismissed: 'kusto.copilotChatFirstTimeDismissed'
 } as const;
 
 export type KustoFavorite = { name: string; clusterUrl: string; database: string };
+export type SqlFavorite = { name: string; connectionId: string; database: string };
 
 export const DEFAULT_PREFERRED_COPILOT_MODEL_ID = 'claude-opus-4.6';
 
@@ -43,7 +45,9 @@ export type CopilotLocalTool = {
 export type StartCopilotWriteQueryMessage = {
 	type: 'startCopilotWriteQuery';
 	boxId: string;
+	flavor: 'kusto' | 'sql';
 	connectionId: string;
+	serverUrl: string;
 	database: string;
 	currentQuery?: string;
 	request: string;
@@ -74,6 +78,15 @@ export type ExecuteQueryMessage = {
 	cacheEnabled?: boolean;
 	cacheValue?: number;
 	cacheUnit?: CacheUnit | string;
+};
+
+export type ExecuteSqlQueryMessage = {
+	type: 'executeSqlQuery';
+	query: string;
+	sqlConnectionId: string;
+	boxId: string;
+	database?: string;
+	queryMode?: string;
 };
 
 export type CopyAdeLinkMessage = {
@@ -135,12 +148,12 @@ export type IncomingWebviewMessage =
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
 	| { type: 'setAutoTriggerAutocompleteEnabled'; enabled: boolean }
 	| { type: 'setCopilotInlineCompletionsEnabled'; enabled: boolean }
-	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string }
+	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string; flavor?: 'kusto' | 'sql' }
 	| { type: 'executePython'; boxId: string; code: string }
 	| { type: 'fetchUrl'; boxId: string; url: string }
 	| { type: 'cancelQuery'; boxId: string }
 	| { type: 'checkCopilotAvailability'; boxId: string }
-	| { type: 'prepareCopilotWriteQuery'; boxId: string }
+	| { type: 'prepareCopilotWriteQuery'; boxId: string; flavor?: 'kusto' | 'sql' }
 	| StartCopilotWriteQueryMessage
 	| { type: 'cancelCopilotWriteQuery'; boxId: string }
 	| { type: 'clearCopilotConversation'; boxId: string }
@@ -149,11 +162,35 @@ export type IncomingWebviewMessage =
 	| { type: 'cancelOptimizeQuery'; boxId: string }
 	| OptimizeQueryMessage
 	| ExecuteQueryMessage
+	| { type: 'getSqlConnections' }
+	| { type: 'getSqlDatabases'; sqlConnectionId: string; boxId: string }
+	| { type: 'refreshSqlDatabases'; sqlConnectionId: string; boxId: string }
+	| { type: 'saveSqlLastSelection'; sqlConnectionId: string; database?: string }
+	| { type: 'promptAddSqlConnection'; boxId?: string }
+	| { type: 'addSqlConnection'; name: string; serverUrl: string; dialect: string; authType: string; database?: string; port?: number; username?: string; password?: string; boxId?: string }
+	| { type: 'testSetSqlAuthOverride'; serverUrl: string; accountId: string; token: string }
+	| { type: 'testClearSqlAuthOverride'; accountId: string }
+	| ExecuteSqlQueryMessage
+	| { type: 'cancelSqlQuery'; boxId: string }
+	| { type: 'prefetchSqlSchema'; sqlConnectionId: string; database: string; boxId: string; forceRefresh?: boolean }
+	| { type: 'prepareSqlCopilotWriteQuery'; boxId: string }
+	| { type: 'startSqlCopilotWriteQuery'; boxId: string; sqlConnectionId: string; database: string; request: string; modelId?: string; enabledTools?: string[] }
+	| { type: 'cancelSqlCopilotWriteQuery'; boxId: string }
+	| { type: 'clearSqlCopilotConversation'; boxId: string }
+	| { type: 'removeFromSqlCopilotHistory'; boxId: string; entryId: string }
+	| { type: 'requestAddSqlFavorite'; connectionId: string; database: string; defaultName?: string; boxId?: string }
+	| { type: 'removeSqlFavorite'; connectionId: string; database: string; boxId?: string }
 	| CopyAdeLinkMessage
 	| ShareToClipboardMessage
 	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string }
 	| { type: 'requestCrossClusterSchema'; clusterName: string; database: string; boxId: string; requestToken: string }
+	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; line: number; column: number } }
+	| { type: 'stsDidOpen'; boxId: string; text: string }
+	| { type: 'stsDidChange'; boxId: string; text: string }
+	| { type: 'stsDidClose'; boxId: string }
+	| { type: 'stsConnect'; boxId: string; sqlConnectionId: string; database: string }
 	| { type: 'promptAddConnection'; boxId?: string }
+	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; boxId?: string }
 	| ImportConnectionsFromXmlMessage
 	| KqlLanguageRequestMessage
 	| FetchControlCommandSyntaxMessage

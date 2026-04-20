@@ -15,6 +15,7 @@ export const styles = css`
 		}
 		:host(.is-collapsed) .header-group {
 			margin-bottom: 0;
+			padding-bottom: 4px;
 		}
 		*, *::before, *::after { box-sizing: border-box; }
 
@@ -148,4 +149,48 @@ export const styles = css`
 			.favorite-btn-wrap { display: none !important; }
 			kw-schema-info { display: none !important; }
 		}
+
+		/* ── Add Connection Modal ────────────────────────────────────── */
+		.add-connection-overlay {
+			position: fixed; top: 0; left: 0; right: 0; bottom: 0;
+			background: rgba(0, 0, 0, 0.5); z-index: 10000;
+			display: flex; align-items: center; justify-content: center;
+		}
+		.add-connection-dialog {
+			background: var(--vscode-editor-background);
+			border: 1px solid var(--vscode-panel-border);
+			border-radius: 8px; width: 440px; max-width: 90%;
+			box-shadow: 0 4px 20px rgba(0, 0, 0, 0.3);
+		}
+		.add-connection-header {
+			display: flex; align-items: center; justify-content: space-between;
+			padding: 16px 20px;
+			border-bottom: 1px solid var(--vscode-panel-border);
+		}
+		.add-connection-title { font-size: 14px; font-weight: 600; }
+		.add-connection-close {
+			width: 28px; height: 28px; padding: 0; border: none;
+			background: transparent; color: var(--vscode-foreground);
+			cursor: pointer; display: inline-flex; align-items: center;
+			justify-content: center; border-radius: 4px;
+		}
+		.add-connection-close:hover { background: var(--vscode-toolbar-hoverBackground); }
+		.add-connection-close svg { width: 16px; height: 16px; fill: currentColor; }
+		.add-connection-body { padding: 16px 20px; }
+		.add-connection-footer {
+			display: flex; justify-content: flex-end; gap: 8px;
+			padding: 12px 20px;
+			border-top: 1px solid var(--vscode-panel-border);
+		}
+		.add-connection-btn {
+			display: inline-flex; align-items: center; gap: 6px;
+			padding: 6px 14px; font-size: 12px; border-radius: 2px;
+			border: 1px solid var(--vscode-button-border, transparent);
+			background: var(--vscode-button-secondaryBackground);
+			color: var(--vscode-button-secondaryForeground);
+			cursor: pointer; font-family: inherit;
+		}
+		.add-connection-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
+		.add-connection-btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+		.add-connection-btn.primary:hover { background: var(--vscode-button-hoverBackground); }
 `;

@@ -1,5 +1,8 @@
 import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
+import type { SectionElement } from '../shared/dom-helpers';
 import { styles } from './kw-url-section.styles.js';
+import { sectionGlowStyles } from '../shared/section-glow.styles.js';
+import { sashSheet } from '../shared/sash-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import '../components/kw-section-shell.js';
@@ -56,7 +59,7 @@ interface UrlFetchState {
  * CSV tables (via `<kw-data-table>`), HTML (sandboxed iframe), or plain text.
  */
 @customElement('kw-url-section')
-export class KwUrlSection extends LitElement {
+export class KwUrlSection extends LitElement implements SectionElement {
 
 	// ── Public properties ─────────────────────────────────────────────────────
 
@@ -141,7 +144,7 @@ export class KwUrlSection extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = styles;
+	static override styles = [sashSheet, styles, sectionGlowStyles];
 
 	// ── Render ─────────────────────────────────────────────────────────────────
 
@@ -152,6 +155,7 @@ export class KwUrlSection extends LitElement {
 					.name=${this._name}
 					.expanded=${this._fetchState.expanded}
 					box-id=${this.boxId}
+					section-type="url"
 					name-placeholder="URL name (optional)"
 					@name-change=${this._onShellNameChange}
 					@toggle-visibility=${this._toggleVisibility}

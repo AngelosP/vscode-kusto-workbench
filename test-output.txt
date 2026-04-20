@@ -1,0 +1,366 @@
+
+[1m[46m RUN [49m[22m [36mv4.1.0 [39m[90mC:/Users/angelpe/source/my-tools/vscode-kusto-workbench[39m
+
+`transformWithEsbuild` is deprecated and will be removed in the future. Please migrate to `transformWithOxc`.
+stderr | tests/webview/kw-query-section-loading.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+stderr | tests/webview/kw-dropdown.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+stderr | tests/webview/kw-section-shell.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+stderr | tests/webview/kw-filter-dialog.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+stderr | tests/webview/section-setName.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+stderr | tests/webview/kw-chart-section-agent.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+stderr | tests/webview/kw-copilot-chat.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+stderr | tests/webview/kw-query-section-favorites.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+stderr | tests/webview/table-search.controller.test.ts > TableSearchController > toggle / close > opens search bar
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+stderr | tests/webview/kw-cell-viewer.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+ [32mΓ£ô[39m tests/webview/kw-dropdown.test.ts [2m([22m[2m37 tests[22m[2m)[22m[33m 600[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/message-handler.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 1687[2mms[22m[39m
+stderr | tests/webview/kw-filter-dialog.test.ts > kw-filter-dialog ΓÇö Lit component > renders with column name in header
+Element kw-filter-dialog scheduled an update (generally because a property was set) after an update completed, causing a new update to be scheduled. This is inefficient and should be avoided unless the next update can only be scheduled as a side effect of the previous update. See https://lit.dev/msg/change-in-update for more information.
+
+ [32mΓ£ô[39m tests/webview/kw-filter-dialog.test.ts [2m([22m[2m103 tests[22m[2m)[22m[33m 415[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/kw-section-shell.test.ts [2m([22m[2m21 tests[22m[2m)[22m[32m 216[2mms[22m[39m
+stderr | tests/webview/kw-chart-section-agent.test.ts > kw-chart-section agent configuration > syncFromGlobalState updates Lit properties from global state
+Element kw-chart-section scheduled an update (generally because a property was set) after an update completed, causing a new update to be scheduled. This is inefficient and should be avoided unless the next update can only be scheduled as a side effect of the previous update. See https://lit.dev/msg/change-in-update for more information.
+
+ [32mΓ£ô[39m tests/webview/kw-cell-viewer.test.ts [2m([22m[2m27 tests[22m[2m)[22m[33m 331[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/table-search.controller.test.ts [2m([22m[2m22 tests[22m[2m)[22m[33m 3280[2mms[22m[39m
+       [33m[2mΓ£ô[22m[39m opens search bar [33m 3249[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/kw-chart-section-agent.test.ts [2m([22m[2m4 tests[22m[2m)[22m[33m 428[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/kw-copilot-chat.test.ts [2m([22m[2m71 tests[22m[2m)[22m[33m 1009[2mms[22m[39m
+     [33m[2mΓ£ô[22m[39m mouseleave on tool message hides tooltip [33m 420[2mms[22m[39m
+stderr | tests/webview/kw-python-section.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+stderr | tests/webview/kw-sort-dialog.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+stderr | tests/webview/kw-sort-dialog.test.ts > kw-sort-dialog ΓÇö rendering > renders without errors
+Element kw-sort-dialog scheduled an update (generally because a property was set) after an update completed, causing a new update to be scheduled. This is inefficient and should be avoided unless the next update can only be scheduled as a side effect of the previous update. See https://lit.dev/msg/change-in-update for more information.
+
+stderr | tests/webview/kw-url-section.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+ [32mΓ£ô[39m tests/webview/kw-sort-dialog.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 189[2mms[22m[39m
+stderr | tests/webview/kw-search-bar.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+ [32mΓ£ô[39m tests/webview/chart-utils.test.ts [2m([22m[2m82 tests[22m[2m)[22m[32m 63[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/kw-url-section.test.ts [2m([22m[2m35 tests[22m[2m)[22m[32m 151[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/kw-search-bar.test.ts [2m([22m[2m19 tests[22m[2m)[22m[32m 175[2mms[22m[39m
+stderr | tests/webview/section-setName.test.ts > kw-transformation-section name > setName stores the name and getName returns it
+Element kw-transformation-section scheduled an update (generally because a property was set) after an update completed, causing a new update to be scheduled. This is inefficient and should be avoided unless the next update can only be scheduled as a side effect of the previous update. See https://lit.dev/msg/change-in-update for more information.
+
+ [32mΓ£ô[39m tests/webview/monaco-caret-docs.test.ts [2m([22m[2m173 tests[22m[2m)[22m[32m 143[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/monaco-diagnostics.test.ts [2m([22m[2m373 tests[22m[2m)[22m[32m 197[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/kqlSchemaInference.test.ts [2m([22m[2m35 tests[22m[2m)[22m[32m 154[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/section-setName.test.ts [2m([22m[2m19 tests[22m[2m)[22m[33m 983[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/kw-python-section.test.ts [2m([22m[2m5 tests[22m[2m)[22m[33m 369[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/kw-query-section-favorites.test.ts [2m([22m[2m3 tests[22m[2m)[22m[33m 428[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/kw-query-section-loading.test.ts [2m([22m[2m6 tests[22m[2m)[22m[33m 807[2mms[22m[39m
+stderr | tests/webview/kw-popover.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+ [32mΓ£ô[39m tests/webview/kw-popover.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 108[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/chart-data-source.controller.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 56[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/chart-pinned-tooltip.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 122[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/kqlDiagnostics.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 58[2mms[22m[39m
+stderr | tests/webview/table-selection.controller.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+ [32mΓ£ô[39m tests/webview/table-selection.controller.test.ts [2m([22m[2m44 tests[22m[2m)[22m[32m 45[2mms[22m[39m
+stderr | tests/webview/search-utils.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+ [32mΓ£ô[39m tests/webview/host/kustoClientUtils.test.ts [2m([22m[2m54 tests[22m[2m)[22m[32m 46[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/search-utils.test.ts [2m([22m[2m35 tests[22m[2m)[22m[32m 48[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/monaco-prettify.test.ts [2m([22m[2m176 tests[22m[2m)[22m[32m 106[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/clusterUtils.test.ts [2m([22m[2m44 tests[22m[2m)[22m[32m 45[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/schemaIndexUtils.test.ts [2m([22m[2m52 tests[22m[2m)[22m[32m 47[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/monaco-theme.test.ts [2m([22m[2m29 tests[22m[2m)[22m[32m 38[2mms[22m[39m
+[90mstdout[2m | tests/webview/persistence-roundtrip.test.ts[2m > [22m[2mpersistence round-trip[2m > [22m[2mrecreates sections from serialized state on handleDocumentDataMessage
+[22m[39m[schema-diag] FILE OPENED ΓÇö sections: []
+
+stderr | tests/webview/persistence-roundtrip.test.ts > persistence round-trip > recreates sections from serialized state on handleDocumentDataMessage
+[kusto] Error: [vitest] No "htmlBoxes" export is defined on the "../../src/webview/core/section-factory.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+    at VitestMocker.createError (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:62:17)
+    at Object.get (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:310:16)
+    at __kustoClearAllSections (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:639:21)
+    at applyKqlxState (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:660:3)
+    at Module.handleDocumentDataMessage (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:1357:2)
+    at C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/tests/webview/persistence-roundtrip.test.ts:207:3
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:296:11
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1258:26
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1681:20
+    at new Promise (<anonymous>) {
+  codeFrame: 'vi.mock(import("../../src/webview/core/section-factory.js"), async (importOriginal) => {\n' +
+    '  const actual = await importOriginal()\n' +
+    '  return {\n' +
+    '    ...actual,\n' +
+    '    // your mocked methods\n' +
+    '  }\n' +
+    '})'
+}
+[kusto] Error: [vitest] No "sqlBoxes" export is defined on the "../../src/webview/core/section-factory.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+    at VitestMocker.createError (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:62:17)
+    at Object.get (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:310:16)
+    at __kustoClearAllSections (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:644:21)
+    at applyKqlxState (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:660:3)
+    at Module.handleDocumentDataMessage (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:1357:2)
+    at C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/tests/webview/persistence-roundtrip.test.ts:207:3
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:296:11
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1258:26
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1681:20
+    at new Promise (<anonymous>) {
+  codeFrame: 'vi.mock(import("../../src/webview/core/section-factory.js"), async (importOriginal) => {\n' +
+    '  const actual = await importOriginal()\n' +
+    '  return {\n' +
+    '    ...actual,\n' +
+    '    // your mocked methods\n' +
+    '  }\n' +
+    '})'
+}
+
+[90mstdout[2m | tests/webview/persistence-roundtrip.test.ts[2m > [22m[2mpersistence round-trip[2m > [22m[2mignores duplicate documentData for same document unless forced
+[22m[39m[schema-diag] FILE OPENED ΓÇö sections: []
+
+stderr | tests/webview/persistence-roundtrip.test.ts > persistence round-trip > ignores duplicate documentData for same document unless forced
+[kusto] Error: [vitest] No "htmlBoxes" export is defined on the "../../src/webview/core/section-factory.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+    at VitestMocker.createError (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:62:17)
+    at Object.get (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:310:16)
+    at __kustoClearAllSections (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:639:21)
+    at applyKqlxState (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:660:3)
+    at Module.handleDocumentDataMessage (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:1357:2)
+    at C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/tests/webview/persistence-roundtrip.test.ts:229:3
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:296:11
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1258:26
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1681:20
+    at new Promise (<anonymous>) {
+  codeFrame: 'vi.mock(import("../../src/webview/core/section-factory.js"), async (importOriginal) => {\n' +
+    '  const actual = await importOriginal()\n' +
+    '  return {\n' +
+    '    ...actual,\n' +
+    '    // your mocked methods\n' +
+    '  }\n' +
+    '})'
+}
+[kusto] Error: [vitest] No "sqlBoxes" export is defined on the "../../src/webview/core/section-factory.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+    at VitestMocker.createError (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:62:17)
+    at Object.get (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:310:16)
+    at __kustoClearAllSections (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:644:21)
+    at applyKqlxState (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:660:3)
+    at Module.handleDocumentDataMessage (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:1357:2)
+    at C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/tests/webview/persistence-roundtrip.test.ts:229:3
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:296:11
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1258:26
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1681:20
+    at new Promise (<anonymous>) {
+  codeFrame: 'vi.mock(import("../../src/webview/core/section-factory.js"), async (importOriginal) => {\n' +
+    '  const actual = await importOriginal()\n' +
+    '  return {\n' +
+    '    ...actual,\n' +
+    '    // your mocked methods\n' +
+    '  }\n' +
+    '})'
+}
+
+[90mstdout[2m | tests/webview/persistence-roundtrip.test.ts[2m > [22m[2mpersistence round-trip[2m > [22m[2mapplies documentData when documentUri changes without forceReload
+[22m[39m[schema-diag] FILE OPENED ΓÇö sections: []
+[schema-diag] FILE OPENED ΓÇö sections: []
+
+stderr | tests/webview/persistence-roundtrip.test.ts > persistence round-trip > applies documentData when documentUri changes without forceReload
+[kusto] Error: [vitest] No "htmlBoxes" export is defined on the "../../src/webview/core/section-factory.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+    at VitestMocker.createError (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:62:17)
+    at Object.get (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:310:16)
+    at __kustoClearAllSections (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:639:21)
+    at applyKqlxState (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:660:3)
+    at Module.handleDocumentDataMessage (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:1357:2)
+    at C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/tests/webview/persistence-roundtrip.test.ts:247:3
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:296:11
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1258:26
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1681:20
+    at new Promise (<anonymous>) {
+  codeFrame: 'vi.mock(import("../../src/webview/core/section-factory.js"), async (importOriginal) => {\n' +
+    '  const actual = await importOriginal()\n' +
+    '  return {\n' +
+    '    ...actual,\n' +
+    '    // your mocked methods\n' +
+    '  }\n' +
+    '})'
+}
+[kusto] Error: [vitest] No "sqlBoxes" export is defined on the "../../src/webview/core/section-factory.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+    at VitestMocker.createError (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:62:17)
+    at Object.get (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:310:16)
+    at __kustoClearAllSections (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:644:21)
+    at applyKqlxState (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:660:3)
+    at Module.handleDocumentDataMessage (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:1357:2)
+    at C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/tests/webview/persistence-roundtrip.test.ts:247:3
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:296:11
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1258:26
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1681:20
+    at new Promise (<anonymous>) {
+  codeFrame: 'vi.mock(import("../../src/webview/core/section-factory.js"), async (importOriginal) => {\n' +
+    '  const actual = await importOriginal()\n' +
+    '  return {\n' +
+    '    ...actual,\n' +
+    '    // your mocked methods\n' +
+    '  }\n' +
+    '})'
+}
+[kusto] Error: [vitest] No "htmlBoxes" export is defined on the "../../src/webview/core/section-factory.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+    at VitestMocker.createError (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:62:17)
+    at Object.get (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:310:16)
+    at __kustoClearAllSections (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:639:21)
+    at applyKqlxState (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:660:3)
+    at Module.handleDocumentDataMessage (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:1357:2)
+    at C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/tests/webview/persistence-roundtrip.test.ts:254:3
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:296:11
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1258:26
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1681:20
+    at new Promise (<anonymous>) {
+  codeFrame: 'vi.mock(import("../../src/webview/core/section-factory.js"), async (importOriginal) => {\n' +
+    '  const actual = await importOriginal()\n' +
+    '  return {\n' +
+    '    ...actual,\n' +
+    '    // your mocked methods\n' +
+    '  }\n' +
+    '})'
+}
+[kusto] Error: [vitest] No "sqlBoxes" export is defined on the "../../src/webview/core/section-factory.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+
+    at VitestMocker.createError (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:62:17)
+    at Object.get (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/vitest/dist/chunks/startVitestModuleRunner.C3ZR-4J3.js:310:16)
+    at __kustoClearAllSections (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:644:21)
+    at applyKqlxState (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:660:3)
+    at Module.handleDocumentDataMessage (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/core/persistence.ts:1357:2)
+    at C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/tests/webview/persistence-roundtrip.test.ts:254:3
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:296:11
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1258:26
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1681:20
+    at new Promise (<anonymous>) {
+  codeFrame: 'vi.mock(import("../../src/webview/core/section-factory.js"), async (importOriginal) => {\n' +
+    '  const actual = await importOriginal()\n' +
+    '  return {\n' +
+    '    ...actual,\n' +
+    '    // your mocked methods\n' +
+    '  }\n' +
+    '})'
+}
+
+ [32mΓ£ô[39m tests/webview/persistence-roundtrip.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 40[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/comparisonUtils.test.ts [2m([22m[2m76 tests[22m[2m)[22m[32m 29[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/lazy-loading.test.ts [2m([22m[2m4 tests[22m[2m)[22m[32m 35[2mms[22m[39m
+stderr | tests/webview/transformation-join.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+stderr | tests/webview/error-utils.test.ts > __kustoTryExtractJsonFromErrorText > returns null for malformed JSON
+[kusto] SyntaxError: Expected property name or '}' in JSON at position 1 (line 1 column 2)
+    at JSON.parse (<anonymous>)
+    at __kustoTryExtractJsonFromErrorText (C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/src/webview/shared/error-parser.ts:45:16)
+    at C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/tests/webview/error-utils.test.ts:44:10
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:296:11
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1258:26
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1681:20
+    at new Promise (<anonymous>)
+    at runWithCancel (file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1678:10)
+    at file:///C:/Users/angelpe/source/my-tools/vscode-kusto-workbench/node_modules/@vitest/runner/dist/index.js:1660:20
+    at new Promise (<anonymous>)
+
+ [32mΓ£ô[39m tests/webview/error-utils.test.ts [2m([22m[2m38 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/transformation-join.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 29[2mms[22m[39m
+stderr | tests/webview/kw-markdown-section-theme.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+ [32mΓ£ô[39m tests/webview/kw-markdown-section-theme.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/popup-dismiss.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/transform-expr.test.ts [2m([22m[2m53 tests[22m[2m)[22m[32m 27[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/safe-run.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 44[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/object-viewer.test.ts [2m([22m[2m44 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+stderr | tests/webview/monaco-helpers.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+ [32mΓ£ô[39m tests/webview/monaco-helpers.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 29[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/table-row-jump.controller.test.ts [2m([22m[2m24 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+stderr | tests/webview/kw-data-table-helpers.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+ [32mΓ£ô[39m tests/webview/kw-data-table-helpers.test.ts [2m([22m[2m63 tests[22m[2m)[22m[32m 25[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/viewer-utils.test.ts [2m([22m[2m65 tests[22m[2m)[22m[32m 21[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/queryEditorConnection.test.ts [2m([22m[2m51 tests[22m[2m)[22m[32m 33[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/dom-helpers.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/kqlxEditorUtils.test.ts [2m([22m[2m73 tests[22m[2m)[22m[32m 43[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/persistence-utils.test.ts [2m([22m[2m32 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/schema-tracker.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+stderr | tests/webview/chart-datasets.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+ [32mΓ£ô[39m tests/webview/chart-datasets.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 19[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/message-protocol.test.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/copilotConversationUtils.test.ts [2m([22m[2m22 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/kqlxFormat.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 31[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/kqlCompatEditorProvider.test.ts [2m([22m[2m23 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/toolOrchestratorConnect.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/connectionManager.test.ts [2m([22m[2m32 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/queryEditorUtils.test.ts [2m([22m[2m41 tests[22m[2m)[22m[32m 20[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/data-utils.test.ts [2m([22m[2m33 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/copilotPromptUtils.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/diffViewerUtils.test.ts [2m([22m[2m23 tests[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/kustoClient.test.ts [2m([22m[2m28 tests[22m[2m)[22m[32m 18[2mms[22m[39m
+stderr | tests/webview/results-state.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+ [32mΓ£ô[39m tests/webview/results-state.test.ts [2m([22m[2m26 tests[22m[2m)[22m[32m 16[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/mssqlDialect.test.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 12[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/cachedValuesViewer.test.ts [2m([22m[2m21 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/dismiss-stack.test.ts [2m([22m[2m7 tests[22m[2m)[22m[32m 13[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/utils.test.ts [2m([22m[2m12 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/schema-utils.test.ts [2m([22m[2m8 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/schema-decision.test.ts [2m([22m[2m15 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/cell-viewer.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 7[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/sqlFormat.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 9[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/webview-messages.test.ts [2m([22m[2m2 tests[22m[2m)[22m[32m 11[2mms[22m[39m
+ [32mΓ£ô[39m tests/webview/host/sqlDialectRegistry.test.ts [2m([22m[2m5 tests[22m[2m)[22m[32m 6[2mms[22m[39m
+stderr | tests/webview/section-naming.test.ts
+Lit is in dev mode. Not recommended for production! See https://lit.dev/msg/dev-mode for more information.
+
+ [32mΓ£ô[39m tests/webview/section-naming.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 10[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m73 passed[39m[22m[90m (73)[39m
+[2m      Tests [22m [1m[32m2579 passed[39m[22m[90m (2579)[39m
+[2m   Start at [22m 04:01:32
+[2m   Duration [22m 40.74s[2m (transform 73.23s, setup 0ms, import 81.29s, tests 13.25s, environment 209.10s)[22m
+

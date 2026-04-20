@@ -410,6 +410,10 @@ describe('getRunModeLabelText', () => {
 		expect(getRunModeLabelText('runFunction')).toBe('Run Function');
 	});
 
+	it('returns correct text for top100 mode (SQL)', () => {
+		expect(getRunModeLabelText('top100')).toBe('Run Query (TOP 100)');
+	});
+
 	it('defaults to take100 for unknown', () => {
 		expect(getRunModeLabelText('')).toBe('Run Query (take 100)');
 	});

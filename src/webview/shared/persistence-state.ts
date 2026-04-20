@@ -31,6 +31,9 @@ export const pState = {
 	/** Pending initial HTML code stashed during restore (consumed by kw-html-section). */
 	pendingHtmlCodeByBoxId: {} as Record<string, string>,
 
+	/** Pending initial SQL query stashed during restore (consumed by kw-sql-section). */
+	pendingSqlQueryByBoxId: {} as Record<string, string>,
+
 	/** Per-box persisted query result JSON (in-memory, included in getKqlxState). */
 	queryResultJsonByBoxId: {} as Record<string, string>,
 
@@ -58,7 +61,7 @@ export const pState = {
 	compatibilityMode: false,
 
 	/** Which section kinds the add-controls buttons allow. */
-	allowedSectionKinds: ['query', 'chart', 'transformation', 'markdown', 'python', 'url'] as string[],
+	allowedSectionKinds: ['query', 'chart', 'transformation', 'python', 'url', 'markdown'] as string[],
 
 	/** Default section kind for empty documents. */
 	defaultSectionKind: 'query' as string,

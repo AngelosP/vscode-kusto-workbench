@@ -87,6 +87,12 @@ export const languages = {
 	createDiagnosticCollection: () => ({ set: () => {}, dispose: () => {} }),
 };
 
+export enum ExtensionMode {
+	Production = 1,
+	Development = 2,
+	Test = 3,
+}
+
 export enum DiagnosticSeverity {
 	Error = 0,
 	Warning = 1,

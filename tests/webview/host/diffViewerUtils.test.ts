@@ -54,7 +54,7 @@ describe('formatKqlxForDiff', () => {
 		}, null, 2);
 		const result = formatKqlxForDiff(raw);
 
-		expect(result).toContain('══ [Query] My Query ══');
+		expect(result).toContain('══ [Kusto] My Query ══');
 		expect(result).toContain('Cluster: https://help.kusto.windows.net');
 		expect(result).toContain('Database: Samples');
 		expect(result).toContain('Run mode: default | Cache: 5 minutes');
@@ -77,7 +77,7 @@ describe('formatKqlxForDiff', () => {
 		expect(result).toContain('Linked query: ./queries/main.kql');
 	});
 
-	it('renders a copilotQuery section as [Query]', () => {
+	it('renders a copilotQuery section as [Kusto]', () => {
 		const raw = JSON.stringify({
 			kind: 'kqlx', version: 1,
 			state: {
@@ -88,7 +88,7 @@ describe('formatKqlxForDiff', () => {
 			}
 		}, null, 2);
 		const result = formatKqlxForDiff(raw);
-		expect(result).toContain('══ [Query] AI Query ══');
+		expect(result).toContain('══ [Kusto] AI Query ══');
 		expect(result).toContain('print "hello"');
 	});
 
@@ -309,7 +309,7 @@ describe('formatKqlxForDiff', () => {
 			}
 		}, null, 2);
 		const result = formatKqlxForDiff(raw);
-		expect(result).toContain('══ [Query] Q1 ══');
+		expect(result).toContain('══ [Kusto] Q1 ══');
 		expect(result).toContain('══ [Markdown] Notes ══');
 		expect(result).toContain('══ [Chart] C1 ══');
 		expect(result).toContain('3 sections');

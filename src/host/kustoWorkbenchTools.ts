@@ -73,7 +73,7 @@ export interface ListSectionsInput {
 }
 
 export interface AddSectionInput {
-	type: 'query' | 'markdown' | 'chart' | 'transformation' | 'url' | 'python' | 'html';
+	type: 'query' | 'markdown' | 'chart' | 'transformation' | 'url' | 'python' | 'html' | 'sql';
 	/** For query sections: initial query text */
 	query?: string;
 	/** For query sections: cluster URL to connect to */
@@ -278,6 +278,34 @@ export interface ManageDevelopmentNotesInput {
 	noteId?: string;
 }
 
+// ── SQL tool input types ────────────────────────────────────────────────────
+
+export interface ListSqlConnectionsInput {}
+
+export interface ConfigureSqlSectionInput {
+	sectionId: string;
+	name?: string;
+	query?: string;
+	serverUrl?: string;
+	database?: string;
+	execute?: boolean;
+}
+
+export interface GetSqlSchemaInput {
+	sectionId: string;
+}
+
+export interface DelegateToSqlCopilotInput {
+	/** The question or request to send to SQL Copilot */
+	question: string;
+	/** Optional: The ID of a SQL section to use. */
+	sectionId?: string;
+	/** Optional: Server URL to connect to */
+	serverUrl?: string;
+	/** Optional: Database name to use */
+	database?: string;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper types for favorites
 // ─────────────────────────────────────────────────────────────────────────────
@@ -316,6 +344,10 @@ export class KustoWorkbenchToolOrchestrator {
 	// Pending responses from webview
 	private pendingResponses = new Map<string, { resolve: (value: unknown) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 	private responseSeq = 0;
+	// Monotonically increasing token to track which editor instance is currently connected.
+	// disconnectIfOwner() only clears the callbacks when the caller's token matches,
+	// preventing a stale editor from disconnecting a newer active one.
+	private connectionToken = 0;
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -329,16 +361,32 @@ export class KustoWorkbenchToolOrchestrator {
 		return KustoWorkbenchToolOrchestrator.instance;
 	}
 
-	setWebviewMessagePoster(poster: ((message: unknown) => void) | undefined): void {
+	/**
+	 * Connect an editor instance to the orchestrator. Returns a token that must
+	 * be passed to {@link disconnectIfOwner} so only the currently-connected
+	 * instance can clear the callbacks.
+	 */
+	connect(
+		poster: (message: unknown) => void,
+		stateGetter: () => Promise<ToolSection[] | undefined>,
+		schemaRefresher: (clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>
+	): number {
+		this.connectionToken++;
 		this.webviewMessagePoster = poster;
+		this.stateGetter = stateGetter;
+		this.schemaRefresher = schemaRefresher;
+		return this.connectionToken;
 	}
 
-	setStateGetter(getter: (() => Promise<ToolSection[] | undefined>) | undefined): void {
-		this.stateGetter = getter;
-	}
-
-	setSchemaRefresher(refresher: ((clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>) | undefined): void {
-		this.schemaRefresher = refresher;
+	/**
+	 * Disconnect only if the caller holds the current connection token.
+	 * This prevents a closing editor from disconnecting a different active one.
+	 */
+	disconnectIfOwner(token: number): void {
+		if (token !== this.connectionToken) return;
+		this.webviewMessagePoster = undefined;
+		this.stateGetter = undefined;
+		this.schemaRefresher = undefined;
 	}
 
 	/**
@@ -509,7 +557,7 @@ export class KustoWorkbenchToolOrchestrator {
 		return { matches, count: matches.length, pattern };
 	}
 
-	async listSections(): Promise<{ sections: Array<{ id: string; type: string; name?: string; expanded?: boolean; clusterUrl?: string; database?: string; entries?: unknown[] }> }> {
+	async listSections(): Promise<{ sections: Array<{ id: string; type: string; name?: string; expanded?: boolean; clusterUrl?: string; serverUrl?: string; database?: string; entries?: unknown[] }> }> {
 		if (!this.stateGetter) {
 			throw new Error('Kusto Workbench is not currently open.');
 		}
@@ -523,13 +571,18 @@ export class KustoWorkbenchToolOrchestrator {
 				const type = typeof s.type === 'string' ? s.type : 'unknown';
 				const name = typeof s.name === 'string' ? s.name : (typeof s.title === 'string' ? s.title : '');
 				const expanded = s.expanded !== false;
-				const clusterUrl = typeof s.clusterUrl === 'string' ? s.clusterUrl : '';
 				const database = typeof s.database === 'string' ? s.database : '';
 				// For devnotes sections, include the entries array so the agent can read them
 				if (type === 'devnotes') {
 					const entries = Array.isArray(s.entries) ? s.entries : [];
-					return { id, type, name, expanded, clusterUrl, database, entries };
+					return { id, type, name, expanded, database, entries };
 				}
+				// SQL sections use serverUrl instead of clusterUrl
+				if (type === 'sql') {
+					const serverUrl = typeof s.serverUrl === 'string' ? s.serverUrl : '';
+					return { id, type, name, expanded, serverUrl, database };
+				}
+				const clusterUrl = typeof s.clusterUrl === 'string' ? s.clusterUrl : '';
 				return { id, type, name, expanded, clusterUrl, database };
 			});
 		return { sections };
@@ -582,6 +635,33 @@ export class KustoWorkbenchToolOrchestrator {
 			return this.sendToWebview('updateDevNotes', { action: 'remove', noteId: input.noteId });
 		}
 		return { success: false, error: `Unknown action: ${input.action}` };
+	}
+
+	// ── SQL tools ─────────────────────────────────────────────────────────────
+
+	async listSqlConnections(): Promise<{ connections: Array<{ id: string; name: string; serverUrl: string; dialect: string }> }> {
+		return this.sendToWebview('toolListSqlConnections', {});
+	}
+
+	async configureSqlSection(input: ConfigureSqlSectionInput): Promise<{ success: boolean; resultPreview?: string }> {
+		if (input.query !== undefined) {
+			input = { ...input, query: unescapeLLMText(input.query) };
+		}
+		return this.sendToWebview('toolConfigureSqlSection', { input });
+	}
+
+	async getSqlSchema(input: GetSqlSchemaInput): Promise<{ success: boolean; schema?: unknown; error?: string }> {
+		return this.sendToWebview('toolGetSqlSchema', { sectionId: input.sectionId });
+	}
+
+	async delegateToSqlCopilot(input: DelegateToSqlCopilotInput): Promise<{
+		success: boolean;
+		answer: string;
+		query?: string;
+		error?: string;
+		timedOut?: boolean;
+	}> {
+		return this.sendToWebview('toolDelegateToSqlCopilot', { input }, 180000);
 	}
 
 	async addSection(input: AddSectionInput): Promise<{ sectionId: string; success: boolean }> {
@@ -1305,6 +1385,96 @@ export class ConfigureHtmlSectionTool implements vscode.LanguageModelTool<Config
 // Registration helper
 // ─────────────────────────────────────────────────────────────────────────────
 
+// ── SQL Tools ─────────────────────────────────────────────────────────────────
+
+export class ListSqlConnectionsTool implements vscode.LanguageModelTool<ListSqlConnectionsInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+	async invoke(
+		_options: vscode.LanguageModelToolInvocationOptions<ListSqlConnectionsInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		try {
+			const result = await this.orchestrator.listSqlConnections();
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+			]);
+		} catch (err) {
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
+			]);
+		}
+	}
+}
+
+export class ConfigureSqlSectionTool implements vscode.LanguageModelTool<ConfigureSqlSectionInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<ConfigureSqlSectionInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		try {
+			const result = await this.orchestrator.configureSqlSection(getToolInput(options));
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+			]);
+		} catch (err) {
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
+			]);
+		}
+	}
+}
+
+export class DelegateToSqlCopilotTool implements vscode.LanguageModelTool<DelegateToSqlCopilotInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<DelegateToSqlCopilotInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		try {
+			const result = await this.orchestrator.delegateToSqlCopilot(getToolInput(options));
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+			]);
+		} catch (err) {
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
+			]);
+		}
+	}
+
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<DelegateToSqlCopilotInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.PreparedToolInvocation> {
+		const input = getToolInput(options);
+		const question = input?.question || 'your question';
+		return {
+			invocationMessage: `Asking SQL Copilot: "${question.slice(0, 100)}${question.length > 100 ? '...' : ''}"`
+		};
+	}
+}
+
+export class GetSqlSchemaTool implements vscode.LanguageModelTool<GetSqlSchemaInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<GetSqlSchemaInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		try {
+			const result = await this.orchestrator.getSqlSchema(getToolInput(options));
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+			]);
+		} catch (err) {
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
+			]);
+		}
+	}
+}
+
 export function registerKustoWorkbenchTools(
 	context: vscode.ExtensionContext,
 	connectionManager: ConnectionManager
@@ -1331,7 +1501,11 @@ export function registerKustoWorkbenchTools(
 		vscode.lm.registerTool('kusto-workbench_configure-html-section', new ConfigureHtmlSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_ask-kusto-copilot', new DelegateToKustoWorkbenchCopilotTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_create-file', new CreateFileTool(orchestrator)),
-		vscode.lm.registerTool('kusto-workbench_manage-development-notes', new ManageDevelopmentNotesTool(orchestrator))
+		vscode.lm.registerTool('kusto-workbench_manage-development-notes', new ManageDevelopmentNotesTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_list-sql-connections', new ListSqlConnectionsTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_configure-sql-section', new ConfigureSqlSectionTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_get-sql-schema', new GetSqlSchemaTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_ask-sql-copilot', new DelegateToSqlCopilotTool(orchestrator))
 	);
 
 	return orchestrator;

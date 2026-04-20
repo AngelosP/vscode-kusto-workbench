@@ -1,5 +1,6 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-dropdown.styles.js';
+import { iconRegistryStyles } from '../shared/icon-registry.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 
@@ -62,7 +63,7 @@ export class KwDropdown extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = styles;
+	static override styles = [iconRegistryStyles, styles];
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 

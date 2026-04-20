@@ -23,7 +23,8 @@
     "workspaceContains:**/*.kql",
     "workspaceContains:**/*.csl",
     "workspaceContains:**/*.kqlx",
-    "workspaceContains:**/*.mdx"
+    "workspaceContains:**/*.mdx",
+    "workspaceContains:**/*.sqlx"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -31,36 +32,59 @@
       "title": "Kusto Workbench",
       "properties": {
         "kustoWorkbench.showActivityBarIcon": {
+          "order": 1,
           "type": "boolean",
           "default": true,
           "description": "Show the Kusto Workbench icon in the Activity Bar for quick access to the Query Editor."
         },
         "kustoWorkbench.openKqlFiles": {
+          "order": 2,
           "type": "boolean",
           "default": true,
           "description": "Use Kusto Workbench to open .kql files by default. When disabled, .kql files will open with VS Code's default text editor."
         },
         "kustoWorkbench.openCslFiles": {
+          "order": 3,
           "type": "boolean",
           "default": true,
           "description": "Use Kusto Workbench to open .csl files by default. When disabled, .csl files will open with VS Code's default text editor."
         },
         "kustoWorkbench.openMdFiles": {
+          "order": 4,
           "type": "boolean",
           "default": false,
           "description": "Use Kusto Workbench to open .md files by default. When disabled, .md files will open with VS Code's default text editor."
         },
+        "kustoWorkbench.alternatingRowColor": {
+          "order": 5,
+          "type": "string",
+          "default": "theme",
+          "description": "Alternating background color for data table rows. 'theme' (default) derives a subtle tint from the active VS Code color theme. 'off' disables alternating rows. Any CSS color value (e.g. '#f5f5f5', 'rgba(0,0,0,0.04)') uses that color directly."
+        },
         "kustoWorkbench.queryTimeout": {
+          "order": 6,
           "type": "number",
           "default": 20,
           "minimum": 0,
           "maximum": 120,
           "description": "Maximum time (in minutes) to wait for a query response before timing out. The server's own timeout policy still applies independently. Set to 0 for no client-side limit."
         },
+        "kustoWorkbench.sqlQueryTimeout": {
+          "order": 7,
+          "type": "number",
+          "default": 20,
+          "minimum": 0,
+          "maximum": 120,
+          "description": "Maximum time (in minutes) to wait for a SQL query response before timing out. Set to 0 for no client-side limit."
+        },
         "kustoWorkbench.sectionDiffMode": {
+          "order": 8,
           "type": "string",
           "default": "contentAndSettings",
-          "enum": ["contentAndSettings", "contentOnly"],
+          "enum": [
+            "contentAndSettings",
+            "contentOnly"
+          ],
           "enumDescriptions": [
             "Show change indicators when either the content or the settings/configuration of a section changed (default).",
             "Show change indicators only when the content of a section changed. Settings/configuration changes are ignored."
@@ -68,6 +92,7 @@
           "description": "Controls what is compared when showing per-section change indicators. 'contentAndSettings' (default) marks a section as changed if either its content or its settings changed. 'contentOnly' only marks a section as changed if its content changed (e.g. the query text, markdown, URL, code, or data source selection)."
         },
         "kustoWorkbench.debug.mdSearchReveal": {
+          "order": 9,
           "type": "boolean",
           "default": false,
           "description": "Shows diagnostic popups for Markdown Search-view reveal (Ctrl+Shift+F click) to help debug selection/reveal wiring."
@@ -122,6 +147,9 @@
           },
           {
             "filenamePattern": "*.mdx"
+          },
+          {
+            "filenamePattern": "*.sqlx"
           }
         ],
         "priority": "default"
@@ -539,7 +567,8 @@
                 "transformation",
                 "url",
                 "python",
-                "html"
+                "html",
+                "sql"
               ],
               "description": "The type of section to add"
             },
@@ -875,7 +904,12 @@
             },
             "orient": {
               "type": "string",
-              "enum": ["LR", "RL", "TB", "BT"],
+              "enum": [
+                "LR",
+                "RL",
+                "TB",
+                "BT"
+              ],
               "description": "For sankey charts: flow direction (left-to-right, right-to-left, top-to-bottom, bottom-to-top)"
             },
             "sankeyLeftMargin": {
@@ -884,12 +918,18 @@
             },
             "stackMode": {
               "type": "string",
-              "enum": ["normal", "stacked", "stacked100"],
+              "enum": [
+                "normal",
+                "stacked",
+                "stacked100"
+              ],
               "description": "For line/area/bar charts: how series are stacked (normal = side-by-side, stacked = cumulative, stacked100 = percentage)"
             },
             "tooltipColumns": {
               "type": "array",
-              "items": { "type": "string" },
+              "items": {
+                "type": "string"
+              },
               "description": "Additional columns to show in chart tooltips"
             },
             "sortColumn": {
@@ -898,12 +938,21 @@
             },
             "sortDirection": {
               "type": "string",
-              "enum": ["asc", "desc"],
+              "enum": [
+                "asc",
+                "desc"
+              ],
               "description": "Sort direction for sortColumn"
             },
             "labelMode": {
               "type": "string",
-              "enum": ["auto", "all", "top5", "top10", "topPercent"],
+              "enum": [
+                "auto",
+                "all",
+                "top5",
+                "top10",
+                "topPercent"
+              ],
               "description": "Controls which data points get labels when showDataLabels is true"
             },
             "labelDensity": {
@@ -920,56 +969,183 @@
             },
             "chartTitleAlign": {
               "type": "string",
-              "enum": ["left", "center", "right"],
+              "enum": [
+                "left",
+                "center",
+                "right"
+              ],
               "description": "Alignment of the chart title"
             },
             "xAxisSettings": {
               "type": "object",
               "description": "X-axis configuration",
               "properties": {
-                "sortDirection": { "type": "string", "enum": ["", "asc", "desc"], "description": "Sort direction for X-axis values" },
-                "scaleType": { "type": "string", "enum": ["", "category", "continuous"], "description": "Scale type: category (discrete) or continuous (numeric/time)" },
-                "labelDensity": { "type": "number", "description": "Label density percentage (0-100)" },
-                "showAxisLabel": { "type": "boolean", "description": "Whether to show the axis title label" },
-                "customLabel": { "type": "string", "description": "Custom axis title text (overrides column name)" },
-                "titleGap": { "type": "number", "description": "Gap in pixels between axis title and axis line" }
+                "sortDirection": {
+                  "type": "string",
+                  "enum": [
+                    "",
+                    "asc",
+                    "desc"
+                  ],
+                  "description": "Sort direction for X-axis values"
+                },
+                "scaleType": {
+                  "type": "string",
+                  "enum": [
+                    "",
+                    "category",
+                    "continuous"
+                  ],
+                  "description": "Scale type: category (discrete) or continuous (numeric/time)"
+                },
+                "labelDensity": {
+                  "type": "number",
+                  "description": "Label density percentage (0-100)"
+                },
+                "showAxisLabel": {
+                  "type": "boolean",
+                  "description": "Whether to show the axis title label"
+                },
+                "customLabel": {
+                  "type": "string",
+                  "description": "Custom axis title text (overrides column name)"
+                },
+                "titleGap": {
+                  "type": "number",
+                  "description": "Gap in pixels between axis title and axis line"
+                }
               }
             },
             "yAxisSettings": {
               "type": "object",
               "description": "Y-axis configuration",
               "properties": {
-                "showAxisLabel": { "type": "boolean", "description": "Whether to show the axis title label" },
-                "customLabel": { "type": "string", "description": "Custom axis title text (overrides column name)" },
-                "min": { "type": "string", "description": "Minimum Y-axis value (empty string for auto)" },
-                "max": { "type": "string", "description": "Maximum Y-axis value (empty string for auto)" },
-                "seriesColors": { "type": "object", "description": "Map of series name (must match a yColumn name) to hex color. Example: {\"Errors\": \"#ee6666\", \"Warnings\": \"#faad14\"}. Arrays of colors are also accepted and will be mapped to yColumns in order.", "additionalProperties": { "type": "string" } },
-                "titleGap": { "type": "number", "description": "Gap in pixels between axis title and axis line" },
-                "sortDirection": { "type": "string", "enum": ["", "asc", "desc"], "description": "Sort direction for Y-axis values" }
+                "showAxisLabel": {
+                  "type": "boolean",
+                  "description": "Whether to show the axis title label"
+                },
+                "customLabel": {
+                  "type": "string",
+                  "description": "Custom axis title text (overrides column name)"
+                },
+                "min": {
+                  "type": "string",
+                  "description": "Minimum Y-axis value (empty string for auto)"
+                },
+                "max": {
+                  "type": "string",
+                  "description": "Maximum Y-axis value (empty string for auto)"
+                },
+                "seriesColors": {
+                  "type": "object",
+                  "description": "Map of series name (must match a yColumn name) to hex color. Example: {\"Errors\": \"#ee6666\", \"Warnings\": \"#faad14\"}. Arrays of colors are also accepted and will be mapped to yColumns in order.",
+                  "additionalProperties": {
+                    "type": "string"
+                  }
+                },
+                "titleGap": {
+                  "type": "number",
+                  "description": "Gap in pixels between axis title and axis line"
+                },
+                "sortDirection": {
+                  "type": "string",
+                  "enum": [
+                    "",
+                    "asc",
+                    "desc"
+                  ],
+                  "description": "Sort direction for Y-axis values"
+                }
               }
             },
             "legendSettings": {
               "type": "object",
               "description": "Legend configuration (overrides top-level legendPosition and stackMode when provided)",
               "properties": {
-                "position": { "type": "string", "enum": ["top", "right", "bottom", "left"], "description": "Legend position" },
-                "stackMode": { "type": "string", "enum": ["normal", "stacked", "stacked100"], "description": "Stack mode" },
-                "gap": { "type": "number", "description": "Gap in pixels between legend and chart" },
-                "sortMode": { "type": "string", "enum": ["", "alpha-asc", "alpha-desc", "value-asc", "value-desc"], "description": "Legend sort order. Use exactly: 'alpha-asc', 'alpha-desc', 'value-asc', 'value-desc', or '' (default). Aliases like 'alphabetical' or 'by-value' are also accepted." },
-                "topN": { "type": "number", "description": "Show only top N series (0 = show all)" },
-                "title": { "type": "string", "description": "Custom legend title (empty = use column name)" },
-                "showEndLabels": { "type": "boolean", "description": "Show legend label at end of each series line" }
+                "position": {
+                  "type": "string",
+                  "enum": [
+                    "top",
+                    "right",
+                    "bottom",
+                    "left"
+                  ],
+                  "description": "Legend position"
+                },
+                "stackMode": {
+                  "type": "string",
+                  "enum": [
+                    "normal",
+                    "stacked",
+                    "stacked100"
+                  ],
+                  "description": "Stack mode"
+                },
+                "gap": {
+                  "type": "number",
+                  "description": "Gap in pixels between legend and chart"
+                },
+                "sortMode": {
+                  "type": "string",
+                  "enum": [
+                    "",
+                    "alpha-asc",
+                    "alpha-desc",
+                    "value-asc",
+                    "value-desc"
+                  ],
+                  "description": "Legend sort order. Use exactly: 'alpha-asc', 'alpha-desc', 'value-asc', 'value-desc', or '' (default). Aliases like 'alphabetical' or 'by-value' are also accepted."
+                },
+                "topN": {
+                  "type": "number",
+                  "description": "Show only top N series (0 = show all)"
+                },
+                "title": {
+                  "type": "string",
+                  "description": "Custom legend title (empty = use column name)"
+                },
+                "showEndLabels": {
+                  "type": "boolean",
+                  "description": "Show legend label at end of each series line"
+                }
               }
             },
             "heatmapSettings": {
               "type": "object",
               "description": "Heatmap-specific configuration (only used when chartType is heatmap)",
               "properties": {
-                "visualMapPosition": { "type": "string", "enum": ["right", "left", "bottom", "top"], "description": "Position of the color slicer (right/left/bottom/top)" },
-                "visualMapGap": { "type": "number", "description": "Gap in pixels between chart and color slicer" },
-                "showCellLabels": { "type": "boolean", "description": "Whether to show value labels inside heatmap cells" },
-                "cellLabelMode": { "type": "string", "enum": ["all", "lowest", "highest", "both"], "description": "Which cells get labels: all, only bottom N, only top N, or both top and bottom N" },
-                "cellLabelN": { "type": "number", "description": "Number of top/bottom values to label (used when cellLabelMode is not 'all')" }
+                "visualMapPosition": {
+                  "type": "string",
+                  "enum": [
+                    "right",
+                    "left",
+                    "bottom",
+                    "top"
+                  ],
+                  "description": "Position of the color slicer (right/left/bottom/top)"
+                },
+                "visualMapGap": {
+                  "type": "number",
+                  "description": "Gap in pixels between chart and color slicer"
+                },
+                "showCellLabels": {
+                  "type": "boolean",
+                  "description": "Whether to show value labels inside heatmap cells"
+                },
+                "cellLabelMode": {
+                  "type": "string",
+                  "enum": [
+                    "all",
+                    "lowest",
+                    "highest",
+                    "both"
+                  ],
+                  "description": "Which cells get labels: all, only bottom N, only top N, or both top and bottom N"
+                },
+                "cellLabelN": {
+                  "type": "number",
+                  "description": "Number of top/bottom values to label (used when cellLabelMode is not 'all')"
+                }
               }
             }
           },
@@ -1115,8 +1291,12 @@
               "items": {
                 "type": "object",
                 "properties": {
-                  "left": { "type": "string" },
-                  "right": { "type": "string" }
+                  "left": {
+                    "type": "string"
+                  },
+                  "right": {
+                    "type": "string"
+                  }
                 }
               },
               "description": "For join: key column pairs (left column name, right column name)"
@@ -1361,6 +1541,137 @@
             "action"
           ]
         }
+      },
+      {
+        "name": "kusto-workbench_list-sql-connections",
+        "tags": [
+          "sql",
+          "connections",
+          "database"
+        ],
+        "toolReferenceName": "listSqlConnections",
+        "displayName": "List SQL Connections",
+        "modelDescription": "Lists all configured SQL Server connections in Kusto Workbench. Returns connection details including server URLs and dialects.",
+        "userDescription": "View all your saved SQL Server connections.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(plug)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {}
+        }
+      },
+      {
+        "name": "kusto-workbench_configure-sql-section",
+        "tags": [
+          "sql",
+          "workbench",
+          "query",
+          "configure"
+        ],
+        "toolReferenceName": "configureSqlSection",
+        "displayName": "Configure SQL Section",
+        "modelDescription": "Configures a SQL section in Kusto Workbench. Use this to set up the server connection and database, change the T-SQL query text, and optionally execute the query immediately.",
+        "userDescription": "Update a SQL section's content and settings.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(edit)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sectionId": {
+              "type": "string",
+              "description": "The ID of the SQL section to update"
+            },
+            "name": {
+              "type": "string",
+              "description": "Optional name/title for the section"
+            },
+            "query": {
+              "type": "string",
+              "description": "The new T-SQL query text"
+            },
+            "serverUrl": {
+              "type": "string",
+              "description": "The SQL Server URL to connect to"
+            },
+            "database": {
+              "type": "string",
+              "description": "The database to use"
+            },
+            "execute": {
+              "type": "boolean",
+              "description": "If true, execute the query after updating"
+            }
+          },
+          "required": [
+            "sectionId"
+          ]
+        }
+      },
+      {
+        "name": "kusto-workbench_get-sql-schema",
+        "tags": [
+          "sql",
+          "schema",
+          "database"
+        ],
+        "toolReferenceName": "getSqlSchema",
+        "displayName": "Get SQL Schema",
+        "modelDescription": "Gets the database schema (tables and columns) for a SQL section's currently connected database. Returns table names and column definitions.",
+        "userDescription": "View the database schema for a SQL section.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(database)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sectionId": {
+              "type": "string",
+              "description": "The ID of the SQL section to get schema for"
+            }
+          },
+          "required": [
+            "sectionId"
+          ]
+        }
+      },
+      {
+        "name": "kusto-workbench_ask-sql-copilot",
+        "tags": [
+          "sql",
+          "copilot",
+          "ai",
+          "query",
+          "assistant"
+        ],
+        "toolReferenceName": "askSqlCopilot",
+        "displayName": "Ask SQL Copilot",
+        "modelDescription": "Delegates questions to the specialized SQL Copilot assistant which has T-SQL knowledge and access to database schemas. This tool will write the appropriate T-SQL query and return it. Use this for any SQL data questions or T-SQL query requests.",
+        "userDescription": "Ask the SQL Copilot AI to write a T-SQL query.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(hubot)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "question": {
+              "type": "string",
+              "description": "The question or request to send to SQL Copilot."
+            },
+            "sectionId": {
+              "type": "string",
+              "description": "Optional: The ID of a SQL section to use as context."
+            },
+            "serverUrl": {
+              "type": "string",
+              "description": "Optional: Server URL to connect to."
+            },
+            "database": {
+              "type": "string",
+              "description": "Optional: Database name to use."
+            }
+          },
+          "required": [
+            "question"
+          ]
+        }
       }
     ]
   },
@@ -1401,7 +1712,8 @@
     "npm-run-all": "^4.1.5",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.48.1",
-    "vitest": "^4.1.0"
+    "vitest": "^4.1.0",
+    "@types/yauzl": "^2.10.3"
   },
   "dependencies": {
     "@azure/identity": "^4.13.0",
@@ -1413,6 +1725,10 @@
     "azure-kusto-data": "^7.0.3",
     "echarts": "^5.5.1",
     "lit": "^3.3.2",
-    "monaco-editor": "^0.52.0"
+    "monaco-editor": "^0.52.0",
+    "mssql": "^11.0.1",
+    "sql-formatter": "^15.7.3",
+    "vscode-jsonrpc": "^8.2.1",
+    "yauzl": "^3.3.0"
   }
 }

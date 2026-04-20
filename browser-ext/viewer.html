@@ -16,6 +16,8 @@
 	<link rel="stylesheet" href="dist/webview/styles/queryEditor.bundle.css">
 	<!-- Read-only overrides: theme fallbacks + hide interactive UI -->
 	<link rel="stylesheet" href="read-only-overrides.css">
+	<!-- Alternating row background for data tables (theme default) -->
+	<style>:root{--kw-alt-row-bg:color-mix(in srgb,var(--vscode-editor-background) 97%,var(--vscode-foreground) 3%)}</style>
 </head>
 
 <body>
@@ -44,12 +46,12 @@
 	<div class="add-controls" role="group" aria-label="Add sections">
 		<span class="add-controls-label">Add</span>
 		<span class="add-controls-options">
-			<button class="add-control-btn" data-add-kind="query" onclick="__kustoRequestAddSection('query')">Query</button>
+			<button class="add-control-btn" data-add-kind="query" onclick="__kustoRequestAddSection('query')">Kusto</button>
 			<button class="add-control-btn" data-add-kind="chart" onclick="__kustoRequestAddSection('chart')">Chart</button>
 			<button class="add-control-btn" data-add-kind="transformation" onclick="__kustoRequestAddSection('transformation')">Transformation</button>
-			<button class="add-control-btn" data-add-kind="markdown" onclick="__kustoRequestAddSection('markdown')">Markdown</button>
 			<button class="add-control-btn" data-add-kind="python" onclick="__kustoRequestAddSection('python')">Python</button>
 			<button class="add-control-btn" data-add-kind="url" onclick="__kustoRequestAddSection('url')">URL</button>
+			<button class="add-control-btn" data-add-kind="markdown" onclick="__kustoRequestAddSection('markdown')">Markdown</button>
 		</span>
 	</div>
 

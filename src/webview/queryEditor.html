@@ -7,6 +7,7 @@
 	<title>Kusto Query Editor</title>
 	<link rel="stylesheet" href="{{monacoCssUri}}">
 	<link rel="stylesheet" href="{{appCssBundleUri}}">
+	<style>{{alternatingRowStyle}}</style>
 </head>
 
 <body>
@@ -15,13 +16,14 @@
 	<div class="add-controls" role="group" aria-label="Add sections">
 		<span class="add-controls-label">Add</span>
 		<span class="add-controls-options">
-			<button class="add-control-btn" data-add-kind="query">Query</button>
+			<button class="add-control-btn" data-add-kind="query">Kusto</button>
+			<button class="add-control-btn" data-add-kind="sql">SQL</button>
 			<button class="add-control-btn" data-add-kind="chart">Chart</button>
 			<button class="add-control-btn" data-add-kind="transformation">Transformation</button>
-			<button class="add-control-btn" data-add-kind="markdown">Markdown</button>
 			<button class="add-control-btn" data-add-kind="python">Python</button>
 			<button class="add-control-btn" data-add-kind="url">URL</button>
 			<button class="add-control-btn" data-add-kind="html">HTML</button>
+			<button class="add-control-btn" data-add-kind="markdown">Markdown</button>
 		</span>
 		<!-- Mobile dropdown for narrow widths -->
 		<div class="add-controls-dropdown">
@@ -30,13 +32,14 @@
 				<svg class="add-controls-dropdown-caret" width="16" height="16" viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg"><path fill-rule="evenodd" clip-rule="evenodd" d="M7.976 10.072l4.357-4.357.62.618L8.284 11h-.618L3 6.333l.619-.618 4.357 4.357z" fill="currentColor"/></svg>
 			</button>
 			<div class="add-controls-dropdown-menu" id="addSectionDropdownMenu" role="listbox" style="display:none;">
-				<div class="add-controls-dropdown-item" role="option" data-add-kind="query">Query</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="query">Kusto</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="sql">SQL</div>
 				<div class="add-controls-dropdown-item" role="option" data-add-kind="chart">Chart</div>
 				<div class="add-controls-dropdown-item" role="option" data-add-kind="transformation">Transformation</div>
-				<div class="add-controls-dropdown-item" role="option" data-add-kind="markdown">Markdown</div>
 				<div class="add-controls-dropdown-item" role="option" data-add-kind="python">Python</div>
 				<div class="add-controls-dropdown-item" role="option" data-add-kind="url">URL</div>
 				<div class="add-controls-dropdown-item" role="option" data-add-kind="html">HTML</div>
+				<div class="add-controls-dropdown-item" role="option" data-add-kind="markdown">Markdown</div>
 			</div>
 		</div>
 	</div>

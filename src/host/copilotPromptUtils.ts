@@ -102,3 +102,50 @@ export function getCopilotLocalTools(): CopilotLocalTool[] {
 		}
 	];
 }
+// ---------------------------------------------------------------------------
+// getSqlCopilotLocalTools
+// ---------------------------------------------------------------------------
+
+export function getSqlCopilotLocalTools(): CopilotLocalTool[] {
+	return [
+		{
+			name: 'get_sql_schema',
+			label: 'Get database schema',
+			description: 'Provides the connected SQL database schema (tables + columns) to improve query correctness.',
+			enabledByDefault: true
+		},
+		{
+			name: 'get_query_optimization_best_practices',
+			label: 'Get query optimization best practices',
+			description: 'Returns the extension\'s SQL query optimization best practices document (optimize-sql-rules.md).',
+			enabledByDefault: true
+		},
+		{
+			name: 'execute_sql_query',
+			label: 'Execute SQL query and read results',
+			description: 'Executes a T-SQL query against the connected SQL server and returns the results (limited to 100 rows).',
+			enabledByDefault: true
+		},
+		{
+			name: 'respond_to_query_performance_optimization_request',
+			label: 'Respond to query performance optimization or data comparison request',
+			description:
+				'Creates a comparison section with your proposed query and runs both queries to compare performance and / or results.',
+			enabledByDefault: true
+		},
+		{
+			name: 'respond_to_sql_query',
+			label: 'Respond with final query',
+			description:
+				'Returns a runnable T-SQL query. The extension will set it in the editor and optionally run it.',
+			enabledByDefault: true
+		},
+		{
+			name: 'ask_user_clarifying_question',
+			label: 'Ask user clarifying question',
+			description:
+				'Ask the user a clarifying question when you need more information to write the correct query.',
+			enabledByDefault: true
+		}
+	];
+}

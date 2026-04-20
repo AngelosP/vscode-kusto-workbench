@@ -23,7 +23,7 @@ export const styles = css`
 			background: var(--vscode-editorGroupHeader-tabsBackground);
 		}
 		.modal-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
-		.modal-body { flex: 1; overflow: auto; padding: 16px; }
+		.modal-body { flex: 1; overflow: auto; padding: 16px; overscroll-behavior: contain; }
 
 		/* Search */
 		.search-area { display: flex; gap: 8px; align-items: center; flex: 1; margin: 0 16px; }
@@ -37,25 +37,28 @@ export const styles = css`
 		}
 		.close-btn:hover { background: var(--vscode-list-hoverBackground); }
 
-		.back-btn {
-			padding: 4px 8px; min-width: 28px; height: 28px;
-			background: var(--vscode-button-background); color: var(--vscode-button-foreground);
-			border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px; cursor: pointer;
-		}
-		.back-btn:hover { background: var(--vscode-button-hoverBackground); }
-
 		.view-link {
 			color: var(--vscode-textLink-foreground); text-decoration: none; font-size: 11px; cursor: pointer;
 		}
 		.view-link:hover { text-decoration: underline; color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground)); }
 
 		.tool-btn {
-			background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground);
-			border: 1px solid var(--vscode-button-border, transparent); border-radius: 2px;
-			padding: 4px 8px; cursor: pointer; display: flex; align-items: center; justify-content: center; font-size: 14px;
+			display: inline-flex; align-items: center; justify-content: center;
+			width: 28px; height: 28px; min-width: 28px; padding: 0;
+			border: 1px solid transparent; border-radius: 4px;
+			background: transparent; color: var(--vscode-foreground);
+			cursor: pointer; font-size: 14px; line-height: 0;
 		}
-		.tool-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
-		.tool-btn.is-active { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+		.tool-btn:hover { background: var(--vscode-list-hoverBackground); }
+		.tool-btn.is-active { background: var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25))); }
+		.tool-btn svg { stroke: currentColor; fill: none; display: block; }
+
+		.show-more-btn {
+			background: transparent; border: none; cursor: pointer;
+			color: var(--vscode-textLink-foreground); font-size: 12px;
+			padding: 6px 0; text-align: left;
+		}
+		.show-more-btn:hover { text-decoration: underline; color: var(--vscode-textLink-activeForeground, var(--vscode-textLink-foreground)); }
 
 		.copy-btn {
 			background: transparent; border: none; color: var(--vscode-foreground); cursor: pointer;
@@ -101,7 +104,23 @@ export const styles = css`
 
 		/* Raw JSON */
 		.raw-actions { display: inline-flex; gap: 4px; align-items: center; }
-		.raw-body { padding: 10px 12px; }
+		.raw-body { padding: 0; }
+		.raw-wrap-scroll {
+			max-height: 400px; overflow: auto; overscroll-behavior: contain;
+			padding: 10px 12px;
+		}
+		.raw-vscroll {
+			max-height: 400px; overflow: auto; overscroll-behavior: contain;
+			padding: 10px 0;
+		}
+		.raw-vline {
+			position: absolute; left: 0;
+			height: 20px; line-height: 20px;
+			white-space: pre;
+			padding: 0 12px;
+			font-family: var(--vscode-editor-font-family);
+			font-size: var(--vscode-editor-font-size);
+		}
 		.json-wrap { font-family: var(--vscode-editor-font-family); font-size: var(--vscode-editor-font-size); white-space: pre-wrap; word-break: break-word; overflow-x: hidden; line-height: 1.6; }
 		.json-key { color: var(--vscode-symbolIcon-propertyForeground); }
 		.json-string { color: var(--vscode-symbolIcon-stringForeground); }

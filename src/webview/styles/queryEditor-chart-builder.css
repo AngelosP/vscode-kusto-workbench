@@ -1500,14 +1500,16 @@
 			overflow: hidden;
 		}
 
-		/* Error/placeholder messages in chart and transformation sections.
-		   Use VS Code UI font (not monospace) to match transformation section styling. */
-		.kusto-chart-canvas .error-message,
-		.results .error-message {
+		/* Error/placeholder messages in chart canvas.
+		   Use VS Code UI font (not monospace) to match transformation section styling.
+		   Left padding 4px aligns text with control labels (section-root 12px + 4px = 16px
+		   = controls panel's padding-left). Top padding 4px keeps a tight gap below controls.
+		   Bottom padding 5px + section-root padding-bottom 12px = 17px, matching transformation. */
+		.kusto-chart-canvas .error-message {
 			font-family: var(--vscode-font-family);
 			font-size: 13px;
 			color: var(--vscode-foreground);
-			padding: 12px;
+			padding: 4px 12px 0 4px;
 		}
 
 		/* Chart type picker with icons */

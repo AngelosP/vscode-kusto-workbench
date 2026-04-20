@@ -1,13 +1,25 @@
 import * as vscode from 'vscode';
 import { parseKqlxText, type KqlxSectionV1, type DevNoteEntry } from './kqlxFormat';
 
-// ── Noise fields to strip from diff display ──────────────────────────────────
+// ── Noise fields ─────────────────────────────────────────────────────────────
 
-/** Keys that represent ephemeral UI state / noise — stripped from all diff views. */
+/**
+ * Keys stripped from state comparison (dirty-detection, persist flow).
+ * Only truly ephemeral UI state — pixel dimensions are intentionally excluded
+ * so that height / width changes are detected and persisted to disk.
+ */
+export const COMPARISON_NOISE_KEYS = new Set([
+	'resultJson',
+	'copilotChatVisible', 'resultsVisible', 'favoritesMode',
+]);
+
+/** Keys stripped from human-readable diff views — superset of COMPARISON_NOISE_KEYS.
+ * Content keys (query, text, code) are excluded because they get their own
+ * dedicated diff tab.  Heights are intentionally kept so layout changes are
+ * visible in the settings diff. */
 export const DIFF_NOISE_KEYS = new Set([
 	'resultJson',
-	'editorHeightPx', 'resultsHeightPx', 'copilotChatWidthPx',
-	'outputHeightPx', 'previewHeightPx',
+	'query', 'text', 'code',
 	'copilotChatVisible', 'resultsVisible', 'favoritesMode',
 ]);
 
@@ -58,6 +70,7 @@ function formatSection(section: KqlxSectionV1): string[] {
 		case 'markdown': return formatMarkdownSection(s);
 		case 'python': return formatPythonSection(s);
 		case 'html': return formatHtmlSection(s);
+		case 'sql': return formatSqlSection(s);
 		case 'url': return formatUrlSection(s);
 		case 'chart': return formatChartSection(s);
 		case 'transformation': return formatTransformationSection(s);
@@ -79,7 +92,7 @@ function kvLine(key: string, value: unknown): string | undefined {
 }
 
 function formatQuerySection(s: Record<string, unknown>): string[] {
-	const lines: string[] = [sectionHeader('Query', s.name)];
+	const lines: string[] = [sectionHeader('Kusto', s.name)];
 
 	pushIfDefined(lines, kvLine('Cluster', s.clusterUrl));
 	pushIfDefined(lines, kvLine('Database', s.database));
@@ -139,6 +152,18 @@ function formatHtmlSection(s: Record<string, unknown>): string[] {
 	if (code) {
 		lines.push('');
 		lines.push(...code.split('\n'));
+	}
+	return lines;
+}
+
+function formatSqlSection(s: Record<string, unknown>): string[] {
+	const lines: string[] = [sectionHeader('SQL', s.name)];
+	pushIfDefined(lines, kvLine('Server', s.serverUrl));
+	pushIfDefined(lines, kvLine('Database', s.database));
+	const query = typeof s.query === 'string' ? s.query : '';
+	if (query) {
+		lines.push('');
+		lines.push(...query.split('\n'));
 	}
 	return lines;
 }

@@ -47,6 +47,7 @@ export function getUrlSection(boxId: string): KwUrlSection | null {
 export interface SectionElement extends HTMLElement {
 	serialize(): unknown;
 	getName(): string;
+	setName(name: string): void;
 }
 
 export function getSectionElement(boxId: string): SectionElement | null {

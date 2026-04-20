@@ -133,6 +133,19 @@ When a Lit component grows beyond ~1,500 lines or has distinct behavioral concer
 | `TableSelectionController` | `kw-data-table` | `components/table-selection.controller.ts` |
 | `TableVirtualScrollController` | `kw-data-table` | `components/table-virtual-scroll.controller.ts` |
 | `TableRowJumpController` | `kw-data-table` | `components/table-row-jump.controller.ts` |
+| `SqlCopilotChatManagerController` | `kw-sql-section` | `sections/sql-copilot-chat-manager.controller.ts` |
+
+## SQL Section Development
+
+SQL sections follow the same patterns as Kusto query sections. Key differences:
+
+* **Connections**: `SqlConnectionManager` (not `ConnectionManager`). IDs use `sql_` prefix. Separate `sqlConnections` state in `state.ts`.
+* **Events**: All SQL custom events use `sql-` prefix (e.g. `sql-connection-changed`, `sql-database-changed`).
+* **Dialects**: Adding a new SQL backend (e.g. PostgreSQL) requires implementing `SqlDialect` interface, registering in `SqlDialectRegistry`, and adding a Copilot rules file.
+* **Copilot**: Uses flavor system — host-side `sqlCopilotFlavor` in `copilotChatFlavor.ts`, webview-side `sqlWebviewFlavor` in `copilot-chat-flavor.ts`.
+* **File format**: `.sqlx` files use the same JSON schema as `.kqlx` but only allow SQL sections. Mixed `.kqlx` files can contain both Kusto and SQL sections.
+* **Build**: `mssql` is externalized in esbuild. `sql-formatter` is bundled for the webview prettify feature.
+* **Tests**: SQL test files in `tests/webview/host/` (`mssqlDialect.test.ts`, `sqlDialectRegistry.test.ts`, `sqlFormat.test.ts`, `sqlClient.test.ts`, `sqlPrettify.test.ts`).
 
 ---
 
@@ -186,7 +199,7 @@ Monaco Editor and `@kusto/monaco-kusto` are **not bundled by esbuild**. They are
 ### What must not change
 
 - **Never add `monaco-editor` or `@kusto/monaco-kusto` to an esbuild entry point.** They are AMD modules loaded at runtime by Monaco's AMD loader. Bundling them would break the loader.
-- **Unused Monaco language workers (`css`, `html`, `json`, `ts`) are filtered out** during the copy step to reduce size. Do not remove this filtering.
+- **Unused Monaco language workers (`css`, `json`, `ts`) are filtered out** during the copy step to reduce size. The `html` worker is kept for HTML section editing. Do not remove this filtering.
 - **Monaco is loaded in the webview via the AMD loader**, not via `import`. Any code that needs Monaco APIs at module scope must handle the case where Monaco is not yet loaded.
 
 ---
@@ -274,7 +287,7 @@ ECharts and Toast UI are loaded lazily via `<script>` tag injection (`src/webvie
 All sections are serialized via a unified loop in `persistence.ts` (`getKqlxState()`):
 
 ```typescript
-const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_'];
+const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_', 'html_', 'sql_'];
 ```
 
 The loop iterates DOM children of `#queries-container`, matches their `id` against these prefixes, and calls `el.serialize()`.
@@ -311,6 +324,20 @@ scrollContainer.addEventListener('scroll', onScroll, { passive: true });
 - **Ephemeral UI** (autocomplete, context menus, tooltips) must close immediately on any scroll.
 - **Interactive UI** (dropdowns, menus, modals) must close after a 20px scroll threshold.
 - **All scroll listeners for dismiss must be `{ passive: true }`** to avoid blocking the scroll thread.
+
+---
+
+## Section Resize — Max Heights & Fit-to-Contents
+
+Sections with a Monaco editor and tabular results (Kusto query, SQL) enforce a specific resize contract. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full design.
+
+### What must not change
+
+- **`monaco-editor-max-height` is 750px.** The editor sash drag, fit-to-contents, double-click, and auto-resize must all cap the editor wrapper at 750px. Do not allow any code path to exceed this.
+- **Results sash drag must be capped at `section-max-height`** (data table content + 10px gap). Results fit-to-contents / double-click caps at `min(section-max-height, 750px)`.
+- **Fit-to-contents and double-click on sashes must share the same calculation.** Do not add separate code paths.
+- **Fit-to-contents on the section shell = fit editor + fit results (when visible).** The shell button must size both the editor and the results area. When tabular results are hidden, only the editor is adjusted. Individual sash double-clicks only resize their respective area.
+- **Auto-resize (grow-only) is capped at 750px** (`monaco-editor-max-height`). It grows to content height up to this cap and is disabled once the user manually resizes.
 
 ---
 

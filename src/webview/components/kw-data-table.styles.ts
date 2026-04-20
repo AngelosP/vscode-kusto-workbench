@@ -7,12 +7,12 @@ export const styles = css`
 		.dt.no-top-border{border-top:none}
 
 		/* Header bar */
-		.hbar{display:flex;align-items:center;justify-content:space-between;padding:4px 0 8px 0;font-size:12px;color:var(--vscode-descriptionForeground);background:transparent;flex-shrink:0;gap:8px;border-top:none;border-bottom:none;margin:0}
-		.hinfo{display:flex;align-items:center;gap:6px;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:-4px}.et{opacity:.7}
-		.tb{display:flex;gap:2px;align-items:center;flex-shrink:0}
+		.hbar{display:flex;align-items:center;justify-content:space-between;padding:4px 0 11px 0;font-size:12px;color:var(--vscode-descriptionForeground);background:transparent;flex-shrink:0;gap:8px;border-top:none;border-bottom:none;margin:0}
+		.hinfo{display:flex;align-items:center;gap:6px;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;position:relative;top:-2px}.et{opacity:.7}
+		.tb{display:inline-flex;gap:2px;align-items:center;flex-shrink:0}
 		.sep{width:1px;height:16px;background:var(--vscode-input-border, rgba(128,128,128,0.3));margin:0 2px}
-		.tbtn{display:inline-flex;align-items:center;justify-content:center;width:28px;height:28px;min-width:28px;padding:0;font-size:11px;border:1px solid transparent;background:transparent;color:var(--vscode-foreground);border-radius:4px;cursor:pointer;font-family:inherit;line-height:0}
-		.tbtn:hover{background:var(--vscode-list-hoverBackground);color:var(--vscode-foreground)}.tbtn.act{color:var(--vscode-foreground);background:var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)))}.tbtn svg{stroke:currentColor;fill:none;display:block}
+		.tbtn{background:transparent;border:1px solid transparent;color:var(--vscode-foreground);cursor:pointer;padding:0;width:28px;height:28px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;line-height:0;outline:none}
+		.tbtn:hover{background:var(--vscode-list-hoverBackground)}.tbtn.act{color:var(--vscode-foreground);background:var(--vscode-toolbar-activeBackground, var(--vscode-actionBar-toggledBackground, rgba(128, 128, 128, 0.25)))}.tbtn svg{display:block}
 		.tbtn.vis-toggle{width:28px;height:28px;padding:0;justify-content:center;border-radius:4px}
 		.tbtn.tbtn-text{width:auto;min-width:auto;padding:0 8px;gap:4px;line-height:1.4}
 		.hidden-hint{font-size:11px;color:var(--vscode-disabledForeground,var(--vscode-descriptionForeground));font-style:italic;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0;flex-shrink:999}
@@ -38,15 +38,15 @@ export const styles = css`
 		.cj-empty{padding:4px 8px;font-size:11px;color:var(--vscode-descriptionForeground);opacity:.7}
 
 		/* Scroll container — the focus outline is on .dt instead */
-		.vscroll{flex:1 1 0;overflow:auto;min-height:0;overflow-anchor:none;border:none;border-radius:0}
+		.vscroll{flex:1 1 0;overflow:auto;min-height:0;overflow-anchor:none;border:1px solid var(--vscode-panel-border);border-radius:1px}
 		.vscroll:focus{outline:none}
 
 		/* Single data table matching original resultsTable.js styles */
 		.dtable{border-collapse:collapse;font-size:12px;user-select:none;table-layout:fixed}
 		.dtable-head-wrap{position:sticky;top:0;z-index:4;overflow:visible;border:none;border-radius:0;background:var(--vscode-editor-background)}
-		th,td{text-align:left;padding:6px 8px;border-right:1px solid var(--vscode-panel-border);border-bottom:1px solid var(--vscode-panel-border);white-space:nowrap;position:relative;max-width:75ch;overflow:hidden;text-overflow:ellipsis}
-		.dtable th:first-child,.dtable td:first-child{border-left:1px solid var(--vscode-panel-border)}
-		.dtable thead th{border-top:1px solid var(--vscode-panel-border)}
+		th,td{text-align:left;vertical-align:middle;padding:6px 8px;border-right:1px solid var(--vscode-panel-border);white-space:nowrap;position:relative;max-width:75ch;overflow:hidden;text-overflow:ellipsis}
+		.dtable th:last-child,.dtable td:last-child{border-right:none}
+		.dtable thead th{border-bottom:1px solid var(--vscode-panel-border)}
 		th,td{height:27px}
 		td{background:var(--vscode-editor-background)}
 		th{font-weight:600;background:var(--vscode-list-hoverBackground);cursor:pointer;user-select:none}
@@ -63,6 +63,10 @@ export const styles = css`
 		.rn{width:40px;min-width:40px;max-width:40px;text-align:center;font-size:12px;opacity:.5;padding:6px 2px;cursor:pointer;position:sticky;left:0;z-index:1;background:var(--vscode-editor-background);border-right:2px solid var(--vscode-panel-border)}
 		.rn:hover{background:var(--vscode-list-hoverBackground);opacity:.8}
 
+		/* Null cell — true null/undefined values, distinct from the string "null" */
+		td.null-cell{color:var(--vscode-disabledForeground, var(--vscode-descriptionForeground));opacity:.75}
+		.alt td.null-cell{color:var(--vscode-disabledForeground, var(--vscode-descriptionForeground))}
+
 		/* Object View button */
 		.obj-link{color:var(--vscode-textLink-foreground);text-decoration:none;font-size:11px;cursor:pointer}.obj-link:hover{text-decoration:underline;color:var(--vscode-textLink-activeForeground,var(--vscode-textLink-foreground))}
 		.obj-cell{text-align:left}
@@ -74,6 +78,11 @@ export const styles = css`
 
 		/* Spacer rows */
 		.vspacer td{padding:0;border:0;border-right:0;line-height:0;font-size:0;background:transparent}
+
+		/* Alternating row background (controlled by --kw-alt-row-bg CSS custom property from host settings) */
+		.alt td{background:var(--kw-alt-row-bg, var(--vscode-editor-background))}
+		.alt .rn{background:var(--kw-alt-row-bg, var(--vscode-editor-background))}
+		.alt .rn:hover{background:var(--vscode-list-hoverBackground);opacity:.8}
 
 		/* Selection (matching original exactly) */
 		.sel-row td{background:var(--vscode-list-inactiveSelectionBackground)}

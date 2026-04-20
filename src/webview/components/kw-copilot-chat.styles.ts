@@ -354,38 +354,8 @@ export const styles = css`
 	/* ── Input area ─────────────────────────────────────────────── */
 
 	.input-resizer {
-		flex: 0 0 1px;
-		height: 1px;
-		cursor: ns-resize;
-		background: var(--vscode-panel-border, rgba(128,128,128,0.35));
-		position: relative;
-		touch-action: none;
 		margin: 0 8px;
-		z-index: 1;
 	}
-	.input-resizer::after {
-		content: '';
-		position: absolute;
-		left: 0;
-		right: 0;
-		top: -3px;
-		bottom: -3px;
-	}
-	.input-resizer::before {
-		content: '';
-		position: absolute;
-		left: 0;
-		right: 0;
-		top: 50%;
-		height: 0;
-		transform: translateY(-50%);
-		background: var(--vscode-sash-hoverBorder, #007fd4);
-		transition: height 0.1s ease;
-		pointer-events: none;
-		z-index: 1;
-	}
-	.input-resizer:hover::before { height: 6px; transition-delay: var(--kw-sash-reveal-delay, 0.5s); }
-	.input-resizer.is-dragging::before { height: 6px; transition-delay: 0s; }
 
 	.input-area {
 		display: flex;

@@ -1,8 +1,14 @@
 import { pState } from '../shared/persistence-state';
+import type { SectionElement } from '../shared/dom-helpers';
 import { LitElement, html, type PropertyValues } from 'lit';
 import { styles } from './kw-python-section.styles.js';
+import { sectionGlowStyles } from '../shared/section-glow.styles.js';
+import { sashSheet } from '../shared/sash-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
+import '../components/kw-monaco-toolbar.js';
+import type { MonacoToolbarItem } from '../components/kw-monaco-toolbar.js';
+import { undoIcon, redoIcon, commentIcon, indentIcon, outdentIcon, runIcon } from '../shared/icon-registry.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { schedulePersist } from '../core/persistence.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
@@ -48,7 +54,7 @@ interface MonacoEditor {
  * Monaco renders in light DOM via `<slot>` to avoid shadow DOM incompatibilities.
  */
 @customElement('kw-python-section')
-export class KwPythonSection extends LitElement {
+export class KwPythonSection extends LitElement implements SectionElement {
 
 	// ── Public properties ─────────────────────────────────────────────────────
 
@@ -116,9 +122,21 @@ export class KwPythonSection extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = styles;
+	static override styles = [sashSheet, styles, sectionGlowStyles];
 
 	// ── Render ─────────────────────────────────────────────────────────────────
+
+	/** Ordered toolbar items for the reusable toolbar component. */
+	private get _toolbarItems(): MonacoToolbarItem[] {
+		return [
+			{ type: 'button', label: 'Comment', title: 'Comment/Uncomment (Ctrl+/)', action: () => this._toggleComment(), icon: commentIcon },
+			{ type: 'button', label: 'Indent', title: 'Indent (Tab)', action: () => this._indent(), icon: indentIcon },
+			{ type: 'button', label: 'Outdent', title: 'Outdent (Shift+Tab)', action: () => this._outdent(), icon: outdentIcon },
+			{ type: 'separator' },
+			{ type: 'button', label: 'Undo', title: 'Undo (Ctrl+Z)', action: () => this._undo(), icon: undoIcon },
+			{ type: 'button', label: 'Redo', title: 'Redo (Ctrl+Y)', action: () => this._redo(), icon: redoIcon },
+		];
+	}
 
 	override render() {
 		return html`
@@ -127,6 +145,7 @@ export class KwPythonSection extends LitElement {
 				.name=${this._title}
 				.expanded=${this._expanded}
 				box-id=${this.boxId}
+				section-type="python"
 				name-placeholder="Python name (optional)"
 				@name-change=${this._onShellNameChange}
 				@toggle-visibility=${this._toggleVisibility}
@@ -135,33 +154,11 @@ export class KwPythonSection extends LitElement {
 					@click=${this._run} title="Run Python (Ctrl+Enter)"
 					aria-label="Run Python"
 					?disabled=${this._running}>
-					${KwPythonSection._runIcon}
+					${runIcon}
 					<span class="run-label">Run</span>
 				</button>
 				<div class="editor-wrapper" id="editor-wrapper">
-					<div class="python-toolbar">
-						<button class="py-toolbar-btn" type="button" title="Comment/Uncomment (Ctrl+/)"
-							aria-label="Toggle comment" @click=${this._toggleComment}>
-							<span class="qe-icon">${KwPythonSection._commentIcon}</span>
-						</button>
-						<button class="py-toolbar-btn" type="button" title="Indent (Tab)"
-							aria-label="Indent" @click=${this._indent}>
-							<span class="qe-icon">${KwPythonSection._indentIcon}</span>
-						</button>
-						<button class="py-toolbar-btn" type="button" title="Outdent (Shift+Tab)"
-							aria-label="Outdent" @click=${this._outdent}>
-							<span class="qe-icon">${KwPythonSection._outdentIcon}</span>
-						</button>
-						<span class="py-toolbar-sep" aria-hidden="true"></span>
-						<button class="py-toolbar-btn" type="button" title="Undo (Ctrl+Z)"
-							aria-label="Undo" @click=${this._undo}>
-							<span class="qe-icon">${KwPythonSection._undoIcon}</span>
-						</button>
-						<button class="py-toolbar-btn" type="button" title="Redo (Ctrl+Y)"
-							aria-label="Redo" @click=${this._redo}>
-							<span class="qe-icon">${KwPythonSection._redoIcon}</span>
-						</button>
-					</div>
+					<kw-monaco-toolbar box-id=${this.boxId} .items=${this._toolbarItems} aria-label="Python editor tools"></kw-monaco-toolbar>
 					<slot name="editor"></slot>
 					<div class="resizer"
 						title="Drag to resize editor\nDouble-click to fit to contents"
@@ -173,52 +170,6 @@ export class KwPythonSection extends LitElement {
 			</div>
 		`;
 	}
-
-	// ── SVG Icons (static) ────────────────────────────────────────────────────
-
-	private static _runIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-			<path d="M4.5 2.5v11l9-5.5z"/>
-		</svg>`;
-
-	/* Comment toggle icon */
-	private static _commentIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-			<path d="M2 4h3l-3 4h3l-3 4" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-			<path d="M9 4h5M9 8h4M9 12h3" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-		</svg>`;
-
-	/* Indent icon */
-	private static _indentIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.3" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M7 4h7M7 8h7M7 12h7"/>
-			<path d="M2 5l3 3-3 3"/>
-		</svg>`;
-
-	/* Outdent icon */
-	private static _outdentIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.3" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M7 4h7M7 8h7M7 12h7"/>
-			<path d="M5 5l-3 3 3 3"/>
-		</svg>`;
-
-	/* Undo icon */
-	private static _undoIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M3 6h7a3 3 0 0 1 0 6H9"/>
-			<path d="M5.5 3.5L3 6l2.5 2.5"/>
-		</svg>`;
-
-	/* Redo icon */
-	private static _redoIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M13 6H6a3 3 0 0 0 0 6h1"/>
-			<path d="M10.5 3.5L13 6l-2.5 2.5"/>
-		</svg>`;
 
 	// ── Monaco Editor ─────────────────────────────────────────────────────────
 
@@ -637,6 +588,11 @@ export class KwPythonSection extends LitElement {
 
 	public getName(): string {
 		return this._title;
+	}
+
+	/** Set section name programmatically (used by agent tools). */
+	public setName(name: string): void {
+		this._title = name;
 	}
 
 	public setExpanded(expanded: boolean): void {

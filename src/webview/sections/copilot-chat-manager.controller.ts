@@ -1,6 +1,7 @@
 // Copilot chat management — ReactiveController pattern.
 // Extracted from kw-query-section.ts into a Lit ReactiveController
 // that manages the Copilot chat panel within a query section.
+// Parameterized with WebviewCopilotFlavor to support both Kusto and SQL.
 import type { ReactiveController, ReactiveControllerHost } from 'lit';
 import type { KwCopilotChat } from '../components/kw-copilot-chat.js';
 import { pState } from '../shared/persistence-state';
@@ -10,20 +11,32 @@ import { displayResultForBox } from '../core/results-state.js';
 import { syncSelectBackedDropdown, renderMenuDropdownHtml } from '../core/dropdown.js';
 import {
 	addQueryBox,
+	addSqlBox,
 	__kustoSetSectionName,
 } from '../core/section-factory.js';
 import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId } from './query-execution.controller.js';
 import { getRunModeForPersistence } from './kw-query-toolbar.js';
 import { __kustoPrettifyKustoTextWithSemicolonStatements } from '../monaco/prettify.js';
+import type { WebviewCopilotFlavor } from './copilot-chat-flavor.js';
 
 // ── Host interface (avoids circular import with kw-query-section.ts) ──────────
 
 /** Minimal interface the controller needs from its host element. */
 export interface CopilotChatManagerHost extends ReactiveControllerHost, HTMLElement {
 	boxId: string;
-	getConnectionId(): string;
+	/** Connection identifier (Kusto connectionId or SQL sqlConnectionId). */
+	getCopilotConnectionId(): string;
+	/** Server URL (Kusto clusterUrl or SQL serverUrl). */
+	getCopilotServerUrl(): string;
 	getDatabase(): string;
-	getClusterUrl(): string;
+	/** Set query text in the section's editor. */
+	setCopilotQueryText(text: string): void;
+	/** Get the current query text from the section's editor. */
+	getCopilotEditorValue(): string;
+	/** Re-layout the section's editor (after resize). */
+	layoutCopilotEditor(): void;
+	/** Focus the section's editor (e.g. after closing the Copilot chat). */
+	focusCopilotEditor(): void;
 }
 
 // ── Constants ─────────────────────────────────────────────────────────────────
@@ -31,7 +44,6 @@ export interface CopilotChatManagerHost extends ReactiveControllerHost, HTMLElem
 const DEFAULT_CHAT_WIDTH_PX = 500;
 const MIN_CHAT_WIDTH_PX = 160;
 const MIN_EDITOR_WIDTH_PX = 240;
-const COPILOT_VISIBILITY_CLASS_HIDDEN = 'kusto-copilot-chat-hidden';
 
 // ── Helpers (module-level) ────────────────────────────────────────────────────
 
@@ -109,18 +121,21 @@ function modelDropdownHtml(boxId: string): string {
 // ── ReactiveController ────────────────────────────────────────────────────────
 
 /**
- * Manages the Copilot chat panel for a single `<kw-query-section>` element:
+ * Manages the Copilot chat panel for a query or SQL section element:
  * installation, visibility, resize, event wiring, and message delegation.
+ * Parameterized with WebviewCopilotFlavor to support both Kusto and SQL.
  */
 export class CopilotChatManagerController implements ReactiveController {
 	host: CopilotChatManagerHost;
+	readonly flavor: WebviewCopilotFlavor;
 
 	private _copilotChatVisible = false;
 	private _copilotChatWidthPx: number | undefined;
 	private _copilotSplitObserver: ResizeObserver | null = null;
 
-	constructor(host: CopilotChatManagerHost) {
+	constructor(host: CopilotChatManagerHost, flavor: WebviewCopilotFlavor) {
 		this.host = host;
+		this.flavor = flavor;
 		host.addController(this);
 	}
 
@@ -138,7 +153,7 @@ export class CopilotChatManagerController implements ReactiveController {
 
 	/** Find the <kw-copilot-chat> Lit element for this section. */
 	getCopilotChatEl(): KwCopilotChat | null {
-		const pane = document.getElementById(this.host.boxId + '_copilot_chat_pane');
+		const pane = document.getElementById(this.host.boxId + this.flavor.domIdInfix + '_copilot_chat_pane');
 		return (pane?.querySelector('kw-copilot-chat') as KwCopilotChat | null) ?? null;
 	}
 
@@ -153,7 +168,7 @@ export class CopilotChatManagerController implements ReactiveController {
 			return this._copilotChatWidthPx;
 		}
 		try {
-			const pane = document.getElementById(this.host.boxId + '_copilot_chat_pane');
+			const pane = document.getElementById(this.host.boxId + this.flavor.domIdInfix + '_copilot_chat_pane');
 			if (!pane) return undefined;
 			const w = Math.round(pane.getBoundingClientRect().width || 0);
 			return w > 0 ? w : undefined;
@@ -165,7 +180,7 @@ export class CopilotChatManagerController implements ReactiveController {
 		if (!id) return;
 		let max: number | undefined;
 		try {
-			const split = document.getElementById(id + '_copilot_split');
+			const split = document.getElementById(id + this.flavor.domIdInfix + '_copilot_split');
 			if (split) {
 				const total = Math.round(split.getBoundingClientRect().width || 0);
 				if (total > 0) max = Math.max(MIN_CHAT_WIDTH_PX, total - MIN_EDITOR_WIDTH_PX);
@@ -173,27 +188,27 @@ export class CopilotChatManagerController implements ReactiveController {
 		} catch (e) { console.error('[kusto]', e); }
 		const next = clampNumber(widthPx, MIN_CHAT_WIDTH_PX, max);
 		try {
-			const pane = document.getElementById(id + '_copilot_chat_pane');
+			const pane = document.getElementById(id + this.flavor.domIdInfix + '_copilot_chat_pane');
 			if (pane?.style) pane.style.flex = '0 1 ' + next + 'px';
 		} catch (e) { console.error('[kusto]', e); }
 		this._copilotChatWidthPx = next;
-		try { const ed = window.queryEditors?.[id]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
+		try { this.host.layoutCopilotEditor(); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	setCopilotChatVisible(visible: boolean): void {
 		const id = this.host.boxId;
 		if (!id) return;
 		const next = !!visible;
+		const wasVisible = this._copilotChatVisible;
 		this._copilotChatVisible = next;
 		if (next) { try { this.installCopilotChat(); } catch (e) { console.error('[kusto]', e); } }
 		try {
-			const split = document.getElementById(id + '_copilot_split');
-			if (split?.classList) split.classList.toggle(COPILOT_VISIBILITY_CLASS_HIDDEN, !next);
+			const split = document.getElementById(id + this.flavor.domIdInfix + '_copilot_split');
+			if (split?.classList) split.classList.toggle(this.flavor.hiddenClass, !next);
 		} catch (e) { console.error('[kusto]', e); }
 		if (next) {
 			try {
-				const wrapper = document.getElementById(id + '_query_editor');
-				const editorWrapper = wrapper?.closest?.('.query-editor-wrapper') as HTMLElement | null;
+				const editorWrapper = this.host.querySelector?.('.query-editor-wrapper') as HTMLElement | null;
 				if (editorWrapper) {
 					const currentHeight = editorWrapper.getBoundingClientRect().height;
 					if (currentHeight < 180) {
@@ -206,8 +221,14 @@ export class CopilotChatManagerController implements ReactiveController {
 			} catch (e) { console.error('[kusto]', e); }
 		}
 		this._setCopilotToggleButtonState(next);
-		try { const ed = window.queryEditors?.[id]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
+		try { this.host.layoutCopilotEditor(); } catch (e) { console.error('[kusto]', e); }
 		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		// Focus management: focus chat input on open, editor on close.
+		if (next && !wasVisible) {
+			try { this.getCopilotChatEl()?.focusInput(); } catch (e) { console.error('[kusto]', e); }
+		} else if (!next && wasVisible) {
+			try { this.host.focusCopilotEditor(); } catch (e) { console.error('[kusto]', e); }
+		}
 	}
 
 	toggleCopilotChat(): void {
@@ -232,29 +253,29 @@ export class CopilotChatManagerController implements ReactiveController {
 
 	installCopilotChat(): void {
 		const boxId = this.host.boxId;
+		const infix = this.flavor.domIdInfix;
+		const cssPrefix = this.flavor.cssClassPrefix;
 		try {
-			const wrapper = document.getElementById(boxId + '_query_editor');
-			if (!wrapper) return;
-			const editorWrapper = wrapper.closest?.('.query-editor-wrapper') as HTMLElement | null;
+			const editorWrapper = this.host.querySelector?.('.query-editor-wrapper') as HTMLElement | null;
 			if (!editorWrapper) return;
-			if (document.getElementById(boxId + '_copilot_chat_pane')) return;
+			if (document.getElementById(boxId + infix + '_copilot_chat_pane')) return;
 
 			const existingChildren = Array.from(editorWrapper.childNodes || []);
 			const split = document.createElement('div');
-			split.className = 'kusto-copilot-split';
-			split.id = boxId + '_copilot_split';
+			split.className = cssPrefix + '-copilot-split';
+			split.id = boxId + infix + '_copilot_split';
 			split.style.flex = '1 1 auto';
 			split.style.minHeight = '0';
 
 			const splitter = document.createElement('div');
-			splitter.className = 'query-editor-resizer kusto-copilot-splitter';
-			splitter.id = boxId + '_copilot_splitter';
+			splitter.className = 'resizer-v query-editor-resizer ' + cssPrefix + '-copilot-splitter';
+			splitter.id = boxId + infix + '_copilot_splitter';
 			splitter.title = 'Drag to resize Copilot chat';
 			splitter.setAttribute('aria-label', 'Resize Copilot chat');
 			splitter.setAttribute('data-kusto-no-editor-focus', 'true');
 
 			const editorPane = document.createElement('div');
-			editorPane.className = 'kusto-copilot-editor-pane';
+			editorPane.className = cssPrefix + '-copilot-editor-pane';
 			for (const n of existingChildren) { try { editorPane.appendChild(n); } catch (e) { console.error('[kusto]', e); } }
 
 			try { editorWrapper.innerHTML = ''; } catch (e) { console.error('[kusto]', e); }
@@ -262,12 +283,15 @@ export class CopilotChatManagerController implements ReactiveController {
 			split.appendChild(splitter);
 
 			const chatPane = document.createElement('div');
-			chatPane.className = 'kusto-copilot-chat-pane';
-			chatPane.id = boxId + '_copilot_chat_pane';
+			chatPane.className = cssPrefix + '-copilot-chat-pane';
+			chatPane.id = boxId + infix + '_copilot_chat_pane';
 			chatPane.style.flex = '0 1 ' + DEFAULT_CHAT_WIDTH_PX + 'px';
 
 			const chatEl = document.createElement('kw-copilot-chat') as KwCopilotChat;
 			chatEl.setAttribute('box-id', boxId);
+			chatEl.finalToolNames = this.flavor.finalToolNames;
+			chatEl.insertQueryToolName = this.flavor.insertQueryToolName;
+			chatEl.tipHtml = this.flavor.tipHtml;
 
 			// Create model dropdown slot.
 			const modelSlot = document.createElement('div');
@@ -298,7 +322,7 @@ export class CopilotChatManagerController implements ReactiveController {
 			this._wireCopilotChatEvents(chatEl, boxId, chatPane, split, splitter);
 
 			// Ask extension for model list + default selection.
-			try { postMessageToHost({ type: 'prepareCopilotWriteQuery', boxId: String(boxId) }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'prepareCopilotWriteQuery', boxId: String(boxId), flavor: this.flavor.id }); } catch (e) { console.error('[kusto]', e); }
 
 			// ResizeObserver: re-layout Monaco when split crosses auto-hide threshold.
 			try {
@@ -310,8 +334,7 @@ export class CopilotChatManagerController implements ReactiveController {
 						const isBelowNow = w > 0 && w <= AUTO_HIDE_THRESHOLD;
 						if (isBelowNow !== wasBelowThreshold) {
 							wasBelowThreshold = isBelowNow;
-							const ed = window.queryEditors?.[boxId];
-							if (ed?.layout) ed.layout();
+							try { this.host.layoutCopilotEditor(); } catch (e) { console.error('[kusto]', e); }
 						}
 					} catch (e) { console.error('[kusto]', e); }
 				});
@@ -324,22 +347,29 @@ export class CopilotChatManagerController implements ReactiveController {
 	private _wireCopilotChatEvents(chatEl: KwCopilotChat, boxId: string, chatPane: HTMLElement, split: HTMLElement, splitter: HTMLElement): void {
 		chatEl.addEventListener('copilot-send', ((e: CustomEvent) => {
 			const { text, enabledTools, requireToolUse } = e.detail;
-			const connectionId = this.host.getConnectionId();
+			const connectionId = this.host.getCopilotConnectionId();
 			const database = this.host.getDatabase();
-			if (!connectionId) { chatEl.appendMessage('notification', 'Select a cluster connection first.'); return; }
+			if (!connectionId) { chatEl.appendMessage('notification', this.flavor.noConnectionMessage); return; }
 			if (!database) { chatEl.appendMessage('notification', 'Select a database first.'); return; }
 			let currentQuery = '';
-			try { const ed = window.queryEditors?.[boxId]; currentQuery = ed ? (ed.getValue() || '') : ''; } catch (e) { console.error('[kusto]', e); }
+			if (this.flavor.includesQueryContext) {
+				try { currentQuery = this.host.getCopilotEditorValue(); } catch (e) { console.error('[kusto]', e); }
+			}
 			const modelId = ((document.getElementById(boxId + '_copilot_model') || {}) as any).value || '';
 			try { __kustoSetLastOptimizeModelId(modelId); } catch (e) { console.error('[kusto]', e); }
 			chatEl.setRunning(true);
 			try {
 				postMessageToHost({
 					type: 'startCopilotWriteQuery', boxId: String(boxId),
-					connectionId: String(connectionId || ''), database: String(database || ''),
-					currentQuery: String(currentQuery || ''), request: String(text || ''),
-					modelId: String(modelId || ''), enabledTools,
-					queryMode: getRunModeForPersistence(boxId) || 'take100',
+					flavor: this.flavor.id,
+					connectionId: String(connectionId || ''),
+					serverUrl: String(this.host.getCopilotServerUrl() || ''),
+					database: String(database || ''),
+					currentQuery: this.flavor.includesQueryContext ? String(currentQuery || '') : undefined,
+					request: String(text || ''),
+					modelId: String(modelId || ''),
+					enabledTools,
+					queryMode: this.flavor.includesQueryContext ? (getRunModeForPersistence(boxId) || 'take100') : undefined,
 					requireToolUse: requireToolUse || undefined
 				});
 			} catch { chatEl.setRunning(false, 'Failed to start Copilot request.'); }
@@ -352,7 +382,7 @@ export class CopilotChatManagerController implements ReactiveController {
 		chatEl.addEventListener('copilot-clear', () => {
 			chatEl.clearConversation();
 			try { postMessageToHost({ type: 'clearCopilotConversation', boxId }); } catch (e) { console.error('[kusto]', e); }
-			try { postMessageToHost({ type: 'prepareCopilotWriteQuery', boxId: String(boxId) }); } catch (e) { console.error('[kusto]', e); }
+			try { postMessageToHost({ type: 'prepareCopilotWriteQuery', boxId: String(boxId), flavor: this.flavor.id }); } catch (e) { console.error('[kusto]', e); }
 		});
 
 		chatEl.addEventListener('copilot-close', () => { this.setCopilotChatVisible(false); });
@@ -365,42 +395,68 @@ export class CopilotChatManagerController implements ReactiveController {
 			try { postMessageToHost({ type: 'removeFromCopilotHistory', boxId, entryId: e.detail.entryId }); } catch (e) { console.error('[kusto]', e); }
 		}) as EventListener);
 
-		chatEl.addEventListener('copilot-open-preview', ((e: CustomEvent) => {
-			try { postMessageToHost({ type: 'openMarkdownPreview', filePath: e.detail.filePath }); } catch (e) { console.error('[kusto]', e); }
-		}) as EventListener);
+		if (this.flavor.supportsOpenPreview) {
+			chatEl.addEventListener('copilot-open-preview', ((e: CustomEvent) => {
+				try { postMessageToHost({ type: 'openMarkdownPreview', filePath: e.detail.filePath }); } catch (e) { console.error('[kusto]', e); }
+			}) as EventListener);
+		}
 
-		chatEl.addEventListener('copilot-insert-query', ((e: CustomEvent) => {
-			try {
-				const sourceClusterUrl = this.host.getClusterUrl();
-				const sourceDatabase = this.host.getDatabase();
+		if (this.flavor.supportsInsertQuery) {
+			chatEl.addEventListener('copilot-insert-query', ((e: CustomEvent) => {
+				try {
+					const sourceServerUrl = this.host.getCopilotServerUrl();
+					const sourceDatabase = this.host.getDatabase();
 
-				const scrollContainer = document.documentElement;
-				const savedScroll = scrollContainer.scrollTop;
-				const newBoxId = addQueryBox({
-					initialQuery: e.detail.query,
-					defaultResultsVisible: true,
-					afterBoxId: boxId,
-					clusterUrl: sourceClusterUrl || undefined,
-					database: sourceDatabase || undefined,
-				});
-				scrollContainer.scrollTop = savedScroll;
-				if (newBoxId) {
-					__kustoSetSectionName(newBoxId, 'Copilot query');
-					setTimeout(() => {
-						setQueryText(newBoxId, e.detail.query);
-						if (e.detail.result) {
-							displayResultForBox(e.detail.result, newBoxId, { label: 'Results', showExecutionTime: true });
+					const scrollContainer = document.documentElement;
+					const savedScroll = scrollContainer.scrollTop;
+					const isSql = this.flavor.id === 'sql';
+
+					// For SQL queries, extract a leading -- comment as the section name.
+					let queryText = String(e.detail.query || '');
+					let sectionName = 'Copilot query';
+					if (isSql) {
+						const match = queryText.match(/^\s*--\s*(.*)\r?\n?/);
+						if (match && match[1] && match[1].trim()) {
+							sectionName = match[1].trim();
+							queryText = queryText.slice(match[0].length);
 						}
-						const newBox = document.getElementById(newBoxId);
-						if (newBox) newBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
-					}, 100);
-				}
-			} catch (e) { console.error('[kusto]', e); }
-		}) as EventListener);
+					}
 
-		chatEl.addEventListener('copilot-open-agent', () => {
-			try { postMessageToHost({ type: 'openCopilotAgent' }); } catch (e) { console.error('[kusto]', e); }
-		});
+					const newBoxId = isSql
+						? addSqlBox({
+							query: queryText,
+							afterBoxId: boxId,
+							serverUrl: sourceServerUrl || undefined,
+							database: sourceDatabase || undefined,
+						})
+						: addQueryBox({
+							initialQuery: queryText,
+							defaultResultsVisible: true,
+							afterBoxId: boxId,
+							clusterUrl: sourceServerUrl || undefined,
+							database: sourceDatabase || undefined,
+						});
+					scrollContainer.scrollTop = savedScroll;
+					if (newBoxId) {
+						__kustoSetSectionName(newBoxId, sectionName);
+						setTimeout(() => {
+							if (!isSql) setQueryText(newBoxId, e.detail.query);
+							if (e.detail.result) {
+								displayResultForBox(e.detail.result, newBoxId, { label: 'Results', showExecutionTime: true });
+							}
+							const newBox = document.getElementById(newBoxId);
+							if (newBox) newBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+						}, 100);
+					}
+				} catch (e) { console.error('[kusto]', e); }
+			}) as EventListener);
+		}
+
+		if (this.flavor.supportsOpenAgent) {
+			chatEl.addEventListener('copilot-open-agent', () => {
+				try { postMessageToHost({ type: 'openCopilotAgent' }); } catch (e) { console.error('[kusto]', e); }
+			});
+		}
 
 		// ── Splitter drag ─────────────────────────────────────────────────
 
@@ -421,7 +477,7 @@ export class CopilotChatManagerController implements ReactiveController {
 				const next = clampNumber(startW - delta, MIN_CHAT_WIDTH_PX, max);
 				try { chatPane.style.flex = '0 1 ' + next + 'px'; } catch (e) { console.error('[kusto]', e); }
 				this._copilotChatWidthPx = next;
-				try { const ed = window.queryEditors?.[boxId]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
+				try { this.host.layoutCopilotEditor(); } catch (e) { console.error('[kusto]', e); }
 			};
 			const onUp = () => {
 				document.removeEventListener('mousemove', onMove, true);
@@ -438,7 +494,7 @@ export class CopilotChatManagerController implements ReactiveController {
 
 	private _setCopilotToggleButtonState(visible: boolean): void {
 		try {
-			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + this.host.boxId + '"]') as any;
+			const toolbar = document.querySelector(this.flavor.toolbarTagName + '[box-id="' + this.host.boxId + '"]') as any;
 			if (toolbar && typeof toolbar.setCopilotChatActive === 'function') {
 				toolbar.setCopilotChatActive(!!visible);
 			}
@@ -461,7 +517,7 @@ export class CopilotChatManagerController implements ReactiveController {
 	}
 
 	copilotWriteQuerySetQuery(queryText: string): void {
-		setQueryText(this.host.boxId, queryText);
+		try { this.host.setCopilotQueryText(queryText); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	copilotWriteQueryDone(ok: boolean, message: string): void {

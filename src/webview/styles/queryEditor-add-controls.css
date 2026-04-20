@@ -81,7 +81,7 @@
 		/* ==========================================================================
 		   ADD SECTION MOBILE DROPDOWN
 		   ==========================================================================
-		   Shows a dropdown instead of inline buttons when viewport is narrow (<465px).
+		   Shows a dropdown instead of inline buttons when viewport is narrow (<541px).
 		   ========================================================================== */
 
 		/* Hide the mobile dropdown by default (shown via media query) */
@@ -136,7 +136,7 @@
 		}
 
 		/* Responsive: show dropdown, hide inline buttons at narrow widths */
-		@media (max-width: 464px) {
+		@media (max-width: 540px) {
 			.add-controls-options {
 				display: none !important;
 			}

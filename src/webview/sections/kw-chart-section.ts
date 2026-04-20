@@ -1,10 +1,12 @@
 import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
+import type { SectionElement } from '../shared/dom-helpers';
 import { styles } from './kw-chart-section.styles.js';
+import { sectionGlowStyles } from '../shared/section-glow.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
 import { schedulePersist } from '../core/persistence.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
-import { codiconSheet } from '../shared/codicon-styles.js';
+import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import { cellToChartString } from '../shared/data-utils.js';
 import {
 	maximizeChartBox,
@@ -185,7 +187,7 @@ function esc(s: unknown): string {
  * and delegates ECharts rendering to light DOM via <slot>.
  */
 @customElement('kw-chart-section')
-export class KwChartSection extends LitElement {
+export class KwChartSection extends LitElement implements SectionElement {
 	public static addChartBox(options: Record<string, unknown> = {}): string {
 		const id = typeof options.id === 'string' && options.id
 			? String(options.id)
@@ -193,6 +195,7 @@ export class KwChartSection extends LitElement {
 		chartBoxes.push(id);
 
 		const st = getChartState(id);
+		st.name = typeof options.name === 'string' ? String(options.name) : (st.name || '');
 		st.mode = (typeof options.mode === 'string' && String(options.mode).toLowerCase() === 'preview') ? 'preview' : 'edit';
 		st.expanded = typeof options.expanded === 'boolean' ? !!options.expanded : true;
 		st.dataSourceId = typeof options.dataSourceId === 'string' ? String(options.dataSourceId) : (st.dataSourceId || '');
@@ -288,7 +291,7 @@ export class KwChartSection extends LitElement {
 
 		const resizerEl = document.createElement('div');
 		resizerEl.id = id + '_chart_resizer';
-		resizerEl.className = 'query-editor-resizer chart-bottom-resizer';
+		resizerEl.className = 'resizer query-editor-resizer chart-bottom-resizer';
 		resizerEl.title = 'Drag to resize\nDouble-click to fit to contents';
 		resizerEl.setAttribute('slot', 'chart-resizer');
 		litEl.appendChild(chartWrapper);
@@ -405,6 +408,9 @@ export class KwChartSection extends LitElement {
 	@state() private _chartSubtitle = '';
 	@state() private _chartTitleAlign: 'left' | 'center' | 'right' = 'center';
 	@state() private _titleSplitPercent = 50;
+
+	/** True when the chart renderer last produced an actual chart (not a placeholder message). */
+	@state() private _isChartRendering = false;
 
 	// Datasets available for selection
 	@state() private _datasets: DatasetEntry[] = [];
@@ -544,7 +550,7 @@ export class KwChartSection extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = [codiconSheet, styles];
+	static override styles = [iconRegistryStyles, styles, sectionGlowStyles];
 	// ── Render ─────────────────────────────────────────────────────────────────
 
 	override render(): TemplateResult {
@@ -563,6 +569,7 @@ export class KwChartSection extends LitElement {
 					.name=${this._name}
 					.expanded=${this._expanded}
 					box-id=${this.boxId}
+					section-type="chart"
 					name-placeholder="Chart name (optional)"
 					@name-change=${this._onShellNameChange}
 					@toggle-visibility=${this._toggleVisibility}
@@ -582,7 +589,7 @@ export class KwChartSection extends LitElement {
 					<div class="chart-edit-mode" id="chart-edit"
 						style=${this._mode === 'edit' ? '' : 'display:none'}>
 						<div class="chart-builder">
-							<div class="chart-controls">
+							<div class="chart-controls ${this._isChartRendering ? '' : 'no-canvas'}">
 								<div class="chart-controls-scroll">
 									<div class="chart-controls-scroll-content">
 										<!-- Chart type row -->
@@ -638,7 +645,7 @@ export class KwChartSection extends LitElement {
 					<!-- Light-DOM wrapper/canvases/resizer via slot -->
 					<slot name="chart-content"></slot>
 				</div>
-				<slot name="chart-resizer"></slot>
+				${this._isChartRendering ? html`<slot name="chart-resizer"></slot>` : nothing}
 				</kw-section-shell>
 			</div>
 		`;
@@ -1100,7 +1107,7 @@ export class KwChartSection extends LitElement {
 				</div>
 				` : nothing}
 				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetAxisSettings('x')} title="Reset to defaults">
-					<span class="codicon codicon-discard" aria-hidden="true"></span>
+					${ICONS.discard}
 				</button>
 			</kw-popover>
 		`;
@@ -1188,7 +1195,7 @@ export class KwChartSection extends LitElement {
 					` : nothing;
 				})() : nothing}
 				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetAxisSettings('y')} title="Reset to defaults">
-					<span class="codicon codicon-discard" aria-hidden="true"></span>
+					${ICONS.discard}
 				</button>
 			</kw-popover>
 		`;
@@ -1316,7 +1323,7 @@ export class KwChartSection extends LitElement {
 					</div>
 				` : nothing}
 				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetLegendSettings()} title="Reset to defaults">
-					<span class="codicon codicon-discard" aria-hidden="true"></span>
+					${ICONS.discard}
 				</button>
 			</kw-popover>
 		`;
@@ -1354,7 +1361,7 @@ export class KwChartSection extends LitElement {
 					</div>
 				` : nothing}
 				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetHeatmapLabelSettings()} title="Reset to defaults">
-					<span class="codicon codicon-discard" aria-hidden="true"></span>
+					${ICONS.discard}
 				</button>
 			</kw-popover>
 		`;
@@ -1382,7 +1389,7 @@ export class KwChartSection extends LitElement {
 					})}
 				</div>
 				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => this._resetHeatmapSlicerSettings()} title="Reset to defaults">
-					<span class="codicon codicon-discard" aria-hidden="true"></span>
+					${ICONS.discard}
 				</button>
 			</kw-popover>
 		`;
@@ -1408,7 +1415,7 @@ export class KwChartSection extends LitElement {
 					})}
 				</div>
 				<button slot="header-actions" class="axis-popup-reset-icon" @click=${() => { this._sankeyLeftMargin = 100; this._sliderMaxOverrides.delete('sankey:leftMargin'); this._schedulePersist(); }} title="Reset to defaults">
-					<span class="codicon codicon-discard" aria-hidden="true"></span>
+					${ICONS.discard}
 				</button>
 			</kw-popover>
 		`;
@@ -2150,6 +2157,16 @@ export class KwChartSection extends LitElement {
 		try {
 			renderChart(this.boxId);
 		} catch (e) { console.error('[kusto]', e); }
+		this._syncRenderingState();
+	}
+
+	/** Sync _isChartRendering from the chart renderer's __wasRendering flag. */
+	private _syncRenderingState(): void {
+		const st = (window as any).chartStateByBoxId?.[this.boxId];
+		const rendering = !!(st && st.__wasRendering);
+		if (this._isChartRendering !== rendering) {
+			this._isChartRendering = rendering;
+		}
 	}
 
 	// ── Host class management ─────────────────────────────────────────────────
@@ -2332,6 +2349,11 @@ export class KwChartSection extends LitElement {
 	/** Get section name. */
 	public getName(): string {
 		return this._name;
+	}
+
+	/** Set section name programmatically (used by agent tools). */
+	public setName(name: string): void {
+		this._name = name;
 	}
 }
 

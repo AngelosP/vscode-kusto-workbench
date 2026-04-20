@@ -6,7 +6,7 @@ import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import { parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview } from './diffViewerUtils';
-import { normalizeSection, computeChangedSections, formatSectionDiffContent, stripDiffNoise, KqlxEditorProvider } from './kqlxEditorProvider';
+import { normalizeSection, computeChangedSections, formatSectionDiffContent, KqlxEditorProvider } from './kqlxEditorProvider';
 import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
 
 /**
@@ -103,8 +103,8 @@ type IncomingWebviewMessage =
 export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider {
 	public static readonly viewType = 'kusto.kqlCompatEditor';
 
-	private static readonly allowedSectionKinds: Array<'query' | 'chart' | 'transformation' | 'markdown' | 'python' | 'url' | 'html'> =
-		['query', 'chart', 'transformation', 'markdown', 'python', 'url', 'html'];
+	private static readonly allowedSectionKinds: Array<'query' | 'chart' | 'transformation' | 'markdown' | 'python' | 'url' | 'html' | 'sql'> =
+		['query', 'sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
 
 	private static getSidecarKqlxUriForCompat(uri: vscode.Uri): vscode.Uri | undefined {
 		return getSidecarKqlxUriForCompat(uri);
@@ -748,11 +748,11 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						}
 
 						const saved = formatSectionDiffContent(
-							savedNormalized ? stripDiffNoise(savedNormalized) : undefined,
+							savedNormalized ?? undefined,
 							'section does not exist on disk'
 						);
 						const current = formatSectionDiffContent(
-							currentSection ? stripDiffNoise(currentSection) : undefined,
+							currentSection ?? undefined,
 							'section not found'
 						);
 
@@ -772,7 +772,8 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 						// When diffMode is contentOnly, skip the settings JSON diff entirely.
 						const diffMode = vscode.workspace.getConfiguration('kustoWorkbench').get<string>('sectionDiffMode', 'contentAndSettings');
-						const showSettingsDiff = diffMode !== 'contentOnly';
+						const settingsChanged = saved.settingsText !== current.settingsText;
+						const showSettingsDiff = diffMode !== 'contentOnly' && settingsChanged;
 
 						if (showSettingsDiff) {
 							await vscode.commands.executeCommand(

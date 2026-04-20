@@ -62,18 +62,19 @@ async function main() {
 	}
 
 	// Skip unused Monaco assets to reduce bundle size:
-	// - Language workers: only editor.worker is needed (KQL uses its own bundled worker).
-	// - Language directories (css, html, json, typescript): we only create 'kusto' and
-	//   'python' models. Kusto comes from @kusto/monaco-kusto (copied separately).
+	// - Language workers: only editor.worker and html.worker are needed.
+	//   (KQL uses its own bundled worker; HTML sections need the HTML worker.)
+	// - Language directories (css, json, typescript): we create 'kusto', 'python',
+	//   and 'html' models. Kusto comes from @kusto/monaco-kusto (copied separately).
 	// - basic-languages: keep only 'python' for syntax highlighting in python sections.
 	//   All other 80+ language grammars are unused dead weight.
 	// - NLS locale files: Monaco localization is not configured; these are never loaded.
 
 	const monacoSrc = path.join(__dirname, 'node_modules', 'monaco-editor', 'min', 'vs');
 	const monacoDest = path.join(__dirname, 'dist', 'monaco', 'vs');
-	const unusedWorkerPattern = /^(css|html|json|ts)\.worker\.[0-9a-f]+\.js$/i;
-	const unusedLanguageDirs = new Set(['css', 'html', 'json', 'typescript']);
-	const keepBasicLanguages = new Set(['python', 'html', 'css', 'javascript']);
+	const unusedWorkerPattern = /^(css|json|ts)\.worker\.[0-9a-f]+\.js$/i;
+	const unusedLanguageDirs = new Set(['css', 'json', 'typescript']);
+	const keepBasicLanguages = new Set(['python', 'html', 'css', 'javascript', 'sql']);
 	try {
 		await fs.promises.mkdir(path.dirname(monacoDest), { recursive: true });
 		// Node 16+ supports fs.promises.cp with a filter
@@ -273,7 +274,7 @@ async function main() {
 		sourcesContent: false,
 		platform: 'node',
 		outfile: 'dist/extension.js',
-		external: ['vscode'],
+		external: ['vscode', 'mssql'],
 		logLevel: 'silent',
 		plugins: [
 			/* add to the end of plugins array */
@@ -327,8 +328,8 @@ async function main() {
 	// Runs inline — no extra step to remember.
 	if (production) {
 		const BASELINES = {
-			'extension.js':                                         927,
-			'webview/webview.bundle.js':                           1380,
+			'extension.js':                                        1106,
+			'webview/webview.bundle.js':                           1824,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
 			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
 			'monaco/':                                            10963,

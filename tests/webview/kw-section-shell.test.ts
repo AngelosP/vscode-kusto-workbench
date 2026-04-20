@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { html, render, nothing } from 'lit';
 import '../../src/webview/components/kw-section-shell.js';
 import type { KwSectionShell } from '../../src/webview/components/kw-section-shell.js';
+import type { SectionType } from '../../src/webview/shared/icon-registry.js';
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -12,6 +13,7 @@ function createShell(attrs: Partial<{
 	expanded: boolean;
 	boxId: string;
 	namePlaceholder: string;
+	sectionType: SectionType | '';
 }> = {}, slots?: {
 	headerButtons?: ReturnType<typeof html>;
 	headerExtra?: ReturnType<typeof html>;
@@ -22,6 +24,7 @@ function createShell(attrs: Partial<{
 		expanded = true,
 		boxId = 'test-box-1',
 		namePlaceholder = 'Section name',
+		sectionType = '',
 	} = attrs;
 
 	render(html`
@@ -29,7 +32,8 @@ function createShell(attrs: Partial<{
 			.name=${name}
 			.expanded=${expanded}
 			box-id=${boxId}
-			name-placeholder=${namePlaceholder}>
+			name-placeholder=${namePlaceholder}
+			section-type=${sectionType || nothing}>
 			${slots?.headerButtons ?? nothing}
 			${slots?.headerExtra ?? nothing}
 			${slots?.body ?? html`<div class="test-body">Body content</div>`}
@@ -250,5 +254,42 @@ describe('kw-section-shell', () => {
 		await el.updateComplete;
 
 		expect(getDragHandle(el).getAttribute('draggable')).toBe('true');
+	});
+
+	it('renders section type icon when section-type is set', async () => {
+		const el = createShell({ sectionType: 'query' });
+		await el.updateComplete;
+
+		const icon = el.shadowRoot!.querySelector('.section-type-icon');
+		expect(icon).toBeTruthy();
+		expect(icon!.querySelector('svg')).toBeTruthy();
+	});
+
+	it('does not render section type icon when section-type is empty', async () => {
+		const el = createShell({ sectionType: '' });
+		await el.updateComplete;
+
+		const icon = el.shadowRoot!.querySelector('.section-type-icon');
+		expect(icon).toBeNull();
+	});
+
+	it('does not render section type icon when section-type is omitted', async () => {
+		const el = createShell();
+		await el.updateComplete;
+
+		const icon = el.shadowRoot!.querySelector('.section-type-icon');
+		expect(icon).toBeNull();
+	});
+
+	it('renders different icons for different section types', async () => {
+		const el = createShell({ sectionType: 'chart' });
+		await el.updateComplete;
+		const chartSvg = el.shadowRoot!.querySelector('.section-type-icon svg')!.outerHTML;
+
+		el.sectionType = 'python';
+		await el.updateComplete;
+		const pythonSvg = el.shadowRoot!.querySelector('.section-type-icon svg')!.outerHTML;
+
+		expect(chartSvg).not.toBe(pythonSvg);
 	});
 });

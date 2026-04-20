@@ -5,6 +5,9 @@ import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
 import { createEmptyKqlxOrMdxFile } from './kqlxFormat';
 import { writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry } from './schemaCache';
+import type { SqlConnectionManager } from './sqlConnectionManager';
+import type { SqlQueryClient } from './sqlClient';
+import { listDialects } from './sql/sqlDialectRegistry';
 
 /**
  * Connection Manager Viewer — Lit web components edition.
@@ -17,12 +20,25 @@ const VIEW_TITLE = 'Connection Manager';
 const STORAGE_KEYS = {
 	favorites: 'kusto.favorites',
 	expandedClusters: 'kusto.connectionManager.expandedClusters',
-	cachedDatabases: 'kusto.cachedDatabases'
+	cachedDatabases: 'kusto.cachedDatabases',
+	activeKind: 'connectionManager.activeKind',
+	sqlExpandedConnections: 'sql.connectionManager.expandedConnections',
+	sqlCachedDatabases: 'sql.connectionManager.cachedDatabases',
+	sqlFavorites: 'sql.favorites',
+	sqlLeaveNoTrace: 'sql.leaveNoTraceConnections',
 } as const;
+
+export type ConnectionKind = 'kusto' | 'sql';
 
 export type KustoFavorite = {
 	name: string;
 	clusterUrl: string;
+	database: string;
+};
+
+export type SqlFavorite = {
+	name: string;
+	connectionId: string;
 	database: string;
 };
 
@@ -47,10 +63,33 @@ type IncomingMessage =
 	| { type: 'connection.importXml' }
 	| { type: 'connection.exportXml' }
 	| { type: 'database.openInNewFile'; clusterUrl: string; database: string }
-	| { type: 'database.refreshSchema'; clusterUrl: string; database: string }
+	| { type: 'database.refreshSchema'; clusterUrl: string; database: string; source?: string }
 	| { type: 'cluster.refreshSchema'; connectionId: string }
 	| { type: 'table.preview'; connectionId: string; database: string; tableName: string }
-	| { type: 'saveResultsCsv'; csv: string; suggestedFileName?: string };
+	| { type: 'saveResultsCsv'; csv: string; suggestedFileName?: string }
+	// SQL connection management
+	| { type: 'setActiveKind'; kind: ConnectionKind }
+	| { type: 'sql.connection.add'; name: string; serverUrl: string; port?: number; dialect: string; authType: string; username?: string; password?: string; database?: string }
+	| { type: 'sql.connection.edit'; id: string; name: string; serverUrl: string; port?: number; dialect: string; authType: string; username?: string; password?: string; database?: string }
+	| { type: 'sql.connection.delete'; id: string }
+	| { type: 'sql.connection.test'; id: string; password?: string }
+	| { type: 'sql.connection.duplicate'; id: string }
+	| { type: 'sql.cluster.expand'; connectionId: string }
+	| { type: 'sql.cluster.collapse'; connectionId: string }
+	| { type: 'sql.cluster.refreshDatabases'; connectionId: string }
+	| { type: 'sql.database.getSchema'; connectionId: string; database: string }
+	| { type: 'sql.database.refreshSchema'; connectionId: string; database: string; source?: string }
+	| { type: 'sql.database.openInNewFile'; serverUrl: string; database: string }
+	| { type: 'sql.table.preview'; connectionId: string; database: string; tableName: string }
+	| { type: 'sql.favorite.add'; connectionId: string; database: string; name: string }
+	| { type: 'sql.favorite.remove'; connectionId: string; database: string }
+	| { type: 'sql.leaveNoTrace.add'; connectionId: string }
+	| { type: 'sql.leaveNoTrace.remove'; connectionId: string };
+
+export interface ConnectionManagerSqlDeps {
+	getSqlConnectionManager: () => SqlConnectionManager;
+	getSqlClient: () => SqlQueryClient;
+}
 
 export class ConnectionManagerViewerV2 {
 	private static current: ConnectionManagerViewerV2 | undefined;
@@ -59,30 +98,39 @@ export class ConnectionManagerViewerV2 {
 		context: vscode.ExtensionContext,
 		extensionUri: vscode.Uri,
 		connectionManager: ConnectionManager,
+		sqlDeps?: ConnectionManagerSqlDeps,
 		viewColumn: vscode.ViewColumn = vscode.ViewColumn.One
 	): void {
 		if (ConnectionManagerViewerV2.current) {
+			// Update SQL deps on re-reveal in case they changed
+			if (sqlDeps) {
+				ConnectionManagerViewerV2.current.sqlDeps = sqlDeps;
+			}
 			ConnectionManagerViewerV2.current.panel.webview.html = ConnectionManagerViewerV2.current.buildHtml(
 				ConnectionManagerViewerV2.current.panel.webview
 			);
 			ConnectionManagerViewerV2.current.panel.reveal(viewColumn);
 			return;
 		}
-		ConnectionManagerViewerV2.current = new ConnectionManagerViewerV2(context, extensionUri, connectionManager, viewColumn);
+		ConnectionManagerViewerV2.current = new ConnectionManagerViewerV2(context, extensionUri, connectionManager, sqlDeps, viewColumn);
 	}
 
 	private readonly panel: vscode.WebviewPanel;
 	private readonly disposables: vscode.Disposable[] = [];
 	private readonly kustoClient: KustoQueryClient;
 	private schemaCache: Map<string, { schema: DatabaseSchemaIndex; timestamp: number }> = new Map();
+	private sqlDeps: ConnectionManagerSqlDeps | undefined;
+	private configSubscription: vscode.Disposable | undefined;
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
 		private readonly extensionUri: vscode.Uri,
 		private readonly connectionManager: ConnectionManager,
+		sqlDeps: ConnectionManagerSqlDeps | undefined,
 		viewColumn: vscode.ViewColumn
 	) {
 		this.kustoClient = new KustoQueryClient(this.context);
+		this.sqlDeps = sqlDeps;
 		this.panel = vscode.window.createWebviewPanel(
 			'kusto.connectionManagerV2',
 			VIEW_TITLE,
@@ -93,6 +141,7 @@ export class ConnectionManagerViewerV2 {
 				localResourceRoots: [this.extensionUri]
 			}
 		);
+		this.panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'images', 'kusto-workbench-logo.png');
 
 		this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
 		this.panel.onDidChangeViewState((e) => {
@@ -102,10 +151,12 @@ export class ConnectionManagerViewerV2 {
 		}, null, this.disposables);
 		this.panel.webview.onDidReceiveMessage((msg: IncomingMessage) => void this.onMessage(msg), null, this.disposables);
 		this.panel.webview.html = this.buildHtml(this.panel.webview);
+		this.watchAlternatingRowColorSetting();
 	}
 
 	private dispose(): void {
 		ConnectionManagerViewerV2.current = undefined;
+		this.configSubscription?.dispose();
 		for (const d of this.disposables) {
 			try { d.dispose(); } catch { /* ignore */ }
 		}
@@ -185,14 +236,86 @@ export class ConnectionManagerViewerV2 {
 		}
 	}
 
+	// ─── SQL data helpers ───────────────────────────────────────────────────
+
+	private getSqlExpandedConnections(): string[] {
+		const raw = this.context.globalState.get<string[] | undefined>(STORAGE_KEYS.sqlExpandedConnections);
+		return Array.isArray(raw) ? raw.filter((s) => typeof s === 'string') : [];
+	}
+
+	private async setSqlExpandedConnections(expanded: string[]): Promise<void> {
+		await this.context.globalState.update(STORAGE_KEYS.sqlExpandedConnections, expanded);
+	}
+
+	private getSqlCachedDatabases(): Record<string, string[]> {
+		const raw = this.context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.sqlCachedDatabases);
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
+		const result: Record<string, string[]> = {};
+		for (const [k, v] of Object.entries(raw)) {
+			if (typeof k === 'string' && Array.isArray(v)) result[k] = v.filter((d) => typeof d === 'string');
+		}
+		return result;
+	}
+
+	private async setSqlCachedDatabases(cached: Record<string, string[]>): Promise<void> {
+		await this.context.globalState.update(STORAGE_KEYS.sqlCachedDatabases, cached);
+	}
+
+	private getSqlFavorites(): SqlFavorite[] {
+		const raw = this.context.globalState.get<unknown>(STORAGE_KEYS.sqlFavorites);
+		if (!Array.isArray(raw)) return [];
+		const out: SqlFavorite[] = [];
+		for (const item of raw) {
+			if (!item || typeof item !== 'object') continue;
+			const maybe = item as Partial<SqlFavorite>;
+			const name = String(maybe.name || '').trim();
+			const connectionId = String(maybe.connectionId || '').trim();
+			const database = String(maybe.database || '').trim();
+			if (!name || !connectionId || !database) continue;
+			out.push({ name, connectionId, database });
+		}
+		return out;
+	}
+
+	private async setSqlFavorites(favorites: SqlFavorite[]): Promise<void> {
+		await this.context.globalState.update(STORAGE_KEYS.sqlFavorites, favorites);
+	}
+
+	private getSqlLeaveNoTrace(): string[] {
+		const raw = this.context.globalState.get<string[] | undefined>(STORAGE_KEYS.sqlLeaveNoTrace);
+		return Array.isArray(raw) ? raw.filter((s) => typeof s === 'string') : [];
+	}
+
+	private async setSqlLeaveNoTrace(connectionIds: string[]): Promise<void> {
+		await this.context.globalState.update(STORAGE_KEYS.sqlLeaveNoTrace, connectionIds);
+	}
+
+	private getActiveKind(): ConnectionKind {
+		const raw = this.context.globalState.get<string>(STORAGE_KEYS.activeKind);
+		return raw === 'sql' ? 'sql' : 'kusto';
+	}
+
+	private async setActiveKind(kind: ConnectionKind): Promise<void> {
+		await this.context.globalState.update(STORAGE_KEYS.activeKind, kind);
+	}
+
 	private async buildSnapshot() {
+		const sqlConnections = this.sqlDeps ? this.sqlDeps.getSqlConnectionManager().getConnections() : [];
 		return {
 			timestamp: Date.now(),
+			activeKind: this.getActiveKind(),
 			connections: this.connectionManager.getConnections(),
 			favorites: this.getFavorites(),
 			cachedDatabases: this.getCachedDatabases(),
 			expandedClusters: this.getExpandedClusters(),
-			leaveNoTraceClusters: this.connectionManager.getLeaveNoTraceClusters()
+			leaveNoTraceClusters: this.connectionManager.getLeaveNoTraceClusters(),
+			// SQL
+			sqlConnections,
+			sqlCachedDatabases: this.getSqlCachedDatabases(),
+			sqlExpandedConnections: this.getSqlExpandedConnections(),
+			sqlFavorites: this.getSqlFavorites(),
+			sqlLeaveNoTrace: this.getSqlLeaveNoTrace(),
+			sqlDialects: listDialects().map(d => ({ id: d.id, displayName: d.displayName, defaultPort: d.defaultPort, authTypes: d.authTypes.map(a => ({ id: a.id, displayName: a.label })) })),
 		};
 	}
 
@@ -212,6 +335,7 @@ export class ConnectionManagerViewerV2 {
 		switch (msg.type) {
 			case 'requestSnapshot': {
 				await this.sendSnapshotToWebview();
+				this.sendAlternatingRowColorSetting();
 				return;
 			}
 			case 'connection.add': {
@@ -371,6 +495,7 @@ export class ConnectionManagerViewerV2 {
 			case 'database.refreshSchema': {
 				const clusterUrl = String(msg.clusterUrl || '').trim();
 				const database = String(msg.database || '').trim();
+				const source = String(msg.source || '').trim();
 				if (!clusterUrl || !database) return;
 				const connections = this.connectionManager.getConnections();
 				const normalizedUrl = this.normalizeFavoriteClusterUrl(clusterUrl);
@@ -384,8 +509,9 @@ export class ConnectionManagerViewerV2 {
 					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
 					const diskEntry: CachedSchemaEntry = { schema: result.schema, timestamp, version: SCHEMA_CACHE_VERSION, clusterUrl: normalizedCluster, database };
 					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, diskEntry);
+					this.panel.webview.postMessage({ type: 'schemaLoaded', connectionId: conn.id, database, schema: result.schema, fromCache: false, cacheAgeMs: 0 });
 					this.panel.webview.postMessage({ type: 'schemaRefreshCompleted', clusterUrl, database, success: true });
-					void vscode.window.setStatusBarMessage(`Schema refreshed: ${database}`, 3000);
+					void vscode.window.showInformationMessage(`Schema refreshed: ${database}${source ? ` (via ${source})` : ''}`);
 				} catch (error) {
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
 					this.panel.webview.postMessage({ type: 'schemaRefreshCompleted', clusterUrl, database, success: false, error: isAuthError ? 'Authentication required. Please test the connection to sign in.' : error instanceof Error ? error.message : String(error) });
@@ -498,6 +624,278 @@ export class ConnectionManagerViewerV2 {
 				if (uri) { await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(csv)); void vscode.window.setStatusBarMessage(`Results saved to ${uri.fsPath}`, 3000); }
 				return;
 			}
+
+			// ─── SQL message handlers ───────────────────────────────────────
+
+			case 'setActiveKind': {
+				const kind = msg.kind === 'sql' ? 'sql' : 'kusto' as ConnectionKind;
+				await this.setActiveKind(kind);
+				return;
+			}
+			case 'sql.connection.add': {
+				if (!this.sqlDeps) return;
+				const name = String(msg.name || '').trim();
+				const serverUrl = String(msg.serverUrl || '').trim();
+				if (!name || !serverUrl) { void vscode.window.showErrorMessage('Connection name and server URL are required.'); return; }
+				try {
+					const mgr = this.sqlDeps.getSqlConnectionManager();
+					await mgr.addConnection({
+						name,
+						serverUrl,
+						port: msg.port,
+						dialect: String(msg.dialect || 'mssql'),
+						authType: String(msg.authType || 'aad'),
+						username: msg.username,
+						database: msg.database ? String(msg.database).trim() : undefined,
+					}, msg.password);
+					void vscode.window.setStatusBarMessage(`SQL connection "${name}" added successfully`, 2000);
+					await this.sendSnapshotToWebview();
+				} catch (error) { void vscode.window.showErrorMessage(`Failed to add SQL connection: ${error instanceof Error ? error.message : String(error)}`); }
+				return;
+			}
+			case 'sql.connection.edit': {
+				if (!this.sqlDeps) return;
+				const id = String(msg.id || '').trim();
+				const name = String(msg.name || '').trim();
+				const serverUrl = String(msg.serverUrl || '').trim();
+				if (!id || !name || !serverUrl) { void vscode.window.showErrorMessage('Connection ID, name, and server URL are required.'); return; }
+				try {
+					const mgr = this.sqlDeps.getSqlConnectionManager();
+					await mgr.updateConnection(id, {
+						name,
+						serverUrl,
+						port: msg.port,
+						dialect: String(msg.dialect || 'mssql'),
+						authType: String(msg.authType || 'aad'),
+						username: msg.username,
+						database: msg.database ? String(msg.database).trim() : undefined,
+					});
+					if (msg.password !== undefined && msg.password !== null) {
+						await mgr.setPassword(id, msg.password);
+					}
+					void vscode.window.setStatusBarMessage(`SQL connection "${name}" updated successfully`, 2000);
+					await this.sendSnapshotToWebview();
+				} catch (error) { void vscode.window.showErrorMessage(`Failed to update SQL connection: ${error instanceof Error ? error.message : String(error)}`); }
+				return;
+			}
+			case 'sql.connection.delete': {
+				if (!this.sqlDeps) return;
+				const id = String(msg.id || '').trim();
+				if (!id) return;
+				const mgr = this.sqlDeps.getSqlConnectionManager();
+				const conn = mgr.getConnection(id);
+				const connName = conn?.name || id;
+				const confirm = await vscode.window.showWarningMessage(`Delete SQL connection "${connName}"?`, { modal: true }, 'Delete');
+				if (confirm !== 'Delete') return;
+				try {
+					// Clean up associated favorites and LNT
+					const sqlFavorites = this.getSqlFavorites().filter(f => f.connectionId !== id);
+					await this.setSqlFavorites(sqlFavorites);
+					const sqlLnt = this.getSqlLeaveNoTrace().filter(cid => cid !== id);
+					await this.setSqlLeaveNoTrace(sqlLnt);
+					await mgr.removeConnection(id);
+					void vscode.window.setStatusBarMessage(`SQL connection "${connName}" deleted`, 2000);
+					await this.sendSnapshotToWebview();
+				} catch (error) { void vscode.window.showErrorMessage(`Failed to delete SQL connection: ${error instanceof Error ? error.message : String(error)}`); }
+				return;
+			}
+			case 'sql.connection.test': {
+				if (!this.sqlDeps) return;
+				const id = String(msg.id || '').trim();
+				if (!id) return;
+				const mgr = this.sqlDeps.getSqlConnectionManager();
+				const conn = mgr.getConnection(id);
+				if (!conn) { void vscode.window.showErrorMessage('SQL connection not found.'); return; }
+				// If a password was passed (testing before save), store it temporarily
+				if (msg.password !== undefined && msg.password !== null) {
+					await mgr.setPassword(id, msg.password);
+				}
+				this.panel.webview.postMessage({ type: 'sql.testConnectionStarted', connectionId: id });
+				try {
+					const client = this.sqlDeps.getSqlClient();
+					const databases = await client.getDatabases(conn);
+					this.panel.webview.postMessage({ type: 'sql.testConnectionResult', connectionId: id, success: true, message: `Connected successfully! Found ${databases.length} database(s).` });
+					const cached = this.getSqlCachedDatabases();
+					cached[id] = databases;
+					await this.setSqlCachedDatabases(cached);
+				} catch (error) {
+					this.panel.webview.postMessage({ type: 'sql.testConnectionResult', connectionId: id, success: false, message: `Connection failed: ${error instanceof Error ? error.message : String(error)}` });
+				}
+				return;
+			}
+			case 'sql.connection.duplicate': {
+				if (!this.sqlDeps) return;
+				const id = String(msg.id || '').trim();
+				if (!id) return;
+				const mgr = this.sqlDeps.getSqlConnectionManager();
+				const conn = mgr.getConnection(id);
+				if (!conn) { void vscode.window.showErrorMessage('SQL connection not found.'); return; }
+				try {
+					await mgr.addConnection({ name: `${conn.name} (copy)`, serverUrl: conn.serverUrl, port: conn.port, dialect: conn.dialect, authType: conn.authType, username: conn.username, database: conn.database });
+					void vscode.window.setStatusBarMessage(`SQL connection duplicated`, 2000);
+					await this.sendSnapshotToWebview();
+				} catch (error) { void vscode.window.showErrorMessage(`Failed to duplicate SQL connection: ${error instanceof Error ? error.message : String(error)}`); }
+				return;
+			}
+			case 'sql.cluster.expand': {
+				if (!this.sqlDeps) return;
+				const connectionId = String(msg.connectionId || '').trim();
+				if (!connectionId) return;
+				const expanded = this.getSqlExpandedConnections();
+				if (!expanded.includes(connectionId)) { expanded.push(connectionId); await this.setSqlExpandedConnections(expanded); }
+				const mgr = this.sqlDeps.getSqlConnectionManager();
+				const conn = mgr.getConnection(connectionId);
+				if (conn) {
+					const cached = this.getSqlCachedDatabases();
+					if (!cached[connectionId] || cached[connectionId].length === 0) {
+						this.panel.webview.postMessage({ type: 'sql.loadingDatabases', connectionId });
+						try {
+							const client = this.sqlDeps.getSqlClient();
+							const databases = await client.getDatabases(conn);
+							cached[connectionId] = databases;
+							await this.setSqlCachedDatabases(cached);
+							this.panel.webview.postMessage({ type: 'sql.databasesLoaded', connectionId, databases });
+						} catch (error) { this.panel.webview.postMessage({ type: 'sql.databasesLoadError', connectionId, error: error instanceof Error ? error.message : String(error) }); }
+					}
+				}
+				return;
+			}
+			case 'sql.cluster.collapse': {
+				const connectionId = String(msg.connectionId || '').trim();
+				if (!connectionId) return;
+				const expanded = this.getSqlExpandedConnections().filter((id) => id !== connectionId);
+				await this.setSqlExpandedConnections(expanded);
+				return;
+			}
+			case 'sql.cluster.refreshDatabases': {
+				if (!this.sqlDeps) return;
+				const connectionId = String(msg.connectionId || '').trim();
+				if (!connectionId) return;
+				const mgr = this.sqlDeps.getSqlConnectionManager();
+				const conn = mgr.getConnection(connectionId);
+				if (!conn) return;
+				this.panel.webview.postMessage({ type: 'sql.loadingDatabases', connectionId });
+				try {
+					const client = this.sqlDeps.getSqlClient();
+					const databases = await client.getDatabases(conn);
+					const cached = this.getSqlCachedDatabases();
+					cached[connectionId] = databases;
+					await this.setSqlCachedDatabases(cached);
+					this.panel.webview.postMessage({ type: 'sql.databasesLoaded', connectionId, databases });
+				} catch (error) {
+					this.panel.webview.postMessage({ type: 'sql.databasesLoadError', connectionId, error: error instanceof Error ? error.message : String(error) });
+				}
+				return;
+			}
+			case 'sql.database.getSchema': {
+				if (!this.sqlDeps) return;
+				const connectionId = String(msg.connectionId || '').trim();
+				const database = String(msg.database || '').trim();
+				if (!connectionId || !database) return;
+				const mgr = this.sqlDeps.getSqlConnectionManager();
+				const conn = mgr.getConnection(connectionId);
+				if (!conn) return;
+				this.panel.webview.postMessage({ type: 'sql.loadingSchema', connectionId, database });
+				try {
+					const client = this.sqlDeps.getSqlClient();
+					const schema = await client.getDatabaseSchema(conn, database);
+					this.panel.webview.postMessage({ type: 'sql.schemaLoaded', connectionId, database, schema });
+				} catch (error) { this.panel.webview.postMessage({ type: 'sql.schemaLoadError', connectionId, database, error: error instanceof Error ? error.message : String(error) }); }
+				return;
+			}
+			case 'sql.database.refreshSchema': {
+				if (!this.sqlDeps) return;
+				const connectionId = String(msg.connectionId || '').trim();
+				const database = String(msg.database || '').trim();
+				const source = String(msg.source || '').trim();
+				if (!connectionId || !database) return;
+				const mgr = this.sqlDeps.getSqlConnectionManager();
+				const conn = mgr.getConnection(connectionId);
+				if (!conn) return;
+				this.panel.webview.postMessage({ type: 'sql.loadingSchema', connectionId, database });
+				try {
+					const client = this.sqlDeps.getSqlClient();
+					const schema = await client.getDatabaseSchema(conn, database);
+					this.panel.webview.postMessage({ type: 'sql.schemaLoaded', connectionId, database, schema });
+					void vscode.window.showInformationMessage(`SQL schema refreshed: ${database}${source ? ` (via ${source})` : ''}`);
+				} catch (error) { this.panel.webview.postMessage({ type: 'sql.schemaLoadError', connectionId, database, error: error instanceof Error ? error.message : String(error) }); }
+				return;
+			}
+			case 'sql.database.openInNewFile': {
+				const serverUrl = String(msg.serverUrl || '').trim();
+				const database = String(msg.database || '').trim();
+				if (!serverUrl || !database) return;
+				try {
+					const file = createEmptyKqlxOrMdxFile('sqlx');
+					file.state.sections.push({ type: 'sql', expanded: true, serverUrl, database, query: '' });
+					const defaultName = `${database}.sqlx`;
+					const uri = await vscode.window.showSaveDialog({ filters: { 'SQL Notebook': ['sqlx'] }, saveLabel: 'Create', title: 'Create new .sqlx file', defaultUri: vscode.workspace.workspaceFolders?.[0] ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, defaultName) : undefined });
+					if (uri) {
+						const content = JSON.stringify(file, null, 2) + '\n';
+						await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(content));
+						const doc = await vscode.workspace.openTextDocument(uri);
+						if (doc.getText().trim() !== content.trim()) { const edit = new vscode.WorkspaceEdit(); edit.replace(uri, new vscode.Range(0, 0, doc.lineCount, 0), content); await vscode.workspace.applyEdit(edit); await doc.save(); }
+						await vscode.commands.executeCommand('vscode.openWith', uri, 'kusto.kqlxEditor');
+					}
+				} catch { void vscode.window.showErrorMessage('Failed to create .sqlx file.'); }
+				return;
+			}
+			case 'sql.table.preview': {
+				if (!this.sqlDeps) return;
+				const connectionId = String(msg.connectionId || '').trim();
+				const database = String(msg.database || '').trim();
+				const tableName = String(msg.tableName || '').trim();
+				if (!connectionId || !database || !tableName) return;
+				const mgr = this.sqlDeps.getSqlConnectionManager();
+				const conn = mgr.getConnection(connectionId);
+				if (!conn) { this.panel.webview.postMessage({ type: 'sql.tablePreviewResult', connectionId, database, tableName, success: false, error: 'Connection not found.' }); return; }
+				this.panel.webview.postMessage({ type: 'sql.tablePreviewLoading', connectionId, database, tableName });
+				try {
+					const safeTableName = tableName.split('.').map(part => `[${part.replace(/\]/g, ']]')}]`).join('.');
+					const query = `SELECT TOP 100 * FROM ${safeTableName}`;
+					const client = this.sqlDeps.getSqlClient();
+					const result = await client.executeQuery(conn, database, query);
+					this.panel.webview.postMessage({ type: 'sql.tablePreviewResult', connectionId, database, tableName, success: true, columns: result.columns, rows: result.rows, rowCount: result.rows.length, executionTime: result.metadata?.executionTime });
+				} catch (error) {
+					this.panel.webview.postMessage({ type: 'sql.tablePreviewResult', connectionId, database, tableName, success: false, error: error instanceof Error ? error.message : String(error) });
+				}
+				return;
+			}
+			case 'sql.favorite.add': {
+				const connectionId = String(msg.connectionId || '').trim();
+				const database = String(msg.database || '').trim();
+				const name = String(msg.name || '').trim();
+				if (!connectionId || !database || !name) return;
+				const favorites = this.getSqlFavorites();
+				if (favorites.some(f => f.connectionId === connectionId && f.database.toLowerCase() === database.toLowerCase())) return;
+				favorites.push({ name, connectionId, database });
+				await this.setSqlFavorites(favorites);
+				return;
+			}
+			case 'sql.favorite.remove': {
+				const connectionId = String(msg.connectionId || '').trim();
+				const database = String(msg.database || '').trim();
+				if (!connectionId || !database) return;
+				const favorites = this.getSqlFavorites().filter(f => !(f.connectionId === connectionId && f.database.toLowerCase() === database.toLowerCase()));
+				await this.setSqlFavorites(favorites);
+				return;
+			}
+			case 'sql.leaveNoTrace.add': {
+				const connectionId = String(msg.connectionId || '').trim();
+				if (!connectionId) return;
+				const lnt = this.getSqlLeaveNoTrace();
+				if (!lnt.includes(connectionId)) { lnt.push(connectionId); await this.setSqlLeaveNoTrace(lnt); }
+				await this.sendSnapshotToWebview();
+				return;
+			}
+			case 'sql.leaveNoTrace.remove': {
+				const connectionId = String(msg.connectionId || '').trim();
+				if (!connectionId) return;
+				const lnt = this.getSqlLeaveNoTrace().filter(id => id !== connectionId);
+				await this.setSqlLeaveNoTrace(lnt);
+				await this.sendSnapshotToWebview();
+				return;
+			}
 			default: return;
 		}
 	}
@@ -600,14 +998,45 @@ export class ConnectionManagerViewerV2 {
 		} catch { return String(url || '').trim().replace(/\/+$/g, '').toLowerCase(); }
 	}
 
+	// ─── Alternating row color setting ──────────────────────────────────────
+
+	private sendAlternatingRowColorSetting(): void {
+		const val = vscode.workspace.getConfiguration('kustoWorkbench').get<string>('alternatingRowColor', 'theme');
+		void this.panel.webview.postMessage({ type: 'settingsUpdate', alternatingRowColor: val });
+	}
+
+	private watchAlternatingRowColorSetting(): void {
+		this.configSubscription?.dispose();
+		this.configSubscription = vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration('kustoWorkbench.alternatingRowColor')) {
+				this.sendAlternatingRowColorSetting();
+			}
+		});
+	}
+
+	private getAlternatingRowCss(): string {
+		const altRowColor = vscode.workspace.getConfiguration('kustoWorkbench').get<string>('alternatingRowColor', 'theme');
+		if (altRowColor === 'off') return '';
+		if (altRowColor === 'theme' || !altRowColor) {
+			return ':root{--kw-alt-row-bg:color-mix(in srgb,var(--vscode-editor-background) 97%,var(--vscode-foreground) 3%)}';
+		}
+		const safe = altRowColor.replace(/[^a-zA-Z0-9#(),./\s%\-]/g, '');
+		return safe ? `:root{--kw-alt-row-bg:${safe}}` : '';
+	}
+
 	// ─── HTML shell (loads Lit bundle) ──────────────────────────────────────
 
 	private buildHtml(webview: vscode.Webview): string {
 		const nonce = String(Date.now()) + Math.random().toString(16).slice(2);
 		const bundleUri = webview.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'webview', 'webview.bundle.js')).toString();
+		const codiconFontUri = webview
+			.asWebviewUri(vscode.Uri.joinPath(this.extensionUri, 'dist', 'monaco', 'vs', 'base', 'browser', 'ui', 'codicons', 'codicon', 'codicon.ttf'))
+			.toString();
+		const altRowCss = this.getAlternatingRowCss();
 		const csp = [
 			"default-src 'none'",
 			"img-src data:",
+			`font-src ${webview.cspSource}`,
 			`style-src 'unsafe-inline' ${webview.cspSource}`,
 			`script-src 'nonce-${nonce}' ${webview.cspSource}`,
 			`connect-src ${webview.cspSource}`
@@ -620,6 +1049,8 @@ export class ConnectionManagerViewerV2 {
 	<meta http-equiv="Content-Security-Policy" content="${csp}">
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<title>${VIEW_TITLE}</title>
+	<style>@font-face { font-family: "codicon"; font-display: block; src: url("${codiconFontUri}") format("truetype"); }</style>
+	${altRowCss ? `<style>${altRowCss}</style>` : ''}
 </head>
 <body>
 	<kw-connection-manager></kw-connection-manager>

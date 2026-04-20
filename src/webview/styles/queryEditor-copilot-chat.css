@@ -47,54 +47,18 @@
 			flex-direction: column;
 		}
 
+		/* Copilot splitter sash pattern provided by sashSheet (.resizer-v)
+		   via document.adoptedStyleSheets. Only structural overrides below. */
+
 		.kusto-copilot-splitter.query-editor-resizer {
-			flex: 0 0 1px;
-			width: 1px;
-			height: auto;
-			cursor: ew-resize;
-			background: var(--vscode-panel-border, rgba(128,128,128,0.35));
 			border-top: none;
-			position: relative;
 			padding: 0;
 			margin: 0;
-			z-index: 1;
 		}
-
-		/* Extended hit area — override base horizontal ::after for vertical splitter */
-		.kusto-copilot-splitter.query-editor-resizer::after {
-			content: '';
-			position: absolute;
-			top: 0;
-			bottom: 0;
-			left: -3px;
-			right: -3px;
-		}
-
-		/* Sash highlight — override base horizontal ::before for vertical splitter */
-		.kusto-copilot-splitter.query-editor-resizer::before {
-			content: '';
-			position: absolute;
-			top: 0;
-			bottom: 0;
-			left: 50%;
-			right: auto;
-			width: 0;
-			height: auto;
-			transform: translateX(-50%);
-			background: var(--vscode-sash-hoverBorder, #007fd4);
-			transition: width 0.1s ease;
-			pointer-events: none;
-			z-index: 1;
-		}
-
-		.kusto-copilot-splitter.query-editor-resizer:hover::before {
-			width: 6px;
-			height: auto;
-		}
-
-		.kusto-copilot-splitter.query-editor-resizer.is-dragging::before {
-			width: 6px;
-			height: auto;
+		.sql-copilot-splitter.query-editor-resizer {
+			border-top: none;
+			padding: 0;
+			margin: 0;
 		}
 
 		.kusto-copilot-chat-header {
@@ -169,9 +133,22 @@
 			min-width: 0;
 		}
 
+		/* SQL variant of the hidden class — same layout rules */
+		.sql-copilot-split.sql-copilot-chat-hidden .sql-copilot-chat-pane,
+		.sql-copilot-split.sql-copilot-chat-hidden .sql-copilot-splitter {
+			display: none;
+		}
+
+		.sql-copilot-split.sql-copilot-chat-hidden .sql-copilot-editor-pane {
+			flex: 1 1 auto;
+			width: 100%;
+			min-width: 0;
+		}
+
 		/* When the Copilot chat is visible, enforce its min-height on the wrapper
 		   so the vertical resize handle cannot squeeze it below the chat's min-height. */
-		.query-editor-wrapper:has(.kusto-copilot-split:not(.kusto-copilot-chat-hidden)) {
+		.query-editor-wrapper:has(.kusto-copilot-split:not(.kusto-copilot-chat-hidden)),
+		.query-editor-wrapper:has(.sql-copilot-split:not(.sql-copilot-chat-hidden)) {
 			min-height: 180px;
 		}
 
@@ -265,52 +242,6 @@
 		.kusto-copilot-chat-msg-notification a:hover {
 			text-decoration: underline;
 			color: var(--vscode-textLink-activeForeground, #3794ff);
-		}
-
-		.kusto-copilot-chat-input-resizer {
-			flex: 0 0 1px;
-			height: 1px;
-			cursor: ns-resize;
-			background: var(--vscode-panel-border, rgba(128,128,128,0.35));
-			position: relative;
-			touch-action: none;
-			margin: 0 8px;
-			z-index: 1;
-		}
-
-		/* Extended hit area */
-		.kusto-copilot-chat-input-resizer::after {
-			content: '';
-			position: absolute;
-			left: 0;
-			right: 0;
-			top: -3px;
-			bottom: -3px;
-		}
-
-		/* Sash highlight on hover / drag */
-		.kusto-copilot-chat-input-resizer::before {
-			content: '';
-			position: absolute;
-			left: 0;
-			right: 0;
-			top: 50%;
-			height: 0;
-			transform: translateY(-50%);
-			background: var(--vscode-sash-hoverBorder, #007fd4);
-			transition: height 0.1s ease;
-			pointer-events: none;
-			z-index: 1;
-		}
-
-		.kusto-copilot-chat-input-resizer:hover::before {
-			height: 6px;
-			transition-delay: var(--kw-sash-reveal-delay, 0.5s);
-		}
-
-		.kusto-copilot-chat-input-resizer.is-dragging::before {
-			height: 6px;
-			transition-delay: 0s;
 		}
 
 		.kusto-copilot-chat-input {

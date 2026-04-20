@@ -30,7 +30,7 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 		isSessionFile: false,
 		documentUri: '',
 		documentKind: 'kqlx',
-		allowedSectionKinds: ['query', 'chart', 'markdown', 'python', 'url'],
+		allowedSectionKinds: ['query', 'chart', 'python', 'url', 'markdown'],
 		defaultSectionKind: 'query',
 		compatibilitySingleKind: 'query',
 		upgradeRequestType: 'requestUpgradeToKqlx',
@@ -245,5 +245,67 @@ describe('message-handler dispatch', () => {
 			connections: [{ name: 'Conn', clusterUrl: 'https://x.kusto.windows.net', database: 'db' }],
 			boxId: 'query_1',
 		});
+	});
+});
+
+/**
+ * Regression tests: tool name updates must use __kustoSetSectionName.
+ *
+ * Bug: toolConfigureQuerySection, toolUpdateMarkdownSection, toolConfigureChart,
+ * and toolConfigureTransformation tried to set names via a non-existent
+ * `document.getElementById(sectionId + '_name')` DOM element, which silently
+ * failed. The name parameter was accepted but never persisted.
+ */
+describe('tool section name persistence', () => {
+	let setSectionNameSpy: ReturnType<typeof vi.fn>;
+
+	beforeAll(async () => {
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		setSectionNameSpy = sectionFactory.__kustoSetSectionName as unknown as ReturnType<typeof vi.fn>;
+	});
+
+	beforeEach(() => {
+		vi.clearAllMocks();
+	});
+
+	it('toolConfigureQuerySection calls __kustoSetSectionName', async () => {
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection',
+			requestId: 'r1',
+			input: { sectionId: 'query_1', name: 'Install Telemetry' },
+		});
+		// Allow microtask queue to flush (handler is async)
+		await new Promise(r => setTimeout(r, 50));
+		expect(setSectionNameSpy).toHaveBeenCalledWith('query_1', 'Install Telemetry');
+	});
+
+	it('toolUpdateMarkdownSection calls __kustoSetSectionName', async () => {
+		dispatchHostMessage({
+			type: 'toolUpdateMarkdownSection',
+			requestId: 'r2',
+			input: { sectionId: 'markdown_1', name: 'Summary' },
+		});
+		await new Promise(r => setTimeout(r, 50));
+		expect(setSectionNameSpy).toHaveBeenCalledWith('markdown_1', 'Summary');
+	});
+
+	it('toolConfigureChart calls __kustoSetSectionName', async () => {
+		dispatchHostMessage({
+			type: 'toolConfigureChart',
+			requestId: 'r3',
+			input: { sectionId: 'chart_1', name: 'Trend Chart' },
+		});
+		await new Promise(r => setTimeout(r, 50));
+		expect(setSectionNameSpy).toHaveBeenCalledWith('chart_1', 'Trend Chart');
+	});
+
+	it('toolConfigureTransformation calls __kustoSetSectionName', async () => {
+		dispatchHostMessage({
+			type: 'toolConfigureTransformation',
+			requestId: 'r4',
+			input: { sectionId: 'transformation_1', name: 'Pivot Data' },
+		});
+		await new Promise(r => setTimeout(r, 50));
+		expect(setSectionNameSpy).toHaveBeenCalledWith('transformation_1', 'Pivot Data');
 	});
 });

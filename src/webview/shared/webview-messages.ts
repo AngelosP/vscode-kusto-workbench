@@ -48,7 +48,9 @@ export type OutgoingShareToClipboardMessage = {
 export type OutgoingStartCopilotWriteQueryMessage = {
 	type: 'startCopilotWriteQuery';
 	boxId: string;
+	flavor: 'kusto' | 'sql';
 	connectionId: string;
+	serverUrl: string;
 	database: string;
 	currentQuery?: string;
 	request: string;
@@ -102,6 +104,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }
 	| { type: 'promptAddConnection'; boxId?: string }
+	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; boxId?: string }
 	| { type: 'promptImportConnectionsXml'; boxId?: string }
 	| { type: 'addConnectionsForClusters'; clusterUrls: string[]; boxId?: string }
 	| OutgoingImportConnectionsFromXmlMessage
@@ -110,6 +113,10 @@ export type OutgoingWebviewMessage =
 	| { type: 'requestAddFavorite'; clusterUrl: string; database: string; defaultName?: string; boxId?: string }
 	| { type: 'removeFavorite'; clusterUrl: string; database: string; boxId?: string }
 	| { type: 'confirmRemoveFavorite'; requestId: string; label?: string; clusterUrl: string; database: string; boxId?: string }
+
+	// SQL favorites
+	| { type: 'requestAddSqlFavorite'; connectionId: string; database: string; defaultName?: string; boxId?: string }
+	| { type: 'removeSqlFavorite'; connectionId: string; database: string; boxId?: string }
 
 	// Info & UI
 	| { type: 'showInfo'; message: string }
@@ -129,6 +136,25 @@ export type OutgoingWebviewMessage =
 	| OutgoingCopyAdeLinkMessage
 	| OutgoingShareToClipboardMessage
 
+	// SQL connections & databases
+	| { type: 'getSqlConnections' }
+	| { type: 'getSqlDatabases'; sqlConnectionId: string; boxId: string }
+	| { type: 'refreshSqlDatabases'; sqlConnectionId: string; boxId: string }
+	| { type: 'saveSqlLastSelection'; sqlConnectionId: string; database?: string }
+	| { type: 'promptAddSqlConnection'; boxId?: string }
+	| { type: 'addSqlConnection'; name: string; serverUrl: string; dialect: string; authType: string; database?: string; port?: number; username?: string; password?: string; boxId?: string }
+	| { type: 'testSetSqlAuthOverride'; serverUrl: string; accountId: string; token: string }
+	| { type: 'testClearSqlAuthOverride'; accountId: string }
+
+	// SQL query execution
+	| { type: 'executeSqlQuery'; query: string; sqlConnectionId: string; boxId: string; database?: string; queryMode?: string }
+	| { type: 'cancelSqlQuery'; boxId: string }
+
+	// SQL schema
+	| { type: 'prefetchSqlSchema'; sqlConnectionId: string; database: string; boxId: string; forceRefresh?: boolean }
+
+	// SQL copilot — unified into Copilot section below
+
 	// Comparisons
 	| { type: 'comparisonBoxEnsured'; requestId: string; sourceBoxId: string; comparisonBoxId: string }
 	| { type: 'comparisonSummary'; sourceBoxId: string; comparisonBoxId: string; dataMatches: boolean; headersMatch?: boolean; rowOrderMatches?: boolean; columnOrderMatches?: boolean }
@@ -136,17 +162,22 @@ export type OutgoingWebviewMessage =
 	// Schema
 	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string }
 	| { type: 'requestCrossClusterSchema'; clusterName: string; database: string; boxId: string; requestToken: string }
+	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; line: number; column: number } }
+	| { type: 'stsDidOpen'; boxId: string; text: string }
+	| { type: 'stsDidChange'; boxId: string; text: string }
+	| { type: 'stsDidClose'; boxId: string }
+	| { type: 'stsConnect'; boxId: string; sqlConnectionId: string; database: string }
 	| OutgoingKqlLanguageRequestMessage
 	| OutgoingFetchControlCommandSyntaxMessage
 
 	// Copilot
 	| { type: 'checkCopilotAvailability'; boxId: string }
-	| { type: 'prepareCopilotWriteQuery'; boxId: string }
+	| { type: 'prepareCopilotWriteQuery'; boxId: string; flavor?: 'kusto' | 'sql' }
 	| OutgoingStartCopilotWriteQueryMessage
 	| { type: 'cancelCopilotWriteQuery'; boxId: string }
 	| { type: 'clearCopilotConversation'; boxId: string }
 	| { type: 'removeFromCopilotHistory'; boxId: string; entryId: string }
-	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string }
+	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string; flavor?: 'kusto' | 'sql' }
 
 	// Optimize
 	| { type: 'prepareOptimizeQuery'; query: string; boxId: string }

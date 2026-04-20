@@ -1,9 +1,18 @@
 import { pState } from '../shared/persistence-state';
+import type { SectionElement } from '../shared/dom-helpers';
 import { postMessageToHost } from '../shared/webview-messages';
 import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { styles } from './kw-html-section.styles.js';
+import { sectionGlowStyles } from '../shared/section-glow.styles.js';
+import { sashSheet } from '../shared/sash-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
+import '../components/kw-monaco-toolbar.js';
+import type { MonacoToolbarItem } from '../components/kw-monaco-toolbar.js';
+import {
+	undoIcon, redoIcon, prettifyIcon, commentHtmlIcon, searchIcon, replaceIcon,
+	indentIcon, outdentIcon, wordWrapIcon, exportIcon,
+} from '../shared/icon-registry.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { schedulePersist } from '../core/persistence.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
@@ -54,7 +63,7 @@ interface MonacoEditor {
  * Monaco renders in light DOM via `<slot>` to avoid shadow DOM incompatibilities.
  */
 @customElement('kw-html-section')
-export class KwHtmlSection extends LitElement {
+export class KwHtmlSection extends LitElement implements SectionElement {
 
 	// ── Public properties ─────────────────────────────────────────────────────
 
@@ -154,8 +163,10 @@ export class KwHtmlSection extends LitElement {
 				}
 			} else {
 				// Returning to code mode — re-layout editor.
+				this._lastPreviewFitHeight = 0;
 				this.updateComplete.then(() => {
 					try { this._editor?.layout(); } catch (e) { console.error('[kusto]', e); }
+					this._updatePlaceholder();
 					if (this._userResizedEditor && this._savedEditorHeightPx !== undefined) {
 						this._restoreEditorHeight();
 					} else {
@@ -169,18 +180,18 @@ export class KwHtmlSection extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = styles;
+	static override styles = [sashSheet, styles, sectionGlowStyles];
 
 	// ── Render ─────────────────────────────────────────────────────────────────
 
 	override render() {
-		const showResizer = this._expanded;
 		return html`
 			<div class="section-root">
 			<kw-section-shell
 				.name=${this._name}
 				.expanded=${this._expanded}
 				box-id=${this.boxId}
+				section-type="html"
 				name-placeholder="HTML name (optional)"
 				@name-change=${this._onShellNameChange}
 				@toggle-visibility=${this._toggleVisibility}
@@ -189,12 +200,6 @@ export class KwHtmlSection extends LitElement {
 				${this._expanded ? (this._mode === 'code' ? this._renderCodeMode() : this._renderPreviewMode()) : nothing}
 			</kw-section-shell>
 			</div>
-			${showResizer ? html`
-				<div class="resizer"
-					title="Drag to resize\nDouble-click to fit to contents"
-					@mousedown=${this._mode === 'code' ? this._onEditorResizerMouseDown : this._onPreviewResizerMouseDown}
-					@dblclick=${this._fitToContents}></div>
-			` : nothing}
 		`;
 	}
 
@@ -211,7 +216,7 @@ export class KwHtmlSection extends LitElement {
 					@click=${() => this._setMode('preview')} title="Preview">Preview</button>
 				<button class="header-tab" type="button"
 					@click=${this._saveAsHtml} title="Export as HTML file" aria-label="Export as HTML file">
-					${KwHtmlSection._exportIcon}
+					${exportIcon}
 				</button>
 			</div>
 		`;
@@ -219,55 +224,38 @@ export class KwHtmlSection extends LitElement {
 
 	// ── Code mode ─────────────────────────────────────────────────────────────
 
+	/** Ordered toolbar items for overflow system. */
+	private get _toolbarItems(): MonacoToolbarItem[] {
+		return [
+			{ type: 'button', label: 'Undo', title: 'Undo (Ctrl+Z)', action: () => this._undo(), icon: undoIcon },
+			{ type: 'button', label: 'Redo', title: 'Redo (Ctrl+Y)', action: () => this._redo(), icon: redoIcon },
+			{ type: 'separator' },
+			{ type: 'button', label: 'Format', title: 'Format Document (Shift+Alt+F)', action: () => this._formatDocument(), icon: prettifyIcon },
+			{ type: 'button', label: 'Comment', title: 'Toggle Comment (Ctrl+/)', action: () => this._toggleComment(), icon: commentHtmlIcon },
+			{ type: 'separator' },
+			{ type: 'button', label: 'Indent', title: 'Indent (Tab)', action: () => this._indent(), icon: indentIcon },
+			{ type: 'button', label: 'Outdent', title: 'Outdent (Shift+Tab)', action: () => this._outdent(), icon: outdentIcon },
+			{ type: 'separator' },
+			{ type: 'button', label: 'Find', title: 'Find (Ctrl+F)', action: () => this._find(), icon: searchIcon },
+			{ type: 'button', label: 'Replace', title: 'Find and Replace (Ctrl+H)', action: () => this._findReplace(), icon: replaceIcon },
+			{ type: 'separator' },
+			{ type: 'button', label: 'Word Wrap', title: 'Toggle Word Wrap', action: () => this._toggleWordWrap(), icon: wordWrapIcon, isActive: this._wordWrap },
+		];
+	}
+
 	private _renderCodeMode(): TemplateResult {
 		return html`
-			<div class="html-toolbar">
-				<button class="html-toolbar-btn" type="button" title="Undo (Ctrl+Z)"
-					aria-label="Undo" @click=${this._undo}>
-					${KwHtmlSection._undoIcon}
-				</button>
-				<button class="html-toolbar-btn" type="button" title="Redo (Ctrl+Y)"
-					aria-label="Redo" @click=${this._redo}>
-					${KwHtmlSection._redoIcon}
-				</button>
-				<span class="html-toolbar-sep" aria-hidden="true"></span>
-				<button class="html-toolbar-btn" type="button" title="Format Document (Shift+Alt+F)"
-					aria-label="Format document" @click=${this._formatDocument}>
-					${KwHtmlSection._formatIcon}
-				</button>
-				<button class="html-toolbar-btn" type="button" title="Toggle Comment (Ctrl+/)"
-					aria-label="Toggle comment" @click=${this._toggleComment}>
-					${KwHtmlSection._commentIcon}
-				</button>
-				<span class="html-toolbar-sep" aria-hidden="true"></span>
-				<button class="html-toolbar-btn" type="button" title="Indent (Tab)"
-					aria-label="Indent" @click=${this._indent}>
-					${KwHtmlSection._indentIcon}
-				</button>
-				<button class="html-toolbar-btn" type="button" title="Outdent (Shift+Tab)"
-					aria-label="Outdent" @click=${this._outdent}>
-					${KwHtmlSection._outdentIcon}
-				</button>
-				<span class="html-toolbar-sep" aria-hidden="true"></span>
-				<button class="html-toolbar-btn" type="button" title="Find (Ctrl+F)"
-					aria-label="Find" @click=${this._find}>
-					${KwHtmlSection._searchIcon}
-				</button>
-				<button class="html-toolbar-btn" type="button" title="Find and Replace (Ctrl+H)"
-					aria-label="Find and Replace" @click=${this._findReplace}>
-					${KwHtmlSection._replaceIcon}
-				</button>
-				<span class="html-toolbar-sep" aria-hidden="true"></span>
-				<button class="html-toolbar-btn ${this._wordWrap ? 'is-active' : ''}" type="button"
-					title="Toggle Word Wrap" aria-label="Toggle Word Wrap"
-					@click=${this._toggleWordWrap}>
-					${KwHtmlSection._wordWrapIcon}
-				</button>
-			</div>
 			<div class="editor-wrapper" id="editor-wrapper">
-				<div class="editor-placeholder" id="editor-placeholder">Probably best to let the agent do this part ...</div>
-				<slot name="editor"></slot>
+				<kw-monaco-toolbar box-id=${this.boxId} .items=${this._toolbarItems} aria-label="HTML editor tools"></kw-monaco-toolbar>
+				<div class="editor-area">
+					<div class="editor-placeholder" id="editor-placeholder">Probably best to let the agent do this part ...</div>
+					<slot name="editor"></slot>
+				</div>
 			</div>
+			<div class="resizer"
+				title="Drag to resize\nDouble-click to fit to contents"
+				@mousedown=${this._onEditorResizerMouseDown}
+				@dblclick=${this._fitToContents}></div>
 		`;
 	}
 
@@ -287,76 +275,12 @@ export class KwHtmlSection extends LitElement {
 					<div class="preview-empty">Write some HTML in Edit mode, and then switch to Preview.</div>
 				`}
 			</div>
+			<div class="resizer"
+				title="Drag to resize\nDouble-click to fit to contents"
+				@mousedown=${this._onPreviewResizerMouseDown}
+				@dblclick=${this._fitToContents}></div>
 		`;
 	}
-
-	// ── SVG Icons (static) ────────────────────────────────────────────────────
-
-	private static _undoIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M3 6h7a3 3 0 0 1 0 6H9"/>
-			<path d="M5.5 3.5L3 6l2.5 2.5"/>
-		</svg>`;
-
-	private static _redoIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M13 6H6a3 3 0 0 0 0 6h1"/>
-			<path d="M10.5 3.5L13 6l-2.5 2.5"/>
-		</svg>`;
-
-	private static _formatIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.3" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M3 4h10M5 8h8M3 12h6"/>
-		</svg>`;
-
-	private static _commentIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-			<path d="M2 4h3l-3 4h3l-3 4" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
-			<path d="M9 4h5M9 8h4M9 12h3" stroke="currentColor" stroke-width="1.3" fill="none" stroke-linecap="round"/>
-		</svg>`;
-
-	private static _indentIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.3" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M7 4h7M7 8h7M7 12h7"/>
-			<path d="M2 5l3 3-3 3"/>
-		</svg>`;
-
-	private static _outdentIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.3" stroke-linecap="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M7 4h7M7 8h7M7 12h7"/>
-			<path d="M5 5l-3 3 3 3"/>
-		</svg>`;
-
-	private static _searchIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<circle cx="7" cy="7" r="4.5"/>
-			<path d="M10.5 10.5L14 14"/>
-		</svg>`;
-
-	private static _replaceIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg">
-			<path fill-rule="evenodd" d="M2.5 4.5h8V3l3 2.5-3 2.5V6.5h-8v-2zM13.5 11.5h-8V13l-3-2.5 3-2.5v1.5h8v2z"/>
-		</svg>`;
-
-	private static _wordWrapIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M2 4h12M2 8h9a2.5 2.5 0 0 1 0 5H8"/>
-			<path d="M9.5 11.5L8 13l1.5 1.5"/>
-		</svg>`;
-
-	private static _exportIcon = html`
-		<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor"
-			stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
-			<path d="M8 2v8M5 7l3 3 3-3"/>
-			<path d="M3 11v2h10v-2"/>
-		</svg>`;
 
 	// ── Monaco Editor ─────────────────────────────────────────────────────────
 
@@ -553,12 +477,17 @@ export class KwHtmlSection extends LitElement {
 		} catch (ex) { console.error('[kusto]', ex); }
 	}
 
-	/** Apply the measured content height to the preview wrapper. */
+	/** Apply the measured content height to the preview wrapper.
+	 *  Skips small adjustments (< 5 px) to avoid a resize feedback loop
+	 *  between the wrapper and the iframe's ResizeObserver. */
+	private _lastPreviewFitHeight = 0;
 	private _applyPreviewFitHeight(contentH: number): void {
 		if (this._userResizedPreview) return;
 		const wrapper = this.shadowRoot?.getElementById('preview-wrapper');
 		if (!wrapper) return;
 		const fitH = Math.max(120, Math.ceil(contentH));
+		if (this._lastPreviewFitHeight > 0 && Math.abs(fitH - this._lastPreviewFitHeight) < 5) return;
+		this._lastPreviewFitHeight = fitH;
 		wrapper.style.height = fitH + 'px';
 		wrapper.style.maxHeight = fitH + 'px';
 	}
@@ -811,9 +740,9 @@ export class KwHtmlSection extends LitElement {
 			try { maybeAutoScrollWhileDragging(moveEvent.clientY); } catch (e) { console.error('[kusto]', e); }
 			const pageY = moveEvent.clientY + getScrollY();
 			const delta = pageY - startPageY;
-			const maxH = parseFloat(wrapper.style.maxHeight || '') || 2000;
-			const nextHeight = Math.max(120, Math.min(maxH, startHeight + delta));
+			const nextHeight = Math.max(120, Math.min(2000, startHeight + delta));
 			wrapper.style.height = nextHeight + 'px';
+			wrapper.style.maxHeight = nextHeight + 'px';
 			if (onMove) onMove(this._editor);
 		};
 

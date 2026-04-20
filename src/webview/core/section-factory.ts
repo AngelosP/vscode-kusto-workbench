@@ -38,6 +38,10 @@ import {
 	lastConnectionId,
 	lastDatabase,
 	setActiveMonacoEditor,
+	sqlConnections,
+	sqlCachedDatabases,
+	sqlFavorites,
+	sqlFavoritesModeByBoxId,
 } from './state';
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from '../sections/query-execution.controller';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
@@ -412,6 +416,20 @@ export function addQueryBox( options?: any) {
 			const boxId = detail.boxId || id;
 			try { refreshSchema(boxId); } catch (e) { console.error('[kusto]', e); }
 		});
+		kwEl.addEventListener('kusto-add-connection', (e: any) => {
+			const detail = e.detail || {};
+			if (detail.clusterUrl) {
+				try {
+					postMessageToHost({
+						type: 'addConnection',
+						name: detail.name,
+						clusterUrl: detail.clusterUrl,
+						database: detail.database,
+						boxId: detail.boxId || id,
+					});
+				} catch (e) { console.error('[kusto]', e); }
+			}
+		});
 	}
 
 	// Default the connection to the query box above this one (if any).
@@ -533,10 +551,8 @@ export function addQueryBox( options?: any) {
 							if (typeof dataTableEl.getContentHeight === 'function') {
 								const contentH = dataTableEl.getContentHeight();
 								if (contentH > 0) {
-									// Add wrapper chrome: resizer + border-top.
-									const resizerEl = document.getElementById(id + '_results_resizer') as any;
-									const resizerH = resizerEl ? resizerEl.getBoundingClientRect().height : 1;
-									maxHeight = Math.max(minHeight, Math.min(900, contentH + resizerH + 1));
+									// section-max-height: table content + CSS gap.
+									maxHeight = Math.max(minHeight, contentH + 20);
 								}
 							}
 						} catch (e) { console.error('[kusto]', e); }
@@ -571,7 +587,7 @@ export function addQueryBox( options?: any) {
 					}
 
 					const desiredPx = Math.max(0, Math.ceil(overheadPx + contentPx + 8));
-					maxHeight = Math.min(900, desiredPx);
+					maxHeight = desiredPx;
 					minHeight = Math.min(maxHeight, Math.max(24, Math.ceil(overheadPx + 8)));
 				} catch (e) { console.error('[kusto]', e); }
 				return { minHeight, maxHeight };
@@ -672,6 +688,9 @@ export function addQueryBox( options?: any) {
 	return id;
 }
 
+/** Cap for fit-to-contents / double-click. Manual drag uses the full content-based max. */
+const FIT_CAP_PX = 400;
+
 export function __kustoAutoSizeEditor( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
@@ -726,7 +745,7 @@ export function __kustoAutoSizeEditor( boxId: any) {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 
-			const desired = Math.max(120, Math.min(20000, Math.ceil(chrome + clipExtras + contentHeight + FIT_SLACK_PX)));
+			const desired = Math.max(120, Math.min(FIT_CAP_PX, Math.ceil(chrome + clipExtras + contentHeight + FIT_SLACK_PX)));
 			wrapper.style.height = desired + 'px';
 			wrapper.style.minHeight = '0';
 			try { if (wrapper.dataset) { wrapper.dataset.kustoUserResized = 'true'; try { delete wrapper.dataset.kustoAutoResized; } catch (e) { console.error('[kusto]', e); } } } catch (e) { console.error('[kusto]', e); }
@@ -743,7 +762,7 @@ export function __kustoAutoSizeEditor( boxId: any) {
 	try { applyAndPersist(); setTimeout(applyAndPersist, 50); setTimeout(applyAndPersist, 150); } catch (e) { console.error('[kusto]', e); }
 }
 
-function __kustoAutoSizeResults( boxId: any) {
+export function __kustoAutoSizeResults( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
 	const w = document.getElementById(id + '_results_wrapper') as any;
@@ -755,17 +774,9 @@ function __kustoAutoSizeResults( boxId: any) {
 	if (dataTableEl && typeof dataTableEl.getContentHeight === 'function') {
 		const contentH = dataTableEl.getContentHeight();
 		if (contentH > 0) {
-			// Wrapper chrome: resizer + border-top.
-			const resizerEl = document.getElementById(id + '_results_resizer') as any;
-			const risizerH = resizerEl ? resizerEl.getBoundingClientRect().height : 1;
-			const wrapperBorder = 1;
-			const desiredPx = contentH + risizerH + wrapperBorder;
-			// Cap: show at most 10 visible rows.
-			const MAX_AUTO_ROWS = 10;
-			const ROW_H = 27;
-			const TABLE_CHROME = 120;
-			const MAX_AUTO_H = TABLE_CHROME + (MAX_AUTO_ROWS * ROW_H);
-			w.style.height = Math.max(120, Math.min(MAX_AUTO_H, Math.ceil(desiredPx))) + 'px';
+			// Fit-to-contents: cap at FIT_CAP_PX, section-max-height = content + gap.
+			const sectionMaxH = contentH + 20;
+			w.style.height = Math.max(120, Math.min(FIT_CAP_PX, Math.ceil(sectionMaxH))) + 'px';
 			w.style.minHeight = '0';
 			try { if (w.dataset) w.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
 		}
@@ -802,7 +813,7 @@ function __kustoAutoSizeResults( boxId: any) {
 		} catch (e) { console.error('[kusto]', e); }
 
 		if (contentH > 0) {
-			const desiredPx = Math.max(24, Math.min(900, Math.ceil(chrome + contentH + 8)));
+			const desiredPx = Math.max(24, Math.min(FIT_CAP_PX, Math.ceil(chrome + contentH + 8)));
 			w.style.height = desiredPx + 'px';
 			w.style.minHeight = '0';
 			try { if (w.dataset) w.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
@@ -818,10 +829,14 @@ export function __kustoMaximizeQueryBox( boxId: any) {
 	// 1. Auto-size the Monaco editor.
 	__kustoAutoSizeEditor(id);
 
-	// 2. Auto-size the tabular results.
-	__kustoAutoSizeResults(id);
-	setTimeout(() => __kustoAutoSizeResults(id), 50);
-	setTimeout(() => __kustoAutoSizeResults(id), 150);
+	// 2. Auto-size the tabular results — only when results are visible.
+	let resultsVisible = true;
+	try { const m = pState.resultsVisibleByBoxId; resultsVisible = !(m && m[id] === false); } catch (e) { console.error('[kusto]', e); }
+	if (resultsVisible) {
+		__kustoAutoSizeResults(id);
+		setTimeout(() => __kustoAutoSizeResults(id), 50);
+		setTimeout(() => __kustoAutoSizeResults(id), 150);
+	}
 
 	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
@@ -2732,3 +2747,358 @@ export function removeHtmlBox(boxId: any) {
 
 window.addHtmlBox = addHtmlBox;
 window.removeHtmlBox = removeHtmlBox;
+
+// ─── SQL section creation ───────────────────────────────────────────────────
+
+export let sqlBoxes: any[] = [];
+try { (window as any).__kustoSqlBoxes = sqlBoxes; } catch (e) { console.error('[kusto]', e); }
+
+/** Get a <kw-sql-section> element by boxId. */
+export function __kustoGetSqlSectionElement(boxId: string): any {
+	return document.getElementById(boxId) as any;
+}
+
+/** Push connections to all SQL section dropdowns. */
+export function updateSqlConnectionSelects() {
+	const lastSqlConnId = (window as any).__kustoSqlLastConnectionId || '';
+	sqlBoxes.forEach((id: any) => {
+		const el = __kustoGetSqlSectionElement(id);
+		if (el && typeof el.setConnections === 'function') {
+			el.setConnections(sqlConnections || [], { lastConnectionId: lastSqlConnId });
+		}
+		if (el && typeof el.setFavorites === 'function') {
+			el.setFavorites(sqlFavorites || []);
+		}
+	});
+}
+
+/** Push database list to a specific SQL section. */
+export function updateSqlDatabaseSelect(boxId: string, databases: string[], sqlConnectionId?: string) {
+	const el = __kustoGetSqlSectionElement(boxId);
+	if (!el || typeof el.setDatabases !== 'function') return;
+
+	// Cache the databases by server key
+	try {
+		if (sqlConnectionId) {
+			const conn = Array.isArray(sqlConnections) ? sqlConnections.find((c: any) => c && String(c.id || '') === String(sqlConnectionId)) : null;
+			const serverUrl = conn && conn.serverUrl ? String(conn.serverUrl) : '';
+			if (serverUrl) {
+				const serverKey = serverUrl.trim().toLowerCase();
+				sqlCachedDatabases[serverKey] = databases;
+			}
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	const lastSqlDb = (window as any).__kustoSqlLastDatabase || '';
+	el.setDatabases(databases, lastSqlDb);
+	try { if (typeof el.setRefreshLoading === 'function') el.setRefreshLoading(false); } catch (e) { console.error('[kusto]', e); }
+}
+
+/** Handle database load error for a SQL section. */
+export function onSqlDatabasesError(boxId: string, error: string, _sqlConnectionId?: string) {
+	const el = __kustoGetSqlSectionElement(boxId);
+	if (el) {
+		try { if (typeof el.setDatabasesLoading === 'function') el.setDatabasesLoading(false); } catch (e) { console.error('[kusto]', e); }
+		try { if (typeof el.setRefreshLoading === 'function') el.setRefreshLoading(false); } catch (e) { console.error('[kusto]', e); }
+	}
+}
+
+/** Push SQL favorites to all SQL section dropdowns. */
+export function updateSqlFavoritesUiForAllBoxes() {
+	try {
+		sqlBoxes.forEach((id: any) => {
+			try {
+				const el = __kustoGetSqlSectionElement(id);
+				if (el && typeof el.setFavorites === 'function') {
+					el.setFavorites(sqlFavorites || []);
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		});
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function toggleSqlFavoriteForBox(boxId: string) {
+	const el = __kustoGetSqlSectionElement(boxId);
+	if (!el) return;
+	const connId = typeof el.getSqlConnectionId === 'function' ? el.getSqlConnectionId() : '';
+	const db = typeof el.getDatabase === 'function' ? el.getDatabase() : '';
+	if (!connId || !db) return;
+	postMessageToHost({ type: 'requestAddSqlFavorite', connectionId: connId, database: db, boxId });
+}
+
+function removeSqlFavorite(connectionId: string, database: string) {
+	const c = String(connectionId || '').trim();
+	const d = String(database || '').trim();
+	if (!c || !d) return;
+	postMessageToHost({ type: 'removeSqlFavorite', connectionId: c, database: d });
+}
+
+export function addSqlBox(options?: any) {
+	const id = (options && options.id) ? String(options.id) : ('sql_' + Date.now());
+	sqlBoxes.push(id);
+
+	const container = document.getElementById('queries-container');
+	if (!container) {
+		return id;
+	}
+
+	const litEl = document.createElement('kw-sql-section') as any;
+	litEl.className = 'query-box';
+	litEl.id = id;
+	litEl.setAttribute('box-id', id);
+
+	// Pass initial query if available.
+	const pendingQuery = pState.pendingSqlQueryByBoxId && pState.pendingSqlQueryByBoxId[id];
+	if (typeof pendingQuery === 'string') {
+		litEl.setAttribute('initial-query', pendingQuery);
+	}
+
+	// Monaco editor lives in light DOM (created by _createLightDomContent
+	// in connectedCallback) to avoid shadow DOM rendering incompatibilities.
+
+	// ── Wire up <kw-sql-section> event listeners ──
+	litEl.addEventListener('section-remove', function (e: any) {
+		try { removeSqlBox(e.detail.boxId); } catch (e2) { console.error('[kusto]', e2); }
+	});
+
+	litEl.addEventListener('sql-connection-changed', (e: any) => {
+		const detail = e.detail || {};
+		const boxId = detail.boxId || id;
+		// Clear schema when server changes.
+		try { delete schemaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+		try {
+			if (typeof litEl.setSchemaInfo === 'function') {
+				litEl.setSchemaInfo({ status: 'not-loaded', statusText: 'Not loaded' });
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		// Persist selection.
+		try {
+			if (!pState.restoreInProgress) {
+				postMessageToHost({
+					type: 'saveSqlLastSelection',
+					sqlConnectionId: String(detail.connectionId || ''),
+					database: '',
+				});
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		// Load database list.
+		if (detail.connectionId) {
+			try {
+				const cid = String(detail.connectionId || '').trim();
+				const conn = Array.isArray(sqlConnections) ? sqlConnections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
+				const serverUrl = conn && conn.serverUrl ? String(conn.serverUrl) : '';
+				const serverKey = serverUrl ? serverUrl.trim().toLowerCase() : '';
+				const cached = (sqlCachedDatabases && sqlCachedDatabases[serverKey]) || [];
+				if (cached && cached.length > 0) {
+					if (typeof litEl.setDatabases === 'function') litEl.setDatabases(cached);
+					// Background refresh
+					postMessageToHost({ type: 'getSqlDatabases', sqlConnectionId: detail.connectionId, boxId: boxId });
+					try { if (typeof litEl.setRefreshLoading === 'function') litEl.setRefreshLoading(true); } catch (e) { console.error('[kusto]', e); }
+				} else {
+					if (typeof litEl.setDatabasesLoading === 'function') litEl.setDatabasesLoading(true);
+					postMessageToHost({ type: 'getSqlDatabases', sqlConnectionId: detail.connectionId, boxId: boxId });
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		}
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	});
+
+	litEl.addEventListener('sql-database-changed', (e: any) => {
+		const detail = e.detail || {};
+		const boxId = detail.boxId || id;
+		// Clear stale schema for previous database.
+		try { delete schemaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+		try {
+			if (!pState.restoreInProgress) {
+				const el2 = __kustoGetSqlSectionElement(boxId);
+				const connId = el2 && typeof el2.getSqlConnectionId === 'function' ? el2.getSqlConnectionId() : '';
+				if (connId) {
+					postMessageToHost({
+						type: 'saveSqlLastSelection',
+						sqlConnectionId: connId,
+						database: detail.database || '',
+					});
+				}
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		// Request schema for the new database.
+		try {
+			const el2 = __kustoGetSqlSectionElement(boxId);
+			const connId = el2 && typeof el2.getSqlConnectionId === 'function' ? el2.getSqlConnectionId() : '';
+			const db = detail.database || '';
+			if (connId && db) {
+				try {
+					if (typeof litEl.setSchemaInfo === 'function') {
+						litEl.setSchemaInfo({ status: 'loading', statusText: 'Loading\u2026' });
+					}
+				} catch (e) { console.error('[kusto]', e); }
+				postMessageToHost({ type: 'prefetchSqlSchema', sqlConnectionId: connId, database: db, boxId });
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	});
+
+	litEl.addEventListener('sql-refresh-databases', (e: any) => {
+		const detail = e.detail || {};
+		const boxId = detail.boxId || id;
+		const connId = detail.connectionId || '';
+		if (connId) {
+			try { if (typeof litEl.setRefreshLoading === 'function') litEl.setRefreshLoading(true); } catch (e) { console.error('[kusto]', e); }
+			postMessageToHost({ type: 'refreshSqlDatabases', sqlConnectionId: connId, boxId: boxId });
+		}
+	});
+
+	litEl.addEventListener('sql-add-connection', (e: any) => {
+		const detail = e.detail || {};
+		// If the event carries form data (submitted from inline form), send addSqlConnection with the full payload
+		if (detail.serverUrl) {
+			try {
+				postMessageToHost({
+					type: 'addSqlConnection',
+					name: detail.name,
+					serverUrl: detail.serverUrl,
+					dialect: detail.dialect || 'mssql',
+					authType: detail.authType || 'aad',
+					database: detail.database,
+					port: detail.port,
+					username: detail.username,
+					password: detail.password,
+					boxId: detail.boxId || id,
+				});
+			} catch (e) { console.error('[kusto]', e); }
+		} else {
+			// Legacy path (no form data) — prompt with input boxes
+			try { postMessageToHost({ type: 'promptAddSqlConnection', boxId: detail.boxId || id }); } catch (e) { console.error('[kusto]', e); }
+		}
+	});
+
+	litEl.addEventListener('sql-schema-refresh', (e: any) => {
+		const detail = e.detail || {};
+		const boxId = detail.boxId || id;
+		const el2 = __kustoGetSqlSectionElement(boxId);
+		const connId = el2 && typeof el2.getSqlConnectionId === 'function' ? el2.getSqlConnectionId() : '';
+		const db = el2 && typeof el2.getDatabase === 'function' ? el2.getDatabase() : '';
+		if (connId && db) {
+			try { delete schemaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+			try {
+				if (typeof litEl.setSchemaInfo === 'function') {
+					litEl.setSchemaInfo({ status: 'loading', statusText: 'Refreshing\u2026' });
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			postMessageToHost({ type: 'prefetchSqlSchema', sqlConnectionId: connId, database: db, boxId, forceRefresh: true });
+		}
+	});
+
+	// ── Favorites event wiring ──
+	litEl.addEventListener('sql-favorite-toggle', (e: any) => {
+		const detail = e.detail || {};
+		const boxId = detail.boxId || id;
+		try { toggleSqlFavoriteForBox(boxId); } catch (e) { console.error('[kusto]', e); }
+	});
+	litEl.addEventListener('sql-favorites-mode-changed', (e: any) => {
+		const detail = e.detail || {};
+		const boxId = detail.boxId || id;
+		try {
+			if (typeof sqlFavoritesModeByBoxId === 'object') {
+				sqlFavoritesModeByBoxId[boxId] = !!detail.favoritesMode;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	});
+	litEl.addEventListener('sql-favorite-selected', (e: any) => {
+		const detail = e.detail || {};
+		const boxId = detail.boxId || id;
+		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	});
+	litEl.addEventListener('sql-favorite-removed', (e: any) => {
+		const detail = e.detail || {};
+		try { removeSqlFavorite(detail.connectionId, detail.database); } catch (e) { console.error('[kusto]', e); }
+	});
+
+	// ── Apply options ──
+	if (options && typeof options.name === 'string') {
+		litEl.setName(options.name);
+	}
+	if (options && typeof options.query === 'string') {
+		litEl.setQuery(options.query);
+	}
+	if (options && typeof options.serverUrl === 'string') {
+		litEl.setDesiredServerUrl(String(options.serverUrl));
+	}
+	if (options && typeof options.database === 'string') {
+		litEl.setDesiredDatabase(String(options.database));
+	}
+	if (options && typeof options.expanded === 'boolean') {
+		litEl.setExpanded(options.expanded);
+	}
+	if (options && typeof options.editorHeightPx === 'number') {
+		litEl.setAttribute('editor-height-px', String(options.editorHeightPx));
+	}
+	if (options && options.copilotChatVisible) {
+		try { litEl.setCopilotChatVisible(true); } catch (e) { console.error('[kusto]', e); }
+	}
+	if (options && typeof options.copilotChatWidthPx === 'number') {
+		try { litEl.copilotCtrl.setCopilotChatWidthPx(options.copilotChatWidthPx); } catch (e) { console.error('[kusto]', e); }
+	}
+
+	const afterBoxId = (options && typeof options.afterBoxId === 'string') ? String(options.afterBoxId) : '';
+	const afterEl = afterBoxId ? document.getElementById(afterBoxId) : null;
+	if (afterEl) {
+		afterEl.insertAdjacentElement('afterend', litEl);
+	} else {
+		container.appendChild(litEl);
+	}
+
+	// Apply connections so the dropdown populates immediately.
+	updateSqlConnectionSelects();
+
+	// Initialize toolbar toggle states from globals.
+	try {
+		const toolbar = document.querySelector('kw-sql-toolbar[box-id="' + id + '"]') as any;
+		if (toolbar && typeof toolbar.setAutoCompleteActive === 'function') {
+			toolbar.setAutoCompleteActive(!!autoTriggerAutocompleteEnabled);
+		}
+		if (toolbar && typeof toolbar.setCopilotInlineActive === 'function') {
+			toolbar.setCopilotInlineActive(!!copilotInlineCompletionsEnabled);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	// Initialize run mode for SQL box (default top100).
+	try { if (typeof window.setRunMode === 'function') window.setRunMode(id, (options && options.runMode) || 'top100'); } catch (e) { console.error('[kusto]', e); }
+
+	// Request SQL connections from host on first box.
+	if (sqlBoxes.length === 1) {
+		try { postMessageToHost({ type: 'getSqlConnections' }); } catch (e) { console.error('[kusto]', e); }
+	}
+
+	// Check Copilot availability for this box
+	try {
+		postMessageToHost({
+			type: 'checkCopilotAvailability',
+			boxId: id
+		});
+	} catch (e) { console.error('[kusto]', e); }
+
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	if (afterBoxId) {
+		try {
+			const newEl = document.getElementById(id);
+			if (newEl && typeof newEl.scrollIntoView === 'function') {
+				newEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+	return id;
+}
+
+export function removeSqlBox(boxId: any) {
+	sqlBoxes = sqlBoxes.filter((id: any) => id !== boxId);
+	const box = document.getElementById(boxId) as any;
+	if (box && box.parentNode) {
+		box.parentNode.removeChild(box);
+	}
+	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+}
+
+window.addSqlBox = addSqlBox;
+window.removeSqlBox = removeSqlBox;

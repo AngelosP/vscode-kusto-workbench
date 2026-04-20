@@ -110,6 +110,15 @@ declare global {
 		copilotInlineCompletionRequests: Record<string, any>;
 		__kustoHandleInlineCompletionResult?: (requestId: string, completions: any[]) => void;
 
+		// SQL state
+		sqlConnections: any[];
+		sqlCachedDatabases: Record<string, any>;
+		sqlFavorites: any[];
+		sqlFavoritesModeByBoxId: Record<string, boolean>;
+		__kustoSqlLastConnectionId?: string;
+		__kustoSqlLastDatabase?: string;
+		__kustoSqlBoxes?: string[];
+
 		// =====================================================================
 		// vscodeApi.js — VS Code API
 		// =====================================================================
@@ -516,6 +525,8 @@ declare global {
 		addUrlBox: (options?: any) => string;
 		addPythonBox: (options?: any) => string;
 		addHtmlBox: (options?: any) => string;
+		addSqlBox: (options?: any) => string;
+		removeSqlBox: (boxId: any) => void;
 		onPythonResult: (message: any) => void;
 		onPythonError: (message: any) => void;
 		__kustoGetFocusedMonacoEditor: () => any | null;

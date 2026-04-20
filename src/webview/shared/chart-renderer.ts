@@ -180,7 +180,7 @@ function getIsDarkThemeForEcharts() {
 
 export function getChartMinResizeHeight(boxId: any) {
 	const CHART_CANVAS_RENDERING_MIN_HEIGHT = 140;
-	const CHART_CANVAS_PLACEHOLDER_MIN_HEIGHT = 60;
+	const CHART_CANVAS_PLACEHOLDER_MIN_HEIGHT = 30;
 	const CONTROLS_MARGIN_BOTTOM = 20;
 	const FALLBACK_MIN = 80;
 	try {
@@ -335,6 +335,15 @@ export function renderChart(boxId: any) {
 	// If ECharts isn't loaded yet, show a placeholder and trigger lazy load.
 	if (!window.echarts || typeof window.echarts.init !== 'function') {
 		try { canvas.textContent = 'Loading chart…'; } catch (e) { console.error('[kusto]', e); }
+		// Collapse the canvas while waiting — the actual chart will restore
+		// min-height when ECharts loads and renderChart re-runs.
+		if (!st.dataSourceId) {
+			try { canvas.style.minHeight = '0'; canvas.style.height = 'auto'; canvas.style.flex = '0 0 auto'; } catch (e) { console.error('[kusto]', e); }
+			try {
+				const w = document.getElementById(id + '_chart_wrapper');
+				if (w) { w.style.height = 'auto'; delete w.dataset.kustoUserResized; }
+			} catch (e) { console.error('[kusto]', e); }
+		}
 		ensureEchartsLoaded().then(() => {
 			for (const cid of (chartBoxes || [])) {
 				try { renderChart(cid); } catch (e) { console.error('[kusto]', e); }
@@ -431,12 +440,18 @@ export function renderChart(boxId: any) {
 		try {
 			canvas.innerHTML = '<div class="error-message" style="white-space:pre-wrap">' + escapeHtml(String(msg || '')) + '</div>';
 		} catch (e) { console.error('[kusto]', e); }
-		try { canvas.style.minHeight = '60px'; } catch (e) { console.error('[kusto]', e); }
-		const isNowRendering = false;
-		st.__wasRendering = isNowRendering;
-		if (wasRendering !== isNowRendering) {
-			try { maximizeChartBox(id); } catch (e) { console.error('[kusto]', e); }
-		}
+		try { canvas.style.minHeight = '0'; } catch (e) { console.error('[kusto]', e); }
+		try { canvas.style.height = 'auto'; canvas.style.flex = '0 0 auto'; } catch (e) { console.error('[kusto]', e); }
+		// Collapse the wrapper too — it may retain a persisted pixel height
+		// from firstUpdated or a previous maximizeChartBox call.
+		// Setting height to 'auto' is sufficient; do NOT call maximizeChartBox
+		// here — it would override 'auto' with a fixed pixel height, making
+		// the placeholder area taller than it should be.
+		try {
+			const wrapper = document.getElementById(id + '_chart_wrapper');
+			if (wrapper) { wrapper.style.height = 'auto'; delete wrapper.dataset.kustoUserResized; }
+		} catch (e) { console.error('[kusto]', e); }
+		st.__wasRendering = false;
 	};
 
 	const chartType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
@@ -456,7 +471,7 @@ export function renderChart(boxId: any) {
 	// Ensure we have an instance bound to the active element.
 	// Guard: defer init if the canvas hasn't been laid out yet (zero dimensions)
 	// to avoid the ECharts "Can't get DOM width or height" warning.
-	try { canvas.style.minHeight = '140px'; } catch (e) { console.error('[kusto]', e); }
+	try { canvas.style.minHeight = '140px'; canvas.style.height = '100%'; canvas.style.flex = '1 1 auto'; } catch (e) { console.error('[kusto]', e); }
 	if (!canvas.clientWidth || !canvas.clientHeight) {
 		requestAnimationFrame(() => { try { renderChart(id); } catch (e) { console.error('[kusto]', e); } });
 		return;
@@ -2081,7 +2096,12 @@ export function renderChart(boxId: any) {
 				const bottomMargin = (rotate > 30 ? 45 : 15) + xAxisTitleGap;
 
 				const legendEnabled = seriesData.length > 1;
-				const useEndLabels = legendShowEndLabels && legendEnabled;
+				// End labels only make sense for line/area charts where each series
+				// terminates at a distinct point. The UI hides the toggle for other
+				// chart types, but the persisted setting can survive a chart-type
+				// switch — guard here so we don't silently suppress the legend.
+				const endLabelsSupported = chartType === 'line' || chartType === 'area';
+				const useEndLabels = legendShowEndLabels && legendEnabled && endLabelsSupported;
 
 				let legendOpt: any;
 				if (useEndLabels) {

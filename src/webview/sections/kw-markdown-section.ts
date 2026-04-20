@@ -1,7 +1,10 @@
 import { pState } from '../shared/persistence-state';
+import type { SectionElement } from '../shared/dom-helpers';
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { LitElement, html, nothing, type PropertyValues } from 'lit';
 import { styles } from './kw-markdown-section.styles.js';
+import { sectionGlowStyles } from '../shared/section-glow.styles.js';
+import { sashSheet } from '../shared/sash-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
@@ -105,7 +108,7 @@ try {
  * TOAST UI renders in light DOM via `<slot>` to avoid shadow DOM incompatibilities.
  */
 @customElement('kw-markdown-section')
-export class KwMarkdownSection extends LitElement {
+export class KwMarkdownSection extends LitElement implements SectionElement {
 	public static addMarkdownBox(options: Record<string, unknown> = {}): string {
 		const id = (typeof options.id === 'string' && options.id) ? String(options.id) : ('markdown_' + Date.now());
 		markdownBoxes.push(id);
@@ -289,7 +292,7 @@ export class KwMarkdownSection extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = styles;
+	static override styles = [sashSheet, styles, sectionGlowStyles];
 
 	// ── Render ─────────────────────────────────────────────────────────────────
 
@@ -303,6 +306,7 @@ export class KwMarkdownSection extends LitElement {
 					.name=${this._title}
 					.expanded=${this._expanded}
 					box-id=${this.boxId}
+					section-type="markdown"
 					name-placeholder="Markdown name (optional)"
 					@name-change=${this._onShellNameChange}
 					@toggle-visibility=${this._toggleVisibility}
@@ -1379,6 +1383,11 @@ export class KwMarkdownSection extends LitElement {
 	/** Get section name. */
 	public getName(): string {
 		return this._title;
+	}
+
+	/** Set section name programmatically (used by agent tools). */
+	public setName(name: string): void {
+		this._title = name;
 	}
 
 	/** Re-apply editor mode externally (e.g., after text update from tool). */

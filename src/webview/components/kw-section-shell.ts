@@ -1,7 +1,8 @@
 import { LitElement, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { styles } from './kw-section-shell.styles.js';
-import { codiconSheet } from '../shared/codicon-styles.js';
+import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
+import { sectionIcons, type SectionType } from '../shared/icon-registry.js';
 
 // ─── SVG icon constants (matching kw-chart-section.ts) ────────────────────────
 
@@ -44,6 +45,10 @@ export class KwSectionShell extends LitElement {
 	@property({ type: String, attribute: 'name-placeholder' })
 	namePlaceholder = 'Section name';
 
+	/** Section type identifier, used to render the type icon in the header. */
+	@property({ type: String, attribute: 'section-type' })
+	sectionType: SectionType | '' = '';
+
 	/**
 	 * Unsaved-change indicator: '' (none), 'modified', or 'new'.
 	 * Reflected to the `has-changes` attribute for CSS styling.
@@ -65,7 +70,7 @@ export class KwSectionShell extends LitElement {
 	@state() private _hasHeaderButtons = false;
 	@state() private _copilotLogoUri = '';
 
-	static override styles = [codiconSheet, styles];
+	static override styles = [iconRegistryStyles, styles];
 
 	override connectedCallback(): void {
 		super.connectedCallback();
@@ -79,19 +84,20 @@ export class KwSectionShell extends LitElement {
 			: this.hasChanges === 'modified' ? 'Section has unsaved changes' : '';
 		return html`
 			<div class="section-header" title=${changesTooltip || nothing}>
-				${showCopilotBadge ? html`
-				<span class="agent-touched-icon" title="Modified by Copilot">
-					${this._copilotLogoUri
-						? html`<img src=${this._copilotLogoUri} width="12" height="12" alt="" aria-hidden="true" />`
-						: html`<span .innerHTML=${SVG_COPILOT_SMALL}></span>`}
-				</span>
-				` : nothing}
 				<div class="query-name-group">
 					<button type="button" class="section-drag-handle" draggable="true"
 						title="Drag to reorder" aria-label="Reorder section"
 						@dragstart=${this._onDragStart}>
 						<span class="section-drag-handle-glyph" aria-hidden="true">⋮</span>
 					</button>
+					${this.sectionType && sectionIcons[this.sectionType] ? html`<span class="section-type-icon" aria-hidden="true">${sectionIcons[this.sectionType]}</span>` : nothing}
+					${showCopilotBadge ? html`
+					<span class="agent-touched-icon" title="Modified by Copilot">
+						${this._copilotLogoUri
+							? html`<img src=${this._copilotLogoUri} width="12" height="12" alt="" aria-hidden="true" />`
+							: html`<span .innerHTML=${SVG_COPILOT_SMALL}></span>`}
+					</span>
+					` : nothing}
 					<input type="text" class="query-name"
 						.value=${this.name}
 						placeholder=${this.namePlaceholder}
@@ -107,7 +113,7 @@ export class KwSectionShell extends LitElement {
 						<button class="unified-btn-secondary md-tab diff-btn"
 							type="button" @click=${this._onDiffClick}
 							title="Show unsaved changes" aria-label="Show unsaved changes">
-							<span class="codicon codicon-git-compare" aria-hidden="true"></span>
+							${ICONS.gitCompare}
 						</button>
 						` : nothing}
 						${this.expanded ? html`

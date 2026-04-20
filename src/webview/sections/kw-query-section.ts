@@ -1,7 +1,9 @@
 import { pState } from '../shared/persistence-state';
+import type { SectionElement } from '../shared/dom-helpers';
 import { postMessageToHost } from '../shared/webview-messages';
-import { LitElement, html, type TemplateResult, render as litRender } from 'lit';
+import { LitElement, html, nothing, type TemplateResult, render as litRender } from 'lit';
 import { styles } from './kw-query-section.styles.js';
+import { sectionGlowStyles } from '../shared/section-glow.styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import type { DropdownItem, DropdownAction } from '../components/kw-dropdown.js';
@@ -11,19 +13,23 @@ import '../components/kw-schema-info.js';
 import '../components/kw-dropdown.js';
 import '../components/kw-section-shell.js';
 import { CopilotChatManagerController } from './copilot-chat-manager.controller.js';
+import { kustoWebviewFlavor } from './copilot-chat-flavor.js';
 import { schedulePersist } from '../core/persistence.js';
 import {
 	removeQueryBox,
 	__kustoMaximizeQueryBox,
+	__kustoAutoSizeResults,
 	toggleQueryBoxVisibility,
-	promptAddConnectionFromDropdown,
 	importConnectionsFromXmlFile,
 	__kustoRefreshAllDataSourceDropdowns,
 } from '../core/section-factory.js';
+import type { KustoConnectionFormSubmitDetail } from '../components/kw-kusto-connection-form.js';
+import '../components/kw-kusto-connection-form.js';
 import { __kustoOpenShareModal, getRunModeForPersistence } from './kw-query-toolbar.js';
 import { optimizeQueryWithCopilot, acceptOptimizations } from './query-execution.controller.js';
 import { QueryConnectionController } from './query-connection.controller.js';
 import { QueryExecutionController } from './query-execution.controller.js';
+import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 
 import { formatClusterDisplayName as _formatClusterDisplayName, formatClusterShortName as _formatClusterShortName } from '../shared/clusterUtils.js';
 
@@ -72,9 +78,9 @@ import type { SchemaInfoState } from '../components/kw-schema-info.js';
 
 // ─── SVG Icons (matching legacy exactly) ──────────────────────────────────────
 
-const clusterIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M5 3.5h6"/><path d="M4 6h8"/><path d="M3.5 8.5h9"/><path d="M4 11h8"/><path d="M5 13.5h6"/></svg>`;
+const clusterIconSvg = ICONS.kustoCluster;
 
-const databaseIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><ellipse cx="8" cy="4" rx="5" ry="2"/><path d="M3 4v8c0 1.1 2.2 2 5 2s5-.9 5-2V4"/><path d="M3 8c0 1.1 2.2 2 5 2s5-.9 5-2"/><path d="M3 12c0 1.1 2.2 2 5 2s5-.9 5-2"/></svg>`;
+const databaseIconSvg = ICONS.database;
 
 const refreshIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M3.5 8a4.5 4.5 0 0 1 7.8-3.1"/><polyline points="11.3 2.7 11.3 5.4 8.6 5.4"/><path d="M12.5 8a4.5 4.5 0 0 1-7.8 3.1"/><polyline points="4.7 13.3 4.7 10.6 7.4 10.6"/></svg>`;
 
@@ -147,7 +153,7 @@ function formatClusterDisplayName(conn: KustoConnection): string {
  * children directly.
  */
 @customElement('kw-query-section')
-export class KwQuerySection extends LitElement {
+export class KwQuerySection extends LitElement implements SectionElement {
 
 	@property({ type: String, reflect: true, attribute: 'box-id' })
 	boxId = '';
@@ -176,6 +182,7 @@ export class KwQuerySection extends LitElement {
 	@state() private _refreshLoading = false;
 	@state() private _favoritesMode = false;
 	@state() private _favorites: KustoFavorite[] = [];
+	@state() private _showAddConnectionModal = false;
 	// ── Header row reactive state ─────────────────────────────────────────────
 
 	@state() private _name = '';
@@ -184,11 +191,11 @@ export class KwQuerySection extends LitElement {
 	// ── ReactiveControllers ──────────────────────────────────────────────────
 	public connectionCtrl = new QueryConnectionController(this as any);
 	public executionCtrl = new QueryExecutionController(this as any);
-	public copilotChatCtrl = new CopilotChatManagerController(this as any);
+	public copilotChatCtrl = new CopilotChatManagerController(this as any, kustoWebviewFlavor);
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = styles;
+	static override styles = [iconRegistryStyles, styles, sectionGlowStyles];
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -250,7 +257,7 @@ export class KwQuerySection extends LitElement {
 					<div class="query-editor" id="${id}_query_editor"></div>
 					<div class="query-editor-placeholder" id="${id}_query_placeholder">Enter your KQL query here...</div>
 				</div>
-				<div class="query-editor-resizer" id="${id}_query_resizer" title=${'Drag to resize editor\nDouble-click to fit to contents'}></div>
+				<div class="resizer query-editor-resizer" id="${id}_query_resizer" title=${'Drag to resize editor\nDouble-click to fit to contents'}></div>
 			</div>
 			<div class="query-actions">
 				<div class="query-run">
@@ -330,7 +337,7 @@ export class KwQuerySection extends LitElement {
 			<div class="results-wrapper" id="${id}_results_wrapper" style="display: none;" data-kusto-no-editor-focus="true">
 				<div class="results" id="${id}_results"></div>
 			</div>
-			<div class="query-editor-resizer" id="${id}_results_resizer" title=${'Drag to resize results\nDouble-click to fit to contents'} style="display: none;"></div>
+			<div class="resizer query-editor-resizer" id="${id}_results_resizer" title=${'Drag to resize results\nDouble-click to fit to contents'} style="display: none;"></div>
 		`, this);
 	}
 
@@ -343,6 +350,7 @@ export class KwQuerySection extends LitElement {
 					.name=${this._name}
 					.expanded=${this._expanded}
 					box-id=${this.boxId}
+					section-type="query"
 					name-placeholder="Query name (optional)"
 					@name-change=${this._onShellNameChange}
 					@toggle-visibility=${this._onToggleClick}
@@ -357,6 +365,7 @@ export class KwQuerySection extends LitElement {
 				</kw-section-shell>
 			</div>
 			<slot></slot>
+			${this._showAddConnectionModal ? this._renderAddConnectionModal() : nothing}
 		`;
 	}
 
@@ -550,10 +559,55 @@ export class KwQuerySection extends LitElement {
 	private _onClusterAction(e: CustomEvent): void {
 		const action = e.detail?.id;
 		if (action === '__enter_new__') {
-			try { promptAddConnectionFromDropdown(this.boxId); } catch (e) { console.error('[kusto]', e); }
+			this._showAddConnectionModal = true;
 		} else if (action === '__import_xml__') {
 			try { importConnectionsFromXmlFile(this.boxId); } catch (e) { console.error('[kusto]', e); }
 		}
+	}
+
+	private _onAddConnectionSubmit(e: CustomEvent<KustoConnectionFormSubmitDetail>): void {
+		this._showAddConnectionModal = false;
+		this.dispatchEvent(new CustomEvent('kusto-add-connection', {
+			detail: { ...e.detail, boxId: this.boxId },
+			bubbles: true, composed: true,
+		}));
+	}
+
+	private _onAddConnectionCancel(): void {
+		this._showAddConnectionModal = false;
+	}
+
+	private _renderAddConnectionModal(): TemplateResult {
+		return html`
+			<div class="add-connection-overlay" @click=${() => this._onAddConnectionCancel()} @keydown=${(e: KeyboardEvent) => {
+				if (e.key === 'Escape') { this._onAddConnectionCancel(); e.preventDefault(); }
+			}}>
+				<div class="add-connection-dialog" @click=${(e: Event) => e.stopPropagation()}>
+					<div class="add-connection-header">
+						<span class="add-connection-title">Add Connection</span>
+						<button class="add-connection-close" @click=${() => this._onAddConnectionCancel()}>
+							<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M8 8.707l3.646 3.647.708-.708L8.707 8l3.647-3.646-.708-.708L8 7.293 4.354 3.646l-.708.708L7.293 8l-3.647 3.646.708.708L8 8.707z"/></svg>
+						</button>
+					</div>
+					<div class="add-connection-body">
+						<kw-kusto-connection-form
+							mode="add"
+							@connection-form-submit=${this._onAddConnectionSubmit}
+							@connection-form-cancel=${() => this._onAddConnectionCancel()}
+						></kw-kusto-connection-form>
+					</div>
+					<div class="add-connection-footer">
+						<button class="add-connection-btn" @click=${() => this._onAddConnectionCancel()}>Cancel</button>
+						<button class="add-connection-btn primary" @click=${() => this._submitAddConnectionForm()}>Save</button>
+					</div>
+				</div>
+			</div>
+		`;
+	}
+
+	private _submitAddConnectionForm(): void {
+		const form = this.shadowRoot?.querySelector('kw-kusto-connection-form');
+		if (form) form.submit();
 	}
 
 	private _onClusterSelected(e: CustomEvent): void {
@@ -685,6 +739,36 @@ export class KwQuerySection extends LitElement {
 	/** Get the currently selected connection ID. */
 	public getConnectionId(): string {
 		return this._connectionId;
+	}
+
+	// ── Copilot adapter methods (CopilotChatManagerHost interface) ────────────
+
+	public getCopilotConnectionId(): string { return this._connectionId; }
+	public getCopilotServerUrl(): string { return this.getClusterUrl(); }
+	public setCopilotQueryText(text: string): void {
+		try {
+			const editor = window.queryEditors?.[this.boxId];
+			if (!editor) return;
+			const model = editor.getModel?.();
+			if (!model) return;
+			let next = String(text || '');
+			try {
+				const { __kustoPrettifyKustoTextWithSemicolonStatements } = require('../monaco/prettify.js');
+				next = __kustoPrettifyKustoTextWithSemicolonStatements(next);
+			} catch (e) { console.error('[kusto]', e); }
+			editor.executeEdits('copilot', [{ range: model.getFullModelRange(), text: next }]);
+			editor.focus();
+			try { schedulePersist('copilotWriteQuery'); } catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
+	}
+	public getCopilotEditorValue(): string {
+		try { const ed = window.queryEditors?.[this.boxId]; return ed ? (ed.getValue() || '') : ''; } catch { return ''; }
+	}
+	public layoutCopilotEditor(): void {
+		try { const ed = window.queryEditors?.[this.boxId]; if (ed?.layout) ed.layout(); } catch (e) { console.error('[kusto]', e); }
+	}
+	public focusCopilotEditor(): void {
+		try { window.queryEditors?.[this.boxId]?.focus(); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	/** Get the currently selected database name. */
@@ -988,14 +1072,14 @@ export class KwQuerySection extends LitElement {
 				if (!visible) {
 					// Shrink: remember current height, collapse to header-only height.
 					const curH = resultsWrapper.style.height;
-					if (curH && curH !== 'auto' && curH !== '40px') {
+					if (curH && curH !== 'auto' && curH !== '48px') {
 						resultsWrapper.dataset.kustoPreviousHeight = curH;
 						// Mark as user-resized so the height is persisted to the .kqlx file
 						// and correctly restored when the file is reopened.
 						resultsWrapper.dataset.kustoUserResized = 'true';
 					}
 					// Collapse to just enough for the kw-data-table header bar.
-					resultsWrapper.style.height = '40px';
+					resultsWrapper.style.height = '48px';
 					resultsWrapper.style.overflow = 'hidden';
 				} else {
 					// Expand: restore previous height.
@@ -1016,10 +1100,16 @@ export class KwQuerySection extends LitElement {
 			if (!resultsWrapper) return;
 			const curH = parseInt(resultsWrapper.style.height, 10);
 			// Skip if collapsed or hidden.
-			if (!curH || curH <= 40) return;
+			if (!curH || curH <= 48) return;
 			const delta = (e as CustomEvent).detail?.delta ?? 0;
 			if (delta === 0) return;
-			resultsWrapper.style.height = Math.max(120, Math.min(900, curH + delta)) + 'px';
+			// section-max-height: table content + 10px gap.
+			let maxH = curH + delta;
+			try {
+				const contentH = typeof dt.getContentHeight === 'function' ? dt.getContentHeight() : 0;
+				if (contentH > 0) maxH = contentH + 20;
+			} catch (e2) { console.error('[kusto]', e2); }
+			resultsWrapper.style.height = Math.max(120, Math.min(maxH, curH + delta)) + 'px';
 		});
 
 		resultsDiv.appendChild(dt);
@@ -1029,7 +1119,7 @@ export class KwQuerySection extends LitElement {
 			resultsWrapper.style.display = 'flex';
 			if (!initialBodyVisible) {
 				// Start collapsed — just enough for the kw-data-table header bar.
-				resultsWrapper.style.height = '40px';
+				resultsWrapper.style.height = '48px';
 				resultsWrapper.style.overflow = 'hidden';
 				if (resizer) resizer.style.display = 'none';
 			} else if (!resultsWrapper.dataset.kustoUserResized) {
@@ -1056,27 +1146,14 @@ export class KwQuerySection extends LitElement {
 		dt.style.minHeight = '0';
 		dt.style.height = '100%';
 
-		// After the data-table renders, refine the height with actual measurements.
-		// Cap to ~10 visible rows (same constant as the initial estimate above).
-		const REFINE_ROW_H = 27;
-		const REFINE_MAX_ROWS = 10;
-		const REFINE_CHROME = 120;
-		const REFINE_MAX_H = REFINE_CHROME + (REFINE_MAX_ROWS * REFINE_ROW_H);
-		requestAnimationFrame(() => {
-			requestAnimationFrame(() => {
-				if (!resultsWrapper || !dt || typeof dt.getContentHeight !== 'function') return;
-				if (!initialBodyVisible) return;
-				if (resultsWrapper.dataset.kustoUserResized) return;
-				const contentH = dt.getContentHeight();
-				if (contentH > 0) {
-					// Add wrapper chrome: resizer + border-top + padding.
-					const resizerH = resizer ? resizer.getBoundingClientRect().height : 1;
-					const wrapperBorder = 1; // border-top on .results-wrapper
-					const desiredH = contentH + resizerH + wrapperBorder;
-					resultsWrapper.style.height = Math.max(120, Math.min(REFINE_MAX_H, desiredH)) + 'px';
-				}
-			});
-		});
+		// After the data-table renders, recalculate max-height using the full
+		// section-max-height / FIT_CAP_PX logic documented in ARCHITECTURE.md.
+		// Retry at 50ms and 150ms to account for data-table rendering latency.
+		if (initialBodyVisible) {
+			__kustoAutoSizeResults(this.boxId);
+			setTimeout(() => __kustoAutoSizeResults(this.boxId), 50);
+			setTimeout(() => __kustoAutoSizeResults(this.boxId), 150);
+		}
 	}
 
 	// ── Error display ─────────────────────────────────────────────────────────
@@ -1341,10 +1418,10 @@ export class KwQuerySection extends LitElement {
 			if (!wrapper) return undefined;
 			if (!wrapper.dataset || wrapper.dataset.kustoUserResized !== 'true') return undefined;
 			let inlineH = wrapper.style.height?.trim();
-			// When results are hidden the wrapper is collapsed to 40px;
+			// When results are hidden the wrapper is collapsed to 48px;
 			// return the remembered pre-collapse height instead.
 			const prevToggle = wrapper.dataset.kustoPreviousHeight?.trim();
-			if (prevToggle && inlineH === '40px') inlineH = prevToggle;
+			if (prevToggle && inlineH === '48px') inlineH = prevToggle;
 			if (!inlineH || inlineH === 'auto') {
 				const prev = wrapper.dataset.kustoPrevHeight?.trim();
 				if (prev) inlineH = prev;

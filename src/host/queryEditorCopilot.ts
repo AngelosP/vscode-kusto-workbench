@@ -1,6 +1,10 @@
 import * as vscode from 'vscode';
 import { KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
+import type { SqlConnectionManager } from './sqlConnectionManager';
+import type { SqlSchemaService } from './sqlEditorSchema';
+import type { SqlQueryClient } from './sqlClient';
+import { SqlQueryCancelledError } from './sqlClient';
 import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToolCallResults, decideNonToolResponse } from './copilotConversationUtils';
 import { SCHEMA_CACHE_VERSION, searchCachedSchemas } from './schemaCache';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget, DEFAULT_SCHEMA_TOKEN_BUDGET_FRACTION, PRUNE_PHASE_DESCRIPTIONS, SchemaPruneResult } from './schemaIndexUtils';
@@ -16,8 +20,10 @@ import {
 } from './queryEditorTypes';
 import {
 	getCopilotLocalTools as getCopilotLocalToolsFn,
+	getSqlCopilotLocalTools as getSqlCopilotLocalToolsFn,
 	buildOptimizeQueryPrompt as buildOptimizeQueryPromptFn
 } from './copilotPromptUtils';
+import { getCopilotFlavorById, type CopilotChatFlavor } from './copilotChatFlavor';
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 
 /**
@@ -75,6 +81,14 @@ export class CopilotService {
 
 	getCopilotLocalTools(): CopilotLocalTool[] {
 		return getCopilotLocalToolsFn();
+	}
+
+	getSqlCopilotLocalTools(): CopilotLocalTool[] {
+		return getSqlCopilotLocalToolsFn();
+	}
+
+	getLocalToolsForFlavor(flavor?: 'kusto' | 'sql'): CopilotLocalTool[] {
+		return flavor === 'sql' ? this.getSqlCopilotLocalTools() : this.getCopilotLocalTools();
 	}
 
 	getCopilotChatTools(enabledTools: string[]): vscode.LanguageModelChatTool[] {
@@ -219,14 +233,87 @@ export class CopilotService {
 		return tools;
 	}
 
-	async readOptimizeQueryRules(): Promise<string> {
+	getSqlCopilotChatTools(enabledTools: string[]): vscode.LanguageModelChatTool[] {
+		const localTools = this.getSqlCopilotLocalTools();
+		const tools: vscode.LanguageModelChatTool[] = [];
+
+		for (const t of localTools) {
+			if (!this.isCopilotToolEnabled(t.name, enabledTools)) continue;
+			const n = this.normalizeToolName(t.name);
+			if (n === 'get_sql_schema') {
+				tools.push({
+					name: 'get_sql_schema',
+					description: 'Provides the connected SQL database schema (tables + columns) to improve query correctness. Call this when you need to know table names, column names, or column types before writing a query.',
+					inputSchema: { type: 'object', properties: {} }
+				});
+			} else if (n === 'get_query_optimization_best_practices') {
+				tools.push({
+					name: 'get_query_optimization_best_practices',
+					description: 'Returns the SQL query optimization best practices document (optimize-sql-rules.md). Call this before optimizing queries for performance.',
+					inputSchema: { type: 'object', properties: {} }
+				});
+			} else if (n === 'execute_sql_query') {
+				tools.push({
+					name: 'execute_sql_query',
+					description: 'Executes a T-SQL query against the connected SQL server and returns the results (limited to 100 rows). Use when you need to run a query to analyze data, explore data, or verify something.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							query: { type: 'string', description: 'The complete T-SQL query to execute.' }
+						},
+						required: ['query']
+					}
+				});
+			} else if (n === 'respond_to_query_performance_optimization_request') {
+				tools.push({
+					name: 'respond_to_query_performance_optimization_request',
+					description: 'Use this as your FINAL response when the user asks to improve or optimize query performance. Creates a side-by-side comparison section with your proposed query and runs both to compare performance and results. Provide the FULL optimized query (not a diff).',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							query: { type: 'string', description: 'The complete optimized T-SQL query.' }
+						},
+						required: ['query']
+					}
+				});
+			} else if (n === 'respond_to_sql_query') {
+				tools.push({
+					name: 'respond_to_sql_query',
+					description: 'Use this as your FINAL response. Sets the T-SQL query in the editor and runs it. Provide the FULL complete T-SQL query (not a diff).',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							query: { type: 'string', description: 'The complete T-SQL query to set in the editor and run.' }
+						},
+						required: ['query']
+					}
+				});
+			} else if (n === 'ask_user_clarifying_question') {
+				tools.push({
+					name: 'ask_user_clarifying_question',
+					description: 'Ask the user a clarifying question when you need more information to write the correct query. Use when the request is ambiguous or you need clarification about tables, columns, filters, or logic.',
+					inputSchema: {
+						type: 'object',
+						properties: {
+							question: { type: 'string', description: 'The specific clarifying question to ask the user.' }
+						},
+						required: ['question']
+					}
+				});
+			}
+		}
+		return tools;
+	}
+
+	async readOptimizeQueryRules(flavor?: 'kusto' | 'sql'): Promise<string> {
+		const fileName = flavor === 'sql' ? 'optimize-sql-rules.md' : 'optimize-query-rules.md';
 		try {
-			const uri = vscode.Uri.joinPath(this.host.context.extensionUri, 'copilot-instructions', 'optimize-query-rules.md');
+			const uri = vscode.Uri.joinPath(this.host.context.extensionUri, 'copilot-instructions', fileName);
 			const bytes = await vscode.workspace.fs.readFile(uri);
 			return new TextDecoder('utf-8').decode(bytes);
 		} catch (e) {
 			const msg = this.host.getErrorMessage(e);
-			return `Failed to read copilot-instructions/optimize-query-rules.md: ${msg}`;
+			return `Failed to read copilot-instructions/${fileName}: ${msg}`;
 		}
 	}
 
@@ -442,6 +529,7 @@ export class CopilotService {
 		const boxId = String(message.boxId || '').trim();
 		const textBefore = String(message.textBefore || '');
 		const textAfter = String(message.textAfter || '');
+		const flavor = message.flavor === 'sql' ? 'sql' : 'kusto';
 
 		if (!requestId) {
 			return;
@@ -475,7 +563,21 @@ export class CopilotService {
 			const trimmedBefore = textBefore.length > maxBefore ? textBefore.slice(-maxBefore) : textBefore;
 			const trimmedAfter = textAfter.length > maxAfter ? textAfter.slice(0, maxAfter) : textAfter;
 
-			const prompt = `You are an expert Kusto Query Language (KQL) assistant providing inline code completions.
+			const prompt = flavor === 'sql'
+				? `You are an expert T-SQL (Microsoft SQL Server) assistant providing inline code completions.
+Complete the following T-SQL code. Only return the completion text that should be inserted at the cursor position.
+Do NOT include any explanation, markdown formatting, or code fences.
+Return ONLY the raw T-SQL code to complete the line or statement.
+If you cannot provide a meaningful completion, return an empty string.
+
+T-SQL code before cursor:
+${trimmedBefore}
+
+T-SQL code after cursor:
+${trimmedAfter}
+
+Completion:`
+				: `You are an expert Kusto Query Language (KQL) assistant providing inline code completions.
 Complete the following KQL code. Only return the completion text that should be inserted at the cursor position.
 Do NOT include any explanation, markdown formatting, or code fences.
 Return ONLY the raw KQL code to complete the line or statement.
@@ -510,7 +612,9 @@ Completion:`;
 				clearTimeout(timeoutId);
 
 				completionText = completionText.trim();
-				completionText = completionText.replace(/^```(?:kusto|kql)?\s*\n?/i, '').replace(/\n?```$/i, '');
+				completionText = flavor === 'sql'
+					? completionText.replace(/^```(?:sql|tsql|t-sql)?\s*\n?/i, '').replace(/\n?```$/i, '')
+					: completionText.replace(/^```(?:kusto|kql)?\s*\n?/i, '').replace(/\n?```$/i, '');
 
 				const completions = completionText ? [{ insertText: completionText }] : [];
 
@@ -564,7 +668,7 @@ Completion:`;
 					boxId,
 					models: [],
 					selectedModelId: '',
-					tools: this.getCopilotLocalTools()
+					tools: this.getLocalToolsForFlavor(message.flavor)
 				});
 				this.host.postMessage({
 					type: 'copilotWriteQueryStatus',
@@ -593,7 +697,7 @@ Completion:`;
 				boxId,
 				models: modelOptions,
 				selectedModelId,
-				tools: this.getCopilotLocalTools()
+				tools: this.getLocalToolsForFlavor(message.flavor)
 			});
 		} catch {
 			this.host.postMessage({
@@ -601,7 +705,7 @@ Completion:`;
 				boxId,
 				models: [],
 				selectedModelId: '',
-				tools: this.getCopilotLocalTools()
+				tools: this.getLocalToolsForFlavor(message.flavor)
 			});
 		}
 	}
@@ -896,7 +1000,10 @@ Completion:`;
 	}
 
 	async startCopilotWriteQuery(
-		message: Extract<IncomingWebviewMessage, { type: 'startCopilotWriteQuery' }>
+		message: Extract<IncomingWebviewMessage, { type: 'startCopilotWriteQuery' }>,
+		sqlConnectionManager?: SqlConnectionManager,
+		sqlSchemaService?: SqlSchemaService,
+		sqlClient?: SqlQueryClient,
 	): Promise<void> {
 		const boxId = String(message.boxId || '').trim();
 		const connectionId = String(message.connectionId || '').trim();
@@ -922,6 +1029,17 @@ Completion:`;
 			} catch {
 				// ignore
 			}
+			return;
+		}
+
+		// If this is a SQL-flavored request, delegate to the SQL flow
+		if (message.flavor === 'sql' && sqlConnectionManager && sqlSchemaService && sqlClient) {
+			await this.startSqlCopilotWriteQuery(
+				{ boxId, sqlConnectionId: connectionId, database, request, currentQuery, modelId: requestedModelId, enabledTools } as any,
+				sqlConnectionManager,
+				sqlSchemaService,
+				sqlClient
+			);
 			return;
 		}
 
@@ -1807,6 +1925,13 @@ Completion:`;
 						).then(selection => {
 							if (selection === 'View') {
 								this.host.revealPanel();
+								// Expand and scroll to the section so the user can find the question.
+								try {
+									this.host.postMessage({
+										type: 'revealSection',
+										boxId,
+									});
+								} catch { /* ignore */ }
 							}
 						});
 
@@ -2100,6 +2225,629 @@ Completion:`;
 			} catch {
 				// ignore
 			}
+		}
+	}
+
+	// ── SQL Copilot ───────────────────────────────────────────────────────────
+
+	private buildSqlMessagesFromHistory(args: {
+		boxId: string;
+		serverUrl: string;
+		database: string;
+		schemaText: string;
+		priorAttempts?: Array<{ attempt: number; query?: string; error?: string }>;
+	}): vscode.LanguageModelChatMessage[] {
+		const history = this.copilotConversationHistoryByBoxId.get(args.boxId) || [];
+		sanitizeConversationHistory(history);
+
+		const messages: vscode.LanguageModelChatMessage[] = [];
+
+		const preambleParts: string[] = [];
+		preambleParts.push('Role: You are a senior T-SQL engineer.');
+		preambleParts.push('Task: Write a complete, runnable T-SQL query for the user request.');
+		preambleParts.push('');
+		preambleParts.push('Context:');
+		preambleParts.push(`- Server: ${args.serverUrl || '(unknown)'}`);
+		preambleParts.push(`- Database: ${args.database || '(unknown)'}`);
+		if (args.schemaText) {
+			preambleParts.push(`\nDatabase Schema:\n${args.schemaText}`);
+		}
+		preambleParts.push('');
+		preambleParts.push('RESPONSE FORMAT RULES:');
+		preambleParts.push('- Use the provided tools to accomplish your task. You have access to tools for getting schema, executing queries, and delivering your final query.');
+		preambleParts.push('- Use as many tool calls as needed across turns: get schema, execute queries, then finish with the respond_to_sql_query tool.');
+		preambleParts.push('- Always provide the FULL query (not a diff) as the tool argument.');
+		preambleParts.push('- If you cannot fulfill the request, use the ask_user_clarifying_question tool.');
+		messages.push(vscode.LanguageModelChatMessage.User(preambleParts.join('\n')));
+
+		for (const entry of history) {
+			if (entry.type === 'general-rules') {
+				if (entry.removed) {
+					messages.push(vscode.LanguageModelChatMessage.User(
+						'[SQL query rules: truncated from conversation history, refer to your knowledge if needed]'
+					));
+				} else {
+					messages.push(vscode.LanguageModelChatMessage.User(
+						'SQL query rules (from copilot-instructions/sql-query-rules.md):\n' + entry.content
+					));
+				}
+			} else if (entry.type === 'user-message') {
+				let text = entry.text;
+				if (entry.querySnapshot) {
+					text += '\n\nCurrent query in editor:\n```sql\n' + entry.querySnapshot + '\n```';
+				}
+				messages.push(vscode.LanguageModelChatMessage.User(text));
+			} else if (entry.type === 'assistant-message') {
+				const parts: Array<vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart> = [];
+				if (entry.text) {
+					parts.push(new vscode.LanguageModelTextPart(entry.text));
+				}
+				if (entry.toolCalls) {
+					for (const tc of entry.toolCalls) {
+						parts.push(new vscode.LanguageModelToolCallPart(tc.callId, tc.name, tc.input));
+					}
+				}
+				if (parts.length > 0) {
+					messages.push(vscode.LanguageModelChatMessage.Assistant(parts));
+				}
+			} else if (entry.type === 'tool-call') {
+				const resultText = entry.removed
+					? '[truncated from conversation history, call tool again if needed]'
+					: entry.result;
+				messages.push(vscode.LanguageModelChatMessage.User([
+					new vscode.LanguageModelToolResultPart(entry.callId, [
+						new vscode.LanguageModelTextPart(resultText)
+					])
+				]));
+			}
+		}
+
+		const attempts = args.priorAttempts || [];
+		if (attempts.length > 0) {
+			const attemptsText = attempts
+				.map((a) => {
+					const parts = [`Attempt ${a.attempt}:`];
+					if (a.query) parts.push(`Generated query:\n${a.query}`);
+					if (a.error) parts.push(`Error:\n${a.error}`);
+					return parts.join('\n');
+				})
+				.join('\n\n');
+			messages.push(vscode.LanguageModelChatMessage.User(
+				'Prior attempts and errors (fix these):\n' + attemptsText
+			));
+		}
+
+		return messages;
+	}
+
+	async startSqlCopilotWriteQuery(
+		message: {
+			boxId: string;
+			sqlConnectionId: string;
+			database: string;
+			request: string;
+			currentQuery?: string;
+			modelId?: string;
+			enabledTools?: string[];
+		},
+		sqlConnectionManager: SqlConnectionManager,
+		sqlSchemaService: SqlSchemaService,
+		sqlClient?: SqlQueryClient,
+	): Promise<void> {
+		const boxId = String(message.boxId || '').trim();
+		const sqlConnectionId = String(message.sqlConnectionId || '').trim();
+		const database = String(message.database || '').trim();
+		const request = String(message.request || '').trim();
+		const currentQuery = String(message.currentQuery || '').trim();
+		const requestedModelId = String(message.modelId || '').trim();
+		const enabledToolsRaw = Array.isArray(message.enabledTools) ? message.enabledTools : [];
+		const enabledTools = enabledToolsRaw.map((t) => this.normalizeToolName(t)).filter(Boolean);
+		if (!boxId || !sqlConnectionId || !database || !request) {
+			this.host.postMessage({
+				type: 'copilotWriteQueryDone', boxId,
+				ok: false, message: 'Select a SQL connection and database, then enter what you want the query to do.',
+			});
+			return;
+		}
+
+		// Cancel any existing request for this box.
+		try {
+			const existing = this.runningCopilotWriteQueryByBoxId.get(boxId);
+			if (existing) { existing.cts.cancel(); this.runningCopilotWriteQueryByBoxId.delete(boxId); }
+		} catch { /* ignore */ }
+
+		const cts = new vscode.CancellationTokenSource();
+		const seq = ++this.copilotWriteSeq;
+		this.runningCopilotWriteQueryByBoxId.set(boxId, { cts, seq });
+		const isActive = () => {
+			const c = this.runningCopilotWriteQueryByBoxId.get(boxId);
+			return !!c && c.cts === cts && c.seq === seq;
+		};
+
+		const postStatus = (text: string, detail?: string) => {
+			try {
+				this.host.postMessage({ type: 'copilotWriteQueryStatus', boxId, status: text, detail: detail || '' });
+			} catch { /* ignore */ }
+		};
+		const postNarrative = (text: string) => {
+			try {
+				this.host.postMessage({ type: 'copilotWriteQueryStatus', boxId, status: text, role: 'assistant' });
+			} catch { /* ignore */ }
+		};
+
+		try {
+			// 1. Select model.
+			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
+			if (models.length === 0) {
+				this.host.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: false, message: 'GitHub Copilot is not available.' });
+				return;
+			}
+			let model = requestedModelId
+				? models.find(m => m.id === requestedModelId) || null
+				: null;
+			if (!model) model = findPreferredDefaultCopilotModel(models) || models[0];
+			if (requestedModelId && requestedModelId !== model.id) {
+				await this.host.context.globalState.update(STORAGE_KEYS.lastOptimizeCopilotModelId, model.id);
+			}
+
+			// 2. Get SQL schema context (pre-fetched for preamble).
+			const connection = sqlConnectionManager.getConnection(sqlConnectionId);
+			let schemaText = '';
+			if (connection) {
+				try {
+					const { schema } = await sqlSchemaService.getSchema(connection, database);
+					if (schema?.tables?.length) {
+						const parts: string[] = [];
+						for (const tableName of schema.tables) {
+							const cols = schema.columnsByTable?.[tableName];
+							if (cols) {
+								const colDefs = Object.entries(cols).map(([n, t]) => `  ${n} (${t})`).join('\n');
+								parts.push(`Table: ${tableName}\n${colDefs}`);
+							} else {
+								parts.push(`Table: ${tableName}`);
+							}
+						}
+						schemaText = parts.join('\n\n');
+					}
+				} catch (e) {
+					this.host.output.appendLine(`[sql-copilot] schema fetch error: ${e}`);
+				}
+			}
+
+			// 3. Load SQL query rules.
+			let sqlRulesText = '';
+			let sqlRulesFilePath = '';
+			try {
+				const rulesPath = vscode.Uri.joinPath(this.host.extensionUri, 'copilot-instructions', 'sql-query-rules.md');
+				const buf = await vscode.workspace.fs.readFile(rulesPath);
+				sqlRulesText = Buffer.from(buf).toString('utf8');
+				sqlRulesFilePath = rulesPath.fsPath;
+			} catch { /* ignore — rules file is optional */ }
+
+			// 4. Build conversation history.
+			const history = this.getOrCreateConversationHistory(boxId);
+
+			// Insert rules on first turn.
+			if (sqlRulesText && !this.copilotGeneralRulesSentPerBox.has(boxId)) {
+				this.copilotGeneralRulesSentPerBox.add(boxId);
+				const rulesEntryId = this.nextHistoryEntryId(boxId);
+				history.push({ type: 'general-rules', content: sqlRulesText, filePath: sqlRulesFilePath, id: rulesEntryId, timestamp: Date.now() });
+				try {
+					this.host.postMessage({
+						type: 'copilotGeneralQueryRulesLoaded',
+						boxId,
+						entryId: rulesEntryId,
+						filePath: sqlRulesFilePath,
+						preview: sqlRulesText
+					});
+				} catch { /* ignore */ }
+			}
+
+			// User message.
+			const userMessageEntryId = this.nextHistoryEntryId(boxId);
+			history.push({ type: 'user-message', text: request, id: userMessageEntryId, querySnapshot: currentQuery || undefined, timestamp: Date.now() });
+
+			if (currentQuery) {
+				try {
+					this.host.postMessage({
+						type: 'copilotUserQuerySnapshot',
+						boxId,
+						entryId: userMessageEntryId,
+						queryText: currentQuery
+					});
+				} catch { /* ignore */ }
+			}
+
+			// 5. Build tools and run agentic loop.
+			const tools = this.getSqlCopilotChatTools(enabledTools);
+			const priorAttempts: Array<{ attempt: number; query?: string; error?: string }> = [];
+			const serverUrl = connection?.serverUrl || '(unknown)';
+
+			const maxAttempts = 6;
+			const maxToolTurns = 100;
+			let toolTurnCount = 0;
+			for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+				if (!isActive() || cts.token.isCancellationRequested) {
+					throw new Error('SQL Copilot write-query canceled');
+				}
+				postStatus(`Generating query (attempt ${attempt}/${maxAttempts})…`);
+
+				const messages = this.buildSqlMessagesFromHistory({
+					boxId, serverUrl, database, schemaText, priorAttempts
+				});
+
+				const response = await model.sendRequest(messages, { tools }, cts.token);
+
+				const nativeToolCalls: vscode.LanguageModelToolCallPart[] = [];
+				let responseText = '';
+				for await (const part of response.stream) {
+					if (!isActive() || cts.token.isCancellationRequested) {
+						throw new Error('SQL Copilot write-query canceled');
+					}
+					if (part instanceof vscode.LanguageModelTextPart) {
+						responseText += part.value;
+					} else if (part instanceof vscode.LanguageModelToolCallPart) {
+						nativeToolCalls.push(part);
+					}
+				}
+
+				if (nativeToolCalls.length === 0) {
+					// No tool calls — accept the text response
+					const decision = decideNonToolResponse(false);
+					if (responseText.trim() && !decision.suppressNarrative) {
+						postNarrative(responseText.trim());
+					}
+
+					// Record in history
+					const assistantEntryId = this.nextHistoryEntryId(boxId);
+					history.push({
+						type: 'assistant-message',
+						id: assistantEntryId,
+						text: responseText,
+						timestamp: Date.now()
+					});
+
+					this.host.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: true, message: '' });
+					return;
+				}
+
+				// Record assistant message with tool calls
+				const assistantEntryId = this.nextHistoryEntryId(boxId);
+				history.push({
+					type: 'assistant-message',
+					id: assistantEntryId,
+					text: responseText,
+					toolCalls: nativeToolCalls.map(tc => ({ callId: tc.callId, name: tc.name, input: tc.input })),
+					timestamp: Date.now()
+				});
+				if (responseText.trim()) {
+					postNarrative(responseText.trim());
+				}
+
+				// Process tool calls
+				let shouldRetryAttempt = false;
+				let hasOptionalToolCalls = false;
+
+				try {
+				for (const tc of nativeToolCalls) {
+					if (!isActive()) throw new Error('SQL Copilot write-query canceled');
+					const toolName = this.normalizeToolName(tc.name);
+
+					if (toolName === 'get_sql_schema') {
+						const schemaResult = schemaText || 'No schema available.';
+						const schemaEntryId = this.nextHistoryEntryId(boxId);
+						history.push({
+							type: 'tool-call', id: schemaEntryId, callId: tc.callId,
+							tool: 'get_sql_schema', args: {}, result: schemaResult, timestamp: Date.now()
+						});
+						try {
+							this.host.postMessage({
+								type: 'copilotWriteQueryToolResult', boxId,
+								entryId: schemaEntryId, tool: 'get_sql_schema',
+								label: `Schema: ${database}`, json: schemaResult
+							});
+						} catch { /* ignore */ }
+						hasOptionalToolCalls = true;
+						continue;
+					}
+
+					if (toolName === 'get_query_optimization_best_practices') {
+						const bestPracticesResult = await this.readOptimizeQueryRules('sql');
+						const bpEntryId = this.nextHistoryEntryId(boxId);
+						history.push({
+							type: 'tool-call', id: bpEntryId, callId: tc.callId,
+							tool: 'get_query_optimization_best_practices',
+							result: bestPracticesResult, timestamp: Date.now()
+						});
+						try {
+							this.host.postMessage({
+								type: 'copilotWriteQueryToolResult', boxId,
+								entryId: bpEntryId, tool: 'get_query_optimization_best_practices',
+								label: 'optimize-sql-rules.md', json: bestPracticesResult
+							});
+						} catch { /* ignore */ }
+						hasOptionalToolCalls = true;
+						continue;
+					}
+
+					if (toolName === 'execute_sql_query') {
+						const query = this.extractQueryArgument(tc.input);
+						if (!query) {
+							const errEntryId = this.nextHistoryEntryId(boxId);
+							history.push({
+								type: 'tool-call', id: errEntryId, callId: tc.callId,
+								tool: 'execute_sql_query', args: tc.input,
+								result: 'Error: query argument was empty.', timestamp: Date.now()
+							});
+							hasOptionalToolCalls = true;
+							continue;
+						}
+						if (!sqlClient || !connection) {
+							const errEntryId = this.nextHistoryEntryId(boxId);
+							history.push({
+								type: 'tool-call', id: errEntryId, callId: tc.callId,
+								tool: 'execute_sql_query', args: { query },
+								result: 'Error: SQL client not available.', timestamp: Date.now()
+							});
+							hasOptionalToolCalls = true;
+							continue;
+						}
+						try {
+							const limitedQuery = query.replace(/;\s*$/, '');
+							const hasTop = /\bTOP\b/i.test(limitedQuery);
+							const finalExecQuery = hasTop ? limitedQuery : limitedQuery.replace(
+								/\bSELECT\b/i, 'SELECT TOP 100'
+							);
+							const cancelClientKey = `${boxId}::${connection.id}::copilotExec`;
+							const result = await sqlClient.executeQueryCancelable(connection, database, finalExecQuery, cancelClientKey).promise;
+
+							let queryResultText = '';
+							const columns = result.columns || [];
+							const rows = result.rows || [];
+							if (rows.length > 0) {
+								const maxRows = Math.min(rows.length, 50);
+								const displayRows = rows.slice(0, maxRows);
+								queryResultText = `Query results (${rows.length} rows${rows.length > maxRows ? `, showing first ${maxRows}` : ''}):\n`;
+								queryResultText += columns.join('\t') + '\n';
+								for (const row of displayRows) {
+									queryResultText += row.map((v: any) => {
+										if (v === null || v === undefined) return '';
+										if (typeof v === 'object') return JSON.stringify(v);
+										return String(v);
+									}).join('\t') + '\n';
+								}
+							} else {
+								queryResultText = 'Query returned no results.';
+							}
+
+							const execEntryId = this.nextHistoryEntryId(boxId);
+							history.push({
+								type: 'tool-call', id: execEntryId, callId: tc.callId,
+								tool: 'execute_sql_query', args: { query },
+								result: queryResultText, timestamp: Date.now()
+							});
+							try {
+								this.host.postMessage({
+									type: 'copilotExecutedQuery', boxId,
+									entryId: execEntryId, query,
+									resultSummary: rows.length > 0 ? `${rows.length} rows` : 'No results',
+									result
+								});
+							} catch { /* ignore */ }
+							hasOptionalToolCalls = true;
+							continue;
+						} catch (e) {
+							const errMsg = e instanceof Error ? e.message : String(e);
+							const execErrEntryId = this.nextHistoryEntryId(boxId);
+							history.push({
+								type: 'tool-call', id: execErrEntryId, callId: tc.callId,
+								tool: 'execute_sql_query', args: { query },
+								result: `Query execution error: ${errMsg}`, timestamp: Date.now()
+							});
+							try {
+								this.host.postMessage({
+									type: 'copilotExecutedQuery', boxId,
+									entryId: execErrEntryId, query,
+									resultSummary: 'Error', errorMessage: errMsg
+								});
+							} catch { /* ignore */ }
+							hasOptionalToolCalls = true;
+							continue;
+						}
+					}
+
+					if (toolName === 'respond_to_query_performance_optimization_request') {
+						const rawQuery = this.extractQueryArgument(tc.input);
+						const improvedQuery = rawQuery.replace(/```(?:sql|tsql)?\s*\n([\s\S]*?)```/gi, '$1').trim();
+						if (!improvedQuery) {
+							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
+							postStatus('Tool call missing query argument. Retrying…');
+							shouldRetryAttempt = true;
+							break;
+						}
+
+						const originalQueryForCompare = currentQuery;
+
+						postStatus('Preparing comparison editor…');
+						const comparisonBoxId = await this.host.ensureComparisonBoxInWebview(boxId, improvedQuery, cts.token);
+						if (!comparisonBoxId) {
+							this.host.postMessage({
+								type: 'copilotWriteQueryDone', boxId,
+								ok: false, message: 'Failed to prepare comparison editor.'
+							});
+							return;
+						}
+
+						try {
+							this.host.deleteComparisonSummary(`${boxId}::${comparisonBoxId}`);
+						} catch { /* ignore */ }
+
+						// Run both queries if sqlClient is available
+						if (sqlClient && connection) {
+							const executeSqlAndPost = async (targetBoxId: string, queryText: string, cancelSuffix: string) => {
+								const cancelClientKey = `${targetBoxId}::${connection.id}::validatePerformanceImprovements::${cancelSuffix}`;
+								const result = await sqlClient.executeQueryCancelable(connection, database, queryText, cancelClientKey).promise;
+								try {
+									this.host.postMessage({ type: 'queryResult', result, boxId: targetBoxId });
+								} catch { /* ignore */ }
+							};
+
+							postStatus('Running original query…');
+							try {
+								await executeSqlAndPost(boxId, originalQueryForCompare, 'source');
+							} catch (error) {
+								const errMsg = error instanceof Error ? error.message : String(error);
+								this.host.output.appendLine(`[sql-copilot] original query execution error: ${errMsg}`);
+								try {
+									this.host.postMessage({ type: 'queryError', error: 'Original query failed to execute.', boxId });
+								} catch { /* ignore */ }
+							}
+
+							postStatus('Running optimized query…');
+							try {
+								await executeSqlAndPost(comparisonBoxId, improvedQuery, 'comparison');
+							} catch (error) {
+								const errMsg = error instanceof Error ? error.message : String(error);
+								this.host.output.appendLine(`[sql-copilot] optimized query execution error: ${errMsg}`);
+								try {
+									this.host.postMessage({ type: 'queryError', error: 'Optimized query failed to execute.', boxId: comparisonBoxId });
+								} catch { /* ignore */ }
+							}
+						}
+
+						this.host.postMessage({
+							type: 'copilotWriteQueryDone', boxId,
+							ok: true, message: 'Comparison ready. Review the results side by side.'
+						});
+						return;
+					}
+
+					if (toolName === 'respond_to_sql_query') {
+						const rawQuery = this.extractQueryArgument(tc.input);
+						const query = rawQuery.replace(/```(?:sql|tsql)?\s*\n([\s\S]*?)```/gi, '$1').trim();
+						if (!query) {
+							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
+							postStatus('Tool call missing query argument. Retrying…');
+							shouldRetryAttempt = true;
+							break;
+						}
+
+						try {
+							this.host.postMessage({ type: 'copilotWriteQuerySetQuery', boxId, query });
+						} catch { /* ignore */ }
+
+						// Auto-run the query
+						if (sqlClient && connection) {
+							postStatus('Running query…');
+							try {
+								this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: true });
+							} catch { /* ignore */ }
+
+							this.host.cancelRunningQuery(boxId);
+							const cancelClientKey = `${boxId}::${connection.id}::copilot`;
+							const { promise, cancel } = sqlClient.executeQueryCancelable(connection, database, query, cancelClientKey);
+							const runSeq = this.host.nextQueryRunSeq();
+							this.host.registerRunningQuery(boxId, cancel, runSeq);
+							try {
+								const result = await promise;
+								if (isActive()) {
+									this.host.postMessage({ type: 'queryResult', result, boxId });
+									this.host.postMessage({ type: 'ensureResultsVisible', boxId });
+									this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false });
+									this.host.postMessage({
+										type: 'copilotWriteQueryDone', boxId,
+										ok: true, message: 'Query ran successfully. Review the results and adjust if needed.'
+									});
+									return;
+								}
+							} catch (error) {
+								if (error instanceof SqlQueryCancelledError || (error as any)?.isCancelled === true) {
+									if (isActive()) {
+										try { this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false }); } catch { /* ignore */ }
+									}
+									throw new Error('SQL Copilot write-query canceled');
+								}
+								const errorMessage = error instanceof Error ? error.message : String(error);
+								this.host.output.appendLine(`[sql-copilot] query execution error: ${errorMessage}`);
+								if (isActive()) {
+									try { this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId }); } catch { /* ignore */ }
+								}
+								priorAttempts.push({ attempt, query, error: errorMessage });
+								postStatus('Query failed to execute. Retrying…');
+								shouldRetryAttempt = true;
+								break;
+							}
+						} else {
+							// No sqlClient — just set the query and finish
+							this.host.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: true, message: '' });
+							return;
+						}
+					}
+
+					if (toolName === 'ask_user_clarifying_question') {
+						const question = this.extractQuestionArgument(tc.input);
+						if (!question) {
+							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty question argument.' });
+							postStatus('Tool call missing question argument. Retrying…');
+							shouldRetryAttempt = true;
+							break;
+						}
+
+						const questionEntryId = this.nextHistoryEntryId(boxId);
+						history.push({
+							type: 'tool-call', id: questionEntryId, callId: tc.callId,
+							tool: 'ask_user_clarifying_question', args: { question },
+							result: 'Question displayed to user. Awaiting response.', timestamp: Date.now()
+						});
+
+						try {
+							this.host.postMessage({
+								type: 'copilotClarifyingQuestion', boxId,
+								entryId: questionEntryId, question
+							});
+						} catch { /* ignore */ }
+
+						this.host.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: true, message: '' });
+						return;
+					}
+				}
+				} finally {
+					this.ensureAllToolCallsHaveResults(history, nativeToolCalls, boxId);
+				}
+
+				if (shouldRetryAttempt) {
+					continue;
+				}
+
+				if (hasOptionalToolCalls) {
+					toolTurnCount++;
+					if (toolTurnCount >= maxToolTurns) {
+						priorAttempts.push({ attempt, error: 'Too many tool turns without a final response.' });
+						postStatus('Too many tool turns. Retrying…');
+						continue;
+					}
+					attempt--;
+					continue;
+				}
+			}
+
+			this.host.postMessage({
+				type: 'copilotWriteQueryDone', boxId,
+				ok: false, message: 'I could not produce a query that runs successfully. Review the latest error and refine your request.'
+			});
+		} catch (err: unknown) {
+			if (!isActive()) return;
+			const msg = err instanceof Error ? err.message : String(err);
+			const canceled = cts.token.isCancellationRequested || /canceled|cancelled/i.test(msg);
+			if (canceled) {
+				try { this.host.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: false, message: 'Canceled.' }); } catch { /* ignore */ }
+			} else {
+				this.host.output.appendLine(`[sql-copilot] error: ${msg}`);
+				this.host.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: false, message: msg });
+			}
+		} finally {
+			try { this.runningCopilotWriteQueryByBoxId.delete(boxId); } catch { /* ignore */ }
+			try { cts.dispose(); } catch { /* ignore */ }
 		}
 	}
 }

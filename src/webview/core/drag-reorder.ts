@@ -2,7 +2,7 @@
 // Self-invoking: installs DnD handlers on #queries-container on import.
 import { schedulePersist } from './persistence';
 import { pState } from '../shared/persistence-state';
-import { __kustoRefreshAllDataSourceDropdowns, pythonBoxes, urlBoxes } from './section-factory';
+import { __kustoRefreshAllDataSourceDropdowns, pythonBoxes, urlBoxes, htmlBoxes, sqlBoxes } from './section-factory';
 import { queryEditors, setQueryBoxes } from './state';
 import { markdownBoxes, markdownEditors } from '../sections/kw-markdown-section';
 import { safeRun } from '../shared/safe-run';
@@ -80,6 +80,8 @@ import { safeRun } from '../shared/safe-run';
 				try { const mdIds = ids.filter((id: any) => id.startsWith('markdown_')); markdownBoxes.length = 0; markdownBoxes.push(...mdIds); } catch (e) { console.error('[kusto]', e); }
 				try { const pyIds = ids.filter((id: any) => id.startsWith('python_')); pythonBoxes.length = 0; pythonBoxes.push(...pyIds); } catch (e) { console.error('[kusto]', e); }
 				try { const urlIds = ids.filter((id: any) => id.startsWith('url_')); urlBoxes.length = 0; urlBoxes.push(...urlIds); } catch (e) { console.error('[kusto]', e); }
+				try { const htmlIds = ids.filter((id: any) => id.startsWith('html_')); htmlBoxes.length = 0; htmlBoxes.push(...htmlIds); } catch (e) { console.error('[kusto]', e); }
+				try { const sqlIds = ids.filter((id: any) => id.startsWith('sql_')); sqlBoxes.length = 0; sqlBoxes.push(...sqlIds); } catch (e) { console.error('[kusto]', e); }
 			} catch (e) { console.error('[kusto]', e); }
 		};
 

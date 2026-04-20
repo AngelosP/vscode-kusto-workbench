@@ -5,7 +5,7 @@ import * as path from 'path';
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
-import { renderDiffInWebview, DIFF_NOISE_KEYS } from './diffViewerUtils';
+import { renderDiffInWebview, DIFF_NOISE_KEYS, COMPARISON_NOISE_KEYS } from './diffViewerUtils';
 import type { SectionChangeInfo } from './queryEditorTypes';
 
 
@@ -132,7 +132,7 @@ export const normalizeSection = (section: unknown): Record<string, unknown> | un
 	const type = String(s.type ?? '');
 	
 	// Skip unknown section types
-	const knownTypes = ['query', 'copilotQuery', 'markdown', 'python', 'url', 'chart', 'transformation', 'html'];
+	const knownTypes = ['query', 'copilotQuery', 'markdown', 'python', 'url', 'chart', 'transformation', 'html', 'sql'];
 	if (!knownTypes.includes(type)) {
 		return undefined;
 	}
@@ -140,10 +140,13 @@ export const normalizeSection = (section: unknown): Record<string, unknown> | un
 	// Normalize the type (copilotQuery -> query for comparison)
 	const normalizedType = (type === 'copilotQuery') ? 'query' : type;
 	
-	// Collect all normalized properties first.
+	// Collect all normalized properties first, skipping ephemeral UI-state
+	// keys (pixel dimensions, visibility toggles, cached results) so that
+	// layout-only changes never mark a section as modified.
 	const raw: Record<string, unknown> = {};
 	for (const [key, value] of Object.entries(s)) {
 		if (key === 'type') continue; // Handled separately
+		if (COMPARISON_NOISE_KEYS.has(key)) continue; // Ephemeral UI state (heights kept for persistence)
 		const normalized = normalizeValue(value, key);
 		if (normalized !== undefined) {
 			raw[key] = normalized;
@@ -334,13 +337,16 @@ export const formatSectionDiffContent = (
 		return { settingsText: `(${fallbackLabel})` };
 	}
 
-	const settingsText = JSON.stringify(normalizedSection, null, 2);
+	// Strip noise (content keys + ephemeral state) from the settings JSON;
+	// content is extracted separately into its own diff tab.
+	const settingsText = JSON.stringify(stripDiffNoise(normalizedSection), null, 2);
 
 	const contentKeyByType: Record<string, { key: string; label: string }> = {
-		query: { key: 'query', label: 'Query' },
+		query: { key: 'query', label: 'Kusto' },
 		markdown: { key: 'text', label: 'Markdown' },
 		python: { key: 'code', label: 'Code' },
 		html: { key: 'code', label: 'Code' },
+		sql: { key: 'query', label: 'SQL Query' },
 	};
 	const sectionType = String(normalizedSection.type ?? '');
 	const contentInfo = contentKeyByType[sectionType];
@@ -403,6 +409,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (p.endsWith('.mdx')) {
 				return 'mdx';
 			}
+			if (p.endsWith('.sqlx')) {
+				return 'sqlx';
+			}
 		} catch {
 			// ignore
 		}
@@ -411,12 +420,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 	private static getAllowedSectionKinds(
 		kind: KqlxFileKind
-	): Array<'query' | 'chart' | 'transformation' | 'markdown' | 'python' | 'url' | 'html'> {
-		// .mdx is intended to be "notebook-like markdown"; we still allow URL and Transformations
-		// so users can fetch CSV and reshape it.
-		return kind === 'mdx'
-			? ['markdown', 'url', 'transformation']
-			: ['query', 'chart', 'transformation', 'markdown', 'python', 'url', 'html'];
+	): Array<'query' | 'chart' | 'transformation' | 'markdown' | 'python' | 'url' | 'html' | 'sql'> {
+		if (kind === 'mdx') {
+			return ['markdown', 'url', 'transformation'];
+		}
+		if (kind === 'sqlx') {
+			return ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+		}
+		return ['query', 'sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
 	}
 
 	private static pendingAddKindKeyForUri(uri: vscode.Uri): string {
@@ -634,7 +645,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			const ids = new Set<string>();
 			try {
 				const parsed = parseKqlxText(text, {
-					allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+					allowedKinds: ['kqlx', 'mdx', 'sqlx'],
 					defaultKind: documentKind
 				});
 				if (parsed.ok) {
@@ -908,7 +919,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const postDocument = async (options?: { forceReload?: boolean }) => {
 			const forceReload = options?.forceReload ?? false;
 			const parsed = parseKqlxText(document.getText(), {
-				allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+				allowedKinds: ['kqlx', 'mdx', 'sqlx'],
 				defaultKind: documentKind
 			});
 			if (!parsed.ok) {
@@ -1151,7 +1162,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					let nextText = '';
 					try {
 						const parsedSaved = parseKqlxText(lastSavedText, {
-							allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+							allowedKinds: ['kqlx', 'mdx', 'sqlx'],
 							defaultKind: documentKind
 						});
 						if (parsedSaved.ok) {
@@ -1184,7 +1195,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							const bytes = await vscode.workspace.fs.readFile(document.uri);
 							const diskText = normalizeTextToEol(new TextDecoder('utf-8').decode(bytes), document.eol);
 							const parsedDisk = parseKqlxText(diskText, {
-								allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+								allowedKinds: ['kqlx', 'mdx', 'sqlx'],
 								defaultKind: documentKind
 							});
 							if (parsedDisk.ok) {
@@ -1227,7 +1238,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							const diskText = normalizeTextToEol(new TextDecoder('utf-8').decode(bytes), document.eol);
 							if (diskText && diskText === nextText) {
 								const parsedDisk = parseKqlxText(diskText, {
-									allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+									allowedKinds: ['kqlx', 'mdx', 'sqlx'],
 									defaultKind: documentKind
 								});
 								if (parsedDisk.ok) {
@@ -1249,7 +1260,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					if (!nextText) {
 						try {
 							const parsedCurrent = parseKqlxText(currentText, {
-								allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+								allowedKinds: ['kqlx', 'mdx', 'sqlx'],
 								defaultKind: documentKind
 							});
 							if (parsedCurrent.ok) {
@@ -1404,7 +1415,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						// Get the current version from the in-memory state.
 						const currentText = document.getText();
 						const parsedCurrent = parseKqlxText(currentText, {
-							allowedKinds: documentKind === 'mdx' ? ['mdx', 'kqlx'] : ['kqlx', 'mdx'],
+							allowedKinds: ['kqlx', 'mdx', 'sqlx'],
 							defaultKind: documentKind
 						});
 						let currentSection: Record<string, unknown> | undefined;
@@ -1439,10 +1450,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 						// For content-bearing sections, also open a dedicated content diff.
 						const contentKeyByType: Record<string, { key: string; label: string }> = {
-							query: { key: 'query', label: 'Query' },
+							query: { key: 'query', label: 'Kusto' },
 							markdown: { key: 'text', label: 'Markdown' },
 							python: { key: 'code', label: 'Code' },
 							html: { key: 'code', label: 'Code' },
+							sql: { key: 'query', label: 'SQL Query' },
 						};
 						const sectionType = String(currentSection?.type ?? savedNormalized?.type ?? '');
 						const contentInfo = contentKeyByType[sectionType];
@@ -1464,7 +1476,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 						// When diffMode is contentOnly, skip the settings JSON diff entirely.
 						const diffMode = vscode.workspace.getConfiguration('kustoWorkbench').get<string>('sectionDiffMode', 'contentAndSettings');
-						const showSettingsDiff = diffMode !== 'contentOnly';
+						const settingsChanged = savedText !== currentSectionText;
+						const showSettingsDiff = diffMode !== 'contentOnly' && settingsChanged;
 
 						if (showSettingsDiff) {
 							// Open the settings diff first, pinned (preview: false) so the content

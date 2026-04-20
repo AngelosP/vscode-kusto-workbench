@@ -106,7 +106,22 @@ export async function getQueryEditorHtml(
 	// Monaco 0.52 ships CSS under vs/editor/editor.main.css.
 	const monacoCssUri = webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'monaco', 'vs', 'editor', 'editor.main.css')).toString();
 
+	// Alternating row color: inject as CSS custom property so it's available at first paint.
+	// The setting also updates live via postMessage (settingsUpdate) when changed at runtime.
+	const altRowColor = vscode.workspace.getConfiguration('kustoWorkbench').get<string>('alternatingRowColor', 'theme');
+	let altRowCss = '';
+	if (altRowColor !== 'off') {
+		if (altRowColor === 'theme' || !altRowColor) {
+			altRowCss = ':root{--kw-alt-row-bg:color-mix(in srgb,var(--vscode-editor-background) 97%,var(--vscode-foreground) 3%)}';
+		} else {
+			// Sanitize custom color: strip anything that could break out of the CSS declaration.
+			const safe = altRowColor.replace(/[^a-zA-Z0-9#(),.\/\s%\-]/g, '');
+			if (safe) { altRowCss = `:root{--kw-alt-row-bg:${safe}}`; }
+		}
+	}
+
 	return template
+		.replaceAll('{{alternatingRowStyle}}', altRowCss)
 		.replaceAll('{{appCssBundleUri}}', appCssBundleUri)
 		.replaceAll('{{queryEditorJsUri}}', queryEditorJsUri)
 		.replaceAll('{{copilotLogoUri}}', copilotLogoUri)

@@ -1365,7 +1365,8 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 						pending.resolve(completions || []);
 					};
 
-					monaco.languages.registerInlineCompletionsProvider('kusto', {
+					// Factory for inline completion providers — registers one per language.
+					const __kustoCreateInlineCompletionProvider = (flavor: 'kusto' | 'sql', commentMarker: string) => ({
 						provideInlineCompletions: async function (model: any, position: any, context: any, _token: any) {
 							try {
 								const isManualTrigger = context && context.triggerKind === 1;
@@ -1378,7 +1379,7 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 								// Don't provide completions if we're in a comment
 								const lineContent = model.getLineContent(position.lineNumber);
 								const textBeforeOnLine = lineContent.substring(0, position.column - 1);
-								if (textBeforeOnLine.includes('//')) {
+								if (textBeforeOnLine.includes(commentMarker)) {
 									return { items: [] };
 								}
 
@@ -1438,7 +1439,8 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 										requestId,
 										boxId,
 										textBefore,
-										textAfter
+										textAfter,
+										flavor
 									});
 								} catch (err) {
 									delete copilotInlineCompletionRequests[requestId];
@@ -1478,6 +1480,9 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 							// No cleanup needed
 						}
 					});
+
+					monaco.languages.registerInlineCompletionsProvider('kusto', __kustoCreateInlineCompletionProvider('kusto', '//'));
+					monaco.languages.registerInlineCompletionsProvider('sql', __kustoCreateInlineCompletionProvider('sql', '--'));
 					
 					__kustoWorkerInitialized = true;
 					
@@ -3796,7 +3801,7 @@ function initQueryEditor(boxId: any) {
 						if ((e.target as HTMLElement).closest('.kusto-copilot-chat') || (e.target as HTMLElement).closest('kw-copilot-chat') || (e.target as HTMLElement).closest('[data-kusto-no-editor-focus="true"]')) {
 							return;
 						}
-						if ((e.target as HTMLElement).closest('.query-editor-toolbar')) {
+						if ((e.target as HTMLElement).closest('.query-editor-toolbar') || (e.target as HTMLElement).closest('kw-query-toolbar')) {
 							return;
 						}
 						if ((e.target as HTMLElement).closest('.query-editor-resizer')) {
@@ -3984,6 +3989,9 @@ function initQueryEditor(boxId: any) {
 				const startPageY = e.clientY + getScrollY();
 				const startHeight = w.getBoundingClientRect().height;
 
+				// monaco-editor-max-height: 750px. Manual drag cannot exceed it.
+				const maxEditorH = 750;
+
 				const onMove = (moveEvent: any) => {
 					try {
 						maybeAutoScrollWhileDragging(moveEvent.clientY);
@@ -3998,8 +4006,8 @@ function initQueryEditor(boxId: any) {
 							minHeightPx = 180;
 						}
 					} catch (e) { console.error('[kusto]', e); }
-					// Manual resizing should not have a max height cap.
-					const nextHeight = Math.max(minHeightPx, startHeight + delta);
+					// Cap at monaco-editor-max-height (content height + chrome).
+					const nextHeight = Math.max(minHeightPx, Math.min(maxEditorH, startHeight + delta));
 					(w as any).style.height = nextHeight + 'px';
 					try {
 						if (pState.manualQueryEditorHeightPxByBoxId && typeof pState.manualQueryEditorHeightPxByBoxId === 'object') {

@@ -7,6 +7,13 @@ import * as zlib from 'zlib';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient, QueryExecutionError } from './kustoClient';
+import { SqlConnectionManager } from './sqlConnectionManager';
+import { SqlQueryClient, SqlQueryCancelledError } from './sqlClient';
+import { SqlSchemaService } from './sqlEditorSchema';
+import { ensureSts } from './sql/stsDownloader';
+import { StsProcessManager, stsProcessManagerSingleton } from './sql/stsProcessManager';
+import { StsLanguageService } from './sql/stsLanguageService';
+import { clearSqlTokenOverride, setSqlServerAccountMapEntry, setSqlTokenOverride } from './sql/sqlAuthState';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { getQueryEditorHtml } from './queryEditorHtml';
 import { toolOrchestrator } from './extension';
@@ -21,6 +28,7 @@ import {
 	appendQueryMode as appendQueryModeFn,
 	buildCacheDirective as buildCacheDirectiveFn
 } from './queryEditorUtils';
+import { appendSqlQueryMode as appendSqlQueryModeFn } from './sqlEditorUtils';
 import {
 	OUTPUT_CHANNEL_NAME,
 	STORAGE_KEYS,
@@ -39,6 +47,41 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly connection: ConnectionService;
 	readonly schema: SchemaService;
 	private readonly runningQueriesByBoxId = new Map<string, { cancel: () => void; runSeq: number }>();
+
+	// SQL support — lazy-initialized.
+	private _sqlConnectionManager?: SqlConnectionManager;
+	private _sqlClient?: SqlQueryClient;
+	private _sqlSchemaService?: SqlSchemaService;
+	private _stsProcessManager?: StsProcessManager;
+	private _stsLanguageService?: StsLanguageService;
+	private _stsInitPromise?: Promise<StsLanguageService | null>;
+
+	get sqlConnectionManager(): SqlConnectionManager {
+		if (!this._sqlConnectionManager) {
+			this._sqlConnectionManager = new SqlConnectionManager(this.context);
+		}
+		return this._sqlConnectionManager;
+	}
+
+	get sqlClient(): SqlQueryClient {
+		if (!this._sqlClient) {
+			this._sqlClient = new SqlQueryClient(this.sqlConnectionManager, this.context);
+		}
+		return this._sqlClient;
+	}
+
+	get sqlSchemaService(): SqlSchemaService {
+		if (!this._sqlSchemaService) {
+			this._sqlSchemaService = new SqlSchemaService({
+				context: this.context,
+				sqlClient: this.sqlClient,
+				output: this.output,
+				postMessage: (msg) => this.postMessage(msg),
+			});
+		}
+		return this._sqlSchemaService;
+	}
+
 	private readonly pendingComparisonEnsureByRequestId = new Map<
 		string,
 		{
@@ -65,6 +108,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private readonly controlCommandSyntaxCache = new Map<string, { timestamp: number; syntax: string; withArgs: string[]; error?: string }>();
 	private readonly CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 	private readonly copilot: CopilotService;
+	private configSubscription?: vscode.Disposable;
 
 	getErrorMessage(error: unknown): string {
 		return getErrorMessageFn(error);
@@ -135,39 +179,46 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		// Connect the tool orchestrator to this webview instance
 		this.connectToolOrchestrator();
 
+		// Reconnect the orchestrator when this panel becomes visible again
+		// (e.g. user switches from another .kqlx tab back to this one).
+		this.panel.onDidChangeViewState(() => {
+			if (this.panel?.visible) {
+				this.connectToolOrchestrator();
+			}
+		});
+
 		this.panel.onDidDispose(() => {
 			this.cancelAllRunningQueries();
 			this.disconnectToolOrchestrator();
+			this.configSubscription?.dispose();
+			this.configSubscription = undefined;
 			this.panel = undefined;
 		});
+
+		this.sendAlternatingRowColorSetting();
+		this.watchAlternatingRowColorSetting();
 	}
+
+	// Token returned by the orchestrator's connect(), used to guard disconnect.
+	private toolOrchestratorToken: number | undefined;
 
 	private connectToolOrchestrator(): void {
 		if (!toolOrchestrator) return;
-		
-		// Set up the message poster
-		toolOrchestrator.setWebviewMessagePoster((message: unknown) => {
-			this.postMessage(message);
-		});
 
-		// Set up the state getter to retrieve current sections
-		toolOrchestrator.setStateGetter(async () => {
-			const sections = await this.requestSectionsFromWebview();
-			// Cast to the expected type - webview returns untyped objects
-			return sections as Array<{ id?: string; type: string; [key: string]: unknown }> | undefined;
-		});
-
-		// Set up the schema refresher (force-fetches from Kusto and updates cache)
-		toolOrchestrator.setSchemaRefresher(async (clusterUrl: string) => {
-			return this.schema.refreshSchemaForTools(clusterUrl);
-		});
+		this.toolOrchestratorToken = toolOrchestrator.connect(
+			(message: unknown) => this.postMessage(message),
+			async () => {
+				const sections = await this.requestSectionsFromWebview();
+				return sections as Array<{ id?: string; type: string; [key: string]: unknown }> | undefined;
+			},
+			async (clusterUrl: string) => this.schema.refreshSchemaForTools(clusterUrl)
+		);
 	}
 
 	private disconnectToolOrchestrator(): void {
-		if (!toolOrchestrator) return;
-		toolOrchestrator.setWebviewMessagePoster(undefined);
-		toolOrchestrator.setStateGetter(undefined);
-		toolOrchestrator.setSchemaRefresher(undefined);
+		if (!toolOrchestrator || this.toolOrchestratorToken === undefined) return;
+		toolOrchestrator.disconnectIfOwner(this.toolOrchestratorToken);
+		this.toolOrchestratorToken = undefined;
 	}
 
 	private toolStateResponseResolvers = new Map<string, (sections: unknown[]) => void>();
@@ -227,11 +278,23 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		// Connect the tool orchestrator to this webview instance
 		this.connectToolOrchestrator();
 
+		// Reconnect the orchestrator when this panel becomes visible again
+		this.panel.onDidChangeViewState(() => {
+			if (this.panel?.visible) {
+				this.connectToolOrchestrator();
+			}
+		});
+
 		this.panel.onDidDispose(() => {
 			this.cancelAllRunningQueries();
 			this.disconnectToolOrchestrator();
+			this.configSubscription?.dispose();
+			this.configSubscription = undefined;
 			this.panel = undefined;
 		});
+
+		this.sendAlternatingRowColorSetting();
+		this.watchAlternatingRowColorSetting();
 	}
 
 	public async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
@@ -308,6 +371,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'confirmRemoveFavorite':
 				await this.connection.confirmRemoveFavorite(message);
 				return;
+			case 'requestAddSqlFavorite':
+				await this.connection.promptAddSqlFavorite(message);
+				return;
+			case 'removeSqlFavorite':
+				await this.connection.removeSqlFavorite(message.connectionId, message.database);
+				return;
 			case 'addConnectionsForClusters':
 				await this.connection.addConnectionsForClusters(message.clusterUrls);
 				await this.sendConnectionsData();
@@ -363,7 +432,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.copilot.prepareCopilotWriteQuery(message);
 				return;
 			case 'startCopilotWriteQuery':
-				await this.copilot.startCopilotWriteQuery(message);
+				await this.copilot.startCopilotWriteQuery(message, this.sqlConnectionManager, this.sqlSchemaService, this.sqlClient);
 				return;
 			case 'cancelCopilotWriteQuery':
 				this.copilot.cancelCopilotWriteQuery(message.boxId);
@@ -397,6 +466,90 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'executeQuery':
 				await this.executeQueryFromWebview(message);
+				return;
+			case 'getSqlConnections':
+				await this.sendSqlConnectionsData();
+				return;
+			case 'getSqlDatabases':
+				await this.sendSqlDatabases(message.sqlConnectionId, message.boxId, false);
+				return;
+			case 'refreshSqlDatabases':
+				await this.sendSqlDatabases(message.sqlConnectionId, message.boxId, true);
+				return;
+			case 'saveSqlLastSelection':
+				{
+					const cid = String(message.sqlConnectionId || '').trim();
+					if (cid) {
+						await this.context.globalState.update('sql.lastConnectionId', cid);
+						if (message.database !== undefined) {
+							await this.context.globalState.update('sql.lastDatabase', message.database);
+						}
+					}
+				}
+				return;
+			case 'promptAddSqlConnection':
+				await this.promptAddSqlConnection(message.boxId);
+				return;
+			case 'addSqlConnection':
+				await this.addSqlConnectionFromWebview(message);
+				return;
+			case 'testSetSqlAuthOverride':
+				if (this.context.extensionMode === vscode.ExtensionMode.Production) {
+					return;
+				}
+				await setSqlServerAccountMapEntry(this.context, message.serverUrl, message.accountId);
+				await setSqlTokenOverride(this.context, message.accountId, message.token);
+				return;
+			case 'testClearSqlAuthOverride':
+				if (this.context.extensionMode === vscode.ExtensionMode.Production) {
+					return;
+				}
+				await clearSqlTokenOverride(this.context, message.accountId);
+				return;
+			case 'executeSqlQuery':
+				await this.executeSqlQueryFromWebview(message);
+				return;
+			case 'cancelSqlQuery':
+				this.cancelRunningQuery(message.boxId);
+				{
+					const bid = String(message.boxId || '').trim();
+					if (bid && !this.runningQueriesByBoxId.has(bid)) {
+						this.postMessage({ type: 'queryCancelled', boxId: bid });
+					}
+				}
+				return;
+			case 'prefetchSqlSchema':
+				await this.prefetchSqlSchema(message.sqlConnectionId, message.database, message.boxId, !!message.forceRefresh);
+				return;
+			case 'stsRequest':
+				await this.handleStsRequest(message.requestId, message.method, message.params);
+				return;
+			case 'stsDidOpen':
+				this.handleStsDidOpen(message.boxId, message.text);
+				return;
+			case 'stsDidChange':
+				this.handleStsDidChange(message.boxId, message.text);
+				return;
+			case 'stsDidClose':
+				this.handleStsDidClose(message.boxId);
+				return;
+			case 'stsConnect':
+				await this.handleStsConnect(message.boxId, message.sqlConnectionId, message.database);
+				return;
+			case 'prepareSqlCopilotWriteQuery':
+				await this.copilot.prepareCopilotWriteQuery(message as any);
+				return;
+			case 'startSqlCopilotWriteQuery':
+				await this.copilot.startSqlCopilotWriteQuery(message as any, this.sqlConnectionManager, this.sqlSchemaService, this.sqlClient);
+				return;
+			case 'cancelSqlCopilotWriteQuery':
+				this.copilot.cancelCopilotWriteQuery(message.boxId);
+				return;
+			case 'clearSqlCopilotConversation':
+				this.copilot.clearCopilotConversation(message.boxId);
+				return;
+			case 'removeFromSqlCopilotHistory':
+				this.copilot.removeFromCopilotHistory(message.boxId, message.entryId);
 				return;
 			case 'copyAdeLink':
 				await this.copyAdeLinkFromWebview(message);
@@ -433,6 +586,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'promptAddConnection':
 				await this.connection.promptAddConnection(message.boxId);
+				return;
+			case 'addConnection':
+				await this.connection.addConnectionFromWebview(message);
 				return;
 			case 'kqlLanguageRequest':
 				await this.handleKqlLanguageRequest(message);
@@ -1493,6 +1649,22 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		void this.panel?.webview.postMessage(message);
 	}
 
+	// ── Alternating row color setting ──────────────────────────────────────────
+
+	private sendAlternatingRowColorSetting(): void {
+		const val = vscode.workspace.getConfiguration('kustoWorkbench').get<string>('alternatingRowColor', 'theme');
+		this.postMessage({ type: 'settingsUpdate', alternatingRowColor: val });
+	}
+
+	private watchAlternatingRowColorSetting(): void {
+		this.configSubscription?.dispose();
+		this.configSubscription = vscode.workspace.onDidChangeConfiguration((e) => {
+			if (e.affectsConfiguration('kustoWorkbench.alternatingRowColor')) {
+				this.sendAlternatingRowColorSetting();
+			}
+		});
+	}
+
 	// ── Schema cache wrappers for CopilotServiceHost / ConnectionServiceHost ──
 
 	async getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined> {
@@ -1566,6 +1738,399 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		} finally {
 			if (boxId) {
 				// Only clear if this is still the active run for the box.
+				const current = this.runningQueriesByBoxId.get(boxId);
+				if (current?.cancel === cancel && current.runSeq === runSeq) {
+					this.runningQueriesByBoxId.delete(boxId);
+				}
+			}
+		}
+	}
+
+	// ── SQL connection helpers ───────────────────────────────────────────────
+
+	private async sendSqlConnectionsData(): Promise<void> {
+		const connections = this.sqlConnectionManager.getConnections();
+		const lastSqlConnectionId = this.context.globalState.get<string>('sql.lastConnectionId') || '';
+		const lastSqlDatabase = this.context.globalState.get<string>('sql.lastDatabase') || '';
+		const cachedSqlDatabases = this.context.globalState.get<Record<string, string[]>>('sql.cachedDatabases') || {};
+		this.postMessage({
+			type: 'sqlConnectionsData',
+			connections,
+			lastConnectionId: lastSqlConnectionId,
+			lastDatabase: lastSqlDatabase,
+			cachedDatabases: cachedSqlDatabases,
+			sqlFavorites: this.connection.getSqlFavorites(),
+		});
+	}
+
+	private async sendSqlDatabases(sqlConnectionId: string, boxId: string, forceRefresh: boolean): Promise<void> {
+		const connection = this.sqlConnectionManager.getConnection(sqlConnectionId);
+		if (!connection) {
+			this.postMessage({ type: 'sqlDatabasesError', boxId, sqlConnectionId, error: 'SQL connection not found.' });
+			return;
+		}
+
+		const serverKey = String(connection.serverUrl || '').trim().toLowerCase();
+		const cached = this.context.globalState.get<Record<string, string[]>>('sql.cachedDatabases') || {};
+		const cachedBefore = (cached[serverKey] ?? []).filter(Boolean);
+
+		if (!forceRefresh && cachedBefore.length > 0) {
+			this.postMessage({ type: 'sqlDatabasesData', databases: cachedBefore, boxId, sqlConnectionId });
+			return;
+		}
+
+		try {
+			const databases = await this.sqlClient.getDatabases(connection);
+			const sorted = databases.slice().sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+			if (serverKey) {
+				cached[serverKey] = sorted;
+				await this.context.globalState.update('sql.cachedDatabases', cached);
+			}
+			this.postMessage({ type: 'sqlDatabasesData', databases: sorted, boxId, sqlConnectionId });
+		} catch (error) {
+			const errorMessage = error instanceof Error ? error.message : String(error);
+			this.output.appendLine(`[${new Date().toISOString()}] Failed to load SQL databases`);
+			this.output.appendLine(`  server: ${connection.serverUrl}`);
+			this.output.appendLine(`  error: ${errorMessage}`);
+			this.output.appendLine('');
+
+			if (cachedBefore.length > 0) {
+				this.postMessage({ type: 'sqlDatabasesData', databases: cachedBefore, boxId, sqlConnectionId });
+				vscode.window.showWarningMessage(`Failed to refresh SQL database list. Using cached list.`);
+				return;
+			}
+
+			vscode.window.showErrorMessage(`Failed to load SQL database list: ${errorMessage}`);
+			this.postMessage({ type: 'sqlDatabasesError', boxId, sqlConnectionId, error: errorMessage });
+		}
+	}
+
+	private async prefetchSqlSchema(sqlConnectionId: string, database: string, boxId: string, forceRefresh: boolean): Promise<void> {
+		const connection = this.sqlConnectionManager.getConnection(sqlConnectionId);
+		if (!connection || !database) {
+			return;
+		}
+		try {
+			this.output.appendLine(`[sql-schema] request server=${connection.serverUrl} db=${database} forceRefresh=${forceRefresh}`);
+			const { schema, fromCache } = await this.sqlSchemaService.getSchema(connection, database, forceRefresh);
+			const tablesCount = schema.tables?.length ?? 0;
+			let columnsCount = 0;
+			if (schema.columnsByTable) {
+				for (const tbl of Object.keys(schema.columnsByTable)) {
+					columnsCount += Object.keys(schema.columnsByTable[tbl] || {}).length;
+				}
+			}
+			this.output.appendLine(`[sql-schema] loaded db=${database} tables=${tablesCount} columns=${columnsCount} fromCache=${fromCache}`);
+			this.postMessage({
+				type: 'sqlSchemaData',
+				boxId,
+				sqlConnectionId,
+				database,
+				serverUrl: connection.serverUrl,
+				schema,
+				schemaMeta: { fromCache, tablesCount, columnsCount },
+			});
+		} catch (error) {
+			const msg = error instanceof Error ? error.message : String(error);
+			this.output.appendLine(`[sql-schema] error db=${database}: ${msg}`);
+			this.postMessage({
+				type: 'sqlSchemaData',
+				boxId,
+				sqlConnectionId,
+				database,
+				serverUrl: connection.serverUrl,
+				schema: null,
+				schemaMeta: { error: true, errorMessage: msg },
+			});
+		}
+	}
+
+	// ── STS (SqlToolsService) integration ──────────────────────────────────
+
+	private async ensureStsLanguageService(): Promise<StsLanguageService | null> {
+		if (this._stsLanguageService) return this._stsLanguageService;
+		if (this._stsInitPromise) return this._stsInitPromise;
+
+		this._stsInitPromise = (async () => {
+			try {
+				// Reuse an existing process manager if another editor already started STS.
+				let processManager = stsProcessManagerSingleton.get();
+				if (!processManager) {
+					const globalStoragePath = this.context.globalStorageUri.fsPath;
+					const binaryPath = await ensureSts(globalStoragePath, this.output);
+					if (!binaryPath) {
+						this.output.appendLine('[sts] STS binary not available — SQL IntelliSense disabled');
+						return null;
+					}
+
+					const logPath = this.context.logUri.fsPath;
+					processManager = new StsProcessManager(binaryPath, logPath, this.output);
+					stsProcessManagerSingleton.set(processManager);
+					await processManager.start();
+				} else {
+					await processManager.ready;
+				}
+
+				this._stsProcessManager = processManager;
+				const languageService = new StsLanguageService(processManager, this.sqlConnectionManager, this.context, this.output);
+				this._stsLanguageService = languageService;
+
+				// Forward diagnostics to webview
+				languageService.onDiagnostics((event) => {
+					this.postMessage({ type: 'stsDiagnostics', boxId: event.boxId, markers: event.markers } as any);
+				});
+
+				return languageService;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : String(err);
+				this.output.appendLine(`[sts] Init failed: ${msg}`);
+				return null;
+			}
+		})();
+
+		return this._stsInitPromise;
+	}
+
+	private async handleStsRequest(requestId: string, method: string, params: { boxId: string; line: number; column: number }): Promise<void> {
+		this.output.appendLine(`[sts-diag] handleStsRequest method=${method} boxId=${params.boxId} L${params.line}:${params.column}`);
+		const svc = await this.ensureStsLanguageService();
+		if (!svc) {
+			this.output.appendLine(`[sts-diag] handleStsRequest → svc=null, returning null`);
+			this.postMessage({ type: 'stsResponse', requestId, result: null } as any);
+			return;
+		}
+		try {
+			let result: unknown = null;
+			switch (method) {
+				case 'textDocument/completion':
+					result = await svc.getCompletions(params.boxId, params.line, params.column);
+					break;
+				case 'textDocument/hover':
+					result = await svc.getHover(params.boxId, params.line, params.column);
+					break;
+				case 'textDocument/signatureHelp':
+					result = await svc.getSignatureHelp(params.boxId, params.line, params.column);
+					break;
+				default:
+					this.output.appendLine(`[sts] Unknown method: ${method}`);
+			}
+			this.postMessage({ type: 'stsResponse', requestId, result } as any);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.output.appendLine(`[sts] Request error (${method}): ${msg}`);
+			this.postMessage({ type: 'stsResponse', requestId, result: null } as any);
+		}
+	}
+
+	private handleStsDidOpen(boxId: string, text: string): void {
+		this.output.appendLine(`[sts-diag] handleStsDidOpen boxId=${boxId} textLen=${text.length}`);
+		this.ensureStsLanguageService().then(svc => {
+			if (svc) svc.openDocument(boxId, text);
+		}).catch(() => { /* ignore */ });
+	}
+
+	private handleStsDidChange(boxId: string, text: string): void {
+		if (this._stsLanguageService) {
+			this._stsLanguageService.changeDocument(boxId, text);
+		}
+	}
+
+	private handleStsDidClose(boxId: string): void {
+		if (this._stsLanguageService) {
+			this._stsLanguageService.closeDocument(boxId);
+		}
+	}
+
+	private async handleStsConnect(boxId: string, sqlConnectionId: string, database: string): Promise<void> {
+		this.output.appendLine(`[sts-diag] handleStsConnect boxId=${boxId} connId=${sqlConnectionId} db=${database}`);
+		const svc = await this.ensureStsLanguageService();
+		if (!svc) {
+			this.output.appendLine(`[sts-diag] handleStsConnect → svc=null`);
+			return;
+		}
+		const connection = this.sqlConnectionManager.getConnection(sqlConnectionId);
+		if (!connection) {
+			this.output.appendLine(`[sts-diag] handleStsConnect → connection not found: ${sqlConnectionId}`);
+			return;
+		}
+		this.output.appendLine(`[sts-diag] handleStsConnect → connecting to ${connection.serverUrl}/${database} auth=${connection.authType}`);
+		try {
+			await svc.connectDocument(boxId, connection, database);
+			this.output.appendLine(`[sts-diag] handleStsConnect → SUCCESS boxId=${boxId}`);
+			this.postMessage({ type: 'stsConnectionState', boxId, state: 'ready' } as any);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : String(err);
+			this.output.appendLine(`[sts-diag] handleStsConnect → FAILED boxId=${boxId}: ${msg}`);
+			this.postMessage({ type: 'stsConnectionState', boxId, state: 'error', error: msg } as any);
+		}
+	}
+
+	/** Shut down the STS process. Called from extension deactivate(). */
+	async stopSts(): Promise<void> {
+		if (this._stsProcessManager) {
+			await this._stsProcessManager.stop();
+			this._stsProcessManager = undefined;
+			this._stsLanguageService = undefined;
+			this._stsInitPromise = undefined;
+		}
+	}
+
+	private async promptAddSqlConnection(boxId?: string): Promise<void> {
+		const serverUrl = await vscode.window.showInputBox({
+			prompt: 'SQL Server address',
+			placeHolder: 'myserver.database.windows.net',
+			ignoreFocusOut: true,
+		});
+		if (!serverUrl) {
+			return;
+		}
+
+		const authType = await vscode.window.showQuickPick(
+			[
+				{ label: 'Azure AD (default)', id: 'aad' },
+				{ label: 'SQL Login (username/password)', id: 'sql-login' },
+			],
+			{ placeHolder: 'Authentication type', ignoreFocusOut: true },
+		);
+		if (!authType) {
+			return;
+		}
+
+		let username: string | undefined;
+		let password: string | undefined;
+		if (authType.id === 'sql-login') {
+			username = await vscode.window.showInputBox({
+				prompt: 'Username',
+				placeHolder: 'sa',
+				ignoreFocusOut: true,
+			});
+			if (!username) {
+				return;
+			}
+			password = await vscode.window.showInputBox({
+				prompt: 'Password',
+				password: true,
+				ignoreFocusOut: true,
+			});
+			if (password === undefined) {
+				return;
+			}
+		}
+
+		const name = (await vscode.window.showInputBox({
+			prompt: 'Connection name (optional)',
+			placeHolder: serverUrl.trim(),
+			ignoreFocusOut: true,
+		})) || '';
+
+		const newConn = await this.sqlConnectionManager.addConnection(
+			{
+				name: name.trim() || serverUrl.trim(),
+				dialect: 'mssql',
+				serverUrl: serverUrl.trim(),
+				authType: authType.id,
+				username,
+			},
+			password,
+		);
+
+		await this.context.globalState.update('sql.lastConnectionId', newConn.id);
+
+		this.postMessage({
+			type: 'sqlConnectionAdded',
+			boxId,
+			connectionId: newConn.id,
+			connections: this.sqlConnectionManager.getConnections(),
+		});
+	}
+
+	private async addSqlConnectionFromWebview(
+		message: Extract<IncomingWebviewMessage, { type: 'addSqlConnection' }>
+	): Promise<void> {
+		const serverUrl = String(message.serverUrl || '').trim();
+		if (!serverUrl) return;
+		const name = String(message.name || '').trim() || serverUrl;
+
+		const newConn = await this.sqlConnectionManager.addConnection(
+			{
+				name,
+				dialect: message.dialect || 'mssql',
+				serverUrl,
+				authType: message.authType || 'aad',
+				username: message.username,
+				port: message.port,
+				database: message.database,
+			},
+			message.password,
+		);
+
+		await this.context.globalState.update('sql.lastConnectionId', newConn.id);
+
+		this.postMessage({
+			type: 'sqlConnectionAdded',
+			boxId: message.boxId,
+			connectionId: newConn.id,
+			connections: this.sqlConnectionManager.getConnections(),
+		});
+	}
+
+	private async executeSqlQueryFromWebview(
+		message: Extract<IncomingWebviewMessage, { type: 'executeSqlQuery' }>
+	): Promise<void> {
+		const boxId = String(message.boxId || '').trim();
+		if (boxId) {
+			this.cancelRunningQuery(boxId);
+		}
+
+		const connection = this.sqlConnectionManager.getConnection(message.sqlConnectionId);
+		if (!connection) {
+			this.postMessage({ type: 'queryError', error: 'SQL connection not found. Please configure a connection.', boxId });
+			return;
+		}
+
+		if (!message.database) {
+			this.postMessage({ type: 'queryError', error: 'Please select a database.', boxId });
+			return;
+		}
+
+		const cancelClientKey = boxId ? `${boxId}::${connection.id}` : connection.id;
+		const queryWithMode = appendSqlQueryModeFn(message.query, message.queryMode);
+		const { promise, cancel } = this.sqlClient.executeQueryCancelable(connection, message.database, queryWithMode, cancelClientKey);
+		const runSeq = ++this.queryRunSeq;
+		const isStillActiveRun = () => {
+			if (!boxId) { return true; }
+			const current = this.runningQueriesByBoxId.get(boxId);
+			return !!current && current.cancel === cancel && current.runSeq === runSeq;
+		};
+		if (boxId) {
+			this.runningQueriesByBoxId.set(boxId, { cancel, runSeq });
+		}
+		try {
+			const result = await promise;
+			if (isStillActiveRun()) {
+				this.postMessage({ type: 'queryResult', result, boxId });
+			}
+		} catch (error) {
+			if ((error as any)?.isCancelled === true || error instanceof SqlQueryCancelledError) {
+				if (isStillActiveRun()) {
+					this.postMessage({ type: 'queryCancelled', boxId });
+				}
+				return;
+			}
+			if (isStillActiveRun()) {
+				const errorMessage = error instanceof Error ? error.message : String(error);
+				this.output.appendLine(`[${new Date().toISOString()}] SQL query execution failed`);
+				this.output.appendLine(`  server: ${connection.serverUrl}`);
+				this.output.appendLine(`  database: ${message.database}`);
+				this.output.appendLine(`  boxId: ${boxId}`);
+				this.output.appendLine(`  error: ${errorMessage}`);
+				this.output.appendLine('');
+				// Error is displayed inline in the SQL section — no notification popup
+				// (avoids stealing keyboard focus from the Monaco editor).
+				this.postMessage({ type: 'queryError', error: errorMessage, boxId });
+			}
+		} finally {
+			if (boxId) {
 				const current = this.runningQueriesByBoxId.get(boxId);
 				if (current?.cancel === cancel && current.runSeq === runSeq) {
 					this.runningQueriesByBoxId.delete(boxId);

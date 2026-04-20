@@ -1,5 +1,8 @@
 import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
+import type { SectionElement } from '../shared/dom-helpers';
 import { styles } from './kw-transformation-section.styles.js';
+import { sectionGlowStyles } from '../shared/section-glow.styles.js';
+import { sashSheet } from '../shared/sash-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
@@ -197,7 +200,7 @@ export function __kustoRenderTransformation(boxId: unknown): void {
 // ─── Component ────────────────────────────────────────────────────────────────
 
 @customElement('kw-transformation-section')
-export class KwTransformationSection extends LitElement {
+export class KwTransformationSection extends LitElement implements SectionElement {
 	public static addTransformationBox(options: Record<string, unknown> = {}): string {
 		const id = (typeof options.id === 'string' && options.id) ? String(options.id) : ('transformation_' + Date.now());
 		transformationBoxes.push(id);
@@ -363,6 +366,7 @@ export class KwTransformationSection extends LitElement {
 		// global results map.
 		this._computeTransformationImpl();
 		this._syncResultsToGlobal();
+		this._autoFitAfterLayout();
 	}
 
 	override updated(changed: PropertyValues): void {
@@ -390,7 +394,7 @@ export class KwTransformationSection extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = styles;
+	static override styles = [sashSheet, styles, sectionGlowStyles];
 
 	// ── Render ─────────────────────────────────────────────────────────────────
 
@@ -401,6 +405,7 @@ export class KwTransformationSection extends LitElement {
 					.name=${this._name}
 					.expanded=${this._expanded}
 					box-id=${this.boxId}
+					section-type="transformation"
 					name-placeholder="Transformation name (optional)"
 					@name-change=${this._onShellNameChange}
 					@toggle-visibility=${this._toggleExpanded}
@@ -421,10 +426,10 @@ export class KwTransformationSection extends LitElement {
 						style="height:${this._wrapperHeight}px">
 						${this._mode === 'edit' ? this._renderControls() : nothing}
 						${this._renderResults()}
-						<div class="resizer"
+						${this._resultColumns.length ? html`<div class="resizer"
 							title="Drag to resize"
 							@mousedown=${this._onResizerMouseDown}
-							@dblclick=${this._onFitToContents}></div>
+							@dblclick=${this._onFitToContents}></div>` : nothing}
 					</div>
 				</kw-section-shell>
 			</div>
@@ -983,13 +988,18 @@ export class KwTransformationSection extends LitElement {
 
 	/** Schedule auto-fit after Lit render + browser layout pass. */
 	private _autoFitAfterLayout(): void {
+		const fit = () => {
+			this._wrapperHeight = this._computeFitHeight();
+			this._schedulePersist();
+		};
 		this.updateComplete.then(() => {
-			// First rAF: Lit has updated the DOM but browser hasn't laid out yet
 			requestAnimationFrame(() => {
-				// Second rAF: browser has completed layout, measurements are accurate
 				requestAnimationFrame(() => {
-					this._wrapperHeight = this._computeFitHeight();
-					this._schedulePersist();
+					fit();
+					// Retry: kw-data-table's virtualizer initializes asynchronously
+					// (rAF + ResizeObserver); a delayed second pass ensures accurate
+					// measurements once the virtualizer has settled.
+					setTimeout(fit, 150);
 				});
 			});
 		});
@@ -1035,10 +1045,15 @@ export class KwTransformationSection extends LitElement {
 
 		// Use kw-data-table.getContentHeight() which accounts for all internal
 		// chrome (header bar, thead, search bar, row-jump, col-jump, rows).
+		// +10 accounts for .results-area padding-bottom that creates the gap
+		// between the table and the section resizer (matches Kusto/SQL sections).
 		const dataTable = this.shadowRoot?.querySelector('kw-data-table') as any;
 		if (dataTable && typeof dataTable.getContentHeight === 'function') {
 			const contentH = dataTable.getContentHeight();
-			nonTableH += Math.max(60, contentH);
+			nonTableH += Math.max(60, contentH) + 10;
+		} else if (this._resultError) {
+			const errorEl = wrapper?.querySelector('.error-message') as HTMLElement | null;
+			nonTableH += errorEl ? Math.max(30, Math.ceil(errorEl.scrollHeight)) : 44;
 		} else {
 			const resultsArea = wrapper?.querySelector('.results-area') as HTMLElement | null;
 			if (resultsArea) {
@@ -1751,6 +1766,11 @@ export class KwTransformationSection extends LitElement {
 		// Sync results to the global results-state map so other sections
 		// (charts, other transformations) can use this transformation as a data source.
 		this._syncResultsToGlobal();
+
+		// Auto-fit after every recomputation — each config change can alter
+		// the output shape (row count, columns, error state).  Mirrors how
+		// Kusto/SQL sections auto-fit after every query execution.
+		this._autoFitAfterLayout();
 	}
 
 	private _syncResultsToGlobal(): void {
@@ -2417,6 +2437,11 @@ export class KwTransformationSection extends LitElement {
 	/** Get section name. */
 	public getName(): string {
 		return this._name;
+	}
+
+	/** Set section name programmatically (used by agent tools). */
+	public setName(name: string): void {
+		this._name = name;
 	}
 
 	/** Public refresh — called by cross-section dependency refresh loops. */

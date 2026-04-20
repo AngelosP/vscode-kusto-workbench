@@ -36,10 +36,17 @@ const CODICON_CHARS: Record<string, number> = {
 	'code': 0xeac4,
 	'comment': 0xea6b,
 	'arrow-up': 0xeaa1,
+	'arrow-left': 0xea9b,
 	'debug-stop': 0xead7,
+	'copy': 0xebcc,
+	'database': 0xeace,
 	'discard': 0xeae2,
-	'settings-gear': 0xeb51,
+	'edit': 0xea73,
 	'git-compare': 0xeafd,
+	'link': 0xeb15,
+	'refresh': 0xeb37,
+	'save': 0xeb4b,
+	'settings-gear': 0xeb51,
 };
 
 function buildCss(): string {

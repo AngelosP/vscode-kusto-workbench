@@ -95,7 +95,7 @@ function scheduleDismiss() {
 }
 
 function getAllowedKinds(): string[] {
-	const defaults = ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
+	const defaults = ['query', 'chart', 'transformation', 'python', 'url', 'markdown'];
 	try {
 		const allowed = Array.isArray(pState.allowedSectionKinds)
 			? pState.allowedSectionKinds.map((v: any) => String(v))
@@ -106,13 +106,14 @@ function getAllowedKinds(): string[] {
 
 function kindLabel(kind: string): string {
 	switch (kind) {
-		case 'query': return 'Query';
+		case 'query': return 'Kusto';
 		case 'chart': return 'Chart';
 		case 'transformation': return 'Transformation';
 		case 'markdown': return 'Markdown';
 		case 'python': return 'Python';
 		case 'url': return 'URL';
 		case 'html': return 'HTML';
+		case 'sql': return 'SQL';
 		default: return kind.charAt(0).toUpperCase() + kind.slice(1);
 	}
 }
@@ -239,12 +240,29 @@ function activateResizer(boxId: string): void {
 		resizer.classList.add('is-dragging');
 		activeResizer = resizer;
 	}
+
+	// Adopt the section's glow accent on the "+" button so it matches the sash.
+	if (plusEl) {
+		const sectionEl = document.getElementById(boxId);
+		const status = sectionEl?.getAttribute('has-changes') || '';
+		if (status) {
+			const accent = getComputedStyle(sectionEl!).getPropertyValue('--kw-sash-accent').trim();
+			if (accent) {
+				plusEl.style.background = accent;
+			}
+		} else {
+			plusEl.style.background = '';
+		}
+	}
 }
 
 function deactivateResizer(): void {
 	if (activeResizer) {
 		activeResizer.classList.remove('is-dragging');
 		activeResizer = null;
+	}
+	if (plusEl) {
+		plusEl.style.background = '';
 	}
 }
 
@@ -392,14 +410,30 @@ try {
 		dismiss();
 	});
 
+	// Dismiss when the mouse leaves the webview or the window loses focus —
+	// mouseleave on the plus/picker only fires when moving to another element
+	// inside the page, not when the cursor exits the window entirely.
+	document.documentElement.addEventListener('mouseleave', () => {
+		if (isPlusVisible || isExpanded) dismiss();
+	});
+	window.addEventListener('blur', () => {
+		if (isPlusVisible || isExpanded) dismiss();
+	});
+
 	// Detect resize-drag start on any resizer element.
+	// Check composedPath()[0] to pierce shadow DOM retargeting — shadow-DOM
+	// resizers use class `.resizer` / `.resizer-v` which are invisible on the
+	// retargeted host element.
 	document.addEventListener('mousedown', (e: MouseEvent) => {
 		const target = e.target as HTMLElement | null;
 		if (!target) return;
-		if (target.classList?.contains('query-editor-resizer') ||
-			target.classList?.contains('chart-bottom-resizer') ||
-			target.classList?.contains('input-resizer') ||
-			target.closest?.('.query-editor-resizer')) {
+		const origin = (e.composedPath?.()[0] ?? target) as HTMLElement;
+		if (origin.classList?.contains('resizer') ||
+			origin.classList?.contains('resizer-v') ||
+			origin.classList?.contains('query-editor-resizer') ||
+			origin.classList?.contains('chart-bottom-resizer') ||
+			origin.classList?.contains('input-resizer') ||
+			origin.closest?.('.query-editor-resizer')) {
 			onResizeStart();
 			const clear = () => { onResizeEnd(); document.removeEventListener('mouseup', clear, true); };
 			document.addEventListener('mouseup', clear, true);

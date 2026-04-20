@@ -139,29 +139,10 @@ export class QueryExecutionController implements ReactiveController {
 		try { hasTable = !!(resultsDiv && resultsDiv.querySelector && (resultsDiv.querySelector('.table-container') || resultsDiv.querySelector('kw-data-table'))); } catch (e) { console.error('[kusto]', e); }
 
 		if (resultsDiv && resultsDiv.querySelector && resultsDiv.querySelector('kw-data-table')) {
-			wrapper.style.display = 'flex';
-			const resizer = document.getElementById(boxId + '_results_resizer') as any;
+			const dt = resultsDiv.querySelector('kw-data-table') as any;
 			let vis = true;
 			try { vis = !(pState.resultsVisibleByBoxId && pState.resultsVisibleByBoxId[boxId] === false); } catch (e) { console.error('[kusto]', e); }
-			if (!vis) {
-				const curH = wrapper.style.height;
-				if (curH && curH !== 'auto' && curH !== '40px') {
-					try { wrapper.dataset.kustoPreviousHeight = curH; } catch (e) { console.error('[kusto]', e); }
-				}
-				wrapper.style.height = '40px';
-				wrapper.style.overflow = 'hidden';
-				if (resizer) resizer.style.display = 'none';
-			} else {
-				if (resizer) resizer.style.display = '';
-				const prev = wrapper.dataset?.kustoPreviousHeight;
-				if (prev) {
-					wrapper.style.height = prev;
-					wrapper.style.overflow = '';
-					try { delete wrapper.dataset.kustoPreviousHeight; } catch (e) { console.error('[kusto]', e); }
-				} else if (!wrapper.style.height || wrapper.style.height === 'auto') {
-					wrapper.style.height = '300px';
-				}
-			}
+			if (dt && typeof dt.setBodyVisible === 'function') dt.setBodyVisible(vis);
 			return;
 		}
 
@@ -785,10 +766,12 @@ export function acceptOptimizations(comparisonBoxId: any) {
 	try {
 		const meta = (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) ? optimizationMetadataByBoxId[comparisonBoxId] : null;
 		const sourceBoxId = meta && meta.sourceBoxId ? meta.sourceBoxId : '';
-		const optimizedQuery = meta && typeof meta.optimizedQuery === 'string' ? meta.optimizedQuery : '';
-		if (!sourceBoxId || !optimizedQuery) return;
+		const currentQuery = queryEditors[comparisonBoxId] && typeof queryEditors[comparisonBoxId].getValue === 'function'
+			? queryEditors[comparisonBoxId].getValue()
+			: (meta && typeof meta.optimizedQuery === 'string' ? meta.optimizedQuery : '');
+		if (!sourceBoxId || !currentQuery) return;
 		if (queryEditors[sourceBoxId] && typeof queryEditors[sourceBoxId].setValue === 'function') {
-			queryEditors[sourceBoxId].setValue(optimizedQuery);
+			queryEditors[sourceBoxId].setValue(currentQuery);
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		}
 		try { __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, false); } catch (e) { console.error('[kusto]', e); }

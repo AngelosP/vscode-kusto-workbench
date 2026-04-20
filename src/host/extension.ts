@@ -4,6 +4,8 @@ import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
 import { CachedValuesViewerV2 } from './cachedValuesViewer';
 import { ConnectionManagerViewerV2 } from './connectionManagerViewer';
+import { SqlConnectionManager } from './sqlConnectionManager';
+import { SqlQueryClient } from './sqlClient';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
 import { KqlxEditorProvider } from './kqlxEditorProvider';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
@@ -14,6 +16,8 @@ import { registerKustoWorkbenchTools, KustoWorkbenchToolOrchestrator } from './k
 import { registerRemoteFileOpener } from './remoteFileOpener';
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { exportSkillCommand, checkAndUpdateSkillFiles } from './skillExport';
+
+import { stsProcessManagerSingleton } from './sql/stsProcessManager';
 
 // Export the tool orchestrator instance so other modules can access it
 export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
@@ -87,6 +91,18 @@ export function activate(context: vscode.ExtensionContext) {
 	// Initialize connection manager
 	const connectionManager = new ConnectionManager(context);
 	const kqlLanguageHost = new KqlLanguageServiceHost(connectionManager, context);
+
+	// Shared SQL lazy-init (used by both editor provider and connection manager viewer)
+	let _sqlConnectionManager: SqlConnectionManager | undefined;
+	let _sqlClient: SqlQueryClient | undefined;
+	const getSqlConnectionManager = (): SqlConnectionManager => {
+		if (!_sqlConnectionManager) { _sqlConnectionManager = new SqlConnectionManager(context); }
+		return _sqlConnectionManager;
+	};
+	const getSqlClient = (): SqlQueryClient => {
+		if (!_sqlClient) { _sqlClient = new SqlQueryClient(getSqlConnectionManager(), context); }
+		return _sqlClient;
+	};
 
 	// Register Kusto Workbench tools for VS Code Copilot Chat integration
 	toolOrchestrator = registerKustoWorkbenchTools(context, connectionManager);
@@ -606,7 +622,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.manageConnections', () => {
-			ConnectionManagerViewerV2.open(context, context.extensionUri, connectionManager);
+			ConnectionManagerViewerV2.open(context, context.extensionUri, connectionManager, { getSqlConnectionManager, getSqlClient });
 		})
 	);
 
@@ -668,7 +684,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.seeCachedValues', async () => {
-			CachedValuesViewerV2.open(context, context.extensionUri, connectionManager);
+			CachedValuesViewerV2.open(context, context.extensionUri, connectionManager, { getSqlConnectionManager, getSqlClient });
 		})
 	);
 
@@ -772,4 +788,9 @@ export function activate(context: vscode.ExtensionContext) {
 }
 
 // This method is called when your extension is deactivated
-export function deactivate() {}
+export async function deactivate() {
+	const pm = stsProcessManagerSingleton.get();
+	if (pm) {
+		await pm.stop();
+	}
+}

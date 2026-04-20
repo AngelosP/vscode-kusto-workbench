@@ -124,7 +124,7 @@ export function __kustoAttachAutoResizeToContent(editor: any, containerEl: any) 
 					}
 				} catch (e) { console.error('[kusto]', e); }
 
-				const next = Math.max(120, Math.ceil(chrome + extras + contentHeight + FIT_SLACK_PX));
+				const next = Math.max(120, Math.min(750, Math.ceil(chrome + extras + contentHeight + FIT_SLACK_PX)));
 
 				// Only grow — never shrink below the current wrapper height.
 				// This prevents a jarring collapse when the user types a short query

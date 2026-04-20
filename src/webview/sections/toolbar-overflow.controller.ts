@@ -196,6 +196,7 @@ export class ToolbarOverflowController implements ReactiveController {
 	private _getToolbarElement(): HTMLElement | null {
 		const boxId = String(this.host.boxId || '');
 		if (!boxId) return null;
-		return this.host.querySelector('#' + CSS.escape(boxId + '_toolbar')) as HTMLElement | null;
+		const root = (this.host as any).renderRoot ?? this.host;
+		return root.querySelector('#' + CSS.escape(boxId + '_toolbar')) as HTMLElement | null;
 	}
 }

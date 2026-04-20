@@ -4,7 +4,7 @@ name: Kusto Workbench
 
 description: Analyze the usage of productX for the past 30 days and find outliers.
 
-tools: ['vscode', 'execute', 'read', 'memory', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureHtmlSection', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections', 'manageDevelopmentNotes', 'agent-first-wiki']
+tools: ['vscode', 'execute', 'read', 'memory', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureHtmlSection', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections', 'manageDevelopmentNotes', 'agent-first-wiki', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
 
 model: Claude Opus 4.6
 
@@ -233,9 +233,10 @@ Use HTML sections to build interactive dashboards from query results. The workfl
 * **Connection first:** Configure the query section with `#configureKustoQuerySection` before `#askKustoCopilot`
 * **Sequencing:** Charts/transformations need their data source to have results first
 * **Section IDs:** Use `#listSections` when you need an ID
-* **Be proactive:** Execute, visualize, document — don't ask permission
-* **Avoid LLM tropes:** Do not use em dashes, en dashes, or hyphens. Use → or : or ; or just word it differently
+* **Be proactive:** Execute, visualize, document; don't ask permission.
+* **Build up your tribal knowledge and memory:** Use every tool to your disposal, like memory, wikis, development notes and everything else you can reasonably leverage to remember what you have learned in the past. The goal is to eliminate making the same mistakes, and to eliminate having the user explain the same thing twice ... instead you are their friend and colleague who gets smarter every day by accumulating knowledge and memories!
 * **Leverage the wiki**: If you have access to a wiki, make good use of it when appropriate. Query it for relevant content, downvoted outdated information, submit new learnings and development notes, etc. You can use it to help others, but also to help your future self, so keep that in mind.
 * **Use fully qualified names when joining data across databases or clusters:** The askKustoCopilot tool cannot go across databases or clusters on its own, so if you expect it to join data across databases or clusters you better give it the fully qualified names it needs.
 * **Files contain development notes:** Each file contains development notes inside of them, which we are maintaining as we work on them. Their purpose is to remind us important implementation details, gotchas, and other input that has stired to the right answer. Use the tool manageDevelopmentNotes to interact with them. Also upload them to the wiki if you have acces to one.
 * **You never update an open file from outside the editor:** When a file is open and we are working on it, we never run powershell or other commands that edit the file outside the editor, we use our tools instead. That's because when the file is reloaded from disk all the Copilot Chat history is lost from each section, so we only do it if we absolutely must, never for convinience.
+* **Avoid LLM tropes:** Do not use em dashes, en dashes, or hyphens. Use → or : or ; or just word it differently.

@@ -29,6 +29,7 @@
 
 			/* Shared delay before sash / insert-zone reveal animations */
 			--kw-sash-reveal-delay: 0.5s;
+			--kw-sash-hover-size: 4px;
 		}
 
 		/* Plain .md files: maximize usable width and simplify section chrome. */
@@ -649,7 +650,11 @@
 		.query-box.is-collapsed .optimize-config,
 		.query-box.is-collapsed .results-wrapper,
 		.query-box.is-collapsed .results-wrapper + .query-editor-resizer,
-		.query-box.is-collapsed .comparison-summary-banner {
+		.query-box.is-collapsed .comparison-summary-banner,
+		/* SQL section collapse (light DOM elements) */
+		.query-box.is-collapsed kw-sql-toolbar,
+		.query-box.is-collapsed .sql-copilot-split,
+		.query-box.is-collapsed .query-editor-wrapper + .query-editor-resizer {
 			display: none !important;
 		}
 
@@ -988,13 +993,71 @@
 
 		.query-box {
 			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
-			border-radius: 0;
+			border-radius: 4px;
 			padding: 12px;
 			margin-bottom: 16px;
 			background: var(--vscode-editor-background);
 			/* Uniform lift on all edges. */
 			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
+			transition: border-color 0.4s ease;
 		}
+		/* Remove bottom padding when results-wrapper is present — it bleeds
+		   left/right to the section edges and sits flush at the bottom. */
+		.query-box:has(.results-wrapper) {
+			padding-bottom: 0;
+		}
+
+		/* ── Unsaved-changes glow for query-box sections ────────────────── */
+
+		/* Default (unfocused): static minimum glow, no animation */
+		.query-box[has-changes="modified"] {
+			border-color: rgba(27, 129, 168, 0.3);
+			box-shadow: 0 2px 10px var(--vscode-widget-shadow), 0 0 12px 3px rgba(27, 129, 168, 0.12);
+		}
+		.query-box[has-changes="new"] {
+			border-color: rgba(46, 160, 67, 0.3);
+			box-shadow: 0 2px 10px var(--vscode-widget-shadow), 0 0 12px 3px rgba(46, 160, 67, 0.12);
+		}
+
+		/* Active (focused): pulsating glow.
+		   Gated on the `.is-active-section` class (managed by active-section-tracker.ts)
+		   rather than `:focus-within` so brief focus drops while the user is interacting
+		   inside the section don't cancel and restart the animation. */
+		.query-box[has-changes="modified"].is-active-section {
+			animation: qbox-glow-modified 3s ease-in-out infinite alternate;
+		}
+		.query-box[has-changes="new"].is-active-section {
+			animation: qbox-glow-new 3s ease-in-out infinite alternate;
+		}
+
+		@keyframes qbox-glow-modified {
+			from { border-color: rgba(27, 129, 168, 0.3);  box-shadow: 0 2px 10px var(--vscode-widget-shadow), 0 0 12px 3px rgba(27, 129, 168, 0.12); }
+			to   { border-color: rgba(27, 129, 168, 0.65); box-shadow: 0 2px 10px var(--vscode-widget-shadow), 0 0 12px 3px rgba(27, 129, 168, 0.35); }
+		}
+		@keyframes qbox-glow-new {
+			from { border-color: rgba(46, 160, 67, 0.3);  box-shadow: 0 2px 10px var(--vscode-widget-shadow), 0 0 12px 3px rgba(46, 160, 67, 0.12); }
+			to   { border-color: rgba(46, 160, 67, 0.65); box-shadow: 0 2px 10px var(--vscode-widget-shadow), 0 0 12px 3px rgba(46, 160, 67, 0.35); }
+		}
+
+		@media (prefers-reduced-motion: reduce) {
+			.query-box[has-changes="modified"].is-active-section {
+				animation: none;
+				border-color: rgba(27, 129, 168, 0.55);
+				box-shadow: 0 2px 10px var(--vscode-widget-shadow), 0 0 12px 3px rgba(27, 129, 168, 0.35);
+			}
+			.query-box[has-changes="new"].is-active-section {
+				animation: none;
+				border-color: rgba(46, 160, 67, 0.55);
+				box-shadow: 0 2px 10px var(--vscode-widget-shadow), 0 0 12px 3px rgba(46, 160, 67, 0.35);
+			}
+		}
+
+		@media (forced-colors: active) {
+			.query-box[has-changes="modified"] { animation: none; box-shadow: none; outline: 2px solid Highlight; outline-offset: 1px; }
+			.query-box[has-changes="new"] { animation: none; box-shadow: none; outline: 2px solid Highlight; outline-offset: 1px; }
+		}
+
+
 
 		/* Lit section custom elements: override the global * { margin: 0 } reset
 		   so :host margin-bottom takes effect in light DOM. */
@@ -1004,7 +1067,8 @@
 		kw-chart-section,
 		kw-transformation-section,
 		kw-html-section,
-		kw-query-section {
+		kw-query-section,
+		kw-sql-section {
 			margin-bottom: 16px;
 		}
 
@@ -1797,21 +1861,14 @@
 		}
 
 		.query-editor-toolbar-sep {
-			width: auto;
-			height: auto;
-			background: transparent;
-			margin: 0 2px;
-			opacity: 0.9;
-			color: var(--vscode-descriptionForeground);
+			width: 1px;
+			height: 20px;
+			background: var(--vscode-descriptionForeground, rgba(128,128,128,0.4));
+			opacity: 0.5;
+			margin: 0 4px;
 			user-select: none;
 			flex-shrink: 0;
-		}
-
-		.query-editor-toolbar-sep::before {
-			content: '|';
-			display: inline-block;
-			line-height: 18px;
-			padding: 0 2px;
+			border-radius: 0.5px;
 		}
 
 		.query-editor-toolbar-btn {
@@ -1913,19 +1970,19 @@
 		/* Copilot logo in the query editor toolbar: ensure good contrast in dark themes.
 		   - If using the image logo, invert it like the optimize button.
 		   - If using the inline SVG fallback, slightly thicken strokes so it doesn't look washed out. */
-		.query-editor-toolbar-btn.kusto-copilot-chat-toggle img.copilot-logo {
+		.query-editor-toolbar-btn img.copilot-logo {
 			width: 16px;
 			height: 16px;
 			display: block;
 		}
 
-		body.vscode-dark .query-editor-toolbar-btn.kusto-copilot-chat-toggle img.copilot-logo,
-		body.vscode-high-contrast .query-editor-toolbar-btn.kusto-copilot-chat-toggle img.copilot-logo,
-		body.vscode-high-contrast-light .query-editor-toolbar-btn.kusto-copilot-chat-toggle img.copilot-logo {
+		body.vscode-dark .query-editor-toolbar-btn img.copilot-logo,
+		body.vscode-high-contrast .query-editor-toolbar-btn img.copilot-logo,
+		body.vscode-high-contrast-light .query-editor-toolbar-btn img.copilot-logo {
 			filter: invert(1);
 		}
 
-		.query-editor-toolbar-btn.kusto-copilot-chat-toggle .copilot-logo-svg {
+		.query-editor-toolbar-btn .copilot-logo-svg {
 			width: 16px;
 			height: 16px;
 			display: block;
@@ -2011,53 +2068,24 @@
 			min-width: 0;
 			position: relative;
 			overflow: hidden;
+			background: var(--vscode-editor-background);
 			font-family: var(--vscode-editor-font-family);
 			font-size: 13px;
 		}
 
 		.query-editor-resizer {
-			flex: 0 0 1px;
-			height: 1px;
-			cursor: ns-resize;
-			background: var(--vscode-panel-border, rgba(128,128,128,0.35));
-			position: relative;
-			touch-action: none;
-			z-index: 1;
+			/* Base sash pattern provided by sashSheet (document.adoptedStyleSheets).
+			   Light-DOM elements carry both .resizer (from sashSheet) and
+			   .query-editor-resizer (for JS queries and layout overrides). */
 		}
 
-		/* Extended hit area for comfortable resizing */
-		.query-editor-resizer::after {
-			content: '';
-			position: absolute;
-			left: 0;
-			right: 0;
-			top: -3px;
-			bottom: -3px;
-		}
-
-		/* Sash highlight on hover / drag */
-		.query-editor-resizer::before {
-			content: '';
-			position: absolute;
-			left: 0;
-			right: 0;
-			top: 50%;
-			height: 0;
-			transform: translateY(-50%);
-			background: var(--vscode-sash-hoverBorder, #007fd4);
-			transition: height 0.1s ease;
-			pointer-events: none;
-			z-index: 1;
-		}
-
-		.query-editor-resizer:hover::before {
-			height: 6px;
-			transition-delay: var(--kw-sash-reveal-delay, 0.5s);
-		}
-
-		.query-editor-resizer.is-dragging::before {
-			height: 6px;
-			transition-delay: 0s;
+		/* Chart-section bottom sash: trim the hover/drag highlight bar so it
+		   doesn't poke past the section's 4px rounded corners. The slotted rule
+		   inside kw-chart-section.styles.ts can't reach this pseudo-element
+		   (::slotted(...)::before is not allowed in shadow CSS), but the resizer
+		   itself is in light DOM, so a document-scoped rule reaches it. */
+		.chart-bottom-resizer::before {
+			border-radius: 0 0 4px 4px;
 		}
 
 		.query-editor-placeholder {
@@ -2495,6 +2523,107 @@
 		@keyframes query-spinner-spin {
 			from { transform: rotate(0deg); }
 			to { transform: rotate(360deg); }
+		}
+
+		/* ══════════════════════════════════════════════════════════════════════
+		   SQL Section (light DOM styles)
+		   ══════════════════════════════════════════════════════════════════════ */
+
+		/* ── SQL editor wrapper — remove bottom margin so resizer sits flush ── */
+		kw-sql-section > .query-editor-wrapper {
+			margin-bottom: 0;
+		}
+
+		/* ── SQL editor placeholder (positioned inside .qe-editor-clip) ─── */
+		.sql-editor-placeholder {
+			position: absolute;
+			left: 61px;
+			top: 9px;
+			right: 10px;
+			pointer-events: none;
+			user-select: none;
+			font-family: var(--vscode-editor-font-family);
+			font-size: 13px;
+			color: var(--vscode-input-placeholderForeground);
+			opacity: 0.9;
+			z-index: 1;
+		}
+
+		/* ── SQL copilot split (light DOM) ──────────────────────────────── */
+		.sql-copilot-split {
+			display: flex;
+			flex-direction: row;
+			flex: 1 1 auto;
+			min-height: 0;
+		}
+
+		.sql-copilot-editor-pane {
+			position: relative;
+			flex: 1 1 auto;
+			min-width: 240px;
+			min-height: 0;
+			display: flex;
+			flex-direction: column;
+		}
+
+		.sql-copilot-splitter {
+			/* Base styling handled by .query-editor-resizer rules in queryEditor-copilot-chat.css */
+		}
+		.sql-copilot-splitter:hover, .sql-copilot-splitter:active {
+			/* Sash highlight handled by ::before rule in queryEditor-copilot-chat.css */
+		}
+
+		.sql-copilot-chat-pane {
+			min-width: 160px;
+			display: flex;
+			flex-direction: column;
+			overflow: hidden;
+		}
+
+		.sql-copilot-chat-pane kw-copilot-chat {
+			flex: 1 1 auto;
+			min-height: 0;
+		}
+
+		/* ── SQL action bar (reuses .query-actions / .query-run from Kusto) ── */
+
+		.sql-run-btn {
+			border-radius: 2px;
+		}
+		.sql-run-btn:hover {
+			background: var(--vscode-button-hoverBackground, var(--vscode-button-background));
+		}
+		.sql-run-btn:disabled {
+			opacity: 0.5;
+			cursor: not-allowed;
+		}
+
+		.sql-error-label {
+			font-size: 11px;
+			color: var(--vscode-errorForeground);
+			white-space: nowrap;
+			overflow: hidden;
+			text-overflow: ellipsis;
+			max-width: 400px;
+		}
+
+		/* ── SQL results (reuses .results-wrapper / .results-body from Kusto) ─── */
+		kw-sql-section > .results-wrapper {
+			margin-top: 2px;
+		}
+
+		kw-query-section > .results-wrapper,
+		kw-sql-section > .results-wrapper {
+			padding-bottom: 10px;
+		}
+
+		.sql-results-body {
+			flex: 1 1 auto;
+			min-height: 0;
+			display: flex;
+			flex-direction: column;
+			overflow: hidden;
+			padding-top: 8px;
 		}
 
 

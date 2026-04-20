@@ -99,6 +99,22 @@ describe('normalizeSection', () => {
 		const result = normalizeSection({ type: 'markdown', content: 'hello', extra: null });
 		expect(result).toEqual({ type: 'markdown', content: 'hello' });
 	});
+
+	it('strips ephemeral UI-state keys but keeps height/width fields', () => {
+		const result = normalizeSection({
+			type: 'query', id: 'q1', query: 'T',
+			editorHeightPx: 300, resultsHeightPx: 200, copilotChatWidthPx: 400,
+			resultJson: '{}', copilotChatVisible: true, resultsVisible: false, favoritesMode: true
+		});
+		expect(result).toBeDefined();
+		expect(result!.editorHeightPx).toBe(300);
+		expect(result!.resultsHeightPx).toBe(200);
+		expect(result!.copilotChatWidthPx).toBe(400);
+		expect(result!.resultJson).toBeUndefined();
+		expect(result!.copilotChatVisible).toBeUndefined();
+		expect(result!.resultsVisible).toBeUndefined();
+		expect(result!.favoritesMode).toBeUndefined();
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -297,21 +313,42 @@ describe('computeChangedSections', () => {
 	});
 
 	it('excludes resultJson from comparison (normalizeSection strips it)', () => {
-		// resultJson should be stripped by normalizeSection, so adding it
-		// to one side but not the other should not produce a change.
+		// resultJson is in DIFF_NOISE_KEYS and is stripped by normalizeSection,
+		// so adding it to one side but not the other should not produce a change.
 		const saved = new Map<string, Record<string, unknown>>([
 			['query_1', { type: 'query', id: 'query_1', query: 'T' }]
 		]);
 		const incoming = [{ type: 'query', id: 'query_1', query: 'T', resultJson: '{"big":"data"}' }];
-		// normalizeSection includes all non-empty keys generically, but resultJson is a string
-		// so it will be included. This test verifies the current behavior.
-		// If resultJson IS included by normalizeSection, it will show as settingsChanged.
 		const changes = computeChangedSections(incoming, saved);
-		// Accept either: if normalizeSection strips it → 0 changes, if not → settingsChanged
-		if (changes.length > 0) {
-			expect(changes[0].settingsChanged).toBe(true);
-			expect(changes[0].contentChanged).toBe(false);
-		}
+		expect(changes).toHaveLength(0);
+	});
+
+	it('excludes ephemeral UI-state keys from comparison', () => {
+		const saved = new Map<string, Record<string, unknown>>([
+			['query_1', { type: 'query', id: 'query_1', query: 'T' }]
+		]);
+		const incoming = [{
+			type: 'query', id: 'query_1', query: 'T',
+			copilotChatVisible: true,
+			resultsVisible: true, favoritesMode: true
+		}];
+		const changes = computeChangedSections(incoming, saved);
+		expect(changes).toHaveLength(0);
+	});
+
+	it('detects height/width changes as settings changes', () => {
+		const saved = new Map<string, Record<string, unknown>>([
+			['query_1', { type: 'query', id: 'query_1', query: 'T' }]
+		]);
+		const incoming = [{
+			type: 'query', id: 'query_1', query: 'T',
+			copilotChatWidthPx: 400, editorHeightPx: 300,
+			resultsHeightPx: 200
+		}];
+		const changes = computeChangedSections(incoming, saved);
+		expect(changes).toHaveLength(1);
+		expect(changes[0].contentChanged).toBe(false);
+		expect(changes[0].settingsChanged).toBe(true);
 	});
 
 	it('detects both content and settings changes', () => {
@@ -367,26 +404,32 @@ describe('formatSectionDiffContent', () => {
 		expect(result.content).toBeUndefined();
 	});
 
-	it('returns JSON settings text for query section', () => {
+	it('returns JSON settings text without content key for query section', () => {
 		const section = { type: 'query', id: 'q1', query: 'T | take 10' };
 		const result = formatSectionDiffContent(section, 'not found');
-		expect(JSON.parse(result.settingsText)).toEqual(section);
+		const parsed = JSON.parse(result.settingsText);
+		// query is stripped from settings (shown in separate diff tab)
+		expect(parsed.query).toBeUndefined();
+		expect(parsed.type).toBe('query');
+		expect(parsed.id).toBe('q1');
 		expect(result.content).toBeDefined();
 		expect(result.content!.text).toBe('T | take 10');
-		expect(result.content!.label).toBe('Query');
+		expect(result.content!.label).toBe('Kusto');
 	});
 
-	it('returns content for markdown section', () => {
+	it('returns content for markdown section (text stripped from settings)', () => {
 		const section = { type: 'markdown', id: 'm1', text: '# Hello' };
 		const result = formatSectionDiffContent(section, 'not found');
+		expect(JSON.parse(result.settingsText).text).toBeUndefined();
 		expect(result.content).toBeDefined();
 		expect(result.content!.text).toBe('# Hello');
 		expect(result.content!.label).toBe('Markdown');
 	});
 
-	it('returns content for python section', () => {
+	it('returns content for python section (code stripped from settings)', () => {
 		const section = { type: 'python', id: 'p1', code: 'print(1)' };
 		const result = formatSectionDiffContent(section, 'not found');
+		expect(JSON.parse(result.settingsText).code).toBeUndefined();
 		expect(result.content).toBeDefined();
 		expect(result.content!.text).toBe('print(1)');
 		expect(result.content!.label).toBe('Code');
@@ -404,6 +447,15 @@ describe('formatSectionDiffContent', () => {
 		const result = formatSectionDiffContent(section, 'not found');
 		expect(result.content).toBeDefined();
 		expect(result.content!.text).toBe('');
+	});
+
+	it('preserves height fields in settings text', () => {
+		const section = { type: 'query', id: 'q1', query: 'T', editorHeightPx: 300, resultsHeightPx: 200 };
+		const result = formatSectionDiffContent(section, 'not found');
+		const parsed = JSON.parse(result.settingsText);
+		expect(parsed.editorHeightPx).toBe(300);
+		expect(parsed.resultsHeightPx).toBe(200);
+		expect(parsed.query).toBeUndefined();
 	});
 });
 
@@ -506,7 +558,7 @@ describe('computeChangedSections diffMode', () => {
 // ---------------------------------------------------------------------------
 
 describe('stripDiffNoise', () => {
-	it('removes all noise fields', () => {
+	it('removes ephemeral UI-state and content keys but keeps heights', () => {
 		const section = {
 			type: 'query', id: 'query_1', query: 'T | count',
 			resultJson: '{}',
@@ -517,17 +569,24 @@ describe('stripDiffNoise', () => {
 			favoritesMode: true,
 		};
 		const result = stripDiffNoise(section);
-		expect(result).toEqual({ type: 'query', id: 'query_1', query: 'T | count' });
+		expect(result).toEqual({
+			type: 'query', id: 'query_1',
+			editorHeightPx: 200, resultsHeightPx: 300,
+			copilotChatWidthPx: 400,
+			outputHeightPx: 150, previewHeightPx: 250,
+		});
 	});
 
-	it('preserves meaningful fields', () => {
+	it('preserves meaningful fields (strips content key)', () => {
 		const section = {
 			type: 'query', id: 'query_1', query: 'T',
 			clusterUrl: 'http://c', database: 'db',
 			runMode: 'default', cacheEnabled: true, cacheValue: 5, cacheUnit: 'minutes',
 		};
 		const result = stripDiffNoise(section);
-		expect(result).toEqual(section);
+		// query is stripped (shown in separate diff tab), everything else kept
+		const { query, ...expected } = section;
+		expect(result).toEqual(expected);
 	});
 
 	it('does not mutate the original object', () => {
@@ -540,8 +599,16 @@ describe('stripDiffNoise', () => {
 	});
 
 	it('returns empty-ish object when all fields are noise', () => {
-		const section = { resultJson: '{}', editorHeightPx: 100 };
+		const section = { resultJson: '{}', query: 'T' };
 		const result = stripDiffNoise(section);
 		expect(result).toEqual({});
+	});
+
+	it('strips text and code content keys for markdown/python sections', () => {
+		const md = { type: 'markdown', id: 'md_1', text: '# Hello', expanded: true };
+		expect(stripDiffNoise(md)).toEqual({ type: 'markdown', id: 'md_1', expanded: true });
+
+		const py = { type: 'python', id: 'py_1', code: 'print(1)', expanded: true };
+		expect(stripDiffNoise(py)).toEqual({ type: 'python', id: 'py_1', expanded: true });
 	});
 });

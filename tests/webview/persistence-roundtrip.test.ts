@@ -53,7 +53,7 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 	pState: {
 		compatibilityMode: false,
 		compatibilitySingleKind: 'query',
-		allowedSectionKinds: ['query', 'chart', 'transformation', 'markdown', 'python', 'url'],
+		allowedSectionKinds: ['query', 'chart', 'transformation', 'python', 'url', 'markdown'],
 		defaultSectionKind: 'query',
 		upgradeRequestType: 'requestUpgradeToKqlx',
 		documentKind: 'kqlx',

@@ -1,5 +1,6 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-object-viewer.styles.js';
+import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { buildSearchRegex, navigateMatch, highlightMatches, type SearchMode } from './search-utils.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
@@ -112,6 +113,13 @@ function writeTextToClipboard(text: string, vscodePostMessage?: (msg: unknown) =
 	} catch (e) { console.error('[kusto]', e); }
 }
 
+// ─── Virtual scroll for raw JSON ──────────────────────────────────────────────
+
+/** Fixed line height in px for the virtual scroll container. */
+const RAW_LINE_HEIGHT = 20;
+/** Extra lines rendered above/below the visible viewport. */
+const RAW_OVERSCAN = 20;
+
 // ─── Component ────────────────────────────────────────────────────────────────
 
 @customElement('kw-object-viewer')
@@ -126,10 +134,24 @@ export class KwObjectViewer extends LitElement {
 
 	@state() private _stack: StackFrame[] = [];
 	@state() private _rawVisible = true;
+	@state() private _rawWordWrap = true;
 	@state() private _searchQuery = '';
 	@state() private _searchMode: SearchMode = 'wildcard';
 	@state() private _currentMatchIndex = 0;
 	private _matchCount = 0;
+	/** Number of entries currently visible in the properties table (pagination). */
+	@state() private _entriesLimit = 200;
+
+	// ── Raw JSON virtual scroll cache ─────────────────────────────────────────
+	private _rawLines: string[] = [];
+	private _rawPlainText = '';
+	private _rawCacheValue: unknown = undefined;
+	private _rawCacheSearch = '';
+	private _rawCacheMode: SearchMode = 'wildcard';
+	private _rawScrollTop = 0;
+	private _rawScrollRaf = 0;
+	/** Per-line count of `.json-highlight` spans, for mapping match index → line. */
+	private _rawLineMatchCounts: number[] = [];
 
 	// ── Public API ────────────────────────────────────────────────────────────
 
@@ -140,7 +162,14 @@ export class KwObjectViewer extends LitElement {
 		this.jsonText = jsonText;
 		const rootValue = parseMaybeJson(jsonText);
 		this._stack = [{ label: title, value: rootValue }];
-		this._rawVisible = true;
+		this._rawVisible = false;
+		this._rawWordWrap = true;
+		this._entriesLimit = 200;
+		this._rawLines = [];
+		this._rawPlainText = '';
+		this._rawLineMatchCounts = [];
+		this._rawCacheValue = undefined;
+		this._rawScrollTop = 0;
 		this._searchQuery = options?.searchQuery ?? '';
 		this._searchMode = options?.searchMode ?? 'wildcard';
 		this._currentMatchIndex = 0;
@@ -152,6 +181,11 @@ export class KwObjectViewer extends LitElement {
 	hide(): void {
 		this.open = false;
 		this._stack = [];
+		this._rawLines = [];
+		this._rawPlainText = '';
+		this._rawLineMatchCounts = [];
+		this._rawCacheValue = undefined;
+		if (this._rawScrollRaf) { cancelAnimationFrame(this._rawScrollRaf); this._rawScrollRaf = 0; }
 		removeDismissable(this._dismissCb);
 	}
 
@@ -161,22 +195,24 @@ export class KwObjectViewer extends LitElement {
 		if (!this.open || this._stack.length === 0) return nothing;
 		const frame = this._stack[this._stack.length - 1];
 		const depth = this._stack.length;
-		const rawStr = stringifyForSearch(frame.value);
-		const formatted = formatJson(frame.value);
 
 		// Build search regex
 		const { regex, error: searchError } = buildSearchRegex(this._searchQuery, this._searchMode);
-		const matchCount = regex ? this._countMatches(regex, rawStr) : 0;
+
+		// Always ensure raw lines are computed (needed for match counting even when collapsed)
+		this._ensureRawLines(frame.value, regex, searchError ?? undefined);
+
+		// Match count is based on the formatted raw text only (not the properties table)
+		let matchCount = 0;
+		if (regex && !searchError && this._searchQuery.trim()) {
+			matchCount = this._countMatches(regex, this._rawPlainText);
+		}
 		this._matchCount = matchCount;
 
-		// Highlighted raw JSON
-		let highlightedRaw = formatted;
-		if (regex && !searchError) {
-			highlightedRaw = this._highlightInHtml(formatted, regex);
-		}
-
-		// Build entries for properties table
-		const entries = this._getEntries(frame.value);
+		// Build entries for properties table (paginated)
+		const allEntries = this._getEntries(frame.value);
+		const entries = allEntries.slice(0, this._entriesLimit);
+		const hasMoreEntries = allEntries.length > this._entriesLimit;
 
 		return html`
 			<div class="modal-backdrop" @click=${this.hide}>
@@ -201,7 +237,7 @@ export class KwObjectViewer extends LitElement {
 						<!-- Properties table -->
 						<div class="section props-section">
 							<div class="section-header">
-								${depth > 1 ? html`<button class="back-btn" type="button" title="Back" aria-label="Back" @click=${this._navigateBack}>←</button>` : nothing}
+							${depth > 1 ? html`<button class="tool-btn" type="button" title="Back" aria-label="Back" @click=${this._navigateBack}>${ICONS.arrowLeft}</button>` : nothing}
 								<div class="section-title">${this._renderBreadcrumbs()}</div>
 							</div>
 							<table class="props-table" aria-label="Properties">
@@ -239,7 +275,7 @@ export class KwObjectViewer extends LitElement {
 											</tr>`;
 									})}
 									${entries.length === 0 ? html`<tr><td>(value)</td><td>${formatScalarForTable(frame.value)}</td></tr>` : nothing}
-								</tbody>
+							${hasMoreEntries ? html`<tr><td colspan="2"><button class="show-more-btn" type="button" @click=${() => { this._entriesLimit += 200; }}>Show ${Math.min(200, allEntries.length - this._entriesLimit)} more… (${allEntries.length - this._entriesLimit} remaining)</button></td></tr>` : nothing}
 							</table>
 						</div>
 
@@ -249,12 +285,18 @@ export class KwObjectViewer extends LitElement {
 								<div class="section-title">Raw value</div>
 								<div class="raw-actions">
 									<button class="tool-btn" type="button" title="Copy to clipboard" aria-label="Copy to clipboard"
-										@click=${() => this._copyRaw(rawStr)}>
+								@click=${() => this._copyRaw(stringifyForSearch(frame.value))}>
 										<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
 											<rect x="5" y="5" width="9" height="9" rx="2" /><path d="M3 11V4c0-1.1.9-2 2-2h7" />
 										</svg>
-									</button>
-									<button class="tool-btn ${this._rawVisible ? 'is-active' : ''}" type="button"
+									</button>								<button class="tool-btn ${this._rawWordWrap ? 'is-active' : ''}" type="button"
+									title="${this._rawWordWrap ? 'Disable word wrap' : 'Enable word wrap'}"
+									aria-label="${this._rawWordWrap ? 'Disable word wrap' : 'Enable word wrap'}"
+									@click=${this._toggleWordWrap}>
+									<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
+										<path d="M2 3h12" /><path d="M2 7h10a2 2 0 0 1 0 4H9" /><path d="M10 12.5l-1.5-1.5L10 9.5" /><path d="M2 11h4" />
+									</svg>
+								</button>									<button class="tool-btn ${this._rawVisible ? 'is-active' : ''}" type="button"
 										title="${this._rawVisible ? 'Hide raw value' : 'Show raw value'}"
 										aria-label="${this._rawVisible ? 'Hide raw value' : 'Show raw value'}"
 										@click=${this._toggleRaw}>
@@ -267,7 +309,7 @@ export class KwObjectViewer extends LitElement {
 							</div>
 							${this._rawVisible ? html`
 								<div class="raw-body">
-									<div class="json-wrap" .innerHTML=${highlightedRaw}></div>
+									${this._rawWordWrap ? this._renderRawWrapped() : this._renderRawVirtual()}
 								</div>
 							` : nothing}
 						</div>
@@ -341,6 +383,87 @@ export class KwObjectViewer extends LitElement {
 		return div.innerHTML;
 	}
 
+	// ── Raw JSON virtual scroll ───────────────────────────────────────────────
+
+	/**
+	 * Compute and cache the array of HTML lines for the raw JSON section.
+	 * Also caches the plain-text form (for match counting) and per-line match counts
+	 * (for mapping a global match index to a line number for virtual scroll navigation).
+	 * Recomputes only when the frame value or search parameters change.
+	 */
+	private _ensureRawLines(value: unknown, regex: RegExp | null, searchError: string | undefined): void {
+		const needsHighlight = !!(regex && !searchError);
+		const cacheKey = this._searchQuery + '|' + this._searchMode;
+		if (value === this._rawCacheValue && cacheKey === this._rawCacheSearch) return;
+		const formatted = formatJson(value);
+
+		// Strip HTML tags to get plain text for match counting
+		this._rawPlainText = formatted.replace(/<[^>]*>/g, '');
+
+		const fullHtml = needsHighlight ? this._highlightInHtml(formatted, regex!) : formatted;
+		const lines = fullHtml.split('\n');
+		this._rawLines = lines;
+
+		// Count `.json-highlight` spans per line for match-index → line mapping
+		if (needsHighlight) {
+			const highlightRe = /<span class="json-highlight">/g;
+			this._rawLineMatchCounts = lines.map(line => {
+				let count = 0;
+				highlightRe.lastIndex = 0;
+				while (highlightRe.exec(line) !== null) count++;
+				return count;
+			});
+		} else {
+			this._rawLineMatchCounts = [];
+		}
+
+		this._rawCacheValue = value;
+		this._rawCacheSearch = cacheKey;
+	}
+
+	/** Render the raw JSON as a simple word-wrapped div (no virtual scroll needed). */
+	private _renderRawWrapped(): TemplateResult {
+		const fullHtml = this._rawLines.join('\n');
+		return html`<div class="raw-wrap-scroll"><div class="json-wrap" .innerHTML=${fullHtml}></div></div>`;
+	}
+
+	/** Render the raw JSON using a virtual scroll container that only creates DOM for visible lines. */
+	private _renderRawVirtual(): TemplateResult {
+		const lines = this._rawLines;
+		const lineCount = lines.length;
+		const totalH = lineCount * RAW_LINE_HEIGHT;
+		const scrollTop = this._rawScrollTop;
+		// Use a generous default viewport; the actual container height is set via CSS.
+		const viewH = 400;
+
+		const first = Math.max(0, Math.floor(scrollTop / RAW_LINE_HEIGHT) - RAW_OVERSCAN);
+		const last = Math.min(lineCount, Math.ceil((scrollTop + viewH) / RAW_LINE_HEIGHT) + RAW_OVERSCAN);
+
+		return html`
+			<div class="raw-vscroll" @scroll=${this._onRawScroll}>
+				<div style="height:${totalH}px;position:relative">
+					${lines.slice(first, last).map((line, i) =>
+						html`<div class="raw-vline" style="top:${(first + i) * RAW_LINE_HEIGHT}px" .innerHTML=${line}></div>`
+					)}
+				</div>
+			</div>
+		`;
+	}
+
+	private _onRawScroll = (e: Event): void => {
+		const el = e.currentTarget as HTMLElement;
+		const newTop = el.scrollTop;
+		// Skip redundant updates
+		if (Math.abs(newTop - this._rawScrollTop) < RAW_LINE_HEIGHT * 0.5) return;
+		this._rawScrollTop = newTop;
+		if (!this._rawScrollRaf) {
+			this._rawScrollRaf = requestAnimationFrame(() => {
+				this._rawScrollRaf = 0;
+				this.requestUpdate();
+			});
+		}
+	};
+
 	// ── Navigation ────────────────────────────────────────────────────────────
 
 	private _getEntries(value: unknown): Array<[string, unknown]> {
@@ -358,16 +481,22 @@ export class KwObjectViewer extends LitElement {
 		if (!frame?.value || typeof frame.value !== 'object') return;
 		const nextValue = (frame.value as Record<string, unknown>)[key];
 		this._stack = [...this._stack, { label: String(key), value: parseMaybeJson(nextValue) }];
+		this._entriesLimit = 200;
+		this._rawScrollTop = 0;
 	}
 
 	private _navigateBack(): void {
 		if (this._stack.length <= 1) return;
 		this._stack = this._stack.slice(0, -1);
+		this._entriesLimit = 200;
+		this._rawScrollTop = 0;
 	}
 
 	private _navigateToDepth(depth: number): void {
 		if (depth >= this._stack.length || depth < 1) return;
 		this._stack = this._stack.slice(0, depth);
+		this._entriesLimit = 200;
+		this._rawScrollTop = 0;
 	}
 
 	private _renderBreadcrumbs(): TemplateResult {
@@ -379,31 +508,93 @@ export class KwObjectViewer extends LitElement {
 
 	// ── Actions ───────────────────────────────────────────────────────────────
 
-	private _toggleRaw(): void { this._rawVisible = !this._rawVisible; }
+	private _toggleRaw(): void {
+		this._rawVisible = !this._rawVisible;
+	}
+
+	private _toggleWordWrap(): void {
+		this._rawWordWrap = !this._rawWordWrap;
+	}
 
 	private _navigateNextMatch(): void {
-		if (this._matchCount < 2) return;
-		this._currentMatchIndex = navigateMatch(this._currentMatchIndex, this._matchCount, 'next');
-		this._scrollToCurrentMatch();
+		if (this._matchCount < 1) return;
+		if (this._matchCount === 1) { this._currentMatchIndex = 0; } else {
+			this._currentMatchIndex = navigateMatch(this._currentMatchIndex, this._matchCount, 'next');
+		}
+		this._scrollRawToMatch(this._currentMatchIndex);
 	}
 
 	private _navigatePrevMatch(): void {
-		if (this._matchCount < 2) return;
-		this._currentMatchIndex = navigateMatch(this._currentMatchIndex, this._matchCount, 'prev');
-		this._scrollToCurrentMatch();
+		if (this._matchCount < 1) return;
+		if (this._matchCount === 1) { this._currentMatchIndex = 0; } else {
+			this._currentMatchIndex = navigateMatch(this._currentMatchIndex, this._matchCount, 'prev');
+		}
+		this._scrollRawToMatch(this._currentMatchIndex);
+	}
+
+	/**
+	 * Expand the raw section (if collapsed) and scroll so that the Nth match
+	 * is visible, then highlight it. Works in both word-wrap and virtual-scroll modes.
+	 */
+	private _scrollRawToMatch(matchIndex: number): void {
+		// Ensure raw section is expanded
+		if (!this._rawVisible) {
+			this._rawVisible = true;
+		}
+
+		if (this._rawWordWrap) {
+			// Word-wrap mode: all highlights are in the DOM, just find the Nth one
+			this.requestUpdate();
+			void this.updateComplete.then(() => {
+				const rawBody = this.shadowRoot?.querySelector('.raw-body');
+				if (!rawBody) return;
+				const highlights = rawBody.querySelectorAll('.json-highlight');
+				for (const el of highlights) el.classList.remove('json-highlight-active');
+				const target = highlights[matchIndex];
+				if (!target) return;
+				target.classList.add('json-highlight-active');
+				try { target.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch { try { target.scrollIntoView(true); } catch (e) { console.error('[kusto]', e); } }
+			});
+			return;
+		}
+
+		// Virtual-scroll mode: map match index → line, scroll container, then highlight
+		const counts = this._rawLineMatchCounts;
+		let remaining = matchIndex;
+		let targetLine = 0;
+		for (let i = 0; i < counts.length; i++) {
+			if (remaining < counts[i]) { targetLine = i; break; }
+			remaining -= counts[i];
+			targetLine = i;
+		}
+
+		// Scroll virtual scroll container to center the target line
+		const targetTop = targetLine * RAW_LINE_HEIGHT;
+		const viewH = 400; // matches CSS max-height
+		this._rawScrollTop = Math.max(0, targetTop - viewH / 2);
+		this.requestUpdate();
+
+		// After render, set the scroll position and highlight the active match
+		void this.updateComplete.then(() => {
+			const container = this.shadowRoot?.querySelector('.raw-vscroll') as HTMLElement | null;
+			if (container) container.scrollTop = this._rawScrollTop;
+
+			const rawBody = this.shadowRoot?.querySelector('.raw-body');
+			if (!rawBody) return;
+			const highlights = rawBody.querySelectorAll('.json-highlight');
+			for (const el of highlights) el.classList.remove('json-highlight-active');
+			const firstRendered = Math.max(0, Math.floor(this._rawScrollTop / RAW_LINE_HEIGHT) - RAW_OVERSCAN);
+			let offsetBefore = 0;
+			for (let i = 0; i < firstRendered && i < counts.length; i++) offsetBefore += counts[i];
+			const localIdx = matchIndex - offsetBefore;
+			if (localIdx >= 0 && localIdx < highlights.length) {
+				highlights[localIdx].classList.add('json-highlight-active');
+			}
+		});
 	}
 
 	private async _scrollToCurrentMatch(): Promise<void> {
-		await this.updateComplete;
-		const root = this.shadowRoot;
-		if (!root) return;
-		const highlights = root.querySelectorAll('.json-highlight');
-		// Remove active from all
-		for (const el of highlights) el.classList.remove('json-highlight-active');
-		const target = highlights[this._currentMatchIndex];
-		if (!target) return;
-		target.classList.add('json-highlight-active');
-		try { target.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch { try { target.scrollIntoView(true); } catch (e) { console.error('[kusto]', e); } }
+		this._scrollRawToMatch(this._currentMatchIndex);
 	}
 
 	private _copyValue(value: unknown): void {
@@ -416,7 +607,7 @@ export class KwObjectViewer extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static styles = styles;
+	static styles = [iconRegistryStyles, styles];
 }
 
 declare global {

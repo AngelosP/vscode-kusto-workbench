@@ -98,6 +98,12 @@ try {
 				const scrollSurface = el.closest('.monaco-scrollable-element, .CodeMirror-scroll, .table-container, .results-body');
 				if (!scrollSurface) return;
 
+				// Don't intercept wheel events aimed at modals rendered inside shadow DOM
+				// (their retargeted target lands on the host element, which lives inside .results-body).
+				const MODAL_TAGS = ['KW-OBJECT-VIEWER', 'KW-SORT-DIALOG', 'KW-FILTER-DIALOG', 'KW-UNIQUE-VALUES-DIALOG'];
+				const path = event.composedPath?.();
+				if (path && path.some((n: any) => n.tagName && MODAL_TAGS.includes(n.tagName))) return;
+
 				// If the surface actually has a vertical scrollbar, let it handle the wheel.
 				const hasVScroll = (scrollSurface.scrollHeight > (scrollSurface.clientHeight + 1));
 				if (hasVScroll) return;
@@ -233,20 +239,13 @@ document.addEventListener('keydown', (event: any) => {
 		if (!isSpace) {
 			return;
 		}
-		// Only handle when the key event originates from inside a Monaco editor.
-		try {
-			const t = event.target;
-			if (!t || !t.closest || !t.closest('.monaco-editor')) {
-				return;
-			}
-		} catch {
-			return;
-		}
 
 		const editor = __kustoGetFocusedMonacoEditor();
 		if (!editor) {
 			return;
 		}
+		// Some automation paths deliver the key event to document/body even when Monaco
+		// still reports text focus. Trust the focused editor rather than the DOM target.
 
 		// We are handling it; avoid double-triggering Monaco keybindings.
 		try { event.preventDefault(); } catch (e) { console.error('[kusto]', e); }
@@ -277,20 +276,13 @@ document.addEventListener('keydown', (event: any) => {
 		if (!isSpace) {
 			return;
 		}
-		// Only handle when the key event originates from inside a Monaco editor.
-		try {
-			const t = event.target;
-			if (!t || !t.closest || !t.closest('.monaco-editor')) {
-				return;
-			}
-		} catch {
-			return;
-		}
 
 		const editor = __kustoGetFocusedMonacoEditor();
 		if (!editor) {
 			return;
 		}
+		// Some automation paths deliver the key event to document/body even when Monaco
+		// still reports text focus. Trust the focused editor rather than the DOM target.
 
 		// We are handling it; avoid double-triggering Monaco keybindings.
 		try { event.preventDefault(); } catch (e) { console.error('[kusto]', e); }

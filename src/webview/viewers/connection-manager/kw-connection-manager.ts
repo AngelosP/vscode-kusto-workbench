@@ -1,7 +1,11 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-connection-manager.styles.js';
 import { customElement, state } from 'lit/decorators.js';
-import { ICONS } from '../../components/icons.js';
+import { ICONS, iconRegistryStyles } from '../../shared/icon-registry.js';
+import type { KustoConnectionFormSubmitDetail } from '../../components/kw-kusto-connection-form.js';
+import type { SqlConnectionFormSubmitDetail } from '../../components/kw-sql-connection-form.js';
+import '../../components/kw-kusto-connection-form.js';
+import '../../components/kw-sql-connection-form.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -20,11 +24,52 @@ interface KustoFavorite {
 
 interface Snapshot {
 	timestamp: number;
+	activeKind?: ConnectionKind;
 	connections: KustoConnection[];
 	favorites: KustoFavorite[];
 	cachedDatabases: Record<string, string[]>;
 	expandedClusters: string[];
 	leaveNoTraceClusters: string[];
+	// SQL
+	sqlConnections?: SqlConnectionInfo[];
+	sqlCachedDatabases?: Record<string, string[]>;
+	sqlExpandedConnections?: string[];
+	sqlDialects?: SqlDialectInfo[];
+	sqlFavorites?: SqlFavorite[];
+	sqlLeaveNoTrace?: string[];
+}
+
+type ConnectionKind = 'kusto' | 'sql';
+
+interface SqlConnectionInfo {
+	id: string;
+	name: string;
+	dialect: string;
+	serverUrl: string;
+	port?: number;
+	database?: string;
+	authType: string;
+	username?: string;
+}
+
+interface SqlDialectInfo {
+	id: string;
+	displayName: string;
+	defaultPort: number;
+	authTypes: Array<{ id: string; displayName: string }>;
+}
+
+interface SqlDatabaseSchema {
+	tables: string[];
+	views?: string[];
+	columnsByTable: Record<string, Record<string, string>>;
+	storedProcedures?: Array<{ name: string; schema?: string; parametersText?: string; body?: string }>;
+}
+
+interface SqlFavorite {
+	name: string;
+	connectionId: string;
+	database: string;
 }
 
 interface DatabaseSchema {
@@ -48,7 +93,7 @@ interface TablePreview {
 interface ExplorerPath {
 	connectionId: string;
 	database?: string;
-	section?: 'tables' | 'functions' | 'table-columns';
+	section?: 'tables' | 'functions' | 'table-columns' | 'views';
 	folderPath?: string[];
 	tableName?: string;
 }
@@ -119,6 +164,22 @@ export class KwConnectionManager extends LitElement {
 	@state() private _modalDb = '';
 	@state() private _testResult = '';
 
+	// SQL modal state
+	@state() private _modalServerUrl = '';
+	@state() private _modalPort = '';
+	@state() private _modalDialect = 'mssql';
+	@state() private _modalAuthType = 'aad';
+	@state() private _modalUsername = '';
+	@state() private _modalPassword = '';
+	@state() private _modalChangePassword = false;
+
+	// Multi-type state
+	@state() private _activeKind: ConnectionKind = 'kusto';
+	@state() private _sqlExplorerPath: ExplorerPath | null = null;
+	@state() private _sqlDatabaseSchemas: Record<string, SqlDatabaseSchema> = {};
+	@state() private _sqlTablePreviewData: Record<string, TablePreview> = {};
+	@state() private _sqlLoadingDatabases = new Set<string>();
+
 	// ── VS Code API ───────────────────────────────────────────────────────────
 
 	private _vscode!: VsCodeApi;
@@ -146,6 +207,21 @@ export class KwConnectionManager extends LitElement {
 		switch (msg.type) {
 			case 'snapshot':
 				this._snapshot = msg.snapshot;
+				// Auto-detect active kind
+				if (this._snapshot) {
+					const hasKusto = (this._snapshot.connections?.length ?? 0) > 0;
+					const hasSql = (this._snapshot.sqlConnections?.length ?? 0) > 0;
+					const persisted = this._snapshot.activeKind;
+					if (persisted === 'sql' && hasSql) {
+						this._activeKind = 'sql';
+					} else if (persisted === 'kusto' && hasKusto) {
+						this._activeKind = 'kusto';
+					} else if (hasSql && !hasKusto) {
+						this._activeKind = 'sql';
+					} else {
+						this._activeKind = 'kusto';
+					}
+				}
 				if (!this._selectedConnectionId && this._snapshot?.connections?.length) {
 					this._selectedConnectionId = this._snapshot.connections[0].id;
 					this._vscode.postMessage({ type: 'cluster.expand', connectionId: this._selectedConnectionId });
@@ -192,6 +268,61 @@ export class KwConnectionManager extends LitElement {
 				}
 				break;
 			}
+			// SQL messages
+			case 'sql.testConnectionStarted':
+				this._testResult = 'loading';
+				break;
+			case 'sql.testConnectionResult':
+				this._testResult = msg.success ? `✓ ${msg.message}` : `✗ ${msg.message}`;
+				break;
+			case 'sql.loadingDatabases':
+				this._sqlLoadingDatabases = new Set([...this._sqlLoadingDatabases, msg.connectionId]);
+				break;
+			case 'sql.databasesLoaded':
+				this._sqlLoadingDatabases = new Set([...this._sqlLoadingDatabases].filter(id => id !== msg.connectionId));
+				this._vscode.postMessage({ type: 'requestSnapshot' });
+				break;
+			case 'sql.databasesLoadError':
+				this._sqlLoadingDatabases = new Set([...this._sqlLoadingDatabases].filter(id => id !== msg.connectionId));
+				break;
+			case 'sql.loadingSchema':
+				// Could add visual indicator
+				break;
+			case 'sql.schemaLoaded': {
+				const sqlDbKey = msg.connectionId + '|' + msg.database;
+				this._sqlDatabaseSchemas = { ...this._sqlDatabaseSchemas, [sqlDbKey]: msg.schema };
+				break;
+			}
+			case 'sql.schemaLoadError':
+				// Could add error state
+				break;
+			case 'sql.tablePreviewLoading': {
+				const sqlPrevKey = msg.connectionId + '|' + msg.database + '|table|' + msg.tableName;
+				this._sqlTablePreviewData = { ...this._sqlTablePreviewData, [sqlPrevKey]: { loading: true } };
+				break;
+			}
+			case 'sql.tablePreviewResult': {
+				const sqlPrevKey = msg.connectionId + '|' + msg.database + '|table|' + msg.tableName;
+				if (msg.success) {
+					this._sqlTablePreviewData = { ...this._sqlTablePreviewData, [sqlPrevKey]: { loading: false, columns: msg.columns, rows: msg.rows, rowCount: msg.rowCount, executionTime: msg.executionTime } };
+				} else {
+					this._sqlTablePreviewData = { ...this._sqlTablePreviewData, [sqlPrevKey]: { loading: false, error: msg.error || 'Failed to load preview.' } };
+				}
+				break;
+			}
+			case 'settingsUpdate': {
+				try {
+					const altColor = typeof msg.alternatingRowColor === 'string' ? msg.alternatingRowColor : '';
+					if (altColor === 'off') {
+						document.documentElement.style.removeProperty('--kw-alt-row-bg');
+					} else if (altColor === 'theme' || !altColor) {
+						document.documentElement.style.setProperty('--kw-alt-row-bg', 'color-mix(in srgb, var(--vscode-editor-background) 97%, var(--vscode-foreground) 3%)');
+					} else {
+						document.documentElement.style.setProperty('--kw-alt-row-bg', altColor);
+					}
+				} catch (e) { console.error('[kusto]', e); }
+				break;
+			}
 		}
 	};
 
@@ -220,6 +351,54 @@ export class KwConnectionManager extends LitElement {
 
 	protected render(): TemplateResult {
 		const connections = this._snapshot?.connections ?? [];
+		const sqlConnections = this._snapshot?.sqlConnections ?? [];
+		const kind = this._activeKind;
+
+		return html`
+			<div class="page-header">
+				<h1>Connection Manager</h1>
+			</div>
+
+			<div class="picker-actions-row">
+				<kw-kind-picker
+					.activeKind=${kind}
+					.kustoCount=${connections.length}
+					.sqlCount=${sqlConnections.length}
+					@kind-changed=${(e: CustomEvent) => this._switchKind(e.detail.kind)}
+				></kw-kind-picker>
+				<div class="title-actions">
+					<button class="header-btn primary" @click=${() => this._openModal('add')}>
+						${ICONS.add} Add connection
+					</button>
+					${kind === 'kusto' ? html`
+						<button class="header-btn" @click=${() => this._vscode.postMessage({ type: 'connection.importXml' })}>
+							${ICONS.importIcon} Import
+						</button>
+						<button class="header-btn" @click=${() => this._vscode.postMessage({ type: 'connection.exportXml' })}>
+							${ICONS.save} Export
+						</button>
+					` : nothing}
+				</div>
+			</div>
+
+			<div class="explorer-panel">
+				${kind === 'kusto' ? this._renderKustoContent() : this._renderSqlContent()}
+			</div>
+
+			${this._modalVisible ? this._renderModal() : nothing}
+		`;
+	}
+
+	private _switchKind(kind: ConnectionKind): void {
+		if (kind === this._activeKind) return;
+		this._activeKind = kind;
+		this._explorerPath = null;
+		this._sqlExplorerPath = null;
+		this._vscode.postMessage({ type: 'setActiveKind', kind });
+	}
+
+	private _renderKustoContent(): TemplateResult {
+		const connections = this._snapshot?.connections ?? [];
 		const favorites = this._snapshot?.favorites ?? [];
 		const lntClusters = this._snapshot?.leaveNoTraceClusters ?? [];
 		const hasFavs = favorites.length > 0;
@@ -237,41 +416,22 @@ export class KwConnectionManager extends LitElement {
 		}
 
 		return html`
-			<div class="page-header">
-				<h1>Connection Manager</h1>
-				<div class="title-actions">
-					<button class="header-btn primary" @click=${() => this._openModal('add')}>
-						${ICONS.add} Add connection
-					</button>
-					<button class="header-btn" @click=${() => this._vscode.postMessage({ type: 'connection.importXml' })}>
-						${ICONS.importIcon} Import
-					</button>
-					<button class="header-btn" @click=${() => this._vscode.postMessage({ type: 'connection.exportXml' })}>
-						${ICONS.save} Export
-					</button>
-				</div>
+			<!-- Filter tabs -->
+			${hasFavs || hasLnt ? html`
+			<div class="filter-bar">
+				<button class="filter-tab ${!this._filterFavorites && !this._filterLnt ? 'active' : ''}" @click=${() => { this._filterFavorites = false; this._filterLnt = false; this._validateBreadcrumb(); }}>${ICONS.kustoCluster} <span class="filter-label">All</span></button>
+				${hasFavs ? html`<button class="filter-tab fav-tab ${this._filterFavorites ? 'active' : ''}" @click=${() => { this._filterFavorites = !this._filterFavorites; this._filterLnt = false; this._validateBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${favorites.length}</span></button>` : nothing}
+				${hasLnt ? html`<button class="filter-tab lnt-tab ${this._filterLnt ? 'active' : ''}" @click=${() => { this._filterLnt = !this._filterLnt; this._filterFavorites = false; this._validateBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${lntClusters.length}</span></button>` : nothing}
 			</div>
+			` : nothing}
 
-			<div class="explorer-panel">
-				<!-- Filter tabs -->
-				${hasFavs || hasLnt ? html`
-				<div class="filter-bar">
-					<button class="filter-tab ${!this._filterFavorites && !this._filterLnt ? 'active' : ''}" @click=${() => { this._filterFavorites = false; this._filterLnt = false; this._validateBreadcrumb(); }}>${ICONS.cluster} <span class="filter-label">All</span></button>
-					${hasFavs ? html`<button class="filter-tab fav-tab ${this._filterFavorites ? 'active' : ''}" @click=${() => { this._filterFavorites = !this._filterFavorites; this._filterLnt = false; this._validateBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${favorites.length}</span></button>` : nothing}
-					${hasLnt ? html`<button class="filter-tab lnt-tab ${this._filterLnt ? 'active' : ''}" @click=${() => { this._filterLnt = !this._filterLnt; this._filterFavorites = false; this._validateBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${lntClusters.length}</span></button>` : nothing}
-				</div>
-				` : nothing}
+			<!-- Breadcrumb (when drilled in) -->
+			${this._explorerPath?.connectionId ? this._renderBreadcrumbBar() : nothing}
 
-				<!-- Breadcrumb (when drilled in) -->
-				${this._explorerPath?.connectionId ? this._renderBreadcrumbBar() : nothing}
-
-				<!-- Explorer content -->
-				<div class="explorer-content">
-					${this._explorerPath?.connectionId ? this._renderDrilledContent() : this._renderClusterList(visibleConnections, favClusterUrls, lntClusters)}
-				</div>
+			<!-- Explorer content -->
+			<div class="explorer-content">
+				${this._explorerPath?.connectionId ? this._renderDrilledContent() : this._renderClusterList(visibleConnections, favClusterUrls, lntClusters)}
 			</div>
-
-			${this._modalVisible ? this._renderModal() : nothing}
 		`;
 	}
 
@@ -281,7 +441,7 @@ export class KwConnectionManager extends LitElement {
 		if (connections.length === 0) {
 			const hasFilter = this._filterFavorites || this._filterLnt;
 			return html`<div class="empty-state">
-				<div class="empty-state-icon">${ICONS.cluster}</div>
+				<div class="empty-state-icon">${ICONS.kustoCluster}</div>
 				<div class="empty-state-title">${hasFilter ? 'No matching clusters' : 'No clusters yet'}</div>
 				<div class="empty-state-text">${hasFilter ? 'Try removing the filter.' : 'Add a Kusto cluster to get started.'}</div>
 			</div>`;
@@ -298,7 +458,7 @@ export class KwConnectionManager extends LitElement {
 
 			return html`
 				<div class="explorer-list-item" @click=${() => this._drillIntoCluster(conn.id)}>
-					<span class="explorer-list-item-icon">${ICONS.cluster}</span>
+					<span class="explorer-list-item-icon cluster">${ICONS.kustoCluster}</span>
 					<span class="explorer-list-item-name">${conn.name || shortClusterName(conn.clusterUrl)}</span>
 					${hasFav ? html`<span class="conn-badge fav-badge" title="Has favorites">${ICONS.starFilled}</span>` : nothing}
 					${isLnt ? html`<span class="conn-badge lnt-badge" title="Leave No Trace">${ICONS.shield}</span>` : nothing}
@@ -376,7 +536,7 @@ export class KwConnectionManager extends LitElement {
 	private _renderBreadcrumb(conn: KustoConnection): TemplateResult {
 		const ep = this._explorerPath;
 		const rootLabel = this._filterFavorites ? 'Favorites' : this._filterLnt ? 'Leave No Trace' : 'All';
-		const rootIcon = this._filterFavorites ? ICONS.starFilled : this._filterLnt ? ICONS.shield : ICONS.cluster;
+		const rootIcon = this._filterFavorites ? ICONS.starFilled : this._filterLnt ? ICONS.shield : ICONS.kustoCluster;
 		return html`
 			<div class="explorer-breadcrumb">
 				<span class="breadcrumb-item" @click=${() => { this._explorerPath = null; }}>
@@ -384,8 +544,12 @@ export class KwConnectionManager extends LitElement {
 				</span>
 				<span class="breadcrumb-separator">/</span>
 				<span class="breadcrumb-item ${!ep?.database ? 'current' : ''}" @click=${() => { this._explorerPath = { connectionId: conn.id, database: undefined } as any; }}>
-					<span class="breadcrumb-icon">${ICONS.cluster}</span>${conn.name}
+					<span class="breadcrumb-icon">${ICONS.kustoCluster}</span>${conn.name}
 				</span>
+				${!ep?.database ? html`
+					<button class="btn-icon breadcrumb-refresh" title="Refresh databases"
+						@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id }); }}>${this._loadingDatabases.has(conn.id) ? ICONS.spinner : ICONS.refresh}</button>
+				` : nothing}
 				${ep?.database ? html`
 					<span class="breadcrumb-separator">/</span>
 					<span class="breadcrumb-item ${!ep.section ? 'current' : ''}" @click=${() => { this._explorerPath = { ...ep, section: undefined, folderPath: undefined, tableName: undefined }; }}>
@@ -404,6 +568,8 @@ export class KwConnectionManager extends LitElement {
 							</span>
 						`)}
 					` : nothing}
+					<button class="btn-icon breadcrumb-refresh" title="Refresh schema for ${ep.database}"
+						@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: conn.clusterUrl, database: ep.database, source: 'breadcrumb' }); }}>${ICONS.refresh}</button>
 				` : nothing}
 			</div>
 		`;
@@ -516,6 +682,10 @@ export class KwConnectionManager extends LitElement {
 						<span class="explorer-list-item-icon table">${ICONS.table}</span>
 							<span class="explorer-list-item-name">${table}</span>
 							${colNames.length > 0 ? html`<span class="explorer-list-item-meta">${colNames.length} cols</span>` : nothing}
+							<div class="explorer-list-item-actions">
+								<button class="btn-icon" title="Refresh schema for ${ep.database}"
+									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: conn.clusterUrl, database: ep.database, source: 'table' }); }}>${ICONS.refresh}</button>
+							</div>
 						</div>
 						${isExpanded ? html`
 							<div class="explorer-item-details">
@@ -569,6 +739,10 @@ export class KwConnectionManager extends LitElement {
 							<span class="explorer-list-item-icon function">${ICONS.function}</span>
 							<span class="explorer-list-item-name">${fn.name}</span>
 							${fn.parametersText ? html`<span class="explorer-list-item-params">(${fn.parametersText})</span>` : nothing}
+							<div class="explorer-list-item-actions">
+								<button class="btn-icon" title="Refresh schema for ${ep.database}"
+									@click=${(e: Event) => { const conn = this._snapshot?.connections?.find(c => c.id === this._explorerPath?.connectionId); if (!conn) return; e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: conn.clusterUrl, database: ep.database, source: 'function' }); }}>${ICONS.refresh}</button>
+							</div>
 						</div>
 						${isExpanded ? html`
 							<div class="explorer-item-details">
@@ -591,17 +765,21 @@ export class KwConnectionManager extends LitElement {
 				<button class="preview-action" @click=${() => this._vscode.postMessage({ type: 'table.preview', connectionId: conn.id, database: ep.database, tableName })}>${ICONS.table} Retry preview</button>
 			</div>`;}
 		if (data?.columns && data?.rows) {
-			if (data.rows.length === 0) return html`<div class="explorer-detail-section"><div style="font-size: 11px; opacity: 0.7; padding: 4px 0;">Table is empty.</div></div>`;
+			if (data.rows.length === 0) return html`<div class="explorer-detail-section"><div style="font-size: 11px; opacity: 0.7; padding: 4px 0; display: flex; align-items: center; gap: 6px;">Table is empty. <button class="btn-icon breadcrumb-refresh" title="Refresh preview" @click=${() => this._vscode.postMessage({ type: 'table.preview', connectionId: conn.id, database: ep.database, tableName })}>${ICONS.refresh}</button></div></div>`;
 			const dtColumns = data.columns.map((c: any) => ({ name: typeof c === 'string' ? c : c.name ?? '', type: typeof c === 'object' ? c.type : undefined }));
+			const tableHeight = Math.min(500, 90 + data.rows.length * 24);
 			return html`
 				<div class="explorer-detail-section">
 					<div class="preview-result">
 						<div class="preview-result-header">
 							<span class="preview-result-info">PREVIEW TOP 100 ROWS</span>
-							<button class="preview-result-dismiss" title="Dismiss" @click=${() => { const next = { ...this._tablePreviewData }; delete next[tableKey]; this._tablePreviewData = next; }}>${ICONS.close}</button>
+							<div class="preview-result-actions">
+								<button class="preview-result-dismiss" title="Refresh preview" @click=${() => this._vscode.postMessage({ type: 'table.preview', connectionId: conn.id, database: ep.database, tableName })}>${ICONS.refresh}</button>
+								<button class="preview-result-dismiss" title="Dismiss" @click=${() => { const next = { ...this._tablePreviewData }; delete next[tableKey]; this._tablePreviewData = next; }}>${ICONS.close}</button>
+							</div>
 						</div>
 						<div class="preview-table-container">
-							<kw-data-table style="height:500px"
+							<kw-data-table style="height:${tableHeight}px"
 								.columns=${dtColumns}
 								.rows=${data.rows as any}
 								.options=${{ compact: true, showExecutionTime: true, executionTime: data.executionTime }}
@@ -617,37 +795,522 @@ export class KwConnectionManager extends LitElement {
 			</div>`;
 	}
 
+	// ── SQL Content ───────────────────────────────────────────────────────────
+
+	private _renderSqlContent(): TemplateResult {
+		const sqlConnections = this._snapshot?.sqlConnections ?? [];
+		const sqlFavorites = this._snapshot?.sqlFavorites ?? [];
+		const sqlLntIds = this._snapshot?.sqlLeaveNoTrace ?? [];
+		const hasFavs = sqlFavorites.length > 0;
+		const hasLnt = sqlLntIds.length > 0;
+		const favConnIds = new Set(sqlFavorites.map(f => f.connectionId));
+		const lntSet = new Set(sqlLntIds);
+
+		// Apply filters
+		let visibleConnections = sqlConnections;
+		if (this._filterFavorites) {
+			visibleConnections = sqlConnections.filter(c => favConnIds.has(c.id));
+		}
+		if (this._filterLnt) {
+			visibleConnections = visibleConnections.filter(c => lntSet.has(c.id));
+		}
+
+		const ep = this._sqlExplorerPath;
+
+		return html`
+			<!-- Filter tabs -->
+			${hasFavs || hasLnt ? html`
+			<div class="filter-bar">
+				<button class="filter-tab ${!this._filterFavorites && !this._filterLnt ? 'active' : ''}" @click=${() => { this._filterFavorites = false; this._filterLnt = false; this._validateSqlBreadcrumb(); }}>${ICONS.sqlServer} <span class="filter-label">All</span></button>
+				${hasFavs ? html`<button class="filter-tab fav-tab ${this._filterFavorites ? 'active' : ''}" @click=${() => { this._filterFavorites = !this._filterFavorites; this._filterLnt = false; this._validateSqlBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${sqlFavorites.length}</span></button>` : nothing}
+				${hasLnt ? html`<button class="filter-tab lnt-tab ${this._filterLnt ? 'active' : ''}" @click=${() => { this._filterLnt = !this._filterLnt; this._filterFavorites = false; this._validateSqlBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${sqlLntIds.length}</span></button>` : nothing}
+			</div>
+			` : nothing}
+
+			<!-- SQL Breadcrumb -->
+			${ep?.connectionId ? this._renderSqlBreadcrumb() : nothing}
+
+			<!-- SQL Explorer content -->
+			<div class="explorer-content">
+				${ep?.connectionId ? this._renderSqlDrilledContent() : this._renderSqlConnectionList(visibleConnections, favConnIds, lntSet)}
+			</div>
+		`;
+	}
+
+	private _renderSqlConnectionList(connections: SqlConnectionInfo[], favConnIds: Set<string>, lntSet: Set<string>): TemplateResult {
+		if (connections.length === 0) {
+			const hasFilter = this._filterFavorites || this._filterLnt;
+			return html`<div class="empty-state">
+				<div class="empty-state-icon">${ICONS.sqlServer}</div>
+				<div class="empty-state-title">${hasFilter ? 'No matching connections' : 'No SQL connections yet'}</div>
+				<div class="empty-state-text">${hasFilter ? 'Try removing the filter.' : 'Add a SQL Server connection to get started.'}</div>
+			</div>`;
+		}
+
+		return html`${connections.map(conn => {
+			const dbCount = this._snapshot?.sqlCachedDatabases?.[conn.id]?.length ?? 0;
+			const authLabel = conn.authType === 'aad' ? 'AAD' : 'SQL Login';
+			const hasFav = favConnIds.has(conn.id);
+			const isLnt = lntSet.has(conn.id);
+			return html`
+				<div class="explorer-list-item" @click=${() => this._drillIntoSqlConnection(conn.id)}>
+					<span class="explorer-list-item-icon server">${ICONS.sqlServer}</span>
+					<span class="explorer-list-item-name">${conn.name || conn.serverUrl}</span>
+					${hasFav ? html`<span class="conn-badge fav-badge" title="Has favorites">${ICONS.starFilled}</span>` : nothing}
+					${isLnt ? html`<span class="conn-badge lnt-badge" title="Leave No Trace">${ICONS.shield}</span>` : nothing}
+					<span class="item-sep">·</span>
+					<span class="explorer-list-item-url">${conn.serverUrl}${conn.port ? ':' + conn.port : ''}</span>
+					<span class="item-sep">·</span>
+					<span class="explorer-list-item-meta">${authLabel}${dbCount > 0 ? ` · ${dbCount} db${dbCount !== 1 ? 's' : ''}` : ''}</span>
+					<div class="explorer-list-item-actions">
+						<button class="btn-icon ${isLnt ? 'is-lnt' : ''}" title="${isLnt ? 'Remove from Leave No Trace' : 'Add to Leave No Trace'}"
+							@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: isLnt ? 'sql.leaveNoTrace.remove' : 'sql.leaveNoTrace.add', connectionId: conn.id }); }}>${ICONS.shield}</button>
+						<button class="btn-icon" title="Edit" @click=${(e: Event) => { e.stopPropagation(); this._openModal('edit', conn.id); }}>${ICONS.edit}</button>
+						<button class="btn-icon" title="Refresh" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.cluster.refreshDatabases', connectionId: conn.id }); }}>${ICONS.refresh}</button>
+						<button class="btn-icon" title="Delete" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.connection.delete', id: conn.id }); }}>${ICONS.delete}</button>
+					</div>
+				</div>`;
+		})}`;
+	}
+
+	private _drillIntoSqlConnection(connId: string): void {
+		this._sqlExplorerPath = { connectionId: connId };
+		this._vscode.postMessage({ type: 'sql.cluster.expand', connectionId: connId });
+	}
+
+	private _renderSqlBreadcrumb(): TemplateResult {
+		const ep = this._sqlExplorerPath;
+		if (!ep) return html``;
+		const conn = (this._snapshot?.sqlConnections ?? []).find(c => c.id === ep.connectionId);
+		if (!conn) return html``;
+		const rootLabel = this._filterFavorites ? 'Favorites' : this._filterLnt ? 'Leave No Trace' : 'All';
+		const rootIcon = this._filterFavorites ? ICONS.starFilled : this._filterLnt ? ICONS.shield : ICONS.sqlServer;
+
+		return html`
+			<div class="explorer-breadcrumb">
+				<span class="breadcrumb-item" @click=${() => { this._sqlExplorerPath = null; }}>
+					<span class="breadcrumb-icon">${rootIcon}</span>${rootLabel}
+				</span>
+				<span class="breadcrumb-separator">/</span>
+				<span class="breadcrumb-item ${!ep.database ? 'current' : ''}" @click=${() => { this._sqlExplorerPath = { connectionId: conn.id }; }}>
+					<span class="breadcrumb-icon">${ICONS.sqlServer}</span>${conn.name}
+				</span>
+				${!ep.database ? html`
+					<button class="btn-icon breadcrumb-refresh" title="Refresh databases"
+						@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.cluster.refreshDatabases', connectionId: conn.id }); }}>${this._sqlLoadingDatabases.has(conn.id) ? ICONS.spinner : ICONS.refresh}</button>
+				` : nothing}
+				${ep.database ? html`
+					<span class="breadcrumb-separator">/</span>
+					<span class="breadcrumb-item ${!ep.section ? 'current' : ''}" @click=${() => { this._sqlExplorerPath = { ...ep, section: undefined, folderPath: undefined }; }}>
+						<span class="breadcrumb-icon">${ICONS.database}</span>${ep.database}
+					</span>
+					${ep.section === 'tables' ? html`
+						<span class="breadcrumb-separator">/</span>
+						<span class="breadcrumb-item current">
+							<span class="breadcrumb-icon">${ICONS.table}</span>Tables
+						</span>
+					` : nothing}
+					${ep.section === 'views' ? html`
+						<span class="breadcrumb-separator">/</span>
+						<span class="breadcrumb-item current">
+							<span class="breadcrumb-icon">${ICONS.table}</span>Views
+						</span>
+					` : nothing}
+					${ep.section === 'functions' ? html`
+						<span class="breadcrumb-separator">/</span>
+						<span class="breadcrumb-item current">
+							<span class="breadcrumb-icon">${ICONS.function}</span>Stored Procedures
+						</span>
+					` : nothing}
+					<button class="btn-icon breadcrumb-refresh" title="Refresh schema for ${ep.database}"
+						@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.refreshSchema', connectionId: conn.id, database: ep.database, source: 'breadcrumb' }); }}>${ICONS.refresh}</button>
+				` : nothing}
+			</div>
+		`;
+	}
+
+	private _renderSqlDrilledContent(): TemplateResult {
+		const ep = this._sqlExplorerPath;
+		if (!ep) return html``;
+		const conn = (this._snapshot?.sqlConnections ?? []).find(c => c.id === ep.connectionId);
+		if (!conn) return html`<div class="empty-state"><div class="empty-state-text">Connection not found.</div></div>`;
+
+		const databases = this._snapshot?.sqlCachedDatabases?.[conn.id] ?? [];
+		const isLoading = this._sqlLoadingDatabases.has(conn.id);
+
+		// Level 1: databases
+		if (!ep.database) {
+			if (isLoading) return html`<div class="loading-state">${ICONS.spinner} Loading databases...</div>`;
+
+			// Filter databases when Favorites filter is active
+			let visibleDbs = databases;
+			if (this._filterFavorites) {
+				const favDbs = new Set((this._snapshot?.sqlFavorites ?? []).filter(f => f.connectionId === conn.id).map(f => f.database));
+				visibleDbs = databases.filter(db => favDbs.has(db));
+			}
+
+			if (visibleDbs.length === 0) {
+				return html`<div class="empty-state">
+					<div class="empty-state-text">${this._filterFavorites ? 'No favorite databases in this connection.' : 'No databases found.'}</div>
+					${!this._filterFavorites ? html`<button class="btn" @click=${() => this._vscode.postMessage({ type: 'sql.cluster.refreshDatabases', connectionId: conn.id })}>Refresh</button>` : nothing}
+				</div>`;
+			}
+			return html`${visibleDbs.map(db => {
+				const isFav = this._isSqlFavorite(conn.id, db);
+				return html`
+					<div class="explorer-list-item" @click=${() => this._navigateToSqlDatabase(conn, db)}>
+						<span class="explorer-list-item-icon database">${ICONS.database}</span>
+						<span class="explorer-list-item-name">${db}</span>
+						<div class="explorer-list-item-actions">
+							<button class="btn-icon ${isFav ? 'is-favorite' : ''}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}"
+								@click=${(e: Event) => { e.stopPropagation(); this._toggleSqlFavorite(conn, db, isFav); }}>
+								${isFav ? ICONS.starFilled : ICONS.star}
+							</button>
+							<button class="btn-icon" title="Refresh" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.cluster.refreshDatabases', connectionId: conn.id }); }}>${ICONS.refresh}</button>
+							<button class="btn-icon" title="Open in new .sqlx file" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.openInNewFile', serverUrl: conn.serverUrl, database: db }); }}>${ICONS.newFile}</button>
+						</div>
+					</div>`;
+			})}`;
+		}
+
+		// Level 2: tables overview
+		const dbKey = conn.id + '|' + ep.database;
+		const schema = this._sqlDatabaseSchemas[dbKey];
+		if (!schema) return html`<div class="loading-state">${ICONS.spinner} Loading schema...</div>`;
+
+		if (!ep.section) {
+			const tableCount = schema.tables?.length ?? 0;
+			const viewCount = schema.views?.length ?? 0;
+			const spCount = schema.storedProcedures?.length ?? 0;
+			return html`
+				${tableCount > 0 ? html`
+					<div class="explorer-list-item" @click=${() => { this._sqlExplorerPath = { ...ep, section: 'tables' }; }}>
+						<span class="explorer-list-item-icon table">${ICONS.table}</span>
+						<span class="explorer-list-item-name">Tables</span>
+						<span class="explorer-list-item-meta">${tableCount}</span>
+					</div>
+				` : nothing}
+				${viewCount > 0 ? html`
+					<div class="explorer-list-item" @click=${() => { this._sqlExplorerPath = { ...ep, section: 'views' }; }}>
+						<span class="explorer-list-item-icon table">${ICONS.table}</span>
+						<span class="explorer-list-item-name">Views</span>
+						<span class="explorer-list-item-meta">${viewCount}</span>
+					</div>
+				` : nothing}
+				${spCount > 0 ? html`
+					<div class="explorer-list-item" @click=${() => { this._sqlExplorerPath = { ...ep, section: 'functions' }; }}>
+						<span class="explorer-list-item-icon function">${ICONS.function}</span>
+						<span class="explorer-list-item-name">Stored Procedures</span>
+						<span class="explorer-list-item-meta">${spCount}</span>
+					</div>
+				` : nothing}
+				${tableCount === 0 && viewCount === 0 && spCount === 0 ? html`<div class="empty-state"><div class="empty-state-text">No tables, views, or stored procedures found.</div></div>` : nothing}
+			`;
+		}
+
+		// Level 3: table list with expandable columns
+		if (ep.section === 'tables') {
+			return this._renderSqlTablesLevel(conn, schema, ep);
+		}
+
+		// Level 3: views (same rendering as tables)
+		if (ep.section === 'views') {
+			return this._renderSqlViewsLevel(conn, schema, ep);
+		}
+
+		// Level 3: stored procedures
+		if (ep.section === 'functions') {
+			return this._renderSqlStoredProcedures(schema, ep);
+		}
+
+		return html`<div class="empty-state">Unknown section</div>`;
+	}
+
+	private _navigateToSqlDatabase(conn: SqlConnectionInfo, db: string): void {
+		this._sqlExplorerPath = { connectionId: conn.id, database: db };
+		const dbKey = conn.id + '|' + db;
+		if (!this._sqlDatabaseSchemas[dbKey]) {
+			this._vscode.postMessage({ type: 'sql.database.getSchema', connectionId: conn.id, database: db });
+		}
+	}
+
+	private _isSqlFavorite(connectionId: string, database: string): boolean {
+		if (!this._snapshot?.sqlFavorites) return false;
+		const nDb = database.toLowerCase();
+		return this._snapshot.sqlFavorites.some(f => f.connectionId === connectionId && f.database.toLowerCase() === nDb);
+	}
+
+	private _toggleSqlFavorite(conn: SqlConnectionInfo, db: string, isFav: boolean): void {
+		if (isFav) {
+			this._vscode.postMessage({ type: 'sql.favorite.remove', connectionId: conn.id, database: db });
+		} else {
+			this._vscode.postMessage({ type: 'sql.favorite.add', connectionId: conn.id, database: db, name: conn.name });
+		}
+		this._vscode.postMessage({ type: 'requestSnapshot' });
+	}
+
+	/** Trim SQL breadcrumb depth so it stays valid when a filter changes. */
+	private _validateSqlBreadcrumb(): void {
+		const ep = this._sqlExplorerPath;
+		if (!ep?.connectionId) return;
+
+		const connections = this._snapshot?.sqlConnections ?? [];
+		const conn = connections.find(c => c.id === ep.connectionId);
+		if (!conn) { this._sqlExplorerPath = null; return; }
+
+		if (this._filterFavorites) {
+			const favConnIds = new Set((this._snapshot?.sqlFavorites ?? []).map(f => f.connectionId));
+			if (!favConnIds.has(conn.id)) { this._sqlExplorerPath = null; return; }
+			if (ep.database) {
+				const favDbs = new Set((this._snapshot?.sqlFavorites ?? []).filter(f => f.connectionId === conn.id).map(f => f.database));
+				if (!favDbs.has(ep.database)) { this._sqlExplorerPath = { connectionId: ep.connectionId }; return; }
+			}
+		}
+		if (this._filterLnt) {
+			const lntSet = new Set(this._snapshot?.sqlLeaveNoTrace ?? []);
+			if (!lntSet.has(conn.id)) { this._sqlExplorerPath = null; return; }
+		}
+	}
+
+	private _renderSqlTablesLevel(conn: SqlConnectionInfo, schema: SqlDatabaseSchema, ep: ExplorerPath): TemplateResult {
+		const tables = (schema.tables ?? []).sort();
+		const dbKey = conn.id + '|' + ep.database;
+
+		return html`
+			${tables.map(table => {
+				const cols = schema.columnsByTable?.[table] ?? {};
+				const colNames = Object.keys(cols).sort();
+				const tableKey = dbKey + '|table|' + table;
+				const isExpanded = this._expandedTables.has(tableKey);
+				const previewData = this._sqlTablePreviewData[tableKey];
+
+				return html`
+					<div class="explorer-list-item-wrapper ${isExpanded ? 'expanded' : ''}">
+						<div class="explorer-list-item" @click=${() => this._toggleTable(tableKey)}>
+							<span class="explorer-list-item-chevron ${isExpanded ? 'expanded' : ''}">${ICONS.chevron}</span>
+							<span class="explorer-list-item-icon table">${ICONS.table}</span>
+							<span class="explorer-list-item-name">${table}</span>
+							${colNames.length > 0 ? html`<span class="explorer-list-item-meta">${colNames.length} cols</span>` : nothing}
+							<div class="explorer-list-item-actions">
+								<button class="btn-icon" title="Refresh schema for ${ep.database}"
+									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.refreshSchema', connectionId: conn.id, database: ep.database }); }}>${ICONS.refresh}</button>
+							</div>
+						</div>
+						${isExpanded ? html`
+							<div class="explorer-item-details">
+								${colNames.length > 0 ? html`
+									<div class="explorer-detail-section">
+										<div class="explorer-detail-label">Schema (${colNames.length} columns)</div>
+										<div class="explorer-detail-schema">
+											${colNames.map(col => html`
+												<div class="explorer-schema-row">
+													<span class="explorer-schema-col-name">${col}</span>
+													<span class="explorer-schema-col-type">${cols[col]}</span>
+												</div>
+											`)}
+										</div>
+									</div>
+								` : nothing}
+								${this._renderSqlTablePreview(tableKey, table, previewData, conn, ep)}
+							</div>
+						` : nothing}
+					</div>`;
+			})}
+			${tables.length === 0 ? html`<div class="empty-state"><div class="empty-state-text">No tables found.</div></div>` : nothing}
+		`;
+	}
+
+	private _renderSqlViewsLevel(conn: SqlConnectionInfo, schema: SqlDatabaseSchema, ep: ExplorerPath): TemplateResult {
+		const views = (schema.views ?? []).sort();
+		const dbKey = conn.id + '|' + ep.database;
+
+		return html`
+			${views.map(view => {
+				const cols = schema.columnsByTable?.[view] ?? {};
+				const colNames = Object.keys(cols).sort();
+				const viewKey = dbKey + '|table|' + view;
+				const isExpanded = this._expandedTables.has(viewKey);
+				const previewData = this._sqlTablePreviewData[viewKey];
+
+				return html`
+					<div class="explorer-list-item-wrapper ${isExpanded ? 'expanded' : ''}">
+						<div class="explorer-list-item" @click=${() => this._toggleTable(viewKey)}>
+							<span class="explorer-list-item-chevron ${isExpanded ? 'expanded' : ''}">${ICONS.chevron}</span>
+							<span class="explorer-list-item-icon table">${ICONS.table}</span>
+							<span class="explorer-list-item-name">${view}</span>
+							${colNames.length > 0 ? html`<span class="explorer-list-item-meta">${colNames.length} cols</span>` : nothing}
+							<div class="explorer-list-item-actions">
+								<button class="btn-icon" title="Refresh schema for ${ep.database}"
+									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.refreshSchema', connectionId: conn.id, database: ep.database, source: 'view' }); }}>${ICONS.refresh}</button>
+							</div>
+						</div>
+						${isExpanded ? html`
+							<div class="explorer-item-details">
+								${colNames.length > 0 ? html`
+									<div class="explorer-detail-section">
+										<div class="explorer-detail-label">Schema (${colNames.length} columns)</div>
+										<div class="explorer-detail-schema">
+											${colNames.map(col => html`
+												<div class="explorer-schema-row">
+													<span class="explorer-schema-col-name">${col}</span>
+													<span class="explorer-schema-col-type">${cols[col]}</span>
+												</div>
+											`)}
+										</div>
+									</div>
+								` : nothing}
+								${this._renderSqlTablePreview(viewKey, view, previewData, conn, ep)}
+							</div>
+						` : nothing}
+					</div>`;
+			})}
+			${views.length === 0 ? html`<div class="empty-state"><div class="empty-state-text">No views found.</div></div>` : nothing}
+		`;
+	}
+
+	private _renderSqlStoredProcedures(schema: SqlDatabaseSchema, ep: ExplorerPath): TemplateResult {
+		const procedures = schema.storedProcedures ?? [];
+		const dbKey = (this._sqlExplorerPath?.connectionId ?? '') + '|' + ep.database;
+		const connectionId = this._sqlExplorerPath?.connectionId ?? '';
+
+		return html`
+			${procedures.map(sp => {
+				const spKey = dbKey + '|fn|' + sp.name;
+				const isExpanded = this._expandedFunctions.has(spKey);
+				return html`
+					<div class="explorer-list-item-wrapper ${isExpanded ? 'expanded' : ''}">
+						<div class="explorer-list-item" @click=${() => this._toggleFunction(spKey)} title="${sp.name}${sp.parametersText ? '(' + sp.parametersText + ')' : ''}">
+							<span class="explorer-list-item-chevron ${isExpanded ? 'expanded' : ''}">${ICONS.chevron}</span>
+							<span class="explorer-list-item-icon function">${ICONS.function}</span>
+							<span class="explorer-list-item-name">${sp.name}</span>
+							${sp.parametersText ? html`<span class="explorer-list-item-params">(${sp.parametersText})</span>` : nothing}
+							<div class="explorer-list-item-actions">
+								<button class="btn-icon" title="Refresh schema for ${ep.database}"
+									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.refreshSchema', connectionId, database: ep.database, source: 'stored procedure' }); }}>${ICONS.refresh}</button>
+							</div>
+						</div>
+						${isExpanded ? html`
+							<div class="explorer-item-details">
+								<div class="explorer-detail-section"><div class="explorer-detail-label">Signature</div><div class="explorer-detail-code">${sp.name}(${sp.parametersText || ''})</div></div>
+								${sp.body ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Implementation</div><pre class="explorer-detail-body">${sp.body}</pre></div>` : nothing}
+							</div>
+						` : nothing}
+					</div>`;
+			})}
+			${procedures.length === 0 ? html`<div class="empty-state"><div class="empty-state-text">No stored procedures found.</div></div>` : nothing}
+		`;
+	}
+
+	private _renderSqlTablePreview(tableKey: string, tableName: string, data: TablePreview | undefined, conn: SqlConnectionInfo, ep: ExplorerPath): TemplateResult {
+		if (data?.loading) return html`<div class="explorer-detail-section"><div class="preview-action loading">${ICONS.spinner} Loading preview…</div></div>`;
+		if (data?.error) {
+			return html`
+				<div class="explorer-detail-section">
+					<div class="preview-error">${data.error}</div>
+					<button class="preview-action" @click=${() => this._vscode.postMessage({ type: 'sql.table.preview', connectionId: conn.id, database: ep.database, tableName })}>${ICONS.table} Retry preview</button>
+				</div>`;
+		}
+		if (data?.columns && data?.rows) {
+			if (data.rows.length === 0) return html`<div class="explorer-detail-section"><div style="font-size: 11px; opacity: 0.7; padding: 4px 0; display: flex; align-items: center; gap: 6px;">Table is empty. <button class="btn-icon breadcrumb-refresh" title="Refresh preview" @click=${() => this._vscode.postMessage({ type: 'sql.table.preview', connectionId: conn.id, database: ep.database, tableName })}>${ICONS.refresh}</button></div></div>`;
+			const dtColumns = data.columns.map((c: any) => ({ name: typeof c === 'string' ? c : c.name ?? '', type: typeof c === 'object' ? c.type : undefined }));
+			const sqlTableHeight = Math.min(500, 90 + data.rows.length * 24);
+			return html`
+				<div class="explorer-detail-section">
+					<div class="preview-result">
+						<div class="preview-result-header">
+							<span class="preview-result-info">PREVIEW TOP 100 ROWS</span>
+							<div class="preview-result-actions">
+								<button class="preview-result-dismiss" title="Refresh preview" @click=${() => this._vscode.postMessage({ type: 'sql.table.preview', connectionId: conn.id, database: ep.database, tableName })}>${ICONS.refresh}</button>
+								<button class="preview-result-dismiss" title="Dismiss" @click=${() => { const next = { ...this._sqlTablePreviewData }; delete next[tableKey]; this._sqlTablePreviewData = next; }}>${ICONS.close}</button>
+							</div>
+						</div>
+						<div class="preview-table-container">
+							<kw-data-table style="height:${sqlTableHeight}px"
+								.columns=${dtColumns}
+								.rows=${data.rows as any}
+								.options=${{ compact: true, showExecutionTime: true, executionTime: data.executionTime }}
+								@save=${(e: CustomEvent) => { this._vscode.postMessage({ type: 'saveResultsCsv', csv: e.detail.csv, suggestedFileName: e.detail.suggestedFileName }); }}
+							></kw-data-table>
+						</div>
+					</div>
+				</div>`;
+		}
+		return html`
+			<div class="explorer-detail-section">
+				<button class="preview-action" @click=${() => this._vscode.postMessage({ type: 'sql.table.preview', connectionId: conn.id, database: ep.database, tableName })}>${ICONS.table} Preview top 100 rows</button>
+			</div>`;
+	}
+
 	// ── Modal ─────────────────────────────────────────────────────────────────
 
 	private _renderModal(): TemplateResult {
+		return this._activeKind === 'sql' ? this._renderSqlModal() : this._renderKustoModal();
+	}
+
+	private _renderKustoModal(): TemplateResult {
 		return html`
 			<div class="modal-overlay" @click=${() => this._closeModal()}>
-				<div class="modal-content" @click=${(e: Event) => e.stopPropagation()} @keydown=${this._onModalKeydown}>
+				<div class="modal-content" @click=${(e: Event) => e.stopPropagation()}>
 					<div class="modal-header">
 						<h2>${this._modalMode === 'edit' ? 'Edit Connection' : 'Add Connection'}</h2>
 						<button class="btn-icon" @click=${() => this._closeModal()}>${ICONS.close}</button>
 					</div>
 					<div class="modal-body">
-						<div class="form-group">
-							<label>Connection Name *</label>
-							<input type="text" .value=${this._modalName} @input=${(e: Event) => this._modalName = (e.target as HTMLInputElement).value} placeholder="My Cluster" />
-						</div>
-						<div class="form-group">
-							<label>Cluster URL *</label>
-							<input type="text" .value=${this._modalUrl} @input=${(e: Event) => this._modalUrl = (e.target as HTMLInputElement).value} placeholder="https://mycluster.kusto.windows.net" />
-						</div>
-						<div class="form-group">
-							<label>Default Database</label>
-							<input type="text" .value=${this._modalDb} @input=${(e: Event) => this._modalDb = (e.target as HTMLInputElement).value} placeholder="(optional)" />
-						</div>
-						${this._editingConnectionId ? html`
-							<button class="btn" @click=${() => this._testConnection()}>Test Connection</button>
-							${this._testResult === 'loading' ? html`<div class="test-result">${ICONS.spinner} Testing connection...</div>` : this._testResult ? html`<div class="test-result">${this._testResult}</div>` : nothing}
-						` : nothing}
+						<kw-kusto-connection-form
+							.mode=${this._modalMode}
+							.name=${this._modalName}
+							.clusterUrl=${this._modalUrl}
+							.database=${this._modalDb}
+							.showTestButton=${!!this._editingConnectionId}
+							.testResult=${this._testResult}
+							@connection-form-submit=${this._onKustoFormSubmit}
+							@connection-form-cancel=${() => this._closeModal()}
+							@connection-form-test=${() => this._testConnection()}
+						></kw-kusto-connection-form>
 					</div>
 					<div class="modal-footer">
 						<button class="btn" @click=${() => this._closeModal()}>Cancel</button>
-						<button class="btn primary" @click=${() => this._saveConnection()}>Save</button>
+						<button class="btn primary" @click=${() => this._submitKustoForm()}>Save</button>
+					</div>
+				</div>
+			</div>
+		`;
+	}
+
+	private _renderSqlModal(): TemplateResult {
+		const dialects = this._snapshot?.sqlDialects ?? [];
+		const isEditing = !!this._editingConnectionId;
+
+		return html`
+			<div class="modal-overlay" @click=${() => this._closeModal()}>
+				<div class="modal-content" @click=${(e: Event) => e.stopPropagation()}>
+					<div class="modal-header">
+						<h2>${isEditing ? 'Edit SQL Connection' : 'Add SQL Connection'}</h2>
+						<button class="btn-icon" @click=${() => this._closeModal()}>${ICONS.close}</button>
+					</div>
+					<div class="modal-body">
+						<kw-sql-connection-form
+							.mode=${this._modalMode}
+							.name=${this._modalName}
+							.serverUrl=${this._modalServerUrl}
+							.port=${this._modalPort}
+							.dialect=${this._modalDialect}
+							.authType=${this._modalAuthType}
+							.username=${this._modalUsername}
+							.password=${this._modalPassword}
+							.database=${this._modalDb}
+							.dialects=${dialects}
+							.showTestButton=${isEditing}
+							.testResult=${this._testResult}
+							.changePassword=${this._modalChangePassword}
+							@sql-connection-form-submit=${this._onSqlFormSubmit}
+							@sql-connection-form-cancel=${() => this._closeModal()}
+							@sql-connection-form-test=${() => this._testSqlConnection()}
+						></kw-sql-connection-form>
+					</div>
+					<div class="modal-footer">
+						<button class="btn" @click=${() => this._closeModal()}>Cancel</button>
+						<button class="btn primary" @click=${() => this._submitSqlForm()}>Save</button>
 					</div>
 				</div>
 			</div>
@@ -709,17 +1372,46 @@ export class KwConnectionManager extends LitElement {
 		this._modalMode = mode;
 		this._editingConnectionId = connId ?? null;
 		this._testResult = '';
-		if (mode === 'edit' && connId && this._snapshot) {
-			const conn = this._snapshot.connections.find(c => c.id === connId);
-			if (conn) {
-				this._modalName = conn.name || '';
-				this._modalUrl = conn.clusterUrl || '';
-				this._modalDb = conn.database || '';
+		this._modalChangePassword = false;
+
+		if (this._activeKind === 'sql') {
+			// SQL modal
+			if (mode === 'edit' && connId && this._snapshot?.sqlConnections) {
+				const conn = this._snapshot.sqlConnections.find(c => c.id === connId);
+				if (conn) {
+					this._modalName = conn.name || '';
+					this._modalServerUrl = conn.serverUrl || '';
+					this._modalPort = conn.port ? String(conn.port) : '';
+					this._modalDialect = conn.dialect || 'mssql';
+					this._modalAuthType = conn.authType || 'aad';
+					this._modalUsername = conn.username || '';
+					this._modalPassword = '';
+					this._modalDb = conn.database || '';
+				}
+			} else {
+				this._modalName = '';
+				this._modalServerUrl = '';
+				this._modalPort = '';
+				this._modalDialect = (this._snapshot?.sqlDialects?.[0]?.id) || 'mssql';
+				this._modalAuthType = 'aad';
+				this._modalUsername = '';
+				this._modalPassword = '';
+				this._modalDb = '';
 			}
 		} else {
-			this._modalName = '';
-			this._modalUrl = '';
-			this._modalDb = '';
+			// Kusto modal
+			if (mode === 'edit' && connId && this._snapshot) {
+				const conn = this._snapshot.connections.find(c => c.id === connId);
+				if (conn) {
+					this._modalName = conn.name || '';
+					this._modalUrl = conn.clusterUrl || '';
+					this._modalDb = conn.database || '';
+				}
+			} else {
+				this._modalName = '';
+				this._modalUrl = '';
+				this._modalDb = '';
+			}
 		}
 		this._modalVisible = true;
 	}
@@ -729,26 +1421,70 @@ export class KwConnectionManager extends LitElement {
 		this._editingConnectionId = null;
 	}
 
-	private _saveConnection(): void {
-		if (!this._modalName.trim() || !this._modalUrl.trim()) return;
-		if (this._editingConnectionId) {
-			this._vscode.postMessage({ type: 'connection.edit', id: this._editingConnectionId, name: this._modalName.trim(), clusterUrl: this._modalUrl.trim(), database: this._modalDb.trim() || undefined });
-		} else {
-			this._vscode.postMessage({ type: 'connection.add', name: this._modalName.trim(), clusterUrl: this._modalUrl.trim(), database: this._modalDb.trim() || undefined });
-		}
-		this._closeModal();
-		setTimeout(() => this._vscode.postMessage({ type: 'requestSnapshot' }), 100);
-	}
-
 	private _testConnection(): void {
 		if (!this._editingConnectionId) return;
 		this._vscode.postMessage({ type: 'connection.test', id: this._editingConnectionId });
 	}
 
+	private _testSqlConnection(): void {
+		if (!this._editingConnectionId) return;
+		const payload: Record<string, unknown> = { id: this._editingConnectionId };
+		// Pass password if authType is sql-login and password was changed
+		if (this._modalAuthType === 'sql-login' && this._modalChangePassword && this._modalPassword) {
+			payload.password = this._modalPassword;
+		}
+		this._vscode.postMessage({ type: 'sql.connection.test', ...payload });
+	}
+
 	private _onModalKeydown = (e: KeyboardEvent) => {
-		if (e.key === 'Enter') { this._saveConnection(); e.preventDefault(); }
+		// Escape on the overlay level (form handles Enter/Escape internally,
+		// but clicks on overlay backdrop don't go through the form)
 		if (e.key === 'Escape') { this._closeModal(); e.preventDefault(); }
 	};
+
+	private _onKustoFormSubmit(e: CustomEvent<KustoConnectionFormSubmitDetail>): void {
+		const { name, clusterUrl, database } = e.detail;
+		if (!clusterUrl) return;
+		if (this._editingConnectionId) {
+			this._vscode.postMessage({ type: 'connection.edit', id: this._editingConnectionId, name, clusterUrl, database });
+		} else {
+			this._vscode.postMessage({ type: 'connection.add', name, clusterUrl, database });
+		}
+		this._closeModal();
+		setTimeout(() => this._vscode.postMessage({ type: 'requestSnapshot' }), 100);
+	}
+
+	private _onSqlFormSubmit(e: CustomEvent<SqlConnectionFormSubmitDetail>): void {
+		const d = e.detail;
+		if (!d.serverUrl) return;
+		const payload: Record<string, unknown> = {
+			name: d.name,
+			serverUrl: d.serverUrl,
+			dialect: d.dialect,
+			authType: d.authType,
+			database: d.database,
+		};
+		if (d.port) payload.port = d.port;
+		if (d.username !== undefined) payload.username = d.username;
+		if (d.password !== undefined) payload.password = d.password;
+		if (this._editingConnectionId) {
+			this._vscode.postMessage({ type: 'sql.connection.edit', id: this._editingConnectionId, ...payload });
+		} else {
+			this._vscode.postMessage({ type: 'sql.connection.add', ...payload });
+		}
+		this._closeModal();
+		setTimeout(() => this._vscode.postMessage({ type: 'requestSnapshot' }), 100);
+	}
+
+	private _submitKustoForm(): void {
+		const form = this.shadowRoot?.querySelector('kw-kusto-connection-form');
+		if (form) form.submit();
+	}
+
+	private _submitSqlForm(): void {
+		const form = this.shadowRoot?.querySelector('kw-sql-connection-form');
+		if (form) form.submit();
+	}
 
 	private _trimFnBody(body: string): string {
 		let s = body.trim();
@@ -810,7 +1546,7 @@ export class KwConnectionManager extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static styles = styles;
+	static styles = [iconRegistryStyles, styles];
 }
 
 declare global {

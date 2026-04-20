@@ -6,7 +6,7 @@ export const styles = css`
 		:host {
 			display: block;
 			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
-			border-radius: 0;
+			border-radius: 4px;
 			margin-bottom: 16px;
 			background: var(--vscode-editor-background);
 			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
@@ -154,6 +154,9 @@ export const styles = css`
 			width: calc(100% + 24px);
 			padding: 16px 16px 0 16px;
 			margin-bottom: 20px;
+		}
+		.chart-controls.no-canvas {
+			margin-bottom: 5px;
 		}
 		.chart-controls::before {
 			content: '';
@@ -900,6 +903,7 @@ export const styles = css`
 			background: var(--vscode-toolbar-hoverBackground);
 		}
 		.axis-popup-reset-icon svg { display: block; }
+		.axis-popup-reset-icon .codicon { font-size: 16px; }
 
 		/* Legacy full-width reset (kept for backwards compat) */
 		.axis-popup-reset {
@@ -1065,8 +1069,8 @@ export const styles = css`
 			z-index: 1;
 			border-radius: 2px;
 		}
-		.chart-title-splitter:hover::before { width: 4px; }
-		.chart-title-splitter.is-dragging::before { width: 4px; }
+		.chart-title-splitter:hover::before { width: var(--kw-sash-hover-size, 4px); }
+		.chart-title-splitter.is-dragging::before { width: var(--kw-sash-hover-size, 4px); }
 		.chart-title-align-group {
 			display: inline-flex;
 			gap: 1px;
@@ -1112,11 +1116,17 @@ export const styles = css`
 			min-height: 0;
 		}
 
-		/* Chart resizer: bleed edge-to-edge to overlap section bottom border */
+		/* Chart resizer: bleed edge-to-edge to overlap section bottom border.
+		   Transparent background lets the host's animated [has-changes] border
+		   show through (matches the fix in kw-transformation-section.styles.ts).
+		   ::slotted(...)::before is not allowed in shadow CSS, so the matching
+		   border-radius for the hover/drag highlight bar lives in queryEditor.css. */
 		::slotted(.chart-bottom-resizer) {
 			margin: 0 -13px -13px !important;
 			width: calc(100% + 26px) !important;
 			z-index: 2;
+			border-radius: 0 0 4px 4px;
+			background: transparent !important;
 		}
 		:host(.is-collapsed) ::slotted(.chart-bottom-resizer) {
 			display: none !important;

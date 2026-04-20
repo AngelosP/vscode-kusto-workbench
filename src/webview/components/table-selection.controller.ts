@@ -196,6 +196,18 @@ export class TableSelectionController implements ReactiveController {
 
 	isSelectionInThisTable(): boolean {
 		if (!this.selectedCell && !this.selectionRange) return false;
+		// When a modal viewer (object viewer, cell viewer) inside the table's
+		// shadow DOM is open, the user is interacting with the viewer — don't
+		// claim copy events for the underlying table selection.
+		try {
+			const sr = this.host.shadowRoot;
+			if (sr) {
+				const ov = sr.querySelector('kw-object-viewer') as HTMLElement & { open?: boolean } | null;
+				if (ov && ov.open) return false;
+				const cv = sr.querySelector('kw-cell-viewer') as HTMLElement & { open?: boolean } | null;
+				if (cv && cv.open) return false;
+			}
+		} catch { /* ignore */ }
 		const active = document.activeElement as HTMLElement | null;
 		if (active && this.host.contains(active)) return true;
 		// Focus is on a specific element outside this table — don't claim the event.

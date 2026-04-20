@@ -2,7 +2,8 @@ import { LitElement, html, nothing, type PropertyValues } from 'lit';
 import { customElement, property, state, query } from 'lit/decorators.js';
 import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { styles } from './kw-copilot-chat.styles.js';
-import { codiconSheet } from '../shared/codicon-styles.js';
+import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
+import { sashSheet } from '../shared/sash-styles.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -59,7 +60,7 @@ function renderMarkdown(text: string): string {
 	}
 }
 
-const FINAL_TOOL_NAMES = new Set([
+const DEFAULT_FINAL_TOOL_NAMES = new Set([
 	'respond_to_query_performance_optimization_request',
 	'respond_to_all_other_queries',
 	'ask_user_clarifying_question',
@@ -94,10 +95,17 @@ const SVG_TOOLS = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" s
 @customElement('kw-copilot-chat')
 export class KwCopilotChat extends LitElement {
 
-	static override styles = [codiconSheet, styles];
+	static override styles = [iconRegistryStyles, sashSheet, styles];
 
 	@property({ type: String, attribute: 'box-id' })
 	boxId = '';
+
+	/** Tool names rendered under the "Final step" group in the tools panel. */
+	finalToolNames: Set<string> = DEFAULT_FINAL_TOOL_NAMES;
+	/** Tool name whose executed query results show an "insert as section" button. Null to suppress. */
+	insertQueryToolName: string | null = 'execute_kusto_query';
+	/** Tip HTML for the initial notification. Null to suppress the tip entirely. */
+	tipHtml: string | null = 'Tip: If the ask is very challenging or broad, use the <a href="#" class="copilot-open-agent-link">Kusto Workbench custom agent</a> instead.';
 
 	// ── Internal reactive state ───────────────────────────────────────────────
 
@@ -137,7 +145,7 @@ export class KwCopilotChat extends LitElement {
 	override connectedCallback(): void {
 		super.connectedCallback();
 		// Seed the initial tip message before the first render.
-		if (this._messages.length === 0) {
+		if (this._messages.length === 0 && this.tipHtml) {
 			this._messages = [{
 				id: this._nextId(),
 				kind: 'notification',
@@ -201,7 +209,7 @@ export class KwCopilotChat extends LitElement {
 			id: this._nextId(),
 			kind: 'tool',
 			text: isError ? 'Query failed to execute' : (resultSummary || ''),
-			toolName: 'execute_kusto_query',
+			toolName: this.insertQueryToolName || 'execute_kusto_query',
 			toolLabel: isError ? 'Query failed to execute' : resultSummary,
 			detail: query,
 			tooltipLabel: 'Query:',
@@ -345,6 +353,16 @@ export class KwCopilotChat extends LitElement {
 		this._requireToolUseOnNextSend = value;
 	}
 
+	/** Focus the chat textarea so the user can start typing. */
+	focusInput(): void {
+		this.updateComplete.then(() => {
+			// Use setTimeout to run after any pending focusSoon() from Monaco's mousedown handler.
+			setTimeout(() => {
+				if (this.isConnected && this.checkVisibility()) this._textarea?.focus();
+			}, 1);
+		});
+	}
+
 	/** Programmatically set the textarea value (used by agent tool delegation). */
 	setInputText(text: string): void {
 		const ta = this._textarea;
@@ -373,19 +391,19 @@ export class KwCopilotChat extends LitElement {
 					<button type="button" class="icon-btn clear-btn"
 						title="Clear conversation history"
 						@click=${this._onClear}>
-						<span class="codicon codicon-clear-all" aria-hidden="true"></span>
+						${ICONS.clearAll}
 					</button>
 					<button type="button" class="icon-btn close-btn"
 						title="Close chat"
 						@click=${this._onClose}>
-						<span class="codicon codicon-close" aria-hidden="true"></span>
+						${ICONS.close}
 					</button>
 				</div>
 			</div>
 			<div class="messages" aria-live="polite" @scroll=${this._onMessagesScroll}>
 				${this._messages.map(m => this._renderMessage(m))}
 			</div>
-			<div class="input-resizer"
+			<div class="resizer input-resizer"
 				title="Drag to resize input area"
 				@mousedown=${this._onInputResizerMouseDown}></div>
 			<div class="input-area">
@@ -455,14 +473,17 @@ export class KwCopilotChat extends LitElement {
 	}
 
 	private _renderNotificationMessage(msg: ChatMessageEntry) {
-		if (msg.text === '__TIP__') {
-			return html`<div class="msg msg-notification">Tip: If the ask is very challenging or broad, use the <a href="#" @click=${this._onOpenAgent}>Kusto Workbench custom agent</a> instead.</div>`;
+		if (msg.text === '__TIP__' && this.tipHtml) {
+			return html`<div class="msg msg-notification" @click=${(e: MouseEvent) => {
+				const t = e.target as HTMLElement;
+				if (t.classList.contains('copilot-open-agent-link')) { e.preventDefault(); this._onOpenAgent(e); }
+			}}>${unsafeHTML(this.tipHtml)}</div>`;
 		}
 		return html`<div class="msg msg-notification">${msg.text}</div>`;
 	}
 
 	private _renderToolMessage(msg: ChatMessageEntry) {
-		const isExecuteQuery = msg.toolName === 'execute_kusto_query';
+		const isExecuteQuery = !!this.insertQueryToolName && msg.toolName === this.insertQueryToolName;
 		const isDevNote = msg.toolName?.startsWith('update_development_note');
 		return html`
 			<div class="msg msg-tool ${msg.isError ? 'is-error' : ''} ${msg.removed ? 'is-removed' : ''}"
@@ -482,21 +503,21 @@ export class KwCopilotChat extends LitElement {
 							<button type="button" class="tool-icon-btn"
 								title="Insert as new query section so you can inspect the query and results"
 								@click=${(e: Event) => { e.preventDefault(); this._onInsertQuery(msg); }}>
-								<span class="codicon codicon-insert"></span>
+								${ICONS.insert}
 							</button>
 						` : nothing}
 						${!isExecuteQuery && !isDevNote && msg.detail ? html`
 						<button type="button" class="tool-icon-btn"
 							title="View what the tool returned"
 							@click=${(e: Event) => { e.preventDefault(); this._onViewTool(msg); }}>
-							<span class="codicon codicon-link-external"></span>
+							${ICONS.linkExternal}
 							</button>
 						` : nothing}
 						${msg.entryId && !msg.removed ? html`
 							<button type="button" class="tool-icon-btn remove-btn"
 								title="Remove from conversation history"
 								@click=${(e: Event) => { e.preventDefault(); this._onRemoveEntry(msg); }}>
-								<span class="codicon codicon-trash"></span>
+								${ICONS.trash}
 							</button>
 						` : nothing}
 					</div>
@@ -525,21 +546,21 @@ export class KwCopilotChat extends LitElement {
 							<button type="button" class="tool-icon-btn"
 								title="View in new tab"
 								@click=${(e: Event) => { e.preventDefault(); this._onOpenPreview(msg); }}>
-								<span class="codicon codicon-link-external"></span>
+								${ICONS.linkExternal}
 							</button>
 						` : nothing}
 						${!msg.filePath && msg.detail ? html`
 							<button type="button" class="tool-icon-btn"
 								title="View content"
 								@click=${(e: Event) => { e.preventDefault(); this._onViewTool(msg); }}>
-								<span class="codicon codicon-link-external"></span>
+								${ICONS.linkExternal}
 							</button>
 						` : nothing}
 						${msg.entryId && !msg.removed ? html`
 							<button type="button" class="tool-icon-btn remove-btn"
 								title="Remove from conversation history"
 								@click=${(e: Event) => { e.preventDefault(); this._onRemoveEntry(msg); }}>
-								<span class="codicon codicon-trash"></span>
+								${ICONS.trash}
 							</button>
 						` : nothing}
 					</div>
@@ -565,13 +586,13 @@ export class KwCopilotChat extends LitElement {
 						<button type="button" class="tool-icon-btn"
 							title=${msg.detail || ''}
 							@click=${(e: Event) => { e.preventDefault(); this._onViewTool({ ...msg, toolName: 'Existing query', toolLabel: 'Query snapshot' }); }}>
-						<span class="codicon codicon-link-external"></span>
+						${ICONS.linkExternal}
 						</button>
 						${msg.entryId && !msg.removed ? html`
 							<button type="button" class="tool-icon-btn remove-btn"
 								title="Remove from conversation history"
 								@click=${(e: Event) => { e.preventDefault(); this._onRemoveEntry(msg); }}>
-								<span class="codicon codicon-trash"></span>
+								${ICONS.trash}
 							</button>
 						` : nothing}
 					</div>
@@ -595,7 +616,7 @@ export class KwCopilotChat extends LitElement {
 							<button type="button" class="tool-icon-btn remove-btn"
 								title="Remove from conversation history"
 								@click=${(e: Event) => { e.preventDefault(); this._onRemoveEntry(msg); }}>
-								<span class="codicon codicon-trash"></span>
+								${ICONS.trash}
 							</button>
 						` : nothing}
 					</div>
@@ -608,8 +629,8 @@ export class KwCopilotChat extends LitElement {
 	// ── Tools panel ───────────────────────────────────────────────────────────
 
 	private _renderToolsPanel() {
-		const finalTools = this._tools.filter(t => FINAL_TOOL_NAMES.has(t.name));
-		const optionalTools = this._tools.filter(t => !FINAL_TOOL_NAMES.has(t.name));
+		const finalTools = this._tools.filter(t => this.finalToolNames.has(t.name));
+		const optionalTools = this._tools.filter(t => !this.finalToolNames.has(t.name));
 		const enabledSet = new Set(this._enabledTools);
 
 		return html`

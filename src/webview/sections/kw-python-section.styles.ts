@@ -1,6 +1,7 @@
 import { css } from 'lit';
+import { monacoToolbarStyles } from '../components/kw-monaco-toolbar.styles.js';
 
-export const styles = css`
+export const styles = [monacoToolbarStyles, css`
 		*, *::before, *::after {
 			box-sizing: border-box;
 		}
@@ -8,7 +9,7 @@ export const styles = css`
 		:host {
 			display: block;
 			border: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
-			border-radius: 0;
+			border-radius: 4px;
 			margin-bottom: 16px;
 			background: var(--vscode-editor-background);
 			box-shadow: 0 2px 10px var(--vscode-widget-shadow);
@@ -65,71 +66,6 @@ export const styles = css`
 			cursor: default;
 		}
 
-		/* ── Python toolbar (inside editor wrapper, above Monaco) ────── */
-
-		.python-toolbar {
-			display: flex;
-			align-items: center;
-			flex-wrap: nowrap;
-			gap: 4px;
-			padding: 0 6px;
-			height: 35px;
-			min-height: 35px;
-			border-bottom: 1px solid var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.25))));
-			background: transparent;
-			color: var(--vscode-foreground);
-			flex: 0 0 auto;
-			border-top-left-radius: 2px;
-			border-top-right-radius: 2px;
-			overflow: visible;
-			position: relative;
-		}
-
-		.py-toolbar-btn {
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			gap: 4px;
-			background: transparent;
-			border: 1px solid transparent;
-			border-radius: 4px;
-			color: var(--vscode-foreground);
-			cursor: pointer;
-			padding: 4px 6px;
-			height: 28px;
-			min-width: 28px;
-		}
-		.py-toolbar-btn:hover {
-			background: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
-			border-color: var(--vscode-toolbar-hoverBackground, var(--vscode-list-hoverBackground));
-		}
-		.py-toolbar-btn .qe-icon {
-			display: inline-flex;
-			align-items: center;
-			justify-content: center;
-			width: 16px;
-			height: 16px;
-		}
-		.py-toolbar-btn svg {
-			display: block;
-		}
-
-		.py-toolbar-sep {
-			width: auto;
-			height: auto;
-			background: transparent;
-			margin: 0 2px;
-			opacity: 0.9;
-			color: var(--vscode-descriptionForeground);
-			user-select: none;
-		}
-		.py-toolbar-sep::before {
-			content: '|';
-			display: inline-block;
-			line-height: 18px;
-			padding: 0 2px;
-		}
-
 		/* Editor wrapper — slotted content (Monaco) lives in light DOM */
 		.editor-wrapper {
 			position: relative;
@@ -158,39 +94,6 @@ export const styles = css`
 			font-size: 13px;
 		}
 
-		.resizer {
-			flex: 0 0 1px;
-			height: 1px;
-			cursor: ns-resize;
-			background: var(--vscode-input-border, var(--vscode-widget-border, var(--vscode-panel-border, rgba(128,128,128,0.35))));
-			position: relative;
-			touch-action: none;
-			z-index: 1;
-		}
-		.resizer::after {
-			content: '';
-			position: absolute;
-			left: 0;
-			right: 0;
-			top: -3px;
-			bottom: -3px;
-		}
-		.resizer::before {
-			content: '';
-			position: absolute;
-			left: 0;
-			right: 0;
-			top: 50%;
-			height: 0;
-			transform: translateY(-50%);
-			background: var(--vscode-sash-hoverBorder, #007fd4);
-			transition: height 0.1s ease;
-			pointer-events: none;
-			z-index: 1;
-		}
-		.resizer:hover::before { height: 6px; transition-delay: var(--kw-sash-reveal-delay, 0.5s); }
-		.resizer.is-dragging::before { height: 6px; transition-delay: 0s; }
-
 		.python-output {
 			border: 1px solid var(--vscode-input-border);
 			border-radius: 4px;
@@ -203,4 +106,4 @@ export const styles = css`
 			overflow: auto;
 			max-height: 320px;
 		}
-`;
+`];

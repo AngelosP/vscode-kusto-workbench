@@ -16,6 +16,24 @@
 				"${workspaceFolder}/dist/**/*.js"
 			],
 			"preLaunchTask": "${defaultBuildTask}"
+    },
+    {
+      "name": "Debug extension with automation support",
+      "type": "extensionHost",
+      "request": "launch",
+      "args": [
+        "--extensionDevelopmentPath=${workspaceFolder}",
+        "--remote-debugging-port=9222",
+        "--user-data-dir=${workspaceFolder}/.vscode-test-user-data",
+        "--disable-workspace-trust"
+      ],
+      "outFiles": [
+        "${workspaceFolder}/dist/**/*.js"
+      ],
+      "preLaunchTask": "${defaultBuildTask}",
+      "env": {
+        "VSCODE_EXT_TESTER_PORT": "9788"
+      }
     }
 	]
 }

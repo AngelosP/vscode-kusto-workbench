@@ -363,6 +363,7 @@ export function getRunModeLabelText(mode: any): string {
 		case 'plain': return 'Run Query';
 		case 'sample100': return 'Run Query (sample 100)';
 		case 'runfunction': return 'Run Function';
+		case 'top100': return 'Run Query (TOP 100)';
 		case 'take100':
 		default: return 'Run Query (take 100)';
 	}

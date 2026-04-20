@@ -5,7 +5,7 @@ export {};
 import { normalizeClusterUrl, isLeaveNoTraceCluster, byteLengthUtf8, trySerializeQueryResult } from '../shared/persistence-utils';
 import { postMessageToHost } from '../shared/webview-messages';
 import { pState } from '../shared/persistence-state';
-import { displayResult } from './results-state';
+import { displayResult, displayResultForBox } from './results-state';
 import {
 	addQueryBox, removeQueryBox, updateConnectionSelects, toggleCacheControls,
 	__kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase,
@@ -13,11 +13,14 @@ import {
 	__kustoClampResultsWrapperHeight,
 	addPythonBox, addUrlBox, removePythonBox, removeUrlBox, pythonBoxes, urlBoxes,
 	addHtmlBox, removeHtmlBox, htmlBoxes,
+	addSqlBox, removeSqlBox, sqlBoxes,
+	__kustoGetSqlSectionElement,
 } from './section-factory';
 import {
 	connections, queryBoxes, queryEditors, favoritesModeByBoxId, leaveNoTraceClusters,
 	caretDocsEnabled, autoTriggerAutocompleteEnabled,
-	setCaretDocsEnabled, setAutoTriggerAutocompleteEnabled
+	setCaretDocsEnabled, setAutoTriggerAutocompleteEnabled,
+	sqlFavoritesModeByBoxId,
 } from './state';
 import { addChartBox, removeChartBox, chartBoxes } from '../sections/kw-chart-section';
 import { addTransformationBox, removeTransformationBox, transformationBoxes } from '../sections/kw-transformation-section';
@@ -69,7 +72,7 @@ export function __kustoApplyDocumentCapabilities() {
 	try {
 		const allowed = Array.isArray(pState.allowedSectionKinds)
 			? pState.allowedSectionKinds.map((k: any) => String(k))
-			: ['query', 'markdown', 'python', 'url', 'html'];
+			: ['query', 'python', 'url', 'html', 'markdown'];
 
 		// If no section kinds are allowed, hide the entire add-controls container.
 		const addControlsContainer = document.querySelector('.add-controls') as HTMLElement | null;
@@ -147,7 +150,7 @@ export function __kustoRequestAddSection(kind: any, afterBoxId?: string) {
 	try {
 		const allowed = Array.isArray(pState.allowedSectionKinds)
 			? pState.allowedSectionKinds.map((v: any) => String(v))
-			: ['query', 'chart', 'markdown', 'python', 'url', 'html'];
+			: ['query', 'chart', 'python', 'url', 'html', 'markdown'];
 		if (allowed.length > 0 && !allowed.includes(k)) {
 			return;
 		}
@@ -194,6 +197,7 @@ export function __kustoRequestAddSection(kind: any, afterBoxId?: string) {
 	if (k === 'python') return addPythonBox(opts);
 	if (k === 'url') return addUrlBox(opts);
 	if (k === 'html') return addHtmlBox(opts);
+	if (k === 'sql') return addSqlBox(opts);
 	// copilotQuery sections are deprecated; Copilot chat is now a per-editor toolbar toggle.
 }
 
@@ -480,7 +484,7 @@ export function getKqlxState() {
 	const sections: any[] = [];
 	const container = document.getElementById('queries-container');
 	const children = container ? Array.from(container.children || []) : [];
-	const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_', 'html_'];
+	const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_', 'html_', 'sql_'];
 	for (const child of children) {
 		const id = child && child.id ? String(child.id) : '';
 		if (!id) continue;
@@ -631,6 +635,16 @@ function __kustoClearAllSections() {
 	try {
 		for (const id of (urlBoxes || []).slice()) {
 			try { removeUrlBox(id); } catch (e) { console.error('[kusto]', e); }
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		for (const id of (htmlBoxes || []).slice()) {
+			try { removeHtmlBox(id); } catch (e) { console.error('[kusto]', e); }
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		for (const id of (sqlBoxes || []).slice()) {
+			try { removeSqlBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	// Clear passthrough dev notes sections
@@ -1153,6 +1167,78 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 				});
 				continue;
 			}
+
+			if (t === 'sql') {
+				const pendingId = section.id ? String(section.id) : ('sql_' + Date.now());
+				try {
+					pState.pendingSqlQueryByBoxId = pState.pendingSqlQueryByBoxId || {};
+					pState.pendingSqlQueryByBoxId[pendingId] = String(section.query || '');
+				} catch (e) { console.error('[kusto]', e); }
+				// Restore results visibility BEFORE creating the section.
+				try {
+					if (typeof section.resultsVisible === 'boolean') {
+						pState.resultsVisibleByBoxId[pendingId] = !!section.resultsVisible;
+					}
+				} catch (e) { console.error('[kusto]', e); }
+				addSqlBox({
+					id: pendingId,
+					name: String(section.name || ''),
+					serverUrl: section.serverUrl ? String(section.serverUrl) : undefined,
+					database: section.database ? String(section.database) : undefined,
+					expanded: (typeof section.expanded === 'boolean') ? section.expanded : true,
+					editorHeightPx: section.editorHeightPx,
+					copilotChatVisible: section.copilotChatVisible,
+					copilotChatWidthPx: section.copilotChatWidthPx,
+				});
+				// Restore run mode.
+				try {
+					setRunMode(pendingId, String(section.runMode || 'top100'));
+				} catch (e) { console.error('[kusto]', e); }
+				// Restore favorites mode.
+				try {
+					if (typeof section.favoritesMode === 'boolean') {
+						const sqlEl = __kustoGetSqlSectionElement(pendingId);
+						if (sqlEl && typeof sqlEl.setFavoritesMode === 'function') {
+							sqlEl.setFavoritesMode(!!section.favoritesMode);
+						}
+						if (typeof sqlFavoritesModeByBoxId === 'object') {
+							sqlFavoritesModeByBoxId[pendingId] = !!section.favoritesMode;
+						}
+					}
+				} catch (e) { console.error('[kusto]', e); }
+				// Restore persisted query results.
+				try {
+					const rj = section.resultJson ? String(section.resultJson) : '';
+					if (rj) {
+						pState.queryResultJsonByBoxId[pendingId] = rj;
+						// Pre-apply persisted results height BEFORE displayResultForBox so
+						// _displayResults sees kustoUserResized and skips auto-sizing.
+						try {
+							const rh = section.resultsHeightPx;
+							if (typeof rh === 'number' && Number.isFinite(rh) && rh > 0) {
+								const sqlWrapper = document.getElementById(pendingId + '_sql_results_wrapper') as HTMLElement | null;
+								if (sqlWrapper) {
+									sqlWrapper.style.height = Math.max(120, Math.round(rh)) + 'px';
+									sqlWrapper.dataset.kustoUserResized = 'true';
+								}
+							}
+						} catch (e) { console.error('[kusto]', e); }
+						try {
+							const parsed = JSON.parse(rj);
+							if (parsed && typeof parsed === 'object') {
+								if (!parsed.metadata || typeof parsed.metadata !== 'object') {
+									parsed.metadata = { executionTime: '' };
+								}
+								pState.lastExecutedBox = pendingId;
+								displayResultForBox(parsed, pendingId, { label: 'Results', showExecutionTime: true });
+							}
+						} catch {
+							delete pState.queryResultJsonByBoxId[pendingId];
+						}
+					}
+				} catch (e) { console.error('[kusto]', e); }
+				continue;
+			}
 		}
 	} finally {
 		pState.restoreInProgress = false;
@@ -1181,7 +1267,7 @@ function __kustoApplyPendingAdds() {
 	}
 	const allowed = Array.isArray(pState.allowedSectionKinds)
 		? pState.allowedSectionKinds.map((v: any) => String(v))
-		: ['query', 'chart', 'transformation', 'markdown', 'python', 'url'];
+		: ['query', 'chart', 'transformation', 'python', 'url', 'markdown'];
 	if (allowed.includes('query')) {
 		for (let i = 0; i < (pendingAdds.query || 0); i++) addQueryBox();
 	}
@@ -1290,7 +1376,7 @@ export function handleDocumentDataMessage(message: any) {
 
 	// If the doc is empty, initialize UX content.
 	try {
-		const hasAny = (queryBoxes && queryBoxes.length) || (markdownBoxes && markdownBoxes.length) || (pythonBoxes && pythonBoxes.length) || (urlBoxes && urlBoxes.length);
+		const hasAny = (queryBoxes && queryBoxes.length) || (markdownBoxes && markdownBoxes.length) || (pythonBoxes && pythonBoxes.length) || (urlBoxes && urlBoxes.length) || (htmlBoxes && htmlBoxes.length) || (sqlBoxes && sqlBoxes.length);
 		if (!hasAny) {
 			const applied = __kustoApplyPendingAdds();
 			if (!applied) {

@@ -8,6 +8,9 @@ import { __kustoRequestAddSection, schedulePersist } from './persistence';
 import { queryEditors } from './state';
 
 // Side-effect imports — register event handlers on import.
+// Active-section-tracker must be imported before message-handler so its
+// focusin listener is installed before any sections are created/focused.
+import './active-section-tracker';
 import './keyboard-shortcuts';
 import './message-handler';
 import './drag-reorder';
@@ -18,6 +21,7 @@ export {};
 // like cached-values or connection-manager that also load the bundle).
 if (window.vscode) {
 	postMessageToHost({ type: 'getConnections' });
+	postMessageToHost({ type: 'getSqlConnections' });
 	// Global Copilot capability check (for add-controls Copilot button)
 	try { postMessageToHost({ type: 'checkCopilotAvailability', boxId: '__kusto_global__' }); } catch (e) { console.error('[kusto]', e); }
 	// Request document state on load (.kqlx custom editor)
@@ -95,7 +99,7 @@ function __kustoUpdateAddSectionDropdownVisibility() {
 	try {
 		const allowed = Array.isArray(pState.allowedSectionKinds)
 			? pState.allowedSectionKinds.map((v: any) => String(v))
-			: ['query', 'chart', 'transformation', 'markdown', 'python', 'url', 'html'];
+			: ['query', 'sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
 
 		const items = document.querySelectorAll('.add-controls-dropdown-item[data-add-kind]');
 		for (const item of items as any) {

@@ -11,9 +11,9 @@ import type { DatabaseSchemaIndex, KustoFunctionInfo, KustoFunctionParameter } f
 // formatCellValue
 // ---------------------------------------------------------------------------
 
-export function formatCellValue(cell: any): { display: string; full: string; isObject?: boolean; rawObject?: any } {
+export function formatCellValue(cell: any): { display: string; full: string; isObject?: boolean; isNull?: boolean; rawObject?: any } {
 	if (cell === null || cell === undefined) {
-		return { display: 'null', full: 'null' };
+		return { display: 'null', full: 'null', isNull: true };
 	}
 	if (cell instanceof Date) {
 		const full = cell.toString();

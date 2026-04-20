@@ -11,16 +11,6 @@ export const styles = css`
 			display: contents;
 		}
 
-		/* ── Unsaved-changes indicator borders ───────────────────────────── */
-		:host([has-changes="modified"]) .section-header {
-			border-left: 3px solid var(--vscode-editorGutter-modifiedBackground, #1b81a8);
-			padding-left: 6px;
-		}
-		:host([has-changes="new"]) .section-header {
-			border-left: 3px solid var(--vscode-editorGutter-addedBackground, #2ea043);
-			padding-left: 6px;
-		}
-
 		/* Diff button accent color when changes present */
 		:host([has-changes="modified"]) .diff-btn {
 			color: var(--vscode-editorGutter-modifiedBackground, #1b81a8);
@@ -38,6 +28,7 @@ export const styles = css`
 			flex: 0 0 auto;
 			width: 14px;
 			height: 14px;
+			margin-left: 7px;
 			margin-right: 2px;
 			opacity: 0.85;
 			color: var(--vscode-foreground);
@@ -117,6 +108,20 @@ export const styles = css`
 			flex: 1 1 auto;
 			font-family: inherit;
 		}
+
+		/* ── Section type icon ───────────────────────────────────────────── */
+
+		.section-type-icon {
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			flex: 0 0 auto;
+			width: 14px;
+			height: 14px;
+			color: var(--vscode-descriptionForeground);
+			margin-left: 2px;
+		}
+		.section-type-icon svg { display: block; width: 14px; height: 14px; }
 		.query-name::placeholder {
 			color: var(--vscode-input-placeholderForeground);
 		}

@@ -15,10 +15,10 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, '..', 'dist');
 
-// ── Baselines (KB) — recorded 2026-03-22 from production build ────────────────
+// ── Baselines (KB) — updated 2026-04-16 after STS integration + pre-existing webview growth ──
 const BASELINES = {
-	'extension.js':                                         927,
-	'webview/webview.bundle.js':                           1223,
+	'extension.js':                                        1106,
+	'webview/webview.bundle.js':                           1824,
 	'queryEditor/vendor/echarts/echarts.webview.js':        586,
 	'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
 	'monaco/':                                            10963,

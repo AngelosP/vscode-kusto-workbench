@@ -30,7 +30,7 @@ export interface DataTableOptions {
 	/** Query metadata — client activity ID and server stats shown in a hover tooltip. */
 	metadata?: { clientActivityId?: string; serverStats?: Record<string, unknown> };
 }
-export type CellValue = string | number | boolean | null | undefined | { display?: string; full?: unknown; isObject?: boolean };
+export type CellValue = string | number | boolean | null | undefined | { display?: string; full?: unknown; isObject?: boolean; isNull?: boolean };
 export interface CellRange { rowMin: number; rowMax: number; colMin: number; colMax: number; }
 
 export function getCellDisplayValue(cell: CellValue): string {
@@ -210,6 +210,11 @@ function fmtCell(cell: CellValue): string {
 	return getCellDisplayValue(cell);
 }
 function escHtml(s: string): string { return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;'); }
+function isCellNull(cell: CellValue): boolean {
+	if (cell === null || cell === undefined) return true;
+	if (typeof cell === 'object' && cell !== null && 'isNull' in cell && cell.isNull) return true;
+	return false;
+}
 function inRange(range: CellRange | null, row: number, col: number): boolean {
 	return !!range && row >= range.rowMin && row <= range.rowMax && col >= range.colMin && col <= range.colMax;
 }
@@ -309,21 +314,29 @@ export class KwDataTable extends LitElement {
 		const headEl = sr.querySelector('.dtable-head-wrap') as HTMLElement | null;
 		const hbarH = hbarEl ? hbarEl.getBoundingClientRect().height : 36;
 		const headH = headEl ? headEl.getBoundingClientRect().height : 28;
-		// Measure actual rendered row height (includes padding + border-bottom).
-		const rowSample = sr.querySelector('#dt-body tbody tr:not(.vspacer)') as HTMLElement | null;
-		const rowH = rowSample ? rowSample.getBoundingClientRect().height : this._estimatedRowHeight();
+		// Measure the actual body table height when rendered, falling back to the
+		// virtualizer estimate for tables too large to fully render.
+		const bodyTable = sr.querySelector('#dt-body') as HTMLElement | null;
 		const totalRows = this.getVisibleRowCount();
-		const allRowsH = totalRows * (rowH + 1);
+		let rowsH: number;
+		if (bodyTable && this._vScrollCtrl.vItems.length === totalRows && totalRows > 0) {
+			// All rows are rendered — use the exact measured height.
+			rowsH = bodyTable.getBoundingClientRect().height;
+		} else {
+			rowsH = this._vScrollCtrl.vTotalSize;
+		}
 		// Measure ALL visible toolbars (search, row-jump, col-jump — each is a .sbar).
 		let toolbarsH = 0;
 		for (const bar of sr.querySelectorAll('.sbar')) {
 			toolbarsH += (bar as HTMLElement).getBoundingClientRect().height;
 		}
 		// When there are columns but 0 rows, the ".empty-body" placeholder is shown.
-		// Measure it so the wrapper height accounts for <thead> + "No matching rows".
 		const emptyEl = totalRows === 0 ? sr.querySelector('.empty-body') as HTMLElement | null : null;
 		const emptyH = emptyEl ? emptyEl.getBoundingClientRect().height : 0;
-		return Math.ceil(hbarH + headH + toolbarsH + allRowsH + emptyH + 25);
+		// .vscroll border (top + bottom).
+		const vscrollEl = sr.querySelector('.vscroll') as HTMLElement | null;
+		const vscrollBorderH = vscrollEl ? (vscrollEl.offsetHeight - vscrollEl.clientHeight) : 2;
+		return Math.ceil(hbarH + toolbarsH + vscrollBorderH + headH + rowsH + emptyH);
 	}
 
 	/** Sum of visible toolbar/sbar chrome element heights. */
@@ -718,10 +731,12 @@ export class KwDataTable extends LitElement {
 					<tbody>
 						${visibleRows.map(({ index, row }) => {
 							const isSel = sel.selectedCell?.row === index;
-							return html`<tr class="${isSel ? 'sel-row' : ''}" data-idx="${index}">
+							const isAlt = index % 2 === 1;
+							return html`<tr class="${isSel ? 'sel-row' : ''}${isAlt ? ' alt' : ''}" data-idx="${index}">
 								<td class="rn" @click=${(e: MouseEvent) => sel.selectRow(e, index)}>${index + 1}</td>
 								${row.getVisibleCells().map((cell, ci) => {
 							const raw = cell.getValue() as CellValue, display = fmtCell(raw);
+								const isNull = isCellNull(raw);
 								const isObj = typeof raw === 'object' && raw !== null && 'isObject' in raw && raw.isObject;
 								const isFocus = sel.selectedCell?.row === index && sel.selectedCell?.col === ci;
 								const isInRng = inRange(sel.selectionRange, index, ci);
@@ -729,11 +744,12 @@ export class KwDataTable extends LitElement {
 								const isCM = isM && search.isCurMatch(index, ci);
 								let cls = isFocus ? 'cf' : isInRng ? 'cr' : '';
 								if (isCM) cls += ' mc'; else if (isM) cls += ' mh';
+								if (isNull) cls += ' null-cell';
 								if (isObj) {
 									return html`<td class="${cls} obj-cell" title="${escHtml(getCellDisplayValue(raw))}"><a class="obj-link" href="#" @click=${(e: MouseEvent) => { e.preventDefault(); e.stopPropagation(); this._openObjectViewer(index, ci); }}>View</a></td>`;
 								}
-								const cellContent = isM && search.searchRegex ? highlightMatches(display, search.searchRegex, isCM ? 'hl-cur' : 'hl') : display;
-								return html`<td class="${cls}" title="${escHtml(getCellDisplayValue(raw))}" @dblclick=${(e: MouseEvent) => { if (this._isCellObject(index, ci)) { e.stopPropagation(); this._openObjectViewer(index, ci); } }}>${cellContent}</td>`;
+								const cellContent = isNull ? 'null' : isM && search.searchRegex ? highlightMatches(display, search.searchRegex, isCM ? 'hl-cur' : 'hl') : display;
+								return html`<td class="${cls}" title="${escHtml(isNull ? 'null' : getCellDisplayValue(raw))}" @dblclick=${(e: MouseEvent) => { if (this._isCellObject(index, ci)) { e.stopPropagation(); this._openObjectViewer(index, ci); } }}>${cellContent}</td>`;
 								})}
 							</tr>`;
 						})}
@@ -1063,7 +1079,8 @@ export class KwDataTable extends LitElement {
 		}
 		// chrome-height-change is now emitted centrally from updated()
 	}
-	private _toggleBody(): void { this._bodyVisible = !this._bodyVisible; this.dispatchEvent(new CustomEvent('visibility-toggle', { detail: { visible: this._bodyVisible }, bubbles: true, composed: true })); }
+	private _toggleBody(): void { this.setBodyVisible(!this._bodyVisible); }
+	setBodyVisible(visible: boolean): void { this._bodyVisible = visible; this.dispatchEvent(new CustomEvent('visibility-toggle', { detail: { visible: this._bodyVisible }, bubbles: true, composed: true })); }
 	private _onSortChange = (e: CustomEvent<{ sorting: SortingState }>): void => {
 		this._sorting = e.detail.sorting;
 		this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: this._sorting } }));

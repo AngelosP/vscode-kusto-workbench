@@ -197,6 +197,23 @@ export type KqlxSectionV1 =
 		}
 	| {
 			id?: string;
+			type: 'sql';
+			name?: string;
+			query?: string;
+			serverUrl?: string;
+			database?: string;
+			expanded?: boolean;
+			resultsVisible?: boolean;
+			favoritesMode?: boolean;
+			resultJson?: string;
+			runMode?: string;
+			editorHeightPx?: number;
+			resultsHeightPx?: number;
+			copilotChatVisible?: boolean;
+			copilotChatWidthPx?: number;
+		}
+	| {
+			id?: string;
 			type: 'devnotes';
 			entries?: DevNoteEntry[];
 		}
@@ -222,7 +239,7 @@ export interface KqlxStateV1 {
 	sections: KqlxSectionV1[];
 }
 
-export type KqlxFileKind = 'kqlx' | 'mdx';
+export type KqlxFileKind = 'kqlx' | 'mdx' | 'sqlx';
 
 export interface KqlxFileV1 {
 	kind: KqlxFileKind;

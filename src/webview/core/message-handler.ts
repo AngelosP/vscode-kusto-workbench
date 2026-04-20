@@ -16,6 +16,10 @@ import {
 	schemaRequestTokenByBoxId,
 	addPythonBox, addUrlBox, removePythonBox, removeUrlBox, onPythonResult, onPythonError,
 	addHtmlBox, removeHtmlBox,
+	addSqlBox, removeSqlBox,
+	updateSqlConnectionSelects, updateSqlDatabaseSelect, onSqlDatabasesError,
+	__kustoGetSqlSectionElement, sqlBoxes,
+	updateSqlFavoritesUiForAllBoxes,
 	__kustoGetChartValidationStatus,
 } from './section-factory';
 import { addMarkdownBox, removeMarkdownBox, __kustoMaximizeMarkdownBox } from '../sections/kw-markdown-section';
@@ -42,6 +46,9 @@ import {
 	__kustoCrossClusterSchemas,
 } from '../monaco/monaco';
 import {
+	handleStsResponse, handleStsDiagnostics,
+} from '../monaco/sql-sts-providers.js';
+import {
 	activeQueryEditorBoxId,
 	connections, setConnections, setLastConnectionId, setLastDatabase,
 	kustoFavorites, setKustoFavorites, setLeaveNoTraceClusters,
@@ -51,6 +58,8 @@ import {
 	schemaByConnDb, schemaRequestResolversByBoxId, schemaByBoxId,
 	schemaFetchInFlightByBoxId, databasesRequestResolversByBoxId,
 	favoritesModeByBoxId,
+	sqlConnections, sqlCachedDatabases, setSqlConnections,
+	sqlFavorites, setSqlFavorites, sqlFavoritesModeByBoxId,
 } from './state';
 
 const _win = window;
@@ -166,6 +175,18 @@ window.addEventListener('message', async (event: any) => {
 	const message = (event && event.data && typeof event.data === 'object') ? event.data : {};
 	const messageType = String(message.type || '');
 	switch (messageType) {
+		case 'settingsUpdate':
+			try {
+				const altColor = typeof message.alternatingRowColor === 'string' ? message.alternatingRowColor : '';
+				if (altColor === 'off') {
+					document.documentElement.style.removeProperty('--kw-alt-row-bg');
+				} else if (altColor === 'theme' || !altColor) {
+					document.documentElement.style.setProperty('--kw-alt-row-bg', 'color-mix(in srgb, var(--vscode-editor-background) 97%, var(--vscode-foreground) 3%)');
+				} else {
+					document.documentElement.style.setProperty('--kw-alt-row-bg', altColor);
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			break;
 		case 'controlCommandSyntaxResult':
 			try {
 				const commandLower = String(message.commandLower || '').trim();
@@ -906,6 +927,127 @@ window.addEventListener('message', async (event: any) => {
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				break;
+		// ── SQL connection messages ────────────────────────────────────
+		case 'sqlConnectionsData':
+			try {
+				setSqlConnections(Array.isArray(message.connections) ? message.connections : []);
+				for (const k of Object.keys(sqlCachedDatabases)) delete sqlCachedDatabases[k];
+				Object.assign(sqlCachedDatabases, message.cachedDatabases || {});
+				try { (window as any).__kustoSqlLastConnectionId = message.lastConnectionId || ''; } catch (e) { console.error('[kusto]', e); }
+				try { (window as any).__kustoSqlLastDatabase = message.lastDatabase || ''; } catch (e) { console.error('[kusto]', e); }
+				setSqlFavorites(Array.isArray(message.sqlFavorites) ? message.sqlFavorites : []);
+				updateSqlConnectionSelects();
+				try { updateSqlFavoritesUiForAllBoxes(); } catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlFavoritesData':
+			try {
+				setSqlFavorites(Array.isArray(message.favorites) ? message.favorites : []);
+				try { updateSqlFavoritesUiForAllBoxes(); } catch (e) { console.error('[kusto]', e); }
+				try {
+					const boxId = message && typeof message.boxId === 'string' ? message.boxId : '';
+					if (boxId && Array.isArray(sqlFavorites) && sqlFavorites.length > 0) {
+						const sqlEl = __kustoGetSqlSectionElement(boxId);
+						if (sqlEl && typeof sqlEl.setFavoritesMode === 'function') {
+							sqlEl.setFavoritesMode(true);
+							if (typeof sqlFavoritesModeByBoxId === 'object') {
+								sqlFavoritesModeByBoxId[boxId] = true;
+							}
+						}
+					}
+				} catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlDatabasesData':
+			try {
+				updateSqlDatabaseSelect(message.boxId, message.databases, message.sqlConnectionId);
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlDatabasesError':
+			try {
+				onSqlDatabasesError(message.boxId, message.error, message.sqlConnectionId);
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlConnectionAdded':
+			try {
+				if (Array.isArray(message.connections)) {
+					setSqlConnections(message.connections);
+				}
+				updateSqlConnectionSelects();
+				const boxId = message.boxId || null;
+				if (boxId && message.connectionId) {
+					const sqlEl = __kustoGetSqlSectionElement(boxId);
+					if (sqlEl && typeof sqlEl.setSqlConnectionId === 'function') {
+						sqlEl.setSqlConnectionId(message.connectionId);
+						sqlEl.dispatchEvent(new CustomEvent('sql-connection-changed', {
+							detail: { boxId: boxId, connectionId: message.connectionId },
+							bubbles: true, composed: true,
+						}));
+					}
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlSchemaData':
+			try {
+				const bid = String(message.boxId || '').trim();
+				if (!bid) break;
+				const meta = message.schemaMeta || {};
+				if (meta.error) {
+					// Schema fetch failed
+					const sqlEl = __kustoGetSqlSectionElement(bid);
+					if (sqlEl && typeof sqlEl.setSchemaInfo === 'function') {
+						sqlEl.setSchemaInfo(buildSchemaInfo(meta.errorMessage || 'Schema failed', true));
+					}
+				} else if (message.schema) {
+					// Store schema for autocomplete
+					schemaByBoxId[bid] = message.schema;
+					const tablesCount = meta.tablesCount ?? (message.schema.tables?.length ?? 0);
+					let columnsCount = meta.columnsCount ?? 0;
+					if (!columnsCount && message.schema.columnsByTable) {
+						for (const tbl of Object.keys(message.schema.columnsByTable)) {
+							columnsCount += Object.keys(message.schema.columnsByTable[tbl] || {}).length;
+						}
+					}
+					const fromCache = !!meta.fromCache;
+					const displayText = tablesCount + ' tables, ' + columnsCount + ' cols' + (fromCache ? ' (cached)' : '');
+					const sqlEl = __kustoGetSqlSectionElement(bid);
+					if (sqlEl && typeof sqlEl.setSchemaInfo === 'function') {
+						sqlEl.setSchemaInfo(buildSchemaInfo(displayText, false,
+							{ fromCache, tablesCount, columnsCount, functionsCount: 0 }));
+					}
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'stsResponse':
+			try {
+				const reqId = String(message.requestId || '');
+				handleStsResponse(reqId, message.result);
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'stsDiagnostics':
+			try {
+				const bid = String(message.boxId || '').trim();
+				if (bid) {
+					// Suppress diagnostics until STS schema is loaded (_stsReady).
+					// Before intelliSenseReady, STS doesn't know about schema objects
+					// and produces false "Incorrect syntax" errors for valid table names.
+					const diagSqlEl = __kustoGetSqlSectionElement(bid);
+					if (diagSqlEl && diagSqlEl._stsReady) {
+						handleStsDiagnostics(bid, message.markers || []);
+					}
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'stsConnectionState':
+			try {
+				const bid = String(message.boxId || '').trim();
+				if (!bid) break;
+				const sqlEl = __kustoGetSqlSectionElement(bid);
+				if (sqlEl && typeof sqlEl.setStsReady === 'function') {
+					sqlEl.setStsReady(String(message.state || '') === 'ready');
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			break;
 		case 'copilotChatFirstTimeResult':
 			try {
 				// Update local flag so the dialog is never shown again.
@@ -917,6 +1059,11 @@ window.addEventListener('message', async (event: any) => {
 					const kwEl = ftBoxId ? __kustoGetQuerySectionElement(ftBoxId) : null;
 					if (kwEl && typeof kwEl.setCopilotChatVisible === 'function') {
 						kwEl.setCopilotChatVisible(true);
+					} else {
+						const sqlEl = ftBoxId ? __kustoGetSqlSectionElement(ftBoxId) : null;
+						if (sqlEl && typeof sqlEl.setCopilotChatVisible === 'function') {
+							sqlEl.setCopilotChatVisible(true);
+						}
 					}
 				}
 				// 'openedAgent' and 'dismissed': do nothing in webview (agent was opened or dialog dismissed).
@@ -954,17 +1101,21 @@ window.addEventListener('message', async (event: any) => {
 						for (const b of btns) {
 							applyToButton(b);
 						}
-						// Also update all kw-query-toolbar Lit elements.
+						// Also update all kw-query-toolbar and kw-sql-toolbar Lit elements.
 						try {
 							document.querySelectorAll('kw-query-toolbar').forEach((toolbar: any) => {
+								if (typeof toolbar.setCopilotChatEnabled === 'function') toolbar.setCopilotChatEnabled(available);
+							});
+							document.querySelectorAll('kw-sql-toolbar').forEach((toolbar: any) => {
 								if (typeof toolbar.setCopilotChatEnabled === 'function') toolbar.setCopilotChatEnabled(available);
 							});
 						} catch (e) { console.error('[kusto]', e); }
 					} else {
 						applyToButton(document.getElementById(boxId + '_copilot_chat_toggle'));
-						// Also update the kw-query-toolbar Lit element.
+						// Also update the kw-query-toolbar or kw-sql-toolbar Lit element.
 						try {
-							const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
+							const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any
+								|| document.querySelector('kw-sql-toolbar[box-id="' + boxId + '"]') as any;
 							if (toolbar && typeof toolbar.setCopilotChatEnabled === 'function') toolbar.setCopilotChatEnabled(available);
 						} catch (e) { console.error('[kusto]', e); }
 					}
@@ -1246,6 +1397,16 @@ window.addEventListener('message', async (event: any) => {
 						message.selectedModelId || '',
 						message.tools || []
 					);
+				} else {
+					// Try SQL section
+					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
+					if (sqlEl && typeof sqlEl.copilotApplyWriteQueryOptions === 'function') {
+						sqlEl.copilotApplyWriteQueryOptions(
+							message.models || [],
+							message.selectedModelId || '',
+							message.tools || []
+						);
+					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1255,6 +1416,11 @@ window.addEventListener('message', async (event: any) => {
 				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotWriteQueryStatus === 'function') {
 					kwEl.copilotWriteQueryStatus(message.status || '', message.detail || '', message.role || '');
+				} else {
+					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
+					if (sqlEl && typeof sqlEl.copilotWriteQueryStatus === 'function') {
+						sqlEl.copilotWriteQueryStatus(message.status || '', message.detail || '', message.role || '');
+					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1265,6 +1431,12 @@ window.addEventListener('message', async (event: any) => {
 				if (kwEl && typeof kwEl.copilotWriteQuerySetQuery === 'function') {
 					kwEl.copilotWriteQuerySetQuery(message.query || '');
 					markSectionAgentTouched(boxId);
+				} else {
+					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
+					if (sqlEl && typeof sqlEl.copilotWriteQuerySetQuery === 'function') {
+						sqlEl.copilotWriteQuerySetQuery(message.query || '');
+						markSectionAgentTouched(boxId);
+					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1288,6 +1460,16 @@ window.addEventListener('message', async (event: any) => {
 						message.json || '',
 						message.entryId || ''
 					);
+				} else {
+					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
+					if (sqlEl && typeof sqlEl.copilotWriteQueryToolResult === 'function') {
+						sqlEl.copilotWriteQueryToolResult(
+							message.tool || '',
+							message.label || '',
+							message.json || '',
+							message.entryId || ''
+						);
+					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1303,6 +1485,17 @@ window.addEventListener('message', async (event: any) => {
 						message.entryId || '',
 						message.result || null
 					);
+				} else {
+					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
+					if (sqlEl && typeof sqlEl.copilotAppendExecutedQuery === 'function') {
+						sqlEl.copilotAppendExecutedQuery(
+							message.query || '',
+							message.resultSummary || '',
+							message.errorMessage || '',
+							message.entryId || '',
+							message.result || null
+						);
+					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1316,6 +1509,15 @@ window.addEventListener('message', async (event: any) => {
 						message.preview || '',
 						message.entryId || ''
 					);
+				} else {
+					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
+					if (sqlEl && typeof sqlEl.copilotAppendGeneralRulesLink === 'function') {
+						sqlEl.copilotAppendGeneralRulesLink(
+							message.filePath || '',
+							message.preview || '',
+							message.entryId || ''
+						);
+					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1328,6 +1530,14 @@ window.addEventListener('message', async (event: any) => {
 						message.queryText || '',
 						message.entryId || ''
 					);
+				} else {
+					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
+					if (sqlEl && typeof sqlEl.copilotAppendQuerySnapshot === 'function') {
+						sqlEl.copilotAppendQuerySnapshot(
+							message.queryText || '',
+							message.entryId || ''
+						);
+					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1340,23 +1550,53 @@ window.addEventListener('message', async (event: any) => {
 						message.preview || '',
 						message.entryId || ''
 					);
+				} else {
+					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
+					if (sqlEl && typeof sqlEl.copilotAppendDevNotesContext === 'function') {
+						sqlEl.copilotAppendDevNotesContext(
+							message.preview || '',
+							message.entryId || ''
+						);
+					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'copilotDevNoteToolCall':
 			try {
 				const boxId = String(message.boxId || '');
+				const detail = message.action === 'save'
+					? ('[' + (message.category || 'note') + '] ' + (message.content || ''))
+					: ('Removed note: ' + (message.noteId || '') + (message.reason ? ' — ' + message.reason : ''));
 				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotAppendDevNoteToolCall === 'function') {
-					const detail = message.action === 'save'
-						? ('[' + (message.category || 'note') + '] ' + (message.content || ''))
-						: ('Removed note: ' + (message.noteId || '') + (message.reason ? ' — ' + message.reason : ''));
 					kwEl.copilotAppendDevNoteToolCall(
 						message.action || 'save',
 						detail,
 						message.result || '',
 						message.entryId || ''
 					);
+				} else {
+					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
+					if (sqlEl && typeof sqlEl.copilotAppendDevNoteToolCall === 'function') {
+						sqlEl.copilotAppendDevNoteToolCall(
+							message.action || 'save',
+							detail,
+							message.result || '',
+							message.entryId || ''
+						);
+					}
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'revealSection':
+			try {
+				const boxId = String(message.boxId || '');
+				if (boxId) {
+					const el = document.getElementById(boxId) as any;
+					if (el) {
+						if (typeof el.setExpanded === 'function') { el.setExpanded(true); }
+						try { el.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* ignore */ }
+					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1369,6 +1609,19 @@ window.addEventListener('message', async (event: any) => {
 						message.question || '',
 						message.entryId || ''
 					);
+					// Ensure the section is visible so the user can find the question
+					if (typeof kwEl.setExpanded === 'function') { kwEl.setExpanded(true); }
+					try { kwEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* ignore */ }
+				} else {
+					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
+					if (sqlEl && typeof sqlEl.copilotAppendClarifyingQuestion === 'function') {
+						sqlEl.copilotAppendClarifyingQuestion(
+							message.question || '',
+							message.entryId || ''
+						);
+						if (typeof sqlEl.setExpanded === 'function') { sqlEl.setExpanded(true); }
+						try { sqlEl.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch { /* ignore */ }
+					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1378,9 +1631,15 @@ window.addEventListener('message', async (event: any) => {
 				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotWriteQueryDone === 'function') {
 					kwEl.copilotWriteQueryDone(!!message.ok, message.message || '');
+				} else {
+					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
+					if (sqlEl && typeof sqlEl.copilotWriteQueryDone === 'function') {
+						sqlEl.copilotWriteQueryDone(!!message.ok, message.message || '');
+					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
+
 		case 'copilotInlineCompletionResult':
 			try {
 				const requestId = String(message.requestId || '');
@@ -1508,6 +1767,16 @@ window.addEventListener('message', async (event: any) => {
 						if (sectionId && input.name) {
 							__kustoSetSectionName(sectionId, input.name);
 						}
+					} else if (sectionType === 'sql') {
+						const sqlOpts: any = {};
+						if (input.query) {
+							sqlOpts.query = String(input.query);
+						}
+						sectionId = addSqlBox(sqlOpts);
+						success = !!sectionId;
+						if (sectionId && input.name) {
+							__kustoSetSectionName(sectionId, input.name);
+						}
 					}
 				} catch (err: any) {
 					console.error('[Kusto Tools] Error adding section:', err);
@@ -1552,6 +1821,9 @@ window.addEventListener('message', async (event: any) => {
 						success = true;
 					} else if (sectionId.startsWith('html_')) {
 						removeHtmlBox(sectionId);
+						success = true;
+					} else if (sectionId.startsWith('sql_')) {
+						removeSqlBox(sectionId);
 						success = true;
 					} else {
 						const sectionEl = document.getElementById(sectionId) as any;
@@ -1672,12 +1944,8 @@ window.addEventListener('message', async (event: any) => {
 					
 					// Update section name if provided
 					if (input.name !== undefined) {
-						const nameInput = document.getElementById(sectionId + '_name') as any;
-						if (nameInput) {
-							nameInput.value = String(input.name);
-							try { nameInput.dispatchEvent(new Event('input')); } catch (e) { console.error('[kusto]', e); }
-							success = true;
-						}
+						__kustoSetSectionName(sectionId, input.name);
+						success = true;
 					}
 					
 					// Update query text
@@ -1813,12 +2081,8 @@ window.addEventListener('message', async (event: any) => {
 				try {
 					// Update section name if provided
 					if (input.name !== undefined) {
-						const nameInput = document.getElementById(sectionId + '_name') as any;
-						if (nameInput) {
-							nameInput.value = String(input.name);
-							try { nameInput.dispatchEvent(new Event('input')); } catch (e) { console.error('[kusto]', e); }
-							success = true;
-						}
+						__kustoSetSectionName(sectionId, input.name);
+						success = true;
 					}
 					
 					// Accept both 'text' and 'content' - LLMs may use either property name
@@ -1885,12 +2149,8 @@ window.addEventListener('message', async (event: any) => {
 				try {
 					// Update section name if provided
 					if (input.name !== undefined) {
-						const nameInput = document.getElementById(sectionId + '_name') as any;
-						if (nameInput) {
-							nameInput.value = String(input.name);
-							try { nameInput.dispatchEvent(new Event('input')); } catch (e) { console.error('[kusto]', e); }
-							success = true;
-						}
+						__kustoSetSectionName(sectionId, input.name);
+						success = true;
 					}
 					
 					// Apply chart configuration
@@ -1931,12 +2191,8 @@ window.addEventListener('message', async (event: any) => {
 				try {
 					// Update section name if provided
 					if (input.name !== undefined) {
-						const nameInput = document.getElementById(sectionId + '_name') as any;
-						if (nameInput) {
-							nameInput.value = String(input.name);
-							try { nameInput.dispatchEvent(new Event('input')); } catch (e) { console.error('[kusto]', e); }
-							success = true;
-						}
+						__kustoSetSectionName(sectionId, input.name);
+						success = true;
 					}
 					
 					// Apply transformation configuration
@@ -1988,6 +2244,84 @@ window.addEventListener('message', async (event: any) => {
 				if (success) { markSectionAgentTouched(sectionId); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success, sectionId }, error: success ? undefined : 'Failed to configure HTML section' });
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+			} catch (err: any) {
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+
+		// ── SQL tool messages ───────────────────────────────────────────
+
+		case 'toolListSqlConnections':
+			try {
+				const requestId = String(message.requestId || '');
+				const conns = (Array.isArray(sqlConnections) ? sqlConnections : []).map((c: any) => ({
+					id: c.id, name: c.name, serverUrl: c.serverUrl, dialect: c.dialect,
+				}));
+				postMessageToHost({ type: 'toolResponse', requestId, result: { connections: conns } });
+			} catch (err: any) {
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { connections: [] }, error: err.message || String(err) });
+			}
+			break;
+
+		case 'toolConfigureSqlSection':
+			try {
+				const requestId = String(message.requestId || '');
+				const input = message.input || {};
+				const sectionId = String(input.sectionId || '');
+				let success = false;
+				const sqlEl = __kustoGetSqlSectionElement(sectionId);
+
+				if (input.name !== undefined && sqlEl && typeof sqlEl.setName === 'function') {
+					sqlEl.setName(String(input.name));
+					success = true;
+				}
+				if (input.query !== undefined && sqlEl && typeof sqlEl.setQuery === 'function') {
+					sqlEl.setQuery(String(input.query));
+					success = true;
+				}
+				if (input.serverUrl && sqlEl) {
+					const conn = (Array.isArray(sqlConnections) ? sqlConnections : []).find(
+						(c: any) => c && String(c.serverUrl || '').toLowerCase().includes(String(input.serverUrl).toLowerCase())
+					);
+					if (conn && typeof sqlEl.setSqlConnectionId === 'function') {
+						sqlEl.setSqlConnectionId(conn.id);
+						sqlEl.dispatchEvent(new CustomEvent('sql-connection-changed', {
+							detail: { boxId: sectionId, connectionId: conn.id, serverUrl: conn.serverUrl },
+							bubbles: true, composed: true,
+						}));
+						success = true;
+					}
+				}
+				if (input.database && sqlEl && typeof sqlEl.setDatabase === 'function') {
+					if (input.serverUrl) await new Promise((r: any) => setTimeout(r, 500));
+					sqlEl.setDatabase(String(input.database));
+					sqlEl.dispatchEvent(new CustomEvent('sql-database-changed', {
+						detail: { boxId: sectionId, database: input.database },
+						bubbles: true, composed: true,
+					}));
+					success = true;
+				}
+				if (input.execute && sqlEl) {
+					// Trigger execution via event
+					sqlEl.dispatchEvent(new CustomEvent('sql-run', { bubbles: true, composed: true }));
+					success = true;
+				}
+				postMessageToHost({ type: 'toolResponse', requestId, result: { success } });
+			} catch (err: any) {
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+
+		case 'toolGetSqlSchema':
+			try {
+				const requestId = String(message.requestId || '');
+				const sectionId = String(message.sectionId || '');
+				const schema = schemaByBoxId[sectionId];
+				if (schema) {
+					postMessageToHost({ type: 'toolResponse', requestId, result: { success: true, schema } });
+				} else {
+					postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'No schema loaded for this section. Connect to a server and select a database first.' } });
+				}
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2281,6 +2615,101 @@ window.addEventListener('message', async (event: any) => {
 			})();
 			break;
 		
+		case 'toolDelegateToSqlCopilot':
+			// Delegate a question to the SQL Copilot Chat — simplified version of the Kusto handler.
+			(async () => {
+				try {
+					const requestId = String(message.requestId || '');
+					const input = message.input || {};
+					const question = String(input.question || '');
+					let sectionId = String(input.sectionId || '');
+					
+					// If no section specified, use the first SQL section
+					if (!sectionId) {
+						const sections = document.querySelectorAll('[data-section-type="sql"]');
+						if (sections.length > 0) {
+							sectionId = sections[0].id;
+						} else {
+							// Try to find any SQL section via the sqlBoxes array
+							if (typeof sqlBoxes !== 'undefined' && sqlBoxes.length > 0) {
+								sectionId = sqlBoxes[0];
+							}
+						}
+					}
+					
+					if (!sectionId) {
+						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'No SQL section available. Add a SQL section first.' } });
+						return;
+					}
+					
+					const sqlEl = __kustoGetSqlSectionElement(sectionId);
+					if (!sqlEl) {
+						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: `SQL section "${sectionId}" not found.` } });
+						return;
+					}
+					
+					// Ensure copilot chat is visible
+					if (typeof sqlEl.setCopilotChatVisible === 'function') {
+						sqlEl.setCopilotChatVisible(true);
+					}
+					await new Promise((r: any) => setTimeout(r, 150));
+					
+					// Find the chat element
+					const chatEl = typeof sqlEl.getCopilotChatEl === 'function' ? sqlEl.getCopilotChatEl() : null;
+					if (!chatEl || typeof chatEl.setInputText !== 'function') {
+						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'SQL Copilot chat not available. Is Copilot enabled?' } });
+						return;
+					}
+					
+					chatEl.setInputText(question);
+					
+					// Listen for results
+					let responded = false;
+					let generatedQuery = '';
+					
+					const resultHandler = (event: any) => {
+						try {
+							const msg = event && event.data;
+							if (!msg || responded) return;
+							if (msg.type === 'copilotWriteQueryDone' && msg.boxId === sectionId) {
+								responded = true;
+								window.removeEventListener('message', resultHandler);
+								try {
+									if (typeof sqlEl.getCopilotEditorValue === 'function') {
+										generatedQuery = sqlEl.getCopilotEditorValue() || '';
+									}
+								} catch (e) { console.error('[kusto]', e); }
+								postMessageToHost({
+									type: 'toolResponse', requestId,
+									result: { success: !!msg.ok, answer: msg.ok ? 'Query generated successfully.' : (msg.message || 'Failed'), query: generatedQuery || undefined, error: msg.ok ? undefined : (msg.message || 'Failed') }
+								});
+							}
+						} catch (err: any) { console.error('[kusto]', err); }
+					};
+					
+					window.addEventListener('message', resultHandler);
+					setTimeout(() => {
+						if (!responded) {
+							responded = true;
+							window.removeEventListener('message', resultHandler);
+							postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, timedOut: true, error: 'Request timed out after 3 minutes' } });
+						}
+					}, 180000);
+					
+					// Send the message
+					const sendBtn = chatEl.shadowRoot?.querySelector('.send-btn') as HTMLElement | null;
+					if (sendBtn) sendBtn.click();
+					else {
+						window.removeEventListener('message', resultHandler);
+						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'Could not find send button' } });
+					}
+				} catch (err: any) {
+					console.error('[kusto]', err);
+					postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false, error: err.message || String(err) } });
+				}
+			})();
+			break;
+		
 		case 'changedSections':
 			// Update per-section unsaved-change indicators.
 			// Message shape: ChangedSectionsMessage { type, changes: SectionChangeInfo[] }
@@ -2295,7 +2724,7 @@ window.addEventListener('message', async (event: any) => {
 				// Update all section elements in the DOM.
 				const container = document.getElementById('queries-container');
 				if (container) {
-					const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_'];
+					const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_', 'html_', 'sql_'];
 					for (const child of Array.from(container.children)) {
 						const id = child.id || '';
 						if (!id || !sectionPrefixes.some(p => id.startsWith(p))) continue;
@@ -2305,6 +2734,16 @@ window.addEventListener('message', async (event: any) => {
 						if (shell) {
 							shell.hasChanges = status;
 							shell.showDiffBtn = status === 'modified';
+						}
+						// Mirror attribute on the section host for :host() glow styles.
+						if (status) {
+							el.setAttribute('has-changes', status);
+							el.title = status === 'new'
+								? 'Section was added after the last save'
+								: 'Section has unsaved changes';
+						} else {
+							el.removeAttribute('has-changes');
+							el.removeAttribute('title');
 						}
 					}
 				}
