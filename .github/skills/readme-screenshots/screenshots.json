@@ -198,14 +198,14 @@
   {
     "filename": "multi-account.png",
     "profile": "kusto-auth",
-    "tier": "hard",
+    "tier": "medium",
     "description": "Cached Values viewer showing auth tokens table with multiple accounts, cluster-to-account associations",
     "readmeLine": 155,
     "altText": "Multi-account support",
     "commands": ["kusto.seeCachedValues"],
-    "windowSize": { "width": 1440, "height": 900 },
-    "cropHints": "Crop to the Cached Values viewer showing the auth tokens and account associations",
-    "notes": "HARD: Needs the Cached Values viewer with multiple authenticated Microsoft accounts visible. Pre-populate by signing in with multiple accounts in the profile."
+    "windowSize": { "width": 1100, "height": 600 },
+    "crop": { "x": 56, "y": 72, "width": 1018, "height": 448 },
+    "notes": "Uses kusto-auth. Opens Cached Values viewer and injects fake HTML matching the original layout. Feature file: features/multi-account.feature"
   },
   {
     "filename": "connection-manager.png",
@@ -239,8 +239,8 @@
     "readmeLine": 173,
     "altText": "Markdown editing",
     "commands": ["kusto.openQueryEditor"],
-    "windowSize": { "width": 950, "height": 1440 },
-    "crop": { "x": 14, "y": 60, "width": 920, "height": 1350 },
+    "windowSize": { "width": 950, "height": 2200 },
+    "crop": { "x": 14, "y": 90, "width": 920, "height": 1554 },
     "notes": "Uses default profile. Adds a markdown section with rich content via setMarkdownContent, removes query section. Feature file: features/markdown.feature"
   },
   {

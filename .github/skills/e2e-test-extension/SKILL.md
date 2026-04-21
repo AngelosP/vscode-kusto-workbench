@@ -242,11 +242,15 @@ vscode-ext-test profile open <profile-name>
 
 - `Given the extension is in a clean state` - reset: close all editors, dismiss notifications, clear output channels
 - `When I execute command "<command-id>"` - run any VS Code command (waits for completion)
+- `When I execute command "<command-id>" with args '<json>'` - run a VS Code command with arguments (JSON array in single quotes, e.g. `'["arg1","arg2"]'`)
 - `When I start command "<command-id>"` - start a VS Code command without waiting (use for commands that show InputBox/QuickPick dialogs, then interact with the dialog in the next step)
+- `When I start command "<command-id>" with args '<json>'` - start a VS Code command with arguments without waiting
 - `When I add folder "<path>" to the workspace` - add a folder to the workspace without reloading the window
 - `When I select "<label>" from the QuickPick` - pick an item from an open QuickPick
 - `When I type "<text>" into the InputBox` - type into a VS Code InputBox prompt
 - `When I click "<button>" on the dialog` - click a button on a modal dialog
+- `When I select "<label>" from the popup menu` - select an item from a context menu, dropdown, or popup overlay (uses OS-level UI Automation with CDP fallback)
+- `When I list the popup menu items` - diagnostic: list all visible items in the current popup menu
 - `When I type "<text>"` - type text into whatever is focused (editors, webview Monaco, inputs)
 - `When I press "<key>"` - press a key or combo (Enter, Escape, Ctrl+S, Ctrl+Space, Shift+Tab, F5, etc.)
 - `When I sign in with Microsoft as "<user>"` - handle Microsoft auth flow
@@ -256,6 +260,47 @@ vscode-ext-test profile open <profile-name>
 - `Then the output channel "<name>" should contain "<text>"` - assert output channel content
 - `Then the output channel "<name>" should not contain "<text>"` - assert output channel does NOT contain text
 - `Then I wait <n> second(s)` - pause for n seconds
+
+### Settings
+
+Change or verify any VS Code or extension-contributed setting at runtime:
+
+- `When I set setting "<key>" to "<value>"` - set a setting (applies to user/global scope by default)
+- `Then setting "<key>" should be "<value>"` - assert a setting has the expected value
+
+**Value parsing.** The value is JSON-parsed when possible:
+- `"true"` / `"false"` → boolean
+- `"42"` → number
+- `"null"` → resets the setting to its default (VS Code treats `null` as "remove override")
+- Anything that is not valid JSON stays as a plain string (e.g. `"on"`, `"hello"`)
+
+**Works for any setting** — built-in VS Code settings (`editor.fontSize`,
+`editor.minimap.enabled`) and extension-contributed settings
+(`myExtension.enableFeature`, `extensionTester.controllerPort`).
+
+**Settings persist across scenarios** within the same test run. They are NOT
+reverted by the `the extension is in a clean state` reset step. If you need
+a clean baseline, explicitly set the value back at the start of each scenario.
+
+Example:
+
+\`\`\`gherkin
+Feature: Extension respects font size setting
+  Scenario: Large font
+    When I set setting "editor.fontSize" to "24"
+    Then setting "editor.fontSize" should be "24"
+
+  Scenario: Boolean toggle
+    When I set setting "editor.minimap.enabled" to "false"
+    Then setting "editor.minimap.enabled" should be "false"
+
+  Scenario: Extension setting
+    When I set setting "myExtension.maxResults" to "100"
+    Then setting "myExtension.maxResults" should be "100"
+
+  Scenario: Reset to default
+    When I set setting "editor.fontSize" to "null"
+\`\`\`
 
 ### Click/Focus Elements in Webviews (Windows UI Automation)
 These use Windows accessibility to find and click elements by their name or text.
@@ -348,7 +393,7 @@ in the extension source is part of the testing process.
 | `When I scroll "<sel>" to the (top\|bottom\|left\|right)` | Jump to an edge |
 | `When I scroll "<sel>" into view` | Scroll the element itself into view |
 | `When I evaluate "<js>" in the webview` | Run arbitrary JS (escape hatch) |
-| `When I list the webviews` | Log all open webview titles and URLs (debugging aid) |
+| `When I list the webviews` | Log all open webview titles, probed DOM titles, and URLs (debugging aid) |
 | `Then the webview should contain "<text>"` | Substring match in body text |
 | `Then the webview "<title>" should contain "<text>"` | Restrict to a webview |
 | `Then element "<sel>" should exist` | Existence assertion |
@@ -356,14 +401,25 @@ in the extension source is part of the testing process.
 | `Then element "<sel>" should have text "<text>"` | Text content assertion |
 
 **Webview targeting.** When multiple webviews are open at once (walkthroughs,
-panels, sidebar views), pass a `<title>` substring to disambiguate. The match
-is case-insensitive and tested against the **HTML `<title>` tag** of the
-webview document and the `vscode-webview://` URL — **not** the VS Code panel
-title (`WebviewPanel.title`). These can be different! If your title isn't
-matching, use the debugging step `When I list the webviews` to see what
-titles and URLs the framework actually sees. Check the extension source for
-the HTML `<title>` set in the webview HTML template. Omit the title and the
-framework tries every webview until one matches.
+panels, sidebar views), pass a `<title>` substring to disambiguate. The
+framework uses a 3-tier matching strategy (all case-insensitive):
+
+1. **CDP target title / URL** — the fastest check; matches the title and URL
+   that Chrome DevTools Protocol reports for each webview target.
+2. **Tab activation** — if tier 1 misses, the framework asks VS Code to
+   activate (bring to front) the tab whose label matches, ensuring the
+   webview's DOM is live for the next step.
+3. **DOM title probe** — connects to each webview via CDP and evaluates
+   `document.title` across all frames (including nested cross-origin
+   iframes). This catches webviews whose CDP target title is generic but
+   whose inner HTML sets a meaningful `<title>`.
+
+This means **the VS Code tab label usually works as the title** — the
+framework will find it via tab activation + DOM probing even when the CDP
+target title doesn't match. If your title still isn't matching, use the
+debugging step `When I list the webviews` to see what titles, probed titles,
+and URLs the framework actually sees. Omit the title and the framework tries
+every webview until one matches.
 
 **Scrolling a specific section or table.** Find a stable selector for the
 container (not the page) - e.g. `section[data-testid="results-table"] .scroll-body`
