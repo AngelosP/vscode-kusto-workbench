@@ -1,6 +1,29 @@
 {
   "recent": [
     {
+      "ts": "2026-04-21T10:25:00Z",
+      "commit": "15c55d4",
+      "commitMsg": "Add feature tests for screenshot captures in various scenarios",
+      "tests": 2768,
+      "testFiles": 82,
+      "stmtCov": null,
+      "lineCov": null,
+      "branchCov": null,
+      "fnCov": null,
+      "distTotalKB": 19021.6,
+      "extensionKB": 1115.1,
+      "webviewKB": 1847.1,
+      "echartsKB": 646.0,
+      "toastuiKB": 602.5,
+      "monacoKB": 11444.8,
+      "hostLines": 22911,
+      "webviewLines": 59306,
+      "testLines": 33621,
+      "tscOk": true,
+      "lintErrors": 0,
+      "lintWarnings": 0
+    },
+    {
       "ts": "2026-03-23T07:30:00Z",
       "commit": "f3a40f8",
       "commitMsg": "Extended test coverage, and fixed the browser extension",
@@ -71,6 +94,29 @@
     }
   ],
   "commits": [
+    {
+      "ts": "2026-04-21T10:25:00Z",
+      "commit": "15c55d4",
+      "commitMsg": "Add feature tests for screenshot captures in various scenarios",
+      "tests": 2768,
+      "testFiles": 82,
+      "stmtCov": null,
+      "lineCov": null,
+      "branchCov": null,
+      "fnCov": null,
+      "distTotalKB": 19021.6,
+      "extensionKB": 1115.1,
+      "webviewKB": 1847.1,
+      "echartsKB": 646.0,
+      "toastuiKB": 602.5,
+      "monacoKB": 11444.8,
+      "hostLines": 22911,
+      "webviewLines": 59306,
+      "testLines": 33621,
+      "tscOk": true,
+      "lintErrors": 0,
+      "lintWarnings": 0
+    },
     {
       "ts": "2026-03-23T07:30:00Z",
       "commit": "f3a40f8",

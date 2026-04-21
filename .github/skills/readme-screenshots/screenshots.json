@@ -8,8 +8,8 @@
     "altText": "Activity bar",
     "commands": ["workbench.view.extension.kustoWorkbench"],
     "windowSize": { "width": 1280, "height": 800 },
-    "cropHints": "Crop to the Activity Bar area plus the tooltip panel, roughly the left 300-400px of the window",
-    "notes": "The tooltip appears on hover. Use the Gherkin click step to hover the icon, then immediately screenshot."
+    "crop": { "x": 0, "y": 34, "width": 340, "height": 740 },
+    "notes": "Uses default profile. Opens the Kusto Workbench activity bar view. Feature file: features/activity-bar.feature"
   },
   {
     "filename": "settings.png",
@@ -20,8 +20,8 @@
     "altText": "Settings",
     "commands": ["workbench.action.openSettings"],
     "windowSize": { "width": 1280, "height": 800 },
-    "cropHints": "Crop to the settings editor area showing the relevant extension setting",
-    "notes": "After opening settings, type 'kustoWorkbench.showActivityBarIcon' into the search box to filter to the relevant setting."
+    "crop": { "x": 55, "y": 95, "width": 1080, "height": 620 },
+    "notes": "Uses default profile. Opens settings and types kustoWorkbench to filter. Feature file: features/settings.feature"
   },
   {
     "filename": "import-connections.png",
@@ -70,8 +70,8 @@
     "altText": "Export a skill that teaches your own agent how to control Kusto Workbench",
     "commands": ["workbench.view.extension.kustoWorkbench"],
     "windowSize": { "width": 1280, "height": 800 },
-    "cropHints": "Crop to the Quick Access panel showing the Export Agent Skill action card",
-    "notes": "Open the Activity Bar view and scroll to the Export Agent Skill section."
+    "crop": { "x": 54, "y": 580, "width": 270, "height": 170 },
+    "notes": "Uses default profile. Opens the Kusto Workbench activity bar view. Feature file: features/export-skill.feature"
   },
   {
     "filename": "kusto-query-editor.png",
@@ -101,15 +101,15 @@
   },
   {
     "filename": "csv.png",
-    "profile": "kusto-auth",
-    "tier": "medium",
+    "profile": "default",
+    "tier": "easy",
     "description": "URL section loading a GitHub-hosted CSV (Plotly dataset), showing tabular data with row/column counts",
     "readmeLine": 95,
     "altText": "Load .csv data directly from the internet",
     "commands": ["kusto.openQueryEditor"],
-    "windowSize": { "width": 1440, "height": 900 },
-    "cropHints": "Crop to the URL section showing the loaded CSV data table",
-    "notes": "Needs a URL section configured with a remote CSV URL. The data must be loaded and visible in the table."
+    "windowSize": { "width": 1050, "height": 700 },
+    "crop": { "x": 14, "y": 108, "width": 1006, "height": 555 },
+    "notes": "Uses default profile — no auth needed. addUrlBox() creates the section, _requestFetch() triggers the load, then the default query section is removed. Feature file: features/csv.feature"
   },
   {
     "filename": "transformation.png",
@@ -119,9 +119,9 @@
     "readmeLine": 103,
     "altText": "Using data transformation to add a calculated column",
     "commands": ["kusto.openQueryEditor"],
-    "windowSize": { "width": 1440, "height": 900 },
-    "cropHints": "Crop to the transformation section showing the calculation formula and the result table below it",
-    "notes": "Needs an existing query with results, plus a transformation section configured to add a calculated column."
+    "windowSize": { "width": 850, "height": 950 },
+    "crop": { "x": 50, "y": 90, "width": 770, "height": 826 },
+    "notes": "Uses kusto-auth with datatable query. Executes query, adds transformation with Calculate mode and UsersPerSession derived column, scrolls to transformation. Feature file: features/transformation.feature"
   },
   {
     "filename": "chart.png",
@@ -131,9 +131,9 @@
     "readmeLine": 113,
     "altText": "Creating a bar chart from a Kusto query",
     "commands": ["kusto.openQueryEditor"],
-    "windowSize": { "width": 1440, "height": 900 },
-    "cropHints": "Crop to the chart section showing the configuration panel and the rendered bar chart",
-    "notes": "Needs an existing query with results, plus a chart section configured as a bar chart with X, Y, and Legend set."
+    "windowSize": { "width": 950, "height": 950 },
+    "crop": { "x": 50, "y": 90, "width": 870, "height": 705 },
+    "notes": "Uses kusto-auth with datatable query. Executes query, adds chart with bar type, X=Day, Y=Count, Legend=ToolArea, title and data labels. Feature file: features/chart.feature"
   },
   {
     "filename": "html-dashboard.png",
@@ -149,15 +149,15 @@
   },
   {
     "filename": "prettify.png",
-    "profile": "kusto-auth",
-    "tier": "medium",
+    "profile": "default",
+    "tier": "easy",
     "description": "Query toolbar showing the 'Prettify query' tooltip on the format button",
     "readmeLine": 127,
     "altText": "Prettify a Kusto query",
     "commands": ["kusto.openQueryEditor"],
     "windowSize": { "width": 1280, "height": 800 },
-    "cropHints": "Crop to the query section toolbar area showing the prettify button with its tooltip",
-    "notes": "Hover the prettify/format button in the toolbar to show the tooltip, then screenshot immediately. Timing-sensitive — tooltip may fade."
+    "crop": { "x": 55, "y": 198, "width": 655, "height": 82 },
+    "notes": "Uses default profile — no auth needed. Injects a fake tooltip div near the prettify button. Feature file: features/prettify.feature"
   },
   {
     "filename": "diagnostics.png",
@@ -192,8 +192,8 @@
     "altText": "Share your queries as Azure Data Explorer links",
     "commands": ["kusto.openQueryEditor"],
     "windowSize": { "width": 1280, "height": 800 },
-    "cropHints": "Crop to the query section toolbar area showing the share button with its tooltip",
-    "notes": "Hover the share button in the toolbar to show the tooltip. Timing-sensitive."
+    "crop": { "x": 55, "y": 105, "width": 960, "height": 175 },
+    "notes": "Uses kusto-auth. Injects fake tooltip near the share button, masks cluster/db names. Feature file: features/share.feature"
   },
   {
     "filename": "multi-account.png",
@@ -239,9 +239,9 @@
     "readmeLine": 173,
     "altText": "Markdown editing",
     "commands": ["kusto.openQueryEditor"],
-    "windowSize": { "width": 1440, "height": 900 },
-    "cropHints": "Crop to the markdown section showing the WYSIWYG editor with diverse rich formatting",
-    "notes": "Open the query editor and add a markdown section (or open a .kqlx/.mdx file that already has one). The section should show varied formatting to demonstrate the editor's capabilities."
+    "windowSize": { "width": 950, "height": 1440 },
+    "crop": { "x": 14, "y": 60, "width": 920, "height": 1350 },
+    "notes": "Uses default profile. Adds a markdown section with rich content via setMarkdownContent, removes query section. Feature file: features/markdown.feature"
   },
   {
     "filename": "python-sections.png",

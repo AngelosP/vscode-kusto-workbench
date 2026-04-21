@@ -45,7 +45,34 @@ and PowerShell for cropping.
    dimensions, making crop coordinates unpredictable. Set display scaling
    to 100% before starting a capture run.
 
-5. **Consistent VS Code theme.** All screenshots must use the same theme.
+5. **Know the monitor layout.** Before writing feature files, detect the
+   available monitors so you can position the Dev Host window on the right
+   screen with the right dimensions. Run:
+   ```powershell
+   Add-Type -AssemblyName System.Windows.Forms
+   [System.Windows.Forms.Screen]::AllScreens | ForEach-Object {
+       $b = $_.Bounds
+       [PSCustomObject]@{
+           Device      = $_.DeviceName
+           Primary     = $_.Primary
+           Width       = $b.Width
+           Height      = $b.Height
+           X           = $b.X
+           Y           = $b.Y
+           Orientation = if ($b.Width -ge $b.Height) { 'Landscape' } else { 'Portrait' }
+       }
+   } | Format-Table -AutoSize
+   ```
+   Use this to decide:
+   - **Which monitor** to place the window on (`I move the Dev Host to X, Y`)
+   - **Max window size** — don't exceed the monitor's resolution
+   - **Portrait monitors** are ideal for tall screenshots (markdown, full
+     query+results+chart combos) since they support heights up to 2560px
+   - **Landscape monitors** are better for wide screenshots (settings,
+     connection manager)
+   - The primary monitor at (0, 0) is the safest default
+
+6. **Consistent VS Code theme.** All screenshots must use the same theme.
    Ensure the profiles are configured with the target theme (Dark Modern
    or whichever theme the existing screenshots use). Set the theme
    explicitly if needed:
@@ -141,12 +168,23 @@ and PowerShell for cropping.
 
 ### Phase 4: Back Up & Replace
 
-13. **Before overwriting**, rename the existing screenshot to keep a backup:
+13. **Before overwriting**, back up the original screenshot — but only if
+    the backup does not already exist:
     ```powershell
-    Rename-Item "media\marketplace\<filename>.png" "<filename>.old.png"
+    if (-not (Test-Path "media\marketplace\<filename>.old.png")) {
+        Rename-Item "media\marketplace\<filename>.png" "<filename>.old.png"
+    }
     ```
-    This preserves the previous version as `<filename>.old.png` in the same
-    directory so you can compare and revert if needed.
+    The `.old.png` file preserves the **original file that was on disk
+    when the replacement session started**. It must only be created once.
+    If `.old.png` already exists, skip the rename — otherwise you would
+    replace the original with one of your own intermediate attempts.
+    On subsequent crop adjustments, only `<filename>.png` changes;
+    `.old.png` always points back to the pre-session original so you can
+    compare against it or revert cleanly.
+
+    The `take-screenshot.ps1` script follows this rule: it only renames
+    the current `.png` to `.old.png` when no `.old.png` exists yet.
 
 14. Write the cropped image to `media/marketplace/<filename>.png` (the crop
     step in Phase 3 can write directly to this path, or copy here now).

@@ -1,0 +1,17 @@
+{
+  "kind": "sqlx",
+  "version": 1,
+  "state": {
+    "caretDocsEnabled": true,
+    "sections": [
+      {
+        "id": "sql_1",
+        "type": "sql",
+        "name": "Original Query",
+        "serverUrl": "server.database.windows.net",
+        "database": "TestDB",
+        "query": "SELECT 1"
+      }
+    ]
+  }
+}

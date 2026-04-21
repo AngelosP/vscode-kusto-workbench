@@ -36,7 +36,7 @@ export const DIFF_NOISE_KEYS = new Set([
  * Pure function — deterministic, no side effects.
  */
 export function formatKqlxForDiff(raw: string): string {
-	const parsed = parseKqlxText(raw, { allowedKinds: ['kqlx', 'mdx'] });
+	const parsed = parseKqlxText(raw, { allowedKinds: ['kqlx', 'mdx', 'sqlx'] });
 	if (!parsed.ok) return raw;
 
 	const { file } = parsed;
@@ -326,7 +326,7 @@ export async function renderDiffInWebview(
 	const fileName = originalUri.path.split('/').pop() || 'file';
 
 	// For .kqlx files, build a human-readable smart view alongside the raw JSON.
-	const isKqlx = /\.kqlx$/i.test(originalUri.path);
+	const isKqlx = /\.(kqlx|mdx|sqlx)$/i.test(originalUri.path);
 	const originalSmart = isKqlx ? formatKqlxForDiff(originalContent) : undefined;
 	const modifiedSmart = isKqlx ? formatKqlxForDiff(modifiedContent) : undefined;
 
@@ -347,8 +347,8 @@ export async function renderDiffInWebview(
 
 function getLanguageFromUri(uri: vscode.Uri): string {
 	const path = uri.path.toLowerCase();
-	if (path.endsWith('.kql') || path.endsWith('.csl') || path.endsWith('.kqlx')) {
-		return 'plaintext'; // Monaco doesn't have kusto built-in
+	if (path.endsWith('.kql') || path.endsWith('.csl') || path.endsWith('.kqlx') || path.endsWith('.sqlx')) {
+		return 'plaintext'; // Monaco doesn't have kusto/sql built-in
 	}
 	if (path.endsWith('.md') || path.endsWith('.mdx')) {
 		return 'markdown';

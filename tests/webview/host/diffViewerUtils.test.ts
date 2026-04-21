@@ -331,6 +331,43 @@ describe('formatKqlxForDiff', () => {
 		expect(result).toContain('doc content');
 	});
 
+	// ── sqlx kind ─────────────────────────────────────────────────────────
+
+	it('handles a sqlx-kind file', () => {
+		const raw = JSON.stringify({
+			kind: 'sqlx', version: 1,
+			state: {
+				sections: [
+					{ id: 'sql_1', type: 'sql', name: 'My SQL', query: 'SELECT 1', serverUrl: 'myserver.database.windows.net', database: 'mydb' },
+				]
+			}
+		}, null, 2);
+		const result = formatKqlxForDiff(raw);
+		expect(result).toContain('sqlx v1');
+		expect(result).toContain('══ [SQL] My SQL ══');
+		expect(result).toContain('Server: myserver.database.windows.net');
+		expect(result).toContain('Database: mydb');
+		expect(result).toContain('SELECT 1');
+	});
+
+	// ── SQL section inside a kqlx file ────────────────────────────────────
+
+	it('formats sql section with server and database', () => {
+		const raw = JSON.stringify({
+			kind: 'kqlx', version: 1,
+			state: {
+				sections: [
+					{ id: 'sql_1', type: 'sql', name: 'Sales', query: 'SELECT * FROM Orders', serverUrl: 'sql.example.com', database: 'SalesDB' },
+				]
+			}
+		}, null, 2);
+		const result = formatKqlxForDiff(raw);
+		expect(result).toContain('══ [SQL] Sales ══');
+		expect(result).toContain('Server: sql.example.com');
+		expect(result).toContain('Database: SalesDB');
+		expect(result).toContain('SELECT * FROM Orders');
+	});
+
 	// ── Unknown section type ──────────────────────────────────────────────
 
 	it('gracefully handles an unknown section type via JSON fallback', () => {

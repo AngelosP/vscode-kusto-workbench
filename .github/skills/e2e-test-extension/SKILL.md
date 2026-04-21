@@ -87,6 +87,14 @@ run, you MUST verify the screenshots.
 Screenshots are saved as `.png` files in the run directory. The `report.md`
 lists all screenshot file paths.
 
+**Automatic failure screenshots.** When a test step fails, the framework
+automatically takes a screenshot of the Dev Host window at the moment of
+failure. These are saved as `<N>-failure-<scenario>-<step>.png` in the run
+directory alongside any explicit screenshots you requested. This means you
+always have a visual record of what went wrong — even if you didn't add a
+manual `I take a screenshot` step. Review these failure screenshots carefully;
+they show exactly what the user would have seen when the step failed.
+
 **To verify screenshots**, use the `view_image` tool with the absolute path
 to each `.png` file. This shows you the actual screenshot so you can see
 what the Dev Host looked like at that point in the test.
@@ -235,6 +243,7 @@ vscode-ext-test profile open <profile-name>
 - `Given the extension is in a clean state` - reset: close all editors, dismiss notifications, clear output channels
 - `When I execute command "<command-id>"` - run any VS Code command (waits for completion)
 - `When I start command "<command-id>"` - start a VS Code command without waiting (use for commands that show InputBox/QuickPick dialogs, then interact with the dialog in the next step)
+- `When I add folder "<path>" to the workspace` - add a folder to the workspace without reloading the window
 - `When I select "<label>" from the QuickPick` - pick an item from an open QuickPick
 - `When I type "<text>" into the InputBox` - type into a VS Code InputBox prompt
 - `When I click "<button>" on the dialog` - click a button on a modal dialog
@@ -444,12 +453,54 @@ defer channel creation by one tick (`queueMicrotask` / `setImmediate`) inside
 your extension, or to call `createOutputChannel` lazily on first use.
 
 ### Native OS Automation (Windows)
-- `When I save the file as "<path>"` - handle Save As dialog: type filename, click Save
-- `When I open the file "<path>"` - handle Open File dialog: type filename, click Open
-- `When I click "<button>" on the "<title>" dialog` - click a button on any native dialog
-- `When I cancel the Save As dialog` - dismiss a Save/Open dialog
-- `When I resize the (window|Dev Host) to <width>x<height>` - resize the Dev Host window (also accepts "<width> by <height>")
-- `When I move the (window|Dev Host) to <x>, <y>` - move the Dev Host window (negative coords OK)
+
+These steps use a FlaUI bridge (.NET) to automate native Windows dialogs that
+VS Code cannot control via its API — file pickers, message boxes, window
+management.
+
+| Step | Description |
+|------|-------------|
+| `When I open the file "<path>"` | Handle Open File dialog: type filename, press Enter |
+| `When I save the file as "<path>"` | Handle Save As dialog: type filename, press Enter |
+| `When I click "<button>" on the "<title>" dialog` | Click a button on any native dialog by title |
+| `When I cancel the Save As dialog` | Dismiss a Save/Open dialog (presses Escape) |
+| `When I cancel the Open dialog` | Same — works for any file dialog variant |
+| `When I resize the (window\|Dev Host) to <W>x<H>` | Resize the Dev Host window |
+| `When I move the (window\|Dev Host) to <x>, <y>` | Move the Dev Host window |
+
+**Important: triggering native dialogs from VS Code.**
+
+Native file dialogs appear when you run commands like
+`workbench.action.files.openFile` (Ctrl+O) or `workbench.action.files.save`
+with an untitled file. These commands **block until the dialog is dismissed**,
+so you MUST use `I start command` (fire-and-forget), NOT `I execute command`
+(which waits for completion and would hang).
+
+After starting the command, **wait for the dialog to appear** before
+interacting with it:
+
+\`\`\`gherkin
+When I start command "workbench.action.files.openFile"
+And I wait 3 seconds
+And I open the file "C:\Users\me\data.csv"
+\`\`\`
+
+**Paths must be absolute.** The file dialog types the path into the OS "File
+name:" edit field and presses Enter. Relative paths resolve relative to
+whatever folder the dialog is currently browsing — which is unpredictable.
+Always use absolute paths.
+
+**Tip — use `${TEMP}` for temp files.** The `${VAR}` syntax resolves from
+environment variables. Combine with the temp file step:
+
+\`\`\`gherkin
+Given a temp file "test-data.txt" exists with content "hello world"
+When I start command "workbench.action.files.openFile"
+And I wait 3 seconds
+And I open the file "${TEMP}\test-data.txt"
+And I wait 2 seconds
+Then the editor should contain "hello world"
+\`\`\`
 
 ### Screenshots
 - `Then I take a screenshot` - capture the full screen, saved to the run directory

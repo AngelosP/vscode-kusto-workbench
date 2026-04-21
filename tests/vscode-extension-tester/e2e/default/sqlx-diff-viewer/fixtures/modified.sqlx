@@ -1,0 +1,25 @@
+{
+  "kind": "sqlx",
+  "version": 1,
+  "state": {
+    "caretDocsEnabled": true,
+    "sections": [
+      {
+        "id": "sql_1",
+        "type": "sql",
+        "name": "Modified Query",
+        "serverUrl": "server.database.windows.net",
+        "database": "TestDB",
+        "query": "SELECT * FROM Products WHERE Active = 1"
+      },
+      {
+        "id": "sql_2",
+        "type": "sql",
+        "name": "New Section",
+        "serverUrl": "server.database.windows.net",
+        "database": "TestDB",
+        "query": "SELECT COUNT(*) FROM Users"
+      }
+    ]
+  }
+}

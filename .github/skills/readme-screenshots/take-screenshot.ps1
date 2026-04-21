@@ -95,8 +95,7 @@ if (-not $crop) {
     Write-Warning "No crop coordinates in manifest for $Name — copying raw screenshot as-is."
     $targetPng = Join-Path $mediaDir $entry.filename
     $oldPng = Join-Path $mediaDir ($entry.filename -replace '\.png$', '.old.png')
-    if (Test-Path $oldPng)    { Remove-Item $oldPng -Force }
-    if (Test-Path $targetPng) { Rename-Item $targetPng $oldPng -Force }
+    if (-not (Test-Path $oldPng) -and (Test-Path $targetPng)) { Rename-Item $targetPng $oldPng -Force }
     Copy-Item $rawPng.FullName $targetPng -Force
     Write-Host "Copied (no crop): $targetPng" -ForegroundColor Green
     exit 0
@@ -107,9 +106,9 @@ Add-Type -AssemblyName System.Drawing
 $targetPng = Join-Path $mediaDir $entry.filename
 $oldPng    = Join-Path $mediaDir ($entry.filename -replace '\.png$', '.old.png')
 
-# Back up existing
-if (Test-Path $oldPng)    { Remove-Item $oldPng -Force }
-if (Test-Path $targetPng) { Rename-Item $targetPng $oldPng -Force }
+# Back up existing (only if .old doesn't already exist — preserve the original)
+if (-not (Test-Path $oldPng) -and (Test-Path $targetPng)) { Rename-Item $targetPng $oldPng -Force }
+if (Test-Path $targetPng) { Remove-Item $targetPng -Force }
 
 $src     = [System.Drawing.Image]::FromFile($rawPng.FullName)
 $rect    = [System.Drawing.Rectangle]::new($crop.x, $crop.y, $crop.width, $crop.height)
