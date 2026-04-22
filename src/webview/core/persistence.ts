@@ -415,7 +415,7 @@ export function getKqlxState() {
 				return {
 					caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
 					autoTriggerAutocompleteEnabled: (typeof autoTriggerAutocompleteEnabled === 'boolean') ? autoTriggerAutocompleteEnabled : false,
-					sections: [{ type: 'markdown', text }]
+					sections: [{ type: 'markdown', ...(firstMarkdownBoxId ? { id: firstMarkdownBoxId } : {}), text }]
 				};
 			}
 
@@ -469,6 +469,7 @@ export function getKqlxState() {
 				sections: [
 					{
 						type: 'query',
+						...(firstQueryBoxId ? { id: firstQueryBoxId } : {}),
 						query: q,
 						...(clusterUrl ? { clusterUrl } : {}),
 						...(database ? { database } : {}),

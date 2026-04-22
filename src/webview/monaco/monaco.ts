@@ -2918,6 +2918,8 @@ function initQueryEditor(boxId: any) {
 					shouldTrigger = true;
 				}
 				if (!shouldTrigger) return;
+				// Skip bulk edits (agent writes, paste, autocomplete acceptance) — matches SQL parity.
+				if (maxChangeLen > 2) return;
 
 				// Debounce + rate-limit (typing can fire rapidly).
 				try {
@@ -2926,7 +2928,6 @@ function initQueryEditor(boxId: any) {
 					}
 				} catch (e) { console.error('[kusto]', e); }
 
-				const changeLen = maxChangeLen; // Capture for closure
 				ed.__kustoAutoSuggestTimer = setTimeout(() => {
 					try {
 						const now = Date.now();

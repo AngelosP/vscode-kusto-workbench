@@ -1937,7 +1937,7 @@ window.addEventListener('message', async (event: any) => {
 				const input = message.input || {};
 				const sectionId = String(input.sectionId || '');
 				let success = false;
-				let resultPreview = '';
+				let deferResponse = false;
 				
 				try {
 					const editor = queryEditors && queryEditors[sectionId];
@@ -2000,16 +2000,85 @@ window.addEventListener('message', async (event: any) => {
 						}
 					}
 					
-					// Execute if requested
+					// Execute if requested — defer the tool response until results arrive (B1 + B2 fix)
 					if (input.execute) {
-						executeQuery(sectionId);
+						const sectionEl = document.getElementById(sectionId);
+						if (sectionEl) {
+							success = true;
+							deferResponse = true;
+
+							let responded = false;
+							const resultHandler = (resultEvent: any) => {
+								try {
+									const resultMsg = resultEvent && resultEvent.data;
+									if (resultMsg && resultMsg.type === 'queryResult' && resultMsg.boxId === sectionId) {
+										if (responded) return;
+										responded = true;
+										window.removeEventListener('message', resultHandler);
+
+										const result = resultMsg.result || {};
+										const rows = result.rows || [];
+										const columns = result.columns || [];
+										const rowCount = rows.length;
+
+										let resultPreview = '';
+										try {
+											const previewRows = rows.slice(0, 5);
+											resultPreview = JSON.stringify({ columns, rows: previewRows, totalRows: rowCount }, null, 2);
+										} catch (e) { console.error('[kusto]', e); }
+
+										postMessageToHost({
+											type: 'toolResponse',
+											requestId,
+											result: { success: true, rowCount, columns, resultPreview }
+										});
+									} else if (resultMsg && resultMsg.type === 'queryError' && resultMsg.boxId === sectionId) {
+										if (responded) return;
+										responded = true;
+										window.removeEventListener('message', resultHandler);
+										postMessageToHost({
+											type: 'toolResponse',
+											requestId,
+											result: { success: false, error: resultMsg.error || 'Query execution failed' }
+										});
+									} else if (resultMsg && resultMsg.type === 'queryCancelled' && resultMsg.boxId === sectionId) {
+										if (responded) return;
+										responded = true;
+										window.removeEventListener('message', resultHandler);
+										postMessageToHost({
+											type: 'toolResponse',
+											requestId,
+											result: { success: false, error: 'Query was cancelled' }
+										});
+									}
+								} catch (e) { console.error('[kusto]', e); }
+							};
+
+							window.addEventListener('message', resultHandler);
+
+							// Timeout safety net — send a response if nothing arrives
+							setTimeout(() => {
+								if (responded) return;
+								responded = true;
+								window.removeEventListener('message', resultHandler);
+								postMessageToHost({
+									type: 'toolResponse',
+									requestId,
+									result: { success: true, resultPreview: '' }
+								});
+							}, 120000);
+
+							executeQuery(sectionId);
+						}
 					}
 				} catch (err: any) {
 					console.error('[Kusto Tools] Error configuring query section:', err);
 				}
 				
 				if (success) { markSectionAgentTouched(sectionId); }
-				postMessageToHost({ type: 'toolResponse', requestId, result: { success, resultPreview }, error: success ? undefined : 'Failed to configure query section' });
+				if (!deferResponse) {
+					postMessageToHost({ type: 'toolResponse', requestId, result: { success, resultPreview: '' }, error: success ? undefined : 'Failed to configure query section' });
+				}
 				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
@@ -2147,6 +2216,20 @@ window.addEventListener('message', async (event: any) => {
 				let validationStatus: any = null;
 				
 				try {
+					// Validate that the target section is actually a chart
+					const chartEl = document.getElementById(sectionId);
+					if (!chartEl || chartEl.tagName !== 'KW-CHART-SECTION') {
+						postMessageToHost({
+							type: 'toolResponse',
+							requestId,
+							result: {
+								success: false,
+								error: `Section '${sectionId}' is not a chart section. Use configureQuerySection for query sections.`,
+							}
+						});
+						break;
+					}
+
 					// Update section name if provided
 					if (input.name !== undefined) {
 						__kustoSetSectionName(sectionId, input.name);

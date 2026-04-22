@@ -290,13 +290,22 @@ describe('tool section name persistence', () => {
 	});
 
 	it('toolConfigureChart calls __kustoSetSectionName', async () => {
-		dispatchHostMessage({
-			type: 'toolConfigureChart',
-			requestId: 'r3',
-			input: { sectionId: 'chart_1', name: 'Trend Chart' },
-		});
-		await new Promise(r => setTimeout(r, 50));
-		expect(setSectionNameSpy).toHaveBeenCalledWith('chart_1', 'Trend Chart');
+		// B4: configureChart now validates the section is a chart — create a mock element
+		const mockChartEl = document.createElement('div');
+		Object.defineProperty(mockChartEl, 'tagName', { value: 'KW-CHART-SECTION', configurable: true });
+		mockChartEl.id = 'chart_1';
+		document.body.appendChild(mockChartEl);
+		try {
+			dispatchHostMessage({
+				type: 'toolConfigureChart',
+				requestId: 'r3',
+				input: { sectionId: 'chart_1', name: 'Trend Chart' },
+			});
+			await new Promise(r => setTimeout(r, 50));
+			expect(setSectionNameSpy).toHaveBeenCalledWith('chart_1', 'Trend Chart');
+		} finally {
+			mockChartEl.remove();
+		}
 	});
 
 	it('toolConfigureTransformation calls __kustoSetSectionName', async () => {

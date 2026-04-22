@@ -1,7 +1,9 @@
 import * as vscode from 'vscode';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { createEmptyKqlxOrMdxFile, DevNoteEntry, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
-import { readAllCachedSchemasFromDisk, readCachedSchemaFromDisk, searchCachedSchemas, SCHEMA_CACHE_VERSION } from './schemaCache';
+import { readAllCachedSchemasFromDisk, readCachedSchemaFromDisk, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION } from './schemaCache';
+import type { SqlConnectionManager } from './sqlConnectionManager';
+import type { KustoQueryClient } from './kustoClient';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -351,12 +353,19 @@ export class KustoWorkbenchToolOrchestrator {
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
-		private readonly connectionManager: ConnectionManager
+		private readonly connectionManager: ConnectionManager,
+		private readonly getSqlConnectionManager: () => SqlConnectionManager,
+		private readonly kustoClient: KustoQueryClient
 	) {}
 
-	static getInstance(context: vscode.ExtensionContext, connectionManager: ConnectionManager): KustoWorkbenchToolOrchestrator {
+	static getInstance(
+		context: vscode.ExtensionContext,
+		connectionManager: ConnectionManager,
+		getSqlConnectionManager: () => SqlConnectionManager,
+		kustoClient: KustoQueryClient
+	): KustoWorkbenchToolOrchestrator {
 		if (!KustoWorkbenchToolOrchestrator.instance) {
-			KustoWorkbenchToolOrchestrator.instance = new KustoWorkbenchToolOrchestrator(context, connectionManager);
+			KustoWorkbenchToolOrchestrator.instance = new KustoWorkbenchToolOrchestrator(context, connectionManager, getSqlConnectionManager, kustoClient);
 		}
 		return KustoWorkbenchToolOrchestrator.instance;
 	}
@@ -463,14 +472,63 @@ export class KustoWorkbenchToolOrchestrator {
 	}
 
 	async refreshSchema(input: RefreshKustoSchemaInput): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
-		if (!this.schemaRefresher) {
-			throw new Error('Kusto Workbench is not currently open. Please open a .kqlx file or use the Query Editor first.');
-		}
 		const clusterUrl = (input.clusterUrl || '').trim();
 		if (!clusterUrl) {
 			return { schemas: [], error: 'clusterUrl is required.' };
 		}
-		return this.schemaRefresher(clusterUrl);
+		// Prefer the webview-connected refresher (also updates the editor's live state),
+		// but fall back to a direct Kusto client refresh when no file is open.
+		if (this.schemaRefresher) {
+			return this.schemaRefresher(clusterUrl);
+		}
+		return this.refreshSchemaDirectly(clusterUrl);
+	}
+
+	/**
+	 * Refresh schema directly via the Kusto client, without requiring an open editor.
+	 * Mirrors the logic in QueryEditorSchema.refreshSchemaForTools.
+	 */
+	private async refreshSchemaDirectly(clusterUrl: string): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
+		const connections = this.connectionManager.getConnections();
+		const normalizedInput = clusterUrl.replace(/\/+$/, '').toLowerCase();
+		const connection = connections.find(c => c.clusterUrl.replace(/\/+$/, '').toLowerCase() === normalizedInput)
+			?? { id: `ephemeral_${Date.now()}`, name: clusterUrl, clusterUrl };
+
+		const schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> = [];
+		try {
+			const databases = await this.kustoClient.getDatabases(connection, true);
+			if (databases.length === 0) {
+				return { schemas: [], error: 'No databases found on this cluster, or insufficient permissions.' };
+			}
+
+			const errors: string[] = [];
+			for (const db of databases) {
+				try {
+					const result = await this.kustoClient.getDatabaseSchema(connection, db, true);
+					const schema = result.schema;
+
+					const cacheKey = `${connection.clusterUrl.replace(/\/+$/, '')}|${db}`;
+					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
+					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+
+					const tables = schema.tables || [];
+					const functions = (schema.functions || []).map(f => typeof f === 'string' ? f : f.name || '').filter(Boolean);
+					schemas.push({ clusterUrl: connection.clusterUrl, database: db, tables, functions });
+				} catch (dbErr) {
+					errors.push(`${db}: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`);
+				}
+			}
+
+			if (errors.length > 0 && schemas.length === 0) {
+				return { schemas, error: `Failed to refresh schema for all databases: ${errors.join('; ')}` };
+			}
+			if (errors.length > 0) {
+				return { schemas, error: `Some databases failed: ${errors.join('; ')}` };
+			}
+			return { schemas };
+		} catch (err) {
+			return { schemas, error: `Failed to refresh schema: ${err instanceof Error ? err.message : String(err)}` };
+		}
 	}
 
 	/**
@@ -497,16 +555,16 @@ export class KustoWorkbenchToolOrchestrator {
 			const cacheKey = `${clusterUrl.replace(/\/+$/, '')}|${db}`;
 			let cached = await readCachedSchemaFromDisk(this.context.globalStorageUri, cacheKey);
 
-			if (!cached?.schema) {
+				if (!cached?.schema) {
 				// Not in cache – try to fetch live
-				if (this.schemaRefresher) {
-					const refreshResult = await this.schemaRefresher(clusterUrl);
-					if (refreshResult.error && refreshResult.schemas.length === 0) {
-						return { error: refreshResult.error };
-					}
-					// Re-read from disk since the refresher persists to cache
-					cached = await readCachedSchemaFromDisk(this.context.globalStorageUri, cacheKey);
+				const refreshResult = this.schemaRefresher
+					? await this.schemaRefresher(clusterUrl)
+					: await this.refreshSchemaDirectly(clusterUrl);
+				if (refreshResult.error && refreshResult.schemas.length === 0) {
+					return { error: refreshResult.error };
 				}
+				// Re-read from disk since the refresher persists to cache
+				cached = await readCachedSchemaFromDisk(this.context.globalStorageUri, cacheKey);
 			}
 
 			if (!cached?.schema) {
@@ -531,9 +589,11 @@ export class KustoWorkbenchToolOrchestrator {
 			clusterUrl
 		);
 
-		if (schemas.length === 0 && this.schemaRefresher) {
+		if (schemas.length === 0) {
 			// Nothing cached – try a live fetch
-			const refreshResult = await this.schemaRefresher(clusterUrl);
+			const refreshResult = this.schemaRefresher
+				? await this.schemaRefresher(clusterUrl)
+				: await this.refreshSchemaDirectly(clusterUrl);
 			if (refreshResult.error && refreshResult.schemas.length === 0) {
 				return { error: refreshResult.error };
 			}
@@ -640,7 +700,8 @@ export class KustoWorkbenchToolOrchestrator {
 	// ── SQL tools ─────────────────────────────────────────────────────────────
 
 	async listSqlConnections(): Promise<{ connections: Array<{ id: string; name: string; serverUrl: string; dialect: string }> }> {
-		return this.sendToWebview('toolListSqlConnections', {});
+		const conns = this.getSqlConnectionManager().getConnections();
+		return { connections: conns.map(c => ({ id: c.id, name: c.name, serverUrl: c.serverUrl, dialect: c.dialect })) };
 	}
 
 	async configureSqlSection(input: ConfigureSqlSectionInput): Promise<{ success: boolean; resultPreview?: string }> {
@@ -868,14 +929,15 @@ export class KustoWorkbenchToolOrchestrator {
 				const sidecarPath = fileUri.fsPath.replace(extension, sidecarExtension);
 				const sidecarUri = vscode.Uri.file(sidecarPath);
 				
-				// Create empty sidecar with link to main file
+				// Create sidecar with linked query section pointing to the main file.
+				// linkedQueryPath must be on the first section (not on state) for
+				// isLinkedSidecarForCompatFile() to detect the sidecar correctly.
 				const baseName = fileUri.fsPath.split(/[\\/]/).pop() || '';
 				const sidecarContent = JSON.stringify({
 					kind: 'kqlx',
 					version: 1,
 					state: {
-						linkedQueryPath: baseName,
-						sections: []
+						sections: [{ type: 'query', linkedQueryPath: baseName }]
 					}
 				}, null, 2);
 				
@@ -1477,9 +1539,11 @@ export class GetSqlSchemaTool implements vscode.LanguageModelTool<GetSqlSchemaIn
 
 export function registerKustoWorkbenchTools(
 	context: vscode.ExtensionContext,
-	connectionManager: ConnectionManager
+	connectionManager: ConnectionManager,
+	getSqlConnectionManager: () => SqlConnectionManager,
+	kustoClient: KustoQueryClient
 ): KustoWorkbenchToolOrchestrator {
-	const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(context, connectionManager);
+	const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(context, connectionManager, getSqlConnectionManager, kustoClient);
 
 	// Register all tools using the languageModelTools[].name values from package.json
 	// This is how VS Code binds the manifest contribution to the implementation

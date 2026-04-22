@@ -13,6 +13,7 @@ import { KqlDiagnosticSeverity } from './kqlLanguageService/protocol';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { recordTextEditorSelection } from './selectionTracker';
 import { registerKustoWorkbenchTools, KustoWorkbenchToolOrchestrator } from './kustoWorkbenchTools';
+import { KustoQueryClient } from './kustoClient';
 import { registerRemoteFileOpener } from './remoteFileOpener';
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { exportSkillCommand, checkAndUpdateSkillFiles } from './skillExport';
@@ -105,7 +106,8 @@ export function activate(context: vscode.ExtensionContext) {
 	};
 
 	// Register Kusto Workbench tools for VS Code Copilot Chat integration
-	toolOrchestrator = registerKustoWorkbenchTools(context, connectionManager);
+	const toolKustoClient = new KustoQueryClient(context);
+	toolOrchestrator = registerKustoWorkbenchTools(context, connectionManager, getSqlConnectionManager, toolKustoClient);
 
 	// Best-effort diagnostics for plain text editors ("Reopen With" → Text Editor)
 	// Uses last selected connection/database from the notebook experience.

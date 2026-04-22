@@ -20,6 +20,9 @@ const fakeConnectionManager = {
 	getConnections: () => [],
 } as any;
 
+const fakeGetSqlConnMgr = () => ({ getConnections: () => [] }) as any;
+const fakeKustoClient = {} as any;
+
 describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 	beforeEach(() => {
 		// Reset the singleton between tests
@@ -27,7 +30,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 	});
 
 	it('connect returns a token and listSections uses the stateGetter', async () => {
-		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager);
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const stateGetter = vi.fn(async () => [
 			{ id: 'q1', type: 'query', name: 'My Query' },
 		]);
@@ -40,7 +43,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 	});
 
 	it('disconnectIfOwner with matching token clears callbacks', async () => {
-		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager);
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const token = orch.connect(vi.fn(), vi.fn(async () => []), vi.fn());
 
 		orch.disconnectIfOwner(token);
@@ -50,7 +53,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 	});
 
 	it('disconnectIfOwner with stale token does NOT clear callbacks', async () => {
-		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager);
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 
 		// Editor A connects
 		const tokenA = orch.connect(vi.fn(), vi.fn(async () => [{ id: 'a1', type: 'query' }]), vi.fn());
@@ -69,7 +72,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 	});
 
 	it('postToActiveWebview uses the latest poster after reconnect', () => {
-		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager);
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 
 		const posterA = vi.fn();
 		orch.connect(posterA, vi.fn(async () => []), vi.fn());
@@ -83,7 +86,7 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 	});
 
 	it('successive connects increment the token', () => {
-		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager);
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const t1 = orch.connect(vi.fn(), vi.fn(async () => []), vi.fn());
 		const t2 = orch.connect(vi.fn(), vi.fn(async () => []), vi.fn());
 		const t3 = orch.connect(vi.fn(), vi.fn(async () => []), vi.fn());
