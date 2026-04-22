@@ -5,6 +5,12 @@
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<title>Kusto Workbench Viewer</title>
+	<!-- Critical CSS: styled first paint while external CSS loads -->
+	<style>
+		body{font-family:var(--vscode-font-family);color:var(--vscode-foreground);background:var(--vscode-editor-background);padding:16px;overflow-x:hidden}
+		.object-viewer-modal,.cell-viewer-modal,.share-modal{display:none}
+		.add-controls,.repo-issues-link{display:none}
+	</style>
 	<!-- Monaco Editor CSS -->
 	<link rel="stylesheet" href="dist/monaco/vs/editor/editor.main.css">
 	<!-- TOAST UI Editor CSS -->

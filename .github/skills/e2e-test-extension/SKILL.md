@@ -100,9 +100,9 @@ to each `.png` file. This shows you the actual screenshot so you can see
 what the Dev Host looked like at that point in the test.
 
 Example:
-\`\`\`
+\\`\\`\\`
 view_image("C:/Users/.../tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/1-screenshot.png")
-\`\`\`
+\\`\\`\\`
 
 After viewing each screenshot:
 1. Verify the expected UI state is visible
@@ -120,55 +120,69 @@ without viewing them with view_image.**
 and you WILL encounter missing capabilities, broken steps, or edge cases that
 don't work yet. This is expected.
 
-**When you hit a wall - a missing step, a broken feature, a step that times
-out unexpectedly, or any situation where the framework can't do what you need
-- you MUST stop immediately and report it.** Do NOT:
+**Before requesting a framework fix, exhaust the tools available to you.**
+Try different selectors, different webview titles, different step orderings,
+longer waits, and the diagnostic steps (`I list the webviews`,
+`I list the frame contexts`). Many apparent framework bugs are actually
+selector mismatches, timing issues, or missing `data-testid` attributes.
+Only after you have genuinely tried and failed should you escalate.
 
-- Write a weaker test as a workaround
-- Skip the critical verification and call it "good enough"
-- Assume the test passed because no error was thrown
-- Try to hack around the limitation with creative step combinations
-- Silently move on to the next test
+**When you hit a wall** — a missing step, a broken feature, a step that times
+out unexpectedly, or any situation where the framework genuinely can't do what
+you need — produce a **fix-request prompt** that an agent working in the
+`vscode-extension-tester` repository could execute directly to implement the
+fix. This is not a bug report for a human — it is an actionable implementation
+prompt for another AI agent. Structure it exactly like this:
 
-**Instead, stop and produce a detailed prompt** that the framework developers
-can use to build or fix the missing capability. Structure it exactly like this:
-
-\`\`\`
-## 🛑 Framework Blocker: [short title]
+\\`\\`\\`
+## 🛑 Framework Fix Request: [short title]
 
 **What I was trying to do:**
 [Describe the test scenario and the specific interaction you needed]
 
 **What step/capability is missing or broken:**
-[Be precise - e.g. "There is no step to read the text content of a specific
+[Be precise — e.g. "There is no step to read the text content of a specific
 CSS selector in a webview" or "The 'I wait for' step times out even though
-the element exists - it appears to not traverse nested iframes in custom
+the element exists — it appears to not traverse nested iframes in custom
 editor webviews"]
 
 **What I observed:**
-[Paste the exact error message, step output, or describe the unexpected behavior]
+[Paste the exact error message, step output, or describe the unexpected behavior.
+Include the full step text, the webview title, the selector, and any diagnostic
+output from `I list the webviews` or `I list the frame contexts`.]
+
+**What I already tried:**
+[List every workaround you attempted and why each failed. This proves the
+issue is in the framework, not in your test. E.g. "Tried different selectors,
+confirmed element exists via `I evaluate`, waited 15 seconds, used
+`I list the frame contexts` which shows only 1 execution context when 2
+frames exist."]
 
 **What the framework needs to support:**
-[Describe the ideal step or fix - e.g. "A step like 'Then element .foo should
-have text bar in the webview' that works inside custom editor webviews with
-nested iframes" or "The CDP client needs to enumerate execution contexts
-across all frames, not just the top-level frame"]
+[Describe the ideal fix. Reference specific files in the vscode-extension-tester
+repo if you know them — e.g. "The `discoverFrameContextIds` method in
+`packages/cli/src/runner/cdp-client.ts` needs to..." or "A new Gherkin step
+in `packages/cli/src/runner/test-runner.ts` that..."]
 
 **Suggested Gherkin step syntax (if applicable):**
-\`\`\`gherkin
+\\`\\`\\`gherkin
 Then element ".my-selector" should have text "expected" in the webview
-\`\`\`
+\\`\\`\\`
 
-**Workaround attempted (if any):**
-[What you tried and why it didn't work]
+**Priority:** [blocking — can't write any meaningful test for this feature]
+or [degraded — can write a partial test but it misses the key assertion]
+\\`\\`\\`
 
-**Priority:** [blocking - can't write any meaningful test for this feature]
-or [degraded - can write a partial test but it misses the key assertion]
-\`\`\`
+**Do NOT:**
+- Write a weaker test as a workaround for a framework limitation
+- Skip the critical verification and call it "good enough"
+- Assume the test passed because no error was thrown
+- Silently move on to the next test
 
-**This prompt is your primary deliverable when blocked.** A well-written
-blocker report is more valuable than a bad test. The framework developers
-will use it to build the fix, and you can resume testing once it ships.
+**This fix-request prompt is your primary deliverable when blocked.** A well-
+written, actionable prompt is more valuable than a bad test. It should contain
+enough detail that an agent can open the vscode-extension-tester repo, read
+the prompt, and implement the fix without further clarification.
 
 ## Test Workflow
 
@@ -230,14 +244,6 @@ Prepare a profile first with:
 vscode-ext-test profile open <profile-name>
 ```
 
-## Tips
-
-- Test IDs are disposable - create a new one for each investigation.
-- The `runs/` directory is gitignored; artifacts are ephemeral.
-- By default, each run launches a fresh isolated VS Code instance.
-  All steps always work - no prerequisites, no extra flags needed.
-- Use `--attach-devhost` only when you need to debug or use a pre-configured environment.
-
 ## Available Gherkin Steps
 
 - `Given the extension is in a clean state` - reset: close all editors, dismiss notifications, clear output channels
@@ -284,7 +290,7 @@ a clean baseline, explicitly set the value back at the start of each scenario.
 
 Example:
 
-\`\`\`gherkin
+\\`\\`\\`gherkin
 Feature: Extension respects font size setting
   Scenario: Large font
     When I set setting "editor.fontSize" to "24"
@@ -300,7 +306,7 @@ Feature: Extension respects font size setting
 
   Scenario: Reset to default
     When I set setting "editor.fontSize" to "null"
-\`\`\`
+\\`\\`\\`
 
 ### Click/Focus Elements in Webviews (Windows UI Automation)
 These use Windows accessibility to find and click elements by their name or text.
@@ -310,11 +316,11 @@ They work for ANY element - including inside webviews, custom editors, and dialo
 - `When I click the "<name>" edit` - click a text field by name
 
 Example - click a button inside a webview:
-\`\`\`gherkin
+\\`\\`\\`gherkin
 When I click the element "Select favorite..."
 When I click the element "Run Query"
 When I click the "File name:" edit
-\`\`\`
+\\`\\`\\`
 
 ### Webview DOM Steps (CSS Selectors via Chrome DevTools)
 
@@ -359,11 +365,11 @@ The pattern:
 2. **Shadow DOM just works.** CSS selector steps automatically pierce open
    shadow roots. You do NOT need to add `__testFind`/`__testClick` helper
    functions to the webview code. Just use `data-testid` selectors as normal:
-   \`\`\`gherkin
+   \\`\\`\\`gherkin
    When I click "[data-testid='add-connection-btn']" in the webview
    Then element "[data-testid='status-indicator']" should exist
    Then element "[data-testid='results-section']" should have text "42 rows"
-   \`\`\`
+   \\`\\`\\`
 
    If the webview uses closed shadow roots (`mode: 'closed'`), the framework
    cannot reach inside them. In that rare case, the extension would need to
@@ -390,10 +396,12 @@ in the extension source is part of the testing process.
 | `When I focus "<sel>" in the webview` | Focus an input or scroll container |
 | `When I scroll "<sel>" by <dx> <dy>` | Scroll a container relatively |
 | `When I scroll "<sel>" to <x> <y>` | Scroll to absolute coords |
-| `When I scroll "<sel>" to the (top\|bottom\|left\|right)` | Jump to an edge |
+| `When I scroll "<sel>" to the (top\\|bottom\\|left\\|right)` | Jump to an edge |
 | `When I scroll "<sel>" into view` | Scroll the element itself into view |
 | `When I evaluate "<js>" in the webview` | Run arbitrary JS (escape hatch) |
 | `When I list the webviews` | Log all open webview titles, probed DOM titles, and URLs (debugging aid) |
+| `When I list the frame contexts` | Log all execution contexts (frames) inside webview targets — shows context IDs, origins, frame IDs, and the frame tree. Use to diagnose when evaluate/click steps can't find elements inside nested iframes. |
+| `When I list the frame contexts in the webview "<title>"` | Same, but restricted to a specific webview |
 | `Then the webview should contain "<text>"` | Substring match in body text |
 | `Then the webview "<title>" should contain "<text>"` | Restrict to a webview |
 | `Then element "<sel>" should exist` | Existence assertion |
@@ -414,6 +422,17 @@ framework uses a 3-tier matching strategy (all case-insensitive):
    iframes). This catches webviews whose CDP target title is generic but
    whose inner HTML sets a meaningful `<title>`.
 
+**Cross-origin iframe support.** VS Code webview panels use deeply nested
+cross-origin iframes (main renderer → `vscode-webview://` outer → inner
+content frame). The framework automatically discovers all execution contexts
+across all frames within each webview target — including inner iframes whose
+contexts may take longer to register. When interacting with custom editor
+webviews that use Web Components (Lit, Shoelace, etc.) rendered inside these
+nested frames, all CSS selector steps and evaluate steps traverse every frame
+automatically. If you suspect a frame discovery issue (e.g. an element exists
+but the framework can't find it), use `When I list the frame contexts` to
+inspect which execution contexts and frames were discovered.
+
 This means **the VS Code tab label usually works as the title** — the
 framework will find it via tab activation + DOM probing even when the CDP
 target title doesn't match. If your title still isn't matching, use the
@@ -425,33 +444,33 @@ every webview until one matches.
 container (not the page) - e.g. `section[data-testid="results-table"] .scroll-body`
 or `.kw-section--results .table-scroll`. Then:
 
-\`\`\`gherkin
+\\`\\`\\`gherkin
 Scenario: Scroll the results table
   When I execute command "kusto.runQuery"
   And I wait for ".kw-results .scroll-body" in the webview
   And I scroll ".kw-results .scroll-body" to the bottom
   Then element ".kw-results tr:last-child" should exist
-\`\`\`
+\\`\\`\\`
 
-\`\`\`gherkin
+\\`\\`\\`gherkin
 Scenario: Horizontally scroll a wide table
   When I scroll ".kw-results .scroll-body" by 800 0
-  Then element ".kw-results th[data-col="timestamp"]" should exist
-\`\`\`
+  Then element ".kw-results th[data-col=\"timestamp\"]" should exist
+\\`\\`\\`
 
-\`\`\`gherkin
+\\`\\`\\`gherkin
 Scenario: Click a button in a specific section of the dashboard
   When I click ".kw-section--charts button.export" in the webview "Dashboard"
   Then I should see notification "Export complete"
-\`\`\`
+\\`\\`\\`
 
 **Escape hatch - evaluate JS.** Use sparingly, but when the selector-based
 steps cannot express what you need (e.g. you need to inspect a virtualized
 list's internal state), reach for `I evaluate`:
 
-\`\`\`gherkin
+\\`\\`\\`gherkin
 When I evaluate "document.querySelectorAll('.row').length" in the webview
-\`\`\`
+\\`\\`\\`
 
 The expression is wrapped in an IIFE; return a value via the last expression.
 Async expressions are awaited.
@@ -486,7 +505,7 @@ controller into allow-list mode, so only the declared channels are dumped):
 
 Example - capture a specific channel and verify a log line:
 
-\`\`\`gherkin
+\\`\\`\\`gherkin
 Feature: Query execution writes a structured trace
   Background:
     Given the extension is in a clean state
@@ -497,7 +516,7 @@ Feature: Query execution writes a structured trace
     And I wait 3 seconds
     Then the output channel "Kusto Workbench" should contain "StormEvents | take 10"
     And the output channel "Kusto Workbench" should have been captured
-\`\`\`
+\\`\\`\\`
 
 **Important caveat.** Channels created by the target extension *before the
 controller activates* cannot be captured retroactively - VS Code's API does
@@ -521,8 +540,8 @@ management.
 | `When I click "<button>" on the "<title>" dialog` | Click a button on any native dialog by title |
 | `When I cancel the Save As dialog` | Dismiss a Save/Open dialog (presses Escape) |
 | `When I cancel the Open dialog` | Same — works for any file dialog variant |
-| `When I resize the (window\|Dev Host) to <W>x<H>` | Resize the Dev Host window |
-| `When I move the (window\|Dev Host) to <x>, <y>` | Move the Dev Host window |
+| `When I resize the (window\\|Dev Host) to <W>x<H>` | Resize the Dev Host window |
+| `When I move the (window\\|Dev Host) to <x>, <y>` | Move the Dev Host window |
 
 **Important: triggering native dialogs from VS Code.**
 
@@ -535,11 +554,11 @@ so you MUST use `I start command` (fire-and-forget), NOT `I execute command`
 After starting the command, **wait for the dialog to appear** before
 interacting with it:
 
-\`\`\`gherkin
+\\`\\`\\`gherkin
 When I start command "workbench.action.files.openFile"
 And I wait 3 seconds
-And I open the file "C:\Users\me\data.csv"
-\`\`\`
+And I open the file "C:\\Users\\me\\data.csv"
+\\`\\`\\`
 
 **Paths must be absolute.** The file dialog types the path into the OS "File
 name:" edit field and presses Enter. Relative paths resolve relative to
@@ -549,14 +568,14 @@ Always use absolute paths.
 **Tip — use `${TEMP}` for temp files.** The `${VAR}` syntax resolves from
 environment variables. Combine with the temp file step:
 
-\`\`\`gherkin
+\\`\\`\\`gherkin
 Given a temp file "test-data.txt" exists with content "hello world"
 When I start command "workbench.action.files.openFile"
 And I wait 3 seconds
-And I open the file "${TEMP}\test-data.txt"
+And I open the file "${TEMP}\\test-data.txt"
 And I wait 2 seconds
 Then the editor should contain "hello world"
-\`\`\`
+\\`\\`\\`
 
 ### Screenshots
 - `Then I take a screenshot` - capture the full screen, saved to the run directory
@@ -577,7 +596,7 @@ Use these for test setup when you don't need to test the actual dialog interacti
 
 Every test should start from a known state. Use Background to reset before each scenario:
 
-\`\`\`gherkin
+\\`\\`\\`gherkin
 Feature: My tests
   Background:
     Given the extension is in a clean state
@@ -586,10 +605,33 @@ Feature: My tests
   Scenario: First test
     When I execute command "myExtension.doSomething"
     ...
-\`\`\`
+\\`\\`\\`
 
 The reset step closes all editors, dismisses notifications, clears output channels,
 and closes panels/sidebars. This ensures each scenario starts from the same baseline.
+
+## Repo-Specific Knowledge
+
+When you run `vscode-ext-test init`, a `repo-knowledge.md` file is created in
+`.github/skills/e2e-test-extension/` alongside this SKILL.md. Unlike SKILL.md
+(which is overwritten on every `init` to stay current with framework updates),
+**`repo-knowledge.md` is never overwritten** — it is your persistent,
+repo-specific knowledge base.
+
+Use `repo-knowledge.md` to record things you learn about testing THIS specific
+codebase that would help in future test sessions:
+
+- Which command IDs the extension registers and what they do
+- Webview titles and CSS selectors that work (or don't work) for this extension
+- Extension activation quirks (e.g. "needs a .kql file open before commands are available")
+- Auth flows or environment setup required for specific features
+- Known flaky areas or timing-sensitive steps that need longer waits
+- `data-testid` attributes that exist (or that you recommended adding)
+- Workarounds for framework limitations specific to this extension's UI
+
+**Read `repo-knowledge.md` before every test session.** It contains hard-won
+knowledge from previous sessions. **Update it after every session** with
+anything new you learned.
 
 ## Tips
 

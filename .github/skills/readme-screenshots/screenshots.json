@@ -108,7 +108,7 @@
     "altText": "Load .csv data directly from the internet",
     "commands": ["kusto.openQueryEditor"],
     "windowSize": { "width": 1050, "height": 700 },
-    "crop": { "x": 14, "y": 108, "width": 1006, "height": 555 },
+    "crop": { "x": 14, "y": 108, "width": 1006, "height": 505 },
     "notes": "Uses default profile — no auth needed. addUrlBox() creates the section, _requestFetch() triggers the load, then the default query section is removed. Feature file: features/csv.feature"
   },
   {
@@ -179,9 +179,10 @@
     "readmeLine": 143,
     "altText": "Performance optimization of an existing query",
     "commands": ["kusto.openQueryEditor"],
-    "windowSize": { "width": 1440, "height": 900 },
-    "cropHints": "Crop to the comparison panel showing the performance metrics and the optimized query",
-    "notes": "Needs two queries that have been compared via the optimization feature. The comparison panel must be open and showing results."
+    "windowSize": { "width": 800, "height": 900 },
+    "cropHints": "Crop to the comparison section: skip title bar + breadcrumb, include section header through last query line",
+    "crop": { "x": 48, "y": 89, "width": 737, "height": 475 },
+    "notes": "Uses kusto-auth. Dispatches compareQueryPerformanceWithQuery message to trigger real optimization flow — creates comparison section, executes both datatable queries, generates real comparison banner. Feature file: features/perf-optimization.feature"
   },
   {
     "filename": "share.png",
@@ -215,9 +216,10 @@
     "readmeLine": 161,
     "altText": "Connection Manager and Cluster Explorer",
     "commands": ["kusto.manageConnections"],
-    "windowSize": { "width": 1440, "height": 900 },
-    "cropHints": "Crop to the Connection Manager panel showing the schema browser with expanded function details",
-    "notes": "Open the Connection Manager, navigate to a cluster > database > Functions, and expand a function to show its details."
+    "windowSize": { "width": 800, "height": 900 },
+    "cropHints": "Tight crop: start at Connection Manager title, include full implementation, exclude toast/status bar",
+    "crop": { "x": 5, "y": 72, "width": 770, "height": 755 },
+    "notes": "Uses kusto-auth. Navigates to cluster > DevCli > Functions via _explorerPath, clicks first function chevron (shadow DOM auto-pierced), masks cluster/database/email/folder names via base64 JS. Feature file: features/connection-manager.feature"
   },
   {
     "filename": "cluster-explorer.png",
@@ -240,7 +242,7 @@
     "altText": "Markdown editing",
     "commands": ["kusto.openQueryEditor"],
     "windowSize": { "width": 950, "height": 2200 },
-    "crop": { "x": 14, "y": 90, "width": 920, "height": 1554 },
+    "crop": { "x": 14, "y": 90, "width": 920, "height": 1350 },
     "notes": "Uses default profile. Adds a markdown section with rich content via setMarkdownContent, removes query section. Feature file: features/markdown.feature"
   },
   {

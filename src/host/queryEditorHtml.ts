@@ -7,8 +7,16 @@ export async function getQueryEditorHtml(
 	options?: { hideFooterControls?: boolean }
 ): Promise<string> {
 	const templateUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'queryEditor.html');
-	const templateBytes = await vscode.workspace.fs.readFile(templateUri);
+	const cssBundleUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor.bundle.css');
+	const [templateBytes, cssBundleBytes] = await Promise.all([
+		vscode.workspace.fs.readFile(templateUri),
+		vscode.workspace.fs.readFile(cssBundleUri),
+	]);
 	let template = new TextDecoder('utf-8').decode(templateBytes);
+	// Inline the CSS bundle so the webview is styled at first paint, even when
+	// VS Code restores cached HTML from a previous session with stale resource URIs.
+	// Sanitize against the (unlikely) case of </style> appearing in CSS content.
+	const appCssInline = new TextDecoder('utf-8').decode(cssBundleBytes).replaceAll('</style>', '<\\/style>');
 
 	// For certain modes (e.g. .md compatibility mode), we want to avoid rendering footer UI
 	// (Add Section buttons + feedback link) entirely so it doesn't take up layout/scroll space.
@@ -25,9 +33,6 @@ export async function getQueryEditorHtml(
 		return `${uri}${sep}v=${encodeURIComponent(cacheBuster)}`;
 	};
 
-	const appCssBundleUri = withCacheBuster(
-		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor.bundle.css')).toString()
-	);
 	const toastUiEditorCssUri = withCacheBuster(
 		webview
 			.asWebviewUri(
@@ -122,7 +127,7 @@ export async function getQueryEditorHtml(
 
 	return template
 		.replaceAll('{{alternatingRowStyle}}', altRowCss)
-		.replaceAll('{{appCssBundleUri}}', appCssBundleUri)
+		.replaceAll('{{appCssInline}}', appCssInline)
 		.replaceAll('{{queryEditorJsUri}}', queryEditorJsUri)
 		.replaceAll('{{copilotLogoUri}}', copilotLogoUri)
 		.replaceAll('{{monacoVsUri}}', monacoVsUri)
