@@ -128,31 +128,29 @@ jobs:
 
           API_BASE="https://api.addons.microsoftedge.microsoft.com/v1/products/$EDGE_PRODUCT_ID"
 
-          # ── 1. Upload package ──
+          # ── 1. Upload package (single request — capture headers + status) ──
           echo "Uploading ${{ env.ZIP_NAME }}..."
-          UPLOAD_RESPONSE=$(curl -s -w "\n%{http_code}" -X POST \
+          HEADER_FILE=$(mktemp)
+          UPLOAD_BODY=$(curl -s -D "$HEADER_FILE" -w "\n%{http_code}" -X POST \
             "$API_BASE/submissions/draft/package" \
             -H "Authorization: ApiKey $EDGE_API_KEY" \
             -H "X-ClientID: $EDGE_CLIENT_ID" \
             -H "Content-Type: application/zip" \
             -T "${{ env.ZIP_NAME }}")
 
-          HTTP_CODE=$(echo "$UPLOAD_RESPONSE" | tail -n1)
-          UPLOAD_BODY=$(echo "$UPLOAD_RESPONSE" | sed '$d')
+          HTTP_CODE=$(echo "$UPLOAD_BODY" | tail -n1)
+          UPLOAD_BODY=$(echo "$UPLOAD_BODY" | sed '$d')
 
-          if [ "$HTTP_CODE" -ne 202 ] && [ "$HTTP_CODE" -lt 200 -o "$HTTP_CODE" -ge 300 ]; then
+          if [ "$HTTP_CODE" -lt 200 ] || [ "$HTTP_CODE" -ge 300 ]; then
             echo "::error::Upload failed with HTTP $HTTP_CODE"
             echo "$UPLOAD_BODY"
+            rm -f "$HEADER_FILE"
             exit 1
           fi
 
           # Extract operation ID from Location header
-          OPERATION_ID=$(curl -s -D - -o /dev/null -X POST \
-            "$API_BASE/submissions/draft/package" \
-            -H "Authorization: ApiKey $EDGE_API_KEY" \
-            -H "X-ClientID: $EDGE_CLIENT_ID" \
-            -H "Content-Type: application/zip" \
-            -T "${{ env.ZIP_NAME }}" | grep -i '^Location:' | awk '{print $2}' | tr -d '\r')
+          OPERATION_ID=$(grep -i '^Location:' "$HEADER_FILE" | awk '{print $2}' | tr -d '\r')
+          rm -f "$HEADER_FILE"
 
           echo "Upload accepted (HTTP $HTTP_CODE). Operation: $OPERATION_ID"
 
