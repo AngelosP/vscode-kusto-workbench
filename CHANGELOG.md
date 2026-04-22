@@ -6,8 +6,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 ## [4.0.0] - 2026-04-21
 
 * T-SQL support!
-* E2E testing via [vscode-extension-tester](http://github.com/AngelosP/vscode-extension-tester).
+* Search support in Connection Manager for cluster, database, table, column, view, function ... even function implementation; search for it all. 
 * Improved the rendering of markdown tables.
+* Support for VS Code's "instant tab" feature.
+* E2E testing via [vscode-extension-tester](http://github.com/AngelosP/vscode-extension-tester).
 
 ## [3.7.0] - 2026-04-11
 

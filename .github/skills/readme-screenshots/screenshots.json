@@ -90,14 +90,14 @@
     "filename": "sql-sections.png",
     "profile": "sql-auth",
     "tier": "medium",
-    "description": "SQL section with T-SQL query, autocomplete, and results table",
+    "description": "SQL section with SELECT TOP 5 T-SQL query joining Product/ProductCategory, masked server/database dropdowns, results table showing Category/Products/AvgPrice/MinPrice/MaxPrice",
     "readmeLine": 86,
     "altText": "SQL sections",
     "commands": ["kusto.openQueryEditor"],
-    "windowSize": { "width": 1440, "height": 900 },
-    "cropHints": "Full window or crop to the SQL section area showing the editor, autocomplete, and results",
-    "notes": "TODO entry — this screenshot is currently inside an HTML comment in README.md (line 86). The comment must be uncommented separately once the screenshot is captured. Do NOT uncomment the README as part of the screenshot workflow.",
-    "todo": true
+    "windowSize": { "width": 900, "height": 1050 },
+    "crop": { "x": 50, "y": 106, "width": 820, "height": 720 },
+    "cropHints": "Crop to the SQL section only: include top 1px border through bottom border. Exclude the 'Add section' buttons below.",
+    "notes": "Uses sql-auth to execute the query and show real results. After execution, dropdown text is masked via querySelectorAll('kw-dropdown') on the section's shadowRoot. Window is narrow+tall (900x1050) with sidebar closed. The feature file scrolls the section into view and focuses the editor group before the screenshot to avoid capturing the Connection Manager tab. Feature file: features/sql-sections.feature"
   },
   {
     "filename": "csv.png",

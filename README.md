@@ -83,7 +83,7 @@ Uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/mona
 
 Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files or add SQL sections to any workbook. The auto-complete experience is powered by Microsoft's SQL Tools Service, the same engine behind the official SQL Server extension. so you get reliable, schema-aware IntelliSense as you type. You also get schema-aware Copilot chat, query execution with full result rendering, and all the same toolbar actions (run modes, favorites, persistence) you already know from the Kusto side.
 
-<!-- TODO: Add screenshot here — e.g. ![SQL sections](media/marketplace/sql-sections.png) -->
+![SQL sections](./media/marketplace/sql-sections.png)
 
 ### Load .csv data directly from the internet
 

@@ -217,6 +217,37 @@ and PowerShell for cropping.
     ```
     Do NOT commit `.old.png` files — they are temporary backups.
 
+### Phase 6: Update the Skill Itself
+
+**CRITICAL: Every screenshot change MUST update the skill's own artifacts.**
+Never do one-off crops, throwaway PowerShell scripts, or ad-hoc coordinate
+hacks that live only in the conversation. If you figured out the right crop
+coordinates, window size, query text, or masking logic — that knowledge
+belongs in the skill, not in your head.
+
+After finalizing a screenshot, always update **all three**:
+
+21. **`screenshots.json`** — Set the final `crop` coordinates (`x`, `y`,
+    `width`, `height`), `windowSize`, `description`, `notes`, and remove
+    `"todo": true` if present. The crop must match what produced the
+    accepted result exactly.
+
+22. **`features/<name>.feature`** — The canonical `.feature` file in this
+    skill's `features/` directory. This is what `take-screenshot.ps1`
+    copies into `e2e/` before running. It must reflect the final working
+    version — correct window size, query text, masking logic, scroll
+    steps, and any workarounds discovered during the session.
+
+23. **`take-screenshot.ps1`** — If the capture or crop workflow needed
+    changes (new logic, different crop strategy, additional steps), update
+    the script so it works correctly for the next run. The script reads
+    `crop` from `screenshots.json` and applies it — if the coordinates
+    are wrong there, every future run will produce a bad crop.
+
+The goal: running `.\take-screenshot.ps1 <name>` must produce a
+pixel-perfect result with zero manual intervention. If it doesn't,
+the skill is broken.
+
 ## Screenshot Manifest
 
 The `screenshots.json` file in this folder defines every screenshot. Fields:

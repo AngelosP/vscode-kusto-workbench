@@ -6,6 +6,13 @@ import type { KustoConnectionFormSubmitDetail } from '../../components/kw-kusto-
 import type { SqlConnectionFormSubmitDetail } from '../../components/kw-sql-connection-form.js';
 import '../../components/kw-kusto-connection-form.js';
 import '../../components/kw-sql-connection-form.js';
+import {
+	ConnectionManagerSearchController,
+	KUSTO_CATEGORIES,
+	SQL_CATEGORIES,
+	type SearchResult,
+	type SearchControllerHost,
+} from './connection-manager-search.controller.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,9 +44,13 @@ interface Snapshot {
 	sqlDialects?: SqlDialectInfo[];
 	sqlFavorites?: SqlFavorite[];
 	sqlLeaveNoTrace?: string[];
+	// Search
+	searchState?: unknown;
 }
 
 type ConnectionKind = 'kusto' | 'sql';
+
+type ActiveFilter = 'all' | 'favorites' | 'lnt' | 'search';
 
 interface SqlConnectionInfo {
 	id: string;
@@ -152,8 +163,8 @@ export class KwConnectionManager extends LitElement {
 	@state() private _databaseSchemas: Record<string, DatabaseSchema> = {};
 	@state() private _tablePreviewData: Record<string, TablePreview> = {};
 	@state() private _loadingDatabases = new Set<string>();
-	@state() private _filterFavorites = false;
-	@state() private _filterLnt = false;
+	@state() private _activeFilter: ActiveFilter = 'all';
+	@state() private _refreshMenuOpen = false;
 
 	// Modal state
 	@state() private _modalVisible = false;
@@ -184,6 +195,15 @@ export class KwConnectionManager extends LitElement {
 
 	private _vscode!: VsCodeApi;
 
+	// ── Search controller ─────────────────────────────────────────────────────
+
+	private _search = new ConnectionManagerSearchController(this as unknown as SearchControllerHost);
+
+	/** Bridge for the search controller to send messages to the host. */
+	postMessage(msg: unknown): void {
+		this._vscode.postMessage(msg);
+	}
+
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
 	connectedCallback(): void {
@@ -191,12 +211,24 @@ export class KwConnectionManager extends LitElement {
 		this._vscode = acquireVsCodeApi();
 		window.addEventListener('message', this._onMessage);
 		this._vscode.postMessage({ type: 'requestSnapshot' });
+		this.addEventListener('click', this._dismissToolsMenu);
 	}
 
 	disconnectedCallback(): void {
 		super.disconnectedCallback();
 		window.removeEventListener('message', this._onMessage);
+		this.removeEventListener('click', this._dismissToolsMenu);
 	}
+
+	private _dismissToolsMenu = (e: Event) => {
+		const path = e.composedPath();
+		if (this._refreshMenuOpen) {
+			const split = this.shadowRoot?.querySelector('.search-refresh-split');
+			if (split && !path.includes(split)) {
+				this._refreshMenuOpen = false;
+			}
+		}
+	};
 
 	// ── Message handling ──────────────────────────────────────────────────────
 
@@ -221,6 +253,8 @@ export class KwConnectionManager extends LitElement {
 					} else {
 						this._activeKind = 'kusto';
 					}
+					// Restore search state
+					this._search.restoreState(this._snapshot.searchState as any, this._activeKind);
 				}
 				if (!this._selectedConnectionId && this._snapshot?.connections?.length) {
 					this._selectedConnectionId = this._snapshot.connections[0].id;
@@ -323,10 +357,28 @@ export class KwConnectionManager extends LitElement {
 				} catch (e) { console.error('[kusto]', e); }
 				break;
 			}
+			// Search messages
+			case 'searchResults':
+				this._search.handleSearchResults(msg.requestId, msg.results, msg.completed);
+				break;
+			case 'searchProgress':
+				this._search.handleSearchProgress(msg.requestId, msg.message, msg.current, msg.total);
+				break;
 		}
 	};
 
 	// ── Computed helpers ──────────────────────────────────────────────────────
+
+	private _isPanelEmpty(): boolean {
+		const kind = this._activeKind;
+		if (this._activeFilter === 'search') {
+			return this._search.results.length === 0;
+		}
+		if (kind === 'kusto') {
+			return (this._snapshot?.connections?.length ?? 0) === 0;
+		}
+		return (this._snapshot?.sqlConnections?.length ?? 0) === 0;
+	}
 
 	private _isLeaveNoTrace(clusterUrl: string): boolean {
 		if (!this._snapshot?.leaveNoTraceClusters) return false;
@@ -368,15 +420,15 @@ export class KwConnectionManager extends LitElement {
 					@kind-changed=${(e: CustomEvent) => this._switchKind(e.detail.kind)}
 				></kw-kind-picker>
 				<div class="title-actions">
-					<button class="header-btn primary" data-testid="cm-add-connection" @click=${() => this._openModal('add')}>
-						${ICONS.add} Add connection
+					<button class="header-btn primary" title="Add connection" data-testid="cm-add-connection" @click=${() => this._openModal('add')}>
+						${ICONS.add} <span class="header-btn-label">Add connection</span>
 					</button>
 					${kind === 'kusto' ? html`
-						<button class="header-btn" @click=${() => this._vscode.postMessage({ type: 'connection.importXml' })}>
-							${ICONS.importIcon} Import
+						<button class="header-btn" title="Import" @click=${() => this._vscode.postMessage({ type: 'connection.importXml' })}>
+							${ICONS.importIcon} <span class="header-btn-label">Import</span>
 						</button>
-						<button class="header-btn" @click=${() => this._vscode.postMessage({ type: 'connection.exportXml' })}>
-							${ICONS.save} Export
+						<button class="header-btn" title="Export" @click=${() => this._vscode.postMessage({ type: 'connection.exportXml' })}>
+							${ICONS.save} <span class="header-btn-label">Export</span>
 						</button>
 					` : nothing}
 				</div>
@@ -395,6 +447,7 @@ export class KwConnectionManager extends LitElement {
 		this._activeKind = kind;
 		this._explorerPath = null;
 		this._sqlExplorerPath = null;
+		this._search.setKind(kind);
 		this._vscode.postMessage({ type: 'setActiveKind', kind });
 	}
 
@@ -405,34 +458,36 @@ export class KwConnectionManager extends LitElement {
 		const hasFavs = favorites.length > 0;
 		const hasLnt = lntClusters.length > 0;
 		const favClusterUrls = new Set(favorites.map(f => normalizeClusterUrl(f.clusterUrl)));
+		const af = this._activeFilter;
 
 		// Apply filters
 		let visibleConnections = connections;
-		if (this._filterFavorites) {
+		if (af === 'favorites') {
 			visibleConnections = connections.filter(c => favClusterUrls.has(normalizeClusterUrl(c.clusterUrl)));
 		}
-		if (this._filterLnt) {
+		if (af === 'lnt') {
 			const lntUrls = new Set(lntClusters.map(u => normalizeClusterUrl(u)));
 			visibleConnections = visibleConnections.filter(c => lntUrls.has(normalizeClusterUrl(c.clusterUrl)));
 		}
 
 		return html`
-			<!-- Filter tabs -->
-			${hasFavs || hasLnt ? html`
-			<div class="filter-bar">
-				<button class="filter-tab ${!this._filterFavorites && !this._filterLnt ? 'active' : ''}" @click=${() => { this._filterFavorites = false; this._filterLnt = false; this._validateBreadcrumb(); }}>${ICONS.kustoCluster} <span class="filter-label">All</span></button>
-				${hasFavs ? html`<button class="filter-tab fav-tab ${this._filterFavorites ? 'active' : ''}" @click=${() => { this._filterFavorites = !this._filterFavorites; this._filterLnt = false; this._validateBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${favorites.length}</span></button>` : nothing}
-				${hasLnt ? html`<button class="filter-tab lnt-tab ${this._filterLnt ? 'active' : ''}" @click=${() => { this._filterLnt = !this._filterLnt; this._filterFavorites = false; this._validateBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${lntClusters.length}</span></button>` : nothing}
+			<!-- Filter tabs (always visible) -->
+			<div class="filter-bar" data-testid="cm-filter-bar">
+				<button class="filter-tab ${af === 'all' ? 'active' : ''}" data-testid="cm-filter-all" @click=${() => { this._activeFilter = 'all'; this._validateBreadcrumb(); }}>${ICONS.kustoCluster} <span class="filter-label">All</span></button>
+				${hasFavs ? html`<button class="filter-tab fav-tab ${af === 'favorites' ? 'active' : ''}" @click=${() => { this._activeFilter = af === 'favorites' ? 'all' : 'favorites'; this._validateBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${favorites.length}</span></button>` : nothing}
+				${hasLnt ? html`<button class="filter-tab lnt-tab ${af === 'lnt' ? 'active' : ''}" @click=${() => { this._activeFilter = af === 'lnt' ? 'all' : 'lnt'; this._validateBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${lntClusters.length}</span></button>` : nothing}
+				<button class="filter-tab search-tab ${af === 'search' ? 'active' : ''}" data-testid="cm-filter-search" @click=${() => { this._activeFilter = af === 'search' ? 'all' : 'search'; if (this._search.kind !== 'kusto') this._search.setKind('kusto'); }}>${ICONS.toolbarSearch} <span class="filter-label">Search</span></button>
 			</div>
-			` : nothing}
 
-			<!-- Breadcrumb (when drilled in) -->
-			${this._explorerPath?.connectionId ? this._renderBreadcrumbBar() : nothing}
+			${af === 'search' ? this._renderSearchContent() : html`
+				<!-- Breadcrumb (when drilled in) -->
+				${this._explorerPath?.connectionId ? this._renderBreadcrumbBar() : nothing}
 
-			<!-- Explorer content -->
-			<div class="explorer-content">
-				${this._explorerPath?.connectionId ? this._renderDrilledContent() : this._renderClusterList(visibleConnections, favClusterUrls, lntClusters)}
-			</div>
+				<!-- Explorer content -->
+				<div class="explorer-content">
+					${this._explorerPath?.connectionId ? this._renderDrilledContent() : this._renderClusterList(visibleConnections, favClusterUrls, lntClusters)}
+				</div>
+			`}
 		`;
 	}
 
@@ -440,7 +495,7 @@ export class KwConnectionManager extends LitElement {
 
 	private _renderClusterList(connections: KustoConnection[], favClusterUrls: Set<string>, lntClusters: string[]): TemplateResult {
 		if (connections.length === 0) {
-			const hasFilter = this._filterFavorites || this._filterLnt;
+			const hasFilter = this._activeFilter === 'favorites' || this._activeFilter === 'lnt';
 			return html`<div class="empty-state" data-testid="cm-empty-state">
 				<div class="empty-state-icon">${ICONS.kustoCluster}</div>
 				<div class="empty-state-title">${hasFilter ? 'No matching clusters' : 'No clusters yet'}</div>
@@ -494,7 +549,7 @@ export class KwConnectionManager extends LitElement {
 		if (!conn) { this._explorerPath = null; return; }
 
 		// Check if the cluster is visible under current filter
-		if (this._filterFavorites) {
+		if (this._activeFilter === 'favorites') {
 			const favUrls = new Set((this._snapshot?.favorites ?? []).map(f => normalizeClusterUrl(f.clusterUrl)));
 			if (!favUrls.has(normalizeClusterUrl(conn.clusterUrl))) { this._explorerPath = null; return; }
 			// If drilled into a database, check if it's a favorite
@@ -503,7 +558,7 @@ export class KwConnectionManager extends LitElement {
 				if (!favDbs.has(ep.database)) { this._explorerPath = { connectionId: ep.connectionId } as any; return; }
 			}
 		}
-		if (this._filterLnt) {
+		if (this._activeFilter === 'lnt') {
 			const lntUrls = new Set((this._snapshot?.leaveNoTraceClusters ?? []).map(u => normalizeClusterUrl(u)));
 			if (!lntUrls.has(normalizeClusterUrl(conn.clusterUrl))) { this._explorerPath = null; return; }
 		}
@@ -536,10 +591,11 @@ export class KwConnectionManager extends LitElement {
 
 	private _renderBreadcrumb(conn: KustoConnection): TemplateResult {
 		const ep = this._explorerPath;
-		const rootLabel = this._filterFavorites ? 'Favorites' : this._filterLnt ? 'Leave No Trace' : 'All';
-		const rootIcon = this._filterFavorites ? ICONS.starFilled : this._filterLnt ? ICONS.shield : ICONS.kustoCluster;
+		const rootLabel = this._activeFilter === 'favorites' ? 'Favorites' : this._activeFilter === 'lnt' ? 'Leave No Trace' : 'All';
+		const rootIcon = this._activeFilter === 'favorites' ? ICONS.starFilled : this._activeFilter === 'lnt' ? ICONS.shield : ICONS.kustoCluster;
 		return html`
 			<div class="explorer-breadcrumb">
+				<button class="btn-icon breadcrumb-back" data-testid="cm-breadcrumb-back" title="Go back" @click=${() => this._navigateBack()}>${ICONS.arrowLeft}</button>
 				<span class="breadcrumb-item" @click=${() => { this._explorerPath = null; }}>
 					<span class="breadcrumb-icon">${rootIcon}</span>${rootLabel}
 				</span>
@@ -585,15 +641,15 @@ export class KwConnectionManager extends LitElement {
 
 			// Filter databases when Favorites filter is active
 			let visibleDbs = databases;
-			if (this._filterFavorites) {
+			if (this._activeFilter === 'favorites') {
 				const favDbs = new Set((this._snapshot?.favorites ?? []).filter(f => normalizeClusterUrl(f.clusterUrl) === normalizeClusterUrl(conn.clusterUrl)).map(f => f.database));
 				visibleDbs = databases.filter(db => favDbs.has(db));
 			}
 
 			if (visibleDbs.length === 0) {return html`
 				<div class="empty-state">
-					<div class="empty-state-text">${this._filterFavorites ? 'No favorite databases in this cluster.' : 'No databases found.'}</div>
-					${!this._filterFavorites ? html`<button class="btn" @click=${() => this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id })}>Refresh</button>` : nothing}
+					<div class="empty-state-text">${this._activeFilter === 'favorites' ? 'No favorite databases in this cluster.' : 'No databases found.'}</div>
+					${this._activeFilter !== 'favorites' ? html`<button class="btn" @click=${() => this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id })}>Refresh</button>` : nothing}
 				</div>`;}
 
 			return html`${visibleDbs.map(db => {
@@ -806,41 +862,43 @@ export class KwConnectionManager extends LitElement {
 		const hasLnt = sqlLntIds.length > 0;
 		const favConnIds = new Set(sqlFavorites.map(f => f.connectionId));
 		const lntSet = new Set(sqlLntIds);
+		const af = this._activeFilter;
 
 		// Apply filters
 		let visibleConnections = sqlConnections;
-		if (this._filterFavorites) {
+		if (af === 'favorites') {
 			visibleConnections = sqlConnections.filter(c => favConnIds.has(c.id));
 		}
-		if (this._filterLnt) {
+		if (af === 'lnt') {
 			visibleConnections = visibleConnections.filter(c => lntSet.has(c.id));
 		}
 
 		const ep = this._sqlExplorerPath;
 
 		return html`
-			<!-- Filter tabs -->
-			${hasFavs || hasLnt ? html`
-			<div class="filter-bar">
-				<button class="filter-tab ${!this._filterFavorites && !this._filterLnt ? 'active' : ''}" @click=${() => { this._filterFavorites = false; this._filterLnt = false; this._validateSqlBreadcrumb(); }}>${ICONS.sqlServer} <span class="filter-label">All</span></button>
-				${hasFavs ? html`<button class="filter-tab fav-tab ${this._filterFavorites ? 'active' : ''}" @click=${() => { this._filterFavorites = !this._filterFavorites; this._filterLnt = false; this._validateSqlBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${sqlFavorites.length}</span></button>` : nothing}
-				${hasLnt ? html`<button class="filter-tab lnt-tab ${this._filterLnt ? 'active' : ''}" @click=${() => { this._filterLnt = !this._filterLnt; this._filterFavorites = false; this._validateSqlBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${sqlLntIds.length}</span></button>` : nothing}
+			<!-- Filter tabs (always visible) -->
+			<div class="filter-bar" data-testid="cm-sql-filter-bar">
+				<button class="filter-tab ${af === 'all' ? 'active' : ''}" data-testid="cm-sql-filter-all" @click=${() => { this._activeFilter = 'all'; this._validateSqlBreadcrumb(); }}>${ICONS.sqlServer} <span class="filter-label">All</span></button>
+				${hasFavs ? html`<button class="filter-tab fav-tab ${af === 'favorites' ? 'active' : ''}" @click=${() => { this._activeFilter = af === 'favorites' ? 'all' : 'favorites'; this._validateSqlBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${sqlFavorites.length}</span></button>` : nothing}
+				${hasLnt ? html`<button class="filter-tab lnt-tab ${af === 'lnt' ? 'active' : ''}" @click=${() => { this._activeFilter = af === 'lnt' ? 'all' : 'lnt'; this._validateSqlBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${sqlLntIds.length}</span></button>` : nothing}
+				<button class="filter-tab search-tab ${af === 'search' ? 'active' : ''}" data-testid="cm-sql-filter-search" @click=${() => { this._activeFilter = af === 'search' ? 'all' : 'search'; if (this._search.kind !== 'sql') this._search.setKind('sql'); }}>${ICONS.toolbarSearch} <span class="filter-label">Search</span></button>
 			</div>
-			` : nothing}
 
-			<!-- SQL Breadcrumb -->
-			${ep?.connectionId ? this._renderSqlBreadcrumb() : nothing}
+			${af === 'search' ? this._renderSearchContent() : html`
+				<!-- SQL Breadcrumb -->
+				${ep?.connectionId ? this._renderSqlBreadcrumb() : nothing}
 
-			<!-- SQL Explorer content -->
-			<div class="explorer-content">
-				${ep?.connectionId ? this._renderSqlDrilledContent() : this._renderSqlConnectionList(visibleConnections, favConnIds, lntSet)}
-			</div>
+				<!-- SQL Explorer content -->
+				<div class="explorer-content">
+					${ep?.connectionId ? this._renderSqlDrilledContent() : this._renderSqlConnectionList(visibleConnections, favConnIds, lntSet)}
+				</div>
+			`}
 		`;
 	}
 
 	private _renderSqlConnectionList(connections: SqlConnectionInfo[], favConnIds: Set<string>, lntSet: Set<string>): TemplateResult {
 		if (connections.length === 0) {
-			const hasFilter = this._filterFavorites || this._filterLnt;
+			const hasFilter = this._activeFilter === 'favorites' || this._activeFilter === 'lnt';
 			return html`<div class="empty-state">
 				<div class="empty-state-icon">${ICONS.sqlServer}</div>
 				<div class="empty-state-title">${hasFilter ? 'No matching connections' : 'No SQL connections yet'}</div>
@@ -884,11 +942,12 @@ export class KwConnectionManager extends LitElement {
 		if (!ep) return html``;
 		const conn = (this._snapshot?.sqlConnections ?? []).find(c => c.id === ep.connectionId);
 		if (!conn) return html``;
-		const rootLabel = this._filterFavorites ? 'Favorites' : this._filterLnt ? 'Leave No Trace' : 'All';
-		const rootIcon = this._filterFavorites ? ICONS.starFilled : this._filterLnt ? ICONS.shield : ICONS.sqlServer;
+		const rootLabel = this._activeFilter === 'favorites' ? 'Favorites' : this._activeFilter === 'lnt' ? 'Leave No Trace' : 'All';
+		const rootIcon = this._activeFilter === 'favorites' ? ICONS.starFilled : this._activeFilter === 'lnt' ? ICONS.shield : ICONS.sqlServer;
 
 		return html`
 			<div class="explorer-breadcrumb">
+				<button class="btn-icon breadcrumb-back" data-testid="cm-sql-breadcrumb-back" title="Go back" @click=${() => this._navigateSqlBack()}>${ICONS.arrowLeft}</button>
 				<span class="breadcrumb-item" @click=${() => { this._sqlExplorerPath = null; }}>
 					<span class="breadcrumb-icon">${rootIcon}</span>${rootLabel}
 				</span>
@@ -945,15 +1004,15 @@ export class KwConnectionManager extends LitElement {
 
 			// Filter databases when Favorites filter is active
 			let visibleDbs = databases;
-			if (this._filterFavorites) {
+			if (this._activeFilter === 'favorites') {
 				const favDbs = new Set((this._snapshot?.sqlFavorites ?? []).filter(f => f.connectionId === conn.id).map(f => f.database));
 				visibleDbs = databases.filter(db => favDbs.has(db));
 			}
 
 			if (visibleDbs.length === 0) {
 				return html`<div class="empty-state">
-					<div class="empty-state-text">${this._filterFavorites ? 'No favorite databases in this connection.' : 'No databases found.'}</div>
-					${!this._filterFavorites ? html`<button class="btn" @click=${() => this._vscode.postMessage({ type: 'sql.cluster.refreshDatabases', connectionId: conn.id })}>Refresh</button>` : nothing}
+					<div class="empty-state-text">${this._activeFilter === 'favorites' ? 'No favorite databases in this connection.' : 'No databases found.'}</div>
+					${this._activeFilter !== 'favorites' ? html`<button class="btn" @click=${() => this._vscode.postMessage({ type: 'sql.cluster.refreshDatabases', connectionId: conn.id })}>Refresh</button>` : nothing}
 				</div>`;
 			}
 			return html`${visibleDbs.map(db => {
@@ -1059,7 +1118,7 @@ export class KwConnectionManager extends LitElement {
 		const conn = connections.find(c => c.id === ep.connectionId);
 		if (!conn) { this._sqlExplorerPath = null; return; }
 
-		if (this._filterFavorites) {
+		if (this._activeFilter === 'favorites') {
 			const favConnIds = new Set((this._snapshot?.sqlFavorites ?? []).map(f => f.connectionId));
 			if (!favConnIds.has(conn.id)) { this._sqlExplorerPath = null; return; }
 			if (ep.database) {
@@ -1067,7 +1126,7 @@ export class KwConnectionManager extends LitElement {
 				if (!favDbs.has(ep.database)) { this._sqlExplorerPath = { connectionId: ep.connectionId }; return; }
 			}
 		}
-		if (this._filterLnt) {
+		if (this._activeFilter === 'lnt') {
 			const lntSet = new Set(this._snapshot?.sqlLeaveNoTrace ?? []);
 			if (!lntSet.has(conn.id)) { this._sqlExplorerPath = null; return; }
 		}
@@ -1504,6 +1563,331 @@ export class KwConnectionManager extends LitElement {
 			return lines.map(l => l.slice(minIndent)).join('\n').trim();
 		}
 		return s.trim();
+	}
+
+	// ── Back navigation ──────────────────────────────────────────────────────
+
+	private _navigateBack(): void {
+		const ep = this._explorerPath;
+		if (!ep) return;
+		if (ep.folderPath && ep.folderPath.length > 0) {
+			this._explorerPath = { ...ep, folderPath: ep.folderPath.slice(0, -1) };
+		} else if (ep.section) {
+			this._explorerPath = { ...ep, section: undefined, folderPath: undefined, tableName: undefined };
+		} else if (ep.database) {
+			this._explorerPath = { connectionId: ep.connectionId };
+		} else {
+			this._explorerPath = null;
+		}
+	}
+
+	private _navigateSqlBack(): void {
+		const ep = this._sqlExplorerPath;
+		if (!ep) return;
+		if (ep.section) {
+			this._sqlExplorerPath = { ...ep, section: undefined, folderPath: undefined };
+		} else if (ep.database) {
+			this._sqlExplorerPath = { connectionId: ep.connectionId };
+		} else {
+			this._sqlExplorerPath = null;
+		}
+	}
+
+	// ── Search UI ─────────────────────────────────────────────────────────────
+
+	private _renderSearchContent(): TemplateResult {
+		const s = this._search;
+		const categories = s.kind === 'sql' ? SQL_CATEGORIES : KUSTO_CATEGORIES;
+		const cats = s.categories;
+		const RESULT_CAT_MAP: Record<string, string> = { cluster: 'clusters', database: 'databases', table: 'tables', column: 'tables', function: 'functions', server: 'servers', view: 'views', 'stored-procedure': 'storedProcedures' };
+		const visibleResults = s.results.filter(r => cats[RESULT_CAT_MAP[r.category] ?? r.category] !== false);
+		const resultCount = visibleResults.length;
+
+		const cachedCount = this._activeKind === 'kusto'
+			? Object.keys(this._snapshot?.cachedDatabases ?? {}).length
+			: Object.keys(this._snapshot?.sqlCachedDatabases ?? {}).length;
+		const totalCount = this._activeKind === 'kusto'
+			? (this._snapshot?.connections?.length ?? 0)
+			: (this._snapshot?.sqlConnections?.length ?? 0);
+
+		return html`
+			<div class="search-container" data-testid="cm-search-container">
+				<!-- Search input -->
+				<div class="search-section-label">What to search for</div>
+				<div class="search-input-row">
+					<div class="search-input-wrapper">
+						<input class="search-input" data-testid="cm-search-input" type="text" placeholder="Search connections, databases, tables…"
+							.value=${s.query}
+							@input=${(e: Event) => s.setQuery((e.target as HTMLInputElement).value)}
+						/>
+						${s.loading ? html`<span class="search-input-spinner">${ICONS.spinner}</span>` : nothing}
+					</div>
+				</div>
+
+				<!-- Refresh progress strip (only for schema refresh operations) -->
+				${s.refreshing ? html`
+					<div class="search-progress-strip">
+						${ICONS.spinner}
+						<span class="search-progress-text">${s.progressMessage || 'Refreshing schemas…'}</span>
+						${s.progressTotal > 0 ? html`<span class="search-progress-count">${s.progressCurrent}/${s.progressTotal}</span>` : nothing}
+						<button class="btn-icon search-progress-dismiss" title="Cancel" @click=${() => s.cancelSearch()}>${ICONS.close}</button>
+					</div>
+				` : nothing}
+
+				<!-- Category chips + Refresh split-button -->
+				<div class="search-categories-row">
+					<div class="search-categories" data-testid="cm-search-categories">
+						${categories.map(cat => {
+							const isOn = s.categories[cat.id];
+							const contentOn = isOn && cat.hasContent && s.contentToggles[cat.id];
+							const icon = { clusters: ICONS.kustoCluster, databases: ICONS.database, tables: ICONS.table, functions: ICONS.function, servers: ICONS.sqlServer, views: ICONS.table, storedProcedures: ICONS.function }[cat.id] ?? ICONS.kustoCluster;
+							const tooltip = isOn && cat.splitLabel ? (contentOn ? `${cat.splitLabel[0]} ${cat.splitLabel[1]}` : cat.splitLabel[0]) : cat.label;
+							return html`
+							<button class="search-category-chip ${isOn ? 'active' : ''} ${cat.hasContent ? 'has-content' : ''} ${contentOn ? 'content-on' : ''}"
+								title=${tooltip}
+								@click=${() => s.cycleCategory(cat.id, cat.hasContent)}>
+								<span class="search-chip-icon">${icon}</span>
+								${isOn && cat.splitLabel ? html`
+									<span class="search-chip-label search-chip-text">${cat.splitLabel[0]} <span class="search-chip-secondary ${contentOn ? '' : 'dimmed'}">${cat.splitLabel[1]}</span></span>
+								` : html`
+									<span class="search-chip-label search-chip-text">${cat.label}</span>
+								`}
+							</button>
+						`;})}
+					</div>
+					<div class="search-refresh-split">
+						<button class="search-refresh-main" @click=${() => s.refreshCachedAndSearch()}>
+							<span class="search-refresh-label-always">Refresh</span> <span class="search-refresh-label-extra">schemas</span> <span class="search-refresh-count">(${cachedCount})</span>
+						</button>
+						<button class="search-refresh-drop ${this._refreshMenuOpen ? 'active' : ''}" @click=${() => { this._refreshMenuOpen = !this._refreshMenuOpen; }}>
+							${ICONS.chevron}
+						</button>
+						${this._refreshMenuOpen ? html`
+							<div class="search-refresh-menu">
+								<button class="search-tools-item" @click=${() => { this._refreshMenuOpen = false; s.refreshCachedAndSearch(); }}>
+									<div class="search-tools-item-title">Refresh connections with cached schemas <span class="search-tools-count">(${cachedCount})</span></div>
+									<div class="search-tools-item-desc">These are connections you typically use. Use this to pick up very recent schema changes in them (new tables, etc.) before you use search.</div>
+								</button>
+								<button class="search-tools-item" @click=${() => { this._refreshMenuOpen = false; s.refreshAllAndSearch(); }}>
+									<div class="search-tools-item-title">Refresh all connections <span class="search-tools-count">(${totalCount})</span></div>
+									<div class="search-tools-item-desc">These are all the connections you have, even ones you have not actually used before. Use this to make sure you have the schema of 100% of your connections before you search.</div>
+								</button>
+							</div>
+						` : nothing}
+					</div>
+				</div>
+
+				<!-- Results -->
+				<!-- Results count (always visible when query present) -->
+				${s.query.trim() ? html`
+					<div class="search-result-count">
+						${s.loading ? html`${resultCount > 0 ? `${resultCount} result${resultCount !== 1 ? 's' : ''} ` : ''}(searching…)` : html`${resultCount} result${resultCount !== 1 ? 's' : ''}`}
+						${!s.loading ? html`<button class="btn-icon search-result-rerun" title="Re-run search" @click=${() => s.rerunSearch()}>${ICONS.refresh}</button>` : nothing}
+					</div>
+				` : nothing}
+
+				<div class="search-results explorer-content" data-testid="cm-search-results">
+					${resultCount === 0 && !s.loading && !s.query.trim() || (s.refreshing && !s.query.trim()) ? html`
+						<div class="empty-state">
+							<div class="empty-state-icon">${ICONS.toolbarSearch}</div>
+							<div class="empty-state-title">Search your connections</div>
+							<div class="empty-state-text">Type to search across clusters, databases, tables, functions, and more.</div>
+						</div>
+					` : nothing}
+					${resultCount === 0 && !s.loading && s.query.trim() ? html`
+						<div class="empty-state">
+							<div class="empty-state-icon">${ICONS.toolbarSearch}</div>
+							<div class="empty-state-title">No results</div>
+							<div class="empty-state-text">Try a different query, enable more categories, or use a broader search scope.</div>
+						</div>
+					` : nothing}
+					${visibleResults.map(r => {
+						const expandable = r.category === 'table' || r.category === 'view' || r.category === 'function' || r.category === 'stored-procedure';
+						const itemKey = this._searchResultKey(r);
+						const isExpanded = expandable && (r.category === 'function' || r.category === 'stored-procedure' ? this._expandedFunctions.has(itemKey) : this._expandedTables.has(itemKey));
+						return html`
+						<div class="explorer-list-item-wrapper ${isExpanded ? 'expanded' : ''}">
+							<div class="explorer-list-item search-result-item" @click=${() => expandable ? this._toggleSearchResult(r) : this._navigateToSearchResult(r)}>
+								${expandable ? html`<span class="explorer-list-item-chevron ${isExpanded ? 'expanded' : ''}">${ICONS.chevron}</span>` : nothing}
+								<span class="explorer-list-item-icon ${r.category}">${this._getSearchResultIcon(r.category)}</span>
+								<span class="explorer-list-item-name">${r.name}</span>
+								<span class="search-result-context">
+									${r.parentName ? html`<span class="search-result-parent">${r.parentName} ›</span>` : nothing}
+									${r.database ? html`<span class="search-result-db">${r.connectionName} › ${r.database}</span>` : html`<span class="search-result-db">${r.connectionName}</span>`}
+								</span>
+								${r.matchContext ? html`<span class="search-result-match">${r.matchContext}</span>` : nothing}
+							</div>
+							${isExpanded ? this._renderSearchResultDetails(r) : nothing}
+						</div>
+					`;})}
+				</div>
+			</div>
+		`;
+	}
+
+	private _getSearchResultIcon(category: string): TemplateResult {
+		switch (category) {
+			case 'cluster': return ICONS.kustoCluster;
+			case 'server': return ICONS.sqlServer;
+			case 'database': return ICONS.database;
+			case 'table': return ICONS.table;
+			case 'view': return ICONS.table;
+			case 'function': return ICONS.function;
+			case 'stored-procedure': return ICONS.function;
+			case 'column': return ICONS.table;
+			default: return ICONS.kustoCluster;
+		}
+	}
+
+	private _searchResultKey(r: SearchResult): string {
+		const dbKey = r.connectionId + '|' + (r.database ?? '');
+		if (r.category === 'table' || r.category === 'view') return dbKey + '|table|' + r.name;
+		if (r.category === 'function' || r.category === 'stored-procedure') return dbKey + '|fn|' + r.name;
+		return dbKey + '|' + r.name;
+	}
+
+	private _toggleSearchResult(r: SearchResult): void {
+		const key = this._searchResultKey(r);
+		if (r.category === 'function' || r.category === 'stored-procedure') {
+			this._toggleFunction(key);
+		} else {
+			this._toggleTable(key);
+		}
+		// Ensure schema is loaded for expansion
+		if (r.database) {
+			const dbKey = r.connectionId + '|' + r.database;
+			if (r.kind === 'kusto' && !this._databaseSchemas[dbKey]) {
+				this._vscode.postMessage({ type: 'database.getSchema', connectionId: r.connectionId, database: r.database });
+			} else if (r.kind === 'sql' && !this._sqlDatabaseSchemas[dbKey]) {
+				this._vscode.postMessage({ type: 'sql.database.getSchema', connectionId: r.connectionId, database: r.database });
+			}
+		}
+	}
+
+	private _renderSearchResultDetails(r: SearchResult): TemplateResult {
+		const dbKey = r.connectionId + '|' + (r.database ?? '');
+		const tableKey = this._searchResultKey(r);
+		if (r.kind === 'kusto') {
+			const schema = this._databaseSchemas[dbKey];
+			if (!schema) return html`<div class="explorer-item-details"><div class="explorer-detail-section"><span class="explorer-detail-label">Loading schema…</span></div></div>`;
+			if (r.category === 'table') {
+				const cols = schema.columnTypesByTable?.[r.name] ?? {};
+				const colNames = Object.keys(cols).sort();
+				const docString = schema.tableDocStrings?.[r.name];
+				const conn = this._snapshot?.connections?.find(c => c.id === r.connectionId);
+				const ep: ExplorerPath = { connectionId: r.connectionId, database: r.database };
+				const previewData = this._tablePreviewData[tableKey];
+				return html`<div class="explorer-item-details">
+					${docString ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Description</div><div class="explorer-detail-docstring">${docString}</div></div>` : nothing}
+					${colNames.length > 0 ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Schema (${colNames.length} columns)</div><div class="explorer-detail-schema">${colNames.map(col => html`<div class="explorer-schema-row"><span class="explorer-schema-col-name">${col}</span><span class="explorer-schema-col-type">${cols[col]}</span></div>`)}</div></div>` : nothing}
+					${conn ? this._renderTablePreview(tableKey, r.name, previewData, conn, ep) : nothing}
+				</div>`;
+			}
+			if (r.category === 'function') {
+				const fn = schema.functions?.find(f => f.name === r.name);
+				if (!fn) return html`<div class="explorer-item-details"><div class="explorer-detail-section"><span class="explorer-detail-label">Function not found in schema</span></div></div>`;
+				return html`<div class="explorer-item-details">
+					${fn.docString ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Description</div><div class="explorer-detail-docstring">${fn.docString}</div></div>` : nothing}
+					<div class="explorer-detail-section"><div class="explorer-detail-label">Signature</div><div class="explorer-detail-code">${fn.name}(${fn.parametersText || ''})</div></div>
+					${fn.body ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Implementation</div><pre class="explorer-detail-body">${this._trimFnBody(fn.body)}</pre></div>` : nothing}
+				</div>`;
+			}
+		} else {
+			const schema = this._sqlDatabaseSchemas[dbKey];
+			if (!schema) return html`<div class="explorer-item-details"><div class="explorer-detail-section"><span class="explorer-detail-label">Loading schema…</span></div></div>`;
+			if (r.category === 'table' || r.category === 'view') {
+				const cols = schema.columnsByTable?.[r.name] ?? {};
+				const colNames = Object.keys(cols).sort();
+				const conn = this._snapshot?.sqlConnections?.find(c => c.id === r.connectionId);
+				const ep: ExplorerPath = { connectionId: r.connectionId, database: r.database };
+				const previewData = this._sqlTablePreviewData[tableKey];
+				return html`<div class="explorer-item-details">
+					${colNames.length > 0 ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Schema (${colNames.length} columns)</div><div class="explorer-detail-schema">${colNames.map(col => html`<div class="explorer-schema-row"><span class="explorer-schema-col-name">${col}</span><span class="explorer-schema-col-type">${cols[col]}</span></div>`)}</div></div>` : nothing}
+					${conn ? this._renderSqlTablePreview(tableKey, r.name, previewData, conn, ep) : nothing}
+				</div>`;
+			}
+			if (r.category === 'stored-procedure') {
+				const sp = schema.storedProcedures?.find(s => s.name === r.name);
+				if (!sp) return html`<div class="explorer-item-details"><div class="explorer-detail-section"><span class="explorer-detail-label">Stored procedure not found in schema</span></div></div>`;
+				return html`<div class="explorer-item-details">
+					<div class="explorer-detail-section"><div class="explorer-detail-label">Signature</div><div class="explorer-detail-code">${sp.name}(${sp.parametersText || ''})</div></div>
+					${sp.body ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Implementation</div><pre class="explorer-detail-body">${sp.body}</pre></div>` : nothing}
+				</div>`;
+			}
+		}
+		return html``;
+	}
+
+	private _navigateToSearchResult(r: SearchResult): void {
+		this._activeFilter = 'all';
+		if (r.kind === 'kusto') {
+			if (r.category === 'cluster' || r.category === 'database') {
+				this._explorerPath = r.database ? { connectionId: r.connectionId, database: r.database } : { connectionId: r.connectionId };
+				this._vscode.postMessage({ type: 'cluster.expand', connectionId: r.connectionId });
+				if (r.database) {
+					const dbKey = r.connectionId + '|' + r.database;
+					if (!this._databaseSchemas[dbKey]) {
+						this._vscode.postMessage({ type: 'database.getSchema', connectionId: r.connectionId, database: r.database });
+					}
+				}
+			} else if (r.category === 'table' || r.category === 'column') {
+				this._explorerPath = { connectionId: r.connectionId, database: r.database, section: 'tables', folderPath: [] };
+				this._vscode.postMessage({ type: 'cluster.expand', connectionId: r.connectionId });
+				if (r.database) {
+					const dbKey = r.connectionId + '|' + r.database;
+					if (!this._databaseSchemas[dbKey]) {
+						this._vscode.postMessage({ type: 'database.getSchema', connectionId: r.connectionId, database: r.database });
+					}
+				}
+			} else if (r.category === 'function') {
+				this._explorerPath = { connectionId: r.connectionId, database: r.database, section: 'functions', folderPath: [] };
+				this._vscode.postMessage({ type: 'cluster.expand', connectionId: r.connectionId });
+				if (r.database) {
+					const dbKey = r.connectionId + '|' + r.database;
+					if (!this._databaseSchemas[dbKey]) {
+						this._vscode.postMessage({ type: 'database.getSchema', connectionId: r.connectionId, database: r.database });
+					}
+				}
+			}
+		} else {
+			if (r.category === 'server' || r.category === 'database') {
+				this._sqlExplorerPath = r.database ? { connectionId: r.connectionId, database: r.database } : { connectionId: r.connectionId };
+				this._vscode.postMessage({ type: 'sql.cluster.expand', connectionId: r.connectionId });
+				if (r.database) {
+					const dbKey = r.connectionId + '|' + r.database;
+					if (!this._sqlDatabaseSchemas[dbKey]) {
+						this._vscode.postMessage({ type: 'sql.database.getSchema', connectionId: r.connectionId, database: r.database });
+					}
+				}
+			} else if (r.category === 'table' || r.category === 'column') {
+				this._sqlExplorerPath = { connectionId: r.connectionId, database: r.database, section: 'tables' };
+				this._vscode.postMessage({ type: 'sql.cluster.expand', connectionId: r.connectionId });
+				if (r.database) {
+					const dbKey = r.connectionId + '|' + r.database;
+					if (!this._sqlDatabaseSchemas[dbKey]) {
+						this._vscode.postMessage({ type: 'sql.database.getSchema', connectionId: r.connectionId, database: r.database });
+					}
+				}
+			} else if (r.category === 'view') {
+				this._sqlExplorerPath = { connectionId: r.connectionId, database: r.database, section: 'views' };
+				this._vscode.postMessage({ type: 'sql.cluster.expand', connectionId: r.connectionId });
+				if (r.database) {
+					const dbKey = r.connectionId + '|' + r.database;
+					if (!this._sqlDatabaseSchemas[dbKey]) {
+						this._vscode.postMessage({ type: 'sql.database.getSchema', connectionId: r.connectionId, database: r.database });
+					}
+				}
+			} else if (r.category === 'stored-procedure') {
+				this._sqlExplorerPath = { connectionId: r.connectionId, database: r.database, section: 'functions' };
+				this._vscode.postMessage({ type: 'sql.cluster.expand', connectionId: r.connectionId });
+				if (r.database) {
+					const dbKey = r.connectionId + '|' + r.database;
+					if (!this._sqlDatabaseSchemas[dbKey]) {
+						this._vscode.postMessage({ type: 'sql.database.getSchema', connectionId: r.connectionId, database: r.database });
+					}
+				}
+			}
+		}
 	}
 
 	// ── Folder tree helpers ───────────────────────────────────────────────────

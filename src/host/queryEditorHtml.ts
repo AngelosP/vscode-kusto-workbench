@@ -127,7 +127,6 @@ export async function getQueryEditorHtml(
 
 	return template
 		.replaceAll('{{alternatingRowStyle}}', altRowCss)
-		.replaceAll('{{appCssInline}}', appCssInline)
 		.replaceAll('{{queryEditorJsUri}}', queryEditorJsUri)
 		.replaceAll('{{copilotLogoUri}}', copilotLogoUri)
 		.replaceAll('{{monacoVsUri}}', monacoVsUri)
@@ -141,5 +140,8 @@ export async function getQueryEditorHtml(
 			tuiColorPickerCssUri,
 			toastUiEditorColorSyntaxCssUri,
 		]))
-		.replaceAll('{{cacheBuster}}', cacheBuster);
+		.replaceAll('{{cacheBuster}}', cacheBuster)
+		// CSS bundle inlined last so its content cannot contain {{...}} placeholders
+		// that earlier replacements would accidentally substitute into.
+		.replaceAll('{{appCssInline}}', appCssInline);
 }

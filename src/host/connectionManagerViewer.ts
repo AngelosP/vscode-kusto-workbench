@@ -4,7 +4,8 @@ import * as os from 'os';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
 import { createEmptyKqlxOrMdxFile } from './kqlxFormat';
-import { writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry } from './schemaCache';
+import { writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry, searchCachedSchemas, readAllCachedSchemasFromDisk, type SchemaSearchMatch } from './schemaCache';
+import { searchCachedSqlSchemas, readAllCachedSqlSchemasFromDisk, type SqlSchemaSearchMatch } from './sqlEditorSchema';
 import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { SqlQueryClient } from './sqlClient';
 import { listDialects } from './sql/sqlDialectRegistry';
@@ -26,6 +27,7 @@ const STORAGE_KEYS = {
 	sqlCachedDatabases: 'sql.connectionManager.cachedDatabases',
 	sqlFavorites: 'sql.favorites',
 	sqlLeaveNoTrace: 'sql.leaveNoTraceConnections',
+	searchState: 'connectionManager.searchState',
 } as const;
 
 export type ConnectionKind = 'kusto' | 'sql';
@@ -84,7 +86,11 @@ type IncomingMessage =
 	| { type: 'sql.favorite.add'; connectionId: string; database: string; name: string }
 	| { type: 'sql.favorite.remove'; connectionId: string; database: string }
 	| { type: 'sql.leaveNoTrace.add'; connectionId: string }
-	| { type: 'sql.leaveNoTrace.remove'; connectionId: string };
+	| { type: 'sql.leaveNoTrace.remove'; connectionId: string }
+	// Search
+	| { type: 'search'; requestId: string; query: string; scope: string; kind: ConnectionKind; categories: Record<string, boolean>; contentToggles: Record<string, boolean> }
+	| { type: 'search.cancel'; requestId: string }
+	| { type: 'search.saveState'; state: unknown };
 
 export interface ConnectionManagerSqlDeps {
 	getSqlConnectionManager: () => SqlConnectionManager;
@@ -121,6 +127,8 @@ export class ConnectionManagerViewerV2 {
 	private schemaCache: Map<string, { schema: DatabaseSchemaIndex; timestamp: number }> = new Map();
 	private sqlDeps: ConnectionManagerSqlDeps | undefined;
 	private configSubscription: vscode.Disposable | undefined;
+	private _activeSearchRequestId: string | null = null;
+	private _searchAbortController: AbortController | null = null;
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -160,6 +168,7 @@ export class ConnectionManagerViewerV2 {
 		for (const d of this.disposables) {
 			try { d.dispose(); } catch { /* ignore */ }
 		}
+		this._searchAbortController?.abort();
 	}
 
 	// ─── Data helpers (identical to original) ───────────────────────────────
@@ -299,6 +308,14 @@ export class ConnectionManagerViewerV2 {
 		await this.context.globalState.update(STORAGE_KEYS.activeKind, kind);
 	}
 
+	private getSearchState(): unknown {
+		return this.context.globalState.get<unknown>(STORAGE_KEYS.searchState) ?? null;
+	}
+
+	private async setSearchState(state: unknown): Promise<void> {
+		await this.context.globalState.update(STORAGE_KEYS.searchState, state);
+	}
+
 	private async buildSnapshot() {
 		const sqlConnections = this.sqlDeps ? this.sqlDeps.getSqlConnectionManager().getConnections() : [];
 		return {
@@ -316,6 +333,8 @@ export class ConnectionManagerViewerV2 {
 			sqlFavorites: this.getSqlFavorites(),
 			sqlLeaveNoTrace: this.getSqlLeaveNoTrace(),
 			sqlDialects: listDialects().map(d => ({ id: d.id, displayName: d.displayName, defaultPort: d.defaultPort, authTypes: d.authTypes.map(a => ({ id: a.id, displayName: a.label })) })),
+			// Search
+			searchState: this.getSearchState(),
 		};
 	}
 
@@ -896,8 +915,468 @@ export class ConnectionManagerViewerV2 {
 				await this.sendSnapshotToWebview();
 				return;
 			}
+
+			// ─── Search message handlers ────────────────────────────────
+
+			case 'search': {
+				const requestId = String(msg.requestId || '');
+				const query = String(msg.query || '').trim();
+				if (!requestId || !query) return;
+
+				// Cancel any previous search
+				if (this._searchAbortController) {
+					this._searchAbortController.abort();
+				}
+				this._activeSearchRequestId = requestId;
+				const abortController = new AbortController();
+				this._searchAbortController = abortController;
+				const signal = abortController.signal;
+
+				// Run search in the background (don't block message loop)
+				void this._executeSearch(requestId, query, msg.scope as string, msg.kind as ConnectionKind, msg.categories, msg.contentToggles, signal);
+				return;
+			}
+			case 'search.cancel': {
+				const requestId = String(msg.requestId || '');
+				if (requestId === this._activeSearchRequestId) {
+					if (this._searchAbortController) this._searchAbortController.abort();
+					this._activeSearchRequestId = null;
+					this._searchAbortController = null;
+				}
+				return;
+			}
+			case 'search.saveState': {
+				await this.setSearchState(msg.state);
+				return;
+			}
+
 			default: return;
 		}
+	}
+
+	// ─── Search execution ───────────────────────────────────────────────────
+
+	private async _executeSearch(
+		requestId: string,
+		query: string,
+		scope: string,
+		kind: ConnectionKind,
+		categories: Record<string, boolean>,
+		contentToggles: Record<string, boolean>,
+		signal: AbortSignal,
+	): Promise<void> {
+		type SearchResult = {
+			category: string;
+			kind: ConnectionKind;
+			connectionId: string;
+			connectionName: string;
+			database?: string;
+			name: string;
+			parentName?: string;
+			matchContext?: string;
+		};
+
+		const sendResults = (results: SearchResult[], completed: boolean) => {
+			if (signal.aborted) return;
+			try { this.panel.webview.postMessage({ type: 'searchResults', requestId, results, completed }); } catch { /* panel disposed */ }
+		};
+		const sendProgress = (message: string, current?: number, total?: number) => {
+			if (signal.aborted) return;
+			try { this.panel.webview.postMessage({ type: 'searchProgress', requestId, message, current, total }); } catch { /* panel disposed */ }
+		};
+
+		let re: RegExp;
+		try { re = new RegExp(query, 'i'); } catch { sendResults([], true); return; }
+
+		try {
+			// ── Phase 1: Connection/database name matches (instant, from snapshot) ──
+			const nameResults: SearchResult[] = [];
+
+			if (kind === 'kusto') {
+				const connections = this.connectionManager.getConnections();
+				const cachedDbs = this.getCachedDatabases();
+				for (const conn of connections) {
+					if (categories['clusters'] && (re.test(conn.name) || re.test(conn.clusterUrl))) {
+						nameResults.push({ category: 'cluster', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, name: conn.name || conn.clusterUrl });
+					}
+					if (categories['databases']) {
+						const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
+						for (const db of cachedDbs[clusterKey] ?? []) {
+							if (re.test(db)) {
+								nameResults.push({ category: 'database', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database: db, name: db });
+							}
+						}
+					}
+				}
+			} else {
+				const sqlConns = this.sqlDeps ? this.sqlDeps.getSqlConnectionManager().getConnections() : [];
+				const sqlCachedDbs = this.getSqlCachedDatabases();
+				for (const conn of sqlConns) {
+					if (categories['servers'] && (re.test(conn.name) || re.test(conn.serverUrl))) {
+						nameResults.push({ category: 'server', kind: 'sql', connectionId: conn.id, connectionName: conn.name, name: conn.name || conn.serverUrl });
+					}
+					if (categories['databases']) {
+						for (const db of sqlCachedDbs[conn.id] ?? []) {
+							if (re.test(db)) {
+								nameResults.push({ category: 'database', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database: db, name: db });
+							}
+						}
+					}
+				}
+			}
+
+			if (nameResults.length > 0) sendResults(nameResults, false);
+			if (signal.aborted) return;
+
+			// ── Phase 2: Schema search (scope-dependent) ──
+
+			if (scope === 'refresh-cached' || scope === 'everything') {
+				await this._refreshSchemasForSearch(kind, scope, query, categories, contentToggles, requestId, signal, sendResults, sendProgress);
+			} else {
+				// Tier 1: search disk-cached schemas
+				await this._searchCachedSchemasForSearch(kind, query, categories, contentToggles, requestId, signal, sendResults);
+			}
+
+			if (!signal.aborted) sendResults([], true);
+		} catch (error) {
+			if (!signal.aborted) {
+				console.warn('[kusto] search error', error);
+				sendResults([], true);
+			}
+		} finally {
+			if (this._activeSearchRequestId === requestId) {
+				this._activeSearchRequestId = null;
+				this._searchAbortController = null;
+			}
+		}
+	}
+
+	/** Tier 1: Search already-cached schemas from disk. */
+	private async _searchCachedSchemasForSearch(
+		kind: ConnectionKind,
+		query: string,
+		categories: Record<string, boolean>,
+		contentToggles: Record<string, boolean>,
+		_requestId: string,
+		signal: AbortSignal,
+		sendResults: (results: any[], completed: boolean) => void,
+	): Promise<void> {
+		const wantsSchemaSearch = kind === 'kusto'
+			? (categories['tables'] || categories['functions'])
+			: (categories['tables'] || categories['views'] || categories['storedProcedures']);
+		if (!wantsSchemaSearch) return;
+
+		if (kind === 'kusto') {
+			const matches = await searchCachedSchemas(this.context.globalStorageUri, query, 500);
+			if (signal.aborted) return;
+			const results = this._mapKustoSchemaMatches(matches, categories, contentToggles);
+			if (results.length > 0) sendResults(results, false);
+		} else {
+			const matches = await searchCachedSqlSchemas(this.context.globalStorageUri, query, 500);
+			if (signal.aborted) return;
+			const results = this._mapSqlSchemaMatches(matches, categories, contentToggles);
+			if (results.length > 0) sendResults(results, false);
+		}
+	}
+
+	/** Tier 2 & 3: Refresh schemas then search each one as it's refreshed. */
+	private async _refreshSchemasForSearch(
+		kind: ConnectionKind,
+		scope: string,
+		query: string,
+		categories: Record<string, boolean>,
+		contentToggles: Record<string, boolean>,
+		_requestId: string,
+		signal: AbortSignal,
+		sendResults: (results: any[], completed: boolean) => void,
+		sendProgress: (message: string, current?: number, total?: number) => void,
+	): Promise<void> {
+		let re: RegExp;
+		try { re = new RegExp(query, 'i'); } catch { return; }
+
+		if (kind === 'kusto') {
+			const connections = this.connectionManager.getConnections();
+
+			if (scope === 'everything') {
+				// Tier 3: refresh all databases for all connections, then schemas
+				let step = 0;
+				const totalConns = connections.length;
+				const dbPairs: Array<{ conn: KustoConnection; db: string }> = [];
+
+				for (const conn of connections) {
+					if (signal.aborted) return;
+					step++;
+					sendProgress(`Connecting to ${conn.name || conn.clusterUrl}…`, step, totalConns);
+					try {
+						const dbs = await this.kustoClient.getDatabases(conn, true);
+						const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
+						const cached = this.getCachedDatabases();
+						cached[clusterKey] = dbs;
+						await this.setCachedDatabases(cached);
+						for (const db of dbs) dbPairs.push({ conn, db });
+					} catch { /* skip connection errors */ }
+				}
+
+				// Now refresh all schemas
+				const totalSchemas = dbPairs.length;
+				for (let i = 0; i < dbPairs.length; i++) {
+					if (signal.aborted) return;
+					const { conn, db } = dbPairs[i];
+					sendProgress(`Loading schema: ${db}`, i + 1, totalSchemas);
+					try {
+						const result = await this.kustoClient.getDatabaseSchema(conn, db, true);
+						const normalizedCluster = conn.clusterUrl.replace(/\/+$/, '');
+						const cacheKey = `${normalizedCluster}|${db}`;
+						await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
+							schema: result.schema,
+							timestamp: Date.now(),
+							version: SCHEMA_CACHE_VERSION,
+							clusterUrl: normalizedCluster,
+							database: db,
+						});
+						// Search the freshly loaded schema
+						const schemaResults = this._searchSingleKustoSchema(result.schema, normalizedCluster, db, conn, re, categories, contentToggles);
+						if (schemaResults.length > 0) sendResults(schemaResults, false);
+					} catch { /* skip schema errors */ }
+				}
+			} else {
+				// Tier 2: refresh only already-cached schemas
+				const cachedEntries = await readAllCachedSchemasFromDisk(this.context.globalStorageUri);
+				const total = cachedEntries.length;
+				for (let i = 0; i < cachedEntries.length; i++) {
+					if (signal.aborted) return;
+					const entry = cachedEntries[i];
+					sendProgress(`Refreshing ${entry.database}…`, i + 1, total);
+					const conn = connections.find(c => {
+						const cUrl = c.clusterUrl.replace(/\/+$/, '').toLowerCase();
+						const eUrl = entry.clusterUrl.replace(/\/+$/, '').toLowerCase();
+						return cUrl === eUrl || cUrl.includes(eUrl) || eUrl.includes(cUrl);
+					});
+					if (!conn) continue;
+					try {
+						const result = await this.kustoClient.getDatabaseSchema(conn, entry.database, true);
+						const normalizedCluster = conn.clusterUrl.replace(/\/+$/, '');
+						const cacheKey = `${normalizedCluster}|${entry.database}`;
+						await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
+							schema: result.schema,
+							timestamp: Date.now(),
+							version: SCHEMA_CACHE_VERSION,
+							clusterUrl: normalizedCluster,
+							database: entry.database,
+						});
+						const schemaResults = this._searchSingleKustoSchema(result.schema, normalizedCluster, entry.database, conn, re, categories, contentToggles);
+						if (schemaResults.length > 0) sendResults(schemaResults, false);
+					} catch { /* skip schema errors */ }
+				}
+			}
+		} else {
+			// SQL Tier 2/3
+			if (!this.sqlDeps) return;
+			const mgr = this.sqlDeps.getSqlConnectionManager();
+			const client = this.sqlDeps.getSqlClient();
+			const sqlConns = mgr.getConnections();
+
+			if (scope === 'everything') {
+				let step = 0;
+				const totalConns = sqlConns.length;
+				const dbPairs: Array<{ conn: any; db: string }> = [];
+
+				for (const conn of sqlConns) {
+					if (signal.aborted) return;
+					step++;
+					sendProgress(`Connecting to ${conn.name || conn.serverUrl}…`, step, totalConns);
+					try {
+						const dbs = await client.getDatabases(conn);
+						const cached = this.getSqlCachedDatabases();
+						cached[conn.id] = dbs;
+						await this.setSqlCachedDatabases(cached);
+						for (const db of dbs) dbPairs.push({ conn, db });
+					} catch { /* skip */ }
+				}
+
+				const totalSchemas = dbPairs.length;
+				for (let i = 0; i < dbPairs.length; i++) {
+					if (signal.aborted) return;
+					const { conn, db } = dbPairs[i];
+					sendProgress(`Loading schema: ${db}`, i + 1, totalSchemas);
+					try {
+						const schema = await client.getDatabaseSchema(conn, db);
+						// Search the fresh schema inline
+						const schemaResults = this._searchSingleSqlSchema(schema, conn, db, re, categories, contentToggles);
+						if (schemaResults.length > 0) sendResults(schemaResults, false);
+					} catch { /* skip */ }
+				}
+			} else {
+				// Tier 2: refresh cached SQL schemas
+				const cachedEntries = await readAllCachedSqlSchemasFromDisk(this.context.globalStorageUri);
+				const total = cachedEntries.length;
+				for (let i = 0; i < cachedEntries.length; i++) {
+					if (signal.aborted) return;
+					const entry = cachedEntries[i];
+					sendProgress(`Refreshing ${entry.database}…`, i + 1, total);
+					const conn = sqlConns.find(c => c.serverUrl.toLowerCase() === entry.serverUrl.toLowerCase());
+					if (!conn) continue;
+					try {
+						const schema = await client.getDatabaseSchema(conn, entry.database);
+						const schemaResults = this._searchSingleSqlSchema(schema, conn, entry.database, re, categories, contentToggles);
+						if (schemaResults.length > 0) sendResults(schemaResults, false);
+					} catch { /* skip */ }
+				}
+			}
+		}
+	}
+
+	/** Search a single Kusto schema against a regex. */
+	private _searchSingleKustoSchema(
+		schema: DatabaseSchemaIndex,
+		_clusterUrl: string,
+		database: string,
+		conn: KustoConnection,
+		re: RegExp,
+		categories: Record<string, boolean>,
+		contentToggles: Record<string, boolean>,
+	): any[] {
+		const results: any[] = [];
+		if (categories['tables']) {
+			for (const table of schema.tables ?? []) {
+				if (re.test(table)) results.push({ category: 'table', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database, name: table });
+			}
+			if (contentToggles['tables']) {
+				for (const [table, cols] of Object.entries(schema.columnTypesByTable ?? {})) {
+					for (const [col, colType] of Object.entries(cols)) {
+						if (re.test(col) || re.test(colType)) {
+							results.push({ category: 'column', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database, name: col, parentName: table, matchContext: `${col}: ${colType}` });
+						}
+					}
+				}
+			}
+		}
+		if (categories['functions']) {
+			for (const fn of (schema.functions ?? []) as Array<{ name?: string; body?: string; parametersText?: string; docString?: string }>) {
+				const fnName = typeof fn === 'string' ? fn : fn?.name;
+				if (!fnName) continue;
+				if (re.test(fnName)) {
+					results.push({ category: 'function', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database, name: fnName });
+				} else if (contentToggles['functions'] && typeof fn === 'object') {
+					if ((fn.body && re.test(fn.body)) || (fn.parametersText && re.test(fn.parametersText)) || (fn.docString && re.test(fn.docString))) {
+						results.push({ category: 'function', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database, name: fnName, matchContext: fn.docString || fn.parametersText || '(body match)' });
+					}
+				}
+			}
+		}
+		return results;
+	}
+
+	/** Search a single SQL schema against a regex. */
+	private _searchSingleSqlSchema(
+		schema: import('./sql/sqlDialect').SqlDatabaseSchemaIndex,
+		conn: { id: string; name: string; serverUrl: string },
+		database: string,
+		re: RegExp,
+		categories: Record<string, boolean>,
+		contentToggles: Record<string, boolean>,
+	): any[] {
+		const results: any[] = [];
+		if (categories['tables']) {
+			for (const table of schema.tables ?? []) {
+				if (re.test(table)) results.push({ category: 'table', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database, name: table });
+			}
+			if (contentToggles['tables']) {
+				const viewSet = new Set(schema.views ?? []);
+				for (const [table, cols] of Object.entries(schema.columnsByTable ?? {})) {
+					if (viewSet.has(table)) continue;
+					for (const [col, colType] of Object.entries(cols)) {
+						if (re.test(col) || re.test(colType)) {
+							results.push({ category: 'column', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database, name: col, parentName: table, matchContext: `${col}: ${colType}` });
+						}
+					}
+				}
+			}
+		}
+		if (categories['views']) {
+			for (const view of schema.views ?? []) {
+				if (re.test(view)) results.push({ category: 'view', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database, name: view });
+			}
+			if (contentToggles['views']) {
+				for (const [view, cols] of Object.entries(schema.columnsByTable ?? {})) {
+					if (!(schema.views ?? []).includes(view)) continue;
+					for (const [col, colType] of Object.entries(cols)) {
+						if (re.test(col) || re.test(colType)) {
+							results.push({ category: 'column', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database, name: col, parentName: view, matchContext: `${col}: ${colType}` });
+						}
+					}
+				}
+			}
+		}
+		if (categories['storedProcedures']) {
+			for (const sp of schema.storedProcedures ?? []) {
+				if (re.test(sp.name)) {
+					results.push({ category: 'stored-procedure', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database, name: sp.name });
+				} else if (contentToggles['storedProcedures']) {
+					if ((sp.body && re.test(sp.body)) || (sp.parametersText && re.test(sp.parametersText))) {
+						results.push({ category: 'stored-procedure', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database, name: sp.name, matchContext: sp.parametersText || '(body match)' });
+					}
+				}
+			}
+		}
+		return results;
+	}
+
+	/** Map Kusto SchemaSearchMatch results to the webview SearchResult format. */
+	private _mapKustoSchemaMatches(matches: SchemaSearchMatch[], categories: Record<string, boolean>, contentToggles: Record<string, boolean>): any[] {
+		const connections = this.connectionManager.getConnections();
+		const results: any[] = [];
+		for (const m of matches) {
+			const conn = connections.find(c => {
+				const cUrl = c.clusterUrl.replace(/\/+$/, '').toLowerCase();
+				const mUrl = m.clusterUrl.replace(/\/+$/, '').toLowerCase();
+				return cUrl === mUrl || cUrl.includes(mUrl) || mUrl.includes(cUrl);
+			});
+			const connId = conn?.id ?? '';
+			const connName = conn?.name ?? m.clusterUrl;
+
+			if (m.kind === 'table' || m.kind === 'tableDocString' || m.kind === 'tableFolder') {
+				if (!categories['tables']) continue;
+				results.push({ category: 'table', kind: 'kusto', connectionId: connId, connectionName: connName, database: m.database, name: m.name, matchContext: m.docString });
+			} else if (m.kind === 'column' || m.kind === 'columnType' || m.kind === 'columnDocString') {
+				if (!categories['tables'] || !contentToggles['tables']) continue;
+				results.push({ category: 'column', kind: 'kusto', connectionId: connId, connectionName: connName, database: m.database, name: m.name, parentName: m.table, matchContext: m.type ? `${m.name}: ${m.type}` : m.docString });
+			} else if (m.kind === 'function' || m.kind === 'functionDocString' || m.kind === 'functionFolder' || m.kind === 'functionParameter' || m.kind === 'functionBody') {
+				if (!categories['functions']) continue;
+				if ((m.kind === 'functionBody' || m.kind === 'functionParameter' || m.kind === 'functionDocString') && !contentToggles['functions']) continue;
+				results.push({ category: 'function', kind: 'kusto', connectionId: connId, connectionName: connName, database: m.database, name: m.name, matchContext: m.docString || m.parametersText });
+			}
+		}
+		return results;
+	}
+
+	/** Map SQL SqlSchemaSearchMatch results to the webview SearchResult format. */
+	private _mapSqlSchemaMatches(matches: SqlSchemaSearchMatch[], categories: Record<string, boolean>, contentToggles: Record<string, boolean>): any[] {
+		const sqlConns = this.sqlDeps ? this.sqlDeps.getSqlConnectionManager().getConnections() : [];
+		const results: any[] = [];
+		for (const m of matches) {
+			const conn = sqlConns.find(c => c.serverUrl.toLowerCase() === m.serverUrl.toLowerCase());
+			const connId = conn?.id ?? '';
+			const connName = conn?.name ?? m.serverUrl;
+
+			if (m.kind === 'table') {
+				if (!categories['tables']) continue;
+				results.push({ category: 'table', kind: 'sql', connectionId: connId, connectionName: connName, database: m.database, name: m.name });
+			} else if (m.kind === 'view') {
+				if (!categories['views']) continue;
+				results.push({ category: 'view', kind: 'sql', connectionId: connId, connectionName: connName, database: m.database, name: m.name });
+			} else if (m.kind === 'column') {
+				const isTableContent = categories['tables'] && contentToggles['tables'];
+				const isViewContent = categories['views'] && contentToggles['views'];
+				if (!isTableContent && !isViewContent) continue;
+				results.push({ category: 'column', kind: 'sql', connectionId: connId, connectionName: connName, database: m.database, name: m.name, parentName: m.table, matchContext: m.type ? `${m.name}: ${m.type}` : undefined });
+			} else if (m.kind === 'storedProcedure' || m.kind === 'spBody' || m.kind === 'spParameter') {
+				if (!categories['storedProcedures']) continue;
+				if ((m.kind === 'spBody' || m.kind === 'spParameter') && !contentToggles['storedProcedures']) continue;
+				results.push({ category: 'stored-procedure', kind: 'sql', connectionId: connId, connectionName: connName, database: m.database, name: m.name, matchContext: m.parametersText });
+			}
+		}
+		return results;
 	}
 
 	// ─── XML import (identical to original) ─────────────────────────────────

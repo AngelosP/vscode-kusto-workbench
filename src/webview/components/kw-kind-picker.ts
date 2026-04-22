@@ -27,11 +27,11 @@ export class KwKindPicker extends LitElement {
 		const kind = this.activeKind;
 		return html`
 			<div class="type-selector">
-				<button class="type-selector-btn ${kind === 'kusto' ? 'active' : ''}" @click=${() => this._pick('kusto')}>
-					${ICONS.kustoCluster} <span>Kusto</span> <span class="type-count">${this.kustoCount}</span>
+				<button class="type-selector-btn ${kind === 'kusto' ? 'active' : ''}" title="Kusto" @click=${() => this._pick('kusto')}>
+					${ICONS.kustoCluster} <span class="type-label">Kusto</span> <span class="type-count">${this.kustoCount}</span>
 				</button>
-				<button class="type-selector-btn ${kind === 'sql' ? 'active' : ''}" @click=${() => this._pick('sql')}>
-					${ICONS.sqlServer} <span>SQL</span> <span class="type-count">${this.sqlCount}</span>
+				<button class="type-selector-btn ${kind === 'sql' ? 'active' : ''}" title="SQL" @click=${() => this._pick('sql')}>
+					${ICONS.sqlServer} <span class="type-label">SQL</span> <span class="type-count">${this.sqlCount}</span>
 				</button>
 			</div>
 		`;
