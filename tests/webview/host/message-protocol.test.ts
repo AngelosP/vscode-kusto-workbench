@@ -162,11 +162,12 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	// Debug
 	'debugMdSearchReveal',
 
-	// Provider messages (kqlx, kqlCompat, mdCompat editors — NOT in IncomingWebviewMessage)
+	// Provider messages (kqlx, kqlCompat, mdCompat, sqlCompat editors — NOT in IncomingWebviewMessage)
 	'requestDocument',
 	'persistDocument',
 	'requestUpgradeToKqlx',
 	'requestUpgradeToMdx',
+	'requestUpgradeToSqlx',
 ] as const satisfies readonly OutgoingType[];
 
 /**
@@ -179,6 +180,7 @@ const PROVIDER_ONLY_OUTGOING_TYPES = new Set([
 	'persistDocument',
 	'requestUpgradeToKqlx',
 	'requestUpgradeToMdx',
+	'requestUpgradeToSqlx',
 	'debugMdSearchReveal',
 ]);
 
@@ -192,6 +194,7 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'persistenceMode',
 	'upgradedToKqlx',
 	'enabledKqlxSidecar',
+	'enabledSqlSidecar',
 	'connectionsData',
 	'updateDevNotes',
 	'favoritesData',
@@ -320,6 +323,7 @@ const HOST_TO_WEBVIEW_TYPES = [
 	'documentData',
 	'upgradedToKqlx',
 	'enabledKqlxSidecar',
+	'enabledSqlSidecar',
 	'revealTextRange',
 	'changedSections',
 

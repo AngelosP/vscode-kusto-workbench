@@ -206,7 +206,8 @@ export type OutgoingWebviewMessage =
 	| { type: 'requestDocument' }
 	| { type: 'persistDocument'; state: unknown; flush?: boolean; reason?: string }
 	| { type: 'requestUpgradeToKqlx'; addKind?: string; state?: unknown }
-	| { type: 'requestUpgradeToMdx'; addKind?: string; state?: unknown };
+	| { type: 'requestUpgradeToMdx'; addKind?: string; state?: unknown }
+	| { type: 'requestUpgradeToSqlx'; addKind?: string; state?: unknown };
 
 
 /**

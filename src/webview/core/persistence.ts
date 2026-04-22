@@ -178,6 +178,8 @@ export function __kustoRequestAddSection(kind: any, afterBoxId?: string) {
 				} catch (e) { console.error('[kusto]', e); }
 				if (pState.upgradeRequestType === 'requestUpgradeToMdx') {
 					postMessageToHost({ type: 'requestUpgradeToMdx', addKind: k, state });
+				} else if (pState.upgradeRequestType === 'requestUpgradeToSqlx') {
+					postMessageToHost({ type: 'requestUpgradeToSqlx', addKind: k, state });
 				} else {
 					postMessageToHost({ type: 'requestUpgradeToKqlx', addKind: k, state });
 				}
@@ -416,6 +418,43 @@ export function getKqlxState() {
 					caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
 					autoTriggerAutocompleteEnabled: (typeof autoTriggerAutocompleteEnabled === 'boolean') ? autoTriggerAutocompleteEnabled : false,
 					sections: [{ type: 'markdown', ...(firstMarkdownBoxId ? { id: firstMarkdownBoxId } : {}), text }]
+				};
+			}
+
+			if (singleKind === 'sql') {
+				let firstSqlBoxId = null;
+				try {
+					const ids = Array.isArray(sqlBoxes) ? sqlBoxes : [];
+					for (const id of ids) {
+						if (typeof id === 'string' && id.startsWith('sql_')) {
+							firstSqlBoxId = id;
+							break;
+						}
+					}
+				} catch (e) { console.error('[kusto]', e); }
+				let query = '';
+				try {
+					if (firstSqlBoxId) {
+						const el = __kustoGetSqlSectionElement(firstSqlBoxId);
+						if (el && typeof el.getQuery === 'function') {
+							query = el.getQuery() || '';
+						}
+					}
+				} catch (e) { console.error('[kusto]', e); }
+				if (!query) {
+					try {
+						const pending = firstSqlBoxId
+							? (pState.pendingSqlQueryByBoxId && pState.pendingSqlQueryByBoxId[firstSqlBoxId])
+							: undefined;
+						if (typeof pending === 'string') {
+							query = pending;
+						}
+					} catch (e) { console.error('[kusto]', e); }
+				}
+				return {
+					caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
+					autoTriggerAutocompleteEnabled: (typeof autoTriggerAutocompleteEnabled === 'boolean') ? autoTriggerAutocompleteEnabled : false,
+					sections: [{ type: 'sql', ...(firstSqlBoxId ? { id: firstSqlBoxId } : {}), query }]
 				};
 			}
 
@@ -719,6 +758,16 @@ function applyKqlxState(state: any) {
 				// when the user actually edits the text (not just unrelated metadata).
 				try { __kustoLastCompatQueryText = singleText; } catch (e) { console.error('[kusto]', e); }
 				addMarkdownBox({ text: singleText, mdAutoExpand: isPlainMd });
+				return;
+			}
+			if (singleKind === 'sql') {
+				const sqlBoxId = 'sql_' + Date.now();
+				try {
+					pState.pendingSqlQueryByBoxId = pState.pendingSqlQueryByBoxId || {};
+					pState.pendingSqlQueryByBoxId[sqlBoxId] = singleText;
+				} catch (e) { console.error('[kusto]', e); }
+				try { __kustoLastCompatQueryText = singleText; } catch (e) { console.error('[kusto]', e); }
+				addSqlBox({ id: sqlBoxId });
 				return;
 			}
 			const boxId = addQueryBox();

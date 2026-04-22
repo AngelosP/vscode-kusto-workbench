@@ -304,6 +304,19 @@ window.addEventListener('message', async (event: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
+		case 'enabledSqlSidecar':
+			// The extension host has enabled a companion .sql.json metadata file for a .sql document.
+			// Exit compatibility mode and perform the originally-requested add.
+			try {
+				__kustoSetCompatibilityMode(false);
+			} catch (e) { console.error('[kusto]', e); }
+			try {
+				const k = message && message.addKind ? String(message.addKind) : '';
+				if (k) {
+					__kustoRequestAddSection(k);
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			break;
 		case 'connectionsData':
 			setConnections(message.connections);
 			try { window.connections = connections; } catch (e) { console.error('[kusto]', e); }

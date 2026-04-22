@@ -9,6 +9,7 @@ import { SqlQueryClient } from './sqlClient';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
 import { KqlxEditorProvider } from './kqlxEditorProvider';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
+import { SqlCompatEditorProvider } from './sqlCompatEditorProvider';
 import { KqlDiagnosticSeverity } from './kqlLanguageService/protocol';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { recordTextEditorSelection } from './selectionTracker';
@@ -41,6 +42,7 @@ export function activate(context: vscode.ExtensionContext) {
 			const openKqlFiles = config.get<boolean>('openKqlFiles', true);
 			const openCslFiles = config.get<boolean>('openCslFiles', true);
 			const openMdFiles = config.get<boolean>('openMdFiles', false);
+			const openSqlFiles = config.get<boolean>('openSqlFiles', false);
 
 			const workbenchConfig = vscode.workspace.getConfiguration('workbench');
 			const currentAssociations = workbenchConfig.get<Record<string, string>>('editorAssociations') || {};
@@ -70,6 +72,13 @@ export function activate(context: vscode.ExtensionContext) {
 				changed = true;
 			}
 
+			// Handle .sql files
+			const sqlAssociation = openSqlFiles ? SqlCompatEditorProvider.viewType : 'default';
+			if (newAssociations['*.sql'] !== sqlAssociation) {
+				newAssociations['*.sql'] = sqlAssociation;
+				changed = true;
+			}
+
 			if (changed) {
 				await workbenchConfig.update('editorAssociations', newAssociations, vscode.ConfigurationTarget.Global);
 			}
@@ -83,7 +92,7 @@ export function activate(context: vscode.ExtensionContext) {
 	void updateEditorAssociations();
 	context.subscriptions.push(
 		vscode.workspace.onDidChangeConfiguration((e) => {
-			if (e.affectsConfiguration('kustoWorkbench.openKqlFiles') || e.affectsConfiguration('kustoWorkbench.openCslFiles') || e.affectsConfiguration('kustoWorkbench.openMdFiles')) {
+			if (e.affectsConfiguration('kustoWorkbench.openKqlFiles') || e.affectsConfiguration('kustoWorkbench.openCslFiles') || e.affectsConfiguration('kustoWorkbench.openMdFiles') || e.affectsConfiguration('kustoWorkbench.openSqlFiles')) {
 				void updateEditorAssociations();
 			}
 		})
@@ -370,6 +379,8 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(KqlCompatEditorProvider.register(context, context.extensionUri, connectionManager));
 	// Register .md compatibility custom editor (upgrade to .mdx for multi-section)
 	context.subscriptions.push(MdCompatEditorProvider.register(context, context.extensionUri, connectionManager));
+	// Register .sql compatibility custom editor (upgrade to .sqlx for multi-section)
+	context.subscriptions.push(SqlCompatEditorProvider.register(context, context.extensionUri, connectionManager));
 
 	// Register URI handler and "Open Remote File" command
 	registerRemoteFileOpener(context);

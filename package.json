@@ -55,14 +55,20 @@
           "default": false,
           "description": "Use Kusto Workbench to open .md files by default. When disabled, .md files will open with VS Code's default text editor."
         },
-        "kustoWorkbench.alternatingRowColor": {
+        "kustoWorkbench.openSqlFiles": {
           "order": 5,
+          "type": "boolean",
+          "default": false,
+          "description": "Use Kusto Workbench to open .sql files by default. When disabled, .sql files will open with VS Code's default text editor."
+        },
+        "kustoWorkbench.alternatingRowColor": {
+          "order": 6,
           "type": "string",
           "default": "theme",
           "description": "Alternating background color for data table rows. 'theme' (default) derives a subtle tint from the active VS Code color theme. 'off' disables alternating rows. Any CSS color value (e.g. '#f5f5f5', 'rgba(0,0,0,0.04)') uses that color directly."
         },
         "kustoWorkbench.queryTimeout": {
-          "order": 6,
+          "order": 7,
           "type": "number",
           "default": 20,
           "minimum": 0,
@@ -70,7 +76,7 @@
           "description": "Maximum time (in minutes) to wait for a query response before timing out. The server's own timeout policy still applies independently. Set to 0 for no client-side limit."
         },
         "kustoWorkbench.sqlQueryTimeout": {
-          "order": 7,
+          "order": 8,
           "type": "number",
           "default": 20,
           "minimum": 0,
@@ -78,7 +84,7 @@
           "description": "Maximum time (in minutes) to wait for a SQL query response before timing out. Set to 0 for no client-side limit."
         },
         "kustoWorkbench.sectionDiffMode": {
-          "order": 8,
+          "order": 9,
           "type": "string",
           "default": "contentAndSettings",
           "enum": [
@@ -92,7 +98,7 @@
           "description": "Controls what is compared when showing per-section change indicators. 'contentAndSettings' (default) marks a section as changed if either its content or its settings changed. 'contentOnly' only marks a section as changed if its content changed (e.g. the query text, markdown, URL, code, or data source selection)."
         },
         "kustoWorkbench.debug.mdSearchReveal": {
-          "order": 9,
+          "order": 10,
           "type": "boolean",
           "default": false,
           "description": "Shows diagnostic popups for Markdown Search-view reveal (Ctrl+Shift+F click) to help debug selection/reveal wiring."
@@ -135,6 +141,20 @@
         "extensions": [
           ".mdx"
         ]
+      },
+      {
+        "id": "sqlx",
+        "aliases": [
+          "SQL Notebook",
+          "SQLX"
+        ],
+        "extensions": [
+          ".sqlx"
+        ],
+        "icon": {
+          "light": "./media/images/kusto-file-light.svg",
+          "dark": "./media/images/kusto-file-dark.svg"
+        }
       }
     ],
     "customEditors": [
@@ -173,6 +193,16 @@
           },
           {
             "filenamePattern": "*.csl"
+          }
+        ],
+        "priority": "option"
+      },
+      {
+        "viewType": "kusto.sqlCompatEditor",
+        "displayName": "SQL Query (Compatibility Mode)",
+        "selector": [
+          {
+            "filenamePattern": "*.sql"
           }
         ],
         "priority": "option"
