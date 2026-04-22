@@ -15,13 +15,13 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, '..', 'dist');
 
-// ── Baselines (KB) — updated 2026-04-16 after STS integration + pre-existing webview growth ──
+// ── Baselines (KB) — updated 2026-04-22 after SQL support ──
 const BASELINES = {
-	'extension.js':                                        1106,
-	'webview/webview.bundle.js':                           1824,
-	'queryEditor/vendor/echarts/echarts.webview.js':        586,
+	'extension.js':                                        1127,
+	'webview/webview.bundle.js':                           1881,
+	'queryEditor/vendor/echarts/echarts.webview.js':        646,
 	'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
-	'monaco/':                                            10963,
+	'monaco/':                                            11445,
 };
 const BUFFER_KB = 50; // allow up to 50 KB growth per entry before failing
 

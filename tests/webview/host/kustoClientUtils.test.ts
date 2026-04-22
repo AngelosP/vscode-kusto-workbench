@@ -14,11 +14,11 @@ import {
 
 describe('formatCellValue', () => {
 	it('returns "null" for null', () => {
-		expect(formatCellValue(null)).toEqual({ display: 'null', full: 'null' });
+		expect(formatCellValue(null)).toEqual({ display: 'null', full: 'null', isNull: true });
 	});
 
 	it('returns "null" for undefined', () => {
-		expect(formatCellValue(undefined)).toEqual({ display: 'null', full: 'null' });
+		expect(formatCellValue(undefined)).toEqual({ display: 'null', full: 'null', isNull: true });
 	});
 
 	it('formats Date objects as ISO without milliseconds', () => {

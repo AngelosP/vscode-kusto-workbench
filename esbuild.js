@@ -328,11 +328,11 @@ async function main() {
 	// Runs inline — no extra step to remember.
 	if (production) {
 		const BASELINES = {
-			'extension.js':                                        1106,
-			'webview/webview.bundle.js':                           1824,
+			'extension.js':                                        1127,
+			'webview/webview.bundle.js':                           1881,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
 			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
-			'monaco/':                                            10963,
+			'monaco/':                                            11445,
 		};
 		const BUFFER_KB = 50;
 		const distDir = path.join(__dirname, 'dist');
