@@ -170,8 +170,7 @@ export async function publishToPowerBIService(input: PublishInput): Promise<Publ
 				version: '4.0',
 				datasetReference: {
 					byConnection: {
-						connectionString: `Data Source=pbiazure://api.powerbi.com;Initial Catalog=${semanticModelId};Identity Provider="https://login.microsoftonline.com/common, https://analysis.windows.net/powerbi/api, 929d0ec0-7a41-4b1e-bc7c-b754a28bddcc";`,
-						pbiModelDatabaseName: semanticModelId,
+						connectionString: `Data Source=pbiazure://api.powerbi.com;Initial Catalog=${semanticModelId};Identity Provider="https://login.microsoftonline.com/common, https://analysis.windows.net/powerbi/api, 929d0ec0-7a41-4b1e-bc7c-b754a28bddcc";semanticModelId=${semanticModelId}`,
 					},
 				},
 			}, null, 2);
