@@ -222,6 +222,7 @@ Use HTML sections to build interactive dashboards from query results. The workfl
 "display": {
     "type": "flat",
     "columns": ["TemplateName", "TotalProvisions", "UniqueUsers", "SuccessRate"],
+    "headers": { "TemplateName": "Template", "TotalProvisions": "Provisions", "UniqueUsers": "Users", "SuccessRate": "Success" },
     "formats": { "TotalProvisions": "#,##0", "UniqueUsers": "#,##0", "SuccessRate": "0.0%" },
     "cellTemplates": {
         "SuccessRate": {
@@ -236,6 +237,12 @@ Use HTML sections to build interactive dashboards from query results. The workfl
     }
 }
 ```
+
+Flat display fields:
+* `columns` — **only the source columns to display** (subset of available columns, not necessarily all). Use the source column names from the query.
+* `headers` — optional map of source column name → display header text. If omitted, the source column name is used as the header.
+* `formats` — optional per-column format strings
+* `cellTemplates` — optional per-column conditional formatting
 
 Cell template fields:
 * `element` — wrapper HTML element (default: `span`)
@@ -253,6 +260,7 @@ The thresholds compare against the raw numeric column value (before formatting).
 * For pivot tables: list the **actual distinct values** from the data in `pivotValues` (e.g., `["Q1", "Q2", "Q3", "Q4"]`)
 * Binding IDs must be kebab-case and descriptive (e.g. `total-events`, `error-rate-chart`)
 * Scalar bindings: `column` names the source data column; `agg` specifies the aggregation; `format` controls display
+* **Never hardcode date ranges or "Generated" timestamps** in the HTML. Instead, data-bind them as scalar bindings so they update automatically when exported to Power BI. For example, use `data-kw-bind="data-period"` with a scalar `MIN`/`MAX` binding for the date range, and `data-kw-bind="generated-date"` with a `MAX` binding for the latest timestamp. Hardcoded dates become stale immediately after export.
 
 **Re-run and update workflow:** When asked to refresh or update an HTML dashboard:
 

@@ -39,29 +39,6 @@ export const styles = [monacoToolbarStyles, css`
 		position: relative;
 	}
 
-	.ds-picker-btn {
-		font-size: 11px !important;
-		padding: 3px 8px !important;
-		width: auto !important;
-		height: auto !important;
-	}
-	.ds-picker-btn:disabled {
-		opacity: 0.5;
-		cursor: default;
-	}
-
-	.ds-badge {
-		display: inline-flex;
-		align-items: center;
-		font-size: 10px;
-		padding: 2px 7px;
-		border-radius: 8px;
-		background: var(--vscode-badge-background, rgba(128,128,128,0.2));
-		color: var(--vscode-badge-foreground, var(--vscode-foreground));
-		white-space: nowrap;
-		user-select: none;
-	}
-
 	.unified-btn-secondary {
 		background: transparent;
 		color: var(--vscode-foreground);
@@ -133,7 +110,8 @@ export const styles = [monacoToolbarStyles, css`
 		margin-left: 2px;
 	}
 	.header-tab svg { display: block; }
-	.header-tab:hover { background: var(--vscode-list-hoverBackground); }
+	.header-tab:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
+	.header-tab:disabled { opacity: 0.5; cursor: not-allowed; }
 
 	/* ── Editor wrapper ──────────────────────────────────────────────── */
 

@@ -17,6 +17,7 @@ export interface PowerBiDataSource {
 export interface PowerBiExportInput {
 	htmlCode: string;
 	sectionName: string;
+	projectName?: string;
 	dataSources: PowerBiDataSource[];
 	previewHeight?: number;
 }
@@ -83,7 +84,7 @@ interface CellTemplate {
 	defaultClass: string;   // CSS class when no threshold matches
 }
 
-interface FlatDisplay { type: 'flat'; columns: string[]; formats?: Record<string, string>; cellTemplates?: Record<string, CellTemplate> }
+interface FlatDisplay { type: 'flat'; columns: string[]; headers?: Record<string, string>; formats?: Record<string, string>; cellTemplates?: Record<string, CellTemplate> }
 interface PivotDisplay { type: 'pivot'; rows: string[]; pivotBy: string; pivotValues: string[]; value: string; agg: string; format?: string; total?: boolean }
 interface ScalarDisplay { type: 'scalar'; agg: string; column: string; format?: string }
 
@@ -204,24 +205,38 @@ function buildConditionalCellDax(colRef: string, formattedValExpr: string, templ
 
 interface DaxVarResult { theadVar?: string; theadDax?: string; rowsVar?: string; rowsDax?: string; scalarVar?: string; scalarDax?: string }
 
-function generateFlatTableDax(pbiTable: string, display: FlatDisplay, ds: PowerBiDataSource, varIdx: number): DaxVarResult {
+/** Extract CSS classes from original `<th>` elements in the table HTML. Returns one class string per column (empty if none). */
+function extractOriginalThClasses(tableInnerHtml: string): string[] {
+	const theadMatch = tableInnerHtml.match(/<thead[^>]*>([\s\S]*?)<\/thead>/i);
+	if (!theadMatch) return [];
+	const thRe = /<th\b([^>]*)>/gi;
+	const classes: string[] = [];
+	let m: RegExpExecArray | null;
+	while ((m = thRe.exec(theadMatch[1])) !== null) {
+		const classMatch = m[1].match(/class\s*=\s*["']([^"']+)["']/i);
+		classes.push(classMatch ? classMatch[1] : '');
+	}
+	return classes;
+}
+
+function generateFlatTableDax(pbiTable: string, display: FlatDisplay, ds: PowerBiDataSource, varIdx: number, originalThClasses: string[] = []): DaxVarResult {
 	const theadVar = `_thead_${varIdx}`;
 	const rowsVar = `_rows_${varIdx}`;
 
-	// thead — column names with optional numeric CSS class
-	const thCells = display.columns.map(colName => {
-		const col = ds.columns.find(c => c.name === colName);
-		const isNum = col ? isNumericKustoType(col.type) : false;
-		return isNum
-			? `<th class=""number"">${escapeDaxString(colName)}</th>`
-			: `<th>${escapeDaxString(colName)}</th>`;
+	// thead — use display headers (fallback to source column name), preserve original CSS classes
+	const thCells = display.columns.map((colName, i) => {
+		const headerText = escapeDaxString(display.headers?.[colName] || colName);
+		const cls = originalThClasses[i] || '';
+		return cls
+			? `<th class=""${escapeDaxString(cls)}"">${headerText}</th>`
+			: `<th>${headerText}</th>`;
 	}).join('');
 	const theadDax = `"<thead><tr>${thCells}</tr></thead>"`;
 
 	// tbody — CONCATENATEX with per-column formatting + optional conditional templates
-	const tdExprs = display.columns.map(colName => {
+	// Reuse the same CSS classes from the original <th> on each <td>
+	const tdExprs = display.columns.map((colName, i) => {
 		const col = ds.columns.find(c => c.name === colName);
-		const isNum = col ? isNumericKustoType(col.type) : false;
 		let valExpr: string;
 		if (display.formats?.[colName]) {
 			valExpr = buildFormatExpr(escCol(colName), display.formats[colName]);
@@ -231,16 +246,18 @@ function generateFlatTableDax(pbiTable: string, display: FlatDisplay, ds: PowerB
 			valExpr = escCol(colName);
 		}
 
+		const cls = originalThClasses[i] || '';
+		const tdOpen = cls ? `<td class=""${escapeDaxString(cls)}"">`  : '<td>';
+
 		// Wrap in conditional template if one is defined for this column
 		const template = display.cellTemplates?.[colName];
+		const isNum = col ? isNumericKustoType(col.type) : false;
 		if (template && isNum) {
 			const innerExpr = buildConditionalCellDax(escCol(colName), valExpr, template);
-			return `"<td class=""number"">" & ${innerExpr} & "</td>"`;
+			return `"${tdOpen}" & ${innerExpr} & "</td>"`;
 		}
 
-		return isNum
-			? `"<td class=""number"">" & ${valExpr} & "</td>"`
-			: `"<td>" & ${valExpr} & "</td>"`;
+		return `"${tdOpen}" & ${valExpr} & "</td>"`;
 	}).join(' & ');
 	const rowsDax = `CONCATENATEX(${escTable(pbiTable)}, "<tr>" & ${tdExprs} & "</tr>", "")`;
 
@@ -257,8 +274,8 @@ function generatePivotTableDax(pbiTable: string, display: PivotDisplay, ds: Powe
 
 	// thead — row dimensions + pivot value headers + optional Total
 	const rowHeaders = display.rows.map(r => `<th>${escapeDaxString(r)}</th>`).join('');
-	const pivotHeaders = display.pivotValues.map(v => `<th class=""number"">${escapeDaxString(v)}</th>`).join('');
-	const totalHeader = display.total === true ? '<th class=""number"">Total</th>' : '';
+	const pivotHeaders = display.pivotValues.map(v => `<th style=""text-align:right"">${escapeDaxString(v)}</th>`).join('');
+	const totalHeader = display.total === true ? '<th style=""text-align:right"">Total</th>' : '';
 	const theadDax = `"<thead><tr>${rowHeaders}${pivotHeaders}${totalHeader}</tr></thead>"`;
 
 	// tbody — iterate over distinct row values
@@ -271,7 +288,7 @@ function generatePivotTableDax(pbiTable: string, display: PivotDisplay, ds: Powe
 		const calcExpr = aggName === 'COUNT'
 			? `CALCULATE(COUNTROWS(${tbl}), ${filterExpr})`
 			: `CALCULATE(${aggName}X(${tbl}, ${escCol(display.value)}), ${filterExpr})`;
-		return `"<td class=""number"">" & ${buildFormatExpr(calcExpr, rawFmt)} & "</td>"`;
+		return `"<td style=""text-align:right"">" & ${buildFormatExpr(calcExpr, rawFmt)} & "</td>"`;
 	}).join(' & ');
 
 	// Optional total column (no filter = all pivot values)
@@ -280,7 +297,7 @@ function generatePivotTableDax(pbiTable: string, display: PivotDisplay, ds: Powe
 		const totalExpr = aggName === 'COUNT'
 			? `CALCULATE(COUNTROWS(${tbl}))`
 			: `CALCULATE(${aggName}X(${tbl}, ${escCol(display.value)}))`;
-		totalCell = ` & "<td class=""number""><strong>" & ${buildFormatExpr(totalExpr, rawFmt)} & "</strong></td>"`;
+		totalCell = ` & "<td style=""text-align:right""><strong>" & ${buildFormatExpr(totalExpr, rawFmt)} & "</strong></td>"`;
 	}
 
 	const rowExpr = `"<tr>" & ${rowDimCells} & ${pivotCells}${totalCell} & "</tr>"`;
@@ -344,8 +361,9 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 				const tableMatch = html.match(tableRe);
 				if (!tableMatch) continue;
 
+				const originalClasses = extractOriginalThClasses(tableMatch[2]);
 				const result = display.type === 'flat'
-					? generateFlatTableDax(pbiTable, display, ds, varIdx)
+					? generateFlatTableDax(pbiTable, display, ds, varIdx, originalClasses)
 					: generatePivotTableDax(pbiTable, display as PivotDisplay, ds, varIdx);
 
 				if (result.theadVar && result.theadDax) vars.push(`VAR ${result.theadVar} = ${result.theadDax}`);
@@ -388,18 +406,20 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 			const theadVar = `_thead_${varIdx}`;
 			varIdx++;
 
-			const thCells = ds.columns.map(c =>
-				isNumericKustoType(c.type)
-					? `<th class=""number"">${escapeDaxString(c.name)}</th>`
-					: `<th>${escapeDaxString(c.name)}</th>`,
-			).join('');
+			const origClasses = extractOriginalThClasses(tableMatch[2]);
+			const thCells = ds.columns.map((c, i) => {
+				const cls = origClasses[i] || '';
+				return cls
+					? `<th class=""${escapeDaxString(cls)}"">${escapeDaxString(c.name)}</th>`
+					: `<th>${escapeDaxString(c.name)}</th>`;
+			}).join('');
 			vars.push(`VAR ${theadVar} = "<thead><tr>${thCells}</tr></thead>"`);
 
-			const tdExprs = ds.columns.map(c =>
-				isNumericKustoType(c.type)
-					? `"<td class=""number"">" & ${daxColumnExpr(c.name, c.type)} & "</td>"`
-					: `"<td>" & ${daxColumnExpr(c.name, c.type)} & "</td>"`,
-			).join(' & ');
+			const tdExprs = ds.columns.map((c, i) => {
+				const cls = origClasses[i] || '';
+				const tdOpen = cls ? `<td class=""${escapeDaxString(cls)}"">` : '<td>';
+				return `"${tdOpen}" & ${daxColumnExpr(c.name, c.type)} & "</td>"`;
+			}).join(' & ');
 			vars.push(`VAR ${varName} = CONCATENATEX(${escTable(pbiTable)}, "<tr>" & ${tdExprs} & "</tr>", "")`);
 
 			const replaced = `${tableMatch[1]}{{${theadVar}}}{{${varName}}}${tableMatch[3]}`;
@@ -520,11 +540,11 @@ export function generateHtmlContentVisualJson(visualName: string, pageHeight = 7
 		$schema: 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.8.0/schema.json',
 		name: visualName,
 		position: {
-			x: 0,
+			x: 25,
 			y: 0,
 			z: 0,
 			height: pageHeight,
-			width: 1280,
+			width: 1450,
 			tabOrder: 0,
 		},
 		visual: {
@@ -550,6 +570,13 @@ export function generateHtmlContentVisualJson(visualName: string, pageHeight = 7
 						],
 					},
 				},
+			},
+			visualContainerObjects: {
+				background: [{
+					properties: {
+						show: { expr: { Literal: { Value: 'false' } } },
+					},
+				}],
 			},
 			drillFilterOtherVisuals: true,
 		},
@@ -664,12 +691,13 @@ function generatePbirPageJson(pageName: string, pageHeight = 720, bgColor?: stri
 		displayName: 'Dashboard',
 		displayOption: 'ActualSize',
 		height: pageHeight,
-		width: 1280,
+		width: 1500,
 	};
 	if (bgColor) {
 		obj.objects = {
 			background: [{ properties: {
 				color: { solid: { color: { expr: { Literal: { Value: `'${bgColor}'` } } } } },
+				transparency: { expr: { Literal: { Value: '0' } } },
 			} }],
 		};
 	}
@@ -733,7 +761,7 @@ export async function exportHtmlToPowerBI(
 	input: PowerBiExportInput,
 	folderUri: vscode.Uri,
 ): Promise<void> {
-	const projectName = sanitizeName(input.sectionName) || 'KustoHtmlDashboard';
+	const projectName = input.projectName || sanitizeName(input.sectionName) || 'KustoHtmlDashboard';
 	const reportFolder = `${projectName}.Report`;
 	const modelFolder = `${projectName}.SemanticModel`;
 	const pageName = 'ReportPage1';

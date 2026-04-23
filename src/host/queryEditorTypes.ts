@@ -128,12 +128,23 @@ export type KqlLanguageRequestMessage = {
 export type FetchControlCommandSyntaxMessage = { type: 'fetchControlCommandSyntax'; requestId: string; commandLower: string; href: string };
 
 export type SaveResultsCsvMessage = { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string };
-export type SaveHtmlFileMessage = { type: 'saveHtmlFile'; boxId?: string; html: string; suggestedFileName?: string };
-export type ExportHtmlToPowerBIMessage = {
-	type: 'exportHtmlToPowerBI';
+export type ExportDashboardMessage = {
+	type: 'exportDashboard';
 	boxId: string;
-	htmlCode: string;
+	html: string;
+	suggestedFileName?: string;
 	previewHeight?: number;
+	dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
+};
+export type GetPbiWorkspacesMessage = { type: 'getPbiWorkspaces'; boxId: string };
+export type PublishToPowerBIMessage = {
+	type: 'publishToPowerBI';
+	boxId: string;
+	workspaceId: string;
+	reportName: string;
+	pageWidth: number;
+	pageHeight: number;
+	htmlCode: string;
 	dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
 };
 
@@ -151,8 +162,9 @@ export type IncomingWebviewMessage =
 	| { type: 'addConnectionsForClusters'; clusterUrls: string[]; boxId?: string }
 	| { type: 'showInfo'; message: string }
 	| SaveResultsCsvMessage
-	| SaveHtmlFileMessage
-	| ExportHtmlToPowerBIMessage
+	| ExportDashboardMessage
+	| GetPbiWorkspacesMessage
+	| PublishToPowerBIMessage
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
 	| { type: 'setAutoTriggerAutocompleteEnabled'; enabled: boolean }
 	| { type: 'setCopilotInlineCompletionsEnabled'; enabled: boolean }

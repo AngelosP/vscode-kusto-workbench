@@ -154,9 +154,13 @@ export const styles = css`
 
 		.md-tabs-divider {
 			width: 1px;
-			height: 16px;
-			background: var(--vscode-input-border, rgba(128,128,128,0.3));
-			margin: 0 2px;
+			height: 20px;
+			background: var(--vscode-descriptionForeground, rgba(128,128,128,0.4));
+			opacity: 0.5;
+			margin: 0 4px;
+			user-select: none;
+			flex-shrink: 0;
+			border-radius: 0.5px;
 		}
 
 		.unified-btn-secondary {

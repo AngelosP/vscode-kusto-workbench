@@ -81,7 +81,9 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'openCopilotAgent',
 	'copilotChatFirstTimeCheck',
 	'showSectionDiff',
-	'exportHtmlToPowerBI',
+	'exportDashboard',
+	'getPbiWorkspaces',
+	'publishToPowerBI',
 ] as const satisfies readonly IncomingType[];
 
 /**
@@ -109,7 +111,9 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'seeCachedValues',
 	'resolveResourceUri',
 	'saveResultsCsv',
-	'exportHtmlToPowerBI',
+	'exportDashboard',
+	'getPbiWorkspaces',
+	'publishToPowerBI',
 
 	// Settings
 	'setCaretDocsEnabled',

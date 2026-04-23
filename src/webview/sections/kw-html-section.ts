@@ -11,10 +11,11 @@ import { OverlayScrollbarsController } from '../components/overlay-scrollbars.co
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
 import '../components/kw-monaco-toolbar.js';
+import '../components/kw-publish-pbi-dialog.js';
 import type { MonacoToolbarItem } from '../components/kw-monaco-toolbar.js';
 import {
 	undoIcon, redoIcon, prettifyIcon, commentHtmlIcon, searchIcon, replaceIcon,
-	indentIcon, outdentIcon, wordWrapIcon, exportIcon,
+	indentIcon, outdentIcon, wordWrapIcon, exportIcon, uploadIcon,
 } from '../shared/icon-registry.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { schedulePersist } from '../core/persistence.js';
@@ -238,6 +239,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				${this._renderToolbar()}
 				${this._expanded ? (this._mode === 'code' ? this._renderCodeMode() : this._renderPreviewMode()) : nothing}
 			</kw-section-shell>
+			<kw-publish-pbi-dialog></kw-publish-pbi-dialog>
 			</div>
 		`;
 	}
@@ -246,9 +248,6 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	private _renderToolbar(): TemplateResult {
 		const bindingCount = this._provenance ? Object.keys(this._provenance.bindings).length : 0;
-		const bindingNames = this._provenance
-			? Object.values(this._provenance.bindings).map(b => b.sectionName || b.sectionId).join(', ')
-			: '';
 		return html`
 			<div slot="header-buttons" class="html-mode-buttons">
 				<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'code' ? 'is-active' : ''}"
@@ -257,14 +256,16 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'preview' ? 'is-active' : ''}"
 					type="button" role="tab" aria-selected=${this._mode === 'preview' ? 'true' : 'false'}
 					@click=${() => this._setMode('preview')} title="Preview">Preview</button>
-				${bindingCount > 0 ? html`
-					<span class="ds-badge" title="Data bindings: ${bindingNames}">${bindingCount} binding${bindingCount > 1 ? 's' : ''}</span>
-				` : nothing}
-				<button class="unified-btn-secondary md-tab md-mode-btn ds-picker-btn" type="button"
-					@click=${this._exportToPowerBI} title="Export to Power BI"
-					?disabled=${bindingCount === 0}>Power BI</button>
+				<span class="query-editor-toolbar-sep"></span>
 				<button class="header-tab" type="button"
-					@click=${this._saveAsHtml} title="Export as HTML file" aria-label="Export as HTML file">
+					@click=${this._publishToPowerBI} title="Publish to Power BI service"
+					aria-label="Publish to Power BI service"
+					?disabled=${bindingCount === 0}>
+					${uploadIcon}
+				</button>
+				<button class="header-tab" type="button"
+					@click=${this._exportDashboard} title="Save dashboard as HTML or Power BI file"
+					aria-label="Save dashboard as HTML or Power BI file">
 					${exportIcon}
 				</button>
 			</div>
@@ -285,42 +286,21 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		return [...new Set(Object.values(this._provenance.bindings).map(b => b.sectionId).filter(Boolean))];
 	}
 
-	// ── Export to Power BI ─────────────────────────────────────────────────────
+	// ── Export dashboard (unified HTML / Power BI) ────────────────────────────
 
-	private _exportToPowerBI(): void {
-		const code = this._getCodeText();
-		if (!code.trim()) {
-			postMessageToHost({ type: 'showInfo', message: 'Write some HTML content before exporting to Power BI.' });
-			return;
-		}
-
-		const provenance = parseKwProvenance(code);
-		if (!provenance || Object.keys(provenance.bindings).length === 0) {
-			postMessageToHost({ type: 'showInfo', message: 'No data bindings found. The HTML must include a <script type="application/kw-provenance"> block declaring its data sources.' });
-			return;
-		}
+	/** Best-effort collection of data sources for PBI export. Returns empty array on failure. */
+	private _collectDataSourcesForPBI(): Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> {
+		const provenance = parseKwProvenance(this._getCodeText());
+		if (!provenance || Object.keys(provenance.bindings).length === 0) return [];
 
 		const dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> = [];
-		for (const [_bindingKey, binding] of Object.entries(provenance.bindings)) {
+		for (const [, binding] of Object.entries(provenance.bindings)) {
 			const dsId = binding.sectionId;
 			const el = document.getElementById(dsId) as any;
-			if (!el) {
-				postMessageToHost({ type: 'showInfo', message: `Data source section "${binding.sectionName || dsId}" not found. It may have been deleted.` });
-				return;
-			}
-			if (!dsId.startsWith('query_')) {
-				postMessageToHost({ type: 'showInfo', message: `Data source "${binding.sectionName}" is not a Kusto query section. Only Kusto query sections are supported for Power BI export.` });
-				return;
-			}
+			if (!el || !dsId.startsWith('query_')) continue;
 			const rsState = getResultsState(dsId);
-			if (!rsState || !rsState.columns?.length) {
-				postMessageToHost({ type: 'showInfo', message: `Run all referenced queries before exporting. "${binding.sectionName || dsId}" has no results.` });
-				return;
-			}
-			const sectionName = binding.sectionName || dsId.replace('query_', 'Query_');
+			if (!rsState || !rsState.columns?.length) continue;
 
-			// Use the query section's serialize() method — it resolves clusterUrl,
-			// database, and query from the Lit component's internal state correctly.
 			let resolvedCluster = '';
 			let resolvedDb = '';
 			let resolvedQuery = '';
@@ -333,50 +313,67 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 
-			if (!resolvedCluster) {
-				postMessageToHost({ type: 'showInfo', message: `Query section "${sectionName}" has no cluster connection. Connect it to a Kusto cluster before exporting.` });
-				return;
-			}
-			if (!resolvedDb) {
-				postMessageToHost({ type: 'showInfo', message: `Query section "${sectionName}" has no database selected.` });
-				return;
-			}
+			if (!resolvedCluster || !resolvedDb) continue;
 
+			const sectionName = binding.sectionName || dsId.replace('query_', 'Query_');
 			const columns = rsState.columns.map((c: any) => ({
 				name: typeof c === 'string' ? c : (c?.name || c?.displayName || 'column'),
 				type: typeof c === 'object' ? (c?.type || 'string') : 'string',
 			}));
 
-			dataSources.push({
-				name: sectionName,
-				sectionId: dsId,
-				clusterUrl: resolvedCluster,
-				database: resolvedDb,
-				query: resolvedQuery,
-				columns,
+			dataSources.push({ name: sectionName, sectionId: dsId, clusterUrl: resolvedCluster, database: resolvedDb, query: resolvedQuery, columns });
+		}
+		return dataSources;
+	}
+
+	/** Measure the current preview height for PBI page sizing. */
+	private _measurePreviewHeight(): number | undefined {
+		if (this._lastPreviewFitHeight > 0) return this._lastPreviewFitHeight;
+		if (this._savedPreviewHeightPx && this._savedPreviewHeightPx > 0) return this._savedPreviewHeightPx;
+		const wrapper = this.shadowRoot?.getElementById('preview-wrapper');
+		if (wrapper && wrapper.clientHeight > 0) return wrapper.clientHeight;
+		return undefined;
+	}
+
+	private _exportDashboard(): void {
+		const code = this._getCodeText();
+		if (!code.trim()) {
+			try { postMessageToHost({ type: 'showInfo', message: 'There is no HTML content to export.' }); } catch (e) { console.error('[kusto]', e); }
+			return;
+		}
+		try {
+			postMessageToHost({
+				type: 'exportDashboard',
+				boxId: this.boxId,
+				html: code,
+				suggestedFileName: this._name || '',
+				previewHeight: this._measurePreviewHeight(),
+				dataSources: this._collectDataSourcesForPBI(),
 			});
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	private _publishToPowerBI(): void {
+		const code = this._getCodeText();
+		if (!code.trim()) {
+			try { postMessageToHost({ type: 'showInfo', message: 'Write some HTML content before publishing to Power BI.' }); } catch (e) { console.error('[kusto]', e); }
+			return;
 		}
 
-		// Measure the live iframe scrollHeight for accurate PBI page sizing.
-		// Falls back to the cached fit height, then to undefined (default 720px in PBI).
-		let previewHeight: number | undefined;
-		try {
-			const iframe = this.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
-			const iframeH = iframe?.contentDocument?.documentElement?.scrollHeight;
-			if (iframeH && iframeH > 0) {
-				previewHeight = iframeH;
-			} else if (this._lastPreviewFitHeight > 0) {
-				previewHeight = this._lastPreviewFitHeight;
-			}
-		} catch { /* cross-origin or not rendered */ }
+		const dataSources = this._collectDataSourcesForPBI();
+		if (dataSources.length === 0) {
+			try { postMessageToHost({ type: 'showInfo', message: 'No data bindings found. Add a provenance block and run queries before publishing.' }); } catch (e) { console.error('[kusto]', e); }
+			return;
+		}
 
-		postMessageToHost({
-			type: 'exportHtmlToPowerBI',
-			boxId: this.boxId,
-			htmlCode: code,
-			previewHeight,
-			dataSources,
-		});
+		this._openPublishDialog(code, dataSources, this._measurePreviewHeight(), this._name || 'KustoHtmlDashboard');
+	}
+
+	private _openPublishDialog(htmlCode: string, dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>, previewHeight: number | undefined, suggestedName: string): void {
+		const dialog = this.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
+		if (dialog) {
+			dialog.show(dataSources, htmlCode, suggestedName, previewHeight, this.boxId);
+		}
 	}
 
 	// ── Code mode ─────────────────────────────────────────────────────────────
@@ -664,13 +661,29 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	/** Handle height reports from the sandboxed preview iframe. */
 	private _handleIframeMessage(e: MessageEvent): void {
 		try {
-			if (!e.data || e.data.type !== 'kw-html-preview-height') return;
-			// Verify the message came from our own iframe.
+			if (!e.data) return;
+
+			// Messages from the sandboxed iframe: only allow kw-html-preview-height.
 			const iframe = this.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
-			if (!iframe || e.source !== iframe.contentWindow) return;
-			const h = Number(e.data.h);
-			if (!Number.isFinite(h) || h <= 0) return;
-			this._applyPreviewFitHeight(h);
+			if (iframe && e.source === iframe.contentWindow) {
+				if (e.data.type !== 'kw-html-preview-height') return;
+				const h = Number(e.data.h);
+				if (!Number.isFinite(h) || h <= 0) return;
+				this._applyPreviewFitHeight(h);
+				return;
+			}
+
+			// Host→webview messages (e.source is null for VS Code postMessage)
+			if (e.data.type === 'openPublishPbiDialog' && e.data.boxId === this.boxId) {
+				this._openPublishDialog(e.data.htmlCode, e.data.dataSources, e.data.previewHeight, e.data.suggestedName);
+				return;
+			}
+
+			if ((e.data.type === 'pbiWorkspacesResult' || e.data.type === 'publishToPowerBIResult') && e.data.boxId === this.boxId) {
+				const dialog = this.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
+				if (dialog) dialog.handleHostMessage(e.data);
+				return;
+			}
 		} catch (ex) { console.error('[kusto]', ex); }
 	}
 
@@ -748,19 +761,6 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		this._captureCurrentHeight();
 		this._mode = mode;
 		this._schedulePersist();
-	}
-
-	private _saveAsHtml(): void {
-		const code = this._getCodeText();
-		if (!code.trim()) {
-			try {
-				postMessageToHost({ type: 'showInfo', message: 'There is no HTML content to save.' });
-			} catch (e) { console.error('[kusto]', e); }
-			return;
-		}
-		try {
-			postMessageToHost({ type: 'saveHtmlFile', boxId: this.boxId, html: code, suggestedFileName: this._name || '' });
-		} catch (e) { console.error('[kusto]', e); }
 	}
 
 	// ── Toolbar actions ──────────────────────────────────────────────────────

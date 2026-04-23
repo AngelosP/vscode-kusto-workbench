@@ -36,10 +36,12 @@ import {
 	CacheUnit,
 	IncomingWebviewMessage,
 	SaveResultsCsvMessage,
-	ExportHtmlToPowerBIMessage,
+	ExportDashboardMessage,
+	PublishToPowerBIMessage,
 	findPreferredDefaultCopilotModel
 } from './queryEditorTypes';
 import { exportHtmlToPowerBI } from './powerBiExport';
+import { listFabricWorkspaces, publishToPowerBIService } from './powerBiPublish';
 
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
@@ -424,11 +426,14 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'saveResultsCsv':
 				await this.saveResultsCsvFromWebview(message);
 				return;
-			case 'saveHtmlFile':
-				await this.saveHtmlFileFromWebview(message as any);
+			case 'exportDashboard':
+				await this.exportDashboardFromWebview(message as ExportDashboardMessage);
 				return;
-			case 'exportHtmlToPowerBI':
-				await this.exportHtmlToPowerBIFromWebview(message as any);
+			case 'getPbiWorkspaces':
+				await this.getPbiWorkspacesFromWebview(message as any);
+				return;
+			case 'publishToPowerBI':
+				await this.publishToPowerBIFromWebview(message as PublishToPowerBIMessage);
 				return;
 			case 'checkCopilotAvailability':
 				await this.copilot.checkCopilotAvailability(message.boxId);
@@ -797,11 +802,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		}
 	}
 
-	private async saveHtmlFileFromWebview(message: { html: string; suggestedFileName?: string }): Promise<void> {
+	private async exportDashboardFromWebview(message: ExportDashboardMessage): Promise<void> {
 		try {
 			const htmlContent = String(message.html || '');
 			if (!htmlContent.trim()) {
-				vscode.window.showInformationMessage('No HTML content to save.');
+				vscode.window.showInformationMessage('No HTML content to export.');
 				return;
 			}
 
@@ -814,71 +819,91 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 			const picked = await vscode.window.showSaveDialog({
 				defaultUri,
-				filters: { 'HTML': ['html', 'htm'] }
+				filters: {
+					'HTML Files': ['html', 'htm'],
+					'Power BI Project': ['pbip'],
+				},
 			});
 
-			if (!picked) {
-				return;
-			}
+			if (!picked) return;
 
-			let targetUri = picked;
-			try {
-				const lower = picked.fsPath.toLowerCase();
+			const lower = picked.fsPath.toLowerCase();
+
+			if (lower.endsWith('.pbip')) {
+				// ── Power BI export path ───────────────────────────────────
+				if (!message.dataSources || message.dataSources.length === 0) {
+					vscode.window.showWarningMessage('No data bindings found. Add a provenance block with data source references before exporting to Power BI.');
+					return;
+				}
+
+				const projectName = path.basename(picked.fsPath).replace(/\.pbip$/i, '');
+				const folderUri = vscode.Uri.file(path.dirname(picked.fsPath));
+				const sectionName = message.dataSources[0]?.name || 'KustoHtmlDashboard';
+
+				await exportHtmlToPowerBI(
+					{ htmlCode: htmlContent, sectionName, projectName, dataSources: message.dataSources, previewHeight: message.previewHeight },
+					folderUri,
+				);
+
+				const action = await vscode.window.showInformationMessage(
+					`Power BI project exported to ${folderUri.fsPath}. Open the .pbip file in Power BI Desktop.`,
+					'Open Folder',
+					'Upload to Power BI',
+				);
+				if (action === 'Open Folder') {
+					await vscode.commands.executeCommand('revealFileInOS', folderUri);
+				} else if (action === 'Upload to Power BI') {
+					this.postMessage({
+						type: 'openPublishPbiDialog',
+						boxId: message.boxId,
+						htmlCode: htmlContent,
+						dataSources: message.dataSources,
+						previewHeight: message.previewHeight,
+						suggestedName: projectName,
+					});
+				}
+			} else {
+				// ── HTML export path ───────────────────────────────────────
+				let targetUri = picked;
 				if (!lower.endsWith('.html') && !lower.endsWith('.htm')) {
 					targetUri = vscode.Uri.file(picked.fsPath + '.html');
 				}
-			} catch {
-				// ignore
-			}
 
-			await vscode.workspace.fs.writeFile(targetUri, Buffer.from(htmlContent, 'utf8'));
-			vscode.window.showInformationMessage(`Saved HTML to ${targetUri.fsPath}`);
-		} catch {
-			vscode.window.showErrorMessage('Failed to save HTML file.');
+				await vscode.workspace.fs.writeFile(targetUri, Buffer.from(htmlContent, 'utf8'));
+				vscode.window.showInformationMessage(`Saved HTML to ${targetUri.fsPath}`);
+			}
+		} catch (e) {
+			console.error('[kusto] Dashboard export error:', e);
+			vscode.window.showErrorMessage('Failed to export dashboard: ' + (e instanceof Error ? e.message : String(e)));
 		}
 	}
 
-	private async exportHtmlToPowerBIFromWebview(message: ExportHtmlToPowerBIMessage): Promise<void> {
+	private async getPbiWorkspacesFromWebview(message: { boxId: string }): Promise<void> {
 		try {
-			if (!message.dataSources || message.dataSources.length === 0) {
-				vscode.window.showWarningMessage('No data sources selected. Select at least one query section as a data source for this HTML dashboard.');
-				return;
-			}
-			if (!message.htmlCode?.trim()) {
-				vscode.window.showWarningMessage('No HTML content to export.');
-				return;
-			}
-
-			const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(os.homedir());
-			const picked = await vscode.window.showOpenDialog({
-				defaultUri: baseDir,
-				canSelectFolders: true,
-				canSelectFiles: false,
-				canSelectMany: false,
-				openLabel: 'Export Here',
-				title: 'Select folder for Power BI project',
-			});
-
-			if (!picked || picked.length === 0) return;
-
-			const folderUri = picked[0];
-			const sectionName = message.dataSources[0]?.name || 'KustoHtmlDashboard';
-
-			await exportHtmlToPowerBI(
-				{ htmlCode: message.htmlCode, sectionName, dataSources: message.dataSources, previewHeight: message.previewHeight },
-				folderUri,
-			);
-
-			const action = await vscode.window.showInformationMessage(
-				`Power BI project exported to ${folderUri.fsPath}. Open the .pbip file in Power BI Desktop.`,
-				'Open Folder',
-			);
-			if (action === 'Open Folder') {
-				await vscode.commands.executeCommand('revealFileInOS', folderUri);
-			}
+			const workspaces = await listFabricWorkspaces();
+			this.postMessage({ type: 'pbiWorkspacesResult', boxId: message.boxId, ok: true, workspaces });
 		} catch (e) {
-			console.error('[kusto] Power BI export error:', e);
-			vscode.window.showErrorMessage('Failed to export Power BI project: ' + (e instanceof Error ? e.message : String(e)));
+			const msg = e instanceof Error ? e.message : String(e);
+			console.error('[kusto] Power BI workspaces error:', e);
+			this.postMessage({ type: 'pbiWorkspacesResult', boxId: message.boxId, ok: false, error: msg });
+		}
+	}
+
+	private async publishToPowerBIFromWebview(message: PublishToPowerBIMessage): Promise<void> {
+		try {
+			const result = await publishToPowerBIService({
+				workspaceId: message.workspaceId,
+				reportName: message.reportName,
+				pageWidth: message.pageWidth,
+				pageHeight: message.pageHeight,
+				htmlCode: message.htmlCode,
+				dataSources: message.dataSources,
+			});
+			this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: true, reportUrl: result.reportUrl });
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : String(e);
+			console.error('[kusto] Power BI publish error:', e);
+			this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: false, error: msg });
 		}
 	}
 

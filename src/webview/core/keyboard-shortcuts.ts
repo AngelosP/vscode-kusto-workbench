@@ -100,7 +100,7 @@ try {
 
 				// Don't intercept wheel events aimed at modals rendered inside shadow DOM
 				// (their retargeted target lands on the host element, which lives inside .results-body).
-				const MODAL_TAGS = ['KW-OBJECT-VIEWER', 'KW-SORT-DIALOG', 'KW-FILTER-DIALOG', 'KW-UNIQUE-VALUES-DIALOG'];
+				const MODAL_TAGS = ['KW-OBJECT-VIEWER', 'KW-SORT-DIALOG', 'KW-FILTER-DIALOG', 'KW-UNIQUE-VALUES-DIALOG', 'KW-PUBLISH-PBI-DIALOG'];
 				const path = event.composedPath?.();
 				if (path && path.some((n: any) => n.tagName && MODAL_TAGS.includes(n.tagName))) return;
 

@@ -77,6 +77,7 @@ export const ICONS = {
 	toolbarInlineFunction: svg(html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M5 2C3.5 2 3 3 3 4v2.5C3 7.5 2 8 2 8s1 .5 1 1.5V12c0 1 .5 2 2 2"/><path d="M11 2c1.5 0 2 1 2 2v2.5c0 1 1 1.5 1 1.5s-1 .5-1 1.5V12c0 1-.5 2-2 2"/></svg>`),
 	toolbarRename: svg(html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M10.5 2.5l3 3-8 8H2.5v-3l8-8z"/><path d="M8.5 4.5l3 3"/></svg>`),
 	toolbarExport: svg(html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M8 2v8M5 7l3 3 3-3"/><path d="M3 11v2h10v-2"/></svg>`),
+	toolbarUpload: svg(html`<svg viewBox="0 0 16 16" width="16" height="16" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M8 10V2M5 5l3-3 3 3"/><path d="M3 11v2h10v-2"/></svg>`),
 	toolbarRun: svg(html`<svg viewBox="0 0 16 16" width="16" height="16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M4.5 2.5v11l9-5.5z"/></svg>`),
 	toolbarTools: codicon('tools'),
 	toolbarLink: codicon('link'),
@@ -154,6 +155,7 @@ export const toolsSingleLineIcon = ICONS.toolbarSingleLine;
 export const toolsInlineFunctionIcon = ICONS.toolbarInlineFunction;
 export const toolsRenameIcon = ICONS.toolbarRename;
 export const exportIcon = ICONS.toolbarExport;
+export const uploadIcon = ICONS.toolbarUpload;
 export const runIcon = ICONS.toolbarRun;
 export const toolsCodiconIcon = ICONS.toolbarTools;
 export const linkCodiconIcon = ICONS.toolbarLink;

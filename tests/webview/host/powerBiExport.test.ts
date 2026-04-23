@@ -151,9 +151,9 @@ describe('generateHtmlContentVisualJson', () => {
 
 	it('positions the visual to fill the page', () => {
 		const json = JSON.parse(generateHtmlContentVisualJson('vis1'));
-		expect(json.position.width).toBe(1280);
+		expect(json.position.width).toBe(1450);
 		expect(json.position.height).toBe(720);
-		expect(json.position.x).toBe(0);
+		expect(json.position.x).toBe(25);
 		expect(json.position.y).toBe(0);
 	});
 
@@ -256,7 +256,7 @@ function makeHtmlWithProvenance(tableBindings: string[], scalarBindings: string[
 		html += `<div data-kw-bind="sales-table">$100,000</div>`;
 	}
 	if (tableBindings.includes('sales')) {
-		html += `<table data-kw-bind="sales-table"><thead><tr><th>R</th><th>S</th><th>Q</th></tr></thead><tbody><tr><td>NA</td><td>50000</td><td>Q1</td></tr></tbody></table>`;
+		html += `<table data-kw-bind="sales-table"><thead><tr><th>R</th><th class="num">S</th><th>Q</th></tr></thead><tbody><tr><td>NA</td><td>50000</td><td>Q1</td></tr></tbody></table>`;
 	}
 	if (tableBindings.includes('categories')) {
 		html += `<table data-kw-bind="cat-table"><thead><tr><th>C</th><th>R</th><th>U</th></tr></thead><tbody><tr><td>Electronics</td><td>45000</td><td>320</td></tr></tbody></table>`;
@@ -324,11 +324,11 @@ describe('generateDaxMeasure', () => {
 		expect(result).toContain('<thead>');
 	});
 
-	it('applies numeric CSS class to numeric columns', () => {
+	it('preserves original CSS classes from HTML th elements', () => {
 		const html = makeHtmlWithProvenance(['sales']);
 		const result = generateDaxMeasure(html, sampleDataSources);
-		// Sales column (long) should get number class in both thead and tbody
-		expect(result).toContain('class=""number""');
+		// Sales column had class="num" in the original HTML — should be preserved
+		expect(result).toContain('class=""num""');
 	});
 
 	it('handles table binding taking priority over scalar for same key', () => {
