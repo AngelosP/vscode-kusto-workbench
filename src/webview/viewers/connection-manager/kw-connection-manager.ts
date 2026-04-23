@@ -1,5 +1,8 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-connection-manager.styles.js';
+import { scrollbarSheet } from '../../shared/scrollbar-styles.js';
+import { osStyles } from '../../shared/os-styles.js';
+import { OverlayScrollbarsController } from '../../components/overlay-scrollbars.controller.js';
 import { customElement, state } from 'lit/decorators.js';
 import { ICONS, iconRegistryStyles } from '../../shared/icon-registry.js';
 import type { KustoConnectionFormSubmitDetail } from '../../components/kw-kusto-connection-form.js';
@@ -151,6 +154,7 @@ function getClusterCacheKey(clusterUrl: string): string {
 
 @customElement('kw-connection-manager')
 export class KwConnectionManager extends LitElement {
+	private _osCtrl = new OverlayScrollbarsController(this);
 
 	// ── State ─────────────────────────────────────────────────────────────────
 
@@ -484,7 +488,7 @@ export class KwConnectionManager extends LitElement {
 				${this._explorerPath?.connectionId ? this._renderBreadcrumbBar() : nothing}
 
 				<!-- Explorer content -->
-				<div class="explorer-content">
+				<div class="explorer-content" data-overlay-scroll="x:hidden">
 					${this._explorerPath?.connectionId ? this._renderDrilledContent() : this._renderClusterList(visibleConnections, favClusterUrls, lntClusters)}
 				</div>
 			`}
@@ -889,7 +893,7 @@ export class KwConnectionManager extends LitElement {
 				${ep?.connectionId ? this._renderSqlBreadcrumb() : nothing}
 
 				<!-- SQL Explorer content -->
-				<div class="explorer-content">
+				<div class="explorer-content" data-overlay-scroll="x:hidden">
 					${ep?.connectionId ? this._renderSqlDrilledContent() : this._renderSqlConnectionList(visibleConnections, favConnIds, lntSet)}
 				</div>
 			`}
@@ -1686,7 +1690,7 @@ export class KwConnectionManager extends LitElement {
 					</div>
 				` : nothing}
 
-				<div class="search-results explorer-content" data-testid="cm-search-results">
+				<div class="search-results explorer-content" data-overlay-scroll="x:hidden" data-testid="cm-search-results">
 					${resultCount === 0 && !s.loading && !s.query.trim() || (s.refreshing && !s.query.trim()) ? html`
 						<div class="empty-state">
 							<div class="empty-state-icon">${ICONS.toolbarSearch}</div>
@@ -1931,7 +1935,7 @@ export class KwConnectionManager extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static styles = [iconRegistryStyles, styles];
+	static styles = [...osStyles, scrollbarSheet, iconRegistryStyles, styles];
 }
 
 declare global {

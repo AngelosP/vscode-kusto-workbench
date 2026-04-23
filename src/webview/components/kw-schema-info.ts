@@ -1,6 +1,7 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { styles } from './kw-schema-info.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import {
 	setupClickOutsideDismiss,
 	setupScrollDismiss,
@@ -39,7 +40,7 @@ const refreshIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill
 @customElement('kw-schema-info')
 export class KwSchemaInfo extends LitElement {
 
-	static override styles = styles;
+	static override styles = [scrollbarSheet, styles];
 
 	// ── Reactive state ────────────────────────────────────────────────────────
 

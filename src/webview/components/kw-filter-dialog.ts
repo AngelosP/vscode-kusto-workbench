@@ -3,6 +3,9 @@ import { customElement, property, state } from 'lit/decorators.js';
 import type { ColumnFiltersState } from '@tanstack/table-core';
 import type { CellValue, DataTableColumn } from './kw-data-table.js';
 import { styles } from './kw-filter-dialog.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
+import { osStyles } from '../shared/os-styles.js';
+import { OverlayScrollbarsController } from './overlay-scrollbars.controller.js';
 
 // ── Filter types (exported — used by kw-data-table for filterFn) ──────────────
 
@@ -247,6 +250,8 @@ const ICON_PLUS = html`<svg viewBox="0 0 16 16" width="16" height="16" fill="non
 
 @customElement('kw-filter-dialog')
 export class KwFilterDialog extends LitElement {
+	private _osCtrl = new OverlayScrollbarsController(this);
+
 	@property({ type: Array, attribute: false }) columns: DataTableColumn[] = [];
 	@property({ type: Array, attribute: false }) rows: CellValue[][] = [];
 	@property({ type: Number, attribute: false }) colIndex: number | null = null;
@@ -458,7 +463,7 @@ export class KwFilterDialog extends LitElement {
 				<button class="fd-mode ${this._mode === 'rules' ? 'active' : ''}" @click=${() => this._setMode('rules')}>Rules${activeRules > 0 ? ` (${activeRules})` : ''}</button>
 				${this._mode === 'rules' ? html`<label class="fd-combine"><input class="fd-combine-cb" type="checkbox" .checked=${this._rulesCombine} @change=${(e: Event) => { this._rulesCombine = (e.target as HTMLInputElement).checked; }} /><span>Apply these rules on top of value filters</span></label>` : nothing}
 			</div>
-			<div class="sd-b">
+			<div class="sd-b" data-overlay-scroll="x:hidden">
 				${this._mode === 'values' ? html`
 					<div class="fd-tools">
 						<div class="sc fd-search">
@@ -534,7 +539,7 @@ export class KwFilterDialog extends LitElement {
 		</div></div>`;
 	}
 
-	static override styles = styles;
+	static override styles = [...osStyles, scrollbarSheet, styles];
 }
 
 declare global {

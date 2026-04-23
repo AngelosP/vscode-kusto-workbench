@@ -124,6 +124,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
 	| { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string }
 	| { type: 'saveHtmlFile'; boxId?: string; html: string; suggestedFileName?: string }
+	| { type: 'exportHtmlToPowerBI'; boxId: string; htmlCode: string; previewHeight?: number; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> }
 
 	// Settings
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }

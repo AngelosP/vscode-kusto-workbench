@@ -5,6 +5,9 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 import { styles } from './kw-html-section.styles.js';
 import { sectionGlowStyles } from '../shared/section-glow.styles.js';
 import { sashSheet } from '../shared/sash-styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
+import { osStyles } from '../shared/os-styles.js';
+import { OverlayScrollbarsController } from '../components/overlay-scrollbars.controller.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
 import '../components/kw-monaco-toolbar.js';
@@ -15,6 +18,7 @@ import {
 } from '../shared/icon-registry.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { schedulePersist } from '../core/persistence.js';
+import { getResultsState } from '../core/results-state.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize.js';
 
@@ -32,6 +36,39 @@ export interface HtmlSectionData {
 	expanded: boolean;
 	editorHeightPx?: number;
 	previewHeightPx?: number;
+	dataSourceIds?: string[];
+}
+
+// ─── Provenance ───────────────────────────────────────────────────────────────
+
+/** A single data binding declared inside `<script type="application/kw-provenance">`. */
+export interface KwProvenanceBinding {
+	sectionId: string;
+	sectionName: string;
+	query?: string;
+	columns?: string[];
+}
+
+/** Parsed provenance block from the HTML code. */
+export interface KwProvenance {
+	version: number;
+	bindings: Record<string, KwProvenanceBinding>;
+}
+
+/**
+ * Parse the `<script type="application/kw-provenance">` block from HTML code.
+ * Returns null if no provenance block is found or it's invalid JSON.
+ */
+export function parseKwProvenance(htmlCode: string): KwProvenance | null {
+	try {
+		const match = htmlCode.match(/<script\s+type\s*=\s*["']application\/kw-provenance["'][^>]*>([\s\S]*?)<\/script>/i);
+		if (!match) return null;
+		const json = JSON.parse(match[1]);
+		if (!json || typeof json !== 'object' || !json.bindings || typeof json.bindings !== 'object') return null;
+		return json as KwProvenance;
+	} catch {
+		return null;
+	}
 }
 
 // Monaco editor instance type (subset of monaco.editor.IStandaloneCodeEditor).
@@ -89,6 +126,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	@state() private _mode: HtmlSectionMode = 'code';
 	@state() private _expanded = true;
 	@state() private _wordWrap = true;
+	/** Parsed from `<script type="application/kw-provenance">` in the HTML code. */
+	@state() private _provenance: KwProvenance | null = null;
 
 	private _editor: MonacoEditor | null = null;
 	private _initRetryCount = 0;
@@ -180,7 +219,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = [sashSheet, styles, sectionGlowStyles];
+	static override styles = [...osStyles, scrollbarSheet, sashSheet, styles, sectionGlowStyles];
 
 	// ── Render ─────────────────────────────────────────────────────────────────
 
@@ -206,6 +245,10 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	// ── Toolbar ───────────────────────────────────────────────────────────────
 
 	private _renderToolbar(): TemplateResult {
+		const bindingCount = this._provenance ? Object.keys(this._provenance.bindings).length : 0;
+		const bindingNames = this._provenance
+			? Object.values(this._provenance.bindings).map(b => b.sectionName || b.sectionId).join(', ')
+			: '';
 		return html`
 			<div slot="header-buttons" class="html-mode-buttons">
 				<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'code' ? 'is-active' : ''}"
@@ -214,12 +257,126 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'preview' ? 'is-active' : ''}"
 					type="button" role="tab" aria-selected=${this._mode === 'preview' ? 'true' : 'false'}
 					@click=${() => this._setMode('preview')} title="Preview">Preview</button>
+				${bindingCount > 0 ? html`
+					<span class="ds-badge" title="Data bindings: ${bindingNames}">${bindingCount} binding${bindingCount > 1 ? 's' : ''}</span>
+				` : nothing}
+				<button class="unified-btn-secondary md-tab md-mode-btn ds-picker-btn" type="button"
+					@click=${this._exportToPowerBI} title="Export to Power BI"
+					?disabled=${bindingCount === 0}>Power BI</button>
 				<button class="header-tab" type="button"
 					@click=${this._saveAsHtml} title="Export as HTML file" aria-label="Export as HTML file">
 					${exportIcon}
 				</button>
 			</div>
 		`;
+	}
+
+	// ── Provenance detection ──────────────────────────────────────────────────
+
+	/** Re-parse provenance from the current HTML code. Called on content change. */
+	private _refreshProvenance(): void {
+		const code = this._getCodeText();
+		this._provenance = parseKwProvenance(code);
+	}
+
+	/** Get the section IDs referenced by the provenance bindings. */
+	private _getProvenanceSectionIds(): string[] {
+		if (!this._provenance) return [];
+		return [...new Set(Object.values(this._provenance.bindings).map(b => b.sectionId).filter(Boolean))];
+	}
+
+	// ── Export to Power BI ─────────────────────────────────────────────────────
+
+	private _exportToPowerBI(): void {
+		const code = this._getCodeText();
+		if (!code.trim()) {
+			postMessageToHost({ type: 'showInfo', message: 'Write some HTML content before exporting to Power BI.' });
+			return;
+		}
+
+		const provenance = parseKwProvenance(code);
+		if (!provenance || Object.keys(provenance.bindings).length === 0) {
+			postMessageToHost({ type: 'showInfo', message: 'No data bindings found. The HTML must include a <script type="application/kw-provenance"> block declaring its data sources.' });
+			return;
+		}
+
+		const dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> = [];
+		for (const [_bindingKey, binding] of Object.entries(provenance.bindings)) {
+			const dsId = binding.sectionId;
+			const el = document.getElementById(dsId) as any;
+			if (!el) {
+				postMessageToHost({ type: 'showInfo', message: `Data source section "${binding.sectionName || dsId}" not found. It may have been deleted.` });
+				return;
+			}
+			if (!dsId.startsWith('query_')) {
+				postMessageToHost({ type: 'showInfo', message: `Data source "${binding.sectionName}" is not a Kusto query section. Only Kusto query sections are supported for Power BI export.` });
+				return;
+			}
+			const rsState = getResultsState(dsId);
+			if (!rsState || !rsState.columns?.length) {
+				postMessageToHost({ type: 'showInfo', message: `Run all referenced queries before exporting. "${binding.sectionName || dsId}" has no results.` });
+				return;
+			}
+			const sectionName = binding.sectionName || dsId.replace('query_', 'Query_');
+
+			// Use the query section's serialize() method — it resolves clusterUrl,
+			// database, and query from the Lit component's internal state correctly.
+			let resolvedCluster = '';
+			let resolvedDb = '';
+			let resolvedQuery = '';
+			try {
+				if (typeof el.serialize === 'function') {
+					const serialized = el.serialize();
+					resolvedCluster = serialized.clusterUrl || '';
+					resolvedDb = serialized.database || '';
+					resolvedQuery = serialized.query || '';
+				}
+			} catch (e) { console.error('[kusto]', e); }
+
+			if (!resolvedCluster) {
+				postMessageToHost({ type: 'showInfo', message: `Query section "${sectionName}" has no cluster connection. Connect it to a Kusto cluster before exporting.` });
+				return;
+			}
+			if (!resolvedDb) {
+				postMessageToHost({ type: 'showInfo', message: `Query section "${sectionName}" has no database selected.` });
+				return;
+			}
+
+			const columns = rsState.columns.map((c: any) => ({
+				name: typeof c === 'string' ? c : (c?.name || c?.displayName || 'column'),
+				type: typeof c === 'object' ? (c?.type || 'string') : 'string',
+			}));
+
+			dataSources.push({
+				name: sectionName,
+				sectionId: dsId,
+				clusterUrl: resolvedCluster,
+				database: resolvedDb,
+				query: resolvedQuery,
+				columns,
+			});
+		}
+
+		// Measure the live iframe scrollHeight for accurate PBI page sizing.
+		// Falls back to the cached fit height, then to undefined (default 720px in PBI).
+		let previewHeight: number | undefined;
+		try {
+			const iframe = this.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+			const iframeH = iframe?.contentDocument?.documentElement?.scrollHeight;
+			if (iframeH && iframeH > 0) {
+				previewHeight = iframeH;
+			} else if (this._lastPreviewFitHeight > 0) {
+				previewHeight = this._lastPreviewFitHeight;
+			}
+		} catch { /* cross-origin or not rendered */ }
+
+		postMessageToHost({
+			type: 'exportHtmlToPowerBI',
+			boxId: this.boxId,
+			htmlCode: code,
+			previewHeight,
+			dataSources,
+		});
 	}
 
 	// ── Code mode ─────────────────────────────────────────────────────────────
@@ -315,7 +472,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				readOnly: false,
 				domReadOnly: false,
 				automaticLayout: true,
-				scrollbar: { alwaysConsumeMouseWheel: false },
+				scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
 				fixedOverflowWidgets: true,
 				minimap: { enabled: false },
 				scrollBeyondLastLine: false,
@@ -361,8 +518,12 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				editor.onDidChangeModelContent(() => {
 					this._schedulePersist();
 					this._updatePlaceholder();
+					this._refreshProvenance();
 				});
 			} catch (e) { console.error('[kusto]', e); }
+
+			// Parse provenance from initial content.
+			this._refreshProvenance();
 
 			// Auto-fit height + max-height so the section is exactly as tall as its content (no scrollbar).
 			try {
@@ -445,11 +606,47 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			if (!iframe) return;
 			const code = this._getCodeText();
 			if (code.trim()) {
-				// Inject a height-reporting script so we can auto-fit the section to the
-				// rendered content height (the iframe is sandboxed, so we use postMessage).
-				iframe.srcdoc = code + KwHtmlSection._heightReportScript;
+				const dataBridge = this._buildDataBridgeScript();
+				iframe.srcdoc = dataBridge + code + KwHtmlSection._heightReportScript;
 			}
 		});
+	}
+
+	/** Build a <script> block that injects KustoWorkbench data bridge into the iframe. */
+	private _buildDataBridgeScript(): string {
+		const sectionIds = this._getProvenanceSectionIds();
+		if (sectionIds.length === 0) return '';
+
+		const MAX_ROWS = 10_000;
+		const sections: Record<string, { columns: Array<{ name: string; type: string }>; rows: unknown[][] }> = {};
+
+		for (const dsId of sectionIds) {
+			const rs = getResultsState(dsId);
+			if (!rs || !rs.columns) continue;
+			const el = document.getElementById(dsId) as any;
+			const name = (typeof el?.getName === 'function' ? el.getName() : '') || dsId.replace('query_', 'Query_');
+			const columns = (rs.columns || []).map((c: any) => ({
+				name: typeof c === 'string' ? c : (c?.name || 'column'),
+				type: typeof c === 'object' ? (c?.type || 'string') : 'string',
+			}));
+			const rows = Array.isArray(rs.rows) ? rs.rows.slice(0, MAX_ROWS) : [];
+			sections[name] = { columns, rows };
+		}
+
+		// Serialize and escape </script> to prevent XSS (C2 from review)
+		const json = JSON.stringify({ sections }).replace(/<\//g, '<\\/');
+
+		return `<script>
+(function(){
+	var _d=${json};
+	var _cbs=[];
+	window.KustoWorkbench={
+		getData:function(){return _d;},
+		onDataReady:function(cb){_cbs.push(cb);try{cb(_d);}catch(e){console.error(e);}},
+		_notify:function(d){_d=d;for(var i=0;i<_cbs.length;i++){try{_cbs[i](d);}catch(e){console.error(e);}}}
+	};
+})();
+<\/script>\n`;
 	}
 
 	/** Script injected into the preview srcdoc to report content height via postMessage. */
@@ -843,6 +1040,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			pState.pendingHtmlCodeByBoxId = pState.pendingHtmlCodeByBoxId || {};
 			pState.pendingHtmlCodeByBoxId[this.boxId] = code;
 		}
+		this._refreshProvenance();
 		// Refresh the preview iframe when content is updated while in preview mode.
 		// requestUpdate() triggers a Lit re-render so the iframe is created if it
 		// was previously showing the empty-content placeholder.
@@ -854,6 +1052,17 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	public getMode(): HtmlSectionMode { return this._mode; }
 	public setMode(mode: HtmlSectionMode): void { this._setMode(mode); }
+
+	public getDataSourceIds(): string[] { return this._getProvenanceSectionIds(); }
+	public setDataSourceIds(_ids: string[]): void {
+		// No-op: data sources are now declared via provenance in the HTML code.
+		// Kept for backward compatibility with addHtmlBox() restore path.
+	}
+
+	/** Called by the cascade system when a referenced data source's results change. */
+	public refreshDataBridge(): void {
+		if (this._mode === 'preview') this._updatePreview();
+	}
 
 	public setExpanded(expanded: boolean): void {
 		this._expanded = expanded;

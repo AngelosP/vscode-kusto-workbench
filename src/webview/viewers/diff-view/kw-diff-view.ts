@@ -1,5 +1,6 @@
 import { LitElement, html, nothing } from 'lit';
 import { styles } from './kw-diff-view.styles.js';
+import { scrollbarSheet } from '../../shared/scrollbar-styles.js';
 import { customElement, state } from 'lit/decorators.js';
 import type { DataTableColumn, CellValue } from '../../components/kw-data-table.js';
 import '../../components/kw-data-table.js';
@@ -337,7 +338,7 @@ export class KwDiffView extends LitElement {
 
 	// ── Styles ──
 
-	static override styles = styles;
+	static override styles = [scrollbarSheet, styles];
 
 	// ── Render ──
 

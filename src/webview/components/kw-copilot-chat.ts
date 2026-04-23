@@ -4,6 +4,7 @@ import { unsafeHTML } from 'lit/directives/unsafe-html.js';
 import { styles } from './kw-copilot-chat.styles.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import { sashSheet } from '../shared/sash-styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -95,7 +96,7 @@ const SVG_TOOLS = '<svg viewBox="0 0 16 16" width="14" height="14" fill="none" s
 @customElement('kw-copilot-chat')
 export class KwCopilotChat extends LitElement {
 
-	static override styles = [iconRegistryStyles, sashSheet, styles];
+	static override styles = [scrollbarSheet, iconRegistryStyles, sashSheet, styles];
 
 	@property({ type: String, attribute: 'box-id' })
 	boxId = '';

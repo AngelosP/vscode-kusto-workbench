@@ -1,6 +1,7 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { styles } from './kw-chart-tooltip.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ const SEARCH_SVG = html`<svg viewBox="0 0 16 16" width="13" height="13" fill="cu
  */
 @customElement('kw-chart-tooltip')
 export class KwChartTooltip extends LitElement {
-	static override styles = styles;
+	static override styles = [scrollbarSheet, styles];
 
 	// ── Public properties ─────────────────────────────────────────────────────
 

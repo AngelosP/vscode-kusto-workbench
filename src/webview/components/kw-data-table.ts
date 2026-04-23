@@ -1,5 +1,9 @@
 import { LitElement, html, nothing, type TemplateResult, type PropertyValues } from 'lit';
 import { styles } from './kw-data-table.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
+import { osLibrarySheet } from '../shared/os-library-styles.js';
+import { osThemeSheet } from '../shared/os-theme-styles.js';
+import { OverlayScrollbars } from 'overlayscrollbars';
 import { customElement, property, state } from 'lit/decorators.js';
 import { createTable, getCoreRowModel, getSortedRowModel, getFilteredRowModel, type Table, type ColumnDef, type SortingState, type ColumnFiltersState, type Row, type CellContext, type RowSelectionState, type Column } from '@tanstack/table-core';
 import type { KwObjectViewer } from './kw-object-viewer.js';
@@ -272,6 +276,7 @@ export class KwDataTable extends LitElement {
 	private _rowJumpCtrl = new TableRowJumpController(this);
 	private _searchCtrl = new TableSearchController(this);
 	private _selectionCtrl = new TableSelectionController(this);
+	private _osInstance: ReturnType<typeof OverlayScrollbars> | null = null;
 
 	private _table: Table<CellValue[]> | null = null;
 	private _scrollAtPopupOpen = 0;
@@ -388,6 +393,7 @@ export class KwDataTable extends LitElement {
 		}
 	}
 	protected firstUpdated(): void {
+		this._initOverlayScrollbars();
 		this._vScrollCtrl.initVirtualizer();
 		this._vScrollCtrl.installViewportResizeWatcher();
 		// Row jump scroll callback wired to virtual-scroll controller
@@ -409,7 +415,10 @@ export class KwDataTable extends LitElement {
 
 	protected updated(changed: PropertyValues): void {
 		if (changed.has('columns') || changed.has('rows')) this._vScrollCtrl.initVirtualizer();
-		if (changed.has('_bodyVisible') && this._bodyVisible) this._vScrollCtrl.initVirtualizer();
+		if (changed.has('_bodyVisible') && this._bodyVisible) {
+			this._initOverlayScrollbars();
+			this._vScrollCtrl.initVirtualizer();
+		}
 		this._vScrollCtrl.installViewportResizeWatcher();
 		this._vScrollCtrl.syncHeaderScroll();
 		// Capture scroll position when a popup opens (for threshold-based dismiss)
@@ -462,8 +471,25 @@ export class KwDataTable extends LitElement {
 			});
 		}
 	}
+	private _initOverlayScrollbars(): void {
+		const vscroll = this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
+		if (!vscroll) return;
+		// Skip if already initialized on this element.
+		if (this._osInstance && OverlayScrollbars.valid(this._osInstance)) return;
+		this._osInstance = OverlayScrollbars(vscroll, {
+			scrollbars: { visibility: 'auto', autoHide: 'move', autoHideDelay: 800, autoHideSuspend: true },
+			overflow: { x: 'scroll', y: 'scroll' },
+		});
+		// Point the virtual-scroll controller at the OverlayScrollbars viewport
+		// element — this is where actual scrolling happens after initialization.
+		const viewport = this._osInstance.elements().viewport;
+		this._vScrollCtrl.setScrollElement(viewport as HTMLElement);
+	}
+
 	disconnectedCallback(): void {
 		super.disconnectedCallback();
+		this._osInstance?.destroy();
+		this._osInstance = null;
 		// Clean up dismiss stack
 		removeDismissable(this._dismissSearch);
 		removeDismissable(this._dismissRowJump);
@@ -1151,6 +1177,6 @@ export class KwDataTable extends LitElement {
 
 	// ── Styles ──
 
-	static styles = styles;
+	static styles = [scrollbarSheet, osLibrarySheet, osThemeSheet, styles];
 }
 declare global { interface HTMLElementTagNameMap { 'kw-data-table': KwDataTable; } }

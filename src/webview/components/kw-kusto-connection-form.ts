@@ -1,6 +1,7 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { styles } from './kw-kusto-connection-form.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { ICONS } from '../shared/icon-registry.js';
 
 // ── Event detail types ────────────────────────────────────────────────────────
@@ -15,7 +16,7 @@ export interface KustoConnectionFormSubmitDetail {
 
 @customElement('kw-kusto-connection-form')
 export class KwKustoConnectionForm extends LitElement {
-	static override styles = styles;
+	static override styles = [scrollbarSheet, styles];
 
 	@property() mode: 'add' | 'edit' = 'add';
 	@property() name = '';

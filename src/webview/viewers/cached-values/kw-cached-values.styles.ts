@@ -97,11 +97,6 @@ export const styles = css`
 		.dbItem:hover .dbActions { opacity: 1; }
 
 		.scrollPane { }
-		.scrollPane::-webkit-scrollbar { width: 12px; height: 12px; }
-		.scrollPane::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); border-radius: 0; }
-		.scrollPane::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
-		.scrollPane::-webkit-scrollbar-thumb:active { background: var(--vscode-scrollbarSlider-activeBackground); }
-		.scrollPane::-webkit-scrollbar-corner { background: transparent; }
 		.listItem { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 8px 10px 8px 12px; border-bottom: 1px solid color-mix(in srgb, var(--vscode-editorWidget-border) 40%, transparent); border-left: 3px solid transparent; cursor: pointer; transition: background 0.15s ease, border-color 0.15s ease; }
 		.listItem:last-child { border-bottom: none; }
 		.listItem:hover { background: var(--vscode-list-hoverBackground); }

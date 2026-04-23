@@ -1,5 +1,8 @@
 import { LitElement, html, nothing } from 'lit';
 import { styles } from './kw-unique-values-dialog.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
+import { osStyles } from '../shared/os-styles.js';
+import { OverlayScrollbarsController } from './overlay-scrollbars.controller.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 import { ensureEchartsLoaded } from '../shared/lazy-vendor.js';
@@ -13,7 +16,9 @@ const MAX_PIE_SLICES = 50;
 
 @customElement('kw-unique-values-dialog')
 export class KwUniqueValuesDialog extends LitElement {
-	static override styles = styles;
+	private _osCtrl = new OverlayScrollbarsController(this);
+
+	static override styles = [...osStyles, scrollbarSheet, styles];
 
 	@property({ type: Array }) columns: DataTableColumn[] = [];
 	@property({ type: Array }) rows: CellValue[][] = [];
@@ -195,7 +200,7 @@ export class KwUniqueValuesDialog extends LitElement {
 					<h3>${title}</h3>
 					<button class="close-btn" title="Close" @click=${this.hide}>✕</button>
 				</div>
-				<div class="modal-body">
+				<div class="modal-body" data-overlay-scroll="x:hidden">
 					${this.mode === 'unique-count' ? html`
 						<div class="uv-column-picker">
 							<label>Group by:</label>

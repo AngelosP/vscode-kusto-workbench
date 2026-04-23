@@ -1,5 +1,6 @@
 import { LitElement, html, type TemplateResult } from 'lit';
 import { styles } from './kw-function-params-dialog.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { customElement, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 
@@ -93,7 +94,7 @@ export class KwFunctionParamsDialog extends LitElement {
 		</div></div>`;
 	}
 
-	static override styles = styles;
+	static override styles = [scrollbarSheet, styles];
 }
 
 declare global {

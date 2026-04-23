@@ -24,12 +24,12 @@ export const styles = css`
 	}
 	.modal-header h3 { margin: 0; font-size: 14px; font-weight: 600; }
 	.modal-body {
-		flex: 1; overflow: hidden; padding: 16px; overscroll-behavior: contain;
+		flex: 1; overflow: auto; padding: 16px; overscroll-behavior: contain;
 		display: flex; flex-direction: column; gap: 16px; min-height: 0;
 	}
 	.table-panel { flex: 0 0 auto; min-width: 0; overflow: hidden; display: flex; flex-direction: column; }
 	.table-panel kw-data-table { flex: 1; min-height: 0; }
-	.chart-panel { flex: 0 0 auto; display: flex; flex-direction: column; align-items: stretch; }
+	.chart-panel { flex: 0 0 auto; display: flex; flex-direction: column; align-items: stretch; margin-top: 10px; }
 	.chart-controls {
 		display: flex; align-items: center; gap: 8px; padding: 0 4px 4px;
 		font-size: 11px; color: var(--vscode-descriptionForeground);

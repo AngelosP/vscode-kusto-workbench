@@ -2,8 +2,10 @@
 // Each component self-registers its custom element on import.
 // Legacy modules absorbed from global-scope JS — register window bridges on import.
 import { sashSheet } from './shared/sash-styles.js';
-document.adoptedStyleSheets = [...document.adoptedStyleSheets, sashSheet];
+import { scrollbarSheet } from './shared/scrollbar-styles.js';
+document.adoptedStyleSheets = [...document.adoptedStyleSheets, sashSheet, scrollbarSheet];
 import './core/state.js'; // Must be first — initializes all state globals on window
+import './core/overlay-scrollbars.js'; // DOM overlay scrollbars for body (before sections render)
 import './generated/controlCommands.generated.js';
 import './generated/functions.generated.js';
 import './core/utils.js';

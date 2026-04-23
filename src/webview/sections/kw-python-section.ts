@@ -4,6 +4,8 @@ import { LitElement, html, type PropertyValues } from 'lit';
 import { styles } from './kw-python-section.styles.js';
 import { sectionGlowStyles } from '../shared/section-glow.styles.js';
 import { sashSheet } from '../shared/sash-styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
+import { osStyles } from '../shared/os-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
 import '../components/kw-monaco-toolbar.js';
@@ -122,7 +124,7 @@ export class KwPythonSection extends LitElement implements SectionElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = [sashSheet, styles, sectionGlowStyles];
+	static override styles = [...osStyles, scrollbarSheet, sashSheet, styles, sectionGlowStyles];
 
 	// ── Render ─────────────────────────────────────────────────────────────────
 
@@ -206,7 +208,7 @@ export class KwPythonSection extends LitElement implements SectionElement {
 				readOnly: false,
 				domReadOnly: false,
 				automaticLayout: true,
-				scrollbar: { alwaysConsumeMouseWheel: false },
+				scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
 				fixedOverflowWidgets: true,
 				minimap: { enabled: false },
 				scrollBeyondLastLine: false,

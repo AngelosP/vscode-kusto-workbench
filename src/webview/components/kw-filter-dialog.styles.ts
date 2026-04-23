@@ -43,7 +43,7 @@ export const styles = css`
 	.fd-tools{display:flex;gap:8px;align-items:center;margin-bottom:8px;flex-wrap:wrap}
 	.fd-search{flex:1}
 	.fd-actions{display:flex;gap:6px;flex-wrap:wrap}
-	.fd-list{max-height:min(60vh,640px);overflow:auto;border:1px solid var(--vscode-panel-border);border-radius:4px}
+	.fd-list{border:1px solid var(--vscode-panel-border);border-radius:4px}
 	.fd-item{display:grid;grid-template-columns:18px 1fr auto;gap:8px;align-items:center;padding:6px 8px;border-bottom:1px solid var(--vscode-panel-border)}
 	.fd-item:last-child{border-bottom:none}
 	.fd-item:hover{background:var(--vscode-list-hoverBackground)}
@@ -56,7 +56,7 @@ export const styles = css`
 	.fr-type-group{display:flex;align-items:center;gap:8px;min-width:0}
 	.fr-type-label{font-size:12px;color:var(--vscode-descriptionForeground);white-space:nowrap}
 	.fr-type-select{min-width:120px}
-	.fr-list{display:flex;flex-direction:column;gap:8px;max-height:min(60vh,640px);overflow:auto;padding-right:2px;padding-left:34px}
+	.fr-list{display:flex;flex-direction:column;gap:8px;padding-right:2px;padding-left:34px}
 	.fr-row{display:flex;flex-wrap:wrap;gap:8px;align-items:center}
 	.fr-add-inline{margin-left:auto;flex:0 0 28px;width:28px;height:28px;padding:0;border:1px solid transparent;border-radius:2px;background:transparent;color:var(--vscode-terminal-ansiGreen);display:inline-flex;align-items:center;justify-content:center;cursor:pointer}
 	.fr-add-inline:hover{background:var(--vscode-button-secondaryHoverBackground);border-color:var(--vscode-input-border)}

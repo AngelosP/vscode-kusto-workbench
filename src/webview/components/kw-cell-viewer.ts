@@ -1,5 +1,6 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-cell-viewer.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { buildSearchRegex, navigateMatch, type SearchMode } from './search-utils.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
@@ -209,7 +210,7 @@ export class KwCellViewer extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static styles = styles;
+	static styles = [scrollbarSheet, styles];
 }
 
 declare global {

@@ -1213,7 +1213,8 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					mode: section.mode || 'code',
 					expanded: (typeof section.expanded === 'boolean') ? section.expanded : true,
 					editorHeightPx: section.editorHeightPx,
-					previewHeightPx: section.previewHeightPx
+					previewHeightPx: section.previewHeightPx,
+					dataSourceIds: Array.isArray(section.dataSourceIds) ? section.dataSourceIds : undefined,
 				});
 				continue;
 			}

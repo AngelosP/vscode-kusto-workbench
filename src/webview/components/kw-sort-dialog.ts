@@ -1,5 +1,8 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-sort-dialog.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
+import { osStyles } from '../shared/os-styles.js';
+import { OverlayScrollbarsController } from './overlay-scrollbars.controller.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { SortingState } from '@tanstack/table-core';
 import type { DataTableColumn } from './kw-data-table.js';
@@ -8,6 +11,8 @@ const ICON_CLOSE = html`<svg viewBox="0 0 16 16" width="12" height="12" fill="cu
 
 @customElement('kw-sort-dialog')
 export class KwSortDialog extends LitElement {
+	private _osCtrl = new OverlayScrollbarsController(this);
+
 	@property({ type: Array, attribute: false }) columns: DataTableColumn[] = [];
 	@property({ type: Array, attribute: false }) sorting: SortingState = [];
 
@@ -80,7 +85,7 @@ export class KwSortDialog extends LitElement {
 				<strong>Sort</strong>
 				<button class="nb sd-x" title="Close" @click=${this._close}>${ICON_CLOSE}</button>
 			</div>
-			<div class="sd-b">
+			<div class="sd-b" data-overlay-scroll="x:hidden">
 				${this._draft.length === 0 ? html`<div class="sd-e">No sort applied.</div>` : nothing}
 				${this._draft.map((rule, idx) => html`<div class="sr">
 					<span class="sr-ord">${idx + 1}</span>
@@ -109,7 +114,7 @@ export class KwSortDialog extends LitElement {
 		</div></div>`;
 	}
 
-	static override styles = styles;
+	static override styles = [...osStyles, scrollbarSheet, styles];
 }
 
 declare global {

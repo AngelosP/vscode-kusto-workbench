@@ -2,6 +2,7 @@ import { LitElement, html, css, nothing, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import { pState } from '../shared/persistence-state.js';
 import { sectionIcons } from '../shared/icon-registry.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -33,7 +34,7 @@ const sectionTypeLabels: Record<SectionSummary['type'], string> = {
 @customElement('kw-section-reorder-popup')
 export class KwSectionReorderPopup extends LitElement {
 
-	static override styles = css`
+	static override styles = [scrollbarSheet, css`
 		:host {
 			display: none;
 			position: fixed;
@@ -294,7 +295,7 @@ export class KwSectionReorderPopup extends LitElement {
 			color: var(--vscode-descriptionForeground, #999);
 			text-align: center;
 		}
-	`;
+	`];
 
 	// ── State ────────────────────────────────────────────────────────────────
 

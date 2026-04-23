@@ -174,17 +174,11 @@ export const styles = css`
 			overflow-x: auto;
 			overflow-y: hidden;
 			padding-bottom: 16px;
-			scrollbar-width: thin;
-			scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
 			/* Needs position:relative so it paints ABOVE the ::before overlay
 			   (which is position:absolute). Without this, the overlay sits on top
 			   of non-positioned children, tinting dropdown backgrounds. */
 			position: relative;
 		}
-		.chart-controls-scroll::-webkit-scrollbar { height: 8px; background: transparent; }
-		.chart-controls-scroll::-webkit-scrollbar-track { background: transparent; }
-		.chart-controls-scroll::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); }
-		.chart-controls-scroll::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
 
 		.chart-controls-scroll-content {
 			min-width: 480px;
@@ -313,7 +307,6 @@ export const styles = css`
 			box-shadow: 0 4px 12px rgba(0,0,0,.35);
 			max-height: 200px;
 			overflow-y: auto;
-			scrollbar-width: thin;
 		}
 
 		.dropdown-item {

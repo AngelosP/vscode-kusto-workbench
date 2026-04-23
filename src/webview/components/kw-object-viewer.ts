@@ -1,5 +1,6 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-object-viewer.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { buildSearchRegex, navigateMatch, highlightMatches, type SearchMode } from './search-utils.js';
@@ -607,7 +608,7 @@ export class KwObjectViewer extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static styles = [iconRegistryStyles, styles];
+	static styles = [scrollbarSheet, iconRegistryStyles, styles];
 }
 
 declare global {

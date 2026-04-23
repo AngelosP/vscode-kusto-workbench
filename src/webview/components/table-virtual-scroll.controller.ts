@@ -33,6 +33,8 @@ export class TableVirtualScrollController implements ReactiveController {
 	private _lastVEnd = -1;
 	private _lastVTopOffset = 0;
 	private _lastViewportW = 0;
+	/** Optional override — when set, used instead of querying `.vscroll`. */
+	private _scrollElementOverride: HTMLElement | null = null;
 
 	constructor(host: VirtualScrollHost) {
 		this.host = host;
@@ -57,10 +59,20 @@ export class TableVirtualScrollController implements ReactiveController {
 
 	// ── Public API ──
 
+	/** Override the scroll element (e.g. OverlayScrollbars viewport). */
+	setScrollElement(el: HTMLElement | null): void {
+		this._scrollElementOverride = el;
+	}
+
+	/** Resolve the active scroll element — override or `.vscroll` fallback. */
+	private _getScrollEl(): HTMLDivElement | null {
+		return (this._scrollElementOverride ?? this.host.shadowRoot?.querySelector('.vscroll')) as HTMLDivElement | null;
+	}
+
 	initVirtualizer(): void {
 		this._virtualizer = null;
 		requestAnimationFrame(() => {
-			const el = this.host.shadowRoot?.querySelector('.vscroll') as HTMLDivElement | null;
+			const el = this._getScrollEl();
 			if (!el) return;
 			if (el.clientHeight > 0) { this._createVirtualizer(el); return; }
 			this._resizeObs?.disconnect();
@@ -83,7 +95,7 @@ export class TableVirtualScrollController implements ReactiveController {
 		const estimate = this.host.getEstimatedRowHeight();
 		this._virtualizer.setOptions({
 			count,
-			getScrollElement: () => this.host.shadowRoot?.querySelector('.vscroll') as HTMLDivElement,
+			getScrollElement: () => this._getScrollEl() as HTMLDivElement,
 			estimateSize: () => estimate,
 			overscan: OVERSCAN,
 			scrollToFn: elementScroll,
@@ -91,7 +103,7 @@ export class TableVirtualScrollController implements ReactiveController {
 			observeElementOffset,
 			onChange: this._onVirtualizerChange,
 		});
-		const el = this.host.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
+		const el = this._getScrollEl();
 		if (el) el.scrollTop = 0;
 		this._lastVStart = -1;
 		this._lastVEnd = -1;
@@ -111,7 +123,7 @@ export class TableVirtualScrollController implements ReactiveController {
 	}
 
 	syncHeaderScroll(): void {
-		const vscroll = this.host.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
+		const vscroll = this._getScrollEl();
 		const headWrap = this.host.shadowRoot?.querySelector('.dtable-head-wrap') as HTMLElement | null;
 		if (!vscroll || !headWrap) return;
 		headWrap.scrollLeft = vscroll.scrollLeft;
@@ -119,7 +131,7 @@ export class TableVirtualScrollController implements ReactiveController {
 
 	installViewportResizeWatcher(): void {
 		if (!this.host.shadowRoot) return;
-		const vscroll = this.host.shadowRoot.querySelector('.vscroll') as HTMLElement | null;
+		const vscroll = this._getScrollEl();
 		if (!vscroll) return;
 		if (!this._viewportResizeObs) {
 			this._viewportResizeObs = new ResizeObserver(() => this._onViewportResize());
@@ -136,7 +148,7 @@ export class TableVirtualScrollController implements ReactiveController {
 		const estimate = this.host.getEstimatedRowHeight();
 		this._virtualizerCleanup?.();
 		this._virtualizer = new Virtualizer({
-			count, getScrollElement: () => el, estimateSize: () => estimate, overscan: OVERSCAN,
+			count, getScrollElement: () => this._getScrollEl() as HTMLDivElement, estimateSize: () => estimate, overscan: OVERSCAN,
 			scrollToFn: elementScroll, observeElementRect, observeElementOffset,
 			onChange: this._onVirtualizerChange,
 		});
@@ -149,7 +161,7 @@ export class TableVirtualScrollController implements ReactiveController {
 		if (!this._virtualizer) return;
 		const items = this._virtualizer.getVirtualItems();
 		const totalSize = this._virtualizer.getTotalSize();
-		const vw = (this.host.shadowRoot?.querySelector('.vscroll') as HTMLElement | null)?.clientWidth ?? 0;
+		const vw = this._getScrollEl()?.clientWidth ?? 0;
 		const start = items.length > 0 ? items[0].index : -1;
 		const end = items.length > 0 ? items[items.length - 1].index : -1;
 		const topOff = items.length > 0 ? items[0].start : 0;
@@ -175,7 +187,7 @@ export class TableVirtualScrollController implements ReactiveController {
 	};
 
 	private _onViewportResize = (): void => {
-		const vw = (this.host.shadowRoot?.querySelector('.vscroll') as HTMLElement | null)?.clientWidth ?? 0;
+		const vw = this._getScrollEl()?.clientWidth ?? 0;
 		if (vw <= 0 || vw === this.viewportW) return;
 		this.viewportW = vw;
 		this._lastViewportW = -1;

@@ -4,6 +4,8 @@ import { postMessageToHost } from '../shared/webview-messages';
 import { LitElement, html, nothing, type PropertyValues, type TemplateResult, render as litRender } from 'lit';
 import { styles } from './kw-sql-section.styles.js';
 import { sectionGlowStyles } from '../shared/section-glow.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
+import { osStyles } from '../shared/os-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DropdownItem, DropdownAction } from '../components/kw-dropdown.js';
 import type { KwSchemaInfo } from '../components/kw-schema-info.js';
@@ -135,7 +137,7 @@ function formatSqlFavoriteDisplay(fav: SqlFavoriteInfo, connections?: SqlConnect
 @customElement('kw-sql-section')
 export class KwSqlSection extends LitElement implements SectionElement {
 
-	static override styles = [iconRegistryStyles, styles, sectionGlowStyles];
+	static override styles = [...osStyles, scrollbarSheet, iconRegistryStyles, styles, sectionGlowStyles];
 
 	// ── Public properties ─────────────────────────────────────────────────────
 
@@ -977,7 +979,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 				padding: { top: 6, bottom: 6 },
 				suggestOnTriggerCharacters: false,
 				wordBasedSuggestions: 'off',
-				scrollbar: { alwaysConsumeMouseWheel: false, horizontal: 'hidden' },
+				scrollbar: { alwaysConsumeMouseWheel: false, horizontal: 'hidden', verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
 				// Enable inline suggestions (ghost text completions from Copilot)
 				inlineSuggest: { enabled: true },
 			});

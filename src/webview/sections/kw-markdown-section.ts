@@ -5,6 +5,8 @@ import { LitElement, html, nothing, type PropertyValues } from 'lit';
 import { styles } from './kw-markdown-section.styles.js';
 import { sectionGlowStyles } from '../shared/section-glow.styles.js';
 import { sashSheet } from '../shared/sash-styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
+import { osStyles } from '../shared/os-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
@@ -292,7 +294,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = [sashSheet, styles, sectionGlowStyles];
+	static override styles = [...osStyles, scrollbarSheet, sashSheet, styles, sectionGlowStyles];
 
 	// ── Render ─────────────────────────────────────────────────────────────────
 

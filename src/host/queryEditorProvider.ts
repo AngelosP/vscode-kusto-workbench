@@ -36,8 +36,10 @@ import {
 	CacheUnit,
 	IncomingWebviewMessage,
 	SaveResultsCsvMessage,
+	ExportHtmlToPowerBIMessage,
 	findPreferredDefaultCopilotModel
 } from './queryEditorTypes';
+import { exportHtmlToPowerBI } from './powerBiExport';
 
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
@@ -424,6 +426,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'saveHtmlFile':
 				await this.saveHtmlFileFromWebview(message as any);
+				return;
+			case 'exportHtmlToPowerBI':
+				await this.exportHtmlToPowerBIFromWebview(message as any);
 				return;
 			case 'checkCopilotAvailability':
 				await this.copilot.checkCopilotAvailability(message.boxId);
@@ -830,6 +835,50 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			vscode.window.showInformationMessage(`Saved HTML to ${targetUri.fsPath}`);
 		} catch {
 			vscode.window.showErrorMessage('Failed to save HTML file.');
+		}
+	}
+
+	private async exportHtmlToPowerBIFromWebview(message: ExportHtmlToPowerBIMessage): Promise<void> {
+		try {
+			if (!message.dataSources || message.dataSources.length === 0) {
+				vscode.window.showWarningMessage('No data sources selected. Select at least one query section as a data source for this HTML dashboard.');
+				return;
+			}
+			if (!message.htmlCode?.trim()) {
+				vscode.window.showWarningMessage('No HTML content to export.');
+				return;
+			}
+
+			const baseDir = vscode.workspace.workspaceFolders?.[0]?.uri ?? vscode.Uri.file(os.homedir());
+			const picked = await vscode.window.showOpenDialog({
+				defaultUri: baseDir,
+				canSelectFolders: true,
+				canSelectFiles: false,
+				canSelectMany: false,
+				openLabel: 'Export Here',
+				title: 'Select folder for Power BI project',
+			});
+
+			if (!picked || picked.length === 0) return;
+
+			const folderUri = picked[0];
+			const sectionName = message.dataSources[0]?.name || 'KustoHtmlDashboard';
+
+			await exportHtmlToPowerBI(
+				{ htmlCode: message.htmlCode, sectionName, dataSources: message.dataSources, previewHeight: message.previewHeight },
+				folderUri,
+			);
+
+			const action = await vscode.window.showInformationMessage(
+				`Power BI project exported to ${folderUri.fsPath}. Open the .pbip file in Power BI Desktop.`,
+				'Open Folder',
+			);
+			if (action === 'Open Folder') {
+				await vscode.commands.executeCommand('revealFileInOS', folderUri);
+			}
+		} catch (e) {
+			console.error('[kusto] Power BI export error:', e);
+			vscode.window.showErrorMessage('Failed to export Power BI project: ' + (e instanceof Error ? e.message : String(e)));
 		}
 	}
 

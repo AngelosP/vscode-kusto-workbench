@@ -1,5 +1,8 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-cached-values.styles.js';
+import { scrollbarSheet } from '../../shared/scrollbar-styles.js';
+import { osStyles } from '../../shared/os-styles.js';
+import { OverlayScrollbarsController } from '../../components/overlay-scrollbars.controller.js';
 import { ICONS, iconRegistryStyles } from '../../shared/icon-registry.js';
 import { sashSheet } from '../../shared/sash-styles.js';
 import { customElement, state, query } from 'lit/decorators.js';
@@ -220,6 +223,7 @@ function buildDbKey(snapshot: Snapshot): string {
 
 @customElement('kw-cached-values')
 export class KwCachedValues extends LitElement {
+	private _osCtrl = new OverlayScrollbarsController(this);
 
 	// ── Reactive state ────────────────────────────────────────────────────────
 
@@ -538,7 +542,7 @@ export class KwCachedValues extends LitElement {
 
 		return html`
 			<div class="twoPane">
-				<div class="pane listPane list scrollPane" tabindex="0" role="listbox" aria-label="Clusters"
+				<div class="pane listPane list scrollPane" data-overlay-scroll="x:hidden" tabindex="0" role="listbox" aria-label="Clusters"
 					@keydown=${this._onDbListKeydown}>
 					${clusterKeys.map(ck => {
 						const list = Array.isArray(cached[ck]) ? cached[ck] : [];
@@ -553,7 +557,7 @@ export class KwCachedValues extends LitElement {
 					})}
 				</div>
 				<div class="resizer-v" @mousedown=${this._onSplitterMouseDown}></div>
-				<div class="pane detailPane scrollPane" tabindex="0" aria-label="Databases">
+				<div class="pane detailPane scrollPane" data-overlay-scroll="x:hidden" tabindex="0" aria-label="Databases">
 					<div style="padding:10px;">
 						<div class="dbDetailHeader">
 							<div class="detailUrl" title="${selectedTitle}">${selectedTitle}</div>
@@ -791,7 +795,7 @@ export class KwCachedValues extends LitElement {
 
 		return html`
 			<div class="twoPane">
-				<div class="pane listPane list scrollPane" tabindex="0" role="listbox" aria-label="Servers"
+				<div class="pane listPane list scrollPane" data-overlay-scroll="x:hidden" tabindex="0" role="listbox" aria-label="Servers"
 					@keydown=${this._onSqlDbListKeydown}>
 					${serverOrder.map(srv => {
 						const e = byServer[srv];
@@ -805,7 +809,7 @@ export class KwCachedValues extends LitElement {
 					})}
 				</div>
 				<div class="resizer-v" @mousedown=${this._onSplitterMouseDown}></div>
-				<div class="pane detailPane scrollPane" tabindex="0" aria-label="Databases">
+				<div class="pane detailPane scrollPane" data-overlay-scroll="x:hidden" tabindex="0" aria-label="Databases">
 					<div style="padding:10px;">
 						<div class="dbDetailHeader">
 							<div class="detailUrl" title="${selected}">${selected}</div>
@@ -1071,7 +1075,7 @@ export class KwCachedValues extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static styles = [iconRegistryStyles, sashSheet, styles];
+	static styles = [...osStyles, scrollbarSheet, iconRegistryStyles, sashSheet, styles];
 }
 
 declare global {

@@ -1,5 +1,6 @@
 import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { styles } from './kw-search-bar.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { customElement, property } from 'lit/decorators.js';
 import type { SearchMode } from './search-utils.js';
 
@@ -9,7 +10,7 @@ import type { SearchMode } from './search-utils.js';
  */
 @customElement('kw-search-bar')
 export class KwSearchBar extends LitElement {
-	static override styles = styles;
+	static override styles = [scrollbarSheet, styles];
 
 	@property() query = '';
 	@property() mode: SearchMode = 'wildcard';

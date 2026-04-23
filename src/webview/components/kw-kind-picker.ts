@@ -1,6 +1,7 @@
 import { LitElement, html, type TemplateResult } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { styles } from './kw-kind-picker.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 
 /**
@@ -43,7 +44,7 @@ export class KwKindPicker extends LitElement {
 		this.dispatchEvent(new CustomEvent('kind-changed', { detail: { kind }, bubbles: true, composed: true }));
 	}
 
-	static styles = [iconRegistryStyles, styles];
+	static styles = [scrollbarSheet, iconRegistryStyles, styles];
 }
 
 declare global {

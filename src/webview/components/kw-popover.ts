@@ -1,6 +1,7 @@
 import { LitElement, html, nothing, type PropertyValues } from 'lit';
 import { customElement, property } from 'lit/decorators.js';
 import { styles } from './kw-popover.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import {
 	setupClickOutsideDismiss,
 	setupScrollDismiss,
@@ -74,7 +75,7 @@ export class KwPopover extends LitElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = styles;
+	static override styles = [scrollbarSheet, styles];
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 

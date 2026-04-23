@@ -20,6 +20,19 @@
 		html {
 			scrollbar-gutter: auto;
 		}
+
+		/* ── VS Code-style scrollbars ─────────────────────────────────
+		   Custom scrollbar styling via WebKit pseudo-elements.
+		   These completely replace the native scrollbar — no arrow buttons,
+		   no native chrome.  Do NOT add scrollbar-width or scrollbar-color
+		   alongside these; on Chromium 134 the standards properties take
+		   precedence and re-enable native rendering (including arrows).    */
+		::-webkit-scrollbar { width: 14px; height: 14px; }
+		::-webkit-scrollbar-track { background: transparent; }
+		::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); }
+		::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
+		::-webkit-scrollbar-thumb:active { background: var(--vscode-scrollbarSlider-activeBackground); }
+		::-webkit-scrollbar-corner { background: transparent; }
 		
 		body {
 			font-family: var(--vscode-font-family);

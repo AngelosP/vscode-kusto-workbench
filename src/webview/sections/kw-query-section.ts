@@ -4,6 +4,8 @@ import { postMessageToHost } from '../shared/webview-messages';
 import { LitElement, html, nothing, type TemplateResult, render as litRender } from 'lit';
 import { styles } from './kw-query-section.styles.js';
 import { sectionGlowStyles } from '../shared/section-glow.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
+import { osStyles } from '../shared/os-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import type { DropdownItem, DropdownAction } from '../components/kw-dropdown.js';
@@ -200,7 +202,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = [iconRegistryStyles, styles, sectionGlowStyles];
+	static override styles = [...osStyles, scrollbarSheet, iconRegistryStyles, styles, sectionGlowStyles];
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 

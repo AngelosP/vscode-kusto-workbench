@@ -8,15 +8,18 @@ export async function getQueryEditorHtml(
 ): Promise<string> {
 	const templateUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'queryEditor.html');
 	const cssBundleUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor.bundle.css');
-	const [templateBytes, cssBundleBytes] = await Promise.all([
+	const overlayScrollbarsCssUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'overlayscrollbars.min.css');
+	const [templateBytes, cssBundleBytes, overlayScrollbarsCssBytes] = await Promise.all([
 		vscode.workspace.fs.readFile(templateUri),
 		vscode.workspace.fs.readFile(cssBundleUri),
+		vscode.workspace.fs.readFile(overlayScrollbarsCssUri),
 	]);
 	let template = new TextDecoder('utf-8').decode(templateBytes);
 	// Inline the CSS bundle so the webview is styled at first paint, even when
 	// VS Code restores cached HTML from a previous session with stale resource URIs.
 	// Sanitize against the (unlikely) case of </style> appearing in CSS content.
-	const appCssInline = new TextDecoder('utf-8').decode(cssBundleBytes).replaceAll('</style>', '<\\/style>');
+	const appCssInline = new TextDecoder('utf-8').decode(overlayScrollbarsCssBytes).replaceAll('</style>', '<\\/style>')
+		+ new TextDecoder('utf-8').decode(cssBundleBytes).replaceAll('</style>', '<\\/style>');
 
 	// For certain modes (e.g. .md compatibility mode), we want to avoid rendering footer UI
 	// (Add Section buttons + feedback link) entirely so it doesn't take up layout/scroll space.

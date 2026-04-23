@@ -2,6 +2,8 @@ import { LitElement, html, nothing, type PropertyValues, type TemplateResult } f
 import type { SectionElement } from '../shared/dom-helpers';
 import { styles } from './kw-chart-section.styles.js';
 import { sectionGlowStyles } from '../shared/section-glow.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
+import { osStyles } from '../shared/os-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
 import { schedulePersist } from '../core/persistence.js';
@@ -550,7 +552,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = [iconRegistryStyles, styles, sectionGlowStyles];
+	static override styles = [...osStyles, scrollbarSheet, iconRegistryStyles, styles, sectionGlowStyles];
 	// ── Render ─────────────────────────────────────────────────────────────────
 
 	override render(): TemplateResult {

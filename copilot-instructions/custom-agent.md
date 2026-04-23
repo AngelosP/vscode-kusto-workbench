@@ -147,27 +147,49 @@ Use HTML sections to build interactive dashboards from query results. The workfl
 4. `#configureHtmlSection` to set the full HTML + JS code, then set `mode: "preview"`
 5. The user can "Save as HTML" from the section toolbar to export to disk
 
-**Data Provenance Protocol:** When generating HTML that uses data from query sections, embed provenance metadata so you can later re-run queries and update values:
+**Data Provenance Protocol (v2):** When generating HTML that uses data from query sections, embed provenance metadata so the extension can export live dashboards to Power BI:
 
 **Step 1: Add a provenance block** in the HTML `<head>`:
 
 ```html
 <script type="application/kw-provenance">
 {
-  "version": 1,
+  "version": 2,
   "bindings": {
     "total-events": {
       "sectionId": "query_123",
       "sectionName": "Event Counts",
-      "query": "Events | summarize TotalEvents=count()",
-      "column": "TotalEvents",
-      "row": 0
+      "display": {
+        "type": "scalar",
+        "agg": "SUM",
+        "column": "TotalEvents",
+        "format": "#,##0"
+      }
     },
     "daily-table": {
       "sectionId": "query_456",
       "sectionName": "Daily Events",
-      "query": "Events | summarize count() by bin(Timestamp, 1d)",
-      "columns": ["Timestamp", "count_"]
+      "columns": ["Timestamp", "count_"],
+      "display": {
+        "type": "flat",
+        "columns": ["Timestamp", "count_"],
+        "formats": { "count_": "#,##0" }
+      }
+    },
+    "sales-by-region": {
+      "sectionId": "query_789",
+      "sectionName": "Regional Sales",
+      "columns": ["Region", "Sales", "Quarter"],
+      "display": {
+        "type": "pivot",
+        "rows": ["Region"],
+        "pivotBy": "Quarter",
+        "pivotValues": ["Q1", "Q2", "Q3", "Q4"],
+        "value": "Sales",
+        "agg": "SUM",
+        "format": "$#,##0",
+        "total": true
+      }
     }
   }
 }
@@ -179,14 +201,58 @@ Use HTML sections to build interactive dashboards from query results. The workfl
 ```html
 <span data-kw-bind="total-events">42,000</span>
 <table data-kw-bind="daily-table">...</table>
+<table data-kw-bind="sales-by-region">...</table>
 ```
+
+**Display types** (required for Power BI export):
+
+| Type | Use when | Key fields |
+|------|----------|------------|
+| `scalar` | Single KPI value (sum, avg, count, max, min) | `agg`, `column`, `format` |
+| `flat` | Table showing rows as-is from the query | `columns`, `formats` (optional) |
+| `pivot` | Table with values pivoted into columns | `rows`, `pivotBy`, `pivotValues`, `value`, `agg`, `format`, `total` |
+
+**Scalar aggregations:** `SUM`, `AVG`, `COUNT`, `MAX`, `MIN`
+
+**Format strings:** Use DAX/Excel format patterns: `#,##0` (integer), `#,##0.##` (decimal), `$#,##0` (currency), `0%` (percentage), `yyyy-MM-dd` (date)
+
+**Conditional cell formatting (flat tables only):** Use `cellTemplates` in a flat display to wrap cell values in HTML with CSS classes chosen by value thresholds. This preserves styled badges, colored indicators, and conditional highlighting in Power BI exports.
+
+```json
+"display": {
+    "type": "flat",
+    "columns": ["TemplateName", "TotalProvisions", "UniqueUsers", "SuccessRate"],
+    "formats": { "TotalProvisions": "#,##0", "UniqueUsers": "#,##0", "SuccessRate": "0.0%" },
+    "cellTemplates": {
+        "SuccessRate": {
+            "element": "span",
+            "baseClass": "success-badge",
+            "thresholds": [
+                { "min": 80, "class": "success-high" },
+                { "min": 40, "class": "success-mid" }
+            ],
+            "defaultClass": "success-low"
+        }
+    }
+}
+```
+
+Cell template fields:
+* `element` — wrapper HTML element (default: `span`)
+* `baseClass` — always-applied CSS class (e.g. `"success-badge"`)
+* `thresholds` — array of `{ min, class }` objects; highest `min` checked first; first match wins
+* `defaultClass` — CSS class when no threshold matches
+
+The thresholds compare against the raw numeric column value (before formatting). Ensure the CSS classes are defined in the dashboard's `<style>` block.
 
 **Provenance rules:**
 
 * Always include `sectionId` (for programmatic matching) and `sectionName` (for readability)
-* Always include `query` text so provenance is self-contained even if the section is later modified
-* Use `column` + `row` for scalar values, `columns` for tabular data
+* Always include `columns` for tabular bindings (list the source column names from the query)
+* Always include `display` with the appropriate type for Power BI export support
+* For pivot tables: list the **actual distinct values** from the data in `pivotValues` (e.g., `["Q1", "Q2", "Q3", "Q4"]`)
 * Binding IDs must be kebab-case and descriptive (e.g. `total-events`, `error-rate-chart`)
+* Scalar bindings: `column` names the source data column; `agg` specifies the aggregation; `format` controls display
 
 **Re-run and update workflow:** When asked to refresh or update an HTML dashboard:
 

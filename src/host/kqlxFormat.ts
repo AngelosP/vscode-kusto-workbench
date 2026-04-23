@@ -194,6 +194,8 @@ export type KqlxSectionV1 =
 			expanded?: boolean;
 			editorHeightPx?: number;
 			previewHeightPx?: number;
+			/** IDs of query/transformation sections this HTML section reads data from. */
+			dataSourceIds?: string[];
 		}
 	| {
 			id?: string;

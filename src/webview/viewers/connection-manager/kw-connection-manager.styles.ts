@@ -19,13 +19,6 @@ export const styles = css`
 
 		h1 { font-size: 16px; margin: 0; font-weight: 600; white-space: nowrap; }
 
-		/* VS Code overlay scrollbars */
-		* { scrollbar-width: thin; scrollbar-color: var(--vscode-scrollbarSlider-background) transparent; }
-		::-webkit-scrollbar { width: 10px; height: 10px; }
-		::-webkit-scrollbar-track { background: transparent; }
-		::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); }
-		::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
-		::-webkit-scrollbar-corner { background: transparent; }
 		h2 { font-size: 14px; margin: 0; font-weight: 600; }
 		.mono { font-family: var(--vscode-editor-font-family); }
 

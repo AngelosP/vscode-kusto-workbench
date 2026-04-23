@@ -120,14 +120,8 @@ export const styles = css`
 			overflow-x: auto;
 			overflow-y: visible;
 			padding-bottom: 16px;
-			scrollbar-width: thin;
-			scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
 			position: relative;
 		}
-		.tf-controls-scroll::-webkit-scrollbar { height: 8px; background: transparent; }
-		.tf-controls-scroll::-webkit-scrollbar-track { background: transparent; }
-		.tf-controls-scroll::-webkit-scrollbar-thumb { background: var(--vscode-scrollbarSlider-background); }
-		.tf-controls-scroll::-webkit-scrollbar-thumb:hover { background: var(--vscode-scrollbarSlider-hoverBackground); }
 
 		.tf-controls-scroll-content {
 			min-width: 480px;
@@ -256,7 +250,6 @@ export const styles = css`
 			box-shadow: 0 4px 12px rgba(0,0,0,.35);
 			max-height: 200px;
 			overflow-y: auto;
-			scrollbar-width: thin;
 		}
 
 		.dropdown-item {

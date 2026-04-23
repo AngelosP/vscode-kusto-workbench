@@ -129,6 +129,13 @@ export type FetchControlCommandSyntaxMessage = { type: 'fetchControlCommandSynta
 
 export type SaveResultsCsvMessage = { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string };
 export type SaveHtmlFileMessage = { type: 'saveHtmlFile'; boxId?: string; html: string; suggestedFileName?: string };
+export type ExportHtmlToPowerBIMessage = {
+	type: 'exportHtmlToPowerBI';
+	boxId: string;
+	htmlCode: string;
+	previewHeight?: number;
+	dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
+};
 
 export type IncomingWebviewMessage =
 	| { type: 'getConnections' }
@@ -145,6 +152,7 @@ export type IncomingWebviewMessage =
 	| { type: 'showInfo'; message: string }
 	| SaveResultsCsvMessage
 	| SaveHtmlFileMessage
+	| ExportHtmlToPowerBIMessage
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
 	| { type: 'setAutoTriggerAutocompleteEnabled'; enabled: boolean }
 	| { type: 'setCopilotInlineCompletionsEnabled'; enabled: boolean }

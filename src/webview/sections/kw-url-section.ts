@@ -3,6 +3,8 @@ import type { SectionElement } from '../shared/dom-helpers';
 import { styles } from './kw-url-section.styles.js';
 import { sectionGlowStyles } from '../shared/section-glow.styles.js';
 import { sashSheet } from '../shared/sash-styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
+import { osStyles } from '../shared/os-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import '../components/kw-section-shell.js';
@@ -144,7 +146,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = [sashSheet, styles, sectionGlowStyles];
+	static override styles = [...osStyles, scrollbarSheet, sashSheet, styles, sectionGlowStyles];
 
 	// ── Render ─────────────────────────────────────────────────────────────────
 

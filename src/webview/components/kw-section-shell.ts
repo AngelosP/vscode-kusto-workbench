@@ -1,6 +1,7 @@
 import { LitElement, html, nothing } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { styles } from './kw-section-shell.styles.js';
+import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import { sectionIcons, type SectionType } from '../shared/icon-registry.js';
 
@@ -70,7 +71,7 @@ export class KwSectionShell extends LitElement {
 	@state() private _hasHeaderButtons = false;
 	@state() private _copilotLogoUri = '';
 
-	static override styles = [iconRegistryStyles, styles];
+	static override styles = [scrollbarSheet, iconRegistryStyles, styles];
 
 	override connectedCallback(): void {
 		super.connectedCallback();

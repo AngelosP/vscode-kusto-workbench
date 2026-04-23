@@ -1703,6 +1703,21 @@ function __kustoRefreshDependentExtraBoxes( rootSourceId: any) {
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
+
+			// Refresh HTML sections that reference this data source.
+			try {
+				const htmlEls = document.querySelectorAll('kw-html-section');
+				for (const el of htmlEls) {
+					try {
+						const htmlSection = el as any;
+						if (typeof htmlSection.getDataSourceIds !== 'function') continue;
+						const dsIds: string[] = htmlSection.getDataSourceIds();
+						if (dsIds.includes(sourceId)) {
+							htmlSection.refreshDataBridge();
+						}
+					} catch (e) { console.error('[kusto]', e); }
+				}
+			} catch (e) { console.error('[kusto]', e); }
 		}
 	} finally {
 		__kustoIsRefreshingDependents = false;
@@ -2395,7 +2410,7 @@ function initPythonEditor( boxId: any) {
 			readOnly: false,
 			domReadOnly: false,
 			automaticLayout: true,
-			scrollbar: { alwaysConsumeMouseWheel: false },
+			scrollbar: { alwaysConsumeMouseWheel: false, verticalScrollbarSize: 10, horizontalScrollbarSize: 10 },
 			fixedOverflowWidgets: true,
 			minimap: { enabled: false },
 			scrollBeyondLastLine: false,
@@ -2714,6 +2729,9 @@ export function addHtmlBox(options?: any) {
 	}
 	if (options && typeof options.previewHeightPx === 'number') {
 		litEl.setAttribute('preview-height-px', String(options.previewHeightPx));
+	}
+	if (options && Array.isArray(options.dataSourceIds)) {
+		litEl.setDataSourceIds(options.dataSourceIds);
 	}
 
 	const afterBoxId = (options && typeof options.afterBoxId === 'string') ? String(options.afterBoxId) : '';

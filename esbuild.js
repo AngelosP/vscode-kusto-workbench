@@ -26,6 +26,15 @@ const esbuildProblemMatcherPlugin = {
 };
 
 async function main() {
+	// ── Generate OverlayScrollbars library CSS as a TypeScript CSSStyleSheet ──
+	// Must run before the webview bundle so the import resolves.
+	try {
+		const { execSync } = require('child_process');
+		execSync('node scripts/generate-os-library-styles.mjs', { stdio: 'inherit' });
+	} catch (e) {
+		console.warn('[watch] failed to generate os-library-styles:', e && e.message ? e.message : e);
+	}
+
 	// ── Copy webview runtime assets from src/webview/ to dist/webview/ ──
 	// Source files live under src/ (excluded from VSIX). The build copies them
 	// to dist/ so they ship at runtime.
@@ -219,6 +228,17 @@ async function main() {
 
 	// App CSS bundle — combines all queryEditor-*.css into a single file.
 	const cssBundleOutfile = path.join(__dirname, 'dist', 'webview', 'styles', 'queryEditor.bundle.css');
+	try {
+		// Copy OverlayScrollbars CSS to dist (inlined into webview HTML at runtime).
+		const osStylesDest = path.join(__dirname, 'dist', 'webview', 'styles');
+		await fs.promises.mkdir(osStylesDest, { recursive: true });
+		await fs.promises.copyFile(
+			path.join(__dirname, 'node_modules', 'overlayscrollbars', 'styles', 'overlayscrollbars.min.css'),
+			path.join(osStylesDest, 'overlayscrollbars.min.css')
+		);
+	} catch (e) {
+		console.warn('[watch] failed to copy OverlayScrollbars CSS:', e && e.message ? e.message : e);
+	}
 	try {
 		const cssCtx = await esbuild.context({
 			entryPoints: [path.join(__dirname, 'src', 'webview', 'styles', 'index.css')],

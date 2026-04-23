@@ -133,7 +133,6 @@ export const styles = css`
 			display: flex;
 			flex-direction: column;
 			min-width: 0;
-			scrollbar-width: thin;
 		}
 
 		.resizer {

@@ -153,29 +153,6 @@
 			padding-bottom: 16px;
 		}
 
-		/* Scrollbar styling for controls. */
-		.chart-box .kusto-chart-controls-scroll,
-		.transformation-box .kusto-chart-controls-scroll {
-			scrollbar-width: thin; /* Firefox - 'thin' typically has no arrows */
-			scrollbar-color: var(--vscode-scrollbarSlider-background) transparent;
-		}
-		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar,
-		.transformation-box .kusto-chart-controls-scroll::-webkit-scrollbar {
-			height: 8px;
-			background: transparent;
-		}
-		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-track,
-		.transformation-box .kusto-chart-controls-scroll::-webkit-scrollbar-track {
-			background: transparent;
-		}
-		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb,
-		.transformation-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb {
-			background: var(--vscode-scrollbarSlider-background);
-		}
-		.chart-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb:hover,
-		.transformation-box .kusto-chart-controls-scroll::-webkit-scrollbar-thumb:hover {
-			background: var(--vscode-scrollbarSlider-hoverBackground);
-		}
 
 		/* Minimum width for the scrollable content area to ensure controls remain functional. */
 		.chart-box .kusto-chart-controls-scroll-content,
