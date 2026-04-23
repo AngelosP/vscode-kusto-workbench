@@ -81,10 +81,10 @@
     "readmeLine": 80,
     "altText": "Kusto query editor",
     "commands": ["kusto.openQueryEditor"],
-    "windowSize": { "width": 850, "height": 950 },
-    "crop": { "x": 50, "y": 108, "width": 770, "height": 728 },
-    "cropHints": "Crop to show the full section: query name row, connection bar, toolbar, editor, run button, results table, and Add section buttons. Include section borders.",
-    "notes": "Uses kusto-auth to execute the datatable query and show real results. After execution, __testSetDropdownText replaces real cluster/database names with fake placeholders. Window is narrow+tall (850x950) with sidebar closed to give the section full width. Feature file: features/kusto-query-editor.feature"
+    "windowSize": { "width": 850, "height": 1100 },
+    "crop": { "x": 15, "y": 107, "width": 820, "height": 589 },
+    "cropHints": "Crop tight to the outer section borders on all 4 sides with 1px padding. Section borders at L=16, R=833, T=108, B=694.",
+    "notes": "Uses kusto-auth to execute the datatable query and show real results. After execution, __testSetDropdownText replaces real cluster/database names with fake placeholders. Window is narrow+tall (850x1100) with sidebar closed to give the section full width. Feature file: features/kusto-query-editor.feature"
   },
   {
     "filename": "sql-sections.png",
@@ -108,8 +108,8 @@
     "altText": "Load .csv data directly from the internet",
     "commands": ["kusto.openQueryEditor"],
     "windowSize": { "width": 1050, "height": 700 },
-    "crop": { "x": 14, "y": 108, "width": 1006, "height": 505 },
-    "notes": "Uses default profile — no auth needed. addUrlBox() creates the section, _requestFetch() triggers the load, then the default query section is removed. Feature file: features/csv.feature"
+    "crop": { "x": 15, "y": 107, "width": 1020, "height": 500 },
+    "notes": "Uses default profile — no auth needed. addUrlBox() creates the section, _requestFetch() triggers the load, then the default query section is removed. Crop ends at the section bottom border, excluding the Add section buttons below. Feature file: features/csv.feature"
   },
   {
     "filename": "transformation.png",
@@ -120,8 +120,8 @@
     "altText": "Using data transformation to add a calculated column",
     "commands": ["kusto.openQueryEditor"],
     "windowSize": { "width": 850, "height": 950 },
-    "crop": { "x": 50, "y": 90, "width": 770, "height": 826 },
-    "notes": "Uses kusto-auth with datatable query. Executes query, adds transformation with Calculate mode and UsersPerSession derived column, scrolls to transformation. Feature file: features/transformation.feature"
+    "crop": { "x": 15, "y": 91, "width": 820, "height": 816 },
+    "notes": "Uses kusto-auth with datatable query. Executes query, adds transformation with Calculate mode and UsersPerSession derived column, scrolls to transformation. Crop snapped 1px outside section borders (L=16, R=833, T=92, B=905). Feature file: features/transformation.feature"
   },
   {
     "filename": "chart.png",

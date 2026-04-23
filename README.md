@@ -94,6 +94,8 @@ Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files
 
 ![HTML based dashboard](media/marketplace/html-dashboard.png)
 
+![HTML based dashboard](media/marketplace/html-dashboard-powerbi.png)
+
 ### Load .csv data directly from the internet
 
 * If you have a URL, then you can load it.
