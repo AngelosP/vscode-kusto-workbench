@@ -899,7 +899,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				htmlCode: message.htmlCode,
 				dataSources: message.dataSources,
 			});
-			this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: true, reportUrl: result.reportUrl });
+			this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: true, reportUrl: result.reportUrl, scheduleConfigured: result.scheduleConfigured });
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
 			console.error('[kusto] Power BI publish error:', e);

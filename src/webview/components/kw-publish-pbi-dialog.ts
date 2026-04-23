@@ -27,6 +27,7 @@ export class KwPublishPbiDialog extends LitElement {
 	@state() private _pageHeight = 720;
 	@state() private _errorMessage = '';
 	@state() private _reportUrl = '';
+	@state() private _scheduleConfigured = false;
 	@state() private _visible = false;
 
 	private _htmlCode = '';
@@ -50,6 +51,7 @@ export class KwPublishPbiDialog extends LitElement {
 		this._pageHeight = previewHeight || 720;
 		this._errorMessage = '';
 		this._reportUrl = '';
+		this._scheduleConfigured = false;
 		this._workspaces = [];
 		this._selectedWorkspaceId = '';
 		this._workspaceFilter = '';
@@ -90,6 +92,7 @@ export class KwPublishPbiDialog extends LitElement {
 		} else if (message.type === 'publishToPowerBIResult') {
 			if (message.ok && message.reportUrl) {
 				this._reportUrl = message.reportUrl;
+				this._scheduleConfigured = !!message.scheduleConfigured;
 				this._state = 'success';
 			} else {
 				this._errorMessage = message.error || 'Failed to publish report.';
@@ -239,55 +242,73 @@ export class KwPublishPbiDialog extends LitElement {
 
 		return html`<div class="sd-bg" @mousedown=${this._cancel}><div class="sd" @mousedown=${(e: Event) => e.stopPropagation()}>
 			<div class="sd-h">
-				<strong>Publish to Power BI</strong>
+				<div class="sd-h-title">
+					<svg class="sd-h-icon" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="10" width="3" height="4"/><rect x="6" y="6" width="3" height="8"/><rect x="10" y="3" width="3" height="11"/></svg>
+					<strong>Publish to Power BI</strong>
+				</div>
 				<button class="nb sd-x" title="Close" @click=${this._cancel}>${ICONS.close}</button>
 			</div>
 			<div class="sd-b">
-				<div class="ppd-row">
-					<label class="ppd-label">Workspace</label>
-					${isLoading
-						? html`<span style="font-size:12px;color:var(--vscode-descriptionForeground)"><span class="ppd-spinner"></span>Loading workspaces…</span>`
-						: html`<div class="ppd-combo">
-							<input class="ppd-input" type="text"
-								.value=${this._workspaceFilter}
-								@input=${this._onWorkspaceFilterInput}
-								@focus=${this._onWorkspaceFocus}
-								@blur=${this._onWorkspaceBlur}
-								placeholder="Search workspaces…"
-								autocomplete="off">
-							${this._workspaceDropdownOpen && this._filteredWorkspaces.length > 0 ? html`
-								<ul class="ppd-combo-list">
-									${this._filteredWorkspaces.map(w => html`
-										<li class="ppd-combo-item ${w.id === this._selectedWorkspaceId ? 'is-selected' : ''}"
-											@mousedown=${() => this._onWorkspacePick(w)}>${w.name}</li>
-									`)}
-								</ul>
-							` : nothing}
-						</div>`
-					}
-				</div>
-				<div class="ppd-row">
-					<label class="ppd-label">Report name</label>
-					<input class="ppd-input" type="text" .value=${this._reportName}
-						@input=${this._onNameInput} placeholder="Report name">
-				</div>
-				<div class="ppd-dims">
+				<div class="ppd-section">
+					<div class="ppd-section-label">Destination</div>
 					<div class="ppd-row">
-						<label class="ppd-label">Page width</label>
-						<input class="ppd-input" type="number" .value=${String(this._pageWidth)}
-							@input=${this._onWidthInput} min="320" max="3840">
+						<label class="ppd-label">Workspace</label>
+						${isLoading
+							? html`<span style="font-size:12px;color:var(--vscode-descriptionForeground)"><span class="ppd-spinner"></span> Loading workspaces…</span>`
+							: html`<div class="ppd-combo">
+								<input class="ppd-input" type="text"
+									.value=${this._workspaceFilter}
+									@input=${this._onWorkspaceFilterInput}
+									@focus=${this._onWorkspaceFocus}
+									@blur=${this._onWorkspaceBlur}
+									placeholder="Search workspaces…"
+									autocomplete="off">
+								${this._workspaceDropdownOpen && this._filteredWorkspaces.length > 0 ? html`
+									<ul class="ppd-combo-list">
+										${this._filteredWorkspaces.map(w => html`
+											<li class="ppd-combo-item ${w.id === this._selectedWorkspaceId ? 'is-selected' : ''}"
+												@mousedown=${() => this._onWorkspacePick(w)}>${w.name}</li>
+										`)}
+									</ul>
+								` : nothing}
+							</div>`
+						}
 					</div>
 					<div class="ppd-row">
-						<label class="ppd-label">Page height</label>
-						<input class="ppd-input" type="number" .value=${String(this._pageHeight)}
-							@input=${this._onHeightInput} min="200" max="14400">
+						<label class="ppd-label">Report name</label>
+						<input class="ppd-input" type="text" .value=${this._reportName}
+							@input=${this._onNameInput} placeholder="Report name">
+					</div>
+				</div>
+				<div class="ppd-section">
+					<div class="ppd-section-label">Layout</div>
+					<div class="ppd-dims">
+						<div class="ppd-row">
+							<label class="ppd-label">Page width</label>
+							<input class="ppd-input" type="number" .value=${String(this._pageWidth)}
+								@input=${this._onWidthInput} min="320" max="3840">
+						</div>
+						<div class="ppd-row">
+							<label class="ppd-label">Page height</label>
+							<input class="ppd-input" type="number" .value=${String(this._pageHeight)}
+								@input=${this._onHeightInput} min="200" max="14400">
+						</div>
 					</div>
 				</div>
 			</div>
 
-			${isPublishing ? html`<div class="ppd-status"><span class="ppd-spinner"></span>Publishing to Power BI…</div>` : nothing}
 			${isError ? html`<div class="ppd-status ppd-status-error">${this._errorMessage}</div>` : nothing}
-			${isSuccess ? html`<div class="ppd-status ppd-status-success">Published! <a href=${this._reportUrl} target="_blank">View report ↗</a></div>` : nothing}
+			${isSuccess ? html`<div class="ppd-status-success">
+				<div class="ppd-success-main">
+					<svg class="ppd-success-check" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1zm3.354 4.646a.5.5 0 0 0-.708 0L7 9.293 5.354 7.646a.5.5 0 1 0-.708.708l2 2a.5.5 0 0 0 .708 0l4-4a.5.5 0 0 0 0-.708z"/></svg>
+					Published successfully
+				</div>
+				<a class="ppd-success-link" href=${this._reportUrl} target="_blank">View report ↗</a>
+				${this._scheduleConfigured ? html`
+					<div class="ppd-success-divider"></div>
+					<div class="ppd-success-schedule">⏰ Daily refresh scheduled at 1:00 AM UTC</div>
+				` : nothing}
+			</div>` : nothing}
 
 			<div class="sd-f">
 				${isSuccess
@@ -296,7 +317,7 @@ export class KwPublishPbiDialog extends LitElement {
 						<button class="sd-btn" @click=${this._cancel}>Cancel</button>
 						<button class="sd-btn sd-btn-primary" @click=${this._publish}
 							?disabled=${!canPublish || isPublishing || isLoading}>
-							${isPublishing ? 'Publishing…' : 'Publish'}
+							${isPublishing ? html`<span class="ppd-spinner"></span> Publishing…` : 'Publish'}
 						</button>
 					`}
 			</div>

@@ -85,6 +85,15 @@ Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files
 
 ![SQL sections](./media/marketplace/sql-sections.png)
 
+## HTML for dashboards and export to Power BI
+
+* Any HTML you would like, there are no limitations here.
+* Dashboards do seem like a great usecase though. Use it to create complex and interactive dashboards that tell the story you want to tell. Just let Copilot do the coding...
+* JavaScript is supported so tooltips, filtering, sorting, and all interactivity is up to you. Create the optimal experience for the audience and conversation at hand.
+* Export it as a Power BI report that refreshes automatically daily.
+
+![HTML based dashboard](media/marketplace/html-dashboard.png)
+
 ### Load .csv data directly from the internet
 
 * If you have a URL, then you can load it.
@@ -111,14 +120,6 @@ Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files
 * Charts update live when you re-run your query.
 
 ![Creating a bar chart from a Kusto query](media/marketplace/chart.png)
-
-## HTML for dashboards and more
-
-* Any HTML you would like, there are no limitations here.
-* Dashboards do seem like a great usecase though. Use it to create complex and interactive dashboards that tell the story you want to tell. Just let Copilot do the coding...
-* JavaScript is supported so tooltips, filtering, sorting, and all interactivity is up to you. Create the optimal experience for the audience and conversation at hand.
-
-![HTML based dashboard](media/marketplace/html-dashboard.png)
 
 ### Prettify query
 

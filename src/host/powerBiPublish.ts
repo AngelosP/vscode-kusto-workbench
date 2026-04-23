@@ -108,6 +108,7 @@ export interface PublishInput {
 
 export interface PublishResult {
 	reportUrl: string;
+	scheduleConfigured: boolean;
 }
 
 /**
@@ -196,10 +197,57 @@ export async function publishToPowerBIService(input: PublishInput): Promise<Publ
 		const reportId = await awaitFabricItem(reportResult, input.workspaceId, 'Report');
 
 		const reportUrl = `https://app.powerbi.com/groups/${input.workspaceId}/reports/${reportId}`;
-		return { reportUrl };
+
+		// Configure daily refresh schedule at 1am UTC via Power BI REST API
+		const scheduleConfigured = await configureRefreshSchedule(input.workspaceId, semanticModelId);
+
+		return { reportUrl, scheduleConfigured };
 	} finally {
 		// Clean up temp directory
 		try { await vscode.workspace.fs.delete(tempUri, { recursive: true }); } catch { /* best effort */ }
+	}
+}
+
+// ── Refresh schedule (Power BI REST API) ───────────────────────────────────────
+
+const PBI_API_BASE = 'https://api.powerbi.com/v1.0/myorg';
+const PBI_SCOPE = 'https://analysis.windows.net/powerbi/api/.default';
+
+async function configureRefreshSchedule(workspaceId: string, datasetId: string): Promise<boolean> {
+	try {
+		const session = await vscode.authentication.getSession('microsoft', [PBI_SCOPE], { createIfNone: false });
+		if (!session) {
+			console.warn('[kusto] No Power BI auth session available for refresh schedule');
+			return false;
+		}
+
+		const url = `${PBI_API_BASE}/groups/${workspaceId}/datasets/${datasetId}/refreshSchedule`;
+		const res = await fetch(url, {
+			method: 'PATCH',
+			headers: {
+				'Authorization': `Bearer ${session.accessToken}`,
+				'Content-Type': 'application/json',
+			},
+			body: JSON.stringify({
+				value: {
+					enabled: true,
+					days: ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'],
+					times: ['01:00'],
+					localTimeZoneId: 'UTC',
+					notifyOption: 'MailOnFailure',
+				},
+			}),
+		});
+
+		if (!res.ok) {
+			const text = await res.text().catch(() => '');
+			console.warn(`[kusto] Refresh schedule API ${res.status}: ${text}`);
+			return false;
+		}
+		return true;
+	} catch (e) {
+		console.warn('[kusto] Failed to configure refresh schedule:', e);
+		return false;
 	}
 }
 

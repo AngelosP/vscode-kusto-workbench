@@ -3,10 +3,15 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.1.0] - 2026-04-23
+
+* Oh no big deal, just the ability to save locally or upload HTML dashboards as Power BI reports ... that look and behave identitical.
+* VS Code style scrollbars wherever it was easy, more tricky ones soon.
+
 ## [4.0.0] - 2026-04-21
 
 * T-SQL support!
-* Search support in Connection Manager for cluster, database, table, column, view, function ... even function implementation; search for it all. 
+* Search support in Connection Manager for cluster, database, table, column, view, function ... even function implementation; search for it all.
 * Improved the rendering of markdown tables.
 * Support for VS Code's "instant tab" feature.
 * E2E testing via [vscode-extension-tester](http://github.com/AngelosP/vscode-extension-tester).
