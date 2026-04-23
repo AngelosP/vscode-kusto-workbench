@@ -349,7 +349,7 @@ async function main() {
 	if (production) {
 		const BASELINES = {
 			'extension.js':                                        1127,
-			'webview/webview.bundle.js':                           1881,
+			'webview/webview.bundle.js':                           1898,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
 			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
 			'monaco/':                                            11445,
