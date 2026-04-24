@@ -1481,23 +1481,6 @@ suite('Sidecar .kql.json strategy', () => {
 });
 
 suite('.md compat persistence', () => {
-	const originalInitializeWebviewPanel = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
-	const originalHandle = (QueryEditorProvider as any).prototype.handleWebviewMessage;
-
-	suiteSetup(() => {
-		(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
-			// no-op
-		};
-		(QueryEditorProvider as any).prototype.handleWebviewMessage = async () => {
-			// no-op
-		};
-	});
-
-	suiteTeardown(() => {
-		(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitializeWebviewPanel;
-		(QueryEditorProvider as any).prototype.handleWebviewMessage = originalHandle;
-	});
-
 	test('persistDocument with changed markdown text should dirty a .md file', async () => {
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		const posted: any[] = [];
@@ -1520,7 +1503,8 @@ suite('.md compat persistence', () => {
 			const fakeContext: vscode.ExtensionContext = {
 				subscriptions: [],
 				workspaceState: { get: () => undefined, update: async () => undefined } as any,
-				globalState: { get: () => undefined, update: async () => undefined } as any
+				globalState: { get: () => undefined, update: async () => undefined } as any,
+				extension: { packageJSON: { version: 'test' } } as any
 			} as any;
 
 			const provider = new (MdCompatEditorProvider as any)(
@@ -1538,8 +1522,10 @@ suite('.md compat persistence', () => {
 
 			const webview: vscode.Webview = {
 				options: {} as any,
+				html: '',
 				postMessage: async (msg: any) => { posted.push(msg); return true; },
-				onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} } as DisposableLike; }
+				onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} } as DisposableLike; },
+				asWebviewUri: (uri: any) => uri,
 			} as any;
 
 			const webviewPanel: vscode.WebviewPanel = {
@@ -1594,7 +1580,8 @@ suite('.md compat persistence', () => {
 			const fakeContext: vscode.ExtensionContext = {
 				subscriptions: [],
 				workspaceState: { get: () => undefined, update: async () => undefined } as any,
-				globalState: { get: () => undefined, update: async () => undefined } as any
+				globalState: { get: () => undefined, update: async () => undefined } as any,
+				extension: { packageJSON: { version: 'test' } } as any
 			} as any;
 
 			const provider = new (MdCompatEditorProvider as any)(
@@ -1612,8 +1599,10 @@ suite('.md compat persistence', () => {
 
 			const webview: vscode.Webview = {
 				options: {} as any,
+				html: '',
 				postMessage: async (msg: any) => { posted.push(msg); return true; },
-				onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} } as DisposableLike; }
+				onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} } as DisposableLike; },
+				asWebviewUri: (uri: any) => uri,
 			} as any;
 
 			const webviewPanel: vscode.WebviewPanel = {

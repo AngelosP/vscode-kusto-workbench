@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en" style="height: 100%;">
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<link rel="stylesheet" href="{{toastUiEditorCssUri}}">
+	<link rel="stylesheet" href="{{toastUiEditorDarkCssUri}}">
+	<link rel="stylesheet" href="{{tuiColorPickerCssUri}}">
+	<link rel="stylesheet" href="{{toastUiEditorColorSyntaxCssUri}}">
+	<style>{{appCssInline}}</style>
+</head>
+<!-- data-kusto-document-kind="md" is set statically since this template is md-only.
+     This activates the md-specific CSS rules (full-viewport flex layout, border removal, etc.)
+     without waiting for the persistenceMode message round-trip. -->
+<body data-kusto-document-kind="md">
+	<div id="queries-container"></div>
+	<script src="{{vscodeApiJsUri}}"></script>
+	<script>
+		window.__kustoQueryEditorConfig = {
+			toastUiEditorUrl: "{{toastUiEditorUrl}}",
+			toastUiCssUrls: {{toastUiCssUrlsJson}},
+			cacheBuster: "{{cacheBuster}}"
+		};
+	</script>
+	<script src="{{toastUiEditorJsUri}}"></script>
+	<script src="{{mdEditorBundleUri}}"></script>
+</body>
+</html>

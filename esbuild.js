@@ -66,6 +66,11 @@ async function main() {
 			path.join(webviewSrcDir, 'vscodeApi.js'),
 			path.join(webviewDistDir, 'vscodeApi.js')
 		);
+		// Lightweight md-only editor template
+		await fs.promises.copyFile(
+			path.join(webviewSrcDir, 'md-editor.html'),
+			path.join(webviewDistDir, 'md-editor.html')
+		);
 	} catch (e) {
 		console.warn('[watch] failed to copy webview runtime assets:', e && e.message ? e.message : e);
 	}
@@ -283,6 +288,33 @@ async function main() {
 		console.warn('[watch] failed to bundle webview Lit components:', e && e.message ? e.message : e);
 	}
 
+	// Lightweight md-only editor bundle (browser target, IIFE).
+	// Contains only kw-markdown-section + thin persistence — no Monaco, no charts, no query infra.
+	try {
+		const mdCtx = await esbuild.context({
+			entryPoints: ['src/webview/md-editor/md-entry.ts'],
+			bundle: true,
+			format: 'iife',
+			platform: 'browser',
+			target: 'es2022',
+			minify: production,
+			sourcemap: !production,
+			sourcesContent: false,
+			outfile: 'dist/webview/md-editor.bundle.js',
+			tsconfig: 'tsconfig.webview.json',
+			logLevel: 'silent',
+			plugins: [esbuildProblemMatcherPlugin],
+		});
+		if (watch) {
+			await mdCtx.watch();
+		} else {
+			await mdCtx.rebuild();
+			await mdCtx.dispose();
+		}
+	} catch (e) {
+		console.warn('[watch] failed to bundle md-editor:', e && e.message ? e.message : e);
+	}
+
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/host/extension.ts'
@@ -313,6 +345,7 @@ async function main() {
 			{ src: path.join(webviewSrcDir, 'queryEditor.js'), dest: path.join(webviewDistDir, 'queryEditor.js') },
 			{ src: path.join(webviewSrcDir, 'queryEditor.html'), dest: path.join(webviewDistDir, 'queryEditor.html') },
 			{ src: path.join(webviewSrcDir, 'vscodeApi.js'), dest: path.join(webviewDistDir, 'vscodeApi.js') },
+			{ src: path.join(webviewSrcDir, 'md-editor.html'), dest: path.join(webviewDistDir, 'md-editor.html') },
 		];
 		for (const { src, dest } of watchCopyTargets) {
 			try {
@@ -348,8 +381,9 @@ async function main() {
 	// Runs inline — no extra step to remember.
 	if (production) {
 		const BASELINES = {
-			'extension.js':                                        1127,
-			'webview/webview.bundle.js':                           1898,
+			'extension.js':                                        1178,
+			'webview/webview.bundle.js':                           1963,
+			'webview/md-editor.bundle.js':                          113,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
 			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
 			'monaco/':                                            11445,

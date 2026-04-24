@@ -10,9 +10,9 @@ import { osStyles } from '../shared/os-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
-import { closeAllMenus as _closeAllDropdownMenus } from '../core/dropdown.js';
-import { schedulePersist } from '../core/persistence.js';
 import { ensureToastUiLoaded } from '../shared/lazy-vendor.js';
+
+const _win = window as any;
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -201,7 +201,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
-		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try { _win.schedulePersist?.(); } catch (e) { console.error('[kusto]', e); }
 		try {
 			const isPlainMd = String(pState.documentKind || '') === 'md';
 			if (!isPlainMd && afterBoxId) {
@@ -857,7 +857,12 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		} catch (e) { console.error('[kusto]', e); }
 		this._applyEditorMode();
 		this._scheduleMdAutoExpand();
-		this._schedulePersist();
+		// In plain .md mode, mode metadata is not written to disk (the file is
+		// raw markdown text), so skip persist to avoid false-dirty from ToastUI
+		// normalizing whitespace/trailing newlines on getValue().
+		if (!this.plainMd) {
+			this._schedulePersist();
+		}
 	}
 
 	private _setModeAndCloseDropdown(mode: MarkdownMode): void {
@@ -988,7 +993,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	private _toggleDropdown(e: Event): void {
 		e.stopPropagation();
 		// Close any global dropdowns first.
-		try { _closeAllDropdownMenus(); } catch (e) { console.error('[kusto]', e); }
+		try { _win.__kustoDropdown?.closeAllMenus?.(); } catch (e) { console.error('[kusto]', e); }
 		this._dropdownOpen = !this._dropdownOpen;
 	}
 
@@ -1282,7 +1287,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 	private _schedulePersist(): void {
 		try {
-			schedulePersist();
+			_win.schedulePersist?.();
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1701,7 +1706,7 @@ export function removeMarkdownBox(boxId: unknown): void {
 	if (idx >= 0) markdownBoxes.splice(idx, 1);
 	const box = document.getElementById(id);
 	if (box?.parentNode) box.parentNode.removeChild(box);
-	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { _win.schedulePersist?.(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		if (window.__kustoMarkdownModeByBoxId && typeof window.__kustoMarkdownModeByBoxId === 'object') {
 			delete window.__kustoMarkdownModeByBoxId[id];

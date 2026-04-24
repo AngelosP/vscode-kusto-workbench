@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 
 import { ConnectionManager } from './connectionManager';
-import { QueryEditorProvider } from './queryEditorProvider';
+import { getMdEditorHtml } from './mdEditorHtml';
 import { stringifyKqlxFile, type KqlxFileV1 } from './kqlxFormat';
 import { getLastSelectionForUri, onDidRecordSelection } from './selectionTracker';
 import { renderDiffInWebview } from './diffViewerUtils';
@@ -343,9 +343,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 			// ignore
 		}
 
-		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
-		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, hideFooterControls: true });
-
+		webviewPanel.webview.html = await getMdEditorHtml(webviewPanel.webview, this.extensionUri, this.context);
 		// Track if the webview has initialized and whether it's currently being edited by the user.
 		let mdWebviewInitialized = false;
 		let lastMdWebviewPersistAt = 0;
@@ -598,8 +596,41 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 					return;
 				}
+				case 'resolveResourceUri': {
+					const requestId = String((message as any).requestId || '');
+					const rawPath = String((message as any).path || '');
+					const reply = (payload: { ok: boolean; uri?: string; error?: string }) => {
+						try { void webviewPanel.webview.postMessage({ type: 'resolveResourceUriResult', requestId, ...payload }); } catch { /* ignore */ }
+					};
+					if (!requestId) return;
+					if (!rawPath.trim()) { reply({ ok: false, error: 'Empty path.' }); return; }
+					const lower = rawPath.trim().toLowerCase();
+					if (lower.startsWith('http://') || lower.startsWith('https://') || lower.startsWith('data:') || lower.startsWith('blob:') || lower.startsWith('vscode-webview://') || lower.startsWith('vscode-resource:')) {
+						reply({ ok: true, uri: rawPath.trim() }); return;
+					}
+					if (!docDir) { reply({ ok: false, error: 'Missing document directory.' }); return; }
+					try {
+						const normalized = rawPath.replace(/\\/g, '/');
+						let targetUri: vscode.Uri;
+						if (normalized.startsWith('/')) {
+							const rel = normalized.replace(/^\/+/, '');
+							targetUri = workspaceFolderUri && rel
+								? vscode.Uri.joinPath(workspaceFolderUri, ...rel.split('/'))
+								: vscode.Uri.file(path.resolve(docDir.fsPath, rel));
+						} else {
+							targetUri = vscode.Uri.file(path.resolve(docDir.fsPath, normalized));
+						}
+						vscode.workspace.fs.stat(targetUri).then(
+							() => { reply({ ok: true, uri: webviewPanel.webview.asWebviewUri(targetUri).toString() }); },
+							() => { reply({ ok: false, error: 'File not found.' }); }
+						);
+					} catch (e) {
+						reply({ ok: false, error: 'Failed to resolve path.' });
+					}
+					return;
+				}
 				default:
-					await queryEditor.handleWebviewMessage(message as any);
+					break;
 			}
 		});
 	}

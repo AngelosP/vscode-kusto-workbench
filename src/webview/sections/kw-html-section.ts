@@ -199,6 +199,10 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		}
 		this._initEditor();
 
+		// Parse provenance eagerly so slicers work when the section loads
+		// directly in preview mode (editor init is skipped in that path).
+		this._refreshProvenance();
+
 		// Restore user-set heights from persisted state.
 		if (this.editorHeightPx !== undefined) {
 			this._savedEditorHeightPx = this.editorHeightPx;
@@ -1044,6 +1048,11 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		this.classList.toggle('is-collapsed', !this._expanded);
 		if (this._expanded && this._mode === 'code') {
 			setTimeout(() => { try { this._editor?.layout(); } catch (e) { console.error('[kusto]', e); } }, 0);
+		} else if (this._expanded && this._mode === 'preview') {
+			this._updatePreview();
+			if (this._userResizedPreview && this._savedPreviewHeightPx !== undefined) {
+				this.updateComplete.then(() => this._restorePreviewHeight());
+			}
 		}
 		this._schedulePersist();
 	}
@@ -1363,8 +1372,15 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	}
 
 	public setExpanded(expanded: boolean): void {
+		const wasCollapsed = !this._expanded;
 		this._expanded = expanded;
 		this.classList.toggle('is-collapsed', !expanded);
+		if (wasCollapsed && expanded && this._mode === 'preview') {
+			this._updatePreview();
+			if (this._userResizedPreview && this._savedPreviewHeightPx !== undefined) {
+				this.updateComplete.then(() => this._restorePreviewHeight());
+			}
+		}
 	}
 }
 
