@@ -633,10 +633,6 @@ export function schedulePersist(reason?: any, immediate?: any) {
 try {
 	window.addEventListener('beforeunload', () => {
 		try {
-			// Only force a final flush for the session file.
-			if (!pState.isSessionFile) {
-				return;
-			}
 			if (!__kustoPersistenceEnabled || pState.restoreInProgress) {
 				return;
 			}

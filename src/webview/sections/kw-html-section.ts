@@ -19,7 +19,7 @@ import {
 } from '../shared/icon-registry.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { schedulePersist } from '../core/persistence.js';
-import { getResultsState } from '../core/results-state.js';
+import { getResultsState, getRawCellValue } from '../core/results-state.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize.js';
 
@@ -51,20 +51,16 @@ export interface HtmlSectionData {
 	pbiPublishInfo?: PbiPublishInfo;
 }
 
-// ─── Provenance ───────────────────────────────────────────────────────────────
+// ─── Provenance v1 — shared data model ────────────────────────────────────────
 
-/** A single data binding declared inside `<script type="application/kw-provenance">`. */
-export interface KwProvenanceBinding {
-	sectionId: string;
-	sectionName: string;
-	query?: string;
-	columns?: string[];
-}
+export interface KwModelFact { sectionId: string; sectionName: string }
+export interface KwModelDimension { column: string; label?: string; mode?: 'dropdown' | 'list' | 'between' }
 
 /** Parsed provenance block from the HTML code. */
 export interface KwProvenance {
 	version: number;
-	bindings: Record<string, KwProvenanceBinding>;
+	model: { fact: KwModelFact; dimensions?: KwModelDimension[] };
+	bindings: Record<string, { display?: unknown }>;
 }
 
 /**
@@ -76,8 +72,10 @@ export function parseKwProvenance(htmlCode: string): KwProvenance | null {
 		const match = htmlCode.match(/<script\s+type\s*=\s*["']application\/kw-provenance["'][^>]*>([\s\S]*?)<\/script>/i);
 		if (!match) return null;
 		const json = JSON.parse(match[1]);
-		if (!json || typeof json !== 'object' || !json.bindings || typeof json.bindings !== 'object') return null;
-		return json as KwProvenance;
+		if (!json || typeof json !== 'object') return null;
+		if (!json.model?.fact?.sectionId) return null;
+		if (!json.bindings || typeof json.bindings !== 'object') return null;
+		return { version: json.version ?? 1, model: json.model, bindings: json.bindings };
 	} catch {
 		return null;
 	}
@@ -159,12 +157,17 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _resizeRaf = 0;
 	/** Bound message handler for iframe height reports. */
 	private _onMessage = this._handleIframeMessage.bind(this);
+	/** MutationObserver for theme changes (body class/style). */
+	private _themeObserver: MutationObserver | null = null;
+	/** Last observed theme fingerprint — prevents non-theme mutations from triggering rebuilds. */
+	private _themeFingerprint: string | null = null;
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
 	override connectedCallback(): void {
 		super.connectedCallback();
 		window.addEventListener('message', this._onMessage);
+		this._setupThemeObserver();
 		// Re-create editor after a DOM move (reorder).
 		if (this._savedCode !== null) {
 			this.updateComplete.then(() => this._initEditor());
@@ -174,6 +177,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		window.removeEventListener('message', this._onMessage);
+		this._themeObserver?.disconnect();
+		this._themeObserver = null;
 		// Save content before destroying so it can be restored on reconnect.
 		if (this._editor) {
 			try {
@@ -293,50 +298,48 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		this._provenance = parseKwProvenance(code);
 	}
 
-	/** Get the section IDs referenced by the provenance bindings. */
+	/** Get the section IDs referenced by the provenance model (just the fact table). */
 	private _getProvenanceSectionIds(): string[] {
-		if (!this._provenance) return [];
-		return [...new Set(Object.values(this._provenance.bindings).map(b => b.sectionId).filter(Boolean))];
+		if (!this._provenance?.model?.fact?.sectionId) return [];
+		return [this._provenance.model.fact.sectionId];
 	}
 
 	// ── Export dashboard (unified HTML / Power BI) ────────────────────────────
 
-	/** Best-effort collection of data sources for PBI export. Returns empty array on failure. */
+	/** Best-effort collection of the fact data source for PBI export. Returns empty array on failure. */
 	private _collectDataSourcesForPBI(): Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> {
 		const provenance = parseKwProvenance(this._getCodeText());
-		if (!provenance || Object.keys(provenance.bindings).length === 0) return [];
+		if (!provenance?.model?.fact?.sectionId) return [];
 
-		const dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> = [];
-		for (const [, binding] of Object.entries(provenance.bindings)) {
-			const dsId = binding.sectionId;
-			const el = document.getElementById(dsId) as any;
-			if (!el || !dsId.startsWith('query_')) continue;
-			const rsState = getResultsState(dsId);
-			if (!rsState || !rsState.columns?.length) continue;
+		const dsId = provenance.model.fact.sectionId;
+		const el = document.getElementById(dsId) as any;
+		if (!el || !dsId.startsWith('query_')) return [];
+		const rsState = getResultsState(dsId);
+		if (!rsState || !rsState.columns?.length) return [];
 
-			let resolvedCluster = '';
-			let resolvedDb = '';
-			let resolvedQuery = '';
-			try {
-				if (typeof el.serialize === 'function') {
-					const serialized = el.serialize();
-					resolvedCluster = serialized.clusterUrl || '';
-					resolvedDb = serialized.database || '';
-					resolvedQuery = serialized.query || '';
-				}
-			} catch (e) { console.error('[kusto]', e); }
+		let resolvedCluster = '';
+		let resolvedDb = '';
+		let resolvedQuery = '';
+		try {
+			if (typeof el.serialize === 'function') {
+				const serialized = el.serialize();
+				resolvedCluster = serialized.clusterUrl || '';
+				resolvedDb = serialized.database || '';
+				resolvedQuery = serialized.query || '';
+			}
+		} catch (e) { console.error('[kusto]', e); }
 
-			if (!resolvedCluster || !resolvedDb) continue;
+		if (!resolvedCluster || !resolvedDb) return [];
 
-			const sectionName = binding.sectionName || dsId.replace('query_', 'Query_');
-			const columns = rsState.columns.map((c: any) => ({
-				name: typeof c === 'string' ? c : (c?.name || c?.displayName || 'column'),
-				type: typeof c === 'object' ? (c?.type || 'string') : 'string',
-			}));
+		const sectionName = provenance.model.fact.sectionName
+			|| (typeof el.getName === 'function' ? el.getName() : '')
+			|| dsId.replace('query_', 'Query_');
+		const columns = rsState.columns.map((c: any) => ({
+			name: typeof c === 'string' ? c : (c?.name || c?.displayName || 'column'),
+			type: typeof c === 'object' ? (c?.type || 'string') : 'string',
+		}));
 
-			dataSources.push({ name: sectionName, sectionId: dsId, clusterUrl: resolvedCluster, database: resolvedDb, query: resolvedQuery, columns });
-		}
-		return dataSources;
+		return [{ name: sectionName, sectionId: dsId, clusterUrl: resolvedCluster, database: resolvedDb, query: resolvedQuery, columns }];
 	}
 
 	/** Measure the current preview height for PBI page sizing. */
@@ -622,41 +625,306 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		});
 	}
 
-	/** Build a <script> block that injects KustoWorkbench data bridge into the iframe. */
+	/** Build a <script> block that injects KustoWorkbench fact data bridge into the iframe. */
 	private _buildDataBridgeScript(): string {
-		const sectionIds = this._getProvenanceSectionIds();
-		if (sectionIds.length === 0) return '';
+		const factSectionId = this._provenance?.model?.fact?.sectionId;
+		if (!factSectionId) return '';
+
+		const rs = getResultsState(factSectionId);
+		if (!rs || !rs.columns) return '';
 
 		const MAX_ROWS = 10_000;
-		const sections: Record<string, { columns: Array<{ name: string; type: string }>; rows: unknown[][] }> = {};
+		const columns = (rs.columns || []).map((c: any) => ({
+			name: typeof c === 'string' ? c : (c?.name || 'column'),
+			type: typeof c === 'object' ? (c?.type || 'string') : 'string',
+		}));
+		const allRows = Array.isArray(rs.rows) ? rs.rows : [];
+		const capped = allRows.length > MAX_ROWS;
+		const rawRows = capped ? allRows.slice(0, MAX_ROWS) : allRows;
 
-		for (const dsId of sectionIds) {
-			const rs = getResultsState(dsId);
-			if (!rs || !rs.columns) continue;
-			const el = document.getElementById(dsId) as any;
-			const name = (typeof el?.getName === 'function' ? el.getName() : '') || dsId.replace('query_', 'Query_');
-			const columns = (rs.columns || []).map((c: any) => ({
-				name: typeof c === 'string' ? c : (c?.name || 'column'),
-				type: typeof c === 'object' ? (c?.type || 'string') : 'string',
-			}));
-			const rows = Array.isArray(rs.rows) ? rs.rows.slice(0, MAX_ROWS) : [];
-			sections[name] = { columns, rows };
+		// Unwrap cell objects ({display,full} → primitive) before serializing to iframe.
+		// This ensures all JS code in the iframe sees plain values, not wrapper objects.
+		const rows = rawRows.map((row: unknown[]) =>
+			row.map((cell: unknown) => getRawCellValue(cell)),
+		);
+
+		const fact = { columns, rows, totalRows: allRows.length, capped };
+		const json = JSON.stringify({ fact }).replace(/<\//g, '<\\/');
+
+		// Build slicer emulation from model.dimensions
+		const dimensions = this._provenance?.model?.dimensions;
+		let slicerBlock = '';
+		if (dimensions && dimensions.length > 0) {
+			slicerBlock = this._buildSlicerBlock(dimensions, columns, rows);
 		}
-
-		// Serialize and escape </script> to prevent XSS (C2 from review)
-		const json = JSON.stringify({ sections }).replace(/<\//g, '<\\/');
 
 		return `<script>
 (function(){
 	var _d=${json};
+	var _full=JSON.parse(JSON.stringify(_d));
 	var _cbs=[];
+	function _cellVal(c){if(c&&typeof c==='object'){if('full' in c&&c.full!=null)return _cellVal(c.full);if('display' in c&&c.display!=null)return _cellVal(c.display);}return c;}
+	function _esc(s){return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
+	function _fmtDate(s){if(s==null)return '';if(s instanceof Date)s=s.toISOString();if(typeof s!=='string')s=String(s);var vm=/^[A-Z][a-z]{2} [A-Z][a-z]{2} \\d/.test(s);if(vm){var p=Date.parse(s);if(isFinite(p))s=new Date(p).toISOString();}if(/^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}/.test(s)){var d=s.replace('T',' ').replace(/\\.\\d+Z?$/,'').replace(/Z$/,'');return d.endsWith(' 00:00:00')?d.substring(0,10):d;}if(/^\\d{4}-\\d{2}-\\d{2} \\d{2}:\\d{2}:\\d{2}$/.test(s))return s.endsWith(' 00:00:00')?s.substring(0,10):s;if(/^\\d{4}-\\d{2}-\\d{2}$/.test(s))return s;return s;}
+	function _fmtVal(v){if(v==null)return '';if(typeof v==='number'){if(v>1e12&&v<2e13){var ds=new Date(v).toISOString();return _fmtDate(ds);}return v.toLocaleString();}var s=String(v);return _fmtDate(s);}
+	function _colIdx(cols,name){for(var i=0;i<cols.length;i++){if(cols[i].name===name)return i;}return -1;}
+	function _num(v){var n=Number(v);return isFinite(n)?n:0;}
+	function _agg(optFact){
+		var f=optFact||_d.fact;
+		var cols=f.columns,rows=f.rows;
+		function ci(name){return _colIdx(cols,name);}
+		var api={
+			count:function(){return rows.length;},
+			dcount:function(col){var i=ci(col);if(i<0)return 0;var s=new Set();for(var r=0;r<rows.length;r++){var v=_cellVal(rows[r][i]);if(v!=null)s.add(v);}return s.size;},
+			sum:function(col){var i=ci(col);if(i<0)return 0;var t=0;for(var r=0;r<rows.length;r++)t+=_num(_cellVal(rows[r][i]));return t;},
+			avg:function(col){return rows.length?api.sum(col)/rows.length:0;},
+			min:function(col){var i=ci(col);if(i<0)return undefined;var m;for(var r=0;r<rows.length;r++){var v=_cellVal(rows[r][i]);if(m===undefined||v<m)m=v;}return m;},
+			max:function(col){var i=ci(col);if(i<0)return undefined;var m;for(var r=0;r<rows.length;r++){var v=_cellVal(rows[r][i]);if(m===undefined||v>m)m=v;}return m;},
+			groupBy:function(keys){
+				var kis=keys.map(ci);
+				var specs=[];
+				function builder(){return{
+					addCount:function(name){specs.push({name:name,type:'count'});return builder();},
+					addDcount:function(name,srcCol){specs.push({name:name,type:'dcount',src:ci(srcCol)});return builder();},
+					addSum:function(name,srcCol){specs.push({name:name,type:'sum',src:ci(srcCol)});return builder();},
+					addAvg:function(name,srcCol){specs.push({name:name,type:'avg',src:ci(srcCol)});return builder();},
+					addMin:function(name,srcCol){specs.push({name:name,type:'min',src:ci(srcCol)});return builder();},
+					addMax:function(name,srcCol){specs.push({name:name,type:'max',src:ci(srcCol)});return builder();},
+					orderBy:function(sortCol,dir){
+						var rs=builder().rows();
+						rs.sort(function(a,b){var av=a[sortCol],bv=b[sortCol];if(av===bv)return 0;var ta=typeof av==='string'&&Date.parse(av),tb=typeof bv==='string'&&Date.parse(bv);if(ta&&tb){av=ta;bv=tb;}var d=(dir||'asc')==='asc'?1:-1;return av<bv?-d:d;});
+						return{rows:function(){return rs;},toTable:function(headers){return _toTable(rs,keys,specs,headers);},topN:function(n){if(n>0)rs=rs.slice(0,n);return{rows:function(){return rs;},toTable:function(headers){return _toTable(rs,keys,specs,headers);}};}};
+					},
+					topN:function(n,sortCol,dir){
+						var rs=builder().rows();
+						rs.sort(function(a,b){var av=a[sortCol],bv=b[sortCol];if(av===bv)return 0;var ta=typeof av==='string'&&Date.parse(av),tb=typeof bv==='string'&&Date.parse(bv);if(ta&&tb){av=ta;bv=tb;}var d=(dir||'desc')==='asc'?1:-1;return av<bv?-d:d;});
+						if(n>0)rs=rs.slice(0,n);
+						return{rows:function(){return rs;},toTable:function(headers){return _toTable(rs,keys,specs,headers);}};
+					},
+					rows:function(){
+						var groups=new Map();
+						for(var r=0;r<rows.length;r++){
+							var key=kis.map(function(ki){return String(_cellVal(rows[r][ki])||'');}).join('\\x00');
+							var g=groups.get(key);
+							if(!g){
+								g={_key:key,_count:0};
+								for(var k=0;k<keys.length;k++)g[keys[k]]=_cellVal(rows[r][kis[k]]);
+								for(var s=0;s<specs.length;s++){
+									var sp=specs[s];
+									if(sp.type==='dcount')g['_set_'+s]=new Set();
+									else if(sp.type==='count')g[sp.name]=0;
+									else if(sp.type==='sum'||sp.type==='avg')g[sp.name]=0;
+									else if(sp.type==='min'||sp.type==='max')g[sp.name]=undefined;
+								}
+								groups.set(key,g);
+							}
+							g._count++;
+							for(var s=0;s<specs.length;s++){
+								var sp=specs[s];
+								var v=sp.src>=0?_cellVal(rows[r][sp.src]):undefined;
+								if(sp.type==='count')g[sp.name]=g._count;
+								else if(sp.type==='dcount'){if(v!=null)g['_set_'+s].add(v);}
+								else if(sp.type==='sum')g[sp.name]+=_num(v);
+								else if(sp.type==='avg')g[sp.name]+=_num(v);
+								else if(sp.type==='min'&&(g[sp.name]===undefined||v<g[sp.name]))g[sp.name]=v;
+								else if(sp.type==='max'&&(g[sp.name]===undefined||v>g[sp.name]))g[sp.name]=v;
+							}
+						}
+						var result=[];
+						groups.forEach(function(g){
+							for(var s=0;s<specs.length;s++){
+								var sp=specs[s];
+								if(sp.type==='dcount')g[sp.name]=g['_set_'+s].size;
+								else if(sp.type==='avg'&&g._count)g[sp.name]=g[sp.name]/g._count;
+							}
+							result.push(g);
+						});
+						return result;
+					},
+					toTable:function(headers){return _toTable(builder().rows(),keys,specs,headers);}
+				};}
+				return builder();
+			}
+		};
+		return api;
+	}
+	function _toTable(rows,keys,specs,headers){
+		var allCols=keys.concat(specs.map(function(s){return s.name;}));
+		var hdrs=headers||allCols;
+		var b='';
+		for(var r=0;r<rows.length;r++){
+			b+='<tr>';
+			for(var c=0;c<allCols.length;c++){
+				var v=rows[r][allCols[c]];
+				b+='<td>'+(v!=null?_esc(_fmtVal(v)):'')+'</td>';
+			}
+			b+='</tr>';
+		}
+		return b;
+	}
+	function _bind(id,val){var el=document.querySelector('[data-kw-bind=\"'+id+'\"]');if(el)el.textContent=_fmtVal(val);}
+	function _bindHtml(id,html){var el=document.querySelector('[data-kw-bind=\"'+id+'\"]');if(el)el.innerHTML=html;}
 	window.KustoWorkbench={
 		getData:function(){return _d;},
 		onDataReady:function(cb){_cbs.push(cb);try{cb(_d);}catch(e){console.error(e);}},
-		_notify:function(d){_d=d;for(var i=0;i<_cbs.length;i++){try{_cbs[i](d);}catch(e){console.error(e);}}}
+		_notify:function(d){_d=d;for(var i=0;i<_cbs.length;i++){try{_cbs[i](d);}catch(e){console.error(e);}}},
+		agg:_agg,
+		bind:_bind,
+		bindHtml:_bindHtml,
+		formatDate:_fmtDate,
+		formatValue:_fmtVal,
+		_cellVal:_cellVal
 	};
+	window._kwFull=_full;
+})();
+<\/script>\n${slicerBlock}`;
+	}
+
+	/**
+	 * Build the slicer emulation HTML+JS block for the preview iframe.
+	 * Dimensions from model.dimensions filter the single fact table.
+	 */
+	private _buildSlicerBlock(
+		dimensions: KwModelDimension[],
+		columns: Array<{ name: string; type: string }>,
+		rows: unknown[][],
+	): string {
+		const MAX_DISTINCT = 500;
+
+		interface SlicerMeta { label: string; colIndex: number; mode: string; distinct: string[] }
+		const metas: SlicerMeta[] = [];
+
+		for (const dim of dimensions) {
+			const colIndex = columns.findIndex(c => c.name === dim.column);
+			if (colIndex < 0) continue;
+			const colType = columns[colIndex].type;
+			const mode = dim.mode || (colType === 'datetime' || colType === 'date' ? 'between' : 'dropdown');
+			const seen = new Set<string>();
+			const distinct: string[] = [];
+			for (const row of rows) {
+				const raw = getRawCellValue(row[colIndex]);
+				const val = String(raw ?? '');
+				if (!seen.has(val)) { seen.add(val); distinct.push(val); }
+				if (distinct.length >= MAX_DISTINCT) break;
+			}
+			distinct.sort();
+			metas.push({ label: dim.label || dim.column, colIndex, mode, distinct });
+		}
+
+		if (metas.length === 0) return '';
+
+		// Read current VS Code theme colors. Inside the sandboxed iframe CSS custom
+		// properties from the parent do not inherit, so we resolve them here and
+		// inject concrete color values into the slicer HTML.
+		const cssVar = (name: string, fallback: string): string => {
+			try { return getComputedStyle(document.body).getPropertyValue(name).trim() || fallback; }
+			catch { return fallback; }
+		};
+		const slicerBg = cssVar('--vscode-editor-background', '#1e1e1e');
+		const slicerFg = cssVar('--vscode-editor-foreground', '#cccccc');
+		const slicerBorder = cssVar('--vscode-widget-border', '#444444');
+		const inputBg = cssVar('--vscode-input-background', '#3c3c3c');
+		const inputFg = cssVar('--vscode-input-foreground', '#cccccc');
+		const inputBorder = cssVar('--vscode-input-border', '#555555');
+		const isDark = this._isDarkTheme();
+
+		// HTML-entity-escape for safe <option> rendering
+		const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+
+		// Build slicer HTML
+		let html = `<div id="kw-slicers" style="all:initial;display:flex;gap:16px;padding:12px 16px;margin-bottom:8px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;background:${slicerBg};color:${slicerFg};border-bottom:1px solid ${slicerBorder};flex-wrap:wrap;align-items:center;color-scheme:${isDark ? 'dark' : 'light'}">`;
+
+		for (let i = 0; i < metas.length; i++) {
+			const m = metas[i];
+			html += `<label style="display:flex;flex-direction:column;gap:2px;min-width:120px"><span style="font-size:11px;opacity:0.7">${esc(m.label)}</span>`;
+			if (m.mode === 'between') {
+				html += `<span style="display:flex;gap:4px"><input type="date" data-kw-slicer="${i}" data-kw-range="min" style="background:${inputBg};color:${inputFg};border:1px solid ${inputBorder};padding:2px 6px;border-radius:3px;font-size:12px"><input type="date" data-kw-slicer="${i}" data-kw-range="max" style="background:${inputBg};color:${inputFg};border:1px solid ${inputBorder};padding:2px 6px;border-radius:3px;font-size:12px"></span>`;
+			} else {
+				html += `<select data-kw-slicer="${i}" style="background:${inputBg};color:${inputFg};border:1px solid ${inputBorder};padding:2px 6px;border-radius:3px;font-size:12px"><option value="">All</option>`;
+				for (const v of m.distinct) {
+					html += `<option value="${esc(v)}">${esc(v)}</option>`;
+				}
+				html += `</select>`;
+			}
+			html += `</label>`;
+		}
+		html += `</div>`;
+
+		// Slicer metadata as JSON for the filtering script
+		const metaJson = JSON.stringify(metas.map(m => ({
+			colIndex: m.colIndex, mode: m.mode,
+		}))).replace(/<\//g, '<\\/');
+
+		// Filtering JS — all slicers filter the single fact table's rows
+		const filterScript = `<script>
+(function(){
+	var _meta=${metaJson};
+	var _cv=window.KustoWorkbench._cellVal;
+	function _toDateStr(val){var s=String(val||'');if(/^\\d{4}-\\d{2}-\\d{2}/.test(s))return s.substring(0,10);var d=new Date(s);if(isNaN(d.getTime()))return '';var y=d.getFullYear(),m=d.getMonth()+1,dy=d.getDate();return y+'-'+(m<10?'0':'')+m+'-'+(dy<10?'0':'')+dy;}
+	function applyFilters(){
+		var full=window._kwFull;
+		var rows=full.fact.rows.slice();
+		for(var i=0;i<_meta.length;i++){
+			var m=_meta[i];
+			if(m.mode==='between'){
+				var minEl=document.querySelector('[data-kw-slicer="'+i+'"][data-kw-range="min"]');
+				var maxEl=document.querySelector('[data-kw-slicer="'+i+'"][data-kw-range="max"]');
+				var minV=minEl?minEl.value:'';
+				var maxV=maxEl?maxEl.value:'';
+				if(minV||maxV){
+					rows=rows.filter(function(row){
+						var v=_toDateStr(_cv(row[m.colIndex]));
+						if(minV&&v<minV)return false;
+						if(maxV&&v>maxV)return false;
+						return true;
+					});
+				}
+			}else{
+				var sel=document.querySelector('[data-kw-slicer="'+i+'"]');
+				var val=sel?sel.value:'';
+				if(val){
+					rows=rows.filter(function(row){return String(_cv(row[m.colIndex])||'')===val;});
+				}
+			}
+		}
+		window.KustoWorkbench._notify({fact:{columns:full.fact.columns,rows:rows,totalRows:rows.length,capped:false}});
+	}
+	var slicerEl=document.getElementById('kw-slicers');
+	slicerEl.addEventListener('change',applyFilters);
+	slicerEl.addEventListener('input',applyFilters);
 })();
 <\/script>\n`;
+
+		return html + filterScript;
+	}
+
+	private _setupThemeObserver(): void {
+		this._themeFingerprint = this._getThemeFingerprint();
+		this._themeObserver = new MutationObserver(() => {
+			const fp = this._getThemeFingerprint();
+			if (this._themeFingerprint !== fp) {
+				this._themeFingerprint = fp;
+				if (this._mode === 'preview') this._updatePreview();
+			}
+		});
+		if (document.body) {
+			this._themeObserver.observe(document.body, { attributes: true, attributeFilter: ['class', 'style'] });
+		}
+		if (document.documentElement) {
+			this._themeObserver.observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'style'] });
+		}
+	}
+
+	private _getThemeFingerprint(): string {
+		try { return getComputedStyle(document.body).getPropertyValue('--vscode-editor-background').trim(); }
+		catch { return ''; }
+	}
+
+	private _isDarkTheme(): boolean {
+		const cls = document.body?.classList;
+		if (cls?.contains('vscode-dark') || cls?.contains('vscode-high-contrast')) return true;
+		if (cls?.contains('vscode-light') || cls?.contains('vscode-high-contrast-light')) return false;
+		return true;
 	}
 
 	/** Script injected into the preview srcdoc to report content height via postMessage. */

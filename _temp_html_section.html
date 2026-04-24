@@ -1,0 +1,524 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<script type="application/kw-provenance">
+{
+  "version": 1,
+  "model": {
+    "fact": { "sectionId": "query_1777011299710", "sectionName": "Skill Events" },
+    "dimensions": [
+      { "column": "Day", "label": "Time Range", "mode": "between" },
+      { "column": "ClientName", "label": "Client", "mode": "dropdown" },
+      { "column": "Version", "label": "Version", "mode": "dropdown" },
+      { "column": "OS", "label": "OS", "mode": "dropdown" },
+      { "column": "Country", "label": "Country", "mode": "dropdown" }
+    ]
+  },
+  "bindings": {
+    "total-calls": {
+      "display": { "type": "scalar", "agg": "COUNT", "format": "#,##0" }
+    },
+    "unique-devices": {
+      "display": { "type": "scalar", "agg": "DISTINCTCOUNT", "column": "DeviceId", "format": "#,##0" }
+    },
+    "unique-skills": {
+      "display": { "type": "scalar", "agg": "DISTINCTCOUNT", "column": "SkillName", "format": "#,##0" }
+    },
+    "unique-sessions": {
+      "display": { "type": "scalar", "agg": "DISTINCTCOUNT", "column": "SessionId", "format": "#,##0" }
+    },
+    "top-skills": {
+      "display": {
+        "type": "table",
+        "columns": [
+          { "name": "SkillName", "header": "Skill" },
+          { "name": "Calls", "agg": "COUNT", "format": "#,##0" },
+          { "name": "Devices", "agg": "DISTINCTCOUNT", "sourceColumn": "DeviceId", "format": "#,##0" },
+          { "name": "Sessions", "agg": "DISTINCTCOUNT", "sourceColumn": "SessionId", "format": "#,##0" }
+        ],
+        "groupBy": ["SkillName"],
+        "orderBy": { "column": "Calls", "direction": "desc" },
+        "top": 20
+      }
+    },
+    "weekly-trend": {
+      "display": {
+        "type": "table",
+        "columns": [
+          { "name": "Week", "header": "Week Of" },
+          { "name": "Calls", "agg": "COUNT", "format": "#,##0" },
+          { "name": "Devices", "agg": "DISTINCTCOUNT", "sourceColumn": "DeviceId", "format": "#,##0" },
+          { "name": "Skills", "agg": "DISTINCTCOUNT", "sourceColumn": "SkillName", "format": "#,##0" },
+          { "name": "Sessions", "agg": "DISTINCTCOUNT", "sourceColumn": "SessionId", "format": "#,##0" }
+        ],
+        "groupBy": ["Week"],
+        "orderBy": { "column": "Week", "direction": "desc" }
+      }
+    },
+    "daily-trend": {
+      "display": {
+        "type": "table",
+        "columns": [
+          { "name": "Day", "header": "Date" },
+          { "name": "Calls", "agg": "COUNT", "format": "#,##0" },
+          { "name": "Devices", "agg": "DISTINCTCOUNT", "sourceColumn": "DeviceId", "format": "#,##0" }
+        ],
+        "groupBy": ["Day"],
+        "orderBy": { "column": "Day", "direction": "desc" }
+      }
+    },
+    "client-distribution": {
+      "display": {
+        "type": "table",
+        "columns": [
+          { "name": "ClientName", "header": "Client" },
+          { "name": "Calls", "agg": "COUNT", "format": "#,##0" },
+          { "name": "Devices", "agg": "DISTINCTCOUNT", "sourceColumn": "DeviceId", "format": "#,##0" },
+          { "name": "Sessions", "agg": "DISTINCTCOUNT", "sourceColumn": "SessionId", "format": "#,##0" }
+        ],
+        "groupBy": ["ClientName"],
+        "orderBy": { "column": "Calls", "direction": "desc" }
+      }
+    },
+    "os-distribution": {
+      "display": {
+        "type": "table",
+        "columns": [
+          { "name": "OS", "header": "OS" },
+          { "name": "Calls", "agg": "COUNT", "format": "#,##0" },
+          { "name": "Devices", "agg": "DISTINCTCOUNT", "sourceColumn": "DeviceId", "format": "#,##0" },
+          { "name": "Sessions", "agg": "DISTINCTCOUNT", "sourceColumn": "SessionId", "format": "#,##0" }
+        ],
+        "groupBy": ["OS"],
+        "orderBy": { "column": "Calls", "direction": "desc" }
+      }
+    },
+    "country-distribution": {
+      "display": {
+        "type": "table",
+        "columns": [
+          { "name": "Country", "header": "Country" },
+          { "name": "Calls", "agg": "COUNT", "format": "#,##0" },
+          { "name": "Devices", "agg": "DISTINCTCOUNT", "sourceColumn": "DeviceId", "format": "#,##0" },
+          { "name": "Sessions", "agg": "DISTINCTCOUNT", "sourceColumn": "SessionId", "format": "#,##0" }
+        ],
+        "groupBy": ["Country"],
+        "orderBy": { "column": "Calls", "direction": "desc" }
+      }
+    },
+    "version-adoption": {
+      "display": {
+        "type": "table",
+        "columns": [
+          { "name": "Version", "header": "Version" },
+          { "name": "Calls", "agg": "COUNT", "format": "#,##0" },
+          { "name": "Devices", "agg": "DISTINCTCOUNT", "sourceColumn": "DeviceId", "format": "#,##0" }
+        ],
+        "groupBy": ["Version"],
+        "orderBy": { "column": "Version", "direction": "asc" }
+      }
+    },
+    "skills-by-client": {
+      "display": {
+        "type": "pivot",
+        "rows": ["SkillName"],
+        "pivotBy": "ClientName",
+        "value": "Calls",
+        "agg": "COUNT",
+        "format": "#,##0",
+        "total": true,
+        "orderBy": { "column": "Total", "direction": "desc" },
+        "top": 15
+      }
+    },
+    "session-depth": {
+      "display": {
+        "type": "table",
+        "columns": [
+          { "name": "SkillsPerSession", "header": "Skills per Session" },
+          { "name": "SessionCount", "agg": "COUNT", "format": "#,##0" }
+        ],
+        "groupBy": ["SkillsPerSession"],
+        "orderBy": { "column": "SkillsPerSession", "direction": "asc" }
+      }
+    }
+  }
+}
+</script>
+<style>
+  :root {
+    --canvas: #F2F2F2;
+    --surface: #FFFFFF;
+    --border: #E0E0E0;
+    --border-light: #EDEDED;
+    --text-primary: #252423;
+    --text-secondary: #605E5C;
+    --text-muted: #A19F9D;
+    --accent-blue: #118DFF;
+    --accent-teal: #12B5CB;
+    --accent-orange: #E66C37;
+    --accent-purple: #6B007B;
+    --accent-green: #0B6A0B;
+    --kpi-1: #118DFF;
+    --kpi-2: #12B5CB;
+    --kpi-3: #E66C37;
+    --kpi-4: #6B007B;
+    --font: 'Segoe UI', -apple-system, system-ui, sans-serif;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: var(--font); background: var(--canvas); color: var(--text-primary); padding: 0; line-height: 1.4; }
+
+  .page-header {
+    background: var(--surface); padding: 16px 24px;
+    display: flex; justify-content: space-between; align-items: center;
+    border-bottom: 1px solid var(--border);
+  }
+  .page-header h1 { font-size: 18px; font-weight: 600; }
+  .page-header .meta { font-size: 11px; color: var(--text-muted); text-align: right; }
+  .content { padding: 16px; }
+
+  .kpi-row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; margin-bottom: 12px; }
+  .kpi-card {
+    background: var(--surface); border-radius: 4px; padding: 16px 20px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.08); position: relative; overflow: hidden;
+  }
+  .kpi-card::before { content: ''; position: absolute; top: 0; left: 0; right: 0; height: 3px; }
+  .kpi-card:nth-child(1)::before { background: var(--kpi-1); }
+  .kpi-card:nth-child(2)::before { background: var(--kpi-2); }
+  .kpi-card:nth-child(3)::before { background: var(--kpi-3); }
+  .kpi-card:nth-child(4)::before { background: var(--kpi-4); }
+  .kpi-value { font-size: 32px; font-weight: 700; line-height: 1.1; }
+  .kpi-card:nth-child(1) .kpi-value { color: var(--kpi-1); }
+  .kpi-card:nth-child(2) .kpi-value { color: var(--kpi-2); }
+  .kpi-card:nth-child(3) .kpi-value { color: var(--kpi-3); }
+  .kpi-card:nth-child(4) .kpi-value { color: var(--kpi-4); }
+  .kpi-label { font-size: 11px; font-weight: 600; color: var(--text-secondary); text-transform: uppercase; letter-spacing: 0.5px; margin-top: 4px; }
+
+  .row { display: grid; gap: 12px; margin-bottom: 12px; }
+  .row-2 { grid-template-columns: 1fr 1fr; }
+  .row-3 { grid-template-columns: 1fr 1fr 1fr; }
+  .panel { background: var(--surface); border-radius: 4px; box-shadow: 0 1px 3px rgba(0,0,0,0.08); padding: 14px 16px; overflow: hidden; }
+  .panel-bottom { display: flex; flex-direction: column; justify-content: space-between; }
+  .panel-title { font-size: 12px; font-weight: 600; margin-bottom: 10px; padding-bottom: 6px; border-bottom: 1px solid var(--border-light); }
+
+  .scroll-panel { max-height: 300px; overflow-y: auto; }
+
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th { text-align: left; font-weight: 600; color: var(--text-secondary); font-size: 10px; text-transform: uppercase; letter-spacing: 0.4px; padding: 5px 8px; border-bottom: 2px solid var(--border); white-space: nowrap; position: sticky; top: 0; background: var(--surface); }
+  th.r, td.r { text-align: right; }
+  td { padding: 5px 8px; border-bottom: 1px solid var(--border-light); }
+  tr:last-child td { border-bottom: none; }
+  tbody tr:hover td { background: #F5F5F5; }
+
+  .bar-cell { position: relative; }
+  .bar-bg { position: absolute; left: 0; top: 2px; bottom: 2px; background: var(--accent-blue); opacity: 0.1; border-radius: 2px; }
+  .bar-text { position: relative; z-index: 1; font-weight: 500; }
+
+  .viz-gap { margin-top: auto; padding-top: 16px; }
+
+  .histogram { display: flex; align-items: flex-end; gap: 6px; height: 80px; }
+  .hist-col { flex: 1; display: flex; flex-direction: column; align-items: center; }
+  .hist-bar { width: 100%; background: var(--accent-purple); opacity: 0.7; border-radius: 2px 2px 0 0; min-height: 2px; }
+  .hist-val { font-size: 9px; color: var(--text-secondary); margin-bottom: 2px; font-weight: 600; }
+  .hist-lbl { font-size: 9px; color: var(--text-muted); margin-top: 3px; }
+
+  .ver-bars { display: flex; flex-direction: column; gap: 5px; }
+  .ver-row { display: flex; align-items: center; gap: 6px; }
+  .ver-label { width: 52px; font-size: 10px; color: var(--text-secondary); text-align: right; flex-shrink: 0; font-weight: 500; }
+  .ver-track { flex: 1; height: 16px; background: #F5F5F5; border-radius: 2px; overflow: hidden; position: relative; }
+  .ver-fill { height: 100%; border-radius: 2px; display: flex; align-items: center; padding-left: 6px; font-size: 9px; font-weight: 600; color: #fff; }
+  .ver-count-out { position: absolute; top: 0; height: 100%; display: flex; align-items: center; font-size: 9px; font-weight: 600; color: var(--text-secondary); padding-left: 4px; }
+
+  .note { font-size: 10px; color: var(--text-muted); margin-top: 6px; }
+  .footer { text-align: center; padding: 12px 16px; font-size: 10px; color: var(--text-muted); border-top: 1px solid var(--border-light); margin-top: 4px; }
+</style>
+</head>
+<body>
+
+<div class="page-header">
+  <h1>Azure SDK Skills Overview</h1>
+  <div class="meta"><span data-kw-bind="date-range"></span><br>ddazureclients / AzSdkToolsMcp</div>
+</div>
+
+<div class="content">
+
+<div class="kpi-row">
+  <div class="kpi-card"><div class="kpi-value" data-kw-bind="total-calls">0</div><div class="kpi-label">Total Skill Calls</div></div>
+  <div class="kpi-card"><div class="kpi-value" data-kw-bind="unique-skills">0</div><div class="kpi-label">Unique Skills</div></div>
+  <div class="kpi-card"><div class="kpi-value" data-kw-bind="unique-devices">0</div><div class="kpi-label">Unique Devices</div></div>
+  <div class="kpi-card"><div class="kpi-value" data-kw-bind="unique-sessions">0</div><div class="kpi-label">Unique Sessions</div></div>
+</div>
+
+<div class="row row-2">
+  <div class="panel">
+    <div class="panel-title">Weekly Trend</div>
+    <table><thead><tr><th>Week Of</th><th class="r">Calls</th><th class="r">Devices</th><th class="r">Skills</th><th class="r">Sessions</th></tr></thead>
+    <tbody data-kw-bind="weekly-trend"></tbody></table>
+  </div>
+  <div class="panel">
+    <div class="panel-title">Daily Trend</div>
+    <div class="scroll-panel">
+      <table><thead><tr><th>Date</th><th class="r">Calls</th><th class="r">Devices</th></tr></thead>
+      <tbody data-kw-bind="daily-trend"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<div class="row row-2">
+  <div class="panel">
+    <div class="panel-title">Top 20 Skills by Calls</div>
+    <table><thead><tr><th>Skill</th><th class="r">Calls</th><th class="r">Devices</th><th class="r">Sessions</th></tr></thead>
+    <tbody data-kw-bind="top-skills"></tbody></table>
+  </div>
+  <div class="panel" style="display:flex;flex-direction:column;gap:16px;">
+    <div>
+      <div class="panel-title">Usage by Client</div>
+      <table style="table-layout:fixed"><colgroup><col><col style="width:70px"><col style="width:70px"><col style="width:70px"></colgroup><thead><tr><th>Client</th><th class="r">Calls</th><th class="r">Devices</th><th class="r">Sessions</th></tr></thead>
+      <tbody data-kw-bind="client-distribution"></tbody></table>
+    </div>
+    <div>
+      <div class="panel-title">Usage by OS</div>
+      <table style="table-layout:fixed"><colgroup><col><col style="width:70px"><col style="width:70px"><col style="width:70px"></colgroup><thead><tr><th>OS</th><th class="r">Calls</th><th class="r">Devices</th><th class="r">Sessions</th></tr></thead>
+      <tbody data-kw-bind="os-distribution"></tbody></table>
+    </div>
+    <div>
+      <div class="panel-title">Usage by Country</div>
+      <table style="table-layout:fixed"><colgroup><col><col style="width:70px"><col style="width:70px"><col style="width:70px"></colgroup><thead><tr><th>Country</th><th class="r">Calls</th><th class="r">Devices</th><th class="r">Sessions</th></tr></thead>
+      <tbody data-kw-bind="country-distribution"></tbody></table>
+    </div>
+  </div>
+</div>
+
+<div class="row row-3">
+  <div class="panel">
+    <div class="panel-title">Top Skills by Client</div>
+    <table><thead><tr><th>Skill</th><th class="r">vscode</th><th class="r">copilot-cli</th><th class="r">Total</th></tr></thead>
+    <tbody data-kw-bind="skills-by-client"></tbody></table>
+  </div>
+  <div class="panel panel-bottom">
+    <div>
+      <div class="panel-title">Session Depth</div>
+      <table><thead><tr><th>Skills / Session</th><th class="r">Sessions</th></tr></thead>
+      <tbody data-kw-bind="session-depth"></tbody></table>
+    </div>
+    <div class="viz-gap">
+      <div class="histogram" data-kw-bind="session-depth-hist"></div>
+      <p class="note" data-kw-bind="depth-note"></p>
+    </div>
+  </div>
+  <div class="panel panel-bottom">
+    <div>
+      <div class="panel-title">Version Adoption</div>
+      <table><thead><tr><th>Version</th><th class="r">Calls</th><th class="r">Devices</th></tr></thead>
+      <tbody data-kw-bind="version-adoption"></tbody></table>
+    </div>
+    <div class="viz-gap">
+      <div class="ver-bars" data-kw-bind="version-bars"></div>
+    </div>
+  </div>
+</div>
+
+</div>
+
+<div class="footer">
+  Azure SDK Skills Overview: skill_invocation events from RawEventsDependencies<br>
+  "Skill Calls" = event fires on load, not completion &middot; "Unique Devices" = devdeviceid, not user-level
+</div>
+
+<script>
+(function() {
+  function fmt(n) { return typeof n === 'number' ? n.toLocaleString() : KustoWorkbench.formatValue(n); }
+
+  function dcount(arr, ci) {
+    var s = {};
+    for (var i = 0; i < arr.length; i++) s[arr[i][ci]] = 1;
+    return Object.keys(s).length;
+  }
+
+  function render() {
+    var kw = KustoWorkbench.agg();
+    var bind = KustoWorkbench.bind;
+    var bindHtml = KustoWorkbench.bindHtml;
+    var fd = KustoWorkbench.formatDate;
+    var data = KustoWorkbench.getData();
+    var fact = data.fact;
+    if (!fact || !fact.rows || !fact.rows.length) return;
+    var rows = fact.rows;
+    var C = {};
+    for (var i = 0; i < fact.columns.length; i++) C[fact.columns[i].name] = i;
+
+    // KPIs
+    bind('total-calls', kw.count());
+    bind('unique-devices', kw.dcount('DeviceId'));
+    bind('unique-skills', kw.dcount('SkillName'));
+    bind('unique-sessions', kw.dcount('SessionId'));
+
+    // Date range
+    bind('date-range', fd(kw.min('Day')) + ' \u2192 ' + fd(kw.max('Day')));
+
+    // Weekly trend
+    var weekRows = kw.groupBy(['Week'])
+        .addCount('Calls')
+        .addDcount('Devices', 'DeviceId')
+        .addDcount('Skills', 'SkillName')
+        .addDcount('Sessions', 'SessionId')
+        .orderBy('Week', 'desc')
+        .rows();
+    var wH = '';
+    for (var i = 0; i < weekRows.length; i++) {
+      var w = weekRows[i];
+      wH += '<tr><td>' + fd(w.Week) + '</td><td class="r">' + fmt(w.Calls) + '</td><td class="r">' + fmt(w.Devices) + '</td><td class="r">' + fmt(w.Skills) + '</td><td class="r">' + fmt(w.Sessions) + '</td></tr>';
+    }
+    bindHtml('weekly-trend', wH);
+
+    // Daily trend
+    var dayRows = kw.groupBy(['Day'])
+        .addCount('Calls')
+        .addDcount('Devices', 'DeviceId')
+        .orderBy('Day', 'desc')
+        .rows();
+    var dH = '';
+    for (var i = 0; i < dayRows.length; i++) {
+      var d = dayRows[i];
+      dH += '<tr><td>' + fd(d.Day) + '</td><td class="r">' + fmt(d.Calls) + '</td><td class="r">' + fmt(d.Devices) + '</td></tr>';
+    }
+    bindHtml('daily-trend', dH);
+
+    // Top 20 skills (with bar visualization)
+    function groupRows(ci) {
+      var map = new Map();
+      for (var i = 0; i < rows.length; i++) {
+        var k = rows[i][ci];
+        if (!map.has(k)) map.set(k, []);
+        map.get(k).push(rows[i]);
+      }
+      return Array.from(map.entries()).map(function(e) { return { key: e[0], r: e[1] }; });
+    }
+
+    var skills = groupRows(C.SkillName);
+    skills.sort(function(a, b) { return b.r.length - a.r.length; });
+    var maxRef = skills.length ? skills[0].r.length : 1;
+    var sH = '';
+    for (var i = 0; i < Math.min(20, skills.length); i++) {
+      var s = skills[i], pct = Math.round(s.r.length / maxRef * 100);
+      sH += '<tr><td class="bar-cell"><div class="bar-bg" style="width:' + pct + '%"></div><span class="bar-text">' + s.key + '</span></td><td class="r">' + fmt(s.r.length) + '</td><td class="r">' + fmt(dcount(s.r, C.DeviceId)) + '</td><td class="r">' + fmt(dcount(s.r, C.SessionId)) + '</td></tr>';
+    }
+    bindHtml('top-skills', sH);
+
+    // Client distribution
+    var clients = groupRows(C.ClientName);
+    clients.sort(function(a, b) { return b.r.length - a.r.length; });
+    var cH = '';
+    for (var i = 0; i < clients.length; i++) {
+      var c = clients[i];
+      cH += '<tr><td>' + c.key + '</td><td class="r">' + fmt(c.r.length) + '</td><td class="r">' + fmt(dcount(c.r, C.DeviceId)) + '</td><td class="r">' + fmt(dcount(c.r, C.SessionId)) + '</td></tr>';
+    }
+    bindHtml('client-distribution', cH);
+
+    // OS distribution
+    var oses = groupRows(C.OS);
+    oses.sort(function(a, b) { return b.r.length - a.r.length; });
+    var oH = '';
+    for (var i = 0; i < oses.length; i++) {
+      var o = oses[i];
+      oH += '<tr><td>' + o.key + '</td><td class="r">' + fmt(o.r.length) + '</td><td class="r">' + fmt(dcount(o.r, C.DeviceId)) + '</td><td class="r">' + fmt(dcount(o.r, C.SessionId)) + '</td></tr>';
+    }
+    bindHtml('os-distribution', oH);
+
+    // Country distribution
+    var countries = groupRows(C.Country);
+    countries.sort(function(a, b) { return b.r.length - a.r.length; });
+    var ctH = '';
+    for (var i = 0; i < countries.length; i++) {
+      var ct = countries[i];
+      ctH += '<tr><td>' + ct.key + '</td><td class="r">' + fmt(ct.r.length) + '</td><td class="r">' + fmt(dcount(ct.r, C.DeviceId)) + '</td><td class="r">' + fmt(dcount(ct.r, C.SessionId)) + '</td></tr>';
+    }
+    bindHtml('country-distribution', ctH);
+
+    // Skills by client pivot
+    var pivotMap = {};
+    for (var i = 0; i < rows.length; i++) {
+      var sk = rows[i][C.SkillName], cl = rows[i][C.ClientName];
+      if (!pivotMap[sk]) pivotMap[sk] = { vscode: 0, 'copilot-cli': 0, total: 0 };
+      if (pivotMap[sk][cl] !== undefined) pivotMap[sk][cl]++;
+      pivotMap[sk].total++;
+    }
+    var pivotArr = Object.keys(pivotMap).map(function(k) {
+      return { n: k, vs: pivotMap[k].vscode, cli: pivotMap[k]['copilot-cli'], t: pivotMap[k].total };
+    });
+    pivotArr.sort(function(a, b) { return b.t - a.t; });
+    var pH = '';
+    for (var i = 0; i < Math.min(15, pivotArr.length); i++) {
+      var p = pivotArr[i];
+      pH += '<tr><td>' + p.n + '</td><td class="r">' + fmt(p.vs) + '</td><td class="r">' + fmt(p.cli) + '</td><td class="r">' + fmt(p.t) + '</td></tr>';
+    }
+    bindHtml('skills-by-client', pH);
+
+    // Session depth with bucketed histogram
+    var sessMap = {};
+    for (var i = 0; i < rows.length; i++) {
+      var sid = rows[i][C.SessionId], sn = rows[i][C.SkillName];
+      if (!sessMap[sid]) sessMap[sid] = {};
+      sessMap[sid][sn] = 1;
+    }
+    var depthMap = {}, totalSess = 0;
+    Object.keys(sessMap).forEach(function(sid) {
+      var d = Object.keys(sessMap[sid]).length;
+      depthMap[d] = (depthMap[d] || 0) + 1;
+      totalSess++;
+    });
+    var depths = Object.keys(depthMap).map(Number).sort(function(a, b) { return a - b; });
+    var dpH = '';
+    for (var i = 0; i < depths.length; i++) {
+      dpH += '<tr><td>' + depths[i] + '</td><td class="r">' + fmt(depthMap[depths[i]]) + '</td></tr>';
+    }
+    bindHtml('session-depth', dpH);
+
+    var histBuckets = {};
+    var CAP = 6;
+    depths.forEach(function(d) {
+      var label = d <= CAP ? d : CAP + 1;
+      histBuckets[label] = (histBuckets[label] || 0) + depthMap[d];
+    });
+    var histKeys = Object.keys(histBuckets).map(Number).sort(function(a, b) { return a - b; });
+    var maxDep = 0;
+    histKeys.forEach(function(k) { if (histBuckets[k] > maxDep) maxDep = histBuckets[k]; });
+    var hpH = '';
+    for (var i = 0; i < histKeys.length; i++) {
+      var k = histKeys[i], cnt = histBuckets[k];
+      var h = Math.max(2, Math.round(cnt / maxDep * 80));
+      var lbl = k <= CAP ? String(k) : String(CAP + 1) + '+';
+      hpH += '<div class="hist-col"><div class="hist-val">' + cnt + '</div><div class="hist-bar" style="height:' + h + 'px"></div><div class="hist-lbl">' + lbl + '</div></div>';
+    }
+    bindHtml('session-depth-hist', hpH);
+    var single = depthMap[1] || 0;
+    if (totalSess > 0) bind('depth-note', Math.round(single / totalSess * 100) + '% of sessions call exactly 1 skill');
+
+    // Version bars with external labels for narrow bars
+    var vers = groupRows(C.Version);
+    vers.sort(function(a, b) { return a.key.localeCompare(b.key); });
+    var maxV = 0;
+    vers.forEach(function(v) { if (v.r.length > maxV) maxV = v.r.length; });
+    var verColors = { '0.6.4.0': '#118DFF', '0.6.5.0': '#118DFF', '0.6.6.0': '#0B6A0B', '0.6.7.0': '#118DFF', '0.6.8.0': '#118DFF', '0.6.9.0': '#6B007B' };
+    var vH = '', bH = '';
+    for (var i = 0; i < vers.length; i++) {
+      var v = vers[i], pct = Math.round(v.r.length / maxV * 100);
+      var col = verColors[v.key] || '#118DFF';
+      vH += '<tr><td>' + v.key + '</td><td class="r">' + fmt(v.r.length) + '</td><td class="r">' + fmt(dcount(v.r, C.DeviceId)) + '</td></tr>';
+      if (pct >= 20) {
+        bH += '<div class="ver-row"><div class="ver-label">' + v.key + '</div><div class="ver-track"><div class="ver-fill" style="width:' + pct + '%;background:' + col + '">' + fmt(v.r.length) + '</div></div></div>';
+      } else {
+        bH += '<div class="ver-row"><div class="ver-label">' + v.key + '</div><div class="ver-track"><div class="ver-fill" style="width:' + pct + '%;background:' + col + '"></div><span class="ver-count-out" style="left:' + pct + '%">' + fmt(v.r.length) + '</span></div></div>';
+      }
+    }
+    bindHtml('version-adoption', vH);
+    bindHtml('version-bars', bH);
+  }
+
+  KustoWorkbench.onDataReady(function() { render(); });
+})();
+</script>
+</body>
+</html>

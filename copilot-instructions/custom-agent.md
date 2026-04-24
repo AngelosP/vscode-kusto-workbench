@@ -139,56 +139,67 @@ Example: Move a chart section to appear right after its data source:
 
 ### 7\. For HTML dashboards
 
-Use HTML sections to build interactive dashboards from query results. The workflow:
+Use HTML sections to build interactive dashboards powered by a shared data model. The workflow:
 
-1. Run queries via `#askKustoCopilot` to get data
-2. `#listSections` to get query section IDs and result data
-3. `#addSection` with `type: "html"` (optionally include `code` for initial content)
-4. `#configureHtmlSection` to set the full HTML + JS code, then set `mode: "preview"`
-5. The user can "Save as HTML" from the section toolbar to export to disk
+1. Create a **fact query** via `#askKustoCopilot` that returns event-grain rows with ALL columns needed for visuals and slicers (e.g., `| project Day=startofday(timestamp), SkillName, ClientName, Version, DeviceId, SessionId, OS, Country`)
+2. `#addSection` with `type: "html"` for the dashboard
+3. Write HTML+JS that computes ALL aggregations client-side from `KustoWorkbench.getData().fact.rows`
+4. `#configureHtmlSection` to set the code, then `mode: "preview"`
 
-**Data Provenance Protocol (v2):** When generating HTML that uses data from query sections, embed provenance metadata so the extension can export live dashboards to Power BI:
+**Data Provenance Protocol (v1):** Embed a provenance block declaring the data model (fact table + dimensions) and bindings (aggregations for each visual). This enables Power BI export with a proper star schema where slicers cross-filter all visuals.
 
 **Step 1: Add a provenance block** in the HTML `<head>`:
 
 ```html
 <script type="application/kw-provenance">
 {
-  "version": 2,
+  "version": 1,
+  "model": {
+    "fact": { "sectionId": "query_123", "sectionName": "Skill Events" },
+    "dimensions": [
+      { "column": "ClientName", "label": "Client" },
+      { "column": "Version", "label": "Version" },
+      { "column": "Day", "label": "Date Range", "mode": "between" }
+    ]
+  },
   "bindings": {
-    "total-events": {
-      "sectionId": "query_123",
-      "sectionName": "Event Counts",
+    "total-refs": {
+      "display": { "type": "scalar", "agg": "COUNT", "format": "#,##0" }
+    },
+    "unique-devices": {
+      "display": { "type": "scalar", "agg": "DISTINCTCOUNT", "column": "DeviceId", "format": "#,##0" }
+    },
+    "top-skills": {
       "display": {
-        "type": "scalar",
-        "agg": "SUM",
-        "column": "TotalEvents",
-        "format": "#,##0"
+        "type": "table",
+        "columns": [
+          { "name": "SkillName", "header": "Skill" },
+          { "name": "References", "agg": "COUNT", "format": "#,##0" },
+          { "name": "Devices", "agg": "DISTINCTCOUNT", "sourceColumn": "DeviceId", "format": "#,##0" }
+        ],
+        "groupBy": ["SkillName"],
+        "orderBy": { "column": "References", "direction": "desc" },
+        "top": 20
       }
     },
-    "daily-table": {
-      "sectionId": "query_456",
-      "sectionName": "Daily Events",
-      "columns": ["Timestamp", "count_"],
-      "display": {
-        "type": "flat",
-        "columns": ["Timestamp", "count_"],
-        "formats": { "count_": "#,##0" }
-      }
-    },
-    "sales-by-region": {
-      "sectionId": "query_789",
-      "sectionName": "Regional Sales",
-      "columns": ["Region", "Sales", "Quarter"],
+    "by-client": {
       "display": {
         "type": "pivot",
-        "rows": ["Region"],
-        "pivotBy": "Quarter",
-        "pivotValues": ["Q1", "Q2", "Q3", "Q4"],
-        "value": "Sales",
-        "agg": "SUM",
-        "format": "$#,##0",
+        "rows": ["SkillName"],
+        "pivotBy": "ClientName",
+        "pivotValues": ["vscode", "copilot-cli"],
+        "value": "SkillName",
+        "agg": "COUNT",
+        "format": "#,##0",
         "total": true
+      }
+    },
+    "os-chart": {
+      "display": {
+        "type": "bar",
+        "groupBy": "OS",
+        "value": { "agg": "COUNT", "format": "#,##0" },
+        "top": 10
       }
     }
   }
@@ -199,77 +210,239 @@ Use HTML sections to build interactive dashboards from query results. The workfl
 **Step 2: Mark bound elements** with `data-kw-bind` attributes:
 
 ```html
-<span data-kw-bind="total-events">42,000</span>
-<table data-kw-bind="daily-table">...</table>
-<table data-kw-bind="sales-by-region">...</table>
+<span data-kw-bind="total-refs">0</span>
+<span data-kw-bind="unique-devices">0</span>
+<table><thead><tr><th>Skill</th><th>References</th><th>Devices</th></tr></thead><tbody data-kw-bind="top-skills"></tbody></table>
+<table><thead><tr><th>Skill</th><th>vscode</th><th>copilot-cli</th><th>Total</th></tr></thead><tbody data-kw-bind="by-client"></tbody></table>
+<div data-kw-bind="os-chart"></div>
 ```
 
-**Display types** (required for Power BI export):
+**Model fields:**
+
+| Field | Required | Description |
+|-------|----------|-------------|
+| `model.fact.sectionId` | Yes | ID of the fact query section (event-grain data) |
+| `model.fact.sectionName` | Yes | Human-readable name for the fact table |
+| `model.dimensions[]` | No | Array of slicer dimensions from fact table columns |
+| `model.dimensions[].column` | Yes | Column name in the fact query |
+| `model.dimensions[].label` | No | Display label for the slicer |
+| `model.dimensions[].mode` | No | `"dropdown"` (default), `"list"`, or `"between"` (dates) |
+
+**Binding display types:**
 
 | Type | Use when | Key fields |
 |------|----------|------------|
-| `scalar` | Single KPI value (sum, avg, count, max, min) | `agg`, `column`, `format` |
-| `flat` | Table showing rows as-is from the query | `columns`, `formats` (optional) |
-| `pivot` | Table with values pivoted into columns | `rows`, `pivotBy`, `pivotValues`, `value`, `agg`, `format`, `total` |
+| `scalar` | Single KPI (count, distinctcount, sum, avg, min, max) | `agg`, `column` (optional for COUNT), `format` |
+| `table` | Aggregated table with groupBy | `columns[]` (with `name`, `agg`, `sourceColumn`, `header`, `format`), `groupBy`, `orderBy`, `top` |
+| `pivot` | Cross-tab with row dimensions + pivot columns | `rows`, `pivotBy`, `pivotValues`, `value`, `agg`, `format`, `total` |
+| `bar` | Horizontal bar chart | `groupBy`, `value` (`{ agg, column?, format? }`), `top?`, `colors?` |
+| `line` | Line chart (trend over time) | `xAxis`, `series` (`[{ agg, column?, label? }]`), `colors?` |
+| `pie` | Donut/pie chart | `groupBy`, `value` (`{ agg, column?, format? }`), `top?`, `colors?` |
 
-**Scalar aggregations:** `SUM`, `AVG`, `COUNT`, `MAX`, `MIN`
-
-**Format strings:** Use DAX/Excel format patterns: `#,##0` (integer), `#,##0.##` (decimal), `$#,##0` (currency), `0%` (percentage), `yyyy-MM-dd` (date)
-
-**Conditional cell formatting (flat tables only):** Use `cellTemplates` in a flat display to wrap cell values in HTML with CSS classes chosen by value thresholds. This preserves styled badges, colored indicators, and conditional highlighting in Power BI exports.
+**Chart binding examples:**
 
 ```json
-"display": {
-    "type": "flat",
-    "columns": ["TemplateName", "TotalProvisions", "UniqueUsers", "SuccessRate"],
-    "headers": { "TemplateName": "Template", "TotalProvisions": "Provisions", "UniqueUsers": "Users", "SuccessRate": "Success" },
-    "formats": { "TotalProvisions": "#,##0", "UniqueUsers": "#,##0", "SuccessRate": "0.0%" },
-    "cellTemplates": {
-        "SuccessRate": {
-            "element": "span",
-            "baseClass": "success-badge",
-            "thresholds": [
-                { "min": 80, "class": "success-high" },
-                { "min": 40, "class": "success-mid" }
-            ],
-            "defaultClass": "success-low"
-        }
-    }
+"os-chart": {
+  "display": {
+    "type": "bar",
+    "groupBy": "OS",
+    "value": { "agg": "COUNT", "format": "#,##0" },
+    "top": 10
+  }
+},
+"weekly-trend": {
+  "display": {
+    "type": "line",
+    "xAxis": "Week",
+    "series": [
+      { "agg": "COUNT", "label": "Calls" },
+      { "agg": "DISTINCTCOUNT", "column": "DeviceId", "label": "Devices" }
+    ]
+  }
+},
+"os-pie": {
+  "display": {
+    "type": "pie",
+    "groupBy": "OS",
+    "value": { "agg": "COUNT" },
+    "top": 6
+  }
 }
 ```
 
-Flat display fields:
-* `columns` — **only the source columns to display** (subset of available columns, not necessarily all). Use the source column names from the query.
-* `headers` — optional map of source column name → display header text. If omitted, the source column name is used as the header.
-* `formats` — optional per-column format strings
-* `cellTemplates` — optional per-column conditional formatting
+Chart elements use `<div data-kw-bind="os-chart"></div>` — the extension generates DAX-driven inline SVG for Power BI export. In the preview, render charts using the `agg()` API with `bindHtml()`. Charts render as SVG in Power BI (no JavaScript), so the preview JS and the DAX SVG are independent render paths for the same data.
 
-Cell template fields:
-* `element` — wrapper HTML element (default: `span`)
-* `baseClass` — always-applied CSS class (e.g. `"success-badge"`)
-* `thresholds` — array of `{ min, class }` objects; highest `min` checked first; first match wins
-* `defaultClass` — CSS class when no threshold matches
+**Scalar aggregations:** `COUNT` (rows), `DISTINCTCOUNT` (unique values), `SUM`, `AVG`, `MAX`, `MIN`
 
-The thresholds compare against the raw numeric column value (before formatting). Ensure the CSS classes are defined in the dashboard's `<style>` block.
+**Data bridge API:** The extension injects `window.KustoWorkbench` into the preview iframe:
+- `getData().fact.columns` : array of `{name, type}` for all fact table columns
+- `getData().fact.rows` : 2D array of fact table rows (up to 10K)
+- `getData().fact.capped` : boolean, true if rows were truncated
+- `onDataReady(cb)` : calls `cb(data)` on initial load and whenever slicers change
+- `agg()` : returns an aggregation helper that reads from the current (slicer-filtered) fact data
+- `bind(id, value)` : sets `textContent` of `[data-kw-bind="id"]` (for scalars); auto-formats numbers and dates
+- `bindHtml(id, html)` : sets `innerHTML` of `[data-kw-bind="id"]` (for tables)
+- `formatDate(str)` : converts ISO datetime strings to `YYYY-MM-DD HH:MM:SS` (same as the tabular results table)
+- `formatValue(val)` : auto-formats any value: numbers get `toLocaleString()`, dates get `formatDate()`, others stay as strings
 
-**Provenance rules:**
+**Aggregation helper (`agg()`):** Always call `agg()` inside `onDataReady` so it picks up slicer-filtered data:
 
-* Always include `sectionId` (for programmatic matching) and `sectionName` (for readability)
-* Always include `columns` for tabular bindings (list the source column names from the query)
-* Always include `display` with the appropriate type for Power BI export support
-* For pivot tables: list the **actual distinct values** from the data in `pivotValues` (e.g., `["Q1", "Q2", "Q3", "Q4"]`)
-* Binding IDs must be kebab-case and descriptive (e.g. `total-events`, `error-rate-chart`)
-* Scalar bindings: `column` names the source data column; `agg` specifies the aggregation; `format` controls display
-* **Never hardcode date ranges or "Generated" timestamps** in the HTML. Instead, data-bind them as scalar bindings so they update automatically when exported to Power BI. For example, use `data-kw-bind="data-period"` with a scalar `MIN`/`MAX` binding for the date range, and `data-kw-bind="generated-date"` with a `MAX` binding for the latest timestamp. Hardcoded dates become stale immediately after export.
+```js
+KustoWorkbench.onDataReady(function(data) {
+    var kw = KustoWorkbench.agg();  // reads current filtered fact data
+    var bind = KustoWorkbench.bind;
+    var bindHtml = KustoWorkbench.bindHtml;
 
-**Re-run and update workflow:** When asked to refresh or update an HTML dashboard:
+    // Scalars
+    bind('total-refs', kw.count());
+    bind('unique-devices', kw.dcount('DeviceId'));
+    bind('date-start', kw.min('Day'));
+    bind('date-end', kw.max('Day'));
 
-1. `#listSections` to find the HTML section and read its code
-2. Parse the `<script type="application/kw-provenance">` block to find all bindings
-3. For each binding, find the matching query section by `sectionId`
-4. Re-execute each query via `#askKustoCopilot` and collect fresh data
-5. Regenerate the bound elements with updated values
-6. `#configureHtmlSection` to set the updated code
+    // Grouped table with top N
+    bindHtml('top-skills', kw.groupBy(['SkillName'])
+        .addCount('References')
+        .addDcount('Devices', 'DeviceId')
+        .topN(20, 'References', 'desc')
+        .toTable(['Skill', 'References', 'Devices']));
+
+    // Grouped table (no top N)
+    bindHtml('daily-trend', kw.groupBy(['Day'])
+        .addCount('References')
+        .addDcount('Devices', 'DeviceId')
+        .orderBy('Day', 'desc')
+        .toTable(['Date', 'References', 'Devices']));
+});
+```
+
+**`agg()` methods:**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `count()` | number | Total row count |
+| `dcount(col)` | number | Distinct values in column |
+| `sum(col)` | number | Sum of numeric column |
+| `avg(col)` | number | Average of numeric column |
+| `min(col)` | value | Minimum value |
+| `max(col)` | value | Maximum value |
+| `groupBy(keys)` | builder | Start a group-by aggregation |
+
+**`groupBy()` builder methods:**
+
+| Method | Returns | Description |
+|--------|---------|-------------|
+| `.addCount(name)` | builder | Add COUNT column |
+| `.addDcount(name, srcCol)` | builder | Add DISTINCTCOUNT column |
+| `.addSum(name, srcCol)` | builder | Add SUM column |
+| `.addAvg(name, srcCol)` | builder | Add AVG column |
+| `.addMin(name, srcCol)` | builder | Add MIN column |
+| `.addMax(name, srcCol)` | builder | Add MAX column |
+| `.orderBy(col, dir)` | result | Sort rows (`dir`: `'asc'` or `'desc'`, default `'asc'`). Chain `.topN(n)` to limit. |
+| `.topN(n, sortCol, dir)` | result | Sort and limit (`dir`: `'asc'` or `'desc'`, default `'desc'`) |
+| `.rows()` | array | Materialized array of `{key1, key2, ..., computed1, ...}` objects |
+| `.toTable(headers)` | string | HTML `<tr>` rows string for `bindHtml()` into a `<tbody>` element |
+
+**Rules:**
+
+* **Always use `KustoWorkbench.agg()`, `bind()`, `bindHtml()`, and `toTable()` for all data access and rendering.** Never write custom column-index lookups, manual groupBy loops, or raw `data.fact.rows[i][j]` access. The `agg()` API handles cell value unwrapping, date formatting, and HTML escaping correctly. Hand-rolled JS will break.
+* **Every binding key in provenance must have a matching `data-kw-bind` attribute in the HTML.** Scalars use `<span data-kw-bind="key">`, tables and pivots use `<tbody data-kw-bind="key">`, charts use `<div data-kw-bind="key">`. Do NOT use `id` attributes or `document.getElementById()` — use `bind(key, value)` for scalars and `bindHtml(key, html)` for tables/charts. The Power BI export generates DAX by finding `data-kw-bind` attributes; elements with only `id` attributes will be blank in Power BI.
+* **Every `data-kw-bind` element must have a matching provenance binding.** Do not create JS-only visuals that use `data-kw-bind` without a corresponding entry in the provenance `bindings` object. Elements without provenance bindings will be blank in Power BI. If a visualization cannot be expressed as a scalar, table, pivot, or chart binding, either express it as a supported binding type or omit it from the dashboard.
+* **Pivot bindings require `pivotValues`** — the explicit list of values for the pivot columns (e.g., `"pivotValues": ["vscode", "copilot-cli"]`). Without `pivotValues`, the DAX generator cannot create CALCULATE expressions and the pivot will be blank in Power BI. Get the values from the data or from the user.
+* **Bindings can only aggregate directly from fact table columns** unless `preAggregate` is used. Each binding's `groupBy`, `value.column`, `sourceColumn`, and `xAxis` must reference columns that exist in the fact query's `| project` clause.
+* **Use `preAggregate` for two-level aggregations.** When a visual needs a nested aggregation (e.g., "count distinct skills per session, then group sessions by that count"), add a `preAggregate` field to the binding instead of materializing the column in the KQL. The `preAggregate` creates an intermediate DAX table, and the binding then aggregates from it. Supported on all binding types except `scalar`. `groupBy` can be a single string or an array of strings (use an array for pivots that need both the row dimension and pivotBy column). The computed column name must NOT collide with existing fact table column names. Example:
+
+```json
+"session-depth": {
+  "display": {
+    "type": "table",
+    "preAggregate": {
+      "groupBy": "SessionId",
+      "compute": { "name": "SkillsPerSession", "agg": "DISTINCTCOUNT", "column": "SkillName" }
+    },
+    "columns": [
+      { "name": "SkillsPerSession", "header": "Skills per Session" },
+      { "name": "SessionCount", "agg": "COUNT", "format": "#,##0" }
+    ],
+    "groupBy": ["SkillsPerSession"],
+    "orderBy": { "column": "SkillsPerSession", "direction": "asc" }
+  }
+}
+```
+* The fact query MUST return event-grain data with ALL columns needed for visuals AND slicers.
+* **Project all time grains in the fact query.** If the dashboard needs daily, weekly, and monthly views, the KQL must include `Day = startofday(timestamp)`, `Week = startofweek(timestamp)`, `Month = startofmonth(timestamp)` as separate columns. The `agg()` helper and DAX generator only work with columns that exist in the fact table. Do not use `bin()`.
+* Dimensions are columns in the fact table that become slicers. Choose low cardinality columns (status values, categories). Avoid high cardinality (user IDs, free text).
+* Use `"mode": "between"` only for `datetime` or numeric dimension columns.
+* Slicers compose with AND logic: when multiple are active, data is filtered by all of them.
+* During Power BI export: the fact query becomes a DirectQuery table, each dimension becomes a dim table (`| distinct col` from fact query), relationships are created automatically, bindings become DAX measures that aggregate from the fact table. Slicer filter context propagates through the star schema.
+* Never hardcode date ranges. Bind them as scalar `MIN`/`MAX` aggregations on the date column.
+* Binding IDs must be kebab-case and descriptive (e.g., `total-refs`, `top-skills`, `daily-trend`).
+
+**Dashboard styling defaults:** Apply these defaults when building HTML dashboards. If the user specifies their own colors, fonts, layout, theme, or brand, follow their instructions instead. When overriding to a dark theme, always invert surfaces and text together: dark backgrounds need light text, and borders should use muted opacity. When the user provides partial brand colors (e.g. "use our brand blue #1234AB"), map them to the closest role (primary, secondary, accent) and keep the remaining defaults.
+
+**CSS custom properties:** Always define a `:root` block at the top of the dashboard `<style>` with these tokens. This ensures consistent theming and correct resolution during Power BI export.
+
+```css
+:root {
+  /* Primary palette */
+  --kw-primary: #FFC20A;       /* gold */
+  --kw-secondary: #0C7BDC;     /* blue */
+  --kw-tertiary: #4819B1;      /* purple */
+  /* Accents */
+  --kw-accent-orange: #EE6914;
+  --kw-accent-lavender: #8E88E8;
+  --kw-accent-teal: #A0DACF;
+  /* Semantic */
+  --kw-success: #59C100;
+  --kw-danger: #C94A53;
+  --kw-neutral: #4C4B54;
+  /* Surfaces */
+  --kw-bg: #FFFFFF;
+  --kw-bg-alt: #FBFBFB;
+  --kw-border: #E6E6E6;
+  /* Text */
+  --kw-text: #252423;
+  --kw-text-secondary: #605E5C;
+  --kw-text-muted: #808080;
+  /* Typography */
+  --kw-font: 'Segoe UI', -apple-system, system-ui, sans-serif;
+}
+```
+
+**Chart color sequence:** When building ECharts or canvas charts in HTML, use these colors in order: `#FFC20A`, `#0C7BDC`, `#4819B1`, `#EE6914`, `#8E88E8`, `#A0DACF`, `#04F704`, `#4C4B54`, `#D81B60`, `#5F6B6D`.
+
+**Layout rules:**
+
+* Page background: `var(--kw-bg-alt)`. Content max width: 100%.
+* Dashboard structure (top to bottom): title and subtitle → date range → optional glossary or explanation box → KPI cards row → slicer/filter controls → data tables → chart grid.
+* Section headers: bold text, background tinted with the primary color at 15% opacity (`rgba(255, 194, 10, 0.15)` for the default gold; update the RGB values to match if the user changes the primary color), padding `8px 16px`.
+* KPI cards: large number (28pt+), small label below, `1px solid var(--kw-border)` border, white background, padding `16px 24px`. Use a flexbox row with `gap: 16px`.
+* Chart grids: CSS grid with 2 or 3 columns depending on content, `gap: 16px`. Each chart cell gets a `1px solid var(--kw-border)` border and white background.
+
+**Table styling rules:**
+
+* Column headers: bold, `var(--kw-bg-alt)` background, `1px solid var(--kw-border)` bottom border, padding `8px 12px`.
+* Right-align numeric and percentage columns (both header and cells).
+* Alternating row backgrounds: odd rows `var(--kw-bg)`, even rows `var(--kw-bg-alt)`.
+* Cell padding: `6px 12px`. Horizontal gridlines: `1px solid var(--kw-border)`.
+* Percentage bar technique for inline visualization in table cells:
+
+```html
+<td style="background: linear-gradient(to right, var(--kw-primary) 47%, transparent 47%);
+           padding: 6px 12px; text-align: right;">
+  47.83%
+</td>
+```
+
+The gradient stop percentage matches the numeric value. Use `var(--kw-primary)` for the fill color. The text overlays the bar.
+
+**Conditional formatting classes:** Define these in the dashboard `<style>` block for status badges and indicators. Use them in the dashboard JS to apply conditional styling based on computed values.
+
+```css
+.badge { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; }
+.badge-success { background: rgba(89, 193, 0, 0.15); color: #3d7a00; }
+.badge-warning { background: rgba(255, 194, 10, 0.15); color: #8a6800; }
+.badge-danger  { background: rgba(201, 74, 83, 0.15); color: #a03038; }
+```
 
 ## ⚠️ Always Verify Tool Responses
 

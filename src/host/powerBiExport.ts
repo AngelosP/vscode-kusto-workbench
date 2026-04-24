@@ -75,30 +75,54 @@ function isNumericKustoType(t: string): boolean {
 	return lower === 'long' || lower === 'int' || lower === 'real' || lower === 'double' || lower === 'decimal';
 }
 
-// ── Provenance parsing (local copy — avoids cross-boundary webview import) ──
+// ── Provenance v1 — shared data model ───────────────────────────────────────
+// The provenance block declares a single fact table (event-grain KQL query) and
+// dimensions (slicer columns from the fact table).  Bindings declare how to
+// aggregate the fact data into visuals (scalars, tables, pivots).
 
-interface CellTemplate {
-	element?: string;       // wrapper element tag, default 'span'
-	baseClass?: string;     // always-applied CSS class (e.g. "success-badge")
-	thresholds: Array<{ min: number; class: string }>;  // evaluated descending; first match wins
-	defaultClass: string;   // CSS class when no threshold matches
+interface ScalarDisplay { type: 'scalar'; agg: string; column?: string; format?: string }
+
+interface TableColumnSpec { name: string; header?: string; agg?: string; sourceColumn?: string; format?: string }
+interface TableDisplay { type: 'table'; columns: TableColumnSpec[]; groupBy: string[]; orderBy?: { column: string; direction?: 'asc' | 'desc' }; top?: number; preAggregate?: PreAggregate }
+
+interface PivotDisplay { type: 'pivot'; rows: string[]; pivotBy: string; pivotValues: string[]; value: string; agg: string; format?: string; total?: boolean; preAggregate?: PreAggregate }
+
+// ── Chart display types (SVG-based visuals for PBI export) ──────────────────
+
+interface ChartValue { agg: string; column?: string; format?: string }
+interface BarDisplay { type: 'bar'; groupBy: string; value: ChartValue; top?: number; colors?: string[]; preAggregate?: PreAggregate }
+interface LineSeriesSpec { agg: string; column?: string; label?: string }
+interface LineDisplay { type: 'line'; xAxis: string; series: LineSeriesSpec[]; colors?: string[]; preAggregate?: PreAggregate }
+interface PieDisplay { type: 'pie'; groupBy: string; value: ChartValue; top?: number; colors?: string[]; preAggregate?: PreAggregate }
+
+/**
+ * Pre-aggregate specification: creates an intermediate DAX table by grouping
+ * the fact table and computing a derived column.  The binding then aggregates
+ * from this intermediate table instead of the raw fact table.
+ *
+ * Example: "count distinct skills per session" → `{ groupBy: "SessionId", compute: { name: "SkillsPerSession", agg: "DISTINCTCOUNT", column: "SkillName" } }`
+ *
+ * The `compute.name` must NOT collide with existing fact table column names.
+ */
+interface PreAggregate {
+	groupBy: string | string[];
+	compute: { name: string; agg: string; column?: string };
 }
 
-interface FlatDisplay { type: 'flat'; columns: string[]; headers?: Record<string, string>; formats?: Record<string, string>; cellTemplates?: Record<string, CellTemplate> }
-interface PivotDisplay { type: 'pivot'; rows: string[]; pivotBy: string; pivotValues: string[]; value: string; agg: string; format?: string; total?: boolean }
-interface ScalarDisplay { type: 'scalar'; agg: string; column: string; format?: string }
+type ChartDisplay = BarDisplay | LineDisplay | PieDisplay;
+
+const CHART_COLORS = ['#FFC20A', '#0C7BDC', '#4819B1', '#EE6914', '#8E88E8', '#A0DACF', '#04F704', '#4C4B54', '#D81B60', '#5F6B6D'];
+
+interface ModelFact { sectionId: string; sectionName: string }
+interface ModelDimension { column: string; label?: string; mode?: 'dropdown' | 'list' | 'between' }
 
 interface ProvenanceBinding {
-	sectionId: string;
-	sectionName: string;
-	columns?: string[];
-	column?: string;
-	row?: number;
-	display?: FlatDisplay | PivotDisplay | ScalarDisplay;
+	display?: ScalarDisplay | TableDisplay | PivotDisplay | ChartDisplay;
 }
 
 interface Provenance {
 	version: number;
+	model: { fact: ModelFact; dimensions?: ModelDimension[] };
 	bindings: Record<string, ProvenanceBinding>;
 }
 
@@ -107,8 +131,10 @@ function parseProvenance(htmlCode: string): Provenance | null {
 		const match = htmlCode.match(/<script\s+type\s*=\s*["']application\/kw-provenance["'][^>]*>([\s\S]*?)<\/script>/i);
 		if (!match) return null;
 		const json = JSON.parse(match[1]);
-		if (!json || typeof json !== 'object' || !json.bindings || typeof json.bindings !== 'object') return null;
-		return json as Provenance;
+		if (!json || typeof json !== 'object') return null;
+		if (!json.model?.fact?.sectionId) return null;
+		if (!json.bindings || typeof json.bindings !== 'object') return null;
+		return { version: json.version ?? 1, model: json.model, bindings: json.bindings };
 	} catch { return null; }
 }
 
@@ -127,6 +153,7 @@ function mapAggToDax(agg: string, pbiTable: string, colName?: string): string {
 		case 'MAX': return `MAXX(${tbl}, ${col})`;
 		case 'MIN': return `MINX(${tbl}, ${col})`;
 		case 'COUNT': return `COUNTROWS(${tbl})`;
+		case 'DISTINCTCOUNT': case 'DCOUNT': return `DISTINCTCOUNT(${tbl}${col})`;
 		default: return `SUMX(${tbl}, ${col})`;
 	}
 }
@@ -163,49 +190,11 @@ function buildFormatExpr(valueExpr: string, format: string): string {
 	return `FORMAT(${valueExpr}, "${escapeDaxString(format)}")`;
 }
 
-// ── Conditional cell formatting ─────────────────────────────────────────────
+// ── Display-specific DAX generators (v1 — all aggregate from single fact table) ──
 
-/**
- * Build a DAX expression that wraps a formatted value in an HTML element with
- * conditional CSS classes based on the raw numeric column value.
- * Returns just the inner `<span>...</span>` fragment — the caller wraps it in `<td>`.
- *
- * Example output (for SuccessRate ≥80→high, ≥40→mid, else low):
- * ```
- * "<span class=""success-badge " & IF([SuccessRate] >= 80, "success-high", IF([SuccessRate] >= 40, "success-mid", "success-low")) & """>" & FORMAT([SuccessRate], "0.00") & "%" & "</span>"
- * ```
- *
- * Note: `formattedValExpr` may contain `&` operators (e.g. `FORMAT(...) & "%"`).
- * This is safe because DAX `&` is left-to-right string concatenation.
- */
-function buildConditionalCellDax(colRef: string, formattedValExpr: string, template: CellTemplate): string {
-	const tag = escapeDaxString(template.element || 'span');
-	const baseClass = template.baseClass ? escapeDaxString(template.baseClass) + ' ' : '';
+interface DaxVarResult { theadVar?: string; theadDax?: string; rowsVar?: string; rowsDax?: string; scalarVar?: string; scalarDax?: string; preVars?: string[] }
 
-	// Sort thresholds descending by min — highest checked first
-	const sorted = [...(template.thresholds || [])].sort((a, b) => b.min - a.min);
-
-	// Build the IF chain for class selection
-	let classExpr: string;
-	if (sorted.length === 0) {
-		classExpr = `"${escapeDaxString(template.defaultClass)}"`;
-	} else {
-		// Build from inside out: innermost is defaultClass
-		classExpr = `"${escapeDaxString(template.defaultClass)}"`;
-		for (let i = sorted.length - 1; i >= 0; i--) {
-			const t = sorted[i];
-			classExpr = `IF(${colRef} >= ${t.min}, "${escapeDaxString(t.class)}", ${classExpr})`;
-		}
-	}
-
-	return `"<${tag} class=""${baseClass}" & ${classExpr} & """>" & ${formattedValExpr} & "</${tag}>"`;
-}
-
-// ── Display-specific DAX generators ─────────────────────────────────────────
-
-interface DaxVarResult { theadVar?: string; theadDax?: string; rowsVar?: string; rowsDax?: string; scalarVar?: string; scalarDax?: string }
-
-/** Extract CSS classes from original `<th>` elements in the table HTML. Returns one class string per column (empty if none). */
+/** Extract CSS classes from original `<th>` elements in the table HTML. */
 function extractOriginalThClasses(tableInnerHtml: string): string[] {
 	const theadMatch = tableInnerHtml.match(/<thead[^>]*>([\s\S]*?)<\/thead>/i);
 	if (!theadMatch) return [];
@@ -219,158 +208,548 @@ function extractOriginalThClasses(tableInnerHtml: string): string[] {
 	return classes;
 }
 
-function generateFlatTableDax(pbiTable: string, display: FlatDisplay, ds: PowerBiDataSource, varIdx: number, originalThClasses: string[] = []): DaxVarResult {
+/** Build a DAX aggregation expression for a table column spec inside ADDCOLUMNS. */
+function buildColumnAggExpr(col: TableColumnSpec, factTable: string): string {
+	const agg = (col.agg || 'SUM').toUpperCase();
+	const srcCol = col.sourceColumn || col.name;
+	const tbl = escTable(factTable);
+	if (agg === 'DISTINCTCOUNT' || agg === 'DCOUNT') return `CALCULATE(DISTINCTCOUNT(${tbl}${escCol(srcCol)}))`;
+	if (agg === 'COUNT') return `CALCULATE(COUNTROWS(${tbl}))`;
+	if (agg === 'SUM') return `CALCULATE(SUMX(${tbl}, ${escCol(srcCol)}))`;
+	if (agg === 'AVG' || agg === 'AVERAGE') return `CALCULATE(AVERAGEX(${tbl}, ${escCol(srcCol)}))`;
+	if (agg === 'MAX') return `CALCULATE(MAXX(${tbl}, ${escCol(srcCol)}))`;
+	if (agg === 'MIN') return `CALCULATE(MINX(${tbl}, ${escCol(srcCol)}))`;
+	return `CALCULATE(SUMX(${tbl}, ${escCol(srcCol)}))`;
+}
+
+function generateScalarDaxVar(factTable: string, display: ScalarDisplay, varIdx: number): DaxVarResult {
+	const scalarVar = `_scalar_${varIdx}`;
+	const agg = (display.agg || 'COUNT').toUpperCase();
+	const tbl = escTable(factTable);
+	let aggExpr: string;
+	if (agg === 'DISTINCTCOUNT' || agg === 'DCOUNT') {
+		aggExpr = `DISTINCTCOUNT(${tbl}${escCol(display.column || '')})`;
+	} else if (agg === 'COUNT') {
+		aggExpr = `COUNTROWS(${tbl})`;
+	} else {
+		aggExpr = mapAggToDax(display.agg, factTable, display.column);
+	}
+	const rawFmt = display.format || '#,##0';
+	const scalarDax = buildFormatExpr(aggExpr, rawFmt);
+	return { scalarVar, scalarDax };
+}
+
+// ── Pre-aggregate support ───────────────────────────────────────────────────
+
+/**
+ * Generate a DAX VAR for a pre-aggregate intermediate table.
+ * Returns `["VAR _pre_N = ADDCOLUMNS(VALUES('Fact'[GroupBy]), "ComputedCol", CALCULATE(...))"]`.
+ */
+function generatePreAggregateVarDax(factTable: string, preAgg: PreAggregate, varIdx: number): string {
+	const tbl = escTable(factTable);
+	const preVarName = `_pre_${varIdx}`;
+	const cols = Array.isArray(preAgg.groupBy) ? preAgg.groupBy : [preAgg.groupBy];
+	const agg = (preAgg.compute.agg || 'COUNT').toUpperCase();
+	const col = preAgg.compute.column;
+	let aggExpr: string;
+	if (agg === 'DISTINCTCOUNT' || agg === 'DCOUNT') aggExpr = `CALCULATE(DISTINCTCOUNT(${tbl}${escCol(col || '')}))`;
+	else if (agg === 'COUNT') aggExpr = `CALCULATE(COUNTROWS(${tbl}))`;
+	else if (agg === 'SUM') aggExpr = `CALCULATE(SUMX(${tbl}, ${escCol(col || '')}))`;
+	else if (agg === 'AVG' || agg === 'AVERAGE') aggExpr = `CALCULATE(AVERAGEX(${tbl}, ${escCol(col || '')}))`;
+	else if (agg === 'MAX') aggExpr = `CALCULATE(MAXX(${tbl}, ${escCol(col || '')}))`;
+	else if (agg === 'MIN') aggExpr = `CALCULATE(MINX(${tbl}, ${escCol(col || '')}))`;
+	else aggExpr = `CALCULATE(COUNTROWS(${tbl}))`;
+	// Single column → VALUES; multiple columns → SUMMARIZE
+	const groupSource = cols.length === 1
+		? `VALUES(${tbl}${escCol(cols[0])})`
+		: `SUMMARIZE(${tbl}, ${cols.map(c => `${tbl}${escCol(c)}`).join(', ')})`;
+	return `VAR ${preVarName} = ADDCOLUMNS(${groupSource}, "${escapeDaxString(preAgg.compute.name)}", ${aggExpr})`;
+}
+
+/**
+ * Build a second-level DAX aggregation expression that operates on a pre-aggregate
+ * VAR table using FILTER + EARLIER for row context.
+ * Used for computed columns when `preAggregate` is active.
+ */
+function buildPreAggColumnAggExpr(col: TableColumnSpec, preVarName: string, groupByCols: string[]): string {
+	const agg = (col.agg || 'COUNT').toUpperCase();
+	const srcCol = col.sourceColumn || col.name;
+	const filterExpr = groupByCols.map(g => `${escCol(g)} = EARLIER(${escCol(g)})`).join(' && ');
+	const filtered = `FILTER(${preVarName}, ${filterExpr})`;
+	if (agg === 'COUNT') return `COUNTROWS(${filtered})`;
+	if (agg === 'DISTINCTCOUNT' || agg === 'DCOUNT') return `COUNTROWS(DISTINCT(SELECTCOLUMNS(${filtered}, "x", ${escCol(srcCol)})))`;
+	if (agg === 'SUM') return `SUMX(${filtered}, ${escCol(srcCol)})`;
+	if (agg === 'AVG' || agg === 'AVERAGE') return `AVERAGEX(${filtered}, ${escCol(srcCol)})`;
+	if (agg === 'MAX') return `MAXX(${filtered}, ${escCol(srcCol)})`;
+	if (agg === 'MIN') return `MINX(${filtered}, ${escCol(srcCol)})`;
+	return `COUNTROWS(${filtered})`;
+}
+
+/** Build a second-level aggregation for chart value specs on a pre-aggregate VAR table. */
+function buildPreAggChartValExpr(value: ChartValue, preVarName: string, groupByCol: string): string {
+	const agg = (value.agg || 'COUNT').toUpperCase();
+	const srcCol = value.column || '';
+	const filterExpr = `${escCol(groupByCol)} = EARLIER(${escCol(groupByCol)})`;
+	const filtered = `FILTER(${preVarName}, ${filterExpr})`;
+	if (agg === 'COUNT') return `COUNTROWS(${filtered})`;
+	if (agg === 'DISTINCTCOUNT' || agg === 'DCOUNT') return `COUNTROWS(DISTINCT(SELECTCOLUMNS(${filtered}, "x", ${escCol(srcCol)})))`;
+	if (agg === 'SUM') return `SUMX(${filtered}, ${escCol(srcCol)})`;
+	if (agg === 'AVG' || agg === 'AVERAGE') return `AVERAGEX(${filtered}, ${escCol(srcCol)})`;
+	if (agg === 'MAX') return `MAXX(${filtered}, ${escCol(srcCol)})`;
+	if (agg === 'MIN') return `MINX(${filtered}, ${escCol(srcCol)})`;
+	return `COUNTROWS(${filtered})`;
+}
+
+function generateTableDaxVars(factTable: string, display: TableDisplay, varIdx: number, originalThClasses: string[] = []): DaxVarResult {
 	const theadVar = `_thead_${varIdx}`;
 	const rowsVar = `_rows_${varIdx}`;
+	const tbl = escTable(factTable);
+	const preVars: string[] = [];
 
-	// thead — use display headers (fallback to source column name), preserve original CSS classes
-	const thCells = display.columns.map((colName, i) => {
-		const headerText = escapeDaxString(display.headers?.[colName] || colName);
+	// thead
+	const thCells = display.columns.map((col, i) => {
+		const headerText = escapeDaxString(col.header || col.name);
 		const cls = originalThClasses[i] || '';
-		return cls
-			? `<th class=""${escapeDaxString(cls)}"">${headerText}</th>`
-			: `<th>${headerText}</th>`;
+		return cls ? `<th class=""${escapeDaxString(cls)}"">${headerText}</th>` : `<th>${headerText}</th>`;
 	}).join('');
 	const theadDax = `"<thead><tr>${thCells}</tr></thead>"`;
 
-	// tbody — CONCATENATEX with per-column formatting + optional conditional templates
-	// Reuse the same CSS classes from the original <th> on each <td>
-	const tdExprs = display.columns.map((colName, i) => {
-		const col = ds.columns.find(c => c.name === colName);
-		let valExpr: string;
-		if (display.formats?.[colName]) {
-			valExpr = buildFormatExpr(escCol(colName), display.formats[colName]);
-		} else if (col) {
-			valExpr = daxColumnExpr(colName, col.type);
+	let summarizedTable: string;
+
+	if (display.preAggregate) {
+		// Two-level aggregation: create pre-aggregate VAR, then SUMMARIZE from it
+		const preVarName = `_pre_${varIdx}`;
+		preVars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
+
+		// groupBy columns reference the pre-aggregate table (unqualified)
+		const groupByCols = display.groupBy.map(g => escCol(g)).join(', ');
+		const computedCols = display.columns.filter(c => c.agg);
+		const addColumnParts = computedCols.map(c =>
+			`"${escapeDaxString(c.name)}", ${buildPreAggColumnAggExpr(c, preVarName, display.groupBy)}`,
+		).join(', ');
+
+		if (addColumnParts) {
+			summarizedTable = `ADDCOLUMNS(SUMMARIZE(${preVarName}, ${groupByCols}), ${addColumnParts})`;
 		} else {
-			valExpr = escCol(colName);
+			summarizedTable = `SUMMARIZE(${preVarName}, ${groupByCols})`;
 		}
+	} else {
+		// Standard single-level aggregation from the fact table
+		const groupByCols = display.groupBy.map(g => `${tbl}${escCol(g)}`).join(', ');
+		const computedCols = display.columns.filter(c => c.agg);
+		const addColumnParts = computedCols.map(c => `"${escapeDaxString(c.name)}", ${buildColumnAggExpr(c, factTable)}`).join(', ');
 
+		if (addColumnParts) {
+			summarizedTable = `ADDCOLUMNS(SUMMARIZE(${tbl}, ${groupByCols}), ${addColumnParts})`;
+		} else {
+			summarizedTable = `SUMMARIZE(${tbl}, ${groupByCols})`;
+		}
+	}
+
+	// Optionally wrap in TOPN
+	if (display.top && display.orderBy) {
+		const dir = (display.orderBy.direction || 'desc').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+		summarizedTable = `TOPN(${display.top}, ${summarizedTable}, ${escCol(display.orderBy.column)}, ${dir})`;
+	}
+
+	// CONCATENATEX for HTML rows
+	const tdExprs = display.columns.map((col, i) => {
+		let valExpr: string;
+		if (col.format) {
+			valExpr = buildFormatExpr(escCol(col.name), col.format);
+		} else {
+			valExpr = escCol(col.name);
+		}
 		const cls = originalThClasses[i] || '';
-		const tdOpen = cls ? `<td class=""${escapeDaxString(cls)}"">`  : '<td>';
-
-		// Wrap in conditional template if one is defined for this column
-		const template = display.cellTemplates?.[colName];
-		const isNum = col ? isNumericKustoType(col.type) : false;
-		if (template && isNum) {
-			const innerExpr = buildConditionalCellDax(escCol(colName), valExpr, template);
-			return `"${tdOpen}" & ${innerExpr} & "</td>"`;
-		}
-
+		const tdOpen = cls ? `<td class=""${escapeDaxString(cls)}"">` : '<td>';
 		return `"${tdOpen}" & ${valExpr} & "</td>"`;
 	}).join(' & ');
-	const rowsDax = `CONCATENATEX(${escTable(pbiTable)}, "<tr>" & ${tdExprs} & "</tr>", "")`;
 
-	return { theadVar, theadDax, rowsVar, rowsDax };
+	// Sort for CONCATENATEX
+	let sortExpr = '';
+	if (display.orderBy) {
+		const dir = (display.orderBy.direction || 'desc').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+		sortExpr = `, ${escCol(display.orderBy.column)}, ${dir}`;
+	}
+
+	const rowsDax = `CONCATENATEX(${summarizedTable}, "<tr>" & ${tdExprs} & "</tr>", ""${sortExpr})`;
+
+	return { theadVar, theadDax, rowsVar, rowsDax, ...(preVars.length > 0 ? { preVars } : {}) };
 }
 
-function generatePivotTableDax(pbiTable: string, display: PivotDisplay, ds: PowerBiDataSource, varIdx: number): DaxVarResult {
-	if (display.pivotValues.length === 0) return {};
+function generatePivotDaxVars(factTable: string, display: PivotDisplay, varIdx: number): DaxVarResult {
+	if (!display.pivotValues || display.pivotValues.length === 0) return {};
 
 	const theadVar = `_thead_${varIdx}`;
 	const rowsVar = `_rows_${varIdx}`;
-	const rawFmt = display.format || resolveRawFormat(display.value, ds);
-	const tbl = escTable(pbiTable);
+	const rawFmt = display.format || '#,##0';
+	const tbl = escTable(factTable);
+	const preVars: string[] = [];
 
-	// thead — row dimensions + pivot value headers + optional Total
+	// thead
 	const rowHeaders = display.rows.map(r => `<th>${escapeDaxString(r)}</th>`).join('');
 	const pivotHeaders = display.pivotValues.map(v => `<th style=""text-align:right"">${escapeDaxString(v)}</th>`).join('');
 	const totalHeader = display.total === true ? '<th style=""text-align:right"">Total</th>' : '';
 	const theadDax = `"<thead><tr>${rowHeaders}${pivotHeaders}${totalHeader}</tr></thead>"`;
 
-	// tbody — iterate over distinct row values
-	const rowDimCells = display.rows.map(r => `"<td>" & ${escCol(r)} & "</td>"`).join(' & ');
-
-	// For each pivot value: CALCULATE(AGG(...), filter)
 	const aggName = (display.agg || 'SUM').toUpperCase();
-	const pivotCells = display.pivotValues.map(val => {
-		const filterExpr = `${tbl}${escCol(display.pivotBy)} = "${escapeDaxString(val)}"`;
-		const calcExpr = aggName === 'COUNT'
-			? `CALCULATE(COUNTROWS(${tbl}), ${filterExpr})`
-			: `CALCULATE(${aggName}X(${tbl}, ${escCol(display.value)}), ${filterExpr})`;
-		return `"<td style=""text-align:right"">" & ${buildFormatExpr(calcExpr, rawFmt)} & "</td>"`;
-	}).join(' & ');
 
-	// Optional total column (no filter = all pivot values)
+	let rowDimCells: string;
+	let pivotCells: string;
 	let totalCell = '';
-	if (display.total === true) {
-		const totalExpr = aggName === 'COUNT'
-			? `CALCULATE(COUNTROWS(${tbl}))`
-			: `CALCULATE(${aggName}X(${tbl}, ${escCol(display.value)}))`;
-		totalCell = ` & "<td style=""text-align:right""><strong>" & ${buildFormatExpr(totalExpr, rawFmt)} & "</strong></td>"`;
-	}
+	let rowExpr: string;
+	let rowsDax: string;
 
-	const rowExpr = `"<tr>" & ${rowDimCells} & ${pivotCells}${totalCell} & "</tr>"`;
-	const sortCol = `${tbl}${escCol(display.rows[0])}`;
-	const rowsDax = `CONCATENATEX(VALUES(${sortCol}), ${rowExpr}, "", ${sortCol}, ASC)`;
+	if (display.preAggregate) {
+		// Two-level aggregation: create pre-agg VAR with all needed dimensions
+		const preVarName = `_pre_${varIdx}`;
+		preVars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
+		const computedCol = escCol(display.preAggregate.compute.name);
 
-	return { theadVar, theadDax, rowsVar, rowsDax };
-}
+		// Row dim cells — unqualified refs from pre-agg VAR
+		rowDimCells = display.rows.map(r => `"<td>" & ${escCol(r)} & "</td>"`).join(' & ');
 
-function generateScalarDaxVar(pbiTable: string, display: ScalarDisplay, ds: PowerBiDataSource, varIdx: number): DaxVarResult {
-	const scalarVar = `_scalar_${varIdx}`;
-	const rawFmt = display.format || resolveRawFormat(display.column, ds);
-	const aggExpr = mapAggToDax(display.agg, pbiTable, display.column);
-	const scalarDax = buildFormatExpr(aggExpr, rawFmt);
-	return { scalarVar, scalarDax };
-}
+		// Pivot cells: SUMX(FILTER(preVar, [pivotBy]="val" && [row0]=EARLIER([row0]) && ...), [Computed])
+		pivotCells = display.pivotValues.map(val => {
+			const rowFilters = display.rows.map(r => `${escCol(r)} = EARLIER(${escCol(r)})`).join(' && ');
+			const pivotFilter = `${escCol(display.pivotBy)} = "${escapeDaxString(val)}"`;
+			const filterExpr = `${pivotFilter} && ${rowFilters}`;
+			const filtered = `FILTER(${preVarName}, ${filterExpr})`;
+			let calcExpr: string;
+			if (aggName === 'COUNT') calcExpr = `COUNTROWS(${filtered})`;
+			else if (aggName === 'DISTINCTCOUNT' || aggName === 'DCOUNT') calcExpr = `COUNTROWS(DISTINCT(SELECTCOLUMNS(${filtered}, "x", ${computedCol})))`;
+			else if (aggName === 'SUM') calcExpr = `SUMX(${filtered}, ${computedCol})`;
+			else if (aggName === 'AVG' || aggName === 'AVERAGE') calcExpr = `AVERAGEX(${filtered}, ${computedCol})`;
+			else if (aggName === 'MAX') calcExpr = `MAXX(${filtered}, ${computedCol})`;
+			else if (aggName === 'MIN') calcExpr = `MINX(${filtered}, ${computedCol})`;
+			else calcExpr = `COUNTROWS(${filtered})`;
+			return `"<td style=""text-align:right"">" & ${buildFormatExpr(calcExpr, rawFmt)} & "</td>"`;
+		}).join(' & ');
 
-// ── Column name remapping (provenance → actual) ────────────────────────────
-
-/**
- * Build a remap function that maps provenance column names to actual data-source
- * column names using positional correspondence.  When the provenance `columns`
- * array is missing, empty, or a different length than the data-source columns
- * the returned function is the identity.
- */
-function buildColumnRemap(bindingColumns: string[] | undefined, dsColumns: Array<{ name: string }>): (name: string) => string {
-	if (!bindingColumns || bindingColumns.length === 0 || bindingColumns.length !== dsColumns.length) return n => n;
-	const map = new Map<string, string>();
-	for (let i = 0; i < bindingColumns.length; i++) {
-		if (bindingColumns[i] !== dsColumns[i].name) {
-			map.set(bindingColumns[i], dsColumns[i].name);
+		// Total cell: same but without pivotBy filter
+		if (display.total === true) {
+			const rowFilters = display.rows.map(r => `${escCol(r)} = EARLIER(${escCol(r)})`).join(' && ');
+			const filtered = `FILTER(${preVarName}, ${rowFilters})`;
+			let totalExpr: string;
+			if (aggName === 'COUNT') totalExpr = `COUNTROWS(${filtered})`;
+			else if (aggName === 'DISTINCTCOUNT' || aggName === 'DCOUNT') totalExpr = `COUNTROWS(DISTINCT(SELECTCOLUMNS(${filtered}, "x", ${computedCol})))`;
+			else if (aggName === 'SUM') totalExpr = `SUMX(${filtered}, ${computedCol})`;
+			else if (aggName === 'AVG' || aggName === 'AVERAGE') totalExpr = `AVERAGEX(${filtered}, ${computedCol})`;
+			else if (aggName === 'MAX') totalExpr = `MAXX(${filtered}, ${computedCol})`;
+			else if (aggName === 'MIN') totalExpr = `MINX(${filtered}, ${computedCol})`;
+			else totalExpr = `COUNTROWS(${filtered})`;
+			totalCell = ` & "<td style=""text-align:right""><strong>" & ${buildFormatExpr(totalExpr, rawFmt)} & "</strong></td>"`;
 		}
+
+		rowExpr = `"<tr>" & ${rowDimCells} & ${pivotCells}${totalCell} & "</tr>"`;
+		// Iterate over distinct row dimension values from the pre-agg table
+		const rowGroupCols = display.rows.map(r => escCol(r)).join(', ');
+		const sortCol = escCol(display.rows[0]);
+		rowsDax = `CONCATENATEX(SUMMARIZE(${preVarName}, ${rowGroupCols}), ${rowExpr}, "", ${sortCol}, ASC)`;
+	} else {
+		// Standard pivot from fact table
+		rowDimCells = display.rows.map(r => `"<td>" & ${escCol(r)} & "</td>"`).join(' & ');
+
+		pivotCells = display.pivotValues.map(val => {
+			const filterExpr = `${tbl}${escCol(display.pivotBy)} = "${escapeDaxString(val)}"`;
+			const calcExpr = aggName === 'COUNT'
+				? `CALCULATE(COUNTROWS(${tbl}), ${filterExpr})`
+				: aggName === 'DISTINCTCOUNT' || aggName === 'DCOUNT'
+					? `CALCULATE(DISTINCTCOUNT(${tbl}${escCol(display.value)}), ${filterExpr})`
+					: `CALCULATE(${aggName}X(${tbl}, ${escCol(display.value)}), ${filterExpr})`;
+			return `"<td style=""text-align:right"">" & ${buildFormatExpr(calcExpr, rawFmt)} & "</td>"`;
+		}).join(' & ');
+
+		if (display.total === true) {
+			const totalExpr = aggName === 'COUNT'
+				? `CALCULATE(COUNTROWS(${tbl}))`
+				: aggName === 'DISTINCTCOUNT' || aggName === 'DCOUNT'
+					? `CALCULATE(DISTINCTCOUNT(${tbl}${escCol(display.value)}))`
+					: `CALCULATE(${aggName}X(${tbl}, ${escCol(display.value)}))`;
+			totalCell = ` & "<td style=""text-align:right""><strong>" & ${buildFormatExpr(totalExpr, rawFmt)} & "</strong></td>"`;
+		}
+
+		rowExpr = `"<tr>" & ${rowDimCells} & ${pivotCells}${totalCell} & "</tr>"`;
+		const sortCol = `${tbl}${escCol(display.rows[0])}`;
+		rowsDax = `CONCATENATEX(VALUES(${sortCol}), ${rowExpr}, "", ${sortCol}, ASC)`;
 	}
-	if (map.size === 0) return n => n;
-	return n => map.get(n) ?? n;
+
+	return { theadVar, theadDax, rowsVar, rowsDax, ...(preVars.length > 0 ? { preVars } : {}) };
 }
 
-/** Remap column-name keys in a record, preserving values. */
-function remapRecordKeys<V>(rec: Record<string, V> | undefined, remap: (n: string) => string): Record<string, V> | undefined {
-	if (!rec) return rec;
-	const out: Record<string, V> = {};
-	for (const [k, v] of Object.entries(rec)) out[remap(k)] = v;
-	return out;
+// ── SVG chart DAX generators ────────────────────────────────────────────────
+// Chart generators push VARs directly into the `vars[]` array and return the
+// final SVG marker name (e.g. "_bar_0") for HTML replacement.
+
+/**
+ * Build a DAX expression that XML-escapes a column value for safe embedding
+ * inside SVG `<text>` elements.  Handles `&`, `<`, `>`, `"`.
+ */
+function daxXmlEscape(colExpr: string): string {
+	return `SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(${colExpr}, "&", "&amp;"), "<", "&lt;"), ">", "&gt;"), """", "&quot;")`;
 }
 
-/** Create a remapped copy of a display spec so that all column references use actual data-source names. */
-function remapDisplay(display: FlatDisplay | PivotDisplay | ScalarDisplay, remap: (n: string) => string): FlatDisplay | PivotDisplay | ScalarDisplay {
-	if (display.type === 'flat') {
-		return {
-			...display,
-			columns: display.columns.map(remap),
-			headers: remapRecordKeys(display.headers, remap),
-			formats: remapRecordKeys(display.formats, remap),
-			cellTemplates: remapRecordKeys(display.cellTemplates, remap),
-		};
-	}
-	if (display.type === 'pivot') {
-		return {
-			...display,
-			rows: display.rows.map(remap),
-			pivotBy: remap(display.pivotBy),
-			value: remap(display.value),
-			// pivotValues are data values, not column names — leave unchanged
-		};
-	}
-	// scalar
-	return { ...display, column: remap(display.column) };
+/** Build a DAX aggregation expression for chart value specs. */
+function chartAggExpr(val: ChartValue, factTable: string): string {
+	const agg = (val.agg || 'COUNT').toUpperCase();
+	const tbl = escTable(factTable);
+	if (agg === 'COUNT') return `CALCULATE(COUNTROWS(${tbl}))`;
+	if (agg === 'DISTINCTCOUNT' || agg === 'DCOUNT') return `CALCULATE(DISTINCTCOUNT(${tbl}${escCol(val.column || '')}))`;
+	if (agg === 'SUM') return `CALCULATE(SUMX(${tbl}, ${escCol(val.column || '')}))`;
+	if (agg === 'AVG' || agg === 'AVERAGE') return `CALCULATE(AVERAGEX(${tbl}, ${escCol(val.column || '')}))`;
+	if (agg === 'MAX') return `CALCULATE(MAXX(${tbl}, ${escCol(val.column || '')}))`;
+	if (agg === 'MIN') return `CALCULATE(MINX(${tbl}, ${escCol(val.column || '')}))`;
+	return `CALCULATE(COUNTROWS(${tbl}))`;
+}
+
+/** Pick a color from the palette by 0-based index. */
+function chartColor(colors: string[] | undefined, idx: number): string {
+	const palette = colors && colors.length > 0 ? colors : CHART_COLORS;
+	return palette[idx % palette.length];
 }
 
 /**
- * Generate a DAX measure expression that builds HTML from live DirectQuery data.
- * v2 provenance: uses `display` specs (flat/pivot/scalar) for explicit DAX generation.
- * v1 fallback: heuristic based on `<table>` vs non-table element detection.
+ * Generate DAX for a horizontal bar chart SVG.
+ * Pushes intermediate VARs into `vars[]`, returns the final marker name.
+ */
+export function generateBarChartDax(factTable: string, display: BarDisplay, varIdx: number, vars: string[]): string {
+	const tbl = escTable(factTable);
+	const dp = `_bardata_${varIdx}`;
+	const mp = `_barmax_${varIdx}`;
+	const sp = `_bar_${varIdx}`;
+
+	let dataTable: string;
+	let groupByRef: string; // column reference for labels in CONCATENATEX
+	if (display.preAggregate) {
+		const preVarName = `_pre_${varIdx}`;
+		vars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
+		const groupCol = escCol(display.groupBy); // unqualified — references pre-aggregate VAR column
+		const valExpr = buildPreAggChartValExpr(display.value, preVarName, display.groupBy);
+		dataTable = `ADDCOLUMNS(SUMMARIZE(${preVarName}, ${groupCol}), "Val", ${valExpr})`;
+		groupByRef = groupCol;
+	} else {
+		const aggExpr = chartAggExpr(display.value, factTable);
+		dataTable = `ADDCOLUMNS(SUMMARIZE(${tbl}, ${tbl}${escCol(display.groupBy)}), "Val", ${aggExpr})`;
+		groupByRef = `${tbl}${escCol(display.groupBy)}`;
+	}
+	if (display.top) {
+		dataTable = `TOPN(${display.top}, ${dataTable}, [Val], DESC)`;
+	}
+	vars.push(`VAR ${dp} = ${dataTable}`);
+	vars.push(`VAR ${mp} = MAXX(${dp}, [Val])`);
+
+	// SVG geometry constants
+	const labelW = 80;
+	const barMaxW = 200;
+	const valGap = 6;
+	const rowH = 24;
+	const gap = 4;
+	const totalW = labelW + barMaxW + 60;
+
+	// CONCATENATEX emitting SVG elements per row
+	const colorCases = Array.from({ length: 10 }, (_, i) =>
+		`${i + 1}, "${chartColor(display.colors, i)}"`,
+	).join(', ');
+
+	const fmtStr = escapeDaxString(display.value.format || '#,##0');
+	const svgExpr = `CONCATENATEX(`
+		+ `ADDCOLUMNS(${dp}, "Idx", RANKX(${dp}, [Val],, DESC, DENSE)), `
+		+ `VAR _y = ([Idx] - 1) * ${rowH + gap} `
+		+ `VAR _w = IF(${mp} = 0, 0, [Val] / ${mp} * ${barMaxW}) `
+		+ `VAR _col = SWITCH([Idx], ${colorCases}, "${chartColor(display.colors, 0)}") `
+		+ `RETURN `
+		+ `"<text x='${labelW - 6}' y='" & FORMAT(_y + 16, "0") & "' text-anchor='end' font-size='11' fill='#605E5C'>" & ${daxXmlEscape(groupByRef)} & "</text>" `
+		+ `& "<rect x='${labelW}' y='" & FORMAT(_y + 2, "0") & "' width='" & FORMAT(_w, "0") & "' height='${rowH - 4}' rx='2' fill='" & _col & "'/>" `
+		+ `& "<text x='" & FORMAT(${labelW} + _w + ${valGap}, "0") & "' y='" & FORMAT(_y + 16, "0") & "' font-size='11' fill='#605E5C'>" & FORMAT([Val], "${fmtStr}") & "</text>", `
+		+ `"", [Idx], ASC)`;
+
+	const countExpr = `COUNTROWS(${dp})`;
+	const heightExpr = `FORMAT(${countExpr} * ${rowH + gap}, "0")`;
+	const svgDax = `"<svg viewBox='0 0 ${totalW} " & ${heightExpr} & "' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:auto'>" & ${svgExpr} & "</svg>"`;
+	vars.push(`VAR ${sp} = ${svgDax}`);
+	return sp;
+}
+
+/**
+ * Generate DAX for a donut/pie chart SVG.
+ * Uses stroke-dasharray circles (no sin/cos needed).
+ */
+export function generatePieChartDax(factTable: string, display: PieDisplay, varIdx: number, vars: string[]): string {
+	const tbl = escTable(factTable);
+	const dp = `_piedata_${varIdx}`;
+	const tp = `_pietotal_${varIdx}`;
+	const sp = `_pie_${varIdx}`;
+
+	let dataTable: string;
+	if (display.preAggregate) {
+		const preVarName = `_pre_${varIdx}`;
+		vars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
+		const groupCol = escCol(display.groupBy);
+		const valExpr = buildPreAggChartValExpr(display.value, preVarName, display.groupBy);
+		dataTable = `ADDCOLUMNS(SUMMARIZE(${preVarName}, ${groupCol}), "Val", ${valExpr})`;
+	} else {
+		const aggExpr = chartAggExpr(display.value, factTable);
+		dataTable = `ADDCOLUMNS(SUMMARIZE(${tbl}, ${tbl}${escCol(display.groupBy)}), "Val", ${aggExpr})`;
+	}
+	if (display.top) {
+		dataTable = `TOPN(${display.top}, ${dataTable}, [Val], DESC)`;
+	}
+	vars.push(`VAR ${dp} = ${dataTable}`);
+	vars.push(`VAR ${tp} = SUMX(${dp}, [Val])`);
+
+	// Circle geometry
+	const cx = 100;
+	const cy = 100;
+	const outerR = 80;
+	const innerR = 50;
+	const strokeW = outerR - innerR;
+	const effectiveR = (outerR + innerR) / 2;
+	const svgW = 200;
+	const svgH = 200;
+
+	const colorCases = Array.from({ length: 10 }, (_, i) =>
+		`${i + 1}, "${chartColor(display.colors, i)}"`,
+	).join(', ');
+
+	// Build ranked table with running totals
+	const rankedTable = `ADDCOLUMNS(${dp}, "Rank", RANKX(${dp}, [Val],, DESC, DENSE))`;
+
+	const svgExpr = `CONCATENATEX(`
+		+ `ADDCOLUMNS(${rankedTable}, `
+		+ `"PrevSum", VAR _r = [Rank] RETURN SUMX(FILTER(${rankedTable}, [Rank] < _r), [Val])), `
+		+ `VAR _circ = 2 * PI() * ${effectiveR} `
+		+ `VAR _segLen = IF(${tp} = 0, 0, [Val] / ${tp} * _circ) `
+		+ `VAR _offset = _circ / 4 - IF(${tp} = 0, 0, [PrevSum] / ${tp} * _circ) `
+		+ `VAR _col = SWITCH([Rank], ${colorCases}, "${chartColor(display.colors, 0)}") `
+		+ `RETURN `
+		+ `"<circle cx='${cx}' cy='${cy}' r='${effectiveR}' fill='none' stroke='" & _col & "' stroke-width='${strokeW}' `
+		+ `stroke-dasharray='" & FORMAT(_segLen, "0.00") & " " & FORMAT(_circ - _segLen, "0.00") & "' `
+		+ `stroke-dashoffset='" & FORMAT(_offset, "0.00") & "'/>", `
+		+ `"", [Rank], ASC)`;
+
+	const svgDax = `"<svg viewBox='0 0 ${svgW} ${svgH}' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:auto'>" & ${svgExpr} & "</svg>"`;
+	vars.push(`VAR ${sp} = ${svgDax}`);
+	return sp;
+}
+
+/**
+ * Generate DAX for a line chart SVG.
+ * Produces a `<polyline>` per series with equally-spaced x-axis points.
+ */
+export function generateLineChartDax(factTable: string, display: LineDisplay, varIdx: number, vars: string[]): string {
+	const tbl = escTable(factTable);
+	const dp = `_linedata_${varIdx}`;
+	const sp = `_line_${varIdx}`;
+
+	let xAxisRef: string; // column reference for RANKX and CONCATENATEX sort
+
+	if (display.preAggregate) {
+		const preVarName = `_pre_${varIdx}`;
+		vars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
+		xAxisRef = escCol(display.xAxis); // unqualified — on pre-agg VAR
+
+		// Build series columns with second-level aggregation from pre-agg table
+		const seriesCols = display.series.map((s, i) => {
+			const filterExpr = `${xAxisRef} = EARLIER(${xAxisRef})`;
+			const filtered = `FILTER(${preVarName}, ${filterExpr})`;
+			const agg = (s.agg || 'COUNT').toUpperCase();
+			const srcCol = s.column || '';
+			let expr: string;
+			if (agg === 'COUNT') expr = `COUNTROWS(${filtered})`;
+			else if (agg === 'DISTINCTCOUNT' || agg === 'DCOUNT') expr = `COUNTROWS(DISTINCT(SELECTCOLUMNS(${filtered}, "x", ${escCol(srcCol)})))`;
+			else if (agg === 'SUM') expr = `SUMX(${filtered}, ${escCol(srcCol)})`;
+			else if (agg === 'AVG' || agg === 'AVERAGE') expr = `AVERAGEX(${filtered}, ${escCol(srcCol)})`;
+			else if (agg === 'MAX') expr = `MAXX(${filtered}, ${escCol(srcCol)})`;
+			else if (agg === 'MIN') expr = `MINX(${filtered}, ${escCol(srcCol)})`;
+			else expr = `COUNTROWS(${filtered})`;
+			return `"S${i}", ${expr}`;
+		}).join(', ');
+
+		vars.push(`VAR ${dp} = ADDCOLUMNS(SUMMARIZE(${preVarName}, ${xAxisRef}), ${seriesCols})`);
+	} else {
+		xAxisRef = `${tbl}${escCol(display.xAxis)}`;
+
+		// Build data table with all series columns from fact table
+		const seriesCols = display.series.map((s, i) => {
+			const seriesVal: ChartValue = { agg: s.agg, column: s.column };
+			return `"S${i}", ${chartAggExpr(seriesVal, factTable)}`;
+		}).join(', ');
+
+		vars.push(`VAR ${dp} = ADDCOLUMNS(SUMMARIZE(${tbl}, ${xAxisRef}), ${seriesCols})`);
+	}
+
+	// Chart geometry
+	const padL = 10;
+	const padR = 10;
+	const padT = 10;
+	const padB = 10;
+	const W = 400;
+	const H = 200;
+	const plotW = W - padL - padR;
+	const plotH = H - padT - padB;
+
+	// Compute min/max across all series for Y scaling
+	const allSeriesMinMax = display.series.map((_, i) => `[S${i}]`);
+	const minExprs = allSeriesMinMax.map(s => `MINX(${dp}, ${s})`).join(', ');
+	const maxExprs = allSeriesMinMax.map(s => `MAXX(${dp}, ${s})`).join(', ');
+	vars.push(`VAR _linemin_${varIdx} = MIN(${minExprs})`);
+	vars.push(`VAR _linemax_${varIdx} = MAX(${maxExprs})`);
+	vars.push(`VAR _linerange_${varIdx} = IF(_linemax_${varIdx} = _linemin_${varIdx}, 1, _linemax_${varIdx} - _linemin_${varIdx})`);
+	vars.push(`VAR _linen_${varIdx} = COUNTROWS(${dp})`);
+
+	const indexedTable = `ADDCOLUMNS(${dp}, "Idx", RANKX(${dp}, ${xAxisRef},, ASC, DENSE))`;
+
+	// Generate one polyline per series
+	const polylines: string[] = [];
+	for (let i = 0; i < display.series.length; i++) {
+		const pointsVar = `_linepts_${varIdx}_${i}`;
+		const color = chartColor(display.colors, i);
+
+		const pointsExpr = `CONCATENATEX(`
+			+ `${indexedTable}, `
+			+ `VAR _x = IF(_linen_${varIdx} <= 1, ${plotW / 2}, ${padL} + (${plotW}) * ([Idx] - 1) / (_linen_${varIdx} - 1)) `
+			+ `VAR _y = ${padT} + ${plotH} - IF(_linerange_${varIdx} = 0, ${plotH / 2}, ([S${i}] - _linemin_${varIdx}) / _linerange_${varIdx} * ${plotH}) `
+			+ `RETURN FORMAT(_x, "0.0") & "," & FORMAT(_y, "0.0"), `
+			+ `" ", ${xAxisRef}, ASC)`;
+
+		vars.push(`VAR ${pointsVar} = ${pointsExpr}`);
+		polylines.push(`"<polyline points='" & ${pointsVar} & "' fill='none' stroke='${color}' stroke-width='2' stroke-linejoin='round'/>"`);
+	}
+
+	const svgContent = polylines.join(' & ');
+	const svgDax = `"<svg viewBox='0 0 ${W} ${H}' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:auto'>" & ${svgContent} & "</svg>"`;
+	vars.push(`VAR ${sp} = ${svgDax}`);
+	return sp;
+}
+/**
+ * Match a `<table>` element that has a `data-kw-bind` attribute either on the
+ * `<table>` tag itself or on a `<tbody>` child.  Returns a match-like tuple
+ * `[fullMatch, openTag, innerContent, closeTag]` or null.
+ *
+ * Pattern 1: `<table data-kw-bind="x">...</table>`
+ * Pattern 2: `<table ...><thead>...</thead><tbody data-kw-bind="x">...</tbody></table>`
+ */
+function matchTableElement(html: string, bindAttr: string): RegExpMatchArray | null {
+	// Try <table data-kw-bind="x">
+	const onTableRe = new RegExp(
+		`(<table\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</table>)`, 'i',
+	);
+	const onTable = html.match(onTableRe);
+	if (onTable) return onTable;
+
+	// Try <tbody data-kw-bind="x"> inside a <table>
+	// Use negative lookahead (?!<table\b) to prevent crossing <table> boundaries
+	// when multiple tables exist in the HTML.
+	const onTbodyRe = new RegExp(
+		`(<table\\b[^>]*>)((?:(?!<table\\b)[\\s\\S])*?<tbody\\b[^>]*?\\b${bindAttr}[^>]*>(?:(?!<table\\b)[\\s\\S])*?)(</table>)`, 'i',
+	);
+	return html.match(onTbodyRe);
+}
+
+/**
+ * Generate a DAX measure expression that builds HTML from a shared fact table.
+ * All bindings aggregate from the single fact table declared in `model.fact`.
+ * Slicer filter context propagates automatically through the star schema.
  */
 export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSource[]): string {
 	const provenance = parseProvenance(htmlCode);
@@ -378,18 +757,10 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 		return `"${escapeDaxString(htmlCode)}"`;
 	}
 
-	// Map binding keys → data sources via sectionId
-	const dsMap = new Map<string, { ds: PowerBiDataSource; pbiTable: string; binding: ProvenanceBinding }>();
-	for (const [key, binding] of Object.entries(provenance.bindings)) {
-		const ds = dataSources.find(d => d.sectionId === binding.sectionId);
-		if (ds) {
-			dsMap.set(key, { ds, pbiTable: sanitizeName(ds.name), binding });
-		}
-	}
-
-	if (dsMap.size === 0) {
-		return `"${escapeDaxString(htmlCode)}"`;
-	}
+	// Resolve the fact table
+	const factDs = dataSources.find(d => d.sectionId === provenance.model.fact.sectionId);
+	if (!factDs) return `"${escapeDaxString(htmlCode)}"`;
+	const factTable = sanitizeName(factDs.name);
 
 	// Strip provenance script block (not needed in PBI)
 	let html = htmlCode.replace(/<script\s+type\s*=\s*["']application\/kw-provenance["'][^>]*>[\s\S]*?<\/script>/gi, '');
@@ -397,116 +768,75 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 	const vars: string[] = [];
 	let varIdx = 0;
 
-	// Process each binding
-	for (const [key, { ds, pbiTable, binding }] of dsMap) {
+	// Process each binding — all reference the same fact table
+	for (const [key, binding] of Object.entries(provenance.bindings)) {
 		const bindAttr = `data-kw-bind\\s*=\\s*["']${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`;
 
-		// ── v2 display-driven dispatch (takes priority) ─────────────────
-		if (binding.display) {
-			// Remap provenance column names → actual data-source column names
-			const remap = buildColumnRemap(binding.columns, ds.columns);
-			const display = remapDisplay(binding.display, remap);
+		if (!binding.display) continue;
+		const display = binding.display;
 
-			if (display.type === 'flat' || display.type === 'pivot') {
-				// Find the <table> element for this binding
-				const tableRe = new RegExp(
-					`(<table\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</table>)`, 'i',
-				);
-				const tableMatch = html.match(tableRe);
-				if (!tableMatch) continue;
+		if (display.type === 'scalar') {
+			const scalarRe = new RegExp(
+				`(<([a-zA-Z][a-zA-Z0-9]*)\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</\\2>)`, 'i',
+			);
+			const scalarMatch = html.match(scalarRe);
+			if (!scalarMatch) continue;
 
-				const originalClasses = extractOriginalThClasses(tableMatch[2]);
-				const result = display.type === 'flat'
-					? generateFlatTableDax(pbiTable, display, ds, varIdx, originalClasses)
-					: generatePivotTableDax(pbiTable, display as PivotDisplay, ds, varIdx);
-
-				if (result.theadVar && result.theadDax) vars.push(`VAR ${result.theadVar} = ${result.theadDax}`);
-				if (result.rowsVar && result.rowsDax) vars.push(`VAR ${result.rowsVar} = ${result.rowsDax}`);
-
-				const replaced = `${tableMatch[1]}{{${result.theadVar}}}{{${result.rowsVar}}}${tableMatch[3]}`;
-				html = html.replace(tableMatch[0], () => replaced);
-				varIdx++;
-				continue;
+			const result = generateScalarDaxVar(factTable, display as ScalarDisplay, varIdx);
+			if (result.scalarVar && result.scalarDax) {
+				vars.push(`VAR ${result.scalarVar} = ${result.scalarDax}`);
+				html = html.replace(scalarMatch[0], () => `${scalarMatch[1]}{{${result.scalarVar}}}${scalarMatch[4]}`);
 			}
-
-			if (display.type === 'scalar') {
-				// Find the element for this binding
-				const scalarRe = new RegExp(
-					`(<([a-zA-Z][a-zA-Z0-9]*)\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</\\2>)`, 'i',
-				);
-				const scalarMatch = html.match(scalarRe);
-				if (!scalarMatch) continue;
-
-				const result = generateScalarDaxVar(pbiTable, display as ScalarDisplay, ds, varIdx);
-				if (result.scalarVar && result.scalarDax) {
-					vars.push(`VAR ${result.scalarVar} = ${result.scalarDax}`);
-					html = html.replace(scalarMatch[0], () => `${scalarMatch[1]}{{${result.scalarVar}}}${scalarMatch[4]}`);
-				}
-				varIdx++;
-				continue;
-			}
-		}
-
-		// ── v1 heuristic fallback (no display spec) ─────────────────────
-
-		// Check for <table> binding
-		const tableRe = new RegExp(
-			`(<table\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</table>)`, 'i',
-		);
-		const tableMatch = html.match(tableRe);
-
-		if (tableMatch) {
-			const varName = `_rows_${varIdx}`;
-			const theadVar = `_thead_${varIdx}`;
 			varIdx++;
-
-			const origClasses = extractOriginalThClasses(tableMatch[2]);
-			const thCells = ds.columns.map((c, i) => {
-				const cls = origClasses[i] || '';
-				return cls
-					? `<th class=""${escapeDaxString(cls)}"">${escapeDaxString(c.name)}</th>`
-					: `<th>${escapeDaxString(c.name)}</th>`;
-			}).join('');
-			vars.push(`VAR ${theadVar} = "<thead><tr>${thCells}</tr></thead>"`);
-
-			const tdExprs = ds.columns.map((c, i) => {
-				const cls = origClasses[i] || '';
-				const tdOpen = cls ? `<td class=""${escapeDaxString(cls)}"">` : '<td>';
-				return `"${tdOpen}" & ${daxColumnExpr(c.name, c.type)} & "</td>"`;
-			}).join(' & ');
-			vars.push(`VAR ${varName} = CONCATENATEX(${escTable(pbiTable)}, "<tr>" & ${tdExprs} & "</tr>", "")`);
-
-			const replaced = `${tableMatch[1]}{{${theadVar}}}{{${varName}}}${tableMatch[3]}`;
-			html = html.replace(tableMatch[0], () => replaced);
 			continue;
 		}
 
-		// Check for scalar (non-table) binding
-		const scalarRe = new RegExp(
-			`(<([a-zA-Z][a-zA-Z0-9]*)\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</\\2>)`, 'i',
-		);
-		const scalarMatch = html.match(scalarRe);
+		if (display.type === 'table') {
+			const tableMatch = matchTableElement(html, bindAttr);
+			if (!tableMatch) continue;
 
-		if (scalarMatch) {
-			const varName = `_scalar_${varIdx}`;
+			const originalClasses = extractOriginalThClasses(tableMatch[2]);
+			const result = generateTableDaxVars(factTable, display as TableDisplay, varIdx, originalClasses);
+			if (result.preVars) result.preVars.forEach(v => vars.push(v));
+			if (result.theadVar && result.theadDax) vars.push(`VAR ${result.theadVar} = ${result.theadDax}`);
+			if (result.rowsVar && result.rowsDax) vars.push(`VAR ${result.rowsVar} = ${result.rowsDax}`);
+
+			const replaced = `${tableMatch[1]}{{${result.theadVar}}}{{${result.rowsVar}}}${tableMatch[3]}`;
+			html = html.replace(tableMatch[0], () => replaced);
 			varIdx++;
+			continue;
+		}
 
-			let targetCol: { name: string; type: string } | undefined;
-			if (binding.column) {
-				targetCol = ds.columns.find(c => c.name === binding.column);
-			}
-			if (!targetCol) {
-				targetCol = ds.columns.find(c => isNumericKustoType(c.type));
-			}
+		if (display.type === 'pivot') {
+			const tableMatch = matchTableElement(html, bindAttr);
+			if (!tableMatch) continue;
 
-			if (targetCol) {
-				const ref = escCol(targetCol.name);
-				const fmt = isNumericKustoType(targetCol.type)
-					? (targetCol.type.toLowerCase() === 'long' || targetCol.type.toLowerCase() === 'int' ? '"#,##0"' : '"#,##0.##"')
-					: '"0"';
-				vars.push(`VAR ${varName} = FORMAT(SUMX(${escTable(pbiTable)}, ${ref}), ${fmt})`);
-				html = html.replace(scalarMatch[0], () => `${scalarMatch[1]}{{${varName}}}${scalarMatch[4]}`);
-			}
+			const result = generatePivotDaxVars(factTable, display as PivotDisplay, varIdx);
+			if (result.preVars) result.preVars.forEach(v => vars.push(v));
+			if (result.theadVar && result.theadDax) vars.push(`VAR ${result.theadVar} = ${result.theadDax}`);
+			if (result.rowsVar && result.rowsDax) vars.push(`VAR ${result.rowsVar} = ${result.rowsDax}`);
+
+			const replaced = `${tableMatch[1]}{{${result.theadVar}}}{{${result.rowsVar}}}${tableMatch[3]}`;
+			html = html.replace(tableMatch[0], () => replaced);
+			varIdx++;
+			continue;
+		}
+
+		if (display.type === 'bar' || display.type === 'pie' || display.type === 'line') {
+			const chartRe = new RegExp(
+				`(<([a-zA-Z][a-zA-Z0-9]*)\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</\\2>)`, 'i',
+			);
+			const chartMatch = html.match(chartRe);
+			if (!chartMatch) continue;
+
+			let markerName: string;
+			if (display.type === 'bar') markerName = generateBarChartDax(factTable, display as BarDisplay, varIdx, vars);
+			else if (display.type === 'pie') markerName = generatePieChartDax(factTable, display as PieDisplay, varIdx, vars);
+			else markerName = generateLineChartDax(factTable, display as LineDisplay, varIdx, vars);
+
+			html = html.replace(chartMatch[0], () => `${chartMatch[1]}{{${markerName}}}${chartMatch[4]}`);
+			varIdx++;
+			continue;
 		}
 	}
 
@@ -588,16 +918,17 @@ export function generateHtmlMeasureTmdl(htmlCode: string, dataSources: PowerBiDa
 /**
  * Generate a PBIR visual.json that uses the marketplace HTML Content visual.
  * The visual reads the HTML DAX measure from the measures table.
+ * @param yOffset Vertical offset when slicers occupy space above the visual.
  */
-export function generateHtmlContentVisualJson(visualName: string, pageHeight = 720): string {
+export function generateHtmlContentVisualJson(visualName: string, pageHeight = 720, yOffset = 0): string {
 	return JSON.stringify({
 		$schema: 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.8.0/schema.json',
 		name: visualName,
 		position: {
 			x: 25,
-			y: 0,
+			y: yOffset,
 			z: 0,
-			height: pageHeight,
+			height: pageHeight - yOffset,
 			width: 1450,
 			tabOrder: 0,
 		},
@@ -637,9 +968,118 @@ export function generateHtmlContentVisualJson(visualName: string, pageHeight = 7
 	}, null, 2);
 }
 
+// ── Generate native PBI slicer visual JSON ──────────────────────────────────
+
+export interface SlicerPosition { x: number; y: number; width: number; height: number }
+
+/**
+ * Generate a PBIR visual.json for a native Power BI slicer.
+ * The slicer filters other visuals on the same page via the Category data role.
+ */
+export function generateSlicerVisualJson(
+	visualName: string,
+	tableName: string,
+	columnName: string,
+	position: SlicerPosition,
+	mode: 'dropdown' | 'list' | 'between' = 'dropdown',
+	tabOrder = 0,
+): string {
+	const pbiMode = mode === 'between' ? 'Between' : mode === 'list' ? 'Basic' : 'Dropdown';
+	const isBetween = mode === 'between';
+
+	const columnField = {
+		Column: {
+			Expression: { SourceRef: { Entity: tableName } },
+			Property: columnName,
+		},
+	};
+	const queryRef = `${tableName}.${columnName}`;
+
+	// All slicer modes need a Values projection (with active: true) so PBI
+	// binds the field and populates values.  Between-mode additionally needs
+	// a sortDefinition.  Without Values + filterConfig the slicer renders
+	// chrome but shows no data.
+	const queryState: Record<string, unknown> = {
+		Category: {
+			projections: [{
+				field: columnField,
+				queryRef,
+				nativeQueryRef: columnName,
+			}],
+		},
+		Values: {
+			projections: [{
+				field: columnField,
+				queryRef,
+				nativeQueryRef: columnName,
+				active: true,
+			}],
+		},
+	};
+
+	const query: Record<string, unknown> = { queryState };
+	if (isBetween) {
+		query.sortDefinition = {
+			sort: [{ field: columnField, direction: 'Ascending' }],
+			isDefaultSort: true,
+		};
+	}
+
+	const result: Record<string, unknown> = {
+		$schema: 'https://developer.microsoft.com/json-schemas/fabric/item/report/definition/visualContainer/2.8.0/schema.json',
+		name: visualName,
+		position: {
+			x: position.x,
+			y: position.y,
+			z: 1,
+			height: position.height,
+			width: position.width,
+			tabOrder,
+		},
+		visual: {
+			visualType: 'slicer',
+			query,
+			objects: {
+				data: [{
+					properties: {
+						mode: { expr: { Literal: { Value: `'${pbiMode}'` } } },
+					},
+				}],
+				selection: [{
+					properties: {
+						singleSelect: { expr: { Literal: { Value: 'false' } } },
+					},
+				}],
+			},
+			drillFilterOtherVisuals: true,
+		},
+	};
+
+	// All slicers need a filterConfig so PBI binds the field and emits
+	// cross-filter interactions to other visuals on the page.
+	const filterId = Array.from({ length: 20 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+	result.filterConfig = {
+		filters: [{
+			name: filterId,
+			field: columnField,
+			type: 'Categorical',
+		}],
+	};
+
+	return JSON.stringify(result, null, 2);
+}
+
 // ── Generate TMDL semantic model files ──────────────────────────────────────
 
-function generateModelTmdl(tableNames: string[]): string {
+/** A relationship entry for the TMDL model (many-to-one, from fact to dim). */
+export interface TmdlRelationship {
+	fromTable: string;
+	fromColumn: string;
+	toTable: string;
+	toColumn: string;
+}
+
+function generateModelTmdl(tableNames: string[], relationships: TmdlRelationship[] = []): string {
 	const allTables = [MEASURES_TABLE_NAME, ...tableNames];
 	const lines = [
 		'model Model',
@@ -661,6 +1101,19 @@ function generateModelTmdl(tableNames: string[]): string {
 		lines.push(`ref table '${escapeTmdlName(name)}'`);
 	}
 
+	// Relationships (many-to-one from fact tables to dimension tables)
+	if (relationships.length > 0) {
+		lines.push('');
+		const esc = (s: string) => s.replace(/'/g, "''");
+		for (const rel of relationships) {
+			const id = crypto.randomUUID?.() ?? Array.from({ length: 32 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+			lines.push(`relationship ${id}`);
+			lines.push(`\tfromColumn: '${esc(rel.fromTable)}'.'${esc(rel.fromColumn)}'`);
+			lines.push(`\ttoColumn: '${esc(rel.toTable)}'.'${esc(rel.toColumn)}'`);
+			lines.push('');
+		}
+	}
+
 	lines.push('');
 	lines.push('ref cultureInfo en-US');
 	lines.push('');
@@ -668,11 +1121,67 @@ function generateModelTmdl(tableNames: string[]): string {
 	return lines.join('\n');
 }
 
+// ── KQL comment stripping ────────────────────────────────────────────────────
+
+/**
+ * Strip KQL single-line comments (`// …`) so the query can be safely collapsed
+ * to a single line. Uses a negative lookbehind to preserve `://` in URLs.
+ */
+function stripKqlLineComments(kql: string): string {
+	return kql.replace(/(?<!:)\/\/[^\r\n]*/g, '');
+}
+
+// ── Dimension table TMDL generation ─────────────────────────────────────────
+
+/**
+ * Generate a TMDL table for a dimension (shared lookup) table.
+ * The table has a single column with `isKey` and wraps the source query with
+ * `| distinct <column>` to produce unique values for the slicer.
+ */
+export function generateDimTableTmdl(
+	dimTableName: string,
+	columnName: string,
+	columnType: string,
+	clusterUrl: string,
+	database: string,
+	sourceQuery: string,
+): string {
+	const tmdlType = kustoTypeToTmdl(columnType);
+	const escapeTmdlName = (s: string) => s.replace(/'/g, "''");
+	const singleLineQuery = stripKqlLineComments(sourceQuery).replace(/\r\n|\r|\n/g, ' ').replace(/\s+/g, ' ').trim();
+	const dimQuery = `${singleLineQuery} | distinct ${columnName}`;
+	const escapedQuery = dimQuery.replace(/"/g, '""');
+	const escapedCluster = clusterUrl.replace(/"/g, '""');
+	const escapedDb = database.replace(/"/g, '""');
+
+	const lines: string[] = [
+		`table '${escapeTmdlName(dimTableName)}'`,
+		`\tlineageTag: ${crypto.randomUUID?.() ?? Math.random().toString(36).substring(2)}`,
+		'',
+		`\tcolumn '${escapeTmdlName(columnName)}'`,
+		`\t\tdataType: ${tmdlType}`,
+		`\t\tlineageTag: ${Math.random().toString(36).substring(2)}`,
+		`\t\tsummarizeBy: none`,
+		`\t\tisKey`,
+		`\t\tsourceColumn: ${escapeTmdlName(columnName)}`,
+		'',
+		`\tpartition '${escapeTmdlName(dimTableName)}' = m`,
+		'\t\tmode: directQuery',
+		'\t\tsource =',
+		'\t\t\tlet',
+		`\t\t\t\tSource = AzureDataExplorer.Contents("${escapedCluster}", "${escapedDb}", "${escapedQuery}")`,
+		'\t\t\tin',
+		'\t\t\t\tSource',
+	];
+
+	return lines.join('\n');
+}
+
 function generateTableTmdl(ds: PowerBiDataSource): string {
 	const tableName = sanitizeName(ds.name);
-	// Collapse query to a single line (TMDL M expression strings cannot span multiple lines
-	// inside the expression block without breaking the indentation parser) and escape " as "".
-	const singleLineQuery = ds.query.replace(/\r\n|\r|\n/g, ' ').replace(/\s+/g, ' ').trim();
+	// Strip KQL line comments, then collapse to a single line (TMDL M expression
+	// strings cannot span multiple lines without breaking the indentation parser).
+	const singleLineQuery = stripKqlLineComments(ds.query).replace(/\r\n|\r|\n/g, ' ').replace(/\s+/g, ' ').trim();
 	const escapedQuery = singleLineQuery.replace(/"/g, '""');
 	const escapeTmdlName = (s: string) => s.replace(/'/g, "''");
 	const lines: string[] = [
@@ -1002,7 +1511,49 @@ export async function exportHtmlToPowerBI(
 	// ── Page height from actual preview rendering ──────────────────────
 	// The HTML section's preview iframe measures scrollHeight and sends it.
 	// PBI max page height is 14400px; default 16:9 is 720px.
-	const pageHeight = Math.min(14400, Math.max(720, input.previewHeight || 720));
+	const contentHeight = Math.min(14400, Math.max(720, input.previewHeight || 720));
+
+	// ── Slicer layout (from model.dimensions) ────────────────────────
+	const provenance = parseProvenance(input.htmlCode);
+	const dimensions = provenance?.model?.dimensions ?? [];
+
+	// Resolve the fact data source
+	const factDs = provenance?.model?.fact
+		? input.dataSources.find(d => d.sectionId === provenance.model.fact.sectionId)
+		: input.dataSources[0];
+	const factTableName = factDs ? sanitizeName(factDs.name) : '';
+
+	// Build dimension tables + relationships from fact → dim
+	interface ResolvedSlicer { tableName: string; columnName: string; mode: 'dropdown' | 'list' | 'between' }
+	const resolvedSlicers: ResolvedSlicer[] = [];
+	const dimTables: Array<{ name: string; columnName: string; columnType: string; clusterUrl: string; database: string; sourceQuery: string }> = [];
+	const relationships: TmdlRelationship[] = [];
+
+	if (factDs) {
+		for (const dim of dimensions) {
+			const col = factDs.columns.find(c => c.name === dim.column);
+			if (!col) continue;
+			const colType = (col.type || '').toLowerCase();
+			const mode = dim.mode || (colType === 'datetime' || colType === 'date' ? 'between' : 'dropdown');
+			const dimName = `dim_${sanitizeName(dim.column)}`;
+
+			dimTables.push({ name: dimName, columnName: dim.column, columnType: col.type, clusterUrl: factDs.clusterUrl, database: factDs.database, sourceQuery: factDs.query });
+			relationships.push({ fromTable: factTableName, fromColumn: dim.column, toTable: dimName, toColumn: dim.column });
+			resolvedSlicers.push({ tableName: dimName, columnName: dim.column, mode });
+		}
+	}
+
+	const SLICER_ROW_HEIGHT = 60;
+	const SLICER_ROW_MARGIN = 20;
+	const SLICER_GAP = 16;
+	const hasSlicers = resolvedSlicers.length > 0;
+	const slicerYOffset = hasSlicers ? SLICER_ROW_MARGIN + SLICER_ROW_HEIGHT + SLICER_ROW_MARGIN : 0;
+	// The preview scrollHeight includes the injected slicer UI (~100px). In PBI
+	// the slicer row is a separate native visual, so subtract the preview slicer
+	// height to avoid double-counting when computing the page height.
+	const PREVIEW_SLICER_APPROX = 80;
+	const adjustedContentHeight = hasSlicers ? Math.max(720, contentHeight - PREVIEW_SLICER_APPROX) : contentHeight;
+	const pageHeight = Math.min(14400, adjustedContentHeight + slicerYOffset);
 
 	// ── Resolve CSS custom properties so they work in PBI HTML Content ──
 	// The visual renders inside a <div>, so :root/body selectors don't
@@ -1048,13 +1599,35 @@ export async function exportHtmlToPowerBI(
 	// ── HTML Content visual (marketplace visual — references the HTML measure)
 	await write(
 		`${reportFolder}/definition/pages/${pageName}/visuals/${visualId}/visual.json`,
-		generateHtmlContentVisualJson(visualId, pageHeight),
+		generateHtmlContentVisualJson(visualId, pageHeight, slicerYOffset),
 	);
 
-	// ── Semantic model
+	// ── Slicer visuals (native PBI slicers above the HTML Content visual)
+	if (hasSlicers) {
+		const PAGE_WIDTH = 1500;
+		const SLICER_X_MARGIN = 25;
+		const availableWidth = PAGE_WIDTH - 2 * SLICER_X_MARGIN;
+		const slicerWidth = Math.floor((availableWidth - (resolvedSlicers.length - 1) * SLICER_GAP) / resolvedSlicers.length);
+
+		for (let i = 0; i < resolvedSlicers.length; i++) {
+			const s = resolvedSlicers[i];
+			const slicerVisualId = Array.from({ length: 20 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+			const x = SLICER_X_MARGIN + i * (slicerWidth + SLICER_GAP);
+			await write(
+				`${reportFolder}/definition/pages/${pageName}/visuals/${slicerVisualId}/visual.json`,
+				generateSlicerVisualJson(slicerVisualId, s.tableName, s.columnName, {
+					x, y: SLICER_ROW_MARGIN, width: slicerWidth, height: SLICER_ROW_HEIGHT,
+				}, s.mode, i + 1),
+			);
+		}
+	}
+
+	// ── Semantic model (star schema: one fact table + dim tables + relationships)
 	await write(`${modelFolder}/definition.pbism`, generateDefinitionPbism());
-	const tableNames = input.dataSources.map(ds => sanitizeName(ds.name));
-	await write(`${modelFolder}/definition/model.tmdl`, generateModelTmdl(tableNames));
+	const factTableNames = input.dataSources.map(ds => sanitizeName(ds.name));
+	const dimTableNamesList = dimTables.map(d => d.name);
+	const allTableNames = [...factTableNames, ...dimTableNamesList];
+	await write(`${modelFolder}/definition/model.tmdl`, generateModelTmdl(allTableNames, relationships));
 	await write(`${modelFolder}/definition/database.tmdl`, generateDatabaseTmdl());
 	await write(`${modelFolder}/definition/cultures/en-US.tmdl`, generateCultureTmdl());
 
@@ -1062,6 +1635,14 @@ export async function exportHtmlToPowerBI(
 	for (const ds of input.dataSources) {
 		const tableName = sanitizeName(ds.name);
 		await write(`${modelFolder}/definition/tables/${tableName}.tmdl`, generateTableTmdl(ds));
+	}
+
+	// ── Dimension tables (Kusto DirectQuery — distinct values for slicer cross-filtering)
+	for (const dim of dimTables) {
+		await write(
+			`${modelFolder}/definition/tables/${dim.name}.tmdl`,
+			generateDimTableTmdl(dim.name, dim.columnName, dim.columnType, dim.clusterUrl, dim.database, dim.sourceQuery),
+		);
 	}
 
 	// ── HTML measures table (DAX measure containing the dashboard HTML/JS)

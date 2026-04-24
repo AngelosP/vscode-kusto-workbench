@@ -2716,7 +2716,10 @@ export function addHtmlBox(options?: any) {
 		litEl.setName(options.name);
 	}
 	if (options && typeof options.code === 'string') {
-		litEl.setCode(options.code);
+		// Set as attribute so _initEditor() picks it up via this.initialCode
+		// when Monaco creates the editor. setCode() alone only buffers to
+		// pendingHtmlCodeByBoxId which is never consumed during editor init.
+		litEl.setAttribute('initial-code', options.code);
 	}
 	if (options && typeof options.mode === 'string') {
 		litEl.setMode(options.mode);

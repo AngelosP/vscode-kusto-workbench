@@ -2,6 +2,8 @@ import { describe, it, expect } from 'vitest';
 import {
 	generateHtmlMeasureTmdl,
 	generateHtmlContentVisualJson,
+	generateSlicerVisualJson,
+	generateDimTableTmdl,
 	escapeDaxString,
 	escapeDaxColumnRef,
 	daxColumnExpr,
@@ -12,21 +14,20 @@ import {
 } from '../../../src/host/powerBiExport';
 import { parseKwProvenance } from '../../../src/webview/sections/kw-html-section';
 
-// ── Provenance parsing ──────────────────────────────────────────────────────
+// ── Provenance v1 parsing ───────────────────────────────────────────────────
 
 describe('parseKwProvenance', () => {
-	it('extracts bindings from a valid provenance block', () => {
+	it('extracts model and bindings from a valid v1 provenance block', () => {
 		const html = `
-			<div>Hello</div>
 			<script type="application/kw-provenance">
 			{
 				"version": 1,
+				"model": {
+					"fact": { "sectionId": "query_123", "sectionName": "Events" },
+					"dimensions": [{ "column": "OS", "label": "Operating System" }]
+				},
 				"bindings": {
-					"sales-table": {
-						"sectionId": "query_123",
-						"sectionName": "Sales",
-						"columns": ["Region", "Amount"]
-					}
+					"total": { "display": { "type": "scalar", "agg": "COUNT", "format": "#,##0" } }
 				}
 			}
 			</script>
@@ -34,9 +35,11 @@ describe('parseKwProvenance', () => {
 		const p = parseKwProvenance(html);
 		expect(p).not.toBeNull();
 		expect(p!.version).toBe(1);
+		expect(p!.model.fact.sectionId).toBe('query_123');
+		expect(p!.model.fact.sectionName).toBe('Events');
+		expect(p!.model.dimensions).toHaveLength(1);
+		expect(p!.model.dimensions![0].column).toBe('OS');
 		expect(Object.keys(p!.bindings)).toHaveLength(1);
-		expect(p!.bindings['sales-table'].sectionId).toBe('query_123');
-		expect(p!.bindings['sales-table'].sectionName).toBe('Sales');
 	});
 
 	it('returns null when no provenance block exists', () => {
@@ -48,13 +51,28 @@ describe('parseKwProvenance', () => {
 		expect(parseKwProvenance(html)).toBeNull();
 	});
 
-	it('handles multiple bindings', () => {
+	it('returns null when model.fact.sectionId is missing', () => {
+		const html = '<script type="application/kw-provenance">{"version":1,"model":{},"bindings":{}}</script>';
+		expect(parseKwProvenance(html)).toBeNull();
+	});
+
+	it('handles provenance with no dimensions', () => {
 		const html = `<script type="application/kw-provenance">
-		{"version":1,"bindings":{"a":{"sectionId":"query_1","sectionName":"A"},"b":{"sectionId":"query_2","sectionName":"B"}}}
+		{"version":1,"model":{"fact":{"sectionId":"q1","sectionName":"F"}},"bindings":{"x":{"display":{"type":"scalar","agg":"COUNT"}}}}
 		</script>`;
 		const p = parseKwProvenance(html);
 		expect(p).not.toBeNull();
-		expect(Object.keys(p!.bindings)).toHaveLength(2);
+		expect(p!.model.dimensions).toBeUndefined();
+	});
+
+	it('handles multiple dimensions', () => {
+		const html = `<script type="application/kw-provenance">
+		{"version":1,"model":{"fact":{"sectionId":"q1","sectionName":"F"},"dimensions":[{"column":"A"},{"column":"B","mode":"between"},{"column":"C","label":"Country"}]},"bindings":{}}
+		</script>`;
+		const p = parseKwProvenance(html);
+		expect(p!.model.dimensions).toHaveLength(3);
+		expect(p!.model.dimensions![1].mode).toBe('between');
+		expect(p!.model.dimensions![2].label).toBe('Country');
 	});
 });
 
@@ -210,604 +228,750 @@ describe('daxColumnExpr', () => {
 	});
 });
 
-// ── Dynamic DAX measure generation ──────────────────────────────────────────
+// ── Dynamic DAX measure generation (v1 — shared fact table) ─────────────────
 
-const sampleDataSources: PowerBiDataSource[] = [
-	{
-		name: 'Regional Sales',
-		sectionId: 'query_1',
-		clusterUrl: 'https://cluster.kusto.windows.net',
-		database: 'db',
-		query: 'T | take 10',
-		columns: [
-			{ name: 'Region', type: 'string' },
-			{ name: 'Sales', type: 'long' },
-			{ name: 'Quarter', type: 'string' },
-		],
-	},
-	{
-		name: 'Categories',
-		sectionId: 'query_2',
-		clusterUrl: 'https://cluster.kusto.windows.net',
-		database: 'db',
-		query: 'T2 | take 10',
-		columns: [
-			{ name: 'Category', type: 'string' },
-			{ name: 'Revenue', type: 'long' },
-			{ name: 'Units', type: 'int' },
-		],
-	},
-];
+const factDataSource: PowerBiDataSource = {
+	name: 'Fact Events',
+	sectionId: 'query_fact',
+	clusterUrl: 'https://cluster.kusto.windows.net',
+	database: 'db',
+	query: 'T | project Day, SkillName, ClientName, DeviceId',
+	columns: [
+		{ name: 'Day', type: 'datetime' },
+		{ name: 'SkillName', type: 'string' },
+		{ name: 'ClientName', type: 'string' },
+		{ name: 'DeviceId', type: 'string' },
+	],
+};
 
-function makeHtmlWithProvenance(tableBindings: string[], scalarBindings: string[] = []): string {
-	const bindings: Record<string, object> = {};
-	if (tableBindings.includes('sales')) {
-		bindings['sales-table'] = { sectionId: 'query_1', sectionName: 'Regional Sales', columns: ['Region', 'Sales', 'Quarter'] };
-	}
-	if (tableBindings.includes('categories')) {
-		bindings['cat-table'] = { sectionId: 'query_2', sectionName: 'Categories', columns: ['Category', 'Revenue', 'Units'] };
-	}
-	if (scalarBindings.includes('total-sales')) {
-		bindings['sales-table'] = bindings['sales-table'] || { sectionId: 'query_1', sectionName: 'Regional Sales', columns: ['Region', 'Sales', 'Quarter'] };
-	}
-
-	const provScript = `<script type="application/kw-provenance">${JSON.stringify({ version: 1, bindings })}</script>`;
-	let html = `<html><head>${provScript}</head><body>`;
-
-	if (scalarBindings.includes('total-sales')) {
-		html += `<div data-kw-bind="sales-table">$100,000</div>`;
-	}
-	if (tableBindings.includes('sales')) {
-		html += `<table data-kw-bind="sales-table"><thead><tr><th>R</th><th class="num">S</th><th>Q</th></tr></thead><tbody><tr><td>NA</td><td>50000</td><td>Q1</td></tr></tbody></table>`;
-	}
-	if (tableBindings.includes('categories')) {
-		html += `<table data-kw-bind="cat-table"><thead><tr><th>C</th><th>R</th><th>U</th></tr></thead><tbody><tr><td>Electronics</td><td>45000</td><td>320</td></tr></tbody></table>`;
-	}
-
-	html += `</body></html>`;
-	return html;
-}
-
-describe('generateDaxMeasure', () => {
-	it('falls back to static string when no provenance', () => {
-		const result = generateDaxMeasure('<div>Hello</div>', sampleDataSources);
-		expect(result).toMatch(/^"/);
-		expect(result).toContain('Hello');
-		expect(result).not.toContain('CONCATENATEX');
-	});
-
-	it('falls back to static string when dataSources is empty', () => {
-		const html = makeHtmlWithProvenance(['sales']);
-		const result = generateDaxMeasure(html, []);
-		expect(result).toMatch(/^"/);
-		expect(result).not.toContain('CONCATENATEX');
-	});
-
-	it('generates CONCATENATEX for a table binding', () => {
-		const html = makeHtmlWithProvenance(['sales']);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('CONCATENATEX');
-		expect(result).toContain("'Regional_Sales'");
-		expect(result).toContain('[Region]');
-		expect(result).toContain('[Sales]');
-		expect(result).toContain('[Quarter]');
-		expect(result).toContain('RETURN');
-	});
-
-	it('generates CONCATENATEX for multiple table bindings', () => {
-		const html = makeHtmlWithProvenance(['sales', 'categories']);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain("'Regional_Sales'");
-		expect(result).toContain("'Categories'");
-		expect(result).toContain('_rows_0');
-		expect(result).toContain('_rows_1');
-	});
-
-	it('generates SUMX for scalar binding', () => {
-		const html = makeHtmlWithProvenance([], ['total-sales']);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('SUMX');
-		expect(result).toContain('[Sales]');
-		expect(result).toContain('FORMAT');
-	});
-
-	it('strips the provenance script from output', () => {
-		const html = makeHtmlWithProvenance(['sales']);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).not.toContain('application/kw-provenance');
-	});
-
-	it('replaces thead with data source column names', () => {
-		const html = makeHtmlWithProvenance(['sales']);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('Region');
-		expect(result).toContain('Sales');
-		expect(result).toContain('Quarter');
-		expect(result).toContain('<thead>');
-	});
-
-	it('preserves original CSS classes from HTML th elements', () => {
-		const html = makeHtmlWithProvenance(['sales']);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		// Sales column had class="num" in the original HTML — should be preserved
-		expect(result).toContain('class=""num""');
-	});
-
-	it('handles table binding taking priority over scalar for same key', () => {
-		// When both a table and scalar use the same binding key, table wins
-		const html = makeHtmlWithProvenance(['sales'], ['total-sales']);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		// Table binding produces CONCATENATEX
-		expect(result).toContain('CONCATENATEX');
-		// Scalar should NOT produce SUMX since the table binding consumed the key
-		expect(result).not.toContain('SUMX');
-	});
-});
-
-// ── Provenance v2: display-driven DAX generation ────────────────────────────
-
-function makeV2Html(bindings: Record<string, object>, bodyHtml: string): string {
-	const prov = JSON.stringify({ version: 2, bindings });
+function makeV1Html(bindings: Record<string, object>, bodyHtml: string, dimensions?: object[]): string {
+	const model: any = { fact: { sectionId: 'query_fact', sectionName: 'Fact Events' } };
+	if (dimensions) model.dimensions = dimensions;
+	const prov = JSON.stringify({ version: 1, model, bindings });
 	return `<html><head><script type="application/kw-provenance">${prov}</script></head><body>${bodyHtml}</body></html>`;
 }
 
-describe('generateDaxMeasure — v2 flat display', () => {
-	it('generates CONCATENATEX with explicit columns', () => {
-		const html = makeV2Html(
-			{
-				'cat-table': {
-					sectionId: 'query_2', sectionName: 'Categories', columns: ['Category', 'Revenue', 'Units'],
-					display: { type: 'flat', columns: ['Category', 'Revenue', 'Units'] },
-				},
-			},
-			'<table data-kw-bind="cat-table"><thead><tr><th>C</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+describe('generateDaxMeasure — v1 scalar', () => {
+	it('generates COUNT for row count scalar', () => {
+		const html = makeV1Html(
+			{ 'total': { display: { type: 'scalar', agg: 'COUNT', format: '#,##0' } } },
+			'<span data-kw-bind="total">0</span>',
 		);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('CONCATENATEX');
-		expect(result).toContain('[Category]');
-		expect(result).toContain('[Revenue]');
-		expect(result).toContain('[Units]');
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('COUNTROWS');
+		expect(result).toContain('#,##0');
+		expect(result).toContain('RETURN');
 	});
 
-	it('applies per-column format from display.formats', () => {
-		const html = makeV2Html(
-			{
-				'cat-table': {
-					sectionId: 'query_2', sectionName: 'Categories', columns: ['Category', 'Revenue'],
-					display: { type: 'flat', columns: ['Category', 'Revenue'], formats: { Revenue: '$#,##0' } },
-				},
-			},
-			'<table data-kw-bind="cat-table"><thead><tr><th>C</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+	it('generates DISTINCTCOUNT for unique values scalar', () => {
+		const html = makeV1Html(
+			{ 'devices': { display: { type: 'scalar', agg: 'DISTINCTCOUNT', column: 'DeviceId', format: '#,##0' } } },
+			'<span data-kw-bind="devices">0</span>',
 		);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('$#,##0');
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('DISTINCTCOUNT');
+		expect(result).toContain('[DeviceId]');
+	});
+
+	it('falls back to static string when no provenance', () => {
+		const result = generateDaxMeasure('<div>Hello</div>', [factDataSource]);
+		expect(result).toMatch(/^"/);
+		expect(result).toContain('Hello');
+	});
+
+	it('falls back to static string when dataSources is empty', () => {
+		const html = makeV1Html(
+			{ 'total': { display: { type: 'scalar', agg: 'COUNT' } } },
+			'<span data-kw-bind="total">0</span>',
+		);
+		const result = generateDaxMeasure(html, []);
+		expect(result).toMatch(/^"/);
 	});
 });
 
-describe('generateDaxMeasure — v2 pivot display', () => {
-	it('generates CALCULATE per pivot value', () => {
-		const html = makeV2Html(
+describe('generateDaxMeasure — v1 table with groupBy', () => {
+	it('generates SUMMARIZE + ADDCOLUMNS + CONCATENATEX', () => {
+		const html = makeV1Html(
 			{
-				'sales-pivot': {
-					sectionId: 'query_1', sectionName: 'Regional Sales', columns: ['Region', 'Sales', 'Quarter'],
+				'top-skills': {
 					display: {
-						type: 'pivot', rows: ['Region'], pivotBy: 'Quarter',
-						pivotValues: ['Q1', 'Q2'], value: 'Sales', agg: 'SUM', format: '$#,##0',
+						type: 'table',
+						columns: [
+							{ name: 'SkillName', header: 'Skill' },
+							{ name: 'Refs', agg: 'COUNT', format: '#,##0' },
+						],
+						groupBy: ['SkillName'],
+						orderBy: { column: 'Refs', direction: 'desc' },
+						top: 10,
 					},
 				},
 			},
-			'<table data-kw-bind="sales-pivot"><thead><tr><th>R</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+			'<table data-kw-bind="top-skills"><thead><tr><th>S</th><th>R</th></tr></thead><tbody></tbody></table>',
 		);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('CALCULATE');
-		expect(result).toContain('SUMX');
-		expect(result).toContain('"Q1"');
-		expect(result).toContain('"Q2"');
-		expect(result).toContain('VALUES');
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('SUMMARIZE');
+		expect(result).toContain('ADDCOLUMNS');
+		expect(result).toContain('TOPN(10');
+		expect(result).toContain('CONCATENATEX');
+		expect(result).toContain('[Refs]');
+		expect(result).toContain('DESC');
+		expect(result).toContain('<thead>');
 	});
 
-	it('includes total column when total is true', () => {
-		const html = makeV2Html(
+	it('generates CALCULATE(DISTINCTCOUNT(...)) inside ADDCOLUMNS', () => {
+		const html = makeV1Html(
 			{
-				'sales-pivot': {
-					sectionId: 'query_1', sectionName: 'Regional Sales', columns: ['Region', 'Sales', 'Quarter'],
+				'skills': {
 					display: {
-						type: 'pivot', rows: ['Region'], pivotBy: 'Quarter',
-						pivotValues: ['Q1'], value: 'Sales', agg: 'SUM', total: true,
+						type: 'table',
+						columns: [
+							{ name: 'SkillName' },
+							{ name: 'Devices', agg: 'DISTINCTCOUNT', sourceColumn: 'DeviceId' },
+						],
+						groupBy: ['SkillName'],
 					},
 				},
 			},
-			'<table data-kw-bind="sales-pivot"><thead><tr><th>R</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+			'<table data-kw-bind="skills"><thead><tr><th>S</th><th>D</th></tr></thead><tbody></tbody></table>',
 		);
-		const result = generateDaxMeasure(html, sampleDataSources);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('CALCULATE(DISTINCTCOUNT');
+		expect(result).toContain('[DeviceId]');
+	});
+});
+
+describe('generateDaxMeasure — v1 pivot', () => {
+	it('generates CALCULATE per pivot value from fact table', () => {
+		const html = makeV1Html(
+			{
+				'by-client': {
+					display: {
+						type: 'pivot', rows: ['SkillName'], pivotBy: 'ClientName',
+						pivotValues: ['vscode', 'copilot-cli'], value: 'SkillName', agg: 'COUNT', total: true,
+					},
+				},
+			},
+			'<table data-kw-bind="by-client"><thead><tr><th>S</th></tr></thead><tbody></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('CALCULATE');
+		expect(result).toContain('COUNTROWS');
+		expect(result).toContain('"vscode"');
+		expect(result).toContain('"copilot-cli"');
 		expect(result).toContain('Total');
+	});
+});
+
+describe('generateDaxMeasure — data-kw-bind on <tbody>', () => {
+	it('matches table binding when data-kw-bind is on <tbody> not <table>', () => {
+		const html = makeV1Html(
+			{
+				'top-skills': {
+					display: {
+						type: 'table',
+						columns: [
+							{ name: 'SkillName', header: 'Skill' },
+							{ name: 'Refs', agg: 'COUNT', format: '#,##0' },
+						],
+						groupBy: ['SkillName'],
+						orderBy: { column: 'Refs', direction: 'desc' },
+						top: 10,
+					},
+				},
+			},
+			'<table><thead><tr><th>Skill</th><th>Refs</th></tr></thead><tbody data-kw-bind="top-skills"></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('SUMMARIZE');
+		expect(result).toContain('TOPN(10');
+		expect(result).toContain('CONCATENATEX');
+	});
+
+	it('matches pivot binding when data-kw-bind is on <tbody>', () => {
+		const html = makeV1Html(
+			{
+				'by-client': {
+					display: {
+						type: 'pivot', rows: ['SkillName'], pivotBy: 'ClientName',
+						pivotValues: ['vscode', 'copilot-cli'], value: 'SkillName', agg: 'COUNT', total: true,
+					},
+				},
+			},
+			'<table><thead><tr><th>S</th></tr></thead><tbody data-kw-bind="by-client"></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('CALCULATE');
+		expect(result).toContain('COUNTROWS');
+		expect(result).toContain('"vscode"');
+	});
+
+	it('prefers <table data-kw-bind> when both table and tbody have the attribute', () => {
+		const html = makeV1Html(
+			{
+				'skills': {
+					display: {
+						type: 'table',
+						columns: [{ name: 'SkillName' }, { name: 'Refs', agg: 'COUNT' }],
+						groupBy: ['SkillName'],
+					},
+				},
+			},
+			'<table data-kw-bind="skills"><thead><tr><th>S</th><th>R</th></tr></thead><tbody></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('SUMMARIZE');
+	});
+
+	it('does not clobber adjacent tables when multiple have tbody data-kw-bind', () => {
+		const html = makeV1Html(
+			{
+				'weekly': {
+					display: {
+						type: 'table',
+						columns: [{ name: 'Week' }, { name: 'Calls', agg: 'COUNT' }],
+						groupBy: ['Week'],
+					},
+				},
+				'skills': {
+					display: {
+						type: 'table',
+						columns: [{ name: 'SkillName' }, { name: 'Refs', agg: 'COUNT' }],
+						groupBy: ['SkillName'],
+					},
+				},
+			},
+			'<table><thead><tr><th>W</th><th>C</th></tr></thead><tbody data-kw-bind="weekly"></tbody></table>'
+			+ '<table><thead><tr><th>S</th><th>R</th></tr></thead><tbody data-kw-bind="skills"></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		// Both tables should produce independent DAX — verify two SUMMARIZE calls
+		const summarizeCount = (result.match(/SUMMARIZE/g) || []).length;
+		expect(summarizeCount).toBeGreaterThanOrEqual(2);
+		// Both thead VARs should exist
+		expect(result).toContain('_thead_0');
+		expect(result).toContain('_thead_1');
+	});
+});
+
+// ── Pre-aggregate (two-level aggregation) ───────────────────────────────────
+
+describe('generateDaxMeasure — preAggregate', () => {
+	it('generates two-level aggregation for table binding (session-depth pattern)', () => {
+		const html = makeV1Html(
+			{
+				'session-depth': {
+					display: {
+						type: 'table',
+						preAggregate: {
+							groupBy: 'SessionId',
+							compute: { name: 'SkillsPerSession', agg: 'DISTINCTCOUNT', column: 'SkillName' },
+						},
+						columns: [
+							{ name: 'SkillsPerSession', header: 'Skills per Session' },
+							{ name: 'SessionCount', agg: 'COUNT', format: '#,##0' },
+						],
+						groupBy: ['SkillsPerSession'],
+						orderBy: { column: 'SkillsPerSession', direction: 'asc' },
+					},
+				},
+			},
+			'<table><thead><tr><th>D</th><th>C</th></tr></thead><tbody data-kw-bind="session-depth"></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		// Pre-aggregate VAR must exist with DISTINCTCOUNT
+		expect(result).toContain('_pre_0');
+		expect(result).toContain('VALUES(');
+		expect(result).toContain('[SessionId]');
+		expect(result).toContain('DISTINCTCOUNT');
+		expect(result).toContain('"SkillsPerSession"');
+		// Second-level uses SUMMARIZE on the pre-aggregate + FILTER/EARLIER
+		expect(result).toContain('SUMMARIZE(_pre_0');
+		expect(result).toContain('COUNTROWS(FILTER(_pre_0');
+		expect(result).toContain('EARLIER');
+		// Pre-aggregate VAR appears before rows VAR
+		const preIdx = result.indexOf('_pre_0');
+		const rowsIdx = result.indexOf('_rows_0');
+		expect(preIdx).toBeLessThan(rowsIdx);
+	});
+
+	it('generates pre-aggregate for bar chart', () => {
+		const html = makeV1Html(
+			{
+				'depth-chart': {
+					display: {
+						type: 'bar',
+						preAggregate: {
+							groupBy: 'SessionId',
+							compute: { name: 'SkillsPerSession', agg: 'DISTINCTCOUNT', column: 'SkillName' },
+						},
+						groupBy: 'SkillsPerSession',
+						value: { agg: 'COUNT', format: '#,##0' },
+					},
+				},
+			},
+			'<div data-kw-bind="depth-chart"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('_pre_0');
+		expect(result).toContain('VALUES(');
+		expect(result).toContain('DISTINCTCOUNT');
+		expect(result).toContain('<svg');
+		expect(result).toContain('<rect');
+	});
+
+	it('table without preAggregate is unchanged (regression)', () => {
+		const html = makeV1Html(
+			{
+				'top-skills': {
+					display: {
+						type: 'table',
+						columns: [{ name: 'SkillName' }, { name: 'Refs', agg: 'COUNT' }],
+						groupBy: ['SkillName'],
+					},
+				},
+			},
+			'<table data-kw-bind="top-skills"><thead><tr><th>S</th><th>R</th></tr></thead><tbody></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).not.toContain('_pre_');
+		expect(result).toContain('SUMMARIZE');
+		expect(result).toContain("'Fact_Events'[SkillName]");
+	});
+
+	it('uses unqualified column references for pre-aggregate groupBy', () => {
+		const html = makeV1Html(
+			{
+				'depth': {
+					display: {
+						type: 'table',
+						preAggregate: {
+							groupBy: 'DeviceId',
+							compute: { name: 'EventCount', agg: 'COUNT' },
+						},
+						columns: [
+							{ name: 'EventCount' },
+							{ name: 'Devices', agg: 'COUNT' },
+						],
+						groupBy: ['EventCount'],
+					},
+				},
+			},
+			'<table><thead><tr><th>E</th><th>D</th></tr></thead><tbody data-kw-bind="depth"></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		// groupBy should be unqualified [EventCount], NOT 'Fact_Events'[EventCount]
+		expect(result).toContain('SUMMARIZE(_pre_0, [EventCount])');
+		expect(result).not.toContain("'Fact_Events'[EventCount]");
+	});
+
+	it('supports DISTINCTCOUNT as second-level aggregation', () => {
+		const html = makeV1Html(
+			{
+				'depth': {
+					display: {
+						type: 'table',
+						preAggregate: {
+							groupBy: 'SessionId',
+							compute: { name: 'SkillsPerSession', agg: 'DISTINCTCOUNT', column: 'SkillName' },
+						},
+						columns: [
+							{ name: 'SkillsPerSession' },
+							{ name: 'UniqueDevices', agg: 'DISTINCTCOUNT', sourceColumn: 'DeviceId' },
+						],
+						groupBy: ['SkillsPerSession'],
+					},
+				},
+			},
+			'<table><thead><tr><th>D</th><th>U</th></tr></thead><tbody data-kw-bind="depth"></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('COUNTROWS(DISTINCT(SELECTCOLUMNS(');
+		expect(result).toContain('[DeviceId]');
+	});
+
+	it('bar chart preAggregate dispatches on value.agg (SUM)', () => {
+		const html = makeV1Html(
+			{
+				'chart': {
+					display: {
+						type: 'bar',
+						preAggregate: {
+							groupBy: 'DeviceId',
+							compute: { name: 'EventCount', agg: 'COUNT' },
+						},
+						groupBy: 'EventCount',
+						value: { agg: 'SUM', column: 'EventCount' },
+					},
+				},
+			},
+			'<div data-kw-bind="chart"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('SUMX(FILTER(_pre_0');
+		expect(result).not.toContain('COUNTROWS(FILTER(_pre_0');
+	});
+
+	it('pie chart preAggregate dispatches on value.agg', () => {
+		const html = makeV1Html(
+			{
+				'chart': {
+					display: {
+						type: 'pie',
+						preAggregate: {
+							groupBy: 'DeviceId',
+							compute: { name: 'EventCount', agg: 'COUNT' },
+						},
+						groupBy: 'EventCount',
+						value: { agg: 'SUM', column: 'EventCount' },
+					},
+				},
+			},
+			'<div data-kw-bind="chart"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('SUMX(FILTER(_pre_0');
+	});
+
+	it('line chart supports preAggregate', () => {
+		const html = makeV1Html(
+			{
+				'trend': {
+					display: {
+						type: 'line',
+						preAggregate: {
+							groupBy: 'SessionId',
+							compute: { name: 'SkillsPerSession', agg: 'DISTINCTCOUNT', column: 'SkillName' },
+						},
+						xAxis: 'SkillsPerSession',
+						series: [{ agg: 'COUNT', label: 'Sessions' }],
+					},
+				},
+			},
+			'<div data-kw-bind="trend"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('_pre_0');
+		expect(result).toContain('SUMMARIZE(_pre_0');
+		expect(result).toContain('<polyline');
+		expect(result).toContain('COUNTROWS(FILTER(_pre_0');
+	});
+
+	it('pivot supports preAggregate with multi-column groupBy', () => {
+		const html = makeV1Html(
+			{
+				'pivot': {
+					display: {
+						type: 'pivot',
+						preAggregate: {
+							groupBy: ['SessionId', 'ClientName'],
+							compute: { name: 'SkillCount', agg: 'DISTINCTCOUNT', column: 'SkillName' },
+						},
+						rows: ['ClientName'],
+						pivotBy: 'SkillCount',
+						pivotValues: ['1', '2', '3'],
+						value: 'SkillCount',
+						agg: 'COUNT',
+						total: true,
+					},
+				},
+			},
+			'<table data-kw-bind="pivot"><thead><tr><th>C</th></tr></thead><tbody></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		// Multi-column groupBy → SUMMARIZE instead of VALUES
+		expect(result).toContain("SUMMARIZE('Fact_Events'");
+		expect(result).toContain('[SessionId]');
+		expect(result).toContain('[ClientName]');
+		// Pre-agg VAR must exist before rows VAR
+		expect(result).toContain('_pre_0');
+		// Pivot cells use FILTER on pre-agg VAR
+		expect(result).toContain('FILTER(_pre_0');
+		// Total cell also uses FILTER on pre-agg
 		expect(result).toContain('<strong>');
 	});
 
-	it('omits total column when total is false or absent', () => {
-		const html = makeV2Html(
+	it('preAggregate groupBy as single-element array normalizes correctly', () => {
+		const html = makeV1Html(
 			{
-				'sales-pivot': {
-					sectionId: 'query_1', sectionName: 'Regional Sales', columns: ['Region', 'Sales', 'Quarter'],
+				'depth': {
 					display: {
-						type: 'pivot', rows: ['Region'], pivotBy: 'Quarter',
-						pivotValues: ['Q1'], value: 'Sales', agg: 'SUM',
+						type: 'table',
+						preAggregate: {
+							groupBy: ['SessionId'],
+							compute: { name: 'SkillsPerSession', agg: 'DISTINCTCOUNT', column: 'SkillName' },
+						},
+						columns: [
+							{ name: 'SkillsPerSession' },
+							{ name: 'Count', agg: 'COUNT' },
+						],
+						groupBy: ['SkillsPerSession'],
 					},
 				},
 			},
-			'<table data-kw-bind="sales-pivot"><thead><tr><th>R</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+			'<table><thead><tr><th>D</th><th>C</th></tr></thead><tbody data-kw-bind="depth"></tbody></table>',
 		);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).not.toContain('Total');
-	});
-
-	it('generates thead with pivot value names', () => {
-		const html = makeV2Html(
-			{
-				'sales-pivot': {
-					sectionId: 'query_1', sectionName: 'Regional Sales', columns: ['Region', 'Sales', 'Quarter'],
-					display: {
-						type: 'pivot', rows: ['Region'], pivotBy: 'Quarter',
-						pivotValues: ['Q1', 'Q2', 'Q3'], value: 'Sales', agg: 'SUM',
-					},
-				},
-			},
-			'<table data-kw-bind="sales-pivot"><thead><tr><th>R</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
-		);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('Q1');
-		expect(result).toContain('Q2');
-		expect(result).toContain('Q3');
-		expect(result).toContain('Region');
-	});
-
-	it('sorts rows by row dimension', () => {
-		const html = makeV2Html(
-			{
-				'sales-pivot': {
-					sectionId: 'query_1', sectionName: 'Regional Sales', columns: ['Region', 'Sales', 'Quarter'],
-					display: {
-						type: 'pivot', rows: ['Region'], pivotBy: 'Quarter',
-						pivotValues: ['Q1'], value: 'Sales', agg: 'SUM',
-					},
-				},
-			},
-			'<table data-kw-bind="sales-pivot"><thead><tr><th>R</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
-		);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('ASC');
+		const result = generateDaxMeasure(html, [factDataSource]);
+		// Single-element array → VALUES (not SUMMARIZE)
+		expect(result).toContain('VALUES(');
+		expect(result).not.toContain('SUMMARIZE(\'Fact_Events\'');
 	});
 });
 
-describe('generateDaxMeasure — v2 scalar display', () => {
-	it('generates FORMAT with specified agg and column', () => {
-		const html = makeV2Html(
-			{
-				'total-sales': {
-					sectionId: 'query_1', sectionName: 'Regional Sales',
-					display: { type: 'scalar', agg: 'SUM', column: 'Sales', format: '$#,##0' },
-				},
-			},
-			'<div data-kw-bind="total-sales">$0</div>',
-		);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('SUMX');
-		expect(result).toContain('[Sales]');
-		expect(result).toContain('$#,##0');
-	});
+// ── SVG chart binding DAX generation ────────────────────────────────────────
 
-	it('handles COUNT agg without column ref', () => {
-		const html = makeV2Html(
+describe('generateDaxMeasure — bar chart', () => {
+	it('generates SUMMARIZE + CONCATENATEX with SVG rect elements', () => {
+		const html = makeV1Html(
 			{
-				'row-count': {
-					sectionId: 'query_1', sectionName: 'Regional Sales',
-					display: { type: 'scalar', agg: 'COUNT', column: 'Region', format: '#,##0' },
+				'os-chart': {
+					display: {
+						type: 'bar', groupBy: 'OS',
+						value: { agg: 'COUNT', format: '#,##0' },
+					},
 				},
 			},
-			'<span data-kw-bind="row-count">0</span>',
+			'<div data-kw-bind="os-chart"></div>',
 		);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('COUNTROWS');
-	});
-
-	it('handles AVG agg', () => {
-		const html = makeV2Html(
-			{
-				'avg-sales': {
-					sectionId: 'query_1', sectionName: 'Regional Sales',
-					display: { type: 'scalar', agg: 'AVG', column: 'Sales', format: '#,##0' },
-				},
-			},
-			'<div data-kw-bind="avg-sales">0</div>',
-		);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('AVERAGEX');
-	});
-});
-
-describe('generateDaxMeasure — v1/v2 mixed', () => {
-	it('handles v1 bindings without display alongside v2 bindings', () => {
-		const html = makeV2Html(
-			{
-				'v1-table': { sectionId: 'query_2', sectionName: 'Categories', columns: ['Category', 'Revenue', 'Units'] },
-				'v2-scalar': {
-					sectionId: 'query_1', sectionName: 'Regional Sales',
-					display: { type: 'scalar', agg: 'SUM', column: 'Sales', format: '$#,##0' },
-				},
-			},
-			'<table data-kw-bind="v1-table"><thead><tr><th>C</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table><div data-kw-bind="v2-scalar">$0</div>',
-		);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		// v1 table binding uses heuristic CONCATENATEX
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('SUMMARIZE');
 		expect(result).toContain('CONCATENATEX');
-		// v2 scalar binding uses explicit SUMX
-		expect(result).toContain('SUMX');
-		expect(result).toContain('$#,##0');
+		expect(result).toContain('<rect');
+		expect(result).toContain('<text');
+		expect(result).toContain('<svg');
+		expect(result).toContain('RETURN');
+	});
+
+	it('applies TOPN when top is specified', () => {
+		const html = makeV1Html(
+			{
+				'top-os': {
+					display: {
+						type: 'bar', groupBy: 'OS',
+						value: { agg: 'COUNT' }, top: 5,
+					},
+				},
+			},
+			'<div data-kw-bind="top-os"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('TOPN(5');
+	});
+
+	it('guards against division by zero with IF(_barmax = 0)', () => {
+		const html = makeV1Html(
+			{
+				'chart': {
+					display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' } },
+				},
+			},
+			'<div data-kw-bind="chart"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('IF(');
+		expect(result).toContain('= 0');
+	});
+
+	it('XML-escapes label values with SUBSTITUTE', () => {
+		const html = makeV1Html(
+			{
+				'chart': {
+					display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' } },
+				},
+			},
+			'<div data-kw-bind="chart"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('SUBSTITUTE');
+		expect(result).toContain('&amp;');
+	});
+
+	it('supports DISTINCTCOUNT aggregation', () => {
+		const html = makeV1Html(
+			{
+				'chart': {
+					display: { type: 'bar', groupBy: 'OS', value: { agg: 'DISTINCTCOUNT', column: 'DeviceId' } },
+				},
+			},
+			'<div data-kw-bind="chart"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('DISTINCTCOUNT');
+		expect(result).toContain('[DeviceId]');
 	});
 });
 
-// ── Provenance v2: conditional cell templates ───────────────────────────────
-
-describe('generateDaxMeasure — v2 flat with cellTemplates', () => {
-	const dsWithRate: PowerBiDataSource[] = [
-		{
-			name: 'Templates',
-			sectionId: 'query_3',
-			clusterUrl: 'https://c.kusto.windows.net',
-			database: 'db',
-			query: 'T',
-			columns: [
-				{ name: 'Name', type: 'string' },
-				{ name: 'Count', type: 'long' },
-				{ name: 'SuccessRate', type: 'real' },
-			],
-		},
-	];
-
-	it('wraps cell value in conditional span with IF chain', () => {
-		const html = makeV2Html(
+describe('generateDaxMeasure — pie chart', () => {
+	it('generates SVG circles with stroke-dasharray', () => {
+		const html = makeV1Html(
 			{
-				't-table': {
-					sectionId: 'query_3', sectionName: 'Templates', columns: ['Name', 'Count', 'SuccessRate'],
+				'os-pie': {
 					display: {
-						type: 'flat', columns: ['Name', 'Count', 'SuccessRate'],
-						formats: { SuccessRate: '0.0%' },
-						cellTemplates: {
-							SuccessRate: {
-								baseClass: 'success-badge',
-								thresholds: [{ min: 80, class: 'success-high' }, { min: 40, class: 'success-mid' }],
-								defaultClass: 'success-low',
-							},
-						},
+						type: 'pie', groupBy: 'OS',
+						value: { agg: 'COUNT' },
 					},
 				},
 			},
-			'<table data-kw-bind="t-table"><thead><tr><th>N</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+			'<div data-kw-bind="os-pie"></div>',
 		);
-		const result = generateDaxMeasure(html, dsWithRate);
-		expect(result).toContain('IF([SuccessRate] >= 80');
-		expect(result).toContain('success-high');
-		expect(result).toContain('success-mid');
-		expect(result).toContain('success-low');
-		expect(result).toContain('success-badge');
-		// Verify correct IF nesting order: highest threshold first
-		expect(result).toContain('IF([SuccessRate] >= 80, "success-high", IF([SuccessRate] >= 40, "success-mid", "success-low"))');
-		expect(result).toContain('<span');
-		expect(result).toContain('</span>');
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('<circle');
+		expect(result).toContain('stroke-dasharray');
+		expect(result).toContain('stroke-dashoffset');
+		expect(result).toContain('PI()');
+		expect(result).toContain('<svg');
 	});
 
-	it('renders non-template columns normally alongside template columns', () => {
-		const html = makeV2Html(
+	it('computes running totals with SUMX + FILTER', () => {
+		const html = makeV1Html(
 			{
-				't-table': {
-					sectionId: 'query_3', sectionName: 'Templates', columns: ['Name', 'Count', 'SuccessRate'],
-					display: {
-						type: 'flat', columns: ['Name', 'Count', 'SuccessRate'],
-						formats: { Count: '#,##0', SuccessRate: '0.0%' },
-						cellTemplates: {
-							SuccessRate: {
-								thresholds: [{ min: 50, class: 'good' }],
-								defaultClass: 'bad',
-							},
-						},
-					},
+				'pie': {
+					display: { type: 'pie', groupBy: 'OS', value: { agg: 'COUNT' } },
 				},
 			},
-			'<table data-kw-bind="t-table"><thead><tr><th>N</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+			'<div data-kw-bind="pie"></div>',
 		);
-		const result = generateDaxMeasure(html, dsWithRate);
-		expect(result).toContain('[Name]');
-		expect(result).toContain('#,##0');
-		expect(result).toContain('IF([SuccessRate] >= 50');
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('SUMX(FILTER');
+		expect(result).toContain('[Rank]');
 	});
 
-	it('handles empty thresholds — uses defaultClass only', () => {
-		const html = makeV2Html(
+	it('guards against zero total', () => {
+		const html = makeV1Html(
 			{
-				't-table': {
-					sectionId: 'query_3', sectionName: 'Templates', columns: ['Name', 'SuccessRate'],
-					display: {
-						type: 'flat', columns: ['Name', 'SuccessRate'],
-						cellTemplates: {
-							SuccessRate: { baseClass: 'badge', thresholds: [], defaultClass: 'neutral' },
-						},
-					},
+				'pie': {
+					display: { type: 'pie', groupBy: 'OS', value: { agg: 'COUNT' } },
 				},
 			},
-			'<table data-kw-bind="t-table"><thead><tr><th>N</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+			'<div data-kw-bind="pie"></div>',
 		);
-		const result = generateDaxMeasure(html, dsWithRate);
-		expect(result).toContain('neutral');
-		expect(result).not.toContain('IF([SuccessRate]');
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('IF(');
+		expect(result).toContain('= 0');
 	});
 
-	it('works with percentage format and cellTemplate together', () => {
-		const html = makeV2Html(
+	it('applies TOPN when top is specified', () => {
+		const html = makeV1Html(
 			{
-				't-table': {
-					sectionId: 'query_3', sectionName: 'Templates', columns: ['SuccessRate'],
-					display: {
-						type: 'flat', columns: ['SuccessRate'],
-						formats: { SuccessRate: '0.0%' },
-						cellTemplates: {
-							SuccessRate: { thresholds: [{ min: 80, class: 'high' }], defaultClass: 'low' },
-						},
-					},
+				'pie': {
+					display: { type: 'pie', groupBy: 'OS', value: { agg: 'COUNT' }, top: 6 },
 				},
 			},
-			'<table data-kw-bind="t-table"><thead><tr><th>R</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+			'<div data-kw-bind="pie"></div>',
 		);
-		const result = generateDaxMeasure(html, dsWithRate);
-		expect(result).toContain('"%"');
-		expect(result).toContain('IF([SuccessRate] >= 80');
-		expect(result).toContain('</span>');
-	});
-
-	it('uses custom element tag when specified', () => {
-		const html = makeV2Html(
-			{
-				't-table': {
-					sectionId: 'query_3', sectionName: 'Templates', columns: ['SuccessRate'],
-					display: {
-						type: 'flat', columns: ['SuccessRate'],
-						cellTemplates: {
-							SuccessRate: { element: 'div', thresholds: [{ min: 50, class: 'ok' }], defaultClass: 'bad' },
-						},
-					},
-				},
-			},
-			'<table data-kw-bind="t-table"><thead><tr><th>R</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
-		);
-		const result = generateDaxMeasure(html, dsWithRate);
-		expect(result).toContain('<div');
-		expect(result).toContain('</div>');
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('TOPN(6');
 	});
 });
 
-// ── Provenance v2: column name remapping (provenance → actual) ──────────────
-
-describe('generateDaxMeasure — column name remapping', () => {
-	const dailyByClientDs: PowerBiDataSource[] = [
-		{
-			name: 'Daily Trend by Client',
-			sectionId: 'query_daily',
-			clusterUrl: 'https://cluster.kusto.windows.net',
-			database: 'db',
-			query: 'T | summarize Refs = count() by Day = bin(timestamp, 1d), Client = tostring(customDimensions.clientname)',
-			columns: [
-				{ name: 'Day', type: 'datetime' },
-				{ name: 'Client', type: 'string' },
-				{ name: 'Refs', type: 'long' },
-			],
-		},
-	];
-
-	it('remaps pivot column names from provenance to actual data-source names', () => {
-		const html = makeV2Html(
+describe('generateDaxMeasure — line chart', () => {
+	it('generates SVG polyline with CONCATENATEX for points', () => {
+		const html = makeV1Html(
 			{
-				'daily-by-client': {
-					sectionId: 'query_daily', sectionName: 'Daily Trend by Client',
-					columns: ['Day', 'ClientName', 'SkillReferences'],
+				'trend': {
 					display: {
-						type: 'pivot', rows: ['Day'], pivotBy: 'ClientName',
-						pivotValues: ['vscode', 'copilot-cli'], value: 'SkillReferences',
-						agg: 'SUM', format: '#,##0', total: true,
+						type: 'line', xAxis: 'Day',
+						series: [{ agg: 'COUNT', label: 'Calls' }],
 					},
 				},
 			},
-			'<table data-kw-bind="daily-by-client"><thead><tr><th>D</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+			'<div data-kw-bind="trend"></div>',
 		);
-		const result = generateDaxMeasure(html, dailyByClientDs);
-		// Should reference the ACTUAL column names, not the provenance ones
-		expect(result).toContain('[Client]');
-		expect(result).toContain('[Refs]');
-		// Should NOT reference the mismatched provenance column names
-		expect(result).not.toContain('[ClientName]');
-		expect(result).not.toContain('[SkillReferences]');
-		// Pivot values are data values, not columns — should be preserved
-		expect(result).toContain('"vscode"');
-		expect(result).toContain('"copilot-cli"');
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('<polyline');
+		expect(result).toContain('points=');
+		expect(result).toContain('CONCATENATEX');
+		expect(result).toContain('<svg');
 	});
 
-	it('remaps flat column names from provenance to actual data-source names', () => {
-		const html = makeV2Html(
+	it('computes Y scaling with MIN/MAX/range guards', () => {
+		const html = makeV1Html(
 			{
-				'flat-table': {
-					sectionId: 'query_daily', sectionName: 'Daily Trend by Client',
-					columns: ['Day', 'ClientName', 'SkillReferences'],
+				'trend': {
 					display: {
-						type: 'flat', columns: ['Day', 'ClientName', 'SkillReferences'],
-						headers: { Day: 'Date', ClientName: 'Client Name', SkillReferences: 'Refs' },
-						formats: { SkillReferences: '#,##0' },
+						type: 'line', xAxis: 'Day',
+						series: [{ agg: 'COUNT' }],
 					},
 				},
 			},
-			'<table data-kw-bind="flat-table"><thead><tr><th>D</th><th>C</th><th>R</th></tr></thead><tbody><tr><td>X</td><td>Y</td><td>Z</td></tr></tbody></table>',
+			'<div data-kw-bind="trend"></div>',
 		);
-		const result = generateDaxMeasure(html, dailyByClientDs);
-		// Should reference actual column names in DAX
-		expect(result).toContain('[Client]');
-		expect(result).toContain('[Refs]');
-		// Should NOT reference provenance column names
-		expect(result).not.toContain('[ClientName]');
-		expect(result).not.toContain('[SkillReferences]');
-		// Headers (display text) should still appear
-		expect(result).toContain('Client Name');
-		expect(result).toContain('#,##0');
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('_linemin_');
+		expect(result).toContain('_linemax_');
+		expect(result).toContain('_linerange_');
+		expect(result).toContain('IF(');
 	});
 
-	it('remaps scalar column name from provenance to actual data-source name', () => {
-		const html = makeV2Html(
+	it('handles single data point with center-x guard', () => {
+		const html = makeV1Html(
 			{
-				'total': {
-					sectionId: 'query_daily', sectionName: 'Daily Trend by Client',
-					columns: ['Day', 'ClientName', 'SkillReferences'],
-					display: { type: 'scalar', agg: 'SUM', column: 'SkillReferences', format: '#,##0' },
-				},
-			},
-			'<div data-kw-bind="total">0</div>',
-		);
-		const result = generateDaxMeasure(html, dailyByClientDs);
-		expect(result).toContain('[Refs]');
-		expect(result).not.toContain('[SkillReferences]');
-	});
-
-	it('preserves column names when provenance matches actual (identity remap)', () => {
-		const html = makeV2Html(
-			{
-				'sales-pivot': {
-					sectionId: 'query_1', sectionName: 'Regional Sales',
-					columns: ['Region', 'Sales', 'Quarter'],
+				'trend': {
 					display: {
-						type: 'pivot', rows: ['Region'], pivotBy: 'Quarter',
-						pivotValues: ['Q1', 'Q2'], value: 'Sales', agg: 'SUM',
+						type: 'line', xAxis: 'Day',
+						series: [{ agg: 'COUNT' }],
 					},
 				},
 			},
-			'<table data-kw-bind="sales-pivot"><thead><tr><th>R</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+			'<div data-kw-bind="trend"></div>',
 		);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('[Region]');
-		expect(result).toContain('[Sales]');
-		expect(result).toContain('[Quarter]');
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('IF(_linen_');
+		expect(result).toContain('<= 1');
 	});
 
-	it('skips remapping when binding.columns is absent', () => {
-		const html = makeV2Html(
+	it('generates multiple polylines for multi-series', () => {
+		const html = makeV1Html(
 			{
-				'sales-pivot': {
-					sectionId: 'query_1', sectionName: 'Regional Sales',
+				'trend': {
 					display: {
-						type: 'pivot', rows: ['Region'], pivotBy: 'Quarter',
-						pivotValues: ['Q1'], value: 'Sales', agg: 'SUM',
+						type: 'line', xAxis: 'Day',
+						series: [
+							{ agg: 'COUNT', label: 'Calls' },
+							{ agg: 'DISTINCTCOUNT', column: 'DeviceId', label: 'Devices' },
+						],
 					},
 				},
 			},
-			'<table data-kw-bind="sales-pivot"><thead><tr><th>R</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+			'<div data-kw-bind="trend"></div>',
 		);
-		const result = generateDaxMeasure(html, sampleDataSources);
-		expect(result).toContain('[Region]');
-		expect(result).toContain('[Sales]');
+		const result = generateDaxMeasure(html, [factDataSource]);
+		const polylineCount = (result.match(/<polyline/g) || []).length;
+		expect(polylineCount).toBe(2);
+		// Each series gets a distinct points VAR
+		expect(result).toContain('_linepts_0_0');
+		expect(result).toContain('_linepts_0_1');
+	});
+});
+
+describe('generateDaxMeasure — mixed chart + scalar + table', () => {
+	it('generates independent VARs for scalar, table, and chart in same dashboard', () => {
+		const html = makeV1Html(
+			{
+				'total': { display: { type: 'scalar', agg: 'COUNT' } },
+				'top-skills': {
+					display: {
+						type: 'table',
+						columns: [{ name: 'SkillName' }, { name: 'Refs', agg: 'COUNT' }],
+						groupBy: ['SkillName'],
+					},
+				},
+				'os-chart': {
+					display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' } },
+				},
+			},
+			'<span data-kw-bind="total">0</span>'
+			+ '<table data-kw-bind="top-skills"><thead><tr><th>S</th><th>R</th></tr></thead><tbody></tbody></table>'
+			+ '<div data-kw-bind="os-chart"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		// All three types present
+		expect(result).toContain('_scalar_');
+		expect(result).toContain('_thead_');
+		expect(result).toContain('_rows_');
+		expect(result).toContain('_bar_');
+		expect(result).toContain('<svg');
+		expect(result).toContain('<rect');
+		expect(result).toContain('RETURN');
 	});
 });
 
@@ -990,5 +1154,211 @@ describe('full PBI export pipeline integration', () => {
 		const dax = generateDaxMeasure(patched, []);
 		expect(dax).toContain('.kw-pbi-root');
 		expect(dax).toContain('#e6edf3');
+	});
+});
+
+// ── Slicer visual JSON generation ───────────────────────────────────────────
+
+describe('generateSlicerVisualJson', () => {
+	it('uses native slicer visualType', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'Events', 'OS', { x: 25, y: 20, width: 300, height: 60 }));
+		expect(json.visual.visualType).toBe('slicer');
+	});
+
+	it('uses the correct PBIR schema version', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'Events', 'OS', { x: 25, y: 20, width: 300, height: 60 }));
+		expect(json.$schema).toContain('visualContainer/2.8.0');
+	});
+
+	it('references the table and column in Category query state', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'MyTable', 'Region', { x: 0, y: 0, width: 200, height: 60 }));
+		const cat = json.visual.query.queryState.Category;
+		expect(cat).toBeDefined();
+		expect(cat.projections).toHaveLength(1);
+		expect(cat.projections[0].field.Column.Expression.SourceRef.Entity).toBe('MyTable');
+		expect(cat.projections[0].field.Column.Property).toBe('Region');
+		expect(cat.projections[0].queryRef).toBe('MyTable.Region');
+		expect(cat.projections[0].nativeQueryRef).toBe('Region');
+	});
+
+	it('positions the visual using provided coordinates', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'T', 'C', { x: 50, y: 20, width: 400, height: 60 }));
+		expect(json.position.x).toBe(50);
+		expect(json.position.y).toBe(20);
+		expect(json.position.width).toBe(400);
+		expect(json.position.height).toBe(60);
+		expect(json.position.z).toBe(1);
+	});
+
+	it('defaults to Dropdown mode', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'T', 'C', { x: 0, y: 0, width: 200, height: 60 }));
+		expect(json.visual.objects.data[0].properties.mode.expr.Literal.Value).toBe("'Dropdown'");
+	});
+
+	it('supports List mode', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'T', 'C', { x: 0, y: 0, width: 200, height: 60 }, 'list'));
+		expect(json.visual.objects.data[0].properties.mode.expr.Literal.Value).toBe("'Basic'");
+	});
+
+	it('supports Between mode', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'T', 'C', { x: 0, y: 0, width: 200, height: 60 }, 'between'));
+		expect(json.visual.objects.data[0].properties.mode.expr.Literal.Value).toBe("'Between'");
+	});
+
+	it('Between mode includes Values projection with active flag', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'MyTable', 'Day', { x: 0, y: 0, width: 200, height: 60 }, 'between'));
+		const values = json.visual.query.queryState.Values;
+		expect(values).toBeDefined();
+		expect(values.projections).toHaveLength(1);
+		expect(values.projections[0].field.Column.Property).toBe('Day');
+		expect(values.projections[0].field.Column.Expression.SourceRef.Entity).toBe('MyTable');
+		expect(values.projections[0].active).toBe(true);
+	});
+
+	it('Between mode includes sortDefinition', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'MyTable', 'Day', { x: 0, y: 0, width: 200, height: 60 }, 'between'));
+		const sort = json.visual.query.sortDefinition;
+		expect(sort).toBeDefined();
+		expect(sort.isDefaultSort).toBe(true);
+		expect(sort.sort).toHaveLength(1);
+		expect(sort.sort[0].direction).toBe('Ascending');
+		expect(sort.sort[0].field.Column.Property).toBe('Day');
+	});
+
+	it('Between mode includes filterConfig', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'MyTable', 'Day', { x: 0, y: 0, width: 200, height: 60 }, 'between'));
+		expect(json.filterConfig).toBeDefined();
+		expect(json.filterConfig.filters).toHaveLength(1);
+		expect(json.filterConfig.filters[0].type).toBe('Categorical');
+		expect(json.filterConfig.filters[0].field.Column.Property).toBe('Day');
+	});
+
+	it('Dropdown mode includes Values projection with active flag', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'T', 'C', { x: 0, y: 0, width: 200, height: 60 }, 'dropdown'));
+		const values = json.visual.query.queryState.Values;
+		expect(values).toBeDefined();
+		expect(values.projections[0].active).toBe(true);
+	});
+
+	it('Dropdown mode includes filterConfig', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'T', 'C', { x: 0, y: 0, width: 200, height: 60 }, 'dropdown'));
+		expect(json.filterConfig).toBeDefined();
+		expect(json.filterConfig.filters).toHaveLength(1);
+		expect(json.filterConfig.filters[0].type).toBe('Categorical');
+	});
+
+	it('Dropdown mode does not include sortDefinition', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'T', 'C', { x: 0, y: 0, width: 200, height: 60 }, 'dropdown'));
+		expect(json.visual.query.sortDefinition).toBeUndefined();
+	});
+
+	it('sets tabOrder from parameter', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'T', 'C', { x: 0, y: 0, width: 200, height: 60 }, 'dropdown', 3));
+		expect(json.position.tabOrder).toBe(3);
+	});
+
+	it('uses the provided visual name', () => {
+		const json = JSON.parse(generateSlicerVisualJson('mySlicerId', 'T', 'C', { x: 0, y: 0, width: 200, height: 60 }));
+		expect(json.name).toBe('mySlicerId');
+	});
+
+	it('enables drillFilterOtherVisuals', () => {
+		const json = JSON.parse(generateSlicerVisualJson('s1', 'T', 'C', { x: 0, y: 0, width: 200, height: 60 }));
+		expect(json.visual.drillFilterOtherVisuals).toBe(true);
+	});
+});
+
+// ── HTML Content visual with yOffset ────────────────────────────────────────
+
+describe('generateHtmlContentVisualJson — with yOffset', () => {
+	it('positions visual at y=0 with default height when no yOffset', () => {
+		const json = JSON.parse(generateHtmlContentVisualJson('vis1'));
+		expect(json.position.y).toBe(0);
+		expect(json.position.height).toBe(720);
+	});
+
+	it('positions visual at y=0 with default when yOffset is 0', () => {
+		const json = JSON.parse(generateHtmlContentVisualJson('vis1', 1000, 0));
+		expect(json.position.y).toBe(0);
+		expect(json.position.height).toBe(1000);
+	});
+
+	it('offsets y and reduces height when yOffset is provided', () => {
+		const json = JSON.parse(generateHtmlContentVisualJson('vis1', 1000, 100));
+		expect(json.position.y).toBe(100);
+		expect(json.position.height).toBe(900);
+	});
+
+	it('preserves existing tests — width is still 1450', () => {
+		const json = JSON.parse(generateHtmlContentVisualJson('vis1', 720, 100));
+		expect(json.position.width).toBe(1450);
+		expect(json.position.x).toBe(25);
+	});
+});
+
+// ── Dimension table TMDL generation ─────────────────────────────────────────
+
+describe('generateDimTableTmdl', () => {
+	it('generates a table with the dim name', () => {
+		const tmdl = generateDimTableTmdl('dim_Client', 'ClientName', 'string', 'https://c.kusto.windows.net', 'db', 'T | take 100');
+		expect(tmdl).toContain("table 'dim_Client'");
+	});
+
+	it('includes the column with isKey attribute', () => {
+		const tmdl = generateDimTableTmdl('dim_Client', 'ClientName', 'string', 'https://c.kusto.windows.net', 'db', 'T | take 100');
+		expect(tmdl).toContain("column 'ClientName'");
+		expect(tmdl).toContain('isKey');
+		expect(tmdl).toContain('dataType: string');
+	});
+
+	it('maps datetime column type to TMDL dateTime', () => {
+		const tmdl = generateDimTableTmdl('dim_Day', 'Day', 'datetime', 'https://c.kusto.windows.net', 'db', 'T | take 100');
+		expect(tmdl).toContain('dataType: dateTime');
+	});
+
+	it('appends | distinct to the source query', () => {
+		const tmdl = generateDimTableTmdl('dim_OS', 'OS', 'string', 'https://c.kusto.windows.net', 'db', 'T\n| where x > 1\n| summarize count() by OS');
+		expect(tmdl).toContain('| distinct OS');
+		// Original query is collapsed to single line
+		expect(tmdl).not.toContain('\n| where');
+	});
+
+	it('uses DirectQuery mode', () => {
+		const tmdl = generateDimTableTmdl('dim_X', 'X', 'string', 'https://c.kusto.windows.net', 'db', 'T');
+		expect(tmdl).toContain('mode: directQuery');
+	});
+
+	it('uses AzureDataExplorer.Contents M expression', () => {
+		const tmdl = generateDimTableTmdl('dim_X', 'X', 'string', 'https://cluster.kusto.windows.net', 'mydb', 'T | take 10');
+		expect(tmdl).toContain('AzureDataExplorer.Contents("https://cluster.kusto.windows.net", "mydb"');
+	});
+
+	it('has exactly one column', () => {
+		const tmdl = generateDimTableTmdl('dim_Version', 'Version', 'string', 'https://c.kusto.windows.net', 'db', 'T');
+		const columnMatches = tmdl.match(/\tcolumn /g);
+		expect(columnMatches).toHaveLength(1);
+	});
+
+	it('strips KQL single-line comments before collapsing to one line', () => {
+		const query = [
+			'RawEvents',
+			'| where name == "skill_invocation"',
+			'    // Filter out test clients',
+			'    and tostring(customDimensions[\'clientname\']) !endswith \'LiveTests\'',
+			'| project Day = startofday(timestamp), OS = client_OS',
+		].join('\n');
+		const tmdl = generateDimTableTmdl('dim_Day', 'Day', 'datetime', 'https://c.kusto.windows.net', 'db', query);
+		// The | project and | distinct must survive (not be eaten by //)
+		expect(tmdl).toContain('| project Day');
+		expect(tmdl).toContain('| distinct Day');
+		// The comment text itself must be gone
+		expect(tmdl).not.toContain('Filter out test clients');
+	});
+
+	it('preserves :// in cluster URLs within KQL when stripping comments', () => {
+		const query = 'cluster("https://other.kusto.windows.net").database("db").T | project X';
+		const tmdl = generateDimTableTmdl('dim_X', 'X', 'string', 'https://c.kusto.windows.net', 'db', query);
+		expect(tmdl).toContain('https://other.kusto.windows.net');
+		expect(tmdl).toContain('| distinct X');
 	});
 });

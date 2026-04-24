@@ -1796,8 +1796,8 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				if (success && sectionId) { markSectionAgentTouched(sectionId); }
+				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { sectionId, success }, error: success ? undefined : 'Failed to add section' });
-				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				console.error('[Kusto Tools] Error in toolAddSection:', err);
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
@@ -1859,7 +1859,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Section not found' });
-				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -1884,7 +1884,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to collapse/expand section' });
-				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -1937,7 +1937,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success, error: error || undefined }, error: success ? undefined : (error || 'Failed to reorder sections') });
-				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2020,6 +2020,10 @@ window.addEventListener('message', async (event: any) => {
 							success = true;
 							deferResponse = true;
 
+							// Force 'Run Query' mode (plain) — agent-generated queries must not
+							// have take-100 / sample-100 limits silently appended.
+							try { setRunMode(sectionId, 'plain'); } catch (e) { console.error('[kusto]', e); }
+
 							let responded = false;
 							const resultHandler = (resultEvent: any) => {
 								try {
@@ -2089,10 +2093,10 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				if (success) { markSectionAgentTouched(sectionId); }
+				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				if (!deferResponse) {
 					postMessageToHost({ type: 'toolResponse', requestId, result: { success, resultPreview: '' }, error: success ? undefined : 'Failed to configure query section' });
 				}
-				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2212,8 +2216,8 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				if (success) { markSectionAgentTouched(sectionId); }
+				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to update markdown section' });
-				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2269,8 +2273,8 @@ window.addEventListener('message', async (event: any) => {
 				if (success) { markSectionAgentTouched(sectionId); }
 				// Include validation status in response so agent can verify configuration worked
 				const result = { success, ...( validationStatus ? { validation: validationStatus } : {}) };
+				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				postMessageToHost({ type: 'toolResponse', requestId, result, error: success ? undefined : 'Failed to configure chart' });
-				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2306,8 +2310,8 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				if (success) { markSectionAgentTouched(sectionId); }
+				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to configure transformation' });
-				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2338,8 +2342,10 @@ window.addEventListener('message', async (event: any) => {
 				}
 				
 				if (success) { markSectionAgentTouched(sectionId); }
+				// Immediate persist (no 400ms debounce) — the tool response is sent right
+				// after this, and the host may save/close before a debounced persist fires.
+				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success, sectionId }, error: success ? undefined : 'Failed to configure HTML section' });
-				try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -2398,6 +2404,9 @@ window.addEventListener('message', async (event: any) => {
 					success = true;
 				}
 				if (input.execute && sqlEl) {
+					// Force 'Run Query' mode (plain) — agent-generated queries must not
+					// have TOP 100 limits silently appended.
+					try { setRunMode(sectionId, 'plain'); } catch (e) { console.error('[kusto]', e); }
 					// Trigger execution via event
 					sqlEl.dispatchEvent(new CustomEvent('sql-run', { bubbles: true, composed: true }));
 					success = true;
@@ -2748,6 +2757,11 @@ window.addEventListener('message', async (event: any) => {
 					if (typeof sqlEl.setCopilotChatVisible === 'function') {
 						sqlEl.setCopilotChatVisible(true);
 					}
+
+					// Force 'Run Query' mode (plain) — agent-generated queries must not
+					// have TOP 100 limits silently appended.
+					try { setRunMode(sectionId, 'plain'); } catch (e) { console.error('[kusto]', e); }
+
 					await new Promise((r: any) => setTimeout(r, 150));
 					
 					// Find the chat element
