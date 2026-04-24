@@ -3,7 +3,7 @@
 // set of host→webview messages needed for .md file editing.
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages.js';
-import { KwMarkdownSection, markdownBoxes, markdownEditors } from '../sections/kw-markdown-section.js';
+import { KwMarkdownSection, markdownBoxes, markdownEditors, type MarkdownSectionData } from '../sections/kw-markdown-section.js';
 
 const _win = window as any;
 
@@ -18,7 +18,7 @@ function schedulePersist(): void {
 	_persistTimer = setTimeout(() => {
 		_persistTimer = null;
 		try {
-			const sections: Array<Record<string, unknown>> = [];
+			const sections: MarkdownSectionData[] = [];
 			for (const boxId of markdownBoxes) {
 				const el = document.getElementById(boxId) as KwMarkdownSection | null;
 				if (el && typeof el.serialize === 'function') {
