@@ -315,6 +315,58 @@ function generateScalarDaxVar(pbiTable: string, display: ScalarDisplay, ds: Powe
 	return { scalarVar, scalarDax };
 }
 
+// ── Column name remapping (provenance → actual) ────────────────────────────
+
+/**
+ * Build a remap function that maps provenance column names to actual data-source
+ * column names using positional correspondence.  When the provenance `columns`
+ * array is missing, empty, or a different length than the data-source columns
+ * the returned function is the identity.
+ */
+function buildColumnRemap(bindingColumns: string[] | undefined, dsColumns: Array<{ name: string }>): (name: string) => string {
+	if (!bindingColumns || bindingColumns.length === 0 || bindingColumns.length !== dsColumns.length) return n => n;
+	const map = new Map<string, string>();
+	for (let i = 0; i < bindingColumns.length; i++) {
+		if (bindingColumns[i] !== dsColumns[i].name) {
+			map.set(bindingColumns[i], dsColumns[i].name);
+		}
+	}
+	if (map.size === 0) return n => n;
+	return n => map.get(n) ?? n;
+}
+
+/** Remap column-name keys in a record, preserving values. */
+function remapRecordKeys<V>(rec: Record<string, V> | undefined, remap: (n: string) => string): Record<string, V> | undefined {
+	if (!rec) return rec;
+	const out: Record<string, V> = {};
+	for (const [k, v] of Object.entries(rec)) out[remap(k)] = v;
+	return out;
+}
+
+/** Create a remapped copy of a display spec so that all column references use actual data-source names. */
+function remapDisplay(display: FlatDisplay | PivotDisplay | ScalarDisplay, remap: (n: string) => string): FlatDisplay | PivotDisplay | ScalarDisplay {
+	if (display.type === 'flat') {
+		return {
+			...display,
+			columns: display.columns.map(remap),
+			headers: remapRecordKeys(display.headers, remap),
+			formats: remapRecordKeys(display.formats, remap),
+			cellTemplates: remapRecordKeys(display.cellTemplates, remap),
+		};
+	}
+	if (display.type === 'pivot') {
+		return {
+			...display,
+			rows: display.rows.map(remap),
+			pivotBy: remap(display.pivotBy),
+			value: remap(display.value),
+			// pivotValues are data values, not column names — leave unchanged
+		};
+	}
+	// scalar
+	return { ...display, column: remap(display.column) };
+}
+
 /**
  * Generate a DAX measure expression that builds HTML from live DirectQuery data.
  * v2 provenance: uses `display` specs (flat/pivot/scalar) for explicit DAX generation.
@@ -351,7 +403,9 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 
 		// ── v2 display-driven dispatch (takes priority) ─────────────────
 		if (binding.display) {
-			const { display } = binding;
+			// Remap provenance column names → actual data-source column names
+			const remap = buildColumnRemap(binding.columns, ds.columns);
+			const display = remapDisplay(binding.display, remap);
 
 			if (display.type === 'flat' || display.type === 'pivot') {
 				// Find the <table> element for this binding
@@ -650,6 +704,103 @@ function generateTableTmdl(ds: PowerBiDataSource): string {
 	return lines.join('\n');
 }
 
+// ── CSS custom-property resolution for Power BI ─────────────────────────────
+// The HTML Content visual renders injected HTML inside a <div>, so :root and
+// body selectors don't match — CSS custom properties never resolve. We inline
+// the literal values before exporting.
+
+/**
+ * Resolve CSS custom properties (`var(--name)`) to their literal values.
+ * Extracts definitions from `:root`, `html`, and `body` rule blocks, then
+ * replaces `var(--name)` and `var(--name, fallback)` references inside
+ * `<style>` blocks and `style=""` attributes.  `<script>` content is left
+ * untouched to avoid corrupting JavaScript or provenance JSON.
+ */
+export function resolveCssVariables(html: string): string {
+	// ── 1. Collect variable definitions from :root / html / body blocks ──
+	const varDefs = new Map<string, string>();
+	const selectorRe = /(?::root|html|body)\s*\{([^}]*)\}/gi;
+	let sm: RegExpExecArray | null;
+	while ((sm = selectorRe.exec(html)) !== null) {
+		const block = sm[1];
+		const propRe = /(--[\w-]+)\s*:\s*([^;]+?)(?:\s*;|\s*$)/g;
+		let pm: RegExpExecArray | null;
+		while ((pm = propRe.exec(block)) !== null) {
+			varDefs.set(pm[1], pm[2].trim());
+		}
+	}
+	if (varDefs.size === 0) return html;
+
+	// ── 2. Iteratively resolve var() references inside definition values ──
+	//    Handles chains like --a: var(--b); --b: #fff
+	for (let pass = 0; pass < 10; pass++) {
+		let changed = false;
+		for (const [key, value] of varDefs) {
+			const resolved = replaceVarRefs(value, varDefs);
+			if (resolved !== value) { varDefs.set(key, resolved); changed = true; }
+		}
+		if (!changed) break;
+	}
+
+	// ── 3. Replace var() in <style> blocks ──────────────────────────────
+	html = html.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, (_m, open, css, close) => {
+		return open + replaceVarRefs(css, varDefs) + close;
+	});
+
+	// ── 4. Replace var() in inline style="" attributes ──────────────────
+	html = html.replace(/\bstyle\s*=\s*"([^"]*)"/gi, (_m, styleVal) => {
+		return `style="${replaceVarRefs(styleVal, varDefs)}"`;
+	});
+
+	return html;
+}
+
+/**
+ * Replace all `var(--name)` and `var(--name, fallback)` occurrences in `text`
+ * using the given variable map.  Uses paren-depth counting so fallbacks with
+ * nested parentheses (e.g. `var(--x, rgba(0,0,0,.5))`) are handled correctly.
+ */
+function replaceVarRefs(text: string, vars: Map<string, string>): string {
+	// Find each `var(` and manually walk to the matching `)`
+	let result = '';
+	let i = 0;
+	while (i < text.length) {
+		const varStart = text.indexOf('var(', i);
+		if (varStart === -1) { result += text.substring(i); break; }
+
+		result += text.substring(i, varStart);
+
+		// Walk from the opening `(` to find the matching `)`
+		let depth = 1;
+		let j = varStart + 4; // past "var("
+		while (j < text.length && depth > 0) {
+			if (text[j] === '(') depth++;
+			else if (text[j] === ')') depth--;
+			j++;
+		}
+		// j now points past the closing `)`
+		const inner = text.substring(varStart + 4, j - 1).trim();
+
+		// Split into name and optional fallback at the first comma
+		const commaIdx = inner.indexOf(',');
+		const varName = (commaIdx >= 0 ? inner.substring(0, commaIdx) : inner).trim();
+		const fallback = commaIdx >= 0 ? inner.substring(commaIdx + 1).trim() : undefined;
+
+		const resolved = vars.get(varName);
+		if (resolved !== undefined) {
+			result += resolved;
+		} else if (fallback !== undefined) {
+			result += fallback;
+		} else {
+			// Can't resolve — keep original
+			result += text.substring(varStart, j);
+		}
+
+		i = j;
+	}
+	return result;
+}
+
 // ── Extract background color from HTML ──────────────────────────────────────
 
 /** Extract the body background color from the HTML's CSS. Returns null if not found. */
@@ -657,6 +808,87 @@ function extractHtmlBackground(htmlCode: string): string | null {
 	// Match body { ... background: #xyz ... } or body { ... background-color: #xyz ... }
 	const bodyMatch = htmlCode.match(/body\s*\{[^}]*?\bbackground(?:-color)?\s*:\s*([^;}\s]+)/i);
 	return bodyMatch ? bodyMatch[1].trim() : null;
+}
+
+// ── PBI visual CSS patching (body selector → wrapper class) ─────────────────
+// The HTML Content visual renders content as innerHTML of a <div>, so `body`
+// selectors never match. We duplicate them with a `.kw-pbi-root` class and
+// wrap the body content in a div with that class.
+
+const PBI_ROOT_CLASS = 'kw-pbi-root';
+
+/**
+ * Patch HTML for the Power BI HTML Content visual:
+ * 1. In `<style>` blocks, duplicate every selector group containing `body`
+ *    with a copy where `body` is replaced by `.kw-pbi-root`.
+ * 2. Wrap the `<body>` content (or entire content) in `<div class="kw-pbi-root">`.
+ *
+ * Must run AFTER `resolveCssVariables` and AFTER `extractHtmlBackground`.
+ */
+export function patchCssForPbiVisual(html: string): string {
+	// ── 1. Patch <style> blocks ─────────────────────────────────────────
+	html = html.replace(/(<style\b[^>]*>)([\s\S]*?)(<\/style>)/gi, (_m, open, css, close) => {
+		return open + patchBodySelectorsInCss(css) + close;
+	});
+
+	// ── 2. Wrap body content in .kw-pbi-root div ────────────────────────
+	const bodyOpenRe = /<body\b[^>]*>/i;
+	const bodyCloseRe = /<\/body>/i;
+	const openMatch = html.match(bodyOpenRe);
+	const closeMatch = html.match(bodyCloseRe);
+
+	if (openMatch && closeMatch) {
+		const afterOpen = openMatch.index! + openMatch[0].length;
+		const beforeClose = html.indexOf(closeMatch[0], afterOpen);
+		html = html.substring(0, afterOpen)
+			+ `<div class="${PBI_ROOT_CLASS}">`
+			+ html.substring(afterOpen, beforeClose)
+			+ '</div>'
+			+ html.substring(beforeClose);
+	} else {
+		// No <body> tag — wrap everything after </head> or the entire string
+		const headClose = html.indexOf('</head>');
+		if (headClose >= 0) {
+			const insertAt = headClose + '</head>'.length;
+			html = html.substring(0, insertAt)
+				+ `<div class="${PBI_ROOT_CLASS}">`
+				+ html.substring(insertAt)
+				+ '</div>';
+		} else {
+			html = `<div class="${PBI_ROOT_CLASS}">${html}</div>`;
+		}
+	}
+
+	return html;
+}
+
+/**
+ * For each CSS rule set in the text, if any selector in its comma-separated
+ * list contains standalone `body`, duplicate the entire selector list with
+ * `body` → `.kw-pbi-root`.
+ *
+ * Example: `body .foo, .bar { color: red }` →
+ *          `body .foo, .bar, .kw-pbi-root .foo { color: red }`
+ */
+function patchBodySelectorsInCss(css: string): string {
+	// Match: selector-group { declarations }
+	// Non-greedy: [^{}]* matches selectors, \{[^}]*\} matches the block
+	return css.replace(/([^{}]+)(\{[^}]*\})/g, (_, selectorGroup: string, block: string) => {
+		const selectors = selectorGroup.split(',').map(s => s.trim());
+		const bodyRe = /(?<![a-zA-Z0-9_-])body(?![a-zA-Z0-9_-])/g;
+		const extras: string[] = [];
+
+		for (const sel of selectors) {
+			if (bodyRe.test(sel)) {
+				bodyRe.lastIndex = 0;
+				const patched = sel.replace(bodyRe, `.${PBI_ROOT_CLASS}`);
+				extras.push(patched);
+			}
+		}
+
+		if (extras.length === 0) return selectorGroup + block;
+		return selectors.concat(extras).join(',') + block;
+	});
 }
 
 // ── PBIR functions — matched against Power BI Desktop April 2026 output ─────
@@ -772,6 +1004,17 @@ export async function exportHtmlToPowerBI(
 	// PBI max page height is 14400px; default 16:9 is 720px.
 	const pageHeight = Math.min(14400, Math.max(720, input.previewHeight || 720));
 
+	// ── Resolve CSS custom properties so they work in PBI HTML Content ──
+	// The visual renders inside a <div>, so :root/body selectors don't
+	// match and var() references never resolve.  Inline them now.
+	const resolvedHtml = resolveCssVariables(input.htmlCode);
+
+	// ── Extract background BEFORE patching body selectors (regex expects `body{`) ──
+	const bgColor = extractHtmlBackground(resolvedHtml) || undefined;
+
+	// ── Patch body selectors → .kw-pbi-root wrapper for PBI visual ──
+	const pbiHtml = patchCssForPbiVisual(resolvedHtml);
+
 	const write = async (relativePath: string, content: string | Buffer) => {
 		const uri = vscode.Uri.joinPath(folderUri, relativePath);
 		const data = typeof content === 'string' ? Buffer.from(content, 'utf8') : content;
@@ -796,7 +1039,6 @@ export async function exportHtmlToPowerBI(
 	await write(`${modelFolder}/.platform`, generatePlatformFile('SemanticModel', projectName));
 
 	// ── Report definition (PBIR format — folder-based)
-	const bgColor = extractHtmlBackground(input.htmlCode) || undefined;
 	await write(`${reportFolder}/definition.pbir`, generateDefinitionPbir(modelFolder));
 	await write(`${reportFolder}/definition/version.json`, generatePbirVersionJson());
 	await write(`${reportFolder}/definition/report.json`, generatePbirReportJson());
@@ -823,5 +1065,5 @@ export async function exportHtmlToPowerBI(
 	}
 
 	// ── HTML measures table (DAX measure containing the dashboard HTML/JS)
-	await write(`${modelFolder}/definition/tables/${MEASURES_TABLE_NAME}.tmdl`, generateHtmlMeasureTmdl(input.htmlCode, input.dataSources));
+	await write(`${modelFolder}/definition/tables/${MEASURES_TABLE_NAME}.tmdl`, generateHtmlMeasureTmdl(pbiHtml, input.dataSources));
 }

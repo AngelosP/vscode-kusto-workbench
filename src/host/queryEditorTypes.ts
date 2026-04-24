@@ -137,6 +137,7 @@ export type ExportDashboardMessage = {
 	dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
 };
 export type GetPbiWorkspacesMessage = { type: 'getPbiWorkspaces'; boxId: string };
+export type CheckPbiItemExistsMessage = { type: 'checkPbiItemExists'; boxId: string; workspaceId: string; reportId: string };
 export type PublishToPowerBIMessage = {
 	type: 'publishToPowerBI';
 	boxId: string;
@@ -146,6 +147,12 @@ export type PublishToPowerBIMessage = {
 	pageHeight: number;
 	htmlCode: string;
 	dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
+	/** Present when updating an existing publish (republish). */
+	semanticModelId?: string;
+	reportId?: string;
+	existingReportName?: string;
+	workspaceName?: string;
+	isPersonalWorkspace?: boolean;
 };
 
 export type IncomingWebviewMessage =
@@ -164,6 +171,7 @@ export type IncomingWebviewMessage =
 	| SaveResultsCsvMessage
 	| ExportDashboardMessage
 	| GetPbiWorkspacesMessage
+	| CheckPbiItemExistsMessage
 	| PublishToPowerBIMessage
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
 	| { type: 'setAutoTriggerAutocompleteEnabled'; enabled: boolean }

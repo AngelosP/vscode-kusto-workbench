@@ -41,7 +41,7 @@ import {
 	findPreferredDefaultCopilotModel
 } from './queryEditorTypes';
 import { exportHtmlToPowerBI } from './powerBiExport';
-import { listFabricWorkspaces, publishToPowerBIService } from './powerBiPublish';
+import { listFabricWorkspaces, publishToPowerBIService, checkFabricItemExists } from './powerBiPublish';
 
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
@@ -434,6 +434,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'publishToPowerBI':
 				await this.publishToPowerBIFromWebview(message as PublishToPowerBIMessage);
+				return;
+			case 'checkPbiItemExists':
+				await this.checkPbiItemExistsFromWebview(message as any);
 				return;
 			case 'checkCopilotAvailability':
 				await this.copilot.checkCopilotAvailability(message.boxId);
@@ -898,12 +901,30 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				pageHeight: message.pageHeight,
 				htmlCode: message.htmlCode,
 				dataSources: message.dataSources,
+				semanticModelId: message.semanticModelId,
+				reportId: message.reportId,
+				existingReportName: message.existingReportName,
+				isPersonalWorkspace: message.isPersonalWorkspace,
 			});
-			this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: true, reportUrl: result.reportUrl, scheduleConfigured: result.scheduleConfigured });
+			this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: true,
+				reportUrl: result.reportUrl, scheduleConfigured: result.scheduleConfigured,
+				semanticModelId: result.semanticModelId, reportId: result.reportId,
+				workspaceId: message.workspaceId, reportName: message.reportName,
+				workspaceName: message.workspaceName });
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
 			console.error('[kusto] Power BI publish error:', e);
 			this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: false, error: msg });
+		}
+	}
+
+	private async checkPbiItemExistsFromWebview(message: { boxId: string; workspaceId: string; reportId: string }): Promise<void> {
+		try {
+			const exists = await checkFabricItemExists(message.workspaceId, message.reportId);
+			this.postMessage({ type: 'pbiItemExistsResult', boxId: message.boxId, exists });
+		} catch (e) {
+			console.warn('[kusto] PBI item existence check failed:', e);
+			this.postMessage({ type: 'pbiItemExistsResult', boxId: message.boxId, exists: false });
 		}
 	}
 

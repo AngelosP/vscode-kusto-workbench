@@ -125,7 +125,8 @@ export type OutgoingWebviewMessage =
 	| { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string }
 	| { type: 'exportDashboard'; boxId: string; html: string; suggestedFileName?: string; previewHeight?: number; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> }
 	| { type: 'getPbiWorkspaces'; boxId: string }
-	| { type: 'publishToPowerBI'; boxId: string; workspaceId: string; reportName: string; pageWidth: number; pageHeight: number; htmlCode: string; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> }
+	| { type: 'checkPbiItemExists'; boxId: string; workspaceId: string; reportId: string }
+	| { type: 'publishToPowerBI'; boxId: string; workspaceId: string; reportName: string; pageWidth: number; pageHeight: number; htmlCode: string; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>; semanticModelId?: string; reportId?: string; existingReportName?: string; workspaceName?: string; isPersonalWorkspace?: boolean }
 
 	// Settings
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }

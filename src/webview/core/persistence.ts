@@ -1215,6 +1215,7 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					editorHeightPx: section.editorHeightPx,
 					previewHeightPx: section.previewHeightPx,
 					dataSourceIds: Array.isArray(section.dataSourceIds) ? section.dataSourceIds : undefined,
+					pbiPublishInfo: section.pbiPublishInfo,
 				});
 				continue;
 			}

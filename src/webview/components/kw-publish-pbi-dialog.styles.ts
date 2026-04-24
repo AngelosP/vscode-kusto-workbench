@@ -55,4 +55,12 @@ export const styles = css`
 	.ppd-validation-header{font-size:12px;font-weight:600;color:var(--vscode-editorWarning-foreground, #cca700);margin-bottom:4px}
 	.ppd-validation-item{font-size:11px;color:var(--vscode-foreground);padding:2px 0;padding-left:12px;position:relative}.ppd-validation-item::before{content:'•';position:absolute;left:2px}
 	.ppd-validation-hint{font-size:11px;color:var(--vscode-descriptionForeground);margin-top:6px;line-height:1.4;font-style:italic}
+
+	/* ── Publish mode toggle ── */
+	.ppd-toggle-group{display:flex;gap:0;border-radius:4px;overflow:hidden;border:1px solid var(--vscode-input-border);margin-bottom:8px}
+	.ppd-toggle-btn{flex:1;padding:6px 12px;font-size:12px;font-family:inherit;border:none;cursor:pointer;background:var(--vscode-input-background);color:var(--vscode-foreground);transition:background .15s,color .15s}
+	.ppd-toggle-btn:not(:last-child){border-right:1px solid var(--vscode-input-border)}
+	.ppd-toggle-btn:hover:not(.is-active){background:var(--vscode-list-hoverBackground)}
+	.ppd-toggle-btn.is-active{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
+	.ppd-info-note{font-size:11px;color:var(--vscode-descriptionForeground);line-height:1.4;padding:6px 8px;border-radius:3px;background:var(--vscode-inputValidation-infoBackground, rgba(0,122,204,0.08));border:1px solid var(--vscode-inputValidation-infoBorder, rgba(0,122,204,0.2));margin-top:6px}
 `;

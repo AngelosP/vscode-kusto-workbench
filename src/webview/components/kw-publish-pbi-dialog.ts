@@ -5,10 +5,12 @@ import { customElement, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
+import type { PbiPublishInfo } from '../sections/kw-html-section.js';
 
 type DialogState = 'idle' | 'loading-workspaces' | 'ready' | 'publishing' | 'success' | 'error';
+type PublishMode = 'update' | 'new';
 
-interface PbiWorkspace { id: string; name: string }
+interface PbiWorkspace { id: string; name: string; isPersonal?: boolean }
 
 const STORAGE_KEY_WORKSPACE_ID = 'kw.publishPbi.lastWorkspaceId';
 const STORAGE_KEY_WORKSPACE_NAME = 'kw.publishPbi.lastWorkspaceName';
@@ -29,9 +31,15 @@ export class KwPublishPbiDialog extends LitElement {
 	@state() private _reportUrl = '';
 	@state() private _scheduleConfigured = false;
 	@state() private _visible = false;
+	@state() private _publishMode: PublishMode = 'new';
+	/** True when the existence check confirmed the report is still alive in the stored workspace. */
+	@state() private _existingItemConfirmed = false;
+	/** True while the existence check is in flight. */
+	@state() private _checkingExistence = false;
 
 	private _htmlCode = '';
 	private _boxId = '';
+	private _pbiPublishInfo: PbiPublishInfo | undefined;
 	private _dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> = [];
 	private _dismiss = () => this._cancel();
 
@@ -41,12 +49,14 @@ export class KwPublishPbiDialog extends LitElement {
 		suggestedName: string,
 		previewHeight?: number,
 		boxId?: string,
+		pbiPublishInfo?: PbiPublishInfo,
 	): void {
 		if (this._visible) this.hide();
 		this._dataSources = dataSources;
 		this._htmlCode = htmlCode;
 		this._boxId = boxId || '';
-		this._reportName = suggestedName || 'KustoHtmlDashboard';
+		this._pbiPublishInfo = pbiPublishInfo;
+		this._reportName = pbiPublishInfo?.reportName || suggestedName || 'KustoHtmlDashboard';
 		this._pageWidth = 1280;
 		this._pageHeight = previewHeight || 720;
 		this._errorMessage = '';
@@ -56,11 +66,20 @@ export class KwPublishPbiDialog extends LitElement {
 		this._selectedWorkspaceId = '';
 		this._workspaceFilter = '';
 		this._workspaceDropdownOpen = false;
+		this._publishMode = 'new';
+		this._existingItemConfirmed = false;
+		this._checkingExistence = false;
 		this._state = 'loading-workspaces';
 		this._visible = true;
 		pushDismissable(this._dismiss);
 
 		postMessageToHost({ type: 'getPbiWorkspaces', boxId: this._boxId });
+
+		// Fire existence check in parallel if we have stored publish info
+		if (pbiPublishInfo?.reportId && pbiPublishInfo?.workspaceId) {
+			this._checkingExistence = true;
+			postMessageToHost({ type: 'checkPbiItemExists', boxId: this._boxId, workspaceId: pbiPublishInfo.workspaceId, reportId: pbiPublishInfo.reportId });
+		}
 	}
 
 	hide(): void {
@@ -74,20 +93,35 @@ export class KwPublishPbiDialog extends LitElement {
 		if (message.type === 'pbiWorkspacesResult') {
 			if (message.ok && message.workspaces) {
 				this._workspaces = message.workspaces;
-				// Restore last-used workspace if it still exists
-				const lastId = this._readLastWorkspace();
-				const lastMatch = lastId ? message.workspaces.find((w: PbiWorkspace) => w.id === lastId.id) : null;
-				if (lastMatch) {
-					this._selectedWorkspaceId = lastMatch.id;
-					this._workspaceFilter = lastMatch.name;
-				} else {
-					this._selectedWorkspaceId = '';
-					this._workspaceFilter = '';
+				// If we have stored PBI info, select that workspace; otherwise restore last-used
+				if (this._pbiPublishInfo?.workspaceId) {
+					const storedMatch = message.workspaces.find((w: PbiWorkspace) => w.id === this._pbiPublishInfo!.workspaceId);
+					if (storedMatch) {
+						this._selectedWorkspaceId = storedMatch.id;
+						this._workspaceFilter = storedMatch.name;
+					}
+				}
+				if (!this._selectedWorkspaceId) {
+					const lastId = this._readLastWorkspace();
+					const lastMatch = lastId ? message.workspaces.find((w: PbiWorkspace) => w.id === lastId.id) : null;
+					if (lastMatch) {
+						this._selectedWorkspaceId = lastMatch.id;
+						this._workspaceFilter = lastMatch.name;
+					}
 				}
 				this._state = 'ready';
 			} else {
 				this._errorMessage = message.error || 'Failed to load workspaces.';
 				this._state = 'error';
+			}
+		} else if (message.type === 'pbiItemExistsResult') {
+			this._checkingExistence = false;
+			if (message.exists) {
+				this._existingItemConfirmed = true;
+				this._publishMode = 'update'; // Default to update when item exists
+			} else {
+				this._existingItemConfirmed = false;
+				this._publishMode = 'new';
 			}
 		} else if (message.type === 'publishToPowerBIResult') {
 			if (message.ok && message.reportUrl) {
@@ -105,10 +139,28 @@ export class KwPublishPbiDialog extends LitElement {
 		this.hide();
 	}
 
+	/** Whether the "Update existing / Publish as new" toggle should be visible. */
+	private get _showUpdateToggle(): boolean {
+		if (!this._pbiPublishInfo) return false;
+		if (this._checkingExistence) return false; // Still checking
+		if (!this._existingItemConfirmed) return false; // Item doesn't exist
+		// Only show when workspace matches the stored workspace
+		return this._selectedWorkspaceId === this._pbiPublishInfo.workspaceId;
+	}
+
+	/** Whether the user changed the report name from the stored name (only relevant in update mode). */
+	private get _isRenaming(): boolean {
+		if (!this._pbiPublishInfo) return false;
+		return this._publishMode === 'update' && this._reportName.trim() !== this._pbiPublishInfo.reportName;
+	}
+
 	private _publish(): void {
 		if (!this._selectedWorkspaceId || !this._reportName.trim()) return;
 		this._state = 'publishing';
 		this._errorMessage = '';
+
+		const isUpdate = this._showUpdateToggle && this._publishMode === 'update' && this._pbiPublishInfo;
+		const selectedWorkspace = this._workspaces.find(w => w.id === this._selectedWorkspaceId);
 
 		postMessageToHost({
 			type: 'publishToPowerBI',
@@ -119,7 +171,17 @@ export class KwPublishPbiDialog extends LitElement {
 			pageHeight: this._pageHeight,
 			htmlCode: this._htmlCode,
 			dataSources: this._dataSources,
+			workspaceName: selectedWorkspace?.name,
+			isPersonalWorkspace: selectedWorkspace?.isPersonal,
+			...(isUpdate ? {
+				semanticModelId: this._pbiPublishInfo!.semanticModelId,
+				reportId: this._pbiPublishInfo!.reportId,
+				existingReportName: this._pbiPublishInfo!.reportName,
+			} : {}),
 		});
+
+		// Remember selected workspace
+		if (selectedWorkspace) this._saveLastWorkspace(selectedWorkspace);
 	}
 
 	private _onWorkspaceFilterInput(e: Event): void {
@@ -178,6 +240,34 @@ export class KwPublishPbiDialog extends LitElement {
 
 	private _onHeightInput(e: Event): void {
 		this._pageHeight = Number((e.target as HTMLInputElement).value) || 720;
+	}
+
+	private _onPublishModeChange(mode: PublishMode): void {
+		this._publishMode = mode;
+	}
+
+	// ── Update / Publish-as-new toggle ────────────────────────────────────────
+
+	private _renderUpdateToggle(): TemplateResult | typeof nothing {
+		if (!this._showUpdateToggle) return nothing;
+
+		return html`
+			<div class="ppd-section">
+				<div class="ppd-section-label">Publish mode</div>
+				<div class="ppd-toggle-group">
+					<button class="ppd-toggle-btn ${this._publishMode === 'update' ? 'is-active' : ''}"
+						@click=${() => this._onPublishModeChange('update')}>Update existing</button>
+					<button class="ppd-toggle-btn ${this._publishMode === 'new' ? 'is-active' : ''}"
+						@click=${() => this._onPublishModeChange('new')}>Publish as new</button>
+				</div>
+				${this._publishMode === 'new' ? html`
+					<div class="ppd-info-note">This will create a new report and semantic model. The previously published report will remain unchanged.</div>
+				` : nothing}
+				${this._isRenaming ? html`
+					<div class="ppd-info-note">Renaming will also rename the semantic model in Power BI. If another item in the workspace already has this name, the publish will fail — just pick a different name and try again. Nothing is lost.</div>
+				` : nothing}
+			</div>
+		`;
 	}
 
 	// ── Validation ────────────────────────────────────────────────────────────
@@ -239,12 +329,14 @@ export class KwPublishPbiDialog extends LitElement {
 		const isSuccess = this._state === 'success';
 		const isError = this._state === 'error' && this._errorMessage;
 		const canPublish = this._state === 'ready' && this._selectedWorkspaceId && this._reportName.trim();
+		const isUpdate = this._showUpdateToggle && this._publishMode === 'update';
+		const publishLabel = isUpdate ? 'Update Report' : 'Publish';
 
 		return html`<div class="sd-bg" @mousedown=${this._cancel}><div class="sd" @mousedown=${(e: Event) => e.stopPropagation()}>
 			<div class="sd-h">
 				<div class="sd-h-title">
 					<svg class="sd-h-icon" viewBox="0 0 16 16" fill="currentColor"><rect x="2" y="10" width="3" height="4"/><rect x="6" y="6" width="3" height="8"/><rect x="10" y="3" width="3" height="11"/></svg>
-					<strong>Publish to Power BI</strong>
+					<strong>${isUpdate ? 'Update Power BI Report' : 'Publish to Power BI'}</strong>
 				</div>
 				<button class="nb sd-x" title="Close" @click=${this._cancel}>${ICONS.close}</button>
 			</div>
@@ -280,6 +372,7 @@ export class KwPublishPbiDialog extends LitElement {
 							@input=${this._onNameInput} placeholder="Report name">
 					</div>
 				</div>
+				${this._renderUpdateToggle()}
 				<div class="ppd-section">
 					<div class="ppd-section-label">Layout</div>
 					<div class="ppd-dims">
@@ -301,7 +394,7 @@ export class KwPublishPbiDialog extends LitElement {
 			${isSuccess ? html`<div class="ppd-status-success">
 				<div class="ppd-success-main">
 					<svg class="ppd-success-check" viewBox="0 0 16 16" fill="currentColor"><path d="M8 1a7 7 0 1 1 0 14A7 7 0 0 1 8 1zm3.354 4.646a.5.5 0 0 0-.708 0L7 9.293 5.354 7.646a.5.5 0 1 0-.708.708l2 2a.5.5 0 0 0 .708 0l4-4a.5.5 0 0 0 0-.708z"/></svg>
-					Published successfully
+					${isUpdate ? 'Updated successfully' : 'Published successfully'}
 				</div>
 				<a class="ppd-success-link" href=${this._reportUrl} target="_blank">View report ↗</a>
 				${this._scheduleConfigured ? html`
@@ -317,7 +410,7 @@ export class KwPublishPbiDialog extends LitElement {
 						<button class="sd-btn" @click=${this._cancel}>Cancel</button>
 						<button class="sd-btn sd-btn-primary" @click=${this._publish}
 							?disabled=${!canPublish || isPublishing || isLoading}>
-							${isPublishing ? html`<span class="ppd-spinner"></span> Publishing…` : 'Publish'}
+							${isPublishing ? html`<span class="ppd-spinner"></span> ${isUpdate ? 'Updating…' : 'Publishing…'}` : publishLabel}
 						</button>
 					`}
 			</div>

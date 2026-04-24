@@ -27,6 +27,16 @@ import { __kustoAttachAutoResizeToContent } from '../monaco/resize.js';
 
 export type HtmlSectionMode = 'code' | 'preview';
 
+/** Power BI publish metadata — mirrors the host-side PbiPublishInfo in kqlxFormat.ts. */
+export interface PbiPublishInfo {
+	workspaceId: string;
+	workspaceName?: string;
+	semanticModelId: string;
+	reportId: string;
+	reportName: string;
+	reportUrl: string;
+}
+
 /** Serialized shape for .kqlx persistence — must match KqlxSectionV1 html variant. */
 export interface HtmlSectionData {
 	id: string;
@@ -38,6 +48,7 @@ export interface HtmlSectionData {
 	editorHeightPx?: number;
 	previewHeightPx?: number;
 	dataSourceIds?: string[];
+	pbiPublishInfo?: PbiPublishInfo;
 }
 
 // ─── Provenance ───────────────────────────────────────────────────────────────
@@ -129,6 +140,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	@state() private _wordWrap = true;
 	/** Parsed from `<script type="application/kw-provenance">` in the HTML code. */
 	@state() private _provenance: KwProvenance | null = null;
+	/** Power BI publish metadata — set after first successful publish, persisted in .kqlx. */
+	@state() private _pbiPublishInfo: PbiPublishInfo | undefined;
 
 	private _editor: MonacoEditor | null = null;
 	private _initRetryCount = 0;
@@ -372,7 +385,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _openPublishDialog(htmlCode: string, dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>, previewHeight: number | undefined, suggestedName: string): void {
 		const dialog = this.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
 		if (dialog) {
-			dialog.show(dataSources, htmlCode, suggestedName, previewHeight, this.boxId);
+			dialog.show(dataSources, htmlCode, suggestedName, previewHeight, this.boxId, this._pbiPublishInfo);
 		}
 	}
 
@@ -679,7 +692,19 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				return;
 			}
 
-			if ((e.data.type === 'pbiWorkspacesResult' || e.data.type === 'publishToPowerBIResult') && e.data.boxId === this.boxId) {
+			if ((e.data.type === 'pbiWorkspacesResult' || e.data.type === 'publishToPowerBIResult' || e.data.type === 'pbiItemExistsResult') && e.data.boxId === this.boxId) {
+				// Capture publish GUIDs BEFORE forwarding to dialog so they persist even if the dialog throws.
+				if (e.data.type === 'publishToPowerBIResult' && e.data.ok && e.data.semanticModelId && e.data.reportId) {
+					this._pbiPublishInfo = {
+						workspaceId: e.data.workspaceId,
+						workspaceName: e.data.workspaceName,
+						semanticModelId: e.data.semanticModelId,
+						reportId: e.data.reportId,
+						reportName: e.data.reportName || '',
+						reportUrl: e.data.reportUrl || '',
+					};
+					schedulePersist(undefined, true); // Immediate flush — losing publish GUIDs is costly
+				}
 				const dialog = this.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
 				if (dialog) dialog.handleHostMessage(e.data);
 				return;
@@ -1009,6 +1034,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		const previewH = this._savedPreviewHeightPx ?? this._getWrapperHeightPx('preview-wrapper', this._userResizedPreview);
 		if (previewH !== undefined) data.previewHeightPx = previewH;
 
+		if (this._pbiPublishInfo) data.pbiPublishInfo = this._pbiPublishInfo;
+
 		return data;
 	}
 
@@ -1058,6 +1085,9 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		// No-op: data sources are now declared via provenance in the HTML code.
 		// Kept for backward compatibility with addHtmlBox() restore path.
 	}
+
+	public getPbiPublishInfo(): PbiPublishInfo | undefined { return this._pbiPublishInfo; }
+	public setPbiPublishInfo(info: PbiPublishInfo | undefined): void { this._pbiPublishInfo = info; }
 
 	/** Called by the cascade system when a referenced data source's results change. */
 	public refreshDataBridge(): void {

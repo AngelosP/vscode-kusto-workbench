@@ -341,6 +341,7 @@ This extension is built on top of some fantastic open-source projects. Huge than
 | **node-mssql** | MIT | Tediousjs contributors | [github.com/tediousjs/node-mssql](https://github.com/tediousjs/node-mssql) |
 | **vscode-jsonrpc** | MIT | Microsoft | [github.com/microsoft/vscode-languageserver-node](https://github.com/microsoft/vscode-languageserver-node) |
 | **esbuild** | MIT | Evan Wallace | [github.com/evanw/esbuild](https://github.com/evanw/esbuild) |
+| **HTML Content** (Power BI visual) | MIT | Daniel Marsh-Patrick / Coacervo | [html-content.com](https://html-content.com/) · [GitHub](https://github.com/dm-p/powerbi-visuals-html-content) |
 
 ## License
 

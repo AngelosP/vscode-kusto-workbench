@@ -6,6 +6,8 @@ import {
 	escapeDaxColumnRef,
 	daxColumnExpr,
 	generateDaxMeasure,
+	resolveCssVariables,
+	patchCssForPbiVisual,
 	type PowerBiDataSource,
 } from '../../../src/host/powerBiExport';
 import { parseKwProvenance } from '../../../src/webview/sections/kw-html-section';
@@ -679,5 +681,314 @@ describe('generateDaxMeasure — v2 flat with cellTemplates', () => {
 		const result = generateDaxMeasure(html, dsWithRate);
 		expect(result).toContain('<div');
 		expect(result).toContain('</div>');
+	});
+});
+
+// ── Provenance v2: column name remapping (provenance → actual) ──────────────
+
+describe('generateDaxMeasure — column name remapping', () => {
+	const dailyByClientDs: PowerBiDataSource[] = [
+		{
+			name: 'Daily Trend by Client',
+			sectionId: 'query_daily',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			database: 'db',
+			query: 'T | summarize Refs = count() by Day = bin(timestamp, 1d), Client = tostring(customDimensions.clientname)',
+			columns: [
+				{ name: 'Day', type: 'datetime' },
+				{ name: 'Client', type: 'string' },
+				{ name: 'Refs', type: 'long' },
+			],
+		},
+	];
+
+	it('remaps pivot column names from provenance to actual data-source names', () => {
+		const html = makeV2Html(
+			{
+				'daily-by-client': {
+					sectionId: 'query_daily', sectionName: 'Daily Trend by Client',
+					columns: ['Day', 'ClientName', 'SkillReferences'],
+					display: {
+						type: 'pivot', rows: ['Day'], pivotBy: 'ClientName',
+						pivotValues: ['vscode', 'copilot-cli'], value: 'SkillReferences',
+						agg: 'SUM', format: '#,##0', total: true,
+					},
+				},
+			},
+			'<table data-kw-bind="daily-by-client"><thead><tr><th>D</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, dailyByClientDs);
+		// Should reference the ACTUAL column names, not the provenance ones
+		expect(result).toContain('[Client]');
+		expect(result).toContain('[Refs]');
+		// Should NOT reference the mismatched provenance column names
+		expect(result).not.toContain('[ClientName]');
+		expect(result).not.toContain('[SkillReferences]');
+		// Pivot values are data values, not columns — should be preserved
+		expect(result).toContain('"vscode"');
+		expect(result).toContain('"copilot-cli"');
+	});
+
+	it('remaps flat column names from provenance to actual data-source names', () => {
+		const html = makeV2Html(
+			{
+				'flat-table': {
+					sectionId: 'query_daily', sectionName: 'Daily Trend by Client',
+					columns: ['Day', 'ClientName', 'SkillReferences'],
+					display: {
+						type: 'flat', columns: ['Day', 'ClientName', 'SkillReferences'],
+						headers: { Day: 'Date', ClientName: 'Client Name', SkillReferences: 'Refs' },
+						formats: { SkillReferences: '#,##0' },
+					},
+				},
+			},
+			'<table data-kw-bind="flat-table"><thead><tr><th>D</th><th>C</th><th>R</th></tr></thead><tbody><tr><td>X</td><td>Y</td><td>Z</td></tr></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, dailyByClientDs);
+		// Should reference actual column names in DAX
+		expect(result).toContain('[Client]');
+		expect(result).toContain('[Refs]');
+		// Should NOT reference provenance column names
+		expect(result).not.toContain('[ClientName]');
+		expect(result).not.toContain('[SkillReferences]');
+		// Headers (display text) should still appear
+		expect(result).toContain('Client Name');
+		expect(result).toContain('#,##0');
+	});
+
+	it('remaps scalar column name from provenance to actual data-source name', () => {
+		const html = makeV2Html(
+			{
+				'total': {
+					sectionId: 'query_daily', sectionName: 'Daily Trend by Client',
+					columns: ['Day', 'ClientName', 'SkillReferences'],
+					display: { type: 'scalar', agg: 'SUM', column: 'SkillReferences', format: '#,##0' },
+				},
+			},
+			'<div data-kw-bind="total">0</div>',
+		);
+		const result = generateDaxMeasure(html, dailyByClientDs);
+		expect(result).toContain('[Refs]');
+		expect(result).not.toContain('[SkillReferences]');
+	});
+
+	it('preserves column names when provenance matches actual (identity remap)', () => {
+		const html = makeV2Html(
+			{
+				'sales-pivot': {
+					sectionId: 'query_1', sectionName: 'Regional Sales',
+					columns: ['Region', 'Sales', 'Quarter'],
+					display: {
+						type: 'pivot', rows: ['Region'], pivotBy: 'Quarter',
+						pivotValues: ['Q1', 'Q2'], value: 'Sales', agg: 'SUM',
+					},
+				},
+			},
+			'<table data-kw-bind="sales-pivot"><thead><tr><th>R</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, sampleDataSources);
+		expect(result).toContain('[Region]');
+		expect(result).toContain('[Sales]');
+		expect(result).toContain('[Quarter]');
+	});
+
+	it('skips remapping when binding.columns is absent', () => {
+		const html = makeV2Html(
+			{
+				'sales-pivot': {
+					sectionId: 'query_1', sectionName: 'Regional Sales',
+					display: {
+						type: 'pivot', rows: ['Region'], pivotBy: 'Quarter',
+						pivotValues: ['Q1'], value: 'Sales', agg: 'SUM',
+					},
+				},
+			},
+			'<table data-kw-bind="sales-pivot"><thead><tr><th>R</th></tr></thead><tbody><tr><td>X</td></tr></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, sampleDataSources);
+		expect(result).toContain('[Region]');
+		expect(result).toContain('[Sales]');
+	});
+});
+
+// ── CSS custom-property resolution ──────────────────────────────────────────
+
+describe('resolveCssVariables', () => {
+	it('resolves :root variables in style blocks', () => {
+		const html = '<style>:root{--bg:#0d1117;--text:#e6edf3}body{background:var(--bg);color:var(--text)}</style>';
+		const result = resolveCssVariables(html);
+		expect(result).toContain('background:#0d1117');
+		expect(result).toContain('color:#e6edf3');
+		expect(result).not.toContain('var(--bg)');
+		expect(result).not.toContain('var(--text)');
+	});
+
+	it('resolves variables defined on body selector', () => {
+		const html = '<style>body{--accent:#58a6ff;color:var(--accent)}</style>';
+		const result = resolveCssVariables(html);
+		expect(result).toContain('color:#58a6ff');
+	});
+
+	it('resolves variables defined on html selector', () => {
+		const html = '<style>html{--x:red}.cls{color:var(--x)}</style>';
+		const result = resolveCssVariables(html);
+		expect(result).toContain('color:red');
+	});
+
+	it('handles var(--name, fallback) syntax', () => {
+		const html = '<style>:root{--a:blue}div{color:var(--a, red);border:var(--missing, 1px solid gray)}</style>';
+		const result = resolveCssVariables(html);
+		expect(result).toContain('color:blue');
+		expect(result).toContain('border:1px solid gray');
+	});
+
+	it('handles fallback with nested parentheses', () => {
+		const html = '<style>:root{--x:red}div{color:var(--missing, rgba(0,0,0,.5))}</style>';
+		const result = resolveCssVariables(html);
+		expect(result).toContain('color:rgba(0,0,0,.5)');
+	});
+
+	it('resolves variable chains (var referencing another var)', () => {
+		const html = '<style>:root{--base:#fff;--bg:var(--base)}body{background:var(--bg)}</style>';
+		const result = resolveCssVariables(html);
+		expect(result).toContain('background:#fff');
+	});
+
+	it('resolves variables in inline style attributes', () => {
+		const html = '<style>:root{--bg:#0d1117}</style><body style="background:var(--bg)">';
+		const result = resolveCssVariables(html);
+		expect(result).toContain('style="background:#0d1117"');
+	});
+
+	it('does not touch script content', () => {
+		const html = '<style>:root{--x:red}</style><script>var s = "var(--x)";</script><div style="color:var(--x)">test</div>';
+		const result = resolveCssVariables(html);
+		// Script content preserved
+		expect(result).toContain('<script>var s = "var(--x)";</script>');
+		// Style resolved
+		expect(result).toContain('style="color:red"');
+	});
+
+	it('returns input unchanged when no CSS variables exist', () => {
+		const html = '<style>body{color:white}</style><div>test</div>';
+		expect(resolveCssVariables(html)).toBe(html);
+	});
+
+	it('handles multi-word values like font stacks', () => {
+		const html = "<style>:root{--font:'Segoe UI',sans-serif}body{font-family:var(--font)}</style>";
+		const result = resolveCssVariables(html);
+		expect(result).toContain("font-family:'Segoe UI',sans-serif");
+	});
+
+	it('preserves unresolvable variables without fallback', () => {
+		const html = '<style>div{color:var(--undefined-var)}</style>';
+		const result = resolveCssVariables(html);
+		expect(result).toContain('var(--undefined-var)');
+	});
+});
+
+describe('resolveCssVariables + extractHtmlBackground integration', () => {
+	it('extractHtmlBackground returns literal color after CSS variable resolution', () => {
+		const html = '<style>:root{--bg:#0d1117}body{background:var(--bg);color:#e6edf3}</style>';
+		const resolved = resolveCssVariables(html);
+		// generateHtmlMeasureTmdl uses extractHtmlBackground internally,
+		// but we can verify the resolved HTML would match the regex
+		expect(resolved).toContain('background:#0d1117');
+	});
+});
+
+describe('resolveCssVariables + generateDaxMeasure integration', () => {
+	it('DAX measure contains resolved colors, not var() references', () => {
+		const darkCss = ':root{--bg:#0d1117;--text:#e6edf3;--accent:#58a6ff}';
+		const html = `<html><head><style>${darkCss}body{background:var(--bg);color:var(--text)}</style></head><body><div>Hello</div></body></html>`;
+		const resolved = resolveCssVariables(html);
+		const dax = generateDaxMeasure(resolved, []);
+		expect(dax).toContain('#0d1117');
+		expect(dax).toContain('#e6edf3');
+		expect(dax).not.toContain('var(--bg)');
+		expect(dax).not.toContain('var(--text)');
+	});
+});
+
+// ── PBI visual CSS patching (body selector → .kw-pbi-root) ─────────────────
+
+describe('patchCssForPbiVisual', () => {
+	it('duplicates body selector with .kw-pbi-root', () => {
+		const html = '<style>body{color:#e6edf3;padding:24px}</style><body><div>Hi</div></body>';
+		const result = patchCssForPbiVisual(html);
+		expect(result).toContain('body,.kw-pbi-root{color:#e6edf3;padding:24px}');
+	});
+
+	it('does not match tbody', () => {
+		const html = '<style>tbody{border:none}</style><body><table><tbody></tbody></table></body>';
+		const result = patchCssForPbiVisual(html);
+		// tbody should NOT get .kw-pbi-root duplicate
+		expect(result).not.toContain('.kw-pbi-root{border:none}');
+		expect(result).toContain('tbody{border:none}');
+	});
+
+	it('handles compound selector: body .foo', () => {
+		const html = '<style>body .foo{color:red}</style><body><div class="foo">X</div></body>';
+		const result = patchCssForPbiVisual(html);
+		expect(result).toContain('.kw-pbi-root .foo');
+		expect(result).toContain('body .foo');
+	});
+
+	it('handles comma-separated selectors with body', () => {
+		const html = '<style>html,body{margin:0}</style><body><div>X</div></body>';
+		const result = patchCssForPbiVisual(html);
+		expect(result).toContain('.kw-pbi-root');
+		expect(result).toContain('html');
+		expect(result).toContain('body');
+	});
+
+	it('wraps body content in .kw-pbi-root div', () => {
+		const html = '<html><head></head><body><div>Content</div></body></html>';
+		const result = patchCssForPbiVisual(html);
+		expect(result).toContain('<div class="kw-pbi-root"><div>Content</div></div>');
+	});
+
+	it('wraps content after </head> when no body tag', () => {
+		const html = '<html><head><style>body{color:white}</style></head><div>Content</div></html>';
+		const result = patchCssForPbiVisual(html);
+		expect(result).toContain('<div class="kw-pbi-root">');
+		expect(result).toContain('Content');
+	});
+
+	it('patches multiple body rules', () => {
+		const html = '<style>body{color:white}body .panel{background:black}</style><body><div>X</div></body>';
+		const result = patchCssForPbiVisual(html);
+		expect(result).toContain('.kw-pbi-root{color:white}');
+		expect(result).toContain('.kw-pbi-root .panel{background:black}');
+	});
+
+	it('does not affect rules without body', () => {
+		const html = '<style>.panel{color:red}th{color:gray}</style><body><div>X</div></body>';
+		const result = patchCssForPbiVisual(html);
+		expect(result).toContain('.panel{color:red}');
+		expect(result).toContain('th{color:gray}');
+		// No kw-pbi-root for non-body selectors
+		expect(result).not.toContain('.kw-pbi-root{color:red}');
+	});
+});
+
+describe('full PBI export pipeline integration', () => {
+	it('resolves CSS vars, extracts background, patches body selectors, and wraps content', () => {
+		const html = '<html><head><style>:root{--bg:#0d1117;--text:#e6edf3}body{background:var(--bg);color:var(--text)}td{padding:8px}</style></head><body><table><td>Hello</td></table></body></html>';
+		const resolved = resolveCssVariables(html);
+		// Background extraction works before patch
+		expect(resolved).toContain('background:#0d1117');
+		// Patch for PBI
+		const patched = patchCssForPbiVisual(resolved);
+		// .kw-pbi-root gets body styles including color
+		expect(patched).toContain('.kw-pbi-root{background:#0d1117;color:#e6edf3}');
+		// Content wrapped
+		expect(patched).toContain('<div class="kw-pbi-root">');
+		// td rule unaffected
+		expect(patched).toContain('td{padding:8px}');
+		// DAX measure includes the patched CSS
+		const dax = generateDaxMeasure(patched, []);
+		expect(dax).toContain('.kw-pbi-root');
+		expect(dax).toContain('#e6edf3');
 	});
 });

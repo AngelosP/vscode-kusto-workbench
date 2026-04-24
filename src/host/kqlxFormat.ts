@@ -1,5 +1,15 @@
 export type KqlxVersion = 1;
 
+/** Power BI publish metadata stored per HTML section after first publish. */
+export interface PbiPublishInfo {
+	workspaceId: string;
+	workspaceName?: string;
+	semanticModelId: string;
+	reportId: string;
+	reportName: string;
+	reportUrl: string;
+}
+
 export type KqlxSectionV1 =
 	| {
 			id?: string;
@@ -196,6 +206,8 @@ export type KqlxSectionV1 =
 			previewHeightPx?: number;
 			/** IDs of query/transformation sections this HTML section reads data from. */
 			dataSourceIds?: string[];
+			/** Power BI publish metadata — present after first successful publish. */
+			pbiPublishInfo?: PbiPublishInfo;
 		}
 	| {
 			id?: string;

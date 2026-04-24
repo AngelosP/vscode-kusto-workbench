@@ -83,6 +83,7 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'showSectionDiff',
 	'exportDashboard',
 	'getPbiWorkspaces',
+	'checkPbiItemExists',
 	'publishToPowerBI',
 ] as const satisfies readonly IncomingType[];
 
@@ -113,6 +114,7 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'saveResultsCsv',
 	'exportDashboard',
 	'getPbiWorkspaces',
+	'checkPbiItemExists',
 	'publishToPowerBI',
 
 	// Settings

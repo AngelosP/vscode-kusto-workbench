@@ -2733,6 +2733,9 @@ export function addHtmlBox(options?: any) {
 	if (options && Array.isArray(options.dataSourceIds)) {
 		litEl.setDataSourceIds(options.dataSourceIds);
 	}
+	if (options && options.pbiPublishInfo && typeof options.pbiPublishInfo === 'object') {
+		litEl.setPbiPublishInfo(options.pbiPublishInfo);
+	}
 
 	const afterBoxId = (options && typeof options.afterBoxId === 'string') ? String(options.afterBoxId) : '';
 	const afterEl = afterBoxId ? document.getElementById(afterBoxId) : null;
