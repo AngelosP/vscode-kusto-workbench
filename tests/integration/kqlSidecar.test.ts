@@ -1507,9 +1507,10 @@ suite('.md compat persistence', () => {
 				extension: { packageJSON: { version: 'test' } } as any
 			} as any;
 
+			const extensionRoot = vscode.Uri.file(path.resolve(__dirname, '..', '..', '..'));
 			const provider = new (MdCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				extensionRoot,
 				{} as any
 			) as MdCompatEditorProvider;
 
@@ -1584,9 +1585,10 @@ suite('.md compat persistence', () => {
 				extension: { packageJSON: { version: 'test' } } as any
 			} as any;
 
+			const extensionRoot = vscode.Uri.file(path.resolve(__dirname, '..', '..', '..'));
 			const provider = new (MdCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				extensionRoot,
 				{} as any
 			) as MdCompatEditorProvider;
 

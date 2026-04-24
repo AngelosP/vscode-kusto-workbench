@@ -1,4 +1,5 @@
 import * as assert from 'assert';
+import * as path from 'path';
 import * as vscode from 'vscode';
 
 import { KqlCompatEditorProvider } from '../../src/host/kqlCompatEditorProvider';
@@ -39,7 +40,7 @@ suite('KQL compat editor - inferred cluster/db wiring', () => {
 				} as any
 			} as any;
 
-			const extensionUri = vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench');
+			const extensionUri = vscode.Uri.file(path.resolve(__dirname, '..', '..', '..'));
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
