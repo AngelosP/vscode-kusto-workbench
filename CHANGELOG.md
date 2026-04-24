@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.2.0] - 2026-04-24
+
+* Slicer support for dashboads and exporting them to Power BI
+
 ## [4.1.0] - 2026-04-23
 
 * Oh no big deal, just the ability to save locally or upload HTML dashboards as Power BI reports ... that look and behave identitical.
