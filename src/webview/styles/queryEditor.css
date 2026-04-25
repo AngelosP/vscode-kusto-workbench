@@ -155,9 +155,16 @@
 			padding-top: 0 !important;
 		}
 
+		body.kw-md-wysiwyg-mode .query-box[id^="markdown_"] .kusto-markdown-editor,
+		body.kw-md-wysiwyg-mode kw-markdown-section[id^="markdown_"] .kusto-markdown-editor {
+			margin-right: -10px;
+		}
+
 		/* WYSIWYG / raw-MD bottom breathing room — keeps the cursor away from the
 		   very bottom edge when editing at the end of an .md document. */
-		body[data-kusto-document-kind="md"] .kusto-markdown-editor .toastui-editor-ww-container .toastui-editor-contents,
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .toastui-editor-ww-container .toastui-editor-contents {
+			padding-bottom: 30vh;
+		}
 		body[data-kusto-document-kind="md"] .kusto-markdown-editor .toastui-editor-md-container .toastui-editor-contents {
 			padding-bottom: 30vh;
 		}
@@ -165,7 +172,8 @@
 		/* ── WYSIWYG custom overlay scrollbar ───────────────────────────── */
 		body[data-kusto-document-kind="md"] .kusto-markdown-editor .ProseMirror.kw-md-scrollbar-native-hidden {
 			scrollbar-width: none !important;
-			padding-right: 18px !important;
+			padding-right: 3px !important;
+			padding-bottom: 10px !important;
 			box-sizing: border-box;
 		}
 		body[data-kusto-document-kind="md"] .kusto-markdown-editor .ProseMirror.kw-md-scrollbar-native-hidden::-webkit-scrollbar,
@@ -174,44 +182,53 @@
 			width: 0 !important;
 			height: 0 !important;
 		}
-		body[data-kusto-document-kind="md"] .kusto-markdown-editor .kw-md-scrollbar {
-			position: absolute;
+		body[data-kusto-document-kind="md"] .kw-md-scrollbar {
+			position: fixed;
 			right: 0;
-			width: 14px;
+			width: 10px;
 			background: transparent;
 			opacity: 0;
 			pointer-events: none;
 			transition: opacity 0.15s ease;
-			z-index: 50;
+			z-index: 100000;
 		}
-		body[data-kusto-document-kind="md"] .kusto-markdown-editor .kw-md-scrollbar.is-visible.is-usable {
+		body[data-kusto-document-kind="md"] .kw-md-scrollbar.is-visible.is-usable {
 			opacity: 1;
 			pointer-events: auto;
 		}
-		body[data-kusto-document-kind="md"] .kusto-markdown-editor .kw-md-scrollbar-thumb {
+		body[data-kusto-document-kind="md"] .kw-md-scrollbar-thumb {
 			position: absolute;
 			top: 0;
 			right: 0;
-			width: 14px;
+			width: 10px;
 			min-height: 33px;
 			border-radius: 0;
 			background: var(--vscode-scrollbarSlider-background);
 		}
-		body[data-kusto-document-kind="md"] .kusto-markdown-editor .kw-md-scrollbar:hover .kw-md-scrollbar-thumb {
+		body[data-kusto-document-kind="md"] .kw-md-scrollbar:hover .kw-md-scrollbar-thumb {
 			background: var(--vscode-scrollbarSlider-hoverBackground);
 		}
-		body[data-kusto-document-kind="md"] .kusto-markdown-editor .kw-md-scrollbar.is-dragging .kw-md-scrollbar-thumb {
+		body[data-kusto-document-kind="md"] .kw-md-scrollbar.is-dragging .kw-md-scrollbar-thumb {
 			background: var(--vscode-scrollbarSlider-activeBackground);
 		}
 
 		/* .md Preview mode viewer alignment. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"].is-md-preview .markdown-viewer,
 		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"].is-md-preview .markdown-viewer {
-			margin-left: 10px;
+			margin-left: 0;
 			margin-right: 0;
 			padding-left: 0;
 			padding-right: 0;
 			margin-top: 0;
+		}
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"].is-md-preview .markdown-viewer .toastui-editor-contents,
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"].is-md-preview .markdown-viewer .toastui-editor-contents {
+			padding-left: 10px !important;
+			padding-right: 13px !important;
+		}
+		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"].is-md-preview .markdown-viewer .os-scrollbar-vertical,
+		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"].is-md-preview .markdown-viewer .os-scrollbar-vertical {
+			display: none !important;
 		}
 
 		/* Markdown section wrapper (non-.md file): Toast UI internal containment. */
@@ -827,6 +844,9 @@
 		.markdown-viewer .toastui-editor-contents table {
 			border: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,0.25)) !important;
 			border-collapse: collapse !important;
+			width: 100% !important;
+			max-width: 100% !important;
+			table-layout: fixed !important;
 		}
 
 		.kusto-markdown-editor .toastui-editor-contents table th,
@@ -836,8 +856,22 @@
 			border: 1px solid var(--vscode-editorWidget-border, rgba(128,128,128,0.25)) !important;
 			padding: 4px 10px !important;
 			height: auto !important;
-			overflow-wrap: break-word !important;
+			min-width: 0 !important;
+			max-width: 100% !important;
+			white-space: normal !important;
+			overflow-wrap: anywhere !important;
 			word-wrap: break-word !important;
+			word-break: break-word !important;
+		}
+
+		.kusto-markdown-editor .toastui-editor-contents table th p,
+		.kusto-markdown-editor .toastui-editor-contents table td p,
+		.markdown-viewer .toastui-editor-contents table th p,
+		.markdown-viewer .toastui-editor-contents table td p {
+			white-space: normal !important;
+			overflow-wrap: anywhere !important;
+			word-wrap: break-word !important;
+			word-break: break-word !important;
 		}
 
 		.kusto-markdown-editor .toastui-editor-contents table th,
