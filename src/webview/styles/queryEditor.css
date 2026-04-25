@@ -166,7 +166,15 @@
 			padding-bottom: 30vh;
 		}
 		body[data-kusto-document-kind="md"] .kusto-markdown-editor .toastui-editor-md-container .toastui-editor-contents {
-			padding-bottom: 30vh;
+			padding-bottom: calc(30vh - 10px);
+		}
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .toastui-editor-md-container .toastui-editor-md-preview {
+			height: calc(100% - 20px) !important;
+			margin-bottom: 20px;
+		}
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .toastui-editor-md-container .toastui-editor-md-preview .toastui-editor-contents {
+			margin-top: -8px;
+			padding-bottom: calc(30vh + 20px);
 		}
 
 		/* ── WYSIWYG custom overlay scrollbar ───────────────────────────── */
