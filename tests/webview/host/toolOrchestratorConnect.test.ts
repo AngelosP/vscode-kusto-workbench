@@ -93,4 +93,61 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(t2).toBeGreaterThan(t1);
 		expect(t3).toBeGreaterThan(t2);
 	});
+
+	it('listSections includes filePath and fileName when documentUri is provided', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		orch.connect(
+			vi.fn(),
+			vi.fn(async () => [{ id: 'q1', type: 'query' }]),
+			vi.fn(),
+			'file:///home/user/analysis.kqlx'
+		);
+
+		const result = await orch.listSections();
+		expect(result.filePath).toBe('/home/user/analysis.kqlx');
+		expect(result.fileName).toBe('analysis.kqlx');
+		expect(result.sections).toHaveLength(1);
+	});
+
+	it('listSections omits filePath and fileName when no documentUri is provided', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		orch.connect(
+			vi.fn(),
+			vi.fn(async () => [{ id: 'q1', type: 'query' }]),
+			vi.fn()
+		);
+
+		const result = await orch.listSections();
+		expect(result.filePath).toBeUndefined();
+		expect(result.fileName).toBeUndefined();
+	});
+
+	it('listSections omits filePath and fileName for non-file URI schemes', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		orch.connect(
+			vi.fn(),
+			vi.fn(async () => [{ id: 'q1', type: 'query' }]),
+			vi.fn(),
+			'untitled:Untitled-1'
+		);
+
+		const result = await orch.listSections();
+		expect(result.filePath).toBeUndefined();
+		expect(result.fileName).toBeUndefined();
+	});
+
+	it('disconnectIfOwner clears documentUri', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const token = orch.connect(
+			vi.fn(),
+			vi.fn(async () => []),
+			vi.fn(),
+			'file:///home/user/test.kqlx'
+		);
+
+		orch.disconnectIfOwner(token);
+
+		// After disconnect, listSections should throw (no stateGetter)
+		await expect(orch.listSections()).rejects.toThrow('not currently open');
+	});
 });

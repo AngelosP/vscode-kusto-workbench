@@ -170,6 +170,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		};
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
+		queryEditor.documentUri = document.uri.toString();
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
 
 		// Sidecar support: if there is a sibling .sql.json file that links back to this .sql,

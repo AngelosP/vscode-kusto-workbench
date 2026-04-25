@@ -206,6 +206,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	// Token returned by the orchestrator's connect(), used to guard disconnect.
 	private toolOrchestratorToken: number | undefined;
 
+	/** URI string of the backing document (set by custom editor providers before initializeWebviewPanel). */
+	documentUri?: string;
+
 	private connectToolOrchestrator(): void {
 		if (!toolOrchestrator) return;
 
@@ -215,7 +218,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				const sections = await this.requestSectionsFromWebview();
 				return sections as Array<{ id?: string; type: string; [key: string]: unknown }> | undefined;
 			},
-			async (clusterUrl: string) => this.schema.refreshSchemaForTools(clusterUrl)
+			async (clusterUrl: string) => this.schema.refreshSchemaForTools(clusterUrl),
+			this.documentUri
 		);
 	}
 

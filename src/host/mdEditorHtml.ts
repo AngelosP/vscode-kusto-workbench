@@ -12,12 +12,15 @@ export async function getMdEditorHtml(
 ): Promise<string> {
 	const templateUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'md-editor.html');
 	const cssBundleUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor.bundle.css');
-	const [templateBytes, cssBundleBytes] = await Promise.all([
+	const overlayScrollbarsCssUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'overlayscrollbars.min.css');
+	const [templateBytes, cssBundleBytes, overlayScrollbarsCssBytes] = await Promise.all([
 		vscode.workspace.fs.readFile(templateUri),
 		vscode.workspace.fs.readFile(cssBundleUri),
+		vscode.workspace.fs.readFile(overlayScrollbarsCssUri),
 	]);
 	let template = new TextDecoder('utf-8').decode(templateBytes);
-	const appCssInline = new TextDecoder('utf-8').decode(cssBundleBytes).replaceAll('</style>', '<\\/style>');
+	const appCssInline = new TextDecoder('utf-8').decode(overlayScrollbarsCssBytes).replaceAll('</style>', '<\\/style>')
+		+ new TextDecoder('utf-8').decode(cssBundleBytes).replaceAll('</style>', '<\\/style>');
 
 	const cacheBuster = `${context.extension.packageJSON?.version ?? 'dev'}-${Date.now()}`;
 	const withCacheBuster = (uri: string) => {

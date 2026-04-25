@@ -27,7 +27,24 @@ export class Position {
 }
 
 export class Uri {
-	static parse(value: string) { return new Uri(value); }
+	static parse(value: string) {
+		const u = new Uri(value);
+		// Minimal URI parsing: detect scheme and extract fsPath for file URIs.
+		const schemeMatch = value.match(/^([a-z][a-z0-9+.-]*):/i);
+		if (schemeMatch) {
+			u.scheme = schemeMatch[1].toLowerCase();
+			if (u.scheme === 'file') {
+				// Strip file:// (or file:///) prefix to get the path
+				const raw = value.replace(/^file:\/\/\/?/i, '');
+				// On Windows: file:///C:/foo → C:/foo (drive letter)
+				// On Unix: file:///home/user → /home/user
+				const hasWindowsDrive = /^[a-zA-Z]:/.test(raw);
+				u.fsPath = hasWindowsDrive ? raw : '/' + raw;
+				u.path = '/' + raw;
+			}
+		}
+		return u;
+	}
 	static file(path: string) {
 		const u = new Uri('file://' + path);
 		u.scheme = 'file';

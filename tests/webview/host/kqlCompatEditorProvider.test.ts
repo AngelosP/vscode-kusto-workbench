@@ -66,7 +66,7 @@ describe('resolveLinkedQueryUri', () => {
 	it('resolves file:// URIs', () => {
 		const kqlxUri = Uri.file('/folder/notebook.kqlx');
 		const result = resolveLinkedQueryUri(kqlxUri, 'file:///other/query.kql');
-		expect(result.path).toBe('file:///other/query.kql');
+		expect(result.path).toBe('/other/query.kql');
 	});
 
 	it('resolves Windows absolute paths', () => {

@@ -68,6 +68,7 @@ Merge all sub-agent results into a single answer for the user. If the user asked
 * No file? → `#createKustoFile` with `fileType: "kqlx"`
 * New kqlx files include one empty query section — **reuse it**, don't add another
 * File open? → `#listSections` to find existing sections before adding new ones
+* `#listSections` also returns `filePath` and `fileName` so you always know which file you're working in
 
 ### 2\. For data questions → `#askKustoCopilot`
 

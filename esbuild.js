@@ -383,7 +383,7 @@ async function main() {
 		const BASELINES = {
 			'extension.js':                                        1178,
 			'webview/webview.bundle.js':                           1963,
-			'webview/md-editor.bundle.js':                          113,
+			'webview/md-editor.bundle.js':                          146,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
 			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
 			'monaco/':                                            11445,

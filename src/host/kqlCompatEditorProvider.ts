@@ -232,6 +232,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		};
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
+		queryEditor.documentUri = document.uri.toString();
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
 
 		// Best-effort default selection for plain `.kql/.csl` files (no embedded metadata).

@@ -5,7 +5,8 @@ import './md-persistence.js';
 
 import { sashSheet } from '../shared/sash-styles.js';
 import { scrollbarSheet } from '../shared/scrollbar-styles.js';
-document.adoptedStyleSheets = [...document.adoptedStyleSheets, sashSheet, scrollbarSheet];
+import { osThemeSheet } from '../shared/os-theme-styles.js';
+document.adoptedStyleSheets = [...document.adoptedStyleSheets, sashSheet, scrollbarSheet, osThemeSheet];
 
 // Register the <kw-markdown-section> custom element.
 import '../sections/kw-markdown-section.js';

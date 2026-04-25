@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { createEmptyKqlxOrMdxFile, DevNoteEntry, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
 import { readAllCachedSchemasFromDisk, readCachedSchemaFromDisk, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION } from './schemaCache';
@@ -343,6 +344,8 @@ export class KustoWorkbenchToolOrchestrator {
 	private stateGetter: (() => Promise<ToolSection[] | undefined>) | undefined;
 	// Callback to force-refresh schema from Kusto and update cache
 	private schemaRefresher: ((clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>) | undefined;
+	// URI string of the document currently connected to the orchestrator
+	private activeDocumentUri: string | undefined;
 	// Pending responses from webview
 	private pendingResponses = new Map<string, { resolve: (value: unknown) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 	private responseSeq = 0;
@@ -378,12 +381,14 @@ export class KustoWorkbenchToolOrchestrator {
 	connect(
 		poster: (message: unknown) => void,
 		stateGetter: () => Promise<ToolSection[] | undefined>,
-		schemaRefresher: (clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>
+		schemaRefresher: (clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>,
+		documentUri?: string
 	): number {
 		this.connectionToken++;
 		this.webviewMessagePoster = poster;
 		this.stateGetter = stateGetter;
 		this.schemaRefresher = schemaRefresher;
+		this.activeDocumentUri = documentUri;
 		return this.connectionToken;
 	}
 
@@ -396,6 +401,7 @@ export class KustoWorkbenchToolOrchestrator {
 		this.webviewMessagePoster = undefined;
 		this.stateGetter = undefined;
 		this.schemaRefresher = undefined;
+		this.activeDocumentUri = undefined;
 	}
 
 	/**
@@ -617,7 +623,7 @@ export class KustoWorkbenchToolOrchestrator {
 		return { matches, count: matches.length, pattern };
 	}
 
-	async listSections(): Promise<{ sections: Array<{ id: string; type: string; name?: string; expanded?: boolean; clusterUrl?: string; serverUrl?: string; database?: string; entries?: unknown[] }> }> {
+	async listSections(): Promise<{ sections: Array<{ id: string; type: string; name?: string; expanded?: boolean; clusterUrl?: string; serverUrl?: string; database?: string; entries?: unknown[] }>; filePath?: string; fileName?: string }> {
 		if (!this.stateGetter) {
 			throw new Error('Kusto Workbench is not currently open.');
 		}
@@ -645,7 +651,21 @@ export class KustoWorkbenchToolOrchestrator {
 				const clusterUrl = typeof s.clusterUrl === 'string' ? s.clusterUrl : '';
 				return { id, type, name, expanded, clusterUrl, database };
 			});
-		return { sections };
+
+		// Include the active document's file path and name when available.
+		const result: { sections: typeof sections; filePath?: string; fileName?: string } = { sections };
+		try {
+			if (this.activeDocumentUri) {
+				const uri = vscode.Uri.parse(this.activeDocumentUri);
+				if (uri.scheme === 'file') {
+					result.filePath = uri.fsPath;
+					result.fileName = path.basename(uri.fsPath);
+				}
+			}
+		} catch {
+			// Malformed URI — degrade gracefully by omitting file info.
+		}
+		return result;
 	}
 
 	/**

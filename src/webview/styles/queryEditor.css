@@ -162,6 +162,48 @@
 			padding-bottom: 30vh;
 		}
 
+		/* ── WYSIWYG custom overlay scrollbar ───────────────────────────── */
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .ProseMirror.kw-md-scrollbar-native-hidden {
+			scrollbar-width: none !important;
+			padding-right: 18px !important;
+			box-sizing: border-box;
+		}
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .ProseMirror.kw-md-scrollbar-native-hidden::-webkit-scrollbar,
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .ProseMirror.kw-md-scrollbar-native-hidden::-webkit-scrollbar-corner {
+			display: none !important;
+			width: 0 !important;
+			height: 0 !important;
+		}
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .kw-md-scrollbar {
+			position: absolute;
+			right: 0;
+			width: 14px;
+			background: transparent;
+			opacity: 0;
+			pointer-events: none;
+			transition: opacity 0.15s ease;
+			z-index: 50;
+		}
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .kw-md-scrollbar.is-visible.is-usable {
+			opacity: 1;
+			pointer-events: auto;
+		}
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .kw-md-scrollbar-thumb {
+			position: absolute;
+			top: 0;
+			right: 0;
+			width: 14px;
+			min-height: 33px;
+			border-radius: 0;
+			background: var(--vscode-scrollbarSlider-background);
+		}
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .kw-md-scrollbar:hover .kw-md-scrollbar-thumb {
+			background: var(--vscode-scrollbarSlider-hoverBackground);
+		}
+		body[data-kusto-document-kind="md"] .kusto-markdown-editor .kw-md-scrollbar.is-dragging .kw-md-scrollbar-thumb {
+			background: var(--vscode-scrollbarSlider-activeBackground);
+		}
+
 		/* .md Preview mode viewer alignment. */
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"].is-md-preview .markdown-viewer,
 		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"].is-md-preview .markdown-viewer {

@@ -7,10 +7,17 @@ import { sectionGlowStyles } from '../shared/section-glow.styles.js';
 import { sashSheet } from '../shared/sash-styles.js';
 import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { osStyles } from '../shared/os-styles.js';
+import { OverlayScrollbars, type PartialOptions } from 'overlayscrollbars';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { ensureToastUiLoaded } from '../shared/lazy-vendor.js';
+
+/** Shared OverlayScrollbars options for plain-md scroll containers. */
+const MD_SCROLLBAR_OPTIONS: PartialOptions = {
+	scrollbars: { visibility: 'auto', autoHide: 'move', autoHideDelay: 800, autoHideSuspend: true },
+	overflow: { x: 'hidden', y: 'scroll' },
+};
 
 const _win = window as any;
 
@@ -43,6 +50,16 @@ interface ToastEditorApi {
 interface ToastViewerApi {
 	setValue(value: string): void;
 	dispose(): void;
+}
+
+interface WysiwygScrollbarOverlay {
+	prose: HTMLElement;
+	track: HTMLDivElement;
+	thumb: HTMLDivElement;
+	resizeObserver: ResizeObserver;
+	mutationObserver: MutationObserver;
+	cleanup: () => void;
+	hideTimer: ReturnType<typeof setTimeout> | null;
 }
 
 window.__kustoMarkdownBoxes = window.__kustoMarkdownBoxes || [];
@@ -248,6 +265,12 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	private _isVeryNarrow = false;
 	/** Height stored before entering Preview mode (so we can restore it). */
 	private _prevHeightPx: string | null = null;
+	/** Custom DOM overlay scrollbar for the WYSIWYG ProseMirror surface (plain-md only). */
+	private _wwOverlay: WysiwygScrollbarOverlay | null = null;
+	/** OverlayScrollbars instance for the Preview viewer container (plain-md only). */
+	private _viewerScrollbar: ReturnType<typeof OverlayScrollbars> | null = null;
+	/** Generation counter to invalidate stale rAF scrollbar init callbacks on rapid mode switching. */
+	private _scrollbarInitGeneration = 0;
 
 	// ── Theme observer singleton ─────────────────────────────────────────────
 
@@ -266,6 +289,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		super.disconnectedCallback();
 		document.removeEventListener('click', this._onDocumentClick);
 		this._cleanupResizeObserver();
+		this._destroyScrollbars();
 	}
 
 	override firstUpdated(_changedProperties: PropertyValues): void {
@@ -624,6 +648,9 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 		// Initial sizing.
 		try { api.layout(); } catch (e) { console.error('[kusto]', e); }
+
+		// Initialize the custom WYSIWYG scrollbar (plain-md only).
+		this._ensureWysiwygScrollbar(editorContainer);
 	}
 
 	private _editorInitRetryCount = 0;
@@ -914,6 +941,9 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			const md = this._editorApi?.getValue() ?? '';
 			this._initViewer(md);
 
+			// Initialize overlay scrollbar on the viewer container.
+			this._initViewerScrollbar();
+
 			// Auto-fit on entering Preview mode so user sees full rendered content.
 			const fit = () => { try { this.fitToContents(); } catch (e) { console.error('[kusto]', e); } };
 			fit();
@@ -926,12 +956,25 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			return;
 		}
 
+		// Destroy viewer scrollbar when leaving Preview.
+		this._scrollbarInitGeneration++;
+		try { this._viewerScrollbar?.destroy(); } catch (e) { console.error('[kusto]', e); }
+		this._viewerScrollbar = null;
+
 		// Editor modes (WYSIWYG / Markdown).
 		const toastEditor = this._editorApi?._toastui;
 		if (toastEditor && typeof toastEditor.changeMode === 'function') {
 			try { toastEditor.changeMode(this._mode, true); } catch (e) { console.error('[kusto]', e); }
 		}
 		try { this._editorApi?.layout(); } catch (e) { console.error('[kusto]', e); }
+
+		// Toast UI may replace the WYSIWYG ProseMirror node across mode switches.
+		// Re-bind the custom scrollbar when returning to WYSIWYG.
+		if (this._mode === 'wysiwyg') {
+			requestAnimationFrame(() => { this._ensureWysiwygScrollbar(editorContainer); });
+		} else {
+			this._destroyWysiwygScrollbar();
+		}
 
 		// After a mode switch (especially from preview → editor where the container
 		// transitions from display:none to visible), the TOASTUI toolbar may
@@ -967,6 +1010,198 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 				document.documentElement.scrollTop = 0;
 			}
 		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	// ── Scrollbar lifecycle (plain-md only) ────────────────────────────────────
+
+	private _ensureWysiwygScrollbar(editorContainer = this._getEditorContainer()): void {
+		if (!this.plainMd || !editorContainer) return;
+		const prose = editorContainer.querySelector('.toastui-editor-ww-container .ProseMirror') as HTMLElement | null;
+		const host = editorContainer.querySelector('.toastui-editor-ww-container > .toastui-editor') as HTMLElement | null;
+		if (!prose || !host) return;
+
+		if (this._wwOverlay?.prose === prose && this._wwOverlay.track.isConnected) {
+			this._syncWysiwygScrollbar();
+			return;
+		}
+
+		this._destroyWysiwygScrollbar();
+
+		const track = document.createElement('div');
+		track.className = 'kw-md-scrollbar';
+		const thumb = document.createElement('div');
+		thumb.className = 'kw-md-scrollbar-thumb';
+		track.appendChild(thumb);
+		host.appendChild(track);
+		prose.classList.add('kw-md-scrollbar-native-hidden');
+
+		let dragging = false;
+		let dragStartY = 0;
+		let dragStartScrollTop = 0;
+		let syncFrame: number | null = null;
+
+		const queueSync = () => {
+			if (syncFrame !== null) return;
+			syncFrame = requestAnimationFrame(() => {
+				syncFrame = null;
+				this._syncWysiwygScrollbar();
+			});
+		};
+
+		const show = () => {
+			track.classList.add('is-visible');
+			if (this._wwOverlay?.hideTimer) clearTimeout(this._wwOverlay.hideTimer);
+			if (this._wwOverlay) {
+				this._wwOverlay.hideTimer = setTimeout(() => {
+					if (!dragging) track.classList.remove('is-visible');
+				}, 800);
+			}
+		};
+
+		const onScroll = () => {
+			queueSync();
+			show();
+		};
+
+		const onMouseMove = (event: MouseEvent) => {
+			if (!dragging || !this._wwOverlay) return;
+			event.preventDefault();
+			const maxScrollTop = Math.max(1, prose.scrollHeight - prose.clientHeight);
+			const maxThumbTop = Math.max(1, track.clientHeight - thumb.clientHeight);
+			prose.scrollTop = dragStartScrollTop + ((event.clientY - dragStartY) / maxThumbTop) * maxScrollTop;
+		};
+
+		const stopDrag = (scheduleHide = true) => {
+			if (!dragging) return;
+			dragging = false;
+			track.classList.remove('is-dragging');
+			document.removeEventListener('mousemove', onMouseMove, true);
+			document.removeEventListener('mouseup', onMouseUp, true);
+			if (scheduleHide) show();
+		};
+
+		const onMouseUp = () => { stopDrag(true); };
+
+		const startDrag = (event: MouseEvent) => {
+			event.preventDefault();
+			event.stopPropagation();
+			dragging = true;
+			dragStartY = event.clientY;
+			dragStartScrollTop = prose.scrollTop;
+			track.classList.add('is-visible', 'is-dragging');
+			document.addEventListener('mousemove', onMouseMove, true);
+			document.addEventListener('mouseup', onMouseUp, true);
+		};
+
+		const onTrackMouseDown = (event: MouseEvent) => {
+			event.preventDefault();
+			event.stopPropagation();
+			if (event.target === thumb) return;
+			const rect = track.getBoundingClientRect();
+			const maxScrollTop = Math.max(1, prose.scrollHeight - prose.clientHeight);
+			const maxThumbTop = Math.max(1, track.clientHeight - thumb.clientHeight);
+			const targetThumbTop = Math.max(0, Math.min(maxThumbTop, event.clientY - rect.top - thumb.clientHeight / 2));
+			prose.scrollTop = (targetThumbTop / maxThumbTop) * maxScrollTop;
+			show();
+		};
+
+		const resizeObserver = new ResizeObserver(queueSync);
+		resizeObserver.observe(prose);
+		resizeObserver.observe(host);
+		const mutationObserver = new MutationObserver(queueSync);
+		mutationObserver.observe(prose, { childList: true, subtree: true, characterData: true });
+
+		prose.addEventListener('scroll', onScroll);
+		host.addEventListener('mousemove', show);
+		host.addEventListener('mouseenter', show);
+		track.addEventListener('mousedown', onTrackMouseDown);
+		thumb.addEventListener('mousedown', startDrag);
+
+		this._wwOverlay = {
+			prose,
+			track,
+			thumb,
+			resizeObserver,
+			mutationObserver,
+			hideTimer: null,
+			cleanup: () => {
+				if (syncFrame !== null) cancelAnimationFrame(syncFrame);
+				if (this._wwOverlay?.hideTimer) clearTimeout(this._wwOverlay.hideTimer);
+				stopDrag(false);
+				if (this._wwOverlay?.hideTimer) clearTimeout(this._wwOverlay.hideTimer);
+				prose.removeEventListener('scroll', onScroll);
+				host.removeEventListener('mousemove', show);
+				host.removeEventListener('mouseenter', show);
+				track.removeEventListener('mousedown', onTrackMouseDown);
+				thumb.removeEventListener('mousedown', startDrag);
+				resizeObserver.disconnect();
+				mutationObserver.disconnect();
+				prose.classList.remove('kw-md-scrollbar-native-hidden');
+				track.remove();
+			},
+		};
+
+		this._syncWysiwygScrollbar();
+	}
+
+	private _syncWysiwygScrollbar(): void {
+		const overlay = this._wwOverlay;
+		if (!overlay || !overlay.prose.isConnected || !overlay.track.isConnected) return;
+		const { prose, track, thumb } = overlay;
+		const host = track.parentElement as HTMLElement | null;
+		if (!host) return;
+
+		const hostRect = host.getBoundingClientRect();
+		const proseRect = prose.getBoundingClientRect();
+		track.style.top = Math.max(0, Math.round(proseRect.top - hostRect.top)) + 'px';
+		track.style.height = Math.max(0, Math.round(prose.clientHeight)) + 'px';
+
+		const scrollHeight = prose.scrollHeight;
+		const clientHeight = prose.clientHeight;
+		if (scrollHeight <= clientHeight + 1 || clientHeight <= 0) {
+			track.classList.remove('is-visible', 'is-usable');
+			return;
+		}
+
+		track.classList.add('is-usable');
+		const thumbHeight = Math.max(33, Math.round((clientHeight / scrollHeight) * clientHeight));
+		const maxThumbTop = Math.max(0, clientHeight - thumbHeight);
+		const maxScrollTop = Math.max(1, scrollHeight - clientHeight);
+		thumb.style.height = thumbHeight + 'px';
+		thumb.style.transform = `translateY(${Math.round((prose.scrollTop / maxScrollTop) * maxThumbTop)}px)`;
+	}
+
+	private _destroyWysiwygScrollbar(): void {
+		try { this._wwOverlay?.cleanup(); } catch (e) { console.error('[kusto]', e); }
+		this._wwOverlay = null;
+	}
+
+	/** Initialize OverlayScrollbars on the Preview `.markdown-viewer` container. */
+	private _initViewerScrollbar(): void {
+		if (!this.plainMd) return;
+		const gen = ++this._scrollbarInitGeneration;
+		// Defer to next frame so the viewer DOM is fully rendered.
+		requestAnimationFrame(() => {
+			try {
+				if (gen !== this._scrollbarInitGeneration) return; // stale callback
+				if (!this.isConnected || this._mode !== 'preview') return;
+				const viewerContainer = this._getViewerContainer();
+				if (!viewerContainer) return;
+				if (viewerContainer.style.display === 'none') return;
+				// Standard restructuring init — the viewer is rendered HTML,
+				// not a ProseMirror editor, so child wrapping is safe.
+				try { this._viewerScrollbar?.destroy(); } catch (e) { console.error('[kusto]', e); }
+				this._viewerScrollbar = null;
+				this._viewerScrollbar = OverlayScrollbars(viewerContainer, MD_SCROLLBAR_OPTIONS);
+			} catch (e) { console.error('[kusto] Failed to init viewer overlay scrollbar', e); }
+		});
+	}
+
+	/** Destroy all overlay scrollbar instances. */
+	private _destroyScrollbars(): void {
+		this._destroyWysiwygScrollbar();
+		try { this._viewerScrollbar?.destroy(); } catch (e) { console.error('[kusto]', e); }
+		this._viewerScrollbar = null;
 	}
 
 	// ── Visibility (expand/collapse) ──────────────────────────────────────────

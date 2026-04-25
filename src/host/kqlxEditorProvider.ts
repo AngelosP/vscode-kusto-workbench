@@ -577,6 +577,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
+		queryEditor.documentUri = document.uri.toString();
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
 
 		const documentKind = KqlxEditorProvider.getDocumentKind(document);

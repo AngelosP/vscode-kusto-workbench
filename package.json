@@ -562,7 +562,7 @@
         ],
         "toolReferenceName": "listSections",
         "displayName": "List Sections",
-        "modelDescription": "Lists all sections in the currently open Kusto Workbench notebook. Sections can be query boxes, markdown, charts, transformations, URLs, or Python code. Returns section IDs needed for other operations.",
+        "modelDescription": "Lists all sections in the currently open Kusto Workbench notebook. Returns section IDs needed for other operations, plus the file path and file name of the currently open document (filePath, fileName).",
         "userDescription": "View all sections in the current Kusto Workbench notebook.",
         "canBeReferencedInPrompt": true,
         "icon": "$(list-flat)",
