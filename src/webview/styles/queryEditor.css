@@ -223,8 +223,8 @@
 		}
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"].is-md-preview .markdown-viewer .toastui-editor-contents,
 		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"].is-md-preview .markdown-viewer .toastui-editor-contents {
-			padding-left: 10px !important;
-			padding-right: 13px !important;
+			padding-left: 13px !important;
+			padding-right: 10px !important;
 		}
 		body[data-kusto-document-kind="md"] .query-box[id^="markdown_"].is-md-preview .markdown-viewer .os-scrollbar-vertical,
 		body[data-kusto-document-kind="md"] kw-markdown-section[id^="markdown_"].is-md-preview .markdown-viewer .os-scrollbar-vertical {

@@ -758,7 +758,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 				contents.style.setProperty('border', 'none', 'important');
 				contents.style.setProperty('outline', 'none', 'important');
 				contents.style.setProperty('box-shadow', 'none', 'important');
-				contents.style.setProperty('padding', '0 10px 10px 5px', 'important');
+				contents.style.setProperty('padding', '0 10px 10px 13px', 'important');
 			}
 			// Also strip border on any direct children (TOAST UI viewer wrapper).
 			for (const child of Array.from(viewerContainer.children)) {
