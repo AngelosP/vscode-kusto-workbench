@@ -34,6 +34,7 @@ Feature: KQL companion sidecar — .kql with existing .kql.json skips upgrade pr
 
     # ── TEST 2: Verify add-section buttons are visible (sidecar mode) ───
     When I wait for "button[data-add-kind='markdown']" in the webview for 10 seconds
+    When I evaluate "(() => { const btn = document.querySelector('button[data-add-kind=' + String.fromCharCode(34) + 'markdown' + String.fromCharCode(34) + ']'); if (!btn) throw new Error('Markdown add button not found'); const wrapper = btn.closest('.add-control-wrapper'); const title = String(wrapper?.getAttribute('title') || ''); if (title.includes('companion metadata file') || title.includes('create a companion')) throw new Error('Expected existing sidecar mode, but markdown add control still has compatibility tooltip: ' + title); return 'sidecar-add-control-ready'; })()" in the webview
     Then I take a screenshot "02-add-buttons-visible"
 
     # ── TEST 3: Add a markdown section — should NOT trigger upgrade ─────

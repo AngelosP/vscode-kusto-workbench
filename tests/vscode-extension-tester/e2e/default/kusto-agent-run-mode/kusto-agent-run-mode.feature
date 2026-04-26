@@ -36,10 +36,10 @@ Feature: Agent tool execution forces run mode to plain (Run Query)
     And I wait 2 seconds
 
     # ── ASSERT: run mode changed to plain ─────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const mode = (window.runModesByBoxId || {})[el.boxId]; if (mode !== 'plain') throw new Error('FAIL: mode should be plain after agent execute, got: ' + mode); return 'PASS: mode = plain'; })()" in the webview
+    When I evaluate "(() => { const sections = Array.from(document.querySelectorAll('kw-query-section')); if (sections.length !== 1) throw new Error('Expected exactly 1 Kusto section, got: ' + sections.length); const el = sections[0]; const sectionId = el.boxId || el.id; if (!sectionId) throw new Error('Kusto section has no boxId/id'); const mode = (window.runModesByBoxId || {})[sectionId]; if (mode !== 'plain') throw new Error('FAIL: mode should be plain after agent execute, got: ' + mode); return 'PASS: mode = plain for ' + sectionId; })()" in the webview
 
     # ── ASSERT: button label updated ──────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const btn = document.getElementById(el.boxId + '_run_btn'); const label = btn?.querySelector('.run-btn-label')?.textContent?.trim() || ''; if (label.includes('take') || label.includes('sample') || label.includes('TOP')) throw new Error('FAIL: label still has modifier: ' + label); return 'PASS: label = ' + label; })()" in the webview
+    When I evaluate "(() => { const sections = Array.from(document.querySelectorAll('kw-query-section')); if (sections.length !== 1) throw new Error('Expected exactly 1 Kusto section, got: ' + sections.length); const el = sections[0]; const sectionId = el.boxId || el.id; const btn = document.getElementById(sectionId + '_run_btn'); if (!btn) throw new Error('Run button not found for ' + sectionId); const label = btn.querySelector('.run-btn-label')?.textContent?.replace(/\s+/g, ' ').trim() || ''; const fullText = btn.textContent?.replace(/\s+/g, ' ').trim() || ''; if (label !== 'Run Query') throw new Error('FAIL: label should be exactly Run Query, got: ' + label + ' (button=' + fullText + ')'); return 'PASS: visible run label = ' + label; })()" in the webview
     Then I take a screenshot "02-after-plain"
 
   Scenario: configureKustoQuerySection execute forces sample100 to plain
@@ -62,7 +62,7 @@ Feature: Agent tool execution forces run mode to plain (Run Query)
     And I wait 2 seconds
 
     # ── ASSERT ────────────────────────────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const mode = (window.runModesByBoxId || {})[el.boxId]; if (mode !== 'plain') throw new Error('FAIL: mode should be plain, got: ' + mode); const btn = document.getElementById(el.boxId + '_run_btn'); const label = btn?.querySelector('.run-btn-label')?.textContent?.trim() || ''; if (label.includes('take') || label.includes('sample') || label.includes('TOP')) throw new Error('FAIL: label still has modifier: ' + label); return 'PASS: mode=plain, label=' + label; })()" in the webview
+    When I evaluate "(() => { const sections = Array.from(document.querySelectorAll('kw-query-section')); if (sections.length !== 1) throw new Error('Expected exactly 1 Kusto section, got: ' + sections.length); const el = sections[0]; const sectionId = el.boxId || el.id; if (!sectionId) throw new Error('Kusto section has no boxId/id'); const mode = (window.runModesByBoxId || {})[sectionId]; if (mode !== 'plain') throw new Error('FAIL: mode should be plain, got: ' + mode); const btn = document.getElementById(sectionId + '_run_btn'); if (!btn) throw new Error('Run button not found for ' + sectionId); const label = btn.querySelector('.run-btn-label')?.textContent?.replace(/\s+/g, ' ').trim() || ''; const fullText = btn.textContent?.replace(/\s+/g, ' ').trim() || ''; if (label !== 'Run Query') throw new Error('FAIL: label should be exactly Run Query, got: ' + label + ' (button=' + fullText + ')'); return 'PASS: mode=plain, visible run label=' + label; })()" in the webview
     Then I take a screenshot "04-after-plain-from-sample"
 
   Scenario: askKustoCopilot also forces mode to plain

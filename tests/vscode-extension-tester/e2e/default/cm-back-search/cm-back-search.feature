@@ -3,13 +3,13 @@ Feature: Connection Manager — Back button, filter bar, and Search tab
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
-    And I set setting "extensions.autoUpdate" to "false"
     And I wait 2 seconds
 
   Scenario: Filter bar always visible with Search tab, back button, and search UI
     # ── Open the Connection Manager ───────────────────────────────────────
     When I execute command "kusto.manageConnections"
     And I wait 3 seconds
+    When I wait for "kw-connection-manager" in the webview for 20 seconds
     Then I take a screenshot "01-cm-opened"
 
     # Helper shorthand for shadow root access

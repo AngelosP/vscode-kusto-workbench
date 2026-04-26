@@ -10,8 +10,9 @@ Feature: Kusto section features — toolbar, run modes, persistence without conn
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); els.forEach(s => s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: s.boxId || s.id }, bubbles: true, composed: true }))); return 'removed ' + els.length; })()" in the webview
+    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = Array.from(document.querySelectorAll(tags.join(','))); els.forEach(s => { const id = s.boxId || s.id; s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: id }, bubbles: true, composed: true })); if (s.isConnected) s.remove(); }); return 'removed ' + els.length; })()" in the webview
     And I wait 2 seconds
+    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const remaining = document.querySelectorAll(tags.join(',')).length; if (remaining !== 0) throw new Error('Expected empty workbench before setup, found ' + remaining); return 'empty before setup'; })()" in the webview
 
     When I wait for "button[data-add-kind='query']" in the webview for 20 seconds
     When I click "button[data-add-kind='query']" in the webview
@@ -23,7 +24,7 @@ Feature: Kusto section features — toolbar, run modes, persistence without conn
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const btn = document.getElementById(el.boxId + '_run_btn'); if (!btn) throw new Error('Run button not found'); return 'run button found, class=' + btn.className + ' ✓'; })()" in the webview
 
     # ── TEST 2: Split-button run toggle exists ────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const toggle = document.getElementById(el.boxId + '_run_toggle'); if (!toggle) throw new Error('Run split toggle not found'); return 'run split toggle found ✓'; })()" in the webview
+    When I evaluate "(() => { const sections = Array.from(document.querySelectorAll('kw-query-section')); if (sections.length !== 1) throw new Error('Expected exactly 1 KQL section, got ' + sections.length); const el = sections[0]; const toggle = el.shadowRoot?.querySelector('#' + CSS.escape(el.boxId + '_run_toggle')); if (!toggle) throw new Error('Run split toggle not found in kw-query-section shadow root'); return 'run split toggle found ✓'; })()" in the webview
 
     # ── TEST 3: Run mode menu exists with options ─────────────────────────
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const menu = document.getElementById(el.boxId + '_run_menu'); if (!menu) throw new Error('Run menu not found'); const items = menu.querySelectorAll('.unified-btn-split-menu-item'); if (items.length < 2) throw new Error('Expected at least 2 run mode items, got ' + items.length); const labels = Array.from(items).map(i => i.textContent?.trim()); return 'run modes: ' + labels.join(', ') + ' ✓'; })()" in the webview

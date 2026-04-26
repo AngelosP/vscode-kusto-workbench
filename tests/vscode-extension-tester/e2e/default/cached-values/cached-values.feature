@@ -9,6 +9,7 @@ Feature: Cached Values Viewer — UI structure, kind switching, sections
     # ── Open the Cached Values viewer ─────────────────────────────────────
     When I execute command "kusto.seeCachedValues"
     And I wait 3 seconds
+    When I wait for "kw-cached-values" in the webview for 20 seconds
     Then I take a screenshot "01-cv-opened"
 
     # All queries go through: const sr = document.querySelector('kw-cached-values')?.shadowRoot

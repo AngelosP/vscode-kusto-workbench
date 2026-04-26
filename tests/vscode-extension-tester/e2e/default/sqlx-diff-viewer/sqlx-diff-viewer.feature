@@ -55,7 +55,7 @@ Feature: .sqlx and .mdx file support — custom editor rendering
 
     # Verify 2 SQL sections are present
     When I wait for "kw-sql-section" in the webview for 20 seconds
-    When I evaluate "document.querySelectorAll('kw-sql-section').length" in the webview
+    When I evaluate "(() => { const count = document.querySelectorAll('kw-sql-section').length; if (count !== 2) throw new Error('Expected 2 SQL sections, got ' + count); return 'SQL section count: ' + count; })()" in the webview
     Then I take a screenshot "06-modified-sqlx-two-sections"
 
     # Clean up

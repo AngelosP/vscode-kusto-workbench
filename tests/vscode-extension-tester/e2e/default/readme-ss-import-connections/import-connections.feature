@@ -7,6 +7,7 @@ Feature: Capture import-connections screenshot
     And I wait 5 seconds
     And I execute command "workbench.action.focusActiveEditorGroup"
     And I wait 1 second
+    When I wait for "kw-query-section .monaco-editor" in the webview for 20 seconds
     And I type " "
     And I press "Ctrl+S"
     And I wait 2 seconds

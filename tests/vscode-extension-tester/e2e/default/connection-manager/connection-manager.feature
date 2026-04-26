@@ -9,6 +9,7 @@ Feature: Connection Manager — UI structure, kind switching, modal, empty state
     # ── Open the Connection Manager ───────────────────────────────────────
     When I execute command "kusto.manageConnections"
     And I wait 3 seconds
+    When I wait for "kw-connection-manager" in the webview for 20 seconds
     Then I take a screenshot "01-cm-opened"
 
     # Helper: all queries go through shadow root
