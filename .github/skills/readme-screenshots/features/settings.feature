@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture settings screenshot
   Scenario: VS Code settings showing Kusto Workbench settings
     Given the extension is in a clean state

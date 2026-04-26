@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture markdown screenshot
   Scenario: WYSIWYG markdown editor with rich formatting
     Given the extension is in a clean state

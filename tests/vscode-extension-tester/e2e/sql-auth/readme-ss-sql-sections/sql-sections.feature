@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture sql-sections screenshot for README
   Scenario: SQL query with results — mirrors the Kusto query editor screenshot
     When I move the Dev Host to 0, 0
@@ -10,7 +12,7 @@ Feature: Capture sql-sections screenshot for README
     And I wait 2 seconds
 
     # Remove all existing sections
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); els.forEach(s => s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: s.boxId || s.id }, bubbles: true, composed: true }))); return 'removed ' + els.length; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
 
     # Add SQL section
@@ -48,7 +50,7 @@ Feature: Capture sql-sections screenshot for README
     When I evaluate "(() => { const sec = document.querySelector('kw-sql-section'); const dds = Array.from(sec.shadowRoot.querySelectorAll('kw-dropdown')); let msg = ''; if (dds[0]) { const btn = dds[0].shadowRoot.querySelector('.kusto-dropdown-btn-text'); if (btn) { btn.textContent = 'serverName'; msg += 'server masked; '; } } if (dds[1]) { const btn = dds[1].shadowRoot.querySelector('.kusto-dropdown-btn-text'); if (btn) { btn.textContent = 'databaseName'; msg += 'db masked; '; } } return msg || 'nothing masked'; })()" in the webview
 
     # Remove the default query section if still present
-    When I evaluate "(() => { const qs = document.querySelector('kw-query-section'); if (qs) { qs.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: qs.boxId || qs.id }, bubbles: true, composed: true })); return 'removed kql section'; } return 'no kql section'; })()" in the webview
+    When I evaluate "(() => document.querySelector('kw-query-section') ? window.__testRemoveSection('kw-query-section') : 'no kql section')()" in the webview
     And I wait 1 second
 
     # Save to clear unsaved indicator

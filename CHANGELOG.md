@@ -3,12 +3,16 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.3.0] - Unreleased
+
+* Improved E2E test coverage
+* 
+
 ## [4.2.1] - 2026-04-25
 
 * Bugs
     * Diff view mode stuck initializing and never rendering the actual diff view.
     * Opening .md files was slow and flacky due to messed up scrollbar implementation.
-<br>
 
 ## [4.2.0] - 2026-04-24
 

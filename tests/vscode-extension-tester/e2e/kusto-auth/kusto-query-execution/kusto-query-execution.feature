@@ -10,7 +10,7 @@ Feature: Kusto query execution end-to-end
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); els.forEach(s => s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: s.boxId || s.id }, bubbles: true, composed: true }))); return 'removed ' + els.length; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='query']" in the webview for 20 seconds
@@ -22,7 +22,7 @@ Feature: Kusto query execution end-to-end
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
     # Select a database with data (e.g. Samples, SampleData, or first available)
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (!el) return 'no section'; const dbs = el._databases || []; const target = dbs.find(d => /sample/i.test(d) || /storm/i.test(d)) || dbs[0]; if (!target) return 'no dbs'; el.setDesiredDatabase(target); el.dispatchEvent(new CustomEvent('database-changed', { detail: { boxId: el.boxId, database: target }, bubbles: true, composed: true })); return 'db=' + target; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (!el) throw new Error('KQL section not found'); const dbs = el._databases || []; const target = dbs.find(d => /sample/i.test(d) || /storm/i.test(d)) || dbs[0]; if (!target) throw new Error('No Kusto databases available'); el.setDesiredDatabase(target); el.dispatchEvent(new CustomEvent('database-changed', { detail: { boxId: el.boxId, database: target }, bubbles: true, composed: true })); return 'db=' + target; })()" in the webview
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
     Then I take a screenshot "01-setup-ready"
 
@@ -100,3 +100,4 @@ Feature: Kusto query execution end-to-end
 
     # ── TEST 8: Final verification ──────────────────────────────────────
     Then I take a screenshot "08-final"
+    When I execute command "workbench.action.closeAllEditors"

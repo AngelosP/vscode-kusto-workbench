@@ -10,7 +10,7 @@ Feature: Kusto section features — toolbar, run modes, persistence without conn
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = Array.from(document.querySelectorAll(tags.join(','))); els.forEach(s => { const id = s.boxId || s.id; s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: id }, bubbles: true, composed: true })); if (s.isConnected) s.remove(); }); return 'removed ' + els.length; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
     When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const remaining = document.querySelectorAll(tags.join(',')).length; if (remaining !== 0) throw new Error('Expected empty workbench before setup, found ' + remaining); return 'empty before setup'; })()" in the webview
 

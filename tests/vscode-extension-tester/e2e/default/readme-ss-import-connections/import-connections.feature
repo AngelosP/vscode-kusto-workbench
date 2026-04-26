@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture import-connections screenshot
   Scenario: Cluster dropdown showing import from XML option
     Given the extension is in a clean state

@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture python-sections screenshot
   Scenario: Python section with pandas code and output
     When I move the Dev Host to 0, 0

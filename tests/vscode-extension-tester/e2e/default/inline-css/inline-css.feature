@@ -44,7 +44,7 @@ Feature: Inline CSS — webview is styled at first paint with no external CSS de
     And I wait 5 seconds
 
     # Clear all sections first
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); els.forEach(s => s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: s.boxId || s.id }, bubbles: true, composed: true }))); return 'removed ' + els.length; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
 
     # ── TEST 7: Add-controls are visible and styled as flex ──────────────

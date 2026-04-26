@@ -11,7 +11,7 @@ Feature: SQL auto-trigger schema-based completions
     And I wait 3 seconds
 
     # Remove all existing sections
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); els.forEach(s => s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: s.boxId || s.id }, bubbles: true, composed: true }))); return 'removed ' + els.length + ' sections'; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
@@ -21,8 +21,8 @@ Feature: SQL auto-trigger schema-based completions
     When I wait for "kw-sql-section[data-test-sql-connection='true']" in the webview for 15 seconds
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
-    # Select sampledb
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (!el) return 'no section'; const dbs = el._databases || []; const t = dbs.find(d => d.toLowerCase().includes('sample')) || dbs[0]; if (!t) return 'no dbs (' + dbs.length + ')'; if (el._database !== t) { el.setDatabase(t); el.dispatchEvent(new CustomEvent('sql-database-changed', { detail: { boxId: el.boxId, database: t }, bubbles: true, composed: true })); } return 'db=' + el._database; })()" in the webview
+    # Select sampledb through the database dropdown
+    When I evaluate "window.__testSelectKwDropdownItem(`kw-sql-section .select-wrapper[title='SQL Database'] kw-dropdown`, 'sampledb')" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
 
     # Wait for schema to load
@@ -31,6 +31,7 @@ Feature: SQL auto-trigger schema-based completions
 
     # Auto-trigger defaults to ON — verify it
     When I evaluate "(() => { return 'autoTrigger=' + window.autoTriggerAutocompleteEnabled; })()" in the webview
+    When I evaluate "(() => { window.__assertSqlSuggest = (context, expectedAnyCsv) => { const widgets = Array.from(document.querySelectorAll('.suggest-widget.visible')).filter(w => !w.classList.contains('hidden') && w.style.display !== 'none' && w.offsetParent !== null); if (widgets.length === 0) throw new Error(context + ': expected visible suggest widget'); const widget = widgets[widgets.length - 1]; const widgetText = (widget.textContent || '').trim(); if (/no suggestions/i.test(widgetText)) throw new Error(context + ': suggest widget reported no suggestions'); const rows = Array.from(widget.querySelectorAll('.monaco-list-row')).filter(r => r.offsetParent !== null); const labels = rows.map(r => ((r.querySelector('.label-name') || {}).textContent || '').trim()).filter(Boolean); if (labels.length === 0) throw new Error(context + ': expected visible suggestions, got 0 labels. Text: ' + widgetText.slice(0, 200)); const expected = String(expectedAnyCsv || '').split(',').map(s => s.trim()).filter(Boolean); if (expected.length && !expected.some(e => labels.some(l => l.toLowerCase().includes(e.toLowerCase())))) throw new Error(context + ': expected one of [' + expected.join(', ') + '], got: ' + labels.slice(0, 20).join(', ')); return context + '(' + labels.length + '): ' + labels.slice(0, 12).join(', '); }; return 'SQL suggest assertion helper installed'; })()" in the webview
 
     # ══════════════════════════════════════════════════════════════════════
     # TEST 1: Verify the auto-trigger toggle button exists in the SQL toolbar
@@ -52,17 +53,17 @@ Feature: SQL auto-trigger schema-based completions
     And I wait 1 second
 
     # Set up the editor and type a dot via Monaco's executeEdits API to fire onDidChangeModelContent
-    When I evaluate "(() => { const ed = document.querySelector('kw-sql-section')._editor; ed.setValue('SELECT * FROM SalesLT'); ed.setPosition({lineNumber:1, column:22}); ed.focus(); return 'ready: ' + ed.getValue(); })()" in the webview
+    When I evaluate "window.__testSetMonacoValueAt('kw-sql-section .query-editor', 'SELECT * FROM SalesLT', 1, 22)" in the webview
     And I wait 1 second
 
     # Type the dot via Monaco's native type command — triggers onDidChangeModelContent reliably
-    When I evaluate "(() => { const ed = document.querySelector('kw-sql-section')._editor; ed.focus(); ed.trigger('keyboard', 'type', { text: '.' }); return 'typed dot: ' + ed.getValue(); })()" in the webview
+    When I evaluate "window.__testTypeMonaco('kw-sql-section .query-editor', '.')" in the webview
     And I wait 2 seconds
     Then I take a screenshot "02-auto-trigger-dot"
 
     # ASSERT: suggest widget should be visible with table names
     Then element ".suggest-widget.visible" should exist
-    When I evaluate "(() => { const rows = Array.from(document.querySelectorAll('.suggest-widget.visible .monaco-list-row')); if (rows.length === 0) return 'FAIL: no suggestions'; return 'DOT(' + rows.length + '): ' + rows.slice(0,10).map(r => (r.querySelector('.label-name')||{}).textContent||'').map(s=>s.trim()).join(', '); })()" in the webview
+    When I evaluate "window.__assertSqlSuggest('auto-trigger SalesLT dot', 'Product,Customer,Address,SalesOrder')" in the webview
     When I press "Escape"
     And I wait 1 second
 
@@ -71,15 +72,15 @@ Feature: SQL auto-trigger schema-based completions
     #   The ( char is in the trigger set and is not a word char
     # ══════════════════════════════════════════════════════════════════════
 
-    When I evaluate "(() => { const ed = document.querySelector('kw-sql-section')._editor; ed.setValue('SELECT COUNT'); ed.setPosition({lineNumber:1, column:13}); ed.focus(); return 'ready: ' + ed.getValue(); })()" in the webview
+    When I evaluate "window.__testSetMonacoValueAt('kw-sql-section .query-editor', 'SELECT COUNT', 1, 13)" in the webview
     And I wait 1 second
 
-    When I evaluate "(() => { const ed = document.querySelector('kw-sql-section')._editor; ed.focus(); ed.trigger('keyboard', 'type', { text: '(' }); return 'typed paren: ' + ed.getValue(); })()" in the webview
+    When I evaluate "window.__testTypeMonaco('kw-sql-section .query-editor', '(')" in the webview
     And I wait 2 seconds
     Then I take a screenshot "03-auto-trigger-paren"
 
     # The suggest widget should appear (COUNT( triggers suggestions for column names)
-    When I evaluate "(() => { const w = document.querySelector('.suggest-widget.visible'); return w ? 'SUGGEST_VISIBLE' : 'NO_WIDGET'; })()" in the webview
+    When I evaluate "window.__assertSqlSuggest('auto-trigger COUNT paren', '')" in the webview
     When I press "Escape"
     And I wait 1 second
 
@@ -91,11 +92,11 @@ Feature: SQL auto-trigger schema-based completions
     When I click "kw-sql-toolbar .qe-auto-autocomplete-toggle" in the webview
     And I wait 1 second
 
-    When I evaluate "(() => { const ed = document.querySelector('kw-sql-section')._editor; ed.setValue('SELECT * FROM SalesLT'); ed.setPosition({lineNumber:1, column:22}); ed.focus(); return 'ready disabled test'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValueAt('kw-sql-section .query-editor', 'SELECT * FROM SalesLT', 1, 22)" in the webview
     And I wait 1 second
 
     # Type the same dot — but with auto-trigger disabled via toggle
-    When I evaluate "(() => { const ed = document.querySelector('kw-sql-section')._editor; ed.focus(); ed.trigger('keyboard', 'type', { text: '.' }); return 'typed dot (disabled): ' + ed.getValue(); })()" in the webview
+    When I evaluate "window.__testTypeMonaco('kw-sql-section .query-editor', '.')" in the webview
     And I wait 2 seconds
     Then I take a screenshot "04-no-auto-trigger-disabled"
 
@@ -134,11 +135,11 @@ Feature: SQL auto-trigger schema-based completions
     # TEST 6: End-of-word suppression — typing word chars at EOL should NOT trigger
     # ══════════════════════════════════════════════════════════════════════
 
-    When I evaluate "(() => { const ed = document.querySelector('kw-sql-section')._editor; ed.setValue('SELECT '); ed.setPosition({lineNumber:1, column:8}); ed.focus(); return 'ready'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValueAt('kw-sql-section .query-editor', 'SELECT ', 1, 8)" in the webview
     And I wait 1 second
 
     # Type word chars at end of line — end-of-word suppression should prevent trigger
-    When I evaluate "(() => { const ed = document.querySelector('kw-sql-section')._editor; ed.focus(); ed.trigger('keyboard', 'type', { text: 'Name' }); return 'typed Name: ' + ed.getValue(); })()" in the webview
+    When I evaluate "window.__testTypeMonaco('kw-sql-section .query-editor', 'Name')" in the webview
     And I wait 2 seconds
     Then I take a screenshot "07-end-of-word-suppression"
 
@@ -150,16 +151,18 @@ Feature: SQL auto-trigger schema-based completions
     #   This confirms the mechanism is still active after suppression.
     # ══════════════════════════════════════════════════════════════════════
 
-    When I evaluate "(() => { const ed = document.querySelector('kw-sql-section')._editor; ed.setValue('SELECT * FROM dbo'); ed.setPosition({lineNumber:1, column:18}); ed.focus(); return 'ready dbo'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValueAt('kw-sql-section .query-editor', 'SELECT * FROM dbo', 1, 18)" in the webview
     And I wait 1 second
 
-    When I evaluate "(() => { const ed = document.querySelector('kw-sql-section')._editor; ed.focus(); ed.trigger('keyboard', 'type', { text: '.' }); return 'typed dbo.: ' + ed.getValue(); })()" in the webview
+    When I evaluate "window.__testTypeMonaco('kw-sql-section .query-editor', '.')" in the webview
     And I wait 2 seconds
     Then I take a screenshot "08-auto-trigger-dbo-dot"
 
     # ASSERT: suggest widget should be visible
     Then element ".suggest-widget.visible" should exist
+    When I evaluate "window.__assertSqlSuggest('auto-trigger dbo dot', '')" in the webview
     When I press "Escape"
     And I wait 1 second
 
     Then I take a screenshot "09-final"
+    When I execute command "workbench.action.closeAllEditors"

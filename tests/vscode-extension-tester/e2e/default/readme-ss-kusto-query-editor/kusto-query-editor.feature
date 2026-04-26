@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture kusto-query-editor screenshot
   Scenario: KQL datatable query with results
     Given the extension is in a clean state

@@ -130,6 +130,7 @@ export class StsLanguageService {
 	private readonly _connectPromiseByUri = new Map<string, Promise<void>>();
 	/** Resolvers for the intelliSenseReady notification — schema is loaded after this fires. */
 	private readonly _intelliSenseReadyByUri = new Map<string, { resolve: () => void; timer: ReturnType<typeof setTimeout> }>();
+	private readonly _closedUris = new Set<string>();
 	private _diagnosticsHandler?: (event: StsDiagnosticsEvent) => void;
 
 	constructor(process: StsProcessManager, connectionManager: SqlConnectionManager, context: vscode.ExtensionContext, output: vscode.OutputChannel) {
@@ -196,6 +197,7 @@ export class StsLanguageService {
 	openDocument(boxId: string, text: string): void {
 		const uri = this._boxIdToUri(boxId);
 		this._output.appendLine(`[sts-diag] openDocument boxId=${boxId} uri=${uri} textLen=${text.length}`);
+		this._closedUris.delete(uri);
 		this._docVersions.set(boxId, 1);
 		this._process.sendNotification('textDocument/didOpen', {
 			textDocument: { uri, languageId: 'sql', version: 1, text },
@@ -215,6 +217,21 @@ export class StsLanguageService {
 	closeDocument(boxId: string): void {
 		const uri = this._boxIdToUri(boxId);
 		this._docVersions.delete(boxId);
+		this._closedUris.add(uri);
+
+		const pendingReady = this._intelliSenseReadyByUri.get(uri);
+		if (pendingReady) {
+			clearTimeout(pendingReady.timer);
+			this._intelliSenseReadyByUri.delete(uri);
+			pendingReady.resolve();
+		}
+
+		const pendingConnection = this._pendingConnections.get(uri);
+		if (pendingConnection) {
+			this._pendingConnections.delete(uri);
+			pendingConnection.reject(new Error('STS document closed'));
+		}
+
 		this._process.sendNotification('textDocument/didClose', {
 			textDocument: { uri },
 		});
@@ -224,7 +241,13 @@ export class StsLanguageService {
 
 	async connectDocument(boxId: string, connection: SqlConnection, database: string): Promise<void> {
 		const uri = this._boxIdToUri(boxId);
+		if (this._closedUris.has(uri)) {
+			throw new Error('STS document closed');
+		}
 		const options = await this._buildConnectionOptions(connection, database);
+		if (this._closedUris.has(uri)) {
+			throw new Error('STS document closed');
+		}
 
 		const connectPromise = new Promise<void>((resolve, reject) => {
 			const timer = setTimeout(() => {
@@ -243,13 +266,23 @@ export class StsLanguageService {
 			const params: StsConnectParams = { ownerUri: uri, connection: { options } };
 			this._output.appendLine(`[sts-diag] connectDocument boxId=${boxId} → ${connection.serverUrl}/${database} (auth=${options.authenticationType})`);
 			await this._process.sendRequest<boolean>('connection/connect', params);
+			if (this._closedUris.has(uri)) {
+				throw new Error('STS document closed');
+			}
 			await connectPromise;
+			if (this._closedUris.has(uri)) {
+				throw new Error('STS document closed');
+			}
 			this._output.appendLine(`[sts-diag] connectDocument boxId=${boxId} → CONNECTED, waiting for schema cache...`);
 
 			// Wait for STS to load the database schema (intelliSenseReady).
 			// Without this, completions return only SQL keywords — no tables/columns.
 			// First schema load can take 30-60s on cold start; use a generous timeout.
 			await new Promise<void>((resolve) => {
+				if (this._closedUris.has(uri)) {
+					resolve();
+					return;
+				}
 				const timer = setTimeout(() => {
 					this._output.appendLine(`[sts-diag] connectDocument boxId=${boxId} → intelliSenseReady timeout (120s), proceeding anyway`);
 					this._intelliSenseReadyByUri.delete(uri);
@@ -257,6 +290,9 @@ export class StsLanguageService {
 				}, 120000);
 				this._intelliSenseReadyByUri.set(uri, { resolve, timer });
 			});
+			if (this._closedUris.has(uri)) {
+				throw new Error('STS document closed');
+			}
 			this._output.appendLine(`[sts-diag] connectDocument boxId=${boxId} → READY (schema loaded)`);
 		})();
 

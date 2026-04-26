@@ -59,6 +59,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private _stsProcessManager?: StsProcessManager;
 	private _stsLanguageService?: StsLanguageService;
 	private _stsInitPromise?: Promise<StsLanguageService | null>;
+	private readonly _closedStsBoxIds = new Set<string>();
 
 	get sqlConnectionManager(): SqlConnectionManager {
 		if (!this._sqlConnectionManager) {
@@ -2022,29 +2023,46 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private handleStsDidOpen(boxId: string, text: string): void {
-		this.output.appendLine(`[sts-diag] handleStsDidOpen boxId=${boxId} textLen=${text.length}`);
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		this._closedStsBoxIds.delete(id);
+		this.output.appendLine(`[sts-diag] handleStsDidOpen boxId=${id} textLen=${text.length}`);
 		this.ensureStsLanguageService().then(svc => {
-			if (svc) svc.openDocument(boxId, text);
+			if (svc && !this._closedStsBoxIds.has(id)) svc.openDocument(id, text);
 		}).catch(() => { /* ignore */ });
 	}
 
 	private handleStsDidChange(boxId: string, text: string): void {
-		if (this._stsLanguageService) {
-			this._stsLanguageService.changeDocument(boxId, text);
+		const id = String(boxId || '').trim();
+		if (id && !this._closedStsBoxIds.has(id) && this._stsLanguageService) {
+			this._stsLanguageService.changeDocument(id, text);
 		}
 	}
 
 	private handleStsDidClose(boxId: string): void {
+		const id = String(boxId || '').trim();
+		if (!id) return;
+		this._closedStsBoxIds.add(id);
+		this.output.appendLine(`[sts-diag] handleStsDidClose boxId=${id}`);
 		if (this._stsLanguageService) {
-			this._stsLanguageService.closeDocument(boxId);
+			this._stsLanguageService.closeDocument(id);
 		}
 	}
 
 	private async handleStsConnect(boxId: string, sqlConnectionId: string, database: string): Promise<void> {
-		this.output.appendLine(`[sts-diag] handleStsConnect boxId=${boxId} connId=${sqlConnectionId} db=${database}`);
+		const id = String(boxId || '').trim();
+		if (!id || this._closedStsBoxIds.has(id)) {
+			this.output.appendLine(`[sts-diag] handleStsConnect skipped closed boxId=${id || '(none)'}`);
+			return;
+		}
+		this.output.appendLine(`[sts-diag] handleStsConnect boxId=${id} connId=${sqlConnectionId} db=${database}`);
 		const svc = await this.ensureStsLanguageService();
 		if (!svc) {
 			this.output.appendLine(`[sts-diag] handleStsConnect → svc=null`);
+			return;
+		}
+		if (this._closedStsBoxIds.has(id)) {
+			this.output.appendLine(`[sts-diag] handleStsConnect skipped closed boxId=${id}`);
 			return;
 		}
 		const connection = this.sqlConnectionManager.getConnection(sqlConnectionId);
@@ -2054,13 +2072,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		}
 		this.output.appendLine(`[sts-diag] handleStsConnect → connecting to ${connection.serverUrl}/${database} auth=${connection.authType}`);
 		try {
-			await svc.connectDocument(boxId, connection, database);
-			this.output.appendLine(`[sts-diag] handleStsConnect → SUCCESS boxId=${boxId}`);
-			this.postMessage({ type: 'stsConnectionState', boxId, state: 'ready' } as any);
+			await svc.connectDocument(id, connection, database);
+			this.output.appendLine(`[sts-diag] handleStsConnect → SUCCESS boxId=${id}`);
+			this.postMessage({ type: 'stsConnectionState', boxId: id, state: 'ready' } as any);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			this.output.appendLine(`[sts-diag] handleStsConnect → FAILED boxId=${boxId}: ${msg}`);
-			this.postMessage({ type: 'stsConnectionState', boxId, state: 'error', error: msg } as any);
+			this.output.appendLine(`[sts-diag] handleStsConnect → FAILED boxId=${id}: ${msg}`);
+			this.postMessage({ type: 'stsConnectionState', boxId: id, state: 'error', error: msg } as any);
 		}
 	}
 

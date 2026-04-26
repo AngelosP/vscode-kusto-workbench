@@ -10,7 +10,7 @@ Feature: Kusto results table — display, columns, rows, data table features
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); els.forEach(s => s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: s.boxId || s.id }, bubbles: true, composed: true }))); return 'removed ' + els.length; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='query']" in the webview for 20 seconds
@@ -21,7 +21,7 @@ Feature: Kusto results table — display, columns, rows, data table features
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
     # Select database
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const dbs = el._databases || []; const target = dbs.find(d => /sample/i.test(d)) || dbs[0]; if (!target) return 'no dbs'; el.setDesiredDatabase(target); el.dispatchEvent(new CustomEvent('database-changed', { detail: { boxId: el.boxId, database: target }, bubbles: true, composed: true })); return 'db=' + target; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const dbs = el._databases || []; const target = dbs.find(d => /sample/i.test(d)) || dbs[0]; if (!target) throw new Error('No Kusto databases available'); el.setDesiredDatabase(target); el.dispatchEvent(new CustomEvent('database-changed', { detail: { boxId: el.boxId, database: target }, bubbles: true, composed: true })); return 'db=' + target; })()" in the webview
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
     Then I take a screenshot "01-setup-ready"
 
@@ -51,7 +51,7 @@ Feature: Kusto results table — display, columns, rows, data table features
     Then I take a screenshot "03-large-result"
 
     # ── TEST 4: Data table has save button ────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const dt = document.getElementById(el.boxId + '_results')?.querySelector('kw-data-table'); if (!dt) throw new Error('No data table'); const sr = dt.shadowRoot; if (!sr) throw new Error('No shadow root on data table'); const saveBtn = sr.querySelector('.save-btn, .results-save-btn, [title*=Save], [title*=save], [title*=CSV], [title*=csv]'); return 'save button: ' + (saveBtn ? 'found' : 'not found (may use different selector)'); })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const dt = document.getElementById(el.boxId + '_results')?.querySelector('kw-data-table'); if (!dt) throw new Error('No data table'); const sr = dt.shadowRoot; if (!sr) throw new Error('No shadow root on data table'); const saveBtn = sr.querySelector('.save-btn, .results-save-btn, [title*=Save], [title*=save], [title*=CSV], [title*=csv]'); if (!saveBtn) throw new Error('Expected data table save/export button'); return 'save button found'; })()" in the webview
 
     # ── TEST 5: No results query ──────────────────────────────────────────
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; ed.setValue('print x=1 | where x == 99'); ed.focus(); return 'no-results query set'; })()" in the webview
@@ -62,7 +62,7 @@ Feature: Kusto results table — display, columns, rows, data table features
     And I wait 1 second
 
     # For empty results: either has-results with 0 rows, or "No results" message
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const resultsDiv = document.getElementById(el.boxId + '_results'); if (!resultsDiv) throw new Error('No results div'); const html = resultsDiv.innerHTML; const dt = resultsDiv.querySelector('kw-data-table'); if (dt) { const rows = dt.rows || []; if (rows.length > 0) throw new Error('Expected 0 rows, got ' + rows.length); return 'empty data table (0 rows) ✓'; } if (html.toLowerCase().includes('no results') || html.toLowerCase().includes('no result')) { return 'No results message shown ✓'; } return 'results area content: ' + html.substring(0, 100); })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const resultsDiv = document.getElementById(el.boxId + '_results'); if (!resultsDiv) throw new Error('No results div'); const html = resultsDiv.innerHTML; const dt = resultsDiv.querySelector('kw-data-table'); if (dt) { const rows = dt.rows || []; if (rows.length > 0) throw new Error('Expected 0 rows, got ' + rows.length); return 'empty data table (0 rows)'; } if (html.toLowerCase().includes('no results') || html.toLowerCase().includes('no result')) { return 'No results message shown'; } throw new Error('Expected empty results table or no-results message, got: ' + html.substring(0, 100)); })()" in the webview
     Then I take a screenshot "04-no-results"
 
     # ── TEST 6: Stale overlay then re-run clears it ───────────────────────
@@ -87,3 +87,4 @@ Feature: Kusto results table — display, columns, rows, data table features
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const resultsDiv = document.getElementById(el.boxId + '_results'); if (resultsDiv?.classList.contains('is-stale')) throw new Error('Stale overlay should be cleared after re-run'); return 'stale cleared ✓'; })()" in the webview
     Then I take a screenshot "06-stale-cleared"
+    When I execute command "workbench.action.closeAllEditors"

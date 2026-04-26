@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture chart screenshot
   Scenario: Bar chart with grouped bars and legend
     When I move the Dev Host to 0, 0

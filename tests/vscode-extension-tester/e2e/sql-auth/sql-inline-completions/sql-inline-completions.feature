@@ -11,7 +11,7 @@ Feature: SQL Copilot inline completions (ghost text)
     And I wait 3 seconds
 
     # Remove all existing sections
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); els.forEach(s => s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: s.boxId || s.id }, bubbles: true, composed: true }))); return 'removed ' + els.length + ' sections'; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
@@ -22,7 +22,7 @@ Feature: SQL Copilot inline completions (ghost text)
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
     # Select sampledb
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (!el) return 'no section'; const dbs = el._databases || []; const t = dbs.find(d => d.toLowerCase().includes('sample')) || dbs[0]; if (!t) return 'no dbs (' + dbs.length + ')'; if (el._database !== t) { el.setDatabase(t); el.dispatchEvent(new CustomEvent('sql-database-changed', { detail: { boxId: el.boxId, database: t }, bubbles: true, composed: true })); } return 'db=' + el._database; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (!el) throw new Error('SQL section not found'); const dbs = el._databases || []; const t = dbs.find(d => d.toLowerCase().includes('sample')) || dbs[0]; if (!t) throw new Error('No SQL databases available; count=' + dbs.length); if (el._database !== t) { el.setDatabase(t); el.dispatchEvent(new CustomEvent('sql-database-changed', { detail: { boxId: el.boxId, database: t }, bubbles: true, composed: true })); } return 'db=' + el._database; })()" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
 
     # Wait for schema to load
@@ -141,7 +141,7 @@ Feature: SQL Copilot inline completions (ghost text)
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); window.__testSqlBoxId = el.boxId; const ed = el._editor; const model = ed.getModel(); window.__testSqlModelUri = model.uri.toString(); return 'boxId=' + el.boxId + ' uri=' + window.__testSqlModelUri; })()" in the webview
 
     # Remove the SQL section
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (!el) throw new Error('no sql section'); el.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: el.boxId || el.id }, bubbles: true, composed: true })); return 'removed'; })()" in the webview
+    When I evaluate "window.__testRemoveSection('kw-sql-section')" in the webview
     And I wait 2 seconds
 
     # Verify the maps are cleaned up
@@ -149,3 +149,4 @@ Feature: SQL Copilot inline completions (ghost text)
     Then I take a screenshot "11-cleanup-verified"
 
     Then I take a screenshot "12-final"
+    When I execute command "workbench.action.closeAllEditors"

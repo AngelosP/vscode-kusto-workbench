@@ -10,7 +10,7 @@ Feature: SQL connection form — inline add-connection UI
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); els.forEach(s => s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: s.boxId || s.id }, bubbles: true, composed: true }))); return 'removed ' + els.length; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
@@ -19,8 +19,7 @@ Feature: SQL connection form — inline add-connection UI
     When I wait for "kw-sql-section" in the webview for 10 seconds
 
     # ── Open the add-connection form ──────────────────────────────────────
-    # Trigger the inline add-connection flow
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); el._showAddSqlModal = true; el.requestUpdate(); return 'form requested'; })()" in the webview
+    When I evaluate "(async () => { const el = document.querySelector('kw-sql-section'); if (!el) throw new Error('SQL section not found'); const bannerAdd = __testFind('sql-add-connection'); if (bannerAdd) { bannerAdd.click(); return 'clicked missing-connection add button'; } const serverDropdown = el.shadowRoot?.querySelector('.connection-row kw-dropdown'); if (!serverDropdown) throw new Error('Server dropdown not found'); const btn = serverDropdown.shadowRoot?.querySelector('.kusto-dropdown-btn'); if (!btn) throw new Error('Server dropdown button not found'); btn.click(); await serverDropdown.updateComplete; const action = Array.from(serverDropdown.shadowRoot?.querySelectorAll('.kusto-dropdown-action') || []).find(a => (a.textContent || '').includes('Add new server')); if (!action) throw new Error('Add new server action not found in dropdown'); action.click(); return 'clicked Add new server action'; })()" in the webview
     And I wait 2 seconds
     Then I take a screenshot "01-form-opened"
 
@@ -35,12 +34,13 @@ Feature: SQL connection form — inline add-connection UI
     When I evaluate "(() => { __testSelect('sql-conn-auth', 'sql-login'); return 'switched to sql-login'; })()" in the webview
     And I wait 1 second
 
-    When I evaluate "(() => { const form = __testFind('sql-conn-name')?.closest('form') || document.querySelector('kw-sql-connection-form')?.shadowRoot; if (!form) return 'WARN: form element not found for field check'; const userField = __testFind('sql-conn-username') || form.querySelector('input[type=text]'); const passField = __testFind('sql-conn-password') || form.querySelector('input[type=password]'); const checks = []; if (!userField) checks.push('username field not visible'); if (!passField) checks.push('password field not visible'); if (checks.length) return 'WARN: ' + checks.join(', ') + ' (may need data-testid attrs)'; return 'SQL Login fields visible'; })()" in the webview
+    When I evaluate "(() => { const form = __testFind('sql-conn-name')?.closest('form') || document.querySelector('kw-sql-connection-form')?.shadowRoot; if (!form) throw new Error('Form element not found for SQL login field check'); const userField = __testFind('sql-conn-username') || form.querySelector('input[type=text]'); const passField = __testFind('sql-conn-password') || form.querySelector('input[type=password]'); const checks = []; if (!userField) checks.push('username field not visible'); if (!passField) checks.push('password field not visible'); if (checks.length) throw new Error(checks.join(', ')); return 'SQL Login fields visible'; })()" in the webview
     Then I take a screenshot "03-sql-login-fields"
 
     # ── TEST 4: Cancel button closes form ─────────────────────────────────
     When I evaluate "(() => { __testClick('sql-conn-cancel'); return 'cancel clicked'; })()" in the webview
     And I wait 1 second
 
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (el._showAddSqlModal) throw new Error('Form should be hidden after cancel'); return 'form closed ✓'; })()" in the webview
+    When I evaluate "(() => { if (__testFind('sql-conn-name') || document.querySelector('kw-sql-connection-form')) throw new Error('SQL connection form should be hidden after cancel'); return 'form closed'; })()" in the webview
     Then I take a screenshot "04-form-closed"
+    When I execute command "workbench.action.closeAllEditors"

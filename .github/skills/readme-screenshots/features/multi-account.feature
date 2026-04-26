@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture multi-account screenshot
   Scenario: Cached Values viewer with multiple accounts
     When I move the Dev Host to 0, 0

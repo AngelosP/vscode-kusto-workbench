@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture sql-sections screenshot for README
   Scenario: SQL query with results — mirrors the Kusto query editor screenshot
     When I move the Dev Host to 0, 0

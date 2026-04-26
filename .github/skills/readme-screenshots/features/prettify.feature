@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture prettify screenshot
   Scenario: Toolbar showing the Prettify button with tooltip
     Given the extension is in a clean state

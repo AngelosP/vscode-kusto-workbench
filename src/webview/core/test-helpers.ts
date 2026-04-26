@@ -14,6 +14,7 @@ type MonacoLike = {
 	setValue?: (value: string) => void;
 	getModel?: () => { getLineCount?: () => number; getLineMaxColumn?: (lineNumber: number) => number } | null;
 	setPosition?: (position: { lineNumber: number; column: number }) => void;
+	setSelection?: (selection: { startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number }) => void;
 	trigger?: (source: string, handlerId: string, payload: any) => void;
 	onDidFocusEditorText?: (cb: () => void) => { dispose(): void };
 	onDidFocusEditorWidget?: (cb: () => void) => { dispose(): void };
@@ -210,11 +211,123 @@ function deepQuerySelector(root: ParentNode, selector: string): Element | null {
 	return null;
 }
 
+function resolveMonacoEditorFromSelector(selector: string): { editor: MonacoLike; editorRoot: HTMLElement } {
+	const match = deepQuerySelector(document, selector) as HTMLElement | null;
+	if (!match) {
+		throw new Error(`monaco target not found: ${selector}`);
+	}
+
+	const editorRoot = (match.closest('.monaco-editor') as HTMLElement | null)
+		|| (match.matches('.monaco-editor') ? match : null)
+		|| (match.querySelector('.monaco-editor') as HTMLElement | null)
+		|| match;
+
+	const editor = resolveMonacoEditorFromElement(editorRoot);
+	if (!editor) {
+		throw new Error(`monaco editor instance not found for: ${selector}`);
+	}
+
+	return { editor, editorRoot };
+}
+
 // Expose on window for E2E test access
 const _win = window as any;
 _win.__testFind = (testId: string): Element | null => deepQueryByTestId(document, testId);
 _win.__testFindAll = (testId: string): Element[] => deepQueryAllByTestId(document, testId);
 _win.__testQuery = (selector: string): Element | null => deepQuerySelector(document, selector);
+
+const TEST_SECTION_SELECTOR = 'kw-sql-section,kw-query-section,kw-chart-section,kw-markdown-section,kw-transformation-section,kw-html-section,kw-url-section,kw-python-section';
+
+function clickTestSectionClose(section: HTMLElement): void {
+	const shell = section.shadowRoot?.querySelector('kw-section-shell') as HTMLElement | null;
+	const closeButton = shell?.shadowRoot?.querySelector('.close-btn') as HTMLElement | null;
+	if (!closeButton) {
+		const tag = section.tagName.toLowerCase();
+		throw new Error(`Could not find section close button for ${tag}`);
+	}
+	closeButton.click();
+}
+
+_win.__testRemoveAllSections = (): string => {
+	let removed = 0;
+	for (let pass = 0; pass < 50; pass++) {
+		const sections = Array.from(document.querySelectorAll(TEST_SECTION_SELECTOR)) as HTMLElement[];
+		if (sections.length === 0) {
+			return `removed ${removed} sections; remaining=0`;
+		}
+
+		for (const section of sections) {
+			if (!section.isConnected) continue;
+			clickTestSectionClose(section);
+			removed++;
+		}
+	}
+
+	const remaining = Array.from(document.querySelectorAll(TEST_SECTION_SELECTOR)).map(element => element.tagName.toLowerCase());
+	throw new Error(`Timed out removing sections; remaining=${remaining.join(', ')}`);
+};
+
+_win.__testRemoveSection = (selector: string = TEST_SECTION_SELECTOR): string => {
+	const section = document.querySelector(selector) as HTMLElement | null;
+	if (!section) {
+		throw new Error(`Section not found: ${selector}`);
+	}
+
+	const tag = section.tagName.toLowerCase();
+	const boxId = (section as any).boxId || section.id || tag;
+	clickTestSectionClose(section);
+
+	for (let pass = 0; pass < 50; pass++) {
+		if (!section.isConnected) {
+			return `removed ${tag} ${boxId}`;
+		}
+	}
+
+	throw new Error(`Timed out removing ${tag} ${boxId}`);
+};
+
+_win.__testSelectKustoRunMode = (mode: string, selector: string = 'kw-query-section'): string => {
+	const section = document.querySelector(selector) as any;
+	if (!section) {
+		throw new Error(`Kusto section not found: ${selector}`);
+	}
+
+	const boxId = String(section.boxId || section.id || '');
+	if (!boxId) {
+		throw new Error('Kusto section has no boxId/id');
+	}
+
+	const labelByMode: Record<string, string> = {
+		plain: 'Run Query',
+		take100: 'Run Query (take 100)',
+		sample100: 'Run Query (sample 100)',
+	};
+	const targetLabel = labelByMode[mode];
+	if (!targetLabel) {
+		throw new Error(`Unsupported Kusto run mode: ${mode}`);
+	}
+
+	const toggle = document.getElementById(boxId + '_run_toggle') as HTMLElement | null;
+	if (!toggle) {
+		throw new Error(`Kusto run-mode toggle not found for ${boxId}`);
+	}
+	toggle.click();
+
+	const menu = document.getElementById(boxId + '_run_menu') as HTMLElement | null;
+	const items = Array.from(menu?.querySelectorAll('[role=menuitem]') || []) as HTMLElement[];
+	const item = items.find(candidate => (candidate.textContent || '').replace(/\s+/g, ' ').trim() === targetLabel);
+	if (!item) {
+		throw new Error(`Kusto run-mode item not found: ${targetLabel}`);
+	}
+	item.click();
+
+	const actual = String(_win.runModesByBoxId?.[boxId] || '');
+	if (actual !== mode) {
+		throw new Error(`Kusto run mode should be ${mode} after menu click, got ${actual}`);
+	}
+
+	return `selected Kusto run mode ${targetLabel} for ${boxId}`;
+};
 
 // ── Interaction helpers ────────────────────────────────────────────────────
 // Each returns a string describing what happened (for E2E step logging).
@@ -357,17 +470,7 @@ _win.__testFocusMonaco = (selector: string): string => {
  */
 _win.__testSetMonacoValue = (selector: string, value: string): string => {
 	const focusResult = _win.__testFocusMonaco(selector);
-	const match = deepQuerySelector(document, selector) as HTMLElement | null;
-	if (!match) {
-		throw new Error(`monaco target not found: ${selector}`);
-	}
-
-	const editorRoot = (match.closest('.monaco-editor') as HTMLElement | null)
-		|| (match.matches('.monaco-editor') ? match : null)
-		|| (match.querySelector('.monaco-editor') as HTMLElement | null)
-		|| match;
-
-	const editor = resolveMonacoEditorFromElement(editorRoot);
+	const { editor } = resolveMonacoEditorFromSelector(selector);
 	if (!editor || typeof editor.setValue !== 'function') {
 		throw new Error(`monaco setValue unavailable for: ${selector}`);
 	}
@@ -396,6 +499,160 @@ _win.__testSetMonacoValue = (selector: string, value: string): string => {
 	updateMonacoFocusDataset(editor);
 	const current = (typeof editor.getValue === 'function') ? editor.getValue() : String(value || '');
 	return `${focusResult}; monaco value set (${current.length} chars)`;
+};
+
+_win.__testSetMonacoValueAt = (selector: string, value: string, lineNumber: number = 1, column?: number): string => {
+	const setResult = _win.__testSetMonacoValue(selector, value);
+	const { editor } = resolveMonacoEditorFromSelector(selector);
+	const model = (typeof editor.getModel === 'function') ? editor.getModel() : null;
+	const targetLine = Number.isFinite(lineNumber) ? Math.max(1, Math.floor(lineNumber)) : 1;
+	const maxColumn = model?.getLineMaxColumn ? model.getLineMaxColumn(targetLine) : String(value || '').length + 1;
+	const targetColumn = Number.isFinite(column) ? Math.max(1, Math.floor(column as number)) : maxColumn;
+	if (typeof editor.setPosition !== 'function') {
+		throw new Error(`monaco setPosition unavailable for: ${selector}`);
+	}
+	editor.setPosition({ lineNumber: targetLine, column: targetColumn });
+	try { editor.focus?.(); } catch { /* ignore */ }
+	updateMonacoFocusDataset(editor);
+	return `${setResult}; caret=${targetLine}:${targetColumn}`;
+};
+
+_win.__testSetMonacoSelection = (
+	selector: string,
+	startLineNumber: number,
+	startColumn: number,
+	endLineNumber: number,
+	endColumn: number,
+): string => {
+	const focusResult = _win.__testFocusMonaco(selector);
+	const { editor } = resolveMonacoEditorFromSelector(selector);
+	if (typeof editor.setSelection !== 'function') {
+		throw new Error(`monaco setSelection unavailable for: ${selector}`);
+	}
+	editor.setSelection({ startLineNumber, startColumn, endLineNumber, endColumn });
+	try { editor.focus?.(); } catch { /* ignore */ }
+	updateMonacoFocusDataset(editor);
+	return `${focusResult}; selection=${startLineNumber}:${startColumn}-${endLineNumber}:${endColumn}`;
+};
+
+_win.__testTriggerMonaco = (selector: string, handlerId: string, payload: any = {}): string => {
+	const focusResult = _win.__testFocusMonaco(selector);
+	const { editor } = resolveMonacoEditorFromSelector(selector);
+	if (typeof editor.trigger !== 'function') {
+		throw new Error(`monaco trigger unavailable for: ${selector}`);
+	}
+	editor.trigger('e2e-test', handlerId, payload ?? {});
+	return `${focusResult}; triggered ${handlerId}`;
+};
+
+_win.__testTypeMonaco = (selector: string, text: string): string => {
+	const focusResult = _win.__testFocusMonaco(selector);
+	const { editor } = resolveMonacoEditorFromSelector(selector);
+	if (typeof editor.trigger !== 'function') {
+		throw new Error(`monaco trigger unavailable for: ${selector}`);
+	}
+	editor.trigger('keyboard', 'type', { text: String(text || '') });
+	const current = typeof editor.getValue === 'function' ? editor.getValue() || '' : '';
+	return `${focusResult}; typed ${String(text || '').length} chars; value=${current}`;
+};
+
+_win.__testGetMonacoValue = (selector: string): string => {
+	const { editor } = resolveMonacoEditorFromSelector(selector);
+	if (typeof editor.getValue !== 'function') {
+		throw new Error(`monaco getValue unavailable for: ${selector}`);
+	}
+	return editor.getValue() || '';
+};
+
+_win.__testSelectKwDropdownItem = async (dropdownSelector: string, labelsCsv: string): Promise<string> => {
+	const dropdown = deepQuerySelector(document, dropdownSelector) as HTMLElement | null;
+	if (!dropdown) {
+		throw new Error(`dropdown not found: ${dropdownSelector}`);
+	}
+	const root = dropdown.shadowRoot;
+	if (!root) {
+		throw new Error(`dropdown shadow root unavailable: ${dropdownSelector}`);
+	}
+	const button = root.querySelector('.kusto-dropdown-btn') as HTMLElement | null;
+	if (!button) {
+		throw new Error(`dropdown button not found: ${dropdownSelector}`);
+	}
+	button.click();
+	const maybeUpdateComplete = (dropdown as any).updateComplete;
+	if (maybeUpdateComplete && typeof maybeUpdateComplete.then === 'function') {
+		await maybeUpdateComplete;
+	}
+	const desired = String(labelsCsv || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+	const items = Array.from(root.querySelectorAll('.kusto-dropdown-item[role="option"]')) as HTMLElement[];
+	if (!items.length) {
+		throw new Error(`dropdown has no items: ${dropdownSelector}`);
+	}
+	const item = items.find(el => {
+		const text = (el.textContent || '').trim().toLowerCase();
+		return desired.length === 0 || desired.some(label => text === label || text.includes(label));
+	});
+	if (!item) {
+		const available = items.map(el => (el.textContent || '').trim()).filter(Boolean).join(', ');
+		throw new Error(`dropdown item not found [${labelsCsv}] in ${dropdownSelector}; available=${available}`);
+	}
+	const label = (item.textContent || '').trim();
+	item.click();
+	const afterClickUpdateComplete = (dropdown as any).updateComplete;
+	if (afterClickUpdateComplete && typeof afterClickUpdateComplete.then === 'function') {
+		await afterClickUpdateComplete;
+	}
+	return `selected dropdown item: ${label}`;
+};
+
+_win.__testAssertVisibleSuggest = (context: string, expectedAnyCsv: string = '', editorSelector: string = ''): string => {
+	const contextLabel = String(context || 'suggestions');
+	const expected = String(expectedAnyCsv || '').split(',').map(s => s.trim()).filter(Boolean);
+	const roots: ParentNode[] = [];
+	if (editorSelector) {
+		const selectedRoot = deepQuerySelector(document, editorSelector) as ParentNode | null;
+		if (!selectedRoot) {
+			throw new Error(`${contextLabel}: editor root not found: ${editorSelector}`);
+		}
+		roots.push(selectedRoot);
+	}
+	roots.push(document);
+
+	let widgets: HTMLElement[] = [];
+	for (const root of roots) {
+		widgets = Array.from(root.querySelectorAll('.suggest-widget.visible')) as HTMLElement[];
+		widgets = widgets.filter(widget =>
+			!widget.classList.contains('hidden')
+			&& widget.style.display !== 'none'
+			&& widget.offsetParent !== null
+		);
+		if (widgets.length) break;
+	}
+
+	if (widgets.length === 0) {
+		throw new Error(`${contextLabel}: expected visible suggest widget`);
+	}
+
+	const widget = widgets[widgets.length - 1];
+	const widgetText = (widget.textContent || '').trim();
+	if (/no suggestions/i.test(widgetText)) {
+		throw new Error(`${contextLabel}: suggest widget reported no suggestions`);
+	}
+
+	const rows = (Array.from(widget.querySelectorAll('.monaco-list-row')) as HTMLElement[])
+		.filter(row => row.offsetParent !== null);
+	const labels = rows
+		.map(row => ((row.querySelector('.label-name') as HTMLElement | null)?.textContent || '').trim())
+		.filter(Boolean);
+
+	if (labels.length === 0) {
+		throw new Error(`${contextLabel}: expected visible suggestions, got 0 labels. Text: ${widgetText.slice(0, 200)}`);
+	}
+
+	if (expected.length && !expected.some(candidate => labels.some(label => label.toLowerCase().includes(candidate.toLowerCase())))) {
+		throw new Error(`${contextLabel}: expected one of [${expected.join(', ')}], got: ${labels.slice(0, 20).join(', ')}`);
+	}
+
+	return `${contextLabel}(${labels.length}): ${labels.slice(0, 15).join(', ')}`;
 };
 
 /**

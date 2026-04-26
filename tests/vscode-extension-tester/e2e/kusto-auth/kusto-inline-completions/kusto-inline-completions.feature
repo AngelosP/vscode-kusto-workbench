@@ -10,7 +10,7 @@ Feature: Kusto inline completions (Copilot ghost text)
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); els.forEach(s => s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: s.boxId || s.id }, bubbles: true, composed: true }))); return 'removed ' + els.length; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='query']" in the webview for 20 seconds
@@ -21,7 +21,7 @@ Feature: Kusto inline completions (Copilot ghost text)
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
     # Select database
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const dbs = el._databases || []; const target = dbs.find(d => /sample/i.test(d)) || dbs[0]; if (!target) return 'no dbs'; el.setDesiredDatabase(target); el.dispatchEvent(new CustomEvent('database-changed', { detail: { boxId: el.boxId, database: target }, bubbles: true, composed: true })); return 'db=' + target; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const dbs = el._databases || []; const target = dbs.find(d => /sample/i.test(d)) || dbs[0]; if (!target) throw new Error('No Kusto databases available'); el.setDesiredDatabase(target); el.dispatchEvent(new CustomEvent('database-changed', { detail: { boxId: el.boxId, database: target }, bubbles: true, composed: true })); return 'db=' + target; })()" in the webview
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
     Then I take a screenshot "00-setup-ready"
 
@@ -67,3 +67,4 @@ Feature: Kusto inline completions (Copilot ghost text)
     # Restore original postMessage
     When I evaluate "(() => { if (window.__testOrigPostMsg) { window.postMessageToHost = window.__testOrigPostMsg; delete window.__testOrigPostMsg; } delete window.__testInlineReqCapture; return 'restored'; })()" in the webview
     Then I take a screenshot "07-final"
+    When I execute command "workbench.action.closeAllEditors"

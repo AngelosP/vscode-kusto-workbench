@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture export-skill screenshot
   Scenario: Activity Bar panel showing Export Agent Skill
     Given the extension is in a clean state

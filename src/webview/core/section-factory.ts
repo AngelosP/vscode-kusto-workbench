@@ -2847,7 +2847,15 @@ function toggleSqlFavoriteForBox(boxId: string) {
 	const connId = typeof el.getSqlConnectionId === 'function' ? el.getSqlConnectionId() : '';
 	const db = typeof el.getDatabase === 'function' ? el.getDatabase() : '';
 	if (!connId || !db) return;
-	postMessageToHost({ type: 'requestAddSqlFavorite', connectionId: connId, database: db, boxId });
+	const dbLower = String(db).toLowerCase();
+	const existing = (sqlFavorites || []).some((favorite: any) =>
+		String(favorite.connectionId || '') === String(connId) && String(favorite.database || '').toLowerCase() === dbLower
+	);
+	if (existing) {
+		postMessageToHost({ type: 'removeSqlFavorite', connectionId: connId, database: db, boxId });
+	} else {
+		postMessageToHost({ type: 'requestAddSqlFavorite', connectionId: connId, database: db, boxId });
+	}
 }
 
 function removeSqlFavorite(connectionId: string, database: string) {

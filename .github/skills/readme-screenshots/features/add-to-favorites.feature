@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture add-to-favorites screenshot
   Scenario: Toolbar with favorites star button and tooltip
     Given the extension is in a clean state

@@ -10,7 +10,7 @@ Feature: SQL query execution end-to-end
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); els.forEach(s => s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: s.boxId || s.id }, bubbles: true, composed: true }))); return 'removed ' + els.length; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
@@ -21,7 +21,7 @@ Feature: SQL query execution end-to-end
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
     # Select sampledb
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (!el) return 'no section'; const dbs = el._databases || []; const t = dbs.find(d => d.toLowerCase().includes('sample')) || dbs[0]; if (!t) return 'no dbs'; if (el._database !== t) { el.setDatabase(t); el.dispatchEvent(new CustomEvent('sql-database-changed', { detail: { boxId: el.boxId || el.id, database: t }, bubbles: true, composed: true })); } return 'db=' + el._database; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (!el) throw new Error('SQL section not found'); const dbs = el._databases || []; const t = dbs.find(d => d.toLowerCase().includes('sample')) || dbs[0]; if (!t) throw new Error('No SQL databases available'); if (el._database !== t) { el.setDatabase(t); el.dispatchEvent(new CustomEvent('sql-database-changed', { detail: { boxId: el.boxId || el.id, database: t }, bubbles: true, composed: true })); } return 'db=' + el._database; })()" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true']" in the webview for 10 seconds
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
     Then I take a screenshot "01-setup-ready"
@@ -98,3 +98,4 @@ Feature: SQL query execution end-to-end
 
     When I evaluate "(() => { const dt = document.querySelector('kw-sql-section .sql-results-body kw-data-table'); if (!dt) throw new Error('No data table'); const rows = dt.rows || []; if (rows.length < 2) throw new Error('Expected multiple rows, got ' + rows.length); return 'multi-row result: ' + rows.length + ' rows ✓'; })()" in the webview
     Then I take a screenshot "07-multi-row-results"
+    When I execute command "workbench.action.closeAllEditors"

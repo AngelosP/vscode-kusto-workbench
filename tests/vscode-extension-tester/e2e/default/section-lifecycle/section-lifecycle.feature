@@ -11,7 +11,7 @@ Feature: Section lifecycle — add, rename, collapse, expand, remove all section
     And I wait 3 seconds
 
     # Clear all existing sections
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); els.forEach(s => s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: s.boxId || s.id }, bubbles: true, composed: true }))); return 'removed ' + els.length; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
 
     # ── TEST 1: Add KQL section ───────────────────────────────────────────
@@ -90,7 +90,7 @@ Feature: Section lifecycle — add, rename, collapse, expand, remove all section
     Then I take a screenshot "09-all-types-verified"
 
     # ── TEST 12: Remove all sections one by one ───────────────────────────
-    When I evaluate "(() => { const tags = ['kw-python-section','kw-html-section','kw-url-section','kw-transformation-section','kw-markdown-section','kw-chart-section','kw-query-section']; tags.forEach(tag => { const el = document.querySelector(tag); if (el) el.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: el.boxId || el.id }, bubbles: true, composed: true })); }); return 'removed all'; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
 
     When I evaluate "(() => { const tags = ['kw-query-section','kw-sql-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const remaining = tags.map(t => ({ tag: t, count: document.querySelectorAll(t).length })).filter(x => x.count > 0); if (remaining.length > 0) throw new Error('Sections still present: ' + JSON.stringify(remaining)); return 'all sections removed ✓'; })()" in the webview

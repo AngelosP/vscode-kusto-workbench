@@ -10,7 +10,7 @@ Feature: SQL connection flow — server select, database loading, refresh
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); els.forEach(s => s.dispatchEvent(new CustomEvent('section-remove', { detail: { boxId: s.boxId || s.id }, bubbles: true, composed: true }))); return 'removed ' + els.length; })()" in the webview
+    When I evaluate "window.__testRemoveAllSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
@@ -28,7 +28,7 @@ Feature: SQL connection flow — server select, database loading, refresh
     Then I take a screenshot "02-databases-loaded"
 
     # ── TEST 3: Select a database ─────────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const dbs = el._databases || []; const t = dbs.find(d => d.toLowerCase().includes('sample')) || dbs[0]; if (!t) return 'no dbs'; if (el._database !== t) { el.setDatabase(t); el.dispatchEvent(new CustomEvent('sql-database-changed', { detail: { boxId: el.boxId || el.id, database: t }, bubbles: true, composed: true })); } return 'selected db=' + el._database; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const dbs = el._databases || []; const t = dbs.find(d => d.toLowerCase().includes('sample')) || dbs[0]; if (!t) throw new Error('No SQL databases available'); if (el._database !== t) { el.setDatabase(t); el.dispatchEvent(new CustomEvent('sql-database-changed', { detail: { boxId: el.boxId || el.id, database: t }, bubbles: true, composed: true })); } return 'selected db=' + el._database; })()" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true']" in the webview for 10 seconds
 
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (el.dataset.testDatabaseSelected !== 'true') throw new Error('Database not selected'); const db = el.dataset.testDatabase; if (!db) throw new Error('No database name in dataset'); return 'database selected: ' + db + ' ✓'; })()" in the webview
@@ -53,3 +53,4 @@ Feature: SQL connection flow — server select, database loading, refresh
     # ── TEST 7: Server dropdown has entries ────────────────────────────────
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const conns = el._connections || []; if (conns.length < 1) throw new Error('Expected at least 1 server connection, got ' + conns.length); return 'server connections: ' + conns.length + ' (' + conns.map(c => c.name || c.serverUrl || c.id).join(', ') + ') ✓'; })()" in the webview
     Then I take a screenshot "06-server-entries"
+    When I execute command "workbench.action.closeAllEditors"

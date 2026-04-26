@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture csv screenshot
   Scenario: URL section loading a GitHub-hosted CSV
     Given the extension is in a clean state

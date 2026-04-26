@@ -1,3 +1,5 @@
+@screenshot-generator
+# Screenshot generator for .github/skills/readme-screenshots; behavioral coverage lives in non-readme E2Es.
 Feature: Capture perf-optimization screenshot
   Scenario: Real A vs B query comparison with performance metrics
     When I move the Dev Host to 0, 0
