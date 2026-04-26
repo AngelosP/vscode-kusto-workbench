@@ -13,11 +13,13 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | File | Purpose |
 | ---- | ------- |
 | `extension.ts` | Entry point. Registers providers, commands, and diagnostics |
-| `queryEditorProvider.ts` | Core class (~4500 lines). Manages the webview panel, handles all webview↔extension messages, query execution |
+| `queryEditorProvider.ts` | Core class (~4500 lines). Manages the webview panel, handles all webview↔extension messages, query execution, dashboard export/publish routing |
 | `queryEditorCopilot.ts` | Copilot integration (extracted from provider) |
 | `queryEditorConnection.ts` | Connection management (extracted from provider) |
 | `queryEditorSchema.ts` | Schema handling (extracted from provider) |
 | `queryEditorTypes.ts` | Shared types, including `IncomingWebviewMessage` |
+| `powerBiExport.ts` | HTML dashboard export: generates `.pbip`/PBIR/TMDL Power BI projects backed by Kusto DirectQuery |
+| `powerBiPublish.ts` | Fabric/Power BI service publishing: creates or updates SemanticModel and Report items from generated PBIR/TMDL artifacts |
 | `kustoClient.ts` | Azure Kusto client wrapper. Authentication, query execution, schema fetching, caching |
 | `connectionManager.ts` | Persists Kusto cluster connections in VS Code global state |
 | `connectionManagerViewer.ts` | Connection manager webview panel |
@@ -118,6 +120,7 @@ The webview runtime is split into `core/` and `monaco/`:
 | `kw-markdown-section` | `kw-markdown-section.ts` | Rich text / documentation (Toast UI editor) |
 | `kw-python-section` | `kw-python-section.ts` | Python code cells |
 | `kw-url-section` | `kw-url-section.ts` | Embedded web content / images |
+| `kw-html-section` | `kw-html-section.ts` | HTML dashboard editor/preview with provenance, slicers, data bridge, and Power BI actions |
 
 ### ReactiveController Pattern
 
@@ -148,6 +151,7 @@ When a Lit component has distinct behavioral concerns, each concern is extracted
 | `kw-sort-dialog` | Column sort dialog |
 | `kw-search-bar` | Reusable search bar with match navigation |
 | `kw-object-viewer` | JSON/object viewer modal |
+| `kw-publish-pbi-dialog` | Power BI/Fabric publish dialog with workspace selection, update/new mode, and publish status |
 
 ### Shared Utilities (`src/webview/shared/`)
 
@@ -174,6 +178,8 @@ Extension host and webview communicate via `postMessage`:
 
 On the host side, incoming messages match the `IncomingWebviewMessage` union type exported from `queryEditorTypes.ts`. On the webview side, the message dispatcher lives in `core/message-handler.ts` (a large `switch` statement) and is wired by `core/main.ts`.
 
+Dashboard-specific messages use the same channel. HTML sections send `exportDashboard` to save the dashboard as standalone HTML or a `.pbip` project, and use `getPbiWorkspaces`, `checkPbiItemExists`, and `publishToPowerBI` for Fabric/Power BI service publishing. The host replies with `openPublishPbiDialog`, `pbiWorkspacesResult`, `pbiItemExistsResult`, and `publishToPowerBIResult`, which are routed back to the originating `kw-html-section`/`kw-publish-pbi-dialog`.
+
 ## Window Bridges (Legacy)
 
 Webview modules communicate via window globals declared in `window-bridges.d.ts`. This is a legacy pattern from when modules were loaded as separate `<script>` tags. The codebase is being progressively migrated to ES module imports between modules.
@@ -194,6 +200,7 @@ JSON format with a `sections` array. Each section has a `type` discriminator and
 | `url` | `kw-url-section` | Embedded web content |
 | `chart` | `kw-chart-section` | Visualization configs (ECharts) |
 | `transformation` | `kw-transformation-section` | Data transformation expressions |
+| `html` | `kw-html-section` | HTML + JS dashboard sections with preview, slicers, data bindings, and Power BI export/publish |
 | `sql` | `kw-sql-section` | T-SQL query cells (SQL Server / Azure SQL) |
 
 > A legacy `copilotQuery` type also exists for backward compatibility. It is treated as `query` at load time and should not be used in new code.
@@ -228,7 +235,60 @@ SqlConnection {
   authType: string;  // 'aad' | 'sql-login'
   username?: string;
 }
+
+HtmlSectionData {
+  type: 'html';
+  code: string;
+  mode: 'code' | 'preview';
+  previewHeightPx?: number;
+  dataSourceIds?: string[];
+  pbiPublishInfo?: PbiPublishInfo;
+}
+
+PbiPublishInfo {
+  workspaceId: string;
+  workspaceName?: string;
+  semanticModelId: string;
+  reportId: string;
+  reportName: string;
+  reportUrl: string;
+}
 ```
+
+## HTML Dashboard Sections
+
+HTML sections are authored in `kw-html-section.ts` and persist as `type: 'html'` sections in `.kqlx` files. They store the source `code`, display `mode`, editor/preview heights, the referenced `dataSourceIds`, and optional `pbiPublishInfo` after a successful Power BI publish. They do not persist query result data in the HTML section; data remains owned by the source query/transformation sections and is read at runtime.
+
+Dashboard data binding is declared with a provenance block embedded in the HTML source:
+
+```html
+<script type="application/kw-provenance">
+{
+  "version": 1,
+  "model": {
+    "fact": { "sectionId": "query_...", "sectionName": "..." },
+    "dimensions": [
+      { "column": "Day", "label": "Date", "mode": "between" }
+    ]
+  },
+  "bindings": {
+    "total-calls": { "display": { "type": "scalar", "agg": "COUNT" } }
+  }
+}
+</script>
+```
+
+The provenance `model.fact` identifies the event-grain source query section. `model.dimensions` describes slicer columns and modes (`dropdown`, `list`, `between`). `bindings` map `data-kw-bind` element names to display definitions such as scalar, table, pivot, and supported chart outputs. Preview rendering injects a sandboxed `window.KustoWorkbench` bridge with helpers such as `getData`, `onDataReady`, `agg`, `bind`, `bindHtml`, and formatting utilities.
+
+Slicers are generated from provenance dimensions for preview. They filter the fact rows client-side and compose with AND semantics before bindings are evaluated. Power BI export uses the same provenance contract but generates DAX/SVG/HTML Content visual output; JavaScript-only DOM updates that are not represented by `data-kw-bind` bindings will not survive the Power BI render path.
+
+## Power BI Dashboard Export and Publishing
+
+HTML dashboards can be saved as standalone HTML or exported as a folder-based Power BI project (`.pbip`) from `powerBiExport.ts`. The `.pbip` export writes PBIR report files, TMDL semantic model files, a `_KW_HtmlMeasures` measure table, and an `HTML Dashboard` measure rendered through the marketplace-signed HTML Content visual (`htmlContent443BE3AD55E043BF878BED274D3A6855`). The implementation intentionally targets `.pbip`/PBIR/TMDL, not `.pbix` files.
+
+Exported data sources are generated from referenced Kusto query sections. The semantic model uses DirectQuery via `AzureDataExplorer.Contents`, maps Kusto column types to TMDL types, and creates native dimension tables/relationships for provenance slicers. Slicer visuals are generated as native Power BI visuals where possible, while scalar/table/pivot/chart dashboard values are generated from the provenance binding definitions.
+
+Power BI service publishing is implemented in `powerBiPublish.ts` using Fabric REST APIs. Publishing creates or updates SemanticModel and Report items in a selected workspace, supports republishing to existing stored IDs, can detect whether the stored report still exists, and persists returned workspace/model/report metadata in `pbiPublishInfo`. Refresh schedule configuration is attempted after publish and treated as non-fatal if it fails.
 
 ## Schema Caching
 
@@ -428,12 +488,16 @@ The extension integrates with VS Code's Copilot APIs for query generation (`star
 
 ### VS Code Agent Tools (via `registerKustoWorkbenchTools()`)
 
-Registered with `vscode.lm.registerTool()`:
+Tools are contributed in `package.json` and registered with `vscode.lm.registerTool()` in `kustoWorkbenchTools.ts`; the manifest `name` must match the registration ID. Current registrations cover connection/schema discovery, section lifecycle and configuration, query/chart/transformation/HTML/SQL configuration, delegation to Kusto or SQL Copilot, file creation, and development notes.
+
+HTML dashboard-relevant tools include:
 
 | Tool ID | Tool Reference Name | Purpose |
 | ------- | ------------------- | ------- |
-| `kusto-workbench_refresh-schema` | `refreshKustoSchema` | Force-refreshes schema from Kusto cluster, updates cache, returns schemas |
-| `kusto-workbench_search-cached-schemas` | `searchCachedSchemas` | Searches all cached schemas for tables, columns, functions matching a regex pattern |
+| `kusto-workbench_add-section` | `addSection` | Adds notebook sections, including `html` sections |
+| `kusto-workbench_configure-html-section` | `configureHtmlSection` | Sets HTML section code/name/mode; dashboard prompts should use `application/kw-provenance` and `data-kw-bind` |
+
+Schema-specific tools still include `kusto-workbench_refresh-schema` and `kusto-workbench_search-cached-schemas`, but they are no longer the full agent tool surface.
 
 ## Dependencies
 
@@ -469,7 +533,8 @@ Tests are organized under `tests/`:
 | `kqlxFormat.test.ts` | `.kqlx` file parsing, serialization, creation |
 | `schemaIndexUtils.test.ts` | Schema formatting, column counting, token-budget pruning |
 | `kqlDiagnostics.test.ts` | KQL error detection, pipe operator validation, statement splitting |
-| `message-protocol.test.ts` | Host↔webview message type alignment, payload shape contracts |
+| `message-protocol.test.ts` | Host↔webview message type alignment, payload shape contracts, including dashboard export/publish messages |
+| `powerBiExport.test.ts` | HTML dashboard provenance parsing, DAX generation, PBIR/TMDL output, native slicers, DirectQuery model generation, and CSS patching |
 | `mssqlDialect.test.ts` | MSSQL dialect: pool creation, query execution, schema extraction, error classification |
 | `sqlDialectRegistry.test.ts` | Dialect registry: register, get, list, unknown dialect handling |
 | `sqlFormat.test.ts` | `.sqlx` file parsing, serialization, section type validation |
@@ -478,6 +543,12 @@ Tests are organized under `tests/`:
 | `sqlAuthState.test.ts` | Per-connection auth state tracking |
 | `sqlFavorites.test.ts` | SQL favorites: add, remove, match, persistence |
 | `sqlEditorUtils.test.ts` | SQL editor utilities: query mode, error formatting |
+
+### Webview/component tests (`tests/webview/`)
+
+| Test File | Coverage |
+| --------- | -------- |
+| `kw-html-section-slicer.test.ts` | HTML dashboard preview slicer normalization and filtering behavior |
 
 ### Integration tests (`tests/integration/`)
 

@@ -2353,18 +2353,6 @@ window.addEventListener('message', async (event: any) => {
 
 		// ── SQL tool messages ───────────────────────────────────────────
 
-		case 'toolListSqlConnections':
-			try {
-				const requestId = String(message.requestId || '');
-				const conns = (Array.isArray(sqlConnections) ? sqlConnections : []).map((c: any) => ({
-					id: c.id, name: c.name, serverUrl: c.serverUrl, dialect: c.dialect,
-				}));
-				postMessageToHost({ type: 'toolResponse', requestId, result: { connections: conns } });
-			} catch (err: any) {
-				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { connections: [] }, error: err.message || String(err) });
-			}
-			break;
-
 		case 'toolConfigureSqlSection':
 			try {
 				const requestId = String(message.requestId || '');

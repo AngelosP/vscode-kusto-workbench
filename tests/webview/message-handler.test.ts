@@ -1,21 +1,38 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 
+const handlerState = vi.hoisted(() => ({
+	sqlConnections: [] as Array<Record<string, unknown>>,
+	sqlCachedDatabases: {} as Record<string, string[]>,
+	sqlFavorites: [] as Array<Record<string, unknown>>,
+	sqlFavoritesModeByBoxId: {} as Record<string, boolean>,
+	schemaByBoxId: {} as Record<string, unknown>,
+}));
+
 const mocks = {
 	postMessageToHost: vi.fn(),
 	handleDocumentDataMessage: vi.fn(),
 	updateConnectionSelects: vi.fn(),
 	updateDatabaseSelect: vi.fn(),
 	onDatabasesError: vi.fn(),
+	updateSqlConnectionSelects: vi.fn(),
+	updateSqlDatabaseSelect: vi.fn(),
+	onSqlDatabasesError: vi.fn(),
+	updateSqlFavoritesUiForAllBoxes: vi.fn(),
+	getSqlSectionElement: vi.fn(),
 	parseKustoExplorerConnectionsXml: vi.fn(),
 	onPythonResult: vi.fn(),
 	onPythonError: vi.fn(),
+	handleStsResponse: vi.fn(),
+	handleStsDiagnostics: vi.fn(),
 	displayCancelled: vi.fn(),
 	setQueryExecuting: vi.fn(),
 	setResultsVisible: vi.fn(),
 	setConnections: vi.fn(),
+	setSqlConnections: vi.fn(),
 	setLastConnectionId: vi.fn(),
 	setLastDatabase: vi.fn(),
 	setKustoFavorites: vi.fn(),
+	setSqlFavorites: vi.fn(),
 	setLeaveNoTraceClusters: vi.fn(),
 	setCaretDocsEnabled: vi.fn(),
 	setAutoTriggerAutocompleteEnabled: vi.fn(),
@@ -46,7 +63,7 @@ vi.mock('../../src/webview/shared/webview-messages.js', () => ({
 }));
 
 vi.mock('../../src/webview/shared/schema-utils.js', () => ({
-	buildSchemaInfo: vi.fn((text: string, isError: boolean) => ({ text, isError })),
+	buildSchemaInfo: vi.fn((text: string, isError: boolean, meta?: unknown) => ({ text, isError, meta })),
 }));
 
 vi.mock('../../src/webview/shared/safe-run.js', () => ({
@@ -84,6 +101,16 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	addUrlBox: vi.fn(() => 'url_1'),
 	removePythonBox: vi.fn(),
 	removeUrlBox: vi.fn(),
+	addHtmlBox: vi.fn(() => 'html_1'),
+	removeHtmlBox: vi.fn(),
+	addSqlBox: vi.fn(() => 'sql_1'),
+	removeSqlBox: vi.fn(),
+	updateSqlConnectionSelects: mocks.updateSqlConnectionSelects,
+	updateSqlDatabaseSelect: mocks.updateSqlDatabaseSelect,
+	onSqlDatabasesError: mocks.onSqlDatabasesError,
+	__kustoGetSqlSectionElement: mocks.getSqlSectionElement,
+	sqlBoxes: [],
+	updateSqlFavoritesUiForAllBoxes: mocks.updateSqlFavoritesUiForAllBoxes,
 	onPythonResult: mocks.onPythonResult,
 	onPythonError: mocks.onPythonError,
 	__kustoGetChartValidationStatus: vi.fn(() => null),
@@ -141,14 +168,31 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 	__kustoCrossClusterSchemas: {},
 }));
 
+vi.mock('../../src/webview/monaco/sql-sts-providers.js', () => ({
+	handleStsResponse: mocks.handleStsResponse,
+	handleStsDiagnostics: mocks.handleStsDiagnostics,
+}));
+
 vi.mock('../../src/webview/core/state.js', () => ({
 	activeQueryEditorBoxId: '',
 	connections: [],
 	setConnections: mocks.setConnections,
+	sqlConnections: handlerState.sqlConnections,
+	setSqlConnections: vi.fn((connections: Array<Record<string, unknown>>) => {
+		mocks.setSqlConnections(connections);
+		handlerState.sqlConnections.splice(0, handlerState.sqlConnections.length, ...connections);
+	}),
 	setLastConnectionId: mocks.setLastConnectionId,
 	setLastDatabase: mocks.setLastDatabase,
 	kustoFavorites: [],
 	setKustoFavorites: mocks.setKustoFavorites,
+	sqlFavorites: handlerState.sqlFavorites,
+	setSqlFavorites: vi.fn((favorites: Array<Record<string, unknown>>) => {
+		mocks.setSqlFavorites(favorites);
+		handlerState.sqlFavorites.splice(0, handlerState.sqlFavorites.length, ...favorites);
+	}),
+	sqlCachedDatabases: handlerState.sqlCachedDatabases,
+	sqlFavoritesModeByBoxId: handlerState.sqlFavoritesModeByBoxId,
 	setLeaveNoTraceClusters: mocks.setLeaveNoTraceClusters,
 	setCaretDocsEnabled: mocks.setCaretDocsEnabled,
 	setAutoTriggerAutocompleteEnabled: mocks.setAutoTriggerAutocompleteEnabled,
@@ -158,10 +202,29 @@ vi.mock('../../src/webview/core/state.js', () => ({
 	optimizationMetadataByBoxId: {},
 	schemaByConnDb: {},
 	schemaRequestResolversByBoxId: {},
-	schemaByBoxId: {},
+	schemaByBoxId: handlerState.schemaByBoxId,
 	schemaFetchInFlightByBoxId: {},
 	databasesRequestResolversByBoxId: {},
 }));
+
+type FakeSqlSection = HTMLElement & {
+	_stsReady?: boolean;
+	setSqlConnectionId: ReturnType<typeof vi.fn>;
+	setFavoritesMode: ReturnType<typeof vi.fn>;
+	setSchemaInfo: ReturnType<typeof vi.fn>;
+	setStsReady: ReturnType<typeof vi.fn>;
+};
+
+function createFakeSqlSection(): FakeSqlSection {
+	const el = document.createElement('div') as FakeSqlSection;
+	el.setSqlConnectionId = vi.fn();
+	el.setFavoritesMode = vi.fn();
+	el.setSchemaInfo = vi.fn();
+	el.setStsReady = vi.fn((ready: boolean) => {
+		el._stsReady = ready;
+	});
+	return el;
+}
 
 function dispatchHostMessage(data: Record<string, unknown>): void {
 	window.dispatchEvent(new MessageEvent('message', { data }));
@@ -178,7 +241,16 @@ describe('message-handler dispatch', () => {
 	});
 
 	beforeEach(() => {
+		document.body.innerHTML = '';
+		handlerState.sqlConnections.splice(0, handlerState.sqlConnections.length);
+		handlerState.sqlFavorites.splice(0, handlerState.sqlFavorites.length);
+		for (const key of Object.keys(handlerState.sqlCachedDatabases)) delete handlerState.sqlCachedDatabases[key];
+		for (const key of Object.keys(handlerState.sqlFavoritesModeByBoxId)) delete handlerState.sqlFavoritesModeByBoxId[key];
+		for (const key of Object.keys(handlerState.schemaByBoxId)) delete handlerState.schemaByBoxId[key];
+		delete (window as any).__kustoSqlLastConnectionId;
+		delete (window as any).__kustoSqlLastDatabase;
 		vi.clearAllMocks();
+		mocks.getSqlSectionElement.mockReturnValue(null);
 	});
 
 	it('routes documentData to persistence handler', async () => {
@@ -246,6 +318,132 @@ describe('message-handler dispatch', () => {
 			boxId: 'query_1',
 		});
 	});
+
+	it('routes sqlConnectionsData to SQL connection state and UI updates', async () => {
+		dispatchHostMessage({
+			type: 'sqlConnectionsData',
+			connections: [{ id: 'sql_conn_1', name: 'Warehouse', serverUrl: 'tcp:sql.example.test', dialect: 'mssql', authType: 'aad' }],
+			lastConnectionId: 'sql_conn_1',
+			lastDatabase: 'Warehouse',
+			cachedDatabases: { 'sql.example.test': ['Warehouse', 'Scratch'] },
+			sqlFavorites: [{ name: 'Warehouse', connectionId: 'sql_conn_1', database: 'Warehouse' }],
+		});
+		await Promise.resolve();
+
+		expect(mocks.setSqlConnections).toHaveBeenCalledWith([
+			{ id: 'sql_conn_1', name: 'Warehouse', serverUrl: 'tcp:sql.example.test', dialect: 'mssql', authType: 'aad' },
+		]);
+		expect(handlerState.sqlCachedDatabases).toEqual({ 'sql.example.test': ['Warehouse', 'Scratch'] });
+		expect((window as any).__kustoSqlLastConnectionId).toBe('sql_conn_1');
+		expect((window as any).__kustoSqlLastDatabase).toBe('Warehouse');
+		expect(mocks.setSqlFavorites).toHaveBeenCalledWith([
+			{ name: 'Warehouse', connectionId: 'sql_conn_1', database: 'Warehouse' },
+		]);
+		expect(mocks.updateSqlConnectionSelects).toHaveBeenCalledTimes(1);
+		expect(mocks.updateSqlFavoritesUiForAllBoxes).toHaveBeenCalledTimes(1);
+	});
+
+	it('routes sqlFavoritesData and enters favorites mode for the originating SQL section', async () => {
+		const sqlEl = createFakeSqlSection();
+		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
+
+		dispatchHostMessage({
+			type: 'sqlFavoritesData',
+			boxId: 'sql_1',
+			favorites: [{ name: 'Warehouse', connectionId: 'sql_conn_1', database: 'Warehouse' }],
+		});
+		await Promise.resolve();
+
+		expect(mocks.setSqlFavorites).toHaveBeenCalledWith([
+			{ name: 'Warehouse', connectionId: 'sql_conn_1', database: 'Warehouse' },
+		]);
+		expect(mocks.updateSqlFavoritesUiForAllBoxes).toHaveBeenCalledTimes(1);
+		expect(sqlEl.setFavoritesMode).toHaveBeenCalledWith(true);
+		expect(handlerState.sqlFavoritesModeByBoxId.sql_1).toBe(true);
+	});
+
+	it('routes sqlDatabasesData and sqlDatabasesError to SQL database handlers', async () => {
+		dispatchHostMessage({ type: 'sqlDatabasesData', boxId: 'sql_1', databases: ['B', 'A'], sqlConnectionId: 'sql_conn_1' });
+		dispatchHostMessage({ type: 'sqlDatabasesError', boxId: 'sql_1', error: 'failed', sqlConnectionId: 'sql_conn_1' });
+		await Promise.resolve();
+
+		expect(mocks.updateSqlDatabaseSelect).toHaveBeenCalledWith('sql_1', ['B', 'A'], 'sql_conn_1');
+		expect(mocks.onSqlDatabasesError).toHaveBeenCalledWith('sql_1', 'failed', 'sql_conn_1');
+	});
+
+	it('routes sqlConnectionAdded to SQL connection state and originating section', async () => {
+		const sqlEl = createFakeSqlSection();
+		const events: Array<Record<string, unknown>> = [];
+		sqlEl.addEventListener('sql-connection-changed', ((event: CustomEvent) => {
+			events.push(event.detail);
+		}) as EventListener);
+		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
+
+		dispatchHostMessage({
+			type: 'sqlConnectionAdded',
+			connections: [{ id: 'sql_conn_2', name: 'New SQL', serverUrl: 'tcp:new.example.test', dialect: 'mssql', authType: 'aad' }],
+			boxId: 'sql_1',
+			connectionId: 'sql_conn_2',
+		});
+		await Promise.resolve();
+
+		expect(mocks.setSqlConnections).toHaveBeenCalledWith([
+			{ id: 'sql_conn_2', name: 'New SQL', serverUrl: 'tcp:new.example.test', dialect: 'mssql', authType: 'aad' },
+		]);
+		expect(mocks.updateSqlConnectionSelects).toHaveBeenCalledTimes(1);
+		expect(sqlEl.setSqlConnectionId).toHaveBeenCalledWith('sql_conn_2');
+		expect(events).toEqual([{ boxId: 'sql_1', connectionId: 'sql_conn_2' }]);
+	});
+
+	it('routes sqlSchemaData success and error states to the SQL section', async () => {
+		const sqlEl = createFakeSqlSection();
+		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
+		const schema = {
+			tables: ['Events', 'Users'],
+			columnsByTable: { Events: { Id: 'int' }, Users: { Name: 'nvarchar' } },
+		};
+
+		dispatchHostMessage({
+			type: 'sqlSchemaData',
+			boxId: 'sql_1',
+			schema,
+			schemaMeta: { tablesCount: 2, columnsCount: 2, fromCache: true },
+		});
+		dispatchHostMessage({
+			type: 'sqlSchemaData',
+			boxId: 'sql_1',
+			schemaMeta: { error: true, errorMessage: 'Schema failed' },
+		});
+		await Promise.resolve();
+
+		expect(handlerState.schemaByBoxId.sql_1).toBe(schema);
+		expect(sqlEl.setSchemaInfo).toHaveBeenNthCalledWith(1, {
+			text: '2 tables, 2 cols (cached)',
+			isError: false,
+			meta: { fromCache: true, tablesCount: 2, columnsCount: 2, functionsCount: 0 },
+		});
+		expect(sqlEl.setSchemaInfo).toHaveBeenNthCalledWith(2, {
+			text: 'Schema failed',
+			isError: true,
+			meta: undefined,
+		});
+	});
+
+	it('routes STS response, diagnostics, and connection state messages', async () => {
+		const sqlEl = createFakeSqlSection();
+		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
+
+		dispatchHostMessage({ type: 'stsResponse', requestId: 'sts_1', result: { items: [] } });
+		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', markers: [{ message: 'before ready' }] });
+		dispatchHostMessage({ type: 'stsConnectionState', boxId: 'sql_1', state: 'ready' });
+		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', markers: [{ message: 'after ready' }] });
+		await Promise.resolve();
+
+		expect(mocks.handleStsResponse).toHaveBeenCalledWith('sts_1', { items: [] });
+		expect(sqlEl.setStsReady).toHaveBeenCalledWith(true);
+		expect(mocks.handleStsDiagnostics).toHaveBeenCalledTimes(1);
+		expect(mocks.handleStsDiagnostics).toHaveBeenCalledWith('sql_1', [{ message: 'after ready' }]);
+	});
 });
 
 /**
@@ -266,6 +464,7 @@ describe('tool section name persistence', () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.getSqlSectionElement.mockReturnValue(null);
 	});
 
 	it('toolConfigureQuerySection calls __kustoSetSectionName', async () => {

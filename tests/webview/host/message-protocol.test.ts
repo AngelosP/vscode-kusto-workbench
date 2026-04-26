@@ -8,6 +8,9 @@
  * NOT behavioral tests — those live in message-handler.test.ts.
  */
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import * as path from 'node:path';
+import * as ts from 'typescript';
 import type { IncomingWebviewMessage } from '../../../src/host/queryEditorTypes';
 import type { OutgoingWebviewMessage } from '../../../src/webview/shared/webview-messages';
 
@@ -22,6 +25,81 @@ type OutgoingType = ExtractType<OutgoingWebviewMessage>;
 // Compile-time check: if a type literal is not a valid discriminant, tsc errors.
 function assertIncomingType(_t: IncomingType): void { /* type-only */ }
 function assertOutgoingType(_t: OutgoingType): void { /* type-only */ }
+
+function readWorkspaceFile(relativePath: string): string {
+	return readFileSync(path.join(process.cwd(), relativePath), 'utf8');
+}
+
+function extractTypeDiscriminants(relativePath: string, typeName: string): string[] {
+	const source = readWorkspaceFile(relativePath);
+	const sourceFile = ts.createSourceFile(relativePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	const aliases = new Map<string, ts.TypeNode>();
+	sourceFile.forEachChild(node => {
+		if (ts.isTypeAliasDeclaration(node)) {
+			aliases.set(node.name.text, node.type);
+		}
+	});
+	const root = aliases.get(typeName);
+	if (!root) {
+		throw new Error(`Type alias ${typeName} not found in ${relativePath}`);
+	}
+	return [...new Set(collectDiscriminants(root, aliases))].sort();
+}
+
+function collectDiscriminants(typeNode: ts.TypeNode, aliases: Map<string, ts.TypeNode>, seen = new Set<string>()): string[] {
+	if (ts.isUnionTypeNode(typeNode)) {
+		return typeNode.types.flatMap(t => collectDiscriminants(t, aliases, seen));
+	}
+	if (ts.isTypeLiteralNode(typeNode)) {
+		return typeNode.members.flatMap(member => {
+			if (!ts.isPropertySignature(member) || !member.type || !ts.isIdentifier(member.name) || member.name.text !== 'type') {
+				return [];
+			}
+			if (ts.isLiteralTypeNode(member.type) && ts.isStringLiteral(member.type.literal)) {
+				return [member.type.literal.text];
+			}
+			return [];
+		});
+	}
+	if (ts.isTypeReferenceNode(typeNode)) {
+		const aliasName = typeNode.typeName.getText();
+		if (seen.has(aliasName)) {
+			return [];
+		}
+		const alias = aliases.get(aliasName);
+		if (!alias) {
+			return [];
+		}
+		const nextSeen = new Set(seen);
+		nextSeen.add(aliasName);
+		return collectDiscriminants(alias, aliases, nextSeen);
+	}
+	return [];
+}
+
+function extractMessageHandlerCaseLabels(): string[] {
+	const source = readWorkspaceFile('src/webview/core/message-handler.ts');
+	const labels = [...source.matchAll(/case\s+['"]([^'"]+)['"]\s*:/g)].map(match => match[1]);
+	return [...new Set(labels)].sort();
+}
+
+function extractPostMessageTypes(relativePath: string): string[] {
+	const source = readWorkspaceFile(relativePath);
+	const labels = [...source.matchAll(/postMessage\(\s*\{[\s\S]*?type:\s*['"]([^'"]+)['"]/g)].map(match => match[1]);
+	return [...new Set(labels)].sort();
+}
+
+function extractDataTypeComparisons(relativePath: string): string[] {
+	const source = readWorkspaceFile(relativePath);
+	const labels = [...source.matchAll(/\.data\.type\s*={2,3}\s*['"]([^'"]+)['"]/g)].map(match => match[1]);
+	return [...new Set(labels)].sort();
+}
+
+function extractMessageTypeComparisons(relativePath: string): string[] {
+	const source = readWorkspaceFile(relativePath);
+	const labels = [...source.matchAll(/\bmessage\.type\s*={2,3}\s*['"]([^'"]+)['"]/g)].map(match => match[1]);
+	return [...new Set(labels)].sort();
+}
 
 // ─── Manually maintained type inventories ────────────────────────────────────
 // When you add a new message type, add it here too.
@@ -64,12 +142,36 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'cancelOptimizeQuery',
 	'optimizeQuery',
 	'executeQuery',
+	'getSqlConnections',
+	'getSqlDatabases',
+	'refreshSqlDatabases',
+	'saveSqlLastSelection',
+	'promptAddSqlConnection',
+	'addSqlConnection',
+	'testSetSqlAuthOverride',
+	'testClearSqlAuthOverride',
+	'executeSqlQuery',
+	'cancelSqlQuery',
+	'prefetchSqlSchema',
+	'prepareSqlCopilotWriteQuery',
+	'startSqlCopilotWriteQuery',
+	'cancelSqlCopilotWriteQuery',
+	'clearSqlCopilotConversation',
+	'removeFromSqlCopilotHistory',
+	'requestAddSqlFavorite',
+	'removeSqlFavorite',
 	'copyAdeLink',
 	'shareToClipboard',
 	'prefetchSchema',
 	'requestCrossClusterSchema',
 	'promptAddConnection',
+	'addConnection',
 	'importConnectionsFromXml',
+	'stsRequest',
+	'stsDidOpen',
+	'stsDidChange',
+	'stsDidClose',
+	'stsConnect',
 	'kqlLanguageRequest',
 	'fetchControlCommandSyntax',
 	'openToolResultInEditor',
@@ -98,6 +200,7 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'refreshDatabases',
 	'saveLastSelection',
 	'promptAddConnection',
+	'addConnection',
 	'promptImportConnectionsXml',
 	'addConnectionsForClusters',
 	'importConnectionsFromXml',
@@ -106,6 +209,8 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'requestAddFavorite',
 	'removeFavorite',
 	'confirmRemoveFavorite',
+	'requestAddSqlFavorite',
+	'removeSqlFavorite',
 
 	// Info & UI
 	'showInfo',
@@ -125,8 +230,21 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	// Query execution
 	'executeQuery',
 	'cancelQuery',
+	'executeSqlQuery',
+	'cancelSqlQuery',
 	'copyAdeLink',
 	'shareToClipboard',
+
+	// SQL connections & schema
+	'getSqlConnections',
+	'getSqlDatabases',
+	'refreshSqlDatabases',
+	'saveSqlLastSelection',
+	'promptAddSqlConnection',
+	'addSqlConnection',
+	'testSetSqlAuthOverride',
+	'testClearSqlAuthOverride',
+	'prefetchSqlSchema',
 
 	// Comparisons
 	'comparisonBoxEnsured',
@@ -135,6 +253,11 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	// Schema
 	'prefetchSchema',
 	'requestCrossClusterSchema',
+	'stsRequest',
+	'stsDidOpen',
+	'stsDidChange',
+	'stsDidClose',
+	'stsConnect',
 	'kqlLanguageRequest',
 	'fetchControlCommandSyntax',
 
@@ -193,10 +316,23 @@ const PROVIDER_ONLY_OUTGOING_TYPES = new Set([
 ]);
 
 /**
+ * Host-supported legacy message types kept for backward compatibility. The
+ * current webview uses the shared Copilot messages with `flavor: 'sql'` instead.
+ */
+const INCOMING_ONLY_WEBVIEW_MESSAGE_TYPES = new Set([
+	'prepareSqlCopilotWriteQuery',
+	'startSqlCopilotWriteQuery',
+	'cancelSqlCopilotWriteQuery',
+	'clearSqlCopilotConversation',
+	'removeFromSqlCopilotHistory',
+]);
+
+/**
  * Every `case` label in the webview's message-handler.ts switch statement.
  * These are messages the webview expects to RECEIVE from the host.
  */
 const MESSAGE_HANDLER_CASE_LABELS = [
+	'settingsUpdate',
 	'controlCommandSyntaxResult',
 	'ensureComparisonBox',
 	'persistenceMode',
@@ -228,6 +364,15 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'crossClusterSchemaData',
 	'crossClusterSchemaError',
 	'connectionAdded',
+	'sqlConnectionsData',
+	'sqlFavoritesData',
+	'sqlDatabasesData',
+	'sqlDatabasesError',
+	'sqlConnectionAdded',
+	'sqlSchemaData',
+	'stsResponse',
+	'stsDiagnostics',
+	'stsConnectionState',
 	'copilotChatFirstTimeResult',
 	'copilotAvailability',
 	'optimizeQueryStatus',
@@ -259,7 +404,11 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'toolUpdateMarkdownSection',
 	'toolConfigureChart',
 	'toolConfigureTransformation',
+	'toolConfigureHtmlSection',
+	'toolConfigureSqlSection',
+	'toolGetSqlSchema',
 	'toolDelegateToKustoWorkbenchCopilot',
+	'toolDelegateToSqlCopilot',
 	'shareContentReady',
 	'resetCopilotModelSelection',
 	'changedSections',
@@ -271,6 +420,7 @@ const MESSAGE_HANDLER_CASE_LABELS = [
  */
 const HOST_TO_WEBVIEW_TYPES = [
 	// queryEditorProvider.ts
+	'settingsUpdate',
 	'requestToolState',
 	'queryCancelled',
 	'showInfo',
@@ -319,6 +469,17 @@ const HOST_TO_WEBVIEW_TYPES = [
 	'connectionAdded',
 	'importConnectionsXmlText',
 	'importConnectionsXmlError',
+	'sqlFavoritesData',
+
+	// SQL connection/schema/queryEditorProvider.ts
+	'sqlConnectionsData',
+	'sqlDatabasesData',
+	'sqlDatabasesError',
+	'sqlConnectionAdded',
+	'sqlSchemaData',
+	'stsResponse',
+	'stsDiagnostics',
+	'stsConnectionState',
 
 	// queryEditorSchema.ts
 	'schemaData',
@@ -339,6 +500,14 @@ const HOST_TO_WEBVIEW_TYPES = [
 	'resetCopilotModelSelection',
 ] as const;
 
+/** Host→webview messages handled directly by a Lit component instead of message-handler.ts. */
+const COMPONENT_HANDLED_HOST_TO_WEBVIEW_TYPES = [
+	'openPublishPbiDialog',
+	'pbiWorkspacesResult',
+	'pbiItemExistsResult',
+	'publishToPowerBIResult',
+] as const;
+
 /**
  * Message types handled in message-handler.ts that are part of the tool/comparison
  * framework, sent via kustoWorkbenchTools.sendToWebview() rather than direct
@@ -356,7 +525,11 @@ const TOOL_FRAMEWORK_HANDLER_TYPES = new Set([
 	'toolUpdateMarkdownSection',
 	'toolConfigureChart',
 	'toolConfigureTransformation',
+	'toolConfigureHtmlSection',
+	'toolConfigureSqlSection',
+	'toolGetSqlSchema',
 	'toolDelegateToKustoWorkbenchCopilot',
+	'toolDelegateToSqlCopilot',
 	'compareQueryPerformanceWithQuery',
 ]);
 
@@ -392,6 +565,22 @@ describe('Message Protocol Contract', () => {
 		}
 	});
 
+	it('INCOMING_WEBVIEW_MESSAGE_TYPES matches the IncomingWebviewMessage source union', () => {
+		expect([...INCOMING_WEBVIEW_MESSAGE_TYPES].sort()).toEqual(
+			extractTypeDiscriminants('src/host/queryEditorTypes.ts', 'IncomingWebviewMessage')
+		);
+	});
+
+	it('OUTGOING_WEBVIEW_MESSAGE_TYPES matches the OutgoingWebviewMessage source union', () => {
+		expect([...OUTGOING_WEBVIEW_MESSAGE_TYPES].sort()).toEqual(
+			extractTypeDiscriminants('src/webview/shared/webview-messages.ts', 'OutgoingWebviewMessage')
+		);
+	});
+
+	it('MESSAGE_HANDLER_CASE_LABELS matches the message-handler switch cases', () => {
+		expect([...MESSAGE_HANDLER_CASE_LABELS].sort()).toEqual(extractMessageHandlerCaseLabels());
+	});
+
 	// ─── Webview → Host direction ──────────────────────────────────────────
 
 	describe('Webview → Host (OutgoingWebviewMessage ↔ IncomingWebviewMessage)', () => {
@@ -410,7 +599,7 @@ describe('Message Protocol Contract', () => {
 			const outgoing = new Set<string>(OUTGOING_WEBVIEW_MESSAGE_TYPES);
 			const missing: string[] = [];
 			for (const t of INCOMING_WEBVIEW_MESSAGE_TYPES) {
-				if (!outgoing.has(t)) {
+				if (!outgoing.has(t) && !INCOMING_ONLY_WEBVIEW_MESSAGE_TYPES.has(t)) {
 					missing.push(t);
 				}
 			}
@@ -452,7 +641,33 @@ describe('Message Protocol Contract', () => {
 			expect(missing, 'Host types with no message-handler case').toEqual([]);
 		});
 
-		it('every message-handler case is either a known host type or a tool-framework handler', () => {
+		it('component-handled host messages are sent by the host and handled by the HTML section', () => {
+			const providerMessages = new Set<string>(extractPostMessageTypes('src/host/queryEditorProvider.ts'));
+			const htmlSectionMessages = new Set<string>(extractDataTypeComparisons('src/webview/sections/kw-html-section.ts'));
+			const publishDialogMessages = new Set<string>(extractMessageTypeComparisons('src/webview/components/kw-publish-pbi-dialog.ts'));
+			const missingSenders: string[] = [];
+			const missingHandlers: string[] = [];
+			const missingDialogHandlers: string[] = [];
+			for (const t of COMPONENT_HANDLED_HOST_TO_WEBVIEW_TYPES) {
+				if (!providerMessages.has(t)) missingSenders.push(t);
+				if (!htmlSectionMessages.has(t)) missingHandlers.push(t);
+				if (t !== 'openPublishPbiDialog' && !publishDialogMessages.has(t)) missingDialogHandlers.push(t);
+			}
+			expect(missingSenders, 'Component-handled host types missing from queryEditorProvider senders').toEqual([]);
+			expect(missingHandlers, 'Component-handled host types missing from kw-html-section handlers').toEqual([]);
+			expect(missingDialogHandlers, 'Power BI reply types missing from kw-publish-pbi-dialog handlers').toEqual([]);
+		});
+
+		it('component-handled host messages are not claimed by message-handler cases', () => {
+			const cases = new Set<string>(MESSAGE_HANDLER_CASE_LABELS);
+			const overlap: string[] = [];
+			for (const t of COMPONENT_HANDLED_HOST_TO_WEBVIEW_TYPES) {
+				if (cases.has(t)) overlap.push(t);
+			}
+			expect(overlap, 'Component-handled messages should stay in the component-handled bucket').toEqual([]);
+		});
+
+		it('every message-handler case is either a known host type or tool-framework handler', () => {
 			const hostTypes = new Set<string>(HOST_TO_WEBVIEW_TYPES);
 			const missing: string[] = [];
 			for (const c of MESSAGE_HANDLER_CASE_LABELS) {
@@ -467,6 +682,16 @@ describe('Message Protocol Contract', () => {
 			const seen = new Set<string>();
 			const dupes: string[] = [];
 			for (const t of HOST_TO_WEBVIEW_TYPES) {
+				if (seen.has(t)) dupes.push(t);
+				seen.add(t);
+			}
+			expect(dupes).toEqual([]);
+		});
+
+		it('no duplicates in component-handled host→webview types', () => {
+			const seen = new Set<string>();
+			const dupes: string[] = [];
+			for (const t of COMPONENT_HANDLED_HOST_TO_WEBVIEW_TYPES) {
 				if (seen.has(t)) dupes.push(t);
 				seen.add(t);
 			}
@@ -503,6 +728,15 @@ describe('Message Protocol Contract', () => {
 				if (incoming.has(t)) overlap.push(t);
 			}
 			expect(overlap, 'Provider-only types should not be in IncomingWebviewMessage').toEqual([]);
+		});
+
+		it('incoming-only message types are NOT in OutgoingWebviewMessage', () => {
+			const outgoing = new Set<string>(OUTGOING_WEBVIEW_MESSAGE_TYPES);
+			const overlap: string[] = [];
+			for (const t of INCOMING_ONLY_WEBVIEW_MESSAGE_TYPES) {
+				if (outgoing.has(t)) overlap.push(t);
+			}
+			expect(overlap, 'Incoming-only types should stay explicit').toEqual([]);
 		});
 	});
 });

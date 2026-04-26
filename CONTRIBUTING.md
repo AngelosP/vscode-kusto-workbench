@@ -32,6 +32,7 @@ For architecture details, file inventories, and design rationale, see [ARCHITECT
 ## Testing Guidelines
 
 - When given an example of a KQL query where the extension behaves incorrectly, **first create a regression test** that catches the problem, then fix the code, then verify the test passes, then verify all tests pass.
+- For HTML dashboard, slicer, Power BI export, or Power BI publish changes, add focused coverage in the existing webview/host suites when possible. The usual starting points are `tests/webview/host/powerBiExport.test.ts`, `tests/webview/kw-html-section-slicer.test.ts`, and `tests/webview/host/message-protocol.test.ts`.
 - Integration tests (`tests/integration/`) run inside VS Code's extension host with full API access.
 - Webview unit tests (`tests/webview/`) run via Vitest without VS Code.
 - E2E tests (`tests/e2e/`) use `vscode-extension-tester` (Selenium). Run with `npm run test:e2e`.
@@ -304,6 +305,16 @@ The loop iterates DOM children of `#queries-container`, matches their `id` again
 - **`schedulePersist()` computes a JSON signature to avoid unnecessary disk writes.** Do not bypass this with direct `postMessage` persistence calls.
 - **Leave No Trace**: Sections connected to a leave-no-trace cluster have their `resultJson` stripped before persistence. If you add new data fields to section serialization, verify they respect this check (see [ARCHITECTURE.md](ARCHITECTURE.md) for details).
 
+### HTML Dashboard Serialization
+
+HTML sections persist source and configuration, not data snapshots. The serialized shape must stay aligned between `kqlxFormat.ts` and `kw-html-section.ts`:
+
+- Persist `type: 'html'`, `code`, `mode`, `expanded`, `editorHeightPx`, `previewHeightPx`, `dataSourceIds`, and optional `pbiPublishInfo`.
+- `dataSourceIds` are references to source query/transformation sections derived from provenance and section wiring; do not duplicate result rows inside the HTML section.
+- `pbiPublishInfo` is metadata returned by Fabric/Power BI publish (`workspaceId`, model/report IDs, report name, URL). Preserve it across save/restore so republish can update the existing report.
+- After a publish updates `pbiPublishInfo`, ensure persistence is scheduled/flushed through the normal persistence path rather than ad hoc host messages.
+- If dashboard fields ever start carrying derived query data, update Leave No Trace stripping first.
+
 ---
 
 ## Popup & Dropdown Dismiss-on-Scroll Implementation
@@ -385,6 +396,21 @@ The query section header toolbar uses **CSS Container Queries** for responsive l
 
 ---
 
+## HTML Dashboards And Power BI Checklist
+
+Use this checklist when changing `kw-html-section`, dashboard prompts/tools, `powerBiExport.ts`, `powerBiPublish.ts`, or related message contracts.
+
+1. **Preserve provenance v1 compatibility.** Dashboards use `<script type="application/kw-provenance">` with `model.fact`, optional `model.dimensions`, and `bindings`. Treat schema changes as compatibility-sensitive.
+2. **Use `data-kw-bind` for exportable values.** Preview JavaScript can enhance the dashboard, but Power BI output is generated from provenance bindings and `data-kw-bind` targets. JS-only DOM updates do not become Power BI visuals.
+3. **Keep slicer semantics consistent.** Preview slicers are derived from provenance dimensions, filter the fact data client-side, and compose with AND semantics. Power BI export should generate equivalent native slicer tables/visuals where supported.
+4. **Document and test new binding shapes.** If adding scalar/table/pivot/chart display modes or `preAggregate` behavior, cover DAX generation and rendered HTML/SVG output in `powerBiExport.test.ts`.
+5. **Export `.pbip`/PBIR/TMDL, not `.pbix`.** Do not describe or implement this path as direct `.pbix` generation. The project uses the marketplace-signed HTML Content visual rather than importing a local `.pbiviz` file.
+6. **Maintain DirectQuery compatibility.** Generated model queries should continue to use Kusto `AzureDataExplorer.Contents` sources and stable table/column naming.
+7. **Preserve Fabric publish/update behavior.** Publishing must support create-new and update-existing flows, item existence checks, stored publish metadata, and non-fatal refresh schedule failures.
+8. **Keep host/webview contracts typed.** Any new export/publish message must be added to both `queryEditorTypes.ts` and `webview-messages.ts`, and covered by `message-protocol.test.ts`.
+
+---
+
 ## Review Checklist — For Every Change
 
 Use this checklist when reviewing any PR or change:
@@ -407,6 +433,7 @@ Use this checklist when reviewing any PR or change:
 - [ ] `npm test` passes (all integration tests).
 - [ ] Bug fixes include a regression test.
 - [ ] New features include tests.
+- [ ] Dashboard/PBI changes include targeted tests for provenance/bindings, slicers, PBIR/TMDL generation, or publish message contracts as appropriate.
 - [ ] Vitest decorator plugin settings unchanged.
 
 ### Architecture
@@ -416,6 +443,7 @@ Use this checklist when reviewing any PR or change:
 - [ ] No scroll-anchored popups/dropdowns.
 - [ ] Webview import order in `index.ts` preserved (`state` first, `main` last, diagnostics/completions before monaco).
 - [ ] New section types follow the [full checklist](#new-section-types--checklist) including `sectionPrefixes`.
+- [ ] HTML dashboard changes follow the [dashboard checklist](#html-dashboards-and-power-bi-checklist), including provenance and `data-kw-bind` compatibility.
 - [ ] Lazy-loaded vendors remain lazy (no direct imports).
 - [ ] Toast UI AMD hack preserved if touching vendor loading.
 
@@ -423,6 +451,7 @@ Use this checklist when reviewing any PR or change:
 - [ ] Error messages are user-friendly and actionable, not raw backend errors.
 - [ ] Error flows are polished, not degraded.
 - [ ] Leave No Trace respected — new data fields on sections are stripped for leave-no-trace clusters.
+- [ ] Power BI publish/update UX preserves stored report metadata and makes update-vs-new behavior clear.
 - [ ] Floating UI dismisses on scroll per the policy.
 
 ### Dependencies

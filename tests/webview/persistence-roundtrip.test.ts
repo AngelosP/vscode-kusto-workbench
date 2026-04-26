@@ -7,8 +7,13 @@ const testState = vi.hoisted(() => {
 	const markdownBoxes: string[] = [];
 	const pythonBoxes: string[] = [];
 	const urlBoxes: string[] = [];
+	const htmlBoxes: string[] = [];
+	const sqlBoxes: string[] = [];
 	const queryEditors: Record<string, { getValue: () => string; layout?: () => void }> = {};
 	const markdownEditors: Record<string, { getValue: () => string }> = {};
+	const sqlElements: Record<string, HTMLElement & {
+		setFavoritesMode: ReturnType<typeof vi.fn>;
+	}> = {};
 
 	const addQueryBox = vi.fn(() => {
 		const id = `query_restored_${addQueryBox.mock.calls.length + 1}`;
@@ -24,6 +29,28 @@ const testState = vi.hoisted(() => {
 		return id;
 	});
 
+	const addHtmlBox = vi.fn((options: { id?: string } = {}) => {
+		const id = options.id || `html_restored_${htmlBoxes.length + 1}`;
+		htmlBoxes.push(id);
+		const el = document.createElement('div');
+		el.id = id;
+		document.body.appendChild(el);
+		return id;
+	});
+
+	const addSqlBox = vi.fn((options: { id?: string } = {}) => {
+		const id = options.id || `sql_restored_${sqlBoxes.length + 1}`;
+		sqlBoxes.push(id);
+		const el = document.createElement('div') as HTMLElement & { setFavoritesMode: ReturnType<typeof vi.fn> };
+		el.id = id;
+		el.setFavoritesMode = vi.fn();
+		sqlElements[id] = el;
+		const resultsWrapper = document.createElement('div');
+		resultsWrapper.id = `${id}_sql_results_wrapper`;
+		document.body.append(el, resultsWrapper);
+		return id;
+	});
+
 	return {
 		queryBoxes,
 		chartBoxes,
@@ -31,10 +58,15 @@ const testState = vi.hoisted(() => {
 		markdownBoxes,
 		pythonBoxes,
 		urlBoxes,
+		htmlBoxes,
+		sqlBoxes,
 		queryEditors,
 		markdownEditors,
+		sqlElements,
 		addQueryBox,
 		addMarkdownBox,
+		addHtmlBox,
+		addSqlBox,
 	};
 });
 
@@ -63,6 +95,9 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 		queryEditorPendingAdds: { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 },
 		pendingQueryTextByBoxId: {} as Record<string, string>,
 		pendingMarkdownTextByBoxId: {} as Record<string, string>,
+		pendingPythonCodeByBoxId: {} as Record<string, string>,
+		pendingHtmlCodeByBoxId: {} as Record<string, string>,
+		pendingSqlQueryByBoxId: {} as Record<string, string>,
 		pendingWrapperHeightPxByBoxId: {} as Record<string, number>,
 		manualQueryEditorHeightPxByBoxId: {} as Record<string, number>,
 		resultsVisibleByBoxId: {} as Record<string, boolean>,
@@ -76,6 +111,7 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
 	displayResult: vi.fn(),
+	displayResultForBox: vi.fn(),
 }));
 
 vi.mock('../../src/webview/core/section-factory.js', () => ({
@@ -105,8 +141,25 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	}),
 	removePythonBox: vi.fn(),
 	removeUrlBox: vi.fn(),
+	addHtmlBox: testState.addHtmlBox,
+	removeHtmlBox: vi.fn((id: string) => {
+		const idx = testState.htmlBoxes.indexOf(id);
+		if (idx >= 0) testState.htmlBoxes.splice(idx, 1);
+		document.getElementById(id)?.remove();
+	}),
+	htmlBoxes: testState.htmlBoxes,
+	addSqlBox: testState.addSqlBox,
+	removeSqlBox: vi.fn((id: string) => {
+		const idx = testState.sqlBoxes.indexOf(id);
+		if (idx >= 0) testState.sqlBoxes.splice(idx, 1);
+		document.getElementById(id)?.remove();
+		document.getElementById(`${id}_sql_results_wrapper`)?.remove();
+		delete testState.sqlElements[id];
+	}),
+	sqlBoxes: testState.sqlBoxes,
 	pythonBoxes: testState.pythonBoxes,
 	urlBoxes: testState.urlBoxes,
+	__kustoGetSqlSectionElement: vi.fn((id: string) => testState.sqlElements[id] || null),
 }));
 
 vi.mock('../../src/webview/core/state.js', () => ({
@@ -119,6 +172,7 @@ vi.mock('../../src/webview/core/state.js', () => ({
 	autoTriggerAutocompleteEnabled: true,
 	setCaretDocsEnabled: vi.fn(),
 	setAutoTriggerAutocompleteEnabled: vi.fn(),
+	sqlFavoritesModeByBoxId: {},
 }));
 
 vi.mock('../../src/webview/sections/kw-chart-section.js', () => ({
@@ -164,6 +218,9 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 }));
 
 import { pState } from '../../src/webview/shared/persistence-state.js';
+import { displayResultForBox } from '../../src/webview/core/results-state.js';
+import { sqlFavoritesModeByBoxId } from '../../src/webview/core/state.js';
+import { setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
 import { getKqlxState, handleDocumentDataMessage } from '../../src/webview/core/persistence.js';
 
 describe('persistence round-trip', () => {
@@ -174,12 +231,25 @@ describe('persistence round-trip', () => {
 		testState.markdownBoxes.splice(0, testState.markdownBoxes.length);
 		testState.pythonBoxes.splice(0, testState.pythonBoxes.length);
 		testState.urlBoxes.splice(0, testState.urlBoxes.length);
+		testState.htmlBoxes.splice(0, testState.htmlBoxes.length);
+		testState.sqlBoxes.splice(0, testState.sqlBoxes.length);
 		for (const k of Object.keys(testState.queryEditors)) delete testState.queryEditors[k];
 		for (const k of Object.keys(testState.markdownEditors)) delete testState.markdownEditors[k];
+		for (const k of Object.keys(testState.sqlElements)) delete testState.sqlElements[k];
 		for (const k of Object.keys(pState.pendingQueryTextByBoxId)) delete pState.pendingQueryTextByBoxId[k];
+		for (const k of Object.keys(pState.pendingMarkdownTextByBoxId)) delete pState.pendingMarkdownTextByBoxId[k];
+		for (const k of Object.keys(pState.pendingPythonCodeByBoxId)) delete pState.pendingPythonCodeByBoxId[k];
+		for (const k of Object.keys(pState.pendingHtmlCodeByBoxId)) delete pState.pendingHtmlCodeByBoxId[k];
+		for (const k of Object.keys(pState.pendingSqlQueryByBoxId)) delete pState.pendingSqlQueryByBoxId[k];
+		for (const k of Object.keys(pState.pendingWrapperHeightPxByBoxId)) delete pState.pendingWrapperHeightPxByBoxId[k];
+		for (const k of Object.keys(pState.resultsVisibleByBoxId)) delete pState.resultsVisibleByBoxId[k];
+		for (const k of Object.keys(pState.queryResultJsonByBoxId)) delete pState.queryResultJsonByBoxId[k];
+		for (const k of Object.keys(sqlFavoritesModeByBoxId)) delete sqlFavoritesModeByBoxId[k];
 		vi.clearAllMocks();
 		pState.compatibilityMode = false;
 		pState.documentKind = 'kqlx';
+		pState.devNotesSections = [];
+		pState.lastExecutedBox = '';
 	});
 
 	it('serializes section DOM via getKqlxState', () => {
@@ -195,12 +265,131 @@ describe('persistence round-trip', () => {
 		markdownEl.id = 'markdown_1';
 		markdownEl.serialize = () => ({ type: 'markdown', id: 'markdown_1', text: 'hello' });
 
-		container.appendChild(queryEl);
-		container.appendChild(markdownEl);
+		const htmlEl = document.createElement('div') as unknown as HTMLElement & { serialize: () => unknown };
+		htmlEl.id = 'html_1';
+		htmlEl.serialize = () => ({ type: 'html', id: 'html_1', code: '<main></main>', mode: 'preview' });
+
+		const sqlEl = document.createElement('div') as unknown as HTMLElement & { serialize: () => unknown };
+		sqlEl.id = 'sql_1';
+		sqlEl.serialize = () => ({ type: 'sql', id: 'sql_1', query: 'select 1' });
+
+		container.append(queryEl, markdownEl, htmlEl, sqlEl);
 
 		const state = getKqlxState() as { sections: Array<{ type: string }> };
-		expect(state.sections).toHaveLength(2);
-		expect(state.sections.map((s) => s.type)).toEqual(['query', 'markdown']);
+		expect(state.sections).toHaveLength(4);
+		expect(state.sections.map((s) => s.type)).toEqual(['query', 'markdown', 'html', 'sql']);
+	});
+
+	it('restores HTML section code, legacy dataSourceIds input, and dashboard publish metadata', () => {
+		const pbiPublishInfo = {
+			workspaceId: 'workspace-1',
+			workspaceName: 'Analytics',
+			semanticModelId: 'model-1',
+			reportId: 'report-1',
+			reportName: 'Ops Dashboard',
+			reportUrl: 'https://app.powerbi.com/report-1',
+		};
+
+		handleDocumentDataMessage({
+			type: 'documentData',
+			ok: true,
+			forceReload: true,
+			documentUri: 'file:///tmp/html.kqlx',
+			state: {
+				sections: [
+					{
+						type: 'html',
+						id: 'html_saved_1',
+						name: 'Dashboard',
+						code: '<main data-kw-bind="total"></main>',
+						mode: 'preview',
+						expanded: false,
+						editorHeightPx: 260,
+						previewHeightPx: 520,
+						// Accepted for older saved documents; provenance is the authoritative source for future saves.
+						dataSourceIds: ['query_1', 'transformation_1'],
+						pbiPublishInfo,
+					},
+				],
+			},
+		});
+
+		expect(pState.pendingHtmlCodeByBoxId.html_saved_1).toBe('<main data-kw-bind="total"></main>');
+		expect(testState.addHtmlBox).toHaveBeenCalledWith({
+			id: 'html_saved_1',
+			name: 'Dashboard',
+			mode: 'preview',
+			expanded: false,
+			editorHeightPx: 260,
+			previewHeightPx: 520,
+			dataSourceIds: ['query_1', 'transformation_1'],
+			pbiPublishInfo,
+		});
+		expect(testState.htmlBoxes).toEqual(['html_saved_1']);
+		expect(testState.queryBoxes).toEqual([]);
+	});
+
+	it('restores SQL section query, state, favorites mode, and persisted results', () => {
+		const resultJson = JSON.stringify({
+			columns: [{ name: 'Value', type: 'int' }],
+			rows: [[1]],
+			metadata: { executionTime: '00:00:00.010' },
+		});
+		vi.mocked(displayResultForBox).mockImplementationOnce((_result, boxId) => {
+			const wrapper = document.getElementById(`${boxId}_sql_results_wrapper`);
+			expect(wrapper?.style.height).toBe('420px');
+			expect(wrapper?.dataset.kustoUserResized).toBe('true');
+		});
+
+		handleDocumentDataMessage({
+			type: 'documentData',
+			ok: true,
+			forceReload: true,
+			documentUri: 'file:///tmp/sql.sqlx',
+			state: {
+				sections: [
+					{
+						type: 'sql',
+						id: 'sql_saved_1',
+						name: 'Warehouse Query',
+						query: 'select top 10 * from dbo.Events',
+						serverUrl: 'tcp:sql.example.test,1433',
+						database: 'Warehouse',
+						expanded: false,
+						resultsVisible: false,
+						favoritesMode: true,
+						resultJson,
+						runMode: 'all',
+						editorHeightPx: 310,
+						resultsHeightPx: 420,
+						copilotChatVisible: true,
+						copilotChatWidthPx: 360,
+					},
+				],
+			},
+		});
+
+		expect(pState.pendingSqlQueryByBoxId.sql_saved_1).toBe('select top 10 * from dbo.Events');
+		expect(testState.addSqlBox).toHaveBeenCalledWith({
+			id: 'sql_saved_1',
+			name: 'Warehouse Query',
+			serverUrl: 'tcp:sql.example.test,1433',
+			database: 'Warehouse',
+			expanded: false,
+			editorHeightPx: 310,
+			copilotChatVisible: true,
+			copilotChatWidthPx: 360,
+		});
+		expect(setRunMode).toHaveBeenCalledWith('sql_saved_1', 'all');
+		expect(pState.resultsVisibleByBoxId.sql_saved_1).toBe(false);
+		expect(testState.sqlElements.sql_saved_1.setFavoritesMode).toHaveBeenCalledWith(true);
+		expect(sqlFavoritesModeByBoxId.sql_saved_1).toBe(true);
+		expect(pState.queryResultJsonByBoxId.sql_saved_1).toBe(resultJson);
+		expect(pState.lastExecutedBox).toBe('sql_saved_1');
+		expect(displayResultForBox).toHaveBeenCalledWith(JSON.parse(resultJson), 'sql_saved_1', { label: 'Results', showExecutionTime: true });
+		expect(document.getElementById('sql_saved_1_sql_results_wrapper')?.style.height).toBe('420px');
+		expect(document.getElementById('sql_saved_1_sql_results_wrapper')?.dataset.kustoUserResized).toBe('true');
+		expect(testState.sqlBoxes).toEqual(['sql_saved_1']);
 	});
 
 	it('recreates sections from serialized state on handleDocumentDataMessage', () => {
