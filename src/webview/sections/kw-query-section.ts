@@ -646,6 +646,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (conn) this._desiredClusterUrl = conn.clusterUrl || '';
 		if (prev !== connectionId) {
 			this._database = '';
+			this._desiredDatabase = '';
 			this._databases = [];
 			this.dispatchEvent(new CustomEvent('connection-changed', {
 				detail: { boxId: this.boxId, connectionId, clusterUrl: conn?.clusterUrl || '' },
@@ -659,6 +660,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (!database) return;
 		const prev = this._database;
 		this._database = database;
+		this._desiredDatabase = '';
 		if (prev !== database) {
 			this.dispatchEvent(new CustomEvent('database-changed', {
 				detail: { boxId: this.boxId, database },
@@ -869,7 +871,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		// If connection changed, fire event so databases get loaded
 		if (prev !== resolvedId && resolvedId) {
 			this.dispatchEvent(new CustomEvent('connection-changed', {
-				detail: { boxId: this.boxId, connectionId: resolvedId, clusterUrl: this.getClusterUrl() },
+				detail: { boxId: this.boxId, connectionId: resolvedId, clusterUrl: this.getClusterUrl(), database: this._desiredDatabase || this._database },
 				bubbles: true, composed: true,
 			}));
 		}
@@ -1346,7 +1348,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 		// Read connection/database from internal state (shadow DOM)
 		const connectionId = this._connectionId;
-		const database = this._database;
+		const database = this._database || this._desiredDatabase;
 
 		let favoritesMode: boolean | undefined;
 		if (this._favoritesMode) favoritesMode = true;
@@ -1355,7 +1357,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		let resultsVisible = true;
 		try { const m = pState.resultsVisibleByBoxId; resultsVisible = !(m && m[b] === false); } catch (e) { console.error('[kusto]', e); }
 
-		const clusterUrl = this.getClusterUrl();
+		const clusterUrl = this.getClusterUrl() || this._desiredClusterUrl;
 
 		let query = '';
 		try {

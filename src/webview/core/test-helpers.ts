@@ -1109,6 +1109,186 @@ function e2eAssertInlineToggleState(kind: E2eSectionKind, expectedActive: boolea
 	return `${kind} inline toggle active=${active}`;
 }
 
+const E2E_PERSISTENCE_SECTION_SELECTOR = 'kw-query-section,kw-sql-section,kw-markdown-section,kw-html-section,kw-chart-section,kw-transformation-section,kw-python-section,kw-url-section';
+
+function e2ePersistenceSections(): HTMLElement[] {
+	const container = document.getElementById('queries-container');
+	const candidates = container
+		? Array.from(container.children)
+		: Array.from(document.querySelectorAll(E2E_PERSISTENCE_SECTION_SELECTOR));
+	return candidates.filter((section): section is HTMLElement => {
+		const tagName = section.tagName?.toLowerCase();
+		return !!tagName && E2E_PERSISTENCE_SECTION_SELECTOR.split(',').includes(tagName);
+	});
+}
+
+function e2ePersistenceSection(sectionId: string): any {
+	const section = document.getElementById(sectionId) as any;
+	if (!section) {
+		throw new Error(`section not found: ${sectionId}`);
+	}
+	return section;
+}
+
+function e2eSerializeSection(sectionId: string): any {
+	const section = e2ePersistenceSection(sectionId);
+	if (typeof section.serialize !== 'function') {
+		throw new Error(`section has no serialize method: ${sectionId}`);
+	}
+	return section.serialize();
+}
+
+function e2eAssertField(actual: any, fieldName: string, expectedValue: any, context: string): void {
+	if (typeof expectedValue === 'undefined') {
+		return;
+	}
+	if (actual !== expectedValue) {
+		throw new Error(`${context} expected ${fieldName}=${JSON.stringify(expectedValue)}, got ${JSON.stringify(actual)}`);
+	}
+}
+
+function e2eAssertIncludes(actual: any, fieldName: string, expectedValue: any, context: string): void {
+	if (typeof expectedValue === 'undefined') {
+		return;
+	}
+	const haystack = String(actual || '');
+	const needles = Array.isArray(expectedValue) ? expectedValue : [expectedValue];
+	for (const needleValue of needles) {
+		const needle = String(needleValue || '');
+		if (needle && !haystack.includes(needle)) {
+			throw new Error(`${context} expected ${fieldName} to include ${JSON.stringify(needle)}`);
+		}
+	}
+}
+
+function e2eParseResultJson(sectionData: any, context: string): any | null {
+	if (!sectionData.resultJson) {
+		return null;
+	}
+	try {
+		return JSON.parse(String(sectionData.resultJson));
+	} catch (error) {
+		throw new Error(`${context} has invalid resultJson: ${error instanceof Error ? error.message : String(error)}`);
+	}
+}
+
+function e2eAssertResultJson(sectionData: any, expected: any, context: string): string {
+	const expectsRows = typeof expected.resultRows !== 'undefined';
+	const expectsColumns = typeof expected.resultColumns !== 'undefined';
+	if (!expectsRows && !expectsColumns) {
+		return '';
+	}
+
+	const result = e2eParseResultJson(sectionData, context);
+	if (!result) {
+		throw new Error(`${context} expected persisted resultJson`);
+	}
+
+	if (expectsRows) {
+		const rows = Array.isArray(result.rows) ? result.rows : [];
+		if (rows.length !== expected.resultRows) {
+			throw new Error(`${context} expected ${expected.resultRows} result row(s), got ${rows.length}`);
+		}
+	}
+
+	if (expectsColumns) {
+		const expectedColumns = String(expected.resultColumns || '').split(',').map(value => value.trim()).filter(Boolean);
+		const actualColumns = Array.isArray(result.columns)
+			? result.columns.map((column: any) => String(column?.name || column || ''))
+			: [];
+		for (const expectedColumn of expectedColumns) {
+			if (!actualColumns.includes(expectedColumn)) {
+				throw new Error(`${context} missing result column ${expectedColumn}; got: ${actualColumns.join(', ')}`);
+			}
+		}
+		return ` resultColumns=${actualColumns.join(',')}`;
+	}
+
+	return '';
+}
+
+function e2eAssertQueryPersistence(sectionId: string, expected: any = {}): string {
+	const sectionData = e2eSerializeSection(sectionId);
+	const context = `query section ${sectionId}`;
+	e2eAssertField(sectionData.type, 'type', 'query', context);
+	e2eAssertField(sectionData.name, 'name', expected.name, context);
+	e2eAssertField(sectionData.query, 'query', expected.query, context);
+	e2eAssertIncludes(sectionData.query, 'query', expected.queryIncludes, context);
+	e2eAssertField(sectionData.clusterUrl, 'clusterUrl', expected.clusterUrl, context);
+	e2eAssertField(sectionData.database, 'database', expected.database, context);
+	e2eAssertField(sectionData.runMode, 'runMode', expected.runMode, context);
+	e2eAssertField(sectionData.resultsVisible, 'resultsVisible', expected.resultsVisible, context);
+	const resultSummary = e2eAssertResultJson(sectionData, expected, context);
+	return `${context} verified${resultSummary}`;
+}
+
+function e2eAssertSqlPersistence(sectionId: string, expected: any = {}): string {
+	const sectionData = e2eSerializeSection(sectionId);
+	const context = `sql section ${sectionId}`;
+	e2eAssertField(sectionData.type, 'type', 'sql', context);
+	e2eAssertField(sectionData.name, 'name', expected.name, context);
+	e2eAssertField(sectionData.query, 'query', expected.query, context);
+	e2eAssertIncludes(sectionData.query, 'query', expected.queryIncludes, context);
+	e2eAssertField(sectionData.serverUrl, 'serverUrl', expected.serverUrl, context);
+	e2eAssertField(sectionData.database, 'database', expected.database, context);
+	e2eAssertField(sectionData.runMode, 'runMode', expected.runMode, context);
+	e2eAssertField(sectionData.resultsVisible, 'resultsVisible', expected.resultsVisible, context);
+	const resultSummary = e2eAssertResultJson(sectionData, expected, context);
+	return `${context} verified${resultSummary}`;
+}
+
+function e2eAssertMarkdownPersistence(sectionId: string, expected: any = {}): string {
+	const sectionData = e2eSerializeSection(sectionId);
+	const context = `markdown section ${sectionId}`;
+	e2eAssertField(sectionData.type, 'type', 'markdown', context);
+	e2eAssertField(sectionData.title, 'title', expected.title, context);
+	e2eAssertField(sectionData.text, 'text', expected.text, context);
+	e2eAssertIncludes(sectionData.text, 'text', expected.textIncludes, context);
+	e2eAssertField(sectionData.mode, 'mode', expected.mode, context);
+	e2eAssertField(sectionData.tab, 'tab', expected.tab, context);
+	return `${context} verified`;
+}
+
+function e2eSelectSqlRunMode(mode: string, sectionId: string = ''): string {
+	const section = sectionId ? e2ePersistenceSection(sectionId) : e2eSection('sql');
+	const boxId = String(section.boxId || section.id || '').trim();
+	if (!boxId) {
+		throw new Error('SQL section has no boxId/id');
+	}
+
+	const labelByMode: Record<string, string> = {
+		plain: 'Run Query',
+		take100: 'Run Query (take 100)',
+		top100: 'Run Query (TOP 100)',
+		sample100: 'Run Query (sample 100)',
+	};
+	const targetLabel = labelByMode[mode];
+	if (!targetLabel) {
+		throw new Error(`Unsupported SQL run mode: ${mode}`);
+	}
+
+	const toggle = document.getElementById(boxId + '_sql_run_toggle') as HTMLElement | null;
+	if (!toggle) {
+		throw new Error(`SQL run-mode toggle not found for ${boxId}`);
+	}
+	toggle.click();
+
+	const menu = document.getElementById(boxId + '_sql_run_menu') as HTMLElement | null;
+	const items = Array.from(menu?.querySelectorAll('[role=menuitem]') || []) as HTMLElement[];
+	const item = items.find(candidate => (candidate.textContent || '').replace(/\s+/g, ' ').trim() === targetLabel);
+	if (!item) {
+		throw new Error(`SQL run-mode item not found: ${targetLabel}`);
+	}
+	item.click();
+
+	const actual = String(_win.runModesByBoxId?.[boxId] || '');
+	if (actual !== mode) {
+		throw new Error(`SQL run mode should be ${mode} after menu click, got ${actual}`);
+	}
+
+	return `selected SQL run mode ${targetLabel} for ${boxId}`;
+}
+
 _win.__e2e = {
 	workbench: {
 		clearSections: () => _win.__testRemoveAllSections(),
@@ -1225,6 +1405,44 @@ _win.__e2e = {
 			e2eAutoTriggerToggle().click();
 			return 'sql auto-trigger toggle clicked';
 		},
+	},
+	persistence: {
+		assertDocumentKind: (expectedKind: string) => {
+			const actual = document.body.dataset.kustoDocumentKind || '';
+			if (actual !== expectedKind) {
+				throw new Error(`expected document kind ${expectedKind}, got ${actual}`);
+			}
+			return `document kind=${actual}`;
+		},
+		assertSectionOrder: (expectedTypesCsv: string) => {
+			const expectedTypes = String(expectedTypesCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+			const actualTypes = e2ePersistenceSections().map(section => {
+				try {
+					return typeof (section as any).serialize === 'function'
+						? String((section as any).serialize().type || '')
+						: section.tagName.toLowerCase().replace(/^kw-/, '').replace(/-section$/, '');
+				} catch {
+					return section.tagName.toLowerCase().replace(/^kw-/, '').replace(/-section$/, '');
+				}
+			});
+			if (actualTypes.join(',') !== expectedTypes.join(',')) {
+				throw new Error(`expected section order ${expectedTypes.join(',')}, got ${actualTypes.join(',')}`);
+			}
+			return `section order=${actualTypes.join(',')}`;
+		},
+		assertSectionIds: (expectedIdsCsv: string) => {
+			const expectedIds = String(expectedIdsCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+			const actualIds = e2ePersistenceSections().map(section => section.id || section.getAttribute('box-id') || '');
+			if (actualIds.join(',') !== expectedIds.join(',')) {
+				throw new Error(`expected section ids ${expectedIds.join(',')}, got ${actualIds.join(',')}`);
+			}
+			return `section ids=${actualIds.join(',')}`;
+		},
+		assertQuerySection: e2eAssertQueryPersistence,
+		assertSqlSection: e2eAssertSqlPersistence,
+		assertMarkdownSection: e2eAssertMarkdownPersistence,
+		selectKustoRunMode: (mode: string, selector: string = 'kw-query-section') => _win.__testSelectKustoRunMode(mode, selector),
+		selectSqlRunMode: e2eSelectSqlRunMode,
 	},
 	inline: {
 		assertToggleVisible: (kind: E2eSectionKind) => {

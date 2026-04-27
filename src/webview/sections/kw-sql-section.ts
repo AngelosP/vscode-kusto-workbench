@@ -195,6 +195,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _savedEditorHeightPx: number | undefined;
 	private _schemaInfoState: SchemaInfoState = { status: 'not-loaded' };
 	private _stsReady = false;
+	private _stsDocumentOpened = false;
 
 	// ── Auto-trigger autocomplete state ──────────────────────────────────────
 	private _autoSuggestTimer: ReturnType<typeof setTimeout> | undefined;
@@ -531,6 +532,15 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			id: c.id,
 			label: c.name || c.serverUrl,
 		}));
+		const restoredServerId = '__restored_sql_server__';
+		const selectedServerId = this._connectionId || (this._desiredServerUrl ? restoredServerId : '');
+		if (!this._connectionId && this._desiredServerUrl) {
+			serverItems.unshift({
+				id: restoredServerId,
+				label: this._desiredServerUrl,
+				disabled: true,
+			});
+		}
 		const serverActions: DropdownAction[] = [
 			{ id: '__add_new__', label: 'Add new server…' },
 		];
@@ -539,7 +549,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 				<kw-dropdown
 					.items=${serverItems}
 					.actions=${serverActions}
-					.selectedId=${this._connectionId}
+					.selectedId=${selectedServerId}
 					.placeholder=${'Select Server...'}
 					.emptyText=${'No SQL connections.'}
 					.buttonIcon=${serverIconSvg}
@@ -552,11 +562,16 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	private _renderDatabaseDropdown(): TemplateResult {
 		const dbItems: DropdownItem[] = (this._databases || []).map(db => ({ id: db, label: db }));
+		const restoredDatabase = !this._database && this._desiredDatabase ? this._desiredDatabase : '';
+		if (restoredDatabase && !dbItems.some(item => item.id === restoredDatabase)) {
+			dbItems.unshift({ id: restoredDatabase, label: restoredDatabase, disabled: true });
+		}
+		const selectedDatabase = this._database || restoredDatabase;
 		return html`
 			<div class="select-wrapper half-width" title="SQL Database">
 				<kw-dropdown
 					.items=${dbItems}
-					.selectedId=${this._database}
+					.selectedId=${selectedDatabase}
 					.placeholder=${'Select Database...'}
 					.emptyText=${this._databasesLoading ? 'Loading...' : 'No databases.'}
 					?disabled=${!this._connectionId}
@@ -769,6 +784,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (conn) this._desiredServerUrl = conn.serverUrl || '';
 		if (prev !== connectionId) {
 			this._database = '';
+			this._desiredDatabase = '';
 			this._databases = [];
 			this.dispatchEvent(new CustomEvent('sql-connection-changed', {
 				detail: { boxId: this.boxId, connectionId, serverUrl: conn?.serverUrl || '' },
@@ -782,21 +798,14 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (!database) return;
 		const prev = this._database;
 		this._database = database;
+		this._desiredDatabase = '';
 		if (prev !== database) {
 			this._resetSchemaReadiness('loading');
 			this.dispatchEvent(new CustomEvent('sql-database-changed', {
 				detail: { boxId: this.boxId, database },
 				bubbles: true, composed: true,
 			}));
-			// Notify STS of database change.
-			if (this._sqlConnectionId) {
-				console.log(`[sts-diag] stsConnect (db-change) boxId=${this.boxId} connId=${this._sqlConnectionId} db=${database}`);
-				try {
-					postMessageToHost({ type: 'stsConnect', boxId: this.boxId, sqlConnectionId: this._sqlConnectionId, database } as any);
-				} catch (e2) { console.error('[kusto]', e2); }
-			} else {
-				console.log(`[sts-diag] stsConnect SKIPPED (db-change) boxId=${this.boxId} connId=(none) db=${database}`);
-			}
+			this._connectStsIfReady('db-change');
 		}
 	}
 
@@ -1008,10 +1017,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			this._updatePlaceholderVisibility();
 			this._markResultsStale();
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
-			// Notify STS of content change (debounced via host-side handling).
-			try {
-				postMessageToHost({ type: 'stsDidChange', boxId: this.boxId, text: editor.getValue() } as any);
-			} catch (e) { console.error('[kusto]', e); }
+			if (this._stsDocumentOpened) {
+				try {
+					postMessageToHost({ type: 'stsDidChange', boxId: this.boxId, text: editor.getValue() } as any);
+				} catch (e) { console.error('[kusto]', e); }
+			}
 			try { this._maybeAutoTriggerAutocomplete(changeEvt); } catch (err) { console.error('[kusto]', err); }
 		});
 
@@ -1088,32 +1098,51 @@ export class KwSqlSection extends LitElement implements SectionElement {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 
-			// Notify STS that a SQL document was opened.
-			try {
-				console.log(`[sts-diag] stsDidOpen boxId=${this.boxId} textLen=${editor.getValue().length}`);
-				postMessageToHost({ type: 'stsDidOpen', boxId: this.boxId, text: editor.getValue() } as any);
-			} catch (e) { console.error('[kusto]', e); }
-
-			// If already connected, notify STS to connect this document.
-			if (this._sqlConnectionId && this._database) {
-				console.log(`[sts-diag] stsConnect (init) boxId=${this.boxId} connId=${this._sqlConnectionId} db=${this._database}`);
-				try {
-					postMessageToHost({ type: 'stsConnect', boxId: this.boxId, sqlConnectionId: this._sqlConnectionId, database: this._database } as any);
-				} catch (e) { console.error('[kusto]', e); }
-			} else {
-				console.log(`[sts-diag] stsConnect SKIPPED (init) boxId=${this.boxId} connId=${this._sqlConnectionId || '(none)'} db=${this._database || '(none)'}`);
-			}
+			this._connectStsIfReady('init');
 
 		} catch (e) {
 			console.error('[kusto] SQL editor init error:', e);
 		}
 	}
 
-	private _disposeEditor(): void {
-		// Notify STS that this document is closed.
+	private _openStsDocumentIfNeeded(): boolean {
+		if (this._stsDocumentOpened) return true;
+		if (!this._editor) return false;
 		try {
-			postMessageToHost({ type: 'stsDidClose', boxId: this.boxId } as any);
-		} catch { /* ignore */ }
+			const text = this._editor.getValue();
+			console.log(`[sts-diag] stsDidOpen boxId=${this.boxId} textLen=${text.length}`);
+			postMessageToHost({ type: 'stsDidOpen', boxId: this.boxId, text } as any);
+			this._stsDocumentOpened = true;
+			return true;
+		} catch (e) {
+			console.error('[kusto]', e);
+			return false;
+		}
+	}
+
+	private _connectStsIfReady(reason: string): void {
+		if (!this._sqlConnectionId || !this._database) {
+			console.log(`[sts-diag] stsConnect SKIPPED (${reason}) boxId=${this.boxId} connId=${this._sqlConnectionId || '(none)'} db=${this._database || '(none)'}`);
+			return;
+		}
+		if (pState.restoreInProgress) {
+			console.log(`[sts-diag] stsConnect SKIPPED (${reason}, restore) boxId=${this.boxId} connId=${this._sqlConnectionId} db=${this._database}`);
+			return;
+		}
+		if (!this._openStsDocumentIfNeeded()) return;
+		console.log(`[sts-diag] stsConnect (${reason}) boxId=${this.boxId} connId=${this._sqlConnectionId} db=${this._database}`);
+		try {
+			postMessageToHost({ type: 'stsConnect', boxId: this.boxId, sqlConnectionId: this._sqlConnectionId, database: this._database } as any);
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	private _disposeEditor(): void {
+		if (this._stsDocumentOpened) {
+			try {
+				postMessageToHost({ type: 'stsDidClose', boxId: this.boxId } as any);
+			} catch { /* ignore */ }
+			this._stsDocumentOpened = false;
+		}
 
 		// Unregister model URI mapping and shared editor maps.
 		if (this._editor) {
@@ -1174,11 +1203,14 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			expanded: this._expanded,
 		};
 
-		if (this.getServerUrl()) {
-			data.serverUrl = this.getServerUrl();
+		const serverUrl = this.getServerUrl() || this._desiredServerUrl;
+		const database = this._database || this._desiredDatabase;
+
+		if (serverUrl) {
+			data.serverUrl = serverUrl;
 		}
-		if (this._database) {
-			data.database = this._database;
+		if (database) {
+			data.database = database;
 		}
 		if (this._favoritesMode) {
 			data.favoritesMode = true;
@@ -1385,7 +1417,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 		if (prev !== resolvedId && resolvedId) {
 			this.dispatchEvent(new CustomEvent('sql-connection-changed', {
-				detail: { boxId: this.boxId, connectionId: resolvedId, serverUrl: this.getServerUrl() },
+				detail: { boxId: this.boxId, connectionId: resolvedId, serverUrl: this.getServerUrl(), database: this._desiredDatabase || this._database },
 				bubbles: true, composed: true,
 			}));
 		}
@@ -1393,6 +1425,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	/** Update available databases. Applies desired database if set. */
 	public setDatabases(databases: string[], desiredDb?: string): void {
+		const previousDatabase = this._database;
 		this._databases = databases;
 		this._databasesLoading = false;
 
@@ -1433,6 +1466,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 					bubbles: true, composed: true,
 				}));
 			}
+		}
+		if (this._database && this._database !== previousDatabase) {
+			this._connectStsIfReady('database-list');
 		}
 	}
 

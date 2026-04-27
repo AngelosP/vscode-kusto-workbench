@@ -346,6 +346,17 @@ export function addQueryBox( options?: any) {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			// Load database list.
+			if (pState.restoreInProgress) {
+				const restoredDatabase = String(detail.database || '').trim();
+				if (restoredDatabase && typeof kwEl.setDatabases === 'function') {
+					kwEl.setDatabases([restoredDatabase], restoredDatabase);
+				}
+				try {
+					const updateRunEnabled = (window as any).__kustoUpdateRunEnabledForBox;
+					if (typeof updateRunEnabled === 'function') updateRunEnabled(boxId);
+				} catch (e) { console.error('[kusto]', e); }
+				return;
+			}
 			if (detail.connectionId) {
 				try {
 					const cid = String(detail.connectionId || '').trim();
@@ -2916,6 +2927,13 @@ export function addSqlBox(options?: any) {
 		// Load database list.
 		if (detail.connectionId) {
 			try {
+				if (pState.restoreInProgress) {
+					const restoredDatabase = String(detail.database || '').trim();
+					if (restoredDatabase && typeof litEl.setDatabases === 'function') {
+						litEl.setDatabases([restoredDatabase], restoredDatabase);
+					}
+					return;
+				}
 				const cid = String(detail.connectionId || '').trim();
 				const conn = Array.isArray(sqlConnections) ? sqlConnections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
 				const serverUrl = conn && conn.serverUrl ? String(conn.serverUrl) : '';
@@ -2955,16 +2973,18 @@ export function addSqlBox(options?: any) {
 		} catch (e) { console.error('[kusto]', e); }
 		// Request schema for the new database.
 		try {
-			const el2 = __kustoGetSqlSectionElement(boxId);
-			const connId = el2 && typeof el2.getSqlConnectionId === 'function' ? el2.getSqlConnectionId() : '';
-			const db = detail.database || '';
-			if (connId && db) {
-				try {
-					if (typeof litEl.setSchemaInfo === 'function') {
-						litEl.setSchemaInfo({ status: 'loading', statusText: 'Loading\u2026' });
-					}
-				} catch (e) { console.error('[kusto]', e); }
-				postMessageToHost({ type: 'prefetchSqlSchema', sqlConnectionId: connId, database: db, boxId });
+			if (!pState.restoreInProgress) {
+				const el2 = __kustoGetSqlSectionElement(boxId);
+				const connId = el2 && typeof el2.getSqlConnectionId === 'function' ? el2.getSqlConnectionId() : '';
+				const db = detail.database || '';
+				if (connId && db) {
+					try {
+						if (typeof litEl.setSchemaInfo === 'function') {
+							litEl.setSchemaInfo({ status: 'loading', statusText: 'Loading\u2026' });
+						}
+					} catch (e) { console.error('[kusto]', e); }
+					postMessageToHost({ type: 'prefetchSqlSchema', sqlConnectionId: connId, database: db, boxId });
+				}
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }

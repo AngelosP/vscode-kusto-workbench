@@ -1,0 +1,32 @@
+{
+  "kind": "kqlx",
+  "version": 1,
+  "state": {
+    "caretDocsEnabled": true,
+    "sections": [
+      {
+        "id": "query_legacy_copilot",
+        "type": "copilotQuery",
+        "name": "Legacy Copilot Query",
+        "clusterUrl": "https://persist-e2e.kusto.windows.net",
+        "database": "PersistDb",
+        "query": "datatable(RowId:int, Label:string)[1, 'legacy_kqlx_marker_alpha', 2, 'legacy_kqlx_marker_beta']",
+        "expanded": true,
+        "resultsVisible": false,
+        "runMode": "sample100",
+        "cacheEnabled": true,
+        "cacheValue": 3,
+        "cacheUnit": "hours",
+        "resultJson": "{\"columns\":[{\"name\":\"RowId\",\"type\":\"int\"},{\"name\":\"Label\",\"type\":\"string\"}],\"rows\":[[1,\"legacy_kqlx_marker_alpha\"],[2,\"legacy_kqlx_marker_beta\"]],\"metadata\":{\"executionTime\":\"00:00:00.123\",\"clientActivityId\":\"legacy-kqlx-contract-e2e\"}}"
+      },
+      {
+        "id": "markdown_legacy_preview",
+        "type": "markdown",
+        "title": "Legacy Preview Notes",
+        "text": "# Legacy Markdown\nlegacy markdown marker survives preview tab restore",
+        "tab": "preview",
+        "expanded": true
+      }
+    ]
+  }
+}

@@ -571,7 +571,9 @@ export class QueryConnectionController implements ReactiveController {
 				});
 			}
 		} catch (e) { console.error('[kusto]', e); }
-		this.ensureSchema(false);
+		if (!pState.restoreInProgress) {
+			this.ensureSchema(false);
+		}
 		// Only set the database-in-context when the user actually interacts.
 		// During restore every section fires onDatabaseChanged sequentially;
 		// calling __kustoUpdateSchemaForFocusedBox for each one races against

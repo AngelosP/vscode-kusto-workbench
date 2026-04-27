@@ -18,6 +18,10 @@ Feature files should prefer the semantic `window.__e2e` API over long inline Jav
 - `window.__e2e.autoTrigger.assertEnabled(true)`
 - `window.__e2e.autoTrigger.clickSqlToggle()`
 - `window.__e2e.inline.beginRequestCapture('sql', 'SELECT ...', 1, 50)`
+- `window.__e2e.persistence.assertSectionOrder('query,markdown,sql')`
+- `window.__e2e.persistence.assertQuerySection('query_1', { queryIncludes: 'StormEvents', clusterUrl: 'https://...', database: 'Samples' })`
+- `window.__e2e.persistence.assertSqlSection('sql_1', { queryIncludes: 'SELECT', serverUrl: 'server.example', database: 'master' })`
+- `window.__e2e.persistence.assertMarkdownSection('markdown_1', { mode: 'preview', textIncludes: 'Notes' })`
 
 ## Boundary
 
