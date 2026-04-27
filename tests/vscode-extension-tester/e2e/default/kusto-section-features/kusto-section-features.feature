@@ -10,7 +10,7 @@ Feature: Kusto section features — toolbar, run modes, persistence without conn
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "window.__testRemoveAllSections()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
     When I evaluate "(() => { const tags = ['kw-sql-section','kw-query-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const remaining = document.querySelectorAll(tags.join(',')).length; if (remaining !== 0) throw new Error('Expected empty workbench before setup, found ' + remaining); return 'empty before setup'; })()" in the webview
 
@@ -38,11 +38,11 @@ Feature: Kusto section features — toolbar, run modes, persistence without conn
     Then I take a screenshot "03-toolbar-buttons"
 
     # ── TEST 6: Monaco editor initialized ─────────────────────────────────
-    When I evaluate "window.__testAssertMonacoEditorMapped('kw-query-section .query-editor')" in the webview
+    When I evaluate "window.__e2e.kusto.assertEditorMapped()" in the webview
 
     # ── TEST 7: Set and read query content ────────────────────────────────
-    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', 'StormEvents | take 10 | sort by StartTime')" in the webview
-    When I evaluate "window.__testAssertMonacoValue('kw-query-section .query-editor', 'StormEvents | take 10 | sort by StartTime')" in the webview
+    When I evaluate "window.__e2e.kusto.setQuery('StormEvents | take 10 | sort by StartTime')" in the webview
+    When I evaluate "window.__e2e.kusto.assertQuery('StormEvents | take 10 | sort by StartTime')" in the webview
 
     # ── TEST 8: Serialization captures query text ─────────────────────────
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const data = el.serialize(); if (!data.query?.includes('StormEvents')) throw new Error('Query not in serialization: ' + data.query); if (data.type !== 'query') throw new Error('Wrong type: ' + data.type); return 'serialization: type=' + data.type + ' query includes StormEvents ✓'; })()" in the webview

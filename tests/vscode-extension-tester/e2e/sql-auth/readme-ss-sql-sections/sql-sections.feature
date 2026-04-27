@@ -12,7 +12,7 @@ Feature: Capture sql-sections screenshot for README
     And I wait 2 seconds
 
     # Remove all existing sections
-    When I evaluate "window.__testRemoveAllSections()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
     # Add SQL section
@@ -50,7 +50,7 @@ Feature: Capture sql-sections screenshot for README
     When I evaluate "(() => { const sec = document.querySelector('kw-sql-section'); const dds = Array.from(sec.shadowRoot.querySelectorAll('kw-dropdown')); let msg = ''; if (dds[0]) { const btn = dds[0].shadowRoot.querySelector('.kusto-dropdown-btn-text'); if (btn) { btn.textContent = 'serverName'; msg += 'server masked; '; } } if (dds[1]) { const btn = dds[1].shadowRoot.querySelector('.kusto-dropdown-btn-text'); if (btn) { btn.textContent = 'databaseName'; msg += 'db masked; '; } } return msg || 'nothing masked'; })()" in the webview
 
     # Remove the default query section if still present
-    When I evaluate "(() => document.querySelector('kw-query-section') ? window.__testRemoveSection('kw-query-section') : 'no kql section')()" in the webview
+    When I evaluate "(() => document.querySelector('kw-query-section') ? window.__e2e.workbench.removeSection('kw-query-section') : 'no kql section')()" in the webview
     And I wait 1 second
 
     # Save to clear unsaved indicator

@@ -11,7 +11,7 @@ Feature: SQL auto-trigger schema-based completions
     And I wait 3 seconds
 
     # Remove all existing sections
-    When I evaluate "window.__testRemoveAllSections()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
@@ -22,7 +22,7 @@ Feature: SQL auto-trigger schema-based completions
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
     # Select sampledb through the database dropdown
-    When I evaluate "window.__testSelectKwDropdownItem(`kw-sql-section .select-wrapper[title='SQL Database'] kw-dropdown`, 'sampledb')" in the webview
+    When I evaluate "window.__e2e.sql.selectDatabase('sampledb')" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
 
     # Wait for schema to load
@@ -30,13 +30,12 @@ Feature: SQL auto-trigger schema-based completions
     Then I take a screenshot "00-setup-ready"
 
     # Auto-trigger defaults to ON — verify it
-    When I evaluate "(() => { return 'autoTrigger=' + window.autoTriggerAutocompleteEnabled; })()" in the webview
-    When I evaluate "(() => { window.__assertSqlSuggest = (context, expectedAnyCsv) => { const widgets = Array.from(document.querySelectorAll('.suggest-widget.visible')).filter(w => !w.classList.contains('hidden') && w.style.display !== 'none' && w.offsetParent !== null); if (widgets.length === 0) throw new Error(context + ': expected visible suggest widget'); const widget = widgets[widgets.length - 1]; const widgetText = (widget.textContent || '').trim(); if (/no suggestions/i.test(widgetText)) throw new Error(context + ': suggest widget reported no suggestions'); const rows = Array.from(widget.querySelectorAll('.monaco-list-row')).filter(r => r.offsetParent !== null); const labels = rows.map(r => ((r.querySelector('.label-name') || {}).textContent || '').trim()).filter(Boolean); if (labels.length === 0) throw new Error(context + ': expected visible suggestions, got 0 labels. Text: ' + widgetText.slice(0, 200)); const expected = String(expectedAnyCsv || '').split(',').map(s => s.trim()).filter(Boolean); if (expected.length && !expected.some(e => labels.some(l => l.toLowerCase().includes(e.toLowerCase())))) throw new Error(context + ': expected one of [' + expected.join(', ') + '], got: ' + labels.slice(0, 20).join(', ')); return context + '(' + labels.length + '): ' + labels.slice(0, 12).join(', '); }; return 'SQL suggest assertion helper installed'; })()" in the webview
+    When I evaluate "window.__e2e.autoTrigger.assertEnabled(true)" in the webview
 
     # ══════════════════════════════════════════════════════════════════════
     # TEST 1: Verify the auto-trigger toggle button exists in the SQL toolbar
     # ══════════════════════════════════════════════════════════════════════
-    Then element "kw-sql-toolbar .qe-auto-autocomplete-toggle" should exist
+    When I evaluate "window.__e2e.autoTrigger.assertSqlToggleVisible()" in the webview
     Then I take a screenshot "01-toggle-exists"
 
     # ══════════════════════════════════════════════════════════════════════
@@ -53,17 +52,16 @@ Feature: SQL auto-trigger schema-based completions
     And I wait 1 second
 
     # Set up the editor and type a dot via Monaco's executeEdits API to fire onDidChangeModelContent
-    When I evaluate "window.__testSetMonacoValueAt('kw-sql-section .query-editor', 'SELECT * FROM SalesLT', 1, 22)" in the webview
+    When I evaluate "window.__e2e.suggest.sql.setTextAt('SELECT * FROM SalesLT', 1, 22)" in the webview
     And I wait 1 second
 
     # Type the dot via Monaco's native type command — triggers onDidChangeModelContent reliably
-    When I evaluate "window.__testTypeMonaco('kw-sql-section .query-editor', '.')" in the webview
+    When I evaluate "window.__e2e.suggest.sql.typeText('.')" in the webview
     And I wait 2 seconds
     Then I take a screenshot "02-auto-trigger-dot"
 
     # ASSERT: suggest widget should be visible with table names
-    Then element ".suggest-widget.visible" should exist
-    When I evaluate "window.__assertSqlSuggest('auto-trigger SalesLT dot', 'Product,Customer,Address,SalesOrder')" in the webview
+    When I evaluate "window.__e2e.suggest.sql.assertVisible('auto-trigger SalesLT dot', 'Product,Customer,Address,SalesOrder')" in the webview
     When I press "Escape"
     And I wait 1 second
 
@@ -72,15 +70,15 @@ Feature: SQL auto-trigger schema-based completions
     #   The ( char is in the trigger set and is not a word char
     # ══════════════════════════════════════════════════════════════════════
 
-    When I evaluate "window.__testSetMonacoValueAt('kw-sql-section .query-editor', 'SELECT COUNT', 1, 13)" in the webview
+    When I evaluate "window.__e2e.suggest.sql.setTextAt('SELECT COUNT', 1, 13)" in the webview
     And I wait 1 second
 
-    When I evaluate "window.__testTypeMonaco('kw-sql-section .query-editor', '(')" in the webview
+    When I evaluate "window.__e2e.suggest.sql.typeText('(')" in the webview
     And I wait 2 seconds
     Then I take a screenshot "03-auto-trigger-paren"
 
     # The suggest widget should appear (COUNT( triggers suggestions for column names)
-    When I evaluate "window.__assertSqlSuggest('auto-trigger COUNT paren', '')" in the webview
+    When I evaluate "window.__e2e.suggest.sql.assertVisible('auto-trigger COUNT paren', '')" in the webview
     When I press "Escape"
     And I wait 1 second
 
@@ -89,22 +87,22 @@ Feature: SQL auto-trigger schema-based completions
     # ══════════════════════════════════════════════════════════════════════
 
     # Click the toggle to disable auto-trigger (it's ON by default)
-    When I click "kw-sql-toolbar .qe-auto-autocomplete-toggle" in the webview
+    When I evaluate "window.__e2e.autoTrigger.clickSqlToggle()" in the webview
     And I wait 1 second
 
-    When I evaluate "window.__testSetMonacoValueAt('kw-sql-section .query-editor', 'SELECT * FROM SalesLT', 1, 22)" in the webview
+    When I evaluate "window.__e2e.suggest.sql.setTextAt('SELECT * FROM SalesLT', 1, 22)" in the webview
     And I wait 1 second
 
     # Type the same dot — but with auto-trigger disabled via toggle
-    When I evaluate "window.__testTypeMonaco('kw-sql-section .query-editor', '.')" in the webview
+    When I evaluate "window.__e2e.suggest.sql.typeText('.')" in the webview
     And I wait 2 seconds
     Then I take a screenshot "04-no-auto-trigger-disabled"
 
     # ASSERT: suggest widget should NOT be visible
-    Then element ".suggest-widget.visible" should not exist
+    When I evaluate "window.__e2e.suggest.sql.assertHidden('disabled auto-trigger')" in the webview
 
     # Re-enable via toggle click
-    When I click "kw-sql-toolbar .qe-auto-autocomplete-toggle" in the webview
+    When I evaluate "window.__e2e.autoTrigger.clickSqlToggle()" in the webview
     And I wait 1 second
 
     # ══════════════════════════════════════════════════════════════════════
@@ -113,54 +111,53 @@ Feature: SQL auto-trigger schema-based completions
     # ══════════════════════════════════════════════════════════════════════
 
     # Verify auto-trigger is ON (re-enabled at end of TEST 4)
-    When I evaluate "(() => { if (!window.autoTriggerAutocompleteEnabled) throw new Error('Expected autoTrigger ON'); return 'before toggle: ON'; })()" in the webview
+    When I evaluate "window.__e2e.autoTrigger.assertEnabled(true)" in the webview
 
     # Click the toggle button in the SQL toolbar — should turn it OFF
-    When I click "kw-sql-toolbar .qe-auto-autocomplete-toggle" in the webview
+    When I evaluate "window.__e2e.autoTrigger.clickSqlToggle()" in the webview
     And I wait 1 second
     Then I take a screenshot "05-toggle-clicked-off"
 
     # Verify state toggled to OFF
-    When I evaluate "(() => { if (window.autoTriggerAutocompleteEnabled) throw new Error('Expected autoTrigger OFF after toggle'); return 'after toggle: OFF'; })()" in the webview
+    When I evaluate "window.__e2e.autoTrigger.assertEnabled(false)" in the webview
 
     # Click again to re-enable
-    When I click "kw-sql-toolbar .qe-auto-autocomplete-toggle" in the webview
+    When I evaluate "window.__e2e.autoTrigger.clickSqlToggle()" in the webview
     And I wait 1 second
     Then I take a screenshot "06-toggle-clicked-on"
 
     # Verify state toggled back to ON
-    When I evaluate "(() => { if (!window.autoTriggerAutocompleteEnabled) throw new Error('Expected autoTrigger ON after re-toggle'); return 'after re-toggle: ON'; })()" in the webview
+    When I evaluate "window.__e2e.autoTrigger.assertEnabled(true)" in the webview
 
     # ══════════════════════════════════════════════════════════════════════
     # TEST 6: End-of-word suppression — typing word chars at EOL should NOT trigger
     # ══════════════════════════════════════════════════════════════════════
 
-    When I evaluate "window.__testSetMonacoValueAt('kw-sql-section .query-editor', 'SELECT ', 1, 8)" in the webview
+    When I evaluate "window.__e2e.suggest.sql.setTextAt('SELECT ', 1, 8)" in the webview
     And I wait 1 second
 
     # Type word chars at end of line — end-of-word suppression should prevent trigger
-    When I evaluate "window.__testTypeMonaco('kw-sql-section .query-editor', 'Name')" in the webview
+    When I evaluate "window.__e2e.suggest.sql.typeText('Name')" in the webview
     And I wait 2 seconds
     Then I take a screenshot "07-end-of-word-suppression"
 
     # ASSERT: suggest widget should NOT be visible (end-of-word suppression)
-    Then element ".suggest-widget.visible" should not exist
+    When I evaluate "window.__e2e.suggest.sql.assertHidden('end-of-word suppression')" in the webview
 
     # ══════════════════════════════════════════════════════════════════════
     # TEST 7: Verify auto-trigger fires after dot even after word suppression test
     #   This confirms the mechanism is still active after suppression.
     # ══════════════════════════════════════════════════════════════════════
 
-    When I evaluate "window.__testSetMonacoValueAt('kw-sql-section .query-editor', 'SELECT * FROM dbo', 1, 18)" in the webview
+    When I evaluate "window.__e2e.suggest.sql.setTextAt('SELECT * FROM dbo', 1, 18)" in the webview
     And I wait 1 second
 
-    When I evaluate "window.__testTypeMonaco('kw-sql-section .query-editor', '.')" in the webview
+    When I evaluate "window.__e2e.suggest.sql.typeText('.')" in the webview
     And I wait 2 seconds
     Then I take a screenshot "08-auto-trigger-dbo-dot"
 
     # ASSERT: suggest widget should be visible
-    Then element ".suggest-widget.visible" should exist
-    When I evaluate "window.__assertSqlSuggest('auto-trigger dbo dot', '')" in the webview
+    When I evaluate "window.__e2e.suggest.sql.assertVisible('auto-trigger dbo dot', '')" in the webview
     When I press "Escape"
     And I wait 1 second
 

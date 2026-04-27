@@ -11,7 +11,7 @@ Feature: Kusto connection flow — cluster select, database loading, schema
     And I wait 3 seconds
 
     # Remove all existing sections
-    When I evaluate "window.__testRemoveAllSections()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
     # Add a fresh KQL section
@@ -34,7 +34,7 @@ Feature: Kusto connection flow — cluster select, database loading, schema
     Then I take a screenshot "03-databases-loaded"
 
     # ── TEST 4: Select a database ─────────────────────────────────────────
-    When I evaluate "window.__testSelectKwDropdownItem(`kw-query-section .select-wrapper[title='Kusto Database'] kw-dropdown`, 'sample,storm', true)" in the webview
+    When I evaluate "window.__e2e.kusto.selectSampleDatabase()" in the webview
     And I wait 2 seconds
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
 

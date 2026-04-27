@@ -11,7 +11,7 @@ Feature: File operations — serialization roundtrip and section content
     And I wait 3 seconds
 
     # Clear existing sections
-    When I evaluate "window.__testRemoveAllSections()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
     # Add a KQL section with content
@@ -20,8 +20,8 @@ Feature: File operations — serialization roundtrip and section content
     And I wait 2 seconds
 
     When I wait for "kw-query-section .monaco-editor" in the webview for 20 seconds
-    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', 'print message=roundtrip_test')" in the webview
-    When I evaluate "window.__testAssertMonacoValue('kw-query-section .query-editor', 'print message=roundtrip_test')" in the webview
+    When I evaluate "window.__e2e.kusto.setQuery('print message=roundtrip_test')" in the webview
+    When I evaluate "window.__e2e.kusto.assertQuery('print message=roundtrip_test')" in the webview
 
     # Rename the section
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const shell = el.shadowRoot?.querySelector('kw-section-shell'); const nameInput = shell?.shadowRoot?.querySelector('input.section-name'); if (nameInput) { nameInput.value = 'Roundtrip Query'; nameInput.dispatchEvent(new Event('input', { bubbles: true })); nameInput.dispatchEvent(new Event('change', { bubbles: true })); } return 'renamed'; })()" in the webview

@@ -10,7 +10,7 @@ Feature: SQL favorites — star toggle, mode switch, dropdown
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "window.__testRemoveAllSections()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
@@ -21,7 +21,7 @@ Feature: SQL favorites — star toggle, mode switch, dropdown
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
     # Select sampledb so we have a valid connection + database for favorites
-    When I evaluate "window.__testSelectKwDropdownItem(`kw-sql-section .select-wrapper[title='SQL Database'] kw-dropdown`, 'sampledb')" in the webview
+    When I evaluate "window.__e2e.sql.selectDatabase('sampledb')" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
     Then I take a screenshot "01-setup-ready"
 

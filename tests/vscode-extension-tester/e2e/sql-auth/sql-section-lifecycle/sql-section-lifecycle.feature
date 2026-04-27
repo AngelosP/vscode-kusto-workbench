@@ -11,7 +11,7 @@ Feature: SQL section lifecycle — add, rename, collapse, expand, remove
     And I wait 3 seconds
 
     # Clear existing sections
-    When I evaluate "window.__testRemoveAllSections()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
     # ── TEST 1: Add SQL section via button ────────────────────────────────
@@ -47,7 +47,7 @@ Feature: SQL section lifecycle — add, rename, collapse, expand, remove
     Then I take a screenshot "04-expanded"
 
     # ── TEST 6: Remove section ────────────────────────────────────────────
-    When I evaluate "window.__testRemoveSection('kw-sql-section')" in the webview
+    When I evaluate "window.__e2e.workbench.removeSection('kw-sql-section')" in the webview
     And I wait 2 seconds
 
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (el) throw new Error('SQL section should be removed from DOM but still found'); return 'section removed ✓'; })()" in the webview

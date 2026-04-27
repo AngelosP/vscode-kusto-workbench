@@ -940,3 +940,378 @@ _win.__testSetDropdownText = (testId: string, text: string): string => {
 	btn.textContent = text;
 	return `set dropdown text: ${text}`;
 };
+
+type E2eSectionKind = 'sql' | 'kusto';
+
+const E2E_SECTION = {
+	sql: {
+		section: 'kw-sql-section',
+		editor: 'kw-sql-section .query-editor',
+		databaseDropdown: "kw-sql-section .select-wrapper[title='SQL Database'] kw-dropdown",
+		runButton: '.sql-run-btn',
+		resultsTable: 'kw-sql-section .sql-results-body kw-data-table',
+	},
+	kusto: {
+		section: 'kw-query-section',
+		editor: 'kw-query-section .query-editor',
+		databaseDropdown: "kw-query-section .select-wrapper[title='Kusto Database'] kw-dropdown",
+		runButton: '',
+		resultsTable: '',
+	},
+};
+
+function e2eSection(kind: E2eSectionKind): any {
+	const section = document.querySelector(E2E_SECTION[kind].section) as any;
+	if (!section) {
+		throw new Error(`${kind} section not found`);
+	}
+	return section;
+}
+
+function e2eKustoElementId(section: any, suffix: string): string {
+	const boxId = String(section?.boxId || section?.id || '').trim();
+	if (!boxId) {
+		throw new Error('Kusto section has no boxId/id');
+	}
+	return `${boxId}_${suffix}`;
+}
+
+function e2eRunButton(kind: E2eSectionKind): HTMLButtonElement {
+	const section = e2eSection(kind);
+	const button = kind === 'sql'
+		? section.querySelector(E2E_SECTION.sql.runButton) as HTMLButtonElement | null
+		: document.getElementById(e2eKustoElementId(section, 'run_btn')) as HTMLButtonElement | null;
+	if (!button) {
+		throw new Error(`${kind} run button not found`);
+	}
+	return button;
+}
+
+function e2eResultsTable(kind: E2eSectionKind): any {
+	const section = e2eSection(kind);
+	const table = kind === 'sql'
+		? document.querySelector(E2E_SECTION.sql.resultsTable) as any
+		: document.getElementById(e2eKustoElementId(section, 'results'))?.querySelector('kw-data-table') as any;
+	if (!table) {
+		throw new Error(`${kind} results data table not found`);
+	}
+	return table;
+}
+
+function e2eColumnNames(table: any): string[] {
+	return (table.columns || []).map((column: any) => String(column?.name || column || ''));
+}
+
+function e2eAssertColumns(kind: E2eSectionKind, expectedCsv: string): string {
+	const table = e2eResultsTable(kind);
+	const columns = e2eColumnNames(table);
+	const expected = String(expectedCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	for (const column of expected) {
+		if (!columns.includes(column)) {
+			throw new Error(`${kind} results missing column ${column}; got: ${columns.join(', ')}`);
+		}
+	}
+	return `${kind} columns verified: ${columns.join(', ')}`;
+}
+
+function e2eAssertRowCount(kind: E2eSectionKind, expected: number, mode: 'exact' | 'atLeast'): string {
+	const table = e2eResultsTable(kind);
+	const rows = table.rows || [];
+	const count = rows.length;
+	if (mode === 'exact' && count !== expected) {
+		throw new Error(`${kind} expected ${expected} row(s), got ${count}`);
+	}
+	if (mode === 'atLeast' && count < expected) {
+		throw new Error(`${kind} expected at least ${expected} row(s), got ${count}`);
+	}
+	return `${kind} row count ${mode === 'exact' ? '=' : '>='} ${expected}: ${count}`;
+}
+
+function e2eAssertState(kind: E2eSectionKind, attr: string, expected: string): string {
+	const section = e2eSection(kind);
+	const actual = section.dataset?.[attr];
+	if (actual !== expected) {
+		throw new Error(`${kind} expected data-test-${attr}=${expected}, got ${actual}`);
+	}
+	return `${kind} data-test-${attr}=${actual}`;
+}
+
+function e2eAssertNoVisibleSuggest(context: string): string {
+	const contextLabel = String(context || 'suggestions');
+	const widgets = (Array.from(document.querySelectorAll('.suggest-widget.visible')) as HTMLElement[])
+		.filter(widget => !widget.classList.contains('hidden') && widget.style.display !== 'none' && widget.offsetParent !== null);
+	if (widgets.length !== 0) {
+		const text = (widgets[widgets.length - 1].textContent || '').trim();
+		throw new Error(`${contextLabel}: expected no visible suggest widget, got ${widgets.length}: ${text.slice(0, 200)}`);
+	}
+	return `${contextLabel}: no visible suggest widget`;
+}
+
+function e2eAutoTriggerToggle(): HTMLElement {
+	const toggle = document.querySelector('kw-sql-toolbar .qe-auto-autocomplete-toggle') as HTMLElement | null;
+	if (!toggle) {
+		throw new Error('SQL auto-trigger toggle not found');
+	}
+	return toggle;
+}
+
+function e2eQueryApi(kind: E2eSectionKind) {
+	const editorSelector = E2E_SECTION[kind].editor;
+	return {
+		selectDatabase: (labelsCsv: string, allowFirstFallback: boolean = false) => _win.__testSelectKwDropdownItem(E2E_SECTION[kind].databaseDropdown, labelsCsv, allowFirstFallback),
+		setQuery: (text: string) => _win.__testSetMonacoValue(editorSelector, text),
+		setQueryAt: (text: string, lineNumber: number = 1, column?: number) => _win.__testSetMonacoValueAt(editorSelector, text, lineNumber, column),
+		setSelection: (startLineNumber: number, startColumn: number, endLineNumber: number, endColumn: number) => _win.__testSetMonacoSelection(editorSelector, startLineNumber, startColumn, endLineNumber, endColumn),
+		assertQuery: (text: string) => _win.__testAssertMonacoValue(editorSelector, text),
+		assertEditorMapped: () => _win.__testAssertMonacoEditorMapped(editorSelector),
+		assertInlineSuggestEnabled: () => _win.__testAssertMonacoInlineSuggestEnabled(editorSelector),
+		modelUri: () => _win.__testGetMonacoModelUri(editorSelector),
+		typeText: (text: string) => _win.__testTypeMonaco(editorSelector, text),
+		triggerSuggest: () => _win.__testTriggerMonaco(editorSelector, 'editor.action.triggerSuggest'),
+		assertSuggestions: (context: string, expectedAnyCsv: string = '') => _win.__testAssertVisibleSuggest(context, expectedAnyCsv, editorSelector),
+		assertMarkers: (expectation: 'any' | 'none' = 'any', owner: string = '', severity: 'error' | '' = '') => _win.__testAssertMonacoMarkers(editorSelector, expectation, owner, severity),
+		assertRunEnabled: () => {
+			const button = e2eRunButton(kind);
+			if (button.disabled) {
+				throw new Error(`${kind} run button should be enabled`);
+			}
+			return `${kind} run button enabled`;
+		},
+		run: () => {
+			const button = e2eRunButton(kind);
+			button.click();
+			return `${kind} run clicked`;
+		},
+		assertHasResults: () => e2eAssertState(kind, 'testHasResults', 'true'),
+		assertHasError: () => e2eAssertState(kind, 'testHasError', 'true'),
+		assertNoError: () => e2eAssertState(kind, 'testHasError', 'false'),
+		assertResultColumns: (expectedCsv: string) => e2eAssertColumns(kind, expectedCsv),
+		assertRowCount: (expected: number) => e2eAssertRowCount(kind, expected, 'exact'),
+		assertMinRowCount: (minimum: number) => e2eAssertRowCount(kind, minimum, 'atLeast'),
+	};
+}
+
+function e2eInlineToggle(kind: E2eSectionKind): HTMLElement {
+	const selector = kind === 'sql' ? 'kw-sql-toolbar .qe-copilot-inline-toggle' : 'kw-query-toolbar .qe-copilot-inline-toggle';
+	const toggle = document.querySelector(selector) as HTMLElement | null;
+	if (!toggle) {
+		throw new Error(`${kind} Copilot inline toggle not found`);
+	}
+	return toggle;
+}
+
+function e2eAssertInlineToggleState(kind: E2eSectionKind, expectedActive: boolean): string {
+	const toggle = e2eInlineToggle(kind);
+	const active = toggle.classList.contains('is-active');
+	if (active !== expectedActive) {
+		throw new Error(`${kind} inline toggle expected active=${expectedActive}, got ${active}`);
+	}
+	return `${kind} inline toggle active=${active}`;
+}
+
+_win.__e2e = {
+	workbench: {
+		clearSections: () => _win.__testRemoveAllSections(),
+		removeSection: (selector: string) => _win.__testRemoveSection(selector),
+	},
+	sql: {
+		...e2eQueryApi('sql'),
+		connectSts: () => {
+			const section = e2eSection('sql');
+			const sqlConnectionId = typeof section.getSqlConnectionId === 'function' ? section.getSqlConnectionId() : '';
+			const database = typeof section.getDatabase === 'function' ? section.getDatabase() : '';
+			if (!sqlConnectionId) {
+				throw new Error('SQL connection id missing before STS connect');
+			}
+			if (!database) {
+				throw new Error('SQL database missing before STS connect');
+			}
+			postMessageToHost({ type: 'stsConnect', boxId: section.boxId, sqlConnectionId, database });
+			return `sql STS connect posted for ${database}`;
+		},
+		assertExecutingTimerVisible: () => {
+			const section = e2eSection('sql');
+			if (section.dataset.testExecuting !== 'true') {
+				throw new Error(`SQL expected executing=true, got ${section.dataset.testExecuting}`);
+			}
+			const status = section.querySelector('.query-exec-status') as HTMLElement | null;
+			if (!status || status.style.display === 'none') {
+				throw new Error('SQL elapsed timer not visible during execution');
+			}
+			return 'sql executing timer visible';
+		},
+		assertStaleResults: () => {
+			const wrapper = document.querySelector('kw-sql-section .results-wrapper') as HTMLElement | null;
+			if (!wrapper) {
+				throw new Error('SQL results wrapper not found');
+			}
+			if (!wrapper.classList.contains('is-stale')) {
+				throw new Error('SQL results wrapper should have is-stale class');
+			}
+			return 'sql stale results verified';
+		},
+		assertResultsNotStale: () => {
+			const wrapper = document.querySelector('kw-sql-section .results-wrapper') as HTMLElement | null;
+			if (!wrapper) {
+				throw new Error('SQL results wrapper not found');
+			}
+			if (wrapper.classList.contains('is-stale')) {
+				throw new Error('SQL stale overlay should be cleared');
+			}
+			return 'sql results not stale';
+		},
+	},
+	kusto: {
+		...e2eQueryApi('kusto'),
+		selectSampleDatabase: () => _win.__testSelectKwDropdownItem(E2E_SECTION.kusto.databaseDropdown, 'sample,storm', true),
+		assertStaleResults: () => {
+			const section = e2eSection('kusto');
+			const resultsDiv = document.getElementById(e2eKustoElementId(section, 'results'));
+			if (!resultsDiv) {
+				throw new Error('Kusto results div not found');
+			}
+			if (!resultsDiv.classList.contains('is-stale')) {
+				throw new Error('Kusto results should have is-stale class');
+			}
+			return 'kusto stale results verified';
+		},
+		assertResultsNotStale: () => {
+			const section = e2eSection('kusto');
+			const resultsDiv = document.getElementById(e2eKustoElementId(section, 'results'));
+			if (!resultsDiv) {
+				throw new Error('Kusto results div not found');
+			}
+			if (resultsDiv.classList.contains('is-stale')) {
+				throw new Error('Kusto stale overlay should be cleared');
+			}
+			return 'kusto results not stale';
+		},
+	},
+	suggest: {
+		sql: {
+			setTextAt: (text: string, lineNumber: number = 1, column?: number) => _win.__e2e.sql.setQueryAt(text, lineNumber, column),
+			typeText: (text: string) => _win.__e2e.sql.typeText(text),
+			trigger: () => _win.__e2e.sql.triggerSuggest(),
+			assertVisible: (context: string, expectedAnyCsv: string = '') => _win.__e2e.sql.assertSuggestions(context, expectedAnyCsv),
+			assertHidden: (context: string) => e2eAssertNoVisibleSuggest(context),
+		},
+		kusto: {
+			setTextAt: (text: string, lineNumber: number = 1, column?: number) => _win.__e2e.kusto.setQueryAt(text, lineNumber, column),
+			typeText: (text: string) => _win.__e2e.kusto.typeText(text),
+			trigger: () => _win.__e2e.kusto.triggerSuggest(),
+			assertVisible: (context: string, expectedAnyCsv: string = '') => _win.__e2e.kusto.assertSuggestions(context, expectedAnyCsv),
+			assertHidden: (context: string) => e2eAssertNoVisibleSuggest(context),
+		},
+	},
+	autoTrigger: {
+		assertSqlToggleVisible: () => {
+			const toggle = e2eAutoTriggerToggle();
+			const rect = toggle.getBoundingClientRect();
+			if (rect.width === 0 || rect.height === 0) {
+				throw new Error('SQL auto-trigger toggle has zero dimensions');
+			}
+			return `sql auto-trigger toggle visible: ${rect.width}x${rect.height}`;
+		},
+		assertEnabled: (expected: boolean) => {
+			if (typeof _win.autoTriggerAutocompleteEnabled !== 'boolean') {
+				throw new Error('autoTriggerAutocompleteEnabled not found');
+			}
+			if (_win.autoTriggerAutocompleteEnabled !== expected) {
+				throw new Error(`autoTriggerAutocompleteEnabled expected ${expected}, got ${_win.autoTriggerAutocompleteEnabled}`);
+			}
+			return `autoTriggerAutocompleteEnabled=${_win.autoTriggerAutocompleteEnabled}`;
+		},
+		clickSqlToggle: () => {
+			e2eAutoTriggerToggle().click();
+			return 'sql auto-trigger toggle clicked';
+		},
+	},
+	inline: {
+		assertToggleVisible: (kind: E2eSectionKind) => {
+			const toggle = e2eInlineToggle(kind);
+			if (toggle.classList.contains('qe-in-overflow')) {
+				throw new Error(`${kind} inline toggle is hidden in toolbar overflow`);
+			}
+			const rect = toggle.getBoundingClientRect();
+			if (rect.width === 0 || rect.height === 0) {
+				throw new Error(`${kind} inline toggle has zero dimensions`);
+			}
+			return `${kind} inline toggle visible: ${rect.width}x${rect.height}`;
+		},
+		assertGlobalEnabled: (expected: boolean) => {
+			if (typeof _win.copilotInlineCompletionsEnabled !== 'boolean') {
+				throw new Error('copilotInlineCompletionsEnabled not found');
+			}
+			if (_win.copilotInlineCompletionsEnabled !== expected) {
+				throw new Error(`copilotInlineCompletionsEnabled expected ${expected}, got ${_win.copilotInlineCompletionsEnabled}`);
+			}
+			return `copilotInlineCompletionsEnabled=${_win.copilotInlineCompletionsEnabled}`;
+		},
+		clickToggle: (kind: E2eSectionKind) => {
+			e2eInlineToggle(kind).click();
+			return `${kind} inline toggle clicked`;
+		},
+		assertToggleState: e2eAssertInlineToggleState,
+		assertSqlAndKustoSynced: (expectedActive: boolean) => {
+			const sql = e2eAssertInlineToggleState('sql', expectedActive);
+			const kusto = e2eAssertInlineToggleState('kusto', expectedActive);
+			return `${sql}; ${kusto}`;
+		},
+		beginRequestCapture: (kind: E2eSectionKind, text: string, lineNumber: number = 1, column?: number) => {
+			_win.__e2e[kind].setQueryAt(text, lineNumber, column);
+			_win.__e2eInlineReqCapture = [];
+			_win.__e2eOrigPostMsg = _win.postMessageToHost;
+			_win.postMessageToHost = function (msg: any) {
+				if (msg && msg.type === 'requestCopilotInlineCompletion') {
+					_win.__e2eInlineReqCapture.push(msg);
+				}
+				if (_win.__e2eOrigPostMsg) {
+					_win.__e2eOrigPostMsg(msg);
+				}
+			};
+			return `${kind} inline request capture armed`;
+		},
+		assertCapturedRequest: (flavor: string, textIncludes: string = '') => {
+			const messages = _win.__e2eInlineReqCapture || [];
+			if (messages.length === 0) {
+				throw new Error('No inline completion request captured');
+			}
+			const msg = messages[0];
+			if (msg.flavor !== flavor) {
+				throw new Error(`Expected inline flavor=${flavor}, got ${msg.flavor}`);
+			}
+			if (textIncludes && !String(msg.textBefore || '').includes(textIncludes)) {
+				throw new Error(`Inline request textBefore missing ${textIncludes}`);
+			}
+			return `inline request captured: flavor=${msg.flavor}, requests=${messages.length}`;
+		},
+		restoreRequestCapture: () => {
+			if (_win.__e2eOrigPostMsg) {
+				_win.postMessageToHost = _win.__e2eOrigPostMsg;
+				delete _win.__e2eOrigPostMsg;
+			}
+			delete _win.__e2eInlineReqCapture;
+			return 'inline request capture restored';
+		},
+		rememberEditorMap: (kind: E2eSectionKind, key: string = 'default') => {
+			const section = e2eSection(kind);
+			const uri = _win.__e2e[kind].modelUri();
+			_win.__e2eRememberedEditors = _win.__e2eRememberedEditors || {};
+			_win.__e2eRememberedEditors[key] = { boxId: section.boxId, uri };
+			return `${kind} remembered editor map ${key}: ${section.boxId} ${uri}`;
+		},
+		assertRememberedEditorMapCleared: (key: string = 'default') => {
+			const remembered = _win.__e2eRememberedEditors?.[key];
+			if (!remembered) {
+				throw new Error(`No remembered editor map for key ${key}`);
+			}
+			if (_win.queryEditorBoxByModelUri?.[remembered.uri]) {
+				throw new Error(`queryEditorBoxByModelUri not cleaned up for ${remembered.uri}`);
+			}
+			if (_win.queryEditors?.[remembered.boxId]) {
+				throw new Error(`queryEditors not cleaned up for ${remembered.boxId}`);
+			}
+			return `editor map cleanup verified for ${key}`;
+		},
+	},
+};

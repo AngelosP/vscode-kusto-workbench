@@ -10,7 +10,7 @@ Feature: Kusto Copilot chat panel — toggle, visibility
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "window.__testRemoveAllSections()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='query']" in the webview for 20 seconds

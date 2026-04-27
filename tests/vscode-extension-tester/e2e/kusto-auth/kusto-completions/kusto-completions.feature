@@ -10,7 +10,7 @@ Feature: Kusto schema-based completions — tables, columns, functions
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "window.__testRemoveAllSections()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='query']" in the webview for 20 seconds
@@ -21,7 +21,7 @@ Feature: Kusto schema-based completions — tables, columns, functions
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
     # Select a database with known schema through the dropdown
-    When I evaluate "window.__testSelectKwDropdownItem(`kw-query-section .select-wrapper[title='Kusto Database'] kw-dropdown`, 'sample,storm', true)" in the webview
+    When I evaluate "window.__e2e.kusto.selectSampleDatabase()" in the webview
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
 
     # Wait for schema to load — check the schema info element
@@ -36,29 +36,29 @@ Feature: Kusto schema-based completions — tables, columns, functions
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const info = el.shadowRoot?.querySelector('kw-schema-info'); if (!info) throw new Error('No kw-schema-info element'); const text = (info.shadowRoot?.textContent || info.textContent || '').trim(); if (!text) throw new Error('Schema info text is empty'); return 'schema info: ' + text.substring(0, 100) + ' ✓'; })()" in the webview
 
     # ── TEST 3: Monaco completions include table names ────────────────────
-    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', '')" in the webview
+    When I evaluate "window.__e2e.kusto.setQuery('')" in the webview
     And I wait 1 second
 
     # Type a partial table name and check if completion providers are registered
-    When I evaluate "window.__testAssertMonacoEditorMapped('kw-query-section .query-editor')" in the webview
+    When I evaluate "window.__e2e.kusto.assertEditorMapped()" in the webview
 
     # ── TEST 4: Trigger completions programmatically ──────────────────────
-    When I evaluate "(async () => { const el = document.querySelector('kw-query-section'); if (!el) throw new Error('KQL section not found'); const boxId = el.boxId; const schema = window.schemaByBoxId && window.schemaByBoxId[boxId]; if (!schema) throw new Error('No schema for boxId=' + boxId); const tableNames = Array.isArray(schema.tables) ? schema.tables : Object.keys(schema.Tables || schema.rawSchemaJson?.Databases?.[el.getDatabase?.()]?.Tables || {}); const expectedTable = tableNames.find(t => /^RawEventsADS$/i.test(t)) || tableNames.find(t => /^RawEvents/i.test(t)) || tableNames.find(t => /^[A-Za-z][A-Za-z0-9_]{5,}$/.test(t)); if (!expectedTable) throw new Error('No usable table names in schema: ' + tableNames.slice(0, 20).join(', ')); const prefixLength = Math.min(Math.max(4, Math.ceil(expectedTable.length / 2)), expectedTable.length); const prefix = expectedTable.slice(0, prefixLength); window.__e2eKustoCompletionExpected = { table: expectedTable, prefix }; window.__testSetMonacoValueAt('kw-query-section .query-editor', prefix, 1, prefix.length + 1); if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') await window.__kustoUpdateSchemaForFocusedBox(boxId, true); window.__testTriggerMonaco('kw-query-section .query-editor', 'editor.action.triggerSuggest'); return 'triggered suggest at ' + prefix + '| expecting ' + expectedTable; })()" in the webview
+    When I evaluate "(async () => { const el = document.querySelector('kw-query-section'); if (!el) throw new Error('KQL section not found'); const boxId = el.boxId; const schema = window.schemaByBoxId && window.schemaByBoxId[boxId]; if (!schema) throw new Error('No schema for boxId=' + boxId); const tableNames = Array.isArray(schema.tables) ? schema.tables : Object.keys(schema.Tables || schema.rawSchemaJson?.Databases?.[el.getDatabase?.()]?.Tables || {}); const expectedTable = tableNames.find(t => /^RawEventsADS$/i.test(t)) || tableNames.find(t => /^RawEvents/i.test(t)) || tableNames.find(t => /^[A-Za-z][A-Za-z0-9_]{5,}$/.test(t)); if (!expectedTable) throw new Error('No usable table names in schema: ' + tableNames.slice(0, 20).join(', ')); const prefixLength = Math.min(Math.max(4, Math.ceil(expectedTable.length / 2)), expectedTable.length); const prefix = expectedTable.slice(0, prefixLength); window.__e2eKustoCompletionExpected = { table: expectedTable, prefix }; window.__e2e.suggest.kusto.setTextAt(prefix, 1, prefix.length + 1); if (typeof window.__kustoUpdateSchemaForFocusedBox === 'function') await window.__kustoUpdateSchemaForFocusedBox(boxId, true); window.__e2e.suggest.kusto.trigger(); return 'triggered suggest at ' + prefix + '| expecting ' + expectedTable; })()" in the webview
     And I wait 3 seconds
     Then I take a screenshot "03-completions-triggered"
 
     # Check if the suggest widget appeared
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const expected = window.__e2eKustoCompletionExpected; if (!expected) throw new Error('Missing expected completion metadata'); const editorEl = document.getElementById(el.boxId + '_query_editor'); if (!editorEl) throw new Error('No editor element'); const widgets = Array.from(editorEl.querySelectorAll('.suggest-widget.visible')).filter(w => !w.classList.contains('hidden') && w.style.display !== 'none' && w.offsetParent !== null); if (widgets.length === 0) throw new Error('Suggest widget should be visible after triggering completions'); const suggestWidget = widgets[widgets.length - 1]; const widgetText = (suggestWidget.textContent || '').trim(); if (/no suggestions/i.test(widgetText)) throw new Error('Suggest widget reported no suggestions for prefix ' + expected.prefix + ' from table ' + expected.table); const rows = Array.from(suggestWidget.querySelectorAll('.monaco-list-row')).filter(r => r.offsetParent !== null); const labels = rows.map(r => ((r.querySelector('.label-name') || {}).textContent || '').trim()).filter(Boolean); if (labels.length === 0) throw new Error('Suggest widget is visible but has no visible row labels. Text: ' + widgetText.slice(0, 200)); if (!labels.some(l => l.toLowerCase() === expected.table.toLowerCase() || l.toLowerCase().startsWith(expected.prefix.toLowerCase()))) throw new Error('Expected completion for ' + expected.table + ' using prefix ' + expected.prefix + ', got: ' + labels.slice(0, 20).join(', ')); return 'suggest widget visible with labels: ' + labels.slice(0, 12).join(', '); })()" in the webview
+    When I evaluate "(() => { const expected = window.__e2eKustoCompletionExpected; if (!expected) throw new Error('Missing expected completion metadata'); return window.__e2e.suggest.kusto.assertVisible('Kusto table completion', expected.table + ',' + expected.prefix); })()" in the webview
     Then I take a screenshot "04-suggest-widget"
 
     # ── TEST 5: KQL language is registered in Monaco ──────────────────────
     When I evaluate "(() => { const langs = monaco.languages.getLanguages(); const kql = langs.find(l => l.id === 'kusto' || l.id === 'kql'); if (!kql) throw new Error('KQL/Kusto language not registered in Monaco. Available: ' + langs.map(l => l.id).join(', ')); return 'KQL language registered: id=' + kql.id + ' ✓'; })()" in the webview
 
     # ── TEST 6: Diagnostics provider detects basic KQL syntax ─────────────
-    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', 'range x from 1 to 5 step 1 | extend y=x*2')" in the webview
+    When I evaluate "window.__e2e.kusto.setQuery('range x from 1 to 5 step 1 | extend y=x*2')" in the webview
     And I wait 2 seconds
 
-    When I evaluate "window.__testAssertMonacoMarkers('kw-query-section .query-editor', 'none', '', 'error')" in the webview
+    When I evaluate "window.__e2e.kusto.assertMarkers('none', '', 'error')" in the webview
     Then I take a screenshot "05-diagnostics"
 
     Then I take a screenshot "06-final"

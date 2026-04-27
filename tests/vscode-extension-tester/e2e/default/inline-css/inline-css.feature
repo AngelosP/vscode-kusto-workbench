@@ -44,7 +44,7 @@ Feature: Inline CSS — webview is styled at first paint with no external CSS de
     And I wait 5 seconds
 
     # Clear all sections first
-    When I evaluate "window.__testRemoveAllSections()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
     # ── TEST 7: Add-controls are visible and styled as flex ──────────────

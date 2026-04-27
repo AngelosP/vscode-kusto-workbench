@@ -10,7 +10,7 @@ Feature: SQL results table — display, stale overlay, metadata
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "window.__testRemoveAllSections()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
@@ -20,7 +20,7 @@ Feature: SQL results table — display, stale overlay, metadata
     When I wait for "kw-sql-section[data-test-sql-connection='true']" in the webview for 15 seconds
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
-    When I evaluate "window.__testSelectKwDropdownItem(`kw-sql-section .select-wrapper[title='SQL Database'] kw-dropdown`, 'sampledb')" in the webview
+    When I evaluate "window.__e2e.sql.selectDatabase('sampledb')" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
 
@@ -31,31 +31,31 @@ Feature: SQL results table — display, stale overlay, metadata
     And I wait 1 second
 
     # ── TEST 1: Execute and verify multi-column results ───────────────────
-    When I evaluate "window.__testSetMonacoValue('kw-sql-section .query-editor', 'SELECT TOP 3 TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES ORDER BY TABLE_SCHEMA, TABLE_NAME')" in the webview
+    When I evaluate "window.__e2e.sql.setQuery('SELECT TOP 3 TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES ORDER BY TABLE_SCHEMA, TABLE_NAME')" in the webview
     And I wait 1 second
 
-    When I evaluate "(() => { document.querySelector('kw-sql-section .sql-run-btn').click(); return 'run'; })()" in the webview
+    When I evaluate "window.__e2e.sql.run()" in the webview
     When I wait for "kw-sql-section[data-test-executing='false']" in the webview for 30 seconds
     And I wait 1 second
 
-    When I evaluate "(() => { const dt = document.querySelector('kw-sql-section .sql-results-body kw-data-table'); if (!dt) throw new Error('No data table'); const cols = (dt.columns || []).map(c => c.name || c); if (cols.length < 3) throw new Error('Expected 3+ columns, got ' + cols.length + ': ' + cols.join(', ')); if (!cols.includes('TABLE_SCHEMA')) throw new Error('Missing TABLE_SCHEMA column'); if (!cols.includes('TABLE_NAME')) throw new Error('Missing TABLE_NAME column'); return 'columns verified: ' + cols.join(', ') + ' ✓'; })()" in the webview
+    When I evaluate "window.__e2e.sql.assertResultColumns('TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE')" in the webview
     Then I take a screenshot "01-multi-column-results"
 
     # ── TEST 2: Results have correct row count ────────────────────────────
-    When I evaluate "(() => { const dt = document.querySelector('kw-sql-section .sql-results-body kw-data-table'); const rows = dt.rows || []; if (rows.length !== 3) throw new Error('Expected 3 rows (TOP 3), got ' + rows.length); return 'rows = 3 ✓'; })()" in the webview
+    When I evaluate "window.__e2e.sql.assertRowCount(3)" in the webview
 
     # ── TEST 3: Edit query → stale overlay appears ────────────────────────
-    When I evaluate "window.__testSetMonacoValue('kw-sql-section .query-editor', 'SELECT TOP 3 TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES -- modified')" in the webview
+    When I evaluate "window.__e2e.sql.setQuery('SELECT TOP 3 TABLE_SCHEMA, TABLE_NAME, TABLE_TYPE FROM INFORMATION_SCHEMA.TABLES -- modified')" in the webview
     And I wait 1 second
 
-    When I evaluate "(() => { const wrapper = document.querySelector('kw-sql-section .results-wrapper'); if (!wrapper) throw new Error('No results wrapper'); const isStale = wrapper.classList.contains('is-stale'); if (!isStale) throw new Error('Results wrapper should have is-stale class after edit'); return 'stale overlay shown ✓'; })()" in the webview
+    When I evaluate "window.__e2e.sql.assertStaleResults()" in the webview
     Then I take a screenshot "02-stale-overlay"
 
     # ── TEST 4: Re-run → stale overlay clears ────────────────────────────
-    When I evaluate "(() => { document.querySelector('kw-sql-section .sql-run-btn').click(); return 'rerun'; })()" in the webview
+    When I evaluate "window.__e2e.sql.run()" in the webview
     When I wait for "kw-sql-section[data-test-executing='false']" in the webview for 30 seconds
     And I wait 1 second
 
-    When I evaluate "(() => { const wrapper = document.querySelector('kw-sql-section .results-wrapper'); if (!wrapper) throw new Error('No results wrapper'); const isStale = wrapper.classList.contains('is-stale'); if (isStale) throw new Error('Stale overlay should be cleared after re-run'); return 'stale cleared ✓'; })()" in the webview
+    When I evaluate "window.__e2e.sql.assertResultsNotStale()" in the webview
     Then I take a screenshot "03-stale-cleared"
     When I execute command "workbench.action.closeAllEditors"

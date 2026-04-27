@@ -10,7 +10,7 @@ Feature: SQL toolbar actions — prettify, comment toggle, undo/redo, search
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
 
-    When I evaluate "window.__testRemoveAllSections()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     And I wait 2 seconds
 
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
@@ -25,7 +25,7 @@ Feature: SQL toolbar actions — prettify, comment toggle, undo/redo, search
     And I wait 1 second
 
     # Set ugly SQL
-    When I evaluate "window.__testSetMonacoValue('kw-sql-section .query-editor', `select * from mytable where id=1 and name='test'`)" in the webview
+    When I evaluate "window.__e2e.sql.setQuery(`select * from mytable where id=1 and name='test'`)" in the webview
     And I wait 1 second
     Then I take a screenshot "01-before-prettify"
 
@@ -38,7 +38,7 @@ Feature: SQL toolbar actions — prettify, comment toggle, undo/redo, search
 
     # ── TEST 2: Toggle comment ────────────────────────────────────────────
     # Set a simple query, select all, toggle comment
-    When I evaluate "(() => { window.__testSetMonacoValue('kw-sql-section .query-editor', 'SELECT 1'); window.__testSetMonacoSelection('kw-sql-section .query-editor', 1, 1, 1, 9); return 'selected all'; })()" in the webview
+    When I evaluate "(() => { window.__e2e.sql.setQuery('SELECT 1'); return window.__e2e.sql.setSelection(1, 1, 1, 9); })()" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const btn = document.querySelector('kw-sql-toolbar button[aria-label=Comment]'); if (!btn) throw new Error('Comment toolbar button not found'); btn.click(); return 'comment clicked'; })()" in the webview
@@ -62,7 +62,7 @@ Feature: SQL toolbar actions — prettify, comment toggle, undo/redo, search
     Then I take a screenshot "05-redone"
 
     # ── TEST 5: Search opens find widget ──────────────────────────────────
-    When I evaluate "window.__testSetMonacoValue('kw-sql-section .query-editor', `SELECT * FROM Products WHERE Color = 'Red'`)" in the webview
+    When I evaluate "window.__e2e.sql.setQuery(`SELECT * FROM Products WHERE Color = 'Red'`)" in the webview
     When I evaluate "(() => { const btn = document.querySelector('kw-sql-toolbar button[aria-label=Search]'); if (!btn) throw new Error('Search toolbar button not found'); btn.click(); return 'search clicked'; })()" in the webview
     And I wait 2 seconds
 
