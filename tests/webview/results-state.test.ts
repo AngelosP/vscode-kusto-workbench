@@ -1,5 +1,34 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+
+const mocks = vi.hoisted(() => ({
+	tryStoreQueryResult: vi.fn(),
+	setResultsVisible: vi.fn(),
+	setQueryExecuting: vi.fn(),
+	notifyResultsUpdated: vi.fn(),
+}));
+
+vi.mock('../../src/webview/shared/persistence-state.js', () => ({
+	pState: {
+		resultsVisibleByBoxId: {},
+		lastExecutedBox: '',
+	}
+}));
+
+vi.mock('../../src/webview/core/persistence.js', () => ({
+	__kustoTryStoreQueryResult: mocks.tryStoreQueryResult,
+}));
+
+vi.mock('../../src/webview/sections/query-execution.controller.js', () => ({
+	__kustoSetResultsVisible: mocks.setResultsVisible,
+	setQueryExecuting: mocks.setQueryExecuting,
+}));
+
+vi.mock('../../src/webview/core/section-factory.js', () => ({
+	__kustoNotifyResultsUpdated: mocks.notifyResultsUpdated,
+}));
+
 import {
+	displayResultForBox,
 	getRawCellValue,
 	getResultsState,
 	setResultsState,
@@ -7,7 +36,53 @@ import {
 	resetCurrentResult,
 	currentResult,
 	ensureResultsShownForTool,
-} from '../../src/webview/core/results-state';
+} from '../../src/webview/core/results-state.js';
+
+describe('results-state displayResultForBox', () => {
+	beforeEach(() => {
+		document.body.innerHTML = '';
+		resetCurrentResult();
+		vi.clearAllMocks();
+	});
+
+	it('renders and updates shared result state without owning persistence', () => {
+		const section = document.createElement('div') as HTMLDivElement & {
+			displayResult: ReturnType<typeof vi.fn>;
+		};
+		section.id = 'query_1';
+		section.displayResult = vi.fn();
+		document.body.appendChild(section);
+
+		const result = {
+			columns: [
+				{ name: 'Name', type: 'string' },
+				{ name: 'Value', type: 'long' },
+			],
+			rows: [
+				['alpha', 1],
+				['beta', 2],
+			],
+			metadata: { executionTime: '00:00:00.123' },
+		};
+
+		displayResultForBox(result, 'query_1', { label: 'Results', showExecutionTime: true });
+
+		expect(section.displayResult).toHaveBeenCalledWith(result, { label: 'Results', showExecutionTime: true });
+		expect(mocks.notifyResultsUpdated).toHaveBeenCalledWith('query_1');
+		expect(mocks.tryStoreQueryResult).not.toHaveBeenCalled();
+
+		const state = getResultsState('query_1') as any;
+		expect(state).toMatchObject({
+			boxId: 'query_1',
+			columns: result.columns,
+			rows: result.rows,
+			metadata: result.metadata,
+			displayRowIndices: [0, 1],
+			rowIndexToDisplayIndex: [0, 1],
+		});
+		expect(state.selectedRows).toBeInstanceOf(Set);
+	});
+});
 
 // ── getRawCellValue ───────────────────────────────────────────────────────────
 

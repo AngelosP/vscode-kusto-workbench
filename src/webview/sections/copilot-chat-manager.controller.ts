@@ -6,7 +6,7 @@ import type { ReactiveController, ReactiveControllerHost } from 'lit';
 import type { KwCopilotChat } from '../components/kw-copilot-chat.js';
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
-import { schedulePersist } from '../core/persistence';
+import { schedulePersist, __kustoOnQueryResult } from '../core/persistence';
 import { displayResultForBox } from '../core/results-state.js';
 import { syncSelectBackedDropdown, renderMenuDropdownHtml } from '../core/dropdown.js';
 import {
@@ -442,6 +442,7 @@ export class CopilotChatManagerController implements ReactiveController {
 							if (!isSql) setQueryText(newBoxId, e.detail.query);
 							if (e.detail.result) {
 								displayResultForBox(e.detail.result, newBoxId, { label: 'Results', showExecutionTime: true });
+								__kustoOnQueryResult(newBoxId, e.detail.result);
 							}
 							const newBox = document.getElementById(newBoxId);
 							if (newBox) newBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });

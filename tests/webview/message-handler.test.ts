@@ -296,6 +296,25 @@ describe('message-handler dispatch', () => {
 		expect(mocks.setResultsVisible).toHaveBeenCalledWith('query_2', true);
 	});
 
+	it('routes one queryResult through rendering and the persistence owner once', async () => {
+		const resultsState = await import('../../src/webview/core/results-state.js');
+		const persistence = await import('../../src/webview/core/persistence.js');
+		const result = {
+			columns: [{ name: 'Value', type: 'long' }],
+			rows: [[42]],
+			metadata: { executionTime: '00:00:00.042' },
+		};
+
+		dispatchHostMessage({ type: 'queryResult', boxId: 'query_42', result });
+		await Promise.resolve();
+
+		expect(mocks.setQueryExecuting).toHaveBeenCalledWith('query_42', false);
+		expect(resultsState.displayResultForBox).toHaveBeenCalledTimes(1);
+		expect(resultsState.displayResultForBox).toHaveBeenCalledWith(result, 'query_42', { label: 'Results', showExecutionTime: true });
+		expect(persistence.__kustoOnQueryResult).toHaveBeenCalledTimes(1);
+		expect(persistence.__kustoOnQueryResult).toHaveBeenCalledWith('query_42', result);
+	});
+
 	it('routes pythonResult and pythonError to python module', async () => {
 		dispatchHostMessage({ type: 'pythonResult', boxId: 'python_1', result: 'ok' });
 		dispatchHostMessage({ type: 'pythonError', boxId: 'python_1', error: 'failed' });

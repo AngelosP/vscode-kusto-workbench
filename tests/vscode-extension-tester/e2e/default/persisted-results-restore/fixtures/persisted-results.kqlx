@@ -1,0 +1,20 @@
+{
+  "kind": "kqlx",
+  "version": 1,
+  "state": {
+    "caretDocsEnabled": true,
+    "autoTriggerAutocompleteEnabled": false,
+    "sections": [
+      {
+        "id": "query_persisted_results",
+        "type": "query",
+        "name": "Persisted Result Fixture",
+        "query": "datatable(RowId:long, Label:string, Amount:real)[1, 'persist_row_01', 10.5, 2, 'persist_row_02', 21.0, 3, 'persist_row_03', 31.5, 4, 'persist_row_04', 42.0, 5, 'persist_row_05', 52.5, 6, 'persist_row_06', 63.0, 7, 'persist_row_07', 73.5, 8, 'persist_row_08', 84.0, 9, 'persist_row_09', 94.5, 10, 'persist_row_10', 105.0, 11, 'persist_row_11', 115.5, 12, 'persist_row_12', 126.0]",
+        "expanded": true,
+        "resultsVisible": true,
+        "resultsHeightPx": 360,
+        "resultJson": "{\"columns\":[{\"name\":\"RowId\",\"type\":\"long\"},{\"name\":\"Label\",\"type\":\"string\"},{\"name\":\"Amount\",\"type\":\"real\"}],\"rows\":[[1,\"persist_row_01\",10.5],[2,\"persist_row_02\",21],[3,\"persist_row_03\",31.5],[4,\"persist_row_04\",42],[5,\"persist_row_05\",52.5],[6,\"persist_row_06\",63],[7,\"persist_row_07\",73.5],[8,\"persist_row_08\",84],[9,\"persist_row_09\",94.5],[10,\"persist_row_10\",105],[11,\"persist_row_11\",115.5],[12,\"persist_row_12\",126]],\"metadata\":{\"executionTime\":\"00:00:00.321\",\"clientActivityId\":\"persisted-results-e2e\"}}"
+      }
+    ]
+  }
+}

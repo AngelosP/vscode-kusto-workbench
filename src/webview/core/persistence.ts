@@ -2,7 +2,7 @@
 // Window bridge exports at bottom for remaining legacy callers.
 export {};
 
-import { normalizeClusterUrl, isLeaveNoTraceCluster, byteLengthUtf8, trySerializeQueryResult } from '../shared/persistence-utils';
+import { normalizeClusterUrl, isLeaveNoTraceCluster, trySerializeQueryResult } from '../shared/persistence-utils';
 import { postMessageToHost } from '../shared/webview-messages';
 import { pState } from '../shared/persistence-state';
 import { displayResult, displayResultForBox } from './results-state';
@@ -221,16 +221,109 @@ try {
 const __kustoMaxPersistedResultBytes = 5 * 1024 * 1024;
 const __kustoMaxPersistedResultRowsHardCap = 5000;
 
-// byteLengthUtf8 is now imported from shared/persistence-utils.ts
+const __kustoStoredResultSignatureByBoxId: Record<string, { json: string; token: string }> = {};
+let __kustoStoredResultRevision = 0;
+
+function __kustoResetStoredResultSignatures() {
+	try {
+		for (const key of Object.keys(__kustoStoredResultSignatureByBoxId)) {
+			delete __kustoStoredResultSignatureByBoxId[key];
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoRememberStoredQueryResultJson(boxId: any, json: string) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return;
+		const text = String(json || '');
+		const current = __kustoStoredResultSignatureByBoxId[id];
+		if (current && current.json === text) {
+			return;
+		}
+		__kustoStoredResultRevision += 1;
+		__kustoStoredResultSignatureByBoxId[id] = {
+			json: text,
+			token: 'result:' + __kustoStoredResultRevision + ':len:' + text.length,
+		};
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoSetStoredQueryResultJson(boxId: any, json: string) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return;
+		const text = String(json || '');
+		pState.queryResultJsonByBoxId[id] = text;
+		__kustoRememberStoredQueryResultJson(id, text);
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoDeleteStoredQueryResultJson(boxId: any) {
+	try {
+		const id = String(boxId || '');
+		if (!id) return;
+		delete pState.queryResultJsonByBoxId[id];
+		delete __kustoStoredResultSignatureByBoxId[id];
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoGetStoredQueryResultToken(boxId: any, resultJson: any) {
+	try {
+		const id = String(boxId || '');
+		const text = String(resultJson || '');
+		if (!text) return '';
+		if (!id) {
+			return 'result:anonymous:len:' + text.length;
+		}
+		const current = __kustoStoredResultSignatureByBoxId[id];
+		if (!current || current.json !== text) {
+			__kustoRememberStoredQueryResultJson(id, text);
+		}
+		return __kustoStoredResultSignatureByBoxId[id]?.token || ('result:unknown:len:' + text.length);
+	} catch {
+		return '';
+	}
+}
+
+function __kustoBuildPersistSignatureState(value: any): any {
+	try {
+		if (Array.isArray(value)) {
+			return value.map(item => __kustoBuildPersistSignatureState(item));
+		}
+		if (!value || typeof value !== 'object') {
+			return value;
+		}
+		const copy: Record<string, unknown> = {};
+		for (const [key, child] of Object.entries(value)) {
+			if (key === 'resultJson' && typeof child === 'string' && child) {
+				copy[key] = __kustoGetStoredQueryResultToken((value as any).id, child);
+			} else {
+				copy[key] = __kustoBuildPersistSignatureState(child);
+			}
+		}
+		return copy;
+	} catch {
+		return value;
+	}
+}
+
+function __kustoGetPersistSignature(state: any) {
+	try {
+		return JSON.stringify(__kustoBuildPersistSignatureState(state));
+	} catch {
+		return '';
+	}
+}
 
 export function __kustoTryStoreQueryResult(boxId: any, result: any) {
 	try {
 		if (!boxId) return;
 		const { json } = trySerializeQueryResult(result, __kustoMaxPersistedResultBytes, __kustoMaxPersistedResultRowsHardCap);
 		if (json) {
-			pState.queryResultJsonByBoxId[boxId] = json;
+			__kustoSetStoredQueryResultJson(boxId, json);
 		} else {
-			delete pState.queryResultJsonByBoxId[boxId];
+			__kustoDeleteStoredQueryResultJson(boxId);
 		}
 	} catch (e) { console.error('[kusto]', e); }
 }
@@ -572,8 +665,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 		const doPersist = () => {
 			try {
 				const state = getKqlxState();
-				let sig = '';
-				try { sig = JSON.stringify(state); } catch { sig = ''; }
+				const sig = __kustoGetPersistSignature(state);
 				if (sig && sig === __kustoLastPersistSignature) {
 					return;
 				}
@@ -693,7 +785,7 @@ function applyKqlxState(state: any) {
 		__kustoPersistenceEnabled = false;
 
 		// Reset persisted results when loading a new document.
-		try { pState.queryResultJsonByBoxId = {}; } catch (e) { console.error('[kusto]', e); }
+		try { pState.queryResultJsonByBoxId = {}; __kustoResetStoredResultSignatures(); } catch (e) { console.error('[kusto]', e); }
 
 		__kustoClearAllSections();
 
@@ -937,7 +1029,7 @@ function applyKqlxState(state: any) {
 					const rj = section.resultJson ? String(section.resultJson) : '';
 					if (rj) {
 						// Keep in-memory cache aligned with restored boxes.
-						pState.queryResultJsonByBoxId[boxId] = rj;
+						__kustoSetStoredQueryResultJson(boxId, rj);
 						try {
 							const parsed = JSON.parse(rj);
 							if (parsed && typeof parsed === 'object') {
@@ -953,7 +1045,7 @@ function applyKqlxState(state: any) {
 							}
 						} catch {
 							// If stored JSON is invalid, drop it.
-							delete pState.queryResultJsonByBoxId[boxId];
+							__kustoDeleteStoredQueryResultJson(boxId);
 						}
 					}
 				} catch (e) { console.error('[kusto]', e); }
@@ -1258,7 +1350,7 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 				try {
 					const rj = section.resultJson ? String(section.resultJson) : '';
 					if (rj) {
-						pState.queryResultJsonByBoxId[pendingId] = rj;
+						__kustoSetStoredQueryResultJson(pendingId, rj);
 						// Pre-apply persisted results height BEFORE displayResultForBox so
 						// _displayResults sees kustoUserResized and skips auto-sizing.
 						try {
@@ -1281,7 +1373,7 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 								displayResultForBox(parsed, pendingId, { label: 'Results', showExecutionTime: true });
 							}
 						} catch {
-							delete pState.queryResultJsonByBoxId[pendingId];
+							__kustoDeleteStoredQueryResultJson(pendingId);
 						}
 					}
 				} catch (e) { console.error('[kusto]', e); }

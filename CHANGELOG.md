@@ -5,8 +5,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [4.3.0] - Unreleased
 
+* Improved performance when dealing with large datasets
 * Improved E2E test coverage
-* 
 
 ## [4.2.1] - 2026-04-25
 

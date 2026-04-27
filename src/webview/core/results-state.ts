@@ -2,7 +2,6 @@
 // Extracted from resultsTable-render.ts during legacy results table removal.
 
 import { pState } from '../shared/persistence-state';
-import { __kustoTryStoreQueryResult } from './persistence';
 import { __kustoSetResultsVisible, setQueryExecuting } from '../sections/query-execution.controller';
 import { __kustoNotifyResultsUpdated } from './section-factory';
 
@@ -98,7 +97,6 @@ export function displayResultForBox(result: any, boxId: any, options: any) {
 		sortSpec: [], columnFilters: {}, filteredRowIndices: null,
 		displayRowIndices, rowIndexToDisplayIndex
 	});
-	try { __kustoTryStoreQueryResult(boxId, result); } catch (e) { console.error('[kusto]', e); }
 }
 
 /**

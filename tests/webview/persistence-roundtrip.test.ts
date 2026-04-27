@@ -14,9 +14,10 @@ const testState = vi.hoisted(() => {
 	const sqlElements: Record<string, HTMLElement & {
 		setFavoritesMode: ReturnType<typeof vi.fn>;
 	}> = {};
+	const postMessageToHost = vi.fn();
 
-	const addQueryBox = vi.fn(() => {
-		const id = `query_restored_${addQueryBox.mock.calls.length + 1}`;
+	const addQueryBox = vi.fn((options: { id?: string } = {}) => {
+		const id = options.id || `query_restored_${addQueryBox.mock.calls.length + 1}`;
 		queryBoxes.push(id);
 		queryEditors[id] = { getValue: () => '' };
 		return id;
@@ -67,6 +68,7 @@ const testState = vi.hoisted(() => {
 		addMarkdownBox,
 		addHtmlBox,
 		addSqlBox,
+		postMessageToHost,
 	};
 });
 
@@ -78,7 +80,7 @@ vi.mock('../../src/webview/shared/persistence-utils.js', () => ({
 }));
 
 vi.mock('../../src/webview/shared/webview-messages.js', () => ({
-	postMessageToHost: vi.fn(),
+	postMessageToHost: testState.postMessageToHost,
 }));
 
 vi.mock('../../src/webview/shared/persistence-state.js', () => ({
@@ -218,10 +220,11 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 }));
 
 import { pState } from '../../src/webview/shared/persistence-state.js';
-import { displayResultForBox } from '../../src/webview/core/results-state.js';
+import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
+import { displayResult, displayResultForBox } from '../../src/webview/core/results-state.js';
 import { sqlFavoritesModeByBoxId } from '../../src/webview/core/state.js';
 import { setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
-import { getKqlxState, handleDocumentDataMessage } from '../../src/webview/core/persistence.js';
+import { getKqlxState, handleDocumentDataMessage, schedulePersist } from '../../src/webview/core/persistence.js';
 
 describe('persistence round-trip', () => {
 	beforeEach(() => {
@@ -390,6 +393,131 @@ describe('persistence round-trip', () => {
 		expect(document.getElementById('sql_saved_1_sql_results_wrapper')?.style.height).toBe('420px');
 		expect(document.getElementById('sql_saved_1_sql_results_wrapper')?.dataset.kustoUserResized).toBe('true');
 		expect(testState.sqlBoxes).toEqual(['sql_saved_1']);
+	});
+
+	it('restores persisted KQL query results to the saved section and keeps the next persist stable', () => {
+		const resultJson = JSON.stringify({
+			columns: [
+				{ name: 'RowId', type: 'long' },
+				{ name: 'Label', type: 'string' },
+			],
+			rows: [[1, 'persisted_alpha'], [2, 'persisted_beta']],
+			metadata: { executionTime: '00:00:00.021', clientActivityId: 'cid_restore' },
+		});
+
+		handleDocumentDataMessage({
+			type: 'documentData',
+			ok: true,
+			forceReload: true,
+			documentUri: 'file:///tmp/query-results.kqlx',
+			state: {
+				sections: [
+					{
+						type: 'query',
+						id: 'query_saved_results',
+						name: 'Persisted Results',
+						query: 'datatable(RowId:long, Label:string)[1, "persisted_alpha", 2, "persisted_beta"]',
+						clusterUrl: 'https://persisted.example.kusto.windows.net',
+						database: 'Samples',
+						resultJson,
+					},
+				],
+			},
+		});
+
+		expect(testState.addQueryBox).toHaveBeenCalledWith({
+			id: 'query_saved_results',
+			expanded: true,
+			clusterUrl: 'https://persisted.example.kusto.windows.net',
+			database: 'Samples',
+		});
+		expect(pState.pendingQueryTextByBoxId.query_saved_results).toContain('persisted_alpha');
+		expect(pState.queryResultJsonByBoxId.query_saved_results).toBe(resultJson);
+		expect(pState.lastExecutedBox).toBe('query_saved_results');
+		expect(displayResult).toHaveBeenCalledWith(JSON.parse(resultJson));
+
+		document.body.innerHTML = '';
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const queryEl = document.createElement('div') as unknown as HTMLElement & { serialize: () => unknown };
+		queryEl.id = 'query_saved_results';
+		queryEl.serialize = () => ({
+			id: 'query_saved_results',
+			type: 'query',
+			name: 'Persisted Results',
+			clusterUrl: 'https://persisted.example.kusto.windows.net',
+			database: 'Samples',
+			query: pState.pendingQueryTextByBoxId.query_saved_results,
+			resultJson: pState.queryResultJsonByBoxId.query_saved_results,
+			resultsVisible: true,
+		});
+		container.appendChild(queryEl);
+
+		vi.mocked(postMessageToHost).mockClear();
+		schedulePersist('roundtrip', true);
+		expect(postMessageToHost).toHaveBeenCalledTimes(1);
+		const persistMessage = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+		expect(persistMessage).toMatchObject({ type: 'persistDocument', reason: 'roundtrip' });
+		expect(persistMessage.state.sections).toHaveLength(1);
+		expect(persistMessage.state.sections[0].id).toBe('query_saved_results');
+		expect(persistMessage.state.sections[0].resultJson).toBe(resultJson);
+
+		schedulePersist('roundtrip', true);
+		expect(postMessageToHost).toHaveBeenCalledTimes(1);
+	});
+
+	it('does not stringify unchanged stored result JSON when schedulePersist runs again', () => {
+		handleDocumentDataMessage({
+			type: 'documentData',
+			ok: true,
+			forceReload: true,
+			documentUri: 'file:///tmp/schedule-large-result.kqlx',
+			state: { sections: [] },
+		});
+
+		const largeResultJson = JSON.stringify({
+			columns: [{ name: 'Payload', type: 'string' }],
+			rows: Array.from({ length: 2000 }, (_, index) => [`row_${index}_${'x'.repeat(80)}`]),
+			metadata: { executionTime: '00:00:01.000' },
+		});
+		pState.queryResultJsonByBoxId.query_large = largeResultJson;
+
+		document.body.innerHTML = '';
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const queryEl = document.createElement('div') as unknown as HTMLElement & { serialize: () => unknown };
+		queryEl.id = 'query_large';
+		queryEl.serialize = () => ({
+			id: 'query_large',
+			type: 'query',
+			name: 'Large Result',
+			query: 'range i from 1 to 2000 step 1',
+			clusterUrl: 'https://persisted.example.kusto.windows.net',
+			database: 'Samples',
+			resultJson: pState.queryResultJsonByBoxId.query_large,
+		});
+		container.appendChild(queryEl);
+
+		vi.mocked(postMessageToHost).mockClear();
+		schedulePersist('initial-large-result', true);
+		expect(postMessageToHost).toHaveBeenCalledTimes(1);
+
+		const stringifySpy = vi.spyOn(JSON, 'stringify');
+		stringifySpy.mockClear();
+		try {
+			schedulePersist('unchanged-large-result', true);
+			const fullResultStateStringifyCalls = stringifySpy.mock.calls.filter(([value]) => {
+				if (!value || typeof value !== 'object') return false;
+				const sections = (value as any).sections;
+				return Array.isArray(sections) && sections.some((section: any) => section?.resultJson === largeResultJson);
+			});
+			expect(fullResultStateStringifyCalls).toHaveLength(0);
+		} finally {
+			stringifySpy.mockRestore();
+		}
+		expect(postMessageToHost).toHaveBeenCalledTimes(1);
 	});
 
 	it('recreates sections from serialized state on handleDocumentDataMessage', () => {

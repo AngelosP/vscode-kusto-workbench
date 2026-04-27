@@ -116,12 +116,13 @@ describe('byteLengthUtf8', () => {
 
 describe('trySerializeQueryResult', () => {
 	it('serializes small results unchanged', () => {
-		const result = { columns: ['a'], rows: [[1], [2]], metadata: {} };
+		const result = { columns: ['a'], rows: [[1], [2]], metadata: { executionTime: '00:00:00.001', clientActivityId: 'cid_1' } };
 		const { json, truncated } = trySerializeQueryResult(result);
 		expect(truncated).toBe(false);
 		expect(json).not.toBeNull();
 		const parsed = JSON.parse(json!);
 		expect(parsed.rows).toEqual([[1], [2]]);
+		expect(parsed.metadata).toEqual({ executionTime: '00:00:00.001', clientActivityId: 'cid_1' });
 	});
 
 	it('returns null for null/undefined input', () => {
@@ -140,7 +141,7 @@ describe('trySerializeQueryResult', () => {
 		// Create a large result
 		const bigRow = ['x'.repeat(100)];
 		const rows = Array.from({ length: 1000 }, () => [...bigRow]);
-		const result = { columns: ['col1'], rows, metadata: {} };
+		const result = { columns: ['col1'], rows, metadata: { executionTime: '00:00:00.500', clientActivityId: 'cid_large' } };
 		const maxBytes = 5000; // very small cap for testing
 		const { json, truncated, rowCount } = trySerializeQueryResult(result, maxBytes);
 		expect(truncated).toBe(true);
@@ -149,14 +150,21 @@ describe('trySerializeQueryResult', () => {
 		expect(rowCount!).toBeLessThan(1000);
 		expect(byteLengthUtf8(json!)).toBeLessThanOrEqual(maxBytes);
 		const parsed = JSON.parse(json!);
+		expect(parsed.columns).toEqual(['col1']);
+		expect(parsed.rows.length).toBe(rowCount);
+		expect(parsed.metadata.executionTime).toBe('00:00:00.500');
+		expect(parsed.metadata.clientActivityId).toBe('cid_large');
 		expect(parsed.metadata.persistedTruncated).toBe(true);
 		expect(parsed.metadata.persistedTotalRows).toBe(1000);
+		expect(parsed.metadata.persistedRows).toBe(rowCount);
 	});
 
 	it('returns null when even a single row exceeds the cap', () => {
 		const result = { columns: ['col1'], rows: [['x'.repeat(10000)]], metadata: {} };
-		const { json } = trySerializeQueryResult(result, 100);
+		const { json, truncated, rowCount } = trySerializeQueryResult(result, 100);
 		expect(json).toBeNull();
+		expect(truncated).toBe(false);
+		expect(rowCount).toBeUndefined();
 	});
 
 	it('respects maxRowsHardCap', () => {
