@@ -1723,6 +1723,13 @@
     "test:webview": "vitest run",
     "test:webview:coverage": "vitest run --coverage",
     "test:webview:watch": "vitest",
+    "test:e2e:full": "node scripts/e2e-full-suite.mjs",
+    "test:e2e:ci": "node scripts/e2e-full-suite.mjs --profiles default",
+    "test:e2e:ci:dry-run": "node scripts/e2e-full-suite.mjs --profiles default --dry-run",
+    "test:e2e:full:behavior": "node scripts/e2e-full-suite.mjs --profiles default,sql-auth,kusto-auth --repair-profile-residue",
+    "test:e2e:full:dry-run": "node scripts/e2e-full-suite.mjs --dry-run",
+    "test:e2e:profile-check": "node scripts/e2e-full-suite.mjs --profile-check-only --profiles sql-auth,kusto-auth",
+    "test:e2e:profile-check:repair": "node scripts/e2e-full-suite.mjs --profile-check-only --profiles sql-auth,kusto-auth --repair-profile-residue",
     "test:coverage-gate": "node scripts/coverage-gate.mjs",
     "bundle-size": "node scripts/bundle-size.mjs",
     "bundle-size:gate": "node scripts/bundle-size-gate.mjs"

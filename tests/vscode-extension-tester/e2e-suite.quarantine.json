@@ -1,0 +1,5 @@
+{
+  "version": 1,
+  "policy": "Temporary quarantine only. Every active entry must include profile, testId, mode, owner, reason, issue, and expiresOn. Prefer fixing the test/product over extending expiry.",
+  "entries": []
+}
