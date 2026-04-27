@@ -25,16 +25,16 @@ Feature: Kusto connection flow — cluster select, database loading, schema
     Then I take a screenshot "01-connected"
 
     # ── TEST 2: Cluster dropdown has entries ───────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const conns = el._connections || []; if (conns.length < 1) throw new Error('Expected at least 1 cluster connection, got ' + conns.length); return 'connections: ' + conns.length + ' (' + conns.map(c => c.name || c.clusterUrl).join(', ') + ') ✓'; })()" in the webview
+    When I evaluate "window.__testAssertKwDropdownHasItems(`kw-query-section .select-wrapper[title='Kusto Cluster'] kw-dropdown`, 1)" in the webview
     Then I take a screenshot "02-cluster-entries"
 
     # ── TEST 3: Database list loaded ──────────────────────────────────────
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const count = parseInt(el.dataset.testDatabaseCount || '0', 10); if (count < 1) throw new Error('Expected at least 1 database, got ' + count); const dbs = el._databases || []; return 'databases loaded: ' + count + ' (' + dbs.slice(0, 5).join(', ') + (dbs.length > 5 ? '...' : '') + ') ✓'; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const count = parseInt(el.dataset.testDatabaseCount || '0', 10); if (count < 1) throw new Error('Expected at least 1 database, got ' + count); return 'databases loaded: ' + count; })()" in the webview
     Then I take a screenshot "03-databases-loaded"
 
     # ── TEST 4: Select a database ─────────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const dbs = el._databases || []; const target = dbs.find(d => d.toLowerCase().includes('sample') || d.toLowerCase().includes('storm')) || dbs[0]; if (!target) throw new Error('No databases available'); el.setDesiredDatabase(target); el.dispatchEvent(new CustomEvent('database-changed', { detail: { boxId: el.boxId, database: target }, bubbles: true, composed: true })); return 'selected db=' + target; })()" in the webview
+    When I evaluate "window.__testSelectKwDropdownItem(`kw-query-section .select-wrapper[title='Kusto Database'] kw-dropdown`, 'sample,storm', true)" in the webview
     And I wait 2 seconds
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
 
@@ -42,7 +42,7 @@ Feature: Kusto connection flow — cluster select, database loading, schema
     Then I take a screenshot "04-database-selected"
 
     # ── TEST 5: Refresh databases ─────────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const prevCount = (el._databases || []).length; el.dispatchEvent(new CustomEvent('refresh-databases', { detail: { boxId: el.boxId, connectionId: el.getConnectionId() }, bubbles: true, composed: true })); return 'refresh dispatched, prev count=' + prevCount; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const prevCount = parseInt(el.dataset.testDatabaseCount || '0', 10); el.dispatchEvent(new CustomEvent('refresh-databases', { detail: { boxId: el.boxId, connectionId: el.getConnectionId() }, bubbles: true, composed: true })); return 'refresh dispatched, prev count=' + prevCount; })()" in the webview
     And I wait 3 seconds
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 

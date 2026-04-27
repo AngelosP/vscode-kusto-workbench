@@ -21,12 +21,14 @@ Feature: Kusto query execution end-to-end
     When I wait for "kw-query-section[data-test-connection='true']" in the webview for 15 seconds
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
-    # Select a database with data (e.g. Samples, SampleData, or first available)
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (!el) throw new Error('KQL section not found'); const dbs = el._databases || []; const target = dbs.find(d => /sample/i.test(d) || /storm/i.test(d)) || dbs[0]; if (!target) throw new Error('No Kusto databases available'); el.setDesiredDatabase(target); el.dispatchEvent(new CustomEvent('database-changed', { detail: { boxId: el.boxId, database: target }, bubbles: true, composed: true })); return 'db=' + target; })()" in the webview
+    # Select a database with data (prefers sample/storm, falls back to the first dropdown item)
+    When I evaluate "window.__testSelectKwDropdownItem(`kw-query-section .select-wrapper[title='Kusto Database'] kw-dropdown`, 'sample,storm', true)" in the webview
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
     Then I take a screenshot "01-setup-ready"
 
     # Focus the KQL editor
+    When I wait for "kw-query-section .monaco-editor" in the webview for 20 seconds
+    When I evaluate "window.__testAssertMonacoEditorMapped('kw-query-section .query-editor')" in the webview
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const editorEl = document.getElementById(el.boxId + '_query_editor'); if (editorEl) editorEl.scrollIntoView({ block: 'center' }); return 'scrolled'; })()" in the webview
     And I wait 1 second
 
@@ -35,7 +37,8 @@ Feature: Kusto query execution end-to-end
     Then I take a screenshot "02-run-enabled"
 
     # ── TEST 2: Execute simple query → results appear ─────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const boxId = el.boxId; const ed = window.queryEditors[boxId]; if (!ed) throw new Error('No editor for ' + boxId); ed.setValue(String.raw`print message='hello from e2e test', value=42`); ed.focus(); return 'query set'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', String.raw`print message='hello from e2e test', value=42`)" in the webview
+    When I evaluate "window.__testAssertMonacoValue('kw-query-section .query-editor', String.raw`print message='hello from e2e test', value=42`)" in the webview
     And I wait 1 second
 
     # Click the Run button
@@ -59,7 +62,7 @@ Feature: Kusto query execution end-to-end
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (el.dataset.testHasError === 'true') throw new Error('Unexpected error after successful query'); return 'no error ✓'; })()" in the webview
 
     # ── TEST 4: Execute invalid KQL → error appears ───────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; ed.setValue('this_table_does_not_exist_xyz_abc'); ed.focus(); return 'bad query set'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', 'this_table_does_not_exist_xyz_abc')" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); document.getElementById(el.boxId + '_run_btn').click(); return 'clicked run'; })()" in the webview
@@ -70,7 +73,7 @@ Feature: Kusto query execution end-to-end
     Then I take a screenshot "04-error-shown"
 
     # ── TEST 5: Elapsed timer appears during execution ────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; ed.setValue('print x=1 | extend y=x'); ed.focus(); return 'query set for timer test'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', 'print x=1 | extend y=x')" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); document.getElementById(el.boxId + '_run_btn').click(); return 'clicked run'; })()" in the webview
@@ -81,7 +84,7 @@ Feature: Kusto query execution end-to-end
     Then I take a screenshot "05-execution-complete"
 
     # ── TEST 6: Multi-row query result ────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; ed.setValue(String.raw`range x from 1 to 5 step 1 | extend label = strcat('row_', tostring(x))`); ed.focus(); return 'multi-row query set'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', String.raw`range x from 1 to 5 step 1 | extend label = strcat('row_', tostring(x))`)" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); document.getElementById(el.boxId + '_run_btn').click(); return 'clicked run'; })()" in the webview
@@ -92,7 +95,7 @@ Feature: Kusto query execution end-to-end
     Then I take a screenshot "06-multi-row-results"
 
     # ── TEST 7: Stale overlay after editing query ─────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; ed.setValue('range x from 1 to 5 step 1 | extend modified=true'); return 'query edited'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', 'range x from 1 to 5 step 1 | extend modified=true')" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const resultsDiv = document.getElementById(el.boxId + '_results'); if (!resultsDiv) throw new Error('No results div'); const isStale = resultsDiv.classList.contains('is-stale'); if (!isStale) throw new Error('Results should have is-stale class after edit'); return 'stale overlay shown ✓'; })()" in the webview

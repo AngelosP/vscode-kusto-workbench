@@ -28,8 +28,8 @@ Feature: SQL connection flow — server select, database loading, refresh
     Then I take a screenshot "02-databases-loaded"
 
     # ── TEST 3: Select a database ─────────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const dbs = el._databases || []; const t = dbs.find(d => d.toLowerCase().includes('sample')) || dbs[0]; if (!t) throw new Error('No SQL databases available'); if (el._database !== t) { el.setDatabase(t); el.dispatchEvent(new CustomEvent('sql-database-changed', { detail: { boxId: el.boxId || el.id, database: t }, bubbles: true, composed: true })); } return 'selected db=' + el._database; })()" in the webview
-    When I wait for "kw-sql-section[data-test-database-selected='true']" in the webview for 10 seconds
+    When I evaluate "window.__testSelectKwDropdownItem(`kw-sql-section .select-wrapper[title='SQL Database'] kw-dropdown`, 'sampledb')" in the webview
+    When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
 
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (el.dataset.testDatabaseSelected !== 'true') throw new Error('Database not selected'); const db = el.dataset.testDatabase; if (!db) throw new Error('No database name in dataset'); return 'database selected: ' + db + ' ✓'; })()" in the webview
     Then I take a screenshot "03-database-selected"
@@ -43,7 +43,7 @@ Feature: SQL connection flow — server select, database loading, refresh
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const info = el.shadowRoot?.querySelector('kw-schema-info'); if (!info) throw new Error('No schema-info element'); const text = info.shadowRoot?.textContent || info.textContent || ''; if (!text.includes('table')) throw new Error('Schema info should mention tables, got: ' + text.substring(0, 80)); return 'schema info: ' + text.trim().substring(0, 60) + ' ✓'; })()" in the webview
 
     # ── TEST 6: Refresh databases ─────────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const prevCount = (el._databases || []).length; el.dispatchEvent(new CustomEvent('sql-refresh-databases', { detail: { boxId: el.boxId || el.id }, bubbles: true, composed: true })); return 'refresh dispatched, prev count=' + prevCount; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const prevCount = parseInt(el.dataset.testDatabaseCount || '0', 10); el.dispatchEvent(new CustomEvent('sql-refresh-databases', { detail: { boxId: el.boxId || el.id }, bubbles: true, composed: true })); return 'refresh dispatched, prev count=' + prevCount; })()" in the webview
     And I wait 3 seconds
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
@@ -51,6 +51,6 @@ Feature: SQL connection flow — server select, database loading, refresh
     Then I take a screenshot "05-databases-refreshed"
 
     # ── TEST 7: Server dropdown has entries ────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const conns = el._connections || []; if (conns.length < 1) throw new Error('Expected at least 1 server connection, got ' + conns.length); return 'server connections: ' + conns.length + ' (' + conns.map(c => c.name || c.serverUrl || c.id).join(', ') + ') ✓'; })()" in the webview
+    When I evaluate "window.__testAssertKwDropdownHasItems(`kw-sql-section .select-wrapper[title='SQL Server'] kw-dropdown`, 1)" in the webview
     Then I take a screenshot "06-server-entries"
     When I execute command "workbench.action.closeAllEditors"

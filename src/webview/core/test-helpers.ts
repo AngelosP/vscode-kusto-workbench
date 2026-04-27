@@ -12,7 +12,8 @@ type MonacoLike = {
 	hasWidgetFocus?: () => boolean;
 	getValue?: () => string;
 	setValue?: (value: string) => void;
-	getModel?: () => { getLineCount?: () => number; getLineMaxColumn?: (lineNumber: number) => number } | null;
+	getModel?: () => { getLineCount?: () => number; getLineMaxColumn?: (lineNumber: number) => number; getLanguageId?: () => string; uri?: { toString(): string } } | null;
+	getOptions?: () => { get?: (option: any) => any };
 	setPosition?: (position: { lineNumber: number; column: number }) => void;
 	setSelection?: (selection: { startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number }) => void;
 	trigger?: (source: string, handlerId: string, payload: any) => void;
@@ -25,8 +26,14 @@ const _monacoFocusTracked = (typeof WeakSet !== 'undefined') ? new WeakSet<objec
 function resolveMonacoEditorFromElement(el: Element | null): MonacoLike | null {
 	if (!el) return null;
 
-	// First try: walk up to a known section element and use its _editor property directly.
+	// First try: walk up to a known section element and use the section-scoped editor map.
 	const host = el.closest('kw-sql-section, kw-query-section, kw-html-section, kw-python-section') as any;
+	const hostBoxId = host ? String(host.boxId || host.id || '').trim() : '';
+	if (hostBoxId && (window as any).queryEditors?.[hostBoxId]) {
+		return (window as any).queryEditors[hostBoxId] as MonacoLike;
+	}
+
+	// Some section implementations still keep their editor instance on the host.
 	if (host && host._editor) {
 		return host._editor as MonacoLike;
 	}
@@ -42,8 +49,15 @@ function resolveMonacoEditorFromElement(el: Element | null): MonacoLike | null {
 		}
 	}
 
-	const winEditor = (window as any).activeMonacoEditor;
-	return winEditor || null;
+	const winEditor = (window as any).activeMonacoEditor as MonacoLike | null;
+	if (winEditor && typeof winEditor.getDomNode === 'function') {
+		const domNode = winEditor.getDomNode();
+		if (domNode && (domNode === el || domNode.contains(el) || el.contains(domNode))) {
+			return winEditor;
+		}
+	}
+
+	return null;
 }
 
 function updateMonacoFocusDataset(editor: MonacoLike | null): 'text' | 'widget' | 'none' {
@@ -564,7 +578,83 @@ _win.__testGetMonacoValue = (selector: string): string => {
 	return editor.getValue() || '';
 };
 
-_win.__testSelectKwDropdownItem = async (dropdownSelector: string, labelsCsv: string): Promise<string> => {
+_win.__testAssertMonacoValue = (selector: string, expected: string): string => {
+	const actual = _win.__testGetMonacoValue(selector);
+	const expectedText = String(expected || '');
+	if (actual !== expectedText) {
+		throw new Error(`monaco value mismatch for ${selector}: expected ${expectedText.length} chars, got ${actual.length} chars`);
+	}
+	return `monaco value verified for ${selector} (${actual.length} chars)`;
+};
+
+_win.__testGetMonacoModelUri = (selector: string): string => {
+	const { editor } = resolveMonacoEditorFromSelector(selector);
+	const model = typeof editor.getModel === 'function' ? editor.getModel() : null;
+	const uri = model?.uri?.toString?.();
+	if (!uri) {
+		throw new Error(`monaco model uri unavailable for: ${selector}`);
+	}
+	return uri;
+};
+
+_win.__testAssertMonacoEditorMapped = (selector: string): string => {
+	const { editor } = resolveMonacoEditorFromSelector(selector);
+	const model = typeof editor.getModel === 'function' ? editor.getModel() : null;
+	const uri = model?.uri?.toString?.();
+	if (!uri) {
+		throw new Error(`monaco model uri unavailable for: ${selector}`);
+	}
+	const boxId = _win.queryEditorBoxByModelUri?.[uri];
+	if (!boxId) {
+		throw new Error(`queryEditorBoxByModelUri missing ${uri}`);
+	}
+	if (!_win.queryEditors?.[boxId]) {
+		throw new Error(`queryEditors missing ${boxId}`);
+	}
+	const language = typeof model?.getLanguageId === 'function' ? model.getLanguageId() : 'unknown';
+	return `editor mapped: boxId=${boxId}, language=${language}, uri=${uri}`;
+};
+
+_win.__testAssertMonacoInlineSuggestEnabled = (selector: string): string => {
+	const { editor } = resolveMonacoEditorFromSelector(selector);
+	const options = typeof editor.getOptions === 'function' ? editor.getOptions() : null;
+	const monacoApi = _win.monaco;
+	const inlineSuggestOption = monacoApi?.editor?.EditorOption?.inlineSuggest;
+	if (!options?.get || inlineSuggestOption === undefined) {
+		throw new Error(`inlineSuggest option unavailable for: ${selector}`);
+	}
+	const inlineSuggest = options.get(inlineSuggestOption);
+	if (!inlineSuggest || inlineSuggest.enabled !== true) {
+		throw new Error(`inlineSuggest not enabled for ${selector}: ${JSON.stringify(inlineSuggest)}`);
+	}
+	return `inlineSuggest enabled for ${selector}`;
+};
+
+_win.__testAssertMonacoMarkers = (selector: string, expectation: 'any' | 'none' = 'any', owner: string = '', severity: 'error' | '' = ''): string => {
+	const { editor } = resolveMonacoEditorFromSelector(selector);
+	const model = typeof editor.getModel === 'function' ? editor.getModel() : null;
+	if (!model?.uri) {
+		throw new Error(`monaco model unavailable for marker check: ${selector}`);
+	}
+	const monacoApi = _win.monaco;
+	if (!monacoApi?.editor?.getModelMarkers) {
+		throw new Error('monaco.editor.getModelMarkers unavailable');
+	}
+	const options = owner ? { resource: model.uri, owner } : { resource: model.uri };
+	let markers = monacoApi.editor.getModelMarkers(options) || [];
+	if (severity === 'error') {
+		markers = markers.filter((marker: any) => marker.severity === monacoApi.MarkerSeverity?.Error);
+	}
+	if (expectation === 'any' && markers.length === 0) {
+		throw new Error(`expected Monaco ${severity || ''} markers for ${selector}, got 0`);
+	}
+	if (expectation === 'none' && markers.length !== 0) {
+		throw new Error(`expected no Monaco ${severity || ''} markers for ${selector}, got ${markers.length}: ${markers.map((m: any) => String(m.message || '').slice(0, 80)).join('; ')}`);
+	}
+	return `${severity || 'all'} markers(${markers.length}) for ${selector}: ${markers.slice(0, 5).map((m: any) => String(m.message || '').slice(0, 60)).join('; ')}`;
+};
+
+_win.__testSelectKwDropdownItem = async (dropdownSelector: string, labelsCsv: string, allowFirstFallback: boolean = false): Promise<string> => {
 	const dropdown = deepQuerySelector(document, dropdownSelector) as HTMLElement | null;
 	if (!dropdown) {
 		throw new Error(`dropdown not found: ${dropdownSelector}`);
@@ -590,7 +680,7 @@ _win.__testSelectKwDropdownItem = async (dropdownSelector: string, labelsCsv: st
 	const item = items.find(el => {
 		const text = (el.textContent || '').trim().toLowerCase();
 		return desired.length === 0 || desired.some(label => text === label || text.includes(label));
-	});
+	}) || (allowFirstFallback ? items[0] : null);
 	if (!item) {
 		const available = items.map(el => (el.textContent || '').trim()).filter(Boolean).join(', ');
 		throw new Error(`dropdown item not found [${labelsCsv}] in ${dropdownSelector}; available=${available}`);
@@ -602,6 +692,34 @@ _win.__testSelectKwDropdownItem = async (dropdownSelector: string, labelsCsv: st
 		await afterClickUpdateComplete;
 	}
 	return `selected dropdown item: ${label}`;
+};
+
+_win.__testAssertKwDropdownHasItems = async (dropdownSelector: string, minCount: number = 1): Promise<string> => {
+	const dropdown = deepQuerySelector(document, dropdownSelector) as HTMLElement | null;
+	if (!dropdown) {
+		throw new Error(`dropdown not found: ${dropdownSelector}`);
+	}
+	const root = dropdown.shadowRoot;
+	if (!root) {
+		throw new Error(`dropdown shadow root unavailable: ${dropdownSelector}`);
+	}
+	const button = root.querySelector('.kusto-dropdown-btn') as HTMLElement | null;
+	if (!button) {
+		throw new Error(`dropdown button not found: ${dropdownSelector}`);
+	}
+	button.click();
+	const maybeUpdateComplete = (dropdown as any).updateComplete;
+	if (maybeUpdateComplete && typeof maybeUpdateComplete.then === 'function') {
+		await maybeUpdateComplete;
+	}
+	const labels = Array.from(root.querySelectorAll('.kusto-dropdown-item[role="option"]'))
+		.map(el => (el.textContent || '').trim())
+		.filter(Boolean);
+	if (labels.length < minCount) {
+		throw new Error(`expected at least ${minCount} dropdown item(s) in ${dropdownSelector}, got ${labels.length}`);
+	}
+	button.click();
+	return `dropdown items(${labels.length}): ${labels.slice(0, 10).join(', ')}`;
 };
 
 _win.__testAssertVisibleSuggest = (context: string, expectedAnyCsv: string = '', editorSelector: string = ''): string => {

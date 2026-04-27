@@ -13,17 +13,18 @@ Feature: Say hi to the audience
     When I wait for "kw-sql-section .monaco-editor" in the webview for 20 seconds
     When I wait for "kw-sql-section[data-test-sql-connection='true']" in the webview for 15 seconds
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const dbs = el._databases || []; const target = dbs.find(d => d.toLowerCase().includes('sample')) || dbs[0]; if (!target) throw new Error('No SQL database available for hello-world query'); if (el._database !== target) { el.setDatabase(target); el.dispatchEvent(new CustomEvent('sql-database-changed', { detail: { boxId: el.boxId || el.id, database: target }, bubbles: true, composed: true })); } return 'database=' + target; })()" in the webview
+    When I evaluate "window.__testSelectKwDropdownItem(`kw-sql-section .select-wrapper[title='SQL Database'] kw-dropdown`, 'sampledb')" in the webview
+    When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
 
     # Check that Monaco loaded (the fix)
-    When I evaluate "(() => { const s = document.querySelector('kw-sql-section'); if (!s) throw new Error('SQL section missing'); if (!s._editor) throw new Error('SQL Monaco editor missing'); if (!(window.monaco && window.monaco.editor)) throw new Error('window.monaco.editor missing'); return 'hasEditor=true monaco=true'; })()" in the webview
+    When I evaluate "window.__testAssertMonacoEditorMapped('kw-sql-section .query-editor')" in the webview
     And I wait 1 second
 
     # Wait for editor to be ready (ensureMonaco is async now)
     And I wait 5 seconds
 
     # Re-check
-    When I evaluate "(() => { const s = document.querySelector('kw-sql-section'); if (!s) throw new Error('SQL section missing on re-check'); if (!s._editor) throw new Error('SQL Monaco editor missing on re-check'); if (!(window.monaco && window.monaco.editor)) throw new Error('window.monaco.editor missing on re-check'); return 'hasEditor=true monaco=true'; })()" in the webview
+    When I evaluate "window.__testAssertMonacoEditorMapped('kw-sql-section .query-editor')" in the webview
     And I wait 1 second
     Then I take a screenshot "01-editor-state"
 
@@ -32,7 +33,7 @@ Feature: Say hi to the audience
     And I wait 1 second
     When I click "kw-sql-section .query-editor" in the webview
     And I wait 1 second
-    When I evaluate "(() => { const ed = document.querySelector('kw-sql-section')._editor; if (!ed) throw new Error('SQL editor missing before setting greeting query'); ed.setValue('SELECT ' + String.fromCharCode(39) + 'Hi everyone! Thanks for watching!' + String.fromCharCode(39) + ' AS Message'); ed.setPosition({lineNumber:1, column:1}); ed.focus(); return 'set: ' + ed.getValue(); })()" in the webview
+    When I evaluate "window.__testSetMonacoValueAt('kw-sql-section .query-editor', 'SELECT ' + String.fromCharCode(39) + 'Hi everyone! Thanks for watching!' + String.fromCharCode(39) + ' AS Message', 1, 1)" in the webview
     And I wait 2 seconds
     Then I take a screenshot "02-after-set"
 

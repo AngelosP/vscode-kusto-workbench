@@ -20,13 +20,16 @@ Feature: Kusto results table — display, columns, rows, data table features
     When I wait for "kw-query-section[data-test-connection='true']" in the webview for 15 seconds
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
-    # Select database
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const dbs = el._databases || []; const target = dbs.find(d => /sample/i.test(d)) || dbs[0]; if (!target) throw new Error('No Kusto databases available'); el.setDesiredDatabase(target); el.dispatchEvent(new CustomEvent('database-changed', { detail: { boxId: el.boxId, database: target }, bubbles: true, composed: true })); return 'db=' + target; })()" in the webview
+    # Select database through the dropdown
+    When I evaluate "window.__testSelectKwDropdownItem(`kw-query-section .select-wrapper[title='Kusto Database'] kw-dropdown`, 'sample,storm', true)" in the webview
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
+    When I wait for "kw-query-section .monaco-editor" in the webview for 20 seconds
+    When I evaluate "window.__testAssertMonacoEditorMapped('kw-query-section .query-editor')" in the webview
     Then I take a screenshot "01-setup-ready"
 
     # ── TEST 1: Multi-column result with typed columns ────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; ed.setValue(String.raw`print str_col='hello', int_col=42, real_col=3.14, bool_col=true, dt_col=datetime(2024-01-15)`); ed.focus(); return 'typed query set'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', String.raw`print str_col='hello', int_col=42, real_col=3.14, bool_col=true, dt_col=datetime(2024-01-15)`)" in the webview
+    When I evaluate "window.__testAssertMonacoValue('kw-query-section .query-editor', String.raw`print str_col='hello', int_col=42, real_col=3.14, bool_col=true, dt_col=datetime(2024-01-15)`)" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); document.getElementById(el.boxId + '_run_btn').click(); return 'run'; })()" in the webview
@@ -40,7 +43,7 @@ Feature: Kusto results table — display, columns, rows, data table features
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const dt = document.getElementById(el.boxId + '_results')?.querySelector('kw-data-table'); if (!dt) throw new Error('No data table'); const rows = dt.rows || []; if (rows.length !== 1) throw new Error('Expected 1 row, got ' + rows.length); const cols = (dt.columns || []).map(c => c.name || c); const row = rows[0]; const strIdx = cols.indexOf('str_col'); const intIdx = cols.indexOf('int_col'); if (String(row[strIdx]) !== 'hello') throw new Error('str_col expected hello, got ' + row[strIdx]); if (Number(row[intIdx]) !== 42) throw new Error('int_col expected 42, got ' + row[intIdx]); return 'row data verified ✓'; })()" in the webview
 
     # ── TEST 3: Larger result set ─────────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; ed.setValue(String.raw`range i from 1 to 20 step 1 | extend name=strcat('item_', tostring(i)), value=i*10`); ed.focus(); return 'large query set'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', String.raw`range i from 1 to 20 step 1 | extend name=strcat('item_', tostring(i)), value=i*10`)" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); document.getElementById(el.boxId + '_run_btn').click(); return 'run'; })()" in the webview
@@ -54,7 +57,7 @@ Feature: Kusto results table — display, columns, rows, data table features
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const dt = document.getElementById(el.boxId + '_results')?.querySelector('kw-data-table'); if (!dt) throw new Error('No data table'); const sr = dt.shadowRoot; if (!sr) throw new Error('No shadow root on data table'); const saveBtn = sr.querySelector('.save-btn, .results-save-btn, [title*=Save], [title*=save], [title*=CSV], [title*=csv]'); if (!saveBtn) throw new Error('Expected data table save/export button'); return 'save button found'; })()" in the webview
 
     # ── TEST 5: No results query ──────────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; ed.setValue('print x=1 | where x == 99'); ed.focus(); return 'no-results query set'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', 'print x=1 | where x == 99')" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); document.getElementById(el.boxId + '_run_btn').click(); return 'run'; })()" in the webview
@@ -66,7 +69,7 @@ Feature: Kusto results table — display, columns, rows, data table features
     Then I take a screenshot "04-no-results"
 
     # ── TEST 6: Stale overlay then re-run clears it ───────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; ed.setValue('range i from 1 to 3 step 1'); ed.focus(); return 'query for stale test'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', 'range i from 1 to 3 step 1')" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); document.getElementById(el.boxId + '_run_btn').click(); return 'run'; })()" in the webview
@@ -74,7 +77,7 @@ Feature: Kusto results table — display, columns, rows, data table features
     And I wait 1 second
 
     # Edit to trigger stale
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; ed.setValue('range i from 1 to 3 step 1 | extend modified=true'); return 'edited'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', 'range i from 1 to 3 step 1 | extend modified=true')" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const resultsDiv = document.getElementById(el.boxId + '_results'); if (!resultsDiv?.classList.contains('is-stale')) throw new Error('Expected stale overlay after edit'); return 'stale overlay shown ✓'; })()" in the webview

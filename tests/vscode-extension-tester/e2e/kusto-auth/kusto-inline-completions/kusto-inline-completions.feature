@@ -20,8 +20,8 @@ Feature: Kusto inline completions (Copilot ghost text)
     When I wait for "kw-query-section[data-test-connection='true']" in the webview for 15 seconds
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
-    # Select database
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const dbs = el._databases || []; const target = dbs.find(d => /sample/i.test(d)) || dbs[0]; if (!target) throw new Error('No Kusto databases available'); el.setDesiredDatabase(target); el.dispatchEvent(new CustomEvent('database-changed', { detail: { boxId: el.boxId, database: target }, bubbles: true, composed: true })); return 'db=' + target; })()" in the webview
+    # Select database through the dropdown
+    When I evaluate "window.__testSelectKwDropdownItem(`kw-query-section .select-wrapper[title='Kusto Database'] kw-dropdown`, 'sample,storm', true)" in the webview
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
     Then I take a screenshot "00-setup-ready"
 
@@ -47,14 +47,14 @@ Feature: Kusto inline completions (Copilot ghost text)
     Then I take a screenshot "03-toggle-on"
 
     # ── TEST 5: KQL editor is registered in shared editor maps ────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const boxId = el.boxId; const ed = window.queryEditors[boxId]; if (!ed) throw new Error('Editor not found in queryEditors for ' + boxId); const model = ed.getModel(); if (!model) throw new Error('No model'); const uri = model.uri.toString(); const mapped = window.queryEditorBoxByModelUri[uri]; if (!mapped) throw new Error('Not in queryEditorBoxByModelUri for ' + uri); if (mapped !== boxId) throw new Error('Map mismatch: ' + mapped + ' vs ' + boxId); return 'MAPS_OK: boxId=' + boxId + ' ✓'; })()" in the webview
+    When I evaluate "window.__testAssertMonacoEditorMapped('kw-query-section .query-editor')" in the webview
     Then I take a screenshot "04-editor-maps"
 
     # ── TEST 6: inlineSuggest option enabled on Monaco editor ─────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; const opts = ed.getOptions(); const inlineSuggestOpt = opts.get(monaco.editor.EditorOption.inlineSuggest); if (!inlineSuggestOpt || !inlineSuggestOpt.enabled) throw new Error('inlineSuggest not enabled: ' + JSON.stringify(inlineSuggestOpt)); return 'INLINE_SUGGEST_ENABLED ✓'; })()" in the webview
+    When I evaluate "window.__testAssertMonacoInlineSuggestEnabled('kw-query-section .query-editor')" in the webview
 
     # ── TEST 7: Trigger inline suggestion via Ctrl+Shift+Space ────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; const editorEl = document.getElementById(el.boxId + '_query_editor'); if (editorEl) editorEl.scrollIntoView({ block: 'center' }); ed.setValue('StormEvents | where '); ed.setPosition({lineNumber:1, column: 21}); ed.focus(); window.__testInlineReqCapture = []; window.__testOrigPostMsg = window.postMessageToHost; window.postMessageToHost = function(msg) { if (msg && msg.type === 'requestCopilotInlineCompletion') { window.__testInlineReqCapture.push(msg); } if (window.__testOrigPostMsg) window.__testOrigPostMsg(msg); }; return 'intercepted, editor ready'; })()" in the webview
+    When I evaluate "(() => { window.__testSetMonacoValueAt('kw-query-section .query-editor', 'StormEvents | where ', 1, 21); window.__testInlineReqCapture = []; window.__testOrigPostMsg = window.postMessageToHost; window.postMessageToHost = function(msg) { if (msg && msg.type === 'requestCopilotInlineCompletion') { window.__testInlineReqCapture.push(msg); } if (window.__testOrigPostMsg) window.__testOrigPostMsg(msg); }; return 'intercepted, editor ready'; })()" in the webview
     And I wait 1 second
 
     When I press "Ctrl+Shift+Space"

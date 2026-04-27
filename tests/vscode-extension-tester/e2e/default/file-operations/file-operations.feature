@@ -19,7 +19,9 @@ Feature: File operations — serialization roundtrip and section content
     When I click "button[data-add-kind='query']" in the webview
     And I wait 2 seconds
 
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (!el) throw new Error('No KQL section'); const boxId = el.boxId || el.id; const ed = window.queryEditors[boxId]; if (ed) { ed.setValue('print message=roundtrip_test'); } return 'KQL section ready, boxId=' + boxId; })()" in the webview
+    When I wait for "kw-query-section .monaco-editor" in the webview for 20 seconds
+    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', 'print message=roundtrip_test')" in the webview
+    When I evaluate "window.__testAssertMonacoValue('kw-query-section .query-editor', 'print message=roundtrip_test')" in the webview
 
     # Rename the section
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const shell = el.shadowRoot?.querySelector('kw-section-shell'); const nameInput = shell?.shadowRoot?.querySelector('input.section-name'); if (nameInput) { nameInput.value = 'Roundtrip Query'; nameInput.dispatchEvent(new Event('input', { bubbles: true })); nameInput.dispatchEvent(new Event('change', { bubbles: true })); } return 'renamed'; })()" in the webview

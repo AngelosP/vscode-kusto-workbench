@@ -20,9 +20,9 @@ Feature: SQL query execution end-to-end
     When I wait for "kw-sql-section[data-test-sql-connection='true']" in the webview for 15 seconds
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
-    # Select sampledb
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (!el) throw new Error('SQL section not found'); const dbs = el._databases || []; const t = dbs.find(d => d.toLowerCase().includes('sample')) || dbs[0]; if (!t) throw new Error('No SQL databases available'); if (el._database !== t) { el.setDatabase(t); el.dispatchEvent(new CustomEvent('sql-database-changed', { detail: { boxId: el.boxId || el.id, database: t }, bubbles: true, composed: true })); } return 'db=' + el._database; })()" in the webview
-    When I wait for "kw-sql-section[data-test-database-selected='true']" in the webview for 10 seconds
+    # Select sampledb through the database dropdown
+    When I evaluate "window.__testSelectKwDropdownItem(`kw-sql-section .select-wrapper[title='SQL Database'] kw-dropdown`, 'sampledb')" in the webview
+    When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
     Then I take a screenshot "01-setup-ready"
 
@@ -38,7 +38,7 @@ Feature: SQL query execution end-to-end
     Then I take a screenshot "02-run-enabled"
 
     # ── TEST 2: Execute simple SELECT → results appear ────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const ed = el._editor; ed.setValue('SELECT 1 AS test_col, 2 AS test_col2'); ed.focus(); return 'query set'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-sql-section .query-editor', 'SELECT 1 AS test_col, 2 AS test_col2')" in the webview
     And I wait 1 second
 
     # Click the Run button
@@ -62,7 +62,7 @@ Feature: SQL query execution end-to-end
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (el.dataset.testHasError === 'true') throw new Error('Unexpected error: ' + el._lastError); return 'no error ✓'; })()" in the webview
 
     # ── TEST 4: Execute invalid SQL → error appears ───────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const ed = el._editor; ed.setValue('SELECT * FROM this_table_does_not_exist_xyz'); ed.focus(); return 'bad query set'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-sql-section .query-editor', 'SELECT * FROM this_table_does_not_exist_xyz')" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); el.querySelector('.sql-run-btn').click(); return 'clicked run'; })()" in the webview
@@ -74,7 +74,7 @@ Feature: SQL query execution end-to-end
 
     # ── TEST 5: Elapsed timer appears during execution ────────────────────
     # Execute a query that takes a moment
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const ed = el._editor; ed.setValue('WAITFOR DELAY \'00:00:02\'; SELECT 1 AS done'); ed.focus(); return 'slow query set'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-sql-section .query-editor', `WAITFOR DELAY '00:00:02'; SELECT 1 AS done`)" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); el.querySelector('.sql-run-btn').click(); return 'clicked run'; })()" in the webview
@@ -89,7 +89,7 @@ Feature: SQL query execution end-to-end
     Then I take a screenshot "06-execution-complete"
 
     # ── TEST 6: Multi-row result ──────────────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const ed = el._editor; ed.setValue('SELECT TOP 5 TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES'); ed.focus(); return 'multi-row query set'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-sql-section .query-editor', 'SELECT TOP 5 TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES')" in the webview
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); el.querySelector('.sql-run-btn').click(); return 'clicked run'; })()" in the webview

@@ -38,10 +38,11 @@ Feature: Kusto section features — toolbar, run modes, persistence without conn
     Then I take a screenshot "03-toolbar-buttons"
 
     # ── TEST 6: Monaco editor initialized ─────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const boxId = el.boxId; const ed = window.queryEditors[boxId]; if (!ed) throw new Error('No Monaco editor for boxId=' + boxId); const model = ed.getModel(); if (!model) throw new Error('No model on editor'); const lang = model.getLanguageId(); return 'editor lang=' + lang + ' ✓'; })()" in the webview
+    When I evaluate "window.__testAssertMonacoEditorMapped('kw-query-section .query-editor')" in the webview
 
     # ── TEST 7: Set and read query content ────────────────────────────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const ed = window.queryEditors[el.boxId]; ed.setValue('StormEvents | take 10 | sort by StartTime'); const val = ed.getValue(); if (!val.includes('StormEvents')) throw new Error('Query not set properly'); return 'query set and read back ✓'; })()" in the webview
+    When I evaluate "window.__testSetMonacoValue('kw-query-section .query-editor', 'StormEvents | take 10 | sort by StartTime')" in the webview
+    When I evaluate "window.__testAssertMonacoValue('kw-query-section .query-editor', 'StormEvents | take 10 | sort by StartTime')" in the webview
 
     # ── TEST 8: Serialization captures query text ─────────────────────────
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const data = el.serialize(); if (!data.query?.includes('StormEvents')) throw new Error('Query not in serialization: ' + data.query); if (data.type !== 'query') throw new Error('Wrong type: ' + data.type); return 'serialization: type=' + data.type + ' query includes StormEvents ✓'; })()" in the webview
@@ -54,5 +55,5 @@ Feature: Kusto section features — toolbar, run modes, persistence without conn
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const optimizeBtn = document.getElementById(el.boxId + '_optimize_btn'); if (!optimizeBtn) throw new Error('Optimize button not found'); return 'optimize button found ✓'; })()" in the webview
 
     # ── TEST 11: Missing clusters banner shows when no connection ──────────
-    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (!el._connectionId || el._connections.length === 0) { const banner = document.getElementById(el.boxId + '_missing_clusters'); return banner ? 'missing clusters banner shown ✓' : 'no banner (connections might already be loaded)'; } return 'connection present, banner test N/A'; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (!el) throw new Error('No KQL section'); if (el.dataset.testConnection !== 'true') { const banner = document.getElementById(el.boxId + '_missing_clusters'); return banner ? 'missing clusters banner shown ✓' : 'no banner (connections might already be loaded)'; } return 'connection present, banner test N/A'; })()" in the webview
     Then I take a screenshot "05-final"

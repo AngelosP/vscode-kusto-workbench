@@ -21,8 +21,8 @@ Feature: SQL Copilot inline completions (ghost text)
     When I wait for "kw-sql-section[data-test-sql-connection='true']" in the webview for 15 seconds
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
 
-    # Select sampledb
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (!el) throw new Error('SQL section not found'); const dbs = el._databases || []; const t = dbs.find(d => d.toLowerCase().includes('sample')) || dbs[0]; if (!t) throw new Error('No SQL databases available; count=' + dbs.length); if (el._database !== t) { el.setDatabase(t); el.dispatchEvent(new CustomEvent('sql-database-changed', { detail: { boxId: el.boxId, database: t }, bubbles: true, composed: true })); } return 'db=' + el._database; })()" in the webview
+    # Select sampledb through the database dropdown
+    When I evaluate "window.__testSelectKwDropdownItem(`kw-sql-section .select-wrapper[title='SQL Database'] kw-dropdown`, 'sampledb')" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
 
     # Wait for schema to load
@@ -67,13 +67,13 @@ Feature: SQL Copilot inline completions (ghost text)
     # TEST 5: SQL editor is registered in the shared editor maps
     #   queryEditorBoxByModelUri and queryEditors should contain this editor
     # ══════════════════════════════════════════════════════════════════════
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (!el) throw new Error('No sql section'); const ed = el._editor; if (!ed) throw new Error('No editor'); const model = ed.getModel(); if (!model || !model.uri) throw new Error('No model'); const uri = model.uri.toString(); const boxId = window.queryEditorBoxByModelUri[uri]; if (!boxId) throw new Error('boxId not in queryEditorBoxByModelUri for ' + uri); const edRef = window.queryEditors[boxId]; if (!edRef) throw new Error('editor not in queryEditors for ' + boxId); return 'MAPS_OK: boxId=' + boxId; })()" in the webview
+    When I evaluate "window.__testAssertMonacoEditorMapped('kw-sql-section .query-editor')" in the webview
     Then I take a screenshot "05-editor-maps-populated"
 
     # ══════════════════════════════════════════════════════════════════════
     # TEST 6: inlineSuggest option is enabled on the SQL Monaco editor
     # ══════════════════════════════════════════════════════════════════════
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const ed = el._editor; const opts = ed.getOptions(); const inlineSuggestOpt = opts.get(monaco.editor.EditorOption.inlineSuggest); if (!inlineSuggestOpt || !inlineSuggestOpt.enabled) throw new Error('inlineSuggest not enabled: ' + JSON.stringify(inlineSuggestOpt)); return 'INLINE_SUGGEST_ENABLED'; })()" in the webview
+    When I evaluate "window.__testAssertMonacoInlineSuggestEnabled('kw-sql-section .query-editor')" in the webview
     Then I take a screenshot "06-inline-suggest-option"
 
     # ══════════════════════════════════════════════════════════════════════
@@ -89,7 +89,7 @@ Feature: SQL Copilot inline completions (ghost text)
     When I click "kw-sql-section .query-editor" in the webview
     And I wait 1 second
 
-    When I evaluate "(() => { const ed = document.querySelector('kw-sql-section')._editor; ed.setValue('SELECT * FROM SalesLT.Customer WHERE FirstName = '); ed.setPosition({lineNumber:1, column: 50}); ed.focus(); window.__testInlineReqCapture = []; const orig = window.__kustoPostMessageToHost || null; window.__testOrigPostMsg = window.postMessageToHost; window.postMessageToHost = function(msg) { if (msg && msg.type === 'requestCopilotInlineCompletion') { window.__testInlineReqCapture.push(msg); } if (window.__testOrigPostMsg) window.__testOrigPostMsg(msg); }; return 'intercepted, editor ready'; })()" in the webview
+    When I evaluate "(() => { window.__testSetMonacoValueAt('kw-sql-section .query-editor', 'SELECT * FROM SalesLT.Customer WHERE FirstName = ', 1, 50); window.__testInlineReqCapture = []; window.__testOrigPostMsg = window.postMessageToHost; window.postMessageToHost = function(msg) { if (msg && msg.type === 'requestCopilotInlineCompletion') { window.__testInlineReqCapture.push(msg); } if (window.__testOrigPostMsg) window.__testOrigPostMsg(msg); }; return 'intercepted, editor ready'; })()" in the webview
     And I wait 1 second
 
     # Trigger inline suggestion manually via Ctrl+Shift+Space
@@ -138,7 +138,7 @@ Feature: SQL Copilot inline completions (ghost text)
     # ══════════════════════════════════════════════════════════════════════
 
     # Capture the boxId before removing
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); window.__testSqlBoxId = el.boxId; const ed = el._editor; const model = ed.getModel(); window.__testSqlModelUri = model.uri.toString(); return 'boxId=' + el.boxId + ' uri=' + window.__testSqlModelUri; })()" in the webview
+    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); window.__testSqlBoxId = el.boxId; window.__testSqlModelUri = window.__testGetMonacoModelUri('kw-sql-section .query-editor'); return 'boxId=' + el.boxId + ' uri=' + window.__testSqlModelUri; })()" in the webview
 
     # Remove the SQL section
     When I evaluate "window.__testRemoveSection('kw-sql-section')" in the webview
