@@ -372,6 +372,11 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		return undefined;
 	}
 
+	private _invalidatePreviewContentHeight(): void {
+		this._lastPreviewContentHeight = 0;
+		this._lastPreviewFitHeight = 0;
+	}
+
 	private _requestFreshPreviewHeight(): Promise<number | undefined> {
 		const iframe = this.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
 		const contentWindow = iframe?.contentWindow;
@@ -399,13 +404,79 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		});
 	}
 
+	private _measureCurrentHtmlHeight(code: string): Promise<number | undefined> {
+		const root = this.shadowRoot;
+		if (!root || !code.trim()) return this._requestFreshPreviewHeight();
+
+		const iframe = document.createElement('iframe');
+		iframe.setAttribute('sandbox', 'allow-scripts');
+		iframe.setAttribute('referrerpolicy', 'no-referrer');
+		iframe.style.position = 'absolute';
+		iframe.style.left = '-10000px';
+		iframe.style.top = '0';
+		iframe.style.width = `${this._getPreviewMeasurementWidth()}px`;
+		iframe.style.height = '1px';
+		iframe.style.border = '0';
+		iframe.style.visibility = 'hidden';
+		iframe.style.pointerEvents = 'none';
+
+		return new Promise(resolve => {
+			let settled = false;
+			let bestHeight = 0;
+			let idleTimer = 0;
+			let maxTimer = 0;
+			const startedAt = Date.now();
+
+			const cleanup = () => {
+				window.removeEventListener('message', onMessage);
+				if (idleTimer) window.clearTimeout(idleTimer);
+				if (maxTimer) window.clearTimeout(maxTimer);
+				iframe.remove();
+			};
+
+			const finish = (height: number | undefined) => {
+				if (settled) return;
+				settled = true;
+				cleanup();
+				resolve(height ?? this._measurePreviewHeight());
+			};
+
+			const queueStableFinish = () => {
+				if (idleTimer) window.clearTimeout(idleTimer);
+				const elapsed = Date.now() - startedAt;
+				const waitMs = elapsed < 350 ? 350 - elapsed : 180;
+				idleTimer = window.setTimeout(() => finish(bestHeight || undefined), waitMs);
+			};
+
+			const onMessage = (event: MessageEvent) => {
+				if (event.source !== iframe.contentWindow || event.data?.type !== 'kw-html-preview-height') return;
+				const height = Number(event.data.h);
+				if (!Number.isFinite(height) || height <= 0) return;
+				bestHeight = Math.max(bestHeight, Math.ceil(height));
+				queueStableFinish();
+			};
+
+			window.addEventListener('message', onMessage);
+			maxTimer = window.setTimeout(() => finish(bestHeight || undefined), 1500);
+			root.appendChild(iframe);
+			iframe.srcdoc = this._buildDataBridgeScript() + code + KwHtmlSection._heightReportScript;
+		});
+	}
+
+	private _getPreviewMeasurementWidth(): number {
+		const wrapper = this.shadowRoot?.getElementById('preview-wrapper');
+		const wrapperWidth = wrapper?.clientWidth || wrapper?.getBoundingClientRect().width || 0;
+		const hostWidth = this.getBoundingClientRect().width || 0;
+		return Math.max(320, Math.round(wrapperWidth || hostWidth || 1280));
+	}
+
 	private async _exportDashboard(): Promise<void> {
 		const code = this._getCodeText();
 		if (!code.trim()) {
 			try { postMessageToHost({ type: 'showInfo', message: 'There is no HTML content to export.' }); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
-		const previewHeight = await this._requestFreshPreviewHeight();
+		const previewHeight = await this._measureCurrentHtmlHeight(code);
 		try {
 			postMessageToHost({
 				type: 'exportDashboard',
@@ -431,7 +502,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			return;
 		}
 
-		const previewHeight = await this._requestFreshPreviewHeight();
+		const previewHeight = await this._measureCurrentHtmlHeight(code);
 		this._openPublishDialog(code, dataSources, previewHeight, this._name || 'KustoHtmlDashboard');
 	}
 
@@ -579,6 +650,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			// Persist on content change.
 			try {
 				editor.onDidChangeModelContent(() => {
+					this._invalidatePreviewContentHeight();
 					this._schedulePersist();
 					this._updatePlaceholder();
 					this._refreshProvenance();
@@ -669,7 +741,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			if (!iframe) return;
 			const code = this._getCodeText();
 			if (code.trim()) {
-				this._lastPreviewContentHeight = 0;
+				this._invalidatePreviewContentHeight();
 				const dataBridge = this._buildDataBridgeScript();
 				iframe.srcdoc = dataBridge + code + KwHtmlSection._heightReportScript;
 			}
@@ -1490,6 +1562,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			pState.pendingHtmlCodeByBoxId = pState.pendingHtmlCodeByBoxId || {};
 			pState.pendingHtmlCodeByBoxId[this.boxId] = code;
 		}
+		this._invalidatePreviewContentHeight();
 		this._refreshProvenance();
 		// Refresh the preview iframe when content is updated while in preview mode.
 		// requestUpdate() triggers a Lit re-render so the iframe is created if it

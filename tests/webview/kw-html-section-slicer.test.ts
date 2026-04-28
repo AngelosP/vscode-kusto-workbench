@@ -9,7 +9,16 @@ type HeightSection = KwHtmlSection & {
 	_savedPreviewHeightPx?: number;
 	_measurePreviewHeight(): number | undefined;
 	_requestFreshPreviewHeight(): Promise<number | undefined>;
+	_measureCurrentHtmlHeight(code: string): Promise<number | undefined>;
 	_handleIframeMessage(e: MessageEvent): void;
+	_collectDataSourcesForPBI(): Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
+	_openPublishDialog(
+		htmlCode: string,
+		dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>,
+		previewHeight: number | undefined,
+		suggestedName: string,
+	): void;
+	_publishToPowerBI(): Promise<void>;
 };
 
 function makeProvenanceHtml(dimensions: object[]): string {
@@ -189,6 +198,35 @@ describe('HTML preview height reporting', () => {
 
 		await expect(pending).resolves.toBe(955);
 		expect(section._measurePreviewHeight()).toBe(955);
+	});
+
+	it('opens the publish dialog with a fresh measurement of the current HTML code', async () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		const currentHtml = '<main style="height:1234px">Current dashboard</main>';
+		let measuredCode = '';
+		let openedPreviewHeight: number | undefined;
+
+		section.setCode(currentHtml);
+		section._collectDataSourcesForPBI = () => [{
+			name: 'Fact Events',
+			sectionId: 'query_fact',
+			clusterUrl: 'https://cluster.example',
+			database: 'db',
+			query: 'FactEvents',
+			columns: [{ name: 'Day', type: 'datetime' }],
+		}];
+		section._measureCurrentHtmlHeight = async (code: string) => {
+			measuredCode = code;
+			return 1234;
+		};
+		section._openPublishDialog = (_htmlCode, _dataSources, previewHeight) => {
+			openedPreviewHeight = previewHeight;
+		};
+
+		await section._publishToPowerBI();
+
+		expect(measuredCode).toBe(currentHtml);
+		expect(openedPreviewHeight).toBe(1234);
 	});
 
 	it('keeps robust body and rendered-element measurements in the injected iframe script', () => {
