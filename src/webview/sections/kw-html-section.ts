@@ -165,6 +165,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _savedEditorHeightPx: number | undefined;
 	/** User-set preview wrapper height (survives mode switches). */
 	private _savedPreviewHeightPx: number | undefined;
+	/** Last content height reported by the preview iframe, independent of wrapper size. */
+	private _lastPreviewContentHeight = 0;
 	/** Pending rAF id for window resize debounce. */
 	private _resizeRaf = 0;
 	/** Bound message handler for iframe height reports. */
@@ -360,6 +362,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	/** Measure the current preview height for PBI page sizing. */
 	private _measurePreviewHeight(): number | undefined {
+		if (this._lastPreviewContentHeight > 0) return this._lastPreviewContentHeight;
 		if (this._lastPreviewFitHeight > 0) return this._lastPreviewFitHeight;
 		if (this._savedPreviewHeightPx && this._savedPreviewHeightPx > 0) return this._savedPreviewHeightPx;
 		const wrapper = this.shadowRoot?.getElementById('preview-wrapper');
@@ -635,6 +638,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			if (!iframe) return;
 			const code = this._getCodeText();
 			if (code.trim()) {
+				this._lastPreviewContentHeight = 0;
 				const dataBridge = this._buildDataBridgeScript();
 				iframe.srcdoc = dataBridge + code + KwHtmlSection._heightReportScript;
 			}
@@ -885,7 +889,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		const esc = (s: string) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 
 		// Build slicer HTML
-		let html = `<style id="kw-preview-slicer-reset">html,body{margin:0!important;}</style><div id="kw-slicers" style="all:initial;box-sizing:border-box;display:flex;gap:16px;padding:12px 16px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;background:${slicerBg};color:${slicerFg};border-bottom:1px solid ${slicerBorder};flex-wrap:wrap;align-items:center;color-scheme:${isDark ? 'dark' : 'light'}">`;
+		let html = `<style id="kw-preview-slicer-reset">html,body{margin:0!important;}</style><div id="kw-slicers" style="all:initial;box-sizing:border-box;display:flex;gap:16px;padding:12px 16px;margin-bottom:20px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;font-size:13px;background:${slicerBg};color:${slicerFg};border-bottom:1px solid ${slicerBorder};flex-wrap:wrap;align-items:center;color-scheme:${isDark ? 'dark' : 'light'}">`;
 
 		for (let i = 0; i < metas.length; i++) {
 			const m = metas[i];
@@ -998,11 +1002,53 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private static _heightReportScript = `
 <script>
 (function(){
-	function send(){parent.postMessage({type:'kw-html-preview-height',h:document.documentElement.scrollHeight},'*');}
-	if(document.readyState==='complete')send();else window.addEventListener('load',send);
-	window.addEventListener('resize',send);
-	window.addEventListener('message',function(e){if(e.data&&e.data.type==='kw-html-request-height')send();});
-	new ResizeObserver(send).observe(document.documentElement);
+		var raf=0;
+		function maxElementBottom(){
+			var body=document.body;
+			if(!body)return 0;
+			var nodes=body.querySelectorAll('*');
+			var max=0;
+			for(var i=0;i<nodes.length;i++){
+				var el=nodes[i];
+				var rect=el.getBoundingClientRect();
+				if(!rect.width&&!rect.height)continue;
+				var style=getComputedStyle(el);
+				var marginBottom=parseFloat(style.marginBottom)||0;
+				max=Math.max(max,Math.ceil(rect.bottom+window.scrollY+marginBottom));
+			}
+			return max;
+		}
+		function measure(){
+			var de=document.documentElement;
+			var body=document.body;
+			return Math.max(
+				de?de.scrollHeight:0,
+				body?body.scrollHeight:0,
+				de?de.offsetHeight:0,
+				body?body.offsetHeight:0,
+				de?de.clientHeight:0,
+				body?body.clientHeight:0,
+				maxElementBottom()
+			);
+		}
+		function send(){parent.postMessage({type:'kw-html-preview-height',h:measure()},'*');}
+		function schedule(){
+			if(raf)cancelAnimationFrame(raf);
+			raf=requestAnimationFrame(function(){raf=0;send();});
+		}
+		if(document.readyState==='complete')schedule();else window.addEventListener('load',schedule);
+		window.addEventListener('DOMContentLoaded',schedule);
+		window.addEventListener('resize',schedule);
+		window.addEventListener('message',function(e){if(e.data&&e.data.type==='kw-html-request-height')schedule();});
+		var ro=new ResizeObserver(schedule);
+		if(document.documentElement)ro.observe(document.documentElement);
+		if(document.body)ro.observe(document.body);
+		var mo=new MutationObserver(schedule);
+		mo.observe(document.documentElement,{childList:true,subtree:true,attributes:true,characterData:true});
+		schedule();
+		setTimeout(schedule,50);
+		setTimeout(schedule,250);
+		setTimeout(schedule,1000);
 })();
 <\/script>`;
 
@@ -1017,7 +1063,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				if (e.data.type !== 'kw-html-preview-height') return;
 				const h = Number(e.data.h);
 				if (!Number.isFinite(h) || h <= 0) return;
-				this._applyPreviewFitHeight(h);
+				this._lastPreviewContentHeight = Math.ceil(h);
+				this._applyPreviewFitHeight(this._lastPreviewContentHeight);
 				return;
 			}
 

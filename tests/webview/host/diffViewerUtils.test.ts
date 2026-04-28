@@ -488,6 +488,7 @@ describe('getDiffHtml', () => {
   expect(html).not.toContain('<script type="application/kw-provenance">');
   expect(html).not.toContain('</SCRIPT>');
   expect(html).toContain('\\u003Cscript type=\\"application/kw-provenance\\"');
+	expect(html).toContain('var rawLang = "markdown";');
  });
 
  it('keeps smart-view content from terminating the bootstrap script', () => {
@@ -503,5 +504,19 @@ describe('getDiffHtml', () => {
   expect(html.match(/<\/script\s*>/gi)).toHaveLength(2);
   expect(html).not.toContain('<script type="application/kw-provenance">');
   expect(html).not.toContain('</SCRIPT>');
+	expect(html).toContain('\\u003Cscript type=\\"application/kw-provenance\\"');
+	expect(html).toContain('\\u003CSCRIPT type=\\"application/kw-provenance\\"');
+	expect(html).toContain('var rawLang = "json";');
+ });
+
+ it('escapes the file name in the title', () => {
+	const html = getDiffHtml({
+	 originalContent: 'before',
+	 modifiedContent: 'after',
+	 language: 'plaintext',
+	 fileName: 'a&b<c>.md',
+	});
+
+	expect(html).toContain('<title>Diff: a&amp;b&lt;c&gt;.md</title>');
  });
 });

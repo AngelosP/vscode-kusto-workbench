@@ -5,12 +5,15 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [4.4.0] - Unreleased
 
-* Improved the publish report UX to 
+* Improved the publish report UX to
     * allow for back-to-back re-publishing
     * show status in 2 lines instead of 3
     * include a link to the report's semantic model's settings
 * Improved HTML + dashboarding capabilities.
 * Improved the visual fidelity of the generated reports.
+* Default model changed to GPT-5.5 (try it on xhigh).
+* Bugs
+    * Removed extra spacing from around the slicers.
 
 ## [4.3.0] - 2026-04-27
 

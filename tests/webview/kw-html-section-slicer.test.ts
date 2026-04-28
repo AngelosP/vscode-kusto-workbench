@@ -3,6 +3,12 @@ import { KwHtmlSection } from '../../src/webview/sections/kw-html-section';
 import { setResultsState } from '../../src/webview/core/results-state';
 
 type BridgeSection = KwHtmlSection & { _buildDataBridgeScript(): string };
+type HeightSection = KwHtmlSection & {
+	_lastPreviewContentHeight: number;
+	_lastPreviewFitHeight: number;
+	_savedPreviewHeightPx?: number;
+	_measurePreviewHeight(): number | undefined;
+};
 
 function makeProvenanceHtml(dimensions: object[]): string {
 	return `<script type="application/kw-provenance">${JSON.stringify({
@@ -144,6 +150,25 @@ describe('generated slicer layout', () => {
 		expect(bridgeHtml).toContain("slicerEl.style.width='calc(100% + '+(pl+pr)+'px)';");
 		expect(slicerTag).toBeTruthy();
 		expect(slicerTag).toContain('box-sizing:border-box');
-		expect(slicerTag).not.toContain('margin-bottom');
+		expect(slicerTag).toContain('margin-bottom:20px');
+	});
+});
+
+describe('HTML preview height reporting', () => {
+	it('uses iframe content height for export even when the visible preview wrapper is shorter', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		section._lastPreviewContentHeight = 920;
+		section._savedPreviewHeightPx = 620;
+
+		expect(section._measurePreviewHeight()).toBe(920);
+	});
+
+	it('keeps robust body and rendered-element measurements in the injected iframe script', () => {
+		const script = (KwHtmlSection as unknown as { _heightReportScript: string })._heightReportScript;
+
+		expect(script).toContain('body?body.scrollHeight:0');
+		expect(script).toContain('maxElementBottom()');
+		expect(script).toContain('ro.observe(document.body)');
+		expect(script).toContain('new MutationObserver(schedule)');
 	});
 });

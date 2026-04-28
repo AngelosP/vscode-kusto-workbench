@@ -392,6 +392,7 @@ export function getDiffHtml(opts: DiffHtmlOptions): string {
 	const primaryOriginal = hasSmart ? opts.originalSmart! : opts.originalContent;
 	const primaryModified = hasSmart ? opts.modifiedSmart! : opts.modifiedContent;
 	const primaryLang = hasSmart ? 'plaintext' : opts.language;
+	const rawLang = hasSmart ? 'json' : opts.language;
 
 	return /* html */ `<!DOCTYPE html>
 <html lang="en">
@@ -508,7 +509,7 @@ export function getDiffHtml(opts: DiffHtmlOptions): string {
 			var rawOriginal = ${serializeForInlineScript(opts.originalContent)};
 			var rawModified = ${serializeForInlineScript(opts.modifiedContent)};
 			var smartLang = ${serializeForInlineScript(primaryLang)};
-			var rawLang = 'json';
+			var rawLang = ${serializeForInlineScript(rawLang)};
 			var hasSmart = ${hasSmart ? 'true' : 'false'};
 			var isSmart = hasSmart; // start in smart mode when available
 
