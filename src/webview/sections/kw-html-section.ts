@@ -18,6 +18,7 @@ import {
 	indentIcon, outdentIcon, wordWrapIcon, exportIcon, uploadIcon,
 } from '../shared/icon-registry.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
+import { requestOverlayScrollbarUpdate } from '../core/overlay-scrollbars.js';
 import { schedulePersist } from '../core/persistence.js';
 import { getResultsState, getRawCellValue } from '../core/results-state.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
@@ -123,6 +124,7 @@ export interface HtmlDashboardExportContext {
  */
 @customElement('kw-html-section')
 export class KwHtmlSection extends LitElement implements SectionElement {
+	private static readonly _POWER_BI_HTML_VISUAL_WIDTH = 1450;
 
 	// ── Public properties ─────────────────────────────────────────────────────
 
@@ -167,6 +169,10 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _savedPreviewHeightPx: number | undefined;
 	/** Last content height reported by the preview iframe, independent of wrapper size. */
 	private _lastPreviewContentHeight = 0;
+	/** Last raw scroll height reported by the preview iframe for diagnostics and scrollbar checks. */
+	private _lastPreviewScrollHeight = 0;
+	/** Last viewport height reported by the preview iframe for diagnostics and scrollbar checks. */
+	private _lastPreviewViewportHeight = 0;
 	/** Pending resolver for an explicit iframe height request before export/publish. */
 	private _pendingPreviewHeightResolve: ((height: number | undefined) => void) | null = null;
 	/** Pending rAF id for window resize debounce. */
@@ -219,14 +225,17 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		// directly in preview mode (editor init is skipped in that path).
 		this._refreshProvenance();
 
-		// Restore user-set heights from persisted state.
+		// Restore user-set editor heights from persisted state.
 		if (this.editorHeightPx !== undefined) {
 			this._savedEditorHeightPx = this.editorHeightPx;
 			this._userResizedEditor = true;
 		}
+
+		// Older files may contain auto-fit preview heights persisted as plain
+		// previewHeightPx values. Keep the value as a fallback for export, but let
+		// the iframe's fresh measurement fit the preview on open.
 		if (this.previewHeightPx !== undefined) {
 			this._savedPreviewHeightPx = this.previewHeightPx;
-			this._userResizedPreview = true;
 		}
 	}
 
@@ -273,7 +282,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				name-placeholder="HTML name (optional)"
 				@name-change=${this._onShellNameChange}
 				@toggle-visibility=${this._toggleVisibility}
-				@fit-to-contents=${this._fitToContents}>
+				@fit-to-contents=${this.fitToContents}>
 				${this._renderToolbar()}
 				${this._expanded ? (this._mode === 'code' ? this._renderCodeMode() : this._renderPreviewMode()) : nothing}
 			</kw-section-shell>
@@ -375,6 +384,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _invalidatePreviewContentHeight(): void {
 		this._lastPreviewContentHeight = 0;
 		this._lastPreviewFitHeight = 0;
+		this._lastPreviewScrollHeight = 0;
+		this._lastPreviewViewportHeight = 0;
 	}
 
 	private _requestFreshPreviewHeight(): Promise<number | undefined> {
@@ -414,7 +425,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		iframe.style.position = 'absolute';
 		iframe.style.left = '-10000px';
 		iframe.style.top = '0';
-		iframe.style.width = `${this._getPreviewMeasurementWidth()}px`;
+		iframe.style.width = `${this._getPowerBiMeasurementWidth()}px`;
 		iframe.style.height = '1px';
 		iframe.style.border = '0';
 		iframe.style.visibility = 'hidden';
@@ -463,11 +474,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		});
 	}
 
-	private _getPreviewMeasurementWidth(): number {
-		const wrapper = this.shadowRoot?.getElementById('preview-wrapper');
-		const wrapperWidth = wrapper?.clientWidth || wrapper?.getBoundingClientRect().width || 0;
-		const hostWidth = this.getBoundingClientRect().width || 0;
-		return Math.max(320, Math.round(wrapperWidth || hostWidth || 1280));
+	private _getPowerBiMeasurementWidth(): number {
+		return KwHtmlSection._POWER_BI_HTML_VISUAL_WIDTH;
 	}
 
 	private async _exportDashboard(): Promise<void> {
@@ -546,7 +554,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			<div class="resizer"
 				title="Drag to resize\nDouble-click to fit to contents"
 				@mousedown=${this._onEditorResizerMouseDown}
-				@dblclick=${this._fitToContents}></div>
+				@dblclick=${this.fitToContents}></div>
 		`;
 	}
 
@@ -569,7 +577,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			<div class="resizer"
 				title="Drag to resize\nDouble-click to fit to contents"
 				@mousedown=${this._onPreviewResizerMouseDown}
-				@dblclick=${this._fitToContents}></div>
+				@dblclick=${this.fitToContents}></div>
 		`;
 	}
 
@@ -600,8 +608,11 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			slotted.style.minHeight = '0';
 			slotted.style.minWidth = '0';
 
+			const pendingCode = this._consumePendingHtmlCode();
+			if (pendingCode !== undefined) this._savedCode = pendingCode;
+
 			const editor = monaco.editor.create(slotted, {
-				value: this._savedCode ?? this.initialCode ?? '',
+				value: pendingCode ?? this._savedCode ?? this.initialCode ?? '',
 				language: 'html',
 				readOnly: false,
 				domReadOnly: false,
@@ -722,6 +733,18 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			if (assigned.length > 0) return assigned[0] as HTMLElement;
 		}
 		return this.querySelector('.query-editor') as HTMLElement | null;
+	}
+
+	private _consumePendingHtmlCode(): string | undefined {
+		try {
+			const pending = pState.pendingHtmlCodeByBoxId;
+			if (pending && typeof pending[this.boxId] === 'string') {
+				const code = pending[this.boxId];
+				delete pending[this.boxId];
+				return code;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		return undefined;
 	}
 
 	// ── Placeholder ───────────────────────────────────────────────────────────
@@ -1106,6 +1129,65 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 <script>
 (function(){
 		var raf=0;
+		function px(v){var n=parseFloat(v||'0');return isFinite(n)?n:0;}
+		function viewportHeight(){
+			var de=document.documentElement;
+			var body=document.body;
+			var primary=Math.max(window.innerHeight||0,de?(de.clientHeight||0):0);
+			return primary>0?primary:(body?(body.clientHeight||0):0);
+		}
+		function bodyBoxHeight(){
+			var body=document.body;
+			if(!body)return 0;
+			var rect=body.getBoundingClientRect();
+			var style=getComputedStyle(body);
+			var bottom=Math.max(0,Math.ceil(rect.bottom+window.scrollY+px(style.marginBottom)));
+			var viewport=viewportHeight();
+			if(!scrollOverflowHeight()&&viewport>0&&Math.abs(bottom-viewport)<2)return 0;
+			return bottom;
+		}
+		function scrollOverflowHeight(){
+			var de=document.documentElement;
+			var body=document.body;
+			var viewport=viewportHeight();
+			var max=0;
+			var bodyScroll=body?(body.scrollHeight||0):0;
+			var docScroll=de?(de.scrollHeight||0):0;
+			if(bodyScroll>viewport+1)max=Math.max(max,bodyScroll);
+			if(docScroll>viewport+1)max=Math.max(max,docScroll);
+			return max;
+		}
+		function rawScrollHeight(){
+			var de=document.documentElement;
+			var body=document.body;
+			return Math.max(body?(body.scrollHeight||0):0,de?(de.scrollHeight||0):0);
+		}
+		function isInFixedSubtree(el){
+			for(var n=el;n&&n!==document.body;n=n.parentElement){
+				if(getComputedStyle(n).position==='fixed')return true;
+			}
+			return false;
+		}
+		function isViewportFill(rect){
+			var viewport=viewportHeight();
+			if(!viewport||scrollOverflowHeight())return false;
+			var top=Math.round(rect.top+window.scrollY);
+			var bottom=Math.round(rect.bottom+window.scrollY);
+			return top<=1&&Math.abs(bottom-viewport)<2;
+		}
+		function clampsOverflow(style){
+			return /(auto|scroll|hidden|clip)/.test((style.overflow||'')+' '+(style.overflowY||'')+' '+(style.overflowX||''));
+		}
+		function clampToOverflowAncestors(el,bottom){
+			for(var n=el.parentElement;n&&n!==document.body;n=n.parentElement){
+				var style=getComputedStyle(n);
+				if(!clampsOverflow(style))continue;
+				var rect=n.getBoundingClientRect();
+				if(!rect.width&&!rect.height)continue;
+				bottom=Math.min(bottom,Math.ceil(rect.bottom+window.scrollY+px(style.marginBottom)));
+			}
+			return bottom;
+		}
 		function maxElementBottom(){
 			var body=document.body;
 			if(!body)return 0;
@@ -1116,25 +1198,38 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				var rect=el.getBoundingClientRect();
 				if(!rect.width&&!rect.height)continue;
 				var style=getComputedStyle(el);
-				var marginBottom=parseFloat(style.marginBottom)||0;
-				max=Math.max(max,Math.ceil(rect.bottom+window.scrollY+marginBottom));
+				if(style.display==='none'||isInFixedSubtree(el)||isViewportFill(rect))continue;
+				var marginBottom=px(style.marginBottom);
+				var bottom=Math.ceil(rect.bottom+window.scrollY+marginBottom);
+				max=Math.max(max,clampToOverflowAncestors(el,bottom));
+			}
+			return max;
+		}
+		function fallbackElementBottom(){
+			var body=document.body;
+			if(!body)return 0;
+			var nodes=body.querySelectorAll('*');
+			var max=0;
+			for(var i=0;i<nodes.length;i++){
+				var el=nodes[i];
+				var rect=el.getBoundingClientRect();
+				if(!rect.width&&!rect.height)continue;
+				var style=getComputedStyle(el);
+				if(style.display==='none')continue;
+				var marginBottom=px(style.marginBottom);
+				var bottom=Math.ceil(rect.bottom+window.scrollY+marginBottom);
+				max=Math.max(max,clampToOverflowAncestors(el,bottom));
 			}
 			return max;
 		}
 		function measure(){
-			var de=document.documentElement;
-			var body=document.body;
-			return Math.max(
-				de?de.scrollHeight:0,
-				body?body.scrollHeight:0,
-				de?de.offsetHeight:0,
-				body?body.offsetHeight:0,
-				de?de.clientHeight:0,
-				body?body.clientHeight:0,
-				maxElementBottom()
-			);
+			var primary=Math.max(bodyBoxHeight(),scrollOverflowHeight(),maxElementBottom());
+			return Math.max(1,primary||fallbackElementBottom());
 		}
-		function send(){parent.postMessage({type:'kw-html-preview-height',h:measure()},'*');}
+		function send(){
+			var h=measure();
+			parent.postMessage({type:'kw-html-preview-height',h:h,metrics:{viewportHeight:viewportHeight(),scrollHeight:rawScrollHeight()}},'*');
+		}
 		function schedule(){
 			if(raf)cancelAnimationFrame(raf);
 			raf=requestAnimationFrame(function(){raf=0;send();});
@@ -1167,6 +1262,11 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				const h = Number(e.data.h);
 				if (!Number.isFinite(h) || h <= 0) return;
 				this._lastPreviewContentHeight = Math.ceil(h);
+				const metrics = e.data.metrics as { scrollHeight?: unknown; viewportHeight?: unknown } | undefined;
+				const scrollHeight = Number(metrics?.scrollHeight);
+				const viewportHeight = Number(metrics?.viewportHeight);
+				this._lastPreviewScrollHeight = Number.isFinite(scrollHeight) && scrollHeight > 0 ? Math.ceil(scrollHeight) : 0;
+				this._lastPreviewViewportHeight = Number.isFinite(viewportHeight) && viewportHeight > 0 ? Math.ceil(viewportHeight) : 0;
 				this._applyPreviewFitHeight(this._lastPreviewContentHeight);
 				if (this._pendingPreviewHeightResolve) {
 					const resolve = this._pendingPreviewHeightResolve;
@@ -1210,11 +1310,12 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		if (this._userResizedPreview) return;
 		const wrapper = this.shadowRoot?.getElementById('preview-wrapper');
 		if (!wrapper) return;
-		const fitH = Math.max(120, Math.ceil(contentH));
+		const fitH = Math.max(120, Math.ceil(contentH + 8));
 		if (this._lastPreviewFitHeight > 0 && Math.abs(fitH - this._lastPreviewFitHeight) < 5) return;
 		this._lastPreviewFitHeight = fitH;
 		wrapper.style.height = fitH + 'px';
 		wrapper.style.maxHeight = fitH + 'px';
+		requestOverlayScrollbarUpdate(true);
 	}
 
 	// ── Height capture / restore (survive mode switches) ──────────────────────
@@ -1222,16 +1323,18 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	/** Snapshot the current wrapper height before a mode switch destroys it. */
 	private _captureCurrentHeight(): void {
 		if (this._mode === 'code') {
+			if (!this._userResizedEditor) { this._savedEditorHeightPx = undefined; return; }
 			const wrapper = this.shadowRoot?.getElementById('editor-wrapper');
 			if (wrapper) {
 				const h = wrapper.getBoundingClientRect().height;
-				if (h > 0) { this._savedEditorHeightPx = Math.round(h); this._userResizedEditor = true; }
+				if (h > 0) this._savedEditorHeightPx = Math.round(h);
 			}
 		} else {
+			if (!this._userResizedPreview) { this._savedPreviewHeightPx = undefined; return; }
 			const wrapper = this.shadowRoot?.getElementById('preview-wrapper');
 			if (wrapper) {
 				const h = wrapper.getBoundingClientRect().height;
-				if (h > 0) { this._savedPreviewHeightPx = Math.round(h); this._userResizedPreview = true; }
+				if (h > 0) this._savedPreviewHeightPx = Math.round(h);
 			}
 		}
 	}
@@ -1252,6 +1355,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		const h = this._savedPreviewHeightPx;
 		wrapper.style.height = h + 'px';
 		wrapper.style.maxHeight = h + 'px';
+		requestOverlayScrollbarUpdate(true);
 	}
 
 	// ── Actions ───────────────────────────────────────────────────────────────
@@ -1334,13 +1438,38 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	// ── Fit to contents ───────────────────────────────────────────────────────
 
-	/** Compute the wrapper padding/border chrome that surrounds the editor. */
+	/** Measure a visible fixed-height child without letting the editor area feed back into the fit. */
+	private _getVisibleBoxHeight(el: Element): number {
+		try {
+			const element = el as HTMLElement;
+			const cs = getComputedStyle(element);
+			if (cs.display === 'none') return 0;
+			const rect = element.getBoundingClientRect();
+			const margin = (parseFloat(cs.marginTop || '0') || 0) + (parseFloat(cs.marginBottom || '0') || 0);
+			return Math.max(0, Math.ceil((rect.height || 0) + margin));
+		} catch (e) { console.error('[kusto]', e); }
+		return 0;
+	}
+
+	/** Compute the wrapper chrome that surrounds the Monaco content. */
 	private _getEditorWrapperChrome(wrapper: HTMLElement): number {
 		let chrome = 0;
 		try {
 			const csw = getComputedStyle(wrapper);
 			chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
 			chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
+
+			for (const child of Array.from(wrapper.children)) {
+				if ((child as HTMLElement).classList?.contains('editor-area')) continue;
+				chrome += this._getVisibleBoxHeight(child);
+			}
+
+			const editorArea = wrapper.querySelector('.editor-area') as HTMLElement | null;
+			if (editorArea) {
+				const csa = getComputedStyle(editorArea);
+				chrome += (parseFloat(csa.paddingTop || '0') || 0) + (parseFloat(csa.paddingBottom || '0') || 0);
+				chrome += (parseFloat(csa.borderTopWidth || '0') || 0) + (parseFloat(csa.borderBottomWidth || '0') || 0);
+			}
 		} catch (e) { console.error('[kusto]', e); }
 		return chrome;
 	}
@@ -1361,7 +1490,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		} catch (e) { console.error('[kusto]', e); }
 		if (!contentHeight) return undefined;
 
-		const raw = Math.max(120, Math.ceil(this._getEditorWrapperChrome(wrapper) + contentHeight));
+		const raw = Math.max(120, Math.ceil(this._getEditorWrapperChrome(wrapper) + contentHeight + 5));
 		return Math.min(raw, KwHtmlSection._AUTO_FIT_MAX_PX);
 	}
 
@@ -1380,6 +1509,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		this._lastFitHeight = fitH;
 		wrapper.style.height = fitH + 'px';
 		wrapper.style.maxHeight = fitH + 'px';
+		requestOverlayScrollbarUpdate(true);
 		try { this._editor.layout(); } catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1396,6 +1526,20 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		});
 	};
 
+	public fitToContents(): void {
+		const run = () => {
+			try { this._fitToContents(); } catch (e) { console.error('[kusto]', e); }
+		};
+
+		run();
+		this.updateComplete.then(() => {
+			run();
+			window.setTimeout(run, 50);
+			window.setTimeout(run, 150);
+			window.setTimeout(run, 350);
+		}).catch(e => console.error('[kusto]', e));
+	}
+
 	private _fitToContents(): void {
 		if (this._mode === 'code') {
 			// Clear user-resize so auto-fit re-engages.
@@ -1404,17 +1548,23 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			// Force recalculation by resetting cached fit height.
 			this._lastFitHeight = 0;
 			this._autoFitToContent();
-			// Retry after layout settles.
-			setTimeout(() => { this._lastFitHeight = 0; this._autoFitToContent(); }, 50);
-			setTimeout(() => { this._lastFitHeight = 0; this._autoFitToContent(); }, 150);
 		} else {
 			// Clear user-resize so auto-fit re-engages.
 			this._userResizedPreview = false;
 			this._savedPreviewHeightPx = undefined;
+			this._invalidatePreviewContentHeight();
+			this.requestUpdate();
 			// Preview mode — ask the iframe to re-report its height.
 			const iframe = this.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
 			if (iframe?.contentWindow) {
 				try { iframe.contentWindow.postMessage({ type: 'kw-html-request-height' }, '*'); } catch (e) { console.error('[kusto]', e); }
+			} else {
+				this.updateComplete.then(() => {
+					const nextIframe = this.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+					if (nextIframe?.contentWindow) {
+						try { nextIframe.contentWindow.postMessage({ type: 'kw-html-request-height' }, '*'); } catch (e) { console.error('[kusto]', e); }
+					}
+				}).catch(e => console.error('[kusto]', e));
 			}
 		}
 		this._schedulePersist();
@@ -1460,6 +1610,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			const nextHeight = Math.max(120, Math.min(2000, startHeight + delta));
 			wrapper.style.height = nextHeight + 'px';
 			wrapper.style.maxHeight = nextHeight + 'px';
+			requestOverlayScrollbarUpdate(true);
 			if (onMove) onMove(this._editor);
 		};
 
@@ -1479,6 +1630,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				if (wrapperId === 'editor-wrapper') this._savedEditorHeightPx = rounded;
 				else if (wrapperId === 'preview-wrapper') this._savedPreviewHeightPx = rounded;
 			}
+			requestOverlayScrollbarUpdate(true);
 			this._schedulePersist();
 		};
 
@@ -1506,6 +1658,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				return pending[this.boxId];
 			}
 		} catch (e) { console.error('[kusto]', e); }
+		if (this._savedCode !== null) return this._savedCode;
+		if (typeof this.initialCode === 'string') return this.initialCode;
 		return '';
 	}
 
@@ -1526,7 +1680,9 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		const editorH = this._savedEditorHeightPx ?? this._getWrapperHeightPx('editor-wrapper', this._userResizedEditor);
 		if (editorH !== undefined) data.editorHeightPx = editorH;
 
-		const previewH = this._savedPreviewHeightPx ?? this._getWrapperHeightPx('preview-wrapper', this._userResizedPreview);
+		const previewH = this._userResizedPreview
+			? (this._savedPreviewHeightPx ?? this._getWrapperHeightPx('preview-wrapper', true))
+			: undefined;
 		if (previewH !== undefined) data.previewHeightPx = previewH;
 
 		if (this._pbiPublishInfo) data.pbiPublishInfo = this._pbiPublishInfo;
@@ -1558,6 +1714,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		if (this._editor) {
 			this._editor.setValue(code);
 		} else {
+			this._savedCode = code;
+			this.initialCode = code;
 			// Buffer for when Monaco isn't ready yet.
 			pState.pendingHtmlCodeByBoxId = pState.pendingHtmlCodeByBoxId || {};
 			pState.pendingHtmlCodeByBoxId[this.boxId] = code;

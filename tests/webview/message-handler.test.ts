@@ -215,6 +215,15 @@ type FakeSqlSection = HTMLElement & {
 	setStsReady: ReturnType<typeof vi.fn>;
 };
 
+type FakeHtmlSection = HTMLElement & {
+	getCode: ReturnType<typeof vi.fn>;
+	setCode: ReturnType<typeof vi.fn>;
+	getMode: ReturnType<typeof vi.fn>;
+	setMode: ReturnType<typeof vi.fn>;
+	fitToContents: ReturnType<typeof vi.fn>;
+	updateComplete: Promise<void>;
+};
+
 function createFakeSqlSection(): FakeSqlSection {
 	const el = document.createElement('div') as FakeSqlSection;
 	el.setSqlConnectionId = vi.fn();
@@ -223,6 +232,19 @@ function createFakeSqlSection(): FakeSqlSection {
 	el.setStsReady = vi.fn((ready: boolean) => {
 		el._stsReady = ready;
 	});
+	return el;
+}
+
+function createFakeHtmlSection(id: string): FakeHtmlSection {
+	const el = document.createElement('div') as FakeHtmlSection;
+	el.id = id;
+	el.getCode = vi.fn(() => '');
+	el.setCode = vi.fn();
+	el.getMode = vi.fn(() => 'code');
+	el.setMode = vi.fn();
+	el.fitToContents = vi.fn();
+	el.updateComplete = Promise.resolve();
+	document.body.appendChild(el);
 	return el;
 }
 
@@ -534,5 +556,55 @@ describe('tool section name persistence', () => {
 		});
 		await new Promise(r => setTimeout(r, 50));
 		expect(setSectionNameSpy).toHaveBeenCalledWith('transformation_1', 'Pivot Data');
+	});
+
+	it('toolConfigureHtmlSection auto-fits when code changes', async () => {
+		const htmlEl = createFakeHtmlSection('html_1');
+
+		dispatchHostMessage({
+			type: 'toolConfigureHtmlSection',
+			requestId: 'r5',
+			sectionId: 'html_1',
+			code: '<main>Dashboard</main>',
+		});
+		await new Promise(r => setTimeout(r, 50));
+
+		expect(htmlEl.setCode).toHaveBeenCalledWith('<main>Dashboard</main>');
+		expect(htmlEl.fitToContents).toHaveBeenCalled();
+	});
+
+	it('toolConfigureHtmlSection does not auto-fit for name-only updates', async () => {
+		const htmlEl = createFakeHtmlSection('html_2');
+
+		dispatchHostMessage({
+			type: 'toolConfigureHtmlSection',
+			requestId: 'r6',
+			sectionId: 'html_2',
+			name: 'Executive Dashboard',
+		});
+		await new Promise(r => setTimeout(r, 50));
+
+		expect(setSectionNameSpy).toHaveBeenCalledWith('html_2', 'Executive Dashboard');
+		expect(htmlEl.fitToContents).not.toHaveBeenCalled();
+	});
+
+	it('toolConfigureHtmlSection does not auto-fit for unchanged mode or code fields', async () => {
+		const htmlEl = createFakeHtmlSection('html_3');
+		htmlEl.getCode.mockReturnValue('<main>Dashboard</main>');
+		htmlEl.getMode.mockReturnValue('preview');
+
+		dispatchHostMessage({
+			type: 'toolConfigureHtmlSection',
+			requestId: 'r7',
+			sectionId: 'html_3',
+			name: 'Executive Dashboard',
+			code: '<main>Dashboard</main>',
+			mode: 'preview',
+		});
+		await new Promise(r => setTimeout(r, 50));
+
+		expect(htmlEl.setCode).toHaveBeenCalledWith('<main>Dashboard</main>');
+		expect(htmlEl.setMode).toHaveBeenCalledWith('preview');
+		expect(htmlEl.fitToContents).not.toHaveBeenCalled();
 	});
 });

@@ -40,10 +40,21 @@ document.adoptedStyleSheets = [...document.adoptedStyleSheets, osThemeSheet, bod
 
 /** The scroll wrapper element — used by getScrollY() and scrollBy(). */
 let scrollViewport: HTMLElement | null = null;
+let scrollbarsInstance: ReturnType<typeof OverlayScrollbars> | null = null;
+let updateRaf = 0;
 
 /** Expose the scroll viewport for `getScrollY()` in utils.ts. */
 export function getOverlayScrollViewport(): HTMLElement | null {
 	return scrollViewport;
+}
+
+export function requestOverlayScrollbarUpdate(force = false): void {
+	if (!scrollbarsInstance) return;
+	if (updateRaf) cancelAnimationFrame(updateRaf);
+	updateRaf = requestAnimationFrame(() => {
+		updateRaf = 0;
+		try { scrollbarsInstance?.update(force); } catch (e) { console.error('[kusto]', e); }
+	});
 }
 
 function init() {
@@ -65,7 +76,7 @@ function init() {
 	scrollViewport = wrapper;
 
 	// Initialise OverlayScrollbars on the wrapper.
-	OverlayScrollbars(wrapper, {
+	scrollbarsInstance = OverlayScrollbars(wrapper, {
 		scrollbars: {
 			visibility: 'auto',
 			autoHide: 'move',
@@ -77,6 +88,15 @@ function init() {
 			y: 'scroll',
 		},
 	});
+
+	const content = document.getElementById('queries-container') || wrapper;
+	try {
+		new ResizeObserver(() => requestOverlayScrollbarUpdate(true)).observe(content);
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		new MutationObserver(() => requestOverlayScrollbarUpdate(true)).observe(content, { childList: true, subtree: true, attributes: true });
+	} catch (e) { console.error('[kusto]', e); }
+	window.addEventListener('resize', () => requestOverlayScrollbarUpdate(true));
 
 	// ── Patch window.scrollBy / window.scrollTo to delegate to the wrapper ──
 	// This ensures the 20+ existing call sites that use window.scrollBy() or

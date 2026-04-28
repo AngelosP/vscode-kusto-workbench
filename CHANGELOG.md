@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.4.1] - 2026-04-28
+
+* Bugs
+    * Auto-fit-to-contents for HTML sections did not do the right thing in all situations, especially when the section was taller than it needed to be.
+
 ## [4.4.0] - 2026-04-28
 
 * Improved the publish report UX to

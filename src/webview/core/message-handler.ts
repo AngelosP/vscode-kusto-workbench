@@ -2322,6 +2322,7 @@ window.addEventListener('message', async (event: any) => {
 				const requestId = String(message.requestId || '');
 				const sectionId = String(message.sectionId || '');
 				let success = false;
+				let shouldAutoFit = false;
 				
 				try {
 					const el = document.getElementById(sectionId) as any;
@@ -2330,10 +2331,25 @@ window.addEventListener('message', async (event: any) => {
 							__kustoSetSectionName(sectionId, message.name);
 						}
 						if (typeof message.code === 'string') {
+							let codeChanged = true;
+							try {
+								if (typeof el.getCode === 'function') codeChanged = el.getCode() !== message.code;
+							} catch (e) { console.error('[kusto]', e); }
 							el.setCode(message.code);
+							shouldAutoFit = shouldAutoFit || codeChanged;
 						}
 						if (typeof message.mode === 'string') {
+							let modeChanged = true;
+							try {
+								if (typeof el.getMode === 'function') modeChanged = el.getMode() !== message.mode;
+							} catch (e) { console.error('[kusto]', e); }
 							el.setMode(message.mode);
+							shouldAutoFit = shouldAutoFit || modeChanged;
+						}
+						if (shouldAutoFit && typeof el.fitToContents === 'function') {
+							if (document.getElementById(sectionId) === el) {
+								try { el.fitToContents(); } catch (e) { console.error('[kusto]', e); }
+							}
 						}
 						success = true;
 					}

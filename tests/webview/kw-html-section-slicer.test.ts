@@ -4,10 +4,17 @@ import { setResultsState } from '../../src/webview/core/results-state';
 
 type BridgeSection = KwHtmlSection & { _buildDataBridgeScript(): string };
 type HeightSection = KwHtmlSection & {
+	_mode: 'code' | 'preview';
+	_userResizedPreview: boolean;
 	_lastPreviewContentHeight: number;
 	_lastPreviewFitHeight: number;
+	_lastPreviewScrollHeight: number;
+	_lastPreviewViewportHeight: number;
 	_savedPreviewHeightPx?: number;
+	_captureCurrentHeight(): void;
+	_applyPreviewFitHeight(contentH: number): void;
 	_measurePreviewHeight(): number | undefined;
+	_getPowerBiMeasurementWidth(): number;
 	_requestFreshPreviewHeight(): Promise<number | undefined>;
 	_measureCurrentHtmlHeight(code: string): Promise<number | undefined>;
 	_handleIframeMessage(e: MessageEvent): void;
@@ -229,12 +236,143 @@ describe('HTML preview height reporting', () => {
 		expect(openedPreviewHeight).toBe(1234);
 	});
 
+	it('measures export height at the generated Power BI HTML visual width', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+
+		expect(section._getPowerBiMeasurementWidth()).toBe(1450);
+	});
+
 	it('keeps robust body and rendered-element measurements in the injected iframe script', () => {
 		const script = (KwHtmlSection as unknown as { _heightReportScript: string })._heightReportScript;
 
-		expect(script).toContain('body?body.scrollHeight:0');
+		expect(script).toContain('body.scrollHeight');
+		expect(script).toContain('rawScrollHeight()');
+		expect(script).toContain('metrics:{viewportHeight:viewportHeight(),scrollHeight:rawScrollHeight()}');
+		expect(script).toContain('primary>0?primary');
+		expect(script).toContain('scrollOverflowHeight()');
 		expect(script).toContain('maxElementBottom()');
+		expect(script).toContain('fallbackElementBottom()');
+		expect(script).toContain('primary||fallbackElementBottom()');
+		expect(script).toContain('clampToOverflowAncestors(el,bottom)');
+		expect(script).toContain('clampsOverflow(style)');
+		expect(script).toContain('isInFixedSubtree(el)');
+		expect(script).toContain('isViewportFill(rect)');
+		expect(script).not.toContain('de?de.clientHeight:0');
+		expect(script).not.toContain('body?body.clientHeight:0');
 		expect(script).toContain('ro.observe(document.body)');
 		expect(script).toContain('new MutationObserver(schedule)');
+	});
+
+	it('returns initial HTML code before Monaco initializes', () => {
+		const section = new KwHtmlSection();
+		section.boxId = 'html_initial_code_test';
+		section.initialCode = '<main>Restored dashboard</main>';
+
+		expect(section.getCode()).toBe('<main>Restored dashboard</main>');
+	});
+
+	it('keeps tool-set HTML code before Monaco initializes', () => {
+		const section = new KwHtmlSection();
+		section.boxId = 'html_pending_code_test';
+		section.initialCode = '<main>Old dashboard</main>';
+
+		section.setCode('<main>New dashboard</main>');
+
+		expect(section.getCode()).toBe('<main>New dashboard</main>');
+		expect(section.initialCode).toBe('<main>New dashboard</main>');
+	});
+
+	it('does not treat persisted previewHeightPx as a current-session manual resize', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		section.previewHeightPx = 1028;
+
+		section.firstUpdated(new Map() as never);
+
+		expect(section._savedPreviewHeightPx).toBe(1028);
+		expect(section._userResizedPreview).toBe(false);
+		expect(section.serialize().previewHeightPx).toBeUndefined();
+	});
+
+	it('stores iframe scroll metrics from preview height reports', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		const contentWindow = {};
+
+		Object.defineProperty(section, 'shadowRoot', {
+			value: {
+				getElementById: (id: string) => id === 'preview-iframe'
+					? { contentWindow }
+					: null,
+			},
+		});
+
+		section._handleIframeMessage({
+			data: { type: 'kw-html-preview-height', h: 955, metrics: { scrollHeight: 956.2, viewportHeight: 948.4 } },
+			source: contentWindow,
+		} as unknown as MessageEvent);
+
+		expect(section._lastPreviewContentHeight).toBe(955);
+		expect(section._lastPreviewScrollHeight).toBe(957);
+		expect(section._lastPreviewViewportHeight).toBe(949);
+	});
+
+	it('adds a small buffer when auto-fitting preview height to avoid iframe scrollbar flicker', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		const wrapper = { style: { height: '', maxHeight: '' } };
+
+		Object.defineProperty(section, 'shadowRoot', {
+			value: {
+				getElementById: (id: string) => id === 'preview-wrapper' ? wrapper : null,
+			},
+			configurable: true,
+		});
+
+		section._userResizedPreview = false;
+		section._applyPreviewFitHeight(640);
+
+		expect(wrapper.style.height).toBe('648px');
+		expect(wrapper.style.maxHeight).toBe('648px');
+		expect(section._lastPreviewFitHeight).toBe(648);
+	});
+
+	it('does not treat auto preview height snapshots as user-resized heights', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		section._mode = 'preview';
+		section._userResizedPreview = false;
+		section._savedPreviewHeightPx = undefined;
+
+		Object.defineProperty(section, 'shadowRoot', {
+			value: {
+				getElementById: (id: string) => id === 'preview-wrapper'
+					? { getBoundingClientRect: () => ({ height: 640 }) }
+					: null,
+			},
+			configurable: true,
+		});
+
+		section._captureCurrentHeight();
+
+		expect(section._userResizedPreview).toBe(false);
+		expect(section._savedPreviewHeightPx).toBeUndefined();
+	});
+
+	it('preserves preview height snapshots that came from a real user resize', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		section._mode = 'preview';
+		section._userResizedPreview = true;
+		section._savedPreviewHeightPx = undefined;
+
+		Object.defineProperty(section, 'shadowRoot', {
+			value: {
+				getElementById: (id: string) => id === 'preview-wrapper'
+					? { getBoundingClientRect: () => ({ height: 640 }) }
+					: null,
+			},
+			configurable: true,
+		});
+
+		section._captureCurrentHeight();
+
+		expect(section._userResizedPreview).toBe(true);
+		expect(section._savedPreviewHeightPx).toBe(640);
 	});
 });
