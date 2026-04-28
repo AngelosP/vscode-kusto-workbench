@@ -3,7 +3,7 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [4.4.0] - Unreleased
+## [4.4.0] - 2026-04-28
 
 * Improved the publish report UX to
     * allow for back-to-back re-publishing
