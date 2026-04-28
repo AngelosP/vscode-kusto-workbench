@@ -1,4 +1,19 @@
 import { describe, it, expect } from 'vitest';
+import { KwHtmlSection } from '../../src/webview/sections/kw-html-section';
+import { setResultsState } from '../../src/webview/core/results-state';
+
+type BridgeSection = KwHtmlSection & { _buildDataBridgeScript(): string };
+
+function makeProvenanceHtml(dimensions: object[]): string {
+	return `<script type="application/kw-provenance">${JSON.stringify({
+		version: 1,
+		model: {
+			fact: { sectionId: 'query_slicer_fact', sectionName: 'Fact Events' },
+			dimensions,
+		},
+		bindings: {},
+	})}</script><main>Dashboard content</main>`;
+}
 
 // ── _toDateStr — same logic as the inline slicer JS in kw-html-section.ts ────
 // Extracts YYYY-MM-DD from any date-like string. This is used by the between-mode
@@ -103,5 +118,32 @@ describe('slicer between filter — date range', () => {
 		const result = slicerBetweenFilter(isoCells, '2024-02-01', '2024-02-28');
 		expect(result).toHaveLength(1);
 		expect(result[0]).toBe('2024-02-10T12:00:00Z');
+	});
+});
+
+describe('generated slicer layout', () => {
+	it('escapes dashboard body padding without requiring source changes', () => {
+		setResultsState('query_slicer_fact', {
+			columns: [{ name: 'Client', type: 'string' }],
+			rows: [['VS Code'], ['Visual Studio']],
+		});
+
+		const section = new KwHtmlSection();
+		section.boxId = 'html_slicer_layout_test';
+		section.setCode(makeProvenanceHtml([{ column: 'Client', label: 'Client' }]).replace(
+			'<main>Dashboard content</main>',
+			'<style>body { padding: 24px; }</style><main>Dashboard content</main>',
+		));
+
+		const bridgeHtml = (section as BridgeSection)._buildDataBridgeScript();
+		const slicerTag = bridgeHtml.match(/<div id="kw-slicers"[^>]*>/)?.[0] || '';
+
+		expect(bridgeHtml).toContain('<style id="kw-preview-slicer-reset">html,body{margin:0!important;}</style>');
+		expect(bridgeHtml).toContain('function fitSlicerToPreviewEdges()');
+		expect(bridgeHtml).toContain("slicerEl.style.marginTop=pt?('-'+pt+'px'):'0';");
+		expect(bridgeHtml).toContain("slicerEl.style.width='calc(100% + '+(pl+pr)+'px)';");
+		expect(slicerTag).toBeTruthy();
+		expect(slicerTag).toContain('box-sizing:border-box');
+		expect(slicerTag).not.toContain('margin-bottom');
 	});
 });

@@ -359,7 +359,7 @@ function getLanguageFromUri(uri: vscode.Uri): string {
 	return 'plaintext';
 }
 
-interface DiffHtmlOptions {
+export interface DiffHtmlOptions {
 	originalContent: string;
 	modifiedContent: string;
 	/** Human-readable smart view of the original (`.kqlx` only). */
@@ -370,8 +370,21 @@ interface DiffHtmlOptions {
 	fileName: string;
 }
 
-function getDiffHtml(opts: DiffHtmlOptions): string {
-	const escapeForJs = (str: string): string => JSON.stringify(str);
+export function serializeForInlineScript(value: string): string {
+	return JSON.stringify(value)
+		.replace(/</g, '\\u003C')
+		.replace(/\u2028/g, '\\u2028')
+		.replace(/\u2029/g, '\\u2029');
+}
+
+function escapeHtmlText(value: string): string {
+	return value
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;');
+}
+
+export function getDiffHtml(opts: DiffHtmlOptions): string {
 
 	const hasSmart = opts.originalSmart !== undefined && opts.modifiedSmart !== undefined;
 
@@ -386,7 +399,7 @@ function getDiffHtml(opts: DiffHtmlOptions): string {
 	<meta charset="UTF-8">
 	<meta name="viewport" content="width=device-width, initial-scale=1.0">
 	<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline' https://cdn.jsdelivr.net; script-src 'unsafe-inline' https://cdn.jsdelivr.net; worker-src blob:; font-src https://cdn.jsdelivr.net data:; connect-src https://cdn.jsdelivr.net; img-src https://cdn.jsdelivr.net data:;">
-	<title>Diff: ${escapeForJs(opts.fileName).slice(1, -1).replace(/</g, '&lt;').replace(/>/g, '&gt;')}</title>
+	<title>Diff: ${escapeHtmlText(opts.fileName)}</title>
 	<style>
 		* {
 			margin: 0;
@@ -490,11 +503,11 @@ function getDiffHtml(opts: DiffHtmlOptions): string {
 	<script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.45.0/min/vs/loader.js"></script>
 	<script>
 		(function() {
-			var smartOriginal = ${escapeForJs(primaryOriginal)};
-			var smartModified = ${escapeForJs(primaryModified)};
-			var rawOriginal = ${escapeForJs(opts.originalContent)};
-			var rawModified = ${escapeForJs(opts.modifiedContent)};
-			var smartLang = ${escapeForJs(primaryLang)};
+			var smartOriginal = ${serializeForInlineScript(primaryOriginal)};
+			var smartModified = ${serializeForInlineScript(primaryModified)};
+			var rawOriginal = ${serializeForInlineScript(opts.originalContent)};
+			var rawModified = ${serializeForInlineScript(opts.modifiedContent)};
+			var smartLang = ${serializeForInlineScript(primaryLang)};
 			var rawLang = 'json';
 			var hasSmart = ${hasSmart ? 'true' : 'false'};
 			var isSmart = hasSmart; // start in smart mode when available

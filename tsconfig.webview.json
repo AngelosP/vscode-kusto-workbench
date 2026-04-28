@@ -12,5 +12,5 @@
 		"skipLibCheck": true,
 		"outDir": "dist/webview-tsc-out"
 	},
-	"include": ["src/webview"]
+	"include": ["src/webview", "src/shared"]
 }

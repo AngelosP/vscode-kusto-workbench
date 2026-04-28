@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { formatKqlxForDiff } from '../../../src/host/diffViewerUtils';
+import { formatKqlxForDiff, getDiffHtml, serializeForInlineScript } from '../../../src/host/diffViewerUtils';
 
 // ---------------------------------------------------------------------------
 // formatKqlxForDiff
@@ -425,4 +425,83 @@ describe('formatKqlxForDiff', () => {
 		const result = formatKqlxForDiff(raw);
 		expect(result).toContain('Caret docs: disabled');
 	});
+});
+
+// ---------------------------------------------------------------------------
+// Diff HTML inline script serialization
+// ---------------------------------------------------------------------------
+
+describe('serializeForInlineScript', () => {
+ it('round-trips script-like content without raw script delimiters', () => {
+  const dangerous = [
+   '```html',
+   '<script type="application/kw-provenance">',
+   '{ "note": "</script> and </SCRIPT> and </script   >" }',
+   '</script>',
+   '```',
+   '\u2028line separator\u2029paragraph separator',
+  ].join('\n');
+
+  const serialized = serializeForInlineScript(dangerous);
+
+  expect(serialized).not.toMatch(/<script/i);
+  expect(serialized).not.toMatch(/<\/script/i);
+  expect(serialized).not.toContain('\u2028');
+  expect(serialized).not.toContain('\u2029');
+  expect(serialized).toContain('\\u003Cscript');
+  expect(serialized).toContain('\\u2028');
+  expect(serialized).toContain('\\u2029');
+  expect(JSON.parse(serialized)).toBe(dangerous);
+ });
+});
+
+describe('getDiffHtml', () => {
+ const originalMarkdown = [
+  '# Kusto Workbench Agent',
+  '',
+  '```html',
+  '<script type="application/kw-provenance">',
+  '{ "bindings": { "total": { "display": { "type": "scalar", "agg": "COUNT" } } } }',
+  '</script>',
+  '```',
+ ].join('\n');
+
+ const modifiedMarkdown = [
+  '# Kusto Workbench Agent',
+  '',
+  '```html',
+  '<SCRIPT type="application/kw-provenance">',
+  '{ "bindings": { "total": { "display": { "type": "scalar", "agg": "COUNT" } } } }',
+  '</SCRIPT>',
+  '```',
+ ].join('\n');
+
+ it('keeps markdown script fences from terminating the bootstrap script', () => {
+  const html = getDiffHtml({
+   originalContent: originalMarkdown,
+   modifiedContent: modifiedMarkdown,
+   language: 'markdown',
+   fileName: 'custom-agent.md',
+  });
+
+  expect(html.match(/<\/script\s*>/gi)).toHaveLength(2);
+  expect(html).not.toContain('<script type="application/kw-provenance">');
+  expect(html).not.toContain('</SCRIPT>');
+  expect(html).toContain('\\u003Cscript type=\\"application/kw-provenance\\"');
+ });
+
+ it('keeps smart-view content from terminating the bootstrap script', () => {
+  const html = getDiffHtml({
+   originalContent: '{ "kind": "kqlx" }',
+   modifiedContent: '{ "kind": "kqlx" }',
+   originalSmart: originalMarkdown,
+   modifiedSmart: modifiedMarkdown,
+   language: 'json',
+   fileName: 'dashboard.kqlx',
+  });
+
+  expect(html.match(/<\/script\s*>/gi)).toHaveLength(2);
+  expect(html).not.toContain('<script type="application/kw-provenance">');
+  expect(html).not.toContain('</SCRIPT>');
+ });
 });

@@ -7,12 +7,21 @@ import {
 	escapeDaxString,
 	escapeDaxColumnRef,
 	daxColumnExpr,
+	findUnsupportedPowerBiBindings,
+	getPowerBiHtmlValidationIssues,
+	validatePowerBiHtmlBindings,
 	generateDaxMeasure,
 	resolveFactTableSlicers,
 	resolveCssVariables,
 	patchCssForPbiVisual,
 	type PowerBiDataSource,
 } from '../../../src/host/powerBiExport';
+import {
+	DASHBOARD_BAR_CHART,
+	DASHBOARD_LINE_CHART,
+	DASHBOARD_PIE_CHART,
+	SUPPORTED_POWER_BI_DISPLAY_TYPES,
+} from '../../../src/shared/dashboardCharts';
 import { parseKwProvenance } from '../../../src/webview/sections/kw-html-section';
 
 // ── Provenance v1 parsing ───────────────────────────────────────────────────
@@ -74,6 +83,412 @@ describe('parseKwProvenance', () => {
 		expect(p!.model.dimensions).toHaveLength(3);
 		expect(p!.model.dimensions![1].mode).toBe('between');
 		expect(p!.model.dimensions![2].label).toBe('Country');
+	});
+});
+
+describe('findUnsupportedPowerBiBindings', () => {
+	it('keeps the documented Power BI display support list explicit', () => {
+		expect(SUPPORTED_POWER_BI_DISPLAY_TYPES).toEqual(['scalar', 'table', 'pivot', 'bar', 'pie', 'line']);
+	});
+
+	it('reports provenance display types that cannot be rendered during Power BI export', () => {
+		const html = makeV1Html(
+			{
+				'trend': { display: { type: 'line', xAxis: 'Day', series: [{ agg: 'COUNT' }] } },
+				'heat': { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'Actions' } },
+				'points': { display: { type: 'scatter', xColumn: 'Actions', yColumns: ['Devices'] } },
+			},
+			'<div data-kw-bind="trend"></div><div data-kw-bind="heat"></div><div data-kw-bind="points"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['heat (heatmap)', 'points (scatter)']);
+	});
+
+	it('ignores unsupported provenance bindings without matching data-kw-bind targets', () => {
+		const html = makeV1Html(
+			{
+				'total': { display: { type: 'scalar', agg: 'COUNT' } },
+				'unused-heatmap': { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'SkillName' } },
+			},
+			'<span data-kw-bind="total"></span>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([]);
+	});
+
+	it('ignores data-kw-bind text that appears only inside script content', () => {
+		const html = makeV1Html(
+			{
+				'total': { display: { type: 'scalar', agg: 'COUNT' } },
+				'heat': { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'SkillName' } },
+			},
+			'<span data-kw-bind="total"></span><script>document.querySelector(\'[data-kw-bind="heat"]\')</script>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([]);
+	});
+
+	it('does not let commented script-like text hide rendered unsupported bindings', () => {
+		const html = makeV1Html(
+			{
+				'heat': { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'SkillName' } },
+			},
+			'<!-- <script>unterminated-looking comment</script> --><div data-kw-bind="heat"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['heat (heatmap)']);
+	});
+
+	it('does not let comment-like script text hide rendered unsupported bindings', () => {
+		const html = makeV1Html(
+			{
+				'heat': { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'SkillName' } },
+			},
+			'<script>const marker = "<!--";</script><div data-kw-bind="heat"></div><!-- close -->',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['heat (heatmap)']);
+	});
+
+	it('ignores data-kw-bind markup inside template content', () => {
+		const html = makeV1Html(
+			{
+				'heat': { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'SkillName' } },
+			},
+			'<template><div data-kw-bind="heat"></div></template>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([]);
+	});
+
+	it('ignores data-kw-bind markup inside noscript content', () => {
+		const html = makeV1Html(
+			{
+				'heat': { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'SkillName' } },
+			},
+			'<noscript><div data-kw-bind="heat"></div></noscript>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([]);
+	});
+
+	it('reports malformed rendered chart specs before export', () => {
+		const html = makeV1Html(
+			{
+				'trend': { display: { type: 'line', xAxis: 'Day' } },
+			},
+			'<div data-kw-bind="trend"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['trend (line: invalid chart spec)']);
+		expect(() => generateDaxMeasure(html, [factDataSource])).not.toThrow();
+	});
+
+	it('reports invalid top values before export', () => {
+		const html = makeV1Html(
+			{
+				'os-chart': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, top: -1 } },
+			},
+			'<div data-kw-bind="os-chart"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['os-chart (bar: invalid chart spec)']);
+	});
+
+	it('reports invalid table top values before export', () => {
+		const html = makeV1Html(
+			{
+				'top-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Sessions', agg: 'COUNT' }],
+						orderBy: { column: 'Sessions', direction: 'desc' },
+						top: -1,
+					},
+				},
+			},
+			'<table data-kw-bind="top-table"></table>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['top-table (table: invalid top)']);
+		expect(generateDaxMeasure(html, [factDataSource])).not.toContain('[Idx] <= -1');
+	});
+
+	it('reports invalid optional chart fields before export', () => {
+		const html = makeV1Html(
+			{
+				'os-chart': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT', column: 123 } } },
+			},
+			'<div data-kw-bind="os-chart"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['os-chart (bar: invalid chart spec)']);
+	});
+
+	it('reports rendered targets missing provenance or display metadata', () => {
+		const missingBindingHtml = makeV1Html({}, '<span data-kw-bind="missing"></span>');
+		const missingDisplayHtml = makeV1Html({ 'total': {} }, '<span data-kw-bind="total"></span>');
+		const missingTypeHtml = makeV1Html({ 'total': { display: { agg: 'COUNT' } } }, '<span data-kw-bind="total"></span>');
+
+		expect(findUnsupportedPowerBiBindings(missingBindingHtml)).toEqual(['missing (missing provenance binding)']);
+		expect(findUnsupportedPowerBiBindings(missingDisplayHtml)).toEqual(['total (missing display)']);
+		expect(findUnsupportedPowerBiBindings(missingTypeHtml)).toEqual(['total (missing display type)']);
+	});
+
+	it('reports table bindings rendered on non-table targets', () => {
+		const html = makeV1Html(
+			{
+				'top-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Sessions', agg: 'COUNT' }],
+					},
+				},
+			},
+			'<div data-kw-bind="top-table"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['top-table (table: target must be table or tbody inside table)']);
+	});
+
+	it('reports standalone tbody table targets before export', () => {
+		const html = makeV1Html(
+			{
+				'top-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Sessions', agg: 'COUNT' }],
+					},
+				},
+			},
+			'<tbody data-kw-bind="top-table"></tbody>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['top-table (table: target must be table or tbody inside table)']);
+	});
+
+	it('reports scalar and chart bindings rendered on void elements', () => {
+		const html = makeV1Html(
+			{
+				'total': { display: { type: 'scalar', agg: 'COUNT' } },
+				'os-chart': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' } } },
+			},
+			'<input data-kw-bind="total"><img data-kw-bind="os-chart">',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([
+			'total (scalar: target must be container element)',
+			'os-chart (bar: target must be container element)',
+		]);
+	});
+
+	it('reports bindings that reference columns missing from the fact data source', () => {
+		const html = makeV1Html(
+			{
+				'os-chart': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'SUM', column: 'Actions' } } },
+			},
+			'<div data-kw-bind="os-chart"></div>',
+		);
+
+		expect(getPowerBiHtmlValidationIssues(html, [factDataSource])).toEqual([
+			'os-chart (groupBy: missing column OS)',
+			'os-chart (value.column: missing column Actions)',
+		]);
+		expect(() => validatePowerBiHtmlBindings(html, [factDataSource])).toThrow(/missing column OS/);
+		expect(() => validatePowerBiHtmlBindings(html, [factDataSource])).toThrow(/missing column Actions/);
+	});
+
+	it('reports provenance bindings without matching rendered targets', () => {
+		const html = makeV1Html(
+			{
+				'total': { display: { type: 'scalar', agg: 'COUNT' } },
+				'unrendered-chart': { display: { type: 'bar', groupBy: 'SkillName', value: { agg: 'COUNT' } } },
+			},
+			'<span data-kw-bind="total"></span>',
+		);
+
+		expect(getPowerBiHtmlValidationIssues(html, [factDataSource])).toEqual([
+			'unrendered-chart (missing data-kw-bind target)',
+		]);
+		expect(() => validatePowerBiHtmlBindings(html, [factDataSource])).toThrow(/unrendered-chart \(missing data-kw-bind target\)/);
+	});
+
+	it('reports slicer dimensions missing from the fact data source', () => {
+		const html = makeV1Html(
+			{ 'total': { display: { type: 'scalar', agg: 'COUNT' } } },
+			'<span data-kw-bind="total"></span>',
+			[{ column: 'OS', label: 'Operating System' }],
+		);
+
+		expect(getPowerBiHtmlValidationIssues(html, [factDataSource])).toEqual([
+			'model.dimensions[0] (slicer: missing column OS)',
+		]);
+	});
+
+	it('keeps the non-throwing collector aligned with the throwing validator', () => {
+		const html = makeV1Html(
+			{
+				'heat': { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'SkillName' } },
+				'bad-scalar': { display: { type: 'scalar', agg: 'SUM' } },
+			},
+			'<div data-kw-bind="heat"></div><span data-kw-bind="bad-scalar"></span>',
+		);
+
+		const issues = getPowerBiHtmlValidationIssues(html, [factDataSource]);
+		expect(issues).toEqual(['heat (heatmap)', 'bad-scalar (scalar: invalid spec)']);
+		expect(() => validatePowerBiHtmlBindings(html, [factDataSource])).toThrow(issues.join(', '));
+	});
+
+	it('reports malformed scalar bindings before export', () => {
+		const html = makeV1Html(
+			{
+				'total': { display: { type: 'scalar', agg: 'SUM' } },
+			},
+			'<span data-kw-bind="total"></span>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['total (scalar: invalid spec)']);
+		expect(() => validatePowerBiHtmlBindings(html)).toThrow(/total \(scalar: invalid spec\)/);
+		expect(generateDaxMeasure(html, [factDataSource])).not.toContain('SUMX');
+	});
+
+	it('reports malformed table bindings before export', () => {
+		const html = makeV1Html(
+			{
+				'top-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Metric', agg: 'SUM', sourceColumn: 123 }],
+					},
+				},
+			},
+			'<table data-kw-bind="top-table"></table>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['top-table (table: invalid spec)']);
+		expect(() => validatePowerBiHtmlBindings(html)).toThrow(/top-table \(table: invalid spec\)/);
+	});
+
+	it('accepts table COUNT aliases that are computed outputs', () => {
+		const html = makeV1Html(
+			{
+				'top-skills': {
+					display: {
+						type: 'table',
+						groupBy: ['SkillName'],
+						columns: [{ name: 'SkillName' }, { name: 'Refs', agg: 'COUNT', format: '#,##0' }],
+						orderBy: { column: 'Refs', direction: 'desc' },
+					},
+				},
+			},
+			'<table data-kw-bind="top-skills"><tbody></tbody></table>',
+		);
+
+		expect(() => validatePowerBiHtmlBindings(html, [factDataSource])).not.toThrow();
+	});
+
+	it('accepts preAggregate table COUNT aliases that are computed outputs', () => {
+		const html = makeV1Html(
+			{
+				'session-depth': {
+					display: {
+						type: 'table',
+						preAggregate: {
+							groupBy: 'DeviceId',
+							compute: { name: 'SkillsPerSession', agg: 'DISTINCTCOUNT', column: 'SkillName' },
+						},
+						groupBy: ['SkillsPerSession'],
+						columns: [{ name: 'SkillsPerSession' }, { name: 'SessionCount', agg: 'COUNT', format: '#,##0' }],
+						orderBy: { column: 'SkillsPerSession', direction: 'asc' },
+					},
+				},
+			},
+			'<table data-kw-bind="session-depth"><tbody></tbody></table>',
+		);
+
+		expect(() => validatePowerBiHtmlBindings(html, [factDataSource])).not.toThrow();
+	});
+
+	it('reports preAggregate computed names that collide with fact or group columns', () => {
+		const html = makeV1Html(
+			{
+				'fact-collision': {
+					display: {
+						type: 'bar',
+						groupBy: 'DeviceId',
+						value: { agg: 'COUNT' },
+						preAggregate: {
+							groupBy: 'DeviceId',
+							compute: { name: 'SkillName', agg: 'DISTINCTCOUNT', column: 'ClientName' },
+						},
+					},
+				},
+				'group-collision': {
+					display: {
+						type: 'bar',
+						groupBy: 'DeviceId',
+						value: { agg: 'COUNT' },
+						preAggregate: {
+							groupBy: 'DeviceId',
+							compute: { name: 'deviceid', agg: 'DISTINCTCOUNT', column: 'SkillName' },
+						},
+					},
+				},
+				'case-collision': {
+					display: {
+						type: 'bar',
+						groupBy: 'DeviceId',
+						value: { agg: 'COUNT' },
+						preAggregate: {
+							groupBy: 'DeviceId',
+							compute: { name: 'clientname', agg: 'DISTINCTCOUNT', column: 'SkillName' },
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="fact-collision"></div><div data-kw-bind="group-collision"></div><div data-kw-bind="case-collision"></div>',
+		);
+
+		expect(getPowerBiHtmlValidationIssues(html, [factDataSource])).toEqual([
+			'fact-collision (preAggregate.compute.name: collides with fact column SkillName)',
+			'group-collision (preAggregate.compute.name: collides with groupBy column DeviceId)',
+			'case-collision (preAggregate.compute.name: collides with fact column ClientName)',
+		]);
+	});
+
+	it('reports malformed pivot bindings before export', () => {
+		const html = makeV1Html(
+			{
+				'pivot': {
+					display: {
+						type: 'pivot',
+						rows: ['OS'],
+						pivotBy: 'SkillName',
+						pivotValues: ['A'],
+						agg: 'SUM',
+					},
+				},
+			},
+			'<table data-kw-bind="pivot"></table>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['pivot (pivot: invalid spec)']);
+		expect(() => validatePowerBiHtmlBindings(html)).toThrow(/pivot \(pivot: invalid spec\)/);
+	});
+
+	it('throws from the root Power BI binding validator for unsupported rendered bindings', () => {
+		const html = makeV1Html(
+			{
+				'heat': { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'SkillName' } },
+			},
+			'<div data-kw-bind="heat"></div>',
+		);
+
+		expect(() => validatePowerBiHtmlBindings(html)).toThrow(/Unsupported bindings: heat \(heatmap\)/);
 	});
 });
 
@@ -288,6 +703,54 @@ describe('generateDaxMeasure — v1 scalar', () => {
 		const result = generateDaxMeasure(html, []);
 		expect(result).toMatch(/^"/);
 	});
+
+	it('replaces the real scalar target when commented bound markup appears first', () => {
+		const html = makeV1Html(
+			{ 'total': { display: { type: 'scalar', agg: 'COUNT' } } },
+			'<!-- <span data-kw-bind="total">old</span> --><span data-kw-bind="total">0</span>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('<!-- <span data-kw-bind=""total"">old</span> -->');
+		expect(result).toContain('<span data-kw-bind=""total"">" & _scalar_0 & "</span>');
+	});
+
+	it('replaces the real scalar target when scripted bound markup appears first', () => {
+		const html = makeV1Html(
+			{ 'total': { display: { type: 'scalar', agg: 'COUNT' } } },
+			'<script>const html = \'<span data-kw-bind="total">old</span>\';</script><span data-kw-bind="total">0</span>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('<script>const html = \'<span data-kw-bind=""total"">old</span>\';</script>');
+		expect(result).toContain('<span data-kw-bind=""total"">" & _scalar_0 & "</span>');
+	});
+
+	it('replaces the real scalar target when template bound markup appears first', () => {
+		const html = makeV1Html(
+			{ 'total': { display: { type: 'scalar', agg: 'COUNT' } } },
+			'<template><span data-kw-bind="total">old</span></template><span data-kw-bind="total">0</span>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('<template><span data-kw-bind=""total"">old</span></template>');
+		expect(result).toContain('<span data-kw-bind=""total"">" & _scalar_0 & "</span>');
+	});
+
+	it('replaces the real scalar target when noscript bound markup appears first', () => {
+		const html = makeV1Html(
+			{ 'total': { display: { type: 'scalar', agg: 'COUNT' } } },
+			'<noscript><span data-kw-bind="total">old</span></noscript><span data-kw-bind="total">0</span>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('<noscript><span data-kw-bind=""total"">old</span></noscript>');
+		expect(result).toContain('<span data-kw-bind=""total"">" & _scalar_0 & "</span>');
+	});
 });
 
 describe('generateDaxMeasure — v1 table with groupBy', () => {
@@ -312,10 +775,13 @@ describe('generateDaxMeasure — v1 table with groupBy', () => {
 		const result = generateDaxMeasure(html, [factDataSource]);
 		expect(result).toContain('SUMMARIZE');
 		expect(result).toContain('ADDCOLUMNS');
-		expect(result).toContain('TOPN(10');
+		expect(result).toContain('FILTER(ADDCOLUMNS(');
+		expect(result).toContain('"Idx", VAR _sort = [Refs]');
+		expect(result).toContain('[Idx] <= 10');
+		expect(result).not.toContain('TOPN(10');
 		expect(result).toContain('CONCATENATEX');
 		expect(result).toContain('[Refs]');
-		expect(result).toContain('DESC');
+		expect(result).toContain(', [Idx], ASC');
 		expect(result).toContain('<thead>');
 	});
 
@@ -384,7 +850,8 @@ describe('generateDaxMeasure — data-kw-bind on <tbody>', () => {
 		);
 		const result = generateDaxMeasure(html, [factDataSource]);
 		expect(result).toContain('SUMMARIZE');
-		expect(result).toContain('TOPN(10');
+		expect(result).toContain('[Idx] <= 10');
+		expect(result).not.toContain('TOPN(10');
 		expect(result).toContain('CONCATENATEX');
 	});
 
@@ -742,7 +1209,49 @@ describe('generateDaxMeasure — bar chart', () => {
 		expect(result).toContain('RETURN');
 	});
 
-	it('applies TOPN when top is specified', () => {
+	it('exports bar charts with fixed chart sizing and tie-safe row indexes', () => {
+		const html = makeV1Html(
+			{
+				'os-chart': {
+					display: {
+						type: 'bar', groupBy: 'OS',
+						value: { agg: 'COUNT', format: '#,##0' },
+					},
+				},
+			},
+			'<div data-kw-bind="os-chart"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain(`<svg class='chart-svg' viewBox='0 0 ${DASHBOARD_BAR_CHART.totalW} `);
+		expect(result).toContain("style='width:100%;height:");
+		expect(result).toContain("px;display:block'");
+		expect(result).toContain(`MAX(${DASHBOARD_BAR_CHART.minH}, ${DASHBOARD_BAR_CHART.padT + DASHBOARD_BAR_CHART.padB} + COUNTROWS(_barrows_0) * ${DASHBOARD_BAR_CHART.rowH + DASHBOARD_BAR_CHART.gap})`);
+		expect(result).toContain('VAR _barrows_0 = ADDCOLUMNS(_bardata_0, "Idx", VAR _v = [Val]');
+		expect(result).toContain('COUNTROWS(FILTER(_bardata_0');
+		expect(result).toContain("'Fact_Events'[OS] <= _label");
+		expect(result).not.toContain('RANKX(_bardata_0, [Val]');
+	});
+
+	it('replaces chart targets on hyphenated custom elements', () => {
+		const html = makeV1Html(
+			{
+				'os-chart': {
+					display: {
+						type: 'bar', groupBy: 'OS',
+						value: { agg: 'COUNT', format: '#,##0' },
+					},
+				},
+			},
+			'<kw-card data-kw-bind="os-chart"></kw-card>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([]);
+		expect(result).toContain('<kw-card data-kw-bind=""os-chart"">" & _bar_0 & "</kw-card>');
+	});
+
+	it('applies exact top count when top is specified', () => {
 		const html = makeV1Html(
 			{
 				'top-os': {
@@ -755,7 +1264,9 @@ describe('generateDaxMeasure — bar chart', () => {
 			'<div data-kw-bind="top-os"></div>',
 		);
 		const result = generateDaxMeasure(html, [factDataSource]);
-		expect(result).toContain('TOPN(5');
+		expect(result).toContain('FILTER(ADDCOLUMNS(_bardata_0, "Idx"');
+		expect(result).toContain('[Idx] <= 5');
+		expect(result).not.toContain('TOPN(5');
 	});
 
 	it('guards against division by zero with IF(_barmax = 0)', () => {
@@ -770,6 +1281,74 @@ describe('generateDaxMeasure — bar chart', () => {
 		const result = generateDaxMeasure(html, [factDataSource]);
 		expect(result).toContain('IF(');
 		expect(result).toContain('= 0');
+	});
+
+	it('preserves custom value formats through DAX FORMAT', () => {
+		const html = makeV1Html(
+			{
+				'currency-chart': {
+					display: { type: 'bar', groupBy: 'OS', value: { agg: 'SUM', column: 'Actions', format: '$#,##0' } },
+				},
+				'unit-chart': {
+					display: { type: 'bar', groupBy: 'OS', value: { agg: 'SUM', column: 'Actions', format: '#,##0 ms' } },
+				},
+			},
+			'<div data-kw-bind="currency-chart"></div><div data-kw-bind="unit-chart"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('FORMAT([Val], "$#,##0")');
+		expect(result).toContain('FORMAT([Val], "#,##0 ms")');
+	});
+
+	it('formats datetime bar category labels explicitly', () => {
+		const html = makeV1Html(
+			{
+				'day-chart': {
+					display: { type: 'bar', groupBy: 'Day', value: { agg: 'COUNT' } },
+				},
+			},
+			'<div data-kw-bind="day-chart"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('FORMAT(\'Fact_Events\'[Day], "yyyy-MM-dd")');
+	});
+
+	it('formats numeric bar category labels explicitly', () => {
+		const html = makeV1Html(
+			{
+				'bucket-chart': {
+					display: { type: 'bar', groupBy: 'Bucket', value: { agg: 'COUNT' } },
+				},
+			},
+			'<div data-kw-bind="bucket-chart"></div>',
+		);
+		const dataSource = { ...factDataSource, columns: [...factDataSource.columns, { name: 'Bucket', type: 'long' }] };
+
+		const result = generateDaxMeasure(html, [dataSource]);
+
+		expect(result).toContain('FORMAT(\'Fact_Events\'[Bucket], "#,##0.##")');
+	});
+
+	it('clamps negative bar widths to zero while preserving raw value labels', () => {
+		const html = makeV1Html(
+			{
+				'chart': {
+					display: { type: 'bar', groupBy: 'OS', value: { agg: 'SUM', column: 'Actions' } },
+				},
+			},
+			'<div data-kw-bind="chart"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('VAR _barmax_0 = MAXX(_barrows_0, MAX(0, [Val]))');
+		expect(result).toContain('VAR _barval = MAX(0, [Val])');
+		expect(result).toContain('VAR _w = IF(_barmax_0 = 0, 0, _barval / _barmax_0');
+		expect(result).toContain('FORMAT([Val], "#,##0")');
 	});
 
 	it('XML-escapes label values with SUBSTITUTE', () => {
@@ -822,6 +1401,61 @@ describe('generateDaxMeasure — pie chart', () => {
 		expect(result).toContain('<svg');
 	});
 
+	it('exports pie charts with chart sizing, legend, and tie-safe slice indexes', () => {
+		const html = makeV1Html(
+			{
+				'os-pie': {
+					display: {
+						type: 'pie', groupBy: 'OS',
+						value: { agg: 'COUNT', format: '#,##0' },
+					},
+				},
+			},
+			'<div data-kw-bind="os-pie"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain(`<svg class='chart-svg' viewBox='0 0 ${DASHBOARD_PIE_CHART.svgW} `);
+		expect(result).toContain("style='width:100%;height:");
+		expect(result).toContain("px;display:block'");
+		expect(result).toContain(`MAX(${DASHBOARD_PIE_CHART.minSvgH}, ${DASHBOARD_PIE_CHART.legendY + DASHBOARD_PIE_CHART.legendPadB} + COUNTROWS(_pieslices_0) * ${DASHBOARD_PIE_CHART.legendRowH})`);
+		expect(result).toContain('VAR _pierows_0 = ADDCOLUMNS(_piedata_0, "Idx", VAR _v = [Val]');
+		expect(result).toContain('VAR _pieslices_0 = ADDCOLUMNS(_pierows_0, "PrevSum"');
+		expect(result).toContain('<rect x=');
+		expect(result).toContain('DIVIDE([Val], _pietotal_0, 0)');
+		expect(result).not.toContain('RANKX(_piedata_0, [Val]');
+	});
+
+	it('formats datetime pie category labels explicitly', () => {
+		const html = makeV1Html(
+			{
+				'day-pie': {
+					display: { type: 'pie', groupBy: 'Day', value: { agg: 'COUNT' } },
+				},
+			},
+			'<div data-kw-bind="day-pie"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('FORMAT(\'Fact_Events\'[Day], "yyyy-MM-dd")');
+	});
+
+	it('formats numeric pie category labels explicitly', () => {
+		const html = makeV1Html(
+			{
+				'bucket-pie': {
+					display: { type: 'pie', groupBy: 'Bucket', value: { agg: 'COUNT' } },
+				},
+			},
+			'<div data-kw-bind="bucket-pie"></div>',
+		);
+		const dataSource = { ...factDataSource, columns: [...factDataSource.columns, { name: 'Bucket', type: 'long' }] };
+
+		const result = generateDaxMeasure(html, [dataSource]);
+
+		expect(result).toContain('FORMAT(\'Fact_Events\'[Bucket], "#,##0.##")');
+	});
+
 	it('computes running totals with SUMX + FILTER', () => {
 		const html = makeV1Html(
 			{
@@ -833,7 +1467,7 @@ describe('generateDaxMeasure — pie chart', () => {
 		);
 		const result = generateDaxMeasure(html, [factDataSource]);
 		expect(result).toContain('SUMX(FILTER');
-		expect(result).toContain('[Rank]');
+		expect(result).toContain('[Idx]');
 	});
 
 	it('guards against zero total', () => {
@@ -850,7 +1484,7 @@ describe('generateDaxMeasure — pie chart', () => {
 		expect(result).toContain('= 0');
 	});
 
-	it('applies TOPN when top is specified', () => {
+	it('applies exact top count when top is specified', () => {
 		const html = makeV1Html(
 			{
 				'pie': {
@@ -860,7 +1494,9 @@ describe('generateDaxMeasure — pie chart', () => {
 			'<div data-kw-bind="pie"></div>',
 		);
 		const result = generateDaxMeasure(html, [factDataSource]);
-		expect(result).toContain('TOPN(6');
+		expect(result).toContain('FILTER(ADDCOLUMNS(_piedata_0, "Idx"');
+		expect(result).toContain('[Idx] <= 6');
+		expect(result).not.toContain('TOPN(6');
 	});
 });
 
@@ -897,13 +1533,44 @@ describe('generateDaxMeasure — line chart', () => {
 			'<div data-kw-bind="trend"></div>',
 		);
 		const result = generateDaxMeasure(html, [factDataSource]);
-		expect(result).toContain("<svg class='chart-svg' viewBox='0 0 760 220'");
-		expect(result).toContain("style='width:100%;height:220px;display:block'");
+		const plotBottom = DASHBOARD_LINE_CHART.padT + (DASHBOARD_LINE_CHART.H - DASHBOARD_LINE_CHART.padT - DASHBOARD_LINE_CHART.padB);
+		const legendY = plotBottom + DASHBOARD_LINE_CHART.xLabelGap + DASHBOARD_LINE_CHART.legendTopGap;
+		expect(result).toContain(`<svg class='chart-svg' viewBox='0 0 ${DASHBOARD_LINE_CHART.W} ${DASHBOARD_LINE_CHART.H}'`);
+		expect(result).toContain(`style='width:100%;height:${DASHBOARD_LINE_CHART.H}px;display:block'`);
 		expect(result).toContain("<line x1='52'");
 		expect(result).toContain('text-anchor=');
 		expect(result).toContain('_linexfirstlabel_0');
 		expect(result).toContain('_linexlastlabel_0');
 		expect(result).toContain('stroke-linecap=');
+		expect(result).toContain('Actions</text>');
+		expect(result).toContain(`<line x1='${DASHBOARD_LINE_CHART.padL}' y1='${legendY - 4}'`);
+		expect(result).toContain(`y='${legendY}' font-size='${DASHBOARD_LINE_CHART.labelFontSize}' fill='${DASHBOARD_LINE_CHART.labelFill}'>Actions</text>`);
+		expect(result).toContain('VAR _linemarker_0_0 = IF(_linen_0 = 1');
+		expect(result).toContain(`VAR _x = ${DASHBOARD_LINE_CHART.padL + (DASHBOARD_LINE_CHART.W - DASHBOARD_LINE_CHART.padL - DASHBOARD_LINE_CHART.padR) / 2}`);
+		expect(result).toContain(`IF(_linerange_0 = 0, ${(DASHBOARD_LINE_CHART.H - DASHBOARD_LINE_CHART.padT - DASHBOARD_LINE_CHART.padB) / 2}`);
+		expect(result).toContain('<circle cx=');
+	});
+
+	it('uses modulo color selection for line series beyond ten', () => {
+		const colors = [
+			'#010101', '#020202', '#030303', '#040404', '#050505', '#060606',
+			'#070707', '#080808', '#090909', '#101010', '#111111',
+		];
+		const html = makeV1Html(
+			{
+				'trend': {
+					display: {
+						type: 'line', xAxis: 'Day',
+						series: colors.map((_, index) => ({ agg: 'COUNT', label: `Series ${index + 1}` })),
+						colors,
+					},
+				},
+			},
+			'<div data-kw-bind="trend"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain("stroke='#111111'");
+		expect(result).toContain('Series 11</text>');
 	});
 
 	it('computes Y scaling with MIN/MAX/range guards', () => {
@@ -921,7 +1588,7 @@ describe('generateDaxMeasure — line chart', () => {
 		const result = generateDaxMeasure(html, [factDataSource]);
 		expect(result).toContain('_linemin_');
 		expect(result).toContain('_linemax_');
-		expect(result).toContain('_linerange_');
+		expect(result).toContain('VAR _linerange_0 = _linemax_0 - _linemin_0');
 		expect(result).toContain('IF(');
 	});
 

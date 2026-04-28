@@ -39,14 +39,22 @@ export const styles = css`
 	/* ── Status ── */
 	.ppd-status{display:flex;align-items:center;gap:8px;padding:12px 16px;font-size:12px;border-top:1px solid var(--vscode-panel-border)}
 	.ppd-status-error{color:var(--vscode-errorForeground)}
-	.ppd-status-success{padding:16px;margin:0 16px 12px;border-radius:6px;background:rgba(115,201,145,.08);border:1px solid rgba(115,201,145,.2)}
-	.ppd-success-main{display:flex;align-items:center;gap:10px;font-size:14px;font-weight:600;color:var(--vscode-testing-iconPassed, #73c991)}
-	.ppd-success-check{width:20px;height:20px;flex-shrink:0}
-	.ppd-success-link{display:inline-flex;align-items:center;gap:4px;margin-top:10px;padding:5px 12px;font-size:12px;border-radius:4px;background:var(--vscode-button-secondaryBackground);color:var(--vscode-textLink-foreground);text-decoration:none;border:1px solid var(--vscode-button-border,transparent);cursor:pointer;transition:background .15s}
-	.ppd-success-link:hover{background:var(--vscode-button-secondaryHoverBackground);text-decoration:none}
+	.ppd-status-success{position:relative;display:flex;flex-direction:column;gap:8px;padding:12px 14px 12px 16px;margin:0 16px 12px;border-radius:6px;overflow:hidden;background:linear-gradient(135deg, rgba(115,201,145,.14), rgba(115,201,145,.055) 58%, rgba(64,160,255,.055));border:1px solid rgba(115,201,145,.34);box-shadow:inset 0 1px 0 rgba(255,255,255,.04),0 8px 20px rgba(0,0,0,.16)}
+	.ppd-status-success::before{content:'';position:absolute;inset:0 auto 0 0;width:3px;background:var(--vscode-testing-iconPassed, #73c991)}
+	.ppd-success-row{position:relative;display:flex;align-items:center;gap:10px;min-width:0;z-index:1}
+	.ppd-success-summary{color:var(--vscode-testing-iconPassed, #73c991)}
+	.ppd-success-check{width:20px;height:20px;flex-shrink:0;filter:drop-shadow(0 1px 4px rgba(115,201,145,.35))}
+	.ppd-success-text{font-size:13px;font-weight:700;white-space:nowrap;color:var(--vscode-foreground)}
+	.ppd-success-schedule-row{padding-left:30px;gap:7px;color:var(--vscode-descriptionForeground);flex-wrap:wrap}
+	.ppd-success-schedule-row .codicon{font-size:13px;width:13px;height:13px;color:var(--vscode-testing-iconPassed, #73c991)}
+	.ppd-success-schedule-label{font-size:11px;font-weight:700;color:var(--vscode-foreground)}
+	.ppd-success-actions{gap:8px;flex-wrap:wrap;padding-left:30px}
+	.ppd-success-link{display:inline-flex;align-items:center;justify-content:center;gap:6px;min-height:27px;padding:5px 10px;font-size:12px;border-radius:5px;background:rgba(255,255,255,.035);color:var(--vscode-textLink-foreground);text-decoration:none;border:1px solid rgba(128,128,128,.26);cursor:pointer;transition:background .15s,border-color .15s,transform .15s,box-shadow .15s;line-height:1.35;box-shadow:inset 0 1px 0 rgba(255,255,255,.035)}
+	.ppd-success-link:hover{background:var(--vscode-button-secondaryHoverBackground);border-color:rgba(115,201,145,.42);text-decoration:none;transform:translateY(-1px);box-shadow:0 4px 12px rgba(0,0,0,.18)}
+	.ppd-success-link:focus-visible{outline:1px solid var(--vscode-focusBorder);outline-offset:2px}
+	.ppd-success-link .codicon{font-size:13px;width:13px;height:13px;color:var(--vscode-testing-iconPassed, #73c991)}
 	.ppd-success-link a{color:inherit;text-decoration:none}
-	.ppd-success-divider{width:100%;height:1px;background:rgba(115,201,145,.15);margin:10px 0}
-	.ppd-success-schedule{font-size:11px;color:var(--vscode-descriptionForeground);display:flex;align-items:center;gap:6px}
+	.ppd-success-schedule{display:inline-flex;align-items:center;min-height:20px;padding:2px 8px;border-radius:999px;background:rgba(255,255,255,.035);border:1px solid rgba(128,128,128,.18);font-size:11px;color:var(--vscode-descriptionForeground);min-width:0}
 	.ppd-spinner{display:inline-block;width:14px;height:14px;border:2px solid var(--vscode-foreground);border-top-color:transparent;border-radius:50%;animation:ppd-spin .8s linear infinite;flex-shrink:0;vertical-align:middle}
 	@keyframes ppd-spin{to{transform:rotate(360deg)}}
 

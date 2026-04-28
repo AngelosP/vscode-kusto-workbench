@@ -1352,7 +1352,7 @@
         ],
         "toolReferenceName": "configureHtmlSection",
         "displayName": "Configure HTML Section",
-        "modelDescription": "Configures an HTML section in Kusto Workbench. HTML sections allow writing HTML + JS code that renders as an interactive preview. Use this to set the HTML code, section name, or toggle between code and preview modes. For dashboards, embed a <script type='application/kw-provenance'> block with data bindings to track which query sections produced each value, and use data-kw-bind attributes on DOM elements.",
+        "modelDescription": "Configures an HTML section in Kusto Workbench. HTML sections allow writing HTML + JS code that renders as an interactive preview. Use this to set the HTML code, section name, or toggle between code and preview modes. For dashboards, embed a <script type='application/kw-provenance'> block with data bindings to track which query sections produced each value, use data-kw-bind attributes on DOM elements, and call KustoWorkbench.renderChart(bindingId) for exportable bar, pie, and line charts so preview SVG matches the Power BI export path.",
         "userDescription": "Configure an HTML section's code, name, or display mode.",
         "canBeReferencedInPrompt": true,
         "icon": "$(code)",
@@ -1378,6 +1378,65 @@
                 "preview"
               ],
               "description": "Display mode: 'code' for editor, 'preview' for rendered HTML"
+            }
+          },
+          "required": [
+            "sectionId"
+          ]
+        }
+      },
+      {
+        "name": "kusto-workbench_get-html-dashboard-guide",
+        "tags": [
+          "kusto",
+          "workbench",
+          "html",
+          "dashboard",
+          "guide"
+        ],
+        "toolReferenceName": "getHtmlDashboardGuide",
+        "displayName": "Get HTML Dashboard Guide",
+        "modelDescription": "Returns Kusto Workbench's canonical HTML dashboard authoring guide. Use this before creating, editing, repairing, or upgrading an HTML dashboard. Modes: checklist for a concise workflow, template for a starter dashboard, full for complete contract details including provenance, data-kw-bind, renderChart, slicers, styling, Power BI export, and upgrade-on-touch rules.",
+        "userDescription": "Get the HTML dashboard authoring guide.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(book)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "enum": [
+                "checklist",
+                "template",
+                "full"
+              ],
+              "description": "Which guide content to return: checklist, template, or full"
+            }
+          }
+        }
+      },
+      {
+        "name": "kusto-workbench_validate-html-dashboard",
+        "tags": [
+          "kusto",
+          "workbench",
+          "html",
+          "dashboard",
+          "validate",
+          "powerbi"
+        ],
+        "toolReferenceName": "validateHtmlDashboard",
+        "displayName": "Validate HTML Dashboard",
+        "modelDescription": "Validates an HTML dashboard section against the current Kusto Workbench dashboard and Power BI export contract. Use after configuring or upgrading a dashboard. Returns structured issues, warnings, provenance status, binding counts, data source counts, and fact columns. Fix all issues before presenting a dashboard as export-ready.",
+        "userDescription": "Validate an HTML dashboard for Power BI export readiness.",
+        "canBeReferencedInPrompt": true,
+        "icon": "$(checklist)",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "sectionId": {
+              "type": "string",
+              "description": "The ID of the HTML section to validate"
             }
           },
           "required": [
@@ -1718,7 +1777,7 @@
     "generate:kusto-functions": "node scripts/generate-kusto-functions.mjs",
     "pretest": "npm run compile-tests && npm run compile && npm run lint",
     "check-types": "tsc --noEmit && tsc --noEmit -p tsconfig.webview.json",
-    "lint": "eslint src/host src/webview",
+    "lint": "eslint src/host src/webview src/shared",
     "test": "vscode-test",
     "test:webview": "vitest run",
     "test:webview:coverage": "vitest run --coverage",

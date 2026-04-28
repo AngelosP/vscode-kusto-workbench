@@ -87,10 +87,11 @@ Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files
 
 ## HTML for dashboards and export to Power BI
 
-* Any HTML you would like, there are no limitations here.
-* Dashboards do seem like a great usecase though. Use it to create complex and interactive dashboards that tell the story you want to tell. Just let Copilot do the coding...
-* JavaScript is supported so tooltips, filtering, sorting, and all interactivity is up to you. Create the optimal experience for the audience and conversation at hand.
-* Export it as a Power BI report that refreshes automatically daily.
+* Author rich HTML dashboards directly in the workbook, with JavaScript available for preview interactions.
+* Add a `kw-provenance` block and `data-kw-bind` targets to make dashboard values exportable to Power BI.
+* Exportable scalar, table, pivot, bar, pie, and line bindings are generated from the same fact query that powers the preview.
+* Use `KustoWorkbench.renderChart(bindingId)` for exportable preview charts so the VS Code preview uses the same SVG geometry, palette, ordering, and labels as the Power BI report.
+* Export dashboards as Power BI reports that can refresh automatically daily.
 
 ![HTML based dashboard](media/marketplace/html-dashboard.png)
 

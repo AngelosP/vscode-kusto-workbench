@@ -3,6 +3,15 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.4.0] - Unreleased
+
+* Improved the publish report UX to 
+    * allow for back-to-back re-publishing
+    * show status in 2 lines instead of 3
+    * include a link to the report's semantic model's settings
+* Improved HTML + dashboarding capabilities.
+* Improved the visual fidelity of the generated reports.
+
 ## [4.3.0] - 2026-04-27
 
 * Improved performance when dealing with large datasets

@@ -40,7 +40,7 @@ import {
 	PublishToPowerBIMessage,
 	findPreferredDefaultCopilotModel
 } from './queryEditorTypes';
-import { exportHtmlToPowerBI } from './powerBiExport';
+import { exportHtmlToPowerBI, findUnsupportedPowerBiBindings } from './powerBiExport';
 import { listFabricWorkspaces, publishToPowerBIService, checkFabricItemExists } from './powerBiPublish';
 
 
@@ -844,6 +844,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					return;
 				}
 
+				const unsupportedBindings = findUnsupportedPowerBiBindings(htmlContent);
+				if (unsupportedBindings.length > 0) {
+					vscode.window.showWarningMessage(`Power BI export supports scalar, table, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`);
+					return;
+				}
+
 				const projectName = path.basename(picked.fsPath).replace(/\.pbip$/i, '');
 				const folderUri = vscode.Uri.file(path.dirname(picked.fsPath));
 				const sectionName = message.dataSources[0]?.name || 'KustoHtmlDashboard';
@@ -899,6 +905,14 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	private async publishToPowerBIFromWebview(message: PublishToPowerBIMessage): Promise<void> {
 		try {
+			const unsupportedBindings = findUnsupportedPowerBiBindings(message.htmlCode);
+			if (unsupportedBindings.length > 0) {
+				const msg = `Power BI publish supports scalar, table, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`;
+				vscode.window.showWarningMessage(msg);
+				this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: false, error: msg });
+				return;
+			}
+
 			const result = await publishToPowerBIService({
 				workspaceId: message.workspaceId,
 				reportName: message.reportName,

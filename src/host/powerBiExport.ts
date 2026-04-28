@@ -2,6 +2,21 @@
 // HTML Content visual to render an HTML section's code with Kusto DirectQuery data.
 
 import * as vscode from 'vscode';
+import {
+	DASHBOARD_BAR_CHART,
+	DASHBOARD_LINE_CHART,
+	DASHBOARD_PIE_CHART,
+	chartColor,
+	escapeXmlLiteral,
+	isSupportedPowerBiDisplayType,
+	isValidDashboardChartDisplay,
+	type BarDisplay,
+	type ChartValue,
+	type DashboardChartDisplay,
+	type LineDisplay,
+	type PieDisplay,
+	type PreAggregate,
+} from '../shared/dashboardCharts';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -87,39 +102,13 @@ interface TableDisplay { type: 'table'; columns: TableColumnSpec[]; groupBy: str
 
 interface PivotDisplay { type: 'pivot'; rows: string[]; pivotBy: string; pivotValues: string[]; value: string; agg: string; format?: string; total?: boolean; preAggregate?: PreAggregate }
 
-// ── Chart display types (SVG-based visuals for PBI export) ──────────────────
-
-interface ChartValue { agg: string; column?: string; format?: string }
-interface BarDisplay { type: 'bar'; groupBy: string; value: ChartValue; top?: number; colors?: string[]; preAggregate?: PreAggregate }
-interface LineSeriesSpec { agg: string; column?: string; label?: string }
-interface LineDisplay { type: 'line'; xAxis: string; series: LineSeriesSpec[]; colors?: string[]; preAggregate?: PreAggregate }
-interface PieDisplay { type: 'pie'; groupBy: string; value: ChartValue; top?: number; colors?: string[]; preAggregate?: PreAggregate }
-
-/**
- * Pre-aggregate specification: creates an intermediate DAX table by grouping
- * the fact table and computing a derived column.  The binding then aggregates
- * from this intermediate table instead of the raw fact table.
- *
- * Example: "count distinct skills per session" → `{ groupBy: "SessionId", compute: { name: "SkillsPerSession", agg: "DISTINCTCOUNT", column: "SkillName" } }`
- *
- * The `compute.name` must NOT collide with existing fact table column names.
- */
-interface PreAggregate {
-	groupBy: string | string[];
-	compute: { name: string; agg: string; column?: string };
-}
-
-type ChartDisplay = BarDisplay | LineDisplay | PieDisplay;
-
-const CHART_COLORS = ['#FFC20A', '#0C7BDC', '#4819B1', '#EE6914', '#8E88E8', '#A0DACF', '#04F704', '#4C4B54', '#D81B60', '#5F6B6D'];
-
 interface ModelFact { sectionId: string; sectionName: string }
 export interface ModelDimension { column: string; label?: string; mode?: 'dropdown' | 'list' | 'between' }
 
 export interface ResolvedSlicer { tableName: string; columnName: string; mode: 'dropdown' | 'list' | 'between' }
 
 interface ProvenanceBinding {
-	display?: ScalarDisplay | TableDisplay | PivotDisplay | ChartDisplay;
+	display?: ScalarDisplay | TableDisplay | PivotDisplay | DashboardChartDisplay;
 }
 
 interface Provenance {
@@ -138,6 +127,271 @@ function parseProvenance(htmlCode: string): Provenance | null {
 		if (!json.bindings || typeof json.bindings !== 'object') return null;
 		return { version: json.version ?? 1, model: json.model, bindings: json.bindings };
 	} catch { return null; }
+}
+
+function findDataKwBindTargets(htmlCode: string): Set<string> {
+	return new Set(findDataKwBindTargetTags(htmlCode).keys());
+}
+
+function stripNonRenderedHtmlBlocks(html: string): string {
+	return html.replace(/<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>|<template\b[\s\S]*?<\/template>|<noscript\b[\s\S]*?<\/noscript>/gi, '');
+}
+
+function findDataKwBindTargetTags(htmlCode: string): Map<string, string[]> {
+	const targetTags = new Map<string, string[]>();
+	const elementHtml = stripNonRenderedHtmlBlocks(htmlCode);
+	const re = /<([a-zA-Z][a-zA-Z0-9:-]*)\b[^>]*\bdata-kw-bind\s*=\s*(["'])(.*?)\2[^>]*>/gi;
+	let match: RegExpExecArray | null;
+	while ((match = re.exec(elementHtml)) !== null) {
+		const key = match[3];
+		const tagName = match[1].toLowerCase();
+		const tags = targetTags.get(key) ?? [];
+		tags.push(tagName);
+		targetTags.set(key, tags);
+	}
+	return targetTags;
+}
+
+function bindingAttributePattern(key: string): string {
+	return `data-kw-bind\\s*=\\s*["']${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`;
+}
+
+function hasBoundContainerElement(html: string, bindAttr: string): boolean {
+	const re = new RegExp(
+		`<([a-zA-Z][a-zA-Z0-9:-]*)\\b[^>]*?\\b${bindAttr}[^>]*>[\\s\\S]*?</\\1>`, 'i',
+	);
+	return re.test(html);
+}
+
+function isObjectRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === 'object';
+}
+
+function isNonEmptyText(value: unknown): value is string {
+	return typeof value === 'string' && value.trim().length > 0;
+}
+
+function aggregateRequiresColumn(agg: unknown): boolean {
+	return String(agg || 'COUNT').toUpperCase() !== 'COUNT';
+}
+
+function isValidPreAggregateSpec(value: unknown): value is PreAggregate {
+	if (!isObjectRecord(value) || !isObjectRecord(value.compute)) return false;
+	const groupBy = value.groupBy;
+	const validGroupBy = isNonEmptyText(groupBy) || (Array.isArray(groupBy) && groupBy.length > 0 && groupBy.every(isNonEmptyText));
+	if (!validGroupBy || !isNonEmptyText(value.compute.name)) return false;
+	if (value.compute.agg !== undefined && !isNonEmptyText(value.compute.agg)) return false;
+	if (aggregateRequiresColumn(value.compute.agg) && !isNonEmptyText(value.compute.column)) return false;
+	if (value.compute.column !== undefined && typeof value.compute.column !== 'string') return false;
+	return true;
+}
+
+function isValidScalarDisplay(display: unknown): display is ScalarDisplay {
+	if (!isObjectRecord(display) || display.type !== 'scalar') return false;
+	if (display.agg !== undefined && !isNonEmptyText(display.agg)) return false;
+	if (aggregateRequiresColumn(display.agg) && !isNonEmptyText(display.column)) return false;
+	if (display.column !== undefined && typeof display.column !== 'string') return false;
+	if (display.format !== undefined && typeof display.format !== 'string') return false;
+	return true;
+}
+
+function isValidTableDisplay(display: unknown): display is TableDisplay {
+	if (!isObjectRecord(display) || display.type !== 'table') return false;
+	if (!Array.isArray(display.groupBy) || display.groupBy.length === 0 || !display.groupBy.every(isNonEmptyText)) return false;
+	if (!Array.isArray(display.columns) || display.columns.length === 0) return false;
+	for (const column of display.columns) {
+		if (!isObjectRecord(column) || !isNonEmptyText(column.name)) return false;
+		if (column.header !== undefined && typeof column.header !== 'string') return false;
+		if (column.agg !== undefined && !isNonEmptyText(column.agg)) return false;
+		if (column.sourceColumn !== undefined && typeof column.sourceColumn !== 'string') return false;
+		if (column.format !== undefined && typeof column.format !== 'string') return false;
+		if (aggregateRequiresColumn(column.agg) && !isNonEmptyText(column.sourceColumn ?? column.name)) return false;
+	}
+	if (display.orderBy !== undefined) {
+		if (!isObjectRecord(display.orderBy) || !isNonEmptyText(display.orderBy.column)) return false;
+		if (display.orderBy.direction !== undefined && display.orderBy.direction !== 'asc' && display.orderBy.direction !== 'desc') return false;
+	}
+	if (display.top !== undefined && (typeof display.top !== 'number' || !Number.isInteger(display.top) || display.top <= 0)) return false;
+	if (display.preAggregate !== undefined && !isValidPreAggregateSpec(display.preAggregate)) return false;
+	return true;
+}
+
+function isValidPivotDisplay(display: unknown): display is PivotDisplay {
+	if (!isObjectRecord(display) || display.type !== 'pivot') return false;
+	if (!Array.isArray(display.rows) || display.rows.length === 0 || !display.rows.every(isNonEmptyText)) return false;
+	if (!isNonEmptyText(display.pivotBy)) return false;
+	if (!Array.isArray(display.pivotValues) || display.pivotValues.length === 0 || !display.pivotValues.every(value => typeof value === 'string')) return false;
+	if (!isNonEmptyText(display.agg)) return false;
+	if (aggregateRequiresColumn(display.agg) && !isNonEmptyText(display.value)) return false;
+	if (display.value !== undefined && typeof display.value !== 'string') return false;
+	if (display.format !== undefined && typeof display.format !== 'string') return false;
+	if (display.total !== undefined && typeof display.total !== 'boolean') return false;
+	if (display.preAggregate !== undefined && !isValidPreAggregateSpec(display.preAggregate)) return false;
+	return true;
+}
+
+function preAggregateOutputColumns(preAggregate: PreAggregate): Set<string> {
+	const groupBy = Array.isArray(preAggregate.groupBy) ? preAggregate.groupBy : [preAggregate.groupBy];
+	return new Set([...groupBy, preAggregate.compute.name]);
+}
+
+function columnKey(name: string): string {
+	return name.trim().toLowerCase();
+}
+
+function findMissingPowerBiBindingTargets(htmlCode: string): string[] {
+	const provenance = parseProvenance(htmlCode);
+	if (!provenance) return [];
+	const renderedTargetTags = findDataKwBindTargetTags(htmlCode);
+	return Object.keys(provenance.bindings)
+		.filter(bindingKey => !renderedTargetTags.has(bindingKey))
+		.map(bindingKey => `${bindingKey} (missing data-kw-bind target)`);
+}
+
+function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBiDataSource[]): string[] {
+	const provenance = parseProvenance(htmlCode);
+	if (!provenance) return [];
+	const factDs = dataSources.find(dataSource => dataSource.sectionId === provenance.model.fact.sectionId);
+	if (!factDs) return [];
+	const factColumns = new Set(factDs.columns.map(column => column.name));
+	const renderedTargetTags = findDataKwBindTargetTags(htmlCode);
+	const missing: string[] = [];
+	const requireFactColumn = (bindingKey: string, columnName: unknown, role: string) => {
+		if (isNonEmptyText(columnName) && !factColumns.has(columnName)) missing.push(`${bindingKey} (${role}: missing column ${columnName})`);
+	};
+	const requireAllowedColumn = (bindingKey: string, columnName: unknown, role: string, allowedColumns: Set<string>) => {
+		if (isNonEmptyText(columnName) && !allowedColumns.has(columnName)) missing.push(`${bindingKey} (${role}: missing column ${columnName})`);
+	};
+	const validatePreAggregate = (bindingKey: string, preAggregate: PreAggregate | undefined): Set<string> | undefined => {
+		if (!preAggregate) return undefined;
+		const groupBy = Array.isArray(preAggregate.groupBy) ? preAggregate.groupBy : [preAggregate.groupBy];
+		for (const columnName of groupBy) requireFactColumn(bindingKey, columnName, 'preAggregate.groupBy');
+		const computeNameKey = columnKey(preAggregate.compute.name);
+		const groupByCollision = groupBy.find(columnName => columnKey(columnName) === computeNameKey);
+		const factCollision = factDs.columns.find(column => columnKey(column.name) === computeNameKey);
+		if (groupByCollision) {
+			missing.push(`${bindingKey} (preAggregate.compute.name: collides with groupBy column ${groupByCollision})`);
+		} else if (factCollision) {
+			missing.push(`${bindingKey} (preAggregate.compute.name: collides with fact column ${factCollision.name})`);
+		}
+		if (aggregateRequiresColumn(preAggregate.compute.agg)) requireFactColumn(bindingKey, preAggregate.compute.column, 'preAggregate.compute.column');
+		return preAggregateOutputColumns(preAggregate);
+	};
+	const dimensions = Array.isArray(provenance.model.dimensions) ? provenance.model.dimensions : [];
+	for (let i = 0; i < dimensions.length; i++) {
+		const dimension = dimensions[i];
+		if (isObjectRecord(dimension) && isNonEmptyText(dimension.column) && !factColumns.has(dimension.column)) {
+			missing.push(`model.dimensions[${i}] (slicer: missing column ${dimension.column})`);
+		}
+	}
+	for (const [bindingKey, binding] of Object.entries(provenance.bindings)) {
+		if (!renderedTargetTags.has(bindingKey) || !binding.display) continue;
+		const display = binding.display;
+		if (isValidScalarDisplay(display)) {
+			if (aggregateRequiresColumn(display.agg)) requireFactColumn(bindingKey, display.column, 'column');
+		} else if (isValidTableDisplay(display)) {
+			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
+			const outputColumns = preColumns ?? factColumns;
+			for (const columnName of display.groupBy) requireAllowedColumn(bindingKey, columnName, 'groupBy', outputColumns);
+			for (const column of display.columns) {
+				const sourceColumn = column.sourceColumn || column.name;
+				if (column.agg) {
+					if (aggregateRequiresColumn(column.agg)) requireAllowedColumn(bindingKey, sourceColumn, 'column', outputColumns);
+				} else {
+					requireAllowedColumn(bindingKey, column.name, 'column', outputColumns);
+				}
+			}
+			if (display.orderBy) {
+				const orderColumns = new Set([...display.groupBy, ...display.columns.map(column => column.name)]);
+				requireAllowedColumn(bindingKey, display.orderBy.column, 'orderBy', orderColumns);
+			}
+		} else if (isValidPivotDisplay(display)) {
+			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
+			const outputColumns = preColumns ?? factColumns;
+			for (const columnName of display.rows) requireAllowedColumn(bindingKey, columnName, 'rows', outputColumns);
+			requireAllowedColumn(bindingKey, display.pivotBy, 'pivotBy', outputColumns);
+			if (aggregateRequiresColumn(display.agg)) requireAllowedColumn(bindingKey, display.value, 'value', outputColumns);
+		} else if (isValidDashboardChartDisplay(display)) {
+			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
+			const outputColumns = preColumns ?? factColumns;
+			if (display.type === 'bar' || display.type === 'pie') {
+				requireAllowedColumn(bindingKey, display.groupBy, 'groupBy', outputColumns);
+				if (aggregateRequiresColumn(display.value.agg)) requireAllowedColumn(bindingKey, display.value.column, 'value.column', outputColumns);
+			} else {
+				requireAllowedColumn(bindingKey, display.xAxis, 'xAxis', outputColumns);
+				for (const series of display.series) {
+					if (aggregateRequiresColumn(series.agg)) requireAllowedColumn(bindingKey, series.column, 'series.column', outputColumns);
+				}
+			}
+		}
+	}
+	return missing;
+}
+
+export function findUnsupportedPowerBiBindings(htmlCode: string): string[] {
+	const provenance = parseProvenance(htmlCode);
+	if (!provenance) return [];
+	const renderedTargetTags = findDataKwBindTargetTags(htmlCode);
+	const renderedHtml = stripNonRenderedHtmlBlocks(htmlCode);
+	const unsupported: string[] = [];
+	for (const [key] of renderedTargetTags) {
+		const binding = provenance.bindings[key];
+		if (!binding) {
+			unsupported.push(`${key} (missing provenance binding)`);
+			continue;
+		}
+		if (!binding.display) {
+			unsupported.push(`${key} (missing display)`);
+			continue;
+		}
+		const display = binding.display as { type?: unknown };
+		const type = typeof display.type === 'string' ? display.type : '';
+		if (!type) {
+			unsupported.push(`${key} (missing display type)`);
+			continue;
+		}
+		const bindAttr = bindingAttributePattern(key);
+		if ((type === 'table' || type === 'pivot') && !matchTableElement(renderedHtml, bindAttr)) {
+			unsupported.push(`${key} (${type}: target must be table or tbody inside table)`);
+		} else if ((type === 'scalar' || type === 'bar' || type === 'pie' || type === 'line') && !hasBoundContainerElement(renderedHtml, bindAttr)) {
+			unsupported.push(`${key} (${type}: target must be container element)`);
+		}
+	}
+	for (const [key, binding] of Object.entries(provenance.bindings)) {
+		if (!renderedTargetTags.has(key)) continue;
+		const display = binding.display as { type?: unknown } | undefined;
+		const type = typeof display?.type === 'string' ? display.type : '';
+		const top = (display as { top?: unknown } | undefined)?.top;
+		if (type && !isSupportedPowerBiDisplayType(type)) {
+			unsupported.push(`${key} (${type})`);
+		} else if (type === 'scalar' && !isValidScalarDisplay(display)) {
+			unsupported.push(`${key} (${type}: invalid spec)`);
+		} else if (type === 'table' && top !== undefined && (typeof top !== 'number' || !Number.isInteger(top) || top <= 0)) {
+			unsupported.push(`${key} (${type}: invalid top)`);
+		} else if (type === 'table' && !isValidTableDisplay(display)) {
+			unsupported.push(`${key} (${type}: invalid spec)`);
+		} else if (type === 'pivot' && !isValidPivotDisplay(display)) {
+			unsupported.push(`${key} (${type}: invalid spec)`);
+		} else if ((type === 'bar' || type === 'pie' || type === 'line') && !isValidDashboardChartDisplay(display)) {
+			unsupported.push(`${key} (${type}: invalid chart spec)`);
+		}
+	}
+	return unsupported;
+}
+
+export function getPowerBiHtmlValidationIssues(htmlCode: string, dataSources?: PowerBiDataSource[]): string[] {
+	return [
+		...findMissingPowerBiBindingTargets(htmlCode),
+		...findUnsupportedPowerBiBindings(htmlCode),
+		...(dataSources ? findMissingPowerBiBindingColumns(htmlCode, dataSources) : []),
+	];
+}
+
+export function validatePowerBiHtmlBindings(htmlCode: string, dataSources?: PowerBiDataSource[]): void {
+	const unsupportedBindings = getPowerBiHtmlValidationIssues(htmlCode, dataSources);
+	if (unsupportedBindings.length > 0) {
+		throw new Error(`Power BI export supports scalar, table, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`);
+	}
 }
 
 export function resolveFactTableSlicers(factDs: PowerBiDataSource | undefined, dimensions: ModelDimension[]): ResolvedSlicer[] {
@@ -378,12 +632,6 @@ function generateTableDaxVars(factTable: string, display: TableDisplay, varIdx: 
 		}
 	}
 
-	// Optionally wrap in TOPN
-	if (display.top && display.orderBy) {
-		const dir = (display.orderBy.direction || 'desc').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-		summarizedTable = `TOPN(${display.top}, ${summarizedTable}, ${escCol(display.orderBy.column)}, ${dir})`;
-	}
-
 	// CONCATENATEX for HTML rows
 	const tdExprs = display.columns.map((col, i) => {
 		let valExpr: string;
@@ -397,14 +645,23 @@ function generateTableDaxVars(factTable: string, display: TableDisplay, varIdx: 
 		return `"${tdOpen}" & ${valExpr} & "</td>"`;
 	}).join(' & ');
 
-	// Sort for CONCATENATEX
+	// Sort for CONCATENATEX. When top is present, use an exact deterministic
+	// index instead of DAX TOPN so ties match the preview helper's slice behavior.
+	let renderTable = summarizedTable;
 	let sortExpr = '';
 	if (display.orderBy) {
 		const dir = (display.orderBy.direction || 'desc').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-		sortExpr = `, ${escCol(display.orderBy.column)}, ${dir}`;
+		const tableTop = display.top;
+		if (tableTop !== undefined && Number.isInteger(tableTop) && tableTop > 0) {
+			const indexedRows = indexedTableRowsExpr(summarizedTable, escCol(display.orderBy.column), display.groupBy.map(g => escCol(g)), dir);
+			renderTable = `FILTER(${indexedRows}, [Idx] <= ${tableTop})`;
+			sortExpr = ', [Idx], ASC';
+		} else {
+			sortExpr = `, ${escCol(display.orderBy.column)}, ${dir}`;
+		}
 	}
 
-	const rowsDax = `CONCATENATEX(${summarizedTable}, "<tr>" & ${tdExprs} & "</tr>", ""${sortExpr})`;
+	const rowsDax = `CONCATENATEX(${renderTable}, "<tr>" & ${tdExprs} & "</tr>", ""${sortExpr})`;
 
 	return { theadVar, theadDax, rowsVar, rowsDax, ...(preVars.length > 0 ? { preVars } : {}) };
 }
@@ -534,19 +791,33 @@ function chartAggExpr(val: ChartValue, factTable: string): string {
 	return `CALCULATE(COUNTROWS(${tbl}))`;
 }
 
-/** Pick a color from the palette by 0-based index. */
-function chartColor(colors: string[] | undefined, idx: number): string {
-	const palette = colors && colors.length > 0 ? colors : CHART_COLORS;
-	return palette[idx % palette.length];
+function indexedChartRowsExpr(sourceVar: string, groupByRef: string): string {
+	return `ADDCOLUMNS(${sourceVar}, "Idx", VAR _v = [Val] VAR _label = ${groupByRef} RETURN COUNTROWS(FILTER(${sourceVar}, [Val] > _v || ([Val] = _v && ${groupByRef} <= _label))))`;
+}
+
+function lexicographicLessOrEqualExpr(refs: string[], variablePrefix: string): string {
+	return refs.map((ref, idx) => {
+		const previousEquals = refs.slice(0, idx).map((prevRef, prevIdx) => `${prevRef} = ${variablePrefix}${prevIdx}`).join(' && ');
+		const comparison = idx === refs.length - 1 ? `${ref} <= ${variablePrefix}${idx}` : `${ref} < ${variablePrefix}${idx}`;
+		return previousEquals ? `(${previousEquals} && ${comparison})` : comparison;
+	}).join(' || ');
+}
+
+function indexedTableRowsExpr(sourceTable: string, sortRef: string, tieRefs: string[], direction: 'ASC' | 'DESC'): string {
+	const keyVars = tieRefs.map((ref, idx) => `VAR _key${idx} = ${ref}`).join(' ');
+	const primaryComparison = direction === 'ASC' ? `${sortRef} < _sort` : `${sortRef} > _sort`;
+	const tieComparison = tieRefs.length > 0 ? lexicographicLessOrEqualExpr(tieRefs, '_key') : 'TRUE()';
+	return `ADDCOLUMNS(${sourceTable}, "Idx", VAR _sort = ${sortRef} ${keyVars} RETURN COUNTROWS(FILTER(${sourceTable}, ${primaryComparison} || (${sortRef} = _sort && (${tieComparison})))))`;
 }
 
 /**
  * Generate DAX for a horizontal bar chart SVG.
  * Pushes intermediate VARs into `vars[]`, returns the final marker name.
  */
-export function generateBarChartDax(factTable: string, display: BarDisplay, varIdx: number, vars: string[]): string {
+export function generateBarChartDax(factTable: string, display: BarDisplay, varIdx: number, vars: string[], dataSource?: PowerBiDataSource): string {
 	const tbl = escTable(factTable);
 	const dp = `_bardata_${varIdx}`;
+	const rp = `_barrows_${varIdx}`;
 	const mp = `_barmax_${varIdx}`;
 	const sp = `_bar_${varIdx}`;
 
@@ -564,40 +835,36 @@ export function generateBarChartDax(factTable: string, display: BarDisplay, varI
 		dataTable = `ADDCOLUMNS(SUMMARIZE(${tbl}, ${tbl}${escCol(display.groupBy)}), "Val", ${aggExpr})`;
 		groupByRef = `${tbl}${escCol(display.groupBy)}`;
 	}
-	if (display.top) {
-		dataTable = `TOPN(${display.top}, ${dataTable}, [Val], DESC)`;
-	}
 	vars.push(`VAR ${dp} = ${dataTable}`);
-	vars.push(`VAR ${mp} = MAXX(${dp}, [Val])`);
+	const indexedRows = indexedChartRowsExpr(dp, groupByRef);
+	vars.push(`VAR ${rp} = ${display.top && display.top > 0 ? `FILTER(${indexedRows}, [Idx] <= ${display.top})` : indexedRows}`);
+	vars.push(`VAR ${mp} = MAXX(${rp}, MAX(0, [Val]))`);
 
-	// SVG geometry constants
-	const labelW = 80;
-	const barMaxW = 200;
-	const valGap = 6;
-	const rowH = 24;
-	const gap = 4;
-	const totalW = labelW + barMaxW + 60;
+	const { labelW, barMaxW, valGap, rowH, gap, padT, padB, totalW, minH } = DASHBOARD_BAR_CHART;
 
 	// CONCATENATEX emitting SVG elements per row
 	const colorCases = Array.from({ length: 10 }, (_, i) =>
 		`${i + 1}, "${chartColor(display.colors, i)}"`,
 	).join(', ');
 
-	const fmtStr = escapeDaxString(display.value.format || '#,##0');
+	const valueTextExpr = buildFormatExpr('[Val]', display.value.format || '#,##0');
+	const labelTextExpr = daxXmlEscape(lineAxisLabelExpr(groupByRef, display.groupBy, dataSource));
 	const svgExpr = `CONCATENATEX(`
-		+ `ADDCOLUMNS(${dp}, "Idx", RANKX(${dp}, [Val],, DESC, DENSE)), `
-		+ `VAR _y = ([Idx] - 1) * ${rowH + gap} `
-		+ `VAR _w = IF(${mp} = 0, 0, [Val] / ${mp} * ${barMaxW}) `
+		+ `${rp}, `
+		+ `VAR _y = ${padT} + ([Idx] - 1) * ${rowH + gap} `
+		+ `VAR _barval = MAX(0, [Val]) `
+		+ `VAR _w = IF(${mp} = 0, 0, _barval / ${mp} * ${barMaxW}) `
 		+ `VAR _col = SWITCH([Idx], ${colorCases}, "${chartColor(display.colors, 0)}") `
 		+ `RETURN `
-		+ `"<text x='${labelW - 6}' y='" & FORMAT(_y + 16, "0") & "' text-anchor='end' font-size='11' fill='#605E5C'>" & ${daxXmlEscape(groupByRef)} & "</text>" `
+		+ `"<text x='${labelW - 6}' y='" & FORMAT(_y + 16, "0") & "' text-anchor='end' font-size='11' fill='#605E5C'>" & ${labelTextExpr} & "</text>" `
 		+ `& "<rect x='${labelW}' y='" & FORMAT(_y + 2, "0") & "' width='" & FORMAT(_w, "0") & "' height='${rowH - 4}' rx='2' fill='" & _col & "'/>" `
-		+ `& "<text x='" & FORMAT(${labelW} + _w + ${valGap}, "0") & "' y='" & FORMAT(_y + 16, "0") & "' font-size='11' fill='#605E5C'>" & FORMAT([Val], "${fmtStr}") & "</text>", `
+		+ `& "<text x='" & FORMAT(${labelW} + _w + ${valGap}, "0") & "' y='" & FORMAT(_y + 16, "0") & "' font-size='11' fill='#605E5C'>" & ${valueTextExpr} & "</text>", `
 		+ `"", [Idx], ASC)`;
 
-	const countExpr = `COUNTROWS(${dp})`;
-	const heightExpr = `FORMAT(${countExpr} * ${rowH + gap}, "0")`;
-	const svgDax = `"<svg viewBox='0 0 ${totalW} " & ${heightExpr} & "' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:auto'>" & ${svgExpr} & "</svg>"`;
+	const countExpr = `COUNTROWS(${rp})`;
+	const heightValueExpr = `MAX(${minH}, ${padT + padB} + ${countExpr} * ${rowH + gap})`;
+	const heightExpr = `FORMAT(${heightValueExpr}, "0")`;
+	const svgDax = `"<svg class='chart-svg' viewBox='0 0 ${totalW} " & ${heightExpr} & "' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:" & ${heightExpr} & "px;display:block' role='img'>" & ${svgExpr} & "</svg>"`;
 	vars.push(`VAR ${sp} = ${svgDax}`);
 	return sp;
 }
@@ -606,60 +873,73 @@ export function generateBarChartDax(factTable: string, display: BarDisplay, varI
  * Generate DAX for a donut/pie chart SVG.
  * Uses stroke-dasharray circles (no sin/cos needed).
  */
-export function generatePieChartDax(factTable: string, display: PieDisplay, varIdx: number, vars: string[]): string {
+export function generatePieChartDax(factTable: string, display: PieDisplay, varIdx: number, vars: string[], dataSource?: PowerBiDataSource): string {
 	const tbl = escTable(factTable);
 	const dp = `_piedata_${varIdx}`;
+	const rp = `_pierows_${varIdx}`;
+	const slices = `_pieslices_${varIdx}`;
 	const tp = `_pietotal_${varIdx}`;
 	const sp = `_pie_${varIdx}`;
 
 	let dataTable: string;
+	let groupByRef: string;
 	if (display.preAggregate) {
 		const preVarName = `_pre_${varIdx}`;
 		vars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
 		const groupCol = escCol(display.groupBy);
 		const valExpr = buildPreAggChartValExpr(display.value, preVarName, display.groupBy);
 		dataTable = `ADDCOLUMNS(SUMMARIZE(${preVarName}, ${groupCol}), "Val", ${valExpr})`;
+		groupByRef = groupCol;
 	} else {
 		const aggExpr = chartAggExpr(display.value, factTable);
 		dataTable = `ADDCOLUMNS(SUMMARIZE(${tbl}, ${tbl}${escCol(display.groupBy)}), "Val", ${aggExpr})`;
-	}
-	if (display.top) {
-		dataTable = `TOPN(${display.top}, ${dataTable}, [Val], DESC)`;
+		groupByRef = `${tbl}${escCol(display.groupBy)}`;
 	}
 	vars.push(`VAR ${dp} = ${dataTable}`);
-	vars.push(`VAR ${tp} = SUMX(${dp}, [Val])`);
+	const indexedRows = indexedChartRowsExpr(dp, groupByRef);
+	vars.push(`VAR ${rp} = ${display.top && display.top > 0 ? `FILTER(${indexedRows}, [Idx] <= ${display.top})` : indexedRows}`);
+	vars.push(`VAR ${tp} = SUMX(${rp}, [Val])`);
+	vars.push(`VAR ${slices} = ADDCOLUMNS(${rp}, "PrevSum", VAR _idx = [Idx] RETURN SUMX(FILTER(${rp}, [Idx] < _idx), [Val]))`);
 
-	// Circle geometry
-	const cx = 100;
-	const cy = 100;
-	const outerR = 80;
-	const innerR = 50;
+	const { cx, cy, outerR, innerR, svgW, minSvgH, legendX, legendY, legendRowH, legendPadB, legendValueX } = DASHBOARD_PIE_CHART;
 	const strokeW = outerR - innerR;
 	const effectiveR = (outerR + innerR) / 2;
-	const svgW = 200;
-	const svgH = 200;
 
 	const colorCases = Array.from({ length: 10 }, (_, i) =>
 		`${i + 1}, "${chartColor(display.colors, i)}"`,
 	).join(', ');
-
-	// Build ranked table with running totals
-	const rankedTable = `ADDCOLUMNS(${dp}, "Rank", RANKX(${dp}, [Val],, DESC, DENSE))`;
+	const valueTextExpr = buildFormatExpr('[Val]', display.value.format || '#,##0');
+	const totalTextExpr = buildFormatExpr(tp, display.value.format || '#,##0');
+	const labelTextExpr = daxXmlEscape(lineAxisLabelExpr(groupByRef, display.groupBy, dataSource));
 
 	const svgExpr = `CONCATENATEX(`
-		+ `ADDCOLUMNS(${rankedTable}, `
-		+ `"PrevSum", VAR _r = [Rank] RETURN SUMX(FILTER(${rankedTable}, [Rank] < _r), [Val])), `
+		+ `${slices}, `
 		+ `VAR _circ = 2 * PI() * ${effectiveR} `
 		+ `VAR _segLen = IF(${tp} = 0, 0, [Val] / ${tp} * _circ) `
 		+ `VAR _offset = _circ / 4 - IF(${tp} = 0, 0, [PrevSum] / ${tp} * _circ) `
-		+ `VAR _col = SWITCH([Rank], ${colorCases}, "${chartColor(display.colors, 0)}") `
+		+ `VAR _col = SWITCH([Idx], ${colorCases}, "${chartColor(display.colors, 0)}") `
 		+ `RETURN `
 		+ `"<circle cx='${cx}' cy='${cy}' r='${effectiveR}' fill='none' stroke='" & _col & "' stroke-width='${strokeW}' `
 		+ `stroke-dasharray='" & FORMAT(_segLen, "0.00") & " " & FORMAT(_circ - _segLen, "0.00") & "' `
 		+ `stroke-dashoffset='" & FORMAT(_offset, "0.00") & "'/>", `
-		+ `"", [Rank], ASC)`;
+		+ `"", [Idx], ASC)`;
 
-	const svgDax = `"<svg viewBox='0 0 ${svgW} ${svgH}' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:auto'>" & ${svgExpr} & "</svg>"`;
+	const legendExpr = `CONCATENATEX(`
+		+ `${slices}, `
+		+ `VAR _y = ${legendY} + ([Idx] - 1) * ${legendRowH} `
+		+ `VAR _col = SWITCH([Idx], ${colorCases}, "${chartColor(display.colors, 0)}") `
+		+ `RETURN `
+		+ `"<rect x='${legendX}' y='" & FORMAT(_y - 10, "0") & "' width='10' height='10' rx='2' fill='" & _col & "'/>" `
+		+ `& "<text x='${legendX + 16}' y='" & FORMAT(_y, "0") & "' font-size='11' fill='#605E5C'>" & ${labelTextExpr} & "</text>" `
+		+ `& "<text x='${legendValueX}' y='" & FORMAT(_y, "0") & "' text-anchor='end' font-size='11' fill='#605E5C'>" & ${valueTextExpr} & " (" & FORMAT(DIVIDE([Val], ${tp}, 0), "0.0%") & ")</text>", `
+		+ `"", [Idx], ASC)`;
+	const totalLabel = `"<text x='${cx}' y='${cy - 4}' text-anchor='middle' font-size='11' fill='#605E5C'>Total</text>" `
+		+ `& "<text x='${cx}' y='${cy + 18}' text-anchor='middle' font-size='20' font-weight='600' fill='#252423'>" & ${totalTextExpr} & "</text>"`;
+	const countExpr = `COUNTROWS(${slices})`;
+	const heightValueExpr = `MAX(${minSvgH}, ${legendY + legendPadB} + ${countExpr} * ${legendRowH})`;
+	const heightExpr = `FORMAT(${heightValueExpr}, "0")`;
+
+	const svgDax = `"<svg class='chart-svg' viewBox='0 0 ${svgW} " & ${heightExpr} & "' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:" & ${heightExpr} & "px;display:block' role='img'>" & ${svgExpr} & ${totalLabel} & ${legendExpr} & "</svg>"`;
 	vars.push(`VAR ${sp} = ${svgDax}`);
 	return sp;
 }
@@ -711,14 +991,15 @@ export function generateLineChartDax(factTable: string, display: LineDisplay, va
 	}
 
 	// Chart geometry
-	const padL = 52;
-	const padR = 16;
-	const padT = 14;
-	const padB = 32;
-	const W = 760;
-	const H = 220;
+	const { padL, padR, padT, padB, W, H } = DASHBOARD_LINE_CHART;
 	const plotW = W - padL - padR;
 	const plotH = H - padT - padB;
+	const plotBottom = padT + plotH;
+	const xLabelY = plotBottom + DASHBOARD_LINE_CHART.xLabelGap;
+	const legendY = xLabelY + DASHBOARD_LINE_CHART.legendTopGap;
+	const legendColumns = Math.max(1, Math.floor(plotW / DASHBOARD_LINE_CHART.legendColumnWidth));
+	const legendRows = Math.max(1, Math.ceil(display.series.length / legendColumns));
+	const svgH = Math.max(H, legendY + legendRows * DASHBOARD_LINE_CHART.legendRowH + DASHBOARD_LINE_CHART.legendBottomPad);
 
 	// Compute min/max across all series for Y scaling
 	const allSeriesMinMax = display.series.map((_, i) => `[S${i}]`);
@@ -726,7 +1007,7 @@ export function generateLineChartDax(factTable: string, display: LineDisplay, va
 	const maxExprs = allSeriesMinMax.map(s => `MAXX(${dp}, ${s})`);
 	vars.push(`VAR _linemin_${varIdx} = ${foldDaxBinaryFunction('MIN', minExprs)}`);
 	vars.push(`VAR _linemax_${varIdx} = ${foldDaxBinaryFunction('MAX', maxExprs)}`);
-	vars.push(`VAR _linerange_${varIdx} = IF(_linemax_${varIdx} = _linemin_${varIdx}, 1, _linemax_${varIdx} - _linemin_${varIdx})`);
+	vars.push(`VAR _linerange_${varIdx} = _linemax_${varIdx} - _linemin_${varIdx}`);
 	vars.push(`VAR _linen_${varIdx} = COUNTROWS(${dp})`);
 	vars.push(`VAR _linexfirstlabel_${varIdx} = CONCATENATEX(TOPN(1, ${dp}, ${xAxisRef}, ASC), ${lineAxisLabelExpr(xAxisRef, display.xAxis, dataSource)}, "")`);
 	vars.push(`VAR _linexlastlabel_${varIdx} = CONCATENATEX(TOPN(1, ${dp}, ${xAxisRef}, DESC), ${lineAxisLabelExpr(xAxisRef, display.xAxis, dataSource)}, "")`);
@@ -740,28 +1021,45 @@ export function generateLineChartDax(factTable: string, display: LineDisplay, va
 	}).join(' & ');
 	const axisLines = `"<line x1='${padL}' y1='${padT}' x2='${padL}' y2='${padT + plotH}' stroke='#C8C6C4' stroke-width='1'/>" `
 		+ `& "<line x1='${padL}' y1='${padT + plotH}' x2='${W - padR}' y2='${padT + plotH}' stroke='#C8C6C4' stroke-width='1'/>"`;
-	const xLabels = `"<text x='${padL}' y='${H - 10}' font-size='11' fill='#605E5C'>" & ${daxXmlEscape(`_linexfirstlabel_${varIdx}`)} & "</text>" `
-		+ `& "<text x='${W - padR}' y='${H - 10}' text-anchor='end' font-size='11' fill='#605E5C'>" & ${daxXmlEscape(`_linexlastlabel_${varIdx}`)} & "</text>"`;
+	const xLabels = `"<text x='${padL}' y='${xLabelY}' font-size='11' fill='#605E5C'>" & ${daxXmlEscape(`_linexfirstlabel_${varIdx}`)} & "</text>" `
+		+ `& "<text x='${W - padR}' y='${xLabelY}' text-anchor='end' font-size='11' fill='#605E5C'>" & ${daxXmlEscape(`_linexlastlabel_${varIdx}`)} & "</text>"`;
+	const legend = display.series.map((series, i) => {
+		const color = chartColor(display.colors, i);
+		const col = i % legendColumns;
+		const row = Math.floor(i / legendColumns);
+		const x = padL + col * DASHBOARD_LINE_CHART.legendColumnWidth;
+		const y = legendY + row * DASHBOARD_LINE_CHART.legendRowH;
+		const label = escapeDaxString(escapeXmlLiteral(series.label || series.column || `Series ${i + 1}`));
+		return `"<line x1='${x}' y1='${y - 4}' x2='${x + DASHBOARD_LINE_CHART.legendLineWidth}' y2='${y - 4}' stroke='${color}' stroke-width='${DASHBOARD_LINE_CHART.lineStrokeWidth}' stroke-linecap='round'/>" `
+			+ `& "<text x='${x + DASHBOARD_LINE_CHART.legendGap}' y='${y}' font-size='${DASHBOARD_LINE_CHART.labelFontSize}' fill='${DASHBOARD_LINE_CHART.labelFill}'>${label}</text>"`;
+	}).join(' & ');
 
 	// Generate one polyline per series
 	const polylines: string[] = [];
 	for (let i = 0; i < display.series.length; i++) {
 		const pointsVar = `_linepts_${varIdx}_${i}`;
+		const markerVar = `_linemarker_${varIdx}_${i}`;
 		const color = chartColor(display.colors, i);
 
 		const pointsExpr = `CONCATENATEX(`
 			+ `${indexedTable}, `
-			+ `VAR _x = IF(_linen_${varIdx} <= 1, ${plotW / 2}, ${padL} + (${plotW}) * ([Idx] - 1) / (_linen_${varIdx} - 1)) `
+			+ `VAR _x = IF(_linen_${varIdx} <= 1, ${padL + plotW / 2}, ${padL} + (${plotW}) * ([Idx] - 1) / (_linen_${varIdx} - 1)) `
 			+ `VAR _y = ${padT} + ${plotH} - IF(_linerange_${varIdx} = 0, ${plotH / 2}, ([S${i}] - _linemin_${varIdx}) / _linerange_${varIdx} * ${plotH}) `
 			+ `RETURN FORMAT(_x, "0.0") & "," & FORMAT(_y, "0.0"), `
 			+ `" ", ${xAxisRef}, ASC)`;
 
 		vars.push(`VAR ${pointsVar} = ${pointsExpr}`);
-		polylines.push(`"<polyline points='" & ${pointsVar} & "' fill='none' stroke='${color}' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/>"`);
+		const markerExpr = `IF(_linen_${varIdx} = 1, CONCATENATEX(${indexedTable}, `
+			+ `VAR _x = ${padL + plotW / 2} `
+			+ `VAR _y = ${padT} + ${plotH} - IF(_linerange_${varIdx} = 0, ${plotH / 2}, ([S${i}] - _linemin_${varIdx}) / _linerange_${varIdx} * ${plotH}) `
+			+ `RETURN "<circle cx='" & FORMAT(_x, "0.0") & "' cy='" & FORMAT(_y, "0.0") & "' r='3.5' fill='${color}'/>", ""), "")`;
+		vars.push(`VAR ${markerVar} = ${markerExpr}`);
+		polylines.push(`"<polyline points='" & ${pointsVar} & "' fill='none' stroke='${color}' stroke-width='${DASHBOARD_LINE_CHART.lineStrokeWidth}' stroke-linecap='round' stroke-linejoin='round'/>"`);
+		polylines.push(markerVar);
 	}
 
-	const svgContent = [gridLines, axisLines, ...polylines, xLabels].join(' & ');
-	const svgDax = `"<svg class='chart-svg' viewBox='0 0 ${W} ${H}' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:${H}px;display:block' role='img'>" & ${svgContent} & "</svg>"`;
+	const svgContent = [gridLines, axisLines, ...polylines, legend, xLabels].filter(Boolean).join(' & ');
+	const svgDax = `"<svg class='chart-svg' viewBox='0 0 ${W} ${svgH}' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:${svgH}px;display:block' role='img'>" & ${svgContent} & "</svg>"`;
 	vars.push(`VAR ${sp} = ${svgDax}`);
 	return sp;
 }
@@ -790,10 +1088,25 @@ function matchTableElement(html: string, bindAttr: string): RegExpMatchArray | n
 	return html.match(onTbodyRe);
 }
 
+function protectNonRenderedHtmlBlocks(html: string): { html: string; blocks: string[] } {
+	const blocks: string[] = [];
+	const protectedHtml = html.replace(/<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>|<template\b[\s\S]*?<\/template>|<noscript\b[\s\S]*?<\/noscript>/gi, block => {
+		const token = `__KW_PROTECTED_HTML_BLOCK_${blocks.length}__`;
+		blocks.push(block);
+		return token;
+	});
+	return { html: protectedHtml, blocks };
+}
+
+function restoreNonRenderedHtmlBlocks(html: string, blocks: string[]): string {
+	return html.replace(/__KW_PROTECTED_HTML_BLOCK_(\d+)__/g, (_match, indexText: string) => blocks[Number(indexText)] ?? '');
+}
+
 /**
  * Generate a DAX measure expression that builds HTML from a shared fact table.
  * All bindings aggregate from the single fact table declared in `model.fact`.
- * Slicer filter context propagates automatically through the star schema.
+ * Native slicer visuals bind directly to fact columns, so their filter context
+ * reaches the generated HTML measure without generated dimension relationships.
  */
 export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSource[]): string {
 	const provenance = parseProvenance(htmlCode);
@@ -808,20 +1121,23 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 
 	// Strip provenance script block (not needed in PBI)
 	let html = htmlCode.replace(/<script\s+type\s*=\s*["']application\/kw-provenance["'][^>]*>[\s\S]*?<\/script>/gi, '');
+	const protectedBlocks = protectNonRenderedHtmlBlocks(html);
+	html = protectedBlocks.html;
 
 	const vars: string[] = [];
 	let varIdx = 0;
 
 	// Process each binding — all reference the same fact table
 	for (const [key, binding] of Object.entries(provenance.bindings)) {
-		const bindAttr = `data-kw-bind\\s*=\\s*["']${key.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}["']`;
+		const bindAttr = bindingAttributePattern(key);
 
 		if (!binding.display) continue;
 		const display = binding.display;
 
 		if (display.type === 'scalar') {
+			if (!isValidScalarDisplay(display)) continue;
 			const scalarRe = new RegExp(
-				`(<([a-zA-Z][a-zA-Z0-9]*)\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</\\2>)`, 'i',
+				`(<([a-zA-Z][a-zA-Z0-9:-]*)\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</\\2>)`, 'i',
 			);
 			const scalarMatch = html.match(scalarRe);
 			if (!scalarMatch) continue;
@@ -836,6 +1152,7 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 		}
 
 		if (display.type === 'table') {
+			if (!isValidTableDisplay(display)) continue;
 			const tableMatch = matchTableElement(html, bindAttr);
 			if (!tableMatch) continue;
 
@@ -852,6 +1169,7 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 		}
 
 		if (display.type === 'pivot') {
+			if (!isValidPivotDisplay(display)) continue;
 			const tableMatch = matchTableElement(html, bindAttr);
 			if (!tableMatch) continue;
 
@@ -867,15 +1185,16 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 		}
 
 		if (display.type === 'bar' || display.type === 'pie' || display.type === 'line') {
+			if (!isValidDashboardChartDisplay(display)) continue;
 			const chartRe = new RegExp(
-				`(<([a-zA-Z][a-zA-Z0-9]*)\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</\\2>)`, 'i',
+				`(<([a-zA-Z][a-zA-Z0-9:-]*)\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</\\2>)`, 'i',
 			);
 			const chartMatch = html.match(chartRe);
 			if (!chartMatch) continue;
 
 			let markerName: string;
-			if (display.type === 'bar') markerName = generateBarChartDax(factTable, display as BarDisplay, varIdx, vars);
-			else if (display.type === 'pie') markerName = generatePieChartDax(factTable, display as PieDisplay, varIdx, vars);
+			if (display.type === 'bar') markerName = generateBarChartDax(factTable, display as BarDisplay, varIdx, vars, factDs);
+			else if (display.type === 'pie') markerName = generatePieChartDax(factTable, display as PieDisplay, varIdx, vars, factDs);
 			else markerName = generateLineChartDax(factTable, display as LineDisplay, varIdx, vars, factDs);
 
 			html = html.replace(chartMatch[0], () => `${chartMatch[1]}{{${markerName}}}${chartMatch[4]}`);
@@ -885,7 +1204,7 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 	}
 
 	if (vars.length === 0) {
-		return `"${escapeDaxString(html)}"`;
+		return `"${escapeDaxString(restoreNonRenderedHtmlBlocks(html, protectedBlocks.blocks))}"`;
 	}
 
 	// Build the RETURN expression: split HTML at markers, escape fragments, join with &
@@ -894,14 +1213,14 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 	let lastIndex = 0;
 
 	for (const m of html.matchAll(markerRe)) {
-		const fragment = html.substring(lastIndex, m.index);
+		const fragment = restoreNonRenderedHtmlBlocks(html.substring(lastIndex, m.index), protectedBlocks.blocks);
 		if (fragment) {
 			parts.push(`"${escapeDaxString(fragment)}"`);
 		}
 		parts.push(m[1]);
 		lastIndex = m.index! + m[0].length;
 	}
-	const trailing = html.substring(lastIndex);
+	const trailing = restoreNonRenderedHtmlBlocks(html.substring(lastIndex), protectedBlocks.blocks);
 	if (trailing) {
 		parts.push(`"${escapeDaxString(trailing)}"`);
 	}
@@ -1145,7 +1464,8 @@ function generateModelTmdl(tableNames: string[], relationships: TmdlRelationship
 		lines.push(`ref table '${escapeTmdlName(name)}'`);
 	}
 
-	// Relationships (many-to-one from fact tables to dimension tables)
+	// Relationships are reserved for future generated-table scenarios; current
+	// dashboard slicers bind directly to fact columns and do not need them.
 	if (relationships.length > 0) {
 		lines.push('');
 		const esc = (s: string) => s.replace(/'/g, "''");
@@ -1546,6 +1866,8 @@ export async function exportHtmlToPowerBI(
 	input: PowerBiExportInput,
 	folderUri: vscode.Uri,
 ): Promise<void> {
+	validatePowerBiHtmlBindings(input.htmlCode, input.dataSources);
+
 	const projectName = input.projectName || sanitizeName(input.sectionName) || 'KustoHtmlDashboard';
 	const reportFolder = `${projectName}.Report`;
 	const modelFolder = `${projectName}.SemanticModel`;

@@ -6,6 +6,7 @@ import { readAllCachedSchemasFromDisk, readCachedSchemaFromDisk, searchCachedSch
 import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { KustoQueryClient } from './kustoClient';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
+import { getPowerBiHtmlValidationIssues, type PowerBiDataSource } from './powerBiExport';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper to extract tool input from invocation options
@@ -26,6 +27,34 @@ function getToolInput<T>(options: vscode.LanguageModelToolInvocationOptions<T> |
  */
 function unescapeLLMText(text: string): string {
 	return text.replace(/\\n/g, '\n').replace(/\\t/g, '\t');
+}
+
+function uniqueStrings(values: string[]): string[] {
+	return [...new Set(values.filter(value => !!value && value.trim().length > 0))];
+}
+
+function extractMarkdownSection(source: string, heading: string): string {
+	const escaped = heading.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+	const startMatch = new RegExp(`^## ${escaped}\\s*$`, 'm').exec(source);
+	if (!startMatch) return source;
+	const start = startMatch.index;
+	const rest = source.slice(start + startMatch[0].length);
+	const nextHeading = /^##\s+/m.exec(rest);
+	return source.slice(start, nextHeading ? start + startMatch[0].length + nextHeading.index : source.length).trim();
+}
+
+function getLegacyDashboardWarnings(htmlCode: string): string[] {
+	const warnings: string[] = [];
+	if (/\bbuild(?:Line|Pie|Bar)Chart\b|<svg\s+xmlns/i.test(htmlCode)) {
+		warnings.push('Legacy or manual chart rendering detected. When touching this dashboard, upgrade exportable visuals to provenance chart bindings plus KustoWorkbench.renderChart(bindingId).');
+	}
+	if (/bindHtml\(\s*['"][^'"]*(?:chart|trend|pie|bar|line|by-os|daily)[^'"]*['"]/i.test(htmlCode)) {
+		warnings.push('Potential preview-only chart rendering via bindHtml() detected. Exportable charts should use data-kw-bind targets backed by provenance display specs and KustoWorkbench.renderChart().');
+	}
+	if (/document\.getElementById\s*\(|querySelector\(\s*['"]#/i.test(htmlCode)) {
+		warnings.push('ID-based DOM binding detected. Dashboard data values should bind through data-kw-bind plus KustoWorkbench.bind(), bindHtml(), or renderChart() so Power BI export can resolve them.');
+	}
+	return warnings;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -238,6 +267,44 @@ export interface ConfigureHtmlSectionInput {
 	code?: string;
 	/** Section mode: 'code' for editor, 'preview' for rendered HTML */
 	mode?: 'code' | 'preview';
+}
+
+export interface GetHtmlDashboardGuideInput {
+	/** Which portion of the dashboard guide to return. */
+	mode?: 'checklist' | 'template' | 'full';
+}
+
+export interface ValidateHtmlDashboardInput {
+	/** The ID of the HTML section to validate. */
+	sectionId: string;
+}
+
+interface HtmlDashboardContextResult {
+	success?: boolean;
+	sectionId?: string;
+	name?: string;
+	code?: string;
+	previewHeight?: number;
+	hasProvenance?: boolean;
+	bindingCount?: number;
+	dataSources?: PowerBiDataSource[];
+	factColumns?: Array<{ name: string; type: string }>;
+	error?: string;
+}
+
+export interface ValidateHtmlDashboardResult {
+	success: boolean;
+	valid: boolean;
+	sectionId: string;
+	issues: string[];
+	warnings: string[];
+	hasProvenance: boolean;
+	bindingCount: number;
+	dataSourceCount: number;
+	factColumns: Array<{ name: string; type: string }>;
+	filePath?: string;
+	fileName?: string;
+	error?: string;
 }
 
 export interface CreateFileInput {
@@ -807,6 +874,97 @@ export class KustoWorkbenchToolOrchestrator {
 			code: input.code,
 			mode: input.mode,
 		});
+	}
+
+	async getHtmlDashboardGuide(input: GetHtmlDashboardGuideInput): Promise<{ mode: 'checklist' | 'template' | 'full'; content: string }> {
+		const mode = input.mode || 'checklist';
+		const guideUri = vscode.Uri.joinPath(this.context.extensionUri, 'copilot-instructions', 'html-dashboard-rules.md');
+		const raw = await vscode.workspace.fs.readFile(guideUri);
+		const guide = Buffer.from(raw).toString('utf8');
+		let content = guide;
+		if (mode === 'checklist') {
+			content = extractMarkdownSection(guide, 'Dashboard Checklist');
+		} else if (mode === 'template') {
+			content = extractMarkdownSection(guide, 'Starter Template');
+		}
+		return { mode, content };
+	}
+
+	async validateHtmlDashboard(input: ValidateHtmlDashboardInput): Promise<ValidateHtmlDashboardResult> {
+		const sectionId = (input.sectionId || '').trim();
+		if (!sectionId) {
+			return {
+				success: false,
+				valid: false,
+				sectionId: '',
+				issues: ['sectionId is required.'],
+				warnings: [],
+				hasProvenance: false,
+				bindingCount: 0,
+				dataSourceCount: 0,
+				factColumns: [],
+				error: 'sectionId is required.',
+			};
+		}
+
+		let context: HtmlDashboardContextResult;
+		try {
+			context = await this.sendToWebview<HtmlDashboardContextResult>('toolGetHtmlDashboardContext', { sectionId });
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			return {
+				success: false,
+				valid: false,
+				sectionId,
+				issues: [message],
+				warnings: [],
+				hasProvenance: false,
+				bindingCount: 0,
+				dataSourceCount: 0,
+				factColumns: [],
+				error: message,
+			};
+		}
+
+		const code = context.code || '';
+		const dataSources = Array.isArray(context.dataSources) ? context.dataSources : [];
+		const issues: string[] = [];
+		if (!context.success) issues.push(context.error || 'Unable to read HTML dashboard context.');
+		if (!code.trim()) issues.push('HTML section has no dashboard code.');
+		if (!context.hasProvenance) issues.push('Missing application/kw-provenance block. Upgrade this dashboard to the latest provenance contract before finalizing.');
+		if ((context.bindingCount || 0) === 0) issues.push('No provenance bindings found. Add bindings for every exportable scalar, table, pivot, and chart.');
+		if (dataSources.length === 0) issues.push('No runnable fact data source found. Run the fact query and ensure provenance model.fact.sectionId points at that query section.');
+		issues.push(...getPowerBiHtmlValidationIssues(code, dataSources));
+
+		let filePath: string | undefined;
+		let fileName: string | undefined;
+		try {
+			if (this.activeDocumentUri) {
+				const uri = vscode.Uri.parse(this.activeDocumentUri);
+				if (uri.scheme === 'file') {
+					filePath = uri.fsPath;
+					fileName = path.basename(uri.fsPath);
+				}
+			}
+		} catch {
+			// Ignore malformed active document URI.
+		}
+
+		const uniqueIssues = uniqueStrings(issues);
+		return {
+			success: !!context.success,
+			valid: !!context.success && uniqueIssues.length === 0,
+			sectionId,
+			issues: uniqueIssues,
+			warnings: uniqueStrings(getLegacyDashboardWarnings(code)),
+			hasProvenance: !!context.hasProvenance,
+			bindingCount: context.bindingCount || 0,
+			dataSourceCount: dataSources.length,
+			factColumns: context.factColumns || [],
+			filePath,
+			fileName,
+			...(context.error ? { error: context.error } : {}),
+		};
 	}
 
 	async delegateToKustoWorkbenchCopilot(input: DelegateToKustoWorkbenchCopilotInput): Promise<{
@@ -1463,6 +1621,66 @@ export class ConfigureHtmlSectionTool implements vscode.LanguageModelTool<Config
 	}
 }
 
+export class GetHtmlDashboardGuideTool implements vscode.LanguageModelTool<GetHtmlDashboardGuideInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<GetHtmlDashboardGuideInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		try {
+			const result = await this.orchestrator.getHtmlDashboardGuide(getToolInput(options));
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(result.content)
+			]);
+		} catch (err) {
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
+			]);
+		}
+	}
+
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<GetHtmlDashboardGuideInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.PreparedToolInvocation> {
+		const input = getToolInput(options);
+		return {
+			invocationMessage: `Reading HTML dashboard guide (${input?.mode || 'checklist'})...`
+		};
+	}
+}
+
+export class ValidateHtmlDashboardTool implements vscode.LanguageModelTool<ValidateHtmlDashboardInput> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<ValidateHtmlDashboardInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		try {
+			const result = await this.orchestrator.validateHtmlDashboard(getToolInput(options));
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+			]);
+		} catch (err) {
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
+			]);
+		}
+	}
+
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<ValidateHtmlDashboardInput>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.PreparedToolInvocation> {
+		const input = getToolInput(options);
+		return {
+			invocationMessage: `Validating HTML dashboard ${input?.sectionId || 'unknown'}...`
+		};
+	}
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // Registration helper
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1583,6 +1801,8 @@ export function registerKustoWorkbenchTools(
 		vscode.lm.registerTool('kusto-workbench_configure-chart', new ConfigureChartTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_configure-transformation', new ConfigureTransformationTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_configure-html-section', new ConfigureHtmlSectionTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_get-html-dashboard-guide', new GetHtmlDashboardGuideTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_validate-html-dashboard', new ValidateHtmlDashboardTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_ask-kusto-copilot', new DelegateToKustoWorkbenchCopilotTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_create-file', new CreateFileTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_manage-development-notes', new ManageDevelopmentNotesTool(orchestrator)),

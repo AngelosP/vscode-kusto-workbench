@@ -32,7 +32,7 @@ For architecture details, file inventories, and design rationale, see [ARCHITECT
 ## Testing Guidelines
 
 - When given an example of a KQL query where the extension behaves incorrectly, **first create a regression test** that catches the problem, then fix the code, then verify the test passes, then verify all tests pass.
-- For HTML dashboard, slicer, Power BI export, or Power BI publish changes, add focused coverage in the existing webview/host suites when possible. The usual starting points are `tests/webview/host/powerBiExport.test.ts`, `tests/webview/kw-html-section-slicer.test.ts`, and `tests/webview/host/message-protocol.test.ts`.
+- For HTML dashboard, slicer, Power BI export, Power BI publish, dashboard prompt/tool, or exported skill template changes, add focused coverage in the existing webview/host suites when possible. The usual starting points are `tests/webview/host/powerBiExport.test.ts`, `tests/webview/kw-html-section-slicer.test.ts`, `tests/webview/host/message-protocol.test.ts`, and `tests/webview/host/skill-template.test.ts`.
 - Integration tests (`tests/integration/`) run inside VS Code's extension host with full API access.
 - Webview unit tests (`tests/webview/`) run via Vitest without VS Code.
 - E2E tests (`tests/e2e/`) use `vscode-extension-tester` (Selenium). Run with `npm run test:e2e`.
@@ -402,12 +402,15 @@ Use this checklist when changing `kw-html-section`, dashboard prompts/tools, `po
 
 1. **Preserve provenance v1 compatibility.** Dashboards use `<script type="application/kw-provenance">` with `model.fact`, optional `model.dimensions`, and `bindings`. Treat schema changes as compatibility-sensitive.
 2. **Use `data-kw-bind` for exportable values.** Preview JavaScript can enhance the dashboard, but Power BI output is generated from provenance bindings and `data-kw-bind` targets. JS-only DOM updates do not become Power BI visuals.
-3. **Keep slicer semantics consistent.** Preview slicers are derived from provenance dimensions, filter the fact data client-side, and compose with AND semantics. Power BI export should generate equivalent native slicer tables/visuals where supported.
-4. **Document and test new binding shapes.** If adding scalar/table/pivot/chart display modes or `preAggregate` behavior, cover DAX generation and rendered HTML/SVG output in `powerBiExport.test.ts`.
-5. **Export `.pbip`/PBIR/TMDL, not `.pbix`.** Do not describe or implement this path as direct `.pbix` generation. The project uses the marketplace-signed HTML Content visual rather than importing a local `.pbiviz` file.
-6. **Maintain DirectQuery compatibility.** Generated model queries should continue to use Kusto `AzureDataExplorer.Contents` sources and stable table/column naming.
-7. **Preserve Fabric publish/update behavior.** Publishing must support create-new and update-existing flows, item existence checks, stored publish metadata, and non-fatal refresh schedule failures.
-8. **Keep host/webview contracts typed.** Any new export/publish message must be added to both `queryEditorTypes.ts` and `webview-messages.ts`, and covered by `message-protocol.test.ts`.
+3. **Keep exportable chart parity explicit.** HTML dashboard charts should use `KustoWorkbench.renderChart(bindingId)` in preview and provenance chart bindings for export. Preview SVG and Power BI DAX/SVG should share the same chart spec, palette, geometry, ordering, top-N, label, and legend semantics.
+4. **Keep slicer semantics consistent.** Preview slicers are derived from provenance dimensions, filter the fact data client-side, and compose with AND semantics. Power BI export should generate equivalent native slicer visuals bound to fact-table columns where supported.
+5. **Keep agent dashboard guidance current.** Dashboard authoring rules live in `copilot-instructions/html-dashboard-rules.md`, are exposed through `getHtmlDashboardGuide`, and should include upgrade-on-touch behavior for existing dashboards. Update `media/skill-template.md` and bump `TEMPLATE_VERSION` in `skillExport.ts` when exported skill behavior changes.
+6. **Validate through the export path.** Agent-facing validation should reuse the webview export context and the shared Power BI validation collector so it matches actual export/publish behavior.
+7. **Document and test new binding shapes.** If adding scalar/table/pivot/chart display modes or `preAggregate` behavior, cover DAX generation and rendered HTML/SVG output in `powerBiExport.test.ts` and preview bridge behavior in webview tests.
+8. **Export `.pbip`/PBIR/TMDL, not `.pbix`.** Do not describe or implement this path as direct `.pbix` generation. The project uses the marketplace-signed HTML Content visual rather than importing a local `.pbiviz` file.
+9. **Maintain DirectQuery compatibility.** Generated model queries should continue to use Kusto `AzureDataExplorer.Contents` sources and stable table/column naming.
+10. **Preserve Fabric publish/update behavior.** Publishing must support create-new and update-existing flows, item existence checks, stored publish metadata, and non-fatal refresh schedule failures.
+11. **Keep host/webview contracts typed.** Any new export/publish message must be added to both `queryEditorTypes.ts` and `webview-messages.ts`, and covered by `message-protocol.test.ts`. Tool-framework messages that intentionally use generic `toolResponse` still need protocol inventory coverage.
 
 ---
 

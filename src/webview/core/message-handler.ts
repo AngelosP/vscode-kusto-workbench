@@ -2351,6 +2351,25 @@ window.addEventListener('message', async (event: any) => {
 			}
 			break;
 
+		case 'toolGetHtmlDashboardContext':
+			try {
+				const requestId = String(message.requestId || '');
+				const sectionId = String(message.sectionId || '');
+				let result: any = { success: false, sectionId, error: 'HTML section not found or does not support dashboard context.' };
+				try {
+					const el = document.getElementById(sectionId) as any;
+					if (el && typeof el.getDashboardExportContext === 'function') {
+						result = { success: true, ...el.getDashboardExportContext() };
+					}
+				} catch (err: any) {
+					result = { success: false, sectionId, error: err?.message || String(err) };
+				}
+				postMessageToHost({ type: 'toolResponse', requestId, result, error: result.success ? undefined : result.error });
+			} catch (err: any) {
+				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
+			}
+			break;
+
 		// ── SQL tool messages ───────────────────────────────────────────
 
 		case 'toolConfigureSqlSection':
