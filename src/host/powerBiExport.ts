@@ -114,7 +114,9 @@ type ChartDisplay = BarDisplay | LineDisplay | PieDisplay;
 const CHART_COLORS = ['#FFC20A', '#0C7BDC', '#4819B1', '#EE6914', '#8E88E8', '#A0DACF', '#04F704', '#4C4B54', '#D81B60', '#5F6B6D'];
 
 interface ModelFact { sectionId: string; sectionName: string }
-interface ModelDimension { column: string; label?: string; mode?: 'dropdown' | 'list' | 'between' }
+export interface ModelDimension { column: string; label?: string; mode?: 'dropdown' | 'list' | 'between' }
+
+export interface ResolvedSlicer { tableName: string; columnName: string; mode: 'dropdown' | 'list' | 'between' }
 
 interface ProvenanceBinding {
 	display?: ScalarDisplay | TableDisplay | PivotDisplay | ChartDisplay;
@@ -136,6 +138,20 @@ function parseProvenance(htmlCode: string): Provenance | null {
 		if (!json.bindings || typeof json.bindings !== 'object') return null;
 		return { version: json.version ?? 1, model: json.model, bindings: json.bindings };
 	} catch { return null; }
+}
+
+export function resolveFactTableSlicers(factDs: PowerBiDataSource | undefined, dimensions: ModelDimension[]): ResolvedSlicer[] {
+	if (!factDs) return [];
+	const factTableName = sanitizeName(factDs.name);
+	const resolvedSlicers: ResolvedSlicer[] = [];
+	for (const dim of dimensions) {
+		const col = factDs.columns.find(c => c.name === dim.column);
+		if (!col) continue;
+		const colType = (col.type || '').toLowerCase();
+		const mode = dim.mode || (colType === 'datetime' || colType === 'date' ? 'between' : 'dropdown');
+		resolvedSlicers.push({ tableName: factTableName, columnName: dim.column, mode });
+	}
+	return resolvedSlicers;
 }
 
 // ── DAX aggregation mapping ─────────────────────────────────────────────────
@@ -188,6 +204,22 @@ function buildFormatExpr(valueExpr: string, format: string): string {
 		return `FORMAT(${valueExpr}, "${escapeDaxString(fmtWithoutPct)}") & "%"`;
 	}
 	return `FORMAT(${valueExpr}, "${escapeDaxString(format)}")`;
+}
+
+function foldDaxBinaryFunction(functionName: 'MIN' | 'MAX', expressions: string[]): string {
+	if (expressions.length === 0) return 'BLANK()';
+	return expressions.slice(1).reduce((acc, expr) => `${functionName}(${acc}, ${expr})`, expressions[0]);
+}
+
+function columnType(dataSource: PowerBiDataSource | undefined, colName: string): string {
+	return dataSource?.columns.find(c => c.name === colName)?.type?.toLowerCase() ?? '';
+}
+
+function lineAxisLabelExpr(valueExpr: string, colName: string, dataSource?: PowerBiDataSource): string {
+	const type = columnType(dataSource, colName);
+	if (type === 'datetime' || type === 'date') return `FORMAT(${valueExpr}, "yyyy-MM-dd")`;
+	if (isNumericKustoType(type)) return `FORMAT(${valueExpr}, "#,##0.##")`;
+	return valueExpr;
 }
 
 // ── Display-specific DAX generators (v1 — all aggregate from single fact table) ──
@@ -636,7 +668,7 @@ export function generatePieChartDax(factTable: string, display: PieDisplay, varI
  * Generate DAX for a line chart SVG.
  * Produces a `<polyline>` per series with equally-spaced x-axis points.
  */
-export function generateLineChartDax(factTable: string, display: LineDisplay, varIdx: number, vars: string[]): string {
+export function generateLineChartDax(factTable: string, display: LineDisplay, varIdx: number, vars: string[], dataSource?: PowerBiDataSource): string {
 	const tbl = escTable(factTable);
 	const dp = `_linedata_${varIdx}`;
 	const sp = `_line_${varIdx}`;
@@ -679,25 +711,37 @@ export function generateLineChartDax(factTable: string, display: LineDisplay, va
 	}
 
 	// Chart geometry
-	const padL = 10;
-	const padR = 10;
-	const padT = 10;
-	const padB = 10;
-	const W = 400;
-	const H = 200;
+	const padL = 52;
+	const padR = 16;
+	const padT = 14;
+	const padB = 32;
+	const W = 760;
+	const H = 220;
 	const plotW = W - padL - padR;
 	const plotH = H - padT - padB;
 
 	// Compute min/max across all series for Y scaling
 	const allSeriesMinMax = display.series.map((_, i) => `[S${i}]`);
-	const minExprs = allSeriesMinMax.map(s => `MINX(${dp}, ${s})`).join(', ');
-	const maxExprs = allSeriesMinMax.map(s => `MAXX(${dp}, ${s})`).join(', ');
-	vars.push(`VAR _linemin_${varIdx} = MIN(${minExprs})`);
-	vars.push(`VAR _linemax_${varIdx} = MAX(${maxExprs})`);
+	const minExprs = allSeriesMinMax.map(s => `MINX(${dp}, ${s})`);
+	const maxExprs = allSeriesMinMax.map(s => `MAXX(${dp}, ${s})`);
+	vars.push(`VAR _linemin_${varIdx} = ${foldDaxBinaryFunction('MIN', minExprs)}`);
+	vars.push(`VAR _linemax_${varIdx} = ${foldDaxBinaryFunction('MAX', maxExprs)}`);
 	vars.push(`VAR _linerange_${varIdx} = IF(_linemax_${varIdx} = _linemin_${varIdx}, 1, _linemax_${varIdx} - _linemin_${varIdx})`);
 	vars.push(`VAR _linen_${varIdx} = COUNTROWS(${dp})`);
+	vars.push(`VAR _linexfirstlabel_${varIdx} = CONCATENATEX(TOPN(1, ${dp}, ${xAxisRef}, ASC), ${lineAxisLabelExpr(xAxisRef, display.xAxis, dataSource)}, "")`);
+	vars.push(`VAR _linexlastlabel_${varIdx} = CONCATENATEX(TOPN(1, ${dp}, ${xAxisRef}, DESC), ${lineAxisLabelExpr(xAxisRef, display.xAxis, dataSource)}, "")`);
 
 	const indexedTable = `ADDCOLUMNS(${dp}, "Idx", RANKX(${dp}, ${xAxisRef},, ASC, DENSE))`;
+	const gridLines = Array.from({ length: 5 }, (_, grid) => {
+		const y = padT + grid * plotH / 4;
+		const yValue = `_linemax_${varIdx} - (${grid} * _linerange_${varIdx} / 4)`;
+		return `"<line x1='${padL}' y1='${y}' x2='${W - padR}' y2='${y}' stroke='#E6E6E6' stroke-width='1'/>" `
+			+ `& "<text x='${padL - 8}' y='${y + 4}' text-anchor='end' font-size='11' fill='#605E5C'>" & ${daxXmlEscape(`FORMAT(${yValue}, "#,##0")`)} & "</text>"`;
+	}).join(' & ');
+	const axisLines = `"<line x1='${padL}' y1='${padT}' x2='${padL}' y2='${padT + plotH}' stroke='#C8C6C4' stroke-width='1'/>" `
+		+ `& "<line x1='${padL}' y1='${padT + plotH}' x2='${W - padR}' y2='${padT + plotH}' stroke='#C8C6C4' stroke-width='1'/>"`;
+	const xLabels = `"<text x='${padL}' y='${H - 10}' font-size='11' fill='#605E5C'>" & ${daxXmlEscape(`_linexfirstlabel_${varIdx}`)} & "</text>" `
+		+ `& "<text x='${W - padR}' y='${H - 10}' text-anchor='end' font-size='11' fill='#605E5C'>" & ${daxXmlEscape(`_linexlastlabel_${varIdx}`)} & "</text>"`;
 
 	// Generate one polyline per series
 	const polylines: string[] = [];
@@ -713,11 +757,11 @@ export function generateLineChartDax(factTable: string, display: LineDisplay, va
 			+ `" ", ${xAxisRef}, ASC)`;
 
 		vars.push(`VAR ${pointsVar} = ${pointsExpr}`);
-		polylines.push(`"<polyline points='" & ${pointsVar} & "' fill='none' stroke='${color}' stroke-width='2' stroke-linejoin='round'/>"`);
+		polylines.push(`"<polyline points='" & ${pointsVar} & "' fill='none' stroke='${color}' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/>"`);
 	}
 
-	const svgContent = polylines.join(' & ');
-	const svgDax = `"<svg viewBox='0 0 ${W} ${H}' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:auto'>" & ${svgContent} & "</svg>"`;
+	const svgContent = [gridLines, axisLines, ...polylines, xLabels].join(' & ');
+	const svgDax = `"<svg class='chart-svg' viewBox='0 0 ${W} ${H}' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:${H}px;display:block' role='img'>" & ${svgContent} & "</svg>"`;
 	vars.push(`VAR ${sp} = ${svgDax}`);
 	return sp;
 }
@@ -832,7 +876,7 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 			let markerName: string;
 			if (display.type === 'bar') markerName = generateBarChartDax(factTable, display as BarDisplay, varIdx, vars);
 			else if (display.type === 'pie') markerName = generatePieChartDax(factTable, display as PieDisplay, varIdx, vars);
-			else markerName = generateLineChartDax(factTable, display as LineDisplay, varIdx, vars);
+			else markerName = generateLineChartDax(factTable, display as LineDisplay, varIdx, vars, factDs);
 
 			html = html.replace(chartMatch[0], () => `${chartMatch[1]}{{${markerName}}}${chartMatch[4]}`);
 			varIdx++;
@@ -1523,25 +1567,10 @@ export async function exportHtmlToPowerBI(
 		: input.dataSources[0];
 	const factTableName = factDs ? sanitizeName(factDs.name) : '';
 
-	// Build dimension tables + relationships from fact → dim
-	interface ResolvedSlicer { tableName: string; columnName: string; mode: 'dropdown' | 'list' | 'between' }
-	const resolvedSlicers: ResolvedSlicer[] = [];
-	const dimTables: Array<{ name: string; columnName: string; columnType: string; clusterUrl: string; database: string; sourceQuery: string }> = [];
-	const relationships: TmdlRelationship[] = [];
-
-	if (factDs) {
-		for (const dim of dimensions) {
-			const col = factDs.columns.find(c => c.name === dim.column);
-			if (!col) continue;
-			const colType = (col.type || '').toLowerCase();
-			const mode = dim.mode || (colType === 'datetime' || colType === 'date' ? 'between' : 'dropdown');
-			const dimName = `dim_${sanitizeName(dim.column)}`;
-
-			dimTables.push({ name: dimName, columnName: dim.column, columnType: col.type, clusterUrl: factDs.clusterUrl, database: factDs.database, sourceQuery: factDs.query });
-			relationships.push({ fromTable: factTableName, fromColumn: dim.column, toTable: dimName, toColumn: dim.column });
-			resolvedSlicers.push({ tableName: dimName, columnName: dim.column, mode });
-		}
-	}
+	// Build slicer bindings directly on the fact table. Avoid generated DirectQuery
+	// dimension tables here: ADX DirectQuery can fail when Power BI composes
+	// joins over native KQL queries that contain `let` statements.
+	const resolvedSlicers = resolveFactTableSlicers(factDs, dimensions);
 
 	const SLICER_ROW_HEIGHT = 60;
 	const SLICER_ROW_MARGIN = 20;
@@ -1622,12 +1651,10 @@ export async function exportHtmlToPowerBI(
 		}
 	}
 
-	// ── Semantic model (star schema: one fact table + dim tables + relationships)
+	// ── Semantic model (fact tables only; slicers bind directly to fact columns)
 	await write(`${modelFolder}/definition.pbism`, generateDefinitionPbism());
 	const factTableNames = input.dataSources.map(ds => sanitizeName(ds.name));
-	const dimTableNamesList = dimTables.map(d => d.name);
-	const allTableNames = [...factTableNames, ...dimTableNamesList];
-	await write(`${modelFolder}/definition/model.tmdl`, generateModelTmdl(allTableNames, relationships));
+	await write(`${modelFolder}/definition/model.tmdl`, generateModelTmdl(factTableNames));
 	await write(`${modelFolder}/definition/database.tmdl`, generateDatabaseTmdl());
 	await write(`${modelFolder}/definition/cultures/en-US.tmdl`, generateCultureTmdl());
 
@@ -1635,14 +1662,6 @@ export async function exportHtmlToPowerBI(
 	for (const ds of input.dataSources) {
 		const tableName = sanitizeName(ds.name);
 		await write(`${modelFolder}/definition/tables/${tableName}.tmdl`, generateTableTmdl(ds));
-	}
-
-	// ── Dimension tables (Kusto DirectQuery — distinct values for slicer cross-filtering)
-	for (const dim of dimTables) {
-		await write(
-			`${modelFolder}/definition/tables/${dim.name}.tmdl`,
-			generateDimTableTmdl(dim.name, dim.columnName, dim.columnType, dim.clusterUrl, dim.database, dim.sourceQuery),
-		);
 	}
 
 	// ── HTML measures table (DAX measure containing the dashboard HTML/JS)

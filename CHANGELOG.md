@@ -3,10 +3,13 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [4.3.0] - Unreleased
+## [4.3.0] - 2026-04-27
 
 * Improved performance when dealing with large datasets
 * Improved E2E test coverage
+* Bugs
+    * Export to Power BI handles slicers better.
+    * Export to Power BI handles line charts better.
 
 ## [4.2.1] - 2026-04-25
 

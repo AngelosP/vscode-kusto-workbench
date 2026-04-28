@@ -8,6 +8,7 @@ import {
 	escapeDaxColumnRef,
 	daxColumnExpr,
 	generateDaxMeasure,
+	resolveFactTableSlicers,
 	resolveCssVariables,
 	patchCssForPbiVisual,
 	type PowerBiDataSource,
@@ -883,6 +884,28 @@ describe('generateDaxMeasure — line chart', () => {
 		expect(result).toContain('<svg');
 	});
 
+	it('exports line charts with preview-like fixed sizing and axes', () => {
+		const html = makeV1Html(
+			{
+				'trend': {
+					display: {
+						type: 'line', xAxis: 'Day',
+						series: [{ agg: 'SUM', column: 'Actions', label: 'Actions' }],
+					},
+				},
+			},
+			'<div data-kw-bind="trend"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain("<svg class='chart-svg' viewBox='0 0 760 220'");
+		expect(result).toContain("style='width:100%;height:220px;display:block'");
+		expect(result).toContain("<line x1='52'");
+		expect(result).toContain('text-anchor=');
+		expect(result).toContain('_linexfirstlabel_0');
+		expect(result).toContain('_linexlastlabel_0');
+		expect(result).toContain('stroke-linecap=');
+	});
+
 	it('computes Y scaling with MIN/MAX/range guards', () => {
 		const html = makeV1Html(
 			{
@@ -940,6 +963,29 @@ describe('generateDaxMeasure — line chart', () => {
 		// Each series gets a distinct points VAR
 		expect(result).toContain('_linepts_0_0');
 		expect(result).toContain('_linepts_0_1');
+	});
+
+	it('nests line chart Y scale MIN/MAX for three or more series', () => {
+		const html = makeV1Html(
+			{
+				'trend': {
+					display: {
+						type: 'line', xAxis: 'Day',
+						series: [
+							{ agg: 'SUM', column: 'InternalActions', label: 'Internal' },
+							{ agg: 'SUM', column: 'ExternalEnterpriseActions', label: 'Enterprise' },
+							{ agg: 'SUM', column: 'ExternalNonEnterpriseActions', label: 'Non-enterprise' },
+						],
+					},
+				},
+			},
+			'<div data-kw-bind="trend"></div>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+		expect(result).toContain('VAR _linemin_0 = MIN(MIN(MINX(_linedata_0, [S0]), MINX(_linedata_0, [S1])), MINX(_linedata_0, [S2]))');
+		expect(result).toContain('VAR _linemax_0 = MAX(MAX(MAXX(_linedata_0, [S0]), MAXX(_linedata_0, [S1])), MAXX(_linedata_0, [S2]))');
+		expect(result).not.toContain('VAR _linemin_0 = MIN(MINX(_linedata_0, [S0]), MINX(_linedata_0, [S1]), MINX(_linedata_0, [S2]))');
+		expect(result).not.toContain('VAR _linemax_0 = MAX(MAXX(_linedata_0, [S0]), MAXX(_linedata_0, [S1]), MAXX(_linedata_0, [S2]))');
 	});
 });
 
@@ -1293,6 +1339,39 @@ describe('generateHtmlContentVisualJson — with yOffset', () => {
 		const json = JSON.parse(generateHtmlContentVisualJson('vis1', 720, 100));
 		expect(json.position.width).toBe(1450);
 		expect(json.position.x).toBe(25);
+	});
+});
+
+describe('resolveFactTableSlicers', () => {
+	it('binds slicers directly to the fact table to avoid DirectQuery joins over let queries', () => {
+		const slicers = resolveFactTableSlicers({
+			...factDataSource,
+			name: 'TypeSpec VS Overall-Driven User Type Fact',
+			columns: [
+				{ name: 'Day', type: 'datetime' },
+				{ name: 'Version', type: 'string' },
+				{ name: 'UserType', type: 'string' },
+			],
+		}, [
+			{ column: 'Day', mode: 'between' },
+			{ column: 'Version' },
+			{ column: 'UserType' },
+		]);
+
+		expect(slicers).toEqual([
+			{ tableName: 'TypeSpec_VS_Overall-Driven_User_Type_Fact', columnName: 'Day', mode: 'between' },
+			{ tableName: 'TypeSpec_VS_Overall-Driven_User_Type_Fact', columnName: 'Version', mode: 'dropdown' },
+			{ tableName: 'TypeSpec_VS_Overall-Driven_User_Type_Fact', columnName: 'UserType', mode: 'dropdown' },
+		]);
+		expect(slicers.every(s => !s.tableName.startsWith('dim_'))).toBe(true);
+	});
+
+	it('skips provenance dimensions that are not projected by the fact query', () => {
+		const slicers = resolveFactTableSlicers(factDataSource, [
+			{ column: 'ClientName' },
+			{ column: 'MissingColumn' },
+		]);
+		expect(slicers.map(s => s.columnName)).toEqual(['ClientName']);
 	});
 });
 
