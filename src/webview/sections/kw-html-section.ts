@@ -167,6 +167,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _savedPreviewHeightPx: number | undefined;
 	/** Last content height reported by the preview iframe, independent of wrapper size. */
 	private _lastPreviewContentHeight = 0;
+	/** Pending resolver for an explicit iframe height request before export/publish. */
+	private _pendingPreviewHeightResolve: ((height: number | undefined) => void) | null = null;
 	/** Pending rAF id for window resize debounce. */
 	private _resizeRaf = 0;
 	/** Bound message handler for iframe height reports. */
@@ -370,25 +372,53 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		return undefined;
 	}
 
-	private _exportDashboard(): void {
+	private _requestFreshPreviewHeight(): Promise<number | undefined> {
+		const iframe = this.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+		const contentWindow = iframe?.contentWindow;
+		if (!contentWindow) return Promise.resolve(this._measurePreviewHeight());
+
+		return new Promise(resolve => {
+			let settled = false;
+			const finish = (height: number | undefined) => {
+				if (settled) return;
+				settled = true;
+				if (this._pendingPreviewHeightResolve === finish) this._pendingPreviewHeightResolve = null;
+				resolve(height ?? this._measurePreviewHeight());
+			};
+
+			this._pendingPreviewHeightResolve = finish;
+			try {
+				contentWindow.postMessage({ type: 'kw-html-request-height' }, '*');
+			} catch (e) {
+				console.error('[kusto]', e);
+				finish(undefined);
+				return;
+			}
+
+			window.setTimeout(() => finish(undefined), 350);
+		});
+	}
+
+	private async _exportDashboard(): Promise<void> {
 		const code = this._getCodeText();
 		if (!code.trim()) {
 			try { postMessageToHost({ type: 'showInfo', message: 'There is no HTML content to export.' }); } catch (e) { console.error('[kusto]', e); }
 			return;
 		}
+		const previewHeight = await this._requestFreshPreviewHeight();
 		try {
 			postMessageToHost({
 				type: 'exportDashboard',
 				boxId: this.boxId,
 				html: code,
 				suggestedFileName: this._name || '',
-				previewHeight: this._measurePreviewHeight(),
+				previewHeight,
 				dataSources: this._collectDataSourcesForPBI(),
 			});
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
-	private _publishToPowerBI(): void {
+	private async _publishToPowerBI(): Promise<void> {
 		const code = this._getCodeText();
 		if (!code.trim()) {
 			try { postMessageToHost({ type: 'showInfo', message: 'Write some HTML content before publishing to Power BI.' }); } catch (e) { console.error('[kusto]', e); }
@@ -401,7 +431,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			return;
 		}
 
-		this._openPublishDialog(code, dataSources, this._measurePreviewHeight(), this._name || 'KustoHtmlDashboard');
+		const previewHeight = await this._requestFreshPreviewHeight();
+		this._openPublishDialog(code, dataSources, previewHeight, this._name || 'KustoHtmlDashboard');
 	}
 
 	private _openPublishDialog(htmlCode: string, dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>, previewHeight: number | undefined, suggestedName: string): void {
@@ -1065,6 +1096,11 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				if (!Number.isFinite(h) || h <= 0) return;
 				this._lastPreviewContentHeight = Math.ceil(h);
 				this._applyPreviewFitHeight(this._lastPreviewContentHeight);
+				if (this._pendingPreviewHeightResolve) {
+					const resolve = this._pendingPreviewHeightResolve;
+					this._pendingPreviewHeightResolve = null;
+					resolve(this._lastPreviewContentHeight);
+				}
 				return;
 			}
 

@@ -8,6 +8,8 @@ type HeightSection = KwHtmlSection & {
 	_lastPreviewFitHeight: number;
 	_savedPreviewHeightPx?: number;
 	_measurePreviewHeight(): number | undefined;
+	_requestFreshPreviewHeight(): Promise<number | undefined>;
+	_handleIframeMessage(e: MessageEvent): void;
 };
 
 function makeProvenanceHtml(dimensions: object[]): string {
@@ -161,6 +163,32 @@ describe('HTML preview height reporting', () => {
 		section._savedPreviewHeightPx = 620;
 
 		expect(section._measurePreviewHeight()).toBe(920);
+	});
+
+	it('requests a fresh iframe height before export or publish uses the cached value', async () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		const contentWindow = { postMessage: (_message: unknown, _targetOrigin: string) => undefined };
+		let requestedMessage: unknown;
+		contentWindow.postMessage = (message: unknown) => { requestedMessage = message; };
+
+		Object.defineProperty(section, 'shadowRoot', {
+			value: {
+				getElementById: (id: string) => id === 'preview-iframe'
+					? { contentWindow }
+					: null,
+			},
+		});
+
+		const pending = section._requestFreshPreviewHeight();
+		expect(requestedMessage).toEqual({ type: 'kw-html-request-height' });
+
+		section._handleIframeMessage({
+			data: { type: 'kw-html-preview-height', h: 955 },
+			source: contentWindow,
+		} as unknown as MessageEvent);
+
+		await expect(pending).resolves.toBe(955);
+		expect(section._measurePreviewHeight()).toBe(955);
 	});
 
 	it('keeps robust body and rendered-element measurements in the injected iframe script', () => {
