@@ -846,7 +846,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 				const unsupportedBindings = findUnsupportedPowerBiBindings(htmlContent);
 				if (unsupportedBindings.length > 0) {
-					vscode.window.showWarningMessage(`Power BI export supports scalar, table, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`);
+					vscode.window.showWarningMessage(`Power BI export supports scalar, table, repeatedTable, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`);
 					return;
 				}
 
@@ -907,7 +907,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		try {
 			const unsupportedBindings = findUnsupportedPowerBiBindings(message.htmlCode);
 			if (unsupportedBindings.length > 0) {
-				const msg = `Power BI publish supports scalar, table, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`;
+				const msg = `Power BI publish supports scalar, table, repeatedTable, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`;
 				vscode.window.showWarningMessage(msg);
 				this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: false, error: msg });
 				return;

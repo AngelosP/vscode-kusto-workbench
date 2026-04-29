@@ -3,10 +3,18 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.5.1] - 2026-04-29
+
+* Added support for conditional formatting in HTML dashboard tables.
+* Added support for repeated tables in HTML dashboards that group by a dimension.
+* Added support for stacked barcharts with multiple colors.
+* Added support for embedding stacked barcharts inside table cells.
+
 ## [4.5.0] - 2026-04-28
 
 * Added support for generationg Power BI reports that use 'import' instead of 'direct query' for their data model.
 * Added validation step before publish to Power BI kicks off that warns the user about any parts of the dashboard that cannot be exported.
+* Added exportable repeated table dashboard bindings for grouped table sections that render consistently in VS Code preview and Power BI export.
 
 ## [4.4.1] - 2026-04-28
 

@@ -99,7 +99,7 @@ Workflow:
 1. Call `#getHtmlDashboardGuide` with `mode: "checklist"` before creating, editing, repairing, or upgrading a dashboard. Use `mode: "full"` for complex repairs and `mode: "template"` for a fresh dashboard skeleton.
 2. Create or identify the event-grain fact query with `#askKustoCopilot`. The query should return all columns needed for KPIs, tables, charts, and slicers.
 3. Add or identify the HTML section.
-4. Write HTML with `application/kw-provenance`, `data-kw-bind`, `KustoWorkbench.agg()`, `bind()`, `renderChart()`, and `renderTable()`. Use `bindHtml()` only for preview-only custom HTML that is not expected to survive Power BI export.
+4. Write HTML with `application/kw-provenance`, `data-kw-bind`, `KustoWorkbench.agg()`, `bind()`, `renderChart()`, `renderTable()`, and `renderRepeatedTable()`. Use `bindHtml()` only for preview-only custom HTML that is not expected to survive Power BI export.
 5. Configure the section with `#configureHtmlSection`.
 6. Call `#validateHtmlDashboard` for the HTML section. Fix all issues. Treat legacy/manual chart warnings as upgrade work when deterministic.
 7. Re-run validation after fixes, then switch to preview mode.
@@ -109,15 +109,15 @@ Upgrade on touch:
 * When the user asks you to modify an existing dashboard, upgrade it to the latest dashboard contracts, specs, and capabilities as part of the requested work.
 * Upgrade provenance, bindings, slicer dimensions, chart/table rendering, preview bridge usage, and responsive styling when the correct upgrade is deterministic.
 * Replace manual exportable chart rendering with provenance chart bindings plus `KustoWorkbench.renderChart(bindingId)`.
-* Replace generated exportable table bodies with provenance table bindings plus `KustoWorkbench.renderTable(bindingId)`.
+* Replace generated exportable table bodies with provenance table or repeated-table bindings plus `KustoWorkbench.renderTable(bindingId)` or `KustoWorkbench.renderRepeatedTable(bindingId)`.
 * Add or repair `data-kw-bind` targets so every exportable value can survive Power BI export.
 * Do this silently as part of the dashboard task. Ask the user only if the change would remove content, alter metric meaning, or require choosing between ambiguous fact models.
 
 Power BI readiness:
 
-* Supported export display types are `scalar`, `table`, `pivot`, `bar`, `pie`, and `line`.
+* Supported export display types are `scalar`, `table`, `repeatedTable`, `pivot`, `bar`, `pie`, and `line`.
 * Exportable charts must use `KustoWorkbench.renderChart(bindingId)`. Manual SVG, canvas, ECharts, D3, or `bindHtml()` charts are preview-only unless represented by provenance bindings.
-* Exportable tables must use `KustoWorkbench.renderTable(bindingId)`. Use `columns[].cellBar` for stacked status bars inside table cells; generated `<td>` cells from `bindHtml(...toTable())` are preview-only.
+* Exportable tables must use `KustoWorkbench.renderTable(bindingId)`. Exportable grouped/repeated table sections must use `KustoWorkbench.renderRepeatedTable(bindingId)` on a visible container. Use `columns[].cellBar` for stacked status bars inside table cells; generated `<td>` cells from `bindHtml(...toTable())` are preview-only.
 * The fact query must be event-grain and stable. Binding columns must exist in the fact query results.
 * Final dashboard work is not done until `#validateHtmlDashboard` is clean or you clearly explain the remaining blocker.
 

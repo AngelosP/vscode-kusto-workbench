@@ -8,10 +8,10 @@ Use this guide whenever you create, edit, repair, validate, or upgrade an HTML d
 2. Keep one fact query as the primary model whenever possible. A dashboard may have supporting query sections, but every exportable value must trace back through the provenance contract.
 3. Add or repair a `<script type="application/kw-provenance">` block before finalizing dashboard code.
 4. Use `version: 1`, a `model.fact.sectionId`, optional `model.dimensions`, and a `bindings` object. Each binding must define a `display` object with a supported `type` and the fields required by that display shape.
-5. Add matching `data-kw-bind="bindingId"` attributes for every exportable scalar, table, pivot, bar, pie, and line visual.
-6. Render exportable data through the dashboard bridge: `KustoWorkbench.bind(bindingId, value)`, `KustoWorkbench.renderChart(bindingId)`, and `KustoWorkbench.renderTable(bindingId)`. Use `bindHtml()` only for preview-only custom HTML that is not expected to survive Power BI export.
-7. Use only supported display types for Power BI export: `scalar`, `table`, `pivot`, `bar`, `pie`, and `line`.
-8. For exportable charts, call `KustoWorkbench.renderChart(bindingId)` into the matching `data-kw-bind` target. For exportable table bodies, including visual cells, call `KustoWorkbench.renderTable(bindingId)`. This keeps the preview and Power BI export path aligned.
+5. Add matching `data-kw-bind="bindingId"` attributes for every exportable scalar, table, repeated table, pivot, bar, pie, and line visual.
+6. Render exportable data through the dashboard bridge: `KustoWorkbench.bind(bindingId, value)`, `KustoWorkbench.renderChart(bindingId)`, `KustoWorkbench.renderTable(bindingId)`, and `KustoWorkbench.renderRepeatedTable(bindingId)`. Use `bindHtml()` only for preview-only custom HTML that is not expected to survive Power BI export.
+7. Use only supported display types for Power BI export: `scalar`, `table`, `repeatedTable`, `pivot`, `bar`, `pie`, and `line`.
+8. For exportable charts, call `KustoWorkbench.renderChart(bindingId)` into the matching `data-kw-bind` target. For exportable table bodies, including visual cells, call `KustoWorkbench.renderTable(bindingId)`. For exportable grouped/repeated table sections, call `KustoWorkbench.renderRepeatedTable(bindingId)` into a visible container target. This keeps the preview and Power BI export path aligned.
 9. Add slicers through `model.dimensions` in provenance. The preview injects matching slicer controls and filters the event-grain fact model before bindings compute values.
 10. If the dashboard already exists, upgrade it while you work on it. Bring provenance, bindings, slicers, chart rendering, and styling up to the latest contract and capabilities as part of the requested task. Do this silently when deterministic; ask the user only if the upgrade would remove content, change business meaning, or require choosing between ambiguous models.
 11. After configuring the HTML section, call `validateHtmlDashboard(sectionId)`. Fix every issue. Treat warnings about legacy/manual chart patterns as upgrade work whenever the user is asking you to modify that dashboard.
@@ -164,7 +164,7 @@ Required shape:
   },
   "bindings": {
     "bindingId": {
-      "display": { "type": "scalar | table | pivot | bar | pie | line" }
+      "display": { "type": "scalar | table | repeatedTable | pivot | bar | pie | line" }
     }
   }
 }
@@ -183,6 +183,7 @@ Supported Power BI export display types:
 
 - `scalar`: one value. Use `display.agg`, optional `display.column`, and optional `display.format`.
 - `table`: grouped table. Use `display.groupBy`, `display.columns[]`, optional `orderBy`, `top`, and `preAggregate`. `top` requires `orderBy` so preview and export choose the same rows. Use `columns[].cellBar` for exportable stacked bars inside table cells.
+- `repeatedTable`: repeated grouped table sections. Use `repeatBy`, optional `repeatColumns`, optional `repeatOrderBy`, optional `repeatTop`, and `table: { groupBy, columns, orderBy?, top? }`. Bind it to a visible container such as `<div data-kw-bind="errorsByEvent"></div>` and call `KustoWorkbench.renderRepeatedTable(bindingId)`.
 - `pivot`: matrix-style grouping. Use `rows`, `pivotBy`, `pivotValues`, `value`, `agg`, optional `format`, `total`, and `preAggregate`.
 - `bar`: categorical comparison or segmented status distribution. Use `groupBy` plus either `value: { agg, column?, format? }`, `segments`, `value` with `thresholdBands`, or `value` with `colorRules`. Optional fields: `top`, `colors`, `variant`, `showValueLabels`, `showCategoryLabels`, and `preAggregate`. Use `scale: "normalized100"` only with `segments`.
 - `pie`: part-to-whole categorical chart. Use `groupBy`, `value: { agg, column?, format? }`, optional `top`, `colors`, and `preAggregate`.
@@ -199,6 +200,10 @@ Do not use unsupported display names in provenance. The Power BI exporter reject
 - Use `orderBy` whenever you use `top`; table specs with `top` but no `orderBy` are invalid.
 - Add stacked bars inside cells with a visual-only column that has `name`, optional `header`, and `cellBar`. Do not add `agg`, `sourceColumn`, or `format` to the cell-bar column itself.
 - Cell bars currently support stacked `segments` only. Use standalone `bar` displays for threshold bands, whole-bar color rules, legends, or axis labels.
+- Add conditional table-cell formatting with `columns[].cellFormat` on a normal grouped or aggregate column. Use this for percentage/status badges or whole-cell highlighting that must preview and export to Power BI the same way.
+- `cellFormat.rules[]` are first-match numeric threshold rules over raw summarized values, not the formatted display string. For percent-like columns, compare the query's raw scale: use `0.8` if the query returns fractions, or `80` if it returns percentage points.
+- `cellFormat.mode` defaults to `"badge"`; use `"cell"` to apply the style to the whole `<td>`. Supported inline styles are `backgroundColor`, `color`, and `fontWeight` (`"normal"`, `"600"`, or `"bold"`). Keep colors simple hex/rgb/hsl/named colors.
+- Do not combine `cellFormat` and `cellBar` on one column. Do not use `cellFormat` in `repeatColumns`; use it in the inner repeated table's `table.columns` instead.
 
 Example table-cell status bar:
 
@@ -239,6 +244,67 @@ KustoWorkbench.renderTable('serviceHealth');
 ```
 
 `scale: "normalized100"` makes each nonzero row fill the cell width and show that row's proportions. `scale: "relative"` scales each row against the largest rendered row total.
+
+Example conditional percentage badge:
+
+```json
+{
+  "name": "SuccessRate",
+  "header": "Success %",
+  "agg": "AVG",
+  "sourceColumn": "SuccessRate",
+  "format": "0.##%",
+  "cellFormat": {
+    "mode": "badge",
+    "rules": [
+      { "operator": "<", "value": 80, "backgroundColor": "#FDE7E9", "color": "#C62828", "fontWeight": "600" }
+    ],
+    "defaultStyle": { "backgroundColor": "#E7F3E7", "color": "#2E7D32", "fontWeight": "600" }
+  }
+}
+```
+
+## Repeated Table Rules
+
+- Use `KustoWorkbench.renderRepeatedTable(bindingId)` for every exportable `repeatedTable` binding.
+- Bind repeated tables to a visible non-table container, such as `<div data-kw-bind="errorsByEvent"></div>`. Do not bind them to `<table>`, `<tbody>`, hidden elements, or `<template>`.
+- Use `repeatBy` for the outer group columns and `repeatColumns` for header values or aggregate counts shown above each inner table. If `repeatColumns` is omitted, the repeat group columns are shown.
+- Use `table.groupBy` and `table.columns` for the inner table rows. Inner table columns follow the same rules as normal table columns, including `columns[].cellBar` and `columns[].cellFormat`.
+- Use `repeatOrderBy` whenever you use `repeatTop`; use `table.orderBy` whenever the inner `table` uses `top`.
+
+Example repeated table:
+
+```html
+<div data-kw-bind="errorsByEvent"></div>
+<script>
+KustoWorkbench.renderRepeatedTable('errorsByEvent');
+</script>
+```
+
+```json
+{
+  "display": {
+    "type": "repeatedTable",
+    "repeatBy": ["EventName"],
+    "repeatColumns": [
+      { "name": "EventName", "header": "Event" },
+      { "name": "Occurrences", "agg": "COUNT", "header": "Occurrences", "format": "#,##0" }
+    ],
+    "repeatOrderBy": { "column": "Occurrences", "direction": "desc" },
+    "repeatTop": 10,
+    "table": {
+      "groupBy": ["Message", "ErrorCode"],
+      "columns": [
+        { "name": "Message", "header": "Message" },
+        { "name": "ErrorCode", "header": "Code" },
+        { "name": "Rows", "agg": "COUNT", "header": "Rows", "format": "#,##0" }
+      ],
+      "orderBy": { "column": "Rows", "direction": "desc" },
+      "top": 5
+    }
+  }
+}
+```
 
 ## Chart Rules
 
@@ -358,7 +424,7 @@ Rules:
 
 ## PreAggregate
 
-Use `preAggregate` when a binding needs a two-level aggregation, such as distinct skills per session followed by session-count distribution. Supported on table, pivot, bar, pie, and line bindings.
+Use `preAggregate` when a binding needs a two-level aggregation, such as distinct skills per session followed by session-count distribution. Supported on table, repeatedTable, pivot, bar, pie, and line bindings.
 
 ```json
 {

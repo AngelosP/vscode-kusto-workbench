@@ -6,6 +6,7 @@ import { DASHBOARD_BAR_CHART, DASHBOARD_LINE_CHART } from '../../src/shared/dash
 interface KustoWorkbenchRuntime {
 	renderChart(bindingId: string, chartSpec?: unknown): void;
 	renderTable(bindingId: string, tableSpec?: unknown): void;
+	renderRepeatedTable(bindingId: string, repeatedTableSpec?: unknown): void;
 	_notify(data: unknown): void;
 	agg(): { avg(column: string): number };
 }
@@ -134,6 +135,93 @@ describe('KustoWorkbench.renderTable preview bridge', () => {
 		expect(rects.map(rect => rect.getAttribute('width'))).toEqual(['160', '80']);
 	});
 
+	it('renders conditional badge cells from raw percent values', () => {
+		const runtime = installBridge(
+			{
+				'quality-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS' },
+							{
+								name: 'FailureRate',
+								agg: 'AVG',
+								sourceColumn: 'FailureRate',
+								format: '0.##%',
+								cellFormat: {
+									rules: [{ operator: '<', value: 0.05, backgroundColor: '#E7F3E7', color: '#2E7D32' }],
+									defaultStyle: { backgroundColor: '#FDE7E9', color: '#C62828' },
+								},
+							},
+						],
+					},
+				},
+			},
+			'<table data-kw-bind="quality-table"></table>',
+			[
+				['2026-04-01T00:00:00Z', 'Linux <LTS>', 'd1', 's1', 'A', 0, 'A', 0, 0, 0, 0, 0, 0.03],
+				['2026-04-01T00:00:00Z', 'Windows', 'd2', 's2', 'B', 0, 'B', 0, 0, 0, 0, 0, 0.12],
+			],
+		);
+
+		runtime.renderTable('quality-table');
+
+		const target = document.querySelector('[data-kw-bind="quality-table"]')!;
+		const badges = Array.from(target.querySelectorAll('.kw-cell-badge')) as HTMLElement[];
+		expect(badges).toHaveLength(2);
+		expect(target.innerHTML).toContain('Linux &lt;LTS&gt;');
+		expect(badges[0].textContent).toBe('0.03%');
+		expect(badges[0].getAttribute('style')).toContain('background-color:#E7F3E7');
+		expect(badges[1].textContent).toBe('0.12%');
+		expect(badges[1].getAttribute('style')).toContain('background-color:#FDE7E9');
+	});
+
+	it('renders whole-cell conditional styles and updates them on notify', () => {
+		const runtime = installBridge(
+			{
+				'latency-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS' },
+							{
+								name: 'Latency',
+								agg: 'AVG',
+								sourceColumn: 'LatencyMs',
+								cellFormat: {
+									mode: 'cell',
+									rules: [{ operator: '>', value: 1000, backgroundColor: '#FDE7E9', color: '#C62828' }],
+									defaultStyle: { backgroundColor: '#E7F3E7', color: '#2E7D32' },
+								},
+							},
+						],
+					},
+				},
+			},
+			'<table data-kw-bind="latency-table"></table>',
+			[['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A', 0, 'A', 0, 0, 0, 0, 500, 0]],
+		);
+
+		runtime.renderTable('latency-table');
+		let cells = Array.from(document.querySelectorAll('[data-kw-bind="latency-table"] tbody td')) as HTMLElement[];
+		expect(cells[1].getAttribute('style')).toContain('background-color:#E7F3E7');
+		expect(cells[1].querySelector('.kw-cell-badge')).toBeNull();
+
+		runtime._notify({
+			fact: {
+				columns: factColumns,
+				rows: [['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A', 0, 'A', 0, 0, 0, 0, 1500, 0]],
+				totalRows: 1,
+				capped: false,
+			},
+		});
+
+		cells = Array.from(document.querySelectorAll('[data-kw-bind="latency-table"] tbody td')) as HTMLElement[];
+		expect(cells[1].getAttribute('style')).toContain('background-color:#FDE7E9');
+	});
+
 	it('rerenders registered tables when filtered data is notified', () => {
 		const runtime = installBridge(
 			{
@@ -210,6 +298,29 @@ describe('KustoWorkbench.renderTable preview bridge', () => {
 		expect(document.querySelector('[data-kw-bind="bad-table"]')!.innerHTML).toBe('');
 	});
 
+	it('rejects conditional formatting on non-numeric value columns in preview', () => {
+		const runtime = installBridge(
+			{
+				'bad-format': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS', cellFormat: { rules: [{ operator: '=', value: 1, backgroundColor: '#E7F3E7' }] } },
+							{ name: 'Rows', agg: 'COUNT' },
+						],
+					},
+				},
+			},
+			'<table data-kw-bind="bad-format"></table>',
+			[['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A']],
+		);
+
+		runtime.renderTable('bad-format');
+
+		expect(document.querySelector('[data-kw-bind="bad-format"]')!.innerHTML).toBe('');
+	});
+
 	it('uses group columns as deterministic top-N tie breakers in preview', () => {
 		const runtime = installBridge(
 			{
@@ -259,6 +370,196 @@ describe('KustoWorkbench.renderTable preview bridge', () => {
 		runtime.renderTable('session-depth');
 
 		expect(document.querySelector('[data-kw-bind="session-depth"]')!.innerHTML).toBe('');
+	});
+});
+
+describe('KustoWorkbench.renderRepeatedTable preview bridge', () => {
+	beforeEach(() => {
+		document.body.innerHTML = '';
+		delete (window as Window & typeof globalThis & { KustoWorkbench?: KustoWorkbenchRuntime }).KustoWorkbench;
+	});
+
+	it('renders repeated groups with scoped inner tables', () => {
+		const runtime = installBridge(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						repeatColumns: [{ name: 'SkillName', header: 'Skill' }, { name: 'Events', agg: 'COUNT' }],
+						repeatOrderBy: { column: 'Events', direction: 'desc' },
+						table: {
+							groupBy: ['OS'],
+							columns: [{ name: 'OS' }, { name: 'Devices', agg: 'DCOUNT', sourceColumn: 'DeviceId' }],
+							orderBy: { column: 'Devices', direction: 'desc' },
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+			[
+				['2026-04-01T00:00:00Z', 'Windows', 'd1', 's1', 'Skill <A>'],
+				['2026-04-01T00:00:00Z', 'Linux', 'd2', 's2', 'Skill <A>'],
+				['2026-04-01T00:00:00Z', 'Linux', 'd3', 's3', 'Skill B'],
+			],
+		);
+
+		runtime.renderRepeatedTable('by-skill');
+
+		const target = document.querySelector('[data-kw-bind="by-skill"]')!;
+		const groups = Array.from(target.querySelectorAll('.kw-repeated-table-group'));
+		expect(groups).toHaveLength(2);
+		expect((groups[0] as HTMLElement).getAttribute('style')).toContain('border:1px solid rgba(127,127,127,0.35)');
+		expect((groups[0] as HTMLElement).getAttribute('style')).toContain('border-radius:6px');
+		const header = groups[0].querySelector('.kw-repeated-table-header') as HTMLElement;
+		const fields = Array.from(header.querySelectorAll('.kw-repeat-field')) as HTMLElement[];
+		expect(header.getAttribute('style')).toContain('display:flex');
+		expect(header.getAttribute('style')).toContain('align-items:flex-start');
+		expect(header.getAttribute('style')).toContain('gap:10px 32px');
+		expect(header.getAttribute('style')).toContain('border-bottom:1px solid rgba(127,127,127,0.35)');
+		expect(fields[0].className).toContain('kw-repeat-primary');
+		expect(fields[0].getAttribute('style')).toContain('flex-direction:column');
+		expect(fields[0].getAttribute('style')).toContain('flex:1 1 220px');
+		expect(fields[1].className).toContain('kw-repeat-metric');
+		expect(fields[1].getAttribute('style')).toContain('flex-direction:column');
+		expect(fields[1].getAttribute('style')).toContain('align-items:flex-end');
+		expect(fields[1].getAttribute('style')).toContain('white-space:nowrap');
+		const metricHeader = groups[0].querySelector('thead th:nth-child(2)') as HTMLElement;
+		const metricCell = groups[0].querySelector('tbody tr:first-child td:nth-child(2)') as HTMLElement;
+		expect(metricHeader.getAttribute('style')).toContain('width:1%');
+		expect(metricHeader.getAttribute('style')).toContain('text-align:right');
+		expect(metricCell.getAttribute('style')).toContain('width:1%');
+		expect(metricCell.getAttribute('style')).toContain('text-align:right');
+		expect(fields[0].querySelector('.kw-repeat-label')?.textContent).toBe('Skill');
+		expect((fields[0].querySelector('.kw-repeat-label') as HTMLElement).getAttribute('style')).toContain('font-weight:700');
+		expect((fields[0].querySelector('.kw-repeat-value') as HTMLElement).getAttribute('style')).toContain('font-weight:400');
+		expect(fields[0].querySelector('.kw-repeat-value')?.textContent).toBe('Skill <A>');
+		expect(groups[0].innerHTML).toContain('Skill &lt;A&gt;');
+		expect(groups[0].textContent).toContain('Events');
+		expect(groups[0].textContent).toContain('2');
+		expect(groups[0].querySelectorAll('tbody tr')).toHaveLength(2);
+		expect(groups[1].querySelectorAll('tbody tr')).toHaveLength(1);
+	});
+
+	it('rerenders registered repeated tables when filtered data is notified', () => {
+		const runtime = installBridge(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						table: { groupBy: ['OS'], columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }] },
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+			[['2026-04-01T00:00:00Z', 'Windows', 'd1', 's1', 'Skill A']],
+		);
+
+		runtime.renderRepeatedTable('by-skill');
+		expect(document.querySelector('[data-kw-bind="by-skill"]')!.textContent).toContain('Skill A');
+
+		runtime._notify({
+			fact: {
+				columns: factColumns,
+				rows: [['2026-04-01T00:00:00Z', 'Linux', 'd2', 's2', 'Skill C']],
+				totalRows: 1,
+				capped: false,
+			},
+		});
+
+		const text = document.querySelector('[data-kw-bind="by-skill"]')!.textContent || '';
+		expect(text).toContain('Skill C');
+		expect(text).not.toContain('Skill A');
+	});
+
+	it('uses export-matching default ordering when repeated table ordering is omitted', () => {
+		const runtime = installBridge(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						table: { groupBy: ['OS'], columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }] },
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+			[
+				['2026-04-01T00:00:00Z', 'Windows', 'd1', 's1', 'Skill B'],
+				['2026-04-01T00:00:00Z', 'Linux', 'd2', 's2', 'Skill B'],
+				['2026-04-01T00:00:00Z', 'macOS', 'd3', 's3', 'Skill A'],
+			],
+		);
+
+		runtime.renderRepeatedTable('by-skill');
+
+		const groups = Array.from(document.querySelectorAll('[data-kw-bind="by-skill"] .kw-repeated-table-group'));
+		expect(groups[0].querySelector('.kw-repeat-value')?.textContent).toBe('Skill A');
+		expect(groups[1].querySelector('.kw-repeat-value')?.textContent).toBe('Skill B');
+		const innerRows = Array.from(groups[1].querySelectorAll('tbody tr td:first-child')).map(cell => cell.textContent);
+		expect(innerRows).toEqual(['Linux', 'Windows']);
+	});
+
+	it('renders conditional formatting inside repeated table inner rows', () => {
+		const runtime = installBridge(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						table: {
+							groupBy: ['OS'],
+							columns: [
+								{ name: 'OS' },
+								{
+									name: 'FailureRate',
+									agg: 'AVG',
+									sourceColumn: 'FailureRate',
+									format: '0.##%',
+									cellFormat: {
+										rules: [{ operator: '>=', value: 0.1, backgroundColor: '#FDE7E9', color: '#C62828' }],
+										defaultStyle: { backgroundColor: '#E7F3E7', color: '#2E7D32' },
+									},
+								},
+							],
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+			[
+				['2026-04-01T00:00:00Z', 'Windows', 'd1', 's1', 'Skill A', 0, 'A', 0, 0, 0, 0, 0, 0.12],
+				['2026-04-01T00:00:00Z', 'Linux', 'd2', 's2', 'Skill A', 0, 'B', 0, 0, 0, 0, 0, 0.02],
+			],
+		);
+
+		runtime.renderRepeatedTable('by-skill');
+
+		const badges = Array.from(document.querySelectorAll('[data-kw-bind="by-skill"] .kw-cell-badge')) as HTMLElement[];
+		expect(badges).toHaveLength(2);
+		expect(badges[0].getAttribute('style')).toContain('background-color:#E7F3E7');
+		expect(badges[1].getAttribute('style')).toContain('background-color:#FDE7E9');
+	});
+
+	it('does not render repeated tables into table structural targets', () => {
+		const runtime = installBridge(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						table: { groupBy: ['OS'], columns: [{ name: 'OS' }] },
+					},
+				},
+			},
+			'<table data-kw-bind="by-skill"></table>',
+			[['2026-04-01T00:00:00Z', 'Windows', 'd1', 's1', 'Skill A']],
+		);
+
+		runtime.renderRepeatedTable('by-skill');
+
+		expect(document.querySelector('[data-kw-bind="by-skill"]')!.innerHTML).toBe('');
 	});
 });
 

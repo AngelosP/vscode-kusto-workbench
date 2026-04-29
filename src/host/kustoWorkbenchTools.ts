@@ -52,10 +52,10 @@ function getLegacyDashboardWarnings(htmlCode: string): string[] {
 		warnings.push('Potential preview-only chart rendering via bindHtml() detected. Exportable charts should use data-kw-bind targets backed by provenance display specs and KustoWorkbench.renderChart().');
 	}
 	if (/bindHtml\(\s*['"][^'"]*(?:table|tbody|rows|breakdown|status|detail|details)[^'"]*['"]/i.test(htmlCode) || /\.toTable\s*\(/i.test(htmlCode)) {
-		warnings.push('Potential preview-only table rendering detected. Exportable tables, especially visual cells such as stacked status bars, should use provenance table specs plus KustoWorkbench.renderTable(bindingId).');
+		warnings.push('Potential preview-only table rendering detected. Exportable tables and repeated tables, especially visual cells such as stacked status bars, should use provenance table specs plus KustoWorkbench.renderTable(bindingId) or KustoWorkbench.renderRepeatedTable(bindingId).');
 	}
 	if (/document\.getElementById\s*\(|querySelector\(\s*['"]#/i.test(htmlCode)) {
-		warnings.push('ID-based DOM binding detected. Dashboard data values should bind through data-kw-bind plus KustoWorkbench.bind(), renderChart(), or renderTable() so Power BI export can resolve them.');
+		warnings.push('ID-based DOM binding detected. Dashboard data values should bind through data-kw-bind plus KustoWorkbench.bind(), renderChart(), renderTable(), or renderRepeatedTable() so Power BI export can resolve them.');
 	}
 	return warnings;
 }
@@ -935,7 +935,7 @@ export class KustoWorkbenchToolOrchestrator {
 		if (!context.success) issues.push(context.error || 'Unable to read HTML dashboard context.');
 		if (!code.trim()) issues.push('HTML section has no dashboard code.');
 		if (!context.hasProvenance) issues.push('Missing application/kw-provenance block. Upgrade this dashboard to the latest provenance contract before finalizing.');
-		if ((context.bindingCount || 0) === 0) issues.push('No provenance bindings found. Add bindings for every exportable scalar, table, pivot, and chart.');
+		if ((context.bindingCount || 0) === 0) issues.push('No provenance bindings found. Add bindings for every exportable scalar, table, repeated table, pivot, and chart.');
 		if (dataSources.length === 0) issues.push('No runnable fact data source found. Run the fact query and ensure provenance model.fact.sectionId points at that query section.');
 		issues.push(...getPowerBiHtmlValidationIssues(code, dataSources));
 

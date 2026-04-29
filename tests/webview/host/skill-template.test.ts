@@ -11,8 +11,8 @@ describe('exported Kusto Workbench skill template', () => {
 	const template = readWorkspaceFile('media/skill-template.md');
 
 	it('is bumped to the current template version', () => {
-		expect(TEMPLATE_VERSION).toBe(5);
-		expect(template).toContain('# version: 5 - Auto-updated by Kusto Workbench. Do not remove this line.');
+		expect(TEMPLATE_VERSION).toBe(7);
+		expect(template).toContain('# version: 7 - Auto-updated by Kusto Workbench. Do not remove this line.');
 	});
 
 	it('documents the current tool surface including dashboards, SQL, and development notes', () => {
@@ -37,7 +37,11 @@ describe('exported Kusto Workbench skill template', () => {
 		expect(template).toContain('scale: "normalized100"');
 		expect(template).toContain('variant: "distribution"');
 		expect(template).toContain('renderTable');
+		expect(template).toContain('renderRepeatedTable');
+		expect(template).toContain('repeatedTable');
 		expect(template).toContain('cellBar');
+		expect(template).toContain('cellFormat');
+		expect(template).toContain('percentage thresholds must match the query\'s scale');
 		expect(template).toContain('Keep `compute.name` distinct from fact and preAggregate group columns.');
 		expect(template).toContain('Power BI export-ready');
 	});

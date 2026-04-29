@@ -21,13 +21,21 @@ import {
 } from '../shared/dashboardCharts';
 import {
 	isTableCellBarColumn,
+	isTableCellFormattedColumn,
+	isValidRepeatedTableDisplay,
 	isValidTableDisplay,
+	repeatedTableRepeatColumns,
+	REPEATED_TABLE_ROW_INDEX_ALIAS_PREFIX,
 	tableAggregateNeedsColumn,
 	tableCellBarAlias,
 	tableCellBarColor,
 	tableCellBarGeometry,
 	TABLE_ROW_INDEX_ALIAS_PREFIX,
+	type RepeatedTableDisplay,
 	type TableCellBarSpec,
+	type TableCellFormatRule,
+	type TableCellFormatSpec,
+	type TableCellStyleSpec,
 	type TableColumnSpec,
 	type TableDisplay,
 } from '../shared/dashboardTables';
@@ -126,7 +134,7 @@ export interface ModelDimension { column: string; label?: string; mode?: 'dropdo
 export interface ResolvedSlicer { tableName: string; columnName: string; mode: 'dropdown' | 'list' | 'between' }
 
 interface ProvenanceBinding {
-	display?: ScalarDisplay | TableDisplay | PivotDisplay | DashboardChartDisplay;
+	display?: ScalarDisplay | TableDisplay | PivotDisplay | DashboardChartDisplay | RepeatedTableDisplay;
 }
 
 interface Provenance {
@@ -200,6 +208,13 @@ function hasBoundContainerElement(html: string, bindAttr: string): boolean {
 	);
 	return re.test(html);
 }
+function isRepeatedTableContainerTag(tagName: string): boolean {
+	return !['table', 'thead', 'tbody', 'tfoot', 'tr', 'td', 'th'].includes(tagName.toLowerCase());
+}
+
+function isVisibleRepeatedTableTarget(target: DataKwBindTargetElement): boolean {
+	return isRepeatedTableContainerTag(target.tagName) && !isHiddenDataKwBindTarget(target.openTag);
+}
 
 function isObjectRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === 'object';
@@ -251,6 +266,16 @@ function preAggregateOutputColumns(preAggregate: PreAggregate): Set<string> {
 	return new Set([...groupBy, preAggregate.compute.name]);
 }
 
+function tableValueColumnTypes(groupBy: string[], columns: TableColumnSpec[], sourceTypes: Map<string, string>): Map<string, string> {
+	const types = new Map<string, string>();
+	for (const columnName of groupBy) types.set(columnName, sourceTypes.get(columnName) ?? '');
+	for (const column of columns) {
+		if (isTableCellBarColumn(column)) continue;
+		types.set(column.name, column.agg ? 'real' : (sourceTypes.get(column.name) ?? ''));
+	}
+	return types;
+}
+
 function columnKey(name: string): string {
 	return name.trim().toLowerCase();
 }
@@ -270,6 +295,7 @@ function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBi
 	const factDs = dataSources.find(dataSource => dataSource.sectionId === provenance.model.fact.sectionId);
 	if (!factDs) return [];
 	const factColumns = new Set(factDs.columns.map(column => column.name));
+	const factColumnTypes = new Map(factDs.columns.map(column => [column.name, column.type]));
 	const renderedTargetTags = findDataKwBindTargetTags(htmlCode);
 	const missing: string[] = [];
 	const requireFactColumn = (bindingKey: string, columnName: unknown, role: string) => {
@@ -277,6 +303,23 @@ function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBi
 	};
 	const requireAllowedColumn = (bindingKey: string, columnName: unknown, role: string, allowedColumns: Set<string>) => {
 		if (isNonEmptyText(columnName) && !allowedColumns.has(columnName)) missing.push(`${bindingKey} (${role}: missing column ${columnName})`);
+	};
+	const requireNumericCellFormatColumn = (bindingKey: string, column: TableColumnSpec, role: string, rowColumnTypes: Map<string, string>) => {
+		if (!isTableCellFormattedColumn(column)) return;
+		const columnName = column.cellFormat.valueColumn ?? column.name;
+		const columnTypeName = rowColumnTypes.get(columnName);
+		if (columnTypeName === undefined) {
+			missing.push(`${bindingKey} (${role}: missing column ${columnName})`);
+		} else if (!isNumericKustoType(columnTypeName)) {
+			missing.push(`${bindingKey} (${role}: non-numeric column ${columnName})`);
+		}
+	};
+	const preAggregateColumnTypes = (preAggregate: PreAggregate): Map<string, string> => {
+		const groupBy = Array.isArray(preAggregate.groupBy) ? preAggregate.groupBy : [preAggregate.groupBy];
+		const types = new Map<string, string>();
+		for (const columnName of groupBy) types.set(columnName, factColumnTypes.get(columnName) ?? '');
+		types.set(preAggregate.compute.name, 'real');
+		return types;
 	};
 	const validatePreAggregate = (bindingKey: string, preAggregate: PreAggregate | undefined): Set<string> | undefined => {
 		if (!preAggregate) return undefined;
@@ -308,6 +351,8 @@ function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBi
 		} else if (isValidTableDisplay(display)) {
 			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
 			const outputColumns = preColumns ?? factColumns;
+			const outputColumnTypes = display.preAggregate ? preAggregateColumnTypes(display.preAggregate) : factColumnTypes;
+			const rowColumnTypes = tableValueColumnTypes(display.groupBy, display.columns, outputColumnTypes);
 			for (const columnName of display.groupBy) requireAllowedColumn(bindingKey, columnName, 'groupBy', outputColumns);
 			for (let i = 0; i < display.columns.length; i++) {
 				const column = display.columns[i];
@@ -324,10 +369,54 @@ function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBi
 				} else {
 					requireAllowedColumn(bindingKey, column.name, 'column', outputColumns);
 				}
+				requireNumericCellFormatColumn(bindingKey, column, `columns[${i}].cellFormat.valueColumn`, rowColumnTypes);
 			}
 			if (display.orderBy) {
 				const orderColumns = new Set([...display.groupBy, ...display.columns.filter(column => !isTableCellBarColumn(column)).map(column => column.name)]);
 				requireAllowedColumn(bindingKey, display.orderBy.column, 'orderBy', orderColumns);
+			}
+		} else if (isValidRepeatedTableDisplay(display)) {
+			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
+			const outputColumns = preColumns ?? factColumns;
+			const outputColumnTypes = display.preAggregate ? preAggregateColumnTypes(display.preAggregate) : factColumnTypes;
+			for (const columnName of display.repeatBy) requireAllowedColumn(bindingKey, columnName, 'repeatBy', outputColumns);
+			const repeatColumns = repeatedTableRepeatColumns(display);
+			for (let i = 0; i < repeatColumns.length; i++) {
+				const column = repeatColumns[i];
+				if (column.agg) {
+					if (tableAggregateNeedsColumn(column.agg)) requireAllowedColumn(bindingKey, column.sourceColumn || column.name, `repeatColumns[${i}].column`, outputColumns);
+				} else {
+					requireAllowedColumn(bindingKey, column.name, `repeatColumns[${i}].column`, outputColumns);
+				}
+			}
+			if (display.repeatOrderBy) {
+				const orderColumns = new Set([...display.repeatBy, ...repeatColumns.map(column => column.name)]);
+				requireAllowedColumn(bindingKey, display.repeatOrderBy.column, 'repeatOrderBy', orderColumns);
+			}
+			for (const columnName of display.table.groupBy) requireAllowedColumn(bindingKey, columnName, 'table.groupBy', outputColumns);
+			for (let i = 0; i < display.table.columns.length; i++) {
+				const column = display.table.columns[i];
+				if (isTableCellBarColumn(column)) {
+					for (let s = 0; s < column.cellBar.segments.length; s++) {
+						const segment = column.cellBar.segments[s];
+						if (tableAggregateNeedsColumn(segment.agg)) requireAllowedColumn(bindingKey, segment.column, `table.columns[${i}].cellBar.segments[${s}].column`, outputColumns);
+					}
+					continue;
+				}
+				const sourceColumn = column.sourceColumn || column.name;
+				if (column.agg) {
+					if (tableAggregateNeedsColumn(column.agg)) requireAllowedColumn(bindingKey, sourceColumn, `table.columns[${i}].column`, outputColumns);
+				} else {
+					requireAllowedColumn(bindingKey, column.name, `table.columns[${i}].column`, outputColumns);
+				}
+			}
+			const innerRowColumnTypes = tableValueColumnTypes(display.table.groupBy, display.table.columns, outputColumnTypes);
+			if (display.table.orderBy) {
+				const orderColumns = new Set([...display.table.groupBy, ...display.table.columns.filter(column => !isTableCellBarColumn(column)).map(column => column.name)]);
+				requireAllowedColumn(bindingKey, display.table.orderBy.column, 'table.orderBy', orderColumns);
+			}
+			for (let i = 0; i < display.table.columns.length; i++) {
+				requireNumericCellFormatColumn(bindingKey, display.table.columns[i], `table.columns[${i}].cellFormat.valueColumn`, innerRowColumnTypes);
 			}
 		} else if (isValidPivotDisplay(display)) {
 			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
@@ -393,6 +482,10 @@ export function findUnsupportedPowerBiBindings(htmlCode: string): string[] {
 		const bindAttr = bindingAttributePattern(key);
 		if ((type === 'table' || type === 'pivot') && !matchTableElement(renderedHtml, bindAttr)) {
 			unsupported.push(`${key} (${type}: target must be table or tbody inside table)`);
+		} else if (type === 'repeatedTable' && !hasBoundContainerElement(renderedHtml, bindAttr)) {
+			unsupported.push(`${key} (${type}: target must be container element)`);
+		} else if (type === 'repeatedTable' && targets.some(target => !isVisibleRepeatedTableTarget(target))) {
+			unsupported.push(`${key} (${type}: target must be a visible non-table container element)`);
 		} else if ((type === 'scalar' || type === 'bar' || type === 'pie' || type === 'line') && !hasBoundContainerElement(renderedHtml, bindAttr)) {
 			unsupported.push(`${key} (${type}: target must be container element)`);
 		}
@@ -409,6 +502,15 @@ export function findUnsupportedPowerBiBindings(htmlCode: string): string[] {
 		} else if (type === 'table' && top !== undefined && (typeof top !== 'number' || !Number.isInteger(top) || top <= 0 || !isObjectRecord((display as { orderBy?: unknown }).orderBy))) {
 			unsupported.push(`${key} (${type}: invalid top)`);
 		} else if (type === 'table' && !isValidTableDisplay(display)) {
+			unsupported.push(`${key} (${type}: invalid spec)`);
+		} else if (type === 'repeatedTable' && (display as { repeatTop?: unknown } | undefined)?.repeatTop !== undefined) {
+			const repeatTop = (display as { repeatTop?: unknown; repeatOrderBy?: unknown }).repeatTop;
+			if (typeof repeatTop !== 'number' || !Number.isInteger(repeatTop) || repeatTop <= 0 || !isObjectRecord((display as { repeatOrderBy?: unknown }).repeatOrderBy)) {
+				unsupported.push(`${key} (${type}: invalid repeatTop)`);
+			} else if (!isValidRepeatedTableDisplay(display)) {
+				unsupported.push(`${key} (${type}: invalid spec)`);
+			}
+		} else if (type === 'repeatedTable' && !isValidRepeatedTableDisplay(display)) {
 			unsupported.push(`${key} (${type}: invalid spec)`);
 		} else if (type === 'pivot' && !isValidPivotDisplay(display)) {
 			unsupported.push(`${key} (${type}: invalid spec)`);
@@ -430,7 +532,7 @@ export function getPowerBiHtmlValidationIssues(htmlCode: string, dataSources?: P
 export function validatePowerBiHtmlBindings(htmlCode: string, dataSources?: PowerBiDataSource[]): void {
 	const unsupportedBindings = getPowerBiHtmlValidationIssues(htmlCode, dataSources);
 	if (unsupportedBindings.length > 0) {
-		throw new Error(`Power BI export supports scalar, table, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`);
+		throw new Error(`Power BI export supports scalar, table, repeatedTable, pivot, bar, pie, and line bindings. Unsupported bindings: ${unsupportedBindings.join(', ')}.`);
 	}
 }
 
@@ -519,6 +621,7 @@ function lineAxisLabelExpr(valueExpr: string, colName: string, dataSource?: Powe
 // ── Display-specific DAX generators (v1 — all aggregate from single fact table) ──
 
 interface DaxVarResult { theadVar?: string; theadDax?: string; rowsVar?: string; rowsDax?: string; scalarVar?: string; scalarDax?: string; preVars?: string[] }
+interface TableRenderOptions { compactMetricColumns?: boolean }
 
 /** Extract CSS classes from original `<th>` elements in the table HTML. */
 function extractOriginalThClasses(tableInnerHtml: string): string[] {
@@ -676,6 +779,10 @@ function tableRowIndexAlias(varIdx: number): string {
 	return `${TABLE_ROW_INDEX_ALIAS_PREFIX}${varIdx}`;
 }
 
+function repeatedTableRowIndexAlias(varIdx: number): string {
+	return `${REPEATED_TABLE_ROW_INDEX_ALIAS_PREFIX}${varIdx}`;
+}
+
 function escapeHtmlTextLiteral(text: string): string {
 	return escapeXmlLiteral(text).replace(/'/g, '&#39;');
 }
@@ -684,70 +791,153 @@ function daxHtmlEscape(colExpr: string): string {
 	return `SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE("" & ${colExpr}, "&", "&amp;"), "<", "&lt;"), ">", "&gt;"), """", "&quot;"), "'", "&#39;")`;
 }
 
+const TABLE_CELL_BADGE_BASE_STYLE = 'display:inline-block;min-width:34px;padding:1px 10px;border-radius:999px;line-height:1.4;text-align:center;font-weight:600;';
+const TABLE_COMPACT_METRIC_CELL_STYLE = 'width:1%;white-space:nowrap;text-align:right;';
+
+function tableStaticCellStyle(column: TableColumnSpec, options: TableRenderOptions): string | undefined {
+	if (!options.compactMetricColumns) return undefined;
+	return column.agg || isTableCellBarColumn(column) ? TABLE_COMPACT_METRIC_CELL_STYLE : undefined;
+}
+
+function tableCellStyleCss(style: TableCellStyleSpec | undefined, mode: 'badge' | 'cell'): string {
+	const parts = mode === 'badge' ? [TABLE_CELL_BADGE_BASE_STYLE] : [];
+	if (style?.backgroundColor) parts.push(`background-color:${style.backgroundColor.trim()};`);
+	if (style?.color) parts.push(`color:${style.color.trim()};`);
+	if (style?.fontWeight) parts.push(`font-weight:${style.fontWeight};`);
+	return parts.join('');
+}
+
+function tableCellFormatPredicate(rule: TableCellFormatRule, valueRef: string): string {
+	const value = daxNumber(rule.value);
+	switch (rule.operator) {
+		case '>': return `${valueRef} > ${value}`;
+		case '>=': return `${valueRef} >= ${value}`;
+		case '<': return `${valueRef} < ${value}`;
+		case '<=': return `${valueRef} <= ${value}`;
+		case '!=':
+		case '<>': return `${valueRef} <> ${value}`;
+		case '=':
+		case '==': return `${valueRef} = ${value}`;
+	}
+	return `${valueRef} = ${value}`;
+}
+
+function tableCellFormatStyleDax(format: TableCellFormatSpec, valueRef: string): string {
+	const mode = format.mode ?? 'badge';
+	const ruleCases = format.rules
+		.map(rule => `${tableCellFormatPredicate(rule, valueRef)}, "${escapeDaxString(tableCellStyleCss(rule, mode))}"`)
+		.join(', ');
+	const defaultStyle = `"${escapeDaxString(tableCellStyleCss(format.defaultStyle, mode))}"`;
+	return `SWITCH(TRUE(), ${ruleCases}, ${defaultStyle})`;
+}
+
+function tableDaxAttrs(cls: string, staticStyle?: string): string {
+	const classAttr = cls ? ` class=""${escapeDaxString(cls)}""` : '';
+	const styleAttr = staticStyle ? ` style=""${escapeDaxString(staticStyle)}""` : '';
+	return `${classAttr}${styleAttr}`;
+}
+
+function tableTdOpenDax(cls: string, styleExpr?: string, staticStyle?: string): string {
+	const attrs = tableDaxAttrs(cls);
+	if (styleExpr && staticStyle) return `"<td${attrs} style='${escapeDaxString(staticStyle)}" & ${styleExpr} & "'>"`;
+	if (styleExpr) return `"<td${attrs} style='" & ${styleExpr} & "'>"`;
+	return `"<td${tableDaxAttrs(cls, staticStyle)}>"`;
+}
+
+function uniqueColumnNames(columns: string[]): string[] {
+	const seen = new Set<string>();
+	const result: string[] = [];
+	for (const column of columns) {
+		const key = columnKey(column);
+		if (seen.has(key)) continue;
+		seen.add(key);
+		result.push(column);
+	}
+	return result;
+}
+
+function buildTableComputedColumnParts(columns: TableColumnSpec[], groupBy: string[], factTable: string, varIdx: number, preVarName?: string): string[] {
+	const parts: string[] = [];
+	for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
+		const column = columns[columnIndex];
+		if (column.agg) {
+			const expr = preVarName
+				? buildPreAggTableValueAggExpr(column.agg, column.sourceColumn || column.name, preVarName, groupBy)
+				: buildTableValueAggExpr(column.agg, column.sourceColumn || column.name, factTable);
+			parts.push(`"${escapeDaxString(column.name)}", ${expr}`);
+		}
+		if (isTableCellBarColumn(column)) {
+			const aliases = tableCellBarSegmentAliases(varIdx, columnIndex, column.cellBar);
+			for (let segmentIndex = 0; segmentIndex < column.cellBar.segments.length; segmentIndex++) {
+				const segment = column.cellBar.segments[segmentIndex];
+				const expr = preVarName
+					? buildPreAggTableValueAggExpr(segment.agg, segment.column, preVarName, groupBy)
+					: buildTableValueAggExpr(segment.agg, segment.column, factTable);
+				parts.push(`"${escapeDaxString(aliases[segmentIndex])}", ${expr}`);
+			}
+		}
+	}
+	return parts;
+}
+
+function buildTableSummaryExpr(factTable: string, columns: TableColumnSpec[], groupBy: string[], varIdx: number, preVarName?: string): string {
+	const tbl = escTable(factTable);
+	const sourceTable = preVarName ?? tbl;
+	const groupByRefs = preVarName ? groupBy.map(g => escCol(g)) : groupBy.map(g => `${tbl}${escCol(g)}`);
+	const addColumnParts = buildTableComputedColumnParts(columns, groupBy, factTable, varIdx, preVarName).join(', ');
+	return addColumnParts
+		? `ADDCOLUMNS(SUMMARIZE(${sourceTable}, ${groupByRefs.join(', ')}), ${addColumnParts})`
+		: `SUMMARIZE(${sourceTable}, ${groupByRefs.join(', ')})`;
+}
+
+function tableTheadDax(columns: TableColumnSpec[], originalThClasses: string[] = [], options: TableRenderOptions = {}): string {
+	const thCells = columns.map((col, i) => {
+		const headerText = escapeDaxString(escapeHtmlTextLiteral(col.header || col.name));
+		const cls = originalThClasses[i] || '';
+		const style = tableStaticCellStyle(col, options);
+		return `<th${tableDaxAttrs(cls, style)}>${headerText}</th>`;
+	}).join('');
+	return `"<thead><tr>${thCells}</tr></thead>"`;
+}
+
+function tableRowCellDax(columns: TableColumnSpec[], varIdx: number, originalThClasses: string[] = [], options: TableRenderOptions = {}): string {
+	return columns.map((col, i) => {
+		const cls = originalThClasses[i] || '';
+		const staticStyle = tableStaticCellStyle(col, options);
+		if (isTableCellBarColumn(col)) {
+			const aliases = tableCellBarSegmentAliases(varIdx, i, col.cellBar);
+			const maxVarName = (col.cellBar.scale ?? 'normalized100') === 'relative' ? tableCellBarMaxVarName(varIdx, i) : undefined;
+			return `${tableTdOpenDax(cls, undefined, staticStyle)} & ${tableCellBarSvgExpr(col.cellBar, aliases, maxVarName)} & "</td>"`;
+		}
+		const formattedValueExpr = col.format ? buildFormatExpr(escCol(col.name), col.format) : escCol(col.name);
+		if (isTableCellFormattedColumn(col)) {
+			const mode = col.cellFormat.mode ?? 'badge';
+			const styleExpr = tableCellFormatStyleDax(col.cellFormat, escCol(col.cellFormat.valueColumn ?? col.name));
+			if (mode === 'cell') {
+				return `${tableTdOpenDax(cls, styleExpr, staticStyle)} & ${daxHtmlEscape(formattedValueExpr)} & "</td>"`;
+			}
+			return `${tableTdOpenDax(cls, undefined, staticStyle)} & "<span class='kw-cell-badge' style='" & ${styleExpr} & "'>" & ${daxHtmlEscape(formattedValueExpr)} & "</span></td>"`;
+		}
+		return `${tableTdOpenDax(cls, undefined, staticStyle)} & ${daxHtmlEscape(formattedValueExpr)} & "</td>"`;
+	}).join(' & ');
+}
+
 function generateTableDaxVars(factTable: string, display: TableDisplay, varIdx: number, originalThClasses: string[] = []): DaxVarResult {
 	const theadVar = `_thead_${varIdx}`;
 	const rowsVar = `_rows_${varIdx}`;
-	const tbl = escTable(factTable);
 	const preVars: string[] = [];
-	const buildComputedColumnParts = (preVarName?: string): string[] => {
-		const parts: string[] = [];
-		for (let columnIndex = 0; columnIndex < display.columns.length; columnIndex++) {
-			const column = display.columns[columnIndex];
-			if (column.agg) {
-				const expr = preVarName
-					? buildPreAggColumnAggExpr(column, preVarName, display.groupBy)
-					: buildColumnAggExpr(column, factTable);
-				parts.push(`"${escapeDaxString(column.name)}", ${expr}`);
-			}
-			if (isTableCellBarColumn(column)) {
-				const aliases = tableCellBarSegmentAliases(varIdx, columnIndex, column.cellBar);
-				for (let segmentIndex = 0; segmentIndex < column.cellBar.segments.length; segmentIndex++) {
-					const segment = column.cellBar.segments[segmentIndex];
-					const expr = preVarName
-						? buildPreAggTableValueAggExpr(segment.agg, segment.column, preVarName, display.groupBy)
-						: buildTableValueAggExpr(segment.agg, segment.column, factTable);
-					parts.push(`"${escapeDaxString(aliases[segmentIndex])}", ${expr}`);
-				}
-			}
-		}
-		return parts;
-	};
-
-	const thCells = display.columns.map((col, i) => {
-		const headerText = escapeDaxString(escapeHtmlTextLiteral(col.header || col.name));
-		const cls = originalThClasses[i] || '';
-		return cls ? `<th class=""${escapeDaxString(cls)}"">${headerText}</th>` : `<th>${headerText}</th>`;
-	}).join('');
-	const theadDax = `"<thead><tr>${thCells}</tr></thead>"`;
+	const theadDax = tableTheadDax(display.columns, originalThClasses);
 
 	let summarizedTable: string;
 	if (display.preAggregate) {
 		const preVarName = `_pre_${varIdx}`;
 		preVars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
-		const groupByCols = display.groupBy.map(g => escCol(g)).join(', ');
-		const addColumnParts = buildComputedColumnParts(preVarName).join(', ');
-		summarizedTable = addColumnParts
-			? `ADDCOLUMNS(SUMMARIZE(${preVarName}, ${groupByCols}), ${addColumnParts})`
-			: `SUMMARIZE(${preVarName}, ${groupByCols})`;
+		summarizedTable = buildTableSummaryExpr(factTable, display.columns, display.groupBy, varIdx, preVarName);
 	} else {
-		const groupByCols = display.groupBy.map(g => `${tbl}${escCol(g)}`).join(', ');
-		const addColumnParts = buildComputedColumnParts().join(', ');
-		summarizedTable = addColumnParts
-			? `ADDCOLUMNS(SUMMARIZE(${tbl}, ${groupByCols}), ${addColumnParts})`
-			: `SUMMARIZE(${tbl}, ${groupByCols})`;
+		summarizedTable = buildTableSummaryExpr(factTable, display.columns, display.groupBy, varIdx);
 	}
 
-	const tdExprs = display.columns.map((col, i) => {
-		const cls = originalThClasses[i] || '';
-		const tdOpen = cls ? `<td class=""${escapeDaxString(cls)}"">` : '<td>';
-		if (isTableCellBarColumn(col)) {
-			const aliases = tableCellBarSegmentAliases(varIdx, i, col.cellBar);
-			const maxVarName = (col.cellBar.scale ?? 'normalized100') === 'relative' ? tableCellBarMaxVarName(varIdx, i) : undefined;
-			return `"${tdOpen}" & ${tableCellBarSvgExpr(col.cellBar, aliases, maxVarName)} & "</td>"`;
-		}
-		const formattedValueExpr = col.format ? buildFormatExpr(escCol(col.name), col.format) : escCol(col.name);
-		return `"${tdOpen}" & ${daxHtmlEscape(formattedValueExpr)} & "</td>"`;
-	}).join(' & ');
+	const tdExprs = tableRowCellDax(display.columns, varIdx, originalThClasses);
 
 	let renderTable = summarizedTable;
 	let sortExpr = '';
@@ -773,6 +963,84 @@ function generateTableDaxVars(factTable: string, display: TableDisplay, varIdx: 
 	const rowsDax = relativeMaxVars.length > 0 ? `${relativeMaxVars.join(' ')} RETURN ${rowConcatDax}` : rowConcatDax;
 
 	return { theadVar, theadDax, rowsVar, rowsDax, ...(preVars.length > 0 ? { preVars } : {}) };
+}
+
+const REPEATED_TABLE_GROUP_STYLE = 'margin:0 0 16px 0;border:1px solid rgba(127,127,127,0.35);border-radius:6px;overflow:hidden;';
+const REPEATED_TABLE_HEADER_STYLE = 'display:flex;flex-wrap:wrap;align-items:flex-start;gap:10px 32px;padding:10px 12px;background:rgba(127,127,127,0.10);border-bottom:1px solid rgba(127,127,127,0.35);font:inherit;';
+const REPEATED_TABLE_PRIMARY_FIELD_STYLE = 'display:flex;flex-direction:column;align-items:flex-start;gap:4px;min-width:0;line-height:1.25;flex:1 1 220px;';
+const REPEATED_TABLE_METRIC_FIELD_STYLE = 'display:flex;flex-direction:column;align-items:flex-end;gap:4px;min-width:96px;line-height:1.25;white-space:nowrap;flex:0 0 auto;';
+const REPEATED_TABLE_LABEL_STYLE = 'font-size:inherit;font-weight:700;line-height:1.25;';
+const REPEATED_TABLE_VALUE_STYLE = 'font-size:inherit;font-weight:400;line-height:1.35;';
+const REPEATED_TABLE_TABLE_STYLE = 'width:100%;border-collapse:collapse;';
+
+function repeatedTableHeaderDax(display: RepeatedTableDisplay): string {
+	const fields = repeatedTableRepeatColumns(display).map((column, index) => {
+		const isPrimary = index === 0;
+		const label = escapeDaxString(escapeHtmlTextLiteral(column.header || column.name));
+		const valueExpr = column.format ? buildFormatExpr(escCol(column.name), column.format) : escCol(column.name);
+		const fieldClass = isPrimary ? 'kw-repeat-field kw-repeat-primary' : 'kw-repeat-field kw-repeat-metric';
+		const fieldStyle = isPrimary ? REPEATED_TABLE_PRIMARY_FIELD_STYLE : REPEATED_TABLE_METRIC_FIELD_STYLE;
+		return `"<span class='${fieldClass}' style='${fieldStyle}'><span class='kw-repeat-label' style='${REPEATED_TABLE_LABEL_STYLE}'>${label}</span><span class='kw-repeat-value' style='${REPEATED_TABLE_VALUE_STYLE}'>" & ${daxHtmlEscape(valueExpr)} & "</span></span>"`;
+	});
+	return `"<div class='kw-repeated-table-header' style='${REPEATED_TABLE_HEADER_STYLE}'>" & ${fields.join(' & ')} & "</div>"`;
+}
+
+function generateRepeatedTableDax(factTable: string, display: RepeatedTableDisplay, varIdx: number, vars: string[]): string {
+	const repeatVar = `_repeat_${varIdx}`;
+	const outerVar = `_repeatData_${varIdx}`;
+	const innerDataVar = `_repeatInnerData_${varIdx}`;
+	const preVarName = display.preAggregate ? `_pre_${varIdx}` : undefined;
+	if (display.preAggregate) {
+		vars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
+	}
+
+	const repeatColumns = repeatedTableRepeatColumns(display);
+	const outerSummary = buildTableSummaryExpr(factTable, repeatColumns, display.repeatBy, varIdx, preVarName);
+	const outerIndexAlias = repeatedTableRowIndexAlias(varIdx);
+	const outerOrderColumn = display.repeatOrderBy?.column ?? display.repeatBy[0];
+	const outerDirection = display.repeatOrderBy
+		? ((display.repeatOrderBy.direction || 'desc').toUpperCase() === 'ASC' ? 'ASC' : 'DESC')
+		: 'ASC';
+	const outerIndexedRows = indexedTableRowsExpr(outerSummary, outerIndexAlias, escCol(outerOrderColumn), display.repeatBy.map(g => escCol(g)), outerDirection);
+	const outerRows = display.repeatTop !== undefined && Number.isInteger(display.repeatTop) && display.repeatTop > 0
+		? `FILTER(${outerIndexedRows}, ${escCol(outerIndexAlias)} <= ${display.repeatTop})`
+		: outerIndexedRows;
+	vars.push(`VAR ${outerVar} = ${outerRows}`);
+
+	const innerSummaryGroupBy = uniqueColumnNames([...display.repeatBy, ...display.table.groupBy]);
+	const innerSummary = buildTableSummaryExpr(factTable, display.table.columns, innerSummaryGroupBy, varIdx, preVarName);
+	vars.push(`VAR ${innerDataVar} = ${innerSummary}`);
+
+	const scopedVar = `_kwRepeatScoped_${varIdx}`;
+	const rowsVar = `_kwRepeatRows_${varIdx}`;
+	const htmlVar = `_kwRepeatHtml_${varIdx}`;
+	const outerKeyVars = display.repeatBy.map((column, index) => `VAR _kwRepeatKey_${varIdx}_${index} = ${escCol(column)}`).join(' ');
+	const scopedFilter = display.repeatBy.map((column, index) => `${escCol(column)} = _kwRepeatKey_${varIdx}_${index}`).join(' && ');
+
+	let innerRowsExpr = scopedVar;
+	let innerSortExpr = display.table.groupBy.length > 0 ? `, ${escCol(display.table.groupBy[0])}, ASC` : '';
+	if (display.table.orderBy) {
+		const innerDirection = (display.table.orderBy.direction || 'desc').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
+		const innerIndexAlias = tableRowIndexAlias(varIdx);
+		const indexedRows = indexedTableRowsExpr(scopedVar, innerIndexAlias, escCol(display.table.orderBy.column), display.table.groupBy.map(g => escCol(g)), innerDirection);
+		innerRowsExpr = display.table.top !== undefined && Number.isInteger(display.table.top) && display.table.top > 0
+			? `FILTER(${indexedRows}, ${escCol(innerIndexAlias)} <= ${display.table.top})`
+			: indexedRows;
+		innerSortExpr = `, ${escCol(innerIndexAlias)}, ASC`;
+	}
+
+	const relativeMaxVars = display.table.columns.flatMap((column, columnIndex) => {
+		if (!isTableCellBarColumn(column) || (column.cellBar.scale ?? 'normalized100') !== 'relative') return [];
+		const aliases = tableCellBarSegmentAliases(varIdx, columnIndex, column.cellBar);
+		return [`VAR ${tableCellBarMaxVarName(varIdx, columnIndex)} = MAXX(${rowsVar}, ${tableCellBarTotalExpr(aliases)})`];
+	});
+	const repeatedTableOptions: TableRenderOptions = { compactMetricColumns: true };
+	const rowCells = tableRowCellDax(display.table.columns, varIdx, [], repeatedTableOptions);
+	const rowsHtmlDax = `CONCATENATEX(${rowsVar}, "<tr>" & ${rowCells} & "</tr>", ""${innerSortExpr})`;
+	const tableDax = `"<table class='kw-repeated-table' style='${REPEATED_TABLE_TABLE_STYLE}'>" & ${tableTheadDax(display.table.columns, [], repeatedTableOptions)} & "<tbody>" & ${htmlVar} & "</tbody></table>"`;
+	const groupDax = `${outerKeyVars} VAR ${scopedVar} = FILTER(${innerDataVar}, ${scopedFilter}) VAR ${rowsVar} = ${innerRowsExpr} ${relativeMaxVars.join(' ')} VAR ${htmlVar} = ${rowsHtmlDax} RETURN "<section class='kw-repeated-table-group' style='${REPEATED_TABLE_GROUP_STYLE}'>" & ${repeatedTableHeaderDax(display)} & ${tableDax} & "</section>"`;
+	vars.push(`VAR ${repeatVar} = CONCATENATEX(${outerVar}, ${groupDax}, "", ${escCol(outerIndexAlias)}, ASC)`);
+	return repeatVar;
 }
 
 function generatePivotDaxVars(factTable: string, display: PivotDisplay, varIdx: number): DaxVarResult {
@@ -1546,6 +1814,20 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 
 			const replaced = replaceTableElement(tableMatch, result.theadVar, result.rowsVar);
 			html = html.replace(tableMatch.fullMatch, () => replaced);
+			varIdx++;
+			continue;
+		}
+
+		if (display.type === 'repeatedTable') {
+			if (!isValidRepeatedTableDisplay(display)) continue;
+			const repeatedTableRe = new RegExp(
+				'(<([a-zA-Z][a-zA-Z0-9:-]*)\\b[^>]*?\\b' + bindAttr + '[^>]*>)([\\s\\S]*?)(</\\2>)', 'i',
+			);
+			const repeatedTableMatch = html.match(repeatedTableRe);
+			if (!repeatedTableMatch || !isRepeatedTableContainerTag(repeatedTableMatch[2])) continue;
+
+			const markerName = generateRepeatedTableDax(factTable, display as RepeatedTableDisplay, varIdx, vars);
+			html = html.replace(repeatedTableMatch[0], () => `${repeatedTableMatch[1]}{{${markerName}}}${repeatedTableMatch[4]}`);
 			varIdx++;
 			continue;
 		}

@@ -34,7 +34,7 @@ export type DashboardChartDisplay = BarDisplay | LineDisplay | PieDisplay;
 export type DashboardChartType = DashboardChartDisplay['type'];
 
 export const SUPPORTED_DASHBOARD_CHART_TYPES = ['bar', 'pie', 'line'] as const;
-export const SUPPORTED_POWER_BI_DISPLAY_TYPES = ['scalar', 'table', 'pivot', ...SUPPORTED_DASHBOARD_CHART_TYPES] as const;
+export const SUPPORTED_POWER_BI_DISPLAY_TYPES = ['scalar', 'table', 'repeatedTable', 'pivot', ...SUPPORTED_DASHBOARD_CHART_TYPES] as const;
 
 export const DASHBOARD_CHART_COLORS = [
 	'#FFC20A', '#0C7BDC', '#4819B1', '#EE6914', '#8E88E8',

@@ -24,6 +24,7 @@ import {
 	SUPPORTED_POWER_BI_DISPLAY_TYPES,
 	isValidDashboardChartDisplay,
 } from '../../../src/shared/dashboardCharts';
+import { isValidRepeatedTableDisplay, isValidTableDisplay } from '../../../src/shared/dashboardTables';
 import { parseKwProvenance } from '../../../src/webview/sections/kw-html-section';
 
 // ── Provenance v1 parsing ───────────────────────────────────────────────────
@@ -90,7 +91,7 @@ describe('parseKwProvenance', () => {
 
 describe('findUnsupportedPowerBiBindings', () => {
 	it('keeps the documented Power BI display support list explicit', () => {
-		expect(SUPPORTED_POWER_BI_DISPLAY_TYPES).toEqual(['scalar', 'table', 'pivot', 'bar', 'pie', 'line']);
+		expect(SUPPORTED_POWER_BI_DISPLAY_TYPES).toEqual(['scalar', 'table', 'repeatedTable', 'pivot', 'bar', 'pie', 'line']);
 	});
 
 	it('reports provenance display types that cannot be rendered during Power BI export', () => {
@@ -233,6 +234,67 @@ describe('findUnsupportedPowerBiBindings', () => {
 		);
 
 		expect(findUnsupportedPowerBiBindings(html)).toEqual(['top-table (table: invalid top)']);
+	});
+
+	it('reports repeated table top without repeatOrderBy before export', () => {
+		const html = makeV1Html(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						repeatTop: 5,
+						table: {
+							groupBy: ['ClientName'],
+							columns: [{ name: 'ClientName' }, { name: 'Rows', agg: 'COUNT' }],
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['by-skill (repeatedTable: invalid repeatTop)']);
+	});
+
+	it('requires repeated table bindings to target a non-table container', () => {
+		const html = makeV1Html(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						table: {
+							groupBy: ['ClientName'],
+							columns: [{ name: 'ClientName' }, { name: 'Rows', agg: 'COUNT' }],
+						},
+					},
+				},
+			},
+			'<table data-kw-bind="by-skill"></table>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['by-skill (repeatedTable: target must be a visible non-table container element)']);
+	});
+
+	it('rejects repeated table bindings when any duplicate target is not a visible non-table container', () => {
+		const html = makeV1Html(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						table: {
+							groupBy: ['ClientName'],
+							columns: [{ name: 'ClientName' }, { name: 'Rows', agg: 'COUNT' }],
+						},
+					},
+				},
+			},
+			'<table data-kw-bind="by-skill"></table><div data-kw-bind="by-skill"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['by-skill (repeatedTable: target must be a visible non-table container element)']);
 	});
 
 	it('reports invalid optional chart fields before export', () => {
@@ -388,6 +450,66 @@ describe('findUnsupportedPowerBiBindings', () => {
 
 		expect(getPowerBiHtmlValidationIssues(html, [barDataSource])).toEqual([
 			'status-table (columns[1].cellBar.segments[1].column: missing column MissingStatus)',
+		]);
+	});
+
+	it('reports missing and non-numeric columns referenced by table cell formatting', () => {
+		const html = makeV1Html(
+			{
+				'format-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS' },
+							{ name: 'Rows', agg: 'COUNT', cellFormat: { valueColumn: 'MissingValue', rules: [{ operator: '>', value: 1, backgroundColor: '#E7F3E7' }] } },
+						],
+					},
+				},
+				'group-format': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS', cellFormat: { rules: [{ operator: '=', value: 1, backgroundColor: '#E7F3E7' }] } },
+							{ name: 'Rows', agg: 'COUNT' },
+						],
+					},
+				},
+			},
+			'<table data-kw-bind="format-table"></table><table data-kw-bind="group-format"></table>',
+		);
+
+		expect(getPowerBiHtmlValidationIssues(html, [barDataSource])).toEqual([
+			'format-table (table: invalid spec)',
+			'group-format (columns[0].cellFormat.valueColumn: non-numeric column OS)',
+		]);
+	});
+
+	it('reports missing columns referenced by repeated table specs', () => {
+		const html = makeV1Html(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						repeatColumns: [
+							{ name: 'SkillName' },
+							{ name: 'MissingTotal', agg: 'SUM', sourceColumn: 'MissingTotal' },
+						],
+						table: {
+							groupBy: ['ClientName'],
+							columns: [{ name: 'ClientName' }, { name: 'MissingRows', agg: 'SUM', sourceColumn: 'MissingRows' }],
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+		);
+
+		expect(getPowerBiHtmlValidationIssues(html, [factDataSource])).toEqual([
+			'by-skill (repeatColumns[1].column: missing column MissingTotal)',
+			'by-skill (table.columns[1].column: missing column MissingRows)',
 		]);
 	});
 
@@ -953,6 +1075,116 @@ describe('dashboard bar display validation', () => {
 	});
 });
 
+describe('dashboard repeated table display validation', () => {
+	it('accepts valid repeated table specs and rejects ambiguous repeat columns', () => {
+		expect(isValidRepeatedTableDisplay({
+			type: 'repeatedTable',
+			repeatBy: ['SkillName'],
+			repeatColumns: [{ name: 'SkillName' }, { name: 'Rows', agg: 'COUNT' }],
+			repeatOrderBy: { column: 'Rows', direction: 'desc' },
+			repeatTop: 10,
+			table: {
+				groupBy: ['ClientName'],
+				columns: [{ name: 'ClientName' }, { name: 'Devices', agg: 'DCOUNT', sourceColumn: 'DeviceId' }],
+				orderBy: { column: 'Devices', direction: 'desc' },
+				top: 5,
+			},
+		})).toBe(true);
+
+		expect(isValidRepeatedTableDisplay({
+			type: 'repeatedTable',
+			repeatBy: ['SkillName'],
+			repeatColumns: [{ name: 'Visual', cellBar: { segments: [{ agg: 'COUNT' }] } }],
+			table: { groupBy: ['ClientName'], columns: [{ name: 'ClientName' }] },
+		})).toBe(false);
+		expect(isValidRepeatedTableDisplay({
+			type: 'repeatedTable',
+			repeatBy: ['SkillName'],
+			repeatTop: 3,
+			table: { groupBy: ['ClientName'], columns: [{ name: 'ClientName' }] },
+		})).toBe(false);
+		expect(isValidRepeatedTableDisplay({
+			type: 'repeatedTable',
+			repeatBy: ['__kw_repeat_idx_0'],
+			table: { groupBy: ['ClientName'], columns: [{ name: 'ClientName' }] },
+		})).toBe(false);
+	});
+});
+
+describe('dashboard table cell formatting validation', () => {
+	it('accepts badge and whole-cell conditional formatting specs', () => {
+		expect(isValidTableDisplay({
+			type: 'table',
+			groupBy: ['OS'],
+			columns: [
+				{ name: 'OS' },
+				{
+					name: 'FailureRate',
+					agg: 'AVG',
+					sourceColumn: 'FailureRate',
+					format: '0.##%',
+					cellFormat: {
+						mode: 'badge',
+						rules: [{ operator: '<', value: 0.8, backgroundColor: '#FDE7E9', color: '#C62828', fontWeight: '600' }],
+						defaultStyle: { backgroundColor: '#E7F3E7', color: '#2E7D32' },
+					},
+				},
+			],
+		})).toBe(true);
+
+		expect(isValidTableDisplay({
+			type: 'table',
+			groupBy: ['OS'],
+			columns: [
+				{ name: 'OS' },
+				{
+					name: 'Latency',
+					agg: 'AVG',
+					sourceColumn: 'LatencyMs',
+					cellFormat: { mode: 'cell', rules: [{ operator: '>=', value: 1000, backgroundColor: 'red', color: 'white' }] },
+				},
+			],
+		})).toBe(true);
+	});
+
+	it('rejects unsafe or ambiguous cell formatting specs', () => {
+		expect(isValidTableDisplay({
+			type: 'table',
+			groupBy: ['OS'],
+			columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT', cellFormat: { rules: [{ operator: 'between', value: 1, backgroundColor: '#fff' }] } }],
+		})).toBe(false);
+		expect(isValidTableDisplay({
+			type: 'table',
+			groupBy: ['OS'],
+			columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT', cellFormat: { rules: [{ operator: '>', value: 1, backgroundColor: 'red;position:fixed' }] } }],
+		})).toBe(false);
+		expect(isValidTableDisplay({
+			type: 'table',
+			groupBy: ['OS'],
+			columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT', cellFormat: { rules: [{ operator: '>', value: 1, backgroundColor: '#fff', fontWeight: '900' }] } }],
+		})).toBe(false);
+		expect(isValidTableDisplay({
+			type: 'table',
+			groupBy: ['OS'],
+			columns: [
+				{ name: 'OS' },
+				{ name: 'Visual', cellBar: { segments: [{ agg: 'COUNT' }] }, cellFormat: { rules: [{ operator: '>', value: 1, backgroundColor: '#fff' }] } },
+			],
+		})).toBe(false);
+		expect(isValidTableDisplay({
+			type: 'table',
+			groupBy: ['OS'],
+			columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT', cellFormat: { valueColumn: 'Missing', rules: [{ operator: '>', value: 1, backgroundColor: '#fff' }] } }],
+		})).toBe(false);
+		expect(isValidRepeatedTableDisplay({
+			type: 'repeatedTable',
+			repeatBy: ['SkillName'],
+			repeatColumns: [{ name: 'SkillName', cellFormat: { rules: [{ operator: '=', value: 1, backgroundColor: '#fff' }] } }],
+			table: { groupBy: ['ClientName'], columns: [{ name: 'ClientName' }] },
+		})).toBe(false);
+	});
+});
+
 describe('generateTableTmdl', () => {
 	it('uses Import mode by default for local export compatibility', () => {
 		const tmdl = generateTableTmdl(factDataSource);
@@ -1171,6 +1403,83 @@ describe('generateDaxMeasure — v1 table with groupBy', () => {
 		expect(result).not.toContain('"<td>" & [SkillName] & "</td>"');
 	});
 
+	it('generates conditional badge table cells from raw numeric values', () => {
+		const html = makeV1Html(
+			{
+				'status-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS', header: 'Service <Name>' },
+							{
+								name: 'FailureRate',
+								header: 'Failure %',
+								agg: 'AVG',
+								sourceColumn: 'FailureRate',
+								format: '0.##%',
+								cellFormat: {
+									rules: [
+										{ operator: '<', value: 0.05, backgroundColor: '#E7F3E7', color: '#2E7D32', fontWeight: '600' },
+										{ operator: '>=', value: 0.1, backgroundColor: '#FDE7E9', color: '#C62828' },
+									],
+									defaultStyle: { backgroundColor: '#FFF4CE', color: '#8A6D1D' },
+								},
+							},
+						],
+					},
+				},
+			},
+			'<table data-kw-bind="status-table"><thead><tr><th>Service</th><th class="metric">Failure</th></tr></thead><tbody></tbody></table>',
+		);
+
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain('kw-cell-badge');
+		expect(result).toContain('SWITCH(TRUE(), [FailureRate] < 0.05');
+		expect(result).toContain('[FailureRate] >= 0.1');
+		expect(result).toContain('background-color:#E7F3E7;color:#2E7D32;font-weight:600;');
+		expect(result).toContain('background-color:#FFF4CE;color:#8A6D1D;');
+		expect(result).toContain('FORMAT([FailureRate], "0.##") & "%"');
+		expect(result).toContain('<th>Service &lt;Name&gt;</th>');
+		expect(result).toContain("\"<td class=\"\"metric\"\">\" & \"<span class='kw-cell-badge' style='\" & SWITCH");
+	});
+
+	it('generates whole-cell conditional styles without wrapping badges', () => {
+		const html = makeV1Html(
+			{
+				'latency-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS' },
+							{
+								name: 'Latency',
+								agg: 'AVG',
+								sourceColumn: 'LatencyMs',
+								format: '#,##0',
+								cellFormat: {
+									mode: 'cell',
+									rules: [{ operator: '>', value: 1000, backgroundColor: '#FDE7E9', color: '#C62828' }],
+									defaultStyle: { backgroundColor: '#E7F3E7' },
+								},
+							},
+						],
+					},
+				},
+			},
+			'<table data-kw-bind="latency-table"></table>',
+		);
+
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain("\"<td style='\" & SWITCH(TRUE(), [Latency] > 1000");
+		expect(result).toContain('background-color:#FDE7E9;color:#C62828;');
+		expect(result).toContain('background-color:#E7F3E7;');
+		expect(result).not.toContain('kw-cell-badge');
+	});
+
 	it('generates inline SVG table cells for stacked cell bars', () => {
 		const html = makeV1Html(
 			{
@@ -1256,6 +1565,184 @@ describe('generateDaxMeasure — v1 table with groupBy', () => {
 
 		expect(result).toContain('"__kw_cellbar_0_1_0", CALCULATE(COUNTROWS(');
 		expect(result).toContain("fill='#0078D4'");
+	});
+});
+
+describe('generateDaxMeasure — repeated table', () => {
+	it('generates outer repeated sections with scoped ordered inner tables', () => {
+		const html = makeV1Html(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						repeatColumns: [
+							{ name: 'SkillName', header: 'Skill <Name>' },
+							{ name: 'Refs', agg: 'COUNT', header: 'References', format: '#,##0' },
+						],
+						repeatOrderBy: { column: 'Refs', direction: 'desc' },
+						repeatTop: 2,
+						table: {
+							groupBy: ['ClientName'],
+							columns: [
+								{ name: 'ClientName', header: 'Client' },
+								{ name: 'Devices', agg: 'DCOUNT', sourceColumn: 'DeviceId', header: 'Devices', format: '#,##0' },
+							],
+							orderBy: { column: 'Devices', direction: 'desc' },
+							top: 3,
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('VAR _repeatData_0 = FILTER(ADDCOLUMNS(');
+		expect(result).toContain('"__kw_repeat_idx_0", VAR _sort = [Refs]');
+		expect(result).toContain('[__kw_repeat_idx_0] <= 2');
+		expect(result).toContain('VAR _repeatInnerData_0 = ADDCOLUMNS(SUMMARIZE');
+		expect(result).toContain('[SkillName] = _kwRepeatKey_0_0');
+		expect(result).toContain('"__kw_table_idx_0", VAR _sort = [Devices]');
+		expect(result).toContain('[__kw_table_idx_0] <= 3');
+		expect(result).toContain('kw-repeated-table-group');
+		expect(result).toContain('kw-repeated-table');
+		expect(result).toContain("kw-repeated-table-group' style='margin:0 0 16px 0;border:1px solid rgba(127,127,127,0.35);border-radius:6px;overflow:hidden;");
+		expect(result).toContain("kw-repeated-table-header' style='display:flex");
+		expect(result).toContain('align-items:flex-start');
+		expect(result).toContain('gap:10px 32px');
+		expect(result).toContain('border-bottom:1px solid rgba(127,127,127,0.35)');
+		expect(result).toContain("kw-repeat-field kw-repeat-primary' style='display:flex");
+		expect(result).toContain('flex-direction:column');
+		expect(result).toContain('flex:1 1 220px');
+		expect(result).toContain("kw-repeat-field kw-repeat-metric' style='display:flex");
+		expect(result).toContain('align-items:flex-end');
+		expect(result).toContain('white-space:nowrap');
+		expect(result).toContain('<th style=""width:1%;white-space:nowrap;text-align:right;"">Devices</th>');
+		expect(result).toContain('<td style=""width:1%;white-space:nowrap;text-align:right;"">');
+		expect(result).toContain("kw-repeat-label' style='font-size:inherit;font-weight:700");
+		expect(result).toContain("kw-repeat-value' style='font-size:inherit;font-weight:400");
+		expect(result).toContain('Skill &lt;Name&gt;');
+		expect(result).toContain('DISTINCTCOUNT');
+		expect(result).toContain('CONCATENATEX(_repeatData_0');
+		expect(result).toContain('RETURN "<html>');
+		expect(result).toContain('_repeat_0');
+	});
+
+	it('defaults omitted repeatOrderBy direction to descending like preview table ordering', () => {
+		const html = makeV1Html(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						repeatColumns: [{ name: 'SkillName' }, { name: 'Rows', agg: 'COUNT' }],
+						repeatOrderBy: { column: 'Rows' },
+						table: {
+							groupBy: ['ClientName'],
+							columns: [{ name: 'ClientName' }, { name: 'Devices', agg: 'DCOUNT', sourceColumn: 'DeviceId' }],
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('"__kw_repeat_idx_0", VAR _sort = [Rows]');
+		expect(result).toContain('[Rows] > _sort');
+	});
+
+	it('uses group-key default ordering when repeated table orderBy fields are omitted', () => {
+		const html = makeV1Html(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						table: {
+							groupBy: ['ClientName'],
+							columns: [{ name: 'ClientName' }, { name: 'Rows', agg: 'COUNT' }],
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('"__kw_repeat_idx_0", VAR _sort = [SkillName]');
+		expect(result).toContain('CONCATENATEX(_repeatData_0');
+		expect(result).toContain(', [__kw_repeat_idx_0], ASC');
+		expect(result).toContain('CONCATENATEX(_kwRepeatRows_0, "<tr>"');
+		expect(result).toContain(', [ClientName], ASC');
+	});
+
+	it('generates per-group relative cell bars for inner repeated tables', () => {
+		const html = makeV1Html(
+			{
+				'by-os': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['OS'],
+						repeatColumns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }],
+						repeatOrderBy: { column: 'Rows', direction: 'desc' },
+						table: {
+							groupBy: ['SkillName'],
+							columns: [
+								{ name: 'SkillName' },
+								{ name: 'Health', cellBar: { scale: 'relative', segments: [{ agg: 'SUM', column: 'Healthy', color: '#2E7D32' }] } },
+							],
+							orderBy: { column: 'SkillName', direction: 'asc' },
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="by-os"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain('VAR _kwCellBarMax_0_1 = MAXX(_kwRepeatRows_0');
+		expect(result).toContain('DIVIDE(MAX(0, COALESCE([__kw_cellbar_0_1_0], 0)), _kwCellBarMax_0_1, 0)');
+		expect(result).toContain('kw-cell-bar');
+	});
+
+	it('generates conditional formatting for inner repeated table cells', () => {
+		const html = makeV1Html(
+			{
+				'by-os': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['OS'],
+						table: {
+							groupBy: ['SkillName'],
+							columns: [
+								{ name: 'SkillName' },
+								{
+									name: 'FailureRate',
+									agg: 'AVG',
+									sourceColumn: 'FailureRate',
+									format: '0.##%',
+									cellFormat: { rules: [{ operator: '>=', value: 0.1, backgroundColor: '#FDE7E9', color: '#C62828' }] },
+								},
+							],
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="by-os"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain('VAR _repeatInnerData_0 = ADDCOLUMNS(SUMMARIZE');
+		expect(result).toContain('kw-cell-badge');
+		expect(result).toContain('SWITCH(TRUE(), [FailureRate] >= 0.1');
+		expect(result).toContain('FORMAT([FailureRate], "0.##") & "%"');
 	});
 });
 
