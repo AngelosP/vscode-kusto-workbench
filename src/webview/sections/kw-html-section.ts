@@ -37,6 +37,7 @@ export interface PbiPublishInfo {
 	reportId: string;
 	reportName: string;
 	reportUrl: string;
+	dataMode?: 'import' | 'directQuery';
 }
 
 /** Serialized shape for .kqlx persistence — must match KqlxSectionV1 html variant. */
@@ -1292,6 +1293,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 						reportId: e.data.reportId,
 						reportName: e.data.reportName || '',
 						reportUrl: e.data.reportUrl || '',
+						dataMode: e.data.dataMode === 'import' || e.data.dataMode === 'directQuery' ? e.data.dataMode : undefined,
 					};
 					schedulePersist(undefined, true); // Immediate flush — losing publish GUIDs is costly
 				}

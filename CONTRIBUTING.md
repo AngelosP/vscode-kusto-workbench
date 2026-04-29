@@ -311,7 +311,7 @@ HTML sections persist source and configuration, not data snapshots. The serializ
 
 - Persist `type: 'html'`, `code`, `mode`, `expanded`, `editorHeightPx`, `previewHeightPx`, `dataSourceIds`, and optional `pbiPublishInfo`.
 - `dataSourceIds` are references to source query/transformation sections derived from provenance and section wiring; do not duplicate result rows inside the HTML section.
-- `pbiPublishInfo` is metadata returned by Fabric/Power BI publish (`workspaceId`, model/report IDs, report name, URL). Preserve it across save/restore so republish can update the existing report.
+- `pbiPublishInfo` is metadata returned by Fabric/Power BI publish (`workspaceId`, model/report IDs, report name, URL, selected data mode). Preserve it across save/restore so republish can update the existing report with the intended Import/DirectQuery behavior.
 - After a publish updates `pbiPublishInfo`, ensure persistence is scheduled/flushed through the normal persistence path rather than ad hoc host messages.
 - If dashboard fields ever start carrying derived query data, update Leave No Trace stripping first.
 
@@ -408,7 +408,7 @@ Use this checklist when changing `kw-html-section`, dashboard prompts/tools, `po
 6. **Validate through the export path.** Agent-facing validation should reuse the webview export context and the shared Power BI validation collector so it matches actual export/publish behavior.
 7. **Document and test new binding shapes.** If adding scalar/table/pivot/chart display modes or `preAggregate` behavior, cover DAX generation and rendered HTML/SVG output in `powerBiExport.test.ts` and preview bridge behavior in webview tests.
 8. **Export `.pbip`/PBIR/TMDL, not `.pbix`.** Do not describe or implement this path as direct `.pbix` generation. The project uses the marketplace-signed HTML Content visual rather than importing a local `.pbiviz` file.
-9. **Maintain DirectQuery compatibility.** Generated model queries should continue to use Kusto `AzureDataExplorer.Contents` sources and stable table/column naming.
+9. **Maintain data-mode compatibility.** Generated model queries should continue to use Kusto `AzureDataExplorer.Contents` sources, stable table/column naming, and explicit Import/DirectQuery behavior for local export, new publish, and legacy republish flows.
 10. **Preserve Fabric publish/update behavior.** Publishing must support create-new and update-existing flows, item existence checks, stored publish metadata, and non-fatal refresh schedule failures.
 11. **Keep host/webview contracts typed.** Any new export/publish message must be added to both `queryEditorTypes.ts` and `webview-messages.ts`, and covered by `message-protocol.test.ts`. Tool-framework messages that intentionally use generic `toolResponse` still need protocol inventory coverage.
 

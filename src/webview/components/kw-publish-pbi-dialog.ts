@@ -6,9 +6,12 @@ import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import type { PbiPublishInfo } from '../sections/kw-html-section.js';
+import { leaveNoTraceClusters } from '../core/state.js';
+import { isLeaveNoTraceCluster } from '../shared/persistence-utils.js';
 
 type DialogState = 'idle' | 'loading-workspaces' | 'ready' | 'publishing' | 'success' | 'error';
 type PublishMode = 'update' | 'new';
+type PowerBiDataMode = 'import' | 'directQuery';
 
 interface PbiWorkspace { id: string; name: string; isPersonal?: boolean }
 
@@ -30,8 +33,11 @@ export class KwPublishPbiDialog extends LitElement {
 	@state() private _errorMessage = '';
 	@state() private _reportUrl = '';
 	@state() private _scheduleConfigured = false;
+	@state() private _initialRefreshTriggered = false;
 	@state() private _visible = false;
 	@state() private _publishMode: PublishMode = 'new';
+	@state() private _dataMode: PowerBiDataMode = 'import';
+	@state() private _publishedDataMode: PowerBiDataMode = 'import';
 	@state() private _lastPublishWasUpdate = false;
 	/** True when the existence check confirmed the report is still alive in the stored workspace. */
 	@state() private _existingItemConfirmed = false;
@@ -41,6 +47,7 @@ export class KwPublishPbiDialog extends LitElement {
 	private _htmlCode = '';
 	private _boxId = '';
 	private _pbiPublishInfo: PbiPublishInfo | undefined;
+	private _dataModeExplicit = false;
 	private _dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> = [];
 	private _dismiss = () => this._cancel();
 
@@ -63,11 +70,15 @@ export class KwPublishPbiDialog extends LitElement {
 		this._errorMessage = '';
 		this._reportUrl = '';
 		this._scheduleConfigured = false;
+		this._initialRefreshTriggered = false;
 		this._workspaces = [];
 		this._selectedWorkspaceId = '';
 		this._workspaceFilter = '';
 		this._workspaceDropdownOpen = false;
 		this._publishMode = pbiPublishInfo?.workspaceId && pbiPublishInfo?.semanticModelId && pbiPublishInfo?.reportId ? 'update' : 'new';
+		this._dataModeExplicit = false;
+		this._applyImplicitDataMode();
+		this._publishedDataMode = this._dataMode;
 		this._lastPublishWasUpdate = false;
 		this._existingItemConfirmed = false;
 		this._checkingExistence = false;
@@ -111,6 +122,7 @@ export class KwPublishPbiDialog extends LitElement {
 						this._workspaceFilter = lastMatch.name;
 					}
 				}
+				this._applyImplicitDataMode();
 				this._state = 'ready';
 			} else {
 				this._errorMessage = message.error || 'Failed to load workspaces.';
@@ -125,12 +137,18 @@ export class KwPublishPbiDialog extends LitElement {
 			} else {
 				this._existingItemConfirmed = false;
 			}
+			this._applyImplicitDataMode();
 		} else if (message.type === 'publishToPowerBIResult') {
 			if (message.ok && message.reportUrl) {
 				const previousReportId = this._pbiPublishInfo?.reportId;
 				const returnedReportId = typeof message.reportId === 'string' ? message.reportId : '';
+				const returnedDataMode = this._normalizeDataMode(message.dataMode) || this._dataMode;
 				this._reportUrl = message.reportUrl;
 				this._scheduleConfigured = !!message.scheduleConfigured;
+				this._initialRefreshTriggered = !!message.initialRefreshTriggered;
+				this._publishedDataMode = returnedDataMode;
+				this._dataMode = returnedDataMode;
+				this._dataModeExplicit = false;
 				this._checkingExistence = false;
 				if (this._lastPublishWasUpdate && previousReportId && returnedReportId && returnedReportId !== previousReportId) {
 					this._lastPublishWasUpdate = false;
@@ -149,6 +167,7 @@ export class KwPublishPbiDialog extends LitElement {
 						reportId: String(message.reportId),
 						reportName,
 						reportUrl: String(message.reportUrl),
+						dataMode: returnedDataMode,
 					};
 					this._selectedWorkspaceId = workspaceId;
 					this._workspaceFilter = workspaceName || this._workspaceFilter;
@@ -180,6 +199,27 @@ export class KwPublishPbiDialog extends LitElement {
 		return this._publishMode === 'update' && this._reportName.trim() !== this._pbiPublishInfo.reportName;
 	}
 
+	private _normalizeDataMode(mode: unknown): PowerBiDataMode | undefined {
+		return mode === 'import' || mode === 'directQuery' ? mode : undefined;
+	}
+
+	private get _hasLeaveNoTraceDataSource(): boolean {
+		return this._dataSources.some(ds => isLeaveNoTraceCluster(ds.clusterUrl, leaveNoTraceClusters));
+	}
+
+	private _applyImplicitDataMode(): void {
+		if (this._dataModeExplicit) return;
+		if (this._hasLeaveNoTraceDataSource) {
+			this._dataMode = 'directQuery';
+			return;
+		}
+		if (this._showUpdateToggle && this._publishMode === 'update') {
+			this._dataMode = this._normalizeDataMode(this._pbiPublishInfo?.dataMode) || 'directQuery';
+			return;
+		}
+		this._dataMode = 'import';
+	}
+
 	private _publish(): void {
 		if (!this._selectedWorkspaceId || !this._reportName.trim() || this._checkingExistence || this._state === 'publishing' || this._state === 'loading-workspaces' || this._state === 'error') return;
 		this._state = 'publishing';
@@ -199,6 +239,7 @@ export class KwPublishPbiDialog extends LitElement {
 			pageHeight: this._pageHeight,
 			htmlCode: this._htmlCode,
 			dataSources: this._dataSources,
+			dataMode: this._dataMode,
 			workspaceName: selectedWorkspace?.name,
 			isPersonalWorkspace: selectedWorkspace?.isPersonal,
 			...(isUpdate ? {
@@ -218,6 +259,7 @@ export class KwPublishPbiDialog extends LitElement {
 		// Clear selection if text no longer matches
 		const match = this._workspaces.find(w => w.name === this._workspaceFilter);
 		this._selectedWorkspaceId = match ? match.id : '';
+		this._applyImplicitDataMode();
 	}
 
 	private _onWorkspaceFocus(): void {
@@ -233,6 +275,7 @@ export class KwPublishPbiDialog extends LitElement {
 		this._selectedWorkspaceId = w.id;
 		this._workspaceFilter = w.name;
 		this._workspaceDropdownOpen = false;
+		this._applyImplicitDataMode();
 		this._saveLastWorkspace(w);
 	}
 
@@ -272,6 +315,13 @@ export class KwPublishPbiDialog extends LitElement {
 
 	private _onPublishModeChange(mode: PublishMode): void {
 		this._publishMode = mode;
+		this._applyImplicitDataMode();
+	}
+
+	private _onDataModeChange(mode: PowerBiDataMode): void {
+		if (mode === 'import' && this._hasLeaveNoTraceDataSource) return;
+		this._dataMode = mode;
+		this._dataModeExplicit = true;
 	}
 
 	// ── Update / Publish-as-new toggle ────────────────────────────────────────
@@ -296,6 +346,38 @@ export class KwPublishPbiDialog extends LitElement {
 				` : nothing}
 				${this._isRenaming ? html`
 					<div class="ppd-info-note">Renaming will also rename the semantic model in Power BI. If another item in the workspace already has this name, the publish will fail — just pick a different name and try again. Nothing is lost.</div>
+				` : nothing}
+			</div>
+		`;
+	}
+
+	private _renderDataModeToggle(): TemplateResult {
+		const controlsDisabled = this._state === 'publishing' || this._checkingExistence;
+		const importDisabled = controlsDisabled || this._hasLeaveNoTraceDataSource;
+
+		return html`
+			<div class="ppd-section">
+				<div class="ppd-section-label">Data mode</div>
+				<div class="ppd-toggle-group ppd-data-mode-toggle">
+					<button class="ppd-toggle-btn ${this._dataMode === 'import' ? 'is-active' : ''}"
+						?disabled=${importDisabled}
+						@click=${() => this._onDataModeChange('import')}>Import</button>
+					<button class="ppd-toggle-btn ${this._dataMode === 'directQuery' ? 'is-active' : ''}"
+						?disabled=${controlsDisabled}
+						@click=${() => this._onDataModeChange('directQuery')}>DirectQuery</button>
+				</div>
+				<div class="ppd-data-mode-copy">
+					<div class="ppd-mode-copy ${this._dataMode === 'import' ? 'is-active' : ''}">
+						<strong>Import</strong>
+						<span>Copies query results into the semantic model during refresh for faster report interactions.</span>
+					</div>
+					<div class="ppd-mode-copy ${this._dataMode === 'directQuery' ? 'is-active' : ''}">
+						<strong>DirectQuery</strong>
+						<span>Keeps data in Kusto and queries the source when report visuals run.</span>
+					</div>
+				</div>
+				${this._hasLeaveNoTraceDataSource ? html`
+					<div class="ppd-info-note">Import is unavailable because one or more source clusters are marked Leave No Trace.</div>
 				` : nothing}
 			</div>
 		`;
@@ -370,6 +452,11 @@ export class KwPublishPbiDialog extends LitElement {
 				<span class="ppd-success-schedule-label">Refresh schedule</span>
 				<span class="ppd-success-schedule">${this._scheduleConfigured ? 'Daily at 1:00 AM UTC' : 'Not configured'}</span>
 			</div>
+			${this._publishedDataMode === 'import' ? html`<div class="ppd-success-row ppd-success-schedule-row">
+				${ICONS.refresh}
+				<span class="ppd-success-schedule-label">Initial refresh</span>
+				<span class="ppd-success-schedule">${this._initialRefreshTriggered ? 'Started' : 'Not started'}</span>
+			</div>` : nothing}
 			<div class="ppd-success-row ppd-success-actions">
 				<a class="ppd-success-link" href=${this._reportUrl} target="_blank" rel="noopener noreferrer">${ICONS.linkExternal}<span>View report</span></a>
 				${settingsUrl ? html`<a class="ppd-success-link" href=${settingsUrl} target="_blank" rel="noopener noreferrer">${ICONS.settingsGear}<span>Semantic model settings</span></a>` : nothing}
@@ -433,6 +520,7 @@ export class KwPublishPbiDialog extends LitElement {
 					</div>
 				</div>
 				${this._renderUpdateToggle()}
+				${this._renderDataModeToggle()}
 				<div class="ppd-section">
 					<div class="ppd-section-label">Layout</div>
 					<div class="ppd-dims">

@@ -91,7 +91,7 @@ Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files
 * Add a `kw-provenance` block and `data-kw-bind` targets to make dashboard values exportable to Power BI.
 * Exportable scalar, table, pivot, bar, pie, and line bindings are generated from the same fact query that powers the preview.
 * Use `KustoWorkbench.renderChart(bindingId)` for exportable preview charts so the VS Code preview uses the same SVG geometry, palette, ordering, and labels as the Power BI report.
-* Export dashboards as Power BI reports that can refresh automatically daily.
+* Export dashboards as Power BI projects or reports that use Import mode by default, with DirectQuery available when the report should query Kusto at view time.
 
 ![HTML based dashboard](media/marketplace/html-dashboard.png)
 
@@ -167,6 +167,8 @@ Explore the Kusto clusters and SQL Server connections you have added with ease. 
 ### Leave No Trace
 
 Are you connecting to a Kusto cluster for which you should never export data or save data locally due to access restrictions, legal requirements, etc? Just flag the cluster and the extension will never save any of its data to disk, or even in temporary files. It will still allow you to save the queries and the chart settings, but the data itself will have to be retrieved each time you connect to the cluster.
+
+Power BI publishing keeps Leave No Trace sources in DirectQuery mode because Import mode stores refreshed query results in the Power BI semantic model.
 
 ![Leave No Trace](media/marketplace/cluster-explorer.png)
 

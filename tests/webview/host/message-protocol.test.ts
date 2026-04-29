@@ -21,6 +21,8 @@ type ExtractType<T> = T extends { type: infer U } ? U : never;
 
 type IncomingType = ExtractType<IncomingWebviewMessage>;
 type OutgoingType = ExtractType<OutgoingWebviewMessage>;
+type IncomingPublishToPowerBIMessage = Extract<IncomingWebviewMessage, { type: 'publishToPowerBI' }>;
+type OutgoingPublishToPowerBIMessage = Extract<OutgoingWebviewMessage, { type: 'publishToPowerBI' }>;
 
 // Compile-time check: if a type literal is not a valid discriminant, tsc errors.
 function assertIncomingType(_t: IncomingType): void { /* type-only */ }
@@ -586,6 +588,23 @@ describe('Message Protocol Contract', () => {
 	// ─── Webview → Host direction ──────────────────────────────────────────
 
 	describe('Webview → Host (OutgoingWebviewMessage ↔ IncomingWebviewMessage)', () => {
+		it('publishToPowerBI carries the selected data mode in both directions', () => {
+			const basePayload = {
+				boxId: 'html_1',
+				workspaceId: 'workspace-1',
+				reportName: 'Ops Dashboard',
+				pageWidth: 1280,
+				pageHeight: 720,
+				htmlCode: '<main></main>',
+				dataSources: [{ name: 'Fact Events', sectionId: 'query_1', clusterUrl: 'https://cluster.example', database: 'db', query: 'FactEvents', columns: [{ name: 'Day', type: 'datetime' }] }],
+			};
+			const incoming: IncomingPublishToPowerBIMessage = { type: 'publishToPowerBI', ...basePayload, dataMode: 'import' };
+			const outgoing: OutgoingPublishToPowerBIMessage = { type: 'publishToPowerBI', ...basePayload, dataMode: 'directQuery' };
+
+			expect(incoming.dataMode).toBe('import');
+			expect(outgoing.dataMode).toBe('directQuery');
+		});
+
 		it('every outgoing type (excluding provider-only) exists in IncomingWebviewMessage', () => {
 			const incoming = new Set<string>(INCOMING_WEBVIEW_MESSAGE_TYPES);
 			const missing: string[] = [];

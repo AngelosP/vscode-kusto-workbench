@@ -8,6 +8,7 @@ export interface PbiPublishInfo {
 	reportId: string;
 	reportName: string;
 	reportUrl: string;
+	dataMode?: 'import' | 'directQuery';
 }
 
 export type KqlxSectionV1 =

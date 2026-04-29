@@ -70,5 +70,11 @@ export const styles = css`
 	.ppd-toggle-btn:not(:last-child){border-right:1px solid var(--vscode-input-border)}
 	.ppd-toggle-btn:hover:not(.is-active){background:var(--vscode-list-hoverBackground)}
 	.ppd-toggle-btn.is-active{background:var(--vscode-button-background);color:var(--vscode-button-foreground)}
+	.ppd-data-mode-toggle{margin-bottom:6px}
+	.ppd-data-mode-copy{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-top:6px}
+	.ppd-mode-copy{min-width:0;padding:7px 8px;border-radius:4px;border:1px solid var(--vscode-panel-border);background:rgba(255,255,255,.02);color:var(--vscode-descriptionForeground);font-size:11px;line-height:1.35}
+	.ppd-mode-copy strong{display:block;margin-bottom:3px;font-size:11px;color:var(--vscode-foreground)}
+	.ppd-mode-copy span{display:block}
+	.ppd-mode-copy.is-active{border-color:var(--vscode-focusBorder);background:var(--vscode-inputValidation-infoBackground, rgba(0,122,204,0.08))}
 	.ppd-info-note{font-size:11px;color:var(--vscode-descriptionForeground);line-height:1.4;padding:6px 8px;border-radius:3px;background:var(--vscode-inputValidation-infoBackground, rgba(0,122,204,0.08));border:1px solid var(--vscode-inputValidation-infoBorder, rgba(0,122,204,0.2));margin-top:6px}
 `;

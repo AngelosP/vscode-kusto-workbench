@@ -38,6 +38,7 @@ const storedPublishInfo = {
 	reportName: 'Ops Dashboard',
 	reportUrl: 'https://app.powerbi.com/groups/workspace-1/reports/report-1',
 };
+type StoredPublishInfo = typeof storedPublishInfo & { dataMode?: 'import' | 'directQuery' };
 
 let container: HTMLDivElement;
 let currentDialog: KwPublishPbiDialog | undefined;
@@ -55,7 +56,7 @@ async function waitForUpdate(dialog: KwPublishPbiDialog): Promise<void> {
 	await dialog.updateComplete;
 }
 
-async function showDialog(dialog: KwPublishPbiDialog, pbiPublishInfo?: typeof storedPublishInfo): Promise<void> {
+async function showDialog(dialog: KwPublishPbiDialog, pbiPublishInfo?: StoredPublishInfo): Promise<void> {
 	dialog.show(dataSources, htmlCode, 'Ops Dashboard', 720, boxId, pbiPublishInfo);
 	await waitForUpdate(dialog);
 }
@@ -80,6 +81,8 @@ async function sendPublishSuccess(
 		ok: true,
 		reportUrl: 'https://app.powerbi.com/groups/workspace-1/reports/report-new',
 		scheduleConfigured: true,
+		initialRefreshTriggered: true,
+		dataMode: 'import',
 		semanticModelId: 'model-new',
 		reportId: 'report-new',
 		workspaceId: 'workspace-1',
@@ -129,6 +132,41 @@ afterEach(() => {
 });
 
 describe('kw-publish-pbi-dialog', () => {
+	it('defaults first-time publishes to Import and posts the selected data mode', async () => {
+		localStorage.setItem('kw.publishPbi.lastWorkspaceId', 'workspace-1');
+		localStorage.setItem('kw.publishPbi.lastWorkspaceName', 'Analytics');
+		const dialog = createDialog();
+		await showDialog(dialog);
+		await sendWorkspaces(dialog);
+
+		expect(dialog.shadowRoot?.textContent).toContain('Copies query results into the semantic model during refresh for faster report interactions.');
+		expect(dialog.shadowRoot?.textContent).toContain('Keeps data in Kusto and queries the source when report visuals run.');
+
+		testState.postMessageToHost.mockClear();
+		primaryButton(dialog).click();
+
+		expect(lastPublishMessage()).toMatchObject({ dataMode: 'import' });
+	});
+
+	it('posts DirectQuery when the user selects DirectQuery', async () => {
+		localStorage.setItem('kw.publishPbi.lastWorkspaceId', 'workspace-1');
+		localStorage.setItem('kw.publishPbi.lastWorkspaceName', 'Analytics');
+		const dialog = createDialog();
+		await showDialog(dialog);
+		await sendWorkspaces(dialog);
+
+		const directQueryButton = Array.from(dialog.shadowRoot?.querySelectorAll('.ppd-toggle-btn') || [])
+			.find(button => (button.textContent || '').trim() === 'DirectQuery') as HTMLButtonElement | undefined;
+		expect(directQueryButton).toBeTruthy();
+		directQueryButton!.click();
+		await waitForUpdate(dialog);
+
+		testState.postMessageToHost.mockClear();
+		primaryButton(dialog).click();
+
+		expect(lastPublishMessage()).toMatchObject({ dataMode: 'directQuery' });
+	});
+
 	it('labels an existing stored report publish action as Re-publish and posts update IDs', async () => {
 		const dialog = createDialog();
 		await showDialog(dialog, storedPublishInfo);
@@ -149,7 +187,48 @@ describe('kw-publish-pbi-dialog', () => {
 			semanticModelId: 'model-1',
 			reportId: 'report-1',
 			existingReportName: 'Ops Dashboard',
+			dataMode: 'directQuery',
 		});
+	});
+
+	it('uses stored Import mode for existing reports that were published with Import', async () => {
+		const dialog = createDialog();
+		await showDialog(dialog, { ...storedPublishInfo, dataMode: 'import' });
+		await sendWorkspaces(dialog);
+		await sendExists(dialog, true);
+
+		testState.postMessageToHost.mockClear();
+		primaryButton(dialog).click();
+
+		expect(lastPublishMessage()).toMatchObject({ dataMode: 'import' });
+	});
+
+	it('defaults legacy stored reports to Import when publishing to a different workspace', async () => {
+		const dialog = createDialog();
+		await showDialog(dialog, storedPublishInfo);
+		await sendWorkspaces(dialog);
+		await sendExists(dialog, true);
+
+		const workspaceInput = dialog.shadowRoot?.querySelector('.ppd-combo .ppd-input') as HTMLInputElement | null;
+		expect(workspaceInput).toBeTruthy();
+		workspaceInput!.value = '';
+		workspaceInput!.dispatchEvent(new Event('input', { bubbles: true }));
+		await waitForUpdate(dialog);
+
+		const otherWorkspace = Array.from(dialog.shadowRoot?.querySelectorAll('.ppd-combo-item') || [])
+			.find(item => (item.textContent || '').trim() === 'Other') as HTMLElement | undefined;
+		expect(otherWorkspace).toBeTruthy();
+		otherWorkspace!.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+		await waitForUpdate(dialog);
+
+		expect(buttonText(primaryButton(dialog))).toBe('Publish');
+		testState.postMessageToHost.mockClear();
+		primaryButton(dialog).click();
+
+		const publish = lastPublishMessage();
+		expect(publish).toMatchObject({ workspaceId: 'workspace-2', dataMode: 'import' });
+		expect(publish).not.toHaveProperty('semanticModelId');
+		expect(publish).not.toHaveProperty('reportId');
 	});
 
 	it('disables publishing while a stored report existence check is pending', async () => {
@@ -181,6 +260,7 @@ describe('kw-publish-pbi-dialog', () => {
 			semanticModelId: 'model-1',
 			reportId: 'report-1',
 			existingReportName: 'Ops Dashboard',
+			dataMode: 'directQuery',
 		});
 	});
 
@@ -206,6 +286,7 @@ describe('kw-publish-pbi-dialog', () => {
 			semanticModelId: 'model-new',
 			reportId: 'report-new',
 			existingReportName: 'Ops Dashboard',
+			dataMode: 'import',
 		});
 	});
 
@@ -241,6 +322,7 @@ describe('kw-publish-pbi-dialog', () => {
 		expect(buttonText(primaryButton(dialog))).toBe('Publish');
 		testState.postMessageToHost.mockClear();
 		primaryButton(dialog).click();
+		expect(lastPublishMessage()).toMatchObject({ dataMode: 'import' });
 		expect(lastPublishMessage()).not.toHaveProperty('reportId');
 
 		await sendPublishSuccess(dialog);
@@ -249,7 +331,7 @@ describe('kw-publish-pbi-dialog', () => {
 		expect(buttonText(primaryButton(dialog))).toBe('Re-publish');
 	});
 
-	it('renders success information as three rows with refresh schedule and links', async () => {
+	it('renders success information with refresh schedule, initial refresh, and links', async () => {
 		localStorage.setItem('kw.publishPbi.lastWorkspaceId', 'workspace-1');
 		localStorage.setItem('kw.publishPbi.lastWorkspaceName', 'Analytics');
 		const dialog = createDialog();
@@ -259,10 +341,12 @@ describe('kw-publish-pbi-dialog', () => {
 		await sendPublishSuccess(dialog);
 
 		const rows = dialog.shadowRoot?.querySelectorAll('.ppd-status-success > .ppd-success-row') || [];
-		expect(rows).toHaveLength(3);
+		expect(rows).toHaveLength(4);
 		expect(rows[0].textContent).toContain('Published Successfully');
 		expect(rows[1].textContent).toContain('Refresh schedule');
 		expect(rows[1].textContent).toContain('Daily at 1:00 AM UTC');
+		expect(rows[2].textContent).toContain('Initial refresh');
+		expect(rows[2].textContent).toContain('Started');
 
 		const links = Array.from(dialog.shadowRoot?.querySelectorAll('.ppd-success-link') || []) as HTMLAnchorElement[];
 		expect(links.map(link => link.textContent)).toEqual(['View report', 'Semantic model settings']);

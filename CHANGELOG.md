@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.5.0] - 2026-04-28
+
+* Added support for generationg Power BI reports that use 'import' instead of 'direct query' for their data model.
+* Added validation step before publish to Power BI kicks off that warns the user about any parts of the dashboard that cannot be exported.
+
 ## [4.4.1] - 2026-04-28
 
 * Bugs

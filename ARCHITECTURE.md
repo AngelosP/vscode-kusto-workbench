@@ -18,7 +18,7 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `queryEditorConnection.ts` | Connection management (extracted from provider) |
 | `queryEditorSchema.ts` | Schema handling (extracted from provider) |
 | `queryEditorTypes.ts` | Shared types, including `IncomingWebviewMessage` |
-| `powerBiExport.ts` | HTML dashboard export: generates `.pbip`/PBIR/TMDL Power BI projects backed by Kusto DirectQuery |
+| `powerBiExport.ts` | HTML dashboard export: generates `.pbip`/PBIR/TMDL Power BI projects backed by Kusto data sources |
 | `powerBiPublish.ts` | Fabric/Power BI service publishing: creates or updates SemanticModel and Report items from generated PBIR/TMDL artifacts |
 | `kustoClient.ts` | Azure Kusto client wrapper. Authentication, query execution, schema fetching, caching |
 | `connectionManager.ts` | Persists Kusto cluster connections in VS Code global state |
@@ -252,6 +252,7 @@ PbiPublishInfo {
   reportId: string;
   reportName: string;
   reportUrl: string;
+  dataMode?: 'import' | 'directQuery';
 }
 ```
 
@@ -288,7 +289,7 @@ The Kusto Workbench agent keeps detailed dashboard authoring rules in `copilot-i
 
 HTML dashboards can be saved as standalone HTML or exported as a folder-based Power BI project (`.pbip`) from `powerBiExport.ts`. The `.pbip` export writes PBIR report files, TMDL semantic model files, a `_KW_HtmlMeasures` measure table, and an `HTML Dashboard` measure rendered through the marketplace-signed HTML Content visual (`htmlContent443BE3AD55E043BF878BED274D3A6855`). The implementation intentionally targets `.pbip`/PBIR/TMDL, not `.pbix` files.
 
-Exported data sources are generated from referenced Kusto query sections. The semantic model uses DirectQuery via `AzureDataExplorer.Contents` and maps Kusto column types to TMDL types. Provenance slicers are emitted as native Power BI visuals bound directly to fact-table columns so filter context reaches DAX measures without generated dimension-table joins. Scalar/table/pivot/chart dashboard values are generated from the provenance binding definitions.
+Exported data sources are generated from referenced Kusto query sections. The semantic model uses `AzureDataExplorer.Contents`, maps Kusto column types to TMDL types, and can generate Kusto tables in Import or DirectQuery mode. Local `.pbip` export and new Power BI service publishing default to Import mode, while legacy republish preserves DirectQuery compatibility unless a mode is selected explicitly. Provenance slicers are emitted as native Power BI visuals bound directly to fact-table columns so filter context reaches DAX measures without generated dimension-table joins. Scalar/table/pivot/chart dashboard values are generated from the provenance binding definitions.
 
 Power BI service publishing is implemented in `powerBiPublish.ts` using Fabric REST APIs. Publishing creates or updates SemanticModel and Report items in a selected workspace, supports republishing to existing stored IDs, can detect whether the stored report still exists, and persists returned workspace/model/report metadata in `pbiPublishInfo`. Refresh schedule configuration is attempted after publish and treated as non-fatal if it fails.
 
@@ -536,7 +537,7 @@ Tests are organized under `tests/`:
 | `schemaIndexUtils.test.ts` | Schema formatting, column counting, token-budget pruning |
 | `kqlDiagnostics.test.ts` | KQL error detection, pipe operator validation, statement splitting |
 | `message-protocol.test.ts` | Host↔webview message type alignment, payload shape contracts, including dashboard export/publish messages |
-| `powerBiExport.test.ts` | HTML dashboard provenance parsing, DAX generation, PBIR/TMDL output, native slicers, DirectQuery model generation, and CSS patching |
+| `powerBiExport.test.ts` | HTML dashboard provenance parsing, DAX generation, PBIR/TMDL output, native slicers, Import/DirectQuery model generation, and CSS patching |
 | `mssqlDialect.test.ts` | MSSQL dialect: pool creation, query execution, schema extraction, error classification |
 | `sqlDialectRegistry.test.ts` | Dialect registry: register, get, list, unknown dialect handling |
 | `sqlFormat.test.ts` | `.sqlx` file parsing, serialization, section type validation |

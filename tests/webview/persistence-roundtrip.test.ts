@@ -291,6 +291,7 @@ describe('persistence round-trip', () => {
 			reportId: 'report-1',
 			reportName: 'Ops Dashboard',
 			reportUrl: 'https://app.powerbi.com/report-1',
+			dataMode: 'import',
 		};
 
 		handleDocumentDataMessage({

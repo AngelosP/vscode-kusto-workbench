@@ -11,6 +11,7 @@ import {
 	getPowerBiHtmlValidationIssues,
 	validatePowerBiHtmlBindings,
 	generateDaxMeasure,
+	generateTableTmdl,
 	resolveFactTableSlicers,
 	resolveCssVariables,
 	patchCssForPbiVisual,
@@ -251,6 +252,25 @@ describe('findUnsupportedPowerBiBindings', () => {
 		);
 
 		expect(findUnsupportedPowerBiBindings(html)).toEqual(['top-table (table: target must be table or tbody inside table)']);
+	});
+
+	it('reports bindings rendered only on hidden targets', () => {
+		const html = makeV1Html(
+			{
+				'top-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Sessions', agg: 'COUNT' }],
+					},
+				},
+			},
+			'<table class="pbi-hidden" data-kw-bind="top-table"></table>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([
+			'top-table (table: target is hidden; bind exportable content to a visible data-kw-bind element)',
+		]);
 	});
 
 	it('reports standalone tbody table targets before export', () => {
@@ -659,6 +679,28 @@ const factDataSource: PowerBiDataSource = {
 		{ name: 'DeviceId', type: 'string' },
 	],
 };
+
+describe('generateTableTmdl', () => {
+	it('uses Import mode by default for local export compatibility', () => {
+		const tmdl = generateTableTmdl(factDataSource);
+
+		expect(tmdl).toContain('mode: import');
+		expect(tmdl).not.toContain('mode: directQuery');
+	});
+
+	it('uses DirectQuery mode when requested', () => {
+		const tmdl = generateTableTmdl(factDataSource, 'directQuery');
+
+		expect(tmdl).toContain('mode: directQuery');
+		expect(tmdl).not.toContain('mode: import');
+	});
+
+	it('preserves the AzureDataExplorer.Contents expression in both modes', () => {
+		const tmdl = generateTableTmdl(factDataSource, 'import');
+
+		expect(tmdl).toContain('AzureDataExplorer.Contents("https://cluster.kusto.windows.net", "db"');
+	});
+});
 
 function makeV1Html(bindings: Record<string, object>, bodyHtml: string, dimensions?: object[]): string {
 	const model: any = { fact: { sectionId: 'query_fact', sectionName: 'Fact Events' } };
@@ -2069,8 +2111,13 @@ describe('generateDimTableTmdl', () => {
 		expect(tmdl).not.toContain('\n| where');
 	});
 
-	it('uses DirectQuery mode', () => {
+	it('uses Import mode by default', () => {
 		const tmdl = generateDimTableTmdl('dim_X', 'X', 'string', 'https://c.kusto.windows.net', 'db', 'T');
+		expect(tmdl).toContain('mode: import');
+	});
+
+	it('uses DirectQuery mode when requested', () => {
+		const tmdl = generateDimTableTmdl('dim_X', 'X', 'string', 'https://c.kusto.windows.net', 'db', 'T', 'directQuery');
 		expect(tmdl).toContain('mode: directQuery');
 	});
 

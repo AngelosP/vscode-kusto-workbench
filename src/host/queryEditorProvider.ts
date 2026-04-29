@@ -40,7 +40,7 @@ import {
 	PublishToPowerBIMessage,
 	findPreferredDefaultCopilotModel
 } from './queryEditorTypes';
-import { exportHtmlToPowerBI, findUnsupportedPowerBiBindings } from './powerBiExport';
+import { exportHtmlToPowerBI, findUnsupportedPowerBiBindings, normalizePowerBiDataMode, type PowerBiDataMode } from './powerBiExport';
 import { listFabricWorkspaces, publishToPowerBIService, checkFabricItemExists } from './powerBiPublish';
 
 
@@ -855,7 +855,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				const sectionName = message.dataSources[0]?.name || 'KustoHtmlDashboard';
 
 				await exportHtmlToPowerBI(
-					{ htmlCode: htmlContent, sectionName, projectName, dataSources: message.dataSources, previewHeight: message.previewHeight },
+					{ htmlCode: htmlContent, sectionName, projectName, dataSources: message.dataSources, dataMode: 'import', previewHeight: message.previewHeight },
 					folderUri,
 				);
 
@@ -913,6 +913,15 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			}
 
+			const hasExistingIds = !!(message.semanticModelId && message.reportId);
+			const dataMode: PowerBiDataMode = normalizePowerBiDataMode(message.dataMode, hasExistingIds ? 'directQuery' : 'import');
+			if (dataMode === 'import' && message.dataSources.some(ds => this.connectionManager.isLeaveNoTrace(ds.clusterUrl))) {
+				const msg = 'Import mode cannot be used with Leave No Trace clusters because it stores query results in Power BI. Select DirectQuery to keep data in Kusto.';
+				vscode.window.showWarningMessage(msg);
+				this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: false, error: msg });
+				return;
+			}
+
 			const result = await publishToPowerBIService({
 				workspaceId: message.workspaceId,
 				reportName: message.reportName,
@@ -920,6 +929,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				pageHeight: message.pageHeight,
 				htmlCode: message.htmlCode,
 				dataSources: message.dataSources,
+				dataMode,
 				semanticModelId: message.semanticModelId,
 				reportId: message.reportId,
 				existingReportName: message.existingReportName,
@@ -927,6 +937,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			});
 			this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: true,
 				reportUrl: result.reportUrl, scheduleConfigured: result.scheduleConfigured,
+				initialRefreshTriggered: result.initialRefreshTriggered, dataMode: result.dataMode,
 				semanticModelId: result.semanticModelId, reportId: result.reportId,
 				workspaceId: message.workspaceId, reportName: message.reportName,
 				workspaceName: message.workspaceName });

@@ -3,7 +3,7 @@
 
 import * as vscode from 'vscode';
 import * as os from 'os';
-import { exportHtmlToPowerBI, type PowerBiDataSource } from './powerBiExport';
+import { exportHtmlToPowerBI, normalizePowerBiDataMode, type PowerBiDataMode, type PowerBiDataSource } from './powerBiExport';
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -112,6 +112,8 @@ export interface PublishInput {
 	pageHeight: number;
 	htmlCode: string;
 	dataSources: PowerBiDataSource[];
+	/** Storage mode for generated Kusto data-source tables. */
+	dataMode?: PowerBiDataMode;
 	/** When present, update the existing SemanticModel instead of creating a new one. */
 	semanticModelId?: string;
 	/** When present, update the existing Report instead of creating a new one. */
@@ -125,6 +127,8 @@ export interface PublishInput {
 export interface PublishResult {
 	reportUrl: string;
 	scheduleConfigured: boolean;
+	initialRefreshTriggered?: boolean;
+	dataMode: PowerBiDataMode;
 	semanticModelId: string;
 	reportId: string;
 }
@@ -236,6 +240,8 @@ export async function publishToPowerBIService(input: PublishInput): Promise<Publ
 	// Generate artifacts using a temp folder — reuses the battle-tested exportHtmlToPowerBI().
 	// We write to a temp dir, read the files back, then clean up.
 	const tempUri = vscode.Uri.joinPath(vscode.Uri.file(os.tmpdir()), `kw-pbi-publish-${Date.now()}`);
+	const hasExistingIds = !!(input.semanticModelId && input.reportId);
+	const dataMode = normalizePowerBiDataMode(input.dataMode, hasExistingIds ? 'directQuery' : 'import');
 
 	try {
 		await exportHtmlToPowerBI(
@@ -244,6 +250,7 @@ export async function publishToPowerBIService(input: PublishInput): Promise<Publ
 				sectionName: input.reportName,
 				projectName: input.reportName.replace(/[^a-zA-Z0-9_-]/g, '_').substring(0, 50) || 'KustoHtmlDashboard',
 				dataSources: input.dataSources,
+				dataMode,
 				previewHeight: input.pageHeight,
 			},
 			tempUri,
@@ -276,7 +283,10 @@ export async function publishToPowerBIService(input: PublishInput): Promise<Publ
 
 				const reportUrl = `https://app.powerbi.com/groups/${input.workspaceId}/reports/${input.reportId}`;
 				const scheduleConfigured = await configureRefreshSchedule(input.workspaceId, input.semanticModelId, input.isPersonalWorkspace);
-				return { reportUrl, scheduleConfigured, semanticModelId: input.semanticModelId, reportId: input.reportId };
+				const initialRefreshTriggered = dataMode === 'import'
+					? await triggerSemanticModelRefresh(input.workspaceId, input.semanticModelId, input.isPersonalWorkspace)
+					: undefined;
+				return { reportUrl, scheduleConfigured, initialRefreshTriggered, dataMode, semanticModelId: input.semanticModelId, reportId: input.reportId };
 			} catch (e) {
 				// 404 → items were deleted externally, fall through to create path
 				if (e instanceof FabricApiError && e.status === 404) {
@@ -316,7 +326,10 @@ export async function publishToPowerBIService(input: PublishInput): Promise<Publ
 
 		const reportUrl = `https://app.powerbi.com/groups/${input.workspaceId}/reports/${reportId}`;
 		const scheduleConfigured = await configureRefreshSchedule(input.workspaceId, semanticModelId, input.isPersonalWorkspace);
-		return { reportUrl, scheduleConfigured, semanticModelId, reportId };
+		const initialRefreshTriggered = dataMode === 'import'
+			? await triggerSemanticModelRefresh(input.workspaceId, semanticModelId, input.isPersonalWorkspace)
+			: undefined;
+		return { reportUrl, scheduleConfigured, initialRefreshTriggered, dataMode, semanticModelId, reportId };
 	} finally {
 		// Clean up temp directory
 		try { await vscode.workspace.fs.delete(tempUri, { recursive: true }); } catch { /* best effort */ }
@@ -383,6 +396,35 @@ async function configureRefreshSchedule(workspaceId: string, datasetId: string, 
 		return false;
 	} catch (e) {
 		console.warn('[kusto] Failed to configure refresh schedule:', e);
+		return false;
+	}
+}
+
+async function triggerSemanticModelRefresh(workspaceId: string, datasetId: string, isPersonalWorkspace?: boolean): Promise<boolean> {
+	try {
+		const session = await vscode.authentication.getSession('microsoft', [PBI_SCOPE], { createIfNone: true });
+		if (!session) return false;
+
+		const headers = {
+			'Authorization': `Bearer ${session.accessToken}`,
+			'Content-Type': 'application/json',
+		};
+		const url = isPersonalWorkspace
+			? `${PBI_API_BASE}/datasets/${datasetId}/refreshes`
+			: `${PBI_API_BASE}/groups/${workspaceId}/datasets/${datasetId}/refreshes`;
+		const res = await fetch(url, {
+			method: 'POST',
+			headers,
+			body: JSON.stringify({ notifyOption: 'MailOnFailure' }),
+		});
+
+		if (res.ok) return true;
+
+		const text = await res.text().catch(() => '');
+		console.warn(`[kusto] Initial semantic model refresh API ${res.status}: ${text}`);
+		return false;
+	} catch (e) {
+		console.warn('[kusto] Failed to trigger initial semantic model refresh:', e);
 		return false;
 	}
 }

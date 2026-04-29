@@ -1,5 +1,5 @@
 // Power BI export: generates a PBIP project folder that uses the marketplace
-// HTML Content visual to render an HTML section's code with Kusto DirectQuery data.
+// HTML Content visual to render an HTML section's code with Kusto data.
 
 import * as vscode from 'vscode';
 import {
@@ -29,11 +29,18 @@ export interface PowerBiDataSource {
 	columns: Array<{ name: string; type: string }>;
 }
 
+export type PowerBiDataMode = 'import' | 'directQuery';
+
+export function normalizePowerBiDataMode(mode: unknown, fallback: PowerBiDataMode = 'import'): PowerBiDataMode {
+	return mode === 'import' || mode === 'directQuery' ? mode : fallback;
+}
+
 export interface PowerBiExportInput {
 	htmlCode: string;
 	sectionName: string;
 	projectName?: string;
 	dataSources: PowerBiDataSource[];
+	dataMode?: PowerBiDataMode;
 	previewHeight?: number;
 }
 
@@ -137,19 +144,39 @@ function stripNonRenderedHtmlBlocks(html: string): string {
 	return html.replace(/<!--[\s\S]*?-->|<script\b[\s\S]*?<\/script>|<style\b[\s\S]*?<\/style>|<template\b[\s\S]*?<\/template>|<noscript\b[\s\S]*?<\/noscript>/gi, '');
 }
 
-function findDataKwBindTargetTags(htmlCode: string): Map<string, string[]> {
-	const targetTags = new Map<string, string[]>();
+interface DataKwBindTargetElement { tagName: string; openTag: string }
+
+function findDataKwBindTargetElements(htmlCode: string): Map<string, DataKwBindTargetElement[]> {
+	const targets = new Map<string, DataKwBindTargetElement[]>();
 	const elementHtml = stripNonRenderedHtmlBlocks(htmlCode);
 	const re = /<([a-zA-Z][a-zA-Z0-9:-]*)\b[^>]*\bdata-kw-bind\s*=\s*(["'])(.*?)\2[^>]*>/gi;
 	let match: RegExpExecArray | null;
 	while ((match = re.exec(elementHtml)) !== null) {
 		const key = match[3];
 		const tagName = match[1].toLowerCase();
-		const tags = targetTags.get(key) ?? [];
-		tags.push(tagName);
-		targetTags.set(key, tags);
+		const elements = targets.get(key) ?? [];
+		elements.push({ tagName, openTag: match[0] });
+		targets.set(key, elements);
+	}
+	return targets;
+}
+
+function findDataKwBindTargetTags(htmlCode: string): Map<string, string[]> {
+	const targetTags = new Map<string, string[]>();
+	for (const [key, elements] of findDataKwBindTargetElements(htmlCode)) {
+		targetTags.set(key, elements.map(element => element.tagName));
 	}
 	return targetTags;
+}
+
+function isHiddenDataKwBindTarget(openTag: string): boolean {
+	if (/\shidden(?:\s|=|>)/i.test(openTag)) return true;
+	if (/\baria-hidden\s*=\s*(["'])true\1/i.test(openTag)) return true;
+	const classMatch = openTag.match(/\bclass\s*=\s*(["'])(.*?)\1/i);
+	if (classMatch && /(?:^|\s)pbi-hidden(?:\s|$)/i.test(classMatch[2])) return true;
+	const styleMatch = openTag.match(/\bstyle\s*=\s*(["'])(.*?)\1/i);
+	if (styleMatch && /(?:^|;)\s*(?:display\s*:\s*none|visibility\s*:\s*hidden)\b/i.test(styleMatch[2])) return true;
+	return false;
 }
 
 function bindingAttributePattern(key: string): string {
@@ -331,7 +358,8 @@ function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBi
 export function findUnsupportedPowerBiBindings(htmlCode: string): string[] {
 	const provenance = parseProvenance(htmlCode);
 	if (!provenance) return [];
-	const renderedTargetTags = findDataKwBindTargetTags(htmlCode);
+	const renderedTargetElements = findDataKwBindTargetElements(htmlCode);
+	const renderedTargetTags = new Map(Array.from(renderedTargetElements, ([key, elements]) => [key, elements.map(element => element.tagName)]));
 	const renderedHtml = stripNonRenderedHtmlBlocks(htmlCode);
 	const unsupported: string[] = [];
 	for (const [key] of renderedTargetTags) {
@@ -348,6 +376,11 @@ export function findUnsupportedPowerBiBindings(htmlCode: string): string[] {
 		const type = typeof display.type === 'string' ? display.type : '';
 		if (!type) {
 			unsupported.push(`${key} (missing display type)`);
+			continue;
+		}
+		const targets = renderedTargetElements.get(key) ?? [];
+		if (targets.length > 0 && targets.every(target => isHiddenDataKwBindTarget(target.openTag))) {
+			unsupported.push(`${key} (${type}: target is hidden; bind exportable content to a visible data-kw-bind element)`);
 			continue;
 		}
 		const bindAttr = bindingAttributePattern(key);
@@ -1509,6 +1542,7 @@ export function generateDimTableTmdl(
 	clusterUrl: string,
 	database: string,
 	sourceQuery: string,
+	dataMode: PowerBiDataMode = 'import',
 ): string {
 	const tmdlType = kustoTypeToTmdl(columnType);
 	const escapeTmdlName = (s: string) => s.replace(/'/g, "''");
@@ -1530,7 +1564,7 @@ export function generateDimTableTmdl(
 		`\t\tsourceColumn: ${escapeTmdlName(columnName)}`,
 		'',
 		`\tpartition '${escapeTmdlName(dimTableName)}' = m`,
-		'\t\tmode: directQuery',
+		`\t\tmode: ${normalizePowerBiDataMode(dataMode, 'import')}`,
 		'\t\tsource =',
 		'\t\t\tlet',
 		`\t\t\t\tSource = AzureDataExplorer.Contents("${escapedCluster}", "${escapedDb}", "${escapedQuery}")`,
@@ -1541,7 +1575,7 @@ export function generateDimTableTmdl(
 	return lines.join('\n');
 }
 
-function generateTableTmdl(ds: PowerBiDataSource): string {
+export function generateTableTmdl(ds: PowerBiDataSource, dataMode: PowerBiDataMode = 'import'): string {
 	const tableName = sanitizeName(ds.name);
 	// Strip KQL line comments, then collapse to a single line (TMDL M expression
 	// strings cannot span multiple lines without breaking the indentation parser).
@@ -1567,7 +1601,7 @@ function generateTableTmdl(ds: PowerBiDataSource): string {
 	const escapedCluster = ds.clusterUrl.replace(/"/g, '""');
 	const escapedDb = ds.database.replace(/"/g, '""');
 	lines.push(`\tpartition '${escapeTmdlName(tableName)}' = m`);
-	lines.push(`\t\tmode: directQuery`);
+	lines.push(`\t\tmode: ${normalizePowerBiDataMode(dataMode, 'import')}`);
 	lines.push(`\t\tsource =`);
 	lines.push(`\t\t\tlet`);
 	lines.push(`\t\t\t\tSource = AzureDataExplorer.Contents("${escapedCluster}", "${escapedDb}", "${escapedQuery}")`);
@@ -1873,6 +1907,7 @@ export async function exportHtmlToPowerBI(
 	const modelFolder = `${projectName}.SemanticModel`;
 	const pageName = 'ReportPage1';
 	const visualId = Array.from({ length: 20 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
+	const dataMode = normalizePowerBiDataMode(input.dataMode, 'import');
 
 	// ── Page height from actual preview rendering ──────────────────────
 	// The HTML section's preview iframe measures scrollHeight and sends it.
@@ -1980,10 +2015,10 @@ export async function exportHtmlToPowerBI(
 	await write(`${modelFolder}/definition/database.tmdl`, generateDatabaseTmdl());
 	await write(`${modelFolder}/definition/cultures/en-US.tmdl`, generateCultureTmdl());
 
-	// ── Data source tables (Kusto DirectQuery)
+	// ── Data source tables (Kusto)
 	for (const ds of input.dataSources) {
 		const tableName = sanitizeName(ds.name);
-		await write(`${modelFolder}/definition/tables/${tableName}.tmdl`, generateTableTmdl(ds));
+		await write(`${modelFolder}/definition/tables/${tableName}.tmdl`, generateTableTmdl(ds, dataMode));
 	}
 
 	// ── HTML measures table (DAX measure containing the dashboard HTML/JS)

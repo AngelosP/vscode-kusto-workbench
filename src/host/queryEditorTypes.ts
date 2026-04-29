@@ -126,6 +126,7 @@ export type KqlLanguageRequestMessage = {
 };
 
 export type FetchControlCommandSyntaxMessage = { type: 'fetchControlCommandSyntax'; requestId: string; commandLower: string; href: string };
+export type PowerBiDataMode = 'import' | 'directQuery';
 
 export type SaveResultsCsvMessage = { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string };
 export type ExportDashboardMessage = {
@@ -147,6 +148,7 @@ export type PublishToPowerBIMessage = {
 	pageHeight: number;
 	htmlCode: string;
 	dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>;
+	dataMode?: PowerBiDataMode;
 	/** Present when updating an existing publish (republish). */
 	semanticModelId?: string;
 	reportId?: string;
