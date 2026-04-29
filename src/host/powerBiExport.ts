@@ -587,18 +587,7 @@ function resolveFormat(explicitFormat: string | undefined, colName: string | und
 	return `"${escapeDaxString(raw)}"`;
 }
 
-/**
- * Build a DAX FORMAT expression from a format pattern.
- * Handles `%` specially: Kusto percentages are typically 0-100 (pre-multiplied),
- * but DAX FORMAT auto-multiplies by 100 when `%` is in the format string.
- * We strip `%` from the format and append it as a literal string instead.
- */
 function buildFormatExpr(valueExpr: string, format: string): string {
-	if (format.includes('%')) {
-		// Strip % from format, append as literal text
-		const fmtWithoutPct = format.replace(/%/g, '');
-		return `FORMAT(${valueExpr}, "${escapeDaxString(fmtWithoutPct)}") & "%"`;
-	}
 	return `FORMAT(${valueExpr}, "${escapeDaxString(format)}")`;
 }
 

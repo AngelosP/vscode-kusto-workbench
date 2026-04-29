@@ -1440,7 +1440,7 @@ describe('generateDaxMeasure — v1 table with groupBy', () => {
 		expect(result).toContain('[FailureRate] >= 0.1');
 		expect(result).toContain('background-color:#E7F3E7;color:#2E7D32;font-weight:600;');
 		expect(result).toContain('background-color:#FFF4CE;color:#8A6D1D;');
-		expect(result).toContain('FORMAT([FailureRate], "0.##") & "%"');
+		expect(result).toContain('FORMAT([FailureRate], "0.##%")');
 		expect(result).toContain('<th>Service &lt;Name&gt;</th>');
 		expect(result).toContain("\"<td class=\"\"metric\"\">\" & \"<span class='kw-cell-badge' style='\" & SWITCH");
 	});
@@ -1742,7 +1742,7 @@ describe('generateDaxMeasure — repeated table', () => {
 		expect(result).toContain('VAR _repeatInnerData_0 = ADDCOLUMNS(SUMMARIZE');
 		expect(result).toContain('kw-cell-badge');
 		expect(result).toContain('SWITCH(TRUE(), [FailureRate] >= 0.1');
-		expect(result).toContain('FORMAT([FailureRate], "0.##") & "%"');
+		expect(result).toContain('FORMAT([FailureRate], "0.##%")');
 	});
 });
 

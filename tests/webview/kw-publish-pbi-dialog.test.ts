@@ -139,8 +139,9 @@ describe('kw-publish-pbi-dialog', () => {
 		await showDialog(dialog);
 		await sendWorkspaces(dialog);
 
-		expect(dialog.shadowRoot?.textContent).toContain('Copies query results into the semantic model during refresh for faster report interactions.');
-		expect(dialog.shadowRoot?.textContent).toContain('Keeps data in Kusto and queries the source when report visuals run.');
+		expect(dialog.shadowRoot?.querySelector('.ppd-data-mode-toggle')).toBeNull();
+		expect(dialog.shadowRoot?.textContent).toContain('Loads the data into its cache, and the dashboard loads instantly.');
+		expect(dialog.shadowRoot?.textContent).toContain('Loads the data live from Kusto as you use the dashboard.');
 
 		testState.postMessageToHost.mockClear();
 		primaryButton(dialog).click();
@@ -155,8 +156,8 @@ describe('kw-publish-pbi-dialog', () => {
 		await showDialog(dialog);
 		await sendWorkspaces(dialog);
 
-		const directQueryButton = Array.from(dialog.shadowRoot?.querySelectorAll('.ppd-toggle-btn') || [])
-			.find(button => (button.textContent || '').trim() === 'DirectQuery') as HTMLButtonElement | undefined;
+		const directQueryButton = Array.from(dialog.shadowRoot?.querySelectorAll('.ppd-mode-copy') || [])
+			.find(button => (button.textContent || '').includes('Direct Query')) as HTMLButtonElement | undefined;
 		expect(directQueryButton).toBeTruthy();
 		directQueryButton!.click();
 		await waitForUpdate(dialog);

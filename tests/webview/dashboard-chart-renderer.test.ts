@@ -135,7 +135,7 @@ describe('KustoWorkbench.renderTable preview bridge', () => {
 		expect(rects.map(rect => rect.getAttribute('width'))).toEqual(['160', '80']);
 	});
 
-	it('renders conditional badge cells from raw percent values', () => {
+	it('renders conditional badge cells from fractional percent values', () => {
 		const runtime = installBridge(
 			{
 				'quality-table': {
@@ -171,10 +171,51 @@ describe('KustoWorkbench.renderTable preview bridge', () => {
 		const badges = Array.from(target.querySelectorAll('.kw-cell-badge')) as HTMLElement[];
 		expect(badges).toHaveLength(2);
 		expect(target.innerHTML).toContain('Linux &lt;LTS&gt;');
-		expect(badges[0].textContent).toBe('0.03%');
+		expect(badges[0].textContent).toBe('3%');
 		expect(badges[0].getAttribute('style')).toContain('background-color:#E7F3E7');
-		expect(badges[1].textContent).toBe('0.12%');
+		expect(badges[1].textContent).toBe('12%');
 		expect(badges[1].getAttribute('style')).toContain('background-color:#FDE7E9');
+	});
+
+	it('ignores typed Kusto null strings when max aggregating numeric table columns', () => {
+		const runtime = installBridge(
+			{
+				'quality-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS' },
+							{
+								name: 'FailureRateMax',
+								agg: 'MAX',
+								sourceColumn: 'FailureRate',
+								format: '0.##%',
+								cellFormat: {
+									rules: [{ operator: '>=', value: 0.1, backgroundColor: '#FDE7E9', color: '#C62828' }],
+									defaultStyle: { backgroundColor: '#E7F3E7', color: '#2E7D32' },
+								},
+							},
+						],
+					},
+				},
+			},
+			'<table data-kw-bind="quality-table"></table>',
+			[
+				['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A', 0, 'A', 0, 0, 0, 0, 0, { display: 'null', full: 'null' }],
+				['2026-04-01T00:00:00Z', 'Linux', 'd2', 's2', 'B', 0, 'B', 0, 0, 0, 0, 0, 0.12],
+				['2026-04-01T00:00:00Z', 'Windows', 'd3', 's3', 'C', 0, 'C', 0, 0, 0, 0, 0, { display: 'null', full: 'null' }],
+			],
+		);
+
+		runtime.renderTable('quality-table');
+
+		const target = document.querySelector('[data-kw-bind="quality-table"]')!;
+		const badges = Array.from(target.querySelectorAll('.kw-cell-badge')) as HTMLElement[];
+		expect(target.textContent).not.toContain('null');
+		expect(badges[0].textContent).toBe('12%');
+		expect(badges[0].getAttribute('style')).toContain('background-color:#FDE7E9');
+		expect(badges[1].textContent).toBe('');
 	});
 
 	it('renders whole-cell conditional styles and updates them on notify', () => {

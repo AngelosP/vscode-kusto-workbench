@@ -200,8 +200,11 @@ Do not use unsupported display names in provenance. The Power BI exporter reject
 - Use `orderBy` whenever you use `top`; table specs with `top` but no `orderBy` are invalid.
 - Add stacked bars inside cells with a visual-only column that has `name`, optional `header`, and `cellBar`. Do not add `agg`, `sourceColumn`, or `format` to the cell-bar column itself.
 - Cell bars currently support stacked `segments` only. Use standalone `bar` displays for threshold bands, whole-bar color rules, legends, or axis labels.
-- Add conditional table-cell formatting with `columns[].cellFormat` on a normal grouped or aggregate column. Use this for percentage/status badges or whole-cell highlighting that must preview and export to Power BI the same way.
-- `cellFormat.rules[]` are first-match numeric threshold rules over raw summarized values, not the formatted display string. For percent-like columns, compare the query's raw scale: use `0.8` if the query returns fractions, or `80` if it returns percentage points.
+- Add conditional table-cell formatting with `columns[].cellFormat` directly on the grouped or aggregate column being displayed. Do not use table-level `cellFormats`, `conditionalFormats`, or format-only columns; those are legacy/unsupported shapes and will not export reliably.
+- For aggregate columns, always set `name` to the output alias and `sourceColumn` to the fact column being summarized. The displayed cell value comes from `columns[].name`; `cellFormat.valueColumn` is only for comparing against a different already-summarized numeric column.
+- `cellFormat.rules[]` are first-match numeric threshold rules over raw summarized values, not the formatted display string. For percent-like columns, prefer query values as fractions from `0` to `1`, use `format: "0.##%"`, and compare thresholds on that same fractional scale, such as `0.8` for 80%. If the query returns percentage points like `80`, divide by 100 in the query before binding or use a non-percent numeric format.
+- Dashboard percent formats follow Power BI semantics: `format: "0.##%"` renders `0.68` as `68%` in preview and export. Do not pre-multiply values before applying a `%` format.
+- In unioned dashboard fact queries where different row families populate different metrics, keep non-applicable numeric metrics as typed nulls and aggregate display columns with `MAX`, `MIN`, or another appropriate aggregation over the real source column. Do not create separate display columns that only contain null placeholders.
 - `cellFormat.mode` defaults to `"badge"`; use `"cell"` to apply the style to the whole `<td>`. Supported inline styles are `backgroundColor`, `color`, and `fontWeight` (`"normal"`, `"600"`, or `"bold"`). Keep colors simple hex/rgb/hsl/named colors.
 - Do not combine `cellFormat` and `cellBar` on one column. Do not use `cellFormat` in `repeatColumns`; use it in the inner repeated table's `table.columns` instead.
 
@@ -257,7 +260,7 @@ Example conditional percentage badge:
   "cellFormat": {
     "mode": "badge",
     "rules": [
-      { "operator": "<", "value": 80, "backgroundColor": "#FDE7E9", "color": "#C62828", "fontWeight": "600" }
+      { "operator": "<", "value": 0.8, "backgroundColor": "#FDE7E9", "color": "#C62828", "fontWeight": "600" }
     ],
     "defaultStyle": { "backgroundColor": "#E7F3E7", "color": "#2E7D32", "fontWeight": "600" }
   }

@@ -358,23 +358,21 @@ export class KwPublishPbiDialog extends LitElement {
 		return html`
 			<div class="ppd-section">
 				<div class="ppd-section-label">Data mode</div>
-				<div class="ppd-toggle-group ppd-data-mode-toggle">
-					<button class="ppd-toggle-btn ${this._dataMode === 'import' ? 'is-active' : ''}"
-						?disabled=${importDisabled}
-						@click=${() => this._onDataModeChange('import')}>Import</button>
-					<button class="ppd-toggle-btn ${this._dataMode === 'directQuery' ? 'is-active' : ''}"
-						?disabled=${controlsDisabled}
-						@click=${() => this._onDataModeChange('directQuery')}>DirectQuery</button>
-				</div>
 				<div class="ppd-data-mode-copy">
-					<div class="ppd-mode-copy ${this._dataMode === 'import' ? 'is-active' : ''}">
+					<button type="button" class="ppd-mode-copy ${this._dataMode === 'import' ? 'is-active' : ''}"
+						?disabled=${importDisabled}
+						aria-pressed=${this._dataMode === 'import' ? 'true' : 'false'}
+						@click=${() => this._onDataModeChange('import')}>
 						<strong>Import</strong>
-						<span>Copies query results into the semantic model during refresh for faster report interactions.</span>
-					</div>
-					<div class="ppd-mode-copy ${this._dataMode === 'directQuery' ? 'is-active' : ''}">
-						<strong>DirectQuery</strong>
-						<span>Keeps data in Kusto and queries the source when report visuals run.</span>
-					</div>
+						<span>Loads the data into its cache, and the dashboard loads instantly.</span>
+					</button>
+					<button type="button" class="ppd-mode-copy ${this._dataMode === 'directQuery' ? 'is-active' : ''}"
+						?disabled=${controlsDisabled}
+						aria-pressed=${this._dataMode === 'directQuery' ? 'true' : 'false'}
+						@click=${() => this._onDataModeChange('directQuery')}>
+						<strong>Direct Query</strong>
+						<span>Loads the data live from Kusto as you use the dashboard.</span>
+					</button>
 				</div>
 				${this._hasLeaveNoTraceDataSource ? html`
 					<div class="ppd-info-note">Import is unavailable because one or more source clusters are marked Leave No Trace.</div>
