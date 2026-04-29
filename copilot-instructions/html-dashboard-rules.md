@@ -9,9 +9,9 @@ Use this guide whenever you create, edit, repair, validate, or upgrade an HTML d
 3. Add or repair a `<script type="application/kw-provenance">` block before finalizing dashboard code.
 4. Use `version: 1`, a `model.fact.sectionId`, optional `model.dimensions`, and a `bindings` object. Each binding must define a `display` object with a supported `type` and the fields required by that display shape.
 5. Add matching `data-kw-bind="bindingId"` attributes for every exportable scalar, table, pivot, bar, pie, and line visual.
-6. Render data through the dashboard bridge: `KustoWorkbench.bind(bindingId, value)`, `KustoWorkbench.bindHtml(bindingId, html)`, and `KustoWorkbench.renderChart(bindingId)`. Do not render exportable charts with manual SVG/canvas/chart libraries.
+6. Render exportable data through the dashboard bridge: `KustoWorkbench.bind(bindingId, value)`, `KustoWorkbench.renderChart(bindingId)`, and `KustoWorkbench.renderTable(bindingId)`. Use `bindHtml()` only for preview-only custom HTML that is not expected to survive Power BI export.
 7. Use only supported display types for Power BI export: `scalar`, `table`, `pivot`, `bar`, `pie`, and `line`.
-8. For exportable charts, call `KustoWorkbench.renderChart(bindingId)` into the matching `data-kw-bind` target. This keeps the preview and Power BI export path aligned.
+8. For exportable charts, call `KustoWorkbench.renderChart(bindingId)` into the matching `data-kw-bind` target. For exportable table bodies, including visual cells, call `KustoWorkbench.renderTable(bindingId)`. This keeps the preview and Power BI export path aligned.
 9. Add slicers through `model.dimensions` in provenance. The preview injects matching slicer controls and filters the event-grain fact model before bindings compute values.
 10. If the dashboard already exists, upgrade it while you work on it. Bring provenance, bindings, slicers, chart rendering, and styling up to the latest contract and capabilities as part of the requested task. Do this silently when deterministic; ask the user only if the upgrade would remove content, change business meaning, or require choosing between ambiguous models.
 11. After configuring the HTML section, call `validateHtmlDashboard(sectionId)`. Fix every issue. Treat warnings about legacy/manual chart patterns as upgrade work whenever the user is asking you to modify that dashboard.
@@ -122,14 +122,10 @@ Use this guide whenever you create, edit, repair, validate, or upgrade an HTML d
     var kw = KustoWorkbench.agg();
     KustoWorkbench.bind('totalRequests', kw.count());
     KustoWorkbench.bind('failureRate', (kw.avg('IsFailure') * 100).toFixed(1) + '%');
-    KustoWorkbench.bindHtml('recentFailures', kw.groupBy(['Timestamp', 'Region', 'ErrorCode', 'Message'])
-      .addCount('Events')
-      .orderBy('Timestamp', 'desc')
-      .topN(25, 'Timestamp', 'desc')
-      .toTable(['Timestamp', 'Region', 'Error Code', 'Message', 'Events']));
   });
   KustoWorkbench.renderChart('requestsOverTime');
   KustoWorkbench.renderChart('failuresByRegion');
+  KustoWorkbench.renderTable('recentFailures');
   </script>
 </section>
 ```
@@ -186,13 +182,63 @@ Rules:
 Supported Power BI export display types:
 
 - `scalar`: one value. Use `display.agg`, optional `display.column`, and optional `display.format`.
-- `table`: grouped table. Use `display.groupBy`, `display.columns[]`, optional `orderBy`, `top`, and `preAggregate`.
+- `table`: grouped table. Use `display.groupBy`, `display.columns[]`, optional `orderBy`, `top`, and `preAggregate`. `top` requires `orderBy` so preview and export choose the same rows. Use `columns[].cellBar` for exportable stacked bars inside table cells.
 - `pivot`: matrix-style grouping. Use `rows`, `pivotBy`, `pivotValues`, `value`, `agg`, optional `format`, `total`, and `preAggregate`.
-- `bar`: categorical comparison. Use `groupBy`, `value: { agg, column?, format? }`, optional `top`, `colors`, and `preAggregate`.
+- `bar`: categorical comparison or segmented status distribution. Use `groupBy` plus either `value: { agg, column?, format? }`, `segments`, `value` with `thresholdBands`, or `value` with `colorRules`. Optional fields: `top`, `colors`, `variant`, `showValueLabels`, `showCategoryLabels`, and `preAggregate`. Use `scale: "normalized100"` only with `segments`.
 - `pie`: part-to-whole categorical chart. Use `groupBy`, `value: { agg, column?, format? }`, optional `top`, `colors`, and `preAggregate`.
 - `line`: time or ordered series. Use `xAxis`, `series: [{ agg, column?, label? }]`, optional `colors`, and `preAggregate`.
 
 Do not use unsupported display names in provenance. The Power BI exporter rejects them.
+
+## Table Rules
+
+- Use `KustoWorkbench.renderTable(bindingId)` for every exportable `table` binding.
+- Bind either a full `<table data-kw-bind="bindingId"></table>` or a `<tbody data-kw-bind="bindingId"></tbody>` inside a table.
+- Do not use `bindHtml(...toTable())` for tables that need to export visual cells, custom row HTML, or generated `<td>` content. That path is preview-only because Power BI export rebuilds table rows from provenance.
+- Keep plain table columns as `{ "name": "ColumnName" }` for grouped dimensions or `{ "name": "OutputName", "agg": "COUNT|SUM|AVG|MIN|MAX|DCOUNT", "sourceColumn": "FactColumn" }` for computed values.
+- Use `orderBy` whenever you use `top`; table specs with `top` but no `orderBy` are invalid.
+- Add stacked bars inside cells with a visual-only column that has `name`, optional `header`, and `cellBar`. Do not add `agg`, `sourceColumn`, or `format` to the cell-bar column itself.
+- Cell bars currently support stacked `segments` only. Use standalone `bar` displays for threshold bands, whole-bar color rules, legends, or axis labels.
+
+Example table-cell status bar:
+
+```html
+<table data-kw-bind="serviceHealth"></table>
+<script>
+KustoWorkbench.renderTable('serviceHealth');
+</script>
+```
+
+```json
+{
+  "display": {
+    "type": "table",
+    "groupBy": ["Service"],
+    "columns": [
+      { "name": "Service", "header": "Service" },
+      { "name": "Total", "agg": "COUNT", "header": "Events", "format": "#,##0" },
+      {
+        "name": "Breakdown",
+        "header": "Status",
+        "cellBar": {
+          "segments": [
+            { "agg": "SUM", "column": "Succeeded", "label": "Succeeded", "color": "#2E7D32" },
+            { "agg": "SUM", "column": "Warning", "label": "Warning", "color": "#F9A825" },
+            { "agg": "SUM", "column": "Failed", "label": "Failed", "color": "#C62828" }
+          ],
+          "scale": "normalized100",
+          "width": 160,
+          "height": 10
+        }
+      }
+    ],
+    "orderBy": { "column": "Total", "direction": "desc" },
+    "top": 25
+  }
+}
+```
+
+`scale: "normalized100"` makes each nonzero row fill the cell width and show that row's proportions. `scale: "relative"` scales each row against the largest rendered row total.
 
 ## Chart Rules
 
@@ -201,6 +247,92 @@ Do not use unsupported display names in provenance. The Power BI exporter reject
 - Do not use `bindHtml()` to render exportable charts unless the target is intentionally preview-only and not represented as a chart in Power BI.
 - If an existing dashboard has manual chart functions such as `buildLineChart`, `buildPieChart`, or `buildBarChart`, upgrade them to provenance chart bindings when touching the dashboard.
 - Keep chart containers sized with CSS so the preview does not shift while data loads.
+
+### Bar Chart Options
+
+Simple bars keep the existing shape:
+
+```json
+{
+  "display": {
+    "type": "bar",
+    "groupBy": "Region",
+    "value": { "agg": "COUNT", "format": "#,##0" },
+    "top": 10
+  }
+}
+```
+
+Use `segments` when the fact query already exposes one numeric column per status or bucket. This renders one stacked horizontal bar per `groupBy` value.
+
+```json
+{
+  "display": {
+    "type": "bar",
+    "groupBy": "Service",
+    "segments": [
+      { "agg": "SUM", "column": "Healthy", "label": "Healthy", "color": "#2E7D32" },
+      { "agg": "SUM", "column": "Warning", "label": "Warning", "color": "#F9A825" },
+      { "agg": "SUM", "column": "Critical", "label": "Critical", "color": "#C62828" }
+    ]
+  }
+}
+```
+
+For screenshot-style compact status bars, combine `segments` with `scale: "normalized100"` and `variant: "distribution"`. Each nonzero row fills the full available bar width and segment widths show that row's proportions.
+
+```json
+{
+  "display": {
+    "type": "bar",
+    "groupBy": "Service",
+    "segments": [
+      { "agg": "SUM", "column": "Succeeded", "color": "#2E7D32" },
+      { "agg": "SUM", "column": "Failed", "color": "#C62828" }
+    ],
+    "scale": "normalized100",
+    "variant": "distribution",
+    "showValueLabels": false
+  }
+}
+```
+
+Use `thresholdBands` when one value should be split across fixed numeric ranges. Bands must start at `0`, be contiguous, and can set `scaleMax` to control the full bar width. `thresholdBands` does not use `scale: "normalized100"`.
+
+```json
+{
+  "display": {
+    "type": "bar",
+    "groupBy": "Service",
+    "value": { "agg": "AVG", "column": "LatencyMs", "format": "#,##0 ms" },
+    "thresholdBands": {
+      "scaleMax": 1000,
+      "bands": [
+        { "min": 0, "max": 250, "color": "#2E7D32" },
+        { "min": 250, "max": 750, "color": "#F9A825" },
+        { "min": 750, "max": 1000, "color": "#C62828" }
+      ]
+    }
+  }
+}
+```
+
+Use `colorRules` when the whole bar should change color based on its computed value. Rules are evaluated in order and fall back to the normal chart palette.
+
+```json
+{
+  "display": {
+    "type": "bar",
+    "groupBy": "Service",
+    "value": { "agg": "AVG", "column": "FailureRate", "format": "0.0%" },
+    "colorRules": [
+      { "operator": ">=", "value": 0.1, "color": "#C62828" },
+      { "operator": ">=", "value": 0.03, "color": "#F9A825" },
+      { "operator": "<", "value": 0.03, "color": "#2E7D32" }
+    ]
+  }
+}
+```
 
 ## Slicers
 

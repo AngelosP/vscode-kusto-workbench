@@ -4,12 +4,14 @@
 import * as vscode from 'vscode';
 import {
 	DASHBOARD_BAR_CHART,
+	DASHBOARD_DISTRIBUTION_BAR_CHART,
 	DASHBOARD_LINE_CHART,
 	DASHBOARD_PIE_CHART,
 	chartColor,
 	escapeXmlLiteral,
 	isSupportedPowerBiDisplayType,
 	isValidDashboardChartDisplay,
+	type BarColorRule,
 	type BarDisplay,
 	type ChartValue,
 	type DashboardChartDisplay,
@@ -17,6 +19,18 @@ import {
 	type PieDisplay,
 	type PreAggregate,
 } from '../shared/dashboardCharts';
+import {
+	isTableCellBarColumn,
+	isValidTableDisplay,
+	tableAggregateNeedsColumn,
+	tableCellBarAlias,
+	tableCellBarColor,
+	tableCellBarGeometry,
+	TABLE_ROW_INDEX_ALIAS_PREFIX,
+	type TableCellBarSpec,
+	type TableColumnSpec,
+	type TableDisplay,
+} from '../shared/dashboardTables';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -103,9 +117,6 @@ function isNumericKustoType(t: string): boolean {
 // aggregate the fact data into visuals (scalars, tables, pivots).
 
 interface ScalarDisplay { type: 'scalar'; agg: string; column?: string; format?: string }
-
-interface TableColumnSpec { name: string; header?: string; agg?: string; sourceColumn?: string; format?: string }
-interface TableDisplay { type: 'table'; columns: TableColumnSpec[]; groupBy: string[]; orderBy?: { column: string; direction?: 'asc' | 'desc' }; top?: number; preAggregate?: PreAggregate }
 
 interface PivotDisplay { type: 'pivot'; rows: string[]; pivotBy: string; pivotValues: string[]; value: string; agg: string; format?: string; total?: boolean; preAggregate?: PreAggregate }
 
@@ -206,8 +217,7 @@ function isValidPreAggregateSpec(value: unknown): value is PreAggregate {
 	if (!isObjectRecord(value) || !isObjectRecord(value.compute)) return false;
 	const groupBy = value.groupBy;
 	const validGroupBy = isNonEmptyText(groupBy) || (Array.isArray(groupBy) && groupBy.length > 0 && groupBy.every(isNonEmptyText));
-	if (!validGroupBy || !isNonEmptyText(value.compute.name)) return false;
-	if (value.compute.agg !== undefined && !isNonEmptyText(value.compute.agg)) return false;
+	if (!validGroupBy || !isNonEmptyText(value.compute.name) || !isNonEmptyText(value.compute.agg)) return false;
 	if (aggregateRequiresColumn(value.compute.agg) && !isNonEmptyText(value.compute.column)) return false;
 	if (value.compute.column !== undefined && typeof value.compute.column !== 'string') return false;
 	return true;
@@ -219,27 +229,6 @@ function isValidScalarDisplay(display: unknown): display is ScalarDisplay {
 	if (aggregateRequiresColumn(display.agg) && !isNonEmptyText(display.column)) return false;
 	if (display.column !== undefined && typeof display.column !== 'string') return false;
 	if (display.format !== undefined && typeof display.format !== 'string') return false;
-	return true;
-}
-
-function isValidTableDisplay(display: unknown): display is TableDisplay {
-	if (!isObjectRecord(display) || display.type !== 'table') return false;
-	if (!Array.isArray(display.groupBy) || display.groupBy.length === 0 || !display.groupBy.every(isNonEmptyText)) return false;
-	if (!Array.isArray(display.columns) || display.columns.length === 0) return false;
-	for (const column of display.columns) {
-		if (!isObjectRecord(column) || !isNonEmptyText(column.name)) return false;
-		if (column.header !== undefined && typeof column.header !== 'string') return false;
-		if (column.agg !== undefined && !isNonEmptyText(column.agg)) return false;
-		if (column.sourceColumn !== undefined && typeof column.sourceColumn !== 'string') return false;
-		if (column.format !== undefined && typeof column.format !== 'string') return false;
-		if (aggregateRequiresColumn(column.agg) && !isNonEmptyText(column.sourceColumn ?? column.name)) return false;
-	}
-	if (display.orderBy !== undefined) {
-		if (!isObjectRecord(display.orderBy) || !isNonEmptyText(display.orderBy.column)) return false;
-		if (display.orderBy.direction !== undefined && display.orderBy.direction !== 'asc' && display.orderBy.direction !== 'desc') return false;
-	}
-	if (display.top !== undefined && (typeof display.top !== 'number' || !Number.isInteger(display.top) || display.top <= 0)) return false;
-	if (display.preAggregate !== undefined && !isValidPreAggregateSpec(display.preAggregate)) return false;
 	return true;
 }
 
@@ -320,16 +309,24 @@ function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBi
 			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
 			const outputColumns = preColumns ?? factColumns;
 			for (const columnName of display.groupBy) requireAllowedColumn(bindingKey, columnName, 'groupBy', outputColumns);
-			for (const column of display.columns) {
+			for (let i = 0; i < display.columns.length; i++) {
+				const column = display.columns[i];
+				if (isTableCellBarColumn(column)) {
+					for (let s = 0; s < column.cellBar.segments.length; s++) {
+						const segment = column.cellBar.segments[s];
+						if (tableAggregateNeedsColumn(segment.agg)) requireAllowedColumn(bindingKey, segment.column, `columns[${i}].cellBar.segments[${s}].column`, outputColumns);
+					}
+					continue;
+				}
 				const sourceColumn = column.sourceColumn || column.name;
 				if (column.agg) {
-					if (aggregateRequiresColumn(column.agg)) requireAllowedColumn(bindingKey, sourceColumn, 'column', outputColumns);
+					if (tableAggregateNeedsColumn(column.agg)) requireAllowedColumn(bindingKey, sourceColumn, 'column', outputColumns);
 				} else {
 					requireAllowedColumn(bindingKey, column.name, 'column', outputColumns);
 				}
 			}
 			if (display.orderBy) {
-				const orderColumns = new Set([...display.groupBy, ...display.columns.map(column => column.name)]);
+				const orderColumns = new Set([...display.groupBy, ...display.columns.filter(column => !isTableCellBarColumn(column)).map(column => column.name)]);
 				requireAllowedColumn(bindingKey, display.orderBy.column, 'orderBy', orderColumns);
 			}
 		} else if (isValidPivotDisplay(display)) {
@@ -341,7 +338,17 @@ function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBi
 		} else if (isValidDashboardChartDisplay(display)) {
 			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
 			const outputColumns = preColumns ?? factColumns;
-			if (display.type === 'bar' || display.type === 'pie') {
+			if (display.type === 'bar') {
+				requireAllowedColumn(bindingKey, display.groupBy, 'groupBy', outputColumns);
+				if (display.segments) {
+					for (let i = 0; i < display.segments.length; i++) {
+						const segment = display.segments[i];
+						if (aggregateRequiresColumn(segment.agg)) requireAllowedColumn(bindingKey, segment.column, `segments[${i}].column`, outputColumns);
+					}
+				} else if (display.value && aggregateRequiresColumn(display.value.agg)) {
+					requireAllowedColumn(bindingKey, display.value.column, 'value.column', outputColumns);
+				}
+			} else if (display.type === 'pie') {
 				requireAllowedColumn(bindingKey, display.groupBy, 'groupBy', outputColumns);
 				if (aggregateRequiresColumn(display.value.agg)) requireAllowedColumn(bindingKey, display.value.column, 'value.column', outputColumns);
 			} else {
@@ -399,7 +406,7 @@ export function findUnsupportedPowerBiBindings(htmlCode: string): string[] {
 			unsupported.push(`${key} (${type})`);
 		} else if (type === 'scalar' && !isValidScalarDisplay(display)) {
 			unsupported.push(`${key} (${type}: invalid spec)`);
-		} else if (type === 'table' && top !== undefined && (typeof top !== 'number' || !Number.isInteger(top) || top <= 0)) {
+		} else if (type === 'table' && top !== undefined && (typeof top !== 'number' || !Number.isInteger(top) || top <= 0 || !isObjectRecord((display as { orderBy?: unknown }).orderBy))) {
 			unsupported.push(`${key} (${type}: invalid top)`);
 		} else if (type === 'table' && !isValidTableDisplay(display)) {
 			unsupported.push(`${key} (${type}: invalid spec)`);
@@ -529,8 +536,12 @@ function extractOriginalThClasses(tableInnerHtml: string): string[] {
 
 /** Build a DAX aggregation expression for a table column spec inside ADDCOLUMNS. */
 function buildColumnAggExpr(col: TableColumnSpec, factTable: string): string {
-	const agg = (col.agg || 'SUM').toUpperCase();
-	const srcCol = col.sourceColumn || col.name;
+	return buildTableValueAggExpr(col.agg, col.sourceColumn || col.name, factTable);
+}
+
+function buildTableValueAggExpr(aggName: string | undefined, sourceColumn: string | undefined, factTable: string): string {
+	const agg = (aggName || 'SUM').toUpperCase();
+	const srcCol = sourceColumn || '';
 	const tbl = escTable(factTable);
 	if (agg === 'DISTINCTCOUNT' || agg === 'DCOUNT') return `CALCULATE(DISTINCTCOUNT(${tbl}${escCol(srcCol)}))`;
 	if (agg === 'COUNT') return `CALCULATE(COUNTROWS(${tbl}))`;
@@ -591,8 +602,12 @@ function generatePreAggregateVarDax(factTable: string, preAgg: PreAggregate, var
  * Used for computed columns when `preAggregate` is active.
  */
 function buildPreAggColumnAggExpr(col: TableColumnSpec, preVarName: string, groupByCols: string[]): string {
-	const agg = (col.agg || 'COUNT').toUpperCase();
-	const srcCol = col.sourceColumn || col.name;
+	return buildPreAggTableValueAggExpr(col.agg, col.sourceColumn || col.name, preVarName, groupByCols);
+}
+
+function buildPreAggTableValueAggExpr(aggName: string | undefined, sourceColumn: string | undefined, preVarName: string, groupByCols: string[]): string {
+	const agg = (aggName || 'COUNT').toUpperCase();
+	const srcCol = sourceColumn || '';
 	const filterExpr = groupByCols.map(g => `${escCol(g)} = EARLIER(${escCol(g)})`).join(' && ');
 	const filtered = `FILTER(${preVarName}, ${filterExpr})`;
 	if (agg === 'COUNT') return `COUNTROWS(${filtered})`;
@@ -619,82 +634,143 @@ function buildPreAggChartValExpr(value: ChartValue, preVarName: string, groupByC
 	return `COUNTROWS(${filtered})`;
 }
 
+function tableCellBarSegmentAliases(varIdx: number, columnIndex: number, cellBar: TableCellBarSpec): string[] {
+	return cellBar.segments.map((_, segmentIndex) => tableCellBarAlias(varIdx, columnIndex, segmentIndex));
+}
+
+function tableCellBarValueExpr(alias: string): string {
+	return `MAX(0, COALESCE(${escCol(alias)}, 0))`;
+}
+
+function tableCellBarTotalExpr(aliases: string[]): string {
+	return aliases.length > 0 ? aliases.map(tableCellBarValueExpr).join(' + ') : '0';
+}
+
+function tableCellBarDimensionExpr(numeratorExpr: string, denominatorExpr: string, width: number): string {
+	return `FORMAT(ROUND(DIVIDE(${numeratorExpr}, ${denominatorExpr}, 0) * ${width}, 0), "0")`;
+}
+
+function tableCellBarSvgExpr(cellBar: TableCellBarSpec, aliases: string[], maxVarName?: string): string {
+	const geom = tableCellBarGeometry(cellBar);
+	const totalExpr = tableCellBarTotalExpr(aliases);
+	const denominatorExpr = maxVarName ?? totalExpr;
+	const svgStart = `<svg class='kw-cell-bar' width='${geom.width}' height='${geom.height}' viewBox='0 0 ${geom.width} ${geom.height}' xmlns='http://www.w3.org/2000/svg' style='width:${geom.width}px;height:${geom.height}px;display:block' aria-hidden='true'>`;
+	const rectExprs = cellBar.segments.map((segment, segmentIndex) => {
+		const alias = aliases[segmentIndex];
+		const previousAliases = aliases.slice(0, segmentIndex);
+		const xNumeratorExpr = previousAliases.length > 0 ? tableCellBarTotalExpr(previousAliases) : '0';
+		const widthNumeratorExpr = tableCellBarValueExpr(alias);
+		const xExpr = segmentIndex === 0 ? '"0"' : tableCellBarDimensionExpr(xNumeratorExpr, denominatorExpr, geom.width);
+		const widthExpr = tableCellBarDimensionExpr(widthNumeratorExpr, denominatorExpr, geom.width);
+		const fill = escapeDaxString(tableCellBarColor(cellBar, segment, segmentIndex));
+		return `"<rect x='" & ${xExpr} & "' y='0' width='" & ${widthExpr} & "' height='${geom.height}' rx='${geom.radius}' fill='${fill}'/>"`;
+	});
+	return `"${escapeDaxString(svgStart)}"${rectExprs.length > 0 ? ` & ${rectExprs.join(' & ')}` : ''} & "</svg>"`;
+}
+
+function tableCellBarMaxVarName(varIdx: number, columnIndex: number): string {
+	return `_kwCellBarMax_${varIdx}_${columnIndex}`;
+}
+
+function tableRowIndexAlias(varIdx: number): string {
+	return `${TABLE_ROW_INDEX_ALIAS_PREFIX}${varIdx}`;
+}
+
+function escapeHtmlTextLiteral(text: string): string {
+	return escapeXmlLiteral(text).replace(/'/g, '&#39;');
+}
+
+function daxHtmlEscape(colExpr: string): string {
+	return `SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE("" & ${colExpr}, "&", "&amp;"), "<", "&lt;"), ">", "&gt;"), """", "&quot;"), "'", "&#39;")`;
+}
+
 function generateTableDaxVars(factTable: string, display: TableDisplay, varIdx: number, originalThClasses: string[] = []): DaxVarResult {
 	const theadVar = `_thead_${varIdx}`;
 	const rowsVar = `_rows_${varIdx}`;
 	const tbl = escTable(factTable);
 	const preVars: string[] = [];
+	const buildComputedColumnParts = (preVarName?: string): string[] => {
+		const parts: string[] = [];
+		for (let columnIndex = 0; columnIndex < display.columns.length; columnIndex++) {
+			const column = display.columns[columnIndex];
+			if (column.agg) {
+				const expr = preVarName
+					? buildPreAggColumnAggExpr(column, preVarName, display.groupBy)
+					: buildColumnAggExpr(column, factTable);
+				parts.push(`"${escapeDaxString(column.name)}", ${expr}`);
+			}
+			if (isTableCellBarColumn(column)) {
+				const aliases = tableCellBarSegmentAliases(varIdx, columnIndex, column.cellBar);
+				for (let segmentIndex = 0; segmentIndex < column.cellBar.segments.length; segmentIndex++) {
+					const segment = column.cellBar.segments[segmentIndex];
+					const expr = preVarName
+						? buildPreAggTableValueAggExpr(segment.agg, segment.column, preVarName, display.groupBy)
+						: buildTableValueAggExpr(segment.agg, segment.column, factTable);
+					parts.push(`"${escapeDaxString(aliases[segmentIndex])}", ${expr}`);
+				}
+			}
+		}
+		return parts;
+	};
 
-	// thead
 	const thCells = display.columns.map((col, i) => {
-		const headerText = escapeDaxString(col.header || col.name);
+		const headerText = escapeDaxString(escapeHtmlTextLiteral(col.header || col.name));
 		const cls = originalThClasses[i] || '';
 		return cls ? `<th class=""${escapeDaxString(cls)}"">${headerText}</th>` : `<th>${headerText}</th>`;
 	}).join('');
 	const theadDax = `"<thead><tr>${thCells}</tr></thead>"`;
 
 	let summarizedTable: string;
-
 	if (display.preAggregate) {
-		// Two-level aggregation: create pre-aggregate VAR, then SUMMARIZE from it
 		const preVarName = `_pre_${varIdx}`;
 		preVars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
-
-		// groupBy columns reference the pre-aggregate table (unqualified)
 		const groupByCols = display.groupBy.map(g => escCol(g)).join(', ');
-		const computedCols = display.columns.filter(c => c.agg);
-		const addColumnParts = computedCols.map(c =>
-			`"${escapeDaxString(c.name)}", ${buildPreAggColumnAggExpr(c, preVarName, display.groupBy)}`,
-		).join(', ');
-
-		if (addColumnParts) {
-			summarizedTable = `ADDCOLUMNS(SUMMARIZE(${preVarName}, ${groupByCols}), ${addColumnParts})`;
-		} else {
-			summarizedTable = `SUMMARIZE(${preVarName}, ${groupByCols})`;
-		}
+		const addColumnParts = buildComputedColumnParts(preVarName).join(', ');
+		summarizedTable = addColumnParts
+			? `ADDCOLUMNS(SUMMARIZE(${preVarName}, ${groupByCols}), ${addColumnParts})`
+			: `SUMMARIZE(${preVarName}, ${groupByCols})`;
 	} else {
-		// Standard single-level aggregation from the fact table
 		const groupByCols = display.groupBy.map(g => `${tbl}${escCol(g)}`).join(', ');
-		const computedCols = display.columns.filter(c => c.agg);
-		const addColumnParts = computedCols.map(c => `"${escapeDaxString(c.name)}", ${buildColumnAggExpr(c, factTable)}`).join(', ');
-
-		if (addColumnParts) {
-			summarizedTable = `ADDCOLUMNS(SUMMARIZE(${tbl}, ${groupByCols}), ${addColumnParts})`;
-		} else {
-			summarizedTable = `SUMMARIZE(${tbl}, ${groupByCols})`;
-		}
+		const addColumnParts = buildComputedColumnParts().join(', ');
+		summarizedTable = addColumnParts
+			? `ADDCOLUMNS(SUMMARIZE(${tbl}, ${groupByCols}), ${addColumnParts})`
+			: `SUMMARIZE(${tbl}, ${groupByCols})`;
 	}
 
-	// CONCATENATEX for HTML rows
 	const tdExprs = display.columns.map((col, i) => {
-		let valExpr: string;
-		if (col.format) {
-			valExpr = buildFormatExpr(escCol(col.name), col.format);
-		} else {
-			valExpr = escCol(col.name);
-		}
 		const cls = originalThClasses[i] || '';
 		const tdOpen = cls ? `<td class=""${escapeDaxString(cls)}"">` : '<td>';
-		return `"${tdOpen}" & ${valExpr} & "</td>"`;
+		if (isTableCellBarColumn(col)) {
+			const aliases = tableCellBarSegmentAliases(varIdx, i, col.cellBar);
+			const maxVarName = (col.cellBar.scale ?? 'normalized100') === 'relative' ? tableCellBarMaxVarName(varIdx, i) : undefined;
+			return `"${tdOpen}" & ${tableCellBarSvgExpr(col.cellBar, aliases, maxVarName)} & "</td>"`;
+		}
+		const formattedValueExpr = col.format ? buildFormatExpr(escCol(col.name), col.format) : escCol(col.name);
+		return `"${tdOpen}" & ${daxHtmlEscape(formattedValueExpr)} & "</td>"`;
 	}).join(' & ');
 
-	// Sort for CONCATENATEX. When top is present, use an exact deterministic
-	// index instead of DAX TOPN so ties match the preview helper's slice behavior.
 	let renderTable = summarizedTable;
 	let sortExpr = '';
 	if (display.orderBy) {
 		const dir = (display.orderBy.direction || 'desc').toUpperCase() === 'ASC' ? 'ASC' : 'DESC';
-		const tableTop = display.top;
-		if (tableTop !== undefined && Number.isInteger(tableTop) && tableTop > 0) {
-			const indexedRows = indexedTableRowsExpr(summarizedTable, escCol(display.orderBy.column), display.groupBy.map(g => escCol(g)), dir);
-			renderTable = `FILTER(${indexedRows}, [Idx] <= ${tableTop})`;
-			sortExpr = ', [Idx], ASC';
+		const rowIndexAlias = tableRowIndexAlias(varIdx);
+		const rowIndexRef = escCol(rowIndexAlias);
+		const indexedRows = indexedTableRowsExpr(summarizedTable, rowIndexAlias, escCol(display.orderBy.column), display.groupBy.map(g => escCol(g)), dir);
+		if (display.top !== undefined && Number.isInteger(display.top) && display.top > 0) {
+			renderTable = `FILTER(${indexedRows}, ${rowIndexRef} <= ${display.top})`;
 		} else {
-			sortExpr = `, ${escCol(display.orderBy.column)}, ${dir}`;
+			renderTable = indexedRows;
 		}
+		sortExpr = `, ${rowIndexRef}, ASC`;
 	}
 
-	const rowsDax = `CONCATENATEX(${renderTable}, "<tr>" & ${tdExprs} & "</tr>", ""${sortExpr})`;
+	const relativeMaxVars = display.columns.flatMap((column, columnIndex) => {
+		if (!isTableCellBarColumn(column) || (column.cellBar.scale ?? 'normalized100') !== 'relative') return [];
+		const aliases = tableCellBarSegmentAliases(varIdx, columnIndex, column.cellBar);
+		return [`VAR ${tableCellBarMaxVarName(varIdx, columnIndex)} = MAXX(${renderTable}, ${tableCellBarTotalExpr(aliases)})`];
+	});
+	const rowConcatDax = `CONCATENATEX(${renderTable}, "<tr>" & ${tdExprs} & "</tr>", ""${sortExpr})`;
+	const rowsDax = relativeMaxVars.length > 0 ? `${relativeMaxVars.join(' ')} RETURN ${rowConcatDax}` : rowConcatDax;
 
 	return { theadVar, theadDax, rowsVar, rowsDax, ...(preVars.length > 0 ? { preVars } : {}) };
 }
@@ -836,18 +912,18 @@ function lexicographicLessOrEqualExpr(refs: string[], variablePrefix: string): s
 	}).join(' || ');
 }
 
-function indexedTableRowsExpr(sourceTable: string, sortRef: string, tieRefs: string[], direction: 'ASC' | 'DESC'): string {
+function indexedTableRowsExpr(sourceTable: string, indexColumn: string, sortRef: string, tieRefs: string[], direction: 'ASC' | 'DESC'): string {
 	const keyVars = tieRefs.map((ref, idx) => `VAR _key${idx} = ${ref}`).join(' ');
 	const primaryComparison = direction === 'ASC' ? `${sortRef} < _sort` : `${sortRef} > _sort`;
 	const tieComparison = tieRefs.length > 0 ? lexicographicLessOrEqualExpr(tieRefs, '_key') : 'TRUE()';
-	return `ADDCOLUMNS(${sourceTable}, "Idx", VAR _sort = ${sortRef} ${keyVars} RETURN COUNTROWS(FILTER(${sourceTable}, ${primaryComparison} || (${sortRef} = _sort && (${tieComparison})))))`;
+	return `ADDCOLUMNS(${sourceTable}, "${escapeDaxString(indexColumn)}", VAR _sort = ${sortRef} ${keyVars} RETURN COUNTROWS(FILTER(${sourceTable}, ${primaryComparison} || (${sortRef} = _sort && (${tieComparison})))))`;
 }
 
 /**
  * Generate DAX for a horizontal bar chart SVG.
  * Pushes intermediate VARs into `vars[]`, returns the final marker name.
  */
-export function generateBarChartDax(factTable: string, display: BarDisplay, varIdx: number, vars: string[], dataSource?: PowerBiDataSource): string {
+function generateSimpleBarChartDax(factTable: string, display: BarDisplay & { value: ChartValue }, varIdx: number, vars: string[], dataSource?: PowerBiDataSource): string {
 	const tbl = escTable(factTable);
 	const dp = `_bardata_${varIdx}`;
 	const rp = `_barrows_${varIdx}`;
@@ -900,6 +976,223 @@ export function generateBarChartDax(factTable: string, display: BarDisplay, varI
 	const svgDax = `"<svg class='chart-svg' viewBox='0 0 ${totalW} " & ${heightExpr} & "' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:" & ${heightExpr} & "px;display:block' role='img'>" & ${svgExpr} & "</svg>"`;
 	vars.push(`VAR ${sp} = ${svgDax}`);
 	return sp;
+}
+
+function hasAdvancedBarOptions(display: BarDisplay): boolean {
+	return !!display.segments
+		|| !!display.thresholdBands
+		|| !!display.colorRules
+		|| display.scale !== undefined
+		|| display.variant !== undefined
+		|| display.showValueLabels !== undefined
+		|| display.showCategoryLabels !== undefined;
+}
+
+function barValueFormat(display: BarDisplay): string {
+	return display.value?.format || display.segments?.[0]?.format || '#,##0';
+}
+
+function daxNumber(value: number): string {
+	return Number.isInteger(value) ? String(value) : String(value);
+}
+
+function daxColorLiteral(color: string): string {
+	return `"${escapeDaxString(color)}"`;
+}
+
+function chartValueAggExpr(value: ChartValue, factTable: string, preVarName: string | undefined, groupByCol: string): string {
+	return preVarName ? buildPreAggChartValExpr(value, preVarName, groupByCol) : chartAggExpr(value, factTable);
+}
+
+function barRulePredicate(rule: BarColorRule): string {
+	const value = daxNumber(rule.value);
+	if (rule.operator === '>') return `[Val] > ${value}`;
+	if (rule.operator === '>=') return `[Val] >= ${value}`;
+	if (rule.operator === '<') return `[Val] < ${value}`;
+	if (rule.operator === '<=') return `[Val] <= ${value}`;
+	if (rule.operator === '!=' || rule.operator === '<>') return `[Val] <> ${value}`;
+	return `[Val] = ${value}`;
+}
+
+function rowColorSwitchExpr(display: BarDisplay): string {
+	const colorCases = Array.from({ length: 10 }, (_, i) =>
+		`${i + 1}, ${daxColorLiteral(chartColor(display.colors, i))}`,
+	).join(', ');
+	return `SWITCH([Idx], ${colorCases}, ${daxColorLiteral(chartColor(display.colors, 0))})`;
+}
+
+function colorRulesSwitchExpr(display: BarDisplay): string {
+	if (!display.colorRules?.length) return rowColorSwitchExpr(display);
+	const ruleCases = display.colorRules
+		.map(rule => `${barRulePredicate(rule)}, ${daxColorLiteral(rule.color)}`)
+		.join(', ');
+	return `SWITCH(TRUE(), ${ruleCases}, ${rowColorSwitchExpr(display)})`;
+}
+
+interface ExportBarGeometry {
+	totalW: number;
+	minH: number;
+	padT: number;
+	padB: number;
+	rowH: number;
+	gap: number;
+	labelW: number;
+	barMaxW: number;
+	valGap: number;
+	barH: number;
+	barOffset: number;
+	barRadius: number;
+	labelFontSize: number;
+	labelFill: string;
+	textDy: number;
+	showCategoryLabels: boolean;
+	showValueLabels: boolean;
+}
+
+function exportBarGeometry(display: BarDisplay): ExportBarGeometry {
+	const distribution = display.variant === 'distribution';
+	const base = distribution ? DASHBOARD_DISTRIBUTION_BAR_CHART : DASHBOARD_BAR_CHART;
+	const showCategoryLabels = display.showCategoryLabels !== false;
+	const showValueLabels = display.showValueLabels === undefined ? !distribution : display.showValueLabels;
+	const labelW = showCategoryLabels ? base.labelW : 0;
+	const valueW = showValueLabels ? 96 : 0;
+	const barMaxW = distribution
+		? Math.max(1, base.totalW - labelW - valueW - (showValueLabels ? base.valGap : 0))
+		: base.barMaxW;
+	return {
+		totalW: base.totalW,
+		minH: base.minH,
+		padT: base.padT,
+		padB: base.padB,
+		rowH: base.rowH,
+		gap: base.gap,
+		labelW,
+		barMaxW,
+		valGap: base.valGap,
+		barH: distribution ? DASHBOARD_DISTRIBUTION_BAR_CHART.barH : base.rowH - 4,
+		barOffset: distribution ? Math.floor((DASHBOARD_DISTRIBUTION_BAR_CHART.rowH - DASHBOARD_DISTRIBUTION_BAR_CHART.barH) / 2) : 2,
+		barRadius: base.barRadius,
+		labelFontSize: base.labelFontSize,
+		labelFill: base.labelFill,
+		textDy: distribution ? base.labelFontSize + 3 : 16,
+		showCategoryLabels,
+		showValueLabels,
+	};
+}
+
+function thresholdDomain(display: BarDisplay): number {
+	const bands = display.thresholdBands?.bands ?? [];
+	return display.thresholdBands?.scaleMax ?? bands[bands.length - 1]?.max ?? 0;
+}
+
+function advancedBarDataTableExpr(factTable: string, display: BarDisplay, varIdx: number, vars: string[]): { dataTable: string; groupByRef: string } {
+	const tbl = escTable(factTable);
+	const preVarName = display.preAggregate ? `_pre_${varIdx}` : undefined;
+	if (display.preAggregate) {
+		vars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
+	}
+	const groupByRef = preVarName ? escCol(display.groupBy) : `${tbl}${escCol(display.groupBy)}`;
+	const sourceTable = preVarName ?? tbl;
+
+	if (display.segments?.length) {
+		const segmentColumns = display.segments.map((segment, i) =>
+			`"Seg${i}", ${chartValueAggExpr(segment, factTable, preVarName, display.groupBy)}`,
+		);
+		const totalExpr = display.segments
+			.map(segment => `MAX(0, ${chartValueAggExpr(segment, factTable, preVarName, display.groupBy)})`)
+			.join(' + ');
+		return {
+			dataTable: `ADDCOLUMNS(SUMMARIZE(${sourceTable}, ${groupByRef}), ${[...segmentColumns, `"Val", ${totalExpr}`].join(', ')})`,
+			groupByRef,
+		};
+	}
+
+	const value = display.value ?? { agg: 'COUNT' };
+	return {
+		dataTable: `ADDCOLUMNS(SUMMARIZE(${sourceTable}, ${groupByRef}), "Val", ${chartValueAggExpr(value, factTable, preVarName, display.groupBy)})`,
+		groupByRef,
+	};
+}
+
+function advancedBarSegmentVariables(display: BarDisplay): string {
+	if (display.segments?.length) {
+		return display.segments.map((_, i) => `VAR _seg${i} = MAX(0, [Seg${i}]) VAR _w${i} = IF(_den = 0, 0, _seg${i} / _den * _barw)`).join(' ');
+	}
+	if (display.thresholdBands?.bands.length) {
+		return display.thresholdBands.bands.map((band, i) =>
+			`VAR _seg${i} = MAX(0, MIN(_barval, ${daxNumber(band.max)}) - ${daxNumber(band.min)}) VAR _w${i} = IF(_den = 0, 0, _seg${i} / _den * _barw)`,
+		).join(' ');
+	}
+	return 'VAR _seg0 = _barval VAR _w0 = IF(_den = 0, 0, _seg0 / _den * _barw)';
+}
+
+function advancedBarRectExpr(display: BarDisplay, geom: ExportBarGeometry): string {
+	const colors: string[] = [];
+	if (display.segments?.length) {
+		for (let i = 0; i < display.segments.length; i++) colors.push(display.segments[i].color || chartColor(display.colors, i));
+	} else if (display.thresholdBands?.bands.length) {
+		for (let i = 0; i < display.thresholdBands.bands.length; i++) colors.push(display.thresholdBands.bands[i].color || chartColor(display.colors, i));
+	} else {
+		colors.push('');
+	}
+	return colors.map((color, i) => {
+		const xExpr = i === 0 ? `${geom.labelW}` : `${geom.labelW} + ${Array.from({ length: i }, (_, idx) => `_w${idx}`).join(' + ')}`;
+		const colorExpr = color ? daxColorLiteral(color) : '_col';
+		return `"<rect x='" & FORMAT(${xExpr}, "0") & "' y='" & FORMAT(_y + ${geom.barOffset}, "0") & "' width='" & FORMAT(_w${i}, "0") & "' height='${geom.barH}' rx='${geom.barRadius}' fill='" & ${colorExpr} & "'/>"`;
+	}).join(' & ');
+}
+
+function generateAdvancedBarChartDax(factTable: string, display: BarDisplay, varIdx: number, vars: string[], dataSource?: PowerBiDataSource): string {
+	const dp = `_bardata_${varIdx}`;
+	const rp = `_barrows_${varIdx}`;
+	const mp = `_barmax_${varIdx}`;
+	const sp = `_bar_${varIdx}`;
+	const { dataTable, groupByRef } = advancedBarDataTableExpr(factTable, display, varIdx, vars);
+	vars.push(`VAR ${dp} = ${dataTable}`);
+	const indexedRows = indexedChartRowsExpr(dp, groupByRef);
+	vars.push(`VAR ${rp} = ${display.top && display.top > 0 ? `FILTER(${indexedRows}, [Idx] <= ${display.top})` : indexedRows}`);
+	vars.push(`VAR ${mp} = MAXX(${rp}, MAX(0, [Val]))`);
+
+	const geom = exportBarGeometry(display);
+	const labelTextExpr = daxXmlEscape(lineAxisLabelExpr(groupByRef, display.groupBy, dataSource));
+	const valueTextExpr = buildFormatExpr('[Val]', barValueFormat(display));
+	const denominatorExpr = display.thresholdBands
+		? daxNumber(thresholdDomain(display))
+		: display.scale === 'normalized100' ? '_barval' : mp;
+	const fillValueExpr = display.thresholdBands ? 'MIN(_barval, _den)' : '_barval';
+	const colorExpr = display.colorRules ? colorRulesSwitchExpr(display) : rowColorSwitchExpr(display);
+	const labelExpr = geom.showCategoryLabels
+		? `"<text x='${geom.labelW - 6}' y='" & FORMAT(_y + ${geom.textDy}, "0") & "' text-anchor='end' font-size='${geom.labelFontSize}' fill='${geom.labelFill}'>" & ${labelTextExpr} & "</text>"`
+		: '';
+	const valueExpr = geom.showValueLabels
+		? `"<text x='" & FORMAT(${geom.labelW} + IF(_den = 0, 0, _fillval / _den * _barw) + ${geom.valGap}, "0") & "' y='" & FORMAT(_y + ${geom.textDy}, "0") & "' font-size='${geom.labelFontSize}' fill='${geom.labelFill}'>" & ${valueTextExpr} & "</text>"`
+		: '';
+	const pieces = [labelExpr, advancedBarRectExpr(display, geom), valueExpr].filter(Boolean).join(' & ');
+	const svgExpr = `CONCATENATEX(`
+		+ `${rp}, `
+		+ `VAR _y = ${geom.padT} + ([Idx] - 1) * ${geom.rowH + geom.gap} `
+		+ `VAR _barval = MAX(0, [Val]) `
+		+ `VAR _den = ${denominatorExpr} `
+		+ `VAR _fillval = ${fillValueExpr} `
+		+ `VAR _barw = ${geom.barMaxW} `
+		+ `VAR _col = ${colorExpr} `
+		+ `${advancedBarSegmentVariables(display)} `
+		+ `RETURN ${pieces}, `
+		+ `"", [Idx], ASC)`;
+
+	const countExpr = `COUNTROWS(${rp})`;
+	const heightValueExpr = `MAX(${geom.minH}, ${geom.padT + geom.padB} + ${countExpr} * ${geom.rowH + geom.gap})`;
+	const heightExpr = `FORMAT(${heightValueExpr}, "0")`;
+	const svgDax = `"<svg class='chart-svg' viewBox='0 0 ${geom.totalW} " & ${heightExpr} & "' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:" & ${heightExpr} & "px;display:block' role='img'>" & ${svgExpr} & "</svg>"`;
+	vars.push(`VAR ${sp} = ${svgDax}`);
+	return sp;
+}
+
+export function generateBarChartDax(factTable: string, display: BarDisplay, varIdx: number, vars: string[], dataSource?: PowerBiDataSource): string {
+	if (!hasAdvancedBarOptions(display) && display.value) {
+		return generateSimpleBarChartDax(factTable, display as BarDisplay & { value: ChartValue }, varIdx, vars, dataSource);
+	}
+	return generateAdvancedBarChartDax(factTable, display, varIdx, vars, dataSource);
 }
 
 /**
@@ -1098,27 +1391,67 @@ export function generateLineChartDax(factTable: string, display: LineDisplay, va
 }
 /**
  * Match a `<table>` element that has a `data-kw-bind` attribute either on the
- * `<table>` tag itself or on a `<tbody>` child.  Returns a match-like tuple
- * `[fullMatch, openTag, innerContent, closeTag]` or null.
+ * `<table>` tag itself or on a `<tbody>` child.
  *
  * Pattern 1: `<table data-kw-bind="x">...</table>`
  * Pattern 2: `<table ...><thead>...</thead><tbody data-kw-bind="x">...</tbody></table>`
  */
-function matchTableElement(html: string, bindAttr: string): RegExpMatchArray | null {
+interface TableElementMatch {
+	fullMatch: string;
+	target: 'table' | 'tbody';
+	tableOpen: string;
+	innerContent: string;
+	tableClose: string;
+	beforeTbody?: string;
+	tbodyOpen?: string;
+	tbodyInner?: string;
+	tbodyClose?: string;
+	afterTbody?: string;
+}
+
+function matchTableElement(html: string, bindAttr: string): TableElementMatch | null {
 	// Try <table data-kw-bind="x">
 	const onTableRe = new RegExp(
 		`(<table\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</table>)`, 'i',
 	);
 	const onTable = html.match(onTableRe);
-	if (onTable) return onTable;
+	if (onTable) {
+		return {
+			fullMatch: onTable[0],
+			target: 'table',
+			tableOpen: onTable[1],
+			innerContent: onTable[2],
+			tableClose: onTable[3],
+		};
+	}
 
 	// Try <tbody data-kw-bind="x"> inside a <table>
 	// Use negative lookahead (?!<table\b) to prevent crossing <table> boundaries
 	// when multiple tables exist in the HTML.
 	const onTbodyRe = new RegExp(
-		`(<table\\b[^>]*>)((?:(?!<table\\b)[\\s\\S])*?<tbody\\b[^>]*?\\b${bindAttr}[^>]*>(?:(?!<table\\b)[\\s\\S])*?)(</table>)`, 'i',
+		`(<table\\b[^>]*>)((?:(?!<table\\b)[\\s\\S])*?)(<tbody\\b[^>]*?\\b${bindAttr}[^>]*>)([\\s\\S]*?)(</tbody>)((?:(?!<table\\b)[\\s\\S])*?)(</table>)`, 'i',
 	);
-	return html.match(onTbodyRe);
+	const onTbody = html.match(onTbodyRe);
+	if (!onTbody) return null;
+	return {
+		fullMatch: onTbody[0],
+		target: 'tbody',
+		tableOpen: onTbody[1],
+		beforeTbody: onTbody[2],
+		tbodyOpen: onTbody[3],
+		tbodyInner: onTbody[4],
+		tbodyClose: onTbody[5],
+		afterTbody: onTbody[6],
+		tableClose: onTbody[7],
+		innerContent: `${onTbody[2]}${onTbody[3]}${onTbody[4]}${onTbody[5]}${onTbody[6]}`,
+	};
+}
+
+function replaceTableElement(match: TableElementMatch, theadVar: string | undefined, rowsVar: string | undefined): string {
+	if (match.target === 'tbody') {
+		return `${match.tableOpen}${match.beforeTbody ?? ''}${match.tbodyOpen ?? ''}{{${rowsVar}}}${match.tbodyClose ?? ''}${match.afterTbody ?? ''}${match.tableClose}`;
+	}
+	return `${match.tableOpen}{{${theadVar}}}<tbody>{{${rowsVar}}}</tbody>${match.tableClose}`;
 }
 
 function protectNonRenderedHtmlBlocks(html: string): { html: string; blocks: string[] } {
@@ -1189,14 +1522,14 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 			const tableMatch = matchTableElement(html, bindAttr);
 			if (!tableMatch) continue;
 
-			const originalClasses = extractOriginalThClasses(tableMatch[2]);
+			const originalClasses = extractOriginalThClasses(tableMatch.innerContent);
 			const result = generateTableDaxVars(factTable, display as TableDisplay, varIdx, originalClasses);
 			if (result.preVars) result.preVars.forEach(v => vars.push(v));
 			if (result.theadVar && result.theadDax) vars.push(`VAR ${result.theadVar} = ${result.theadDax}`);
 			if (result.rowsVar && result.rowsDax) vars.push(`VAR ${result.rowsVar} = ${result.rowsDax}`);
 
-			const replaced = `${tableMatch[1]}{{${result.theadVar}}}{{${result.rowsVar}}}${tableMatch[3]}`;
-			html = html.replace(tableMatch[0], () => replaced);
+			const replaced = replaceTableElement(tableMatch, result.theadVar, result.rowsVar);
+			html = html.replace(tableMatch.fullMatch, () => replaced);
 			varIdx++;
 			continue;
 		}
@@ -1211,8 +1544,8 @@ export function generateDaxMeasure(htmlCode: string, dataSources: PowerBiDataSou
 			if (result.theadVar && result.theadDax) vars.push(`VAR ${result.theadVar} = ${result.theadDax}`);
 			if (result.rowsVar && result.rowsDax) vars.push(`VAR ${result.rowsVar} = ${result.rowsDax}`);
 
-			const replaced = `${tableMatch[1]}{{${result.theadVar}}}{{${result.rowsVar}}}${tableMatch[3]}`;
-			html = html.replace(tableMatch[0], () => replaced);
+			const replaced = replaceTableElement(tableMatch, result.theadVar, result.rowsVar);
+			html = html.replace(tableMatch.fullMatch, () => replaced);
 			varIdx++;
 			continue;
 		}

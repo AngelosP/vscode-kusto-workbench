@@ -5,6 +5,7 @@ import { DASHBOARD_BAR_CHART, DASHBOARD_LINE_CHART } from '../../src/shared/dash
 
 interface KustoWorkbenchRuntime {
 	renderChart(bindingId: string, chartSpec?: unknown): void;
+	renderTable(bindingId: string, tableSpec?: unknown): void;
 	_notify(data: unknown): void;
 	agg(): { avg(column: string): number };
 }
@@ -20,6 +21,11 @@ const factColumns = [
 	{ name: 'Bucket', type: 'long' },
 	{ name: 'Code', type: 'string' },
 	{ name: 'Score', type: 'real' },
+	{ name: 'Healthy', type: 'long' },
+	{ name: 'Warning', type: 'long' },
+	{ name: 'Critical', type: 'long' },
+	{ name: 'LatencyMs', type: 'real' },
+	{ name: 'FailureRate', type: 'real' },
 ];
 
 function htmlWithBindings(bindings: Record<string, object>): string {
@@ -45,6 +51,216 @@ function installBridge(bindings: Record<string, object>, bodyHtml: string, rows:
 	new Function(match![1]).call(window);
 	return (window as Window & typeof globalThis & { KustoWorkbench: KustoWorkbenchRuntime }).KustoWorkbench;
 }
+
+describe('KustoWorkbench.renderTable preview bridge', () => {
+	beforeEach(() => {
+		document.body.innerHTML = '';
+		delete (window as Window & typeof globalThis & { KustoWorkbench?: KustoWorkbenchRuntime }).KustoWorkbench;
+	});
+
+	it('renders a full table with stacked cell-bar SVG cells', () => {
+		const runtime = installBridge(
+			{
+				'status-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS', header: 'Service' },
+							{
+								name: 'Breakdown',
+								cellBar: {
+									segments: [
+										{ agg: 'SUM', column: 'Healthy', color: '#2E7D32' },
+										{ agg: 'SUM', column: 'Critical', color: '#C62828' },
+									],
+									scale: 'normalized100',
+								},
+							},
+						],
+					},
+				},
+			},
+			'<table data-kw-bind="status-table"></table>',
+			[
+				['2026-04-01T00:00:00Z', 'Service <A>', 'd1', 's1', 'A', 0, 'A', 0, 2, 0, 1],
+				['2026-04-01T00:00:00Z', 'Service B', 'd2', 's2', 'B', 0, 'B', 0, 1, 0, 1],
+			],
+		);
+
+		runtime.renderTable('status-table');
+
+		const table = document.querySelector('[data-kw-bind="status-table"]')!;
+		expect(table.querySelectorAll('th')).toHaveLength(2);
+		expect(table.textContent).toContain('Service');
+		expect(table.innerHTML).toContain('Service &lt;A&gt;');
+		const rects = Array.from(table.querySelectorAll('rect'));
+		expect(rects).toHaveLength(4);
+		expect(rects[0].getAttribute('width')).toBe('107');
+		expect(rects[1].getAttribute('x')).toBe('107');
+		expect(rects[1].getAttribute('width')).toBe('53');
+		expect(rects[0].getAttribute('fill')).toBe('#2E7D32');
+		expect(rects[1].getAttribute('fill')).toBe('#C62828');
+	});
+
+	it('renders tbody-only targets and relative cell-bar scaling', () => {
+		const runtime = installBridge(
+			{
+				'status-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS' },
+							{ name: 'Health', cellBar: { scale: 'relative', segments: [{ agg: 'SUM', column: 'Healthy', color: '#2E7D32' }] } },
+						],
+						orderBy: { column: 'OS', direction: 'asc' },
+					},
+				},
+			},
+			'<table><thead><tr><th>Service</th><th>Health</th></tr></thead><tbody data-kw-bind="status-table"></tbody></table>',
+			[
+				['2026-04-01T00:00:00Z', 'A', 'd1', 's1', 'A', 0, 'A', 0, 4, 0, 0],
+				['2026-04-01T00:00:00Z', 'B', 'd2', 's2', 'B', 0, 'B', 0, 2, 0, 0],
+			],
+		);
+
+		runtime.renderTable('status-table');
+
+		const tbody = document.querySelector('tbody[data-kw-bind="status-table"]')!;
+		expect(tbody.querySelectorAll('tr')).toHaveLength(2);
+		expect(document.querySelectorAll('thead th')).toHaveLength(2);
+		const rects = Array.from(tbody.querySelectorAll('rect'));
+		expect(rects.map(rect => rect.getAttribute('width'))).toEqual(['160', '80']);
+	});
+
+	it('rerenders registered tables when filtered data is notified', () => {
+		const runtime = installBridge(
+			{
+				'status-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', cellBar: { segments: [{ agg: 'COUNT' }] } }],
+					},
+				},
+			},
+			'<table data-kw-bind="status-table"></table>',
+			[['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A']],
+		);
+
+		runtime.renderTable('status-table');
+		expect(document.querySelector('[data-kw-bind="status-table"]')!.textContent).toContain('Linux');
+
+		runtime._notify({
+			fact: {
+				columns: factColumns,
+				rows: [['2026-04-01T00:00:00Z', 'Windows', 'd2', 's2', 'B']],
+				totalRows: 1,
+				capped: false,
+			},
+		});
+
+		const text = document.querySelector('[data-kw-bind="status-table"]')!.textContent || '';
+		expect(text).toContain('Windows');
+		expect(text).not.toContain('Linux');
+	});
+
+	it('rejects table top without orderBy in preview', () => {
+		const runtime = installBridge(
+			{
+				'top-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }],
+						top: 1,
+					},
+				},
+			},
+			'<table data-kw-bind="top-table"></table>',
+			[
+				['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A'],
+				['2026-04-01T00:00:00Z', 'Windows', 'd2', 's2', 'B'],
+			],
+		);
+
+		runtime.renderTable('top-table');
+
+		expect(document.querySelector('[data-kw-bind="top-table"]')!.innerHTML).toBe('');
+	});
+
+	it('rejects plain columns that are neither grouped nor aggregated in preview', () => {
+		const runtime = installBridge(
+			{
+				'bad-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'SkillName' }],
+					},
+				},
+			},
+			'<table data-kw-bind="bad-table"></table>',
+			[['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A']],
+		);
+
+		runtime.renderTable('bad-table');
+
+		expect(document.querySelector('[data-kw-bind="bad-table"]')!.innerHTML).toBe('');
+	});
+
+	it('uses group columns as deterministic top-N tie breakers in preview', () => {
+		const runtime = installBridge(
+			{
+				'top-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }],
+						orderBy: { column: 'Rows', direction: 'desc' },
+						top: 2,
+					},
+				},
+			},
+			'<table data-kw-bind="top-table"></table>',
+			[
+				['2026-04-01T00:00:00Z', 'C', 'd1', 's1', 'A'],
+				['2026-04-01T00:00:00Z', 'A', 'd2', 's2', 'B'],
+				['2026-04-01T00:00:00Z', 'B', 'd3', 's3', 'C'],
+			],
+		);
+
+		runtime.renderTable('top-table');
+
+		const cells = Array.from(document.querySelectorAll('[data-kw-bind="top-table"] tbody tr td:first-child'));
+		expect(cells.map(cell => cell.textContent)).toEqual(['A', 'B']);
+	});
+
+	it('rejects table preAggregate specs without compute agg in preview', () => {
+		const runtime = installBridge(
+			{
+				'session-depth': {
+					display: {
+						type: 'table',
+						preAggregate: {
+							groupBy: 'SessionId',
+							compute: { name: 'SkillsPerSession', column: 'SkillName' },
+						},
+						groupBy: ['SkillsPerSession'],
+						columns: [{ name: 'SkillsPerSession' }, { name: 'Sessions', agg: 'COUNT' }],
+					},
+				},
+			},
+			'<table data-kw-bind="session-depth"></table>',
+			[['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A']],
+		);
+
+		runtime.renderTable('session-depth');
+
+		expect(document.querySelector('[data-kw-bind="session-depth"]')!.innerHTML).toBe('');
+	});
+});
 
 describe('KustoWorkbench.renderChart preview bridge', () => {
 	beforeEach(() => {
@@ -131,6 +347,100 @@ describe('KustoWorkbench.renderChart preview bridge', () => {
 		const rects = Array.from(document.querySelectorAll('[data-kw-bind="os-chart"] rect'));
 		expect(rects).toHaveLength(11);
 		expect(rects[10].getAttribute('fill')).toBe('#111111');
+	});
+
+	it('renders normalized distribution bar segments as full-width compact rows', () => {
+		const runtime = installBridge(
+			{
+				'status-chart': {
+					display: {
+						type: 'bar', groupBy: 'OS',
+						segments: [
+							{ agg: 'SUM', column: 'Healthy', color: '#2E7D32' },
+							{ agg: 'SUM', column: 'Critical', color: '#C62828' },
+						],
+						scale: 'normalized100',
+						variant: 'distribution',
+						showCategoryLabels: false,
+						showValueLabels: false,
+					},
+				},
+			},
+			'<div data-kw-bind="status-chart"></div>',
+			[
+				['2026-04-01T00:00:00Z', 'Service A', 'd1', 's1', 'A', 0, 'A', 0, 2, 0, 1],
+				['2026-04-01T00:00:00Z', 'Service B', 'd2', 's2', 'B', 0, 'B', 0, 1, 0, 1],
+			],
+		);
+
+		runtime.renderChart('status-chart');
+
+		const rects = Array.from(document.querySelectorAll('[data-kw-bind="status-chart"] rect'));
+		expect(rects).toHaveLength(4);
+		expect(rects[0].getAttribute('rx')).toBe('0');
+		expect(rects[0].getAttribute('height')).toBe('8');
+		expect(rects[0].getAttribute('width')).toBe('507');
+		expect(rects[1].getAttribute('x')).toBe('507');
+		expect(rects[1].getAttribute('width')).toBe('253');
+		expect(rects[0].getAttribute('fill')).toBe('#2E7D32');
+		expect(rects[1].getAttribute('fill')).toBe('#C62828');
+		expect((document.querySelector('[data-kw-bind="status-chart"]')!.textContent || '').trim()).toBe('');
+	});
+
+	it('splits a bar value across fixed threshold bands', () => {
+		const runtime = installBridge(
+			{
+				'latency-chart': {
+					display: {
+						type: 'bar', groupBy: 'OS',
+						value: { agg: 'AVG', column: 'LatencyMs', format: '#,##0 ms' },
+						thresholdBands: {
+							scaleMax: 100,
+							bands: [
+								{ min: 0, max: 50, color: '#2E7D32' },
+								{ min: 50, max: 100, color: '#C62828' },
+							],
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="latency-chart"></div>',
+			[['2026-04-01T00:00:00Z', 'Service A', 'd1', 's1', 'A', 0, 'A', 0, 0, 0, 0, 75]],
+		);
+
+		runtime.renderChart('latency-chart');
+
+		const rects = Array.from(document.querySelectorAll('[data-kw-bind="latency-chart"] rect'));
+		expect(rects.map(rect => rect.getAttribute('width'))).toEqual(['230', '115']);
+		expect(rects.map(rect => rect.getAttribute('fill'))).toEqual(['#2E7D32', '#C62828']);
+		const label = document.querySelector('[data-kw-bind="latency-chart"] text');
+		expect(label!.getAttribute('y')).toBe('24');
+		expect(document.querySelector('[data-kw-bind="latency-chart"]')!.textContent).toContain('75 ms');
+	});
+
+	it('colors a whole bar by first matching color rule', () => {
+		const runtime = installBridge(
+			{
+				'failure-chart': {
+					display: {
+						type: 'bar', groupBy: 'OS',
+						value: { agg: 'AVG', column: 'FailureRate', format: '0.0%' },
+						colorRules: [
+							{ operator: '>=', value: 0.1, color: '#C62828' },
+							{ operator: '<', value: 0.1, color: '#2E7D32' },
+						],
+					},
+				},
+			},
+			'<div data-kw-bind="failure-chart"></div>',
+			[['2026-04-01T00:00:00Z', 'Service A', 'd1', 's1', 'A', 0, 'A', 0, 0, 0, 0, 0, 0.12]],
+		);
+
+		runtime.renderChart('failure-chart');
+
+		const rect = document.querySelector('[data-kw-bind="failure-chart"] rect');
+		expect(rect).not.toBeNull();
+		expect(rect!.getAttribute('fill')).toBe('#C62828');
 	});
 
 	it('formats pie legend percentages with DAX percent semantics', () => {
@@ -247,26 +557,38 @@ describe('KustoWorkbench.renderChart preview bridge', () => {
 			{
 				'bad-top': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, top: -1 } },
 				'bad-colors': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, colors: '#ff0000' } },
+				'bad-palette': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, colors: ['#2E7D32', 'bad"color'] } },
 				'bad-format': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT', format: {} } } },
 				'bad-column': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT', column: 123 } } },
+				'bad-normalized-value': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, scale: 'normalized100' } },
+				'bad-segment-value': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, segments: [{ agg: 'SUM', column: 'Healthy' }] } },
+				'bad-threshold-scale': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, scale: 'normalized100', thresholdBands: { bands: [{ min: 0, max: 1 }] } } },
 				'bad-label': { display: { type: 'line', xAxis: 'Day', series: [{ agg: 'COUNT', label: 123 }] } },
 				'bad-preagg': { display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, preAggregate: { groupBy: 'OS', compute: { name: 'Total', agg: 'SUM' } } } },
 			},
-			'<div data-kw-bind="bad-top"></div><div data-kw-bind="bad-colors"></div><div data-kw-bind="bad-format"></div><div data-kw-bind="bad-column"></div><div data-kw-bind="bad-label"></div><div data-kw-bind="bad-preagg"></div>',
+			'<div data-kw-bind="bad-top"></div><div data-kw-bind="bad-colors"></div><div data-kw-bind="bad-palette"></div><div data-kw-bind="bad-format"></div><div data-kw-bind="bad-column"></div><div data-kw-bind="bad-normalized-value"></div><div data-kw-bind="bad-segment-value"></div><div data-kw-bind="bad-threshold-scale"></div><div data-kw-bind="bad-label"></div><div data-kw-bind="bad-preagg"></div>',
 			[['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A']],
 		);
 
 		runtime.renderChart('bad-top');
 		runtime.renderChart('bad-colors');
+		runtime.renderChart('bad-palette');
 		runtime.renderChart('bad-format');
 		runtime.renderChart('bad-column');
+		runtime.renderChart('bad-normalized-value');
+		runtime.renderChart('bad-segment-value');
+		runtime.renderChart('bad-threshold-scale');
 		runtime.renderChart('bad-label');
 		runtime.renderChart('bad-preagg');
 
 		expect(document.querySelector('[data-kw-bind="bad-top"] svg')).toBeNull();
 		expect(document.querySelector('[data-kw-bind="bad-colors"] svg')).toBeNull();
+		expect(document.querySelector('[data-kw-bind="bad-palette"] svg')).toBeNull();
 		expect(document.querySelector('[data-kw-bind="bad-format"] svg')).toBeNull();
 		expect(document.querySelector('[data-kw-bind="bad-column"] svg')).toBeNull();
+		expect(document.querySelector('[data-kw-bind="bad-normalized-value"] svg')).toBeNull();
+		expect(document.querySelector('[data-kw-bind="bad-segment-value"] svg')).toBeNull();
+		expect(document.querySelector('[data-kw-bind="bad-threshold-scale"] svg')).toBeNull();
 		expect(document.querySelector('[data-kw-bind="bad-label"] svg')).toBeNull();
 		expect(document.querySelector('[data-kw-bind="bad-preagg"] svg')).toBeNull();
 	});

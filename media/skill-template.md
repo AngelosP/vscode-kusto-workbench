@@ -6,7 +6,7 @@ description: Operate Kusto Workbench to query Azure Data Explorer and SQL source
 
 tools: ['createKustoFile', 'askKustoCopilot', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'addSection', 'removeSection', 'reorderSections', 'collapseExpandSection', 'configureKustoQuerySection', 'updateMarkdownSection', 'configureChart', 'configureTransformation', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'manageDevelopmentNotes', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
 
-# version: 3 - Auto-updated by Kusto Workbench. Do not remove this line.
+# version: 5 - Auto-updated by Kusto Workbench. Do not remove this line.
 
 ---
 
@@ -98,17 +98,20 @@ Use HTML sections for interactive dashboards, rich reports, and Power BI-ready d
 1. Call `#getHtmlDashboardGuide` with `mode: "checklist"` before creating, editing, repairing, or upgrading a dashboard. Use `full` for complex repairs and `template` for a starter dashboard.
 2. Create or identify an event-grain fact query with `#askKustoCopilot`. It should return all columns needed for KPIs, tables, charts, and slicers.
 3. Add or identify the HTML section.
-4. Configure HTML with a `<script type="application/kw-provenance">` block, matching `data-kw-bind` attributes, `KustoWorkbench.agg()`, `bind()`, `bindHtml()`, and `renderChart()`.
+4. Configure HTML with a `<script type="application/kw-provenance">` block, matching `data-kw-bind` attributes, `KustoWorkbench.agg()`, `bind()`, `renderChart()`, and `renderTable()`.
 5. Use only supported export display types: `scalar`, `table`, `pivot`, `bar`, `pie`, and `line`.
-6. Use `KustoWorkbench.renderChart(bindingId)` for exportable charts. Manual SVG, canvas, ECharts, D3, or `bindHtml()` charts are preview-only unless represented by provenance bindings.
-7. Use `preAggregate` for supported table, pivot, bar, pie, and line bindings that need two-level aggregation, such as per-session distinct counts followed by a distribution. Keep `compute.name` distinct from fact and preAggregate group columns.
-8. Call `#configureHtmlSection`, then `#validateHtmlDashboard`. Fix all issues and revalidate before switching to preview mode.
+6. Use `KustoWorkbench.renderChart(bindingId)` for exportable charts and `KustoWorkbench.renderTable(bindingId)` for exportable tables. Manual SVG, canvas, ECharts, D3, generated `<td>` cells, or `bindHtml()` visuals are preview-only unless represented by provenance bindings.
+7. For dashboard bar charts, use `segments` for multi-color status bars, `scale: "normalized100"` plus `variant: "distribution"` for compact 100% distribution bars, `thresholdBands` for fixed numeric ranges, and `colorRules` for whole-bar conditional color. Keep these in provenance and render them with `KustoWorkbench.renderChart(bindingId)`.
+8. For stacked bars inside table cells, use a `display.type: "table"` binding with a visual-only column containing `cellBar: { segments: [...], scale: "normalized100" | "relative" }`, then call `KustoWorkbench.renderTable(bindingId)`. This is Power BI export-ready; `bindHtml(...toTable())` is not export-ready for visual cells. Use `orderBy` whenever the table uses `top`.
+9. Use `preAggregate` for supported table, pivot, bar, pie, and line bindings that need two-level aggregation, such as per-session distinct counts followed by a distribution. Keep `compute.name` distinct from fact and preAggregate group columns.
+10. Call `#configureHtmlSection`, then `#validateHtmlDashboard`. Fix all issues and revalidate before switching to preview mode.
 
 Upgrade on touch:
 
 - When the user asks you to modify an existing dashboard, upgrade it to the latest dashboard contracts, specs, and capabilities as part of the requested work.
 - Upgrade provenance, bindings, slicer dimensions, exportable chart rendering, preview bridge usage, and responsive styling when deterministic.
 - Replace legacy manual exportable chart rendering with provenance chart bindings plus `KustoWorkbench.renderChart(bindingId)`.
+- Replace preview-only generated table bodies with provenance table bindings plus `KustoWorkbench.renderTable(bindingId)` when the table needs to survive Power BI export.
 - Add or repair `data-kw-bind` targets so Power BI export can resolve every exportable value.
 - Do this silently as part of the dashboard task. Ask the user only if the change would remove visible content, alter metric meaning, or require choosing between ambiguous fact models.
 

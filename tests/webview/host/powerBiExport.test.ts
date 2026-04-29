@@ -22,6 +22,7 @@ import {
 	DASHBOARD_LINE_CHART,
 	DASHBOARD_PIE_CHART,
 	SUPPORTED_POWER_BI_DISPLAY_TYPES,
+	isValidDashboardChartDisplay,
 } from '../../../src/shared/dashboardCharts';
 import { parseKwProvenance } from '../../../src/webview/sections/kw-html-section';
 
@@ -216,6 +217,24 @@ describe('findUnsupportedPowerBiBindings', () => {
 		expect(generateDaxMeasure(html, [factDataSource])).not.toContain('[Idx] <= -1');
 	});
 
+	it('reports table top without orderBy before export', () => {
+		const html = makeV1Html(
+			{
+				'top-table': {
+					display: {
+						type: 'table',
+						groupBy: ['SkillName'],
+						columns: [{ name: 'SkillName' }, { name: 'Refs', agg: 'COUNT' }],
+						top: 5,
+					},
+				},
+			},
+			'<table data-kw-bind="top-table"></table>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['top-table (table: invalid top)']);
+	});
+
 	it('reports invalid optional chart fields before export', () => {
 		const html = makeV1Html(
 			{
@@ -321,6 +340,159 @@ describe('findUnsupportedPowerBiBindings', () => {
 		expect(() => validatePowerBiHtmlBindings(html, [factDataSource])).toThrow(/missing column Actions/);
 	});
 
+	it('reports missing columns referenced by segmented bar specs', () => {
+		const html = makeV1Html(
+			{
+				'status-chart': {
+					display: {
+						type: 'bar', groupBy: 'OS',
+						segments: [
+							{ agg: 'SUM', column: 'Healthy' },
+							{ agg: 'SUM', column: 'MissingStatus' },
+						],
+					},
+				},
+			},
+			'<div data-kw-bind="status-chart"></div>',
+		);
+
+		expect(getPowerBiHtmlValidationIssues(html, [barDataSource])).toEqual([
+			'status-chart (segments[1].column: missing column MissingStatus)',
+		]);
+	});
+
+	it('reports missing columns referenced by table cell-bar segments', () => {
+		const html = makeV1Html(
+			{
+				'status-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS' },
+							{
+								name: 'Breakdown',
+								cellBar: {
+									segments: [
+										{ agg: 'SUM', column: 'Healthy' },
+										{ agg: 'SUM', column: 'MissingStatus' },
+									],
+								},
+							},
+						],
+					},
+				},
+			},
+			'<table data-kw-bind="status-table"></table>',
+		);
+
+		expect(getPowerBiHtmlValidationIssues(html, [barDataSource])).toEqual([
+			'status-table (columns[1].cellBar.segments[1].column: missing column MissingStatus)',
+		]);
+	});
+
+	it('rejects malformed table cell-bar specs, visual-only sort columns, and plain non-group columns', () => {
+		const html = makeV1Html(
+			{
+				'bad-cellbar': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS' },
+							{ name: 'Breakdown', cellBar: { segments: [] } },
+						],
+					},
+				},
+				'bad-sort': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS' },
+							{ name: 'Breakdown', cellBar: { segments: [{ agg: 'COUNT' }] } },
+						],
+						orderBy: { column: 'Breakdown' },
+					},
+				},
+				'bad-plain-column': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS' },
+							{ name: 'SkillName' },
+						],
+					},
+				},
+				'bad-reserved-column': {
+					display: {
+						type: 'table',
+						groupBy: ['__kw_table_idx_0'],
+						columns: [{ name: '__kw_table_idx_0' }],
+					},
+				},
+			},
+			'<table data-kw-bind="bad-cellbar"></table><table data-kw-bind="bad-sort"></table><table data-kw-bind="bad-plain-column"></table><table data-kw-bind="bad-reserved-column"></table>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([
+			'bad-cellbar (table: invalid spec)',
+			'bad-sort (table: invalid spec)',
+			'bad-plain-column (table: invalid spec)',
+			'bad-reserved-column (table: invalid spec)',
+		]);
+	});
+
+	it('accepts COUNT table cell-bar segments without source columns', () => {
+		const html = makeV1Html(
+			{
+				'status-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [
+							{ name: 'OS' },
+							{ name: 'Rows', cellBar: { segments: [{ agg: 'COUNT' }] } },
+						],
+					},
+				},
+			},
+			'<table data-kw-bind="status-table"></table>',
+		);
+
+		expect(() => validatePowerBiHtmlBindings(html, [barDataSource])).not.toThrow();
+	});
+
+	it('reports invalid advanced bar combinations before export', () => {
+		const html = makeV1Html(
+			{
+				'bad-segment-value': {
+					display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, segments: [{ agg: 'SUM', column: 'Healthy' }] },
+				},
+				'bad-threshold-scale': {
+					display: {
+						type: 'bar', groupBy: 'OS', value: { agg: 'AVG', column: 'LatencyMs' }, scale: 'normalized100',
+						thresholdBands: { bands: [{ min: 0, max: 50 }, { min: 50, max: 100 }] },
+					},
+				},
+				'bad-color-scale': {
+					display: {
+						type: 'bar', groupBy: 'OS', value: { agg: 'AVG', column: 'FailureRate' }, scale: 'normalized100',
+						colorRules: [{ operator: '>=', value: 0.1, color: '#C62828' }],
+					},
+				},
+			},
+			'<div data-kw-bind="bad-segment-value"></div><div data-kw-bind="bad-threshold-scale"></div><div data-kw-bind="bad-color-scale"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([
+			'bad-segment-value (bar: invalid chart spec)',
+			'bad-threshold-scale (bar: invalid chart spec)',
+			'bad-color-scale (bar: invalid chart spec)',
+		]);
+	});
+
 	it('reports provenance bindings without matching rendered targets', () => {
 		const html = makeV1Html(
 			{
@@ -391,6 +563,27 @@ describe('findUnsupportedPowerBiBindings', () => {
 
 		expect(findUnsupportedPowerBiBindings(html)).toEqual(['top-table (table: invalid spec)']);
 		expect(() => validatePowerBiHtmlBindings(html)).toThrow(/top-table \(table: invalid spec\)/);
+	});
+
+	it('reports table preAggregate specs missing compute agg before export', () => {
+		const html = makeV1Html(
+			{
+				'session-depth': {
+					display: {
+						type: 'table',
+						preAggregate: {
+							groupBy: 'SessionId',
+							compute: { name: 'SkillsPerSession', column: 'SkillName' },
+						},
+						groupBy: ['SkillsPerSession'],
+						columns: [{ name: 'SkillsPerSession' }, { name: 'Sessions', agg: 'COUNT' }],
+					},
+				},
+			},
+			'<table data-kw-bind="session-depth"></table>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['session-depth (table: invalid spec)']);
 	});
 
 	it('accepts table COUNT aliases that are computed outputs', () => {
@@ -492,11 +685,28 @@ describe('findUnsupportedPowerBiBindings', () => {
 						agg: 'SUM',
 					},
 				},
+				'pivot-preagg': {
+					display: {
+						type: 'pivot',
+						rows: ['SkillsPerSession'],
+						pivotBy: 'ClientName',
+						pivotValues: ['vscode'],
+						value: 'SkillsPerSession',
+						agg: 'COUNT',
+						preAggregate: {
+							groupBy: 'SessionId',
+							compute: { name: 'SkillsPerSession', column: 'SkillName' },
+						},
+					},
+				},
 			},
-			'<table data-kw-bind="pivot"></table>',
+			'<table data-kw-bind="pivot"></table><table data-kw-bind="pivot-preagg"></table>',
 		);
 
-		expect(findUnsupportedPowerBiBindings(html)).toEqual(['pivot (pivot: invalid spec)']);
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([
+			'pivot (pivot: invalid spec)',
+			'pivot-preagg (pivot: invalid spec)',
+		]);
 		expect(() => validatePowerBiHtmlBindings(html)).toThrow(/pivot \(pivot: invalid spec\)/);
 	});
 
@@ -680,6 +890,69 @@ const factDataSource: PowerBiDataSource = {
 	],
 };
 
+const barDataSource: PowerBiDataSource = {
+	...factDataSource,
+	columns: [
+		...factDataSource.columns,
+		{ name: 'OS', type: 'string' },
+		{ name: 'Healthy', type: 'long' },
+		{ name: 'Warning', type: 'long' },
+		{ name: 'Critical', type: 'long' },
+		{ name: 'LatencyMs', type: 'real' },
+		{ name: 'FailureRate', type: 'real' },
+	],
+};
+
+describe('dashboard bar display validation', () => {
+	it('accepts each supported bar mode and rejects ambiguous combinations', () => {
+		expect(isValidDashboardChartDisplay({ type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' } })).toBe(true);
+		expect(isValidDashboardChartDisplay({
+			type: 'bar', groupBy: 'OS',
+			segments: [{ agg: 'SUM', column: 'Healthy', color: '#2E7D32' }],
+		})).toBe(true);
+		expect(isValidDashboardChartDisplay({
+			type: 'bar', groupBy: 'OS',
+			value: { agg: 'AVG', column: 'LatencyMs' },
+			thresholdBands: { scaleMax: 100, bands: [{ min: 0, max: 50 }, { min: 50, max: 100 }] },
+		})).toBe(true);
+		expect(isValidDashboardChartDisplay({
+			type: 'bar', groupBy: 'OS',
+			value: { agg: 'AVG', column: 'FailureRate' },
+			colorRules: [{ operator: '>=', value: 0.1, color: '#C62828' }],
+		})).toBe(true);
+
+		expect(isValidDashboardChartDisplay({
+			type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' },
+			scale: 'normalized100',
+		})).toBe(false);
+		expect(isValidDashboardChartDisplay({
+			type: 'bar', groupBy: 'OS',
+			value: { agg: 'AVG', column: 'FailureRate' },
+			scale: 'normalized100',
+			colorRules: [{ operator: '>=', value: 0.1, color: '#C62828' }],
+		})).toBe(false);
+		expect(isValidDashboardChartDisplay({
+			type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' },
+			segments: [{ agg: 'SUM', column: 'Healthy' }],
+		})).toBe(false);
+		expect(isValidDashboardChartDisplay({
+			type: 'bar', groupBy: 'OS',
+			value: { agg: 'AVG', column: 'LatencyMs' },
+			scale: 'normalized100',
+			thresholdBands: { bands: [{ min: 0, max: 50 }, { min: 60, max: 100 }] },
+		})).toBe(false);
+		expect(isValidDashboardChartDisplay({
+			type: 'bar', groupBy: 'OS',
+			value: { agg: 'AVG', column: 'LatencyMs' },
+			thresholdBands: { scaleMax: 40, bands: [{ min: 0, max: 50 }] },
+		})).toBe(false);
+		expect(isValidDashboardChartDisplay({
+			type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' },
+			colors: ['#2E7D32', 'bad"color'],
+		})).toBe(false);
+	});
+});
+
 describe('generateTableTmdl', () => {
 	it('uses Import mode by default for local export compatibility', () => {
 		const tmdl = generateTableTmdl(factDataSource);
@@ -818,12 +1091,12 @@ describe('generateDaxMeasure — v1 table with groupBy', () => {
 		expect(result).toContain('SUMMARIZE');
 		expect(result).toContain('ADDCOLUMNS');
 		expect(result).toContain('FILTER(ADDCOLUMNS(');
-		expect(result).toContain('"Idx", VAR _sort = [Refs]');
-		expect(result).toContain('[Idx] <= 10');
+		expect(result).toContain('"__kw_table_idx_0", VAR _sort = [Refs]');
+		expect(result).toContain('[__kw_table_idx_0] <= 10');
 		expect(result).not.toContain('TOPN(10');
 		expect(result).toContain('CONCATENATEX');
 		expect(result).toContain('[Refs]');
-		expect(result).toContain(', [Idx], ASC');
+		expect(result).toContain(', [__kw_table_idx_0], ASC');
 		expect(result).toContain('<thead>');
 	});
 
@@ -846,6 +1119,143 @@ describe('generateDaxMeasure — v1 table with groupBy', () => {
 		const result = generateDaxMeasure(html, [factDataSource]);
 		expect(result).toContain('CALCULATE(DISTINCTCOUNT');
 		expect(result).toContain('[DeviceId]');
+	});
+
+	it('uses deterministic groupBy tie ordering for ordered tables without top', () => {
+		const html = makeV1Html(
+			{
+				'skills': {
+					display: {
+						type: 'table',
+						columns: [
+							{ name: 'SkillName', header: 'Skill' },
+							{ name: 'Refs', agg: 'COUNT', format: '#,##0' },
+						],
+						groupBy: ['SkillName'],
+						orderBy: { column: 'Refs', direction: 'desc' },
+					},
+				},
+			},
+			'<table data-kw-bind="skills"></table>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('"__kw_table_idx_0", VAR _sort = [Refs]');
+		expect(result).toContain('[Refs] > _sort || ([Refs] = _sort && ([SkillName] <= _key0))');
+		expect(result).toContain(', [__kw_table_idx_0], ASC');
+		expect(result).not.toContain('[__kw_table_idx_0] <=');
+	});
+
+	it('escapes table header literals and dynamic cell text for HTML export', () => {
+		const html = makeV1Html(
+			{
+				'skills': {
+					display: {
+						type: 'table',
+						columns: [
+							{ name: 'SkillName', header: 'Skill <Name> & Owner' },
+							{ name: 'Refs', agg: 'COUNT' },
+						],
+						groupBy: ['SkillName'],
+					},
+				},
+			},
+			'<table data-kw-bind="skills"><thead><tr><th>Skill</th><th>Refs</th></tr></thead><tbody></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('<th>Skill &lt;Name&gt; &amp; Owner</th>');
+		expect(result).toContain('"" & [SkillName], "&", "&amp;"');
+		expect(result).toContain('"<", "&lt;"');
+		expect(result).toContain('">", "&gt;"');
+		expect(result).not.toContain('"<td>" & [SkillName] & "</td>"');
+	});
+
+	it('generates inline SVG table cells for stacked cell bars', () => {
+		const html = makeV1Html(
+			{
+				'status-table': {
+					display: {
+						type: 'table',
+						columns: [
+							{ name: 'OS', header: 'Service' },
+							{
+								name: 'Breakdown',
+								cellBar: {
+									segments: [
+										{ agg: 'SUM', column: 'Healthy', color: '#2E7D32' },
+										{ agg: 'SUM', column: 'Critical', color: '#C62828' },
+									],
+									scale: 'normalized100',
+								},
+							},
+						],
+						groupBy: ['OS'],
+					},
+				},
+			},
+			'<table data-kw-bind="status-table"><thead><tr><th>Service</th><th>Breakdown</th></tr></thead><tbody></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain('Breakdown');
+		expect(result).toContain('kw-cell-bar');
+		expect(result).toContain('__kw_cellbar_0_1_0');
+		expect(result).toContain('__kw_cellbar_0_1_1');
+		expect(result).toContain('CALCULATE(SUMX');
+		expect(result).toContain('[Healthy]');
+		expect(result).toContain('[Critical]');
+		expect(result).toContain('DIVIDE(MAX(0, COALESCE([__kw_cellbar_0_1_0], 0))');
+		expect(result).toContain('"<td>" & "<svg class=\'kw-cell-bar\'');
+	});
+
+	it('generates relative scaling vars for each table cell-bar column', () => {
+		const html = makeV1Html(
+			{
+				'status-table': {
+					display: {
+						type: 'table',
+						columns: [
+							{ name: 'OS' },
+							{ name: 'Health', cellBar: { scale: 'relative', segments: [{ agg: 'SUM', column: 'Healthy' }] } },
+							{ name: 'Problems', cellBar: { scale: 'relative', segments: [{ agg: 'SUM', column: 'Warning' }, { agg: 'SUM', column: 'Critical' }] } },
+						],
+						groupBy: ['OS'],
+						orderBy: { column: 'OS', direction: 'asc' },
+						top: 5,
+					},
+				},
+			},
+			'<table data-kw-bind="status-table"><tbody></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain('VAR _kwCellBarMax_0_1 = MAXX(');
+		expect(result).toContain('VAR _kwCellBarMax_0_2 = MAXX(');
+		expect(result).toContain('DIVIDE(MAX(0, COALESCE([__kw_cellbar_0_1_0], 0)), _kwCellBarMax_0_1, 0)');
+		expect(result).toContain('[__kw_table_idx_0] <= 5');
+	});
+
+	it('generates COUNT-based table cell bars without requiring a source column', () => {
+		const html = makeV1Html(
+			{
+				'status-table': {
+					display: {
+						type: 'table',
+						columns: [
+							{ name: 'OS' },
+							{ name: 'Rows', cellBar: { segments: [{ agg: 'COUNT', color: '#0078D4' }] } },
+						],
+						groupBy: ['OS'],
+					},
+				},
+			},
+			'<table data-kw-bind="status-table"><tbody></tbody></table>',
+		);
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain('"__kw_cellbar_0_1_0", CALCULATE(COUNTROWS(');
+		expect(result).toContain("fill='#0078D4'");
 	});
 });
 
@@ -888,13 +1298,18 @@ describe('generateDaxMeasure — data-kw-bind on <tbody>', () => {
 					},
 				},
 			},
-			'<table><thead><tr><th>Skill</th><th>Refs</th></tr></thead><tbody data-kw-bind="top-skills"></tbody></table>',
+			'<table><caption>Keep me</caption><colgroup><col></colgroup><thead><tr><th>Existing Skill</th><th>Existing Refs</th></tr></thead><tbody class="live" data-kw-bind="top-skills"></tbody></table>',
 		);
 		const result = generateDaxMeasure(html, [factDataSource]);
 		expect(result).toContain('SUMMARIZE');
-		expect(result).toContain('[Idx] <= 10');
+		expect(result).toContain('[__kw_table_idx_0] <= 10');
 		expect(result).not.toContain('TOPN(10');
 		expect(result).toContain('CONCATENATEX');
+		expect(result).toContain('<caption>Keep me</caption>');
+		expect(result).toContain('<colgroup><col></colgroup>');
+		expect(result).toContain('Existing Skill');
+		expect(result).toContain('<tbody class=""live"" data-kw-bind=""top-skills"">');
+		expect(result).toContain('_rows_0 & "</tbody></table>');
 	});
 
 	it('matches pivot binding when data-kw-bind is on <tbody>', () => {
@@ -1419,6 +1834,92 @@ describe('generateDaxMeasure — bar chart', () => {
 		const result = generateDaxMeasure(html, [factDataSource]);
 		expect(result).toContain('DISTINCTCOUNT');
 		expect(result).toContain('[DeviceId]');
+	});
+
+	it('generates segmented normalized distribution bar DAX without same-call Val reuse', () => {
+		const html = makeV1Html(
+			{
+				'status-chart': {
+					display: {
+						type: 'bar', groupBy: 'OS',
+						segments: [
+							{ agg: 'SUM', column: 'Healthy', color: '#2E7D32' },
+							{ agg: 'SUM', column: 'Critical', color: '#C62828' },
+						],
+						scale: 'normalized100',
+						variant: 'distribution',
+						showCategoryLabels: false,
+						showValueLabels: false,
+					},
+				},
+			},
+			'<div data-kw-bind="status-chart"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain('"Seg0", CALCULATE(SUMX');
+		expect(result).toContain('"Seg1", CALCULATE(SUMX');
+		expect(result).toContain('"Val", MAX(0, CALCULATE(SUMX');
+		expect(result).toContain('VAR _den = _barval');
+		expect(result).toContain("height='8'");
+		expect(result).toContain("rx='0'");
+		expect(result).not.toContain('"Val", MAX(0, [Seg0])');
+		expect((result.match(/<rect/g) || [])).toHaveLength(2);
+	});
+
+	it('generates threshold band clamp expressions against an explicit domain', () => {
+		const html = makeV1Html(
+			{
+				'latency-chart': {
+					display: {
+						type: 'bar', groupBy: 'OS',
+						value: { agg: 'AVG', column: 'LatencyMs', format: '#,##0 ms' },
+						thresholdBands: {
+							scaleMax: 100,
+							bands: [
+								{ min: 0, max: 50, color: '#2E7D32' },
+								{ min: 50, max: 100, color: '#C62828' },
+							],
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="latency-chart"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain('VAR _den = 100');
+		expect(result).toContain('VAR _fillval = MIN(_barval, _den)');
+		expect(result).toContain('VAR _seg0 = MAX(0, MIN(_barval, 50) - 0)');
+		expect(result).toContain('VAR _seg1 = MAX(0, MIN(_barval, 100) - 50)');
+		expect(result).toContain('FORMAT(_y + 16, "0")');
+		expect((result.match(/<rect/g) || [])).toHaveLength(2);
+	});
+
+	it('generates color rule SWITCH expressions for whole-bar coloring', () => {
+		const html = makeV1Html(
+			{
+				'failure-chart': {
+					display: {
+						type: 'bar', groupBy: 'OS',
+						value: { agg: 'AVG', column: 'FailureRate', format: '0.0%' },
+						colorRules: [
+							{ operator: '>=', value: 0.1, color: '#C62828' },
+							{ operator: '<', value: 0.1, color: '#2E7D32' },
+						],
+					},
+				},
+			},
+			'<div data-kw-bind="failure-chart"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain('SWITCH(TRUE(), [Val] >= 0.1, "#C62828", [Val] < 0.1, "#2E7D32"');
+		expect(result).toContain('VAR _col = SWITCH(TRUE()');
+		expect((result.match(/<rect/g) || [])).toHaveLength(1);
 	});
 });
 

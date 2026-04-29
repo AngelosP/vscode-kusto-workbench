@@ -51,8 +51,11 @@ function getLegacyDashboardWarnings(htmlCode: string): string[] {
 	if (/bindHtml\(\s*['"][^'"]*(?:chart|trend|pie|bar|line|by-os|daily)[^'"]*['"]/i.test(htmlCode)) {
 		warnings.push('Potential preview-only chart rendering via bindHtml() detected. Exportable charts should use data-kw-bind targets backed by provenance display specs and KustoWorkbench.renderChart().');
 	}
+	if (/bindHtml\(\s*['"][^'"]*(?:table|tbody|rows|breakdown|status|detail|details)[^'"]*['"]/i.test(htmlCode) || /\.toTable\s*\(/i.test(htmlCode)) {
+		warnings.push('Potential preview-only table rendering detected. Exportable tables, especially visual cells such as stacked status bars, should use provenance table specs plus KustoWorkbench.renderTable(bindingId).');
+	}
 	if (/document\.getElementById\s*\(|querySelector\(\s*['"]#/i.test(htmlCode)) {
-		warnings.push('ID-based DOM binding detected. Dashboard data values should bind through data-kw-bind plus KustoWorkbench.bind(), bindHtml(), or renderChart() so Power BI export can resolve them.');
+		warnings.push('ID-based DOM binding detected. Dashboard data values should bind through data-kw-bind plus KustoWorkbench.bind(), renderChart(), or renderTable() so Power BI export can resolve them.');
 	}
 	return warnings;
 }

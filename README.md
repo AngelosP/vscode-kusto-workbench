@@ -90,7 +90,7 @@ Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files
 * Author rich HTML dashboards directly in the workbook, with JavaScript available for preview interactions.
 * Add a `kw-provenance` block and `data-kw-bind` targets to make dashboard values exportable to Power BI.
 * Exportable scalar, table, pivot, bar, pie, and line bindings are generated from the same fact query that powers the preview.
-* Use `KustoWorkbench.renderChart(bindingId)` for exportable preview charts so the VS Code preview uses the same SVG geometry, palette, ordering, and labels as the Power BI report.
+* Use `KustoWorkbench.renderChart(bindingId)` for exportable preview charts and `KustoWorkbench.renderTable(bindingId)` for exportable tables, including stacked status bars inside table cells.
 * Export dashboards as Power BI projects or reports that use Import mode by default, with DirectQuery available when the report should query Kusto at view time.
 
 ![HTML based dashboard](media/marketplace/html-dashboard.png)
