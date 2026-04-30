@@ -63,6 +63,30 @@ function sendSqlSchemaLoaded(el: KwConnectionManager, connectionId: string, data
 	window.dispatchEvent(new MessageEvent('message', { data: { type: 'sql.schemaLoaded', connectionId, database, schema } }));
 }
 
+function listItemNames(el: KwConnectionManager): string[] {
+	return Array.from(el.shadowRoot!.querySelectorAll('.explorer-list-item-name'))
+		.map(node => (node.textContent ?? '').trim());
+}
+
+function columnNames(el: KwConnectionManager): string[] {
+	return Array.from(el.shadowRoot!.querySelectorAll('.explorer-schema-col-name'))
+		.map(node => (node.textContent ?? '').trim());
+}
+
+function clickListItemByName(el: KwConnectionManager, name: string): void {
+	const row = Array.from(el.shadowRoot!.querySelectorAll('.explorer-list-item'))
+		.find(item => item.querySelector('.explorer-list-item-name')?.textContent?.trim() === name);
+	expect(row).not.toBeUndefined();
+	(row as HTMLElement).click();
+}
+
+function clickBreadcrumbByText(el: KwConnectionManager, text: string): void {
+	const breadcrumb = Array.from(el.shadowRoot!.querySelectorAll('.breadcrumb-item'))
+		.find(item => item.textContent?.includes(text));
+	expect(breadcrumb).not.toBeUndefined();
+	(breadcrumb as HTMLElement).click();
+}
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
 let container: HTMLDivElement;
@@ -82,6 +106,145 @@ afterEach(() => {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('kw-connection-manager', () => {
+
+	// ── Alphabetical ordering ──────────────────────────────────────────────────
+
+	describe('alphabetical sorting', () => {
+		it('Kusto: sorts clusters by displayed name', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				connections: [
+					kustoConnection('c-zeta', 'zeta Cluster', 'https://zeta.kusto.windows.net'),
+					kustoConnection('c-alpha', 'alpha Cluster', 'https://alpha.kusto.windows.net'),
+					kustoConnection('c-beta', 'Beta Cluster', 'https://beta.kusto.windows.net'),
+				],
+				cachedDatabases: {},
+			}));
+			await el.updateComplete;
+
+			expect(listItemNames(el)).toEqual(['alpha Cluster', 'Beta Cluster', 'zeta Cluster']);
+			expect(postedMessages).toContainEqual(expect.objectContaining({ type: 'cluster.expand', connectionId: 'c-alpha' }));
+		});
+
+		it('Kusto: sorts databases, folders, tables, and columns while keeping folders first', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				cachedDatabases: { 'mycluster.kusto.windows.net': ['zetaDb', 'AlphaDb', 'betaDb'] },
+			}));
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MyCluster');
+			await el.updateComplete;
+			expect(listItemNames(el)).toEqual(['AlphaDb', 'betaDb', 'zetaDb']);
+
+			clickListItemByName(el, 'AlphaDb');
+			await el.updateComplete;
+			sendSchemaLoaded(el, 'c1', 'AlphaDb', {
+				tables: ['zRoot', 'betaRoot', 'AlphaRoot', 'zChild', 'alphaChild'],
+				tableFolders: { zChild: 'Zoo', alphaChild: 'Apple' },
+				columnTypesByTable: {
+					AlphaRoot: { zCol: 'string', alphaCol: 'long', BetaCol: 'int' },
+				},
+			});
+			await el.updateComplete;
+
+			clickListItemByName(el, 'Tables');
+			await el.updateComplete;
+			expect(listItemNames(el)).toEqual(['Apple', 'Zoo', 'AlphaRoot', 'betaRoot', 'zRoot']);
+
+			clickListItemByName(el, 'AlphaRoot');
+			await el.updateComplete;
+			expect(columnNames(el)).toEqual(['alphaCol', 'BetaCol', 'zCol']);
+		});
+
+		it('Kusto: sorts function folders and functions while keeping folders first', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				cachedDatabases: { 'mycluster.kusto.windows.net': ['AlphaDb'] },
+			}));
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MyCluster');
+			await el.updateComplete;
+			clickListItemByName(el, 'AlphaDb');
+			await el.updateComplete;
+			sendSchemaLoaded(el, 'c1', 'AlphaDb', {
+				tables: [],
+				functions: [
+					{ name: 'zRoot' },
+					{ name: 'alphaRoot' },
+					{ name: 'zChild', folder: 'Zoo' },
+					{ name: 'alphaChild', folder: 'Apple' },
+				],
+			});
+			await el.updateComplete;
+
+			clickListItemByName(el, 'Functions');
+			await el.updateComplete;
+			expect(listItemNames(el)).toEqual(['Apple', 'Zoo', 'alphaRoot', 'zRoot']);
+		});
+
+		it('SQL: sorts connections, databases, schema objects, and columns without mutating schema arrays', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				activeKind: 'sql',
+				connections: [],
+				cachedDatabases: {},
+				sqlConnections: [
+					sqlConnection('sql-zeta', 'zeta Server', 'zeta.database.windows.net'),
+					sqlConnection('sql-alpha', 'alpha Server', 'alpha.database.windows.net'),
+					sqlConnection('sql-beta', 'Beta Server', 'beta.database.windows.net'),
+				],
+				sqlCachedDatabases: {
+					'sql-alpha': ['zetaDb', 'AlphaDb', 'betaDb'],
+					'sql-beta': [],
+					'sql-zeta': [],
+				},
+			}));
+			await el.updateComplete;
+			expect(listItemNames(el)).toEqual(['alpha Server', 'Beta Server', 'zeta Server']);
+
+			clickListItemByName(el, 'alpha Server');
+			await el.updateComplete;
+			expect(listItemNames(el)).toEqual(['AlphaDb', 'betaDb', 'zetaDb']);
+
+			clickListItemByName(el, 'AlphaDb');
+			await el.updateComplete;
+			const sqlSchema = {
+				tables: ['zTable', 'AlphaTable'],
+				views: ['zView', 'AlphaView'],
+				storedProcedures: [{ name: 'zProc' }, { name: 'AlphaProc' }],
+				columnsByTable: {
+					AlphaTable: { zCol: 'int', alphaCol: 'nvarchar' },
+					AlphaView: { zViewCol: 'int', alphaViewCol: 'nvarchar' },
+				},
+			};
+			sendSqlSchemaLoaded(el, 'sql-alpha', 'AlphaDb', sqlSchema);
+			await el.updateComplete;
+
+			clickListItemByName(el, 'Tables');
+			await el.updateComplete;
+			expect(listItemNames(el)).toEqual(['AlphaTable', 'zTable']);
+			clickListItemByName(el, 'AlphaTable');
+			await el.updateComplete;
+			expect(columnNames(el)).toEqual(['alphaCol', 'zCol']);
+
+			clickBreadcrumbByText(el, 'AlphaDb');
+			await el.updateComplete;
+			clickListItemByName(el, 'Views');
+			await el.updateComplete;
+			expect(listItemNames(el)).toEqual(['AlphaView', 'zView']);
+
+			clickBreadcrumbByText(el, 'AlphaDb');
+			await el.updateComplete;
+			clickListItemByName(el, 'Stored Procedures');
+			await el.updateComplete;
+			expect(listItemNames(el)).toEqual(['AlphaProc', 'zProc']);
+			expect(sqlSchema.tables).toEqual(['zTable', 'AlphaTable']);
+			expect(sqlSchema.views).toEqual(['zView', 'AlphaView']);
+			expect(sqlSchema.storedProcedures.map(procedure => procedure.name)).toEqual(['zProc', 'AlphaProc']);
+		});
+	});
 
 	// ── Breadcrumb refresh ────────────────────────────────────────────────────
 

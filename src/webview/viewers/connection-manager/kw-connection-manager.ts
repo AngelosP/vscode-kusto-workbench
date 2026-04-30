@@ -67,6 +67,21 @@ interface SqlConnectionInfo {
 	username?: string;
 }
 
+interface KustoFunctionInfo {
+	name: string;
+	folder?: string;
+	parametersText?: string;
+	docString?: string;
+	body?: string;
+}
+
+interface SqlStoredProcedureInfo {
+	name: string;
+	schema?: string;
+	parametersText?: string;
+	body?: string;
+}
+
 interface SqlDialectInfo {
 	id: string;
 	displayName: string;
@@ -78,7 +93,7 @@ interface SqlDatabaseSchema {
 	tables: string[];
 	views?: string[];
 	columnsByTable: Record<string, Record<string, string>>;
-	storedProcedures?: Array<{ name: string; schema?: string; parametersText?: string; body?: string }>;
+	storedProcedures?: SqlStoredProcedureInfo[];
 }
 
 interface SqlFavorite {
@@ -89,7 +104,7 @@ interface SqlFavorite {
 
 interface DatabaseSchema {
 	tables?: string[];
-	functions?: Array<{ name: string; folder?: string; parametersText?: string; docString?: string; body?: string }>;
+	functions?: KustoFunctionInfo[];
 	columnTypesByTable?: Record<string, Record<string, string>>;
 	tableFolders?: Record<string, string>;
 	tableDocStrings?: Record<string, string>;
@@ -149,6 +164,45 @@ function getClusterCacheKey(clusterUrl: string): string {
 		if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
 		return String(new URL(u).hostname || '').trim().toLowerCase() || u.toLowerCase();
 	} catch { return String(clusterUrl || '').trim().toLowerCase(); }
+}
+
+const alphabeticCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });
+
+function compareAlphabetically(left: string | undefined, right: string | undefined): number {
+	return alphabeticCollator.compare(left ?? '', right ?? '');
+}
+
+function sortStringsAlphabetically(values: readonly string[] | undefined): string[] {
+	return [...(values ?? [])].sort(compareAlphabetically);
+}
+
+function sortByAlphabeticLabels<T>(values: readonly T[] | undefined, getLabels: (item: T) => readonly (string | undefined)[]): T[] {
+	return [...(values ?? [])].sort((left, right) => {
+		const leftLabels = getLabels(left);
+		const rightLabels = getLabels(right);
+		const labelCount = Math.max(leftLabels.length, rightLabels.length);
+		for (let labelIndex = 0; labelIndex < labelCount; labelIndex++) {
+			const comparison = compareAlphabetically(leftLabels[labelIndex], rightLabels[labelIndex]);
+			if (comparison !== 0) return comparison;
+		}
+		return 0;
+	});
+}
+
+function getKustoConnectionLabel(connection: KustoConnection): string {
+	return connection.name || shortClusterName(connection.clusterUrl);
+}
+
+function sortKustoConnections(connections: readonly KustoConnection[] | undefined): KustoConnection[] {
+	return sortByAlphabeticLabels(connections, connection => [getKustoConnectionLabel(connection), connection.clusterUrl, connection.id]);
+}
+
+function getSqlConnectionLabel(connection: SqlConnectionInfo): string {
+	return connection.name || connection.serverUrl;
+}
+
+function sortSqlConnections(connections: readonly SqlConnectionInfo[] | undefined): SqlConnectionInfo[] {
+	return sortByAlphabeticLabels(connections, connection => [getSqlConnectionLabel(connection), connection.serverUrl, connection.id]);
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -291,7 +345,8 @@ export class KwConnectionManager extends LitElement {
 					this._search.restoreState(this._snapshot.searchState as any, this._activeKind);
 				}
 				if (!this._selectedConnectionId && this._snapshot?.connections?.length) {
-					this._selectedConnectionId = this._snapshot.connections[0].id;
+					const sortedConnections = sortKustoConnections(this._snapshot.connections);
+					this._selectedConnectionId = sortedConnections[0].id;
 					this._vscode.postMessage({ type: 'cluster.expand', connectionId: this._selectedConnectionId });
 				}
 				break;
@@ -436,8 +491,8 @@ export class KwConnectionManager extends LitElement {
 	// ── Render ────────────────────────────────────────────────────────────────
 
 	protected render(): TemplateResult {
-		const connections = this._snapshot?.connections ?? [];
-		const sqlConnections = this._snapshot?.sqlConnections ?? [];
+		const connections = sortKustoConnections(this._snapshot?.connections);
+		const sqlConnections = sortSqlConnections(this._snapshot?.sqlConnections);
 		const kind = this._activeKind;
 
 		return html`
@@ -486,7 +541,7 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _renderKustoContent(): TemplateResult {
-		const connections = this._snapshot?.connections ?? [];
+		const connections = sortKustoConnections(this._snapshot?.connections);
 		const favorites = this._snapshot?.favorites ?? [];
 		const lntClusters = this._snapshot?.leaveNoTraceClusters ?? [];
 		const hasFavs = favorites.length > 0;
@@ -674,10 +729,10 @@ export class KwConnectionManager extends LitElement {
 			if (isLoading) return html`<div class="loading-state">${ICONS.spinner} Loading databases...</div>`;
 
 			// Filter databases when Favorites filter is active
-			let visibleDbs = databases;
+			let visibleDbs = sortStringsAlphabetically(databases);
 			if (this._activeFilter === 'favorites') {
 				const favDbs = new Set((this._snapshot?.favorites ?? []).filter(f => normalizeClusterUrl(f.clusterUrl) === normalizeClusterUrl(conn.clusterUrl)).map(f => f.database));
-				visibleDbs = databases.filter(db => favDbs.has(db));
+				visibleDbs = visibleDbs.filter(db => favDbs.has(db));
 			}
 
 			if (visibleDbs.length === 0) {return html`
@@ -744,8 +799,8 @@ export class KwConnectionManager extends LitElement {
 		const tableFolders = schema.tableFolders ?? {};
 		const tree = this._buildFolderTree(schema.tables ?? [], t => tableFolders[t]);
 		const currentNode = this._getTreeAtPath(tree, ep.folderPath ?? []);
-		const folders = Object.keys(currentNode).filter(k => k !== '__items').sort();
-		const tables = (currentNode as any).__items as string[] ?? [];
+		const folders = sortStringsAlphabetically(Object.keys(currentNode).filter(folderName => folderName !== '__items'));
+		const tables = sortStringsAlphabetically((currentNode as { __items?: string[] }).__items);
 		const dbKey = conn.id + '|' + ep.database;
 
 		return html`
@@ -760,7 +815,7 @@ export class KwConnectionManager extends LitElement {
 			})}
 			${tables.map(table => {
 				const cols = schema.columnTypesByTable?.[table] ?? {};
-				const colNames = Object.keys(cols).sort();
+				const colNames = sortStringsAlphabetically(Object.keys(cols));
 				const tableKey = dbKey + '|table|' + table;
 				const isExpanded = this._expandedTables.has(tableKey);
 				const docString = schema.tableDocStrings?.[table];
@@ -804,10 +859,10 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _renderFunctionsLevel(schema: DatabaseSchema, ep: ExplorerPath): TemplateResult {
-		const fnTree = this._buildFolderTree(schema.functions ?? [], (f: any) => f.folder);
+		const fnTree = this._buildFolderTree(schema.functions ?? [], functionInfo => functionInfo.folder);
 		const currentNode = this._getTreeAtPath(fnTree, ep.folderPath ?? []);
-		const folders = Object.keys(currentNode).filter(k => k !== '__items').sort();
-		const functions = (currentNode as any).__items as Array<{ name: string; parametersText?: string; docString?: string; body?: string }> ?? [];
+		const folders = sortStringsAlphabetically(Object.keys(currentNode).filter(folderName => folderName !== '__items'));
+		const functions = sortByAlphabeticLabels((currentNode as { __items?: KustoFunctionInfo[] }).__items, functionInfo => [functionInfo.name]);
 		const dbKey = (this._explorerPath?.connectionId ?? '') + '|' + ep.database;
 
 		return html`
@@ -889,7 +944,7 @@ export class KwConnectionManager extends LitElement {
 	// ── SQL Content ───────────────────────────────────────────────────────────
 
 	private _renderSqlContent(): TemplateResult {
-		const sqlConnections = this._snapshot?.sqlConnections ?? [];
+		const sqlConnections = sortSqlConnections(this._snapshot?.sqlConnections);
 		const sqlFavorites = this._snapshot?.sqlFavorites ?? [];
 		const sqlLntIds = this._snapshot?.sqlLeaveNoTrace ?? [];
 		const hasFavs = sqlFavorites.length > 0;
@@ -1037,10 +1092,10 @@ export class KwConnectionManager extends LitElement {
 			if (isLoading) return html`<div class="loading-state">${ICONS.spinner} Loading databases...</div>`;
 
 			// Filter databases when Favorites filter is active
-			let visibleDbs = databases;
+			let visibleDbs = sortStringsAlphabetically(databases);
 			if (this._activeFilter === 'favorites') {
 				const favDbs = new Set((this._snapshot?.sqlFavorites ?? []).filter(f => f.connectionId === conn.id).map(f => f.database));
-				visibleDbs = databases.filter(db => favDbs.has(db));
+				visibleDbs = visibleDbs.filter(db => favDbs.has(db));
 			}
 
 			if (visibleDbs.length === 0) {
@@ -1167,13 +1222,13 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _renderSqlTablesLevel(conn: SqlConnectionInfo, schema: SqlDatabaseSchema, ep: ExplorerPath): TemplateResult {
-		const tables = (schema.tables ?? []).sort();
+		const tables = sortStringsAlphabetically(schema.tables);
 		const dbKey = conn.id + '|' + ep.database;
 
 		return html`
 			${tables.map(table => {
 				const cols = schema.columnsByTable?.[table] ?? {};
-				const colNames = Object.keys(cols).sort();
+				const colNames = sortStringsAlphabetically(Object.keys(cols));
 				const tableKey = dbKey + '|table|' + table;
 				const isExpanded = this._expandedTables.has(tableKey);
 				const previewData = this._sqlTablePreviewData[tableKey];
@@ -1215,13 +1270,13 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _renderSqlViewsLevel(conn: SqlConnectionInfo, schema: SqlDatabaseSchema, ep: ExplorerPath): TemplateResult {
-		const views = (schema.views ?? []).sort();
+		const views = sortStringsAlphabetically(schema.views);
 		const dbKey = conn.id + '|' + ep.database;
 
 		return html`
 			${views.map(view => {
 				const cols = schema.columnsByTable?.[view] ?? {};
-				const colNames = Object.keys(cols).sort();
+				const colNames = sortStringsAlphabetically(Object.keys(cols));
 				const viewKey = dbKey + '|table|' + view;
 				const isExpanded = this._expandedTables.has(viewKey);
 				const previewData = this._sqlTablePreviewData[viewKey];
@@ -1263,7 +1318,7 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _renderSqlStoredProcedures(schema: SqlDatabaseSchema, ep: ExplorerPath): TemplateResult {
-		const procedures = schema.storedProcedures ?? [];
+		const procedures = sortByAlphabeticLabels(schema.storedProcedures, storedProcedure => [storedProcedure.name]);
 		const dbKey = (this._sqlExplorerPath?.connectionId ?? '') + '|' + ep.database;
 		const connectionId = this._sqlExplorerPath?.connectionId ?? '';
 
@@ -1806,7 +1861,7 @@ export class KwConnectionManager extends LitElement {
 			if (!schema) return html`<div class="explorer-item-details"><div class="explorer-detail-section"><span class="explorer-detail-label">Loading schema…</span></div></div>`;
 			if (r.category === 'table') {
 				const cols = schema.columnTypesByTable?.[r.name] ?? {};
-				const colNames = Object.keys(cols).sort();
+				const colNames = sortStringsAlphabetically(Object.keys(cols));
 				const docString = schema.tableDocStrings?.[r.name];
 				const conn = this._snapshot?.connections?.find(c => c.id === r.connectionId);
 				const ep: ExplorerPath = { connectionId: r.connectionId, database: r.database };
@@ -1831,7 +1886,7 @@ export class KwConnectionManager extends LitElement {
 			if (!schema) return html`<div class="explorer-item-details"><div class="explorer-detail-section"><span class="explorer-detail-label">Loading schema…</span></div></div>`;
 			if (r.category === 'table' || r.category === 'view') {
 				const cols = schema.columnsByTable?.[r.name] ?? {};
-				const colNames = Object.keys(cols).sort();
+				const colNames = sortStringsAlphabetically(Object.keys(cols));
 				const conn = this._snapshot?.sqlConnections?.find(c => c.id === r.connectionId);
 				const ep: ExplorerPath = { connectionId: r.connectionId, database: r.database };
 				const previewData = this._sqlTablePreviewData[tableKey];

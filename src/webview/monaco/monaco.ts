@@ -332,6 +332,74 @@ export function __kustoDisableMonacoKustoWorkerHover(monacoApi: any): boolean {
 	}
 }
 
+function __kustoNormalizeMarkerValue(value: any): any {
+	if (value === null || value === undefined) {
+		return null;
+	}
+	if (Array.isArray(value)) {
+		return value.map((item) => __kustoNormalizeMarkerValue(item));
+	}
+	if (typeof value !== 'object') {
+		return value;
+	}
+	try {
+		const proto = Object.getPrototypeOf(value);
+		if (proto && proto !== Object.prototype && typeof value.toString === 'function') {
+			const text = value.toString();
+			if (text && text !== '[object Object]') {
+				return text;
+			}
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	const out: Record<string, any> = {};
+	for (const key of Object.keys(value).sort()) {
+		const next = value[key];
+		if (typeof next === 'function') {
+			continue;
+		}
+		out[key] = __kustoNormalizeMarkerValue(next);
+	}
+	return out;
+}
+
+function __kustoNormalizeMonacoMarker(marker: any): any {
+	const rangeNumber = (value: any) => (typeof value === 'number' && Number.isFinite(value)) ? value : null;
+	return {
+		severity: marker?.severity ?? null,
+		message: marker?.message ?? '',
+		source: marker?.source ?? null,
+		code: __kustoNormalizeMarkerValue(marker?.code),
+		startLineNumber: rangeNumber(marker?.startLineNumber),
+		startColumn: rangeNumber(marker?.startColumn),
+		endLineNumber: rangeNumber(marker?.endLineNumber),
+		endColumn: rangeNumber(marker?.endColumn),
+		tags: __kustoNormalizeMarkerValue(marker?.tags),
+		relatedInformation: __kustoNormalizeMarkerValue(marker?.relatedInformation),
+	};
+}
+
+export function __kustoAreEquivalentMonacoMarkers(currentMarkers: any, nextMarkers: any): boolean {
+	try {
+		if (!Array.isArray(currentMarkers) || !Array.isArray(nextMarkers)) {
+			return false;
+		}
+		if (currentMarkers.length !== nextMarkers.length) {
+			return false;
+		}
+		const current = currentMarkers.map((marker) => JSON.stringify(__kustoNormalizeMonacoMarker(marker))).sort();
+		const next = nextMarkers.map((marker) => JSON.stringify(__kustoNormalizeMonacoMarker(marker))).sort();
+		for (let index = 0; index < current.length; index++) {
+			if (current[index] !== next[index]) {
+				return false;
+			}
+		}
+		return true;
+	} catch (e) {
+		console.error('[kusto]', e);
+		return false;
+	}
+}
+
 function ensureMonaco() {
 	if (monacoReadyPromise) {
 		return monacoReadyPromise;
@@ -422,6 +490,14 @@ function ensureMonaco() {
 												return;
 											}
 										}
+										try {
+											if (model && model.uri && Array.isArray(markers) && typeof monaco.editor.getModelMarkers === 'function') {
+												const currentMarkers = monaco.editor.getModelMarkers({ owner: 'kusto', resource: model.uri });
+												if (__kustoAreEquivalentMonacoMarkers(currentMarkers, markers)) {
+													return;
+												}
+											}
+										} catch (e) { console.error('[kusto]', e); }
 									}
 									return originalSetModelMarkers.call(this, model, owner, markers);
 								};
@@ -1898,6 +1974,8 @@ function initQueryEditor(boxId: any) {
 			// and an action bar ("View Problem") that isn't useful in our webview.
 			// We hide the action bar via CSS and keep our custom diagnostics tooltip for squiggles.
 			hover: { enabled: true, above: true, sticky: true },
+			// The default blinking caret invalidates focused hovers on the blink cadence in VS Code webviews.
+			cursorBlinking: 'solid',
 			// Autocomplete should be manual-only (Ctrl+Space / toolbar) unless explicitly triggered by code.
 			suggestOnTriggerCharacters: false,
 			quickSuggestions: false,
