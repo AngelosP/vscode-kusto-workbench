@@ -36,7 +36,12 @@ Feature: Kusto autocomplete performance guard
     When I evaluate "window.__e2e.kusto.assertRepeatedSuggestLatency('project-columns', 5, 3000, 1500)" in the webview
 
     When I evaluate "window.__e2e.kusto.assertRepeatedSuggestLatency('pipe-operators', 5, 3000, 1500)" in the webview
-    Then I take a screenshot "02-latency-guard-complete"
+    When I evaluate "window.__e2e.kusto.assertCompletionStaysVisible('pipe-operators', 800)" in the webview
+    Then I take a screenshot "02-latency-guard-visible"
+    When I click the element "where"
+    And I wait 1 second
+    When I evaluate "window.__e2e.kusto.assertAcceptedCompletion('pipe-operators')" in the webview
+    Then I take a screenshot "03-operator-accepted"
 
     When I evaluate "window.__e2e.autoTrigger.ensureEnabled('kusto', true)" in the webview
     When I execute command "workbench.action.closeAllEditors"

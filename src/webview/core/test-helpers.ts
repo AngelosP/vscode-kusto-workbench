@@ -225,6 +225,21 @@ function deepQuerySelector(root: ParentNode, selector: string): Element | null {
 	return null;
 }
 
+function deepQuerySelectorAll(root: ParentNode, selector: string): Element[] {
+	const results: Element[] = [];
+	try {
+		root.querySelectorAll(selector).forEach(el => results.push(el));
+	} catch { /* invalid selector for this root */ }
+
+	root.querySelectorAll('*').forEach(el => {
+		if (el.shadowRoot) {
+			results.push(...deepQuerySelectorAll(el.shadowRoot, selector));
+		}
+	});
+
+	return results;
+}
+
 function resolveMonacoEditorFromSelector(selector: string): { editor: MonacoLike; editorRoot: HTMLElement } {
 	const match = deepQuerySelector(document, selector) as HTMLElement | null;
 	if (!match) {
@@ -725,26 +740,8 @@ _win.__testAssertKwDropdownHasItems = async (dropdownSelector: string, minCount:
 _win.__testAssertVisibleSuggest = (context: string, expectedAnyCsv: string = '', editorSelector: string = ''): string => {
 	const contextLabel = String(context || 'suggestions');
 	const expected = String(expectedAnyCsv || '').split(',').map(s => s.trim()).filter(Boolean);
-	const roots: ParentNode[] = [];
-	if (editorSelector) {
-		const selectedRoot = deepQuerySelector(document, editorSelector) as ParentNode | null;
-		if (!selectedRoot) {
-			throw new Error(`${contextLabel}: editor root not found: ${editorSelector}`);
-		}
-		roots.push(selectedRoot);
-	}
-	roots.push(document);
-
-	let widgets: HTMLElement[] = [];
-	for (const root of roots) {
-		widgets = Array.from(root.querySelectorAll('.suggest-widget.visible')) as HTMLElement[];
-		widgets = widgets.filter(widget =>
-			!widget.classList.contains('hidden')
-			&& widget.style.display !== 'none'
-			&& widget.offsetParent !== null
-		);
-		if (widgets.length) break;
-	}
+	const widgets = e2eVisibleSuggestWidgets(contextLabel, editorSelector);
+	e2eAssertNoSuggestLoading(`${contextLabel} loading check`, editorSelector);
 
 	if (widgets.length === 0) {
 		throw new Error(`${contextLabel}: expected visible suggest widget`);
@@ -752,14 +749,19 @@ _win.__testAssertVisibleSuggest = (context: string, expectedAnyCsv: string = '',
 
 	const widget = widgets[widgets.length - 1];
 	const widgetText = (widget.textContent || '').trim();
+	if (/\bloading\b/i.test(widgetText)) {
+		throw new Error(`${contextLabel}: suggest widget is still loading. Text: ${widgetText.slice(0, 200)}`);
+	}
 	if (/no suggestions/i.test(widgetText)) {
 		throw new Error(`${contextLabel}: suggest widget reported no suggestions`);
 	}
 
 	const rows = (Array.from(widget.querySelectorAll('.monaco-list-row')) as HTMLElement[])
-		.filter(row => row.offsetParent !== null);
+		.filter(row => e2eIsVisibleElement(row));
 	const labels = rows
-		.map(row => ((row.querySelector('.label-name') as HTMLElement | null)?.textContent || '').trim())
+		.map(row => row.querySelector('.label-name') as HTMLElement | null)
+		.filter(labelElement => labelElement ? e2eIsVisibleElement(labelElement) : false)
+		.map(labelElement => (labelElement?.textContent || '').trim())
 		.filter(Boolean);
 
 	if (labels.length === 0) {
@@ -1051,8 +1053,7 @@ function e2eAssertState(kind: E2eSectionKind, attr: string, expected: string): s
 
 function e2eAssertNoVisibleSuggest(context: string): string {
 	const contextLabel = String(context || 'suggestions');
-	const widgets = (Array.from(document.querySelectorAll('.suggest-widget.visible')) as HTMLElement[])
-		.filter(widget => !widget.classList.contains('hidden') && widget.style.display !== 'none' && widget.offsetParent !== null);
+	const widgets = e2eVisibleSuggestWidgets(contextLabel);
 	if (widgets.length !== 0) {
 		const text = (widgets[widgets.length - 1].textContent || '').trim();
 		throw new Error(`${contextLabel}: expected no visible suggest widget, got ${widgets.length}: ${text.slice(0, 200)}`);
@@ -1062,6 +1063,78 @@ function e2eAssertNoVisibleSuggest(context: string): string {
 
 function e2eDelay(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function e2eIsVisibleElement(element: HTMLElement): boolean {
+	let current: HTMLElement | null = element;
+	while (current) {
+		if (String(current.getAttribute('aria-hidden') || '').toLowerCase() === 'true') return false;
+		if (current.classList.contains('hidden')) return false;
+		const currentStyle = getComputedStyle(current);
+		if (currentStyle.display === 'none' || currentStyle.visibility === 'hidden' || Number(currentStyle.opacity) === 0) return false;
+		current = current.parentElement;
+	}
+	const rect = element.getBoundingClientRect();
+	if (rect.width <= 0 || rect.height <= 0) return false;
+	const doc = element.ownerDocument || document;
+	const view = doc.defaultView || window;
+	if (rect.right <= 0 || rect.bottom <= 0 || rect.left >= view.innerWidth || rect.top >= view.innerHeight) return false;
+	const minX = Math.max(0, rect.left + 1);
+	const maxX = Math.min(view.innerWidth - 1, rect.right - 1);
+	const minY = Math.max(0, rect.top + 1);
+	const maxY = Math.min(view.innerHeight - 1, rect.bottom - 1);
+	const points = [
+		[(minX + maxX) / 2, (minY + maxY) / 2],
+		[minX, minY],
+		[maxX, minY],
+		[minX, maxY],
+	] as const;
+	for (const [x, y] of points) {
+		const hit = doc.elementFromPoint(x, y);
+		if (hit && (hit === element || element.contains(hit) || hit.contains(element))) {
+			return true;
+		}
+	}
+	return false;
+}
+
+function e2eSuggestRoots(contextLabel: string, editorSelector: string = ''): ParentNode[] {
+	const roots: ParentNode[] = [];
+	if (editorSelector) {
+		const selectedRoot = deepQuerySelector(document, editorSelector) as ParentNode | null;
+		if (!selectedRoot) {
+			throw new Error(`${contextLabel}: editor root not found: ${editorSelector}`);
+		}
+		roots.push(selectedRoot);
+	}
+	roots.push(document);
+	return roots;
+}
+
+function e2eVisibleSuggestWidgets(contextLabel: string, editorSelector: string = ''): HTMLElement[] {
+	const seen = new Set<HTMLElement>();
+	const widgets: HTMLElement[] = [];
+	for (const root of e2eSuggestRoots(contextLabel, editorSelector)) {
+		const rootWidgets = deepQuerySelectorAll(root, '.suggest-widget') as HTMLElement[];
+		for (const widget of rootWidgets) {
+			if (!seen.has(widget) && e2eIsVisibleElement(widget)) {
+				seen.add(widget);
+				widgets.push(widget);
+			}
+		}
+	}
+	return widgets;
+}
+
+function e2eAssertNoSuggestLoading(context: string, editorSelector: string = ''): string {
+	const contextLabel = String(context || 'suggestions');
+	const loadingWidgets = e2eVisibleSuggestWidgets(contextLabel, editorSelector)
+		.filter(widget => /\bloading\b/i.test((widget.textContent || '').trim()));
+	if (loadingWidgets.length) {
+		const text = (loadingWidgets[loadingWidgets.length - 1].textContent || '').trim();
+		throw new Error(`${contextLabel}: expected no visible loading suggest widget, got ${loadingWidgets.length}: ${text.slice(0, 200)}`);
+	}
+	return `${contextLabel}: no visible loading suggest widget`;
 }
 
 function e2eEditor(kind: E2eSectionKind): MonacoLike {
@@ -1087,7 +1160,7 @@ function e2eHideSuggest(kind: E2eSectionKind): string {
 	let hiddenCount = 0;
 	for (const root of roots) {
 		try {
-			const widgets = Array.from(root.querySelectorAll('.suggest-widget.visible')) as HTMLElement[];
+			const widgets = deepQuerySelectorAll(root, '.suggest-widget') as HTMLElement[];
 			for (const widget of widgets) {
 				widget.classList.add('hidden');
 				widget.style.display = 'none';
@@ -1100,26 +1173,8 @@ function e2eHideSuggest(kind: E2eSectionKind): string {
 
 function e2eVisibleSuggestLabels(context: string, editorSelector: string = ''): string[] {
 	const contextLabel = String(context || 'suggestions');
-	const roots: ParentNode[] = [];
-	if (editorSelector) {
-		const selectedRoot = deepQuerySelector(document, editorSelector) as ParentNode | null;
-		if (!selectedRoot) {
-			throw new Error(`${contextLabel}: editor root not found: ${editorSelector}`);
-		}
-		roots.push(selectedRoot);
-	}
-	roots.push(document);
-
-	let widgets: HTMLElement[] = [];
-	for (const root of roots) {
-		widgets = Array.from(root.querySelectorAll('.suggest-widget.visible')) as HTMLElement[];
-		widgets = widgets.filter(widget =>
-			!widget.classList.contains('hidden')
-			&& widget.style.display !== 'none'
-			&& widget.offsetParent !== null
-		);
-		if (widgets.length) break;
-	}
+	const widgets = e2eVisibleSuggestWidgets(contextLabel, editorSelector);
+	e2eAssertNoSuggestLoading(`${contextLabel} loading check`, editorSelector);
 
 	if (widgets.length === 0) {
 		throw new Error(`${contextLabel}: expected visible suggest widget`);
@@ -1127,14 +1182,19 @@ function e2eVisibleSuggestLabels(context: string, editorSelector: string = ''): 
 
 	const widget = widgets[widgets.length - 1];
 	const widgetText = (widget.textContent || '').trim();
+	if (/\bloading\b/i.test(widgetText)) {
+		throw new Error(`${contextLabel}: suggest widget is still loading. Text: ${widgetText.slice(0, 200)}`);
+	}
 	if (/no suggestions/i.test(widgetText)) {
 		throw new Error(`${contextLabel}: suggest widget reported no suggestions`);
 	}
 
 	const rows = (Array.from(widget.querySelectorAll('.monaco-list-row')) as HTMLElement[])
-		.filter(row => row.offsetParent !== null);
+		.filter(row => e2eIsVisibleElement(row));
 	const labels = rows
-		.map(row => ((row.querySelector('.label-name') as HTMLElement | null)?.textContent || '').trim())
+		.map(row => row.querySelector('.label-name') as HTMLElement | null)
+		.filter(labelElement => labelElement ? e2eIsVisibleElement(labelElement) : false)
+		.map(labelElement => (labelElement?.textContent || '').trim())
 		.filter(Boolean);
 
 	if (labels.length === 0) {
@@ -1448,6 +1508,7 @@ async function e2eWaitForExistingSuggest(kind: E2eSectionKind, context: string, 
 			const result = exact
 				? e2eAssertVisibleSuggestExact(context, expectedAnyCsv, E2E_SECTION[kind].editor)
 				: _win.__testAssertVisibleSuggest(context, expectedAnyCsv, E2E_SECTION[kind].editor);
+			e2eAssertNoSuggestLoading(`${context} loading check`, E2E_SECTION[kind].editor);
 			return { elapsedMs: performance.now() - started, result };
 		} catch (error) {
 			lastError = error;
@@ -1467,12 +1528,14 @@ async function e2eAssertSuggestStaysVisible(kind: E2eSectionKind, context: strin
 		latest = exact
 			? e2eAssertVisibleSuggestExact(context, expected, E2E_SECTION[kind].editor)
 			: _win.__testAssertVisibleSuggest(context, expected, E2E_SECTION[kind].editor);
+		e2eAssertNoSuggestLoading(`${context} loading check`, E2E_SECTION[kind].editor);
 		checks++;
 		await e2eDelay(100);
 	}
 	latest = exact
 		? e2eAssertVisibleSuggestExact(context, expected, E2E_SECTION[kind].editor)
 		: _win.__testAssertVisibleSuggest(context, expected, E2E_SECTION[kind].editor);
+	e2eAssertNoSuggestLoading(`${context} final loading check`, E2E_SECTION[kind].editor);
 	return `${latest}; stayed visible for ${Math.round(performance.now() - started)}ms (${checks + 1} checks)`;
 }
 
@@ -1501,6 +1564,7 @@ async function e2eAssertRepeatedSuggestLatency(kind: E2eSectionKind, scenario: K
 		if (result.elapsedMs > maxSingleMs) {
 			throw new Error(`${scenario} run ${runIndex + 1}: ${Math.round(result.elapsedMs)}ms > ${maxSingleMs}ms`);
 		}
+		await e2eAssertSuggestStaysVisible(kind, `${scenario} run ${runIndex + 1} settled`, expected, 350, true);
 		timings.push(result.elapsedMs);
 	}
 	const average = timings.reduce((total, value) => total + value, 0) / Math.max(1, timings.length);
@@ -1551,6 +1615,9 @@ function e2eAssertAcceptedKustoCompletion(scenario: KustoCompletionScenario): st
 	}
 	if ((scenario === 'project-columns' || scenario === 'where-columns') && !new RegExp(`\\b${targets.column}\\b`, 'i').test(value)) {
 		throw new Error(`Expected accepted column completion ${targets.column}, got ${JSON.stringify(value)}`);
+	}
+	if (scenario === 'pipe-operators' && !/\|\s+(where|project|summarize|take)\b/i.test(value)) {
+		throw new Error(`Expected accepted pipe operator completion, got ${JSON.stringify(value)}`);
 	}
 	return `kusto accepted ${scenario}: ${JSON.stringify(value)}`;
 }
