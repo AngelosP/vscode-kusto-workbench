@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import { __kustoDisableMonacoKustoWorkerHover, __kustoGetColumnsByTable } from '../../src/webview/monaco/monaco.js';
 
 // ── __kustoGetColumnsByTable ──────────────────────────────────────────────────
@@ -119,5 +121,17 @@ describe('__kustoDisableMonacoKustoWorkerHover', () => {
 
 		expect(__kustoDisableMonacoKustoWorkerHover(monacoApi)).toBe(false);
 		expect(called).toBe(false);
+	});
+
+	it('is called before local Kusto hover registration during Monaco bootstrap', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const contributionLoadIndex = source.indexOf("['vs/language/kusto/monaco.contribution']");
+		const disableCallIndex = source.indexOf('__kustoDisableMonacoKustoWorkerHover(monaco)', contributionLoadIndex);
+		const localHoverIndex = source.indexOf("monaco.languages.registerHoverProvider('kusto'", contributionLoadIndex);
+
+		expect(contributionLoadIndex).toBeGreaterThan(-1);
+		expect(disableCallIndex).toBeGreaterThan(contributionLoadIndex);
+		expect(localHoverIndex).toBeGreaterThan(disableCallIndex);
+		expect(source).toContain('hover: { enabled: true, above: true, sticky: true }');
 	});
 });
