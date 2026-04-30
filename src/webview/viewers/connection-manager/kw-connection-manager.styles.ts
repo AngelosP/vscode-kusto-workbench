@@ -138,7 +138,9 @@ export const styles = css`
 		.explorer-list-item-actions .btn-icon { opacity: 0; transition: opacity 0.1s; }
 		.explorer-list-item:hover .explorer-list-item-actions .btn-icon { opacity: 1; }
 		.explorer-list-item-actions .btn-icon.is-favorite { opacity: 1; }
+		.explorer-list-item-actions .btn-icon.is-favorite-action { opacity: 1; }
 		.explorer-list-item-actions .btn-icon.is-lnt { opacity: 1; }
+		.favorite-context { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 		.explorer-list-item-chevron { width: 16px; height: 16px; flex-shrink: 0; transition: transform 0.15s ease; opacity: 0.7; display: flex; align-items: center; }
 		.explorer-list-item-chevron svg { width: 14px; height: 14px; fill: currentColor; }
 		.explorer-list-item-chevron.expanded { transform: rotate(90deg); }

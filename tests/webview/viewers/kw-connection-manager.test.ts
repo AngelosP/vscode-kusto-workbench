@@ -87,6 +87,18 @@ function clickBreadcrumbByText(el: KwConnectionManager, text: string): void {
 	(breadcrumb as HTMLElement).click();
 }
 
+function clickButtonByTestId(el: KwConnectionManager, testId: string): void {
+	const button = el.shadowRoot!.querySelector(`[data-testid="${testId}"]`) as HTMLButtonElement | null;
+	expect(button).not.toBeNull();
+	button!.click();
+}
+
+function messageTypes(): string[] {
+	return postedMessages
+		.map(message => (message && typeof message === 'object' && 'type' in message ? String((message as { type?: unknown }).type) : ''))
+		.filter(Boolean);
+}
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
 let container: HTMLDivElement;
@@ -243,6 +255,138 @@ describe('kw-connection-manager', () => {
 			expect(sqlSchema.tables).toEqual(['zTable', 'AlphaTable']);
 			expect(sqlSchema.views).toEqual(['zView', 'AlphaView']);
 			expect(sqlSchema.storedProcedures.map(procedure => procedure.name)).toEqual(['zProc', 'AlphaProc']);
+		});
+	});
+
+	// ── Favorites ───────────────────────────────────────────────────────────────
+
+	describe('favorites', () => {
+		it('Kusto: add favorite requests a friendly-name prompt', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot());
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MyCluster');
+			await el.updateComplete;
+
+			postedMessages = [];
+			clickButtonByTestId(el, 'cm-favorite-add');
+			await el.updateComplete;
+
+			expect(postedMessages).toEqual([
+				expect.objectContaining({ type: 'favorite.promptAdd', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1' }),
+			]);
+		});
+
+		it('Kusto: renders favorite friendly names in Favorites mode with case-insensitive database matching', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				favorites: [{ name: 'Friendly Kusto DB', clusterUrl: 'https://MYCLUSTER.kusto.windows.net/', database: 'DB1' }],
+			}));
+			await el.updateComplete;
+
+			clickButtonByTestId(el, 'cm-filter-favorites');
+			await el.updateComplete;
+			clickListItemByName(el, 'MyCluster');
+			await el.updateComplete;
+
+			expect(listItemNames(el)).toEqual(['Friendly Kusto DB']);
+			expect(el.shadowRoot!.textContent).toContain('db1 · MyCluster');
+		});
+
+		it('Kusto: rename and remove favorite actions post identity messages without navigating the row', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				favorites: [{ name: 'Friendly Kusto DB', clusterUrl: 'https://MYCLUSTER.kusto.windows.net/', database: 'DB1' }],
+			}));
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MyCluster');
+			await el.updateComplete;
+
+			postedMessages = [];
+			clickButtonByTestId(el, 'cm-favorite-rename');
+			await el.updateComplete;
+
+			expect(postedMessages).toEqual([
+				expect.objectContaining({ type: 'favorite.promptRename', clusterUrl: 'https://MYCLUSTER.kusto.windows.net/', database: 'DB1' }),
+			]);
+			expect(messageTypes()).not.toContain('database.getSchema');
+
+			postedMessages = [];
+			clickButtonByTestId(el, 'cm-favorite-remove');
+			await el.updateComplete;
+
+			expect(postedMessages).toEqual([
+				expect.objectContaining({ type: 'favorite.remove', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1' }),
+			]);
+		});
+
+		it('SQL: add favorite requests a friendly-name prompt', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ activeKind: 'sql', connections: [], cachedDatabases: {} }));
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MySqlServer');
+			await el.updateComplete;
+
+			postedMessages = [];
+			clickButtonByTestId(el, 'cm-sql-favorite-add');
+			await el.updateComplete;
+
+			expect(postedMessages).toEqual([
+				expect.objectContaining({ type: 'sql.favorite.promptAdd', connectionId: 'sql1', database: 'sqldb1' }),
+			]);
+		});
+
+		it('SQL: renders favorite friendly names in Favorites mode with case-insensitive database matching', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				activeKind: 'sql',
+				connections: [],
+				cachedDatabases: {},
+				sqlFavorites: [{ name: 'Friendly SQL DB', connectionId: 'sql1', database: 'SQLDB1' }],
+			}));
+			await el.updateComplete;
+
+			clickButtonByTestId(el, 'cm-sql-filter-favorites');
+			await el.updateComplete;
+			clickListItemByName(el, 'MySqlServer');
+			await el.updateComplete;
+
+			expect(listItemNames(el)).toEqual(['Friendly SQL DB']);
+			expect(el.shadowRoot!.textContent).toContain('sqldb1 · MySqlServer');
+		});
+
+		it('SQL: rename and remove favorite actions post identity messages without navigating the row', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				activeKind: 'sql',
+				connections: [],
+				cachedDatabases: {},
+				sqlFavorites: [{ name: 'Friendly SQL DB', connectionId: 'sql1', database: 'SQLDB1' }],
+			}));
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MySqlServer');
+			await el.updateComplete;
+
+			postedMessages = [];
+			clickButtonByTestId(el, 'cm-sql-favorite-rename');
+			await el.updateComplete;
+
+			expect(postedMessages).toEqual([
+				expect.objectContaining({ type: 'sql.favorite.promptRename', connectionId: 'sql1', database: 'SQLDB1' }),
+			]);
+			expect(messageTypes()).not.toContain('sql.database.getSchema');
+
+			postedMessages = [];
+			clickButtonByTestId(el, 'cm-sql-favorite-remove');
+			await el.updateComplete;
+
+			expect(postedMessages).toEqual([
+				expect.objectContaining({ type: 'sql.favorite.remove', connectionId: 'sql1', database: 'sqldb1' }),
+			]);
 		});
 	});
 

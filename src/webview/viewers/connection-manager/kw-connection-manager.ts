@@ -475,12 +475,12 @@ export class KwConnectionManager extends LitElement {
 		return this._snapshot.leaveNoTraceClusters.some(u => normalizeClusterUrl(u) === normalized);
 	}
 
-	private _isFavorite(clusterUrl: string, database: string): boolean {
-		if (!this._snapshot?.favorites) return false;
+	private _getFavorite(clusterUrl: string, database: string): KustoFavorite | undefined {
+		if (!this._snapshot?.favorites) return undefined;
 		const nUrl = normalizeClusterUrl(clusterUrl);
-		const nDb = database.toLowerCase();
-		return this._snapshot.favorites.some(f =>
-			normalizeClusterUrl(f.clusterUrl) === nUrl && f.database.toLowerCase() === nDb
+		const nDb = String(database || '').trim().toLowerCase();
+		return this._snapshot.favorites.find(f =>
+			normalizeClusterUrl(f.clusterUrl) === nUrl && String(f.database || '').trim().toLowerCase() === nDb
 		);
 	}
 
@@ -563,7 +563,7 @@ export class KwConnectionManager extends LitElement {
 			<!-- Filter tabs (always visible) -->
 			<div class="filter-bar" data-testid="cm-filter-bar">
 				<button class="filter-tab ${af === 'all' ? 'active' : ''}" data-testid="cm-filter-all" @click=${() => { this._activeFilter = 'all'; this._validateBreadcrumb(); }}>${ICONS.kustoCluster} <span class="filter-label">All</span></button>
-				${hasFavs ? html`<button class="filter-tab fav-tab ${af === 'favorites' ? 'active' : ''}" @click=${() => { this._activeFilter = af === 'favorites' ? 'all' : 'favorites'; this._validateBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${favorites.length}</span></button>` : nothing}
+				${hasFavs ? html`<button class="filter-tab fav-tab ${af === 'favorites' ? 'active' : ''}" data-testid="cm-filter-favorites" @click=${() => { this._activeFilter = af === 'favorites' ? 'all' : 'favorites'; this._validateBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${favorites.length}</span></button>` : nothing}
 				${hasLnt ? html`<button class="filter-tab lnt-tab ${af === 'lnt' ? 'active' : ''}" @click=${() => { this._activeFilter = af === 'lnt' ? 'all' : 'lnt'; this._validateBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${lntClusters.length}</span></button>` : nothing}
 				<button class="filter-tab search-tab ${af === 'search' ? 'active' : ''}" data-testid="cm-filter-search" @click=${() => { this._activeFilter = af === 'search' ? 'all' : 'search'; if (this._search.kind !== 'kusto') this._search.setKind('kusto'); }}>${ICONS.toolbarSearch} <span class="filter-label">Search</span></button>
 			</div>
@@ -643,8 +643,7 @@ export class KwConnectionManager extends LitElement {
 			if (!favUrls.has(normalizeClusterUrl(conn.clusterUrl))) { this._explorerPath = null; return; }
 			// If drilled into a database, check if it's a favorite
 			if (ep.database) {
-				const favDbs = new Set((this._snapshot?.favorites ?? []).filter(f => normalizeClusterUrl(f.clusterUrl) === normalizeClusterUrl(conn.clusterUrl)).map(f => f.database));
-				if (!favDbs.has(ep.database)) { this._explorerPath = { connectionId: ep.connectionId } as any; return; }
+				if (!this._getFavorite(conn.clusterUrl, ep.database)) { this._explorerPath = { connectionId: ep.connectionId } as any; return; }
 			}
 		}
 		if (this._activeFilter === 'lnt') {
@@ -731,8 +730,7 @@ export class KwConnectionManager extends LitElement {
 			// Filter databases when Favorites filter is active
 			let visibleDbs = sortStringsAlphabetically(databases);
 			if (this._activeFilter === 'favorites') {
-				const favDbs = new Set((this._snapshot?.favorites ?? []).filter(f => normalizeClusterUrl(f.clusterUrl) === normalizeClusterUrl(conn.clusterUrl)).map(f => f.database));
-				visibleDbs = visibleDbs.filter(db => favDbs.has(db));
+				visibleDbs = visibleDbs.filter(db => this._getFavorite(conn.clusterUrl, db));
 			}
 
 			if (visibleDbs.length === 0) {return html`
@@ -742,13 +740,23 @@ export class KwConnectionManager extends LitElement {
 				</div>`;}
 
 			return html`${visibleDbs.map(db => {
-				const isFav = this._isFavorite(conn.clusterUrl, db);
+				const favorite = this._getFavorite(conn.clusterUrl, db);
+				const isFav = !!favorite;
+				const displayName = this._activeFilter === 'favorites' && favorite ? favorite.name : db;
 				return html`
 					<div class="explorer-list-item" @click=${() => this._navigateToDatabase(conn, db)}>
 						<span class="explorer-list-item-icon database">${ICONS.database}</span>
-						<span class="explorer-list-item-name">${db}</span>
+						<span class="explorer-list-item-name">${displayName}</span>
+						${this._activeFilter === 'favorites' && favorite ? html`
+							<span class="item-sep">·</span>
+							<span class="explorer-list-item-meta favorite-context">${db} · ${conn.name || shortClusterName(conn.clusterUrl)}</span>
+						` : nothing}
 						<div class="explorer-list-item-actions">
-							<button class="btn-icon ${isFav ? 'is-favorite' : ''}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}"
+							${isFav ? html`
+								<button class="btn-icon is-favorite-action" data-testid="cm-favorite-rename" title="Rename favorite"
+									@click=${(e: Event) => { e.stopPropagation(); this._renameFavorite(conn, db); }}>${ICONS.edit}</button>
+							` : nothing}
+							<button class="btn-icon ${isFav ? 'is-favorite' : ''}" data-testid=${isFav ? 'cm-favorite-remove' : 'cm-favorite-add'} title="${isFav ? 'Remove from favorites' : 'Add to favorites'}"
 								@click=${(e: Event) => { e.stopPropagation(); this._toggleFavorite(conn, db, isFav); }}>
 								${isFav ? ICONS.starFilled : ICONS.star}
 							</button>
@@ -968,7 +976,7 @@ export class KwConnectionManager extends LitElement {
 			<!-- Filter tabs (always visible) -->
 			<div class="filter-bar" data-testid="cm-sql-filter-bar">
 				<button class="filter-tab ${af === 'all' ? 'active' : ''}" data-testid="cm-sql-filter-all" @click=${() => { this._activeFilter = 'all'; this._validateSqlBreadcrumb(); }}>${ICONS.sqlServer} <span class="filter-label">All</span></button>
-				${hasFavs ? html`<button class="filter-tab fav-tab ${af === 'favorites' ? 'active' : ''}" @click=${() => { this._activeFilter = af === 'favorites' ? 'all' : 'favorites'; this._validateSqlBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${sqlFavorites.length}</span></button>` : nothing}
+				${hasFavs ? html`<button class="filter-tab fav-tab ${af === 'favorites' ? 'active' : ''}" data-testid="cm-sql-filter-favorites" @click=${() => { this._activeFilter = af === 'favorites' ? 'all' : 'favorites'; this._validateSqlBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${sqlFavorites.length}</span></button>` : nothing}
 				${hasLnt ? html`<button class="filter-tab lnt-tab ${af === 'lnt' ? 'active' : ''}" @click=${() => { this._activeFilter = af === 'lnt' ? 'all' : 'lnt'; this._validateSqlBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${sqlLntIds.length}</span></button>` : nothing}
 				<button class="filter-tab search-tab ${af === 'search' ? 'active' : ''}" data-testid="cm-sql-filter-search" @click=${() => { this._activeFilter = af === 'search' ? 'all' : 'search'; if (this._search.kind !== 'sql') this._search.setKind('sql'); }}>${ICONS.toolbarSearch} <span class="filter-label">Search</span></button>
 			</div>
@@ -1094,8 +1102,7 @@ export class KwConnectionManager extends LitElement {
 			// Filter databases when Favorites filter is active
 			let visibleDbs = sortStringsAlphabetically(databases);
 			if (this._activeFilter === 'favorites') {
-				const favDbs = new Set((this._snapshot?.sqlFavorites ?? []).filter(f => f.connectionId === conn.id).map(f => f.database));
-				visibleDbs = visibleDbs.filter(db => favDbs.has(db));
+				visibleDbs = visibleDbs.filter(db => this._getSqlFavorite(conn.id, db));
 			}
 
 			if (visibleDbs.length === 0) {
@@ -1105,13 +1112,23 @@ export class KwConnectionManager extends LitElement {
 				</div>`;
 			}
 			return html`${visibleDbs.map(db => {
-				const isFav = this._isSqlFavorite(conn.id, db);
+				const favorite = this._getSqlFavorite(conn.id, db);
+				const isFav = !!favorite;
+				const displayName = this._activeFilter === 'favorites' && favorite ? favorite.name : db;
 				return html`
 					<div class="explorer-list-item" @click=${() => this._navigateToSqlDatabase(conn, db)}>
 						<span class="explorer-list-item-icon database">${ICONS.database}</span>
-						<span class="explorer-list-item-name">${db}</span>
+						<span class="explorer-list-item-name">${displayName}</span>
+						${this._activeFilter === 'favorites' && favorite ? html`
+							<span class="item-sep">·</span>
+							<span class="explorer-list-item-meta favorite-context">${db} · ${conn.name || conn.serverUrl}</span>
+						` : nothing}
 						<div class="explorer-list-item-actions">
-							<button class="btn-icon ${isFav ? 'is-favorite' : ''}" title="${isFav ? 'Remove from favorites' : 'Add to favorites'}"
+							${isFav ? html`
+								<button class="btn-icon is-favorite-action" data-testid="cm-sql-favorite-rename" title="Rename favorite"
+									@click=${(e: Event) => { e.stopPropagation(); this._renameSqlFavorite(conn, db); }}>${ICONS.edit}</button>
+							` : nothing}
+							<button class="btn-icon ${isFav ? 'is-favorite' : ''}" data-testid=${isFav ? 'cm-sql-favorite-remove' : 'cm-sql-favorite-add'} title="${isFav ? 'Remove from favorites' : 'Add to favorites'}"
 								@click=${(e: Event) => { e.stopPropagation(); this._toggleSqlFavorite(conn, db, isFav); }}>
 								${isFav ? ICONS.starFilled : ICONS.star}
 							</button>
@@ -1183,19 +1200,24 @@ export class KwConnectionManager extends LitElement {
 		}
 	}
 
-	private _isSqlFavorite(connectionId: string, database: string): boolean {
-		if (!this._snapshot?.sqlFavorites) return false;
-		const nDb = database.toLowerCase();
-		return this._snapshot.sqlFavorites.some(f => f.connectionId === connectionId && f.database.toLowerCase() === nDb);
+	private _getSqlFavorite(connectionId: string, database: string): SqlFavorite | undefined {
+		if (!this._snapshot?.sqlFavorites) return undefined;
+		const nDb = String(database || '').trim().toLowerCase();
+		return this._snapshot.sqlFavorites.find(f => f.connectionId === connectionId && String(f.database || '').trim().toLowerCase() === nDb);
 	}
 
 	private _toggleSqlFavorite(conn: SqlConnectionInfo, db: string, isFav: boolean): void {
 		if (isFav) {
 			this._vscode.postMessage({ type: 'sql.favorite.remove', connectionId: conn.id, database: db });
 		} else {
-			this._vscode.postMessage({ type: 'sql.favorite.add', connectionId: conn.id, database: db, name: conn.name });
+			this._vscode.postMessage({ type: 'sql.favorite.promptAdd', connectionId: conn.id, database: db });
 		}
-		this._vscode.postMessage({ type: 'requestSnapshot' });
+	}
+
+	private _renameSqlFavorite(conn: SqlConnectionInfo, db: string): void {
+		const favorite = this._getSqlFavorite(conn.id, db);
+		if (!favorite) return;
+		this._vscode.postMessage({ type: 'sql.favorite.promptRename', connectionId: favorite.connectionId, database: favorite.database });
 	}
 
 	/** Trim SQL breadcrumb depth so it stays valid when a filter changes. */
@@ -1211,8 +1233,7 @@ export class KwConnectionManager extends LitElement {
 			const favConnIds = new Set((this._snapshot?.sqlFavorites ?? []).map(f => f.connectionId));
 			if (!favConnIds.has(conn.id)) { this._sqlExplorerPath = null; return; }
 			if (ep.database) {
-				const favDbs = new Set((this._snapshot?.sqlFavorites ?? []).filter(f => f.connectionId === conn.id).map(f => f.database));
-				if (!favDbs.has(ep.database)) { this._sqlExplorerPath = { connectionId: ep.connectionId }; return; }
+				if (!this._getSqlFavorite(conn.id, ep.database)) { this._sqlExplorerPath = { connectionId: ep.connectionId }; return; }
 			}
 		}
 		if (this._activeFilter === 'lnt') {
@@ -1500,9 +1521,14 @@ export class KwConnectionManager extends LitElement {
 		if (isFav) {
 			this._vscode.postMessage({ type: 'favorite.remove', clusterUrl: conn.clusterUrl, database: db });
 		} else {
-			this._vscode.postMessage({ type: 'favorite.add', clusterUrl: conn.clusterUrl, database: db, name: conn.name });
+			this._vscode.postMessage({ type: 'favorite.promptAdd', clusterUrl: conn.clusterUrl, database: db });
 		}
-		this._vscode.postMessage({ type: 'requestSnapshot' });
+	}
+
+	private _renameFavorite(conn: KustoConnection, db: string): void {
+		const favorite = this._getFavorite(conn.clusterUrl, db);
+		if (!favorite) return;
+		this._vscode.postMessage({ type: 'favorite.promptRename', clusterUrl: favorite.clusterUrl, database: favorite.database });
 	}
 
 	private _toggleTable(tableKey: string): void {

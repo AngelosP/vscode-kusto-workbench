@@ -9,6 +9,24 @@ import { searchCachedSqlSchemas, readAllCachedSqlSchemasFromDisk, type SqlSchema
 import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { SqlQueryClient } from './sqlClient';
 import { listDialects } from './sql/sqlDialectRegistry';
+import {
+	addKustoFavoriteIfMissing,
+	addSqlFavoriteIfMissing,
+	getKustoFavorite,
+	getKustoFavoriteDefaultName,
+	getSqlFavorite,
+	normalizeFavoriteClusterUrl as normalizeStoredFavoriteClusterUrl,
+	removeKustoFavorite,
+	removeSqlFavorite,
+	renameKustoFavorite,
+	renameSqlFavorite,
+	sanitizeKustoFavorites,
+	sanitizeSqlFavorites,
+	upsertKustoFavorite,
+	upsertSqlFavorite,
+	type KustoFavorite,
+	type SqlFavorite,
+} from './connectionManagerFavorites';
 
 /**
  * Connection Manager Viewer — Lit web components edition.
@@ -17,6 +35,8 @@ import { listDialects } from './sql/sqlDialectRegistry';
  */
 
 const VIEW_TITLE = 'Connection Manager';
+
+export type { KustoFavorite, SqlFavorite } from './connectionManagerFavorites';
 
 const STORAGE_KEYS = {
 	favorites: 'kusto.favorites',
@@ -32,18 +52,6 @@ const STORAGE_KEYS = {
 
 export type ConnectionKind = 'kusto' | 'sql';
 
-export type KustoFavorite = {
-	name: string;
-	clusterUrl: string;
-	database: string;
-};
-
-export type SqlFavorite = {
-	name: string;
-	connectionId: string;
-	database: string;
-};
-
 type IncomingMessage =
 	| { type: 'requestSnapshot' }
 	| { type: 'connection.add'; name: string; clusterUrl: string; database?: string }
@@ -52,6 +60,8 @@ type IncomingMessage =
 	| { type: 'connection.test'; id: string }
 	| { type: 'connection.duplicate'; id: string }
 	| { type: 'favorite.add'; clusterUrl: string; database: string; name: string }
+	| { type: 'favorite.promptAdd'; clusterUrl: string; database: string; defaultName?: string }
+	| { type: 'favorite.promptRename'; clusterUrl: string; database: string }
 	| { type: 'favorite.remove'; clusterUrl: string; database: string }
 	| { type: 'favorite.reorder'; favorites: KustoFavorite[] }
 	| { type: 'cluster.expand'; connectionId: string }
@@ -84,6 +94,8 @@ type IncomingMessage =
 	| { type: 'sql.database.openInNewFile'; serverUrl: string; database: string }
 	| { type: 'sql.table.preview'; connectionId: string; database: string; tableName: string }
 	| { type: 'sql.favorite.add'; connectionId: string; database: string; name: string }
+	| { type: 'sql.favorite.promptAdd'; connectionId: string; database: string; defaultName?: string }
+	| { type: 'sql.favorite.promptRename'; connectionId: string; database: string }
 	| { type: 'sql.favorite.remove'; connectionId: string; database: string }
 	| { type: 'sql.leaveNoTrace.add'; connectionId: string }
 	| { type: 'sql.leaveNoTrace.remove'; connectionId: string }
@@ -175,18 +187,7 @@ export class ConnectionManagerViewerV2 {
 
 	private getFavorites(): KustoFavorite[] {
 		const raw = this.context.globalState.get<unknown>(STORAGE_KEYS.favorites);
-		if (!Array.isArray(raw)) return [];
-		const out: KustoFavorite[] = [];
-		for (const item of raw) {
-			if (!item || typeof item !== 'object') continue;
-			const maybe = item as Partial<KustoFavorite>;
-			const name = String(maybe.name || '').trim();
-			const clusterUrl = String(maybe.clusterUrl || '').trim();
-			const database = String(maybe.database || '').trim();
-			if (!name || !clusterUrl || !database) continue;
-			out.push({ name, clusterUrl, database });
-		}
-		return out;
+		return sanitizeKustoFavorites(raw);
 	}
 
 	private async setFavorites(favorites: KustoFavorite[]): Promise<void> {
@@ -194,19 +195,7 @@ export class ConnectionManagerViewerV2 {
 	}
 
 	private normalizeFavoriteClusterUrl(clusterUrl: string): string {
-		let u = String(clusterUrl || '').trim();
-		if (!u) return '';
-		if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
-		return u.replace(/\/+$/g, '').toLowerCase();
-	}
-
-	private isFavorite(clusterUrl: string, database: string): boolean {
-		const normalizedUrl = this.normalizeFavoriteClusterUrl(clusterUrl);
-		const normalizedDb = String(database || '').trim().toLowerCase();
-		return this.getFavorites().some((f) => {
-			return this.normalizeFavoriteClusterUrl(f.clusterUrl) === normalizedUrl &&
-				String(f.database || '').trim().toLowerCase() === normalizedDb;
-		});
+		return normalizeStoredFavoriteClusterUrl(clusterUrl);
 	}
 
 	private getExpandedClusters(): string[] {
@@ -272,18 +261,7 @@ export class ConnectionManagerViewerV2 {
 
 	private getSqlFavorites(): SqlFavorite[] {
 		const raw = this.context.globalState.get<unknown>(STORAGE_KEYS.sqlFavorites);
-		if (!Array.isArray(raw)) return [];
-		const out: SqlFavorite[] = [];
-		for (const item of raw) {
-			if (!item || typeof item !== 'object') continue;
-			const maybe = item as Partial<SqlFavorite>;
-			const name = String(maybe.name || '').trim();
-			const connectionId = String(maybe.connectionId || '').trim();
-			const database = String(maybe.database || '').trim();
-			if (!name || !connectionId || !database) continue;
-			out.push({ name, connectionId, database });
-		}
-		return out;
+		return sanitizeSqlFavorites(raw);
 	}
 
 	private async setSqlFavorites(favorites: SqlFavorite[]): Promise<void> {
@@ -346,6 +324,98 @@ export class ConnectionManagerViewerV2 {
 			// Ignore transient panel lifecycle races (dispose/reveal ordering), but keep diagnostics.
 			console.warn('[kusto] connection manager snapshot refresh failed', error);
 		}
+	}
+
+	private async promptAddFavorite(clusterUrlRaw: string, databaseRaw: string, defaultNameRaw?: string): Promise<void> {
+		const clusterUrl = normalizeStoredFavoriteClusterUrl(clusterUrlRaw);
+		const database = String(databaseRaw || '').trim();
+		if (!clusterUrl || !database) return;
+		const defaultName = String(defaultNameRaw || '').trim() || getKustoFavoriteDefaultName(clusterUrl, database);
+		const picked = await vscode.window.showInputBox({
+			title: 'Add to favorites',
+			prompt: 'Enter a friendly name for this cluster + database',
+			value: defaultName,
+			ignoreFocusOut: true,
+		});
+		const name = typeof picked === 'string' ? picked.trim() : '';
+		if (!name) return;
+		const result = upsertKustoFavorite(this.getFavorites(), { name, clusterUrl, database });
+		if (result.changed) {
+			await this.setFavorites(result.favorites);
+			void vscode.window.setStatusBarMessage(`Favorite "${name}" saved`, 2000);
+		}
+		await this.sendSnapshotToWebview();
+	}
+
+	private async promptRenameFavorite(clusterUrlRaw: string, databaseRaw: string): Promise<void> {
+		const clusterUrl = String(clusterUrlRaw || '').trim();
+		const database = String(databaseRaw || '').trim();
+		if (!clusterUrl || !database) return;
+		const current = getKustoFavorite(this.getFavorites(), clusterUrl, database);
+		if (!current) { await this.sendSnapshotToWebview(); return; }
+		const picked = await vscode.window.showInputBox({
+			title: 'Rename favorite',
+			prompt: 'Enter a friendly name for this cluster + database',
+			value: current.name,
+			ignoreFocusOut: true,
+		});
+		const name = typeof picked === 'string' ? picked.trim() : '';
+		if (!name) return;
+		const result = renameKustoFavorite(this.getFavorites(), clusterUrl, database, name);
+		if (result.changed) {
+			await this.setFavorites(result.favorites);
+			void vscode.window.setStatusBarMessage(`Favorite renamed to "${name}"`, 2000);
+		}
+		await this.sendSnapshotToWebview();
+	}
+
+	private getSqlFavoriteDefaultName(connectionId: string, database: string): string {
+		const connection = this.sqlDeps?.getSqlConnectionManager().getConnection(connectionId);
+		const serverName = connection ? (connection.name || connection.serverUrl || connectionId) : connectionId;
+		return `${serverName}.${database}`;
+	}
+
+	private async promptAddSqlFavorite(connectionIdRaw: string, databaseRaw: string, defaultNameRaw?: string): Promise<void> {
+		const connectionId = String(connectionIdRaw || '').trim();
+		const database = String(databaseRaw || '').trim();
+		if (!connectionId || !database) return;
+		const defaultName = String(defaultNameRaw || '').trim() || this.getSqlFavoriteDefaultName(connectionId, database);
+		const picked = await vscode.window.showInputBox({
+			title: 'Add to favorites',
+			prompt: 'Enter a friendly name for this server + database',
+			value: defaultName,
+			ignoreFocusOut: true,
+		});
+		const name = typeof picked === 'string' ? picked.trim() : '';
+		if (!name) return;
+		const result = upsertSqlFavorite(this.getSqlFavorites(), { name, connectionId, database });
+		if (result.changed) {
+			await this.setSqlFavorites(result.favorites);
+			void vscode.window.setStatusBarMessage(`SQL favorite "${name}" saved`, 2000);
+		}
+		await this.sendSnapshotToWebview();
+	}
+
+	private async promptRenameSqlFavorite(connectionIdRaw: string, databaseRaw: string): Promise<void> {
+		const connectionId = String(connectionIdRaw || '').trim();
+		const database = String(databaseRaw || '').trim();
+		if (!connectionId || !database) return;
+		const current = getSqlFavorite(this.getSqlFavorites(), connectionId, database);
+		if (!current) { await this.sendSnapshotToWebview(); return; }
+		const picked = await vscode.window.showInputBox({
+			title: 'Rename favorite',
+			prompt: 'Enter a friendly name for this server + database',
+			value: current.name,
+			ignoreFocusOut: true,
+		});
+		const name = typeof picked === 'string' ? picked.trim() : '';
+		if (!name) return;
+		const result = renameSqlFavorite(this.getSqlFavorites(), connectionId, database, name);
+		if (result.changed) {
+			await this.setSqlFavorites(result.favorites);
+			void vscode.window.setStatusBarMessage(`SQL favorite renamed to "${name}"`, 2000);
+		}
+		await this.sendSnapshotToWebview();
 	}
 
 	// ─── Message handling (identical to original) ───────────────────────────
@@ -428,24 +498,37 @@ export class ConnectionManagerViewerV2 {
 				const database = String(msg.database || '').trim();
 				const name = String(msg.name || '').trim();
 				if (!clusterUrl || !database || !name) return;
-				if (this.isFavorite(clusterUrl, database)) return;
-				const favorites = this.getFavorites();
-				favorites.push({ name, clusterUrl, database });
-				await this.setFavorites(favorites);
+				const result = addKustoFavoriteIfMissing(this.getFavorites(), { name, clusterUrl, database });
+				if (result.changed) {
+					await this.setFavorites(result.favorites);
+				}
+				await this.sendSnapshotToWebview();
+				return;
+			}
+			case 'favorite.promptAdd': {
+				await this.promptAddFavorite(msg.clusterUrl, msg.database, msg.defaultName);
+				return;
+			}
+			case 'favorite.promptRename': {
+				await this.promptRenameFavorite(msg.clusterUrl, msg.database);
 				return;
 			}
 			case 'favorite.remove': {
 				const clusterUrl = String(msg.clusterUrl || '').trim();
 				const database = String(msg.database || '').trim();
 				if (!clusterUrl || !database) return;
-				const normalizedUrl = this.normalizeFavoriteClusterUrl(clusterUrl);
-				const normalizedDb = database.toLowerCase();
-				const favorites = this.getFavorites().filter((f) => !(this.normalizeFavoriteClusterUrl(f.clusterUrl) === normalizedUrl && String(f.database || '').trim().toLowerCase() === normalizedDb));
-				await this.setFavorites(favorites);
+				const result = removeKustoFavorite(this.getFavorites(), clusterUrl, database);
+				if (result.changed) {
+					await this.setFavorites(result.favorites);
+				}
+				await this.sendSnapshotToWebview();
 				return;
 			}
 			case 'favorite.reorder': {
-				if (Array.isArray(msg.favorites)) await this.setFavorites(msg.favorites);
+				if (Array.isArray(msg.favorites)) {
+					await this.setFavorites(sanitizeKustoFavorites(msg.favorites));
+					await this.sendSnapshotToWebview();
+				}
 				return;
 			}
 			case 'cluster.expand': {
@@ -885,18 +968,30 @@ export class ConnectionManagerViewerV2 {
 				const database = String(msg.database || '').trim();
 				const name = String(msg.name || '').trim();
 				if (!connectionId || !database || !name) return;
-				const favorites = this.getSqlFavorites();
-				if (favorites.some(f => f.connectionId === connectionId && f.database.toLowerCase() === database.toLowerCase())) return;
-				favorites.push({ name, connectionId, database });
-				await this.setSqlFavorites(favorites);
+				const result = addSqlFavoriteIfMissing(this.getSqlFavorites(), { name, connectionId, database });
+				if (result.changed) {
+					await this.setSqlFavorites(result.favorites);
+				}
+				await this.sendSnapshotToWebview();
+				return;
+			}
+			case 'sql.favorite.promptAdd': {
+				await this.promptAddSqlFavorite(msg.connectionId, msg.database, msg.defaultName);
+				return;
+			}
+			case 'sql.favorite.promptRename': {
+				await this.promptRenameSqlFavorite(msg.connectionId, msg.database);
 				return;
 			}
 			case 'sql.favorite.remove': {
 				const connectionId = String(msg.connectionId || '').trim();
 				const database = String(msg.database || '').trim();
 				if (!connectionId || !database) return;
-				const favorites = this.getSqlFavorites().filter(f => !(f.connectionId === connectionId && f.database.toLowerCase() === database.toLowerCase()));
-				await this.setSqlFavorites(favorites);
+				const result = removeSqlFavorite(this.getSqlFavorites(), connectionId, database);
+				if (result.changed) {
+					await this.setSqlFavorites(result.favorites);
+				}
+				await this.sendSnapshotToWebview();
 				return;
 			}
 			case 'sql.leaveNoTrace.add': {
