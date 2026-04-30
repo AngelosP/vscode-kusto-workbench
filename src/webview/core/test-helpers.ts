@@ -943,6 +943,19 @@ _win.__testSetDropdownText = (testId: string, text: string): string => {
 
 type E2eSectionKind = 'sql' | 'kusto';
 
+type KustoCompletionScenario = 'table-prefix' | 'pipe-operators' | 'project-columns' | 'where-columns' | 'summarize-functions' | 'extend-functions' | 'valid-query';
+
+type KustoCompletionTargets = {
+	table: string;
+	tablePrefix: string;
+	column: string;
+	columnPrefix: string;
+	stringColumn: string;
+	numericColumn: string;
+	dateColumn: string;
+	expectedByScenario: Record<string, string[]>;
+};
+
 const E2E_SECTION = {
 	sql: {
 		section: 'kw-sql-section',
@@ -1047,12 +1060,383 @@ function e2eAssertNoVisibleSuggest(context: string): string {
 	return `${contextLabel}: no visible suggest widget`;
 }
 
-function e2eAutoTriggerToggle(): HTMLElement {
-	const toggle = document.querySelector('kw-sql-toolbar .qe-auto-autocomplete-toggle') as HTMLElement | null;
+function e2eDelay(ms: number): Promise<void> {
+	return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+function e2eEditor(kind: E2eSectionKind): MonacoLike {
+	const section = e2eSection(kind);
+	const boxId = String(section.boxId || section.id || '').trim();
+	const editor = boxId ? _win.queryEditors?.[boxId] as MonacoLike | undefined : undefined;
+	if (editor) {
+		return editor;
+	}
+	return resolveMonacoEditorFromSelector(E2E_SECTION[kind].editor).editor;
+}
+
+function e2eHideSuggest(kind: E2eSectionKind): string {
+	const editor = e2eEditor(kind);
+	try { editor.trigger?.('keyboard', 'hideSuggestWidget', {}); } catch { /* ignore */ }
+	return `${kind} suggest hide requested`;
+}
+
+function e2eVisibleSuggestLabels(context: string, editorSelector: string = ''): string[] {
+	const contextLabel = String(context || 'suggestions');
+	const roots: ParentNode[] = [];
+	if (editorSelector) {
+		const selectedRoot = deepQuerySelector(document, editorSelector) as ParentNode | null;
+		if (!selectedRoot) {
+			throw new Error(`${contextLabel}: editor root not found: ${editorSelector}`);
+		}
+		roots.push(selectedRoot);
+	}
+	roots.push(document);
+
+	let widgets: HTMLElement[] = [];
+	for (const root of roots) {
+		widgets = Array.from(root.querySelectorAll('.suggest-widget.visible')) as HTMLElement[];
+		widgets = widgets.filter(widget =>
+			!widget.classList.contains('hidden')
+			&& widget.style.display !== 'none'
+			&& widget.offsetParent !== null
+		);
+		if (widgets.length) break;
+	}
+
+	if (widgets.length === 0) {
+		throw new Error(`${contextLabel}: expected visible suggest widget`);
+	}
+
+	const widget = widgets[widgets.length - 1];
+	const widgetText = (widget.textContent || '').trim();
+	if (/no suggestions/i.test(widgetText)) {
+		throw new Error(`${contextLabel}: suggest widget reported no suggestions`);
+	}
+
+	const rows = (Array.from(widget.querySelectorAll('.monaco-list-row')) as HTMLElement[])
+		.filter(row => row.offsetParent !== null);
+	const labels = rows
+		.map(row => ((row.querySelector('.label-name') as HTMLElement | null)?.textContent || '').trim())
+		.filter(Boolean);
+
+	if (labels.length === 0) {
+		throw new Error(`${contextLabel}: expected visible suggestions, got 0 labels. Text: ${widgetText.slice(0, 200)}`);
+	}
+
+	return labels;
+}
+
+function e2eNormalizeSuggestLabel(value: string): string {
+	let label = String(value || '').trim();
+	label = label.replace(/^(\x1b\[[0-9;]*m)+/g, '');
+	label = label.replace(/^(\x00|\[|\(|\{|"|')+/, '').replace(/(\]|\)|\}|"|')+$/, '');
+	label = label.split(/[\s,\(:]/g).filter(Boolean)[0] || label;
+	return label.trim().toLowerCase();
+}
+
+function e2eAssertVisibleSuggestExact(context: string, expectedAnyCsv: string, editorSelector: string = ''): string {
+	const contextLabel = String(context || 'suggestions');
+	const expected = String(expectedAnyCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	const labels = e2eVisibleSuggestLabels(contextLabel, editorSelector);
+	if (expected.length) {
+		const normalizedLabels = labels.map(label => e2eNormalizeSuggestLabel(label));
+		const matched = expected.some(candidate => normalizedLabels.includes(e2eNormalizeSuggestLabel(candidate)));
+		if (!matched) {
+			throw new Error(`${contextLabel}: expected exact one of [${expected.join(', ')}], got: ${labels.slice(0, 20).join(', ')}`);
+		}
+	}
+	return `${contextLabel}(${labels.length}): ${labels.slice(0, 15).join(', ')}`;
+}
+
+function e2eAutoTriggerToggle(kind: E2eSectionKind = 'sql'): HTMLElement {
+	const toolbarSelector = kind === 'sql' ? 'kw-sql-toolbar' : 'kw-query-toolbar';
+	const toggle = document.querySelector(`${toolbarSelector} .qe-auto-autocomplete-toggle`) as HTMLElement | null;
 	if (!toggle) {
-		throw new Error('SQL auto-trigger toggle not found');
+		throw new Error(`${kind} auto-trigger toggle not found`);
 	}
 	return toggle;
+}
+
+function e2eAssertAutoTriggerToggleVisible(kind: E2eSectionKind): string {
+	const toggle = e2eAutoTriggerToggle(kind);
+	const rect = toggle.getBoundingClientRect();
+	if (rect.width === 0 || rect.height === 0) {
+		throw new Error(`${kind} auto-trigger toggle has zero dimensions`);
+	}
+	return `${kind} auto-trigger toggle visible: ${rect.width}x${rect.height}`;
+}
+
+function e2eClickAutoTriggerToggle(kind: E2eSectionKind): string {
+	e2eAutoTriggerToggle(kind).click();
+	return `${kind} auto-trigger toggle clicked`;
+}
+
+function e2eAssertAutoTriggerEnabled(expected: boolean): string {
+	if (typeof _win.autoTriggerAutocompleteEnabled !== 'boolean') {
+		throw new Error('autoTriggerAutocompleteEnabled not found');
+	}
+	if (_win.autoTriggerAutocompleteEnabled !== expected) {
+		throw new Error(`autoTriggerAutocompleteEnabled expected ${expected}, got ${_win.autoTriggerAutocompleteEnabled}`);
+	}
+	return `autoTriggerAutocompleteEnabled=${_win.autoTriggerAutocompleteEnabled}`;
+}
+
+function e2eEnsureAutoTriggerEnabled(kind: E2eSectionKind, expected: boolean): string {
+	if (typeof _win.autoTriggerAutocompleteEnabled !== 'boolean') {
+		throw new Error('autoTriggerAutocompleteEnabled not found');
+	}
+	if (_win.autoTriggerAutocompleteEnabled !== expected) {
+		e2eClickAutoTriggerToggle(kind);
+	}
+	return e2eAssertAutoTriggerEnabled(expected);
+}
+
+function e2eKustoSchema(): any {
+	const section = e2eSection('kusto');
+	const boxId = String(section.boxId || section.id || '').trim();
+	const schema = boxId ? _win.schemaByBoxId?.[boxId] : null;
+	if (!schema) {
+		const allKeys = _win.schemaByBoxId ? Object.keys(_win.schemaByBoxId) : [];
+		throw new Error(`No Kusto schema for boxId=${boxId} (keys: ${allKeys.join(',')})`);
+	}
+	return schema;
+}
+
+function e2eIdentifierNames(values: string[]): string[] {
+	return values
+		.map(value => String(value || '').trim())
+		.filter(value => /^[A-Za-z_][A-Za-z0-9_]*$/.test(value));
+}
+
+function e2eUniquePrefix(value: string, allValues: string[], minimumLength: number = 3): string {
+	const normalized = String(value || '');
+	for (let length = Math.min(Math.max(minimumLength, 1), normalized.length); length <= normalized.length; length++) {
+		const prefix = normalized.slice(0, length);
+		const matches = allValues.filter(candidate => String(candidate || '').toLowerCase().startsWith(prefix.toLowerCase()));
+		if (matches.length === 1) {
+			return prefix;
+		}
+	}
+	return normalized;
+}
+
+function e2ePickColumn(columns: string[], columnTypes: Record<string, string>, typePattern: RegExp, fallback: string): string {
+	return columns.find(column => typePattern.test(String(columnTypes[column] || ''))) || fallback;
+}
+
+function e2ePrepareKustoCompletionTargets(): string {
+	const schema = e2eKustoSchema();
+	const tableNames = e2eIdentifierNames(Array.isArray(schema.tables) ? schema.tables : Object.keys(schema.columnTypesByTable || {}));
+	const columnTypesByTable = schema.columnTypesByTable && typeof schema.columnTypesByTable === 'object'
+		? schema.columnTypesByTable as Record<string, Record<string, string>>
+		: {};
+	const preferredTables = ['StormEvents', 'RawEventsADS', 'PopulationData'];
+	const rankedTables = [
+		...preferredTables.filter(table => tableNames.some(candidate => candidate.toLowerCase() === table.toLowerCase())),
+		...tableNames,
+	];
+	const table = rankedTables.find(candidate => {
+		const columns = e2eIdentifierNames(Object.keys(columnTypesByTable[candidate] || {}));
+		return columns.length >= 3;
+	});
+	if (!table) {
+		throw new Error(`No Kusto table with at least 3 identifier columns. Tables: ${tableNames.slice(0, 20).join(', ')}`);
+	}
+
+	const columnTypes = columnTypesByTable[table] || {};
+	const columns = e2eIdentifierNames(Object.keys(columnTypes));
+	if (columns.length < 3) {
+		throw new Error(`Kusto table ${table} has too few identifier columns: ${columns.join(', ')}`);
+	}
+
+	const fallbackColumn = columns[0];
+	const stringColumn = e2ePickColumn(columns, columnTypes, /string/i, fallbackColumn);
+	const numericColumn = e2ePickColumn(columns, columnTypes, /int|long|real|decimal|double/i, fallbackColumn);
+	const dateColumn = e2ePickColumn(columns, columnTypes, /date|time/i, fallbackColumn);
+	const column = stringColumn || numericColumn || dateColumn || fallbackColumn;
+	const targets: KustoCompletionTargets = {
+		table,
+		tablePrefix: e2eUniquePrefix(table, tableNames, 3),
+		column,
+		columnPrefix: e2eUniquePrefix(column, columns, 2),
+		stringColumn,
+		numericColumn,
+		dateColumn,
+		expectedByScenario: {
+			'table-prefix': [table],
+			'pipe-operators': ['where', 'project', 'summarize', 'take'],
+			'project-columns': [column],
+			'where-columns': [column],
+			'summarize-functions': ['dcount'],
+			'extend-functions': ['tostring', 'todouble', 'todatetime', 'tolower'],
+		},
+	};
+	_win.__e2eKustoCompletionTargets = targets;
+	return `kusto completion targets: table=${targets.table} tablePrefix=${targets.tablePrefix} column=${targets.column} columnPrefix=${targets.columnPrefix} string=${targets.stringColumn} numeric=${targets.numericColumn} date=${targets.dateColumn}`;
+}
+
+function e2eKustoCompletionTargets(): KustoCompletionTargets {
+	const targets = _win.__e2eKustoCompletionTargets as KustoCompletionTargets | undefined;
+	if (!targets) {
+		e2ePrepareKustoCompletionTargets();
+	}
+	const nextTargets = _win.__e2eKustoCompletionTargets as KustoCompletionTargets | undefined;
+	if (!nextTargets) {
+		throw new Error('Kusto completion targets were not prepared');
+	}
+	return nextTargets;
+}
+
+async function e2eWaitForKustoCompletionTargets(timeoutMs: number = 25000): Promise<string> {
+	const started = performance.now();
+	let lastError: unknown;
+	while (performance.now() - started <= timeoutMs) {
+		try {
+			return e2ePrepareKustoCompletionTargets();
+		} catch (error) {
+			lastError = error;
+			await e2eDelay(500);
+		}
+	}
+	const message = lastError instanceof Error ? lastError.message : String(lastError || 'timed out');
+	throw new Error(`Kusto schema completion targets not ready after ${timeoutMs}ms: ${message}`);
+}
+
+function e2eSetKustoCompletionContext(scenario: KustoCompletionScenario): string {
+	const targets = e2eKustoCompletionTargets();
+	const table = targets.table;
+	const column = targets.column;
+	let text = '';
+	let lineNumber = 1;
+	let columnNumber = 1;
+
+	if (scenario === 'table-prefix') {
+		text = targets.tablePrefix;
+		lineNumber = 1;
+		columnNumber = targets.tablePrefix.length + 1;
+	} else if (scenario === 'pipe-operators') {
+		text = `${table}\n| `;
+		lineNumber = 2;
+		columnNumber = 3;
+	} else if (scenario === 'project-columns') {
+		text = `${table}\n| project ${targets.columnPrefix}`;
+		lineNumber = 2;
+		columnNumber = `| project ${targets.columnPrefix}`.length + 1;
+	} else if (scenario === 'where-columns') {
+		text = `${table}\n| where ${targets.columnPrefix}`;
+		lineNumber = 2;
+		columnNumber = `| where ${targets.columnPrefix}`.length + 1;
+	} else if (scenario === 'summarize-functions') {
+		text = `${table}\n| summarize dc`;
+		lineNumber = 2;
+		columnNumber = '| summarize dc'.length + 1;
+	} else if (scenario === 'extend-functions') {
+		text = `${table}\n| extend computedValue = to`;
+		lineNumber = 2;
+		columnNumber = '| extend computedValue = to'.length + 1;
+	} else if (scenario === 'valid-query') {
+		text = `${table}\n| project ${column}\n| take 5`;
+		lineNumber = 3;
+		columnNumber = '| take 5'.length + 1;
+	} else {
+		throw new Error(`Unknown Kusto completion scenario: ${scenario}`);
+	}
+
+	_win.__e2e.kusto.setQueryAt(text, lineNumber, columnNumber);
+	try {
+		const editor = e2eEditor('kusto') as any;
+		if (editor.__kustoAutoSuggestTimer) {
+			clearTimeout(editor.__kustoAutoSuggestTimer);
+			editor.__kustoAutoSuggestTimer = null;
+		}
+	} catch { /* ignore */ }
+	return `kusto completion context ${scenario}: ${JSON.stringify(text)}`;
+}
+
+async function e2eWaitForSuggest(kind: E2eSectionKind, context: string, expectedAnyCsv: string, timeoutMs: number, exact: boolean = false): Promise<{ elapsedMs: number; result: string }> {
+	const editor = e2eEditor(kind);
+	const started = performance.now();
+	try { editor.trigger?.('keyboard', 'editor.action.triggerSuggest', {}); } catch { /* fallback below */ }
+	let lastError: unknown;
+	while (performance.now() - started <= timeoutMs) {
+		try {
+			const result = exact
+				? e2eAssertVisibleSuggestExact(context, expectedAnyCsv, E2E_SECTION[kind].editor)
+				: _win.__testAssertVisibleSuggest(context, expectedAnyCsv, E2E_SECTION[kind].editor);
+			return { elapsedMs: performance.now() - started, result };
+		} catch (error) {
+			lastError = error;
+			await e2eDelay(50);
+		}
+	}
+	const message = lastError instanceof Error ? lastError.message : String(lastError || 'timed out');
+	throw new Error(`${context}: no matching suggestions within ${timeoutMs}ms: ${message}`);
+}
+
+async function e2eAssertSuggestLatency(kind: E2eSectionKind, context: string, expectedAnyCsv: string, maxMs: number = 3000, exact: boolean = false): Promise<string> {
+	const expected = String(expectedAnyCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	const result = await e2eWaitForSuggest(kind, context, expected.join(','), maxMs, exact);
+	if (result.elapsedMs > maxMs) {
+		throw new Error(`${context}: suggestions took ${Math.round(result.elapsedMs)}ms, expected <= ${maxMs}ms`);
+	}
+	await e2eDelay(250);
+	const stableResult = exact
+		? e2eAssertVisibleSuggestExact(`${context} stable`, expected.join(','), E2E_SECTION[kind].editor)
+		: _win.__testAssertVisibleSuggest(`${context} stable`, expected.join(','), E2E_SECTION[kind].editor);
+	return `${result.result}; ${stableResult}; latency=${Math.round(result.elapsedMs)}ms <= ${maxMs}ms`;
+}
+
+async function e2eAssertRepeatedSuggestLatency(kind: E2eSectionKind, scenario: KustoCompletionScenario, runs: number = 5, maxSingleMs: number = 3000, maxAverageMs: number = 1500): Promise<string> {
+	const targets = e2eKustoCompletionTargets();
+	const expected = (targets.expectedByScenario[scenario] || []).join(',');
+	const timings: number[] = [];
+	for (let runIndex = 0; runIndex < runs; runIndex++) {
+		e2eHideSuggest(kind);
+		await e2eDelay(120);
+		e2eSetKustoCompletionContext(scenario);
+		const result = await e2eWaitForSuggest(kind, `${scenario} run ${runIndex + 1}`, expected, maxSingleMs, true);
+		if (result.elapsedMs > maxSingleMs) {
+			throw new Error(`${scenario} run ${runIndex + 1}: ${Math.round(result.elapsedMs)}ms > ${maxSingleMs}ms`);
+		}
+		timings.push(result.elapsedMs);
+	}
+	const average = timings.reduce((total, value) => total + value, 0) / Math.max(1, timings.length);
+	if (average > maxAverageMs) {
+		throw new Error(`${scenario}: average suggest latency ${Math.round(average)}ms > ${maxAverageMs}ms (${timings.map(value => Math.round(value)).join(', ')}ms)`);
+	}
+	return `${scenario} repeated latency ok: avg=${Math.round(average)}ms single=[${timings.map(value => Math.round(value)).join(',')}] thresholds single<=${maxSingleMs} avg<=${maxAverageMs}`;
+}
+
+function e2eAssertKustoCompletionVisible(scenario: KustoCompletionScenario): string {
+	const targets = e2eKustoCompletionTargets();
+	const expected = (targets.expectedByScenario[scenario] || []).join(',');
+	return e2eAssertVisibleSuggestExact(`kusto ${scenario}`, expected, E2E_SECTION.kusto.editor);
+}
+
+async function e2eAssertKustoCompletionLatency(scenario: KustoCompletionScenario, maxMs: number = 3000): Promise<string> {
+	const targets = e2eKustoCompletionTargets();
+	const expected = (targets.expectedByScenario[scenario] || []).join(',');
+	return e2eAssertSuggestLatency('kusto', `kusto ${scenario}`, expected, maxMs, true);
+}
+
+function e2eAcceptKustoSuggestion(scenario: KustoCompletionScenario): string {
+	const editor = e2eEditor('kusto');
+	try { editor.trigger?.('keyboard', 'acceptSelectedSuggestion', {}); } catch (error) {
+		throw new Error(`Kusto accept suggestion failed for ${scenario}: ${error instanceof Error ? error.message : String(error)}`);
+	}
+	return `kusto accepted suggestion for ${scenario}`;
+}
+
+function e2eAssertAcceptedKustoCompletion(scenario: KustoCompletionScenario): string {
+	const targets = e2eKustoCompletionTargets();
+	const value = String(e2eEditor('kusto').getValue?.() || '');
+	if (scenario === 'table-prefix' && !value.startsWith(targets.table)) {
+		throw new Error(`Expected accepted table completion ${targets.table}, got ${JSON.stringify(value)}`);
+	}
+	if ((scenario === 'project-columns' || scenario === 'where-columns') && !new RegExp(`\\b${targets.column}\\b`, 'i').test(value)) {
+		throw new Error(`Expected accepted column completion ${targets.column}, got ${JSON.stringify(value)}`);
+	}
+	return `kusto accepted ${scenario}: ${JSON.stringify(value)}`;
 }
 
 function e2eQueryApi(kind: E2eSectionKind) {
@@ -1344,6 +1728,14 @@ _win.__e2e = {
 	kusto: {
 		...e2eQueryApi('kusto'),
 		selectSampleDatabase: () => _win.__testSelectKwDropdownItem(E2E_SECTION.kusto.databaseDropdown, 'sample,storm', true),
+		prepareCompletionTargets: () => e2ePrepareKustoCompletionTargets(),
+		waitForCompletionTargets: (timeoutMs: number = 25000) => e2eWaitForKustoCompletionTargets(timeoutMs),
+		setCompletionContext: (scenario: KustoCompletionScenario) => e2eSetKustoCompletionContext(scenario),
+		assertCompletionVisible: (scenario: KustoCompletionScenario) => e2eAssertKustoCompletionVisible(scenario),
+		assertCompletionLatency: (scenario: KustoCompletionScenario, maxMs: number = 3000) => e2eAssertKustoCompletionLatency(scenario, maxMs),
+		assertRepeatedSuggestLatency: (scenario: KustoCompletionScenario, runs: number = 5, maxSingleMs: number = 3000, maxAverageMs: number = 1500) => e2eAssertRepeatedSuggestLatency('kusto', scenario, runs, maxSingleMs, maxAverageMs),
+		acceptSuggestion: (scenario: KustoCompletionScenario) => e2eAcceptKustoSuggestion(scenario),
+		assertAcceptedCompletion: (scenario: KustoCompletionScenario) => e2eAssertAcceptedKustoCompletion(scenario),
 		assertStaleResults: () => {
 			const section = e2eSection('kusto');
 			const resultsDiv = document.getElementById(e2eKustoElementId(section, 'results'));
@@ -1385,26 +1777,17 @@ _win.__e2e = {
 	},
 	autoTrigger: {
 		assertSqlToggleVisible: () => {
-			const toggle = e2eAutoTriggerToggle();
-			const rect = toggle.getBoundingClientRect();
-			if (rect.width === 0 || rect.height === 0) {
-				throw new Error('SQL auto-trigger toggle has zero dimensions');
-			}
-			return `sql auto-trigger toggle visible: ${rect.width}x${rect.height}`;
+			return e2eAssertAutoTriggerToggleVisible('sql');
 		},
 		assertEnabled: (expected: boolean) => {
-			if (typeof _win.autoTriggerAutocompleteEnabled !== 'boolean') {
-				throw new Error('autoTriggerAutocompleteEnabled not found');
-			}
-			if (_win.autoTriggerAutocompleteEnabled !== expected) {
-				throw new Error(`autoTriggerAutocompleteEnabled expected ${expected}, got ${_win.autoTriggerAutocompleteEnabled}`);
-			}
-			return `autoTriggerAutocompleteEnabled=${_win.autoTriggerAutocompleteEnabled}`;
+			return e2eAssertAutoTriggerEnabled(expected);
 		},
 		clickSqlToggle: () => {
-			e2eAutoTriggerToggle().click();
-			return 'sql auto-trigger toggle clicked';
+			return e2eClickAutoTriggerToggle('sql');
 		},
+		assertToggleVisible: (kind: E2eSectionKind) => e2eAssertAutoTriggerToggleVisible(kind),
+		clickToggle: (kind: E2eSectionKind) => e2eClickAutoTriggerToggle(kind),
+		ensureEnabled: (kind: E2eSectionKind, expected: boolean) => e2eEnsureAutoTriggerEnabled(kind, expected),
 	},
 	persistence: {
 		assertDocumentKind: (expectedKind: string) => {
