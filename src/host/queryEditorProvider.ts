@@ -593,7 +593,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.fetchUrlFromWebview(message);
 				return;
 			case 'prefetchSchema':
-				await this.schema.prefetchSchema(message.connectionId, message.database, message.boxId, !!message.forceRefresh, message.requestToken);
+				await this.schema.prefetchSchema(message.connectionId, message.database, message.boxId, !!message.forceRefresh, message.requestToken, {
+					cacheOnly: !!message.cacheOnly,
+					silent: !!message.silent,
+					reason: message.reason,
+				});
 				return;
 			case 'requestCrossClusterSchema':
 				await this.schema.handleCrossClusterSchemaRequest(message.clusterName, message.database, message.boxId, message.requestToken);

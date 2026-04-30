@@ -3,8 +3,8 @@ import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
-import { SCHEMA_CACHE_VERSION } from './schemaCache';
-import { countColumns } from './schemaIndexUtils';
+import { classifyCachedSchema, SCHEMA_CACHE_TTL_MS, SCHEMA_CACHE_VERSION } from './schemaCache';
+import { getAutocompleteSchemaSignature, getSchemaSummary } from './schemaIndexUtils';
 import {
 	STORAGE_KEYS,
 	CachedSchemaEntry
@@ -23,14 +23,151 @@ export interface SchemaServiceHost {
 	findConnection(connectionId: string): KustoConnection | undefined;
 }
 
+type SchemaPrefetchOptions = {
+	cacheOnly?: boolean;
+	silent?: boolean;
+	reason?: string;
+};
+
+type BackgroundSchemaRefreshListener = {
+	connection: KustoConnection;
+	connectionId: string;
+	database: string;
+	boxId: string;
+	requestToken?: string;
+	cachedSignature?: string;
+	cachedHasRawSchemaJson: boolean;
+	forceRefresh: boolean;
+	silent?: boolean;
+	reason?: string;
+};
+
 
 // ── SchemaService class ──
 
 export class SchemaService {
-	private readonly SCHEMA_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 1 day
+	private readonly backgroundSchemaRefreshes = new Map<string, { listeners: BackgroundSchemaRefreshListener[]; promise: Promise<void> }>();
 
 	constructor(private readonly host: SchemaServiceHost) {
 		void this.migrateCachedSchemasToDiskOnce();
+	}
+
+	private postSchemaData(args: {
+		boxId: string;
+		connectionId: string;
+		database: string;
+		clusterUrl: string;
+		requestToken?: string;
+		schema: DatabaseSchemaIndex;
+		meta?: Record<string, unknown>;
+	}): void {
+		const summary = getSchemaSummary(args.schema);
+		this.host.postMessage({
+			type: 'schemaData',
+			boxId: args.boxId,
+			connectionId: args.connectionId,
+			database: args.database,
+			clusterUrl: args.clusterUrl,
+			requestToken: args.requestToken,
+			schema: args.schema,
+			schemaMeta: {
+				...summary,
+				schemaSignature: getAutocompleteSchemaSignature(args.schema),
+				...args.meta,
+			}
+		});
+	}
+
+	private postSilentSchemaMiss(connectionId: string, database: string, boxId: string, requestToken: string | undefined, options: SchemaPrefetchOptions): void {
+		this.host.postMessage({
+			type: 'schemaError',
+			boxId,
+			connectionId,
+			database,
+			requestToken,
+			cacheOnly: !!options.cacheOnly,
+			silent: !!options.silent,
+			error: 'No cached schema is available.'
+		});
+	}
+
+	private scheduleBackgroundSchemaRefresh(cacheKey: string, listener: BackgroundSchemaRefreshListener): void {
+		const existing = this.backgroundSchemaRefreshes.get(cacheKey);
+		if (existing) {
+			existing.listeners.push(listener);
+			return;
+		}
+
+		const listeners: BackgroundSchemaRefreshListener[] = [listener];
+		const promise = (async () => {
+			try {
+				const result = await this.host.kustoClient.getDatabaseSchema(listener.connection, listener.database, true);
+				const schema = result.schema;
+				const timestamp = result.fromCache
+					? Date.now() - (result.cacheAgeMs ?? 0)
+					: Date.now();
+				await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+
+				const freshSignature = getAutocompleteSchemaSignature(schema);
+				const freshHasRawSchemaJson = !!schema.rawSchemaJson;
+				const snapshot = listeners.slice();
+				for (const item of snapshot) {
+					if (item.boxId.startsWith('__schema_req__')) {
+						continue;
+					}
+					const autocompleteChanged = !!item.cachedSignature && item.cachedSignature !== freshSignature;
+					const rawCapabilityImproved = !item.cachedHasRawSchemaJson && freshHasRawSchemaJson;
+					const workerUpdateNeeded = autocompleteChanged || rawCapabilityImproved || item.forceRefresh;
+					this.postSchemaData({
+						boxId: item.boxId,
+						connectionId: item.connectionId,
+						database: item.database,
+						clusterUrl: item.connection.clusterUrl,
+						requestToken: item.requestToken,
+						schema,
+						meta: {
+							fromCache: result.fromCache,
+							cacheAgeMs: result.cacheAgeMs,
+							debug: result.debug,
+							forceRefresh: item.forceRefresh,
+							deliveryKind: 'fresh',
+							cacheState: 'fresh',
+							isBackgroundRefresh: true,
+							refreshState: 'completed',
+							refreshReason: item.reason || 'stale-cache',
+							workerUpdateNeeded,
+							autocompleteChanged,
+							rawCapabilityImproved,
+							silent: !!item.silent,
+						}
+					});
+				}
+			} catch (error) {
+				const rawMessage = error instanceof Error ? error.message : String(error);
+				this.host.output.appendLine(`[schema] background refresh failed db=${listener.database}: ${rawMessage}`);
+				const snapshot = listeners.slice();
+				for (const item of snapshot) {
+					if (!item.forceRefresh) {
+						continue;
+					}
+					try {
+						const userMessage = this.host.formatQueryExecutionErrorForUser(error, item.connection, item.database);
+						void vscode.window.showWarningMessage(`Failed to refresh schema for ${item.database}. Using cached schema for autocomplete.`, 'More Info').then(selection => {
+							if (selection === 'More Info') {
+								void vscode.window.showInformationMessage(userMessage, { modal: true });
+							}
+						});
+					} catch {
+						// ignore warning formatting failures
+					}
+				}
+			} finally {
+				this.backgroundSchemaRefreshes.delete(cacheKey);
+			}
+		})();
+
+		this.backgroundSchemaRefreshes.set(cacheKey, { listeners, promise });
+		void promise;
 	}
 
 	// ── Disk cache infrastructure ──
@@ -111,7 +248,8 @@ export class SchemaService {
 		database: string,
 		boxId: string,
 		forceRefresh: boolean,
-		requestToken?: string
+		requestToken?: string,
+		options: SchemaPrefetchOptions = {}
 	): Promise<void> {
 		const connection = this.host.findConnection(connectionId);
 		if (!connection || !database) {
@@ -125,68 +263,110 @@ export class SchemaService {
 
 		try {
 			this.host.output.appendLine(
-				`[schema] request connectionId=${connectionId} db=${database} forceRefresh=${forceRefresh}`
+				`[schema] request connectionId=${connectionId} db=${database} forceRefresh=${forceRefresh} cacheOnly=${!!options.cacheOnly}`
 			);
 
 			// Read persisted cache once so we can (a) use it when fresh, and (b) fall back to it on errors.
 			const cached = await this.getCachedSchemaFromDisk(cacheKey);
-			const cachedAgeMs = cached ? Date.now() - cached.timestamp : undefined;
-			const cachedIsFresh = !!(cached && typeof cachedAgeMs === 'number' && cachedAgeMs < this.SCHEMA_CACHE_TTL_MS);
-			const cachedIsLatest = !!(cached && (cached.version ?? 0) === SCHEMA_CACHE_VERSION);
+			const cachedState = classifyCachedSchema(cached);
+			const cachedAgeMs = cachedState.cacheAgeMs;
+			const cachedSignature = cached?.schema ? getAutocompleteSchemaSignature(cached.schema) : undefined;
+			const cachedHasRawSchemaJson = !!cached?.schema?.rawSchemaJson;
+
+			if (options.cacheOnly) {
+				if (cached?.schema) {
+					this.host.output.appendLine(`[schema] loaded (cache-only) db=${database}`);
+					this.postSchemaData({
+						boxId,
+						connectionId,
+						database,
+						clusterUrl: connection.clusterUrl,
+						requestToken,
+						schema: cached.schema,
+						meta: {
+							fromCache: true,
+							cacheAgeMs: cachedAgeMs,
+							deliveryKind: 'cache-only',
+							cacheState: cachedState.isFresh && cachedState.isLatestVersion ? 'fresh' : 'stale',
+							isStale: !(cachedState.isFresh && cachedState.isLatestVersion),
+							refreshState: 'none',
+							workerUpdateNeeded: true,
+							cacheOnly: true,
+							silent: !!options.silent,
+						}
+					});
+					return;
+				}
+				this.host.output.appendLine(`[schema] cache-only miss db=${database}`);
+				this.postSilentSchemaMiss(connectionId, database, boxId, requestToken, options);
+				return;
+			}
 
 			// Default path: use persisted cache when it's still fresh.
-			if (!forceRefresh && cached && cachedIsFresh && cachedIsLatest) {
+			if (!forceRefresh && cached && cachedState.isFresh && cachedState.isLatestVersion) {
 				const schema = cached.schema;
-				const tablesCount = schema.tables?.length ?? 0;
-				const columnsCount = countColumns(schema);
+				const summary = getSchemaSummary(schema);
 
 				this.host.output.appendLine(
-					`[schema] loaded (persisted cache) db=${database} tables=${tablesCount} columns=${columnsCount}`
+					`[schema] loaded (persisted cache) db=${database} tables=${summary.tablesCount} columns=${summary.columnsCount}`
 				);
-				this.host.postMessage({
-					type: 'schemaData',
+				this.postSchemaData({
 					boxId,
 					connectionId,
 					database,
 					clusterUrl: connection.clusterUrl,
 					requestToken,
 					schema,
-					schemaMeta: {
+					meta: {
 						fromCache: true,
 						cacheAgeMs: cachedAgeMs,
-						tablesCount,
-						columnsCount,
-						functionsCount: schema.functions?.length ?? 0
+						deliveryKind: 'cache',
+						cacheState: 'fresh',
+						isStale: false,
+						refreshState: 'none',
+						workerUpdateNeeded: true,
 					}
 				});
 				return;
 			}
 
 			// If we have cached data (even if stale or outdated version) and this is NOT a force refresh,
-			// return the cached data immediately without making a network call.
+			// return the cached data immediately and refresh in the background.
 			if (!forceRefresh && cached) {
 				const schema = cached.schema;
-				const tablesCount = schema.tables?.length ?? 0;
-				const columnsCount = countColumns(schema);
+				const summary = getSchemaSummary(schema);
 
 				this.host.output.appendLine(
-					`[schema] loaded (persisted cache, stale/outdated) db=${database} tables=${tablesCount} columns=${columnsCount}`
+					`[schema] loaded (persisted cache, stale/outdated) db=${database} tables=${summary.tablesCount} columns=${summary.columnsCount}`
 				);
-				this.host.postMessage({
-					type: 'schemaData',
+				this.postSchemaData({
 					boxId,
 					connectionId,
 					database,
 					clusterUrl: connection.clusterUrl,
 					requestToken,
 					schema,
-					schemaMeta: {
+					meta: {
 						fromCache: true,
 						cacheAgeMs: cachedAgeMs,
-						tablesCount,
-						columnsCount,
-						functionsCount: schema.functions?.length ?? 0
+						deliveryKind: 'cache',
+						cacheState: cachedState.isLatestVersion ? 'stale' : 'outdated',
+						isStale: true,
+						refreshState: 'scheduled',
+						refreshReason: cachedState.isLatestVersion ? 'stale-cache' : 'cache-version-mismatch',
+						workerUpdateNeeded: true,
 					}
+				});
+				this.scheduleBackgroundSchemaRefresh(cacheKey, {
+					connection,
+					connectionId,
+					database,
+					boxId,
+					requestToken,
+					cachedSignature,
+					cachedHasRawSchemaJson,
+					forceRefresh: false,
+					reason: cachedState.isLatestVersion ? 'stale-cache' : 'cache-version-mismatch',
 				});
 				return;
 			}
@@ -194,11 +374,10 @@ export class SchemaService {
 			const result = await this.host.kustoClient.getDatabaseSchema(connection, database, forceRefresh);
 			const schema = result.schema;
 
-			const tablesCount = schema.tables?.length ?? 0;
-			const columnsCount = countColumns(schema);
+			const summary = getSchemaSummary(schema);
 
 			this.host.output.appendLine(
-				`[schema] loaded db=${database} tables=${tablesCount} columns=${columnsCount} fromCache=${result.fromCache}`
+				`[schema] loaded db=${database} tables=${summary.tablesCount} columns=${summary.columnsCount} fromCache=${result.fromCache}`
 			);
 
 			// Persist schema across VS Code sessions.
@@ -206,7 +385,7 @@ export class SchemaService {
 				? Date.now() - (result.cacheAgeMs ?? 0)
 				: Date.now();
 			await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
-			if (tablesCount === 0 || columnsCount === 0) {
+			if (summary.tablesCount === 0 || summary.columnsCount === 0) {
 				const d = result.debug;
 				if (d) {
 					this.host.output.appendLine(`[schema] debug command=${d.commandUsed ?? ''}`);
@@ -218,22 +397,23 @@ export class SchemaService {
 				}
 			}
 
-			this.host.postMessage({
-				type: 'schemaData',
+			this.postSchemaData({
 				boxId,
 				connectionId,
 				database,
 				clusterUrl: connection.clusterUrl,
 				requestToken,
 				schema,
-				schemaMeta: {
+				meta: {
 					fromCache: result.fromCache,
 					cacheAgeMs: result.cacheAgeMs,
-					tablesCount,
-					columnsCount,
-					functionsCount: schema.functions?.length ?? 0,
 					debug: result.debug,
-					forceRefresh
+					forceRefresh,
+					deliveryKind: result.fromCache ? 'memory-cache' : 'fresh',
+					cacheState: 'fresh',
+					isStale: false,
+					refreshState: 'completed',
+					workerUpdateNeeded: true,
 				}
 			});
 		} catch (error) {
@@ -245,29 +425,30 @@ export class SchemaService {
 				const cached = await this.getCachedSchemaFromDisk(cacheKey);
 				if (cached && cached.schema) {
 					const schema = cached.schema;
-					const tablesCount = schema.tables?.length ?? 0;
-					const columnsCount = countColumns(schema);
+					const summary = getSchemaSummary(schema);
 					const hasRawSchemaJson = !!schema.rawSchemaJson;
 
 					this.host.output.appendLine(
-						`[schema] using cached schema after failure db=${database} tables=${tablesCount} columns=${columnsCount} hasRawSchemaJson=${hasRawSchemaJson}`
+						`[schema] using cached schema after failure db=${database} tables=${summary.tablesCount} columns=${summary.columnsCount} hasRawSchemaJson=${hasRawSchemaJson}`
 					);
-					this.host.postMessage({
-						type: 'schemaData',
+					this.postSchemaData({
 						boxId,
 						connectionId,
 						database,
 						clusterUrl: connection.clusterUrl,
 						requestToken,
 						schema,
-						schemaMeta: {
+						meta: {
 							fromCache: true,
 							cacheAgeMs: Date.now() - cached.timestamp,
-							tablesCount,
-							columnsCount,
-							functionsCount: schema.functions?.length ?? 0,
 							isFailoverToCache: true,
-							hasRawSchemaJson
+							hasRawSchemaJson,
+							forceRefresh,
+							deliveryKind: 'cache-failover',
+							cacheState: 'stale',
+							isStale: true,
+							refreshState: 'failed',
+							workerUpdateNeeded: true,
 						}
 					});
 
@@ -351,7 +532,7 @@ export class SchemaService {
 
 			const cached = await this.getCachedSchemaFromDisk(cacheKey);
 			const cachedAgeMs = cached ? Date.now() - cached.timestamp : undefined;
-			const cachedIsFresh = !!(cached && typeof cachedAgeMs === 'number' && cachedAgeMs < this.SCHEMA_CACHE_TTL_MS);
+			const cachedIsFresh = !!(cached && typeof cachedAgeMs === 'number' && cachedAgeMs < SCHEMA_CACHE_TTL_MS);
 
 			if (cached && cachedIsFresh && cached.schema.rawSchemaJson) {
 				this.host.postMessage({

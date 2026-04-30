@@ -236,7 +236,7 @@ export function onQueryEditorToolbarAction(boxId: any, action: any): void {
 				return;
 			}
 		} catch (e) { console.error('[kusto]', e); }
-		return runMonacoAction(boxId, 'editor.action.triggerSuggest');
+		return;
 	}
 	if (action === 'rename') return runMonacoAction(boxId, 'editor.action.rename');
 	if (action === 'doubleToSingle') return replaceAllInEditor(boxId, '"', "'");

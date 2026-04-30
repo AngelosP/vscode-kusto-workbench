@@ -463,7 +463,7 @@ declare global {
 		// monaco.ts
 		// =====================================================================
 		__kustoFunctionDocs: Record<string, any>;
-		__kustoSetMonacoKustoSchema: (rawSchemaJson: any, clusterUrl: string, database: string, setAsContext?: boolean, modelUri?: string, forceRefresh?: boolean) => Promise<void>;
+		__kustoSetMonacoKustoSchema: (rawSchemaJson: any, clusterUrl: string, database: string, setAsContext?: boolean, modelUri?: string, forceRefresh?: boolean) => Promise<boolean>;
 		__kustoUpdateSchemaForFocusedBox: (boxId: string, enableMarkers?: boolean) => Promise<void>;
 		__kustoApplyCrossClusterSchema: (clusterName: string, clusterUrl: string, database: string, rawSchemaJson: any) => Promise<void>;
 		__kustoTriggerRevalidation: (boxId: string) => void;
@@ -471,7 +471,7 @@ declare global {
 		__kustoExtractStatementTextAtCursor: (editor: any) => string | null;
 		__kustoAutoFindInQueryEditor: (boxId: string, term: string) => Promise<boolean>;
 		__kustoClearAutoFindInQueryEditor: (boxId: string) => void;
-		__kustoTriggerAutocompleteForBoxId: (boxId: string) => void;
+		__kustoTriggerAutocompleteForBoxId: (boxId: string) => Promise<boolean>;
 		__kustoSingleLineQueryForBoxId: (boxId: string) => void;
 		__kustoPrettifyQueryForBoxId: (boxId: string) => void;
 		__kustoPrettifyKustoText: (text: string) => string;

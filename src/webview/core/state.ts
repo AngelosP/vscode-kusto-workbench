@@ -22,8 +22,28 @@ export const schemaFetchInFlightByBoxId: Record<string, any> = {};
 export const lastSchemaRequestAtByBoxId: Record<string, any> = {};
 export const qualifyTablesInFlightByBoxId: Record<string, any> = {};
 export const schemaByConnDb: Record<string, any> = {};
+export const schemaMetaByConnDb: Record<string, any> = {};
+export const schemaMetaByBoxId: Record<string, any> = {};
 export const schemaRequestResolversByBoxId: Record<string, any> = {};
 export const databasesRequestResolversByBoxId: Record<string, any> = {};
+export type SchemaWorkerReadyState = {
+	status: 'pending' | 'ready' | 'error';
+	schemaKey?: string;
+	schemaSignature?: string;
+	updatedAt: number;
+};
+export type PendingSchemaWorkerUpdate = {
+	rawSchemaJson: any;
+	clusterUrl: string;
+	database: string;
+	schemaKey: string;
+	schemaSignature?: string;
+	forceRefresh?: boolean;
+	reason?: string;
+};
+export const schemaWorkerReadyByBoxId: Record<string, SchemaWorkerReadyState | undefined> = {};
+export const schemaWorkerReadyWaitersByBoxId: Record<string, Array<{ schemaKey?: string; resolve: (ready: boolean) => void }>> = {};
+export const pendingSchemaWorkerUpdateByBoxId: Record<string, PendingSchemaWorkerUpdate | undefined> = {};
 export const missingClusterDetectTimersByBoxId: Record<string, any> = {};
 export const lastQueryTextByBoxId: Record<string, any> = {};
 export const missingClusterUrlsByBoxId: Record<string, any> = {};
@@ -69,6 +89,91 @@ export function setCaretDocsEnabled(val: boolean) { caretDocsEnabled = val; try 
 export function setAutoTriggerAutocompleteEnabled(val: boolean) { autoTriggerAutocompleteEnabled = val; try { _win.autoTriggerAutocompleteEnabled = val; } catch (e) { console.error('[kusto]', e); } }
 export function setCopilotInlineCompletionsEnabled(val: boolean) { copilotInlineCompletionsEnabled = val; try { _win.copilotInlineCompletionsEnabled = val; } catch (e) { console.error('[kusto]', e); } }
 export function setSqlConnections(val: any[]) { sqlConnections.length = 0; sqlConnections.push(...val); try { _win.sqlConnections = sqlConnections; } catch (e) { console.error('[kusto]', e); } }
+
+function resolveSchemaWorkerWaiters(boxId: string, ready: boolean, schemaKey?: string): void {
+	try {
+		const waiters = schemaWorkerReadyWaitersByBoxId[boxId];
+		if (!waiters || waiters.length === 0) {
+			return;
+		}
+		const remaining: typeof waiters = [];
+		for (const waiter of waiters) {
+			if (!waiter.schemaKey || !schemaKey || waiter.schemaKey === schemaKey) {
+				try { waiter.resolve(ready); } catch (e) { console.error('[kusto]', e); }
+			} else {
+				remaining.push(waiter);
+			}
+		}
+		if (remaining.length) {
+			schemaWorkerReadyWaitersByBoxId[boxId] = remaining;
+		} else {
+			delete schemaWorkerReadyWaitersByBoxId[boxId];
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+export function markSchemaWorkerApplyPending(boxId: string, schemaKey: string, schemaSignature?: string): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	schemaWorkerReadyByBoxId[id] = { status: 'pending', schemaKey, schemaSignature, updatedAt: Date.now() };
+}
+
+export function markSchemaWorkerReady(boxId: string, schemaKey: string, schemaSignature?: string): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	schemaWorkerReadyByBoxId[id] = { status: 'ready', schemaKey, schemaSignature, updatedAt: Date.now() };
+	resolveSchemaWorkerWaiters(id, true, schemaKey);
+}
+
+export function markSchemaWorkerApplyFailed(boxId: string, schemaKey?: string): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	schemaWorkerReadyByBoxId[id] = { status: 'error', schemaKey, updatedAt: Date.now() };
+	resolveSchemaWorkerWaiters(id, false, schemaKey);
+}
+
+export function isSchemaWorkerReady(boxId: string, schemaKey?: string): boolean {
+	const id = String(boxId || '').trim();
+	if (!id) return false;
+	const state = schemaWorkerReadyByBoxId[id];
+	if (!state || state.status !== 'ready') return false;
+	return !schemaKey || !state.schemaKey || state.schemaKey === schemaKey;
+}
+
+export function waitForSchemaWorkerReady(boxId: string, schemaKey?: string, timeoutMs: number = 900): Promise<boolean> {
+	const id = String(boxId || '').trim();
+	if (!id) return Promise.resolve(false);
+	if (isSchemaWorkerReady(id, schemaKey)) {
+		return Promise.resolve(true);
+	}
+	return new Promise(resolve => {
+		let settled = false;
+		let timeoutId: number | undefined;
+		const finish = (ready: boolean) => {
+			if (settled) return;
+			settled = true;
+			if (timeoutId !== undefined) {
+				try { clearTimeout(timeoutId); } catch (e) { console.error('[kusto]', e); }
+			}
+			resolve(ready);
+		};
+		try {
+			(schemaWorkerReadyWaitersByBoxId[id] = schemaWorkerReadyWaitersByBoxId[id] || []).push({ schemaKey, resolve: finish });
+			timeoutId = window.setTimeout(() => {
+				try {
+					const waiters = schemaWorkerReadyWaitersByBoxId[id] || [];
+					schemaWorkerReadyWaitersByBoxId[id] = waiters.filter(waiter => waiter.resolve !== finish);
+					if (schemaWorkerReadyWaitersByBoxId[id].length === 0) {
+						delete schemaWorkerReadyWaitersByBoxId[id];
+					}
+				} catch (e) { console.error('[kusto]', e); }
+				finish(isSchemaWorkerReady(id, schemaKey));
+			}, Math.max(0, timeoutMs));
+		} catch {
+			finish(false);
+		}
+	});
+}
 
 // ======================================================================
 // Window bridge: expose all state globals for remaining legacy callers

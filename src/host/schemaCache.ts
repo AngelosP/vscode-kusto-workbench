@@ -7,8 +7,34 @@ import { DatabaseSchemaIndex, KustoFunctionInfo } from './kustoClient';
 // Used to automatically refresh stale cache entries created by older extension versions.
 // Version 4: Extract function docString and folder from JSON schema (2025-01-24)
 export const SCHEMA_CACHE_VERSION = 4;
+export const SCHEMA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
 export type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number; version: number; clusterUrl?: string; database?: string };
+export type CachedSchemaClassification = {
+	exists: boolean;
+	cacheAgeMs?: number;
+	isFresh: boolean;
+	isLatestVersion: boolean;
+	isUsable: boolean;
+};
+
+export const classifyCachedSchema = (
+	entry: CachedSchemaEntry | undefined,
+	now: number = Date.now()
+): CachedSchemaClassification => {
+	if (!entry || !entry.schema || typeof entry.timestamp !== 'number') {
+		return { exists: false, isFresh: false, isLatestVersion: false, isUsable: false };
+	}
+	const cacheAgeMs = Math.max(0, now - entry.timestamp);
+	const isLatestVersion = (entry.version ?? 0) === SCHEMA_CACHE_VERSION;
+	return {
+		exists: true,
+		cacheAgeMs,
+		isFresh: cacheAgeMs < SCHEMA_CACHE_TTL_MS,
+		isLatestVersion,
+		isUsable: true,
+	};
+};
 
 export const getSchemaCacheDirUri = (globalStorageUri: vscode.Uri): vscode.Uri => {
 	return vscode.Uri.joinPath(globalStorageUri, 'schemaCache');

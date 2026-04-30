@@ -1,3 +1,5 @@
+import * as crypto from 'crypto';
+
 import { DatabaseSchemaIndex } from './kustoClient';
 
 /**
@@ -78,6 +80,71 @@ export const countColumns = (schema: DatabaseSchemaIndex | undefined | null): nu
 		count += Array.isArray(cols) ? cols.length : 0;
 	}
 	return count;
+};
+
+export const getSchemaSummary = (schema: DatabaseSchemaIndex | undefined | null): { tablesCount: number; columnsCount: number; functionsCount: number; hasRawSchemaJson: boolean } => ({
+	tablesCount: schema?.tables?.length ?? 0,
+	columnsCount: countColumns(schema),
+	functionsCount: schema?.functions?.length ?? 0,
+	hasRawSchemaJson: !!schema?.rawSchemaJson,
+});
+
+function stableForSignature(value: unknown): unknown {
+	if (Array.isArray(value)) {
+		return value.map(stableForSignature);
+	}
+	if (!value || typeof value !== 'object') {
+		return value;
+	}
+	const out: Record<string, unknown> = {};
+	for (const key of Object.keys(value as Record<string, unknown>).sort((a, b) => a.localeCompare(b))) {
+		out[key] = stableForSignature((value as Record<string, unknown>)[key]);
+	}
+	return out;
+}
+
+export const getAutocompleteSchemaSignature = (schema: DatabaseSchemaIndex | undefined | null): string => {
+	if (!schema) {
+		return 'sha256:empty';
+	}
+	const tableNames = Array.isArray(schema.tables)
+		? schema.tables.map(table => String(table || '')).filter(Boolean).sort((a, b) => a.localeCompare(b))
+		: [];
+	const columnTypesByTable: Record<string, Record<string, string>> = {};
+	for (const table of Object.keys(schema.columnTypesByTable || {}).sort((a, b) => a.localeCompare(b))) {
+		const columns = schema.columnTypesByTable?.[table] || {};
+		columnTypesByTable[table] = {};
+		for (const column of Object.keys(columns).sort((a, b) => a.localeCompare(b))) {
+			columnTypesByTable[table][column] = String(columns[column] || '');
+		}
+	}
+	const functions = (schema.functions || [])
+		.map(fn => ({
+			name: String(fn?.name || ''),
+			parametersText: String(fn?.parametersText || ''),
+			parameters: (fn?.parameters || []).map(param => ({
+				name: String(param?.name || ''),
+				type: String(param?.type || ''),
+				defaultValue: String(param?.defaultValue || ''),
+				raw: String(param?.raw || ''),
+			})),
+			docString: String(fn?.docString || ''),
+			folder: String(fn?.folder || ''),
+			body: String(fn?.body || ''),
+		}))
+		.filter(fn => fn.name)
+		.sort((a, b) => a.name.localeCompare(b.name));
+	const canonical = stableForSignature({
+		tables: tableNames,
+		columnTypesByTable,
+		tableDocStrings: stableForSignature(schema.tableDocStrings || {}),
+		tableFolders: stableForSignature(schema.tableFolders || {}),
+		columnDocStrings: stableForSignature(schema.columnDocStrings || {}),
+		functions,
+		rawSchemaJson: schema.rawSchemaJson ? stableForSignature(schema.rawSchemaJson) : null,
+	});
+	const json = JSON.stringify(canonical);
+	return 'sha256:' + crypto.createHash('sha256').update(json, 'utf8').digest('hex');
 };
 
 /**

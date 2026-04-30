@@ -4,6 +4,7 @@
 
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { setActiveMonacoEditor } from './state.js';
+import { __kustoFindSuggestWidgetForEditor } from '../monaco/suggest.js';
 
 type MonacoLike = {
 	getDomNode?: () => HTMLElement | null;
@@ -564,11 +565,40 @@ _win.__testSetMonacoSelection = (
 	return `${focusResult}; selection=${startLineNumber}:${startColumn}-${endLineNumber}:${endColumn}`;
 };
 
+
+function e2eGetEditorBoxId(editor: MonacoLike): string {
+	try {
+		const model = typeof editor.getModel === 'function' ? editor.getModel() : null;
+		const uri = model?.uri?.toString?.();
+		if (uri && _win.queryEditorBoxByModelUri?.[uri]) {
+			return String(_win.queryEditorBoxByModelUri[uri]);
+		}
+	} catch { /* ignore */ }
+	try {
+		for (const [boxId, knownEditor] of Object.entries(_win.queryEditors || {})) {
+			if (knownEditor === editor) {
+				return String(boxId);
+			}
+		}
+	} catch { /* ignore */ }
+	return '';
+}
+
 _win.__testTriggerMonaco = (selector: string, handlerId: string, payload: any = {}): string => {
 	const focusResult = _win.__testFocusMonaco(selector);
 	const { editor } = resolveMonacoEditorFromSelector(selector);
 	if (typeof editor.trigger !== 'function') {
 		throw new Error(`monaco trigger unavailable for: ${selector}`);
+	}
+	const model = typeof editor.getModel === 'function' ? editor.getModel() : null;
+	const language = typeof model?.getLanguageId === 'function' ? model.getLanguageId() : '';
+	const isKustoSuggest = handlerId === 'editor.action.triggerSuggest' && language === 'kusto';
+	if (isKustoSuggest && typeof _win.__kustoTriggerAutocompleteForBoxId === 'function') {
+		const boxId = e2eGetEditorBoxId(editor);
+		if (boxId) {
+			_win.__kustoTriggerAutocompleteForBoxId(boxId);
+			return `${focusResult}; triggered gated kusto suggest for ${boxId}`;
+		}
 	}
 	editor.trigger('e2e-test', handlerId, payload ?? {});
 	return `${focusResult}; triggered ${handlerId}`;
@@ -798,6 +828,11 @@ _win.__testSendCtrlSpaceMonaco = (selector: string): string => {
 	const editor = resolveMonacoEditorFromElement(editorRoot);
 	if (editor && typeof editor.trigger === 'function') {
 		try {
+			const kustoBoxId = (editor as any).__kustoBoxId;
+			if (kustoBoxId && typeof _win.__kustoTriggerAutocompleteForBoxId === 'function') {
+				_win.__kustoTriggerAutocompleteForBoxId(kustoBoxId);
+				return `${focusResult}; triggerSuggest via kusto helper`;
+			}
 			editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
 			return `${focusResult}; triggerSuggest via editor.trigger()`;
 		} catch (err) {
@@ -1091,7 +1126,7 @@ function e2eIsVisibleElement(element: HTMLElement): boolean {
 	] as const;
 	for (const [x, y] of points) {
 		const hit = doc.elementFromPoint(x, y);
-		if (hit && (hit === element || element.contains(hit) || hit.contains(element))) {
+		if (hit && (hit === element || element.contains(hit))) {
 			return true;
 		}
 	}
@@ -1114,6 +1149,18 @@ function e2eSuggestRoots(contextLabel: string, editorSelector: string = ''): Par
 function e2eVisibleSuggestWidgets(contextLabel: string, editorSelector: string = ''): HTMLElement[] {
 	const seen = new Set<HTMLElement>();
 	const widgets: HTMLElement[] = [];
+	if (editorSelector) {
+		try {
+			const { editor } = resolveMonacoEditorFromSelector(editorSelector);
+			const editorWidget = __kustoFindSuggestWidgetForEditor(editor, { requireVisible: true, maxDistancePx: 480 }) as HTMLElement | null;
+			if (editorWidget && e2eIsVisibleElement(editorWidget)) {
+				seen.add(editorWidget);
+				widgets.push(editorWidget);
+			}
+		} catch {
+			// Fall through to DOM traversal below for non-Monaco callers and diagnostics.
+		}
+	}
 	for (const root of e2eSuggestRoots(contextLabel, editorSelector)) {
 		const rootWidgets = deepQuerySelectorAll(root, '.suggest-widget') as HTMLElement[];
 		for (const widget of rootWidgets) {
@@ -1497,7 +1544,13 @@ function e2eSetKustoCompletionContext(scenario: KustoCompletionScenario): string
 async function e2eWaitForSuggest(kind: E2eSectionKind, context: string, expectedAnyCsv: string, timeoutMs: number, exact: boolean = false): Promise<{ elapsedMs: number; result: string }> {
 	const editor = e2eEditor(kind);
 	const started = performance.now();
-	try { editor.trigger?.('keyboard', 'editor.action.triggerSuggest', {}); } catch { /* fallback below */ }
+	try {
+		if (kind === 'kusto' && (editor as any).__kustoBoxId && typeof _win.__kustoTriggerAutocompleteForBoxId === 'function') {
+			_win.__kustoTriggerAutocompleteForBoxId((editor as any).__kustoBoxId);
+		} else {
+			editor.trigger?.('keyboard', 'editor.action.triggerSuggest', {});
+		}
+	} catch { /* fallback below */ }
 	return e2eWaitForExistingSuggest(kind, context, expectedAnyCsv, timeoutMs, exact, started);
 }
 
@@ -1634,7 +1687,21 @@ function e2eQueryApi(kind: E2eSectionKind) {
 		assertInlineSuggestEnabled: () => _win.__testAssertMonacoInlineSuggestEnabled(editorSelector),
 		modelUri: () => _win.__testGetMonacoModelUri(editorSelector),
 		typeText: (text: string) => _win.__testTypeMonaco(editorSelector, text),
-		triggerSuggest: () => _win.__testTriggerMonaco(editorSelector, 'editor.action.triggerSuggest'),
+		triggerSuggest: async () => {
+			if (kind === 'kusto' && typeof _win.__kustoTriggerAutocompleteForBoxId === 'function') {
+				const { editor } = resolveMonacoEditorFromSelector(editorSelector);
+				const boxId = e2eGetEditorBoxId(editor);
+				if (!boxId) {
+					throw new Error('Kusto editor boxId unavailable for triggerSuggest');
+				}
+				const triggered = await _win.__kustoTriggerAutocompleteForBoxId(boxId);
+				if (!triggered) {
+					throw new Error(`Kusto autocomplete trigger was not accepted for ${boxId}`);
+				}
+				return `triggered gated kusto suggest for ${boxId}`;
+			}
+			return _win.__testTriggerMonaco(editorSelector, 'editor.action.triggerSuggest');
+		},
 		assertSuggestions: (context: string, expectedAnyCsv: string = '') => _win.__testAssertVisibleSuggest(context, expectedAnyCsv, editorSelector),
 		assertMarkers: (expectation: 'any' | 'none' = 'any', owner: string = '', severity: 'error' | '' = '') => _win.__testAssertMonacoMarkers(editorSelector, expectation, owner, severity),
 		assertRunEnabled: () => {
@@ -1959,6 +2026,7 @@ _win.__e2e = {
 			typeText: (text: string) => _win.__e2e.kusto.typeText(text),
 			hide: () => e2eHideSuggest('kusto'),
 			trigger: () => _win.__e2e.kusto.triggerSuggest(),
+			waitVisible: (context: string, expectedAnyCsv: string = '', timeoutMs: number = 5000) => e2eWaitForSuggest('kusto', context, expectedAnyCsv, timeoutMs, false),
 			assertVisible: (context: string, expectedAnyCsv: string = '') => _win.__e2e.kusto.assertSuggestions(context, expectedAnyCsv),
 			assertHidden: (context: string) => e2eAssertNoVisibleSuggest(context),
 		},

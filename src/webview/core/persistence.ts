@@ -11,6 +11,7 @@ import {
 	__kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase,
 	__kustoSetAutoEnterFavoritesForBox, __kustoTryAutoEnterFavoritesModeForAllBoxes,
 	__kustoClampResultsWrapperHeight,
+	schemaRequestTokenByBoxId,
 	addPythonBox, addUrlBox, removePythonBox, removeUrlBox, pythonBoxes, urlBoxes,
 	addHtmlBox, removeHtmlBox, htmlBoxes,
 	addSqlBox, removeSqlBox, sqlBoxes,
@@ -18,6 +19,7 @@ import {
 } from './section-factory';
 import {
 	connections, queryBoxes, queryEditors, favoritesModeByBoxId, leaveNoTraceClusters,
+	activeQueryEditorBoxId,
 	caretDocsEnabled, autoTriggerAutocompleteEnabled,
 	setCaretDocsEnabled, setAutoTriggerAutocompleteEnabled,
 	sqlFavoritesModeByBoxId,
@@ -43,6 +45,8 @@ let __kustoPersistTimer: any = null;
 let __kustoDocumentDataApplyCount = 0;
 let __kustoHasAppliedDocument = false;
 let __kustoLastAppliedDocumentUri = '';
+let __kustoSchemaPrewarmTimer: any = null;
+const __kustoSchemaPrewarmSentKeys = new Set<string>();
 
 // Thin wrapper kept for the window bridge export.
 function __kustoNormalizeClusterUrl(clusterUrl: any) {
@@ -60,6 +64,80 @@ function __kustoIsLeaveNoTraceCluster(clusterUrl: any) {
 	} catch {
 		return false;
 	}
+}
+
+function __kustoIsVisibleExpandedQuerySection(boxId: string): boolean {
+	try {
+		const el = __kustoGetQuerySectionElement(boxId) as any;
+		if (!el) return false;
+		if (typeof el.isExpanded === 'function' && !el.isExpanded()) return false;
+		if (el.classList && el.classList.contains('is-collapsed')) return false;
+		const style = typeof getComputedStyle === 'function' ? getComputedStyle(el) : null;
+		if (style && (style.display === 'none' || style.visibility === 'hidden')) return false;
+		if (typeof el.getClientRects === 'function' && el.getClientRects().length === 0) return false;
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoPickSchemaPrewarmBoxId(): string {
+	try {
+		const active = String(activeQueryEditorBoxId || '');
+		if (active && __kustoIsVisibleExpandedQuerySection(active)) {
+			return active;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try {
+		for (const boxId of queryBoxes || []) {
+			const id = String(boxId || '');
+			if (id && __kustoIsVisibleExpandedQuerySection(id)) {
+				return id;
+			}
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	return '';
+}
+
+export function __kustoScheduleLocalSchemaPrewarm(reason: string = 'file-open'): void {
+	try {
+		if (__kustoSchemaPrewarmTimer) {
+			clearTimeout(__kustoSchemaPrewarmTimer);
+		}
+		__kustoSchemaPrewarmTimer = setTimeout(() => {
+			__kustoSchemaPrewarmTimer = null;
+			try {
+				if (!window.vscode) return;
+				const boxId = __kustoPickSchemaPrewarmBoxId();
+				if (!boxId) return;
+				let ownerId = boxId;
+				try {
+					if (typeof (window as any).__kustoGetSelectionOwnerBoxId === 'function') {
+						ownerId = (window as any).__kustoGetSelectionOwnerBoxId(boxId) || boxId;
+					}
+				} catch (e) { console.error('[kusto]', e); }
+				const connectionId = __kustoGetConnectionId(ownerId);
+				const database = __kustoGetDatabase(ownerId);
+				if (!connectionId || !database) return;
+				const key = connectionId + '|' + database;
+				if (__kustoSchemaPrewarmSentKeys.has(key)) return;
+				__kustoSchemaPrewarmSentKeys.add(key);
+				const requestToken = 'schema_prewarm_' + Date.now() + '_' + Math.random().toString(16).slice(2);
+				try { schemaRequestTokenByBoxId[boxId] = requestToken; } catch (e) { console.error('[kusto]', e); }
+				postMessageToHost({
+					type: 'prefetchSchema',
+					connectionId,
+					database,
+					boxId,
+					forceRefresh: false,
+					requestToken,
+					cacheOnly: true,
+					silent: true,
+					reason,
+				});
+			} catch (e) { console.error('[kusto]', e); }
+		}, 80);
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 // Document capabilities (set by extension host via the persistenceMode message).
@@ -1547,10 +1625,10 @@ export function handleDocumentDataMessage(message: any) {
 		console.log('%c[schema-diag] FILE OPENED — sections:', 'color:#0af;font-weight:bold', sectionSummary);
 	} catch (e) { console.error('[schema-diag]', e); }
 
-	// Schema loading is purely focus-driven: onDidFocusEditorText in monaco.ts
-	// calls __kustoUpdateSchemaForFocusedBox when the user clicks into a section.
-	// No proactive/timer-based loading here — avoids a race where the timer could
-	// overwrite the schema of the section the user already focused.
+	// Open-time schema prewarm is local/cache-only and silent. It deliberately does not
+	// use ensureSchemaForBox because that path owns visible loading state and may call
+	// remote Kusto when no local cache exists.
+	__kustoScheduleLocalSchemaPrewarm('document-restore');
 
 	// Persistence remains enabled; edits will persist via event hooks.
 }

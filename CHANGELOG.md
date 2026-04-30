@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.5.2] - 2026-04-30
+
+* Added support for VS Code v1.118.1 which contained breaking (for our use cases) changes
+
 ## [4.5.1] - 2026-04-29
 
 * Added support for conditional formatting in HTML dashboard tables.

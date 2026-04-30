@@ -39,12 +39,13 @@ import {
 import {
 	schedulePersist, handleDocumentDataMessage, getKqlxState,
 	__kustoSetCompatibilityMode, __kustoApplyDocumentCapabilities,
-	__kustoRequestAddSection, __kustoOnQueryResult,
+	__kustoRequestAddSection, __kustoOnQueryResult, __kustoScheduleLocalSchemaPrewarm,
 } from './persistence';
 import {
 	__kustoControlCommandDocCache, __kustoControlCommandDocPending,
 	__kustoCrossClusterSchemas,
 } from '../monaco/monaco';
+import { __kustoFindSuggestWidgetForEditor, __kustoIsElementVisibleForSuggest } from '../monaco/suggest';
 import {
 	handleStsResponse, handleStsDiagnostics,
 } from '../monaco/sql-sts-providers.js';
@@ -56,7 +57,10 @@ import {
 	setCopilotInlineCompletionsEnabled,
 	queryEditors, cachedDatabases, optimizationMetadataByBoxId,
 	schemaByConnDb, schemaRequestResolversByBoxId, schemaByBoxId,
+	schemaMetaByConnDb, schemaMetaByBoxId,
 	schemaFetchInFlightByBoxId, databasesRequestResolversByBoxId,
+	markSchemaWorkerApplyFailed, markSchemaWorkerApplyPending, markSchemaWorkerReady,
+	pendingSchemaWorkerUpdateByBoxId,
 	favoritesModeByBoxId,
 	sqlConnections, sqlCachedDatabases, setSqlConnections,
 	sqlFavorites, setSqlFavorites, sqlFavoritesModeByBoxId,
@@ -76,6 +80,129 @@ function markSectionAgentTouched(sectionId: string): void {
 	if (shell) {
 		shell.agentTouched = true;
 	}
+}
+
+function isSuggestVisibleForBoxId(boxId: string): boolean {
+	try {
+		const editor = queryEditors ? queryEditors[boxId] : null;
+		if (!editor) return false;
+		const widget = __kustoFindSuggestWidgetForEditor(editor, { requireVisible: true, maxDistancePx: 320 });
+		return !!(widget && __kustoIsElementVisibleForSuggest(widget));
+	} catch {
+		return false;
+	}
+}
+
+function getModelUriForBoxId(boxId: string): string | null {
+	try {
+		const editor = queryEditors ? queryEditors[boxId] : null;
+		const model = editor && typeof editor.getModel === 'function' ? editor.getModel() : null;
+		if (model && model.uri) {
+			return model.uri.toString();
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	return null;
+}
+
+function getCurrentSchemaKeyForBoxId(boxId: string): string | null {
+	try {
+		let ownerId = boxId;
+		try {
+			if (typeof (window as any).__kustoGetSelectionOwnerBoxId === 'function') {
+				ownerId = (window as any).__kustoGetSelectionOwnerBoxId(boxId) || boxId;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		const connectionId = __kustoGetConnectionId(ownerId);
+		const database = __kustoGetDatabase(ownerId);
+		if (!connectionId || !database) return null;
+		const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === connectionId) : null;
+		const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
+		if (!clusterUrl) return null;
+		return `${clusterUrl}|${database}`;
+	} catch {
+		return null;
+	}
+}
+
+function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, isForceRefresh: boolean, schemaSignature?: string): void {
+	const boxId = String(message?.boxId || '');
+	if (!boxId || !message?.schema?.rawSchemaJson || !message.clusterUrl || !message.database) {
+		return;
+	}
+
+	const meta = message.schemaMeta || {};
+	if (meta.workerUpdateNeeded === false) {
+		return;
+	}
+
+	const isActiveBox = boxId === activeQueryEditorBoxId;
+	const shouldDeferForSuggest = !!meta.isBackgroundRefresh && !isForceRefresh && isActiveBox && isSuggestVisibleForBoxId(boxId);
+	if (shouldDeferForSuggest) {
+		pendingSchemaWorkerUpdateByBoxId[boxId] = {
+			rawSchemaJson: message.schema.rawSchemaJson,
+			clusterUrl: message.clusterUrl,
+			database: message.database,
+			schemaKey,
+			schemaSignature,
+			forceRefresh: isForceRefresh,
+			reason: meta.refreshReason || 'background-refresh'
+		};
+		return;
+	}
+
+	const shouldSetAsContext = isActiveBox || isForceRefresh;
+	markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature);
+
+	const applySchema = async () => {
+		if (typeof window.__kustoSetMonacoKustoSchema !== 'function') {
+			return false;
+		}
+		const currentSchemaKey = getCurrentSchemaKeyForBoxId(boxId);
+		if (!currentSchemaKey || currentSchemaKey !== schemaKey) {
+			return false;
+		}
+		const modelUri = getModelUriForBoxId(boxId);
+		if (!modelUri) {
+			return false;
+		}
+		const applied = await window.__kustoSetMonacoKustoSchema(
+			message.schema.rawSchemaJson,
+			message.clusterUrl,
+			message.database,
+			shouldSetAsContext,
+			modelUri,
+			isForceRefresh
+		);
+		if (!applied) {
+			return false;
+		}
+		if (shouldSetAsContext && typeof window.__kustoTriggerRevalidation === 'function') {
+			window.__kustoTriggerRevalidation(boxId);
+		}
+		markSchemaWorkerReady(boxId, schemaKey, schemaSignature);
+		try { delete pendingSchemaWorkerUpdateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+		return true;
+	};
+
+	const retryDelays = [100, 300, 600, 1000, 2000];
+	let retryIndex = 0;
+	const retry = () => {
+		applySchema().then((applied: boolean) => {
+			if (applied) {
+				return;
+			}
+			if (retryIndex >= retryDelays.length) {
+				markSchemaWorkerApplyFailed(boxId, schemaKey);
+				return;
+			}
+			const delay = retryDelays[retryIndex++];
+			setTimeout(retry, delay);
+		}).catch((error: unknown) => {
+			console.error('[schemaData] Worker schema apply failed:', error);
+			markSchemaWorkerApplyFailed(boxId, schemaKey);
+		});
+	};
+	retry();
 }
 
 // --- KQL language service bridge & resource URI resolver ---
@@ -358,6 +485,7 @@ window.addEventListener('message', async (event: any) => {
 			try { updateCaretDocsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
 			try { updateAutoTriggerAutocompleteToggleButtons(); } catch (e) { console.error('[kusto]', e); }
 			try { updateCopilotInlineCompletionsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
+			try { __kustoScheduleLocalSchemaPrewarm('connections-data'); } catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'updateDevNotes': {
 			// Mutate passthrough dev notes sections from extension host (Copilot / agent tool calls)
@@ -687,7 +815,7 @@ window.addEventListener('message', async (event: any) => {
 				const tok = message && typeof message.requestToken === 'string' ? message.requestToken : '';
 				if (tok && schemaRequestTokenByBoxId) {
 					const expected = schemaRequestTokenByBoxId[message.boxId];
-					if (expected && expected !== tok) {
+					if (expected !== tok) {
 						break;
 					}
 				}
@@ -698,6 +826,7 @@ window.addEventListener('message', async (event: any) => {
 				const db = String(message.database || '').trim();
 				if (cid && db) {
 					schemaByConnDb[cid + '|' + db] = message.schema;
+					schemaMetaByConnDb[cid + '|' + db] = message.schemaMeta || {};
 				}
 			} catch (e) { console.error('[kusto]', e); }
 
@@ -714,85 +843,17 @@ window.addEventListener('message', async (event: any) => {
 			// Normal per-editor schema update (autocomplete).
 			// This is the SINGLE source of truth for schema data - no duplicate caching
 			schemaByBoxId[message.boxId] = message.schema;
+			schemaMetaByBoxId[message.boxId] = message.schemaMeta || {};
 			schemaFetchInFlightByBoxId[message.boxId] = false;
 			
 			// Update monaco-kusto with the raw schema JSON if available
 			// With aggregate schema approach, we always push schemas to monaco-kusto
 			// The __kustoSetMonacoKustoSchema function handles de-duplication and uses addDatabaseToSchema for subsequent loads
 			try {
-				const schemaKey = message.clusterUrl && message.database ? `${message.clusterUrl}|${message.database}` : null;
-				
-				// Check if this box is the active/focused box - if so, we should set it as the context
-				const isActiveBox = message.boxId === activeQueryEditorBoxId;
+				const schemaKey = message.clusterUrl && message.database ? `${message.clusterUrl}|${message.database}` : '';
 				const isForceRefresh = !!(message.schemaMeta && message.schemaMeta.forceRefresh);
-
-				// When no editor has focus, skip pushing to the monaco-kusto worker.
-				// Schema data is already cached in schemaByBoxId above. When the user
-				// focuses a section, __kustoUpdateSchemaForFocusedBox will read from
-				// cache and push to the worker queue as the first operation — ensuring
-				// the correct database is in context immediately without queueing behind
-				// a flood of ADD operations from other sections' responses.
-				const shouldUpdate = schemaKey && message.schema && message.schema.rawSchemaJson && message.clusterUrl && message.database
-					&& (isActiveBox || isForceRefresh);
-				
-				if (shouldUpdate) {
-					const applySchema = async () => {
-						if (typeof window.__kustoSetMonacoKustoSchema === 'function') {
-							// Schema/context state in monaco-kusto is tracked PER Monaco model URI.
-							// If we don't pass the model URI, monaco.js falls back to models[0], which can
-							// immediately put the wrong database in context for the active editor.
-							let modelUri: any = null;
-							try {
-								const editor = queryEditors ? queryEditors[message.boxId] : null;
-								const model = editor && typeof editor.getModel === 'function' ? editor.getModel() : null;
-								if (model && model.uri) {
-									modelUri = model.uri.toString();
-								}
-							} catch (e) { console.error('[kusto]', e); }
-
-							// If we can't resolve a model URI yet (editor not ready), retry later.
-							if (!modelUri) {
-								return false;
-							}
-
-							// Set as context if this is the active box, OR if this is a force-refresh.
-							// When the user clicks "Refresh schema" (forceRefresh), the editor may have lost
-							// focus (activeQueryEditorBoxId cleared to null by onDidBlurEditorWidget).
-							// Without setAsContext=true, addDatabaseToSchema updates the aggregate schema
-							// but the stale in-context database persists, causing completions to stay stale.
-							const shouldSetAsContext = isActiveBox || isForceRefresh;
-							await window.__kustoSetMonacoKustoSchema(message.schema.rawSchemaJson, message.clusterUrl, message.database, shouldSetAsContext, modelUri, isForceRefresh);
-							
-							// Trigger revalidation to reflect the new schema
-							if (shouldSetAsContext && typeof window.__kustoTriggerRevalidation === 'function') {
-								window.__kustoTriggerRevalidation(message.boxId);
-							}
-							return true;
-						}
-						return false;
-					};
-					
-					// Try immediately
-					applySchema().then((success: any) => {
-						if (!success) {
-							// If function not available yet, retry after monaco-kusto loads
-							const retryDelays = [100, 300, 600, 1000, 2000];
-							let retryIndex = 0;
-							const retry = () => {
-								if (retryIndex < retryDelays.length) {
-									setTimeout(() => {
-										applySchema().then((applied: any) => {
-											if (!applied) {
-												retryIndex++;
-												retry();
-											}
-										});
-									}, retryDelays[retryIndex]);
-								}
-							};
-							retry();
-						}
-					});
+				if (schemaKey) {
+					applyKustoSchemaToWorkerFromMessage(message, schemaKey, isForceRefresh, message.schemaMeta?.schemaSignature);
 				}
 			} catch (e: any) { console.error('[schemaData] Error:', e); }
 			
@@ -848,7 +909,7 @@ window.addEventListener('message', async (event: any) => {
 				const tok = message && typeof message.requestToken === 'string' ? message.requestToken : '';
 				if (tok && schemaRequestTokenByBoxId) {
 					const expected = schemaRequestTokenByBoxId[message.boxId];
-					if (expected && expected !== tok) {
+					if (expected !== tok) {
 						break;
 					}
 				}
@@ -864,6 +925,9 @@ window.addEventListener('message', async (event: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			// Non-fatal; keep any previously loaded schema + counts if present.
 			schemaFetchInFlightByBoxId[message.boxId] = false;
+			if (message.silent || message.cacheOnly) {
+				break;
+			}
 			try {
 				const hasSchema = !!(schemaByBoxId && schemaByBoxId[message.boxId]);
 				if (!hasSchema) {

@@ -259,6 +259,9 @@ document.addEventListener('keydown', (event: any) => {
 				window.__kustoTriggerAutocompleteForBoxId(boxId);
 				return;
 			}
+			if (boxId) {
+				return;
+			}
 		} catch (e) { console.error('[kusto]', e); }
 		try {
 			editor.trigger('keyboard', 'editor.action.triggerSuggest', {});

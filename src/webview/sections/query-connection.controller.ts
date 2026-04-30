@@ -15,6 +15,9 @@ import {
 	schemaFetchInFlightByBoxId,
 	lastSchemaRequestAtByBoxId,
 	schemaByConnDb,
+	schemaMetaByBoxId,
+	schemaMetaByConnDb,
+	pendingSchemaWorkerUpdateByBoxId,
 	schemaRequestResolversByBoxId,
 	databasesRequestResolversByBoxId,
 	missingClusterDetectTimersByBoxId,
@@ -512,7 +515,11 @@ export class QueryConnectionController implements ReactiveController {
 	ensureSchema(forceRefresh?: boolean): void {
 		const boxId = this.host.boxId;
 		if (!boxId) return;
-		if (!forceRefresh && schemaByBoxId[boxId]) return;
+		if (!forceRefresh && schemaByBoxId[boxId]) {
+			const meta = schemaMetaByBoxId[boxId] || {};
+			const needsRefresh = !!meta.isStale || meta.cacheState === 'stale' || meta.cacheState === 'outdated';
+			if (!needsRefresh) return;
+		}
 		if (schemaFetchInFlightByBoxId[boxId]) return;
 		const now = Date.now();
 		const last = lastSchemaRequestAtByBoxId[boxId] || 0;
@@ -528,10 +535,26 @@ export class QueryConnectionController implements ReactiveController {
 		const connectionId = __kustoGetConnectionId(ownerId);
 		const database = __kustoGetDatabase(ownerId);
 		if (!connectionId || !database) return;
+		try {
+			const connDbKey = connectionId + '|' + database;
+			if (!forceRefresh && schemaByConnDb && schemaByConnDb[connDbKey]) {
+				schemaByBoxId[boxId] = schemaByConnDb[connDbKey];
+				schemaMetaByBoxId[boxId] = schemaMetaByConnDb[connDbKey] || {};
+				const schema = schemaByBoxId[boxId];
+				const meta = schemaMetaByBoxId[boxId] || {};
+				const tablesCount = meta.tablesCount ?? (schema?.tables?.length ?? 0);
+				const columnsCount = meta.columnsCount ?? 0;
+				const functionsCount = meta.functionsCount ?? (schema?.functions?.length ?? 0);
+				this.host.setSchemaInfo(buildSchemaInfo(`${tablesCount} tables, ${columnsCount} cols${meta.fromCache ? ' (cached)' : ''}`, false,
+					{ fromCache: !!meta.fromCache, tablesCount, columnsCount, functionsCount, hasRawSchemaJson: !!schema?.rawSchemaJson }));
+				const needsRefresh = !!meta.isStale || meta.cacheState === 'stale' || meta.cacheState === 'outdated';
+				if (!needsRefresh) return;
+			}
+		} catch (e) { console.error('[kusto]', e); }
 
 		schemaFetchInFlightByBoxId[boxId] = true;
 		try {
-			this.host.setSchemaInfo({ status: 'loading', statusText: 'Loading\u2026' });
+			this.host.setSchemaInfo({ status: 'loading', statusText: schemaByBoxId[boxId] ? 'Refreshing\u2026' : 'Loading\u2026' });
 		} catch (e) { console.error('[kusto]', e); }
 
 		let requestToken = '';
@@ -552,6 +575,8 @@ export class QueryConnectionController implements ReactiveController {
 	onDatabaseChanged(): void {
 		const boxId = this.host.boxId;
 		delete schemaByBoxId[boxId];
+		delete schemaMetaByBoxId[boxId];
+		delete pendingSchemaWorkerUpdateByBoxId[boxId];
 		try {
 			if (schemaFetchInFlightByBoxId) schemaFetchInFlightByBoxId[boxId] = false;
 			if (lastSchemaRequestAtByBoxId) lastSchemaRequestAtByBoxId[boxId] = 0;

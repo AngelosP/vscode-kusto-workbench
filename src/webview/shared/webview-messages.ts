@@ -163,7 +163,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'comparisonSummary'; sourceBoxId: string; comparisonBoxId: string; dataMatches: boolean; headersMatch?: boolean; rowOrderMatches?: boolean; columnOrderMatches?: boolean }
 
 	// Schema
-	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string }
+	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string; cacheOnly?: boolean; silent?: boolean; reason?: string }
 	| { type: 'requestCrossClusterSchema'; clusterName: string; database: string; boxId: string; requestToken: string }
 	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; line: number; column: number } }
 	| { type: 'stsDidOpen'; boxId: string; text: string }

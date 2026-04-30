@@ -18,6 +18,8 @@ import {
 	queryEditorVisibilityObservers,
 	queryEditorVisibilityMutationObservers,
 	schemaByBoxId,
+	schemaMetaByBoxId,
+	pendingSchemaWorkerUpdateByBoxId,
 	schemaFetchInFlightByBoxId,
 	lastSchemaRequestAtByBoxId,
 	schemaByConnDb,
@@ -333,6 +335,8 @@ export function addQueryBox( options?: any) {
 			const boxId = detail.boxId || id;
 			// Clear schema so it doesn't mismatch.
 			try { delete schemaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+			try { delete schemaMetaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+			try { delete pendingSchemaWorkerUpdateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 			try { if (schemaFetchInFlightByBoxId) schemaFetchInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
 			try { if (lastSchemaRequestAtByBoxId) lastSchemaRequestAtByBoxId[boxId] = 0; } catch (e) { console.error('[kusto]', e); }
 			try { delete schemaRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }

@@ -8,6 +8,8 @@ import {
 	abbreviateType,
 	addPruneNotice,
 	formatSchemaAsCompactText,
+	getAutocompleteSchemaSignature,
+	getSchemaSummary,
 	TYPE_ABBREVIATIONS,
 } from '../../../src/host/schemaIndexUtils';
 
@@ -93,6 +95,79 @@ describe('countColumns', () => {
 			columnTypesByTable: { Big: cols }
 		});
 		expect(countColumns(schema)).toBe(10);
+	});
+});
+
+describe('schema summary and autocomplete signature', () => {
+	it('summarizes tables, columns, functions, and raw schema capability', () => {
+		const schema = makeSchema({
+			tables: ['Events'],
+			columnTypesByTable: { Events: { EventName: 'string', Timestamp: 'datetime' } },
+			functions: [{ name: 'ActiveEvents' }],
+			rawSchemaJson: { Databases: { Samples: { Tables: {} } } }
+		});
+
+		expect(getSchemaSummary(schema)).toEqual({
+			tablesCount: 1,
+			columnsCount: 2,
+			functionsCount: 1,
+			hasRawSchemaJson: true,
+		});
+	});
+
+	it('generates stable signatures for reordered schema objects', () => {
+		const a = makeSchema({
+			tables: ['B', 'A'],
+			columnTypesByTable: {
+				B: { Z: 'long', A: 'string' },
+				A: { Id: 'string' },
+			},
+			tableDocStrings: { B: 'Bee', A: 'Ay' },
+			functions: [
+				{ name: 'FnB', parameters: [{ name: 'x', type: 'long' }], docString: 'B' },
+				{ name: 'FnA', parametersText: '(s:string)', folder: 'Folder' },
+			],
+			rawSchemaJson: { Databases: { Db: { Tables: { B: {}, A: {} } } }, Plugins: [] },
+		});
+		const b = makeSchema({
+			tables: ['A', 'B'],
+			columnTypesByTable: {
+				A: { Id: 'string' },
+				B: { A: 'string', Z: 'long' },
+			},
+			tableDocStrings: { A: 'Ay', B: 'Bee' },
+			functions: [
+				{ name: 'FnA', parametersText: '(s:string)', folder: 'Folder' },
+				{ name: 'FnB', parameters: [{ name: 'x', type: 'long' }], docString: 'B' },
+			],
+			rawSchemaJson: { Plugins: [], Databases: { Db: { Tables: { A: {}, B: {} } } } },
+		});
+
+		expect(getAutocompleteSchemaSignature(a)).toBe(getAutocompleteSchemaSignature(b));
+	});
+
+	it('changes signatures for autocomplete-visible table, column, and function changes', () => {
+		const base = makeSchema({
+			tables: ['Events'],
+			columnTypesByTable: { Events: { EventName: 'string' } },
+			functions: [{ name: 'ActiveEvents', docString: 'old' }],
+		});
+
+		expect(getAutocompleteSchemaSignature(base)).not.toBe(getAutocompleteSchemaSignature(makeSchema({
+			tables: ['Events', 'Users'],
+			columnTypesByTable: { Events: { EventName: 'string' }, Users: { UserId: 'string' } },
+			functions: [{ name: 'ActiveEvents', docString: 'old' }],
+		})));
+		expect(getAutocompleteSchemaSignature(base)).not.toBe(getAutocompleteSchemaSignature(makeSchema({
+			tables: ['Events'],
+			columnTypesByTable: { Events: { EventName: 'string', Timestamp: 'datetime' } },
+			functions: [{ name: 'ActiveEvents', docString: 'old' }],
+		})));
+		expect(getAutocompleteSchemaSignature(base)).not.toBe(getAutocompleteSchemaSignature(makeSchema({
+			tables: ['Events'],
+			columnTypesByTable: { Events: { EventName: 'string' } },
+			functions: [{ name: 'ActiveEvents', docString: 'new' }],
+		})));
 	});
 });
 

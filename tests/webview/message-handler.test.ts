@@ -6,6 +6,11 @@ const handlerState = vi.hoisted(() => ({
 	sqlFavorites: [] as Array<Record<string, unknown>>,
 	sqlFavoritesModeByBoxId: {} as Record<string, boolean>,
 	schemaByBoxId: {} as Record<string, unknown>,
+	schemaMetaByBoxId: {} as Record<string, unknown>,
+	schemaByConnDb: {} as Record<string, unknown>,
+	schemaMetaByConnDb: {} as Record<string, unknown>,
+	pendingSchemaWorkerUpdateByBoxId: {} as Record<string, unknown>,
+	schemaRequestTokenByBoxId: {} as Record<string, string>,
 }));
 
 const mocks = {
@@ -96,7 +101,7 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	__kustoTryAutoEnterFavoritesModeForAllBoxes: vi.fn(),
 	__kustoMaybeDefaultFirstBoxToFavoritesMode: vi.fn(),
 	__kustoOnConnectionsUpdated: vi.fn(),
-	schemaRequestTokenByBoxId: {},
+	schemaRequestTokenByBoxId: handlerState.schemaRequestTokenByBoxId,
 	addPythonBox: vi.fn(() => 'python_1'),
 	addUrlBox: vi.fn(() => 'url_1'),
 	removePythonBox: vi.fn(),
@@ -160,12 +165,18 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 	__kustoApplyDocumentCapabilities: vi.fn(),
 	__kustoRequestAddSection: vi.fn(),
 	__kustoOnQueryResult: vi.fn(),
+	__kustoScheduleLocalSchemaPrewarm: vi.fn(),
 }));
 
 vi.mock('../../src/webview/monaco/monaco.js', () => ({
 	__kustoControlCommandDocCache: {},
 	__kustoControlCommandDocPending: {},
 	__kustoCrossClusterSchemas: {},
+}));
+
+vi.mock('../../src/webview/monaco/suggest.js', () => ({
+	__kustoFindSuggestWidgetForEditor: vi.fn(() => null),
+	__kustoIsElementVisibleForSuggest: vi.fn(() => false),
 }));
 
 vi.mock('../../src/webview/monaco/sql-sts-providers.js', () => ({
@@ -200,10 +211,16 @@ vi.mock('../../src/webview/core/state.js', () => ({
 	queryEditors: {},
 	cachedDatabases: {},
 	optimizationMetadataByBoxId: {},
-	schemaByConnDb: {},
+	schemaByConnDb: handlerState.schemaByConnDb,
+	schemaMetaByConnDb: handlerState.schemaMetaByConnDb,
 	schemaRequestResolversByBoxId: {},
 	schemaByBoxId: handlerState.schemaByBoxId,
+	schemaMetaByBoxId: handlerState.schemaMetaByBoxId,
 	schemaFetchInFlightByBoxId: {},
+	markSchemaWorkerApplyFailed: vi.fn(),
+	markSchemaWorkerApplyPending: vi.fn(),
+	markSchemaWorkerReady: vi.fn(),
+	pendingSchemaWorkerUpdateByBoxId: handlerState.pendingSchemaWorkerUpdateByBoxId,
 	databasesRequestResolversByBoxId: {},
 }));
 
@@ -269,6 +286,11 @@ describe('message-handler dispatch', () => {
 		for (const key of Object.keys(handlerState.sqlCachedDatabases)) delete handlerState.sqlCachedDatabases[key];
 		for (const key of Object.keys(handlerState.sqlFavoritesModeByBoxId)) delete handlerState.sqlFavoritesModeByBoxId[key];
 		for (const key of Object.keys(handlerState.schemaByBoxId)) delete handlerState.schemaByBoxId[key];
+		for (const key of Object.keys(handlerState.schemaMetaByBoxId)) delete handlerState.schemaMetaByBoxId[key];
+		for (const key of Object.keys(handlerState.schemaByConnDb)) delete handlerState.schemaByConnDb[key];
+		for (const key of Object.keys(handlerState.schemaMetaByConnDb)) delete handlerState.schemaMetaByConnDb[key];
+		for (const key of Object.keys(handlerState.pendingSchemaWorkerUpdateByBoxId)) delete handlerState.pendingSchemaWorkerUpdateByBoxId[key];
+		for (const key of Object.keys(handlerState.schemaRequestTokenByBoxId)) delete handlerState.schemaRequestTokenByBoxId[key];
 		delete (window as any).__kustoSqlLastConnectionId;
 		delete (window as any).__kustoSqlLastDatabase;
 		vi.clearAllMocks();
@@ -484,6 +506,66 @@ describe('message-handler dispatch', () => {
 		expect(sqlEl.setStsReady).toHaveBeenCalledWith(true);
 		expect(mocks.handleStsDiagnostics).toHaveBeenCalledTimes(1);
 		expect(mocks.handleStsDiagnostics).toHaveBeenCalledWith('sql_1', [{ message: 'after ready' }]);
+	});
+
+	it('drops tokened Kusto schema responses when the box token no longer matches', async () => {
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_new';
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'Samples',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			requestToken: 'schema_old',
+			schema: { tables: ['OldTable'], columnTypesByTable: {}, rawSchemaJson: { Databases: {} } },
+			schemaMeta: { schemaSignature: 'old', workerUpdateNeeded: true },
+		});
+
+		expect(handlerState.schemaByBoxId.query_1).toBeUndefined();
+		expect(handlerState.schemaByConnDb['c1|Samples']).toBeUndefined();
+	});
+
+	it('suppresses visible UI for silent cache-only schema misses', async () => {
+		const errorRenderer = await import('../../src/webview/core/error-renderer.js');
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_prewarm';
+		const queryEl = { setSchemaInfo: vi.fn() };
+		(sectionFactory.__kustoGetQuerySectionElement as unknown as ReturnType<typeof vi.fn>).mockReturnValue(queryEl);
+
+		dispatchHostMessage({
+			type: 'schemaError',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'Samples',
+			requestToken: 'schema_prewarm',
+			cacheOnly: true,
+			silent: true,
+			error: 'No cached schema is available.',
+		});
+
+		expect(queryEl.setSchemaInfo).not.toHaveBeenCalled();
+		expect(errorRenderer.__kustoDisplayBoxError).not.toHaveBeenCalled();
+	});
+
+	it('updates Kusto schema caches without touching the worker when schema metadata says it is unchanged', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const schema = { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: {} } };
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'Samples',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			schema,
+			schemaMeta: { schemaSignature: 'same', workerUpdateNeeded: false, isBackgroundRefresh: true },
+		});
+
+		expect(handlerState.schemaByBoxId.query_1).toBe(schema);
+		expect(handlerState.schemaByConnDb['c1|Samples']).toBe(schema);
+		expect(state.markSchemaWorkerApplyPending).not.toHaveBeenCalled();
+		expect(state.markSchemaWorkerReady).not.toHaveBeenCalled();
 	});
 });
 
