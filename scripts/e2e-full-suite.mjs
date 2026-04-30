@@ -43,6 +43,7 @@ Options:
   --repair-profile-residue          Move named-profile workspaceStorage residue aside before/after runs.
   --profile-check-only              Only check named-profile residue, then exit.
   --timeout <ms>                    Pass a per-step timeout to vscode-ext-test.
+	--vscode-version <version>        VS Code version to pass to vscode-ext-test. Defaults to E2E_VSCODE_VERSION or stable.
   --quarantine <path>               Quarantine manifest path.
   --output-dir <path>               History/output root. Defaults to tests/vscode-extension-tester/history.
   --help                            Show this help.
@@ -62,6 +63,7 @@ function parseArgs(argv) {
 		repairProfileResidue: false,
 		profileCheckOnly: false,
 		timeout: '',
+		vscodeVersion: process.env.E2E_VSCODE_VERSION || 'stable',
 		quarantinePath: defaultQuarantinePath,
 		outputDir: historyRoot,
 	};
@@ -113,6 +115,9 @@ function parseArgs(argv) {
 			case '--timeout':
 				options.timeout = next();
 				break;
+			case '--vscode-version':
+				options.vscodeVersion = next();
+				break;
 			case '--quarantine':
 				options.quarantinePath = path.resolve(repoRoot, next());
 				break;
@@ -134,6 +139,7 @@ function parseArgs(argv) {
 
 	options.profiles = unique(options.profiles.map(value => value.trim()).filter(Boolean));
 	options.testIds = unique(options.testIds.map(value => value.trim()).filter(Boolean));
+	options.vscodeVersion = String(options.vscodeVersion || '').trim() || 'stable';
 	return options;
 }
 
@@ -534,6 +540,7 @@ function summarizeSuite({ runStartedAt, completedAt, options, cases, excludedScr
 		version: 1,
 		runStartedAt,
 		completedAt,
+		vscodeVersion: options.vscodeVersion,
 		profiles: options.profiles.length > 0 ? options.profiles : discoverProfiles(),
 		includeScreenshotGenerators: options.includeScreenshotGenerators,
 		dryRun: options.dryRun,
@@ -570,6 +577,7 @@ function toMarkdown(summary) {
 	lines.push('');
 	lines.push(`- Started: ${summary.runStartedAt}`);
 	lines.push(`- Completed: ${summary.completedAt}`);
+	lines.push(`- VS Code: ${summary.vscodeVersion}`);
 	lines.push(`- Selected: ${summary.totalSelected} tests`);
 	lines.push(`- Executed: ${summary.executed}`);
 	lines.push(`- Passed: ${summary.passed}`);
@@ -651,6 +659,7 @@ function appendHistory(outputRoot, summary) {
 	const compact = {
 		runStartedAt: summary.runStartedAt,
 		completedAt: summary.completedAt,
+		vscodeVersion: summary.vscodeVersion,
 		selected: summary.totalSelected,
 		executed: summary.executed,
 		passed: summary.passed,
@@ -793,7 +802,7 @@ function main() {
 		}
 
 		console.log(`Running ${testCase.profile}/${testCase.testId}...`);
-		const args = ['run', '--no-build', '--test-id', testCase.testId];
+		const args = ['run', '--no-build', '--test-id', testCase.testId, '--vscode-version', options.vscodeVersion];
 		if (testCase.profile !== 'default') {
 			args.push('--reuse-named-profile', testCase.profile);
 		}

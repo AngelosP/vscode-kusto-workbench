@@ -218,5 +218,9 @@ export type OutgoingWebviewMessage =
  * Safe to call when `window.vscode` is unavailable (e.g. browser-ext standalone) — silently no-ops.
  */
 export function postMessageToHost(msg: OutgoingWebviewMessage): void {
+	const e2eCaptureHostMessage = (window as any).__e2eCaptureHostMessage;
+	if (typeof e2eCaptureHostMessage === 'function') {
+		e2eCaptureHostMessage(msg);
+	}
 	window.vscode?.postMessage(msg);
 }

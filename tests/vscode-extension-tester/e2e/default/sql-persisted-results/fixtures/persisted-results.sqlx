@@ -1,0 +1,23 @@
+{
+  "kind": "sqlx",
+  "version": 1,
+  "state": {
+    "caretDocsEnabled": true,
+    "autoTriggerAutocompleteEnabled": false,
+    "sections": [
+      {
+        "id": "sql_persisted_results",
+        "type": "sql",
+        "name": "Persisted SQL Result Fixture",
+        "serverUrl": "offline-sql-e2e.database.windows.net",
+        "database": "OfflineWarehouse",
+        "query": "SELECT TOP 4 RowId, Label, Amount FROM OfflineFixture",
+        "runMode": "plain",
+        "expanded": true,
+        "resultsVisible": true,
+        "resultsHeightPx": 320,
+        "resultJson": "{\"columns\":[{\"name\":\"RowId\",\"type\":\"int\"},{\"name\":\"Label\",\"type\":\"nvarchar\"},{\"name\":\"Amount\",\"type\":\"decimal\"}],\"rows\":[[1,\"sql_row_01\",10.25],[2,\"sql_row_02\",20.5],[3,\"sql_row_03\",30.75],[4,\"sql_row_04\",41]],\"metadata\":{\"executionTime\":\"00:00:00.123\",\"clientActivityId\":\"sql-persisted-results-e2e\"}}"
+      }
+    ]
+  }
+}

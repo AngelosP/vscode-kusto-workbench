@@ -1256,6 +1256,20 @@ function e2eAssertVisibleSuggestExact(context: string, expectedAnyCsv: string, e
 	return `${contextLabel}(${labels.length}): ${labels.slice(0, 15).join(', ')}`;
 }
 
+function e2eAssertVisibleSuggestAll(context: string, expectedCsv: string, editorSelector: string = ''): string {
+	const contextLabel = String(context || 'suggestions');
+	const expected = String(expectedCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	const labels = e2eVisibleSuggestLabels(contextLabel, editorSelector);
+	if (expected.length) {
+		const normalizedLabels = new Set(labels.map(label => e2eNormalizeSuggestLabel(label)));
+		const missing = expected.filter(candidate => !normalizedLabels.has(e2eNormalizeSuggestLabel(candidate)));
+		if (missing.length) {
+			throw new Error(`${contextLabel}: missing expected suggestions [${missing.join(', ')}], got: ${labels.slice(0, 20).join(', ')}`);
+		}
+	}
+	return `${contextLabel} all(${labels.length}): ${labels.slice(0, 15).join(', ')}`;
+}
+
 function e2eAutoTriggerToggle(kind: E2eSectionKind = 'sql'): HTMLElement {
 	const toolbarSelector = kind === 'sql' ? 'kw-sql-toolbar' : 'kw-query-toolbar';
 	const toggle = document.querySelector(`${toolbarSelector} .qe-auto-autocomplete-toggle`) as HTMLElement | null;
@@ -1561,6 +1575,22 @@ async function e2eWaitForExistingSuggest(kind: E2eSectionKind, context: string, 
 	}
 	const message = lastError instanceof Error ? lastError.message : String(lastError || 'timed out');
 	throw new Error(`${context}: no matching suggestions within ${timeoutMs}ms: ${message}`);
+}
+
+async function e2eWaitForExistingSuggestAll(kind: E2eSectionKind, context: string, expectedCsv: string, timeoutMs: number, started: number = performance.now()): Promise<{ elapsedMs: number; result: string }> {
+	let lastError: unknown;
+	while (performance.now() - started <= timeoutMs) {
+		try {
+			const result = e2eAssertVisibleSuggestAll(context, expectedCsv, E2E_SECTION[kind].editor);
+			e2eAssertNoSuggestLoading(`${context} loading check`, E2E_SECTION[kind].editor);
+			return { elapsedMs: performance.now() - started, result };
+		} catch (error) {
+			lastError = error;
+			await e2eDelay(50);
+		}
+	}
+	const message = lastError instanceof Error ? lastError.message : String(lastError || 'timed out');
+	throw new Error(`${context}: no matching complete suggestion set within ${timeoutMs}ms: ${message}`);
 }
 
 async function e2eAssertSuggestStaysVisible(kind: E2eSectionKind, context: string, expectedAnyCsv: string, durationMs: number = 1000, exact: boolean = false): Promise<string> {
@@ -2010,6 +2040,8 @@ _win.__e2e = {
 			typeText: (text: string) => _win.__e2e.sql.typeText(text),
 			trigger: () => _win.__e2e.sql.triggerSuggest(),
 			assertVisible: (context: string, expectedAnyCsv: string = '') => _win.__e2e.sql.assertSuggestions(context, expectedAnyCsv),
+			assertAllVisible: (context: string, expectedCsv: string = '') => e2eAssertVisibleSuggestAll(context, expectedCsv, E2E_SECTION.sql.editor),
+			waitExistingAllVisible: (context: string, expectedCsv: string = '', timeoutMs: number = 5000) => e2eWaitForExistingSuggestAll('sql', context, expectedCsv, timeoutMs),
 			assertHidden: (context: string) => e2eAssertNoVisibleSuggest(context),
 		},
 		kusto: {
@@ -2018,7 +2050,9 @@ _win.__e2e = {
 			hide: () => e2eHideSuggest('kusto'),
 			trigger: () => _win.__e2e.kusto.triggerSuggest(),
 			waitVisible: (context: string, expectedAnyCsv: string = '', timeoutMs: number = 5000) => e2eWaitForSuggest('kusto', context, expectedAnyCsv, timeoutMs, false),
+			waitExistingAllVisible: (context: string, expectedCsv: string = '', timeoutMs: number = 5000) => e2eWaitForExistingSuggestAll('kusto', context, expectedCsv, timeoutMs),
 			assertVisible: (context: string, expectedAnyCsv: string = '') => _win.__e2e.kusto.assertSuggestions(context, expectedAnyCsv),
+			assertAllVisible: (context: string, expectedCsv: string = '') => e2eAssertVisibleSuggestAll(context, expectedCsv, E2E_SECTION.kusto.editor),
 			assertHidden: (context: string) => e2eAssertNoVisibleSuggest(context),
 		},
 	},
@@ -2108,13 +2142,17 @@ _win.__e2e = {
 		beginRequestCapture: (kind: E2eSectionKind, text: string, lineNumber: number = 1, column?: number) => {
 			_win.__e2e[kind].setQueryAt(text, lineNumber, column);
 			_win.__e2eInlineReqCapture = [];
-			_win.__e2eOrigPostMsg = _win.postMessageToHost;
-			_win.postMessageToHost = function (msg: any) {
+			_win.__e2eOrigCaptureHostMessage = _win.__e2eCaptureHostMessage;
+			_win.__e2eCaptureHostMessage = function (msg: any) {
 				if (msg && msg.type === 'requestCopilotInlineCompletion') {
-					_win.__e2eInlineReqCapture.push(msg);
+					const requestId = String(msg.requestId || '');
+					const alreadyCaptured = requestId && _win.__e2eInlineReqCapture.some((existing: any) => String(existing.requestId || '') === requestId);
+					if (!alreadyCaptured) {
+						_win.__e2eInlineReqCapture.push(msg);
+					}
 				}
-				if (_win.__e2eOrigPostMsg) {
-					_win.__e2eOrigPostMsg(msg);
+				if (typeof _win.__e2eOrigCaptureHostMessage === 'function') {
+					_win.__e2eOrigCaptureHostMessage(msg);
 				}
 			};
 			return `${kind} inline request capture armed`;
@@ -2134,10 +2172,12 @@ _win.__e2e = {
 			return `inline request captured: flavor=${msg.flavor}, requests=${messages.length}`;
 		},
 		restoreRequestCapture: () => {
-			if (_win.__e2eOrigPostMsg) {
-				_win.postMessageToHost = _win.__e2eOrigPostMsg;
-				delete _win.__e2eOrigPostMsg;
+			if (typeof _win.__e2eOrigCaptureHostMessage === 'function') {
+				_win.__e2eCaptureHostMessage = _win.__e2eOrigCaptureHostMessage;
+			} else {
+				delete _win.__e2eCaptureHostMessage;
 			}
+			delete _win.__e2eOrigCaptureHostMessage;
 			delete _win.__e2eInlineReqCapture;
 			return 'inline request capture restored';
 		},

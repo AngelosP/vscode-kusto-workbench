@@ -22,6 +22,12 @@ For ad hoc filtering, invoke the Node runner directly so shell-specific npm argu
 node scripts/e2e-full-suite.mjs --profiles "default,sql-auth,kusto-auth" --test-id sql-auto-trigger --repair-profile-residue --no-build
 ```
 
+To pin a local run to the same VS Code selection mechanism used by CI, pass a version explicitly. `stable` keeps the `vscode-ext-test` default behavior, while CI resolves and passes the newest stable numeric version once per workflow run:
+
+```powershell
+node scripts/e2e-full-suite.mjs --profiles default --vscode-version stable
+```
+
 Dry-run discovery:
 
 ```powershell
@@ -49,6 +55,8 @@ The orchestrator writes ignored artifacts under `tests/vscode-extension-tester/h
 - `flake-ledger.json` for per-test pass/fail counts and recent status history.
 - `full-suite-<timestamp>/command-output/` for raw `vscode-ext-test` output.
 - Per-test framework artifacts remain in `tests/vscode-extension-tester/runs/<profile>/<test-id>/<timestamp>/` with `report.md`, `results.json`, screenshots, and output channel logs.
+
+The suite summaries record the VS Code version requested for the run. Scheduled CI resolves this to the latest stable numeric version before invoking the runner, so the artifact trail shows which editor release produced the signal.
 
 After any failure, inspect in this order:
 
@@ -97,7 +105,7 @@ The orchestrator also seeds named profiles with quiet host settings such as `ext
 
 ## Scheduling
 
-The scheduled workflow `.github/workflows/e2e-full-suite.yml` runs on GitHub-hosted `windows-latest`; no self-hosted runner or custom `kusto-workbench-e2e` label is required for the current CI signal. It executes the unauthenticated `default` profile only and intentionally skips `sql-auth` and `kusto-auth` because those named profiles require prepared authentication state. The workflow installs the released `vscode-ext-test` CLI before running the suite:
+The scheduled workflow `.github/workflows/e2e-full-suite.yml` runs on GitHub-hosted `windows-latest`; no self-hosted runner or custom `kusto-workbench-e2e` label is required for the current CI signal. It executes the unauthenticated `default` profile only and intentionally skips `sql-auth` and `kusto-auth` because those named profiles require prepared authentication state. Before the run, the workflow queries the official VS Code stable release endpoint, semver-sorts the returned stable versions, validates the newest version against `package.json`'s VS Code engine minimum, and passes the resolved numeric version to `vscode-ext-test` via `--vscode-version`. The workflow installs the released `vscode-ext-test` CLI before running the suite:
 
 ```powershell
 npm install -g https://github.com/AngelosP/vscode-extension-tester/releases/download/v0.1.0/vscode-ext-test-0.1.0.tgz
@@ -106,5 +114,7 @@ npm install -g https://github.com/AngelosP/vscode-extension-tester/releases/down
 Do not rely on a local symlink or an unpinned global install for scheduled runs. When upgrading the E2E framework, first run the workflow manually with the `vscodeExtTestPackage` input set to the candidate tarball URL. After dry-run discovery and the default-profile suite are clean, bump the default release tarball URL in the workflow.
 
 Authenticated coverage remains opt-in for local or future prepared self-hosted runs with `npm run test:e2e:full:behavior`.
+
+Default-profile coverage may include copies of authenticated-profile tests only when the copied scenario remains fully operational without a live SQL/Kusto connection. Toolbar, persistence, form, fallback autocomplete, and persisted-result rendering tests are good candidates. Live query execution, connection/database selection, schema-bound autocomplete, STS diagnostics, favorites against a real service, Copilot availability, remote network files, and screenshot generators stay in authenticated or explicit profiles.
 
 GitHub-hosted runners cannot provide the reusable authenticated product signal without a profile setup flow. Keep uploading both `history/` and `runs/` artifacts so failures still include reports, screenshots, and output-channel logs.

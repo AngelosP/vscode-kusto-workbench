@@ -49,12 +49,44 @@ jobs:
           Write-Host "vscode-ext-test path: $($command.Source)"
           vscode-ext-test --version
 
+      - name: Resolve latest stable VS Code
+        shell: pwsh
+        run: |
+          Set-StrictMode -Version Latest
+          $ErrorActionPreference = 'Stop'
+
+          $packageJson = Get-Content -Raw package.json | ConvertFrom-Json
+          $engineRange = [string]$packageJson.engines.vscode
+          $minimumEngine = ($engineRange -replace '^[\^~>=<\s]*', '').Trim()
+          if ($minimumEngine -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Unable to parse package.json engines.vscode minimum from '$engineRange'"
+          }
+
+          $releaseUri = 'https://update.code.visualstudio.com/api/releases/stable?released=true'
+          $response = Invoke-RestMethod -Uri $releaseUri -TimeoutSec 30
+          $versions = @($response) |
+            ForEach-Object { [string]$_ } |
+            Where-Object { $_ -match '^\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]$_ } -Descending
+
+          $latest = $versions | Select-Object -First 1
+          if (-not $latest) {
+            throw "No stable VS Code versions were returned from $releaseUri"
+          }
+          if ([version]$latest -lt [version]$minimumEngine) {
+            throw "Resolved VS Code $latest is below extension engine minimum $minimumEngine"
+          }
+
+          "E2E_VSCODE_VERSION=$latest" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          "Resolved latest stable VS Code: $latest" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          Write-Host "Resolved latest stable VS Code: $latest"
+
       - name: Run default-profile E2E suite
         shell: pwsh
         env:
           E2E_INCLUDE_SCREENSHOTS: ${{ github.event.inputs.includeScreenshotGenerators || 'false' }}
         run: |
-          $arguments = @('--profiles', 'default')
+          $arguments = @('--profiles', 'default', '--vscode-version', $env:E2E_VSCODE_VERSION)
           if ($env:E2E_INCLUDE_SCREENSHOTS -eq 'true') {
             $arguments += '--include-screenshot-generators'
           }
