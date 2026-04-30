@@ -1077,7 +1077,25 @@ function e2eEditor(kind: E2eSectionKind): MonacoLike {
 function e2eHideSuggest(kind: E2eSectionKind): string {
 	const editor = e2eEditor(kind);
 	try { editor.trigger?.('keyboard', 'hideSuggestWidget', {}); } catch { /* ignore */ }
-	return `${kind} suggest hide requested`;
+	const roots: ParentNode[] = [document];
+	try {
+		const selectedRoot = deepQuerySelector(document, E2E_SECTION[kind].editor) as ParentNode | null;
+		if (selectedRoot) {
+			roots.unshift(selectedRoot);
+		}
+	} catch { /* ignore */ }
+	let hiddenCount = 0;
+	for (const root of roots) {
+		try {
+			const widgets = Array.from(root.querySelectorAll('.suggest-widget.visible')) as HTMLElement[];
+			for (const widget of widgets) {
+				widget.classList.add('hidden');
+				widget.style.display = 'none';
+				hiddenCount++;
+			}
+		} catch { /* ignore */ }
+	}
+	return `${kind} suggest hide requested; hidden widgets=${hiddenCount}`;
 }
 
 function e2eVisibleSuggestLabels(context: string, editorSelector: string = ''): string[] {
@@ -1302,6 +1320,69 @@ async function e2eWaitForKustoCompletionTargets(timeoutMs: number = 25000): Prom
 	throw new Error(`Kusto schema completion targets not ready after ${timeoutMs}ms: ${message}`);
 }
 
+function e2eSetKustoCompletionTargetProbeState(status: string, message: string = ''): void {
+	try {
+		const section = e2eSection('kusto') as HTMLElement;
+		section.dataset.testCompletionTargetsStatus = status;
+		section.dataset.testCompletionTargetsReady = status === 'ready' ? 'true' : 'false';
+		section.dataset.testCompletionTargetsMessage = message;
+	} catch { /* ignore */ }
+}
+
+function e2eStartKustoCompletionTargetProbe(timeoutMs: number = 25000): string {
+	try {
+		const previous = _win.__e2eKustoCompletionTargetProbeTimer;
+		if (previous) {
+			clearInterval(previous);
+			_win.__e2eKustoCompletionTargetProbeTimer = null;
+		}
+	} catch { /* ignore */ }
+
+	e2eSetKustoCompletionTargetProbeState('waiting');
+	const started = performance.now();
+	let lastMessage = '';
+	const probe = () => {
+		try {
+			const result = e2ePrepareKustoCompletionTargets();
+			try {
+				if (_win.__e2eKustoCompletionTargetProbeTimer) {
+					clearInterval(_win.__e2eKustoCompletionTargetProbeTimer);
+					_win.__e2eKustoCompletionTargetProbeTimer = null;
+				}
+			} catch { /* ignore */ }
+			e2eSetKustoCompletionTargetProbeState('ready', result);
+		} catch (error) {
+			lastMessage = error instanceof Error ? error.message : String(error || 'not ready');
+			if (performance.now() - started > timeoutMs) {
+				try {
+					if (_win.__e2eKustoCompletionTargetProbeTimer) {
+						clearInterval(_win.__e2eKustoCompletionTargetProbeTimer);
+						_win.__e2eKustoCompletionTargetProbeTimer = null;
+					}
+				} catch { /* ignore */ }
+				e2eSetKustoCompletionTargetProbeState('error', lastMessage);
+			}
+		}
+	};
+	probe();
+	try {
+		if (!_win.__e2eKustoCompletionTargets) {
+			_win.__e2eKustoCompletionTargetProbeTimer = setInterval(probe, 500);
+		}
+	} catch { /* ignore */ }
+	return `kusto completion target probe started (${timeoutMs}ms)`;
+}
+
+function e2eAssertKustoCompletionTargetsReady(): string {
+	const section = e2eSection('kusto') as HTMLElement;
+	const status = section.dataset.testCompletionTargetsStatus || '';
+	const message = section.dataset.testCompletionTargetsMessage || '';
+	if (status !== 'ready') {
+		throw new Error(`Kusto completion targets not ready: status=${status || '(missing)'} message=${message}`);
+	}
+	return message || e2ePrepareKustoCompletionTargets();
+}
+
 function e2eSetKustoCompletionContext(scenario: KustoCompletionScenario): string {
 	const targets = e2eKustoCompletionTargets();
 	const table = targets.table;
@@ -1357,6 +1438,10 @@ async function e2eWaitForSuggest(kind: E2eSectionKind, context: string, expected
 	const editor = e2eEditor(kind);
 	const started = performance.now();
 	try { editor.trigger?.('keyboard', 'editor.action.triggerSuggest', {}); } catch { /* fallback below */ }
+	return e2eWaitForExistingSuggest(kind, context, expectedAnyCsv, timeoutMs, exact, started);
+}
+
+async function e2eWaitForExistingSuggest(kind: E2eSectionKind, context: string, expectedAnyCsv: string, timeoutMs: number, exact: boolean = false, started: number = performance.now()): Promise<{ elapsedMs: number; result: string }> {
 	let lastError: unknown;
 	while (performance.now() - started <= timeoutMs) {
 		try {
@@ -1371,6 +1456,24 @@ async function e2eWaitForSuggest(kind: E2eSectionKind, context: string, expected
 	}
 	const message = lastError instanceof Error ? lastError.message : String(lastError || 'timed out');
 	throw new Error(`${context}: no matching suggestions within ${timeoutMs}ms: ${message}`);
+}
+
+async function e2eAssertSuggestStaysVisible(kind: E2eSectionKind, context: string, expectedAnyCsv: string, durationMs: number = 1000, exact: boolean = false): Promise<string> {
+	const expected = String(expectedAnyCsv || '').split(',').map(value => value.trim()).filter(Boolean).join(',');
+	const started = performance.now();
+	let checks = 0;
+	let latest = '';
+	while (performance.now() - started <= durationMs) {
+		latest = exact
+			? e2eAssertVisibleSuggestExact(context, expected, E2E_SECTION[kind].editor)
+			: _win.__testAssertVisibleSuggest(context, expected, E2E_SECTION[kind].editor);
+		checks++;
+		await e2eDelay(100);
+	}
+	latest = exact
+		? e2eAssertVisibleSuggestExact(context, expected, E2E_SECTION[kind].editor)
+		: _win.__testAssertVisibleSuggest(context, expected, E2E_SECTION[kind].editor);
+	return `${latest}; stayed visible for ${Math.round(performance.now() - started)}ms (${checks + 1} checks)`;
 }
 
 async function e2eAssertSuggestLatency(kind: E2eSectionKind, context: string, expectedAnyCsv: string, maxMs: number = 3000, exact: boolean = false): Promise<string> {
@@ -1411,6 +1514,19 @@ function e2eAssertKustoCompletionVisible(scenario: KustoCompletionScenario): str
 	const targets = e2eKustoCompletionTargets();
 	const expected = (targets.expectedByScenario[scenario] || []).join(',');
 	return e2eAssertVisibleSuggestExact(`kusto ${scenario}`, expected, E2E_SECTION.kusto.editor);
+}
+
+async function e2eAssertKustoCompletionStaysVisible(scenario: KustoCompletionScenario, durationMs: number = 1000): Promise<string> {
+	const targets = e2eKustoCompletionTargets();
+	const expected = (targets.expectedByScenario[scenario] || []).join(',');
+	return e2eAssertSuggestStaysVisible('kusto', `kusto ${scenario} persistent`, expected, durationMs, true);
+}
+
+async function e2eAssertKustoAutoTriggered(scenario: KustoCompletionScenario, timeoutMs: number = 3000): Promise<string> {
+	const targets = e2eKustoCompletionTargets();
+	const expected = (targets.expectedByScenario[scenario] || []).join(',');
+	const result = await e2eWaitForExistingSuggest('kusto', `kusto ${scenario} auto-trigger`, expected, timeoutMs, true);
+	return `${result.result}; auto-trigger latency=${Math.round(result.elapsedMs)}ms <= ${timeoutMs}ms`;
 }
 
 async function e2eAssertKustoCompletionLatency(scenario: KustoCompletionScenario, maxMs: number = 3000): Promise<string> {
@@ -1730,8 +1846,12 @@ _win.__e2e = {
 		selectSampleDatabase: () => _win.__testSelectKwDropdownItem(E2E_SECTION.kusto.databaseDropdown, 'sample,storm', true),
 		prepareCompletionTargets: () => e2ePrepareKustoCompletionTargets(),
 		waitForCompletionTargets: (timeoutMs: number = 25000) => e2eWaitForKustoCompletionTargets(timeoutMs),
+		startCompletionTargetProbe: (timeoutMs: number = 25000) => e2eStartKustoCompletionTargetProbe(timeoutMs),
+		assertCompletionTargetsReady: () => e2eAssertKustoCompletionTargetsReady(),
 		setCompletionContext: (scenario: KustoCompletionScenario) => e2eSetKustoCompletionContext(scenario),
 		assertCompletionVisible: (scenario: KustoCompletionScenario) => e2eAssertKustoCompletionVisible(scenario),
+		assertCompletionStaysVisible: (scenario: KustoCompletionScenario, durationMs: number = 1000) => e2eAssertKustoCompletionStaysVisible(scenario, durationMs),
+		assertAutoTriggered: (scenario: KustoCompletionScenario, timeoutMs: number = 3000) => e2eAssertKustoAutoTriggered(scenario, timeoutMs),
 		assertCompletionLatency: (scenario: KustoCompletionScenario, maxMs: number = 3000) => e2eAssertKustoCompletionLatency(scenario, maxMs),
 		assertRepeatedSuggestLatency: (scenario: KustoCompletionScenario, runs: number = 5, maxSingleMs: number = 3000, maxAverageMs: number = 1500) => e2eAssertRepeatedSuggestLatency('kusto', scenario, runs, maxSingleMs, maxAverageMs),
 		acceptSuggestion: (scenario: KustoCompletionScenario) => e2eAcceptKustoSuggestion(scenario),
@@ -1770,6 +1890,7 @@ _win.__e2e = {
 		kusto: {
 			setTextAt: (text: string, lineNumber: number = 1, column?: number) => _win.__e2e.kusto.setQueryAt(text, lineNumber, column),
 			typeText: (text: string) => _win.__e2e.kusto.typeText(text),
+			hide: () => e2eHideSuggest('kusto'),
 			trigger: () => _win.__e2e.kusto.triggerSuggest(),
 			assertVisible: (context: string, expectedAnyCsv: string = '') => _win.__e2e.kusto.assertSuggestions(context, expectedAnyCsv),
 			assertHidden: (context: string) => e2eAssertNoVisibleSuggest(context),

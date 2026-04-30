@@ -20,7 +20,9 @@ Feature: Kusto auto-trigger autocomplete behavior
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
     When I evaluate "window.__e2e.kusto.selectSampleDatabase()" in the webview
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
-    When I evaluate "window.__e2e.kusto.waitForCompletionTargets(25000)" in the webview
+    When I evaluate "window.__e2e.kusto.startCompletionTargetProbe(25000)" in the webview
+    When I wait for "kw-query-section[data-test-completion-targets-ready='true']" in the webview for 30 seconds
+    When I evaluate "window.__e2e.kusto.assertCompletionTargetsReady()" in the webview
     Then I take a screenshot "01-setup-ready"
 
     When I evaluate "window.__e2e.autoTrigger.ensureEnabled('kusto', true)" in the webview
@@ -35,10 +37,12 @@ Feature: Kusto auto-trigger autocomplete behavior
     When I evaluate "window.__e2e.kusto.setCompletionContext('pipe-operators')" in the webview
     When I press "Escape"
     And I wait 1 second
+    When I evaluate "window.__e2e.suggest.kusto.hide()" in the webview
+    When I evaluate "window.__e2e.suggest.kusto.assertHidden('before enabled pipe auto-trigger')" in the webview
     When I evaluate "window.__e2e.kusto.setQueryAt(window.__e2eKustoCompletionTargets.table + '\n|', 2, 2)" in the webview
     When I evaluate "window.__e2e.suggest.kusto.typeText(' ')" in the webview
-    And I wait 2 seconds
-    When I evaluate "window.__e2e.kusto.assertCompletionVisible('pipe-operators')" in the webview
+    When I evaluate "window.__e2e.kusto.assertAutoTriggered('pipe-operators', 3000)" in the webview
+    When I evaluate "window.__e2e.kusto.assertCompletionStaysVisible('pipe-operators', 800)" in the webview
 
     When I press "Escape"
     And I wait 1 second
@@ -66,9 +70,11 @@ Feature: Kusto auto-trigger autocomplete behavior
     When I evaluate "window.__e2e.autoTrigger.assertEnabled(true)" in the webview
     Then I take a screenshot "06-toggle-on"
 
+    When I evaluate "window.__e2e.suggest.kusto.hide()" in the webview
+    When I evaluate "window.__e2e.suggest.kusto.assertHidden('before re-enabled pipe auto-trigger')" in the webview
     When I evaluate "window.__e2e.kusto.setQueryAt(window.__e2eKustoCompletionTargets.table + '\n|', 2, 2)" in the webview
     When I evaluate "window.__e2e.suggest.kusto.typeText(' ')" in the webview
-    And I wait 2 seconds
-    When I evaluate "window.__e2e.kusto.assertCompletionVisible('pipe-operators')" in the webview
+    When I evaluate "window.__e2e.kusto.assertAutoTriggered('pipe-operators', 3000)" in the webview
+    When I evaluate "window.__e2e.kusto.assertCompletionStaysVisible('pipe-operators', 800)" in the webview
 
     When I execute command "workbench.action.closeAllEditors"

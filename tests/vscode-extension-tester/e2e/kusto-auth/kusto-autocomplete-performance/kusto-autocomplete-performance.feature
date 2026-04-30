@@ -20,7 +20,9 @@ Feature: Kusto autocomplete performance guard
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
     When I evaluate "window.__e2e.kusto.selectSampleDatabase()" in the webview
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
-    When I evaluate "window.__e2e.kusto.waitForCompletionTargets(25000)" in the webview
+    When I evaluate "window.__e2e.kusto.startCompletionTargetProbe(25000)" in the webview
+    When I wait for "kw-query-section[data-test-completion-targets-ready='true']" in the webview for 30 seconds
+    When I evaluate "window.__e2e.kusto.assertCompletionTargetsReady()" in the webview
     Then I take a screenshot "01-schema-ready"
 
     When I scroll "kw-query-section .query-editor" into view
