@@ -38,7 +38,7 @@ Feature: Kusto autocomplete performance guard
     When I evaluate "window.__e2e.kusto.assertRepeatedSuggestLatency('pipe-operators', 5, 3000, 1500)" in the webview
     When I evaluate "window.__e2e.kusto.assertCompletionStaysVisible('pipe-operators', 800)" in the webview
     Then I take a screenshot "02-latency-guard-visible"
-    When I click the element "where"
+    When I evaluate "window.__e2e.kusto.acceptSuggestion('pipe-operators')" in the webview
     And I wait 1 second
     When I evaluate "window.__e2e.kusto.assertAcceptedCompletion('pipe-operators')" in the webview
     Then I take a screenshot "03-operator-accepted"

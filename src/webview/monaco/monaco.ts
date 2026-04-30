@@ -188,8 +188,29 @@ async function __kustoPrepareSchemaForAutocomplete(ed: any): Promise<boolean> {
 			if (typeof ensureSchemaForBox === 'function') {
 				ensureSchemaForBox(boxId, false);
 			}
-			await waitForSchemaWorkerReady(boxId, context.schemaKey, 750);
-			return isSchemaWorkerReady(boxId, context.schemaKey);
+			const ready = await waitForSchemaWorkerReady(boxId, context.schemaKey, 750);
+			if (ready || isSchemaWorkerReady(boxId, context.schemaKey)) {
+				return true;
+			}
+			try {
+				if (!ed.__kustoRetrySuggestWhenSchemaReady) {
+					ed.__kustoRetrySuggestWhenSchemaReady = true;
+					waitForSchemaWorkerReady(boxId, context.schemaKey, 8000).then((becameReady: boolean) => {
+						try {
+							ed.__kustoRetrySuggestWhenSchemaReady = false;
+							if (!becameReady) return;
+							if (typeof ed.hasTextFocus === 'function' && !ed.hasTextFocus()) return;
+							if (typeof _win.__kustoTriggerAutocompleteForBoxId === 'function') {
+								void _win.__kustoTriggerAutocompleteForBoxId(boxId);
+							}
+						} catch (e) { console.error('[kusto]', e); }
+					}).catch((e: any) => {
+						try { ed.__kustoRetrySuggestWhenSchemaReady = false; } catch (inner) { console.error('[kusto]', inner); }
+						console.error('[kusto]', e);
+					});
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			return false;
 		}
 
 		if (!isSchemaWorkerReady(boxId, context.schemaKey)) {
@@ -284,6 +305,30 @@ export function __kustoGetColumnsByTable(schema: any) {
 		return out;
 	} catch {
 		return null;
+	}
+}
+
+export function __kustoDisableMonacoKustoWorkerHover(monacoApi: any): boolean {
+	try {
+		const defaults = monacoApi?.languages?.kusto?.kustoDefaults;
+		if (!defaults || typeof defaults.setLanguageSettings !== 'function') {
+			return false;
+		}
+		const currentSettings = defaults.languageSettings;
+		if (!currentSettings || typeof currentSettings !== 'object') {
+			return false;
+		}
+		if (currentSettings.enableHover === false) {
+			return true;
+		}
+		defaults.setLanguageSettings({
+			...currentSettings,
+			enableHover: false,
+		});
+		return true;
+	} catch (e) {
+		console.error('[kusto]', e);
+		return false;
 	}
 }
 
@@ -409,6 +454,7 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 							// Now load monaco-kusto after Monaco is fully initialized
 							(req as any)(['vs/language/kusto/monaco.contribution'], () => {
 								try {
+					__kustoDisableMonacoKustoWorkerHover(monaco);
 					// monaco.languages.register({ id: 'kusto' });
 
 					// ── Caret docs loaded from monaco-caret-docs.ts ──
@@ -567,7 +613,7 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 								const modelUri = model.uri ? model.uri.toString() : '';
 								const bId = queryEditorBoxByModelUri[modelUri] || '';
 								const info = getHoverInfoAt(model, position, bId);
-								if (!info || info.__kustoSkipInHoverWidget) {
+								if (!info) {
 									return null;
 								}
 								// Strip custom {{sig}}...{{/sig}} markers and render as styled HTML.
@@ -1851,7 +1897,7 @@ function initQueryEditor(boxId: any) {
 			// Monaco's built-in hover UI shows multiple stacked hover blocks (markers + providers)
 			// and an action bar ("View Problem") that isn't useful in our webview.
 			// We hide the action bar via CSS and keep our custom diagnostics tooltip for squiggles.
-			hover: { enabled: true, above: true },
+			hover: { enabled: true, above: true, sticky: true },
 			// Autocomplete should be manual-only (Ctrl+Space / toolbar) unless explicitly triggered by code.
 			suggestOnTriggerCharacters: false,
 			quickSuggestions: false,
@@ -2958,6 +3004,18 @@ function initQueryEditor(boxId: any) {
 				if (!ed) return false;
 				const schemaReady = await __kustoPrepareSchemaForAutocomplete(ed);
 				if (!schemaReady) return false;
+				try {
+					const root = ed.getDomNode && ed.getDomNode();
+					const host = root && root.closest ? (root.closest('.monaco-editor') || root) : root;
+					const doc = root && root.ownerDocument ? root.ownerDocument : document;
+					const widgets = host && typeof host.querySelectorAll === 'function'
+						? host.querySelectorAll('.suggest-widget')
+						: (doc && typeof doc.querySelectorAll === 'function' ? doc.querySelectorAll('.suggest-widget') : []);
+					for (const widget of Array.from(widgets || []) as any[]) {
+						try { if (widget.classList && widget.classList.contains('hidden')) widget.classList.remove('hidden'); } catch (e) { console.error('[kusto]', e); }
+						try { if (widget.style && widget.style.display === 'none') widget.style.display = ''; } catch (e) { console.error('[kusto]', e); }
+					}
+				} catch (e) { console.error('[kusto]', e); }
 				let shouldDeferTrigger = false;
 				// Ensure the editor's layout info is up-to-date before Monaco decides
 				// whether the suggest widget should render above or below the caret.

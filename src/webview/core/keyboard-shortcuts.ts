@@ -252,20 +252,32 @@ document.addEventListener('keydown', (event: any) => {
 		try { event.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
 		try { event.stopImmediatePropagation(); } catch (e) { console.error('[kusto]', e); }
 
-		// Prefer the shared helper so we keep the "hide if no suggestions" behavior.
+		const triggerNativeSuggest = () => {
+			try {
+				editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
+			} catch (e) { console.error('[kusto]', e); }
+		};
+
+		// Prefer the shared helper so schema can be applied first, but never swallow
+		// Ctrl+Space completely if the gated path cannot accept the trigger.
 		try {
 			const boxId = editor.__kustoBoxId;
 			if (boxId && typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
-				window.__kustoTriggerAutocompleteForBoxId(boxId);
-				return;
-			}
-			if (boxId) {
+				const result = window.__kustoTriggerAutocompleteForBoxId(boxId);
+				if (result && typeof result.then === 'function') {
+					result.then((triggered: boolean) => {
+						if (!triggered) triggerNativeSuggest();
+					}).catch((e: any) => {
+						console.error('[kusto]', e);
+						triggerNativeSuggest();
+					});
+				} else if (!result) {
+					triggerNativeSuggest();
+				}
 				return;
 			}
 		} catch (e) { console.error('[kusto]', e); }
-		try {
-			editor.trigger('keyboard', 'editor.action.triggerSuggest', {});
-		} catch (e) { console.error('[kusto]', e); }
+		triggerNativeSuggest();
 	} catch (e) { console.error('[kusto]', e); }
 }, true);
 

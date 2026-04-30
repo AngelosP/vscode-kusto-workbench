@@ -230,13 +230,24 @@ export function onQueryEditorToolbarAction(boxId: any, action: any): void {
 		return;
 	}
 	if (action === 'autocomplete') {
+		const fallback = () => runMonacoAction(boxId, 'editor.action.triggerSuggest');
 		try {
 			if (typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
-				window.__kustoTriggerAutocompleteForBoxId(boxId);
+				const result = window.__kustoTriggerAutocompleteForBoxId(boxId);
+				if (result && typeof result.then === 'function') {
+					result.then((triggered: boolean) => {
+						if (!triggered) fallback();
+					}).catch((e: any) => {
+						console.error('[kusto]', e);
+						fallback();
+					});
+				} else if (!result) {
+					fallback();
+				}
 				return;
 			}
 		} catch (e) { console.error('[kusto]', e); }
-		return;
+		return fallback();
 	}
 	if (action === 'rename') return runMonacoAction(boxId, 'editor.action.rename');
 	if (action === 'doubleToSingle') return replaceAllInEditor(boxId, '"', "'");

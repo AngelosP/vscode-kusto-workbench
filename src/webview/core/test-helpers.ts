@@ -1197,25 +1197,8 @@ function e2eEditor(kind: E2eSectionKind): MonacoLike {
 function e2eHideSuggest(kind: E2eSectionKind): string {
 	const editor = e2eEditor(kind);
 	try { editor.trigger?.('keyboard', 'hideSuggestWidget', {}); } catch { /* ignore */ }
-	const roots: ParentNode[] = [document];
-	try {
-		const selectedRoot = deepQuerySelector(document, E2E_SECTION[kind].editor) as ParentNode | null;
-		if (selectedRoot) {
-			roots.unshift(selectedRoot);
-		}
-	} catch { /* ignore */ }
-	let hiddenCount = 0;
-	for (const root of roots) {
-		try {
-			const widgets = deepQuerySelectorAll(root, '.suggest-widget') as HTMLElement[];
-			for (const widget of widgets) {
-				widget.classList.add('hidden');
-				widget.style.display = 'none';
-				hiddenCount++;
-			}
-		} catch { /* ignore */ }
-	}
-	return `${kind} suggest hide requested; hidden widgets=${hiddenCount}`;
+	try { editor.trigger?.('keyboard', 'hideSuggestWidget', {}); } catch { /* ignore */ }
+	return `${kind} suggest hide requested`;
 }
 
 function e2eVisibleSuggestLabels(context: string, editorSelector: string = ''): string[] {
@@ -1546,11 +1529,19 @@ async function e2eWaitForSuggest(kind: E2eSectionKind, context: string, expected
 	const started = performance.now();
 	try {
 		if (kind === 'kusto' && (editor as any).__kustoBoxId && typeof _win.__kustoTriggerAutocompleteForBoxId === 'function') {
-			_win.__kustoTriggerAutocompleteForBoxId((editor as any).__kustoBoxId);
+			const triggered = await _win.__kustoTriggerAutocompleteForBoxId((editor as any).__kustoBoxId);
+			if (!triggered) {
+				throw new Error(`${context}: Kusto autocomplete trigger was not accepted`);
+			}
 		} else {
 			editor.trigger?.('keyboard', 'editor.action.triggerSuggest', {});
 		}
-	} catch { /* fallback below */ }
+	} catch (error) {
+		if (kind === 'kusto') {
+			throw error;
+		}
+		/* fallback below */
+	}
 	return e2eWaitForExistingSuggest(kind, context, expectedAnyCsv, timeoutMs, exact, started);
 }
 

@@ -172,30 +172,139 @@
 			toastUiCssUrls: {{toastUiCssUrlsJson}}
 		};
 
-		// Monaco web workers fail with importScripts in VS Code webviews
-		// because vscode-resource URLs are cross-origin to the worker blob.
-		// Work-around: pre-fetch workerMain.js, inline it with the correct
-		// baseUrl, and hand Monaco the resulting blob: URL.
+		// Monaco web workers run from blob: URLs in VS Code webviews. In VS Code
+		// 1.118, importing vscode-resource scripts directly from that blob worker
+		// can fail, so fetch worker scripts on the webview thread and let the
+		// worker's importScripts() read them from an in-memory map.
 		(function () {
 			var baseUrl = "{{monacoVsUri}}".replace(/\/vs\/?$/, '/');
-			var workerUrl = baseUrl + "vs/base/worker/workerMain.js";
-			var blobUrl = null;
+			var cacheBuster = "{{cacheBuster}}";
+			var workerMainPath = "vs/base/worker/workerMain.js";
+			var workerScriptPathsByLabel = {
+				kusto: [
+					"vs/language/kusto/kustoWorker.js",
+					"vs/language/kusto/main-f8f8d919.js",
+					"vs/language/kusto/schema-d1f6d06d.js",
+					"vs/language/kusto/bridge.min.js",
+					"vs/language/kusto/kusto.javascript.client.min.js",
+					"vs/language/kusto/newtonsoft.json.min.js",
+					"vs/language/kusto/Kusto.Language.Bridge.min.js"
+				],
+				html: ["vs/language/html/htmlWorker.js"]
+			};
+			var workerScriptTextPromises = Object.create(null);
 
-			fetch(workerUrl)
-				.then(function (r) { return r.text(); })
-				.then(function (text) {
-					var prefix = 'self.MonacoEnvironment = { baseUrl: "' + baseUrl + '" };\n';
-					blobUrl = URL.createObjectURL(
-						new Blob([prefix + text], { type: 'text/javascript' })
-					);
-				})
-				.catch(function (err) {
-					console.warn('[Kusto Workbench] Worker prefetch failed, workers will run on main thread', err);
+			function withCacheBuster(url) {
+				if (!cacheBuster) return url;
+				return url + (url.indexOf('?') >= 0 ? '&' : '?') + 'v=' + encodeURIComponent(cacheBuster);
+			}
+
+			function toWorkerScriptUrl(path) {
+				return baseUrl + path;
+			}
+
+			function fetchWorkerScript(path) {
+				return fetch(withCacheBuster(toWorkerScriptUrl(path)))
+					.then(function (response) {
+						if (!response.ok) {
+							throw new Error('HTTP ' + response.status + ' while loading Monaco worker script ' + path);
+						}
+						return response.text();
+					});
+			}
+
+			function normalizeWorkerLabel(label) {
+				var value = String(label || '').toLowerCase();
+				if (value === 'kusto' || value === 'kql') return 'kusto';
+				if (value === 'html' || value === 'handlebars' || value === 'razor') return 'html';
+				return 'editor';
+			}
+
+			function getWorkerScripts(label) {
+				var normalizedLabel = normalizeWorkerLabel(label);
+				if (!workerScriptTextPromises[normalizedLabel]) {
+					var paths = [workerMainPath].concat(workerScriptPathsByLabel[normalizedLabel] || []);
+					workerScriptTextPromises[normalizedLabel] = Promise.all(paths.map(function (path) {
+						return fetchWorkerScript(path).then(function (text) {
+							return { path: path, text: text };
+						});
+					})).then(function (entries) {
+						var scripts = Object.create(null);
+						entries.forEach(function (entry) { scripts[entry.path] = entry.text; });
+						return scripts;
+					});
+				}
+				return workerScriptTextPromises[normalizedLabel];
+			}
+
+			function buildWorkerSource(label, scripts) {
+				var workerMainText = scripts[workerMainPath];
+				var moduleScripts = Object.create(null);
+				Object.keys(scripts).forEach(function (path) {
+					if (path !== workerMainPath) moduleScripts[path] = scripts[path];
 				});
 
+				return [
+					'(function () {',
+					'  var baseUrl = ' + JSON.stringify(baseUrl) + ';',
+					'  var workerLabel = ' + JSON.stringify(String(label || 'editor')) + ';',
+					'  var scriptTexts = ' + JSON.stringify(moduleScripts) + ';',
+					'  var workerMainText = ' + JSON.stringify(workerMainText) + ';',
+					'  var originalImportScripts = typeof importScripts === "function" ? importScripts.bind(self) : null;',
+					'  function normalizeScriptKey(url) {',
+					'    var value = String(url || "");',
+					'    try { value = new URL(value, baseUrl).toString(); } catch (err) {}',
+					'    var queryIndex = value.search(/[?#]/);',
+					'    if (queryIndex >= 0) value = value.slice(0, queryIndex);',
+					'    var cleanBaseUrl = String(baseUrl).replace(/[?#].*$/, "");',
+					'    if (value.indexOf(cleanBaseUrl) === 0) value = value.slice(cleanBaseUrl.length);',
+					'    var distMarker = "/dist/monaco/";',
+					'    var distIndex = value.indexOf(distMarker);',
+					'    if (distIndex >= 0) value = value.slice(distIndex + distMarker.length);',
+					'    return value.replace(/^\\/+/, "");',
+					'  }',
+					'  function runWorkerScript(url, text) {',
+					'    (0, eval)(text + "\\n//# sourceURL=" + url);',
+					'  }',
+					'  self.MonacoEnvironment = self.MonacoEnvironment || {};',
+					'  self.MonacoEnvironment.baseUrl = baseUrl;',
+					'  self.importScripts = function () {',
+					'    for (var i = 0; i < arguments.length; i++) {',
+					'      var url = String(arguments[i]);',
+					'      var key = normalizeScriptKey(url);',
+					'      var text = scriptTexts[key];',
+					'      if (typeof text === "string") {',
+					'        runWorkerScript(url, text);',
+					'      } else if (originalImportScripts) {',
+					'        originalImportScripts(url);',
+					'      } else {',
+					'        throw new Error("Monaco worker script not embedded for " + workerLabel + ": " + url + " (" + key + ")");',
+					'      }',
+					'    }',
+					'  };',
+					'  runWorkerScript(baseUrl + "vs/base/worker/workerMain.js", workerMainText);',
+					'})();'
+				].join('\n');
+			}
+
+			function createMonacoWorker(label) {
+				return getWorkerScripts(label).then(function (scripts) {
+					var source = buildWorkerSource(label, scripts);
+					var blobUrl = URL.createObjectURL(new Blob([source], { type: 'text/javascript' }));
+					var worker = new Worker(blobUrl, { name: String(label || 'monaco') });
+					setTimeout(function () {
+						try { URL.revokeObjectURL(blobUrl); } catch (err) { console.error('[Kusto Workbench] Failed to revoke Monaco worker blob URL', err); }
+					}, 30000);
+					return worker;
+				});
+			}
+
 			window.MonacoEnvironment = {
+				getWorker: function (_workerId, label) {
+					return createMonacoWorker(label);
+				},
 				getWorkerUrl: function () {
-					return blobUrl || workerUrl;
+					return toWorkerScriptUrl(workerMainPath);
 				}
 			};
 		})();

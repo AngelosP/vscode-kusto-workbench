@@ -76,7 +76,7 @@ Feature: Kusto auto-trigger autocomplete behavior
     When I evaluate "window.__e2e.suggest.kusto.typeText(' ')" in the webview
     When I evaluate "window.__e2e.kusto.assertAutoTriggered('pipe-operators', 3000)" in the webview
     When I evaluate "window.__e2e.kusto.assertCompletionStaysVisible('pipe-operators', 800)" in the webview
-    When I click the element "where"
+    When I evaluate "window.__e2e.kusto.acceptSuggestion('pipe-operators')" in the webview
     And I wait 1 second
     When I evaluate "window.__e2e.kusto.assertAcceptedCompletion('pipe-operators')" in the webview
 

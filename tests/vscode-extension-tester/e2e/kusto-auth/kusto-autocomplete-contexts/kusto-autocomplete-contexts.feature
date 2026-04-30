@@ -36,10 +36,11 @@ Feature: Kusto autocomplete schema contexts
     When I evaluate "window.__e2e.kusto.assertCompletionLatency('table-prefix', 3000)" in the webview
     When I evaluate "window.__e2e.kusto.assertCompletionVisible('table-prefix')" in the webview
     When I evaluate "window.__e2e.kusto.assertCompletionStaysVisible('table-prefix', 800)" in the webview
-    When I click the element "RawEventsADS"
+    Then I take a screenshot "02-table-suggestions-visible"
+    When I evaluate "window.__e2e.kusto.acceptSuggestion('table-prefix')" in the webview
     And I wait 1 second
     When I evaluate "window.__e2e.kusto.assertAcceptedCompletion('table-prefix')" in the webview
-    Then I take a screenshot "02-table-accepted"
+    Then I take a screenshot "03-table-accepted"
 
     When I press "Escape"
     And I wait 1 second
@@ -54,7 +55,7 @@ Feature: Kusto autocomplete schema contexts
     When I evaluate "window.__e2e.kusto.assertCompletionLatency('project-columns', 3000)" in the webview
     When I evaluate "window.__e2e.kusto.assertCompletionVisible('project-columns')" in the webview
     When I evaluate "window.__e2e.kusto.assertCompletionStaysVisible('project-columns', 800)" in the webview
-    When I click the element "EventName"
+    When I evaluate "window.__e2e.kusto.acceptSuggestion('project-columns')" in the webview
     And I wait 1 second
     When I evaluate "window.__e2e.kusto.assertAcceptedCompletion('project-columns')" in the webview
 
@@ -84,7 +85,7 @@ Feature: Kusto autocomplete schema contexts
     When I evaluate "window.__e2e.kusto.setCompletionContext('valid-query')" in the webview
     And I wait 2 seconds
     When I evaluate "window.__e2e.kusto.assertMarkers('none', '', 'error')" in the webview
-    Then I take a screenshot "03-valid-query-no-errors"
+    Then I take a screenshot "04-valid-query-no-errors"
 
     When I evaluate "window.__e2e.autoTrigger.ensureEnabled('kusto', true)" in the webview
     When I execute command "workbench.action.closeAllEditors"

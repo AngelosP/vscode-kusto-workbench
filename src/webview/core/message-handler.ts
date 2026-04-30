@@ -136,6 +136,9 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 	}
 
 	const isActiveBox = boxId === activeQueryEditorBoxId;
+	if (!isActiveBox && !isForceRefresh) {
+		return;
+	}
 	const shouldDeferForSuggest = !!meta.isBackgroundRefresh && !isForceRefresh && isActiveBox && isSuggestVisibleForBoxId(boxId);
 	if (shouldDeferForSuggest) {
 		pendingSchemaWorkerUpdateByBoxId[boxId] = {
