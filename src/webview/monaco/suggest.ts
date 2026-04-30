@@ -2,10 +2,62 @@
 // Handles suggest widget visibility, cursor-word detection, preselect, and smart sizing.
 
 import { queryEditors } from '../core/state';
+import { addPageScrollListener, getPageScrollElement } from '../core/utils';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 
 let _suggestWidgetScrollDismissInstalled = false;
 let _suggestWidgetViewportListenersInstalled = false;
 let _clampAllSuggestWidgets: (() => void) | null = null;
+
+function __kustoIsMonacoSuggestScrollTarget(target: any): boolean {
+	try {
+		if (!target || !target.closest) return false;
+		return !!(target.closest('.monaco-editor') || target.closest('.suggest-widget'));
+	} catch {
+		return false;
+	}
+}
+
+function __kustoIsBodyOverlayScrollTarget(target: any): boolean {
+	try {
+		if (!target || !target.classList) return false;
+		if (target === getPageScrollElement()) return true;
+		if (target.getAttribute && target.getAttribute('data-kw-page-scroll-element') === 'true') return true;
+		if (target.classList.contains('kw-scroll-viewport')) return true;
+		return !!(target.classList.contains('os-viewport') && target.closest && target.closest('.kw-scroll-viewport'));
+	} catch {
+		return false;
+	}
+}
+
+function __kustoAnyEditorHasSuggestFocus(editors: Record<string, any>): boolean {
+	try {
+		if (!editors) return false;
+		for (const id of Object.keys(editors)) {
+			const editor = editors[id];
+			if (!editor) continue;
+			try {
+				const hasWidgetFocus = typeof editor.hasWidgetFocus === 'function' ? editor.hasWidgetFocus() : false;
+				const hasTextFocus = typeof editor.hasTextFocus === 'function' ? editor.hasTextFocus() : false;
+				if (hasWidgetFocus || hasTextFocus) return true;
+			} catch (e) { console.error('[kusto]', e); }
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	return false;
+}
+
+export function __kustoShouldDismissSuggestOnScrollTarget(target: any, editors: Record<string, any> = queryEditors): boolean {
+	try {
+		if (target && target !== document && target !== document.documentElement && target !== document.body) {
+			if (__kustoIsMonacoSuggestScrollTarget(target)) return false;
+			if (__kustoIsBodyOverlayScrollTarget(target) && __kustoAnyEditorHasSuggestFocus(editors)) return false;
+		}
+		return true;
+	} catch {
+		return true;
+	}
+}
+
 export function __kustoIsElementVisibleForSuggest(el: any) {
 	try {
 		if (!el) return false;
@@ -460,17 +512,8 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 			try {
 				if (!_suggestWidgetScrollDismissInstalled) {
 					_suggestWidgetScrollDismissInstalled = true;
-					window.addEventListener('scroll', (ev: any) => {
+					registerPageScrollDismissable(() => {
 						try {
-							const target = ev && ev.target;
-							// If scroll originated inside a Monaco editor or suggest widget, ignore.
-							if (target && target !== document && target !== document.documentElement && target !== document.body) {
-								try {
-									if (target.closest && (target.closest('.monaco-editor') || target.closest('.suggest-widget'))) {
-										return;
-									}
-								} catch (e) { console.error('[kusto]', e); }
-							}
 							// Outer scroll — dismiss all suggest widgets.
 							if (!queryEditors) return;
 							for (const id of Object.keys(queryEditors)) {
@@ -482,7 +525,12 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 								} catch (e) { console.error('[kusto]', e); }
 							}
 						} catch (e) { console.error('[kusto]', e); }
-					}, true);
+					}, {
+						mode: 'ephemeral',
+						dismissOnWheel: true,
+						once: false,
+						shouldDismiss: ({ event }) => __kustoShouldDismissSuggestOnScrollTarget(event.target, queryEditors),
+					});
 				}
 			} catch (e) { console.error('[kusto]', e); }
 
@@ -1053,9 +1101,9 @@ export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {
 				window.addEventListener('resize', () => {
 					try { _clampAllSuggestWidgets && _clampAllSuggestWidgets(); } catch (e) { console.error('[kusto]', e); }
 				});
-				window.addEventListener('scroll', () => {
+				addPageScrollListener(() => {
 					try { _clampAllSuggestWidgets && _clampAllSuggestWidgets(); } catch (e) { console.error('[kusto]', e); }
-				}, true);
+				}, { passive: true });
 			}
 		} catch (e) { console.error('[kusto]', e); }
 

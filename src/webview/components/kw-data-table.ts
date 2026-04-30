@@ -18,6 +18,7 @@ import { TableVirtualScrollController } from './table-virtual-scroll.controller.
 import { TableRowJumpController } from './table-row-jump.controller.js';
 import { TableSearchController } from './table-search.controller.js';
 import { TableSelectionController } from './table-selection.controller.js';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 
 export interface DataTableColumn { name: string; type?: string; }
 export interface DataTableOptions {
@@ -277,9 +278,9 @@ export class KwDataTable extends LitElement {
 	private _searchCtrl = new TableSearchController(this);
 	private _selectionCtrl = new TableSelectionController(this);
 	private _osInstance: ReturnType<typeof OverlayScrollbars> | null = null;
+	private _osHostElement: HTMLElement | null = null;
 
 	private _table: Table<CellValue[]> | null = null;
-	private _scrollAtPopupOpen = 0;
 	private _columnWidths: number[] = [];
 	private _measureCanvas: HTMLCanvasElement | null = null;
 	private _lastVisibleRowCount = -1;
@@ -403,7 +404,6 @@ export class KwDataTable extends LitElement {
 			this._selectionCtrl.clearSelectionRange();
 			this._vScrollCtrl.scrollToIndex(row, { align: 'center' });
 		};
-		document.addEventListener('scroll', this._onDocumentScrollDismiss, { capture: true, passive: true });
 	}
 	// Stable dismiss callbacks for the dismiss stack
 	private _dismissSearch = (): void => { this._searchCtrl.toggle(); };
@@ -412,21 +412,20 @@ export class KwDataTable extends LitElement {
 	private _dismissColumnMenu = (): void => { this._closeColumnMenu(); };
 	private _dismissSortDialog = (): void => { this._sortDialogOpen = false; };
 	private _dismissFilterDialog = (): void => { this._closeFilterDialog(); };
+	private _removePageScrollListener: (() => void) | null = null;
 
 	protected updated(changed: PropertyValues): void {
 		if (changed.has('columns') || changed.has('rows')) this._vScrollCtrl.initVirtualizer();
-		if (changed.has('_bodyVisible') && this._bodyVisible) {
-			this._initOverlayScrollbars();
-			this._vScrollCtrl.initVirtualizer();
+		if (changed.has('_bodyVisible')) {
+			if (this._bodyVisible) {
+				this._refreshVisibleBodyLayout();
+			} else {
+				this._destroyOverlayScrollbars();
+			}
 		}
 		this._vScrollCtrl.installViewportResizeWatcher();
 		this._vScrollCtrl.syncHeaderScroll();
-		// Capture scroll position when a popup opens (for threshold-based dismiss)
-		if ((changed.has('_columnMenuOpen') && this._columnMenuOpen !== null) ||
-			(changed.has('_sortDialogOpen') && this._sortDialogOpen) ||
-			(changed.has('_filterDialogOpen') && this._filterDialogOpen)) {
-			this._scrollAtPopupOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		}
+		this._syncPopupScrollDismiss(changed);
 		// Manage dismiss stack for search (controller state)
 		const prevSearchVisible = (changed.get('_searchCtrl') as any)?.visible;
 		// For controller-driven state, we manually track open/close in the dismiss stack
@@ -474,22 +473,44 @@ export class KwDataTable extends LitElement {
 	private _initOverlayScrollbars(): void {
 		const vscroll = this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
 		if (!vscroll) return;
-		// Skip if already initialized on this element.
-		if (this._osInstance && OverlayScrollbars.valid(this._osInstance)) return;
+		// Skip only when the live instance is attached to the current element.
+		if (this._osInstance && OverlayScrollbars.valid(this._osInstance) && this._osHostElement === vscroll) {
+			const viewport = this._osInstance.elements().viewport;
+			this._vScrollCtrl.setScrollElement(viewport as HTMLElement);
+			return;
+		}
+		this._destroyOverlayScrollbars();
 		this._osInstance = OverlayScrollbars(vscroll, {
 			scrollbars: { visibility: 'auto', autoHide: 'move', autoHideDelay: 800, autoHideSuspend: true },
 			overflow: { x: 'scroll', y: 'scroll' },
 		});
+		this._osHostElement = vscroll;
 		// Point the virtual-scroll controller at the OverlayScrollbars viewport
 		// element — this is where actual scrolling happens after initialization.
 		const viewport = this._osInstance.elements().viewport;
 		this._vScrollCtrl.setScrollElement(viewport as HTMLElement);
 	}
 
-	disconnectedCallback(): void {
-		super.disconnectedCallback();
+	private _destroyOverlayScrollbars(): void {
 		this._osInstance?.destroy();
 		this._osInstance = null;
+		this._osHostElement = null;
+		this._vScrollCtrl.resetScrollElement();
+	}
+
+	private _refreshVisibleBodyLayout(): void {
+		this._initOverlayScrollbars();
+		this._vScrollCtrl.initVirtualizer();
+		requestAnimationFrame(() => {
+			if (!this.isConnected || !this._bodyVisible) return;
+			this._vScrollCtrl.measure();
+			this._vScrollCtrl.syncHeaderScroll();
+		});
+	}
+
+	disconnectedCallback(): void {
+		super.disconnectedCallback();
+		this._destroyOverlayScrollbars();
 		// Clean up dismiss stack
 		removeDismissable(this._dismissSearch);
 		removeDismissable(this._dismissRowJump);
@@ -498,7 +519,10 @@ export class KwDataTable extends LitElement {
 		removeDismissable(this._dismissSortDialog);
 		removeDismissable(this._dismissFilterDialog);
 		document.removeEventListener('mousedown', this._onDocMouseDown);
-		document.removeEventListener('scroll', this._onDocumentScrollDismiss, true);
+		if (this._removePageScrollListener) {
+			this._removePageScrollListener();
+			this._removePageScrollListener = null;
+		}
 	}
 
 	// ── TanStack Table ──
@@ -819,7 +843,7 @@ export class KwDataTable extends LitElement {
 		const meta = this.options.metadata;
 		const hasTooltip = !!(meta && (meta.clientActivityId || meta.serverStats));
 		return html`<div class="hbar">
-			<span class="hinfo${hasTooltip ? ' hinfo-anchor' : ''}" @mouseenter=${hasTooltip ? this._showMetaTooltip : nothing} @mouseleave=${hasTooltip ? this._scheduleHideMetaTooltip : nothing}>${this.options.label ? html`<strong>${this.options.label}:</strong> ` : nothing}${rowSummary} / ${this.columns.length} col${this.columns.length !== 1 ? 's' : ''}${this.options.executionTime && this.options.showExecutionTime ? html` <span class="et">(${this.options.executionTime})</span>` : nothing}${showVis ? html` <button class="tbtn vis-toggle ${this._bodyVisible ? 'act' : ''}" title="${this._bodyVisible ? 'Hide results' : 'Show results'}" @click=${this._toggleBody}>${ICON.eye}</button>${!this._bodyVisible ? html`<span class="hidden-hint" @click=${this._toggleBody}>(results hidden from view, click to show them)</span>` : nothing}` : nothing}</span>
+			<span class="hinfo"><span class="hinfo-text${hasTooltip ? ' hinfo-anchor' : ''}" @mouseenter=${hasTooltip ? this._showMetaTooltip : nothing} @mouseleave=${hasTooltip ? this._scheduleHideMetaTooltip : nothing}>${this.options.label ? html`<strong>${this.options.label}:</strong> ` : nothing}${rowSummary} / ${this.columns.length} col${this.columns.length !== 1 ? 's' : ''}${this.options.executionTime && this.options.showExecutionTime ? html` <span class="et">(${this.options.executionTime})</span>` : nothing}</span>${showVis ? html` <button class="tbtn vis-toggle ${this._bodyVisible ? 'act' : ''}" title="${this._bodyVisible ? 'Hide results' : 'Show results'}" @click=${this._toggleBody}>${ICON.eye}</button>${!this._bodyVisible ? html`<span class="hidden-hint" @click=${this._toggleBody}>(results hidden from view, click to show them)</span>` : nothing}` : nothing}</span>
 			${(showToolbar && this._bodyVisible) ? html`<div class="tb">
 				<button class="tbtn ${this._searchCtrl.visible ? 'act' : ''}" title="Search data" @click=${() => this._toggleSearch()}>${ICON.search}</button>
 				<button class="tbtn ${this._rowJumpCtrl.visible ? 'act' : ''}" title="Scroll to row" @click=${() => this._toggleRowJump(totalRows)}>${ICON.scrollToRow}</button>
@@ -1106,7 +1130,15 @@ export class KwDataTable extends LitElement {
 		// chrome-height-change is now emitted centrally from updated()
 	}
 	private _toggleBody(): void { this.setBodyVisible(!this._bodyVisible); }
-	setBodyVisible(visible: boolean): void { this._bodyVisible = visible; this.dispatchEvent(new CustomEvent('visibility-toggle', { detail: { visible: this._bodyVisible }, bubbles: true, composed: true })); }
+	setBodyVisible(visible: boolean, options?: { emit?: boolean }): void {
+		const nextVisible = !!visible;
+		if (nextVisible === this._bodyVisible) return;
+		if (!nextVisible) this._destroyOverlayScrollbars();
+		this._bodyVisible = nextVisible;
+		if (options?.emit !== false) {
+			this.dispatchEvent(new CustomEvent('visibility-toggle', { detail: { visible: this._bodyVisible }, bubbles: true, composed: true }));
+		}
+	}
 	private _onSortChange = (e: CustomEvent<{ sorting: SortingState }>): void => {
 		this._sorting = e.detail.sorting;
 		this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: this._sorting } }));
@@ -1154,12 +1186,29 @@ export class KwDataTable extends LitElement {
 
 	private _onDocumentScrollDismiss = (): void => {
 		if (!this._columnMenuOpen && this._columnMenuOpen !== 0 && !this._sortDialogOpen && !this._filterDialogOpen) return;
-		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		if (Math.abs(scrollY - this._scrollAtPopupOpen) <= 20) return;
 		this._columnMenuOpen = null;
 		this._sortDialogOpen = false;
 		this._filterDialogOpen = false;
 	};
+
+	private _syncPopupScrollDismiss(changed?: PropertyValues): void {
+		const hasPopup = this._columnMenuOpen !== null || this._sortDialogOpen || this._filterDialogOpen;
+		const popupChanged = !!(changed?.has('_columnMenuOpen') || changed?.has('_sortDialogOpen') || changed?.has('_filterDialogOpen'));
+		if (!hasPopup) {
+			if (this._removePageScrollListener) {
+				this._removePageScrollListener();
+				this._removePageScrollListener = null;
+			}
+			return;
+		}
+		if (popupChanged && this._removePageScrollListener) {
+			this._removePageScrollListener();
+			this._removePageScrollListener = null;
+		}
+		if (!this._removePageScrollListener) {
+			this._removePageScrollListener = registerPageScrollDismissable(() => this._onDocumentScrollDismiss());
+		}
+	}
 
 	private _copyCol(ci: number): void { if (!this._table) return; const rows = this._table.getRowModel().rows; const text = this.columns[ci].name + '\n' + rows.map(r => getCellDisplayValue(r.original[ci])).join('\n'); try { navigator.clipboard.writeText(text); } catch (e) { console.error('[kusto]', e); } }
 	private _save(): void {

@@ -3,6 +3,7 @@
 // (Escape is delegated to the existing dismiss-stack module).
 
 export { pushDismissable, removeDismissable } from './dismiss-stack.js';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 
 /**
  * Click-outside dismiss.
@@ -42,27 +43,5 @@ export function setupScrollDismiss(
 	onDismiss: () => void,
 	thresholdPx = 20,
 ): () => void {
-	const scrollAtOpen =
-		document.documentElement.scrollTop || document.body.scrollTop || 0;
-
-	let removed = false;
-
-	const onScroll = () => {
-		const scrollY =
-			document.documentElement.scrollTop || document.body.scrollTop || 0;
-		if (Math.abs(scrollY - scrollAtOpen) > thresholdPx) {
-			onDismiss();
-			cleanup();
-		}
-	};
-
-	function cleanup() {
-		if (removed) return;
-		removed = true;
-		document.removeEventListener('scroll', onScroll, true);
-	}
-
-	document.addEventListener('scroll', onScroll, { capture: true, passive: true } as AddEventListenerOptions);
-
-	return cleanup;
+	return registerPageScrollDismissable(onDismiss, { thresholdPx });
 }

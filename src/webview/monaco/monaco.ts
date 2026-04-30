@@ -53,7 +53,8 @@ import {
 	KUSTO_CONTROL_COMMAND_DOCS_BASE_URL, KUSTO_CONTROL_COMMAND_DOCS_VIEW, __kustoControlCommands,
 } from './caret-docs';
 import { __kustoAttachAutoResizeToContent } from './resize';
-import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
+import { addPageScrollListener, escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { __kustoAutoSizeEditor, ensureSchemaForBox, __kustoGetConnectionId, __kustoGetDatabase } from '../core/section-factory';
 import { executeQuery } from '../sections/query-execution.controller';
 import { initToolbarOverflow } from '../sections/kw-query-toolbar';
@@ -3620,7 +3621,7 @@ function initQueryEditor(boxId: any) {
 									// Allow other features (e.g., async doc fetch) to request a re-render of the active caret-docs banner.
 									_win.__kustoRefreshActiveCaretDocs = refreshActive;
 								} catch (e) { console.error('[kusto]', e); }
-							window.addEventListener('scroll', refreshActive, true);
+							addPageScrollListener(refreshActive, { passive: true });
 							window.addEventListener('resize', refreshActive);
 						}
 					} catch (e) { console.error('[kusto]', e); }
@@ -4215,18 +4216,21 @@ function __kustoShowEditorContextMenu(editor: any, event: MouseEvent) {
 			__kustoHideEditorContextMenu();
 		} catch { __kustoHideEditorContextMenu(); }
 	};
-	const onScroll = () => { __kustoHideEditorContextMenu(); };
 	const onKeyDown = (e: KeyboardEvent) => { if (e.key === 'Escape') __kustoHideEditorContextMenu(); };
+	let removeScrollListener: (() => void) | null = null;
 
 	setTimeout(() => {
 		document.addEventListener('mousedown', onDismiss, true);
-		window.addEventListener('scroll', onScroll, { capture: true, passive: true });
+		removeScrollListener = registerPageScrollDismissable(() => __kustoHideEditorContextMenu(), { mode: 'ephemeral', dismissOnWheel: true });
 		document.addEventListener('keydown', onKeyDown, true);
 	}, 0);
 
 	__kustoEditorContextMenuCleanup = () => {
 		document.removeEventListener('mousedown', onDismiss, true);
-		window.removeEventListener('scroll', onScroll, true);
+		if (removeScrollListener) {
+			removeScrollListener();
+			removeScrollListener = null;
+		}
 		document.removeEventListener('keydown', onKeyDown, true);
 	};
 }

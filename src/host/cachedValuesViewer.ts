@@ -697,9 +697,13 @@ export class CachedValuesViewerV2 {
 	<meta http-equiv="Content-Security-Policy" content="${csp}">
 	<meta name="viewport" content="width=device-width, initial-scale=1" />
 	<title>${VIEW_TITLE}</title>
-	<style>@font-face { font-family: "codicon"; font-display: block; src: url("${codiconFontUri}") format("truetype"); }</style>
+	<style>
+		@font-face { font-family: "codicon"; font-display: block; src: url("${codiconFontUri}") format("truetype"); }
+		html, body { width: 100%; min-height: 100%; margin: 0; }
+		kw-cached-values { display: block; width: 100%; }
+	</style>
 </head>
-<body>
+<body data-kw-page-overlay-scroll="true">
 	<kw-cached-values></kw-cached-values>
 	<script nonce="${nonce}" src="${bundleUri}"></script>
 </body>

@@ -81,7 +81,11 @@ export class OverlayScrollbarsController implements ReactiveController {
 
 		// Initialize new elements.
 		for (const el of marked) {
-			if (this._instances.has(el)) continue;
+			const existing = this._instances.get(el);
+			if (existing) {
+				existing.update();
+				continue;
+			}
 			const overflow = parseOverflow(el.getAttribute(ATTR));
 			const opts: PartialOptions = {
 				...DEFAULT_OPTIONS,

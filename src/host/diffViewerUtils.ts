@@ -10,7 +10,7 @@ import { parseKqlxText, type KqlxSectionV1, type DevNoteEntry } from './kqlxForm
  */
 export const COMPARISON_NOISE_KEYS = new Set([
 	'resultJson',
-	'copilotChatVisible', 'resultsVisible', 'favoritesMode',
+	'copilotChatVisible', 'favoritesMode',
 ]);
 
 /** Keys stripped from human-readable diff views — superset of COMPARISON_NOISE_KEYS.

@@ -8,6 +8,7 @@ import { osStyles } from '../shared/os-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { setResultsState } from '../core/results-state.js';
 import { schedulePersist } from '../core/persistence.js';
 import { __kustoGetChartDatasetsInDomOrder, __kustoCleanupSectionModeResizeObserver, __kustoRefreshAllDataSourceDropdowns } from '../core/section-factory.js';
@@ -338,21 +339,22 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	private _joinKeyDragState: { fromIndex: number; overIndex: number | null; insertAfter: boolean } | null = null;
 
 	private _closeDropdownBound = this._closeDropdownOnClickOutside.bind(this);
-	private _closeAllPopupsOnScrollBound = this._closeAllPopupsOnScroll.bind(this);
-	private _scrollAtPopupOpen = 0;
+	private _removePageScrollListener: (() => void) | null = null;
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
 	override connectedCallback(): void {
 		super.connectedCallback();
 		this._syncGlobalState();
-		window.addEventListener('scroll', this._closeAllPopupsOnScrollBound, { capture: true, passive: true });
 	}
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		document.removeEventListener('mousedown', this._closeDropdownBound);
-		window.removeEventListener('scroll', this._closeAllPopupsOnScrollBound, { capture: true });
+		if (this._removePageScrollListener) {
+			this._removePageScrollListener();
+			this._removePageScrollListener = null;
+		}
 	}
 
 	override firstUpdated(_changedProperties: PropertyValues): void {
@@ -392,6 +394,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 			this._writeToGlobalState();
 			this._computeTransformation();
 		}
+		this._syncPopupScrollDismiss(changed);
 	}
 
 	// ── Styles ────────────────────────────────────────────────────────────────
@@ -1138,7 +1141,6 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 				this._refreshDatasets();
 			}
 			this._openDropdownId = id;
-			this._scrollAtPopupOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
 			this.updateComplete.then(() => {
 				const menu = this.shadowRoot?.querySelector('.dropdown-menu') as HTMLElement;
 				if (menu) {
@@ -1162,10 +1164,27 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	private _closeAllPopupsOnScroll(): void {
 		if (!this._openDropdownId) return;
-		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		if (Math.abs(scrollY - this._scrollAtPopupOpen) <= 20) return;
 		this._openDropdownId = '';
 		document.removeEventListener('mousedown', this._closeDropdownBound);
+	}
+
+	private _syncPopupScrollDismiss(changed?: PropertyValues): void {
+		const hasPopup = !!this._openDropdownId;
+		const popupChanged = !!changed?.has('_openDropdownId');
+		if (!hasPopup) {
+			if (this._removePageScrollListener) {
+				this._removePageScrollListener();
+				this._removePageScrollListener = null;
+			}
+			return;
+		}
+		if (popupChanged && this._removePageScrollListener) {
+			this._removePageScrollListener();
+			this._removePageScrollListener = null;
+		}
+		if (!this._removePageScrollListener) {
+			this._removePageScrollListener = registerPageScrollDismissable(() => this._closeAllPopupsOnScroll());
+		}
 	}
 
 	// ── Derive handlers ───────────────────────────────────────────────────────

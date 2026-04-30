@@ -4,6 +4,7 @@ import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { iconRegistryStyles } from '../shared/icon-registry.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 
 // ─── Exported Types ───────────────────────────────────────────────────────────
 
@@ -59,8 +60,7 @@ export class KwDropdown extends LitElement {
 	@state() private _open = false;
 	@state() private _focusedIndex = -1;
 
-	// Scroll position when menu was last opened (for 20px threshold dismiss)
-	private _scrollAtOpen = 0;
+	private _removePageScrollListener: (() => void) | null = null;
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
@@ -74,14 +74,6 @@ export class KwDropdown extends LitElement {
 		const path = e.composedPath();
 		if (path.includes(this)) return;
 		this._closeMenu();
-	};
-
-	private _onDocumentScroll = (): void => {
-		if (!this._open) return;
-		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		if (Math.abs(scrollY - this._scrollAtOpen) > 20) {
-			this._closeMenu();
-		}
 	};
 
 	private _dismissMenu = (): void => {
@@ -111,13 +103,16 @@ export class KwDropdown extends LitElement {
 
 	private _addListeners(): void {
 		document.addEventListener('mousedown', this._onDocumentMousedown);
-		document.addEventListener('scroll', this._onDocumentScroll, true);
+		this._removePageScrollListener = registerPageScrollDismissable(() => this._closeMenu());
 		document.addEventListener('keydown', this._onDocumentKeydown, true);
 	}
 
 	private _removeListeners(): void {
 		document.removeEventListener('mousedown', this._onDocumentMousedown);
-		document.removeEventListener('scroll', this._onDocumentScroll, true);
+		if (this._removePageScrollListener) {
+			this._removePageScrollListener();
+			this._removePageScrollListener = null;
+		}
 		document.removeEventListener('keydown', this._onDocumentKeydown, true);
 	}
 
@@ -305,7 +300,6 @@ export class KwDropdown extends LitElement {
 	}
 
 	private _openMenu(): void {
-		this._scrollAtOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
 		this._open = true;
 		// Set initial focus: selected item, or first entry
 		const entries = this._getAllEntries();

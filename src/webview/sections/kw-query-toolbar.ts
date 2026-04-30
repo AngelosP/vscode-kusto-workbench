@@ -31,8 +31,9 @@ import {
 	sqlBoxes,
 } from '../core/section-factory.js';
 import { executeQuery, __kustoIsRunSelectionReady } from './query-execution.controller.js';
-import { toolbarScrollAtOpen, closeAllMenus } from '../core/dropdown.js';
+import { closeAllMenus } from '../core/dropdown.js';
 import { schedulePersist } from '../core/persistence.js';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import {
 	activeQueryEditorBoxId,
 	caretDocOverlaysByBoxId,
@@ -703,22 +704,46 @@ export function setRunMode(boxId: any, mode: any): void {
 	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
+let removeRunMenuScrollDismiss: (() => void) | null = null;
+let activeRunMenuBoxId: string | null = null;
+
+function cleanupRunMenuScrollDismiss(): void {
+	if (removeRunMenuScrollDismiss) {
+		removeRunMenuScrollDismiss();
+		removeRunMenuScrollDismiss = null;
+	}
+	activeRunMenuBoxId = null;
+}
+
 export function closeRunMenu(boxId: any): void {
-	const menu = document.getElementById(boxId + '_run_menu') as any;
+	const id = String(boxId || '').trim();
+	if (activeRunMenuBoxId === id) cleanupRunMenuScrollDismiss();
+	const menu = document.getElementById(id + '_run_menu') as any;
 	if (menu) menu.style.display = 'none';
 }
 
 export function closeAllRunMenus(): void {
+	cleanupRunMenuScrollDismiss();
 	if (!queryBoxes) return;
 	queryBoxes.forEach((id: any) => closeRunMenu(id));
 }
 
 export function toggleRunMenu(boxId: any): void {
-	const menu = document.getElementById(boxId + '_run_menu') as any;
+	const id = String(boxId || '').trim();
+	const menu = document.getElementById(id + '_run_menu') as any;
 	if (!menu) return;
 	const next = menu.style.display === 'block' ? 'none' : 'block';
 	closeAllRunMenus();
 	menu.style.display = next;
+	if (next === 'block') {
+		try {
+			removeRunMenuScrollDismiss = registerPageScrollDismissable(() => closeAllRunMenus(), {
+				dismissOnWheel: true,
+				shouldDismiss: ({ event, kind }) => kind !== 'wheel' || !event.composedPath().includes(menu),
+			});
+			activeRunMenuBoxId = id;
+		} catch (e) { console.error('[kusto]', e); }
+	}
 }
 
 // ── Function definition detection (shared by Copy as Inline Function and Run Function) ──
@@ -782,28 +807,6 @@ document.addEventListener('click', (ev: any) => {
 	try { closeAllFavoritesDropdowns(); } catch (e) { console.error('[kusto]', e); }
 	try { closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
 });
-
-document.addEventListener('scroll', (ev: any) => {
-	try {
-		const target = ev && ev.target ? ev.target : null;
-		if (target && target.closest && (target.closest('.kusto-dropdown-menu') || target.closest('.kusto-favorites-menu'))) {
-			return;
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	closeAllRunMenus();
-	try {
-		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		if (Math.abs(scrollY - toolbarScrollAtOpen) > 20) {
-			closeAllMenus();
-		}
-	} catch (e) { console.error('[kusto]', e); }
-}, true);
-
-document.addEventListener('wheel', (ev: any) => {
-	if (__kustoEventIsInsideDropdownUi(ev)) return;
-	closeAllRunMenus();
-	try { closeAllMenus(); } catch (e) { console.error('[kusto]', e); }
-}, { passive: true });
 
 window.updateCaretDocsToggleButtons = updateCaretDocsToggleButtons;
 window.updateAutoTriggerAutocompleteToggleButtons = updateAutoTriggerAutocompleteToggleButtons;

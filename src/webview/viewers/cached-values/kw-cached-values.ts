@@ -57,6 +57,14 @@ interface VsCodeApi {
 
 declare function acquireVsCodeApi(): VsCodeApi;
 
+function getVsCodeApi(): VsCodeApi {
+	const existing = (window as Window & { vscode?: VsCodeApi }).vscode;
+	if (existing) return existing;
+	const vscode = acquireVsCodeApi();
+	try { (window as Window & { vscode?: VsCodeApi }).vscode = vscode; } catch (e) { console.error('[kusto]', e); }
+	return vscode;
+}
+
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function escapeHtml(s: unknown): string {
@@ -257,7 +265,7 @@ export class KwCachedValues extends LitElement {
 
 	connectedCallback(): void {
 		super.connectedCallback();
-		this._vscode = acquireVsCodeApi();
+		this._vscode = getVsCodeApi();
 		window.addEventListener('message', this._onMessage);
 		this._requestSnapshot();
 	}
@@ -322,27 +330,29 @@ export class KwCachedValues extends LitElement {
 		const sqlCount = snap ? (snap.sqlConnections?.length ?? 0) : 0;
 
 		return html`
-			<h1 data-testid="cv-title">Cached Values</h1>
-			<div class="small" style="display:flex;align-items:center;gap:6px;">Last updated: ${timestamp}
-				<button class="iconButton" data-testid="cv-refresh" title="Refresh" aria-label="Refresh"
-					@click=${() => this._requestSnapshot()}
-					?disabled=${this._requestPending}>
-					${ICONS.refresh}
-				</button>
+			<div class="viewerContent" @wheel=${this._onNestedScrollWheel}>
+				<h1 data-testid="cv-title">Cached Values</h1>
+				<div class="small" style="display:flex;align-items:center;gap:6px;">Last updated: ${timestamp}
+					<button class="iconButton" data-testid="cv-refresh" title="Refresh" aria-label="Refresh"
+						@click=${() => this._requestSnapshot()}
+						?disabled=${this._requestPending}>
+						${ICONS.refresh}
+					</button>
+				</div>
+
+				<!-- Type selector -->
+				<kw-kind-picker
+					data-testid="cv-kind-picker"
+					.activeKind=${kind}
+					.kustoCount=${kustoCount}
+					.sqlCount=${sqlCount}
+					@kind-changed=${(e: CustomEvent) => this._switchKind(e.detail.kind)}
+				></kw-kind-picker>
+
+				${kind === 'kusto' ? this._renderKustoContent() : this._renderSqlContent()}
+
+				<kw-object-viewer></kw-object-viewer>
 			</div>
-
-			<!-- Type selector -->
-			<kw-kind-picker
-				data-testid="cv-kind-picker"
-				.activeKind=${kind}
-				.kustoCount=${kustoCount}
-				.sqlCount=${sqlCount}
-				@kind-changed=${(e: CustomEvent) => this._switchKind(e.detail.kind)}
-			></kw-kind-picker>
-
-			${kind === 'kusto' ? this._renderKustoContent() : this._renderSqlContent()}
-
-			<kw-object-viewer></kw-object-viewer>
 		`;
 	}
 
@@ -853,6 +863,33 @@ export class KwCachedValues extends LitElement {
 	}
 
 	// ── Event handlers ────────────────────────────────────────────────────────
+
+	private _onNestedScrollWheel(event: WheelEvent): void {
+		const scrollable = this._findNestedVerticalScroller(event);
+		if (!scrollable || !this._canScrollVertically(scrollable, event.deltaY)) return;
+		event.stopPropagation();
+	}
+
+	private _findNestedVerticalScroller(event: WheelEvent): HTMLElement | null {
+		const path = typeof event.composedPath === 'function' ? event.composedPath() : [];
+		for (const target of path) {
+			if (target === this || target === this.shadowRoot) return null;
+			if (!(target instanceof HTMLElement)) continue;
+			if (target === this) return null;
+			const style = getComputedStyle(target);
+			const overflowY = style.overflowY || style.overflow;
+			if (overflowY === 'auto' || overflowY === 'scroll') return target;
+		}
+		return null;
+	}
+
+	private _canScrollVertically(element: HTMLElement, deltaY: number): boolean {
+		if (!deltaY) return false;
+		const maxScrollTop = Math.max(0, element.scrollHeight - element.clientHeight);
+		if (maxScrollTop <= 0) return false;
+		if (deltaY > 0) return element.scrollTop < maxScrollTop;
+		return element.scrollTop > 0;
+	}
 
 	private _toggleOverride(key: string): void {
 		const next = new Set(this._expandedOverrides);

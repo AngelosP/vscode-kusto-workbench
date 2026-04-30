@@ -578,6 +578,18 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
 		queryEditor.documentUri = document.uri.toString();
+		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
+		const queuedWebviewMessages: IncomingWebviewMessage[] = [];
+		const webviewMessageSubscription = webviewPanel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
+			if (!message || typeof message.type !== 'string') {
+				return;
+			}
+			if (!handleIncomingWebviewMessage) {
+				queuedWebviewMessages.push(message);
+				return;
+			}
+			return handleIncomingWebviewMessage(message);
+		});
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
 
 		const documentKind = KqlxEditorProvider.getDocumentKind(document);
@@ -961,7 +973,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			});
 		};
 
-		const subscriptions: vscode.Disposable[] = [];
+		const subscriptions: vscode.Disposable[] = [webviewMessageSubscription];
 		subscriptions.push(
 			vscode.workspace.onDidSaveTextDocument((saved) => {
 				try {
@@ -1069,7 +1081,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 		});
 
-		webviewPanel.webview.onDidReceiveMessage(async (message: IncomingWebviewMessage) => {
+		handleIncomingWebviewMessage = async (message: IncomingWebviewMessage) => {
 			if (!message || typeof message.type !== 'string') {
 				return;
 			}
@@ -1523,7 +1535,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// Forward everything else to the existing query editor handler.
 					await queryEditor.handleWebviewMessage(message as any);
 			}
-		});
+		};
+
+		for (const queuedMessage of queuedWebviewMessages.splice(0)) {
+			await handleIncomingWebviewMessage(queuedMessage);
+		}
 
 		// Do not push document contents automatically.
 		// The webview asks for the initial document explicitly (requestDocument).

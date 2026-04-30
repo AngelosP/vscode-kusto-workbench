@@ -6,6 +6,7 @@ import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 import { __kustoCloseShareModal, __kustoShareCopyToClipboard } from '../sections/kw-query-toolbar';
 import { __kustoRequestAddSection, schedulePersist } from './persistence';
 import { queryEditors } from './state';
+import { registerPageScrollDismissable } from './page-scroll-dismiss.js';
 
 // Side-effect imports — register event handlers on import.
 // Active-section-tracker must be imported before message-handler so its
@@ -48,6 +49,22 @@ if (window.vscode) {
 // ==========================================================================
 // ADD SECTION DROPDOWN (for narrow viewports)
 // ==========================================================================
+let removeAddSectionScrollDismiss: (() => void) | null = null;
+
+function cleanupAddSectionScrollDismiss(): void {
+	if (!removeAddSectionScrollDismiss) return;
+	removeAddSectionScrollDismiss();
+	removeAddSectionScrollDismiss = null;
+}
+
+function closeAddSectionDropdown(): void {
+	cleanupAddSectionScrollDismiss();
+	const btn = document.getElementById('addSectionDropdownBtn') as any;
+	const menu = document.getElementById('addSectionDropdownMenu') as any;
+	if (menu) menu.style.display = 'none';
+	if (btn) btn.setAttribute('aria-expanded', 'false');
+}
+
 // Toggle the "Add Section" dropdown menu (shown at narrow widths < 465px).
 function __kustoToggleAddSectionDropdown( event: any) {
 	try {
@@ -66,13 +83,16 @@ function __kustoToggleAddSectionDropdown( event: any) {
 		} catch (e) { console.error('[kusto]', e); }
 
 		if (wasOpen) {
-			menu.style.display = 'none';
-			btn.setAttribute('aria-expanded', 'false');
+			closeAddSectionDropdown();
 			return;
 		}
 
 		menu.style.display = 'block';
 		btn.setAttribute('aria-expanded', 'true');
+		removeAddSectionScrollDismiss = registerPageScrollDismissable(closeAddSectionDropdown, {
+			dismissOnWheel: true,
+			shouldDismiss: ({ event, kind }) => kind !== 'wheel' || !menu.contains(event.target as Node),
+		});
 
 		// Apply visibility based on allowed section kinds.
 		__kustoUpdateAddSectionDropdownVisibility();
@@ -83,11 +103,7 @@ function __kustoToggleAddSectionDropdown( event: any) {
 // Called when a dropdown item is selected.
 function __kustoAddSectionFromDropdown( kind: any) {
 	try {
-		// Close the dropdown.
-		const btn = document.getElementById('addSectionDropdownBtn') as any;
-		const menu = document.getElementById('addSectionDropdownMenu') as any;
-		if (menu) menu.style.display = 'none';
-		if (btn) btn.setAttribute('aria-expanded', 'false');
+		closeAddSectionDropdown();
 
 		// Add the section.
 		__kustoRequestAddSection(kind);
@@ -127,8 +143,7 @@ document.addEventListener('click', (event: any) => {
 			}
 		}
 
-		menu.style.display = 'none';
-		if (btn) btn.setAttribute('aria-expanded', 'false');
+		closeAddSectionDropdown();
 	} catch (e) { console.error('[kusto]', e); }
 });
 
@@ -140,8 +155,7 @@ document.addEventListener('keydown', (event: any) => {
 		const btn = document.getElementById('addSectionDropdownBtn') as any;
 		if (!menu || menu.style.display !== 'block') return;
 
-		menu.style.display = 'none';
-		if (btn) btn.setAttribute('aria-expanded', 'false');
+		closeAddSectionDropdown();
 	} catch (e) { console.error('[kusto]', e); }
 });
 

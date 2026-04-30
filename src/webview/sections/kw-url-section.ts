@@ -10,6 +10,7 @@ import type { DataTableColumn, DataTableOptions } from '../components/kw-data-ta
 import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { schedulePersist } from '../core/persistence.js';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { __kustoRefreshAllDataSourceDropdowns } from '../core/section-factory.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -94,6 +95,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 	private _autoFitPending = false;
 	private _csvResizeObs: ResizeObserver | null = null;
 	private _fetchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+	private _removeImageMenuScrollDismiss: (() => void) | null = null;
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -105,6 +107,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		window.removeEventListener('message', this._onMessage);
+		this._closeImageMenu();
 		this._csvResizeObs?.disconnect();
 		this._csvResizeObs = null;
 	}
@@ -526,10 +529,23 @@ export class KwUrlSection extends LitElement implements SectionElement {
 	}
 
 	private _toggleImageMenu = (): void => {
-		this._imageMenuOpen = !this._imageMenuOpen;
-		if (this._imageMenuOpen) {
+		const nextOpen = !this._imageMenuOpen;
+		this._imageMenuOpen = nextOpen;
+		if (nextOpen) {
 			requestAnimationFrame(() => document.addEventListener('mousedown', this._closeImageMenuOnOutside, true));
+			this._cleanupImageMenuScrollDismiss();
+			this._removeImageMenuScrollDismiss = registerPageScrollDismissable(() => this._closeImageMenu(), {
+				dismissOnWheel: true,
+				shouldDismiss: ({ event, kind }) => {
+					if (kind !== 'wheel') return true;
+					const path = event.composedPath();
+					const menu = this.shadowRoot?.querySelector('.img-menu');
+					const anchor = this.shadowRoot?.querySelector('.img-menu-anchor');
+					return !((menu && path.includes(menu)) || (anchor && path.includes(anchor)));
+				},
+			});
 		} else {
+			this._cleanupImageMenuScrollDismiss();
 			document.removeEventListener('mousedown', this._closeImageMenuOnOutside, true);
 		}
 	};
@@ -539,9 +555,20 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		const menu = this.shadowRoot?.querySelector('.img-menu');
 		const anchor = this.shadowRoot?.querySelector('.img-menu-anchor');
 		if (menu && (path.includes(menu) || (anchor && path.includes(anchor)))) return;
+		this._closeImageMenu();
+	};
+
+	private _closeImageMenu(): void {
+		this._cleanupImageMenuScrollDismiss();
 		this._imageMenuOpen = false;
 		document.removeEventListener('mousedown', this._closeImageMenuOnOutside, true);
-	};
+	}
+
+	private _cleanupImageMenuScrollDismiss(): void {
+		if (!this._removeImageMenuScrollDismiss) return;
+		this._removeImageMenuScrollDismiss();
+		this._removeImageMenuScrollDismiss = null;
+	}
 
 	private _setImageSizeMode(mode: ImageSizeMode): void {
 		this._imageSizeMode = mode;

@@ -10,7 +10,23 @@ export function escapeRegex(str: string): string {
 	return str.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
 }
 
+export function getPageScrollElement(): HTMLElement | null {
+	try {
+		return (
+			document.querySelector('.kw-scroll-viewport [data-kw-page-scroll-element="true"]') as HTMLElement | null
+			|| document.querySelector('.kw-scroll-viewport [data-overlayscrollbars-viewport]') as HTMLElement | null
+			|| document.querySelector('.kw-scroll-viewport') as HTMLElement | null
+		);
+	} catch {
+		return null;
+	}
+}
+
 export function getScrollY(): number {
+	try {
+		const scrollElement = getPageScrollElement();
+		if (scrollElement) return scrollElement.scrollTop || 0;
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof window.scrollY === 'number') {
 			return window.scrollY;
@@ -23,6 +39,50 @@ export function getScrollY(): number {
 	} catch {
 		return 0;
 	}
+}
+
+type PageScrollListenerTarget = Window | HTMLElement;
+
+interface PageScrollListenerRegistration {
+	listener: EventListener;
+	options?: AddEventListenerOptions | boolean;
+	target: PageScrollListenerTarget | null;
+}
+
+const pageScrollListeners = new Set<PageScrollListenerRegistration>();
+
+function getPageScrollListenerTarget(): PageScrollListenerTarget {
+	return getPageScrollElement() || window;
+}
+
+function attachPageScrollListener(registration: PageScrollListenerRegistration, target: PageScrollListenerTarget): void {
+	target.addEventListener('scroll', registration.listener, registration.options);
+	registration.target = target;
+}
+
+function detachPageScrollListener(registration: PageScrollListenerRegistration): void {
+	if (!registration.target) return;
+	registration.target.removeEventListener('scroll', registration.listener, registration.options);
+	registration.target = null;
+}
+
+export function refreshPageScrollListeners(): void {
+	const nextTarget = getPageScrollListenerTarget();
+	for (const registration of pageScrollListeners) {
+		if (registration.target === nextTarget) continue;
+		detachPageScrollListener(registration);
+		attachPageScrollListener(registration, nextTarget);
+	}
+}
+
+export function addPageScrollListener(listener: EventListener, options?: AddEventListenerOptions | boolean): () => void {
+	const registration: PageScrollListenerRegistration = { listener, options, target: null };
+	pageScrollListeners.add(registration);
+	attachPageScrollListener(registration, getPageScrollListenerTarget());
+	return () => {
+		pageScrollListeners.delete(registration);
+		detachPageScrollListener(registration);
+	};
 }
 
 export function maybeAutoScrollWhileDragging(clientY: number, options?: { thresholdPx?: number; maxStepPx?: number }): number {

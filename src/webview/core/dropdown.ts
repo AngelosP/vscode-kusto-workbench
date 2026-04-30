@@ -1,11 +1,46 @@
 // Dropdown module — legacy HTML dropdown rendering and menu management.
 // ES module exports at bottom for TypeScript callers.
 // window.__kustoDropdown bridge retained for inline HTML onclick handlers.
+import { registerPageScrollDismissable } from './page-scroll-dismiss.js';
 import { escapeHtml as _escHtml } from './utils';
 
 const _win = window;
 
-export let toolbarScrollAtOpen = 0;
+let removeLegacyMenuScrollDismiss: (() => void) | null = null;
+
+function cleanupLegacyMenuScrollDismiss(): void {
+	if (!removeLegacyMenuScrollDismiss) return;
+	removeLegacyMenuScrollDismiss();
+	removeLegacyMenuScrollDismiss = null;
+}
+
+function isInsideLegacyDropdownUi(target: EventTarget | null): boolean {
+	try {
+		if (!target || !(target as Element).closest) return false;
+		return !!(target as Element).closest([
+			'.kusto-dropdown-menu',
+			'.kusto-favorites-menu',
+			'.kusto-dropdown-btn',
+			'.kusto-favorites-btn',
+			'.kusto-dropdown-wrapper',
+			'.qe-toolbar-dropdown-menu',
+			'.qe-toolbar-overflow-menu',
+			'.md-mode-dropdown-menu',
+			'.section-mode-dropdown-menu',
+			'.add-controls-dropdown-menu',
+		].join(','));
+	} catch {
+		return false;
+	}
+}
+
+function registerLegacyMenuScrollDismiss(closeMenus: () => void): void {
+	cleanupLegacyMenuScrollDismiss();
+	removeLegacyMenuScrollDismiss = registerPageScrollDismissable(closeMenus, {
+		dismissOnWheel: true,
+		shouldDismiss: ({ event, kind }) => kind !== 'wheel' || !isInsideLegacyDropdownUi(event.target),
+	});
+}
 
 // Trash icon SVG inlined to avoid circular dependency with queryBoxes.ts.
 const _trashIconSvg =
@@ -197,6 +232,7 @@ let _dd: Record<string, any>;
 
 	dd.closeAllMenus = function () {
 		try {
+			cleanupLegacyMenuScrollDismiss();
 			const menus = Array.from(document.querySelectorAll('.kusto-dropdown-menu, .kusto-favorites-menu, .qe-toolbar-overflow-menu, .md-mode-dropdown-menu, .section-mode-dropdown-menu, .add-controls-dropdown-menu'));
 			for (const m of menus) {
 				try { (m as HTMLElement).style.display = 'none'; } catch (e) { console.error('[kusto]', e); }
@@ -214,6 +250,7 @@ let _dd: Record<string, any>;
 		const mid = String(menuId || '').trim();
 		if (!bid || !mid) return;
 		try {
+			cleanupLegacyMenuScrollDismiss();
 			const menu = document.getElementById(mid);
 			if (menu) (menu as HTMLElement).style.display = 'none';
 		} catch (e) { console.error('[kusto]', e); }
@@ -256,8 +293,7 @@ let _dd: Record<string, any>;
 			menu.style.display = 'block';
 			btn.setAttribute('aria-expanded', 'true');
 			try { btn.classList && btn.classList.add('is-active'); } catch (e) { console.error('[kusto]', e); }
-			// Capture scroll position for threshold-based dismiss (see queryBoxes-toolbar.ts scroll handler)
-			try { toolbarScrollAtOpen = document.documentElement.scrollTop || document.body.scrollTop || 0; } catch (e) { console.error('[kusto]', e); }
+			registerLegacyMenuScrollDismiss(() => dd.closeAllMenus());
 		} catch (e) { console.error('[kusto]', e); }
 
 		const positionFixedMenuUnderButton = (buttonEl: HTMLElement, menuEl: HTMLElement) => {
@@ -357,6 +393,7 @@ let _dd: Record<string, any>;
 							return;
 						}
 						if (String(menu.style.display || '') === 'block') {
+							cleanupLegacyMenuScrollDismiss();
 							try { menu.style.display = 'none'; } catch (e) { console.error('[kusto]', e); }
 							try { btn.setAttribute('aria-expanded', 'false'); } catch (e) { console.error('[kusto]', e); }
 							try { btn.classList && btn.classList.remove('is-active'); } catch (e) { console.error('[kusto]', e); }
@@ -787,6 +824,7 @@ let _dd: Record<string, any>;
 		menu.style.display = 'block';
 		btn.setAttribute('aria-expanded', 'true');
 		try { btn.classList && btn.classList.add('is-active'); } catch (e) { console.error('[kusto]', e); }
+		registerLegacyMenuScrollDismiss(() => dd.closeAllMenus());
 
 		try {
 			const computedPos = window.getComputedStyle(menu).position;

@@ -142,7 +142,7 @@ export class QueryExecutionController implements ReactiveController {
 			const dt = resultsDiv.querySelector('kw-data-table') as any;
 			let vis = true;
 			try { vis = !(pState.resultsVisibleByBoxId && pState.resultsVisibleByBoxId[boxId] === false); } catch (e) { console.error('[kusto]', e); }
-			if (dt && typeof dt.setBodyVisible === 'function') dt.setBodyVisible(vis);
+			if (dt && typeof dt.setBodyVisible === 'function') dt.setBodyVisible(vis, { emit: false });
 			return;
 		}
 

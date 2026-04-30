@@ -47,6 +47,7 @@ import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryTo
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
+import { registerPageScrollDismissable } from './page-scroll-dismiss.js';
 
 import { currentResult, resetCurrentResult, getResultsState, getRawCellValue as _getRawCellValueFromState } from './results-state';
 import {
@@ -1491,15 +1492,16 @@ function toggleCachePopup( boxId: any) {
 
 	popup.classList.add('open');
 
-	// Capture scroll position for threshold-based dismiss (interactive — 20px)
-	const scrollAtOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
+	let removeScrollListener: (() => void) | null = null;
 
 	const closePopup = () => {
 		popup.classList.remove('open');
 		delete popup._kustoCacheClose;
 		document.removeEventListener('click', clickHandler);
-		document.removeEventListener('scroll', scrollHandler, true);
-		document.removeEventListener('wheel', wheelHandler, true);
+		if (removeScrollListener) {
+			removeScrollListener();
+			removeScrollListener = null;
+		}
 	};
 
 	popup._kustoCacheClose = closePopup;
@@ -1512,27 +1514,12 @@ function toggleCachePopup( boxId: any) {
 		} catch { closePopup(); }
 	};
 
-	const scrollHandler = () => {
-		try {
-			const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
-			if (Math.abs(scrollY - scrollAtOpen) > 20) {
-				closePopup();
-			}
-		} catch (e) { console.error('[kusto]', e); }
-	};
-
-	const wheelHandler = (e: any) => {
-		try {
-			// Allow wheel inside the popup (e.g. number input spin)
-			if (popup.contains(e.target)) return;
-			closePopup();
-		} catch { closePopup(); }
-	};
-
 	// Delay click listener to avoid closing from the opening click
 	setTimeout(() => { document.addEventListener('click', clickHandler); }, 0);
-	document.addEventListener('scroll', scrollHandler, true);
-	document.addEventListener('wheel', wheelHandler, { passive: true, capture: true } as any);
+	removeScrollListener = registerPageScrollDismissable(closePopup, {
+		dismissOnWheel: true,
+		shouldDismiss: ({ event, kind }) => kind !== 'wheel' || !popup.contains(event.target as Node),
+	});
 }
 
 // Keep for backward compatibility
@@ -2180,6 +2167,14 @@ export function __kustoPickFirstNonEmpty( arr: any) {
 	return _pickFirstNonEmpty(arr);
 }
 
+let removeSectionModeDropdownScrollDismiss: (() => void) | null = null;
+
+function cleanupSectionModeDropdownScrollDismiss(): void {
+	if (!removeSectionModeDropdownScrollDismiss) return;
+	removeSectionModeDropdownScrollDismiss();
+	removeSectionModeDropdownScrollDismiss = null;
+}
+
 function __kustoToggleSectionModeDropdown( boxId: any, prefix: any, ev: any) {
 	try {
 		if (ev && typeof ev.stopPropagation === 'function') {
@@ -2190,6 +2185,7 @@ function __kustoToggleSectionModeDropdown( boxId: any, prefix: any, ev: any) {
 		if (!menu || !btn) return;
 		const isOpen = menu.style.display !== 'none';
 		// Close all other dropdowns first
+		cleanupSectionModeDropdownScrollDismiss();
 		try { _closeAllDropdownMenus(); } catch (e) { console.error('[kusto]', e); }
 		if (isOpen) {
 			menu.style.display = 'none';
@@ -2197,12 +2193,17 @@ function __kustoToggleSectionModeDropdown( boxId: any, prefix: any, ev: any) {
 		} else {
 			menu.style.display = 'block';
 			btn.setAttribute('aria-expanded', 'true');
+			removeSectionModeDropdownScrollDismiss = registerPageScrollDismissable(() => __kustoCloseSectionModeDropdown(boxId, prefix), {
+				dismissOnWheel: true,
+				shouldDismiss: ({ event, kind }) => kind !== 'wheel' || !event.composedPath().includes(menu),
+			});
 		}
 	} catch (e) { console.error('[kusto]', e); }
 }
 
 function __kustoCloseSectionModeDropdown( boxId: any, prefix: any) {
 	try {
+		cleanupSectionModeDropdownScrollDismiss();
 		const menu = document.getElementById(boxId + '_' + prefix + '_mode_dropdown_menu') as any;
 		const btn = document.getElementById(boxId + '_' + prefix + '_mode_dropdown_btn') as any;
 		if (menu) menu.style.display = 'none';
@@ -2258,6 +2259,7 @@ try {
 			if (!target) return;
 			const inDropdown = target.closest && target.closest('.section-mode-dropdown');
 			if (!inDropdown) {
+				cleanupSectionModeDropdownScrollDismiss();
 				const menus = document.querySelectorAll('.section-mode-dropdown-menu');
 				const btns = document.querySelectorAll('.section-mode-dropdown-btn');
 				for (const m of menus as any) {

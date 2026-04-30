@@ -2,6 +2,7 @@ import { LitElement, html, nothing, type TemplateResult } from 'lit';
 import { customElement, property, state } from 'lit/decorators.js';
 import { classMap } from 'lit/directives/class-map.js';
 import { ToolbarOverflowController, type ToolbarOverflowHost } from '../sections/toolbar-overflow.controller.js';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -96,7 +97,8 @@ export class KwMonacoToolbar extends LitElement implements ToolbarOverflowHost {
 	 * duplicate ResizeObservers and causes oscillation.
 	 */
 	protected _overflowController = new ToolbarOverflowController(this as unknown as ToolbarOverflowHost);
-	private _scrollAtMenuOpen = 0;
+	private _removePageScrollListener: (() => void) | null = null;
+	private _dismissListenerTimer: ReturnType<typeof setTimeout> | null = null;
 
 	// ── Submenu state ─────────────────────────────────────────────────────────
 
@@ -107,8 +109,6 @@ export class KwMonacoToolbar extends LitElement implements ToolbarOverflowHost {
 
 	// Bound dismiss handlers (stable references for add/removeEventListener).
 	private _onOutsideMousedown = this._handleOutsideMousedown.bind(this);
-	private _onScrollDismiss = this._handleScrollDismiss.bind(this);
-	private _onWheelDismiss = this._handleWheelDismiss.bind(this);
 
 	// ── ToolbarOverflowHost interface ─────────────────────────────────────────
 
@@ -515,18 +515,37 @@ export class KwMonacoToolbar extends LitElement implements ToolbarOverflowHost {
 	// ── Menu dismiss listeners ────────────────────────────────────────────────
 
 	private _addMenuDismissListeners(): void {
-		this._scrollAtMenuOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		setTimeout(() => {
+		this._removePageScrollListener?.();
+		this._removePageScrollListener = registerPageScrollDismissable(() => this.closeAllMenus(), {
+			dismissOnWheel: true,
+			shouldDismiss: ({ event, kind }) => kind !== 'wheel' || this._shouldDismissForMenuWheel(event),
+		});
+		this._dismissListenerTimer = setTimeout(() => {
+			this._dismissListenerTimer = null;
+			if (!this._overflowMenuOpen && this._submenuOpenIndex < 0) return;
 			document.addEventListener('mousedown', this._onOutsideMousedown);
-			document.addEventListener('scroll', this._onScrollDismiss, true);
-			document.addEventListener('wheel', this._onWheelDismiss, { passive: true } as EventListenerOptions);
 		}, 0);
 	}
 
 	private _removeMenuDismissListeners(): void {
+		if (this._dismissListenerTimer) {
+			clearTimeout(this._dismissListenerTimer);
+			this._dismissListenerTimer = null;
+		}
 		document.removeEventListener('mousedown', this._onOutsideMousedown);
-		document.removeEventListener('scroll', this._onScrollDismiss, true);
-		document.removeEventListener('wheel', this._onWheelDismiss);
+		if (this._removePageScrollListener) {
+			this._removePageScrollListener();
+			this._removePageScrollListener = null;
+		}
+	}
+
+	private _shouldDismissForMenuWheel(event: Event): boolean {
+		const path = event.composedPath();
+		const menus = this.querySelectorAll('.qe-toolbar-overflow-menu, .qe-toolbar-dropdown-menu');
+		for (const menu of Array.from(menus)) {
+			if (path.includes(menu)) return false;
+		}
+		return true;
 	}
 
 	private _handleOutsideMousedown(e: MouseEvent): void {
@@ -537,18 +556,6 @@ export class KwMonacoToolbar extends LitElement implements ToolbarOverflowHost {
 			const submenuWrapper = this.querySelector('#' + CSS.escape(this.boxId + '_submenu_wrapper_' + this._submenuOpenIndex));
 			if (submenuWrapper && path.includes(submenuWrapper)) return;
 		}
-		this.closeAllMenus();
-	}
-
-	private _handleScrollDismiss(): void {
-		if (!this._overflowMenuOpen && this._submenuOpenIndex < 0) return;
-		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		if (Math.abs(scrollY - this._scrollAtMenuOpen) > 20) {
-			this.closeAllMenus();
-		}
-	}
-
-	private _handleWheelDismiss(): void {
 		this.closeAllMenus();
 	}
 }

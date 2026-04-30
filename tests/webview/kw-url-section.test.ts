@@ -12,6 +12,7 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 }));
 
 vi.mock('../../src/webview/core/utils.js', () => ({
+	addPageScrollListener: vi.fn(() => vi.fn()),
 	getScrollY: () => 0,
 	maybeAutoScrollWhileDragging: () => {},
 	escapeHtml: (s: string) => s,

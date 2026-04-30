@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { getClusterCacheKey, mergeCachedDatabaseKeys } from '../../../src/host/cachedValuesViewer';
+import { CachedValuesViewerV2, getClusterCacheKey, mergeCachedDatabaseKeys } from '../../../src/host/cachedValuesViewer';
 
 // ── getClusterCacheKey ───────────────────────────────────────────────────────
 
@@ -134,5 +134,21 @@ describe('mergeCachedDatabaseKeys', () => {
 			new Map(),
 		);
 		expect(next['host.kusto.windows.net']).toEqual([]);
+	});
+});
+
+// ── HTML shell ───────────────────────────────────────────────────────────────
+
+describe('CachedValuesViewerV2 HTML shell', () => {
+	it('opts into the shared page-level overlay scrollbar', () => {
+		const webview = {
+			cspSource: 'vscode-resource:',
+			asWebviewUri: () => ({ toString: () => 'vscode-resource:/asset' }),
+		};
+		const html = (CachedValuesViewerV2.prototype as any).buildHtml.call({ extensionUri: {} }, webview);
+
+		expect(html).toContain('<body data-kw-page-overlay-scroll="true">');
+		expect(html).toContain('html, body { width: 100%; min-height: 100%; margin: 0; }');
+		expect(html).toContain('kw-cached-values { display: block; width: 100%; }');
 	});
 });

@@ -1,5 +1,9 @@
-import { describe, it, expect } from 'vitest';
-import { escapeHtml, escapeRegex } from '../../src/webview/core/utils.js';
+import { describe, it, expect, afterEach } from 'vitest';
+import { addPageScrollListener, escapeHtml, escapeRegex, getPageScrollElement, getScrollY, refreshPageScrollListeners } from '../../src/webview/core/utils.js';
+
+afterEach(() => {
+	document.querySelectorAll('.kw-scroll-viewport').forEach(el => el.remove());
+});
 
 // ── escapeHtml ────────────────────────────────────────────────────────────────
 
@@ -62,5 +66,60 @@ describe('escapeRegex', () => {
 		const regex = new RegExp(escapeRegex(literal));
 		expect(regex.test(literal)).toBe(true);
 		expect(regex.test('price is X999 XUSDX')).toBe(false);
+	});
+});
+
+// ── page scroll helpers ──────────────────────────────────────────────────────
+
+describe('page scroll helpers', () => {
+	it('reads scroll position from the overlay page scroll element when present', () => {
+		const scrollEl = document.createElement('div');
+		scrollEl.className = 'kw-scroll-viewport';
+		scrollEl.scrollTop = 42;
+		document.body.appendChild(scrollEl);
+
+		expect(getPageScrollElement()).toBe(scrollEl);
+		expect(getScrollY()).toBe(42);
+	});
+
+	it('listens to the overlay page scroll element instead of document noise', () => {
+		const scrollEl = document.createElement('div');
+		scrollEl.className = 'kw-scroll-viewport';
+		document.body.appendChild(scrollEl);
+		let calls = 0;
+		const cleanup = addPageScrollListener(() => { calls++; }, { passive: true });
+
+		document.dispatchEvent(new Event('scroll'));
+		expect(calls).toBe(0);
+
+		scrollEl.dispatchEvent(new Event('scroll'));
+		expect(calls).toBe(1);
+
+		cleanup();
+		scrollEl.dispatchEvent(new Event('scroll'));
+		expect(calls).toBe(1);
+	});
+
+	it('rebinds listeners to a later-created overlay page scroll element', () => {
+		let calls = 0;
+		const cleanup = addPageScrollListener(() => { calls++; }, { passive: true });
+
+		window.dispatchEvent(new Event('scroll'));
+		expect(calls).toBe(1);
+
+		const scrollEl = document.createElement('div');
+		scrollEl.className = 'kw-scroll-viewport';
+		document.body.appendChild(scrollEl);
+		refreshPageScrollListeners();
+
+		window.dispatchEvent(new Event('scroll'));
+		expect(calls).toBe(1);
+
+		scrollEl.dispatchEvent(new Event('scroll'));
+		expect(calls).toBe(2);
+
+		cleanup();
+		scrollEl.dispatchEvent(new Event('scroll'));
+		expect(calls).toBe(2);
 	});
 });

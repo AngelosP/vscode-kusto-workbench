@@ -6,6 +6,7 @@ import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import { sashSheet } from '../shared/sash-styles.js';
 import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -134,9 +135,7 @@ export class KwCopilotChat extends LitElement {
 	/** Stable dismiss callback for dismiss-stack (Escape key). */
 	private _dismissToolsPanel = (): void => { this._closeToolsPanel(); };
 	/** Bound scroll handler for dismiss-on-scroll. */
-	private _closeToolsPanelOnScrollBound = this._closeToolsPanelOnScroll.bind(this);
-	/** Scroll position captured when the tools panel opened. */
-	private _toolsPanelScrollAtOpen = 0;
+	private _removeToolsPanelScrollListener: (() => void) | null = null;
 
 	@query('.messages') private _messagesHost!: HTMLDivElement;
 	@query('textarea') private _textarea!: HTMLTextAreaElement;
@@ -928,8 +927,7 @@ export class KwCopilotChat extends LitElement {
 		});
 		setTimeout(() => document.addEventListener('mousedown', this._closeToolsPanelBound, true), 0);
 		pushDismissable(this._dismissToolsPanel);
-		this._toolsPanelScrollAtOpen = document.documentElement.scrollTop;
-		document.addEventListener('scroll', this._closeToolsPanelOnScrollBound, { capture: true, passive: true });
+		this._removeToolsPanelScrollListener = registerPageScrollDismissable(() => this._closeToolsPanel());
 	}
 
 	/** Close the tools panel and remove all listeners. */
@@ -937,7 +935,10 @@ export class KwCopilotChat extends LitElement {
 		if (!this._toolsPanelOpen) return;
 		this._toolsPanelOpen = false;
 		document.removeEventListener('mousedown', this._closeToolsPanelBound, true);
-		document.removeEventListener('scroll', this._closeToolsPanelOnScrollBound, true);
+		if (this._removeToolsPanelScrollListener) {
+			this._removeToolsPanelScrollListener();
+			this._removeToolsPanelScrollListener = null;
+		}
 		removeDismissable(this._dismissToolsPanel);
 	}
 
@@ -948,11 +949,6 @@ export class KwCopilotChat extends LitElement {
 		this._closeToolsPanel();
 	}
 
-	private _closeToolsPanelOnScroll(): void {
-		if (Math.abs(document.documentElement.scrollTop - this._toolsPanelScrollAtOpen) > 20) {
-			this._closeToolsPanel();
-		}
-	}
 
 	private _onToolToggle(name: string, checked: boolean): void {
 		this._userModifiedTools = true;

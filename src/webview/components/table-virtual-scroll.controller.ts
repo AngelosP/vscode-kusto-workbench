@@ -61,7 +61,30 @@ export class TableVirtualScrollController implements ReactiveController {
 
 	/** Override the scroll element (e.g. OverlayScrollbars viewport). */
 	setScrollElement(el: HTMLElement | null): void {
+		if (this._scrollElementOverride === el) return;
 		this._scrollElementOverride = el;
+		this._lastViewportW = -1;
+	}
+
+	/** Release the current scroll element and virtualizer state when the scroll host is removed. */
+	resetScrollElement(): void {
+		this._resizeObs?.disconnect();
+		this._resizeObs = null;
+		this._viewportResizeObs?.disconnect();
+		this._viewportResizeObs = null;
+		this._virtualizerCleanup?.();
+		this._virtualizerCleanup = null;
+		this._virtualizer = null;
+		this._scrollElementOverride = null;
+		if (this._syncRaf) { cancelAnimationFrame(this._syncRaf); this._syncRaf = 0; }
+		window.removeEventListener('resize', this._onViewportResize);
+		this.vItems = [];
+		this.vTotalSize = 0;
+		this.viewportW = 0;
+		this._lastVStart = -1;
+		this._lastVEnd = -1;
+		this._lastVTopOffset = 0;
+		this._lastViewportW = 0;
 	}
 
 	/** Resolve the active scroll element — override or `.vscroll` fallback. */
@@ -70,7 +93,8 @@ export class TableVirtualScrollController implements ReactiveController {
 	}
 
 	initVirtualizer(): void {
-		this._virtualizer = null;
+		this._resizeObs?.disconnect();
+		this._resizeObs = null;
 		requestAnimationFrame(() => {
 			const el = this._getScrollEl();
 			if (!el) return;

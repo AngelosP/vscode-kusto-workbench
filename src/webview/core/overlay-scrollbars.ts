@@ -8,44 +8,91 @@
  * Uses the OverlayScrollbars library which preserves native scroll feel
  * (momentum, keyboard, touch) while rendering a custom DOM scrollbar.
  *
- * Strategy: wrap all body children in a `.kw-scroll-viewport` div, set
- * body to `overflow: hidden; height: 100vh`, and initialise OverlayScrollbars
- * on the wrapper. This avoids breaking the 20+ call sites that read
+ * Strategy: in webviews that opt into page overlay scrolling, wrap all body
+ * children in a `.kw-scroll-viewport` div, set body to
+ * `overflow: hidden; height: 100vh`, and initialise OverlayScrollbars on the
+ * wrapper. This avoids breaking the 20+ call sites that read
  * `document.documentElement.scrollTop` — we patch `getScrollY()` and
  * `window.scrollBy/scrollTo` to delegate to the wrapper.
  */
 import { OverlayScrollbars } from 'overlayscrollbars';
+import { osLibrarySheet } from '../shared/os-library-styles.js';
 import { osThemeSheet } from '../shared/os-theme-styles.js';
+import { refreshPageScrollDismissRoot } from './page-scroll-dismiss.js';
+import { refreshPageScrollListeners } from './utils.js';
 
 // ── Body-specific overrides ──
 const bodyStyles = /* css */ `
 /* Lock body — the wrapper handles scrolling */
 body {
 	overflow: hidden !important;
+	width: 100% !important;
 	height: 100vh !important;
+	margin: 0 !important;
 	padding: 0 !important;
 }
 
 /* Scroll wrapper fills the viewport and provides the actual scroll */
 .kw-scroll-viewport {
+	box-sizing: border-box;
+	width: 100%;
 	height: 100vh;
 	overflow: auto;
 	padding: 16px; /* body padding moved here */
+}
+
+body[data-kw-page-overlay-scroll="true"] .kw-scroll-viewport {
+	padding: 0;
 }
 `;
 
 const bodySheet = new CSSStyleSheet();
 bodySheet.replaceSync(bodyStyles);
-document.adoptedStyleSheets = [...document.adoptedStyleSheets, osThemeSheet, bodySheet];
+document.adoptedStyleSheets = [...document.adoptedStyleSheets, osLibrarySheet, osThemeSheet];
 
-/** The scroll wrapper element — used by getScrollY() and scrollBy(). */
+function adoptBodySheet(): void {
+	if (document.adoptedStyleSheets.includes(bodySheet)) return;
+	document.adoptedStyleSheets = [...document.adoptedStyleSheets, bodySheet];
+}
+
+function shouldInitializePageScrollbars(): boolean {
+	return !!document.getElementById('queries-container') || document.body?.dataset.kwPageOverlayScroll === 'true';
+}
+
+/** The actual page scroll element — used by getScrollY() and scrollBy(). */
 let scrollViewport: HTMLElement | null = null;
 let scrollbarsInstance: ReturnType<typeof OverlayScrollbars> | null = null;
 let updateRaf = 0;
 
-/** Expose the scroll viewport for `getScrollY()` in utils.ts. */
+/** Expose the scroll viewport for tests and diagnostics. */
 export function getOverlayScrollViewport(): HTMLElement | null {
 	return scrollViewport;
+}
+
+function markPageScrollElement(element: HTMLElement): void {
+	try { element.setAttribute('data-kw-page-scroll-element', 'true'); } catch (e) { console.error('[kusto]', e); }
+}
+
+function scrollElementBy(element: HTMLElement, xOrOptions?: number | ScrollToOptions, y?: number): void {
+	if (typeof xOrOptions === 'object') {
+		const top = Number(xOrOptions.top ?? 0);
+		const left = Number(xOrOptions.left ?? 0);
+		element.scrollTop += Number.isFinite(top) ? top : 0;
+		element.scrollLeft += Number.isFinite(left) ? left : 0;
+		return;
+	}
+	element.scrollLeft += Number.isFinite(Number(xOrOptions)) ? Number(xOrOptions) : 0;
+	element.scrollTop += Number.isFinite(Number(y)) ? Number(y) : 0;
+}
+
+function scrollElementTo(element: HTMLElement, xOrOptions?: number | ScrollToOptions, y?: number): void {
+	if (typeof xOrOptions === 'object') {
+		if (xOrOptions.left !== undefined) element.scrollLeft = Number(xOrOptions.left) || 0;
+		if (xOrOptions.top !== undefined) element.scrollTop = Number(xOrOptions.top) || 0;
+		return;
+	}
+	element.scrollLeft = Number(xOrOptions) || 0;
+	element.scrollTop = Number(y) || 0;
 }
 
 export function requestOverlayScrollbarUpdate(force = false): void {
@@ -58,10 +105,10 @@ export function requestOverlayScrollbarUpdate(force = false): void {
 }
 
 function init() {
-	// Only run in the main query editor webview (has #queries-container).
-	// Viewer webviews (Connection Manager, Cached Values) have their own
-	// root elements and must not have their DOM reparented.
-	if (!document.getElementById('queries-container')) return;
+	// Main editor opts in with #queries-container. Standalone viewers opt in with
+	// a body data attribute when they want the same page-level VS Code scrollbar.
+	if (!shouldInitializePageScrollbars()) return;
+	adoptBodySheet();
 
 	// Wrap all body children in a scroll container.
 	const wrapper = document.createElement('div');
@@ -72,8 +119,7 @@ function init() {
 		wrapper.appendChild(document.body.firstChild);
 	}
 	document.body.appendChild(wrapper);
-
-	scrollViewport = wrapper;
+	const content = document.getElementById('queries-container') || wrapper.firstElementChild || wrapper;
 
 	// Initialise OverlayScrollbars on the wrapper.
 	scrollbarsInstance = OverlayScrollbars(wrapper, {
@@ -89,7 +135,13 @@ function init() {
 		},
 	});
 
-	const content = document.getElementById('queries-container') || wrapper;
+	const elements = scrollbarsInstance.elements();
+	const viewport = (elements.scrollOffsetElement || elements.viewport) as HTMLElement;
+	scrollViewport = viewport || wrapper;
+	markPageScrollElement(scrollViewport);
+	refreshPageScrollListeners();
+	refreshPageScrollDismissRoot();
+
 	try {
 		new ResizeObserver(() => requestOverlayScrollbarUpdate(true)).observe(content);
 	} catch (e) { console.error('[kusto]', e); }
@@ -106,20 +158,12 @@ function init() {
 
 	window.scrollBy = function scrollByPatched(xOrOptions?: number | ScrollToOptions, y?: number) {
 		if (!scrollViewport) { origScrollBy(xOrOptions as number, y as number); return; }
-		if (typeof xOrOptions === 'object') {
-			scrollViewport.scrollBy(xOrOptions);
-		} else {
-			scrollViewport.scrollBy(xOrOptions ?? 0, y ?? 0);
-		}
+		scrollElementBy(scrollViewport, xOrOptions, y);
 	} as typeof window.scrollBy;
 
 	window.scrollTo = function scrollToPatched(xOrOptions?: number | ScrollToOptions, y?: number) {
 		if (!scrollViewport) { origScrollTo(xOrOptions as number, y as number); return; }
-		if (typeof xOrOptions === 'object') {
-			scrollViewport.scrollTo(xOrOptions);
-		} else {
-			scrollViewport.scrollTo(xOrOptions ?? 0, y ?? 0);
-		}
+		scrollElementTo(scrollViewport, xOrOptions, y);
 	} as typeof window.scrollTo;
 
 	// Patch document.documentElement.scrollTop and window.scrollY

@@ -3,6 +3,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 // ── Mocks ─────────────────────────────────────────────────────────────────────
 
 vi.mock('../../src/webview/core/utils.js', () => ({
+	addPageScrollListener: vi.fn(() => vi.fn()),
 	getScrollY: () => 0,
 	maybeAutoScrollWhileDragging: vi.fn(),
 }));

@@ -341,6 +341,25 @@ describe('TableVirtualScrollController', () => {
 		expect(host.requestUpdate).toHaveBeenCalled();
 	});
 
+	it('resets the current scroll element, virtualizer, observers, and measurements', () => {
+		const { ctrl } = createHarness({ width: 300 });
+		const instance = init(ctrl);
+		ctrl.installViewportResizeWatcher();
+		instance.options.onChange(instance, false);
+		expect(rafCallbacks).toHaveLength(1);
+
+		ctrl.resetScrollElement();
+
+		expect(instance.cleanup).toHaveBeenCalledTimes(1);
+		expect(MockResizeObserver.instances.at(-1)?.disconnect).toHaveBeenCalled();
+		expect(removeEventListenerSpy).toHaveBeenCalledWith('resize', expect.any(Function));
+		expect(cancelAnimationFrameSpy).toHaveBeenCalledTimes(1);
+		expect(rafCallbacks).toHaveLength(0);
+		expect(ctrl.vItems).toEqual([]);
+		expect(ctrl.vTotalSize).toBe(0);
+		expect(ctrl.viewportW).toBe(0);
+	});
+
 	it('cleans up observers, virtualizer cleanup, resize listener, and scheduled sync on disconnect', () => {
 		const { ctrl } = createHarness();
 		const instance = init(ctrl);

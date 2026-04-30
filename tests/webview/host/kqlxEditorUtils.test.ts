@@ -100,7 +100,7 @@ describe('normalizeSection', () => {
 		expect(result).toEqual({ type: 'markdown', content: 'hello' });
 	});
 
-	it('strips ephemeral UI-state keys but keeps height/width fields', () => {
+	it('strips ephemeral UI-state keys but keeps persisted visibility and height/width fields', () => {
 		const result = normalizeSection({
 			type: 'query', id: 'q1', query: 'T',
 			editorHeightPx: 300, resultsHeightPx: 200, copilotChatWidthPx: 400,
@@ -112,7 +112,7 @@ describe('normalizeSection', () => {
 		expect(result!.copilotChatWidthPx).toBe(400);
 		expect(result!.resultJson).toBeUndefined();
 		expect(result!.copilotChatVisible).toBeUndefined();
-		expect(result!.resultsVisible).toBeUndefined();
+		expect(result!.resultsVisible).toBe(false);
 		expect(result!.favoritesMode).toBeUndefined();
 	});
 });
@@ -330,10 +330,28 @@ describe('computeChangedSections', () => {
 		const incoming = [{
 			type: 'query', id: 'query_1', query: 'T',
 			copilotChatVisible: true,
-			resultsVisible: true, favoritesMode: true
+			favoritesMode: true
 		}];
 		const changes = computeChangedSections(incoming, saved);
 		expect(changes).toHaveLength(0);
+	});
+
+	it('detects persisted results visibility changes as settings changes', () => {
+		const saved = new Map<string, Record<string, unknown>>([
+			['query_1', { type: 'query', id: 'query_1', query: 'T', resultsVisible: true }]
+		]);
+		const incoming = [{
+			type: 'query', id: 'query_1', query: 'T',
+			resultsVisible: false
+		}];
+		const changes = computeChangedSections(incoming, saved);
+		expect(changes).toHaveLength(1);
+		expect(changes[0]).toMatchObject({
+			id: 'query_1',
+			status: 'modified',
+			contentChanged: false,
+			settingsChanged: true,
+		});
 	});
 
 	it('detects height/width changes as settings changes', () => {

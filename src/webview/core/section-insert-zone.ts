@@ -5,6 +5,7 @@
 
 import { pState } from '../shared/persistence-state';
 import { __kustoRequestAddSection } from './persistence';
+import { addPageScrollListener, getScrollY } from './utils';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 /**
@@ -155,7 +156,7 @@ function expand() {
 
 	// Position picker centered on the "+"'s position.
 	const plusRect = plusEl.getBoundingClientRect();
-	const scrollY = window.scrollY || window.pageYOffset || 0;
+	const scrollY = getScrollY();
 	const centerX = plusRect.left + plusRect.width / 2;
 	const topY = plusRect.top + scrollY;
 
@@ -270,7 +271,7 @@ function deactivateResizer(): void {
 
 function showPlus(edge: EdgeInfo) {
 	const { plus } = ensureDOM();
-	const scrollY = window.scrollY || window.pageYOffset || 0;
+	const scrollY = getScrollY();
 	const topY = edge.bottomY + scrollY;
 
 	// Center the "+" horizontally on the section.
@@ -347,7 +348,7 @@ function onMouseMove(e: MouseEvent) {
 
 function onScroll() {
 	if ((!isPlusVisible && !isExpanded) || scrollAtOpen === null) return;
-	const scrollY = window.scrollY || window.pageYOffset || 0;
+	const scrollY = getScrollY();
 	if (Math.abs(scrollY - scrollAtOpen) > SCROLL_DISMISS_PX) {
 		dismiss();
 	}
@@ -359,7 +360,7 @@ function onScroll() {
 
 function repositionToEdge(newBottomY: number): void {
 	if (!plusEl) return;
-	const scrollY = window.scrollY || window.pageYOffset || 0;
+	const scrollY = getScrollY();
 	plusEl.style.top = (newBottomY + scrollY) + 'px';
 	anchoredBottomY = newBottomY;
 	scrollAtOpen = scrollY;
@@ -395,7 +396,7 @@ function onResizeEnd() {
 
 try {
 	document.addEventListener('mousemove', onMouseMove, { passive: true });
-	window.addEventListener('scroll', onScroll, { passive: true });
+	addPageScrollListener(onScroll, { passive: true });
 
 	// Dismiss on Escape.
 	document.addEventListener('keydown', (e: KeyboardEvent) => {

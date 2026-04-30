@@ -6,10 +6,16 @@ export const styles = css`
 
 		:host {
 			display: block;
+			width: 100%;
 			font-family: var(--vscode-font-family);
 			font-size: var(--vscode-font-size);
 			color: var(--vscode-editor-foreground);
 			background: var(--vscode-editor-background);
+		}
+
+		.viewerContent {
+			width: 100%;
+			min-width: 0;
 			padding: 16px;
 		}
 

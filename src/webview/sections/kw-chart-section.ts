@@ -8,6 +8,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
 import { schedulePersist } from '../core/persistence.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import { cellToChartString } from '../shared/data-utils.js';
 import {
@@ -425,10 +426,9 @@ export class KwChartSection extends LitElement implements SectionElement {
 
 	private _userResized = false;
 	private _closeDropdownBound = this._closeDropdownOnClickOutside.bind(this);
-	private _closeAllPopupsOnScrollBound = this._closeAllPopupsOnScroll.bind(this);
 	private _onChartAxisTitleClickBound = this._onChartAxisTitleClick.bind(this) as EventListener;
 	private _onSeriesColorChangeBound = this._onSeriesColorChangeFromTooltip.bind(this) as EventListener;
-	private _scrollAtPopupOpen = 0;
+	private _removePageScrollListener: (() => void) | null = null;
 
 	/** Sticky slider max overrides, keyed by 'axis:key' (e.g. 'x:titleGap'). */
 	private _sliderMaxOverrides = new Map<string, number>();
@@ -480,9 +480,6 @@ export class KwChartSection extends LitElement implements SectionElement {
 		this._setupThemeObserver();
 		this.addEventListener('kusto-axis-title-click', this._onChartAxisTitleClickBound);
 		this.addEventListener('kusto-series-color-change', this._onSeriesColorChangeBound);
-		// Close fixed-position popups/dropdowns when the page scrolls so they
-		// don't float detached from their anchor buttons.
-		window.addEventListener('scroll', this._closeAllPopupsOnScrollBound, { capture: true, passive: true });
 		// Register public API for tool configuration
 		(this as any).__kustoLitChart = true;
 	}
@@ -492,7 +489,10 @@ export class KwChartSection extends LitElement implements SectionElement {
 		this.removeEventListener('kusto-axis-title-click', this._onChartAxisTitleClickBound);
 		this.removeEventListener('kusto-series-color-change', this._onSeriesColorChangeBound);
 		document.removeEventListener('mousedown', this._closeDropdownBound);
-		window.removeEventListener('scroll', this._closeAllPopupsOnScrollBound, { capture: true });
+		if (this._removePageScrollListener) {
+			this._removePageScrollListener();
+			this._removePageScrollListener = null;
+		}
 		removeDismissable(this._dismissDropdown);
 		removeDismissable(this._dismissModeDropdown);
 		this._themeObserver?.disconnect();
@@ -535,6 +535,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 			if (this._modeDropdownOpen) pushDismissable(this._dismissModeDropdown);
 			else removeDismissable(this._dismissModeDropdown);
 		}
+		this._syncPopupScrollDismiss(changed);
 
 		// Re-render chart when key properties change
 		const chartTriggers = [
@@ -1430,17 +1431,12 @@ export class KwChartSection extends LitElement implements SectionElement {
 		this._schedulePersist();
 	}
 
-	private _captureScrollPosition(): void {
-		this._scrollAtPopupOpen = document.documentElement.scrollTop || document.body.scrollTop || 0;
-	}
-
 	private _toggleDropdown(id: string, btnEl?: HTMLElement): void {
 		if (this._openDropdownId === id) {
 			this._openDropdownId = '';
 			document.removeEventListener('mousedown', this._closeDropdownBound);
 		} else {
 			this._openDropdownId = id;
-			this._captureScrollPosition();
 			// After Lit re-renders the menu, position it using the button's bounding rect
 			if (btnEl) {
 				this.updateComplete.then(() => {
@@ -1466,14 +1462,31 @@ export class KwChartSection extends LitElement implements SectionElement {
 	/** Close all fixed-position dropdowns when scroll exceeds threshold. */
 	private _closeAllPopupsOnScroll(): void {
 		if (!this._openDropdownId && !this._modeDropdownOpen) return;
-		const scrollY = document.documentElement.scrollTop || document.body.scrollTop || 0;
-		if (Math.abs(scrollY - this._scrollAtPopupOpen) <= 20) return;
 		if (this._openDropdownId) {
 			this._openDropdownId = '';
 			document.removeEventListener('mousedown', this._closeDropdownBound);
 		}
 		if (this._modeDropdownOpen) {
 			this._modeDropdownOpen = false;
+		}
+	}
+
+	private _syncPopupScrollDismiss(changed?: PropertyValues): void {
+		const hasPopup = !!this._openDropdownId || this._modeDropdownOpen;
+		const popupChanged = !!(changed?.has('_openDropdownId') || changed?.has('_modeDropdownOpen'));
+		if (!hasPopup) {
+			if (this._removePageScrollListener) {
+				this._removePageScrollListener();
+				this._removePageScrollListener = null;
+			}
+			return;
+		}
+		if (popupChanged && this._removePageScrollListener) {
+			this._removePageScrollListener();
+			this._removePageScrollListener = null;
+		}
+		if (!this._removePageScrollListener) {
+			this._removePageScrollListener = registerPageScrollDismissable(() => this._closeAllPopupsOnScroll());
 		}
 	}
 

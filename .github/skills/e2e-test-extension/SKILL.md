@@ -12,9 +12,14 @@ applyTo: "tests/vscode-extension-tester/**"
 
 Use this skill to create, run, and verify E2E tests for a VS Code extension.
 
+This file is installed into extension repos by `vscode-ext-test init` at
+`.github/skills/e2e-test-extension/SKILL.md`. Rerun `vscode-ext-test init`
+after upgrading the CLI to refresh these framework instructions; repo-specific
+knowledge belongs in `repo-knowledge.md`, which init preserves.
+
 ## Execution Modes
 
-The framework has two execution modes:
+The framework has three execution modes:
 
 1. **Default (launch mode):** The CLI downloads and launches a fresh, isolated
    VS Code instance automatically. No F5, no Dev Host, no prerequisites.
@@ -24,6 +29,14 @@ The framework has two execution modes:
    Extension Development Host. Use this when you need to debug the extension
    under test or when you have manually prepared the environment (e.g.
    authenticated, installed additional extensions).
+
+3. **Live stepping (`vscode-ext-test live` or `tests add --live-mode`):**
+  Start or attach once, then run Gherkin steps/scripts incrementally. Each
+  response includes pass/fail, screenshots, output/log artifact paths, and
+  current VS Code state. Use this while discovering the right steps before
+  writing the final `.feature` file. Ending a launched live session captures
+  a final screenshot before shutting VS Code down; ending an attached session
+  only disconnects.
 
 ## Build Lifecycle
 
@@ -186,6 +199,21 @@ the prompt, and implement the fix without further clarification.
 
 ## Test Workflow
 
+### Live authoring workflow
+
+When you are exploring an unfamiliar UI or fixing a flaky scenario, prefer
+live stepping before editing the final feature file:
+
+1. Start a live session with `start_live_session` when one is not already active.
+2. Run candidate steps with `run_gherkin_step` or short blocks with `run_gherkin_script`.
+3. Inspect the returned screenshots/log artifact paths after each failure or surprising state.
+4. Once the steps are stable, write the `.feature` file and verify it with `run_test`.
+5. End the session with `end_live_session` so the final screenshot is captured.
+
+`vscode-ext-test tests add` starts this live session automatically by default
+when exploration is enabled. Use `--live-mode off` only when you want code-only
+test drafting.
+
 ### Default (launch mode - recommended)
 
 1. **Write .feature files** in `tests/vscode-extension-tester/e2e/default/<test-id>/`:
@@ -249,23 +277,53 @@ vscode-ext-test profile open <profile-name>
 - `Given the extension is in a clean state` - reset: close all editors, dismiss notifications, clear output channels
 - `When I execute command "<command-id>"` - run any VS Code command (waits for completion)
 - `When I execute command "<command-id>" with args '<json>'` - run a VS Code command with arguments (JSON array in single quotes, e.g. `'["arg1","arg2"]'`)
-- `When I start command "<command-id>"` - start a VS Code command without waiting (use for commands that show InputBox/QuickPick dialogs, then interact with the dialog in the next step)
+- `When I start command "<command-id>"` - start a VS Code command without waiting (use for commands that show QuickInput dialogs, then interact with the dialog in the next step)
 - `When I start command "<command-id>" with args '<json>'` - start a VS Code command with arguments without waiting
 - `When I add folder "<path>" to the workspace` - add a folder to the workspace without reloading the window
-- `When I select "<label>" from the QuickPick` - pick an item from an open QuickPick
-- `When I type "<text>" into the InputBox` - type into a VS Code InputBox prompt
+- `When I inspect the QuickInput` - print the current QuickInput title, value, validation, and item IDs from captured extension-host state or the visible workbench widget
+- `When I select QuickInput item "<label>"` / `When I select "<label>" from the QuickInput` - pick an item from captured QuickInput state or the visible workbench widget
+- `When I select "<label>" from the QuickPick` - compatibility alias for selecting an open QuickPick item
+- `When I enter "<text>" in the QuickInput` - set and accept text after validation clears
+- `When I type "<text>" into the InputBox` - compatibility alias for entering text in a VS Code InputBox prompt
 - `When I click "<button>" on the dialog` - click a button on a modal dialog
+- `When I click "<action>" on notification "<text>"` - resolve a captured VS Code notification action
 - `When I select "<label>" from the popup menu` - select an item from a context menu, dropdown, or popup overlay (uses OS-level UI Automation with CDP fallback)
 - `When I list the popup menu items` - diagnostic: list all visible items in the current popup menu
 - `When I type "<text>"` - type text into whatever is focused (editors, webview Monaco, inputs)
 - `When I press "<key>"` - press a key or combo (Enter, Escape, Ctrl+S, Ctrl+Space, Shift+Tab, F5, etc.)
+- `When I move the mouse to <x>, <y>` - move the OS cursor to coordinates. In live sessions these are relative to the full Dev Host window/screenshot; in normal batch runs they are absolute screen coordinates.
+- `When I click` / `When I right click` / `When I middle click` / `When I double click` - click at the current mouse position
+- `When I click at <x>, <y>` / `When I right click at <x>, <y>` / `When I middle click at <x>, <y>` / `When I double click at <x>, <y>` - click coordinates. In live sessions these are relative to the full Dev Host window/screenshot, including title bar and borders; in normal batch runs they are absolute screen coordinates.
+- `When I right click the element "<name>"` - open a context menu on an accessible element by name/text
 - `When I sign in with Microsoft as "<user>"` - handle Microsoft auth flow
 - `Then I should see notification "<text>"` - assert a notification contains text
 - `Then I should not see notification "<text>"` - assert NO notification contains text
+- `Then I wait for QuickInput item "<label>"` - wait for a visible QuickInput item
+- `Then I wait for QuickInput title "<text>"` - wait for a QuickInput title
+- `Then I wait for QuickInput value "<value>"` - wait for the current QuickInput value
+- `Then the QuickInput should contain item "<label>"` - assert the current QuickInput has an item
+- `Then the QuickInput title should contain "<text>"` - assert QuickInput title text
+- `Then the QuickInput value should be "<value>"` - assert QuickInput value
+- `Then I wait for progress "<title>" to start` / `Then I wait for progress "<title>" to complete` - wait for a tracked long-running operation
+- `Then progress "<title>" should be active` / `Then progress "<title>" should be completed` - assert tracked progress state
 - `Then the editor should contain "<text>"` - assert the active editor has text
 - `Then the output channel "<name>" should contain "<text>"` - assert output channel content
 - `Then the output channel "<name>" should not contain "<text>"` - assert output channel does NOT contain text
 - `Then I wait <n> second(s)` - pause for n seconds
+
+### Reliable Input Targeting
+
+Use the most semantic target that can reach the UI:
+
+1. Prefer VS Code commands and QuickInput inspection/selection/text steps when the behavior is command-driven; these steps fall back to the visible workbench QuickInput widget when no extension-host session was intercepted.
+2. For webviews, prefer stable CSS selectors such as `[data-testid='...']`; selector clicks use CDP pointer events with a DOM-event fallback.
+3. For workbench/native UI, use accessible-name clicks such as `I click the element "Run Query"` or `I right click the element "Explorer"`.
+4. Prefer QuickInput/progress/notification wait steps over fixed sleeps.
+5. Use raw coordinates only as a last resort. In live sessions, raw coordinates are full Dev Host window/screenshot-relative; in normal batch runs, they are absolute screen coordinates. Stabilize the window first with `I resize the Dev Host...` / `I move the Dev Host...`.
+
+Right-clicking and popup selection are two separate actions: first use a
+right-click step to open the context menu, then use
+`When I select "<label>" from the popup menu`.
 
 ### Settings
 
@@ -308,10 +366,13 @@ Feature: Extension respects font size setting
     When I set setting "editor.fontSize" to "null"
 \\`\\`\\`
 
-### Click/Focus Elements in Webviews (Windows UI Automation)
+### Click/Focus Elements by Accessible Name (Windows UI Automation)
 These use Windows accessibility to find and click elements by their name or text.
 They work for ANY element - including inside webviews, custom editors, and dialogs:
 - `When I click the element "<name>"` - click an element by its accessible name/text
+- `When I right click the element "<name>"` - right-click an element by its accessible name/text
+- `When I middle click the element "<name>"` - middle-click an element by its accessible name/text
+- `When I double click the element "<name>"` - double-click an element by its accessible name/text
 - `When I click the "<name>" button` - click a button by name
 - `When I click the "<name>" edit` - click a text field by name
 
@@ -393,6 +454,9 @@ in the extension source is part of the testing process.
 | `When I wait for "<sel>" in the webview for <n> seconds` | Custom timeout |
 | `When I click "<sel>" in the webview` | Click any element by selector |
 | `When I click "<sel>" in the webview "<title>"` | Click in a specific webview |
+| `When I right click "<sel>" in the webview` | Right-click an element by selector |
+| `When I middle click "<sel>" in the webview` | Middle-click an element by selector |
+| `When I double click "<sel>" in the webview` | Double-click an element by selector |
 | `When I focus "<sel>" in the webview` | Focus an input or scroll container |
 | `When I scroll "<sel>" by <dx> <dy>` | Scroll a container relatively |
 | `When I scroll "<sel>" to <x> <y>` | Scroll to absolute coords |
@@ -578,8 +642,8 @@ Then the editor should contain "hello world"
 \\`\\`\\`
 
 ### Screenshots
-- `Then I take a screenshot` - capture the full screen, saved to the run directory
-- `Then I take a screenshot "label"` - capture with a descriptive label (e.g. "after-query-runs")
+- `Then I take a screenshot` - capture the targeted Extension Development Host window, saved to the run directory
+- `Then I take a screenshot "label"` - capture the targeted Dev Host with a descriptive label (e.g. "after-query-runs")
 
 ### File Utilities (direct via code - no UI dialogs)
 Use these for test setup when you don't need to test the actual dialog interaction:

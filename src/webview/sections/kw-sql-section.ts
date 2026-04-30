@@ -17,6 +17,7 @@ import '../components/kw-section-shell.js';
 import '../components/kw-data-table.js';
 import './kw-sql-toolbar.js';
 import { maybeAutoScrollWhileDragging } from '../core/utils.js';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { schedulePersist } from '../core/persistence.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
 import { registerStsProviders, registerStsEditorModel, unregisterStsEditorModel, setStsReady } from '../monaco/sql-sts-providers.js';
@@ -196,6 +197,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _schemaInfoState: SchemaInfoState = { status: 'not-loaded' };
 	private _stsReady = false;
 	private _stsDocumentOpened = false;
+	private _removeRunMenuScrollDismiss: (() => void) | null = null;
 
 	// ── Auto-trigger autocomplete state ──────────────────────────────────────
 	private _autoSuggestTimer: ReturnType<typeof setTimeout> | undefined;
@@ -229,6 +231,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
+		this._closeSqlRunMenu();
 		this._stopElapsedTimer();
 		if (this._autoSuggestTimer !== undefined) { clearTimeout(this._autoSuggestTimer); this._autoSuggestTimer = undefined; }
 		if (this._editor) {
@@ -1835,15 +1838,33 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const menu = document.getElementById(this.boxId + '_sql_run_menu') as HTMLElement | null;
 		if (!menu) return;
 		const next = menu.style.display === 'block' ? 'none' : 'block';
+		this._cleanupSqlRunMenuScrollDismiss();
 		menu.style.display = next;
+		if (next === 'block') {
+			this._removeRunMenuScrollDismiss = registerPageScrollDismissable(() => this._closeSqlRunMenu(), {
+				dismissOnWheel: true,
+				shouldDismiss: ({ event, kind }) => kind !== 'wheel' || !menu.contains(event.target as Node),
+			});
+		}
+	}
+
+	private _closeSqlRunMenu(): void {
+		this._cleanupSqlRunMenuScrollDismiss();
+		const menu = document.getElementById(this.boxId + '_sql_run_menu') as HTMLElement | null;
+		if (menu) menu.style.display = 'none';
+	}
+
+	private _cleanupSqlRunMenuScrollDismiss(): void {
+		if (!this._removeRunMenuScrollDismiss) return;
+		this._removeRunMenuScrollDismiss();
+		this._removeRunMenuScrollDismiss = null;
 	}
 
 	private _applySqlRunMode(mode: string): void {
 		setRunMode(this.boxId, mode);
 		this._syncActionBar();
 		try {
-			const menu = document.getElementById(this.boxId + '_sql_run_menu') as HTMLElement | null;
-			if (menu) menu.style.display = 'none';
+			this._closeSqlRunMenu();
 		} catch (e) { console.error('[kusto]', e); }
 		this._runQuery();
 	}

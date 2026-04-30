@@ -5,6 +5,7 @@ import { osStyles } from '../../shared/os-styles.js';
 import { OverlayScrollbarsController } from '../../components/overlay-scrollbars.controller.js';
 import { customElement, state } from 'lit/decorators.js';
 import { ICONS, iconRegistryStyles } from '../../shared/icon-registry.js';
+import { registerPageScrollDismissable } from '../../core/page-scroll-dismiss.js';
 import type { KustoConnectionFormSubmitDetail } from '../../components/kw-kusto-connection-form.js';
 import type { SqlConnectionFormSubmitDetail } from '../../components/kw-sql-connection-form.js';
 import '../../components/kw-kusto-connection-form.js';
@@ -202,6 +203,7 @@ export class KwConnectionManager extends LitElement {
 	// ── Search controller ─────────────────────────────────────────────────────
 
 	private _search = new ConnectionManagerSearchController(this as unknown as SearchControllerHost);
+	private _removeRefreshMenuScrollDismiss: (() => void) | null = null;
 
 	/** Bridge for the search controller to send messages to the host. */
 	postMessage(msg: unknown): void {
@@ -222,6 +224,7 @@ export class KwConnectionManager extends LitElement {
 		super.disconnectedCallback();
 		window.removeEventListener('message', this._onMessage);
 		this.removeEventListener('click', this._dismissToolsMenu);
+		this._cleanupRefreshMenuScrollDismiss();
 	}
 
 	private _dismissToolsMenu = (e: Event) => {
@@ -229,10 +232,37 @@ export class KwConnectionManager extends LitElement {
 		if (this._refreshMenuOpen) {
 			const split = this.shadowRoot?.querySelector('.search-refresh-split');
 			if (split && !path.includes(split)) {
-				this._refreshMenuOpen = false;
+				this._closeRefreshMenu();
 			}
 		}
 	};
+
+	private _toggleRefreshMenu(): void {
+		const nextOpen = !this._refreshMenuOpen;
+		this._refreshMenuOpen = nextOpen;
+		this._cleanupRefreshMenuScrollDismiss();
+		if (nextOpen) {
+			this._removeRefreshMenuScrollDismiss = registerPageScrollDismissable(() => this._closeRefreshMenu(), {
+				dismissOnWheel: true,
+				shouldDismiss: ({ event, kind }) => {
+					if (kind !== 'wheel') return true;
+					const split = this.shadowRoot?.querySelector('.search-refresh-split');
+					return !(split && event.composedPath().includes(split));
+				},
+			});
+		}
+	}
+
+	private _closeRefreshMenu(): void {
+		this._cleanupRefreshMenuScrollDismiss();
+		this._refreshMenuOpen = false;
+	}
+
+	private _cleanupRefreshMenuScrollDismiss(): void {
+		if (!this._removeRefreshMenuScrollDismiss) return;
+		this._removeRefreshMenuScrollDismiss();
+		this._removeRefreshMenuScrollDismiss = null;
+	}
 
 	// ── Message handling ──────────────────────────────────────────────────────
 
@@ -1663,16 +1693,16 @@ export class KwConnectionManager extends LitElement {
 						<button class="search-refresh-main" @click=${() => s.refreshCachedAndSearch()}>
 							<span class="search-refresh-label-always">Refresh</span> <span class="search-refresh-label-extra">schemas</span> <span class="search-refresh-count">(${cachedCount})</span>
 						</button>
-						<button class="search-refresh-drop ${this._refreshMenuOpen ? 'active' : ''}" @click=${() => { this._refreshMenuOpen = !this._refreshMenuOpen; }}>
+						<button class="search-refresh-drop ${this._refreshMenuOpen ? 'active' : ''}" @click=${() => this._toggleRefreshMenu()}>
 							${ICONS.chevron}
 						</button>
 						${this._refreshMenuOpen ? html`
 							<div class="search-refresh-menu">
-								<button class="search-tools-item" @click=${() => { this._refreshMenuOpen = false; s.refreshCachedAndSearch(); }}>
+								<button class="search-tools-item" @click=${() => { this._closeRefreshMenu(); s.refreshCachedAndSearch(); }}>
 									<div class="search-tools-item-title">Refresh connections with cached schemas <span class="search-tools-count">(${cachedCount})</span></div>
 									<div class="search-tools-item-desc">These are connections you typically use. Use this to pick up very recent schema changes in them (new tables, etc.) before you use search.</div>
 								</button>
-								<button class="search-tools-item" @click=${() => { this._refreshMenuOpen = false; s.refreshAllAndSearch(); }}>
+								<button class="search-tools-item" @click=${() => { this._closeRefreshMenu(); s.refreshAllAndSearch(); }}>
 									<div class="search-tools-item-title">Refresh all connections <span class="search-tools-count">(${totalCount})</span></div>
 									<div class="search-tools-item-desc">These are all the connections you have, even ones you have not actually used before. Use this to make sure you have the schema of 100% of your connections before you search.</div>
 								</button>

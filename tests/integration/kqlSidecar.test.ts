@@ -720,6 +720,81 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('.kqlx requestDocument sent during webview initialization is replayed', async () => {
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
+		const previousInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-startup-'));
+		const kqlxPath = path.join(tmpDir, 'startup.kqlx');
+		const kqlxText = JSON.stringify({
+			kind: 'kqlx',
+			version: 1,
+			state: {
+				sections: [
+					{ type: 'query', id: 'query_startup', query: 'StartupTable | take 1' }
+				]
+			}
+		}, null, 2);
+
+		try {
+			fs.writeFileSync(kqlxPath, kqlxText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
+				assert.ok(receiveHandler, 'expected early webview message handler');
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			};
+
+			const fakeContext: vscode.ExtensionContext = {
+				subscriptions: [],
+				workspaceState: { get: () => undefined, update: async () => undefined } as any,
+				globalState: { get: () => undefined, update: async () => undefined } as any,
+				globalStorageUri: vscode.Uri.file('C:/tmp')
+			} as any;
+
+			const provider = new (KqlxEditorProvider as any)(
+				fakeContext,
+				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				{ getConnections: () => [], addConnection: async () => undefined } as any
+			) as KqlxEditorProvider;
+
+			const document: vscode.TextDocument = {
+				uri: vscode.Uri.file(kqlxPath),
+				getText: () => kqlxText,
+				eol: vscode.EndOfLine.LF
+			} as any;
+
+			const webview: vscode.Webview = {
+				options: {} as any,
+				postMessage: async (msg: any) => {
+					posted.push(msg);
+					return true;
+				},
+				onDidReceiveMessage: (handler: any) => {
+					receiveHandler = handler;
+					return { dispose() {} } as DisposableLike;
+				}
+			} as any;
+
+			const webviewPanel: vscode.WebviewPanel = {
+				webview,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
+
+			const docMsg = posted.find((m) => m && m.type === 'documentData' && m.ok === true);
+			assert.ok(docMsg, 'expected queued requestDocument to produce documentData');
+			assert.strictEqual(docMsg.state.sections[0].query, 'StartupTable | take 1');
+		} finally {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = previousInitialize;
+			try {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			} catch {
+				// ignore
+			}
+		}
+	});
+
 	test('saveLastSelection caches file connection for .kql without sidecar', async () => {
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		const posted: any[] = [];

@@ -41,6 +41,7 @@ vi.mock('../../src/webview/shared/data-utils.js', () => ({
 }));
 
 vi.mock('../../src/webview/core/utils.js', () => ({
+	addPageScrollListener: vi.fn(() => vi.fn()),
 	getScrollY: vi.fn(() => 0),
 	maybeAutoScrollWhileDragging: vi.fn(),
 }));

@@ -66,22 +66,44 @@ describe('setupClickOutsideDismiss', () => {
 
 describe('setupScrollDismiss', () => {
 	let onDismiss: ReturnType<typeof vi.fn>;
+	let scrollEl: HTMLDivElement;
 
 	beforeEach(() => {
 		onDismiss = vi.fn();
+		scrollEl = document.createElement('div');
+		scrollEl.className = 'kw-scroll-viewport';
+		document.body.appendChild(scrollEl);
 	});
 
-	it('does not dismiss when scroll is within threshold', () => {
+	afterEach(() => {
+		scrollEl.remove();
+	});
+
+	it('does not dismiss on document-level scroll noise', () => {
 		setupScrollDismiss(onDismiss, 20);
-		// Simulate small scroll — scrollTop stays 0 in happy-dom
 		document.dispatchEvent(new Event('scroll'));
 		expect(onDismiss).not.toHaveBeenCalled();
+	});
+
+	it('does not dismiss when page scroll is within threshold', () => {
+		setupScrollDismiss(onDismiss, 20);
+		scrollEl.scrollTop = 10;
+		scrollEl.dispatchEvent(new Event('scroll'));
+		expect(onDismiss).not.toHaveBeenCalled();
+	});
+
+	it('dismisses when page scroll exceeds threshold', () => {
+		setupScrollDismiss(onDismiss, 20);
+		scrollEl.scrollTop = 21;
+		scrollEl.dispatchEvent(new Event('scroll'));
+		expect(onDismiss).toHaveBeenCalledOnce();
 	});
 
 	it('cleanup removes the listener', () => {
 		const cleanup = setupScrollDismiss(onDismiss, 20);
 		cleanup();
-		document.dispatchEvent(new Event('scroll'));
+		scrollEl.scrollTop = 30;
+		scrollEl.dispatchEvent(new Event('scroll'));
 		expect(onDismiss).not.toHaveBeenCalled();
 	});
 

@@ -11,6 +11,7 @@ import { OverlayScrollbars, type PartialOptions } from 'overlayscrollbars';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
+import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { ensureToastUiLoaded } from '../shared/lazy-vendor.js';
 
 /** Shared OverlayScrollbars options for plain-md scroll containers. */
@@ -285,6 +286,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	private _previewOverlay: PreviewScrollbarOverlay | null = null;
 	/** Generation counter to invalidate stale rAF scrollbar init callbacks on rapid mode switching. */
 	private _scrollbarInitGeneration = 0;
+	private _removeDropdownScrollDismiss: (() => void) | null = null;
 
 	// ── Theme observer singleton ─────────────────────────────────────────────
 
@@ -303,6 +305,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		super.disconnectedCallback();
 		document.removeEventListener('click', this._onDocumentClick);
 		document.body.classList.remove('kw-md-wysiwyg-mode');
+		this._cleanupDropdownScrollDismiss();
 		this._cleanupResizeObserver();
 		this._destroyScrollbars();
 	}
@@ -1443,14 +1446,37 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		e.stopPropagation();
 		// Close any global dropdowns first.
 		try { _win.__kustoDropdown?.closeAllMenus?.(); } catch (e) { console.error('[kusto]', e); }
-		this._dropdownOpen = !this._dropdownOpen;
+		const nextOpen = !this._dropdownOpen;
+		this._dropdownOpen = nextOpen;
+		if (nextOpen) {
+			this._cleanupDropdownScrollDismiss();
+			this._removeDropdownScrollDismiss = registerPageScrollDismissable(() => this._closeDropdown(), {
+				dismissOnWheel: true,
+				shouldDismiss: ({ event, kind }) => {
+					if (kind !== 'wheel') return true;
+					const menu = this.shadowRoot?.querySelector('.md-mode-dropdown-menu');
+					return !(menu && event.composedPath().includes(menu));
+				},
+			});
+		} else {
+			this._cleanupDropdownScrollDismiss();
+		}
 	}
 
 	private _onDocumentClick = (): void => {
-		if (this._dropdownOpen) {
-			this._dropdownOpen = false;
-		}
+		this._closeDropdown();
 	};
+
+	private _closeDropdown(): void {
+		this._cleanupDropdownScrollDismiss();
+		this._dropdownOpen = false;
+	}
+
+	private _cleanupDropdownScrollDismiss(): void {
+		if (!this._removeDropdownScrollDismiss) return;
+		this._removeDropdownScrollDismiss();
+		this._removeDropdownScrollDismiss = null;
+	}
 
 	// ── Shell event handlers ──────────────────────────────────────────────────
 

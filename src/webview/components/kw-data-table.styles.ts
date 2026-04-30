@@ -8,7 +8,7 @@ export const styles = css`
 
 		/* Header bar */
 		.hbar{display:flex;align-items:center;justify-content:space-between;padding:4px 0 11px 0;font-size:12px;color:var(--vscode-descriptionForeground);background:transparent;flex-shrink:0;gap:8px;border-top:none;border-bottom:none;margin:0}
-		.hinfo{display:flex;align-items:center;gap:6px;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;position:relative;top:-2px}.et{opacity:.7}
+		.hinfo{display:flex;align-items:center;gap:6px;flex-shrink:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;position:relative;top:-2px}.hinfo-text{display:inline-block;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.et{opacity:.7}
 		.tb{display:inline-flex;gap:2px;align-items:center;flex-shrink:0}
 		.sep{width:1px;height:16px;background:var(--vscode-input-border, rgba(128,128,128,0.3));margin:0 2px}
 		.tbtn{background:transparent;border:1px solid transparent;color:var(--vscode-foreground);cursor:pointer;padding:0;width:28px;height:28px;border-radius:4px;display:inline-flex;align-items:center;justify-content:center;line-height:0;outline:none}

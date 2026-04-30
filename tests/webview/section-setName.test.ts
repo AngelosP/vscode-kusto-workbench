@@ -45,6 +45,7 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 }));
 
 vi.mock('../../src/webview/core/utils.js', () => ({
+	addPageScrollListener: vi.fn(() => vi.fn()),
 	getScrollY: () => 0,
 	maybeAutoScrollWhileDragging: vi.fn(),
 }));
