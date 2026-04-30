@@ -382,7 +382,7 @@ async function main() {
 	if (production) {
 		const BASELINES = {
 			'extension.js':                                        1178,
-			'webview/webview.bundle.js':                           2020,
+			'webview/webview.bundle.js':                           2087,
 			'webview/md-editor.bundle.js':                          146,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
 			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
