@@ -32,6 +32,19 @@ let resizeObserveMock: ReturnType<typeof vi.fn>;
 let mutationObserveMock: ReturnType<typeof vi.fn>;
 const originalResizeObserver = globalThis.ResizeObserver;
 const originalMutationObserver = globalThis.MutationObserver;
+const originalWindowScrollBy = window.scrollBy;
+const originalWindowScrollTo = window.scrollTo;
+const originalWindowScrollYDescriptor = Object.getOwnPropertyDescriptor(window, 'scrollY');
+const originalWindowPageYOffsetDescriptor = Object.getOwnPropertyDescriptor(window, 'pageYOffset');
+const originalDocumentElementScrollTopDescriptor = Object.getOwnPropertyDescriptor(document.documentElement, 'scrollTop');
+
+function restoreDescriptor(target: object, propertyName: string, descriptor: PropertyDescriptor | undefined): void {
+	if (descriptor) {
+		Object.defineProperty(target, propertyName, descriptor);
+	} else {
+		delete (target as Record<string, unknown>)[propertyName];
+	}
+}
 
 beforeEach(() => {
 	vi.resetModules();
@@ -62,6 +75,11 @@ afterEach(() => {
 	document.body.innerHTML = '';
 	document.body.removeAttribute('data-kw-page-overlay-scroll');
 	document.adoptedStyleSheets = [];
+	window.scrollBy = originalWindowScrollBy;
+	window.scrollTo = originalWindowScrollTo;
+	restoreDescriptor(window, 'scrollY', originalWindowScrollYDescriptor);
+	restoreDescriptor(window, 'pageYOffset', originalWindowPageYOffsetDescriptor);
+	restoreDescriptor(document.documentElement, 'scrollTop', originalDocumentElementScrollTopDescriptor);
 	if (originalResizeObserver) globalThis.ResizeObserver = originalResizeObserver;
 	else delete (globalThis as { ResizeObserver?: typeof ResizeObserver }).ResizeObserver;
 	if (originalMutationObserver) globalThis.MutationObserver = originalMutationObserver;
@@ -149,6 +167,9 @@ describe('page OverlayScrollbars bootstrap', () => {
 	it('uses the generated OverlayScrollbars viewport as the page scroll element', async () => {
 		document.body.dataset.kwPageOverlayScroll = 'true';
 		document.body.appendChild(document.createElement('kw-cached-values'));
+		const scrollYDescriptor = Object.getOwnPropertyDescriptor(window, 'scrollY');
+		const pageYOffsetDescriptor = Object.getOwnPropertyDescriptor(window, 'pageYOffset');
+		const documentScrollTopDescriptor = Object.getOwnPropertyDescriptor(document.documentElement, 'scrollTop');
 
 		const overlayModule = await import('../../src/webview/core/overlay-scrollbars.js');
 		document.dispatchEvent(new Event('DOMContentLoaded'));
@@ -162,6 +183,9 @@ describe('page OverlayScrollbars bootstrap', () => {
 		expect(overlayModule.getOverlayScrollViewport()).toBe(viewport);
 		expect(getPageScrollElement()).toBe(viewport);
 		expect(getScrollY()).toBe(10);
+		expect(Object.getOwnPropertyDescriptor(window, 'scrollY')).toEqual(scrollYDescriptor);
+		expect(Object.getOwnPropertyDescriptor(window, 'pageYOffset')).toEqual(pageYOffsetDescriptor);
+		expect(Object.getOwnPropertyDescriptor(document.documentElement, 'scrollTop')).toEqual(documentScrollTopDescriptor);
 
 		window.scrollBy(0, 15);
 		expect(viewport.scrollTop).toBe(25);

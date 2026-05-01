@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { addPageScrollListener, escapeHtml, escapeRegex, getPageScrollElement, getScrollY, refreshPageScrollListeners } from '../../src/webview/core/utils.js';
+import { addPageScrollListener, escapeHtml, escapeRegex, getPageScrollElement, getPageScrollMaxTop, getScrollY, refreshPageScrollListeners, scrollElementIntoPageView, scrollPageBy, setPageScrollTop } from '../../src/webview/core/utils.js';
 
 afterEach(() => {
 	document.querySelectorAll('.kw-scroll-viewport').forEach(el => el.remove());
@@ -72,6 +72,15 @@ describe('escapeRegex', () => {
 // ── page scroll helpers ──────────────────────────────────────────────────────
 
 describe('page scroll helpers', () => {
+	function createScrollablePageElement(): HTMLDivElement {
+		const scrollEl = document.createElement('div');
+		scrollEl.className = 'kw-scroll-viewport';
+		Object.defineProperty(scrollEl, 'clientHeight', { configurable: true, value: 100 });
+		Object.defineProperty(scrollEl, 'scrollHeight', { configurable: true, value: 500 });
+		document.body.appendChild(scrollEl);
+		return scrollEl;
+	}
+
 	it('reads scroll position from the overlay page scroll element when present', () => {
 		const scrollEl = document.createElement('div');
 		scrollEl.className = 'kw-scroll-viewport';
@@ -121,5 +130,56 @@ describe('page scroll helpers', () => {
 		cleanup();
 		scrollEl.dispatchEvent(new Event('scroll'));
 		expect(calls).toBe(2);
+	});
+
+	it('sets and clamps the explicit overlay page scroll position', () => {
+		const scrollEl = createScrollablePageElement();
+
+		expect(getPageScrollMaxTop()).toBe(400);
+		expect(setPageScrollTop(250)).toBe(250);
+		expect(scrollEl.scrollTop).toBe(250);
+
+		expect(setPageScrollTop(999)).toBe(400);
+		expect(scrollEl.scrollTop).toBe(400);
+
+		expect(setPageScrollTop(-30)).toBe(0);
+		expect(scrollEl.scrollTop).toBe(0);
+	});
+
+	it('scrolls the explicit page element by a delta without consulting window scroll reads', () => {
+		const scrollEl = createScrollablePageElement();
+		scrollEl.scrollTop = 120;
+
+		expect(scrollPageBy(0, 90)).toEqual({ left: 0, top: 210 });
+		expect(scrollEl.scrollTop).toBe(210);
+
+		expect(scrollPageBy(0, -500)).toEqual({ left: 0, top: 0 });
+		expect(scrollEl.scrollTop).toBe(0);
+	});
+
+	it('scrolls an element into the overlay page viewport using client rects', () => {
+		const scrollEl = createScrollablePageElement();
+		const target = document.createElement('div');
+		scrollEl.appendChild(target);
+		scrollEl.scrollTop = 50;
+		(scrollEl as any).getBoundingClientRect = () => ({ top: 10, bottom: 110, height: 100, left: 0, right: 100, width: 100, x: 0, y: 10, toJSON: () => ({}) } as DOMRect);
+		(target as any).getBoundingClientRect = () => ({ top: 180, bottom: 220, height: 40, left: 0, right: 100, width: 100, x: 0, y: 180, toJSON: () => ({}) } as DOMRect);
+
+		scrollElementIntoPageView(target, 'start');
+
+		expect(scrollEl.scrollTop).toBe(220);
+	});
+
+	it('documents the old fake-scroll/native-event coordinate mismatch', () => {
+		const clientY = 120;
+		const nativeEventPageY = 120;
+		const editorViewportTop = 100;
+		const fakeWindowScrollY = 500;
+
+		const oldMixedRelativeY = nativeEventPageY - (editorViewportTop + fakeWindowScrollY);
+		const clientCoordinateRelativeY = clientY - editorViewportTop;
+
+		expect(oldMixedRelativeY).toBe(-480);
+		expect(clientCoordinateRelativeY).toBe(20);
 	});
 });

@@ -53,6 +53,7 @@ import {
 	KUSTO_CONTROL_COMMAND_DOCS_BASE_URL, KUSTO_CONTROL_COMMAND_DOCS_VIEW, __kustoControlCommands,
 } from './caret-docs';
 import { __kustoAttachAutoResizeToContent } from './resize';
+import { __kustoInstallEditorClickFidelityGuard } from './click-fidelity';
 import { addPageScrollListener, escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { __kustoAutoSizeEditor, ensureSchemaForBox, __kustoGetConnectionId, __kustoGetDatabase } from '../core/section-factory';
@@ -4205,19 +4206,79 @@ function initQueryEditor(boxId: any) {
 			});
 		} catch (e) { console.error('[kusto]', e); }
 
-		// In VS Code webviews, the first click can sometimes focus the webview but not reliably
-		// place the Monaco caret if we eagerly call editor.focus() during the same mouse event.
-		// Defer focus slightly so Monaco can handle click-to-place-caret on the first click.
-		const focusSoon = () => {
-			setTimeout(() => {
+		// Keep click-to-caret reliable after collapse/expand and page-scroll changes.
+		// The guard synchronously lays Monaco out before Monaco maps mouse coordinates,
+		// then uses a narrow deferred repair only for simple clicks that Monaco missed.
+		const clickFidelityGuard = __kustoInstallEditorClickFidelityGuard({
+			boxId,
+			editor,
+			container,
+			wrapper: wrapper as HTMLElement | null,
+			activateEditor: () => {
 				setActiveQueryEditorBoxId(boxId);
 				setActiveMonacoEditor(editor);
-				try { editor.layout(); } catch (e) { console.error('[kusto]', e); }
-				try { if (typeof editor.__kustoScheduleSuggestClamp === 'function') editor.__kustoScheduleSuggestClamp(); } catch (e) { console.error('[kusto]', e); }
-				try { editor.focus(); } catch (e) { console.error('[kusto]', e); }
-			}, 0);
-		};
+			},
+			forceWritable: () => __kustoForceEditorWritable(editor),
+			setCrossClusterPointerDown: (isPointerDown: boolean) => __kustoSetCrossClusterPointerDown(boxId, isPointerDown),
+			scheduleSuggestClamp: () => {
+				if (typeof editor.__kustoScheduleSuggestClamp === 'function') {
+					editor.__kustoScheduleSuggestClamp();
+				}
+			},
+			logError: (error: unknown) => console.error('[kusto]', error),
+		});
 		const onCrossClusterPointerUp = () => __kustoSetCrossClusterPointerDown(boxId, false);
+		let disposePageScrollRelayout: (() => void) | null = null;
+		let pageScrollRelayoutFrame = 0;
+		const isEditorConnectedAndMeasurable = () => {
+			try {
+				const editorDom = typeof editor.getDomNode === 'function' ? editor.getDomNode() : container;
+				const measured = (wrapper as HTMLElement | null) || container || editorDom;
+				if (!editorDom || !measured || !editorDom.isConnected || !measured.isConnected) {
+					return false;
+				}
+				const editorRect = editorDom.getBoundingClientRect ? editorDom.getBoundingClientRect() : null;
+				const measuredRect = measured.getBoundingClientRect ? measured.getBoundingClientRect() : null;
+				if (!editorRect || !measuredRect) {
+					return false;
+				}
+				const viewportHeight = Math.max(0, window.innerHeight || document.documentElement?.clientHeight || 0);
+				const viewportWidth = Math.max(0, window.innerWidth || document.documentElement?.clientWidth || 0);
+				const overscan = 600;
+				const nearViewport = !viewportHeight || !viewportWidth
+					|| (editorRect.bottom >= -overscan
+						&& editorRect.top <= viewportHeight + overscan
+						&& editorRect.right >= -overscan
+						&& editorRect.left <= viewportWidth + overscan);
+				return nearViewport
+					&& editorRect.width > 0 && editorRect.height > 0
+					&& measuredRect.width > 0 && measuredRect.height > 0;
+			} catch {
+				return false;
+			}
+		};
+		const runPageScrollRelayout = () => {
+			pageScrollRelayoutFrame = 0;
+			if (!isEditorConnectedAndMeasurable()) {
+				return;
+			}
+			try { editor.layout(); } catch (e) { console.error('[kusto]', e); }
+			try { if (typeof editor.render === 'function') editor.render(true); } catch (e) { console.error('[kusto]', e); }
+			try { if (typeof editor.__kustoScheduleSuggestClamp === 'function') editor.__kustoScheduleSuggestClamp(); } catch (e) { console.error('[kusto]', e); }
+		};
+		const schedulePageScrollRelayout = () => {
+			if (pageScrollRelayoutFrame) {
+				return;
+			}
+			try {
+				pageScrollRelayoutFrame = requestAnimationFrame(runPageScrollRelayout);
+			} catch {
+				setTimeout(runPageScrollRelayout, 0);
+			}
+		};
+		try {
+			disposePageScrollRelayout = addPageScrollListener(schedulePageScrollRelayout, { passive: true });
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			editor.onMouseDown(() => __kustoSetCrossClusterPointerDown(boxId, true));
 			editor.onMouseMove((event: any) => {
@@ -4240,6 +4301,11 @@ function initQueryEditor(boxId: any) {
 		try {
 			if (typeof editor.onDidDispose === 'function') {
 				editor.onDidDispose(() => {
+					try { clickFidelityGuard.dispose(); } catch (e) { console.error('[kusto]', e); }
+					try { if (pageScrollRelayoutFrame) cancelAnimationFrame(pageScrollRelayoutFrame); } catch (e) { console.error('[kusto]', e); }
+					pageScrollRelayoutFrame = 0;
+					try { if (disposePageScrollRelayout) disposePageScrollRelayout(); } catch (e) { console.error('[kusto]', e); }
+					disposePageScrollRelayout = null;
 					__kustoClearCrossClusterCheckTimer(boxId);
 					try { __kustoRemoveCrossClusterInterestForBox(boxId); } catch (e) { console.error('[kusto]', e); }
 					try { delete __kustoLastCrossClusterInteractionAtByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
@@ -4262,46 +4328,6 @@ function initQueryEditor(boxId: any) {
 			}
 		};
 
-		if (wrapper) {
-			wrapper.addEventListener('mousedown', (e) => {
-				try {
-					if (e && e.target && (e.target as HTMLElement).closest) {
-						// Allow embedded UI (e.g. Copilot Chat) to receive focus.
-						if ((e.target as HTMLElement).closest('.kusto-copilot-chat') || (e.target as HTMLElement).closest('kw-copilot-chat') || (e.target as HTMLElement).closest('[data-kusto-no-editor-focus="true"]')) {
-							return;
-						}
-						if ((e.target as HTMLElement).closest('.query-editor-toolbar') || (e.target as HTMLElement).closest('kw-query-toolbar')) {
-							return;
-						}
-						if ((e.target as HTMLElement).closest('.query-editor-resizer')) {
-							return;
-						}
-						// Allow Monaco widgets (find widget, suggest widget, etc.) to receive focus.
-						if ((e.target as HTMLElement).closest('.find-widget') || (e.target as HTMLElement).closest('.suggest-widget') || (e.target as HTMLElement).closest('.parameter-hints-widget') || (e.target as HTMLElement).closest('.monaco-hover') || (e.target as HTMLElement).closest('.overflowingContentWidgets')) {
-							return;
-						}
-					}
-				} catch (e) { console.error('[kusto]', e); }
-				try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
-				try { __kustoSetCrossClusterPointerDown(boxId, true); } catch (e) { console.error('[kusto]', e); }
-				focusSoon();
-			}, true);
-		}
-
-		// Keep a direct hook on the editor container too.
-		container.addEventListener('mousedown', (e) => {
-			try {
-				if (e && e.target && (e.target as HTMLElement).closest) {
-					// Allow Monaco widgets (find widget, suggest widget, etc.) to receive focus.
-					if ((e.target as HTMLElement).closest('.find-widget') || (e.target as HTMLElement).closest('.suggest-widget') || (e.target as HTMLElement).closest('.parameter-hints-widget') || (e.target as HTMLElement).closest('.monaco-hover') || (e.target as HTMLElement).closest('.overflowingContentWidgets')) {
-						return;
-					}
-				}
-			} catch (e) { console.error('[kusto]', e); }
-			try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
-			try { __kustoSetCrossClusterPointerDown(boxId, true); } catch (e) { console.error('[kusto]', e); }
-			focusSoon();
-		}, true);
 		editor.onDidBlurEditorText(() => {
 			syncPlaceholder();
 		});
@@ -4665,10 +4691,11 @@ function __kustoShowEditorContextMenu(editor: any, event: MouseEvent) {
 	document.body.appendChild(menu);
 	__kustoEditorContextMenuEl = menu;
 
-	// Position: use event coordinates, but clamp to viewport.
+	// Position from viewport coordinates. The notebook page uses an overlay scroll
+	// element, so pageX/pageY can disagree with fixed/body overlays after scroll.
 	const menuRect = menu.getBoundingClientRect();
-	let left = event.pageX;
-	let top = event.pageY;
+	let left = event.clientX;
+	let top = event.clientY;
 	if (left + menuRect.width > window.innerWidth) {
 		left = Math.max(0, window.innerWidth - menuRect.width - 4);
 	}

@@ -11,9 +11,9 @@
  * Strategy: in webviews that opt into page overlay scrolling, wrap all body
  * children in a `.kw-scroll-viewport` div, set body to
  * `overflow: hidden; height: 100vh`, and initialise OverlayScrollbars on the
- * wrapper. This avoids breaking the 20+ call sites that read
- * `document.documentElement.scrollTop` — we patch `getScrollY()` and
- * `window.scrollBy/scrollTo` to delegate to the wrapper.
+ * wrapper. The wrapper is the canonical page scroll element for app code;
+ * global scroll reads are intentionally left native so browser/Monaco mouse
+ * coordinate math stays in one coordinate system.
  */
 import { OverlayScrollbars } from 'overlayscrollbars';
 import { osLibrarySheet } from '../shared/os-library-styles.js';
@@ -173,9 +173,10 @@ function init() {
 	} catch (e) { console.error('[kusto]', e); }
 	window.addEventListener('resize', () => requestOverlayScrollbarUpdate(true));
 
-	// ── Patch window.scrollBy / window.scrollTo to delegate to the wrapper ──
-	// This ensures the 20+ existing call sites that use window.scrollBy() or
-	// document.documentElement.scrollTop continue to work correctly.
+	// ── Patch write-only window scroll methods to delegate to the wrapper ──
+	// Do not spoof scrollY/pageYOffset/documentElement.scrollTop reads here:
+	// native mouse events and third-party geometry code must see native document
+	// scroll state, while app code reads the overlay viewport via getScrollY().
 	const origScrollBy = window.scrollBy.bind(window);
 	const origScrollTo = window.scrollTo.bind(window);
 
@@ -188,24 +189,6 @@ function init() {
 		if (!scrollViewport) { origScrollTo(xOrOptions as number, y as number); return; }
 		scrollElementTo(scrollViewport, xOrOptions, y);
 	} as typeof window.scrollTo;
-
-	// Patch document.documentElement.scrollTop and window.scrollY
-	// to read from the wrapper.
-	Object.defineProperty(document.documentElement, 'scrollTop', {
-		get() { return scrollViewport ? scrollViewport.scrollTop : 0; },
-		set(v: number) { if (scrollViewport) scrollViewport.scrollTop = v; },
-		configurable: true,
-	});
-
-	Object.defineProperty(window, 'scrollY', {
-		get() { return scrollViewport ? scrollViewport.scrollTop : 0; },
-		configurable: true,
-	});
-
-	Object.defineProperty(window, 'pageYOffset', {
-		get() { return scrollViewport ? scrollViewport.scrollTop : 0; },
-		configurable: true,
-	});
 }
 
 if (document.readyState === 'loading') {

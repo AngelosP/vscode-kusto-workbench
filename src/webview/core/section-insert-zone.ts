@@ -156,9 +156,8 @@ function expand() {
 
 	// Position picker centered on the "+"'s position.
 	const plusRect = plusEl.getBoundingClientRect();
-	const scrollY = getScrollY();
 	const centerX = plusRect.left + plusRect.width / 2;
-	const topY = plusRect.top + scrollY;
+	const topY = plusRect.top;
 
 	plusEl.classList.remove('visible');
 	pickerEl.classList.add('visible');
@@ -272,7 +271,7 @@ function deactivateResizer(): void {
 function showPlus(edge: EdgeInfo) {
 	const { plus } = ensureDOM();
 	const scrollY = getScrollY();
-	const topY = edge.bottomY + scrollY;
+	const topY = edge.bottomY;
 
 	// Center the "+" horizontally on the section.
 	const sectionEl = document.getElementById(edge.boxId);
@@ -361,13 +360,13 @@ function onScroll() {
 function repositionToEdge(newBottomY: number): void {
 	if (!plusEl) return;
 	const scrollY = getScrollY();
-	plusEl.style.top = (newBottomY + scrollY) + 'px';
+	plusEl.style.top = newBottomY + 'px';
 	anchoredBottomY = newBottomY;
 	scrollAtOpen = scrollY;
 	// If the picker is expanded, reposition it too.
 	if (isExpanded && pickerEl) {
 		const plusRect = plusEl.getBoundingClientRect();
-		pickerEl.style.top = (plusRect.top + scrollY - pickerEl.offsetHeight / 2) + 'px';
+		pickerEl.style.top = (plusRect.top - pickerEl.offsetHeight / 2) + 'px';
 	}
 }
 

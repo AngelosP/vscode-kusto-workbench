@@ -9,6 +9,7 @@ import { __kustoGetQuerySectionElement } from './section-factory';
 import { __kustoEnsureAllEditorsWritableSoon } from '../monaco/writable';
 import { executeQuery } from '../sections/query-execution.controller';
 import { safeRun } from '../shared/safe-run';
+import { scrollPageBy } from './utils';
 
 document.addEventListener('keydown', async (event: any) => {
 	if (!(event.ctrlKey || event.metaKey) || (event.key !== 'v' && event.key !== 'V')) {
@@ -112,7 +113,7 @@ try {
 				const dy = (typeof event.deltaY === 'number' && Number.isFinite(event.deltaY)) ? event.deltaY : 0;
 				const dx = (typeof event.deltaX === 'number' && Number.isFinite(event.deltaX)) ? event.deltaX : 0;
 				if (!dy && !dx) return;
-				try { window.scrollBy(dx, dy); } catch (e) { console.error('[kusto]', e); }
+				try { scrollPageBy(dx, dy); } catch (e) { console.error('[kusto]', e); }
 				try { event.preventDefault(); } catch (e) { console.error('[kusto]', e); }
 				try { event.stopPropagation(); } catch (e) { console.error('[kusto]', e); }
 			} catch (e) { console.error('[kusto]', e); }

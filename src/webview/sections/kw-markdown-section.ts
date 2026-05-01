@@ -10,7 +10,7 @@ import { osStyles } from '../shared/os-styles.js';
 import { OverlayScrollbars, type PartialOptions } from 'overlayscrollbars';
 import { customElement, property, state } from 'lit/decorators.js';
 import '../components/kw-section-shell.js';
-import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
+import { getScrollY, maybeAutoScrollWhileDragging, setPageScrollTop } from '../core/utils.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { ensureToastUiLoaded } from '../shared/lazy-vendor.js';
 
@@ -1026,8 +1026,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	private _resetMdScroll(): void {
 		try {
 			if (String(pState.documentKind || '') === 'md') {
-				document.body.scrollTop = 0;
-				document.documentElement.scrollTop = 0;
+				setPageScrollTop(0);
 			}
 		} catch (e) { console.error('[kusto]', e); }
 	}

@@ -22,10 +22,97 @@ export function getPageScrollElement(): HTMLElement | null {
 	}
 }
 
+function getDocumentScrollElement(): HTMLElement {
+	return (document.scrollingElement as HTMLElement | null) || document.documentElement || document.body;
+}
+
+function isDocumentScrollElement(element: HTMLElement): boolean {
+	return element === document.documentElement || element === document.body || element === document.scrollingElement;
+}
+
+function getPageScrollClientHeight(element: HTMLElement): number {
+	if (isDocumentScrollElement(element)) {
+		return Math.max(0, window.innerHeight || document.documentElement?.clientHeight || element.clientHeight || 0);
+	}
+	return Math.max(0, element.clientHeight || 0);
+}
+
+export function getPageScrollTop(scrollElement?: HTMLElement | null): number {
+	try {
+		const element = scrollElement || getPageScrollElement() || getDocumentScrollElement();
+		return Math.max(0, element.scrollTop || 0);
+	} catch {
+		return 0;
+	}
+}
+
+export function getPageScrollMaxTop(scrollElement?: HTMLElement | null): number {
+	try {
+		const element = scrollElement || getPageScrollElement() || getDocumentScrollElement();
+		return Math.max(0, (element.scrollHeight || 0) - getPageScrollClientHeight(element));
+	} catch {
+		return 0;
+	}
+}
+
+export function setPageScrollTop(scrollTop: number, scrollElement?: HTMLElement | null): number {
+	try {
+		const element = scrollElement || getPageScrollElement() || getDocumentScrollElement();
+		const nextTop = Math.max(0, Math.min(getPageScrollMaxTop(element), Math.round(Number(scrollTop) || 0)));
+		element.scrollTop = nextTop;
+		if (isDocumentScrollElement(element)) {
+			try { document.documentElement.scrollTop = nextTop; } catch { /* ignore */ }
+			try { document.body.scrollTop = nextTop; } catch { /* ignore */ }
+		}
+		return element.scrollTop || nextTop;
+	} catch {
+		return 0;
+	}
+}
+
+export function scrollPageBy(deltaX: number, deltaY: number, scrollElement?: HTMLElement | null): { left: number; top: number } {
+	try {
+		const element = scrollElement || getPageScrollElement() || getDocumentScrollElement();
+		const nextLeft = Math.max(0, Math.round((element.scrollLeft || 0) + (Number(deltaX) || 0)));
+		element.scrollLeft = nextLeft;
+		const top = setPageScrollTop((element.scrollTop || 0) + (Number(deltaY) || 0), element);
+		return { left: element.scrollLeft || nextLeft, top };
+	} catch {
+		return { left: 0, top: 0 };
+	}
+}
+
+export function scrollElementIntoPageView(element: HTMLElement, block: ScrollLogicalPosition = 'nearest'): void {
+	try {
+		const scrollElement = getPageScrollElement();
+		if (!scrollElement) {
+			element.scrollIntoView({ block, behavior: 'auto' });
+			return;
+		}
+		const scrollRect = scrollElement.getBoundingClientRect();
+		const elementRect = element.getBoundingClientRect();
+		let nextTop = getPageScrollTop(scrollElement);
+		if (block === 'center') {
+			nextTop += elementRect.top - scrollRect.top - Math.max(0, (scrollRect.height - Math.min(elementRect.height, scrollRect.height)) / 2);
+		} else if (block === 'end') {
+			nextTop += elementRect.bottom - scrollRect.bottom;
+		} else if (block === 'start') {
+			nextTop += elementRect.top - scrollRect.top;
+		} else {
+			if (elementRect.top < scrollRect.top) {
+				nextTop += elementRect.top - scrollRect.top;
+			} else if (elementRect.bottom > scrollRect.bottom) {
+				nextTop += elementRect.bottom - scrollRect.bottom;
+			}
+		}
+		setPageScrollTop(nextTop, scrollElement);
+	} catch (e) { console.error('[kusto]', e); }
+}
+
 export function getScrollY(): number {
 	try {
 		const scrollElement = getPageScrollElement();
-		if (scrollElement) return scrollElement.scrollTop || 0;
+		if (scrollElement) return getPageScrollTop(scrollElement);
 	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof window.scrollY === 'number') {
@@ -114,7 +201,7 @@ export function maybeAutoScrollWhileDragging(clientY: number, options?: { thresh
 		}
 
 		if (scrollDeltaY) {
-			try { window.scrollBy(0, scrollDeltaY); } catch (e) { console.error('[kusto]', e); }
+			try { scrollPageBy(0, scrollDeltaY); } catch (e) { console.error('[kusto]', e); }
 		}
 		return scrollDeltaY;
 	} catch {

@@ -2,7 +2,7 @@
 
 		/* ── The "+" circle — follows the cursor along a section's bottom edge ── */
 		.insert-zone-plus {
-			position: absolute;
+			position: fixed;
 			display: none;
 			align-items: center;
 			justify-content: center;
@@ -41,7 +41,7 @@
 
 		/* ── Expanded section-kind picker (replaces the "+" on click) ──── */
 		.insert-zone-picker {
-			position: absolute;
+			position: fixed;
 			display: none;
 			align-items: center;
 			gap: 2px;

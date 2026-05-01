@@ -1,0 +1,29 @@
+{
+  "kind": "kqlx",
+  "version": 1,
+  "state": {
+    "caretDocsEnabled": true,
+    "autoTriggerAutocompleteEnabled": false,
+    "sections": [
+      {
+        "id": "html_click_fidelity_restored",
+        "type": "html",
+        "name": "Restored Tall HTML Preview",
+        "code": "<!doctype html>\n<html>\n<head>\n<meta charset='utf-8'>\n<style>\nbody{margin:0;font:13px Arial,sans-serif;background:#121820;color:#eef2f7;}\n.header{position:sticky;top:0;background:#202b36;padding:14px 18px;border-bottom:1px solid #405164;}\n.wrap{padding:18px;}\n.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;}\n.card{min-height:120px;border:1px solid #405164;background:#1b2631;padding:12px;}\n.band{height:1100px;margin-top:16px;border:1px solid #405164;background:repeating-linear-gradient(0deg,#18232e,#18232e 28px,#202b36 28px,#202b36 56px);}\n.footer{padding:18px;color:#b9c6d3;}\n</style>\n</head>\n<body>\n<div class='header'>Restored preview fixture</div>\n<div class='wrap'>\n<div class='grid'>\n<div class='card'>Panel 1<br>Alpha<br>Beta<br>Gamma</div>\n<div class='card'>Panel 2<br>Delta<br>Epsilon<br>Zeta</div>\n<div class='card'>Panel 3<br>Eta<br>Theta<br>Iota</div>\n</div>\n<div class='band'></div>\n<div class='footer'>End of tall restored preview.</div>\n</div>\n</body>\n</html>",
+        "mode": "preview",
+        "expanded": true,
+        "previewHeightPx": 1655,
+        "previewHeightUserSet": true
+      },
+      {
+        "id": "query_click_fidelity_restored",
+        "type": "query",
+        "name": "Restored Kusto Click Target",
+        "query": "print restored_row_01 = 1\nprint restored_row_02 = 2\nprint restored_row_03 = 3\nprint restored_row_04 = 4\nprint restored_row_05 = 5\nprint restored_row_06 = 6\nprint restored_row_07 = 7\nprint restored_row_08 = 8\nprint restored_row_09 = 9\nprint restored_row_10 = 10\nprint restored_row_11 = 11\nprint restored_row_12 = 12\nprint restored_row_13 = 13\nprint restored_row_14 = 14\nprint restored_row_15 = 15\nprint restored_row_16 = 16\nprint restored_row_17 = 17\nprint restored_row_18 = 18\nprint restored_row_19 = 19\nprint restored_row_20 = 20",
+        "expanded": true,
+        "editorHeightPx": 260,
+        "resultsVisible": false
+      }
+    ]
+  }
+}

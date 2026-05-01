@@ -4,17 +4,23 @@
 
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { setActiveMonacoEditor } from './state.js';
+import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
 import { __kustoFindSuggestWidgetForEditor } from '../monaco/suggest.js';
 
 type MonacoLike = {
 	getDomNode?: () => HTMLElement | null;
 	focus?: () => void;
+	layout?: () => void;
 	hasTextFocus?: () => boolean;
 	hasWidgetFocus?: () => boolean;
 	getValue?: () => string;
 	setValue?: (value: string) => void;
 	getModel?: () => { getLineCount?: () => number; getLineMaxColumn?: (lineNumber: number) => number; getLanguageId?: () => string; uri?: { toString(): string } } | null;
 	getOptions?: () => { get?: (option: any) => any };
+	getPosition?: () => { lineNumber: number; column: number } | null;
+	getTargetAtClientPoint?: (clientX: number, clientY: number) => { type?: number | string; position?: { lineNumber: number; column: number } | null } | null;
+	getScrolledVisiblePosition?: (position: { lineNumber: number; column: number }) => { top: number; left: number; height: number } | null;
+	render?: (forceRedraw?: boolean) => void;
 	setPosition?: (position: { lineNumber: number; column: number }) => void;
 	setSelection?: (selection: { startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number }) => void;
 	trigger?: (source: string, handlerId: string, payload: any) => void;
@@ -2460,8 +2466,8 @@ async function e2eLayoutAssertStableHeights(context: string): Promise<string> {
 
 async function e2eLayoutAssertScrollStability(): Promise<string> {
 	e2eLayoutAssertAllSectionTypes();
-	const scrollingElement = document.scrollingElement || document.documentElement;
-	const maxScrollTop = scrollingElement.scrollHeight - scrollingElement.clientHeight;
+	const scrollingElement = e2ePageScrollElement();
+	const maxScrollTop = e2ePageScrollMaxTop(scrollingElement);
 	if (maxScrollTop < 300) {
 		throw new Error(`Expected a meaningfully scrollable notebook, got maxScrollTop=${maxScrollTop}`);
 	}
@@ -2469,15 +2475,15 @@ async function e2eLayoutAssertScrollStability(): Promise<string> {
 		throw new Error(`Unexpected horizontal page overflow: ${document.documentElement.scrollWidth} > ${document.documentElement.clientWidth}`);
 	}
 
-	window.scrollTo(0, 0);
+	e2eSetPageScrollTop(scrollingElement, 0);
 	await e2eLayoutDelay(100);
-	if ((window.scrollY || scrollingElement.scrollTop) > 10) {
+	if (e2ePageScrollTop(scrollingElement) > 10) {
 		throw new Error('Notebook did not scroll to top');
 	}
-	window.scrollTo(0, maxScrollTop);
+	e2eSetPageScrollTop(scrollingElement, maxScrollTop);
 	await e2eLayoutDelay(100);
-	if ((window.scrollY || scrollingElement.scrollTop) < maxScrollTop * 0.75) {
-		throw new Error(`Notebook did not scroll near bottom; scrollTop=${window.scrollY || scrollingElement.scrollTop}, max=${maxScrollTop}`);
+	if (e2ePageScrollTop(scrollingElement) < maxScrollTop * 0.75) {
+		throw new Error(`Notebook did not scroll near bottom; scrollTop=${e2ePageScrollTop(scrollingElement)}, max=${maxScrollTop}`);
 	}
 
 	for (const spec of E2E_LAYOUT_SPECS) {
@@ -2578,6 +2584,356 @@ async function e2eLayoutAssertNoLayoutRegression(): Promise<string> {
 	return 'layout regression checks passed';
 }
 
+async function e2eAssertKustoClickCaretFidelityWithHtmlSection(): Promise<string> {
+	_win.__testRemoveAllSections();
+	await e2eLayoutWaitFor(() => document.querySelectorAll(TEST_SECTION_SELECTOR).length === 0, 'all sections to be removed');
+
+	const queryText = Array.from({ length: 18 }, (_value, index) => `print row_${String(index + 1).padStart(2, '0')}`).join('\n');
+	const queryId = e2eLayoutAddSection('addQueryBox', {
+		id: 'query_click_fidelity',
+		initialQuery: queryText,
+		expanded: true,
+	});
+	e2eLayoutAddSection('addHtmlBox', {
+		id: 'html_click_fidelity',
+		name: 'Caret HTML',
+		code: e2eLayoutHtmlPreviewCode(),
+		mode: 'preview',
+		expanded: true,
+	});
+	await e2eLayoutWaitFor(() => !!document.getElementById(queryId) && !!document.getElementById('html_click_fidelity'), 'Kusto and HTML caret fidelity sections');
+	await e2eLayoutDelay(250);
+
+	const querySection = document.getElementById(queryId) as HTMLElement | null;
+	if (!querySection) {
+		throw new Error('Kusto click fidelity section was not created');
+	}
+	querySection.scrollIntoView({ block: 'center' });
+	await e2eLayoutDelay(150);
+
+	const editor = resolveMonacoEditorFromElement(querySection);
+	if (!editor || typeof editor.getDomNode !== 'function' || typeof editor.getScrolledVisiblePosition !== 'function' || typeof editor.getPosition !== 'function') {
+		throw new Error('Kusto Monaco editor does not expose caret-position APIs');
+	}
+	const editorRoot = editor.getDomNode();
+	if (!editorRoot) {
+		throw new Error('Kusto Monaco editor DOM node unavailable');
+	}
+	try { editor.layout?.(); } catch { /* ignore */ }
+	try { editor.setPosition?.({ lineNumber: 1, column: 1 }); } catch { /* ignore */ }
+
+	const targetLine = 5;
+	const targetColumn = 4;
+	const visiblePosition = editor.getScrolledVisiblePosition({ lineNumber: targetLine, column: targetColumn });
+	if (!visiblePosition) {
+		throw new Error(`Target caret position ${targetLine}:${targetColumn} is not visible`);
+	}
+	const editorRect = editorRoot.getBoundingClientRect();
+	const clientX = Math.round(editorRect.left + visiblePosition.left + 2);
+	const clientY = Math.round(editorRect.top + visiblePosition.top + Math.max(2, visiblePosition.height / 2));
+	const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+	if (!target) {
+		throw new Error(`No DOM target at Monaco click point ${clientX},${clientY}`);
+	}
+
+	const mouseInit: MouseEventInit = {
+		bubbles: true,
+		cancelable: true,
+		composed: true,
+		view: window,
+		button: 0,
+		buttons: 1,
+		clientX,
+		clientY,
+		detail: 1,
+	};
+	try { target.dispatchEvent(new PointerEvent('pointerdown', mouseInit)); } catch { /* ignore */ }
+	target.dispatchEvent(new MouseEvent('mousedown', mouseInit));
+	target.dispatchEvent(new MouseEvent('mouseup', { ...mouseInit, buttons: 0 }));
+	target.dispatchEvent(new MouseEvent('click', { ...mouseInit, buttons: 0 }));
+	await e2eLayoutDelay(300);
+
+	const position = editor.getPosition();
+	if (!position) {
+		throw new Error('Kusto editor caret position unavailable after click');
+	}
+	if (position.lineNumber !== targetLine || position.column !== targetColumn) {
+		throw new Error(`Kusto editor caret jumped after mixed HTML click: expected ${targetLine}:${targetColumn}, got ${position.lineNumber}:${position.column}`);
+	}
+	return `Kusto caret stayed on clicked line ${position.lineNumber}:${position.column} with HTML section present`;
+}
+
+function e2ePageScrollElement(): HTMLElement {
+	const scrollElement = getPageScrollElement()
+		|| (document.scrollingElement as HTMLElement | null)
+		|| document.documentElement;
+	if (!scrollElement) {
+		throw new Error('No page scroll element available');
+	}
+	return scrollElement;
+}
+
+function e2ePageScrollTop(scrollElement: HTMLElement): number {
+	return getPageScrollTop(scrollElement);
+}
+
+function e2ePageScrollMaxTop(scrollElement: HTMLElement): number {
+	return getPageScrollMaxTop(scrollElement);
+}
+
+function e2eSetPageScrollTop(scrollElement: HTMLElement, scrollTop: number): void {
+	setPageScrollTop(scrollTop, scrollElement);
+	try { scrollElement.dispatchEvent(new Event('scroll')); } catch { /* ignore */ }
+}
+
+function e2eAssertOverlayScrollContract(scrollElement: HTMLElement, context: string): string {
+	const scrollTop = e2ePageScrollTop(scrollElement);
+	const nativeScrollY = Number(window.scrollY || 0);
+	const nativePageYOffset = Number(window.pageYOffset || 0);
+	const documentTop = Number(document.documentElement.scrollTop || 0);
+	if (scrollTop > 100) {
+		const fakeReadDetected = Math.abs(nativeScrollY - scrollTop) < 2
+			|| Math.abs(nativePageYOffset - scrollTop) < 2
+			|| Math.abs(documentTop - scrollTop) < 2;
+		if (fakeReadDetected) {
+			throw new Error(`${context}: global scroll reads are still spoofed; pageScrollTop=${scrollTop}, window.scrollY=${nativeScrollY}, pageYOffset=${nativePageYOffset}, documentElement.scrollTop=${documentTop}`);
+		}
+	}
+	return `pageScrollTop=${scrollTop}, nativeScrollY=${nativeScrollY}, pageYOffset=${nativePageYOffset}, documentElement.scrollTop=${documentTop}`;
+}
+
+function e2eScrollElementIntoPageView(element: HTMLElement, block: 'start' | 'center'): HTMLElement {
+	const scrollElement = e2ePageScrollElement();
+	const scrollRect = scrollElement === document.documentElement || scrollElement === document.body
+		? { top: 0, height: window.innerHeight }
+		: scrollElement.getBoundingClientRect();
+	const elementRect = element.getBoundingClientRect();
+	const currentTop = e2ePageScrollTop(scrollElement);
+	let nextTop = currentTop + elementRect.top - scrollRect.top;
+	if (block === 'center') {
+		nextTop -= Math.max(0, (scrollRect.height - Math.min(elementRect.height, scrollRect.height)) / 2);
+	}
+	e2eSetPageScrollTop(scrollElement, nextTop);
+	return scrollElement;
+}
+
+function e2eDescribeElement(element: Element | null): string {
+	if (!element) return '(null)';
+	const htmlElement = element as HTMLElement;
+	const id = htmlElement.id ? `#${htmlElement.id}` : '';
+	const classes = String(htmlElement.className || '').trim().replace(/\s+/g, '.');
+	return `${htmlElement.tagName.toLowerCase()}${id}${classes ? '.' + classes : ''}`;
+}
+
+type RestoredNativeClickExpectation = {
+	lineNumber: number;
+	column: number;
+	clientX: number;
+	clientY: number;
+	scrollTop: number;
+	targetDescription: string;
+};
+
+const RESTORED_NATIVE_CLICK_CLIENT_X = 185;
+const RESTORED_NATIVE_CLICK_CLIENT_Y = 560;
+
+async function e2ePrepareRestoredHtmlPreviewNativeClickTarget(): Promise<string> {
+	await e2eLayoutWaitFor(() => !!document.getElementById('html_click_fidelity_restored') && !!document.getElementById('query_click_fidelity_restored'), 'restored HTML and Kusto sections', 15000);
+	const htmlSection = document.getElementById('html_click_fidelity_restored') as HTMLElement | null;
+	const querySection = document.getElementById('query_click_fidelity_restored') as HTMLElement | null;
+	if (!htmlSection || !querySection) {
+		throw new Error('Restored native-click fixture sections are missing');
+	}
+
+	await e2eLayoutWaitFor(() => {
+		const previewWrapper = htmlSection.shadowRoot?.getElementById('preview-wrapper') as HTMLElement | null;
+		const rect = previewWrapper?.getBoundingClientRect();
+		return !!previewWrapper && !!rect && rect.height >= 1200;
+	}, 'restored native-click tall HTML preview wrapper', 15000);
+
+	const scrollElement = e2ePageScrollElement();
+	const maxScrollTop = e2ePageScrollMaxTop(scrollElement);
+	if (maxScrollTop < 600) {
+		throw new Error(`Restored native-click fixture did not create a meaningful page scroll range: maxScrollTop=${maxScrollTop}`);
+	}
+
+	e2eSetPageScrollTop(scrollElement, 0);
+	await e2eLayoutDelay(100);
+	e2eScrollElementIntoPageView(querySection, 'center');
+	await e2eLayoutDelay(250);
+
+	const editor = resolveMonacoEditorFromElement(querySection);
+	if (!editor || typeof editor.getDomNode !== 'function' || typeof editor.getScrolledVisiblePosition !== 'function' || typeof editor.getPosition !== 'function') {
+		throw new Error('Restored native-click Kusto Monaco editor does not expose required APIs');
+	}
+	const editorRoot = editor.getDomNode();
+	if (!editorRoot) {
+		throw new Error('Restored native-click Kusto Monaco editor DOM node unavailable');
+	}
+	try { editor.layout?.(); } catch { /* ignore */ }
+	try { editor.render?.(true); } catch { /* ignore */ }
+
+	const targetLine = 6;
+	const targetColumn = 10;
+	const position = editor.getScrolledVisiblePosition({ lineNumber: targetLine, column: targetColumn });
+	if (!position) {
+		throw new Error(`Restored native-click target ${targetLine}:${targetColumn} is not visible`);
+	}
+	const editorRect = editorRoot.getBoundingClientRect();
+	const currentClientY = Math.round(editorRect.top + position.top + Math.max(2, position.height / 2));
+	const nextScrollTop = e2ePageScrollTop(scrollElement) + currentClientY - RESTORED_NATIVE_CLICK_CLIENT_Y;
+	e2eSetPageScrollTop(scrollElement, nextScrollTop);
+	await e2eLayoutDelay(250);
+	try { editor.layout?.(); } catch { /* ignore */ }
+	try { editor.render?.(true); } catch { /* ignore */ }
+
+	const target = document.elementFromPoint(RESTORED_NATIVE_CLICK_CLIENT_X, RESTORED_NATIVE_CLICK_CLIENT_Y) as HTMLElement | null;
+	const mappedTarget = editor.getTargetAtClientPoint?.(RESTORED_NATIVE_CLICK_CLIENT_X, RESTORED_NATIVE_CLICK_CLIENT_Y);
+	if (!target || !mappedTarget?.position) {
+		throw new Error(`Native-click coordinate ${RESTORED_NATIVE_CLICK_CLIENT_X},${RESTORED_NATIVE_CLICK_CLIENT_Y} did not map to Monaco content; target=${e2eDescribeElement(target)}`);
+	}
+	if (mappedTarget.position.lineNumber !== targetLine) {
+		const rect = editorRoot.getBoundingClientRect();
+		throw new Error(`Native-click coordinate mapped to wrong line before click: expected line ${targetLine}, got ${mappedTarget.position.lineNumber}:${mappedTarget.position.column}; editorRect=${Math.round(rect.left)},${Math.round(rect.top)},${Math.round(rect.width)}x${Math.round(rect.height)}; target=${e2eDescribeElement(target)}`);
+	}
+
+	const expectation: RestoredNativeClickExpectation = {
+		lineNumber: mappedTarget.position.lineNumber,
+		column: mappedTarget.position.column,
+		clientX: RESTORED_NATIVE_CLICK_CLIENT_X,
+		clientY: RESTORED_NATIVE_CLICK_CLIENT_Y,
+		scrollTop: e2ePageScrollTop(scrollElement),
+		targetDescription: e2eDescribeElement(target),
+	};
+	_win.__e2eRestoredNativeClickExpectation = expectation;
+	try { editor.setPosition?.({ lineNumber: 1, column: 1 }); } catch { /* ignore */ }
+	return `prepared restored native click at ${expectation.clientX},${expectation.clientY}; expected=${expectation.lineNumber}:${expectation.column}; scrollTop=${expectation.scrollTop}/${maxScrollTop}; target=${expectation.targetDescription}; ${e2eAssertOverlayScrollContract(scrollElement, 'native-click prepare scroll contract')}`;
+}
+
+async function e2eAssertRestoredHtmlPreviewNativeClickTarget(): Promise<string> {
+	await e2eLayoutDelay(250);
+	const expectation = _win.__e2eRestoredNativeClickExpectation as RestoredNativeClickExpectation | undefined;
+	if (!expectation) {
+		throw new Error('Restored native-click expectation was not prepared');
+	}
+	const querySection = document.getElementById('query_click_fidelity_restored') as HTMLElement | null;
+	const editor = querySection ? resolveMonacoEditorFromElement(querySection) : null;
+	if (!editor || typeof editor.getPosition !== 'function') {
+		throw new Error('Restored native-click Kusto editor unavailable for assertion');
+	}
+	const position = editor.getPosition();
+	if (!position) {
+		throw new Error('Restored native-click Kusto caret position unavailable after native click');
+	}
+	if (position.lineNumber !== expectation.lineNumber || position.column !== expectation.column) {
+		throw new Error(`Native click mapped incorrectly: expected ${expectation.lineNumber}:${expectation.column}, got ${position.lineNumber}:${position.column}; click=${expectation.clientX},${expectation.clientY}; preparedScrollTop=${expectation.scrollTop}; target=${expectation.targetDescription}`);
+	}
+	return `native click kept Kusto caret at ${position.lineNumber}:${position.column}; click=${expectation.clientX},${expectation.clientY}; preparedScrollTop=${expectation.scrollTop}; target=${expectation.targetDescription}`;
+}
+
+async function e2eAssertKustoClickCaretFidelityAfterRestoredHtmlPreviewScroll(): Promise<string> {
+	await e2eLayoutWaitFor(() => !!document.getElementById('html_click_fidelity_restored') && !!document.getElementById('query_click_fidelity_restored'), 'restored HTML and Kusto sections', 15000);
+	const htmlSection = document.getElementById('html_click_fidelity_restored') as HTMLElement | null;
+	const querySection = document.getElementById('query_click_fidelity_restored') as HTMLElement | null;
+	if (!htmlSection || !querySection) {
+		throw new Error('Restored click-fidelity fixture sections are missing');
+	}
+
+	await e2eLayoutWaitFor(() => {
+		const previewWrapper = htmlSection.shadowRoot?.getElementById('preview-wrapper') as HTMLElement | null;
+		const iframe = htmlSection.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+		const rect = previewWrapper?.getBoundingClientRect();
+		return !!previewWrapper && !!iframe && !!rect && rect.height >= 1200;
+	}, 'restored tall HTML preview wrapper', 15000);
+
+	const scrollElement = e2ePageScrollElement();
+	const maxScrollTop = e2ePageScrollMaxTop(scrollElement);
+	if (maxScrollTop < 600) {
+		throw new Error(`Restored fixture did not create a meaningful page scroll range: maxScrollTop=${maxScrollTop}, scrollHeight=${scrollElement.scrollHeight}, clientHeight=${scrollElement.clientHeight}`);
+	}
+
+	e2eSetPageScrollTop(scrollElement, 0);
+	await e2eLayoutDelay(100);
+	e2eScrollElementIntoPageView(htmlSection, 'start');
+	await e2eLayoutDelay(100);
+	e2eSetPageScrollTop(scrollElement, e2ePageScrollTop(scrollElement) + 900);
+	await e2eLayoutDelay(200);
+	e2eScrollElementIntoPageView(querySection, 'center');
+	await e2eLayoutDelay(300);
+	const scrollContract = e2eAssertOverlayScrollContract(scrollElement, 'restored click-fidelity scroll contract');
+
+	const editor = resolveMonacoEditorFromElement(querySection);
+	if (!editor || typeof editor.getDomNode !== 'function' || typeof editor.getScrolledVisiblePosition !== 'function' || typeof editor.getPosition !== 'function') {
+		throw new Error('Restored Kusto Monaco editor does not expose caret-position APIs');
+	}
+	const editorRoot = editor.getDomNode();
+	if (!editorRoot) {
+		throw new Error('Restored Kusto Monaco editor DOM node unavailable');
+	}
+
+	await e2eLayoutWaitFor(() => {
+		const rect = editorRoot.getBoundingClientRect();
+		return editorRoot.isConnected && rect.width > 0 && rect.height > 0 && rect.bottom > 0 && rect.top < window.innerHeight;
+	}, 'restored Kusto editor to become visible and measurable', 10000);
+
+	try { editor.setPosition?.({ lineNumber: 1, column: 1 }); } catch { /* ignore */ }
+	await e2eLayoutAnimationFrame();
+
+	const targetLine = 6;
+	const targetColumn = 10;
+	const visiblePosition = editor.getScrolledVisiblePosition({ lineNumber: targetLine, column: targetColumn });
+	if (!visiblePosition) {
+		throw new Error(`Restored target caret position ${targetLine}:${targetColumn} is not visible`);
+	}
+	const editorRect = editorRoot.getBoundingClientRect();
+	const clientX = Math.round(editorRect.left + visiblePosition.left + 2);
+	const clientY = Math.round(editorRect.top + visiblePosition.top + Math.max(2, visiblePosition.height / 2));
+	const target = document.elementFromPoint(clientX, clientY) as HTMLElement | null;
+	if (!target) {
+		throw new Error(`No DOM target at restored Monaco click point ${clientX},${clientY}`);
+	}
+
+	let expectedPosition = { lineNumber: targetLine, column: targetColumn };
+	try {
+		const mappedTarget = editor.getTargetAtClientPoint?.(clientX, clientY);
+		if (mappedTarget?.position) {
+			expectedPosition = { lineNumber: mappedTarget.position.lineNumber, column: mappedTarget.position.column };
+		}
+	} catch { /* ignore */ }
+	if (expectedPosition.lineNumber !== targetLine) {
+		throw new Error(`Restored click point mapped to unexpected line before dispatch: expected line ${targetLine}, got ${expectedPosition.lineNumber}:${expectedPosition.column}`);
+	}
+
+	const mouseInit: MouseEventInit = {
+		bubbles: true,
+		cancelable: true,
+		composed: true,
+		view: window,
+		button: 0,
+		buttons: 1,
+		clientX,
+		clientY,
+		detail: 1,
+	};
+	try { target.dispatchEvent(new PointerEvent('pointerdown', { ...mouseInit, pointerId: 1, pointerType: 'mouse', isPrimary: true })); } catch { /* ignore */ }
+	target.dispatchEvent(new MouseEvent('mousedown', mouseInit));
+	target.dispatchEvent(new MouseEvent('mouseup', { ...mouseInit, buttons: 0 }));
+	target.dispatchEvent(new MouseEvent('click', { ...mouseInit, buttons: 0 }));
+	await e2eLayoutDelay(350);
+
+	const position = editor.getPosition();
+	if (!position) {
+		throw new Error('Restored Kusto editor caret position unavailable after click');
+	}
+	if (position.lineNumber !== expectedPosition.lineNumber || position.column !== expectedPosition.column) {
+		const scrollTop = e2ePageScrollTop(scrollElement);
+		const queryRect = querySection.getBoundingClientRect();
+		const targetRect = target.getBoundingClientRect();
+		throw new Error(`Restored HTML preview click mapped incorrectly: expected ${expectedPosition.lineNumber}:${expectedPosition.column}, got ${position.lineNumber}:${position.column}; scrollTop=${scrollTop}/${maxScrollTop}; editorRect=${Math.round(editorRect.left)},${Math.round(editorRect.top)},${Math.round(editorRect.width)}x${Math.round(editorRect.height)}; queryRect=${Math.round(queryRect.left)},${Math.round(queryRect.top)},${Math.round(queryRect.width)}x${Math.round(queryRect.height)}; click=${clientX},${clientY}; target=${e2eDescribeElement(target)}; targetRect=${Math.round(targetRect.left)},${Math.round(targetRect.top)},${Math.round(targetRect.width)}x${Math.round(targetRect.height)}`);
+	}
+	return `Restored HTML preview click kept Kusto caret at ${position.lineNumber}:${position.column}; pageScrollTop=${e2ePageScrollTop(scrollElement)}/${maxScrollTop}; ${scrollContract}; target=${e2eDescribeElement(target)}`;
+}
+
 _win.__e2e = {
 	workbench: {
 		clearSections: () => _win.__testRemoveAllSections(),
@@ -2640,6 +2996,10 @@ _win.__e2e = {
 	},
 	kusto: {
 		...e2eQueryApi('kusto'),
+		assertClickCaretFidelityWithHtmlSection: () => e2eAssertKustoClickCaretFidelityWithHtmlSection(),
+		assertClickCaretFidelityAfterRestoredHtmlPreviewScroll: () => e2eAssertKustoClickCaretFidelityAfterRestoredHtmlPreviewScroll(),
+		prepareRestoredHtmlPreviewNativeClickTarget: () => e2ePrepareRestoredHtmlPreviewNativeClickTarget(),
+		assertRestoredHtmlPreviewNativeClickTarget: () => e2eAssertRestoredHtmlPreviewNativeClickTarget(),
 		selectSampleDatabase: () => _win.__testSelectKwDropdownItem(E2E_SECTION.kusto.databaseDropdown, 'sample,storm', true),
 		prepareCompletionTargets: () => e2ePrepareKustoCompletionTargets(),
 		waitForCompletionTargets: (timeoutMs: number = 25000) => e2eWaitForKustoCompletionTargets(timeoutMs),

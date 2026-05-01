@@ -1635,7 +1635,7 @@
 		}
 
 		.kusto-context-menu {
-			position: absolute;
+			position: fixed;
 			z-index: 100000;
 			background: var(--vscode-menu-background);
 			color: var(--vscode-menu-foreground);

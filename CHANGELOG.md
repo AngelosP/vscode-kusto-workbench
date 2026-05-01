@@ -3,6 +3,12 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.6.1] - 2026-05-01
+
+* Bugs
+    * Clicking inside a Kusto section's editor would sometimes be 'off' by a few lines
+    * Deploying Power BI reports would get the Kusto cluster URL wrong (truncated) and make it impossible to configure data refresh.
+
 ## [4.6.0] - 2026-05-01
 
 * Connections in Connection Manager are now listed alphabetically (d'oh).
