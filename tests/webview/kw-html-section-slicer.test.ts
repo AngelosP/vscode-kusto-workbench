@@ -10,9 +10,12 @@ type HeightSection = KwHtmlSection & {
 	_lastPreviewFitHeight: number;
 	_lastPreviewScrollHeight: number;
 	_lastPreviewViewportHeight: number;
+	_lastPreviewViewportBoundHeight: number;
 	_savedPreviewHeightPx?: number;
 	_captureCurrentHeight(): void;
+	_updatePreview(): void;
 	_applyPreviewFitHeight(contentH: number): void;
+	_resetAutoPreviewHeightForFreshFit(): void;
 	_measurePreviewHeight(): number | undefined;
 	_getPowerBiMeasurementWidth(): number;
 	_requestFreshPreviewHeight(): Promise<number | undefined>;
@@ -245,9 +248,13 @@ describe('HTML preview height reporting', () => {
 	it('keeps robust body and rendered-element measurements in the injected iframe script', () => {
 		const script = (KwHtmlSection as unknown as { _heightReportScript: string })._heightReportScript;
 
+		expect(script).toContain('kw-preview-base-reset');
+		expect(script).toContain(':where(html,body){margin:0;}');
 		expect(script).toContain('body.scrollHeight');
 		expect(script).toContain('rawScrollHeight()');
-		expect(script).toContain('metrics:{viewportHeight:viewportHeight(),scrollHeight:rawScrollHeight()}');
+		expect(script).toContain('metrics:{viewportHeight:viewportHeight(),scrollHeight:rawScrollHeight(),viewportBoundHeight:viewportBoundHeight()}');
+		expect(script).toContain('declaresViewportBlockSize(el)');
+		expect(script).toContain('styleUsesViewportBlockSize');
 		expect(script).toContain('primary>0?primary');
 		expect(script).toContain('scrollOverflowHeight()');
 		expect(script).toContain('maxElementBottom()');
@@ -293,6 +300,19 @@ describe('HTML preview height reporting', () => {
 		expect(section.serialize().previewHeightPx).toBeUndefined();
 	});
 
+	it('restores and reserializes explicitly user-set preview heights', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		section.previewHeightPx = 1028;
+		section.previewHeightUserSet = true;
+
+		section.firstUpdated(new Map() as never);
+
+		expect(section._savedPreviewHeightPx).toBe(1028);
+		expect(section._userResizedPreview).toBe(true);
+		expect(section.serialize().previewHeightPx).toBe(1028);
+		expect(section.serialize().previewHeightUserSet).toBe(true);
+	});
+
 	it('stores iframe scroll metrics from preview height reports', () => {
 		const section = new KwHtmlSection() as unknown as HeightSection;
 		const contentWindow = {};
@@ -332,6 +352,158 @@ describe('HTML preview height reporting', () => {
 		expect(wrapper.style.height).toBe('648px');
 		expect(wrapper.style.maxHeight).toBe('648px');
 		expect(section._lastPreviewFitHeight).toBe(648);
+	});
+
+	it('does not grow auto-fit preview height when the report is bound to the current iframe viewport', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		const wrapper = {
+			clientHeight: 640,
+			style: { height: '', maxHeight: '' },
+			getBoundingClientRect: () => ({ height: 640 }),
+		};
+
+		Object.defineProperty(section, 'shadowRoot', {
+			value: {
+				getElementById: (id: string) => id === 'preview-wrapper' ? wrapper : null,
+			},
+			configurable: true,
+		});
+
+		section._userResizedPreview = false;
+		section._lastPreviewViewportHeight = 640;
+		section._lastPreviewScrollHeight = 640;
+		section._applyPreviewFitHeight(640);
+
+		expect(wrapper.style.height).toBe('');
+		expect(wrapper.style.maxHeight).toBe('');
+		expect(section._lastPreviewFitHeight).toBe(0);
+	});
+
+	it('does not grow auto-fit preview height for viewport-unit layouts with padding', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		const wrapper = {
+			clientHeight: 640,
+			style: { height: '', maxHeight: '' },
+			getBoundingClientRect: () => ({ height: 640 }),
+		};
+
+		Object.defineProperty(section, 'shadowRoot', {
+			value: {
+				getElementById: (id: string) => id === 'preview-wrapper' ? wrapper : null,
+			},
+			configurable: true,
+		});
+
+		section._userResizedPreview = false;
+		section._lastPreviewViewportHeight = 640;
+		section._lastPreviewScrollHeight = 688;
+		section._lastPreviewViewportBoundHeight = 688;
+		section._applyPreviewFitHeight(688);
+
+		expect(wrapper.style.height).toBe('');
+		expect(wrapper.style.maxHeight).toBe('');
+		expect(section._lastPreviewFitHeight).toBe(0);
+	});
+
+	it('does not grow auto-fit preview height for offset viewport-unit layouts', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		const wrapper = {
+			clientHeight: 640,
+			style: { height: '', maxHeight: '' },
+			getBoundingClientRect: () => ({ height: 640 }),
+		};
+
+		Object.defineProperty(section, 'shadowRoot', {
+			value: {
+				getElementById: (id: string) => id === 'preview-wrapper' ? wrapper : null,
+			},
+			configurable: true,
+		});
+
+		section._userResizedPreview = false;
+		section._lastPreviewViewportHeight = 640;
+		section._lastPreviewScrollHeight = 736;
+		section._lastPreviewViewportBoundHeight = 736;
+		section._applyPreviewFitHeight(736);
+
+		expect(wrapper.style.height).toBe('');
+		expect(wrapper.style.maxHeight).toBe('');
+		expect(section._lastPreviewFitHeight).toBe(0);
+	});
+
+	it('still grows auto-fit preview height for real content slightly taller than the iframe viewport', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		const wrapper = {
+			clientHeight: 640,
+			style: { height: '', maxHeight: '' },
+			getBoundingClientRect: () => ({ height: 640 }),
+		};
+
+		Object.defineProperty(section, 'shadowRoot', {
+			value: {
+				getElementById: (id: string) => id === 'preview-wrapper' ? wrapper : null,
+			},
+			configurable: true,
+		});
+
+		section._userResizedPreview = false;
+		section._lastPreviewViewportHeight = 640;
+		section._lastPreviewScrollHeight = 656;
+		section._applyPreviewFitHeight(656);
+
+		expect(wrapper.style.height).toBe('664px');
+		expect(wrapper.style.maxHeight).toBe('664px');
+		expect(section._lastPreviewFitHeight).toBe(664);
+	});
+
+	it('resets stale auto-fit wrapper height before reloading preview srcdoc', async () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		section.boxId = 'html_reload_reset_test';
+		section.initialCode = '<main>Dashboard content</main>';
+		const wrapper = { style: { height: '1800px', maxHeight: '1800px' } };
+		const iframe = { srcdoc: '' };
+
+		Object.defineProperty(section, 'updateComplete', { value: Promise.resolve(), configurable: true });
+		Object.defineProperty(section, 'shadowRoot', {
+			value: {
+				getElementById: (id: string) => {
+					if (id === 'preview-wrapper') return wrapper;
+					if (id === 'preview-iframe') return iframe;
+					return null;
+				},
+			},
+			configurable: true,
+		});
+
+		section._userResizedPreview = false;
+		section._lastPreviewFitHeight = 1800;
+		section._updatePreview();
+		await Promise.resolve();
+
+		expect(wrapper.style.height).toBe('');
+		expect(wrapper.style.maxHeight).toBe('');
+		expect(section._lastPreviewFitHeight).toBe(0);
+		expect(iframe.srcdoc).toContain('<main>Dashboard content</main>');
+	});
+
+	it('resets non-user-resized preview wrappers before a fresh fit request', () => {
+		const section = new KwHtmlSection() as unknown as HeightSection;
+		const wrapper = { style: { height: '1800px', maxHeight: '1800px' } };
+
+		Object.defineProperty(section, 'shadowRoot', {
+			value: {
+				getElementById: (id: string) => id === 'preview-wrapper' ? wrapper : null,
+			},
+			configurable: true,
+		});
+
+		section._userResizedPreview = false;
+		section._lastPreviewFitHeight = 1800;
+		section._resetAutoPreviewHeightForFreshFit();
+
+		expect(wrapper.style.height).toBe('');
+		expect(wrapper.style.maxHeight).toBe('');
+		expect(section._lastPreviewFitHeight).toBe(0);
 	});
 
 	it('does not treat auto preview height snapshots as user-resized heights', () => {

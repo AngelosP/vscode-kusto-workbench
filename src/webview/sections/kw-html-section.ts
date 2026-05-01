@@ -51,6 +51,7 @@ export interface HtmlSectionData {
 	expanded: boolean;
 	editorHeightPx?: number;
 	previewHeightPx?: number;
+	previewHeightUserSet?: boolean;
 	dataSourceIds?: string[];
 	pbiPublishInfo?: PbiPublishInfo;
 }
@@ -127,6 +128,8 @@ export interface HtmlDashboardExportContext {
 @customElement('kw-html-section')
 export class KwHtmlSection extends LitElement implements SectionElement {
 	private static readonly _POWER_BI_HTML_VISUAL_WIDTH = 1450;
+	private static readonly _PREVIEW_FIT_BUFFER_PX = 8;
+	private static readonly _PREVIEW_VIEWPORT_EPSILON_PX = 2;
 
 	// ── Public properties ─────────────────────────────────────────────────────
 
@@ -145,6 +148,10 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	/** Preview wrapper height in pixels (from persisted state). */
 	@property({ type: Number, attribute: 'preview-height-px' })
 	previewHeightPx: number | undefined = undefined;
+
+	/** Whether previewHeightPx came from an explicit user resize. */
+	@property({ type: Boolean, attribute: 'preview-height-user-set' })
+	previewHeightUserSet = false;
 
 	// ── Internal state ────────────────────────────────────────────────────────
 
@@ -175,6 +182,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _lastPreviewScrollHeight = 0;
 	/** Last viewport height reported by the preview iframe for diagnostics and scrollbar checks. */
 	private _lastPreviewViewportHeight = 0;
+	/** Last viewport-derived layout height reported by the preview iframe. */
+	private _lastPreviewViewportBoundHeight = 0;
 	/** Pending resolver for an explicit iframe height request before export/publish. */
 	private _pendingPreviewHeightResolve: ((height: number | undefined) => void) | null = null;
 	/** Pending rAF id for window resize debounce. */
@@ -234,10 +243,11 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		}
 
 		// Older files may contain auto-fit preview heights persisted as plain
-		// previewHeightPx values. Keep the value as a fallback for export, but let
-		// the iframe's fresh measurement fit the preview on open.
+		// previewHeightPx values. Only explicitly user-set values restore the
+		// wrapper; legacy values stay available as an export fallback.
 		if (this.previewHeightPx !== undefined) {
 			this._savedPreviewHeightPx = this.previewHeightPx;
+			this._userResizedPreview = this.previewHeightUserSet;
 		}
 	}
 
@@ -388,6 +398,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		this._lastPreviewFitHeight = 0;
 		this._lastPreviewScrollHeight = 0;
 		this._lastPreviewViewportHeight = 0;
+		this._lastPreviewViewportBoundHeight = 0;
 	}
 
 	private _requestFreshPreviewHeight(): Promise<number | undefined> {
@@ -767,6 +778,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			const code = this._getCodeText();
 			if (code.trim()) {
 				this._invalidatePreviewContentHeight();
+				this._resetAutoPreviewHeightForFreshFit();
 				const dataBridge = this._buildDataBridgeScript();
 				iframe.srcdoc = dataBridge + code + KwHtmlSection._heightReportScript;
 			}
@@ -947,6 +959,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	function _chartColor(colors,idx){var p=colors&&colors.length?colors:_chartDefaults.colors;return p[idx%p.length];}
 	function _chartSwitchColor(colors,idx){if(idx>=_chartDefaults.colorCaseCount)return _chartColor(colors,0);return _chartColor(colors,idx);}
 	function _aggNeedsColumn(agg){return String(agg||'').toUpperCase()!=='COUNT';}
+	function _validTooltipAgg(agg){if(typeof agg!=='string')return false;var a=agg.trim().toUpperCase();return a==='COUNT'||a==='SUM'||a==='AVG'||a==='AVERAGE'||a==='MIN'||a==='MAX'||a==='DISTINCTCOUNT'||a==='DCOUNT';}
 	function _safeColor(c){return typeof c==='string'&&c.trim()&&!/["'<>&]/.test(c);}
 	function _safeCssColor(c){if(typeof c!=='string')return false;var s=c.trim();return !!s&&!/[;:{}"'<>&\\\\]/.test(s)&&s.indexOf('/*')<0&&(/^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{4}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(s)||/^[a-zA-Z]+$/.test(s)||/^rgba?\(\s*\d{1,3}\s*,\s*\d{1,3}\s*,\s*\d{1,3}\s*(?:,\s*(?:0|1|0?\.\d+))?\s*\)$/.test(s)||/^hsla?\(\s*-?\d+(?:\.\d+)?(?:deg)?\s*,\s*(?:100|\d{1,2}(?:\.\d+)?)%\s*,\s*(?:100|\d{1,2}(?:\.\d+)?)%\s*(?:,\s*(?:0|1|0?\.\d+))?\s*\)$/.test(s));}
 	function _validFiniteNumber(v){return typeof v==='number'&&isFinite(v);}
@@ -956,11 +969,16 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	function _validThresholdBands(t){if(!t||typeof t!=='object'||!Array.isArray(t.bands)||t.bands.length===0)return false;if(t.scaleMax!==undefined&&(!_validFiniteNumber(t.scaleMax)||t.scaleMax<=0))return false;var expected=0;for(var i=0;i<t.bands.length;i++){if(!_validThresholdBand(t.bands[i])||t.bands[i].min!==expected)return false;expected=t.bands[i].max;}return t.scaleMax===undefined||t.scaleMax>=expected;}
 	function _validColorRule(r){var ops={'>':1,'>=':1,'<':1,'<=':1,'=':1,'==':1,'!=':1,'<>':1};return r&&typeof r==='object'&&ops[String(r.operator)]&&_validFiniteNumber(r.value)&&_safeColor(r.color)&&(r.label===undefined||typeof r.label==='string');}
 	function _validChartSeries(s){return s&&typeof s==='object'&&typeof s.agg==='string'&&s.agg.trim()&&(!_aggNeedsColumn(s.agg)||(typeof s.column==='string'&&s.column.trim()))&&(s.column===undefined||typeof s.column==='string')&&(s.label===undefined||typeof s.label==='string');}
-	function _validPreAggregate(p){if(!p||typeof p!=='object'||!p.compute||typeof p.compute!=='object')return false;var g=typeof p.groupBy==='string'?p.groupBy.trim():Array.isArray(p.groupBy)&&p.groupBy.length>0&&p.groupBy.every(function(x){return typeof x==='string'&&x.trim();});return !!g&&typeof p.compute.name==='string'&&p.compute.name.trim()&&typeof p.compute.agg==='string'&&p.compute.agg.trim()&&(!_aggNeedsColumn(p.compute.agg)||(typeof p.compute.column==='string'&&p.compute.column.trim()))&&(p.compute.column===undefined||typeof p.compute.column==='string');}
-	function _validChartOptions(d){if(d.top!==undefined&&(typeof d.top!=='number'||!isFinite(d.top)||Math.floor(d.top)!==d.top||d.top<=0))return false;if(d.colors!==undefined&&(!Array.isArray(d.colors)||!d.colors.every(_safeColor)))return false;if(d.preAggregate!==undefined&&!_validPreAggregate(d.preAggregate))return false;return true;}
-	function _validBarDisplay(d){if(typeof d.groupBy!=='string'||!d.groupBy.trim())return false;if(d.scale!==undefined&&d.scale!=='relative'&&d.scale!=='normalized100')return false;if(d.variant!==undefined&&d.variant!=='standard'&&d.variant!=='distribution')return false;if(d.showValueLabels!==undefined&&typeof d.showValueLabels!=='boolean')return false;if(d.showCategoryLabels!==undefined&&typeof d.showCategoryLabels!=='boolean')return false;var hasValue=d.value!==undefined,hasSegments=d.segments!==undefined,hasThreshold=d.thresholdBands!==undefined,hasRules=d.colorRules!==undefined,modeCount=(hasSegments?1:0)+(hasThreshold?1:0)+(hasRules?1:0);if(modeCount>1)return false;if(d.scale==='normalized100'&&!hasSegments)return false;if(hasSegments)return !hasValue&&Array.isArray(d.segments)&&d.segments.length>0&&d.segments.every(_validBarSegment);if(hasThreshold)return hasValue&&_validChartValue(d.value)&&_validThresholdBands(d.thresholdBands);if(hasRules)return hasValue&&_validChartValue(d.value)&&Array.isArray(d.colorRules)&&d.colorRules.length>0&&d.colorRules.every(_validColorRule);return hasValue&&_validChartValue(d.value);}
-	function _validChartDisplay(d){if(!d||typeof d!=='object'||!_validChartOptions(d))return false;if(d.type==='bar')return _validBarDisplay(d);if(d.type==='pie')return typeof d.groupBy==='string'&&d.groupBy.trim()&&_validChartValue(d.value);if(d.type==='line')return typeof d.xAxis==='string'&&d.xAxis.trim()&&Array.isArray(d.series)&&d.series.length>0&&d.series.every(_validChartSeries);return false;}
-	function _reservedTableAlias(n){var s=String(n||'').toLowerCase();return s.indexOf('__kw_cellbar_')===0||s.indexOf('__kw_table_idx_')===0||s.indexOf('__kw_repeat_idx_')===0;}
+	function _safeTooltipString(v){return typeof v==='string'&&!/<\\/script/i.test(v);}
+	function _validTooltipField(f){var hasAgg=f&&typeof f==='object'&&f.agg!==undefined,agg=hasAgg?String(f.agg||'').trim().toUpperCase():'';return f&&typeof f==='object'&&(f.label===undefined||_safeTooltipString(f.label))&&(f.format===undefined||_safeTooltipString(f.format))&&(f.column===undefined||(typeof f.column==='string'&&f.column.trim()&&!/<\\/script/i.test(f.column)))&&(!hasAgg||_validTooltipAgg(f.agg))&&(hasAgg||(typeof f.column==='string'&&f.column.trim()))&&(!(hasAgg&&agg==='COUNT')||f.column===undefined)&&(!(hasAgg&&agg!=='COUNT')||(typeof f.column==='string'&&f.column.trim()));}
+	function _validTooltip(t){return t&&typeof t==='object'&&Array.isArray(t.fields)&&t.fields.length>0&&t.fields.every(_validTooltipField);}
+	function _reservedTooltipAlias(n){return String(n||'').toLowerCase().indexOf('__kw_tooltip_')===0;}
+	function _validChartDimensionName(n){return typeof n==='string'&&n.trim()&&!_reservedTooltipAlias(n);}
+	function _validPreAggregate(p){if(!p||typeof p!=='object'||!p.compute||typeof p.compute!=='object')return false;var g=typeof p.groupBy==='string'?_validChartDimensionName(p.groupBy):Array.isArray(p.groupBy)&&p.groupBy.length>0&&p.groupBy.every(_validChartDimensionName);return !!g&&_validChartDimensionName(p.compute.name)&&typeof p.compute.agg==='string'&&p.compute.agg.trim()&&(!_aggNeedsColumn(p.compute.agg)||(typeof p.compute.column==='string'&&p.compute.column.trim()))&&(p.compute.column===undefined||typeof p.compute.column==='string');}
+	function _validChartOptions(d){if(d.top!==undefined&&(typeof d.top!=='number'||!isFinite(d.top)||Math.floor(d.top)!==d.top||d.top<=0))return false;if(d.colors!==undefined&&(!Array.isArray(d.colors)||!d.colors.every(_safeColor)))return false;if(d.preAggregate!==undefined&&!_validPreAggregate(d.preAggregate))return false;if(d.tooltip!==undefined&&!_validTooltip(d.tooltip))return false;return true;}
+	function _validBarDisplay(d){if(!_validChartDimensionName(d.groupBy))return false;if(d.scale!==undefined&&d.scale!=='relative'&&d.scale!=='normalized100')return false;if(d.variant!==undefined&&d.variant!=='standard'&&d.variant!=='distribution')return false;if(d.showValueLabels!==undefined&&typeof d.showValueLabels!=='boolean')return false;if(d.showCategoryLabels!==undefined&&typeof d.showCategoryLabels!=='boolean')return false;var hasValue=d.value!==undefined,hasSegments=d.segments!==undefined,hasThreshold=d.thresholdBands!==undefined,hasRules=d.colorRules!==undefined,modeCount=(hasSegments?1:0)+(hasThreshold?1:0)+(hasRules?1:0);if(modeCount>1)return false;if(d.scale==='normalized100'&&!hasSegments)return false;if(hasSegments)return !hasValue&&Array.isArray(d.segments)&&d.segments.length>0&&d.segments.every(_validBarSegment);if(hasThreshold)return hasValue&&_validChartValue(d.value)&&_validThresholdBands(d.thresholdBands);if(hasRules)return hasValue&&_validChartValue(d.value)&&Array.isArray(d.colorRules)&&d.colorRules.length>0&&d.colorRules.every(_validColorRule);return hasValue&&_validChartValue(d.value);}
+	function _validChartDisplay(d){if(!d||typeof d!=='object'||!_validChartOptions(d))return false;if(d.type==='bar')return _validBarDisplay(d);if(d.type==='pie')return _validChartDimensionName(d.groupBy)&&_validChartValue(d.value);if(d.type==='line')return _validChartDimensionName(d.xAxis)&&Array.isArray(d.series)&&d.series.length>0&&d.series.every(_validChartSeries);return false;}
+	function _reservedTableAlias(n){var s=String(n||'').toLowerCase();return s.indexOf('__kw_cellbar_')===0||s.indexOf('__kw_table_idx_')===0||s.indexOf('__kw_repeat_idx_')===0||s.indexOf('__kw_tooltip_')===0;}
 	function _validCellBar(b){return b&&typeof b==='object'&&Array.isArray(b.segments)&&b.segments.length>0&&b.segments.every(_validBarSegment)&&(b.scale===undefined||b.scale==='normalized100'||b.scale==='relative')&&(b.width===undefined||(_validFiniteNumber(b.width)&&b.width>0))&&(b.height===undefined||(_validFiniteNumber(b.height)&&b.height>0))&&(b.radius===undefined||(_validFiniteNumber(b.radius)&&b.radius>=0))&&(b.colors===undefined||(Array.isArray(b.colors)&&b.colors.every(_safeColor)));}
 	function _isCellBarColumn(c){return !!(c&&typeof c==='object'&&c.cellBar!==undefined);}
 	function _isCellFormattedColumn(c){return !!(c&&typeof c==='object'&&c.cellFormat!==undefined);}
@@ -990,21 +1008,36 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		if(d.orderBy!==undefined){if(!d.orderBy||typeof d.orderBy!=='object'||typeof d.orderBy.column!=='string'||!d.orderBy.column.trim())return false;if(d.orderBy.direction!==undefined&&d.orderBy.direction!=='asc'&&d.orderBy.direction!=='desc')return false;var ok=false;for(var og=0;og<d.groupBy.length;og++){if(d.groupBy[og]===d.orderBy.column)ok=true;}for(var oi=0;oi<d.columns.length;oi++){if(!_isCellBarColumn(d.columns[oi])&&d.columns[oi].name===d.orderBy.column)ok=true;}if(!ok)return false;}
 		if(d.top!==undefined&&(typeof d.top!=='number'||!isFinite(d.top)||Math.floor(d.top)!==d.top||d.top<=0||d.orderBy===undefined))return false;
 		if(d.preAggregate!==undefined&&!_validPreAggregate(d.preAggregate))return false;
+		if(d.tooltip!==undefined&&!_validTooltip(d.tooltip))return false;
 		return true;
 	}
 	function _repeatColumns(d){return Array.isArray(d.repeatColumns)?d.repeatColumns:d.repeatBy.map(function(n){return{name:n};});}
 	function _validRepeatColumns(cols,repeatBy){if(cols!==undefined&&(!Array.isArray(cols)||cols.length===0))return false;if(cols===undefined)return true;var grouped={};for(var g=0;g<repeatBy.length;g++)grouped[repeatBy[g]]=1;for(var i=0;i<cols.length;i++){var c=cols[i];if(!c||typeof c!=='object'||typeof c.name!=='string'||!c.name.trim())return false;if(_reservedTableAlias(c.name)||_isCellBarColumn(c)||c.cellFormat!==undefined)return false;if(c.header!==undefined&&typeof c.header!=='string')return false;if(c.agg!==undefined&&(typeof c.agg!=='string'||!c.agg.trim()))return false;if(c.sourceColumn!==undefined&&typeof c.sourceColumn!=='string')return false;if(c.format!==undefined&&typeof c.format!=='string')return false;if(c.agg===undefined&&!grouped[c.name])return false;if(_aggNeedsColumn(c.agg)){var src=c.sourceColumn||c.name;if(typeof src!=='string'||!src.trim())return false;}}return true;}
-	function _validRepeatedTableDisplay(d){if(!d||typeof d!=='object'||d.type!=='repeatedTable')return false;if(!Array.isArray(d.repeatBy)||d.repeatBy.length===0||!d.repeatBy.every(function(x){return typeof x==='string'&&x.trim()&&!_reservedTableAlias(x);}))return false;if(!_validRepeatColumns(d.repeatColumns,d.repeatBy))return false;var rcols=_repeatColumns(d);if(d.repeatOrderBy!==undefined){if(!d.repeatOrderBy||typeof d.repeatOrderBy!=='object'||typeof d.repeatOrderBy.column!=='string'||!d.repeatOrderBy.column.trim())return false;if(d.repeatOrderBy.direction!==undefined&&d.repeatOrderBy.direction!=='asc'&&d.repeatOrderBy.direction!=='desc')return false;var rok=false;for(var r=0;r<d.repeatBy.length;r++){if(d.repeatBy[r]===d.repeatOrderBy.column)rok=true;}for(var c=0;c<rcols.length;c++){if(rcols[c].name===d.repeatOrderBy.column)rok=true;}if(!rok)return false;}if(d.repeatTop!==undefined&&(typeof d.repeatTop!=='number'||!isFinite(d.repeatTop)||Math.floor(d.repeatTop)!==d.repeatTop||d.repeatTop<=0||d.repeatOrderBy===undefined))return false;if(!d.table||typeof d.table!=='object')return false;return _validTableDisplay({type:'table',groupBy:d.table.groupBy,columns:d.table.columns,orderBy:d.table.orderBy,top:d.table.top,preAggregate:d.preAggregate});}
-	function _chartDisplay(id,spec){var b=_p&&_p.bindings?_p.bindings[String(id||'')]:null;if(b&&b.display)return _validChartDisplay(b.display)?b.display:null;if(spec&&typeof spec==='object'){try{console.warn('KustoWorkbench.renderChart ignores chartSpec unless the same chart is declared in kw-provenance.');}catch(e){}}return null;}
+	function _validRepeatedTableDisplay(d){if(!d||typeof d!=='object'||d.type!=='repeatedTable'||d.tooltip!==undefined)return false;if(!Array.isArray(d.repeatBy)||d.repeatBy.length===0||!d.repeatBy.every(function(x){return typeof x==='string'&&x.trim()&&!_reservedTableAlias(x);}))return false;if(!_validRepeatColumns(d.repeatColumns,d.repeatBy))return false;var rcols=_repeatColumns(d);if(d.repeatOrderBy!==undefined){if(!d.repeatOrderBy||typeof d.repeatOrderBy!=='object'||typeof d.repeatOrderBy.column!=='string'||!d.repeatOrderBy.column.trim())return false;if(d.repeatOrderBy.direction!==undefined&&d.repeatOrderBy.direction!=='asc'&&d.repeatOrderBy.direction!=='desc')return false;var rok=false;for(var r=0;r<d.repeatBy.length;r++){if(d.repeatBy[r]===d.repeatOrderBy.column)rok=true;}for(var c=0;c<rcols.length;c++){if(rcols[c].name===d.repeatOrderBy.column)rok=true;}if(!rok)return false;}if(d.repeatTop!==undefined&&(typeof d.repeatTop!=='number'||!isFinite(d.repeatTop)||Math.floor(d.repeatTop)!==d.repeatTop||d.repeatTop<=0||d.repeatOrderBy===undefined))return false;if(!d.table||typeof d.table!=='object')return false;return _validTableDisplay({type:'table',groupBy:d.table.groupBy,columns:d.table.columns,orderBy:d.table.orderBy,top:d.table.top,preAggregate:d.preAggregate,tooltip:d.table.tooltip});}
 	function _tableColumnValueType(display,f,name){for(var g=0;g<display.groupBy.length;g++){if(display.groupBy[g]===name)return _columnType(f,name);}for(var i=0;i<display.columns.length;i++){var c=display.columns[i];if(!_isCellBarColumn(c)&&c.name===name)return c.agg?'real':_columnType(f,c.name);}return '';}
 	function _validCellFormatValueTypes(display,f){for(var i=0;i<display.columns.length;i++){var c=display.columns[i];if(_isCellFormattedColumn(c)&&!_isNumericType(_tableColumnValueType(display,f,c.cellFormat.valueColumn||c.name)))return false;}return true;}
-	function _tableDisplay(id,spec){var b=_p&&_p.bindings?_p.bindings[String(id||'')]:null;if(b&&b.display)return _validTableDisplay(b.display)&&_validCellFormatValueTypes(b.display,_tableFact(b.display))?b.display:null;if(spec&&typeof spec==='object'){try{console.warn('KustoWorkbench.renderTable ignores tableSpec unless the same table is declared in kw-provenance.');}catch(e){}}return null;}
-	function _repeatedTableDisplay(id,spec){var b=_p&&_p.bindings?_p.bindings[String(id||'')]:null;if(b&&b.display){if(!_validRepeatedTableDisplay(b.display))return null;var inner={type:'table',groupBy:b.display.table.groupBy,columns:b.display.table.columns};return _validCellFormatValueTypes(inner,_tableFact(b.display))?b.display:null;}if(spec&&typeof spec==='object'){try{console.warn('KustoWorkbench.renderRepeatedTable ignores repeatedTableSpec unless the same repeated table is declared in kw-provenance.');}catch(e){}}return null;}
+	function _hasFactColumn(f,name){return typeof name==='string'&&name.trim()&&_colIdx(f&&f.columns?f.columns:[],name)>=0;}
+	function _tableRowColumns(display){var cols={};for(var g=0;g<display.groupBy.length;g++)cols[display.groupBy[g]]=1;for(var i=0;i<display.columns.length;i++){var c=display.columns[i];if(!_isCellBarColumn(c))cols[c.name]=1;}return cols;}
+	function _validTooltipColumns(tooltip,f,rowColumns){if(!tooltip)return true;for(var i=0;i<tooltip.fields.length;i++){var field=tooltip.fields[i],agg=String(field.agg||'').trim().toUpperCase();if(field.agg){if(agg!=='COUNT'&&!_hasFactColumn(f,field.column))return false;}else if(!rowColumns[field.column])return false;}return true;}
+	function _validTableTooltipColumns(display,f){return _validTooltipColumns(display.tooltip,f,_tableRowColumns(display));}
+	function _validChartTooltipColumns(display,f){var rowColumns={};if(display.type==='line')rowColumns[display.xAxis]=1;else rowColumns[display.groupBy]=1;return _validTooltipColumns(display.tooltip,f,rowColumns);}
+	function _chartDisplay(id,spec){var b=_p&&_p.bindings?_p.bindings[String(id||'')]:null;if(b&&b.display){if(!_validChartDisplay(b.display))return null;var f=_chartFact(b.display);return _validChartTooltipColumns(b.display,f)?b.display:null;}if(spec&&typeof spec==='object'){try{console.warn('KustoWorkbench.renderChart ignores chartSpec unless the same chart is declared in kw-provenance.');}catch(e){}}return null;}
+	function _tableDisplay(id,spec){var b=_p&&_p.bindings?_p.bindings[String(id||'')]:null;if(b&&b.display){if(!_validTableDisplay(b.display))return null;var f=_tableFact(b.display);return _validCellFormatValueTypes(b.display,f)&&_validTableTooltipColumns(b.display,f)?b.display:null;}if(spec&&typeof spec==='object'){try{console.warn('KustoWorkbench.renderTable ignores tableSpec unless the same table is declared in kw-provenance.');}catch(e){}}return null;}
+	function _repeatedTableDisplay(id,spec){var b=_p&&_p.bindings?_p.bindings[String(id||'')]:null;if(b&&b.display){if(!_validRepeatedTableDisplay(b.display))return null;var f=_tableFact(b.display),inner={type:'table',groupBy:b.display.table.groupBy,columns:b.display.table.columns,tooltip:b.display.table.tooltip};return _validCellFormatValueTypes(inner,f)&&_validTableTooltipColumns(inner,f)?b.display:null;}if(spec&&typeof spec==='object'){try{console.warn('KustoWorkbench.renderRepeatedTable ignores repeatedTableSpec unless the same repeated table is declared in kw-provenance.');}catch(e){}}return null;}
 	function _tableFact(display){return display&&display.preAggregate?_preFact(display.preAggregate):_d.fact;}
 	function _tableSegmentAlias(ci,si){return '__kw_cellbar_'+ci+'_'+si;}
+	function _tooltipAlias(fi){return '__kw_tooltip_'+fi;}
+	function _addTooltipAggs(builder,tooltip){if(!tooltip)return builder;for(var fi=0;fi<tooltip.fields.length;fi++){var field=tooltip.fields[fi];if(field.agg)builder=_addAgg(builder,_tooltipAlias(fi),String(field.agg||'').trim().toUpperCase(),field.column);}return builder;}
+	function _tooltipLabel(field){return field.label||field.column||String(field.agg||'').trim().toUpperCase()||'Value';}
+	function _tooltipValue(row,field,fieldIndex){var value=field.agg?row[_tooltipAlias(fieldIndex)]:row[field.column];return _tableFormat(value,field.format||(field.agg?'#,##0':undefined));}
+	function _tooltipText(tooltip,row,baseLines){if(!tooltip)return '';var lines=baseLines?baseLines.slice():[];for(var fi=0;fi<tooltip.fields.length;fi++){var field=tooltip.fields[fi];lines.push(_tooltipLabel(field)+': '+_tooltipValue(row,field,fi));}return lines.join('\\n');}
+	function _tooltipMetaText(text){return String(text).replace(/\\r\\n/g,'\\n').replace(/\\r/g,'\\n');}
+	function _tooltipEscaped(text){return _esc(_tooltipMetaText(text)).replace(/\\n/g,'&#10;');}
+	function _tooltipAttr(text){if(!text)return '';var escaped=_tooltipEscaped(text);return ' title="'+escaped+'" aria-label="'+escaped+'"';}
+	function _svgWrapTooltip(text,body){if(!text)return body;return '<g'+_tooltipAttr(text)+'><title>'+_tooltipEscaped(text)+'</title>'+body+'</g>';}
 	function _tableValue(row,alias){return Math.max(0,_num(row[alias]));}
 	function _tableCellBarTotal(row,aliases){var t=0;for(var i=0;i<aliases.length;i++)t+=_tableValue(row,aliases[i]);return t;}
-	function _tableRowsFromFact(f,display){var b=_agg(f).groupBy(display.groupBy);for(var i=0;i<display.columns.length;i++){var col=display.columns[i];if(_isCellBarColumn(col)){for(var s=0;s<col.cellBar.segments.length;s++){var seg=col.cellBar.segments[s];b=_addAgg(b,_tableSegmentAlias(i,s),seg.agg,seg.column);}}else if(col.agg){b=_addAgg(b,col.name,col.agg,col.sourceColumn||col.name);}}
+	function _tableRowsFromFact(f,display){var b=_agg(f).groupBy(display.groupBy);for(var i=0;i<display.columns.length;i++){var col=display.columns[i];if(_isCellBarColumn(col)){for(var s=0;s<col.cellBar.segments.length;s++){var seg=col.cellBar.segments[s];b=_addAgg(b,_tableSegmentAlias(i,s),seg.agg,seg.column);}}else if(col.agg){b=_addAgg(b,col.name,col.agg,col.sourceColumn||col.name);}}b=_addTooltipAggs(b,display.tooltip);
 		var rs=b.rows(),order=display.orderBy;if(order){var typ=_columnType(f,order.column);for(var c=0;c<display.columns.length;c++){if(display.columns[c].name===order.column&&display.columns[c].agg)typ='real';}var dir=order.direction==='asc'?1:-1;rs.sort(function(a,b){var primary=dir*_cmpVal(a[order.column],b[order.column],typ);if(primary!==0)return primary;for(var g=0;g<display.groupBy.length;g++){var gc=display.groupBy[g],tie=_cmpVal(a[gc],b[gc],_columnType(f,gc));if(tie!==0)return tie;}return 0;});if(display.top>0)rs=rs.slice(0,display.top);}var maxes={};for(var c=0;c<display.columns.length;c++){var col=display.columns[c];if(_isCellBarColumn(col)&&col.cellBar.scale==='relative'){var aliases=[];for(var s=0;s<col.cellBar.segments.length;s++)aliases.push(_tableSegmentAlias(c,s));var m=0;for(var r=0;r<rs.length;r++){var t=_tableCellBarTotal(rs[r],aliases);if(t>m)m=t;}maxes[c]=m;}}return{fact:f,rows:rs,relativeMaxes:maxes};}
 	function _tableRows(display){return _tableRowsFromFact(_tableFact(display),display);}
 	function _tableFormat(v,fmt){return fmt?_formatChartNumber(v,fmt):_fmtVal(v);}
@@ -1016,31 +1049,33 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	function _cellFormatStyle(fmt,row,col){var mode=(fmt&&fmt.mode)||'badge',v=_num(row[(fmt&&fmt.valueColumn)||col.name]),rules=(fmt&&fmt.rules)||[];for(var i=0;i<rules.length;i++){if(_ruleMatches(v,rules[i]))return _cellStyleCss(rules[i],mode);}return _cellStyleCss(fmt&&fmt.defaultStyle,mode);}
 	function _metricColumn(col){return !!(col&&(col.agg||_isCellBarColumn(col)));}
 	function _renderTableCellHtml(col,row,columnIndex,mat,compact){var compactStyle=compact&&_metricColumn(col)?_metricCellStyle:'',cellAttr=compactStyle?' style="'+compactStyle+'"':'';if(_isCellBarColumn(col))return '<td'+cellAttr+'>'+_renderCellBarSvg(col.cellBar,row,columnIndex,mat.relativeMaxes[columnIndex]||0)+'</td>';var text=_esc(_tableFormat(row[col.name],col.format));if(_isCellFormattedColumn(col)){var mode=col.cellFormat.mode||'badge',style=_esc(_cellFormatStyle(col.cellFormat,row,col));if(mode==='cell')return '<td style="'+compactStyle+style+'">'+text+'</td>';return '<td'+cellAttr+'><span class="kw-cell-badge" style="'+style+'">'+text+'</span></td>';}return '<td'+cellAttr+'>'+text+'</td>';}
-	function _renderTableRowsHtml(display,mat,compact){var rows='';for(var r=0;r<mat.rows.length;r++){var row=mat.rows[r];rows+='<tr>';for(var c=0;c<display.columns.length;c++){rows+=_renderTableCellHtml(display.columns[c],row,c,mat,compact);}rows+='</tr>';}return rows;}
+	function _renderTableRowsHtml(display,mat,compact){var rows='';for(var r=0;r<mat.rows.length;r++){var row=mat.rows[r];rows+='<tr'+_tooltipAttr(_tooltipText(display.tooltip,row))+'>';for(var c=0;c<display.columns.length;c++){rows+=_renderTableCellHtml(display.columns[c],row,c,mat,compact);}rows+='</tr>';}return rows;}
 	function _renderTableHeadHtml(display,compact){var head='<thead><tr>';for(var c=0;c<display.columns.length;c++){var col=display.columns[c],cellAttr=compact&&_metricColumn(col)?' style="'+_metricCellStyle+'"':'';head+='<th'+cellAttr+'>'+_esc(col.header||col.name)+'</th>';}return head+'</tr></thead>';}
 	function _renderTable(id,spec){var key=String(id||'');if(!key)return;var display=_tableDisplay(key,spec);if(!display||display.type!=='table')return;_tableRegistry[key]=display;var el=_bindEl(key);if(!el){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){_renderRegisteredTables();},{once:true});return;}var mat=_tableRows(display),rows=_renderTableRowsHtml(display,mat,false);if(String(el.tagName||'').toLowerCase()==='tbody'){el.innerHTML=rows;return;}el.innerHTML=_renderTableHeadHtml(display,false)+'<tbody>'+rows+'</tbody>';}
 	function _renderRegisteredTables(){for(var key in _tableRegistry){if(Object.prototype.hasOwnProperty.call(_tableRegistry,key))_renderTable(key,_tableRegistry[key]);}}
 	function _sameKeyValue(a,b,type){return _cmpVal(a,b,type)===0;}
 	function _filterFactForRepeat(f,repeatBy,row){var idxs=repeatBy.map(function(k){return _colIdx(f.columns,k);});var types=repeatBy.map(function(k){return _columnType(f,k);});var out=[];for(var r=0;r<f.rows.length;r++){var sourceRow=f.rows[r],ok=true;for(var i=0;i<repeatBy.length;i++){if(!_sameKeyValue(_cellVal(sourceRow[idxs[i]]),row[repeatBy[i]],types[i])){ok=false;break;}}if(ok)out.push(sourceRow);}return{columns:f.columns,rows:out,totalRows:out.length,capped:f.capped};}
 	function _renderRepeatedHeader(display,row){var cols=_repeatColumns(display),html='<div class="kw-repeated-table-header" style="'+_repeatHeaderStyle+'">';for(var i=0;i<cols.length;i++){var col=cols[i],primary=i===0,fieldStyle=primary?_repeatPrimaryFieldStyle:_repeatMetricFieldStyle,fieldClass=primary?'kw-repeat-field kw-repeat-primary':'kw-repeat-field kw-repeat-metric',label=col.header||col.name;html+='<span class="'+fieldClass+'" style="'+fieldStyle+'"><span class="kw-repeat-label" style="'+_repeatLabelStyle+'">'+_esc(label)+'</span><span class="kw-repeat-value" style="'+_repeatValueStyle+'">'+_esc(_tableFormat(row[col.name],col.format))+'</span></span>';}return html+'</div>';}
-	function _renderRepeatedTable(id,spec){var key=String(id||'');if(!key)return;var display=_repeatedTableDisplay(key,spec);if(!display||display.type!=='repeatedTable')return;_repeatedTableRegistry[key]=display;var el=_bindEl(key);if(!el){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){_renderRegisteredRepeatedTables();},{once:true});return;}var tag=String(el.tagName||'').toLowerCase();if(tag==='table'||tag==='thead'||tag==='tbody'||tag==='tfoot'||tag==='tr'||tag==='td'||tag==='th')return;var fact=_tableFact(display),repeatDisplay={type:'table',groupBy:display.repeatBy,columns:_repeatColumns(display),orderBy:display.repeatOrderBy||{column:display.repeatBy[0],direction:'asc'},top:display.repeatTop},outer=_tableRowsFromFact(fact,repeatDisplay).rows,html='';for(var r=0;r<outer.length;r++){var outerRow=outer[r],scoped=_filterFactForRepeat(fact,display.repeatBy,outerRow),innerOrder=display.table.orderBy||(display.table.groupBy.length?{column:display.table.groupBy[0],direction:'asc'}:undefined),innerDisplay={type:'table',groupBy:display.table.groupBy,columns:display.table.columns,orderBy:innerOrder,top:display.table.top},mat=_tableRowsFromFact(scoped,innerDisplay);html+='<section class="kw-repeated-table-group" style="'+_repeatGroupStyle+'">'+_renderRepeatedHeader(display,outerRow)+'<table class="kw-repeated-table" style="'+_repeatTableStyle+'">'+_renderTableHeadHtml(innerDisplay,true)+'<tbody>'+_renderTableRowsHtml(innerDisplay,mat,true)+'</tbody></table></section>';}el.innerHTML=html;}
+	function _renderRepeatedTable(id,spec){var key=String(id||'');if(!key)return;var display=_repeatedTableDisplay(key,spec);if(!display||display.type!=='repeatedTable')return;_repeatedTableRegistry[key]=display;var el=_bindEl(key);if(!el){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){_renderRegisteredRepeatedTables();},{once:true});return;}var tag=String(el.tagName||'').toLowerCase();if(tag==='table'||tag==='thead'||tag==='tbody'||tag==='tfoot'||tag==='tr'||tag==='td'||tag==='th')return;var fact=_tableFact(display),repeatDisplay={type:'table',groupBy:display.repeatBy,columns:_repeatColumns(display),orderBy:display.repeatOrderBy||{column:display.repeatBy[0],direction:'asc'},top:display.repeatTop},outer=_tableRowsFromFact(fact,repeatDisplay).rows,html='';for(var r=0;r<outer.length;r++){var outerRow=outer[r],scoped=_filterFactForRepeat(fact,display.repeatBy,outerRow),innerOrder=display.table.orderBy||(display.table.groupBy.length?{column:display.table.groupBy[0],direction:'asc'}:undefined),innerDisplay={type:'table',groupBy:display.table.groupBy,columns:display.table.columns,orderBy:innerOrder,top:display.table.top,tooltip:display.table.tooltip},mat=_tableRowsFromFact(scoped,innerDisplay);html+='<section class="kw-repeated-table-group" style="'+_repeatGroupStyle+'">'+_renderRepeatedHeader(display,outerRow)+'<table class="kw-repeated-table" style="'+_repeatTableStyle+'">'+_renderTableHeadHtml(innerDisplay,true)+'<tbody>'+_renderTableRowsHtml(innerDisplay,mat,true)+'</tbody></table></section>';}el.innerHTML=html;}
 	function _renderRegisteredRepeatedTables(){for(var key in _repeatedTableRegistry){if(Object.prototype.hasOwnProperty.call(_repeatedTableRegistry,key))_renderRepeatedTable(key,_repeatedTableRegistry[key]);}}
-	function _barPieRows(display){var f=_chartFact(display);var val=display.value||{agg:'COUNT'};var labelType=_columnType(f,display.groupBy);var b=_agg(f).groupBy([display.groupBy]);b=_addAgg(b,'Val',val.agg,val.column);var rs=b.rows().map(function(r){var label=r[display.groupBy];return{Label:label==null?'':_axisLabel(label,display.groupBy,f),RawLabel:label,Val:_num(r.Val)};});rs.sort(function(a,b){var c=_cmpVal(a.Val,b.Val);if(c!==0)return -c;return _cmpVal(a.RawLabel,b.RawLabel,labelType);});if(display.top>0)rs=rs.slice(0,display.top);return rs;}
+	function _copyTooltipValues(target,source,tooltip){if(!tooltip)return target;for(var fi=0;fi<tooltip.fields.length;fi++){if(tooltip.fields[fi].agg)target[_tooltipAlias(fi)]=source[_tooltipAlias(fi)];}return target;}
+	function _barPieRows(display){var f=_chartFact(display);var val=display.value||{agg:'COUNT'};var labelType=_columnType(f,display.groupBy);var b=_agg(f).groupBy([display.groupBy]);b=_addAgg(b,'Val',val.agg,val.column);b=_addTooltipAggs(b,display.tooltip);var rs=b.rows().map(function(r){var label=r[display.groupBy],item={Label:label==null?'':_axisLabel(label,display.groupBy,f),RawLabel:label,Val:_num(r.Val)};item[display.groupBy]=label;return _copyTooltipValues(item,r,display.tooltip);});rs.sort(function(a,b){var c=_cmpVal(a.Val,b.Val);if(c!==0)return -c;return _cmpVal(a.RawLabel,b.RawLabel,labelType);});if(display.top>0)rs=rs.slice(0,display.top);return rs;}
 	function _sortBarRows(rs,display,labelType){rs.sort(function(a,b){var c=_cmpVal(a.SortVal,b.SortVal);if(c!==0)return -c;return _cmpVal(a.RawLabel,b.RawLabel,labelType);});if(display.top>0)rs=rs.slice(0,display.top);return rs;}
 	function _barValueFormat(display){if(display.value&&display.value.format)return display.value.format;if(display.segments&&display.segments.length&&display.segments[0].format)return display.segments[0].format;return '#,##0';}
-	function _barSegmentRows(display){var f=_chartFact(display),specs=display.segments||[],labelType=_columnType(f,display.groupBy),b=_agg(f).groupBy([display.groupBy]);for(var i=0;i<specs.length;i++)b=_addAgg(b,'S'+i,specs[i].agg,specs[i].column);var rs=b.rows().map(function(r){var label=r[display.groupBy],total=0,segs=[];for(var i=0;i<specs.length;i++){var sp=specs[i],v=Math.max(0,_num(r['S'+i]));total+=v;segs.push({Label:sp.label||sp.column||('Segment '+(i+1)),Val:v,Color:sp.color||_chartColor(display.colors,i)});}return{Label:label==null?'':_axisLabel(label,display.groupBy,f),RawLabel:label,Val:total,SortVal:total,Segments:segs};});return _sortBarRows(rs,display,labelType);}
-	function _thresholdRows(display){var base=_barPieRows(display),bands=display.thresholdBands&&display.thresholdBands.bands?display.thresholdBands.bands:[],domain=(display.thresholdBands&&display.thresholdBands.scaleMax)||((bands[bands.length-1]||{}).max||0);return base.map(function(r){var pv=Math.max(0,r.Val),segs=[];for(var i=0;i<bands.length;i++){var band=bands[i],v=Math.max(0,Math.min(pv,band.max)-band.min);segs.push({Label:band.label||'',Val:v,Color:band.color||_chartColor(display.colors,i)});}return{Label:r.Label,RawLabel:r.RawLabel,Val:r.Val,SortVal:r.Val,Domain:domain,Segments:segs};});}
+	function _barSegmentRows(display){var f=_chartFact(display),specs=display.segments||[],labelType=_columnType(f,display.groupBy),b=_agg(f).groupBy([display.groupBy]);for(var i=0;i<specs.length;i++)b=_addAgg(b,'S'+i,specs[i].agg,specs[i].column);b=_addTooltipAggs(b,display.tooltip);var rs=b.rows().map(function(r){var label=r[display.groupBy],total=0,segs=[];for(var i=0;i<specs.length;i++){var sp=specs[i],v=Math.max(0,_num(r['S'+i]));total+=v;segs.push({Label:sp.label||sp.column||('Segment '+(i+1)),Val:v,Color:sp.color||_chartColor(display.colors,i)});}var item={Label:label==null?'':_axisLabel(label,display.groupBy,f),RawLabel:label,Val:total,SortVal:total,Segments:segs};item[display.groupBy]=label;return _copyTooltipValues(item,r,display.tooltip);});return _sortBarRows(rs,display,labelType);}
+	function _thresholdRows(display){var base=_barPieRows(display),bands=display.thresholdBands&&display.thresholdBands.bands?display.thresholdBands.bands:[],domain=(display.thresholdBands&&display.thresholdBands.scaleMax)||((bands[bands.length-1]||{}).max||0);return base.map(function(r){var pv=Math.max(0,r.Val),segs=[];for(var i=0;i<bands.length;i++){var band=bands[i],v=Math.max(0,Math.min(pv,band.max)-band.min);segs.push({Label:band.label||'',Val:v,Color:band.color||_chartColor(display.colors,i)});}var item={Label:r.Label,RawLabel:r.RawLabel,Val:r.Val,SortVal:r.Val,Domain:domain,Segments:segs};item[display.groupBy]=r.RawLabel;return _copyTooltipValues(item,r,display.tooltip);});}
 	function _ruleMatches(v,r){if(r.operator==='>')return v>r.value;if(r.operator==='>=')return v>=r.value;if(r.operator==='<')return v<r.value;if(r.operator==='<=')return v<=r.value;if(r.operator==='!='||r.operator==='<>')return v!==r.value;return v===r.value;}
 	function _ruleColor(display,val,idx){var rules=display.colorRules||[];for(var i=0;i<rules.length;i++){if(_ruleMatches(val,rules[i]))return rules[i].color;}return _chartSwitchColor(display.colors,idx);}
-	function _barRows(display){if(display.segments)return _barSegmentRows(display);if(display.thresholdBands)return _thresholdRows(display);var base=_barPieRows(display);return base.map(function(r,i){return{Label:r.Label,RawLabel:r.RawLabel,Val:r.Val,SortVal:r.Val,Segments:[{Label:'',Val:Math.max(0,r.Val),Color:display.colorRules?_ruleColor(display,r.Val,i):_chartSwitchColor(display.colors,i)}]};});}
-	function _lineRows(display){var f=_chartFact(display);var series=Array.isArray(display.series)?display.series:[];var xType=_columnType(f,display.xAxis);var b=_agg(f).groupBy([display.xAxis]);for(var i=0;i<series.length;i++){b=_addAgg(b,'S'+i,series[i].agg,series[i].column);}var rs=b.rows();rs.sort(function(a,b){return _cmpVal(a[display.xAxis],b[display.xAxis],xType);});return{fact:f,series:series,rows:rs};}
+	function _barRows(display){if(display.segments)return _barSegmentRows(display);if(display.thresholdBands)return _thresholdRows(display);var base=_barPieRows(display);return base.map(function(r,i){var item={Label:r.Label,RawLabel:r.RawLabel,Val:r.Val,SortVal:r.Val,Segments:[{Label:'',Val:Math.max(0,r.Val),Color:display.colorRules?_ruleColor(display,r.Val,i):_chartSwitchColor(display.colors,i)}]};item[display.groupBy]=r.RawLabel;return _copyTooltipValues(item,r,display.tooltip);});}
+	function _lineRows(display){var f=_chartFact(display);var series=Array.isArray(display.series)?display.series:[];var xType=_columnType(f,display.xAxis);var b=_agg(f).groupBy([display.xAxis]);for(var i=0;i<series.length;i++){b=_addAgg(b,'S'+i,series[i].agg,series[i].column);}b=_addTooltipAggs(b,display.tooltip);var rs=b.rows();rs.sort(function(a,b){return _cmpVal(a[display.xAxis],b[display.xAxis],xType);});return{fact:f,series:series,rows:rs};}
 	function _svgRoot(w,h,content){return "<svg class='chart-svg' viewBox='0 0 "+w+' '+h+"' xmlns='http://www.w3.org/2000/svg' style='width:100%;height:"+h+"px;display:block' role='img'>"+content+'</svg>';}
 	function _hasAdvancedBarOptions(display){return !!(display.segments||display.thresholdBands||display.colorRules||display.scale||display.variant||display.showValueLabels!==undefined||display.showCategoryLabels!==undefined);}
-	function _renderSimpleBarSvg(display){var g=_chartDefaults.bar,rows=_barPieRows(display),max=0,body='';for(var i=0;i<rows.length;i++){var pv=Math.max(0,rows[i].Val);if(pv>max)max=pv;}var h=Math.max(g.minH,g.padT+g.padB+rows.length*(g.rowH+g.gap));for(var i=0;i<rows.length;i++){var r=rows[i],y=g.padT+i*(g.rowH+g.gap),barVal=Math.max(0,r.Val),w=max===0?0:barVal/max*g.barMaxW,col=_chartSwitchColor(display.colors,i);body+="<text x='"+(g.labelW-6)+"' y='"+(y+16)+"' text-anchor='end' font-size='11' fill='#605E5C'>"+_esc(r.Label)+"</text>";body+="<rect x='"+g.labelW+"' y='"+(y+2)+"' width='"+Math.round(w)+"' height='"+(g.rowH-4)+"' rx='2' fill='"+col+"'/>";body+="<text x='"+Math.round(g.labelW+w+g.valGap)+"' y='"+(y+16)+"' font-size='11' fill='#605E5C'>"+_esc(_formatChartNumber(r.Val,(display.value&&display.value.format)||'#,##0'))+"</text>";}return _svgRoot(g.totalW,h,body);}
+	function _chartTooltip(display,row,valueText){return _tooltipText(display.tooltip,row,[display.groupBy+': '+row.Label,'Value: '+valueText]);}
+	function _renderSimpleBarSvg(display){var g=_chartDefaults.bar,rows=_barPieRows(display),max=0,body='';for(var i=0;i<rows.length;i++){var pv=Math.max(0,rows[i].Val);if(pv>max)max=pv;}var h=Math.max(g.minH,g.padT+g.padB+rows.length*(g.rowH+g.gap));for(var i=0;i<rows.length;i++){var r=rows[i],y=g.padT+i*(g.rowH+g.gap),barVal=Math.max(0,r.Val),w=max===0?0:barVal/max*g.barMaxW,col=_chartSwitchColor(display.colors,i),valueText=_formatChartNumber(r.Val,(display.value&&display.value.format)||'#,##0'),rowBody='';rowBody+="<text x='"+(g.labelW-6)+"' y='"+(y+16)+"' text-anchor='end' font-size='11' fill='#605E5C'>"+_esc(r.Label)+"</text>";rowBody+="<rect x='"+g.labelW+"' y='"+(y+2)+"' width='"+Math.round(w)+"' height='"+(g.rowH-4)+"' rx='2' fill='"+col+"'/>";rowBody+="<text x='"+Math.round(g.labelW+w+g.valGap)+"' y='"+(y+16)+"' font-size='11' fill='#605E5C'>"+_esc(valueText)+"</text>";body+=_svgWrapTooltip(_chartTooltip(display,r,valueText),rowBody);}return _svgRoot(g.totalW,h,body);}
 	function _barGeom(display){var dist=display.variant==='distribution',g=dist?_chartDefaults.barDistribution:_chartDefaults.bar,showCat=display.showCategoryLabels!==false,showVal=display.showValueLabels===undefined?!dist:display.showValueLabels,labelW=showCat?g.labelW:0,valueW=showVal?96:0,barMaxW=dist?Math.max(1,g.totalW-labelW-valueW-(showVal?g.valGap:0)):g.barMaxW,barH=dist?g.barH:g.rowH-4,barOffset=dist?Math.floor((g.rowH-barH)/2):2,textDy=dist?g.labelFontSize+3:16;return{g:g,showCat:showCat,showVal:showVal,labelW:labelW,barMaxW:barMaxW,barH:barH,barOffset:barOffset,textDy:textDy};}
-	function _renderBarSvg(display){if(!_hasAdvancedBarOptions(display))return _renderSimpleBarSvg(display);var geom=_barGeom(display),g=geom.g,rows=_barRows(display),max=0,body='',fmt=_barValueFormat(display);for(var i=0;i<rows.length;i++){var pv=Math.max(0,rows[i].Val);if(pv>max)max=pv;}var h=Math.max(g.minH,g.padT+g.padB+rows.length*(g.rowH+g.gap));for(var i=0;i<rows.length;i++){var r=rows[i],y=g.padT+i*(g.rowH+g.gap),x=geom.labelW,denom=display.thresholdBands?r.Domain:(display.scale==='normalized100'?Math.max(0,r.Val):max),fillVal=display.thresholdBands?Math.min(Math.max(0,r.Val),denom):Math.max(0,r.Val);if(geom.showCat)body+="<text x='"+(geom.labelW-6)+"' y='"+(y+geom.textDy)+"' text-anchor='end' font-size='"+g.labelFontSize+"' fill='"+g.labelFill+"'>"+_esc(r.Label)+"</text>";for(var s=0;s<r.Segments.length;s++){var seg=r.Segments[s],segVal=Math.max(0,seg.Val),w=denom===0?0:segVal/denom*geom.barMaxW;body+="<rect x='"+Math.round(x)+"' y='"+(y+geom.barOffset)+"' width='"+Math.round(w)+"' height='"+geom.barH+"' rx='"+g.barRadius+"' fill='"+seg.Color+"'/>";x+=w;}if(geom.showVal)body+="<text x='"+Math.round(geom.labelW+(denom===0?0:fillVal/denom*geom.barMaxW)+g.valGap)+"' y='"+(y+geom.textDy)+"' font-size='"+g.labelFontSize+"' fill='"+g.labelFill+"'>"+_esc(_formatChartNumber(r.Val,fmt))+"</text>";}return _svgRoot(g.totalW,h,body);}
-	function _renderPieSvg(display){var g=_chartDefaults.pie,rows=_barPieRows(display),total=0,body='',legend='';for(var i=0;i<rows.length;i++)total+=rows[i].Val;var strokeW=g.outerR-g.innerR,effR=(g.outerR+g.innerR)/2,circ=2*Math.PI*effR,prev=0,h=Math.max(g.minSvgH,g.legendY+g.legendPadB+rows.length*g.legendRowH);for(var i=0;i<rows.length;i++){var r=rows[i],col=_chartSwitchColor(display.colors,i),seg=total===0?0:r.Val/total*circ,off=circ/4-(total===0?0:prev/total*circ),y=g.legendY+i*g.legendRowH;body+="<circle cx='"+g.cx+"' cy='"+g.cy+"' r='"+effR+"' fill='none' stroke='"+col+"' stroke-width='"+strokeW+"' stroke-dasharray='"+seg.toFixed(2)+' '+(circ-seg).toFixed(2)+"' stroke-dashoffset='"+off.toFixed(2)+"'/>";legend+="<rect x='"+g.legendX+"' y='"+(y-10)+"' width='10' height='10' rx='2' fill='"+col+"'/>";legend+="<text x='"+(g.legendX+16)+"' y='"+y+"' font-size='11' fill='#605E5C'>"+_esc(r.Label)+"</text>";legend+="<text x='"+g.legendValueX+"' y='"+y+"' text-anchor='end' font-size='11' fill='#605E5C'>"+_esc(_formatChartNumber(r.Val,(display.value&&display.value.format)||'#,##0'))+' ('+_formatChartNumber(total===0?0:r.Val/total,'0.0%')+")</text>";prev+=r.Val;}var center="<text x='"+g.cx+"' y='"+(g.cy-4)+"' text-anchor='middle' font-size='11' fill='#605E5C'>Total</text>"+"<text x='"+g.cx+"' y='"+(g.cy+18)+"' text-anchor='middle' font-size='20' font-weight='600' fill='#252423'>"+_esc(_formatChartNumber(total,(display.value&&display.value.format)||'#,##0'))+"</text>";return _svgRoot(g.svgW,h,body+center+legend);}
-	function _renderLineSvg(display){var g=_chartDefaults.line,mat=_lineRows(display),rows=mat.rows,series=mat.series,plotW=g.W-g.padL-g.padR,plotH=g.H-g.padT-g.padB,plotBottom=g.padT+plotH,xLabelY=plotBottom+g.xLabelGap,legendY=xLabelY+g.legendTopGap,legendColumns=Math.max(1,Math.floor(plotW/g.legendColumnWidth)),legendRows=Math.max(1,Math.ceil(series.length/legendColumns)),svgH=Math.max(g.H,legendY+legendRows*g.legendRowH+g.legendBottomPad),min,max;for(var r=0;r<rows.length;r++){for(var s=0;s<series.length;s++){var v=_num(rows[r]['S'+s]);if(min===undefined||v<min)min=v;if(max===undefined||v>max)max=v;}}if(min===undefined){min=0;max=0;}var range=max-min,body='';for(var grid=0;grid<g.gridCount;grid++){var y=g.padT+grid*plotH/(g.gridCount-1),yv=max-(grid*range/(g.gridCount-1));body+="<line x1='"+g.padL+"' y1='"+y+"' x2='"+(g.W-g.padR)+"' y2='"+y+"' stroke='#E6E6E6' stroke-width='1'/>";body+="<text x='"+(g.padL-8)+"' y='"+(y+4)+"' text-anchor='end' font-size='11' fill='#605E5C'>"+_esc(_formatChartNumber(yv,'#,##0'))+"</text>";}body+="<line x1='"+g.padL+"' y1='"+g.padT+"' x2='"+g.padL+"' y2='"+plotBottom+"' stroke='#C8C6C4' stroke-width='1'/><line x1='"+g.padL+"' y1='"+plotBottom+"' x2='"+(g.W-g.padR)+"' y2='"+plotBottom+"' stroke='#C8C6C4' stroke-width='1'/>";for(var s=0;s<series.length;s++){var pts=[],singlePoint='';for(var r=0;r<rows.length;r++){var x=rows.length<=1?g.padL+plotW/2:g.padL+plotW*r/(rows.length-1),y=g.padT+plotH-(range===0?plotH/2:(_num(rows[r]['S'+s])-min)/range*plotH);pts.push(x.toFixed(1)+','+y.toFixed(1));if(rows.length===1)singlePoint="<circle cx='"+x.toFixed(1)+"' cy='"+y.toFixed(1)+"' r='3.5' fill='"+_chartColor(display.colors,s)+"'/>";}body+="<polyline points='"+pts.join(' ')+"' fill='none' stroke='"+_chartColor(display.colors,s)+"' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/>"+singlePoint;}for(var s=0;s<series.length;s++){var col=s%legendColumns,row=Math.floor(s/legendColumns),lx=g.padL+col*g.legendColumnWidth,ly=legendY+row*g.legendRowH,label=series[s].label||series[s].column||('Series '+(s+1));body+="<line x1='"+lx+"' y1='"+(ly-4)+"' x2='"+(lx+g.legendLineWidth)+"' y2='"+(ly-4)+"' stroke='"+_chartColor(display.colors,s)+"' stroke-width='3' stroke-linecap='round'/>";body+="<text x='"+(lx+g.legendGap)+"' y='"+ly+"' font-size='11' fill='#605E5C'>"+_esc(label)+"</text>";}if(rows.length>0){body+="<text x='"+g.padL+"' y='"+xLabelY+"' font-size='11' fill='#605E5C'>"+_esc(_axisLabel(rows[0][display.xAxis],display.xAxis,mat.fact))+"</text>";body+="<text x='"+(g.W-g.padR)+"' y='"+xLabelY+"' text-anchor='end' font-size='11' fill='#605E5C'>"+_esc(_axisLabel(rows[rows.length-1][display.xAxis],display.xAxis,mat.fact))+"</text>";}return _svgRoot(g.W,svgH,body);}
+	function _renderBarSvg(display){if(!_hasAdvancedBarOptions(display))return _renderSimpleBarSvg(display);var geom=_barGeom(display),g=geom.g,rows=_barRows(display),max=0,body='',fmt=_barValueFormat(display);for(var i=0;i<rows.length;i++){var pv=Math.max(0,rows[i].Val);if(pv>max)max=pv;}var h=Math.max(g.minH,g.padT+g.padB+rows.length*(g.rowH+g.gap));for(var i=0;i<rows.length;i++){var r=rows[i],y=g.padT+i*(g.rowH+g.gap),x=geom.labelW,denom=display.thresholdBands?r.Domain:(display.scale==='normalized100'?Math.max(0,r.Val):max),fillVal=display.thresholdBands?Math.min(Math.max(0,r.Val),denom):Math.max(0,r.Val),valueText=_formatChartNumber(r.Val,fmt),rowBody='';if(geom.showCat)rowBody+="<text x='"+(geom.labelW-6)+"' y='"+(y+geom.textDy)+"' text-anchor='end' font-size='"+g.labelFontSize+"' fill='"+g.labelFill+"'>"+_esc(r.Label)+"</text>";for(var s=0;s<r.Segments.length;s++){var seg=r.Segments[s],segVal=Math.max(0,seg.Val),w=denom===0?0:segVal/denom*geom.barMaxW;rowBody+="<rect x='"+Math.round(x)+"' y='"+(y+geom.barOffset)+"' width='"+Math.round(w)+"' height='"+geom.barH+"' rx='"+g.barRadius+"' fill='"+seg.Color+"'/>";x+=w;}if(geom.showVal)rowBody+="<text x='"+Math.round(geom.labelW+(denom===0?0:fillVal/denom*geom.barMaxW)+g.valGap)+"' y='"+(y+geom.textDy)+"' font-size='"+g.labelFontSize+"' fill='"+g.labelFill+"'>"+_esc(valueText)+"</text>";body+=_svgWrapTooltip(_chartTooltip(display,r,valueText),rowBody);}return _svgRoot(g.totalW,h,body);}
+	function _renderPieSvg(display){var g=_chartDefaults.pie,rows=_barPieRows(display),total=0,body='',legend='';for(var i=0;i<rows.length;i++)total+=rows[i].Val;var strokeW=g.outerR-g.innerR,effR=(g.outerR+g.innerR)/2,circ=2*Math.PI*effR,prev=0,h=Math.max(g.minSvgH,g.legendY+g.legendPadB+rows.length*g.legendRowH);for(var i=0;i<rows.length;i++){var r=rows[i],col=_chartSwitchColor(display.colors,i),seg=total===0?0:r.Val/total*circ,off=circ/4-(total===0?0:prev/total*circ),y=g.legendY+i*g.legendRowH,valueText=_formatChartNumber(r.Val,(display.value&&display.value.format)||'#,##0'),tip=_chartTooltip(display,r,valueText),slice="<circle cx='"+g.cx+"' cy='"+g.cy+"' r='"+effR+"' fill='none' stroke='"+col+"' stroke-width='"+strokeW+"' stroke-dasharray='"+seg.toFixed(2)+' '+(circ-seg).toFixed(2)+"' stroke-dashoffset='"+off.toFixed(2)+"'/>";body+=_svgWrapTooltip(tip,slice);var legendRow="<rect x='"+g.legendX+"' y='"+(y-10)+"' width='10' height='10' rx='2' fill='"+col+"'/>"+"<text x='"+(g.legendX+16)+"' y='"+y+"' font-size='11' fill='#605E5C'>"+_esc(r.Label)+"</text>"+"<text x='"+g.legendValueX+"' y='"+y+"' text-anchor='end' font-size='11' fill='#605E5C'>"+_esc(valueText)+' ('+_formatChartNumber(total===0?0:r.Val/total,'0.0%')+")</text>";legend+=_svgWrapTooltip(tip,legendRow);prev+=r.Val;}var center="<text x='"+g.cx+"' y='"+(g.cy-4)+"' text-anchor='middle' font-size='11' fill='#605E5C'>Total</text>"+"<text x='"+g.cx+"' y='"+(g.cy+18)+"' text-anchor='middle' font-size='20' font-weight='600' fill='#252423'>"+_esc(_formatChartNumber(total,(display.value&&display.value.format)||'#,##0'))+"</text>";return _svgRoot(g.svgW,h,body+center+legend);}
+	function _renderLineSvg(display){var g=_chartDefaults.line,mat=_lineRows(display),rows=mat.rows,series=mat.series,plotW=g.W-g.padL-g.padR,plotH=g.H-g.padT-g.padB,plotBottom=g.padT+plotH,xLabelY=plotBottom+g.xLabelGap,legendY=xLabelY+g.legendTopGap,legendColumns=Math.max(1,Math.floor(plotW/g.legendColumnWidth)),legendRows=Math.max(1,Math.ceil(series.length/legendColumns)),svgH=Math.max(g.H,legendY+legendRows*g.legendRowH+g.legendBottomPad),min,max;for(var r=0;r<rows.length;r++){for(var s=0;s<series.length;s++){var v=_num(rows[r]['S'+s]);if(min===undefined||v<min)min=v;if(max===undefined||v>max)max=v;}}if(min===undefined){min=0;max=0;}var range=max-min,body='';for(var grid=0;grid<g.gridCount;grid++){var y=g.padT+grid*plotH/(g.gridCount-1),yv=max-(grid*range/(g.gridCount-1));body+="<line x1='"+g.padL+"' y1='"+y+"' x2='"+(g.W-g.padR)+"' y2='"+y+"' stroke='#E6E6E6' stroke-width='1'/>";body+="<text x='"+(g.padL-8)+"' y='"+(y+4)+"' text-anchor='end' font-size='11' fill='#605E5C'>"+_esc(_formatChartNumber(yv,'#,##0'))+"</text>";}body+="<line x1='"+g.padL+"' y1='"+g.padT+"' x2='"+g.padL+"' y2='"+plotBottom+"' stroke='#C8C6C4' stroke-width='1'/><line x1='"+g.padL+"' y1='"+plotBottom+"' x2='"+(g.W-g.padR)+"' y2='"+plotBottom+"' stroke='#C8C6C4' stroke-width='1'/>";for(var s=0;s<series.length;s++){var pts=[],singlePoint='',pointMarkers='',seriesColor=_chartColor(display.colors,s);for(var r=0;r<rows.length;r++){var x=rows.length<=1?g.padL+plotW/2:g.padL+plotW*r/(rows.length-1),y=g.padT+plotH-(range===0?plotH/2:(_num(rows[r]['S'+s])-min)/range*plotH),valueText=_formatChartNumber(rows[r]['S'+s],'#,##0'),seriesLabel=series[s].label||series[s].column||('Series '+(s+1)),tip=_tooltipText(display.tooltip,rows[r],[display.xAxis+': '+_axisLabel(rows[r][display.xAxis],display.xAxis,mat.fact),seriesLabel+': '+valueText]);pts.push(x.toFixed(1)+','+y.toFixed(1));if(tip){var pointBody="<circle cx='"+x.toFixed(1)+"' cy='"+y.toFixed(1)+"' r='"+g.pointRadius+"' fill='#FFFFFF' stroke='"+seriesColor+"' stroke-width='"+g.pointStrokeWidth+"'/>"+"<circle cx='"+x.toFixed(1)+"' cy='"+y.toFixed(1)+"' r='"+g.tooltipHitRadius+"' fill='#FFFFFF' fill-opacity='0' stroke='none' pointer-events='all'/>";pointMarkers+=_svgWrapTooltip(tip,pointBody);}else if(rows.length===1){singlePoint="<circle cx='"+x.toFixed(1)+"' cy='"+y.toFixed(1)+"' r='"+g.pointRadius+"' fill='"+seriesColor+"'/>";}}body+="<polyline points='"+pts.join(' ')+"' fill='none' stroke='"+seriesColor+"' stroke-width='3' stroke-linecap='round' stroke-linejoin='round'/>"+singlePoint+pointMarkers;}for(var s=0;s<series.length;s++){var col=s%legendColumns,row=Math.floor(s/legendColumns),lx=g.padL+col*g.legendColumnWidth,ly=legendY+row*g.legendRowH,label=series[s].label||series[s].column||('Series '+(s+1));body+="<line x1='"+lx+"' y1='"+(ly-4)+"' x2='"+(lx+g.legendLineWidth)+"' y2='"+(ly-4)+"' stroke='"+_chartColor(display.colors,s)+"' stroke-width='3' stroke-linecap='round'/>";body+="<text x='"+(lx+g.legendGap)+"' y='"+ly+"' font-size='11' fill='#605E5C'>"+_esc(label)+"</text>";}if(rows.length>0){body+="<text x='"+g.padL+"' y='"+xLabelY+"' font-size='11' fill='#605E5C'>"+_esc(_axisLabel(rows[0][display.xAxis],display.xAxis,mat.fact))+"</text>";body+="<text x='"+(g.W-g.padR)+"' y='"+xLabelY+"' text-anchor='end' font-size='11' fill='#605E5C'>"+_esc(_axisLabel(rows[rows.length-1][display.xAxis],display.xAxis,mat.fact))+"</text>";}return _svgRoot(g.W,svgH,body);}
 	function _renderChart(id,spec){var key=String(id||'');if(!key)return;var display=_chartDisplay(key,spec);if(!display||!display.type)return;_chartRegistry[key]=display;var el=_bindEl(key);if(!el){if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',function(){_renderRegisteredCharts();},{once:true});return;}var svg='';if(display.type==='bar'&&display.groupBy)svg=_renderBarSvg(display);else if(display.type==='pie'&&display.groupBy)svg=_renderPieSvg(display);else if(display.type==='line'&&display.xAxis)svg=_renderLineSvg(display);if(svg)el.innerHTML=svg;}
 	function _renderRegisteredCharts(){for(var key in _chartRegistry){if(Object.prototype.hasOwnProperty.call(_chartRegistry,key))_renderChart(key,_chartRegistry[key]);}}
 	function _bind(id,val){var el=_bindEl(id);if(el)el.textContent=_fmtVal(val);}
@@ -1230,6 +1265,14 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 <script>
 (function(){
 		var raf=0;
+		function installBaseReset(){
+			if(document.getElementById('kw-preview-base-reset'))return;
+			var style=document.createElement('style');
+			style.id='kw-preview-base-reset';
+			style.textContent=':where(html,body){margin:0;}';
+			(document.head||document.documentElement).appendChild(style);
+		}
+		installBaseReset();
 		function px(v){var n=parseFloat(v||'0');return isFinite(n)?n:0;}
 		function viewportHeight(){
 			var de=document.documentElement;
@@ -1275,6 +1318,51 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			var top=Math.round(rect.top+window.scrollY);
 			var bottom=Math.round(rect.bottom+window.scrollY);
 			return top<=1&&Math.abs(bottom-viewport)<2;
+		}
+		function usesViewportUnit(value){
+			return /(?:^|[^a-z])(?:vh|dvh|svh|lvh|vmin|vmax)(?:$|[^a-z])/i.test(String(value||''));
+		}
+		function styleUsesViewportBlockSize(style){
+			if(!style)return false;
+			return usesViewportUnit(style.height)||usesViewportUnit(style.minHeight)||usesViewportUnit(style.maxHeight);
+		}
+		function ruleUsesViewportBlockSize(rule,el){
+			try{
+				if(rule&&rule.style&&rule.selectorText&&styleUsesViewportBlockSize(rule.style)&&el.matches(rule.selectorText))return true;
+				if(rule&&rule.cssRules){
+					for(var i=0;i<rule.cssRules.length;i++){if(ruleUsesViewportBlockSize(rule.cssRules[i],el))return true;}
+				}
+			}catch(e){}
+			return false;
+		}
+		function declaresViewportBlockSize(el){
+			if(styleUsesViewportBlockSize(el.style))return true;
+			for(var s=0;s<document.styleSheets.length;s++){
+				try{
+					var rules=document.styleSheets[s].cssRules;
+					if(!rules)continue;
+					for(var r=0;r<rules.length;r++){if(ruleUsesViewportBlockSize(rules[r],el))return true;}
+				}catch(e){}
+			}
+			return false;
+		}
+		function viewportBoundHeight(){
+			var viewport=viewportHeight();
+			if(!viewport)return 0;
+			var max=0;
+			function consider(el){
+				if(!el||!declaresViewportBlockSize(el))return;
+				var rect=el.getBoundingClientRect();
+				if(!rect.width&&!rect.height)return;
+				var style=getComputedStyle(el);
+				if(style.display==='none'||isInFixedSubtree(el))return;
+				var bottom=Math.ceil(rect.bottom+window.scrollY+px(style.marginBottom));
+				if(bottom>=viewport-2)max=Math.max(max,bottom);
+			}
+			consider(document.body);
+			var nodes=document.body?document.body.querySelectorAll('*'):[];
+			for(var i=0;i<nodes.length;i++)consider(nodes[i]);
+			return max;
 		}
 		function clampsOverflow(style){
 			return /(auto|scroll|hidden|clip)/.test((style.overflow||'')+' '+(style.overflowY||'')+' '+(style.overflowX||''));
@@ -1329,7 +1417,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		}
 		function send(){
 			var h=measure();
-			parent.postMessage({type:'kw-html-preview-height',h:h,metrics:{viewportHeight:viewportHeight(),scrollHeight:rawScrollHeight()}},'*');
+			parent.postMessage({type:'kw-html-preview-height',h:h,metrics:{viewportHeight:viewportHeight(),scrollHeight:rawScrollHeight(),viewportBoundHeight:viewportBoundHeight()}},'*');
 		}
 		function schedule(){
 			if(raf)cancelAnimationFrame(raf);
@@ -1363,11 +1451,13 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				const h = Number(e.data.h);
 				if (!Number.isFinite(h) || h <= 0) return;
 				this._lastPreviewContentHeight = Math.ceil(h);
-				const metrics = e.data.metrics as { scrollHeight?: unknown; viewportHeight?: unknown } | undefined;
+				const metrics = e.data.metrics as { scrollHeight?: unknown; viewportHeight?: unknown; viewportBoundHeight?: unknown } | undefined;
 				const scrollHeight = Number(metrics?.scrollHeight);
 				const viewportHeight = Number(metrics?.viewportHeight);
+				const viewportBoundHeight = Number(metrics?.viewportBoundHeight);
 				this._lastPreviewScrollHeight = Number.isFinite(scrollHeight) && scrollHeight > 0 ? Math.ceil(scrollHeight) : 0;
 				this._lastPreviewViewportHeight = Number.isFinite(viewportHeight) && viewportHeight > 0 ? Math.ceil(viewportHeight) : 0;
+				this._lastPreviewViewportBoundHeight = Number.isFinite(viewportBoundHeight) && viewportBoundHeight > 0 ? Math.ceil(viewportBoundHeight) : 0;
 				this._applyPreviewFitHeight(this._lastPreviewContentHeight);
 				if (this._pendingPreviewHeightResolve) {
 					const resolve = this._pendingPreviewHeightResolve;
@@ -1412,11 +1502,33 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		if (this._userResizedPreview) return;
 		const wrapper = this.shadowRoot?.getElementById('preview-wrapper');
 		if (!wrapper) return;
-		const fitH = Math.max(120, Math.ceil(contentH + 8));
+		if (this._isPreviewHeightViewportBound(contentH, wrapper)) return;
+		const fitH = Math.max(120, Math.ceil(contentH + KwHtmlSection._PREVIEW_FIT_BUFFER_PX));
 		if (this._lastPreviewFitHeight > 0 && Math.abs(fitH - this._lastPreviewFitHeight) < 5) return;
 		this._lastPreviewFitHeight = fitH;
 		wrapper.style.height = fitH + 'px';
 		wrapper.style.maxHeight = fitH + 'px';
+		requestOverlayScrollbarUpdate(true);
+	}
+
+	private _isPreviewHeightViewportBound(contentH: number, wrapper: HTMLElement): boolean {
+		if (this._lastPreviewViewportHeight <= 0) return false;
+		if (this._lastPreviewScrollHeight > 0 && Math.abs(this._lastPreviewScrollHeight - contentH) > KwHtmlSection._PREVIEW_VIEWPORT_EPSILON_PX) return false;
+		let wrapperHeight = 0;
+		try { wrapperHeight = wrapper.getBoundingClientRect().height || wrapper.clientHeight || 0; } catch (e) { console.error('[kusto]', e); }
+		if (wrapperHeight > 0 && Math.abs(wrapperHeight - this._lastPreviewViewportHeight) > KwHtmlSection._PREVIEW_VIEWPORT_EPSILON_PX) return false;
+		if (Math.abs(contentH - this._lastPreviewViewportHeight) <= KwHtmlSection._PREVIEW_VIEWPORT_EPSILON_PX) return true;
+		return this._lastPreviewViewportBoundHeight > 0
+			&& Math.abs(contentH - this._lastPreviewViewportBoundHeight) <= KwHtmlSection._PREVIEW_VIEWPORT_EPSILON_PX;
+	}
+
+	private _resetAutoPreviewHeightForFreshFit(): void {
+		if (this._userResizedPreview) return;
+		this._lastPreviewFitHeight = 0;
+		const wrapper = this.shadowRoot?.getElementById('preview-wrapper');
+		if (!wrapper) return;
+		wrapper.style.height = '';
+		wrapper.style.maxHeight = '';
 		requestOverlayScrollbarUpdate(true);
 	}
 
@@ -1653,8 +1765,10 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		} else {
 			// Clear user-resize so auto-fit re-engages.
 			this._userResizedPreview = false;
+			this.previewHeightUserSet = false;
 			this._savedPreviewHeightPx = undefined;
 			this._invalidatePreviewContentHeight();
+			this._resetAutoPreviewHeightForFreshFit();
 			this.requestUpdate();
 			// Preview mode — ask the iframe to re-report its height.
 			const iframe = this.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
@@ -1679,7 +1793,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	}
 
 	private _onPreviewResizerMouseDown(e: MouseEvent): void {
-		this._onResizerMouseDown(e, 'preview-wrapper', () => { this._userResizedPreview = true; });
+		this._onResizerMouseDown(e, 'preview-wrapper', () => { this._userResizedPreview = true; this.previewHeightUserSet = true; });
 	}
 
 	private _onResizerMouseDown(e: MouseEvent, wrapperId: string, markResized: () => void, onMove?: (editor: MonacoEditor | null) => void): void {
@@ -1785,7 +1899,10 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		const previewH = this._userResizedPreview
 			? (this._savedPreviewHeightPx ?? this._getWrapperHeightPx('preview-wrapper', true))
 			: undefined;
-		if (previewH !== undefined) data.previewHeightPx = previewH;
+		if (previewH !== undefined) {
+			data.previewHeightPx = previewH;
+			data.previewHeightUserSet = true;
+		}
 
 		if (this._pbiPublishInfo) data.pbiPublishInfo = this._pbiPublishInfo;
 

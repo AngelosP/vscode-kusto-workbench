@@ -775,7 +775,9 @@ export function acceptOptimizations(comparisonBoxId: any) {
 			: (meta && typeof meta.optimizedQuery === 'string' ? meta.optimizedQuery : '');
 		if (!sourceBoxId || !currentQuery) return;
 		if (queryEditors[sourceBoxId] && typeof queryEditors[sourceBoxId].setValue === 'function') {
+			const beforeSignature = _win.__kustoGetSectionSerializedSignature?.(sourceBoxId);
 			queryEditors[sourceBoxId].setValue(currentQuery);
+			_win.__kustoMarkSectionAgentTouched?.(sourceBoxId, beforeSignature);
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		}
 		try { __kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, false); } catch (e) { console.error('[kusto]', e); }
@@ -1078,6 +1080,8 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 	const model = editor.getModel();
 	if (!model) return '';
 	const shouldExecute = !(options && options.skipExecute === true);
+	const shouldMarkAgentTouched = !!(options && options.agentTouched === true);
+	const sourceBeforeSignature = shouldMarkAgentTouched ? _win.__kustoGetSectionSerializedSignature?.(boxId) : undefined;
 	const isManualCompareOnly = !shouldExecute;
 	if (isManualCompareOnly) {
 		try { __kustoHideOptimizePromptForBox(boxId); } catch (e) { console.error('[kusto]', e); }
@@ -1131,6 +1135,7 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 			const comparisonBoxEl = document.getElementById(existingComparisonBoxId) as any;
 			const comparisonEditor = queryEditors && queryEditors[existingComparisonBoxId];
 			if (comparisonBoxEl && comparisonEditor && typeof comparisonEditor.setValue === 'function') {
+				const beforeSignature = _win.__kustoGetSectionSerializedSignature?.(existingComparisonBoxId);
 				let nextComparisonQuery = overrideText.trim() ? overrideText : query;
 				try { if (typeof _win.__kustoPrettifyKustoText === 'function') nextComparisonQuery = _win.__kustoPrettifyKustoText(nextComparisonQuery); } catch (e) { console.error('[kusto]', e); }
 				try { comparisonEditor.setValue(nextComparisonQuery); } catch (e) { console.error('[kusto]', e); }
@@ -1167,6 +1172,10 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 					__kustoSetResultsVisible(boxId, false);
 					__kustoSetResultsVisible(existingComparisonBoxId, false);
 				} catch (e) { console.error('[kusto]', e); }
+				if (shouldMarkAgentTouched) {
+					_win.__kustoMarkSectionAgentTouched?.(boxId, sourceBeforeSignature);
+					_win.__kustoMarkSectionAgentTouched?.(existingComparisonBoxId, beforeSignature);
+				}
 				if (shouldExecute) {
 					try {
 						executeQuery(boxId);
@@ -1229,6 +1238,10 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 			if (!existing) __kustoSetSectionName(comparisonBoxId, __kustoPickNextAvailableSectionLetterName(comparisonBoxId));
 		}
 	} catch (e) { console.error('[kusto]', e); }
+	if (shouldMarkAgentTouched) {
+		_win.__kustoMarkSectionAgentTouched?.(boxId, sourceBeforeSignature);
+		_win.__kustoMarkSectionAgentTouched?.(comparisonBoxId);
+	}
 	if (shouldExecute) {
 		try {
 			executeQuery(boxId);

@@ -69,18 +69,109 @@ import {
 const _win = window;
 
 // ── Agent-touched helper ─────────────────────────────────────────────────
-// Marks a section's kw-section-shell as agent-touched so it shows the
-// Copilot icon next to the unsaved-changes accent bar.
+// Tracks whether a section's current dirty state came from Copilot/tooling.
 
-function markSectionAgentTouched(sectionId: string): void {
-	if (!sectionId) return;
+type AgentTouchedState = {
+	dirtyConfirmed: boolean;
+};
+
+const agentTouchedStateBySectionId = new Map<string, AgentTouchedState>();
+
+function getSectionShell(sectionId: string): any {
+	if (!sectionId) return null;
 	const el = document.getElementById(sectionId) as any;
-	if (!el) return;
-	const shell = el.shadowRoot?.querySelector('kw-section-shell');
-	if (shell) {
-		shell.agentTouched = true;
+	return el?.shadowRoot?.querySelector('kw-section-shell') || null;
+}
+
+function getSectionSerializedSignature(sectionId: string): string {
+	if (!sectionId) return '';
+	const el = document.getElementById(sectionId) as any;
+	if (!el || typeof el.serialize !== 'function') return '';
+	try {
+		const serialized = el.serialize();
+		if (pState.compatibilityMode && serialized && typeof serialized === 'object') {
+			return JSON.stringify(getCompatibilityPersistedContent(serialized as Record<string, unknown>));
+		}
+		return JSON.stringify(serialized);
+	} catch (e) {
+		console.error('[kusto]', e);
+		return '';
 	}
 }
+
+function getCompatibilityPersistedContent(section: Record<string, unknown>): Record<string, unknown> {
+	const rawType = String(section.type || pState.compatibilitySingleKind || 'query');
+	const sectionType = rawType === 'copilotQuery' ? 'query' : rawType;
+	const contentKey = sectionType === 'markdown' ? 'text'
+		: sectionType === 'python' ? 'code'
+			: sectionType === 'url' ? 'url'
+				: 'query';
+	return {
+		type: sectionType,
+		[contentKey]: typeof section[contentKey] === 'string' ? section[contentKey] : '',
+	};
+}
+
+function markSectionAgentTouched(sectionId: string, beforeSignature?: string): void {
+	if (!sectionId) return;
+	const signature = getSectionSerializedSignature(sectionId);
+	const shell = getSectionShell(sectionId);
+	if (beforeSignature !== undefined && signature === beforeSignature) {
+		if (!shell || !shell.hasChanges) {
+			clearSectionAgentTouched(sectionId, shell);
+		}
+		return;
+	}
+	const dirtyConfirmed = !!(shell && shell.hasChanges);
+	agentTouchedStateBySectionId.set(sectionId, { dirtyConfirmed });
+	if (shell) {
+		shell.agentTouched = dirtyConfirmed;
+	}
+}
+
+function clearSectionAgentTouched(sectionId: string, shell?: any): void {
+	agentTouchedStateBySectionId.delete(sectionId);
+	const targetShell = shell || getSectionShell(sectionId);
+	if (targetShell) {
+		targetShell.agentTouched = false;
+	}
+}
+
+function clearAllSectionAgentTouched(): void {
+	agentTouchedStateBySectionId.clear();
+	const container = document.getElementById('queries-container');
+	if (!container) return;
+	for (const childElement of Array.from(container.children)) {
+		const shell = (childElement as any).shadowRoot?.querySelector('kw-section-shell');
+		if (shell) {
+			shell.agentTouched = false;
+		}
+	}
+}
+
+function reconcileSectionAgentTouched(sectionId: string, status: '' | 'modified' | 'new', shell: any): void {
+	if (!status) {
+		clearSectionAgentTouched(sectionId, shell);
+		return;
+	}
+
+	const agentState = agentTouchedStateBySectionId.get(sectionId);
+	if (!agentState) {
+		shell.agentTouched = false;
+		return;
+	}
+
+	if (agentState.dirtyConfirmed) {
+		shell.agentTouched = true;
+		return;
+	}
+
+	agentState.dirtyConfirmed = true;
+	shell.agentTouched = true;
+}
+
+(_win as any).__kustoMarkSectionAgentTouched = markSectionAgentTouched;
+(_win as any).__kustoGetSectionSerializedSignature = getSectionSerializedSignature;
 
 function isSuggestVisibleForBoxId(boxId: string): boolean {
 	try {
@@ -352,7 +443,7 @@ window.addEventListener('message', async (event: any) => {
 				}
 				let comparisonBoxId = '';
 				try {
-					comparisonBoxId = await optimizeQueryWithCopilot(boxId, query, { skipExecute: true });
+					comparisonBoxId = await optimizeQueryWithCopilot(boxId, query, { skipExecute: true, agentTouched: true });
 				} catch (e) { console.error('[kusto]', e); }
 				try {
 					postMessageToHost({
@@ -566,6 +657,7 @@ window.addEventListener('message', async (event: any) => {
 		case 'documentData':
 			try {
 				{
+					clearAllSectionAgentTouched();
 					handleDocumentDataMessage(message);
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -1235,13 +1327,14 @@ window.addEventListener('message', async (event: any) => {
 				const boxId = String(message.boxId || '');
 				const query = String(message.query || '');
 				if (boxId) {
-					Promise.resolve(optimizeQueryWithCopilot(boxId, query));
+					Promise.resolve(optimizeQueryWithCopilot(boxId, query, { agentTouched: true }));
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'optimizeQueryReady':
 			try {
 				const sourceBoxId = message.boxId || '';
+				const sourceBeforeSignature = getSectionSerializedSignature(sourceBoxId);
 				try {
 					{
 						__kustoSetOptimizeInProgress(sourceBoxId, false, '');
@@ -1289,6 +1382,7 @@ window.addEventListener('message', async (event: any) => {
 				// If a comparison box already exists for this source, reuse it.
 				if (optimizationMetadataByBoxId[sourceBoxId] && optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId) {
 					const comparisonBoxId = optimizationMetadataByBoxId[sourceBoxId].comparisonBoxId;
+					const beforeSignature = getSectionSerializedSignature(comparisonBoxId);
 					const comparisonEditor = queryEditors && queryEditors[comparisonBoxId];
 					if (comparisonBoxId && comparisonEditor && typeof comparisonEditor.setValue === 'function') {
 						try {
@@ -1317,6 +1411,8 @@ window.addEventListener('message', async (event: any) => {
 								__kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, true);
 							}
 						} catch (e) { console.error('[kusto]', e); }
+						markSectionAgentTouched(sourceBoxId, sourceBeforeSignature);
+						markSectionAgentTouched(comparisonBoxId, beforeSignature);
 						try {
 							{
 								__kustoSetResultsVisible(sourceBoxId, false);
@@ -1350,6 +1446,7 @@ window.addEventListener('message', async (event: any) => {
 					isComparison: true,
 					defaultResultsVisible: false
 				});
+				markSectionAgentTouched(comparisonBoxId);
 				try {
 					{
 						__kustoSetResultsVisible(sourceBoxId, false);
@@ -1361,6 +1458,7 @@ window.addEventListener('message', async (event: any) => {
 						__kustoSetLinkedOptimizationMode(sourceBoxId, comparisonBoxId, true);
 					}
 				} catch (e) { console.error('[kusto]', e); }
+				markSectionAgentTouched(sourceBoxId, sourceBeforeSignature);
 				
 				// Store optimization metadata
 				optimizationMetadataByBoxId[comparisonBoxId] = {
@@ -1507,15 +1605,16 @@ window.addEventListener('message', async (event: any) => {
 		case 'copilotWriteQuerySetQuery':
 			try {
 				const boxId = String(message.boxId || '');
+				const beforeSignature = getSectionSerializedSignature(boxId);
 				const kwEl = boxId ? __kustoGetQuerySectionElement(boxId) : null;
 				if (kwEl && typeof kwEl.copilotWriteQuerySetQuery === 'function') {
 					kwEl.copilotWriteQuerySetQuery(message.query || '');
-					markSectionAgentTouched(boxId);
+					markSectionAgentTouched(boxId, beforeSignature);
 				} else {
 					const sqlEl = boxId ? __kustoGetSqlSectionElement(boxId) : null;
 					if (sqlEl && typeof sqlEl.copilotWriteQuerySetQuery === 'function') {
 						sqlEl.copilotWriteQuerySetQuery(message.query || '');
-						markSectionAgentTouched(boxId);
+						markSectionAgentTouched(boxId, beforeSignature);
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -1914,6 +2013,7 @@ window.addEventListener('message', async (event: any) => {
 					}
 
 					if (success) {
+						agentTouchedStateBySectionId.delete(sectionId);
 						if (queryEditors && queryEditors[sectionId]) {
 							delete queryEditors[sectionId];
 						}
@@ -1938,6 +2038,7 @@ window.addEventListener('message', async (event: any) => {
 				const requestId = String(message.requestId || '');
 				const sectionId = String(message.sectionId || '');
 				const collapsed = !!message.collapsed;
+				const beforeSignature = getSectionSerializedSignature(sectionId);
 				let success = false;
 				
 				try {
@@ -1950,6 +2051,7 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error collapsing section:', err);
 				}
 				
+				if (success) { markSectionAgentTouched(sectionId, beforeSignature); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to collapse/expand section' });
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 			} catch (err: any) {
@@ -2016,6 +2118,7 @@ window.addEventListener('message', async (event: any) => {
 				const requestId = String(message.requestId || '');
 				const input = message.input || {};
 				const sectionId = String(input.sectionId || '');
+				const beforeSignature = getSectionSerializedSignature(sectionId);
 				let success = false;
 				let deferResponse = false;
 				
@@ -2159,7 +2262,7 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error configuring query section:', err);
 				}
 				
-				if (success) { markSectionAgentTouched(sectionId); }
+				if (success) { markSectionAgentTouched(sectionId, beforeSignature); }
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				if (!deferResponse) {
 					postMessageToHost({ type: 'toolResponse', requestId, result: { success, resultPreview: '' }, error: success ? undefined : 'Failed to configure query section' });
@@ -2229,6 +2332,7 @@ window.addEventListener('message', async (event: any) => {
 				const requestId = String(message.requestId || '');
 				const input = message.input || {};
 				const sectionId = String(input.sectionId || '');
+				const beforeSignature = getSectionSerializedSignature(sectionId);
 				let success = false;
 				
 				try {
@@ -2282,7 +2386,7 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error updating markdown section:', err);
 				}
 				
-				if (success) { markSectionAgentTouched(sectionId); }
+				if (success) { markSectionAgentTouched(sectionId, beforeSignature); }
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to update markdown section' });
 			} catch (err: any) {
@@ -2296,6 +2400,7 @@ window.addEventListener('message', async (event: any) => {
 				const requestId = String(message.requestId || '');
 				const input = message.input || {};
 				const sectionId = String(input.sectionId || '');
+				const beforeSignature = getSectionSerializedSignature(sectionId);
 				let success = false;
 				let validationStatus: any = null;
 				
@@ -2337,7 +2442,7 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error configuring chart:', err);
 				}
 				
-				if (success) { markSectionAgentTouched(sectionId); }
+				if (success) { markSectionAgentTouched(sectionId, beforeSignature); }
 				// Include validation status in response so agent can verify configuration worked
 				const result = { success, ...( validationStatus ? { validation: validationStatus } : {}) };
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
@@ -2353,6 +2458,7 @@ window.addEventListener('message', async (event: any) => {
 				const requestId = String(message.requestId || '');
 				const input = message.input || {};
 				const sectionId = String(input.sectionId || '');
+				const beforeSignature = getSectionSerializedSignature(sectionId);
 				let success = false;
 				
 				try {
@@ -2376,7 +2482,7 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error configuring transformation:', err);
 				}
 				
-				if (success) { markSectionAgentTouched(sectionId); }
+				if (success) { markSectionAgentTouched(sectionId, beforeSignature); }
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to configure transformation' });
 			} catch (err: any) {
@@ -2388,6 +2494,7 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				const requestId = String(message.requestId || '');
 				const sectionId = String(message.sectionId || '');
+				const beforeSignature = getSectionSerializedSignature(sectionId);
 				let success = false;
 				let shouldAutoFit = false;
 				
@@ -2413,7 +2520,10 @@ window.addEventListener('message', async (event: any) => {
 							el.setMode(message.mode);
 							shouldAutoFit = shouldAutoFit || modeChanged;
 						}
-						if (shouldAutoFit && typeof el.fitToContents === 'function') {
+						const hasManualPreviewHeight = typeof el.getMode === 'function'
+							&& el.getMode() === 'preview'
+							&& el.previewHeightUserSet === true;
+						if (shouldAutoFit && !hasManualPreviewHeight && typeof el.fitToContents === 'function') {
 							if (document.getElementById(sectionId) === el) {
 								try { el.fitToContents(); } catch (e) { console.error('[kusto]', e); }
 							}
@@ -2424,7 +2534,7 @@ window.addEventListener('message', async (event: any) => {
 					console.error('[Kusto Tools] Error configuring HTML section:', err);
 				}
 				
-				if (success) { markSectionAgentTouched(sectionId); }
+				if (success) { markSectionAgentTouched(sectionId, beforeSignature); }
 				// Immediate persist (no 400ms debounce) — the tool response is sent right
 				// after this, and the host may save/close before a debounced persist fires.
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
@@ -2462,6 +2572,7 @@ window.addEventListener('message', async (event: any) => {
 				const sectionId = String(input.sectionId || '');
 				let success = false;
 				const sqlEl = __kustoGetSqlSectionElement(sectionId);
+				const beforeSignature = getSectionSerializedSignature(sectionId);
 
 				if (input.name !== undefined && sqlEl && typeof sqlEl.setName === 'function') {
 					sqlEl.setName(String(input.name));
@@ -2500,6 +2611,10 @@ window.addEventListener('message', async (event: any) => {
 					// Trigger execution via event
 					sqlEl.dispatchEvent(new CustomEvent('sql-run', { bubbles: true, composed: true }));
 					success = true;
+				}
+				if (success) {
+					markSectionAgentTouched(sectionId, beforeSignature);
+					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				}
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success } });
 			} catch (err: any) {
@@ -2542,6 +2657,7 @@ window.addEventListener('message', async (event: any) => {
 							sectionId = sections[0].id;
 						} else {
 							sectionId = addQueryBox();
+							markSectionAgentTouched(sectionId);
 						}
 					}
 					
@@ -2594,9 +2710,11 @@ window.addEventListener('message', async (event: any) => {
 				
 				// Ensure the section is in 'Run Query' mode (plain) — not 'take 100' or 'sample 100'.
 				// This prevents the Copilot-generated queries from having unwanted limits appended.
+				const beforeSignature = getSectionSerializedSignature(sectionId);
 				try {
 					setRunMode(sectionId, 'plain');
 				} catch (e) { console.error('[kusto]', e); }
+				markSectionAgentTouched(sectionId, beforeSignature);
 
 				// Step 1: Show the Copilot Chat panel (toggle the button)
 				{
@@ -2850,7 +2968,9 @@ window.addEventListener('message', async (event: any) => {
 
 					// Force 'Run Query' mode (plain) — agent-generated queries must not
 					// have TOP 100 limits silently appended.
+					const beforeSignature = getSectionSerializedSignature(sectionId);
 					try { setRunMode(sectionId, 'plain'); } catch (e) { console.error('[kusto]', e); }
+					markSectionAgentTouched(sectionId, beforeSignature);
 
 					await new Promise((r: any) => setTimeout(r, 150));
 					
@@ -2924,16 +3044,22 @@ window.addEventListener('message', async (event: any) => {
 				// Update all section elements in the DOM.
 				const container = document.getElementById('queries-container');
 				if (container) {
-					const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_', 'html_', 'sql_'];
+					const sectionPrefixes = ['query_', 'copilotQuery_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_', 'html_', 'sql_'];
 					for (const child of Array.from(container.children)) {
 						const id = child.id || '';
 						if (!id || !sectionPrefixes.some(p => id.startsWith(p))) continue;
 						const el = child as any;
 						const shell = el.shadowRoot?.querySelector('kw-section-shell');
 						const status = changedById.get(id) || '';
+						if (!status) {
+							clearSectionAgentTouched(id, shell);
+						}
 						if (shell) {
 							shell.hasChanges = status;
 							shell.showDiffBtn = status === 'modified';
+							if (status) {
+								reconcileSectionAgentTouched(id, status, shell);
+							}
 						}
 						// Mirror attribute on the section host for :host() glow styles.
 						if (status) {

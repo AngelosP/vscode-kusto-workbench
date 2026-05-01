@@ -104,6 +104,144 @@ describe('KustoWorkbench.renderTable preview bridge', () => {
 		expect(rects[1].getAttribute('fill')).toBe('#C62828');
 	});
 
+	it('renders table row tooltip metadata from grouped and aggregate fields', () => {
+		const runtime = installBridge(
+			{
+				'quality-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }],
+						tooltip: {
+							fields: [
+								{ label: 'Service', column: 'OS' },
+								{ label: 'Devices', agg: 'DCOUNT', column: 'DeviceId', format: '#,##0' },
+							],
+						},
+					},
+				},
+			},
+			'<table data-kw-bind="quality-table"></table>',
+			[
+				['2026-04-01T00:00:00Z', 'Linux <LTS>', 'd1', 's1', 'A'],
+				['2026-04-01T00:00:00Z', 'Linux <LTS>', 'd2', 's2', 'B'],
+			],
+		);
+
+		runtime.renderTable('quality-table');
+
+		const row = document.querySelector('[data-kw-bind="quality-table"] tbody tr') as HTMLTableRowElement;
+		expect(row.getAttribute('title')).toContain('Service: Linux <LTS>');
+		expect(row.getAttribute('aria-label')).toContain('Devices: 2');
+	});
+
+	it('normalizes padded tooltip aggregates in preview', () => {
+		const runtime = installBridge(
+			{
+				'quality-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }],
+						tooltip: { fields: [{ label: 'Avg latency', agg: ' AVG ', column: 'LatencyMs', format: '#,##0' }] },
+					},
+				},
+			},
+			'<table data-kw-bind="quality-table"></table>',
+			[
+				['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A', 0, 'A', 0, 0, 0, 0, 10],
+				['2026-04-01T00:00:00Z', 'Linux', 'd2', 's2', 'B', 0, 'B', 0, 0, 0, 0, 30],
+			],
+		);
+
+		runtime.renderTable('quality-table');
+
+		const row = document.querySelector('[data-kw-bind="quality-table"] tbody tr') as HTMLTableRowElement;
+		expect(row.getAttribute('title')).toContain('Avg latency: 20');
+	});
+
+	it('rejects tooltip columns missing from preview rows or fact data', () => {
+		const runtime = installBridge(
+			{
+				'bad-row-tooltip': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }],
+						tooltip: { fields: [{ label: 'Skill', column: 'SkillName' }] },
+					},
+				},
+				'bad-agg-tooltip': {
+					display: {
+						type: 'bar',
+						groupBy: 'OS',
+						value: { agg: 'COUNT' },
+						tooltip: { fields: [{ label: 'Missing', agg: 'SUM', column: 'MissingMetric' }] },
+					},
+				},
+			},
+			'<table data-kw-bind="bad-row-tooltip"></table><div data-kw-bind="bad-agg-tooltip"></div>',
+			[['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A']],
+		);
+
+		runtime.renderTable('bad-row-tooltip');
+		runtime.renderChart('bad-agg-tooltip');
+
+		expect(document.querySelector('[data-kw-bind="bad-row-tooltip"]')!.innerHTML).toBe('');
+		expect(document.querySelector('[data-kw-bind="bad-agg-tooltip"]')!.innerHTML).toBe('');
+	});
+
+	it('rejects malformed table tooltip specs in preview', () => {
+		const runtime = installBridge(
+			{
+				'bad-tooltip': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }],
+						tooltip: { fields: [] },
+					},
+				},
+				'bad-tooltip-agg': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }],
+						tooltip: { fields: [{ label: 'Median', agg: 'MEDIAN', column: 'LatencyMs' }] },
+					},
+				},
+				'bad-tooltip-count-column': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }],
+						tooltip: { fields: [{ label: 'Rows', agg: 'COUNT', column: 'DeviceId' }] },
+					},
+				},
+				'bad-tooltip-agg-type': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }],
+						tooltip: { fields: [{ label: 'Rows', agg: ['COUNT'] }] },
+					},
+				},
+			},
+			'<table data-kw-bind="bad-tooltip"></table><table data-kw-bind="bad-tooltip-agg"></table><table data-kw-bind="bad-tooltip-count-column"></table><table data-kw-bind="bad-tooltip-agg-type"></table>',
+			[['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A']],
+		);
+
+		runtime.renderTable('bad-tooltip');
+		runtime.renderTable('bad-tooltip-agg');
+		runtime.renderTable('bad-tooltip-count-column');
+		runtime.renderTable('bad-tooltip-agg-type');
+
+		expect(document.querySelector('[data-kw-bind="bad-tooltip"]')!.innerHTML).toBe('');
+		expect(document.querySelector('[data-kw-bind="bad-tooltip-agg"]')!.innerHTML).toBe('');
+		expect(document.querySelector('[data-kw-bind="bad-tooltip-count-column"]')!.innerHTML).toBe('');
+		expect(document.querySelector('[data-kw-bind="bad-tooltip-agg-type"]')!.innerHTML).toBe('');
+	});
+
 	it('renders tbody-only targets and relative cell-bar scaling', () => {
 		const runtime = installBridge(
 			{
@@ -482,6 +620,55 @@ describe('KustoWorkbench.renderRepeatedTable preview bridge', () => {
 		expect(groups[1].querySelectorAll('tbody tr')).toHaveLength(1);
 	});
 
+	it('renders repeated-table inner row tooltip metadata', () => {
+		const runtime = installBridge(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						table: {
+							groupBy: ['OS'],
+							columns: [{ name: 'OS' }, { name: 'Devices', agg: 'DCOUNT', sourceColumn: 'DeviceId' }],
+							tooltip: { fields: [{ label: 'Devices', agg: 'DCOUNT', column: 'DeviceId' }] },
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+			[
+				['2026-04-01T00:00:00Z', 'Windows', 'd1', 's1', 'Skill A'],
+				['2026-04-01T00:00:00Z', 'Windows', 'd2', 's2', 'Skill A'],
+			],
+		);
+
+		runtime.renderRepeatedTable('by-skill');
+
+		const row = document.querySelector('[data-kw-bind="by-skill"] tbody tr') as HTMLTableRowElement;
+		expect(row.getAttribute('title')).toContain('Devices: 2');
+	});
+
+	it('rejects misplaced repeated-table tooltip metadata in preview', () => {
+		const runtime = installBridge(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						tooltip: { fields: [{ label: 'Skill', column: 'SkillName' }] },
+						table: { groupBy: ['OS'], columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }] },
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+			[['2026-04-01T00:00:00Z', 'Windows', 'd1', 's1', 'Skill A']],
+		);
+
+		runtime.renderRepeatedTable('by-skill');
+
+		expect(document.querySelector('[data-kw-bind="by-skill"]')!.innerHTML).toBe('');
+	});
+
 	it('rerenders registered repeated tables when filtered data is notified', () => {
 		const runtime = installBridge(
 			{
@@ -631,6 +818,33 @@ describe('KustoWorkbench.renderChart preview bridge', () => {
 		expect(svg!.getAttribute('style')).toContain(`height:${DASHBOARD_BAR_CHART.minH}px`);
 		expect(svg!.textContent).toContain('Linux');
 		expect(svg!.textContent).toContain('2');
+	});
+
+	it('renders chart SVG tooltip metadata from aggregate fields', () => {
+		const runtime = installBridge(
+			{
+				'os-chart': {
+					display: {
+						type: 'bar',
+						groupBy: 'OS',
+						value: { agg: 'COUNT', format: '#,##0' },
+						tooltip: { fields: [{ label: 'Devices', agg: 'DCOUNT', column: 'DeviceId', format: '#,##0' }] },
+					},
+				},
+			},
+			'<div data-kw-bind="os-chart"></div>',
+			[
+				['2026-04-01T00:00:00Z', 'Linux', 'd1', 's1', 'A'],
+				['2026-04-01T00:00:00Z', 'Linux', 'd2', 's2', 'B'],
+			],
+		);
+
+		runtime.renderChart('os-chart');
+
+		const group = document.querySelector('[data-kw-bind="os-chart"] svg g[title]') as SVGGElement;
+		expect(group.getAttribute('title')).toContain('OS: Linux');
+		expect(group.getAttribute('aria-label')).toContain('Devices: 2');
+		expect(group.querySelector('title')?.textContent).toContain('Value: 2');
 	});
 
 	it('rerenders registered charts when filtered data is notified', () => {
@@ -1038,6 +1252,43 @@ describe('KustoWorkbench.renderChart preview bridge', () => {
 		const legendText = Array.from(svg!.querySelectorAll('text')).find(element => element.textContent === 'Sessions');
 		expect(legendText).not.toBeUndefined();
 		expect(Number(legendText!.getAttribute('y'))).toBeGreaterThan(plotBottom);
+	});
+
+	it('renders visible point markers for line chart tooltip targets', () => {
+		const runtime = installBridge(
+			{
+				'trend': {
+					display: {
+						type: 'line',
+						xAxis: 'Day',
+						series: [{ agg: 'COUNT', label: 'Sessions' }],
+						tooltip: { fields: [{ label: 'Devices', agg: 'DCOUNT', column: 'DeviceId' }] },
+					},
+				},
+			},
+			'<div data-kw-bind="trend"></div>',
+			[
+				['2026-04-01T00:00:00Z', 'Windows', 'd1', 's1', 'A'],
+				['2026-04-02T00:00:00Z', 'Linux', 'd2', 's2', 'B'],
+			],
+		);
+
+		runtime.renderChart('trend');
+
+		const tooltipGroups = Array.from(document.querySelectorAll('[data-kw-bind="trend"] svg g[title]'));
+		expect(tooltipGroups).toHaveLength(2);
+		for (const group of tooltipGroups) {
+			const circles = Array.from(group.querySelectorAll('circle'));
+			expect(circles).toHaveLength(2);
+			expect(circles[0].getAttribute('r')).toBe(String(DASHBOARD_LINE_CHART.pointRadius));
+			expect(circles[0].getAttribute('fill')).toBe('#FFFFFF');
+			expect(circles[0].getAttribute('stroke')).toBe('#FFC20A');
+			expect(circles[0].getAttribute('stroke-width')).toBe(String(DASHBOARD_LINE_CHART.pointStrokeWidth));
+			expect(circles[1].getAttribute('r')).toBe(String(DASHBOARD_LINE_CHART.tooltipHitRadius));
+			expect(circles[1].getAttribute('fill-opacity')).toBe('0');
+			expect(circles[1].getAttribute('pointer-events')).toBe('all');
+			expect(group.querySelector('title')?.textContent).toContain('Devices: 1');
+		}
 	});
 
 	it('uses modulo color selection for line series beyond ten', () => {

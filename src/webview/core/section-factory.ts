@@ -2750,6 +2750,9 @@ export function addHtmlBox(options?: any) {
 	if (options && typeof options.previewHeightPx === 'number') {
 		litEl.setAttribute('preview-height-px', String(options.previewHeightPx));
 	}
+	if (options && options.previewHeightUserSet === true) {
+		litEl.setAttribute('preview-height-user-set', 'true');
+	}
 	if (options && Array.isArray(options.dataSourceIds)) {
 		litEl.setDataSourceIds(options.dataSourceIds);
 	}

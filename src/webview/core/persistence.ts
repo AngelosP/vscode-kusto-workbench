@@ -1373,7 +1373,7 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					pState.pendingHtmlCodeByBoxId = pState.pendingHtmlCodeByBoxId || {};
 					pState.pendingHtmlCodeByBoxId[pendingId] = String(section.code || '');
 				} catch (e) { console.error('[kusto]', e); }
-				addHtmlBox({
+				const htmlOptions: any = {
 					id: pendingId,
 					name: String(section.name || ''),
 					mode: section.mode || 'code',
@@ -1382,7 +1382,9 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					previewHeightPx: section.previewHeightPx,
 					dataSourceIds: Array.isArray(section.dataSourceIds) ? section.dataSourceIds : undefined,
 					pbiPublishInfo: section.pbiPublishInfo,
-				});
+				};
+				if (section.previewHeightUserSet === true) htmlOptions.previewHeightUserSet = true;
+				addHtmlBox(htmlOptions);
 				continue;
 			}
 

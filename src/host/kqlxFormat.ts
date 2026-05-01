@@ -205,6 +205,7 @@ export type KqlxSectionV1 =
 			expanded?: boolean;
 			editorHeightPx?: number;
 			previewHeightPx?: number;
+			previewHeightUserSet?: boolean;
 			/** IDs of query/transformation sections this HTML section reads data from. */
 			dataSourceIds?: string[];
 			/** Power BI publish metadata — present after first successful publish. */

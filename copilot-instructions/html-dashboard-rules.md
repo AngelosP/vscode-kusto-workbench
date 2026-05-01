@@ -182,14 +182,41 @@ Rules:
 Supported Power BI export display types:
 
 - `scalar`: one value. Use `display.agg`, optional `display.column`, and optional `display.format`.
-- `table`: grouped table. Use `display.groupBy`, `display.columns[]`, optional `orderBy`, `top`, and `preAggregate`. `top` requires `orderBy` so preview and export choose the same rows. Use `columns[].cellBar` for exportable stacked bars inside table cells.
-- `repeatedTable`: repeated grouped table sections. Use `repeatBy`, optional `repeatColumns`, optional `repeatOrderBy`, optional `repeatTop`, and `table: { groupBy, columns, orderBy?, top? }`. Bind it to a visible container such as `<div data-kw-bind="errorsByEvent"></div>` and call `KustoWorkbench.renderRepeatedTable(bindingId)`.
+- `table`: grouped table. Use `display.groupBy`, `display.columns[]`, optional `orderBy`, `top`, `preAggregate`, and `tooltip`. `top` requires `orderBy` so preview and export choose the same rows. Use `columns[].cellBar` for exportable stacked bars inside table cells.
+- `repeatedTable`: repeated grouped table sections. Use `repeatBy`, optional `repeatColumns`, optional `repeatOrderBy`, optional `repeatTop`, and `table: { groupBy, columns, orderBy?, top?, tooltip? }`. Bind it to a visible container such as `<div data-kw-bind="errorsByEvent"></div>` and call `KustoWorkbench.renderRepeatedTable(bindingId)`.
 - `pivot`: matrix-style grouping. Use `rows`, `pivotBy`, `pivotValues`, `value`, `agg`, optional `format`, `total`, and `preAggregate`.
-- `bar`: categorical comparison or segmented status distribution. Use `groupBy` plus either `value: { agg, column?, format? }`, `segments`, `value` with `thresholdBands`, or `value` with `colorRules`. Optional fields: `top`, `colors`, `variant`, `showValueLabels`, `showCategoryLabels`, and `preAggregate`. Use `scale: "normalized100"` only with `segments`.
-- `pie`: part-to-whole categorical chart. Use `groupBy`, `value: { agg, column?, format? }`, optional `top`, `colors`, and `preAggregate`.
-- `line`: time or ordered series. Use `xAxis`, `series: [{ agg, column?, label? }]`, optional `colors`, and `preAggregate`.
+- `bar`: categorical comparison or segmented status distribution. Use `groupBy` plus either `value: { agg, column?, format? }`, `segments`, `value` with `thresholdBands`, or `value` with `colorRules`. Optional fields: `top`, `colors`, `variant`, `showValueLabels`, `showCategoryLabels`, `preAggregate`, and `tooltip`. Use `scale: "normalized100"` only with `segments`.
+- `pie`: part-to-whole categorical chart. Use `groupBy`, `value: { agg, column?, format? }`, optional `top`, `colors`, `preAggregate`, and `tooltip`.
+- `line`: time or ordered series. Use `xAxis`, `series: [{ agg, column?, label? }]`, optional `colors`, `preAggregate`, and `tooltip`.
 
 Do not use unsupported display names in provenance. The Power BI exporter rejects them.
+
+## Tooltip Rules
+
+Dashboard tooltips are supported only inside HTML dashboard provenance bindings that render through `KustoWorkbench.renderChart()`, `KustoWorkbench.renderTable()`, or `KustoWorkbench.renderRepeatedTable()` and export to Power BI. Do not use notebook chart `tooltipColumns`, custom mouse handlers, Lit popovers, ECharts tooltips, or shared result-table tooltips for Power BI dashboard behavior.
+
+Add a `tooltip` object to supported dashboard displays:
+
+```json
+{
+  "tooltip": {
+    "fields": [
+      { "label": "Devices", "agg": "DCOUNT", "column": "DeviceId", "format": "#,##0" },
+      { "label": "Failure %", "agg": "AVG", "column": "FailureRate", "format": "0.0%" }
+    ]
+  }
+}
+```
+
+Rules:
+
+- `tooltip.fields` must be non-empty.
+- Use `{ "column": "ColumnName" }` for a row value that exists in the rendered row, such as a table group column, a table output column, a bar/pie `groupBy`, or a line `xAxis`.
+- Use `{ "agg": "COUNT|SUM|AVG|AVERAGE|MIN|MAX|DCOUNT|DISTINCTCOUNT", "column": "FactColumn" }` for an extra aggregate. `COUNT` is row-count-only and must omit `column`; every other aggregate must include `column`.
+- `label` and `format` are optional strings. Avoid `</script>` in tooltip labels and formats because provenance is JSON embedded in a script tag.
+- With `preAggregate`, tooltip columns follow the same rules as the display: they can reference only the pre-aggregate output columns, and aggregate fields summarize over those outputs.
+- In repeated tables, put `tooltip` on the inner `table` object. Repeated header tooltips are not part of the export contract.
+- Power BI export uses static HTML/SVG metadata (`title`, `aria-label`, and SVG `<title>`). This gives native hover text in the HTML Content visual without custom JavaScript; it is not a native Power BI tooltip field well.
 
 ## Table Rules
 
@@ -207,6 +234,7 @@ Do not use unsupported display names in provenance. The Power BI exporter reject
 - In unioned dashboard fact queries where different row families populate different metrics, keep non-applicable numeric metrics as typed nulls and aggregate display columns with `MAX`, `MIN`, or another appropriate aggregation over the real source column. Do not create separate display columns that only contain null placeholders.
 - `cellFormat.mode` defaults to `"badge"`; use `"cell"` to apply the style to the whole `<td>`. Supported inline styles are `backgroundColor`, `color`, and `fontWeight` (`"normal"`, `"600"`, or `"bold"`). Keep colors simple hex/rgb/hsl/named colors.
 - Do not combine `cellFormat` and `cellBar` on one column. Do not use `cellFormat` in `repeatColumns`; use it in the inner repeated table's `table.columns` instead.
+- Add row hover details with `display.tooltip`; the preview and Power BI export attach safe `title` and `aria-label` metadata to generated rows.
 
 Example table-cell status bar:
 
@@ -273,6 +301,7 @@ Example conditional percentage badge:
 - Bind repeated tables to a visible non-table container, such as `<div data-kw-bind="errorsByEvent"></div>`. Do not bind them to `<table>`, `<tbody>`, hidden elements, or `<template>`.
 - Use `repeatBy` for the outer group columns and `repeatColumns` for header values or aggregate counts shown above each inner table. If `repeatColumns` is omitted, the repeat group columns are shown.
 - Use `table.groupBy` and `table.columns` for the inner table rows. Inner table columns follow the same rules as normal table columns, including `columns[].cellBar` and `columns[].cellFormat`.
+- Put repeated-table row hover details on `table.tooltip`; outer repeated headers do not currently emit exportable hover details.
 - Use `repeatOrderBy` whenever you use `repeatTop`; use `table.orderBy` whenever the inner `table` uses `top`.
 
 Example repeated table:
@@ -316,6 +345,7 @@ KustoWorkbench.renderRepeatedTable('errorsByEvent');
 - Do not use `bindHtml()` to render exportable charts unless the target is intentionally preview-only and not represented as a chart in Power BI.
 - If an existing dashboard has manual chart functions such as `buildLineChart`, `buildPieChart`, or `buildBarChart`, upgrade them to provenance chart bindings when touching the dashboard.
 - Keep chart containers sized with CSS so the preview does not shift while data loads.
+- Add chart hover details with `display.tooltip`; the preview and Power BI export attach SVG `<title>` plus safe `title`/`aria-label` metadata to bar, pie, and line chart marks. Line charts show visible point markers at each tooltip target so users can see where to hover.
 
 ### Bar Chart Options
 

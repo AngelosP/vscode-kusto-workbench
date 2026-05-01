@@ -173,6 +173,8 @@ declare global {
 		// =====================================================================
 		schedulePersist: (reason?: string, immediate?: boolean) => void;
 		handleDocumentDataMessage: (message: any) => void;
+		__kustoMarkSectionAgentTouched?: (sectionId: string, beforeSignature?: string) => void;
+		__kustoGetSectionSerializedSignature?: (sectionId: string) => string;
 		__kustoOnQueryResult: (boxId: string, result: any) => void;
 		__kustoRequestAddSection: (kind: string) => void;
 		__kustoSetCompatibilityMode: (enabled: boolean) => void;

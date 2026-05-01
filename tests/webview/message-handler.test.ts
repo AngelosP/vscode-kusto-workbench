@@ -1,4 +1,5 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { KwSectionShell } from '../../src/webview/components/kw-section-shell.js';
 
 const handlerState = vi.hoisted(() => ({
 	sqlConnections: [] as Array<Record<string, unknown>>,
@@ -11,6 +12,23 @@ const handlerState = vi.hoisted(() => ({
 	schemaMetaByConnDb: {} as Record<string, unknown>,
 	pendingSchemaWorkerUpdateByBoxId: {} as Record<string, unknown>,
 	schemaRequestTokenByBoxId: {} as Record<string, string>,
+	queryEditors: {} as Record<string, any>,
+	optimizationMetadataByBoxId: {} as Record<string, any>,
+	pState: {
+		isSessionFile: false,
+		documentUri: '',
+		documentKind: 'kqlx',
+		allowedSectionKinds: ['query', 'chart', 'python', 'url', 'markdown'],
+		defaultSectionKind: 'query',
+		compatibilityMode: false,
+		compatibilitySingleKind: 'query',
+		upgradeRequestType: 'requestUpgradeToKqlx',
+		compatibilityTooltip: '',
+		copilotChatFirstTimeDismissed: false,
+		devNotesSections: [],
+		lastExecutedBox: '',
+		resultsVisibleByBoxId: {},
+	} as Record<string, unknown>,
 }));
 
 const mocks = {
@@ -22,6 +40,9 @@ const mocks = {
 	updateSqlConnectionSelects: vi.fn(),
 	updateSqlDatabaseSelect: vi.fn(),
 	onSqlDatabasesError: vi.fn(),
+	getQuerySectionElement: vi.fn(),
+	getConnectionId: vi.fn(() => ''),
+	getDatabase: vi.fn(() => ''),
 	updateSqlFavoritesUiForAllBoxes: vi.fn(),
 	getSqlSectionElement: vi.fn(),
 	parseKustoExplorerConnectionsXml: vi.fn(),
@@ -42,25 +63,14 @@ const mocks = {
 	setCaretDocsEnabled: vi.fn(),
 	setAutoTriggerAutocompleteEnabled: vi.fn(),
 	setCopilotInlineCompletionsEnabled: vi.fn(),
+	setRunMode: vi.fn(),
 	updateCaretDocsToggleButtons: vi.fn(),
 	updateAutoTriggerAutocompleteToggleButtons: vi.fn(),
 	updateCopilotInlineCompletionsToggleButtons: vi.fn(),
 };
 
 vi.mock('../../src/webview/shared/persistence-state.js', () => ({
-	pState: {
-		isSessionFile: false,
-		documentUri: '',
-		documentKind: 'kqlx',
-		allowedSectionKinds: ['query', 'chart', 'python', 'url', 'markdown'],
-		defaultSectionKind: 'query',
-		compatibilitySingleKind: 'query',
-		upgradeRequestType: 'requestUpgradeToKqlx',
-		compatibilityTooltip: '',
-		copilotChatFirstTimeDismissed: false,
-		devNotesSections: [],
-		lastExecutedBox: '',
-	}
+	pState: handlerState.pState,
 }));
 
 vi.mock('../../src/webview/shared/webview-messages.js', () => ({
@@ -89,10 +99,15 @@ vi.mock('../../src/webview/core/error-renderer.js', () => ({
 
 vi.mock('../../src/webview/core/section-factory.js', () => ({
 	addQueryBox: vi.fn(() => 'query_1'),
-	__kustoGetQuerySectionElement: vi.fn(() => null),
+	removeQueryBox: vi.fn(),
+	toggleCacheControls: vi.fn(),
+	__kustoGetQuerySectionElement: mocks.getQuerySectionElement,
 	__kustoSetSectionName: vi.fn(),
-	__kustoGetConnectionId: vi.fn(() => ''),
-	__kustoGetDatabase: vi.fn(() => ''),
+	__kustoGetSectionName: vi.fn(() => ''),
+	__kustoPickNextAvailableSectionLetterName: vi.fn(() => 'A'),
+	__kustoGetConnectionId: mocks.getConnectionId,
+	__kustoGetDatabase: mocks.getDatabase,
+	__kustoLog: vi.fn(),
 	updateConnectionSelects: mocks.updateConnectionSelects,
 	updateDatabaseSelect: mocks.updateDatabaseSelect,
 	onDatabasesError: mocks.onDatabasesError,
@@ -142,20 +157,27 @@ vi.mock('../../src/webview/sections/kw-query-toolbar.js', () => ({
 	updateCaretDocsToggleButtons: mocks.updateCaretDocsToggleButtons,
 	updateAutoTriggerAutocompleteToggleButtons: mocks.updateAutoTriggerAutocompleteToggleButtons,
 	updateCopilotInlineCompletionsToggleButtons: mocks.updateCopilotInlineCompletionsToggleButtons,
-	setRunMode: vi.fn(),
+	getRunMode: vi.fn(() => 'all'),
+	setRunMode: mocks.setRunMode,
+	closeRunMenu: vi.fn(),
+	functionRunDialogOpenByBoxId: {},
 }));
 
-vi.mock('../../src/webview/sections/query-execution.controller.js', () => ({
-	executeQuery: vi.fn(),
-	setQueryExecuting: mocks.setQueryExecuting,
-	__kustoSetResultsVisible: mocks.setResultsVisible,
-	__kustoSetLinkedOptimizationMode: vi.fn(),
-	displayComparisonSummary: vi.fn(),
-	optimizeQueryWithCopilot: vi.fn(async () => 'query_compare_1'),
-	__kustoSetOptimizeInProgress: vi.fn(),
-	__kustoHideOptimizePromptForBox: vi.fn(),
-	__kustoApplyOptimizeQueryOptions: vi.fn(),
-}));
+vi.mock('../../src/webview/sections/query-execution.controller.js', async () => {
+	const actual = await vi.importActual<typeof import('../../src/webview/sections/query-execution.controller.js')>('../../src/webview/sections/query-execution.controller.js');
+	return {
+		...actual,
+		executeQuery: vi.fn(),
+		setQueryExecuting: mocks.setQueryExecuting,
+		__kustoSetResultsVisible: mocks.setResultsVisible,
+		__kustoSetLinkedOptimizationMode: vi.fn(),
+		displayComparisonSummary: vi.fn(),
+		optimizeQueryWithCopilot: actual.optimizeQueryWithCopilot,
+		__kustoSetOptimizeInProgress: vi.fn(),
+		__kustoHideOptimizePromptForBox: vi.fn(),
+		__kustoApplyOptimizeQueryOptions: vi.fn(),
+	};
+});
 
 vi.mock('../../src/webview/core/persistence.js', () => ({
 	schedulePersist: vi.fn(),
@@ -208,9 +230,11 @@ vi.mock('../../src/webview/core/state.js', () => ({
 	setCaretDocsEnabled: mocks.setCaretDocsEnabled,
 	setAutoTriggerAutocompleteEnabled: mocks.setAutoTriggerAutocompleteEnabled,
 	setCopilotInlineCompletionsEnabled: mocks.setCopilotInlineCompletionsEnabled,
-	queryEditors: {},
+	queryEditors: handlerState.queryEditors,
+	queryExecutionTimers: {},
+	pendingFavoriteSelectionByBoxId: {},
 	cachedDatabases: {},
-	optimizationMetadataByBoxId: {},
+	optimizationMetadataByBoxId: handlerState.optimizationMetadataByBoxId,
 	schemaByConnDb: handlerState.schemaByConnDb,
 	schemaMetaByConnDb: handlerState.schemaMetaByConnDb,
 	schemaRequestResolversByBoxId: {},
@@ -238,6 +262,7 @@ type FakeHtmlSection = HTMLElement & {
 	getMode: ReturnType<typeof vi.fn>;
 	setMode: ReturnType<typeof vi.fn>;
 	fitToContents: ReturnType<typeof vi.fn>;
+	previewHeightUserSet?: boolean;
 	updateComplete: Promise<void>;
 };
 
@@ -265,6 +290,51 @@ function createFakeHtmlSection(id: string): FakeHtmlSection {
 	return el;
 }
 
+type FakeSectionHost = HTMLElement & {
+	serialize: ReturnType<typeof vi.fn>;
+	copilotWriteQuerySetQuery?: ReturnType<typeof vi.fn>;
+};
+
+function ensureQueriesContainer(): HTMLElement {
+	let container = document.getElementById('queries-container');
+	if (!container) {
+		container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+	}
+	return container;
+}
+
+function createSectionWithShell(id: string, initialState: Record<string, unknown> = { id, type: 'query', query: '' }) {
+	const container = ensureQueriesContainer();
+	const section = document.createElement('div') as FakeSectionHost;
+	section.id = id;
+	let serializedState = initialState;
+	section.serialize = vi.fn(() => serializedState);
+	section.attachShadow({ mode: 'open' });
+	const shell = document.createElement('kw-section-shell') as KwSectionShell;
+	section.shadowRoot!.appendChild(shell);
+	container.appendChild(section);
+	return {
+		section,
+		shell,
+		setSerializedState: (nextState: Record<string, unknown>) => { serializedState = nextState; },
+	};
+}
+
+function createQueryCacheControls(boxId: string): void {
+	const enabled = document.createElement('input');
+	enabled.id = `${boxId}_cache_enabled`;
+	enabled.type = 'checkbox';
+	const value = document.createElement('input');
+	value.id = `${boxId}_cache_value`;
+	value.value = '1';
+	const unit = document.createElement('select');
+	unit.id = `${boxId}_cache_unit`;
+	unit.value = 'h';
+	document.body.append(enabled, value, unit);
+}
+
 function dispatchHostMessage(data: Record<string, unknown>): void {
 	window.dispatchEvent(new MessageEvent('message', { data }));
 }
@@ -276,6 +346,7 @@ describe('message-handler dispatch', () => {
 			getState: vi.fn(() => ({})),
 			setState: vi.fn(),
 		};
+		await import('../../src/webview/components/kw-section-shell.js');
 		await import('../../src/webview/core/message-handler.js');
 	});
 
@@ -291,9 +362,14 @@ describe('message-handler dispatch', () => {
 		for (const key of Object.keys(handlerState.schemaMetaByConnDb)) delete handlerState.schemaMetaByConnDb[key];
 		for (const key of Object.keys(handlerState.pendingSchemaWorkerUpdateByBoxId)) delete handlerState.pendingSchemaWorkerUpdateByBoxId[key];
 		for (const key of Object.keys(handlerState.schemaRequestTokenByBoxId)) delete handlerState.schemaRequestTokenByBoxId[key];
+		for (const key of Object.keys(handlerState.queryEditors)) delete handlerState.queryEditors[key];
+		for (const key of Object.keys(handlerState.optimizationMetadataByBoxId)) delete handlerState.optimizationMetadataByBoxId[key];
 		delete (window as any).__kustoSqlLastConnectionId;
 		delete (window as any).__kustoSqlLastDatabase;
 		vi.clearAllMocks();
+		mocks.getQuerySectionElement.mockReturnValue(null);
+		mocks.getConnectionId.mockReturnValue('');
+		mocks.getDatabase.mockReturnValue('');
 		mocks.getSqlSectionElement.mockReturnValue(null);
 	});
 
@@ -569,6 +645,601 @@ describe('message-handler dispatch', () => {
 	});
 });
 
+describe('changedSections agent provenance', () => {
+	beforeAll(async () => {
+		await import('../../src/webview/components/kw-section-shell.js');
+		await import('../../src/webview/core/message-handler.js');
+	});
+
+	beforeEach(() => {
+		document.body.innerHTML = '';
+		dispatchHostMessage({ type: 'documentData', ok: true, state: { sections: [] } });
+		vi.clearAllMocks();
+		mocks.getQuerySectionElement.mockReturnValue(null);
+		mocks.getConnectionId.mockReturnValue('');
+		mocks.getDatabase.mockReturnValue('');
+		mocks.getSqlSectionElement.mockReturnValue(null);
+		mocks.setRunMode.mockImplementation(() => undefined);
+		for (const key of Object.keys(handlerState.queryEditors)) delete handlerState.queryEditors[key];
+		for (const key of Object.keys(handlerState.optimizationMetadataByBoxId)) delete handlerState.optimizationMetadataByBoxId[key];
+		handlerState.pState.compatibilityMode = false;
+		handlerState.pState.compatibilitySingleKind = 'query';
+	});
+
+	it('clears the agent marker when a section becomes clean', async () => {
+		const { section, shell } = createSectionWithShell('query_1');
+		shell.agentTouched = true;
+		shell.hasChanges = 'modified';
+		shell.showDiffBtn = true;
+		section.setAttribute('has-changes', 'modified');
+		await shell.updateComplete;
+
+		dispatchHostMessage({ type: 'changedSections', changes: [] });
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('');
+		expect(shell.showDiffBtn).toBe(false);
+		expect(shell.agentTouched).toBe(false);
+		expect(shell.hasAttribute('agent-touched')).toBe(false);
+		expect(section.hasAttribute('has-changes')).toBe(false);
+	});
+
+	it('confirms pending agent provenance when a tool change becomes modified', async () => {
+		let query = 'StormEvents | count';
+		const { section, shell, setSerializedState } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query });
+		section.copilotWriteQuerySetQuery = vi.fn((nextQuery: string) => {
+			query = String(nextQuery);
+			setSerializedState({ id: 'query_1', type: 'query', query });
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+
+		dispatchHostMessage({ type: 'copilotWriteQuerySetQuery', boxId: 'query_1', query: 'StormEvents | take 10' });
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'modified', contentChanged: true, settingsChanged: false }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.showDiffBtn).toBe(true);
+		expect(shell.agentTouched).toBe(true);
+		expect(shell.hasAttribute('agent-touched')).toBe(true);
+	});
+
+	it('keeps pending agent provenance if the user edits before dirty reconciliation', async () => {
+		let query = 'StormEvents | count';
+		const { section, shell, setSerializedState } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query });
+		section.copilotWriteQuerySetQuery = vi.fn((nextQuery: string) => {
+			query = String(nextQuery);
+			setSerializedState({ id: 'query_1', type: 'query', query });
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+
+		dispatchHostMessage({ type: 'copilotWriteQuerySetQuery', boxId: 'query_1', query: 'StormEvents | take 10' });
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		query = 'StormEvents | take 10\n| summarize Count=count()';
+		setSerializedState({ id: 'query_1', type: 'query', query });
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'modified', contentChanged: true, settingsChanged: false }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(true);
+		expect(shell.hasAttribute('agent-touched')).toBe(true);
+	});
+
+	it('confirms pending agent provenance when a tool-added section is new', async () => {
+		const { shell } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
+
+		dispatchHostMessage({ type: 'toolAddSection', requestId: 'r-new', input: { type: 'query', query: 'print 1' } });
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'new', contentChanged: true, settingsChanged: true }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('new');
+		expect(shell.showDiffBtn).toBe(false);
+		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('does not inherit agent provenance from a no-op Copilot query update', async () => {
+		let query = 'StormEvents | count';
+		const { section, shell, setSerializedState } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query });
+		section.copilotWriteQuerySetQuery = vi.fn((nextQuery: string) => {
+			query = String(nextQuery);
+			setSerializedState({ id: 'query_1', type: 'query', query });
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+
+		dispatchHostMessage({ type: 'copilotWriteQuerySetQuery', boxId: 'query_1', query });
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		query = 'StormEvents | summarize Count=count()';
+		setSerializedState({ id: 'query_1', type: 'query', query });
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'modified', contentChanged: true, settingsChanged: false }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(false);
+		expect(shell.hasAttribute('agent-touched')).toBe(false);
+	});
+
+	it('does not restore agent provenance after save-clear followed by manual edit', async () => {
+		let query = 'StormEvents | count';
+		const { section, shell, setSerializedState } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query });
+		section.copilotWriteQuerySetQuery = vi.fn((nextQuery: string) => {
+			query = String(nextQuery);
+			setSerializedState({ id: 'query_1', type: 'query', query });
+		});
+		mocks.getQuerySectionElement.mockReturnValue(section);
+
+		dispatchHostMessage({ type: 'copilotWriteQuerySetQuery', boxId: 'query_1', query: 'StormEvents | take 10' });
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'modified', contentChanged: true, settingsChanged: false }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+		expect(shell.agentTouched).toBe(true);
+
+		dispatchHostMessage({ type: 'changedSections', changes: [] });
+		await Promise.resolve();
+		await shell.updateComplete;
+		expect(shell.agentTouched).toBe(false);
+
+		query = 'StormEvents | summarize Count=count()';
+		setSerializedState({ id: 'query_1', type: 'query', query });
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'modified', contentChanged: true, settingsChanged: false }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(false);
+		expect(shell.hasAttribute('agent-touched')).toBe(false);
+	});
+
+	it('does not mark compatibility metadata-only tool changes as pending provenance', async () => {
+		const pState = (await import('../../src/webview/shared/persistence-state.js')).pState as any;
+		pState.compatibilityMode = true;
+		pState.compatibilitySingleKind = 'sql';
+		let sqlState = { id: 'sql_1', type: 'sql', query: 'select 1', name: 'Original' };
+		const { section, shell, setSerializedState } = createSectionWithShell('sql_1', sqlState);
+		(section as any).setName = vi.fn((name: string) => {
+			sqlState = { ...sqlState, name };
+			setSerializedState(sqlState);
+		});
+		mocks.getSqlSectionElement.mockReturnValue(section);
+
+		dispatchHostMessage({
+			type: 'toolConfigureSqlSection',
+			requestId: 'r-sql-metadata',
+			input: { sectionId: 'sql_1', name: 'Renamed SQL' },
+		});
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		sqlState = { ...sqlState, query: 'select 2' };
+		setSerializedState(sqlState);
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'sql_1', status: 'modified', contentChanged: true, settingsChanged: false }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(false);
+		expect(shell.hasAttribute('agent-touched')).toBe(false);
+	});
+
+	it('marks reused optimized comparison sections as agent-touched when dirty', async () => {
+		let query = 'Old optimized query';
+		const { shell, setSerializedState } = createSectionWithShell('query_cmp', { id: 'query_cmp', type: 'query', query });
+		handlerState.queryEditors.query_cmp = {
+			setValue: vi.fn((nextQuery: string) => {
+				query = String(nextQuery);
+				setSerializedState({ id: 'query_cmp', type: 'query', query });
+			}),
+		};
+		handlerState.queryEditors.query_src = { getValue: vi.fn(() => 'Source query') };
+		handlerState.optimizationMetadataByBoxId.query_src = { comparisonBoxId: 'query_cmp' };
+
+		dispatchHostMessage({
+			type: 'optimizeQueryReady',
+			boxId: 'query_src',
+			optimizedQuery: 'New optimized query',
+			queryName: 'Source',
+		});
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_cmp', status: 'modified', contentChanged: true, settingsChanged: false }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('marks newly created optimized comparison sections as agent-touched when new', async () => {
+		const { shell } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'New optimized query' });
+		handlerState.queryEditors.query_src = { getValue: vi.fn(() => 'Source query') };
+
+		dispatchHostMessage({
+			type: 'optimizeQueryReady',
+			boxId: 'query_src',
+			optimizedQuery: 'New optimized query',
+			queryName: 'Source',
+		});
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'new', contentChanged: true, settingsChanged: true }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('new');
+		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('marks tool-driven collapse changes as agent-touched when dirty', async () => {
+		let expanded = true;
+		const { section, shell, setSerializedState } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1', expanded });
+		(section as any).setExpanded = vi.fn((nextExpanded: boolean) => {
+			expanded = nextExpanded;
+			setSerializedState({ id: 'query_1', type: 'query', query: 'print 1', expanded });
+		});
+
+		dispatchHostMessage({ type: 'toolCollapseSection', requestId: 'r-collapse', sectionId: 'query_1', collapsed: true });
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'modified', contentChanged: false, settingsChanged: true }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('exposes a bridge for Copilot chat inserted sections', async () => {
+		const { shell } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'print 1' });
+
+		window.__kustoMarkSectionAgentTouched?.('query_1');
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'new', contentChanged: true, settingsChanged: true }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('new');
+		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('marks ensured comparison boxes as agent-touched when dirty', async () => {
+		let comparisonQuery = 'Old comparison query';
+		const { shell, setSerializedState } = createSectionWithShell('query_cmp', { id: 'query_cmp', type: 'query', query: comparisonQuery });
+		handlerState.queryEditors.query_src = {
+			getModel: vi.fn(() => ({ getValue: vi.fn(() => 'Source query') })),
+			getValue: vi.fn(() => 'Source query'),
+		};
+		handlerState.queryEditors.query_cmp = {
+			setValue: vi.fn((nextQuery: string) => {
+				comparisonQuery = String(nextQuery);
+				setSerializedState({ id: 'query_cmp', type: 'query', query: comparisonQuery });
+			}),
+		};
+		handlerState.optimizationMetadataByBoxId.query_src = { comparisonBoxId: 'query_cmp' };
+		mocks.getConnectionId.mockReturnValue('conn-1');
+		mocks.getDatabase.mockReturnValue('db-1');
+
+		dispatchHostMessage({ type: 'ensureComparisonBox', requestId: 'r-ensure', boxId: 'query_src', query: 'New comparison query' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_cmp', status: 'modified', contentChanged: true, settingsChanged: false }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('marks source settings changed by ensured comparison as agent-touched when dirty', async () => {
+		let sourceState = { id: 'query_src', type: 'query', query: 'Source query', runMode: 'take100' };
+		let comparisonState = { id: 'query_cmp', type: 'query', query: 'Old comparison query', runMode: 'take100' };
+		const { shell, setSerializedState: setSourceSerializedState } = createSectionWithShell('query_src', sourceState);
+		const { setSerializedState: setComparisonSerializedState } = createSectionWithShell('query_cmp', comparisonState);
+		handlerState.queryEditors.query_src = {
+			getModel: vi.fn(() => ({ getValue: vi.fn(() => 'Source query') })),
+			getValue: vi.fn(() => 'Source query'),
+		};
+		handlerState.queryEditors.query_cmp = {
+			setValue: vi.fn((nextQuery: string) => {
+				comparisonState = { ...comparisonState, query: String(nextQuery) };
+				setComparisonSerializedState(comparisonState);
+			}),
+		};
+		handlerState.optimizationMetadataByBoxId.query_src = { comparisonBoxId: 'query_cmp' };
+		mocks.getConnectionId.mockReturnValue('conn-1');
+		mocks.getDatabase.mockReturnValue('db-1');
+		mocks.setRunMode.mockImplementation((sectionId: string, mode: string) => {
+			if (sectionId === 'query_src') {
+				sourceState = { ...sourceState, runMode: mode };
+				setSourceSerializedState(sourceState);
+			} else if (sectionId === 'query_cmp') {
+				comparisonState = { ...comparisonState, runMode: mode };
+				setComparisonSerializedState(comparisonState);
+			}
+		});
+
+		dispatchHostMessage({ type: 'ensureComparisonBox', requestId: 'r-ensure-source', boxId: 'query_src', query: 'New comparison query' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_src', status: 'modified', contentChanged: false, settingsChanged: true }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('does not mark manual compare-created sections as agent-touched', async () => {
+		let sourceState = { id: 'query_src', type: 'query', query: 'Source query', runMode: 'take100' };
+		let comparisonState = { id: 'query_1', type: 'query', query: 'Source query', runMode: 'take100' };
+		const { setSerializedState: setSourceSerializedState } = createSectionWithShell('query_src', sourceState);
+		const { shell, setSerializedState: setComparisonSerializedState } = createSectionWithShell('query_1', comparisonState);
+		handlerState.queryEditors.query_src = {
+			getModel: vi.fn(() => ({ getValue: vi.fn(() => 'Source query') })),
+			getValue: vi.fn(() => 'Source query'),
+		};
+		mocks.getConnectionId.mockReturnValue('conn-1');
+		mocks.getDatabase.mockReturnValue('db-1');
+		mocks.setRunMode.mockImplementation((sectionId: string, mode: string) => {
+			if (sectionId === 'query_src') {
+				sourceState = { ...sourceState, runMode: mode };
+				setSourceSerializedState(sourceState);
+			} else if (sectionId === 'query_1') {
+				comparisonState = { ...comparisonState, runMode: mode };
+				setComparisonSerializedState(comparisonState);
+			}
+		});
+		const { optimizeQueryWithCopilot } = await import('../../src/webview/sections/query-execution.controller.js');
+
+		await optimizeQueryWithCopilot('query_src', null, { skipExecute: true });
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'new', contentChanged: true, settingsChanged: true }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('new');
+		expect(shell.agentTouched).toBe(false);
+	});
+
+	it('marks compare-query-created comparison boxes as agent-touched when new', async () => {
+		const { shell } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'Comparison query' });
+		createQueryCacheControls('query_src');
+		createQueryCacheControls('query_1');
+		handlerState.queryEditors.query_src = {
+			getModel: vi.fn(() => ({ getValue: vi.fn(() => 'Source query') })),
+			getValue: vi.fn(() => 'Source query'),
+		};
+		mocks.getConnectionId.mockReturnValue('conn-1');
+		mocks.getDatabase.mockReturnValue('db-1');
+
+		dispatchHostMessage({ type: 'compareQueryPerformanceWithQuery', boxId: 'query_src', query: 'Comparison query' });
+		await new Promise(resolve => setTimeout(resolve, 0));
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'new', contentChanged: true, settingsChanged: true }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('new');
+		expect(shell.agentTouched).toBe(true);
+		await new Promise(resolve => setTimeout(resolve, 120));
+	});
+
+	it('marks accepted optimized source queries as agent-touched when dirty', async () => {
+		let sourceQuery = 'Source query';
+		const { shell, setSerializedState } = createSectionWithShell('query_src', { id: 'query_src', type: 'query', query: sourceQuery });
+		createSectionWithShell('query_cmp', { id: 'query_cmp', type: 'query', query: 'Optimized query' });
+		handlerState.queryEditors.query_src = {
+			setValue: vi.fn((nextQuery: string) => {
+				sourceQuery = String(nextQuery);
+				setSerializedState({ id: 'query_src', type: 'query', query: sourceQuery });
+			}),
+		};
+		handlerState.queryEditors.query_cmp = { getValue: vi.fn(() => 'Optimized query') };
+		handlerState.optimizationMetadataByBoxId.query_cmp = { sourceBoxId: 'query_src', optimizedQuery: 'Optimized query' };
+		const { acceptOptimizations } = await import('../../src/webview/sections/query-execution.controller.js');
+
+		acceptOptimizations('query_cmp');
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_src', status: 'modified', contentChanged: true, settingsChanged: false }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('marks delegated Kusto Copilot run-mode changes as agent-touched when dirty', async () => {
+		let state = { id: 'query_1', type: 'query', query: 'print 1', runMode: 'take100' };
+		const { section, shell, setSerializedState } = createSectionWithShell('query_1', state);
+		(section as any).setCopilotChatVisible = vi.fn();
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.getConnectionId.mockReturnValue('conn-1');
+		mocks.getDatabase.mockReturnValue('db-1');
+		mocks.setRunMode.mockImplementation((sectionId: string, mode: string) => {
+			if (sectionId !== 'query_1') return;
+			state = { ...state, runMode: mode };
+			setSerializedState(state);
+		});
+
+		dispatchHostMessage({ type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-copilot', input: { sectionId: 'query_1', question: 'Help' } });
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'modified', contentChanged: false, settingsChanged: true }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+		await new Promise(resolve => setTimeout(resolve, 120));
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('marks auto-created delegated Kusto Copilot sections as agent-touched when new', async () => {
+		const { shell } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: '' });
+
+		dispatchHostMessage({ type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-new', input: { question: 'Help' } });
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'new', contentChanged: true, settingsChanged: true }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('new');
+		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('marks delegated SQL Copilot run-mode changes as agent-touched when dirty', async () => {
+		let state = { id: 'sql_1', type: 'sql', query: 'select 1', runMode: 'top100' };
+		const { section, shell, setSerializedState } = createSectionWithShell('sql_1', state);
+		(section as any).setCopilotChatVisible = vi.fn();
+		(section as any).getCopilotChatEl = vi.fn(() => null);
+		mocks.getSqlSectionElement.mockReturnValue(section);
+		mocks.setRunMode.mockImplementation((sectionId: string, mode: string) => {
+			if (sectionId !== 'sql_1') return;
+			state = { ...state, runMode: mode };
+			setSerializedState(state);
+		});
+
+		dispatchHostMessage({ type: 'toolDelegateToSqlCopilot', requestId: 'r-sql-copilot', input: { sectionId: 'sql_1', question: 'Help' } });
+		await Promise.resolve();
+		expect(shell.agentTouched).toBe(false);
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'sql_1', status: 'modified', contentChanged: false, settingsChanged: true }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+		await new Promise(resolve => setTimeout(resolve, 170));
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('reconciles legacy copilotQuery sections when dirty', async () => {
+		const { shell } = createSectionWithShell('copilotQuery_1', { id: 'copilotQuery_1', type: 'copilotQuery', query: 'print 1' });
+
+		window.__kustoMarkSectionAgentTouched?.('copilotQuery_1');
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'copilotQuery_1', status: 'modified', contentChanged: true, settingsChanged: false }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('clears visible agent markers when document data is re-applied without remounting', async () => {
+		const { shell } = createSectionWithShell('query_1');
+		shell.agentTouched = true;
+		shell.hasChanges = 'modified';
+		await shell.updateComplete;
+
+		dispatchHostMessage({ type: 'documentData', ok: true, state: { sections: [] } });
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(mocks.handleDocumentDataMessage).toHaveBeenCalledTimes(1);
+		expect(shell.agentTouched).toBe(false);
+		expect(shell.hasAttribute('agent-touched')).toBe(false);
+	});
+
+	it('suppresses stale visible agent markers when no provenance state exists', async () => {
+		const { shell } = createSectionWithShell('query_1');
+		shell.agentTouched = true;
+		await shell.updateComplete;
+
+		dispatchHostMessage({
+			type: 'changedSections',
+			changes: [{ id: 'query_1', status: 'modified', contentChanged: true, settingsChanged: false }],
+		});
+		await Promise.resolve();
+		await shell.updateComplete;
+
+		expect(shell.hasChanges).toBe('modified');
+		expect(shell.agentTouched).toBe(false);
+		expect(shell.hasAttribute('agent-touched')).toBe(false);
+	});
+});
+
 /**
  * Regression tests: tool name updates must use __kustoSetSectionName.
  *
@@ -587,7 +1258,12 @@ describe('tool section name persistence', () => {
 
 	beforeEach(() => {
 		vi.clearAllMocks();
+		mocks.getQuerySectionElement.mockReturnValue(null);
+		mocks.getConnectionId.mockReturnValue('');
+		mocks.getDatabase.mockReturnValue('');
 		mocks.getSqlSectionElement.mockReturnValue(null);
+		for (const key of Object.keys(handlerState.queryEditors)) delete handlerState.queryEditors[key];
+		for (const key of Object.keys(handlerState.optimizationMetadataByBoxId)) delete handlerState.optimizationMetadataByBoxId[key];
 	});
 
 	it('toolConfigureQuerySection calls __kustoSetSectionName', async () => {
@@ -640,6 +1316,25 @@ describe('tool section name persistence', () => {
 		expect(setSectionNameSpy).toHaveBeenCalledWith('transformation_1', 'Pivot Data');
 	});
 
+	it('toolConfigureSqlSection schedules persistence after a name update', async () => {
+		const { section, setSerializedState } = createSectionWithShell('sql_1', { id: 'sql_1', type: 'sql', query: 'select 1', name: 'Original' });
+		(section as any).setName = vi.fn((name: string) => {
+			setSerializedState({ id: 'sql_1', type: 'sql', query: 'select 1', name });
+		});
+		mocks.getSqlSectionElement.mockReturnValue(section);
+		const persistence = await import('../../src/webview/core/persistence.js');
+
+		dispatchHostMessage({
+			type: 'toolConfigureSqlSection',
+			requestId: 'r-sql-name',
+			input: { sectionId: 'sql_1', name: 'Renamed SQL' },
+		});
+		await new Promise(r => setTimeout(r, 50));
+
+		expect((section as any).setName).toHaveBeenCalledWith('Renamed SQL');
+		expect(persistence.schedulePersist).toHaveBeenCalledWith(undefined, true);
+	});
+
 	it('toolConfigureHtmlSection auto-fits when code changes', async () => {
 		const htmlEl = createFakeHtmlSection('html_1');
 
@@ -653,6 +1348,24 @@ describe('tool section name persistence', () => {
 
 		expect(htmlEl.setCode).toHaveBeenCalledWith('<main>Dashboard</main>');
 		expect(htmlEl.fitToContents).toHaveBeenCalled();
+	});
+
+	it('toolConfigureHtmlSection preserves manual preview height when code changes', async () => {
+		const htmlEl = createFakeHtmlSection('html_manual_preview');
+		htmlEl.getMode.mockReturnValue('preview');
+		htmlEl.previewHeightUserSet = true;
+
+		dispatchHostMessage({
+			type: 'toolConfigureHtmlSection',
+			requestId: 'r5-manual',
+			sectionId: 'html_manual_preview',
+			code: '<main>Dashboard</main>',
+		});
+		await new Promise(r => setTimeout(r, 50));
+
+		expect(htmlEl.setCode).toHaveBeenCalledWith('<main>Dashboard</main>');
+		expect(htmlEl.fitToContents).not.toHaveBeenCalled();
+		expect(htmlEl.previewHeightUserSet).toBe(true);
 	});
 
 	it('toolConfigureHtmlSection does not auto-fit for name-only updates', async () => {

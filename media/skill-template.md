@@ -6,7 +6,7 @@ description: Operate Kusto Workbench to query Azure Data Explorer and SQL source
 
 tools: ['createKustoFile', 'askKustoCopilot', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'addSection', 'removeSection', 'reorderSections', 'collapseExpandSection', 'configureKustoQuerySection', 'updateMarkdownSection', 'configureChart', 'configureTransformation', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'manageDevelopmentNotes', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
 
-# version: 8 - Auto-updated by Kusto Workbench. Do not remove this line.
+# version: 10 - Auto-updated by Kusto Workbench. Do not remove this line.
 
 ---
 
@@ -104,9 +104,10 @@ Use HTML sections for interactive dashboards, rich reports, and Power BI-ready d
 7. For dashboard bar charts, use `segments` for multi-color status bars, `scale: "normalized100"` plus `variant: "distribution"` for compact 100% distribution bars, `thresholdBands` for fixed numeric ranges, and `colorRules` for whole-bar conditional color. Keep these in provenance and render them with `KustoWorkbench.renderChart(bindingId)`.
 8. For stacked bars inside table cells, use a `display.type: "table"` binding with a visual-only column containing `cellBar: { segments: [...], scale: "normalized100" | "relative" }`, then call `KustoWorkbench.renderTable(bindingId)`. This is Power BI export-ready; `bindHtml(...toTable())` is not export-ready for visual cells. Use `orderBy` whenever the table uses `top`.
 9. For conditional table-cell formatting, use `columns[].cellFormat` directly on the grouped or aggregate table column being displayed. Never use table-level `cellFormats`, `conditionalFormats`, or format-only columns. For aggregate columns, set `name` to the output alias and `sourceColumn` to the fact column; `cellFormat.valueColumn` is only for comparing against another already-summarized numeric column. Rules compare raw summarized numeric values, so percentage thresholds must match the query's scale. Prefer fractional rate columns from `0` to `1`, use `format: "0.##%"`, and compare against thresholds such as `0.8` for 80%; `0.68` renders as `68%` in preview and Power BI export. If the query returns percentage points like `80`, divide by 100 before binding or use a non-percent numeric format. Do not combine `cellFormat` with `cellBar`, and do not put `cellFormat` on repeated-table `repeatColumns`; use it on inner `table.columns`.
-10. For repeated grouped table sections, use `display.type: "repeatedTable"` with `repeatBy`, optional `repeatColumns`, optional `repeatOrderBy`/`repeatTop`, and an inner `table` spec; bind it to a visible container, not a `<table>` or `<tbody>`.
-11. Use `preAggregate` for supported table, repeatedTable, pivot, bar, pie, and line bindings that need two-level aggregation, such as per-session distinct counts followed by a distribution. Keep `compute.name` distinct from fact and preAggregate group columns.
-12. Call `#configureHtmlSection`, then `#validateHtmlDashboard`. Fix all issues and revalidate before switching to preview mode.
+10. For dashboard-only hover details that survive Power BI export, add `tooltip: { fields: [...] }` to table, bar, pie, line, or repeated-table inner `table` display specs. Use row fields for rendered row columns and aggregate fields for extra `COUNT`, `SUM`, `AVG`, `AVERAGE`, `MIN`, `MAX`, `DCOUNT`, or `DISTINCTCOUNT` values. `COUNT` is row-count-only and must omit `column`; every other aggregate must include `column`. The export path emits static `title`, `aria-label`, and SVG `<title>` metadata, not custom JavaScript or native Power BI tooltip field wells. Line charts show visible point markers at tooltip targets.
+11. For repeated grouped table sections, use `display.type: "repeatedTable"` with `repeatBy`, optional `repeatColumns`, optional `repeatOrderBy`/`repeatTop`, and an inner `table` spec; bind it to a visible container, not a `<table>` or `<tbody>`.
+12. Use `preAggregate` for supported table, repeatedTable, pivot, bar, pie, and line bindings that need two-level aggregation, such as per-session distinct counts followed by a distribution. Keep `compute.name` distinct from fact and preAggregate group columns.
+13. Call `#configureHtmlSection`, then `#validateHtmlDashboard`. Fix all issues and revalidate before switching to preview mode.
 
 Upgrade on touch:
 

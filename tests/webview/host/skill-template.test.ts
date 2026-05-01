@@ -11,8 +11,8 @@ describe('exported Kusto Workbench skill template', () => {
 	const template = readWorkspaceFile('media/skill-template.md');
 
 	it('is bumped to the current template version', () => {
-		expect(TEMPLATE_VERSION).toBe(8);
-		expect(template).toContain('# version: 8 - Auto-updated by Kusto Workbench. Do not remove this line.');
+		expect(TEMPLATE_VERSION).toBe(10);
+		expect(template).toContain('# version: 10 - Auto-updated by Kusto Workbench. Do not remove this line.');
 	});
 
 	it('documents the current tool surface including dashboards, SQL, and development notes', () => {
@@ -41,6 +41,9 @@ describe('exported Kusto Workbench skill template', () => {
 		expect(template).toContain('repeatedTable');
 		expect(template).toContain('cellBar');
 		expect(template).toContain('cellFormat');
+		expect(template).toContain('tooltip: { fields: [...] }');
+		expect(template).toContain('SVG `<title>` metadata');
+		expect(template).toContain('Line charts show visible point markers at tooltip targets.');
 		expect(template).toContain('Never use table-level `cellFormats`');
 		expect(template).toContain('`0.68` renders as `68%`');
 		expect(template).toContain('Keep `compute.name` distinct from fact and preAggregate group columns.');

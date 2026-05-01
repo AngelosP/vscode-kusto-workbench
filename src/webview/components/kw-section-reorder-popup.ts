@@ -370,10 +370,15 @@ export class KwSectionReorderPopup extends LitElement {
 			let changeStatus: '' | 'modified' | 'new' = '';
 			let agentTouched = false;
 			try {
-				const shell = el.shadowRoot?.querySelector('kw-section-shell');
-				const attr = shell?.getAttribute('has-changes') || '';
-				if (attr === 'modified' || attr === 'new') changeStatus = attr;
-				agentTouched = shell?.hasAttribute('agent-touched') ?? false;
+				const shell = el.shadowRoot?.querySelector('kw-section-shell') as any;
+				const propStatus = shell?.hasChanges;
+				const attrStatus = shell?.getAttribute('has-changes') || '';
+				if (propStatus === 'modified' || propStatus === 'new') changeStatus = propStatus;
+				else if (attrStatus === 'modified' || attrStatus === 'new') changeStatus = attrStatus;
+				const propAgentTouched = typeof shell?.agentTouched === 'boolean'
+					? shell.agentTouched
+					: (shell?.hasAttribute('agent-touched') ?? false);
+				agentTouched = !!changeStatus && propAgentTouched;
 			} catch { /* ignore */ }
 			results.push({
 				id,

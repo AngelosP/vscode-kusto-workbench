@@ -453,6 +453,33 @@ describe('findUnsupportedPowerBiBindings', () => {
 		]);
 	});
 
+	it('reports missing columns referenced by dashboard tooltip specs', () => {
+		const html = makeV1Html(
+			{
+				'os-chart': {
+					display: {
+						type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' },
+						tooltip: { fields: [{ label: 'Missing', agg: 'SUM', column: 'MissingMetric' }] },
+					},
+				},
+				'top-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }],
+						tooltip: { fields: [{ label: 'Raw skill', column: 'SkillName' }] },
+					},
+				},
+			},
+			'<div data-kw-bind="os-chart"></div><table data-kw-bind="top-table"></table>',
+		);
+
+		expect(getPowerBiHtmlValidationIssues(html, [barDataSource])).toEqual([
+			'os-chart (display.tooltip.fields[0].column: missing column MissingMetric)',
+			'top-table (display.tooltip.fields[0].column: missing column SkillName)',
+		]);
+	});
+
 	it('reports missing and non-numeric columns referenced by table cell formatting', () => {
 		const html = makeV1Html(
 			{
@@ -612,6 +639,104 @@ describe('findUnsupportedPowerBiBindings', () => {
 			'bad-segment-value (bar: invalid chart spec)',
 			'bad-threshold-scale (bar: invalid chart spec)',
 			'bad-color-scale (bar: invalid chart spec)',
+		]);
+	});
+
+	it('reports malformed dashboard tooltip specs before export', () => {
+		const html = makeV1Html(
+			{
+				'bad-tooltip': {
+					display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, tooltip: { fields: [] } },
+				},
+				'bad-tooltip-agg': {
+					display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, tooltip: { fields: [{ label: 'Median', agg: 'MEDIAN', column: 'LatencyMs' }] } },
+				},
+				'bad-tooltip-count-column': {
+					display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, tooltip: { fields: [{ label: 'Rows', agg: 'COUNT', column: 'DeviceId' }] } },
+				},
+				'bad-tooltip-agg-type': {
+					display: { type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' }, tooltip: { fields: [{ label: 'Rows', agg: ['COUNT'] }] } },
+				},
+			},
+			'<div data-kw-bind="bad-tooltip"></div><div data-kw-bind="bad-tooltip-agg"></div><div data-kw-bind="bad-tooltip-count-column"></div><div data-kw-bind="bad-tooltip-agg-type"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([
+			'bad-tooltip (bar: invalid chart spec)',
+			'bad-tooltip-agg (bar: invalid chart spec)',
+			'bad-tooltip-count-column (bar: invalid chart spec)',
+			'bad-tooltip-agg-type (bar: invalid chart spec)',
+		]);
+	});
+
+	it('rejects misplaced repeated-table tooltip specs before export', () => {
+		const html = makeV1Html(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						tooltip: { fields: [{ label: 'Skill', column: 'SkillName' }] },
+						table: { groupBy: ['OS'], columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }] },
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual(['by-skill (repeatedTable: invalid spec)']);
+	});
+
+	it('rejects table pre-aggregate fields that collide with generated tooltip aliases', () => {
+		const html = makeV1Html(
+			{
+				'top-table': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }],
+						preAggregate: { groupBy: 'OS', compute: { name: '__kw_tooltip_0_0', agg: 'COUNT' } },
+					},
+				},
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						preAggregate: { groupBy: ['__kw_tooltip_0_1'], compute: { name: 'Rows', agg: 'COUNT' } },
+						table: { groupBy: ['OS'], columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT' }] },
+					},
+				},
+			},
+			'<table data-kw-bind="top-table"></table><div data-kw-bind="by-skill"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([
+			'top-table (table: invalid spec)',
+			'by-skill (repeatedTable: invalid spec)',
+		]);
+	});
+
+	it('rejects dashboard chart fields that collide with generated tooltip aliases', () => {
+		const html = makeV1Html(
+			{
+				'bad-chart-group': {
+					display: { type: 'bar', groupBy: '__kw_tooltip_0_0', value: { agg: 'COUNT' } },
+				},
+				'bad-chart-preagg': {
+					display: {
+						type: 'line',
+						xAxis: 'Day',
+						series: [{ agg: 'COUNT' }],
+						preAggregate: { groupBy: 'Day', compute: { name: '__kw_tooltip_0_1', agg: 'COUNT' } },
+					},
+				},
+			},
+			'<div data-kw-bind="bad-chart-group"></div><div data-kw-bind="bad-chart-preagg"></div>',
+		);
+
+		expect(findUnsupportedPowerBiBindings(html)).toEqual([
+			'bad-chart-group (bar: invalid chart spec)',
+			'bad-chart-preagg (line: invalid chart spec)',
 		]);
 	});
 
@@ -1403,6 +1528,40 @@ describe('generateDaxMeasure — v1 table with groupBy', () => {
 		expect(result).not.toContain('"<td>" & [SkillName] & "</td>"');
 	});
 
+	it('generates table row tooltip metadata with escaped dynamic values', () => {
+		const html = makeV1Html(
+			{
+				'services': {
+					display: {
+						type: 'table',
+						groupBy: ['OS'],
+						columns: [{ name: 'OS' }, { name: 'Rows', agg: 'COUNT', format: '#,##0' }],
+						tooltip: {
+							fields: [
+								{ label: 'Service "owner"', column: 'OS' },
+								{ label: 'Devices', agg: 'DCOUNT', column: 'DeviceId', format: '#,##0' },
+								{ label: 'Avg latency', agg: ' AVG ', column: 'LatencyMs', format: '#,##0' },
+							],
+						},
+					},
+				},
+			},
+			'<table data-kw-bind="services"></table>',
+		);
+
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain('__kw_tooltip_0_1');
+		expect(result).toContain('__kw_tooltip_0_2');
+		expect(result).toContain("CALCULATE(AVERAGEX('Fact_Events', [LatencyMs]))");
+		expect(result).toContain("<tr title='");
+		expect(result).toContain("aria-label='");
+		expect(result).toContain('Service &quot;owner&quot;: ');
+		expect(result).toContain('&#10;');
+		expect(result).toContain('UNICHAR(10), "&#10;"');
+		expect(result).toContain('SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE');
+	});
+
 	it('generates conditional badge table cells from raw numeric values', () => {
 		const html = makeV1Html(
 			{
@@ -1628,6 +1787,32 @@ describe('generateDaxMeasure — repeated table', () => {
 		expect(result).toContain('CONCATENATEX(_repeatData_0');
 		expect(result).toContain('RETURN "<html>');
 		expect(result).toContain('_repeat_0');
+	});
+
+	it('generates repeated-table inner row tooltip metadata', () => {
+		const html = makeV1Html(
+			{
+				'by-skill': {
+					display: {
+						type: 'repeatedTable',
+						repeatBy: ['SkillName'],
+						table: {
+							groupBy: ['ClientName'],
+							columns: [{ name: 'ClientName' }, { name: 'Rows', agg: 'COUNT' }],
+							tooltip: { fields: [{ label: 'Devices', agg: 'DCOUNT', column: 'DeviceId' }] },
+						},
+					},
+				},
+			},
+			'<div data-kw-bind="by-skill"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('__kw_tooltip_0_0');
+		expect(result).toContain("<tr title='");
+		expect(result).toContain("aria-label='");
+		expect(result).toContain('Devices: ');
 	});
 
 	it('defaults omitted repeatOrderBy direction to descending like preview table ordering', () => {
@@ -2176,6 +2361,27 @@ describe('generateDaxMeasure — bar chart', () => {
 		expect(result).not.toContain('RANKX(_bardata_0, [Val]');
 	});
 
+	it('generates bar chart SVG tooltip metadata', () => {
+		const html = makeV1Html(
+			{
+				'os-chart': {
+					display: {
+						type: 'bar', groupBy: 'OS', value: { agg: 'COUNT', format: '#,##0' },
+						tooltip: { fields: [{ label: 'Devices', agg: 'DCOUNT', column: 'DeviceId', format: '#,##0' }] },
+					},
+				},
+			},
+			'<div data-kw-bind="os-chart"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain('__kw_tooltip_0_0');
+		expect(result).toContain('<title>');
+		expect(result).toContain("aria-label='");
+		expect(result).toContain('Devices: ');
+	});
+
 	it('replaces chart targets on hyphenated custom elements', () => {
 		const html = makeV1Html(
 			{
@@ -2455,6 +2661,27 @@ describe('generateDaxMeasure — pie chart', () => {
 		expect(result).not.toContain('RANKX(_piedata_0, [Val]');
 	});
 
+	it('generates pie chart SVG tooltip metadata', () => {
+		const html = makeV1Html(
+			{
+				'os-pie': {
+					display: {
+						type: 'pie', groupBy: 'OS', value: { agg: 'COUNT' },
+						tooltip: { fields: [{ label: 'Devices', agg: 'DCOUNT', column: 'DeviceId' }] },
+					},
+				},
+			},
+			'<div data-kw-bind="os-pie"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [barDataSource]);
+
+		expect(result).toContain('__kw_tooltip_0_0');
+		expect(result).toContain('<title>');
+		expect(result).toContain("aria-label='");
+		expect(result).toContain('Devices: ');
+	});
+
 	it('formats datetime pie category labels explicitly', () => {
 		const html = makeV1Html(
 			{
@@ -2579,6 +2806,30 @@ describe('generateDaxMeasure — line chart', () => {
 		expect(result).toContain(`VAR _x = ${DASHBOARD_LINE_CHART.padL + (DASHBOARD_LINE_CHART.W - DASHBOARD_LINE_CHART.padL - DASHBOARD_LINE_CHART.padR) / 2}`);
 		expect(result).toContain(`IF(_linerange_0 = 0, ${(DASHBOARD_LINE_CHART.H - DASHBOARD_LINE_CHART.padT - DASHBOARD_LINE_CHART.padB) / 2}`);
 		expect(result).toContain('<circle cx=');
+	});
+
+	it('generates line chart point tooltip metadata', () => {
+		const html = makeV1Html(
+			{
+				'trend': {
+					display: {
+						type: 'line', xAxis: 'Day',
+						series: [{ agg: 'COUNT', label: 'Calls' }],
+						tooltip: { fields: [{ label: 'Devices', agg: 'DCOUNT', column: 'DeviceId' }] },
+					},
+				},
+			},
+			'<div data-kw-bind="trend"></div>',
+		);
+
+		const result = generateDaxMeasure(html, [factDataSource]);
+
+		expect(result).toContain('__kw_tooltip_0_0');
+		expect(result).toContain('VAR _linetip_0_0');
+		expect(result).toContain('<title>');
+		expect(result).toContain(`r='${DASHBOARD_LINE_CHART.pointRadius}' fill='#FFFFFF' stroke='#FFC20A' stroke-width='${DASHBOARD_LINE_CHART.pointStrokeWidth}'`);
+		expect(result).toContain(`r='${DASHBOARD_LINE_CHART.tooltipHitRadius}' fill='#FFFFFF' fill-opacity='0'`);
+		expect(result).toContain("pointer-events='all'");
 	});
 
 	it('uses modulo color selection for line series beyond ten', () => {

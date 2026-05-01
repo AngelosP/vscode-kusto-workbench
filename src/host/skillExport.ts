@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 
 /** Bump this when you change skill-template.md in a way that requires re-export. */
-export const TEMPLATE_VERSION = 8;
+export const TEMPLATE_VERSION = 10;
 
 const SKILL_FILENAME = 'SKILL.md';
 const STATE_KEY = 'kusto.exportedSkills'; // globalState key

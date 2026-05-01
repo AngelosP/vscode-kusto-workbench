@@ -39,6 +39,13 @@ import {
 	type TableColumnSpec,
 	type TableDisplay,
 } from '../shared/dashboardTables';
+import {
+	dashboardTooltipAggregateNeedsColumn,
+	dashboardTooltipAlias,
+	normalizeDashboardTooltipAggregate,
+	type DashboardTooltipField,
+	type DashboardTooltipSpec,
+} from '../shared/dashboardTooltips';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -314,6 +321,18 @@ function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBi
 			missing.push(`${bindingKey} (${role}: non-numeric column ${columnName})`);
 		}
 	};
+	const requireTooltipColumns = (bindingKey: string, tooltip: DashboardTooltipSpec | undefined, role: string, sourceColumns: Set<string>, rowColumns: Set<string>) => {
+		if (!tooltip) return;
+		for (let fieldIndex = 0; fieldIndex < tooltip.fields.length; fieldIndex++) {
+			const field = tooltip.fields[fieldIndex];
+			const fieldRole = `${role}.tooltip.fields[${fieldIndex}].column`;
+			if (field.agg) {
+				if (dashboardTooltipAggregateNeedsColumn(field.agg)) requireAllowedColumn(bindingKey, field.column, fieldRole, sourceColumns);
+			} else {
+				requireAllowedColumn(bindingKey, field.column, fieldRole, rowColumns);
+			}
+		}
+	};
 	const preAggregateColumnTypes = (preAggregate: PreAggregate): Map<string, string> => {
 		const groupBy = Array.isArray(preAggregate.groupBy) ? preAggregate.groupBy : [preAggregate.groupBy];
 		const types = new Map<string, string>();
@@ -353,6 +372,8 @@ function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBi
 			const outputColumns = preColumns ?? factColumns;
 			const outputColumnTypes = display.preAggregate ? preAggregateColumnTypes(display.preAggregate) : factColumnTypes;
 			const rowColumnTypes = tableValueColumnTypes(display.groupBy, display.columns, outputColumnTypes);
+			const rowColumns = new Set(rowColumnTypes.keys());
+			requireTooltipColumns(bindingKey, display.tooltip, 'display', outputColumns, rowColumns);
 			for (const columnName of display.groupBy) requireAllowedColumn(bindingKey, columnName, 'groupBy', outputColumns);
 			for (let i = 0; i < display.columns.length; i++) {
 				const column = display.columns[i];
@@ -411,6 +432,8 @@ function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBi
 				}
 			}
 			const innerRowColumnTypes = tableValueColumnTypes(display.table.groupBy, display.table.columns, outputColumnTypes);
+			const innerRowColumns = new Set(innerRowColumnTypes.keys());
+			requireTooltipColumns(bindingKey, display.table.tooltip, 'table', outputColumns, innerRowColumns);
 			if (display.table.orderBy) {
 				const orderColumns = new Set([...display.table.groupBy, ...display.table.columns.filter(column => !isTableCellBarColumn(column)).map(column => column.name)]);
 				requireAllowedColumn(bindingKey, display.table.orderBy.column, 'table.orderBy', orderColumns);
@@ -428,6 +451,7 @@ function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBi
 			const preColumns = validatePreAggregate(bindingKey, display.preAggregate);
 			const outputColumns = preColumns ?? factColumns;
 			if (display.type === 'bar') {
+				requireTooltipColumns(bindingKey, display.tooltip, 'display', outputColumns, new Set([display.groupBy]));
 				requireAllowedColumn(bindingKey, display.groupBy, 'groupBy', outputColumns);
 				if (display.segments) {
 					for (let i = 0; i < display.segments.length; i++) {
@@ -438,9 +462,11 @@ function findMissingPowerBiBindingColumns(htmlCode: string, dataSources: PowerBi
 					requireAllowedColumn(bindingKey, display.value.column, 'value.column', outputColumns);
 				}
 			} else if (display.type === 'pie') {
+				requireTooltipColumns(bindingKey, display.tooltip, 'display', outputColumns, new Set([display.groupBy]));
 				requireAllowedColumn(bindingKey, display.groupBy, 'groupBy', outputColumns);
 				if (aggregateRequiresColumn(display.value.agg)) requireAllowedColumn(bindingKey, display.value.column, 'value.column', outputColumns);
 			} else {
+				requireTooltipColumns(bindingKey, display.tooltip, 'display', outputColumns, new Set([display.xAxis]));
 				requireAllowedColumn(bindingKey, display.xAxis, 'xAxis', outputColumns);
 				for (const series of display.series) {
 					if (aggregateRequiresColumn(series.agg)) requireAllowedColumn(bindingKey, series.column, 'series.column', outputColumns);
@@ -780,6 +806,69 @@ function daxHtmlEscape(colExpr: string): string {
 	return `SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE(SUBSTITUTE("" & ${colExpr}, "&", "&amp;"), "<", "&lt;"), ">", "&gt;"), """", "&quot;"), "'", "&#39;")`;
 }
 
+function daxTooltipMetadataEscape(colExpr: string): string {
+	return `SUBSTITUTE(SUBSTITUTE(${daxHtmlEscape(colExpr)}, UNICHAR(13), ""), UNICHAR(10), "&#10;")`;
+}
+
+function tooltipFieldLabel(field: DashboardTooltipField): string {
+	return field.label || field.column || normalizeDashboardTooltipAggregate(field.agg) || 'Value';
+}
+
+function tooltipFieldValueRef(field: DashboardTooltipField, varIdx: number, fieldIndex: number): string {
+	return field.agg ? escCol(dashboardTooltipAlias(varIdx, fieldIndex)) : escCol(field.column || '');
+}
+
+function tooltipFieldValueDax(field: DashboardTooltipField, valueRef: string): string {
+	if (field.format) return buildFormatExpr(valueRef, field.format);
+	if (field.agg) return buildFormatExpr(valueRef, '#,##0');
+	return `"" & ${valueRef}`;
+}
+
+function tooltipLineDax(label: string, valueExpr: string): string {
+	return `"${escapeDaxString(escapeHtmlTextLiteral(label))}: " & ${daxTooltipMetadataEscape(valueExpr)}`;
+}
+
+function tooltipTextDax(tooltip: DashboardTooltipSpec | undefined, varIdx: number, baseLines: string[] = []): string | undefined {
+	if (!tooltip) return undefined;
+	const fieldLines = tooltip.fields.map((field, fieldIndex) => {
+		const valueRef = tooltipFieldValueRef(field, varIdx, fieldIndex);
+		return tooltipLineDax(tooltipFieldLabel(field), tooltipFieldValueDax(field, valueRef));
+	});
+	const lines = [...baseLines, ...fieldLines];
+	return lines.length > 0 ? lines.join(' & "&#10;" & ') : undefined;
+}
+
+function tooltipAggregateColumnParts(tooltip: DashboardTooltipSpec | undefined, factTable: string, varIdx: number, groupBy: string[], preVarName?: string): string[] {
+	if (!tooltip) return [];
+	const parts: string[] = [];
+	for (let fieldIndex = 0; fieldIndex < tooltip.fields.length; fieldIndex++) {
+		const field = tooltip.fields[fieldIndex];
+		if (!field.agg) continue;
+		const agg = normalizeDashboardTooltipAggregate(field.agg);
+		const expr = preVarName
+			? buildPreAggTableValueAggExpr(agg, field.column, preVarName, groupBy)
+			: buildTableValueAggExpr(agg, field.column, factTable);
+		parts.push(`"${escapeDaxString(dashboardTooltipAlias(varIdx, fieldIndex))}", ${expr}`);
+	}
+	return parts;
+}
+
+function tooltipRowOpenDax(tooltip: DashboardTooltipSpec | undefined, varIdx: number): string {
+	const textExpr = tooltipTextDax(tooltip, varIdx);
+	if (!textExpr) return '"<tr>"';
+	return `"<tr title='" & ${textExpr} & "' aria-label='" & ${textExpr} & "'>"`;
+}
+
+function svgTooltipGroupExpr(innerExpr: string, tooltipExpr: string | undefined): string {
+	if (!tooltipExpr) return innerExpr;
+	return `VAR _tip = ${tooltipExpr} RETURN "<g title='" & _tip & "' aria-label='" & _tip & "'><title>" & _tip & "</title>" & ${innerExpr} & "</g>"`;
+}
+
+function svgTooltipCircleExpr(circleExpr: string, tooltipExpr: string | undefined): string {
+	if (!tooltipExpr) return circleExpr;
+	return `VAR _tip = ${tooltipExpr} RETURN "<g title='" & _tip & "' aria-label='" & _tip & "'><title>" & _tip & "</title>" & ${circleExpr} & "</g>"`;
+}
+
 const TABLE_CELL_BADGE_BASE_STYLE = 'display:inline-block;min-width:34px;padding:1px 10px;border-radius:999px;line-height:1.4;text-align:center;font-weight:600;';
 const TABLE_COMPACT_METRIC_CELL_STYLE = 'width:1%;white-space:nowrap;text-align:right;';
 
@@ -845,7 +934,7 @@ function uniqueColumnNames(columns: string[]): string[] {
 	return result;
 }
 
-function buildTableComputedColumnParts(columns: TableColumnSpec[], groupBy: string[], factTable: string, varIdx: number, preVarName?: string): string[] {
+function buildTableComputedColumnParts(columns: TableColumnSpec[], groupBy: string[], factTable: string, varIdx: number, preVarName?: string, tooltip?: DashboardTooltipSpec): string[] {
 	const parts: string[] = [];
 	for (let columnIndex = 0; columnIndex < columns.length; columnIndex++) {
 		const column = columns[columnIndex];
@@ -866,14 +955,14 @@ function buildTableComputedColumnParts(columns: TableColumnSpec[], groupBy: stri
 			}
 		}
 	}
-	return parts;
+	return [...parts, ...tooltipAggregateColumnParts(tooltip, factTable, varIdx, groupBy, preVarName)];
 }
 
-function buildTableSummaryExpr(factTable: string, columns: TableColumnSpec[], groupBy: string[], varIdx: number, preVarName?: string): string {
+function buildTableSummaryExpr(factTable: string, columns: TableColumnSpec[], groupBy: string[], varIdx: number, preVarName?: string, tooltip?: DashboardTooltipSpec): string {
 	const tbl = escTable(factTable);
 	const sourceTable = preVarName ?? tbl;
 	const groupByRefs = preVarName ? groupBy.map(g => escCol(g)) : groupBy.map(g => `${tbl}${escCol(g)}`);
-	const addColumnParts = buildTableComputedColumnParts(columns, groupBy, factTable, varIdx, preVarName).join(', ');
+	const addColumnParts = buildTableComputedColumnParts(columns, groupBy, factTable, varIdx, preVarName, tooltip).join(', ');
 	return addColumnParts
 		? `ADDCOLUMNS(SUMMARIZE(${sourceTable}, ${groupByRefs.join(', ')}), ${addColumnParts})`
 		: `SUMMARIZE(${sourceTable}, ${groupByRefs.join(', ')})`;
@@ -921,9 +1010,9 @@ function generateTableDaxVars(factTable: string, display: TableDisplay, varIdx: 
 	if (display.preAggregate) {
 		const preVarName = `_pre_${varIdx}`;
 		preVars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
-		summarizedTable = buildTableSummaryExpr(factTable, display.columns, display.groupBy, varIdx, preVarName);
+		summarizedTable = buildTableSummaryExpr(factTable, display.columns, display.groupBy, varIdx, preVarName, display.tooltip);
 	} else {
-		summarizedTable = buildTableSummaryExpr(factTable, display.columns, display.groupBy, varIdx);
+		summarizedTable = buildTableSummaryExpr(factTable, display.columns, display.groupBy, varIdx, undefined, display.tooltip);
 	}
 
 	const tdExprs = tableRowCellDax(display.columns, varIdx, originalThClasses);
@@ -948,7 +1037,7 @@ function generateTableDaxVars(factTable: string, display: TableDisplay, varIdx: 
 		const aliases = tableCellBarSegmentAliases(varIdx, columnIndex, column.cellBar);
 		return [`VAR ${tableCellBarMaxVarName(varIdx, columnIndex)} = MAXX(${renderTable}, ${tableCellBarTotalExpr(aliases)})`];
 	});
-	const rowConcatDax = `CONCATENATEX(${renderTable}, "<tr>" & ${tdExprs} & "</tr>", ""${sortExpr})`;
+	const rowConcatDax = `CONCATENATEX(${renderTable}, ${tooltipRowOpenDax(display.tooltip, varIdx)} & ${tdExprs} & "</tr>", ""${sortExpr})`;
 	const rowsDax = relativeMaxVars.length > 0 ? `${relativeMaxVars.join(' ')} RETURN ${rowConcatDax}` : rowConcatDax;
 
 	return { theadVar, theadDax, rowsVar, rowsDax, ...(preVars.length > 0 ? { preVars } : {}) };
@@ -997,7 +1086,7 @@ function generateRepeatedTableDax(factTable: string, display: RepeatedTableDispl
 	vars.push(`VAR ${outerVar} = ${outerRows}`);
 
 	const innerSummaryGroupBy = uniqueColumnNames([...display.repeatBy, ...display.table.groupBy]);
-	const innerSummary = buildTableSummaryExpr(factTable, display.table.columns, innerSummaryGroupBy, varIdx, preVarName);
+	const innerSummary = buildTableSummaryExpr(factTable, display.table.columns, innerSummaryGroupBy, varIdx, preVarName, display.table.tooltip);
 	vars.push(`VAR ${innerDataVar} = ${innerSummary}`);
 
 	const scopedVar = `_kwRepeatScoped_${varIdx}`;
@@ -1025,7 +1114,7 @@ function generateRepeatedTableDax(factTable: string, display: RepeatedTableDispl
 	});
 	const repeatedTableOptions: TableRenderOptions = { compactMetricColumns: true };
 	const rowCells = tableRowCellDax(display.table.columns, varIdx, [], repeatedTableOptions);
-	const rowsHtmlDax = `CONCATENATEX(${rowsVar}, "<tr>" & ${rowCells} & "</tr>", ""${innerSortExpr})`;
+	const rowsHtmlDax = `CONCATENATEX(${rowsVar}, ${tooltipRowOpenDax(display.table.tooltip, varIdx)} & ${rowCells} & "</tr>", ""${innerSortExpr})`;
 	const tableDax = `"<table class='kw-repeated-table' style='${REPEATED_TABLE_TABLE_STYLE}'>" & ${tableTheadDax(display.table.columns, [], repeatedTableOptions)} & "<tbody>" & ${htmlVar} & "</tbody></table>"`;
 	const groupDax = `${outerKeyVars} VAR ${scopedVar} = FILTER(${innerDataVar}, ${scopedFilter}) VAR ${rowsVar} = ${innerRowsExpr} ${relativeMaxVars.join(' ')} VAR ${htmlVar} = ${rowsHtmlDax} RETURN "<section class='kw-repeated-table-group' style='${REPEATED_TABLE_GROUP_STYLE}'>" & ${repeatedTableHeaderDax(display)} & ${tableDax} & "</section>"`;
 	vars.push(`VAR ${repeatVar} = CONCATENATEX(${outerVar}, ${groupDax}, "", ${escCol(outerIndexAlias)}, ASC)`);
@@ -1194,11 +1283,13 @@ function generateSimpleBarChartDax(factTable: string, display: BarDisplay & { va
 		vars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
 		const groupCol = escCol(display.groupBy); // unqualified — references pre-aggregate VAR column
 		const valExpr = buildPreAggChartValExpr(display.value, preVarName, display.groupBy);
-		dataTable = `ADDCOLUMNS(SUMMARIZE(${preVarName}, ${groupCol}), "Val", ${valExpr})`;
+		const tooltipParts = tooltipAggregateColumnParts(display.tooltip, factTable, varIdx, [display.groupBy], preVarName);
+		dataTable = `ADDCOLUMNS(SUMMARIZE(${preVarName}, ${groupCol}), ${[`"Val", ${valExpr}`, ...tooltipParts].join(', ')})`;
 		groupByRef = groupCol;
 	} else {
 		const aggExpr = chartAggExpr(display.value, factTable);
-		dataTable = `ADDCOLUMNS(SUMMARIZE(${tbl}, ${tbl}${escCol(display.groupBy)}), "Val", ${aggExpr})`;
+		const tooltipParts = tooltipAggregateColumnParts(display.tooltip, factTable, varIdx, [display.groupBy]);
+		dataTable = `ADDCOLUMNS(SUMMARIZE(${tbl}, ${tbl}${escCol(display.groupBy)}), ${[`"Val", ${aggExpr}`, ...tooltipParts].join(', ')})`;
 		groupByRef = `${tbl}${escCol(display.groupBy)}`;
 	}
 	vars.push(`VAR ${dp} = ${dataTable}`);
@@ -1215,6 +1306,13 @@ function generateSimpleBarChartDax(factTable: string, display: BarDisplay & { va
 
 	const valueTextExpr = buildFormatExpr('[Val]', display.value.format || '#,##0');
 	const labelTextExpr = daxXmlEscape(lineAxisLabelExpr(groupByRef, display.groupBy, dataSource));
+	const tooltipExpr = tooltipTextDax(display.tooltip, varIdx, [
+		tooltipLineDax(display.groupBy, lineAxisLabelExpr(groupByRef, display.groupBy, dataSource)),
+		tooltipLineDax('Value', valueTextExpr),
+	]);
+	const simpleBarInnerExpr = `"<text x='${labelW - 6}' y='" & FORMAT(_y + 16, "0") & "' text-anchor='end' font-size='11' fill='#605E5C'>" & ${labelTextExpr} & "</text>" `
+		+ `& "<rect x='${labelW}' y='" & FORMAT(_y + 2, "0") & "' width='" & FORMAT(_w, "0") & "' height='${rowH - 4}' rx='2' fill='" & _col & "'/>" `
+		+ `& "<text x='" & FORMAT(${labelW} + _w + ${valGap}, "0") & "' y='" & FORMAT(_y + 16, "0") & "' font-size='11' fill='#605E5C'>" & ${valueTextExpr} & "</text>"`;
 	const svgExpr = `CONCATENATEX(`
 		+ `${rp}, `
 		+ `VAR _y = ${padT} + ([Idx] - 1) * ${rowH + gap} `
@@ -1222,9 +1320,7 @@ function generateSimpleBarChartDax(factTable: string, display: BarDisplay & { va
 		+ `VAR _w = IF(${mp} = 0, 0, _barval / ${mp} * ${barMaxW}) `
 		+ `VAR _col = SWITCH([Idx], ${colorCases}, "${chartColor(display.colors, 0)}") `
 		+ `RETURN `
-		+ `"<text x='${labelW - 6}' y='" & FORMAT(_y + 16, "0") & "' text-anchor='end' font-size='11' fill='#605E5C'>" & ${labelTextExpr} & "</text>" `
-		+ `& "<rect x='${labelW}' y='" & FORMAT(_y + 2, "0") & "' width='" & FORMAT(_w, "0") & "' height='${rowH - 4}' rx='2' fill='" & _col & "'/>" `
-		+ `& "<text x='" & FORMAT(${labelW} + _w + ${valGap}, "0") & "' y='" & FORMAT(_y + 16, "0") & "' font-size='11' fill='#605E5C'>" & ${valueTextExpr} & "</text>", `
+		+ `${svgTooltipGroupExpr(simpleBarInnerExpr, tooltipExpr)}, `
 		+ `"", [Idx], ASC)`;
 
 	const countExpr = `COUNTROWS(${rp})`;
@@ -1359,14 +1455,14 @@ function advancedBarDataTableExpr(factTable: string, display: BarDisplay, varIdx
 			.map(segment => `MAX(0, ${chartValueAggExpr(segment, factTable, preVarName, display.groupBy)})`)
 			.join(' + ');
 		return {
-			dataTable: `ADDCOLUMNS(SUMMARIZE(${sourceTable}, ${groupByRef}), ${[...segmentColumns, `"Val", ${totalExpr}`].join(', ')})`,
+			dataTable: `ADDCOLUMNS(SUMMARIZE(${sourceTable}, ${groupByRef}), ${[...segmentColumns, `"Val", ${totalExpr}`, ...tooltipAggregateColumnParts(display.tooltip, factTable, varIdx, [display.groupBy], preVarName)].join(', ')})`,
 			groupByRef,
 		};
 	}
 
 	const value = display.value ?? { agg: 'COUNT' };
 	return {
-		dataTable: `ADDCOLUMNS(SUMMARIZE(${sourceTable}, ${groupByRef}), "Val", ${chartValueAggExpr(value, factTable, preVarName, display.groupBy)})`,
+		dataTable: `ADDCOLUMNS(SUMMARIZE(${sourceTable}, ${groupByRef}), ${[`"Val", ${chartValueAggExpr(value, factTable, preVarName, display.groupBy)}`, ...tooltipAggregateColumnParts(display.tooltip, factTable, varIdx, [display.groupBy], preVarName)].join(', ')})`,
 		groupByRef,
 	};
 }
@@ -1413,6 +1509,10 @@ function generateAdvancedBarChartDax(factTable: string, display: BarDisplay, var
 	const geom = exportBarGeometry(display);
 	const labelTextExpr = daxXmlEscape(lineAxisLabelExpr(groupByRef, display.groupBy, dataSource));
 	const valueTextExpr = buildFormatExpr('[Val]', barValueFormat(display));
+	const tooltipExpr = tooltipTextDax(display.tooltip, varIdx, [
+		tooltipLineDax(display.groupBy, lineAxisLabelExpr(groupByRef, display.groupBy, dataSource)),
+		tooltipLineDax('Value', valueTextExpr),
+	]);
 	const denominatorExpr = display.thresholdBands
 		? daxNumber(thresholdDomain(display))
 		: display.scale === 'normalized100' ? '_barval' : mp;
@@ -1434,7 +1534,7 @@ function generateAdvancedBarChartDax(factTable: string, display: BarDisplay, var
 		+ `VAR _barw = ${geom.barMaxW} `
 		+ `VAR _col = ${colorExpr} `
 		+ `${advancedBarSegmentVariables(display)} `
-		+ `RETURN ${pieces}, `
+		+ `RETURN ${svgTooltipGroupExpr(pieces, tooltipExpr)}, `
 		+ `"", [Idx], ASC)`;
 
 	const countExpr = `COUNTROWS(${rp})`;
@@ -1471,11 +1571,13 @@ export function generatePieChartDax(factTable: string, display: PieDisplay, varI
 		vars.push(generatePreAggregateVarDax(factTable, display.preAggregate, varIdx));
 		const groupCol = escCol(display.groupBy);
 		const valExpr = buildPreAggChartValExpr(display.value, preVarName, display.groupBy);
-		dataTable = `ADDCOLUMNS(SUMMARIZE(${preVarName}, ${groupCol}), "Val", ${valExpr})`;
+		const tooltipParts = tooltipAggregateColumnParts(display.tooltip, factTable, varIdx, [display.groupBy], preVarName);
+		dataTable = `ADDCOLUMNS(SUMMARIZE(${preVarName}, ${groupCol}), ${[`"Val", ${valExpr}`, ...tooltipParts].join(', ')})`;
 		groupByRef = groupCol;
 	} else {
 		const aggExpr = chartAggExpr(display.value, factTable);
-		dataTable = `ADDCOLUMNS(SUMMARIZE(${tbl}, ${tbl}${escCol(display.groupBy)}), "Val", ${aggExpr})`;
+		const tooltipParts = tooltipAggregateColumnParts(display.tooltip, factTable, varIdx, [display.groupBy]);
+		dataTable = `ADDCOLUMNS(SUMMARIZE(${tbl}, ${tbl}${escCol(display.groupBy)}), ${[`"Val", ${aggExpr}`, ...tooltipParts].join(', ')})`;
 		groupByRef = `${tbl}${escCol(display.groupBy)}`;
 	}
 	vars.push(`VAR ${dp} = ${dataTable}`);
@@ -1494,6 +1596,10 @@ export function generatePieChartDax(factTable: string, display: PieDisplay, varI
 	const valueTextExpr = buildFormatExpr('[Val]', display.value.format || '#,##0');
 	const totalTextExpr = buildFormatExpr(tp, display.value.format || '#,##0');
 	const labelTextExpr = daxXmlEscape(lineAxisLabelExpr(groupByRef, display.groupBy, dataSource));
+	const pieTooltipExpr = tooltipTextDax(display.tooltip, varIdx, [
+		tooltipLineDax(display.groupBy, lineAxisLabelExpr(groupByRef, display.groupBy, dataSource)),
+		tooltipLineDax('Value', valueTextExpr),
+	]);
 
 	const svgExpr = `CONCATENATEX(`
 		+ `${slices}, `
@@ -1502,9 +1608,9 @@ export function generatePieChartDax(factTable: string, display: PieDisplay, varI
 		+ `VAR _offset = _circ / 4 - IF(${tp} = 0, 0, [PrevSum] / ${tp} * _circ) `
 		+ `VAR _col = SWITCH([Idx], ${colorCases}, "${chartColor(display.colors, 0)}") `
 		+ `RETURN `
-		+ `"<circle cx='${cx}' cy='${cy}' r='${effectiveR}' fill='none' stroke='" & _col & "' stroke-width='${strokeW}' `
+		+ `${svgTooltipCircleExpr(`"<circle cx='${cx}' cy='${cy}' r='${effectiveR}' fill='none' stroke='" & _col & "' stroke-width='${strokeW}' `
 		+ `stroke-dasharray='" & FORMAT(_segLen, "0.00") & " " & FORMAT(_circ - _segLen, "0.00") & "' `
-		+ `stroke-dashoffset='" & FORMAT(_offset, "0.00") & "'/>", `
+		+ `stroke-dashoffset='" & FORMAT(_offset, "0.00") & "'/>"`, pieTooltipExpr)}, `
 		+ `"", [Idx], ASC)`;
 
 	const legendExpr = `CONCATENATEX(`
@@ -1512,9 +1618,9 @@ export function generatePieChartDax(factTable: string, display: PieDisplay, varI
 		+ `VAR _y = ${legendY} + ([Idx] - 1) * ${legendRowH} `
 		+ `VAR _col = SWITCH([Idx], ${colorCases}, "${chartColor(display.colors, 0)}") `
 		+ `RETURN `
-		+ `"<rect x='${legendX}' y='" & FORMAT(_y - 10, "0") & "' width='10' height='10' rx='2' fill='" & _col & "'/>" `
+		+ `${svgTooltipGroupExpr(`"<rect x='${legendX}' y='" & FORMAT(_y - 10, "0") & "' width='10' height='10' rx='2' fill='" & _col & "'/>" `
 		+ `& "<text x='${legendX + 16}' y='" & FORMAT(_y, "0") & "' font-size='11' fill='#605E5C'>" & ${labelTextExpr} & "</text>" `
-		+ `& "<text x='${legendValueX}' y='" & FORMAT(_y, "0") & "' text-anchor='end' font-size='11' fill='#605E5C'>" & ${valueTextExpr} & " (" & FORMAT(DIVIDE([Val], ${tp}, 0), "0.0%") & ")</text>", `
+		+ `& "<text x='${legendValueX}' y='" & FORMAT(_y, "0") & "' text-anchor='end' font-size='11' fill='#605E5C'>" & ${valueTextExpr} & " (" & FORMAT(DIVIDE([Val], ${tp}, 0), "0.0%") & ")</text>"`, pieTooltipExpr)}, `
 		+ `"", [Idx], ASC)`;
 	const totalLabel = `"<text x='${cx}' y='${cy - 4}' text-anchor='middle' font-size='11' fill='#605E5C'>Total</text>" `
 		+ `& "<text x='${cx}' y='${cy + 18}' text-anchor='middle' font-size='20' font-weight='600' fill='#252423'>" & ${totalTextExpr} & "</text>"`;
@@ -1560,7 +1666,8 @@ export function generateLineChartDax(factTable: string, display: LineDisplay, va
 			return `"S${i}", ${expr}`;
 		}).join(', ');
 
-		vars.push(`VAR ${dp} = ADDCOLUMNS(SUMMARIZE(${preVarName}, ${xAxisRef}), ${seriesCols})`);
+		const tooltipParts = tooltipAggregateColumnParts(display.tooltip, factTable, varIdx, [display.xAxis], preVarName);
+		vars.push(`VAR ${dp} = ADDCOLUMNS(SUMMARIZE(${preVarName}, ${xAxisRef}), ${[seriesCols, ...tooltipParts].filter(Boolean).join(', ')})`);
 	} else {
 		xAxisRef = `${tbl}${escCol(display.xAxis)}`;
 
@@ -1570,7 +1677,8 @@ export function generateLineChartDax(factTable: string, display: LineDisplay, va
 			return `"S${i}", ${chartAggExpr(seriesVal, factTable)}`;
 		}).join(', ');
 
-		vars.push(`VAR ${dp} = ADDCOLUMNS(SUMMARIZE(${tbl}, ${xAxisRef}), ${seriesCols})`);
+		const tooltipParts = tooltipAggregateColumnParts(display.tooltip, factTable, varIdx, [display.xAxis]);
+		vars.push(`VAR ${dp} = ADDCOLUMNS(SUMMARIZE(${tbl}, ${xAxisRef}), ${[seriesCols, ...tooltipParts].filter(Boolean).join(', ')})`);
 	}
 
 	// Chart geometry
@@ -1622,7 +1730,13 @@ export function generateLineChartDax(factTable: string, display: LineDisplay, va
 	for (let i = 0; i < display.series.length; i++) {
 		const pointsVar = `_linepts_${varIdx}_${i}`;
 		const markerVar = `_linemarker_${varIdx}_${i}`;
+		const tooltipMarkerVar = `_linetip_${varIdx}_${i}`;
 		const color = chartColor(display.colors, i);
+		const seriesLabel = display.series[i].label || display.series[i].column || `Series ${i + 1}`;
+		const lineTooltipExpr = tooltipTextDax(display.tooltip, varIdx, [
+			tooltipLineDax(display.xAxis, lineAxisLabelExpr(xAxisRef, display.xAxis, dataSource)),
+			tooltipLineDax(seriesLabel, buildFormatExpr(`[S${i}]`, '#,##0')),
+		]);
 
 		const pointsExpr = `CONCATENATEX(`
 			+ `${indexedTable}, `
@@ -1632,13 +1746,20 @@ export function generateLineChartDax(factTable: string, display: LineDisplay, va
 			+ `" ", ${xAxisRef}, ASC)`;
 
 		vars.push(`VAR ${pointsVar} = ${pointsExpr}`);
-		const markerExpr = `IF(_linen_${varIdx} = 1, CONCATENATEX(${indexedTable}, `
+		const markerExpr = lineTooltipExpr ? '""' : `IF(_linen_${varIdx} = 1, CONCATENATEX(${indexedTable}, `
 			+ `VAR _x = ${padL + plotW / 2} `
 			+ `VAR _y = ${padT} + ${plotH} - IF(_linerange_${varIdx} = 0, ${plotH / 2}, ([S${i}] - _linemin_${varIdx}) / _linerange_${varIdx} * ${plotH}) `
-			+ `RETURN "<circle cx='" & FORMAT(_x, "0.0") & "' cy='" & FORMAT(_y, "0.0") & "' r='3.5' fill='${color}'/>", ""), "")`;
+			+ `RETURN "<circle cx='" & FORMAT(_x, "0.0") & "' cy='" & FORMAT(_y, "0.0") & "' r='${DASHBOARD_LINE_CHART.pointRadius}' fill='${color}'/>", ""), "")`;
 		vars.push(`VAR ${markerVar} = ${markerExpr}`);
+		const tooltipPointExpr = `"<circle cx='" & FORMAT(_x, "0.0") & "' cy='" & FORMAT(_y, "0.0") & "' r='${DASHBOARD_LINE_CHART.pointRadius}' fill='#FFFFFF' stroke='${color}' stroke-width='${DASHBOARD_LINE_CHART.pointStrokeWidth}'/>" `
+			+ `& "<circle cx='" & FORMAT(_x, "0.0") & "' cy='" & FORMAT(_y, "0.0") & "' r='${DASHBOARD_LINE_CHART.tooltipHitRadius}' fill='#FFFFFF' fill-opacity='0' stroke='none' pointer-events='all'/>"`;
+		const tooltipMarkersExpr = lineTooltipExpr
+			? `CONCATENATEX(${indexedTable}, VAR _x = IF(_linen_${varIdx} <= 1, ${padL + plotW / 2}, ${padL} + (${plotW}) * ([Idx] - 1) / (_linen_${varIdx} - 1)) VAR _y = ${padT} + ${plotH} - IF(_linerange_${varIdx} = 0, ${plotH / 2}, ([S${i}] - _linemin_${varIdx}) / _linerange_${varIdx} * ${plotH}) ${svgTooltipCircleExpr(tooltipPointExpr, lineTooltipExpr)}, "", ${xAxisRef}, ASC)`
+			: '""';
+		vars.push(`VAR ${tooltipMarkerVar} = ${tooltipMarkersExpr}`);
 		polylines.push(`"<polyline points='" & ${pointsVar} & "' fill='none' stroke='${color}' stroke-width='${DASHBOARD_LINE_CHART.lineStrokeWidth}' stroke-linecap='round' stroke-linejoin='round'/>"`);
 		polylines.push(markerVar);
+		polylines.push(tooltipMarkerVar);
 	}
 
 	const svgContent = [gridLines, axisLines, ...polylines, legend, xLabels].filter(Boolean).join(' & ');

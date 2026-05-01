@@ -438,6 +438,7 @@ export class CopilotChatManagerController implements ReactiveController {
 					scrollContainer.scrollTop = savedScroll;
 					if (newBoxId) {
 						__kustoSetSectionName(newBoxId, sectionName);
+						window.__kustoMarkSectionAgentTouched?.(newBoxId);
 						setTimeout(() => {
 							if (!isSql) setQueryText(newBoxId, e.detail.query);
 							if (e.detail.result) {

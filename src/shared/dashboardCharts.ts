@@ -1,3 +1,5 @@
+import { isReservedDashboardTooltipAlias, isValidDashboardTooltipSpec, type DashboardTooltipSpec } from './dashboardTooltips';
+
 export interface PreAggregate {
 	groupBy: string | string[];
 	compute: { name: string; agg: string; column?: string };
@@ -25,10 +27,11 @@ export interface BarDisplay {
 	top?: number;
 	colors?: string[];
 	preAggregate?: PreAggregate;
+	tooltip?: DashboardTooltipSpec;
 }
 export interface LineSeriesSpec { agg: string; column?: string; label?: string }
-export interface LineDisplay { type: 'line'; xAxis: string; series: LineSeriesSpec[]; colors?: string[]; preAggregate?: PreAggregate }
-export interface PieDisplay { type: 'pie'; groupBy: string; value: ChartValue; top?: number; colors?: string[]; preAggregate?: PreAggregate }
+export interface LineDisplay { type: 'line'; xAxis: string; series: LineSeriesSpec[]; colors?: string[]; preAggregate?: PreAggregate; tooltip?: DashboardTooltipSpec }
+export interface PieDisplay { type: 'pie'; groupBy: string; value: ChartValue; top?: number; colors?: string[]; preAggregate?: PreAggregate; tooltip?: DashboardTooltipSpec }
 
 export type DashboardChartDisplay = BarDisplay | LineDisplay | PieDisplay;
 export type DashboardChartType = DashboardChartDisplay['type'];
@@ -112,6 +115,9 @@ export const DASHBOARD_LINE_CHART = {
 	legendGap: 24,
 	legendRowH: 18,
 	lineStrokeWidth: 3,
+	pointRadius: 3.5,
+	pointStrokeWidth: 2,
+	tooltipHitRadius: 8,
 } as const;
 
 export const DASHBOARD_CHART_DEFAULTS = {
@@ -144,6 +150,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 
 function isNonEmptyString(value: unknown): value is string {
 	return typeof value === 'string' && value.trim().length > 0;
+}
+
+function isValidChartDimensionName(value: unknown): value is string {
+	return isNonEmptyString(value) && !isReservedDashboardTooltipAlias(value);
 }
 
 function aggregateNeedsColumn(agg: unknown): boolean {
@@ -202,7 +212,7 @@ function isBarColorRule(value: unknown): value is BarColorRule {
 }
 
 function isValidBarDisplay(display: BarDisplay): boolean {
-	if (!isNonEmptyString(display.groupBy)) return false;
+	if (!isValidChartDimensionName(display.groupBy)) return false;
 	if (display.scale !== undefined && display.scale !== 'relative' && display.scale !== 'normalized100') return false;
 	if (display.variant !== undefined && display.variant !== 'standard' && display.variant !== 'distribution') return false;
 	if (display.showValueLabels !== undefined && typeof display.showValueLabels !== 'boolean') return false;
@@ -239,10 +249,10 @@ function isValidBarDisplay(display: BarDisplay): boolean {
 function isPreAggregate(value: unknown): value is PreAggregate {
 	if (!isRecord(value)) return false;
 	const groupBy = value.groupBy;
-	const validGroupBy = isNonEmptyString(groupBy) || (Array.isArray(groupBy) && groupBy.length > 0 && groupBy.every(isNonEmptyString));
+	const validGroupBy = isValidChartDimensionName(groupBy) || (Array.isArray(groupBy) && groupBy.length > 0 && groupBy.every(isValidChartDimensionName));
 	if (!validGroupBy || !isRecord(value.compute)) return false;
 	const compute = value.compute;
-	if (!isNonEmptyString(compute.name) || !isNonEmptyString(compute.agg)) return false;
+	if (!isValidChartDimensionName(compute.name) || !isNonEmptyString(compute.agg)) return false;
 	if (aggregateNeedsColumn(compute.agg) && !isNonEmptyString(compute.column)) return false;
 	if (compute.column !== undefined && typeof compute.column !== 'string') return false;
 	return true;
@@ -252,6 +262,7 @@ function hasValidSharedChartOptions(display: Record<string, unknown>): boolean {
 	if (display.top !== undefined && (typeof display.top !== 'number' || !Number.isInteger(display.top) || display.top <= 0)) return false;
 	if (display.colors !== undefined && (!Array.isArray(display.colors) || !display.colors.every(isSafeSvgColor))) return false;
 	if (display.preAggregate !== undefined && !isPreAggregate(display.preAggregate)) return false;
+	if (display.tooltip !== undefined && !isValidDashboardTooltipSpec(display.tooltip)) return false;
 	return true;
 }
 
@@ -261,9 +272,9 @@ export function isValidDashboardChartDisplay(display: unknown): display is Dashb
 		return isValidBarDisplay(display);
 	}
 	if (display.type === 'pie') {
-		return isNonEmptyString(display.groupBy) && isChartValue(display.value);
+		return isValidChartDimensionName(display.groupBy) && isChartValue(display.value);
 	}
-	return isNonEmptyString(display.xAxis)
+	return isValidChartDimensionName(display.xAxis)
 		&& Array.isArray(display.series)
 		&& display.series.length > 0
 		&& display.series.every(series => isRecord(series)

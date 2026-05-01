@@ -5,6 +5,7 @@ import {
 	type BarSegmentSpec,
 	type PreAggregate,
 } from './dashboardCharts';
+import { DASHBOARD_TOOLTIP_ALIAS_PREFIX, isValidDashboardTooltipSpec, type DashboardTooltipSpec } from './dashboardTooltips';
 
 export interface TableCellBarSpec {
 	segments: BarSegmentSpec[];
@@ -54,6 +55,7 @@ export interface TableDisplay {
 	orderBy?: { column: string; direction?: 'asc' | 'desc' };
 	top?: number;
 	preAggregate?: PreAggregate;
+	tooltip?: DashboardTooltipSpec;
 }
 
 export interface RepeatedTableInnerDisplay {
@@ -61,6 +63,7 @@ export interface RepeatedTableInnerDisplay {
 	groupBy: string[];
 	orderBy?: { column: string; direction?: 'asc' | 'desc' };
 	top?: number;
+	tooltip?: DashboardTooltipSpec;
 }
 
 export interface RepeatedTableDisplay {
@@ -124,11 +127,13 @@ export function isValidTableDisplay(display: unknown): display is TableDisplay {
 
 	if (display.top !== undefined && (typeof display.top !== 'number' || !Number.isInteger(display.top) || display.top <= 0 || display.orderBy === undefined)) return false;
 	if (display.preAggregate !== undefined && !isValidPreAggregateSpec(display.preAggregate)) return false;
+	if (display.tooltip !== undefined && !isValidDashboardTooltipSpec(display.tooltip)) return false;
 	return true;
 }
 
 export function isValidRepeatedTableDisplay(display: unknown): display is RepeatedTableDisplay {
 	if (!isRecord(display) || display.type !== 'repeatedTable') return false;
+	if (display.tooltip !== undefined) return false;
 	if (!Array.isArray(display.repeatBy) || display.repeatBy.length === 0 || !display.repeatBy.every(isNonEmptyString)) return false;
 	if (hasReservedAliasName(display.repeatBy)) return false;
 	if (display.repeatColumns !== undefined && (!Array.isArray(display.repeatColumns) || display.repeatColumns.length === 0)) return false;
@@ -146,6 +151,7 @@ export function isValidRepeatedTableDisplay(display: unknown): display is Repeat
 		orderBy: display.table.orderBy,
 		top: display.table.top,
 		preAggregate: display.preAggregate,
+		tooltip: display.table.tooltip,
 	};
 	return isValidTableDisplay(tableDisplay);
 }
@@ -272,6 +278,8 @@ function isValidPreAggregateSpec(value: unknown): value is PreAggregate {
 	const groupBy = value.groupBy;
 	const validGroupBy = isNonEmptyString(groupBy) || (Array.isArray(groupBy) && groupBy.length > 0 && groupBy.every(isNonEmptyString));
 	if (!validGroupBy || !isNonEmptyString(value.compute.name) || !isNonEmptyString(value.compute.agg)) return false;
+	const groupByColumns = (Array.isArray(groupBy) ? groupBy : [groupBy]) as string[];
+	if (hasReservedAliasName(groupByColumns) || isReservedAliasName(value.compute.name)) return false;
 	if (tableAggregateNeedsColumn(value.compute.agg) && !isNonEmptyString(value.compute.column)) return false;
 	if (value.compute.column !== undefined && typeof value.compute.column !== 'string') return false;
 	return true;
@@ -281,7 +289,8 @@ function isReservedAliasName(value: string): boolean {
 	const normalized = value.toLowerCase();
 	return normalized.startsWith(TABLE_CELL_BAR_ALIAS_PREFIX)
 		|| normalized.startsWith(TABLE_ROW_INDEX_ALIAS_PREFIX)
-		|| normalized.startsWith(REPEATED_TABLE_ROW_INDEX_ALIAS_PREFIX);
+		|| normalized.startsWith(REPEATED_TABLE_ROW_INDEX_ALIAS_PREFIX)
+		|| normalized.startsWith(DASHBOARD_TOOLTIP_ALIAS_PREFIX);
 }
 
 function hasReservedAliasName(values: string[]): boolean {
