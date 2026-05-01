@@ -15,10 +15,12 @@ import { fileURLToPath } from 'node:url';
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const DIST = join(__dirname, '..', 'dist');
 
-// ── Baselines (KB) — updated 2026-04-22 after SQL support ──
+// ── Baselines (KB) — updated 2026-05-01 after tutorial viewer support ──
 const BASELINES = {
-	'extension.js':                                        1127,
-	'webview/webview.bundle.js':                           1881,
+	'extension.js':                                        1229,
+	'webview/webview.bundle.js':                           2114,
+	'webview/md-editor.bundle.js':                          153,
+	'webview/tutorial-viewer.bundle.js':                     55,
 	'queryEditor/vendor/echarts/echarts.webview.js':        646,
 	'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
 	'monaco/':                                            11445,

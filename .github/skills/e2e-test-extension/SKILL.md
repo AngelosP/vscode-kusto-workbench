@@ -206,13 +206,20 @@ live stepping before editing the final feature file:
 
 1. Start a live session with `start_live_session` when one is not already active.
 2. Run candidate steps with `run_gherkin_step` or short blocks with `run_gherkin_script`.
-3. Inspect the returned screenshots/log artifact paths after each failure or surprising state.
-4. Once the steps are stable, write the `.feature` file and verify it with `run_test`.
-5. End the session with `end_live_session` so the final screenshot is captured.
+3. Use `run_extension_host_script` only for explicit diagnostic JavaScript that must run in the VS Code extension host with the `vscode` API; it is not a Gherkin runner.
+4. Inspect the returned screenshots/log artifact paths after each failure or surprising state.
+5. Once the steps are stable, write the `.feature` file and verify it with `run_test`.
+6. End the session with `end_live_session` so the final screenshot is captured.
 
 `vscode-ext-test tests add` starts this live session automatically by default
 when exploration is enabled. Use `--live-mode off` only when you want code-only
 test drafting.
+
+When a live session should use an authenticated or prepared profile, pass
+`reuseNamedProfile` or `reuseOrCreateNamedProfile` to `start_live_session`.
+Auto mode only attaches to an existing Dev Host when its detected user-data
+directory matches the requested profile; otherwise it launches the requested
+profile.
 
 ### Default (launch mode - recommended)
 
@@ -241,6 +248,7 @@ test drafting.
    - `results.json` - structured results with screenshot paths.
    - `console.log` - structured output log per scenario/step.
    - `*.png` - screenshot images.
+  - screenshot warnings - if native capture had to fall back or failed, warnings appear in the step artifact, `report.md`, and `console.log`.
 
 4. **Verify screenshots** - use `view_image` on each .png listed in `report.md`. Do NOT skip this step.
 
@@ -291,6 +299,9 @@ vscode-ext-test profile open <profile-name>
 - `When I list the popup menu items` - diagnostic: list all visible items in the current popup menu
 - `When I type "<text>"` - type text into whatever is focused (editors, webview Monaco, inputs)
 - `When I press "<key>"` - press a key or combo (Enter, Escape, Ctrl+S, Ctrl+Space, Shift+Tab, F5, etc.)
+- `When I click "<css selector>" in the webview` / `When I right click "<css selector>" in the webview` / `When I middle click "<css selector>" in the webview` / `When I double click "<css selector>" in the webview` - click a webview element by stable CSS selector
+- `When I click the webview element "<text>"` - click a webview control by visible text, aria-label, title, or role text when no stable selector exists
+- `When I evaluate "<js>" in the webview for <n> seconds` - run diagnostic JavaScript in a webview with a caller-provided timeout budget; the timeout must be less than the step timeout
 - `When I move the mouse to <x>, <y>` - move the OS cursor to coordinates. In live sessions these are relative to the full Dev Host window/screenshot; in normal batch runs they are absolute screen coordinates.
 - `When I click` / `When I right click` / `When I middle click` / `When I double click` - click at the current mouse position
 - `When I click at <x>, <y>` / `When I right click at <x>, <y>` / `When I middle click at <x>, <y>` / `When I double click at <x>, <y>` - click coordinates. In live sessions these are relative to the full Dev Host window/screenshot, including title bar and borders; in normal batch runs they are absolute screen coordinates.
@@ -316,10 +327,11 @@ vscode-ext-test profile open <profile-name>
 Use the most semantic target that can reach the UI:
 
 1. Prefer VS Code commands and QuickInput inspection/selection/text steps when the behavior is command-driven; these steps fall back to the visible workbench QuickInput widget when no extension-host session was intercepted.
-2. For webviews, prefer stable CSS selectors such as `[data-testid='...']`; selector clicks use CDP pointer events with a DOM-event fallback.
-3. For workbench/native UI, use accessible-name clicks such as `I click the element "Run Query"` or `I right click the element "Explorer"`.
-4. Prefer QuickInput/progress/notification wait steps over fixed sleeps.
-5. Use raw coordinates only as a last resort. In live sessions, raw coordinates are full Dev Host window/screenshot-relative; in normal batch runs, they are absolute screen coordinates. Stabilize the window first with `I resize the Dev Host...` / `I move the Dev Host...`.
+2. For webviews, prefer stable CSS selectors such as `[data-testid='...']`; selector clicks use DOM-first activation and collect diagnostics on failure.
+3. If a webview has no stable selector, use `I click the webview element "<text>"` before falling back to native automation.
+4. For workbench/native UI, use accessible-name clicks such as `I click the element "Run Query"` or `I right click the element "Explorer"`.
+5. Prefer QuickInput/progress/notification wait steps over fixed sleeps.
+6. Use raw coordinates only as a last resort. In live sessions, raw coordinates are full Dev Host window/screenshot-relative; in normal batch runs, they are absolute screen coordinates. Stabilize the window first with `I resize the Dev Host...` / `I move the Dev Host...`.
 
 Right-clicking and popup selection are two separate actions: first use a
 right-click step to open the context menu, then use

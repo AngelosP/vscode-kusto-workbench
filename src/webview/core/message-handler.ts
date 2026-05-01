@@ -1052,7 +1052,7 @@ window.addEventListener('message', async (event: any) => {
 				const rawSchemaJson = message.rawSchemaJson;
 				
 				if (rawSchemaJson && typeof window.__kustoApplyCrossClusterSchema === 'function') {
-					window.__kustoApplyCrossClusterSchema(clusterName, clusterUrl, database, rawSchemaJson);
+					window.__kustoApplyCrossClusterSchema(clusterName, clusterUrl, database, rawSchemaJson, message.boxId);
 				}
 			} catch (e: any) {
 				console.error('[crossClusterSchemaData] Error:', e);

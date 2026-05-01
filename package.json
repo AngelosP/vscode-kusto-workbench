@@ -102,6 +102,26 @@
           "type": "boolean",
           "default": false,
           "description": "Shows diagnostic popups for Markdown Search-view reveal (Ctrl+Shift+F click) to help debug selection/reveal wiring."
+        },
+        "kustoWorkbench.tutorials.catalogUrl": {
+          "order": 11,
+          "type": "string",
+          "default": "https://raw.githubusercontent.com/AngelosP/vscode-kusto-workbench/main/docs/tutorials/catalog.v1.json",
+          "description": "GitHub-hosted tutorial catalog URL. Only github.com and raw.githubusercontent.com HTTPS URLs are loaded."
+        },
+        "kustoWorkbench.tutorials.enableUpdateChecks": {
+          "order": 12,
+          "type": "boolean",
+          "default": true,
+          "description": "Check subscribed tutorial categories for updates when you open Kusto-related files or the tutorial viewer. No checks run unless a category is subscribed."
+        },
+        "kustoWorkbench.tutorials.refreshIntervalHours": {
+          "order": 13,
+          "type": "number",
+          "default": 24,
+          "minimum": 1,
+          "maximum": 168,
+          "description": "Minimum number of hours between remote tutorial catalog refreshes. Cached and built-in tutorials remain available offline."
         }
       }
     },
@@ -261,6 +281,11 @@
       {
         "command": "kusto.openWalkthroughs",
         "title": "Open Walkthroughs...",
+        "category": "Kusto Workbench"
+      },
+      {
+        "command": "kusto.openTutorials",
+        "title": "Open Tutorials...",
         "category": "Kusto Workbench"
       },
       {
@@ -1790,6 +1815,7 @@
     "test:e2e:profile-check": "node scripts/e2e-full-suite.mjs --profile-check-only --profiles sql-auth,kusto-auth",
     "test:e2e:profile-check:repair": "node scripts/e2e-full-suite.mjs --profile-check-only --profiles sql-auth,kusto-auth --repair-profile-residue",
     "test:coverage-gate": "node scripts/coverage-gate.mjs",
+    "validate:tutorials": "node scripts/validate-tutorial-catalog.mjs",
     "bundle-size": "node scripts/bundle-size.mjs",
     "bundle-size:gate": "node scripts/bundle-size-gate.mjs"
   },

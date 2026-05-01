@@ -26,6 +26,7 @@ const quietProfileSettings = {
 	'extensions.showRecommendationsOnlyOnDemand': true,
 	'workbench.startupEditor': 'none',
 };
+const perTestConfigFile = 'e2e.settings.json';
 
 function usage() {
 	return `Usage: node scripts/e2e-full-suite.mjs [options]
@@ -210,13 +211,16 @@ function discoverCases(options, quarantineEntries) {
 				continue;
 			}
 
-			const category = testId.startsWith('readme-ss-') ? 'screenshot-generator' : 'behavior';
+			const workspaceSettings = readTestWorkspaceSettings(testDir);
+
+			const category = testId.startsWith('readme-ss-') || testId.startsWith('tutorial-media-') ? 'screenshot-generator' : 'behavior';
 			const quarantine = findQuarantine(quarantineEntries, profile, testId);
 			const testCase = {
 				profile,
 				testId,
 				category,
 				featureFiles: featureFiles.map(name => relativePath(path.join(testDir, name))),
+				workspaceSettings,
 				quarantine,
 			};
 
@@ -230,6 +234,19 @@ function discoverCases(options, quarantineEntries) {
 	}
 
 	return { cases, excludedScreenshotGenerators };
+}
+
+function readTestWorkspaceSettings(testDir) {
+	const configPath = path.join(testDir, perTestConfigFile);
+	if (!existsSync(configPath)) {
+		return null;
+	}
+
+	const config = readJson(configPath, {});
+	if (!config.workspaceSettings || typeof config.workspaceSettings !== 'object' || Array.isArray(config.workspaceSettings)) {
+		throw new Error(`${relativePath(configPath)} must contain an object property named workspaceSettings.`);
+	}
+	return config.workspaceSettings;
 }
 
 function findQuarantine(entries, profile, testId) {
@@ -347,13 +364,14 @@ function repairProfileResidue(residueEntries, backupRoot) {
 	return repaired;
 }
 
-function runCommand(command, args, outputFile) {
+function runCommand(command, args, outputFile, envOverrides = {}) {
 	const startedAt = Date.now();
 	const result = spawnSync(command, args, {
 		cwd: repoRoot,
 		encoding: 'utf8',
 		shell: shellForPlatform(),
 		maxBuffer: 1024 * 1024 * 200,
+		env: { ...process.env, ...envOverrides },
 	});
 	const stdout = result.stdout || '';
 	const stderr = result.stderr || '';
@@ -372,6 +390,24 @@ function runCommand(command, args, outputFile) {
 		combinedOutput,
 		durationMs: Date.now() - startedAt,
 	};
+}
+
+function safePathSegment(value) {
+	return String(value || '').replace(/[^a-zA-Z0-9_.-]+/g, '_');
+}
+
+function prepareTestWorkspace(testCase, suiteOutputDir) {
+	if (!testCase.workspaceSettings) {
+		return null;
+	}
+	const workspaceDir = path.join(
+		suiteOutputDir,
+		'workspaces',
+		`${safePathSegment(testCase.profile)}__${safePathSegment(testCase.testId)}`,
+	);
+	const settingsPath = path.join(workspaceDir, '.vscode', 'settings.json');
+	writeJson(settingsPath, testCase.workspaceSettings);
+	return { workspaceDir, settingsPath };
 }
 
 function latestRunDir(profile, testId) {
@@ -810,8 +846,14 @@ function main() {
 			args.push('--timeout', options.timeout);
 		}
 
+		const preparedWorkspace = prepareTestWorkspace(testCase, suiteOutputDir);
+		const envOverrides = preparedWorkspace ? { VSCODE_EXT_TEST_WORKSPACE: preparedWorkspace.workspaceDir } : {};
+		if (preparedWorkspace) {
+			console.log(`Seeded per-test VS Code workspace settings for ${testCase.profile}/${testCase.testId}: ${relativePath(preparedWorkspace.settingsPath)}`);
+		}
+
 		const outputFile = path.join(commandLogDir, `${testCase.profile}__${testCase.testId}.log`);
-		const result = runCommand('vscode-ext-test', args, outputFile);
+		const result = runCommand('vscode-ext-test', args, outputFile, envOverrides);
 		const runDir = artifactDirFromOutput(result.combinedOutput, testCase.profile, testCase.testId);
 		const artifacts = summarizeArtifacts(runDir);
 		const resultFailed = result.status !== 0 || (artifacts.results?.totalFailed || 0) > 0;
@@ -827,6 +869,7 @@ function main() {
 			durationMs: result.durationMs,
 			completedAt: new Date().toISOString(),
 			runDir,
+			workspaceSettingsPath: preparedWorkspace ? preparedWorkspace.settingsPath : '',
 			reportPath: artifacts.reportPath,
 			screenshots: artifacts.screenshots,
 			failureScreenshots: artifacts.failureScreenshots,

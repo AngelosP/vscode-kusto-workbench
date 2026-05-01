@@ -61,6 +61,7 @@ import { initToolbarOverflow } from '../sections/kw-query-toolbar';
 import { postMessageToHost } from '../shared/webview-messages';
 import { decideSchemaOperation } from '../shared/schema-decision';
 import { SchemaTracker } from '../shared/schema-tracker';
+import { extractCrossClusterRefs, getCrossClusterSchemaCheckDelay } from '../shared/cross-cluster-schema';
 import {
 	connections,
 	monacoReadyPromise,
@@ -237,7 +238,7 @@ let __kustoSetDatabaseInContext: ((...args: any[]) => Promise<boolean>) | null =
 export let __kustoUpdateSchemaForFocusedBox: ((...args: any[]) => Promise<void>) | null = null;
 let __kustoEnableMarkersForBox: ((boxId: any) => void) | null = null;
 let __kustoTriggerRevalidation: ((boxId: any) => void) | null = null;
-let __kustoExtractCrossClusterRefs: ((queryText: any) => any[]) | null = null;
+let __kustoExtractCrossClusterRefs: ((queryText: any, currentContext?: any) => any[]) | null = null;
 let __kustoRequestCrossClusterSchema: ((clusterName: any, database: any, boxId: any) => void) | null = null;
 let __kustoApplyCrossClusterSchemaInternal: ((...args: any[]) => Promise<void>) | null = null;
 let __kustoCheckCrossClusterRefs: ((queryText: any, boxId: any) => void) | null = null;
@@ -260,6 +261,10 @@ let __kustoMonacoInitializedByModel: Record<string, boolean> = {};
 
 let __kustoMonacoModelDisposeHookInstalled = false;
 let __kustoCrossClusterCheckTimeout: Record<string, any> = {};
+let __kustoCrossClusterApplyTimeout: Record<string, any> = {};
+let __kustoLastCrossClusterInteractionAtByBoxId: Record<string, number> = {};
+let __kustoCrossClusterPointerDownByBoxId: Record<string, boolean> = {};
+let __kustoCrossClusterInterestedBoxIdsByKey: Record<string, Set<string>> = {};
 let __kustoWorkerInitialized = false;
 let __kustoWorkerNeedsSchemaReload = false;
 let __kustoLastFocusedBoxId: string | null = null;
@@ -274,6 +279,211 @@ export { __kustoControlCommandDocCache, __kustoControlCommandDocPending } from '
 export { __kustoGeneratedFunctionsMerged, setGeneratedFunctionsMerged } from './caret-docs';
 export let __kustoCrossClusterSchemas: Record<string, any> = {};
 export let __kustoMonacoInitRetryCountByBoxId: Record<string, number> = {};
+
+const CROSS_CLUSTER_SCHEMA_CONTENT_CHECK_DELAY_MS = 500;
+const CROSS_CLUSTER_SCHEMA_FOCUS_CHECK_DELAY_MS = 1500;
+const CROSS_CLUSTER_SCHEMA_MIN_IDLE_MS = 1200;
+const CROSS_CLUSTER_SCHEMA_APPLY_MIN_IDLE_MS = 1200;
+const CROSS_CLUSTER_SCHEMA_IDLE_RETRY_FLOOR_MS = 100;
+
+interface CrossClusterSchemaApplyArgs {
+	clusterName: string;
+	clusterUrl: string;
+	database: string;
+	rawSchemaJson: any;
+	boxId?: string;
+}
+
+function __kustoNormalizeCrossClusterBoxId(boxId: any): string {
+	return String(boxId || '').trim();
+}
+
+function __kustoNoteCrossClusterInteraction(boxId?: any): void {
+	const now = Date.now();
+	__kustoLastMonacoInteractionAt = now;
+	const id = __kustoNormalizeCrossClusterBoxId(boxId);
+	if (id) {
+		__kustoLastCrossClusterInteractionAtByBoxId[id] = now;
+	}
+}
+
+function __kustoSetCrossClusterPointerDown(boxId: any, isDown: boolean): void {
+	__kustoNoteCrossClusterInteraction(boxId);
+	const id = __kustoNormalizeCrossClusterBoxId(boxId);
+	if (!id) {
+		return;
+	}
+	if (isDown) {
+		__kustoCrossClusterPointerDownByBoxId[id] = true;
+	} else {
+		delete __kustoCrossClusterPointerDownByBoxId[id];
+	}
+}
+
+function __kustoIsCrossClusterPointerDown(boxId?: any): boolean {
+	const id = __kustoNormalizeCrossClusterBoxId(boxId);
+	if (id) {
+		return !!__kustoCrossClusterPointerDownByBoxId[id];
+	}
+	return Object.values(__kustoCrossClusterPointerDownByBoxId).some(Boolean);
+}
+
+function __kustoGetCrossClusterIdleDelay(boxId: string | undefined, minIdleMs: number): number {
+	if (__kustoIsCrossClusterPointerDown(boxId)) {
+		return Math.max(minIdleMs, CROSS_CLUSTER_SCHEMA_IDLE_RETRY_FLOOR_MS);
+	}
+	const id = __kustoNormalizeCrossClusterBoxId(boxId);
+	const lastForBox = id ? (__kustoLastCrossClusterInteractionAtByBoxId[id] || 0) : 0;
+	return getCrossClusterSchemaCheckDelay(Date.now(), Math.max(__kustoLastMonacoInteractionAt || 0, lastForBox), minIdleMs);
+}
+
+function __kustoEditorHasCrossClusterFocus(editor: any): boolean {
+	try {
+		const hasWidgetFocus = typeof editor?.hasWidgetFocus === 'function' ? editor.hasWidgetFocus() : false;
+		const hasTextFocus = typeof editor?.hasTextFocus === 'function' ? editor.hasTextFocus() : false;
+		return hasWidgetFocus || hasTextFocus;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoIsCurrentCrossClusterEditor(editor: any, boxId: string): boolean {
+	return !!boxId && activeQueryEditorBoxId === boxId && queryEditors?.[boxId] === editor && __kustoEditorHasCrossClusterFocus(editor);
+}
+
+function __kustoClearCrossClusterCheckTimer(boxId: string): void {
+	try {
+		if (__kustoCrossClusterCheckTimeout?.[boxId]) {
+			clearTimeout(__kustoCrossClusterCheckTimeout[boxId]);
+			delete __kustoCrossClusterCheckTimeout[boxId];
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoRemoveCrossClusterInterestForBox(boxId: any): void {
+	const id = __kustoNormalizeCrossClusterBoxId(boxId);
+	if (!id) {
+		return;
+	}
+	for (const [key, boxIds] of Object.entries(__kustoCrossClusterInterestedBoxIdsByKey)) {
+		boxIds.delete(id);
+		if (boxIds.size === 0) {
+			delete __kustoCrossClusterInterestedBoxIdsByKey[key];
+		}
+	}
+}
+
+function __kustoTrackCrossClusterInterest(key: string, boxId: any): void {
+	const id = __kustoNormalizeCrossClusterBoxId(boxId);
+	if (!key || !id) {
+		return;
+	}
+	if (!__kustoCrossClusterInterestedBoxIdsByKey[key]) {
+		__kustoCrossClusterInterestedBoxIdsByKey[key] = new Set<string>();
+	}
+	__kustoCrossClusterInterestedBoxIdsByKey[key].add(id);
+}
+
+function __kustoHasLiveCrossClusterInterest(key: string): boolean {
+	const boxIds = __kustoCrossClusterInterestedBoxIdsByKey[key];
+	if (!boxIds) {
+		return false;
+	}
+	for (const id of Array.from(boxIds)) {
+		if (queryEditors?.[id]) {
+			return true;
+		}
+		boxIds.delete(id);
+	}
+	if (boxIds.size === 0) {
+		delete __kustoCrossClusterInterestedBoxIdsByKey[key];
+	}
+	return false;
+}
+
+function __kustoScheduleCrossClusterRefCheck(editor: any, boxId: any, initialDelayMs: number): void {
+	const id = __kustoNormalizeCrossClusterBoxId(boxId);
+	if (!id || !editor) {
+		return;
+	}
+	if (!__kustoCrossClusterCheckTimeout) {
+		__kustoCrossClusterCheckTimeout = {};
+	}
+	__kustoClearCrossClusterCheckTimer(id);
+
+	const run = () => {
+		try { delete __kustoCrossClusterCheckTimeout[id]; } catch (e) { console.error('[kusto]', e); }
+		try {
+			const idleDelay = __kustoGetCrossClusterIdleDelay(id, CROSS_CLUSTER_SCHEMA_MIN_IDLE_MS);
+			if (idleDelay > 0) {
+				__kustoCrossClusterCheckTimeout[id] = setTimeout(run, Math.max(idleDelay, CROSS_CLUSTER_SCHEMA_IDLE_RETRY_FLOOR_MS));
+				return;
+			}
+			if (!__kustoIsCurrentCrossClusterEditor(editor, id)) {
+				return;
+			}
+			if (__kustoCheckCrossClusterRefs !== null) {
+				__kustoCheckCrossClusterRefs(editor.getValue(), id);
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	};
+
+	__kustoCrossClusterCheckTimeout[id] = setTimeout(run, Math.max(0, initialDelayMs));
+}
+
+function __kustoScheduleCrossClusterSchemaApply(args: CrossClusterSchemaApplyArgs): void {
+	const key = `${String(args.clusterName || '').toLowerCase()}|${String(args.database || '').toLowerCase()}`;
+	if (!key || key === '|') {
+		return;
+	}
+	const shouldSkipDisposedBox = () => {
+		const id = __kustoNormalizeCrossClusterBoxId(args.boxId);
+		if (id && !queryEditors?.[id]) {
+			if (__kustoHasLiveCrossClusterInterest(key)) {
+				return false;
+			}
+			__kustoCrossClusterSchemas[key] = { status: 'error', error: 'Editor disposed before schema apply' };
+			return true;
+		}
+		return false;
+	};
+	try {
+		if (__kustoCrossClusterApplyTimeout?.[key]) {
+			clearTimeout(__kustoCrossClusterApplyTimeout[key]);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	const run = () => {
+		try { delete __kustoCrossClusterApplyTimeout[key]; } catch (e) { console.error('[kusto]', e); }
+		try {
+			if (shouldSkipDisposedBox()) {
+				return;
+			}
+			const idleDelay = __kustoGetCrossClusterIdleDelay(args.boxId, CROSS_CLUSTER_SCHEMA_APPLY_MIN_IDLE_MS);
+			if (idleDelay > 0) {
+				__kustoCrossClusterApplyTimeout[key] = setTimeout(run, Math.max(idleDelay, CROSS_CLUSTER_SCHEMA_IDLE_RETRY_FLOOR_MS));
+				return;
+			}
+
+			const operationPromise = __kustoSchemaOperationQueue.then(async () => {
+				if (shouldSkipDisposedBox()) {
+					return;
+				}
+				const queuedIdleDelay = __kustoGetCrossClusterIdleDelay(args.boxId, CROSS_CLUSTER_SCHEMA_APPLY_MIN_IDLE_MS);
+				if (queuedIdleDelay > 0) {
+					__kustoScheduleCrossClusterSchemaApply(args);
+					return;
+				}
+				return await __kustoApplyCrossClusterSchemaInternal!(args.clusterName, args.clusterUrl, args.database, args.rawSchemaJson);
+			}).catch((e: any) => {
+				console.error('[monaco-kusto] Cross-cluster schema operation failed:', e);
+			});
+			__kustoSchemaOperationQueue = operationPromise;
+		} catch (e) { console.error('[kusto]', e); }
+	};
+
+	__kustoCrossClusterApplyTimeout[key] = setTimeout(run, 0);
+}
 
 // AMD globals loaded by require() — not available at module scope
 // but referenced inside the require() callback and other functions.
@@ -1287,73 +1497,8 @@ __kustoTriggerRevalidation = function(boxId: any) {
 
 					// Parse query text to extract cluster() and database() references
 					// Returns array of { clusterName, database } objects
-__kustoExtractCrossClusterRefs = function (queryText: any) {
-						const refs: any[] = [];
-						if (!queryText || typeof queryText !== 'string') {
-							return refs;
-						}
-
-						// Pattern 1: cluster('name').database('dbname')
-						// cluster("name").database("dbname")
-						// cluster(name).database(dbname) - without quotes
-						const clusterDbPattern = /cluster\s*\(\s*['"]?([^'")\s]+)['"]?\s*\)\s*\.\s*database\s*\(\s*['"]?([^'")\s]+)['"]?\s*\)/gi;
-						// Get current context to skip refs that match the active connection
-						const currentCtx = __kustoSchemaTracker.databaseInContext;
-						const currentClusterShort = currentCtx?.clusterUrl
-							? (currentCtx.clusterUrl.match(/https?:\/\/([^.]+)/i)?.[1] || '').toLowerCase()
-							: '';
-						const currentDbLower = (currentCtx?.database || '').toLowerCase();
-						let match;
-						while ((match = clusterDbPattern.exec(queryText)) !== null) {
-							const clusterName = match[1];
-							const database = match[2];
-							if (clusterName && database) {
-								// Skip if this ref matches the current connection — it's a no-op,
-								// the schema for the active cluster+database is already loaded.
-								if (currentClusterShort && currentDbLower &&
-									clusterName.toLowerCase() === currentClusterShort &&
-									database.toLowerCase() === currentDbLower) {
-									continue;
-								}
-								// Also skip if the ref matches the full cluster URL
-								if (currentCtx?.clusterUrl && currentDbLower &&
-									clusterName.toLowerCase() === currentCtx.clusterUrl.toLowerCase().replace(/^https?:\/\//, '').replace(/\/+$/, '') &&
-									database.toLowerCase() === currentDbLower) {
-									continue;
-								}
-								// Avoid duplicates
-								const exists = refs.some(r => 
-									r.clusterName?.toLowerCase() === clusterName.toLowerCase() &&
-									r.database.toLowerCase() === database.toLowerCase()
-								);
-								if (!exists) {
-									refs.push({ clusterName, database });
-								}
-							}
-						}
-						
-						// Pattern 2: database('name') without cluster() prefix
-						// This references a database on the SAME cluster as the current connection
-						// We'll mark these with clusterName = null and resolve the cluster later
-						const dbOnlyPattern = /(?<!cluster\s*\([^)]*\)\s*\.)\bdatabase\s*\(\s*['"]?([^'")\s]+)['"]?\s*\)/gi;
-						while ((match = dbOnlyPattern.exec(queryText)) !== null) {
-							const database = match[1];
-							if (database) {
-								// Check if this database is different from the current context
-								const currentDb = __kustoSchemaTracker.databaseInContext?.database;
-								if (database.toLowerCase() !== currentDb?.toLowerCase()) {
-									const exists = refs.some(r => 
-										r.clusterName === null &&
-										r.database.toLowerCase() === database.toLowerCase()
-									);
-									if (!exists) {
-										refs.push({ clusterName: null, database }); // null means "same cluster"
-									}
-								}
-							}
-						}
-						
-						return refs;
+__kustoExtractCrossClusterRefs = function (queryText: any, currentContext: any = null) {
+						return extractCrossClusterRefs(queryText, currentContext || __kustoSchemaTracker.databaseInContext);
 					};
 
 					// Request schema for a cross-cluster reference
@@ -1361,20 +1506,19 @@ __kustoRequestCrossClusterSchema = function (clusterName: any, database: any, bo
 						// If clusterName is null, resolve it from current context
 						let resolvedClusterName = clusterName;
 						if (clusterName === null) {
-							const currentContext = __kustoSchemaTracker.databaseInContext;
+							const currentContext = __kustoGetSchemaContextForBox(__kustoNormalizeCrossClusterBoxId(boxId)) || __kustoSchemaTracker.databaseInContext;
 							if (currentContext?.clusterUrl) {
-								// Extract cluster name from URL (e.g., https://ddtelvscode.kusto.windows.net -> ddtelvscode)
-								const urlMatch = currentContext.clusterUrl.match(/https?:\/\/([^.]+)/i);
-								resolvedClusterName = urlMatch ? urlMatch[1] : currentContext.clusterUrl;
+								resolvedClusterName = currentContext.clusterUrl;
 							} else {
 								return;
 							}
 						}
 						
 						const key = `${resolvedClusterName.toLowerCase()}|${database.toLowerCase()}`;
+						__kustoTrackCrossClusterInterest(key, boxId);
 						
-						// Skip if already loaded or pending
-						if (__kustoCrossClusterSchemas[key]) {
+						// Skip if already loaded or pending. Previous errors are retryable.
+						if (__kustoCrossClusterSchemas[key] && __kustoCrossClusterSchemas[key].status !== 'error') {
 							return;
 						}
 
@@ -1394,15 +1538,14 @@ __kustoRequestCrossClusterSchema = function (clusterName: any, database: any, bo
 
 					// Apply a cross-cluster schema to monaco-kusto
 					// This is serialized through the same queue as __kustoSetMonacoKustoSchema to prevent races
-					_win.__kustoApplyCrossClusterSchema = async function (clusterName: any, clusterUrl: any, database: any, rawSchemaJson: any) {
-						// Serialize through the same queue as primary schema operations
-						const operationPromise = __kustoSchemaOperationQueue.then(async () => {
-							return await __kustoApplyCrossClusterSchemaInternal!(clusterName, clusterUrl, database, rawSchemaJson);
-						}).catch((e: any) => {
-							console.error('[monaco-kusto] Cross-cluster schema operation failed:', e);
+					_win.__kustoApplyCrossClusterSchema = async function (clusterName: any, clusterUrl: any, database: any, rawSchemaJson: any, boxId: any = '') {
+						__kustoScheduleCrossClusterSchemaApply({
+							clusterName: String(clusterName || ''),
+							clusterUrl: String(clusterUrl || ''),
+							database: String(database || ''),
+							rawSchemaJson,
+							boxId: __kustoNormalizeCrossClusterBoxId(boxId),
 						});
-						__kustoSchemaOperationQueue = operationPromise;
-						return operationPromise;
 					};
 					
 					// Internal implementation - called through the queue
@@ -1434,7 +1577,11 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 								const workerAccessor = await monaco.languages.kusto.getKustoWorker();
 								const models = monaco.editor.getModels();
 								
-								if (models && models.length > 0) {
+								if (!models || models.length === 0) {
+									__kustoCrossClusterSchemas[key] = { status: 'error', error: 'No synced model available' };
+									return;
+								}
+
 									// The kusto worker schema is GLOBAL — one addDatabaseToSchema call
 									// applies to all models. Use models[0].uri which is guaranteed to
 									// have its document synced (avoids "document is null" errors).
@@ -1530,7 +1677,8 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 									} else if (!__kustoCrossClusterSchemas[key] || __kustoCrossClusterSchemas[key].status !== 'error') {
 										__kustoCrossClusterSchemas[key] = { status: 'error', error: 'API not available' };
 									}
-								}
+							} else {
+								__kustoCrossClusterSchemas[key] = { status: 'error', error: 'API not available' };
 							}
 						} catch (e) {
 							console.error('[monaco-kusto] Failed to apply cross-cluster schema:', e);
@@ -1540,9 +1688,10 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 
 					// Check for cross-cluster references in a query and request schemas
 __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
-						const refs = __kustoExtractCrossClusterRefs!(queryText);
+						const currentContext = __kustoGetSchemaContextForBox(__kustoNormalizeCrossClusterBoxId(boxId)) || __kustoSchemaTracker.databaseInContext;
+						const refs = __kustoExtractCrossClusterRefs!(queryText, currentContext);
 						if (refs.length > 0) {
-							const diagCtx = __kustoSchemaTracker.databaseInContext;
+							const diagCtx = currentContext;
 							console.log(
 								'%c[schema-diag] FQ-REFS in %s | current-context: %s/%s | refs:',
 								'color:#f80;font-weight:bold',
@@ -3976,17 +4125,11 @@ function initQueryEditor(boxId: any) {
 				__kustoScheduleKustoDiagnostics(boxId, 250);
 			} catch (e) { console.error('[kusto]', e); }
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
-			// Check for cross-cluster references and request their schemas
+			// Check for cross-cluster references and request their schemas after the editor is quiet.
 			try {
 				if (__kustoCheckCrossClusterRefs !== null) {
-					// Debounce the check to avoid excessive requests while typing
-					if (!__kustoCrossClusterCheckTimeout) {
-						__kustoCrossClusterCheckTimeout = {};
-					}
-					clearTimeout(__kustoCrossClusterCheckTimeout[boxId]);
-					__kustoCrossClusterCheckTimeout[boxId] = setTimeout(() => {
-						__kustoCheckCrossClusterRefs!(editor.getValue(), boxId);
-					}, 500);
+					__kustoNoteCrossClusterInteraction(boxId);
+					__kustoScheduleCrossClusterRefCheck(editor, boxId, CROSS_CLUSTER_SCHEMA_CONTENT_CHECK_DELAY_MS);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try { __kustoMaybeAutoTriggerAutocomplete(editor, boxId, e); } catch (e) { console.error('[kusto]', e); }
@@ -3996,6 +4139,7 @@ function initQueryEditor(boxId: any) {
 			setActiveQueryEditorBoxId(boxId);
 			setActiveMonacoEditor(editor);
 			try { __kustoLastMonacoInteractionAt = Date.now(); } catch (e) { console.error('[kusto]', e); }
+			try { __kustoNoteCrossClusterInteraction(boxId); } catch (e) { console.error('[kusto]', e); }
 			try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 			syncPlaceholder();
 			ensureSchemaForBox(boxId);
@@ -4009,13 +4153,11 @@ function initQueryEditor(boxId: any) {
 			try {
 				__kustoScheduleKustoDiagnostics(boxId, 0);
 			} catch (e) { console.error('[kusto]', e); }
-			// Check for cross-cluster references on focus (in addition to content change)
+			// Check for cross-cluster references on focus (in addition to content change),
+			// but wait for click/selection activity to settle before starting schema work.
 			try {
 				if (__kustoCheckCrossClusterRefs !== null) {
-					// Small delay to let the schema load first
-					setTimeout(() => {
-						__kustoCheckCrossClusterRefs!(editor.getValue(), boxId);
-					}, 100);
+					__kustoScheduleCrossClusterRefCheck(editor, boxId, CROSS_CLUSTER_SCHEMA_FOCUS_CHECK_DELAY_MS);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 		});
@@ -4026,6 +4168,7 @@ function initQueryEditor(boxId: any) {
 				setActiveQueryEditorBoxId(boxId);
 				setActiveMonacoEditor(editor);
 				try { __kustoLastMonacoInteractionAt = Date.now(); } catch (e) { console.error('[kusto]', e); }
+				try { __kustoNoteCrossClusterInteraction(boxId); } catch (e) { console.error('[kusto]', e); }
 				try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
 				syncPlaceholder();
 				scheduleDocUpdate();
@@ -4074,6 +4217,41 @@ function initQueryEditor(boxId: any) {
 				try { editor.focus(); } catch (e) { console.error('[kusto]', e); }
 			}, 0);
 		};
+		const onCrossClusterPointerUp = () => __kustoSetCrossClusterPointerDown(boxId, false);
+		try {
+			editor.onMouseDown(() => __kustoSetCrossClusterPointerDown(boxId, true));
+			editor.onMouseMove((event: any) => {
+				try {
+					const buttons = event?.event?.browserEvent?.buttons;
+					if (buttons === 0) {
+						__kustoSetCrossClusterPointerDown(boxId, false);
+						return;
+					}
+				} catch (e) { console.error('[kusto]', e); }
+				__kustoNoteCrossClusterInteraction(boxId);
+			});
+			editor.onDidChangeCursorPosition(() => __kustoNoteCrossClusterInteraction(boxId));
+			document.addEventListener('mouseup', onCrossClusterPointerUp, true);
+			document.addEventListener('pointerup', onCrossClusterPointerUp, true);
+			document.addEventListener('pointercancel', onCrossClusterPointerUp, true);
+			document.addEventListener('visibilitychange', onCrossClusterPointerUp, true);
+			window.addEventListener('blur', onCrossClusterPointerUp, true);
+		} catch (e) { console.error('[kusto]', e); }
+		try {
+			if (typeof editor.onDidDispose === 'function') {
+				editor.onDidDispose(() => {
+					__kustoClearCrossClusterCheckTimer(boxId);
+					try { __kustoRemoveCrossClusterInterestForBox(boxId); } catch (e) { console.error('[kusto]', e); }
+					try { delete __kustoLastCrossClusterInteractionAtByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+					try { delete __kustoCrossClusterPointerDownByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+					try { document.removeEventListener('mouseup', onCrossClusterPointerUp, true); } catch (e) { console.error('[kusto]', e); }
+					try { document.removeEventListener('pointerup', onCrossClusterPointerUp, true); } catch (e) { console.error('[kusto]', e); }
+					try { document.removeEventListener('pointercancel', onCrossClusterPointerUp, true); } catch (e) { console.error('[kusto]', e); }
+					try { document.removeEventListener('visibilitychange', onCrossClusterPointerUp, true); } catch (e) { console.error('[kusto]', e); }
+					try { window.removeEventListener('blur', onCrossClusterPointerUp, true); } catch (e) { console.error('[kusto]', e); }
+				});
+			}
+		} catch (e) { console.error('[kusto]', e); }
 		const isEditorFocused = () => {
 			try {
 				const hasWidgetFocus = typeof editor.hasWidgetFocus === 'function' ? editor.hasWidgetFocus() : false;
@@ -4105,6 +4283,7 @@ function initQueryEditor(boxId: any) {
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
+				try { __kustoSetCrossClusterPointerDown(boxId, true); } catch (e) { console.error('[kusto]', e); }
 				focusSoon();
 			}, true);
 		}
@@ -4120,6 +4299,7 @@ function initQueryEditor(boxId: any) {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try { __kustoForceEditorWritable(editor); } catch (e) { console.error('[kusto]', e); }
+			try { __kustoSetCrossClusterPointerDown(boxId, true); } catch (e) { console.error('[kusto]', e); }
 			focusSoon();
 		}, true);
 		editor.onDidBlurEditorText(() => {

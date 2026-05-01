@@ -18,6 +18,10 @@ import { KustoQueryClient } from './kustoClient';
 import { registerRemoteFileOpener } from './remoteFileOpener';
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { exportSkillCommand, checkAndUpdateSkillFiles } from './skillExport';
+import { TutorialCatalogService } from './tutorials/tutorialCatalogService';
+import { TutorialNotificationService, isKustoTutorialTriggerDocument } from './tutorials/tutorialNotificationService';
+import { TutorialSubscriptionService } from './tutorials/tutorialSubscriptionService';
+import { TutorialViewerPanel } from './tutorials/tutorialViewerPanel';
 
 import { stsProcessManagerSingleton } from './sql/stsProcessManager';
 
@@ -101,6 +105,13 @@ export function activate(context: vscode.ExtensionContext) {
 	// Initialize connection manager
 	const connectionManager = new ConnectionManager(context);
 	const kqlLanguageHost = new KqlLanguageServiceHost(connectionManager, context);
+	const tutorialCatalogService = new TutorialCatalogService(context, context.extensionUri);
+	const tutorialSubscriptionService = new TutorialSubscriptionService(context);
+	const openTutorials = async (selectedCategoryId?: string): Promise<void> => {
+		TutorialViewerPanel.open(context, context.extensionUri, tutorialCatalogService, tutorialSubscriptionService, { selectedCategoryId });
+		await tutorialNotificationService.checkOnViewerOpen();
+	};
+	const tutorialNotificationService = new TutorialNotificationService(tutorialCatalogService, tutorialSubscriptionService, openTutorials);
 
 	// Shared SQL lazy-init (used by both editor provider and connection manager viewer)
 	let _sqlConnectionManager: SqlConnectionManager | undefined;
@@ -199,6 +210,9 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.workspace.onDidOpenTextDocument((doc) => {
 			scheduleDiagnostics(doc, 0);
+			if (isKustoTutorialTriggerDocument(doc)) {
+				void tutorialNotificationService.checkOnKustoFileOpen();
+			}
 			// Best-effort: capture any selection that VS Code may apply during open
 			// (e.g., clicking a result in the global Search view).
 			try {
@@ -602,10 +616,10 @@ export function activate(context: vscode.ExtensionContext) {
 							await vscode.commands.executeCommand('kusto.openRemoteFile');
 							break;
 						case 'openWalkthroughAgent':
-							await vscode.commands.executeCommand('workbench.action.openWalkthrough', { category: 'angelos-petropoulos.vscode-kusto-workbench#kusto-workbench.agent-first' }, true);
+							await vscode.commands.executeCommand('kusto.openTutorials', 'agent');
 							break;
 						case 'openWalkthroughEditor':
-							await vscode.commands.executeCommand('workbench.action.openWalkthrough', { category: 'angelos-petropoulos.vscode-kusto-workbench#kusto-workbench.editor-first' }, true);
+							await vscode.commands.executeCommand('kusto.openTutorials', 'editor');
 							break;					case 'exportSkill':
 						await vscode.commands.executeCommand('kusto.exportSkill');
 						break;					}
@@ -630,6 +644,12 @@ export function activate(context: vscode.ExtensionContext) {
 			await vscode.commands.executeCommand('vscode.openWith', sessionUri, KqlxEditorProvider.viewType, {
 				viewColumn: vscode.ViewColumn.One
 			});
+		})
+	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.openTutorials', async (categoryId?: string) => {
+			await openTutorials(typeof categoryId === 'string' ? categoryId : undefined);
 		})
 	);
 

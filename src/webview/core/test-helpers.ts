@@ -1944,10 +1944,652 @@ function e2eSelectSqlRunMode(mode: string, sectionId: string = ''): string {
 	return `selected SQL run mode ${targetLabel} for ${boxId}`;
 }
 
+type E2eLayoutKind = 'query' | 'sql' | 'chart' | 'markdown' | 'transformation' | 'url' | 'html' | 'python';
+
+interface E2eLayoutSpec {
+	kind: E2eLayoutKind;
+	tagName: string;
+	id: string;
+	minHeight: number;
+	maxHeight: number;
+	target: (section: HTMLElement) => HTMLElement | null;
+	resizer: (section: HTMLElement) => HTMLElement | null;
+}
+
+const E2E_LAYOUT_RESULT_SECTION_ID = 'e2e_layout_query';
+const E2E_LAYOUT_SPECS: E2eLayoutSpec[] = [
+	{
+		kind: 'query',
+		tagName: 'kw-query-section',
+		id: E2E_LAYOUT_RESULT_SECTION_ID,
+		minHeight: 80,
+		maxHeight: 950,
+		target: section => section.querySelector('.query-editor-wrapper') as HTMLElement | null,
+		resizer: section => document.getElementById(String((section as any).boxId || section.id) + '_query_resizer') as HTMLElement | null,
+	},
+	{
+		kind: 'sql',
+		tagName: 'kw-sql-section',
+		id: 'e2e_layout_sql',
+		minHeight: 80,
+		maxHeight: 950,
+		target: section => section.querySelector('.query-editor-wrapper') as HTMLElement | null,
+		resizer: section => document.getElementById(String((section as any).boxId || section.id) + '_sql_editor_resizer') as HTMLElement | null,
+	},
+	{
+		kind: 'chart',
+		tagName: 'kw-chart-section',
+		id: 'e2e_layout_chart',
+		minHeight: 120,
+		maxHeight: 950,
+		target: section => section.querySelector('.query-editor-wrapper') as HTMLElement | null,
+		resizer: section => document.getElementById(String((section as any).boxId || section.id) + '_chart_resizer') as HTMLElement | null,
+	},
+	{
+		kind: 'markdown',
+		tagName: 'kw-markdown-section',
+		id: 'e2e_layout_markdown',
+		minHeight: 120,
+		maxHeight: 950,
+		target: section => section.shadowRoot?.getElementById('editor-wrapper') as HTMLElement | null,
+		resizer: section => section.shadowRoot?.querySelector('.resizer') as HTMLElement | null,
+	},
+	{
+		kind: 'transformation',
+		tagName: 'kw-transformation-section',
+		id: 'e2e_layout_transformation',
+		minHeight: 120,
+		maxHeight: 950,
+		target: section => section.shadowRoot?.getElementById('tf-wrapper') as HTMLElement | null,
+		resizer: section => section.shadowRoot?.querySelector('.resizer') as HTMLElement | null,
+	},
+	{
+		kind: 'url',
+		tagName: 'kw-url-section',
+		id: 'e2e_layout_url',
+		minHeight: 120,
+		maxHeight: 950,
+		target: section => section.shadowRoot?.getElementById('output-wrapper') as HTMLElement | null,
+		resizer: section => section.shadowRoot?.querySelector('.resizer') as HTMLElement | null,
+	},
+	{
+		kind: 'html',
+		tagName: 'kw-html-section',
+		id: 'e2e_layout_html',
+		minHeight: 120,
+		maxHeight: 950,
+		target: section => (section.shadowRoot?.getElementById('preview-wrapper')
+			|| section.shadowRoot?.getElementById('editor-wrapper')) as HTMLElement | null,
+		resizer: section => section.shadowRoot?.querySelector('.resizer') as HTMLElement | null,
+	},
+	{
+		kind: 'python',
+		tagName: 'kw-python-section',
+		id: 'e2e_layout_python',
+		minHeight: 120,
+		maxHeight: 950,
+		target: section => section.shadowRoot?.getElementById('editor-wrapper') as HTMLElement | null,
+		resizer: section => section.shadowRoot?.querySelector('.resizer') as HTMLElement | null,
+	},
+];
+
+function e2eLayoutSpec(kind: E2eLayoutKind): E2eLayoutSpec {
+	const spec = E2E_LAYOUT_SPECS.find(candidate => candidate.kind === kind);
+	if (!spec) {
+		throw new Error(`Unknown layout section kind: ${kind}`);
+	}
+	return spec;
+}
+
+function e2eLayoutSection(spec: E2eLayoutSpec): HTMLElement {
+	const section = document.getElementById(spec.id) as HTMLElement | null;
+	if (!section) {
+		throw new Error(`Missing ${spec.kind} layout section ${spec.id}`);
+	}
+	if (section.tagName.toLowerCase() !== spec.tagName) {
+		throw new Error(`Expected ${spec.id} to be ${spec.tagName}, got ${section.tagName.toLowerCase()}`);
+	}
+	return section;
+}
+
+function e2eLayoutShell(section: HTMLElement, kind: string): HTMLElement {
+	const shell = section.shadowRoot?.querySelector('kw-section-shell') as HTMLElement | null;
+	if (!shell) {
+		throw new Error(`Missing section shell for ${kind}`);
+	}
+	return shell;
+}
+
+function e2eLayoutShellButton(section: HTMLElement, kind: string, selector: string): HTMLElement {
+	const shell = e2eLayoutShell(section, kind);
+	const button = shell.shadowRoot?.querySelector(selector) as HTMLElement | null;
+	if (!button) {
+		throw new Error(`Missing ${selector} button for ${kind}`);
+	}
+	return button;
+}
+
+function e2eLayoutIsDisplayed(element: HTMLElement | null): boolean {
+	if (!element || !element.isConnected) return false;
+	const rect = element.getBoundingClientRect();
+	if (rect.width <= 0 || rect.height <= 0) return false;
+	const style = getComputedStyle(element);
+	return style.display !== 'none' && style.visibility !== 'hidden' && style.opacity !== '0';
+}
+
+function e2eLayoutAssertDisplayed(element: HTMLElement | null, context: string): DOMRect {
+	if (!e2eLayoutIsDisplayed(element)) {
+		throw new Error(`${context} should be visible`);
+	}
+	return (element as HTMLElement).getBoundingClientRect();
+}
+
+function e2eLayoutAssertFiniteHeight(spec: E2eLayoutSpec, target: HTMLElement, context: string): number {
+	const height = target.getBoundingClientRect().height;
+	if (!Number.isFinite(height)) {
+		throw new Error(`${context} height is not finite: ${height}`);
+	}
+	if (height < spec.minHeight || height > spec.maxHeight) {
+		throw new Error(`${context} height out of bounds: ${height}px, expected ${spec.minHeight}-${spec.maxHeight}px`);
+	}
+	return height;
+}
+
+function e2eLayoutAssertTextIncludes(element: HTMLElement | null, expectedText: string, context: string): void {
+	if (!element) {
+		throw new Error(`${context} element not found`);
+	}
+	const text = String(element.textContent || '').replace(/\s+/g, ' ').trim();
+	if (!text.includes(expectedText)) {
+		throw new Error(`${context} missing ${JSON.stringify(expectedText)}; text=${JSON.stringify(text.slice(0, 180))}`);
+	}
+	if (!e2eLayoutIsDisplayed(element)) {
+		throw new Error(`${context} should be visible`);
+	}
+}
+
+function e2eLayoutAssertDataTableRows(root: ParentNode | null, context: string, minimumRows: number): void {
+	const table = root?.querySelector('kw-data-table') as any;
+	if (!table) {
+		throw new Error(`${context} data table not found`);
+	}
+	const rows = Array.isArray(table.rows) ? table.rows : [];
+	const columns = Array.isArray(table.columns) ? table.columns : [];
+	if (rows.length < minimumRows) {
+		throw new Error(`${context} expected at least ${minimumRows} rows, got ${rows.length}`);
+	}
+	if (columns.length < 2) {
+		throw new Error(`${context} expected multiple columns, got ${columns.length}`);
+	}
+	if (!e2eLayoutIsDisplayed(table as HTMLElement)) {
+		throw new Error(`${context} data table should be visible`);
+	}
+}
+
+function e2eLayoutAssertSectionContent(spec: E2eLayoutSpec): void {
+	const section = e2eLayoutSection(spec) as any;
+	const id = String(section.boxId || section.id || spec.id);
+	switch (spec.kind) {
+		case 'query': {
+			if (section.dataset.testHasResults !== 'true') {
+				throw new Error('query section expected synthetic results');
+			}
+			const wrapper = document.getElementById(id + '_results_wrapper') as HTMLElement | null;
+			e2eLayoutAssertDisplayed(wrapper, 'query results wrapper');
+			e2eLayoutAssertDataTableRows(wrapper, 'query results', 16);
+			return;
+		}
+		case 'sql': {
+			if (section.dataset.testHasResults !== 'true') {
+				throw new Error('SQL section expected synthetic results');
+			}
+			const wrapper = document.getElementById(id + '_sql_results_wrapper') as HTMLElement | null;
+			e2eLayoutAssertDisplayed(wrapper, 'SQL results wrapper');
+			e2eLayoutAssertDataTableRows(wrapper, 'SQL results', 16);
+			return;
+		}
+		case 'chart': {
+			const canvas = document.getElementById(id + '_chart_canvas_preview') as HTMLElement | null;
+			e2eLayoutAssertDisplayed(canvas, 'chart preview canvas');
+			const statusText = String(canvas?.textContent || '').trim();
+			const hasRenderer = !!canvas?.querySelector('canvas,svg');
+			if (!hasRenderer && /loading chart|select a data source|no data/i.test(statusText)) {
+				throw new Error(`chart did not render data; status=${JSON.stringify(statusText)}`);
+			}
+			return;
+		}
+		case 'markdown': {
+			e2eLayoutAssertTextIncludes(section.querySelector('.markdown-viewer') as HTMLElement | null, 'Markdown paragraph 42', 'markdown preview');
+			return;
+		}
+		case 'transformation': {
+			e2eLayoutAssertDataTableRows(section.shadowRoot, 'transformation results', 16);
+			return;
+		}
+		case 'url': {
+			e2eLayoutAssertTextIncludes(section.shadowRoot?.getElementById('url-content') as HTMLElement | null, 'URL body 42', 'URL content');
+			return;
+		}
+		case 'html': {
+			const iframe = section.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+			e2eLayoutAssertDisplayed(iframe, 'HTML preview iframe');
+			if (!String(iframe?.srcdoc || '').includes('Layout Preview')) {
+				throw new Error('HTML preview iframe srcdoc missing fixture content');
+			}
+			return;
+		}
+		case 'python': {
+			e2eLayoutAssertTextIncludes(section.shadowRoot?.querySelector('.python-output') as HTMLElement | null, 'Python output 18', 'Python output');
+			return;
+		}
+	}
+}
+
+function e2eLayoutDelay(ms: number): Promise<void> {
+	return new Promise(resolve => window.setTimeout(resolve, ms));
+}
+
+function e2eLayoutAnimationFrame(): Promise<void> {
+	return new Promise(resolve => window.requestAnimationFrame(() => resolve()));
+}
+
+async function e2eLayoutWaitFor(
+	predicate: () => boolean,
+	description: string,
+	timeoutMs: number = 8000,
+	intervalMs: number = 50,
+): Promise<void> {
+	const start = Date.now();
+	let lastError = '';
+	while (Date.now() - start < timeoutMs) {
+		try {
+			if (predicate()) return;
+		} catch (error) {
+			lastError = error instanceof Error ? error.message : String(error);
+		}
+		await e2eLayoutDelay(intervalMs);
+	}
+	throw new Error(`Timed out waiting for ${description}${lastError ? ': ' + lastError : ''}`);
+}
+
+async function e2eLayoutWaitForUpdate(section: HTMLElement): Promise<void> {
+	try {
+		const updateComplete = (section as any).updateComplete;
+		if (updateComplete && typeof updateComplete.then === 'function') {
+			await updateComplete;
+		}
+	} catch { /* ignore test-only update timing errors */ }
+	await e2eLayoutAnimationFrame();
+}
+
+function e2eLayoutGeneratedLines(prefix: string, count: number): string {
+	return Array.from({ length: count }, (_value, index) => `${prefix} ${index + 1}: layout regression sample text`).join('\n');
+}
+
+function e2eLayoutSampleResult(): any {
+	const categories = ['Alpha', 'Beta', 'Gamma', 'Delta'];
+	const rows = Array.from({ length: 32 }, (_value, index) => [
+		`2026-02-${String((index % 28) + 1).padStart(2, '0')}T00:00:00Z`,
+		categories[index % categories.length],
+		(index + 1) * 3,
+		index + 10,
+	]);
+	return {
+		columns: [
+			{ name: 'Day', type: 'datetime' },
+			{ name: 'Category', type: 'string' },
+			{ name: 'Score', type: 'real' },
+			{ name: 'Events', type: 'long' },
+		],
+		rows,
+		metadata: { executionTimeMs: 5 },
+	};
+}
+
+function e2eLayoutDispatchQueryResult(boxId: string, result: any): void {
+	window.dispatchEvent(new MessageEvent('message', {
+		data: { type: 'queryResult', boxId, result },
+	}));
+}
+
+function e2eLayoutDispatchUrlContent(boxId: string): void {
+	window.dispatchEvent(new MessageEvent('message', {
+		data: {
+			type: 'urlContent',
+			boxId,
+			url: 'https://example.invalid/e2e-layout.txt',
+			contentType: 'text/plain',
+			status: 200,
+			kind: 'text',
+			body: e2eLayoutGeneratedLines('URL body', 42),
+		},
+	}));
+}
+
+function e2eLayoutHtmlPreviewCode(): string {
+	const cards = Array.from({ length: 10 }, (_value, index) => `
+    <section class="metric">
+      <h2>Metric ${index + 1}</h2>
+      <p>Viewport-bound preview fixture row ${index + 1}</p>
+    </section>`).join('');
+	return `<!doctype html>
+<html>
+<head>
+  <style>
+    html, body { margin: 0; font-family: sans-serif; }
+    body { min-height: 100vh; padding: 24px; box-sizing: border-box; background: #fafafa; }
+    main { min-height: calc(100vh - 48px); display: grid; gap: 12px; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .metric { border: 1px solid #ccc; padding: 12px; background: white; }
+    h1, h2, p { margin: 0 0 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <section class="metric"><h1>Layout Preview</h1><p>This fixture intentionally uses viewport height.</p></section>${cards}
+  </main>
+</body>
+</html>`;
+}
+
+function e2eLayoutAddSection(addFunctionName: string, options: Record<string, unknown>): string {
+	const addFunction = _win[addFunctionName];
+	if (typeof addFunction !== 'function') {
+		throw new Error(`Missing section factory ${addFunctionName}`);
+	}
+	return String(addFunction(options));
+}
+
+async function e2eLayoutSetMonacoValue(sectionId: string, value: string): Promise<void> {
+	await e2eLayoutWaitFor(() => !!resolveMonacoEditorFromElement(document.getElementById(sectionId)), `${sectionId} Monaco editor`, 10000);
+	const editor = resolveMonacoEditorFromElement(document.getElementById(sectionId));
+	if (!editor || typeof editor.setValue !== 'function') {
+		throw new Error(`Unable to set Monaco value for ${sectionId}`);
+	}
+	editor.setValue(value);
+}
+
+async function e2eLayoutCreateStressNotebook(): Promise<string> {
+	_win.__testRemoveAllSections();
+	await e2eLayoutWaitFor(() => document.querySelectorAll(TEST_SECTION_SELECTOR).length === 0, 'all sections to be removed');
+
+	const queryText = `datatable(Category:string, Score:long, Events:long)\n[\n${Array.from({ length: 24 }, (_value, index) => `  "${['Alpha', 'Beta', 'Gamma', 'Delta'][index % 4]}", ${index * 3 + 1}, ${index + 10}`).join(',\n')}\n]`;
+	const sqlText = `SELECT * FROM (VALUES\n${Array.from({ length: 24 }, (_value, index) => `  ('${['Alpha', 'Beta', 'Gamma', 'Delta'][index % 4]}', ${index * 3 + 1}, ${index + 10})`).join(',\n')}\n) AS layout_fixture(Category, Score, Events);`;
+	const markdownText = `# Layout Regression Fixture\n\n${e2eLayoutGeneratedLines('Markdown paragraph', 42)}`;
+	const pythonText = `values = list(range(64))\nfor value in values:\n    print('layout row', value)`;
+
+	const queryId = e2eLayoutAddSection('addQueryBox', {
+		id: e2eLayoutSpec('query').id,
+		initialQuery: queryText,
+		defaultResultsVisible: true,
+		expanded: true,
+	});
+	const sqlId = e2eLayoutAddSection('addSqlBox', {
+		id: e2eLayoutSpec('sql').id,
+		name: 'Layout SQL',
+		query: sqlText,
+		expanded: true,
+		editorHeightPx: 220,
+	});
+
+	await e2eLayoutWaitFor(() => !!document.getElementById(queryId) && !!document.getElementById(sqlId), 'query and SQL sections');
+	e2eLayoutDispatchQueryResult(queryId, e2eLayoutSampleResult());
+	e2eLayoutDispatchQueryResult(sqlId, e2eLayoutSampleResult());
+
+	e2eLayoutAddSection('addChartBox', {
+		id: e2eLayoutSpec('chart').id,
+		name: 'Layout Chart',
+		mode: 'preview',
+		dataSourceId: queryId,
+		chartType: 'bar',
+		xColumn: 'Category',
+		yColumn: 'Score',
+		yColumns: ['Score'],
+		editorHeightPx: 240,
+	});
+	e2eLayoutAddSection('addMarkdownBox', {
+		id: e2eLayoutSpec('markdown').id,
+		title: 'Layout Markdown',
+		text: markdownText,
+		mode: 'preview',
+		editorHeightPx: 220,
+	});
+	e2eLayoutAddSection('addTransformationBox', {
+		id: e2eLayoutSpec('transformation').id,
+		name: 'Layout Transformation',
+		mode: 'preview',
+		dataSourceId: queryId,
+		transformationType: 'derive',
+		deriveColumns: [{ name: 'ScoreCopy', expression: 'Score' }],
+		editorHeightPx: 240,
+	});
+	e2eLayoutAddSection('addUrlBox', {
+		id: e2eLayoutSpec('url').id,
+		name: 'Layout URL',
+		url: 'https://example.invalid/e2e-layout.txt',
+		outputHeightPx: 180,
+		expanded: true,
+	});
+	e2eLayoutAddSection('addHtmlBox', {
+		id: e2eLayoutSpec('html').id,
+		name: 'Layout HTML',
+		code: e2eLayoutHtmlPreviewCode(),
+		mode: 'preview',
+		expanded: true,
+	});
+	e2eLayoutAddSection('addPythonBox', { id: e2eLayoutSpec('python').id });
+
+	await e2eLayoutWaitFor(() => E2E_LAYOUT_SPECS.every(spec => !!document.getElementById(spec.id)), 'all layout sections');
+	e2eLayoutDispatchUrlContent(e2eLayoutSpec('url').id);
+
+	const pythonSection = e2eLayoutSection(e2eLayoutSpec('python')) as any;
+	await e2eLayoutSetMonacoValue(e2eLayoutSpec('python').id, pythonText);
+	if (typeof pythonSection.setOutput === 'function') {
+		pythonSection.setOutput(e2eLayoutGeneratedLines('Python output', 18));
+	}
+
+	const transformationSection = e2eLayoutSection(e2eLayoutSpec('transformation')) as any;
+	if (typeof transformationSection.refresh === 'function') {
+		transformationSection.refresh();
+	}
+
+	await e2eLayoutWaitFor(() => {
+		const urlTarget = e2eLayoutSpec('url').target(e2eLayoutSection(e2eLayoutSpec('url')));
+		const transformationResizer = e2eLayoutSpec('transformation').resizer(e2eLayoutSection(e2eLayoutSpec('transformation')));
+		const markdownViewer = e2eLayoutSection(e2eLayoutSpec('markdown')).querySelector('.markdown-viewer') as HTMLElement | null;
+		return e2eLayoutIsDisplayed(urlTarget)
+			&& e2eLayoutIsDisplayed(transformationResizer)
+			&& e2eLayoutIsDisplayed(markdownViewer)
+			&& String(markdownViewer?.textContent || '').includes('Markdown paragraph 42');
+	}, 'loaded URL, markdown, and transformation results');
+
+	for (const spec of E2E_LAYOUT_SPECS) {
+		await e2eLayoutWaitForUpdate(e2eLayoutSection(spec));
+	}
+	await e2eLayoutAssertStableHeights('created stress notebook');
+	return `created layout stress notebook with ${E2E_LAYOUT_SPECS.length} sections`;
+}
+
+function e2eLayoutAssertAllSectionTypes(): string {
+	const sections = e2ePersistenceSections();
+	const actualIds = sections.map(section => section.id || section.getAttribute('box-id') || '');
+	const expectedIds = E2E_LAYOUT_SPECS.map(spec => spec.id);
+	if (actualIds.join(',') !== expectedIds.join(',')) {
+		throw new Error(`Expected layout section ids ${expectedIds.join(',')}, got ${actualIds.join(',')}`);
+	}
+	for (const spec of E2E_LAYOUT_SPECS) {
+		const section = e2eLayoutSection(spec);
+		const target = spec.target(section);
+		e2eLayoutAssertDisplayed(section, `${spec.kind} section`);
+		e2eLayoutAssertDisplayed(target, `${spec.kind} layout target`);
+		e2eLayoutAssertFiniteHeight(spec, target as HTMLElement, `${spec.kind} layout target`);
+		e2eLayoutAssertSectionContent(spec);
+		if (!e2eLayoutIsDisplayed(spec.resizer(section))) {
+			throw new Error(`${spec.kind} resizer should be visible`);
+		}
+	}
+	return `all ${E2E_LAYOUT_SPECS.length} layout section types verified`;
+}
+
+async function e2eLayoutAssertStableHeights(context: string): Promise<string> {
+	const samples: number[][] = [];
+	for (let sample = 0; sample < 4; sample++) {
+		samples.push(E2E_LAYOUT_SPECS.map(spec => {
+			const section = e2eLayoutSection(spec);
+			const target = spec.target(section);
+			return target ? Math.round(target.getBoundingClientRect().height) : -1;
+		}));
+		await e2eLayoutDelay(250);
+	}
+	E2E_LAYOUT_SPECS.forEach((spec, index) => {
+		const values = samples.map(sample => sample[index]);
+		if (values.some(value => value <= 0 || !Number.isFinite(value))) {
+			throw new Error(`${context}: invalid ${spec.kind} height samples ${values.join(',')}`);
+		}
+		const min = Math.min(...values);
+		const max = Math.max(...values);
+		if (max - min > 48) {
+			throw new Error(`${context}: unstable ${spec.kind} height samples ${values.join(',')}`);
+		}
+	});
+	const documentHeight = Math.max(document.documentElement.scrollHeight, document.body.scrollHeight);
+	if (documentHeight > 20000) {
+		throw new Error(`${context}: document height is unexpectedly large (${documentHeight}px)`);
+	}
+	return `${context}: layout heights stable`;
+}
+
+async function e2eLayoutAssertScrollStability(): Promise<string> {
+	e2eLayoutAssertAllSectionTypes();
+	const scrollingElement = document.scrollingElement || document.documentElement;
+	const maxScrollTop = scrollingElement.scrollHeight - scrollingElement.clientHeight;
+	if (maxScrollTop < 300) {
+		throw new Error(`Expected a meaningfully scrollable notebook, got maxScrollTop=${maxScrollTop}`);
+	}
+	if (document.documentElement.scrollWidth > document.documentElement.clientWidth + 12) {
+		throw new Error(`Unexpected horizontal page overflow: ${document.documentElement.scrollWidth} > ${document.documentElement.clientWidth}`);
+	}
+
+	window.scrollTo(0, 0);
+	await e2eLayoutDelay(100);
+	if ((window.scrollY || scrollingElement.scrollTop) > 10) {
+		throw new Error('Notebook did not scroll to top');
+	}
+	window.scrollTo(0, maxScrollTop);
+	await e2eLayoutDelay(100);
+	if ((window.scrollY || scrollingElement.scrollTop) < maxScrollTop * 0.75) {
+		throw new Error(`Notebook did not scroll near bottom; scrollTop=${window.scrollY || scrollingElement.scrollTop}, max=${maxScrollTop}`);
+	}
+
+	for (const spec of E2E_LAYOUT_SPECS) {
+		const section = e2eLayoutSection(spec);
+		section.scrollIntoView({ block: 'center' });
+		await e2eLayoutDelay(100);
+		const rect = section.getBoundingClientRect();
+		if (rect.bottom <= 0 || rect.top >= window.innerHeight) {
+			throw new Error(`${spec.kind} section is not visible after scrollIntoView: top=${rect.top}, bottom=${rect.bottom}`);
+		}
+	}
+
+	await e2eLayoutAssertStableHeights('scroll stability');
+	return `scroll stability verified across ${E2E_LAYOUT_SPECS.length} sections`;
+}
+
+async function e2eLayoutExerciseCollapseExpand(): Promise<string> {
+	e2eLayoutAssertAllSectionTypes();
+	for (const spec of E2E_LAYOUT_SPECS) {
+		const section = e2eLayoutSection(spec);
+		section.scrollIntoView({ block: 'center' });
+		await e2eLayoutDelay(75);
+		const beforeTarget = spec.target(section);
+		const beforeHeight = e2eLayoutAssertDisplayed(beforeTarget, `${spec.kind} target before collapse`).height;
+		e2eLayoutShellButton(section, spec.kind, '.toggle-btn').click();
+		await e2eLayoutWaitForUpdate(section);
+		await e2eLayoutDelay(100);
+		const collapsedTarget = spec.target(section);
+		if (e2eLayoutIsDisplayed(collapsedTarget)) {
+			throw new Error(`${spec.kind} target remained visible after collapse`);
+		}
+		e2eLayoutShellButton(section, spec.kind, '.toggle-btn').click();
+		await e2eLayoutWaitForUpdate(section);
+		await e2eLayoutWaitFor(() => e2eLayoutIsDisplayed(spec.target(section)), `${spec.kind} target to reappear after expand`);
+		e2eLayoutAssertFiniteHeight(spec, spec.target(section) as HTMLElement, `${spec.kind} target after expand`);
+		e2eLayoutAssertSectionContent(spec);
+	}
+	await e2eLayoutAssertStableHeights('collapse and expand');
+	return `collapse and expand verified across ${E2E_LAYOUT_SPECS.length} sections`;
+}
+
+function e2eLayoutDispatchDrag(resizer: HTMLElement, deltaY: number): void {
+	const rect = resizer.getBoundingClientRect();
+	const clientX = Math.max(1, Math.round(rect.left + Math.max(4, rect.width / 2)));
+	const clientY = Math.max(1, Math.round(rect.top + Math.max(1, rect.height / 2)));
+	const base: MouseEventInit = {
+		bubbles: true,
+		cancelable: true,
+		composed: true,
+		view: window,
+		button: 0,
+		buttons: 1,
+		clientX,
+		clientY,
+	};
+	resizer.dispatchEvent(new MouseEvent('mousedown', base));
+	document.dispatchEvent(new MouseEvent('mousemove', { ...base, clientY: clientY + deltaY }));
+	document.dispatchEvent(new MouseEvent('mouseup', { ...base, buttons: 0, clientY: clientY + deltaY }));
+}
+
+async function e2eLayoutExerciseAutoFitAndResize(): Promise<string> {
+	e2eLayoutAssertAllSectionTypes();
+	for (const spec of E2E_LAYOUT_SPECS) {
+		const section = e2eLayoutSection(spec);
+		section.scrollIntoView({ block: 'center' });
+		await e2eLayoutDelay(100);
+		const target = spec.target(section);
+		const resizer = spec.resizer(section);
+		e2eLayoutAssertDisplayed(target, `${spec.kind} resize target`);
+		e2eLayoutAssertDisplayed(resizer, `${spec.kind} resizer`);
+		const beforeDrag = e2eLayoutAssertFiniteHeight(spec, target as HTMLElement, `${spec.kind} before drag`);
+		e2eLayoutDispatchDrag(resizer as HTMLElement, 72);
+		await e2eLayoutDelay(150);
+		const afterDrag = e2eLayoutAssertFiniteHeight(spec, target as HTMLElement, `${spec.kind} after drag`);
+		if (Math.abs(afterDrag - beforeDrag) < 18) {
+			e2eLayoutDispatchDrag(resizer as HTMLElement, -72);
+			await e2eLayoutDelay(150);
+			const afterReverseDrag = e2eLayoutAssertFiniteHeight(spec, target as HTMLElement, `${spec.kind} after reverse drag`);
+			if (Math.abs(afterReverseDrag - beforeDrag) < 18) {
+				throw new Error(`${spec.kind} manual resize did not change height; before=${beforeDrag}, after=${afterDrag}, reverse=${afterReverseDrag}`);
+			}
+		}
+
+		const fitButton = e2eLayoutShellButton(section, spec.kind, '.md-max-btn');
+		fitButton.click();
+		await e2eLayoutWaitForUpdate(section);
+		await e2eLayoutDelay(200);
+		e2eLayoutAssertFiniteHeight(spec, spec.target(section) as HTMLElement, `${spec.kind} after fit to contents`);
+		e2eLayoutAssertSectionContent(spec);
+	}
+	await e2eLayoutAssertStableHeights('fit and resize');
+	return `fit and resize verified across ${E2E_LAYOUT_SPECS.length} sections`;
+}
+
+async function e2eLayoutAssertNoLayoutRegression(): Promise<string> {
+	e2eLayoutAssertAllSectionTypes();
+	await e2eLayoutAssertScrollStability();
+	return 'layout regression checks passed';
+}
+
 _win.__e2e = {
 	workbench: {
 		clearSections: () => _win.__testRemoveAllSections(),
 		removeSection: (selector: string) => _win.__testRemoveSection(selector),
+	},
+	layout: {
+		createStressNotebook: e2eLayoutCreateStressNotebook,
+		assertAllSectionTypes: e2eLayoutAssertAllSectionTypes,
+		assertScrollStability: e2eLayoutAssertScrollStability,
+		exerciseCollapseExpand: e2eLayoutExerciseCollapseExpand,
+		exerciseAutoFitAndResize: e2eLayoutExerciseAutoFitAndResize,
+		assertNoLayoutRegression: e2eLayoutAssertNoLayoutRegression,
 	},
 	sql: {
 		...e2eQueryApi('sql'),

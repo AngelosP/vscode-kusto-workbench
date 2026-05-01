@@ -1,0 +1,8 @@
+{
+  "workspaceSettings": {
+    "kustoWorkbench.tutorials.catalogUrl": "",
+    "kustoWorkbench.tutorials.enableUpdateChecks": false,
+    "git.openRepositoryInParentFolders": "never",
+    "workbench.secondarySideBar.defaultVisibility": "hidden"
+  }
+}

@@ -7,6 +7,11 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 * Connections in Connection Manager are now listed alphabetically (d'oh).
 * Adding / removing favorites in Connection Manager gives you a chance to enter a friendly name for the connection (d'oh).
+* Alpha build of 'tutorials' included
+* Bugs
+    * Fixed poor scrolling performance after implementing VS Code like look and feel (what we do in the name of looks).
+    * Fixed poor resizing performance horzontally.
+    * Fixed mouse click from outside the monaco editor inside the monaco editor on a row that is a fully qualified table causing a temporary freeze.
 
 ## [4.5.2] - 2026-04-30
 
@@ -485,4 +490,4 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [0.0.5]
 
-* Initial release
+* Initial Release

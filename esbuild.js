@@ -71,6 +71,10 @@ async function main() {
 			path.join(webviewSrcDir, 'md-editor.html'),
 			path.join(webviewDistDir, 'md-editor.html')
 		);
+		await fs.promises.copyFile(
+			path.join(webviewSrcDir, 'tutorial-viewer.html'),
+			path.join(webviewDistDir, 'tutorial-viewer.html')
+		);
 	} catch (e) {
 		console.warn('[watch] failed to copy webview runtime assets:', e && e.message ? e.message : e);
 	}
@@ -315,6 +319,32 @@ async function main() {
 		console.warn('[watch] failed to bundle md-editor:', e && e.message ? e.message : e);
 	}
 
+	// Lightweight tutorial viewer bundle (browser target, IIFE).
+	try {
+		const tutorialCtx = await esbuild.context({
+			entryPoints: ['src/webview/tutorials/tutorial-viewer-entry.ts'],
+			bundle: true,
+			format: 'iife',
+			platform: 'browser',
+			target: 'es2022',
+			minify: production,
+			sourcemap: !production,
+			sourcesContent: false,
+			outfile: 'dist/webview/tutorial-viewer.bundle.js',
+			tsconfig: 'tsconfig.webview.json',
+			logLevel: 'silent',
+			plugins: [esbuildProblemMatcherPlugin],
+		});
+		if (watch) {
+			await tutorialCtx.watch();
+		} else {
+			await tutorialCtx.rebuild();
+			await tutorialCtx.dispose();
+		}
+	} catch (e) {
+		console.warn('[watch] failed to bundle tutorial viewer:', e && e.message ? e.message : e);
+	}
+
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/host/extension.ts'
@@ -346,6 +376,7 @@ async function main() {
 			{ src: path.join(webviewSrcDir, 'queryEditor.html'), dest: path.join(webviewDistDir, 'queryEditor.html') },
 			{ src: path.join(webviewSrcDir, 'vscodeApi.js'), dest: path.join(webviewDistDir, 'vscodeApi.js') },
 			{ src: path.join(webviewSrcDir, 'md-editor.html'), dest: path.join(webviewDistDir, 'md-editor.html') },
+			{ src: path.join(webviewSrcDir, 'tutorial-viewer.html'), dest: path.join(webviewDistDir, 'tutorial-viewer.html') },
 		];
 		for (const { src, dest } of watchCopyTargets) {
 			try {
@@ -381,9 +412,10 @@ async function main() {
 	// Runs inline — no extra step to remember.
 	if (production) {
 		const BASELINES = {
-			'extension.js':                                        1178,
+			'extension.js':                                        1229,
 			'webview/webview.bundle.js':                           2087,
 			'webview/md-editor.bundle.js':                          146,
+			'webview/tutorial-viewer.bundle.js':                     55,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
 			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
 			'monaco/':                                            11445,

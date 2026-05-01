@@ -63,6 +63,7 @@ function shouldInitializePageScrollbars(): boolean {
 let scrollViewport: HTMLElement | null = null;
 let scrollbarsInstance: ReturnType<typeof OverlayScrollbars> | null = null;
 let updateRaf = 0;
+let pendingUpdateForce = false;
 
 /** Expose the scroll viewport for tests and diagnostics. */
 export function getOverlayScrollViewport(): HTMLElement | null {
@@ -95,12 +96,30 @@ function scrollElementTo(element: HTMLElement, xOrOptions?: number | ScrollToOpt
 	element.scrollTop = Number(y) || 0;
 }
 
+function isLayoutRelevantDirectAttribute(attributeName: string | null): boolean {
+	return attributeName === 'class' || attributeName === 'style' || attributeName === 'hidden' || attributeName === 'open';
+}
+
+function shouldIgnorePageOverlayMutation(mutation: MutationRecord, contentRoot: HTMLElement, wrapper: HTMLElement): boolean {
+	const target = mutation.target;
+	if (!(target instanceof Element)) return true;
+	if (target === contentRoot || target === wrapper) return false;
+	if (!contentRoot.contains(target)) return false;
+	if (target.parentElement === contentRoot) {
+		return mutation.type === 'attributes' && !isLayoutRelevantDirectAttribute(mutation.attributeName);
+	}
+	return true;
+}
+
 export function requestOverlayScrollbarUpdate(force = false): void {
 	if (!scrollbarsInstance) return;
-	if (updateRaf) cancelAnimationFrame(updateRaf);
+	pendingUpdateForce = pendingUpdateForce || force;
+	if (updateRaf) return;
 	updateRaf = requestAnimationFrame(() => {
+		const forceUpdate = pendingUpdateForce;
 		updateRaf = 0;
-		try { scrollbarsInstance?.update(force); } catch (e) { console.error('[kusto]', e); }
+		pendingUpdateForce = false;
+		try { scrollbarsInstance?.update(forceUpdate); } catch (e) { console.error('[kusto]', e); }
 	});
 }
 
@@ -123,6 +142,10 @@ function init() {
 
 	// Initialise OverlayScrollbars on the wrapper.
 	scrollbarsInstance = OverlayScrollbars(wrapper, {
+		update: {
+			attributes: ['hidden'],
+			ignoreMutation: mutation => shouldIgnorePageOverlayMutation(mutation, content as HTMLElement, wrapper),
+		},
 		scrollbars: {
 			visibility: 'auto',
 			autoHide: 'move',
@@ -146,7 +169,7 @@ function init() {
 		new ResizeObserver(() => requestOverlayScrollbarUpdate(true)).observe(content);
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		new MutationObserver(() => requestOverlayScrollbarUpdate(true)).observe(content, { childList: true, subtree: true, attributes: true });
+		new MutationObserver(() => requestOverlayScrollbarUpdate()).observe(content, { childList: true });
 	} catch (e) { console.error('[kusto]', e); }
 	window.addEventListener('resize', () => requestOverlayScrollbarUpdate(true));
 

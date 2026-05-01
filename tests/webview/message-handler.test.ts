@@ -407,6 +407,29 @@ describe('message-handler dispatch', () => {
 		expect(mocks.onDatabasesError).toHaveBeenCalledWith('query_1', 'boom', 'c1');
 	});
 
+	it('routes cross-cluster schema responses with their originating box id', async () => {
+		const applyCrossClusterSchema = vi.fn();
+		(window as any).__kustoApplyCrossClusterSchema = applyCrossClusterSchema;
+
+		dispatchHostMessage({
+			type: 'crossClusterSchemaData',
+			boxId: 'query_7',
+			clusterName: 'remote',
+			clusterUrl: 'https://remote.kusto.windows.net',
+			database: 'Telemetry',
+			rawSchemaJson: '{"Databases":{}}',
+		});
+		await Promise.resolve();
+
+		expect(applyCrossClusterSchema).toHaveBeenCalledWith(
+			'remote',
+			'https://remote.kusto.windows.net',
+			'Telemetry',
+			'{"Databases":{}}',
+			'query_7',
+		);
+	});
+
 	it('routes queryCancelled and ensureResultsVisible', async () => {
 		dispatchHostMessage({ type: 'queryCancelled', boxId: 'query_2' });
 		dispatchHostMessage({ type: 'ensureResultsVisible', boxId: 'query_2' });

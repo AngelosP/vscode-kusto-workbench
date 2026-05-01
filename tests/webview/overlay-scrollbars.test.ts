@@ -87,8 +87,63 @@ describe('page OverlayScrollbars bootstrap', () => {
 		expect(overlayMocks.OverlayScrollbars).toHaveBeenCalledWith(wrapper, expect.objectContaining({
 			overflow: { x: 'hidden', y: 'scroll' },
 		}));
+		const options = overlayMocks.OverlayScrollbars.mock.calls[0][1] as any;
+		expect(typeof options.update?.ignoreMutation).toBe('function');
+		expect(options.update?.attributes).toEqual(['hidden']);
 		expect(resizeObserveMock).toHaveBeenCalledWith(viewer);
-		expect(mutationObserveMock).toHaveBeenCalledWith(viewer, { childList: true, subtree: true, attributes: true });
+		expect(mutationObserveMock).toHaveBeenCalledWith(viewer, { childList: true });
+	});
+
+	it('ignores deep notebook mutations while allowing root layout mutations', async () => {
+		document.body.dataset.kwPageOverlayScroll = 'true';
+		const viewer = document.createElement('div');
+		document.body.appendChild(viewer);
+
+		await import('../../src/webview/core/overlay-scrollbars.js');
+		document.dispatchEvent(new Event('DOMContentLoaded'));
+
+		const wrapper = document.querySelector('.kw-scroll-viewport') as HTMLElement;
+		const options = overlayMocks.OverlayScrollbars.mock.calls[0][1] as any;
+		const ignoreMutation = options.update.ignoreMutation as (mutation: MutationRecord) => boolean;
+		const section = document.createElement('kw-query-section');
+		const internal = document.createElement('div');
+		const sibling = document.createElement('div');
+		const siblingInternal = document.createElement('button');
+		viewer.appendChild(section);
+		section.appendChild(internal);
+		wrapper.appendChild(sibling);
+		sibling.appendChild(siblingInternal);
+
+		expect(ignoreMutation({ type: 'attributes', target: internal, attributeName: 'style' } as MutationRecord)).toBe(true);
+		expect(ignoreMutation({ type: 'attributes', target: section, attributeName: 'class' } as MutationRecord)).toBe(false);
+		expect(ignoreMutation({ type: 'attributes', target: section, attributeName: 'data-testid' } as MutationRecord)).toBe(true);
+		expect(ignoreMutation({ type: 'childList', target: viewer } as MutationRecord)).toBe(false);
+		expect(ignoreMutation({ type: 'attributes', target: siblingInternal, attributeName: 'style' } as MutationRecord)).toBe(false);
+	});
+
+	it('keeps pending forced updates regardless of request order in the frame', async () => {
+		document.body.dataset.kwPageOverlayScroll = 'true';
+		document.body.appendChild(document.createElement('kw-cached-values'));
+
+		const overlayModule = await import('../../src/webview/core/overlay-scrollbars.js');
+		document.dispatchEvent(new Event('DOMContentLoaded'));
+		const instance = overlayMocks.instances[0];
+		instance.update.mockClear();
+
+		overlayModule.requestOverlayScrollbarUpdate(true);
+		overlayModule.requestOverlayScrollbarUpdate(false);
+		await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+
+		expect(instance.update).toHaveBeenCalledTimes(1);
+		expect(instance.update).toHaveBeenCalledWith(true);
+
+		instance.update.mockClear();
+		overlayModule.requestOverlayScrollbarUpdate(false);
+		overlayModule.requestOverlayScrollbarUpdate(true);
+		await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+
+		expect(instance.update).toHaveBeenCalledTimes(1);
+		expect(instance.update).toHaveBeenCalledWith(true);
 	});
 
 	it('uses the generated OverlayScrollbars viewport as the page scroll element', async () => {

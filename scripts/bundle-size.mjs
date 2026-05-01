@@ -6,6 +6,8 @@ const DIST = join(import.meta.dirname, '..', 'dist');
 const FILES = [
   'extension.js',
   'webview/webview.bundle.js',
+  'webview/md-editor.bundle.js',
+  'webview/tutorial-viewer.bundle.js',
   'queryEditor/vendor/echarts/echarts.webview.js',
   'queryEditor/vendor/toastui-editor/toastui-editor.webview.js',
 ];

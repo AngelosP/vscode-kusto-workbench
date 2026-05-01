@@ -58,6 +58,10 @@ The orchestrator writes ignored artifacts under `tests/vscode-extension-tester/h
 
 The suite summaries record the VS Code version requested for the run. Scheduled CI resolves this to the latest stable numeric version before invoking the runner, so the artifact trail shows which editor release produced the signal.
 
+## Per-Test Workspace Settings
+
+Tests can include an `e2e.settings.json` file next to their `.feature` file with a `workspaceSettings` object. The suite runner creates an isolated workspace under that run's history folder, writes those settings to `.vscode/settings.json`, and launches VS Code with that workspace for the test. Use this for deterministic feature flags or network-sensitive settings that should be expressed through normal VS Code configuration rather than through UI editing.
+
 After any failure, inspect in this order:
 
 1. `tests/vscode-extension-tester/history/latest-summary.md`
