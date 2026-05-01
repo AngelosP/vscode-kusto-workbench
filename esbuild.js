@@ -415,7 +415,7 @@ async function main() {
 			'extension.js':                                        1229,
 			'webview/webview.bundle.js':                           2087,
 			'webview/md-editor.bundle.js':                          146,
-			'webview/tutorial-viewer.bundle.js':                     55,
+			'webview/tutorial-viewer.bundle.js':                     61,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
 			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
 			'monaco/':                                            11445,
