@@ -1106,6 +1106,151 @@ function e2eDelay(ms: number): Promise<void> {
 	return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function e2eKustoCancelButton(): HTMLButtonElement {
+	const section = e2eSection('kusto');
+	const button = document.getElementById(e2eKustoElementId(section, 'cancel_btn')) as HTMLButtonElement | null;
+	if (!button) {
+		throw new Error('kusto cancel button not found');
+	}
+	return button;
+}
+
+function e2eKustoResultsElement(): HTMLElement {
+	const section = e2eSection('kusto');
+	const results = document.getElementById(e2eKustoElementId(section, 'results')) as HTMLElement | null;
+	if (!results) {
+		throw new Error('kusto results element not found');
+	}
+	return results;
+}
+
+function e2eSetKustoCacheEnabled(enabled: boolean): string {
+	const section = e2eSection('kusto');
+	const checkbox = document.getElementById(e2eKustoElementId(section, 'cache_enabled')) as HTMLInputElement | null;
+	if (!checkbox) {
+		throw new Error('kusto cache checkbox not found');
+	}
+	checkbox.checked = !!enabled;
+	checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+	return `kusto cache enabled=${checkbox.checked}`;
+}
+
+function e2eBeginHostMessageCapture(): string {
+	const root = (_win.__e2e = _win.__e2e || {}) as any;
+	const existing = root.hostMessageCapture || {};
+	const original = existing.active ? existing.original : _win.__e2eCaptureHostMessage;
+	root.hostMessageCapture = { active: true, original, messages: [] };
+	_win.__e2eCaptureHostMessage = function (msg: any) {
+		try {
+			root.hostMessageCapture.messages.push(msg);
+		} catch {
+			// ignore
+		}
+		if (typeof original === 'function') {
+			original(msg);
+		}
+	};
+	return 'host message capture armed';
+}
+
+function e2eRestoreHostMessageCapture(): string {
+	const root = (_win.__e2e = _win.__e2e || {}) as any;
+	const capture = root.hostMessageCapture;
+	if (capture && typeof capture.original === 'function') {
+		_win.__e2eCaptureHostMessage = capture.original;
+	} else {
+		delete _win.__e2eCaptureHostMessage;
+	}
+	delete root.hostMessageCapture;
+	return 'host message capture restored';
+}
+
+function e2eCapturedHostMessages(): any[] {
+	const capture = (_win.__e2e as any)?.hostMessageCapture;
+	return Array.isArray(capture?.messages) ? capture.messages : [];
+}
+
+async function e2eAssertHostMessageCaptured(type: string, boxId: string = '', timeoutMs: number = 5000): Promise<string> {
+	const wantedType = String(type || '').trim();
+	const wantedBoxId = String(boxId || '').trim();
+	if (!wantedType) {
+		throw new Error('host message type is required');
+	}
+	const started = performance.now();
+	while (performance.now() - started <= timeoutMs) {
+		const messages = e2eCapturedHostMessages();
+		const match = messages.find(msg => {
+			if (!msg || msg.type !== wantedType) return false;
+			if (!wantedBoxId) return true;
+			return String(msg.boxId || '') === wantedBoxId;
+		});
+		if (match) {
+			return `captured host message ${wantedType}${wantedBoxId ? ` for ${wantedBoxId}` : ''}`;
+		}
+		await e2eDelay(100);
+	}
+	const seen = e2eCapturedHostMessages().map(msg => `${msg?.type || '<missing>'}:${msg?.boxId || ''}`).join(', ');
+	throw new Error(`Timed out waiting for host message ${wantedType}${wantedBoxId ? ` for ${wantedBoxId}` : ''}. Seen: ${seen}`);
+}
+
+function e2eAssertKustoCancelVisibleEnabled(): string {
+	const button = e2eKustoCancelButton();
+	const style = getComputedStyle(button);
+	if (button.disabled || style.display === 'none' || style.visibility === 'hidden') {
+		throw new Error(`kusto cancel button should be visible and enabled; disabled=${button.disabled}, display=${style.display}, visibility=${style.visibility}`);
+	}
+	return 'kusto cancel button visible and enabled';
+}
+
+async function e2eAssertKustoStillExecutingWithCancelAfter(delayMs: number): Promise<string> {
+	const delay = Number(delayMs);
+	if (!Number.isFinite(delay) || delay < 0) {
+		throw new Error(`invalid wait duration for Kusto cancel assertion: ${delayMs}`);
+	}
+	await e2eDelay(delay);
+	const section = e2eSection('kusto');
+	const executing = section.dataset?.testExecuting;
+	if (executing !== 'true') {
+		const resultText = (e2eKustoResultsElement().textContent || '').trim().slice(0, 200);
+		throw new Error(`expected Kusto query to still be executing after ${delay}ms, got data-test-executing=${executing}; results=${resultText}`);
+	}
+	e2eAssertKustoCancelVisibleEnabled();
+	return `kusto query still executing after ${delay}ms with cancel active`;
+}
+
+function e2eAssertKustoCancelHiddenDisabled(): string {
+	const button = e2eKustoCancelButton();
+	const style = getComputedStyle(button);
+	if (!button.disabled && style.display !== 'none' && style.visibility !== 'hidden') {
+		throw new Error('kusto cancel button should be hidden or disabled');
+	}
+	return 'kusto cancel button hidden or disabled';
+}
+
+function e2eClickKustoCancel(): string {
+	e2eAssertKustoCancelVisibleEnabled();
+	e2eKustoCancelButton().click();
+	return 'kusto cancel clicked';
+}
+
+function e2eAssertKustoNotStuck(): string {
+	const section = e2eSection('kusto');
+	const executing = section.dataset?.testExecuting;
+	if (executing !== 'false') {
+		throw new Error(`kusto section is still executing: data-test-executing=${executing}`);
+	}
+	e2eAssertKustoCancelHiddenDisabled();
+	return 'kusto section is not stuck';
+}
+
+function e2eAssertKustoCancelledText(): string {
+	const text = e2eKustoResultsElement().textContent || '';
+	if (!/Cancelled\./i.test(text)) {
+		throw new Error(`expected Cancelled. text, got: ${text.slice(0, 200)}`);
+	}
+	return 'kusto cancelled text visible';
+}
+
 function e2eIsVisibleElement(element: HTMLElement): boolean {
 	let current: HTMLElement | null = element;
 	while (current) {
@@ -1737,6 +1882,57 @@ function e2eQueryApi(kind: E2eSectionKind) {
 				throw new Error(`${kind} run button should be enabled`);
 			}
 			return `${kind} run button enabled`;
+		},
+		selectRunMode: (mode: string) => {
+			if (kind !== 'kusto') {
+				throw new Error('selectRunMode is only implemented for kusto sections');
+			}
+			return _win.__testSelectKustoRunMode(mode, E2E_SECTION.kusto.section);
+		},
+		setCacheEnabled: (enabled: boolean) => {
+			if (kind !== 'kusto') {
+				throw new Error('setCacheEnabled is only implemented for kusto sections');
+			}
+			return e2eSetKustoCacheEnabled(enabled);
+		},
+		beginHostMessageCapture: e2eBeginHostMessageCapture,
+		restoreHostMessageCapture: e2eRestoreHostMessageCapture,
+		assertHostMessageCaptured: e2eAssertHostMessageCaptured,
+		assertCancelButtonVisibleEnabled: () => {
+			if (kind !== 'kusto') {
+				throw new Error('assertCancelButtonVisibleEnabled is only implemented for kusto sections');
+			}
+			return e2eAssertKustoCancelVisibleEnabled();
+		},
+		assertStillExecutingWithCancelAfter: (delayMs: number) => {
+			if (kind !== 'kusto') {
+				throw new Error('assertStillExecutingWithCancelAfter is only implemented for kusto sections');
+			}
+			return e2eAssertKustoStillExecutingWithCancelAfter(delayMs);
+		},
+		assertCancelButtonHiddenDisabled: () => {
+			if (kind !== 'kusto') {
+				throw new Error('assertCancelButtonHiddenDisabled is only implemented for kusto sections');
+			}
+			return e2eAssertKustoCancelHiddenDisabled();
+		},
+		clickCancel: () => {
+			if (kind !== 'kusto') {
+				throw new Error('clickCancel is only implemented for kusto sections');
+			}
+			return e2eClickKustoCancel();
+		},
+		assertNotStuck: () => {
+			if (kind !== 'kusto') {
+				throw new Error('assertNotStuck is only implemented for kusto sections');
+			}
+			return e2eAssertKustoNotStuck();
+		},
+		assertCancelledText: () => {
+			if (kind !== 'kusto') {
+				throw new Error('assertCancelledText is only implemented for kusto sections');
+			}
+			return e2eAssertKustoCancelledText();
 		},
 		run: () => {
 			const button = e2eRunButton(kind);

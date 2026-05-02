@@ -60,6 +60,12 @@ export interface QueryResult {
 	};
 }
 
+export interface CancelableQueryExecution {
+	promise: Promise<QueryResult>;
+	cancel: () => void;
+	clientActivityId: string;
+}
+
 export interface DatabaseSchemaIndex {
 	tables: string[];
 	/**
@@ -203,15 +209,38 @@ export class KustoQueryClient {
 	 * @param clientTimeoutMs Optional client-side HTTP timeout in milliseconds. When set, the SDK
 	 *   keeps the HTTP connection open for this long without altering the server-side timeout.
 	 */
-	private async createRequestProperties(activityPrefix: string, clientTimeoutMs?: number): Promise<any> {
+	private async createRequestProperties(activityPrefix: string, clientTimeoutMs?: number, clientRequestId?: string): Promise<any> {
 		const { ClientRequestProperties } = await import('azure-kusto-data');
 		const props = new ClientRequestProperties();
-		props.clientRequestId = `KW.${activityPrefix};${randomUUID()}`;
+		props.clientRequestId = clientRequestId || `KW.${activityPrefix};${randomUUID()}`;
 		props.application = KustoQueryClient.APPLICATION_NAME;
 		if (clientTimeoutMs && clientTimeoutMs > 0) {
 			props.setClientTimeout(clientTimeoutMs);
 		}
 		return props;
+	}
+
+	private static quoteKustoStringLiteral(value: string): string {
+		return `"${String(value).replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
+	}
+
+	private async cancelQueryByClientActivityId(
+		connection: KustoConnection,
+		database: string,
+		clientActivityId: string,
+		reason: string = 'Canceled from Kusto Workbench'
+	): Promise<void> {
+		const id = String(clientActivityId || '').trim();
+		if (!id) {
+			return;
+		}
+		const command = `.cancel query ${KustoQueryClient.quoteKustoStringLiteral(id)} with (reason = ${KustoQueryClient.quoteKustoStringLiteral(reason)})`;
+		const props = await this.createRequestProperties('cancel_query');
+		await this.executeWithAuthRetry<any>(
+			connection,
+			(client) => client.execute(database, command, props),
+			{ allowInteractive: false }
+		);
 	}
 
 	/**
@@ -452,7 +481,7 @@ export class KustoQueryClient {
 		}
 	}
 
-	private async getOrCreateClient(connection: KustoConnection): Promise<any> {
+	private async getOrCreateClient(connection: KustoConnection, opts?: { interactiveIfNeeded?: boolean }): Promise<any> {
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		if (!clusterEndpoint) {
 			throw new Error('Cluster URL is missing.');
@@ -467,7 +496,7 @@ export class KustoQueryClient {
 		}
 
 		// Create/refresh client via auth flow (may use silent retries and only prompt if needed).
-		const { client } = await this.createClientWithRetry(connection, { interactiveIfNeeded: true });
+		const { client } = await this.createClientWithRetry(connection, { interactiveIfNeeded: opts?.interactiveIfNeeded !== false });
 		return client;
 	}
 
@@ -497,7 +526,7 @@ export class KustoQueryClient {
 		return { client: new Client(kcsb), clusterEndpoint, accountId };
 	}
 
-	private async getOrCreateCancelableClient(connection: KustoConnection, key: string): Promise<any> {
+	private async getOrCreateCancelableClient(connection: KustoConnection, key: string, opts?: { interactiveIfNeeded?: boolean }): Promise<any> {
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		const mappedAccountId = this.getClusterAccountId(clusterEndpoint);
 		const existing = this.cancelableClientsByKey.get(key);
@@ -508,7 +537,7 @@ export class KustoQueryClient {
 			try { existing.client?.close?.(); } catch { /* ignore */ }
 			this.cancelableClientsByKey.delete(key);
 		}
-		const created = await this.createClientWithRetry(connection, { interactiveIfNeeded: true, storeInMainClientCache: false });
+		const created = await this.createClientWithRetry(connection, { interactiveIfNeeded: opts?.interactiveIfNeeded !== false, storeInMainClientCache: false });
 		this.cancelableClientsByKey.set(key, created);
 		return created.client;
 	}
@@ -785,8 +814,8 @@ export class KustoQueryClient {
 		// First attempt: use existing cached client (if any).
 		try {
 			const client = opts?.cancelableKey
-				? await this.getOrCreateCancelableClient(connection, opts.cancelableKey)
-				: await this.getOrCreateClient(connection);
+				? await this.getOrCreateCancelableClient(connection, opts.cancelableKey, { interactiveIfNeeded: allowInteractive })
+				: await this.getOrCreateClient(connection, { interactiveIfNeeded: allowInteractive });
 			try { opts?.onClient?.(client); } catch { /* ignore */ }
 			return await operation(client);
 		} catch (error) {
@@ -1008,10 +1037,14 @@ export class KustoQueryClient {
 		database: string,
 		query: string,
 		clientKey?: string
-	): { promise: Promise<QueryResult>; cancel: () => void } {
+	): CancelableQueryExecution {
 		const key = String(clientKey || connection.id || '').trim() || 'default';
+		const clientActivityId = `KW.execute_query;${randomUUID()}`;
 		let client: any | undefined;
 		let cancelled = false;
+		let settled = false;
+		let submitted = false;
+		let serverCancelStarted = false;
 
 		// Use a deferred rejection so that cancel() immediately resolves the
 		// outer promise instead of waiting for the HTTP round-trip to complete.
@@ -1025,7 +1058,20 @@ export class KustoQueryClient {
 		// and cancelPromise is never settled.
 		cancelPromise.catch(() => { /* intentionally ignored */ });
 
+		const startServerCancel = () => {
+			if (serverCancelStarted || !submitted) {
+				return;
+			}
+			serverCancelStarted = true;
+			void this.cancelQueryByClientActivityId(connection, database, clientActivityId).catch(() => {
+				// Server-side cancellation is best-effort. Local cancellation already won.
+			});
+		};
+
 		const cancel = () => {
+			if (cancelled || settled) {
+				return;
+			}
 			cancelled = true;
 			// Immediately trip the race so the caller gets QueryCancelledError
 			// without waiting for the network response.
@@ -1041,6 +1087,7 @@ export class KustoQueryClient {
 			} catch {
 				// ignore
 			}
+			startServerCancel();
 		};
 
 		const executeAsync = async (): Promise<QueryResult> => {
@@ -1051,10 +1098,16 @@ export class KustoQueryClient {
 			client = await this.getOrCreateCancelableClient(connection, key);
 			// If we were cancelled while acquiring/creating the client, do not execute.
 			if (cancelled) {
+				try {
+					this.cancelableClientsByKey.delete(key);
+					client?.close?.();
+				} catch {
+					// ignore
+				}
 				throw new QueryCancelledError();
 			}
 			const startTime = Date.now();
-			let requestClientActivityId: string | undefined;
+			let requestClientActivityId: string | undefined = clientActivityId;
 			try {
 				// Check again right before executing (cancellation can happen at any time).
 				if (cancelled) {
@@ -1062,15 +1115,24 @@ export class KustoQueryClient {
 				}
 				const queryTimeoutMin = vscode.workspace.getConfiguration('kustoWorkbench').get<number>('queryTimeout', 20);
 				const clientTimeoutMs = queryTimeoutMin > 0 ? queryTimeoutMin * 60 * 1000 : undefined;
-				const props = await this.createRequestProperties('execute_query', clientTimeoutMs);
-				requestClientActivityId = props.clientRequestId;
+				const props = await this.createRequestProperties('execute_query', clientTimeoutMs, clientActivityId);
+				if (cancelled) {
+					throw new QueryCancelledError();
+				}
+				requestClientActivityId = props.clientRequestId || clientActivityId;
 				const result = await this.executeWithAuthRetry<any>(
 					connection,
-					(c) => c.execute(database, query, props),
+					(c) => {
+						if (cancelled) {
+							throw new QueryCancelledError();
+						}
+						submitted = true;
+						return c.execute(database, query, props);
+					},
 					{ allowInteractive: true, cancelableKey: key, onClient: (c2) => { client = c2; } }
 				);
 				const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
-				const clientActivityId = this.extractClientActivityId(result);
+				const responseClientActivityId = this.extractClientActivityId(result) || requestClientActivityId;
 				const serverStats = this.extractServerStats(result);
 
 				const primaryResults = result.primaryResults[0];
@@ -1102,7 +1164,7 @@ export class KustoQueryClient {
 						cluster: connection.clusterUrl,
 						database: database,
 						executionTime,
-						clientActivityId,
+						clientActivityId: responseClientActivityId,
 						serverStats
 					}
 				};
@@ -1134,9 +1196,11 @@ export class KustoQueryClient {
 
 		// Race the actual execution against the cancel promise so that calling
 		// cancel() causes the outer promise to reject immediately.
-		const promise = Promise.race([executeAsync(), cancelPromise]);
+		const promise = Promise.race([executeAsync(), cancelPromise]).finally(() => {
+			settled = true;
+		});
 
-		return { promise, cancel };
+		return { promise, cancel, clientActivityId };
 	}
 
 	async getDatabaseSchema(

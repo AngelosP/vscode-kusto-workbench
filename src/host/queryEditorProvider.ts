@@ -43,6 +43,12 @@ import {
 import { exportHtmlToPowerBI, findUnsupportedPowerBiBindings, normalizePowerBiDataMode, type PowerBiDataMode } from './powerBiExport';
 import { listFabricWorkspaces, publishToPowerBIService, checkFabricItemExists } from './powerBiPublish';
 
+type RunningQueryEntry = {
+	cancel: () => void;
+	runSeq: number;
+	clientActivityId?: string;
+};
+
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
 	private panel?: vscode.WebviewPanel;
@@ -50,7 +56,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly output = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
 	readonly connection: ConnectionService;
 	readonly schema: SchemaService;
-	private readonly runningQueriesByBoxId = new Map<string, { cancel: () => void; runSeq: number }>();
+	private readonly runningQueriesByBoxId = new Map<string, RunningQueryEntry>();
 
 	// SQL support — lazy-initialized.
 	private _sqlConnectionManager?: SqlConnectionManager;
@@ -528,13 +534,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.executeSqlQueryFromWebview(message);
 				return;
 			case 'cancelSqlQuery':
-				this.cancelRunningQuery(message.boxId);
-				{
-					const bid = String(message.boxId || '').trim();
-					if (bid && !this.runningQueriesByBoxId.has(bid)) {
-						this.postMessage({ type: 'queryCancelled', boxId: bid });
-					}
-				}
+				this.cancelRunningQuery(message.boxId, { notifyWebview: true });
 				return;
 			case 'prefetchSqlSchema':
 				await this.prefetchSqlSchema(message.sqlConnectionId, message.database, message.boxId, !!message.forceRefresh);
@@ -576,15 +576,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.shareToClipboardFromWebview(message);
 				return;
 			case 'cancelQuery':
-				this.cancelRunningQuery(message.boxId);
-				// If there was nothing to cancel (query already completed but UI is
-				// stuck), send queryCancelled so the webview resets the executing state.
-				{
-					const bid = String(message.boxId || '').trim();
-					if (bid && !this.runningQueriesByBoxId.has(bid)) {
-						this.postMessage({ type: 'queryCancelled', boxId: bid });
-					}
-				}
+				this.cancelRunningQuery(message.boxId, { notifyWebview: true });
 				return;
 			case 'executePython':
 				await this.executePythonFromWebview(message);
@@ -1474,24 +1466,42 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 	}
 
-	cancelRunningQuery(boxId: string): void {
+	cancelRunningQuery(boxId: string, options?: { notifyWebview?: boolean }): void {
 		const id = String(boxId || '').trim();
 		if (!id) {
 			return;
 		}
 		const running = this.runningQueriesByBoxId.get(id);
 		if (!running) {
+			if (options?.notifyWebview) {
+				this.postMessage({ type: 'queryCancelled', boxId: id });
+			}
 			return;
 		}
+		this.runningQueriesByBoxId.delete(id);
 		try {
 			running.cancel();
 		} catch {
 			// ignore
 		}
+		if (options?.notifyWebview) {
+			this.postMessage({ type: 'queryCancelled', boxId: id });
+		}
 	}
 
-	registerRunningQuery(boxId: string, cancel: () => void, runSeq: number): void {
-		this.runningQueriesByBoxId.set(boxId, { cancel, runSeq });
+	registerRunningQuery(boxId: string, cancel: () => void, runSeq: number, clientActivityId?: string): void {
+		this.runningQueriesByBoxId.set(boxId, { cancel, runSeq, clientActivityId });
+	}
+
+	unregisterRunningQuery(boxId: string, cancel: () => void, runSeq: number): void {
+		const id = String(boxId || '').trim();
+		if (!id) {
+			return;
+		}
+		const current = this.runningQueriesByBoxId.get(id);
+		if (current?.cancel === cancel && current.runSeq === runSeq) {
+			this.runningQueriesByBoxId.delete(id);
+		}
 	}
 
 	nextQueryRunSeq(): number {
@@ -1833,7 +1843,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 
 		const cancelClientKey = boxId ? `${boxId}::${connection.id}` : connection.id;
-		const { promise, cancel } = this.kustoClient.executeQueryCancelable(connection, message.database, finalQuery, cancelClientKey);
+		const { promise, cancel, clientActivityId } = this.kustoClient.executeQueryCancelable(connection, message.database, finalQuery, cancelClientKey);
 		const runSeq = ++this.queryRunSeq;
 		const isStillActiveRun = () => {
 			if (!boxId) {
@@ -1843,7 +1853,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			return !!current && current.cancel === cancel && current.runSeq === runSeq;
 		};
 		if (boxId) {
-			this.runningQueriesByBoxId.set(boxId, { cancel, runSeq });
+			this.runningQueriesByBoxId.set(boxId, { cancel, runSeq, clientActivityId });
 		}
 		try {
 			const result = await promise;

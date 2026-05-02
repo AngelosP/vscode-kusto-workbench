@@ -42,8 +42,9 @@ export interface CopilotServiceHost {
 	logQueryExecutionError(error: unknown, connection: KustoConnection, db: string | undefined, boxId: string, query: string): void;
 	normalizeClusterUrlKey(url: string): string;
 
-	cancelRunningQuery(boxId: string): void;
-	registerRunningQuery(boxId: string, cancel: () => void, runSeq: number): void;
+	cancelRunningQuery(boxId: string, options?: { notifyWebview?: boolean }): void;
+	registerRunningQuery(boxId: string, cancel: () => void, runSeq: number, clientActivityId?: string): void;
+	unregisterRunningQuery(boxId: string, cancel: () => void, runSeq: number): void;
 	nextQueryRunSeq(): number;
 
 	isControlCommand(query: string): boolean;
@@ -61,11 +62,17 @@ export interface CopilotServiceHost {
 	revealPanel(): void;
 }
 
+type RunningCopilotWriteQuery = {
+	cts: vscode.CancellationTokenSource;
+	seq: number;
+	queryCancels: Set<() => void>;
+};
+
 export class CopilotService {
 	private copilotWriteSeq = 0;
 	private copilotHistoryEntrySeq = 0;
 	private readonly runningOptimizeByBoxId = new Map<string, vscode.CancellationTokenSource>();
-	private readonly runningCopilotWriteQueryByBoxId = new Map<string, { cts: vscode.CancellationTokenSource; seq: number }>();
+	private readonly runningCopilotWriteQueryByBoxId = new Map<string, RunningCopilotWriteQuery>();
 	private readonly copilotGeneralRulesSentPerBox = new Set<string>();
 	private readonly copilotDevNotesSentPerBox = new Set<string>();
 	private readonly copilotConversationHistoryByBoxId = new Map<string, ConversationHistoryEntry[]>();
@@ -78,6 +85,39 @@ export class CopilotService {
 	private static readonly INLINE_MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 	constructor(private readonly host: CopilotServiceHost) {}
+
+	private createRunningCopilotWriteQuery(boxId: string, cts: vscode.CancellationTokenSource, seq: number): RunningCopilotWriteQuery {
+		const running: RunningCopilotWriteQuery = { cts, seq, queryCancels: new Set() };
+		this.runningCopilotWriteQueryByBoxId.set(boxId, running);
+		return running;
+	}
+
+	private cancelTrackedCopilotQueries(running: RunningCopilotWriteQuery): void {
+		for (const cancel of running.queryCancels) {
+			try {
+				cancel();
+			} catch {
+				// ignore
+			}
+		}
+		running.queryCancels.clear();
+	}
+
+	private trackCopilotQueryCancel(
+		boxId: string,
+		cts: vscode.CancellationTokenSource,
+		seq: number,
+		cancel: () => void
+	): () => void {
+		const running = this.runningCopilotWriteQueryByBoxId.get(boxId);
+		if (!running || running.cts !== cts || running.seq !== seq) {
+			return () => { /* inactive run */ };
+		}
+		running.queryCancels.add(cancel);
+		return () => {
+			running.queryCancels.delete(cancel);
+		};
+	}
 
 	getCopilotLocalTools(): CopilotLocalTool[] {
 		return getCopilotLocalToolsFn();
@@ -462,6 +502,7 @@ export class CopilotService {
 		} catch {
 			// ignore
 		}
+		this.cancelTrackedCopilotQueries(running);
 		this.host.cancelRunningQuery(id);
 		try {
 			running.cts.cancel();
@@ -1046,6 +1087,8 @@ Completion:`;
 		try {
 			const existing = this.runningCopilotWriteQueryByBoxId.get(boxId);
 			if (existing) {
+				this.cancelTrackedCopilotQueries(existing);
+				this.host.cancelRunningQuery(boxId);
 				existing.cts.cancel();
 				this.runningCopilotWriteQueryByBoxId.delete(boxId);
 			}
@@ -1055,7 +1098,7 @@ Completion:`;
 
 		const cts = new vscode.CancellationTokenSource();
 		const seq = ++this.copilotWriteSeq;
-		this.runningCopilotWriteQueryByBoxId.set(boxId, { cts, seq });
+		this.createRunningCopilotWriteQuery(boxId, cts, seq);
 		const isActive = () => {
 			const current = this.runningCopilotWriteQueryByBoxId.get(boxId);
 			return !!current && current.cts === cts && current.seq === seq;
@@ -1390,7 +1433,12 @@ Completion:`;
 							const cacheDirective = isControl ? '' : this.host.buildCacheDirective(true, 1, 'days');
 							const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithLimit}` : queryWithLimit;
 							const cancelClientKey = `${boxId}::${connection.id}::executeForCopilot`;
-							const result = await this.host.kustoClient.executeQueryCancelable(connection, database, finalQuery, cancelClientKey).promise;
+							const execution = this.host.kustoClient.executeQueryCancelable(connection, database, finalQuery, cancelClientKey);
+							const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, execution.cancel);
+							const result = await execution.promise.finally(untrack);
+							if (!isActive() || cts.token.isCancellationRequested) {
+								throw new Error('Copilot write-query canceled');
+							}
 
 							let queryResultText = '';
 							const columns = result.columns || [];
@@ -1438,6 +1486,9 @@ Completion:`;
 							continue;
 						} catch (e) {
 							const errMsg = this.host.getErrorMessage(e);
+							if (!isActive() || cts.token.isCancellationRequested || (e as Record<string, unknown>)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
+								throw new Error('Copilot write-query canceled');
+							}
 
 							const execErrEntryId = this.nextHistoryEntryId(boxId);
 							history.push({
@@ -1581,7 +1632,12 @@ Completion:`;
 							const cacheDirective = this.host.buildCacheDirective(true, 1, 'days');
 							const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 							const cancelClientKey = `${targetBoxId}::${connection.id}::validatePerformanceImprovements::${cancelSuffix}`;
-							const result = await this.host.kustoClient.executeQueryCancelable(connection, database, finalQuery, cancelClientKey).promise;
+							const execution = this.host.kustoClient.executeQueryCancelable(connection, database, finalQuery, cancelClientKey);
+							const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, execution.cancel);
+							const result = await execution.promise.finally(untrack);
+							if (!isActive() || cts.token.isCancellationRequested) {
+								return;
+							}
 							try {
 								this.host.postMessage({ type: 'queryResult', result, boxId: targetBoxId });
 							} catch {
@@ -1610,6 +1666,10 @@ Completion:`;
 						try {
 							await executeQueryAndPost(boxId, originalQueryForCompare, 'source');
 						} catch (error) {
+							const errMsg = this.host.getErrorMessage(error);
+							if (!isActive() || cts.token.isCancellationRequested || (error as Record<string, unknown>)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
+								throw new Error('Copilot write-query canceled');
+							}
 							this.host.logQueryExecutionError(error, connection, database, boxId, originalQueryForCompare);
 							try {
 								this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId });
@@ -1655,6 +1715,10 @@ Completion:`;
 								executed = true;
 								break;
 							} catch (error) {
+								const errMsg = this.host.getErrorMessage(error);
+								if (!isActive() || cts.token.isCancellationRequested || (error as Record<string, unknown>)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
+									throw new Error('Copilot write-query canceled');
+								}
 								this.host.logQueryExecutionError(error, connection, database, comparisonBoxId, candidate);
 								lastExecErrorText = this.host.formatQueryExecutionErrorForUser(error, connection, database);
 								try {
@@ -1771,14 +1835,14 @@ Completion:`;
 						const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 
 						const cancelClientKey = `${boxId}::${connection.id}::copilot`;
-						const { promise, cancel } = this.host.kustoClient.executeQueryCancelable(
+						const { promise, cancel, clientActivityId } = this.host.kustoClient.executeQueryCancelable(
 							connection,
 							database,
 							finalQuery,
 							cancelClientKey
 						);
 						const runSeq = this.host.nextQueryRunSeq();
-						this.host.registerRunningQuery(boxId, cancel, runSeq);
+						this.host.registerRunningQuery(boxId, cancel, runSeq, clientActivityId);
 						try {
 							const result = await promise;
 							if (isActive()) {
@@ -1819,6 +1883,8 @@ Completion:`;
 							postStatus('Query failed to execute. Retrying…');
 							shouldRetryAttempt = true;
 							break;
+						} finally {
+							this.host.unregisterRunningQuery(boxId, cancel, runSeq);
 						}
 					}
 
@@ -1971,6 +2037,7 @@ Completion:`;
 				message: 'I could not produce a query that runs successfully. Review the latest error and refine your request.'
 			});
 		} catch (err) {
+			if (!isActive()) return;
 			const msg = this.host.getErrorMessage(err);
 			const canceled = cts.token.isCancellationRequested || /canceled|cancelled/i.test(msg);
 			if (canceled) {
@@ -2000,6 +2067,7 @@ Completion:`;
 			try {
 				const current = this.runningCopilotWriteQueryByBoxId.get(boxId);
 				if (current?.cts === cts && current.seq === seq) {
+					this.cancelTrackedCopilotQueries(current);
 					this.runningCopilotWriteQueryByBoxId.delete(boxId);
 				}
 			} catch {
@@ -2353,12 +2421,12 @@ Completion:`;
 		// Cancel any existing request for this box.
 		try {
 			const existing = this.runningCopilotWriteQueryByBoxId.get(boxId);
-			if (existing) { existing.cts.cancel(); this.runningCopilotWriteQueryByBoxId.delete(boxId); }
+			if (existing) { this.cancelTrackedCopilotQueries(existing); this.host.cancelRunningQuery(boxId); existing.cts.cancel(); this.runningCopilotWriteQueryByBoxId.delete(boxId); }
 		} catch { /* ignore */ }
 
 		const cts = new vscode.CancellationTokenSource();
 		const seq = ++this.copilotWriteSeq;
-		this.runningCopilotWriteQueryByBoxId.set(boxId, { cts, seq });
+		this.createRunningCopilotWriteQuery(boxId, cts, seq);
 		const isActive = () => {
 			const c = this.runningCopilotWriteQueryByBoxId.get(boxId);
 			return !!c && c.cts === cts && c.seq === seq;
@@ -2599,7 +2667,12 @@ Completion:`;
 								/\bSELECT\b/i, 'SELECT TOP 100'
 							);
 							const cancelClientKey = `${boxId}::${connection.id}::copilotExec`;
-							const result = await sqlClient.executeQueryCancelable(connection, database, finalExecQuery, cancelClientKey).promise;
+							const execution = sqlClient.executeQueryCancelable(connection, database, finalExecQuery, cancelClientKey);
+							const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, execution.cancel);
+							const result = await execution.promise.finally(untrack);
+							if (!isActive() || cts.token.isCancellationRequested) {
+								throw new Error('SQL Copilot write-query canceled');
+							}
 
 							let queryResultText = '';
 							const columns = result.columns || [];
@@ -2638,6 +2711,9 @@ Completion:`;
 							continue;
 						} catch (e) {
 							const errMsg = e instanceof Error ? e.message : String(e);
+							if (!isActive() || cts.token.isCancellationRequested || e instanceof SqlQueryCancelledError || (e as any)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
+								throw new Error('SQL Copilot write-query canceled');
+							}
 							const execErrEntryId = this.nextHistoryEntryId(boxId);
 							history.push({
 								type: 'tool-call', id: execErrEntryId, callId: tc.callId,
@@ -2686,7 +2762,12 @@ Completion:`;
 						if (sqlClient && connection) {
 							const executeSqlAndPost = async (targetBoxId: string, queryText: string, cancelSuffix: string) => {
 								const cancelClientKey = `${targetBoxId}::${connection.id}::validatePerformanceImprovements::${cancelSuffix}`;
-								const result = await sqlClient.executeQueryCancelable(connection, database, queryText, cancelClientKey).promise;
+								const execution = sqlClient.executeQueryCancelable(connection, database, queryText, cancelClientKey);
+								const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, execution.cancel);
+								const result = await execution.promise.finally(untrack);
+								if (!isActive() || cts.token.isCancellationRequested) {
+									return;
+								}
 								try {
 									this.host.postMessage({ type: 'queryResult', result, boxId: targetBoxId });
 								} catch { /* ignore */ }
@@ -2697,6 +2778,9 @@ Completion:`;
 								await executeSqlAndPost(boxId, originalQueryForCompare, 'source');
 							} catch (error) {
 								const errMsg = error instanceof Error ? error.message : String(error);
+								if (!isActive() || cts.token.isCancellationRequested || error instanceof SqlQueryCancelledError || (error as any)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
+									throw new Error('SQL Copilot write-query canceled');
+								}
 								this.host.output.appendLine(`[sql-copilot] original query execution error: ${errMsg}`);
 								try {
 									this.host.postMessage({ type: 'queryError', error: 'Original query failed to execute.', boxId });
@@ -2708,6 +2792,9 @@ Completion:`;
 								await executeSqlAndPost(comparisonBoxId, improvedQuery, 'comparison');
 							} catch (error) {
 								const errMsg = error instanceof Error ? error.message : String(error);
+								if (!isActive() || cts.token.isCancellationRequested || error instanceof SqlQueryCancelledError || (error as any)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
+									throw new Error('SQL Copilot write-query canceled');
+								}
 								this.host.output.appendLine(`[sql-copilot] optimized query execution error: ${errMsg}`);
 								try {
 									this.host.postMessage({ type: 'queryError', error: 'Optimized query failed to execute.', boxId: comparisonBoxId });
@@ -2776,6 +2863,8 @@ Completion:`;
 								postStatus('Query failed to execute. Retrying…');
 								shouldRetryAttempt = true;
 								break;
+							} finally {
+								this.host.unregisterRunningQuery(boxId, cancel, runSeq);
 							}
 						} else {
 							// No sqlClient — just set the query and finish
@@ -2846,7 +2935,13 @@ Completion:`;
 				this.host.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: false, message: msg });
 			}
 		} finally {
-			try { this.runningCopilotWriteQueryByBoxId.delete(boxId); } catch { /* ignore */ }
+			try {
+				const current = this.runningCopilotWriteQueryByBoxId.get(boxId);
+				if (current?.cts === cts && current.seq === seq) {
+					this.cancelTrackedCopilotQueries(current);
+					this.runningCopilotWriteQueryByBoxId.delete(boxId);
+				}
+			} catch { /* ignore */ }
 			try { cts.dispose(); } catch { /* ignore */ }
 		}
 	}
