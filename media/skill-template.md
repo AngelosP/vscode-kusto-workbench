@@ -6,7 +6,7 @@ description: Operate Kusto Workbench to query Azure Data Explorer and SQL source
 
 tools: ['createKustoFile', 'askKustoCopilot', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'addSection', 'removeSection', 'reorderSections', 'collapseExpandSection', 'configureKustoQuerySection', 'updateMarkdownSection', 'configureChart', 'configureTransformation', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'manageDevelopmentNotes', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
 
-# version: 10 - Auto-updated by Kusto Workbench. Do not remove this line.
+# version: 12 - Auto-updated by Kusto Workbench. Do not remove this line.
 
 ---
 
@@ -29,7 +29,7 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `#configureChart` | Configure chart sections. Always inspect returned validation |
 | `#configureTransformation` | Configure derive, summarize, pivot, distinct, join, union, sort, filter, or limit transformations |
 | `#configureHtmlSection` | Configure HTML section source, name, and code or preview mode |
-| `#getHtmlDashboardGuide` | Read the canonical HTML dashboard rules: `checklist`, `template`, or `full` |
+| `#getHtmlDashboardGuide` | Read the canonical HTML dashboard rules: `checklist`, `template`, or `full`; exported skills also include `./html-dashboard-rules.md` |
 | `#validateHtmlDashboard` | Validate an HTML dashboard section against the current dashboard and Power BI export contract |
 | `#updateMarkdownSection` | Update markdown section content |
 | `#manageDevelopmentNotes` | Read, add, or remove development notes stored in the open file |
@@ -95,7 +95,7 @@ Use SQL tools for SQL Server/T-SQL work.
 
 Use HTML sections for interactive dashboards, rich reports, and Power BI-ready dashboard surfaces.
 
-1. Call `#getHtmlDashboardGuide` with `mode: "checklist"` before creating, editing, repairing, or upgrading a dashboard. Use `full` for complex repairs and `template` for a starter dashboard.
+1. Read `./html-dashboard-rules.md` from this skill folder for the full exportable HTML dashboard and Power BI contract, then call `#getHtmlDashboardGuide` with `mode: "checklist"` before creating, editing, repairing, or upgrading a dashboard. Use `full` for complex repairs and `template` for a starter dashboard.
 2. Create or identify an event-grain fact query with `#askKustoCopilot`. It should return all columns needed for KPIs, tables, charts, and slicers.
 3. Add or identify the HTML section.
 4. Configure HTML with a `<script type="application/kw-provenance">` block, matching `data-kw-bind` attributes, `KustoWorkbench.agg()`, `bind()`, `renderChart()`, `renderTable()`, and `renderRepeatedTable()`.

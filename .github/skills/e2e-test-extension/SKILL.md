@@ -12,10 +12,10 @@ applyTo: "tests/vscode-extension-tester/**"
 
 Use this skill to create, run, and verify E2E tests for a VS Code extension.
 
-This file is installed into extension repos by `vscode-ext-test init` at
-`.github/skills/e2e-test-extension/SKILL.md`. Rerun `vscode-ext-test init`
+This file is installed into extension repos by `vscode-ext-test install-into-project` at
+`.github/skills/e2e-test-extension/SKILL.md`. Rerun `vscode-ext-test install-into-project`
 after upgrading the CLI to refresh these framework instructions; repo-specific
-knowledge belongs in `repo-knowledge.md`, which init preserves.
+knowledge belongs in `repo-knowledge.md`, which the command preserves.
 
 ## Execution Modes
 
@@ -99,6 +99,12 @@ run, you MUST verify the screenshots.
 
 Screenshots are saved as `.png` files in the run directory. The `report.md`
 lists all screenshot file paths.
+
+Each screenshot artifact also includes capture metadata in `results.json`,
+live `step-result.json` manifests, live JSONL responses, and `report.md`:
+the intended Dev Host process id, the captured window process id, window title,
+window bounds, and capture method. Use this metadata with the PNG to spot
+wrong-window or stale-window captures before trusting the visual state.
 
 **Automatic failure screenshots.** When a test step fails, the framework
 automatically takes a screenshot of the Dev Host window at the moment of
@@ -243,12 +249,7 @@ profile.
    `e2e/default/<test-id>/`, and writes artifacts to `runs/default/<test-id>/<timestamp>/`.
    Each run uses a unique timestamp so previous results are preserved.
 
-3. **Review artifacts** - artifacts are in `tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/` (gitignored):
-   - `report.md` - read this FIRST. It lists all results AND screenshot file paths.
-   - `results.json` - structured results with screenshot paths.
-   - `console.log` - structured output log per scenario/step.
-   - `*.png` - screenshot images.
-  - screenshot warnings - if native capture had to fall back or failed, warnings appear in the step artifact, `report.md`, and `console.log`.
+3. **Review artifacts** - artifacts are in `tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/` (gitignored). Read `report.md` first because it lists all results, screenshot file paths, screenshot capture metadata, webview text evidence, and warnings. Use `results.json` for structured results with per-screenshot capture metadata and per-webview text evidence, `console.log` for scenario/step output and warnings, and `*.png` for the screenshot images. Check the step artifact metadata when native capture fell back, the wrong window may have been captured, or a webview assertion needs text evidence beyond screenshots.
 
 4. **Verify screenshots** - use `view_image` on each .png listed in `report.md`. Do NOT skip this step.
 
@@ -475,14 +476,16 @@ in the extension source is part of the testing process.
 | `When I scroll "<sel>" to the (top\\|bottom\\|left\\|right)` | Jump to an edge |
 | `When I scroll "<sel>" into view` | Scroll the element itself into view |
 | `When I evaluate "<js>" in the webview` | Run arbitrary JS (escape hatch) |
-| `When I list the webviews` | Log all open webview titles, probed DOM titles, and URLs (debugging aid) |
+| `When I list the webviews` | Log all open webview titles, probed DOM titles, URLs, and bounded visible text evidence (debugging aid) |
 | `When I list the frame contexts` | Log all execution contexts (frames) inside webview targets — shows context IDs, origins, frame IDs, and the frame tree. Use to diagnose when evaluate/click steps can't find elements inside nested iframes. |
 | `When I list the frame contexts in the webview "<title>"` | Same, but restricted to a specific webview |
-| `Then the webview should contain "<text>"` | Substring match in body text |
-| `Then the webview "<title>" should contain "<text>"` | Restrict to a webview |
+| `Then the webview should contain "<text>"` | Substring match in body text; records bounded webview text evidence in `results.json` and `report.md` |
+| `Then the webview "<title>" should contain "<text>"` | Restrict to a webview and record target-attributed text evidence |
 | `Then element "<sel>" should exist` | Existence assertion |
 | `Then element "<sel>" should not exist` | Negative existence |
-| `Then element "<sel>" should have text "<text>"` | Text content assertion |
+| `Then element "<sel>" should have text "<text>"` | Text content assertion; records selector-scoped webview text evidence |
+| `Then element "<sel>" should have text "<text>" in the webview` | Text content assertion; records selector-scoped webview text evidence |
+| `Then element "<sel>" should have text "<text>" in the webview "<title>"` | Restrict selector text assertion to a specific webview and record target-attributed evidence |
 
 **Webview targeting.** When multiple webviews are open at once (walkthroughs,
 panels, sidebar views), pass a `<title>` substring to disambiguate. The
@@ -654,8 +657,8 @@ Then the editor should contain "hello world"
 \\`\\`\\`
 
 ### Screenshots
-- `Then I take a screenshot` - capture the targeted Extension Development Host window, saved to the run directory
-- `Then I take a screenshot "label"` - capture the targeted Dev Host with a descriptive label (e.g. "after-query-runs")
+- `Then I take a screenshot` - capture the targeted Extension Development Host window, saved to the run directory with Dev Host PID, captured window title/bounds, and capture method metadata
+- `Then I take a screenshot "label"` - capture the targeted Dev Host with a descriptive label (e.g. "after-query-runs") and the same capture metadata
 
 ### File Utilities (direct via code - no UI dialogs)
 Use these for test setup when you don't need to test the actual dialog interaction:
@@ -688,9 +691,9 @@ and closes panels/sidebars. This ensures each scenario starts from the same base
 
 ## Repo-Specific Knowledge
 
-When you run `vscode-ext-test init`, a `repo-knowledge.md` file is created in
+When you run `vscode-ext-test install-into-project`, a `repo-knowledge.md` file is created in
 `.github/skills/e2e-test-extension/` alongside this SKILL.md. Unlike SKILL.md
-(which is overwritten on every `init` to stay current with framework updates),
+(which is overwritten on every `install-into-project` to stay current with framework updates),
 **`repo-knowledge.md` is never overwritten** — it is your persistent,
 repo-specific knowledge base.
 

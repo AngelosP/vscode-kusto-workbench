@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { html, render, nothing } from 'lit';
 import '../../src/webview/tutorials/kw-tutorial-viewer.js';
 import type { KwTutorialViewer } from '../../src/webview/tutorials/kw-tutorial-viewer.js';
-import type { TutorialViewerSnapshot } from '../../src/shared/tutorials/tutorialCatalog.js';
+import { TUTORIAL_CONNECTION_REQUIRED_MESSAGE, type TutorialViewerSnapshot } from '../../src/shared/tutorials/tutorialCatalog.js';
 
 let container: HTMLDivElement;
 let postedMessages: unknown[];
@@ -27,7 +27,6 @@ function snapshot(overrides: Partial<TutorialViewerSnapshot> = {}): TutorialView
 					summary: 'Build a chart with the agent',
 					categoryId: 'agent',
 					minExtensionVersion: '0.0.0',
-					updateToken: 'agent-start-v1',
 					tags: ['chart'],
 					actions: [],
 					compatible: true,
@@ -38,7 +37,6 @@ function snapshot(overrides: Partial<TutorialViewerSnapshot> = {}): TutorialView
 					summary: 'Refine the report',
 					categoryId: 'agent',
 					minExtensionVersion: '0.0.0',
-					updateToken: 'agent-next-v1',
 					tags: ['agent'],
 					actions: [],
 					compatible: true,
@@ -46,7 +44,7 @@ function snapshot(overrides: Partial<TutorialViewerSnapshot> = {}): TutorialView
 			],
 		},
 		preferences: [{ categoryId: 'agent', subscribed: false, channel: 'off', unseenCount: 1 }],
-		status: { source: 'builtIn', stale: false, errors: [], warnings: [] },
+		status: { source: 'cache', stale: false, errors: [], warnings: [] },
 		preferredMode: 'standard',
 	};
 	return { ...base, ...overrides };
@@ -69,7 +67,7 @@ async function settle(viewer: KwTutorialViewer): Promise<void> {
 }
 
 async function sendTutorialContent(viewer: KwTutorialViewer, tutorialId: string, markdown: string): Promise<void> {
-	window.dispatchEvent(new MessageEvent('message', { data: { type: 'tutorialContent', content: { tutorialId, markdown, source: 'builtIn', errors: [] } } }));
+	window.dispatchEvent(new MessageEvent('message', { data: { type: 'tutorialContent', content: { tutorialId, markdown, source: 'cache', errors: [] } } }));
 	await settle(viewer);
 }
 
@@ -100,13 +98,60 @@ describe('kw-tutorial-viewer', () => {
 		expect(viewer.shadowRoot!.querySelector('[data-overlay-scroll]')).toBeTruthy();
 	});
 
-	it('opens focused mode and navigates within the current category', async () => {
+	it('renders a connection-required state when no remote catalog or cache is available', async () => {
 		const viewer = createViewer();
-		await sendSnapshot(viewer, snapshot({ preferredMode: 'focused' }));
-		expect(viewer.shadowRoot!.querySelector('[data-testid="tutorial-viewer-mode-focused"]')).toBeTruthy();
+		await sendSnapshot(viewer, snapshot({
+			catalog: { schemaVersion: 1, generatedAt: '2026-05-01T00:00:00.000Z', categories: [], tutorials: [] },
+			preferences: [],
+			status: { source: 'unavailable', stale: false, errors: [TUTORIAL_CONNECTION_REQUIRED_MESSAGE], warnings: [] },
+		}));
+		expect(viewer.shadowRoot!.textContent).toContain(TUTORIAL_CONNECTION_REQUIRED_MESSAGE);
+		expect(viewer.shadowRoot!.querySelector('[data-testid="tutorial-viewer-mode-unavailable"]')).toBeTruthy();
+		expect(viewer.shadowRoot!.querySelector('[data-testid="tutorial-item"]')).toBeNull();
+		(viewer.shadowRoot!.querySelector('.action-btn') as HTMLButtonElement).click();
+		expect(postedMessages).toContainEqual({ type: 'refreshCatalog' });
+	});
+
+	it('opens compact mode and navigates within the current category', async () => {
+		const viewer = createViewer();
+		await sendSnapshot(viewer, snapshot({ preferredMode: 'compact' }));
+		await sendTutorialContent(viewer, 'agent-start', '# Agent start\n\nOpen the Kusto Workbench agent.');
+		expect(viewer.shadowRoot!.querySelector('[data-testid="tutorial-viewer-mode-compact"]')).toBeTruthy();
+		expect(viewer.shadowRoot!.textContent).toContain('Did you know?');
 		expect(viewer.shadowRoot!.textContent).toContain('Agent start');
+		expect(viewer.shadowRoot!.querySelector('.compact-markdown h1')).toBeNull();
+		expect(viewer.shadowRoot!.querySelector('.compact-markdown')!.textContent).toContain('Open the Kusto Workbench agent.');
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-next"]') as HTMLButtonElement).click();
 		expect(postedMessages).toContainEqual({ type: 'openTutorial', tutorialId: 'agent-next' });
+	});
+
+	it('offers compact delivery, mute, browse, and dismiss controls', async () => {
+		const viewer = createViewer();
+		await sendSnapshot(viewer, snapshot({
+			preferredMode: 'compact',
+			preferences: [{ categoryId: 'agent', subscribed: true, channel: 'nextFileOpenPopup', unseenCount: 1 }],
+		}));
+		const channel = viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-channel"]') as HTMLButtonElement;
+		expect(channel.textContent).toContain('pop-up');
+		channel.click();
+		expect(postedMessages).toContainEqual({ type: 'setNotificationChannel', categoryId: 'agent', channel: 'vscodeNotification' });
+
+		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute"]') as HTMLButtonElement).click();
+		await viewer.updateComplete;
+		expect(viewer.shadowRoot!.querySelector('.mute-menu')).toBeTruthy();
+		(viewer.shadowRoot!.querySelector('.mute-menu button') as HTMLButtonElement).click();
+		expect(postedMessages).toContainEqual({ type: 'setNotificationChannel', categoryId: 'agent', channel: 'off' });
+
+		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute"]') as HTMLButtonElement).click();
+		await viewer.updateComplete;
+		const menuItems = Array.from(viewer.shadowRoot!.querySelectorAll<HTMLButtonElement>('.mute-menu button'));
+		menuItems[2].click();
+		expect(postedMessages).toContainEqual({ type: 'setCategorySubscriptions', categoryIds: ['agent'], subscribed: false });
+
+		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-dismiss"]') as HTMLButtonElement).click();
+		expect(postedMessages).toContainEqual({ type: 'dismiss' });
+		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-mode-standard"]') as HTMLButtonElement).click();
+		expect(postedMessages).toContainEqual({ type: 'setPreferredMode', mode: 'standard' });
 	});
 
 	it('searches tutorial summaries', async () => {
@@ -121,9 +166,9 @@ describe('kw-tutorial-viewer', () => {
 	it('posts subscription and channel changes', async () => {
 		const viewer = createViewer();
 		await sendSnapshot(viewer);
-		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-mode-focused"]') as HTMLButtonElement).click();
+		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-mode-compact"]') as HTMLButtonElement).click();
 		await viewer.updateComplete;
-		expect(postedMessages).toContainEqual({ type: 'setPreferredMode', mode: 'focused' });
+		expect(postedMessages).toContainEqual({ type: 'setPreferredMode', mode: 'compact' });
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-mode-standard"]') as HTMLButtonElement).click();
 		await viewer.updateComplete;
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-category-subscribe"]') as HTMLButtonElement).click();
@@ -133,7 +178,7 @@ describe('kw-tutorial-viewer', () => {
 		expect(bell.getAttribute('aria-label')).toBe('Unsubscribe from Agent workflow category updates');
 		const channel = viewer.shadowRoot!.querySelector('[data-testid="tutorial-category-channel"]') as HTMLButtonElement;
 		expect(channel.textContent).toContain('pop-up');
-		expect(channel.title).toContain('automatically fire up the tutorial UI');
+		expect(channel.title).toContain('compact card');
 		expect(channel.getAttribute('aria-label')).toContain('Agent workflow updates');
 		channel.click();
 		expect(postedMessages).toContainEqual({ type: 'setNotificationChannel', categoryId: 'agent', channel: 'vscodeNotification' });
@@ -143,11 +188,11 @@ describe('kw-tutorial-viewer', () => {
 		expect(viewer.shadowRoot!.querySelector('[data-testid="tutorial-category-channel"]')).toBeNull();
 	});
 
-	it('switches focused content when the host reopens a different category', async () => {
+	it('switches compact content when the host reopens a different category', async () => {
 		const base = snapshot();
 		const multiCategorySnapshot: TutorialViewerSnapshot = {
 			...base,
-			preferredMode: 'focused',
+			preferredMode: 'compact',
 			catalog: {
 				...base.catalog,
 				categories: [
@@ -162,7 +207,6 @@ describe('kw-tutorial-viewer', () => {
 						summary: 'Build a chart from results',
 						categoryId: 'charts',
 						minExtensionVersion: '0.0.0',
-						updateToken: 'chart-start-v1',
 						tags: ['chart'],
 						actions: [],
 						compatible: true,

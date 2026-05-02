@@ -9,11 +9,14 @@ export const TUTORIAL_NOTIFICATION_CHANNELS = [
 export type TutorialNotificationChannel = typeof TUTORIAL_NOTIFICATION_CHANNELS[number];
 
 export const TUTORIAL_VIEWER_MODES = [
+	'compact',
 	'focused',
 	'standard',
 ] as const;
 
 export type TutorialViewerMode = typeof TUTORIAL_VIEWER_MODES[number];
+
+export const TUTORIAL_CONNECTION_REQUIRED_MESSAGE = 'Kusto Workbench tutorials require a connection to the GitHub repo, but it cannot be established right now.';
 
 export interface TutorialCategory {
 	id: string;
@@ -57,12 +60,10 @@ export interface TutorialSummary {
 	summary: string;
 	categoryId: string;
 	minExtensionVersion: string;
-	updateToken: string;
 	tags: string[];
 	durationMinutes?: number;
 	sortOrder?: number;
 	searchText?: string;
-	nativeWalkthroughId?: string;
 	actions: TutorialAction[];
 	compatible: boolean;
 }
@@ -89,7 +90,7 @@ export interface TutorialViewerCatalog {
 }
 
 export interface TutorialViewerStatus {
-	source: 'remote' | 'cache' | 'builtIn';
+	source: 'remote' | 'cache' | 'localDevelopment' | 'unavailable';
 	stale: boolean;
 	lastUpdated?: string;
 	errors: string[];
@@ -109,7 +110,6 @@ export const ALLOWED_TUTORIAL_COMMANDS = new Set([
 	'kusto.openQueryEditor',
 	'kusto.manageConnections',
 	'kusto.openCustomAgent',
-	'kusto.openWalkthroughs',
 ]);
 
 const BLOCKED_URL_PROTOCOLS = new Set([
@@ -412,12 +412,10 @@ export function summarizeTutorial(tutorial: TutorialItem, installedVersion: stri
 		summary: tutorial.summary,
 		categoryId: tutorial.categoryId,
 		minExtensionVersion: tutorial.minExtensionVersion,
-		updateToken: tutorial.updateToken,
 		tags: tutorial.tags ?? [],
 		durationMinutes: tutorial.durationMinutes,
 		sortOrder: tutorial.sortOrder,
 		searchText: tutorial.searchText,
-		nativeWalkthroughId: tutorial.nativeWalkthroughId,
 		actions: tutorial.actions ?? [],
 		compatible: isExtensionVersionCompatible(installedVersion, tutorial.minExtensionVersion),
 	};

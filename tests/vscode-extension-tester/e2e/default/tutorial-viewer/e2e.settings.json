@@ -1,6 +1,6 @@
 {
   "workspaceSettings": {
-    "kustoWorkbench.tutorials.catalogUrl": "",
+    "kustoWorkbench.tutorials.catalogUrl": "https://raw.githubusercontent.com/AngelosP/vscode-kusto-workbench/__tutorial-e2e-missing__/media/tutorials/catalog.v1.json",
     "kustoWorkbench.tutorials.enableUpdateChecks": false,
     "git.openRepositoryInParentFolders": "never",
     "workbench.secondarySideBar.defaultVisibility": "hidden"

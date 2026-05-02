@@ -14,7 +14,8 @@ esbuild.js
 vsc-extension-quickstart.md
 dev-backlog.md
 scripts/**
-docs/tutorials/**
+media/tutorials/**
+media/walkthroughs/**
 browser-ext/**
 **/*.vsix
 **/tsconfig.json

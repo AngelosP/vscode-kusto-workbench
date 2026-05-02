@@ -52,7 +52,15 @@ export class Uri {
 		u.path = path;
 		return u;
 	}
-	static joinPath(..._args: any[]) { return new Uri(''); }
+	static joinPath(base: Uri, ...segments: string[]) {
+		const basePath = base.fsPath || base.path || base.toString();
+		const joined = [basePath, ...segments]
+			.filter(Boolean)
+			.join('/')
+			.replace(/\\/g, '/')
+			.replace(/\/+/g, '/');
+		return Uri.file(joined);
+	}
 	scheme = 'file';
 	fsPath = '';
 	path = '';
@@ -84,11 +92,35 @@ export const commands = {
 	executeCommand: () => Promise.resolve(),
 };
 
+const fileSystemStore = new Map<string, Uint8Array>();
+
+export const __mockFileSystem = {
+	clear: () => fileSystemStore.clear(),
+	readText: (uri: Uri) => {
+		const bytes = fileSystemStore.get(uri.toString()) ?? fileSystemStore.get(uri.fsPath);
+		return bytes ? new TextDecoder().decode(bytes) : undefined;
+	},
+};
+
 export const workspace = {
 	getConfiguration: () => ({
 		get: () => undefined,
 		update: () => Promise.resolve(),
 	}),
+	fs: {
+		createDirectory: () => Promise.resolve(),
+		readFile: async (uri: Uri) => {
+			const bytes = fileSystemStore.get(uri.toString()) ?? fileSystemStore.get(uri.fsPath);
+			if (!bytes) {
+				throw new Error(`ENOENT: ${uri.toString()}`);
+			}
+			return bytes;
+		},
+		writeFile: async (uri: Uri, bytes: Uint8Array) => {
+			fileSystemStore.set(uri.toString(), bytes);
+			fileSystemStore.set(uri.fsPath, bytes);
+		},
+	},
 	onDidChangeConfiguration: () => ({ dispose: () => {} }),
 };
 

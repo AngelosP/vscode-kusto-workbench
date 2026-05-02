@@ -34,6 +34,7 @@ import { executeQuery, __kustoIsRunSelectionReady } from './query-execution.cont
 import { closeAllMenus } from '../core/dropdown.js';
 import { schedulePersist } from '../core/persistence.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
+import { canonicalizePowerBiKustoClusterUrl } from '../../shared/kustoClusterUrls.js';
 import {
 	activeQueryEditorBoxId,
 	caretDocOverlaysByBoxId,
@@ -644,6 +645,14 @@ async function exportQueryToPowerBI(boxId: any): Promise<void> {
 		try { postMessageToHost({ type: 'showInfo', message: 'Selected connection is missing a cluster URL' }); } catch (e) { console.error('[kusto]', e); }
 		return;
 	}
+	let powerBiClusterUrl: string;
+	try {
+		powerBiClusterUrl = canonicalizePowerBiKustoClusterUrl(clusterUrl);
+	} catch (error) {
+		const message = error instanceof Error ? error.message : 'Selected connection is not a valid Power BI Azure Data Explorer source.';
+		try { postMessageToHost({ type: 'showInfo', message }); } catch (e) { console.error('[kusto]', e); }
+		return;
+	}
 
 	const trimmedQuery = (query || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').trim();
 	const powerBIPrefix = 'set notruncation;\nset maxmemoryconsumptionperiterator=32212254720;\n';
@@ -655,7 +664,7 @@ async function exportQueryToPowerBI(boxId: any): Promise<void> {
 		'    Query = "\n' +
 		indentedQuery + '\n' +
 		'    ",\n' +
-		'    Source = AzureDataExplorer.Contents("' + escapeMString(clusterUrl) + '", "' + escapeMString(database) + '", Query)\n' +
+		'    Source = AzureDataExplorer.Contents("' + escapeMString(powerBiClusterUrl) + '", "' + escapeMString(database) + '", Query)\n' +
 		'in\n' +
 		'    Source';
 

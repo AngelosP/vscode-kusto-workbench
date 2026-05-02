@@ -1330,6 +1330,34 @@ describe('generateTableTmdl', () => {
 
 		expect(tmdl).toContain('AzureDataExplorer.Contents("https://cluster.kusto.windows.net", "db"');
 	});
+
+	it('canonicalizes truncated ADX cluster URLs for Power BI', () => {
+		const shortHttps = generateTableTmdl({ ...factDataSource, clusterUrl: 'https://ddtelinsights' });
+		const bareHost = generateTableTmdl({ ...factDataSource, clusterUrl: 'ddtelinsights' });
+
+		expect(shortHttps).toContain('AzureDataExplorer.Contents("https://ddtelinsights.kusto.windows.net", "db"');
+		expect(bareHost).toContain('AzureDataExplorer.Contents("https://ddtelinsights.kusto.windows.net", "db"');
+	});
+
+	it('preserves already complete dotted cluster URLs for Power BI', () => {
+		const tmdl = generateTableTmdl({ ...factDataSource, clusterUrl: 'https://adx.contoso.com/' });
+
+		expect(tmdl).toContain('AzureDataExplorer.Contents("https://adx.contoso.com", "db"');
+	});
+});
+
+describe('generateDimTableTmdl', () => {
+	it('canonicalizes truncated ADX cluster URLs for Power BI', () => {
+		const tmdl = generateDimTableTmdl('Dim Skill', 'SkillName', 'string', 'https://ddtelinsights', 'db', factDataSource.query);
+
+		expect(tmdl).toContain('AzureDataExplorer.Contents("https://ddtelinsights.kusto.windows.net", "db"');
+	});
+
+	it('preserves complete dotted cluster URLs for Power BI', () => {
+		const tmdl = generateDimTableTmdl('Dim Skill', 'SkillName', 'string', 'https://cluster.kusto.windows.net/', 'db', factDataSource.query);
+
+		expect(tmdl).toContain('AzureDataExplorer.Contents("https://cluster.kusto.windows.net", "db"');
+	});
 });
 
 function makeV1Html(bindings: Record<string, object>, bodyHtml: string, dimensions?: object[]): string {

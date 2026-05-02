@@ -4,12 +4,11 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
-const catalogPath = join(root, 'docs', 'tutorials', 'catalog.v1.json');
+const catalogPath = join(root, 'media', 'tutorials', 'catalog.v1.json');
 const allowedCommands = new Set([
 	'kusto.openQueryEditor',
 	'kusto.manageConnections',
 	'kusto.openCustomAgent',
-	'kusto.openWalkthroughs',
 ]);
 
 const errors = [];
@@ -78,7 +77,7 @@ for (const [index, tutorial] of (catalog.tutorials || []).entries()) {
 		if (!isAllowedRemoteUrl(contentUrl)) fail(`tutorial ${id} remote contentUrl must be HTTPS GitHub-hosted: ${contentUrl}`);
 	} else {
 		const localPath = normalize(join(dirname(catalogPath), contentUrl));
-		if (!localPath.startsWith(normalize(dirname(catalogPath)))) fail(`tutorial ${id} content escapes docs/tutorials`);
+		if (!localPath.startsWith(normalize(dirname(catalogPath)))) fail(`tutorial ${id} content escapes media/tutorials`);
 		if (!existsSync(localPath)) fail(`tutorial ${id} content file does not exist: ${contentUrl}`);
 	}
 	for (const [actionIndex, action] of (tutorial.actions || []).entries()) {

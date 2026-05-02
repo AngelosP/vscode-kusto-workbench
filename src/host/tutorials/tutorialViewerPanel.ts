@@ -18,10 +18,11 @@ type TutorialViewerMessage =
 	| { type: 'openTutorial'; tutorialId: string }
 	| { type: 'setPreferredMode'; mode: TutorialViewerMode }
 	| { type: 'setCategorySubscription'; categoryId: string; subscribed: boolean }
+	| { type: 'setCategorySubscriptions'; categoryIds: string[]; subscribed: boolean }
 	| { type: 'setNotificationChannel'; categoryId: string; channel: TutorialNotificationChannel }
 	| { type: 'markCategorySeen'; categoryId: string }
 	| { type: 'runAction'; command: string }
-	| { type: 'openNativeWalkthrough'; walkthroughId: string };
+	| { type: 'dismiss' };
 
 interface TutorialViewerOpenOptions {
 	selectedCategoryId?: string;
@@ -56,7 +57,7 @@ export class TutorialViewerPanel {
 		}
 		const panel = vscode.window.createWebviewPanel(
 			'kustoTutorialViewer',
-			'Kusto Workbench Tutorials',
+			'Did you know?',
 			vscode.ViewColumn.One,
 			{
 				enableScripts: true,
@@ -110,6 +111,14 @@ export class TutorialViewerPanel {
 					await this.subscriptionService.setSubscription(message.categoryId, !!message.subscribed);
 					await this.postSnapshot();
 					break;
+				case 'setCategorySubscriptions': {
+					const resolved = await this.catalogService.getCatalog();
+					const validCategoryIds = new Set(resolved.catalog.categories.map(category => category.id));
+					const categoryIds = message.categoryIds.filter(categoryId => typeof categoryId === 'string' && validCategoryIds.has(categoryId));
+					await this.subscriptionService.setSubscriptions(categoryIds, !!message.subscribed);
+					await this.postSnapshot();
+					break;
+				}
 				case 'setNotificationChannel':
 					if (isTutorialNotificationChannel(message.channel)) {
 						await this.subscriptionService.setChannel(message.categoryId, message.channel);
@@ -127,12 +136,8 @@ export class TutorialViewerPanel {
 						await vscode.commands.executeCommand(message.command);
 					}
 					break;
-				case 'openNativeWalkthrough':
-					await vscode.commands.executeCommand(
-						'workbench.action.openWalkthrough',
-						{ category: `angelos-petropoulos.vscode-kusto-workbench#${message.walkthroughId}` },
-						true,
-					);
+				case 'dismiss':
+					this.panel.dispose();
 					break;
 			}
 		} catch (error) {
@@ -198,7 +203,7 @@ export class TutorialViewerPanel {
 	}
 
 	private defaultPreferredMode(): TutorialViewerMode {
-		return this.subscriptionService.getSubscribedCategoryIds().length > 0 ? 'focused' : 'standard';
+		return this.subscriptionService.getSubscribedCategoryIds().length > 0 ? 'compact' : 'standard';
 	}
 
 	private escapeHtml(value: string): string {

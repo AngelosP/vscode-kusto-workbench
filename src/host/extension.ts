@@ -22,8 +22,11 @@ import { TutorialCatalogService } from './tutorials/tutorialCatalogService';
 import { TutorialNotificationService, isKustoTutorialTriggerDocument } from './tutorials/tutorialNotificationService';
 import { TutorialSubscriptionService } from './tutorials/tutorialSubscriptionService';
 import { TutorialViewerPanel } from './tutorials/tutorialViewerPanel';
+import type { TutorialViewerMode } from '../shared/tutorials/tutorialCatalog';
 
 import { stsProcessManagerSingleton } from './sql/stsProcessManager';
+
+const TUTORIAL_ACTIVATION_CHECK_DELAY_MS = 10000;
 
 // Export the tool orchestrator instance so other modules can access it
 export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
@@ -105,13 +108,16 @@ export function activate(context: vscode.ExtensionContext) {
 	// Initialize connection manager
 	const connectionManager = new ConnectionManager(context);
 	const kqlLanguageHost = new KqlLanguageServiceHost(connectionManager, context);
-	const tutorialCatalogService = new TutorialCatalogService(context, context.extensionUri);
+	const tutorialCatalogService = new TutorialCatalogService(context);
 	const tutorialSubscriptionService = new TutorialSubscriptionService(context);
-	const openTutorials = async (selectedCategoryId?: string): Promise<void> => {
-		TutorialViewerPanel.open(context, context.extensionUri, tutorialCatalogService, tutorialSubscriptionService, { selectedCategoryId });
-		await tutorialNotificationService.checkOnViewerOpen();
+	const openTutorials = async (selectedCategoryId?: string, preferredMode: TutorialViewerMode = 'standard'): Promise<void> => {
+		TutorialViewerPanel.open(context, context.extensionUri, tutorialCatalogService, tutorialSubscriptionService, { selectedCategoryId, preferredMode });
 	};
-	const tutorialNotificationService = new TutorialNotificationService(tutorialCatalogService, tutorialSubscriptionService, openTutorials);
+	const tutorialNotificationService = new TutorialNotificationService(context, tutorialCatalogService, tutorialSubscriptionService, openTutorials);
+	const tutorialActivationCheckTimer = setTimeout(() => {
+		void tutorialNotificationService.checkOnActivation();
+	}, TUTORIAL_ACTIVATION_CHECK_DELAY_MS);
+	context.subscriptions.push({ dispose: () => clearTimeout(tutorialActivationCheckTimer) });
 
 	// Shared SQL lazy-init (used by both editor provider and connection manager viewer)
 	let _sqlConnectionManager: SqlConnectionManager | undefined;
@@ -649,7 +655,7 @@ export function activate(context: vscode.ExtensionContext) {
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.openTutorials', async (categoryId?: string) => {
-			await openTutorials(typeof categoryId === 'string' ? categoryId : undefined);
+			await openTutorials(typeof categoryId === 'string' ? categoryId : undefined, 'standard');
 		})
 	);
 
@@ -782,25 +788,6 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			void vscode.window.showInformationMessage('Reset Copilot model selection. New editors will use the default model.');
-		})
-	);
-
-	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.openWalkthroughs', async () => {
-			const walkthroughs = [
-				{ label: '$(rocket) Agent-First Workflow', description: 'Let the agent build queries and charts for you', id: 'kusto-workbench.agent-first' },
-				{ label: '$(edit) Editor-First Workflow', description: 'Write KQL, explore results, build charts, and use AI', id: 'kusto-workbench.editor-first' },
-			];
-			const picked = await vscode.window.showQuickPick(walkthroughs, {
-				placeHolder: 'Choose a walkthrough to get started',
-			});
-			if (picked) {
-				void vscode.commands.executeCommand(
-					'workbench.action.openWalkthrough',
-					{ category: `angelos-petropoulos.vscode-kusto-workbench#${picked.id}` },
-					true
-				);
-			}
 		})
 	);
 

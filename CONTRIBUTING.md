@@ -161,6 +161,19 @@ The sections below define the constraints that prevent regressions. Any change t
 
 ---
 
+## Webview Page Scroll & Mouse Coordinates
+
+The main notebook/page scrollbar is implemented with OverlayScrollbars on `.kw-scroll-viewport`, not with native document scrolling. That wrapper is the canonical page scroll element for application code.
+
+### What must not change
+
+- **Do not spoof native global scroll reads.** Never patch `window.scrollY`, `window.pageYOffset`, or `document.documentElement.scrollTop` to return the overlay viewport's scroll position. Monaco and browser native mouse handling depend on those reads staying native.
+- **Use explicit page-scroll helpers for app scroll state.** Code that needs notebook page scroll position or scroll writes must use `getPageScrollElement()`, `getPageScrollTop()`, `setPageScrollTop()`, `scrollPageBy()`, or another explicit helper in `src/webview/core/utils.ts`.
+- **Use viewport coordinates for body-attached overlays.** Context menus, insert affordances, and similar floating UI attached to `document.body` should use `clientX`/`clientY` and `getBoundingClientRect()` with `position: fixed`, not `pageX`/`pageY` or document-coordinate math.
+- **Native E2E coverage is required for scroll-offset caret bugs.** Synthetic DOM-dispatched clicks can miss Monaco/native coordinate regressions. Repros involving editor click placement after page scroll need a native `vscode-extension-tester` click path, like `tests/vscode-extension-tester/e2e/default/kusto-click-caret-fidelity/`.
+
+---
+
 ## Bundle Format & Build System
 
 The build produces multiple bundles via esbuild (`esbuild.js`). The formats and targets are load-bearing:

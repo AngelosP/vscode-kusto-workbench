@@ -3,6 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.7.0] - 2026.05.02
+
+* 
+
 ## [4.6.1] - 2026-05-01
 
 * Bugs

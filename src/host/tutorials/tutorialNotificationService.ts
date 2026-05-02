@@ -1,47 +1,55 @@
 import * as vscode from 'vscode';
-import type { TutorialCatalog, TutorialItem } from '../../shared/tutorials/tutorialCatalog';
+import type { TutorialCatalog, TutorialItem, TutorialViewerMode } from '../../shared/tutorials/tutorialCatalog';
 import { TutorialCatalogService } from './tutorialCatalogService';
 import { TutorialSubscriptionService } from './tutorialSubscriptionService';
 
 const DIGEST_THROTTLE_MS = 6 * 60 * 60 * 1000;
+const AUTOMATIC_CHECK_DATE_KEY = 'kusto.tutorials.lastAutomaticCheckDate.v1';
 
 export class TutorialNotificationService {
 	private pendingPopup: { categoryId: string; title: string; count: number } | null = null;
 	private checking = false;
 
 	constructor(
+		private readonly context: vscode.ExtensionContext,
 		private readonly catalogService: TutorialCatalogService,
 		private readonly subscriptionService: TutorialSubscriptionService,
-		private readonly openViewer: (categoryId?: string) => Promise<void>,
+		private readonly openViewer: (categoryId?: string, preferredMode?: TutorialViewerMode) => Promise<void>,
 	) { }
 
 	async checkOnKustoFileOpen(): Promise<void> {
 		if (this.subscriptionService.getSubscribedCategoryIds().length === 0) {
 			return;
 		}
-		await this.checkForUpdates({ allowVsCodeNotification: false });
 		if (this.pendingPopup) {
 			const pending = this.pendingPopup;
 			this.pendingPopup = null;
 			const action = await vscode.window.showInformationMessage(
 				`${pending.count} new ${pending.title} tutorial update${pending.count === 1 ? '' : 's'} available.`,
-				'Open Tutorials',
+				'Open Did you know?',
 				'Dismiss',
 			);
-			if (action === 'Open Tutorials') {
-				await this.openViewer(pending.categoryId);
+			if (action === 'Open Did you know?') {
+				await this.openViewer(pending.categoryId, 'compact');
 			}
 		}
 	}
 
-	async checkOnViewerOpen(): Promise<void> {
+	async checkOnActivation(): Promise<void> {
 		if (this.subscriptionService.getSubscribedCategoryIds().length === 0) {
 			return;
 		}
-		await this.checkForUpdates({ allowVsCodeNotification: true });
+		if (!this.catalogService.getSettings().enableUpdateChecks || this.hasCheckedToday()) {
+			return;
+		}
+		try {
+			await this.checkForUpdates({ allowVsCodeNotification: true, forceRefresh: true, requireRemote: true });
+		} finally {
+			await this.context.globalState.update(AUTOMATIC_CHECK_DATE_KEY, this.todayKey());
+		}
 	}
 
-	private async checkForUpdates(options: { allowVsCodeNotification: boolean }): Promise<void> {
+	private async checkForUpdates(options: { allowVsCodeNotification: boolean; forceRefresh?: boolean; requireRemote?: boolean }): Promise<void> {
 		if (this.checking) {
 			return;
 		}
@@ -52,7 +60,13 @@ export class TutorialNotificationService {
 
 		this.checking = true;
 		try {
-			const resolved = await this.catalogService.getCatalog();
+			const resolved = await this.catalogService.getCatalog({ forceRefresh: options.forceRefresh });
+			if (options.requireRemote && resolved.source !== 'remote') {
+				return;
+			}
+			if (resolved.source === 'unavailable') {
+				return;
+			}
 			const preferences = this.subscriptionService.getPreferences(resolved.catalog);
 			const digests: Array<{ categoryId: string; title: string; tutorials: TutorialItem[]; channel: string }> = [];
 			for (const preference of preferences) {
@@ -88,14 +102,25 @@ export class TutorialNotificationService {
 	private async showDigestNotification(catalog: TutorialCatalog, categoryId: string, title: string, tutorials: TutorialItem[]): Promise<void> {
 		const action = await vscode.window.showInformationMessage(
 			`${tutorials.length} new ${title} tutorial update${tutorials.length === 1 ? '' : 's'} available.`,
-			'Open Tutorials',
+			'Open Did you know?',
 			'Mark Seen',
 		);
-		if (action === 'Open Tutorials') {
-			await this.openViewer(categoryId);
+		if (action === 'Open Did you know?') {
+			await this.openViewer(categoryId, 'compact');
 		} else if (action === 'Mark Seen') {
 			await this.subscriptionService.markCategorySeen(catalog, categoryId);
 		}
+	}
+
+	private hasCheckedToday(): boolean {
+		return this.context.globalState.get<string>(AUTOMATIC_CHECK_DATE_KEY) === this.todayKey();
+	}
+
+	private todayKey(): string {
+		const now = new Date();
+		const month = String(now.getMonth() + 1).padStart(2, '0');
+		const day = String(now.getDate()).padStart(2, '0');
+		return `${now.getFullYear()}-${month}-${day}`;
 	}
 }
 

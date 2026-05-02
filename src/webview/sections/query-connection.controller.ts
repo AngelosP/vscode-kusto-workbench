@@ -44,6 +44,7 @@ import {
 	findFavorite as __kustoFindFavorite_pure,
 	getFavoritesSorted as __kustoGetFavoritesSorted_pure,
 	parseKustoConnectionString,
+	selectBestKustoClusterUrl,
 	findConnectionIdForClusterUrl as _findConnIdPure,
 } from '../shared/clusterUtils';
 import { escapeHtml } from '../core/utils';
@@ -775,7 +776,7 @@ export function parseKustoExplorerConnectionsXml(xmlText: any) {
 		const details = getChildText(node, 'Details');
 		const connectionString = getChildText(node, 'ConnectionString');
 		const parsed = parseKustoConnectionString(connectionString);
-		let clusterUrl = (parsed.dataSource || details || '').trim();
+		let clusterUrl = selectBestKustoClusterUrl(parsed.dataSource, details).trim();
 		if (!clusterUrl) continue;
 		if (!/^https?:\/\//i.test(clusterUrl)) clusterUrl = 'https://' + clusterUrl.replace(/^\/+/, '');
 		results.push({

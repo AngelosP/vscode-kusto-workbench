@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import { createHash } from 'crypto';
 import {
 	TUTORIAL_CATALOG_SCHEMA_VERSION,
+	TUTORIAL_CONNECTION_REQUIRED_MESSAGE,
 	toTutorialViewerCatalog,
 	validateTutorialCatalog,
 	type TutorialCatalog,
@@ -9,9 +10,8 @@ import {
 	type TutorialItem,
 	type TutorialViewerStatus,
 } from '../../shared/tutorials/tutorialCatalog';
-import { BUILT_IN_TUTORIAL_CATALOG, BUILT_IN_TUTORIAL_CONTENT_PATHS, REMOTE_TUTORIAL_FALLBACK_CONTENT_PATHS } from './builtInTutorialCatalog';
 
-const DEFAULT_CATALOG_URL = 'https://raw.githubusercontent.com/AngelosP/vscode-kusto-workbench/main/docs/tutorials/catalog.v1.json';
+const DEFAULT_CATALOG_URL = 'https://raw.githubusercontent.com/AngelosP/vscode-kusto-workbench/main/media/tutorials/catalog.v1.json';
 const CATALOG_CACHE_FILE = 'catalog-cache.v1.json';
 const MAX_CATALOG_BYTES = 512 * 1024;
 const MAX_MARKDOWN_BYTES = 1024 * 1024;
@@ -46,9 +46,13 @@ export interface ResolvedTutorialCatalog {
 export interface TutorialContentResult {
 	tutorialId: string;
 	markdown: string;
-	source: 'remote' | 'cache' | 'builtIn';
+	source: 'remote' | 'cache' | 'localDevelopment' | 'unavailable';
 	errors: string[];
 }
+
+type TutorialContentSource =
+	| { kind: 'remote'; url: string }
+	| { kind: 'localDevelopment'; uri: vscode.Uri; baseUri: vscode.Uri };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -76,7 +80,6 @@ export class TutorialCatalogService {
 
 	constructor(
 		private readonly context: vscode.ExtensionContext,
-		private readonly extensionUri: vscode.Uri,
 	) {
 		this.cacheRoot = vscode.Uri.joinPath(context.globalStorageUri, 'tutorials');
 	}
@@ -92,6 +95,10 @@ export class TutorialCatalogService {
 
 	getDefaultCatalogUrl(): string {
 		return DEFAULT_CATALOG_URL;
+	}
+
+	getLocalDevelopmentCatalogUri(): vscode.Uri {
+		return vscode.Uri.joinPath(this.context.extensionUri, 'media', 'tutorials', 'catalog.v1.json');
 	}
 
 	getSettings(): TutorialSettings {
@@ -125,12 +132,26 @@ export class TutorialCatalogService {
 		const resolved = this.latestCatalog ?? await this.getCatalog();
 		const tutorial = resolved.catalog.tutorials.find(candidate => candidate.id === tutorialId);
 		if (!tutorial) {
-			return { tutorialId, markdown: '', source: 'builtIn', errors: [`Unknown tutorial '${tutorialId}'.`] };
+			return { tutorialId, markdown: '', source: 'unavailable', errors: [`Unknown tutorial '${tutorialId}'.`] };
 		}
 		const errors: string[] = [];
 		const contentSource = this.resolveContentSource(tutorial, resolved);
 
-		if (contentSource.kind === 'remote') {
+		if (contentSource?.kind === 'localDevelopment') {
+			try {
+				const markdown = await this.readLocalDevelopmentText(contentSource.uri, MAX_MARKDOWN_BYTES, 'tutorial');
+				return {
+					tutorialId,
+					markdown: await this.rewriteMarkdownImages(markdown, { kind: 'localDevelopment', baseUri: contentSource.baseUri }, webview, errors),
+					source: 'localDevelopment',
+					errors,
+				};
+			} catch (error) {
+				errors.push(`Could not load local development tutorial content: ${this.messageFromError(error)}`);
+			}
+		}
+
+		if (contentSource?.kind === 'remote') {
 			try {
 				const markdown = await this.fetchRemoteMarkdown(contentSource.url, tutorial.id);
 				return {
@@ -141,7 +162,7 @@ export class TutorialCatalogService {
 				};
 			} catch (error) {
 				errors.push(`Could not load remote tutorial content: ${this.messageFromError(error)}`);
-				const cached = await this.readTextCache(this.contentCacheName(contentSource.url));
+				const cached = await this.readCachedTutorialMarkdown(tutorial.id, contentSource.url);
 				if (cached) {
 					return {
 						tutorialId,
@@ -151,23 +172,14 @@ export class TutorialCatalogService {
 					};
 				}
 			}
+		} else {
+			const cached = await this.readCachedTutorialMarkdown(tutorial.id);
+			if (cached) {
+				return { tutorialId, markdown: cached, source: 'cache', errors };
+			}
 		}
 
-		const localPath = BUILT_IN_TUTORIAL_CONTENT_PATHS[tutorialId] ?? REMOTE_TUTORIAL_FALLBACK_CONTENT_PATHS[tutorialId] ?? (contentSource.kind === 'local' ? contentSource.path : undefined);
-		if (!localPath) {
-			return { tutorialId, markdown: '', source: 'builtIn', errors: [...errors, 'No built-in tutorial content is available.'] };
-		}
-		try {
-			const markdown = await this.readExtensionText(localPath);
-			return {
-				tutorialId,
-				markdown: await this.rewriteMarkdownImages(markdown, { kind: 'local', basePath: localPath }, webview, errors),
-				source: 'builtIn',
-				errors,
-			};
-		} catch (error) {
-			return { tutorialId, markdown: '', source: 'builtIn', errors: [...errors, this.messageFromError(error)] };
-		}
+		return { tutorialId, markdown: '', source: 'unavailable', errors: [...errors, TUTORIAL_CONNECTION_REQUIRED_MESSAGE] };
 	}
 
 	toStatus(resolved: ResolvedTutorialCatalog): TutorialViewerStatus {
@@ -181,10 +193,14 @@ export class TutorialCatalogService {
 	}
 
 	private async resolveCatalog(options: { forceRefresh?: boolean }): Promise<ResolvedTutorialCatalog> {
+		if (this.isLocalDevelopmentMode()) {
+			return await this.readLocalDevelopmentCatalog();
+		}
+
 		const settings = this.getSettings();
 		const cached = await this.readCatalogCache(settings.catalogUrl);
-		if (!settings.catalogUrl || !settings.enableUpdateChecks) {
-			return cached ?? this.builtInCatalog(settings.catalogUrl ? ['Tutorial update checks are disabled.'] : []);
+		if (!settings.catalogUrl) {
+			return cached ?? this.unavailableCatalog(['Tutorial catalog URL is not configured.']);
 		}
 		if (!options.forceRefresh && cached && !this.isCacheExpired(cached.lastUpdated, settings.refreshIntervalHours)) {
 			return cached;
@@ -198,7 +214,7 @@ export class TutorialCatalogService {
 			if (cached) {
 				return { ...cached, stale: true, errors: [...cached.errors, message] };
 			}
-			return this.builtInCatalog([message]);
+			return this.unavailableCatalog([message], settings.catalogUrl);
 		}
 	}
 
@@ -245,16 +261,47 @@ export class TutorialCatalogService {
 		};
 	}
 
-	private builtInCatalog(errors: string[] = []): ResolvedTutorialCatalog {
-		const validation = validateTutorialCatalog(BUILT_IN_TUTORIAL_CATALOG, this.installedVersion);
+	private async readLocalDevelopmentCatalog(): Promise<ResolvedTutorialCatalog> {
+		const catalogUri = this.getLocalDevelopmentCatalogUri();
+		try {
+			const text = await this.readLocalDevelopmentText(catalogUri, MAX_CATALOG_BYTES, 'catalog');
+			const parsed = JSON.parse(text) as unknown;
+			const validation = validateTutorialCatalog(parsed, this.installedVersion);
+			if (!validation.catalog) {
+				throw new Error(validation.errors.join(' '));
+			}
+			return {
+				catalog: validation.catalog,
+				validation,
+				source: 'localDevelopment',
+				stale: false,
+				lastUpdated: new Date().toISOString(),
+				catalogUrl: catalogUri.toString(),
+				errors: [],
+				warnings: validation.warnings,
+			};
+		} catch (error) {
+			const message = `Could not load local development tutorial catalog from ${catalogUri.fsPath || catalogUri.toString()}: ${this.messageFromError(error)}`;
+			console.warn(`[Kusto Workbench] ${message}`);
+			return this.unavailableCatalog([message], catalogUri.toString());
+		}
+	}
+
+	private unavailableCatalog(errors: string[] = [], catalogUrl?: string): ResolvedTutorialCatalog {
+		const catalog: TutorialCatalog = {
+			schemaVersion: TUTORIAL_CATALOG_SCHEMA_VERSION,
+			generatedAt: new Date().toISOString(),
+			categories: [],
+			tutorials: [],
+		};
 		return {
-			catalog: validation.catalog ?? BUILT_IN_TUTORIAL_CATALOG,
-			validation,
-			source: 'builtIn',
+			catalog,
+			validation: { catalog: null, errors: [], warnings: [], incompatibleTutorialIds: [] },
+			source: 'unavailable',
 			stale: false,
-			lastUpdated: BUILT_IN_TUTORIAL_CATALOG.generatedAt,
-			errors: [...errors, ...validation.errors],
-			warnings: validation.warnings,
+			catalogUrl,
+			errors: [TUTORIAL_CONNECTION_REQUIRED_MESSAGE, ...errors],
+			warnings: [],
 		};
 	}
 
@@ -297,15 +344,22 @@ export class TutorialCatalogService {
 		return Date.now() - updatedAt > refreshIntervalHours * 60 * 60 * 1000;
 	}
 
-	private resolveContentSource(tutorial: TutorialItem, resolved: ResolvedTutorialCatalog): { kind: 'remote'; url: string } | { kind: 'local'; path: string } {
+	private resolveContentSource(tutorial: TutorialItem, resolved: ResolvedTutorialCatalog): TutorialContentSource | null {
 		const contentUrl = tutorial.contentUrl;
+		if (resolved.source === 'localDevelopment') {
+			if (/^https?:\/\//i.test(contentUrl)) {
+				return { kind: 'remote', url: contentUrl };
+			}
+			const contentUri = this.resolveLocalDevelopmentUri(contentUrl);
+			return contentUri ? { kind: 'localDevelopment', uri: contentUri, baseUri: this.parentUri(contentUri) } : null;
+		}
 		if (/^https?:\/\//i.test(contentUrl)) {
 			return { kind: 'remote', url: contentUrl };
 		}
 		if (resolved.catalogUrl && /^https?:\/\//i.test(resolved.catalogUrl)) {
 			return { kind: 'remote', url: new URL(contentUrl, resolved.catalogUrl).toString() };
 		}
-		return { kind: 'local', path: contentUrl };
+		return null;
 	}
 
 	private async fetchRemoteMarkdown(url: string, tutorialId: string): Promise<string> {
@@ -324,7 +378,7 @@ export class TutorialCatalogService {
 
 	private async rewriteMarkdownImages(
 		markdown: string,
-		base: { kind: 'remote'; baseUrl: string } | { kind: 'local'; basePath: string },
+		base: { kind: 'remote'; baseUrl: string } | { kind: 'localDevelopment'; baseUri: vscode.Uri },
 		webview: vscode.Webview,
 		errors: string[],
 	): Promise<string> {
@@ -356,7 +410,7 @@ export class TutorialCatalogService {
 
 	private async resolveImageSource(
 		source: string,
-		base: { kind: 'remote'; baseUrl: string } | { kind: 'local'; basePath: string },
+		base: { kind: 'remote'; baseUrl: string } | { kind: 'localDevelopment'; baseUri: vscode.Uri },
 		webview: vscode.Webview,
 		errors: string[],
 	): Promise<string | null> {
@@ -365,27 +419,35 @@ export class TutorialCatalogService {
 			errors.push(`Blocked tutorial image source '${normalized}'.`);
 			return null;
 		}
-		if (/^https?:\/\//i.test(normalized) || base.kind === 'remote') {
-			const imageUrl = /^https?:\/\//i.test(normalized)
-				? normalized
-				: base.kind === 'remote'
-					? new URL(normalized, base.baseUrl).toString()
-					: normalized;
-			try {
-				return (await this.fetchAndCacheImage(imageUrl, webview))?.toString() ?? null;
-			} catch (error) {
-				errors.push(`Could not cache tutorial image ${redactTutorialUrl(imageUrl)}: ${this.messageFromError(error)}`);
+		if (base.kind === 'localDevelopment' && !/^https?:\/\//i.test(normalized)) {
+			const imageUri = this.resolveLocalDevelopmentUri(normalized, base.baseUri);
+			if (!imageUri) {
+				errors.push(`Blocked tutorial image source '${normalized}'.`);
 				return null;
 			}
+			return webview.asWebviewUri(imageUri).toString();
 		}
 
-		if (normalized.startsWith('/') || normalized.split('/').includes('..')) {
+		let imageUrl: string;
+		try {
+			if (/^https?:\/\//i.test(normalized)) {
+				imageUrl = normalized;
+			} else if (base.kind === 'remote') {
+				imageUrl = new URL(normalized, base.baseUrl).toString();
+			} else {
+				errors.push(`Blocked tutorial image source '${normalized}'.`);
+				return null;
+			}
+		} catch {
 			errors.push(`Blocked tutorial image source '${normalized}'.`);
 			return null;
 		}
-		const baseSegments = base.basePath.split('/').slice(0, -1);
-		const localUri = vscode.Uri.joinPath(this.extensionUri, ...baseSegments, normalized);
-		return webview.asWebviewUri(localUri).toString();
+		try {
+			return (await this.fetchAndCacheImage(imageUrl, webview))?.toString() ?? null;
+		} catch (error) {
+			errors.push(`Could not cache tutorial image ${redactTutorialUrl(imageUrl)}: ${this.messageFromError(error)}`);
+			return null;
+		}
 	}
 
 	private async fetchAndCacheImage(imageUrl: string, webview: vscode.Webview): Promise<vscode.Uri | null> {
@@ -457,10 +519,39 @@ export class TutorialCatalogService {
 		return text;
 	}
 
-	private async readExtensionText(relativePath: string): Promise<string> {
-		const safePath = relativePath.split('/').filter(segment => segment && segment !== '..');
-		const bytes = await vscode.workspace.fs.readFile(vscode.Uri.joinPath(this.extensionUri, ...safePath));
+	private async readLocalDevelopmentText(uri: vscode.Uri, maxBytes: number, label: string): Promise<string> {
+		const bytes = await vscode.workspace.fs.readFile(uri);
+		if (bytes.byteLength > maxBytes) {
+			throw new Error(`${label} file is too large`);
+		}
 		return new TextDecoder().decode(bytes);
+	}
+
+	private resolveLocalDevelopmentUri(relativePath: string, baseUri = this.localDevelopmentRootUri()): vscode.Uri | null {
+		if (relativePath.startsWith('/') || relativePath.startsWith('//') || relativePath.includes('\\') || /^[a-z][a-z0-9+.-]*:/i.test(relativePath)) {
+			return null;
+		}
+		const segments = relativePath.split('/').filter(Boolean);
+		if (!segments.length || segments.some(segment => segment === '..')) {
+			return null;
+		}
+		return vscode.Uri.joinPath(baseUri, ...segments);
+	}
+
+	private parentUri(uri: vscode.Uri): vscode.Uri {
+		const rootPath = this.localDevelopmentRootUri().path.replace(/\\/g, '/');
+		const uriPath = uri.path.replace(/\\/g, '/');
+		const relativePath = uriPath.startsWith(rootPath) ? uriPath.slice(rootPath.length) : '';
+		const relativeSegments = relativePath.split('/').filter(Boolean);
+		return vscode.Uri.joinPath(this.localDevelopmentRootUri(), ...relativeSegments.slice(0, -1));
+	}
+
+	private localDevelopmentRootUri(): vscode.Uri {
+		return vscode.Uri.joinPath(this.context.extensionUri, 'media', 'tutorials');
+	}
+
+	private isLocalDevelopmentMode(): boolean {
+		return this.context.extensionMode === vscode.ExtensionMode.Development;
 	}
 
 	private async readJsonCache(fileName: string): Promise<unknown | null> {
@@ -491,6 +582,16 @@ export class TutorialCatalogService {
 	private async writeTextCache(fileName: string, text: string): Promise<void> {
 		await vscode.workspace.fs.createDirectory(this.cacheRoot);
 		await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(this.cacheRoot, fileName), new TextEncoder().encode(text));
+	}
+
+	private async readCachedTutorialMarkdown(tutorialId: string, contentUrl?: string): Promise<string | null> {
+		if (contentUrl) {
+			const byUrl = await this.readTextCache(this.contentCacheName(contentUrl));
+			if (byUrl) {
+				return byUrl;
+			}
+		}
+		return await this.readTextCache(`content-by-id-${this.cacheKey(tutorialId)}.md`);
 	}
 
 	private async readCachedEtag(catalogUrl: string): Promise<string | undefined> {

@@ -46,6 +46,7 @@ import {
 	type DashboardTooltipField,
 	type DashboardTooltipSpec,
 } from '../shared/dashboardTooltips';
+import { canonicalizePowerBiKustoClusterUrl } from '../shared/kustoClusterUrls';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -2274,7 +2275,7 @@ export function generateDimTableTmdl(
 	const singleLineQuery = stripKqlLineComments(sourceQuery).replace(/\r\n|\r|\n/g, ' ').replace(/\s+/g, ' ').trim();
 	const dimQuery = `${singleLineQuery} | distinct ${columnName}`;
 	const escapedQuery = dimQuery.replace(/"/g, '""');
-	const escapedCluster = clusterUrl.replace(/"/g, '""');
+	const escapedCluster = canonicalizePowerBiKustoClusterUrl(clusterUrl).replace(/"/g, '""');
 	const escapedDb = database.replace(/"/g, '""');
 
 	const lines: string[] = [
@@ -2323,7 +2324,7 @@ export function generateTableTmdl(ds: PowerBiDataSource, dataMode: PowerBiDataMo
 		lines.push('');
 	}
 
-	const escapedCluster = ds.clusterUrl.replace(/"/g, '""');
+	const escapedCluster = canonicalizePowerBiKustoClusterUrl(ds.clusterUrl).replace(/"/g, '""');
 	const escapedDb = ds.database.replace(/"/g, '""');
 	lines.push(`\tpartition '${escapeTmdlName(tableName)}' = m`);
 	lines.push(`\t\tmode: ${normalizePowerBiDataMode(dataMode, 'import')}`);
@@ -2633,6 +2634,9 @@ export async function exportHtmlToPowerBI(
 	const pageName = 'ReportPage1';
 	const visualId = Array.from({ length: 20 }, () => Math.floor(Math.random() * 16).toString(16)).join('');
 	const dataMode = normalizePowerBiDataMode(input.dataMode, 'import');
+	for (const dataSource of input.dataSources) {
+		canonicalizePowerBiKustoClusterUrl(dataSource.clusterUrl);
+	}
 
 	// ── Page height from actual preview rendering ──────────────────────
 	// The HTML section's preview iframe measures scrollHeight and sends it.

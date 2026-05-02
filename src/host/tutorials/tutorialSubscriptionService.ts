@@ -78,6 +78,20 @@ export class TutorialSubscriptionService {
 		await this.writeState(stored);
 	}
 
+	async setSubscriptions(categoryIds: readonly string[], subscribed: boolean): Promise<void> {
+		const stored = normalizeStored(this.context.globalState.get(SUBSCRIPTION_STATE_KEY));
+		for (const categoryId of categoryIds) {
+			const preference = this.ensurePreference(stored, categoryId);
+			preference.subscribed = subscribed;
+			if (!subscribed) {
+				preference.channel = 'off';
+			} else if (preference.channel === 'off') {
+				preference.channel = 'nextFileOpenPopup';
+			}
+		}
+		await this.writeState(stored);
+	}
+
 	async setChannel(categoryId: string, channel: TutorialNotificationChannel): Promise<void> {
 		const stored = normalizeStored(this.context.globalState.get(SUBSCRIPTION_STATE_KEY));
 		const preference = this.ensurePreference(stored, categoryId);

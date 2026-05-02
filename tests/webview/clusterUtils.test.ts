@@ -12,7 +12,11 @@ import {
 	getFavoritesSorted,
 	parseKustoConnectionString,
 	findConnectionIdForClusterUrl,
+	canonicalizePowerBiKustoClusterUrl,
+	isCompleteKustoClusterUrl,
+	selectBestKustoClusterUrl,
 } from '../../src/webview/shared/clusterUtils';
+import { parseKustoExplorerConnectionsXml } from '../../src/webview/sections/query-connection.controller';
 
 // ── formatClusterDisplayName ──────────────────────────────────────────────
 
@@ -59,6 +63,86 @@ describe('normalizeClusterUrlKey', () => {
 	it('preserves paths', () => {
 		expect(normalizeClusterUrlKey('https://host.com/path'))
 			.toBe('https://host.com/path');
+	});
+});
+
+// ── Kusto cluster URL selection and Power BI canonicalization ─────────────
+
+describe('isCompleteKustoClusterUrl', () => {
+	it('detects dotted hostnames as complete', () => {
+		expect(isCompleteKustoClusterUrl('https://ddtelinsights.kusto.windows.net')).toBe(true);
+		expect(isCompleteKustoClusterUrl('https://ddtelinsights')).toBe(false);
+	});
+});
+
+describe('selectBestKustoClusterUrl', () => {
+	it('prefers a complete details URL over a short data source', () => {
+		expect(selectBestKustoClusterUrl('ddtelinsights', 'https://ddtelinsights.kusto.windows.net'))
+			.toBe('https://ddtelinsights.kusto.windows.net');
+	});
+
+	it('preserves the first short URL when no complete candidate exists', () => {
+		expect(selectBestKustoClusterUrl('https://ddtelinsights', 'https://ddtelinsights'))
+			.toBe('https://ddtelinsights');
+	});
+
+	it('adds https to bare candidates', () => {
+		expect(selectBestKustoClusterUrl('ddtelinsights', ''))
+			.toBe('https://ddtelinsights');
+	});
+});
+
+describe('canonicalizePowerBiKustoClusterUrl', () => {
+	it('expands bare ADX cluster hosts for Power BI output', () => {
+		expect(canonicalizePowerBiKustoClusterUrl('ddtelinsights')).toBe('https://ddtelinsights.kusto.windows.net');
+		expect(canonicalizePowerBiKustoClusterUrl('https://ddtelinsights')).toBe('https://ddtelinsights.kusto.windows.net');
+		expect(canonicalizePowerBiKustoClusterUrl('https://DDTELINSIGHTS/')).toBe('https://ddtelinsights.kusto.windows.net');
+	});
+
+	it('preserves complete dotted hosts and strips the root trailing slash', () => {
+		expect(canonicalizePowerBiKustoClusterUrl('https://cluster.kusto.windows.net/')).toBe('https://cluster.kusto.windows.net');
+		expect(canonicalizePowerBiKustoClusterUrl('https://cluster.z1.kusto.windows.net')).toBe('https://cluster.z1.kusto.windows.net');
+		expect(canonicalizePowerBiKustoClusterUrl('https://adx.contoso.com')).toBe('https://adx.contoso.com');
+	});
+
+	it('uses HTTPS for complete hosts supplied with http', () => {
+		expect(canonicalizePowerBiKustoClusterUrl('http://ddtelinsights')).toBe('https://ddtelinsights.kusto.windows.net');
+		expect(canonicalizePowerBiKustoClusterUrl('http://cluster.kusto.windows.net')).toBe('https://cluster.kusto.windows.net');
+	});
+
+	it('rejects cluster URLs that are not simple Power BI ADX source roots', () => {
+		expect(() => canonicalizePowerBiKustoClusterUrl('')).toThrow(/requires a Kusto cluster URL/);
+		expect(() => canonicalizePowerBiKustoClusterUrl('ftp://ddtelinsights')).toThrow(/valid HTTPS/);
+		expect(() => canonicalizePowerBiKustoClusterUrl('https://ddtelinsights:443')).toThrow(/without a port/);
+		expect(() => canonicalizePowerBiKustoClusterUrl('https://user@ddtelinsights')).toThrow(/without credentials/);
+		expect(() => canonicalizePowerBiKustoClusterUrl('https://ddtelinsights/path')).toThrow(/root URL/);
+		expect(() => canonicalizePowerBiKustoClusterUrl('https://ddtelinsights?x=1')).toThrow(/query string or fragment/);
+	});
+});
+
+describe('parseKustoExplorerConnectionsXml', () => {
+	it('prefers full Details over a short connection-string data source', () => {
+		const imported = parseKustoExplorerConnectionsXml(`
+			<ServerDescriptionBase>
+				<Name>Display Name</Name>
+				<Details>https://ddtelinsights.kusto.windows.net</Details>
+				<ConnectionString>Data Source=ddtelinsights;Initial Catalog=Samples;AAD Federated Security=True</ConnectionString>
+			</ServerDescriptionBase>
+		`);
+
+		expect(imported).toEqual([{ name: 'Display Name', clusterUrl: 'https://ddtelinsights.kusto.windows.net', database: 'Samples' }]);
+	});
+
+	it('keeps a short-but-valid Kusto URL when no full XML candidate exists', () => {
+		const imported = parseKustoExplorerConnectionsXml(`
+			<ServerDescriptionBase>
+				<Name>https://ddtelinsights</Name>
+				<Details>https://ddtelinsights</Details>
+				<ConnectionString>Data Source=https://ddtelinsights;AAD Federated Security=True</ConnectionString>
+			</ServerDescriptionBase>
+		`);
+
+		expect(imported).toEqual([{ name: 'https://ddtelinsights', clusterUrl: 'https://ddtelinsights', database: undefined }]);
 	});
 });
 

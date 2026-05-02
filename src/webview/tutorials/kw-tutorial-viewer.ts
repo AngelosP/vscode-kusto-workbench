@@ -8,6 +8,7 @@ import { osThemeSheet } from '../shared/os-theme-styles.js';
 import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import {
 	searchTutorials,
+	TUTORIAL_CONNECTION_REQUIRED_MESSAGE,
 	type TutorialCategory,
 	type TutorialCategoryPreference,
 	type TutorialNotificationChannel,
@@ -22,7 +23,7 @@ declare const acquireVsCodeApi: () => { postMessage(message: unknown): void };
 interface TutorialContentMessage {
 	tutorialId: string;
 	markdown: string;
-	source: 'remote' | 'cache' | 'builtIn';
+	source: 'remote' | 'cache' | 'localDevelopment' | 'unavailable';
 	errors: string[];
 }
 
@@ -39,6 +40,7 @@ export class KwTutorialViewer extends LitElement {
 	@state() private renderedMarkdown = '';
 	@state() private contentErrors: string[] = [];
 	@state() private hostError = '';
+	@state() private muteMenuOpen = false;
 
 	private readonly _osCtrl = new OverlayScrollbarsController(this);
 	private readonly vscode = acquireVsCodeApi();
@@ -64,13 +66,36 @@ export class KwTutorialViewer extends LitElement {
 		}
 
 		const selectedTutorial = this.currentTutorial();
+		if (this.isUnavailableSnapshot(snapshot)) {
+			return html`
+				<div class="viewer-shell mode-standard" data-testid="tutorial-viewer-mode-unavailable">
+					${this.renderUnavailable()}
+				</div>
+			`;
+		}
 		this.ensureTutorialLoaded(selectedTutorial);
 
+		const renderedMode = this.isCompactMode() ? 'compact' : 'standard';
 		return html`
-			<div class="viewer-shell mode-${this.mode}" data-testid="tutorial-viewer-mode-${this.mode}">
-				${this.mode === 'focused'
-					? this.renderFocusedMode(selectedTutorial)
+			<div class="viewer-shell mode-${renderedMode}" data-testid="tutorial-viewer-mode-${renderedMode}">
+				${renderedMode === 'compact'
+					? this.renderCompactMode(selectedTutorial)
 					: this.renderStandardMode(selectedTutorial)}
+			</div>
+		`;
+	}
+
+	private renderUnavailable(): TemplateResult {
+		const detail = this.snapshot?.status.errors.find(Boolean) ?? this.hostError;
+		return html`
+			<div class="viewer-frame unavailable-frame" role="dialog" aria-label="Did you know? unavailable">
+				<div class="unavailable-content" role="status">
+					<span class="eyebrow">Kusto Workbench</span>
+					<h1 data-testid="tutorial-viewer-title">Did you know?</h1>
+					<p data-testid="tutorial-unavailable-message">${TUTORIAL_CONNECTION_REQUIRED_MESSAGE}</p>
+					${detail && detail !== TUTORIAL_CONNECTION_REQUIRED_MESSAGE ? html`<p class="unavailable-detail">${detail}</p>` : nothing}
+					<button class="action-btn" title="Refresh tutorials" aria-label="Refresh tutorials" @click=${this.refreshCatalog}>${ICONS.refresh} Refresh</button>
+				</div>
 			</div>
 		`;
 	}
@@ -79,16 +104,16 @@ export class KwTutorialViewer extends LitElement {
 		const snapshot = this.snapshot!;
 		const tutorials = this.filteredTutorials();
 		return html`
-			<div class="viewer-frame standard-frame" role="dialog" aria-label="Kusto Workbench tutorials">
+			<div class="viewer-frame standard-frame" role="dialog" aria-label="Did you know? library">
 				<aside class="sidebar" aria-label="Tutorial navigation">
 					<div class="header">
 						<div class="title-row">
 							<div class="title-copy">
 								<span class="eyebrow">Kusto Workbench</span>
-								<h1 data-testid="tutorial-viewer-title">Tutorials</h1>
+								<h1 data-testid="tutorial-viewer-title">Did you know?</h1>
 							</div>
 							<div class="toolbar-actions">
-								<button class="icon-btn" title="Focused mode" aria-label="Focused mode" data-testid="tutorial-mode-focused" @click=${() => this.setMode('focused')}>${ICONS.sidebar}</button>
+								<button class="icon-btn" title="Compact card" aria-label="Compact card" data-testid="tutorial-mode-compact" @click=${() => this.setMode('compact')}>${ICONS.book}</button>
 								<button class="icon-btn" title="Refresh tutorials" aria-label="Refresh tutorials" @click=${this.refreshCatalog}>${ICONS.refresh}</button>
 							</div>
 						</div>
@@ -122,41 +147,76 @@ export class KwTutorialViewer extends LitElement {
 		`;
 	}
 
-	private renderFocusedMode(selectedTutorial: TutorialSummary | null): TemplateResult {
+	private renderCompactMode(selectedTutorial: TutorialSummary | null): TemplateResult {
 		if (!selectedTutorial) {
-			return html`<div class="viewer-frame focused-frame" role="dialog" aria-label="Kusto Workbench tutorials"><div class="empty">Pick a tutorial to get started.</div></div>`;
+			return html`<div class="compact-backdrop"><div class="viewer-frame compact-frame" role="dialog" aria-modal="true" aria-label="Did you know?"><div class="empty">Pick something to learn.</div></div></div>`;
 		}
 
 		const category = this.categoryFor(selectedTutorial.categoryId);
-		const sequence = this.focusedTutorials();
+		const sequence = this.compactTutorials();
 		const index = Math.max(0, sequence.findIndex(tutorial => tutorial.id === selectedTutorial.id));
 		const previousTutorial = index > 0 ? sequence[index - 1] : null;
 		const nextTutorial = index >= 0 && index < sequence.length - 1 ? sequence[index + 1] : null;
 		const isLoading = this.loadingTutorialId === selectedTutorial.id;
+		const preference = this.preference(selectedTutorial.categoryId);
+		const metadata = [category?.title, selectedTutorial.durationMinutes ? `${selectedTutorial.durationMinutes} min` : undefined]
+			.filter(Boolean)
+			.join(' - ');
 
 		return html`
-			<div class="viewer-frame focused-frame" role="dialog" aria-label=${`${selectedTutorial.title} tutorial`}>
-				<header class="focused-toolbar">
-					<div class="focused-heading">
-						<div class="focused-category-row">
-							<span class="eyebrow">${category?.title ?? 'Tutorial'}</span>
-							${category ? this.renderCategoryNotificationControls(category.id, this.preference(category.id), true) : nothing}
+			<div class="compact-backdrop">
+				<div class="viewer-frame compact-frame" role="dialog" aria-modal="true" aria-label=${`Did you know? ${selectedTutorial.title}`} tabindex="-1" @keydown=${this.onCompactKeydown}>
+					<header class="compact-header">
+						<div class="compact-kicker-row">
+							<span class="compact-brand">Did you know?</span>
+							${metadata ? html`<span class="compact-meta">${metadata}</span>` : nothing}
 						</div>
+						<button class="icon-btn compact-close" title="Dismiss" aria-label="Dismiss Did you know?" data-testid="tutorial-dismiss" @click=${this.dismissViewer}>${ICONS.close}</button>
 						<h1 data-testid="tutorial-viewer-title">${selectedTutorial.title}</h1>
-					</div>
-					<div class="focused-actions">
-						<button class="action-btn" data-testid="tutorial-mode-standard" @click=${() => this.setMode('standard')}>${ICONS.sidebar} Standard</button>
-					</div>
-				</header>
-				<section class="focused-content" data-overlay-scroll="x:hidden y:scroll" aria-label="Tutorial body">
-					${this.contentErrors.length ? html`<div class="error-list" role="status">${this.contentErrors[0]}</div>` : nothing}
-					${isLoading ? html`<div class="loading" role="status">Loading tutorial...</div>` : html`<article class="markdown focused-markdown" @click=${this.onMarkdownClick}>${this.renderMarkdown()}</article>`}
-				</section>
-				<footer class="focused-nav" aria-label="Tutorial navigation">
-					<button class="nav-btn previous" data-testid="tutorial-prev" ?disabled=${!previousTutorial} @click=${() => previousTutorial ? this.openTutorial(previousTutorial.id) : undefined}>${ICONS.chevron} Previous</button>
-					<span class="position" aria-label=${`Tutorial ${index + 1} of ${sequence.length}`}>${index + 1} of ${sequence.length}</span>
-					<button class="nav-btn" data-testid="tutorial-next" ?disabled=${!nextTutorial} @click=${() => nextTutorial ? this.openTutorial(nextTutorial.id) : undefined}>Next ${ICONS.chevron}</button>
-				</footer>
+						<p class="compact-summary">${selectedTutorial.summary}</p>
+					</header>
+					<section class="compact-content" data-overlay-scroll="x:hidden y:scroll" aria-label="Did you know? content">
+						${this.contentErrors.length ? html`<div class="error-list" role="status">${this.contentErrors[0]}</div>` : nothing}
+						${isLoading ? html`<div class="loading" role="status">Loading...</div>` : html`<article class="markdown compact-markdown" @click=${this.onMarkdownClick}>${this.renderCompactMarkdown(selectedTutorial)}</article>`}
+					</section>
+					<footer class="compact-footer" aria-label="Did you know? actions">
+						<div class="compact-action-strip">
+							${selectedTutorial.actions.length ? html`
+								<div class="compact-primary-actions">
+									${selectedTutorial.actions.map(action => html`<button class="action-btn primary" @click=${() => this.runAction(action.command)}>${action.title}</button>`)}
+								</div>
+							` : html`<span></span>`}
+							<div class="compact-nav" aria-label="Did you know? navigation">
+								<button class="icon-btn previous" data-testid="tutorial-prev" title="Previous" aria-label="Previous" ?disabled=${!previousTutorial} @click=${() => previousTutorial ? this.openTutorial(previousTutorial.id) : undefined}>${ICONS.chevron}</button>
+								<span class="position" aria-label=${`Tutorial ${index + 1} of ${sequence.length}`}>${index + 1} of ${sequence.length}</span>
+								<button class="icon-btn" data-testid="tutorial-next" title="Next" aria-label="Next" ?disabled=${!nextTutorial} @click=${() => nextTutorial ? this.openTutorial(nextTutorial.id) : undefined}>${ICONS.chevron}</button>
+							</div>
+						</div>
+						<div class="compact-utility-strip">
+							<button
+								class="delivery-pill"
+								data-testid="tutorial-compact-channel"
+								title=${this.notificationChannelTitle(preference?.channel)}
+								aria-label=${`Did you know? delivery: ${this.notificationChannelLabel(preference?.channel)}`}
+								@click=${() => this.toggleNotificationChannel(selectedTutorial.categoryId, preference?.channel)}
+							>
+								${preference?.channel === 'off' ? ICONS.bellSlash : ICONS.bell}
+								<span>${this.notificationChannelLabel(preference?.channel)}</span>
+							</button>
+							<div class="mute-wrap">
+								<button class="link-btn compact-link" data-testid="tutorial-compact-mute" aria-expanded=${this.muteMenuOpen ? 'true' : 'false'} @click=${this.toggleMuteMenu}>Mute...</button>
+								${this.muteMenuOpen ? html`
+									<div class="mute-menu" role="menu" aria-label="Mute Did you know?">
+										<button role="menuitem" @click=${() => this.muteCurrentCategory(selectedTutorial.categoryId)}>Mute ${category?.title ?? 'this category'}</button>
+										<button role="menuitem" @click=${this.chooseMutedCategories}>Choose categories...</button>
+										<button role="menuitem" @click=${this.muteAllCategories}>Mute all</button>
+									</div>
+								` : nothing}
+							</div>
+							<button class="link-btn compact-link" data-testid="tutorial-mode-standard" @click=${() => this.setMode('standard')}>Browse all</button>
+						</div>
+					</footer>
+				</div>
 			</div>
 		`;
 	}
@@ -164,6 +224,7 @@ export class KwTutorialViewer extends LitElement {
 	private renderStatus(): TemplateResult | typeof nothing {
 		if (!this.snapshot) return nothing;
 		const status = this.snapshot.status;
+		if (status.source === 'unavailable') return nothing;
 		const parts = [`Catalog: ${status.source}${status.stale ? ' (stale)' : ''}`];
 		if (status.lastUpdated) {
 			parts.push(`Updated ${new Date(status.lastUpdated).toLocaleDateString()}`);
@@ -285,7 +346,6 @@ export class KwTutorialViewer extends LitElement {
 				</div>
 				<div class="detail-actions">
 					${tutorial.actions.map(action => html`<button class="action-btn" @click=${() => this.runAction(action.command)}>${action.title}</button>`)}
-					${tutorial.nativeWalkthroughId ? html`<button class="link-btn" @click=${() => this.openNativeWalkthrough(tutorial.nativeWalkthroughId!)}>Open native walkthrough</button>` : nothing}
 					<button class="link-btn" @click=${() => this.markCategorySeen(tutorial.categoryId)}>Mark category seen</button>
 				</div>
 			</header>
@@ -298,6 +358,26 @@ export class KwTutorialViewer extends LitElement {
 
 	private renderMarkdown(): TemplateResult {
 		return html`${this.renderedMarkdown ? html`<div .innerHTML=${this.renderedMarkdown}></div>` : html`<div class="empty">Select a tutorial to load its content.</div>`}`;
+	}
+
+	private renderCompactMarkdown(tutorial: TutorialSummary): TemplateResult {
+		const compactHtml = this.compactMarkdownHtml(tutorial);
+		return html`${compactHtml ? html`<div .innerHTML=${compactHtml}></div>` : html`<div class="empty">Select a tutorial to load its content.</div>`}`;
+	}
+
+	private compactMarkdownHtml(tutorial: TutorialSummary): string {
+		if (!this.renderedMarkdown) return '';
+		const template = document.createElement('template');
+		template.innerHTML = this.renderedMarkdown;
+		const firstElement = Array.from(template.content.children)[0];
+		if (firstElement?.tagName === 'H1' && this.normalizeText(firstElement.textContent) === this.normalizeText(tutorial.title)) {
+			firstElement.remove();
+		}
+		return template.innerHTML;
+	}
+
+	private normalizeText(value: string | null | undefined): string {
+		return String(value ?? '').replace(/\s+/g, ' ').trim().toLocaleLowerCase();
 	}
 
 	private onHostMessage = (event: MessageEvent) => {
@@ -313,7 +393,7 @@ export class KwTutorialViewer extends LitElement {
 			this.snapshot = snapshot;
 			this.hostError = '';
 			if (!this.modeInitialized) {
-				this.mode = snapshot.preferredMode;
+				this.mode = this.normalizeMode(snapshot.preferredMode);
 				this.modeInitialized = true;
 			}
 			this.applyHostSelection(snapshot);
@@ -432,12 +512,15 @@ export class KwTutorialViewer extends LitElement {
 	}
 
 	private setMode(mode: TutorialViewerMode): void {
-		this.mode = mode;
-		this.vscode.postMessage({ type: 'setPreferredMode', mode });
+		const normalizedMode = this.normalizeMode(mode);
+		this.mode = normalizedMode;
+		this.muteMenuOpen = false;
+		this.vscode.postMessage({ type: 'setPreferredMode', mode: normalizedMode });
 	}
 
 	private openTutorial(tutorialId: string): void {
 		if (this.selectedTutorialId === tutorialId && (this.loadingTutorialId === tutorialId || this.loadedTutorialId === tutorialId)) return;
+		this.muteMenuOpen = false;
 		const tutorial = this.snapshot?.catalog.tutorials.find(candidate => candidate.id === tutorialId);
 		if (tutorial) {
 			this.selectedCategoryId = tutorial.categoryId;
@@ -456,18 +539,56 @@ export class KwTutorialViewer extends LitElement {
 
 	private toggleNotificationChannel(categoryId: string, currentChannel: TutorialNotificationChannel | undefined): void {
 		const channel: TutorialNotificationChannel = currentChannel === 'nextFileOpenPopup' ? 'vscodeNotification' : 'nextFileOpenPopup';
+		this.muteMenuOpen = false;
 		this.vscode.postMessage({ type: 'setNotificationChannel', categoryId, channel });
 	}
 
 	private notificationChannelLabel(channel: TutorialNotificationChannel | undefined): string {
-		return channel === 'vscodeNotification' ? 'notification' : 'pop-up';
+		if (channel === 'vscodeNotification') return 'notification';
+		if (channel === 'off') return 'off';
+		return 'pop-up';
 	}
 
 	private notificationChannelTitle(channel: TutorialNotificationChannel | undefined): string {
-		return channel === 'vscodeNotification'
-			? 'notification will show a VS Code style notification instead.'
-			: 'pop-up will automatically fire up the tutorial UI on the next file open.';
+		if (channel === 'vscodeNotification') {
+			return 'VS Code notification shows a notification instead of the compact card.';
+		}
+		if (channel === 'off') {
+			return 'Alerts are off. Click to use the compact pop-up card.';
+		}
+		return 'Pop-up opens Did you know? as a compact card on the next file open.';
 	}
+
+	private toggleMuteMenu = (event: Event): void => {
+		event.stopPropagation();
+		this.muteMenuOpen = !this.muteMenuOpen;
+	};
+
+	private muteCurrentCategory(categoryId: string): void {
+		this.muteMenuOpen = false;
+		this.vscode.postMessage({ type: 'setNotificationChannel', categoryId, channel: 'off' });
+	}
+
+	private muteAllCategories = (): void => {
+		const categoryIds = this.snapshot?.catalog.categories.map(category => category.id) ?? [];
+		this.muteMenuOpen = false;
+		this.vscode.postMessage({ type: 'setCategorySubscriptions', categoryIds, subscribed: false });
+	};
+
+	private chooseMutedCategories = (): void => {
+		this.setMode('standard');
+	};
+
+	private dismissViewer = (): void => {
+		this.vscode.postMessage({ type: 'dismiss' });
+	};
+
+	private onCompactKeydown = (event: KeyboardEvent): void => {
+		if (event.key === 'Escape') {
+			event.preventDefault();
+			this.dismissViewer();
+		}
+	};
 
 	private markCategorySeen(categoryId: string): void {
 		this.vscode.postMessage({ type: 'markCategorySeen', categoryId });
@@ -475,10 +596,6 @@ export class KwTutorialViewer extends LitElement {
 
 	private runAction(command: string): void {
 		this.vscode.postMessage({ type: 'runAction', command });
-	}
-
-	private openNativeWalkthrough(walkthroughId: string): void {
-		this.vscode.postMessage({ type: 'openNativeWalkthrough', walkthroughId });
 	}
 
 	private onTutorialListKeydown(event: KeyboardEvent): void {
@@ -505,8 +622,12 @@ export class KwTutorialViewer extends LitElement {
 	}
 
 	private currentTutorial(): TutorialSummary | null {
-		const tutorials = this.mode === 'focused' ? this.focusedTutorials() : this.filteredTutorials();
+		const tutorials = this.isCompactMode() ? this.compactTutorials() : this.filteredTutorials();
 		return this.selectedTutorial(tutorials) ?? tutorials[0] ?? null;
+	}
+
+	private isUnavailableSnapshot(snapshot: TutorialViewerSnapshot): boolean {
+		return snapshot.status.source === 'unavailable';
 	}
 
 	private ensureTutorialLoaded(tutorial: TutorialSummary | null): void {
@@ -521,7 +642,7 @@ export class KwTutorialViewer extends LitElement {
 		return searchTutorials(this.snapshot.catalog.tutorials, this.snapshot.catalog.categories, this.query, this.selectedCategoryId);
 	}
 
-	private focusedTutorials(): TutorialSummary[] {
+	private compactTutorials(): TutorialSummary[] {
 		const allTutorials = this.snapshot?.catalog.tutorials ?? [];
 		const seed = this.selectedTutorial(allTutorials)
 			?? (this.selectedCategoryId ? allTutorials.find(tutorial => tutorial.categoryId === this.selectedCategoryId) : undefined)
@@ -550,6 +671,15 @@ export class KwTutorialViewer extends LitElement {
 		this.loadedTutorialId = null;
 		this.renderedMarkdown = '';
 		this.contentErrors = [];
+		this.muteMenuOpen = false;
+	}
+
+	private isCompactMode(): boolean {
+		return this.mode === 'compact' || this.mode === 'focused';
+	}
+
+	private normalizeMode(mode: TutorialViewerMode): TutorialViewerMode {
+		return mode === 'focused' ? 'compact' : mode;
 	}
 
 	private escapeHtml(value: string): string {

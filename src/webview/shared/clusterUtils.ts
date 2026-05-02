@@ -1,6 +1,13 @@
 // Pure utility functions for cluster URL parsing, formatting, and favorites.
 // Extracted from queryBoxes-connection.ts bridge module for testability.
 
+export {
+	canonicalizePowerBiKustoClusterUrl,
+	ensureKustoClusterUrlScheme,
+	isCompleteKustoClusterUrl,
+	selectBestKustoClusterUrl,
+} from '../../shared/kustoClusterUrls.js';
+
 export function formatClusterDisplayName(connection: any): string {
 	if (!connection) return '';
 	const url = String(connection.clusterUrl || '').trim();

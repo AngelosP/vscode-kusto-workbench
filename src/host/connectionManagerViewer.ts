@@ -9,6 +9,7 @@ import { searchCachedSqlSchemas, readAllCachedSqlSchemasFromDisk, type SqlSchema
 import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { SqlQueryClient } from './sqlClient';
 import { listDialects } from './sql/sqlDialectRegistry';
+import { selectBestKustoClusterUrl } from '../shared/kustoClusterUrls';
 import {
 	addKustoFavoriteIfMissing,
 	addSqlFavoriteIfMissing,
@@ -1539,7 +1540,7 @@ export class ConnectionManagerViewerV2 {
 			const details = this.getXmlChildText(block, 'Details');
 			const connectionString = this.getXmlChildText(block, 'ConnectionString');
 			const parsed = this.parseKustoConnectionString(connectionString);
-			let clusterUrl = (parsed.dataSource || details || '').trim();
+			let clusterUrl = selectBestKustoClusterUrl(parsed.dataSource, details).trim();
 			if (!clusterUrl) continue;
 			if (!/^https?:\/\//i.test(clusterUrl)) clusterUrl = 'https://' + clusterUrl.replace(/^\/+/, '');
 			results.push({ name: name.trim() || clusterUrl, clusterUrl: clusterUrl.trim(), database: parsed.initialCatalog.trim() || undefined });
