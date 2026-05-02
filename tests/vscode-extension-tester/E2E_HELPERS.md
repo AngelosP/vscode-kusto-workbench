@@ -22,6 +22,15 @@ Feature files should prefer the semantic `window.__e2e` API over long inline Jav
 - `window.__e2e.persistence.assertQuerySection('query_1', { queryIncludes: 'StormEvents', clusterUrl: 'https://...', database: 'Samples' })`
 - `window.__e2e.persistence.assertSqlSection('sql_1', { queryIncludes: 'SELECT', serverUrl: 'server.example', database: 'master' })`
 - `window.__e2e.persistence.assertMarkdownSection('markdown_1', { mode: 'preview', textIncludes: 'Notes' })`
+- `window.__e2e.cursorStatus.createNotebook()`
+- `window.__e2e.cursorStatus.beginCapture()` / `window.__e2e.cursorStatus.restoreCapture()`
+- `window.__e2e.cursorStatus.hoverKusto(2, 5)`
+- `window.__e2e.cursorStatus.focusKusto(2, 5)` / `focusSql(2, 8)` / `focusHtml(2, 4)` / `focusPython(2, 6)` / `focusMarkdown(1, 3)`
+- `window.__e2e.cursorStatus.assertVisible('kusto', 2, 5)`
+- `window.__e2e.cursorStatus.assertStatusBarVisible('kusto', 2, 5)` / `assertStatusBarHidden()`
+- `window.__e2e.cursorStatus.setKustoExpanded(false)` / `setKustoExpanded(true)`
+- `window.__e2e.cursorStatus.setHtmlPreview()` / `setMarkdownPreview()`
+- `window.__e2e.cursorStatus.assertHidden('html')` / `assertHidden('markdown')`
 
 ## Boundary
 

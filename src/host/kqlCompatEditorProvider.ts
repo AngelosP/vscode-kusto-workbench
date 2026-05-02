@@ -4,6 +4,7 @@ import * as path from 'path';
 
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
+import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview } from './diffViewerUtils';
 import { normalizeSection, computeChangedSections, formatSectionDiffContent, KqlxEditorProvider } from './kqlxEditorProvider';
@@ -121,9 +122,10 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 	public static register(
 		context: vscode.ExtensionContext,
 		extensionUri: vscode.Uri,
-		connectionManager: ConnectionManager
+		connectionManager: ConnectionManager,
+		editorCursorStatusBar?: EditorCursorStatusBar
 	): vscode.Disposable {
-		const provider = new KqlCompatEditorProvider(context, extensionUri, connectionManager);
+		const provider = new KqlCompatEditorProvider(context, extensionUri, connectionManager, editorCursorStatusBar);
 		return vscode.window.registerCustomEditorProvider(KqlCompatEditorProvider.viewType, provider, {
 			webviewOptions: { retainContextWhenHidden: true }
 		});
@@ -132,7 +134,8 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
 		private readonly extensionUri: vscode.Uri,
-		private readonly connectionManager: ConnectionManager
+		private readonly connectionManager: ConnectionManager,
+		private readonly editorCursorStatusBar?: EditorCursorStatusBar
 	) {}
 
 	/**
@@ -231,7 +234,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			localResourceRoots: [this.extensionUri]
 		};
 
-		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
+		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.editorCursorStatusBar);
 		queryEditor.documentUri = document.uri.toString();
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
 

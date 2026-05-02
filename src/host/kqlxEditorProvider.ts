@@ -4,6 +4,7 @@ import * as path from 'path';
 
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
+import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview, DIFF_NOISE_KEYS, COMPARISON_NOISE_KEYS } from './diffViewerUtils';
 import type { SectionChangeInfo } from './queryEditorTypes';
@@ -446,7 +447,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 	public static register(
 		context: vscode.ExtensionContext,
 		extensionUri: vscode.Uri,
-		connectionManager: ConnectionManager
+		connectionManager: ConnectionManager,
+		editorCursorStatusBar?: EditorCursorStatusBar
 	): vscode.Disposable {
 		// Register the virtual document provider for section diffs (once).
 		if (!KqlxEditorProvider.sectionDiffProviderRegistered) {
@@ -460,7 +462,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			);
 		}
 
-		const provider = new KqlxEditorProvider(context, extensionUri, connectionManager);
+		const provider = new KqlxEditorProvider(context, extensionUri, connectionManager, editorCursorStatusBar);
 		return vscode.window.registerCustomEditorProvider(KqlxEditorProvider.viewType, provider, {
 			// VS Code supports a built-in Find widget for webviews.
 			// Our `vscode` typings may lag the runtime API, so we set this defensively.
@@ -471,7 +473,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
 		private readonly extensionUri: vscode.Uri,
-		private readonly connectionManager: ConnectionManager
+		private readonly connectionManager: ConnectionManager,
+		private readonly editorCursorStatusBar?: EditorCursorStatusBar
 	) {}
 
 	/**
@@ -576,7 +579,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean) as vscode.Uri[]
 		};
 
-		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context);
+		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.editorCursorStatusBar);
 		queryEditor.documentUri = document.uri.toString();
 		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
 		const queuedWebviewMessages: IncomingWebviewMessage[] = [];

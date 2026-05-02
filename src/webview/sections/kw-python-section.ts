@@ -15,6 +15,8 @@ import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { schedulePersist } from '../core/persistence.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize.js';
+import { postMessageToHost } from '../shared/webview-messages.js';
+import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -41,9 +43,15 @@ interface MonacoEditor {
 	focus(): void;
 	onDidFocusEditorText(cb: () => void): { dispose(): void };
 	onDidFocusEditorWidget(cb: () => void): { dispose(): void };
+	onDidBlurEditorText?(cb: () => void): { dispose(): void };
+	onDidBlurEditorWidget?(cb: () => void): { dispose(): void };
+	onDidChangeCursorPosition?(cb: () => void): { dispose(): void };
 	onDidChangeModelContent(cb: () => void): { dispose(): void };
 	updateOptions(opts: Record<string, unknown>): void;
 	addCommand(keybinding: number, handler: () => void): void;
+	hasTextFocus?(): boolean;
+	hasWidgetFocus?(): boolean;
+	getPosition?(): { lineNumber: number; column: number } | null;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -80,6 +88,7 @@ export class KwPythonSection extends LitElement implements SectionElement {
 	@state() private _running = false;
 
 	private _editor: MonacoEditor | null = null;
+	private _cursorStatus: EditorCursorStatusPublisher | null = null;
 	private _initRetryCount = 0;
 	private _userResized = false;
 	/** Saved editor content across DOM moves (disconnect → reconnect). */
@@ -194,9 +203,11 @@ export class KwPythonSection extends LitElement implements SectionElement {
 				try {
 					const dom = this._editor.getDomNode();
 					if (dom && dom.isConnected && slotted.contains(dom)) return;
+					this._cursorStatus?.dispose();
 					this._editor.dispose();
 				} catch (e) { console.error('[kusto]', e); }
 				this._editor = null;
+				this._cursorStatus = null;
 			}
 
 			slotted.style.minHeight = '0';
@@ -231,6 +242,13 @@ export class KwPythonSection extends LitElement implements SectionElement {
 			} catch (e) { console.error('[kusto]', e); }
 
 			this._editor = editor;
+			this._cursorStatus?.dispose();
+			this._cursorStatus = createMonacoCursorStatusPublisher({
+				editor,
+				boxId: this.boxId,
+				editorKind: 'python',
+				postMessage: (message) => postMessageToHost(message)
+			});
 
 			// Writable guards.
 			this._forceWritable(editor);
@@ -295,6 +313,10 @@ export class KwPythonSection extends LitElement implements SectionElement {
 	}
 
 	private _disposeEditor(): void {
+		if (this._cursorStatus) {
+			try { this._cursorStatus.dispose(); } catch (e) { console.error('[kusto]', e); }
+			this._cursorStatus = null;
+		}
 		if (this._editor) {
 			try { this._editor.dispose(); } catch (e) { console.error('[kusto]', e); }
 			this._editor = null;
@@ -347,6 +369,8 @@ export class KwPythonSection extends LitElement implements SectionElement {
 		this.classList.toggle('is-collapsed', !this._expanded);
 		if (this._expanded) {
 			setTimeout(() => { try { this._editor?.layout(); } catch (e) { console.error('[kusto]', e); } }, 0);
+		} else {
+			this._cursorStatus?.clear('python-collapse');
 		}
 		this._schedulePersist();
 	}
@@ -600,6 +624,9 @@ export class KwPythonSection extends LitElement implements SectionElement {
 	public setExpanded(expanded: boolean): void {
 		this._expanded = expanded;
 		this.classList.toggle('is-collapsed', !expanded);
+		if (!expanded) {
+			this._cursorStatus?.clear('python-collapse');
+		}
 	}
 }
 

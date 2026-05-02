@@ -115,6 +115,8 @@ function extractMessageTypeComparisons(relativePath: string): string[] {
  */
 const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'getConnections',
+	'editorCursorPositionChanged',
+	'getEditorCursorStatusSnapshot',
 	'getDatabases',
 	'refreshDatabases',
 	'saveLastSelection',
@@ -198,6 +200,8 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	// Connection & database
 	'getConnections',
+	'editorCursorPositionChanged',
+	'getEditorCursorStatusSnapshot',
 	'getDatabases',
 	'refreshDatabases',
 	'saveLastSelection',

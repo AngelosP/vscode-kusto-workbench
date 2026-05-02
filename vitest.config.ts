@@ -29,6 +29,7 @@ export default defineConfig({
 				'src/host/kustoClientUtils.ts',
 				'src/host/queryEditorUtils.ts',
 				'src/host/copilotPromptUtils.ts',
+				'src/host/editorCursorStatusBar.ts',
 			],
 			exclude: ['src/webview/vendor/**', 'src/webview/**/*.d.ts'],
 		},

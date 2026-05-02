@@ -32,6 +32,7 @@ import { sqlWebviewFlavor } from './copilot-chat-flavor.js';
 import type { SqlConnectionFormSubmitDetail } from '../components/kw-sql-connection-form.js';
 import '../components/kw-sql-connection-form.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
+import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -67,6 +68,9 @@ interface MonacoEditor {
 	trigger(source: string, handlerId: string, payload: unknown): void;
 	onDidFocusEditorText(cb: () => void): { dispose(): void };
 	onDidFocusEditorWidget(cb: () => void): { dispose(): void };
+	onDidBlurEditorText?(cb: () => void): { dispose(): void };
+	onDidBlurEditorWidget?(cb: () => void): { dispose(): void };
+	onDidChangeCursorPosition?(cb: () => void): { dispose(): void };
 	onDidChangeModelContent(cb: (e: { changes: Array<{ text: string; range: unknown }> }) => void): { dispose(): void };
 	onDidContentSizeChange(cb: () => void): { dispose(): void };
 	updateOptions(opts: Record<string, unknown>): void;
@@ -74,6 +78,7 @@ interface MonacoEditor {
 	pushUndoStop?(): void;
 	executeEdits?(source: string, edits: Array<{ range: unknown; text: string }>): void;
 	hasTextFocus?(): boolean;
+	hasWidgetFocus?(): boolean;
 	getPosition?(): { lineNumber: number; column: number } | null;
 }
 
@@ -188,6 +193,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	readonly copilotCtrl = new CopilotChatManagerController(this as any, sqlWebviewFlavor);
 
 	private _editor: MonacoEditor | null = null;
+	private _cursorStatus: EditorCursorStatusPublisher | null = null;
 	private _initRetryCount = 0;
 	private _monacoRetryCount = 0;
 	private _userResizedEditor = false;
@@ -997,6 +1003,13 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			});
 
 			this._editor = editor;
+			this._cursorStatus?.dispose();
+			this._cursorStatus = createMonacoCursorStatusPublisher({
+				editor,
+				boxId: this.boxId,
+				editorKind: 'sql',
+				postMessage: (message) => postMessageToHost(message)
+			});
 
 			// Register model URI → boxId mapping for STS providers.
 			try {
@@ -1163,6 +1176,10 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (this._editorResizeObserver) {
 			try { this._editorResizeObserver.disconnect(); } catch { /* ignore */ }
 			this._editorResizeObserver = null;
+		}
+		if (this._cursorStatus) {
+			try { this._cursorStatus.dispose(); } catch { /* ignore */ }
+			this._cursorStatus = null;
 		}
 		if (this._editor) {
 			try { this._editor.dispose(); } catch { /* ignore */ }
@@ -1903,6 +1920,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (expanded) {
 			this.classList.remove('is-collapsed');
 		} else {
+			this._cursorStatus?.clear('sql-collapse');
 			this.classList.add('is-collapsed');
 		}
 	}

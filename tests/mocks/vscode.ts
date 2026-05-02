@@ -15,6 +15,19 @@ export class EventEmitter {
 	dispose() {}
 }
 
+export interface Disposable {
+	dispose(): void;
+}
+
+export interface StatusBarItem extends Disposable {
+	name: string;
+	text: string;
+	tooltip: unknown;
+	accessibilityInformation: unknown;
+	show(): void;
+	hide(): void;
+}
+
 export class Range {
 	constructor(
 		public startLine = 0, public startCharacter = 0,
@@ -79,12 +92,37 @@ export class Uri {
 	toString() { return this._value; }
 }
 
+export const __mockStatusBarItems: any[] = [];
+
+export enum StatusBarAlignment {
+	Left = 1,
+	Right = 2,
+}
+
 export const window = {
 	createOutputChannel: () => ({ appendLine: () => {}, dispose: () => {} }),
 	showInformationMessage: () => Promise.resolve(undefined),
 	showErrorMessage: () => Promise.resolve(undefined),
 	showWarningMessage: () => Promise.resolve(undefined),
 	createWebviewPanel: () => ({}),
+	createStatusBarItem: (id?: string, alignment?: StatusBarAlignment, priority?: number) => {
+		const item = {
+			id,
+			alignment,
+			priority,
+			name: '',
+			text: '',
+			tooltip: undefined as unknown,
+			accessibilityInformation: undefined as unknown,
+			shown: false,
+			disposed: false,
+			show() { this.shown = true; },
+			hide() { this.shown = false; },
+			dispose() { this.disposed = true; },
+		};
+		__mockStatusBarItems.push(item);
+		return item;
+	},
 };
 
 export const commands = {

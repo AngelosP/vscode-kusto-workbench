@@ -1193,6 +1193,244 @@ async function e2eAssertHostMessageCaptured(type: string, boxId: string = '', ti
 	throw new Error(`Timed out waiting for host message ${wantedType}${wantedBoxId ? ` for ${wantedBoxId}` : ''}. Seen: ${seen}`);
 }
 
+function e2eCursorOffsetForLineColumn(text: string, lineNumber: number, column: number): number {
+	const lines = String(text || '').split('\n');
+	const targetLine = Math.max(1, Math.floor(lineNumber));
+	let offset = 0;
+	for (let index = 0; index < Math.min(targetLine - 1, lines.length); index++) {
+		offset += lines[index].length + 1;
+	}
+	const lineText = lines[Math.max(0, Math.min(targetLine - 1, lines.length - 1))] || '';
+	return offset + Math.max(0, Math.min(Math.floor(column) - 1, lineText.length));
+}
+
+async function e2eCursorCreateNotebook(): Promise<string> {
+	_win.__testRemoveAllSections();
+	await e2eLayoutWaitFor(() => document.querySelectorAll(TEST_SECTION_SELECTOR).length === 0, 'all sections removed for cursor test');
+
+	const queryId = e2eLayoutAddSection('addQueryBox', {
+		id: 'cursor_query',
+		initialQuery: 'print alpha=1\n| extend beta = alpha + 1',
+		expanded: true,
+	});
+	const sqlId = e2eLayoutAddSection('addSqlBox', {
+		id: 'cursor_sql',
+		name: 'Cursor SQL',
+		query: 'SELECT 1 AS alpha\nSELECT 2 AS beta',
+		expanded: true,
+		editorHeightPx: 180,
+	});
+	const htmlId = e2eLayoutAddSection('addHtmlBox', {
+		id: 'cursor_html',
+		name: 'Cursor HTML',
+		code: '<main>\n  <h1>Cursor</h1>\n</main>',
+		mode: 'code',
+		expanded: true,
+	});
+	const pythonId = e2eLayoutAddSection('addPythonBox', { id: 'cursor_python' });
+	const markdownId = e2eLayoutAddSection('addMarkdownBox', {
+		id: 'cursor_markdown',
+		title: 'Cursor Markdown',
+		text: '# Cursor\n\nBody text',
+		mode: 'markdown',
+		expanded: true,
+	});
+
+	await e2eLayoutWaitFor(() => [queryId, sqlId, htmlId, pythonId, markdownId].every(id => !!document.getElementById(id)), 'cursor test sections');
+	await e2eLayoutSetMonacoValue(pythonId, 'value = 1\nprint(value)');
+	return `cursor notebook ready: ${[queryId, sqlId, htmlId, pythonId, markdownId].join(',')}`;
+}
+
+async function e2eCursorFocusMonaco(sectionId: string, lineNumber: number, column: number): Promise<string> {
+	await e2eLayoutWaitFor(() => !!resolveMonacoEditorFromElement(document.getElementById(sectionId)), `${sectionId} Monaco editor`, 10000);
+	const section = document.getElementById(sectionId);
+	const editor = resolveMonacoEditorFromElement(section);
+	if (!editor) {
+		throw new Error(`Monaco editor not found for ${sectionId}`);
+	}
+	if (typeof editor.setPosition === 'function') {
+		editor.setPosition({ lineNumber, column });
+	}
+	if (typeof editor.setSelection === 'function') {
+		editor.setSelection({ startLineNumber: lineNumber, startColumn: column, endLineNumber: lineNumber, endColumn: column });
+	}
+	try { setActiveMonacoEditor(editor); } catch { /* ignore */ }
+	try { editor.focus?.(); } catch { /* ignore */ }
+	try { editor.render?.(true); } catch { /* ignore */ }
+	await e2eDelay(150);
+	const position = editor.getPosition?.();
+	return `${sectionId} caret at ${position?.lineNumber ?? lineNumber}:${position?.column ?? column}`;
+}
+
+async function e2eCursorHoverMonaco(sectionId: string, lineNumber: number, column: number): Promise<string> {
+	await e2eLayoutWaitFor(() => !!resolveMonacoEditorFromElement(document.getElementById(sectionId)), `${sectionId} Monaco editor`, 10000);
+	const section = document.getElementById(sectionId);
+	const editor = resolveMonacoEditorFromElement(section);
+	if (!editor) {
+		throw new Error(`Monaco editor not found for ${sectionId}`);
+	}
+	if (typeof editor.setPosition === 'function') {
+		editor.setPosition({ lineNumber, column });
+	}
+	const domNode = typeof editor.getDomNode === 'function' ? editor.getDomNode() : null;
+	if (!domNode) {
+		throw new Error(`Monaco DOM node not found for ${sectionId}`);
+	}
+	domNode.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true, clientX: 20, clientY: 20 }));
+	domNode.dispatchEvent(new MouseEvent('mousemove', { bubbles: true, clientX: 24, clientY: 24 }));
+	await e2eDelay(150);
+	const position = editor.getPosition?.();
+	return `${sectionId} hover at ${position?.lineNumber ?? lineNumber}:${position?.column ?? column}`;
+}
+
+async function e2eCursorFocusMarkdown(lineNumber: number, column: number): Promise<string> {
+	const section = document.getElementById('cursor_markdown') as any;
+	if (!section) {
+		throw new Error('cursor_markdown section not found');
+	}
+	if (typeof section.setMarkdownMode === 'function') {
+		section.setMarkdownMode('markdown');
+	}
+	await e2eDelay(250);
+	const editorRoot = section.querySelector('.toastui-editor-defaultUI') as HTMLElement | null;
+	if (!editorRoot) {
+		throw new Error('Markdown editor root not found');
+	}
+	const text = typeof section.getText === 'function' ? String(section.getText()) : '# Cursor\n\nBody text';
+	const offset = e2eCursorOffsetForLineColumn(text, lineNumber, column);
+	const textarea = editorRoot.querySelector('textarea') as HTMLTextAreaElement | null;
+	if (textarea) {
+		textarea.focus();
+		textarea.selectionStart = offset;
+		textarea.selectionEnd = offset;
+		textarea.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+		await e2eDelay(150);
+		return `markdown textarea caret at ${lineNumber}:${column}`;
+	}
+	const editable = editorRoot.querySelector('[contenteditable="true"], .ProseMirror') as HTMLElement | null;
+	if (!editable) {
+		throw new Error('Markdown editable surface not found');
+	}
+	editable.focus();
+	const textNode = editable.firstChild && editable.firstChild.nodeType === Node.TEXT_NODE
+		? editable.firstChild
+		: document.createTextNode(text);
+	if (!textNode.parentNode) {
+		editable.appendChild(textNode);
+	}
+	const range = document.createRange();
+	range.setStart(textNode, Math.min(offset, textNode.textContent?.length ?? 0));
+	range.collapse(true);
+	const selection = window.getSelection();
+	selection?.removeAllRanges();
+	selection?.addRange(range);
+	editable.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true }));
+	await e2eDelay(150);
+	return `markdown editable caret at ${lineNumber}:${column}`;
+}
+
+async function e2eCursorSetHtmlPreview(): Promise<string> {
+	const section = document.getElementById('cursor_html') as any;
+	if (!section || typeof section.setMode !== 'function') {
+		throw new Error('cursor_html section with setMode not found');
+	}
+	section.setMode('preview');
+	await e2eDelay(200);
+	return 'html preview mode set';
+}
+
+async function e2eCursorSetMarkdownPreview(): Promise<string> {
+	const section = document.getElementById('cursor_markdown') as any;
+	if (!section || typeof section.setMarkdownMode !== 'function') {
+		throw new Error('cursor_markdown section with setMarkdownMode not found');
+	}
+	section.setMarkdownMode('preview');
+	await e2eDelay(200);
+	return 'markdown preview mode set';
+}
+
+async function e2eCursorSetKustoExpanded(expanded: boolean): Promise<string> {
+	const section = document.getElementById('cursor_query') as any;
+	if (!section || typeof section.setExpanded !== 'function') {
+		throw new Error('cursor_query section with setExpanded not found');
+	}
+	section.setExpanded(!!expanded);
+	await e2eDelay(200);
+	return `kusto expanded=${!!expanded}`;
+}
+
+async function e2eAssertCursorStatusMessage(editorKind: string, lineNumber?: number, column?: number, visible = true, timeoutMs = 5000): Promise<string> {
+	const wantedKind = String(editorKind || '').trim();
+	if (!wantedKind) {
+		throw new Error('editorKind is required');
+	}
+	const started = performance.now();
+	while (performance.now() - started <= timeoutMs) {
+		const messages = e2eCapturedHostMessages().filter(msg => msg?.type === 'editorCursorPositionChanged' && msg.editorKind === wantedKind);
+		const match = messages.find(msg => {
+			if (!!msg.visible !== visible) return false;
+			if (!visible) return true;
+			return msg.line === lineNumber && msg.column === column;
+		});
+		if (match) {
+			return visible
+				? `${wantedKind} cursor status captured at ${lineNumber}:${column}`
+				: `${wantedKind} cursor status clear captured`;
+		}
+		await e2eDelay(100);
+	}
+	const seen = e2eCapturedHostMessages()
+		.filter(msg => msg?.type === 'editorCursorPositionChanged')
+		.map(msg => `${msg.editorKind}:${msg.visible === false ? 'hidden' : `${msg.line}:${msg.column}`}`)
+		.join(', ');
+	throw new Error(`Timed out waiting for ${wantedKind} cursor status visible=${visible} ${lineNumber ?? ''}:${column ?? ''}. Seen: ${seen}`);
+}
+
+async function e2eCursorStatusSnapshot(timeoutMs = 5000): Promise<any> {
+	const requestId = `cursor-status-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+	return await new Promise((resolve, reject) => {
+		let settled = false;
+		const cleanup = () => {
+			window.removeEventListener('message', onMessage);
+			clearTimeout(timer);
+		};
+		const onMessage = (event: MessageEvent) => {
+			const message = event.data || {};
+			if (message.type !== 'editorCursorStatusSnapshot' || message.requestId !== requestId) {
+				return;
+			}
+			settled = true;
+			cleanup();
+			resolve(message.snapshot || { visible: false, text: '' });
+		};
+		const timer = setTimeout(() => {
+			if (!settled) {
+				cleanup();
+				reject(new Error(`Timed out waiting for cursor status snapshot ${requestId}`));
+			}
+		}, timeoutMs);
+		window.addEventListener('message', onMessage);
+		postMessageToHost({ type: 'getEditorCursorStatusSnapshot', requestId });
+	});
+}
+
+async function e2eAssertCursorStatusBar(editorKind: string, lineNumber?: number, column?: number, visible = true, timeoutMs = 5000): Promise<string> {
+	const started = performance.now();
+	const wantedText = visible ? `Ln ${lineNumber}, Col ${column}` : '';
+	while (performance.now() - started <= timeoutMs) {
+		const snapshot = await e2eCursorStatusSnapshot(timeoutMs);
+		if (!visible && snapshot.visible === false) {
+			return 'host cursor status hidden';
+		}
+		if (visible && snapshot.visible === true && snapshot.text === wantedText && snapshot.editorKind === editorKind) {
+			return `host cursor status ${snapshot.text}`;
+		}
+		await e2eDelay(100);
+	}
+	const snapshot = await e2eCursorStatusSnapshot(timeoutMs);
+	throw new Error(`Expected host cursor status ${visible ? wantedText : 'hidden'} for ${editorKind}; got ${JSON.stringify(snapshot)}`);
+}
+
 function e2eAssertKustoCancelVisibleEnabled(): string {
 	const button = e2eKustoCancelButton();
 	const style = getComputedStyle(button);
@@ -3142,6 +3380,24 @@ _win.__e2e = {
 		exerciseCollapseExpand: e2eLayoutExerciseCollapseExpand,
 		exerciseAutoFitAndResize: e2eLayoutExerciseAutoFitAndResize,
 		assertNoLayoutRegression: e2eLayoutAssertNoLayoutRegression,
+	},
+	cursorStatus: {
+		beginCapture: e2eBeginHostMessageCapture,
+		restoreCapture: e2eRestoreHostMessageCapture,
+		createNotebook: e2eCursorCreateNotebook,
+		hoverKusto: (lineNumber: number, column: number) => e2eCursorHoverMonaco('cursor_query', lineNumber, column),
+		focusKusto: (lineNumber: number, column: number) => e2eCursorFocusMonaco('cursor_query', lineNumber, column),
+		focusSql: (lineNumber: number, column: number) => e2eCursorFocusMonaco('cursor_sql', lineNumber, column),
+		focusHtml: (lineNumber: number, column: number) => e2eCursorFocusMonaco('cursor_html', lineNumber, column),
+		focusPython: (lineNumber: number, column: number) => e2eCursorFocusMonaco('cursor_python', lineNumber, column),
+		focusMarkdown: (lineNumber: number, column: number) => e2eCursorFocusMarkdown(lineNumber, column),
+		setHtmlPreview: e2eCursorSetHtmlPreview,
+		setMarkdownPreview: e2eCursorSetMarkdownPreview,
+		setKustoExpanded: e2eCursorSetKustoExpanded,
+		assertVisible: (editorKind: string, lineNumber: number, column: number, timeoutMs: number = 5000) => e2eAssertCursorStatusMessage(editorKind, lineNumber, column, true, timeoutMs),
+		assertHidden: (editorKind: string, timeoutMs: number = 5000) => e2eAssertCursorStatusMessage(editorKind, undefined, undefined, false, timeoutMs),
+		assertStatusBarVisible: (editorKind: string, lineNumber: number, column: number, timeoutMs: number = 5000) => e2eAssertCursorStatusBar(editorKind, lineNumber, column, true, timeoutMs),
+		assertStatusBarHidden: (timeoutMs: number = 5000) => e2eAssertCursorStatusBar('', undefined, undefined, false, timeoutMs),
 	},
 	sql: {
 		...e2eQueryApi('sql'),

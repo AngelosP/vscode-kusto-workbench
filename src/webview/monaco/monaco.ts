@@ -60,6 +60,7 @@ import { __kustoAutoSizeEditor, ensureSchemaForBox, __kustoGetConnectionId, __ku
 import { executeQuery } from '../sections/query-execution.controller';
 import { initToolbarOverflow } from '../sections/kw-query-toolbar';
 import { postMessageToHost } from '../shared/webview-messages';
+import { createMonacoCursorStatusPublisher } from '../shared/editor-cursor-status';
 import { decideSchemaOperation } from '../shared/schema-decision';
 import { SchemaTracker } from '../shared/schema-tracker';
 import { extractCrossClusterRefs, getCrossClusterSchemaCheckDelay } from '../shared/cross-cluster-schema';
@@ -2059,6 +2060,7 @@ function initQueryEditor(boxId: any) {
 				if (attached) {
 					return;
 				}
+				try { existing.__kustoCursorStatus?.dispose?.(); } catch (e) { console.error('[kusto]', e); }
 				try { existing.dispose(); } catch (e) { console.error('[kusto]', e); }
 				try { delete queryEditors[boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
@@ -2940,6 +2942,22 @@ function initQueryEditor(boxId: any) {
 		} catch (e) { console.error('[kusto]', e); }
 
 		queryEditors[boxId] = editor;
+		try {
+			const cursorStatus = createMonacoCursorStatusPublisher({
+				editor,
+				boxId: String(boxId),
+				editorKind: 'kusto',
+				postMessage: (message) => postMessageToHost(message)
+			});
+			editor.__kustoCursorStatus = cursorStatus;
+			const originalDispose = typeof editor.dispose === 'function' ? editor.dispose.bind(editor) : null;
+			if (originalDispose) {
+				editor.dispose = () => {
+					try { cursorStatus.dispose(); } catch (e) { console.error('[kusto]', e); }
+					return originalDispose();
+				};
+			}
+		} catch (e) { console.error('[kusto]', e); }
 		// Allow other scripts to reliably map editor -> boxId (used for global key handlers).
 		try { editor.__kustoBoxId = boxId; } catch (e) { console.error('[kusto]', e); }
 		// Work around sporadic webview timing issues where Monaco input can end up stuck readonly.

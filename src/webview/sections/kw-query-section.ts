@@ -761,6 +761,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	public isExpanded(): boolean { return this._expanded; }
 	public setExpanded(expanded: boolean): void {
 		this._expanded = expanded;
+		if (!expanded) {
+			try { window.queryEditors?.[this.boxId]?.__kustoCursorStatus?.clear?.('kusto-collapse'); } catch (e) { console.error('[kusto]', e); }
+		}
 		// Sync the is-collapsed class on the host element for light-DOM CSS rules.
 		this.classList.toggle('is-collapsed', !expanded);
 	}

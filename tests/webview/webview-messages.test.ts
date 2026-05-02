@@ -16,4 +16,41 @@ describe('postMessageToHost', () => {
 		delete (window as any).vscode;
 		expect(() => postMessageToHost({ type: 'getConnections' })).not.toThrow();
 	});
+
+	it('posts cursor position payloads', () => {
+		const postMessage = vi.fn();
+		(window as any).vscode = { postMessage };
+
+		postMessageToHost({
+			type: 'editorCursorPositionChanged',
+			boxId: 'query_1',
+			editorKind: 'kusto',
+			line: 4,
+			column: 41,
+			visible: true,
+			reason: 'test'
+		});
+
+		expect(postMessage).toHaveBeenCalledWith({
+			type: 'editorCursorPositionChanged',
+			boxId: 'query_1',
+			editorKind: 'kusto',
+			line: 4,
+			column: 41,
+			visible: true,
+			reason: 'test'
+		});
+	});
+
+	it('posts cursor status snapshot requests', () => {
+		const postMessage = vi.fn();
+		(window as any).vscode = { postMessage };
+
+		postMessageToHost({ type: 'getEditorCursorStatusSnapshot', requestId: 'cursor-request-1' });
+
+		expect(postMessage).toHaveBeenCalledWith({
+			type: 'getEditorCursorStatusSnapshot',
+			requestId: 'cursor-request-1'
+		});
+	});
 });

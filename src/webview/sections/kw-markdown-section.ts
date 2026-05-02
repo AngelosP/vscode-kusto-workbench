@@ -13,6 +13,7 @@ import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging, setPageScrollTop } from '../core/utils.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { ensureToastUiLoaded } from '../shared/lazy-vendor.js';
+import { getMarkdownCursorPosition } from '../shared/markdown-cursor-position.js';
 
 /** Shared OverlayScrollbars options for plain-md scroll containers. */
 const MD_SCROLLBAR_OPTIONS: PartialOptions = {
@@ -287,6 +288,9 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	/** Generation counter to invalidate stale rAF scrollbar init callbacks on rapid mode switching. */
 	private _scrollbarInitGeneration = 0;
 	private _removeDropdownScrollDismiss: (() => void) | null = null;
+	private _removeMarkdownCursorStatusListeners: (() => void) | null = null;
+	private _lastMarkdownCursorStatusKey = '';
+	private _markdownMouseInside = false;
 
 	// ── Theme observer singleton ─────────────────────────────────────────────
 
@@ -607,6 +611,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 				} catch (e) { console.error('[kusto]', e); }
 			},
 			dispose: () => {
+				try { this._cleanupMarkdownCursorStatus(); } catch (e) { console.error('[kusto]', e); }
 				try { toastEditor?.destroy?.(); } catch (e) { console.error('[kusto]', e); }
 				try { editorContainer.textContent = ''; } catch (e) { console.error('[kusto]', e); }
 			},
@@ -614,6 +619,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		};
 
 		this._editorApi = api;
+		this._installMarkdownCursorStatus(editorContainer);
 
 		// Register with global markdownEditors map so legacy code can still access it.
 		try {
@@ -955,6 +961,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		viewerContainer.style.display = isPreview ? '' : 'none';
 
 		if (isPreview) {
+			this._clearMarkdownCursorStatus('markdown-preview');
 			// Strip any border on the viewer container itself (global CSS may add one).
 			viewerContainer.style.setProperty('border', 'none', 'important');
 			const md = this._editorApi?.getValue() ?? '';
@@ -987,6 +994,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			try { toastEditor.changeMode(this._mode, true); } catch (e) { console.error('[kusto]', e); }
 		}
 		try { this._editorApi?.layout(); } catch (e) { console.error('[kusto]', e); }
+		this._publishMarkdownCursorStatus('markdown-edit-mode');
 
 		// Toast UI may replace the WYSIWYG ProseMirror node across mode switches.
 		// Re-bind the custom scrollbar when returning to WYSIWYG.
@@ -1028,6 +1036,113 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			if (String(pState.documentKind || '') === 'md') {
 				setPageScrollTop(0);
 			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	private _installMarkdownCursorStatus(editorContainer: HTMLElement): void {
+		this._cleanupMarkdownCursorStatus(false);
+		const publish = (reason: string) => this._publishMarkdownCursorStatus(reason, editorContainer);
+		const onSelectionChange = () => publish('markdown-selection');
+		const onFocusOrInput = () => publish('markdown-focus');
+		const onMouseEnterOrMove = () => {
+			this._markdownMouseInside = true;
+			publish('markdown-mouse');
+		};
+		const onMouseLeave = () => {
+			this._markdownMouseInside = false;
+			setTimeout(() => {
+				try {
+					if (!editorContainer.contains(document.activeElement)) {
+						this._clearMarkdownCursorStatus('markdown-mouse-leave');
+					}
+				} catch (e) { console.error('[kusto]', e); }
+			}, 0);
+		};
+		const onFocusOut = () => {
+			setTimeout(() => {
+				try {
+					if (!editorContainer.contains(document.activeElement) && !this._markdownMouseInside) {
+						this._clearMarkdownCursorStatus('markdown-blur');
+					}
+				} catch (e) { console.error('[kusto]', e); }
+			}, 0);
+		};
+
+		document.addEventListener('selectionchange', onSelectionChange);
+		editorContainer.addEventListener('keyup', onFocusOrInput, true);
+		editorContainer.addEventListener('mouseup', onFocusOrInput, true);
+		editorContainer.addEventListener('mouseenter', onMouseEnterOrMove);
+		editorContainer.addEventListener('mousemove', onMouseEnterOrMove);
+		editorContainer.addEventListener('mouseleave', onMouseLeave);
+		editorContainer.addEventListener('focusin', onFocusOrInput, true);
+		editorContainer.addEventListener('focusout', onFocusOut, true);
+
+		this._removeMarkdownCursorStatusListeners = () => {
+			document.removeEventListener('selectionchange', onSelectionChange);
+			editorContainer.removeEventListener('keyup', onFocusOrInput, true);
+			editorContainer.removeEventListener('mouseup', onFocusOrInput, true);
+			editorContainer.removeEventListener('mouseenter', onMouseEnterOrMove);
+			editorContainer.removeEventListener('mousemove', onMouseEnterOrMove);
+			editorContainer.removeEventListener('mouseleave', onMouseLeave);
+			editorContainer.removeEventListener('focusin', onFocusOrInput, true);
+			editorContainer.removeEventListener('focusout', onFocusOut, true);
+		};
+	}
+
+	private _cleanupMarkdownCursorStatus(clear = true): void {
+		if (this._removeMarkdownCursorStatusListeners) {
+			try { this._removeMarkdownCursorStatusListeners(); } catch (e) { console.error('[kusto]', e); }
+			this._removeMarkdownCursorStatusListeners = null;
+		}
+		this._markdownMouseInside = false;
+		if (clear) {
+			this._clearMarkdownCursorStatus('markdown-dispose');
+		}
+	}
+
+	private _publishMarkdownCursorStatus(reason: string, editorContainer = this._getEditorContainer()): void {
+		try {
+			if (!editorContainer || this._mode === 'preview') {
+				this._clearMarkdownCursorStatus(reason);
+				return;
+			}
+			if (!this._markdownMouseInside && !editorContainer.contains(document.activeElement) && !editorContainer.contains(window.getSelection()?.anchorNode ?? null)) {
+				return;
+			}
+			const position = getMarkdownCursorPosition(editorContainer);
+			if (!position) {
+				return;
+			}
+			const key = `visible:${position.line}:${position.column}`;
+			if (key === this._lastMarkdownCursorStatusKey) {
+				return;
+			}
+			this._lastMarkdownCursorStatusKey = key;
+			postMessageToHost({
+				type: 'editorCursorPositionChanged',
+				boxId: this.boxId,
+				editorKind: 'markdown',
+				line: position.line,
+				column: position.column,
+				visible: true,
+				reason
+			});
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	private _clearMarkdownCursorStatus(reason: string): void {
+		try {
+			if (this._lastMarkdownCursorStatusKey === 'hidden') {
+				return;
+			}
+			this._lastMarkdownCursorStatusKey = 'hidden';
+			postMessageToHost({
+				type: 'editorCursorPositionChanged',
+				boxId: this.boxId,
+				editorKind: 'markdown',
+				visible: false,
+				reason
+			});
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1425,6 +1540,9 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	private _toggleVisibility(): void {
 		this._expanded = !this._expanded;
 		this.classList.toggle('is-collapsed', !this._expanded);
+		if (!this._expanded) {
+			this._clearMarkdownCursorStatus('markdown-collapse');
+		}
 
 		// Sync with global state for legacy code.
 		try {
@@ -1854,6 +1972,9 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	public setExpanded(expanded: boolean): void {
 		this._expanded = expanded;
 		this.classList.toggle('is-collapsed', !expanded);
+		if (!expanded) {
+			this._clearMarkdownCursorStatus('markdown-collapse');
+		}
 	}
 
 	/** Get the TOAST UI editor API (for legacy markdownEditors[boxId] compatibility). */

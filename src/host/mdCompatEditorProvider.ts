@@ -9,22 +9,26 @@ import { getLastSelectionForUri, onDidRecordSelection } from './selectionTracker
 import { renderDiffInWebview } from './diffViewerUtils';
 import { normalizeSection, formatSectionDiffContent, KqlxEditorProvider } from './kqlxEditorProvider';
 import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
+import { EditorCursorStatusBar, type EditorCursorStatusPayload } from './editorCursorStatusBar';
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
+	| ({ type: 'editorCursorPositionChanged' } & EditorCursorStatusPayload)
 	| { type: 'persistDocument'; state: { sections?: Array<{ type?: string; text?: string }> } }
 	| { type: 'requestUpgradeToMdx'; addKind?: string }
 	| { type: string; [key: string]: unknown };
 
 export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 	public static readonly viewType = 'kusto.mdCompatEditor';
+	private static cursorOwnerSequence = 0;
 
 	public static register(
 		context: vscode.ExtensionContext,
 		extensionUri: vscode.Uri,
-		connectionManager: ConnectionManager
+		connectionManager: ConnectionManager,
+		editorCursorStatusBar?: EditorCursorStatusBar
 	): vscode.Disposable {
-		const provider = new MdCompatEditorProvider(context, extensionUri, connectionManager);
+		const provider = new MdCompatEditorProvider(context, extensionUri, connectionManager, editorCursorStatusBar);
 		return vscode.window.registerCustomEditorProvider(MdCompatEditorProvider.viewType, provider, {
 			// VS Code supports a built-in Find widget for webviews.
 			// Our `vscode` typings may lag the runtime API, so we set this defensively.
@@ -35,7 +39,8 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
 		private readonly extensionUri: vscode.Uri,
-		private readonly connectionManager: ConnectionManager
+		private readonly connectionManager: ConnectionManager,
+		private readonly editorCursorStatusBar?: EditorCursorStatusBar
 	) {}
 
 	/**
@@ -118,6 +123,12 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 		webviewPanel: vscode.WebviewPanel,
 		_token: vscode.CancellationToken
 	): Promise<void> {
+		const cursorOwnerPrefix = `mdCompat:${++MdCompatEditorProvider.cursorOwnerSequence}:`;
+		const cursorOwnerForMessage = (message: { boxId?: string; editorKind?: string }): string => {
+			const boxId = typeof message.boxId === 'string' && message.boxId.trim() ? message.boxId.trim() : '';
+			const editorKind = typeof message.editorKind === 'string' && message.editorKind.trim() ? message.editorKind.trim() : 'markdown';
+			return `${cursorOwnerPrefix}${boxId || editorKind}`;
+		};
 		// Detect if this editor is being opened as part of a diff view.
 		// VS Code uses special URI schemes for source control diffs (e.g., 'git', 'gitfs').
 		// When in diff mode, render our Monaco-based diff viewer directly in this webview.
@@ -200,6 +211,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 		};
 		webviewPanel.onDidDispose(() => {
+			this.editorCursorStatusBar?.clearOwnerPrefix(cursorOwnerPrefix);
 			try {
 				for (const d of disposables) {
 					try {
@@ -210,6 +222,11 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				}
 			} catch {
 				// ignore
+			}
+		});
+		webviewPanel.onDidChangeViewState(() => {
+			if (!webviewPanel.visible) {
+				this.editorCursorStatusBar?.clearOwnerPrefix(cursorOwnerPrefix);
 			}
 		});
 
@@ -490,6 +507,14 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				return;
 			}
 			switch (message.type) {
+				case 'editorCursorPositionChanged':
+					{
+						const cursorMessage = message as { type: 'editorCursorPositionChanged' } & EditorCursorStatusPayload;
+						if (webviewPanel.visible) {
+							this.editorCursorStatusBar?.update(cursorOwnerForMessage(cursorMessage), cursorMessage);
+						}
+					}
+					return;
 				case 'debugMdSearchReveal':
 					try {
 						const phase = message && typeof (message as any).phase === 'string' ? String((message as any).phase) : 'webview';

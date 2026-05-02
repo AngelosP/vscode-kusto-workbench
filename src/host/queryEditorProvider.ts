@@ -42,6 +42,7 @@ import {
 } from './queryEditorTypes';
 import { exportHtmlToPowerBI, findUnsupportedPowerBiBindings, normalizePowerBiDataMode, type PowerBiDataMode } from './powerBiExport';
 import { listFabricWorkspaces, publishToPowerBIService, checkFabricItemExists } from './powerBiPublish';
+import { EditorCursorStatusBar } from './editorCursorStatusBar';
 
 type RunningQueryEntry = {
 	cancel: () => void;
@@ -51,7 +52,10 @@ type RunningQueryEntry = {
 
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
+	private static cursorOwnerSequence = 0;
+
 	private panel?: vscode.WebviewPanel;
+	private readonly cursorOwnerPrefix = `queryEditor:${++QueryEditorProvider.cursorOwnerSequence}:`;
 	readonly kustoClient: KustoQueryClient;
 	readonly output = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
 	readonly connection: ConnectionService;
@@ -155,7 +159,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	constructor(
 		readonly extensionUri: vscode.Uri,
 		readonly connectionManager: ConnectionManager,
-		readonly context: vscode.ExtensionContext
+		readonly context: vscode.ExtensionContext,
+		private readonly editorCursorStatusBar?: EditorCursorStatusBar
 	) {
 		this.kustoClient = new KustoQueryClient(this.context);
 		this.kqlLanguageHost = new KqlLanguageServiceHost(this.connectionManager, this.context);
@@ -195,10 +200,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.panel.onDidChangeViewState(() => {
 			if (this.panel?.visible) {
 				this.connectToolOrchestrator();
+			} else {
+				this.clearCursorStatusForProvider();
 			}
 		});
 
 		this.panel.onDidDispose(() => {
+			this.clearCursorStatusForProvider();
 			this.cancelAllRunningQueries();
 			this.disconnectToolOrchestrator();
 			this.configSubscription?.dispose();
@@ -234,6 +242,38 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		if (!toolOrchestrator || this.toolOrchestratorToken === undefined) return;
 		toolOrchestrator.disconnectIfOwner(this.toolOrchestratorToken);
 		this.toolOrchestratorToken = undefined;
+	}
+
+	private getCursorStatusOwnerId(message: { boxId?: string; editorKind?: string }): string {
+		const boxId = typeof message.boxId === 'string' && message.boxId.trim() ? message.boxId.trim() : '';
+		const editorKind = typeof message.editorKind === 'string' && message.editorKind.trim() ? message.editorKind.trim() : 'editor';
+		return `${this.cursorOwnerPrefix}${boxId || editorKind}`;
+	}
+
+	private handleEditorCursorPositionChanged(message: IncomingWebviewMessage & { type: 'editorCursorPositionChanged' }): void {
+		if (!this.editorCursorStatusBar || !this.panel?.visible) {
+			return;
+		}
+		this.editorCursorStatusBar.update(this.getCursorStatusOwnerId(message), message);
+	}
+
+	private async postEditorCursorStatusSnapshot(message: IncomingWebviewMessage & { type: 'getEditorCursorStatusSnapshot' }): Promise<void> {
+		if (this.context.extensionMode === vscode.ExtensionMode.Production) {
+			return;
+		}
+		try {
+			await this.panel?.webview.postMessage({
+				type: 'editorCursorStatusSnapshot',
+				requestId: message.requestId,
+				snapshot: this.editorCursorStatusBar?.getSnapshot() ?? { visible: false, text: '' }
+			});
+		} catch {
+			// ignore test-only snapshot failures
+		}
+	}
+
+	private clearCursorStatusForProvider(): void {
+		this.editorCursorStatusBar?.clearOwnerPrefix(this.cursorOwnerPrefix);
 	}
 
 	private toolStateResponseResolvers = new Map<string, (sections: unknown[]) => void>();
@@ -297,10 +337,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.panel.onDidChangeViewState(() => {
 			if (this.panel?.visible) {
 				this.connectToolOrchestrator();
+			} else {
+				this.clearCursorStatusForProvider();
 			}
 		});
 
 		this.panel.onDidDispose(() => {
+			this.clearCursorStatusForProvider();
 			this.cancelAllRunningQueries();
 			this.disconnectToolOrchestrator();
 			this.configSubscription?.dispose();
@@ -314,6 +357,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	public async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
 		switch (message.type) {
+			case 'editorCursorPositionChanged':
+				this.handleEditorCursorPositionChanged(message);
+				return;
+			case 'getEditorCursorStatusSnapshot':
+				await this.postEditorCursorStatusSnapshot(message);
+				return;
 			case 'comparisonBoxEnsured':
 				try {
 					const requestId = String(message.requestId || '');

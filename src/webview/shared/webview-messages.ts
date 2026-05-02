@@ -95,11 +95,28 @@ export type OutgoingImportConnectionsFromXmlMessage = {
 	boxId?: string;
 };
 
+export type OutgoingEditorCursorPositionChangedMessage = {
+	type: 'editorCursorPositionChanged';
+	boxId?: string;
+	editorKind?: 'kusto' | 'sql' | 'html' | 'python' | 'markdown';
+	line?: number;
+	column?: number;
+	visible?: boolean;
+	reason?: string;
+};
+
+export type OutgoingEditorCursorStatusSnapshotRequestMessage = {
+	type: 'getEditorCursorStatusSnapshot';
+	requestId?: string;
+};
+
 // ── The union ──────────────────────────────────────────────────────────────
 
 export type OutgoingWebviewMessage =
 	// Connection & database
 	| { type: 'getConnections' }
+	| OutgoingEditorCursorPositionChangedMessage
+	| OutgoingEditorCursorStatusSnapshotRequestMessage
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }

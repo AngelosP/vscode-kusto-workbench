@@ -23,6 +23,7 @@ import { TutorialNotificationService, isKustoTutorialTriggerDocument } from './t
 import { TutorialSubscriptionService } from './tutorials/tutorialSubscriptionService';
 import { TutorialViewerPanel } from './tutorials/tutorialViewerPanel';
 import type { TutorialViewerMode } from '../shared/tutorials/tutorialCatalog';
+import { EditorCursorStatusBar } from './editorCursorStatusBar';
 
 import { stsProcessManagerSingleton } from './sql/stsProcessManager';
 
@@ -105,7 +106,15 @@ export function activate(context: vscode.ExtensionContext) {
 		})
 	);
 
-	// Initialize connection manager
+	// Initialize status bar integration and connection manager
+	const editorCursorStatusBar = new EditorCursorStatusBar();
+	context.subscriptions.push(editorCursorStatusBar);
+	if (context.extensionMode !== vscode.ExtensionMode.Production) {
+		context.subscriptions.push(
+			vscode.commands.registerCommand('kustoWorkbench.test.getCursorStatusBar', () => editorCursorStatusBar.getSnapshot())
+		);
+	}
+
 	const connectionManager = new ConnectionManager(context);
 	const kqlLanguageHost = new KqlLanguageServiceHost(connectionManager, context);
 	const tutorialCatalogService = new TutorialCatalogService(context);
@@ -394,13 +403,13 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	// Register .kqlx custom editor
-	context.subscriptions.push(KqlxEditorProvider.register(context, context.extensionUri, connectionManager));
+	context.subscriptions.push(KqlxEditorProvider.register(context, context.extensionUri, connectionManager, editorCursorStatusBar));
 	// Register .kql/.csl compatibility custom editor
-	context.subscriptions.push(KqlCompatEditorProvider.register(context, context.extensionUri, connectionManager));
+	context.subscriptions.push(KqlCompatEditorProvider.register(context, context.extensionUri, connectionManager, editorCursorStatusBar));
 	// Register .md compatibility custom editor (upgrade to .mdx for multi-section)
-	context.subscriptions.push(MdCompatEditorProvider.register(context, context.extensionUri, connectionManager));
+	context.subscriptions.push(MdCompatEditorProvider.register(context, context.extensionUri, connectionManager, editorCursorStatusBar));
 	// Register .sql compatibility custom editor (upgrade to .sqlx for multi-section)
-	context.subscriptions.push(SqlCompatEditorProvider.register(context, context.extensionUri, connectionManager));
+	context.subscriptions.push(SqlCompatEditorProvider.register(context, context.extensionUri, connectionManager, editorCursorStatusBar));
 
 	// Register URI handler and "Open Remote File" command
 	registerRemoteFileOpener(context);

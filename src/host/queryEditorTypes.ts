@@ -157,8 +157,25 @@ export type PublishToPowerBIMessage = {
 	isPersonalWorkspace?: boolean;
 };
 
+export type EditorCursorPositionChangedMessage = {
+	type: 'editorCursorPositionChanged';
+	boxId?: string;
+	editorKind?: 'kusto' | 'sql' | 'html' | 'python' | 'markdown';
+	line?: number;
+	column?: number;
+	visible?: boolean;
+	reason?: string;
+};
+
+export type EditorCursorStatusSnapshotRequestMessage = {
+	type: 'getEditorCursorStatusSnapshot';
+	requestId?: string;
+};
+
 export type IncomingWebviewMessage =
 	| { type: 'getConnections' }
+	| EditorCursorPositionChangedMessage
+	| EditorCursorStatusSnapshotRequestMessage
 	| { type: 'getDatabases'; connectionId: string; boxId: string }
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }

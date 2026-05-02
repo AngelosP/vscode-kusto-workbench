@@ -25,6 +25,7 @@ import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoIns
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize.js';
 import { DASHBOARD_CHART_DEFAULTS } from '../../shared/dashboardCharts.js';
 import { DASHBOARD_TABLE_CELL_BAR } from '../../shared/dashboardTables.js';
+import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -98,10 +99,16 @@ interface MonacoEditor {
 	focus(): void;
 	onDidFocusEditorText(cb: () => void): { dispose(): void };
 	onDidFocusEditorWidget(cb: () => void): { dispose(): void };
+	onDidBlurEditorText?(cb: () => void): { dispose(): void };
+	onDidBlurEditorWidget?(cb: () => void): { dispose(): void };
+	onDidChangeCursorPosition?(cb: () => void): { dispose(): void };
 	onDidChangeModelContent(cb: () => void): { dispose(): void };
 	onDidContentSizeChange(cb: () => void): { dispose(): void };
 	updateOptions(opts: Record<string, unknown>): void;
 	addCommand(keybinding: number, handler: () => void): void;
+	hasTextFocus?(): boolean;
+	hasWidgetFocus?(): boolean;
+	getPosition?(): { lineNumber: number; column: number } | null;
 }
 
 export interface HtmlDashboardExportContext {
@@ -165,6 +172,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	@state() private _pbiPublishInfo: PbiPublishInfo | undefined;
 
 	private _editor: MonacoEditor | null = null;
+	private _cursorStatus: EditorCursorStatusPublisher | null = null;
 	private _initRetryCount = 0;
 	private _userResizedEditor = false;
 	private _userResizedPreview = false;
@@ -613,9 +621,11 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				try {
 					const dom = this._editor.getDomNode();
 					if (dom && dom.isConnected && slotted.contains(dom)) return;
+					this._cursorStatus?.dispose();
 					this._editor.dispose();
 				} catch (e) { console.error('[kusto]', e); }
 				this._editor = null;
+				this._cursorStatus = null;
 			}
 
 			slotted.style.minHeight = '0';
@@ -654,6 +664,13 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			} catch (e) { console.error('[kusto]', e); }
 
 			this._editor = editor;
+			this._cursorStatus?.dispose();
+			this._cursorStatus = createMonacoCursorStatusPublisher({
+				editor,
+				boxId: this.boxId,
+				editorKind: 'html',
+				postMessage: (message) => postMessageToHost(message)
+			});
 
 			// Writable guards.
 			this._forceWritable(editor);
@@ -729,6 +746,10 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _disposeEditor(): void {
 		window.removeEventListener('resize', this._onWindowResize);
 		if (this._resizeRaf) { cancelAnimationFrame(this._resizeRaf); this._resizeRaf = 0; }
+		if (this._cursorStatus) {
+			try { this._cursorStatus.dispose(); } catch (e) { console.error('[kusto]', e); }
+			this._cursorStatus = null;
+		}
 		if (this._editor) {
 			try { this._editor.dispose(); } catch (e) { console.error('[kusto]', e); }
 			this._editor = null;
@@ -1589,12 +1610,17 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			if (this._userResizedPreview && this._savedPreviewHeightPx !== undefined) {
 				this.updateComplete.then(() => this._restorePreviewHeight());
 			}
+		} else if (!this._expanded) {
+			this._cursorStatus?.clear('html-collapse');
 		}
 		this._schedulePersist();
 	}
 
 	private _setMode(mode: HtmlSectionMode): void {
 		if (this._mode === mode) return;
+		if (mode === 'preview') {
+			this._cursorStatus?.clear('html-preview');
+		}
 		// Capture current wrapper height before the mode switch destroys the DOM.
 		this._captureCurrentHeight();
 		this._mode = mode;
@@ -1987,6 +2013,9 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		const wasCollapsed = !this._expanded;
 		this._expanded = expanded;
 		this.classList.toggle('is-collapsed', !expanded);
+		if (!expanded) {
+			this._cursorStatus?.clear('html-collapse');
+		}
 		if (wasCollapsed && expanded && this._mode === 'preview') {
 			this._updatePreview();
 			if (this._userResizedPreview && this._savedPreviewHeightPx !== undefined) {
