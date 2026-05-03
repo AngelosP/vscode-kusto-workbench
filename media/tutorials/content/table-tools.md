@@ -1,5 +1,5 @@
-# Explore table results
+# Transformations do not re-run the Kusto queries
 
-After a query runs, use the results table to sort, filter, and inspect complex values. The table is designed for scanning, so start by narrowing down the rows and columns you care about.
+Transformation sections operate over cached result data. That means you can filter, project, summarize, pivot, or sort a result without sending the original Kusto query again.
 
-Transformation sections are useful when you want a reusable derived view over a result set. Add one when the next step is a calculation, projection, pivot, or grouping.
+Use them when you want a reusable derived view over a result set. The source query stays stable, and each transformation documents the next step in the analysis.

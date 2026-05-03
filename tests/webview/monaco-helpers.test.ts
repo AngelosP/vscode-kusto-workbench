@@ -230,17 +230,34 @@ describe('__kustoAreEquivalentMonacoMarkers', () => {
 		expect(__kustoAreEquivalentMonacoMarkers(null, [])).toBe(false);
 	});
 
-	it('guards Kusto marker writes before forwarding to Monaco', () => {
+	it('only skips repeated empty Kusto marker writes before forwarding to Monaco', () => {
 		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
 		const interceptorIndex = source.indexOf("monaco.editor.setModelMarkers = function(model: any, owner: any, markers: any)");
 		const normalizeIndex = source.indexOf('__kustoNormalizeCollapsedMonacoMarkers(model, markers)', interceptorIndex);
+		const emptyGuardIndex = source.indexOf('normalizedMarkers.length === 0 && __kustoAreEquivalentMonacoMarkers(currentMarkers, normalizedMarkers)', interceptorIndex);
 		const guardIndex = source.indexOf('__kustoAreEquivalentMonacoMarkers(currentMarkers, normalizedMarkers)', interceptorIndex);
 		const forwardIndex = source.indexOf('return originalSetModelMarkers.call(this, model, owner, normalizedMarkers)', interceptorIndex);
 
 		expect(interceptorIndex).toBeGreaterThan(-1);
 		expect(normalizeIndex).toBeGreaterThan(interceptorIndex);
+		expect(emptyGuardIndex).toBeGreaterThan(normalizeIndex);
 		expect(guardIndex).toBeGreaterThan(normalizeIndex);
 		expect(forwardIndex).toBeGreaterThan(guardIndex);
+	});
+
+	it('defers focus-gated marker clearing so transient Monaco blur does not erase diagnostics', () => {
+		const source = readFileSync(join(process.cwd(), 'src/webview/monaco/monaco.ts'), 'utf8');
+		const delayIndex = source.indexOf('KUSTO_MARKER_BLUR_CLEAR_DELAY_MS');
+		const schedulerIndex = source.indexOf('__kustoScheduleDisableMarkersForModel = function(modelUri: any)');
+		const cancelIndex = source.indexOf('clearTimeout(__kustoMarkerBlurClearTimers[uri])', source.indexOf('__kustoEnableMarkersForModel = function(modelUri: any)'));
+		const blurHandlerIndex = source.indexOf('editor.onDidBlurEditorWidget(() => {');
+		const scheduledBlurIndex = source.indexOf('__kustoScheduleDisableMarkersForModel!(model.uri)', blurHandlerIndex);
+
+		expect(delayIndex).toBeGreaterThan(-1);
+		expect(schedulerIndex).toBeGreaterThan(delayIndex);
+		expect(cancelIndex).toBeGreaterThan(delayIndex);
+		expect(blurHandlerIndex).toBeGreaterThan(-1);
+		expect(scheduledBlurIndex).toBeGreaterThan(blurHandlerIndex);
 	});
 });
 

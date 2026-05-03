@@ -103,20 +103,26 @@
           "default": false,
           "description": "Shows diagnostic popups for Markdown Search-view reveal (Ctrl+Shift+F click) to help debug selection/reveal wiring."
         },
-        "kustoWorkbench.tutorials.catalogUrl": {
+        "kustoWorkbench.tutorials.enabled": {
           "order": 11,
+          "type": "boolean",
+          "default": true,
+          "description": "Enable the Did you know? tutorial feature. When disabled, automatic Did you know? pop-ups and notifications do not run until this setting is turned back on."
+        },
+        "kustoWorkbench.tutorials.catalogUrl": {
+          "order": 12,
           "type": "string",
           "default": "https://raw.githubusercontent.com/AngelosP/vscode-kusto-workbench/main/media/tutorials/catalog.v1.json",
           "description": "GitHub-hosted tutorial catalog URL. Only github.com and raw.githubusercontent.com HTTPS URLs are loaded."
         },
         "kustoWorkbench.tutorials.enableUpdateChecks": {
-          "order": 12,
+          "order": 13,
           "type": "boolean",
           "default": true,
           "description": "Check subscribed tutorial categories for updates once per day after extension activation. No checks run unless a category is subscribed."
         },
         "kustoWorkbench.tutorials.refreshIntervalHours": {
-          "order": 13,
+          "order": 14,
           "type": "number",
           "default": 24,
           "minimum": 1,

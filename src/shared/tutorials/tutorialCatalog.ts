@@ -8,6 +8,14 @@ export const TUTORIAL_NOTIFICATION_CHANNELS = [
 
 export type TutorialNotificationChannel = typeof TUTORIAL_NOTIFICATION_CHANNELS[number];
 
+export const TUTORIAL_NOTIFICATION_CADENCES = [
+	'daily',
+	'weekly',
+	'monthly',
+] as const;
+
+export type TutorialNotificationCadence = typeof TUTORIAL_NOTIFICATION_CADENCES[number];
+
 export const TUTORIAL_VIEWER_MODES = [
 	'compact',
 	'focused',
@@ -25,47 +33,34 @@ export interface TutorialCategory {
 	sortOrder?: number;
 }
 
-export interface TutorialAction {
-	id: string;
-	title: string;
-	command: string;
-}
-
 export interface TutorialItem {
 	id: string;
-	title: string;
-	summary: string;
 	categoryId: string;
 	contentUrl: string;
 	minExtensionVersion: string;
 	updateToken: string;
-	tags?: string[];
-	durationMinutes?: number;
-	sortOrder?: number;
-	searchText?: string;
-	nativeWalkthroughId?: string;
-	actions?: TutorialAction[];
 }
 
 export interface TutorialCatalog {
 	schemaVersion: typeof TUTORIAL_CATALOG_SCHEMA_VERSION;
 	generatedAt: string;
 	categories: TutorialCategory[];
-	tutorials: TutorialItem[];
+	content: TutorialItem[];
 }
 
 export interface TutorialSummary {
 	id: string;
-	title: string;
-	summary: string;
+	displayName: string;
+	contentText?: string;
 	categoryId: string;
 	minExtensionVersion: string;
-	tags: string[];
-	durationMinutes?: number;
-	sortOrder?: number;
-	searchText?: string;
-	actions: TutorialAction[];
 	compatible: boolean;
+	unseen: boolean;
+}
+
+export interface TutorialSummaryContent {
+	displayName?: string;
+	contentText?: string;
 }
 
 export interface TutorialCatalogValidationResult {
@@ -79,6 +74,8 @@ export interface TutorialCategoryPreference {
 	categoryId: string;
 	subscribed: boolean;
 	channel: TutorialNotificationChannel;
+	notificationCadence: TutorialNotificationCadence;
+	muted?: boolean;
 	unseenCount: number;
 }
 
@@ -86,7 +83,7 @@ export interface TutorialViewerCatalog {
 	schemaVersion: typeof TUTORIAL_CATALOG_SCHEMA_VERSION;
 	generatedAt: string;
 	categories: TutorialCategory[];
-	tutorials: TutorialSummary[];
+	content: TutorialSummary[];
 }
 
 export interface TutorialViewerStatus {
@@ -101,16 +98,11 @@ export interface TutorialViewerSnapshot {
 	catalog: TutorialViewerCatalog;
 	preferences: TutorialCategoryPreference[];
 	status: TutorialViewerStatus;
+	tutorialsEnabled: boolean;
 	preferredMode: TutorialViewerMode;
 	selectedCategoryId?: string;
 	selectedTutorialId?: string;
 }
-
-export const ALLOWED_TUTORIAL_COMMANDS = new Set([
-	'kusto.openQueryEditor',
-	'kusto.manageConnections',
-	'kusto.openCustomAgent',
-]);
 
 const BLOCKED_URL_PROTOCOLS = new Set([
 	'command:',
@@ -133,16 +125,12 @@ function asPositiveNumber(value: unknown): number | undefined {
 	return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : undefined;
 }
 
-function asStringArray(value: unknown): string[] | undefined {
-	if (!Array.isArray(value)) {
-		return undefined;
-	}
-	const strings = value.map(asString).filter((item): item is string => !!item);
-	return strings.length === value.length ? strings : undefined;
-}
-
 export function isTutorialNotificationChannel(value: string): value is TutorialNotificationChannel {
 	return (TUTORIAL_NOTIFICATION_CHANNELS as readonly string[]).includes(value);
+}
+
+export function isTutorialNotificationCadence(value: string): value is TutorialNotificationCadence {
+	return (TUTORIAL_NOTIFICATION_CADENCES as readonly string[]).includes(value);
 }
 
 export function isTutorialViewerMode(value: string): value is TutorialViewerMode {
@@ -235,37 +223,6 @@ function normalizeCategory(value: unknown, errors: string[], seenIds: Set<string
 	return category;
 }
 
-function normalizeActions(value: unknown, errors: string[], tutorialId: string): TutorialAction[] | undefined {
-	if (value === undefined) {
-		return undefined;
-	}
-	if (!Array.isArray(value)) {
-		errors.push(`tutorial '${tutorialId}' actions must be an array.`);
-		return undefined;
-	}
-	const actions: TutorialAction[] = [];
-	for (let index = 0; index < value.length; index += 1) {
-		const action = value[index];
-		if (!isRecord(action)) {
-			errors.push(`tutorial '${tutorialId}' actions[${index}] must be an object.`);
-			continue;
-		}
-		const id = asString(action.id);
-		const title = asString(action.title);
-		const command = asString(action.command);
-		if (!id || !title || !command) {
-			errors.push(`tutorial '${tutorialId}' actions[${index}] requires id, title, and command.`);
-			continue;
-		}
-		if (!ALLOWED_TUTORIAL_COMMANDS.has(command)) {
-			errors.push(`tutorial '${tutorialId}' action '${id}' uses blocked command '${command}'.`);
-			continue;
-		}
-		actions.push({ id, title, command });
-	}
-	return actions;
-}
-
 function normalizeTutorial(
 	value: unknown,
 	errors: string[],
@@ -277,27 +234,23 @@ function normalizeTutorial(
 	index: number,
 ): TutorialItem | null {
 	if (!isRecord(value)) {
-		errors.push(`tutorials[${index}] must be an object.`);
+		errors.push(`content[${index}] must be an object.`);
 		return null;
 	}
 
 	const id = asString(value.id);
-	const title = asString(value.title);
-	const summary = asString(value.summary);
 	const categoryId = asString(value.categoryId);
 	const contentUrl = asString(value.contentUrl);
 	const minExtensionVersion = asString(value.minExtensionVersion);
 	const updateToken = asString(value.updateToken);
 
-	if (!id) errors.push(`tutorials[${index}].id is required.`);
-	if (!title) errors.push(`tutorials[${index}].title is required.`);
-	if (!summary) errors.push(`tutorials[${index}].summary is required.`);
-	if (!categoryId) errors.push(`tutorials[${index}].categoryId is required.`);
-	if (!contentUrl) errors.push(`tutorials[${index}].contentUrl is required.`);
-	if (!minExtensionVersion) errors.push(`tutorials[${index}].minExtensionVersion is required.`);
-	if (!updateToken) errors.push(`tutorials[${index}].updateToken is required.`);
+	if (!id) errors.push(`content[${index}].id is required.`);
+	if (!categoryId) errors.push(`content[${index}].categoryId is required.`);
+	if (!contentUrl) errors.push(`content[${index}].contentUrl is required.`);
+	if (!minExtensionVersion) errors.push(`content[${index}].minExtensionVersion is required.`);
+	if (!updateToken) errors.push(`content[${index}].updateToken is required.`);
 
-	if (!id || !title || !summary || !categoryId || !contentUrl || !minExtensionVersion || !updateToken) {
+	if (!id || !categoryId || !contentUrl || !minExtensionVersion || !updateToken) {
 		return null;
 	}
 	if (seenIds.has(id)) {
@@ -324,25 +277,11 @@ function normalizeTutorial(
 
 	const tutorial: TutorialItem = {
 		id,
-		title,
-		summary,
 		categoryId,
 		contentUrl,
 		minExtensionVersion,
 		updateToken,
 	};
-	const tags = asStringArray(value.tags);
-	if (tags) tutorial.tags = tags;
-	const durationMinutes = asPositiveNumber(value.durationMinutes);
-	if (durationMinutes !== undefined) tutorial.durationMinutes = durationMinutes;
-	const sortOrder = asPositiveNumber(value.sortOrder);
-	if (sortOrder !== undefined) tutorial.sortOrder = sortOrder;
-	const searchText = asString(value.searchText);
-	if (searchText) tutorial.searchText = searchText;
-	const nativeWalkthroughId = asString(value.nativeWalkthroughId);
-	if (nativeWalkthroughId) tutorial.nativeWalkthroughId = nativeWalkthroughId;
-	const actions = normalizeActions(value.actions, errors, id);
-	if (actions && actions.length > 0) tutorial.actions = actions;
 	return tutorial;
 }
 
@@ -364,10 +303,10 @@ export function validateTutorialCatalog(input: unknown, installedVersion: string
 	if (!Array.isArray(input.categories)) {
 		errors.push('categories must be an array.');
 	}
-	if (!Array.isArray(input.tutorials)) {
-		errors.push('tutorials must be an array.');
+	if (!Array.isArray(input.content)) {
+		errors.push('content must be an array.');
 	}
-	if (errors.length > 0 || !generatedAt || !Array.isArray(input.categories) || !Array.isArray(input.tutorials)) {
+	if (errors.length > 0 || !generatedAt || !Array.isArray(input.categories) || !Array.isArray(input.content)) {
 		return { catalog: null, errors, warnings, incompatibleTutorialIds };
 	}
 
@@ -379,20 +318,19 @@ export function validateTutorialCatalog(input: unknown, installedVersion: string
 
 	const categoryIds = new Set(categories.map(category => category.id));
 	const seenTutorialIds = new Set<string>();
-	const tutorials = input.tutorials
+	const content = input.content
 		.map((tutorial, index) => normalizeTutorial(tutorial, errors, warnings, categoryIds, seenTutorialIds, installedVersion, incompatibleTutorialIds, index))
-		.filter((tutorial): tutorial is TutorialItem => !!tutorial)
-		.sort(sortCatalogEntries);
+		.filter((tutorial): tutorial is TutorialItem => !!tutorial);
 
 	if (categories.length === 0) {
 		errors.push('Catalog must contain at least one category.');
 	}
-	if (tutorials.length === 0) {
-		errors.push('Catalog must contain at least one tutorial.');
+	if (content.length === 0) {
+		errors.push('Catalog must contain at least one content item.');
 	}
 
 	return {
-		catalog: errors.length === 0 ? { schemaVersion: TUTORIAL_CATALOG_SCHEMA_VERSION, generatedAt, categories, tutorials } : null,
+		catalog: errors.length === 0 ? { schemaVersion: TUTORIAL_CATALOG_SCHEMA_VERSION, generatedAt, categories, content } : null,
 		errors,
 		warnings,
 		incompatibleTutorialIds,
@@ -405,28 +343,42 @@ export function sortCatalogEntries<T extends { title: string; sortOrder?: number
 	return leftOrder === rightOrder ? left.title.localeCompare(right.title) : leftOrder - rightOrder;
 }
 
-export function summarizeTutorial(tutorial: TutorialItem, installedVersion: string): TutorialSummary {
+export function deriveTutorialDisplayName(tutorial: Pick<TutorialItem, 'id' | 'contentUrl'>): string {
+	const contentPath = tutorial.contentUrl.split(/[?#]/, 1)[0] ?? '';
+	const fileName = contentPath.split('/').filter(Boolean).pop() ?? '';
+	const stem = fileName.replace(/\.[^.]+$/, '') || tutorial.id;
+	return toDisplayName(stem || tutorial.id);
+}
+
+function toDisplayName(value: string): string {
+	const words = value.split(/[-_\s]+/).map(word => word.trim()).filter(Boolean);
+	if (!words.length) {
+		return 'Tutorial';
+	}
+	return words.map((word, index) => {
+		const normalized = word.toLowerCase();
+		return index === 0 ? normalized.charAt(0).toUpperCase() + normalized.slice(1) : normalized;
+	}).join(' ');
+}
+
+export function summarizeTutorial(tutorial: TutorialItem, installedVersion: string, summaryContent: TutorialSummaryContent = {}): TutorialSummary {
 	return {
 		id: tutorial.id,
-		title: tutorial.title,
-		summary: tutorial.summary,
+		displayName: summaryContent.displayName ?? deriveTutorialDisplayName(tutorial),
+		contentText: summaryContent.contentText,
 		categoryId: tutorial.categoryId,
 		minExtensionVersion: tutorial.minExtensionVersion,
-		tags: tutorial.tags ?? [],
-		durationMinutes: tutorial.durationMinutes,
-		sortOrder: tutorial.sortOrder,
-		searchText: tutorial.searchText,
-		actions: tutorial.actions ?? [],
 		compatible: isExtensionVersionCompatible(installedVersion, tutorial.minExtensionVersion),
+		unseen: false,
 	};
 }
 
-export function toTutorialViewerCatalog(catalog: TutorialCatalog, installedVersion: string): TutorialViewerCatalog {
+export function toTutorialViewerCatalog(catalog: TutorialCatalog, installedVersion: string, summaryContent: ReadonlyMap<string, TutorialSummaryContent> = new Map()): TutorialViewerCatalog {
 	return {
 		schemaVersion: catalog.schemaVersion,
 		generatedAt: catalog.generatedAt,
 		categories: [...catalog.categories].sort(sortCatalogEntries),
-		tutorials: catalog.tutorials.map(tutorial => summarizeTutorial(tutorial, installedVersion)).sort(sortCatalogEntries),
+		content: catalog.content.map(tutorial => summarizeTutorial(tutorial, installedVersion, summaryContent.get(tutorial.id))),
 	};
 }
 
@@ -447,11 +399,10 @@ export function searchTutorials(
 			return true;
 		}
 		const haystack = [
-			tutorial.title,
-			tutorial.summary,
-			tutorial.searchText ?? '',
+			tutorial.displayName,
+			tutorial.contentText ?? '',
+			tutorial.id,
 			categoryTitleById.get(tutorial.categoryId) ?? '',
-			...tutorial.tags,
 		].join(' ').toLowerCase();
 		return tokens.every(token => haystack.includes(token));
 	});

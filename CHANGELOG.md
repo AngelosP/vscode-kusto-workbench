@@ -3,9 +3,13 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [4.7.0] - 2026.05.02
+## [4.7.0] - 2026.05.03
 
-* 
+* HTML sections with outdated configurations get notification bar now.
+* [Feat: Add column and line cursor location to the VS Code status bar · Issue #22 · AngelosP/vscode-kusto-workbench](https://github.com/AngelosP/vscode-kusto-workbench/issues/22)
+* Bugs
+    * [Intellisense is not showing the error with a red squiggly · Issue #23 · AngelosP/vscode-kusto-workbench](https://github.com/AngelosP/vscode-kusto-workbench/issues/23)
+    * [In a kqlx Notebook, click "Cancel query" does not cancel the query · Issue #21 · AngelosP/vscode-kusto-workbench](https://github.com/AngelosP/vscode-kusto-workbench/issues/21)
 
 ## [4.6.1] - 2026-05-01
 

@@ -21,6 +21,7 @@ export const tutorialViewerStyles = css`
 		display: grid;
 		place-items: center;
 		background: var(--vscode-editor-background);
+		overflow: visible;
 	}
 
 	.mode-compact {
@@ -70,8 +71,10 @@ export const tutorialViewerStyles = css`
 	}
 
 	.standard-frame {
+		position: relative;
 		display: grid;
 		grid-template-columns: minmax(320px, 380px) minmax(0, 1fr);
+		overflow: visible;
 	}
 
 	.focused-frame {
@@ -85,6 +88,7 @@ export const tutorialViewerStyles = css`
 		min-height: 100%;
 		display: grid;
 		place-items: center;
+		overflow: visible;
 	}
 
 	.compact-frame {
@@ -97,6 +101,7 @@ export const tutorialViewerStyles = css`
 		border-radius: 8px;
 		background: var(--vscode-editor-background);
 		box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42);
+		overflow: visible;
 	}
 
 	.sidebar {
@@ -109,7 +114,6 @@ export const tutorialViewerStyles = css`
 	}
 
 	.header,
-	.detail-header,
 	.focused-toolbar,
 	.focused-nav,
 	.compact-header,
@@ -119,6 +123,8 @@ export const tutorialViewerStyles = css`
 	}
 
 	.header {
+		position: relative;
+		z-index: 4;
 		padding: 14px;
 		display: grid;
 		gap: 10px;
@@ -126,6 +132,8 @@ export const tutorialViewerStyles = css`
 	}
 
 	.title-row,
+	.standard-brand-row,
+	.standard-filter-row,
 	.toolbar-actions,
 	.detail-title-row,
 	.detail-actions,
@@ -136,9 +144,7 @@ export const tutorialViewerStyles = css`
 	.category-controls,
 	.compact-kicker-row,
 	.compact-nav,
-		.compact-action-strip,
-		.compact-utility-strip,
-	.compact-primary-actions {
+	.compact-utility-strip {
 		display: flex;
 		align-items: center;
 		gap: 8px;
@@ -148,8 +154,7 @@ export const tutorialViewerStyles = css`
 	.detail-title-row,
 	.focused-toolbar,
 	.focused-nav,
-	.compact-kicker-row,
-	.compact-action-strip {
+	.compact-kicker-row {
 		justify-content: space-between;
 	}
 
@@ -158,6 +163,10 @@ export const tutorialViewerStyles = css`
 		display: grid;
 		gap: 2px;
 		min-width: 0;
+	}
+
+	.standard-title-copy {
+		align-content: center;
 	}
 
 	h1,
@@ -232,7 +241,7 @@ export const tutorialViewerStyles = css`
 	.bell-toggle:hover,
 	.channel-pill:hover,
 	.delivery-pill:hover,
-	.mute-menu button:hover {
+	.mute-menu button:hover:not(:disabled) {
 		background: var(--vscode-button-hoverBackground);
 		color: var(--vscode-button-foreground);
 	}
@@ -303,8 +312,7 @@ export const tutorialViewerStyles = css`
 
 	.section-label,
 	.eyebrow,
-	.position,
-	.compact-meta {
+	.position {
 		font-size: 11px;
 		line-height: 1.4;
 		color: var(--vscode-descriptionForeground);
@@ -312,19 +320,101 @@ export const tutorialViewerStyles = css`
 
 	.compact-header {
 		position: relative;
-		padding: 16px 42px 8px 16px;
+		padding: 16px 42px 10px 16px;
 		display: grid;
-		gap: 7px;
+		gap: 8px;
 		border-bottom: 0;
 		background: color-mix(in srgb, var(--vscode-editor-background) 92%, var(--vscode-sideBar-background));
 	}
 
-	.compact-brand {
+	.compact-brand,
+	.standard-brand {
 		font-size: 11px;
 		font-weight: 700;
 		letter-spacing: 0;
 		text-transform: uppercase;
 		color: var(--vscode-textLink-foreground);
+	}
+
+	.standard-brand-row {
+		justify-content: flex-start;
+		gap: 6px;
+	}
+
+	h1.standard-brand {
+		font-size: 22px;
+		font-weight: 500;
+		line-height: 1.2;
+	}
+
+	.status-info {
+		width: 18px;
+		height: 18px;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		color: var(--vscode-textLink-foreground);
+		cursor: help;
+		user-select: none;
+	}
+
+	.status-info .codicon {
+		font-size: 16px;
+		width: 16px;
+		height: 16px;
+	}
+
+	.status-info.warning {
+		color: var(--vscode-editorWarning-foreground, var(--vscode-textLink-foreground));
+	}
+
+	.standard-filter-row {
+		min-width: 0;
+		flex-wrap: wrap;
+	}
+
+	.category-dropdown {
+		flex: 1 1 auto;
+		min-width: 0;
+	}
+
+	.standard-seen-toggle {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		min-height: 27px;
+		color: var(--vscode-descriptionForeground);
+		font-size: 12px;
+		line-height: 1.35;
+		white-space: nowrap;
+		cursor: pointer;
+		user-select: none;
+	}
+
+	.standard-seen-toggle input {
+		width: 14px;
+		height: 14px;
+		margin: 0;
+		accent-color: var(--vscode-checkbox-selectBackground, var(--vscode-focusBorder));
+	}
+
+	.standard-seen-toggle input:focus-visible {
+		outline: 1px solid var(--vscode-focusBorder);
+		outline-offset: 2px;
+	}
+
+	.standard-mute-wrap {
+		flex: 0 0 auto;
+	}
+
+	.standard-close {
+		position: absolute;
+		top: 10px;
+		right: 10px;
+		z-index: 20;
+		background: transparent;
+		border-color: transparent;
+		color: var(--vscode-descriptionForeground);
 	}
 
 	.compact-close {
@@ -343,12 +433,6 @@ export const tutorialViewerStyles = css`
 		font-size: 19px;
 		line-height: 1.25;
 		padding-right: 8px;
-	}
-
-	.compact-summary {
-		margin: 0;
-		line-height: 1.45;
-		color: var(--vscode-descriptionForeground);
 	}
 
 	.section-label {
@@ -487,9 +571,7 @@ export const tutorialViewerStyles = css`
 		overflow: auto;
 		min-height: 0;
 		flex: 1;
-		display: grid;
-		align-content: start;
-		gap: 8px;
+		display: block;
 	}
 
 	.tutorial-item {
@@ -504,6 +586,25 @@ export const tutorialViewerStyles = css`
 		display: grid;
 		gap: 7px;
 		min-width: 0;
+		width: 100%;
+		margin: 0 0 5px;
+	}
+
+	.tutorial-item:last-child {
+		margin-bottom: 0;
+	}
+
+	.search-hit {
+		padding: 0 1px;
+		border-radius: 2px;
+		background: var(--vscode-editor-findMatchHighlightBackground, rgba(234, 92, 0, 0.33));
+		color: inherit;
+	}
+
+	.search-hit.current {
+		background: var(--vscode-editor-findMatchBackground, rgba(234, 92, 0, 0.55));
+		outline: 1px solid var(--vscode-editor-findMatchBorder, var(--vscode-focusBorder));
+		outline-offset: 1px;
 	}
 
 	.tutorial-item:hover,
@@ -541,12 +642,6 @@ export const tutorialViewerStyles = css`
 		background: var(--vscode-editor-background);
 	}
 
-	.detail-header {
-		padding: 18px 22px 14px;
-		display: grid;
-		gap: 12px;
-	}
-
 	.detail-title-row {
 		align-items: flex-start;
 		gap: 16px;
@@ -569,14 +664,47 @@ export const tutorialViewerStyles = css`
 		flex: 1;
 		line-height: 1.6;
 		min-height: 0;
+		text-align: left;
+	}
+
+	.standard-footer {
+		border-top: 1px solid var(--vscode-panel-border);
+		padding: 10px 14px;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		flex-wrap: wrap;
+		background: color-mix(in srgb, var(--vscode-editor-background) 94%, var(--vscode-sideBar-background));
+	}
+
+	.standard-nav {
+		justify-content: flex-start;
+		flex: 0 0 auto;
+	}
+
+	.standard-footer-actions {
+		display: flex;
+		align-items: center;
+		justify-content: flex-end;
+		gap: 6px;
+	}
+
+	.standard-footer-link {
+		min-height: 24px;
+		padding: 2px 8px;
+		border-color: transparent;
+		background: transparent;
+		color: var(--vscode-descriptionForeground);
 	}
 
 	.compact-content {
-		padding: 4px 16px 12px;
+		padding: 6px 16px 12px;
 		overflow: auto;
 		line-height: 1.5;
-		max-height: min(460px, calc(100vh - 236px));
+		max-height: min(500px, calc(100vh - 210px));
 		min-height: 0;
+		text-align: left;
 	}
 
 	.focused-toolbar {
@@ -611,11 +739,13 @@ export const tutorialViewerStyles = css`
 
 	.markdown {
 		max-width: 820px;
+		margin: 0;
+		text-align: left;
 	}
 
 	.focused-markdown {
 		max-width: 760px;
-		margin: 0 auto;
+		margin: 0;
 	}
 
 	.compact-markdown {
@@ -698,69 +828,74 @@ export const tutorialViewerStyles = css`
 	}
 
 	.markdown img {
+		display: block;
 		max-width: 100%;
 		height: auto;
+		margin: 10px 0 14px;
 		border: 1px solid var(--vscode-panel-border);
 		border-radius: 6px;
 	}
 
 	.compact-markdown img {
-		display: block;
 		max-height: min(320px, 42vh);
 		object-fit: contain;
-		margin: 10px auto 14px;
-	}
-
-	.compact-primary-actions {
-		flex-wrap: wrap;
-	}
-
-	.compact-primary-actions .action-btn {
-		min-height: 30px;
-		padding: 5px 9px;
 	}
 
 	.compact-footer {
 		border-top: 1px solid var(--vscode-panel-border);
 		border-bottom: 0;
-		padding: 10px 12px 12px;
-		display: grid;
-		gap: 8px;
+		padding: 10px 12px;
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		flex-wrap: wrap;
 		background: color-mix(in srgb, var(--vscode-editor-background) 94%, var(--vscode-sideBar-background));
 	}
 
 	.compact-nav,
-	.compact-action-strip,
 	.compact-utility-strip {
 		flex-wrap: wrap;
 	}
 
-	.compact-action-strip {
-		gap: 12px;
-	}
-
 	.compact-utility-strip {
-		justify-content: flex-start;
+		justify-content: flex-end;
 		gap: 6px;
 	}
 
 	.compact-nav {
-		gap: 4px;
+		gap: 8px;
 		color: var(--vscode-descriptionForeground);
 	}
 
 	.compact-nav .icon-btn {
-		width: 26px;
-		min-width: 26px;
-		min-height: 26px;
-		background: transparent;
-		border-color: transparent;
-		color: inherit;
+		width: 38px;
+		min-width: 38px;
+		min-height: 34px;
+		border-radius: 6px;
+		background: var(--vscode-button-secondaryBackground);
+		border-color: var(--vscode-button-border, var(--vscode-panel-border));
+		color: var(--vscode-foreground);
+		transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease, transform 80ms ease;
+	}
+
+	.compact-nav .icon-btn:hover:not(:disabled) {
+		background: var(--vscode-button-hoverBackground);
+		border-color: var(--vscode-focusBorder);
+		color: var(--vscode-button-foreground);
+		box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 55%, transparent);
+	}
+
+	.compact-nav .icon-btn:active:not(:disabled) {
+		transform: translateY(1px);
 	}
 
 	.compact-nav .icon-btn:disabled {
-		opacity: 0.22;
+		opacity: 0.38;
 		cursor: default;
+		background: transparent;
+		border-color: transparent;
+		box-shadow: none;
 	}
 
 	.delivery-pill {
@@ -785,10 +920,10 @@ export const tutorialViewerStyles = css`
 
 	.mute-menu {
 		position: absolute;
-		left: 0;
+		right: 0;
 		bottom: calc(100% + 6px);
-		z-index: 2;
-		min-width: 190px;
+		z-index: 40;
+		min-width: 280px;
 		padding: 4px;
 		border: 1px solid var(--vscode-panel-border);
 		border-radius: 6px;
@@ -806,10 +941,77 @@ export const tutorialViewerStyles = css`
 		text-align: left;
 	}
 
+	.mute-menu button:disabled {
+		opacity: 0.55;
+		cursor: default;
+	}
+
+	.mute-menu-item {
+		display: flex;
+		align-items: flex-start;
+		gap: 8px;
+	}
+
+	.mute-menu-item > span:last-child {
+		display: grid;
+		gap: 1px;
+	}
+
+	.mute-submenu-parent {
+		position: relative;
+	}
+
+	.mute-submenu-trigger .submenu-chevron {
+		width: 14px;
+		height: 14px;
+		margin-left: auto;
+		transform: rotate(180deg);
+		color: var(--vscode-descriptionForeground);
+	}
+
+	.mute-flyout {
+		position: absolute;
+		right: calc(100% + 6px);
+		bottom: 0;
+		z-index: 3;
+		min-width: 220px;
+		padding: 4px;
+		border: 1px solid var(--vscode-panel-border);
+		border-radius: 6px;
+		background: var(--vscode-dropdown-background, var(--vscode-editor-background));
+		box-shadow: 0 8px 24px rgba(0, 0, 0, 0.28);
+	}
+
+	.menu-check {
+		width: 14px;
+		height: 14px;
+		margin-top: 1px;
+		flex: 0 0 14px;
+	}
+
+	.menu-subline {
+		font-size: 11px;
+		line-height: 1.3;
+		color: var(--vscode-descriptionForeground);
+	}
+
+	.mute-menu-divider {
+		height: 1px;
+		margin: 4px 2px;
+		background: var(--vscode-panel-border);
+	}
+
 	.empty,
 	.loading {
 		color: var(--vscode-descriptionForeground);
 		padding: 20px;
+	}
+
+	.content-empty {
+		margin: auto;
+		max-width: 420px;
+		text-align: center;
+		line-height: 1.5;
 	}
 
 	.error-list {
@@ -879,7 +1081,6 @@ export const tutorialViewerStyles = css`
 			max-height: calc(100vh - 16px);
 		}
 
-		.compact-action-strip,
 		.compact-utility-strip {
 			align-items: stretch;
 			flex-direction: column;
@@ -889,16 +1090,25 @@ export const tutorialViewerStyles = css`
 			justify-content: space-between;
 		}
 
-		.compact-primary-actions,
-		.compact-primary-actions .action-btn,
-		.compact-utility-strip > *,
-		.compact-utility-strip .delivery-pill {
+		.compact-utility-strip > * {
 			width: 100%;
+		}
+
+		.standard-filter-row {
+			align-items: stretch;
+		}
+
+		.category-dropdown {
+			flex-basis: min(220px, calc(100% - 38px));
 		}
 
 		.mute-wrap,
 		.mute-wrap > .compact-link {
 			width: 100%;
+		}
+
+		.standard-mute-wrap {
+			width: auto;
 		}
 
 		.mute-menu {
@@ -916,7 +1126,6 @@ export const tutorialViewerStyles = css`
 			padding-left: 4px;
 		}
 
-		.detail-header,
 		.content,
 		.focused-content {
 			padding-left: 14px;

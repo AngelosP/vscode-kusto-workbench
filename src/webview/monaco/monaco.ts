@@ -234,6 +234,7 @@ async function __kustoPrepareSchemaForAutocomplete(ed: any): Promise<boolean> {
 // These replace _win.xxx bridge assignments for self-consumed functions.
 let __kustoEnableMarkersForModel: ((modelUri: any) => void) | null = null;
 let __kustoDisableMarkersForModel: ((modelUri: any) => void) | null = null;
+let __kustoScheduleDisableMarkersForModel: ((modelUri: any) => void) | null = null;
 let __kustoGetHoverInfoAt: ((model: any, position: any, boxId?: string) => any) | null = null;
 let __kustoSchemaOperationQueue: Promise<any> = Promise.resolve();
 let __kustoSetMonacoKustoSchemaInternal: ((...args: any[]) => Promise<any>) | null = null;
@@ -250,6 +251,8 @@ let __kustoStatementSeparatorMinBlankLines = 1;
 let __kustoGetStatementBlocksFromModel: ((model: any) => any[]) | null = null;
 let __kustoIsSeparatorBlankLine: ((model: any, lineNumber: any) => boolean) | null = null;
 let __kustoExtractStatementTextAtCursor: ((editor: any) => string | null) | null = null;
+const KUSTO_MARKER_BLUR_CLEAR_DELAY_MS = 150;
+const __kustoMarkerBlurClearTimers: Record<string, any> = {};
 
 // Exported module-level lets for cross-module ES imports (lazily assigned inside require callback).
 export let __kustoAutoFindInQueryEditor: ((boxId: any, term: any) => Promise<boolean>) | null = null;
@@ -710,7 +713,7 @@ function ensureMonaco() {
 										try {
 											if (model && model.uri && Array.isArray(normalizedMarkers) && typeof monaco.editor.getModelMarkers === 'function') {
 												const currentMarkers = monaco.editor.getModelMarkers({ owner: 'kusto', resource: model.uri });
-												if (__kustoAreEquivalentMonacoMarkers(currentMarkers, normalizedMarkers)) {
+												if (normalizedMarkers.length === 0 && __kustoAreEquivalentMonacoMarkers(currentMarkers, normalizedMarkers)) {
 													return;
 												}
 											}
@@ -723,9 +726,29 @@ function ensureMonaco() {
 __kustoEnableMarkersForModel = function(modelUri: any) {
 									if (!modelUri) return;
 									const uri = typeof modelUri === 'string' ? modelUri : modelUri.toString();
+									try {
+										if (__kustoMarkerBlurClearTimers[uri]) {
+											clearTimeout(__kustoMarkerBlurClearTimers[uri]);
+											delete __kustoMarkerBlurClearTimers[uri];
+										}
+									} catch (e) { console.error('[kusto]', e); }
 									if (!__kustoMarkersEnabledModels.has(uri)) {
 										__kustoMarkersEnabledModels.add(uri);
 									}
+								};
+
+__kustoScheduleDisableMarkersForModel = function(modelUri: any) {
+									if (!modelUri || __kustoDisableMarkersForModel === null) return;
+									const uri = typeof modelUri === 'string' ? modelUri : modelUri.toString();
+									try {
+										if (__kustoMarkerBlurClearTimers[uri]) {
+											clearTimeout(__kustoMarkerBlurClearTimers[uri]);
+										}
+										__kustoMarkerBlurClearTimers[uri] = setTimeout(() => {
+											try { delete __kustoMarkerBlurClearTimers[uri]; } catch (e) { console.error('[kusto]', e); }
+											try { __kustoDisableMarkersForModel!(uri); } catch (e) { console.error('[kusto]', e); }
+										}, KUSTO_MARKER_BLUR_CLEAR_DELAY_MS);
+									} catch (e) { console.error('[kusto]', e); }
 								};
 								
 								// Function to disable markers for a specific model (called on blur)
@@ -733,6 +756,12 @@ __kustoEnableMarkersForModel = function(modelUri: any) {
 __kustoDisableMarkersForModel = function(modelUri: any) {
 									if (!modelUri) return;
 									const uri = typeof modelUri === 'string' ? modelUri : modelUri.toString();
+									try {
+										if (__kustoMarkerBlurClearTimers[uri]) {
+											clearTimeout(__kustoMarkerBlurClearTimers[uri]);
+											delete __kustoMarkerBlurClearTimers[uri];
+										}
+									} catch (e) { console.error('[kusto]', e); }
 									__kustoMarkersEnabledModels.delete(uri);
 									// Also clear any existing markers for this model
 									try {
@@ -4219,8 +4248,8 @@ function initQueryEditor(boxId: any) {
 							// Disable markers (red squiggles) for this editor now that it's unfocused
 							try {
 								const model = editor.getModel();
-								if (model && model.uri && __kustoDisableMarkersForModel !== null) {
-									__kustoDisableMarkersForModel!(model.uri);
+								if (model && model.uri && __kustoScheduleDisableMarkersForModel !== null) {
+									__kustoScheduleDisableMarkersForModel!(model.uri);
 								}
 							} catch (e) { console.error('[kusto]', e); }
 						}

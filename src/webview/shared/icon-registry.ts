@@ -44,6 +44,7 @@ export const ICONS = {
 	delete: codicon('trash'),
 	copy: codicon('copy'),
 	refresh: codicon('refresh'),
+	info: codicon('info'),
 	bell: svg(html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M4.5 6.7c0-2.2 1.4-3.7 3.5-3.7s3.5 1.5 3.5 3.7v2.4l1.2 1.9H3.3l1.2-1.9V6.7z"/><path d="M6.7 12.5c.3.7.8 1 1.3 1s1-.3 1.3-1"/></svg>`),
 	bellSlash: svg(html`<svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg"><path d="M5.1 5.1c.5-1.3 1.5-2.1 2.9-2.1 2.1 0 3.5 1.5 3.5 3.7v2.4l.8 1.3"/><path d="M3.3 11h7.7"/><path d="M6.7 12.5c.3.7.8 1 1.3 1s1-.3 1.3-1"/><path d="M2.5 2.5l11 11"/><path d="M4.5 7.1v2l-.7 1.1"/></svg>`),
 	add: svg(html`<svg viewBox="0 0 16 16" fill="currentColor" xmlns="http://www.w3.org/2000/svg"><path d="M14 7v1H8v6H7V8H1V7h6V1h1v6h6z"/></svg>`),

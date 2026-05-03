@@ -36,10 +36,8 @@ function validCatalog(): TutorialCatalog {
 		schemaVersion: 1,
 		generatedAt: '2026-05-01T00:00:00.000Z',
 		categories: [{ id: 'agent', title: 'Agent workflow' }],
-		tutorials: [{
+		content: [{
 			id: 'one',
-			title: 'One tutorial',
-			summary: 'A remote tutorial',
 			categoryId: 'agent',
 			contentUrl: 'content/one.md',
 			minExtensionVersion: '0.0.0',
@@ -72,7 +70,7 @@ describe('TutorialCatalogService', () => {
 
 		expect(result.status.source).toBe('unavailable');
 		expect(result.catalog.categories).toEqual([]);
-		expect(result.catalog.tutorials).toEqual([]);
+		expect(result.catalog.content).toEqual([]);
 		expect(result.status.errors[0]).toBe(TUTORIAL_CONNECTION_REQUIRED_MESSAGE);
 	});
 
@@ -101,13 +99,15 @@ describe('TutorialCatalogService', () => {
 				return new Response(JSON.stringify(validCatalog()), { status: 200 });
 			}
 			if (url === contentUrl) {
-				return new Response('# Downloaded tutorial', { status: 200 });
+				return new Response('# Downloaded tutorial\n\nCached rows are searchable.', { status: 200 });
 			}
 			return new Response('', { status: 404 });
 		});
 		vi.stubGlobal('fetch', fetchMock);
 		const service = createService();
-		await service.getViewerCatalog({ forceRefresh: true });
+		const viewerCatalog = await service.getViewerCatalog({ forceRefresh: true });
+		expect(viewerCatalog.catalog.content[0].displayName).toBe('Downloaded tutorial');
+		expect(viewerCatalog.catalog.content[0].contentText).toBe('Cached rows are searchable.');
 		const remoteContent = await service.getTutorialContent('one', webview);
 		expect(remoteContent.source).toBe('remote');
 
@@ -126,13 +126,15 @@ describe('TutorialCatalogService', () => {
 		const context = createContext(vscode.ExtensionMode.Development);
 		const service = new TutorialCatalogService(context);
 		await vscode.workspace.fs.writeFile(service.getLocalDevelopmentCatalogUri(), new TextEncoder().encode(JSON.stringify(validCatalog())));
-		await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(context.extensionUri, 'media', 'tutorials', 'content', 'one.md'), new TextEncoder().encode('# Local tutorial'));
+		await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(context.extensionUri, 'media', 'tutorials', 'content', 'one.md'), new TextEncoder().encode('# Local tutorial\n\nLocal searchable body.'));
 
 		const result = await service.getViewerCatalog({ forceRefresh: true });
 		const content = await service.getTutorialContent('one', webview);
 
 		expect(result.status.source).toBe('localDevelopment');
-		expect(result.catalog.tutorials[0].id).toBe('one');
+		expect(result.catalog.content[0].id).toBe('one');
+		expect(result.catalog.content[0].displayName).toBe('Local tutorial');
+		expect(result.catalog.content[0].contentText).toBe('Local searchable body.');
 		expect(content.source).toBe('localDevelopment');
 		expect(content.markdown).toContain('Local tutorial');
 		expect(fetchMock).not.toHaveBeenCalled();

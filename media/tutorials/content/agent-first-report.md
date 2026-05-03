@@ -1,11 +1,11 @@
-# Build a report with the agent
+# You can build and publish a Power BI report
 
-Open the Kusto Workbench agent and describe the report you want in one sentence. A good first request includes the metric, time range, and visualization shape.
+Start with the Kusto Workbench agent or build the report by hand from query, chart, markdown, and HTML sections. Once the result is ready, use the Power BI export flow to package the report for sharing.
 
-Example request:
+Good reports usually start with a clear metric, time range, and visual shape:
 
 ```text
-Show daily active users for the last 30 days and chart it as a line graph.
+Create a Power BI-ready report for daily active users over the last 30 days.
 ```
 
-Review the generated query before relying on the result. The agent can iterate on the same notebook, so follow-up requests like "change this to a rolling 7 day average" work well.
+Review the generated queries and visuals before publishing. The notebook stays editable, so you can keep iterating until the exported report tells the story clearly.

@@ -33,82 +33,41 @@
       "sortOrder": 50
     }
   ],
-  "tutorials": [
+  "content": [
     {
       "id": "agent-first-report",
-      "title": "Build a report with the agent",
-      "summary": "Start from a natural-language question and let the Kusto Workbench agent create a query and chart.",
       "categoryId": "agent",
       "contentUrl": "content/agent-first-report.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "agent-first-report-2026-05-01",
-      "tags": ["agent", "chart", "query"],
-      "durationMinutes": 5,
-      "sortOrder": 10,
-      "nativeWalkthroughId": "kusto-workbench.agent-first",
-      "actions": [
-        {
-          "id": "open-agent",
-          "title": "Open Kusto Workbench Agent",
-          "command": "kusto.openCustomAgent"
-        }
-      ]
+      "updateToken": "agent-first-report-2026-05-01"
     },
     {
       "id": "editor-first-query",
-      "title": "Run your first query",
-      "summary": "Open the query editor, write a simple KQL query, and inspect the results table.",
       "categoryId": "editor",
       "contentUrl": "content/editor-first-query.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "editor-first-query-2026-05-01",
-      "tags": ["editor", "query", "kql"],
-      "durationMinutes": 4,
-      "sortOrder": 20,
-      "nativeWalkthroughId": "kusto-workbench.editor-first",
-      "actions": [
-        {
-          "id": "open-editor",
-          "title": "Open Query Editor",
-          "command": "kusto.openQueryEditor"
-        }
-      ]
+      "updateToken": "editor-first-query-2026-05-01"
     },
     {
       "id": "table-tools",
-      "title": "Explore table results",
-      "summary": "Use column tools, value inspection, and transformation sections to understand query output.",
       "categoryId": "results",
       "contentUrl": "content/table-tools.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "table-tools-2026-05-01",
-      "tags": ["table", "filter", "transform"],
-      "durationMinutes": 6,
-      "sortOrder": 30
+      "updateToken": "table-tools-2026-05-01"
     },
     {
       "id": "build-chart",
-      "title": "Build a chart",
-      "summary": "Turn query results into a chart section and tune chart type, axes, and labels.",
       "categoryId": "charts",
-      "contentUrl": "content/build-chart.md",
+      "contentUrl": "content/sections-flash-green-blue.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "build-chart-2026-05-01",
-      "tags": ["chart", "visualization"],
-      "durationMinutes": 5,
-      "sortOrder": 40
+      "updateToken": "build-chart-2026-05-03"
     },
     {
       "id": "copilot-chat",
-      "title": "Use Copilot chat in a query section",
-      "summary": "Ask Copilot to write or refine KQL while keeping the selected database schema in context.",
       "categoryId": "copilot",
       "contentUrl": "content/copilot-chat.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "copilot-chat-2026-05-01",
-      "tags": ["copilot", "chat", "schema"],
-      "durationMinutes": 5,
-      "sortOrder": 50
+      "updateToken": "copilot-chat-2026-05-01"
     }
   ]
 }

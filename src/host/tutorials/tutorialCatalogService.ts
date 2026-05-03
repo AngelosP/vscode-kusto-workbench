@@ -8,6 +8,7 @@ import {
 	type TutorialCatalog,
 	type TutorialCatalogValidationResult,
 	type TutorialItem,
+	type TutorialSummaryContent,
 	type TutorialViewerStatus,
 } from '../../shared/tutorials/tutorialCatalog';
 
@@ -27,6 +28,7 @@ interface CatalogCacheFile {
 }
 
 interface TutorialSettings {
+	enabled: boolean;
 	catalogUrl: string;
 	enableUpdateChecks: boolean;
 	refreshIntervalHours: number;
@@ -103,10 +105,11 @@ export class TutorialCatalogService {
 
 	getSettings(): TutorialSettings {
 		const config = vscode.workspace.getConfiguration('kustoWorkbench');
+		const enabled = !!config.get('tutorials.enabled', true);
 		const catalogUrl = String(config.get('tutorials.catalogUrl', DEFAULT_CATALOG_URL) || '').trim();
 		const enableUpdateChecks = !!config.get('tutorials.enableUpdateChecks', true);
 		const refreshIntervalHours = Math.max(1, Number(config.get('tutorials.refreshIntervalHours', 24)) || 24);
-		return { catalogUrl, enableUpdateChecks, refreshIntervalHours };
+		return { enabled, catalogUrl, enableUpdateChecks, refreshIntervalHours };
 	}
 
 	async getCatalog(options: { forceRefresh?: boolean } = {}): Promise<ResolvedTutorialCatalog> {
@@ -122,15 +125,16 @@ export class TutorialCatalogService {
 
 	async getViewerCatalog(options: { forceRefresh?: boolean } = {}) {
 		const resolved = await this.getCatalog(options);
+		const summaryContent = await this.resolveSummaryContent(resolved);
 		return {
-			catalog: toTutorialViewerCatalog(resolved.catalog, this.installedVersion),
+			catalog: toTutorialViewerCatalog(resolved.catalog, this.installedVersion, summaryContent),
 			status: this.toStatus(resolved),
 		};
 	}
 
 	async getTutorialContent(tutorialId: string, webview: vscode.Webview): Promise<TutorialContentResult> {
 		const resolved = this.latestCatalog ?? await this.getCatalog();
-		const tutorial = resolved.catalog.tutorials.find(candidate => candidate.id === tutorialId);
+		const tutorial = resolved.catalog.content.find(candidate => candidate.id === tutorialId);
 		if (!tutorial) {
 			return { tutorialId, markdown: '', source: 'unavailable', errors: [`Unknown tutorial '${tutorialId}'.`] };
 		}
@@ -292,7 +296,7 @@ export class TutorialCatalogService {
 			schemaVersion: TUTORIAL_CATALOG_SCHEMA_VERSION,
 			generatedAt: new Date().toISOString(),
 			categories: [],
-			tutorials: [],
+			content: [],
 		};
 		return {
 			catalog,
@@ -360,6 +364,59 @@ export class TutorialCatalogService {
 			return { kind: 'remote', url: new URL(contentUrl, resolved.catalogUrl).toString() };
 		}
 		return null;
+	}
+
+	private async resolveSummaryContent(resolved: ResolvedTutorialCatalog): Promise<Map<string, TutorialSummaryContent>> {
+		const summaryContent = new Map<string, TutorialSummaryContent>();
+		await Promise.all(resolved.catalog.content.map(async tutorial => {
+			const content = await this.readSummaryContent(tutorial, resolved);
+			if (content) {
+				summaryContent.set(tutorial.id, content);
+			}
+		}));
+		return summaryContent;
+	}
+
+	private async readSummaryContent(tutorial: TutorialItem, resolved: ResolvedTutorialCatalog): Promise<TutorialSummaryContent | null> {
+		const contentSource = this.resolveContentSource(tutorial, resolved);
+		if (!contentSource) {
+			return null;
+		}
+		try {
+			let markdown = '';
+			if (contentSource.kind === 'localDevelopment') {
+				markdown = await this.readLocalDevelopmentText(contentSource.uri, MAX_MARKDOWN_BYTES, 'tutorial');
+			} else {
+				markdown = await this.readCachedTutorialMarkdown(tutorial.id, contentSource.url)
+					?? await this.fetchRemoteMarkdown(contentSource.url, tutorial.id);
+			}
+			return {
+				displayName: this.firstMarkdownHeading(markdown) ?? undefined,
+				contentText: this.markdownToSearchText(markdown),
+			};
+		} catch {
+			return null;
+		}
+	}
+
+	private firstMarkdownHeading(markdown: string): string | null {
+		const match = /^#\s+(.+?)\s*#*\s*$/m.exec(markdown);
+		return match?.[1]?.trim() || null;
+	}
+
+	private markdownToSearchText(markdown: string): string {
+		return markdown
+			.replace(/^#\s+.+?\s*#*\s*$/m, ' ')
+			.replace(/```[\s\S]*?```/g, block => block.replace(/```[^\n]*\n?|```/g, ' '))
+			.replace(/`([^`]+)`/g, '$1')
+			.replace(/!\[([^\]]*)\]\([^)]+\)/g, '$1')
+			.replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
+			.replace(/<[^>]+>/g, ' ')
+			.replace(/^#{1,6}\s+/gm, ' ')
+			.replace(/^[>\-*+\d.)\s]+/gm, ' ')
+			.replace(/[\\*_~#>`|\[\](){}\/]/g, ' ')
+			.replace(/\s+/g, ' ')
+			.trim();
 	}
 
 	private async fetchRemoteMarkdown(url: string, tutorialId: string): Promise<string> {

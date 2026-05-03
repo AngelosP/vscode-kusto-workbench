@@ -16,6 +16,7 @@ export const styles = css`
 	display: flex;
 	align-items: center;
 	flex: 1;
+	min-height: 27px;
 	background: var(--vscode-input-background);
 	border: 1px solid var(--vscode-input-border);
 	border-radius: 2px;
@@ -39,7 +40,7 @@ export const styles = css`
 
 .search-input {
 	flex: 1;
-	padding: 4px 8px 4px 26px;
+	padding: 5px 8px 5px 26px;
 	font-size: 12px;
 	font-family: inherit;
 	background: transparent;
@@ -62,8 +63,8 @@ export const styles = css`
 }
 
 .mode-toggle {
-	width: 20px;
-	height: 18px;
+	width: 24px;
+	height: 24px;
 	padding: 0;
 	border: none;
 	background: transparent;
@@ -96,8 +97,8 @@ export const styles = css`
 }
 
 .nav-btn {
-	width: 20px;
-	height: 18px;
+	width: 24px;
+	height: 24px;
 	padding: 0;
 	border: none;
 	background: transparent;

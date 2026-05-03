@@ -1,5 +1,11 @@
-# Build a chart
+# Sections flash green (new) and blue (edited)
 
-Add a chart section below a query result when you want to compare categories or inspect a trend. Pick a chart type first, then map the x and y columns.
+They flash when they are the currently selected editor, and they remain green and blue until the next time the file is saved.
 
-For time series, sort the query by time before charting. For categorical charts, keep the result set small enough that the chart can be read at a glance.
+New sections flash green
+![Top-left corner of a new section with a green border](images/section-new-green-corner.png)
+
+Changed sections flash blue
+![Top-left corner of a changed section with a blue border](images/section-changed-blue-corner.png)
+
+<br>

@@ -26,6 +26,7 @@
 const CODICON_CHARS: Record<string, number> = {
 	'clear-all': 0xeabf,
 	'close': 0xea76,
+	'info': 0xea74,
 	'tools': 0xeb6d,
 	'eye': 0xea70,
 	'trash': 0xea81,

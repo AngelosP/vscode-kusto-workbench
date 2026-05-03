@@ -705,6 +705,76 @@ _win.__testAssertMonacoMarkers = (selector: string, expectation: 'any' | 'none' 
 	return `${severity || 'all'} markers(${markers.length}) for ${selector}: ${markers.slice(0, 5).map((m: any) => String(m.message || '').slice(0, 60)).join('; ')}`;
 };
 
+_win.__testAssertMonacoDiagnosticVisible = (selector: string, expectedText: string, expectedMessage: string = '', owner: string = 'kusto'): string => {
+	const { editor, editorRoot } = resolveMonacoEditorFromSelector(selector);
+	const model = typeof editor.getModel === 'function' ? editor.getModel() : null;
+	if (!model?.uri) {
+		throw new Error(`monaco model unavailable for diagnostic visibility check: ${selector}`);
+	}
+	const monacoApi = _win.monaco;
+	if (!monacoApi?.editor?.getModelMarkers) {
+		throw new Error('monaco.editor.getModelMarkers unavailable');
+	}
+	const markerText = String(expectedText || '');
+	const messageText = String(expectedMessage || '');
+	const markers = monacoApi.editor.getModelMarkers({ owner, resource: model.uri }) || [];
+	const marker = markers.find((candidate: any) => {
+		if (candidate.severity !== monacoApi.MarkerSeverity?.Error) return false;
+		if (messageText && !String(candidate.message || '').includes(messageText)) return false;
+		const text = model.getValueInRange({
+			startLineNumber: candidate.startLineNumber,
+			startColumn: candidate.startColumn,
+			endLineNumber: candidate.endLineNumber,
+			endColumn: candidate.endColumn,
+		});
+		return text === markerText;
+	});
+	if (!marker) {
+		throw new Error(`Expected ${owner} error marker over ${JSON.stringify(markerText)} for ${selector}, got ${JSON.stringify(markers.map((candidate: any) => ({ message: candidate.message, startLineNumber: candidate.startLineNumber, startColumn: candidate.startColumn, endLineNumber: candidate.endLineNumber, endColumn: candidate.endColumn })))}`);
+	}
+	const range = {
+		startLineNumber: marker.startLineNumber,
+		startColumn: marker.startColumn,
+		endLineNumber: marker.endLineNumber,
+		endColumn: marker.endColumn,
+	};
+	const decorations = model.getAllDecorations().filter((decoration: any) => decoration.options?.className === 'squiggly-error');
+	const matchingDecoration = decorations.find((decoration: any) => model.getValueInRange(decoration.range) === markerText);
+	if (!matchingDecoration) {
+		throw new Error(`Expected squiggly-error model decoration over ${JSON.stringify(markerText)}, got ${JSON.stringify(decorations.map((decoration: any) => ({ range: decoration.range, text: model.getValueInRange(decoration.range), className: decoration.options?.className })))}`);
+	}
+	const root = editorRoot.matches('.monaco-editor') ? editorRoot : editorRoot.querySelector('.monaco-editor') as HTMLElement | null;
+	if (!root) {
+		throw new Error(`monaco editor root unavailable for diagnostic visibility check: ${selector}`);
+	}
+	const startPosition = editor.getScrolledVisiblePosition?.({ lineNumber: range.startLineNumber, column: range.startColumn });
+	const endPosition = editor.getScrolledVisiblePosition?.({ lineNumber: range.endLineNumber, column: range.endColumn });
+	if (!startPosition || !endPosition) {
+		throw new Error(`marker range is not visible for ${JSON.stringify(markerText)} in ${selector}`);
+	}
+	const rootRect = root.getBoundingClientRect();
+	const expectedLeft = rootRect.left + Math.min(startPosition.left, endPosition.left) - 2;
+	const expectedRight = rootRect.left + Math.max(startPosition.left, endPosition.left) + 2;
+	const expectedTop = rootRect.top + Math.min(startPosition.top, endPosition.top) - 2;
+	const expectedBottom = rootRect.top + Math.max(startPosition.top + startPosition.height, endPosition.top + endPosition.height) + 6;
+	const squiggles = Array.from(root.querySelectorAll('.cdr.squiggly-error')) as HTMLElement[];
+	const visibleSquiggle = squiggles.find((node) => {
+		const rect = node.getBoundingClientRect();
+		if (rect.width <= 0 || rect.height <= 0) return false;
+		const overlapsTarget = rect.right >= expectedLeft && rect.left <= expectedRight && rect.bottom >= expectedTop && rect.top <= expectedBottom;
+		if (!overlapsTarget) return false;
+		const style = getComputedStyle(node);
+		const hasBorder = style.borderBottomStyle !== 'none' && parseFloat(style.borderBottomWidth || '0') > 0 && style.borderBottomColor !== 'transparent' && !style.borderBottomColor.endsWith(', 0)');
+		const hasBackground = !!style.backgroundImage && style.backgroundImage !== 'none';
+		return hasBorder || hasBackground;
+	});
+	if (!visibleSquiggle) {
+		throw new Error(`Expected visible squiggly-error DOM over ${JSON.stringify(markerText)}, got ${JSON.stringify(squiggles.map((node) => { const rect = node.getBoundingClientRect(); const style = getComputedStyle(node); return { x: Math.round(rect.x), y: Math.round(rect.y), width: Math.round(rect.width), height: Math.round(rect.height), borderBottomStyle: style.borderBottomStyle, borderBottomWidth: style.borderBottomWidth, borderBottomColor: style.borderBottomColor, backgroundImage: style.backgroundImage === 'none' ? 'none' : 'set' }; }))}`);
+	}
+	const visibleRect = visibleSquiggle.getBoundingClientRect();
+	return `visible ${owner} diagnostic over ${JSON.stringify(markerText)} at ${range.startLineNumber}:${range.startColumn}-${range.endColumn}; squiggle=${Math.round(visibleRect.x)},${Math.round(visibleRect.y)} ${Math.round(visibleRect.width)}x${Math.round(visibleRect.height)}`;
+};
+
 _win.__testSelectKwDropdownItem = async (dropdownSelector: string, labelsCsv: string, allowFirstFallback: boolean = false): Promise<string> => {
 	const dropdown = deepQuerySelector(document, dropdownSelector) as HTMLElement | null;
 	if (!dropdown) {
@@ -2114,6 +2184,7 @@ function e2eQueryApi(kind: E2eSectionKind) {
 		},
 		assertSuggestions: (context: string, expectedAnyCsv: string = '') => _win.__testAssertVisibleSuggest(context, expectedAnyCsv, editorSelector),
 		assertMarkers: (expectation: 'any' | 'none' = 'any', owner: string = '', severity: 'error' | '' = '') => _win.__testAssertMonacoMarkers(editorSelector, expectation, owner, severity),
+		assertDiagnosticVisible: (expectedText: string, expectedMessage: string = '', owner: string = 'kusto') => _win.__testAssertMonacoDiagnosticVisible(editorSelector, expectedText, expectedMessage, owner),
 		assertRunEnabled: () => {
 			const button = e2eRunButton(kind);
 			if (button.disabled) {

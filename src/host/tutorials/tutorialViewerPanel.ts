@@ -2,9 +2,10 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import { randomBytes } from 'crypto';
 import {
-	ALLOWED_TUTORIAL_COMMANDS,
+	isTutorialNotificationCadence,
 	isTutorialNotificationChannel,
 	isTutorialViewerMode,
+	type TutorialNotificationCadence,
 	type TutorialNotificationChannel,
 	type TutorialViewerMode,
 	type TutorialViewerSnapshot,
@@ -15,13 +16,13 @@ import { TutorialSubscriptionService } from './tutorialSubscriptionService';
 type TutorialViewerMessage =
 	| { type: 'requestSnapshot' }
 	| { type: 'refreshCatalog' }
-	| { type: 'openTutorial'; tutorialId: string }
+	| { type: 'openTutorial'; tutorialId: string; markSeen?: boolean }
 	| { type: 'setPreferredMode'; mode: TutorialViewerMode }
 	| { type: 'setCategorySubscription'; categoryId: string; subscribed: boolean }
 	| { type: 'setCategorySubscriptions'; categoryIds: string[]; subscribed: boolean }
+	| { type: 'setNotificationCadence'; categoryId: string; notificationCadence: TutorialNotificationCadence }
 	| { type: 'setNotificationChannel'; categoryId: string; channel: TutorialNotificationChannel }
-	| { type: 'markCategorySeen'; categoryId: string }
-	| { type: 'runAction'; command: string }
+	| { type: 'setTutorialsEnabled'; enabled: boolean; dismissAfterUpdate?: boolean }
 	| { type: 'dismiss' };
 
 interface TutorialViewerOpenOptions {
@@ -39,6 +40,7 @@ export class TutorialViewerPanel {
 	private selectedCategoryId: string | undefined;
 	private selectedTutorialId: string | undefined;
 	private preferredMode: TutorialViewerMode | undefined;
+	private disposed = false;
 
 	static open(
 		context: vscode.ExtensionContext,
@@ -83,6 +85,11 @@ export class TutorialViewerPanel {
 		this.panel.webview.html = this.buildHtml(this.panel.webview);
 		this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
 		this.panel.webview.onDidReceiveMessage(message => this.enqueueMessage(message), null, this.disposables);
+		vscode.workspace.onDidChangeConfiguration(event => {
+			if (event.affectsConfiguration('kustoWorkbench.tutorials.enabled')) {
+				void this.postSnapshot();
+			}
+		}, null, this.disposables);
 	}
 
 	private enqueueMessage(message: TutorialViewerMessage): void {
@@ -99,7 +106,7 @@ export class TutorialViewerPanel {
 					await this.postSnapshot({ forceRefresh: true });
 					break;
 				case 'openTutorial':
-					await this.postTutorial(message.tutorialId);
+					await this.postTutorial(message.tutorialId, { markSeen: message.markSeen === true });
 					break;
 				case 'setPreferredMode':
 					if (isTutorialViewerMode(message.mode)) {
@@ -125,15 +132,18 @@ export class TutorialViewerPanel {
 						await this.postSnapshot();
 					}
 					break;
-				case 'markCategorySeen': {
-					const resolved = await this.catalogService.getCatalog();
-					await this.subscriptionService.markCategorySeen(resolved.catalog, message.categoryId);
-					await this.postSnapshot();
+				case 'setNotificationCadence':
+					if (isTutorialNotificationCadence(message.notificationCadence)) {
+						await this.subscriptionService.setNotificationCadence(message.categoryId, message.notificationCadence);
+						await this.postSnapshot();
+					}
 					break;
-				}
-				case 'runAction':
-					if (ALLOWED_TUTORIAL_COMMANDS.has(message.command)) {
-						await vscode.commands.executeCommand(message.command);
+				case 'setTutorialsEnabled':
+					await this.setTutorialsEnabled(!!message.enabled);
+					if (message.dismissAfterUpdate) {
+						this.panel.dispose();
+					} else {
+						await this.postSnapshot();
 					}
 					break;
 				case 'dismiss':
@@ -146,13 +156,22 @@ export class TutorialViewerPanel {
 	}
 
 	private async postSnapshot(options: { forceRefresh?: boolean } = {}): Promise<void> {
+		if (this.disposed) {
+			return;
+		}
 		const revision = ++this.snapshotRevision;
 		const resolved = await this.catalogService.getViewerCatalog(options);
 		const catalog = await this.catalogService.getCatalog();
+		const settings = this.catalogService.getSettings();
+		const unseenTutorialIds = this.subscriptionService.getUnseenTutorialIds(catalog.catalog);
 		const snapshot: TutorialViewerSnapshot = {
-			catalog: resolved.catalog,
+			catalog: {
+				...resolved.catalog,
+				content: resolved.catalog.content.map(tutorial => ({ ...tutorial, unseen: unseenTutorialIds.has(tutorial.id) })),
+			},
 			preferences: this.subscriptionService.getPreferences(catalog.catalog),
 			status: resolved.status,
+			tutorialsEnabled: settings.enabled,
 			preferredMode: this.preferredMode ?? this.defaultPreferredMode(),
 			selectedCategoryId: this.selectedCategoryId,
 			selectedTutorialId: this.selectedTutorialId,
@@ -160,17 +179,23 @@ export class TutorialViewerPanel {
 		await this.panel.webview.postMessage({ type: 'snapshot', snapshot, revision });
 	}
 
-	private async postTutorial(tutorialId: string): Promise<void> {
+	private async postTutorial(tutorialId: string, options: { markSeen?: boolean } = {}): Promise<void> {
 		const content = await this.catalogService.getTutorialContent(tutorialId, this.panel.webview);
 		const resolved = await this.catalogService.getCatalog();
-		const tutorial = resolved.catalog.tutorials.find(candidate => candidate.id === tutorialId);
+		const tutorial = resolved.catalog.content.find(candidate => candidate.id === tutorialId);
 		if (tutorial) {
 			this.selectedCategoryId = tutorial.categoryId;
 			this.selectedTutorialId = tutorial.id;
-			await this.subscriptionService.markTutorialSeen(tutorial.categoryId, tutorial.updateToken);
+			if (options.markSeen) {
+				await this.subscriptionService.markTutorialSeen(tutorial.categoryId, tutorial.updateToken);
+			}
 		}
 		await this.panel.webview.postMessage({ type: 'tutorialContent', content });
 		await this.postSnapshot();
+	}
+
+	private async setTutorialsEnabled(enabled: boolean): Promise<void> {
+		await vscode.workspace.getConfiguration('kustoWorkbench').update('tutorials.enabled', enabled, vscode.ConfigurationTarget.Global);
 	}
 
 	private buildHtml(webview: vscode.Webview): string {
@@ -199,7 +224,7 @@ export class TutorialViewerPanel {
 			.replace(/{{tutorialViewerBundleUri}}/g, String(bundleUri))
 			.replace(/{{markedUri}}/g, String(markedUri))
 			.replace(/{{purifyUri}}/g, String(purifyUri))
-			.replace(/{{codiconsFontUri}}/g, String(codiconsFontUri));
+			.replace(/{{codiconFontUri}}/g, String(codiconsFontUri));
 	}
 
 	private defaultPreferredMode(): TutorialViewerMode {
@@ -211,6 +236,7 @@ export class TutorialViewerPanel {
 	}
 
 	private dispose(): void {
+		this.disposed = true;
 		TutorialViewerPanel.current = undefined;
 		while (this.disposables.length) {
 			this.disposables.pop()?.dispose();

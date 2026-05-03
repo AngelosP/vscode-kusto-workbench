@@ -11,15 +11,12 @@ function catalog(overrides: Partial<TutorialCatalog> = {}): TutorialCatalog {
 		schemaVersion: 1,
 		generatedAt: '2026-05-01T00:00:00.000Z',
 		categories: [{ id: 'agent', title: 'Agent', sortOrder: 1 }],
-		tutorials: [{
+		content: [{
 			id: 'agent-start',
-			title: 'Agent start',
-			summary: 'Build a chart with the agent',
 			categoryId: 'agent',
 			contentUrl: 'content/agent-start.md',
 			minExtensionVersion: '0.0.0',
 			updateToken: 'agent-start-v1',
-			tags: ['chart'],
 		}],
 		...overrides,
 	};
@@ -29,11 +26,11 @@ describe('tutorial catalog validation', () => {
 	it('accepts a valid catalog', () => {
 		const result = validateTutorialCatalog(catalog(), '0.0.0-placeholder');
 		expect(result.errors).toEqual([]);
-		expect(result.catalog?.tutorials).toHaveLength(1);
+		expect(result.catalog?.content).toHaveLength(1);
 	});
 
 	it('requires minExtensionVersion and updateToken', () => {
-		const input = catalog({ tutorials: [{ ...catalog().tutorials[0], minExtensionVersion: '', updateToken: '' }] });
+		const input = catalog({ content: [{ ...catalog().content[0], minExtensionVersion: '', updateToken: '' }] });
 		const result = validateTutorialCatalog(input, '1.0.0');
 		expect(result.catalog).toBeNull();
 		expect(result.errors.join(' ')).toContain('minExtensionVersion');
@@ -42,8 +39,8 @@ describe('tutorial catalog validation', () => {
 
 	it('blocks unsafe content URLs', () => {
 		const input = catalog({
-			tutorials: [{
-				...catalog().tutorials[0],
+			content: [{
+				...catalog().content[0],
 				contentUrl: 'command:kusto.openQueryEditor',
 			}],
 		});
@@ -52,39 +49,37 @@ describe('tutorial catalog validation', () => {
 		expect(result.errors.join(' ')).toContain('unsafe contentUrl');
 	});
 
-	it('blocks arbitrary commands', () => {
+	it('strips legacy tutorial metadata fields', () => {
 		const input = catalog({
-			tutorials: [{
-				...catalog().tutorials[0],
+			content: [{
+				...catalog().content[0],
+				title: 'Legacy title',
+				summary: 'Legacy summary',
+				tags: ['legacy'],
+				sortOrder: 1,
+				nativeWalkthroughId: 'legacy.walkthrough',
 				actions: [{ id: 'bad', title: 'Bad', command: 'workbench.action.reloadWindow' }],
-			}],
-		});
+			} as any],
+		} as any);
 		const result = validateTutorialCatalog(input, '1.0.0');
-		expect(result.catalog).toBeNull();
-		expect(result.errors.join(' ')).toContain('blocked command');
+		expect(result.errors).toEqual([]);
+		expect((result.catalog?.content[0] as any).title).toBeUndefined();
+		expect((result.catalog?.content[0] as any).summary).toBeUndefined();
+		expect((result.catalog?.content[0] as any).tags).toBeUndefined();
+		expect((result.catalog?.content[0] as any).sortOrder).toBeUndefined();
+		expect((result.catalog?.content[0] as any).nativeWalkthroughId).toBeUndefined();
+		expect((result.catalog?.content[0] as any).actions).toBeUndefined();
 	});
 
 	it('rejects invalid minExtensionVersion values', () => {
-		const input = catalog({ tutorials: [{ ...catalog().tutorials[0], minExtensionVersion: 'soon' }] });
+		const input = catalog({ content: [{ ...catalog().content[0], minExtensionVersion: 'soon' }] });
 		const result = validateTutorialCatalog(input, '1.0.0');
 		expect(result.catalog).toBeNull();
 		expect(result.errors.join(' ')).toContain('invalid minExtensionVersion');
 	});
 
-	it('drops catalog action args from viewer-safe actions', () => {
-		const input = catalog({
-			tutorials: [{
-				...catalog().tutorials[0],
-				actions: [{ id: 'open', title: 'Open', command: 'kusto.openQueryEditor', args: ['ignored'] } as any],
-			}],
-		});
-		const result = validateTutorialCatalog(input, '1.0.0');
-		expect(result.errors).toEqual([]);
-		expect(result.catalog?.tutorials[0].actions?.[0]).toEqual({ id: 'open', title: 'Open', command: 'kusto.openQueryEditor' });
-	});
-
 	it('marks future tutorials incompatible without rejecting the catalog', () => {
-		const input = catalog({ tutorials: [{ ...catalog().tutorials[0], minExtensionVersion: '99.0.0' }] });
+		const input = catalog({ content: [{ ...catalog().content[0], minExtensionVersion: '99.0.0' }] });
 		const result = validateTutorialCatalog(input, '1.0.0');
 		expect(result.catalog).not.toBeNull();
 		expect(result.incompatibleTutorialIds).toEqual(['agent-start']);
@@ -96,10 +91,11 @@ describe('tutorial catalog validation', () => {
 });
 
 describe('tutorial search', () => {
-	it('searches title, summary, tags, and category title', () => {
+	it('searches derived display name, id, and category title', () => {
 		const result = validateTutorialCatalog(catalog(), '1.0.0');
-		const tutorials = result.catalog!.tutorials.map(tutorial => ({ ...tutorial, tags: tutorial.tags ?? [], actions: [], compatible: true }));
-		expect(searchTutorials(tutorials, result.catalog!.categories, 'chart', null)).toHaveLength(1);
+		const tutorials = result.catalog!.content.map(tutorial => ({ id: tutorial.id, displayName: 'Agent start', contentText: 'Searchable markdown body', categoryId: tutorial.categoryId, minExtensionVersion: tutorial.minExtensionVersion, compatible: true, unseen: true }));
+		expect(searchTutorials(tutorials, result.catalog!.categories, 'start', null)).toHaveLength(1);
+		expect(searchTutorials(tutorials, result.catalog!.categories, 'markdown body', null)).toHaveLength(1);
 		expect(searchTutorials(tutorials, result.catalog!.categories, 'agent', 'agent')).toHaveLength(1);
 		expect(searchTutorials(tutorials, result.catalog!.categories, 'missing', null)).toHaveLength(0);
 	});
