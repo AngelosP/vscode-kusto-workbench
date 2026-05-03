@@ -109,13 +109,15 @@ The orchestrator also seeds named profiles with quiet host settings such as `ext
 
 ## Scheduling
 
-The scheduled workflow `.github/workflows/e2e-full-suite.yml` runs on GitHub-hosted `windows-latest`; no self-hosted runner or custom `kusto-workbench-e2e` label is required for the current CI signal. It executes the unauthenticated `default` profile only and intentionally skips `sql-auth` and `kusto-auth` because those named profiles require prepared authentication state. Before the run, the workflow queries the official VS Code stable release endpoint, semver-sorts the returned stable versions, validates the newest version against `package.json`'s VS Code engine minimum, and passes the resolved numeric version to `vscode-ext-test` via `--vscode-version`. The workflow installs the released `vscode-ext-test` CLI before running the suite:
+The scheduled workflow `.github/workflows/e2e-full-suite.yml` runs on GitHub-hosted `windows-latest`; no self-hosted runner or custom `kusto-workbench-e2e` label is required for the current CI signal. It executes the unauthenticated `default` profile only and intentionally skips `sql-auth` and `kusto-auth` because those named profiles require prepared authentication state. Before the run, the workflow queries the official VS Code stable release endpoint, semver-sorts the returned stable versions, validates the newest version against `package.json`'s VS Code engine minimum, and passes the resolved numeric version to `vscode-ext-test` via `--vscode-version`. The workflow also queries the latest `vscode-extension-tester` GitHub release and installs the `vscode-ext-test-*.tgz` asset before running the suite:
 
 ```powershell
-npm install -g https://github.com/AngelosP/vscode-extension-tester/releases/download/v0.1.0/vscode-ext-test-0.1.0.tgz
+$release = Invoke-RestMethod -Uri 'https://api.github.com/repos/AngelosP/vscode-extension-tester/releases/latest'
+$package = ($release.assets | Where-Object name -match '^vscode-ext-test-\d+\.\d+\.\d+\.tgz$' | Select-Object -First 1).browser_download_url
+npm install -g $package
 ```
 
-Do not rely on a local symlink or an unpinned global install for scheduled runs. When upgrading the E2E framework, first run the workflow manually with the `vscodeExtTestPackage` input set to the candidate tarball URL. After dry-run discovery and the default-profile suite are clean, bump the default release tarball URL in the workflow.
+Do not rely on a local symlink or a preinstalled global CLI for scheduled runs. Scheduled runs use the latest released framework by default so new framework step definitions are picked up automatically. When validating a candidate or rolling back, run the workflow manually with the `vscodeExtTestPackage` input set to a specific tarball URL.
 
 Authenticated coverage remains opt-in for local or future prepared self-hosted runs with `npm run test:e2e:full:behavior`.
 
