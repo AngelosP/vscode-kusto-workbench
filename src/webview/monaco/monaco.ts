@@ -54,6 +54,7 @@ import {
 } from './caret-docs';
 import { __kustoAttachAutoResizeToContent } from './resize';
 import { __kustoInstallEditorClickFidelityGuard } from './click-fidelity';
+import { __kustoNormalizeCollapsedMonacoMarkers } from './marker-ranges';
 import { addPageScrollListener, escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from '../core/utils';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { __kustoAutoSizeEditor, ensureSchemaForBox, __kustoGetConnectionId, __kustoGetDatabase } from '../core/section-factory';
@@ -681,6 +682,7 @@ function ensureMonaco() {
 								__kustoModelClusterMap = {};
 								
 								monaco.editor.setModelMarkers = function(model: any, owner: any, markers: any) {
+									let normalizedMarkers = markers;
 									// Only intercept kusto markers
 									if (owner === 'kusto') {
 										const uri = model && model.uri ? model.uri.toString() : '';
@@ -702,16 +704,19 @@ function ensureMonaco() {
 												return;
 											}
 										}
+										normalizedMarkers = Array.isArray(markers)
+											? __kustoNormalizeCollapsedMonacoMarkers(model, markers)
+											: markers;
 										try {
-											if (model && model.uri && Array.isArray(markers) && typeof monaco.editor.getModelMarkers === 'function') {
+											if (model && model.uri && Array.isArray(normalizedMarkers) && typeof monaco.editor.getModelMarkers === 'function') {
 												const currentMarkers = monaco.editor.getModelMarkers({ owner: 'kusto', resource: model.uri });
-												if (__kustoAreEquivalentMonacoMarkers(currentMarkers, markers)) {
+												if (__kustoAreEquivalentMonacoMarkers(currentMarkers, normalizedMarkers)) {
 													return;
 												}
 											}
 										} catch (e) { console.error('[kusto]', e); }
 									}
-									return originalSetModelMarkers.call(this, model, owner, markers);
+									return originalSetModelMarkers.call(this, model, owner, normalizedMarkers);
 								};
 								
 								// Function to enable markers for a specific model (called on focus AFTER schema context is set)
