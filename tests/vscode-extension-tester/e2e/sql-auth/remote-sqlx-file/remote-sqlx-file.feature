@@ -9,7 +9,7 @@
   Scenario: Open a remote .sqlx file from GitHub via Open Remote File command
     When I start command "kusto.openRemoteFile"
     And I wait 2 seconds
-    When I type "https://github.com/coreai-microsoft/azure-dev-tools/blob/main/product-telemetry/.investigations/angelpe/Temp/sample.sqlx" into the InputBox
+    When I type "https://raw.githubusercontent.com/AngelosP/vscode-kusto-workbench/main/tests/vscode-extension-tester/e2e/default/sqlx-diff-viewer/fixtures/open-test.sqlx" into the InputBox
     And I press "Enter"
     Then I take a screenshot "01-url-submitted"
 
