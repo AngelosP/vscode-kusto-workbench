@@ -1200,12 +1200,13 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				const bid = String(message.boxId || '').trim();
 				if (bid) {
+					const markers = message.markers || [];
 					// Suppress diagnostics until STS schema is loaded (_stsReady).
 					// Before intelliSenseReady, STS doesn't know about schema objects
 					// and produces false "Incorrect syntax" errors for valid table names.
 					const diagSqlEl = __kustoGetSqlSectionElement(bid);
-					if (diagSqlEl && diagSqlEl._stsReady) {
-						handleStsDiagnostics(bid, message.markers || []);
+					if (diagSqlEl && (diagSqlEl._stsReady || markers.length === 0)) {
+						handleStsDiagnostics(bid, markers);
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }

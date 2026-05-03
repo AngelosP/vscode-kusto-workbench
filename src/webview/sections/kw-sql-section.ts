@@ -203,6 +203,8 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _schemaInfoState: SchemaInfoState = { status: 'not-loaded' };
 	private _stsReady = false;
 	private _stsDocumentOpened = false;
+	private _stsConnectTarget = '';
+	private _stsConnectPending = false;
 	private _removeRunMenuScrollDismiss: (() => void) | null = null;
 
 	// ── Auto-trigger autocomplete state ──────────────────────────────────────
@@ -783,6 +785,18 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (form) form.submit();
 	}
 
+	private _connectionTargetSignature(connectionId = this._connectionId, connections = this._connections): string {
+		const conn = connections.find(c => c.id === connectionId);
+		if (!conn) return String(connectionId || '');
+		return JSON.stringify({
+			id: String(conn.id || ''),
+			serverUrl: String(conn.serverUrl || '').trim().toLowerCase(),
+			port: conn.port || '',
+			authType: String(conn.authType || '').trim().toLowerCase(),
+			username: String(conn.username || '').trim().toLowerCase(),
+		});
+	}
+
 	private _onServerSelected(e: CustomEvent): void {
 		const connectionId = e.detail?.id;
 		if (!connectionId) return;
@@ -795,6 +809,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			this._database = '';
 			this._desiredDatabase = '';
 			this._databases = [];
+			this._resetSchemaReadiness('not-loaded');
 			this.dispatchEvent(new CustomEvent('sql-connection-changed', {
 				detail: { boxId: this.boxId, connectionId, serverUrl: conn?.serverUrl || '' },
 				bubbles: true, composed: true,
@@ -903,6 +918,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _resetSchemaReadiness(status: SchemaInfoState['status'] = 'not-loaded'): void {
 		this._schemaInfoState = { status };
 		this._stsReady = false;
+		this._stsConnectPending = false;
+		this._stsConnectTarget = '';
+		setStsReady(this.boxId, false);
 		this._syncTestStateAttrs();
 	}
 
@@ -1141,6 +1159,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			console.log(`[sts-diag] stsConnect SKIPPED (${reason}) boxId=${this.boxId} connId=${this._sqlConnectionId || '(none)'} db=${this._database || '(none)'}`);
 			return;
 		}
+		const target = `${this._connectionTargetSignature(this._sqlConnectionId)}\n${this._database}`;
+		if (this._stsConnectTarget === target && (this._stsConnectPending || this._stsReady)) {
+			console.log(`[sts-diag] stsConnect SKIPPED (${reason}, duplicate) boxId=${this.boxId} connId=${this._sqlConnectionId} db=${this._database}`);
+			return;
+		}
 		if (pState.restoreInProgress) {
 			console.log(`[sts-diag] stsConnect SKIPPED (${reason}, restore) boxId=${this.boxId} connId=${this._sqlConnectionId} db=${this._database}`);
 			return;
@@ -1148,11 +1171,20 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (!this._openStsDocumentIfNeeded()) return;
 		console.log(`[sts-diag] stsConnect (${reason}) boxId=${this.boxId} connId=${this._sqlConnectionId} db=${this._database}`);
 		try {
+			this._stsConnectTarget = target;
+			this._stsConnectPending = true;
 			postMessageToHost({ type: 'stsConnect', boxId: this.boxId, sqlConnectionId: this._sqlConnectionId, database: this._database } as any);
-		} catch (e) { console.error('[kusto]', e); }
+		} catch (e) {
+			this._stsConnectPending = false;
+			console.error('[kusto]', e);
+		}
 	}
 
 	private _disposeEditor(): void {
+		this._stsReady = false;
+		this._stsConnectPending = false;
+		this._stsConnectTarget = '';
+		setStsReady(this.boxId, false);
 		if (this._stsDocumentOpened) {
 			try {
 				postMessageToHost({ type: 'stsDidClose', boxId: this.boxId } as any);
@@ -1399,6 +1431,8 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		conns: SqlConnectionInfo[],
 		opts?: { lastConnectionId?: string },
 	): void {
+		const prev = this._connectionId;
+		const prevSignature = this._connectionTargetSignature(prev);
 		this._connections = conns;
 		const lastConnId = opts?.lastConnectionId || '';
 
@@ -1423,10 +1457,16 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			if (match) resolvedId = match.id;
 		}
 
-		const prev = this._connectionId;
 		this._connectionId = resolvedId;
 		this._sqlConnectionId = resolvedId;
-		if (prev !== resolvedId) {
+		const nextSignature = this._connectionTargetSignature(resolvedId);
+		const connectionTargetChanged = prev !== resolvedId || Boolean(resolvedId && prevSignature !== nextSignature);
+		if (connectionTargetChanged) {
+			if (prev === resolvedId) {
+				this._database = '';
+				this._desiredDatabase = '';
+				this._databases = [];
+			}
 			this._resetSchemaReadiness('not-loaded');
 		}
 
@@ -1435,7 +1475,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			if (conn) this._desiredServerUrl = conn.serverUrl;
 		}
 
-		if (prev !== resolvedId && resolvedId) {
+		if (connectionTargetChanged && resolvedId) {
 			this.dispatchEvent(new CustomEvent('sql-connection-changed', {
 				detail: { boxId: this.boxId, connectionId: resolvedId, serverUrl: this.getServerUrl(), database: this._desiredDatabase || this._database },
 				bubbles: true, composed: true,
@@ -1512,6 +1552,12 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	public setStsReady(ready: boolean): void {
 		this._stsReady = ready;
+		this._stsConnectPending = false;
+		if (ready) {
+			this._stsConnectTarget = this._sqlConnectionId && this._database ? `${this._connectionTargetSignature(this._sqlConnectionId)}\n${this._database}` : this._stsConnectTarget;
+		} else {
+			this._stsConnectTarget = '';
+		}
 		setStsReady(this.boxId, ready);
 		this._syncTestStateAttrs();
 	}

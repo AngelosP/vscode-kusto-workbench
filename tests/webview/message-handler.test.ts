@@ -597,14 +597,16 @@ describe('message-handler dispatch', () => {
 
 		dispatchHostMessage({ type: 'stsResponse', requestId: 'sts_1', result: { items: [] } });
 		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', markers: [{ message: 'before ready' }] });
+		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', markers: [] });
 		dispatchHostMessage({ type: 'stsConnectionState', boxId: 'sql_1', state: 'ready' });
 		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', markers: [{ message: 'after ready' }] });
 		await Promise.resolve();
 
 		expect(mocks.handleStsResponse).toHaveBeenCalledWith('sts_1', { items: [] });
 		expect(sqlEl.setStsReady).toHaveBeenCalledWith(true);
-		expect(mocks.handleStsDiagnostics).toHaveBeenCalledTimes(1);
-		expect(mocks.handleStsDiagnostics).toHaveBeenCalledWith('sql_1', [{ message: 'after ready' }]);
+		expect(mocks.handleStsDiagnostics).toHaveBeenCalledTimes(2);
+		expect(mocks.handleStsDiagnostics).toHaveBeenNthCalledWith(1, 'sql_1', []);
+		expect(mocks.handleStsDiagnostics).toHaveBeenNthCalledWith(2, 'sql_1', [{ message: 'after ready' }]);
 	});
 
 	it('drops tokened Kusto schema responses when the box token no longer matches', async () => {

@@ -3403,6 +3403,9 @@ _win.__e2e = {
 		...e2eQueryApi('sql'),
 		connectSts: () => {
 			const section = e2eSection('sql');
+			if (section.dataset.testStsReady === 'true') {
+				return 'sql STS already ready';
+			}
 			const sqlConnectionId = typeof section.getSqlConnectionId === 'function' ? section.getSqlConnectionId() : '';
 			const database = typeof section.getDatabase === 'function' ? section.getDatabase() : '';
 			if (!sqlConnectionId) {

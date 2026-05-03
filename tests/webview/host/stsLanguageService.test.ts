@@ -66,6 +66,28 @@ function createTestConnection(overrides: Partial<SqlConnection> = {}): SqlConnec
 	};
 }
 
+async function waitForConnectCallCount(mockPm: ReturnType<typeof createMockProcessManager>, count: number): Promise<any[][]> {
+	for (let attempt = 0; attempt < 20; attempt++) {
+		const connectCalls = (mockPm.sendRequest as any).mock.calls.filter((call: any[]) => call[0] === 'connection/connect');
+		if (connectCalls.length >= count) {
+			return connectCalls;
+		}
+		await Promise.resolve();
+	}
+	return (mockPm.sendRequest as any).mock.calls.filter((call: any[]) => call[0] === 'connection/connect');
+}
+
+async function simulateConnectedAndReady(mockPm: ReturnType<typeof createMockProcessManager>, ownerUri: string, connectionId: string): Promise<void> {
+	(mockPm as any)._simulateNotification('connection/complete', {
+		ownerUri,
+		connectionId,
+	});
+	await Promise.resolve();
+	(mockPm as any)._simulateNotification('textDocument/intelliSenseReady', {
+		ownerUri,
+	});
+}
+
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('StsLanguageService', () => {
@@ -136,6 +158,79 @@ describe('StsLanguageService', () => {
 				(c: any[]) => c[0] === 'textDocument/didChange',
 			);
 			expect(changeCalls[0][1].contentChanges).toEqual([{ text: 'new text' }]);
+		});
+	});
+
+	describe('connectDocument', () => {
+		it('joins duplicate same-target connects before credentials resolve', async () => {
+			let resolvePassword: (password: string) => void = () => undefined;
+			(mockConnMgr.getPassword as any).mockReturnValue(new Promise<string>((resolve) => { resolvePassword = resolve; }));
+			service.openDocument('box-1', 'SELECT 1');
+
+			const connection = createTestConnection();
+			const first = service.connectDocument('box-1', connection, 'sampledb');
+			const second = service.connectDocument('box-1', connection, 'sampledb');
+			await Promise.resolve();
+
+			expect(mockPm.sendRequest).not.toHaveBeenCalledWith('connection/connect', expect.anything());
+			resolvePassword('test-password');
+
+			const connectCalls = await waitForConnectCallCount(mockPm, 1);
+			expect(connectCalls).toHaveLength(1);
+
+			await simulateConnectedAndReady(mockPm, 'sql://box-1.sql', 'connected-1');
+
+			await expect(first).resolves.toBeUndefined();
+			await expect(second).resolves.toBeUndefined();
+		});
+
+		it('reopens the STS document when a different target supersedes an in-flight connect', async () => {
+			service.openDocument('box-1', 'SELECT 1');
+
+			const first = service.connectDocument('box-1', createTestConnection(), 'sampledb');
+			const firstError = first.catch(err => err);
+			await waitForConnectCallCount(mockPm, 1);
+			const second = service.connectDocument('box-1', createTestConnection(), 'master');
+			await waitForConnectCallCount(mockPm, 2);
+
+			await expect(firstError).resolves.toHaveProperty('message', 'STS document superseded');
+			const notifications = (mockPm.sendNotification as any).mock.calls;
+			expect(notifications).toContainEqual(['textDocument/didClose', { textDocument: { uri: 'sql://box-1.sql' } }]);
+			expect(notifications).toContainEqual(['textDocument/didOpen', {
+				textDocument: { uri: 'sql://box-1.2.sql', languageId: 'sql', version: 1, text: 'SELECT 1' },
+			}]);
+
+			await simulateConnectedAndReady(mockPm, 'sql://box-1.2.sql', 'connected-2');
+
+			await expect(second).resolves.toBeUndefined();
+		});
+
+		it('rejects duplicate waiters when the document closes while connecting', async () => {
+			service.openDocument('box-1', 'SELECT 1');
+
+			const connection = createTestConnection();
+			const first = service.connectDocument('box-1', connection, 'sampledb');
+			const second = service.connectDocument('box-1', connection, 'sampledb');
+			await waitForConnectCallCount(mockPm, 1);
+
+			service.closeDocument('box-1');
+
+			await expect(first).rejects.toThrow('STS document closed');
+			await expect(second).rejects.toThrow('STS document closed');
+		});
+
+		it('cleans pending state when connection/connect fails so a retry can connect', async () => {
+			service.openDocument('box-1', 'SELECT 1');
+			(mockPm.sendRequest as any).mockRejectedValueOnce(new Error('connect request failed'));
+
+			await expect(service.connectDocument('box-1', createTestConnection(), 'sampledb')).rejects.toThrow('connect request failed');
+
+			(mockPm.sendRequest as any).mockResolvedValueOnce(true);
+			const retry = service.connectDocument('box-1', createTestConnection(), 'sampledb');
+			await waitForConnectCallCount(mockPm, 2);
+			await simulateConnectedAndReady(mockPm, 'sql://box-1.sql', 'connected-retry');
+
+			await expect(retry).resolves.toBeUndefined();
 		});
 	});
 
@@ -259,6 +354,7 @@ describe('StsLanguageService', () => {
 		it('translates LSP diagnostics to Monaco markers', () => {
 			const diagnosticsReceived: any[] = [];
 			service.onDiagnostics((event) => diagnosticsReceived.push(event));
+			service.openDocument('box-1', 'SELECT 1');
 
 			// Simulate STS publishing diagnostics
 			(mockPm as any)._simulateNotification('textDocument/publishDiagnostics', {
@@ -304,6 +400,29 @@ describe('StsLanguageService', () => {
 			});
 
 			expect(diagnosticsReceived).toHaveLength(0);
+		});
+
+		it('clears and ignores diagnostics from superseded STS document URIs', async () => {
+			const diagnosticsReceived: any[] = [];
+			service.onDiagnostics((event) => diagnosticsReceived.push(event));
+			service.openDocument('box-1', 'SELECT 1');
+
+			const first = service.connectDocument('box-1', createTestConnection(), 'sampledb');
+			const firstError = first.catch(err => err);
+			await waitForConnectCallCount(mockPm, 1);
+			const second = service.connectDocument('box-1', createTestConnection(), 'master');
+			await waitForConnectCallCount(mockPm, 2);
+			await expect(firstError).resolves.toHaveProperty('message', 'STS document superseded');
+
+			(mockPm as any)._simulateNotification('textDocument/publishDiagnostics', {
+				uri: 'sql://box-1.sql',
+				diagnostics: [{ range: { start: { line: 0, character: 0 }, end: { line: 0, character: 6 } }, message: 'old', severity: 1 }],
+			});
+
+			expect(diagnosticsReceived).toEqual([{ boxId: 'box-1', markers: [] }]);
+
+			await simulateConnectedAndReady(mockPm, 'sql://box-1.2.sql', 'connected-2');
+			await expect(second).resolves.toBeUndefined();
 		});
 	});
 });

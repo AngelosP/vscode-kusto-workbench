@@ -70,6 +70,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private _stsLanguageService?: StsLanguageService;
 	private _stsInitPromise?: Promise<StsLanguageService | null>;
 	private readonly _closedStsBoxIds = new Set<string>();
+	private readonly _latestStsConnectSequenceByBoxId = new Map<string, number>();
+	private readonly _stsConnectSequenceByBoxId = new Map<string, number>();
 
 	get sqlConnectionManager(): SqlConnectionManager {
 		if (!this._sqlConnectionManager) {
@@ -2131,10 +2133,31 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const id = String(boxId || '').trim();
 		if (!id) return;
 		this._closedStsBoxIds.add(id);
+		this._latestStsConnectSequenceByBoxId.delete(id);
 		this.output.appendLine(`[sts-diag] handleStsDidClose boxId=${id}`);
 		if (this._stsLanguageService) {
 			this._stsLanguageService.closeDocument(id);
 		}
+	}
+
+	private _nextStsConnectSequence(boxId: string): number {
+		const sequence = (this._stsConnectSequenceByBoxId.get(boxId) || 0) + 1;
+		this._stsConnectSequenceByBoxId.set(boxId, sequence);
+		this._latestStsConnectSequenceByBoxId.set(boxId, sequence);
+		return sequence;
+	}
+
+	private _isCurrentStsConnect(boxId: string, sequence: number): boolean {
+		return !this._closedStsBoxIds.has(boxId) && this._latestStsConnectSequenceByBoxId.get(boxId) === sequence;
+	}
+
+	private _postCurrentStsConnectError(boxId: string, sequence: number, message: string): void {
+		if (!this._isCurrentStsConnect(boxId, sequence)) {
+			this.output.appendLine(`[sts-diag] handleStsConnect → stale early failure suppressed boxId=${boxId}: ${message}`);
+			return;
+		}
+		this.output.appendLine(`[sts-diag] handleStsConnect → FAILED boxId=${boxId}: ${message}`);
+		this.postMessage({ type: 'stsConnectionState', boxId, state: 'error', error: message } as any);
 	}
 
 	private async handleStsConnect(boxId: string, sqlConnectionId: string, database: string): Promise<void> {
@@ -2143,28 +2166,39 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.output.appendLine(`[sts-diag] handleStsConnect skipped closed boxId=${id || '(none)'}`);
 			return;
 		}
+		const connectSequence = this._nextStsConnectSequence(id);
 		this.output.appendLine(`[sts-diag] handleStsConnect boxId=${id} connId=${sqlConnectionId} db=${database}`);
 		const svc = await this.ensureStsLanguageService();
 		if (!svc) {
 			this.output.appendLine(`[sts-diag] handleStsConnect → svc=null`);
+			this._postCurrentStsConnectError(id, connectSequence, 'SQL Tools Service unavailable');
 			return;
 		}
-		if (this._closedStsBoxIds.has(id)) {
+		if (!this._isCurrentStsConnect(id, connectSequence)) {
 			this.output.appendLine(`[sts-diag] handleStsConnect skipped closed boxId=${id}`);
 			return;
 		}
 		const connection = this.sqlConnectionManager.getConnection(sqlConnectionId);
 		if (!connection) {
 			this.output.appendLine(`[sts-diag] handleStsConnect → connection not found: ${sqlConnectionId}`);
+			this._postCurrentStsConnectError(id, connectSequence, `SQL connection not found: ${sqlConnectionId}`);
 			return;
 		}
 		this.output.appendLine(`[sts-diag] handleStsConnect → connecting to ${connection.serverUrl}/${database} auth=${connection.authType}`);
 		try {
 			await svc.connectDocument(id, connection, database);
+			if (!this._isCurrentStsConnect(id, connectSequence)) {
+				this.output.appendLine(`[sts-diag] handleStsConnect → stale success suppressed boxId=${id}`);
+				return;
+			}
 			this.output.appendLine(`[sts-diag] handleStsConnect → SUCCESS boxId=${id}`);
 			this.postMessage({ type: 'stsConnectionState', boxId: id, state: 'ready' } as any);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
+			if (!this._isCurrentStsConnect(id, connectSequence)) {
+				this.output.appendLine(`[sts-diag] handleStsConnect → stale failure suppressed boxId=${id}: ${msg}`);
+				return;
+			}
 			this.output.appendLine(`[sts-diag] handleStsConnect → FAILED boxId=${id}: ${msg}`);
 			this.postMessage({ type: 'stsConnectionState', boxId: id, state: 'error', error: msg } as any);
 		}

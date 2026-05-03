@@ -211,7 +211,7 @@ function discoverCases(options, quarantineEntries) {
 				continue;
 			}
 
-			const workspaceSettings = readTestWorkspaceSettings(testDir);
+			const testSettings = readTestSettings(testDir);
 
 			const category = testId.startsWith('readme-ss-') || testId.startsWith('tutorial-media-') ? 'screenshot-generator' : 'behavior';
 			const quarantine = findQuarantine(quarantineEntries, profile, testId);
@@ -220,7 +220,8 @@ function discoverCases(options, quarantineEntries) {
 				testId,
 				category,
 				featureFiles: featureFiles.map(name => relativePath(path.join(testDir, name))),
-				workspaceSettings,
+				workspaceSettings: testSettings.workspaceSettings,
+				timeout: testSettings.timeout,
 				quarantine,
 			};
 
@@ -236,17 +237,31 @@ function discoverCases(options, quarantineEntries) {
 	return { cases, excludedScreenshotGenerators };
 }
 
-function readTestWorkspaceSettings(testDir) {
+function readTestSettings(testDir) {
 	const configPath = path.join(testDir, perTestConfigFile);
 	if (!existsSync(configPath)) {
-		return null;
+		return { workspaceSettings: null, timeout: '' };
 	}
 
 	const config = readJson(configPath, {});
-	if (!config.workspaceSettings || typeof config.workspaceSettings !== 'object' || Array.isArray(config.workspaceSettings)) {
-		throw new Error(`${relativePath(configPath)} must contain an object property named workspaceSettings.`);
+	let workspaceSettings = null;
+	if (config.workspaceSettings !== undefined) {
+		if (!config.workspaceSettings || typeof config.workspaceSettings !== 'object' || Array.isArray(config.workspaceSettings)) {
+			throw new Error(`${relativePath(configPath)} property workspaceSettings must be an object.`);
+		}
+		workspaceSettings = config.workspaceSettings;
 	}
-	return config.workspaceSettings;
+
+	let timeout = '';
+	if (config.timeout !== undefined) {
+		const value = String(config.timeout || '').trim();
+		if (!/^\d+$/.test(value) || Number(value) <= 0) {
+			throw new Error(`${relativePath(configPath)} property timeout must be a positive millisecond value.`);
+		}
+		timeout = value;
+	}
+
+	return { workspaceSettings, timeout };
 }
 
 function findQuarantine(entries, profile, testId) {
@@ -842,8 +857,9 @@ function main() {
 		if (testCase.profile !== 'default') {
 			args.push('--reuse-named-profile', testCase.profile);
 		}
-		if (options.timeout) {
-			args.push('--timeout', options.timeout);
+		const timeout = options.timeout || testCase.timeout;
+		if (timeout) {
+			args.push('--timeout', timeout);
 		}
 
 		const preparedWorkspace = prepareTestWorkspace(testCase, suiteOutputDir);
