@@ -47,7 +47,7 @@ function createContext(initialState: Record<string, unknown> = {}): vscode.Exten
 function createServices(source: 'remote' | 'cache' | 'unavailable' = 'remote') {
 	const resolvedCatalog = catalog();
 	const catalogService = {
-		getSettings: () => ({ enabled: true, catalogUrl: 'https://raw.githubusercontent.com/owner/repo/main/catalog.json', enableUpdateChecks: true, refreshIntervalHours: 24 }),
+		getSettings: () => ({ enabled: true, catalogUrl: 'https://raw.githubusercontent.com/owner/repo/main/catalog.json', refreshIntervalHours: 24 }),
 		getCatalog: vi.fn(async () => ({
 			catalog: resolvedCatalog,
 			validation: { catalog: resolvedCatalog, errors: [], warnings: [], incompatibleTutorialIds: [] },
@@ -126,7 +126,7 @@ describe('TutorialNotificationService', () => {
 	it('does not check for updates when tutorials are disabled globally', async () => {
 		const context = createContext();
 		const { catalogService, subscriptionService } = createServices('remote');
-		catalogService.getSettings = () => ({ enabled: false, catalogUrl: 'https://raw.githubusercontent.com/owner/repo/main/catalog.json', enableUpdateChecks: true, refreshIntervalHours: 24 });
+		catalogService.getSettings = () => ({ enabled: false, catalogUrl: 'https://raw.githubusercontent.com/owner/repo/main/catalog.json', refreshIntervalHours: 24 });
 		const service = new TutorialNotificationService(context, catalogService as any, subscriptionService as any, vi.fn());
 
 		await service.checkOnActivation();
@@ -139,7 +139,7 @@ describe('TutorialNotificationService', () => {
 	it('does not show a pending popup when tutorials are disabled globally', async () => {
 		const context = createContext();
 		const { catalogService, subscriptionService } = createServices('remote');
-		catalogService.getSettings = () => ({ enabled: false, catalogUrl: 'https://raw.githubusercontent.com/owner/repo/main/catalog.json', enableUpdateChecks: true, refreshIntervalHours: 24 });
+		catalogService.getSettings = () => ({ enabled: false, catalogUrl: 'https://raw.githubusercontent.com/owner/repo/main/catalog.json', refreshIntervalHours: 24 });
 		const openViewer = vi.fn();
 		const service = new TutorialNotificationService(context, catalogService as any, subscriptionService as any, openViewer);
 		(service as any).pendingPopup = { categoryId: 'agent', title: 'Agent workflow', count: 1 };

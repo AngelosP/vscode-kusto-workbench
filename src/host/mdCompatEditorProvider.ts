@@ -142,33 +142,6 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 		// For the "modified" side (file: scheme) or normal usage, render the regular editor.
 
 		const disposables: vscode.Disposable[] = [];
-		const isMdSearchDebugEnabled = (): boolean => {
-			try {
-				return !!vscode.workspace.getConfiguration('kustoWorkbench').get('debug.mdSearchReveal', false);
-			} catch {
-				return false;
-			}
-		};
-		let lastDebugKey = '';
-		let lastDebugAt = 0;
-		const debugPopup = (label: string, detail?: string): void => {
-			try {
-				if (!isMdSearchDebugEnabled()) {
-					return;
-				}
-				const msg = `[kusto md debug] ${label}${detail ? ` ${detail}` : ''}`;
-				const now = Date.now();
-				const key = msg;
-				if (key === lastDebugKey && now - lastDebugAt < 1200) {
-					return;
-				}
-				lastDebugKey = key;
-				lastDebugAt = now;
-				void vscode.window.showInformationMessage(msg);
-			} catch {
-				// ignore
-			}
-		};
 
 		// IMPORTANT: When opening from VS Code's global Search view, VS Code may briefly create/focus
 		// a text editor with the correct selection and then swap to the custom editor. If we wait
@@ -182,10 +155,8 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			if (!webviewReady) {
 				pendingRevealRange = range;
-				debugPopup('queueReveal(pending)', `${document.uri.toString()} ${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`);
 				return;
 			}
-			debugPopup('queueReveal(sendNow)', `${document.uri.toString()} ${range.start.line}:${range.start.character}-${range.end.line}:${range.end.character}`);
 			postRevealRange(range);
 		};
 		const captureBestEffortRangeNow = (): vscode.Range | undefined => {
@@ -193,19 +164,13 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				const uri = document.uri.toString();
 				const active = vscode.window.activeTextEditor;
 				if (active && active.document?.uri?.toString() === uri) {
-					debugPopup('capture(activeTextEditor)', `${uri} ${active.selection.start.line}:${active.selection.start.character}-${active.selection.end.line}:${active.selection.end.character}`);
 					return active.selection;
 				}
 				const editor = (vscode.window.visibleTextEditors || []).find((e) => e.document?.uri?.toString() === uri);
 				if (editor) {
-					debugPopup('capture(visibleTextEditor)', `${uri} ${editor.selection.start.line}:${editor.selection.start.character}-${editor.selection.end.line}:${editor.selection.end.character}`);
 					return editor.selection;
 				}
-				const tracked = getLastSelectionForUri(document.uri);
-				if (tracked) {
-					debugPopup('capture(selectionTracker)', `${uri} ${tracked.start.line}:${tracked.start.character}-${tracked.end.line}:${tracked.end.character}`);
-				}
-				return tracked;
+				return getLastSelectionForUri(document.uri);
 			} catch {
 				return undefined;
 			}
@@ -284,10 +249,6 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				endOffset = undefined;
 			}
 			try {
-				debugPopup(
-					'postRevealRange(host->webview)',
-					`${document.uri.toString()} ${key} matchLen=${matchText ? matchText.length : 0} startOff=${startOffset ?? 'n/a'} endOff=${endOffset ?? 'n/a'}`
-				);
 				void webviewPanel.webview.postMessage({
 					type: 'revealTextRange',
 					documentUri: document.uri.toString(),
@@ -482,7 +443,6 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 			});
 			webviewReady = true;
 			mdWebviewInitialized = true;
-			debugPopup('webviewReady', document.uri.toString());
 			try {
 				if (pendingRevealRange) {
 					postRevealRange(pendingRevealRange);
@@ -515,15 +475,6 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 					}
 					return;
-				case 'debugMdSearchReveal':
-					try {
-						const phase = message && typeof (message as any).phase === 'string' ? String((message as any).phase) : 'webview';
-						const d = message && typeof (message as any).detail === 'string' ? String((message as any).detail) : '';
-						debugPopup(`webview:${phase}`, d);
-					} catch {
-						// ignore
-					}
-					break;
 				case 'requestDocument':
 					// Re-send mode in response to a request (the webview is guaranteed to be listening).
 					try {

@@ -216,9 +216,6 @@ export type OutgoingWebviewMessage =
 	| { type: 'openCopilotAgent' }
 	| { type: 'copilotChatFirstTimeCheck'; boxId: string }
 
-	// Debug
-	| { type: 'debugMdSearchReveal'; phase: string; detail: string }
-
 	// Section diff
 	| { type: 'showSectionDiff'; sectionId: string }
 

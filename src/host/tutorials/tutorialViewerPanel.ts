@@ -86,7 +86,7 @@ export class TutorialViewerPanel {
 		this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
 		this.panel.webview.onDidReceiveMessage(message => this.enqueueMessage(message), null, this.disposables);
 		vscode.workspace.onDidChangeConfiguration(event => {
-			if (event.affectsConfiguration('kustoWorkbench.tutorials.enabled')) {
+			if (event.affectsConfiguration('kustoWorkbench.didYouKnow.enabled')) {
 				void this.postSnapshot();
 			}
 		}, null, this.disposables);
@@ -195,7 +195,7 @@ export class TutorialViewerPanel {
 	}
 
 	private async setTutorialsEnabled(enabled: boolean): Promise<void> {
-		await vscode.workspace.getConfiguration('kustoWorkbench').update('tutorials.enabled', enabled, vscode.ConfigurationTarget.Global);
+		await vscode.workspace.getConfiguration('kustoWorkbench').update('didYouKnow.enabled', enabled, vscode.ConfigurationTarget.Global);
 	}
 
 	private buildHtml(webview: vscode.Webview): string {

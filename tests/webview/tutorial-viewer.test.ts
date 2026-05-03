@@ -202,12 +202,58 @@ describe('kw-tutorial-viewer', () => {
 		expect(viewer.shadowRoot!.textContent).toContain('2 of 2');
 		expect(viewer.shadowRoot!.textContent).not.toContain('Nothing to show right now');
 
+		await sendSnapshot(viewer, {
+			...unreadSnapshot,
+			selectedCategoryId: 'charts',
+			selectedTutorialId: 'chart-start',
+			catalog: {
+				...unreadSnapshot.catalog,
+				content: [
+					...unreadSnapshot.catalog.content.map(tutorial => ({ ...tutorial, unseen: false })),
+					{
+						id: 'late-tip',
+						displayName: 'Late tip',
+						categoryId: 'charts',
+						minExtensionVersion: '0.0.0',
+						compatible: true,
+						unseen: true,
+					},
+				],
+			},
+		});
+		expect(viewer.shadowRoot!.textContent).toContain('Chart start');
+		expect(viewer.shadowRoot!.textContent).toContain('2 of 3');
+		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-next"]') as HTMLButtonElement).click();
+		expect(postedMessages).toContainEqual({ type: 'openTutorial', tutorialId: 'late-tip', markSeen: true });
+
+		await sendSnapshot(viewer, {
+			...unreadSnapshot,
+			selectedCategoryId: 'charts',
+			selectedTutorialId: 'late-tip',
+			catalog: {
+				...unreadSnapshot.catalog,
+				content: [
+					...unreadSnapshot.catalog.content.map(tutorial => ({ ...tutorial, unseen: false })),
+					{
+						id: 'late-tip',
+						displayName: 'Late tip',
+						categoryId: 'charts',
+						minExtensionVersion: '0.0.0',
+						compatible: true,
+						unseen: false,
+					},
+				],
+			},
+		});
+		expect(viewer.shadowRoot!.textContent).toContain('Late tip');
+		expect(viewer.shadowRoot!.textContent).toContain('3 of 3');
+
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-mode-standard"]') as HTMLButtonElement).click();
 		await viewer.updateComplete;
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-mode-compact"]') as HTMLButtonElement).click();
 		await viewer.updateComplete;
 		expect(viewer.shadowRoot!.textContent).toContain('Nothing to show right now');
-		expect(viewer.shadowRoot!.textContent).toContain("There is nothing new to show you. In compact mode only content that you have not seen before is displayed. If you want to see everything, please use 'Browse all'");
+		expect(viewer.shadowRoot!.querySelector('.compact-content .empty')!.textContent).toBe("There is nothing new to show you. In compact mode only content that you have not seen before is displayed. If you want to see everything, please use 'Browse all'");
 		expect(viewer.shadowRoot!.textContent).not.toContain('0 of 0');
 		expect(viewer.shadowRoot!.querySelector('.compact-nav')).toBeNull();
 		expect(viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-show-seen-toggle"]')).toBeNull();
@@ -446,6 +492,13 @@ describe('kw-tutorial-viewer', () => {
 		expect(viewer.shadowRoot!.querySelectorAll('.search-hit')).toHaveLength(2);
 		expect(postedMessages).toContainEqual({ type: 'openTutorial', tutorialId: 'agent-next' });
 		expect(postedMessages).not.toContainEqual({ type: 'openTutorial', tutorialId: 'agent-next', markSeen: true });
+
+		search.dispatchEvent(new CustomEvent('search-input', { detail: { query: 'next cached' } }));
+		await settle(viewer);
+		expect(search.matchCount).toBe(2);
+		expect(viewer.shadowRoot!.textContent).toContain('Agent next');
+		expect(viewer.shadowRoot!.textContent).not.toContain('Agent start');
+		expect(viewer.shadowRoot!.querySelectorAll('.search-hit')).toHaveLength(2);
 	});
 
 	it('uses the Browse all category dropdown and shared mute menu values', async () => {

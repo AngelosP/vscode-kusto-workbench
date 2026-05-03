@@ -2,6 +2,8 @@
 
 Open the query editor when you want to try KQL quickly without adding a new file to the workspace. It gives you a lightweight scratchpad with the same connection and execution tools.
 
+![Kusto query editor scratchpad](images/tip-editor-scratchpad.png)
+
 ```kusto
 StormEvents
 | take 10

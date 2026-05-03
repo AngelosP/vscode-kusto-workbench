@@ -10,8 +10,8 @@ Feature: Tutorial viewer
     And I capture the output channel "Kusto Workbench"
     And I wait 2 seconds
 
-  Scenario: Open tutorials without a reachable GitHub catalog
+  Scenario: Open Did you know manually
     When I execute command "kusto.openTutorials"
     When I wait for "kw-tutorial-viewer" in the webview for 25 seconds
-    And I evaluate "(() => { const viewer = document.querySelector('kw-tutorial-viewer'); const root = viewer.shadowRoot; const waitFor = async () => { for (let attempt = 0; attempt < 120; attempt++) { await viewer.updateComplete; const text = root.textContent || ''; if (text.includes('requires a connection to the GitHub repo') && root.querySelector('[data-testid=tutorial-viewer-mode-unavailable]')) return text; await new Promise(resolve => setTimeout(resolve, 100)); } throw new Error('connection-required tutorial state did not render'); }; return waitFor().then(text => { if (root.querySelector('[data-testid=tutorial-item]')) throw new Error('tutorial items should not render without remote catalog or cache'); if (root.querySelector('[data-testid=tutorial-category-row]')) throw new Error('category rows should not render without remote catalog or cache'); return text; }); })()" in the webview
-    Then I take a screenshot "01-tutorial-viewer-unavailable"
+    And I evaluate "(() => { const viewer = document.querySelector('kw-tutorial-viewer'); const root = viewer.shadowRoot; const waitFor = async () => { for (let attempt = 0; attempt < 120; attempt++) { await viewer.updateComplete; const text = root.textContent || ''; if (text.includes('Did you know?') && (root.querySelector('[data-testid=tutorial-viewer-mode-standard]') || root.querySelector('[data-testid=tutorial-viewer-mode-unavailable]'))) return text; await new Promise(resolve => setTimeout(resolve, 100)); } throw new Error('Did you know viewer did not render'); }; return waitFor(); })()" in the webview
+    Then I take a screenshot "01-did-you-know-open"

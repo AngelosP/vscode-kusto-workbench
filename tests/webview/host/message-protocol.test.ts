@@ -296,9 +296,6 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	// Section diff
 	'showSectionDiff',
 
-	// Debug
-	'debugMdSearchReveal',
-
 	// Provider messages (kqlx, kqlCompat, mdCompat, sqlCompat editors — NOT in IncomingWebviewMessage)
 	'requestDocument',
 	'persistDocument',
@@ -318,7 +315,6 @@ const PROVIDER_ONLY_OUTGOING_TYPES = new Set([
 	'requestUpgradeToKqlx',
 	'requestUpgradeToMdx',
 	'requestUpgradeToSqlx',
-	'debugMdSearchReveal',
 ]);
 
 /**

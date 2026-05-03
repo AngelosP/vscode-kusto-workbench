@@ -6,14 +6,9 @@ import { TutorialCatalogService } from '../../../src/host/tutorials/tutorialCata
 const catalogUrl = 'https://raw.githubusercontent.com/AngelosP/vscode-kusto-workbench/main/media/tutorials/catalog.v1.json';
 const contentUrl = 'https://raw.githubusercontent.com/AngelosP/vscode-kusto-workbench/main/media/tutorials/content/one.md';
 
-function mockConfiguration(url: string): void {
+function mockConfiguration(): void {
 	vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({
-		get: (key: string, fallback?: unknown) => {
-			if (key === 'tutorials.catalogUrl') return url;
-			if (key === 'tutorials.enableUpdateChecks') return true;
-			if (key === 'tutorials.refreshIntervalHours') return 24;
-			return fallback;
-		},
+		get: (_key: string, fallback?: unknown) => fallback,
 		update: () => Promise.resolve(),
 	} as any);
 }
@@ -54,7 +49,7 @@ describe('TutorialCatalogService', () => {
 	beforeEach(() => {
 		vi.restoreAllMocks();
 		(vscode as any).__mockFileSystem.clear();
-		mockConfiguration(catalogUrl);
+		mockConfiguration();
 	});
 
 	afterEach(() => {

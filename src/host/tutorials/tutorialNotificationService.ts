@@ -52,7 +52,7 @@ export class TutorialNotificationService {
 		if (this.subscriptionService.getSubscribedCategoryIds().length === 0) {
 			return;
 		}
-		if (!settings.enableUpdateChecks || this.hasCheckedToday()) {
+		if (this.hasCheckedToday()) {
 			return;
 		}
 		try {

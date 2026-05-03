@@ -107,22 +107,8 @@ try {
 				const payload = { startLine: sl, startChar: sc, endLine: el, endChar: ec, matchText, startOffset, endOffset };
 				const litEl = document.getElementById(boxId) as any;
 				if (litEl && typeof litEl.revealRange === 'function') {
-					try {
-						postMessageToHost({
-							type: 'debugMdSearchReveal',
-							phase: 'markdownReveal(apply)',
-							detail: `${String(pState.documentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText.length}`
-						} as any);
-					} catch (e) { console.error('[kusto]', e); }
 					litEl.revealRange(payload);
 				} else {
-					try {
-						postMessageToHost({
-							type: 'debugMdSearchReveal',
-							phase: 'markdownReveal(queued)',
-							detail: `${String(pState.documentUri || '')} boxId=${boxId} ${sl}:${sc}-${el}:${ec} matchLen=${matchText.length}`
-						} as any);
-					} catch (e) { console.error('[kusto]', e); }
 					pState.pendingMarkdownRevealByBoxId = pState.pendingMarkdownRevealByBoxId || {};
 					pState.pendingMarkdownRevealByBoxId[boxId] = payload;
 				}

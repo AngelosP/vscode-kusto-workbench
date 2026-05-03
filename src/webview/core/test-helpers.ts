@@ -15,7 +15,14 @@ type MonacoLike = {
 	hasWidgetFocus?: () => boolean;
 	getValue?: () => string;
 	setValue?: (value: string) => void;
-	getModel?: () => { getLineCount?: () => number; getLineMaxColumn?: (lineNumber: number) => number; getLanguageId?: () => string; uri?: { toString(): string } } | null;
+	getModel?: () => {
+		getLineCount?: () => number;
+		getLineMaxColumn?: (lineNumber: number) => number;
+		getLanguageId?: () => string;
+		getValueInRange?: (range: unknown) => string;
+		getAllDecorations?: () => Array<{ range: unknown; options?: { className?: string } }>;
+		uri?: { toString(): string };
+	} | null;
 	getOptions?: () => { get?: (option: any) => any };
 	getPosition?: () => { lineNumber: number; column: number } | null;
 	getTargetAtClientPoint?: (clientX: number, clientY: number) => { type?: number | string; position?: { lineNumber: number; column: number } | null } | null;
@@ -711,6 +718,11 @@ _win.__testAssertMonacoDiagnosticVisible = (selector: string, expectedText: stri
 	if (!model?.uri) {
 		throw new Error(`monaco model unavailable for diagnostic visibility check: ${selector}`);
 	}
+	if (typeof model.getValueInRange !== 'function' || typeof model.getAllDecorations !== 'function') {
+		throw new Error(`monaco model diagnostic decoration APIs unavailable for: ${selector}`);
+	}
+	const getValueInRange = model.getValueInRange.bind(model);
+	const getAllDecorations = model.getAllDecorations.bind(model);
 	const monacoApi = _win.monaco;
 	if (!monacoApi?.editor?.getModelMarkers) {
 		throw new Error('monaco.editor.getModelMarkers unavailable');
@@ -721,7 +733,7 @@ _win.__testAssertMonacoDiagnosticVisible = (selector: string, expectedText: stri
 	const marker = markers.find((candidate: any) => {
 		if (candidate.severity !== monacoApi.MarkerSeverity?.Error) return false;
 		if (messageText && !String(candidate.message || '').includes(messageText)) return false;
-		const text = model.getValueInRange({
+		const text = getValueInRange({
 			startLineNumber: candidate.startLineNumber,
 			startColumn: candidate.startColumn,
 			endLineNumber: candidate.endLineNumber,
@@ -738,10 +750,10 @@ _win.__testAssertMonacoDiagnosticVisible = (selector: string, expectedText: stri
 		endLineNumber: marker.endLineNumber,
 		endColumn: marker.endColumn,
 	};
-	const decorations = model.getAllDecorations().filter((decoration: any) => decoration.options?.className === 'squiggly-error');
-	const matchingDecoration = decorations.find((decoration: any) => model.getValueInRange(decoration.range) === markerText);
+	const decorations = getAllDecorations().filter((decoration: any) => decoration.options?.className === 'squiggly-error');
+	const matchingDecoration = decorations.find((decoration: any) => getValueInRange(decoration.range) === markerText);
 	if (!matchingDecoration) {
-		throw new Error(`Expected squiggly-error model decoration over ${JSON.stringify(markerText)}, got ${JSON.stringify(decorations.map((decoration: any) => ({ range: decoration.range, text: model.getValueInRange(decoration.range), className: decoration.options?.className })))}`);
+		throw new Error(`Expected squiggly-error model decoration over ${JSON.stringify(markerText)}, got ${JSON.stringify(decorations.map((decoration: any) => ({ range: decoration.range, text: getValueInRange(decoration.range), className: decoration.options?.className })))}`);
 	}
 	const root = editorRoot.matches('.monaco-editor') ? editorRoot : editorRoot.querySelector('.monaco-editor') as HTMLElement | null;
 	if (!root) {

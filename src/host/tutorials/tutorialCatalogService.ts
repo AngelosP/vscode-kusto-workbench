@@ -18,6 +18,7 @@ const MAX_CATALOG_BYTES = 512 * 1024;
 const MAX_MARKDOWN_BYTES = 1024 * 1024;
 const MAX_IMAGE_BYTES = 3 * 1024 * 1024;
 const FETCH_TIMEOUT_MS = 8000;
+const DEFAULT_REFRESH_INTERVAL_HOURS = 24;
 
 interface CatalogCacheFile {
 	fetchedAt: string;
@@ -30,7 +31,6 @@ interface CatalogCacheFile {
 interface TutorialSettings {
 	enabled: boolean;
 	catalogUrl: string;
-	enableUpdateChecks: boolean;
 	refreshIntervalHours: number;
 }
 
@@ -105,11 +105,8 @@ export class TutorialCatalogService {
 
 	getSettings(): TutorialSettings {
 		const config = vscode.workspace.getConfiguration('kustoWorkbench');
-		const enabled = !!config.get('tutorials.enabled', true);
-		const catalogUrl = String(config.get('tutorials.catalogUrl', DEFAULT_CATALOG_URL) || '').trim();
-		const enableUpdateChecks = !!config.get('tutorials.enableUpdateChecks', true);
-		const refreshIntervalHours = Math.max(1, Number(config.get('tutorials.refreshIntervalHours', 24)) || 24);
-		return { enabled, catalogUrl, enableUpdateChecks, refreshIntervalHours };
+		const enabled = !!config.get('didYouKnow.enabled', true);
+		return { enabled, catalogUrl: DEFAULT_CATALOG_URL, refreshIntervalHours: DEFAULT_REFRESH_INTERVAL_HOURS };
 	}
 
 	async getCatalog(options: { forceRefresh?: boolean } = {}): Promise<ResolvedTutorialCatalog> {

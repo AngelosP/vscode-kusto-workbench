@@ -19,7 +19,6 @@ import { registerRemoteFileOpener } from './remoteFileOpener';
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { exportSkillCommand, checkAndUpdateSkillFiles } from './skillExport';
 import { TutorialCatalogService } from './tutorials/tutorialCatalogService';
-import { TutorialNotificationService, isKustoTutorialTriggerDocument } from './tutorials/tutorialNotificationService';
 import { TutorialSubscriptionService } from './tutorials/tutorialSubscriptionService';
 import { TutorialViewerPanel } from './tutorials/tutorialViewerPanel';
 import type { TutorialViewerMode } from '../shared/tutorials/tutorialCatalog';
@@ -27,22 +26,12 @@ import { EditorCursorStatusBar } from './editorCursorStatusBar';
 
 import { stsProcessManagerSingleton } from './sql/stsProcessManager';
 
-const TUTORIAL_ACTIVATION_CHECK_DELAY_MS = 10000;
-
 // Export the tool orchestrator instance so other modules can access it
 export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
-	const isMdSearchDebugEnabled = (): boolean => {
-		try {
-			return !!vscode.workspace.getConfiguration('kustoWorkbench').get('debug.mdSearchReveal', false);
-		} catch {
-			return false;
-		}
-	};
-
 	// Configure editor associations for .kql and .csl files based on settings
 	const updateEditorAssociations = async (): Promise<void> => {
 		try {
@@ -122,11 +111,6 @@ export function activate(context: vscode.ExtensionContext) {
 	const openTutorials = async (selectedCategoryId?: string, preferredMode: TutorialViewerMode = 'standard'): Promise<void> => {
 		TutorialViewerPanel.open(context, context.extensionUri, tutorialCatalogService, tutorialSubscriptionService, { selectedCategoryId, preferredMode });
 	};
-	const tutorialNotificationService = new TutorialNotificationService(context, tutorialCatalogService, tutorialSubscriptionService, openTutorials);
-	const tutorialActivationCheckTimer = setTimeout(() => {
-		void tutorialNotificationService.checkOnActivation();
-	}, TUTORIAL_ACTIVATION_CHECK_DELAY_MS);
-	context.subscriptions.push({ dispose: () => clearTimeout(tutorialActivationCheckTimer) });
 
 	// Shared SQL lazy-init (used by both editor provider and connection manager viewer)
 	let _sqlConnectionManager: SqlConnectionManager | undefined;
@@ -225,9 +209,6 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.workspace.onDidOpenTextDocument((doc) => {
 			scheduleDiagnostics(doc, 0);
-			if (isKustoTutorialTriggerDocument(doc)) {
-				void tutorialNotificationService.checkOnKustoFileOpen();
-			}
 			// Best-effort: capture any selection that VS Code may apply during open
 			// (e.g., clicking a result in the global Search view).
 			try {
@@ -263,56 +244,6 @@ export function activate(context: vscode.ExtensionContext) {
 		vscode.window.onDidChangeTextEditorSelection((e) => {
 			try {
 				recordTextEditorSelection(e.textEditor);
-				// Debugging aid: Surface selection changes for .md.
-				// This helps confirm if Search results are producing observable selection events.
-				try {
-					if (!isMdSearchDebugEnabled()) {
-						return;
-					}
-					const doc = e.textEditor?.document;
-					const p = String(doc?.uri?.path || '').toLowerCase();
-					if (!p.endsWith('.md')) {
-						return;
-					}
-					const sel = e.textEditor.selection;
-					const kindStr = (e && e.kind !== undefined)
-						? (e.kind === vscode.TextEditorSelectionChangeKind.Command ? 'Command'
-							: e.kind === vscode.TextEditorSelectionChangeKind.Keyboard ? 'Keyboard'
-								: e.kind === vscode.TextEditorSelectionChangeKind.Mouse ? 'Mouse'
-									: String(e.kind))
-						: 'Unknown';
-					const key = `${doc.uri.toString()}@${sel.start.line}:${sel.start.character}-${sel.end.line}:${sel.end.character}`;
-					try {
-						if (!(globalThis as any).__kustoMdSelDebugLast) {
-							(globalThis as any).__kustoMdSelDebugLast = { key: '', at: 0 };
-						}
-						const last = (globalThis as any).__kustoMdSelDebugLast;
-						const now = Date.now();
-						if (last.key === key && now - last.at < 1000) {
-							return;
-						}
-						last.key = key;
-						last.at = now;
-					} catch {
-						// ignore
-					}
-					const snippet = (() => {
-						try {
-							if (!sel || sel.isEmpty) {
-								return '';
-							}
-							const t = doc.getText(sel);
-							return typeof t === 'string' ? t.slice(0, 80) : '';
-						} catch {
-							return '';
-						}
-					})();
-					void vscode.window.showInformationMessage(
-						`[kusto md debug] selection(kind=${kindStr}) ${doc.uri.toString()} @ ${sel.start.line}:${sel.start.character}-${sel.end.line}:${sel.end.character}${snippet ? ` text=\"${snippet}\"` : ''}`
-					);
-				} catch {
-					// ignore
-				}
 			} catch {
 				// ignore
 			}
@@ -323,26 +254,6 @@ export function activate(context: vscode.ExtensionContext) {
 			try {
 				if (editor) {
 					recordTextEditorSelection(editor);
-				}
-				try {
-					if (!isMdSearchDebugEnabled()) {
-						return;
-					}
-					const doc = editor?.document;
-					if (!doc) {
-						void vscode.window.showInformationMessage('[kusto md debug] activeTextEditor = <none>');
-						return;
-					}
-					const p = String(doc.uri?.path || '').toLowerCase();
-					if (!p.endsWith('.md')) {
-						return;
-					}
-					const sel = editor.selection;
-					void vscode.window.showInformationMessage(
-						`[kusto md debug] activeTextEditor ${doc.uri.toString()} @ ${sel.start.line}:${sel.start.character}-${sel.end.line}:${sel.end.character}`
-					);
-				} catch {
-					// ignore
 				}
 			} catch {
 				// ignore
@@ -358,21 +269,6 @@ export function activate(context: vscode.ExtensionContext) {
 					} catch {
 						// ignore
 					}
-				}
-				try {
-					if (!isMdSearchDebugEnabled()) {
-						return;
-					}
-					const mdUris = (editors || [])
-						.map((e) => e && e.document ? e.document.uri : null)
-						.filter(Boolean)
-						.map((u) => String((u as vscode.Uri).toString()))
-						.filter((u) => u.toLowerCase().endsWith('.md'));
-					if (mdUris.length) {
-						void vscode.window.showInformationMessage(`[kusto md debug] visibleTextEditors(md) count=${mdUris.length}`);
-					}
-				} catch {
-					// ignore
 				}
 			} catch {
 				// ignore
@@ -418,7 +314,12 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider('kustoWorkbench.quickAccess', {
 			resolveWebviewView(webviewView: vscode.WebviewView) {
-				webviewView.webview.options = { enableScripts: true };
+				webviewView.webview.options = {
+					enableScripts: true,
+					localResourceRoots: [context.extensionUri]
+				};
+				const queryEditorIconDarkUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'images', 'kusto-file-dark.svg'));
+				const queryEditorIconLightUri = webviewView.webview.asWebviewUri(vscode.Uri.joinPath(context.extensionUri, 'media', 'images', 'kusto-file-light.svg'));
 				webviewView.webview.html = `<!DOCTYPE html>
 <html>
 <head>
@@ -473,6 +374,17 @@ export function activate(context: vscode.ExtensionContext) {
 			font-size: 16px;
 			opacity: 0.85;
 		}
+		.card-title-icon {
+			width: 16px;
+			height: 16px;
+			flex: 0 0 16px;
+			opacity: 0.85;
+		}
+		.theme-icon-light { display: none; }
+		body.vscode-light .theme-icon-dark,
+		body.vscode-high-contrast-light .theme-icon-dark { display: none; }
+		body.vscode-light .theme-icon-light,
+		body.vscode-high-contrast-light .theme-icon-light { display: inline-block; }
 		
 		.card-desc { 
 			font-size: 12px; 
@@ -504,7 +416,9 @@ export function activate(context: vscode.ExtensionContext) {
 		<div class="section-header">Get Started</div>
 		<div class="card featured">
 			<div class="card-title">
-				<i class="codicon codicon-play"></i> Query Playground
+				<img class="card-title-icon theme-icon-dark" src="${queryEditorIconDarkUri}" alt="" aria-hidden="true">
+				<img class="card-title-icon theme-icon-light" src="${queryEditorIconLightUri}" alt="" aria-hidden="true">
+				Query Playground
 			</div>
 			<div class="card-desc">New here? Start with the playground, it auto-saves your work. Use <strong>File → Save As...</strong> anytime to save it to disk. Default shortcut is <strong>CTRL+SHIFT+ALT+K.</strong></div>
 			<button class="button" onclick="sendCommand('openQueryEditor')">Open Query Editor</button>
