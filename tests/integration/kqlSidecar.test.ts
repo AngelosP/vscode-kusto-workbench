@@ -91,7 +91,9 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const webviewPanel: vscode.WebviewPanel = {
 				webview,
-				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+				visible: true,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike),
+				onDidChangeViewState: () => ({ dispose() {} } as DisposableLike)
 			} as any;
 
 			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
@@ -180,7 +182,9 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const webviewPanel: vscode.WebviewPanel = {
 				webview,
-				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+				visible: true,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike),
+				onDidChangeViewState: () => ({ dispose() {} } as DisposableLike)
 			} as any;
 
 			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
@@ -269,7 +273,9 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const webviewPanel: vscode.WebviewPanel = {
 				webview,
-				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+				visible: true,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike),
+				onDidChangeViewState: () => ({ dispose() {} } as DisposableLike)
 			} as any;
 
 			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
@@ -368,7 +374,9 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const webviewPanel: vscode.WebviewPanel = {
 				webview,
-				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+				visible: true,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike),
+				onDidChangeViewState: () => ({ dispose() {} } as DisposableLike)
 			} as any;
 
 			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
@@ -1606,7 +1614,9 @@ suite('.md compat persistence', () => {
 
 			const webviewPanel: vscode.WebviewPanel = {
 				webview,
-				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+				visible: true,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike),
+				onDidChangeViewState: () => ({ dispose() {} } as DisposableLike)
 			} as any;
 
 			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
@@ -1684,7 +1694,9 @@ suite('.md compat persistence', () => {
 
 			const webviewPanel: vscode.WebviewPanel = {
 				webview,
-				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+				visible: true,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike),
+				onDidChangeViewState: () => ({ dispose() {} } as DisposableLike)
 			} as any;
 
 			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
