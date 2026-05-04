@@ -87,6 +87,7 @@ vi.mock('../../src/webview/shared/safe-run.js', () => ({
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
 	getResultsState: vi.fn(() => null),
+	getResultsStateRevision: vi.fn(() => 0),
 	displayResultForBox: vi.fn(),
 	displayResult: vi.fn(),
 	displayCancelled: mocks.displayCancelled,

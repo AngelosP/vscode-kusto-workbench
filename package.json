@@ -932,7 +932,8 @@
                   "type": "number",
                   "description": "Gap in pixels between axis title and axis line"
                 }
-              }
+              },
+              "additionalProperties": false
             },
             "yAxisSettings": {
               "type": "object",
@@ -974,7 +975,8 @@
                   ],
                   "description": "Sort direction for Y-axis values"
                 }
-              }
+              },
+              "additionalProperties": false
             },
             "legendSettings": {
               "type": "object",
@@ -1026,7 +1028,8 @@
                   "type": "boolean",
                   "description": "Show legend label at end of each series line"
                 }
-              }
+              },
+              "additionalProperties": false
             },
             "heatmapSettings": {
               "type": "object",
@@ -1064,12 +1067,14 @@
                   "type": "number",
                   "description": "Number of top/bottom values to label (used when cellLabelMode is not 'all')"
                 }
-              }
+              },
+              "additionalProperties": false
             }
           },
           "required": [
             "sectionId"
-          ]
+          ],
+          "additionalProperties": false
         }
       },
       {

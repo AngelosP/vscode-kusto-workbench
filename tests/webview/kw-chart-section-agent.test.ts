@@ -23,6 +23,11 @@ vi.mock('../../src/webview/shared/chart-renderer.js', () => ({
 	maximizeChartBox: vi.fn(),
 	disposeChartEcharts: vi.fn(),
 	renderChart: vi.fn(),
+	getChartState: (id: string) => {
+		const states = (window as any).chartStateByBoxId || ((window as any).chartStateByBoxId = {});
+		return states[id] || (states[id] = {});
+	},
+	getChartMinResizeHeight: () => 140,
 }));
 
 vi.mock('../../src/webview/core/persistence.js', () => ({
@@ -30,7 +35,8 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 }));
 
 import '../../src/webview/sections/kw-chart-section.js';
-import type { KwChartSection } from '../../src/webview/sections/kw-chart-section.js';
+import { KwChartSection } from '../../src/webview/sections/kw-chart-section.js';
+import { ICONS } from '../../src/webview/shared/icon-registry.js';
 
 beforeEach(() => {
 	// Stub globals that kw-chart-section reads
@@ -48,6 +54,32 @@ function createChartSection(boxId = 'chart_test_1'): KwChartSection {
 		</kw-chart-section>
 	`, container);
 	return container.querySelector('kw-chart-section')!;
+}
+
+function getChartTypeButton(el: KwChartSection, ariaLabel: string): HTMLButtonElement {
+	const button = el.shadowRoot!.querySelector(`.chart-type-btn[aria-label="${ariaLabel}"]`) as HTMLButtonElement | null;
+	expect(button).not.toBeNull();
+	return button!;
+}
+
+function getSelectByFieldLabel(el: KwChartSection, fieldLabel: string): HTMLSelectElement {
+	const groups = Array.from(el.shadowRoot!.querySelectorAll('.chart-field-group'));
+	const group = groups.find(candidate => candidate.querySelector('label')?.textContent?.trim() === fieldLabel);
+	expect(group).toBeTruthy();
+	const select = group!.querySelector('select') as HTMLSelectElement | null;
+	expect(select).not.toBeNull();
+	return select!;
+}
+
+function changeSelectValue(select: HTMLSelectElement, value: string): void {
+	select.value = value;
+	select.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+}
+
+async function configureAreaChart(el: KwChartSection): Promise<void> {
+	expect(el.configure({ chartType: 'area', dataSourceId: 'q1', xColumn: 'Timestamp', yColumns: ['Count'] })).toBe(true);
+	el.refreshDatasets();
+	await el.updateComplete;
 }
 
 // ── Setup/teardown ────────────────────────────────────────────────────────────
@@ -102,6 +134,123 @@ describe('kw-chart-section agent configuration', () => {
 		expect((el as any)._showDataLabels).toBe(true);
 		expect((el as any)._sortColumn).toBe('Timestamp');
 		expect((el as any)._sortDirection).toBe('asc');
+	});
+
+	it('ignores stale zoom/pan state from global chart config', async () => {
+		const el = createChartSection();
+		await el.updateComplete;
+
+		const global = (window as any).chartStateByBoxId;
+		global['chart_test_1'] = {
+			chartType: 'line',
+			dataSourceId: 'q1',
+			xColumn: 'Timestamp',
+			yColumns: ['Count'],
+			zoomPanEnabled: true,
+		};
+
+		el.syncFromGlobalState();
+		await el.updateComplete;
+		expect((el as any)._zoomPanEnabled).toBeUndefined();
+		expect(el.serialize()).not.toHaveProperty('zoomPanEnabled');
+	});
+
+	it('configure ignores zoom/pan fields from untyped callers', async () => {
+		const el = createChartSection();
+		await el.updateComplete;
+
+		expect(el.configure({ chartType: 'line', dataSourceId: 'q1', xColumn: 'Timestamp', yColumns: ['Count'], zoomPanEnabled: true } as any)).toBe(true);
+		await el.updateComplete;
+		expect(el.serialize()).not.toHaveProperty('zoomPanEnabled');
+		expect((window as any).chartStateByBoxId['chart_test_1'] ?? {}).not.toHaveProperty('zoomPanEnabled');
+		expect((el as any)._zoomPanEnabled).toBeUndefined();
+	});
+
+	it('configure drops nested stale zoom fields while keeping known settings', async () => {
+		const el = createChartSection();
+		await el.updateComplete;
+
+		expect(el.configure({
+			chartType: 'line',
+			dataSourceId: 'q1',
+			xColumn: 'Timestamp',
+			yColumns: ['Count'],
+			xAxisSettings: { customLabel: 'Time', zoomPanEnabled: true },
+			yAxisSettings: { customLabel: 'Events', dataZoom: { start: 20 } },
+			legendSettings: { sortMode: 'alphabetical', zoomPanEnabled: true },
+		} as any)).toBe(true);
+		await el.updateComplete;
+
+		const serialized = el.serialize() as any;
+		expect(serialized.xAxisSettings.customLabel).toBe('Time');
+		expect(serialized.xAxisSettings).not.toHaveProperty('zoomPanEnabled');
+		expect(serialized.yAxisSettings.customLabel).toBe('Events');
+		expect(serialized.yAxisSettings).not.toHaveProperty('dataZoom');
+		expect(serialized.legendSettings.sortMode).toBe('alpha-asc');
+		expect(serialized.legendSettings).not.toHaveProperty('zoomPanEnabled');
+	});
+
+	it('axis setting setters drop stale nested zoom fields', async () => {
+		const el = createChartSection();
+		await el.updateComplete;
+
+		el.setYColumns(['Count']);
+		el.setXAxisSettings({ customLabel: 'Time', zoomPanEnabled: true } as any);
+		el.setYAxisSettings({ customLabel: 'Events', dataZoom: { start: 10 } } as any);
+
+		const serialized = el.serialize() as any;
+		expect(serialized.xAxisSettings.customLabel).toBe('Time');
+		expect(serialized.xAxisSettings).not.toHaveProperty('zoomPanEnabled');
+		expect(serialized.yAxisSettings.customLabel).toBe('Events');
+		expect(serialized.yAxisSettings).not.toHaveProperty('dataZoom');
+	});
+
+	it('partial legend settings preserve top-level stack mode', async () => {
+		const el = createChartSection();
+		await el.updateComplete;
+
+		expect(el.configure({
+			chartType: 'bar',
+			dataSourceId: 'q1',
+			xColumn: 'Timestamp',
+			yColumns: ['Count'],
+			stackMode: 'stacked',
+			legendSettings: { sortMode: 'alpha-asc' },
+		} as any)).toBe(true);
+
+		const serialized = el.serialize() as any;
+		expect(serialized.stackMode).toBe('stacked');
+		expect(serialized.legendSettings.stackMode).toBe('stacked');
+		expect(serialized.legendSettings.sortMode).toBe('alpha-asc');
+	});
+
+	it('does not render zoom as an edit-panel option', async () => {
+		const el = createChartSection();
+		await el.updateComplete;
+
+		expect(el.configure({ chartType: 'line', dataSourceId: 'q1', xColumn: 'Timestamp', yColumns: ['Count'] })).toBe(true);
+		el.refreshDatasets();
+		await el.updateComplete;
+
+		const labels = Array.from(el.shadowRoot!.querySelectorAll('.chart-mapping-grid > .chart-field-group > label:first-child'))
+			.map(label => label.textContent?.trim())
+			.filter(Boolean);
+		expect(labels).not.toContain('Zoom');
+	});
+
+	it('uses the shared icon registry for the floating undo zoom button', () => {
+		const queriesContainer = document.createElement('div');
+		queriesContainer.id = 'queries-container';
+		container.appendChild(queriesContainer);
+
+		const id = 'chart_zoom_undo_icon';
+		KwChartSection.addChartBox({ id });
+
+		const undoButton = document.getElementById(`${id}_chart_zoom_undo`);
+		const expected = document.createElement('span');
+		render(ICONS.toolbarUndo, expected);
+
+		expect(undoButton?.innerHTML).toBe(expected.innerHTML);
 	});
 
 	it('dropdowns reflect global state after syncFromGlobalState', async () => {
@@ -165,6 +314,59 @@ describe('kw-chart-section agent configuration', () => {
 		expect((el as any)._chartType).toBe('area');
 		expect((el as any)._xColumn).toBe('');
 		expect((el as any)._yColumns).toEqual([]);
+	});
+
+	for (const target of [
+		{ ariaLabel: 'Pie Chart', chartType: 'pie' },
+		{ ariaLabel: 'Funnel Chart', chartType: 'funnel' },
+	] as const) {
+		it(`${target.chartType} Label and Value dropdowns stay blank when backend fields are blank`, async () => {
+			const el = createChartSection(`chart_${target.chartType}_blank_roles`);
+			await el.updateComplete;
+			await configureAreaChart(el);
+
+			getChartTypeButton(el, target.ariaLabel).click();
+			await el.updateComplete;
+
+			const labelSelect = getSelectByFieldLabel(el, 'Label');
+			const valueSelect = getSelectByFieldLabel(el, 'Value');
+			expect(labelSelect.value).toBe('');
+			expect(valueSelect.value).toBe('');
+
+			const serialized = el.serialize() as any;
+			expect(serialized.chartType).toBe(target.chartType);
+			expect(serialized.xColumn).toBe('Timestamp');
+			expect(serialized.yColumns).toEqual(['Count']);
+			expect(serialized).not.toHaveProperty('labelColumn');
+			expect(serialized).not.toHaveProperty('valueColumn');
+
+			const globalState = (window as any).chartStateByBoxId[el.boxId];
+			expect(globalState.labelColumn).toBe('');
+			expect(globalState.valueColumn).toBe('');
+		});
+	}
+
+	it('pie Label and Value dropdown changes update serialized and renderer state', async () => {
+		const el = createChartSection('chart_pie_selected_roles');
+		await el.updateComplete;
+		await configureAreaChart(el);
+
+		getChartTypeButton(el, 'Pie Chart').click();
+		await el.updateComplete;
+
+		changeSelectValue(getSelectByFieldLabel(el, 'Label'), 'Timestamp');
+		await el.updateComplete;
+		changeSelectValue(getSelectByFieldLabel(el, 'Value'), 'Count');
+		await el.updateComplete;
+
+		const serialized = el.serialize() as any;
+		expect(serialized.chartType).toBe('pie');
+		expect(serialized.labelColumn).toBe('Timestamp');
+		expect(serialized.valueColumn).toBe('Count');
+
+		const globalState = (window as any).chartStateByBoxId[el.boxId];
+		expect(globalState.labelColumn).toBe('Timestamp');
+		expect(globalState.valueColumn).toBe('Count');
 	});
 
 	it('opens X/Y axis popup from chart axis-title click event', async () => {

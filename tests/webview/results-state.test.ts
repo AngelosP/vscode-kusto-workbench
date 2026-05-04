@@ -31,6 +31,7 @@ import {
 	displayResultForBox,
 	getRawCellValue,
 	getResultsState,
+	getResultsStateRevision,
 	setResultsState,
 	ensureResultsStateMap,
 	resetCurrentResult,
@@ -81,6 +82,16 @@ describe('results-state displayResultForBox', () => {
 			rowIndexToDisplayIndex: [0, 1],
 		});
 		expect(state.selectedRows).toBeInstanceOf(Set);
+		expect(getResultsStateRevision('query_1')).toBeGreaterThan(0);
+	});
+
+	it('increments a revision whenever shared result state is replaced', () => {
+		const id = 'query_revision_test';
+		expect(getResultsStateRevision(id)).toBe(0);
+		setResultsState(id, { columns: [], rows: [] });
+		const firstRevision = getResultsStateRevision(id);
+		setResultsState(id, { columns: [], rows: [['next']] });
+		expect(getResultsStateRevision(id)).toBe(firstRevision + 1);
 	});
 });
 

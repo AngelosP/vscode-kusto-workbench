@@ -3,6 +3,12 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.7.0] - 2026.05.04
+
+* [Ability to pan and zoom in the plots · Issue #6 · AngelosP/vscode-kusto-workbench](https://github.com/AngelosP/vscode-kusto-workbench/issues/6)
+* Bugs
+    * When the chart type changes from Area to Pie, the X axis column is visible selected in the Label column of the pie chart, but the chart area still complains no columns is selected.
+
 ## [4.6.3] - 2026.05.03
 
 * [Feature request: configurable `maxResultRows` for MCP tool responses · Issue #19 · AngelosP/vscode-kusto-workbench](https://github.com/AngelosP/vscode-kusto-workbench/issues/19)

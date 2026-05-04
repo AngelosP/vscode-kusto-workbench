@@ -11,6 +11,7 @@ import {
 	TitleComponent,
 	TooltipComponent,
 	ToolboxComponent,
+	DataZoomComponent,
 	VisualMapComponent
 } from 'echarts/components';
 import { CanvasRenderer } from 'echarts/renderers';
@@ -31,6 +32,7 @@ echarts.use([
 	TitleComponent,
 	TooltipComponent,
 	ToolboxComponent,
+	DataZoomComponent,
 	VisualMapComponent,
 	CanvasRenderer
 ]);

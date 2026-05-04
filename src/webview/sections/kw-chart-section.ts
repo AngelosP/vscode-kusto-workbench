@@ -1,4 +1,4 @@
-import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
+import { LitElement, html, nothing, render as renderLit, type PropertyValues, type TemplateResult } from 'lit';
 import type { SectionElement } from '../shared/dom-helpers';
 import { styles } from './kw-chart-section.styles.js';
 import { sectionGlowStyles } from '../shared/section-glow.styles.js';
@@ -27,6 +27,10 @@ import {
 	getDefaultYAxisSettings,
 	getDefaultLegendSettings,
 	getDefaultHeatmapSettings,
+	sanitizeXAxisSettings,
+	sanitizeYAxisSettings,
+	sanitizeLegendSettings,
+	sanitizeHeatmapSettings,
 	hasCustomXAxisSettings,
 	hasCustomYAxisSettings,
 	hasCustomLabelSettings,
@@ -228,19 +232,23 @@ export class KwChartSection extends LitElement implements SectionElement {
 		st.chartSubtitle = typeof options.chartSubtitle === 'string' ? String(options.chartSubtitle) : (st.chartSubtitle || '');
 		st.chartTitleAlign = typeof options.chartTitleAlign === 'string' ? String(options.chartTitleAlign) : (st.chartTitleAlign || 'center');
 		if (options.xAxisSettings && typeof options.xAxisSettings === 'object') {
-			st.xAxisSettings = { ...getDefaultXAxisSettings(), ...st.xAxisSettings, ...options.xAxisSettings };
+			st.xAxisSettings = sanitizeXAxisSettings(options.xAxisSettings, st.xAxisSettings || getDefaultXAxisSettings());
 		}
 		if (options.yAxisSettings && typeof options.yAxisSettings === 'object') {
-			st.yAxisSettings = { ...getDefaultYAxisSettings(), ...st.yAxisSettings, ...options.yAxisSettings };
+			st.yAxisSettings = sanitizeYAxisSettings(options.yAxisSettings, st.yAxisSettings || getDefaultYAxisSettings(), Array.isArray(st.yColumns) ? st.yColumns : []);
 		}
 		if (options.legendSettings && typeof options.legendSettings === 'object') {
-			st.legendSettings = { ...getDefaultLegendSettings(), ...st.legendSettings, ...options.legendSettings };
+			st.legendSettings = sanitizeLegendSettings(options.legendSettings, {
+				...(st.legendSettings || getDefaultLegendSettings()),
+				position: st.legendPosition,
+				stackMode: st.stackMode,
+			});
 			// Back-sync top-level fields so the renderer reads consistent values
 			if (typeof st.legendSettings.position === 'string') st.legendPosition = st.legendSettings.position;
 			if (typeof st.legendSettings.stackMode === 'string') st.stackMode = st.legendSettings.stackMode;
 		}
 		if (options.heatmapSettings && typeof options.heatmapSettings === 'object') {
-			st.heatmapSettings = { ...getDefaultHeatmapSettings(), ...st.heatmapSettings, ...options.heatmapSettings };
+			st.heatmapSettings = sanitizeHeatmapSettings(options.heatmapSettings, st.heatmapSettings || getDefaultHeatmapSettings());
 		}
 
 		const container = document.getElementById('queries-container');
@@ -268,6 +276,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 		editContainer.style.flexDirection = 'column';
 		editContainer.style.height = '100%';
 		editContainer.style.minHeight = '0';
+		editContainer.className = 'kusto-chart-edit-surface';
 
 		const canvasEdit = document.createElement('div');
 		canvasEdit.className = 'kusto-chart-canvas';
@@ -275,6 +284,35 @@ export class KwChartSection extends LitElement implements SectionElement {
 		canvasEdit.style.minHeight = '140px';
 		canvasEdit.style.flex = '1 1 auto';
 		editContainer.appendChild(canvasEdit);
+
+		const zoomControls = document.createElement('div');
+		zoomControls.id = id + '_chart_zoom_controls';
+		zoomControls.className = 'kusto-chart-floating-zoom-controls';
+		zoomControls.hidden = true;
+		const undoZoomButton = document.createElement('button');
+		undoZoomButton.id = id + '_chart_zoom_undo';
+		undoZoomButton.className = 'kusto-chart-floating-zoom-btn kusto-chart-floating-zoom-undo';
+		undoZoomButton.type = 'button';
+		undoZoomButton.title = 'Undo zoom';
+		undoZoomButton.setAttribute('aria-label', 'Undo zoom');
+		undoZoomButton.hidden = true;
+		renderLit(ICONS.toolbarUndo, undoZoomButton);
+		const zoomButton = document.createElement('button');
+		zoomButton.id = id + '_chart_zoom_select';
+		zoomButton.className = 'kusto-chart-floating-zoom-btn kusto-chart-floating-zoom-select';
+		zoomButton.type = 'button';
+		zoomButton.textContent = 'Zoom';
+		zoomButton.title = 'Draw a rectangle to zoom';
+		zoomButton.setAttribute('aria-label', 'Draw a rectangle to zoom');
+		zoomControls.appendChild(undoZoomButton);
+		zoomControls.appendChild(zoomButton);
+		editContainer.appendChild(zoomControls);
+		const zoomHint = document.createElement('div');
+		zoomHint.id = id + '_chart_zoom_hint';
+		zoomHint.className = 'kusto-chart-zoom-hint';
+		zoomHint.hidden = true;
+		zoomHint.textContent = 'Drag a rectangle around the area you want to zoom';
+		editContainer.appendChild(zoomHint);
 		chartWrapper.appendChild(editContainer);
 
 		const previewContainer = document.createElement('div');
@@ -468,9 +506,9 @@ export class KwChartSection extends LitElement implements SectionElement {
 	getTargetColumn(): string { return this._targetColumn; }
 	setTargetColumn(v: string): void { this._targetColumn = v; }
 	getXAxisSettings(): XAxisSettings { return this._xAxisSettings; }
-	setXAxisSettings(v: XAxisSettings): void { this._xAxisSettings = v; }
+	setXAxisSettings(v: XAxisSettings): void { this._xAxisSettings = sanitizeXAxisSettings(v, defaultXAxisSettings()); }
 	getYAxisSettings(): YAxisSettings { return this._yAxisSettings; }
-	setYAxisSettings(v: YAxisSettings): void { this._yAxisSettings = v; }
+	setYAxisSettings(v: YAxisSettings): void { this._yAxisSettings = sanitizeYAxisSettings(v, defaultYAxisSettings(), this._yColumns); }
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -780,7 +818,8 @@ export class KwChartSection extends LitElement implements SectionElement {
 					<!-- Label column -->
 					<span class="chart-field-group">
 						<label>Label</label>
-						<select class="chart-select" @change=${this._onLabelColumnChanged}>
+						<select class="chart-select" .value=${this._labelColumn} @change=${this._onLabelColumnChanged}>
+							<option value="" ?selected=${!this._labelColumn}>(select)</option>
 							${colNames.map(c => html`
 								<option value=${c} ?selected=${this._labelColumn === c}>${c}</option>
 							`)}
@@ -790,7 +829,8 @@ export class KwChartSection extends LitElement implements SectionElement {
 					<!-- Value column -->
 					<span class="chart-field-group">
 						<label>Value</label>
-						<select class="chart-select" @change=${this._onValueColumnChanged}>
+						<select class="chart-select" .value=${this._valueColumn} @change=${this._onValueColumnChanged}>
+							<option value="" ?selected=${!this._valueColumn}>(select)</option>
 							${colNames.map(c => html`
 								<option value=${c} ?selected=${this._valueColumn === c}>${c}</option>
 							`)}
@@ -1958,18 +1998,22 @@ export class KwChartSection extends LitElement implements SectionElement {
 			if (typeof config.chartSubtitle === 'string') this._chartSubtitle = config.chartSubtitle;
 			if (typeof config.chartTitleAlign === 'string') this._chartTitleAlign = config.chartTitleAlign as 'left' | 'center' | 'right';
 			if (config.xAxisSettings && typeof config.xAxisSettings === 'object') {
-				this._xAxisSettings = { ...this._xAxisSettings, ...(config.xAxisSettings as Partial<XAxisSettings>) };
+				this._xAxisSettings = sanitizeXAxisSettings(config.xAxisSettings, this._xAxisSettings);
 			}
 			if (config.yAxisSettings && typeof config.yAxisSettings === 'object') {
-				this._yAxisSettings = { ...this._yAxisSettings, ...(config.yAxisSettings as Partial<YAxisSettings>) };
+				this._yAxisSettings = sanitizeYAxisSettings(config.yAxisSettings, this._yAxisSettings, this._yColumns);
 			}
 			if (config.legendSettings && typeof config.legendSettings === 'object') {
-				this._legendSettings = { ...this._legendSettings, ...(config.legendSettings as Partial<LegendSettings>) };
+				this._legendSettings = sanitizeLegendSettings(config.legendSettings, {
+					...this._legendSettings,
+					position: this._legendPosition,
+					stackMode: this._stackMode,
+				});
 				this._legendPosition = normalizeLegendPosition(this._legendSettings.position);
 				this._stackMode = normalizeStackMode(this._legendSettings.stackMode);
 			}
 			if (config.heatmapSettings && typeof config.heatmapSettings === 'object') {
-				this._heatmapSettings = { ...this._heatmapSettings, ...(config.heatmapSettings as Partial<HeatmapSettings>) };
+				this._heatmapSettings = sanitizeHeatmapSettings(config.heatmapSettings, this._heatmapSettings);
 			}
 			this._refreshDatasets();
 			this._schedulePersist();
@@ -2022,18 +2066,22 @@ export class KwChartSection extends LitElement implements SectionElement {
 		if (typeof st.orient === 'string') this._orient = this._normalizeOrient(st.orient);
 		if (typeof st.sankeyLeftMargin === 'number') this._sankeyLeftMargin = st.sankeyLeftMargin;
 		if (st.xAxisSettings && typeof st.xAxisSettings === 'object') {
-			this._xAxisSettings = { ...defaultXAxisSettings(), ...st.xAxisSettings };
+			this._xAxisSettings = sanitizeXAxisSettings(st.xAxisSettings, defaultXAxisSettings());
 		}
 		if (st.yAxisSettings && typeof st.yAxisSettings === 'object') {
-			this._yAxisSettings = { ...defaultYAxisSettings(), ...st.yAxisSettings };
+			this._yAxisSettings = sanitizeYAxisSettings(st.yAxisSettings, defaultYAxisSettings(), this._yColumns);
 		}
 		if (st.legendSettings && typeof st.legendSettings === 'object') {
-			this._legendSettings = { ...getDefaultLegendSettings(), ...st.legendSettings };
+			this._legendSettings = sanitizeLegendSettings(st.legendSettings, {
+				...getDefaultLegendSettings(),
+				position: this._legendPosition,
+				stackMode: this._stackMode,
+			});
 			this._legendPosition = normalizeLegendPosition(this._legendSettings.position);
 			this._stackMode = normalizeStackMode(this._legendSettings.stackMode);
 		}
 		if (st.heatmapSettings && typeof st.heatmapSettings === 'object') {
-			this._heatmapSettings = { ...getDefaultHeatmapSettings(), ...st.heatmapSettings };
+			this._heatmapSettings = sanitizeHeatmapSettings(st.heatmapSettings, getDefaultHeatmapSettings());
 		}
 	}
 
@@ -2072,10 +2120,10 @@ export class KwChartSection extends LitElement implements SectionElement {
 		st.chartTitle = this._chartTitle;
 		st.chartSubtitle = this._chartSubtitle;
 		st.chartTitleAlign = this._chartTitleAlign;
-		st.xAxisSettings = { ...this._xAxisSettings };
-		st.yAxisSettings = { ...this._yAxisSettings };
-		st.legendSettings = { ...this._legendSettings };
-		st.heatmapSettings = { ...this._heatmapSettings };
+		st.xAxisSettings = sanitizeXAxisSettings(this._xAxisSettings, defaultXAxisSettings());
+		st.yAxisSettings = sanitizeYAxisSettings(this._yAxisSettings, defaultYAxisSettings(), this._yColumns);
+		st.legendSettings = sanitizeLegendSettings(this._legendSettings, getDefaultLegendSettings());
+		st.heatmapSettings = sanitizeHeatmapSettings(this._heatmapSettings, getDefaultHeatmapSettings());
 
 		win.chartStateByBoxId[this.boxId] = st;
 	}
@@ -2312,18 +2360,22 @@ export class KwChartSection extends LitElement implements SectionElement {
 		if (typeof options.chartSubtitle === 'string') this._chartSubtitle = options.chartSubtitle;
 		if (typeof options.chartTitleAlign === 'string') this._chartTitleAlign = (options.chartTitleAlign as 'left' | 'center' | 'right') || 'center';
 		if (options.xAxisSettings && typeof options.xAxisSettings === 'object') {
-			this._xAxisSettings = { ...defaultXAxisSettings(), ...this._xAxisSettings, ...(options.xAxisSettings as Partial<XAxisSettings>) };
+			this._xAxisSettings = sanitizeXAxisSettings(options.xAxisSettings, this._xAxisSettings);
 		}
 		if (options.yAxisSettings && typeof options.yAxisSettings === 'object') {
-			this._yAxisSettings = { ...defaultYAxisSettings(), ...this._yAxisSettings, ...(options.yAxisSettings as Partial<YAxisSettings>) };
+			this._yAxisSettings = sanitizeYAxisSettings(options.yAxisSettings, this._yAxisSettings, this._yColumns);
 		}
 		if (options.legendSettings && typeof options.legendSettings === 'object') {
-			this._legendSettings = { ...getDefaultLegendSettings(), ...this._legendSettings, ...(options.legendSettings as Partial<LegendSettings>) };
+			this._legendSettings = sanitizeLegendSettings(options.legendSettings, {
+				...this._legendSettings,
+				position: this._legendPosition,
+				stackMode: this._stackMode,
+			});
 			this._legendPosition = normalizeLegendPosition(this._legendSettings.position);
 			this._stackMode = normalizeStackMode(this._legendSettings.stackMode);
 		}
 		if (options.heatmapSettings && typeof options.heatmapSettings === 'object') {
-			this._heatmapSettings = { ...getDefaultHeatmapSettings(), ...this._heatmapSettings, ...(options.heatmapSettings as Partial<HeatmapSettings>) };
+			this._heatmapSettings = sanitizeHeatmapSettings(options.heatmapSettings, this._heatmapSettings);
 		}
 	}
 

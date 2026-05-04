@@ -78,7 +78,12 @@ import {
 import { closeAllMenus as _closeAllDropdownMenus } from './dropdown';
 
 import { renderChart as __kustoRenderChart, getChartState as __kustoGetChartState } from '../shared/chart-renderer';
-import { normalizeLegendSortMode } from '../shared/chart-utils';
+import {
+	sanitizeHeatmapSettings,
+	sanitizeLegendSettings,
+	sanitizeXAxisSettings,
+	sanitizeYAxisSettings,
+} from '../shared/chart-utils';
 import { __kustoForceEditorWritable, __kustoInstallWritableGuard, __kustoEnsureEditorWritableSoon } from '../monaco/writable';
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize';
 import { tryParseFiniteNumber, tryParseDate } from '../shared/transform-expr';
@@ -1903,34 +1908,22 @@ function __kustoConfigureChartFromTool( boxId: any, config: any) {
 			st.chartTitleAlign = config.chartTitleAlign;
 		}
 		if (config.xAxisSettings && typeof config.xAxisSettings === 'object') {
-			st.xAxisSettings = { ...(st.xAxisSettings || {}), ...config.xAxisSettings };
+			st.xAxisSettings = sanitizeXAxisSettings(config.xAxisSettings, st.xAxisSettings || undefined);
 		}
 		if (config.yAxisSettings && typeof config.yAxisSettings === 'object') {
-			const yas = { ...config.yAxisSettings };
-			// Normalize seriesColors: accept arrays by mapping to yColumns
-			if (Array.isArray(yas.seriesColors)) {
-				const cols = Array.isArray(st.yColumns) ? st.yColumns : [];
-				const obj: Record<string, string> = {};
-				for (let i = 0; i < yas.seriesColors.length; i++) {
-					const key = cols[i] || `series${i}`;
-					obj[key] = String(yas.seriesColors[i]);
-				}
-				yas.seriesColors = obj;
-			}
-			st.yAxisSettings = { ...(st.yAxisSettings || {}), ...yas };
+			st.yAxisSettings = sanitizeYAxisSettings(config.yAxisSettings, st.yAxisSettings || undefined, Array.isArray(st.yColumns) ? st.yColumns : []);
 		}
 		if (config.legendSettings && typeof config.legendSettings === 'object') {
-			const ls = { ...config.legendSettings };
-			// Normalize sortMode aliases (e.g. "alphabetical" → "alpha-asc")
-			if (typeof ls.sortMode === 'string') {
-				ls.sortMode = normalizeLegendSortMode(ls.sortMode);
-			}
-			st.legendSettings = { ...(st.legendSettings || {}), ...ls };
+			st.legendSettings = sanitizeLegendSettings(config.legendSettings, {
+				...(st.legendSettings || {}),
+				position: st.legendPosition,
+				stackMode: st.stackMode,
+			});
 			if (typeof st.legendSettings.position === 'string') st.legendPosition = st.legendSettings.position;
 			if (typeof st.legendSettings.stackMode === 'string') st.stackMode = st.legendSettings.stackMode;
 		}
 		if (config.heatmapSettings && typeof config.heatmapSettings === 'object') {
-			st.heatmapSettings = { ...(st.heatmapSettings || {}), ...config.heatmapSettings };
+			st.heatmapSettings = sanitizeHeatmapSettings(config.heatmapSettings, st.heatmapSettings || undefined);
 		}
 		
 		// Update the UI dropdowns to reflect new state and re-render the chart

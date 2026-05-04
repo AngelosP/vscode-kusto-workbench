@@ -243,6 +243,51 @@ describe('formatKqlxForDiff', () => {
 		expect(result).toContain('Data source: query_1');
 		expect(result).toContain('X: State | Y: count_, total');
 		expect(result).toContain('Title: Storm Counts');
+		expect(result).not.toContain('Zoom & pan: enabled');
+	});
+
+	it('ignores stale zoom/pan chart fields in documents', () => {
+		const raw = JSON.stringify({
+			kind: 'kqlx', version: 1,
+			state: {
+				sections: [{
+					id: 'chart_1', type: 'chart', name: 'My Chart',
+					chartType: 'line',
+					dataSourceId: 'query_1',
+					xColumn: 'State',
+					yColumns: ['count_'],
+					labelColumn: 'State',
+					valueColumn: 'count_',
+					zoomPanEnabled: true,
+				}]
+			}
+		}, null, 2);
+		const result = formatKqlxForDiff(raw);
+		expect(result).toContain('══ [Chart] My Chart ══');
+		expect(result).not.toContain('Zoom & pan: enabled');
+	});
+
+	it('ignores stale nested zoom/pan chart fields in documents', () => {
+		const raw = JSON.stringify({
+			kind: 'kqlx', version: 1,
+			state: {
+				sections: [{
+					id: 'chart_1', type: 'chart', name: 'My Chart',
+					chartType: 'line',
+					dataSourceId: 'query_1',
+					xColumn: 'State',
+					yColumns: ['count_'],
+					xAxisSettings: { customLabel: 'State', zoomPanEnabled: true },
+					yAxisSettings: { customLabel: 'Events', dataZoom: { start: 25 } },
+					legendSettings: { position: 'top', zoomPanEnabled: true },
+				}]
+			}
+		}, null, 2);
+		const result = formatKqlxForDiff(raw);
+		expect(result).toContain('customLabel: State');
+		expect(result).toContain('customLabel: Events');
+		expect(result).not.toContain('zoomPanEnabled');
+		expect(result).not.toContain('dataZoom');
 	});
 
 	// ── Transformation section ────────────────────────────────────────────

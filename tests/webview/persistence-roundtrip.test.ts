@@ -114,6 +114,7 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 vi.mock('../../src/webview/core/results-state.js', () => ({
 	displayResult: vi.fn(),
 	displayResultForBox: vi.fn(),
+	getResultsStateRevision: vi.fn(() => 0),
 }));
 
 vi.mock('../../src/webview/core/section-factory.js', () => ({

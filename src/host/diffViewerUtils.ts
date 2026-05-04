@@ -13,6 +13,13 @@ export const COMPARISON_NOISE_KEYS = new Set([
 	'copilotChatVisible', 'favoritesMode',
 ]);
 
+const CHART_NESTED_SETTING_KEYS: Record<string, Set<string>> = {
+	xAxisSettings: new Set(['sortDirection', 'scaleType', 'labelDensity', 'showAxisLabel', 'customLabel', 'titleGap']),
+	yAxisSettings: new Set(['showAxisLabel', 'customLabel', 'min', 'max', 'seriesColors', 'titleGap', 'sortDirection']),
+	legendSettings: new Set(['position', 'stackMode', 'gap', 'sortMode', 'topN', 'title', 'showEndLabels']),
+	heatmapSettings: new Set(['visualMapPosition', 'visualMapGap', 'showCellLabels', 'cellLabelMode', 'cellLabelN']),
+};
+
 /** Keys stripped from human-readable diff views — superset of COMPARISON_NOISE_KEYS.
  * Content keys (query, text, code) are excluded because they get their own
  * dedicated diff tab.  Heights are intentionally kept so layout changes are
@@ -199,10 +206,10 @@ function formatChartSection(s: Record<string, unknown>): string[] {
 	pushIfDefined(lines, kvLine('Subtitle', s.chartSubtitle));
 
 	// Emit nested settings objects as compact key-value groups.
-	emitNestedSettings(lines, 'X-axis', s.xAxisSettings);
-	emitNestedSettings(lines, 'Y-axis', s.yAxisSettings);
-	emitNestedSettings(lines, 'Legend settings', s.legendSettings);
-	emitNestedSettings(lines, 'Heatmap', s.heatmapSettings);
+	emitNestedSettings(lines, 'X-axis', filterNestedSettings(s.xAxisSettings, CHART_NESTED_SETTING_KEYS.xAxisSettings));
+	emitNestedSettings(lines, 'Y-axis', filterNestedSettings(s.yAxisSettings, CHART_NESTED_SETTING_KEYS.yAxisSettings));
+	emitNestedSettings(lines, 'Legend settings', filterNestedSettings(s.legendSettings, CHART_NESTED_SETTING_KEYS.legendSettings));
+	emitNestedSettings(lines, 'Heatmap', filterNestedSettings(s.heatmapSettings, CHART_NESTED_SETTING_KEYS.heatmapSettings));
 
 	return lines;
 }
@@ -287,6 +294,15 @@ function emitNestedSettings(lines: string[], label: string, obj: unknown): void 
 	for (const [k, v] of entries) {
 		lines.push(`  ${k}: ${typeof v === 'object' ? JSON.stringify(v) : v}`);
 	}
+}
+
+function filterNestedSettings(obj: unknown, allowedKeys: Set<string>): Record<string, unknown> | undefined {
+	if (!obj || typeof obj !== 'object') return undefined;
+	const filtered: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(obj as Record<string, unknown>)) {
+		if (allowedKeys.has(key)) filtered[key] = value;
+	}
+	return Object.keys(filtered).length ? filtered : undefined;
 }
 
 // ── Webview diff renderer ────────────────────────────────────────────────────

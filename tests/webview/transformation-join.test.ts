@@ -24,6 +24,7 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
 	setResultsState: mockSetResultsState,
+	getResultsStateRevision: vi.fn(() => 0),
 }));
 
 vi.mock('../../src/webview/core/section-factory.js', () => ({

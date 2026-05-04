@@ -17,6 +17,8 @@ In the chart section header, you'll find controls to:
 * **Set the Y axis**: pick one or more columns for the values.
 * **Set the legend**: choose a column to split the data into separate series (e.g., by region or category).
 
+For line, area, bar, and scatter charts, hover over the chart area in Edit mode to use rectangle zoom controls.
+
 ## Chart types and when to use them
 
 | Chart Type | Best For |

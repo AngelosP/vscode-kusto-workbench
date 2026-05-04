@@ -4,7 +4,7 @@
 import { schedulePersist } from '../core/persistence';
 import { isDarkTheme } from '../monaco/theme';
 import { escapeHtml } from '../core/utils';
-import { getResultsState } from '../core/results-state';
+import { getResultsState, getResultsStateRevision } from '../core/results-state';
 import { ensureEchartsLoaded } from './lazy-vendor.js';
 import {
 	handleTooltipFormatter,
@@ -178,6 +178,445 @@ function getIsDarkThemeForEcharts() {
 	return true;
 }
 
+const ZOOM_PAN_HINT_SESSION_KEY = 'kustoWorkbench.chartZoomHintShown';
+
+function hasSeenZoomPanHint(): boolean {
+	try {
+		if (window.sessionStorage && window.sessionStorage.getItem(ZOOM_PAN_HINT_SESSION_KEY) === '1') return true;
+	} catch { /* noop */ }
+	try { return (window as any).__kustoZoomPanHintShown === true; } catch { return false; }
+}
+
+function markZoomPanHintSeen(): void {
+	try { window.sessionStorage?.setItem(ZOOM_PAN_HINT_SESSION_KEY, '1'); } catch { /* noop */ }
+	try { (window as any).__kustoZoomPanHintShown = true; } catch { /* noop */ }
+}
+
+function showZoomPanHintOnce(boxId: string): void {
+	try {
+		if (!boxId || hasSeenZoomPanHint()) return;
+		const hint = document.getElementById(boxId + '_chart_zoom_hint') as (HTMLElement & { __kustoZoomHintTimer?: number }) | null;
+		if (!hint) return;
+		markZoomPanHintSeen();
+		if (hint.__kustoZoomHintTimer) {
+			clearTimeout(hint.__kustoZoomHintTimer);
+			hint.__kustoZoomHintTimer = 0;
+		}
+		hint.hidden = false;
+		hint.classList.remove('is-visible');
+		void hint.offsetWidth;
+		hint.classList.add('is-visible');
+		hint.__kustoZoomHintTimer = window.setTimeout(() => {
+			try {
+				hint.classList.remove('is-visible');
+				hint.hidden = true;
+				hint.__kustoZoomHintTimer = 0;
+			} catch (e) { console.error('[kusto]', e); }
+		}, 2700);
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function isZoomPanSupportedChartType(chartType: any): boolean {
+	return chartType === 'scatter' || chartType === 'line' || chartType === 'area' || chartType === 'bar';
+}
+
+function buildZoomPanOptions(chartType: any): Record<string, any> {
+	if (!isZoomPanSupportedChartType(chartType)) return {};
+	return {
+		toolbox: {
+			show: true,
+			showTitle: false,
+			itemSize: 0,
+			itemGap: 0,
+			left: -10000,
+			top: -10000,
+			feature: {
+				dataZoom: {
+					xAxisIndex: 'all',
+					yAxisIndex: 'all',
+					title: { zoom: '', back: '' },
+					iconStyle: { opacity: 0 },
+					emphasis: { iconStyle: { opacity: 0 } },
+					brushStyle: { borderWidth: 0, color: 'rgba(127,127,127,0.18)' },
+				},
+			},
+		},
+		dataZoom: [
+			{
+				type: 'inside',
+				xAxisIndex: 0,
+				filterMode: 'none',
+				zoomOnMouseWheel: false,
+				moveOnMouseMove: false,
+				moveOnMouseWheel: false,
+			},
+			{
+				type: 'inside',
+				yAxisIndex: 0,
+				filterMode: 'none',
+				zoomOnMouseWheel: false,
+				moveOnMouseMove: false,
+				moveOnMouseWheel: false,
+			},
+		],
+	};
+}
+
+function getDataZoomRange(dataZoom: any, dataZoomIndex: number): Record<string, any> | null {
+	if (!dataZoom || typeof dataZoom !== 'object') return null;
+	const range: Record<string, any> = { dataZoomIndex };
+	let hasRange = false;
+	for (const key of ['start', 'end', 'startValue', 'endValue']) {
+		const value = dataZoom[key];
+		if (value === undefined || value === null || value === '') continue;
+		range[key] = value;
+		hasRange = true;
+	}
+	if (!hasRange) return null;
+	const hasValueRange = range.startValue !== undefined || range.endValue !== undefined;
+	const isFullPercentRange = !hasValueRange
+		&& (range.start === undefined || range.start === 0)
+		&& (range.end === undefined || range.end === 100);
+	return isFullPercentRange ? null : range;
+}
+
+function readZoomPanViewport(inst: any): any[] | null {
+	try {
+		if (!inst || typeof inst.getOption !== 'function') return null;
+		const option = inst.getOption();
+		const dataZoom = option && Array.isArray(option.dataZoom) ? option.dataZoom : [];
+		const ranges = dataZoom
+			.map((entry: any, index: number) => getDataZoomRange(entry, index))
+			.filter((entry: any) => !!entry);
+		return ranges.length ? ranges : null;
+	} catch (e) { console.error('[kusto]', e); }
+	return null;
+}
+
+function clearZoomPanViewport(st: any): void {
+	try {
+		if (!st) return;
+		releaseZoomPanPointerCapture(st);
+		delete st.__zoomPanViewport;
+		delete st.__zoomPanViewportSignature;
+		delete st.__zoomPanUndoStack;
+		delete st.__zoomPanPendingUndoViewport;
+		delete st.__zoomPanSelectActive;
+		delete st.__zoomPanSelectSignature;
+		delete st.__zoomPanTooltipSuppressed;
+		delete st.__zoomPanTooltipBoxId;
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function cloneZoomPanViewport(viewport: any[] | null): any[] | null {
+	try {
+		return Array.isArray(viewport) ? viewport.map((entry: any) => ({ ...entry })) : null;
+	} catch (e) { console.error('[kusto]', e); }
+	return null;
+}
+
+function setZoomPanHoverSuppressed(boxId: string, st: any, inst: any, suppressed: boolean): void {
+	try {
+		if (!st) return;
+		const currentBoxId = boxId || String(st.__zoomPanTooltipBoxId || '');
+		if (suppressed) {
+			st.__zoomPanTooltipSuppressed = true;
+			st.__zoomPanTooltipBoxId = currentBoxId;
+		} else if (st.__zoomPanTooltipSuppressed !== true) {
+			return;
+		}
+		try { if (currentBoxId) dismissHoverTooltip(currentBoxId); } catch (e) { console.error('[kusto]', e); }
+		if (inst && typeof inst.dispatchAction === 'function') {
+			try { inst.dispatchAction({ type: 'hideTip' }); } catch (e) { console.error('[kusto]', e); }
+			try { inst.dispatchAction({ type: 'downplay' }); } catch (e) { console.error('[kusto]', e); }
+		}
+		if (inst && typeof inst.setOption === 'function') {
+			try { inst.setOption({ tooltip: { show: !suppressed } }, { notMerge: false, lazyUpdate: true, silent: true }); } catch (e) { console.error('[kusto]', e); }
+		}
+		if (!suppressed) {
+			delete st.__zoomPanTooltipSuppressed;
+			delete st.__zoomPanTooltipBoxId;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function syncZoomPanControls(boxId: string, st: any, chartType: any, inst: any, signature: string): void {
+	try {
+		const controls = document.getElementById(boxId + '_chart_zoom_controls') as HTMLElement | null;
+		if (!controls) return;
+		const zoomButton = document.getElementById(boxId + '_chart_zoom_select') as HTMLButtonElement | null;
+		const undoButton = document.getElementById(boxId + '_chart_zoom_undo') as HTMLButtonElement | null;
+		const show = !!(st && st.mode === 'edit' && isZoomPanSupportedChartType(chartType) && inst);
+		if (!show) {
+			deactivateZoomPanSelect(st, inst);
+			uninstallZoomPanPointerCaptureBridge(st);
+		} else {
+			installZoomPanPointerCaptureBridge(st, inst);
+			if (st.__zoomPanSelectActive === true) setZoomPanHoverSuppressed(boxId, st, inst, true);
+		}
+		controls.hidden = !show;
+		if (zoomButton) {
+			zoomButton.disabled = !show;
+			zoomButton.classList.toggle('is-active', show && st.__zoomPanSelectActive === true);
+			zoomButton.onclick = (event: MouseEvent) => {
+				event.preventDefault();
+				event.stopPropagation();
+				try { activateZoomPanSelect(boxId, st, inst, chartType, signature); } catch (e) { console.error('[kusto]', e); }
+			};
+		}
+		if (undoButton) {
+			const canUndo = show && Array.isArray(st.__zoomPanUndoStack) && st.__zoomPanUndoStack.length > 0;
+			undoButton.hidden = !canUndo;
+			undoButton.disabled = !canUndo;
+			undoButton.onclick = (event: MouseEvent) => {
+				event.preventDefault();
+				event.stopPropagation();
+				try { undoZoomPanGesture(boxId, st, inst, chartType, signature); } catch (e) { console.error('[kusto]', e); }
+			};
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function getZoomPanPointerRoot(inst: any): HTMLElement | null {
+	try {
+		const zr = inst && typeof inst.getZr === 'function' ? inst.getZr() : null;
+		const viewportRoot = zr && zr.painter && typeof zr.painter.getViewportRoot === 'function'
+			? zr.painter.getViewportRoot()
+			: null;
+		if (viewportRoot instanceof HTMLElement) return viewportRoot;
+		const proxyRoot = zr && zr.handler && zr.handler.proxy ? zr.handler.proxy.dom : null;
+		if (proxyRoot instanceof HTMLElement) return proxyRoot;
+		const dom = inst && typeof inst.getDom === 'function' ? inst.getDom() : null;
+		if (dom instanceof HTMLElement) return dom;
+	} catch (e) { console.error('[kusto]', e); }
+	return null;
+}
+
+function releaseZoomPanPointerCapture(st: any, pointerId?: number): void {
+	try {
+		if (!st) return;
+		const root = st.__zoomPanPointerCaptureRoot as HTMLElement | undefined;
+		const capturedPointerId = typeof pointerId === 'number' ? pointerId : st.__zoomPanCapturedPointerId;
+		if (root && typeof capturedPointerId === 'number' && typeof root.releasePointerCapture === 'function') {
+			try {
+				if (typeof root.hasPointerCapture !== 'function' || root.hasPointerCapture(capturedPointerId)) {
+					root.releasePointerCapture(capturedPointerId);
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		}
+		delete st.__zoomPanCapturedPointerId;
+		delete st.__zoomPanPointerCaptureRoot;
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function uninstallZoomPanPointerCaptureBridge(st: any): void {
+	try {
+		if (!st) return;
+		const cleanup = st.__zoomPanPointerCaptureCleanup;
+		if (typeof cleanup === 'function') {
+			try { cleanup(); } catch (e) { console.error('[kusto]', e); }
+		}
+		delete st.__zoomPanPointerCaptureCleanup;
+		delete st.__zoomPanPointerCaptureElement;
+		releaseZoomPanPointerCapture(st);
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function installZoomPanPointerCaptureBridge(st: any, inst: any): void {
+	try {
+		if (!st || !inst) return;
+		const root = getZoomPanPointerRoot(inst);
+		if (!root || typeof root.addEventListener !== 'function' || typeof root.setPointerCapture !== 'function') return;
+		if (st.__zoomPanPointerCaptureElement === root && typeof st.__zoomPanPointerCaptureCleanup === 'function') return;
+		uninstallZoomPanPointerCaptureBridge(st);
+
+		const onPointerDown = (event: PointerEvent) => {
+			try {
+				if (st.__zoomPanSelectActive !== true) return;
+				if (event.isPrimary === false || (typeof event.button === 'number' && event.button !== 0)) return;
+				root.setPointerCapture(event.pointerId);
+				st.__zoomPanCapturedPointerId = event.pointerId;
+				st.__zoomPanPointerCaptureRoot = root;
+			} catch (e) { console.error('[kusto]', e); }
+		};
+		const onPointerEnd = (event: PointerEvent) => {
+			try { releaseZoomPanPointerCapture(st, event.pointerId); } catch (e) { console.error('[kusto]', e); }
+		};
+
+		root.addEventListener('pointerdown', onPointerDown);
+		root.addEventListener('pointerup', onPointerEnd);
+		root.addEventListener('pointercancel', onPointerEnd);
+		root.addEventListener('lostpointercapture', onPointerEnd);
+		st.__zoomPanPointerCaptureElement = root;
+		st.__zoomPanPointerCaptureCleanup = () => {
+			root.removeEventListener('pointerdown', onPointerDown);
+			root.removeEventListener('pointerup', onPointerEnd);
+			root.removeEventListener('pointercancel', onPointerEnd);
+			root.removeEventListener('lostpointercapture', onPointerEnd);
+		};
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function setZoomPanSelectActive(st: any, inst: any, active: boolean): void {
+	try {
+		if (inst && typeof inst.dispatchAction === 'function') {
+			inst.dispatchAction({
+				type: 'takeGlobalCursor',
+				key: 'dataZoomSelect',
+				dataZoomSelectActive: active,
+			});
+		}
+		if (st) st.__zoomPanSelectActive = active;
+		if (!active) {
+			releaseZoomPanPointerCapture(st);
+			setZoomPanHoverSuppressed('', st, inst, false);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function deactivateZoomPanSelect(st: any, inst: any): void {
+	try {
+		if (st && st.__zoomPanSelectActive === true) {
+			setZoomPanSelectActive(st, inst, false);
+		}
+		if (st) {
+			delete st.__zoomPanPendingUndoViewport;
+			delete st.__zoomPanSelectSignature;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function activateZoomPanSelect(boxId: string, st: any, inst: any, chartType: any, signature: string): void {
+	try {
+		if (!st || st.mode !== 'edit' || !isZoomPanSupportedChartType(chartType) || !inst) return;
+		st.__zoomPanPendingUndoViewport = cloneZoomPanViewport(readZoomPanViewport(inst));
+		st.__zoomPanSelectSignature = signature;
+		try { dismissHoverTooltip(boxId); } catch (e) { console.error('[kusto]', e); }
+		setZoomPanHoverSuppressed(boxId, st, inst, true);
+		showZoomPanHintOnce(boxId);
+		setZoomPanSelectActive(st, inst, true);
+		syncZoomPanControls(boxId, st, chartType, inst, signature);
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function dispatchFullZoomPanExtent(inst: any): void {
+	try {
+		if (!inst || typeof inst.dispatchAction !== 'function') return;
+		inst.dispatchAction({
+			type: 'dataZoom',
+			batch: [
+				{ dataZoomIndex: 0, start: 0, end: 100 },
+				{ dataZoomIndex: 1, start: 0, end: 100 },
+			],
+		});
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function undoZoomPanGesture(boxId: string, st: any, inst: any, chartType: any, signature: string): void {
+	try {
+		if (!st || !isZoomPanSupportedChartType(chartType) || !inst) return;
+		const stack = Array.isArray(st.__zoomPanUndoStack) ? st.__zoomPanUndoStack : [];
+		if (!stack.length) return;
+		const previousViewport = stack.pop();
+		st.__zoomPanUndoStack = stack;
+		st.__applyingZoomPanViewport = true;
+		try {
+			if (Array.isArray(previousViewport) && previousViewport.length) {
+				inst.dispatchAction({ type: 'dataZoom', batch: previousViewport });
+				st.__zoomPanViewport = cloneZoomPanViewport(previousViewport);
+				st.__zoomPanViewportSignature = signature;
+			} else {
+				dispatchFullZoomPanExtent(inst);
+				delete st.__zoomPanViewport;
+				delete st.__zoomPanViewportSignature;
+			}
+		} finally {
+			st.__applyingZoomPanViewport = false;
+		}
+		delete st.__zoomPanPendingUndoViewport;
+		setZoomPanSelectActive(st, inst, false);
+		syncZoomPanControls(boxId, st, chartType, inst, signature);
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function getZoomPanSignature(st: any, chartType: any, colNames: any[], rows: any[], resultRevision: number): string {
+	const sampleRows = Array.isArray(rows) && rows.length
+		? [rows[0], rows[Math.floor(rows.length / 2)], rows[rows.length - 1]]
+		: [];
+	const legendSettings = st && st.legendSettings && typeof st.legendSettings === 'object' ? st.legendSettings : {};
+	return JSON.stringify({
+		chartType: String(chartType || ''),
+		dataSourceId: String(st && st.dataSourceId || ''),
+		xColumn: String(st && st.xColumn || ''),
+		yColumn: String(st && st.yColumn || ''),
+		yColumns: Array.isArray(st && st.yColumns) ? st.yColumns.map((column: any) => String(column || '')) : [],
+		legendColumn: String(st && st.legendColumn || ''),
+		legendPosition: String(st && st.legendPosition || ''),
+		stackMode: String(st && st.stackMode || ''),
+		legendSettings: {
+			position: String(legendSettings.position || ''),
+			stackMode: String(legendSettings.stackMode || ''),
+			gap: typeof legendSettings.gap === 'number' ? legendSettings.gap : 0,
+			sortMode: String(legendSettings.sortMode || ''),
+			topN: typeof legendSettings.topN === 'number' ? legendSettings.topN : 0,
+			title: String(legendSettings.title || ''),
+			showEndLabels: legendSettings.showEndLabels === true,
+		},
+		sortColumn: String(st && st.sortColumn || ''),
+		sortDirection: String(st && st.sortDirection || ''),
+		xAxisScaleType: String(st && st.xAxisSettings && st.xAxisSettings.scaleType || ''),
+		xAxisSortDirection: String(st && st.xAxisSettings && st.xAxisSettings.sortDirection || ''),
+		yAxisMin: String(st && st.yAxisSettings ? st.yAxisSettings.min ?? '' : ''),
+		yAxisMax: String(st && st.yAxisSettings ? st.yAxisSettings.max ?? '' : ''),
+		columns: Array.isArray(colNames) ? colNames.map((column: any) => String(column || '')) : [],
+		rowCount: Array.isArray(rows) ? rows.length : 0,
+		resultRevision,
+		sampleRows,
+	});
+}
+
+function storeZoomPanViewport(st: any, inst: any, chartType: any, signature: string): void {
+	try {
+		if (!st || !isZoomPanSupportedChartType(chartType)) {
+			deactivateZoomPanSelect(st, inst);
+			clearZoomPanViewport(st);
+			return;
+		}
+		const viewport = readZoomPanViewport(inst);
+		if (viewport) {
+			st.__zoomPanViewport = viewport;
+			st.__zoomPanViewportSignature = signature;
+		} else {
+			clearZoomPanViewport(st);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function applyZoomPanViewport(st: any, inst: any, chartType: any, signature: string): void {
+	try {
+		if (!st || !isZoomPanSupportedChartType(chartType)) {
+			deactivateZoomPanSelect(st, inst);
+			clearZoomPanViewport(st);
+			return;
+		}
+		if (st.__zoomPanViewportSignature !== signature) {
+			deactivateZoomPanSelect(st, inst);
+			clearZoomPanViewport(st);
+			return;
+		}
+		const batch = Array.isArray(st.__zoomPanViewport)
+			? st.__zoomPanViewport.filter((entry: any) => entry && typeof entry === 'object')
+			: [];
+		if (!batch.length || !inst || typeof inst.dispatchAction !== 'function') return;
+		st.__applyingZoomPanViewport = true;
+		try {
+			inst.dispatchAction({ type: 'dataZoom', batch });
+		} finally {
+			st.__applyingZoomPanViewport = false;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
 export function getChartMinResizeHeight(boxId: any) {
 	const CHART_CANVAS_RENDERING_MIN_HEIGHT = 140;
 	const CHART_CANVAS_PLACEHOLDER_MIN_HEIGHT = 30;
@@ -255,9 +694,15 @@ export function disposeChartEcharts(boxId: any) {
 	try {
 		const st = getChartState(boxId);
 		if (st && st.__echarts && st.__echarts.instance) {
+			try {
+				const chartType = typeof st.__echarts.chartType === 'string' ? st.__echarts.chartType : st.chartType;
+				const signature = typeof st.__echarts.zoomPanSignature === 'string' ? st.__echarts.zoomPanSignature : st.__zoomPanViewportSignature;
+				if (typeof signature === 'string') storeZoomPanViewport(st, st.__echarts.instance, chartType, signature);
+			} catch (e) { console.error('[kusto]', e); }
 			try { st.__echarts.instance.dispose(); } catch (e) { console.error('[kusto]', e); }
 		}
 		if (st) {
+			try { uninstallZoomPanPointerCaptureBridge(st); } catch (e) { console.error('[kusto]', e); }
 			try {
 				if (st.__resizeObserver && typeof st.__resizeObserver.disconnect === 'function') {
 					st.__resizeObserver.disconnect();
@@ -431,6 +876,9 @@ export function renderChart(boxId: any) {
 
 	// Helper to dispose ECharts instance before showing error text.
 	const showErrorAndReturn = (msg: any) => {
+		try { deactivateZoomPanSelect(st, st.__echarts && st.__echarts.instance); } catch (e) { console.error('[kusto]', e); }
+		try { clearZoomPanViewport(st); } catch (e) { console.error('[kusto]', e); }
+		try { syncZoomPanControls(id, st, chartType, null, ''); } catch (e) { console.error('[kusto]', e); }
 		try {
 			if (st.__echarts && st.__echarts.instance) {
 				st.__echarts.instance.dispose();
@@ -455,6 +903,7 @@ export function renderChart(boxId: any) {
 	};
 
 	const chartType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
+	const zoomPanSignature = getZoomPanSignature(st, chartType, colNames, rawRows, getResultsStateRevision(st.dataSourceId));
 	if (!st.dataSourceId) {
 		showErrorAndReturn('Select a data source (a query, CSV URL, or transformation section with results).');
 		return;
@@ -481,8 +930,15 @@ export function renderChart(boxId: any) {
 		const themeName = isDark ? 'dark' : undefined;
 		const prev = st.__echarts && st.__echarts.instance ? st.__echarts : null;
 		if (!prev || prev.canvasId !== canvasId || prev.isDark !== isDark) {
+			try {
+				if (prev && prev.instance) {
+					const prevChartType = typeof prev.chartType === 'string' ? prev.chartType : chartType;
+					const prevSignature = typeof prev.zoomPanSignature === 'string' ? prev.zoomPanSignature : (typeof st.__zoomPanViewportSignature === 'string' ? st.__zoomPanViewportSignature : zoomPanSignature);
+					storeZoomPanViewport(st, prev.instance, prevChartType, prevSignature);
+				}
+			} catch (e) { console.error('[kusto]', e); }
 			try { if (prev && prev.instance) prev.instance.dispose(); } catch (e) { console.error('[kusto]', e); }
-			st.__echarts = { instance: window.echarts.init(canvas, themeName), canvasId, isDark };
+			st.__echarts = { instance: window.echarts.init(canvas, themeName), canvasId, isDark, chartType, zoomPanSignature };
 			try {
 				if (st.__resizeObserver && typeof st.__resizeObserver.disconnect === 'function') {
 					st.__resizeObserver.disconnect();
@@ -492,10 +948,46 @@ export function renderChart(boxId: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
+	try {
+		if (!isZoomPanSupportedChartType(chartType)) {
+			deactivateZoomPanSelect(st, st.__echarts && st.__echarts.instance);
+			clearZoomPanViewport(st);
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
 	const inst = st.__echarts && st.__echarts.instance ? st.__echarts.instance : null;
 	if (!inst) return;
 
 	// Forward X/Y axis click interactions from the rendered chart back to the
+
+	try {
+		if (st.__zoomPanDataZoomHandler) {
+			try { inst.off('datazoom', st.__zoomPanDataZoomHandler); } catch (e) { console.error('[kusto]', e); }
+		}
+		if (isZoomPanSupportedChartType(chartType)) {
+			st.__zoomPanDataZoomHandler = () => {
+				try {
+					if (st.__applyingZoomPanViewport) return;
+					const nextViewport = readZoomPanViewport(inst);
+					if (st.__zoomPanSelectActive === true && st.__zoomPanSelectSignature === zoomPanSignature) {
+						if (nextViewport) {
+							const stack = Array.isArray(st.__zoomPanUndoStack) ? st.__zoomPanUndoStack : [];
+							stack.push(cloneZoomPanViewport(st.__zoomPanPendingUndoViewport));
+							st.__zoomPanUndoStack = stack;
+						}
+						delete st.__zoomPanPendingUndoViewport;
+						delete st.__zoomPanSelectSignature;
+						setZoomPanSelectActive(st, inst, false);
+					}
+					storeZoomPanViewport(st, inst, chartType, zoomPanSignature);
+					syncZoomPanControls(id, st, chartType, inst, zoomPanSignature);
+				} catch (e) { console.error('[kusto]', e); }
+			};
+			inst.on('datazoom', st.__zoomPanDataZoomHandler);
+		} else {
+			delete st.__zoomPanDataZoomHandler;
+		}
+	} catch (e) { console.error('[kusto]', e); }
 	// owning chart section so it can open the corresponding axis settings popup.
 	try {
 		if (st.__axisTitleClickHandler) {
@@ -1280,6 +1772,7 @@ export function renderChart(boxId: any) {
 							formatter: (value: any) => formatNumber(value)
 						}
 					},
+					...buildZoomPanOptions(chartType),
 					series: [{
 						type: 'scatter',
 						name: yColName,
@@ -2109,7 +2602,6 @@ export function renderChart(boxId: any) {
 				} else if (legendEnabled) {
 					legendOpt = buildLegendOption(legendPosition);
 				}
-
 				// Add end labels to each series when enabled
 				if (useEndLabels) {
 					for (const s of seriesData) {
@@ -2204,6 +2696,10 @@ export function renderChart(boxId: any) {
 						},
 						formatter: (params: any) => {
 							try {
+								if (st.__zoomPanSelectActive === true) {
+									dismissHoverTooltip(id);
+									return '';
+								}
 								const arr = Array.isArray(params) ? params : (params ? [params] : []);
 								handleTooltipFormatter(id, arr, stackMode);
 							} catch (e) { console.error('[kusto]', e); }
@@ -2211,6 +2707,10 @@ export function renderChart(boxId: any) {
 						},
 						position: (point: any) => {
 							try {
+								if (st.__zoomPanSelectActive === true) {
+									dismissHoverTooltip(id);
+									return [-9999, -9999];
+								}
 								handleTooltipPosition(id, point[0], point[1], inst);
 							} catch (e) { console.error('[kusto]', e); }
 							return [-9999, -9999];
@@ -2248,6 +2748,7 @@ export function renderChart(boxId: any) {
 								: (value: any) => formatNumber(value)
 						}
 					},
+					...buildZoomPanOptions(chartType),
 					series: seriesData,
 					...(showLabels && dataLabelDensity >= 100 ? { labelLayout: { hideOverlap: false } } : {})
 				};
@@ -2286,6 +2787,14 @@ export function renderChart(boxId: any) {
 		try { inst.dispatchAction({ type: 'hideTip' }); } catch (e) { console.error('[kusto]', e); }
 		try { dismissHoverTooltip(id); } catch (e) { console.error('[kusto]', e); }
 		inst.setOption(option || {}, { notMerge: true, lazyUpdate: true, silent: true });
+		try {
+			if (st.__echarts) {
+				st.__echarts.chartType = chartType;
+				st.__echarts.zoomPanSignature = zoomPanSignature;
+			}
+		} catch (e) { console.error('[kusto]', e); }
+		try { applyZoomPanViewport(st, inst, chartType, zoomPanSignature); } catch (e) { console.error('[kusto]', e); }
+		try { syncZoomPanControls(id, st, chartType, inst, zoomPanSignature); } catch (e) { console.error('[kusto]', e); }
 
 		const isNowRendering = true;
 		if (!wasRendering && isNowRendering) {

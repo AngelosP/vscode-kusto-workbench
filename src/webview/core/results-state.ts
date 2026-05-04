@@ -8,6 +8,7 @@ import { __kustoNotifyResultsUpdated } from './section-factory';
 // ── Results state map ────────────────────────────────────────────────────────
 
 const _resultsByBoxId: Record<string, any> = {};
+const _resultsRevisionByBoxId: Record<string, number> = {};
 export let currentResult: any = null;
 
 export function resetCurrentResult() {
@@ -25,11 +26,19 @@ export function getResultsState(boxId: any) {
 	return _resultsByBoxId[boxId] || null;
 }
 
+export function getResultsStateRevision(boxId: any) {
+	if (!boxId) {
+		return 0;
+	}
+	return _resultsRevisionByBoxId[boxId] || 0;
+}
+
 export function setResultsState(boxId: any, state: any) {
 	if (!boxId) {
 		return;
 	}
 	_resultsByBoxId[boxId] = state;
+	_resultsRevisionByBoxId[boxId] = (_resultsRevisionByBoxId[boxId] || 0) + 1;
 	// Backward-compat: keep the last rendered result as the "current" one.
 	currentResult = state;
 	// Notify any dependent sections (charts/transformations) that this data source changed.

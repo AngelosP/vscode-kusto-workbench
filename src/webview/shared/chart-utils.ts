@@ -124,6 +124,46 @@ export function getDefaultXAxisSettings(): XAxisSettings {
 	};
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isFiniteNumber(value: unknown): value is number {
+	return typeof value === 'number' && Number.isFinite(value);
+}
+
+function normalizeAxisSortDirection(value: unknown): '' | 'asc' | 'desc' {
+	const direction = String(value || '').toLowerCase();
+	return direction === 'asc' || direction === 'desc' ? direction : '';
+}
+
+function normalizeScaleType(value: unknown): '' | 'category' | 'continuous' {
+	const scaleType = String(value || '').toLowerCase();
+	return scaleType === 'category' || scaleType === 'continuous' ? scaleType : '';
+}
+
+export function sanitizeXAxisSettings(input: unknown, base: Partial<XAxisSettings> = getDefaultXAxisSettings()): XAxisSettings {
+	const defaults = getDefaultXAxisSettings();
+	const current = isRecord(base) ? base : {};
+	const next: XAxisSettings = {
+		...defaults,
+		...(typeof current.sortDirection === 'string' ? { sortDirection: normalizeAxisSortDirection(current.sortDirection) } : {}),
+		...(typeof current.scaleType === 'string' ? { scaleType: normalizeScaleType(current.scaleType) } : {}),
+		...(isFiniteNumber(current.labelDensity) ? { labelDensity: current.labelDensity } : {}),
+		...(typeof current.showAxisLabel === 'boolean' ? { showAxisLabel: current.showAxisLabel } : {}),
+		...(typeof current.customLabel === 'string' ? { customLabel: current.customLabel } : {}),
+		...(isFiniteNumber(current.titleGap) ? { titleGap: current.titleGap } : {}),
+	};
+	if (!isRecord(input)) return next;
+	if (typeof input.sortDirection === 'string') next.sortDirection = normalizeAxisSortDirection(input.sortDirection);
+	if (typeof input.scaleType === 'string') next.scaleType = normalizeScaleType(input.scaleType);
+	if (isFiniteNumber(input.labelDensity)) next.labelDensity = input.labelDensity;
+	if (typeof input.showAxisLabel === 'boolean') next.showAxisLabel = input.showAxisLabel;
+	if (typeof input.customLabel === 'string') next.customLabel = input.customLabel;
+	if (isFiniteNumber(input.titleGap)) next.titleGap = input.titleGap;
+	return next;
+}
+
 export function hasCustomXAxisSettings(settings: Partial<XAxisSettings> | null | undefined): boolean {
 	if (!settings || typeof settings !== 'object') return false;
 	const defaults = getDefaultXAxisSettings();
@@ -147,6 +187,46 @@ export function getDefaultYAxisSettings(): YAxisSettings {
 		titleGap: 45,
 		sortDirection: '',
 	};
+}
+
+function sanitizeSeriesColors(value: unknown, yColumns: string[] = []): Record<string, string> {
+	const colors: Record<string, string> = {};
+	if (Array.isArray(value)) {
+		for (let index = 0; index < value.length; index++) {
+			const key = yColumns[index] || `series${index}`;
+			colors[key] = String(value[index]);
+		}
+		return colors;
+	}
+	if (!isRecord(value)) return colors;
+	for (const [key, color] of Object.entries(value)) {
+		if (typeof color === 'string') colors[key] = color;
+	}
+	return colors;
+}
+
+export function sanitizeYAxisSettings(input: unknown, base: Partial<YAxisSettings> = getDefaultYAxisSettings(), yColumns: string[] = []): YAxisSettings {
+	const defaults = getDefaultYAxisSettings();
+	const current = isRecord(base) ? base : {};
+	const next: YAxisSettings = {
+		...defaults,
+		...(typeof current.showAxisLabel === 'boolean' ? { showAxisLabel: current.showAxisLabel } : {}),
+		...(typeof current.customLabel === 'string' ? { customLabel: current.customLabel } : {}),
+		...(typeof current.min === 'string' ? { min: current.min } : {}),
+		...(typeof current.max === 'string' ? { max: current.max } : {}),
+		...(isFiniteNumber(current.titleGap) ? { titleGap: current.titleGap } : {}),
+		...(typeof current.sortDirection === 'string' ? { sortDirection: normalizeAxisSortDirection(current.sortDirection) } : {}),
+		seriesColors: sanitizeSeriesColors(current.seriesColors, yColumns),
+	};
+	if (!isRecord(input)) return next;
+	if (typeof input.showAxisLabel === 'boolean') next.showAxisLabel = input.showAxisLabel;
+	if (typeof input.customLabel === 'string') next.customLabel = input.customLabel;
+	if (typeof input.min === 'string') next.min = input.min;
+	if (typeof input.max === 'string') next.max = input.max;
+	if (isFiniteNumber(input.titleGap)) next.titleGap = input.titleGap;
+	if (typeof input.sortDirection === 'string') next.sortDirection = normalizeAxisSortDirection(input.sortDirection);
+	if ('seriesColors' in input) next.seriesColors = sanitizeSeriesColors(input.seriesColors, yColumns);
+	return next;
 }
 
 export function hasCustomYAxisSettings(settings: Partial<YAxisSettings> | null | undefined): boolean {
@@ -183,6 +263,30 @@ export function getDefaultLegendSettings(): LegendSettings {
 	};
 }
 
+export function sanitizeLegendSettings(input: unknown, base: Partial<LegendSettings> = getDefaultLegendSettings()): LegendSettings {
+	const defaults = getDefaultLegendSettings();
+	const current = isRecord(base) ? base : {};
+	const next: LegendSettings = {
+		...defaults,
+		...(typeof current.position === 'string' ? { position: normalizeLegendPosition(current.position) } : {}),
+		...(typeof current.stackMode === 'string' ? { stackMode: normalizeStackMode(current.stackMode) } : {}),
+		...(isFiniteNumber(current.gap) ? { gap: current.gap } : {}),
+		...(typeof current.sortMode === 'string' ? { sortMode: normalizeLegendSortMode(current.sortMode) } : {}),
+		...(isFiniteNumber(current.topN) ? { topN: current.topN } : {}),
+		...(typeof current.title === 'string' ? { title: current.title } : {}),
+		...(typeof current.showEndLabels === 'boolean' ? { showEndLabels: current.showEndLabels } : {}),
+	};
+	if (!isRecord(input)) return next;
+	if (typeof input.position === 'string') next.position = normalizeLegendPosition(input.position);
+	if (typeof input.stackMode === 'string') next.stackMode = normalizeStackMode(input.stackMode);
+	if (isFiniteNumber(input.gap)) next.gap = input.gap;
+	if (typeof input.sortMode === 'string') next.sortMode = normalizeLegendSortMode(input.sortMode);
+	if (isFiniteNumber(input.topN)) next.topN = input.topN;
+	if (typeof input.title === 'string') next.title = input.title;
+	if (typeof input.showEndLabels === 'boolean') next.showEndLabels = input.showEndLabels;
+	return next;
+}
+
 export function hasCustomLegendSettings(settings: Partial<LegendSettings> | null | undefined): boolean {
 	if (!settings || typeof settings !== 'object') return false;
 	const d = getDefaultLegendSettings();
@@ -205,6 +309,36 @@ export function getDefaultHeatmapSettings(): HeatmapSettings {
 		cellLabelMode: 'all',
 		cellLabelN: 5,
 	};
+}
+
+function normalizeHeatmapVisualMapPosition(value: unknown): HeatmapVisualMapPosition {
+	const position = String(value || '').toLowerCase();
+	return position === 'right' || position === 'left' || position === 'bottom' || position === 'top' ? position : 'right';
+}
+
+function normalizeHeatmapCellLabelMode(value: unknown): HeatmapCellLabelMode {
+	const mode = String(value || '').toLowerCase();
+	return mode === 'lowest' || mode === 'highest' || mode === 'both' ? mode : 'all';
+}
+
+export function sanitizeHeatmapSettings(input: unknown, base: Partial<HeatmapSettings> = getDefaultHeatmapSettings()): HeatmapSettings {
+	const defaults = getDefaultHeatmapSettings();
+	const current = isRecord(base) ? base : {};
+	const next: HeatmapSettings = {
+		...defaults,
+		...(typeof current.visualMapPosition === 'string' ? { visualMapPosition: normalizeHeatmapVisualMapPosition(current.visualMapPosition) } : {}),
+		...(isFiniteNumber(current.visualMapGap) ? { visualMapGap: current.visualMapGap } : {}),
+		...(typeof current.showCellLabels === 'boolean' ? { showCellLabels: current.showCellLabels } : {}),
+		...(typeof current.cellLabelMode === 'string' ? { cellLabelMode: normalizeHeatmapCellLabelMode(current.cellLabelMode) } : {}),
+		...(isFiniteNumber(current.cellLabelN) ? { cellLabelN: current.cellLabelN } : {}),
+	};
+	if (!isRecord(input)) return next;
+	if (typeof input.visualMapPosition === 'string') next.visualMapPosition = normalizeHeatmapVisualMapPosition(input.visualMapPosition);
+	if (isFiniteNumber(input.visualMapGap)) next.visualMapGap = input.visualMapGap;
+	if (typeof input.showCellLabels === 'boolean') next.showCellLabels = input.showCellLabels;
+	if (typeof input.cellLabelMode === 'string') next.cellLabelMode = normalizeHeatmapCellLabelMode(input.cellLabelMode);
+	if (isFiniteNumber(input.cellLabelN)) next.cellLabelN = input.cellLabelN;
+	return next;
 }
 
 export function hasCustomHeatmapSettings(settings: Partial<HeatmapSettings> | null | undefined): boolean {

@@ -1477,6 +1477,108 @@
 			overflow: hidden;
 		}
 
+		.kusto-chart-edit-surface {
+			position: relative;
+		}
+
+		.kusto-chart-floating-zoom-controls {
+			position: absolute;
+			top: 8px;
+			right: 8px;
+			z-index: 20;
+			display: flex;
+			align-items: center;
+			gap: 4px;
+			opacity: 0;
+			pointer-events: none;
+			transition: opacity 80ms ease-out;
+		}
+
+		.kusto-chart-floating-zoom-controls[hidden] {
+			display: none !important;
+		}
+
+		.kusto-chart-edit-surface:hover .kusto-chart-floating-zoom-controls,
+		.kusto-chart-edit-surface:focus-within .kusto-chart-floating-zoom-controls,
+		.kusto-chart-floating-zoom-controls:focus-within {
+			opacity: 0.86;
+			pointer-events: auto;
+		}
+
+		.kusto-chart-floating-zoom-btn {
+			height: 26px;
+			min-width: 26px;
+			border: 1px solid var(--vscode-button-border, var(--vscode-input-border, transparent));
+			border-radius: 4px;
+			background: color-mix(in srgb, var(--vscode-editor-background) 76%, transparent);
+			color: var(--vscode-foreground);
+			box-shadow: 0 2px 8px rgba(0, 0, 0, 0.22);
+			font: 12px var(--vscode-font-family);
+			line-height: 1;
+			padding: 0 9px;
+			cursor: pointer;
+			display: inline-flex;
+			align-items: center;
+			justify-content: center;
+			opacity: 0.82;
+		}
+
+		.kusto-chart-floating-zoom-btn:hover,
+		.kusto-chart-floating-zoom-btn:focus-visible,
+		.kusto-chart-floating-zoom-btn.is-active {
+			opacity: 1;
+			background: color-mix(in srgb, var(--vscode-toolbar-activeBackground, var(--vscode-button-background)) 70%, transparent);
+		}
+
+		.kusto-chart-floating-zoom-btn:focus-visible {
+			outline: 1px solid var(--vscode-focusBorder);
+			outline-offset: 1px;
+		}
+
+		.kusto-chart-floating-zoom-undo {
+			width: 26px;
+			padding: 0;
+		}
+
+		.kusto-chart-floating-zoom-undo[hidden] {
+			display: none !important;
+		}
+
+		.kusto-chart-zoom-hint {
+			position: absolute;
+			left: 50%;
+			top: 50%;
+			z-index: 19;
+			transform: translate(-50%, -50%);
+			max-width: min(420px, calc(100% - 48px));
+			padding: 9px 13px;
+			border: 1px solid var(--vscode-button-border, var(--vscode-input-border, transparent));
+			border-radius: 4px;
+			background: color-mix(in srgb, var(--vscode-editor-background) 84%, transparent);
+			color: var(--vscode-foreground);
+			box-shadow: 0 4px 18px rgba(0, 0, 0, 0.28);
+			font: 12px var(--vscode-font-family);
+			line-height: 1.35;
+			text-align: center;
+			pointer-events: none;
+			opacity: 0;
+		}
+
+		.kusto-chart-zoom-hint[hidden] {
+			display: none !important;
+		}
+
+		.kusto-chart-zoom-hint.is-visible {
+			animation: kusto-chart-zoom-hint-fade 2600ms ease-out forwards;
+		}
+
+		@keyframes kusto-chart-zoom-hint-fade {
+			0% { opacity: 0; transform: translate(-50%, -48%); }
+			12% { opacity: 0.96; transform: translate(-50%, -50%); }
+			68% { opacity: 0.96; transform: translate(-50%, -50%); }
+			100% { opacity: 0; transform: translate(-50%, -53%); }
+		}
+
 		/* Error/placeholder messages in chart canvas.
 		   Use VS Code UI font (not monospace) to match transformation section styling.
 		   Left padding 4px aligns text with control labels (section-root 12px + 4px = 16px
