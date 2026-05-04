@@ -10,13 +10,14 @@ Copilot integration gives your favorite LLM the right context and tools to actua
 
 It has advanced markdown capabilities (thanks to the amazing folks at [TOAST UI](https://ui.toast.com/)), so you could even just use it as a better markdown editor (with WYSIWYG support) for VS Code. Open existing .md files (open with, or change association), or make a new empty .mdx file and give it a go.
 
-### Tutorials
+### Walkthroughs
 
-New to the extension? The tutorial viewer groups short tutorials by workflow area, opens manually in a focused reading mode or standard browsing mode, and keeps search plus subscription settings in the standard view. Tutorial content is pulled from the project GitHub catalog and is not bundled in the extension. If the GitHub repo cannot be reached and no downloaded cache exists yet, the viewer shows a connection-required message instead of falling back to packaged content.
+New to the extension? Two built-in walkthroughs will get you going fast:
 
-Automatic Did you know? pop-ups and background update checks are not wired up while this feature is being finalized.
+* **Agent-First Workflow** – Let the VS Code Copilot agent build queries, charts, and full reports for you.
+* **Editor-First Workflow** – Write KQL yourself, explore results, then add charts and markdown around them.
 
-Open tutorials from the command palette (`Kusto Workbench: Open Tutorials...`) or from the Activity Bar.
+Open them from the command palette (`Kusto Workbench: Open Walkthroughs...`) or from the Activity Bar.
 
 ## Key Features
 

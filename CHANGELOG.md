@@ -3,6 +3,12 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.6.3] - 2026.05.03
+
+* [Feature request: configurable `maxResultRows` for MCP tool responses · Issue #19 · AngelosP/vscode-kusto-workbench](https://github.com/AngelosP/vscode-kusto-workbench/issues/19)
+* Bugs
+    * Fixed bad README.md change.
+
 ## [4.6.2] - 2026.05.03
 
 * [Feat: Add column and line cursor location to the VS Code status bar · Issue #22 · AngelosP/vscode-kusto-workbench](https://github.com/AngelosP/vscode-kusto-workbench/issues/22)

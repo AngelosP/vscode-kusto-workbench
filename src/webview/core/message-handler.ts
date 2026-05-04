@@ -66,6 +66,21 @@ import {
 	sqlFavorites, setSqlFavorites, sqlFavoritesModeByBoxId,
 } from './state';
 
+const ASK_KUSTO_COPILOT_DEFAULT_MAX_RESULT_ROWS = 100;
+const ASK_KUSTO_COPILOT_MIN_MAX_RESULT_ROWS = 1;
+const ASK_KUSTO_COPILOT_MAX_MAX_RESULT_ROWS = 1000;
+
+function normalizeAskKustoCopilotMaxResultRows(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) {
+		return ASK_KUSTO_COPILOT_DEFAULT_MAX_RESULT_ROWS;
+	}
+	const integerValue = Math.trunc(value);
+	return Math.max(
+		ASK_KUSTO_COPILOT_MIN_MAX_RESULT_ROWS,
+		Math.min(ASK_KUSTO_COPILOT_MAX_MAX_RESULT_ROWS, integerValue)
+	);
+}
+
 const _win = window;
 
 // ── Agent-touched helper ─────────────────────────────────────────────────
@@ -2628,6 +2643,7 @@ window.addEventListener('message', async (event: any) => {
 					const requestId = String(message.requestId || '');
 					const input = message.input || {};
 					const question = String(input.question || '');
+					const maxResultRows = normalizeAskKustoCopilotMaxResultRows(input.maxResultRows);
 					let sectionId = String(input.sectionId || '');
 					
 					// If no section specified, use the first query section or create one
@@ -2721,12 +2737,16 @@ window.addEventListener('message', async (event: any) => {
 				let generatedQuery = '';
 				let queryGenerated = false;
 				let pendingQueryResult: any = null; // Store queryResult if it arrives before copilotWriteQueryDone
+				let timeoutId: ReturnType<typeof setTimeout> | undefined;
 				
 				// Helper to send successful response
 				const sendSuccessResponse = (msg: any) => {
 					if (responded) return;
 					responded = true;
 					window.removeEventListener('message', resultHandler);
+					if (timeoutId !== undefined) {
+						clearTimeout(timeoutId);
+					}
 					
 					// Get current query from editor
 					try {
@@ -2763,10 +2783,8 @@ window.addEventListener('message', async (event: any) => {
 					}
 					
 					// Limit rows for response size
-					const truncated = rows.length > 100;
-					if (truncated) {
-						rows = rows.slice(0, 100);
-					}
+					const truncated = rows.length > maxResultRows;
+					const responseRows = truncated ? rows.slice(0, maxResultRows) : rows;
 					
 					postMessageToHost({ 
 						type: 'toolResponse', 
@@ -2776,8 +2794,10 @@ window.addEventListener('message', async (event: any) => {
 							query: generatedQuery,
 							rowCount,
 							columns,
-							results: rows,
-							truncated: truncated ? 'Results truncated to 100 rows' : undefined
+							results: responseRows,
+							maxResultRows,
+							returnedRowCount: responseRows.length,
+							truncated: truncated ? `Results truncated to ${maxResultRows} rows` : undefined
 						}
 					});
 				};
@@ -2798,6 +2818,9 @@ window.addEventListener('message', async (event: any) => {
 							if (!msg.ok) {
 								responded = true;
 								window.removeEventListener('message', resultHandler);
+								if (timeoutId !== undefined) {
+									clearTimeout(timeoutId);
+								}
 								
 								// Don't call __kustoCopilotWriteQueryDone here — the regular
 								// 'copilotWriteQueryDone' handler already does it, and calling
@@ -2838,6 +2861,9 @@ window.addEventListener('message', async (event: any) => {
 						if (msg.type === 'queryError' && msg.boxId === sectionId && queryGenerated) {
 							responded = true;
 							window.removeEventListener('message', resultHandler);
+							if (timeoutId !== undefined) {
+								clearTimeout(timeoutId);
+							}
 							
 							postMessageToHost({ 
 								type: 'toolResponse', 
@@ -2857,7 +2883,7 @@ window.addEventListener('message', async (event: any) => {
 				window.addEventListener('message', resultHandler);
 				
 				// Timeout after 3 minutes
-				const timeoutId = setTimeout(() => {
+				timeoutId = setTimeout(() => {
 					if (!responded) {
 						responded = true;
 						window.removeEventListener('message', resultHandler);

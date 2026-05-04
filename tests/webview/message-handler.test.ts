@@ -339,6 +339,8 @@ function dispatchHostMessage(data: Record<string, unknown>): void {
 	window.dispatchEvent(new MessageEvent('message', { data }));
 }
 
+let getResultsStateMock: ReturnType<typeof vi.fn>;
+
 describe('message-handler dispatch', () => {
 	beforeAll(async () => {
 		(window as any).vscode = {
@@ -347,6 +349,8 @@ describe('message-handler dispatch', () => {
 			setState: vi.fn(),
 		};
 		await import('../../src/webview/components/kw-section-shell.js');
+		const resultsState = await import('../../src/webview/core/results-state.js');
+		getResultsStateMock = resultsState.getResultsState as unknown as ReturnType<typeof vi.fn>;
 		await import('../../src/webview/core/message-handler.js');
 	});
 
@@ -367,6 +371,7 @@ describe('message-handler dispatch', () => {
 		delete (window as any).__kustoSqlLastConnectionId;
 		delete (window as any).__kustoSqlLastDatabase;
 		vi.clearAllMocks();
+		getResultsStateMock.mockReturnValue(null);
 		mocks.getQuerySectionElement.mockReturnValue(null);
 		mocks.getConnectionId.mockReturnValue('');
 		mocks.getDatabase.mockReturnValue('');
@@ -1187,6 +1192,108 @@ describe('changedSections agent provenance', () => {
 
 		expect(shell.hasChanges).toBe('new');
 		expect(shell.agentTouched).toBe(true);
+	});
+
+	async function runDelegatedKustoCopilotResponseTest(options: { maxResultRows?: unknown; rowCount: number; resultBeforeDone?: boolean }) {
+		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'range Index from 1 to 10 step 1' });
+		(section as any).setCopilotChatVisible = vi.fn();
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.getConnectionId.mockReturnValue('conn-1');
+		mocks.getDatabase.mockReturnValue('db-1');
+		handlerState.queryEditors.query_1 = { getValue: vi.fn(() => 'range Index from 1 to 10 step 1') };
+
+		const rows = Array.from({ length: options.rowCount }, (_unused, index) => [index + 1]);
+		const columns = ['Index'];
+		getResultsStateMock.mockReturnValue({ columns, rows } as any);
+
+		const chatPane = document.createElement('div');
+		chatPane.id = 'query_1_copilot_chat_pane';
+		const chatElement = document.createElement('kw-copilot-chat') as HTMLElement & {
+			setInputText: ReturnType<typeof vi.fn>;
+			setRequireToolUseOnNextSend: ReturnType<typeof vi.fn>;
+		};
+		chatElement.setInputText = vi.fn();
+		chatElement.setRequireToolUseOnNextSend = vi.fn();
+		chatPane.appendChild(chatElement);
+		document.body.appendChild(chatPane);
+
+		(section as any).copilotWriteQuerySend = vi.fn(() => {
+			const queryResultMessage = { type: 'queryResult', boxId: 'query_1', result: { rows, columns } };
+			const doneMessage = { type: 'copilotWriteQueryDone', boxId: 'query_1', ok: true };
+			if (options.resultBeforeDone) {
+				dispatchHostMessage(queryResultMessage);
+				dispatchHostMessage(doneMessage);
+			} else {
+				dispatchHostMessage(doneMessage);
+				dispatchHostMessage(queryResultMessage);
+			}
+		});
+
+		const input: Record<string, unknown> = { sectionId: 'query_1', question: 'Help' };
+		if ('maxResultRows' in options) {
+			input.maxResultRows = options.maxResultRows;
+		}
+
+		mocks.postMessageToHost.mockClear();
+		dispatchHostMessage({ type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'r-kusto-copilot-results', input });
+		await new Promise(resolve => setTimeout(resolve, 140));
+
+		const response = mocks.postMessageToHost.mock.calls
+			.map(([message]) => message as any)
+			.find(message => message.type === 'toolResponse' && message.requestId === 'r-kusto-copilot-results');
+		expect(response).toBeTruthy();
+		return response.result;
+	}
+
+	it('defaults delegated Kusto Copilot tool results to 100 rows', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({ rowCount: 150 });
+
+		expect(result.success).toBe(true);
+		expect(result.rowCount).toBe(150);
+		expect(result.results).toHaveLength(100);
+		expect(result.maxResultRows).toBe(100);
+		expect(result.returnedRowCount).toBe(100);
+		expect(result.truncated).toBe('Results truncated to 100 rows');
+	});
+
+	it('uses a custom delegated Kusto Copilot maxResultRows response cap', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({ rowCount: 150, maxResultRows: 125 });
+
+		expect(result.rowCount).toBe(150);
+		expect(result.results).toHaveLength(125);
+		expect(result.maxResultRows).toBe(125);
+		expect(result.returnedRowCount).toBe(125);
+		expect(result.truncated).toBe('Results truncated to 125 rows');
+	});
+
+	it('supports smaller delegated Kusto Copilot maxResultRows caps', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({ rowCount: 25, maxResultRows: 5 });
+
+		expect(result.rowCount).toBe(25);
+		expect(result.results).toHaveLength(5);
+		expect(result.maxResultRows).toBe(5);
+		expect(result.returnedRowCount).toBe(5);
+		expect(result.truncated).toBe('Results truncated to 5 rows');
+	});
+
+	it('normalizes invalid delegated Kusto Copilot maxResultRows values defensively', async () => {
+		const invalidResult = await runDelegatedKustoCopilotResponseTest({ rowCount: 150, maxResultRows: '250' });
+		expect(invalidResult.results).toHaveLength(100);
+		expect(invalidResult.maxResultRows).toBe(100);
+
+		const belowMinimumResult = await runDelegatedKustoCopilotResponseTest({ rowCount: 150, maxResultRows: 0 });
+		expect(belowMinimumResult.results).toHaveLength(1);
+		expect(belowMinimumResult.maxResultRows).toBe(1);
+	});
+
+	it('uses maxResultRows when query results arrive before Copilot completion', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({ rowCount: 130, maxResultRows: 120, resultBeforeDone: true });
+
+		expect(result.rowCount).toBe(130);
+		expect(result.results).toHaveLength(120);
+		expect(result.maxResultRows).toBe(120);
+		expect(result.returnedRowCount).toBe(120);
+		expect(result.truncated).toBe('Results truncated to 120 rows');
 	});
 
 	it('marks delegated SQL Copilot run-mode changes as agent-touched when dirty', async () => {

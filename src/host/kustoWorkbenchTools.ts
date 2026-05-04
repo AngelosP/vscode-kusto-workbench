@@ -19,6 +19,21 @@ function getToolInput<T>(options: vscode.LanguageModelToolInvocationOptions<T> |
 	return opts.input ?? opts.parameters ?? ({} as T);
 }
 
+const ASK_KUSTO_COPILOT_DEFAULT_MAX_RESULT_ROWS = 100;
+const ASK_KUSTO_COPILOT_MIN_MAX_RESULT_ROWS = 1;
+const ASK_KUSTO_COPILOT_MAX_MAX_RESULT_ROWS = 1000;
+
+function normalizeAskKustoCopilotMaxResultRows(value: unknown): number {
+	if (typeof value !== 'number' || !Number.isFinite(value)) {
+		return ASK_KUSTO_COPILOT_DEFAULT_MAX_RESULT_ROWS;
+	}
+	const integerValue = Math.trunc(value);
+	return Math.max(
+		ASK_KUSTO_COPILOT_MIN_MAX_RESULT_ROWS,
+		Math.min(ASK_KUSTO_COPILOT_MAX_MAX_RESULT_ROWS, integerValue)
+	);
+}
+
 /**
  * LLMs frequently send literal two-character "\n" sequences in JSON string
  * values instead of actual newline characters. This is especially problematic
@@ -260,6 +275,8 @@ export interface DelegateToKustoWorkbenchCopilotInput {
 	clusterUrl?: string;
 	/** Optional: Database name to use. If not provided, uses the current database. */
 	database?: string;
+	/** Optional: Maximum rows returned in the tool response. Defaults to 100. */
+	maxResultRows?: number;
 }
 
 export interface ConfigureHtmlSectionInput {
@@ -978,10 +995,17 @@ export class KustoWorkbenchToolOrchestrator {
 		rowCount?: number;
 		columns?: string[];
 		results?: Array<Record<string, unknown>>;
+		maxResultRows?: number;
+		returnedRowCount?: number;
+		truncated?: string;
 		error?: string;
 		timedOut?: boolean;
 	}> {
-		return this.sendToWebview('toolDelegateToKustoWorkbenchCopilot', { input }, 180000); // 3 minute timeout for Copilot + query execution
+		const normalizedInput = {
+			...input,
+			maxResultRows: normalizeAskKustoCopilotMaxResultRows(input.maxResultRows)
+		};
+		return this.sendToWebview('toolDelegateToKustoWorkbenchCopilot', { input: normalizedInput }, 180000); // 3 minute timeout for Copilot + query execution
 	}
 
 	async createFile(input: CreateFileInput): Promise<{

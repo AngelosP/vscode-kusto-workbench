@@ -150,4 +150,30 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		// After disconnect, listSections should throw (no stateGetter)
 		await expect(orch.listSections()).rejects.toThrow('not currently open');
 	});
+
+	it('normalizes maxResultRows before delegating to Kusto Copilot', async () => {
+		async function capturePostedInput(rawMaxResultRows: unknown): Promise<Record<string, unknown>> {
+			(KustoWorkbenchToolOrchestrator as any).instance = undefined;
+			const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+			const poster = vi.fn();
+			orchestrator.connect(poster, vi.fn(async () => []), vi.fn());
+
+			const input: Record<string, unknown> = { question: 'Help' };
+			if (rawMaxResultRows !== undefined) {
+				input.maxResultRows = rawMaxResultRows;
+			}
+			const delegatePromise = orchestrator.delegateToKustoWorkbenchCopilot(input as any);
+			const postedMessage = poster.mock.calls[0][0] as any;
+			orchestrator.handleWebviewResponse(postedMessage.requestId, { success: true });
+			await delegatePromise;
+			return postedMessage.input;
+		}
+
+		await expect(capturePostedInput(undefined)).resolves.toMatchObject({ maxResultRows: 100 });
+		await expect(capturePostedInput(250)).resolves.toMatchObject({ maxResultRows: 250 });
+		await expect(capturePostedInput(250.9)).resolves.toMatchObject({ maxResultRows: 250 });
+		await expect(capturePostedInput(0)).resolves.toMatchObject({ maxResultRows: 1 });
+		await expect(capturePostedInput(2000)).resolves.toMatchObject({ maxResultRows: 1000 });
+		await expect(capturePostedInput('250')).resolves.toMatchObject({ maxResultRows: 100 });
+	});
 });

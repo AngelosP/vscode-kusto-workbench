@@ -1345,7 +1345,7 @@
         ],
         "toolReferenceName": "askKustoCopilot",
         "displayName": "Ask Kusto Workbench Copilot",
-        "modelDescription": "The primary tool for executing Kusto queries through Kusto Workbench. Delegates questions to the specialized Kusto Workbench Copilot assistant which has deep KQL knowledge and access to database schemas. This tool will write the appropriate KQL query, execute it against the specified cluster/database, and return the actual query results (rows, columns, and data). Use this for any data questions, KQL queries, or data exploration. Returns success/failure status, the generated query, row count, column names, and actual result data (up to 100 rows).",
+        "modelDescription": "The primary tool for executing Kusto queries through Kusto Workbench. Delegates questions to the specialized Kusto Workbench Copilot assistant which has deep KQL knowledge and access to database schemas. This tool will write the appropriate KQL query, execute it against the specified cluster/database, and return the actual query results (rows, columns, and data). Use this for any data questions, KQL queries, or data exploration. Returns success/failure status, the generated query, row count, column names, and actual result data (up to maxResultRows rows; default 100).",
         "userDescription": "Ask the Kusto Workbench AI to write and execute a KQL query, returning the results.",
         "canBeReferencedInPrompt": true,
         "icon": "$(hubot)",
@@ -1367,6 +1367,13 @@
             "database": {
               "type": "string",
               "description": "Optional: Database name to use. If not provided, uses the current database."
+            },
+            "maxResultRows": {
+              "type": "number",
+              "default": 100,
+              "minimum": 1,
+              "maximum": 1000,
+              "description": "Optional: Maximum number of result rows to return in the tool response. Defaults to 100. This does not change query execution or the Kusto Workbench UI results."
             }
           },
           "required": [
