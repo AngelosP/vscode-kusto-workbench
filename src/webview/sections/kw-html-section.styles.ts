@@ -112,6 +112,105 @@ export const styles = [monacoToolbarStyles, css`
 	.header-tab svg { display: block; }
 	.header-tab:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
 	.header-tab:disabled { opacity: 0.5; cursor: not-allowed; }
+	.header-tab-tooltip-wrapper {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		border-radius: 4px;
+	}
+	.header-tab-tooltip-wrapper:focus-visible {
+		outline: 1px solid var(--vscode-focusBorder);
+		outline-offset: 1px;
+	}
+	.sr-only {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		padding: 0;
+		margin: -1px;
+		overflow: hidden;
+		clip: rect(0, 0, 0, 0);
+		white-space: nowrap;
+		border: 0;
+	}
+
+	.power-bi-upgrade-notice {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		gap: 12px;
+		margin: 8px 0 10px;
+		padding: 8px 10px;
+		border: 1px solid var(--vscode-inputValidation-warningBorder, var(--vscode-widget-border, rgba(128,128,128,0.35)));
+		border-radius: 4px;
+		background: var(--vscode-inputValidation-warningBackground, var(--vscode-editorWidget-background));
+		color: var(--vscode-inputValidation-warningForeground, var(--vscode-foreground));
+	}
+	.power-bi-upgrade-copy {
+		min-width: 0;
+		flex: 1 1 auto;
+	}
+	.power-bi-upgrade-title {
+		font-size: 12px;
+		font-weight: 600;
+		line-height: 1.35;
+	}
+	.power-bi-upgrade-detail {
+		margin-top: 2px;
+		font-size: 12px;
+		line-height: 1.35;
+		color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+	}
+	.power-bi-upgrade-actions {
+		display: inline-flex;
+		align-items: center;
+		gap: 6px;
+		flex: 0 0 auto;
+	}
+	.power-bi-upgrade-primary,
+	.power-bi-upgrade-secondary,
+	.power-bi-upgrade-close {
+		font-family: var(--vscode-font-family);
+		font-size: 12px;
+		line-height: 1.3;
+		border-radius: 4px;
+		cursor: pointer;
+	}
+	.power-bi-upgrade-primary {
+		border: 1px solid var(--vscode-button-border, transparent);
+		background: var(--vscode-button-background);
+		color: var(--vscode-button-foreground);
+		padding: 4px 10px;
+	}
+	.power-bi-upgrade-primary:hover {
+		background: var(--vscode-button-hoverBackground);
+	}
+	.power-bi-upgrade-secondary,
+	.power-bi-upgrade-close {
+		border: 1px solid transparent;
+		background: transparent;
+		color: var(--vscode-foreground);
+		padding: 4px 8px;
+	}
+	.power-bi-upgrade-secondary:hover,
+	.power-bi-upgrade-close:hover {
+		background: var(--vscode-list-hoverBackground);
+	}
+	.power-bi-upgrade-close {
+		width: 24px;
+		height: 24px;
+		padding: 0;
+	}
+	@media (max-width: 700px) {
+		.power-bi-upgrade-notice {
+			align-items: stretch;
+			flex-direction: column;
+		}
+		.power-bi-upgrade-actions {
+			justify-content: flex-start;
+			flex-wrap: wrap;
+		}
+	}
 
 	/* ── Editor wrapper ──────────────────────────────────────────────── */
 

@@ -1,0 +1,48 @@
+{
+  "kind": "kqlx",
+  "version": 1,
+  "state": {
+    "caretDocsEnabled": true,
+    "autoTriggerAutocompleteEnabled": false,
+    "sections": [
+      {
+        "id": "query_zoom_series",
+        "type": "query",
+        "name": "Source query: request volume",
+        "query": "datatable(Timestamp:datetime, Requests:long, Region:string)[datetime(2026-04-01), 118, 'West', datetime(2026-04-02), 124, 'West', datetime(2026-04-03), 132, 'West', datetime(2026-04-04), 141, 'West', datetime(2026-04-05), 149, 'West', datetime(2026-04-06), 318, 'West', datetime(2026-04-07), 462, 'West', datetime(2026-04-08), 371, 'West', datetime(2026-04-09), 178, 'West', datetime(2026-04-10), 164, 'West', datetime(2026-04-11), 171, 'West', datetime(2026-04-12), 188, 'West', datetime(2026-04-01), 92, 'East', datetime(2026-04-02), 98, 'East', datetime(2026-04-03), 104, 'East', datetime(2026-04-04), 111, 'East', datetime(2026-04-05), 116, 'East', datetime(2026-04-06), 176, 'East', datetime(2026-04-07), 238, 'East', datetime(2026-04-08), 206, 'East', datetime(2026-04-09), 132, 'East', datetime(2026-04-10), 127, 'East', datetime(2026-04-11), 135, 'East', datetime(2026-04-12), 142, 'East']",
+        "expanded": false,
+        "resultsVisible": false,
+        "resultJson": "{\"columns\":[{\"name\":\"Timestamp\",\"type\":\"datetime\"},{\"name\":\"Requests\",\"type\":\"long\"},{\"name\":\"Region\",\"type\":\"string\"}],\"rows\":[[\"2026-04-01T00:00:00Z\",118,\"West\"],[\"2026-04-02T00:00:00Z\",124,\"West\"],[\"2026-04-03T00:00:00Z\",132,\"West\"],[\"2026-04-04T00:00:00Z\",141,\"West\"],[\"2026-04-05T00:00:00Z\",149,\"West\"],[\"2026-04-06T00:00:00Z\",318,\"West\"],[\"2026-04-07T00:00:00Z\",462,\"West\"],[\"2026-04-08T00:00:00Z\",371,\"West\"],[\"2026-04-09T00:00:00Z\",178,\"West\"],[\"2026-04-10T00:00:00Z\",164,\"West\"],[\"2026-04-11T00:00:00Z\",171,\"West\"],[\"2026-04-12T00:00:00Z\",188,\"West\"],[\"2026-04-01T00:00:00Z\",92,\"East\"],[\"2026-04-02T00:00:00Z\",98,\"East\"],[\"2026-04-03T00:00:00Z\",104,\"East\"],[\"2026-04-04T00:00:00Z\",111,\"East\"],[\"2026-04-05T00:00:00Z\",116,\"East\"],[\"2026-04-06T00:00:00Z\",176,\"East\"],[\"2026-04-07T00:00:00Z\",238,\"East\"],[\"2026-04-08T00:00:00Z\",206,\"East\"],[\"2026-04-09T00:00:00Z\",132,\"East\"],[\"2026-04-10T00:00:00Z\",127,\"East\"],[\"2026-04-11T00:00:00Z\",135,\"East\"],[\"2026-04-12T00:00:00Z\",142,\"East\"]],\"metadata\":{\"executionTime\":\"00:00:00.042\",\"clientActivityId\":\"did-you-know-chart-showcase\"}}"
+      },
+      {
+        "id": "chart_zoom_example",
+        "type": "chart",
+        "name": "Connected chart: request volume",
+        "mode": "edit",
+        "expanded": true,
+        "dataSourceId": "query_zoom_series",
+        "chartType": "line",
+        "xColumn": "Timestamp",
+        "yColumn": "Requests",
+        "yColumns": ["Requests"],
+        "legendColumn": "Region",
+        "legendPosition": "top",
+        "chartTitle": "Request volume",
+        "chartSubtitle": "Draw a rectangle to inspect the spike",
+        "showDataLabels": false,
+        "yAxisSettings": {
+          "showAxisLabel": true,
+          "customLabel": "Requests per region",
+          "min": "0",
+          "max": "500",
+          "titleGap": 56,
+          "seriesColors": {
+            "West": "#3b82f6",
+            "East": "#f97316"
+          }
+        },
+        "editorHeightPx": 420
+      }
+    ]
+  }
+}

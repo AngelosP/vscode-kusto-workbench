@@ -139,6 +139,13 @@ export type ExportDashboardMessage = {
 };
 export type GetPbiWorkspacesMessage = { type: 'getPbiWorkspaces'; boxId: string };
 export type CheckPbiItemExistsMessage = { type: 'checkPbiItemExists'; boxId: string; workspaceId: string; reportId: string };
+export type RequestHtmlDashboardUpgradeWithCopilotMessage = {
+	type: 'requestHtmlDashboardUpgradeWithCopilot';
+	sectionId: string;
+	sectionName?: string;
+	targetVersion: number;
+	reasons?: string[];
+};
 export type PublishToPowerBIMessage = {
 	type: 'publishToPowerBI';
 	boxId: string;
@@ -189,6 +196,7 @@ export type IncomingWebviewMessage =
 	| { type: 'showInfo'; message: string }
 	| SaveResultsCsvMessage
 	| ExportDashboardMessage
+	| RequestHtmlDashboardUpgradeWithCopilotMessage
 	| GetPbiWorkspacesMessage
 	| CheckPbiItemExistsMessage
 	| PublishToPowerBIMessage

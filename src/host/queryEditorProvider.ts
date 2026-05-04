@@ -37,6 +37,7 @@ import {
 	IncomingWebviewMessage,
 	SaveResultsCsvMessage,
 	ExportDashboardMessage,
+	RequestHtmlDashboardUpgradeWithCopilotMessage,
 	PublishToPowerBIMessage,
 	findPreferredDefaultCopilotModel
 } from './queryEditorTypes';
@@ -491,6 +492,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'exportDashboard':
 				await this.exportDashboardFromWebview(message as ExportDashboardMessage);
 				return;
+			case 'requestHtmlDashboardUpgradeWithCopilot':
+				await this.requestHtmlDashboardUpgradeWithCopilot(message as RequestHtmlDashboardUpgradeWithCopilotMessage);
+				return;
 			case 'getPbiWorkspaces':
 				await this.getPbiWorkspacesFromWebview(message as any);
 				return;
@@ -855,6 +859,42 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		} catch {
 			vscode.window.showErrorMessage('Failed to copy share content to clipboard.');
 		}
+	}
+
+	private async requestHtmlDashboardUpgradeWithCopilot(message: RequestHtmlDashboardUpgradeWithCopilotMessage): Promise<void> {
+		const sectionId = String(message.sectionId || '').trim();
+		if (!sectionId) return;
+		const prompt = this.buildHtmlDashboardUpgradePrompt(message);
+		const opened = await openKustoWorkbenchAgentChat({ query: prompt, submit: true });
+		if (!opened) {
+			void vscode.window.showWarningMessage('Kusto Workbench could not start the Power BI upgrade chat automatically. Open the Kusto Workbench agent and ask it to make this HTML section exportable to Power BI.');
+		}
+	}
+
+	private buildHtmlDashboardUpgradePrompt(message: RequestHtmlDashboardUpgradeWithCopilotMessage): string {
+		const sectionId = String(message.sectionId || '').trim();
+		const sectionName = String(message.sectionName || '').trim();
+		const targetVersion = Number.isFinite(message.targetVersion) ? message.targetVersion : 1;
+		const reasons = Array.isArray(message.reasons)
+			? message.reasons.map(reason => String(reason || '').trim()).filter(reason => reason.length > 0)
+			: [];
+		const sectionLabel = sectionName ? `${sectionName} (${sectionId})` : sectionId;
+		const reasonText = reasons.length > 0
+			? reasons.map(reason => `- ${reason}`).join('\n')
+			: '- The section is behind the current Power BI export contract.';
+
+		return [
+			`Upgrade HTML section ${sectionLabel} to the latest Kusto Workbench HTML dashboard Power BI export contract (version ${targetVersion}).`,
+			'',
+			'Preserve the dashboard look, layout, interactivity, and data semantics unless the Power BI export contract requires a change.',
+			'Use provenance bindings and KustoWorkbench.renderChart, KustoWorkbench.renderTable, or KustoWorkbench.renderRepeatedTable where appropriate so the dashboard exports cleanly to Power BI.',
+			'Do not make unrelated notebook changes.',
+			'',
+			'Issues detected:',
+			reasonText,
+			'',
+			'After updating the section, validate the dashboard and fix any remaining export issues.'
+		].join('\n');
 	}
 
 	private async exportDashboardFromWebview(message: ExportDashboardMessage): Promise<void> {

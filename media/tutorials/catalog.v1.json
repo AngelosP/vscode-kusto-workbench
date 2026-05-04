@@ -1,6 +1,6 @@
 {
   "schemaVersion": 1,
-  "generatedAt": "2026-05-03T00:00:00.000Z",
+  "generatedAt": "2026-05-04T00:00:00.000Z",
   "categories": [
     {
       "id": "agent",
@@ -47,32 +47,11 @@
   ],
   "content": [
     {
-      "id": "agent-first-report",
-      "categoryId": "agent",
-      "contentUrl": "content/agent-first-report.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "agent-first-report-2026-05-03"
-    },
-    {
-      "id": "agent-run-and-check",
-      "categoryId": "agent",
-      "contentUrl": "content/agent-run-and-check.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "agent-run-and-check-2026-05-03"
-    },
-    {
-      "id": "agent-adds-sections",
-      "categoryId": "agent",
-      "contentUrl": "content/agent-adds-sections.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "agent-adds-sections-2026-05-03"
-    },
-    {
       "id": "agent-schema-search",
       "categoryId": "agent",
       "contentUrl": "content/agent-schema-search.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "agent-schema-search-2026-05-03"
+      "updateToken": "agent-schema-search-2026-05-04"
     },
     {
       "id": "agent-export-skill",
@@ -86,14 +65,14 @@
       "categoryId": "editor",
       "contentUrl": "content/editor-first-query.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "editor-first-query-2026-05-03"
+      "updateToken": "editor-first-query-2026-05-04"
     },
     {
       "id": "editor-run-modes",
       "categoryId": "editor",
       "contentUrl": "content/editor-run-modes.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "editor-run-modes-2026-05-03"
+      "updateToken": "editor-run-modes-2026-05-04"
     },
     {
       "id": "editor-prettify-query",
@@ -103,46 +82,32 @@
       "updateToken": "editor-prettify-query-2026-05-03"
     },
     {
-      "id": "editor-file-formats",
-      "categoryId": "editor",
-      "contentUrl": "content/editor-file-formats.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "editor-file-formats-2026-05-03"
-    },
-    {
       "id": "editor-multi-account",
       "categoryId": "editor",
       "contentUrl": "content/editor-multi-account.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "editor-multi-account-2026-05-03"
+      "updateToken": "editor-multi-account-2026-05-04"
     },
     {
-      "id": "table-tools",
+      "id": "transformations-do-not-rerun-queries",
       "categoryId": "results",
-      "contentUrl": "content/table-tools.md",
+      "contentUrl": "content/transformations-do-not-rerun-queries.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "table-tools-2026-05-03"
+      "updateToken": "transformations-do-not-rerun-queries-2026-05-04"
     },
     {
       "id": "results-search-json",
       "categoryId": "results",
       "contentUrl": "content/results-search-json.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "results-search-json-2026-05-03"
+      "updateToken": "results-search-json-2026-05-04"
     },
     {
       "id": "results-column-tools",
       "categoryId": "results",
       "contentUrl": "content/results-column-tools.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "results-column-tools-2026-05-03"
-    },
-    {
-      "id": "results-complex-cells",
-      "categoryId": "results",
-      "contentUrl": "content/results-complex-cells.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "results-complex-cells-2026-05-03"
+      "updateToken": "results-column-tools-2026-05-04"
     },
     {
       "id": "results-csv-url",
@@ -152,25 +117,18 @@
       "updateToken": "results-csv-url-2026-05-03"
     },
     {
-      "id": "build-chart",
-      "categoryId": "charts",
-      "contentUrl": "content/chart-from-results.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "build-chart-2026-05-03"
-    },
-    {
       "id": "chart-live-refresh",
       "categoryId": "charts",
       "contentUrl": "content/chart-live-refresh.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "chart-live-refresh-2026-05-03"
+      "updateToken": "chart-live-refresh-2026-05-04"
     },
     {
       "id": "chart-types",
       "categoryId": "charts",
       "contentUrl": "content/chart-types.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "chart-types-2026-05-03"
+      "updateToken": "chart-types-2026-05-04"
     },
     {
       "id": "chart-series-splits",
@@ -184,28 +142,14 @@
       "categoryId": "charts",
       "contentUrl": "content/chart-settings-clicks.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "chart-settings-clicks-2026-05-03"
+      "updateToken": "chart-settings-clicks-2026-05-04"
     },
     {
-      "id": "copilot-chat",
-      "categoryId": "copilot",
-      "contentUrl": "content/copilot-chat.md",
+      "id": "chart-zoom",
+      "categoryId": "charts",
+      "contentUrl": "content/chart-zoom.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "copilot-chat-2026-05-03"
-    },
-    {
-      "id": "copilot-runs-checks",
-      "categoryId": "copilot",
-      "contentUrl": "content/copilot-runs-checks.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "copilot-runs-checks-2026-05-03"
-    },
-    {
-      "id": "copilot-conversation-history",
-      "categoryId": "copilot",
-      "contentUrl": "content/copilot-conversation-history.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "copilot-conversation-history-2026-05-03"
+      "updateToken": "chart-zoom-2026-05-04"
     },
     {
       "id": "copilot-optimize-query",
@@ -219,7 +163,7 @@
       "categoryId": "copilot",
       "contentUrl": "content/copilot-agent-vs-chat.md",
       "minExtensionVersion": "0.0.0",
-      "updateToken": "copilot-agent-vs-chat-2026-05-03"
+      "updateToken": "copilot-agent-vs-chat-2026-05-04"
     },
     {
       "id": "powerbi-build-publish-report",
@@ -227,34 +171,6 @@
       "contentUrl": "content/powerbi-build-publish-report.md",
       "minExtensionVersion": "0.0.0",
       "updateToken": "powerbi-build-publish-report-2026-05-03"
-    },
-    {
-      "id": "powerbi-provenance-bindings",
-      "categoryId": "power-bi",
-      "contentUrl": "content/powerbi-provenance-bindings.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "powerbi-provenance-bindings-2026-05-03"
-    },
-    {
-      "id": "powerbi-render-chart-table",
-      "categoryId": "power-bi",
-      "contentUrl": "content/powerbi-render-chart-table.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "powerbi-render-chart-table-2026-05-03"
-    },
-    {
-      "id": "powerbi-import-directquery",
-      "categoryId": "power-bi",
-      "contentUrl": "content/powerbi-import-directquery.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "powerbi-import-directquery-2026-05-03"
-    },
-    {
-      "id": "powerbi-publish-fabric",
-      "categoryId": "power-bi",
-      "contentUrl": "content/powerbi-publish-fabric.md",
-      "minExtensionVersion": "0.0.0",
-      "updateToken": "powerbi-publish-fabric-2026-05-03"
     },
     {
       "id": "sections-flash-green-blue",

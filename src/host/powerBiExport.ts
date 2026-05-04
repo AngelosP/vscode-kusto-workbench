@@ -46,6 +46,7 @@ import {
 	type DashboardTooltipField,
 	type DashboardTooltipSpec,
 } from '../shared/dashboardTooltips';
+import { parseKwProvenance } from '../shared/htmlDashboardUpgrade';
 import { canonicalizePowerBiKustoClusterUrl } from '../shared/kustoClusterUrls';
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -152,15 +153,7 @@ interface Provenance {
 }
 
 function parseProvenance(htmlCode: string): Provenance | null {
-	try {
-		const match = htmlCode.match(/<script\s+type\s*=\s*["']application\/kw-provenance["'][^>]*>([\s\S]*?)<\/script>/i);
-		if (!match) return null;
-		const json = JSON.parse(match[1]);
-		if (!json || typeof json !== 'object') return null;
-		if (!json.model?.fact?.sectionId) return null;
-		if (!json.bindings || typeof json.bindings !== 'object') return null;
-		return { version: json.version ?? 1, model: json.model, bindings: json.bindings };
-	} catch { return null; }
+	return parseKwProvenance(htmlCode) as Provenance | null;
 }
 
 function findDataKwBindTargets(htmlCode: string): Set<string> {

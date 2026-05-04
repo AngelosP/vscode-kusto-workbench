@@ -1,7 +1,5 @@
-# The agent can search schemas across your saved connections
+# The agent can kick off an exhaustive schema search
 
-When you know the metric but not the table, let the agent search. Kusto Workbench keeps schema context for your connections, so the agent can look for likely tables, columns, and functions before it starts writing KQL.
+When you know the business concept but not the table or even the database / cluster, ask the Kusto Workbench agent to search broadly. It can inspect saved Kusto connection schemas and list the tables and columns most likely to hold the data you need.
 
-![Connection manager with cluster and database schema context](images/tip-agent-schema.png)
-
-This works best when you describe the business concept in plain language. Ask it to list candidate tables first when you want to review the trail before it runs anything expensive.
+![Kusto Workbench agent prompt for exhaustive schema search](images/tip-agent-schema-search.png)

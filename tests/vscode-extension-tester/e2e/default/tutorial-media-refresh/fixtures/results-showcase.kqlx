@@ -1,0 +1,21 @@
+{
+  "kind": "kqlx",
+  "version": 1,
+  "state": {
+    "caretDocsEnabled": true,
+    "autoTriggerAutocompleteEnabled": false,
+    "sections": [
+      {
+        "id": "query_results_showcase",
+        "type": "query",
+        "name": "Result table with dynamic details",
+        "query": "datatable(Timestamp:datetime, User:string, Action:string, Details:dynamic, DurationMs:long)[datetime(2026-05-01 09:00:00), 'alex', 'Checkout', dynamic({'requestId':'R-1001','retryPolicy':'fast-path','flags':['vip','sample'],'country':'US'}), 138, datetime(2026-05-01 09:02:00), 'bianca', 'Search', dynamic({'requestId':'R-1002','query':'chart zoom','country':'GB'}), 82, datetime(2026-05-01 09:05:00), 'chen', 'Export', dynamic({'requestId':'R-1003','format':'csv','retryPolicy':'none','country':'CA'}), 211]",
+        "expanded": true,
+        "resultsVisible": true,
+        "editorHeightPx": 150,
+        "resultsHeightPx": 380,
+        "resultJson": "{\"columns\":[{\"name\":\"Timestamp\",\"type\":\"datetime\"},{\"name\":\"User\",\"type\":\"string\"},{\"name\":\"Action\",\"type\":\"string\"},{\"name\":\"Details\",\"type\":\"dynamic\"},{\"name\":\"DurationMs\",\"type\":\"long\"}],\"rows\":[[\"2026-05-01T09:00:00Z\",\"alex\",\"Checkout\",{\"isObject\":true,\"display\":\"{...}\",\"full\":{\"requestId\":\"R-1001\",\"retryPolicy\":\"fast-path\",\"flags\":[\"vip\",\"sample\"],\"country\":\"US\"}},138],[\"2026-05-01T09:02:00Z\",\"bianca\",\"Search\",{\"isObject\":true,\"display\":\"{...}\",\"full\":{\"requestId\":\"R-1002\",\"query\":\"chart zoom\",\"country\":\"GB\"}},82],[\"2026-05-01T09:05:00Z\",\"chen\",\"Export\",{\"isObject\":true,\"display\":\"{...}\",\"full\":{\"requestId\":\"R-1003\",\"format\":\"csv\",\"retryPolicy\":\"none\",\"country\":\"CA\"}},211]],\"metadata\":{\"executionTime\":\"00:00:00.055\",\"clientActivityId\":\"did-you-know-results-search\"}}"
+      }
+    ]
+  }
+}

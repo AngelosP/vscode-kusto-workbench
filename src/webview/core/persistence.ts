@@ -47,6 +47,8 @@ let __kustoHasAppliedDocument = false;
 let __kustoLastAppliedDocumentUri = '';
 let __kustoSchemaPrewarmTimer: any = null;
 const __kustoSchemaPrewarmSentKeys = new Set<string>();
+let __kustoHtmlPowerBiCompatibilityTimer: any = null;
+let __kustoHtmlPowerBiCompatibilityRunToken = 0;
 
 // Thin wrapper kept for the window bridge export.
 function __kustoNormalizeClusterUrl(clusterUrl: any) {
@@ -137,6 +139,59 @@ export function __kustoScheduleLocalSchemaPrewarm(reason: string = 'file-open'):
 				});
 			} catch (e) { console.error('[kusto]', e); }
 		}, 80);
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoCancelHtmlPowerBiCompatibilityCheck(): void {
+	try {
+		__kustoHtmlPowerBiCompatibilityRunToken++;
+		if (__kustoHtmlPowerBiCompatibilityTimer) {
+			clearTimeout(__kustoHtmlPowerBiCompatibilityTimer);
+			__kustoHtmlPowerBiCompatibilityTimer = null;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoQueueIdle(callback: () => void): void {
+	try {
+		const requestIdle = (window as any).requestIdleCallback;
+		if (typeof requestIdle === 'function') {
+			requestIdle(() => callback(), { timeout: 500 });
+			return;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try { setTimeout(callback, 25); } catch (e) { console.error('[kusto]', e); }
+}
+
+export function __kustoScheduleHtmlPowerBiCompatibilityCheck(_reason: string = 'document-restore'): void {
+	try {
+		__kustoCancelHtmlPowerBiCompatibilityCheck();
+		const ids = Array.isArray(htmlBoxes) ? htmlBoxes.slice().map((id: any) => String(id || '')).filter(Boolean) : [];
+		if (ids.length === 0) return;
+		const runToken = ++__kustoHtmlPowerBiCompatibilityRunToken;
+		__kustoHtmlPowerBiCompatibilityTimer = setTimeout(() => {
+			__kustoHtmlPowerBiCompatibilityTimer = null;
+			const pending = ids.slice();
+			const processNextBatch = () => {
+				try {
+					if (runToken !== __kustoHtmlPowerBiCompatibilityRunToken) return;
+					const startedAt = Date.now();
+					let processed = 0;
+					while (pending.length > 0 && processed < 2 && Date.now() - startedAt < 12) {
+						const id = pending.shift();
+						const el = id ? document.getElementById(id) as any : null;
+						if (el && typeof el.evaluatePowerBiCompatibilityNotice === 'function') {
+							el.evaluatePowerBiCompatibilityNotice();
+						}
+						processed++;
+					}
+					if (pending.length > 0) {
+						__kustoQueueIdle(processNextBatch);
+					}
+				} catch (e) { console.error('[kusto]', e); }
+			};
+			__kustoQueueIdle(processNextBatch);
+		}, 500);
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -803,6 +858,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 try {
 	window.addEventListener('beforeunload', () => {
 		try {
+			__kustoCancelHtmlPowerBiCompatibilityCheck();
 			if (!__kustoPersistenceEnabled || pState.restoreInProgress) {
 				return;
 			}
@@ -1382,6 +1438,7 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					previewHeightPx: section.previewHeightPx,
 					dataSourceIds: Array.isArray(section.dataSourceIds) ? section.dataSourceIds : undefined,
 					pbiPublishInfo: section.pbiPublishInfo,
+					powerBiUpgradeNotice: section.powerBiUpgradeNotice,
 				};
 				if (section.previewHeightUserSet === true) htmlOptions.previewHeightUserSet = true;
 				addHtmlBox(htmlOptions);
@@ -1525,6 +1582,7 @@ export function handleDocumentDataMessage(message: any) {
 			return;
 		}
 	} catch (e) { console.error('[kusto]', e); }
+	__kustoCancelHtmlPowerBiCompatibilityCheck();
 	__kustoHasAppliedDocument = true;
 	try {
 		if (message && typeof message.documentUri === 'string') {
@@ -1631,6 +1689,7 @@ export function handleDocumentDataMessage(message: any) {
 	// use ensureSchemaForBox because that path owns visible loading state and may call
 	// remote Kusto when no local cache exists.
 	__kustoScheduleLocalSchemaPrewarm('document-restore');
+	__kustoScheduleHtmlPowerBiCompatibilityCheck('document-restore');
 
 	// Persistence remains enabled; edits will persist via event hooks.
 }

@@ -186,6 +186,7 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'toolStateResponse',
 	'openCopilotAgent',
 	'copilotChatFirstTimeCheck',
+	'requestHtmlDashboardUpgradeWithCopilot',
 	'showSectionDiff',
 	'exportDashboard',
 	'getPbiWorkspaces',
@@ -292,6 +293,7 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'openMarkdownPreview',
 	'openCopilotAgent',
 	'copilotChatFirstTimeCheck',
+	'requestHtmlDashboardUpgradeWithCopilot',
 
 	// Section diff
 	'showSectionDiff',

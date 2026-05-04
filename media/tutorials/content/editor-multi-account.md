@@ -4,4 +4,4 @@ Kusto Workbench remembers the Microsoft work account that succeeds for each clus
 
 ![Multi-account cluster selection](images/tip-editor-multi-account.png)
 
-This is easy to miss because the best version of it feels boring: fewer sign-in prompts, fewer accidental account swaps, and less ceremony when a workbook crosses team boundaries.
+To review or change those cached choices, run **Kusto Workbench: Show Cached Values** from the Command Palette. The Cached Values screen lets you inspect and refresh saved Kusto and SQL connection metadata in one place.

@@ -7,6 +7,7 @@ import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { KustoQueryClient } from './kustoClient';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
 import { getPowerBiHtmlValidationIssues, type PowerBiDataSource } from './powerBiExport';
+import { getLegacyDashboardWarnings } from '../shared/htmlDashboardUpgrade';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper to extract tool input from invocation options
@@ -56,23 +57,6 @@ function extractMarkdownSection(source: string, heading: string): string {
 	const rest = source.slice(start + startMatch[0].length);
 	const nextHeading = /^##\s+/m.exec(rest);
 	return source.slice(start, nextHeading ? start + startMatch[0].length + nextHeading.index : source.length).trim();
-}
-
-function getLegacyDashboardWarnings(htmlCode: string): string[] {
-	const warnings: string[] = [];
-	if (/\bbuild(?:Line|Pie|Bar)Chart\b|<svg\s+xmlns/i.test(htmlCode)) {
-		warnings.push('Legacy or manual chart rendering detected. When touching this dashboard, upgrade exportable visuals to provenance chart bindings plus KustoWorkbench.renderChart(bindingId).');
-	}
-	if (/bindHtml\(\s*['"][^'"]*(?:chart|trend|pie|bar|line|by-os|daily)[^'"]*['"]/i.test(htmlCode)) {
-		warnings.push('Potential preview-only chart rendering via bindHtml() detected. Exportable charts should use data-kw-bind targets backed by provenance display specs and KustoWorkbench.renderChart().');
-	}
-	if (/bindHtml\(\s*['"][^'"]*(?:table|tbody|rows|breakdown|status|detail|details)[^'"]*['"]/i.test(htmlCode) || /\.toTable\s*\(/i.test(htmlCode)) {
-		warnings.push('Potential preview-only table rendering detected. Exportable tables and repeated tables, especially visual cells such as stacked status bars, should use provenance table specs plus KustoWorkbench.renderTable(bindingId) or KustoWorkbench.renderRepeatedTable(bindingId).');
-	}
-	if (/document\.getElementById\s*\(|querySelector\(\s*['"]#/i.test(htmlCode)) {
-		warnings.push('ID-based DOM binding detected. Dashboard data values should bind through data-kw-bind plus KustoWorkbench.bind(), renderChart(), renderTable(), or renderRepeatedTable() so Power BI export can resolve them.');
-	}
-	return warnings;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────

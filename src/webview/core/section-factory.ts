@@ -2752,6 +2752,9 @@ export function addHtmlBox(options?: any) {
 	if (options && options.pbiPublishInfo && typeof options.pbiPublishInfo === 'object') {
 		litEl.setPbiPublishInfo(options.pbiPublishInfo);
 	}
+	if (options && options.powerBiUpgradeNotice && typeof options.powerBiUpgradeNotice === 'object') {
+		litEl.setPowerBiUpgradeNotice(options.powerBiUpgradeNotice);
+	}
 
 	const afterBoxId = (options && typeof options.afterBoxId === 'string') ? String(options.afterBoxId) : '';
 	const afterEl = afterBoxId ? document.getElementById(afterBoxId) : null;

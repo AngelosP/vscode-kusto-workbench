@@ -1,15 +1,12 @@
-import { existsSync, readFileSync } from 'node:fs';
-import { dirname, join, normalize } from 'node:path';
+import { existsSync, readFileSync, statSync } from 'node:fs';
+import { dirname, isAbsolute, join, normalize, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
 const catalogPath = join(root, 'media', 'tutorials', 'catalog.v1.json');
-const allowedCommands = new Set([
-	'kusto.openQueryEditor',
-	'kusto.manageConnections',
-	'kusto.openCustomAgent',
-]);
+const tutorialsRoot = dirname(catalogPath);
+const maxImageBytes = 3 * 1024 * 1024;
 
 const errors = [];
 
@@ -45,11 +42,43 @@ function isAllowedRemoteUrl(value) {
 	}
 }
 
+function isInside(parent, child) {
+	const rel = relative(parent, child);
+	return !!rel && !rel.startsWith('..') && !isAbsolute(rel);
+}
+
+function validateMarkdownImageReferences(markdown, contentPath, tutorialId) {
+	const imagePattern = /!\[[^\]]*\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+	for (const match of markdown.matchAll(imagePattern)) {
+		const imageRef = match[1].trim();
+		if (/^https?:\/\//i.test(imageRef)) {
+			if (!isAllowedRemoteUrl(imageRef)) fail(`tutorial ${tutorialId} image URL must be HTTPS GitHub-hosted: ${imageRef}`);
+			continue;
+		}
+		if (!isSafeContentUrl(imageRef)) {
+			fail(`tutorial ${tutorialId} has unsafe image path ${imageRef}`);
+			continue;
+		}
+		const imagePath = normalize(join(dirname(contentPath), imageRef));
+		if (!isInside(dirname(contentPath), imagePath)) {
+			fail(`tutorial ${tutorialId} image escapes content directory: ${imageRef}`);
+			continue;
+		}
+		if (!existsSync(imagePath)) {
+			fail(`tutorial ${tutorialId} image does not exist: ${imageRef}`);
+			continue;
+		}
+		if (statSync(imagePath).size > maxImageBytes) {
+			fail(`tutorial ${tutorialId} image exceeds 3 MB: ${imageRef}`);
+		}
+	}
+}
+
 const catalog = JSON.parse(readFileSync(catalogPath, 'utf8'));
 if (catalog.schemaVersion !== 1) fail('schemaVersion must be 1');
 requireString(catalog.generatedAt, 'generatedAt');
 if (!Array.isArray(catalog.categories)) fail('categories must be an array');
-if (!Array.isArray(catalog.tutorials)) fail('tutorials must be an array');
+if (!Array.isArray(catalog.content)) fail('content must be an array');
 
 const categoryIds = new Set();
 for (const [index, category] of (catalog.categories || []).entries()) {
@@ -60,14 +89,12 @@ for (const [index, category] of (catalog.categories || []).entries()) {
 }
 
 const tutorialIds = new Set();
-for (const [index, tutorial] of (catalog.tutorials || []).entries()) {
-	const id = requireString(tutorial?.id, `tutorials[${index}].id`);
-	const categoryId = requireString(tutorial?.categoryId, `tutorials[${index}].categoryId`);
-	const contentUrl = requireString(tutorial?.contentUrl, `tutorials[${index}].contentUrl`);
-	requireString(tutorial?.title, `tutorials[${index}].title`);
-	requireString(tutorial?.summary, `tutorials[${index}].summary`);
-	const minExtensionVersion = requireString(tutorial?.minExtensionVersion, `tutorials[${index}].minExtensionVersion`);
-	requireString(tutorial?.updateToken, `tutorials[${index}].updateToken`);
+for (const [index, tutorial] of (catalog.content || []).entries()) {
+	const id = requireString(tutorial?.id, `content[${index}].id`);
+	const categoryId = requireString(tutorial?.categoryId, `content[${index}].categoryId`);
+	const contentUrl = requireString(tutorial?.contentUrl, `content[${index}].contentUrl`);
+	const minExtensionVersion = requireString(tutorial?.minExtensionVersion, `content[${index}].minExtensionVersion`);
+	requireString(tutorial?.updateToken, `content[${index}].updateToken`);
 	if (tutorialIds.has(id)) fail(`duplicate tutorial id ${id}`);
 	tutorialIds.add(id);
 	if (!categoryIds.has(categoryId)) fail(`tutorial ${id} references unknown category ${categoryId}`);
@@ -76,13 +103,14 @@ for (const [index, tutorial] of (catalog.tutorials || []).entries()) {
 	if (/^https?:\/\//i.test(contentUrl)) {
 		if (!isAllowedRemoteUrl(contentUrl)) fail(`tutorial ${id} remote contentUrl must be HTTPS GitHub-hosted: ${contentUrl}`);
 	} else {
-		const localPath = normalize(join(dirname(catalogPath), contentUrl));
-		if (!localPath.startsWith(normalize(dirname(catalogPath)))) fail(`tutorial ${id} content escapes media/tutorials`);
+		const localPath = normalize(join(tutorialsRoot, contentUrl));
+		if (!isInside(tutorialsRoot, localPath)) fail(`tutorial ${id} content escapes media/tutorials`);
 		if (!existsSync(localPath)) fail(`tutorial ${id} content file does not exist: ${contentUrl}`);
-	}
-	for (const [actionIndex, action] of (tutorial.actions || []).entries()) {
-		const command = requireString(action?.command, `tutorials[${index}].actions[${actionIndex}].command`);
-		if (!allowedCommands.has(command)) fail(`tutorial ${id} uses blocked command ${command}`);
+		else {
+			const markdown = readFileSync(localPath, 'utf8');
+			if (!/^#\s+\S/.test(markdown)) fail(`tutorial ${id} content file must start with a top-level heading`);
+			validateMarkdownImageReferences(markdown, localPath, id);
+		}
 	}
 }
 
@@ -92,4 +120,4 @@ if (errors.length) {
 	process.exit(1);
 }
 
-console.log(`Tutorial catalog OK: ${catalog.tutorials.length} tutorials in ${catalog.categories.length} categories.`);
+console.log(`Tutorial catalog OK: ${catalog.content.length} content items in ${catalog.categories.length} categories.`);

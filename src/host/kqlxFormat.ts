@@ -1,3 +1,5 @@
+import type { PowerBiUpgradeNoticeState } from '../shared/htmlDashboardUpgrade';
+
 export type KqlxVersion = 1;
 
 /** Power BI publish metadata stored per HTML section after first publish. */
@@ -210,6 +212,8 @@ export type KqlxSectionV1 =
 			dataSourceIds?: string[];
 			/** Power BI publish metadata — present after first successful publish. */
 			pbiPublishInfo?: PbiPublishInfo;
+			/** Per-section user dismissal state for Power BI export compatibility notices. */
+			powerBiUpgradeNotice?: PowerBiUpgradeNoticeState;
 		}
 	| {
 			id?: string;
