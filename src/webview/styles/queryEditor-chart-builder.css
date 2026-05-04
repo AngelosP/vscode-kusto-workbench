@@ -1481,6 +1481,30 @@
 			position: relative;
 		}
 
+		.kusto-chart-zoom-drag-overlay {
+			position: absolute;
+			inset: 0 -12px -13px -12px;
+			z-index: 18;
+			cursor: crosshair;
+			pointer-events: auto;
+		}
+
+		.kusto-chart-zoom-drag-overlay[hidden] {
+			display: none !important;
+		}
+
+		.kusto-chart-zoom-drag-rect {
+			position: absolute;
+			border: 1px solid color-mix(in srgb, var(--vscode-focusBorder) 70%, transparent);
+			background: rgba(127, 127, 127, 0.18);
+			box-sizing: border-box;
+			pointer-events: none;
+		}
+
+		.kusto-chart-zoom-drag-rect[hidden] {
+			display: none !important;
+		}
+
 		.kusto-chart-floating-zoom-controls {
 			position: absolute;
 			top: 8px;

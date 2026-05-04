@@ -33,6 +33,7 @@ describe('chart-renderer zoom/pan controls', () => {
 	let setOption: ReturnType<typeof vi.fn>;
 	let instance: Record<string, any>;
 	let viewportRoot: HTMLElement | null;
+	let gridRect: { x: number; y: number; width: number; height: number };
 
 	beforeEach(() => {
 		document.body.innerHTML = '';
@@ -51,6 +52,7 @@ describe('chart-renderer zoom/pan controls', () => {
 
 		setOption = vi.fn();
 		viewportRoot = null;
+		gridRect = { x: 80, y: 40, width: 500, height: 260 };
 		for (const mock of Object.values(tooltipMocks)) mock.mockClear();
 		instance = {
 			dispose: vi.fn(),
@@ -61,6 +63,14 @@ describe('chart-renderer zoom/pan controls', () => {
 			resize: vi.fn(),
 			setOption,
 		};
+		instance.getModel = vi.fn(() => ({
+			getComponent: vi.fn(() => ({
+				coordinateSystem: {
+					getRect: () => ({ ...gridRect }),
+					getCartesians: () => [{ pointToData: ([x, y]: number[]) => [x, y] }],
+				},
+			})),
+		}));
 		(window as any).echarts = {
 			init: vi.fn((dom: HTMLElement) => {
 				viewportRoot = document.createElement('div');
@@ -97,6 +107,15 @@ describe('chart-renderer zoom/pan controls', () => {
 	}
 
 	function addZoomControls(id: string, editContainer: HTMLElement): void {
+		const overlay = document.createElement('div');
+		overlay.id = `${id}_chart_zoom_drag_overlay`;
+		overlay.hidden = true;
+		const rect = document.createElement('div');
+		rect.className = 'kusto-chart-zoom-drag-rect';
+		rect.hidden = true;
+		overlay.appendChild(rect);
+		editContainer.appendChild(overlay);
+
 		const controls = document.createElement('div');
 		controls.id = `${id}_chart_zoom_controls`;
 		controls.hidden = true;
@@ -179,11 +198,17 @@ describe('chart-renderer zoom/pan controls', () => {
 		return document.getElementById(`${id}_chart_zoom_hint`) as HTMLElement;
 	}
 
-	function createPointerEvent(type: string, pointerId: number, button = 0): PointerEvent {
+	function getDragOverlay(id: string): HTMLElement {
+		return document.getElementById(`${id}_chart_zoom_drag_overlay`) as HTMLElement;
+	}
+
+	function createPointerEvent(type: string, pointerId: number, button = 0, point: { clientX: number; clientY: number } = { clientX: 0, clientY: 0 }): PointerEvent {
 		const event = new Event(type, { bubbles: true, cancelable: true }) as PointerEvent;
 		Object.defineProperty(event, 'pointerId', { value: pointerId });
 		Object.defineProperty(event, 'button', { value: button });
 		Object.defineProperty(event, 'isPrimary', { value: true });
+		Object.defineProperty(event, 'clientX', { value: point.clientX });
+		Object.defineProperty(event, 'clientY', { value: point.clientY });
 		return event;
 	}
 
@@ -230,6 +255,17 @@ describe('chart-renderer zoom/pan controls', () => {
 		expect(controls.controls.hidden).toBe(true);
 	});
 
+	it('positions floating controls below chart title and subtitle', () => {
+		const scenario = renderScenario('line', {
+			legendColumn: 'Category',
+			chartTitle: 'Request volume',
+			chartSubtitle: 'Last 30 days',
+		});
+		const controls = getControls(scenario.id);
+
+		expect(controls.controls.style.top).toBe('56px');
+	});
+
 	it('activates ECharts rectangle zoom selection from the floating Zoom button', () => {
 		const scenario = renderScenario('line', { legendColumn: 'Category' });
 		const controls = getControls(scenario.id);
@@ -243,6 +279,29 @@ describe('chart-renderer zoom/pan controls', () => {
 		});
 		expect(scenario.state.__zoomPanSelectActive).toBe(true);
 		expect(controls.zoom.classList.contains('is-active')).toBe(true);
+		expect(getDragOverlay(scenario.id).hidden).toBe(false);
+	});
+
+	it('lets rectangle zoom start from chart background outside the ECharts grid', () => {
+		const scenario = renderScenario('line', { legendColumn: 'Category' });
+		const controls = getControls(scenario.id);
+		const overlay = getDragOverlay(scenario.id);
+
+		controls.zoom.click();
+		instance.dispatchAction.mockClear();
+
+		overlay.dispatchEvent(createPointerEvent('pointerdown', 43, 0, { clientX: 20, clientY: 20 }));
+		overlay.dispatchEvent(createPointerEvent('pointermove', 43, 0, { clientX: 320, clientY: 220 }));
+		overlay.dispatchEvent(createPointerEvent('pointerup', 43, 0, { clientX: 320, clientY: 220 }));
+
+		expect(instance.dispatchAction).toHaveBeenCalledWith({
+			type: 'dataZoom',
+			batch: [
+				{ dataZoomIndex: 0, startValue: 80, endValue: 320 },
+				{ dataZoomIndex: 1, startValue: 40, endValue: 220 },
+			],
+		});
+		expect(overlay.querySelector('.kusto-chart-zoom-drag-rect')?.hasAttribute('hidden')).toBe(true);
 	});
 
 	it('captures chart pointer release while rectangle zoom selection is active', () => {

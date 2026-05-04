@@ -285,6 +285,17 @@ export class KwChartSection extends LitElement implements SectionElement {
 		canvasEdit.style.flex = '1 1 auto';
 		editContainer.appendChild(canvasEdit);
 
+		const zoomDragOverlay = document.createElement('div');
+		zoomDragOverlay.id = id + '_chart_zoom_drag_overlay';
+		zoomDragOverlay.className = 'kusto-chart-zoom-drag-overlay';
+		zoomDragOverlay.hidden = true;
+		const zoomDragRect = document.createElement('div');
+		zoomDragRect.id = id + '_chart_zoom_drag_rect';
+		zoomDragRect.className = 'kusto-chart-zoom-drag-rect';
+		zoomDragRect.hidden = true;
+		zoomDragOverlay.appendChild(zoomDragRect);
+		editContainer.appendChild(zoomDragOverlay);
+
 		const zoomControls = document.createElement('div');
 		zoomControls.id = id + '_chart_zoom_controls';
 		zoomControls.className = 'kusto-chart-floating-zoom-controls';

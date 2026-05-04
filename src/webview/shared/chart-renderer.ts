@@ -220,6 +220,11 @@ function isZoomPanSupportedChartType(chartType: any): boolean {
 	return chartType === 'scatter' || chartType === 'line' || chartType === 'area' || chartType === 'bar';
 }
 
+const ZOOM_PAN_MIN_DRAG_PX = 6;
+
+type ZoomPanPoint = { x: number; y: number };
+type ZoomPanRect = { x: number; y: number; width: number; height: number };
+
 function buildZoomPanOptions(chartType: any): Record<string, any> {
 	if (!isZoomPanSupportedChartType(chartType)) return {};
 	return {
@@ -297,6 +302,7 @@ function clearZoomPanViewport(st: any): void {
 	try {
 		if (!st) return;
 		releaseZoomPanPointerCapture(st);
+		uninstallZoomPanDragOverlay(st);
 		delete st.__zoomPanViewport;
 		delete st.__zoomPanViewportSignature;
 		delete st.__zoomPanUndoStack;
@@ -313,6 +319,303 @@ function cloneZoomPanViewport(viewport: any[] | null): any[] | null {
 		return Array.isArray(viewport) ? viewport.map((entry: any) => ({ ...entry })) : null;
 	} catch (e) { console.error('[kusto]', e); }
 	return null;
+}
+
+function getZoomPanChartDom(inst: any): HTMLElement | null {
+	try {
+		const dom = inst && typeof inst.getDom === 'function' ? inst.getDom() : null;
+		return dom instanceof HTMLElement ? dom : null;
+	} catch (e) { console.error('[kusto]', e); }
+	return null;
+}
+
+function getZoomPanCartesian(inst: any): any | null {
+	try {
+		const model = inst && typeof inst.getModel === 'function' ? inst.getModel() : null;
+		const gridModel = model && typeof model.getComponent === 'function' ? model.getComponent('grid', 0) : null;
+		const grid = gridModel && gridModel.coordinateSystem ? gridModel.coordinateSystem : null;
+		const cartesians = grid && typeof grid.getCartesians === 'function' ? grid.getCartesians() : null;
+		if (Array.isArray(cartesians) && cartesians[0]) return cartesians[0];
+		if (grid && typeof grid.pointToData === 'function') return grid;
+	} catch (e) { console.error('[kusto]', e); }
+	return null;
+}
+
+function parseZoomPanGridMargin(value: any, total: number, fallback: number): number {
+	if (typeof value === 'number' && Number.isFinite(value)) return value;
+	if (typeof value === 'string') {
+		const trimmed = value.trim();
+		if (trimmed.endsWith('%')) {
+			const percent = Number.parseFloat(trimmed.slice(0, -1));
+			if (Number.isFinite(percent)) return total * percent / 100;
+		}
+		const numeric = Number.parseFloat(trimmed);
+		if (Number.isFinite(numeric)) return numeric;
+	}
+	return fallback;
+}
+
+function getZoomPanGridRect(inst: any): ZoomPanRect | null {
+	try {
+		const model = inst && typeof inst.getModel === 'function' ? inst.getModel() : null;
+		const gridModel = model && typeof model.getComponent === 'function' ? model.getComponent('grid', 0) : null;
+		const grid = gridModel && gridModel.coordinateSystem ? gridModel.coordinateSystem : null;
+		const rect = grid && typeof grid.getRect === 'function' ? grid.getRect() : null;
+		if (rect && Number.isFinite(rect.x) && Number.isFinite(rect.y) && Number.isFinite(rect.width) && Number.isFinite(rect.height)) {
+			return { x: rect.x, y: rect.y, width: rect.width, height: rect.height };
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	try {
+		const dom = getZoomPanChartDom(inst);
+		if (!dom) return null;
+		const domRect = dom.getBoundingClientRect();
+		const width = dom.clientWidth || domRect.width;
+		const height = dom.clientHeight || domRect.height;
+		if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) return null;
+		const option = inst && typeof inst.getOption === 'function' ? inst.getOption() : null;
+		const gridOption = option && (Array.isArray(option.grid) ? option.grid[0] : option.grid);
+		if (gridOption && typeof gridOption === 'object') {
+			const left = parseZoomPanGridMargin(gridOption.left, width, 0);
+			const right = parseZoomPanGridMargin(gridOption.right, width, 0);
+			const top = parseZoomPanGridMargin(gridOption.top, height, 0);
+			const bottom = parseZoomPanGridMargin(gridOption.bottom, height, 0);
+			return {
+				x: left,
+				y: top,
+				width: Math.max(0, width - left - right),
+				height: Math.max(0, height - top - bottom),
+			};
+		}
+		return { x: 0, y: 0, width, height };
+	} catch (e) { console.error('[kusto]', e); }
+	return null;
+}
+
+function clampZoomPanPointToRect(point: ZoomPanPoint, rect: ZoomPanRect): ZoomPanPoint {
+	return {
+		x: Math.max(rect.x, Math.min(rect.x + rect.width, point.x)),
+		y: Math.max(rect.y, Math.min(rect.y + rect.height, point.y)),
+	};
+}
+
+function getZoomPanPointFromEvent(event: PointerEvent, inst: any): ZoomPanPoint | null {
+	try {
+		const dom = getZoomPanChartDom(inst);
+		if (!dom) return null;
+		const rect = dom.getBoundingClientRect();
+		const eventLike = event as any;
+		const clientX = typeof eventLike.clientX === 'number' ? eventLike.clientX
+			: (typeof eventLike.offsetX === 'number' ? rect.left + eventLike.offsetX : NaN);
+		const clientY = typeof eventLike.clientY === 'number' ? eventLike.clientY
+			: (typeof eventLike.offsetY === 'number' ? rect.top + eventLike.offsetY : NaN);
+		if (!Number.isFinite(clientX) || !Number.isFinite(clientY)) return null;
+		return { x: clientX - rect.left, y: clientY - rect.top };
+	} catch (e) { console.error('[kusto]', e); }
+	return null;
+}
+
+function getZoomPanDataPoint(inst: any, point: ZoomPanPoint): any[] | null {
+	try {
+		const cartesian = getZoomPanCartesian(inst);
+		if (cartesian && typeof cartesian.pointToData === 'function') {
+			const value = cartesian.pointToData([point.x, point.y], true);
+			return Array.isArray(value) && value.length >= 2 ? value : null;
+		}
+		if (inst && typeof inst.convertFromPixel === 'function') {
+			const value = inst.convertFromPixel({ xAxisIndex: 0, yAxisIndex: 0 }, [point.x, point.y]);
+			return Array.isArray(value) && value.length >= 2 ? value : null;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	return null;
+}
+
+function formatZoomPanDataRange(a: any, b: any): [any, any] {
+	return a > b ? [b, a] : [a, b];
+}
+
+function isUsableZoomPanDataValue(value: any): boolean {
+	return value !== undefined && value !== null && !(typeof value === 'number' && !Number.isFinite(value));
+}
+
+function hideZoomPanDragRect(overlay: HTMLElement): void {
+	try {
+		const rectEl = overlay.querySelector('.kusto-chart-zoom-drag-rect') as HTMLElement | null;
+		if (!rectEl) return;
+		rectEl.hidden = true;
+		rectEl.style.left = '';
+		rectEl.style.top = '';
+		rectEl.style.width = '';
+		rectEl.style.height = '';
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function updateZoomPanDragRect(overlay: HTMLElement, inst: any, startPoint: ZoomPanPoint, currentPoint: ZoomPanPoint): void {
+	try {
+		const rectEl = overlay.querySelector('.kusto-chart-zoom-drag-rect') as HTMLElement | null;
+		const gridRect = getZoomPanGridRect(inst);
+		const chartDom = getZoomPanChartDom(inst);
+		if (!rectEl || !gridRect || !chartDom) return;
+		const start = clampZoomPanPointToRect(startPoint, gridRect);
+		const current = clampZoomPanPointToRect(currentPoint, gridRect);
+		const x = Math.min(start.x, current.x);
+		const y = Math.min(start.y, current.y);
+		const width = Math.abs(current.x - start.x);
+		const height = Math.abs(current.y - start.y);
+		if (width < 1 || height < 1) {
+			rectEl.hidden = true;
+			return;
+		}
+		const chartRect = chartDom.getBoundingClientRect();
+		const overlayRect = overlay.getBoundingClientRect();
+		rectEl.hidden = false;
+		rectEl.style.left = `${chartRect.left - overlayRect.left + x}px`;
+		rectEl.style.top = `${chartRect.top - overlayRect.top + y}px`;
+		rectEl.style.width = `${width}px`;
+		rectEl.style.height = `${height}px`;
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function dispatchZoomPanOverlaySelection(st: any, inst: any, startPoint: ZoomPanPoint, endPoint: ZoomPanPoint): boolean {
+	try {
+		if (!st || !inst || typeof inst.dispatchAction !== 'function') return false;
+		const gridRect = getZoomPanGridRect(inst);
+		if (!gridRect) return false;
+		const start = clampZoomPanPointToRect(startPoint, gridRect);
+		const end = clampZoomPanPointToRect(endPoint, gridRect);
+		if (Math.abs(end.x - start.x) < ZOOM_PAN_MIN_DRAG_PX || Math.abs(end.y - start.y) < ZOOM_PAN_MIN_DRAG_PX) return false;
+		const startData = getZoomPanDataPoint(inst, start);
+		const endData = getZoomPanDataPoint(inst, end);
+		if (!startData || !endData) return false;
+		if (!isUsableZoomPanDataValue(startData[0]) || !isUsableZoomPanDataValue(endData[0])
+			|| !isUsableZoomPanDataValue(startData[1]) || !isUsableZoomPanDataValue(endData[1])) {
+			return false;
+		}
+		const xRange = formatZoomPanDataRange(startData[0], endData[0]);
+		const yRange = formatZoomPanDataRange(startData[1], endData[1]);
+		inst.dispatchAction({
+			type: 'dataZoom',
+			batch: [
+				{ dataZoomIndex: 0, startValue: xRange[0], endValue: xRange[1] },
+				{ dataZoomIndex: 1, startValue: yRange[0], endValue: yRange[1] },
+			],
+		});
+		return true;
+	} catch (e) { console.error('[kusto]', e); }
+	return false;
+}
+
+function setZoomPanDragOverlayActive(st: any, active: boolean): void {
+	try {
+		const overlay = st && st.__zoomPanDragOverlayElement instanceof HTMLElement ? st.__zoomPanDragOverlayElement : null;
+		if (!overlay) return;
+		overlay.hidden = !active;
+		if (!active) hideZoomPanDragRect(overlay);
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function uninstallZoomPanDragOverlay(st: any): void {
+	try {
+		if (!st) return;
+		const cleanup = st.__zoomPanDragOverlayCleanup;
+		if (typeof cleanup === 'function') {
+			try { cleanup(); } catch (e) { console.error('[kusto]', e); }
+		}
+		setZoomPanDragOverlayActive(st, false);
+		delete st.__zoomPanDragOverlayCleanup;
+		delete st.__zoomPanDragOverlayElement;
+		delete st.__zoomPanDragOverlayInstance;
+		delete st.__zoomPanDragOverlaySignature;
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function installZoomPanDragOverlay(boxId: string, st: any, inst: any, chartType: any, signature: string): void {
+	try {
+		if (!st || !inst || !isZoomPanSupportedChartType(chartType)) return;
+		const overlay = document.getElementById(boxId + '_chart_zoom_drag_overlay') as HTMLElement | null;
+		if (!overlay) return;
+		if (st.__zoomPanDragOverlayElement === overlay && st.__zoomPanDragOverlayInstance === inst && st.__zoomPanDragOverlaySignature === signature) return;
+		uninstallZoomPanDragOverlay(st);
+
+		let dragStart: ZoomPanPoint | null = null;
+		let capturedPointerId: number | null = null;
+
+		const releaseCapture = () => {
+			try {
+				if (capturedPointerId !== null && typeof overlay.releasePointerCapture === 'function'
+					&& (typeof overlay.hasPointerCapture !== 'function' || overlay.hasPointerCapture(capturedPointerId))) {
+					overlay.releasePointerCapture(capturedPointerId);
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			capturedPointerId = null;
+		};
+
+		const finishDrag = (event: PointerEvent, commit: boolean) => {
+			try {
+				if (!dragStart) return;
+				event.preventDefault();
+				event.stopPropagation();
+				const dragEnd = getZoomPanPointFromEvent(event, inst);
+				hideZoomPanDragRect(overlay);
+				if (commit && dragEnd && st.__zoomPanSelectActive === true && st.__zoomPanSelectSignature === signature) {
+					const dispatched = dispatchZoomPanOverlaySelection(st, inst, dragStart, dragEnd);
+					if (!dispatched) {
+						deactivateZoomPanSelect(st, inst);
+						syncZoomPanControls(boxId, st, chartType, inst, signature);
+					}
+				} else {
+					deactivateZoomPanSelect(st, inst);
+					syncZoomPanControls(boxId, st, chartType, inst, signature);
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			finally {
+				dragStart = null;
+				releaseCapture();
+			}
+		};
+
+		const onPointerDown = (event: PointerEvent) => {
+			try {
+				if (st.__zoomPanSelectActive !== true) return;
+				if (event.isPrimary === false || (typeof event.button === 'number' && event.button !== 0)) return;
+				const point = getZoomPanPointFromEvent(event, inst);
+				if (!point) return;
+				event.preventDefault();
+				event.stopPropagation();
+				dragStart = point;
+				capturedPointerId = event.pointerId;
+				try { if (typeof overlay.setPointerCapture === 'function') overlay.setPointerCapture(event.pointerId); } catch (e) { console.error('[kusto]', e); }
+				updateZoomPanDragRect(overlay, inst, dragStart, point);
+			} catch (e) { console.error('[kusto]', e); }
+		};
+		const onPointerMove = (event: PointerEvent) => {
+			try {
+				if (!dragStart) return;
+				const point = getZoomPanPointFromEvent(event, inst);
+				if (!point) return;
+				event.preventDefault();
+				event.stopPropagation();
+				updateZoomPanDragRect(overlay, inst, dragStart, point);
+			} catch (e) { console.error('[kusto]', e); }
+		};
+		const onPointerUp = (event: PointerEvent) => finishDrag(event, true);
+		const onPointerCancel = (event: PointerEvent) => finishDrag(event, false);
+
+		overlay.addEventListener('pointerdown', onPointerDown);
+		overlay.addEventListener('pointermove', onPointerMove);
+		overlay.addEventListener('pointerup', onPointerUp);
+		overlay.addEventListener('pointercancel', onPointerCancel);
+		st.__zoomPanDragOverlayElement = overlay;
+		st.__zoomPanDragOverlayInstance = inst;
+		st.__zoomPanDragOverlaySignature = signature;
+		st.__zoomPanDragOverlayCleanup = () => {
+			overlay.removeEventListener('pointerdown', onPointerDown);
+			overlay.removeEventListener('pointermove', onPointerMove);
+			overlay.removeEventListener('pointerup', onPointerUp);
+			overlay.removeEventListener('pointercancel', onPointerCancel);
+			releaseCapture();
+		};
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 function setZoomPanHoverSuppressed(boxId: string, st: any, inst: any, suppressed: boolean): void {
@@ -340,6 +643,18 @@ function setZoomPanHoverSuppressed(boxId: string, st: any, inst: any, suppressed
 	} catch (e) { console.error('[kusto]', e); }
 }
 
+function getZoomPanControlsTop(st: any): number {
+	try {
+		const chartTitle = (typeof st?.chartTitle === 'string') ? st.chartTitle.trim() : '';
+		const chartSubtitle = (typeof st?.chartSubtitle === 'string') ? st.chartSubtitle.trim() : '';
+		const titleHeight = chartTitle ? 24 : 0;
+		const subtitleHeight = chartSubtitle ? 18 : 0;
+		const titleSpace = titleHeight + subtitleHeight + ((chartTitle || chartSubtitle) ? 6 : 0);
+		return 8 + titleSpace;
+	} catch (e) { console.error('[kusto]', e); }
+	return 8;
+}
+
 function syncZoomPanControls(boxId: string, st: any, chartType: any, inst: any, signature: string): void {
 	try {
 		const controls = document.getElementById(boxId + '_chart_zoom_controls') as HTMLElement | null;
@@ -350,10 +665,14 @@ function syncZoomPanControls(boxId: string, st: any, chartType: any, inst: any, 
 		if (!show) {
 			deactivateZoomPanSelect(st, inst);
 			uninstallZoomPanPointerCaptureBridge(st);
+			uninstallZoomPanDragOverlay(st);
 		} else {
 			installZoomPanPointerCaptureBridge(st, inst);
+			installZoomPanDragOverlay(boxId, st, inst, chartType, signature);
 			if (st.__zoomPanSelectActive === true) setZoomPanHoverSuppressed(boxId, st, inst, true);
 		}
+		setZoomPanDragOverlayActive(st, show && st.__zoomPanSelectActive === true);
+		controls.style.top = `${getZoomPanControlsTop(st)}px`;
 		controls.hidden = !show;
 		if (zoomButton) {
 			zoomButton.disabled = !show;
@@ -469,6 +788,7 @@ function setZoomPanSelectActive(st: any, inst: any, active: boolean): void {
 		if (st) st.__zoomPanSelectActive = active;
 		if (!active) {
 			releaseZoomPanPointerCapture(st);
+			setZoomPanDragOverlayActive(st, false);
 			setZoomPanHoverSuppressed('', st, inst, false);
 		}
 	} catch (e) { console.error('[kusto]', e); }
