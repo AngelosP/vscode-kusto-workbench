@@ -19,10 +19,12 @@ import { registerRemoteFileOpener } from './remoteFileOpener';
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { exportSkillCommand, checkAndUpdateSkillFiles } from './skillExport';
 import { TutorialCatalogService } from './tutorials/tutorialCatalogService';
-import { TutorialNotificationService } from './tutorials/tutorialNotificationService';
+import { isKustoTutorialTriggerDocument, isKustoTutorialTriggerUri, TutorialNotificationService } from './tutorials/tutorialNotificationService';
 import { registerTutorialNotificationTriggers } from './tutorials/tutorialNotificationTriggers';
 import { TutorialSubscriptionService } from './tutorials/tutorialSubscriptionService';
-import { TutorialViewerPanel } from './tutorials/tutorialViewerPanel';
+import { TutorialViewerPanel, resolveTutorialsEnabledConfigurationTarget } from './tutorials/tutorialViewerPanel';
+import { resetDidYouKnowDevelopmentState } from './tutorials/tutorialDevelopmentState';
+import { EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
 import type { TutorialViewerMode } from '../shared/tutorials/tutorialCatalog';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
 
@@ -34,6 +36,8 @@ export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
+	void vscode.commands.executeCommand('setContext', 'kustoWorkbench.devMode', context.extensionMode !== vscode.ExtensionMode.Production);
+
 	// Configure editor associations for .kql and .csl files based on settings
 	const updateEditorAssociations = async (): Promise<void> => {
 		try {
@@ -113,8 +117,68 @@ export function activate(context: vscode.ExtensionContext) {
 	const openTutorials = async (selectedCategoryId?: string, preferredMode: TutorialViewerMode = 'standard'): Promise<void> => {
 		TutorialViewerPanel.open(context, context.extensionUri, tutorialCatalogService, tutorialSubscriptionService, { selectedCategoryId, preferredMode });
 	};
-	const tutorialNotificationService = new TutorialNotificationService(context, tutorialCatalogService, tutorialSubscriptionService, openTutorials);
+	const openTutorialPopup = async (selectedCategoryId?: string, preferredMode: TutorialViewerMode = 'standard', triggerDocument?: vscode.TextDocument): Promise<boolean> => {
+		if (triggerDocument) {
+			return await EmbeddedTutorialWebviewRegistry.showForDocument(triggerDocument.uri.toString(), {
+				context,
+				catalogService: tutorialCatalogService,
+				subscriptionService: tutorialSubscriptionService,
+			}, { selectedCategoryId, preferredMode });
+		}
+		await openTutorials(selectedCategoryId, preferredMode);
+		return true;
+	};
+	const tutorialNotificationService = new TutorialNotificationService(context, tutorialCatalogService, tutorialSubscriptionService, openTutorialPopup);
 	registerTutorialNotificationTriggers(context, tutorialNotificationService);
+	if (context.extensionMode !== vscode.ExtensionMode.Production) {
+		const resetDidYouKnowState = async (options?: { openIfKustoFileOpen?: boolean; silent?: boolean }) => {
+			const configuration = vscode.workspace.getConfiguration('kustoWorkbench');
+			const configurationTarget = resolveTutorialsEnabledConfigurationTarget(
+				configuration.inspect<boolean>('didYouKnow.enabled'),
+				(vscode.workspace.workspaceFolders?.length ?? 0) > 0,
+			);
+			await configuration.update('didYouKnow.enabled', true, configurationTarget);
+
+			const result = await resetDidYouKnowDevelopmentState(context, tutorialCatalogService);
+			tutorialNotificationService.reloadPendingPopups();
+
+			const activeDocument = vscode.window.activeTextEditor?.document;
+			const activeTabInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+			const activeTabUri = activeTabInput instanceof vscode.TabInputText || activeTabInput instanceof vscode.TabInputCustom
+				? activeTabInput.uri
+				: undefined;
+			const activeTabDocument = activeTabUri !== undefined && isKustoTutorialTriggerUri(activeTabUri)
+				? await vscode.workspace.openTextDocument(activeTabUri)
+				: undefined;
+			let triggerDocument: vscode.TextDocument | undefined;
+			if (activeDocument !== undefined && isKustoTutorialTriggerDocument(activeDocument)) {
+				triggerDocument = activeDocument;
+			} else if (activeTabDocument !== undefined) {
+				triggerDocument = activeTabDocument;
+			} else {
+				triggerDocument = vscode.workspace.textDocuments.find(doc => isKustoTutorialTriggerDocument(doc));
+			}
+			const openedCompact = options?.openIfKustoFileOpen === true && triggerDocument !== undefined;
+			if (openedCompact) {
+				await tutorialNotificationService.checkOnKustoFileOpen(triggerDocument);
+			}
+
+			if (options?.silent !== true) {
+				void vscode.window.showInformationMessage(
+					`Reset Did you know state: ${result.contentCount} unread item${result.contentCount === 1 ? '' : 's'} across ${result.categoryCount} categor${result.categoryCount === 1 ? 'y' : 'ies'}.`,
+				);
+			}
+			return { ...result, openedCompact };
+		};
+
+		context.subscriptions.push(
+			vscode.commands.registerCommand('kustoWorkbench.test.resetDidYouKnowState', resetDidYouKnowState),
+			vscode.commands.registerCommand('kustoWorkbench.dev.resetDidYouKnowState', async () => {
+				const result = await resetDidYouKnowState({ silent: false });
+				return result;
+			}),
+		);
+	}
 
 	// Shared SQL lazy-init (used by both editor provider and connection manager viewer)
 	let _sqlConnectionManager: SqlConnectionManager | undefined;

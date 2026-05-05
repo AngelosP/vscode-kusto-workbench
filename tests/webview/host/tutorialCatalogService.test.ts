@@ -115,10 +115,10 @@ describe('TutorialCatalogService', () => {
 		expect(cachedContent.markdown).toContain('Downloaded tutorial');
 	});
 
-	it('loads the local media/tutorials catalog and content while running in extension development mode', async () => {
+	it('loads the local media/tutorials catalog and content while running in non-production extension modes', async () => {
 		const fetchMock = vi.fn(async () => new Response('', { status: 500 }));
 		vi.stubGlobal('fetch', fetchMock);
-		const context = createContext(vscode.ExtensionMode.Development);
+		const context = createContext(vscode.ExtensionMode.Test);
 		const service = new TutorialCatalogService(context);
 		await vscode.workspace.fs.writeFile(service.getLocalDevelopmentCatalogUri(), new TextEncoder().encode(JSON.stringify(validCatalog())));
 		await vscode.workspace.fs.writeFile(vscode.Uri.joinPath(context.extensionUri, 'media', 'tutorials', 'content', 'one.md'), new TextEncoder().encode('# Local tutorial\n\nLocal searchable body.'));

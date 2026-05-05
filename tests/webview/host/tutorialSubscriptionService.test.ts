@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import type { TutorialCatalog } from '../../../src/shared/tutorials/tutorialCatalog.js';
-import { TutorialSubscriptionService } from '../../../src/host/tutorials/tutorialSubscriptionService.js';
+import { SUBSCRIPTION_STATE_KEY, TutorialSubscriptionService } from '../../../src/host/tutorials/tutorialSubscriptionService.js';
 
 function createContext(initialState: Record<string, unknown> = {}): vscode.ExtensionContext {
 	const state = new Map<string, unknown>(Object.entries(initialState));
@@ -36,6 +36,22 @@ function catalog(): TutorialCatalog {
 }
 
 describe('TutorialSubscriptionService', () => {
+	it('can mark a tutorial read and unread by update token', async () => {
+		const context = createContext();
+		const service = new TutorialSubscriptionService(context);
+
+		await service.markTutorialSeen('agent', 'agent-start-v1');
+
+		expect(service.getUnseenTutorialIds(catalog())).toEqual(new Set());
+
+		await service.setTutorialSeen('agent', 'agent-start-v1', false);
+
+		expect(service.getUnseenTutorialIds(catalog())).toEqual(new Set(['agent-start']));
+		expect(context.globalState.get(SUBSCRIPTION_STATE_KEY)).toMatchObject({
+			categories: [{ categoryId: 'agent', seenUpdateTokens: [] }],
+		});
+	});
+
 	it('restores the previous active delivery channel when unmuting a category', async () => {
 		const service = new TutorialSubscriptionService(createContext());
 

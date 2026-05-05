@@ -11,6 +11,12 @@ export const tutorialViewerStyles = css`
 		overflow: hidden;
 	}
 
+	:host([embedded]) {
+		height: 100%;
+		background: transparent;
+		pointer-events: none;
+	}
+
 	* {
 		box-sizing: border-box;
 	}
@@ -24,8 +30,18 @@ export const tutorialViewerStyles = css`
 		overflow: visible;
 	}
 
+	:host([embedded]) .viewer-shell {
+		height: 100%;
+		background: transparent;
+		pointer-events: none;
+	}
+
 	.mode-compact {
 		background: color-mix(in srgb, var(--vscode-editor-background) 86%, #000 14%);
+	}
+
+	:host([embedded]) .mode-compact {
+		background: transparent;
 	}
 
 	.viewer-frame {
@@ -91,6 +107,14 @@ export const tutorialViewerStyles = css`
 		overflow: visible;
 	}
 
+	:host([embedded]) .compact-backdrop {
+		pointer-events: none;
+	}
+
+	:host([embedded]) .viewer-frame {
+		pointer-events: auto;
+	}
+
 	.compact-frame {
 		width: min(540px, calc(100vw - 24px));
 		height: auto;
@@ -101,6 +125,8 @@ export const tutorialViewerStyles = css`
 		border-radius: 8px;
 		background: var(--vscode-editor-background);
 		box-shadow: 0 14px 36px rgba(0, 0, 0, 0.42);
+		transform: translate(var(--kw-compact-offset-x, 0px), var(--kw-compact-offset-y, 0px));
+		will-change: transform;
 		overflow: visible;
 	}
 
@@ -123,8 +149,6 @@ export const tutorialViewerStyles = css`
 	}
 
 	.header {
-		position: relative;
-		z-index: 4;
 		padding: 14px;
 		display: grid;
 		gap: 10px;
@@ -189,20 +213,22 @@ export const tutorialViewerStyles = css`
 	.action-btn,
 	.link-btn,
 	.nav-btn,
+	.read-toggle,
 	.bell-toggle,
 	.channel-pill,
 	.delivery-pill,
 	.mute-menu button {
 		font: inherit;
 		color: var(--vscode-foreground);
-		border: 1px solid var(--vscode-button-border, var(--vscode-panel-border));
-		background: var(--vscode-button-secondaryBackground);
+		border: 1px solid transparent;
+		background: transparent;
 		border-radius: 4px;
 		min-height: 28px;
 		cursor: pointer;
 	}
 
 	.icon-btn,
+	.read-toggle,
 	.bell-toggle {
 		width: 30px;
 		min-width: 30px;
@@ -234,16 +260,38 @@ export const tutorialViewerStyles = css`
 		border-color: var(--vscode-button-background);
 	}
 
-	.icon-btn:hover,
-	.action-btn:hover,
-	.link-btn:hover,
-	.nav-btn:hover:not(:disabled),
-	.bell-toggle:hover,
-	.channel-pill:hover,
-	.delivery-pill:hover,
-	.mute-menu button:hover:not(:disabled) {
+	.action-btn.primary:hover:not(:disabled),
+	.bell-toggle.active:hover:not(:disabled) {
 		background: var(--vscode-button-hoverBackground);
 		color: var(--vscode-button-foreground);
+	}
+
+	.action-btn.primary:active:not(:disabled),
+	.bell-toggle.active:active:not(:disabled) {
+		opacity: 0.85;
+	}
+
+	.icon-btn:hover:not(:disabled),
+	.action-btn:not(.primary):hover:not(:disabled),
+	.link-btn:hover:not(:disabled),
+	.nav-btn:hover:not(:disabled),
+	.bell-toggle:not(.active):hover:not(:disabled),
+	.channel-pill:hover:not(:disabled),
+	.delivery-pill:hover:not(:disabled),
+	.mute-menu button:hover:not(:disabled) {
+		background: var(--vscode-list-hoverBackground);
+		color: var(--vscode-foreground);
+	}
+
+	.icon-btn:active:not(:disabled),
+	.action-btn:not(.primary):active:not(:disabled),
+	.link-btn:active:not(:disabled),
+	.nav-btn:active:not(:disabled),
+	.bell-toggle:not(.active):active:not(:disabled),
+	.channel-pill:active:not(:disabled),
+	.delivery-pill:active:not(:disabled),
+	.mute-menu button:active:not(:disabled) {
+		opacity: 0.75;
 	}
 
 	.channel-pill,
@@ -262,6 +310,7 @@ export const tutorialViewerStyles = css`
 	.action-btn svg,
 	.link-btn svg,
 	.nav-btn svg,
+	.read-toggle svg,
 	.bell-toggle svg,
 	.channel-pill svg,
 	.delivery-pill svg,
@@ -284,6 +333,7 @@ export const tutorialViewerStyles = css`
 	.action-btn:focus-visible,
 	.link-btn:focus-visible,
 	.nav-btn:focus-visible,
+	.read-toggle:focus-visible,
 	.category-main:focus-visible,
 	.tutorial-item:focus-visible,
 	.bell-toggle:focus-visible,
@@ -342,7 +392,7 @@ export const tutorialViewerStyles = css`
 	}
 
 	h1.standard-brand {
-		font-size: 22px;
+		font-size: 16px;
 		font-weight: 500;
 		line-height: 1.2;
 	}
@@ -407,14 +457,25 @@ export const tutorialViewerStyles = css`
 		flex: 0 0 auto;
 	}
 
+	.toolbar-actions {
+		justify-content: flex-end;
+		gap: 4px;
+		margin-left: auto;
+		flex: 0 0 auto;
+	}
+
 	.standard-close {
 		position: absolute;
 		top: 10px;
 		right: 10px;
 		z-index: 20;
-		background: transparent;
-		border-color: transparent;
 		color: var(--vscode-descriptionForeground);
+	}
+
+	.standard-refresh svg {
+		width: 14px;
+		height: 14px;
+		flex-basis: 14px;
 	}
 
 	.compact-close {
@@ -567,31 +628,104 @@ export const tutorialViewerStyles = css`
 	}
 
 	.tutorial-list {
-		padding: 12px 10px;
+		position: relative;
+		padding: 10px 24px 10px 8px;
 		overflow: auto;
 		min-height: 0;
 		flex: 1;
 		display: block;
+		overscroll-behavior: contain;
+		scrollbar-gutter: stable;
+		background: color-mix(in srgb, var(--vscode-sideBar-background) 96%, var(--vscode-editor-background));
+	}
+
+	.tutorial-list .os-scrollbar-vertical {
+		opacity: 1 !important;
+		visibility: visible !important;
+	}
+
+	.tutorial-list .os-scrollbar-vertical .os-scrollbar-handle {
+		min-height: 20px;
+	}
+
+	.tutorial-item-row {
+		display: grid;
+		grid-template-columns: 30px minmax(0, 1fr);
+		align-items: stretch;
+		gap: 4px;
+		min-width: 0;
+		width: 100%;
+		margin: 0 0 3px;
+		border: 1px solid transparent;
+		border-radius: 4px;
+		background: transparent;
+		transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
+	}
+
+	.tutorial-item-row:last-child {
+		margin-bottom: 0;
+	}
+
+	.tutorial-item-row:hover {
+		border-color: color-mix(in srgb, var(--vscode-focusBorder) 48%, transparent);
+		background: var(--vscode-list-hoverBackground);
+	}
+
+	.tutorial-item-row.active {
+		border-color: color-mix(in srgb, var(--vscode-focusBorder) 72%, transparent);
+		background: var(--vscode-inputValidation-infoBackground, rgba(0, 122, 204, 0.08));
+		box-shadow: inset 2px 0 0 color-mix(in srgb, var(--vscode-focusBorder) 86%, transparent);
+	}
+
+	.tutorial-item-row.active:hover {
+		background: color-mix(in srgb, var(--vscode-inputValidation-infoBackground, rgba(0, 122, 204, 0.08)) 82%, var(--vscode-list-hoverBackground));
+	}
+
+	.tutorial-item-row.incompatible {
+		opacity: 0.62;
+	}
+
+	.read-toggle {
+		width: 26px;
+		min-width: 26px;
+		min-height: 26px;
+		height: 26px;
+		align-self: start;
+		margin: 6px 0 0 5px;
+		color: color-mix(in srgb, var(--vscode-descriptionForeground) 86%, transparent);
+		background: transparent;
+		border-color: transparent;
+	}
+
+	.read-toggle.unread {
+		color: var(--vscode-textLink-foreground);
+	}
+
+	.read-toggle.read {
+		opacity: 0.72;
+	}
+
+	.read-toggle:hover:not(:disabled) {
+		background: color-mix(in srgb, var(--vscode-list-hoverBackground) 82%, var(--vscode-editor-background));
+		color: var(--vscode-foreground);
+		opacity: 1;
 	}
 
 	.tutorial-item {
-		border: 1px solid var(--vscode-panel-border);
-		background: color-mix(in srgb, var(--vscode-list-inactiveSelectionBackground, transparent) 72%, transparent);
-		color: var(--vscode-foreground);
-		border-radius: 6px;
-		padding: 10px;
+		border: 0;
+		background: transparent;
+		color: color-mix(in srgb, var(--vscode-foreground) 68%, var(--vscode-descriptionForeground));
+		border-radius: 3px;
+		padding: 9px 10px 9px 0;
 		cursor: pointer;
 		text-align: left;
 		font: inherit;
 		display: grid;
-		gap: 7px;
+		gap: 5px;
 		min-width: 0;
 		width: 100%;
-		margin: 0 0 5px;
-	}
-
-	.tutorial-item:last-child {
-		margin-bottom: 0;
+		margin: 0;
+		transition: background 120ms ease, border-color 120ms ease, color 120ms ease;
 	}
 
 	.search-hit {
@@ -608,17 +742,22 @@ export const tutorialViewerStyles = css`
 	}
 
 	.tutorial-item:hover,
-	.tutorial-item.active {
-		border-color: var(--vscode-focusBorder);
-		background: var(--vscode-list-hoverBackground);
+	.tutorial-item:focus-visible {
+		background: transparent;
+		color: var(--vscode-foreground);
 	}
 
 	.tutorial-item.active {
-		box-shadow: inset 2px 0 0 var(--vscode-focusBorder);
+		background: transparent;
+		color: var(--vscode-foreground);
 	}
 
-	.tutorial-item.incompatible {
-		opacity: 0.62;
+	.tutorial-item.active .item-title {
+		color: var(--vscode-foreground);
+	}
+
+	.tutorial-item:not(.active) .item-title {
+		color: color-mix(in srgb, var(--vscode-foreground) 62%, var(--vscode-descriptionForeground));
 	}
 
 	.item-summary {
@@ -691,11 +830,15 @@ export const tutorialViewerStyles = css`
 	}
 
 	.standard-footer-link {
-		min-height: 24px;
-		padding: 2px 8px;
+		min-height: 28px;
+		padding: 5px 10px;
 		border-color: transparent;
 		background: transparent;
 		color: var(--vscode-descriptionForeground);
+	}
+
+	.standard-got-it {
+		min-width: 72px;
 	}
 
 	.compact-content {
@@ -861,6 +1004,7 @@ export const tutorialViewerStyles = css`
 	.compact-utility-strip {
 		justify-content: flex-end;
 		gap: 6px;
+		margin-left: auto;
 	}
 
 	.compact-nav {
@@ -873,21 +1017,19 @@ export const tutorialViewerStyles = css`
 		min-width: 38px;
 		min-height: 34px;
 		border-radius: 6px;
-		background: var(--vscode-button-secondaryBackground);
-		border-color: var(--vscode-button-border, var(--vscode-panel-border));
+		background: transparent;
+		border-color: transparent;
 		color: var(--vscode-foreground);
-		transition: background-color 120ms ease, border-color 120ms ease, color 120ms ease, box-shadow 120ms ease, transform 80ms ease;
+		transition: background-color 120ms ease, color 120ms ease, opacity 80ms ease;
 	}
 
 	.compact-nav .icon-btn:hover:not(:disabled) {
-		background: var(--vscode-button-hoverBackground);
-		border-color: var(--vscode-focusBorder);
-		color: var(--vscode-button-foreground);
-		box-shadow: 0 0 0 1px color-mix(in srgb, var(--vscode-focusBorder) 55%, transparent);
+		background: var(--vscode-list-hoverBackground);
+		color: var(--vscode-foreground);
 	}
 
 	.compact-nav .icon-btn:active:not(:disabled) {
-		transform: translateY(1px);
+		opacity: 0.75;
 	}
 
 	.compact-nav .icon-btn:disabled {
@@ -895,7 +1037,6 @@ export const tutorialViewerStyles = css`
 		cursor: default;
 		background: transparent;
 		border-color: transparent;
-		box-shadow: none;
 	}
 
 	.delivery-pill {
@@ -909,8 +1050,18 @@ export const tutorialViewerStyles = css`
 		border-color: transparent;
 		background: transparent;
 		color: var(--vscode-descriptionForeground);
-		min-height: 24px;
-		padding: 2px 6px;
+		min-height: 28px;
+		padding: 5px 10px;
+	}
+
+	.compact-got-it {
+		min-width: 72px;
+	}
+
+	.compact-empty-message {
+		width: 100%;
+		text-align: left;
+		line-height: 1.5;
 	}
 
 	.mute-wrap {
@@ -921,7 +1072,7 @@ export const tutorialViewerStyles = css`
 	.mute-menu {
 		position: absolute;
 		right: 0;
-		bottom: calc(100% + 6px);
+		bottom: 100%;
 		z-index: 40;
 		min-width: 280px;
 		padding: 4px;
@@ -971,7 +1122,7 @@ export const tutorialViewerStyles = css`
 
 	.mute-flyout {
 		position: absolute;
-		right: calc(100% + 6px);
+		right: 100%;
 		bottom: 0;
 		z-index: 3;
 		min-width: 220px;
@@ -1041,6 +1192,13 @@ export const tutorialViewerStyles = css`
 
 		.standard-frame {
 			grid-template-columns: 1fr;
+		}
+
+		.standard-close {
+			position: static;
+			top: auto;
+			right: auto;
+			z-index: auto;
 		}
 
 		.sidebar {

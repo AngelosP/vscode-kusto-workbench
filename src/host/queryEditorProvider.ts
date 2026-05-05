@@ -44,6 +44,7 @@ import {
 import { exportHtmlToPowerBI, findUnsupportedPowerBiBindings, normalizePowerBiDataMode, type PowerBiDataMode } from './powerBiExport';
 import { listFabricWorkspaces, publishToPowerBIService, checkFabricItemExists } from './powerBiPublish';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
+import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
 
 type RunningQueryEntry = {
 	cancel: () => void;
@@ -127,6 +128,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private readonly CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 	private readonly copilot: CopilotService;
 	private configSubscription?: vscode.Disposable;
+	private embeddedTutorialHost?: EmbeddedTutorialWebviewHost;
+	private embeddedTutorialRegistration?: vscode.Disposable;
 
 	getErrorMessage(error: unknown): string {
 		return getErrorMessageFn(error);
@@ -185,6 +188,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.panel.webview.html = await getQueryEditorHtml(this.panel.webview, this.extensionUri, this.context, {
 			hideFooterControls: !!options?.hideFooterControls
 		});
+		this.embeddedTutorialHost = new EmbeddedTutorialWebviewHost(this.panel, this.documentUri);
+		this.embeddedTutorialRegistration = EmbeddedTutorialWebviewRegistry.register(this.embeddedTutorialHost);
 
 		const shouldRegisterMessageHandler = options?.registerMessageHandler !== false;
 		if (shouldRegisterMessageHandler) {
@@ -212,6 +217,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.clearCursorStatusForProvider();
 			this.cancelAllRunningQueries();
 			this.disconnectToolOrchestrator();
+			this.embeddedTutorialRegistration?.dispose();
+			this.embeddedTutorialRegistration = undefined;
+			this.embeddedTutorialHost = undefined;
 			this.configSubscription?.dispose();
 			this.configSubscription = undefined;
 			this.panel = undefined;
@@ -359,6 +367,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	public async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
+		if (this.embeddedTutorialHost?.handleMessage(message)) {
+			return;
+		}
 		switch (message.type) {
 			case 'editorCursorPositionChanged':
 				this.handleEditorCursorPositionChanged(message);

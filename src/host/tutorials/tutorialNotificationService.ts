@@ -4,15 +4,15 @@ import { TutorialCatalogService } from './tutorialCatalogService';
 import { TutorialSubscriptionService } from './tutorialSubscriptionService';
 
 const DIGEST_THROTTLE_MS = 6 * 60 * 60 * 1000;
-const AUTOMATIC_CHECK_DATE_KEY = 'kusto.tutorials.lastAutomaticCheckDate.v1';
-const PENDING_POPUPS_KEY = 'kusto.tutorials.pendingPopups.v1';
+export const AUTOMATIC_CHECK_DATE_KEY = 'kusto.tutorials.lastAutomaticCheckDate.v1';
+export const PENDING_POPUPS_KEY = 'kusto.tutorials.pendingPopups.v1';
 const CADENCE_INTERVAL_MS: Record<TutorialNotificationCadence, number> = {
 	daily: 24 * 60 * 60 * 1000,
 	weekly: 7 * 24 * 60 * 60 * 1000,
 	monthly: 30 * 24 * 60 * 60 * 1000,
 };
 
-interface PendingTutorialPopup {
+export interface PendingTutorialPopup {
 	categoryId: string;
 	title: string;
 	count: number;
@@ -47,31 +47,35 @@ export class TutorialNotificationService {
 		private readonly context: vscode.ExtensionContext,
 		private readonly catalogService: TutorialCatalogService,
 		private readonly subscriptionService: TutorialSubscriptionService,
-		private readonly openViewer: (categoryId?: string, preferredMode?: TutorialViewerMode) => Promise<void>,
+		private readonly openViewer: (categoryId?: string, preferredMode?: TutorialViewerMode, triggerDocument?: vscode.TextDocument) => Promise<boolean | void>,
 	) {
 		this.pendingPopups = normalizePendingPopups(this.context.globalState.get(PENDING_POPUPS_KEY));
 	}
 
-	async checkOnKustoFileOpen(): Promise<void> {
+	reloadPendingPopups(): void {
+		this.pendingPopups = normalizePendingPopups(this.context.globalState.get(PENDING_POPUPS_KEY));
+	}
+
+	async checkOnKustoFileOpen(triggerDocument?: vscode.TextDocument): Promise<void> {
 		if (!this.catalogService.getSettings().enabled) {
 			await this.clearPendingPopups();
 			return;
 		}
-		const pendingPopups = await this.takeDeliverablePendingPopups();
+		const pendingPopups = await this.getDeliverablePendingPopups();
 		if (pendingPopups.length === 0) {
 			return;
 		}
-		const action = await vscode.window.showInformationMessage(
-			this.pendingPopupMessage(pendingPopups),
-			'Open Did you know?',
-			'Dismiss',
-		);
+		const selectedCategoryId = pendingPopups.length === 1 ? pendingPopups[0].categoryId : undefined;
+		const opened = triggerDocument
+			? await this.openViewer(selectedCategoryId, 'compact', triggerDocument)
+			: await this.openViewer(selectedCategoryId, 'compact');
+		if (opened === false) {
+			return;
+		}
+		await this.removePendingPopups(pendingPopups);
 		const notifiedAt = new Date().toISOString();
 		for (const pending of pendingPopups) {
 			await this.subscriptionService.markCategoryNotified(pending.categoryId, notifiedAt);
-		}
-		if (action === 'Open Did you know?') {
-			await this.openViewer(pendingPopups.length === 1 ? pendingPopups[0].categoryId : undefined, 'compact');
 		}
 	}
 
@@ -158,14 +162,22 @@ export class TutorialNotificationService {
 		}
 	}
 
-	private async takeDeliverablePendingPopups(): Promise<PendingTutorialPopup[]> {
+	private async getDeliverablePendingPopups(): Promise<PendingTutorialPopup[]> {
 		if (this.pendingPopups.length === 0) {
 			return [];
 		}
 		const deliverable = this.pendingPopups.filter(popup => this.canDeliverPendingPopup(popup));
-		this.pendingPopups = [];
-		await this.persistPendingPopups();
+		if (deliverable.length !== this.pendingPopups.length) {
+			this.pendingPopups = deliverable;
+			await this.persistPendingPopups();
+		}
 		return deliverable;
+	}
+
+	private async removePendingPopups(delivered: PendingTutorialPopup[]): Promise<void> {
+		const deliveredCategoryIds = new Set(delivered.map(popup => popup.categoryId));
+		this.pendingPopups = this.pendingPopups.filter(popup => !deliveredCategoryIds.has(popup.categoryId));
+		await this.persistPendingPopups();
 	}
 
 	private canDeliverPendingPopup(popup: PendingTutorialPopup): boolean {
@@ -190,15 +202,6 @@ export class TutorialNotificationService {
 
 	private async persistPendingPopups(): Promise<void> {
 		await this.context.globalState.update(PENDING_POPUPS_KEY, this.pendingPopups.length > 0 ? this.pendingPopups : undefined);
-	}
-
-	private pendingPopupMessage(popups: PendingTutorialPopup[]): string {
-		if (popups.length === 1) {
-			const pending = popups[0];
-			return `${pending.count} new ${pending.title} tutorial update${pending.count === 1 ? '' : 's'} available.`;
-		}
-		const count = popups.reduce((total, pending) => total + pending.count, 0);
-		return `${count} new tutorial updates available across ${popups.length} categories.`;
 	}
 
 	private async showDigestNotification(categoryId: string, title: string, content: TutorialItem[]): Promise<void> {
@@ -234,9 +237,13 @@ export class TutorialNotificationService {
 	}
 }
 
-export function isKustoTutorialTriggerDocument(doc: vscode.TextDocument): boolean {
-	if (doc.uri.scheme !== 'file' && doc.uri.scheme !== 'vscode-userdata') {
+export function isKustoTutorialTriggerUri(uri: vscode.Uri): boolean {
+	if (uri.scheme !== 'file' && uri.scheme !== 'vscode-userdata') {
 		return false;
 	}
-	return /\.(kql|csl|kqlx|mdx|sqlx)$/i.test(doc.uri.fsPath || doc.uri.path);
+	return /\.(kql|csl|sql|md|kqlx|mdx|sqlx)$/i.test(uri.fsPath || uri.path);
+}
+
+export function isKustoTutorialTriggerDocument(doc: vscode.TextDocument): boolean {
+	return isKustoTutorialTriggerUri(doc.uri);
 }

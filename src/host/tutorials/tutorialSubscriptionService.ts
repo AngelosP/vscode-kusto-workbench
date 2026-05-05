@@ -8,7 +8,7 @@ import {
 	type TutorialNotificationChannel,
 } from '../../shared/tutorials/tutorialCatalog';
 
-const SUBSCRIPTION_STATE_KEY = 'kusto.tutorials.subscriptions.v1';
+export const SUBSCRIPTION_STATE_KEY = 'kusto.tutorials.subscriptions.v1';
 
 type ActiveTutorialNotificationChannel = Exclude<TutorialNotificationChannel, 'off'>;
 
@@ -164,11 +164,17 @@ export class TutorialSubscriptionService {
 	}
 
 	async markTutorialSeen(categoryId: string, updateToken: string): Promise<void> {
+		await this.setTutorialSeen(categoryId, updateToken, true);
+	}
+
+	async setTutorialSeen(categoryId: string, updateToken: string, seen: boolean): Promise<void> {
 		const stored = normalizeStored(this.context.globalState.get(SUBSCRIPTION_STATE_KEY));
 		const preference = this.ensurePreference(stored, categoryId);
-		if (!preference.seenUpdateTokens.includes(updateToken)) {
+		if (seen && !preference.seenUpdateTokens.includes(updateToken)) {
 			preference.seenUpdateTokens.push(updateToken);
 			preference.seenUpdateTokens = preference.seenUpdateTokens.slice(-200);
+		} else if (!seen) {
+			preference.seenUpdateTokens = preference.seenUpdateTokens.filter(token => token !== updateToken);
 		}
 		await this.writeState(stored);
 	}

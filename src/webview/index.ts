@@ -31,6 +31,7 @@ import './components/kw-monaco-toolbar.js';
 import './components/kw-unique-values-dialog.js';
 import './components/kw-copilot-chat.js';
 import './core/test-helpers.js'; // E2E: shadow-piercing __testFind/__testQuery helpers
+import './tutorials/embedded-tutorial-overlay.js';
 import './components/kw-section-shell.js';
 import './components/kw-popover.js';
 import './components/kw-kusto-connection-form.js';

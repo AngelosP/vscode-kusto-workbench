@@ -16,7 +16,8 @@ import { TutorialSubscriptionService } from './tutorialSubscriptionService';
 type TutorialViewerMessage =
 	| { type: 'requestSnapshot' }
 	| { type: 'refreshCatalog' }
-	| { type: 'openTutorial'; tutorialId: string; markSeen?: boolean }
+	| { type: 'openTutorial'; tutorialId: string; markSeen?: boolean; markSeenTutorialIds?: string[] }
+	| { type: 'setTutorialSeen'; tutorialId: string; seen: boolean }
 	| { type: 'setPreferredMode'; mode: TutorialViewerMode }
 	| { type: 'setCategorySubscription'; categoryId: string; subscribed: boolean }
 	| { type: 'setCategorySubscriptions'; categoryIds: string[]; subscribed: boolean }
@@ -126,11 +127,17 @@ export class TutorialViewerPanel {
 					await this.postSnapshot({ forceRefresh: true });
 					break;
 				case 'openTutorial':
-					await this.postTutorial(message.tutorialId, { markSeen: message.markSeen === true });
+					await this.postTutorial(message.tutorialId, { markSeen: message.markSeen === true, markSeenTutorialIds: message.markSeenTutorialIds });
+					break;
+				case 'setTutorialSeen':
+					await this.setTutorialSeen(message.tutorialId, message.seen === true);
 					break;
 				case 'setPreferredMode':
 					if (isTutorialViewerMode(message.mode)) {
 						this.preferredMode = message.mode;
+						if (message.mode === 'standard') {
+							this.selectedCategoryId = undefined;
+						}
 						await this.postSnapshot();
 					}
 					break;
@@ -203,18 +210,37 @@ export class TutorialViewerPanel {
 		await this.panel.webview.postMessage({ type: 'snapshot', snapshot, revision });
 	}
 
-	private async postTutorial(tutorialId: string, options: { markSeen?: boolean } = {}): Promise<void> {
+	private async postTutorial(tutorialId: string, options: { markSeen?: boolean; markSeenTutorialIds?: string[] } = {}): Promise<void> {
 		const content = await this.catalogService.getTutorialContent(tutorialId, this.panel.webview);
 		const resolved = await this.catalogService.getCatalog();
 		const tutorial = resolved.catalog.content.find(candidate => candidate.id === tutorialId);
 		if (tutorial) {
-			this.selectedCategoryId = tutorial.categoryId;
+			const effectiveMode = this.preferredMode ?? this.defaultPreferredMode();
+			if (effectiveMode === 'compact' || effectiveMode === 'focused' || this.selectedCategoryId !== undefined) {
+				this.selectedCategoryId = tutorial.categoryId;
+			}
 			this.selectedTutorialId = tutorial.id;
+			const markSeenTutorialIds = new Set((options.markSeenTutorialIds ?? []).filter(candidate => typeof candidate === 'string'));
 			if (options.markSeen) {
-				await this.subscriptionService.markTutorialSeen(tutorial.categoryId, tutorial.updateToken);
+				markSeenTutorialIds.add(tutorial.id);
+			}
+			for (const markSeenTutorialId of markSeenTutorialIds) {
+				const tutorialToMarkSeen = resolved.catalog.content.find(candidate => candidate.id === markSeenTutorialId);
+				if (tutorialToMarkSeen) {
+					await this.subscriptionService.markTutorialSeen(tutorialToMarkSeen.categoryId, tutorialToMarkSeen.updateToken);
+				}
 			}
 		}
 		await this.panel.webview.postMessage({ type: 'tutorialContent', content });
+		await this.postSnapshot();
+	}
+
+	private async setTutorialSeen(tutorialId: string, seen: boolean): Promise<void> {
+		const resolved = await this.catalogService.getCatalog();
+		const tutorial = resolved.catalog.content.find(candidate => candidate.id === tutorialId);
+		if (tutorial) {
+			await this.subscriptionService.setTutorialSeen(tutorial.categoryId, tutorial.updateToken, seen);
+		}
 		await this.postSnapshot();
 	}
 

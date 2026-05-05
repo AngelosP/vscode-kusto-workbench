@@ -24,10 +24,13 @@ describe('TutorialViewerPanel HTML template', () => {
 		const root = process.cwd();
 		const panelSource = readFileSync(join(root, 'src', 'host', 'tutorials', 'tutorialViewerPanel.ts'), 'utf8');
 
-		expect(panelSource).toContain("| { type: 'openTutorial'; tutorialId: string; markSeen?: boolean }");
-		expect(panelSource).toContain('await this.postTutorial(message.tutorialId, { markSeen: message.markSeen === true });');
+		expect(panelSource).toContain("| { type: 'openTutorial'; tutorialId: string; markSeen?: boolean; markSeenTutorialIds?: string[] }");
+		expect(panelSource).toContain("| { type: 'setTutorialSeen'; tutorialId: string; seen: boolean }");
+		expect(panelSource).toContain('await this.postTutorial(message.tutorialId, { markSeen: message.markSeen === true, markSeenTutorialIds: message.markSeenTutorialIds });');
+		expect(panelSource).toContain('await this.setTutorialSeen(message.tutorialId, message.seen === true);');
 		expect(panelSource).toContain('if (options.markSeen)');
-		expect(panelSource).toContain('await this.subscriptionService.markTutorialSeen(tutorial.categoryId, tutorial.updateToken);');
+		expect(panelSource).toContain('await this.subscriptionService.markTutorialSeen(tutorialToMarkSeen.categoryId, tutorialToMarkSeen.updateToken);');
+		expect(panelSource).toContain('await this.subscriptionService.setTutorialSeen(tutorial.categoryId, tutorial.updateToken, seen);');
 	});
 
 	it('updates the explicit workspace scope when Did you know is disabled there', () => {

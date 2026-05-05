@@ -8,6 +8,8 @@ import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { osThemeSheet } from '../shared/os-theme-styles.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, sashSheet, scrollbarSheet, osThemeSheet];
 
+import '../tutorials/embedded-tutorial-overlay.js';
+
 // Register the <kw-markdown-section> custom element.
 import '../sections/kw-markdown-section.js';
 

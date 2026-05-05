@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { html, render, nothing } from 'lit';
 import '../../src/webview/tutorials/kw-tutorial-viewer.js';
 import type { KwTutorialViewer } from '../../src/webview/tutorials/kw-tutorial-viewer.js';
@@ -68,6 +68,20 @@ async function sendTutorialContent(viewer: KwTutorialViewer, tutorialId: string,
 	await settle(viewer);
 }
 
+function domRect(left: number, top: number, width: number, height: number): DOMRect {
+	return {
+		x: left,
+		y: top,
+		left,
+		top,
+		width,
+		height,
+		right: left + width,
+		bottom: top + height,
+		toJSON: () => ({ x: left, y: top, left, top, width, height, right: left + width, bottom: top + height }),
+	} as DOMRect;
+}
+
 beforeEach(() => {
 	installMocks();
 	container = document.createElement('div');
@@ -96,9 +110,11 @@ describe('kw-tutorial-viewer', () => {
 		expect(text).not.toContain('#chart');
 		expect(viewer.shadowRoot!.querySelector('[data-testid="tutorial-viewer-mode-standard"]')).toBeTruthy();
 		expect(viewer.shadowRoot!.querySelector('[aria-label="Did you know? content"]')).toBeTruthy();
-		const info = viewer.shadowRoot!.querySelector('.status-info') as HTMLElement;
-		expect(info.title).toContain('Catalog: remote');
-		expect(info.title).toContain('Updated');
+		expect(viewer.shadowRoot!.querySelector('.status-info')).toBeNull();
+		const refresh = viewer.shadowRoot!.querySelector('.standard-refresh') as HTMLButtonElement;
+		expect(refresh.title).toContain('Refresh catalog');
+		expect(refresh.title).toContain('Catalog: remote');
+		expect(refresh.title).toContain('Updated');
 		const categorySelect = viewer.shadowRoot!.querySelector('[data-testid="tutorial-category-select"]') as HTMLElement & { selectedId: string; items: Array<{ label: string }> };
 		expect(categorySelect).toBeTruthy();
 		expect(categorySelect.selectedId).toBe('all');
@@ -108,7 +124,8 @@ describe('kw-tutorial-viewer', () => {
 		const standardClose = viewer.shadowRoot!.querySelector('[data-testid="tutorial-standard-dismiss"]') as HTMLButtonElement;
 		expect(standardClose).toBeTruthy();
 		expect(standardClose.closest('.standard-frame')).toBeTruthy();
-		expect(standardClose.closest('.toolbar-actions')).toBeNull();
+		expect(standardClose.closest('.toolbar-actions')).toBeTruthy();
+		expect(Array.from(viewer.shadowRoot!.querySelectorAll<HTMLButtonElement>('.toolbar-actions button')).map(button => button.classList.contains('standard-refresh') ? 'refresh' : button.dataset.testid)).toEqual(['refresh', 'tutorial-standard-dismiss']);
 		expect(viewer.shadowRoot!.querySelector('[data-testid="tutorial-standard-mute"]')).toBeTruthy();
 		const standardNav = viewer.shadowRoot!.querySelector('.standard-nav')!;
 		expect(standardNav.textContent).toContain('1 of 2');
@@ -116,16 +133,56 @@ describe('kw-tutorial-viewer', () => {
 		expect(postedMessages).toContainEqual({ type: 'openTutorial', tutorialId: 'agent-start' });
 		expect(postedMessages).not.toContainEqual({ type: 'openTutorial', tutorialId: 'agent-start', markSeen: true });
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-standard-next"]') as HTMLButtonElement).click();
-		expect(postedMessages).toContainEqual({ type: 'openTutorial', tutorialId: 'agent-next', markSeen: true });
+		expect(postedMessages).toContainEqual({ type: 'openTutorial', tutorialId: 'agent-next', markSeen: true, markSeenTutorialIds: ['agent-start'] });
 		await settle(viewer);
 		expect(viewer.shadowRoot!.querySelector('.standard-nav')!.textContent).toContain('2 of 2');
 		expect((viewer.shadowRoot!.querySelector('[data-testid="tutorial-standard-prev"]') as HTMLButtonElement).disabled).toBe(false);
 		const compactButton = viewer.shadowRoot!.querySelector('[data-testid="tutorial-mode-compact"]') as HTMLButtonElement;
 		expect(compactButton.closest('.standard-footer')).toBeTruthy();
 		expect(compactButton.textContent).toContain('Compact');
+		expect(viewer.shadowRoot!.querySelector('[data-testid="tutorial-standard-got-it"]')).toBeTruthy();
 		expect(viewer.shadowRoot!.querySelector('.tutorial-item')).toBeTruthy();
 		expect(viewer.shadowRoot!.querySelector('.detail-header')).toBeNull();
-		expect(viewer.shadowRoot!.querySelector('[data-overlay-scroll]')).toBeTruthy();
+		const tutorialList = viewer.shadowRoot!.querySelector('[data-testid="tutorial-list"]') as HTMLElement;
+		expect(tutorialList.getAttribute('data-overlay-scroll')).toBe('x:hidden y:scroll visibility:visible autoHide:never');
+		expect(tutorialList.getAttribute('tabindex')).toBe('0');
+	});
+
+	it('toggles standard tutorial read state without opening the row', async () => {
+		const viewer = createViewer();
+		await sendSnapshot(viewer);
+		let toggles = Array.from(viewer.shadowRoot!.querySelectorAll<HTMLButtonElement>('[data-testid="tutorial-read-toggle"]'));
+		expect(toggles).toHaveLength(2);
+		expect(toggles[0].getAttribute('aria-label')).toBe('Mark as read');
+		expect(toggles[0].classList.contains('unread')).toBe(true);
+
+		postedMessages = [];
+		toggles[0].click();
+		expect(postedMessages).toEqual([{ type: 'setTutorialSeen', tutorialId: 'agent-start', seen: true }]);
+		expect(postedMessages.some((message: any) => message.type === 'openTutorial')).toBe(false);
+
+		postedMessages = [];
+		(viewer.shadowRoot!.querySelector('[data-tutorial-id="agent-start"]') as HTMLButtonElement).click();
+		expect(postedMessages).toEqual([{ type: 'setTutorialSeen', tutorialId: 'agent-start', seen: true }]);
+
+		const readSnapshot = snapshot({
+			catalog: {
+				...snapshot().catalog,
+				content: snapshot().catalog.content.map(tutorial => tutorial.id === 'agent-start' ? { ...tutorial, unseen: false } : tutorial),
+			},
+		});
+		await sendSnapshot(viewer, readSnapshot);
+		toggles = Array.from(viewer.shadowRoot!.querySelectorAll<HTMLButtonElement>('[data-testid="tutorial-read-toggle"]'));
+		expect(toggles[0].getAttribute('aria-label')).toBe('Mark as unread');
+		expect(toggles[0].classList.contains('read')).toBe(true);
+
+		postedMessages = [];
+		toggles[0].click();
+		expect(postedMessages).toEqual([{ type: 'setTutorialSeen', tutorialId: 'agent-start', seen: false }]);
+
+		postedMessages = [];
+		(viewer.shadowRoot!.querySelector('[data-tutorial-id="agent-next"]') as HTMLButtonElement).click();
+		expect(postedMessages).toEqual([{ type: 'openTutorial', tutorialId: 'agent-next', markSeen: true }]);
 	});
 
 	it('renders a connection-required state when no remote catalog or cache is available', async () => {
@@ -153,6 +210,38 @@ describe('kw-tutorial-viewer', () => {
 		expect(viewer.shadowRoot!.querySelector('.compact-meta')).toBeNull();
 		expect(viewer.shadowRoot!.querySelector('.compact-markdown h1')).toBeNull();
 		expect(viewer.shadowRoot!.querySelector('.compact-markdown')!.textContent).toContain('Open the Kusto Workbench agent.');
+	});
+
+	it('keeps the clicked compact navigation button under the pointer after navigation changes layout', async () => {
+		const viewer = createViewer();
+		let nextButtonTop = 300;
+		const rectSpy = vi.spyOn(Element.prototype, 'getBoundingClientRect').mockImplementation(function (this: Element) {
+			if (this instanceof HTMLElement && this.classList.contains('compact-frame')) {
+				return domRect(230, 100, 540, 360);
+			}
+			if (this instanceof HTMLElement && this.dataset.testid === 'tutorial-next') {
+				return domRect(430, nextButtonTop, 38, 34);
+			}
+			if (this instanceof HTMLElement && this.dataset.testid === 'tutorial-prev') {
+				return domRect(384, nextButtonTop, 38, 34);
+			}
+			return domRect(0, 0, 10, 10);
+		});
+		try {
+			await sendSnapshot(viewer, snapshot({ preferredMode: 'compact' }));
+			await sendTutorialContent(viewer, 'agent-start', '# Agent start\n\nOpen the Kusto Workbench agent.');
+			const nextButton = viewer.shadowRoot!.querySelector('[data-testid="tutorial-next"]') as HTMLButtonElement;
+			nextButton.dispatchEvent(new MouseEvent('click', { bubbles: true, composed: true, clientX: 450, clientY: 314 }));
+			nextButtonTop = 340;
+			await settle(viewer);
+
+			const frame = viewer.shadowRoot!.querySelector('.compact-frame') as HTMLElement;
+			expect(frame.style.getPropertyValue('--kw-compact-offset-y')).toBe('-40px');
+			expect(frame.style.getPropertyValue('--kw-compact-offset-x')).toBe('0px');
+			expect(postedMessages).toContainEqual({ type: 'openTutorial', tutorialId: 'agent-next', markSeen: true });
+		} finally {
+			rectSpy.mockRestore();
+		}
 	});
 
 	it('keeps compact navigation on a session-stable unread queue across categories', async () => {
@@ -250,13 +339,23 @@ describe('kw-tutorial-viewer', () => {
 
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-mode-standard"]') as HTMLButtonElement).click();
 		await viewer.updateComplete;
+		const categorySelect = viewer.shadowRoot!.querySelector('[data-testid="tutorial-category-select"]') as HTMLElement & { selectedId: string };
+		expect(categorySelect.selectedId).toBe('all');
+		expect(viewer.shadowRoot!.textContent).toContain('Agent start');
+		expect(viewer.shadowRoot!.textContent).toContain('Agent next');
+		expect(viewer.shadowRoot!.textContent).toContain('Chart start');
+		expect(viewer.shadowRoot!.textContent).toContain('Late tip');
+		expect(viewer.shadowRoot!.querySelector('.standard-nav')!.textContent).toContain('4 of 4');
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-mode-compact"]') as HTMLButtonElement).click();
 		await viewer.updateComplete;
 		expect(viewer.shadowRoot!.textContent).toContain('Nothing to show right now');
 		expect(viewer.shadowRoot!.querySelector('.compact-content .empty')!.textContent).toBe("There is nothing new to show you. In compact mode only content that you have not seen before is displayed. If you want to see everything, please use 'Browse all'");
+		expect(viewer.shadowRoot!.querySelector('.compact-content .compact-empty-message')).toBeTruthy();
 		expect(viewer.shadowRoot!.textContent).not.toContain('0 of 0');
 		expect(viewer.shadowRoot!.querySelector('.compact-nav')).toBeNull();
 		expect(viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-show-seen-toggle"]')).toBeNull();
+		const emptyFooterButtons = Array.from(viewer.shadowRoot!.querySelectorAll<HTMLButtonElement>('.compact-footer button')).map(button => button.dataset.testid);
+		expect(emptyFooterButtons.slice(-2)).toEqual(['tutorial-mode-standard', 'tutorial-compact-got-it']);
 	});
 
 	it('applies recently muted and unmuted categories to compact navigation on next or previous', async () => {
@@ -333,6 +432,7 @@ describe('kw-tutorial-viewer', () => {
 		expect(footer.querySelector('[data-testid="tutorial-compact-show-seen-toggle"]')).toBeNull();
 		expect(footer.querySelector('[data-testid="tutorial-compact-mute"]')).toBeTruthy();
 		expect(footer.querySelector('[data-testid="tutorial-mode-standard"]')).toBeTruthy();
+		expect(footer.querySelector('[data-testid="tutorial-compact-got-it"]')).toBeTruthy();
 
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute"]') as HTMLButtonElement).click();
 		await viewer.updateComplete;
@@ -429,8 +529,47 @@ describe('kw-tutorial-viewer', () => {
 
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-dismiss"]') as HTMLButtonElement).click();
 		expect(postedMessages).toContainEqual({ type: 'dismiss' });
+		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-got-it"]') as HTMLButtonElement).click();
+		expect(postedMessages).toContainEqual({ type: 'dismiss' });
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-mode-standard"]') as HTMLButtonElement).click();
 		expect(postedMessages).toContainEqual({ type: 'setPreferredMode', mode: 'standard' });
+		await viewer.updateComplete;
+		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-standard-got-it"]') as HTMLButtonElement).click();
+		expect(postedMessages).toContainEqual({ type: 'dismiss' });
+	});
+
+	it('dismisses the mute menu on outside click, Escape, and mouse leave', async () => {
+		const viewer = createViewer();
+		await sendSnapshot(viewer, snapshot({
+			preferredMode: 'compact',
+			preferences: [{ categoryId: 'agent', subscribed: true, channel: 'nextFileOpenPopup', notificationCadence: 'daily', unseenCount: 1 }],
+		}));
+		const muteButton = () => viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute"]') as HTMLButtonElement;
+
+		muteButton().click();
+		await settle(viewer);
+		expect(viewer.shadowRoot!.querySelector('.mute-menu')).toBeTruthy();
+		window.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, composed: true }));
+		await settle(viewer);
+		expect(viewer.shadowRoot!.querySelector('.mute-menu')).toBeNull();
+
+		muteButton().click();
+		await settle(viewer);
+		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute-categories"]') as HTMLButtonElement).click();
+		await settle(viewer);
+		expect(viewer.shadowRoot!.querySelector('.mute-flyout')).toBeTruthy();
+		window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true, composed: true, cancelable: true }));
+		await settle(viewer);
+		expect(viewer.shadowRoot!.querySelector('.mute-menu')).toBeNull();
+		expect(viewer.shadowRoot!.querySelector('.mute-flyout')).toBeNull();
+
+		muteButton().click();
+		await settle(viewer);
+		expect(viewer.shadowRoot!.querySelector('.mute-menu')).toBeTruthy();
+		(viewer.shadowRoot!.querySelector('.mute-wrap') as HTMLElement).dispatchEvent(new MouseEvent('mouseleave', { bubbles: false, composed: true }));
+		await new Promise(resolve => setTimeout(resolve, 280));
+		await settle(viewer);
+		expect(viewer.shadowRoot!.querySelector('.mute-menu')).toBeNull();
 	});
 
 	it('searches tutorial display names', async () => {

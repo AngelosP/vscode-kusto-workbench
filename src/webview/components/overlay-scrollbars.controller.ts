@@ -18,10 +18,15 @@
  * `osThemeSheet` for the overlay scrollbar styling to work inside Shadow DOM.
  *
  * Options can be customized per-element via data attributes:
- *   data-overlay-scroll="x:hidden y:scroll"  (default: x:scroll y:scroll)
+ *   data-overlay-scroll="x:hidden y:scroll autoHide:never"  (default: x:scroll y:scroll)
  */
 import { type ReactiveController, type ReactiveControllerHost } from 'lit';
-import { OverlayScrollbars, type PartialOptions } from 'overlayscrollbars';
+import {
+	OverlayScrollbars,
+	type PartialOptions,
+	type ScrollbarsAutoHideBehavior,
+	type ScrollbarsVisibilityBehavior,
+} from 'overlayscrollbars';
 
 const ATTR = 'data-overlay-scroll';
 
@@ -30,13 +35,30 @@ const DEFAULT_OPTIONS: PartialOptions = {
 	overflow: { x: 'scroll', y: 'scroll' },
 };
 
-/** Parse per-element overflow overrides from the attribute value. */
-function parseOverflow(attr: string | null): { x?: string; y?: string } {
+interface ParsedOverlayScrollOptions {
+	x?: string;
+	y?: string;
+	autoHide?: ScrollbarsAutoHideBehavior;
+	visibility?: ScrollbarsVisibilityBehavior;
+}
+
+function isAutoHideBehavior(value: string): value is ScrollbarsAutoHideBehavior {
+	return value === 'never' || value === 'scroll' || value === 'move' || value === 'leave';
+}
+
+function isVisibilityBehavior(value: string): value is ScrollbarsVisibilityBehavior {
+	return value === 'auto' || value === 'visible' || value === 'hidden';
+}
+
+/** Parse per-element scrollbar overrides from the attribute value. */
+function parseScrollOptions(attr: string | null): ParsedOverlayScrollOptions {
 	if (!attr) return {};
-	const result: Record<string, string> = {};
+	const result: ParsedOverlayScrollOptions = {};
 	for (const part of attr.split(/\s+/)) {
-		const [key, val] = part.split(':');
-		if ((key === 'x' || key === 'y') && val) result[key] = val;
+		const [key, value] = part.split(':');
+		if ((key === 'x' || key === 'y') && value) result[key] = value;
+		else if (key === 'autoHide' && value && isAutoHideBehavior(value)) result.autoHide = value;
+		else if (key === 'visibility' && value && isVisibilityBehavior(value)) result.visibility = value;
 	}
 	return result;
 }
@@ -86,12 +108,17 @@ export class OverlayScrollbarsController implements ReactiveController {
 				existing.update();
 				continue;
 			}
-			const overflow = parseOverflow(el.getAttribute(ATTR));
+			const scrollOptions = parseScrollOptions(el.getAttribute(ATTR));
 			const opts: PartialOptions = {
 				...DEFAULT_OPTIONS,
 				overflow: {
-					x: (overflow.x ?? 'scroll') as 'scroll' | 'hidden' | 'visible',
-					y: (overflow.y ?? 'scroll') as 'scroll' | 'hidden' | 'visible',
+					x: (scrollOptions.x ?? 'scroll') as 'scroll' | 'hidden' | 'visible',
+					y: (scrollOptions.y ?? 'scroll') as 'scroll' | 'hidden' | 'visible',
+				},
+				scrollbars: {
+					...DEFAULT_OPTIONS.scrollbars,
+					autoHide: scrollOptions.autoHide ?? DEFAULT_OPTIONS.scrollbars?.autoHide,
+					visibility: scrollOptions.visibility ?? DEFAULT_OPTIONS.scrollbars?.visibility,
 				},
 			};
 			const instance = OverlayScrollbars(el, opts);

@@ -10,6 +10,7 @@ import { renderDiffInWebview } from './diffViewerUtils';
 import { normalizeSection, formatSectionDiffContent, KqlxEditorProvider } from './kqlxEditorProvider';
 import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
 import { EditorCursorStatusBar, type EditorCursorStatusPayload } from './editorCursorStatusBar';
+import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
@@ -322,6 +323,8 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 		}
 
 		webviewPanel.webview.html = await getMdEditorHtml(webviewPanel.webview, this.extensionUri, this.context);
+		const embeddedTutorialHost = new EmbeddedTutorialWebviewHost(webviewPanel, document.uri.toString());
+		disposables.push(EmbeddedTutorialWebviewRegistry.register(embeddedTutorialHost));
 		// Track if the webview has initialized and whether it's currently being edited by the user.
 		let mdWebviewInitialized = false;
 		let lastMdWebviewPersistAt = 0;
@@ -464,6 +467,9 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 
 		webviewPanel.webview.onDidReceiveMessage(async (message: IncomingWebviewMessage) => {
 			if (!message || typeof message.type !== 'string') {
+				return;
+			}
+			if (embeddedTutorialHost.handleMessage(message)) {
 				return;
 			}
 			switch (message.type) {

@@ -44,6 +44,17 @@ function createContext(initialState: Record<string, unknown> = {}): vscode.Exten
 	} as any;
 }
 
+function triggerDocument(fsPath = 'C:\\work\\notebook.kqlx'): vscode.TextDocument {
+	return {
+		uri: {
+			scheme: 'file',
+			fsPath,
+			path: fsPath.replace(/\\/g, '/'),
+			toString: () => `file:///${fsPath.replace(/\\/g, '/')}`,
+		},
+	} as any;
+}
+
 function createServices(source: 'remote' | 'cache' | 'unavailable' = 'remote', resolvedCatalog: TutorialCatalog = catalog()) {
 	const catalogService = {
 		getSettings: () => ({ enabled: true, catalogUrl: 'https://raw.githubusercontent.com/owner/repo/main/catalog.json', refreshIntervalHours: 24 }),
@@ -84,17 +95,15 @@ describe('TutorialNotificationService', () => {
 		const context = createContext();
 		const { catalogService, subscriptionService } = createServices();
 		subscriptionService.getStoredPreference = () => ({ categoryId: 'agent', subscribed: true, channel: 'nextFileOpenPopup', notificationCadence: 'daily', seenUpdateTokens: [] });
-		const service = new TutorialNotificationService(context, catalogService as any, subscriptionService as any, vi.fn());
+		const openViewer = vi.fn(async () => undefined);
+		const service = new TutorialNotificationService(context, catalogService as any, subscriptionService as any, openViewer);
 		(service as any).pendingPopups = [{ categoryId: 'agent', title: 'Agent workflow', count: 1 }];
 
 		await service.checkOnKustoFileOpen();
 
 		expect(catalogService.getCatalog).not.toHaveBeenCalled();
-		expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-			'1 new Agent workflow tutorial update available.',
-			'Open Did you know?',
-			'Dismiss',
-		);
+		expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+		expect(openViewer).toHaveBeenCalledWith('agent', 'compact');
 	});
 
 	it('checks for updates once per day after activation', async () => {
@@ -171,6 +180,22 @@ describe('TutorialNotificationService', () => {
 		expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
 		expect(openViewer).not.toHaveBeenCalled();
 		expect((service as any).pendingPopups).toEqual([]);
+	});
+
+	it('keeps a deliverable pending popup when no embedded editor accepts file-open delivery', async () => {
+		const context = createContext();
+		const { catalogService, subscriptionService } = createServices('remote');
+		subscriptionService.getStoredPreference = () => ({ categoryId: 'agent', subscribed: true, channel: 'nextFileOpenPopup', notificationCadence: 'daily', muted: false, seenUpdateTokens: [] });
+		const openViewer = vi.fn(async () => false);
+		const service = new TutorialNotificationService(context, catalogService as any, subscriptionService as any, openViewer);
+		(service as any).pendingPopups = [{ categoryId: 'agent', title: 'Agent workflow', count: 1 }];
+		const document = triggerDocument();
+
+		await service.checkOnKustoFileOpen(document);
+
+		expect(openViewer).toHaveBeenCalledWith('agent', 'compact', document);
+		expect(subscriptionService.markCategoryNotified).not.toHaveBeenCalled();
+		expect((service as any).pendingPopups).toEqual([{ categoryId: 'agent', title: 'Agent workflow', count: 1 }]);
 	});
 
 	it('clears a stale pending popup when its muted category was the only subscription', async () => {
@@ -302,11 +327,8 @@ describe('TutorialNotificationService', () => {
 
 		await service.checkOnKustoFileOpen();
 
-		expect(vscode.window.showInformationMessage).toHaveBeenCalledWith(
-			'2 new tutorial updates available across 2 categories.',
-			'Open Did you know?',
-			'Dismiss',
-		);
+		expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+		expect(openViewer).toHaveBeenCalledWith(undefined, 'compact');
 		expect(subscriptionService.markCategoryNotified).toHaveBeenCalledTimes(2);
 		expect(subscriptionService.markCategoryNotified).toHaveBeenCalledWith('agent', expect.any(String));
 		expect(subscriptionService.markCategoryNotified).toHaveBeenCalledWith('charts', expect.any(String));
@@ -358,7 +380,8 @@ describe('TutorialNotificationService', () => {
 				: new Date(now.getTime() - 10 * 24 * 60 * 60 * 1000).toISOString(),
 			seenUpdateTokens: [],
 		});
-		const service = new TutorialNotificationService(context, catalogService as any, subscriptionService as any, vi.fn());
+		const openViewer = vi.fn(async () => undefined);
+		const service = new TutorialNotificationService(context, catalogService as any, subscriptionService as any, openViewer);
 
 		await service.checkOnActivation();
 
@@ -375,5 +398,6 @@ describe('TutorialNotificationService', () => {
 		await service.checkOnKustoFileOpen();
 
 		expect(vscode.window.showInformationMessage).not.toHaveBeenCalled();
+		expect(openViewer).not.toHaveBeenCalled();
 	});
 });

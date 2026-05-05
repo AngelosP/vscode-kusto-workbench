@@ -605,7 +605,7 @@ export class TutorialCatalogService {
 	}
 
 	private isLocalDevelopmentMode(): boolean {
-		return this.context.extensionMode === vscode.ExtensionMode.Development;
+		return this.context.extensionMode !== vscode.ExtensionMode.Production;
 	}
 
 	private async readJsonCache(fileName: string): Promise<unknown | null> {

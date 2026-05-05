@@ -1,0 +1,15 @@
+{
+  "kind": "kqlx",
+  "version": 1,
+  "state": {
+    "sections": [
+      {
+        "id": "embedded_popup_query",
+        "type": "query",
+        "name": "Embedded popup query",
+        "query": "StormEvents | take 10",
+        "expanded": true
+      }
+    ]
+  }
+}

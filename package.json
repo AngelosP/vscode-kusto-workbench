@@ -274,6 +274,11 @@
         "category": "Kusto Workbench"
       },
       {
+        "command": "kustoWorkbench.dev.resetDidYouKnowState",
+        "title": "Reset Did You Know State",
+        "category": "Kusto Workbench"
+      },
+      {
         "command": "kusto.exportSkill",
         "title": "Export Agent Skill...",
         "category": "Kusto Workbench",
@@ -284,6 +289,10 @@
       "commandPalette": [
         {
           "command": "kusto.showDevelopmentNotes"
+        },
+        {
+          "command": "kustoWorkbench.dev.resetDidYouKnowState",
+          "when": "kustoWorkbench.devMode"
         }
       ],
       "view/title": [

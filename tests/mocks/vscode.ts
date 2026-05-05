@@ -92,6 +92,14 @@ export class Uri {
 	toString() { return this._value; }
 }
 
+export class TabInputText {
+	constructor(public readonly uri: Uri) {}
+}
+
+export class TabInputCustom {
+	constructor(public readonly uri: Uri, public readonly viewType: string) {}
+}
+
 export const __mockStatusBarItems: any[] = [];
 
 export enum StatusBarAlignment {
@@ -108,6 +116,12 @@ export enum ConfigurationTarget {
 export const window = {
 	activeTextEditor: undefined as any,
 	onDidChangeActiveTextEditor: () => ({ dispose: () => {} }),
+	tabGroups: {
+		activeTabGroup: { activeTab: undefined as any, tabs: [] as any[], isActive: true },
+		all: [] as any[],
+		onDidChangeTabs: () => ({ dispose: () => {} }),
+		onDidChangeTabGroups: () => ({ dispose: () => {} }),
+	},
 	createOutputChannel: () => ({ appendLine: () => {}, dispose: () => {} }),
 	showInformationMessage: () => Promise.resolve(undefined),
 	showErrorMessage: () => Promise.resolve(undefined),
@@ -170,6 +184,7 @@ export const workspace = {
 			fileSystemStore.set(uri.fsPath, bytes);
 		},
 	},
+	openTextDocument: async (uri: Uri) => ({ uri }),
 	onDidOpenTextDocument: () => ({ dispose: () => {} }),
 	onDidChangeConfiguration: () => ({ dispose: () => {} }),
 };

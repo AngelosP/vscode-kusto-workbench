@@ -21,7 +21,17 @@ import {
 } from '../../shared/tutorials/tutorialCatalog.js';
 import { tutorialViewerStyles } from './kw-tutorial-viewer.styles.js';
 
-declare const acquireVsCodeApi: () => { postMessage(message: unknown): void };
+type VsCodeApi = { postMessage(message: unknown): void };
+
+declare const acquireVsCodeApi: () => VsCodeApi;
+
+function getVsCodeApi(): VsCodeApi {
+	const existing = (window as unknown as { vscode?: VsCodeApi }).vscode;
+	if (existing && typeof existing.postMessage === 'function') {
+		return existing;
+	}
+	return acquireVsCodeApi();
+}
 
 interface TutorialContentMessage {
 	tutorialId: string;
@@ -36,8 +46,20 @@ interface TutorialSearchMatch {
 	fieldMatchIndex: number;
 }
 
+interface CompactPointerAnchor {
+	buttonTestId: 'tutorial-prev' | 'tutorial-next';
+	clientX: number;
+	clientY: number;
+	offsetX: number;
+	offsetY: number;
+}
+
 function escapeSearchRegex(value: string): string {
 	return value.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&');
+}
+
+function clamp(value: number, min: number, max: number): number {
+	return Math.min(Math.max(value, min), max);
 }
 
 @customElement('kw-tutorial-viewer')
@@ -60,23 +82,34 @@ export class KwTutorialViewer extends LitElement {
 	@state() private muteCategorySubmenuOpen = false;
 	@state() private categoryMuteOverrides: Record<string, boolean> = {};
 	@state() private contentTitles: Record<string, string> = {};
+	@state() private compactDialogOffsetX = 0;
+	@state() private compactDialogOffsetY = 0;
 
 	private readonly _osCtrl = new OverlayScrollbarsController(this);
-	private readonly vscode = acquireVsCodeApi();
+	private readonly vscode = getVsCodeApi();
 	private modeInitialized = false;
 	private latestSnapshotRevision = 0;
 	private loadedTutorialId: string | null = null;
 	private compactSessionTutorialIds: string[] | null = null;
+	private compactPointerAnchor: CompactPointerAnchor | null = null;
+	private compactPointerAnchorTimer: number | undefined;
+	private muteMenuCloseTimer: number | undefined;
 
 	connectedCallback(): void {
 		super.connectedCallback();
 		window.addEventListener('message', this.onHostMessage);
+		window.addEventListener('pointerdown', this.onGlobalPointerDown, true);
+		window.addEventListener('keydown', this.onGlobalKeyDown, true);
 		this.vscode.postMessage({ type: 'requestSnapshot' });
 	}
 
 	disconnectedCallback(): void {
 		super.disconnectedCallback();
 		window.removeEventListener('message', this.onHostMessage);
+		window.removeEventListener('pointerdown', this.onGlobalPointerDown, true);
+		window.removeEventListener('keydown', this.onGlobalKeyDown, true);
+		this.clearCompactPointerAnchorTimer();
+		this.cancelScheduledMuteMenuClose();
 	}
 
 	render(): TemplateResult {
@@ -133,20 +166,21 @@ export class KwTutorialViewer extends LitElement {
 		const currentTutorialPosition = selectedTutorialIndex >= 0 ? selectedTutorialIndex + 1 : 0;
 		const previousTutorial = selectedTutorialIndex > 0 ? tutorials[selectedTutorialIndex - 1] : null;
 		const nextTutorial = selectedTutorialIndex >= 0 && selectedTutorialIndex < tutorials.length - 1 ? tutorials[selectedTutorialIndex + 1] : null;
+		const currentTutorialId = selectedTutorial?.id;
+		const refreshTitle = this.refreshCatalogTitle();
 		return html`
 			<div class="viewer-frame standard-frame" role="dialog" aria-label="Did you know? library">
-				<button class="icon-btn standard-close" title="Close" aria-label="Close Did you know?" data-testid="tutorial-standard-dismiss" @click=${this.dismissViewer}>${ICONS.close}</button>
 				<aside class="sidebar" aria-label="Did you know? navigation">
 					<div class="header">
 						<div class="title-row">
 							<div class="title-copy standard-title-copy">
 								<div class="standard-brand-row">
 									<h1 class="standard-brand" data-testid="tutorial-viewer-title">Did you know?</h1>
-									${this.renderStatusInfo()}
 								</div>
 							</div>
 							<div class="toolbar-actions">
-								<button class="icon-btn" title="Refresh catalog" aria-label="Refresh catalog" @click=${this.refreshCatalog}>${ICONS.refresh}</button>
+								<button class="icon-btn standard-refresh" title=${refreshTitle} aria-label="Refresh catalog" @click=${this.refreshCatalog}>${ICONS.refresh}</button>
+								<button class="icon-btn standard-close" title="Close" aria-label="Close Did you know?" data-testid="tutorial-standard-dismiss" @click=${this.dismissViewer}>${ICONS.close}</button>
 							</div>
 						</div>
 						<kw-search-bar
@@ -178,7 +212,8 @@ export class KwTutorialViewer extends LitElement {
 					<div
 						class="tutorial-list"
 						data-testid="tutorial-list"
-						data-overlay-scroll="x:hidden y:scroll"
+						data-overlay-scroll="x:hidden y:scroll visibility:visible autoHide:never"
+						tabindex="0"
 						aria-label="Did you know? content"
 						@keydown=${this.onTutorialListKeydown}
 					>
@@ -189,18 +224,19 @@ export class KwTutorialViewer extends LitElement {
 					${selectedTutorial ? this.renderStandardDetail(selectedTutorial) : this.renderEmptyState(emptyMessage, 'content-empty')}
 					<footer class="standard-footer" aria-label="Did you know? actions">
 						<div class="compact-nav standard-nav" aria-label="Did you know? navigation">
-							<button class="icon-btn previous" data-testid="tutorial-standard-prev" title="Previous" aria-label="Previous" ?disabled=${!previousTutorial} @click=${() => previousTutorial ? this.openTutorial(previousTutorial.id, { markSeen: true }) : undefined}>${ICONS.chevron}</button>
+							<button class="icon-btn previous" data-testid="tutorial-standard-prev" title="Previous" aria-label="Previous" ?disabled=${!previousTutorial} @click=${() => previousTutorial ? this.openTutorial(previousTutorial.id, { markSeen: true, markSeenTutorialIds: currentTutorialId ? [currentTutorialId] : [] }) : undefined}>${ICONS.chevron}</button>
 							<span class="position" aria-label=${`Tutorial ${currentTutorialPosition} of ${tutorials.length}`}>${currentTutorialPosition} of ${tutorials.length}</span>
-							<button class="icon-btn" data-testid="tutorial-standard-next" title="Next" aria-label="Next" ?disabled=${!nextTutorial} @click=${() => nextTutorial ? this.openTutorial(nextTutorial.id, { markSeen: true }) : undefined}>${ICONS.chevron}</button>
+							<button class="icon-btn" data-testid="tutorial-standard-next" title="Next" aria-label="Next" ?disabled=${!nextTutorial} @click=${() => nextTutorial ? this.openTutorial(nextTutorial.id, { markSeen: true, markSeenTutorialIds: currentTutorialId ? [currentTutorialId] : [] }) : undefined}>${ICONS.chevron}</button>
 						</div>
 						<div class="standard-footer-actions">
 							${muteCategoryId ? html`
-								<div class="mute-wrap standard-mute-wrap">
+								<div class="mute-wrap standard-mute-wrap" @mouseenter=${this.cancelScheduledMuteMenuClose} @mouseleave=${this.scheduleMuteMenuClose}>
 									<button class="link-btn standard-footer-link" data-testid="tutorial-standard-mute" aria-expanded=${this.muteMenuOpen ? 'true' : 'false'} @click=${this.toggleMuteMenu}>Mute...</button>
 									${this.muteMenuOpen ? html`<div class="mute-menu" role="menu" aria-label="Mute Did you know?">${this.renderMuteMenu(muteCategoryId, mutePreference)}</div>` : nothing}
 								</div>
 							` : nothing}
 							<button class="link-btn standard-footer-link" data-testid="tutorial-mode-compact" @click=${() => this.setMode('compact')}>Compact</button>
+							<button class="action-btn primary standard-got-it" data-testid="tutorial-standard-got-it" @click=${this.dismissViewer}>Got it!</button>
 						</div>
 					</footer>
 				</main>
@@ -225,7 +261,7 @@ export class KwTutorialViewer extends LitElement {
 
 		return html`
 			<div class="compact-backdrop">
-				<div class="viewer-frame compact-frame" role="dialog" aria-modal="true" aria-label=${`Did you know? ${title}`} tabindex="-1" @keydown=${this.onCompactKeydown}>
+				<div class="viewer-frame compact-frame" style=${this.compactFrameStyle()} role="dialog" aria-modal="true" aria-label=${`Did you know? ${title}`} tabindex="-1" @keydown=${this.onCompactKeydown}>
 					<header class="compact-header">
 						<div class="compact-kicker-row">
 							<span class="compact-brand">Did you know?</span>
@@ -239,16 +275,17 @@ export class KwTutorialViewer extends LitElement {
 					</section>
 					<footer class="compact-footer" aria-label="Did you know? actions">
 						<div class="compact-nav" aria-label="Did you know? navigation">
-							<button class="icon-btn previous" data-testid="tutorial-prev" title="Previous" aria-label="Previous" ?disabled=${!previousAvailable} @click=${() => this.navigateCompact(-1, { markSeen: true })}>${ICONS.chevron}</button>
+							<button class="icon-btn previous" data-testid="tutorial-prev" title="Previous" aria-label="Previous" ?disabled=${!previousAvailable} @click=${(event: MouseEvent) => this.navigateCompactFromPointer(event, -1, { markSeen: true })}>${ICONS.chevron}</button>
 							<span class="position" aria-label=${`Tutorial ${index + 1} of ${sequence.length}`}>${index + 1} of ${sequence.length}</span>
-							<button class="icon-btn" data-testid="tutorial-next" title="Next" aria-label="Next" ?disabled=${!nextAvailable} @click=${() => this.navigateCompact(1, { markSeen: true })}>${ICONS.chevron}</button>
+							<button class="icon-btn" data-testid="tutorial-next" title="Next" aria-label="Next" ?disabled=${!nextAvailable} @click=${(event: MouseEvent) => this.navigateCompactFromPointer(event, 1, { markSeen: true })}>${ICONS.chevron}</button>
 						</div>
 						<div class="compact-utility-strip">
-							<div class="mute-wrap">
+							<div class="mute-wrap" @mouseenter=${this.cancelScheduledMuteMenuClose} @mouseleave=${this.scheduleMuteMenuClose}>
 								<button class="link-btn compact-link" data-testid="tutorial-compact-mute" aria-expanded=${this.muteMenuOpen ? 'true' : 'false'} @click=${this.toggleMuteMenu}>Mute...</button>
 								${this.muteMenuOpen ? html`<div class="mute-menu" role="menu" aria-label="Mute Did you know?">${this.renderMuteMenu(selectedTutorial.categoryId, preference)}</div>` : nothing}
 							</div>
 							<button class="link-btn compact-link" data-testid="tutorial-mode-standard" @click=${() => this.setMode('standard')}>Browse all</button>
+							<button class="action-btn primary compact-got-it" data-testid="tutorial-compact-got-it" @click=${this.dismissViewer}>Got it!</button>
 						</div>
 					</footer>
 				</div>
@@ -262,7 +299,7 @@ export class KwTutorialViewer extends LitElement {
 		const message = "There is nothing new to show you. In compact mode only content that you have not seen before is displayed. If you want to see everything, please use 'Browse all'";
 		return html`
 			<div class="compact-backdrop">
-				<div class="viewer-frame compact-frame compact-empty-frame" role="dialog" aria-modal="true" aria-label="Did you know?" tabindex="-1" @keydown=${this.onCompactKeydown}>
+				<div class="viewer-frame compact-frame compact-empty-frame" style=${this.compactFrameStyle()} role="dialog" aria-modal="true" aria-label="Did you know?" tabindex="-1" @keydown=${this.onCompactKeydown}>
 					<header class="compact-header">
 						<div class="compact-kicker-row">
 							<span class="compact-brand">Did you know?</span>
@@ -271,17 +308,18 @@ export class KwTutorialViewer extends LitElement {
 						<h1 data-testid="tutorial-viewer-title">Nothing to show right now</h1>
 					</header>
 					<section class="compact-content" data-overlay-scroll="x:hidden y:scroll" aria-label="Did you know? content">
-						${this.renderEmptyState(message)}
+						${this.renderEmptyState(message, 'compact-empty-message')}
 					</section>
 					<footer class="compact-footer" aria-label="Did you know? actions">
 						<div class="compact-utility-strip">
 							${muteCategoryId ? html`
-								<div class="mute-wrap">
+								<div class="mute-wrap" @mouseenter=${this.cancelScheduledMuteMenuClose} @mouseleave=${this.scheduleMuteMenuClose}>
 									<button class="link-btn compact-link" data-testid="tutorial-compact-mute" aria-expanded=${this.muteMenuOpen ? 'true' : 'false'} @click=${this.toggleMuteMenu}>Mute...</button>
 									${this.muteMenuOpen ? html`<div class="mute-menu" role="menu" aria-label="Mute Did you know?">${this.renderMuteMenu(muteCategoryId, mutePreference)}</div>` : nothing}
 								</div>
 							` : nothing}
 							<button class="link-btn compact-link" data-testid="tutorial-mode-standard" @click=${() => this.setMode('standard')}>Browse all</button>
+							<button class="action-btn primary compact-got-it" data-testid="tutorial-compact-got-it" @click=${this.dismissViewer}>Got it!</button>
 						</div>
 					</footer>
 				</div>
@@ -293,12 +331,20 @@ export class KwTutorialViewer extends LitElement {
 		return html`<div class=${`empty ${className}`.trim()} role="status">${message}</div>`;
 	}
 
-	private renderStatusInfo(): TemplateResult | typeof nothing {
+	private compactFrameStyle(): string {
+		if (!this.compactDialogOffsetX && !this.compactDialogOffsetY) {
+			return '';
+		}
+		return `--kw-compact-offset-x: ${this.formatOffset(this.compactDialogOffsetX)}px; --kw-compact-offset-y: ${this.formatOffset(this.compactDialogOffsetY)}px;`;
+	}
+
+	private formatOffset(value: number): string {
+		return String(Math.round(value * 100) / 100);
+	}
+
+	private refreshCatalogTitle(): string {
 		const statusText = this.statusText();
-		if (!statusText) return nothing;
-		return html`
-			<span class="status-info ${this.statusHasWarnings() ? 'warning' : ''}" tabindex="0" role="img" aria-label=${statusText} title=${statusText}>${ICONS.info}</span>
-		`;
+		return statusText ? `Refresh catalog\n\n${statusText}` : 'Refresh catalog';
 	}
 
 	private statusText(): string {
@@ -311,10 +357,6 @@ export class KwTutorialViewer extends LitElement {
 		}
 		const warnings = [...status.errors, ...status.warnings, this.hostError].filter(Boolean);
 		return `${parts.join(' - ')}${warnings.length ? `\n${warnings[0]}` : ''}`;
-	}
-
-	private statusHasWarnings(): boolean {
-		return !!this.snapshot && [...this.snapshot.status.errors, ...this.snapshot.status.warnings, this.hostError].filter(Boolean).length > 0;
 	}
 
 	private renderSearchHighlightedText(text: string, tutorialId: string, field: TutorialSearchMatch['field'], currentSearchMatch: TutorialSearchMatch | null, fieldMatchIndexOffset = 0): TemplateResult {
@@ -401,20 +443,38 @@ export class KwTutorialViewer extends LitElement {
 	private renderTutorialItem(tutorial: TutorialSummary, currentSearchMatch: TutorialSearchMatch | null = null): TemplateResult {
 		const active = this.selectedTutorialId === tutorial.id;
 		const title = this.tutorialDisplayName(tutorial);
+		const readStateTitle = tutorial.unseen ? 'Mark as read' : 'Mark as unread';
 		return html`
-			<button
-				class="tutorial-item ${active ? 'active' : ''} ${tutorial.compatible ? '' : 'incompatible'}"
-				data-testid="tutorial-item"
-				data-tutorial-id=${tutorial.id}
-				aria-current=${active ? 'true' : 'false'}
-				aria-label=${title}
-				@click=${() => this.openTutorial(tutorial.id, { markSeen: true })}
-			>
-				<span class="item-title">${this.renderSearchHighlightedText(title, tutorial.id, 'displayName', currentSearchMatch)}</span>
-				${this.renderContentSearchSnippet(tutorial, currentSearchMatch)}
-				${tutorial.compatible ? nothing : html`<span class="item-meta"><span>Requires ${tutorial.minExtensionVersion}</span></span>`}
-			</button>
+			<div class="tutorial-item-row ${active ? 'active' : ''} ${tutorial.compatible ? '' : 'incompatible'} ${tutorial.unseen ? 'unread' : 'read'}">
+				<button
+					class="read-toggle ${tutorial.unseen ? 'unread' : 'read'}"
+					data-testid="tutorial-read-toggle"
+					aria-label=${readStateTitle}
+					title=${readStateTitle}
+					@click=${(event: Event) => this.toggleTutorialSeen(event, tutorial)}
+				>
+					${tutorial.unseen ? ICONS.mailUnread : ICONS.mailRead}
+				</button>
+				<button
+					class="tutorial-item ${active ? 'active' : ''} ${tutorial.compatible ? '' : 'incompatible'}"
+					data-testid="tutorial-item"
+					data-tutorial-id=${tutorial.id}
+					aria-current=${active ? 'true' : 'false'}
+					aria-label=${title}
+					@click=${() => this.openTutorial(tutorial.id, { markSeen: true })}
+				>
+					<span class="item-title">${this.renderSearchHighlightedText(title, tutorial.id, 'displayName', currentSearchMatch)}</span>
+					${this.renderContentSearchSnippet(tutorial, currentSearchMatch)}
+					${tutorial.compatible ? nothing : html`<span class="item-meta"><span>Requires ${tutorial.minExtensionVersion}</span></span>`}
+				</button>
+			</div>
 		`;
+	}
+
+	private toggleTutorialSeen(event: Event, tutorial: TutorialSummary): void {
+		event.preventDefault();
+		event.stopPropagation();
+		this.setTutorialSeen(tutorial.id, tutorial.unseen);
 	}
 
 	private renderStandardDetail(tutorial: TutorialSummary): TemplateResult {
@@ -487,7 +547,7 @@ export class KwTutorialViewer extends LitElement {
 	private renderCategoryMuteSubmenu(disabled: boolean): TemplateResult {
 		const categories = this.snapshot?.catalog.categories ?? [];
 		return html`
-			<div class="mute-submenu-parent" @mouseenter=${() => this.openMuteCategorySubmenu()}>
+			<div class="mute-submenu-parent" @mouseenter=${() => this.openMuteCategorySubmenu()} @mouseleave=${this.closeMuteCategorySubmenu}>
 				<button
 					class="mute-menu-item mute-submenu-trigger"
 					role="menuitem"
@@ -611,6 +671,7 @@ export class KwTutorialViewer extends LitElement {
 		this.contentErrors = content.errors ?? [];
 		this.rememberContentTitle(content.tutorialId, content.markdown || '');
 		this.renderedMarkdown = await this.sanitizeMarkdown(content.markdown || '');
+		this.scheduleCompactPointerAdjustment();
 	}
 
 	private rememberContentTitle(tutorialId: string, markdown: string): void {
@@ -753,9 +814,14 @@ export class KwTutorialViewer extends LitElement {
 	}
 
 	private setMode(mode: TutorialViewerMode): void {
+		const wasCompactMode = this.isCompactMode();
 		const normalizedMode = this.normalizeMode(mode);
 		if (normalizedMode === 'compact' && !this.isCompactMode()) {
 			this.compactSessionTutorialIds = null;
+		}
+		if (normalizedMode === 'standard' && wasCompactMode) {
+			this.selectedCategoryId = null;
+			this.resetCompactDialogPosition();
 		}
 		this.mode = normalizedMode;
 		this.muteMenuOpen = false;
@@ -763,8 +829,13 @@ export class KwTutorialViewer extends LitElement {
 		this.vscode.postMessage({ type: 'setPreferredMode', mode: normalizedMode });
 	}
 
-	private openTutorial(tutorialId: string, options: { preserveMuteMenu?: boolean; markSeen?: boolean } = {}): void {
-		if (this.selectedTutorialId === tutorialId && (this.loadingTutorialId === tutorialId || this.loadedTutorialId === tutorialId)) return;
+	private openTutorial(tutorialId: string, options: { preserveMuteMenu?: boolean; markSeen?: boolean; markSeenTutorialIds?: string[] } = {}): void {
+		if (this.selectedTutorialId === tutorialId && (this.loadingTutorialId === tutorialId || this.loadedTutorialId === tutorialId)) {
+			if (options.markSeen) {
+				this.setTutorialSeen(tutorialId, true);
+			}
+			return;
+		}
 		if (!options.preserveMuteMenu) {
 			this.muteMenuOpen = false;
 			this.muteCategorySubmenuOpen = false;
@@ -778,7 +849,20 @@ export class KwTutorialViewer extends LitElement {
 		this.loadedTutorialId = null;
 		this.renderedMarkdown = '';
 		this.contentErrors = [];
-		this.vscode.postMessage(options.markSeen ? { type: 'openTutorial', tutorialId, markSeen: true } : { type: 'openTutorial', tutorialId });
+		const message: { type: 'openTutorial'; tutorialId: string; markSeen?: boolean; markSeenTutorialIds?: string[] } = { type: 'openTutorial', tutorialId };
+		if (options.markSeen) {
+			message.markSeen = true;
+		}
+		if (options.markSeenTutorialIds?.length) {
+			message.markSeenTutorialIds = options.markSeenTutorialIds;
+		}
+		this.vscode.postMessage(message);
+	}
+
+	private setTutorialSeen(tutorialId: string, seen: boolean): void {
+		this.muteMenuOpen = false;
+		this.muteCategorySubmenuOpen = false;
+		this.vscode.postMessage({ type: 'setTutorialSeen', tutorialId, seen });
 	}
 
 	private setNotificationChannel(categoryId: string, channel: TutorialNotificationChannel): void {
@@ -821,17 +905,65 @@ export class KwTutorialViewer extends LitElement {
 
 	private toggleMuteMenu = (event: Event): void => {
 		event.stopPropagation();
+		this.cancelScheduledMuteMenuClose();
 		this.muteMenuOpen = !this.muteMenuOpen;
 		if (!this.muteMenuOpen) {
 			this.muteCategorySubmenuOpen = false;
 		}
 	};
 
+	private closeMuteMenu = (): void => {
+		this.cancelScheduledMuteMenuClose();
+		if (!this.muteMenuOpen && !this.muteCategorySubmenuOpen) {
+			return;
+		}
+		this.muteMenuOpen = false;
+		this.muteCategorySubmenuOpen = false;
+	};
+
+	private scheduleMuteMenuClose = (): void => {
+		this.cancelScheduledMuteMenuClose();
+		this.muteMenuCloseTimer = window.setTimeout(() => this.closeMuteMenu(), 250);
+	};
+
+	private cancelScheduledMuteMenuClose = (): void => {
+		if (this.muteMenuCloseTimer === undefined) {
+			return;
+		}
+		window.clearTimeout(this.muteMenuCloseTimer);
+		this.muteMenuCloseTimer = undefined;
+	};
+
+	private onGlobalPointerDown = (event: PointerEvent): void => {
+		if (!this.muteMenuOpen) {
+			return;
+		}
+		const insideMuteMenu = event.composedPath().some(node => node instanceof HTMLElement && node.classList.contains('mute-wrap'));
+		if (!insideMuteMenu) {
+			this.closeMuteMenu();
+		}
+	};
+
+	private onGlobalKeyDown = (event: KeyboardEvent): void => {
+		if (event.key !== 'Escape' || !this.muteMenuOpen) {
+			return;
+		}
+		event.preventDefault();
+		event.stopPropagation();
+		this.closeMuteMenu();
+	};
+
 	private openMuteCategorySubmenu(): void {
+		this.cancelScheduledMuteMenuClose();
 		this.muteCategorySubmenuOpen = true;
 	}
 
+	private closeMuteCategorySubmenu = (): void => {
+		this.muteCategorySubmenuOpen = false;
+	};
+
 	private toggleMuteCategorySubmenu(): void {
+		this.cancelScheduledMuteMenuClose();
 		this.muteCategorySubmenuOpen = !this.muteCategorySubmenuOpen;
 	}
 
@@ -1022,6 +1154,115 @@ export class KwTutorialViewer extends LitElement {
 		} else {
 			this.requestUpdate();
 		}
+	}
+
+	private navigateCompactFromPointer(event: MouseEvent, direction: -1 | 1, options: { markSeen?: boolean } = {}): void {
+		const anchor = this.captureCompactPointerAnchor(event);
+		this.navigateCompact(direction, options);
+		if (anchor) {
+			this.trackCompactPointerAnchor(anchor);
+		}
+	}
+
+	private captureCompactPointerAnchor(event: MouseEvent): CompactPointerAnchor | null {
+		const button = event.currentTarget instanceof HTMLElement ? event.currentTarget : null;
+		const buttonTestId = button?.dataset.testid;
+		if (!button || (buttonTestId !== 'tutorial-prev' && buttonTestId !== 'tutorial-next')) {
+			return null;
+		}
+		if (!Number.isFinite(event.clientX) || !Number.isFinite(event.clientY)) {
+			return null;
+		}
+		const rect = button.getBoundingClientRect();
+		if (rect.width <= 0 || rect.height <= 0) {
+			return null;
+		}
+		return {
+			buttonTestId,
+			clientX: event.clientX,
+			clientY: event.clientY,
+			offsetX: clamp(event.clientX - rect.left, 0, rect.width),
+			offsetY: clamp(event.clientY - rect.top, 0, rect.height),
+		};
+	}
+
+	private trackCompactPointerAnchor(anchor: CompactPointerAnchor): void {
+		this.compactPointerAnchor = anchor;
+		this.clearCompactPointerAnchorTimer();
+		this.compactPointerAnchorTimer = window.setTimeout(() => {
+			if (this.compactPointerAnchor === anchor) {
+				this.compactPointerAnchor = null;
+			}
+		}, 1800);
+		this.scheduleCompactPointerAdjustment(anchor);
+	}
+
+	private scheduleCompactPointerAdjustment(anchor = this.compactPointerAnchor): void {
+		if (!anchor) {
+			return;
+		}
+		void this.updateComplete.then(() => {
+			if (this.compactPointerAnchor !== anchor || !this.isConnected || !this.isCompactMode()) {
+				return;
+			}
+			this.adjustCompactDialogForPointer(anchor);
+		});
+	}
+
+	private adjustCompactDialogForPointer(anchor: CompactPointerAnchor): void {
+		const button = this.shadowRoot?.querySelector<HTMLElement>(`[data-testid="${anchor.buttonTestId}"]`);
+		const frame = this.shadowRoot?.querySelector<HTMLElement>('.compact-frame');
+		if (!button || !frame) {
+			return;
+		}
+		const buttonRect = button.getBoundingClientRect();
+		const frameRect = frame.getBoundingClientRect();
+		if (buttonRect.width <= 0 || buttonRect.height <= 0 || frameRect.width <= 0 || frameRect.height <= 0) {
+			return;
+		}
+		const desiredLeft = anchor.clientX - clamp(anchor.offsetX, 0, buttonRect.width);
+		const desiredTop = anchor.clientY - clamp(anchor.offsetY, 0, buttonRect.height);
+		let deltaX = desiredLeft - buttonRect.left;
+		let deltaY = desiredTop - buttonRect.top;
+		const margin = 8;
+		const viewportWidth = window.innerWidth || document.documentElement.clientWidth || frameRect.right;
+		const viewportHeight = window.innerHeight || document.documentElement.clientHeight || frameRect.bottom;
+		if (frameRect.width < viewportWidth - margin * 2) {
+			const nextLeft = frameRect.left + deltaX;
+			const nextRight = frameRect.right + deltaX;
+			if (nextLeft < margin) deltaX += margin - nextLeft;
+			else if (nextRight > viewportWidth - margin) deltaX -= nextRight - (viewportWidth - margin);
+		} else {
+			deltaX = 0;
+		}
+		if (frameRect.height < viewportHeight - margin * 2) {
+			const nextTop = frameRect.top + deltaY;
+			const nextBottom = frameRect.bottom + deltaY;
+			if (nextTop < margin) deltaY += margin - nextTop;
+			else if (nextBottom > viewportHeight - margin) deltaY -= nextBottom - (viewportHeight - margin);
+		} else {
+			deltaY = 0;
+		}
+		if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) {
+			return;
+		}
+		this.compactDialogOffsetX += deltaX;
+		this.compactDialogOffsetY += deltaY;
+	}
+
+	private resetCompactDialogPosition(): void {
+		this.compactDialogOffsetX = 0;
+		this.compactDialogOffsetY = 0;
+		this.compactPointerAnchor = null;
+		this.clearCompactPointerAnchorTimer();
+	}
+
+	private clearCompactPointerAnchorTimer(): void {
+		if (this.compactPointerAnchorTimer === undefined) {
+			return;
+		}
+		window.clearTimeout(this.compactPointerAnchorTimer);
+		this.compactPointerAnchorTimer = undefined;
 	}
 
 	private hasPendingCompactQueueNavigation(currentTutorialId: string, direction: -1 | 1): boolean {
