@@ -19,6 +19,8 @@ import { registerRemoteFileOpener } from './remoteFileOpener';
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { exportSkillCommand, checkAndUpdateSkillFiles } from './skillExport';
 import { TutorialCatalogService } from './tutorials/tutorialCatalogService';
+import { TutorialNotificationService } from './tutorials/tutorialNotificationService';
+import { registerTutorialNotificationTriggers } from './tutorials/tutorialNotificationTriggers';
 import { TutorialSubscriptionService } from './tutorials/tutorialSubscriptionService';
 import { TutorialViewerPanel } from './tutorials/tutorialViewerPanel';
 import type { TutorialViewerMode } from '../shared/tutorials/tutorialCatalog';
@@ -111,6 +113,8 @@ export function activate(context: vscode.ExtensionContext) {
 	const openTutorials = async (selectedCategoryId?: string, preferredMode: TutorialViewerMode = 'standard'): Promise<void> => {
 		TutorialViewerPanel.open(context, context.extensionUri, tutorialCatalogService, tutorialSubscriptionService, { selectedCategoryId, preferredMode });
 	};
+	const tutorialNotificationService = new TutorialNotificationService(context, tutorialCatalogService, tutorialSubscriptionService, openTutorials);
+	registerTutorialNotificationTriggers(context, tutorialNotificationService);
 
 	// Shared SQL lazy-init (used by both editor provider and connection manager viewer)
 	let _sqlConnectionManager: SqlConnectionManager | undefined;

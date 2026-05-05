@@ -799,10 +799,10 @@ export class KwTutorialViewer extends LitElement {
 		this.compactSessionTutorialIds = this.projectCompactSessionTutorialIds(this.compactSessionTutorialIds ?? this.createCompactSessionTutorialIds());
 		this.currentSearchMatchIndex = 0;
 		if (muted) {
-			this.vscode.postMessage({ type: 'setNotificationChannel', categoryId, channel: 'off' });
+			this.vscode.postMessage({ type: 'setCategoryMuted', categoryId, muted: true });
 			return;
 		}
-		this.vscode.postMessage({ type: 'setNotificationChannel', categoryId, channel: 'nextFileOpenPopup' });
+		this.vscode.postMessage({ type: 'setCategoryMuted', categoryId, muted: false });
 	}
 
 	private setNotificationCadence(categoryId: string, notificationCadence: TutorialNotificationCadence): void {

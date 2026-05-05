@@ -10,10 +10,13 @@ import {
 
 const SUBSCRIPTION_STATE_KEY = 'kusto.tutorials.subscriptions.v1';
 
+type ActiveTutorialNotificationChannel = Exclude<TutorialNotificationChannel, 'off'>;
+
 interface StoredTutorialCategoryPreference {
 	categoryId: string;
 	subscribed: boolean;
 	channel: TutorialNotificationChannel;
+	previousChannel?: ActiveTutorialNotificationChannel;
 	notificationCadence: TutorialNotificationCadence;
 	muted?: boolean;
 	lastNotifiedAt?: string;
@@ -23,6 +26,10 @@ interface StoredTutorialCategoryPreference {
 interface StoredTutorialSubscriptions {
 	categories: StoredTutorialCategoryPreference[];
 	lastDigestAt?: string;
+}
+
+function isActiveNotificationChannel(value: unknown): value is ActiveTutorialNotificationChannel {
+	return value === 'nextFileOpenPopup' || value === 'vscodeNotification';
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -44,6 +51,7 @@ function normalizeStored(value: unknown): StoredTutorialSubscriptions {
 			categoryId: raw.categoryId,
 			subscribed: raw.subscribed === true,
 			channel,
+			previousChannel: isActiveNotificationChannel(raw.previousChannel) ? raw.previousChannel : isActiveNotificationChannel(channel) ? channel : undefined,
 			notificationCadence,
 			muted: raw.muted === true,
 			lastNotifiedAt: typeof raw.lastNotifiedAt === 'string' ? raw.lastNotifiedAt : undefined,
@@ -94,9 +102,9 @@ export class TutorialSubscriptionService {
 		preference.subscribed = subscribed;
 		preference.muted = false;
 		if (!subscribed) {
-			preference.channel = 'off';
+			this.disablePreference(preference);
 		} else if (preference.channel === 'off') {
-			preference.channel = 'nextFileOpenPopup';
+			this.unmutePreference(preference);
 		}
 		await this.writeState(stored);
 	}
@@ -108,9 +116,9 @@ export class TutorialSubscriptionService {
 			preference.subscribed = subscribed;
 			preference.muted = false;
 			if (!subscribed) {
-				preference.channel = 'off';
+				this.disablePreference(preference);
 			} else if (preference.channel === 'off') {
-				preference.channel = 'nextFileOpenPopup';
+				this.unmutePreference(preference);
 			}
 		}
 		await this.writeState(stored);
@@ -119,9 +127,25 @@ export class TutorialSubscriptionService {
 	async setChannel(categoryId: string, channel: TutorialNotificationChannel): Promise<void> {
 		const stored = normalizeStored(this.context.globalState.get(SUBSCRIPTION_STATE_KEY));
 		const preference = this.ensurePreference(stored, categoryId);
-		preference.channel = channel;
-		preference.subscribed = channel !== 'off';
-		preference.muted = channel === 'off';
+		if (channel === 'off') {
+			this.mutePreference(preference);
+		} else {
+			preference.channel = channel;
+			preference.previousChannel = channel;
+			preference.subscribed = true;
+			preference.muted = false;
+		}
+		await this.writeState(stored);
+	}
+
+	async setMuted(categoryId: string, muted: boolean): Promise<void> {
+		const stored = normalizeStored(this.context.globalState.get(SUBSCRIPTION_STATE_KEY));
+		const preference = this.ensurePreference(stored, categoryId);
+		if (muted) {
+			this.mutePreference(preference);
+		} else {
+			this.unmutePreference(preference);
+		}
 		await this.writeState(stored);
 	}
 
@@ -183,6 +207,32 @@ export class TutorialSubscriptionService {
 			stored.categories.push(preference);
 		}
 		return preference;
+	}
+
+	private mutePreference(preference: StoredTutorialCategoryPreference): void {
+		if (isActiveNotificationChannel(preference.channel)) {
+			preference.previousChannel = preference.channel;
+		}
+		preference.channel = 'off';
+		preference.subscribed = false;
+		preference.muted = true;
+	}
+
+	private disablePreference(preference: StoredTutorialCategoryPreference): void {
+		if (isActiveNotificationChannel(preference.channel)) {
+			preference.previousChannel = preference.channel;
+		}
+		preference.channel = 'off';
+		preference.subscribed = false;
+		preference.muted = false;
+	}
+
+	private unmutePreference(preference: StoredTutorialCategoryPreference): void {
+		const channel = preference.previousChannel ?? 'nextFileOpenPopup';
+		preference.channel = channel;
+		preference.previousChannel = channel;
+		preference.subscribed = true;
+		preference.muted = false;
 	}
 
 	private async writeState(state: StoredTutorialSubscriptions): Promise<void> {

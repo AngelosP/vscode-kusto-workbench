@@ -1,18 +1,46 @@
 import * as vscode from 'vscode';
-import type { TutorialItem, TutorialNotificationCadence, TutorialViewerMode } from '../../shared/tutorials/tutorialCatalog';
+import type { TutorialItem, TutorialNotificationCadence, TutorialNotificationChannel, TutorialViewerMode } from '../../shared/tutorials/tutorialCatalog';
 import { TutorialCatalogService } from './tutorialCatalogService';
 import { TutorialSubscriptionService } from './tutorialSubscriptionService';
 
 const DIGEST_THROTTLE_MS = 6 * 60 * 60 * 1000;
 const AUTOMATIC_CHECK_DATE_KEY = 'kusto.tutorials.lastAutomaticCheckDate.v1';
+const PENDING_POPUPS_KEY = 'kusto.tutorials.pendingPopups.v1';
 const CADENCE_INTERVAL_MS: Record<TutorialNotificationCadence, number> = {
 	daily: 24 * 60 * 60 * 1000,
 	weekly: 7 * 24 * 60 * 60 * 1000,
 	monthly: 30 * 24 * 60 * 60 * 1000,
 };
 
+interface PendingTutorialPopup {
+	categoryId: string;
+	title: string;
+	count: number;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+function normalizePendingPopups(value: unknown): PendingTutorialPopup[] {
+	if (!Array.isArray(value)) {
+		return [];
+	}
+	const popups: PendingTutorialPopup[] = [];
+	for (const raw of value) {
+		if (!isRecord(raw) || typeof raw.categoryId !== 'string' || typeof raw.title !== 'string' || typeof raw.count !== 'number') {
+			continue;
+		}
+		if (!Number.isFinite(raw.count) || raw.count < 1) {
+			continue;
+		}
+		popups.push({ categoryId: raw.categoryId, title: raw.title, count: Math.floor(raw.count) });
+	}
+	return popups;
+}
+
 export class TutorialNotificationService {
-	private pendingPopup: { categoryId: string; title: string; count: number } | null = null;
+	private pendingPopups: PendingTutorialPopup[];
 	private checking = false;
 
 	constructor(
@@ -20,27 +48,30 @@ export class TutorialNotificationService {
 		private readonly catalogService: TutorialCatalogService,
 		private readonly subscriptionService: TutorialSubscriptionService,
 		private readonly openViewer: (categoryId?: string, preferredMode?: TutorialViewerMode) => Promise<void>,
-	) { }
+	) {
+		this.pendingPopups = normalizePendingPopups(this.context.globalState.get(PENDING_POPUPS_KEY));
+	}
 
 	async checkOnKustoFileOpen(): Promise<void> {
 		if (!this.catalogService.getSettings().enabled) {
-			this.pendingPopup = null;
+			await this.clearPendingPopups();
 			return;
 		}
-		if (this.subscriptionService.getSubscribedCategoryIds().length === 0) {
+		const pendingPopups = await this.takeDeliverablePendingPopups();
+		if (pendingPopups.length === 0) {
 			return;
 		}
-		if (this.pendingPopup) {
-			const pending = this.pendingPopup;
-			this.pendingPopup = null;
-			const action = await vscode.window.showInformationMessage(
-				`${pending.count} new ${pending.title} tutorial update${pending.count === 1 ? '' : 's'} available.`,
-				'Open Did you know?',
-				'Dismiss',
-			);
-			if (action === 'Open Did you know?') {
-				await this.openViewer(pending.categoryId, 'compact');
-			}
+		const action = await vscode.window.showInformationMessage(
+			this.pendingPopupMessage(pendingPopups),
+			'Open Did you know?',
+			'Dismiss',
+		);
+		const notifiedAt = new Date().toISOString();
+		for (const pending of pendingPopups) {
+			await this.subscriptionService.markCategoryNotified(pending.categoryId, notifiedAt);
+		}
+		if (action === 'Open Did you know?') {
+			await this.openViewer(pendingPopups.length === 1 ? pendingPopups[0].categoryId : undefined, 'compact');
 		}
 	}
 
@@ -84,7 +115,7 @@ export class TutorialNotificationService {
 				return;
 			}
 			const preferences = this.subscriptionService.getPreferences(resolved.catalog);
-			const digests: Array<{ categoryId: string; title: string; content: TutorialItem[]; channel: string }> = [];
+			const digests: Array<{ categoryId: string; title: string; content: TutorialItem[]; channel: TutorialNotificationChannel }> = [];
 			for (const preference of preferences) {
 				if (!preference.subscribed || preference.channel === 'off') {
 					continue;
@@ -104,18 +135,70 @@ export class TutorialNotificationService {
 			if (digests.length === 0) {
 				return;
 			}
+			const deliverableDigests = digests.filter(digest => digest.channel === 'nextFileOpenPopup' || (digest.channel === 'vscodeNotification' && options.allowVsCodeNotification));
+			if (deliverableDigests.length === 0) {
+				return;
+			}
 			await this.subscriptionService.setLastDigestAt(new Date().toISOString());
-			for (const digest of digests) {
-				await this.subscriptionService.markCategoryNotified(digest.categoryId);
+			let pendingPopupsChanged = false;
+			for (const digest of deliverableDigests) {
 				if (digest.channel === 'nextFileOpenPopup') {
-					this.pendingPopup = { categoryId: digest.categoryId, title: digest.title, count: digest.content.length };
-				} else if (digest.channel === 'vscodeNotification' && options.allowVsCodeNotification) {
+					this.queuePendingPopup({ categoryId: digest.categoryId, title: digest.title, count: digest.content.length });
+					pendingPopupsChanged = true;
+				} else if (digest.channel === 'vscodeNotification') {
 					await this.showDigestNotification(digest.categoryId, digest.title, digest.content);
+					await this.subscriptionService.markCategoryNotified(digest.categoryId);
 				}
+			}
+			if (pendingPopupsChanged) {
+				await this.persistPendingPopups();
 			}
 		} finally {
 			this.checking = false;
 		}
+	}
+
+	private async takeDeliverablePendingPopups(): Promise<PendingTutorialPopup[]> {
+		if (this.pendingPopups.length === 0) {
+			return [];
+		}
+		const deliverable = this.pendingPopups.filter(popup => this.canDeliverPendingPopup(popup));
+		this.pendingPopups = [];
+		await this.persistPendingPopups();
+		return deliverable;
+	}
+
+	private canDeliverPendingPopup(popup: PendingTutorialPopup): boolean {
+		const preference = this.subscriptionService.getStoredPreference(popup.categoryId);
+		return preference?.subscribed === true && preference.muted !== true && preference.channel === 'nextFileOpenPopup';
+	}
+
+	private queuePendingPopup(popup: PendingTutorialPopup): void {
+		this.pendingPopups = [
+			...this.pendingPopups.filter(candidate => candidate.categoryId !== popup.categoryId),
+			popup,
+		];
+	}
+
+	private async clearPendingPopups(): Promise<void> {
+		if (this.pendingPopups.length === 0) {
+			return;
+		}
+		this.pendingPopups = [];
+		await this.persistPendingPopups();
+	}
+
+	private async persistPendingPopups(): Promise<void> {
+		await this.context.globalState.update(PENDING_POPUPS_KEY, this.pendingPopups.length > 0 ? this.pendingPopups : undefined);
+	}
+
+	private pendingPopupMessage(popups: PendingTutorialPopup[]): string {
+		if (popups.length === 1) {
+			const pending = popups[0];
+			return `${pending.count} new ${pending.title} tutorial update${pending.count === 1 ? '' : 's'} available.`;
+		}
+		const count = popups.reduce((total, pending) => total + pending.count, 0);
+		return `${count} new tutorial updates available across ${popups.length} categories.`;
 	}
 
 	private async showDigestNotification(categoryId: string, title: string, content: TutorialItem[]): Promise<void> {

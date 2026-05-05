@@ -300,7 +300,7 @@ describe('kw-tutorial-viewer', () => {
 		await viewer.updateComplete;
 		const agentMute = viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute-category-agent"]') as HTMLButtonElement;
 		agentMute.click();
-		expect(postedMessages).toContainEqual({ type: 'setNotificationChannel', categoryId: 'agent', channel: 'off' });
+		expect(postedMessages).toContainEqual({ type: 'setCategoryMuted', categoryId: 'agent', muted: true });
 		await settle(viewer);
 		expect(viewer.shadowRoot!.querySelector('.mute-menu')).toBeTruthy();
 		expect(postedMessages).toContainEqual({ type: 'openTutorial', tutorialId: 'chart-start' });
@@ -311,7 +311,7 @@ describe('kw-tutorial-viewer', () => {
 		const mutedAgent = viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute-category-agent"]') as HTMLButtonElement;
 		expect(mutedAgent.getAttribute('aria-checked')).toBe('true');
 		mutedAgent.click();
-		expect(postedMessages).toContainEqual({ type: 'setNotificationChannel', categoryId: 'agent', channel: 'nextFileOpenPopup' });
+		expect(postedMessages).toContainEqual({ type: 'setCategoryMuted', categoryId: 'agent', muted: false });
 		await settle(viewer);
 		expect((viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute-category-agent"]') as HTMLButtonElement).getAttribute('aria-checked')).toBe('false');
 		expect(viewer.shadowRoot!.textContent).toContain('1 of 3');
@@ -377,7 +377,7 @@ describe('kw-tutorial-viewer', () => {
 		expect(muteCategory.textContent).toContain('Agent workflow');
 		expect(muteCategory.getAttribute('aria-checked')).toBe('false');
 		muteCategory.click();
-		expect(postedMessages).toContainEqual({ type: 'setNotificationChannel', categoryId: 'agent', channel: 'off' });
+		expect(postedMessages).toContainEqual({ type: 'setCategoryMuted', categoryId: 'agent', muted: true });
 		await viewer.updateComplete;
 		expect(viewer.shadowRoot!.querySelector('.mute-menu')).toBeTruthy();
 		const mutedCategory = viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute-category-agent"]') as HTMLButtonElement;
@@ -386,7 +386,7 @@ describe('kw-tutorial-viewer', () => {
 		expect((viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-popup-channel"]') as HTMLButtonElement).getAttribute('aria-checked')).toBe('true');
 		expect((viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-notification-channel"]') as HTMLButtonElement).getAttribute('aria-checked')).toBe('false');
 		mutedCategory.click();
-		expect(postedMessages).toContainEqual({ type: 'setNotificationChannel', categoryId: 'agent', channel: 'nextFileOpenPopup' });
+		expect(postedMessages).toContainEqual({ type: 'setCategoryMuted', categoryId: 'agent', muted: false });
 		await viewer.updateComplete;
 		expect((viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute-category-agent"]') as HTMLButtonElement).getAttribute('aria-checked')).toBe('false');
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute"]') as HTMLButtonElement).click();
@@ -555,13 +555,13 @@ describe('kw-tutorial-viewer', () => {
 		await viewer.updateComplete;
 		const chartMute = viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute-category-charts"]') as HTMLButtonElement;
 		chartMute.click();
-		expect(postedMessages).toContainEqual({ type: 'setNotificationChannel', categoryId: 'charts', channel: 'off' });
+		expect(postedMessages).toContainEqual({ type: 'setCategoryMuted', categoryId: 'charts', muted: true });
 		await settle(viewer);
 		expect(viewer.shadowRoot!.textContent).not.toContain('Chart start');
 		expect(viewer.shadowRoot!.textContent).toContain('Based on the current settings, there is no content to show at the moment.');
 		expect(viewer.shadowRoot!.querySelector('.standard-nav')!.textContent).toContain('0 of 0');
 		(viewer.shadowRoot!.querySelector('[data-testid="tutorial-compact-mute-category-charts"]') as HTMLButtonElement).click();
-		expect(postedMessages).toContainEqual({ type: 'setNotificationChannel', categoryId: 'charts', channel: 'nextFileOpenPopup' });
+		expect(postedMessages).toContainEqual({ type: 'setCategoryMuted', categoryId: 'charts', muted: false });
 		await settle(viewer);
 		expect(viewer.shadowRoot!.textContent).toContain('Chart start');
 		expect(viewer.shadowRoot!.querySelector('.standard-nav')!.textContent).toContain('1 of 1');

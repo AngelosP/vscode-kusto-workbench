@@ -1,8 +1,15 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
+import * as vscode from 'vscode';
+import { resolveTutorialsEnabledConfigurationTarget, TutorialViewerPanel } from '../../../src/host/tutorials/tutorialViewerPanel.js';
 
 describe('TutorialViewerPanel HTML template', () => {
+	afterEach(() => {
+		vi.restoreAllMocks();
+		vscode.workspace.workspaceFolders = [];
+	});
+
 	it('replaces the codicon font URI placeholder used by the template', () => {
 		const root = process.cwd();
 		const template = readFileSync(join(root, 'src', 'webview', 'tutorial-viewer.html'), 'utf8');
@@ -21,5 +28,25 @@ describe('TutorialViewerPanel HTML template', () => {
 		expect(panelSource).toContain('await this.postTutorial(message.tutorialId, { markSeen: message.markSeen === true });');
 		expect(panelSource).toContain('if (options.markSeen)');
 		expect(panelSource).toContain('await this.subscriptionService.markTutorialSeen(tutorial.categoryId, tutorial.updateToken);');
+	});
+
+	it('updates the explicit workspace scope when Did you know is disabled there', () => {
+		expect(resolveTutorialsEnabledConfigurationTarget({ workspaceValue: false }, false)).toBe(vscode.ConfigurationTarget.Workspace);
+		expect(resolveTutorialsEnabledConfigurationTarget({ workspaceFolderValue: false, workspaceValue: true }, true)).toBe(vscode.ConfigurationTarget.WorkspaceFolder);
+		expect(resolveTutorialsEnabledConfigurationTarget({ globalValue: false }, false)).toBe(vscode.ConfigurationTarget.Global);
+	});
+
+	it('writes the enabled setting back to workspace scope when that scope disabled it', async () => {
+		const update = vi.fn(async () => undefined);
+		vscode.workspace.workspaceFolders = [{ uri: vscode.Uri.file('/workspace') }] as any;
+		vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({
+			inspect: () => ({ workspaceValue: false }),
+			update,
+		} as any);
+
+		await (TutorialViewerPanel.prototype as any).setTutorialsEnabled.call({}, true);
+
+		expect(vscode.workspace.getConfiguration).toHaveBeenCalledWith('kustoWorkbench', vscode.workspace.workspaceFolders[0].uri);
+		expect(update).toHaveBeenCalledWith('didYouKnow.enabled', true, vscode.ConfigurationTarget.Workspace);
 	});
 });

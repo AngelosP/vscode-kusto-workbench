@@ -1,0 +1,7 @@
+{
+  "workspaceSettings": {
+    "git.openRepositoryInParentFolders": "never",
+    "workbench.secondarySideBar.defaultVisibility": "hidden",
+    "kustoWorkbench.didYouKnow.enabled": false
+  }
+}

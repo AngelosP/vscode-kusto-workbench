@@ -99,7 +99,15 @@ export enum StatusBarAlignment {
 	Right = 2,
 }
 
+export enum ConfigurationTarget {
+	Global = 1,
+	Workspace = 2,
+	WorkspaceFolder = 3,
+}
+
 export const window = {
+	activeTextEditor: undefined as any,
+	onDidChangeActiveTextEditor: () => ({ dispose: () => {} }),
 	createOutputChannel: () => ({ appendLine: () => {}, dispose: () => {} }),
 	showInformationMessage: () => Promise.resolve(undefined),
 	showErrorMessage: () => Promise.resolve(undefined),
@@ -141,8 +149,11 @@ export const __mockFileSystem = {
 };
 
 export const workspace = {
+	textDocuments: [] as any[],
+	workspaceFolders: [] as any[],
 	getConfiguration: () => ({
 		get: () => undefined,
+		inspect: () => undefined,
 		update: () => Promise.resolve(),
 	}),
 	fs: {
@@ -159,6 +170,7 @@ export const workspace = {
 			fileSystemStore.set(uri.fsPath, bytes);
 		},
 	},
+	onDidOpenTextDocument: () => ({ dispose: () => {} }),
 	onDidChangeConfiguration: () => ({ dispose: () => {} }),
 };
 

@@ -20,6 +20,7 @@ type TutorialViewerMessage =
 	| { type: 'setPreferredMode'; mode: TutorialViewerMode }
 	| { type: 'setCategorySubscription'; categoryId: string; subscribed: boolean }
 	| { type: 'setCategorySubscriptions'; categoryIds: string[]; subscribed: boolean }
+	| { type: 'setCategoryMuted'; categoryId: string; muted: boolean }
 	| { type: 'setNotificationCadence'; categoryId: string; notificationCadence: TutorialNotificationCadence }
 	| { type: 'setNotificationChannel'; categoryId: string; channel: TutorialNotificationChannel }
 	| { type: 'setTutorialsEnabled'; enabled: boolean; dismissAfterUpdate?: boolean }
@@ -29,6 +30,25 @@ interface TutorialViewerOpenOptions {
 	selectedCategoryId?: string;
 	selectedTutorialId?: string;
 	preferredMode?: TutorialViewerMode;
+}
+
+interface InspectedTutorialsEnabledConfiguration {
+	globalValue?: boolean;
+	workspaceFolderValue?: boolean;
+	workspaceValue?: boolean;
+}
+
+export function resolveTutorialsEnabledConfigurationTarget(
+	inspected: InspectedTutorialsEnabledConfiguration | undefined,
+	hasWorkspaceFolder: boolean,
+): vscode.ConfigurationTarget {
+	if (hasWorkspaceFolder && inspected?.workspaceFolderValue !== undefined) {
+		return vscode.ConfigurationTarget.WorkspaceFolder;
+	}
+	if (inspected?.workspaceValue !== undefined) {
+		return vscode.ConfigurationTarget.Workspace;
+	}
+	return vscode.ConfigurationTarget.Global;
 }
 
 export class TutorialViewerPanel {
@@ -126,6 +146,10 @@ export class TutorialViewerPanel {
 					await this.postSnapshot();
 					break;
 				}
+				case 'setCategoryMuted':
+					await this.subscriptionService.setMuted(message.categoryId, !!message.muted);
+					await this.postSnapshot();
+					break;
 				case 'setNotificationChannel':
 					if (isTutorialNotificationChannel(message.channel)) {
 						await this.subscriptionService.setChannel(message.categoryId, message.channel);
@@ -195,7 +219,12 @@ export class TutorialViewerPanel {
 	}
 
 	private async setTutorialsEnabled(enabled: boolean): Promise<void> {
-		await vscode.workspace.getConfiguration('kustoWorkbench').update('didYouKnow.enabled', enabled, vscode.ConfigurationTarget.Global);
+		const workspaceFolder = vscode.workspace.workspaceFolders?.[0];
+		const configuration = workspaceFolder
+			? vscode.workspace.getConfiguration('kustoWorkbench', workspaceFolder.uri)
+			: vscode.workspace.getConfiguration('kustoWorkbench');
+		const target = resolveTutorialsEnabledConfigurationTarget(configuration.inspect<boolean>('didYouKnow.enabled'), workspaceFolder !== undefined);
+		await configuration.update('didYouKnow.enabled', enabled, target);
 	}
 
 	private buildHtml(webview: vscode.Webview): string {
