@@ -121,7 +121,7 @@ export class OverlayScrollbarsController implements ReactiveController {
 					visibility: scrollOptions.visibility ?? DEFAULT_OPTIONS.scrollbars?.visibility,
 				},
 			};
-			const instance = OverlayScrollbars(el, opts);
+			const instance = OverlayScrollbars({ target: el, elements: { viewport: el } }, opts);
 			this._instances.set(el, instance);
 
 			// Force-hide native scrollbar on the viewport element.

@@ -131,6 +131,24 @@ export function activate(context: vscode.ExtensionContext) {
 	const tutorialNotificationService = new TutorialNotificationService(context, tutorialCatalogService, tutorialSubscriptionService, openTutorialPopup);
 	registerTutorialNotificationTriggers(context, tutorialNotificationService);
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
+		const getActiveTutorialTriggerDocument = async (): Promise<vscode.TextDocument | undefined> => {
+			const activeDocument = vscode.window.activeTextEditor?.document;
+			const activeTabInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
+			const activeTabUri = activeTabInput instanceof vscode.TabInputText || activeTabInput instanceof vscode.TabInputCustom
+				? activeTabInput.uri
+				: undefined;
+			const activeTabDocument = activeTabUri !== undefined && isKustoTutorialTriggerUri(activeTabUri)
+				? await vscode.workspace.openTextDocument(activeTabUri)
+				: undefined;
+			if (activeDocument !== undefined && isKustoTutorialTriggerDocument(activeDocument)) {
+				return activeDocument;
+			}
+			if (activeTabDocument !== undefined) {
+				return activeTabDocument;
+			}
+			return vscode.workspace.textDocuments.find(doc => isKustoTutorialTriggerDocument(doc));
+		};
+
 		const resetDidYouKnowState = async (options?: { openIfKustoFileOpen?: boolean; silent?: boolean }) => {
 			const configuration = vscode.workspace.getConfiguration('kustoWorkbench');
 			const configurationTarget = resolveTutorialsEnabledConfigurationTarget(
@@ -142,22 +160,7 @@ export function activate(context: vscode.ExtensionContext) {
 			const result = await resetDidYouKnowDevelopmentState(context, tutorialCatalogService);
 			tutorialNotificationService.reloadPendingPopups();
 
-			const activeDocument = vscode.window.activeTextEditor?.document;
-			const activeTabInput = vscode.window.tabGroups.activeTabGroup.activeTab?.input;
-			const activeTabUri = activeTabInput instanceof vscode.TabInputText || activeTabInput instanceof vscode.TabInputCustom
-				? activeTabInput.uri
-				: undefined;
-			const activeTabDocument = activeTabUri !== undefined && isKustoTutorialTriggerUri(activeTabUri)
-				? await vscode.workspace.openTextDocument(activeTabUri)
-				: undefined;
-			let triggerDocument: vscode.TextDocument | undefined;
-			if (activeDocument !== undefined && isKustoTutorialTriggerDocument(activeDocument)) {
-				triggerDocument = activeDocument;
-			} else if (activeTabDocument !== undefined) {
-				triggerDocument = activeTabDocument;
-			} else {
-				triggerDocument = vscode.workspace.textDocuments.find(doc => isKustoTutorialTriggerDocument(doc));
-			}
+			const triggerDocument = await getActiveTutorialTriggerDocument();
 			const openedCompact = options?.openIfKustoFileOpen === true && triggerDocument !== undefined;
 			if (openedCompact) {
 				await tutorialNotificationService.checkOnKustoFileOpen(triggerDocument);
@@ -173,6 +176,12 @@ export function activate(context: vscode.ExtensionContext) {
 
 		context.subscriptions.push(
 			vscode.commands.registerCommand('kustoWorkbench.test.resetDidYouKnowState', resetDidYouKnowState),
+			vscode.commands.registerCommand('kustoWorkbench.test.openEmbeddedDidYouKnow', async () => {
+				const triggerDocument = await getActiveTutorialTriggerDocument();
+				return triggerDocument !== undefined
+					? await openTutorialPopup(undefined, 'compact', triggerDocument)
+					: false;
+			}),
 			vscode.commands.registerCommand('kustoWorkbench.dev.resetDidYouKnowState', async () => {
 				const result = await resetDidYouKnowState({ silent: false });
 				return result;

@@ -1,4 +1,4 @@
-import { LitElement, html, nothing, type TemplateResult } from 'lit';
+import { LitElement, html, nothing, type PropertyValues, type TemplateResult } from 'lit';
 import { customElement, state } from 'lit/decorators.js';
 import '../components/kw-dropdown.js';
 import '../components/kw-search-bar.js';
@@ -93,6 +93,7 @@ export class KwTutorialViewer extends LitElement {
 	private compactSessionTutorialIds: string[] | null = null;
 	private compactPointerAnchor: CompactPointerAnchor | null = null;
 	private compactPointerAnchorTimer: number | undefined;
+	private compactLayoutObserver: ResizeObserver | undefined;
 	private muteMenuCloseTimer: number | undefined;
 
 	connectedCallback(): void {
@@ -109,7 +110,12 @@ export class KwTutorialViewer extends LitElement {
 		window.removeEventListener('pointerdown', this.onGlobalPointerDown, true);
 		window.removeEventListener('keydown', this.onGlobalKeyDown, true);
 		this.clearCompactPointerAnchorTimer();
+		this.disconnectCompactLayoutObserver();
 		this.cancelScheduledMuteMenuClose();
+	}
+
+	protected override updated(_changedProperties: PropertyValues): void {
+		this.updateCompactLayoutObserver();
 	}
 
 	render(): TemplateResult {
@@ -626,6 +632,7 @@ export class KwTutorialViewer extends LitElement {
 				this.modeInitialized = true;
 			}
 			this.applyHostSelection(snapshot);
+			this.scheduleCompactPointerAdjustment();
 		} else if (message.type === 'tutorialContent') {
 			void this.showTutorialContent(message.content as TutorialContentMessage);
 		} else if (message.type === 'error') {
@@ -1193,7 +1200,7 @@ export class KwTutorialViewer extends LitElement {
 			if (this.compactPointerAnchor === anchor) {
 				this.compactPointerAnchor = null;
 			}
-		}, 1800);
+		}, 4000);
 		this.scheduleCompactPointerAdjustment(anchor);
 	}
 
@@ -1222,27 +1229,8 @@ export class KwTutorialViewer extends LitElement {
 		}
 		const desiredLeft = anchor.clientX - clamp(anchor.offsetX, 0, buttonRect.width);
 		const desiredTop = anchor.clientY - clamp(anchor.offsetY, 0, buttonRect.height);
-		let deltaX = desiredLeft - buttonRect.left;
-		let deltaY = desiredTop - buttonRect.top;
-		const margin = 8;
-		const viewportWidth = window.innerWidth || document.documentElement.clientWidth || frameRect.right;
-		const viewportHeight = window.innerHeight || document.documentElement.clientHeight || frameRect.bottom;
-		if (frameRect.width < viewportWidth - margin * 2) {
-			const nextLeft = frameRect.left + deltaX;
-			const nextRight = frameRect.right + deltaX;
-			if (nextLeft < margin) deltaX += margin - nextLeft;
-			else if (nextRight > viewportWidth - margin) deltaX -= nextRight - (viewportWidth - margin);
-		} else {
-			deltaX = 0;
-		}
-		if (frameRect.height < viewportHeight - margin * 2) {
-			const nextTop = frameRect.top + deltaY;
-			const nextBottom = frameRect.bottom + deltaY;
-			if (nextTop < margin) deltaY += margin - nextTop;
-			else if (nextBottom > viewportHeight - margin) deltaY -= nextBottom - (viewportHeight - margin);
-		} else {
-			deltaY = 0;
-		}
+		const deltaX = desiredLeft - buttonRect.left;
+		const deltaY = desiredTop - buttonRect.top;
 		if (Math.abs(deltaX) < 0.5 && Math.abs(deltaY) < 0.5) {
 			return;
 		}
@@ -1263,6 +1251,36 @@ export class KwTutorialViewer extends LitElement {
 		}
 		window.clearTimeout(this.compactPointerAnchorTimer);
 		this.compactPointerAnchorTimer = undefined;
+	}
+
+	private updateCompactLayoutObserver(): void {
+		if (typeof ResizeObserver === 'undefined' || !this.shadowRoot || !this.isCompactMode()) {
+			this.disconnectCompactLayoutObserver();
+			return;
+		}
+		const elements = [
+			this.shadowRoot.querySelector('.compact-frame'),
+			this.shadowRoot.querySelector('.compact-content'),
+			this.shadowRoot.querySelector('.compact-markdown'),
+			this.shadowRoot.querySelector('.compact-footer'),
+			this.shadowRoot.querySelector('.compact-nav'),
+		].filter((element): element is Element => element instanceof Element);
+		if (elements.length === 0) {
+			this.disconnectCompactLayoutObserver();
+			return;
+		}
+		if (!this.compactLayoutObserver) {
+			this.compactLayoutObserver = new ResizeObserver(() => this.scheduleCompactPointerAdjustment());
+		}
+		this.compactLayoutObserver.disconnect();
+		for (const element of elements) {
+			this.compactLayoutObserver.observe(element);
+		}
+	}
+
+	private disconnectCompactLayoutObserver(): void {
+		this.compactLayoutObserver?.disconnect();
+		this.compactLayoutObserver = undefined;
 	}
 
 	private hasPendingCompactQueueNavigation(currentTutorialId: string, direction: -1 | 1): boolean {
