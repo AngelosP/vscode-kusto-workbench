@@ -243,7 +243,9 @@ export type OutgoingWebviewMessage =
 export function postMessageToHost(msg: OutgoingWebviewMessage): void {
 	const e2eCaptureHostMessage = (window as any).__e2eCaptureHostMessage;
 	if (typeof e2eCaptureHostMessage === 'function') {
-		e2eCaptureHostMessage(msg);
+		if (e2eCaptureHostMessage(msg) === false) {
+			return;
+		}
 	}
 	window.vscode?.postMessage(msg);
 }
