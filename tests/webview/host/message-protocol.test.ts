@@ -128,6 +128,7 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'promptImportConnectionsXml',
 	'addConnectionsForClusters',
 	'showInfo',
+	'showPowerBiPublishHelp',
 	'saveResultsCsv',
 	'setCaretDocsEnabled',
 	'setAutoTriggerAutocompleteEnabled',
@@ -221,6 +222,7 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 
 	// Info & UI
 	'showInfo',
+	'showPowerBiPublishHelp',
 	'seeCachedValues',
 	'resolveResourceUri',
 	'saveResultsCsv',

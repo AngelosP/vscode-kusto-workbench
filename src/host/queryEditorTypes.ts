@@ -146,6 +146,13 @@ export type RequestHtmlDashboardUpgradeWithCopilotMessage = {
 	targetVersion: number;
 	reasons?: string[];
 };
+export type ShowPowerBiPublishHelpMessage = {
+	type: 'showPowerBiPublishHelp';
+	sectionId: string;
+	sectionName?: string;
+	targetVersion?: number;
+	reasons?: string[];
+};
 export type PublishToPowerBIMessage = {
 	type: 'publishToPowerBI';
 	boxId: string;
@@ -194,6 +201,7 @@ export type IncomingWebviewMessage =
 	| { type: 'promptImportConnectionsXml'; boxId?: string }
 	| { type: 'addConnectionsForClusters'; clusterUrls: string[]; boxId?: string }
 	| { type: 'showInfo'; message: string }
+	| ShowPowerBiPublishHelpMessage
 	| SaveResultsCsvMessage
 	| ExportDashboardMessage
 	| RequestHtmlDashboardUpgradeWithCopilotMessage

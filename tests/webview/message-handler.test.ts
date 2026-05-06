@@ -738,6 +738,8 @@ describe('changedSections agent provenance', () => {
 
 		expect(shell.hasChanges).toBe('modified');
 		expect(shell.showDiffBtn).toBe(true);
+		expect(section.hasAttribute('has-changes')).toBe(true);
+		expect(section.hasAttribute('title')).toBe(false);
 		expect(shell.agentTouched).toBe(true);
 		expect(shell.hasAttribute('agent-touched')).toBe(true);
 	});

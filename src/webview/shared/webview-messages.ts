@@ -118,6 +118,14 @@ export type OutgoingHtmlDashboardUpgradeWithCopilotMessage = {
 	reasons?: string[];
 };
 
+export type OutgoingPowerBiPublishHelpMessage = {
+	type: 'showPowerBiPublishHelp';
+	sectionId: string;
+	sectionName?: string;
+	targetVersion?: number;
+	reasons?: string[];
+};
+
 // ── The union ──────────────────────────────────────────────────────────────
 
 export type OutgoingWebviewMessage =
@@ -145,6 +153,7 @@ export type OutgoingWebviewMessage =
 
 	// Info & UI
 	| { type: 'showInfo'; message: string }
+	| OutgoingPowerBiPublishHelpMessage
 	| { type: 'seeCachedValues' }
 	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
 	| { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string }

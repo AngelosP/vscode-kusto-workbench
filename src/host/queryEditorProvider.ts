@@ -38,6 +38,7 @@ import {
 	SaveResultsCsvMessage,
 	ExportDashboardMessage,
 	RequestHtmlDashboardUpgradeWithCopilotMessage,
+	ShowPowerBiPublishHelpMessage,
 	PublishToPowerBIMessage,
 	findPreferredDefaultCopilotModel
 } from './queryEditorTypes';
@@ -497,6 +498,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'showInfo':
 				vscode.window.showInformationMessage(message.message);
 				return;
+			case 'showPowerBiPublishHelp':
+				await this.showPowerBiPublishHelp(message as ShowPowerBiPublishHelpMessage);
+				return;
 			case 'saveResultsCsv':
 				await this.saveResultsCsvFromWebview(message);
 				return;
@@ -870,6 +874,23 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		} catch {
 			vscode.window.showErrorMessage('Failed to copy share content to clipboard.');
 		}
+	}
+
+	private async showPowerBiPublishHelp(message: ShowPowerBiPublishHelpMessage): Promise<void> {
+		const sectionId = String(message.sectionId || '').trim();
+		const fixAction = 'Ask Kusto Workbench to Fix';
+		const selection = await vscode.window.showWarningMessage(
+			'Power BI publish needs query-backed data bindings. Ask Kusto Workbench to add or fix the provenance block, connect it to query results, and then try publishing again.',
+			fixAction,
+		);
+		if (selection !== fixAction || !sectionId) return;
+		await this.requestHtmlDashboardUpgradeWithCopilot({
+			type: 'requestHtmlDashboardUpgradeWithCopilot',
+			sectionId,
+			sectionName: message.sectionName,
+			targetVersion: Number.isFinite(message.targetVersion) ? Number(message.targetVersion) : 1,
+			reasons: Array.isArray(message.reasons) ? message.reasons : undefined,
+		});
 	}
 
 	private async requestHtmlDashboardUpgradeWithCopilot(message: RequestHtmlDashboardUpgradeWithCopilotMessage): Promise<void> {

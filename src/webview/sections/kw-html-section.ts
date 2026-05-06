@@ -14,6 +14,7 @@ import '../components/kw-monaco-toolbar.js';
 import '../components/kw-publish-pbi-dialog.js';
 import type { MonacoToolbarItem } from '../components/kw-monaco-toolbar.js';
 import {
+	ICONS, iconRegistryStyles,
 	undoIcon, redoIcon, prettifyIcon, commentHtmlIcon, searchIcon, replaceIcon,
 	indentIcon, outdentIcon, wordWrapIcon, exportIcon, uploadIcon,
 } from '../shared/icon-registry.js';
@@ -26,7 +27,11 @@ import { __kustoAttachAutoResizeToContent } from '../monaco/resize.js';
 import { DASHBOARD_CHART_DEFAULTS } from '../../shared/dashboardCharts.js';
 import { DASHBOARD_TABLE_CELL_BAR } from '../../shared/dashboardTables.js';
 import {
+	CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
 	analyzeHtmlDashboardPowerBiCompatibility,
+	canOfferHtmlDashboardPowerBiUpgrade,
+	getKnownUnsupportedPowerBiCompatibilityReasons,
+	getKnownUnsupportedPowerBiDisplayTypes,
 	parseKwProvenance,
 	type HtmlDashboardPowerBiCompatibilityResult,
 	type KwModelDimension,
@@ -282,7 +287,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	// ── Styles ────────────────────────────────────────────────────────────────
 
-	static override styles = [...osStyles, scrollbarSheet, sashSheet, styles, sectionGlowStyles];
+	static override styles = [...osStyles, scrollbarSheet, sashSheet, iconRegistryStyles, styles, sectionGlowStyles];
 
 	// ── Render ─────────────────────────────────────────────────────────────────
 
@@ -310,10 +315,9 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	// ── Toolbar ───────────────────────────────────────────────────────────────
 
 	private _renderToolbar(): TemplateResult {
-		const uploadEnabled = this._isPowerBiUploadEnabled();
-		const uploadTitle = uploadEnabled
-			? 'Publish to Power BI service'
-			: 'This HTML section is not set up for Power BI export yet. Ask the Kusto Workbench agent to make it exportable to Power BI.';
+		const uploadBlocker = this._getPowerBiUploadBlockerMessage();
+		const uploadEnabled = !uploadBlocker;
+		const uploadTitle = uploadBlocker || 'Publish to Power BI service';
 		const uploadHelpId = `${this.boxId}-power-bi-upload-help`;
 		return html`
 			<div slot="header-buttons" class="html-mode-buttons">
@@ -328,7 +332,9 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 					aria-describedby=${uploadEnabled ? nothing : uploadHelpId}
 					aria-disabled=${uploadEnabled ? nothing : 'true'}
 					role=${uploadEnabled ? nothing : 'button'}
-					tabindex=${uploadEnabled ? '-1' : '0'}>
+					tabindex=${uploadEnabled ? '-1' : '0'}
+					@click=${this._showPowerBiUploadUnavailableMessage}
+					@keydown=${this._onPowerBiUploadUnavailableKeyDown}>
 					${uploadEnabled ? nothing : html`<span id=${uploadHelpId} class="sr-only">${uploadTitle}</span>`}
 					<button class="header-tab" type="button"
 						@click=${this._publishToPowerBI} title=${uploadEnabled ? uploadTitle : ''}
@@ -351,31 +357,81 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _renderPowerBiUpgradeNotice(): TemplateResult | typeof nothing {
 		const status = this._powerBiCompatibilityStatus;
 		if (!status || !status.needsUpgrade || this._isPowerBiNoticeDismissed(status)) return nothing;
-		const reasonSummary = status.reasons.slice(0, 2).join(' ');
-		const extraCount = Math.max(0, status.reasons.length - 2);
+		const noticeText = this._getPowerBiUpgradeNoticeText(status.reasons);
+		const accessibleText = `${noticeText.title}. ${noticeText.detail}`;
 		return html`
-			<div class="power-bi-upgrade-notice" role="status" aria-live="polite">
+			<div class="power-bi-upgrade-notice" role="status" aria-live="polite" aria-label=${accessibleText}>
+				<div class="power-bi-upgrade-icon" role="img" tabindex="0" title=${noticeText.detail} aria-label=${noticeText.detail}>${ICONS.info}</div>
 				<div class="power-bi-upgrade-copy">
-					<div class="power-bi-upgrade-title">Power BI export update available</div>
-					<div class="power-bi-upgrade-detail">
-						${reasonSummary}${extraCount > 0 ? ` ${extraCount} more issue${extraCount === 1 ? '' : 's'} detected.` : ''}
-					</div>
+					<div class="power-bi-upgrade-title">${noticeText.title}</div>
 				</div>
 				<div class="power-bi-upgrade-actions">
 					<button type="button" class="power-bi-upgrade-primary" @click=${this._requestPowerBiUpgradeWithCopilot}>Update</button>
-					<button type="button" class="power-bi-upgrade-secondary" @click=${this._dismissPowerBiUpgradeNotice}>Don't tell me again</button>
-					<button type="button" class="power-bi-upgrade-close" @click=${this._closePowerBiUpgradeNotice} aria-label="Close Power BI export update notice">X</button>
+					<button type="button" class="power-bi-upgrade-secondary" @click=${this._dismissPowerBiUpgradeNotice}>Don't show again</button>
+					<button type="button" class="power-bi-upgrade-close" title="Dismiss Power BI export notification" @click=${this._closePowerBiUpgradeNotice} aria-label="Dismiss Power BI export notification">${ICONS.close}</button>
 				</div>
 			</div>
 		`;
 	}
 
-	private _getPowerBiBindingCount(): number {
-		return this._provenance ? Object.keys(this._provenance.bindings || {}).length : 0;
+	private _getPowerBiUpgradeNoticeText(reasons: string[]): { title: string; detail: string } {
+		const normalizedReasons = reasons.map(reason => String(reason || '').toLowerCase());
+		const hasReason = (needle: string): boolean => normalizedReasons.some(reason => reason.includes(needle));
+		let detail = 'Kusto Workbench found a compatibility issue in this section.';
+		if (hasReason('missing application/kw-provenance')) {
+			detail = 'This dashboard needs Power BI export metadata.';
+		} else if (hasReason('older than the current power bi export contract')) {
+			detail = 'This dashboard uses an older Power BI export format.';
+		} else if (hasReason('preview-only') || hasReason('manual chart') || hasReason('id-based dom binding')) {
+			detail = 'Some preview-only rendering needs exportable Power BI bindings.';
+		} else if (hasReason('missing data-kw-bind target') || hasReason('target must') || hasReason('target is hidden')) {
+			detail = 'Some dashboard content is not connected to exportable Power BI elements.';
+		} else if (hasReason('invalid spec') || hasReason('missing display') || hasReason('invalid top') || hasReason('invalid repeattop')) {
+			detail = 'Some Power BI bindings need updated export settings.';
+		}
+		return { title: 'Power BI export needs an update', detail };
+	}
+
+	private _getPowerBiBindingCount(code = this._getCodeText()): number {
+		const provenance = parseKwProvenance(code);
+		return provenance ? Object.keys(provenance.bindings || {}).length : 0;
 	}
 
 	private _isPowerBiUploadEnabled(): boolean {
-		return this._getPowerBiBindingCount() > 0;
+		return !this._getPowerBiUploadBlockerMessage();
+	}
+
+	private _getKnownUnsupportedPowerBiCompatibilityReasons(code = this._getCodeText()): string[] {
+		return getKnownUnsupportedPowerBiCompatibilityReasons(analyzeHtmlDashboardPowerBiCompatibility(code).reasons);
+	}
+
+	private _getPowerBiUnsupportedBlockerMessage(reasons: string[]): string {
+		const types = getKnownUnsupportedPowerBiDisplayTypes(reasons);
+		const visualSummary = types.length === 0
+			? 'one or more visuals'
+			: `${types.join(', ')} ${types.length === 1 ? 'visuals' : 'visuals'}`;
+		return `Power BI export does not support ${visualSummary} yet. Use the HTML preview, or change the binding to scalar, table, repeatedTable, pivot, bar, pie, or line before publishing.`;
+	}
+
+	private _getPowerBiUploadBlockerMessage(code = this._getCodeText()): string | undefined {
+		if (this._getPowerBiBindingCount(code) === 0) {
+			return 'This HTML section is not set up for Power BI export yet. Ask the Kusto Workbench agent to make it exportable to Power BI.';
+		}
+		const unsupportedReasons = this._getKnownUnsupportedPowerBiCompatibilityReasons(code);
+		return unsupportedReasons.length > 0 ? this._getPowerBiUnsupportedBlockerMessage(unsupportedReasons) : undefined;
+	}
+
+	private _showPowerBiUploadUnavailableMessage(event?: Event): void {
+		const message = this._getPowerBiUploadBlockerMessage();
+		if (!message) return;
+		event?.preventDefault();
+		event?.stopPropagation();
+		try { postMessageToHost({ type: 'showInfo', message }); } catch (e) { console.error('[kusto]', e); }
+	}
+
+	private _onPowerBiUploadUnavailableKeyDown(event: KeyboardEvent): void {
+		if (event.key !== 'Enter' && event.key !== ' ') return;
+		this._showPowerBiUploadUnavailableMessage(event);
 	}
 
 	private _hasPowerBiExportMetadata(): boolean {
@@ -608,9 +664,23 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			return;
 		}
 
+		const unsupportedReasons = this._getKnownUnsupportedPowerBiCompatibilityReasons(code);
+		if (unsupportedReasons.length > 0) {
+			try { postMessageToHost({ type: 'showInfo', message: this._getPowerBiUnsupportedBlockerMessage(unsupportedReasons) }); } catch (e) { console.error('[kusto]', e); }
+			return;
+		}
+
 		const dataSources = this._collectDataSourcesForPBI();
 		if (dataSources.length === 0) {
-			try { postMessageToHost({ type: 'showInfo', message: 'No data bindings found. Add a provenance block and run queries before publishing.' }); } catch (e) { console.error('[kusto]', e); }
+			try {
+				postMessageToHost({
+					type: 'showPowerBiPublishHelp',
+					sectionId: this.boxId,
+					sectionName: this._name || undefined,
+					targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
+					reasons: this._getPowerBiPublishBlockerReasons(code),
+				});
+			} catch (e) { console.error('[kusto]', e); }
 			return;
 		}
 
@@ -623,6 +693,22 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		if (dialog) {
 			dialog.show(dataSources, htmlCode, suggestedName, previewHeight, this.boxId, this._pbiPublishInfo);
 		}
+	}
+
+	private _getPowerBiPublishBlockerReasons(code: string): string[] {
+		const provenance = parseKwProvenance(code);
+		const reasons = ['No query-backed data sources were available for Power BI publish.'];
+		if (!provenance) {
+			reasons.push('Missing application/kw-provenance block.');
+		} else if (Object.keys(provenance.bindings || {}).length === 0) {
+			reasons.push('The provenance block has no data bindings.');
+		} else {
+			const factSectionId = String(provenance.model?.fact?.sectionId || '').trim();
+			reasons.push(factSectionId
+				? `Run the referenced query section (${factSectionId}) so Kusto Workbench can package its query and result schema for Power BI.`
+				: 'The provenance block is missing a fact query section reference.');
+		}
+		return [...new Set(reasons)];
 	}
 
 	// ── Code mode ─────────────────────────────────────────────────────────────
@@ -2088,7 +2174,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			return undefined;
 		}
 		const status = analyzeHtmlDashboardPowerBiCompatibility(this._getCodeText());
-		this._powerBiCompatibilityStatus = status.needsUpgrade ? status : undefined;
+		this._powerBiCompatibilityStatus = canOfferHtmlDashboardPowerBiUpgrade(status) ? status : undefined;
 		return this._powerBiCompatibilityStatus;
 	}
 

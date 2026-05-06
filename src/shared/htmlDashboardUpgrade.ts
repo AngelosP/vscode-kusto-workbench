@@ -250,6 +250,47 @@ export function findUnsupportedPowerBiBindings(htmlCode: string): string[] {
 	return uniqueStrings(unsupported);
 }
 
+function getUnsupportedDisplayTypeFromCompatibilityReason(reason: string): string | undefined {
+	const match = reason.match(/^.+\s\(([^:()\s]+)\)$/);
+	if (!match) return undefined;
+	const type = match[1];
+	return isSupportedPowerBiDisplayType(type) ? undefined : type;
+}
+
+export function getKnownUnsupportedPowerBiCompatibilityReasons(reasons: readonly string[]): string[] {
+	return uniqueStrings(reasons.filter(reason => !!getUnsupportedDisplayTypeFromCompatibilityReason(reason)));
+}
+
+export function getKnownUnsupportedPowerBiDisplayTypes(reasons: readonly string[]): string[] {
+	return uniqueStrings(reasons.map(reason => getUnsupportedDisplayTypeFromCompatibilityReason(reason) || ''));
+}
+
+function isActionablePowerBiCompatibilityReason(reason: string): boolean {
+	const normalized = reason.toLowerCase();
+	return normalized.includes('missing application/kw-provenance')
+		|| normalized.includes('older than the current power bi export contract')
+		|| normalized.includes('missing data-kw-bind target')
+		|| normalized.includes('missing provenance binding')
+		|| normalized.includes('missing display')
+		|| normalized.includes('missing display type')
+		|| normalized.includes('target must')
+		|| normalized.includes('target is hidden')
+		|| normalized.includes('invalid spec')
+		|| normalized.includes('invalid chart spec')
+		|| normalized.includes('invalid top')
+		|| normalized.includes('invalid repeattop')
+		|| normalized.includes('legacy or manual chart rendering')
+		|| normalized.includes('preview-only chart rendering')
+		|| normalized.includes('preview-only table rendering')
+		|| normalized.includes('id-based dom binding');
+}
+
+export function canOfferHtmlDashboardPowerBiUpgrade(status: Pick<HtmlDashboardPowerBiCompatibilityResult, 'needsUpgrade' | 'reasons'>): boolean {
+	return status.needsUpgrade
+		&& getKnownUnsupportedPowerBiCompatibilityReasons(status.reasons).length === 0
+		&& status.reasons.some(isActionablePowerBiCompatibilityReason);
+}
+
 function compatibilitySignature(htmlCode: string, reasons: string[]): string {
 	const source = `${CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION}\n${reasons.join('\n')}\n${htmlCode}`;
 	let hash = 2166136261;

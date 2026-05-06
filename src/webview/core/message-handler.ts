@@ -3070,9 +3070,7 @@ window.addEventListener('message', async (event: any) => {
 						// Mirror attribute on the section host for :host() glow styles.
 						if (status) {
 							el.setAttribute('has-changes', status);
-							el.title = status === 'new'
-								? 'Section was added after the last save'
-								: 'Section has unsaved changes';
+							el.removeAttribute('title');
 						} else {
 							el.removeAttribute('has-changes');
 							el.removeAttribute('title');

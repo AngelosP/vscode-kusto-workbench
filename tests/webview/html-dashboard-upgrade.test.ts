@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { render } from 'lit';
 import { KwHtmlSection, type PbiPublishInfo } from '../../src/webview/sections/kw-html-section';
 import {
 	CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
@@ -23,6 +24,21 @@ function pbiInfo(): PbiPublishInfo {
 		reportName: 'Report',
 		reportUrl: 'https://powerbi.example/reports/report-1',
 	};
+}
+
+function fixableTableTargetHtml(): string {
+	return provenanceHtml(
+		{
+			'top-table': {
+				display: {
+					type: 'table',
+					groupBy: ['OS'],
+					columns: [{ name: 'OS' }, { name: 'Sessions', agg: 'COUNT' }],
+				},
+			},
+		},
+		'<div data-kw-bind="top-table"></div>',
+	);
 }
 
 describe('htmlDashboardUpgrade shared analyzer', () => {
@@ -52,18 +68,7 @@ describe('htmlDashboardUpgrade shared analyzer', () => {
 	});
 
 	it('reports target-shape blockers before export or publish is attempted', () => {
-		const html = provenanceHtml(
-			{
-				'top-table': {
-					display: {
-						type: 'table',
-						groupBy: ['OS'],
-						columns: [{ name: 'OS' }, { name: 'Sessions', agg: 'COUNT' }],
-					},
-				},
-			},
-			'<div data-kw-bind="top-table"></div>',
-		);
+		const html = fixableTableTargetHtml();
 
 		expect(findUnsupportedPowerBiBindings(html)).toEqual(['top-table (table: target must be table or tbody inside table)']);
 		expect(analyzeHtmlDashboardPowerBiCompatibility(html).reasons).toContain('top-table (table: target must be table or tbody inside table)');
@@ -114,14 +119,11 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 		expect(status?.reasons.join('\n')).toContain('Missing application/kw-provenance');
 	});
 
-	it('checks upload-enabled sections and posts an upgrade request to the host', () => {
+	it('checks fixable upload-enabled sections and posts an upgrade request to the host', () => {
 		const section = new KwHtmlSection();
 		section.boxId = 'html_upgrade_me';
 		section.setName('Dashboard');
-		section.setCode(provenanceHtml(
-			{ heat: { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'Requests' } } },
-			'<div data-kw-bind="heat"></div>',
-		));
+		section.setCode(fixableTableTargetHtml());
 
 		const status = section.evaluatePowerBiCompatibilityNotice();
 		expect(status?.needsUpgrade).toBe(true);
@@ -133,17 +135,86 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 			sectionId: 'html_upgrade_me',
 			sectionName: 'Dashboard',
 			targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
-			reasons: ['heat (heatmap)'],
+			reasons: ['top-table (table: target must be table or tbody inside table)'],
+		});
+	});
+
+	it('summarizes Power BI notice reasons without raw analyzer text', () => {
+		const section = new KwHtmlSection();
+		const noticeText = (section as unknown as { _getPowerBiUpgradeNoticeText(reasons: string[]): { title: string; detail: string } })
+			._getPowerBiUpgradeNoticeText(['top-table (table: target must be table or tbody inside table)']);
+
+		expect(noticeText.title).toBe('Power BI export needs an update');
+		expect(noticeText.detail).toBe('Some dashboard content is not connected to exportable Power BI elements.');
+		expect(noticeText.detail).not.toContain('top-table (table: target must be table or tbody inside table)');
+	});
+
+	it('gives the Power BI notice close button its own native tooltip', () => {
+		const section = new KwHtmlSection();
+		section.setCode(fixableTableTargetHtml());
+		section.evaluatePowerBiCompatibilityNotice();
+
+		const container = document.createElement('div');
+		render((section as unknown as { _renderPowerBiUpgradeNotice(): unknown })._renderPowerBiUpgradeNotice(), container);
+
+		const closeButton = container.querySelector('.power-bi-upgrade-close');
+		expect(closeButton?.getAttribute('title')).toBe('Dismiss Power BI export notification');
+		expect(closeButton?.getAttribute('aria-label')).toBe('Dismiss Power BI export notification');
+	});
+
+	it('does not offer a passive update for unsupported display bindings and explains the publish block', async () => {
+		const section = new KwHtmlSection();
+		section.boxId = 'html_unsupported_heatmap';
+		section.setCode(provenanceHtml(
+			{ heat: { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'Requests' } } },
+			'<div data-kw-bind="heat"></div>',
+		));
+
+		expect(section.isPowerBiCompatibilityCheckEnabled()).toBe(false);
+		expect(section.evaluatePowerBiCompatibilityNotice()).toBeUndefined();
+		expect((section as unknown as { _isPowerBiUploadEnabled(): boolean })._isPowerBiUploadEnabled()).toBe(false);
+
+		(section as unknown as { _showPowerBiUploadUnavailableMessage(): void })._showPowerBiUploadUnavailableMessage();
+		expect(capturedMessages).toHaveLength(1);
+		expect(capturedMessages[0]).toMatchObject({ type: 'showInfo' });
+		expect(JSON.stringify(capturedMessages[0])).toContain('does not support heatmap visuals yet');
+		capturedMessages = [];
+
+		await (section as unknown as { _publishToPowerBI(): Promise<void> })._publishToPowerBI();
+
+		expect(capturedMessages).toHaveLength(1);
+		expect(capturedMessages[0]).toMatchObject({
+			type: 'showInfo',
+		});
+		expect(JSON.stringify(capturedMessages[0])).toContain('does not support heatmap visuals yet');
+		expect(JSON.stringify(capturedMessages[0])).not.toContain('heat (heatmap)');
+	});
+
+	it('posts actionable publish help when Power BI publish has no data bindings', async () => {
+		const section = new KwHtmlSection();
+		section.boxId = 'html_publish_help';
+		section.setName('Publish Help Dashboard');
+		section.setCode('<main>Manual dashboard without provenance</main>');
+
+		await (section as unknown as { _publishToPowerBI(): Promise<void> })._publishToPowerBI();
+
+		expect(capturedMessages).toHaveLength(1);
+		expect(capturedMessages[0]).toMatchObject({
+			type: 'showPowerBiPublishHelp',
+			sectionId: 'html_publish_help',
+			sectionName: 'Publish Help Dashboard',
+			targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
+			reasons: [
+				'No query-backed data sources were available for Power BI publish.',
+				'Missing application/kw-provenance block.',
+			],
 		});
 	});
 
 	it('serializes dont-tell-me-again dismissal with version and fingerprint', () => {
 		const section = new KwHtmlSection();
 		section.boxId = 'html_dismiss';
-		section.setCode(provenanceHtml(
-			{ heat: { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'Requests' } } },
-			'<div data-kw-bind="heat"></div>',
-		));
+		section.setCode(fixableTableTargetHtml());
 
 		const status = section.evaluatePowerBiCompatibilityNotice();
 		expect(status?.signature).toBeTruthy();
@@ -160,10 +231,7 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 		try {
 			const section = new KwHtmlSection();
 			section.boxId = 'html_refresh_status';
-			section.setCode(provenanceHtml(
-				{ heat: { display: { type: 'heatmap', xColumn: 'Day', valueColumn: 'Requests' } } },
-				'<div data-kw-bind="heat"></div>',
-			));
+			section.setCode(fixableTableTargetHtml());
 
 			expect(section.evaluatePowerBiCompatibilityNotice()?.needsUpgrade).toBe(true);
 
@@ -179,7 +247,7 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 		}
 	});
 
-	it('detects a newly introduced unsupported Power BI binding after code changes', () => {
+	it('blocks a newly introduced unsupported Power BI binding without showing the passive update notice', () => {
 		vi.useFakeTimers();
 		try {
 			const section = new KwHtmlSection();
@@ -197,7 +265,8 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 			));
 			vi.runAllTimers();
 
-			expect((section as unknown as { _powerBiCompatibilityStatus?: { reasons?: string[] } })._powerBiCompatibilityStatus?.reasons).toContain('heat (heatmap)');
+			expect((section as unknown as { _powerBiCompatibilityStatus?: unknown })._powerBiCompatibilityStatus).toBeUndefined();
+			expect((section as unknown as { _isPowerBiUploadEnabled(): boolean })._isPowerBiUploadEnabled()).toBe(false);
 		} finally {
 			vi.useRealTimers();
 		}
