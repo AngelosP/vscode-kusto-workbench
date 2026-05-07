@@ -126,6 +126,20 @@ export type OutgoingPowerBiPublishHelpMessage = {
 	reasons?: string[];
 };
 
+export type OutgoingPowerBiPartialPublishWarningMessage = {
+	type: 'showPowerBiPartialPublishWarning';
+	requestId: string;
+	sectionId: string;
+	sectionName?: string;
+	targetVersion?: number;
+	reasons?: string[];
+};
+
+export type OutgoingPowerBiUnsupportedVisualHelpMessage = {
+	type: 'showPowerBiUnsupportedVisualHelp';
+	message: string;
+};
+
 // ── The union ──────────────────────────────────────────────────────────────
 
 export type OutgoingWebviewMessage =
@@ -154,6 +168,8 @@ export type OutgoingWebviewMessage =
 	// Info & UI
 	| { type: 'showInfo'; message: string }
 	| OutgoingPowerBiPublishHelpMessage
+	| OutgoingPowerBiPartialPublishWarningMessage
+	| OutgoingPowerBiUnsupportedVisualHelpMessage
 	| { type: 'seeCachedValues' }
 	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
 	| { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string }

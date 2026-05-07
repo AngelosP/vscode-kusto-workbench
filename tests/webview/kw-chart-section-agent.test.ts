@@ -205,6 +205,24 @@ describe('kw-chart-section agent configuration', () => {
 		expect(serialized.yAxisSettings).not.toHaveProperty('dataZoom');
 	});
 
+	it('serializes heatmap Y-axis sort direction when it is the only Y-axis customization', async () => {
+		const el = createChartSection();
+		await el.updateComplete;
+
+		expect(el.configure({
+			chartType: 'heatmap',
+			dataSourceId: 'q1',
+			xColumn: 'Timestamp',
+			yColumn: 'Category',
+			valueColumn: 'Value',
+			yAxisSettings: { sortDirection: 'desc' },
+		} as any)).toBe(true);
+		await el.updateComplete;
+
+		const serialized = el.serialize() as any;
+		expect(serialized.yAxisSettings.sortDirection).toBe('desc');
+	});
+
 	it('partial legend settings preserve top-level stack mode', async () => {
 		const el = createChartSection();
 		await el.updateComplete;

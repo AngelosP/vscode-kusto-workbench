@@ -104,6 +104,20 @@ describe('__kustoGetChartDatasetsInDomOrder', () => {
 		expect(datasets).toHaveLength(0);
 	});
 
+	it('includes SQL sections with results as chart data sources', () => {
+		setupDom([
+			{ id: 'sql_1', name: 'A' },
+			{ id: 'chart_1' },
+		]);
+		setFakeResults('sql_1');
+
+		const datasets = __kustoGetChartDatasetsInDomOrder();
+
+		expect(datasets).toHaveLength(1);
+		expect(datasets[0].id).toBe('sql_1');
+		expect(datasets[0].label).toBe('A [section #1]');
+	});
+
 	// Regression: collapsed transformation sections must still appear as data
 	// sources.  The bug was that KwTransformationSection._computeTransformation()
 	// bailed on collapsed sections, so their results never reached the global map

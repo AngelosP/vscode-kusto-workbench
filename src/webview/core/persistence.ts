@@ -181,7 +181,10 @@ export function __kustoScheduleHtmlPowerBiCompatibilityCheck(_reason: string = '
 						const id = pending.shift();
 						const el = id ? document.getElementById(id) as any : null;
 						if (el && typeof el.evaluatePowerBiCompatibilityNotice === 'function') {
-							el.evaluatePowerBiCompatibilityNotice();
+							const shouldRun = typeof el.shouldRunPowerBiCompatibilityNoticeCheck === 'function'
+								? el.shouldRunPowerBiCompatibilityNoticeCheck()
+								: !(typeof el.isPowerBiUpgradeNoticeDismissed === 'function' && el.isPowerBiUpgradeNoticeDismissed());
+							if (shouldRun) el.evaluatePowerBiCompatibilityNotice();
 						}
 						processed++;
 					}
@@ -992,11 +995,14 @@ function applyKqlxState(state: any) {
 				addSqlBox({ id: sqlBoxId });
 				return;
 			}
-			const boxId = addQueryBox();
+			const desiredClusterUrl = String(suggestedClusterUrl || '').trim();
+			const db = String(suggestedDatabase || '').trim();
+			const boxId = addQueryBox((desiredClusterUrl || db) ? {
+				clusterUrl: desiredClusterUrl,
+				database: db,
+			} : undefined);
 			// Apply optional suggested cluster/db selection for compatibility-mode query docs.
 			try {
-				const desiredClusterUrl = String(suggestedClusterUrl || '').trim();
-				const db = String(suggestedDatabase || '').trim();
 				const kwEl = __kustoGetQuerySectionElement(boxId);
 				if (kwEl) {
 					if (desiredClusterUrl && typeof kwEl.setDesiredClusterUrl === 'function') {

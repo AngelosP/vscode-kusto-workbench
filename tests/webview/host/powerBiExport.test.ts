@@ -1150,6 +1150,79 @@ const barDataSource: PowerBiDataSource = {
 	],
 };
 
+function extractAzureDataExplorerMStrings(tmdl: string): string[] {
+	const marker = 'AzureDataExplorer.Contents(';
+	const callStart = tmdl.indexOf(marker);
+	if (callStart < 0) throw new Error('Missing AzureDataExplorer.Contents call');
+
+	let cursor = callStart + marker.length;
+	const args: string[] = [];
+	const isWhitespace = (value: string): boolean => /\s/.test(value);
+
+	while (cursor < tmdl.length && args.length < 3) {
+		while (cursor < tmdl.length && isWhitespace(tmdl.charAt(cursor))) cursor++;
+		if (tmdl.charAt(cursor) !== '"') throw new Error(`Expected M string argument ${args.length + 1}`);
+		cursor++;
+
+		let value = '';
+		let closed = false;
+		while (cursor < tmdl.length) {
+			const character = tmdl.charAt(cursor);
+			if (character === '"') {
+				if (tmdl.charAt(cursor + 1) === '"') {
+					value += '"';
+					cursor += 2;
+					continue;
+				}
+				cursor++;
+				closed = true;
+				break;
+			}
+			value += character;
+			cursor++;
+		}
+
+		if (!closed) throw new Error(`Unterminated M string argument ${args.length + 1}`);
+		args.push(decodePowerQueryMStringEscapes(value));
+
+		while (cursor < tmdl.length && isWhitespace(tmdl.charAt(cursor))) cursor++;
+		if (args.length < 3) {
+			if (tmdl.charAt(cursor) !== ',') throw new Error(`Expected comma after M string argument ${args.length}`);
+			cursor++;
+		}
+	}
+
+	if (args.length !== 3) throw new Error('Expected three AzureDataExplorer.Contents string arguments');
+	return args;
+}
+
+function decodePowerQueryMStringEscapes(value: string): string {
+	return value.replace(/#\(([^)]*)\)/g, (match, escapeList: string) => {
+		const escapeNames = escapeList.split(',').map(part => part.trim().toLowerCase());
+		let decoded = '';
+		for (const escapeName of escapeNames) {
+			if (escapeName === 'cr') {
+				decoded += '\r';
+			} else if (escapeName === 'lf') {
+				decoded += '\n';
+			} else if (escapeName === 'tab') {
+				decoded += '\t';
+			} else if (escapeName === '#') {
+				decoded += '#';
+			} else if (/^[0-9a-f]+$/i.test(escapeName)) {
+				decoded += String.fromCodePoint(parseInt(escapeName, 16));
+			} else {
+				return match;
+			}
+		}
+		return decoded;
+	});
+}
+
+function extractAzureDataExplorerKql(tmdl: string): string {
+	return extractAzureDataExplorerMStrings(tmdl)[2];
+}
+
 describe('dashboard bar display validation', () => {
 	it('accepts each supported bar mode and rejects ambiguous combinations', () => {
 		expect(isValidDashboardChartDisplay({ type: 'bar', groupBy: 'OS', value: { agg: 'COUNT' } })).toBe(true);
@@ -1343,6 +1416,87 @@ describe('generateTableTmdl', () => {
 		const tmdl = generateTableTmdl({ ...factDataSource, clusterUrl: 'https://adx.contoso.com/' });
 
 		expect(tmdl).toContain('AzureDataExplorer.Contents("https://adx.contoso.com", "db"');
+	});
+
+	it('preserves vstfs triple-slash strings in the embedded fact KQL', () => {
+		const query = [
+			'datatable(SourceBuildId:string, buildURI:string, modelName:string, modelVersion:string)[]',
+			"| where SourceBuildId != '' // real export comment should be stripped",
+			'| extend',
+			"    PipelineLink = iff(isempty(buildURI), strcat('vstfs:///Build/Build/', SourceBuildId), buildURI),",
+			"    ModelDisplay = strcat(modelName, iff(isempty(modelVersion), '', strcat(' / ', modelVersion)))",
+		].join('\n');
+		const tmdl = generateTableTmdl({ ...factDataSource, query });
+		const embeddedKql = extractAzureDataExplorerKql(tmdl);
+
+		expect(embeddedKql).toContain("SourceBuildId != '' | extend");
+		expect(embeddedKql).toContain("strcat('vstfs:///Build/Build/', SourceBuildId)");
+		expect(embeddedKql).toContain('ModelDisplay = strcat(modelName');
+		expect(embeddedKql).not.toContain('real export comment');
+		expect(embeddedKql).not.toContain('vstfs:/ ModelDisplay');
+	});
+
+	it('preserves line-comment markers inside KQL string literals', () => {
+		const query = [
+			'print',
+			"    SingleQuoted = 'a''//b',",
+			'    DoubleQuoted = "a\\"//b",',
+			"    HashLiteral = '#(lf)//b',",
+			'    TripleQuoted = ```line // not a comment```',
+			'// real comment should be stripped',
+		].join('\n');
+		const tmdl = generateTableTmdl({ ...factDataSource, query });
+		const embeddedKql = extractAzureDataExplorerKql(tmdl);
+
+		expect(embeddedKql).toContain("SingleQuoted = 'a''//b'");
+		expect(embeddedKql).toContain('DoubleQuoted = "a\\"//b"');
+		expect(embeddedKql).toContain("HashLiteral = '#(lf)//b'");
+		expect(embeddedKql).toContain('TripleQuoted = ```line // not a comment```');
+		expect(embeddedKql).not.toContain('real comment should be stripped');
+	});
+
+	it('strips real comments after verbatim KQL strings ending in backslash', () => {
+		const query = [
+			"print Path = @'C:\\temp\\' // real comment should be stripped",
+			'| extend Survives = 1',
+		].join('\n');
+		const tmdl = generateTableTmdl({ ...factDataSource, query });
+		const embeddedKql = extractAzureDataExplorerKql(tmdl);
+
+		expect(embeddedKql).toContain("Path = @'C:\\temp\\' | extend Survives = 1");
+		expect(embeddedKql).not.toContain('real comment should be stripped');
+	});
+
+	it('preserves line-comment markers inside hidden KQL string literals', () => {
+		const query = [
+			'print',
+			"    HiddenSingle = h'a//b',",
+			'    HiddenDouble = h"c//d",',
+			"    HiddenVerbatim = h@'C:\\temp\\//name' // real comment should be stripped",
+			'| extend Survives = 1',
+		].join('\n');
+		const tmdl = generateTableTmdl({ ...factDataSource, query });
+		const embeddedKql = extractAzureDataExplorerKql(tmdl);
+
+		expect(embeddedKql).toContain("HiddenSingle = h'a//b'");
+		expect(embeddedKql).toContain('HiddenDouble = h"c//d"');
+		expect(embeddedKql).toContain("HiddenVerbatim = h@'C:\\temp\\//name' | extend Survives = 1");
+		expect(embeddedKql).not.toContain('real comment should be stripped');
+	});
+
+	it('preserves multiline triple-backtick literals while stripping real comments', () => {
+		const query = [
+			'print',
+			'    Notes = ```first line',
+			'second // not a comment',
+			'third line``` // real comment should be stripped',
+			'| extend Survives = 1',
+		].join('\n');
+		const tmdl = generateTableTmdl({ ...factDataSource, query });
+		const embeddedKql = extractAzureDataExplorerKql(tmdl);
+
+		expect(embeddedKql).toContain('Notes = ```first line\nsecond // not a comment\nthird line``` | extend Survives = 1');
+		expect(embeddedKql).not.toContain('real comment should be stripped');
 	});
 });
 
@@ -3420,5 +3574,23 @@ describe('generateDimTableTmdl', () => {
 		const tmdl = generateDimTableTmdl('dim_X', 'X', 'string', 'https://c.kusto.windows.net', 'db', query);
 		expect(tmdl).toContain('https://other.kusto.windows.net');
 		expect(tmdl).toContain('| distinct X');
+	});
+
+	it('preserves vstfs triple-slash strings in the embedded dimension KQL', () => {
+		const query = [
+			'datatable(SourceBuildId:string, buildURI:string, X:string)[]',
+			"| where SourceBuildId != '' // real export comment should be stripped",
+			'| extend',
+			"    PipelineLink = iff(isempty(buildURI), strcat('vstfs:///Build/Build/', SourceBuildId), buildURI),",
+			'    X = strcat(X, PipelineLink)',
+		].join('\n');
+		const tmdl = generateDimTableTmdl('dim_X', 'X', 'string', 'https://c.kusto.windows.net', 'db', query);
+		const embeddedKql = extractAzureDataExplorerKql(tmdl);
+
+		expect(embeddedKql).toContain("strcat('vstfs:///Build/Build/', SourceBuildId)");
+		expect(embeddedKql).toContain('X = strcat(X, PipelineLink)');
+		expect(embeddedKql).toContain('| distinct X');
+		expect(embeddedKql).not.toContain('real export comment');
+		expect(embeddedKql).not.toContain('vstfs:/ X =');
 	});
 });

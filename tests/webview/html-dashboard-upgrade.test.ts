@@ -73,6 +73,39 @@ describe('htmlDashboardUpgrade shared analyzer', () => {
 		expect(findUnsupportedPowerBiBindings(html)).toEqual(['top-table (table: target must be table or tbody inside table)']);
 		expect(analyzeHtmlDashboardPowerBiCompatibility(html).reasons).toContain('top-table (table: target must be table or tbody inside table)');
 	});
+
+	it('reports the missing field for invalid chart display specs', () => {
+		const status = analyzeHtmlDashboardPowerBiCompatibility(provenanceHtml(
+			{
+				'invalid-pie': { display: { type: 'pie', groupBy: 'State' } },
+				'invalid-bar': { display: { type: 'bar', groupBy: 'State' } },
+				'invalid-bar-sum': { display: { type: 'bar', groupBy: 'State', value: { agg: 'SUM' } } },
+			},
+			'<div data-kw-bind="invalid-pie"></div><div data-kw-bind="invalid-bar"></div><div data-kw-bind="invalid-bar-sum"></div>',
+		));
+
+		expect(status.reasons).toContain('invalid-pie (pie: invalid chart spec: missing value)');
+		expect(status.reasons).toContain('invalid-bar (bar: invalid chart spec: missing value)');
+		expect(status.reasons).toContain('invalid-bar-sum (bar: invalid chart spec: missing value column)');
+	});
+
+	it('reports preview-only data-role rendering as a partial Power BI export issue', () => {
+		const status = analyzeHtmlDashboardPowerBiCompatibility(provenanceHtml(
+			{ total: { display: { type: 'scalar', agg: 'COUNT' } } },
+			`<main>
+				<div data-kw-bind="total"></div>
+				<div data-role="heatmap"></div>
+				<script>
+					KustoWorkbench.onDataReady(function () {
+						document.currentScript.closest('main').querySelector('[data-role="heatmap"]').innerHTML = '<button>Manual cell</button>';
+					});
+				</script>
+			</main>`,
+		));
+
+		expect(status.needsUpgrade).toBe(true);
+		expect(status.reasons.join('\n')).toContain('Potential preview-only data-role rendering detected');
+	});
 });
 
 describe('KwHtmlSection Power BI upgrade relevance gate', () => {
@@ -172,21 +205,22 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 
 		expect(section.isPowerBiCompatibilityCheckEnabled()).toBe(false);
 		expect(section.evaluatePowerBiCompatibilityNotice()).toBeUndefined();
-		expect((section as unknown as { _isPowerBiUploadEnabled(): boolean })._isPowerBiUploadEnabled()).toBe(false);
 
-		(section as unknown as { _showPowerBiUploadUnavailableMessage(): void })._showPowerBiUploadUnavailableMessage();
-		expect(capturedMessages).toHaveLength(1);
-		expect(capturedMessages[0]).toMatchObject({ type: 'showInfo' });
-		expect(JSON.stringify(capturedMessages[0])).toContain('does not support heatmap visuals yet');
-		capturedMessages = [];
+		const container = document.createElement('div');
+		render((section as unknown as { _renderToolbar(): unknown })._renderToolbar(), container);
+		const uploadButton = container.querySelector<HTMLButtonElement>('button[aria-label="Publish to Power BI service"]');
+		expect(uploadButton).toBeTruthy();
+		expect(uploadButton?.disabled).toBe(false);
+		expect(uploadButton?.getAttribute('title')).toBe('Publish to Power BI service');
 
 		await (section as unknown as { _publishToPowerBI(): Promise<void> })._publishToPowerBI();
 
 		expect(capturedMessages).toHaveLength(1);
 		expect(capturedMessages[0]).toMatchObject({
-			type: 'showInfo',
+			type: 'showPowerBiUnsupportedVisualHelp',
 		});
 		expect(JSON.stringify(capturedMessages[0])).toContain('does not support heatmap visuals yet');
+		expect(JSON.stringify(capturedMessages[0])).toContain('Ask for support for this chart type');
 		expect(JSON.stringify(capturedMessages[0])).not.toContain('heat (heatmap)');
 	});
 
@@ -205,10 +239,134 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 			sectionName: 'Publish Help Dashboard',
 			targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
 			reasons: [
+				'Missing application/kw-provenance block. Ask Kusto Workbench to make this dashboard exportable to Power BI.',
 				'No query-backed data sources were available for Power BI publish.',
-				'Missing application/kw-provenance block.',
 			],
 		});
+	});
+
+	it('includes section compatibility reasons in publish help when query-backed data is missing', async () => {
+		const section = new KwHtmlSection();
+		section.boxId = 'html_invalid_pie_chart_spec';
+		section.setName('Invalid pie chart spec');
+		section.setCode(provenanceHtml(
+			{ 'invalid-pie': { display: { type: 'pie', groupBy: 'State' } } },
+			'<div data-kw-bind="invalid-pie"></div>',
+		));
+
+		await (section as unknown as { _publishToPowerBI(): Promise<void> })._publishToPowerBI();
+
+		expect(capturedMessages).toHaveLength(1);
+		expect(capturedMessages[0]).toMatchObject({
+			type: 'showPowerBiPublishHelp',
+			sectionId: 'html_invalid_pie_chart_spec',
+			sectionName: 'Invalid pie chart spec',
+			reasons: [
+				'invalid-pie (pie: invalid chart spec: missing value)',
+				'No query-backed data sources were available for Power BI publish.',
+				'Run the referenced query section (query_fact) so Kusto Workbench can package its query and result schema for Power BI.',
+			],
+		});
+	});
+
+	it('warns before partially publishing query-backed dashboards with preview-only rendering', async () => {
+		const section = new KwHtmlSection();
+		section.boxId = 'html_partial_publish';
+		section.setName('Partial Publish Dashboard');
+		section.setCode(provenanceHtml(
+			{ total: { display: { type: 'scalar', agg: 'COUNT' } } },
+			`<main>
+				<div data-kw-bind="total"></div>
+				<div data-role="heatmap"></div>
+				<script>
+					KustoWorkbench.onDataReady(function (data) {
+						document.currentScript.closest('main').querySelector('[data-role="heatmap"]').innerHTML = '<button>Manual cell</button>';
+						KustoWorkbench.bind('total', String((data && data.rows || []).length));
+					});
+				</script>
+			</main>`,
+		));
+
+		const dataSources = [{
+			name: 'Fact Events',
+			sectionId: 'query_fact',
+			clusterUrl: 'https://cluster.example',
+			database: 'db',
+			query: 'FactEvents',
+			columns: [{ name: 'OS', type: 'string' }],
+		}];
+		const openedDialogs: unknown[] = [];
+		Object.assign(section as unknown as Record<string, unknown>, {
+			_collectDataSourcesForPBI: () => dataSources,
+			_measureCurrentHtmlHeight: vi.fn(async () => 480),
+			_openPublishDialog: vi.fn((htmlCode: string, dialogDataSources: unknown[], previewHeight: number | undefined, suggestedName: string) => {
+				openedDialogs.push({ htmlCode, dialogDataSources, previewHeight, suggestedName });
+			}),
+		});
+
+		await (section as unknown as { _publishToPowerBI(): Promise<void> })._publishToPowerBI();
+
+		expect(openedDialogs).toHaveLength(0);
+		expect(capturedMessages).toHaveLength(1);
+		expect(capturedMessages[0]).toMatchObject({
+			type: 'showPowerBiPartialPublishWarning',
+			sectionId: 'html_partial_publish',
+			sectionName: 'Partial Publish Dashboard',
+			targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
+		});
+		expect(JSON.stringify(capturedMessages[0])).toContain('Potential preview-only data-role rendering detected');
+	});
+
+	it('opens the publish dialog after the host returns Publish anyway for a partial dashboard', async () => {
+		const section = new KwHtmlSection();
+		section.boxId = 'html_partial_publish_continue';
+		section.setName('Partial Publish Dashboard');
+		section.setCode(provenanceHtml(
+			{ total: { display: { type: 'scalar', agg: 'COUNT' } } },
+			`<main>
+				<div data-kw-bind="total"></div>
+				<div data-role="feed"></div>
+				<script>
+					KustoWorkbench.onDataReady(function () {
+						document.currentScript.closest('main').querySelector('[data-role="feed"]').textContent = 'Preview only';
+					});
+				</script>
+			</main>`,
+		));
+
+		const dataSources = [{
+			name: 'Fact Events',
+			sectionId: 'query_fact',
+			clusterUrl: 'https://cluster.example',
+			database: 'db',
+			query: 'FactEvents',
+			columns: [{ name: 'OS', type: 'string' }],
+		}];
+		const openPublishDialog = vi.fn();
+		Object.assign(section as unknown as Record<string, unknown>, {
+			_collectDataSourcesForPBI: () => dataSources,
+			_measureCurrentHtmlHeight: vi.fn(async () => 512),
+			_openPublishDialog: openPublishDialog,
+		});
+
+		section.connectedCallback();
+		try {
+			await (section as unknown as { _publishToPowerBI(): Promise<void> })._publishToPowerBI();
+			const message = capturedMessages[0] as { requestId: string };
+			window.dispatchEvent(new MessageEvent('message', {
+				data: {
+					type: 'powerBiPartialPublishWarningResult',
+					boxId: 'html_partial_publish_continue',
+					requestId: message.requestId,
+					action: 'publishAnyway',
+				},
+			}));
+			await new Promise(resolve => setTimeout(resolve, 0));
+
+			expect(openPublishDialog).toHaveBeenCalledWith(expect.any(String), dataSources, 512, 'Partial Publish Dashboard');
+		} finally {
+			section.disconnectedCallback();
+		}
 	});
 
 	it('serializes dont-tell-me-again dismissal with version and fingerprint', () => {
@@ -221,9 +379,53 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 		(section as unknown as { _dismissPowerBiUpgradeNotice(): void })._dismissPowerBiUpgradeNotice();
 		const serialized = section.serialize();
 
+		expect(serialized.powerBiUpgradeNotice?.dismissedForSection).toBe(true);
 		expect(serialized.powerBiUpgradeNotice?.dismissedForVersion).toBe(CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION);
 		expect(serialized.powerBiUpgradeNotice?.dismissedForSignature).toBe(status?.signature);
 		expect(serialized.powerBiUpgradeNotice?.dismissedAt).toBeTruthy();
+	});
+
+	it('skips compatibility checks for a section-level dismissed notice even when the HTML changes', () => {
+		vi.useFakeTimers();
+		try {
+			const section = new KwHtmlSection();
+			section.boxId = 'html_dismissed_forever';
+			section.setCode(fixableTableTargetHtml());
+
+			expect(section.evaluatePowerBiCompatibilityNotice()?.needsUpgrade).toBe(true);
+			(section as unknown as { _dismissPowerBiUpgradeNotice(): void })._dismissPowerBiUpgradeNotice();
+
+			expect(section.isPowerBiUpgradeNoticeDismissed()).toBe(true);
+			expect(section.shouldRunPowerBiCompatibilityNoticeCheck()).toBe(false);
+			expect(section.isPowerBiCompatibilityCheckEnabled()).toBe(false);
+			expect(section.evaluatePowerBiCompatibilityNotice()).toBeUndefined();
+
+			section.setCode(provenanceHtml(
+				{ 'another-table': { display: { type: 'table', groupBy: ['OS'], columns: [{ name: 'OS' }] } } },
+				'<div data-kw-bind="another-table"></div>',
+			));
+			vi.runAllTimers();
+
+			expect(section.shouldRunPowerBiCompatibilityNoticeCheck()).toBe(false);
+			expect((section as unknown as { _powerBiCompatibilityStatus?: unknown })._powerBiCompatibilityStatus).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('treats restored signature-only dismissals as section-level dismissals', () => {
+		const section = new KwHtmlSection();
+		section.boxId = 'html_legacy_dismissed';
+		section.setPowerBiUpgradeNotice({
+			dismissedForVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
+			dismissedForSignature: 'legacy-signature',
+			dismissedAt: '2026-05-06T00:00:00.000Z',
+		});
+		section.setCode(fixableTableTargetHtml());
+
+		expect(section.isPowerBiUpgradeNoticeDismissed()).toBe(true);
+		expect(section.shouldRunPowerBiCompatibilityNoticeCheck()).toBe(false);
+		expect(section.evaluatePowerBiCompatibilityNotice()).toBeUndefined();
 	});
 
 	it('clears stale compatibility status when code changes to a valid exportable section', () => {
@@ -266,7 +468,7 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 			vi.runAllTimers();
 
 			expect((section as unknown as { _powerBiCompatibilityStatus?: unknown })._powerBiCompatibilityStatus).toBeUndefined();
-			expect((section as unknown as { _isPowerBiUploadEnabled(): boolean })._isPowerBiUploadEnabled()).toBe(false);
+			expect((section as unknown as { _canEvaluatePowerBiCompatibilityNotice(): boolean })._canEvaluatePowerBiCompatibilityNotice()).toBe(false);
 		} finally {
 			vi.useRealTimers();
 		}

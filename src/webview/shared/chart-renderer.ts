@@ -2482,8 +2482,8 @@ export function renderChart(boxId: any) {
 				const yAxisMaxValue = (yAxisMax !== '' && yAxisMax !== undefined) ? parseFloat(yAxisMax) : undefined;
 				const seriesColors = (yAxisSettings.seriesColors && typeof yAxisSettings.seriesColors === 'object') ? yAxisSettings.seriesColors : {};
 
-				const useContinuousLabels = useTime && xAxisScaleType === 'continuous';
-				const treatAsTime = useTime;
+				const treatAsTime = useTime && xAxisScaleType !== 'category';
+				const useContinuousLabels = treatAsTime && xAxisScaleType === 'continuous';
 
 					let timeKeys: any[] = [];
 					let timeLabels: any[] = [];
@@ -2524,6 +2524,32 @@ export function renderChart(boxId: any) {
 
 				let seriesData: any[] = [];
 				let xLabelsSet = new Set();
+				let categoryXLabels: any[] = [];
+
+				const sortCategoryLabels = (labels: any[]) => {
+					const sortedLabels = [...labels];
+					if (!xAxisSortDirection) return sortedLabels;
+					try {
+						const numericLabels = sortedLabels.filter((label: any) => {
+							const n = parseFloat(label);
+							return !isNaN(n) && isFinite(n);
+						});
+						const isNumeric = numericLabels.length === sortedLabels.length && sortedLabels.length > 0;
+
+						if (isNumeric) {
+							sortedLabels.sort((a: any, b: any) => {
+								const diff = parseFloat(a) - parseFloat(b);
+								return xAxisSortDirection === 'desc' ? -diff : diff;
+							});
+						} else {
+							sortedLabels.sort((a: any, b: any) => {
+								const cmp = String(a).localeCompare(String(b));
+								return xAxisSortDirection === 'desc' ? -cmp : cmp;
+							});
+						}
+					} catch (e) { console.error('[kusto]', e); }
+					return sortedLabels;
+				};
 
 				const getSeriesColor = (name: any, index: any) => {
 					if (seriesColors[name]) return seriesColors[name];
@@ -2667,14 +2693,16 @@ export function renderChart(boxId: any) {
 							});
 						}
 					} else {
-						const xLabels = Array.from(xLabelsSet);
+						const xLabels = sortCategoryLabels(Array.from(xLabelsSet));
+						categoryXLabels = xLabels;
 						for (const legendName of legendNames) {
 							const pts = groups[legendName] || [];
-							const dataMap: any = {};
-							const ttMap: any = {};
+							const dataMap = new Map<string, any>();
+							const ttMap = new Map<string, any>();
 							for (const p of pts) {
-								dataMap[p.x] = p.y;
-								if (!(p.x in ttMap)) ttMap[p.x] = p.tt;
+								const key = String(p.x);
+								dataMap.set(key, p.y);
+								ttMap.set(key, p.tt);
 							}
 							seriesData.push({
 								name: legendName,
@@ -2682,9 +2710,10 @@ export function renderChart(boxId: any) {
 								...(isArea ? { areaStyle: {} } : {}),
 								...(getSeriesColor(legendName, seriesData.length) ? { itemStyle: { color: getSeriesColor(legendName, seriesData.length) }, lineStyle: { color: getSeriesColor(legendName, seriesData.length) }, areaStyle: isArea ? { color: getSeriesColor(legendName, seriesData.length) } : undefined } : {}),
 								data: xLabels.map((xl: any) => {
-									const v = (xl in dataMap) ? dataMap[xl] : null;
+									const key = String(xl);
+									const v = dataMap.has(key) ? dataMap.get(key) : null;
 									if (v === null || v === undefined) return null;
-									return { value: v, name: xl, __kustoTooltip: (xl in ttMap) ? ttMap[xl] : null };
+									return { value: v, name: xl, __kustoTooltip: ttMap.has(key) ? ttMap.get(key) : null };
 								}),
 								label: {
 									show: showLabels,
@@ -2705,6 +2734,13 @@ export function renderChart(boxId: any) {
 						}
 					}
 				} else {
+					if (!treatAsTime) {
+						for (const r of (rows || [])) {
+							const xVal = (r && r.length > xi) ? cellToChartString(r[xi]) : '';
+							xLabelsSet.add(xVal);
+						}
+						categoryXLabels = sortCategoryLabels(Array.from(xLabelsSet));
+					}
 					for (const yCol of yCols) {
 						const yi = indexOf(yCol);
 						if (yi < 0) continue;
@@ -2750,21 +2786,26 @@ export function renderChart(boxId: any) {
 								}
 							});
 						} else {
+							const dataMap = new Map<string, any>();
+							const ttMap = new Map<string, any>();
 							for (const r of (rows || [])) {
 								const xVal = (r && r.length > xi) ? cellToChartString(r[xi]) : '';
-								xLabelsSet.add(xVal);
+								const yVal = (r && r.length > yi) ? cellToNumber(r[yi]) : null;
+								const key = String(xVal);
+								dataMap.set(key, yVal);
+								ttMap.set(key, getTooltipPayloadForRow(r));
 							}
-							const xLabels = Array.from(xLabelsSet);
-							const yData = (rows || []).map((r: any) => (r && r.length > yi) ? cellToNumber(r[yi]) : null);
-							const ttData = (rows || []).map((r: any) => getTooltipPayloadForRow(r));
+							const xLabels = categoryXLabels;
 							seriesData.push({
 								name: yCol,
 								type: (chartType === 'bar') ? 'bar' : 'line',
 								...(isArea ? { areaStyle: {} } : {}),
 								...(getSeriesColor(yCol, seriesData.length) ? { itemStyle: { color: getSeriesColor(yCol, seriesData.length) }, lineStyle: { color: getSeriesColor(yCol, seriesData.length) }, areaStyle: isArea ? { color: getSeriesColor(yCol, seriesData.length) } : undefined } : {}),
-								data: yData.map((v: any, idx: any) => {
+								data: xLabels.map((xl: any) => {
+									const key = String(xl);
+									const v = dataMap.has(key) ? dataMap.get(key) : null;
 									if (v === null || v === undefined) return null;
-									return { value: v, __kustoTooltip: (idx < ttData.length) ? ttData[idx] : null };
+									return { value: v, name: xl, __kustoTooltip: ttMap.has(key) ? ttMap.get(key) : null };
 								}),
 								label: {
 									show: showLabels,
@@ -2774,7 +2815,7 @@ export function renderChart(boxId: any) {
 										try {
 											const idx = params?.dataIndex ?? 0;
 											const v = typeof params?.value === 'number' ? params.value : null;
-											if (!shouldShowLabel(v, yData.length || 1, idx, yRangeForLabels)) return '';
+											if (!shouldShowLabel(v, xLabels.length || 1, idx, yRangeForLabels)) return '';
 											return typeof v === 'number' ? formatNumber(v) : '';
 										} catch {
 											return '';
@@ -2786,29 +2827,8 @@ export function renderChart(boxId: any) {
 					}
 				}
 
-				let xLabels = treatAsTime ? timeLabels : Array.from(xLabelsSet);
 
-				if (!treatAsTime && xAxisSortDirection) {
-					try {
-						const numericLabels = xLabels.filter((l: any) => {
-							const n = parseFloat(l);
-							return !isNaN(n) && isFinite(n);
-						});
-						const isNumeric = numericLabels.length === xLabels.length && xLabels.length > 0;
-
-						if (isNumeric) {
-							xLabels.sort((a: any, b: any) => {
-								const diff = parseFloat(a) - parseFloat(b);
-								return xAxisSortDirection === 'desc' ? -diff : diff;
-							});
-						} else {
-							xLabels.sort((a: any, b: any) => {
-								const cmp = String(a).localeCompare(String(b));
-								return xAxisSortDirection === 'desc' ? -cmp : cmp;
-							});
-						}
-					} catch (e) { console.error('[kusto]', e); }
-				}
+				let xLabels = treatAsTime ? timeLabels : (categoryXLabels.length ? categoryXLabels : sortCategoryLabels(Array.from(xLabelsSet)));
 
 				const showTime = treatAsTime ? timeShowTime : false;
 

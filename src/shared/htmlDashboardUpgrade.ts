@@ -17,6 +17,7 @@ export interface KwProvenance {
 }
 
 export interface PowerBiUpgradeNoticeState {
+	dismissedForSection?: boolean;
 	dismissedForVersion?: number;
 	dismissedForSignature?: string;
 	dismissedAt?: string;
@@ -72,6 +73,11 @@ export function getLegacyDashboardWarnings(htmlCode: string): string[] {
 	}
 	if (/bindHtml\(\s*['"][^'"]*(?:table|tbody|rows|breakdown|status|detail|details)[^'"]*['"]/i.test(htmlCode) || /\.toTable\s*\(/i.test(htmlCode)) {
 		warnings.push('Potential preview-only table rendering detected. Exportable tables and repeated tables, especially visual cells such as stacked status bars, should use provenance table specs plus KustoWorkbench.renderTable(bindingId) or KustoWorkbench.renderRepeatedTable(bindingId).');
+	}
+	if (/\bKustoWorkbench\.(?:onDataReady|getData)\s*\(/i.test(htmlCode)
+		&& /\bdata-role\s*=/i.test(htmlCode)
+		&& /(?:\.(?:innerHTML|textContent)\s*=|insertAdjacentHTML\s*\(|appendChild\s*\(|createElement\s*\(|querySelector\s*\(\s*['"]\[data-role=)/i.test(htmlCode)) {
+		warnings.push('Potential preview-only data-role rendering detected. Data-driven content rendered into unbound data-role elements will not be included in Power BI export; use data-kw-bind targets backed by provenance display specs plus KustoWorkbench.bind(), renderChart(), renderTable(), or renderRepeatedTable().');
 	}
 	if (/document\.getElementById\s*\(|querySelector\(\s*['"]#/i.test(htmlCode)) {
 		warnings.push('ID-based DOM binding detected. Dashboard data values should bind through data-kw-bind plus KustoWorkbench.bind(), renderChart(), renderTable(), or renderRepeatedTable() so Power BI export can resolve them.');
@@ -161,6 +167,44 @@ function isValidPreAggregateSpec(value: unknown): value is PreAggregate {
 	return true;
 }
 
+function describeInvalidChartValue(value: unknown, label: string): string | undefined {
+	if (!isObjectRecord(value)) return `missing ${label}`;
+	if (!isNonEmptyText(value.agg)) return `missing ${label} aggregation`;
+	if (aggregateRequiresColumn(value.agg) && !isNonEmptyText(value.column)) return `missing ${label} column`;
+	if (value.column !== undefined && typeof value.column !== 'string') return `invalid ${label} column`;
+	if (value.format !== undefined && typeof value.format !== 'string') return `invalid ${label} format`;
+	return undefined;
+}
+
+function describeInvalidDashboardChartDisplay(display: unknown): string {
+	if (!isObjectRecord(display)) return 'invalid chart spec';
+	const type = typeof display.type === 'string' ? display.type : '';
+	if (type === 'pie') {
+		if (!isNonEmptyText(display.groupBy)) return 'invalid chart spec: missing groupBy';
+		const valueReason = describeInvalidChartValue(display.value, 'value');
+		return valueReason ? `invalid chart spec: ${valueReason}` : 'invalid chart spec';
+	}
+	if (type === 'bar') {
+		if (!isNonEmptyText(display.groupBy)) return 'invalid chart spec: missing groupBy';
+		const hasSegments = display.segments !== undefined;
+		const hasThresholdBands = display.thresholdBands !== undefined;
+		const hasColorRules = display.colorRules !== undefined;
+		if (display.value === undefined && !hasSegments && !hasThresholdBands && !hasColorRules) {
+			return 'invalid chart spec: missing value';
+		}
+		if ((hasThresholdBands || hasColorRules) && display.value === undefined) return 'invalid chart spec: missing value';
+		if (display.value !== undefined && !hasSegments) {
+			const valueReason = describeInvalidChartValue(display.value, 'value');
+			if (valueReason) return `invalid chart spec: ${valueReason}`;
+		}
+	}
+	if (type === 'line') {
+		if (!isNonEmptyText(display.xAxis)) return 'invalid chart spec: missing xAxis';
+		if (!Array.isArray(display.series) || display.series.length === 0) return 'invalid chart spec: missing series';
+	}
+	return 'invalid chart spec';
+}
+
 function isValidPivotDisplay(display: unknown): boolean {
 	if (!isObjectRecord(display) || display.type !== 'pivot') return false;
 	if (!Array.isArray(display.rows) || display.rows.length === 0 || !display.rows.every(isNonEmptyText)) return false;
@@ -243,7 +287,7 @@ export function findUnsupportedPowerBiBindings(htmlCode: string): string[] {
 		} else if (type === 'pivot' && !isValidPivotDisplay(display)) {
 			unsupported.push(`${key} (${type}: invalid spec)`);
 		} else if ((type === 'bar' || type === 'pie' || type === 'line') && !isValidDashboardChartDisplay(display)) {
-			unsupported.push(`${key} (${type}: invalid chart spec)`);
+			unsupported.push(`${key} (${type}: ${describeInvalidDashboardChartDisplay(display)})`);
 		}
 	}
 
@@ -282,6 +326,7 @@ function isActionablePowerBiCompatibilityReason(reason: string): boolean {
 		|| normalized.includes('legacy or manual chart rendering')
 		|| normalized.includes('preview-only chart rendering')
 		|| normalized.includes('preview-only table rendering')
+		|| normalized.includes('preview-only data-role rendering')
 		|| normalized.includes('id-based dom binding');
 }
 

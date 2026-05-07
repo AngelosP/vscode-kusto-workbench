@@ -2237,14 +2237,278 @@ function generateModelTmdl(tableNames: string[], relationships: TmdlRelationship
 	return lines.join('\n');
 }
 
-// ── KQL comment stripping ────────────────────────────────────────────────────
+// ── KQL query normalization for Power BI M ───────────────────────────────────
+
+type KqlStringQuote = "'" | '"';
+
+interface KqlStringPrefix {
+	quote: KqlStringQuote;
+	length: number;
+	verbatim: boolean;
+}
+
+function isKqlStringQuote(value: string): value is KqlStringQuote {
+	return value === "'" || value === '"';
+}
+
+function detectKqlStringPrefix(source: string, index: number): KqlStringPrefix | undefined {
+	const character = source.charAt(index);
+	const nextCharacter = source.charAt(index + 1);
+	const thirdCharacter = source.charAt(index + 2);
+
+	if (character === '@' && isKqlStringQuote(nextCharacter)) {
+		return { quote: nextCharacter, length: 2, verbatim: true };
+	}
+
+	if (character === 'h' || character === 'H') {
+		if (nextCharacter === '@' && isKqlStringQuote(thirdCharacter)) {
+			return { quote: thirdCharacter, length: 3, verbatim: true };
+		}
+		if (isKqlStringQuote(nextCharacter)) {
+			return { quote: nextCharacter, length: 2, verbatim: false };
+		}
+	}
+
+	if (isKqlStringQuote(character)) {
+		return { quote: character, length: 1, verbatim: false };
+	}
+
+	return undefined;
+}
 
 /**
  * Strip KQL single-line comments (`// …`) so the query can be safely collapsed
- * to a single line. Uses a negative lookbehind to preserve `://` in URLs.
+ * to a single line without corrupting comment markers inside string literals.
  */
 function stripKqlLineComments(kql: string): string {
-	return kql.replace(/(?<!:)\/\/[^\r\n]*/g, '');
+	const source = String(kql ?? '');
+	let output = '';
+	let inLineComment = false;
+	let inBlockComment = false;
+	let inTripleBacktickString = false;
+	let currentStringQuote: KqlStringQuote | undefined;
+	let currentStringIsVerbatim = false;
+
+	for (let index = 0; index < source.length; index++) {
+		const character = source.charAt(index);
+		const nextCharacter = source.charAt(index + 1);
+		const thirdCharacter = source.charAt(index + 2);
+
+		if (inLineComment) {
+			if (character === '\r') {
+				output += character;
+				if (nextCharacter === '\n') {
+					output += nextCharacter;
+					index++;
+				}
+				inLineComment = false;
+			} else if (character === '\n') {
+				output += character;
+				inLineComment = false;
+			}
+			continue;
+		}
+
+		if (inBlockComment) {
+			output += character;
+			if (character === '*' && nextCharacter === '/') {
+				output += nextCharacter;
+				index++;
+				inBlockComment = false;
+			}
+			continue;
+		}
+
+		if (inTripleBacktickString) {
+			output += character;
+			if (character === '`' && nextCharacter === '`' && thirdCharacter === '`') {
+				output += nextCharacter + thirdCharacter;
+				index += 2;
+				inTripleBacktickString = false;
+			}
+			continue;
+		}
+
+		if (currentStringQuote) {
+			output += character;
+			if (!currentStringIsVerbatim && character === '\\' && index + 1 < source.length) {
+				output += nextCharacter;
+				index++;
+				continue;
+			}
+			if (character === currentStringQuote) {
+				if (nextCharacter === currentStringQuote) {
+					output += nextCharacter;
+					index++;
+					continue;
+				}
+				currentStringQuote = undefined;
+				currentStringIsVerbatim = false;
+			}
+			continue;
+		}
+
+		if (character === '/' && nextCharacter === '/') {
+			inLineComment = true;
+			index++;
+			continue;
+		}
+
+		if (character === '/' && nextCharacter === '*') {
+			output += character + nextCharacter;
+			index++;
+			inBlockComment = true;
+			continue;
+		}
+
+		if (character === '`' && nextCharacter === '`' && thirdCharacter === '`') {
+			output += character + nextCharacter + thirdCharacter;
+			index += 2;
+			inTripleBacktickString = true;
+			continue;
+		}
+
+		const stringPrefix = detectKqlStringPrefix(source, index);
+		if (stringPrefix) {
+			output += source.slice(index, index + stringPrefix.length);
+			index += stringPrefix.length - 1;
+			currentStringQuote = stringPrefix.quote;
+			currentStringIsVerbatim = stringPrefix.verbatim;
+			continue;
+		}
+
+		output += character;
+	}
+
+	return output;
+}
+
+function collapseKqlWhitespaceOutsideStrings(kql: string): string {
+	const source = String(kql ?? '');
+	let output = '';
+	let pendingWhitespace = false;
+	let inBlockComment = false;
+	let inTripleBacktickString = false;
+	let currentStringQuote: KqlStringQuote | undefined;
+	let currentStringIsVerbatim = false;
+
+	const flushWhitespace = () => {
+		if (pendingWhitespace && output.length > 0 && !/\s$/.test(output)) output += ' ';
+		pendingWhitespace = false;
+	};
+
+	const appendOutsideText = (value: string) => {
+		flushWhitespace();
+		output += value;
+	};
+
+	for (let index = 0; index < source.length; index++) {
+		const character = source.charAt(index);
+		const nextCharacter = source.charAt(index + 1);
+		const thirdCharacter = source.charAt(index + 2);
+
+		if (inBlockComment) {
+			output += character;
+			if (character === '*' && nextCharacter === '/') {
+				output += nextCharacter;
+				index++;
+				inBlockComment = false;
+			}
+			continue;
+		}
+
+		if (inTripleBacktickString) {
+			output += character;
+			if (character === '`' && nextCharacter === '`' && thirdCharacter === '`') {
+				output += nextCharacter + thirdCharacter;
+				index += 2;
+				inTripleBacktickString = false;
+			}
+			continue;
+		}
+
+		if (currentStringQuote) {
+			output += character;
+			if (!currentStringIsVerbatim && character === '\\' && index + 1 < source.length) {
+				output += nextCharacter;
+				index++;
+				continue;
+			}
+			if (character === currentStringQuote) {
+				if (nextCharacter === currentStringQuote) {
+					output += nextCharacter;
+					index++;
+					continue;
+				}
+				currentStringQuote = undefined;
+				currentStringIsVerbatim = false;
+			}
+			continue;
+		}
+
+		if (/\s/.test(character)) {
+			pendingWhitespace = true;
+			continue;
+		}
+
+		if (character === '/' && nextCharacter === '*') {
+			appendOutsideText(character + nextCharacter);
+			index++;
+			inBlockComment = true;
+			continue;
+		}
+
+		if (character === '`' && nextCharacter === '`' && thirdCharacter === '`') {
+			appendOutsideText(character + nextCharacter + thirdCharacter);
+			index += 2;
+			inTripleBacktickString = true;
+			continue;
+		}
+
+		const stringPrefix = detectKqlStringPrefix(source, index);
+		if (stringPrefix) {
+			appendOutsideText(source.slice(index, index + stringPrefix.length));
+			index += stringPrefix.length - 1;
+			currentStringQuote = stringPrefix.quote;
+			currentStringIsVerbatim = stringPrefix.verbatim;
+			continue;
+		}
+
+		appendOutsideText(character);
+	}
+
+	return output.trim();
+}
+
+function normalizeKqlForPowerBiQuery(kql: string): string {
+	return collapseKqlWhitespaceOutsideStrings(stripKqlLineComments(kql));
+}
+
+function escapePowerQueryMString(value: string): string {
+	let escaped = '';
+	for (let index = 0; index < value.length; index++) {
+		const character = value.charAt(index);
+		const nextCharacter = value.charAt(index + 1);
+		if (character === '"') {
+			escaped += '""';
+		} else if (character === '#') {
+			escaped += '#(#)';
+		} else if (character === '\r') {
+			if (nextCharacter === '\n') {
+				escaped += '#(cr,lf)';
+				index++;
+			} else {
+				escaped += '#(cr)';
+			}
+		} else if (character === '\n') {
+			escaped += '#(lf)';
+		} else if (character === '\t') {
+			escaped += '#(tab)';
+		} else {
+			escaped += character;
+		}
+	}
+	return escaped;
 }
 
 // ── Dimension table TMDL generation ─────────────────────────────────────────
@@ -2265,11 +2529,11 @@ export function generateDimTableTmdl(
 ): string {
 	const tmdlType = kustoTypeToTmdl(columnType);
 	const escapeTmdlName = (s: string) => s.replace(/'/g, "''");
-	const singleLineQuery = stripKqlLineComments(sourceQuery).replace(/\r\n|\r|\n/g, ' ').replace(/\s+/g, ' ').trim();
-	const dimQuery = `${singleLineQuery} | distinct ${columnName}`;
-	const escapedQuery = dimQuery.replace(/"/g, '""');
-	const escapedCluster = canonicalizePowerBiKustoClusterUrl(clusterUrl).replace(/"/g, '""');
-	const escapedDb = database.replace(/"/g, '""');
+	const normalizedQuery = normalizeKqlForPowerBiQuery(sourceQuery);
+	const dimQuery = `${normalizedQuery} | distinct ${columnName}`;
+	const escapedQuery = escapePowerQueryMString(dimQuery);
+	const escapedCluster = escapePowerQueryMString(canonicalizePowerBiKustoClusterUrl(clusterUrl));
+	const escapedDb = escapePowerQueryMString(database);
 
 	const lines: string[] = [
 		`table '${escapeTmdlName(dimTableName)}'`,
@@ -2296,10 +2560,8 @@ export function generateDimTableTmdl(
 
 export function generateTableTmdl(ds: PowerBiDataSource, dataMode: PowerBiDataMode = 'import'): string {
 	const tableName = sanitizeName(ds.name);
-	// Strip KQL line comments, then collapse to a single line (TMDL M expression
-	// strings cannot span multiple lines without breaking the indentation parser).
-	const singleLineQuery = stripKqlLineComments(ds.query).replace(/\r\n|\r|\n/g, ' ').replace(/\s+/g, ' ').trim();
-	const escapedQuery = singleLineQuery.replace(/"/g, '""');
+	const normalizedQuery = normalizeKqlForPowerBiQuery(ds.query);
+	const escapedQuery = escapePowerQueryMString(normalizedQuery);
 	const escapeTmdlName = (s: string) => s.replace(/'/g, "''");
 	const lines: string[] = [
 		`table '${escapeTmdlName(tableName)}'`,
@@ -2317,8 +2579,8 @@ export function generateTableTmdl(ds: PowerBiDataSource, dataMode: PowerBiDataMo
 		lines.push('');
 	}
 
-	const escapedCluster = canonicalizePowerBiKustoClusterUrl(ds.clusterUrl).replace(/"/g, '""');
-	const escapedDb = ds.database.replace(/"/g, '""');
+	const escapedCluster = escapePowerQueryMString(canonicalizePowerBiKustoClusterUrl(ds.clusterUrl));
+	const escapedDb = escapePowerQueryMString(ds.database);
 	lines.push(`\tpartition '${escapeTmdlName(tableName)}' = m`);
 	lines.push(`\t\tmode: ${normalizePowerBiDataMode(dataMode, 'import')}`);
 	lines.push(`\t\tsource =`);

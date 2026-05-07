@@ -153,6 +153,18 @@ export type ShowPowerBiPublishHelpMessage = {
 	targetVersion?: number;
 	reasons?: string[];
 };
+export type ShowPowerBiPartialPublishWarningMessage = {
+	type: 'showPowerBiPartialPublishWarning';
+	requestId: string;
+	sectionId: string;
+	sectionName?: string;
+	targetVersion?: number;
+	reasons?: string[];
+};
+export type ShowPowerBiUnsupportedVisualHelpMessage = {
+	type: 'showPowerBiUnsupportedVisualHelp';
+	message: string;
+};
 export type PublishToPowerBIMessage = {
 	type: 'publishToPowerBI';
 	boxId: string;
@@ -202,6 +214,8 @@ export type IncomingWebviewMessage =
 	| { type: 'addConnectionsForClusters'; clusterUrls: string[]; boxId?: string }
 	| { type: 'showInfo'; message: string }
 	| ShowPowerBiPublishHelpMessage
+	| ShowPowerBiPartialPublishWarningMessage
+	| ShowPowerBiUnsupportedVisualHelpMessage
 	| SaveResultsCsvMessage
 	| ExportDashboardMessage
 	| RequestHtmlDashboardUpgradeWithCopilotMessage

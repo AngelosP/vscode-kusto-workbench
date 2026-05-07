@@ -112,17 +112,6 @@ export const styles = [monacoToolbarStyles, css`
 	.header-tab svg { display: block; }
 	.header-tab:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
 	.header-tab:disabled { opacity: 0.5; cursor: not-allowed; }
-	.header-tab-tooltip-wrapper[aria-disabled="true"] .header-tab { pointer-events: none; }
-	.header-tab-tooltip-wrapper {
-		display: inline-flex;
-		align-items: center;
-		justify-content: center;
-		border-radius: 4px;
-	}
-	.header-tab-tooltip-wrapper:focus-visible {
-		outline: 1px solid var(--vscode-focusBorder);
-		outline-offset: 1px;
-	}
 	.sr-only {
 		position: absolute;
 		width: 1px;

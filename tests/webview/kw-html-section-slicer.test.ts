@@ -212,7 +212,11 @@ describe('HTML preview height reporting', () => {
 
 	it('opens the publish dialog with a fresh measurement of the current HTML code', async () => {
 		const section = new KwHtmlSection() as unknown as HeightSection;
-		const currentHtml = '<main style="height:1234px">Current dashboard</main>';
+		const currentHtml = `<script type="application/kw-provenance">${JSON.stringify({
+			version: 1,
+			model: { fact: { sectionId: 'query_fact', sectionName: 'Fact Events' } },
+			bindings: { total: { display: { type: 'scalar', agg: 'COUNT' } } },
+		})}</script><main style="height:1234px"><span data-kw-bind="total">0</span>Current dashboard</main>`;
 		let measuredCode = '';
 		let openedPreviewHeight: number | undefined;
 
@@ -276,6 +280,24 @@ describe('HTML preview height reporting', () => {
 		section.initialCode = '<main>Restored dashboard</main>';
 
 		expect(section.getCode()).toBe('<main>Restored dashboard</main>');
+	});
+
+	it('renders restored initial HTML when the section starts expanded in preview mode', async () => {
+		const section = new KwHtmlSection();
+		section.boxId = 'html_restored_preview_test';
+		section.setAttribute('initial-code', '<main>Restored dashboard</main>');
+		section.setMode('preview');
+
+		document.body.appendChild(section);
+		try {
+			await section.updateComplete;
+			await Promise.resolve();
+
+			const iframe = section.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+			expect(iframe?.srcdoc).toContain('<main>Restored dashboard</main>');
+		} finally {
+			section.remove();
+		}
 	});
 
 	it('keeps tool-set HTML code before Monaco initializes', () => {

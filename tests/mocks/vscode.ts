@@ -147,6 +147,10 @@ export const window = {
 	},
 };
 
+export const env = {
+	openExternal: () => Promise.resolve(true),
+};
+
 export const commands = {
 	registerCommand: () => ({ dispose: () => {} }),
 	executeCommand: () => Promise.resolve(),

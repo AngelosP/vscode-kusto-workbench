@@ -134,7 +134,11 @@ describe('chart-renderer zoom/pan controls', () => {
 		editContainer.appendChild(hint);
 	}
 
-	function renderScenario(chartType: string, stateOverrides: Record<string, unknown> = {}): { id: string; option: any; state: any } {
+	function renderScenario(
+		chartType: string,
+		stateOverrides: Record<string, unknown> = {},
+		resultsOverrides: { columns?: unknown[]; rows?: unknown[][] } = {},
+	): { id: string; option: any; state: any } {
 		const id = `chart_${chartType}_${Math.random().toString(36).slice(2)}`;
 		const host = document.createElement('div');
 		host.id = id;
@@ -155,8 +159,8 @@ describe('chart-renderer zoom/pan controls', () => {
 		document.body.appendChild(wrapper);
 
 		resultsState.byId.q1 = {
-			columns: ['Timestamp', 'Value', 'Category', 'Target'],
-			rows: [
+			columns: resultsOverrides.columns ?? ['Timestamp', 'Value', 'Category', 'Target'],
+			rows: resultsOverrides.rows ?? [
 				['2024-01-01T00:00:00Z', 10, 'A', 'B'],
 				['2024-01-02T00:00:00Z', 20, 'B', 'C'],
 			],
@@ -185,6 +189,192 @@ describe('chart-renderer zoom/pan controls', () => {
 		expect(fullOptionCall).toBeTruthy();
 		return { id, option: fullOptionCall![0], state };
 	}
+
+	function valuesFor(series: any): any[] {
+		return (series.data || []).map((point: any) => point && typeof point === 'object' ? point.value : point);
+	}
+
+	it.each(['line', 'bar', 'area'])('keeps category X-axis sort paired with %s values and tooltips', (chartType) => {
+		const scenario = renderScenario(chartType, {
+			xColumn: 'Category',
+			yColumn: 'Value',
+			yColumns: ['Value'],
+			tooltipColumns: ['Target'],
+			xAxisSettings: { sortDirection: 'asc' },
+		}, {
+			columns: ['Category', 'Value', 'Target'],
+			rows: [
+				['B', 20, 'detail-b'],
+				['A', 10, 'detail-a'],
+				['C', 30, 'detail-c'],
+			],
+		});
+
+		expect(scenario.option.xAxis.data).toEqual(['A', 'B', 'C']);
+		expect(valuesFor(scenario.option.series[0])).toEqual([10, 20, 30]);
+		expect(scenario.option.series[0].data.map((point: any) => point.name)).toEqual(['A', 'B', 'C']);
+		expect(scenario.option.series[0].data.map((point: any) => point.__kustoTooltip?.Target)).toEqual(['detail-a', 'detail-b', 'detail-c']);
+	});
+
+	it('keeps descending category X-axis sort paired with values', () => {
+		const scenario = renderScenario('bar', {
+			xColumn: 'Category',
+			yColumn: 'Value',
+			yColumns: ['Value'],
+			xAxisSettings: { sortDirection: 'desc' },
+		}, {
+			columns: ['Category', 'Value'],
+			rows: [
+				['B', 20],
+				['A', 10],
+				['C', 30],
+			],
+		});
+
+		expect(scenario.option.xAxis.data).toEqual(['C', 'B', 'A']);
+		expect(valuesFor(scenario.option.series[0])).toEqual([30, 20, 10]);
+	});
+
+	it('uses numeric category order when sorting numeric-looking X labels', () => {
+		const scenario = renderScenario('line', {
+			xColumn: 'Bucket',
+			yColumn: 'Value',
+			yColumns: ['Value'],
+			xAxisSettings: { sortDirection: 'asc', scaleType: 'category' },
+		}, {
+			columns: ['Bucket', 'Value'],
+			rows: [
+				['10', 100],
+				['2', 20],
+				['1', 10],
+			],
+		});
+
+		expect(scenario.option.xAxis.data).toEqual(['1', '2', '10']);
+		expect(valuesFor(scenario.option.series[0])).toEqual([10, 20, 100]);
+	});
+
+	it('keeps category X-axis sort paired across multiple Y series', () => {
+		const scenario = renderScenario('line', {
+			xColumn: 'Category',
+			yColumn: 'Primary',
+			yColumns: ['Primary', 'Secondary'],
+			xAxisSettings: { sortDirection: 'asc' },
+		}, {
+			columns: ['Category', 'Primary', 'Secondary'],
+			rows: [
+				['B', 20, 200],
+				['A', 10, 100],
+				['C', 30, 300],
+			],
+		});
+
+		expect(scenario.option.xAxis.data).toEqual(['A', 'B', 'C']);
+		expect(valuesFor(scenario.option.series[0])).toEqual([10, 20, 30]);
+		expect(valuesFor(scenario.option.series[1])).toEqual([100, 200, 300]);
+	});
+
+	it('keeps category X-axis sort paired for legend split series', () => {
+		const scenario = renderScenario('bar', {
+			xColumn: 'Category',
+			yColumn: 'Value',
+			yColumns: ['Value'],
+			legendColumn: 'Segment',
+			tooltipColumns: ['Target'],
+			xAxisSettings: { sortDirection: 'asc' },
+		}, {
+			columns: ['Category', 'Value', 'Segment', 'Target'],
+			rows: [
+				['B', 20, 'East', 'east-b'],
+				['A', 10, 'East', 'east-a'],
+				['C', 30, 'East', 'east-c'],
+				['B', 200, 'West', 'west-b'],
+				['A', 100, 'West', 'west-a'],
+				['C', 300, 'West', 'west-c'],
+			],
+		});
+
+		const east = scenario.option.series.find((series: any) => series.name === 'East');
+		const west = scenario.option.series.find((series: any) => series.name === 'West');
+		expect(scenario.option.xAxis.data).toEqual(['A', 'B', 'C']);
+		expect(valuesFor(east)).toEqual([10, 20, 30]);
+		expect(valuesFor(west)).toEqual([100, 200, 300]);
+		expect(east.data.map((point: any) => point.name)).toEqual(['A', 'B', 'C']);
+		expect(east.data.map((point: any) => point.__kustoTooltip?.Target)).toEqual(['east-a', 'east-b', 'east-c']);
+	});
+
+	it('normalizes stacked100 data after applying sorted category order', () => {
+		const scenario = renderScenario('bar', {
+			xColumn: 'Category',
+			yColumn: 'Value',
+			yColumns: ['Value'],
+			legendColumn: 'Segment',
+			stackMode: 'stacked100',
+			xAxisSettings: { sortDirection: 'asc' },
+		}, {
+			columns: ['Category', 'Value', 'Segment'],
+			rows: [
+				['B', 20, 'East'],
+				['B', 30, 'West'],
+				['A', 30, 'East'],
+				['A', 70, 'West'],
+				['C', 50, 'East'],
+				['C', 50, 'West'],
+			],
+		});
+
+		const east = scenario.option.series.find((series: any) => series.name === 'East');
+		const west = scenario.option.series.find((series: any) => series.name === 'West');
+		expect(scenario.option.xAxis.data).toEqual(['A', 'B', 'C']);
+		expect(valuesFor(east)).toEqual([30, 40, 50]);
+		expect(valuesFor(west)).toEqual([70, 60, 50]);
+		expect(east.data.map((point: any) => point.__kustoOriginalValue)).toEqual([30, 20, 50]);
+		expect(west.data.map((point: any) => point.__kustoOriginalValue)).toEqual([70, 30, 50]);
+	});
+
+	it('deduplicates category labels before aligning values', () => {
+		const scenario = renderScenario('bar', {
+			xColumn: 'Category',
+			yColumn: 'Value',
+			yColumns: ['Value'],
+			tooltipColumns: ['Target'],
+			xAxisSettings: { sortDirection: 'asc' },
+		}, {
+			columns: ['Category', 'Value', 'Target'],
+			rows: [
+				['B', 20, 'first-b'],
+				['B', 25, 'latest-b'],
+				['A', 10, 'only-a'],
+			],
+		});
+
+		expect(scenario.option.xAxis.data).toEqual(['A', 'B']);
+		expect(valuesFor(scenario.option.series[0])).toEqual([10, 25]);
+		expect(scenario.option.series[0].data.map((point: any) => point.__kustoTooltip?.Target)).toEqual(['only-a', 'latest-b']);
+	});
+
+	it('keeps time X-axis sorting paired with values', () => {
+		const scenario = renderScenario('line', {
+			xColumn: 'Timestamp',
+			yColumn: 'Value',
+			yColumns: ['Value'],
+			xAxisSettings: { sortDirection: 'desc' },
+		}, {
+			columns: ['Timestamp', 'Value'],
+			rows: [
+				['2024-01-02T00:00:00Z', 20],
+				['2024-01-01T00:00:00Z', 10],
+				['2024-01-03T00:00:00Z', 30],
+			],
+		});
+
+		expect(scenario.option.xAxis.data).toEqual([
+			'03-Jan-2024',
+			'02-Jan-2024',
+			'01-Jan-2024',
+		]);
+		expect(valuesFor(scenario.option.series[0])).toEqual([30, 20, 10]);
+	});
 
 	function getControls(id: string): { controls: HTMLElement; zoom: HTMLButtonElement; undo: HTMLButtonElement } {
 		return {

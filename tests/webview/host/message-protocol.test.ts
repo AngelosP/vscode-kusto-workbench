@@ -129,6 +129,8 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'addConnectionsForClusters',
 	'showInfo',
 	'showPowerBiPublishHelp',
+	'showPowerBiPartialPublishWarning',
+	'showPowerBiUnsupportedVisualHelp',
 	'saveResultsCsv',
 	'setCaretDocsEnabled',
 	'setAutoTriggerAutocompleteEnabled',
@@ -223,6 +225,8 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	// Info & UI
 	'showInfo',
 	'showPowerBiPublishHelp',
+	'showPowerBiPartialPublishWarning',
+	'showPowerBiUnsupportedVisualHelp',
 	'seeCachedValues',
 	'resolveResourceUri',
 	'saveResultsCsv',

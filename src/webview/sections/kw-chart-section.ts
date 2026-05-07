@@ -2315,6 +2315,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 		const ySet = this._yAxisSettings;
 		if (ySet.showAxisLabel !== yDef.showAxisLabel || ySet.customLabel !== yDef.customLabel ||
 			ySet.min !== yDef.min || ySet.max !== yDef.max || ySet.titleGap !== yDef.titleGap ||
+			ySet.sortDirection !== yDef.sortDirection ||
 			(ySet.seriesColors && Object.keys(ySet.seriesColors).length > 0)) {
 			data.yAxisSettings = { ...ySet };
 		}

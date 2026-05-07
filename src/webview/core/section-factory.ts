@@ -1770,11 +1770,11 @@ export function __kustoGetChartDatasetsInDomOrder() {
 				const id = child && child.id ? String(child.id) : '';
 				if (!id) continue;
 				// Count all section types for consistent numbering
-				if (id.startsWith('query_') || id.startsWith('markdown_') || id.startsWith('python_') || id.startsWith('url_') || id.startsWith('chart_') || id.startsWith('transformation_') || id.startsWith('html_') || id.startsWith('copilotQuery_')) {
+				if (id.startsWith('query_') || id.startsWith('sql_') || id.startsWith('markdown_') || id.startsWith('python_') || id.startsWith('url_') || id.startsWith('chart_') || id.startsWith('transformation_') || id.startsWith('html_') || id.startsWith('copilotQuery_')) {
 					sectionIndex++;
 				}
 				// Only include sections that can be data sources
-				if (!(id.startsWith('query_') || id.startsWith('url_') || id.startsWith('transformation_'))) continue;
+				if (!(id.startsWith('query_') || id.startsWith('sql_') || id.startsWith('url_') || id.startsWith('transformation_'))) continue;
 				const st = getResultsState(id);
 				const cols = st && Array.isArray(st.columns) ? st.columns : [];
 				const rows = st && Array.isArray(st.rows) ? st.rows : [];

@@ -224,8 +224,9 @@ import { pState } from '../../src/webview/shared/persistence-state.js';
 import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
 import { displayResult, displayResultForBox } from '../../src/webview/core/results-state.js';
 import { sqlFavoritesModeByBoxId } from '../../src/webview/core/state.js';
+import { updateConnectionSelects, __kustoSetAutoEnterFavoritesForBox } from '../../src/webview/core/section-factory.js';
 import { setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
-import { getKqlxState, handleDocumentDataMessage, schedulePersist } from '../../src/webview/core/persistence.js';
+import { getKqlxState, handleDocumentDataMessage, schedulePersist, __kustoScheduleHtmlPowerBiCompatibilityCheck } from '../../src/webview/core/persistence.js';
 
 describe('persistence round-trip', () => {
 	beforeEach(() => {
@@ -284,7 +285,7 @@ describe('persistence round-trip', () => {
 		expect(state.sections.map((s) => s.type)).toEqual(['query', 'markdown', 'html', 'sql']);
 	});
 
-	it('restores HTML section code, legacy dataSourceIds input, and dashboard publish metadata', () => {
+	it('restores HTML section code, legacy dataSourceIds input, dashboard publish metadata, and Power BI dismissal state', () => {
 		const pbiPublishInfo = {
 			workspaceId: 'workspace-1',
 			workspaceName: 'Analytics',
@@ -293,6 +294,12 @@ describe('persistence round-trip', () => {
 			reportName: 'Ops Dashboard',
 			reportUrl: 'https://app.powerbi.com/report-1',
 			dataMode: 'import',
+		};
+		const powerBiUpgradeNotice = {
+			dismissedForSection: true,
+			dismissedForVersion: 1,
+			dismissedForSignature: 'dismissed-signature',
+			dismissedAt: '2026-05-06T00:00:00.000Z',
 		};
 
 		handleDocumentDataMessage({
@@ -314,6 +321,7 @@ describe('persistence round-trip', () => {
 						// Accepted for older saved documents; provenance is the authoritative source for future saves.
 						dataSourceIds: ['query_1', 'transformation_1'],
 						pbiPublishInfo,
+						powerBiUpgradeNotice,
 					},
 				],
 			},
@@ -329,9 +337,45 @@ describe('persistence round-trip', () => {
 			previewHeightPx: 520,
 			dataSourceIds: ['query_1', 'transformation_1'],
 			pbiPublishInfo,
+			powerBiUpgradeNotice,
 		});
 		expect(testState.htmlBoxes).toEqual(['html_saved_1']);
 		expect(testState.queryBoxes).toEqual([]);
+	});
+
+	it('skips dismissed HTML sections during scheduled Power BI compatibility checks but still checks other sections', () => {
+		vi.useFakeTimers();
+		try {
+			const dismissed = document.createElement('div') as HTMLElement & {
+				shouldRunPowerBiCompatibilityNoticeCheck: ReturnType<typeof vi.fn>;
+				evaluatePowerBiCompatibilityNotice: ReturnType<typeof vi.fn>;
+			};
+			dismissed.id = 'html_dismissed';
+			dismissed.shouldRunPowerBiCompatibilityNoticeCheck = vi.fn(() => false);
+			dismissed.evaluatePowerBiCompatibilityNotice = vi.fn();
+
+			const active = document.createElement('div') as HTMLElement & {
+				shouldRunPowerBiCompatibilityNoticeCheck: ReturnType<typeof vi.fn>;
+				evaluatePowerBiCompatibilityNotice: ReturnType<typeof vi.fn>;
+			};
+			active.id = 'html_active';
+			active.shouldRunPowerBiCompatibilityNoticeCheck = vi.fn(() => true);
+			active.evaluatePowerBiCompatibilityNotice = vi.fn();
+
+			document.body.append(dismissed, active);
+			testState.htmlBoxes.push('html_dismissed', 'html_active');
+
+			__kustoScheduleHtmlPowerBiCompatibilityCheck('test');
+			vi.advanceTimersByTime(500);
+			vi.advanceTimersByTime(25);
+
+			expect(dismissed.shouldRunPowerBiCompatibilityNoticeCheck).toHaveBeenCalledTimes(1);
+			expect(dismissed.evaluatePowerBiCompatibilityNotice).not.toHaveBeenCalled();
+			expect(active.shouldRunPowerBiCompatibilityNoticeCheck).toHaveBeenCalledTimes(1);
+			expect(active.evaluatePowerBiCompatibilityNotice).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('restores SQL section query, state, favorites mode, and persisted results', () => {
@@ -542,6 +586,42 @@ describe('persistence round-trip', () => {
 		const restoredQueryId = String(testState.addQueryBox.mock.results[0]?.value || '');
 		expect(restoredQueryId).toBeTruthy();
 		expect(pState.pendingQueryTextByBoxId[restoredQueryId]).toBe('TableA | take 3');
+	});
+
+	it('restores compatibility query connection data before connection selectors refresh', () => {
+		handleDocumentDataMessage({
+			type: 'documentData',
+			ok: true,
+			forceReload: true,
+			compatibilityMode: true,
+			compatibilitySingleKind: 'query',
+			documentKind: 'kql',
+			documentUri: 'file:///tmp/plain.kql',
+			state: {
+				sections: [
+					{
+						type: 'query',
+						query: 'StormEvents | take 5',
+						clusterUrl: 'https://help.kusto.windows.net',
+						database: 'Samples',
+					},
+				],
+			},
+		});
+
+		expect(testState.addQueryBox).toHaveBeenCalledWith({
+			clusterUrl: 'https://help.kusto.windows.net',
+			database: 'Samples',
+		});
+		expect(__kustoSetAutoEnterFavoritesForBox).toHaveBeenCalledWith(
+			testState.addQueryBox.mock.results[0]?.value,
+			'https://help.kusto.windows.net',
+			'Samples'
+		);
+		expect(updateConnectionSelects).toHaveBeenCalled();
+
+		const restoredQueryId = String(testState.addQueryBox.mock.results[0]?.value || '');
+		expect(pState.pendingQueryTextByBoxId[restoredQueryId]).toBe('StormEvents | take 5');
 	});
 
 	it('ignores duplicate documentData for same document unless forced', () => {

@@ -39,6 +39,8 @@ import {
 	ExportDashboardMessage,
 	RequestHtmlDashboardUpgradeWithCopilotMessage,
 	ShowPowerBiPublishHelpMessage,
+	ShowPowerBiPartialPublishWarningMessage,
+	ShowPowerBiUnsupportedVisualHelpMessage,
 	PublishToPowerBIMessage,
 	findPreferredDefaultCopilotModel
 } from './queryEditorTypes';
@@ -52,6 +54,8 @@ type RunningQueryEntry = {
 	runSeq: number;
 	clientActivityId?: string;
 };
+
+const GITHUB_ISSUES_URL = 'https://github.com/AngelosP/vscode-kusto-workbench/issues';
 
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
@@ -501,6 +505,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'showPowerBiPublishHelp':
 				await this.showPowerBiPublishHelp(message as ShowPowerBiPublishHelpMessage);
 				return;
+			case 'showPowerBiPartialPublishWarning':
+				await this.showPowerBiPartialPublishWarning(message as ShowPowerBiPartialPublishWarningMessage);
+				return;
+			case 'showPowerBiUnsupportedVisualHelp':
+				await this.showPowerBiUnsupportedVisualHelp(message as ShowPowerBiUnsupportedVisualHelpMessage);
+				return;
 			case 'saveResultsCsv':
 				await this.saveResultsCsvFromWebview(message);
 				return;
@@ -878,19 +888,76 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	private async showPowerBiPublishHelp(message: ShowPowerBiPublishHelpMessage): Promise<void> {
 		const sectionId = String(message.sectionId || '').trim();
-		const fixAction = 'Ask Kusto Workbench to Fix';
+		const sectionName = String(message.sectionName || '').trim();
+		const sectionLabel = sectionName || sectionId || 'this HTML section';
+		const fixAction = 'Fix it using Kusto Workbench';
 		const selection = await vscode.window.showWarningMessage(
-			'Power BI publish needs query-backed data bindings. Ask Kusto Workbench to add or fix the provenance block, connect it to query results, and then try publishing again.',
+			`Power BI publish needs query-backed data bindings for ${sectionLabel}. Ask Kusto Workbench to add or fix the provenance block, connect it to query results, and then try publishing again.`,
 			fixAction,
 		);
 		if (selection !== fixAction || !sectionId) return;
 		await this.requestHtmlDashboardUpgradeWithCopilot({
 			type: 'requestHtmlDashboardUpgradeWithCopilot',
 			sectionId,
-			sectionName: message.sectionName,
+			sectionName: sectionName || undefined,
 			targetVersion: Number.isFinite(message.targetVersion) ? Number(message.targetVersion) : 1,
 			reasons: Array.isArray(message.reasons) ? message.reasons : undefined,
 		});
+	}
+
+	private async showPowerBiPartialPublishWarning(message: ShowPowerBiPartialPublishWarningMessage): Promise<void> {
+		const requestId = String(message.requestId || '').trim();
+		const sectionId = String(message.sectionId || '').trim();
+		const sectionName = String(message.sectionName || '').trim();
+		const sectionLabel = sectionName || sectionId || 'this HTML section';
+		const targetVersion = Number.isFinite(message.targetVersion) ? Number(message.targetVersion) : 1;
+		const reasons = Array.isArray(message.reasons) ? message.reasons : undefined;
+		const publishAnywayAction = 'Publish anyway';
+		const fixAction = 'Fix with Kusto Workbench';
+		const selection = await vscode.window.showWarningMessage(
+			`Power BI can publish ${sectionLabel}, but Kusto Workbench found visuals or interactions that Power BI export cannot fully reproduce. Publish anyway to continue with the exportable parts, or ask Kusto Workbench to make the section 100% compatible with Power BI exporting first.`,
+			publishAnywayAction,
+			fixAction,
+		);
+
+		const postResult = (action: 'publishAnyway' | 'fixWithKustoWorkbench' | 'dismissed'): void => {
+			if (!sectionId || !requestId) return;
+			this.postMessage({
+				type: 'powerBiPartialPublishWarningResult',
+				boxId: sectionId,
+				requestId,
+				action,
+			});
+		};
+
+		if (selection === publishAnywayAction) {
+			postResult('publishAnyway');
+			return;
+		}
+
+		if (selection === fixAction) {
+			postResult('fixWithKustoWorkbench');
+			if (!sectionId) return;
+			await this.requestHtmlDashboardUpgradeWithCopilot({
+				type: 'requestHtmlDashboardUpgradeWithCopilot',
+				sectionId,
+				sectionName: sectionName || undefined,
+				targetVersion,
+				reasons,
+			});
+			return;
+		}
+
+		postResult('dismissed');
+	}
+
+	private async showPowerBiUnsupportedVisualHelp(message: ShowPowerBiUnsupportedVisualHelpMessage): Promise<void> {
+		const openIssuesAction = 'Ask for it';
+		const text = String(message.message || '').trim() || 'Power BI export does not support this chart type yet.';
+		const selection = await vscode.window.showInformationMessage(text, openIssuesAction);
+		if (selection === openIssuesAction) {
+			await vscode.env.openExternal(vscode.Uri.parse(GITHUB_ISSUES_URL));
+		}
 	}
 
 	private async requestHtmlDashboardUpgradeWithCopilot(message: RequestHtmlDashboardUpgradeWithCopilotMessage): Promise<void> {
@@ -918,6 +985,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		return [
 			`Upgrade HTML section ${sectionLabel} to the latest Kusto Workbench HTML dashboard Power BI export contract (version ${targetVersion}).`,
 			'',
+			'Make the dashboard 100% compatible with Power BI exporting before publishing.',
 			'Preserve the dashboard look, layout, interactivity, and data semantics unless the Power BI export contract requires a change.',
 			'Use provenance bindings and KustoWorkbench.renderChart, KustoWorkbench.renderTable, or KustoWorkbench.renderRepeatedTable where appropriate so the dashboard exports cleanly to Power BI.',
 			'Do not make unrelated notebook changes.',

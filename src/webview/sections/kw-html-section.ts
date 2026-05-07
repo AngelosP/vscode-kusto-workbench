@@ -72,6 +72,15 @@ export interface HtmlSectionData {
 	powerBiUpgradeNotice?: PowerBiUpgradeNoticeState;
 }
 
+type PowerBiPublishDataSource = { name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> };
+
+type PendingPowerBiPartialPublish = {
+	requestId: string;
+	code: string;
+	dataSources: PowerBiPublishDataSource[];
+	suggestedName: string;
+};
+
 export { parseKwProvenance };
 export type { KwModelDimension, KwModelFact, KwProvenance, PowerBiUpgradeNoticeState };
 
@@ -166,6 +175,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _powerBiNoticeClosedSignature = '';
 	/** Debounced compatibility refresh after local or tool-driven code changes. */
 	private _powerBiCompatibilityRefreshTimer: any = null;
+	/** Pending publish context while the native partial-publish warning is awaiting a choice. */
+	private _pendingPowerBiPartialPublish: PendingPowerBiPartialPublish | undefined;
 
 	private _editor: MonacoEditor | null = null;
 	private _cursorStatus: EditorCursorStatusPublisher | null = null;
@@ -257,6 +268,13 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			this._savedPreviewHeightPx = this.previewHeightPx;
 			this._userResizedPreview = this.previewHeightUserSet;
 		}
+
+		if (this._expanded && this._mode === 'preview') {
+			this._updatePreview();
+			if (this._userResizedPreview && this._savedPreviewHeightPx !== undefined) {
+				this.updateComplete.then(() => this._restorePreviewHeight());
+			}
+		}
 	}
 
 	override updated(changed: PropertyValues): void {
@@ -315,10 +333,6 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	// ── Toolbar ───────────────────────────────────────────────────────────────
 
 	private _renderToolbar(): TemplateResult {
-		const uploadBlocker = this._getPowerBiUploadBlockerMessage();
-		const uploadEnabled = !uploadBlocker;
-		const uploadTitle = uploadBlocker || 'Publish to Power BI service';
-		const uploadHelpId = `${this.boxId}-power-bi-upload-help`;
 		return html`
 			<div slot="header-buttons" class="html-mode-buttons">
 				<button class="unified-btn-secondary md-tab md-mode-btn ${this._mode === 'code' ? 'is-active' : ''}"
@@ -328,23 +342,11 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 					type="button" role="tab" aria-selected=${this._mode === 'preview' ? 'true' : 'false'}
 					@click=${() => this._setMode('preview')} title="Preview">Preview</button>
 				<span class="query-editor-toolbar-sep"></span>
-				<span class="header-tab-tooltip-wrapper" title=${uploadTitle} aria-label=${uploadTitle}
-					aria-describedby=${uploadEnabled ? nothing : uploadHelpId}
-					aria-disabled=${uploadEnabled ? nothing : 'true'}
-					role=${uploadEnabled ? nothing : 'button'}
-					tabindex=${uploadEnabled ? '-1' : '0'}
-					@click=${this._showPowerBiUploadUnavailableMessage}
-					@keydown=${this._onPowerBiUploadUnavailableKeyDown}>
-					${uploadEnabled ? nothing : html`<span id=${uploadHelpId} class="sr-only">${uploadTitle}</span>`}
-					<button class="header-tab" type="button"
-						@click=${this._publishToPowerBI} title=${uploadEnabled ? uploadTitle : ''}
-						aria-label="Publish to Power BI service"
-						aria-describedby=${uploadEnabled ? nothing : uploadHelpId}
-						aria-disabled=${uploadEnabled ? 'false' : 'true'}
-						?disabled=${!uploadEnabled}>
-						${uploadIcon}
-					</button>
-				</span>
+				<button class="header-tab" type="button"
+					@click=${this._publishToPowerBI} title="Publish to Power BI service"
+					aria-label="Publish to Power BI service">
+					${uploadIcon}
+				</button>
 				<button class="header-tab" type="button"
 					@click=${this._exportDashboard} title="Save dashboard as HTML or Power BI file"
 					aria-label="Save dashboard as HTML or Power BI file">
@@ -397,8 +399,9 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		return provenance ? Object.keys(provenance.bindings || {}).length : 0;
 	}
 
-	private _isPowerBiUploadEnabled(): boolean {
-		return !this._getPowerBiUploadBlockerMessage();
+	private _canEvaluatePowerBiCompatibilityNotice(code = this._getCodeText()): boolean {
+		if (this._getPowerBiBindingCount(code) === 0) return false;
+		return this._getKnownUnsupportedPowerBiCompatibilityReasons(code).length === 0;
 	}
 
 	private _getKnownUnsupportedPowerBiCompatibilityReasons(code = this._getCodeText()): string[] {
@@ -410,28 +413,10 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		const visualSummary = types.length === 0
 			? 'one or more visuals'
 			: `${types.join(', ')} ${types.length === 1 ? 'visuals' : 'visuals'}`;
-		return `Power BI export does not support ${visualSummary} yet. Use the HTML preview, or change the binding to scalar, table, repeatedTable, pivot, bar, pie, or line before publishing.`;
-	}
-
-	private _getPowerBiUploadBlockerMessage(code = this._getCodeText()): string | undefined {
-		if (this._getPowerBiBindingCount(code) === 0) {
-			return 'This HTML section is not set up for Power BI export yet. Ask the Kusto Workbench agent to make it exportable to Power BI.';
-		}
-		const unsupportedReasons = this._getKnownUnsupportedPowerBiCompatibilityReasons(code);
-		return unsupportedReasons.length > 0 ? this._getPowerBiUnsupportedBlockerMessage(unsupportedReasons) : undefined;
-	}
-
-	private _showPowerBiUploadUnavailableMessage(event?: Event): void {
-		const message = this._getPowerBiUploadBlockerMessage();
-		if (!message) return;
-		event?.preventDefault();
-		event?.stopPropagation();
-		try { postMessageToHost({ type: 'showInfo', message }); } catch (e) { console.error('[kusto]', e); }
-	}
-
-	private _onPowerBiUploadUnavailableKeyDown(event: KeyboardEvent): void {
-		if (event.key !== 'Enter' && event.key !== ' ') return;
-		this._showPowerBiUploadUnavailableMessage(event);
+		const supportRequest = types.length <= 1
+			? 'Ask for support for this chart type; it will be added once the owner knows people need it.'
+			: 'Ask for support for these chart types; they will be added once the owner knows people need them.';
+		return `Power BI export does not support ${visualSummary} yet. Use the HTML preview, or change the binding to scalar, table, repeatedTable, pivot, bar, pie, or line before publishing. ${supportRequest}`;
 	}
 
 	private _hasPowerBiExportMetadata(): boolean {
@@ -439,10 +424,16 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	}
 
 	private _isPowerBiNoticeDismissed(status: HtmlDashboardPowerBiCompatibilityResult): boolean {
-		if (this._powerBiNoticeClosedSignature === status.signature) return true;
+		return this._isPowerBiUpgradeNoticeDismissedForSection() || this._powerBiNoticeClosedSignature === status.signature;
+	}
+
+	private _isPowerBiUpgradeNoticeDismissedForSection(): boolean {
 		return !!this._powerBiUpgradeNotice
-			&& this._powerBiUpgradeNotice.dismissedForVersion === status.targetVersion
-			&& this._powerBiUpgradeNotice.dismissedForSignature === status.signature;
+			&& (
+				this._powerBiUpgradeNotice.dismissedForSection === true
+				// Treat saved pre-release signature dismissals as section-level dismissals so restored sections can skip analysis.
+				|| !!this._powerBiUpgradeNotice.dismissedForSignature
+			);
 	}
 
 	private _requestPowerBiUpgradeWithCopilot(): void {
@@ -463,6 +454,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		const status = this._powerBiCompatibilityStatus;
 		if (!status) return;
 		this._powerBiUpgradeNotice = {
+			dismissedForSection: true,
 			dismissedForVersion: status.targetVersion,
 			dismissedForSignature: status.signature,
 			dismissedAt: new Date().toISOString(),
@@ -495,7 +487,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	// ── Export dashboard (unified HTML / Power BI) ────────────────────────────
 
 	/** Best-effort collection of the fact data source for PBI export. Returns empty array on failure. */
-	private _collectDataSourcesForPBI(): Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> {
+	private _collectDataSourcesForPBI(): PowerBiPublishDataSource[] {
 		const provenance = parseKwProvenance(this._getCodeText());
 		if (!provenance?.model?.fact?.sectionId) return [];
 
@@ -664,14 +656,14 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			return;
 		}
 
-		const unsupportedReasons = this._getKnownUnsupportedPowerBiCompatibilityReasons(code);
-		if (unsupportedReasons.length > 0) {
-			try { postMessageToHost({ type: 'showInfo', message: this._getPowerBiUnsupportedBlockerMessage(unsupportedReasons) }); } catch (e) { console.error('[kusto]', e); }
-			return;
-		}
-
+		const compatibilityStatus = analyzeHtmlDashboardPowerBiCompatibility(code);
+		const unsupportedReasons = getKnownUnsupportedPowerBiCompatibilityReasons(compatibilityStatus.reasons);
 		const dataSources = this._collectDataSourcesForPBI();
 		if (dataSources.length === 0) {
+			if (unsupportedReasons.length > 0) {
+				try { postMessageToHost({ type: 'showPowerBiUnsupportedVisualHelp', message: this._getPowerBiUnsupportedBlockerMessage(unsupportedReasons) }); } catch (e) { console.error('[kusto]', e); }
+				return;
+			}
 			try {
 				postMessageToHost({
 					type: 'showPowerBiPublishHelp',
@@ -684,11 +676,51 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 			return;
 		}
 
+		if (compatibilityStatus.needsUpgrade && compatibilityStatus.reasons.length > 0) {
+			this._requestPowerBiPartialPublishWarning(code, dataSources, compatibilityStatus.reasons);
+			return;
+		}
+
 		const previewHeight = await this._measureCurrentHtmlHeight(code);
 		this._openPublishDialog(code, dataSources, previewHeight, this._name || 'KustoHtmlDashboard');
 	}
 
-	private _openPublishDialog(htmlCode: string, dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }>, previewHeight: number | undefined, suggestedName: string): void {
+	private _requestPowerBiPartialPublishWarning(code: string, dataSources: PowerBiPublishDataSource[], reasons: string[]): void {
+		const requestId = `${this.boxId}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+		this._pendingPowerBiPartialPublish = {
+			requestId,
+			code,
+			dataSources,
+			suggestedName: this._name || 'KustoHtmlDashboard',
+		};
+		try {
+			postMessageToHost({
+				type: 'showPowerBiPartialPublishWarning',
+				requestId,
+				sectionId: this.boxId,
+				sectionName: this._name || undefined,
+				targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
+				reasons,
+			});
+		} catch (e) { console.error('[kusto]', e); }
+	}
+
+	private async _handlePowerBiPartialPublishWarningResult(message: { requestId?: unknown; action?: unknown }): Promise<void> {
+		const requestId = String(message.requestId || '').trim();
+		const action = String(message.action || '').trim();
+		const pending = this._pendingPowerBiPartialPublish;
+		if (!pending || !requestId || pending.requestId !== requestId) return;
+		this._pendingPowerBiPartialPublish = undefined;
+		if (action !== 'publishAnyway') return;
+		if (this._getCodeText() !== pending.code) {
+			try { postMessageToHost({ type: 'showInfo', message: 'The HTML changed before publishing. Click Publish to Power BI service again so Kusto Workbench can re-check compatibility.' }); } catch (e) { console.error('[kusto]', e); }
+			return;
+		}
+		const previewHeight = await this._measureCurrentHtmlHeight(pending.code);
+		this._openPublishDialog(pending.code, pending.dataSources, previewHeight, pending.suggestedName);
+	}
+
+	private _openPublishDialog(htmlCode: string, dataSources: PowerBiPublishDataSource[], previewHeight: number | undefined, suggestedName: string): void {
 		const dialog = this.shadowRoot?.querySelector<any>('kw-publish-pbi-dialog');
 		if (dialog) {
 			dialog.show(dataSources, htmlCode, suggestedName, previewHeight, this.boxId, this._pbiPublishInfo);
@@ -697,9 +729,13 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	private _getPowerBiPublishBlockerReasons(code: string): string[] {
 		const provenance = parseKwProvenance(code);
-		const reasons = ['No query-backed data sources were available for Power BI publish.'];
+		const compatibilityStatus = analyzeHtmlDashboardPowerBiCompatibility(code);
+		const compatibilityReasons = canOfferHtmlDashboardPowerBiUpgrade(compatibilityStatus) ? compatibilityStatus.reasons : [];
+		const reasons = [...compatibilityReasons, 'No query-backed data sources were available for Power BI publish.'];
 		if (!provenance) {
-			reasons.push('Missing application/kw-provenance block.');
+			if (!compatibilityReasons.some(reason => reason.toLowerCase().includes('missing application/kw-provenance'))) {
+				reasons.push('Missing application/kw-provenance block.');
+			}
 		} else if (Object.keys(provenance.bindings || {}).length === 0) {
 			reasons.push('The provenance block has no data bindings.');
 		} else {
@@ -1664,6 +1700,11 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 				return;
 			}
 
+			if (e.data.type === 'powerBiPartialPublishWarningResult' && e.data.boxId === this.boxId) {
+				void this._handlePowerBiPartialPublishWarningResult(e.data);
+				return;
+			}
+
 			if ((e.data.type === 'pbiWorkspacesResult' || e.data.type === 'publishToPowerBIResult' || e.data.type === 'pbiItemExistsResult') && e.data.boxId === this.boxId) {
 				// Capture publish GUIDs BEFORE forwarding to dialog so they persist even if the dialog throws.
 				if (e.data.type === 'publishToPowerBIResult' && e.data.ok && e.data.semanticModelId && e.data.reportId) {
@@ -2161,15 +2202,20 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	public setPbiPublishInfo(info: PbiPublishInfo | undefined): void { this._pbiPublishInfo = info; }
 	public getPowerBiUpgradeNotice(): PowerBiUpgradeNoticeState | undefined { return this._powerBiUpgradeNotice; }
 	public setPowerBiUpgradeNotice(notice: PowerBiUpgradeNoticeState | undefined): void { this._powerBiUpgradeNotice = notice; }
+	public isPowerBiUpgradeNoticeDismissed(): boolean { return this._isPowerBiUpgradeNoticeDismissedForSection(); }
+
+	public shouldRunPowerBiCompatibilityNoticeCheck(): boolean {
+		return !this._isPowerBiUpgradeNoticeDismissedForSection() && this.isPowerBiCompatibilityCheckEnabled();
+	}
 
 	public isPowerBiCompatibilityCheckEnabled(): boolean {
+		if (this._isPowerBiUpgradeNoticeDismissedForSection()) return false;
 		this._refreshProvenance();
-		return this._isPowerBiUploadEnabled() || this._hasPowerBiExportMetadata();
+		return this._canEvaluatePowerBiCompatibilityNotice() || this._hasPowerBiExportMetadata();
 	}
 
 	public evaluatePowerBiCompatibilityNotice(): HtmlDashboardPowerBiCompatibilityResult | undefined {
-		this._refreshProvenance();
-		if (!this.isPowerBiCompatibilityCheckEnabled()) {
+		if (!this.shouldRunPowerBiCompatibilityNoticeCheck()) {
 			this._powerBiCompatibilityStatus = undefined;
 			return undefined;
 		}
@@ -2179,7 +2225,8 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	}
 
 	private _refreshPowerBiCompatibilityNoticeAfterCodeChange(): void {
-		if (!this._powerBiCompatibilityStatus && !this._isPowerBiUploadEnabled() && !this._hasPowerBiExportMetadata()) return;
+		if (this._isPowerBiUpgradeNoticeDismissedForSection()) return;
+		if (!this._powerBiCompatibilityStatus && !this._canEvaluatePowerBiCompatibilityNotice() && !this._hasPowerBiExportMetadata()) return;
 		if (this._powerBiCompatibilityRefreshTimer) clearTimeout(this._powerBiCompatibilityRefreshTimer);
 		this._powerBiCompatibilityRefreshTimer = setTimeout(() => {
 			this._powerBiCompatibilityRefreshTimer = null;
