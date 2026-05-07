@@ -626,6 +626,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 		// Inform the webview whether it's operating in session mode, and which section kinds are allowed.
 		const postPersistenceMode = () => {
+			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
 			try {
 				void webviewPanel.webview.postMessage({
 					type: 'persistenceMode',
@@ -634,7 +635,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					compatibilityMode: false,
 					documentKind,
 					allowedSectionKinds,
-					defaultSectionKind
+					defaultSectionKind,
+					htmlPowerBiCompatibilityCheckEnabled
 				});
 			} catch {
 				// ignore
@@ -934,6 +936,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 		const postDocument = async (options?: { forceReload?: boolean }) => {
 			const forceReload = options?.forceReload ?? false;
+			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
 			const parsed = parseKqlxText(document.getText(), {
 				allowedKinds: ['kqlx', 'mdx', 'sqlx'],
 				defaultKind: documentKind
@@ -945,6 +948,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					forceReload,
 					documentUri: document.uri.toString(),
 					error: parsed.error,
+					htmlPowerBiCompatibilityCheckEnabled,
 					state: createEmptyKqlxFile().state
 				});
 				return;
@@ -972,6 +976,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				ok: true,
 				forceReload,
 				documentUri: document.uri.toString(),
+				htmlPowerBiCompatibilityCheckEnabled,
 				state: hydratedState
 			});
 		};

@@ -93,6 +93,7 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 		documentKind: 'kqlx',
 		documentUri: '',
 		compatibilityTooltip: '',
+		htmlPowerBiCompatibilityCheckEnabled: true,
 		restoreInProgress: false,
 		queryEditorPendingAdds: { query: 0, chart: 0, transformation: 0, markdown: 0, python: 0, url: 0 },
 		pendingQueryTextByBoxId: {} as Record<string, string>,
@@ -226,7 +227,7 @@ import { displayResult, displayResultForBox } from '../../src/webview/core/resul
 import { sqlFavoritesModeByBoxId } from '../../src/webview/core/state.js';
 import { updateConnectionSelects, __kustoSetAutoEnterFavoritesForBox } from '../../src/webview/core/section-factory.js';
 import { setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
-import { getKqlxState, handleDocumentDataMessage, schedulePersist, __kustoScheduleHtmlPowerBiCompatibilityCheck } from '../../src/webview/core/persistence.js';
+import { getKqlxState, handleDocumentDataMessage, schedulePersist, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
 
 describe('persistence round-trip', () => {
 	beforeEach(() => {
@@ -255,6 +256,7 @@ describe('persistence round-trip', () => {
 		pState.documentKind = 'kqlx';
 		pState.devNotesSections = [];
 		pState.lastExecutedBox = '';
+		pState.htmlPowerBiCompatibilityCheckEnabled = true;
 	});
 
 	it('serializes section DOM via getKqlxState', () => {
@@ -374,6 +376,36 @@ describe('persistence round-trip', () => {
 			expect(active.shouldRunPowerBiCompatibilityNoticeCheck).toHaveBeenCalledTimes(1);
 			expect(active.evaluatePowerBiCompatibilityNotice).toHaveBeenCalledTimes(1);
 		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not schedule delayed HTML Power BI compatibility checks when globally disabled', () => {
+		vi.useFakeTimers();
+		try {
+			const active = document.createElement('div') as HTMLElement & {
+				shouldRunPowerBiCompatibilityNoticeCheck: ReturnType<typeof vi.fn>;
+				evaluatePowerBiCompatibilityNotice: ReturnType<typeof vi.fn>;
+				clearPowerBiCompatibilityNotice: ReturnType<typeof vi.fn>;
+			};
+			active.id = 'html_active';
+			active.shouldRunPowerBiCompatibilityNoticeCheck = vi.fn(() => true);
+			active.evaluatePowerBiCompatibilityNotice = vi.fn();
+			active.clearPowerBiCompatibilityNotice = vi.fn();
+
+			document.body.append(active);
+			testState.htmlBoxes.push('html_active');
+
+			__kustoSetHtmlPowerBiCompatibilityCheckEnabled(false);
+			__kustoScheduleHtmlPowerBiCompatibilityCheck('test');
+			vi.advanceTimersByTime(500);
+			vi.advanceTimersByTime(25);
+
+			expect(active.clearPowerBiCompatibilityNotice).toHaveBeenCalled();
+			expect(active.shouldRunPowerBiCompatibilityNoticeCheck).not.toHaveBeenCalled();
+			expect(active.evaluatePowerBiCompatibilityNotice).not.toHaveBeenCalled();
+		} finally {
+			pState.htmlPowerBiCompatibilityCheckEnabled = true;
 			vi.useRealTimers();
 		}
 	});

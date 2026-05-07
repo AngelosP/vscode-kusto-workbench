@@ -102,6 +102,12 @@
           "type": "boolean",
           "default": true,
           "description": "Enable Did you know? content. Turning this off mutes all Did you know? channels and stops update checks."
+        },
+        "kustoWorkbench.html.powerBiCompatibilityCheck.enabled": {
+          "order": 11,
+          "type": "boolean",
+          "default": true,
+          "description": "Enable delayed HTML section checks that surface Power BI export compatibility notices. Turning this off prevents the delayed scan and hides compatibility notices."
         }
       }
     },
@@ -274,11 +280,6 @@
         "category": "Kusto Workbench"
       },
       {
-        "command": "kustoWorkbench.dev.resetDidYouKnowState",
-        "title": "Reset Did You Know State",
-        "category": "Kusto Workbench"
-      },
-      {
         "command": "kusto.exportSkill",
         "title": "Export Agent Skill...",
         "category": "Kusto Workbench",
@@ -289,10 +290,6 @@
       "commandPalette": [
         {
           "command": "kusto.showDevelopmentNotes"
-        },
-        {
-          "command": "kustoWorkbench.dev.resetDidYouKnowState",
-          "when": "kustoWorkbench.devMode"
         }
       ],
       "view/title": [

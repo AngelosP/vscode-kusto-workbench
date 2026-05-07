@@ -223,11 +223,82 @@ function deepQueryAllByTestId(root: ParentNode, testId: string): Element[] {
  * Find an element by any CSS selector, recursively through shadow roots.
  * Useful when data-testid isn't available.
  */
+function splitSelectorOnTopLevelWhitespace(selector: string): string[] {
+	const parts: string[] = [];
+	let current = '';
+	let quote: string | null = null;
+	let bracketDepth = 0;
+	let parenDepth = 0;
+	let escaping = false;
+
+	for (const char of selector) {
+		if (escaping) {
+			current += char;
+			escaping = false;
+			continue;
+		}
+		if (char === '\\') {
+			current += char;
+			escaping = true;
+			continue;
+		}
+		if (quote) {
+			current += char;
+			if (char === quote) quote = null;
+			continue;
+		}
+		if (char === '"' || char === "'") {
+			quote = char;
+			current += char;
+			continue;
+		}
+		if (char === '[') bracketDepth++;
+		else if (char === ']') bracketDepth = Math.max(0, bracketDepth - 1);
+		else if (char === '(') parenDepth++;
+		else if (char === ')') parenDepth = Math.max(0, parenDepth - 1);
+
+		if (/\s/.test(char) && bracketDepth === 0 && parenDepth === 0) {
+			const trimmed = current.trim();
+			if (trimmed) parts.push(trimmed);
+			current = '';
+			continue;
+		}
+		current += char;
+	}
+
+	const trimmed = current.trim();
+	if (trimmed) parts.push(trimmed);
+	return parts;
+}
+
+function deepQuerySelectorAcrossShadowPath(root: ParentNode, selector: string): Element | null {
+	const parts = splitSelectorOnTopLevelWhitespace(selector);
+	for (let splitIndex = 1; splitIndex < parts.length; splitIndex++) {
+		const hostSelector = parts.slice(0, splitIndex).join(' ');
+		const descendantSelector = parts.slice(splitIndex).join(' ');
+		let hosts: Element[] = [];
+		try {
+			hosts = Array.from(root.querySelectorAll(hostSelector));
+		} catch {
+			continue;
+		}
+		for (const host of hosts) {
+			if (!host.shadowRoot) continue;
+			const found = deepQuerySelector(host.shadowRoot, descendantSelector);
+			if (found) return found;
+		}
+	}
+	return null;
+}
+
 function deepQuerySelector(root: ParentNode, selector: string): Element | null {
 	try {
 		const direct = root.querySelector(selector);
 		if (direct) return direct;
 	} catch { /* invalid selector for this root */ }
+
+	const acrossShadowPath = deepQuerySelectorAcrossShadowPath(root, selector);
+	if (acrossShadowPath) return acrossShadowPath;
 
 	const elements = root.querySelectorAll('*');
 	for (const el of elements) {
@@ -3673,7 +3744,7 @@ _win.__e2e = {
 		assertClickCaretFidelityAfterRestoredHtmlPreviewScroll: () => e2eAssertKustoClickCaretFidelityAfterRestoredHtmlPreviewScroll(),
 		prepareRestoredHtmlPreviewNativeClickTarget: () => e2ePrepareRestoredHtmlPreviewNativeClickTarget(),
 		assertRestoredHtmlPreviewNativeClickTarget: () => e2eAssertRestoredHtmlPreviewNativeClickTarget(),
-		selectSampleDatabase: () => _win.__testSelectKwDropdownItem(E2E_SECTION.kusto.databaseDropdown, 'sample,storm', true),
+		selectSampleDatabase: () => _win.__testSelectKwDropdownItem(E2E_SECTION.kusto.databaseDropdown, 'sample,storm,ads,devcli', true),
 		prepareCompletionTargets: () => e2ePrepareKustoCompletionTargets(),
 		waitForCompletionTargets: (timeoutMs: number = 25000) => e2eWaitForKustoCompletionTargets(timeoutMs),
 		startCompletionTargetProbe: (timeoutMs: number = 25000) => e2eStartKustoCompletionTargetProbe(timeoutMs),

@@ -230,8 +230,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.panel = undefined;
 		});
 
-		this.sendAlternatingRowColorSetting();
-		this.watchAlternatingRowColorSetting();
+		this.sendWorkbenchSettings();
+		this.watchWorkbenchSettings();
 	}
 
 	// Token returned by the orchestrator's connect(), used to guard disconnect.
@@ -367,8 +367,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.panel = undefined;
 		});
 
-		this.sendAlternatingRowColorSetting();
-		this.watchAlternatingRowColorSetting();
+		this.sendWorkbenchSettings();
+		this.watchWorkbenchSettings();
 	}
 
 	public async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
@@ -1981,16 +1981,18 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	// ── Alternating row color setting ──────────────────────────────────────────
 
-	private sendAlternatingRowColorSetting(): void {
-		const val = vscode.workspace.getConfiguration('kustoWorkbench').get<string>('alternatingRowColor', 'theme');
-		this.postMessage({ type: 'settingsUpdate', alternatingRowColor: val });
+	private sendWorkbenchSettings(): void {
+		const configuration = vscode.workspace.getConfiguration('kustoWorkbench');
+		const alternatingRowColor = configuration.get<string>('alternatingRowColor', 'theme');
+		const htmlPowerBiCompatibilityCheckEnabled = configuration.get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
+		this.postMessage({ type: 'settingsUpdate', alternatingRowColor, htmlPowerBiCompatibilityCheckEnabled });
 	}
 
-	private watchAlternatingRowColorSetting(): void {
+	private watchWorkbenchSettings(): void {
 		this.configSubscription?.dispose();
 		this.configSubscription = vscode.workspace.onDidChangeConfiguration((e) => {
-			if (e.affectsConfiguration('kustoWorkbench.alternatingRowColor')) {
-				this.sendAlternatingRowColorSetting();
+			if (e.affectsConfiguration('kustoWorkbench.alternatingRowColor') || e.affectsConfiguration('kustoWorkbench.html.powerBiCompatibilityCheck.enabled')) {
+				this.sendWorkbenchSettings();
 			}
 		});
 	}

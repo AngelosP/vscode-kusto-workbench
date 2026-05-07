@@ -40,6 +40,7 @@ import {
 	schedulePersist, handleDocumentDataMessage, getKqlxState,
 	__kustoSetCompatibilityMode, __kustoApplyDocumentCapabilities,
 	__kustoRequestAddSection, __kustoOnQueryResult, __kustoScheduleLocalSchemaPrewarm,
+	__kustoSetHtmlPowerBiCompatibilityCheckEnabled,
 } from './persistence';
 import {
 	__kustoControlCommandDocCache, __kustoControlCommandDocPending,
@@ -421,6 +422,9 @@ window.addEventListener('message', async (event: any) => {
 				} else {
 					document.documentElement.style.setProperty('--kw-alt-row-bg', altColor);
 				}
+				if (typeof message.htmlPowerBiCompatibilityCheckEnabled === 'boolean') {
+					__kustoSetHtmlPowerBiCompatibilityCheckEnabled(message.htmlPowerBiCompatibilityCheckEnabled);
+				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'controlCommandSyntaxResult':
@@ -506,6 +510,9 @@ window.addEventListener('message', async (event: any) => {
 							}
 							if (typeof message.firstSectionPinned === 'boolean') {
 								pState.firstSectionPinned = message.firstSectionPinned;
+							}
+							if (typeof message.htmlPowerBiCompatibilityCheckEnabled === 'boolean') {
+								__kustoSetHtmlPowerBiCompatibilityCheckEnabled(message.htmlPowerBiCompatibilityCheckEnabled);
 							}
 						} catch (e) { console.error('[kusto]', e); }
 						__kustoSetCompatibilityMode(!!message.compatibilityMode);

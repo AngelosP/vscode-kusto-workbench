@@ -10,7 +10,7 @@ Feature: Did you know embedded file popup
     And I wait 2 seconds
 
   Scenario: File-open compact popup appears inside the Kusto editor webview
-    When I execute command "kustoWorkbench.dev.resetDidYouKnowState"
+    When I execute command "kustoWorkbench.test.resetDidYouKnowState"
     And I open file "tests/vscode-extension-tester/e2e/default/did-you-know-embedded-popup/fixtures/embedded-did-you-know.kqlx" in the editor
     And I wait for "kw-query-section .monaco-editor" in the webview for 25 seconds
     And I wait for "#kw-embedded-tutorial-viewer-host kw-tutorial-viewer" in the webview for 25 seconds

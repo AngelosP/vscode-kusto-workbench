@@ -84,6 +84,9 @@ export const pState = {
 	/** True when the first section is pinned to position 0 (e.g. kql+json sidecar). */
 	firstSectionPinned: false,
 
+	/** True when delayed HTML Power BI export compatibility notices are enabled. */
+	htmlPowerBiCompatibilityCheckEnabled: true,
+
 	// ── Shared runtime state ─────────────────────────────────────────
 
 	/** True while applyKqlxState is rebuilding the UI from a document payload. */

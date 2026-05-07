@@ -306,6 +306,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			const sidecarEnabled = !!sidecarFile;
 			const compatibilityMode = !sidecarEnabled;
 			const sidecarName = getSidecarDisplayName();
+			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
 			const tooltip = compatibilityMode
 				? `This is a .kql/.csl file. To add sections, Kusto Workbench will create a companion metadata file (${sidecarName}) next to it.`
 				: '';
@@ -320,7 +321,8 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					defaultSectionKind: 'query',
 					upgradeRequestType: 'requestUpgradeToKqlx',
 					compatibilityTooltip: tooltip,
-					firstSectionPinned: sidecarEnabled
+					firstSectionPinned: sidecarEnabled,
+					htmlPowerBiCompatibilityCheckEnabled
 				});
 			} catch {
 				// ignore
@@ -417,6 +419,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 		const postDocument = (options?: { forceReload?: boolean }) => {
 			const forceReload = options?.forceReload ?? false;
+			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
 			const queryText = document.getText();
 			const sidecarEnabled = !!sidecarFile;
 			const sidecarName = getSidecarDisplayName();
@@ -458,6 +461,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				compatibilityTooltip: !sidecarEnabled
 					? `This is a .kql/.csl file. To add sections, Kusto Workbench will create a companion metadata file (${sidecarName}) next to it.`
 					: '',
+				htmlPowerBiCompatibilityCheckEnabled,
 				state
 			});
 		};

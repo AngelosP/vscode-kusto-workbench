@@ -182,10 +182,6 @@ export function activate(context: vscode.ExtensionContext) {
 					? await openTutorialPopup(undefined, 'compact', triggerDocument)
 					: false;
 			}),
-			vscode.commands.registerCommand('kustoWorkbench.dev.resetDidYouKnowState', async () => {
-				const result = await resetDidYouKnowState({ silent: false });
-				return result;
-			}),
 		);
 	}
 

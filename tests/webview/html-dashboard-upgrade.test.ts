@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render } from 'lit';
 import { KwHtmlSection, type PbiPublishInfo } from '../../src/webview/sections/kw-html-section';
+import { pState } from '../../src/webview/shared/persistence-state';
 import {
 	CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
 	analyzeHtmlDashboardPowerBiCompatibility,
@@ -112,6 +113,7 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 	let capturedMessages: unknown[];
 
 	beforeEach(() => {
+		pState.htmlPowerBiCompatibilityCheckEnabled = true;
 		capturedMessages = [];
 		(window as Window & typeof globalThis & { __e2eCaptureHostMessage?: (message: unknown) => void }).__e2eCaptureHostMessage = message => {
 			capturedMessages.push(message);
@@ -119,6 +121,7 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 	});
 
 	afterEach(() => {
+		pState.htmlPowerBiCompatibilityCheckEnabled = true;
 		delete (window as Window & typeof globalThis & { __e2eCaptureHostMessage?: (message: unknown) => void }).__e2eCaptureHostMessage;
 	});
 
@@ -170,6 +173,21 @@ describe('KwHtmlSection Power BI upgrade relevance gate', () => {
 			targetVersion: CURRENT_HTML_DASHBOARD_POWER_BI_EXPORT_VERSION,
 			reasons: ['top-table (table: target must be table or tbody inside table)'],
 		});
+	});
+
+	it('suppresses and clears Power BI notices when the global compatibility check is disabled', () => {
+		const section = new KwHtmlSection();
+		section.boxId = 'html_globally_disabled';
+		section.setCode(fixableTableTargetHtml());
+
+		expect(section.evaluatePowerBiCompatibilityNotice()?.needsUpgrade).toBe(true);
+
+		pState.htmlPowerBiCompatibilityCheckEnabled = false;
+
+		expect(section.shouldRunPowerBiCompatibilityNoticeCheck()).toBe(false);
+		expect(section.isPowerBiCompatibilityCheckEnabled()).toBe(false);
+		expect(section.evaluatePowerBiCompatibilityNotice()).toBeUndefined();
+		expect((section as unknown as { _powerBiCompatibilityStatus?: unknown })._powerBiCompatibilityStatus).toBeUndefined();
 	});
 
 	it('summarizes Power BI notice reasons without raw analyzer text', () => {

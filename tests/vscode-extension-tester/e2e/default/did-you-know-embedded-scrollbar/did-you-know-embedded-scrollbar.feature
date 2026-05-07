@@ -8,7 +8,7 @@ Feature: Did you know embedded standard scrollbar
     And I execute command "workbench.action.closeAuxiliaryBar"
     And I execute command "workbench.action.closePanel"
     And I wait 2 seconds
-    When I execute command "kustoWorkbench.dev.resetDidYouKnowState"
+    When I execute command "kustoWorkbench.test.resetDidYouKnowState"
     And I open file "tests/vscode-extension-tester/e2e/default/did-you-know-embedded-popup/fixtures/embedded-did-you-know.kqlx" in the editor
     And I wait for "kw-query-section .monaco-editor" in the webview for 25 seconds
     And I execute command "kustoWorkbench.test.openEmbeddedDidYouKnow"

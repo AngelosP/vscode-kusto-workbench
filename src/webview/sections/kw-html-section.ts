@@ -357,6 +357,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	}
 
 	private _renderPowerBiUpgradeNotice(): TemplateResult | typeof nothing {
+		if (pState.htmlPowerBiCompatibilityCheckEnabled === false) return nothing;
 		const status = this._powerBiCompatibilityStatus;
 		if (!status || !status.needsUpgrade || this._isPowerBiNoticeDismissed(status)) return nothing;
 		const noticeText = this._getPowerBiUpgradeNoticeText(status.reasons);
@@ -2203,12 +2204,21 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	public getPowerBiUpgradeNotice(): PowerBiUpgradeNoticeState | undefined { return this._powerBiUpgradeNotice; }
 	public setPowerBiUpgradeNotice(notice: PowerBiUpgradeNoticeState | undefined): void { this._powerBiUpgradeNotice = notice; }
 	public isPowerBiUpgradeNoticeDismissed(): boolean { return this._isPowerBiUpgradeNoticeDismissedForSection(); }
+	public clearPowerBiCompatibilityNotice(): void {
+		if (this._powerBiCompatibilityRefreshTimer) {
+			clearTimeout(this._powerBiCompatibilityRefreshTimer);
+			this._powerBiCompatibilityRefreshTimer = null;
+		}
+		this._powerBiCompatibilityStatus = undefined;
+		this.requestUpdate();
+	}
 
 	public shouldRunPowerBiCompatibilityNoticeCheck(): boolean {
-		return !this._isPowerBiUpgradeNoticeDismissedForSection() && this.isPowerBiCompatibilityCheckEnabled();
+		return pState.htmlPowerBiCompatibilityCheckEnabled !== false && !this._isPowerBiUpgradeNoticeDismissedForSection() && this.isPowerBiCompatibilityCheckEnabled();
 	}
 
 	public isPowerBiCompatibilityCheckEnabled(): boolean {
+		if (pState.htmlPowerBiCompatibilityCheckEnabled === false) return false;
 		if (this._isPowerBiUpgradeNoticeDismissedForSection()) return false;
 		this._refreshProvenance();
 		return this._canEvaluatePowerBiCompatibilityNotice() || this._hasPowerBiExportMetadata();
@@ -2225,6 +2235,10 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	}
 
 	private _refreshPowerBiCompatibilityNoticeAfterCodeChange(): void {
+		if (pState.htmlPowerBiCompatibilityCheckEnabled === false) {
+			this.clearPowerBiCompatibilityNotice();
+			return;
+		}
 		if (this._isPowerBiUpgradeNoticeDismissedForSection()) return;
 		if (!this._powerBiCompatibilityStatus && !this._canEvaluatePowerBiCompatibilityNotice() && !this._hasPowerBiExportMetadata()) return;
 		if (this._powerBiCompatibilityRefreshTimer) clearTimeout(this._powerBiCompatibilityRefreshTimer);

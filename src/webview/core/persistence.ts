@@ -152,6 +152,34 @@ function __kustoCancelHtmlPowerBiCompatibilityCheck(): void {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
+function __kustoClearHtmlPowerBiCompatibilityNotices(): void {
+	try {
+		const ids = Array.isArray(htmlBoxes) ? htmlBoxes.slice().map((id: any) => String(id || '')).filter(Boolean) : [];
+		for (const id of ids) {
+			const el = document.getElementById(id) as any;
+			if (el && typeof el.clearPowerBiCompatibilityNotice === 'function') {
+				el.clearPowerBiCompatibilityNotice();
+			}
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+export function __kustoSetHtmlPowerBiCompatibilityCheckEnabled(enabled: boolean): void {
+	try {
+		const next = enabled !== false;
+		const previous = pState.htmlPowerBiCompatibilityCheckEnabled !== false;
+		pState.htmlPowerBiCompatibilityCheckEnabled = next;
+		if (!next) {
+			__kustoCancelHtmlPowerBiCompatibilityCheck();
+			__kustoClearHtmlPowerBiCompatibilityNotices();
+			return;
+		}
+		if (!previous && next) {
+			__kustoScheduleHtmlPowerBiCompatibilityCheck('settings-enabled');
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
 function __kustoQueueIdle(callback: () => void): void {
 	try {
 		const requestIdle = (window as any).requestIdleCallback;
@@ -166,6 +194,10 @@ function __kustoQueueIdle(callback: () => void): void {
 export function __kustoScheduleHtmlPowerBiCompatibilityCheck(_reason: string = 'document-restore'): void {
 	try {
 		__kustoCancelHtmlPowerBiCompatibilityCheck();
+		if (pState.htmlPowerBiCompatibilityCheckEnabled === false) {
+			__kustoClearHtmlPowerBiCompatibilityNotices();
+			return;
+		}
 		const ids = Array.isArray(htmlBoxes) ? htmlBoxes.slice().map((id: any) => String(id || '')).filter(Boolean) : [];
 		if (ids.length === 0) return;
 		const runToken = ++__kustoHtmlPowerBiCompatibilityRunToken;
@@ -1641,6 +1673,9 @@ export function handleDocumentDataMessage(message: any) {
 		if (typeof message.firstSectionPinned === 'boolean') {
 			pState.firstSectionPinned = message.firstSectionPinned;
 		}
+		if (typeof message.htmlPowerBiCompatibilityCheckEnabled === 'boolean') {
+			__kustoSetHtmlPowerBiCompatibilityCheckEnabled(message.htmlPowerBiCompatibilityCheckEnabled);
+		}
 		try {
 			if (typeof __kustoApplyDocumentCapabilities === 'function') {
 				__kustoApplyDocumentCapabilities();
@@ -1695,7 +1730,9 @@ export function handleDocumentDataMessage(message: any) {
 	// use ensureSchemaForBox because that path owns visible loading state and may call
 	// remote Kusto when no local cache exists.
 	__kustoScheduleLocalSchemaPrewarm('document-restore');
-	__kustoScheduleHtmlPowerBiCompatibilityCheck('document-restore');
+	if (pState.htmlPowerBiCompatibilityCheckEnabled !== false) {
+		__kustoScheduleHtmlPowerBiCompatibilityCheck('document-restore');
+	}
 
 	// Persistence remains enabled; edits will persist via event hooks.
 }
