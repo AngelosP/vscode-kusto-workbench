@@ -4,7 +4,8 @@ import type { KwCachedValues } from '../../../src/webview/viewers/cached-values/
 
 const overlayMocks = vi.hoisted(() => {
 	const instances: any[] = [];
-	const OverlayScrollbars = vi.fn((host: HTMLElement, options: unknown) => {
+	const OverlayScrollbars = vi.fn((targetOrOptions: HTMLElement | { target: HTMLElement }, options: unknown) => {
+		const host = targetOrOptions instanceof HTMLElement ? targetOrOptions : targetOrOptions.target;
 		const viewport = document.createElement('div');
 		const instance: any = {
 			host,
