@@ -2135,13 +2135,24 @@ export function renderChart(boxId: any) {
 				showErrorAndReturn('Select X, Y, and Value columns.');
 				return;
 			} else {
-				const useTime = inferTimeXAxisFromRows(rows, xi);
-
 				// Read axis and heatmap settings
 				const xAxisSettings = st.xAxisSettings || getDefaultXAxisSettings();
 				const yAxisSettings = st.yAxisSettings || getDefaultYAxisSettings();
 				const heatmapSettings = st.heatmapSettings || getDefaultHeatmapSettings();
 				const xAxisSortDir = xAxisSettings.sortDirection || '';
+				const xAxisScaleType = xAxisSettings.scaleType || '';
+				const useTime = xAxisScaleType !== 'category' && inferTimeXAxisFromRows(rows, xi);
+				const sortCategories = (categories: string[], direction: '' | 'asc' | 'desc' = 'asc') => {
+					const dir = direction || 'asc';
+					const allNumeric = categories.length > 0 && categories.every(label => {
+						const n = parseFloat(label);
+						return !isNaN(n) && isFinite(n);
+					});
+					categories.sort((a, b) => {
+						const cmp = allNumeric ? parseFloat(a) - parseFloat(b) : a.localeCompare(b);
+						return dir === 'desc' ? -cmp : cmp;
+					});
+				};
 
 				// Collect unique X and Y categories, and aggregate values for duplicate (X, Y) pairs.
 				const xSet = new Map<string, string>();   // display → display (preserve order)
@@ -2180,12 +2191,11 @@ export function renderChart(boxId: any) {
 					xCategories.sort((a, b) => dir === 'desc' ? Number(b) - Number(a) : Number(a) - Number(b));
 				} else {
 					const dir = xAxisSortDir || 'asc';
-					xCategories.sort((a, b) => dir === 'desc' ? b.localeCompare(a) : a.localeCompare(b));
+					sortCategories(xCategories, dir);
 				}
-				yCategories.sort();
 				// Apply Y-axis sort direction if configured
 				const yAxisSortDir = yAxisSettings.sortDirection || '';
-				if (yAxisSortDir === 'desc') yCategories.reverse();
+				sortCategories(yCategories, yAxisSortDir === 'desc' ? 'desc' : 'asc');
 
 				// Build ECharts data: [xIndex, yIndex, value]
 				let minVal = Infinity;

@@ -119,6 +119,9 @@ describe('kw-chart-section agent configuration', () => {
 			showDataLabels: true,
 			sortColumn: 'Timestamp',
 			sortDirection: 'asc',
+			chartTitle: 'Requests by category',
+			chartSubtitle: 'From tool configuration',
+			chartTitleAlign: 'left',
 		};
 
 		// Call syncFromGlobalState (what __kustoUpdateChartBuilderUI should do)
@@ -134,6 +137,14 @@ describe('kw-chart-section agent configuration', () => {
 		expect((el as any)._showDataLabels).toBe(true);
 		expect((el as any)._sortColumn).toBe('Timestamp');
 		expect((el as any)._sortDirection).toBe('asc');
+		expect((el as any)._chartTitle).toBe('Requests by category');
+		expect((el as any)._chartSubtitle).toBe('From tool configuration');
+		expect((el as any)._chartTitleAlign).toBe('left');
+		expect(el.serialize()).toMatchObject({
+			chartTitle: 'Requests by category',
+			chartSubtitle: 'From tool configuration',
+			chartTitleAlign: 'left',
+		});
 	});
 
 	it('ignores stale zoom/pan state from global chart config', async () => {

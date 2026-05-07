@@ -2775,6 +2775,138 @@ function e2eLayoutDispatchQueryResult(boxId: string, result: any): void {
 	}));
 }
 
+function e2eChartRegressionResult(): any {
+	return {
+		columns: [
+			{ name: 'Bucket', type: 'string' },
+			{ name: 'Lane', type: 'string' },
+			{ name: 'Value', type: 'long' },
+		],
+		rows: [
+			['10', '2', 102],
+			['2', '2', 22],
+			['1', '2', 12],
+			['10', '10', 1010],
+			['2', '10', 210],
+			['1', '10', 110],
+		],
+		metadata: { executionTimeMs: 1 },
+	};
+}
+
+function e2eChartAssertArrayEqual(name: string, actual: unknown, expected: unknown): void {
+	const actualJson = JSON.stringify(actual);
+	const expectedJson = JSON.stringify(expected);
+	if (actualJson !== expectedJson) {
+		throw new Error(`${name} expected ${expectedJson}, got ${actualJson}`);
+	}
+}
+
+function e2eChartRenderedOption(chartId: string): any {
+	const state = _win.chartStateByBoxId?.[chartId];
+	const instance = state?.__echarts?.instance;
+	if (!instance || typeof instance.getOption !== 'function') {
+		throw new Error(`Rendered ECharts instance not available for ${chartId}`);
+	}
+	const option = instance.getOption();
+	if (!option) {
+		throw new Error(`Rendered ECharts option not available for ${chartId}`);
+	}
+	return option;
+}
+
+function e2eChartAssertRegressionState(chartId: string): string {
+	const chartSection = document.getElementById(chartId) as any;
+	if (!chartSection || typeof chartSection.serialize !== 'function') {
+		throw new Error(`Chart section not found or not serializable: ${chartId}`);
+	}
+
+	const serialized = chartSection.serialize();
+	if (serialized.chartTitle !== 'Requests by bucket') {
+		throw new Error(`chartTitle did not sync into serialization: ${JSON.stringify(serialized.chartTitle)}`);
+	}
+	if (serialized.chartSubtitle !== 'From live E2E global state') {
+		throw new Error(`chartSubtitle did not sync into serialization: ${JSON.stringify(serialized.chartSubtitle)}`);
+	}
+	if (serialized.chartTitleAlign !== 'left') {
+		throw new Error(`chartTitleAlign did not sync into serialization: ${JSON.stringify(serialized.chartTitleAlign)}`);
+	}
+
+	const option = e2eChartRenderedOption(chartId);
+	const xAxisOption = Array.isArray(option.xAxis) ? option.xAxis[0] : option.xAxis;
+	const yAxisOption = Array.isArray(option.yAxis) ? option.yAxis[0] : option.yAxis;
+	const seriesOption = Array.isArray(option.series) ? option.series[0] : option.series;
+	const heatmapValues = Array.isArray(seriesOption?.data)
+		? seriesOption.data.map((point: any) => point?.value)
+		: [];
+
+	e2eChartAssertArrayEqual('xAxis.data', xAxisOption?.data, ['1', '2', '10']);
+	e2eChartAssertArrayEqual('yAxis.data', yAxisOption?.data, ['2', '10']);
+	e2eChartAssertArrayEqual('heatmap values', heatmapValues, [
+		[0, 0, 12],
+		[0, 1, 110],
+		[1, 0, 22],
+		[1, 1, 210],
+		[2, 0, 102],
+		[2, 1, 1010],
+	]);
+
+	return 'live chart title sync and heatmap numeric category ordering verified';
+}
+
+async function e2eChartAssertTitleSyncAndHeatmapNumericCategories(): Promise<string> {
+	const queryId = e2eLayoutAddSection('addQueryBox', {
+		id: 'query_e2e_chart_regression',
+		initialQuery: 'datatable(Bucket:string, Lane:string, Value:long)[]',
+		defaultResultsVisible: true,
+		expanded: true,
+	});
+	await e2eLayoutWaitFor(() => !!document.getElementById(queryId), 'chart regression query section');
+	e2eLayoutDispatchQueryResult(queryId, e2eChartRegressionResult());
+
+	const chartId = e2eLayoutAddSection('addChartBox', {
+		id: 'chart_e2e_heatmap_regression',
+		name: 'Chart Regression Heatmap',
+		mode: 'preview',
+		expanded: true,
+		dataSourceId: queryId,
+		chartType: 'heatmap',
+		xColumn: 'Bucket',
+		yColumn: 'Lane',
+		valueColumn: 'Value',
+		xAxisSettings: { sortDirection: 'asc', scaleType: 'category' },
+		yAxisSettings: { sortDirection: 'asc' },
+		chartTitle: 'Initial title',
+		chartSubtitle: 'Initial subtitle',
+		chartTitleAlign: 'center',
+		editorHeightPx: 260,
+	});
+	await e2eLayoutWaitFor(() => !!document.getElementById(chartId), 'chart regression chart section');
+
+	const chartSection = document.getElementById(chartId) as any;
+	await e2eLayoutWaitForUpdate(chartSection as HTMLElement);
+	_win.chartStateByBoxId = _win.chartStateByBoxId || {};
+	_win.chartStateByBoxId[chartId] = {
+		...(_win.chartStateByBoxId[chartId] || {}),
+		chartTitle: 'Requests by bucket',
+		chartSubtitle: 'From live E2E global state',
+		chartTitleAlign: 'left',
+	};
+	if (typeof chartSection.syncFromGlobalState !== 'function') {
+		throw new Error(`Chart section cannot sync global state: ${chartId}`);
+	}
+	chartSection.syncFromGlobalState();
+	await e2eLayoutWaitForUpdate(chartSection as HTMLElement);
+
+	await e2eLayoutWaitFor(() => {
+		e2eChartAssertRegressionState(chartId);
+		return true;
+	}, 'chart regression state', 10000);
+	const summary = e2eChartAssertRegressionState(chartId);
+	chartSection.scrollIntoView({ block: 'start' });
+	return summary;
+}
+
 function e2eLayoutDispatchUrlContent(boxId: string): void {
 	window.dispatchEvent(new MessageEvent('message', {
 		data: {
@@ -3463,6 +3595,9 @@ _win.__e2e = {
 		exerciseCollapseExpand: e2eLayoutExerciseCollapseExpand,
 		exerciseAutoFitAndResize: e2eLayoutExerciseAutoFitAndResize,
 		assertNoLayoutRegression: e2eLayoutAssertNoLayoutRegression,
+	},
+	chart: {
+		assertTitleSyncAndHeatmapNumericCategories: e2eChartAssertTitleSyncAndHeatmapNumericCategories,
 	},
 	cursorStatus: {
 		beginCapture: e2eBeginHostMessageCapture,

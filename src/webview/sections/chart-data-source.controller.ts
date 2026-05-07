@@ -102,17 +102,17 @@ export class ChartDataSourceController implements ReactiveController {
 		const saved = this._columnMemory.get(newId);
 		if (saved) {
 			const cols = new Set(this.getColumnNames());
-			if (saved.xColumn && cols.has(saved.xColumn)) this.host.setXColumn(saved.xColumn);
+			this.host.setXColumn(saved.xColumn && cols.has(saved.xColumn) ? saved.xColumn : '');
 			const restoredY = saved.yColumns.filter(c => cols.has(c));
-			if (restoredY.length) this.host.setYColumns(restoredY);
-			if (saved.legendColumn && cols.has(saved.legendColumn)) this.host.setLegendColumn(saved.legendColumn);
-			if (saved.labelColumn && cols.has(saved.labelColumn)) this.host.setLabelColumn(saved.labelColumn);
-			if (saved.valueColumn && cols.has(saved.valueColumn)) this.host.setValueColumn(saved.valueColumn);
+			this.host.setYColumns(restoredY);
+			this.host.setLegendColumn(saved.legendColumn && cols.has(saved.legendColumn) ? saved.legendColumn : '');
+			this.host.setLabelColumn(saved.labelColumn && cols.has(saved.labelColumn) ? saved.labelColumn : '');
+			this.host.setValueColumn(saved.valueColumn && cols.has(saved.valueColumn) ? saved.valueColumn : '');
 			const restoredTooltip = saved.tooltipColumns.filter(c => cols.has(c));
-			if (restoredTooltip.length) this.host.setTooltipColumns(restoredTooltip);
-			if (saved.sortColumn && cols.has(saved.sortColumn)) this.host.setSortColumn(saved.sortColumn);
-			if (saved.sourceColumn && cols.has(saved.sourceColumn)) this.host.setSourceColumn(saved.sourceColumn);
-			if (saved.targetColumn && cols.has(saved.targetColumn)) this.host.setTargetColumn(saved.targetColumn);
+			this.host.setTooltipColumns(restoredTooltip);
+			this.host.setSortColumn(saved.sortColumn && cols.has(saved.sortColumn) ? saved.sortColumn : '');
+			this.host.setSourceColumn(saved.sourceColumn && cols.has(saved.sourceColumn) ? saved.sourceColumn : '');
+			this.host.setTargetColumn(saved.targetColumn && cols.has(saved.targetColumn) ? saved.targetColumn : '');
 			if (saved.xAxisSettings) this.host.setXAxisSettings({ ...saved.xAxisSettings });
 			if (saved.yAxisSettings) this.host.setYAxisSettings({ ...saved.yAxisSettings });
 			// Restore wrapper height.

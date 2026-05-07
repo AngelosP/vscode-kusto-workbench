@@ -418,6 +418,40 @@ describe('ChartDataSourceController', () => {
 			expect(host._state.xColumn).toBe('X');
 			expect(host._state.yColumns).toEqual(['Y']);
 		});
+
+		it('restores intentionally empty selections when switching back to a data source with overlapping columns', () => {
+			const first: DatasetEntry = { id: 'first', label: 'First', columns: ['Category', 'Value'] as any, rows: [] };
+			const second: DatasetEntry = { id: 'second', label: 'Second', columns: ['Category', 'Value'] as any, rows: [] };
+			mockDatasets = [first, second];
+			host._state.dataSourceId = 'first';
+			host._state.datasets = [first, second];
+			host._state.xColumn = '';
+			host._state.yColumns = [];
+			host._state.legendColumn = '';
+			host._state.labelColumn = '';
+			host._state.valueColumn = '';
+			host._state.tooltipColumns = [];
+			host._state.sortColumn = '';
+
+			ctrl.onDataSourceChanged(fakeEvent('second'));
+			host._state.xColumn = 'Category';
+			host._state.yColumns = ['Value'];
+			host._state.legendColumn = 'Category';
+			host._state.labelColumn = 'Category';
+			host._state.valueColumn = 'Value';
+			host._state.tooltipColumns = ['Value'];
+			host._state.sortColumn = 'Value';
+
+			ctrl.onDataSourceChanged(fakeEvent('first'));
+
+			expect(host._state.xColumn).toBe('');
+			expect(host._state.yColumns).toEqual([]);
+			expect(host._state.legendColumn).toBe('');
+			expect(host._state.labelColumn).toBe('');
+			expect(host._state.valueColumn).toBe('');
+			expect(host._state.tooltipColumns).toEqual([]);
+			expect(host._state.sortColumn).toBe('');
+		});
 	});
 
 	// ── getColumnNames — additional edge cases ─────────────────────────────

@@ -2076,6 +2076,9 @@ export class KwChartSection extends LitElement implements SectionElement {
 		if (typeof st.targetColumn === 'string') this._targetColumn = st.targetColumn;
 		if (typeof st.orient === 'string') this._orient = this._normalizeOrient(st.orient);
 		if (typeof st.sankeyLeftMargin === 'number') this._sankeyLeftMargin = st.sankeyLeftMargin;
+		if (typeof st.chartTitle === 'string') this._chartTitle = st.chartTitle;
+		if (typeof st.chartSubtitle === 'string') this._chartSubtitle = st.chartSubtitle;
+		if (typeof st.chartTitleAlign === 'string') this._chartTitleAlign = st.chartTitleAlign as 'left' | 'center' | 'right';
 		if (st.xAxisSettings && typeof st.xAxisSettings === 'object') {
 			this._xAxisSettings = sanitizeXAxisSettings(st.xAxisSettings, defaultXAxisSettings());
 		}

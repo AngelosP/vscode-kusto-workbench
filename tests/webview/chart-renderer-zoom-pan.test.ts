@@ -254,6 +254,37 @@ describe('chart-renderer zoom/pan controls', () => {
 		expect(valuesFor(scenario.option.series[0])).toEqual([10, 20, 100]);
 	});
 
+	it('uses numeric category order for heatmap axes and keeps cells paired', () => {
+		const scenario = renderScenario('heatmap', {
+			xColumn: 'Bucket',
+			yColumn: 'Lane',
+			valueColumn: 'Value',
+			xAxisSettings: { sortDirection: 'asc', scaleType: 'category' },
+			yAxisSettings: { sortDirection: 'asc' },
+		}, {
+			columns: ['Bucket', 'Lane', 'Value'],
+			rows: [
+				['10', '2', 102],
+				['2', '2', 22],
+				['1', '2', 12],
+				['10', '10', 1010],
+				['2', '10', 210],
+				['1', '10', 110],
+			],
+		});
+
+		expect(scenario.option.xAxis.data).toEqual(['1', '2', '10']);
+		expect(scenario.option.yAxis.data).toEqual(['2', '10']);
+		expect(scenario.option.series[0].data.map((point: any) => point.value)).toEqual([
+			[0, 0, 12],
+			[0, 1, 110],
+			[1, 0, 22],
+			[1, 1, 210],
+			[2, 0, 102],
+			[2, 1, 1010],
+		]);
+	});
+
 	it('keeps category X-axis sort paired across multiple Y series', () => {
 		const scenario = renderScenario('line', {
 			xColumn: 'Category',
