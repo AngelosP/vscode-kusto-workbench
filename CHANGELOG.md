@@ -7,7 +7,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 * [Ability to pan and zoom in the plots · Issue #6 · AngelosP/vscode-kusto-workbench](https://github.com/AngelosP/vscode-kusto-workbench/issues/6)
 * In-section notifications when an HTML section is not 100% up with the latest exporting capabilities and can use a quick update from the Kusto Workbench agent.
-* Finalized UX of 'Did you know?' feature that lets users know of production functionality in piece-meal fashion.
+* Finalized UX of 'Did you know?' feature that lets users know of product functionality in piece-meal fashion.
 * Bugs
     * When the chart type changes from Area to Pie, the X axis column is visible selected in the Label column of the pie chart, but the chart area still complains no columns is selected.
     * Exporting Power BI reports that involved '.' and '/' characters in specific combinations tripped out our logic of stripping out comments during the export and generation of the Power BI artifacts.
