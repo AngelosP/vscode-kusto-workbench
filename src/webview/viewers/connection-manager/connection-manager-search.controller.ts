@@ -187,6 +187,10 @@ export class ConnectionManagerSearchController implements ReactiveController {
 	// ── Restore from snapshot ─────────────────────────────────────────────
 
 	restoreState(state: Partial<SearchState> | undefined, kind: ConnectionKind): void {
+		const previousKind = this._kind;
+		const previousQuery = this.query;
+		const previousScope = this.scope;
+		const previousResults = this.results;
 		this._kind = kind;
 		if (!state || typeof state !== 'object') {
 			this.query = '';
@@ -196,11 +200,21 @@ export class ConnectionManagerSearchController implements ReactiveController {
 			this.results = [];
 			return;
 		}
-		this.query = typeof state.query === 'string' ? state.query : '';
-		this.scope = (state.scope === 'cached' || state.scope === 'refresh-cached' || state.scope === 'everything') ? state.scope : 'cached';
+		const restoredQuery = typeof state.query === 'string' ? state.query : '';
+		const restoredScope = (state.scope === 'cached' || state.scope === 'refresh-cached' || state.scope === 'everything') ? state.scope : 'cached';
+		const restoredResults = Array.isArray(state.lastResults) ? state.lastResults : [];
+		const shouldKeepLiveResults = previousKind === kind
+			&& restoredQuery.trim().length > 0
+			&& restoredQuery === previousQuery
+			&& restoredScope === previousScope
+			&& previousResults.length > 0
+			&& restoredResults.length === 0;
+
+		this.query = restoredQuery;
+		this.scope = restoredScope;
 		this.categories = (state.categories && typeof state.categories === 'object') ? { ...defaultCategories(kind), ...state.categories } : defaultCategories(kind);
 		this.contentToggles = (state.contentToggles && typeof state.contentToggles === 'object') ? { ...defaultContentToggles(kind), ...state.contentToggles } : defaultContentToggles(kind);
-		this.results = Array.isArray(state.lastResults) ? state.lastResults : [];
+		this.results = shouldKeepLiveResults ? previousResults : restoredResults;
 		this.host.requestUpdate();
 	}
 
@@ -310,6 +324,7 @@ export class ConnectionManagerSearchController implements ReactiveController {
 			this.refreshing = false;
 			this.progressMessage = '';
 			this._activeRequestId = null;
+			this._saveStateNow();
 		}
 		this.host.requestUpdate();
 	}
@@ -344,18 +359,27 @@ export class ConnectionManagerSearchController implements ReactiveController {
 	private _debouncedSave(): void {
 		if (this._saveDebounceTimer) clearTimeout(this._saveDebounceTimer);
 		this._saveDebounceTimer = setTimeout(() => {
-			this.host.postMessage({
-				type: 'search.saveState',
-				state: {
-					query: this.query,
-					scope: this.scope,
-					categories: this.categories,
-					contentToggles: this.contentToggles,
-					lastResults: this.results,
-					lastSearchTimestamp: Date.now(),
-				} satisfies SearchState,
-			});
+			this._saveDebounceTimer = null;
+			this._saveStateNow();
 		}, 500);
+	}
+
+	private _saveStateNow(): void {
+		if (this._saveDebounceTimer) {
+			clearTimeout(this._saveDebounceTimer);
+			this._saveDebounceTimer = null;
+		}
+		this.host.postMessage({
+			type: 'search.saveState',
+			state: {
+				query: this.query,
+				scope: this.scope,
+				categories: this.categories,
+				contentToggles: this.contentToggles,
+				lastResults: this.results,
+				lastSearchTimestamp: Date.now(),
+			} satisfies SearchState,
+		});
 	}
 
 	private _performSearch(): void {

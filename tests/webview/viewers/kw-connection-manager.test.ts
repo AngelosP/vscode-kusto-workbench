@@ -1,7 +1,8 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { render, nothing, html } from 'lit';
 import '../../../src/webview/viewers/connection-manager/kw-connection-manager.js';
 import type { KwConnectionManager } from '../../../src/webview/viewers/connection-manager/kw-connection-manager.js';
+import type { SearchResult, SearchState } from '../../../src/webview/viewers/connection-manager/connection-manager-search.controller.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -97,6 +98,18 @@ function messageTypes(): string[] {
 	return postedMessages
 		.map(message => (message && typeof message === 'object' && 'type' in message ? String((message as { type?: unknown }).type) : ''))
 		.filter(Boolean);
+}
+
+function searchResult(overrides: Partial<SearchResult> = {}): SearchResult {
+	return {
+		category: 'table',
+		kind: 'kusto',
+		connectionId: 'c1',
+		connectionName: 'MyCluster',
+		database: 'db1',
+		name: 'Orders',
+		...overrides,
+	};
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
@@ -387,6 +400,63 @@ describe('kw-connection-manager', () => {
 			expect(postedMessages).toEqual([
 				expect.objectContaining({ type: 'sql.favorite.remove', connectionId: 'sql1', database: 'sqldb1' }),
 			]);
+		});
+	});
+
+	// ── Search state ───────────────────────────────────────────────────────────
+
+	describe('search state', () => {
+		it('Kusto: preserves completed search results when returning to the tab with a stale snapshot', async () => {
+			vi.useFakeTimers();
+			try {
+				const el = createElement();
+				sendSnapshot(el, snapshot());
+				await el.updateComplete;
+
+				clickButtonByTestId(el, 'cm-filter-search');
+				await el.updateComplete;
+
+				const input = el.shadowRoot!.querySelector('[data-testid="cm-search-input"]') as HTMLInputElement | null;
+				expect(input).not.toBeNull();
+				input!.value = 'orders';
+				input!.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+				await el.updateComplete;
+				await vi.advanceTimersByTimeAsync(300);
+				await el.updateComplete;
+
+				const searchMessage = postedMessages.find((message): message is {
+					type: 'search';
+					requestId: string;
+					query: string;
+					categories: SearchState['categories'];
+					contentToggles: SearchState['contentToggles'];
+				} => Boolean(message && typeof message === 'object' && (message as { type?: unknown }).type === 'search'));
+				expect(searchMessage).toEqual(expect.objectContaining({ query: 'orders', scope: 'cached', kind: 'kusto' }));
+
+				const completedResult = searchResult();
+				window.dispatchEvent(new MessageEvent('message', {
+					data: { type: 'searchResults', requestId: searchMessage!.requestId, results: [completedResult], completed: true },
+				}));
+				await el.updateComplete;
+				expect(listItemNames(el)).toContain('Orders');
+
+				sendSnapshot(el, snapshot({
+					searchState: {
+						query: 'orders',
+						scope: 'cached',
+						categories: searchMessage!.categories,
+						contentToggles: searchMessage!.contentToggles,
+						lastResults: [],
+						lastSearchTimestamp: Date.now(),
+					} satisfies SearchState,
+				}));
+				await el.updateComplete;
+
+				expect(listItemNames(el)).toContain('Orders');
+				expect(el.shadowRoot!.textContent).not.toContain('No results');
+			} finally {
+				vi.useRealTimers();
+			}
 		});
 	});
 

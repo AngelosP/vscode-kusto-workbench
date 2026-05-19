@@ -10,6 +10,7 @@ browser-ext/dist/
 browser-ext/node_modules/
 .env
 *.zip
+tests/vscode-extension-tester/live/
 tests/vscode-extension-tester/runs/
 tests/vscode-extension-tester/results/
 tests/vscode-extension-tester/history/
