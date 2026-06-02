@@ -147,4 +147,38 @@ describe('kw-query-section loading states', () => {
 		const dropdown = getDatabaseDropdown(el);
 		expect(dropdown!.loading).toBe(false);
 	});
+
+	it('selects the first configured connection when no desired current or last selection exists', async () => {
+		const el = createSection();
+		const connectionEvents: CustomEvent[] = [];
+		el.addEventListener('connection-changed', event => connectionEvents.push(event as CustomEvent));
+
+		el.setConnections([
+			{ id: 'c1', clusterUrl: 'https://first.kusto.windows.net' },
+			{ id: 'c2', clusterUrl: 'https://second.kusto.windows.net' },
+		]);
+		await el.updateComplete;
+
+		expect(el.getConnectionId()).toBe('c1');
+		expect(el.getClusterUrl()).toBe('https://first.kusto.windows.net');
+		expect(connectionEvents).toHaveLength(1);
+		expect(connectionEvents[0].detail).toMatchObject({
+			boxId: 'test1',
+			connectionId: 'c1',
+			clusterUrl: 'https://first.kusto.windows.net',
+		});
+	});
+
+	it('still prefers the last configured connection over the first fallback', async () => {
+		const el = createSection();
+
+		el.setConnections([
+			{ id: 'c1', clusterUrl: 'https://first.kusto.windows.net' },
+			{ id: 'c2', clusterUrl: 'https://second.kusto.windows.net' },
+		], { lastConnectionId: 'c2' });
+		await el.updateComplete;
+
+		expect(el.getConnectionId()).toBe('c2');
+		expect(el.getClusterUrl()).toBe('https://second.kusto.windows.net');
+	});
 });

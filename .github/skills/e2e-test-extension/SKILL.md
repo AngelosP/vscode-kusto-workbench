@@ -15,7 +15,7 @@ Use this skill to create, run, and verify E2E tests for a VS Code extension.
 This file is installed into extension repos by `vscode-ext-test install-into-project` at
 `.github/skills/e2e-test-extension/SKILL.md`. Rerun `vscode-ext-test install-into-project`
 after upgrading the CLI to refresh these framework instructions; repo-specific
-knowledge belongs in `repo-knowledge.md`, which the command preserves.
+knowledge belongs in `repo-knowledge.md`, which install-into-project preserves.
 
 ## Execution Modes
 
@@ -37,60 +37,6 @@ The framework has three execution modes:
   writing the final `.feature` file. Ending a launched live session captures
   a final screenshot before shutting VS Code down; ending an attached session
   only disconnects.
-
-### Live JSONL Protocol
-
-Use `vscode-ext-test live` when you need to keep one VS Code session open while
-trying steps one at a time. The command reads one JSON object per line from
-stdin and writes one JSON object per line to stdout. Operational logs go to
-stderr, so do not parse stderr as protocol output.
-
-Start a session:
-
-```bash
-vscode-ext-test live --mode auto
-```
-
-Send requests in this shape:
-
-```json
-{"id":1,"method":"runStep","params":{"step":"When I execute command \"workbench.action.showCommands\""}}
-```
-
-Supported request methods:
-
-| Method | Params | Purpose |
-| ------ | ------ | ------- |
-| `runStep` | `{ "step": "<single Gherkin step>" }` | Run one Gherkin step |
-| `runScript` | `{ "script": "<multi-line Gherkin steps>", "stopOnFailure": true }` | Run a block of Gherkin steps |
-| `runExtensionHostScript` | `{ "script": "<JavaScript>", "timeoutMs": 5000 }` | Run diagnostic JavaScript in the VS Code extension host with the `vscode` API available |
-| `reset` | `{ "mode": "cleanState" }` or `{ "mode": "reload" }` | Reset state or reload the Dev Host |
-| `state` | `{}` | Read current VS Code state |
-| `summary` | `{}` | Read live session summary |
-| `end` | `{}` | Close the live session |
-
-Common examples:
-
-```jsonl
-{"id":1,"method":"runStep","params":{"step":"When I execute command \"workbench.action.showCommands\""}}
-{"id":2,"method":"runScript","params":{"script":"Then I wait 1 second\nWhen I press \"Escape\""}}
-{"id":3,"method":"runScript","params":{"script":"When I type:\n  \"\"\"\n  first line\n  second line\n  \"\"\""}}
-{"id":4,"method":"runExtensionHostScript","params":{"script":"return vscode.window.activeTextEditor?.document.uri.toString();","timeoutMs":5000}}
-{"id":5,"method":"state","params":{}}
-{"id":6,"method":"end","params":{}}
-```
-
-Responses are JSONL envelopes. Session lifecycle messages look like
-`{"type":"session_started","summary":{...}}` and
-`{"type":"session_ended","summary":{...}}`. Request responses look like
-`{"type":"response","id":1,"ok":true,"result":{...}}` or
-`{"type":"response","id":1,"ok":false,"error":"..."}`.
-
-Use `runScript` for Gherkin step blocks, doc strings, and multiline text. JSONL
-requires one JSON object per physical line, so embedded Gherkin newlines must be
-escaped as `\n` inside the JSON string; do not send pretty-printed or literal
-multi-line JSON requests. Use `runExtensionHostScript` only for diagnostic
-JavaScript that must run inside the extension host.
 
 ## Build Lifecycle
 
@@ -153,12 +99,6 @@ run, you MUST verify the screenshots.
 
 Screenshots are saved as `.png` files in the run directory. The `report.md`
 lists all screenshot file paths.
-
-Each screenshot artifact also includes capture metadata in `results.json`,
-live `step-result.json` manifests, live JSONL responses, and `report.md`:
-the intended Dev Host process id, the captured window process id, window title,
-window bounds, and capture method. Use this metadata with the PNG to spot
-wrong-window or stale-window captures before trusting the visual state.
 
 **Automatic failure screenshots.** When a test step fails, the framework
 automatically takes a screenshot of the Dev Host window at the moment of
@@ -303,7 +243,12 @@ profile.
    `e2e/default/<test-id>/`, and writes artifacts to `runs/default/<test-id>/<timestamp>/`.
    Each run uses a unique timestamp so previous results are preserved.
 
-3. **Review artifacts** - artifacts are in `tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/` (gitignored). Read `report.md` first because it lists all results, screenshot file paths, screenshot capture metadata, webview text evidence, and warnings. Use `results.json` for structured results with per-screenshot capture metadata and per-webview text evidence, `console.log` for scenario/step output and warnings, and `*.png` for the screenshot images. Check the step artifact metadata when native capture fell back, the wrong window may have been captured, or a webview assertion needs text evidence beyond screenshots.
+3. **Review artifacts** - artifacts are in `tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/` (gitignored):
+   - `report.md` - read this FIRST. It lists all results AND screenshot file paths.
+   - `results.json` - structured results with screenshot paths.
+   - `console.log` - structured output log per scenario/step.
+   - `*.png` - screenshot images.
+  - screenshot warnings - if native capture had to fall back or failed, warnings appear in the step artifact, `report.md`, and `console.log`.
 
 4. **Verify screenshots** - use `view_image` on each .png listed in `report.md`. Do NOT skip this step.
 
@@ -335,6 +280,12 @@ Prepare a profile first with:
 vscode-ext-test profile open <profile-name>
 ```
 
+On VS Code 1.120+, named profiles use a CLI-owned shared auth store under
+`tests/vscode-extension-tester/auth-shared/` so GitHub/Copilot and Microsoft
+auth can survive across multiple prepared profiles without using VS Code's global
+`.vscode-shared` store. If auth gets corrupted, close all profile windows and
+recreate/sign in the affected profiles with `vscode-ext-test profile open`.
+
 ## Available Gherkin Steps
 
 - `Given the extension is in a clean state` - reset: close all editors, dismiss notifications, clear output channels
@@ -347,15 +298,12 @@ vscode-ext-test profile open <profile-name>
 - `When I select QuickInput item "<label>"` / `When I select "<label>" from the QuickInput` - pick an item from captured QuickInput state or the visible workbench widget
 - `When I select "<label>" from the QuickPick` - compatibility alias for selecting an open QuickPick item
 - `When I enter "<text>" in the QuickInput` - set and accept text after validation clears
-- `When I enter text in the QuickInput:` - set and accept multiline doc-string text after validation clears
 - `When I type "<text>" into the InputBox` - compatibility alias for entering text in a VS Code InputBox prompt
-- `When I type text into the InputBox:` - compatibility alias for entering multiline doc-string text in a VS Code InputBox prompt
 - `When I click "<button>" on the dialog` - click a button on a modal dialog
 - `When I click "<action>" on notification "<text>"` - resolve a captured VS Code notification action
 - `When I select "<label>" from the popup menu` - select an item from a context menu, dropdown, or popup overlay (uses OS-level UI Automation with CDP fallback)
 - `When I list the popup menu items` - diagnostic: list all visible items in the current popup menu
 - `When I type "<text>"` - type text into whatever is focused (editors, webview Monaco, inputs)
-- `When I type:` - type multiline doc-string text into whatever is focused (editors, webview Monaco, inputs)
 - `When I press "<key>"` - press a key or combo (Enter, Escape, Ctrl+S, Ctrl+Space, Shift+Tab, F5, etc.)
 - `When I click "<css selector>" in the webview` / `When I right click "<css selector>" in the webview` / `When I middle click "<css selector>" in the webview` / `When I double click "<css selector>" in the webview` - click a webview element by stable CSS selector
 - `When I click the webview element "<text>"` - click a webview control by visible text, aria-label, title, or role text when no stable selector exists
@@ -376,38 +324,9 @@ vscode-ext-test profile open <profile-name>
 - `Then I wait for progress "<title>" to start` / `Then I wait for progress "<title>" to complete` - wait for a tracked long-running operation
 - `Then progress "<title>" should be active` / `Then progress "<title>" should be completed` - assert tracked progress state
 - `Then the editor should contain "<text>"` - assert the active editor has text
-- `Then the editor should contain:` - assert the active editor contains multiline doc-string text
 - `Then the output channel "<name>" should contain "<text>"` - assert output channel content
-- `Then the output channel "<name>" should contain:` - assert output channel content includes multiline doc-string text
 - `Then the output channel "<name>" should not contain "<text>"` - assert output channel does NOT contain text
-- `Then the output channel "<name>" should not contain:` - assert output channel content does NOT include multiline doc-string text
-- `Then I wait for output channel "<name>" to contain:` / `Then I wait for output channel "<name>" to contain for <n> seconds:` - wait for multiline doc-string text in an output channel
-- `Then the file "<path>" should contain:` - assert file content includes multiline doc-string text
 - `Then I wait <n> second(s)` - pause for n seconds
-
-### Multiline Text
-
-Do not put literal newlines inside quoted step arguments. Quoted arguments are
-for single-line values. For multiline editor text, code blocks, JSON, strings
-with many quotes, or any payload where line breaks matter, use a Gherkin doc
-string on the colon-ended step form:
-
-```gherkin
-When I type:
-  """
-  first line
-  second line
-  """
-Then the editor should contain:
-  """
-  first line
-  second line
-  """
-```
-
-In live sessions, send doc-string blocks with `run_gherkin_script` or JSONL
-`runScript`, not as a single quoted `run_gherkin_step` string with literal line
-breaks.
 
 ### Reliable Input Targeting
 
@@ -562,16 +481,14 @@ in the extension source is part of the testing process.
 | `When I scroll "<sel>" to the (top\\|bottom\\|left\\|right)` | Jump to an edge |
 | `When I scroll "<sel>" into view` | Scroll the element itself into view |
 | `When I evaluate "<js>" in the webview` | Run arbitrary JS (escape hatch) |
-| `When I list the webviews` | Log all open webview titles, probed DOM titles, URLs, and bounded visible text evidence (debugging aid) |
+| `When I list the webviews` | Log all open webview titles, probed DOM titles, and URLs (debugging aid) |
 | `When I list the frame contexts` | Log all execution contexts (frames) inside webview targets — shows context IDs, origins, frame IDs, and the frame tree. Use to diagnose when evaluate/click steps can't find elements inside nested iframes. |
 | `When I list the frame contexts in the webview "<title>"` | Same, but restricted to a specific webview |
-| `Then the webview should contain "<text>"` | Substring match in body text; records bounded webview text evidence in `results.json` and `report.md` |
-| `Then the webview "<title>" should contain "<text>"` | Restrict to a webview and record target-attributed text evidence |
+| `Then the webview should contain "<text>"` | Substring match in body text |
+| `Then the webview "<title>" should contain "<text>"` | Restrict to a webview |
 | `Then element "<sel>" should exist` | Existence assertion |
 | `Then element "<sel>" should not exist` | Negative existence |
-| `Then element "<sel>" should have text "<text>"` | Text content assertion; records selector-scoped webview text evidence |
-| `Then element "<sel>" should have text "<text>" in the webview` | Text content assertion; records selector-scoped webview text evidence |
-| `Then element "<sel>" should have text "<text>" in the webview "<title>"` | Restrict selector text assertion to a specific webview and record target-attributed evidence |
+| `Then element "<sel>" should have text "<text>"` | Text content assertion |
 
 **Webview targeting.** When multiple webviews are open at once (walkthroughs,
 panels, sidebar views), pass a `<title>` substring to disambiguate. The
@@ -743,22 +660,19 @@ Then the editor should contain "hello world"
 \\`\\`\\`
 
 ### Screenshots
-- `Then I take a screenshot` - capture the targeted Extension Development Host window, saved to the run directory with Dev Host PID, captured window title/bounds, and capture method metadata
-- `Then I take a screenshot "label"` - capture the targeted Dev Host with a descriptive label (e.g. "after-query-runs") and the same capture metadata
+- `Then I take a screenshot` - capture the targeted Extension Development Host window, saved to the run directory
+- `Then I take a screenshot "label"` - capture the targeted Dev Host with a descriptive label (e.g. "after-query-runs")
 
 ### File Utilities (direct via code - no UI dialogs)
 Use these for test setup when you don't need to test the actual dialog interaction:
 - `Given a file "<path>" exists` - create an empty file (relative to cwd or absolute)
 - `Given a file "<path>" exists with content "<text>"` - create a file with content
-- `Given a file "<path>" exists with content:` - create a file with multiline doc-string content
 - `Given a temp file "<name>" exists` - create in OS temp directory
 - `Given a temp file "<name>" exists with content "<text>"` - create temp file with content
-- `Given a temp file "<name>" exists with content:` - create temp file with multiline doc-string content
 - `When I open file "<path>" in the editor` - open file directly (no Open dialog)
 - `When I delete file "<path>"` - delete a file
 - `Then the file "<path>" should exist` - assert file exists on disk
 - `Then the file "<path>" should contain "<text>"` - assert file content
-- `Then the file "<path>" should contain:` - assert file content includes multiline doc-string text
 
 ### Clean State
 

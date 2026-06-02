@@ -8,7 +8,10 @@ Feature: Say hi to the audience
     When I execute command "kusto.openQueryEditor"
     And I wait 5 seconds
     When I wait for "#queries-container" in the webview for 20 seconds
-    When I evaluate "(() => { if (!document.querySelector('kw-sql-section')) { const add = document.querySelector('button[data-add-kind=sql]'); if (!add) throw new Error('SQL section missing and add SQL button not found'); add.click(); return 'added sql section'; } return 'sql section already present'; })()" in the webview
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
+    And I wait 2 seconds
+    When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
+    When I click "button[data-add-kind='sql']" in the webview
     And I wait 2 seconds
     When I wait for "kw-sql-section .monaco-editor" in the webview for 20 seconds
     When I wait for "kw-sql-section[data-test-sql-connection='true']" in the webview for 15 seconds

@@ -15,6 +15,7 @@ tests/vscode-extension-tester/runs/
 tests/vscode-extension-tester/results/
 tests/vscode-extension-tester/history/
 tests/vscode-extension-tester/profiles/
+tests/vscode-extension-tester/auth-shared/
 coverage/
 esbuild-errors.txt
 esbuild-result.txt

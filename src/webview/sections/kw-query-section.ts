@@ -861,6 +861,13 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			if (match) resolvedId = match.id;
 		}
 
+		// 4. Fall back to the first configured connection when no prior selection
+		// exists. Authenticated profiles can have saved connections without a
+		// lastConnectionId, especially after profile/auth storage migrations.
+		if (!resolvedId && connections.length > 0) {
+			resolvedId = connections[0].id;
+		}
+
 		const prev = this._connectionId;
 		this._connectionId = resolvedId;
 

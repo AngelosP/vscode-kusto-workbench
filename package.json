@@ -24,7 +24,9 @@
     "workspaceContains:**/*.csl",
     "workspaceContains:**/*.kqlx",
     "workspaceContains:**/*.mdx",
-    "workspaceContains:**/*.sqlx"
+    "workspaceContains:**/*.sqlx",
+    "onCommand:kustoWorkbench.test.resetDidYouKnowState",
+    "onCommand:kustoWorkbench.test.openEmbeddedDidYouKnow"
   ],
   "main": "./dist/extension.js",
   "contributes": {

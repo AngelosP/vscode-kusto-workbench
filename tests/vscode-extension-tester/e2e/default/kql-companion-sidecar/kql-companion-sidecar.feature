@@ -51,7 +51,6 @@ Feature: KQL companion sidecar — .kql with existing .kql.json skips upgrade pr
 
     # ── TEST 6: Verify we now have 2 sections total ─────────────────────
     When I evaluate "(() => { const tags = ['kw-query-section','kw-sql-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const all = document.querySelectorAll(tags.join(',')); if (all.length !== 2) throw new Error('Expected 2 sections, found ' + all.length); const types = [...all].map(e => e.tagName.toLowerCase()); return 'sections: ' + types.join(', '); })()" in the webview
-    Then I take a screenshot "04-two-sections-verified"
 
     # ── TEST 7: Verify sections serialize correctly (query + markdown) ──
     When I evaluate "(() => { const tags = ['kw-query-section','kw-sql-section','kw-chart-section','kw-markdown-section','kw-transformation-section','kw-html-section','kw-url-section','kw-python-section']; const els = document.querySelectorAll(tags.join(',')); const types = [...els].map(el => { try { const s = el.serialize(); return s?.type || 'unknown'; } catch { return 'no-serialize'; } }); if (!types.includes('query')) throw new Error('Missing query section in serialization: ' + types.join(', ')); if (!types.includes('markdown')) throw new Error('Missing markdown section in serialization: ' + types.join(', ')); return 'serialized types: ' + types.join(', '); })()" in the webview

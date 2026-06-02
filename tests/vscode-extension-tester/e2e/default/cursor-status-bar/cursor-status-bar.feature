@@ -53,5 +53,4 @@ Feature: Webview editor cursor status bar
     When I evaluate "window.__e2e.cursorStatus.setMarkdownPreview()" in the webview for 10 seconds
     Then I evaluate "window.__e2e.cursorStatus.assertHidden('markdown')" in the webview for 10 seconds
     And I evaluate "window.__e2e.cursorStatus.assertStatusBarHidden()" in the webview for 10 seconds
-    Then I take a screenshot "02-cursor-status-preview-clears"
     And I evaluate "window.__e2e.cursorStatus.restoreCapture()" in the webview
