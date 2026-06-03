@@ -119,6 +119,39 @@ describe('sanitizeConversationHistory', () => {
 		expect(history.some((e) => e.type === 'tool-call' && e.callId === 'valid_tc')).toBe(true);
 	});
 
+	it('removes assistant tool calls with missing names and their tool results', () => {
+		const history: ConversationHistoryEntry[] = [
+			userMsg('hello'),
+			assistantMsg('', [
+				{ callId: 'valid_tc', name: 'get_schema', input: {} },
+				{ callId: 'missing_name_tc', name: '', input: {} }
+			]),
+			toolCall('valid_tc', 'get_schema', 'schema result'),
+			toolCall('missing_name_tc', '', 'bad result')
+		];
+
+		sanitizeConversationHistory(history);
+
+		const assistant = history.find((e): e is Extract<ConversationHistoryEntry, { type: 'assistant-message' }> => e.type === 'assistant-message');
+		expect(assistant?.toolCalls).toEqual([{ callId: 'valid_tc', name: 'get_schema', input: {} }]);
+		expect(history.some((e) => e.type === 'tool-call' && e.callId === 'missing_name_tc')).toBe(false);
+		expect(history.some((e) => e.type === 'tool-call' && e.callId === 'valid_tc')).toBe(true);
+	});
+
+	it('trims assistant tool call identifiers before preserving them', () => {
+		const history: ConversationHistoryEntry[] = [
+			userMsg('hello'),
+			assistantMsg('', [{ callId: ' tc1 ', name: ' get_schema ', input: {} }]),
+			toolCall('tc1', 'get_schema', 'schema result')
+		];
+
+		sanitizeConversationHistory(history);
+
+		const assistant = history.find((e): e is Extract<ConversationHistoryEntry, { type: 'assistant-message' }> => e.type === 'assistant-message');
+		expect(assistant?.toolCalls).toEqual([{ callId: 'tc1', name: 'get_schema', input: {} }]);
+		expect(history.some((e) => e.type === 'tool-call' && e.callId === 'tc1')).toBe(true);
+	});
+
 	it('handles empty history', () => {
 		const history: ConversationHistoryEntry[] = [];
 		sanitizeConversationHistory(history);
@@ -254,6 +287,26 @@ describe('insertMissingToolCallResults', () => {
 		expect(history).toHaveLength(5);
 		expect((history[3] as any).callId).toBe('tc2');
 		expect((history[4] as any).callId).toBe('tc3');
+	});
+
+	it('does not insert missing tool result entries for malformed native tool calls', () => {
+		const history: ConversationHistoryEntry[] = [
+			userMsg('go'),
+			assistantMsg('', [{ callId: 'tc1', name: 'get_schema', input: {} }])
+		];
+
+		insertMissingToolCallResults(
+			history,
+			[
+				{ callId: 'tc1', name: 'get_schema', input: {} },
+				{ callId: 'tc_missing_name', name: '', input: {} },
+				{ callId: '', name: 'execute', input: {} }
+			],
+			nextId
+		);
+
+		expect(history.filter((e) => e.type === 'tool-call')).toHaveLength(1);
+		expect((history[2] as any).callId).toBe('tc1');
 	});
 });
 

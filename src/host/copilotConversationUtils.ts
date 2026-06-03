@@ -16,6 +16,14 @@ export type ConversationHistoryEntry =
 	| { type: 'general-rules'; id: string; content: string; filePath: string; removed?: boolean; timestamp: number }
 	| { type: 'devnotes-context'; id: string; content: string; removed?: boolean; timestamp: number };
 
+function normalizeToolIdentifier(value: unknown): string {
+	return String(value || '').trim();
+}
+
+function isValidToolCall<T extends { callId?: unknown; name?: unknown }>(call: T | undefined): call is T & { callId: string; name: string } {
+	return !!call && !!normalizeToolIdentifier(call.callId) && !!normalizeToolIdentifier(call.name);
+}
+
 // ---------------------------------------------------------------------------
 // sanitizeConversationHistory
 // ---------------------------------------------------------------------------
@@ -39,6 +47,13 @@ export function sanitizeConversationHistory(
 	const validCallIds = new Set<string>();
 	for (const entry of history) {
 		if (entry.type === 'assistant-message' && entry.toolCalls) {
+			entry.toolCalls = entry.toolCalls
+				.map((tc) => ({
+					...tc,
+					callId: normalizeToolIdentifier(tc.callId),
+					name: normalizeToolIdentifier(tc.name)
+				}))
+				.filter(isValidToolCall);
 			for (const tc of entry.toolCalls) {
 				validCallIds.add(tc.callId);
 			}
@@ -139,7 +154,15 @@ export function insertMissingToolCallResults(
 			.map((e) => e.callId)
 	);
 
-	const missing = nativeToolCalls.filter((tc) => !existingCallIds.has(tc.callId));
+	const validNativeToolCalls = nativeToolCalls
+		.map((tc) => ({
+			...tc,
+			callId: normalizeToolIdentifier(tc.callId),
+			name: normalizeToolIdentifier(tc.name)
+		}))
+		.filter(isValidToolCall);
+
+	const missing = validNativeToolCalls.filter((tc) => !existingCallIds.has(tc.callId));
 	if (missing.length === 0) {
 		return;
 	}
@@ -151,7 +174,7 @@ export function insertMissingToolCallResults(
 		const entry = history[i];
 		if (
 			entry.type === 'assistant-message' &&
-			entry.toolCalls?.some((tc) => nativeToolCalls.some((ntc) => ntc.callId === tc.callId))
+			entry.toolCalls?.some((tc) => validNativeToolCalls.some((ntc) => ntc.callId === tc.callId))
 		) {
 			ownerIdx = i;
 			break;

@@ -412,6 +412,20 @@ export class CopilotService {
 		return raw;
 	}
 
+	private toHistoryToolCalls(
+		nativeToolCalls: vscode.LanguageModelToolCallPart[],
+		tools: vscode.LanguageModelChatTool[]
+	): Array<{ callId: string; name: string; input: object }> {
+		const offeredToolNames = new Set(tools.map((tool) => this.normalizeToolName(tool.name)).filter(Boolean));
+		return nativeToolCalls
+			.map((tc) => ({
+				callId: String(tc.callId || '').trim(),
+				name: this.normalizeToolName(tc.name),
+				input: tc.input && typeof tc.input === 'object' ? tc.input as object : {}
+			}))
+			.filter((tc) => !!tc.callId && !!tc.name && offeredToolNames.has(tc.name));
+	}
+
 	private extractQueryArgument(args: unknown): string {
 		try {
 			if (args && typeof args === 'object') {
@@ -1318,6 +1332,13 @@ Completion:`;
 					return;
 				}
 
+				const historyToolCalls = this.toHistoryToolCalls(nativeToolCalls, tools);
+				if (historyToolCalls.length === 0) {
+					priorAttempts.push({ attempt, error: 'Copilot returned malformed tool calls without valid tool names.' });
+					postStatus('Copilot returned malformed tool calls. Retrying…');
+					continue;
+				}
+
 				// Has tool calls — post any accompanying narrative text.
 				if (responseText.trim()) {
 					postNarrative(responseText.trim());
@@ -1328,7 +1349,7 @@ Completion:`;
 					type: 'assistant-message',
 					id: assistantEntryId,
 					text: responseText,
-					toolCalls: nativeToolCalls.map(tc => ({ callId: tc.callId, name: tc.name, input: tc.input })),
+					toolCalls: historyToolCalls,
 					timestamp: Date.now()
 				});
 
@@ -2011,7 +2032,7 @@ Completion:`;
 					}
 				}
 				} finally {
-					this.ensureAllToolCallsHaveResults(history, nativeToolCalls, boxId);
+					this.ensureAllToolCallsHaveResults(history, historyToolCalls, boxId);
 				}
 
 				if (shouldRetryAttempt) {
@@ -2579,13 +2600,20 @@ Completion:`;
 					return;
 				}
 
+				const historyToolCalls = this.toHistoryToolCalls(nativeToolCalls, tools);
+				if (historyToolCalls.length === 0) {
+					priorAttempts.push({ attempt, error: 'Copilot returned malformed tool calls without valid tool names.' });
+					postStatus('Copilot returned malformed tool calls. Retrying…');
+					continue;
+				}
+
 				// Record assistant message with tool calls
 				const assistantEntryId = this.nextHistoryEntryId(boxId);
 				history.push({
 					type: 'assistant-message',
 					id: assistantEntryId,
 					text: responseText,
-					toolCalls: nativeToolCalls.map(tc => ({ callId: tc.callId, name: tc.name, input: tc.input })),
+					toolCalls: historyToolCalls,
 					timestamp: Date.now()
 				});
 				if (responseText.trim()) {
@@ -2901,7 +2929,7 @@ Completion:`;
 					}
 				}
 				} finally {
-					this.ensureAllToolCallsHaveResults(history, nativeToolCalls, boxId);
+					this.ensureAllToolCallsHaveResults(history, historyToolCalls, boxId);
 				}
 
 				if (shouldRetryAttempt) {

@@ -3,10 +3,12 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [4.8.0] - 2026.06.03
+## [4.7.1] - 2026.06.03
 
 * Bugs
     * Adding a connection from certain entry points would sometimes not show the 'Test Connection' button.
+    * Some models would occasionally show tool call errors in versions v1.121.0+ of VS Code.
+    * Navigating to a new cluster / database via the connection manager would not render the right UI.
 
 ## [4.7.0] - 2026.05.06
 
