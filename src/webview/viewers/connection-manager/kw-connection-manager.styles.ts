@@ -59,7 +59,7 @@ export const styles = css`
 		.add-btn svg { width: 18px; height: 18px; }
 
 		/* Main layout — single panel */
-		.explorer-panel { flex: 0 1 auto; min-height: 0; display: flex; flex-direction: column; border: 1px solid var(--vscode-editorWidget-border); border-radius: 4px; background: var(--vscode-editorWidget-background); overflow: hidden; }
+		.explorer-panel { flex: 1 1 auto; min-height: 190px; display: flex; flex-direction: column; border: 1px solid var(--vscode-editorWidget-border); border-radius: 4px; background: var(--vscode-editorWidget-background); overflow: hidden; }
 
 		/* Filter tabs */
 		.filter-bar { display: flex; gap: 0; border-bottom: 1px solid var(--vscode-editorWidget-border); flex-shrink: 0; container-type: inline-size; background: var(--vscode-sideBarSectionHeader-background, rgba(128,128,128,.08)); }
@@ -76,7 +76,7 @@ export const styles = css`
 		@container (max-width: 400px) { .filter-label { display: none; } .filter-tab { padding: 10px 10px; gap: 4px; } }
 
 		/* Explorer content */
-		.explorer-content { flex: 1; overflow-y: auto; min-height: 0; }
+		.explorer-content { flex: 1 1 auto; overflow-y: auto; min-height: 120px; display: flex; flex-direction: column; }
 
 		/* Badges on cluster items */
 		.conn-badge { width: 16px; height: 16px; flex-shrink: 0; display: inline-flex; align-items: center; }
@@ -111,7 +111,7 @@ export const styles = css`
 		.breadcrumb-icon .codicon { font-size: 14px; }
 
 		/* Explorer list */
-		.explorer-list { flex: 1; overflow-y: auto; }
+		.explorer-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
 		.explorer-list-item { display: flex; align-items: center; gap: 8px; padding: 10px 12px 10px 15px; cursor: pointer; transition: background 0.1s; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editorWidget-background); }
 		.explorer-list-item:last-child { border-bottom: none; }
 		.explorer-list-item:hover { background: var(--vscode-list-hoverBackground); }
@@ -181,11 +181,12 @@ export const styles = css`
 		.preview-table td { padding: 4px 8px; border-bottom: 1px solid var(--vscode-editorWidget-border); max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 		/* Empty + loading states */
-		.empty-state { display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 16px; opacity: 0.7; text-align: center; }
+		.empty-state { flex: 1 1 auto; min-height: 96px; display: flex; flex-direction: column; align-items: center; justify-content: center; padding: 32px 16px; opacity: 0.7; text-align: center; }
 		.empty-state-icon { margin-bottom: 8px; }
 		.empty-state-icon svg { width: 32px; height: 32px; }
 		.empty-state-title { font-weight: 600; margin-bottom: 4px; }
 		.empty-state-text { font-size: 12px; }
+		.empty-state .btn { margin-top: 12px; }
 		.loading-state { padding: 16px; text-align: center; opacity: 0.7; }
 		.loading-state svg { width: 16px; height: 16px; vertical-align: middle; margin-right: 4px; }
 

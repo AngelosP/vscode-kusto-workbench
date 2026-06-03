@@ -768,8 +768,9 @@ export class KwConnectionManager extends LitElement {
 				</div>`;}
 
 			if (visibleDbs.length === 0) {return html`
-				<div class="empty-state">
-					<div class="empty-state-text">${this._activeFilter === 'favorites' ? 'No favorite databases in this cluster.' : 'No databases found.'}</div>
+				<div class="empty-state" data-testid="cm-database-empty-state">
+					<div class="empty-state-title">${this._activeFilter === 'favorites' ? 'No favorite databases' : 'No databases found'}</div>
+					<div class="empty-state-text">${this._activeFilter === 'favorites' ? 'This cluster has no favorite databases under the current filter.' : 'No databases are cached for this cluster yet.'}</div>
 					${this._activeFilter !== 'favorites' ? html`<button class="btn" @click=${() => this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id })}>Refresh</button>` : nothing}
 				</div>`;}
 
@@ -1158,8 +1159,9 @@ export class KwConnectionManager extends LitElement {
 			}
 
 			if (visibleDbs.length === 0) {
-				return html`<div class="empty-state">
-					<div class="empty-state-text">${this._activeFilter === 'favorites' ? 'No favorite databases in this connection.' : 'No databases found.'}</div>
+				return html`<div class="empty-state" data-testid="cm-sql-database-empty-state">
+					<div class="empty-state-title">${this._activeFilter === 'favorites' ? 'No favorite databases' : 'No databases found'}</div>
+					<div class="empty-state-text">${this._activeFilter === 'favorites' ? 'This connection has no favorite databases under the current filter.' : 'No databases are cached for this connection yet.'}</div>
 					${this._activeFilter !== 'favorites' ? html`<button class="btn" @click=${() => this._vscode.postMessage({ type: 'sql.cluster.refreshDatabases', connectionId: conn.id })}>Refresh</button>` : nothing}
 				</div>`;
 			}

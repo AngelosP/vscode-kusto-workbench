@@ -586,6 +586,26 @@ describe('kw-connection-manager', () => {
 	// ── Preview refresh ───────────────────────────────────────────────────────
 
 	describe('load error states', () => {
+		it('Kusto: drilled cluster with no cached databases shows an empty state, not a blank panel', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ cachedDatabases: { 'mycluster.kusto.windows.net': [] } }));
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MyCluster');
+			await el.updateComplete;
+
+			const emptyState = el.shadowRoot!.querySelector('[data-testid="cm-database-empty-state"]') as HTMLElement | null;
+			expect(emptyState).not.toBeNull();
+			expect(emptyState?.textContent).toContain('No databases found');
+			expect(emptyState?.textContent).toContain('Refresh');
+			expect(el.shadowRoot!.querySelector('[data-testid="cm-database-load-error"]')).toBeNull();
+			expect(el.shadowRoot!.textContent).not.toContain('Loading databases');
+
+			postedMessages = [];
+			(emptyState!.querySelector('button') as HTMLButtonElement).click();
+			expect(postedMessages).toContainEqual(expect.objectContaining({ type: 'cluster.refreshDatabases', connectionId: 'c1' }));
+		});
+
 		it('Kusto: database load failure shows retry instead of a misleading empty state', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({ cachedDatabases: {} }));
