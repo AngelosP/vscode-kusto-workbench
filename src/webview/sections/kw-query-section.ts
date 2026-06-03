@@ -185,6 +185,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	@state() private _favoritesMode = false;
 	@state() private _favorites: KustoFavorite[] = [];
 	@state() private _showAddConnectionModal = false;
+	@state() private _addConnectionTestResult = '';
 	// ── Header row reactive state ─────────────────────────────────────────────
 
 	@state() private _name = '';
@@ -586,14 +587,20 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	private _onClusterAction(e: CustomEvent): void {
 		const action = e.detail?.id;
 		if (action === '__enter_new__') {
-			this._showAddConnectionModal = true;
+			this.openAddConnectionModal();
 		} else if (action === '__import_xml__') {
 			try { importConnectionsFromXmlFile(this.boxId); } catch (e) { console.error('[kusto]', e); }
 		}
 	}
 
+	openAddConnectionModal(): void {
+		this._addConnectionTestResult = '';
+		this._showAddConnectionModal = true;
+	}
+
 	private _onAddConnectionSubmit(e: CustomEvent<KustoConnectionFormSubmitDetail>): void {
 		this._showAddConnectionModal = false;
+		this._addConnectionTestResult = '';
 		this.dispatchEvent(new CustomEvent('kusto-add-connection', {
 			detail: { ...e.detail, boxId: this.boxId },
 			bubbles: true, composed: true,
@@ -602,6 +609,20 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	private _onAddConnectionCancel(): void {
 		this._showAddConnectionModal = false;
+		this._addConnectionTestResult = '';
+	}
+
+	private _onAddConnectionTest(e: CustomEvent<KustoConnectionFormSubmitDetail>): void {
+		this._addConnectionTestResult = e.detail.clusterUrl ? 'loading' : 'Enter a cluster URL before testing.';
+		if (!e.detail.clusterUrl) return;
+		this.dispatchEvent(new CustomEvent('kusto-test-connection', {
+			detail: { ...e.detail, boxId: this.boxId },
+			bubbles: true, composed: true,
+		}));
+	}
+
+	setAddConnectionTestResult(result: string): void {
+		this._addConnectionTestResult = result;
 	}
 
 	private _renderAddConnectionModal(): TemplateResult {
@@ -619,8 +640,11 @@ export class KwQuerySection extends LitElement implements SectionElement {
 					<div class="add-connection-body">
 						<kw-kusto-connection-form
 							mode="add"
+							.showTestButton=${true}
+							.testResult=${this._addConnectionTestResult}
 							@connection-form-submit=${this._onAddConnectionSubmit}
 							@connection-form-cancel=${() => this._onAddConnectionCancel()}
+							@connection-form-test=${this._onAddConnectionTest}
 						></kw-kusto-connection-form>
 					</div>
 					<div class="add-connection-footer">

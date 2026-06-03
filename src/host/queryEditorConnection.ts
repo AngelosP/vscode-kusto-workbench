@@ -660,49 +660,7 @@ export class ConnectionService {
 	// ── Connection CRUD ──
 
 	async promptAddConnection(boxId?: string): Promise<void> {
-		const clusterUrlRaw = await vscode.window.showInputBox({
-			prompt: 'Cluster URL',
-			placeHolder: 'https://mycluster.region.kusto.windows.net',
-			ignoreFocusOut: true
-		});
-		if (!clusterUrlRaw) {
-			return;
-		}
-
-		let clusterUrl = clusterUrlRaw.trim();
-		if (!/^https?:\/\//i.test(clusterUrl)) {
-			clusterUrl = 'https://' + clusterUrl.replace(/^\/+/, '');
-		}
-
-		const name =
-			(await vscode.window.showInputBox({
-				prompt: 'Connection name (optional)',
-				placeHolder: 'My cluster',
-				ignoreFocusOut: true
-			})) || '';
-		const database =
-			(await vscode.window.showInputBox({
-				prompt: 'Default database (optional)',
-				placeHolder: 'MyDatabase',
-				ignoreFocusOut: true
-			})) || '';
-
-		const newConn = await this.host.connectionManager.addConnection({
-			name: name.trim() || clusterUrl,
-			clusterUrl,
-			database: database.trim() || undefined
-		});
-		await this.saveLastSelection(newConn.id, newConn.database);
-
-		this.host.postMessage({
-			type: 'connectionAdded',
-			boxId,
-			connectionId: newConn.id,
-			lastConnectionId: this.lastConnectionId,
-			lastDatabase: this.lastDatabase,
-			connections: this.host.connectionManager.getConnections(),
-			cachedDatabases: this.getCachedDatabases()
-		});
+		this.host.postMessage({ type: 'openKustoAddConnectionDialog', boxId });
 	}
 
 	async addConnectionFromWebview(data: { name: string; clusterUrl: string; database?: string; boxId?: string }): Promise<void> {
@@ -729,6 +687,45 @@ export class ConnectionService {
 			connections: this.host.connectionManager.getConnections(),
 			cachedDatabases: this.getCachedDatabases()
 		});
+	}
+
+	async testConnectionFromWebview(data: { name?: string; clusterUrl: string; database?: string; boxId?: string }): Promise<void> {
+		let clusterUrl = String(data.clusterUrl || '').trim();
+		if (!clusterUrl) {
+			this.host.postMessage({ type: 'kustoConnectionTestResult', boxId: data.boxId, success: false, message: 'Enter a cluster URL before testing.' });
+			return;
+		}
+		clusterUrl = ensureHttpsUrl(clusterUrl);
+
+		const connection: KustoConnection = {
+			id: `draft:${clusterUrl}`,
+			name: String(data.name || '').trim() || clusterUrl,
+			clusterUrl,
+			database: String(data.database || '').trim() || undefined,
+		};
+
+		this.host.postMessage({ type: 'kustoConnectionTestStarted', boxId: data.boxId });
+		try {
+			const databases = await this.host.kustoClient.getDatabases(connection, true);
+			const databaseList = (Array.isArray(databases) ? databases : []).map(d => String(d || '').trim()).filter(Boolean);
+			this.host.postMessage({
+				type: 'kustoConnectionTestResult',
+				boxId: data.boxId,
+				success: true,
+				message: `Connected successfully! Found ${databaseList.length} database(s).`,
+				databases: databaseList,
+			});
+		} catch (error) {
+			const errorMsg = error instanceof Error ? error.message : String(error);
+			const isAuthError = this.host.kustoClient.isAuthenticationError(error);
+			this.host.postMessage({
+				type: 'kustoConnectionTestResult',
+				boxId: data.boxId,
+				success: false,
+				message: isAuthError ? 'Authentication failed. Please sign in when prompted.' : `Connection failed: ${errorMsg}`,
+				isAuthError,
+			});
+		}
 	}
 
 	async addConnectionsForClusters(clusterUrls: string[]): Promise<void> {

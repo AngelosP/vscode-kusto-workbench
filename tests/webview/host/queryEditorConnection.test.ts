@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
 	ensureHttpsUrl,
 	getDefaultConnectionName,
@@ -154,8 +154,8 @@ function makeMockHost(overrides: Partial<Record<string, any>> = {}) {
 			},
 		},
 		kustoClient: {
-			getDatabases: async () => [],
-			isAuthenticationError: () => false,
+			getDatabases: overrides.getDatabases ?? (async () => []),
+			isAuthenticationError: overrides.isAuthenticationError ?? (() => false),
 		},
 		output: { appendLine: () => {} },
 		postMessage: overrides.postMessage ?? (() => {}),
@@ -289,6 +289,42 @@ describe('ConnectionService — removeFavorite', () => {
 		const host = makeMockHost();
 		const svc = new ConnectionService(host as any);
 		await svc.removeFavorite('https://test', ''); // should not throw
+	});
+});
+
+describe('ConnectionService — add/test connection UI routing', () => {
+	it('routes promptAddConnection back to the canonical webview dialog', async () => {
+		const postMessage = vi.fn();
+		const host = makeMockHost({ postMessage });
+		const svc = new ConnectionService(host as any);
+
+		await svc.promptAddConnection('query_1');
+
+		expect(postMessage).toHaveBeenCalledWith({ type: 'openKustoAddConnectionDialog', boxId: 'query_1' });
+	});
+
+	it('tests a draft connection without saving it', async () => {
+		const postMessage = vi.fn();
+		const getDatabases = vi.fn(async () => ['Samples', 'Telemetry']);
+		const host = makeMockHost({ postMessage, getDatabases });
+		const svc = new ConnectionService(host as any);
+
+		await svc.testConnectionFromWebview({ name: 'Draft', clusterUrl: 'draft.kusto.windows.net', database: 'Samples', boxId: 'query_1' });
+
+		expect(getDatabases).toHaveBeenCalledWith(expect.objectContaining({
+			id: 'draft:https://draft.kusto.windows.net',
+			name: 'Draft',
+			clusterUrl: 'https://draft.kusto.windows.net',
+			database: 'Samples',
+		}), true);
+		expect(postMessage).toHaveBeenNthCalledWith(1, { type: 'kustoConnectionTestStarted', boxId: 'query_1' });
+		expect(postMessage).toHaveBeenNthCalledWith(2, {
+			type: 'kustoConnectionTestResult',
+			boxId: 'query_1',
+			success: true,
+			message: 'Connected successfully! Found 2 database(s).',
+			databases: ['Samples', 'Telemetry'],
+		});
 	});
 });
 

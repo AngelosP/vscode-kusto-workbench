@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.8.0] - 2026.06.03
+
+* Bugs
+    * Adding a connection from certain entry points would sometimes not show the 'Test Connection' button.
+
 ## [4.7.0] - 2026.05.06
 
 * [Ability to pan and zoom in the plots · Issue #6 · AngelosP/vscode-kusto-workbench](https://github.com/AngelosP/vscode-kusto-workbench/issues/6)
@@ -11,7 +16,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Bugs
     * When the chart type changes from Area to Pie, the X axis column is visible selected in the Label column of the pie chart, but the chart area still complains no columns is selected.
     * Exporting Power BI reports that involved '.' and '/' characters in specific combinations tripped out our logic of stripping out comments during the export and generation of the Power BI artifacts.
-    * When opening a .kql/.csl file we remember the connection last used and we restore it, but the value was being restored in a way that it bypassed related logic, like making sure the button Run Query is enabled, etc. 
+    * When opening a .kql/.csl file we remember the connection last used and we restore it, but the value was being restored in a way that it bypassed related logic, like making sure the button Run Query is enabled, etc.
     * When the file is a .sql with a compansion .json file, the Chart section type would not pick up the data from the SQL section type.
     * In line / area / bar graphs when the X axis is a string and it is sorted alphabetically, it doesn't redraw the chart only redraws the axis values; which means the chart becomes incorrect.
 

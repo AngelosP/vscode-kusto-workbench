@@ -1431,11 +1431,11 @@ export class KwConnectionManager extends LitElement {
 							.name=${this._modalName}
 							.clusterUrl=${this._modalUrl}
 							.database=${this._modalDb}
-							.showTestButton=${!!this._editingConnectionId}
+							.showTestButton=${true}
 							.testResult=${this._testResult}
 							@connection-form-submit=${this._onKustoFormSubmit}
 							@connection-form-cancel=${() => this._closeModal()}
-							@connection-form-test=${() => this._testConnection()}
+							@connection-form-test=${this._testConnection}
 						></kw-kusto-connection-form>
 					</div>
 					<div class="modal-footer">
@@ -1596,9 +1596,20 @@ export class KwConnectionManager extends LitElement {
 		this._editingConnectionId = null;
 	}
 
-	private _testConnection(): void {
-		if (!this._editingConnectionId) return;
-		this._vscode.postMessage({ type: 'connection.test', id: this._editingConnectionId });
+	private _testConnection(e?: CustomEvent<KustoConnectionFormSubmitDetail>): void {
+		const detail = e?.detail;
+		if (!this._editingConnectionId && !detail?.clusterUrl) {
+			this._testResult = 'Enter a cluster URL before testing.';
+			return;
+		}
+		this._testResult = 'loading';
+		this._vscode.postMessage({
+			type: 'connection.test',
+			id: this._editingConnectionId || undefined,
+			name: detail?.name,
+			clusterUrl: detail?.clusterUrl,
+			database: detail?.database,
+		});
 	}
 
 	private _testSqlConnection(): void {

@@ -268,6 +268,7 @@ export type IncomingWebviewMessage =
 	| { type: 'stsConnect'; boxId: string; sqlConnectionId: string; database: string }
 	| { type: 'promptAddConnection'; boxId?: string }
 	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; boxId?: string }
+	| { type: 'testKustoConnection'; name?: string; clusterUrl: string; database?: string; boxId?: string }
 	| ImportConnectionsFromXmlMessage
 	| KqlLanguageRequestMessage
 	| FetchControlCommandSyntaxMessage

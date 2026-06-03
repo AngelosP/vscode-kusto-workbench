@@ -451,6 +451,20 @@ export function addQueryBox( options?: any) {
 				} catch (e) { console.error('[kusto]', e); }
 			}
 		});
+		kwEl.addEventListener('kusto-test-connection', (e: any) => {
+			const detail = e.detail || {};
+			if (detail.clusterUrl) {
+				try {
+					postMessageToHost({
+						type: 'testKustoConnection',
+						name: detail.name,
+						clusterUrl: detail.clusterUrl,
+						database: detail.database,
+						boxId: detail.boxId || id,
+					});
+				} catch (e) { console.error('[kusto]', e); }
+			}
+		});
 	}
 
 	// Default the connection to the query box above this one (if any).

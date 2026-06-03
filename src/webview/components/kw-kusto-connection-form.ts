@@ -51,31 +51,31 @@ export class KwKustoConnectionForm extends LitElement {
 
 	override render(): TemplateResult {
 		return html`
-			<div @keydown=${this._onKeydown}>
+			<div data-testid="kusto-connection-form" @keydown=${this._onKeydown}>
 				<div class="form-group">
 					<label>Connection Name${this.mode === 'add' ? '' : ' *'}</label>
-					<input type="text" .value=${this._name}
+					<input data-testid="kusto-conn-name" type="text" .value=${this._name}
 						@input=${(e: Event) => this._name = (e.target as HTMLInputElement).value}
 						placeholder=${this.mode === 'add' ? '(optional — defaults to cluster URL)' : 'My Cluster'} />
 				</div>
 				<div class="form-group">
 					<label>Cluster URL *</label>
-					<input type="text" .value=${this._clusterUrl}
+					<input data-testid="kusto-conn-cluster-url" type="text" .value=${this._clusterUrl}
 						@input=${(e: Event) => this._clusterUrl = (e.target as HTMLInputElement).value}
 						placeholder="https://mycluster.kusto.windows.net" />
 				</div>
 				<div class="form-group">
 					<label>Default Database</label>
-					<input type="text" .value=${this._database}
+					<input data-testid="kusto-conn-database" type="text" .value=${this._database}
 						@input=${(e: Event) => this._database = (e.target as HTMLInputElement).value}
 						placeholder="(optional)" />
 				</div>
 				${this.showTestButton ? html`
-					<button class="btn" @click=${this._onTest}>Test Connection</button>
+					<button class="btn" data-testid="kusto-conn-test" @click=${this._onTest}>Test Connection</button>
 					${this.testResult === 'loading'
-						? html`<div class="test-result">${ICONS.spinner} Testing connection...</div>`
+						? html`<div class="test-result" data-testid="kusto-conn-test-result">${ICONS.spinner} Testing connection...</div>`
 						: this.testResult
-							? html`<div class="test-result">${this.testResult}</div>`
+							? html`<div class="test-result" data-testid="kusto-conn-test-result">${this.testResult}</div>`
 							: nothing}
 				` : nothing}
 			</div>
@@ -85,12 +85,10 @@ export class KwKustoConnectionForm extends LitElement {
 	// ── Actions ───────────────────────────────────────────────────────────────
 
 	submit(): void {
-		const clusterUrl = this._clusterUrl.trim();
-		if (!clusterUrl) return;
-		const name = this._name.trim() || clusterUrl;
-		const database = this._database.trim() || undefined;
+		const detail = this._getFormDetail();
+		if (!detail.clusterUrl) return;
 		this.dispatchEvent(new CustomEvent<KustoConnectionFormSubmitDetail>('connection-form-submit', {
-			detail: { name, clusterUrl, database },
+			detail,
 			bubbles: true, composed: true,
 		}));
 	}
@@ -102,9 +100,19 @@ export class KwKustoConnectionForm extends LitElement {
 	}
 
 	private _onTest(): void {
-		this.dispatchEvent(new CustomEvent('connection-form-test', {
+		this.dispatchEvent(new CustomEvent<KustoConnectionFormSubmitDetail>('connection-form-test', {
+			detail: this._getFormDetail(),
 			bubbles: true, composed: true,
 		}));
+	}
+
+	private _getFormDetail(): KustoConnectionFormSubmitDetail {
+		const clusterUrl = this._clusterUrl.trim();
+		return {
+			name: this._name.trim() || clusterUrl,
+			clusterUrl,
+			database: this._database.trim() || undefined,
+		};
 	}
 
 	private _onKeydown = (e: KeyboardEvent): void => {

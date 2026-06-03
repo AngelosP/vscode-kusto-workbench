@@ -152,6 +152,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }
 	| { type: 'promptAddConnection'; boxId?: string }
 	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; boxId?: string }
+	| { type: 'testKustoConnection'; name?: string; clusterUrl: string; database?: string; boxId?: string }
 	| { type: 'promptImportConnectionsXml'; boxId?: string }
 	| { type: 'addConnectionsForClusters'; clusterUrls: string[]; boxId?: string }
 	| OutgoingImportConnectionsFromXmlMessage

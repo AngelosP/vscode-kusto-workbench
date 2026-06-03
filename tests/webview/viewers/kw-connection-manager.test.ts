@@ -405,6 +405,47 @@ describe('kw-connection-manager', () => {
 
 	// ── Search state ───────────────────────────────────────────────────────────
 
+	describe('connection form modal', () => {
+		it('Kusto: add modal shows Test Connection and posts draft details', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ connections: [], cachedDatabases: {}, sqlConnections: [], sqlCachedDatabases: {} }));
+			await el.updateComplete;
+
+			clickButtonByTestId(el, 'cm-add-connection');
+			await el.updateComplete;
+
+			const form = el.shadowRoot!.querySelector('kw-kusto-connection-form') as HTMLElement & { updateComplete: Promise<unknown> };
+			expect(form).not.toBeNull();
+			await form.updateComplete;
+
+			const formRoot = form.shadowRoot!;
+			const testButton = Array.from(formRoot.querySelectorAll('button'))
+				.find(button => button.textContent?.includes('Test Connection')) as HTMLButtonElement | undefined;
+			expect(testButton).not.toBeUndefined();
+
+			const inputs = Array.from(formRoot.querySelectorAll('input'));
+			inputs[0].value = 'Draft Kusto';
+			inputs[0].dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+			inputs[1].value = 'draft.kusto.windows.net';
+			inputs[1].dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+			inputs[2].value = 'Samples';
+			inputs[2].dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+
+			postedMessages = [];
+			testButton!.click();
+			await el.updateComplete;
+
+			expect(postedMessages).toContainEqual(expect.objectContaining({
+				type: 'connection.test',
+				name: 'Draft Kusto',
+				clusterUrl: 'draft.kusto.windows.net',
+				database: 'Samples',
+			}));
+		});
+	});
+
+	// ── Search state ───────────────────────────────────────────────────────────
+
 	describe('search state', () => {
 		it('Kusto: preserves completed search results when returning to the tab with a stale snapshot', async () => {
 			vi.useFakeTimers();

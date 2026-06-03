@@ -1070,6 +1070,30 @@ window.addEventListener('message', async (event: any) => {
 				__kustoCrossClusterSchemas[key] = { status: 'error', error: message.error };
 			} catch (e) { console.error('[kusto]', e); }
 			break;
+		case 'openKustoAddConnectionDialog':
+			try {
+				const kwEl = message.boxId ? __kustoGetQuerySectionElement(message.boxId) : null;
+				if (kwEl && typeof kwEl.openAddConnectionModal === 'function') {
+					kwEl.openAddConnectionModal();
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'kustoConnectionTestStarted':
+			try {
+				const kwEl = message.boxId ? __kustoGetQuerySectionElement(message.boxId) : null;
+				if (kwEl && typeof kwEl.setAddConnectionTestResult === 'function') {
+					kwEl.setAddConnectionTestResult('loading');
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'kustoConnectionTestResult':
+			try {
+				const kwEl = message.boxId ? __kustoGetQuerySectionElement(message.boxId) : null;
+				if (kwEl && typeof kwEl.setAddConnectionTestResult === 'function') {
+					kwEl.setAddConnectionTestResult(message.success ? `✓ ${message.message}` : `✗ ${message.message}`);
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			break;
 			case 'connectionAdded':
 				// Refresh list and preselect the new connection in the originating box.
 				if (Array.isArray(message.connections)) {

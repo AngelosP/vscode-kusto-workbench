@@ -58,7 +58,7 @@ type IncomingMessage =
 	| { type: 'connection.add'; name: string; clusterUrl: string; database?: string }
 	| { type: 'connection.edit'; id: string; name: string; clusterUrl: string; database?: string }
 	| { type: 'connection.delete'; id: string }
-	| { type: 'connection.test'; id: string }
+	| { type: 'connection.test'; id?: string; name?: string; clusterUrl?: string; database?: string }
 	| { type: 'connection.duplicate'; id: string }
 	| { type: 'favorite.add'; clusterUrl: string; database: string; name: string }
 	| { type: 'favorite.promptAdd'; clusterUrl: string; database: string; defaultName?: string }
@@ -468,20 +468,23 @@ export class ConnectionManagerViewerV2 {
 			}
 			case 'connection.test': {
 				const id = String(msg.id || '').trim();
-				if (!id) return;
 				const connections = this.connectionManager.getConnections();
-				const conn = connections.find((c) => c.id === id);
+				let conn = id ? connections.find((c) => c.id === id) : undefined;
+				if (!conn && msg.clusterUrl) {
+					const clusterUrl = String(msg.clusterUrl || '').trim();
+					conn = { id: `draft:${clusterUrl}`, name: String(msg.name || '').trim() || clusterUrl, clusterUrl, database: msg.database ? String(msg.database).trim() : undefined };
+				}
 				if (!conn) { void vscode.window.showErrorMessage('Connection not found.'); return; }
-				this.panel.webview.postMessage({ type: 'testConnectionStarted', connectionId: id });
+				this.panel.webview.postMessage({ type: 'testConnectionStarted', connectionId: id || conn.id });
 				try {
 					const databases = await this.kustoClient.getDatabases(conn, true);
-					this.panel.webview.postMessage({ type: 'testConnectionResult', connectionId: id, success: true, message: `Connected successfully! Found ${databases.length} database(s).`, databases });
+					this.panel.webview.postMessage({ type: 'testConnectionResult', connectionId: id || conn.id, success: true, message: `Connected successfully! Found ${databases.length} database(s).`, databases });
 					const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
 					if (clusterKey && databases.length > 0) { const cached = this.getCachedDatabases(); cached[clusterKey] = databases; await this.setCachedDatabases(cached); }
 				} catch (error) {
 					const errorMsg = error instanceof Error ? error.message : String(error);
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
-					this.panel.webview.postMessage({ type: 'testConnectionResult', connectionId: id, success: false, message: isAuthError ? 'Authentication failed. Please sign in when prompted.' : `Connection failed: ${errorMsg}`, isAuthError });
+					this.panel.webview.postMessage({ type: 'testConnectionResult', connectionId: id || conn.id, success: false, message: isAuthError ? 'Authentication failed. Please sign in when prompted.' : `Connection failed: ${errorMsg}`, isAuthError });
 				}
 				return;
 			}

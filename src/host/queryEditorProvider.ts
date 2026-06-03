@@ -684,6 +684,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'addConnection':
 				await this.connection.addConnectionFromWebview(message);
 				return;
+			case 'testKustoConnection':
+				await this.connection.testConnectionFromWebview(message);
+				return;
 			case 'kqlLanguageRequest':
 				await this.handleKqlLanguageRequest(message);
 				return;
