@@ -71,12 +71,13 @@ Feature: Connection Manager — UI structure, kind switching, modal, empty state
     # Close SQL modal
     When I evaluate "(() => { const sr = document.querySelector('kw-connection-manager')?.shadowRoot; sr?.querySelector('[data-testid=cm-modal-content] .modal-footer button')?.click(); return 'closed'; })()" in the webview
     And I wait 1 second
+    When I evaluate "(() => { const sr = document.querySelector('kw-connection-manager')?.shadowRoot; if (sr?.querySelector('[data-testid=cm-modal-overlay]')) throw new Error('SQL modal still open'); return 'SQL modal closed'; })()" in the webview
 
     # ── TEST 12: Switch back to Kusto ─────────────────────────────────────
     When I evaluate "(() => { const sr = document.querySelector('kw-connection-manager')?.shadowRoot; const picker = sr?.querySelector('[data-testid=cm-kind-picker]'); const btns = picker?.shadowRoot?.querySelectorAll('button') || []; Array.from(btns).find(b => b.textContent.toLowerCase().includes('kusto'))?.click(); return 'back to Kusto'; })()" in the webview
     And I wait 1 second
 
-    When I evaluate "(() => { const sr = document.querySelector('kw-connection-manager')?.shadowRoot; if (sr?.querySelector('[data-testid=cm-explorer-panel]')?.dataset.testKind !== 'kusto') throw new Error('Not Kusto'); return 'Kusto mode restored'; })()" in the webview
+    When I evaluate "(() => { const sr = document.querySelector('kw-connection-manager')?.shadowRoot; if (sr?.querySelector('[data-testid=cm-explorer-panel]')?.dataset.testKind !== 'kusto') throw new Error('Not Kusto'); if (sr?.querySelector('[data-testid=cm-modal-overlay]')) throw new Error('Modal unexpectedly open after switching back to Kusto'); return 'Kusto mode restored with no modal'; })()" in the webview
 
     # ── TEST 13: Import/Export buttons in Kusto mode ──────────────────────
     When I evaluate "(() => { const sr = document.querySelector('kw-connection-manager')?.shadowRoot; const btns = sr?.querySelectorAll('.header-btn') || []; const labels = Array.from(btns).map(b => b.textContent.trim()); if (!labels.some(l => l.includes('Import'))) throw new Error('No Import button'); if (!labels.some(l => l.includes('Export'))) throw new Error('No Export button'); return 'Import + Export visible'; })()" in the webview

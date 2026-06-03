@@ -585,6 +585,90 @@ describe('kw-connection-manager', () => {
 
 	// ── Preview refresh ───────────────────────────────────────────────────────
 
+	describe('load error states', () => {
+		it('Kusto: database load failure shows retry instead of a misleading empty state', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ cachedDatabases: {} }));
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MyCluster');
+			await el.updateComplete;
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'databasesLoadError', connectionId: 'c1', error: 'Auth expired' } }));
+			await el.updateComplete;
+
+			const errorState = el.shadowRoot!.querySelector('[data-testid="cm-database-load-error"]') as HTMLElement | null;
+			expect(errorState?.textContent).toContain('Could not load databases');
+			expect(errorState?.textContent).toContain('Auth expired');
+
+			postedMessages = [];
+			(errorState!.querySelector('button') as HTMLButtonElement).click();
+			expect(postedMessages).toContainEqual(expect.objectContaining({ type: 'cluster.refreshDatabases', connectionId: 'c1' }));
+		});
+
+		it('Kusto: schema load failure shows retry instead of loading forever', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ cachedDatabases: { 'mycluster.kusto.windows.net': ['db1'] } }));
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MyCluster');
+			await el.updateComplete;
+			clickListItemByName(el, 'db1');
+			await el.updateComplete;
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'schemaLoadError', connectionId: 'c1', database: 'db1', error: 'Schema unavailable' } }));
+			await el.updateComplete;
+
+			const errorState = el.shadowRoot!.querySelector('[data-testid="cm-schema-load-error"]') as HTMLElement | null;
+			expect(errorState?.textContent).toContain('Could not load schema');
+			expect(errorState?.textContent).toContain('Schema unavailable');
+
+			postedMessages = [];
+			(errorState!.querySelector('button') as HTMLButtonElement).click();
+			expect(postedMessages).toContainEqual(expect.objectContaining({ type: 'database.getSchema', connectionId: 'c1', database: 'db1' }));
+		});
+
+		it('SQL: database load failure shows retry instead of a misleading empty state', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ activeKind: 'sql', connections: [], cachedDatabases: {}, sqlCachedDatabases: { sql1: [] } }));
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MySqlServer');
+			await el.updateComplete;
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'sql.databasesLoadError', connectionId: 'sql1', error: 'Login failed' } }));
+			await el.updateComplete;
+
+			const dbError = el.shadowRoot!.querySelector('[data-testid="cm-sql-database-load-error"]') as HTMLElement | null;
+			expect(dbError?.textContent).toContain('Could not load databases');
+			expect(dbError?.textContent).toContain('Login failed');
+
+			postedMessages = [];
+			(dbError!.querySelector('button') as HTMLButtonElement).click();
+			expect(postedMessages).toContainEqual(expect.objectContaining({ type: 'sql.cluster.refreshDatabases', connectionId: 'sql1' }));
+		});
+
+		it('SQL: schema load failure shows retry instead of loading forever', async () => {
+			const el = createElement();
+
+			sendSnapshot(el, snapshot({ activeKind: 'sql', connections: [], cachedDatabases: {}, sqlCachedDatabases: { sql1: ['sqldb1'] } }));
+			await el.updateComplete;
+			clickListItemByName(el, 'MySqlServer');
+			await el.updateComplete;
+			clickListItemByName(el, 'sqldb1');
+			await el.updateComplete;
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'sql.schemaLoadError', connectionId: 'sql1', database: 'sqldb1', error: 'Schema timeout' } }));
+			await el.updateComplete;
+
+			const schemaError = el.shadowRoot!.querySelector('[data-testid="cm-sql-schema-load-error"]') as HTMLElement | null;
+			expect(schemaError?.textContent).toContain('Could not load schema');
+			expect(schemaError?.textContent).toContain('Schema timeout');
+
+			postedMessages = [];
+			(schemaError!.querySelector('button') as HTMLButtonElement).click();
+			expect(postedMessages).toContainEqual(expect.objectContaining({ type: 'sql.database.getSchema', connectionId: 'sql1', database: 'sqldb1' }));
+		});
+	});
+
+	// ── Preview refresh ───────────────────────────────────────────────────────
+
 	describe('preview refresh', () => {
 		it('Kusto: empty table shows refresh button', async () => {
 			const el = createElement();

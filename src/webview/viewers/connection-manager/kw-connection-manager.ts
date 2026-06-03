@@ -222,6 +222,8 @@ export class KwConnectionManager extends LitElement {
 	@state() private _databaseSchemas: Record<string, DatabaseSchema> = {};
 	@state() private _tablePreviewData: Record<string, TablePreview> = {};
 	@state() private _loadingDatabases = new Set<string>();
+	@state() private _databaseLoadErrors: Record<string, string> = {};
+	@state() private _schemaLoadErrors: Record<string, string> = {};
 	@state() private _activeFilter: ActiveFilter = 'all';
 	@state() private _refreshMenuOpen = false;
 
@@ -249,6 +251,8 @@ export class KwConnectionManager extends LitElement {
 	@state() private _sqlDatabaseSchemas: Record<string, SqlDatabaseSchema> = {};
 	@state() private _sqlTablePreviewData: Record<string, TablePreview> = {};
 	@state() private _sqlLoadingDatabases = new Set<string>();
+	@state() private _sqlDatabaseLoadErrors: Record<string, string> = {};
+	@state() private _sqlSchemaLoadErrors: Record<string, string> = {};
 
 	// ── VS Code API ───────────────────────────────────────────────────────────
 
@@ -358,17 +362,31 @@ export class KwConnectionManager extends LitElement {
 				break;
 			case 'loadingDatabases':
 				this._loadingDatabases = new Set([...this._loadingDatabases, msg.connectionId]);
+				this._databaseLoadErrors = { ...this._databaseLoadErrors, [msg.connectionId]: '' };
 				break;
 			case 'databasesLoaded':
 				this._loadingDatabases = new Set([...this._loadingDatabases].filter(id => id !== msg.connectionId));
+				this._databaseLoadErrors = { ...this._databaseLoadErrors, [msg.connectionId]: '' };
 				this._vscode.postMessage({ type: 'requestSnapshot' });
 				break;
 			case 'databasesLoadError':
 				this._loadingDatabases = new Set([...this._loadingDatabases].filter(id => id !== msg.connectionId));
+				this._databaseLoadErrors = { ...this._databaseLoadErrors, [msg.connectionId]: msg.error || 'Failed to load databases.' };
 				break;
+			case 'loadingSchema': {
+				const dbKey = msg.connectionId + '|' + msg.database;
+				this._schemaLoadErrors = { ...this._schemaLoadErrors, [dbKey]: '' };
+				break;
+			}
 			case 'schemaLoaded': {
 				const dbKey = msg.connectionId + '|' + msg.database;
 				this._databaseSchemas = { ...this._databaseSchemas, [dbKey]: msg.schema };
+				this._schemaLoadErrors = { ...this._schemaLoadErrors, [dbKey]: '' };
+				break;
+			}
+			case 'schemaLoadError': {
+				const dbKey = msg.connectionId + '|' + msg.database;
+				this._schemaLoadErrors = { ...this._schemaLoadErrors, [dbKey]: msg.error || 'Failed to load schema.' };
 				break;
 			}
 			case 'schemaRefreshStarted':
@@ -400,25 +418,33 @@ export class KwConnectionManager extends LitElement {
 				break;
 			case 'sql.loadingDatabases':
 				this._sqlLoadingDatabases = new Set([...this._sqlLoadingDatabases, msg.connectionId]);
+				this._sqlDatabaseLoadErrors = { ...this._sqlDatabaseLoadErrors, [msg.connectionId]: '' };
 				break;
 			case 'sql.databasesLoaded':
 				this._sqlLoadingDatabases = new Set([...this._sqlLoadingDatabases].filter(id => id !== msg.connectionId));
+				this._sqlDatabaseLoadErrors = { ...this._sqlDatabaseLoadErrors, [msg.connectionId]: '' };
 				this._vscode.postMessage({ type: 'requestSnapshot' });
 				break;
 			case 'sql.databasesLoadError':
 				this._sqlLoadingDatabases = new Set([...this._sqlLoadingDatabases].filter(id => id !== msg.connectionId));
+				this._sqlDatabaseLoadErrors = { ...this._sqlDatabaseLoadErrors, [msg.connectionId]: msg.error || 'Failed to load databases.' };
 				break;
-			case 'sql.loadingSchema':
-				// Could add visual indicator
+			case 'sql.loadingSchema': {
+				const sqlDbKey = msg.connectionId + '|' + msg.database;
+				this._sqlSchemaLoadErrors = { ...this._sqlSchemaLoadErrors, [sqlDbKey]: '' };
 				break;
+			}
 			case 'sql.schemaLoaded': {
 				const sqlDbKey = msg.connectionId + '|' + msg.database;
 				this._sqlDatabaseSchemas = { ...this._sqlDatabaseSchemas, [sqlDbKey]: msg.schema };
+				this._sqlSchemaLoadErrors = { ...this._sqlSchemaLoadErrors, [sqlDbKey]: '' };
 				break;
 			}
-			case 'sql.schemaLoadError':
-				// Could add error state
+			case 'sql.schemaLoadError': {
+				const sqlDbKey = msg.connectionId + '|' + msg.database;
+				this._sqlSchemaLoadErrors = { ...this._sqlSchemaLoadErrors, [sqlDbKey]: msg.error || 'Failed to load schema.' };
 				break;
+			}
 			case 'sql.tablePreviewLoading': {
 				const sqlPrevKey = msg.connectionId + '|' + msg.database + '|table|' + msg.tableName;
 				this._sqlTablePreviewData = { ...this._sqlTablePreviewData, [sqlPrevKey]: { loading: true } };
@@ -722,6 +748,7 @@ export class KwConnectionManager extends LitElement {
 
 	private _renderExplorerContent(conn: KustoConnection, databases: string[], isLoading: boolean): TemplateResult {
 		const ep = this._explorerPath;
+		const databaseLoadError = this._databaseLoadErrors[conn.id] || '';
 
 		// Level 1: databases
 		if (!ep?.database) {
@@ -732,6 +759,13 @@ export class KwConnectionManager extends LitElement {
 			if (this._activeFilter === 'favorites') {
 				visibleDbs = visibleDbs.filter(db => this._getFavorite(conn.clusterUrl, db));
 			}
+
+			if (visibleDbs.length === 0 && databaseLoadError) {return html`
+				<div class="empty-state" data-testid="cm-database-load-error">
+					<div class="empty-state-title">Could not load databases</div>
+					<div class="empty-state-text">${databaseLoadError}</div>
+					<button class="btn" @click=${() => this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id })}>Retry</button>
+				</div>`;}
 
 			if (visibleDbs.length === 0) {return html`
 				<div class="empty-state">
@@ -772,6 +806,15 @@ export class KwConnectionManager extends LitElement {
 		// Level 2: tables/functions overview
 		const dbKey = conn.id + '|' + ep.database;
 		const schema = this._databaseSchemas[dbKey];
+		const schemaLoadError = this._schemaLoadErrors[dbKey] || '';
+		if (!schema && schemaLoadError) {
+			return html`
+			<div class="empty-state" data-testid="cm-schema-load-error">
+				<div class="empty-state-title">Could not load schema</div>
+				<div class="empty-state-text">${schemaLoadError}</div>
+				<button class="btn" @click=${() => this._vscode.postMessage({ type: 'database.getSchema', connectionId: conn.id, database: ep.database })}>Retry</button>
+			</div>`;
+		}
 		if (!schema) return html`<div class="loading-state">${ICONS.spinner} Loading schema...</div>`;
 
 		if (!ep.section) {
@@ -1094,6 +1137,7 @@ export class KwConnectionManager extends LitElement {
 
 		const databases = this._snapshot?.sqlCachedDatabases?.[conn.id] ?? [];
 		const isLoading = this._sqlLoadingDatabases.has(conn.id);
+		const databaseLoadError = this._sqlDatabaseLoadErrors[conn.id] || '';
 
 		// Level 1: databases
 		if (!ep.database) {
@@ -1103,6 +1147,14 @@ export class KwConnectionManager extends LitElement {
 			let visibleDbs = sortStringsAlphabetically(databases);
 			if (this._activeFilter === 'favorites') {
 				visibleDbs = visibleDbs.filter(db => this._getSqlFavorite(conn.id, db));
+			}
+
+			if (visibleDbs.length === 0 && databaseLoadError) {
+				return html`<div class="empty-state" data-testid="cm-sql-database-load-error">
+					<div class="empty-state-title">Could not load databases</div>
+					<div class="empty-state-text">${databaseLoadError}</div>
+					<button class="btn" @click=${() => this._vscode.postMessage({ type: 'sql.cluster.refreshDatabases', connectionId: conn.id })}>Retry</button>
+				</div>`;
 			}
 
 			if (visibleDbs.length === 0) {
@@ -1142,6 +1194,15 @@ export class KwConnectionManager extends LitElement {
 		// Level 2: tables overview
 		const dbKey = conn.id + '|' + ep.database;
 		const schema = this._sqlDatabaseSchemas[dbKey];
+		const schemaLoadError = this._sqlSchemaLoadErrors[dbKey] || '';
+		if (!schema && schemaLoadError) {
+			return html`
+			<div class="empty-state" data-testid="cm-sql-schema-load-error">
+				<div class="empty-state-title">Could not load schema</div>
+				<div class="empty-state-text">${schemaLoadError}</div>
+				<button class="btn" @click=${() => this._vscode.postMessage({ type: 'sql.database.getSchema', connectionId: conn.id, database: ep.database })}>Retry</button>
+			</div>`;
+		}
 		if (!schema) return html`<div class="loading-state">${ICONS.spinner} Loading schema...</div>`;
 
 		if (!ep.section) {
@@ -1452,8 +1513,8 @@ export class KwConnectionManager extends LitElement {
 		const isEditing = !!this._editingConnectionId;
 
 		return html`
-			<div class="modal-overlay" @click=${() => this._closeModal()}>
-				<div class="modal-content" @click=${(e: Event) => e.stopPropagation()}>
+			<div class="modal-overlay" data-testid="cm-modal-overlay" @click=${() => this._closeModal()}>
+				<div class="modal-content" data-testid="cm-modal-content" @click=${(e: Event) => e.stopPropagation()}>
 					<div class="modal-header">
 						<h2>${isEditing ? 'Edit SQL Connection' : 'Add SQL Connection'}</h2>
 						<button class="btn-icon" @click=${() => this._closeModal()}>${ICONS.close}</button>
