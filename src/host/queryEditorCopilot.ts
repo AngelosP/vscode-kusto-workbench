@@ -5,7 +5,7 @@ import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { SqlSchemaService } from './sqlEditorSchema';
 import type { SqlQueryClient } from './sqlClient';
 import { SqlQueryCancelledError } from './sqlClient';
-import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToolCallResults, decideNonToolResponse } from './copilotConversationUtils';
+import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToolCallResults, decideNonToolResponse, groupConversationHistoryForProvider, type ToolCallHistoryEntry } from './copilotConversationUtils';
 import { SCHEMA_CACHE_VERSION, searchCachedSchemas } from './schemaCache';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget, DEFAULT_SCHEMA_TOKEN_BUDGET_FRACTION, PRUNE_PHASE_DESCRIPTIONS, SchemaPruneResult } from './schemaIndexUtils';
 import {
@@ -502,6 +502,34 @@ export class CopilotService {
 		insertMissingToolCallResults(history, nativeToolCalls, () => this.nextHistoryEntryId(boxId));
 	}
 
+	private appendToolResultBatchMessage(
+		messages: vscode.LanguageModelChatMessage[],
+		entries: ToolCallHistoryEntry[]
+	): void {
+		const previous = messages[messages.length - 1];
+		if (!previous || previous.role !== vscode.LanguageModelChatMessageRole.Assistant) {
+			return;
+		}
+		const previousToolCallIds = new Set(
+			previous.content
+				.filter((part): part is vscode.LanguageModelToolCallPart => part instanceof vscode.LanguageModelToolCallPart)
+				.map((part) => part.callId)
+		);
+		const resultParts = entries
+			.filter((entry) => previousToolCallIds.has(entry.callId))
+			.map((entry) => {
+				const resultText = entry.removed
+					? '[truncated from conversation history, call tool again if needed]'
+					: entry.result;
+				return new vscode.LanguageModelToolResultPart(entry.callId, [
+					new vscode.LanguageModelTextPart(resultText)
+				]);
+			});
+		if (resultParts.length > 0) {
+			messages.push(vscode.LanguageModelChatMessage.User(resultParts));
+		}
+	}
+
 	cancelCopilotWriteQuery(boxId: string): void {
 		const id = String(boxId || '').trim();
 		if (!id) {
@@ -899,7 +927,12 @@ Completion:`;
 		preambleParts.push('- If you cannot fulfill the request, use the ask_user_clarifying_question tool.');
 		messages.push(vscode.LanguageModelChatMessage.User(preambleParts.join('\n')));
 
-		for (const entry of history) {
+		for (const batch of groupConversationHistoryForProvider(history)) {
+			if (batch.type === 'tool-results') {
+				this.appendToolResultBatchMessage(messages, batch.entries);
+				continue;
+			}
+			const entry = batch.entry;
 			if (entry.type === 'general-rules') {
 				if (entry.removed) {
 					messages.push(vscode.LanguageModelChatMessage.User(
@@ -939,15 +972,6 @@ Completion:`;
 				if (parts.length > 0) {
 					messages.push(vscode.LanguageModelChatMessage.Assistant(parts));
 				}
-			} else if (entry.type === 'tool-call') {
-				const resultText = entry.removed
-					? '[truncated from conversation history, call tool again if needed]'
-					: entry.result;
-				messages.push(vscode.LanguageModelChatMessage.User([
-					new vscode.LanguageModelToolResultPart(entry.callId, [
-						new vscode.LanguageModelTextPart(resultText)
-					])
-				]));
 			}
 		}
 
@@ -971,11 +995,11 @@ Completion:`;
 						}
 					}
 					const missing = toolCallParts.filter(tc => !resultCallIds.has(tc.callId));
-					for (let k = missing.length - 1; k >= 0; k--) {
+					if (missing.length > 0) {
 						messages.splice(i + 1, 0, vscode.LanguageModelChatMessage.User([
-							new vscode.LanguageModelToolResultPart(missing[k].callId, [
+							...missing.map((tc) => new vscode.LanguageModelToolResultPart(tc.callId, [
 								new vscode.LanguageModelTextPart('[Tool result was not recorded]')
-							])
+							]))
 						]));
 					}
 				}
@@ -2349,7 +2373,12 @@ Completion:`;
 		preambleParts.push('- If you cannot fulfill the request, use the ask_user_clarifying_question tool.');
 		messages.push(vscode.LanguageModelChatMessage.User(preambleParts.join('\n')));
 
-		for (const entry of history) {
+		for (const batch of groupConversationHistoryForProvider(history)) {
+			if (batch.type === 'tool-results') {
+				this.appendToolResultBatchMessage(messages, batch.entries);
+				continue;
+			}
+			const entry = batch.entry;
 			if (entry.type === 'general-rules') {
 				if (entry.removed) {
 					messages.push(vscode.LanguageModelChatMessage.User(
@@ -2379,15 +2408,6 @@ Completion:`;
 				if (parts.length > 0) {
 					messages.push(vscode.LanguageModelChatMessage.Assistant(parts));
 				}
-			} else if (entry.type === 'tool-call') {
-				const resultText = entry.removed
-					? '[truncated from conversation history, call tool again if needed]'
-					: entry.result;
-				messages.push(vscode.LanguageModelChatMessage.User([
-					new vscode.LanguageModelToolResultPart(entry.callId, [
-						new vscode.LanguageModelTextPart(resultText)
-					])
-				]));
 			}
 		}
 

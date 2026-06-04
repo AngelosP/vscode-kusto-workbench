@@ -3,6 +3,7 @@ import {
 	type ConversationHistoryEntry,
 	sanitizeConversationHistory,
 	insertMissingToolCallResults,
+	groupConversationHistoryForProvider,
 	decideNonToolResponse
 } from '../../../src/host/copilotConversationUtils';
 
@@ -307,6 +308,55 @@ describe('insertMissingToolCallResults', () => {
 
 		expect(history.filter((e) => e.type === 'tool-call')).toHaveLength(1);
 		expect((history[2] as any).callId).toBe('tc1');
+	});
+});
+
+// ---------------------------------------------------------------------------
+// groupConversationHistoryForProvider
+// ---------------------------------------------------------------------------
+
+describe('groupConversationHistoryForProvider', () => {
+	beforeEach(() => resetIds());
+
+	it('groups consecutive tool results from one assistant tool-use turn into one provider batch', () => {
+		const history: ConversationHistoryEntry[] = [
+			userMsg('run both'),
+			assistantMsg('', [
+				{ callId: 'tc1', name: 'execute_kusto_query', input: { query: 'print a=1' } },
+				{ callId: 'tc2', name: 'execute_kusto_query', input: { query: 'print b=2' } }
+			]),
+			toolCall('tc1', 'execute_kusto_query', '1 row'),
+			toolCall('tc2', 'execute_kusto_query', '1 row'),
+			userMsg('next request')
+		];
+
+		const grouped = groupConversationHistoryForProvider(history);
+
+		expect(grouped.map((entry) => entry.type)).toEqual(['entry', 'entry', 'tool-results', 'entry']);
+		expect(grouped[2]).toMatchObject({
+			type: 'tool-results',
+			entries: [
+				{ callId: 'tc1', tool: 'execute_kusto_query' },
+				{ callId: 'tc2', tool: 'execute_kusto_query' }
+			]
+		});
+	});
+
+	it('keeps separate assistant tool-use turns as separate provider batches', () => {
+		const history: ConversationHistoryEntry[] = [
+			userMsg('first'),
+			assistantMsg('', [{ callId: 'tc1', name: 'execute_kusto_query', input: {} }]),
+			toolCall('tc1', 'execute_kusto_query', 'first result'),
+			userMsg('second'),
+			assistantMsg('', [{ callId: 'tc2', name: 'execute_kusto_query', input: {} }]),
+			toolCall('tc2', 'execute_kusto_query', 'second result')
+		];
+
+		const grouped = groupConversationHistoryForProvider(history);
+
+		expect(grouped.map((entry) => entry.type)).toEqual(['entry', 'entry', 'tool-results', 'entry', 'entry', 'tool-results']);
+		expect(grouped[2]).toMatchObject({ type: 'tool-results', entries: [{ callId: 'tc1' }] });
+		expect(grouped[5]).toMatchObject({ type: 'tool-results', entries: [{ callId: 'tc2' }] });
 	});
 });
 

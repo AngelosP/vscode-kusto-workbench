@@ -3,6 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.7.2] - 2026.06.03
+
+* Bugs
+    * Some models would occasionally show tool call errors in versions v1.121.0+ of VS Code (more edge cases fixed)
+
 ## [4.7.1] - 2026.06.03
 
 * Bugs

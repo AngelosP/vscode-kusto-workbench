@@ -16,6 +16,12 @@ export type ConversationHistoryEntry =
 	| { type: 'general-rules'; id: string; content: string; filePath: string; removed?: boolean; timestamp: number }
 	| { type: 'devnotes-context'; id: string; content: string; removed?: boolean; timestamp: number };
 
+export type ToolCallHistoryEntry = Extract<ConversationHistoryEntry, { type: 'tool-call' }>;
+
+export type ConversationHistoryProviderBatch =
+	| { type: 'entry'; entry: Exclude<ConversationHistoryEntry, ToolCallHistoryEntry> }
+	| { type: 'tool-results'; entries: ToolCallHistoryEntry[] };
+
 function normalizeToolIdentifier(value: unknown): string {
 	return String(value || '').trim();
 }
@@ -206,6 +212,41 @@ export function insertMissingToolCallResults(
 	}));
 
 	history.splice(insertAt, 0, ...newEntries);
+}
+
+// ---------------------------------------------------------------------------
+// groupConversationHistoryForProvider
+// ---------------------------------------------------------------------------
+
+/**
+ * Groups consecutive tool-call results into a single provider user message.
+ *
+ * Anthropic/Gemini-style providers require all `tool_result` blocks for one
+ * assistant tool-use response to appear in the single immediately following
+ * user message. Serializing each result as its own user message makes the
+ * second result look orphaned because its previous message is another user
+ * message, not the assistant tool-use message.
+ */
+export function groupConversationHistoryForProvider(
+	history: ConversationHistoryEntry[]
+): ConversationHistoryProviderBatch[] {
+	const batches: ConversationHistoryProviderBatch[] = [];
+	for (let i = 0; i < history.length; i++) {
+		const entry = history[i];
+		if (entry.type !== 'tool-call') {
+			batches.push({ type: 'entry', entry });
+			continue;
+		}
+
+		const entries: ToolCallHistoryEntry[] = [];
+		while (i < history.length && history[i].type === 'tool-call') {
+			entries.push(history[i] as ToolCallHistoryEntry);
+			i++;
+		}
+		i--;
+		batches.push({ type: 'tool-results', entries });
+	}
+	return batches;
 }
 
 // ---------------------------------------------------------------------------
