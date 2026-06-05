@@ -146,6 +146,10 @@ export class TableVirtualScrollController implements ReactiveController {
 		this._sync();
 	}
 
+	getScrollElement(): HTMLElement | null {
+		return this._getScrollEl();
+	}
+
 	syncHeaderScroll(): void {
 		const vscroll = this._getScrollEl();
 		const headWrap = this.host.shadowRoot?.querySelector('.dtable-head-wrap') as HTMLElement | null;

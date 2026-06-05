@@ -183,9 +183,9 @@ export class TableSelectionController implements ReactiveController {
 			this._selectionAnchor = { row: nr, col: nc };
 		}
 		this.selectedCell = { row: nr, col: nc };
+		this.host.requestUpdate();
 		this.host.scrollToRow(nr, { align: 'auto' });
 		this.host.scrollColumnIntoView(nc);
-		this.host.requestUpdate();
 	}
 
 	copy(): void {
@@ -259,12 +259,22 @@ export class TableSelectionController implements ReactiveController {
 	};
 
 	private _onDocumentKeydown = (e: KeyboardEvent): void => {
-		if (!(e.ctrlKey || e.metaKey)) return;
 		const key = String(e.key).toLowerCase();
 		const active = document.activeElement as HTMLElement | null;
 		const target = (e.target as HTMLElement | null);
 		const activeInHost = !!(active && this.host.contains(active));
 		const targetInHost = !!(target && this.host.contains(target));
+
+		if (this._isNavigationKey(e)) {
+			if (!this.isSelectionInThisTable() && !activeInHost && !targetInHost) return;
+			if (this._isEditingText(e, active, target)) return;
+			this.handleKeydown(e);
+			e.stopPropagation();
+			if (typeof (e as any).stopImmediatePropagation === 'function') (e as any).stopImmediatePropagation();
+			return;
+		}
+
+		if (!(e.ctrlKey || e.metaKey)) return;
 
 		if (key === 'a') {
 			if (!activeInHost && !targetInHost) return;
@@ -291,6 +301,43 @@ export class TableSelectionController implements ReactiveController {
 		if (typeof (e as any).stopImmediatePropagation === 'function') (e as any).stopImmediatePropagation();
 		this.copy();
 	};
+
+	private _isNavigationKey(e: KeyboardEvent): boolean {
+		switch (e.key) {
+			case 'ArrowUp':
+			case 'ArrowDown':
+			case 'ArrowLeft':
+			case 'ArrowRight':
+			case 'Home':
+			case 'End':
+			case 'PageUp':
+			case 'PageDown':
+				return true;
+			default:
+				return false;
+		}
+	}
+
+	private _isEditingText(e: KeyboardEvent, active: HTMLElement | null, target: HTMLElement | null): boolean {
+		const path = typeof e.composedPath === 'function' ? e.composedPath() : [];
+		if (path.some(item => this._isEditableElement(item))) return true;
+
+		let shadowActive = this.host.shadowRoot?.activeElement as Element | null;
+		while (shadowActive) {
+			if (this._isEditableElement(shadowActive)) return true;
+			shadowActive = shadowActive instanceof HTMLElement
+				? shadowActive.shadowRoot?.activeElement ?? null
+				: null;
+		}
+
+		return [active, target].some(element => this._isEditableElement(element));
+	}
+
+	private _isEditableElement(value: unknown): value is HTMLElement {
+		return value instanceof HTMLInputElement ||
+			value instanceof HTMLTextAreaElement ||
+			(value instanceof HTMLElement && value.isContentEditable);
+	}
 
 	private _buildClipboardText(): string {
 		const rows = this.host.getTableRows().map(r => r.original);

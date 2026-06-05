@@ -297,6 +297,20 @@ describe('TableSelectionController', () => {
 	// ── document keydown integration ──────────────────────────────────────
 
 	describe('document keydown integration', () => {
+		it('ArrowRight navigates the active table selection when focus is on the document body', () => {
+			document.body.appendChild(host as unknown as HTMLElement);
+			ctrl.hostConnected();
+			ctrl.setSelectedCell({ row: 0, col: 0 });
+			(ctrl as any)._becomeActive();
+
+			const ev = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true });
+			document.body.dispatchEvent(ev);
+
+			expect(ctrl.selectedCell).toEqual({ row: 0, col: 1 });
+			expect(host.scrollColumnIntoView).toHaveBeenCalledWith(1);
+			(host as unknown as HTMLElement).remove();
+		});
+
 		it('Ctrl+A inside table host selects all', () => {
 			document.body.appendChild(host as unknown as HTMLElement);
 			ctrl.hostConnected();
@@ -325,6 +339,28 @@ describe('TableSelectionController', () => {
 			inp.dispatchEvent(ev);
 
 			expect(ctrl.selectionRange).toBeNull();
+			(host as unknown as HTMLElement).remove();
+		});
+
+		it('ArrowRight inside a nested shadow input does not move the table selection', () => {
+			document.body.appendChild(host as unknown as HTMLElement);
+			ctrl.hostConnected();
+			ctrl.setSelectedCell({ row: 0, col: 0 });
+			(ctrl as any)._becomeActive();
+
+			const root = (host as unknown as HTMLElement).attachShadow({ mode: 'open' });
+			const nested = document.createElement('div');
+			const nestedRoot = nested.attachShadow({ mode: 'open' });
+			const input = document.createElement('input');
+			nestedRoot.appendChild(input);
+			root.appendChild(nested);
+			input.focus();
+
+			const ev = new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true, cancelable: true, composed: true });
+			input.dispatchEvent(ev);
+
+			expect(ctrl.selectedCell).toEqual({ row: 0, col: 0 });
+			expect(host.scrollColumnIntoView).not.toHaveBeenCalled();
 			(host as unknown as HTMLElement).remove();
 		});
 	});

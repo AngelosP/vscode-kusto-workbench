@@ -365,7 +365,7 @@ export class KwDataTable extends LitElement {
 	getSelectedCol(): number { return this._selectionCtrl.selectedCell?.col ?? 0; }
 	scrollToRow(index: number, opts?: { align?: 'auto' | 'center' | 'start' | 'end' }): void { this._vScrollCtrl.scrollToIndex(index, opts); }
 	scrollColumnIntoView(col: number): void {
-		const el = this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
+		const el = this._getScrollElement();
 		if (!el) return;
 		const colWidths = this._layoutColumns().widths;
 		const cellLeft = colWidths.slice(0, col).reduce((sum, w) => sum + w, ROW_NUMBER_WIDTH);
@@ -377,12 +377,53 @@ export class KwDataTable extends LitElement {
 		} else if (cellRight > viewRight) {
 			el.scrollLeft = cellRight - el.clientWidth;
 		} else {
+			this._scheduleSelectedCellReveal();
 			return;
 		}
 		this._vScrollCtrl.syncHeaderScroll();
+		this._scheduleSelectedCellReveal();
 	}
-	setSelectedCell(cell: { row: number; col: number } | null): void { this._selectionCtrl.setSelectedCell(cell); }
+	setSelectedCell(cell: { row: number; col: number } | null): void {
+		this._selectionCtrl.setSelectedCell(cell);
+		if (cell) this.scrollColumnIntoView(cell.col);
+	}
 	clearSelectionRange(): void { this._selectionCtrl.clearSelectionRange(); }
+
+	private _getScrollElement(): HTMLElement | null {
+		return this._vScrollCtrl.getScrollElement();
+	}
+
+	private _scheduleSelectedCellReveal(): void {
+		void this.updateComplete.then(() => {
+			requestAnimationFrame(() => this._scrollSelectedCellIntoViewByDom());
+		});
+	}
+
+	private _scrollSelectedCellIntoViewByDom(): void {
+		const sr = this.shadowRoot;
+		const scroller = this._getScrollElement();
+		const selectedCell = sr?.querySelector('td.cf') as HTMLElement | null;
+		if (!scroller || !selectedCell) return;
+
+		const cellRect = selectedCell.getBoundingClientRect();
+		const viewRect = scroller.getBoundingClientRect();
+		if (cellRect.width <= 0 || viewRect.width <= 0) return;
+
+		const leftLimit = viewRect.left + ROW_NUMBER_WIDTH;
+		const rightLimit = viewRect.right;
+		let nextScrollLeft = scroller.scrollLeft;
+		if (cellRect.left < leftLimit) {
+			nextScrollLeft -= leftLimit - cellRect.left;
+		} else if (cellRect.right > rightLimit) {
+			nextScrollLeft += cellRect.right - rightLimit;
+		}
+
+		nextScrollLeft = Math.max(0, Math.ceil(nextScrollLeft));
+		if (nextScrollLeft !== scroller.scrollLeft) {
+			scroller.scrollLeft = nextScrollLeft;
+			this._vScrollCtrl.syncHeaderScroll();
+		}
+	}
 
 	// ── Lifecycle ──
 
@@ -639,7 +680,7 @@ export class KwDataTable extends LitElement {
 
 	private _viewportWidth(): number {
 		if (this._vScrollCtrl.viewportW > 0) return this._vScrollCtrl.viewportW;
-		const vscroll = this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
+		const vscroll = this._getScrollElement();
 		if (vscroll && vscroll.clientWidth > 0) return vscroll.clientWidth;
 		const dt = this.shadowRoot?.querySelector('.dt') as HTMLElement | null;
 		if (dt && dt.clientWidth > 0) return dt.clientWidth;
@@ -1147,7 +1188,7 @@ export class KwDataTable extends LitElement {
 	};
 	private _clearSort(): void { this._sorting = []; this._table?.setOptions(p => ({ ...p, state: { ...p.state, sorting: [] } })); this._sortDialogOpen = false; this._vScrollCtrl.updateCount(); }
 	private _scrollToCol(ci: number): void {
-		const el = this.shadowRoot?.querySelector('.vscroll') as HTMLElement | null;
+		const el = this._getScrollElement();
 		if (!el) return;
 		const colWidths = this._layoutColumns().widths;
 		const left = colWidths.slice(0, ci).reduce((sum, width) => sum + width, ROW_NUMBER_WIDTH);
