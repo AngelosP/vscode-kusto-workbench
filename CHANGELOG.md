@@ -3,10 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [4.7.3] - 2026.06.06
+## [4.7.3] - 2026.06.08
 
 * Bugs
     * Scrolling tabular results using the keyboard arrow keys only worked up / down and not left / right.
+    * Opening .md files fails (change in VS Code's latest stable release).
 
 ## [4.7.2] - 2026.06.03
 

@@ -29,7 +29,6 @@ esbuild-errors.txt
 coverage/**
 ARCHITECTURE.md
 CONTRIBUTING.md
-CHANGELOG.md
 
 # Build artifacts that shouldn't ship
 dist/webview/_temp_*

@@ -26,7 +26,9 @@
     "workspaceContains:**/*.mdx",
     "workspaceContains:**/*.sqlx",
     "onCommand:kustoWorkbench.test.resetDidYouKnowState",
-    "onCommand:kustoWorkbench.test.openEmbeddedDidYouKnow"
+    "onCommand:kustoWorkbench.test.openEmbeddedDidYouKnow",
+    "onCommand:kustoWorkbench.test.openMdCompatFile",
+    "onCommand:kustoWorkbench.test.openMdCompatFileViaAssociation"
   ],
   "main": "./dist/extension.js",
   "contributes": {

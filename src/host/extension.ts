@@ -379,6 +379,40 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(MdCompatEditorProvider.register(context, context.extensionUri, connectionManager, editorCursorStatusBar));
 	// Register .sql compatibility custom editor (upgrade to .sqlx for multi-section)
 	context.subscriptions.push(SqlCompatEditorProvider.register(context, context.extensionUri, connectionManager, editorCursorStatusBar));
+	if (context.extensionMode !== vscode.ExtensionMode.Production) {
+		const resolveDevMarkdownUri = (relativePath = 'CHANGELOG.md'): vscode.Uri => {
+			const root = vscode.workspace.workspaceFolders?.[0]?.uri ?? context.extensionUri;
+			const segments = String(relativePath || 'CHANGELOG.md').split(/[\\/]+/).filter(Boolean);
+			return vscode.Uri.joinPath(root, ...segments);
+		};
+		context.subscriptions.push(
+			vscode.commands.registerCommand('kustoWorkbench.test.openMdCompatFile', async (relativePath = 'CHANGELOG.md') => {
+				const uri = resolveDevMarkdownUri(relativePath);
+				await vscode.commands.executeCommand('vscode.openWith', uri, MdCompatEditorProvider.viewType, {
+					viewColumn: vscode.ViewColumn.Active,
+					preserveFocus: false,
+				});
+				return uri.toString();
+			}),
+			vscode.commands.registerCommand('kustoWorkbench.test.openMdCompatFileViaAssociation', async (relativePath = 'CHANGELOG.md') => {
+				const uri = resolveDevMarkdownUri(relativePath);
+				const workbenchConfig = vscode.workspace.getConfiguration('workbench');
+				const original = workbenchConfig.get<Record<string, string>>('editorAssociations') || {};
+				const next = { ...original, '*.md': MdCompatEditorProvider.viewType };
+				try {
+					await workbenchConfig.update('editorAssociations', next, vscode.ConfigurationTarget.Global);
+					await vscode.commands.executeCommand('vscode.open', uri);
+					return uri.toString();
+				} finally {
+					try {
+						await workbenchConfig.update('editorAssociations', original, vscode.ConfigurationTarget.Global);
+					} catch {
+						// ignore cleanup failures in tests
+					}
+				}
+			})
+		);
+	}
 
 	// Register URI handler and "Open Remote File" command
 	registerRemoteFileOpener(context);
