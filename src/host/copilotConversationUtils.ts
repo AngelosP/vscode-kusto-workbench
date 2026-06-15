@@ -70,6 +70,7 @@ export function sanitizeConversationHistory(
 	for (let i = history.length - 1; i >= 0; i--) {
 		const entry = history[i];
 		if (entry.type === 'tool-call') {
+			entry.callId = normalizeToolIdentifier(entry.callId);
 			if (!validCallIds.has(entry.callId)) {
 				// Orphaned tool-call — remove it.
 				history.splice(i, 1);
@@ -157,7 +158,7 @@ export function insertMissingToolCallResults(
 	const existingCallIds = new Set(
 		history
 			.filter((e): e is Extract<ConversationHistoryEntry, { type: 'tool-call' }> => e.type === 'tool-call')
-			.map((e) => e.callId)
+			.map((e) => normalizeToolIdentifier(e.callId))
 	);
 
 	const validNativeToolCalls = nativeToolCalls

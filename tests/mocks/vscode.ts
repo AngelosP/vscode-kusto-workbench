@@ -201,6 +201,51 @@ export const lm = {
 	selectChatModels: () => Promise.resolve([]),
 };
 
+export enum LanguageModelChatMessageRole {
+	User = 1,
+	Assistant = 2,
+}
+
+export class LanguageModelTextPart {
+	constructor(public readonly value: string) {}
+}
+
+export class LanguageModelToolCallPart {
+	constructor(
+		public readonly callId: string,
+		public readonly name: string,
+		public readonly input: unknown,
+	) {}
+}
+
+export class LanguageModelToolResultPart {
+	constructor(
+		public readonly callId: string,
+		public readonly content: LanguageModelTextPart[],
+	) {}
+}
+
+export class LanguageModelChatMessage {
+	constructor(
+		public readonly role: LanguageModelChatMessageRole,
+		public readonly content: Array<LanguageModelTextPart | LanguageModelToolCallPart | LanguageModelToolResultPart>,
+	) {}
+
+	static User(content: string | Array<LanguageModelTextPart | LanguageModelToolResultPart>) {
+		return new LanguageModelChatMessage(
+			LanguageModelChatMessageRole.User,
+			typeof content === 'string' ? [new LanguageModelTextPart(content)] : content,
+		);
+	}
+
+	static Assistant(content: string | Array<LanguageModelTextPart | LanguageModelToolCallPart>) {
+		return new LanguageModelChatMessage(
+			LanguageModelChatMessageRole.Assistant,
+			typeof content === 'string' ? [new LanguageModelTextPart(content)] : content,
+		);
+	}
+}
+
 export const languages = {
 	createDiagnosticCollection: () => ({ set: () => {}, dispose: () => {} }),
 };

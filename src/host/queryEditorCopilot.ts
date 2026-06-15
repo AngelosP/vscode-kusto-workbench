@@ -502,6 +502,27 @@ export class CopilotService {
 		insertMissingToolCallResults(history, nativeToolCalls, () => this.nextHistoryEntryId(boxId));
 	}
 
+	private appendToolCallHistoryResult(
+		history: ConversationHistoryEntry[],
+		boxId: string,
+		callId: unknown,
+		tool: string,
+		args: unknown,
+		result: string
+	): string {
+		const entryId = this.nextHistoryEntryId(boxId);
+		history.push({
+			type: 'tool-call',
+			id: entryId,
+			callId: String(callId || '').trim(),
+			tool,
+			args,
+			result,
+			timestamp: Date.now()
+		});
+		return entryId;
+	}
+
 	private appendToolResultBatchMessage(
 		messages: vscode.LanguageModelChatMessage[],
 		entries: ToolCallHistoryEntry[]
@@ -528,6 +549,133 @@ export class CopilotService {
 		if (resultParts.length > 0) {
 			messages.push(vscode.LanguageModelChatMessage.User(resultParts));
 		}
+	}
+
+	private createPlaceholderToolResultPart(callId: string): vscode.LanguageModelToolResultPart {
+		return new vscode.LanguageModelToolResultPart(callId, [
+			new vscode.LanguageModelTextPart('[Tool result was not recorded]')
+		]);
+	}
+
+	private isPlaceholderToolResultPart(part: vscode.LanguageModelToolResultPart): boolean {
+		const text = part.content
+			.filter((contentPart): contentPart is vscode.LanguageModelTextPart => contentPart instanceof vscode.LanguageModelTextPart)
+			.map((contentPart) => contentPart.value)
+			.join('\n')
+			.trim();
+		return text === '[Tool result was not recorded]' ||
+			text === '[Tool call was not processed — the turn ended before a result could be produced.]';
+	}
+
+	private sanitizeProviderToolMessageSequence(
+		messages: vscode.LanguageModelChatMessage[]
+	): vscode.LanguageModelChatMessage[] {
+		const sanitized: vscode.LanguageModelChatMessage[] = [];
+		for (let i = 0; i < messages.length; i++) {
+			const message = messages[i];
+
+			if (message.role === vscode.LanguageModelChatMessageRole.Assistant) {
+				const assistantParts: Array<vscode.LanguageModelTextPart | vscode.LanguageModelToolCallPart> = [];
+				const toolCallParts: vscode.LanguageModelToolCallPart[] = [];
+				const seenToolCallIds = new Set<string>();
+
+				for (const part of message.content) {
+					if (part instanceof vscode.LanguageModelTextPart) {
+						assistantParts.push(part);
+						continue;
+					}
+					if (part instanceof vscode.LanguageModelToolCallPart) {
+						const callId = String(part.callId || '').trim();
+						const name = String(part.name || '').trim();
+						if (!callId || !name || seenToolCallIds.has(callId)) {
+							continue;
+						}
+						seenToolCallIds.add(callId);
+						const normalized = callId === part.callId && name === part.name
+							? part
+							: new vscode.LanguageModelToolCallPart(callId, name, part.input);
+						assistantParts.push(normalized);
+						toolCallParts.push(normalized);
+					}
+				}
+
+				if (assistantParts.length === 0) {
+					continue;
+				}
+
+				sanitized.push(vscode.LanguageModelChatMessage.Assistant(assistantParts));
+
+				if (toolCallParts.length === 0) {
+					continue;
+				}
+
+				const expectedCallIds = new Set(toolCallParts.map((part) => part.callId));
+				const resultPartsByCallId = new Map<string, vscode.LanguageModelToolResultPart>();
+				const deferredUserMessages: vscode.LanguageModelTextPart[][] = [];
+				let scanEnd = i + 1;
+
+				while (scanEnd < messages.length && messages[scanEnd].role !== vscode.LanguageModelChatMessageRole.Assistant) {
+					const candidate = messages[scanEnd];
+					if (candidate.role === vscode.LanguageModelChatMessageRole.User) {
+						const deferredUserParts: vscode.LanguageModelTextPart[] = [];
+						for (const part of candidate.content) {
+							if (part instanceof vscode.LanguageModelToolResultPart) {
+								const callId = String(part.callId || '').trim();
+								if (expectedCallIds.has(callId)) {
+									const normalizedPart = callId === part.callId
+										? part
+										: new vscode.LanguageModelToolResultPart(callId, part.content);
+									const existing = resultPartsByCallId.get(callId);
+									if (!existing || (this.isPlaceholderToolResultPart(existing) && !this.isPlaceholderToolResultPart(normalizedPart))) {
+										resultPartsByCallId.set(callId, normalizedPart);
+									}
+								}
+							} else if (part instanceof vscode.LanguageModelTextPart) {
+								deferredUserParts.push(part);
+							}
+						}
+						if (deferredUserParts.length > 0) {
+							deferredUserMessages.push(deferredUserParts);
+						}
+					}
+					scanEnd++;
+				}
+
+				for (const toolCall of toolCallParts) {
+					if (!resultPartsByCallId.has(toolCall.callId)) {
+						resultPartsByCallId.set(toolCall.callId, this.createPlaceholderToolResultPart(toolCall.callId));
+					}
+				}
+
+				const resultParts = toolCallParts.map((toolCall) => resultPartsByCallId.get(toolCall.callId)!);
+				sanitized.push(vscode.LanguageModelChatMessage.User(resultParts));
+				for (const deferredUserParts of deferredUserMessages) {
+					sanitized.push(vscode.LanguageModelChatMessage.User(deferredUserParts));
+				}
+				if (scanEnd > i + 1) {
+					i = scanEnd - 1;
+				}
+				continue;
+			}
+
+			if (message.role === vscode.LanguageModelChatMessageRole.User) {
+				const hasToolResults = message.content.some((part) => part instanceof vscode.LanguageModelToolResultPart);
+				if (!hasToolResults) {
+					sanitized.push(message);
+					continue;
+				}
+				const textParts = message.content.filter(
+					(part): part is vscode.LanguageModelTextPart => part instanceof vscode.LanguageModelTextPart
+				);
+				if (textParts.length > 0) {
+					sanitized.push(vscode.LanguageModelChatMessage.User(textParts));
+				}
+				continue;
+			}
+
+			sanitized.push(message);
+		}
+		return sanitized;
 	}
 
 	cancelCopilotWriteQuery(boxId: string): void {
@@ -975,63 +1123,6 @@ Completion:`;
 			}
 		}
 
-		// Safety: verify every assistant tool_use has a matching tool_result
-		for (let i = 0; i < messages.length; i++) {
-			const msg = messages[i];
-			if (msg.role === vscode.LanguageModelChatMessageRole.Assistant) {
-				const toolCallParts = msg.content.filter(
-					(p): p is vscode.LanguageModelToolCallPart => p instanceof vscode.LanguageModelToolCallPart
-				);
-				if (toolCallParts.length > 0) {
-					const resultCallIds = new Set<string>();
-					for (let j = i + 1; j < messages.length; j++) {
-						for (const part of messages[j].content) {
-							if (part instanceof vscode.LanguageModelToolResultPart) {
-								resultCallIds.add(part.callId);
-							}
-						}
-						if (messages[j].role === vscode.LanguageModelChatMessageRole.Assistant) {
-							break;
-						}
-					}
-					const missing = toolCallParts.filter(tc => !resultCallIds.has(tc.callId));
-					if (missing.length > 0) {
-						messages.splice(i + 1, 0, vscode.LanguageModelChatMessage.User([
-							...missing.map((tc) => new vscode.LanguageModelToolResultPart(tc.callId, [
-								new vscode.LanguageModelTextPart('[Tool result was not recorded]')
-							]))
-						]));
-					}
-				}
-			}
-		}
-
-		// Reverse safety: remove orphaned tool_results
-		{
-			const allToolUseIds = new Set<string>();
-			for (const msg of messages) {
-				if (msg.role === vscode.LanguageModelChatMessageRole.Assistant) {
-					for (const part of msg.content) {
-						if (part instanceof vscode.LanguageModelToolCallPart) {
-							allToolUseIds.add(part.callId);
-						}
-					}
-				}
-			}
-			for (let i = messages.length - 1; i >= 0; i--) {
-				const msg = messages[i];
-				if (msg.role === vscode.LanguageModelChatMessageRole.User) {
-					const hasOnlyOrphanedToolResults = msg.content.every(
-						(p) => p instanceof vscode.LanguageModelToolResultPart && !allToolUseIds.has(p.callId)
-					);
-					if (hasOnlyOrphanedToolResults && msg.content.length > 0 &&
-						msg.content.some((p) => p instanceof vscode.LanguageModelToolResultPart)) {
-						messages.splice(i, 1);
-					}
-				}
-			}
-		}
-
 		const attempts = args.priorAttempts || [];
 		if (attempts.length > 0) {
 			const attemptsText = attempts
@@ -1047,7 +1138,7 @@ Completion:`;
 			));
 		}
 
-		return messages;
+		return this.sanitizeProviderToolMessageSequence(messages);
 	}
 
 	async handleCopilotChatFirstTimeCheck(boxId: string): Promise<void> {
@@ -1651,6 +1742,7 @@ Completion:`;
 						const rawQuery = this.extractQueryArgument(tc.input);
 						const improvedQuery = this.extractKustoCodeBlock(rawQuery).trim();
 						if (!improvedQuery) {
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, tc.input, 'Error: query argument was empty.');
 							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
 							postStatus('Tool call missing query argument. Retrying…');
 							shouldRetryAttempt = true;
@@ -1663,6 +1755,7 @@ Completion:`;
 						postStatus('Preparing comparison editor…');
 						let comparisonBoxId = await this.host.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
 						if (!comparisonBoxId) {
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: candidate }, 'Error: failed to prepare comparison editor.');
 							this.host.postMessage({
 								type: 'copilotWriteQueryDone',
 								boxId,
@@ -1692,6 +1785,7 @@ Completion:`;
 
 						comparisonBoxId = await this.host.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
 						if (!comparisonBoxId) {
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: candidate }, 'Error: failed to prepare comparison editor.');
 							this.host.postMessage({
 								type: 'copilotWriteQueryDone',
 								boxId,
@@ -1716,6 +1810,7 @@ Completion:`;
 								throw new Error('Copilot write-query canceled');
 							}
 							this.host.logQueryExecutionError(error, connection, database, boxId, originalQueryForCompare);
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: candidate }, `Error: original query failed to execute: ${this.host.formatQueryExecutionErrorForUser(error, connection, database)}`);
 							try {
 								this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId });
 							} catch {
@@ -1741,6 +1836,7 @@ Completion:`;
 							postStatus(`Running comparison query (attempt ${execAttempt}/${maxExecAttempts})…`);
 							comparisonBoxId = await this.host.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
 							if (!comparisonBoxId) {
+								this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: candidate }, 'Error: failed to prepare comparison editor.');
 								this.host.postMessage({
 									type: 'copilotWriteQueryDone',
 									boxId,
@@ -1776,6 +1872,7 @@ Completion:`;
 									// ignore
 								}
 								if (execAttempt >= maxExecAttempts) {
+									this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: candidate }, `Error: optimized query failed to execute: ${lastExecErrorText || errMsg}`);
 									this.host.postMessage({
 										type: 'copilotWriteQueryDone',
 										boxId,
@@ -1832,6 +1929,7 @@ Completion:`;
 						}
 
 						if (!executed) {
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: candidate }, 'Error: optimized query failed to execute.');
 							this.host.postMessage({
 								type: 'copilotWriteQueryDone',
 								boxId,
@@ -1841,6 +1939,7 @@ Completion:`;
 							return;
 						}
 
+						this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: candidate }, 'Comparison ready. Optimized query executed successfully.');
 						this.host.postMessage({
 							type: 'copilotWriteQueryDone',
 							boxId,
@@ -1855,6 +1954,7 @@ Completion:`;
 						const rawQuery = this.extractQueryArgument(tc.input);
 						const query = this.extractKustoCodeBlock(rawQuery).trim();
 						if (!query) {
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, tc.input, 'Error: query argument was empty.');
 							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
 							postStatus('Tool call missing query argument. Retrying…');
 							shouldRetryAttempt = true;
@@ -1891,6 +1991,7 @@ Completion:`;
 						try {
 							const result = await promise;
 							if (isActive()) {
+								this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query }, 'Query ran successfully.');
 								this.host.postMessage({ type: 'queryResult', result, boxId });
 								this.host.postMessage({ type: 'ensureResultsVisible', boxId });
 								this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false });
@@ -1925,6 +2026,7 @@ Completion:`;
 							}
 
 							priorAttempts.push({ attempt, query, error: userMessage });
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query }, `Query execution error: ${userMessage}`);
 							postStatus('Query failed to execute. Retrying…');
 							shouldRetryAttempt = true;
 							break;
@@ -2426,7 +2528,7 @@ Completion:`;
 			));
 		}
 
-		return messages;
+		return this.sanitizeProviderToolMessageSequence(messages);
 	}
 
 	async startSqlCopilotWriteQuery(
@@ -2784,6 +2886,7 @@ Completion:`;
 						const rawQuery = this.extractQueryArgument(tc.input);
 						const improvedQuery = rawQuery.replace(/```(?:sql|tsql)?\s*\n([\s\S]*?)```/gi, '$1').trim();
 						if (!improvedQuery) {
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, tc.input, 'Error: query argument was empty.');
 							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
 							postStatus('Tool call missing query argument. Retrying…');
 							shouldRetryAttempt = true;
@@ -2795,6 +2898,7 @@ Completion:`;
 						postStatus('Preparing comparison editor…');
 						const comparisonBoxId = await this.host.ensureComparisonBoxInWebview(boxId, improvedQuery, cts.token);
 						if (!comparisonBoxId) {
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: improvedQuery }, 'Error: failed to prepare comparison editor.');
 							this.host.postMessage({
 								type: 'copilotWriteQueryDone', boxId,
 								ok: false, message: 'Failed to prepare comparison editor.'
@@ -2850,6 +2954,7 @@ Completion:`;
 							}
 						}
 
+						this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: improvedQuery }, 'Comparison ready. Review the results side by side.');
 						this.host.postMessage({
 							type: 'copilotWriteQueryDone', boxId,
 							ok: true, message: 'Comparison ready. Review the results side by side.'
@@ -2861,6 +2966,7 @@ Completion:`;
 						const rawQuery = this.extractQueryArgument(tc.input);
 						const query = rawQuery.replace(/```(?:sql|tsql)?\s*\n([\s\S]*?)```/gi, '$1').trim();
 						if (!query) {
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, tc.input, 'Error: query argument was empty.');
 							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
 							postStatus('Tool call missing query argument. Retrying…');
 							shouldRetryAttempt = true;
@@ -2886,6 +2992,7 @@ Completion:`;
 							try {
 								const result = await promise;
 								if (isActive()) {
+									this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query }, 'Query ran successfully.');
 									this.host.postMessage({ type: 'queryResult', result, boxId });
 									this.host.postMessage({ type: 'ensureResultsVisible', boxId });
 									this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false });
@@ -2908,6 +3015,7 @@ Completion:`;
 									try { this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId }); } catch { /* ignore */ }
 								}
 								priorAttempts.push({ attempt, query, error: errorMessage });
+								this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query }, `Query execution error: ${errorMessage}`);
 								postStatus('Query failed to execute. Retrying…');
 								shouldRetryAttempt = true;
 								break;
@@ -2916,6 +3024,7 @@ Completion:`;
 							}
 						} else {
 							// No sqlClient — just set the query and finish
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query }, 'Query set in editor.');
 							this.host.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: true, message: '' });
 							return;
 						}

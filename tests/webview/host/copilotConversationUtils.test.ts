@@ -153,6 +153,19 @@ describe('sanitizeConversationHistory', () => {
 		expect(history.some((e) => e.type === 'tool-call' && e.callId === 'tc1')).toBe(true);
 	});
 
+	it('trims tool result call identifiers before matching them to assistant tool calls', () => {
+		const history: ConversationHistoryEntry[] = [
+			userMsg('hello'),
+			assistantMsg('', [{ callId: 'tc1', name: 'get_schema', input: {} }]),
+			toolCall(' tc1 ', 'get_schema', 'schema result')
+		];
+
+		sanitizeConversationHistory(history);
+
+		expect(history).toHaveLength(3);
+		expect(history.some((e) => e.type === 'tool-call' && e.callId === 'tc1')).toBe(true);
+	});
+
 	it('handles empty history', () => {
 		const history: ConversationHistoryEntry[] = [];
 		sanitizeConversationHistory(history);
