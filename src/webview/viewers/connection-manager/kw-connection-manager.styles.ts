@@ -111,7 +111,7 @@ export const styles = css`
 		.breadcrumb-icon .codicon { font-size: 14px; }
 
 		/* Explorer list */
-		.explorer-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; }
+		.explorer-list { flex: 0 0 auto; min-height: 0; overflow-y: visible; display: flex; flex-direction: column; }
 		.explorer-list-item { display: flex; align-items: center; gap: 8px; padding: 10px 12px 10px 15px; cursor: pointer; transition: background 0.1s; border-bottom: 1px solid var(--vscode-editorWidget-border); background: var(--vscode-editorWidget-background); }
 		.explorer-list-item:last-child { border-bottom: none; }
 		.explorer-list-item:hover { background: var(--vscode-list-hoverBackground); }

@@ -67,3 +67,4 @@ Feature: Connection Manager with Kusto connections — explorer, drill-down, fav
     When I evaluate "(() => { const modal = document.querySelector('kw-connection-manager')?.shadowRoot?.querySelector('[data-testid=cm-modal-content]'); modal?.querySelector('.modal-footer button:first-child')?.click(); return 'closed edit modal'; })()" in the webview
     And I wait 1 second
     Then I take a screenshot "10-final"
+

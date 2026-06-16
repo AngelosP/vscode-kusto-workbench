@@ -285,6 +285,21 @@ export class KwConnectionManager extends LitElement {
 		this._cleanupRefreshMenuScrollDismiss();
 	}
 
+	protected override updated(): void {
+		this._syncScrollOwnerTestState();
+	}
+
+	private _syncScrollOwnerTestState(): void {
+		const content = this.shadowRoot?.querySelector<HTMLElement>('.explorer-content');
+		if (!content) {
+			delete this.dataset.testScrollOwner;
+			return;
+		}
+		const nestedList = content.querySelector<HTMLElement>('.explorer-list');
+		const nestedOverflowY = nestedList ? String(getComputedStyle(nestedList).overflowY || '') : '';
+		this.dataset.testScrollOwner = nestedOverflowY === 'auto' || nestedOverflowY === 'scroll' ? 'nested' : 'single';
+	}
+
 	private _dismissToolsMenu = (e: Event) => {
 		const path = e.composedPath();
 		if (this._refreshMenuOpen) {
