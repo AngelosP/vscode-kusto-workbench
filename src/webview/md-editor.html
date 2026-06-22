@@ -7,7 +7,7 @@
 	<link rel="stylesheet" href="{{toastUiEditorDarkCssUri}}">
 	<link rel="stylesheet" href="{{tuiColorPickerCssUri}}">
 	<link rel="stylesheet" href="{{toastUiEditorColorSyntaxCssUri}}">
-	<style>{{appCssInline}}</style>
+	<style>@font-face { font-family: "codicon"; font-display: block; src: url("{{codiconFontUri}}") format("truetype"); }{{appCssInline}}</style>
 </head>
 <!-- data-kusto-document-kind="md" is set statically since this template is md-only.
      This activates the md-specific CSS rules (full-viewport flex layout, border removal, etc.)
@@ -23,6 +23,8 @@
 		};
 	</script>
 	<script src="{{toastUiEditorJsUri}}"></script>
+	<script src="{{markedUri}}"></script>
+	<script src="{{purifyUri}}"></script>
 	<script src="{{mdEditorBundleUri}}"></script>
 </body>
 </html>

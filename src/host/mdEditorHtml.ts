@@ -43,6 +43,15 @@ export async function getMdEditorHtml(
 	const toastUiEditorJsUri = withCacheBuster(
 		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'queryEditor', 'vendor', 'toastui-editor', 'toastui-editor.webview.js')).toString()
 	);
+	const markedUri = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'vendor', 'marked.min.js')).toString()
+	);
+	const purifyUri = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'vendor', 'purify.min.js')).toString()
+	);
+	const codiconFontUri = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'monaco', 'vs', 'base', 'browser', 'ui', 'codicons', 'codicon', 'codicon.ttf')).toString()
+	);
 	const vscodeApiJsUri = withCacheBuster(
 		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'vscodeApi.js')).toString()
 	);
@@ -59,6 +68,9 @@ export async function getMdEditorHtml(
 		.replaceAll('{{tuiColorPickerCssUri}}', tuiColorPickerCssUri)
 		.replaceAll('{{toastUiEditorColorSyntaxCssUri}}', toastUiEditorColorSyntaxCssUri)
 		.replaceAll('{{toastUiEditorJsUri}}', toastUiEditorJsUri)
+		.replaceAll('{{markedUri}}', markedUri)
+		.replaceAll('{{purifyUri}}', purifyUri)
+		.replaceAll('{{codiconFontUri}}', codiconFontUri)
 		.replaceAll('{{vscodeApiJsUri}}', vscodeApiJsUri)
 		.replaceAll('{{mdEditorBundleUri}}', mdEditorBundleUri)
 		.replaceAll('{{toastUiEditorUrl}}', toastUiEditorUrl)
