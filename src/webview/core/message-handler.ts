@@ -652,17 +652,17 @@ window.addEventListener('message', async (event: any) => {
 			try {
 				__kustoUpdateFavoritesUiForAllBoxes();
 			} catch (e) { console.error('[kusto]', e); }
-			try {
-				__kustoTryAutoEnterFavoritesModeForAllBoxes();
-			} catch (e) { console.error('[kusto]', e); }
-			try {
-				__kustoMaybeDefaultFirstBoxToFavoritesMode();
-			} catch (e) { console.error('[kusto]', e); }
 			// If this update came from an "Add favorite" action in a specific box, automatically
 			// switch that box into Favorites mode.
 			try {
 				const boxId = message && typeof message.boxId === 'string' ? message.boxId : '';
 				if (boxId && Array.isArray(kustoFavorites) && kustoFavorites.length > 0) {
+					try {
+						__kustoTryAutoEnterFavoritesModeForAllBoxes();
+					} catch (e) { console.error('[kusto]', e); }
+					try {
+						__kustoMaybeDefaultFirstBoxToFavoritesMode();
+					} catch (e) { console.error('[kusto]', e); }
 					if (typeof window.__kustoEnterFavoritesModeForBox === 'function') {
 						window.__kustoEnterFavoritesModeForBox(boxId);
 					}

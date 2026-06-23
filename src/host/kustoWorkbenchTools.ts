@@ -1,5 +1,4 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { createEmptyKqlxOrMdxFile, DevNoteEntry, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
 import { readAllCachedSchemasFromDisk, readCachedSchemaFromDisk, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION } from './schemaCache';
@@ -8,6 +7,12 @@ import type { KustoQueryClient } from './kustoClient';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
 import { getPowerBiHtmlValidationIssues, type PowerBiDataSource } from './powerBiExport';
 import { getLegacyDashboardWarnings } from '../shared/htmlDashboardUpgrade';
+import { classifyWorkbenchUri, classifyWorkbenchUriString, type WorkbenchFileInfo, type WorkbenchFileKind } from './workbenchFileTypes';
+
+export type TargetFields = {
+	openFileId?: string;
+	targetFileUri?: string;
+};
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Helper to extract tool input from invocation options
@@ -106,7 +111,7 @@ export interface ListSectionsInput {
 	// No input required
 }
 
-export interface AddSectionInput {
+export interface AddSectionInput extends TargetFields {
 	type: 'query' | 'markdown' | 'chart' | 'transformation' | 'url' | 'python' | 'html' | 'sql';
 	/** For query sections: initial query text */
 	query?: string;
@@ -130,21 +135,21 @@ export interface AddSectionInput {
 	name?: string;
 }
 
-export interface RemoveSectionInput {
+export interface RemoveSectionInput extends TargetFields {
 	sectionId: string;
 }
 
-export interface CollapseSectionInput {
+export interface CollapseSectionInput extends TargetFields {
 	sectionId: string;
 	collapsed: boolean;
 }
 
-export interface ReorderSectionsInput {
+export interface ReorderSectionsInput extends TargetFields {
 	/** Array of section IDs in the desired order. All section IDs must be included. Devnotes IDs are accepted but silently ignored (they have no visual position). */
 	sectionIds: string[];
 }
 
-export interface ConfigureQuerySectionInput {
+export interface ConfigureQuerySectionInput extends TargetFields {
 	sectionId: string;
 	/** Optional name/title for the section */
 	name?: string;
@@ -154,7 +159,7 @@ export interface ConfigureQuerySectionInput {
 	execute?: boolean;
 }
 
-export interface UpdateMarkdownSectionInput {
+export interface UpdateMarkdownSectionInput extends TargetFields {
 	sectionId: string;
 	/** Optional name/title for the section */
 	name?: string;
@@ -164,7 +169,7 @@ export interface UpdateMarkdownSectionInput {
 	mode?: 'preview' | 'markdown' | 'wysiwyg';
 }
 
-export interface ConfigureChartInput {
+export interface ConfigureChartInput extends TargetFields {
 	sectionId: string;
 	/** Optional name/title for the section */
 	name?: string;
@@ -225,7 +230,7 @@ export interface ConfigureChartInput {
 	};
 }
 
-export interface ConfigureTransformationInput {
+export interface ConfigureTransformationInput extends TargetFields {
 	sectionId: string;
 	/** Optional name/title for the section */
 	name?: string;
@@ -250,7 +255,7 @@ export interface ConfigureTransformationInput {
 	joinOmitDuplicateColumns?: boolean;
 }
 
-export interface DelegateToKustoWorkbenchCopilotInput {
+export interface DelegateToKustoWorkbenchCopilotInput extends TargetFields {
 	/** The question or request to send to Kusto Workbench Copilot */
 	question: string;
 	/** Optional: The ID of a query section to use. If not provided, one will be created or the first available will be used. */
@@ -263,7 +268,7 @@ export interface DelegateToKustoWorkbenchCopilotInput {
 	maxResultRows?: number;
 }
 
-export interface ConfigureHtmlSectionInput {
+export interface ConfigureHtmlSectionInput extends TargetFields {
 	sectionId: string;
 	/** Optional name/title for the section */
 	name?: string;
@@ -278,7 +283,7 @@ export interface GetHtmlDashboardGuideInput {
 	mode?: 'checklist' | 'template' | 'full';
 }
 
-export interface ValidateHtmlDashboardInput {
+export interface ValidateHtmlDashboardInput extends TargetFields {
 	/** The ID of the HTML section to validate. */
 	sectionId: string;
 }
@@ -340,6 +345,10 @@ export interface CreateFileInput {
 
 export interface ManageDevelopmentNotesInput {
 	action: 'add' | 'remove' | 'view';
+	/** Optional: target a specific open Workbench file returned by #listSections. */
+	openFileId?: string;
+	/** Optional: target a specific Workbench file URI. */
+	targetFileUri?: string;
 	/** For 'add': the category of the note */
 	category?: 'correction' | 'clarification' | 'schema-hint' | 'usage-note' | 'gotcha';
 	/** For 'add': concise note content */
@@ -356,7 +365,7 @@ export interface ManageDevelopmentNotesInput {
 
 export interface ListSqlConnectionsInput {}
 
-export interface ConfigureSqlSectionInput {
+export interface ConfigureSqlSectionInput extends TargetFields {
 	sectionId: string;
 	name?: string;
 	query?: string;
@@ -365,11 +374,11 @@ export interface ConfigureSqlSectionInput {
 	execute?: boolean;
 }
 
-export interface GetSqlSchemaInput {
+export interface GetSqlSchemaInput extends TargetFields {
 	sectionId: string;
 }
 
-export interface DelegateToSqlCopilotInput {
+export interface DelegateToSqlCopilotInput extends TargetFields {
 	/** The question or request to send to SQL Copilot */
 	question: string;
 	/** Optional: The ID of a SQL section to use. */
@@ -406,17 +415,79 @@ interface ToolSection {
 	[key: string]: unknown;
 }
 
+type ToolSectionSummary = {
+	id: string;
+	type: string;
+	name?: string;
+	expanded?: boolean;
+	clusterUrl?: string;
+	serverUrl?: string;
+	database?: string;
+	entries?: unknown[];
+};
+
+type OpenWorkbenchFileSummary = {
+	openFileId: string;
+	uri: string;
+	logicalUri: string;
+	fileKind: WorkbenchFileKind;
+	filePath?: string;
+	fileName?: string;
+	sidecarFor?: string;
+	isActive: boolean;
+	isLiveWorkbench: boolean;
+	isReadOnlyFallback: boolean;
+	sections?: ToolSectionSummary[];
+	sectionsUnavailable?: boolean;
+	error?: string;
+};
+
+type InternalOpenWorkbenchFileSummary = OpenWorkbenchFileSummary & {
+	logicalUriKey: string;
+	priority: number;
+};
+
+type ListSectionsResult = {
+	sections: ToolSectionSummary[];
+	filePath?: string;
+	fileName?: string;
+	openFiles?: OpenWorkbenchFileSummary[];
+};
+
+type ActivationResult = {
+	success: boolean;
+	openFileId?: string;
+	uri?: string;
+	logicalUri?: string;
+	fileKind?: WorkbenchFileKind;
+	filePath?: string;
+	fileName?: string;
+	isLiveWorkbench?: boolean;
+	isReadOnlyFallback?: boolean;
+	error?: string;
+};
+
+interface LiveWorkbenchConnection {
+	token: number;
+	poster: (message: unknown) => void;
+	stateGetter: () => Promise<ToolSection[] | undefined>;
+	schemaRefresher: (clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>;
+	documentUri?: string;
+	documentInfo?: WorkbenchFileInfo;
+	logicalUriKey?: string;
+	sequence: number;
+}
+
 export class KustoWorkbenchToolOrchestrator {
 	private static instance: KustoWorkbenchToolOrchestrator | undefined;
 	
-	// Callback to post messages to the active webview
+	// Legacy fallback callbacks for the latest connected editor, including the standalone Query Editor.
 	private webviewMessagePoster: ((message: unknown) => void) | undefined;
-	// Callback to get the current state from the webview
 	private stateGetter: (() => Promise<ToolSection[] | undefined>) | undefined;
-	// Callback to force-refresh schema from Kusto and update cache
 	private schemaRefresher: ((clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>) | undefined;
-	// URI string of the document currently connected to the orchestrator
 	private activeDocumentUri: string | undefined;
+	private latestConnectionToken: number | undefined;
+	private readonly liveConnections = new Map<number, LiveWorkbenchConnection>();
 	// Pending responses from webview
 	private pendingResponses = new Map<string, { resolve: (value: unknown) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 	private responseSeq = 0;
@@ -456,10 +527,20 @@ export class KustoWorkbenchToolOrchestrator {
 		documentUri?: string
 	): number {
 		this.connectionToken++;
-		this.webviewMessagePoster = poster;
-		this.stateGetter = stateGetter;
-		this.schemaRefresher = schemaRefresher;
-		this.activeDocumentUri = documentUri;
+		const documentInfo = documentUri
+			? classifyWorkbenchUriString(documentUri, { includeOptionalPlainText: true })
+			: undefined;
+		const entry: LiveWorkbenchConnection = {
+			token: this.connectionToken,
+			poster,
+			stateGetter,
+			schemaRefresher,
+			...(documentUri ? { documentUri } : {}),
+			...(documentInfo ? { documentInfo, logicalUriKey: documentInfo.logicalUriKey } : {}),
+			sequence: this.connectionToken,
+		};
+		this.liveConnections.set(entry.token, entry);
+		this.applyLatestConnection(entry);
 		return this.connectionToken;
 	}
 
@@ -468,11 +549,280 @@ export class KustoWorkbenchToolOrchestrator {
 	 * This prevents a closing editor from disconnecting a different active one.
 	 */
 	disconnectIfOwner(token: number): void {
-		if (token !== this.connectionToken) return;
-		this.webviewMessagePoster = undefined;
-		this.stateGetter = undefined;
-		this.schemaRefresher = undefined;
-		this.activeDocumentUri = undefined;
+		this.liveConnections.delete(token);
+		if (this.latestConnectionToken !== token) {
+			return;
+		}
+		this.applyLatestConnection(this.getLatestLiveConnection());
+	}
+
+	private applyLatestConnection(entry: LiveWorkbenchConnection | undefined): void {
+		this.latestConnectionToken = entry?.token;
+		this.webviewMessagePoster = entry?.poster;
+		this.stateGetter = entry?.stateGetter;
+		this.schemaRefresher = entry?.schemaRefresher;
+		this.activeDocumentUri = entry?.documentUri;
+	}
+
+	private getLatestLiveConnection(): LiveWorkbenchConnection | undefined {
+		let latest: LiveWorkbenchConnection | undefined;
+		for (const entry of this.liveConnections.values()) {
+			if (!latest || entry.sequence > latest.sequence) {
+				latest = entry;
+			}
+		}
+		return latest;
+	}
+
+	private getLatestLiveConnectionForKey(logicalUriKey: string): LiveWorkbenchConnection | undefined {
+		let latest: LiveWorkbenchConnection | undefined;
+		for (const entry of this.liveConnections.values()) {
+			if (entry.logicalUriKey !== logicalUriKey) {
+				continue;
+			}
+			if (!latest || entry.sequence > latest.sequence) {
+				latest = entry;
+			}
+		}
+		return latest;
+	}
+
+	private getTabInputUri(input: unknown): { uri: vscode.Uri; viewType?: string } | undefined {
+		try {
+			if (input instanceof vscode.TabInputText) {
+				return { uri: input.uri };
+			}
+			if (input instanceof vscode.TabInputCustom) {
+				return { uri: input.uri, viewType: input.viewType };
+			}
+		} catch {
+			// Fall through to structural checks for test doubles and older typings.
+		}
+		try {
+			const maybe = input as { uri?: unknown; viewType?: unknown };
+			if (maybe?.uri && typeof (maybe.uri as vscode.Uri).toString === 'function') {
+				return {
+					uri: maybe.uri as vscode.Uri,
+					...(typeof maybe.viewType === 'string' ? { viewType: maybe.viewType } : {}),
+				};
+			}
+		} catch {
+			// ignore
+		}
+		return undefined;
+	}
+
+	private summarizeOpenFile(
+		info: WorkbenchFileInfo,
+		isActive: boolean,
+		isLiveWorkbench: boolean,
+		priority: number
+	): InternalOpenWorkbenchFileSummary {
+		return {
+			openFileId: info.openFileId,
+			uri: info.uriString,
+			logicalUri: info.logicalUriString,
+			logicalUriKey: info.logicalUriKey,
+			fileKind: info.fileKind,
+			...(info.filePath ? { filePath: info.filePath } : {}),
+			...(info.fileName ? { fileName: info.fileName } : {}),
+			...(info.sidecarFor ? { sidecarFor: info.sidecarFor } : {}),
+			isActive,
+			isLiveWorkbench,
+			isReadOnlyFallback: !isLiveWorkbench,
+			priority,
+		};
+	}
+
+	private collectOpenWorkbenchFiles(): { openFiles: InternalOpenWorkbenchFileSummary[]; activeFile?: InternalOpenWorkbenchFileSummary; hasActiveUnsupportedFile: boolean } {
+		type Candidate = { uri: vscode.Uri; viewType?: string; isActive: boolean; priority: number; includeOptionalPlainText?: boolean };
+		const candidates: Candidate[] = [];
+		let hasActiveUnsupportedFile = false;
+		const pushCandidate = (candidate: Candidate | undefined): void => {
+			if (!candidate) return;
+			candidates.push(candidate);
+		};
+
+		try {
+			const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
+			const activeInput = this.getTabInputUri(activeTab?.input);
+			if (activeInput) {
+				pushCandidate({ ...activeInput, isActive: true, priority: 0 });
+				if (!classifyWorkbenchUri(activeInput.uri, { viewType: activeInput.viewType })) {
+					hasActiveUnsupportedFile = true;
+				}
+			}
+		} catch {
+			// ignore
+		}
+
+		try {
+			let priority = 10;
+			for (const group of vscode.window.tabGroups.all || []) {
+				for (const tab of group.tabs || []) {
+					const tabInput = this.getTabInputUri(tab.input);
+					if (!tabInput) continue;
+					pushCandidate({ ...tabInput, isActive: group.isActive === true && tab.isActive === true, priority: priority++ });
+				}
+			}
+		} catch {
+			// ignore
+		}
+
+		try {
+			const activeEditor = vscode.window.activeTextEditor;
+			if (activeEditor?.document?.uri) {
+				pushCandidate({ uri: activeEditor.document.uri, isActive: true, priority: 100 });
+				if (!classifyWorkbenchUri(activeEditor.document.uri)) {
+					hasActiveUnsupportedFile = true;
+				}
+			}
+		} catch {
+			// ignore
+		}
+
+		try {
+			let priority = 200;
+			for (const editor of vscode.window.visibleTextEditors || []) {
+				if (editor?.document?.uri) {
+					pushCandidate({ uri: editor.document.uri, isActive: false, priority: priority++ });
+				}
+			}
+		} catch {
+			// ignore
+		}
+
+		try {
+			let priority = 300;
+			for (const document of vscode.workspace.textDocuments || []) {
+				if (document?.uri) {
+					pushCandidate({ uri: document.uri, isActive: false, priority: priority++ });
+				}
+			}
+		} catch {
+			// ignore
+		}
+
+		for (const entry of this.liveConnections.values()) {
+			if (entry.documentInfo) {
+				pushCandidate({ uri: entry.documentInfo.uri, isActive: false, priority: 400 + entry.sequence, includeOptionalPlainText: true });
+			}
+		}
+
+		const byLogicalUri = new Map<string, InternalOpenWorkbenchFileSummary>();
+		for (const candidate of candidates) {
+			const info = classifyWorkbenchUri(candidate.uri, {
+				viewType: candidate.viewType,
+				includeOptionalPlainText: candidate.includeOptionalPlainText === true,
+			});
+			if (!info) continue;
+			const isLiveWorkbench = this.getLatestLiveConnectionForKey(info.logicalUriKey) !== undefined;
+			const summary = this.summarizeOpenFile(info, candidate.isActive, isLiveWorkbench, candidate.priority);
+			const existing = byLogicalUri.get(summary.logicalUriKey);
+			if (!existing) {
+				byLogicalUri.set(summary.logicalUriKey, summary);
+				continue;
+			}
+			const shouldReplaceIdentity = summary.isActive && !existing.isActive || summary.priority < existing.priority;
+			byLogicalUri.set(summary.logicalUriKey, {
+				...(shouldReplaceIdentity ? summary : existing),
+				isActive: existing.isActive || summary.isActive,
+				isLiveWorkbench: existing.isLiveWorkbench || summary.isLiveWorkbench,
+				isReadOnlyFallback: !(existing.isLiveWorkbench || summary.isLiveWorkbench),
+				priority: Math.min(existing.priority, summary.priority),
+			});
+		}
+
+		const openFiles = [...byLogicalUri.values()].sort((a, b) => a.priority - b.priority);
+		return { openFiles, activeFile: openFiles.find(file => file.isActive), hasActiveUnsupportedFile };
+	}
+
+	private toPublicOpenFiles(openFiles: InternalOpenWorkbenchFileSummary[]): OpenWorkbenchFileSummary[] {
+		return openFiles.map(({ logicalUriKey: _logicalUriKey, priority: _priority, ...file }) => file);
+	}
+
+	private normalizeTargetFileUri(value: string): WorkbenchFileInfo | undefined {
+		const raw = String(value || '').trim();
+		if (!raw) {
+			return undefined;
+		}
+		try {
+			if (/^[a-zA-Z]:[\\/]/.test(raw) || raw.startsWith('\\\\')) {
+				return classifyWorkbenchUri(vscode.Uri.file(raw), { includeOptionalPlainText: true });
+			}
+		} catch {
+			// ignore
+		}
+		try {
+			return classifyWorkbenchUriString(raw, { includeOptionalPlainText: true });
+		} catch {
+			// ignore
+		}
+		try {
+			return classifyWorkbenchUri(vscode.Uri.file(raw), { includeOptionalPlainText: true });
+		} catch {
+			return undefined;
+		}
+	}
+
+	private splitTargetFields<T extends TargetFields>(input: T): { target: TargetFields; rest: Omit<T, keyof TargetFields> } {
+		const { openFileId, targetFileUri, ...rest } = input;
+		return {
+			target: {
+				...(typeof openFileId === 'string' && openFileId.trim() ? { openFileId: openFileId.trim() } : {}),
+				...(typeof targetFileUri === 'string' && targetFileUri.trim() ? { targetFileUri: targetFileUri.trim() } : {}),
+			},
+			rest: rest as Omit<T, keyof TargetFields>,
+		};
+	}
+
+	private resolveToolTarget(targetFields: TargetFields = {}): { connection?: LiveWorkbenchConnection; activeFile?: InternalOpenWorkbenchFileSummary; openFiles: InternalOpenWorkbenchFileSummary[]; hasActiveUnsupportedFile: boolean; explicitTarget?: InternalOpenWorkbenchFileSummary; explicitTargetRequested: boolean } {
+		const { openFiles, activeFile, hasActiveUnsupportedFile } = this.collectOpenWorkbenchFiles();
+		const openFileId = typeof targetFields.openFileId === 'string' ? targetFields.openFileId.trim() : '';
+		const rawTargetFileUri = typeof targetFields.targetFileUri === 'string' ? targetFields.targetFileUri.trim() : '';
+		const targetFileInfo = rawTargetFileUri
+			? this.normalizeTargetFileUri(rawTargetFileUri)
+			: undefined;
+		const targetFileUriId = targetFileInfo?.openFileId ?? '';
+		const explicitTargetRequested = !!openFileId || !!rawTargetFileUri;
+
+		if (rawTargetFileUri && !targetFileInfo) {
+			throw new Error(`targetFileUri is not a supported Kusto Workbench file: ${rawTargetFileUri}`);
+		}
+
+		if (openFileId && targetFileUriId && openFileId !== targetFileUriId) {
+			throw new Error('openFileId and targetFileUri refer to different Workbench files. Use only one target or make them agree.');
+		}
+
+		const explicitOpenFileId = openFileId || targetFileUriId;
+		if (explicitOpenFileId) {
+			let explicitTarget = openFiles.find(file => file.openFileId === explicitOpenFileId);
+			if (!explicitTarget && targetFileInfo) {
+				explicitTarget = this.summarizeOpenFile(targetFileInfo, false, false, 0);
+			}
+			if (!explicitTarget) {
+				throw new Error(`Target Workbench file not found: ${explicitOpenFileId}. Use #listSections to get current openFileId values.`);
+			}
+			return {
+				openFiles,
+				activeFile,
+				hasActiveUnsupportedFile,
+				explicitTarget,
+				explicitTargetRequested,
+				connection: this.getLatestLiveConnectionForKey(explicitTarget.logicalUriKey),
+			};
+		}
+
+		if (activeFile) {
+			return {
+				openFiles,
+				activeFile,
+				hasActiveUnsupportedFile,
+				explicitTargetRequested,
+				connection: this.getLatestLiveConnectionForKey(activeFile.logicalUriKey),
+			};
+		}
+		return { openFiles, hasActiveUnsupportedFile, explicitTargetRequested, connection: hasActiveUnsupportedFile ? undefined : this.getLatestLiveConnection() };
 	}
 
 	/**
@@ -480,8 +830,9 @@ export class KustoWorkbenchToolOrchestrator {
 	 * Used for one-way notifications that don't expect a response.
 	 */
 	postToActiveWebview(message: unknown): void {
-		if (this.webviewMessagePoster) {
-			this.webviewMessagePoster(message);
+		const target = this.resolveToolTarget();
+		if (target.connection) {
+			target.connection.poster(message);
 		}
 	}
 
@@ -497,9 +848,16 @@ export class KustoWorkbenchToolOrchestrator {
 		}
 	}
 
-	private async sendToWebview<T>(type: string, payload: Record<string, unknown>, timeoutMs = 30000): Promise<T> {
-		if (!this.webviewMessagePoster) {
-			throw new Error('Kusto Workbench is not currently open. Please open a .kqlx file or use the Query Editor first.');
+	private async sendToWebview<T>(type: string, payload: Record<string, unknown>, timeoutMs = 30000, targetFields: TargetFields = {}): Promise<T> {
+		const target = this.resolveToolTarget(targetFields);
+		if (!target.connection) {
+			if (target.explicitTarget) {
+				throw new Error('The targeted Kusto Workbench file is open without a live Workbench editor. Reopen it with Kusto Workbench before editing or executing sections.');
+			}
+			if (target.activeFile) {
+				throw new Error('The active Kusto Workbench file is open without a live Workbench editor. Reopen it with Kusto Workbench before editing or executing sections.');
+			}
+			throw new Error('Kusto Workbench is not currently open. Please open a supported Kusto Workbench file or use the Query Editor first.');
 		}
 		
 		const requestId = `tool_${++this.responseSeq}_${Date.now()}`;
@@ -516,7 +874,7 @@ export class KustoWorkbenchToolOrchestrator {
 				timer 
 			});
 			
-			this.webviewMessagePoster!({ type, requestId, ...payload });
+			target.connection!.poster({ type, requestId, ...payload });
 		});
 	}
 
@@ -555,8 +913,9 @@ export class KustoWorkbenchToolOrchestrator {
 		}
 		// Prefer the webview-connected refresher (also updates the editor's live state),
 		// but fall back to a direct Kusto client refresh when no file is open.
-		if (this.schemaRefresher) {
-			return this.schemaRefresher(clusterUrl);
+		const target = this.resolveToolTarget();
+		if (target.connection?.schemaRefresher) {
+			return target.connection.schemaRefresher(clusterUrl);
 		}
 		return this.refreshSchemaDirectly(clusterUrl);
 	}
@@ -634,8 +993,9 @@ export class KustoWorkbenchToolOrchestrator {
 
 				if (!cached?.schema) {
 				// Not in cache – try to fetch live
-				const refreshResult = this.schemaRefresher
-					? await this.schemaRefresher(clusterUrl)
+				const target = this.resolveToolTarget();
+				const refreshResult = target.connection?.schemaRefresher
+					? await target.connection.schemaRefresher(clusterUrl)
 					: await this.refreshSchemaDirectly(clusterUrl);
 				if (refreshResult.error && refreshResult.schemas.length === 0) {
 					return { error: refreshResult.error };
@@ -668,8 +1028,9 @@ export class KustoWorkbenchToolOrchestrator {
 
 		if (schemas.length === 0) {
 			// Nothing cached – try a live fetch
-			const refreshResult = this.schemaRefresher
-				? await this.schemaRefresher(clusterUrl)
+			const target = this.resolveToolTarget();
+			const refreshResult = target.connection?.schemaRefresher
+				? await target.connection.schemaRefresher(clusterUrl)
 				: await this.refreshSchemaDirectly(clusterUrl);
 			if (refreshResult.error && refreshResult.schemas.length === 0) {
 				return { error: refreshResult.error };
@@ -694,59 +1055,96 @@ export class KustoWorkbenchToolOrchestrator {
 		return { matches, count: matches.length, pattern };
 	}
 
-	async listSections(): Promise<{ sections: Array<{ id: string; type: string; name?: string; expanded?: boolean; clusterUrl?: string; serverUrl?: string; database?: string; entries?: unknown[] }>; filePath?: string; fileName?: string }> {
-		if (!this.stateGetter) {
+	private summarizeToolSection(s: ToolSection, idx: number): ToolSectionSummary {
+		const id = typeof s.id === 'string' ? s.id : `section_${idx}`;
+		const type = typeof s.type === 'string' ? s.type : 'unknown';
+		const name = typeof s.name === 'string' ? s.name : (typeof s.title === 'string' ? s.title : '');
+		const expanded = s.expanded !== false;
+		const database = typeof s.database === 'string' ? s.database : '';
+		if (type === 'devnotes') {
+			const entries = Array.isArray(s.entries) ? s.entries : [];
+			return { id, type, name, expanded, database, entries };
+		}
+		if (type === 'sql') {
+			const serverUrl = typeof s.serverUrl === 'string' ? s.serverUrl : '';
+			return { id, type, name, expanded, serverUrl, database };
+		}
+		const clusterUrl = typeof s.clusterUrl === 'string' ? s.clusterUrl : '';
+		return { id, type, name, expanded, clusterUrl, database };
+	}
+
+	private async getSectionsForConnection(connection: LiveWorkbenchConnection): Promise<ToolSectionSummary[] | undefined> {
+		const rawSections = await connection.stateGetter();
+		return rawSections?.map((section, index) => this.summarizeToolSection(section, index));
+	}
+
+	async listSections(): Promise<ListSectionsResult> {
+		const target = this.resolveToolTarget();
+		const openFiles = this.toPublicOpenFiles(target.openFiles);
+		const sectionsByOpenFileId = new Map<string, ToolSectionSummary[]>();
+		await Promise.all(openFiles.map(async (file) => {
+			const internal = target.openFiles.find(openFile => openFile.openFileId === file.openFileId);
+			const connection = internal ? this.getLatestLiveConnectionForKey(internal.logicalUriKey) : undefined;
+			if (!connection) {
+				return;
+			}
+			try {
+				const sections = await this.getSectionsForConnection(connection);
+				if (sections) {
+					file.sections = sections;
+					sectionsByOpenFileId.set(file.openFileId, sections);
+				} else {
+					file.sectionsUnavailable = true;
+					file.error = 'Sections are unavailable for this open file.';
+				}
+			} catch (err) {
+				file.sectionsUnavailable = true;
+				file.error = err instanceof Error ? err.message : String(err);
+			}
+		}));
+		if (!target.connection) {
+			const file = target.activeFile ?? (target.hasActiveUnsupportedFile ? undefined : target.openFiles[0]);
+			if (file) {
+				return {
+					sections: [],
+					...(file.filePath ? { filePath: file.filePath } : {}),
+					...(file.fileName ? { fileName: file.fileName } : {}),
+					openFiles,
+				};
+			}
+			if (openFiles.length) {
+				return { sections: [], openFiles };
+			}
 			throw new Error('Kusto Workbench is not currently open.');
 		}
-		const rawSections = await this.stateGetter();
-		if (!rawSections) {
-			return { sections: [] };
+		const targetOpenFileId = target.explicitTarget?.openFileId ?? target.activeFile?.openFileId ?? target.connection.documentInfo?.openFileId;
+		const sections = targetOpenFileId ? sectionsByOpenFileId.get(targetOpenFileId) : await this.getSectionsForConnection(target.connection);
+		if (!sections) {
+			return { sections: [], ...(openFiles.length ? { openFiles } : {}) };
 		}
-		const sections = rawSections
-			.map((s, idx) => {
-				const id = typeof s.id === 'string' ? s.id : `section_${idx}`;
-				const type = typeof s.type === 'string' ? s.type : 'unknown';
-				const name = typeof s.name === 'string' ? s.name : (typeof s.title === 'string' ? s.title : '');
-				const expanded = s.expanded !== false;
-				const database = typeof s.database === 'string' ? s.database : '';
-				// For devnotes sections, include the entries array so the agent can read them
-				if (type === 'devnotes') {
-					const entries = Array.isArray(s.entries) ? s.entries : [];
-					return { id, type, name, expanded, database, entries };
-				}
-				// SQL sections use serverUrl instead of clusterUrl
-				if (type === 'sql') {
-					const serverUrl = typeof s.serverUrl === 'string' ? s.serverUrl : '';
-					return { id, type, name, expanded, serverUrl, database };
-				}
-				const clusterUrl = typeof s.clusterUrl === 'string' ? s.clusterUrl : '';
-				return { id, type, name, expanded, clusterUrl, database };
-			});
 
 		// Include the active document's file path and name when available.
-		const result: { sections: typeof sections; filePath?: string; fileName?: string } = { sections };
-		try {
-			if (this.activeDocumentUri) {
-				const uri = vscode.Uri.parse(this.activeDocumentUri);
-				if (uri.scheme === 'file') {
-					result.filePath = uri.fsPath;
-					result.fileName = path.basename(uri.fsPath);
-				}
-			}
-		} catch {
-			// Malformed URI — degrade gracefully by omitting file info.
-		}
+		const file = target.activeFile && target.connection.logicalUriKey === target.activeFile.logicalUriKey
+			? target.activeFile
+			: target.connection.documentInfo;
+		const result: ListSectionsResult = {
+			sections,
+			...(file?.filePath ? { filePath: file.filePath } : {}),
+			...(file?.fileName ? { fileName: file.fileName } : {}),
+			...(openFiles.length ? { openFiles } : {}),
+		};
 		return result;
 	}
 
 	/**
 	 * Returns the current development notes from the open file, if any.
 	 */
-	async getDevNotes(): Promise<DevNoteEntry[]> {
-		if (!this.stateGetter) {
+	async getDevNotes(targetFields: TargetFields = {}): Promise<DevNoteEntry[]> {
+		const target = this.resolveToolTarget(targetFields);
+		if (!target.connection) {
 			return [];
 		}
-		const rawSections = await this.stateGetter();
+		const rawSections = await target.connection.stateGetter();
 		if (!rawSections) {
 			return [];
 		}
@@ -759,8 +1157,10 @@ export class KustoWorkbenchToolOrchestrator {
 	}
 
 	async manageDevelopmentNotes(input: ManageDevelopmentNotesInput): Promise<{ success: boolean; noteId?: string; notes?: DevNoteEntry[]; error?: string }> {
+		const { target, rest } = this.splitTargetFields(input);
+		input = rest as ManageDevelopmentNotesInput;
 		if (input.action === 'view') {
-			const notes = await this.getDevNotes();
+			const notes = await this.getDevNotes(target);
 			return { success: true, notes };
 		}
 		if (input.action === 'add') {
@@ -778,12 +1178,12 @@ export class KustoWorkbenchToolOrchestrator {
 				...(input.relatedSectionIds ? { relatedSectionIds: input.relatedSectionIds } : {}),
 			};
 			const action = input.supersedes ? 'supersede' : 'add';
-			return this.sendToWebview('updateDevNotes', { action, entry, supersededId: input.supersedes });
+			return this.sendToWebview('updateDevNotes', { action, entry, supersededId: input.supersedes }, 30000, target);
 		} else if (input.action === 'remove') {
 			if (!input.noteId) {
 				return { success: false, error: '"noteId" is required when removing a development note.' };
 			}
-			return this.sendToWebview('updateDevNotes', { action: 'remove', noteId: input.noteId });
+			return this.sendToWebview('updateDevNotes', { action: 'remove', noteId: input.noteId }, 30000, target);
 		}
 		return { success: false, error: `Unknown action: ${input.action}` };
 	}
@@ -796,14 +1196,17 @@ export class KustoWorkbenchToolOrchestrator {
 	}
 
 	async configureSqlSection(input: ConfigureSqlSectionInput): Promise<{ success: boolean; resultPreview?: string }> {
+		const { target, rest } = this.splitTargetFields(input);
+		input = rest as ConfigureSqlSectionInput;
 		if (input.query !== undefined) {
 			input = { ...input, query: unescapeLLMText(input.query) };
 		}
-		return this.sendToWebview('toolConfigureSqlSection', { input });
+		return this.sendToWebview('toolConfigureSqlSection', { input }, 30000, target);
 	}
 
 	async getSqlSchema(input: GetSqlSchemaInput): Promise<{ success: boolean; schema?: unknown; error?: string }> {
-		return this.sendToWebview('toolGetSqlSchema', { sectionId: input.sectionId });
+		const { target, rest } = this.splitTargetFields(input);
+		return this.sendToWebview('toolGetSqlSchema', { sectionId: rest.sectionId }, 30000, target);
 	}
 
 	async delegateToSqlCopilot(input: DelegateToSqlCopilotInput): Promise<{
@@ -813,10 +1216,13 @@ export class KustoWorkbenchToolOrchestrator {
 		error?: string;
 		timedOut?: boolean;
 	}> {
-		return this.sendToWebview('toolDelegateToSqlCopilot', { input }, 180000);
+		const { target, rest } = this.splitTargetFields(input);
+		return this.sendToWebview('toolDelegateToSqlCopilot', { input: rest }, 180000, target);
 	}
 
 	async addSection(input: AddSectionInput): Promise<{ sectionId: string; success: boolean }> {
+		const { target, rest } = this.splitTargetFields(input);
+		input = rest as AddSectionInput;
 		// Unescape literal \n sequences that LLMs frequently produce in text content
 		const textValue = input.text ?? input.content;
 		if (textValue !== undefined) {
@@ -828,47 +1234,58 @@ export class KustoWorkbenchToolOrchestrator {
 		if (input.code !== undefined) {
 			input = { ...input, code: unescapeLLMText(input.code) };
 		}
-		return this.sendToWebview('toolAddSection', { input });
+		return this.sendToWebview('toolAddSection', { input }, 30000, target);
 	}
 
 	async removeSection(input: RemoveSectionInput): Promise<{ success: boolean }> {
-		return this.sendToWebview('toolRemoveSection', { sectionId: input.sectionId });
+		const { target, rest } = this.splitTargetFields(input);
+		return this.sendToWebview('toolRemoveSection', { sectionId: rest.sectionId }, 30000, target);
 	}
 
 	async collapseSection(input: CollapseSectionInput): Promise<{ success: boolean }> {
-		return this.sendToWebview('toolCollapseSection', { sectionId: input.sectionId, collapsed: input.collapsed });
+		const { target, rest } = this.splitTargetFields(input);
+		return this.sendToWebview('toolCollapseSection', { sectionId: rest.sectionId, collapsed: rest.collapsed }, 30000, target);
 	}
 
 	async reorderSections(input: ReorderSectionsInput): Promise<{ success: boolean; error?: string }> {
-		return this.sendToWebview('toolReorderSections', { sectionIds: input.sectionIds });
+		const { target, rest } = this.splitTargetFields(input);
+		return this.sendToWebview('toolReorderSections', { sectionIds: rest.sectionIds }, 30000, target);
 	}
 
 	async configureQuerySection(input: ConfigureQuerySectionInput): Promise<{ success: boolean; resultPreview?: string }> {
+		const { target, rest } = this.splitTargetFields(input);
+		input = rest as ConfigureQuerySectionInput;
 		// Unescape literal \n sequences that LLMs frequently produce in query text
 		if (input.query !== undefined) {
 			input = { ...input, query: unescapeLLMText(input.query) };
 		}
-		return this.sendToWebview('toolConfigureQuerySection', { input });
+		return this.sendToWebview('toolConfigureQuerySection', { input }, 30000, target);
 	}
 
 	async updateMarkdownSection(input: UpdateMarkdownSectionInput): Promise<{ success: boolean }> {
+		const { target, rest } = this.splitTargetFields(input);
+		input = rest as UpdateMarkdownSectionInput;
 		// Unescape literal \n sequences that LLMs frequently produce in markdown text
 		const textValue = input.text ?? input.content;
 		if (textValue !== undefined) {
 			input = { ...input, text: unescapeLLMText(textValue) };
 		}
-		return this.sendToWebview('toolUpdateMarkdownSection', { input });
+		return this.sendToWebview('toolUpdateMarkdownSection', { input }, 30000, target);
 	}
 
 	async configureChart(input: ConfigureChartInput): Promise<{ success: boolean }> {
-		return this.sendToWebview('toolConfigureChart', { input });
+		const { target, rest } = this.splitTargetFields(input);
+		return this.sendToWebview('toolConfigureChart', { input: rest }, 30000, target);
 	}
 
 	async configureTransformation(input: ConfigureTransformationInput): Promise<{ success: boolean }> {
-		return this.sendToWebview('toolConfigureTransformation', { input });
+		const { target, rest } = this.splitTargetFields(input);
+		return this.sendToWebview('toolConfigureTransformation', { input: rest }, 30000, target);
 	}
 
 	async configureHtmlSection(input: ConfigureHtmlSectionInput): Promise<{ success: boolean; sectionId?: string }> {
+		const { target, rest } = this.splitTargetFields(input);
+		input = rest as ConfigureHtmlSectionInput;
 		if (input.code !== undefined) {
 			input = { ...input, code: unescapeLLMText(input.code) };
 		}
@@ -877,7 +1294,7 @@ export class KustoWorkbenchToolOrchestrator {
 			name: input.name,
 			code: input.code,
 			mode: input.mode,
-		});
+		}, 30000, target);
 	}
 
 	async getHtmlDashboardGuide(input: GetHtmlDashboardGuideInput): Promise<{ mode: 'checklist' | 'template' | 'full'; content: string }> {
@@ -895,6 +1312,8 @@ export class KustoWorkbenchToolOrchestrator {
 	}
 
 	async validateHtmlDashboard(input: ValidateHtmlDashboardInput): Promise<ValidateHtmlDashboardResult> {
+		const { target, rest } = this.splitTargetFields(input);
+		input = rest as ValidateHtmlDashboardInput;
 		const sectionId = (input.sectionId || '').trim();
 		if (!sectionId) {
 			return {
@@ -913,7 +1332,7 @@ export class KustoWorkbenchToolOrchestrator {
 
 		let context: HtmlDashboardContextResult;
 		try {
-			context = await this.sendToWebview<HtmlDashboardContextResult>('toolGetHtmlDashboardContext', { sectionId });
+			context = await this.sendToWebview<HtmlDashboardContextResult>('toolGetHtmlDashboardContext', { sectionId }, 30000, target);
 		} catch (err) {
 			const message = err instanceof Error ? err.message : String(err);
 			return {
@@ -942,17 +1361,13 @@ export class KustoWorkbenchToolOrchestrator {
 
 		let filePath: string | undefined;
 		let fileName: string | undefined;
-		try {
-			if (this.activeDocumentUri) {
-				const uri = vscode.Uri.parse(this.activeDocumentUri);
-				if (uri.scheme === 'file') {
-					filePath = uri.fsPath;
-					fileName = path.basename(uri.fsPath);
-				}
-			}
-		} catch {
-			// Ignore malformed active document URI.
-		}
+		const resolvedTarget = this.resolveToolTarget(target);
+		const file = resolvedTarget.explicitTarget
+			?? (resolvedTarget.activeFile && resolvedTarget.connection?.logicalUriKey === resolvedTarget.activeFile.logicalUriKey
+				? resolvedTarget.activeFile
+				: resolvedTarget.connection?.documentInfo);
+		filePath = file?.filePath;
+		fileName = file?.fileName;
 
 		const uniqueIssues = uniqueStrings(issues);
 		return {
@@ -985,11 +1400,82 @@ export class KustoWorkbenchToolOrchestrator {
 		error?: string;
 		timedOut?: boolean;
 	}> {
+		const { target, rest } = this.splitTargetFields(input);
 		const normalizedInput = {
-			...input,
+			...rest,
 			maxResultRows: normalizeAskKustoCopilotMaxResultRows(input.maxResultRows)
 		};
-		return this.sendToWebview('toolDelegateToKustoWorkbenchCopilot', { input: normalizedInput }, 180000); // 3 minute timeout for Copilot + query execution
+		return this.sendToWebview('toolDelegateToKustoWorkbenchCopilot', { input: normalizedInput }, 180000, target); // 3 minute timeout for Copilot + query execution
+	}
+
+	private getEditorIdForWorkbenchFile(info: WorkbenchFileInfo): string | undefined {
+		switch (info.fileKind) {
+			case 'kqlx':
+			case 'mdx':
+			case 'sqlx':
+				return 'kusto.kqlxEditor';
+			case 'kql':
+			case 'csl':
+			case 'kql-sidecar':
+			case 'csl-sidecar':
+				return 'kusto.kqlCompatEditor';
+			case 'sql':
+			case 'sql-sidecar':
+				return 'kusto.sqlCompatEditor';
+			case 'md':
+				return 'kusto.mdCompatEditor';
+			default:
+				return undefined;
+		}
+	}
+
+	async activateWorkbenchFile(input: TargetFields): Promise<ActivationResult> {
+		const targetFileInfo = input.targetFileUri ? this.normalizeTargetFileUri(input.targetFileUri) : undefined;
+		const target = this.resolveToolTarget(input);
+		const file = target.explicitTarget ?? target.activeFile;
+		const info = targetFileInfo
+			?? (file ? classifyWorkbenchUriString(file.logicalUri, { includeOptionalPlainText: true }) : undefined)
+			?? target.connection?.documentInfo;
+		if (!file && !info) {
+			return { success: false, error: 'No target Workbench file was found. Use #listSections to get current openFileId values.' };
+		}
+		const effectiveInfo = info ?? (file ? classifyWorkbenchUriString(file.logicalUri, { includeOptionalPlainText: true }) : undefined);
+		if (!effectiveInfo) {
+			return { success: false, error: 'The target is not a supported Kusto Workbench file.' };
+		}
+		const editorId = this.getEditorIdForWorkbenchFile(effectiveInfo);
+		if (!editorId) {
+			return { success: false, error: 'No Workbench editor is available for the target file.' };
+		}
+		try {
+			await vscode.commands.executeCommand('vscode.openWith', effectiveInfo.logicalUri, editorId, {
+				viewColumn: vscode.ViewColumn.Active,
+				preserveFocus: false,
+			});
+		} catch (err) {
+			return {
+				success: false,
+				openFileId: effectiveInfo.openFileId,
+				uri: effectiveInfo.uriString,
+				logicalUri: effectiveInfo.logicalUriString,
+				fileKind: effectiveInfo.fileKind,
+				...(effectiveInfo.filePath ? { filePath: effectiveInfo.filePath } : {}),
+				...(effectiveInfo.fileName ? { fileName: effectiveInfo.fileName } : {}),
+				error: err instanceof Error ? err.message : String(err),
+			};
+		}
+		const liveConnection = this.getLatestLiveConnectionForKey(effectiveInfo.logicalUriKey);
+		return {
+			success: true,
+			openFileId: effectiveInfo.openFileId,
+			uri: effectiveInfo.uriString,
+			logicalUri: effectiveInfo.logicalUriString,
+			fileKind: effectiveInfo.fileKind,
+			...(effectiveInfo.filePath ? { filePath: effectiveInfo.filePath } : {}),
+			...(effectiveInfo.fileName ? { fileName: effectiveInfo.fileName } : {}),
+			isLiveWorkbench: !!liveConnection,
+			isReadOnlyFallback: !liveConnection,
+		};
 	}
 
 	async createFile(input: CreateFileInput): Promise<{
@@ -1336,6 +1822,36 @@ export class ListSectionsTool implements vscode.LanguageModelTool<ListSectionsIn
 				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
 			]);
 		}
+	}
+}
+
+export class ActivateWorkbenchFileTool implements vscode.LanguageModelTool<TargetFields> {
+	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
+
+	async invoke(
+		options: vscode.LanguageModelToolInvocationOptions<TargetFields>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.LanguageModelToolResult> {
+		try {
+			const result = await this.orchestrator.activateWorkbenchFile(getToolInput(options));
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
+			]);
+		} catch (err) {
+			return new vscode.LanguageModelToolResult([
+				new vscode.LanguageModelTextPart(`Error: ${err instanceof Error ? err.message : String(err)}`)
+			]);
+		}
+	}
+
+	async prepareInvocation(
+		options: vscode.LanguageModelToolInvocationPrepareOptions<TargetFields>,
+		_token: vscode.CancellationToken
+	): Promise<vscode.PreparedToolInvocation> {
+		const input = getToolInput(options);
+		return {
+			invocationMessage: `Activating Workbench file ${input?.openFileId || input?.targetFileUri || ''}...`
+		};
 	}
 }
 
@@ -1803,6 +2319,7 @@ export function registerKustoWorkbenchTools(
 		vscode.lm.registerTool('kusto-workbench_refresh-schema', new RefreshKustoSchemaTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_search-cached-schemas', new SearchCachedSchemasTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_list-sections', new ListSectionsTool(orchestrator)),
+		vscode.lm.registerTool('kusto-workbench_activate-workbench-file', new ActivateWorkbenchFileTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_add-section', new AddSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_remove-section', new RemoveSectionTool(orchestrator)),
 		vscode.lm.registerTool('kusto-workbench_collapse-section', new CollapseSectionTool(orchestrator)),

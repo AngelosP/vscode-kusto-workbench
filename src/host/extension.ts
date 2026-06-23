@@ -27,8 +27,11 @@ import { resetDidYouKnowDevelopmentState } from './tutorials/tutorialDevelopment
 import { EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
 import type { TutorialViewerMode } from '../shared/tutorials/tutorialCatalog';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
+import { createEmptyKqlxFile, stringifyKqlxFile, parseKqlxText, type KqlxFileV1 } from './kqlxFormat';
 
 import { stsProcessManagerSingleton } from './sql/stsProcessManager';
+
+type TestOpenFileSummary = NonNullable<Awaited<ReturnType<KustoWorkbenchToolOrchestrator['listSections']>>['openFiles']>[number];
 
 // Export the tool orchestrator instance so other modules can access it
 export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
@@ -200,6 +203,277 @@ export function activate(context: vscode.ExtensionContext) {
 	// Register Kusto Workbench tools for VS Code Copilot Chat integration
 	const toolKustoClient = new KustoQueryClient(context);
 	toolOrchestrator = registerKustoWorkbenchTools(context, connectionManager, getSqlConnectionManager, toolKustoClient);
+	if (context.extensionMode !== vscode.ExtensionMode.Production) {
+		context.subscriptions.push(
+			vscode.commands.registerCommand('kustoWorkbench.test.runOpenFileTargetingScenario', async (modeOrWorkspacePath?: string, workspacePath?: string) => {
+				if (!toolOrchestrator) {
+					throw new Error('Kusto Workbench tools are not initialized.');
+				}
+				const mode = modeOrWorkspacePath === 'real-editors' || modeOrWorkspacePath === 'real-editors-forced-failure'
+					? modeOrWorkspacePath
+					: 'synthetic';
+				const workspacePathCandidate = mode === 'real-editors' || mode === 'real-editors-forced-failure' ? workspacePath : modeOrWorkspacePath;
+				const providedWorkspacePath = typeof workspacePathCandidate === 'string' && workspacePathCandidate.trim() && !workspacePathCandidate.includes('$')
+					? vscode.Uri.file(workspacePathCandidate.trim())
+					: undefined;
+				const root = providedWorkspacePath ?? vscode.workspace.workspaceFolders?.[0]?.uri ?? context.extensionUri;
+
+				if (mode === 'real-editors' || mode === 'real-editors-forced-failure') {
+					const resultDir = vscode.Uri.joinPath(root, 'tests', 'vscode-extension-tester', 'runs', 'default');
+					await vscode.workspace.fs.createDirectory(resultDir);
+					const scenarioDir = vscode.Uri.joinPath(resultDir, 'agent-open-file-targeting-real');
+					await vscode.workspace.fs.createDirectory(scenarioDir);
+					const resultUri = vscode.Uri.joinPath(resultDir, 'agent-open-file-targeting-real-result.json');
+					try { await vscode.workspace.fs.delete(resultUri); } catch { /* ignore stale cleanup */ }
+					const writeRealResult = async (result: Record<string, unknown>) => {
+						const markers = Object.entries(result).filter(([, value]) => value === true).map(([key]) => `${key}:true`);
+						await vscode.workspace.fs.writeFile(resultUri, new TextEncoder().encode(JSON.stringify({ ...result, markers }, null, 2)));
+					};
+
+					const buildFile = (query: string, name: string): KqlxFileV1 => {
+						const file = createEmptyKqlxFile();
+						file.state.sections.push({ id: 'query_1', type: 'query', name, expanded: true, query });
+						return file;
+					};
+
+					const activeUri = vscode.Uri.joinPath(scenarioDir, 'active-real.kqlx');
+					const targetUri = vscode.Uri.joinPath(scenarioDir, 'target-real.kqlx');
+					const activeInitialText = stringifyKqlxFile(buildFile('print "active original"', 'Active real'));
+					const targetInitialText = stringifyKqlxFile(buildFile('print "target original"', 'Target real'));
+					await vscode.workspace.fs.writeFile(activeUri, new TextEncoder().encode(activeInitialText));
+					await vscode.workspace.fs.writeFile(targetUri, new TextEncoder().encode(targetInitialText));
+
+					const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+					await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+					await vscode.commands.executeCommand('vscode.openWith', activeUri, KqlxEditorProvider.viewType, { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: false });
+					await vscode.commands.executeCommand('vscode.openWith', targetUri, KqlxEditorProvider.viewType, { viewColumn: vscode.ViewColumn.Beside, preview: false, preserveFocus: false });
+					await vscode.commands.executeCommand('vscode.openWith', activeUri, KqlxEditorProvider.viewType, { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: false });
+					let forcedFailureTriggered = false;
+					try {
+						let listed: Awaited<ReturnType<typeof toolOrchestrator.listSections>> | undefined;
+						let activeFile: TestOpenFileSummary | undefined;
+						let targetFile: TestOpenFileSummary | undefined;
+						for (let attempt = 0; attempt < 40; attempt++) {
+							listed = await toolOrchestrator.listSections();
+							const openFiles = Array.isArray(listed.openFiles) ? listed.openFiles : [];
+							activeFile = openFiles.find(file => file.fileName === 'active-real.kqlx');
+							targetFile = openFiles.find(file => file.fileName === 'target-real.kqlx');
+							if (activeFile?.isLiveWorkbench && activeFile.isActive && Array.isArray(activeFile.sections) && activeFile.sections.length > 0
+								&& targetFile?.isLiveWorkbench && targetFile.isActive === false && Array.isArray(targetFile.sections) && targetFile.sections.length > 0
+								&& targetFile.openFileId && activeFile.openFileId && targetFile.openFileId !== activeFile.openFileId) {
+								break;
+							}
+							await delay(250);
+						}
+						if (!activeFile?.isLiveWorkbench || !activeFile.isActive || !Array.isArray(activeFile.sections) || activeFile.sections.length === 0) {
+							throw new Error('Active real editor did not become live and active.');
+						}
+						if (!targetFile?.isLiveWorkbench || targetFile.isActive !== false || !Array.isArray(targetFile.sections) || targetFile.sections.length === 0 || !targetFile.openFileId) {
+							throw new Error('Target real editor did not become live and non-active.');
+						}
+						const activeQuerySectionId = activeFile.sections.find(section => section.type === 'query')?.id ?? activeFile.sections[0]?.id;
+						const targetQuerySectionId = targetFile.sections.find(section => section.type === 'query')?.id ?? targetFile.sections[0]?.id;
+						if (!activeQuerySectionId) {
+							throw new Error('Active real editor did not report a query section ID.');
+						}
+						if (!targetQuerySectionId) {
+							await writeRealResult({
+								scenario: 'real-editors',
+								error: 'Target real editor did not report a query section ID.',
+								activeFile,
+								targetFile,
+								listed,
+							});
+							throw new Error('Target real editor did not report a query section ID.');
+						}
+
+						let configureResult: { success: boolean; resultPreview?: string } | undefined;
+						let configureError = '';
+						for (let attempt = 0; attempt < 20; attempt++) {
+							try {
+								configureResult = await toolOrchestrator.configureQuerySection({ sectionId: targetQuerySectionId, query: 'print "target updated"', openFileId: targetFile.openFileId });
+								if (configureResult.success) {
+									break;
+								}
+								configureError = 'configureQuerySection returned success=false';
+							} catch (err) {
+								configureError = err instanceof Error ? err.message : String(err);
+							}
+							await delay(250);
+						}
+						if (!configureResult?.success) {
+							await writeRealResult({
+								scenario: 'real-editors',
+								error: 'Target configureQuerySection did not report success.',
+								configureError,
+								targetQuerySectionId,
+								activeFile,
+								targetFile,
+								listed,
+							});
+							throw new Error('Target configureQuerySection did not report success.');
+						}
+
+						const parseQuery = (text: string): string => {
+							const parsed = parseKqlxText(text, { allowedKinds: ['kqlx'], defaultKind: 'kqlx' });
+							if (!parsed.ok) return '';
+							const section = parsed.file.state.sections.find(sec => (sec as any).id === 'query_1') as { query?: string } | undefined;
+							return section?.query ?? '';
+						};
+
+						let targetDocument = vscode.workspace.textDocuments.find(document => document.uri.toString() === targetUri.toString());
+						for (let attempt = 0; attempt < 20; attempt++) {
+							targetDocument = vscode.workspace.textDocuments.find(document => document.uri.toString() === targetUri.toString());
+							if (targetDocument && parseQuery(targetDocument.getText()) === 'print "target updated"') {
+								break;
+							}
+							await delay(250);
+						}
+						if (!targetDocument || parseQuery(targetDocument.getText()) !== 'print "target updated"') {
+							await writeRealResult({
+								scenario: 'real-editors',
+								error: 'Target document did not receive the updated query in memory.',
+								configureResult,
+								targetQuerySectionId,
+								targetDocumentText: targetDocument?.getText() ?? '',
+								activeFile,
+								targetFile,
+								listed,
+							});
+							throw new Error('Target document did not receive the updated query in memory.');
+						}
+						const activeDocument = vscode.workspace.textDocuments.find(document => document.uri.toString() === activeUri.toString());
+						const activeMemoryQuery = activeDocument ? parseQuery(activeDocument.getText()) : '';
+						const activeMemoryUnchanged = activeMemoryQuery === 'print "active original"' && !String(activeDocument?.getText() ?? '').includes('target updated');
+						if (mode === 'real-editors-forced-failure') {
+							forcedFailureTriggered = true;
+							return { scenario: 'real-editors-forced-failure', forcedFailureTriggered };
+						}
+						await targetDocument.save();
+
+						let activeDiskText = '';
+						let targetDiskText = '';
+						for (let attempt = 0; attempt < 20; attempt++) {
+							activeDiskText = new TextDecoder().decode(await vscode.workspace.fs.readFile(activeUri));
+							targetDiskText = new TextDecoder().decode(await vscode.workspace.fs.readFile(targetUri));
+							if (parseQuery(targetDiskText) === 'print "target updated"') {
+								break;
+							}
+							await delay(250);
+						}
+						const activeQuery = parseQuery(activeDiskText);
+						const targetQuery = parseQuery(targetDiskText);
+						const result = {
+							scenario: 'real-editors',
+							realEditorsOpened: !!activeFile && !!targetFile,
+							nonActiveOpenFileIdTargeted: targetQuery === 'print "target updated"',
+							activeFileMemoryUnchanged: activeMemoryUnchanged,
+							activeFileDiskUnchanged: activeQuery === 'print "active original"' && !activeDiskText.includes('target updated'),
+							targetFileDiskChanged: targetQuery === 'print "target updated"' && !targetDiskText.includes('target original'),
+							duplicateSectionIdsVerified: activeQuerySectionId === targetQuerySectionId,
+							activeQuerySectionId,
+							targetQuerySectionId,
+							activeFilePath: activeUri.fsPath,
+							targetFilePath: targetUri.fsPath,
+						};
+						await writeRealResult(result);
+						return result;
+					} finally {
+						let cleanupSavedDirtyDocs = false;
+						for (const uri of [activeUri, targetUri]) {
+							try {
+								const document = vscode.workspace.textDocuments.find(doc => doc.uri.toString() === uri.toString());
+								if (document?.isDirty) {
+									await document.save();
+									cleanupSavedDirtyDocs = true;
+								}
+							} catch {
+								// Best-effort cleanup; closeAllEditors still runs below.
+							}
+						}
+						await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+						if (mode === 'real-editors-forced-failure') {
+							let cleanupClosedEditors = false;
+							let cleanupNoLiveEditors = false;
+							let cleanupOpenFiles: Array<{ fileName?: string }> = [];
+							for (let attempt = 0; attempt < 20; attempt++) {
+								const cleanupListed = await toolOrchestrator.listSections().catch(() => ({ openFiles: [] }));
+								cleanupOpenFiles = Array.isArray(cleanupListed.openFiles) ? cleanupListed.openFiles : [];
+								const tempFiles = cleanupOpenFiles.filter(file => file.fileName === 'active-real.kqlx' || file.fileName === 'target-real.kqlx');
+								cleanupClosedEditors = tempFiles.length === 0;
+								cleanupNoLiveEditors = !tempFiles.some(file => (file as { isLiveWorkbench?: boolean }).isLiveWorkbench === true);
+								if (cleanupNoLiveEditors) {
+									break;
+								}
+								await delay(250);
+							}
+							const cleanupResult = {
+								scenario: 'real-editors-forced-failure',
+								forcedFailureTriggered,
+								cleanupSavedDirtyDocs,
+								cleanupClosedEditors,
+								cleanupNoLiveEditors,
+								cleanupOpenFiles,
+							};
+							await writeRealResult(cleanupResult);
+							return cleanupResult;
+						}
+					}
+				}
+
+				const activeUri = vscode.Uri.joinPath(root, 'agent-open-file-targeting-active.kqlx');
+				const targetUri = vscode.Uri.joinPath(root, 'agent-open-file-targeting-target.kqlx');
+				const activeMessages: unknown[] = [];
+				const targetMessages: unknown[] = [];
+				const activeToken = toolOrchestrator.connect(
+					(message) => activeMessages.push(message),
+					async () => [{ id: 'query_1', type: 'query', name: 'Active file' }],
+					async () => ({ schemas: [] }),
+					activeUri.toString()
+				);
+				const targetToken = toolOrchestrator.connect(
+					(message) => targetMessages.push(message),
+					async () => [{ id: 'query_1', type: 'query', name: 'Target file' }],
+					async () => ({ schemas: [] }),
+					targetUri.toString()
+				);
+				try {
+					const listed = await toolOrchestrator.listSections();
+					const openFiles = Array.isArray(listed.openFiles) ? listed.openFiles : [];
+					const targetFile = openFiles.find(file => file.fileName === 'agent-open-file-targeting-target.kqlx');
+					if (!targetFile?.openFileId) {
+						throw new Error('Target file openFileId was not returned by listSections.');
+					}
+					const configurePromise = toolOrchestrator.configureQuerySection({
+						sectionId: 'query_1',
+						query: 'print "explicit target"',
+						openFileId: targetFile.openFileId,
+					});
+					const posted = targetMessages[0] as { requestId?: string; input?: { query?: string } } | undefined;
+					if (!posted?.requestId) {
+						throw new Error('No tool message was posted to the explicit target file.');
+					}
+					toolOrchestrator.handleWebviewResponse(posted.requestId, { success: true });
+					await configurePromise;
+					const result = {
+						explicitTargetUpdatedNonActive: targetMessages.length === 1 && posted.input?.query === 'print "explicit target"',
+						activeFilePreserved: activeMessages.length === 0,
+						openFilesIncludedBoth: openFiles.some(file => file.fileName === 'agent-open-file-targeting-active.kqlx')
+							&& openFiles.some(file => file.fileName === 'agent-open-file-targeting-target.kqlx'),
+					};
+					const markers = Object.entries(result).filter(([, value]) => value).map(([key]) => `${key}:true`);
+					const resultDir = vscode.Uri.joinPath(root, 'tests', 'vscode-extension-tester', 'runs', 'default');
+					await vscode.workspace.fs.createDirectory(resultDir);
+					const resultUri = vscode.Uri.joinPath(resultDir, 'agent-open-file-targeting-result.json');
+					await vscode.workspace.fs.writeFile(resultUri, new TextEncoder().encode(JSON.stringify({ ...result, markers }, null, 2)));
+					return result;
+				} finally {
+					toolOrchestrator.disconnectIfOwner(activeToken);
+					toolOrchestrator.disconnectIfOwner(targetToken);
+				}
+			})
+		);
+	}
 
 	// Best-effort diagnostics for plain text editors ("Reopen With" → Text Editor)
 	// Uses last selected connection/database from the notebook experience.

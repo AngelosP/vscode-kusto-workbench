@@ -1,4 +1,5 @@
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import * as vscode from 'vscode';
 import {
 	ensureHttpsUrl,
 	getDefaultConnectionName,
@@ -9,6 +10,11 @@ import {
 	ConnectionService
 } from '../../../src/host/queryEditorConnection';
 import { STORAGE_KEYS } from '../../../src/host/queryEditorTypes';
+
+afterEach(() => {
+	vi.restoreAllMocks();
+	(ConnectionService as any).liveServices?.clear?.();
+});
 
 describe('ensureHttpsUrl', () => {
 	it('empty string → empty string', () => {
@@ -141,7 +147,7 @@ describe('normalizeFavoriteClusterUrl', () => {
 // ── ConnectionService ─────────────────────────────────────────────────────────
 
 function makeMockHost(overrides: Partial<Record<string, any>> = {}) {
-	const globalState = new Map<string, any>();
+	const globalState = overrides.globalState ?? new Map<string, any>();
 	return {
 		connectionManager: {
 			getConnections: () => overrides.connections ?? [],
@@ -242,6 +248,99 @@ describe('ConnectionService — getFavorites', () => {
 		const result = svc.getFavorites();
 		expect(result).toHaveLength(1);
 		expect(result[0].name).toBe('Good');
+	});
+});
+
+describe('ConnectionService — promptAddFavorite', () => {
+	const openFileClasses = [
+		{ id: 'kqlx', label: '.kqlx', supportsManySections: true },
+		{ id: 'plain-kql', label: 'plain .kql', supportsManySections: false },
+		{ id: 'plain-csl', label: 'plain .csl', supportsManySections: false },
+		{ id: 'kql-sidecar', label: '.kql + .kql.json', supportsManySections: true },
+		{ id: 'csl-sidecar', label: '.csl + .csl.json', supportsManySections: true },
+	];
+	const oneSectionProviderPermutations = openFileClasses.flatMap(source =>
+		openFileClasses.map(target => ({
+			shape: 'one-section open files',
+			source,
+			target,
+			sourceSections: 1,
+			targetSections: 1,
+		}))
+	);
+	const manySectionProviderPermutations = openFileClasses
+		.filter(fileClass => fileClass.supportsManySections)
+		.flatMap(source => openFileClasses
+			.filter(fileClass => fileClass.supportsManySections)
+			.map(target => ({
+				shape: 'many-section open files',
+				source,
+				target,
+				sourceSections: 3,
+				targetSections: 3,
+			}))
+		);
+	const providerSyncPermutations = [...oneSectionProviderPermutations, ...manySectionProviderPermutations];
+
+	it('stores the favorite and notifies the originating provider', async () => {
+		const postMessage = vi.fn();
+		vi.spyOn(vscode.window, 'showInputBox').mockResolvedValue('Friendly Favorite' as any);
+		const host = makeMockHost({ postMessage });
+		const svc = new ConnectionService(host as any);
+
+		await svc.promptAddFavorite({
+			type: 'requestAddFavorite',
+			clusterUrl: 'cluster-one.kusto.windows.net/',
+			database: 'Samples',
+			boxId: 'query_origin',
+		});
+
+		expect(host._globalState.get(STORAGE_KEYS.favorites)).toEqual([
+			{ name: 'Friendly Favorite', clusterUrl: 'https://cluster-one.kusto.windows.net', database: 'Samples' },
+		]);
+		expect(postMessage).toHaveBeenCalledWith({
+			type: 'favoritesData',
+			boxId: 'query_origin',
+			favorites: [
+				{ name: 'Friendly Favorite', clusterUrl: 'https://cluster-one.kusto.windows.net', database: 'Samples' },
+			],
+		});
+	});
+
+	it.each(providerSyncPermutations)(
+		'notifies already-open $target.label target when $source.label source changes favorites ($shape, source sections=$sourceSections, target sections=$targetSections)',
+		async ({ source, target, shape, sourceSections, targetSections }) => {
+		const sharedGlobalState = new Map<string, any>();
+		const originatingPostMessage = vi.fn();
+		const otherOpenProviderPostMessage = vi.fn();
+		const key = `${shape}-${source.id}-to-${target.id}-${sourceSections}-${targetSections}`;
+		const favoriteName = `Cross File Favorite ${key}`;
+		const clusterUrl = `cross-file-${source.id}-to-${target.id}-${sourceSections}-${targetSections}.kusto.windows.net`;
+		const database = `CrossDb${sourceSections}${targetSections}`;
+		vi.spyOn(vscode.window, 'showInputBox').mockResolvedValue(favoriteName as any);
+		const originatingHost = makeMockHost({ postMessage: originatingPostMessage, globalState: sharedGlobalState });
+		const otherOpenProviderHost = makeMockHost({ postMessage: otherOpenProviderPostMessage, globalState: sharedGlobalState });
+		const originatingService = new ConnectionService(originatingHost as any);
+		const otherOpenService = new ConnectionService(otherOpenProviderHost as any);
+
+		await originatingService.promptAddFavorite({
+			type: 'requestAddFavorite',
+			clusterUrl,
+			database,
+			boxId: 'query_origin',
+		});
+		const favorite = { name: favoriteName, clusterUrl: `https://${clusterUrl}`, database };
+
+		expect(otherOpenService.getFavorites()).toEqual([favorite]);
+		expect(originatingPostMessage).toHaveBeenCalledWith({
+			type: 'favoritesData',
+			boxId: 'query_origin',
+			favorites: [favorite],
+		});
+		expect(otherOpenProviderPostMessage).toHaveBeenCalledWith({
+			type: 'favoritesData',
+			favorites: [favorite],
+		});
 	});
 });
 

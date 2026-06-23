@@ -101,6 +101,7 @@ export class TabInputCustom {
 }
 
 export const __mockStatusBarItems: any[] = [];
+export const __mockCommandCalls: Array<{ command: string; args: unknown[] }> = [];
 
 export enum StatusBarAlignment {
 	Left = 1,
@@ -113,8 +114,14 @@ export enum ConfigurationTarget {
 	WorkspaceFolder = 3,
 }
 
+export enum ViewColumn {
+	Active = -1,
+	One = 1,
+}
+
 export const window = {
 	activeTextEditor: undefined as any,
+	visibleTextEditors: [] as any[],
 	onDidChangeActiveTextEditor: () => ({ dispose: () => {} }),
 	tabGroups: {
 		activeTabGroup: { activeTab: undefined as any, tabs: [] as any[], isActive: true },
@@ -123,6 +130,7 @@ export const window = {
 		onDidChangeTabGroups: () => ({ dispose: () => {} }),
 	},
 	createOutputChannel: () => ({ appendLine: () => {}, dispose: () => {} }),
+	showInputBox: () => Promise.resolve(undefined),
 	showInformationMessage: () => Promise.resolve(undefined),
 	showErrorMessage: () => Promise.resolve(undefined),
 	showWarningMessage: () => Promise.resolve(undefined),
@@ -153,7 +161,10 @@ export const env = {
 
 export const commands = {
 	registerCommand: () => ({ dispose: () => {} }),
-	executeCommand: () => Promise.resolve(),
+	executeCommand: (command: string, ...args: unknown[]) => {
+		__mockCommandCalls.push({ command, args });
+		return Promise.resolve();
+	},
 };
 
 const fileSystemStore = new Map<string, Uint8Array>();

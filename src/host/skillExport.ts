@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 
 /** Bump this when you change skill-template.md in a way that requires re-export. */
-export const TEMPLATE_VERSION = 12;
+export const TEMPLATE_VERSION = 13;
 
 export const SKILL_FILENAME = 'SKILL.md';
 export const HTML_DASHBOARD_RULES_FILENAME = 'html-dashboard-rules.md';

@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
 import { ConnectionManager, KustoConnection } from './connectionManager';
+import { ConnectionService } from './queryEditorConnection';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
 import { createEmptyKqlxOrMdxFile } from './kqlxFormat';
 import { writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry, searchCachedSchemas, readAllCachedSchemasFromDisk, type SchemaSearchMatch } from './schemaCache';
@@ -165,6 +166,12 @@ export class ConnectionManagerViewerV2 {
 		this.panel.iconPath = vscode.Uri.joinPath(this.extensionUri, 'media', 'images', 'kusto-workbench-logo.png');
 
 		this.panel.onDidDispose(() => this.dispose(), null, this.disposables);
+		this.disposables.push(ConnectionService.onKustoFavoritesChanged((context) => {
+			if (context === this.context) {
+				return this.sendSnapshotToWebview();
+			}
+			return undefined;
+		}));
 		this.panel.onDidChangeViewState((e) => {
 			if (e.webviewPanel.visible) {
 				void this.sendSnapshotToWebview();
@@ -193,6 +200,7 @@ export class ConnectionManagerViewerV2 {
 
 	private async setFavorites(favorites: KustoFavorite[]): Promise<void> {
 		await this.context.globalState.update(STORAGE_KEYS.favorites, favorites);
+		ConnectionService.broadcastKustoFavoritesData(this.context);
 	}
 
 	private normalizeFavoriteClusterUrl(clusterUrl: string): string {

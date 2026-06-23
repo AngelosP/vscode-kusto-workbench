@@ -12,7 +12,7 @@ Feature: Exported skill includes dashboard rules sidecar
 
     Then the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\SKILL.md" should exist
     And the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\html-dashboard-rules.md" should exist
-    And the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\SKILL.md" should contain "# version: 12"
+    And the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\SKILL.md" should contain "# version: 13"
     And the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\SKILL.md" should contain "./html-dashboard-rules.md"
     And the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\SKILL.md" should contain "# Kusto Workbench Skill"
     And the file "${VSCODE_EXT_TEST_WORKSPACE}\.github\skills\kusto-workbench\html-dashboard-rules.md" should contain "# Kusto Workbench HTML Dashboard Rules"

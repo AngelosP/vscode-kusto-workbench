@@ -184,6 +184,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		panel: vscode.WebviewPanel,
 		options?: { registerMessageHandler?: boolean; hideFooterControls?: boolean }
 	): Promise<void> {
+		this.connection.activate();
 		this.panel = panel;
 		// Do NOT set panel.iconPath here — this method is called for custom editors
 		// where VS Code owns the panel. Setting iconPath on a custom-editor panel
@@ -222,6 +223,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.clearCursorStatusForProvider();
 			this.cancelAllRunningQueries();
 			this.disconnectToolOrchestrator();
+			this.connection.dispose();
 			this.embeddedTutorialRegistration?.dispose();
 			this.embeddedTutorialRegistration = undefined;
 			this.embeddedTutorialHost = undefined;
@@ -242,6 +244,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	private connectToolOrchestrator(): void {
 		if (!toolOrchestrator) return;
+		if (this.toolOrchestratorToken !== undefined) {
+			toolOrchestrator.disconnectIfOwner(this.toolOrchestratorToken);
+			this.toolOrchestratorToken = undefined;
+		}
 
 		this.toolOrchestratorToken = toolOrchestrator.connect(
 			(message: unknown) => this.postMessage(message),
@@ -320,6 +326,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.panel.reveal(vscode.ViewColumn.One);
 			return;
 		}
+		this.connection.activate();
 
 		this.panel = vscode.window.createWebviewPanel(
 			'kustoQueryEditor',
@@ -362,6 +369,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.clearCursorStatusForProvider();
 			this.cancelAllRunningQueries();
 			this.disconnectToolOrchestrator();
+			this.connection.dispose();
 			this.configSubscription?.dispose();
 			this.configSubscription = undefined;
 			this.panel = undefined;
@@ -1978,8 +1986,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		}
 	}
 
-	postMessage(message: unknown): void {
-		void this.panel?.webview.postMessage(message);
+	postMessage(message: unknown): Thenable<boolean> | undefined {
+		return this.panel?.webview.postMessage(message);
 	}
 
 	// ── Alternating row color setting ──────────────────────────────────────────

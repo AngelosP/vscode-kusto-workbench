@@ -2,6 +2,7 @@ import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KwSectionShell } from '../../src/webview/components/kw-section-shell.js';
 
 const handlerState = vi.hoisted(() => ({
+	kustoFavorites: [] as Array<Record<string, unknown>>,
 	sqlConnections: [] as Array<Record<string, unknown>>,
 	sqlCachedDatabases: {} as Record<string, string[]>,
 	sqlFavorites: [] as Array<Record<string, unknown>>,
@@ -37,6 +38,9 @@ const mocks = {
 	updateConnectionSelects: vi.fn(),
 	updateDatabaseSelect: vi.fn(),
 	onDatabasesError: vi.fn(),
+	updateKustoFavoritesUiForAllBoxes: vi.fn(),
+	tryAutoEnterKustoFavoritesModeForAllBoxes: vi.fn(),
+	maybeDefaultFirstKustoBoxToFavoritesMode: vi.fn(),
 	updateSqlConnectionSelects: vi.fn(),
 	updateSqlDatabaseSelect: vi.fn(),
 	onSqlDatabasesError: vi.fn(),
@@ -113,9 +117,9 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	updateDatabaseSelect: mocks.updateDatabaseSelect,
 	onDatabasesError: mocks.onDatabasesError,
 	parseKustoExplorerConnectionsXml: mocks.parseKustoExplorerConnectionsXml,
-	__kustoUpdateFavoritesUiForAllBoxes: vi.fn(),
-	__kustoTryAutoEnterFavoritesModeForAllBoxes: vi.fn(),
-	__kustoMaybeDefaultFirstBoxToFavoritesMode: vi.fn(),
+	__kustoUpdateFavoritesUiForAllBoxes: mocks.updateKustoFavoritesUiForAllBoxes,
+	__kustoTryAutoEnterFavoritesModeForAllBoxes: mocks.tryAutoEnterKustoFavoritesModeForAllBoxes,
+	__kustoMaybeDefaultFirstBoxToFavoritesMode: mocks.maybeDefaultFirstKustoBoxToFavoritesMode,
 	__kustoOnConnectionsUpdated: vi.fn(),
 	schemaRequestTokenByBoxId: handlerState.schemaRequestTokenByBoxId,
 	addPythonBox: vi.fn(() => 'python_1'),
@@ -218,8 +222,11 @@ vi.mock('../../src/webview/core/state.js', () => ({
 	}),
 	setLastConnectionId: mocks.setLastConnectionId,
 	setLastDatabase: mocks.setLastDatabase,
-	kustoFavorites: [],
-	setKustoFavorites: mocks.setKustoFavorites,
+	kustoFavorites: handlerState.kustoFavorites,
+	setKustoFavorites: vi.fn((favorites: Array<Record<string, unknown>>) => {
+		mocks.setKustoFavorites(favorites);
+		handlerState.kustoFavorites.splice(0, handlerState.kustoFavorites.length, ...favorites);
+	}),
 	sqlFavorites: handlerState.sqlFavorites,
 	setSqlFavorites: vi.fn((favorites: Array<Record<string, unknown>>) => {
 		mocks.setSqlFavorites(favorites);
@@ -357,6 +364,7 @@ describe('message-handler dispatch', () => {
 
 	beforeEach(() => {
 		document.body.innerHTML = '';
+		handlerState.kustoFavorites.splice(0, handlerState.kustoFavorites.length);
 		handlerState.sqlConnections.splice(0, handlerState.sqlConnections.length);
 		handlerState.sqlFavorites.splice(0, handlerState.sqlFavorites.length);
 		for (const key of Object.keys(handlerState.sqlCachedDatabases)) delete handlerState.sqlCachedDatabases[key];
@@ -377,6 +385,7 @@ describe('message-handler dispatch', () => {
 		mocks.getConnectionId.mockReturnValue('');
 		mocks.getDatabase.mockReturnValue('');
 		mocks.getSqlSectionElement.mockReturnValue(null);
+		delete (window as any).__kustoEnterFavoritesModeForBox;
 	});
 
 	it('routes documentData to persistence handler', async () => {
@@ -528,6 +537,38 @@ describe('message-handler dispatch', () => {
 		expect(mocks.updateSqlFavoritesUiForAllBoxes).toHaveBeenCalledTimes(1);
 		expect(sqlEl.setFavoritesMode).toHaveBeenCalledWith(true);
 		expect(handlerState.sqlFavoritesModeByBoxId.sql_1).toBe(true);
+	});
+
+	it('routes favoritesData to Kusto favorites state and all Kusto sections', async () => {
+		const favorites = [{ name: 'Telemetry Favorite', clusterUrl: 'https://telemetry.kusto.windows.net', database: 'Samples' }];
+		const enterFavoritesMode = vi.fn();
+		(window as any).__kustoEnterFavoritesModeForBox = enterFavoritesMode;
+
+		dispatchHostMessage({
+			type: 'favoritesData',
+			boxId: 'query_1',
+			favorites,
+		});
+		await Promise.resolve();
+
+		expect(mocks.setKustoFavorites).toHaveBeenCalledWith(favorites);
+		expect(mocks.updateKustoFavoritesUiForAllBoxes).toHaveBeenCalledTimes(1);
+		expect(mocks.tryAutoEnterKustoFavoritesModeForAllBoxes).toHaveBeenCalledTimes(1);
+		expect(mocks.maybeDefaultFirstKustoBoxToFavoritesMode).toHaveBeenCalledTimes(1);
+		expect(enterFavoritesMode).toHaveBeenCalledWith('query_1');
+	});
+
+	it('does not auto-enter Kusto favorites mode for non-originating favoritesData', async () => {
+		dispatchHostMessage({
+			type: 'favoritesData',
+			favorites: [{ name: 'Remote Favorite', clusterUrl: 'https://remote.kusto.windows.net', database: 'Samples' }],
+		});
+		await Promise.resolve();
+
+		expect(mocks.setKustoFavorites).toHaveBeenCalledTimes(1);
+		expect(mocks.updateKustoFavoritesUiForAllBoxes).toHaveBeenCalledTimes(1);
+		expect(mocks.tryAutoEnterKustoFavoritesModeForAllBoxes).not.toHaveBeenCalled();
+		expect(mocks.maybeDefaultFirstKustoBoxToFavoritesMode).not.toHaveBeenCalled();
 	});
 
 	it('routes sqlDatabasesData and sqlDatabasesError to SQL database handlers', async () => {

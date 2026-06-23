@@ -3,15 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [4.7.5] - 2026.06.16
-
-* Bugs
-    * Connection Manager would in certain cases require you to scroll before it would display the databases of the selected cluster (scroll view bug)
-
-## [4.7.4] - 2026.06.15
+## [4.7.4] - 2026.06.22
 
 * Bugs
     * Some models would occasionally show tool call errors in versions v1.122.0+ of VS Code (more edge cases fixed)
+    * Connection Manager would in certain cases require you to scroll before it would display the databases of the selected cluster (scroll view bug)
 
 ## [4.7.3] - 2026.06.08
 

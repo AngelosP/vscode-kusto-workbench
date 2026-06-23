@@ -28,7 +28,8 @@
     "onCommand:kustoWorkbench.test.resetDidYouKnowState",
     "onCommand:kustoWorkbench.test.openEmbeddedDidYouKnow",
     "onCommand:kustoWorkbench.test.openMdCompatFile",
-    "onCommand:kustoWorkbench.test.openMdCompatFileViaAssociation"
+    "onCommand:kustoWorkbench.test.openMdCompatFileViaAssociation",
+    "onCommand:kustoWorkbench.test.runOpenFileTargetingScenario"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -460,13 +461,42 @@
         ],
         "toolReferenceName": "listSections",
         "displayName": "List Sections",
-        "modelDescription": "Lists all sections in the currently open Kusto Workbench notebook. Returns section IDs needed for other operations, plus the file path and file name of the currently open document (filePath, fileName).",
-        "userDescription": "View all sections in the current Kusto Workbench notebook.",
+        "modelDescription": "Lists sections in the active or open Kusto Workbench file, including .kqlx, .mdx, .sqlx, .kql, .csl, sidecar-backed query files, and .sql files when opened with the Workbench SQL compatibility editor. .md compatibility files are included in openFiles inventory and should be upgraded to .mdx for editable sections. Returns section IDs needed for other operations, the file path and file name when available, and openFiles metadata for supported open files.",
+        "userDescription": "View sections and supported open files in Kusto Workbench.",
         "canBeReferencedInPrompt": true,
         "icon": "$(list-flat)",
         "inputSchema": {
           "type": "object",
           "properties": {}
+        }
+      },
+      {
+        "name": "kusto-workbench_activate-workbench-file",
+        "tags": [
+          "kusto",
+          "workbench",
+          "file",
+          "activate",
+          "open"
+        ],
+        "toolReferenceName": "activateWorkbenchFile",
+        "displayName": "Activate Workbench File",
+        "modelDescription": "Activates or opens a supported Kusto Workbench file returned by #listSections. Use openFileId when available, or targetFileUri. Sidecar URIs are resolved to their primary logical file. Explicit targeting on mutating tools does not require activation; use this when the user wants the file to become visible/focused.",
+        "userDescription": "Activate or open a specific Kusto Workbench file.",
+        "canBeReferencedInPrompt": true,
+        "icon": "",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
+            }
+          }
         }
       },
       {
@@ -549,6 +579,14 @@
             "name": {
               "type": "string",
               "description": "Optional name/title for the section"
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -576,6 +614,14 @@
             "sectionId": {
               "type": "string",
               "description": "The ID of the section to remove"
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -607,6 +653,14 @@
             "collapsed": {
               "type": "boolean",
               "description": "True to collapse, false to expand"
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -639,6 +693,14 @@
                 "type": "string"
               },
               "description": "Array of ALL section IDs in the desired order. Must include every section ID from #listSections. Devnotes section IDs may be included but are silently ignored."
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -687,6 +749,14 @@
             "execute": {
               "type": "boolean",
               "description": "If true, execute the query after updating"
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -735,6 +805,14 @@
                 "wysiwyg"
               ],
               "description": "The display mode: preview (rendered), markdown (raw), or wysiwyg (rich editor)"
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -1079,6 +1157,14 @@
                 }
               },
               "additionalProperties": false
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -1237,6 +1323,14 @@
             "joinOmitDuplicateColumns": {
               "type": "boolean",
               "description": "For join: whether to omit duplicate key columns from the right side"
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -1281,6 +1375,14 @@
                 "preview"
               ],
               "description": "Display mode: 'code' for editor, 'preview' for rendered HTML"
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -1340,6 +1442,14 @@
             "sectionId": {
               "type": "string",
               "description": "The ID of the HTML section to validate"
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -1389,6 +1499,14 @@
               "minimum": 1,
               "maximum": 1000,
               "description": "Optional: Maximum number of result rows to return in the tool response. Defaults to 100. This does not change query execution or the Kusto Workbench UI results."
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -1534,6 +1652,14 @@
             "noteId": {
               "type": "string",
               "description": "For 'remove': the ID of the note to remove."
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -1599,6 +1725,14 @@
             "execute": {
               "type": "boolean",
               "description": "If true, execute the query after updating"
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -1625,6 +1759,14 @@
             "sectionId": {
               "type": "string",
               "description": "The ID of the SQL section to get schema for"
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [
@@ -1665,6 +1807,14 @@
             "database": {
               "type": "string",
               "description": "Optional: Database name to use."
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional: Target a specific open Kusto Workbench file using the openFileId returned by #listSections."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
           "required": [

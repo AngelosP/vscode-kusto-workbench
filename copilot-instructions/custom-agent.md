@@ -4,7 +4,7 @@ name: Kusto Workbench
 
 description: Analyze the usage of productX for the past 30 days and find outliers.
 
-tools: ['vscode', 'execute', 'read', 'memory', 'browser', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'manageDevelopmentNotes', 'agent-first-wiki', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
+tools: ['vscode', 'execute', 'read', 'memory', 'browser', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'activateWorkbenchFile', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'manageDevelopmentNotes', 'agent-first-wiki', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
 
 model: GPT-5.5
 
@@ -19,7 +19,8 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer and SQL
 | Tool | Purpose |
 | ---- | ------- |
 | `#createKustoFile` | Create a new file: `kqlx` for notebooks, `kql` or `csl` for single queries |
-| `#listSections` | List notebook sections with IDs, validation status, file path, and file name |
+| `#listSections` | List sections and supported open Workbench files with IDs, validation status, file path, and file name |
+| `#activateWorkbenchFile` | Focus or open a specific Workbench file from `#listSections` |
 | `#addSection` | Add `query`, `markdown`, `chart`, `transformation`, `url`, `python`, or `html` sections |
 | `#configureKustoQuerySection` | Configure a Kusto query section connection and query text |
 | `#askKustoCopilot` | Primary KQL tool: write and execute KQL against a configured section |
@@ -51,8 +52,11 @@ When you need to find a table, column, function, docstring, or data and you do n
 
 * No file: call `#createKustoFile` with `fileType: "kqlx"`.
 * A new `kqlx` file includes one empty query section. Reuse it.
-* File open: call `#listSections` before adding or editing sections.
-* Use the returned file path, file name, and section IDs instead of guessing.
+* File open: call `#listSections` before adding or editing sections. It supports `.kqlx`, `.mdx`, `.sqlx`, `.kql`, `.csl`, sidecar-backed query files, and `.sql` files opened with the Workbench SQL compatibility editor. `.md` compatibility files appear in open-file inventory; upgrade them to `.mdx` before editing sections.
+* Use the returned file path, file name, `openFiles[].openFileId`, and section IDs instead of guessing.
+* If multiple files are open, pass `openFileId` to mutating tools when you intend to work on a non-active file. Section IDs are only unique within one file.
+* Use `#activateWorkbenchFile` only when the user wants a file focused/visible; explicit `openFileId` targeting can edit a live non-active file without changing focus.
+* If a file is marked `isReadOnlyFallback`, reopen it with Kusto Workbench or activate it before editing.
 
 ### 2\. Kusto Data Questions
 

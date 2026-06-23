@@ -4,6 +4,8 @@ import '../../src/webview/components/kw-dropdown.js';
 import '../../src/webview/sections/kw-query-section.js';
 import type { KwQuerySection } from '../../src/webview/sections/kw-query-section.js';
 import type { KwDropdown } from '../../src/webview/components/kw-dropdown.js';
+import { setKustoFavorites, setQueryBoxes } from '../../src/webview/core/state.js';
+import { __kustoUpdateFavoritesUiForAllBoxes } from '../../src/webview/sections/query-connection.controller.js';
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -15,6 +17,8 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+	setKustoFavorites([]);
+	setQueryBoxes([]);
 	render(nothing, container);
 	container.remove();
 });
@@ -37,6 +41,31 @@ function getDropdownButtonText(dropdown: KwDropdown): string {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('kw-query-section favorites dropdown', () => {
+
+	it('updates favorites dropdowns for every Kusto section in the current webview', async () => {
+		render(html`
+			<kw-query-section id="query_a" box-id="query_a"></kw-query-section>
+			<kw-query-section id="query_b" box-id="query_b"></kw-query-section>
+		`, container);
+		const sections = Array.from(container.querySelectorAll('kw-query-section')) as KwQuerySection[];
+		for (const el of sections) {
+			el.setFavoritesMode(true);
+			await el.updateComplete;
+		}
+
+		setQueryBoxes(['query_a', 'query_b']);
+		setKustoFavorites([
+			{ clusterUrl: 'https://shared.kusto.windows.net', database: 'Samples', name: 'Shared Favorite' },
+		]);
+		__kustoUpdateFavoritesUiForAllBoxes();
+		for (const el of sections) await el.updateComplete;
+
+		for (const el of sections) {
+			const dropdown = getFavoritesDropdown(el);
+			expect(dropdown).not.toBeNull();
+			expect(dropdown!.items.map(item => item.label)).toContain('Shared Favorite');
+		}
+	});
 
 	it('shows selected favorite label when connection+database match a favorite', async () => {
 		const el = createSection();

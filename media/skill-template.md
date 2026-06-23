@@ -4,9 +4,9 @@ name: Kusto Workbench
 
 description: Operate Kusto Workbench to query Azure Data Explorer and SQL sources, build charts, create transformations, author HTML dashboards, validate Power BI-ready reports, and organize notebook analyses. Use when the user mentions Kusto, KQL, Azure Data Explorer, ADX, telemetry queries, SQL sections, charting, dashboards, or Power BI export from Kusto Workbench.
 
-tools: ['createKustoFile', 'askKustoCopilot', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'addSection', 'removeSection', 'reorderSections', 'collapseExpandSection', 'configureKustoQuerySection', 'updateMarkdownSection', 'configureChart', 'configureTransformation', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'manageDevelopmentNotes', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
+tools: ['createKustoFile', 'askKustoCopilot', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'activateWorkbenchFile', 'addSection', 'removeSection', 'reorderSections', 'collapseExpandSection', 'configureKustoQuerySection', 'updateMarkdownSection', 'configureChart', 'configureTransformation', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'manageDevelopmentNotes', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
 
-# version: 12 - Auto-updated by Kusto Workbench. Do not remove this line.
+# version: 13 - Auto-updated by Kusto Workbench. Do not remove this line.
 
 ---
 
@@ -19,7 +19,8 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | Tool | Purpose |
 | ---- | ------- |
 | `#createKustoFile` | Create a new file: `kqlx` for notebooks, `kql` or `csl` for single queries |
-| `#listSections` | List notebook sections with IDs, file path, file name, and validation status |
+| `#listSections` | List sections and supported open Workbench files with IDs, file path, file name, and validation status |
+| `#activateWorkbenchFile` | Focus or open a specific Workbench file from `#listSections` |
 | `#addSection` | Add `query`, `markdown`, `chart`, `transformation`, `url`, `python`, or `html` sections |
 | `#removeSection`, `#reorderSections`, `#collapseExpandSection` | Organize notebook sections |
 | `#configureKustoQuerySection` | Configure a Kusto query section connection and query text |
@@ -41,8 +42,10 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 
 - No file open: call `#createKustoFile` with `fileType: "kqlx"`.
 - New `kqlx` files include one empty query section. Reuse it.
-- File already open: call `#listSections` before adding or editing sections.
-- Use returned section IDs instead of guessing.
+- File already open: call `#listSections` before adding or editing sections. It supports `.kqlx`, `.mdx`, `.sqlx`, `.kql`, `.csl`, sidecar-backed query files, and `.sql` files opened with the Workbench SQL compatibility editor. `.md` compatibility files appear in open-file inventory; upgrade them to `.mdx` before editing sections.
+- Use returned file metadata, `openFiles[].openFileId`, and section IDs instead of guessing.
+- If multiple files are open, pass `openFileId` to mutating tools when you intend to work on a non-active file. Section IDs are only unique within one file.
+- Use `#activateWorkbenchFile` only when the user wants a file focused/visible; explicit `openFileId` targeting can edit a live non-active file without changing focus.
 
 ### 2. Search For Data Across Connections
 

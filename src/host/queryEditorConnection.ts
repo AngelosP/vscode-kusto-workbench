@@ -88,7 +88,7 @@ export interface ConnectionServiceHost {
 	readonly context: vscode.ExtensionContext;
 	readonly kustoClient: KustoQueryClient;
 	readonly output: vscode.OutputChannel;
-	postMessage(message: unknown): void;
+	postMessage(message: unknown): Thenable<boolean> | PromiseLike<boolean> | void;
 	formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, database?: string): string;
 	normalizeClusterUrlKey(url: string): string;
 	getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined>;
@@ -98,13 +98,28 @@ export interface ConnectionServiceHost {
 // ── ConnectionService class ──
 
 export class ConnectionService {
+	private static readonly liveServices = new Set<ConnectionService>();
+	private static readonly kustoFavoritesListeners = new Set<(context: vscode.ExtensionContext) => void | PromiseLike<void>>();
+
 	private lastConnectionId?: string;
 	private lastDatabase?: string;
+	private disposed = false;
 	/** Tracks when we last showed a DB-load error notification per cluster (to avoid spamming). */
 	private lastDbErrorNotificationByCluster = new Map<string, number>();
 
 	constructor(private readonly host: ConnectionServiceHost) {
+		this.activate();
 		this.loadLastSelection();
+	}
+
+	activate(): void {
+		this.disposed = false;
+		ConnectionService.liveServices.add(this);
+	}
+
+	dispose(): void {
+		this.disposed = true;
+		ConnectionService.liveServices.delete(this);
 	}
 
 	// ── Last selection ──
@@ -167,7 +182,57 @@ export class ConnectionService {
 
 	private async setFavorites(favorites: KustoFavorite[], boxId?: string): Promise<void> {
 		await this.host.context.globalState.update(STORAGE_KEYS.favorites, favorites);
-		await this.sendFavoritesData(boxId);
+		ConnectionService.broadcastKustoFavoritesData(this.host.context, boxId, this);
+	}
+
+	static broadcastKustoFavoritesData(context: vscode.ExtensionContext, originatingBoxId?: string, originatingService?: ConnectionService): void {
+		for (const service of ConnectionService.liveServices) {
+			if (service.disposed) {
+				ConnectionService.liveServices.delete(service);
+				continue;
+			}
+			if (!service.sharesFavoriteStorageWithContext(context)) {
+				continue;
+			}
+			void service
+				.sendFavoritesData(service === originatingService ? originatingBoxId : undefined)
+				.catch((error: unknown) => service.logFavoritesBroadcastError(error));
+		}
+		for (const listener of ConnectionService.kustoFavoritesListeners) {
+			try {
+				void Promise.resolve(listener(context)).catch((error: unknown) => {
+					try { console.warn('[kusto] Failed to notify Kusto favorites listener', error); } catch {
+						// ignore logging failures
+					}
+				});
+			} catch (error) {
+				try { console.warn('[kusto] Failed to notify Kusto favorites listener', error); } catch {
+					// ignore logging failures
+				}
+			}
+		}
+	}
+
+	static onKustoFavoritesChanged(listener: (context: vscode.ExtensionContext) => void | PromiseLike<void>): vscode.Disposable {
+		ConnectionService.kustoFavoritesListeners.add(listener);
+		return { dispose: () => { ConnectionService.kustoFavoritesListeners.delete(listener); } };
+	}
+
+	private sharesFavoriteStorageWithContext(context: vscode.ExtensionContext): boolean {
+		if (this.host.context === context) {
+			return true;
+		}
+		try {
+			return this.host.context.globalState.get<unknown>(STORAGE_KEYS.favorites) === context.globalState.get<unknown>(STORAGE_KEYS.favorites);
+		} catch {
+			return false;
+		}
+	}
+
+	private logFavoritesBroadcastError(error: unknown): void {
+		try { this.host.output.appendLine(`[favorites] Failed to broadcast favoritesData: ${error instanceof Error ? error.message : String(error)}`); } catch {
+			// ignore logging failures
+		}
 	}
 
 	private async sendFavoritesData(boxId?: string): Promise<void> {
@@ -175,7 +240,7 @@ export class ConnectionService {
 		if (boxId) {
 			payload.boxId = boxId;
 		}
-		this.host.postMessage(payload);
+		await Promise.resolve(this.host.postMessage(payload));
 	}
 
 	async promptAddFavorite(
@@ -308,7 +373,13 @@ export class ConnectionService {
 
 	private async setSqlFavorites(favorites: SqlFavorite[], boxId?: string): Promise<void> {
 		await this.host.context.globalState.update(STORAGE_KEYS.sqlFavorites, favorites);
-		await this.sendSqlFavoritesData(boxId);
+		try {
+			await this.sendSqlFavoritesData(boxId);
+		} catch (error) {
+			try { this.host.output.appendLine(`[favorites] Failed to send sqlFavoritesData: ${error instanceof Error ? error.message : String(error)}`); } catch {
+				// ignore logging failures
+			}
+		}
 	}
 
 	private async sendSqlFavoritesData(boxId?: string): Promise<void> {
@@ -316,7 +387,7 @@ export class ConnectionService {
 		if (boxId) {
 			payload.boxId = boxId;
 		}
-		this.host.postMessage(payload);
+		await Promise.resolve(this.host.postMessage(payload));
 	}
 
 	async promptAddSqlFavorite(

@@ -4,7 +4,7 @@ name: Kusto Workbench Search
 description: Search for Kusto data
 user-invokable: false
 
-tools: ['vscode', 'execute', 'read', 'memory', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections', 'manageDevelopmentNotes']
+tools: ['vscode', 'execute', 'read', 'memory', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'activateWorkbenchFile', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections', 'manageDevelopmentNotes']
 
 model: Claude Opus 4.6
 
@@ -25,7 +25,8 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer with th
 | `#getKustoSchema` | Get database schema (tables, columns, functions) for a cluster |
 | `#refreshKustoSchema` | Force-refresh schema from Kusto cluster (bypasses cache) |
 | `#searchCachedSchemas` | Search all cached schemas for tables, columns, or functions by regex pattern |
-| `#listSections` | List notebook sections with IDs and validation status |
+| `#listSections` | List sections and supported open Workbench files with IDs and validation status |
+| `#activateWorkbenchFile` | Focus or open a specific Workbench file from `#listSections` |
 | `#addSection` | Add section: `query`, `markdown`, `chart`, `transformation`, `url`, `python` |
 | `#removeSection` | Remove a section by ID |
 | `#reorderSections` | Reorder all sections by providing IDs in desired order |
@@ -51,8 +52,9 @@ You control Kusto Workbench, a VS Code extension for Azure Data Explorer with th
 
 3. **If the search is for actual data values** (not schema names), you need to run a query:
    a. Ensure a query section exists (use `#listSections`, or `#addSection` type `"query"`)
-   b. Configure it with `#configureKustoQuerySection` for the target cluster/database
-   c. Use `#askKustoCopilot` to search the data
+   b. If multiple files are open, keep the intended file's `openFileId` from `openFiles` and pass it to section tools.
+   c. Configure it with `#configureKustoQuerySection` for the target cluster/database
+   d. Use `#askKustoCopilot` to search the data
 
 4. **Collect all matches.** For each match, include: cluster URL, database, matched entity (table/column/function name), and enough context to be useful (column types, docstrings, etc.).
 

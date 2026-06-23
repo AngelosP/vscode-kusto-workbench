@@ -1288,6 +1288,187 @@ function e2eSetKustoCacheEnabled(enabled: boolean): string {
 	return `kusto cache enabled=${checkbox.checked}`;
 }
 
+function e2eNormalizeClusterUrlKey(url: string): string {
+	try {
+		const raw = String(url || '').trim();
+		if (!raw) return '';
+		const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
+		const parsed = new URL(withScheme);
+		return (parsed.origin + parsed.pathname).replace(/\/+$/g, '').toLowerCase();
+	} catch {
+		return String(url || '').trim().replace(/\/+$/g, '').toLowerCase();
+	}
+}
+
+function e2eKustoFavoriteSections(): any[] {
+	return Array.from(document.querySelectorAll('kw-query-section')) as any[];
+}
+
+function e2eKustoFavoriteMatches(favorite: any, clusterUrl: string, database: string): boolean {
+	const favoriteCluster = e2eNormalizeClusterUrlKey(String(favorite?.clusterUrl || ''));
+	const targetCluster = e2eNormalizeClusterUrlKey(clusterUrl);
+	const favoriteDatabase = String(favorite?.database || '').trim().toLowerCase();
+	const targetDatabase = String(database || '').trim().toLowerCase();
+	return !!targetCluster && favoriteCluster === targetCluster && favoriteDatabase === targetDatabase;
+}
+
+function e2eKustoGlobalFavorites(): any[] {
+	return Array.isArray((_win as any).kustoFavorites) ? (_win as any).kustoFavorites : [];
+}
+
+async function e2eKustoPrepareFavoriteDocument(options: any = {}): Promise<string> {
+	const clusterUrl = String(options.clusterUrl || '').trim();
+	const database = String(options.database || '').trim();
+	const sectionCount = Math.max(1, Number(options.sectionCount || 1));
+	if (!clusterUrl) throw new Error('clusterUrl is required');
+	if (!database) throw new Error('database is required');
+
+	while (e2eKustoFavoriteSections().length < sectionCount) {
+		const nextIndex = e2eKustoFavoriteSections().length + 1;
+		if (typeof (_win as any).addQueryBox !== 'function') {
+			throw new Error('addQueryBox is not available for creating Kusto sections');
+		}
+		(_win as any).addQueryBox({
+			id: `query_favsync_${Date.now()}_${nextIndex}`,
+			initialQuery: `print favsync_${nextIndex}=1`,
+			clusterUrl,
+			database,
+		});
+		await e2eDelay(80);
+	}
+
+	const connectionId = `favsync_${e2eNormalizeClusterUrlKey(clusterUrl).replace(/[^a-z0-9]+/g, '_') || Date.now()}`;
+	const conn = { id: connectionId, name: String(options.connectionName || clusterUrl), clusterUrl, database };
+	const sections = e2eKustoFavoriteSections();
+	for (const section of sections) {
+		// Set the current connection before publishing the local fake connection list.
+		// That prevents kw-query-section.setConnections() from dispatching the normal
+		// connection-changed event, which would ask the host to load databases for a fake cluster.
+		if (typeof section.setConnectionId === 'function') section.setConnectionId(conn.id);
+		if (typeof section.setDesiredClusterUrl === 'function') section.setDesiredClusterUrl(clusterUrl);
+		if (typeof section.setConnections === 'function') section.setConnections([conn], { lastConnectionId: conn.id });
+		if (typeof section.setDatabase === 'function') section.setDatabase(database);
+		if (typeof section.setDatabases === 'function') section.setDatabases([database], database);
+		if (typeof section.setFavoritesMode === 'function') section.setFavoritesMode(false);
+		section.requestUpdate?.();
+	}
+	for (const section of sections) await section.updateComplete;
+	return `prepared ${sections.length} Kusto section(s) for ${clusterUrl}/${database}`;
+}
+
+async function e2eKustoCleanFavorite(options: any = {}): Promise<string> {
+	const clusterUrl = String(options.clusterUrl || '').trim();
+	const database = String(options.database || '').trim();
+	const timeoutMs = Math.max(500, Number(options.timeoutMs || 5000));
+	if (!clusterUrl) throw new Error('clusterUrl is required');
+	if (!database) throw new Error('database is required');
+	let sawRoundTrip = false;
+	const onMessage = (event: MessageEvent) => {
+		if ((event as any)?.data?.type === 'favoritesData') {
+			sawRoundTrip = true;
+		}
+	};
+	window.addEventListener('message', onMessage as EventListener);
+	postMessageToHost({ type: 'removeFavorite', clusterUrl, database });
+	const started = performance.now();
+	try {
+		while (performance.now() - started <= timeoutMs) {
+			if (sawRoundTrip && !e2eKustoGlobalFavorites().some(favorite => e2eKustoFavoriteMatches(favorite, clusterUrl, database))) {
+				return `cleaned favorite for ${clusterUrl}/${database}`;
+			}
+			await e2eDelay(80);
+		}
+	} finally {
+		window.removeEventListener('message', onMessage as EventListener);
+	}
+	const matching = e2eKustoGlobalFavorites()
+		.filter(favorite => e2eKustoFavoriteMatches(favorite, clusterUrl, database))
+		.map(favorite => String(favorite?.name || ''))
+		.join(', ');
+	throw new Error(`Timed out cleaning favorite for ${clusterUrl}/${database}; sawRoundTrip=${sawRoundTrip}; matching favorites: ${matching}`);
+}
+
+async function e2eKustoSetFavoritesModeForInspection(section: any): Promise<void> {
+	if (typeof section.setFavoritesMode === 'function') {
+		section.setFavoritesMode(true);
+	}
+	section.requestUpdate?.();
+	await section.updateComplete;
+}
+
+function e2eKustoFavoriteDropdownLabels(section: any): string[] {
+	const dropdown = section.shadowRoot?.querySelector('.kusto-favorites-combo kw-dropdown') as any;
+	if (!dropdown) return [];
+	return (Array.isArray(dropdown.items) ? dropdown.items : []).map((item: any) => String(item?.label || '').trim());
+}
+
+async function e2eKustoCheckFavoriteInAllSections(name: string, expectedSectionCount: number | undefined, expectedVisible: boolean): Promise<{ ok: boolean; details: string[]; errors: string[] }> {
+	const favoriteName = String(name || '').trim();
+	if (!favoriteName) throw new Error('favorite name is required');
+	const sections = e2eKustoFavoriteSections();
+	if (typeof expectedSectionCount === 'number' && sections.length !== expectedSectionCount) {
+		throw new Error(`Expected ${expectedSectionCount} Kusto section(s), found ${sections.length}`);
+	}
+	const errors: string[] = [];
+	const details: string[] = [];
+	for (const section of sections) {
+		await e2eKustoSetFavoritesModeForInspection(section);
+		const labels = e2eKustoFavoriteDropdownLabels(section);
+		const sectionId = String(section.boxId || section.id || 'unknown');
+		const hasFavorite = labels.includes(favoriteName);
+		details.push(`${sectionId}=[${labels.join('|')}]`);
+		if (expectedVisible && !hasFavorite) errors.push(`${sectionId} is missing ${favoriteName}`);
+		if (!expectedVisible && hasFavorite) errors.push(`${sectionId} unexpectedly has ${favoriteName}`);
+	}
+	return { ok: errors.length === 0, details, errors };
+}
+
+async function e2eKustoAssertFavoriteInAllSections(name: string, expectedSectionCount?: number, expectedVisible = true, timeoutMs = 5000): Promise<string> {
+	const started = performance.now();
+	let last: { ok: boolean; details: string[]; errors: string[] } | undefined;
+	while (performance.now() - started <= timeoutMs) {
+		last = await e2eKustoCheckFavoriteInAllSections(name, expectedSectionCount, expectedVisible);
+		if (last.ok) {
+			return `${expectedVisible ? 'found' : 'did not find'} ${name} in ${last.details.length} Kusto section(s): ${last.details.join(', ')}`;
+		}
+		await e2eDelay(100);
+	}
+	const globalFavorites = e2eKustoGlobalFavorites();
+	throw new Error(`${last?.errors.join('; ') || 'favorite assertion did not settle'}; window.kustoFavorites=${globalFavorites.length}; dropdowns: ${last?.details.join(', ') || ''}`);
+}
+
+async function e2eKustoAddFavoriteFromSection(index = 0): Promise<string> {
+	const sections = e2eKustoFavoriteSections();
+	const section = sections[index];
+	if (!section) throw new Error(`Kusto section index ${index} not found; total=${sections.length}`);
+	if (typeof section.setFavoritesMode === 'function') section.setFavoritesMode(false);
+	section.requestUpdate?.();
+	await section.updateComplete;
+	const star = section.shadowRoot?.querySelector('.favorite-btn') as HTMLButtonElement | null;
+	if (!star) throw new Error(`Favorite star button not found in ${section.boxId || section.id}`);
+	if (star.classList.contains('favorite-active')) {
+		throw new Error(`Favorite star is already active in ${section.boxId || section.id}; choose a unique cluster/database for this scenario`);
+	}
+	star.click();
+	return `clicked favorite star in ${section.boxId || section.id}`;
+}
+
+function e2eKustoSetFavoritesSyncProbe(label = 'target'): string {
+	const token = `${String(label || 'target')}:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+	(_win as any).__favsyncTargetProbe = token;
+	return token;
+}
+
+function e2eKustoAssertFavoritesSyncProbe(token: string): string {
+	const expected = String(token || '').trim();
+	const actual = String((_win as any).__favsyncTargetProbe || '').trim();
+	if (!expected) throw new Error('probe token is required');
+	if (actual !== expected) {
+		throw new Error(`Target webview probe changed or disappeared; expected ${expected}, got ${actual || '<missing>'}`);
+	}
+	return `target probe still present: ${actual}`;
+}
+
 function e2eBeginHostMessageCapture(): string {
 	const root = (_win.__e2e = _win.__e2e || {}) as any;
 	const existing = root.hostMessageCapture || {};
@@ -3740,6 +3921,15 @@ _win.__e2e = {
 	},
 	kusto: {
 		...e2eQueryApi('kusto'),
+		favorites: {
+			prepareDocument: e2eKustoPrepareFavoriteDocument,
+			clean: e2eKustoCleanFavorite,
+			addFromSection: e2eKustoAddFavoriteFromSection,
+			setProbe: e2eKustoSetFavoritesSyncProbe,
+			assertProbe: e2eKustoAssertFavoritesSyncProbe,
+			assertVisibleInAllSections: (name: string, expectedSectionCount?: number, timeoutMs?: number) => e2eKustoAssertFavoriteInAllSections(name, expectedSectionCount, true, timeoutMs),
+			assertAbsentInAllSections: (name: string, expectedSectionCount?: number, timeoutMs?: number) => e2eKustoAssertFavoriteInAllSections(name, expectedSectionCount, false, timeoutMs),
+		},
 		assertClickCaretFidelityWithHtmlSection: () => e2eAssertKustoClickCaretFidelityWithHtmlSection(),
 		assertClickCaretFidelityAfterRestoredHtmlPreviewScroll: () => e2eAssertKustoClickCaretFidelityAfterRestoredHtmlPreviewScroll(),
 		prepareRestoredHtmlPreviewNativeClickTarget: () => e2ePrepareRestoredHtmlPreviewNativeClickTarget(),
