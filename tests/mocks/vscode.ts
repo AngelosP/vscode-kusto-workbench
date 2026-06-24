@@ -42,10 +42,11 @@ export class Position {
 export class Uri {
 	static parse(value: string) {
 		const u = new Uri(value);
-		// Minimal URI parsing: detect scheme and extract fsPath for file URIs.
-		const schemeMatch = value.match(/^([a-z][a-z0-9+.-]*):/i);
+		// Minimal URI parsing: detect scheme, authority, and path.
+		const schemeMatch = value.match(/^([a-z][a-z0-9+.-]*):(?:\/\/([^/]*))?(.*)$/i);
 		if (schemeMatch) {
 			u.scheme = schemeMatch[1].toLowerCase();
+			u.authority = schemeMatch[2] ?? '';
 			if (u.scheme === 'file') {
 				// Strip file:// (or file:///) prefix to get the path
 				const raw = value.replace(/^file:\/\/\/?/i, '');
@@ -54,6 +55,9 @@ export class Uri {
 				const hasWindowsDrive = /^[a-zA-Z]:/.test(raw);
 				u.fsPath = hasWindowsDrive ? raw : '/' + raw;
 				u.path = '/' + raw;
+			} else {
+				u.path = schemeMatch[3] || '';
+				u.fsPath = u.path;
 			}
 		}
 		return u;
@@ -75,18 +79,28 @@ export class Uri {
 		return Uri.file(joined);
 	}
 	scheme = 'file';
+	authority = '';
 	fsPath = '';
 	path = '';
 	constructor(private _value: string = '') {
 		this.fsPath = _value;
 		this.path = _value;
 	}
-	with(change: { scheme?: string; path?: string }): Uri {
-		const u = new Uri(this._value);
-		u.scheme = change.scheme ?? this.scheme;
-		u.path = change.path ?? this.path;
+	with(change: { scheme?: string; path?: string; authority?: string }): Uri {
+		const scheme = change.scheme ?? this.scheme;
+		const authority = change.authority ?? this.authority;
+		const path = change.path ?? this.path;
+		const value = authority
+			? `${scheme}://${authority}${path}`
+			: scheme === 'file'
+				? `file://${path}`
+				: `${scheme}:${path}`;
+		const u = new Uri(value);
+		u.scheme = scheme;
+		u.authority = authority;
+		u.path = path;
 		u.fsPath = change.path ?? this.fsPath;
-		u._value = change.path ?? this._value;
+		u._value = value;
 		return u;
 	}
 	toString() { return this._value; }
@@ -131,9 +145,11 @@ export const window = {
 	},
 	createOutputChannel: () => ({ appendLine: () => {}, dispose: () => {} }),
 	showInputBox: () => Promise.resolve(undefined),
+	showSaveDialog: () => Promise.resolve(undefined),
 	showInformationMessage: () => Promise.resolve(undefined),
 	showErrorMessage: () => Promise.resolve(undefined),
 	showWarningMessage: () => Promise.resolve(undefined),
+	setStatusBarMessage: () => ({ dispose: () => {} }),
 	createWebviewPanel: () => ({}),
 	createStatusBarItem: (id?: string, alignment?: StatusBarAlignment, priority?: number) => {
 		const item = {

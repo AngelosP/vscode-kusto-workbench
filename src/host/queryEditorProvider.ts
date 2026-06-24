@@ -48,6 +48,7 @@ import { exportHtmlToPowerBI, findUnsupportedPowerBiBindings, normalizePowerBiDa
 import { listFabricWorkspaces, publishToPowerBIService, checkFabricItemExists } from './powerBiPublish';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
+import { notifySavedFile, withCsvExtension } from './savedFileNotification';
 
 type RunningQueryEntry = {
 	cancel: () => void;
@@ -1178,17 +1179,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 
 			let targetUri = picked;
-			try {
-				const lower = picked.fsPath.toLowerCase();
-				if (!lower.endsWith('.csv')) {
-					targetUri = vscode.Uri.file(picked.fsPath + '.csv');
-				}
-			} catch {
-				// ignore
-			}
+			try { targetUri = withCsvExtension(picked); } catch { /* ignore */ }
 
 			await vscode.workspace.fs.writeFile(targetUri, Buffer.from(csv, 'utf8'));
-			vscode.window.showInformationMessage(`Saved results to ${targetUri.fsPath}`);
+			await notifySavedFile(targetUri, `Saved results to ${targetUri.fsPath}`);
 		} catch {
 			vscode.window.showErrorMessage('Failed to save results to CSV file.');
 		}

@@ -11,6 +11,7 @@ import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { SqlQueryClient } from './sqlClient';
 import { listDialects } from './sql/sqlDialectRegistry';
 import { selectBestKustoClusterUrl } from '../shared/kustoClusterUrls';
+import { notifySavedFile, withCsvExtension } from './savedFileNotification';
 import {
 	addKustoFavoriteIfMissing,
 	addSqlFavoriteIfMissing,
@@ -731,11 +732,20 @@ export class ConnectionManagerViewerV2 {
 				return;
 			}
 			case 'saveResultsCsv': {
-				const csv = String(msg.csv || '');
-				if (!csv.trim()) { void vscode.window.showInformationMessage('No results to save.'); return; }
-				const suggestedName = String(msg.suggestedFileName || 'results.csv');
-				const uri = await vscode.window.showSaveDialog({ filters: { 'CSV': ['csv'] }, saveLabel: 'Save', title: 'Save results as CSV', defaultUri: vscode.workspace.workspaceFolders?.[0] ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, suggestedName) : undefined });
-				if (uri) { await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(csv)); void vscode.window.setStatusBarMessage(`Results saved to ${uri.fsPath}`, 3000); }
+				try {
+					const csv = String(msg.csv || '');
+					if (!csv.trim()) { void vscode.window.showInformationMessage('No results to save.'); return; }
+					const suggestedName = String(msg.suggestedFileName || 'results.csv');
+					const uri = await vscode.window.showSaveDialog({ filters: { 'CSV': ['csv'] }, saveLabel: 'Save', title: 'Save results as CSV', defaultUri: vscode.workspace.workspaceFolders?.[0] ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, suggestedName) : undefined });
+					if (uri) {
+						let targetUri = uri;
+						try { targetUri = withCsvExtension(uri); } catch { /* ignore */ }
+						await vscode.workspace.fs.writeFile(targetUri, new TextEncoder().encode(csv));
+						await notifySavedFile(targetUri, `Saved results to ${targetUri.fsPath}`);
+					}
+				} catch {
+					void vscode.window.showErrorMessage('Failed to save results to CSV file.');
+				}
 				return;
 			}
 
