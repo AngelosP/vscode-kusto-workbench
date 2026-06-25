@@ -40,6 +40,7 @@ import {
 	queryExecutionTimers, schemaByBoxId, queryBoxes, favoritesModeByBoxId,
 } from '../core/state';
 import { __kustoParseFunction, __kustoParseParamList } from '../monaco/prettify';
+import { findKustoFunctionDefinitionAtOffset, getSingleKustoCodeFenceBodyRange, hasKustoFunctionDefinition, normalizeKustoText } from '../../shared/kustoFunctionDefinitions.js';
 import type { FunctionParam } from '../components/kw-function-params-dialog';
 import '../components/kw-function-params-dialog';
 
@@ -1414,6 +1415,73 @@ function showFunctionParamsDialog(functionName: string, params: FunctionParam[],
 	});
 }
 
+function getSelectedEditorText(editor: any): string | null {
+	try {
+		if (!editor || typeof editor.getSelection !== 'function' || typeof editor.getModel !== 'function') return null;
+		const selection = editor.getSelection();
+		if (!selection || typeof selection.isEmpty !== 'function' || selection.isEmpty()) return null;
+		const model = editor.getModel();
+		if (!model || typeof model.getValueInRange !== 'function') return null;
+		const selected = String(model.getValueInRange(selection) || '').trim();
+		return selected || null;
+	} catch {
+		return null;
+	}
+}
+
+function getOffsetForEditorPosition(editor: any, text: string): number | null {
+	try {
+		if (!editor || typeof editor.getModel !== 'function' || typeof editor.getPosition !== 'function') return null;
+		const model = editor.getModel();
+		const position = editor.getPosition();
+		if (!model || !position) return null;
+		if (typeof model.getOffsetAt === 'function') {
+			const rawOffset = Math.max(0, Number(model.getOffsetAt(position)) || 0);
+			return normalizeKustoText(String(text || '').slice(0, rawOffset)).length;
+		}
+		const lineNumber = Math.max(1, Number(position.lineNumber) || 1);
+		const column = Math.max(1, Number(position.column) || 1);
+		const lines = String(text || '').replace(/\r\n/g, '\n').replace(/\r/g, '\n').split('\n');
+		let offset = 0;
+		for (let i = 0; i < Math.min(lineNumber - 1, lines.length); i++) offset += lines[i].length + 1;
+		return offset + column - 1;
+	} catch {
+		return null;
+	}
+}
+
+function getRunFunctionText(editor: any, fullText: string): string {
+	const selectedText = getSelectedEditorText(editor);
+	if (selectedText) return selectedText;
+
+	const offset = getOffsetForEditorPosition(editor, fullText);
+	if (offset !== null) {
+		const normalizedText = normalizeKustoText(fullText);
+		const fenced = getSingleKustoCodeFenceBodyRange(normalizedText);
+		if (fenced && offset >= fenced.start && offset <= fenced.end) {
+			const definition = findKustoFunctionDefinitionAtOffset(fenced.text, offset - fenced.start);
+			if (definition) return fenced.text.slice(definition.start, definition.end).trim();
+		} else {
+			const definition = findKustoFunctionDefinitionAtOffset(normalizedText, offset);
+			if (definition) return normalizedText.slice(definition.start, definition.end).trim();
+		}
+		if (hasKustoFunctionDefinition(fullText)) return '';
+	}
+
+	try {
+		const model = editor?.getModel && editor.getModel();
+		const blocks = (model && typeof _win.__kustoGetStatementBlocksFromModel === 'function')
+			? _win.__kustoGetStatementBlocksFromModel(model)
+			: [];
+		if (blocks && blocks.length > 1 && typeof _win.__kustoExtractStatementTextAtCursor === 'function') {
+			const stmt = _win.__kustoExtractStatementTextAtCursor(editor);
+			if (stmt) return String(stmt).trim();
+		}
+	} catch (e) { console.error('[kusto]', e); }
+
+	return fullText;
+}
+
 export async function executeRunFunction(boxId: string): Promise<void> {
 	const id = boxId.trim();
 	if (!id) return;
@@ -1424,24 +1492,8 @@ export async function executeRunFunction(boxId: string): Promise<void> {
 
 	const editor = queryEditors[id] ?? null;
 	if (!editor) return;
-	let text = editor.getValue ? editor.getValue() : '';
-
-	// Handle multi-statement editors — extract the statement under the cursor.
-	try {
-		const model = editor.getModel && editor.getModel();
-		const blocks = (model && typeof _win.__kustoGetStatementBlocksFromModel === 'function')
-			? _win.__kustoGetStatementBlocksFromModel(model)
-			: [];
-		if (blocks && blocks.length > 1 && typeof _win.__kustoExtractStatementTextAtCursor === 'function') {
-			const stmt = _win.__kustoExtractStatementTextAtCursor(editor);
-			if (stmt) {
-				text = stmt;
-			} else {
-				try { postMessageToHost({ type: 'showInfo', message: 'Place the cursor inside a function definition to run it.' }); } catch (e) { console.error('[kusto]', e); }
-				return;
-			}
-		}
-	} catch (e) { console.error('[kusto]', e); }
+	const fullText = editor.getValue ? String(editor.getValue() || '') : '';
+	const text = getRunFunctionText(editor, fullText);
 
 	const parsed = __kustoParseFunction(text);
 	if (!parsed) {

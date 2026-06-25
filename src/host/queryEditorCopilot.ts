@@ -25,6 +25,7 @@ import {
 } from './copilotPromptUtils';
 import { getCopilotFlavorById, type CopilotChatFlavor } from './copilotChatFlavor';
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
+import { convertKustoFunctionDefinitionsToInline } from '../shared/kustoFunctionDefinitions';
 
 /**
  * Interface that the CopilotService uses to call back into the host (QueryEditorProvider).
@@ -468,6 +469,14 @@ export class CopilotService {
 			return String(codeBlockMatch[1] || '').trim();
 		}
 		return raw.trim();
+	}
+
+	private getRunnableKustoQuery(query: string): string {
+		try {
+			return convertKustoFunctionDefinitionsToInline(query) || query;
+		} catch {
+			return query;
+		}
 	}
 
 	formatCopilotModelLabel(model: vscode.LanguageModelChat): string {
@@ -1549,6 +1558,7 @@ Completion:`;
 					if (toolName === 'execute_kusto_query') {
 						const rawQuery = this.extractQueryArgument(tc.input);
 						const query = this.extractKustoCodeBlock(rawQuery).trim();
+						const effectiveQuery = this.getRunnableKustoQuery(query);
 						if (!query) {
 							const errEntryId = this.nextHistoryEntryId(boxId);
 							history.push({
@@ -1564,8 +1574,8 @@ Completion:`;
 							continue;
 						}
 						try {
-							const isControl = this.host.isControlCommand(query);
-							const queryWithLimit = this.host.appendQueryMode(query, copilotQueryMode);
+							const isControl = this.host.isControlCommand(effectiveQuery);
+							const queryWithLimit = this.host.appendQueryMode(effectiveQuery, copilotQueryMode);
 							const cacheDirective = isControl ? '' : this.host.buildCacheDirective(true, 1, 'days');
 							const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithLimit}` : queryWithLimit;
 							const cancelClientKey = `${boxId}::${connection.id}::executeForCopilot`;
@@ -1601,7 +1611,7 @@ Completion:`;
 								id: execEntryId,
 								callId: tc.callId,
 								tool: 'execute_kusto_query',
-								args: { query },
+								args: { query: effectiveQuery },
 								result: queryResultText,
 								timestamp: Date.now()
 							});
@@ -1611,7 +1621,7 @@ Completion:`;
 									type: 'copilotExecutedQuery',
 									boxId,
 									entryId: execEntryId,
-									query,
+									query: effectiveQuery,
 									resultSummary: rows.length > 0 ? `${rows.length} rows` : 'No results',
 									result
 								});
@@ -1632,7 +1642,7 @@ Completion:`;
 								id: execErrEntryId,
 								callId: tc.callId,
 								tool: 'execute_kusto_query',
-								args: { query },
+								args: { query: effectiveQuery },
 								result: `Query execution error: ${errMsg}`,
 								timestamp: Date.now()
 							});
@@ -1642,7 +1652,7 @@ Completion:`;
 									type: 'copilotExecutedQuery',
 									boxId,
 									entryId: execErrEntryId,
-									query,
+									query: effectiveQuery,
 									resultSummary: 'Error',
 									errorMessage: errMsg
 								});
@@ -1749,8 +1759,8 @@ Completion:`;
 							break;
 						}
 
-						const originalQueryForCompare = currentQuery;
-						let candidate = improvedQuery;
+						const originalQueryForCompare = this.getRunnableKustoQuery(currentQuery);
+						let candidate = this.getRunnableKustoQuery(improvedQuery);
 
 						postStatus('Preparing comparison editor…');
 						let comparisonBoxId = await this.host.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
@@ -1767,7 +1777,7 @@ Completion:`;
 
 						const executeQueryAndPost = async (targetBoxId: string, queryText: string, cancelSuffix: string) => {
 							const queryWithMode = this.host.appendQueryMode(queryText, copilotQueryMode);
-							const cacheDirective = this.host.buildCacheDirective(true, 1, 'days');
+							const cacheDirective = this.host.isControlCommand(queryText) ? '' : this.host.buildCacheDirective(true, 1, 'days');
 							const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 							const cancelClientKey = `${targetBoxId}::${connection.id}::validatePerformanceImprovements::${cancelSuffix}`;
 							const execution = this.host.kustoClient.executeQueryCancelable(connection, database, finalQuery, cancelClientKey);
@@ -1923,7 +1933,7 @@ Completion:`;
 									}
 								}
 								if (fixedQuery) {
-									candidate = fixedQuery;
+									candidate = this.getRunnableKustoQuery(fixedQuery);
 								}
 							}
 						}
@@ -1953,6 +1963,7 @@ Completion:`;
 					if (toolName === 'respond_to_all_other_queries') {
 						const rawQuery = this.extractQueryArgument(tc.input);
 						const query = this.extractKustoCodeBlock(rawQuery).trim();
+						const effectiveQuery = this.getRunnableKustoQuery(query);
 						if (!query) {
 							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, tc.input, 'Error: query argument was empty.');
 							priorAttempts.push({ attempt, error: 'Tool call was missing a non-empty query argument.' });
@@ -1962,7 +1973,7 @@ Completion:`;
 						}
 
 						try {
-							this.host.postMessage({ type: 'copilotWriteQuerySetQuery', boxId, query });
+							this.host.postMessage({ type: 'copilotWriteQuerySetQuery', boxId, query: effectiveQuery });
 						} catch {
 							// ignore
 						}
@@ -1975,8 +1986,8 @@ Completion:`;
 						}
 
 						this.host.cancelRunningQuery(boxId);
-						const queryWithMode = this.host.appendQueryMode(query, copilotQueryMode);
-						const cacheDirective = this.host.buildCacheDirective(true, 1, 'days');
+						const queryWithMode = this.host.appendQueryMode(effectiveQuery, copilotQueryMode);
+						const cacheDirective = this.host.isControlCommand(effectiveQuery) ? '' : this.host.buildCacheDirective(true, 1, 'days');
 						const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 
 						const cancelClientKey = `${boxId}::${connection.id}::copilot`;
@@ -1991,7 +2002,7 @@ Completion:`;
 						try {
 							const result = await promise;
 							if (isActive()) {
-								this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query }, 'Query ran successfully.');
+								this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: effectiveQuery }, 'Query ran successfully.');
 								this.host.postMessage({ type: 'queryResult', result, boxId });
 								this.host.postMessage({ type: 'ensureResultsVisible', boxId });
 								this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false });
@@ -2025,8 +2036,8 @@ Completion:`;
 								}
 							}
 
-							priorAttempts.push({ attempt, query, error: userMessage });
-							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query }, `Query execution error: ${userMessage}`);
+							priorAttempts.push({ attempt, query: effectiveQuery, error: userMessage });
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: effectiveQuery }, `Query execution error: ${userMessage}`);
 							postStatus('Query failed to execute. Retrying…');
 							shouldRetryAttempt = true;
 							break;
@@ -2389,6 +2400,8 @@ Completion:`;
 			if (!optimizedQuery) {
 				throw new Error('Failed to extract optimized query from Copilot response');
 			}
+
+			optimizedQuery = this.getRunnableKustoQuery(optimizedQuery);
 
 			postStatus('Done. Creating comparison…');
 

@@ -1527,6 +1527,247 @@ async function e2eAssertHostMessageCaptured(type: string, boxId: string = '', ti
 	throw new Error(`Timed out waiting for host message ${wantedType}${wantedBoxId ? ` for ${wantedBoxId}` : ''}. Seen: ${seen}`);
 }
 
+function e2eRunFunctionMessages(): any[] {
+	return Array.isArray(_win.__e2eRunFunctionManualMessages) ? _win.__e2eRunFunctionManualMessages : [];
+}
+
+function e2eRunFunctionExecuteMessage(): any {
+	const section = e2eSection('kusto');
+	const boxId = String(section.boxId || section.id || '');
+	return e2eRunFunctionMessages().find(message => message && message.type === 'executeQuery' && String(message.boxId || '') === boxId);
+}
+
+function e2eRunFunctionInfoMessage(): any {
+	return e2eRunFunctionMessages().find(message => message && message.type === 'showInfo');
+}
+
+function e2eRunFunctionArmCapture(): void {
+	if (typeof _win.__e2eRunFunctionManualRestore === 'function') {
+		_win.__e2eRunFunctionManualRestore();
+	}
+	const original = _win.__e2eCaptureHostMessage;
+	const hadOriginal = typeof original === 'function';
+	_win.__e2eRunFunctionManualMessages = [];
+	_win.__e2eCaptureHostMessage = (message: any) => {
+		try { _win.__e2eRunFunctionManualMessages.push(message); } catch { /* ignore */ }
+		return false;
+	};
+	_win.__e2eRunFunctionManualRestore = () => {
+		if (hadOriginal) _win.__e2eCaptureHostMessage = original;
+		else delete _win.__e2eCaptureHostMessage;
+		delete _win.__e2eRunFunctionManualRestore;
+	};
+}
+
+function e2eRunFunctionCleanup(): void {
+	try { e2eSection('kusto').executionCtrl?.setQueryExecuting(false); } catch { /* ignore */ }
+	if (typeof _win.__e2eRunFunctionManualRestore === 'function') {
+		_win.__e2eRunFunctionManualRestore();
+	}
+}
+
+async function e2eRunFunctionWaitForMessage(timeoutMs = 6000): Promise<any> {
+	const started = performance.now();
+	while (performance.now() - started <= timeoutMs) {
+		const message = e2eRunFunctionExecuteMessage() || e2eRunFunctionInfoMessage();
+		if (message) return message;
+		await e2eDelay(50);
+	}
+	const seen = e2eRunFunctionMessages().map(message => `${message?.type || '<missing>'}:${message?.boxId || ''}`).join(', ');
+	throw new Error(`Timed out waiting for Run Function host message. Seen: ${seen}`);
+}
+
+async function e2eRunFunctionSetConnected(): Promise<any> {
+	const section = e2eSection('kusto');
+	if (typeof section.setConnectionId !== 'function' || typeof section.setDatabase !== 'function') {
+		throw new Error('Kusto section connection/database setters are missing');
+	}
+	section.setConnectionId('manual-e2e-connection');
+	section.setDatabase('Samples');
+	await section.updateComplete;
+	if (typeof _win.__kustoUpdateRunEnabledForBox === 'function') {
+		_win.__kustoUpdateRunEnabledForBox(section.boxId);
+	}
+	return section;
+}
+
+async function e2eRunFunctionPrepare(text: string, lineNumber: number, column: number): Promise<any> {
+	const section = await e2eRunFunctionSetConnected();
+	try { section.executionCtrl?.setQueryExecuting(false); } catch { /* ignore */ }
+	_win.__e2e.kusto.setQueryAt(text, lineNumber, column);
+	const editor = e2eEditor('kusto');
+	try { editor.setSelection?.({ startLineNumber: lineNumber, startColumn: column, endLineNumber: lineNumber, endColumn: column }); } catch { /* ignore */ }
+	try { editor.focus?.(); } catch { /* ignore */ }
+	if (typeof _win.setRunMode === 'function') {
+		_win.setRunMode(section.boxId, 'runFunction');
+	}
+	if (typeof _win.__kustoUpdateRunEnabledForBox === 'function') {
+		_win.__kustoUpdateRunEnabledForBox(section.boxId);
+	}
+	await e2eDelay(150);
+	return section;
+}
+
+async function e2eRunFunctionRun(): Promise<any> {
+	e2eRunFunctionArmCapture();
+	const section = e2eSection('kusto');
+	if (typeof _win.__kustoApplyRunModeFromMenu !== 'function') {
+		throw new Error('Run Function menu handler missing');
+	}
+	_win.__kustoApplyRunModeFromMenu(section.boxId, 'runFunction');
+	return e2eRunFunctionWaitForMessage();
+}
+
+function e2eRunFunctionAssertExecuted(message: any, expectedQuery: string, label: string): void {
+	if (!message || message.type !== 'executeQuery') {
+		throw new Error(`${label} did not execute: ${JSON.stringify(message)}`);
+	}
+	if (message.query !== expectedQuery) {
+		throw new Error(`${label} query mismatch. Expected ${JSON.stringify(expectedQuery)}, got ${JSON.stringify(message.query)}`);
+	}
+	if (message.queryMode !== 'plain') {
+		throw new Error(`${label} should use plain query mode, got ${message.queryMode}`);
+	}
+	if (message.cacheEnabled !== false) {
+		throw new Error(`${label} should disable cache, got ${message.cacheEnabled}`);
+	}
+	if (/^\s*\.(create-or-alter|create|alter)\s+function\b/im.test(String(message.query || ''))) {
+		throw new Error(`${label} sent raw function management command: ${message.query}`);
+	}
+}
+
+async function e2eRunFunctionManualLeadingComments(): Promise<string> {
+	const nl = String.fromCharCode(10);
+	const text = [
+		'// leading helper comment',
+		'/* leading block comment */',
+		'// .create function FakeManual() { print fake=1 }',
+		'.create function RealManual() { print real=1 }',
+	].join(nl);
+	await e2eRunFunctionPrepare(text, 4, 20);
+	const message = await e2eRunFunctionRun();
+	e2eRunFunctionCleanup();
+	e2eRunFunctionAssertExecuted(message, `let RealManual = () { print real=1 };${nl}RealManual()`, 'leading-comments');
+	if (/FakeManual/.test(String(message.query || ''))) {
+		throw new Error('leading-comments ran the commented fake function');
+	}
+	return 'leading-comments Run Function query verified';
+}
+
+async function e2eRunFunctionManualCursorSecondSameLine(): Promise<string> {
+	const nl = String.fromCharCode(10);
+	const text = '.create function FirstManual() { print first=1 }; .create function SecondManual() { print second=2 }';
+	await e2eRunFunctionPrepare(text, 1, text.indexOf('SecondManual') + 2);
+	const message = await e2eRunFunctionRun();
+	e2eRunFunctionCleanup();
+	e2eRunFunctionAssertExecuted(message, `let SecondManual = () { print second=2 };${nl}SecondManual()`, 'same-line second function');
+	if (/FirstManual/.test(String(message.query || ''))) {
+		throw new Error('same-line scenario included the first function');
+	}
+	return 'same-line second function query verified';
+}
+
+async function e2eRunFunctionManualCrlfSecond(): Promise<string> {
+	const nl = String.fromCharCode(10);
+	const crlf = String.fromCharCode(13, 10);
+	const text = [
+		'.create function FirstManual() {',
+		'print first=1',
+		'};',
+		'.create function SecondManual() {',
+		'print second=2',
+		'| extend doubled = second * 2',
+		'}',
+	].join(crlf);
+	await e2eRunFunctionPrepare(text, 5, 8);
+	const message = await e2eRunFunctionRun();
+	e2eRunFunctionCleanup();
+	e2eRunFunctionAssertExecuted(message, `let SecondManual = () {${nl}print second=2${nl}| extend doubled = second * 2${nl}};${nl}SecondManual()`, 'CRLF second function');
+	return 'CRLF second function query verified';
+}
+
+async function e2eRunFunctionManualOpenParameterizedDialog(): Promise<string> {
+	const quote = String.fromCharCode(34);
+	const text = `.create function LabelManual(label:string = ${quote}a,b=c${quote}) { print label }`;
+	await e2eRunFunctionPrepare(text, 1, text.indexOf('LabelManual') + 2);
+	e2eRunFunctionArmCapture();
+	_win.__kustoApplyRunModeFromMenu(e2eSection('kusto').boxId, 'runFunction');
+	const started = performance.now();
+	let dialog: any = null;
+	while (performance.now() - started <= 6000) {
+		dialog = document.querySelector('kw-function-params-dialog') as any;
+		if (dialog) break;
+		await e2eDelay(50);
+	}
+	if (!dialog) throw new Error('Timed out waiting for function parameter dialog');
+	await dialog.updateComplete;
+	const root = dialog.shadowRoot;
+	const inputs = Array.from(root.querySelectorAll('.fpd-input')) as HTMLInputElement[];
+	if (inputs.length !== 1) {
+		throw new Error(`Expected one parameter input, got ${inputs.length}`);
+	}
+	const expectedDefault = `${quote}a,b=c${quote}`;
+	if (inputs[0].value !== expectedDefault) {
+		throw new Error(`Expected default value ${expectedDefault}, got ${JSON.stringify(inputs[0].value)}`);
+	}
+	if (!String(root.textContent || '').includes(`default: ${expectedDefault}`)) {
+		throw new Error('Dialog did not show full default text');
+	}
+	return 'parameter dialog default value verified';
+}
+
+async function e2eRunFunctionManualFinishParameterizedDialog(): Promise<string> {
+	const nl = String.fromCharCode(10);
+	const quote = String.fromCharCode(34);
+	const dialog = document.querySelector('kw-function-params-dialog') as any;
+	if (!dialog) throw new Error('parameter dialog missing before finish');
+	await dialog.updateComplete;
+	const runButton = (Array.from(dialog.shadowRoot.querySelectorAll('button')) as HTMLButtonElement[])
+		.find(button => (button.textContent || '').trim() === 'Run');
+	if (!runButton) throw new Error('parameter dialog Run button missing');
+	runButton.click();
+	const started = performance.now();
+	let message: any = null;
+	while (performance.now() - started <= 6000) {
+		message = e2eRunFunctionExecuteMessage();
+		if (message) break;
+		await e2eDelay(50);
+	}
+	if (!message) throw new Error('Timed out waiting for parameterized executeQuery');
+	e2eRunFunctionCleanup();
+	const expectedDefault = `${quote}a,b=c${quote}`;
+	e2eRunFunctionAssertExecuted(message, `let LabelManual = (label:string = ${expectedDefault}) { print label };${nl}LabelManual(${expectedDefault})`, 'parameter default');
+	return 'parameterized Run Function query verified';
+}
+
+async function e2eRunFunctionManualFencedKql(): Promise<string> {
+	const nl = String.fromCharCode(10);
+	const text = ['```kql', '.create function FencedManual() { print fenced=1 }', '```'].join(nl);
+	await e2eRunFunctionPrepare(text, 2, 20);
+	const message = await e2eRunFunctionRun();
+	e2eRunFunctionCleanup();
+	e2eRunFunctionAssertExecuted(message, `let FencedManual = () { print fenced=1 };${nl}FencedManual()`, 'fenced kql');
+	if (/```/.test(String(message.query || ''))) {
+		throw new Error('fenced query included fence markers');
+	}
+	return 'fenced KQL Run Function query verified';
+}
+
+async function e2eRunFunctionManualCursorOutsideShowsNoFunction(): Promise<string> {
+	const nl = String.fromCharCode(10);
+	const text = ['.create function FirstManual() { print first=1 };', 'FirstManual()'].join(nl);
+	await e2eRunFunctionPrepare(text, 2, 2);
+	const message = await e2eRunFunctionRun();
+	e2eRunFunctionCleanup();
+	if (!message || message.type !== 'showInfo' || message.message !== 'No function definition found in this section.') {
+		throw new Error(`Expected no-function info, got ${JSON.stringify(message)}`);
+	}
+	if (e2eRunFunctionMessages().some(candidate => candidate && candidate.type === 'executeQuery')) {
+		throw new Error('Cursor outside function unexpectedly executed a query');
+	}
+	return 'cursor outside function shows no-function message';
+}
+
 function e2eCursorOffsetForLineColumn(text: string, lineNumber: number, column: number): number {
 	const lines = String(text || '').split('\n');
 	const targetLine = Math.max(1, Math.floor(lineNumber));
@@ -3921,6 +4162,16 @@ _win.__e2e = {
 	},
 	kusto: {
 		...e2eQueryApi('kusto'),
+		runFunctionManual: {
+			setConnected: e2eRunFunctionSetConnected,
+			leadingComments: e2eRunFunctionManualLeadingComments,
+			cursorSecondSameLine: e2eRunFunctionManualCursorSecondSameLine,
+			crlfSecond: e2eRunFunctionManualCrlfSecond,
+			openParameterizedDialog: e2eRunFunctionManualOpenParameterizedDialog,
+			finishParameterizedDialog: e2eRunFunctionManualFinishParameterizedDialog,
+			fencedKql: e2eRunFunctionManualFencedKql,
+			cursorOutsideShowsNoFunction: e2eRunFunctionManualCursorOutsideShowsNoFunction,
+		},
 		favorites: {
 			prepareDocument: e2eKustoPrepareFavoriteDocument,
 			clean: e2eKustoCleanFavorite,
