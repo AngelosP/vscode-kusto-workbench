@@ -26,6 +26,7 @@ import {
 	formatQueryExecutionErrorForUser as formatQueryExecutionErrorForUserFn,
 	isControlCommand as isControlCommandFn,
 	appendQueryMode as appendQueryModeFn,
+	normalizeControlCommandForExecution as normalizeControlCommandForExecutionFn,
 	buildCacheDirective as buildCacheDirectiveFn
 } from './queryEditorUtils';
 import { appendSqlQueryMode as appendSqlQueryModeFn } from './sqlEditorUtils';
@@ -2039,9 +2040,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const isControl = this.isControlCommand(message.query);
 		const cacheDirective = isControl ? '' : this.buildCacheDirective(message.cacheEnabled, message.cacheValue, message.cacheUnit);
 		const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
+		const executionQuery = this.normalizeControlCommandForExecution(finalQuery);
 
 		const cancelClientKey = boxId ? `${boxId}::${connection.id}` : connection.id;
-		const { promise, cancel, clientActivityId } = this.kustoClient.executeQueryCancelable(connection, message.database, finalQuery, cancelClientKey);
+		const { promise, cancel, clientActivityId } = this.kustoClient.executeQueryCancelable(connection, message.database, executionQuery, cancelClientKey);
 		const runSeq = ++this.queryRunSeq;
 		const isStillActiveRun = () => {
 			if (!boxId) {
@@ -2066,7 +2068,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			}
 			if (isStillActiveRun()) {
-				this.logQueryExecutionError(error, connection, message.database, boxId, finalQuery);
+				this.logQueryExecutionError(error, connection, message.database, boxId, executionQuery);
 				const userMessage = this.formatQueryExecutionErrorForUser(error, connection, message.database);
 				const clientActivityId = error instanceof QueryExecutionError ? error.clientActivityId : undefined;
 				vscode.window.showErrorMessage(userMessage);
@@ -2539,6 +2541,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	appendQueryMode(query: string, queryMode?: string): string {
 		return appendQueryModeFn(query, queryMode);
+	}
+
+	normalizeControlCommandForExecution(query: string): string {
+		return normalizeControlCommandForExecutionFn(query);
 	}
 
 	// HTML rendering moved to src/queryEditorHtml.ts

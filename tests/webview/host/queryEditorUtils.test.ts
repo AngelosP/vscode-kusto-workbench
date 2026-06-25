@@ -4,6 +4,7 @@ import {
 	formatQueryExecutionErrorForUser,
 	isControlCommand,
 	appendQueryMode,
+	normalizeControlCommandForExecution,
 	buildCacheDirective
 } from '../../../src/host/queryEditorUtils';
 
@@ -144,6 +145,45 @@ describe('isControlCommand', () => {
 
 	it('returns false for unclosed block comment', () => {
 		expect(isControlCommand('/* unclosed .show')).toBe(false);
+	});
+});
+
+// ---------------------------------------------------------------------------
+// normalizeControlCommandForExecution
+// ---------------------------------------------------------------------------
+
+describe('normalizeControlCommandForExecution', () => {
+	it('removes a leading line comment before a control command', () => {
+		expect(normalizeControlCommandForExecution('// comment\n.show databases')).toBe('.show databases');
+	});
+
+	it('removes a leading block comment before a control command', () => {
+		expect(normalizeControlCommandForExecution('/* comment */\n.show databases')).toBe('.show databases');
+	});
+
+	it('removes multiple leading comments and blank lines using original offsets', () => {
+		const query = '  // generated\r\n\t/* second */\n  \t.create-or-update function F() { print x=1 }';
+		expect(normalizeControlCommandForExecution(query)).toBe('.create-or-update function F() { print x=1 }');
+	});
+
+	it('leaves ordinary queries after comments unchanged', () => {
+		const query = '// note\nStormEvents | take 10';
+		expect(normalizeControlCommandForExecution(query)).toBe(query);
+	});
+
+	it('leaves comment-only text unchanged', () => {
+		const query = '// just a comment';
+		expect(normalizeControlCommandForExecution(query)).toBe(query);
+	});
+
+	it('leaves unclosed block comments unchanged', () => {
+		const query = '/* unclosed .show';
+		expect(normalizeControlCommandForExecution(query)).toBe(query);
+	});
+
+	it('preserves trailing comments after a control command', () => {
+		const query = '// leading\n.show tables\n// trailing note';
+		expect(normalizeControlCommandForExecution(query)).toBe('.show tables\n// trailing note');
 	});
 });
 

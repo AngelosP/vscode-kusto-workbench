@@ -26,6 +26,7 @@ function makeHost(): CopilotServiceHost {
 		nextQueryRunSeq: () => 1,
 		isControlCommand: () => false,
 		appendQueryMode: (query: string) => query,
+		normalizeControlCommandForExecution: (query: string) => query,
 		buildCacheDirective: () => undefined,
 		getCachedSchemaFromDisk: () => Promise.resolve(undefined),
 		saveCachedSchemaToDisk: () => Promise.resolve(),

@@ -50,6 +50,7 @@ export interface CopilotServiceHost {
 
 	isControlCommand(query: string): boolean;
 	appendQueryMode(query: string, mode?: string): string;
+	normalizeControlCommandForExecution(query: string): string;
 	buildCacheDirective(enabled?: boolean, value?: number, unit?: CacheUnit | string): string | undefined;
 
 	getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined>;
@@ -68,6 +69,22 @@ type RunningCopilotWriteQuery = {
 	seq: number;
 	queryCancels: Set<() => void>;
 };
+
+class CopilotExecutionQueryError extends Error {
+	readonly originalError: unknown;
+	readonly executionQuery: string;
+	readonly isCancelled?: boolean;
+
+	constructor(error: unknown, executionQuery: string) {
+		super(error instanceof Error ? error.message : String(error));
+		this.name = error instanceof Error ? error.name : 'CopilotExecutionQueryError';
+		this.originalError = error;
+		this.executionQuery = executionQuery;
+		if ((error as Record<string, unknown>)?.isCancelled === true) {
+			this.isCancelled = true;
+		}
+	}
+}
 
 export class CopilotService {
 	private copilotWriteSeq = 0;
@@ -1578,8 +1595,9 @@ Completion:`;
 							const queryWithLimit = this.host.appendQueryMode(effectiveQuery, copilotQueryMode);
 							const cacheDirective = isControl ? '' : this.host.buildCacheDirective(true, 1, 'days');
 							const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithLimit}` : queryWithLimit;
+							const executionQuery = this.host.normalizeControlCommandForExecution(finalQuery);
 							const cancelClientKey = `${boxId}::${connection.id}::executeForCopilot`;
-							const execution = this.host.kustoClient.executeQueryCancelable(connection, database, finalQuery, cancelClientKey);
+							const execution = this.host.kustoClient.executeQueryCancelable(connection, database, executionQuery, cancelClientKey);
 							const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, execution.cancel);
 							const result = await execution.promise.finally(untrack);
 							if (!isActive() || cts.token.isCancellationRequested) {
@@ -1779,31 +1797,26 @@ Completion:`;
 							const queryWithMode = this.host.appendQueryMode(queryText, copilotQueryMode);
 							const cacheDirective = this.host.isControlCommand(queryText) ? '' : this.host.buildCacheDirective(true, 1, 'days');
 							const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
+							const executionQuery = this.host.normalizeControlCommandForExecution(finalQuery);
 							const cancelClientKey = `${targetBoxId}::${connection.id}::validatePerformanceImprovements::${cancelSuffix}`;
-							const execution = this.host.kustoClient.executeQueryCancelable(connection, database, finalQuery, cancelClientKey);
+							const execution = this.host.kustoClient.executeQueryCancelable(connection, database, executionQuery, cancelClientKey);
 							const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, execution.cancel);
-							const result = await execution.promise.finally(untrack);
-							if (!isActive() || cts.token.isCancellationRequested) {
-								return;
-							}
 							try {
-								this.host.postMessage({ type: 'queryResult', result, boxId: targetBoxId });
-							} catch {
-								// ignore
+								const result = await execution.promise;
+								if (!isActive() || cts.token.isCancellationRequested) {
+									return;
+								}
+								try {
+									this.host.postMessage({ type: 'queryResult', result, boxId: targetBoxId });
+								} catch {
+									// ignore
+								}
+							} catch (error) {
+								throw new CopilotExecutionQueryError(error, executionQuery);
+							} finally {
+								untrack();
 							}
 						};
-
-						comparisonBoxId = await this.host.ensureComparisonBoxInWebview(boxId, candidate, cts.token);
-						if (!comparisonBoxId) {
-							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: candidate }, 'Error: failed to prepare comparison editor.');
-							this.host.postMessage({
-								type: 'copilotWriteQueryDone',
-								boxId,
-								ok: false,
-								message: 'Failed to prepare comparison editor.'
-							});
-							return;
-						}
 
 						try {
 							this.host.deleteComparisonSummary(`${boxId}::${comparisonBoxId}`);
@@ -1815,12 +1828,14 @@ Completion:`;
 						try {
 							await executeQueryAndPost(boxId, originalQueryForCompare, 'source');
 						} catch (error) {
-							const errMsg = this.host.getErrorMessage(error);
-							if (!isActive() || cts.token.isCancellationRequested || (error as Record<string, unknown>)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
+							const originalError = error instanceof CopilotExecutionQueryError ? error.originalError : error;
+							const errMsg = this.host.getErrorMessage(originalError);
+							if (!isActive() || cts.token.isCancellationRequested || (originalError as Record<string, unknown>)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
 								throw new Error('Copilot write-query canceled');
 							}
-							this.host.logQueryExecutionError(error, connection, database, boxId, originalQueryForCompare);
-							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: candidate }, `Error: original query failed to execute: ${this.host.formatQueryExecutionErrorForUser(error, connection, database)}`);
+							const executionQuery = error instanceof CopilotExecutionQueryError ? error.executionQuery : originalQueryForCompare;
+							this.host.logQueryExecutionError(originalError, connection, database, boxId, executionQuery);
+							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: candidate }, `Error: original query failed to execute: ${this.host.formatQueryExecutionErrorForUser(originalError, connection, database)}`);
 							try {
 								this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId });
 							} catch {
@@ -1866,12 +1881,14 @@ Completion:`;
 								executed = true;
 								break;
 							} catch (error) {
-								const errMsg = this.host.getErrorMessage(error);
-								if (!isActive() || cts.token.isCancellationRequested || (error as Record<string, unknown>)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
+								const originalError = error instanceof CopilotExecutionQueryError ? error.originalError : error;
+								const errMsg = this.host.getErrorMessage(originalError);
+								if (!isActive() || cts.token.isCancellationRequested || (originalError as Record<string, unknown>)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
 									throw new Error('Copilot write-query canceled');
 								}
-								this.host.logQueryExecutionError(error, connection, database, comparisonBoxId, candidate);
-								lastExecErrorText = this.host.formatQueryExecutionErrorForUser(error, connection, database);
+								const executionQuery = error instanceof CopilotExecutionQueryError ? error.executionQuery : candidate;
+								this.host.logQueryExecutionError(originalError, connection, database, comparisonBoxId, executionQuery);
+								lastExecErrorText = this.host.formatQueryExecutionErrorForUser(originalError, connection, database);
 								try {
 									this.host.postMessage({
 										type: 'queryError',
@@ -1989,12 +2006,13 @@ Completion:`;
 						const queryWithMode = this.host.appendQueryMode(effectiveQuery, copilotQueryMode);
 						const cacheDirective = this.host.isControlCommand(effectiveQuery) ? '' : this.host.buildCacheDirective(true, 1, 'days');
 						const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
+						const executionQuery = this.host.normalizeControlCommandForExecution(finalQuery);
 
 						const cancelClientKey = `${boxId}::${connection.id}::copilot`;
 						const { promise, cancel, clientActivityId } = this.host.kustoClient.executeQueryCancelable(
 							connection,
 							database,
-							finalQuery,
+							executionQuery,
 							cancelClientKey
 						);
 						const runSeq = this.host.nextQueryRunSeq();
@@ -2027,7 +2045,7 @@ Completion:`;
 							}
 
 							const userMessage = this.host.formatQueryExecutionErrorForUser(error, connection, database);
-							this.host.logQueryExecutionError(error, connection, database, boxId, finalQuery);
+							this.host.logQueryExecutionError(error, connection, database, boxId, executionQuery);
 							if (isActive()) {
 								try {
 									this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId });

@@ -123,27 +123,41 @@ export function formatQueryExecutionErrorForUser(errorMessage: string, clusterUr
 // isControlCommand
 // ---------------------------------------------------------------------------
 
-export function isControlCommand(query: string): boolean {
-	const trimmed = (query ?? '').replace(/^\s+/, '');
+function getFirstExecutableTokenOffset(query: string): number {
+	const text = String(query ?? '');
 	let i = 0;
-	while (i < trimmed.length) {
-		while (i < trimmed.length && /\s/.test(trimmed[i])) i++;
-		if (i >= trimmed.length) return false;
-		if (trimmed[i] === '/' && trimmed[i + 1] === '/') {
-			const nl = trimmed.indexOf('\n', i + 2);
-			if (nl < 0) return false;
+	while (i < text.length) {
+		while (i < text.length && /\s/.test(text[i])) i++;
+		if (i >= text.length) return -1;
+		if (text[i] === '/' && text[i + 1] === '/') {
+			const nl = text.indexOf('\n', i + 2);
+			if (nl < 0) return -1;
 			i = nl + 1;
 			continue;
 		}
-		if (trimmed[i] === '/' && trimmed[i + 1] === '*') {
-			const end = trimmed.indexOf('*/', i + 2);
-			if (end < 0) return false;
+		if (text[i] === '/' && text[i + 1] === '*') {
+			const end = text.indexOf('*/', i + 2);
+			if (end < 0) return -1;
 			i = end + 2;
 			continue;
 		}
-		return trimmed[i] === '.';
+		return i;
 	}
-	return false;
+	return -1;
+}
+
+export function isControlCommand(query: string): boolean {
+	const offset = getFirstExecutableTokenOffset(query);
+	return offset >= 0 && String(query ?? '')[offset] === '.';
+}
+
+export function normalizeControlCommandForExecution(query: string): string {
+	const text = String(query ?? '');
+	const offset = getFirstExecutableTokenOffset(text);
+	if (offset >= 0 && text[offset] === '.') {
+		return text.slice(offset);
+	}
+	return query;
 }
 
 // ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ vi.mock('vscode', async () => {
 import * as vscode from 'vscode';
 import { CopilotService, type CopilotServiceHost } from '../../../src/host/queryEditorCopilot.js';
 import type { KustoConnection } from '../../../src/host/connectionManager.js';
-import { appendQueryMode, buildCacheDirective, isControlCommand } from '../../../src/host/queryEditorUtils.js';
+import { appendQueryMode, buildCacheDirective, isControlCommand, normalizeControlCommandForExecution } from '../../../src/host/queryEditorUtils.js';
 
 const TEST_CONNECTION: KustoConnection = {
 	id: 'conn-1',
@@ -92,7 +92,7 @@ function createHost(capturedQueries: string[], executeError?: Error): CopilotSer
 		postMessage: vi.fn(),
 		findConnection: vi.fn(() => TEST_CONNECTION),
 		getErrorMessage: (error: unknown) => error instanceof Error ? error.message : String(error),
-		formatQueryExecutionErrorForUser: (error: unknown) => error instanceof Error ? error.message : String(error),
+		formatQueryExecutionErrorForUser: vi.fn((error: unknown) => error instanceof Error ? error.message : String(error)),
 		logQueryExecutionError: vi.fn(),
 		normalizeClusterUrlKey: (url: string) => url,
 		cancelRunningQuery: vi.fn(),
@@ -101,6 +101,7 @@ function createHost(capturedQueries: string[], executeError?: Error): CopilotSer
 		nextQueryRunSeq: () => ++runSeq,
 		isControlCommand,
 		appendQueryMode,
+		normalizeControlCommandForExecution,
 		buildCacheDirective: vi.fn((enabled?: boolean, value?: number, unit?: string) => buildCacheDirective(enabled, value, unit)),
 		getCachedSchemaFromDisk: () => Promise.resolve(undefined),
 		saveCachedSchemaToDisk: () => Promise.resolve(),
@@ -117,6 +118,20 @@ function createHostWithComparisonCapture(capturedQueries: string[], comparisonQu
 	host.ensureComparisonBoxInWebview = vi.fn((_sourceBoxId: string, query: string) => {
 		comparisonQueries.push(query);
 		return Promise.resolve('comparison');
+	});
+	return host;
+}
+
+function createHostWithQueryErrors(capturedQueries: string[], errorsByQuery: Record<string, Error>): CopilotServiceHost {
+	const host = createHost(capturedQueries);
+	(host.kustoClient.executeQueryCancelable as any) = vi.fn((_connection: KustoConnection, _database: string, query: string) => {
+		capturedQueries.push(query);
+		const error = errorsByQuery[query];
+		return {
+			promise: error ? Promise.reject(error) : Promise.resolve({ columns: ['x'], rows: [[1]], metadata: {} }),
+			cancel: vi.fn(),
+			clientActivityId: 'KW.execute_query;test',
+		};
 	});
 	return host;
 }
@@ -442,6 +457,25 @@ describe('Kusto Copilot function execution', () => {
 		expect(normalizeQueryText(setQueryMessages[0].query)).not.toMatch(/\blet\s+FilterRows\s*=/i);
 	});
 
+	it('strips leading comments from management-only final-response execution while preserving visible query text', async () => {
+		const functionQuery = '  // generated helper\r\n\t.create function FilterRows(threshold:long) { range x from 1 to 10 step 1 | where x > threshold }\n// keep visible';
+		const model = createModel([
+			[new vscode.LanguageModelToolCallPart('final-call', 'respond_to_all_other_queries', { query: functionQuery })],
+		]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const capturedQueries: string[] = [];
+		const host = createHost(capturedQueries);
+		const service = new CopilotService(host);
+
+		await service.startCopilotWriteQuery(startMessage());
+
+		expect(capturedQueries).toHaveLength(1);
+		expect(capturedQueries[0]).toBe('.create function FilterRows(threshold:long) { range x from 1 to 10 step 1 | where x > threshold }\n// keep visible');
+		const setQueryMessages = hostMessagesOfType(host, 'copilotWriteQuerySetQuery');
+		expect(setQueryMessages).toHaveLength(1);
+		expect(setQueryMessages[0].query).toBe(functionQuery.trim());
+	});
+
 	it('does not convert definition-only final responses with trailing comments into inline queries', async () => {
 		const functionQuery = '.create function FilterRows(threshold:long) { range x from 1 to 10 step 1 | where x > threshold }\n// helper comment';
 		const model = createModel([
@@ -523,10 +557,63 @@ describe('Kusto Copilot function execution', () => {
 			request: 'Optimize this query.',
 		});
 
-		expect(comparisonQueries.length).toBeGreaterThan(0);
+		expect(comparisonQueries).toHaveLength(2);
 		expectInlineFilterRowsQuery(comparisonQueries[0]);
 		expect(capturedQueries.length).toBeGreaterThanOrEqual(2);
 		expectInlineFilterRowsQuery(capturedQueries[capturedQueries.length - 1]);
+	});
+
+	it('strips leading comments from raw control commands in optimization comparison execution', async () => {
+		const candidateQuery = '// optimized metadata\n.show tables';
+		const model = createModel([
+			[new vscode.LanguageModelToolCallPart('opt-call', 'respond_to_query_performance_optimization_request', { query: candidateQuery })],
+		]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const capturedQueries: string[] = [];
+		const comparisonQueries: string[] = [];
+		const host = createHostWithComparisonCapture(capturedQueries, comparisonQueries);
+		const service = new CopilotService(host);
+
+		await service.startCopilotWriteQuery({
+			...startMessage(),
+			currentQuery: '// source metadata\n.show databases',
+			request: 'Optimize this query.',
+		});
+
+		expect(comparisonQueries).toHaveLength(2);
+		expect(comparisonQueries[0]).toBe(candidateQuery);
+		expect(capturedQueries).toContain('.show databases');
+		expect(capturedQueries).toContain('.show tables');
+		expect(capturedQueries).not.toContain('// source metadata\n.show databases');
+		expect(capturedQueries).not.toContain(candidateQuery);
+	});
+
+	it('logs stripped execution payloads while formatting original errors for optimization comparison failures', async () => {
+		const sourceError = new Error('synthetic source failure');
+		const model = createModel([
+			[new vscode.LanguageModelToolCallPart('opt-call', 'respond_to_query_performance_optimization_request', { query: '// optimized metadata\n.show tables' })],
+		]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const capturedQueries: string[] = [];
+		const host = createHostWithQueryErrors(capturedQueries, { '.show databases': sourceError });
+		const comparisonQueries: string[] = [];
+		host.ensureComparisonBoxInWebview = vi.fn((_sourceBoxId: string, query: string) => {
+			comparisonQueries.push(query);
+			return Promise.resolve('comparison');
+		});
+		const service = new CopilotService(host);
+
+		await service.startCopilotWriteQuery({
+			...startMessage(),
+			currentQuery: '// source metadata\n.show databases',
+			request: 'Optimize this query.',
+		});
+
+		expect(capturedQueries).toEqual(['.show databases']);
+		expect(host.logQueryExecutionError).toHaveBeenCalledWith(sourceError, TEST_CONNECTION, 'Samples', 'query_1', '.show databases');
+		expect(host.formatQueryExecutionErrorForUser).toHaveBeenCalledWith(sourceError, TEST_CONNECTION, 'Samples');
+		expect(comparisonQueries).toHaveLength(1);
+		expect(comparisonQueries[0]).toBe('// optimized metadata\n.show tables');
 	});
 
 	it('converts optimization source function definitions before running source comparison queries', async () => {
@@ -614,6 +701,25 @@ describe('Kusto Copilot function execution', () => {
 		const executedMessages = hostMessagesOfType(host, 'copilotExecutedQuery');
 		expect(executedMessages).toHaveLength(1);
 		expectInlineFilterRowsQuery(executedMessages[0].query);
+	});
+
+	it('strips leading comments from raw control commands in execute_kusto_query while preserving visible tool text', async () => {
+		const rawQuery = '  // inspect metadata\r\n\t.show tables';
+		const model = createModel([
+			[new vscode.LanguageModelToolCallPart('execute-call', 'execute_kusto_query', { query: rawQuery })],
+			[new vscode.LanguageModelTextPart('The command executed successfully.')],
+		]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const capturedQueries: string[] = [];
+		const host = createHost(capturedQueries);
+		const service = new CopilotService(host);
+
+		await service.startCopilotWriteQuery(startMessage());
+
+		expect(capturedQueries).toEqual(['.show tables']);
+		const executedMessages = hostMessagesOfType(host, 'copilotExecutedQuery');
+		expect(executedMessages).toHaveLength(1);
+		expect(executedMessages[0].query).toBe(rawQuery.trim());
 	});
 
 	it('stores inline executed-query tool queries in Copilot conversation history', async () => {

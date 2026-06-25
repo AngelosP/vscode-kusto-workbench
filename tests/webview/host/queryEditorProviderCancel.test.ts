@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { QueryEditorProvider } from '../../../src/host/queryEditorProvider';
 import type { KustoConnection } from '../../../src/host/connectionManager';
 import type { ExecuteQueryMessage } from '../../../src/host/queryEditorTypes';
+import { appendQueryMode, isControlCommand, normalizeControlCommandForExecution } from '../../../src/host/queryEditorUtils';
 
 const TEST_CONNECTION: KustoConnection = {
 	id: 'conn-1',
@@ -65,6 +66,7 @@ function createProviderHarness() {
 	};
 	provider.appendQueryMode = vi.fn((query: string) => query);
 	provider.isControlCommand = vi.fn(() => false);
+	provider.normalizeControlCommandForExecution = vi.fn((query: string) => normalizeControlCommandForExecution(query));
 	provider.buildCacheDirective = vi.fn(() => '');
 	provider.logQueryExecutionError = vi.fn();
 	provider.formatQueryExecutionErrorForUser = vi.fn((error: unknown) => error instanceof Error ? error.message : String(error));
@@ -163,5 +165,60 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.runningQueriesByBoxId.has('query_1')).toBe(true);
 		provider.unregisterRunningQuery('query_1', newCancel, 2);
 		expect(provider.runningQueriesByBoxId.has('query_1')).toBe(false);
+	});
+
+	it('strips leading comments only from the control-command payload sent to Kusto', async () => {
+		const provider = createProviderHarness();
+		const originalQuery = '  // create helper\r\n\t.create-or-update function F() { print x=1 }\n// trailing note';
+		const message = executeMessage('query_1', originalQuery);
+		message.cacheEnabled = true;
+		message.queryMode = 'take100';
+		provider.isControlCommand = vi.fn(() => true);
+		provider.appendQueryMode = vi.fn((query: string) => query);
+		provider.buildCacheDirective = vi.fn(() => 'set query_results_cache_max_age = time(1h);');
+		provider.kustoClient.executeQueryCancelable.mockReturnValueOnce({
+			promise: Promise.resolve(queryResult('ok')),
+			cancel: vi.fn(),
+			clientActivityId: 'KW.execute_query;commented-control',
+		});
+
+		await provider.executeQueryFromWebview(message);
+
+		expect(provider.buildCacheDirective).not.toHaveBeenCalled();
+		expect(provider.kustoClient.executeQueryCancelable).toHaveBeenCalledWith(
+			TEST_CONNECTION,
+			'Samples',
+			'.create-or-update function F() { print x=1 }\n// trailing note',
+			'query_1::conn-1'
+		);
+		expect(message.query).toBe(originalQuery);
+	});
+
+	it('uses real control-command detection to suppress cache and query-mode changes before stripping', async () => {
+		const provider = createProviderHarness();
+		const originalQuery = '  // create helper\r\n\t.create-or-update function F() { print x=1 }';
+		const message = executeMessage('query_1', originalQuery);
+		message.cacheEnabled = true;
+		message.queryMode = 'take100';
+		provider.isControlCommand = vi.fn((query: string) => isControlCommand(query));
+		provider.appendQueryMode = vi.fn((query: string, mode?: string) => appendQueryMode(query, mode));
+		provider.buildCacheDirective = vi.fn(() => 'set query_results_cache_max_age = time(1h);');
+		provider.kustoClient.executeQueryCancelable.mockReturnValueOnce({
+			promise: Promise.resolve(queryResult('ok')),
+			cancel: vi.fn(),
+			clientActivityId: 'KW.execute_query;real-control-detection',
+		});
+
+		await provider.executeQueryFromWebview(message);
+
+		expect(provider.isControlCommand).toHaveBeenCalledWith(originalQuery);
+		expect(provider.buildCacheDirective).not.toHaveBeenCalled();
+		expect(provider.kustoClient.executeQueryCancelable).toHaveBeenCalledWith(
+			TEST_CONNECTION,
+			'Samples',
+			'.create-or-update function F() { print x=1 }',
+			'query_1::conn-1'
+		);
+		expect(message.query).toBe(originalQuery);
 	});
 });
