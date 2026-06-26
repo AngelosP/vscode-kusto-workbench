@@ -184,7 +184,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	async initializeWebviewPanel(
 		panel: vscode.WebviewPanel,
-		options?: { registerMessageHandler?: boolean; hideFooterControls?: boolean }
+		options?: { registerMessageHandler?: boolean; hideFooterControls?: boolean; initialDocumentLoading?: boolean }
 	): Promise<void> {
 		this.connection.activate();
 		this.panel = panel;
@@ -194,7 +194,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		// in $setIconPath) and break the entire webview. Standalone panels set
 		// their icon in openEditor() instead.
 		this.panel.webview.html = await getQueryEditorHtml(this.panel.webview, this.extensionUri, this.context, {
-			hideFooterControls: !!options?.hideFooterControls
+			hideFooterControls: !!options?.hideFooterControls,
+			initialDocumentLoading: !!options?.initialDocumentLoading
 		});
 		this.embeddedTutorialHost = new EmbeddedTutorialWebviewHost(this.panel, this.documentUri);
 		this.embeddedTutorialRegistration = EmbeddedTutorialWebviewRegistry.register(this.embeddedTutorialHost);

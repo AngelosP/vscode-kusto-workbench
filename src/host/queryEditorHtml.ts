@@ -4,7 +4,7 @@ export async function getQueryEditorHtml(
 	webview: vscode.Webview,
 	extensionUri: vscode.Uri,
 	context: vscode.ExtensionContext,
-	options?: { hideFooterControls?: boolean }
+	options?: { hideFooterControls?: boolean; initialDocumentLoading?: boolean }
 ): Promise<string> {
 	const templateUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'queryEditor.html');
 	const cssBundleUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor.bundle.css');
@@ -128,7 +128,11 @@ export async function getQueryEditorHtml(
 		}
 	}
 
+	const initialDocumentLoading = options?.initialDocumentLoading === true;
+
 	return template
+		.replaceAll('{{documentLoadingBodyAttributes}}', initialDocumentLoading ? ' data-kusto-document-loading="true"' : '')
+		.replaceAll('{{documentLoadingContainerAttributes}}', initialDocumentLoading ? ' aria-busy="true"' : '')
 		.replaceAll('{{alternatingRowStyle}}', altRowCss)
 		.replaceAll('{{queryEditorJsUri}}', queryEditorJsUri)
 		.replaceAll('{{copilotLogoUri}}', copilotLogoUri)

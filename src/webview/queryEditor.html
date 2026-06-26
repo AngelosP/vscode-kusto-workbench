@@ -9,8 +9,12 @@
 	<style>{{appCssInline}}{{alternatingRowStyle}}</style>
 </head>
 
-<body>
-	<div id="queries-container"></div>
+<body{{documentLoadingBodyAttributes}}>
+	<div id="documentLoading" class="document-loading" role="status" aria-live="polite">
+		<span class="document-loading-spinner" aria-hidden="true"></span>
+		<span class="document-loading-text">Opening notebook...</span>
+	</div>
+	<div id="queries-container"{{documentLoadingContainerAttributes}}></div>
 	<kw-section-reorder-popup id="sectionReorderPopup"></kw-section-reorder-popup>
 	<div class="add-controls" role="group" aria-label="Add sections">
 		<span class="add-controls-label">Add</span>

@@ -181,4 +181,70 @@ describe('kw-query-section loading states', () => {
 		expect(el.getConnectionId()).toBe('c2');
 		expect(el.getClusterUrl()).toBe('https://second.kusto.windows.net');
 	});
+
+	it('preserves restored cluster intent until the saved cluster is auto-added', async () => {
+		const el = createSection();
+		const connectionEvents: CustomEvent[] = [];
+		el.addEventListener('connection-changed', event => connectionEvents.push(event as CustomEvent));
+
+		el.setDesiredClusterUrl('https://saved.kusto.windows.net');
+		el.setDesiredDatabase('SavedDb');
+		el.setConnections([
+			{ id: 'existing', clusterUrl: 'https://existing.kusto.windows.net' },
+		], { lastConnectionId: 'existing' });
+		await el.updateComplete;
+
+		expect(el.getConnectionId()).toBe('');
+		expect(el.getClusterUrl()).toBe('');
+		expect(connectionEvents).toHaveLength(0);
+
+		el.setConnections([
+			{ id: 'existing', clusterUrl: 'https://existing.kusto.windows.net' },
+			{ id: 'saved', clusterUrl: 'https://saved.kusto.windows.net' },
+		], { lastConnectionId: 'existing' });
+		await el.updateComplete;
+
+		expect(el.getConnectionId()).toBe('saved');
+		expect(el.getClusterUrl()).toBe('https://saved.kusto.windows.net');
+		expect(connectionEvents).toHaveLength(1);
+		expect(connectionEvents[0].detail).toMatchObject({
+			boxId: 'test1',
+			connectionId: 'saved',
+			clusterUrl: 'https://saved.kusto.windows.net',
+			database: 'SavedDb',
+		});
+	});
+
+	it('does not resolve restored cluster intent by short-name collision', async () => {
+		const el = createSection();
+		const connectionEvents: CustomEvent[] = [];
+		el.addEventListener('connection-changed', event => connectionEvents.push(event as CustomEvent));
+
+		el.setDesiredClusterUrl('https://foo.region-a.kusto.windows.net');
+		el.setDesiredDatabase('SavedDb');
+		el.setConnections([
+			{ id: 'wrong', clusterUrl: 'https://foo.region-b.kusto.windows.net' },
+		], { lastConnectionId: 'wrong' });
+		await el.updateComplete;
+
+		expect(el.getConnectionId()).toBe('');
+		expect(el.getClusterUrl()).toBe('');
+		expect(connectionEvents).toHaveLength(0);
+
+		el.setConnections([
+			{ id: 'wrong', clusterUrl: 'https://foo.region-b.kusto.windows.net' },
+			{ id: 'saved', clusterUrl: 'https://foo.region-a.kusto.windows.net' },
+		], { lastConnectionId: 'wrong' });
+		await el.updateComplete;
+
+		expect(el.getConnectionId()).toBe('saved');
+		expect(el.getClusterUrl()).toBe('https://foo.region-a.kusto.windows.net');
+		expect(connectionEvents).toHaveLength(1);
+		expect(connectionEvents[0].detail).toMatchObject({
+			boxId: 'test1',
+			connectionId: 'saved',
+			clusterUrl: 'https://foo.region-a.kusto.windows.net',
+			database: 'SavedDb',
+		});
+	});
 });

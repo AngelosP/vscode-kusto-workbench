@@ -18,7 +18,7 @@ import '../components/kw-data-table.js';
 import './kw-sql-toolbar.js';
 import { maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
-import { schedulePersist } from '../core/persistence.js';
+import { schedulePersist, __kustoClearStoredQueryResult } from '../core/persistence.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
 import { registerStsProviders, registerStsEditorModel, unregisterStsEditorModel, setStsReady } from '../monaco/sql-sts-providers.js';
 import { setActiveMonacoEditor, queryEditorBoxByModelUri, queryEditors } from '../core/state.js';
@@ -170,6 +170,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	@state() private _connections: SqlConnectionInfo[] = [];
 	@state() private _connectionId = '';
 	@state() private _desiredServerUrl = '';
+	private _desiredServerUrlPendingMatch = false;
 	@state() private _databases: string[] = [];
 	@state() private _database = '';
 	@state() private _desiredDatabase = '';
@@ -804,7 +805,10 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._connectionId = connectionId;
 		this._sqlConnectionId = connectionId;
 		const conn = this._connections.find(c => c.id === connectionId);
-		if (conn) this._desiredServerUrl = conn.serverUrl || '';
+		if (conn) {
+			this._desiredServerUrl = conn.serverUrl || '';
+			this._desiredServerUrlPendingMatch = false;
+		}
 		if (prev !== connectionId) {
 			this._database = '';
 			this._desiredDatabase = '';
@@ -1376,6 +1380,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	/** Set the desired server URL (used during restoration). */
 	public setDesiredServerUrl(url: string): void {
 		this._desiredServerUrl = url;
+		this._desiredServerUrlPendingMatch = !!String(url || '').trim();
 	}
 
 	/** Set the desired database (used during restoration). */
@@ -1386,6 +1391,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	/** @deprecated Use setDesiredServerUrl instead. Kept for restore compat. */
 	public setServerUrl(url: string): void {
 		this._desiredServerUrl = url;
+		this._desiredServerUrlPendingMatch = !!String(url || '').trim();
 	}
 
 	public getDatabase(): string { return this._database; }
@@ -1404,6 +1410,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	public setSqlConnectionId(id: string): void {
 		this._sqlConnectionId = id;
 		this._connectionId = id;
+		if (id) {
+			this._desiredServerUrlPendingMatch = false;
+		}
 		if (!id) this._resetSchemaReadiness('not-loaded');
 	}
 
@@ -1442,7 +1451,16 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (this._desiredServerUrl) {
 			const target = this._desiredServerUrl.trim().toLowerCase();
 			const match = conns.find(c => (c.serverUrl || '').trim().toLowerCase() === target);
-			if (match) resolvedId = match.id;
+			if (match) {
+				resolvedId = match.id;
+				this._desiredServerUrlPendingMatch = false;
+			}
+		}
+
+		if (!resolvedId && this._desiredServerUrlPendingMatch) {
+			this._connectionId = '';
+			this._sqlConnectionId = '';
+			return;
 		}
 
 		// 2. Try current selection
@@ -1472,7 +1490,10 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 		if (resolvedId) {
 			const conn = conns.find(c => c.id === resolvedId);
-			if (conn) this._desiredServerUrl = conn.serverUrl;
+			if (conn) {
+				this._desiredServerUrl = conn.serverUrl;
+				this._desiredServerUrlPendingMatch = false;
+			}
 		}
 
 		if (connectionTargetChanged && resolvedId) {
@@ -1880,6 +1901,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._executing = true;
 		this._lastError = '';
 		this._startElapsedTimer();
+		try { __kustoClearStoredQueryResult(this.boxId); } catch (e) { console.error('[kusto]', e); }
 		postMessageToHost({
 			type: 'executeSqlQuery',
 			query,

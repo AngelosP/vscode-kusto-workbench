@@ -593,7 +593,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			return handleIncomingWebviewMessage(message);
 		});
-		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
+		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
 
 		const documentKind = KqlxEditorProvider.getDocumentKind(document);
 		const allowedSectionKinds = KqlxEditorProvider.getAllowedSectionKinds(documentKind);
@@ -900,7 +900,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			const uniqueKeys = new Map<string, string>();
 			for (const u of urls) {
-				const k = getClusterShortNameKey(u);
+				const k = normalizeClusterUrlKey(u);
 				if (k && !uniqueKeys.has(k)) {
 					uniqueKeys.set(k, u);
 				}
@@ -911,11 +911,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 
 			const existing = this.connectionManager.getConnections();
-			const existingKeys = new Set(existing.map((c) => getClusterShortNameKey(c.clusterUrl || '')).filter(Boolean));
+			const existingKeys = new Set(existing.map((c) => normalizeClusterUrlKey(c.clusterUrl || '')).filter(Boolean));
 
 			let added = 0;
 			for (const [, originalUrl] of uniqueKeys) {
-				const key = getClusterShortNameKey(originalUrl);
+				const key = normalizeClusterUrlKey(originalUrl);
 				if (!key || existingKeys.has(key)) {
 					continue;
 				}
@@ -957,20 +957,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			const sanitizedState = sanitizeStateForKind(documentKind, parsed.file.state);
 			const hydratedState = await injectLinkedQueryText(sanitizedState);
 
-			let connectionsChanged = false;
-			try {
-				connectionsChanged = await ensureConnectionsForState(hydratedState);
-			} catch {
-				// ignore
-			}
-			if (connectionsChanged) {
-				try {
-					await queryEditor.refreshConnectionsData();
-				} catch {
-					// ignore
-				}
-			}
-
 			void webviewPanel.webview.postMessage({
 				type: 'documentData',
 				ok: true,
@@ -979,6 +965,22 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				htmlPowerBiCompatibilityCheckEnabled,
 				state: hydratedState
 			});
+
+			void (async () => {
+				let connectionsChanged = false;
+				try {
+					connectionsChanged = await ensureConnectionsForState(hydratedState);
+				} catch {
+					// ignore
+				}
+				if (connectionsChanged) {
+					try {
+						await queryEditor.refreshConnectionsData();
+					} catch {
+						// ignore
+					}
+				}
+			})();
 		};
 
 		const subscriptions: vscode.Disposable[] = [webviewMessageSubscription];

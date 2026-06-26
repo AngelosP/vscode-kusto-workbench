@@ -5,7 +5,7 @@ export {};
 import { normalizeClusterUrl, isLeaveNoTraceCluster, trySerializeQueryResult } from '../shared/persistence-utils';
 import { postMessageToHost } from '../shared/webview-messages';
 import { pState } from '../shared/persistence-state';
-import { displayResult, displayResultForBox } from './results-state';
+import { displayResultForBox, getResultsStateRevision } from './results-state';
 import {
 	addQueryBox, removeQueryBox, updateConnectionSelects, toggleCacheControls,
 	__kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase,
@@ -23,6 +23,7 @@ import {
 	caretDocsEnabled, autoTriggerAutocompleteEnabled,
 	setCaretDocsEnabled, setAutoTriggerAutocompleteEnabled,
 	sqlFavoritesModeByBoxId,
+	queryExecutionTimers,
 } from './state';
 import { addChartBox, removeChartBox, chartBoxes } from '../sections/kw-chart-section';
 import { addTransformationBox, removeTransformationBox, transformationBoxes } from '../sections/kw-transformation-section';
@@ -49,6 +50,20 @@ let __kustoSchemaPrewarmTimer: any = null;
 const __kustoSchemaPrewarmSentKeys = new Set<string>();
 let __kustoHtmlPowerBiCompatibilityTimer: any = null;
 let __kustoHtmlPowerBiCompatibilityRunToken = 0;
+let __kustoRestoreResultGeneration = 0;
+let __kustoDeferredRestoredResultScheduled = false;
+
+type DeferredRestoredResultJob = {
+	generation: number;
+	documentUri: string;
+	boxId: string;
+	resultJson: string;
+	kind: 'query' | 'sql';
+	resultsHeightPx?: number;
+	initialResultsRevision: number;
+};
+
+let __kustoDeferredRestoredResultJobs: DeferredRestoredResultJob[] = [];
 
 // Thin wrapper kept for the window bridge export.
 function __kustoNormalizeClusterUrl(clusterUrl: any) {
@@ -189,6 +204,136 @@ function __kustoQueueIdle(callback: () => void): void {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try { setTimeout(callback, 25); } catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoSetDocumentLoading(loading: boolean, text?: string): void {
+	try {
+		const body = document.body as HTMLElement | null;
+		if (body && body.dataset) {
+			if (loading) {
+				body.dataset.kustoDocumentLoading = 'true';
+			} else {
+				delete body.dataset.kustoDocumentLoading;
+			}
+		}
+		const loader = document.getElementById('documentLoading') as HTMLElement | null;
+		if (loader) {
+			loader.style.display = '';
+			loader.setAttribute('aria-hidden', loading ? 'false' : 'true');
+			if (text) {
+				const label = loader.querySelector('.document-loading-text');
+				if (label) label.textContent = text;
+			}
+		}
+		const container = document.getElementById('queries-container') as HTMLElement | null;
+		if (container) {
+			if (loading) {
+				container.setAttribute('aria-busy', 'true');
+			} else {
+				container.removeAttribute('aria-busy');
+			}
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoStartRestoreResultBatch(): number {
+	__kustoRestoreResultGeneration++;
+	__kustoDeferredRestoredResultJobs = [];
+	__kustoDeferredRestoredResultScheduled = false;
+	return __kustoRestoreResultGeneration;
+}
+
+function __kustoQueueRestoredResult(job: Omit<DeferredRestoredResultJob, 'generation' | 'documentUri' | 'initialResultsRevision'>): void {
+	try {
+		const boxId = String(job.boxId || '');
+		const resultJson = String(job.resultJson || '');
+		if (!boxId || !resultJson) return;
+		__kustoDeferredRestoredResultJobs.push({
+			...job,
+			boxId,
+			resultJson,
+			generation: __kustoRestoreResultGeneration,
+			documentUri: String(pState.documentUri || ''),
+			initialResultsRevision: getResultsStateRevision(boxId),
+		});
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoIsDeferredResultJobCurrent(job: DeferredRestoredResultJob): boolean {
+	try {
+		if (job.generation !== __kustoRestoreResultGeneration) return false;
+		if (String(pState.documentUri || '') !== job.documentUri) return false;
+		if (pState.queryResultJsonByBoxId?.[job.boxId] !== job.resultJson) return false;
+		if (getResultsStateRevision(job.boxId) !== job.initialResultsRevision) return false;
+		const sectionEl = document.getElementById(job.boxId);
+		if (!sectionEl) return false;
+		const tag = String(sectionEl.tagName || '').toLowerCase();
+		if (job.kind === 'query') {
+			if (queryExecutionTimers?.[job.boxId]) return false;
+			return job.boxId.startsWith('query_') || tag === 'kw-query-section';
+		}
+		if ((sectionEl as any)._executing === true || (sectionEl as HTMLElement).dataset?.testExecuting === 'true') return false;
+		return job.boxId.startsWith('sql_') || tag === 'kw-sql-section';
+	} catch {
+		return false;
+	}
+}
+
+function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): void {
+	try {
+		if (!__kustoIsDeferredResultJobCurrent(job)) return;
+		let parsed: any;
+		try {
+			parsed = JSON.parse(job.resultJson);
+		} catch {
+			if (pState.queryResultJsonByBoxId?.[job.boxId] === job.resultJson) {
+				__kustoDeleteStoredQueryResultJson(job.boxId);
+			}
+			return;
+		}
+		if (!parsed || typeof parsed !== 'object') return;
+		if (!__kustoIsDeferredResultJobCurrent(job)) return;
+
+		if (!parsed.metadata || typeof parsed.metadata !== 'object') {
+			parsed.metadata = { executionTime: '' };
+		} else if (typeof parsed.metadata.executionTime === 'undefined') {
+			parsed.metadata.executionTime = '';
+		}
+
+		if (job.kind === 'sql') {
+			try {
+				const rh = job.resultsHeightPx;
+				if (typeof rh === 'number' && Number.isFinite(rh) && rh > 0) {
+					const sqlWrapper = document.getElementById(job.boxId + '_sql_results_wrapper') as HTMLElement | null;
+					if (sqlWrapper) {
+						sqlWrapper.style.height = Math.max(120, Math.round(rh)) + 'px';
+						sqlWrapper.dataset.kustoUserResized = 'true';
+					}
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		}
+
+		if (!__kustoIsDeferredResultJobCurrent(job)) return;
+		pState.lastExecutedBox = job.boxId;
+		displayResultForBox(parsed, job.boxId, { label: 'Results', showExecutionTime: true });
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+function __kustoScheduleDeferredRestoredResults(): void {
+	try {
+		if (__kustoDeferredRestoredResultScheduled || __kustoDeferredRestoredResultJobs.length === 0) return;
+		__kustoDeferredRestoredResultScheduled = true;
+		__kustoQueueIdle(() => {
+			__kustoDeferredRestoredResultScheduled = false;
+			const job = __kustoDeferredRestoredResultJobs.shift();
+			if (job) {
+				__kustoRenderDeferredRestoredResult(job);
+			}
+			if (__kustoDeferredRestoredResultJobs.length > 0) {
+				__kustoScheduleDeferredRestoredResults();
+			}
+		});
+	} catch (e) { console.error('[kusto]', e); }
 }
 
 export function __kustoScheduleHtmlPowerBiCompatibilityCheck(_reason: string = 'document-restore'): void {
@@ -434,6 +579,10 @@ function __kustoDeleteStoredQueryResultJson(boxId: any) {
 		delete pState.queryResultJsonByBoxId[id];
 		delete __kustoStoredResultSignatureByBoxId[id];
 	} catch (e) { console.error('[kusto]', e); }
+}
+
+export function __kustoClearStoredQueryResult(boxId: any) {
+	__kustoDeleteStoredQueryResultJson(boxId);
 }
 
 function __kustoGetStoredQueryResultToken(boxId: any, resultJson: any) {
@@ -951,6 +1100,7 @@ function __kustoClearAllSections() {
 function applyKqlxState(state: any) {
 	pState.restoreInProgress = true;
 	try {
+		__kustoStartRestoreResultBatch();
 		__kustoPersistenceEnabled = false;
 
 		// Reset persisted results when loading a new document.
@@ -1202,23 +1352,7 @@ function applyKqlxState(state: any) {
 					if (rj) {
 						// Keep in-memory cache aligned with restored boxes.
 						__kustoSetStoredQueryResultJson(boxId, rj);
-						try {
-							const parsed = JSON.parse(rj);
-							if (parsed && typeof parsed === 'object') {
-								// displayResult expects columns/rows/metadata in the typical shape.
-								const p = parsed;
-								if (!p.metadata || typeof p.metadata !== 'object') {
-									p.metadata = { executionTime: '' };
-								} else if (typeof p.metadata.executionTime === 'undefined') {
-									p.metadata.executionTime = '';
-								}
-								pState.lastExecutedBox = boxId;
-								displayResult(p);
-							}
-						} catch {
-							// If stored JSON is invalid, drop it.
-							__kustoDeleteStoredQueryResultJson(boxId);
-						}
+						__kustoQueueRestoredResult({ kind: 'query', boxId, resultJson: rj });
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				try {
@@ -1526,30 +1660,12 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					const rj = section.resultJson ? String(section.resultJson) : '';
 					if (rj) {
 						__kustoSetStoredQueryResultJson(pendingId, rj);
-						// Pre-apply persisted results height BEFORE displayResultForBox so
-						// _displayResults sees kustoUserResized and skips auto-sizing.
-						try {
-							const rh = section.resultsHeightPx;
-							if (typeof rh === 'number' && Number.isFinite(rh) && rh > 0) {
-								const sqlWrapper = document.getElementById(pendingId + '_sql_results_wrapper') as HTMLElement | null;
-								if (sqlWrapper) {
-									sqlWrapper.style.height = Math.max(120, Math.round(rh)) + 'px';
-									sqlWrapper.dataset.kustoUserResized = 'true';
-								}
-							}
-						} catch (e) { console.error('[kusto]', e); }
-						try {
-							const parsed = JSON.parse(rj);
-							if (parsed && typeof parsed === 'object') {
-								if (!parsed.metadata || typeof parsed.metadata !== 'object') {
-									parsed.metadata = { executionTime: '' };
-								}
-								pState.lastExecutedBox = pendingId;
-								displayResultForBox(parsed, pendingId, { label: 'Results', showExecutionTime: true });
-							}
-						} catch {
-							__kustoDeleteStoredQueryResultJson(pendingId);
-						}
+						__kustoQueueRestoredResult({
+							kind: 'sql',
+							boxId: pendingId,
+							resultJson: rj,
+							resultsHeightPx: section.resultsHeightPx,
+						});
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				continue;
@@ -1620,6 +1736,7 @@ export function handleDocumentDataMessage(message: any) {
 			return;
 		}
 	} catch (e) { console.error('[kusto]', e); }
+	__kustoSetDocumentLoading(true, 'Opening notebook...');
 	__kustoCancelHtmlPowerBiCompatibilityCheck();
 	__kustoHasAppliedDocument = true;
 	try {
@@ -1628,10 +1745,11 @@ export function handleDocumentDataMessage(message: any) {
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
-	// Some host-to-webview messages can arrive before the webview registers its message listener.
-	// documentData is requested by the webview after initialization, so it is a reliable place
-	// to apply compatibility mode for .kql/.csl files.
 	try {
+		// Some host-to-webview messages can arrive before the webview registers its message listener.
+		// documentData is requested by the webview after initialization, so it is a reliable place
+		// to apply compatibility mode for .kql/.csl files.
+		try {
 		if (typeof message.compatibilityMode === 'boolean') {
 			if (typeof __kustoSetCompatibilityMode === 'function') {
 				__kustoSetCompatibilityMode(!!message.compatibilityMode);
@@ -1639,11 +1757,11 @@ export function handleDocumentDataMessage(message: any) {
 				pState.compatibilityMode = !!message.compatibilityMode;
 			}
 		}
-	} catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
 
-	// Capabilities can arrive either via persistenceMode or (for robustness) piggybacked on documentData.
-	// This prevents restore issues when messages arrive out-of-order.
-	try {
+		// Capabilities can arrive either via persistenceMode or (for robustness) piggybacked on documentData.
+		// This prevents restore issues when messages arrive out-of-order.
+		try {
 		if (typeof message.documentUri === 'string') {
 			pState.documentUri = String(message.documentUri);
 		}
@@ -1681,20 +1799,20 @@ export function handleDocumentDataMessage(message: any) {
 				__kustoApplyDocumentCapabilities();
 			}
 		} catch (e) { console.error('[kusto]', e); }
-	} catch (e) { console.error('[kusto]', e); }
-
-	const ok = !!(message && message.ok);
-	if (!ok && message && message.error) {
-		try {
-			// Non-fatal: start with an empty doc state.
-			console.warn('Failed to parse .kqlx:', message.error);
 		} catch (e) { console.error('[kusto]', e); }
-	}
 
-	applyKqlxState(message && message.state ? message.state : { sections: [] });
+		const ok = !!(message && message.ok);
+		if (!ok && message && message.error) {
+			try {
+				// Non-fatal: start with an empty doc state.
+				console.warn('Failed to parse .kqlx:', message.error);
+			} catch (e) { console.error('[kusto]', e); }
+		}
 
-	// If the doc is empty, initialize UX content.
-	try {
+		applyKqlxState(message && message.state ? message.state : { sections: [] });
+
+		// If the doc is empty, initialize UX content.
+		try {
 		const hasAny = (queryBoxes && queryBoxes.length) || (markdownBoxes && markdownBoxes.length) || (pythonBoxes && pythonBoxes.length) || (urlBoxes && urlBoxes.length) || (htmlBoxes && htmlBoxes.length) || (sqlBoxes && sqlBoxes.length);
 		if (!hasAny) {
 			const applied = __kustoApplyPendingAdds();
@@ -1709,7 +1827,12 @@ export function handleDocumentDataMessage(message: any) {
 				}
 			}
 		}
-	} catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
+
+		__kustoScheduleDeferredRestoredResults();
+	} finally {
+		__kustoSetDocumentLoading(false);
+	}
 
 	// ── Schema diagnostics: log all sections on file open ──
 	try {

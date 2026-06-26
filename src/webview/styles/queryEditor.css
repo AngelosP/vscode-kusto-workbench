@@ -45,6 +45,37 @@
 			--kw-sash-hover-size: 4px;
 		}
 
+		.document-loading {
+			display: none;
+			align-items: center;
+			justify-content: center;
+			gap: 8px;
+			min-height: 96px;
+			color: var(--vscode-descriptionForeground, var(--vscode-foreground));
+			font-size: 13px;
+		}
+
+		body[data-kusto-document-loading="true"] .document-loading {
+			display: flex;
+		}
+
+		.document-loading-spinner {
+			display: inline-block;
+			width: 14px;
+			height: 14px;
+			box-sizing: border-box;
+			border-radius: 50%;
+			border: 2px solid var(--vscode-editorWidget-border);
+			border-top-color: var(--vscode-progressBar-background);
+			animation: query-spinner-spin 0.9s linear infinite;
+		}
+
+		@media (prefers-reduced-motion: reduce) {
+			.document-loading-spinner {
+				animation: none;
+			}
+		}
+
 		/* Plain .md files: maximize usable width and simplify section chrome. */
 		body[data-kusto-document-kind="md"] {
 			padding: 0;

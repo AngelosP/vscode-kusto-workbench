@@ -11,6 +11,7 @@ const testState = vi.hoisted(() => {
 	const sqlBoxes: string[] = [];
 	const queryEditors: Record<string, { getValue: () => string; layout?: () => void }> = {};
 	const markdownEditors: Record<string, { getValue: () => string }> = {};
+	const queryExecutionTimers: Record<string, unknown> = {};
 	const sqlElements: Record<string, HTMLElement & {
 		setFavoritesMode: ReturnType<typeof vi.fn>;
 	}> = {};
@@ -20,6 +21,9 @@ const testState = vi.hoisted(() => {
 		const id = options.id || `query_restored_${addQueryBox.mock.calls.length + 1}`;
 		queryBoxes.push(id);
 		queryEditors[id] = { getValue: () => '' };
+		const el = document.createElement('div');
+		el.id = id;
+		document.body.appendChild(el);
 		return id;
 	});
 
@@ -63,6 +67,7 @@ const testState = vi.hoisted(() => {
 		sqlBoxes,
 		queryEditors,
 		markdownEditors,
+		queryExecutionTimers,
 		sqlElements,
 		addQueryBox,
 		addMarkdownBox,
@@ -123,6 +128,7 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	removeQueryBox: vi.fn((id: string) => {
 		const idx = testState.queryBoxes.indexOf(id);
 		if (idx >= 0) testState.queryBoxes.splice(idx, 1);
+		document.getElementById(id)?.remove();
 	}),
 	updateConnectionSelects: vi.fn(),
 	toggleCacheControls: vi.fn(),
@@ -170,6 +176,7 @@ vi.mock('../../src/webview/core/state.js', () => ({
 	connections: [],
 	queryBoxes: testState.queryBoxes,
 	queryEditors: testState.queryEditors,
+	queryExecutionTimers: testState.queryExecutionTimers,
 	favoritesModeByBoxId: {},
 	leaveNoTraceClusters: [],
 	caretDocsEnabled: true,
@@ -241,6 +248,7 @@ describe('persistence round-trip', () => {
 		testState.sqlBoxes.splice(0, testState.sqlBoxes.length);
 		for (const k of Object.keys(testState.queryEditors)) delete testState.queryEditors[k];
 		for (const k of Object.keys(testState.markdownEditors)) delete testState.markdownEditors[k];
+		for (const k of Object.keys(testState.queryExecutionTimers)) delete testState.queryExecutionTimers[k];
 		for (const k of Object.keys(testState.sqlElements)) delete testState.sqlElements[k];
 		for (const k of Object.keys(pState.pendingQueryTextByBoxId)) delete pState.pendingQueryTextByBoxId[k];
 		for (const k of Object.keys(pState.pendingMarkdownTextByBoxId)) delete pState.pendingMarkdownTextByBoxId[k];
@@ -254,10 +262,15 @@ describe('persistence round-trip', () => {
 		vi.clearAllMocks();
 		pState.compatibilityMode = false;
 		pState.documentKind = 'kqlx';
+		pState.documentUri = '';
 		pState.devNotesSections = [];
 		pState.lastExecutedBox = '';
 		pState.htmlPowerBiCompatibilityCheckEnabled = true;
 	});
+
+	function flushDeferredRestoreTimers() {
+		vi.advanceTimersByTime(25);
+	}
 
 	it('serializes section DOM via getKqlxState', () => {
 		const container = document.createElement('div');
@@ -411,6 +424,7 @@ describe('persistence round-trip', () => {
 	});
 
 	it('restores SQL section query, state, favorites mode, and persisted results', () => {
+		vi.useFakeTimers();
 		const resultJson = JSON.stringify({
 			columns: [{ name: 'Value', type: 'int' }],
 			rows: [[1]],
@@ -422,58 +436,67 @@ describe('persistence round-trip', () => {
 			expect(wrapper?.dataset.kustoUserResized).toBe('true');
 		});
 
-		handleDocumentDataMessage({
-			type: 'documentData',
-			ok: true,
-			forceReload: true,
-			documentUri: 'file:///tmp/sql.sqlx',
-			state: {
-				sections: [
-					{
-						type: 'sql',
-						id: 'sql_saved_1',
-						name: 'Warehouse Query',
-						query: 'select top 10 * from dbo.Events',
-						serverUrl: 'tcp:sql.example.test,1433',
-						database: 'Warehouse',
-						expanded: false,
-						resultsVisible: false,
-						favoritesMode: true,
-						resultJson,
-						runMode: 'all',
-						editorHeightPx: 310,
-						resultsHeightPx: 420,
-						copilotChatVisible: true,
-						copilotChatWidthPx: 360,
-					},
-				],
-			},
-		});
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData',
+				ok: true,
+				forceReload: true,
+				documentUri: 'file:///tmp/sql.sqlx',
+				state: {
+					sections: [
+						{
+							type: 'sql',
+							id: 'sql_saved_1',
+							name: 'Warehouse Query',
+							query: 'select top 10 * from dbo.Events',
+							serverUrl: 'tcp:sql.example.test,1433',
+							database: 'Warehouse',
+							expanded: false,
+							resultsVisible: false,
+							favoritesMode: true,
+							resultJson,
+							runMode: 'all',
+							editorHeightPx: 310,
+							resultsHeightPx: 420,
+							copilotChatVisible: true,
+							copilotChatWidthPx: 360,
+						},
+					],
+				},
+			});
 
-		expect(pState.pendingSqlQueryByBoxId.sql_saved_1).toBe('select top 10 * from dbo.Events');
-		expect(testState.addSqlBox).toHaveBeenCalledWith({
-			id: 'sql_saved_1',
-			name: 'Warehouse Query',
-			serverUrl: 'tcp:sql.example.test,1433',
-			database: 'Warehouse',
-			expanded: false,
-			editorHeightPx: 310,
-			copilotChatVisible: true,
-			copilotChatWidthPx: 360,
-		});
-		expect(setRunMode).toHaveBeenCalledWith('sql_saved_1', 'all');
-		expect(pState.resultsVisibleByBoxId.sql_saved_1).toBe(false);
-		expect(testState.sqlElements.sql_saved_1.setFavoritesMode).toHaveBeenCalledWith(true);
-		expect(sqlFavoritesModeByBoxId.sql_saved_1).toBe(true);
-		expect(pState.queryResultJsonByBoxId.sql_saved_1).toBe(resultJson);
-		expect(pState.lastExecutedBox).toBe('sql_saved_1');
-		expect(displayResultForBox).toHaveBeenCalledWith(JSON.parse(resultJson), 'sql_saved_1', { label: 'Results', showExecutionTime: true });
-		expect(document.getElementById('sql_saved_1_sql_results_wrapper')?.style.height).toBe('420px');
-		expect(document.getElementById('sql_saved_1_sql_results_wrapper')?.dataset.kustoUserResized).toBe('true');
-		expect(testState.sqlBoxes).toEqual(['sql_saved_1']);
+			expect(pState.pendingSqlQueryByBoxId.sql_saved_1).toBe('select top 10 * from dbo.Events');
+			expect(testState.addSqlBox).toHaveBeenCalledWith({
+				id: 'sql_saved_1',
+				name: 'Warehouse Query',
+				serverUrl: 'tcp:sql.example.test,1433',
+				database: 'Warehouse',
+				expanded: false,
+				editorHeightPx: 310,
+				copilotChatVisible: true,
+				copilotChatWidthPx: 360,
+			});
+			expect(setRunMode).toHaveBeenCalledWith('sql_saved_1', 'all');
+			expect(pState.resultsVisibleByBoxId.sql_saved_1).toBe(false);
+			expect(testState.sqlElements.sql_saved_1.setFavoritesMode).toHaveBeenCalledWith(true);
+			expect(sqlFavoritesModeByBoxId.sql_saved_1).toBe(true);
+			expect(pState.queryResultJsonByBoxId.sql_saved_1).toBe(resultJson);
+			expect(displayResultForBox).not.toHaveBeenCalled();
+			expect(testState.sqlBoxes).toEqual(['sql_saved_1']);
+
+			flushDeferredRestoreTimers();
+
+			expect(pState.lastExecutedBox).toBe('sql_saved_1');
+			expect(displayResultForBox).toHaveBeenCalledWith(JSON.parse(resultJson), 'sql_saved_1', { label: 'Results', showExecutionTime: true });
+			expect(document.getElementById('sql_saved_1_sql_results_wrapper')?.style.height).toBe('420px');
+			expect(document.getElementById('sql_saved_1_sql_results_wrapper')?.dataset.kustoUserResized).toBe('true');
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('restores persisted KQL query results to the saved section and keeps the next persist stable', () => {
+		vi.useFakeTimers();
 		const resultJson = JSON.stringify({
 			columns: [
 				{ name: 'RowId', type: 'long' },
@@ -483,66 +506,156 @@ describe('persistence round-trip', () => {
 			metadata: { executionTime: '00:00:00.021', clientActivityId: 'cid_restore' },
 		});
 
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData',
+				ok: true,
+				forceReload: true,
+				documentUri: 'file:///tmp/query-results.kqlx',
+				state: {
+					sections: [
+						{
+							type: 'query',
+							id: 'query_saved_results',
+							name: 'Persisted Results',
+							query: 'datatable(RowId:long, Label:string)[1, "persisted_alpha", 2, "persisted_beta"]',
+							clusterUrl: 'https://persisted.example.kusto.windows.net',
+							database: 'Samples',
+							resultJson,
+						},
+					],
+				},
+			});
+
+			expect(testState.addQueryBox).toHaveBeenCalledWith({
+				id: 'query_saved_results',
+				expanded: true,
+				clusterUrl: 'https://persisted.example.kusto.windows.net',
+				database: 'Samples',
+			});
+			expect(pState.pendingQueryTextByBoxId.query_saved_results).toContain('persisted_alpha');
+			expect(pState.queryResultJsonByBoxId.query_saved_results).toBe(resultJson);
+			expect(displayResultForBox).not.toHaveBeenCalled();
+
+			flushDeferredRestoreTimers();
+
+			expect(pState.lastExecutedBox).toBe('query_saved_results');
+			expect(displayResultForBox).toHaveBeenCalledWith(JSON.parse(resultJson), 'query_saved_results', { label: 'Results', showExecutionTime: true });
+
+			document.body.innerHTML = '';
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			document.body.appendChild(container);
+			const queryEl = document.createElement('div') as unknown as HTMLElement & { serialize: () => unknown };
+			queryEl.id = 'query_saved_results';
+			queryEl.serialize = () => ({
+				id: 'query_saved_results',
+				type: 'query',
+				name: 'Persisted Results',
+				clusterUrl: 'https://persisted.example.kusto.windows.net',
+				database: 'Samples',
+				query: pState.pendingQueryTextByBoxId.query_saved_results,
+				resultJson: pState.queryResultJsonByBoxId.query_saved_results,
+				resultsVisible: true,
+			});
+			container.appendChild(queryEl);
+
+			vi.mocked(postMessageToHost).mockClear();
+			schedulePersist('roundtrip', true);
+			expect(postMessageToHost).toHaveBeenCalledTimes(1);
+			const persistMessage = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+			expect(persistMessage).toMatchObject({ type: 'persistDocument', reason: 'roundtrip' });
+			expect(persistMessage.state.sections).toHaveLength(1);
+			expect(persistMessage.state.sections[0].id).toBe('query_saved_results');
+			expect(persistMessage.state.sections[0].resultJson).toBe(resultJson);
+
+			schedulePersist('roundtrip', true);
+			expect(postMessageToHost).toHaveBeenCalledTimes(1);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('clears the initial document loading state after restore', () => {
+		document.body.dataset.kustoDocumentLoading = 'true';
+		const loader = document.createElement('div');
+		loader.id = 'documentLoading';
+		loader.innerHTML = '<span class="document-loading-text">Opening notebook...</span>';
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		container.setAttribute('aria-busy', 'true');
+		document.body.append(loader, container);
+
 		handleDocumentDataMessage({
 			type: 'documentData',
 			ok: true,
 			forceReload: true,
-			documentUri: 'file:///tmp/query-results.kqlx',
-			state: {
-				sections: [
-					{
-						type: 'query',
-						id: 'query_saved_results',
-						name: 'Persisted Results',
-						query: 'datatable(RowId:long, Label:string)[1, "persisted_alpha", 2, "persisted_beta"]',
-						clusterUrl: 'https://persisted.example.kusto.windows.net',
-						database: 'Samples',
-						resultJson,
-					},
-				],
-			},
+			documentUri: 'file:///tmp/loading.kqlx',
+			state: { sections: [{ type: 'query', id: 'query_loading', query: 'print 1' }] },
 		});
 
-		expect(testState.addQueryBox).toHaveBeenCalledWith({
-			id: 'query_saved_results',
-			expanded: true,
-			clusterUrl: 'https://persisted.example.kusto.windows.net',
-			database: 'Samples',
-		});
-		expect(pState.pendingQueryTextByBoxId.query_saved_results).toContain('persisted_alpha');
-		expect(pState.queryResultJsonByBoxId.query_saved_results).toBe(resultJson);
-		expect(pState.lastExecutedBox).toBe('query_saved_results');
-		expect(displayResult).toHaveBeenCalledWith(JSON.parse(resultJson));
+		expect(document.body.dataset.kustoDocumentLoading).toBeUndefined();
+		expect(loader.getAttribute('aria-hidden')).toBe('true');
+		expect(container.hasAttribute('aria-busy')).toBe(false);
+	});
 
-		document.body.innerHTML = '';
-		const container = document.createElement('div');
-		container.id = 'queries-container';
-		document.body.appendChild(container);
-		const queryEl = document.createElement('div') as unknown as HTMLElement & { serialize: () => unknown };
-		queryEl.id = 'query_saved_results';
-		queryEl.serialize = () => ({
-			id: 'query_saved_results',
-			type: 'query',
-			name: 'Persisted Results',
-			clusterUrl: 'https://persisted.example.kusto.windows.net',
-			database: 'Samples',
-			query: pState.pendingQueryTextByBoxId.query_saved_results,
-			resultJson: pState.queryResultJsonByBoxId.query_saved_results,
-			resultsVisible: true,
-		});
-		container.appendChild(queryEl);
+	it('does not let stale deferred restored results render after a forced reload', () => {
+		vi.useFakeTimers();
+		try {
+			const oldResultJson = JSON.stringify({ columns: [{ name: 'Old', type: 'string' }], rows: [['old']], metadata: {} });
+			const newResultJson = JSON.stringify({ columns: [{ name: 'New', type: 'string' }], rows: [['new']], metadata: {} });
 
-		vi.mocked(postMessageToHost).mockClear();
-		schedulePersist('roundtrip', true);
-		expect(postMessageToHost).toHaveBeenCalledTimes(1);
-		const persistMessage = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
-		expect(persistMessage).toMatchObject({ type: 'persistDocument', reason: 'roundtrip' });
-		expect(persistMessage.state.sections).toHaveLength(1);
-		expect(persistMessage.state.sections[0].id).toBe('query_saved_results');
-		expect(persistMessage.state.sections[0].resultJson).toBe(resultJson);
+			handleDocumentDataMessage({
+				type: 'documentData',
+				ok: true,
+				forceReload: true,
+				documentUri: 'file:///tmp/reload.kqlx',
+				state: { sections: [{ type: 'query', id: 'query_reload', query: 'old', resultJson: oldResultJson }] },
+			});
+			handleDocumentDataMessage({
+				type: 'documentData',
+				ok: true,
+				forceReload: true,
+				documentUri: 'file:///tmp/reload.kqlx',
+				state: { sections: [{ type: 'query', id: 'query_reload', query: 'new', resultJson: newResultJson }] },
+			});
 
-		schedulePersist('roundtrip', true);
-		expect(postMessageToHost).toHaveBeenCalledTimes(1);
+			flushDeferredRestoreTimers();
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).toHaveBeenCalledTimes(1);
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				{ ...JSON.parse(newResultJson), metadata: { executionTime: '' } },
+				'query_reload',
+				{ label: 'Results', showExecutionTime: true }
+			);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not render deferred restored results over a running query', () => {
+		vi.useFakeTimers();
+		try {
+			const resultJson = JSON.stringify({ columns: [{ name: 'Saved', type: 'string' }], rows: [['saved']], metadata: {} });
+
+			handleDocumentDataMessage({
+				type: 'documentData',
+				ok: true,
+				forceReload: true,
+				documentUri: 'file:///tmp/live-wins.kqlx',
+				state: { sections: [{ type: 'query', id: 'query_live_wins', query: 'saved', resultJson }] },
+			});
+
+			testState.queryExecutionTimers.query_live_wins = 1;
+			delete pState.queryResultJsonByBoxId.query_live_wins;
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).not.toHaveBeenCalled();
+			expect(pState.queryResultJsonByBoxId.query_live_wins).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('does not stringify unchanged stored result JSON when schedulePersist runs again', () => {

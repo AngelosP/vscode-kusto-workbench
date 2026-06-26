@@ -177,6 +177,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	@state() private _connections: KustoConnection[] = [];
 	@state() private _connectionId = '';
 	@state() private _desiredClusterUrl = '';
+	private _desiredClusterUrlPendingMatch = false;
 	@state() private _databases: string[] = [];
 	@state() private _database = '';
 	@state() private _desiredDatabase = '';
@@ -667,7 +668,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const prev = this._connectionId;
 		this._connectionId = connectionId;
 		const conn = this._connections.find(c => c.id === connectionId);
-		if (conn) this._desiredClusterUrl = conn.clusterUrl || '';
+		if (conn) {
+			this._desiredClusterUrl = conn.clusterUrl || '';
+			this._desiredClusterUrlPendingMatch = false;
+		}
 		if (prev !== connectionId) {
 			this._database = '';
 			this._desiredDatabase = '';
@@ -725,6 +729,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (conn) {
 			this._connectionId = conn.id;
 			this._desiredClusterUrl = conn.clusterUrl;
+			this._desiredClusterUrlPendingMatch = false;
 			this._desiredDatabase = fav.database;
 			// Clear current database and list so schema/autocomplete reloads.
 			this._database = '';
@@ -841,6 +846,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	/** Set the desired cluster URL (used during restoration). */
 	public setDesiredClusterUrl(url: string): void {
 		this._desiredClusterUrl = url;
+		this._desiredClusterUrlPendingMatch = !!String(url || '').trim();
 	}
 
 	/** Set the desired database (used during restoration). */
@@ -858,19 +864,29 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 		// Resolve best connection ID: prefer desired > current > last
 		let resolvedId = '';
+		let resolvedDesiredCluster = false;
 
 		// 1. Try desired cluster URL
 		if (this._desiredClusterUrl) {
 			const target = normalizeClusterUrlKey(this._desiredClusterUrl);
 			const match = connections.find(c => normalizeClusterUrlKey(c.clusterUrl) === target);
-			if (!match) {
+			if (!match && !this._desiredClusterUrlPendingMatch) {
 				// Try short name
 				const targetShort = clusterShortNameKey(this._desiredClusterUrl);
 				const shortMatch = connections.find(c => clusterShortNameKey(c.clusterUrl) === targetShort);
-				if (shortMatch) resolvedId = shortMatch.id;
-			} else {
+				if (shortMatch) {
+					resolvedId = shortMatch.id;
+					resolvedDesiredCluster = true;
+				}
+			} else if (match) {
 				resolvedId = match.id;
+				resolvedDesiredCluster = true;
 			}
+		}
+
+		if (!resolvedDesiredCluster && this._desiredClusterUrlPendingMatch) {
+			this._connectionId = '';
+			return;
 		}
 
 		// 2. Try current selection
@@ -898,7 +914,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		// Update desired cluster URL from resolved connection
 		if (resolvedId) {
 			const conn = connections.find(c => c.id === resolvedId);
-			if (conn) this._desiredClusterUrl = conn.clusterUrl;
+			if (conn) {
+				this._desiredClusterUrl = conn.clusterUrl;
+				this._desiredClusterUrlPendingMatch = false;
+			}
 		}
 
 
@@ -1012,7 +1031,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (this._connectionId !== connectionId) {
 			this._connectionId = connectionId;
 			const conn = this._connections.find(c => c.id === connectionId);
-			if (conn) this._desiredClusterUrl = conn.clusterUrl;
+			if (conn) {
+				this._desiredClusterUrl = conn.clusterUrl;
+				this._desiredClusterUrlPendingMatch = false;
+			}
 		}
 	}
 

@@ -1378,6 +1378,7 @@ export function executeQuery(boxId: any, mode?: any) {
 	if (!connectionId) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); } return; }
 	if (!database) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); } return; }
 	__kustoLog(boxId, 'run.start', 'Executing query', { connectionId, database, queryMode: effectiveMode });
+	try { delete pState.queryResultJsonByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	setQueryExecuting(boxId, true);
 	closeRunMenu(boxId);
 	try { lastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled; } catch (e) { console.error('[kusto]', e); }
@@ -1395,6 +1396,7 @@ export function executeQueryDirect(boxId: string, query: string): void {
 	if (!connectionId) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); } return; }
 	if (!database) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); } return; }
 	__kustoLog(id, 'run.start', 'Executing inline function query', { connectionId, database, queryMode: 'plain' });
+	try { delete pState.queryResultJsonByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 	setQueryExecuting(id, true);
 	closeRunMenu(id);
 	pState.lastExecutedBox = id;
