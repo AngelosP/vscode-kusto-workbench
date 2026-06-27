@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as path from 'path';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { createEmptyKqlxOrMdxFile, DevNoteEntry, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
 import { readAllCachedSchemasFromDisk, readCachedSchemaFromDisk, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION } from './schemaCache';
@@ -488,6 +490,7 @@ export class KustoWorkbenchToolOrchestrator {
 	private activeDocumentUri: string | undefined;
 	private latestConnectionToken: number | undefined;
 	private readonly liveConnections = new Map<number, LiveWorkbenchConnection>();
+	private readonly renamedWorkbenchFiles = new Map<string, WorkbenchFileInfo>();
 	// Pending responses from webview
 	private pendingResponses = new Map<string, { resolve: (value: unknown) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>();
 	private responseSeq = 0;
@@ -527,8 +530,11 @@ export class KustoWorkbenchToolOrchestrator {
 		documentUri?: string
 	): number {
 		this.connectionToken++;
-		const documentInfo = documentUri
+		const classifiedDocumentInfo = documentUri
 			? classifyWorkbenchUriString(documentUri, { includeOptionalPlainText: true })
+			: undefined;
+		const documentInfo = classifiedDocumentInfo
+			? this.resolveRenamedWorkbenchFileInfo(classifiedDocumentInfo)
 			: undefined;
 		const entry: LiveWorkbenchConnection = {
 			token: this.connectionToken,
@@ -587,6 +593,101 @@ export class KustoWorkbenchToolOrchestrator {
 		return latest;
 	}
 
+	private resolveRenamedWorkbenchFileInfo(info: WorkbenchFileInfo): WorkbenchFileInfo {
+		let current = info;
+		const seen = new Set<string>();
+		for (let step = 0; step < 10; step++) {
+			const key = current.logicalUriKey;
+			if (seen.has(key)) {
+				return current;
+			}
+			seen.add(key);
+
+			const renamed = this.renamedWorkbenchFiles.get(key);
+			if (!renamed) {
+				return current;
+			}
+			current = renamed;
+			if (renamed.logicalUriKey === key) {
+				return renamed;
+			}
+		}
+		return current;
+	}
+
+	async handleFilesRenamed(files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[]): Promise<void> {
+		for (const file of files) {
+			const oldInfo = classifyWorkbenchUri(file.oldUri, { includeOptionalPlainText: true });
+			const newInfo = classifyWorkbenchUri(file.newUri, { includeOptionalPlainText: true });
+			if (!oldInfo || !newInfo) {
+				continue;
+			}
+			const previousInfo = this.resolveRenamedWorkbenchFileInfo(oldInfo);
+			this.renamedWorkbenchFiles.set(oldInfo.logicalUriKey, newInfo);
+			if (previousInfo.logicalUriKey !== oldInfo.logicalUriKey) {
+				this.renamedWorkbenchFiles.set(previousInfo.logicalUriKey, newInfo);
+			}
+
+			for (const entry of this.liveConnections.values()) {
+				if (entry.logicalUriKey !== oldInfo.logicalUriKey && entry.logicalUriKey !== previousInfo.logicalUriKey) {
+					continue;
+				}
+				entry.documentUri = newInfo.uriString;
+				entry.documentInfo = newInfo;
+				entry.logicalUriKey = newInfo.logicalUriKey;
+				if (this.latestConnectionToken === entry.token) {
+					this.applyLatestConnection(entry);
+				}
+			}
+		}
+		await this.closeRenamedWorkbenchTabs(files);
+	}
+
+	private isSameUriExact(left: vscode.Uri, right: vscode.Uri): boolean {
+		try {
+			if (left.scheme === 'file' && right.scheme === 'file') {
+				return left.fsPath === right.fsPath;
+			}
+		} catch {
+			// ignore
+		}
+		return left.toString() === right.toString();
+	}
+
+	private async closeRenamedWorkbenchTabs(files: readonly { oldUri: vscode.Uri; newUri: vscode.Uri }[]): Promise<void> {
+		try {
+			if (typeof vscode.window.tabGroups.close !== 'function') {
+				return;
+			}
+
+			const tabsToClose: vscode.Tab[] = [];
+			for (const file of files) {
+				for (const group of vscode.window.tabGroups.all || []) {
+					for (const tab of group.tabs || []) {
+						const tabInput = this.getTabInputUri(tab.input);
+						if (!tabInput || !this.isSameUriExact(tabInput.uri, file.oldUri)) {
+							continue;
+						}
+						const info = classifyWorkbenchUri(tabInput.uri, {
+							viewType: tabInput.viewType,
+							includeOptionalPlainText: true,
+						});
+						if (info) {
+							tabsToClose.push(tab);
+						}
+					}
+				}
+			}
+
+			const uniqueTabs = [...new Set(tabsToClose)];
+			if (uniqueTabs.length > 0) {
+				await vscode.window.tabGroups.close(uniqueTabs, true);
+			}
+		} catch {
+			// Best-effort cleanup only; inventory canonicalization still protects tool behavior.
+		}
+	}
+
 	private getTabInputUri(input: unknown): { uri: vscode.Uri; viewType?: string } | undefined {
 		try {
 			if (input instanceof vscode.TabInputText) {
@@ -635,19 +736,37 @@ export class KustoWorkbenchToolOrchestrator {
 	}
 
 	private collectOpenWorkbenchFiles(): { openFiles: InternalOpenWorkbenchFileSummary[]; activeFile?: InternalOpenWorkbenchFileSummary; hasActiveUnsupportedFile: boolean } {
-		type Candidate = { uri: vscode.Uri; viewType?: string; isActive: boolean; priority: number; includeOptionalPlainText?: boolean };
+		type Candidate = { uri: vscode.Uri; viewType?: string; isActive: boolean; priority: number; includeOptionalPlainText?: boolean; source?: 'tab' | 'textEditor' | 'workspaceDocument' | 'liveConnection' };
 		const candidates: Candidate[] = [];
 		let hasActiveUnsupportedFile = false;
 		const pushCandidate = (candidate: Candidate | undefined): void => {
 			if (!candidate) return;
 			candidates.push(candidate);
 		};
+		const resolveExistingFileUri = (uri: vscode.Uri): vscode.Uri | undefined => {
+			try {
+				if (uri.scheme !== 'file') {
+					return uri;
+				}
+				if (!fs.existsSync(uri.fsPath)) {
+					return undefined;
+				}
+				const dir = path.dirname(uri.fsPath);
+				const base = path.basename(uri.fsPath);
+				const actualBase = fs.readdirSync(dir).find(entry => entry.toLowerCase() === base.toLowerCase());
+				return actualBase && actualBase !== base
+					? vscode.Uri.file(path.join(dir, actualBase))
+					: uri;
+			} catch {
+				return uri;
+			}
+		};
 
 		try {
 			const activeTab = vscode.window.tabGroups.activeTabGroup.activeTab;
 			const activeInput = this.getTabInputUri(activeTab?.input);
 			if (activeInput) {
-				pushCandidate({ ...activeInput, isActive: true, priority: 0 });
+				pushCandidate({ ...activeInput, isActive: true, priority: 0, source: 'tab' });
 				if (!classifyWorkbenchUri(activeInput.uri, { viewType: activeInput.viewType })) {
 					hasActiveUnsupportedFile = true;
 				}
@@ -662,7 +781,7 @@ export class KustoWorkbenchToolOrchestrator {
 				for (const tab of group.tabs || []) {
 					const tabInput = this.getTabInputUri(tab.input);
 					if (!tabInput) continue;
-					pushCandidate({ ...tabInput, isActive: group.isActive === true && tab.isActive === true, priority: priority++ });
+					pushCandidate({ ...tabInput, isActive: group.isActive === true && tab.isActive === true, priority: priority++, source: 'tab' });
 				}
 			}
 		} catch {
@@ -672,7 +791,7 @@ export class KustoWorkbenchToolOrchestrator {
 		try {
 			const activeEditor = vscode.window.activeTextEditor;
 			if (activeEditor?.document?.uri) {
-				pushCandidate({ uri: activeEditor.document.uri, isActive: true, priority: 100 });
+				pushCandidate({ uri: activeEditor.document.uri, isActive: true, priority: 100, source: 'textEditor' });
 				if (!classifyWorkbenchUri(activeEditor.document.uri)) {
 					hasActiveUnsupportedFile = true;
 				}
@@ -685,7 +804,7 @@ export class KustoWorkbenchToolOrchestrator {
 			let priority = 200;
 			for (const editor of vscode.window.visibleTextEditors || []) {
 				if (editor?.document?.uri) {
-					pushCandidate({ uri: editor.document.uri, isActive: false, priority: priority++ });
+					pushCandidate({ uri: editor.document.uri, isActive: false, priority: priority++, source: 'textEditor' });
 				}
 			}
 		} catch {
@@ -696,7 +815,10 @@ export class KustoWorkbenchToolOrchestrator {
 			let priority = 300;
 			for (const document of vscode.workspace.textDocuments || []) {
 				if (document?.uri) {
-					pushCandidate({ uri: document.uri, isActive: false, priority: priority++ });
+					const existingUri = resolveExistingFileUri(document.uri);
+					if (existingUri) {
+						pushCandidate({ uri: existingUri, isActive: false, priority: priority++, source: 'workspaceDocument' });
+					}
 				}
 			}
 		} catch {
@@ -705,17 +827,18 @@ export class KustoWorkbenchToolOrchestrator {
 
 		for (const entry of this.liveConnections.values()) {
 			if (entry.documentInfo) {
-				pushCandidate({ uri: entry.documentInfo.uri, isActive: false, priority: 400 + entry.sequence, includeOptionalPlainText: true });
+				pushCandidate({ uri: entry.documentInfo.uri, isActive: false, priority: 400 + entry.sequence, includeOptionalPlainText: true, source: 'liveConnection' });
 			}
 		}
 
 		const byLogicalUri = new Map<string, InternalOpenWorkbenchFileSummary>();
 		for (const candidate of candidates) {
-			const info = classifyWorkbenchUri(candidate.uri, {
+			const classifiedInfo = classifyWorkbenchUri(candidate.uri, {
 				viewType: candidate.viewType,
 				includeOptionalPlainText: candidate.includeOptionalPlainText === true,
 			});
-			if (!info) continue;
+			if (!classifiedInfo) continue;
+			const info = this.resolveRenamedWorkbenchFileInfo(classifiedInfo);
 			const isLiveWorkbench = this.getLatestLiveConnectionForKey(info.logicalUriKey) !== undefined;
 			const summary = this.summarizeOpenFile(info, candidate.isActive, isLiveWorkbench, candidate.priority);
 			const existing = byLogicalUri.get(summary.logicalUriKey);

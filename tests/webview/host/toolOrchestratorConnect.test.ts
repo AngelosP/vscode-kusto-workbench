@@ -343,6 +343,98 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		]));
 	});
 
+	it('updates live open-file identity after a pinned editor is renamed', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const oldUri = vscode.Uri.file('/work/OpenBeforeRename.kqlx');
+		const newUri = vscode.Uri.file('/work/openAfterRename.kqlx');
+		const stateGetter = vi.fn(async () => [{ id: 'query_1', type: 'query', name: 'Renamed live file' }]);
+
+		orch.connect(vi.fn(), stateGetter, vi.fn(), oldUri.toString());
+		await orch.handleFilesRenamed([{ oldUri, newUri }]);
+		setActiveCustomTab(newUri, 'kusto.kqlxEditor');
+
+		const result = await orch.listSections();
+		const openFiles = result.openFiles ?? [];
+
+		expect(result.fileName).toBe('openAfterRename.kqlx');
+		expect(result.sections).toEqual([expect.objectContaining({ id: 'query_1', name: 'Renamed live file' })]);
+		expect(openFiles).toEqual(expect.arrayContaining([
+			expect.objectContaining({ fileName: 'openAfterRename.kqlx', isActive: true, isLiveWorkbench: true })
+		]));
+		expect(openFiles.some(file => file.fileName === 'OpenBeforeRename.kqlx')).toBe(false);
+	});
+
+	it('refreshes casing for a case-only rename instead of keeping the old tab name', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const oldUri = vscode.Uri.file('/work/GetBlahBlah.kqlx');
+		const newUri = vscode.Uri.file('/work/getBlahBlah.kqlx');
+
+		orch.connect(vi.fn(), vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), oldUri.toString());
+		await orch.handleFilesRenamed([{ oldUri, newUri }]);
+		setActiveCustomTab(newUri, 'kusto.kqlxEditor');
+
+		const result = await orch.listSections();
+		const openFiles = result.openFiles ?? [];
+
+		expect(openFiles).toHaveLength(1);
+		expect(openFiles[0]).toMatchObject({ fileName: 'getBlahBlah.kqlx', isActive: true, isLiveWorkbench: true });
+		expect(openFiles[0].fileName).not.toBe('GetBlahBlah.kqlx');
+	});
+
+	it('does not regress to the old file name when a renamed custom editor reconnects with its original URI', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const oldUri = vscode.Uri.file('/work/GetBlahBlah.kqlx');
+		const newUri = vscode.Uri.file('/work/getBlahBlah.kqlx');
+		const originalToken = orch.connect(vi.fn(), vi.fn(async () => [{ id: 'old_connection', type: 'query' }]), vi.fn(), oldUri.toString());
+
+		await orch.handleFilesRenamed([{ oldUri, newUri }]);
+		orch.disconnectIfOwner(originalToken);
+		orch.connect(vi.fn(), vi.fn(async () => [{ id: 'reconnected', type: 'query' }]), vi.fn(), oldUri.toString());
+		setActiveCustomTab(newUri, 'kusto.kqlxEditor');
+
+		const result = await orch.listSections();
+		const openFiles = result.openFiles ?? [];
+
+		expect(result.fileName).toBe('getBlahBlah.kqlx');
+		expect(result.sections[0].id).toBe('reconnected');
+		expect(openFiles).toEqual([expect.objectContaining({ fileName: 'getBlahBlah.kqlx', isLiveWorkbench: true })]);
+		expect(openFiles.some(file => file.fileName === 'GetBlahBlah.kqlx')).toBe(false);
+	});
+
+	it('collapses stale text documents left behind after a preview editor rename', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const oldUri = vscode.Uri.file('/work/PreviewRenameSource.kqlx');
+		const newUri = vscode.Uri.file('/work/PreviewRenameTarget.kqlx');
+
+		orch.connect(vi.fn(), vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), oldUri.toString());
+		await orch.handleFilesRenamed([{ oldUri, newUri }]);
+		setActiveCustomTab(newUri, 'kusto.kqlxEditor');
+		(vscode.workspace as any).textDocuments = [{ uri: oldUri }, { uri: newUri }];
+
+		const result = await orch.listSections();
+		const openFiles = result.openFiles ?? [];
+
+		expect(openFiles).toHaveLength(1);
+		expect(openFiles[0]).toMatchObject({ fileName: 'PreviewRenameTarget.kqlx', isActive: true, isLiveWorkbench: true });
+		expect(openFiles.some(file => file.fileName === 'PreviewRenameSource.kqlx')).toBe(false);
+	});
+
+	it('closes the stale old-case tab after a case-only rename', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const oldUri = vscode.Uri.file('/work/GetBlahBlah.kqlx');
+		const newUri = vscode.Uri.file('/work/getBlahBlah.kqlx');
+		const oldTab = { isActive: false, input: new vscode.TabInputCustom(oldUri, 'kusto.kqlxEditor'), label: 'GetBlahBlah.kqlx' };
+		const newTab = { isActive: true, input: new vscode.TabInputCustom(newUri, 'kusto.kqlxEditor'), label: 'getBlahBlah.kqlx' };
+		const group = { activeTab: newTab, tabs: [newTab, oldTab], isActive: true };
+
+		orch.connect(vi.fn(), vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), oldUri.toString());
+		setTabGroups(group);
+
+		await orch.handleFilesRenamed([{ oldUri, newUri }]);
+
+		expect(group.tabs).toEqual([newTab]);
+	});
+
 	it('routes configureQuerySection to a non-active file when openFileId is provided', async () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const activeUri = vscode.Uri.file('/work/active.kqlx');

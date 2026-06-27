@@ -29,7 +29,8 @@
     "onCommand:kustoWorkbench.test.openEmbeddedDidYouKnow",
     "onCommand:kustoWorkbench.test.openMdCompatFile",
     "onCommand:kustoWorkbench.test.openMdCompatFileViaAssociation",
-    "onCommand:kustoWorkbench.test.runOpenFileTargetingScenario"
+    "onCommand:kustoWorkbench.test.runOpenFileTargetingScenario",
+    "onCommand:kustoWorkbench.test.runRenameOpenFilesScenario"
   ],
   "main": "./dist/extension.js",
   "contributes": {

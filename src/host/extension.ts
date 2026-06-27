@@ -203,6 +203,13 @@ export function activate(context: vscode.ExtensionContext) {
 	// Register Kusto Workbench tools for VS Code Copilot Chat integration
 	const toolKustoClient = new KustoQueryClient(context);
 	toolOrchestrator = registerKustoWorkbenchTools(context, connectionManager, getSqlConnectionManager, toolKustoClient);
+	context.subscriptions.push(
+		vscode.workspace.onDidRenameFiles((event) => {
+			void toolOrchestrator?.handleFilesRenamed(event.files).catch(() => {
+				// Ignore rename bookkeeping failures; VS Code remains the source of truth.
+			});
+		})
+	);
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
 		context.subscriptions.push(
 			vscode.commands.registerCommand('kustoWorkbench.test.runOpenFileTargetingScenario', async (modeOrWorkspacePath?: string, workspacePath?: string) => {
@@ -470,6 +477,131 @@ export function activate(context: vscode.ExtensionContext) {
 				} finally {
 					toolOrchestrator.disconnectIfOwner(activeToken);
 					toolOrchestrator.disconnectIfOwner(targetToken);
+				}
+			}),
+			vscode.commands.registerCommand('kustoWorkbench.test.runRenameOpenFilesScenario', async () => {
+				if (!toolOrchestrator) {
+					throw new Error('Kusto Workbench tools are not initialized.');
+				}
+				const orchestrator = toolOrchestrator;
+
+				const root = vscode.workspace.workspaceFolders?.[0]?.uri ?? context.extensionUri;
+				const resultDir = vscode.Uri.joinPath(root, 'tests', 'vscode-extension-tester', 'runs', 'default');
+				await vscode.workspace.fs.createDirectory(resultDir);
+				const scenarioDir = vscode.Uri.joinPath(resultDir, 'rename-open-files');
+				try { await vscode.workspace.fs.delete(scenarioDir, { recursive: true, useTrash: false }); } catch { /* ignore stale cleanup */ }
+				await vscode.workspace.fs.createDirectory(scenarioDir);
+				const resultUri = vscode.Uri.joinPath(resultDir, 'rename-open-files-result.json');
+				try { await vscode.workspace.fs.delete(resultUri); } catch { /* ignore stale cleanup */ }
+
+				const writeResult = async (result: Record<string, unknown>) => {
+					const markers = Object.entries(result).filter(([, value]) => value === true).map(([key]) => `${key}:true`);
+					await vscode.workspace.fs.writeFile(resultUri, new TextEncoder().encode(JSON.stringify({ ...result, markers }, null, 2)));
+				};
+
+				const buildFile = (query: string, name: string): KqlxFileV1 => {
+					const file = createEmptyKqlxFile();
+					file.state.sections.push({ id: 'query_1', type: 'query', name, expanded: true, query });
+					return file;
+				};
+
+				const delay = (ms: number) => new Promise(resolve => setTimeout(resolve, ms));
+				const fileNameEquals = (actual: string | undefined, expected: string): boolean => String(actual || '') === expected;
+				const tabSnapshot = () => {
+					const tabs: Array<{ label: string; uri: string; fileName: string }> = [];
+					try {
+						for (const group of vscode.window.tabGroups.all || []) {
+							for (const tab of group.tabs || []) {
+								const input = tab.input as { uri?: vscode.Uri } | undefined;
+								const uri = input?.uri;
+								tabs.push({
+									label: String(tab.label || ''),
+									uri: uri?.toString() ?? '',
+									fileName: uri?.scheme === 'file' ? uri.fsPath.split(/[\\/]/).pop() || '' : uri?.path.split('/').pop() || '',
+								});
+							}
+						}
+					} catch {
+						// ignore
+					}
+					return tabs;
+				};
+
+				const waitForRenameState = async (expectedName: string, oldName: string) => {
+					let listed: Awaited<ReturnType<typeof orchestrator.listSections>> | undefined;
+					let tabs: ReturnType<typeof tabSnapshot> = [];
+					for (let attempt = 0; attempt < 50; attempt++) {
+						listed = await orchestrator.listSections().catch(() => undefined);
+						tabs = tabSnapshot();
+						const openFiles = Array.isArray(listed?.openFiles) ? listed.openFiles : [];
+						const expectedFile = openFiles.find(file => fileNameEquals(file.fileName, expectedName));
+						const oldOpenFile = openFiles.find(file => fileNameEquals(file.fileName, oldName));
+						const oldTab = tabs.find(tab => tab.fileName === oldName || tab.label === oldName);
+						if (expectedFile?.isLiveWorkbench && Array.isArray(expectedFile.sections) && expectedFile.sections.length > 0 && !oldOpenFile && !oldTab) {
+							return { listed, tabs, expectedFile };
+						}
+						await delay(250);
+					}
+					throw new Error(`Rename state did not settle for ${oldName} -> ${expectedName}: ${JSON.stringify({ listed, tabs }, null, 2)}`);
+				};
+
+				const pinnedOldName = 'GetBlahBlah.kqlx';
+				const pinnedNewName = 'getBlahBlah.kqlx';
+				const previewOldName = 'PreviewRenameSource.kqlx';
+				const previewNewName = 'PreviewRenameTarget.kqlx';
+				const pinnedOldUri = vscode.Uri.joinPath(scenarioDir, pinnedOldName);
+				const pinnedNewUri = vscode.Uri.joinPath(scenarioDir, pinnedNewName);
+				const previewOldUri = vscode.Uri.joinPath(scenarioDir, previewOldName);
+				const previewNewUri = vscode.Uri.joinPath(scenarioDir, previewNewName);
+
+				await vscode.workspace.fs.writeFile(pinnedOldUri, new TextEncoder().encode(stringifyKqlxFile(buildFile('print "pinned before rename"', 'Pinned case rename'))));
+				await vscode.workspace.fs.writeFile(previewOldUri, new TextEncoder().encode(stringifyKqlxFile(buildFile('print "preview before rename"', 'Preview rename'))));
+
+				try {
+					await vscode.commands.executeCommand('workbench.action.closeAllEditors');
+
+					await vscode.commands.executeCommand('vscode.openWith', pinnedOldUri, KqlxEditorProvider.viewType, { viewColumn: vscode.ViewColumn.One, preview: false, preserveFocus: false });
+					await waitForRenameState(pinnedOldName, '__no_old_pinned__');
+					await vscode.workspace.fs.rename(pinnedOldUri, pinnedNewUri, { overwrite: false });
+					await orchestrator.handleFilesRenamed([{ oldUri: pinnedOldUri, newUri: pinnedNewUri }]);
+					const pinnedAfter = await waitForRenameState(pinnedNewName, pinnedOldName);
+
+					await vscode.commands.executeCommand('vscode.openWith', previewOldUri, KqlxEditorProvider.viewType, { viewColumn: vscode.ViewColumn.Active, preview: true, preserveFocus: false });
+					await waitForRenameState(previewOldName, '__no_old_preview__');
+					await vscode.workspace.fs.rename(previewOldUri, previewNewUri, { overwrite: false });
+					await orchestrator.handleFilesRenamed([{ oldUri: previewOldUri, newUri: previewNewUri }]);
+					const previewAfter = await waitForRenameState(previewNewName, previewOldName);
+
+					const pinnedOpenFiles = Array.isArray(pinnedAfter.listed?.openFiles) ? pinnedAfter.listed.openFiles : [];
+					const previewOpenFiles = Array.isArray(previewAfter.listed?.openFiles) ? previewAfter.listed.openFiles : [];
+					const pinnedTabs = pinnedAfter.tabs;
+					const previewTabs = previewAfter.tabs;
+					const result = {
+						scenario: 'rename-open-files',
+						pinnedCaseRenameNewVisible: pinnedOpenFiles.some(file => file.fileName === pinnedNewName),
+						pinnedCaseRenameOldAbsent: !pinnedOpenFiles.some(file => file.fileName === pinnedOldName) && !pinnedTabs.some(tab => tab.fileName === pinnedOldName || tab.label === pinnedOldName),
+						pinnedCaseRenameLive: pinnedOpenFiles.some(file => file.fileName === pinnedNewName && file.isLiveWorkbench === true && Array.isArray(file.sections) && file.sections.length > 0),
+						previewRenameNewVisible: previewOpenFiles.some(file => file.fileName === previewNewName),
+						previewRenameOldAbsent: !previewOpenFiles.some(file => file.fileName === previewOldName) && !previewTabs.some(tab => tab.fileName === previewOldName || tab.label === previewOldName),
+						previewRenameLive: previewOpenFiles.some(file => file.fileName === previewNewName && file.isLiveWorkbench === true && Array.isArray(file.sections) && file.sections.length > 0),
+						noDuplicateOldAndNew: !previewOpenFiles.some(file => file.fileName === previewOldName) && !pinnedOpenFiles.some(file => file.fileName === pinnedOldName),
+						pinnedOpenFiles,
+						previewOpenFiles,
+						pinnedTabs,
+						previewTabs,
+					};
+					await writeResult(result);
+					await vscode.commands.executeCommand('notifications.clearAll');
+					return result;
+				} catch (err) {
+					const result = {
+						scenario: 'rename-open-files',
+						error: err instanceof Error ? err.message : String(err),
+						openFiles: await orchestrator.listSections().catch(error => ({ error: error instanceof Error ? error.message : String(error) })),
+						tabs: tabSnapshot(),
+					};
+					await writeResult(result);
+					throw err;
 				}
 			})
 		);

@@ -142,6 +142,16 @@ export const window = {
 		all: [] as any[],
 		onDidChangeTabs: () => ({ dispose: () => {} }),
 		onDidChangeTabGroups: () => ({ dispose: () => {} }),
+		close: async (tabOrTabs: any | any[]) => {
+			const tabsToClose = new Set(Array.isArray(tabOrTabs) ? tabOrTabs : [tabOrTabs]);
+			for (const group of window.tabGroups.all as any[]) {
+				group.tabs = (group.tabs || []).filter((tab: any) => !tabsToClose.has(tab));
+				if (group.activeTab && tabsToClose.has(group.activeTab)) {
+					group.activeTab = group.tabs[0];
+				}
+			}
+			return true;
+		},
 	},
 	createOutputChannel: () => ({ appendLine: () => {}, dispose: () => {} }),
 	showInputBox: () => Promise.resolve(undefined),
