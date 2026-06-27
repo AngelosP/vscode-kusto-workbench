@@ -3,12 +3,14 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [4.7.4] - 2026.06.23
+## [4.7.4] - 2026.06.28
 
+* Improved 'file open' performance.
 * Bugs
     * Some models would occasionally show tool call errors in versions v1.122.0+ of VS Code (more edge cases fixed)
     * Connection Manager would in certain cases require you to scroll before it would display the databases of the selected cluster (scroll view bug)
-    * Adding / removing from favorites while files were open meant the files had to be re-opened before they saw the changes. 
+    * Adding / removing from favorites while files were open meant the files had to be re-opened before they saw the changes.
+    * Renaming files but keeping most of the filename the same would cause weird situations where both files would appear side-by-side.
 
 ## [4.7.3] - 2026.06.08
 

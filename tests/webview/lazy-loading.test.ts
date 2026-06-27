@@ -20,12 +20,37 @@ describe('lazy vendor loading', () => {
 		delete (window as any).toastui;
 		(window as any).__kustoQueryEditorConfig = {
 			echartsUrl: 'https://example.test/echarts.webview.js',
+			markedUrl: 'https://example.test/marked.min.js',
+			purifyUrl: 'https://example.test/purify.min.js',
 			toastUiEditorUrl: 'https://example.test/toastui.webview.js',
 			toastUiCssUrls: [
 				'https://example.test/toastui-a.css',
 				'https://example.test/toastui-b.css',
 			],
 		};
+	});
+
+	it('ensureMarkdownPreviewLibsLoaded is idempotent and injects marked and DOMPurify scripts', async () => {
+		const { ensureMarkdownPreviewLibsLoaded } = await importLazyVendor();
+
+		const p1 = ensureMarkdownPreviewLibsLoaded();
+		const p2 = ensureMarkdownPreviewLibsLoaded();
+		expect(p1).not.toBe(p2);
+
+		const scripts = appendedNodes.filter((n) => n.tagName === 'SCRIPT') as HTMLScriptElement[];
+		expect(scripts).toHaveLength(2);
+		expect(scripts[0].src).toContain('marked.min.js');
+		expect(scripts[1].src).toContain('purify.min.js');
+
+		(window as any).marked = { parse: () => '' };
+		(window as any).DOMPurify = { sanitize: () => '' };
+		scripts[0].onload?.(new Event('load'));
+		scripts[1].onload?.(new Event('load'));
+		await expect(p1).resolves.toBeUndefined();
+		await expect(p2).resolves.toBeUndefined();
+
+		await expect(ensureMarkdownPreviewLibsLoaded()).resolves.toBeUndefined();
+		expect(appendedNodes.filter((n) => n.tagName === 'SCRIPT')).toHaveLength(2);
 	});
 
 	it('ensureEchartsLoaded is idempotent and injects one script', async () => {

@@ -98,12 +98,6 @@
 	})();
 	const scriptPaths = [
 		'vscodeApi.js',
-
-
-		'vendor/marked.min.js',
-		'vendor/purify.min.js',
-
-
 		'dist/webview/webview.bundle.js',
 	];
 
@@ -129,11 +123,10 @@
 
 			// Monaco registers an AMD loader (`define.amd`). Some UMD bundles will detect AMD and
 			// register as modules instead of exposing globals.
-			// - Our markdown preview expects `window.marked` and `window.DOMPurify`.
 			// - Our markdown editor expects `window.toastui.Editor`.
 			// For these scripts, temporarily disable AMD/CommonJS detection so they take the
 			// globals path.
-			const isVendorLib = /(^|\/)(vendor\/)(marked\.min\.js|purify\.min\.js|toastui-editor\/toastui-editor\.(js|webview\.js))$/i.test(relativePath)
+			const isVendorLib = /(^|\/)(vendor\/)(toastui-editor\/toastui-editor\.(js|webview\.js))$/i.test(relativePath)
 				|| /(^|\/)(dist\/queryEditor\/vendor\/toastui-editor\/toastui-editor\.webview\.js)$/i.test(relativePath);
 			let restore = null;
 			if (isVendorLib) {

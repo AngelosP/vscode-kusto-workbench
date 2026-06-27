@@ -2,6 +2,39 @@ import * as vscode from 'vscode';
 
 import { perfMark } from './perfTrace';
 
+type QueryEditorHtmlAssets = {
+	template: string;
+	appCssInline: string;
+};
+
+let cachedAssetsPromise: Promise<QueryEditorHtmlAssets> | undefined;
+const sessionCacheBuster = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+
+async function getCachedQueryEditorHtmlAssets(extensionUri: vscode.Uri): Promise<QueryEditorHtmlAssets> {
+	if (cachedAssetsPromise) {
+		perfMark('host.queryEditorHtml.assetsCache.hit');
+		return cachedAssetsPromise;
+	}
+
+	perfMark('host.queryEditorHtml.assetsCache.miss');
+	const templateUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'queryEditor.html');
+	const cssBundleUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor.bundle.css');
+	const overlayScrollbarsCssUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'overlayscrollbars.min.css');
+	cachedAssetsPromise = Promise.all([
+		vscode.workspace.fs.readFile(templateUri),
+		vscode.workspace.fs.readFile(cssBundleUri),
+		vscode.workspace.fs.readFile(overlayScrollbarsCssUri),
+	]).then(([templateBytes, cssBundleBytes, overlayScrollbarsCssBytes]) => {
+		perfMark('host.queryEditorHtml.assetsRead');
+		const template = new TextDecoder('utf-8').decode(templateBytes);
+		const appCssInline = new TextDecoder('utf-8').decode(overlayScrollbarsCssBytes).replaceAll('</style>', '<\/style>')
+			+ new TextDecoder('utf-8').decode(cssBundleBytes).replaceAll('</style>', '<\/style>');
+		return { template, appCssInline };
+	});
+
+	return cachedAssetsPromise;
+}
+
 export async function getQueryEditorHtml(
 	webview: vscode.Webview,
 	extensionUri: vscode.Uri,
@@ -9,21 +42,9 @@ export async function getQueryEditorHtml(
 	options?: { hideFooterControls?: boolean; initialDocumentLoading?: boolean }
 ): Promise<string> {
 	perfMark('host.queryEditorHtml.start');
-	const templateUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'queryEditor.html');
-	const cssBundleUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor.bundle.css');
-	const overlayScrollbarsCssUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'overlayscrollbars.min.css');
-	const [templateBytes, cssBundleBytes, overlayScrollbarsCssBytes] = await Promise.all([
-		vscode.workspace.fs.readFile(templateUri),
-		vscode.workspace.fs.readFile(cssBundleUri),
-		vscode.workspace.fs.readFile(overlayScrollbarsCssUri),
-	]);
-	perfMark('host.queryEditorHtml.assetsRead');
-	let template = new TextDecoder('utf-8').decode(templateBytes);
-	// Inline the CSS bundle so the webview is styled at first paint, even when
-	// VS Code restores cached HTML from a previous session with stale resource URIs.
-	// Sanitize against the (unlikely) case of </style> appearing in CSS content.
-	const appCssInline = new TextDecoder('utf-8').decode(overlayScrollbarsCssBytes).replaceAll('</style>', '<\\/style>')
-		+ new TextDecoder('utf-8').decode(cssBundleBytes).replaceAll('</style>', '<\\/style>');
+	const assets = await getCachedQueryEditorHtmlAssets(extensionUri);
+	let template = assets.template;
+	const appCssInline = assets.appCssInline;
 
 	// For certain modes (e.g. .md compatibility mode), we want to avoid rendering footer UI
 	// (Add Section buttons + feedback link) entirely so it doesn't take up layout/scroll space.
@@ -34,7 +55,7 @@ export async function getQueryEditorHtml(
 		template = template.replace(/\s*<div class="repo-issues-link"[\s\S]*?<\/div>\s*/m, '\n');
 	}
 
-	const cacheBuster = `${context.extension.packageJSON?.version ?? 'dev'}-${Date.now()}`;
+	const cacheBuster = `${context.extension.packageJSON?.version ?? 'dev'}-${sessionCacheBuster}`;
 	const withCacheBuster = (uri: string) => {
 		const sep = uri.includes('?') ? '&' : '?';
 		return `${uri}${sep}v=${encodeURIComponent(cacheBuster)}`;
@@ -99,6 +120,12 @@ export async function getQueryEditorHtml(
 	const queryEditorJsUri = withCacheBuster(
 		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'queryEditor.js')).toString()
 	);
+	const markedUrl = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'vendor', 'marked.min.js')).toString()
+	);
+	const purifyUrl = withCacheBuster(
+		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'vendor', 'purify.min.js')).toString()
+	);
 
 	const echartsUrl = withCacheBuster(
 		webview.asWebviewUri(vscode.Uri.joinPath(extensionUri, 'dist', 'queryEditor', 'vendor', 'echarts', 'echarts.webview.js')).toString()
@@ -140,6 +167,8 @@ export async function getQueryEditorHtml(
 		.replaceAll('{{alternatingRowStyle}}', altRowCss)
 		.replaceAll('{{queryEditorJsUri}}', queryEditorJsUri)
 		.replaceAll('{{copilotLogoUri}}', copilotLogoUri)
+		.replaceAll('{{markedUrl}}', markedUrl)
+		.replaceAll('{{purifyUrl}}', purifyUrl)
 		.replaceAll('{{monacoVsUri}}', monacoVsUri)
 		.replaceAll('{{monacoLoaderUri}}', withCacheBuster(monacoLoaderUri))
 		.replaceAll('{{monacoCssUri}}', withCacheBuster(monacoCssUri))

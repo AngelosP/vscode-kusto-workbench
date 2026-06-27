@@ -12,6 +12,7 @@ import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { schedulePersist } from '../core/persistence.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { __kustoRefreshAllDataSourceDropdowns } from '../core/section-factory.js';
+import { ensureDomPurifyLoaded } from '../shared/lazy-vendor.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -96,6 +97,8 @@ export class KwUrlSection extends LitElement implements SectionElement {
 	private _csvResizeObs: ResizeObserver | null = null;
 	private _fetchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private _removeImageMenuScrollDismiss: (() => void) | null = null;
+	private _domPurifyLoadFailed = false;
+	private _domPurifyLoadRequested = false;
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -430,13 +433,28 @@ export class KwUrlSection extends LitElement implements SectionElement {
 			const escapedUrl = st.url.replace(/"/g, '&quot;');
 			htmlContent = `<base href="${escapedUrl}">` + htmlContent;
 		}
-		// Sanitize with DOMPurify if available.
+		// Sanitize with DOMPurify. It is lazy-loaded so query-only files do not pay
+		// the startup cost for HTML URL sections they never use.
 		const DOMPurify = window.DOMPurify;
 		if (DOMPurify && typeof DOMPurify.sanitize === 'function') {
 			htmlContent = DOMPurify.sanitize(htmlContent, {
 				ADD_TAGS: ['base'],
 				ADD_ATTR: ['href', 'target', 'rel']
 			});
+		} else if (!this._domPurifyLoadFailed) {
+			contentEl.style.whiteSpace = 'pre-wrap';
+			contentEl.textContent = 'Preparing HTML preview...';
+			if (!this._domPurifyLoadRequested) {
+				this._domPurifyLoadRequested = true;
+				void ensureDomPurifyLoaded()
+					.then(() => this._renderUrlContent())
+					.catch(() => {
+						this._domPurifyLoadFailed = true;
+						this._renderUrlContent();
+					})
+					.finally(() => { this._domPurifyLoadRequested = false; });
+			}
+			return;
 		}
 		const iframe = document.createElement('iframe');
 		iframe.style.width = '100%';

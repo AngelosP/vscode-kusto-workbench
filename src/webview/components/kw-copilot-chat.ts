@@ -7,6 +7,7 @@ import { sashSheet } from '../shared/sash-styles.js';
 import { scrollbarSheet } from '../shared/scrollbar-styles.js';
 import { pushDismissable, removeDismissable } from './dismiss-stack.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
+import { ensureMarkdownPreviewLibsLoaded } from '../shared/lazy-vendor.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -136,6 +137,7 @@ export class KwCopilotChat extends LitElement {
 	private _dismissToolsPanel = (): void => { this._closeToolsPanel(); };
 	/** Bound scroll handler for dismiss-on-scroll. */
 	private _removeToolsPanelScrollListener: (() => void) | null = null;
+	private _markdownPreviewLibsRequested = false;
 
 	@query('.messages') private _messagesHost!: HTMLDivElement;
 	@query('textarea') private _textarea!: HTMLTextAreaElement;
@@ -457,6 +459,23 @@ export class KwCopilotChat extends LitElement {
 		}
 	}
 
+	private _ensureMarkdownPreviewLibsForRender(): void {
+		const w = globalThis as Record<string, unknown>;
+		const marked = w['marked'] as { parse?: (src: string) => string } | undefined;
+		const DOMPurify = w['DOMPurify'] as { sanitize?: (html: string) => string } | undefined;
+		if (marked?.parse && DOMPurify?.sanitize) {
+			return;
+		}
+		if (this._markdownPreviewLibsRequested) {
+			return;
+		}
+		this._markdownPreviewLibsRequested = true;
+		void ensureMarkdownPreviewLibsLoaded()
+			.then(() => this.requestUpdate())
+			.catch(() => {})
+			.finally(() => { this._markdownPreviewLibsRequested = false; });
+	}
+
 	private _renderUserMessage(msg: ChatMessageEntry) {
 		return html`<div class="msg msg-user"
 			title=${msg.detail || ''}
@@ -465,6 +484,7 @@ export class KwCopilotChat extends LitElement {
 	}
 
 	private _renderAssistantMessage(msg: ChatMessageEntry) {
+		this._ensureMarkdownPreviewLibsForRender();
 		const mdHtml = renderMarkdown(msg.text);
 		return html`<div class="msg msg-assistant"
 			title=${msg.detail || ''}
@@ -603,6 +623,7 @@ export class KwCopilotChat extends LitElement {
 	}
 
 	private _renderClarifyingQuestionMessage(msg: ChatMessageEntry) {
+		this._ensureMarkdownPreviewLibsForRender();
 		return html`
 			<div class="msg msg-clarifying-question ${msg.removed ? 'is-removed' : ''}"
 				data-entry-id=${msg.entryId || ''}>

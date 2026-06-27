@@ -4,6 +4,54 @@
 
 const _win = window as any;
 
+function loadGlobalScriptOnce(
+	url: string,
+	name: string,
+	isAvailable: () => boolean,
+	setPromise: (promise: Promise<void> | null) => void,
+	getPromise: () => Promise<void> | null,
+	options?: { disableAmd?: boolean }
+): Promise<void> {
+	if (isAvailable()) return Promise.resolve();
+	const existing = getPromise();
+	if (existing) return existing;
+	if (!url) return Promise.resolve();
+
+	const promise = new Promise<void>((resolve, reject) => {
+		let restore: (() => void) | null = null;
+		if (options?.disableAmd) {
+			try {
+				const saved = {
+					defineAmd: _win.define?.amd,
+					module: _win.module,
+					exports: _win.exports,
+				};
+				try { if (_win.define?.amd) _win.define.amd = undefined; } catch { /* ignore */ }
+				try { _win.module = undefined; _win.exports = undefined; } catch { /* ignore */ }
+				restore = () => {
+					try { if (_win.define) _win.define.amd = saved.defineAmd; } catch { /* ignore */ }
+					try { _win.module = saved.module; _win.exports = saved.exports; } catch { /* ignore */ }
+				};
+			} catch { restore = null; }
+		}
+
+		const el = document.createElement('script');
+		el.src = url;
+		el.onload = () => {
+			try { restore?.(); } catch { /* ignore */ }
+			resolve();
+		};
+		el.onerror = () => {
+			try { restore?.(); } catch { /* ignore */ }
+			setPromise(null);
+			reject(new Error(`Failed to load ${name}`));
+		};
+		(document.head || document.documentElement).appendChild(el);
+	});
+	setPromise(promise);
+	return promise;
+}
+
 // ── ECharts ──────────────────────────────────────────────────────────────────
 
 let _echartsPromise: Promise<void> | null = null;
@@ -36,6 +84,8 @@ export function ensureEchartsLoaded(): Promise<void> {
 
 let _toastUiPromise: Promise<void> | null = null;
 let _toastUiCssInjected = false;
+let _markedPromise: Promise<void> | null = null;
+let _domPurifyPromise: Promise<void> | null = null;
 
 /**
  * Ensures TOAST UI Editor is loaded. Returns immediately if already available.
@@ -94,4 +144,32 @@ export function ensureToastUiLoaded(): Promise<void> {
 		(document.head || document.documentElement).appendChild(el);
 	});
 	return _toastUiPromise;
+}
+
+// ── Markdown helpers (marked + DOMPurify) ────────────────────────────────────
+
+export function ensureMarkedLoaded(): Promise<void> {
+	return loadGlobalScriptOnce(
+		_win.__kustoQueryEditorConfig?.markedUrl || '',
+		'marked',
+		() => typeof _win.marked?.parse === 'function',
+		(promise) => { _markedPromise = promise; },
+		() => _markedPromise,
+		{ disableAmd: true }
+	);
+}
+
+export function ensureDomPurifyLoaded(): Promise<void> {
+	return loadGlobalScriptOnce(
+		_win.__kustoQueryEditorConfig?.purifyUrl || '',
+		'DOMPurify',
+		() => typeof _win.DOMPurify?.sanitize === 'function',
+		(promise) => { _domPurifyPromise = promise; },
+		() => _domPurifyPromise,
+		{ disableAmd: true }
+	);
+}
+
+export async function ensureMarkdownPreviewLibsLoaded(): Promise<void> {
+	await Promise.all([ensureMarkedLoaded(), ensureDomPurifyLoaded()]);
 }
