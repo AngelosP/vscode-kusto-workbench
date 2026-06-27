@@ -8,6 +8,7 @@
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
 import { schedulePersist } from './persistence';
+import { perfMark } from './perf.js';
 import {
 	cachedDatabases,
 	connections,
@@ -320,6 +321,7 @@ export function addQueryBox( options?: any) {
 	} else {
 		container.insertAdjacentHTML('beforeend', boxHtml);
 	}
+	perfMark('webview.section.query.added', { boxId: id, isComparison, childCount: container.children.length });
 	// Do not auto-assign a name; section names are user-defined unless explicitly set by a feature.
 	// Initialize toolbar toggle states from globals.
 	try {
@@ -633,7 +635,7 @@ export function addQueryBox( options?: any) {
 					e.preventDefault();
 					e.stopPropagation();
 				} catch (e) { console.error('[kusto]', e); }
-				try { wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
+				try { delete wrapper.dataset.kustoRestoredHeight; delete wrapper.dataset.kustoRestoredHeightPx; wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
 
 				resizer.classList.add('is-dragging');
 				const previousCursor = document.body.style.cursor;
@@ -813,7 +815,7 @@ export function __kustoAutoSizeResults( boxId: any) {
 			const sectionMaxH = contentH + 20;
 			w.style.height = Math.max(120, Math.min(FIT_CAP_PX, Math.ceil(sectionMaxH))) + 'px';
 			w.style.minHeight = '0';
-			try { if (w.dataset) w.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
+			try { if (w.dataset) { delete w.dataset.kustoRestoredHeight; delete w.dataset.kustoRestoredHeightPx; w.dataset.kustoUserResized = 'true'; } } catch (e) { console.error('[kusto]', e); }
 		}
 		return;
 	}
@@ -851,7 +853,7 @@ export function __kustoAutoSizeResults( boxId: any) {
 			const desiredPx = Math.max(24, Math.min(FIT_CAP_PX, Math.ceil(chrome + contentH + 8)));
 			w.style.height = desiredPx + 'px';
 			w.style.minHeight = '0';
-			try { if (w.dataset) w.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
+			try { if (w.dataset) { delete w.dataset.kustoRestoredHeight; delete w.dataset.kustoRestoredHeightPx; w.dataset.kustoUserResized = 'true'; } } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }

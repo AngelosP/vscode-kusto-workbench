@@ -4,6 +4,7 @@
 
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { setActiveMonacoEditor } from './state.js';
+import { perfSnapshot } from './perf.js';
 import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
 import { __kustoFindSuggestWidgetForEditor } from '../monaco/suggest.js';
 
@@ -4077,6 +4078,9 @@ async function e2eAssertKustoClickCaretFidelityAfterRestoredHtmlPreviewScroll():
 }
 
 _win.__e2e = {
+	perf: {
+		snapshot: perfSnapshot,
+	},
 	workbench: {
 		clearSections: () => _win.__testRemoveAllSections(),
 		removeSection: (selector: string) => _win.__testRemoveSection(selector),

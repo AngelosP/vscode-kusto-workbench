@@ -9,6 +9,7 @@ import { parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } f
 import { renderDiffInWebview } from './diffViewerUtils';
 import { normalizeSection, computeChangedSections, formatSectionDiffContent, KqlxEditorProvider } from './kqlxEditorProvider';
 import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
+import { perfBegin, perfMark } from './perfTrace';
 
 /**
  * Compute the sidecar .kqlx URI for a .kql/.csl compat file.
@@ -217,6 +218,10 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		webviewPanel: vscode.WebviewPanel,
 		_token: vscode.CancellationToken
 	): Promise<void> {
+		perfBegin('host.kqlCompat.resolve', {
+			scheme: document.uri.scheme,
+			path: document.uri.path,
+		});
 		// Detect if this editor is being opened as part of a diff view.
 		// VS Code uses special URI schemes for source control diffs (e.g., 'git', 'gitfs').
 		// When in diff mode, render our Monaco-based diff viewer directly in this webview.
@@ -236,12 +241,27 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.editorCursorStatusBar);
 		queryEditor.documentUri = document.uri.toString();
-		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
+		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
+		const queuedWebviewMessages: IncomingWebviewMessage[] = [];
+		const webviewMessageSubscription = webviewPanel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
+			if (!message || typeof message.type !== 'string') {
+				return;
+			}
+			if (!handleIncomingWebviewMessage) {
+				queuedWebviewMessages.push(message);
+				return;
+			}
+			return handleIncomingWebviewMessage(message);
+		});
+		perfMark('host.kqlCompat.initializeWebview.start');
+		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
+		perfMark('host.kqlCompat.initializeWebview.done');
 
 		// Best-effort default selection for plain `.kql/.csl` files (no embedded metadata).
 		// Priority: 1) cached file connection, 2) query-based inference.
 		// This is intentionally non-fatal: if we can't resolve, the UI falls back to last selection.
 		let cachedFileConnection: { clusterUrl: string; database: string } | undefined;
+		perfMark('host.kqlCompat.cachedFileConnection.start');
 		try {
 			if (document.uri.scheme === 'file') {
 				const cached = this.connectionManager.getFileConnection(document.uri.fsPath);
@@ -252,6 +272,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		} catch {
 			cachedFileConnection = undefined;
 		}
+		perfMark('host.kqlCompat.cachedFileConnection.done', { found: !!cachedFileConnection });
 
 		let inferredSelection: { clusterUrl: string; database: string } | undefined;
 		if (cachedFileConnection) {
@@ -259,9 +280,12 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			inferredSelection = cachedFileConnection;
 		} else {
 			try {
+				perfMark('host.kqlCompat.inference.start', { length: document.getText().length });
 				inferredSelection = await queryEditor.inferClusterDatabaseForKqlQuery(document.getText());
+				perfMark('host.kqlCompat.inference.done', { found: !!inferredSelection });
 			} catch {
 				inferredSelection = undefined;
+				perfMark('host.kqlCompat.inference.error');
 			}
 		}
 
@@ -271,6 +295,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		let sidecarFile: KqlxFileV1 | undefined;
 		let lastWrittenSidecarText: string | undefined;
 		let sidecarDirty = false;
+		perfMark('host.kqlCompat.sidecar.start');
 		try {
 			sidecarUri = KqlCompatEditorProvider.getSidecarKqlxUriForCompat(document.uri);
 			if (sidecarUri && sidecarUri.scheme === 'file') {
@@ -289,6 +314,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		} catch {
 			// ignore
 		}
+		perfMark('host.kqlCompat.sidecar.done', { found: !!sidecarFile });
 
 		let lastKnownSidecarState: KqlxStateV1 | undefined = sidecarFile?.state;
 
@@ -419,6 +445,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 		const postDocument = (options?: { forceReload?: boolean }) => {
 			const forceReload = options?.forceReload ?? false;
+			perfMark('host.kqlCompat.postDocument.start', { forceReload, sidecarEnabled: !!sidecarFile });
 			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
 			const queryText = document.getText();
 			const sidecarEnabled = !!sidecarFile;
@@ -464,10 +491,11 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				htmlPowerBiCompatibilityCheckEnabled,
 				state
 			});
+			perfMark('host.kqlCompat.documentData.posted', { sections: state.sections.length, sidecarEnabled });
 		};
 
 		// Track if the webview has initialized and whether it's currently being edited by the user.
-		const subscriptions: vscode.Disposable[] = [];
+		const subscriptions: vscode.Disposable[] = [webviewMessageSubscription];
 		let webviewInitialized = false;
 		let lastWebviewPersistAt = 0;
 
@@ -581,12 +609,13 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			}
 		});
 
-		webviewPanel.webview.onDidReceiveMessage(async (message: IncomingWebviewMessage) => {
+		handleIncomingWebviewMessage = async (message: IncomingWebviewMessage) => {
 			if (!message || typeof message.type !== 'string') {
 				return;
 			}
 			switch (message.type) {
 				case 'requestDocument':
+					perfMark('host.kqlCompat.requestDocument.received');
 					// Re-send mode in response to a request (the webview is guaranteed to be listening).
 					postPersistenceMode();
 					// In Explorer single-click preview mode, VS Code can reuse the same webview
@@ -594,6 +623,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					// re-applied for the current document.
 					postDocument({ forceReload: true });
 					webviewInitialized = true;
+					perfMark('host.kqlCompat.requestDocument.completed');
 					return;
 				case 'requestUpgradeToKqlx': {
 					const addKind = (message && typeof message.addKind === 'string') ? message.addKind : '';
@@ -818,7 +848,11 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				default:
 					await queryEditor.handleWebviewMessage(message as any);
 			}
-		});
+		};
+
+		for (const queuedMessage of queuedWebviewMessages.splice(0)) {
+			await handleIncomingWebviewMessage(queuedMessage);
+		}
 	}
 
 	private static buildSidecarFileForCompat(compatUri: vscode.Uri, state: KqlxStateV1): KqlxFileV1 {

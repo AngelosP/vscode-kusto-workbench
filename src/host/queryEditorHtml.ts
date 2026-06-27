@@ -1,11 +1,14 @@
 import * as vscode from 'vscode';
 
+import { perfMark } from './perfTrace';
+
 export async function getQueryEditorHtml(
 	webview: vscode.Webview,
 	extensionUri: vscode.Uri,
 	context: vscode.ExtensionContext,
 	options?: { hideFooterControls?: boolean; initialDocumentLoading?: boolean }
 ): Promise<string> {
+	perfMark('host.queryEditorHtml.start');
 	const templateUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'queryEditor.html');
 	const cssBundleUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'queryEditor.bundle.css');
 	const overlayScrollbarsCssUri = vscode.Uri.joinPath(extensionUri, 'dist', 'webview', 'styles', 'overlayscrollbars.min.css');
@@ -14,6 +17,7 @@ export async function getQueryEditorHtml(
 		vscode.workspace.fs.readFile(cssBundleUri),
 		vscode.workspace.fs.readFile(overlayScrollbarsCssUri),
 	]);
+	perfMark('host.queryEditorHtml.assetsRead');
 	let template = new TextDecoder('utf-8').decode(templateBytes);
 	// Inline the CSS bundle so the webview is styled at first paint, even when
 	// VS Code restores cached HTML from a previous session with stale resource URIs.
@@ -130,7 +134,7 @@ export async function getQueryEditorHtml(
 
 	const initialDocumentLoading = options?.initialDocumentLoading === true;
 
-	return template
+	const html = template
 		.replaceAll('{{documentLoadingBodyAttributes}}', initialDocumentLoading ? ' data-kusto-document-loading="true"' : '')
 		.replaceAll('{{documentLoadingContainerAttributes}}', initialDocumentLoading ? ' aria-busy="true"' : '')
 		.replaceAll('{{alternatingRowStyle}}', altRowCss)
@@ -151,4 +155,6 @@ export async function getQueryEditorHtml(
 		// CSS bundle inlined last so its content cannot contain {{...}} placeholders
 		// that earlier replacements would accidentally substitute into.
 		.replaceAll('{{appCssInline}}', appCssInline);
+	perfMark('host.queryEditorHtml.end', { length: html.length });
+	return html;
 }

@@ -50,6 +50,7 @@ import { listFabricWorkspaces, publishToPowerBIService, checkFabricItemExists } 
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
 import { notifySavedFile, withCsvExtension } from './savedFileNotification';
+import { perfMark } from './perfTrace';
 
 type RunningQueryEntry = {
 	cancel: () => void;
@@ -186,6 +187,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		panel: vscode.WebviewPanel,
 		options?: { registerMessageHandler?: boolean; hideFooterControls?: boolean; initialDocumentLoading?: boolean }
 	): Promise<void> {
+		perfMark('host.queryEditorProvider.initialize.start', { initialDocumentLoading: !!options?.initialDocumentLoading });
 		this.connection.activate();
 		this.panel = panel;
 		// Do NOT set panel.iconPath here — this method is called for custom editors
@@ -197,6 +199,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			hideFooterControls: !!options?.hideFooterControls,
 			initialDocumentLoading: !!options?.initialDocumentLoading
 		});
+		perfMark('host.queryEditorProvider.htmlAssigned');
 		this.embeddedTutorialHost = new EmbeddedTutorialWebviewHost(this.panel, this.documentUri);
 		this.embeddedTutorialRegistration = EmbeddedTutorialWebviewRegistry.register(this.embeddedTutorialHost);
 
@@ -237,6 +240,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 		this.sendWorkbenchSettings();
 		this.watchWorkbenchSettings();
+		perfMark('host.queryEditorProvider.initialize.end');
 	}
 
 	// Token returned by the orchestrator's connect(), used to guard disconnect.

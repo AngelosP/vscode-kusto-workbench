@@ -2,6 +2,7 @@
 // Dispatches incoming postMessage from the extension host to the right module.
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
+import { perfMark } from './perf.js';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { safeRun } from '../shared/safe-run';
 import { getResultsState, displayResultForBox, displayResult, displayCancelled } from './results-state';
@@ -408,8 +409,8 @@ try {
 } catch (e) { console.error('[kusto]', e); }
 
 // --- Extension host message dispatcher ---
-window.addEventListener('message', async (event: any) => {
-	const message = (event && event.data && typeof event.data === 'object') ? event.data : {};
+const __kustoDispatchHostMessage = async (message: any) => {
+	message = (message && typeof message === 'object') ? message : {};
 	const messageType = String(message.type || '');
 	switch (messageType) {
 		case 'settingsUpdate':
@@ -677,6 +678,12 @@ window.addEventListener('message', async (event: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'documentData':
+			perfMark('webview.message.documentData.received', {
+				ok: !!message.ok,
+				forceReload: !!message.forceReload,
+				sections: Array.isArray((message as any).state?.sections) ? (message as any).state.sections.length : 0,
+				documentKind: (message as any).documentKind || '',
+			});
 			try {
 				{
 					clearAllSectionAgentTouched();
@@ -3147,4 +3154,19 @@ window.addEventListener('message', async (event: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 	}
+};
+
+(window as any).__kustoHostMessageDispatcherReady = true;
+window.addEventListener('message', async (event: any) => {
+	const message = (event && event.data && typeof event.data === 'object') ? event.data : {};
+	await __kustoDispatchHostMessage(message);
 });
+
+try {
+	const buffered = Array.isArray((window as any).__kustoBufferedHostMessages)
+		? (window as any).__kustoBufferedHostMessages.splice(0)
+		: [];
+	for (const message of buffered) {
+		void __kustoDispatchHostMessage(message);
+	}
+} catch (e) { console.error('[kusto]', e); }

@@ -21,8 +21,16 @@ const testState = vi.hoisted(() => {
 		const id = options.id || `query_restored_${addQueryBox.mock.calls.length + 1}`;
 		queryBoxes.push(id);
 		queryEditors[id] = { getValue: () => '' };
-		const el = document.createElement('div');
+		const el = document.createElement('div') as HTMLElement & { serialize?: () => unknown };
 		el.id = id;
+		el.serialize = () => ({
+			id,
+			type: 'query',
+			query: queryEditors[id]?.getValue?.() || (window as any).__testPendingQueryTextByBoxId?.[id] || '',
+			...(typeof (window as any).__testQueryResultJsonByBoxId?.[id] === 'string' && (window as any).__testQueryResultJsonByBoxId[id]
+				? { resultJson: (window as any).__testQueryResultJsonByBoxId[id] }
+				: {}),
+		});
 		document.body.appendChild(el);
 		return id;
 	});
@@ -266,6 +274,8 @@ describe('persistence round-trip', () => {
 		pState.devNotesSections = [];
 		pState.lastExecutedBox = '';
 		pState.htmlPowerBiCompatibilityCheckEnabled = true;
+		(window as any).__testPendingQueryTextByBoxId = pState.pendingQueryTextByBoxId;
+		(window as any).__testQueryResultJsonByBoxId = pState.queryResultJsonByBoxId;
 	});
 
 	function flushDeferredRestoreTimers() {
@@ -574,6 +584,76 @@ describe('persistence round-trip', () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it('does not persist load-time query defaults immediately after restoring persisted results', () => {
+		vi.useFakeTimers();
+		try {
+			const resultJson = JSON.stringify({
+				columns: [{ name: 'RowId', type: 'long' }],
+				rows: [[1]],
+				metadata: { executionTime: '00:00:00.321' },
+			});
+			handleDocumentDataMessage({
+				type: 'documentData',
+				ok: true,
+				forceReload: true,
+				documentUri: 'file:///tmp/persisted-results.kqlx',
+				state: {
+					sections: [{
+						id: 'query_persisted_results',
+						type: 'query',
+						name: 'Persisted Result Fixture',
+						query: 'datatable(RowId:long)[1]',
+						expanded: true,
+						resultsVisible: true,
+						resultsHeightPx: 360,
+						resultJson,
+					}],
+				},
+			});
+
+			const queryEl = document.getElementById('query_persisted_results') as HTMLElement & { serialize: () => unknown };
+			expect(queryEl).toBeTruthy();
+			queryEl.serialize = () => ({
+				id: 'query_persisted_results',
+				type: 'query',
+				query: 'datatable(RowId:long)[1]',
+				resultJson,
+			});
+
+			vi.mocked(postMessageToHost).mockClear();
+			schedulePersist('restore-defaults', true);
+			expect(postMessageToHost).not.toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not flush restored non-session files on beforeunload', () => {
+		pState.isSessionFile = false;
+		const resultJson = JSON.stringify({
+			columns: [{ name: 'RowId', type: 'long' }],
+			rows: [[1]],
+			metadata: { executionTime: '00:00:00.321' },
+		});
+		handleDocumentDataMessage({
+			type: 'documentData',
+			ok: true,
+			forceReload: true,
+			documentUri: 'file:///tmp/flush-clean.kqlx',
+			state: {
+				sections: [{
+					id: 'query_flush_clean',
+					type: 'query',
+					query: 'datatable(RowId:long)[1]',
+					resultJson,
+				}],
+			},
+		});
+		vi.mocked(postMessageToHost).mockClear();
+		window.dispatchEvent(new Event('beforeunload'));
+		expect(postMessageToHost).not.toHaveBeenCalled();
 	});
 
 	it('clears the initial document loading state after restore', () => {

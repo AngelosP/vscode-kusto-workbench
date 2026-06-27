@@ -9,6 +9,7 @@ import { KqlCompatEditorProvider } from '../../src/host/kqlCompatEditorProvider'
 import { KqlxEditorProvider } from '../../src/host/kqlxEditorProvider';
 import { MdCompatEditorProvider } from '../../src/host/mdCompatEditorProvider';
 import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
+import { SqlCompatEditorProvider } from '../../src/host/sqlCompatEditorProvider';
 
 type DisposableLike = { dispose(): void };
 
@@ -793,6 +794,144 @@ suite('Sidecar .kql.json strategy', () => {
 			const docMsg = posted.find((m) => m && m.type === 'documentData' && m.ok === true);
 			assert.ok(docMsg, 'expected queued requestDocument to produce documentData');
 			assert.strictEqual(docMsg.state.sections[0].query, 'StartupTable | take 1');
+		} finally {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = previousInitialize;
+			try {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			} catch {
+				// ignore
+			}
+		}
+	});
+
+	test('.kql requestDocument sent during webview initialization is replayed', async () => {
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
+		const previousInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kql-startup-'));
+		const kqlPath = path.join(tmpDir, 'startup.kql');
+
+		try {
+			fs.writeFileSync(kqlPath, 'StartupTable | take 1', 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
+				assert.ok(receiveHandler, 'expected early webview message handler');
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			};
+
+			const fakeContext: vscode.ExtensionContext = {
+				subscriptions: [],
+				workspaceState: { get: () => undefined, update: async () => undefined } as any,
+				globalState: { get: () => undefined, update: async () => undefined } as any
+			} as any;
+
+			const provider = new (KqlCompatEditorProvider as any)(
+				fakeContext,
+				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				{ getConnections: () => [] } as any
+			) as KqlCompatEditorProvider;
+
+			const document: vscode.TextDocument = {
+				uri: vscode.Uri.file(kqlPath),
+				getText: () => 'StartupTable | take 1',
+				lineCount: 1,
+				lineAt: () => ({ text: 'StartupTable | take 1' } as any)
+			} as any;
+
+			const webview: vscode.Webview = {
+				options: {} as any,
+				postMessage: async (msg: any) => {
+					posted.push(msg);
+					return true;
+				},
+				onDidReceiveMessage: (handler: any) => {
+					receiveHandler = handler;
+					return { dispose() {} } as DisposableLike;
+				}
+			} as any;
+
+			const webviewPanel: vscode.WebviewPanel = {
+				webview,
+				visible: true,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike),
+				onDidChangeViewState: () => ({ dispose() {} } as DisposableLike)
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
+
+			const docMsg = posted.find((m) => m && m.type === 'documentData' && m.ok === true);
+			assert.ok(docMsg, 'expected queued requestDocument to produce documentData');
+			assert.strictEqual(docMsg.compatibilityMode, true);
+			assert.strictEqual(docMsg.documentKind, 'kql');
+			assert.strictEqual(docMsg.state.sections[0].query, 'StartupTable | take 1');
+		} finally {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = previousInitialize;
+			try {
+				fs.rmSync(tmpDir, { recursive: true, force: true });
+			} catch {
+				// ignore
+			}
+		}
+	});
+
+	test('.sql requestDocument sent during webview initialization is replayed', async () => {
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const posted: any[] = [];
+		const previousInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-startup-'));
+		const sqlPath = path.join(tmpDir, 'startup.sql');
+
+		try {
+			fs.writeFileSync(sqlPath, 'select top 1 * from StartupTable', 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
+				assert.ok(receiveHandler, 'expected early webview message handler');
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			};
+
+			const fakeContext: vscode.ExtensionContext = {
+				subscriptions: [],
+				workspaceState: { get: () => undefined, update: async () => undefined } as any,
+				globalState: { get: () => undefined, update: async () => undefined } as any
+			} as any;
+
+			const provider = new (SqlCompatEditorProvider as any)(
+				fakeContext,
+				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				{} as any
+			) as SqlCompatEditorProvider;
+
+			const document: vscode.TextDocument = {
+				uri: vscode.Uri.file(sqlPath),
+				getText: () => 'select top 1 * from StartupTable',
+				lineCount: 1,
+				lineAt: () => ({ text: 'select top 1 * from StartupTable' } as any)
+			} as any;
+
+			const webview: vscode.Webview = {
+				options: {} as any,
+				postMessage: async (msg: any) => {
+					posted.push(msg);
+					return true;
+				},
+				onDidReceiveMessage: (handler: any) => {
+					receiveHandler = handler;
+					return { dispose() {} } as DisposableLike;
+				}
+			} as any;
+
+			const webviewPanel: vscode.WebviewPanel = {
+				webview,
+				onDidDispose: () => ({ dispose() {} } as DisposableLike)
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, webviewPanel, {} as any);
+
+			const docMsg = posted.find((m) => m && m.type === 'documentData' && m.ok === true);
+			assert.ok(docMsg, 'expected queued requestDocument to produce documentData');
+			assert.strictEqual(docMsg.compatibilityMode, true);
+			assert.strictEqual(docMsg.documentKind, 'sql');
+			assert.strictEqual(docMsg.state.sections[0].query, 'select top 1 * from StartupTable');
 		} finally {
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = previousInitialize;
 			try {

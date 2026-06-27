@@ -3,6 +3,7 @@
 // Window bridge exports at bottom for remaining legacy callers.
 import { pState } from '../shared/persistence-state';
 import { schedulePersist } from '../core/persistence';
+import { perfMark } from '../core/perf.js';
 
 // Sub-modules (Phase 6 decomposition) — import ensures esbuild includes them in bundle.
 import {
@@ -2046,6 +2047,7 @@ try {
 } catch (e) { console.error('[kusto]', e); }
 
 function initQueryEditor(boxId: any) {
+	perfMark('webview.monaco.queryEditor.init.start', { boxId });
 	return ensureMonaco()!.then((monaco: any) => {
 		const container = document.getElementById(boxId + '_query_editor');
 		const wrapper = container && container.closest ? container.closest('.query-editor-wrapper') : null;
@@ -2976,6 +2978,7 @@ function initQueryEditor(boxId: any) {
 		} catch (e) { console.error('[kusto]', e); }
 
 		queryEditors[boxId] = editor;
+		perfMark('webview.monaco.queryEditor.ready', { boxId });
 		try {
 			const cursorStatus = createMonacoCursorStatusPublisher({
 				editor,

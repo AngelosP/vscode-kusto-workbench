@@ -166,6 +166,29 @@
 
 	<script src="{{monacoLoaderUri}}"></script>
 	<script>
+		(function () {
+			var start = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+			var perf = window.__kustoPerf = window.__kustoPerf || {
+				startTime: start,
+				marks: [],
+				mark: function (name, detail) {
+					try {
+						var now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+						var entry = { name: String(name || ''), timeMs: Math.max(0, now - this.startTime) };
+						if (typeof detail !== 'undefined') entry.detail = JSON.parse(JSON.stringify(detail));
+						this.marks.push(entry);
+					} catch (err) {
+						try { this.marks.push({ name: String(name || ''), timeMs: 0, detail: String(detail) }); } catch (err2) {}
+					}
+				},
+				snapshot: function () {
+					var now = (typeof performance !== 'undefined' && performance.now) ? performance.now() : Date.now();
+					return { durationMs: Math.max(0, now - this.startTime), marks: this.marks.slice(), measures: {} };
+				}
+			};
+			try { perf.mark('webview.html.inline'); } catch (err) {}
+		})();
+
 		window.__kustoQueryEditorConfig = {
 			monacoVsUri: "{{monacoVsUri}}",
 			monacoLoaderUri: "{{monacoLoaderUri}}",

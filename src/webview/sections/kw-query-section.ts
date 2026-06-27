@@ -178,6 +178,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	@state() private _connectionId = '';
 	@state() private _desiredClusterUrl = '';
 	private _desiredClusterUrlPendingMatch = false;
+	private _persistConnectionSelection = false;
 	@state() private _databases: string[] = [];
 	@state() private _database = '';
 	@state() private _desiredDatabase = '';
@@ -667,6 +668,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (!connectionId) return;
 		const prev = this._connectionId;
 		this._connectionId = connectionId;
+		this._persistConnectionSelection = true;
 		const conn = this._connections.find(c => c.id === connectionId);
 		if (conn) {
 			this._desiredClusterUrl = conn.clusterUrl || '';
@@ -688,6 +690,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (!database) return;
 		const prev = this._database;
 		this._database = database;
+		this._persistConnectionSelection = true;
 		this._desiredDatabase = '';
 		if (prev !== database) {
 			this.dispatchEvent(new CustomEvent('database-changed', {
@@ -728,6 +731,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const conn = this._connections.find(c => normalizeClusterUrlKey(c.clusterUrl) === target);
 		if (conn) {
 			this._connectionId = conn.id;
+			this._persistConnectionSelection = true;
 			this._desiredClusterUrl = conn.clusterUrl;
 			this._desiredClusterUrlPendingMatch = false;
 			this._desiredDatabase = fav.database;
@@ -847,11 +851,17 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	public setDesiredClusterUrl(url: string): void {
 		this._desiredClusterUrl = url;
 		this._desiredClusterUrlPendingMatch = !!String(url || '').trim();
+		if (String(url || '').trim()) {
+			this._persistConnectionSelection = true;
+		}
 	}
 
 	/** Set the desired database (used during restoration). */
 	public setDesiredDatabase(db: string): void {
 		this._desiredDatabase = db;
+		if (String(db || '').trim()) {
+			this._persistConnectionSelection = true;
+		}
 	}
 
 	/** Update available connections. Resolves desired/current/last selection. */
@@ -1043,6 +1053,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		this._database = database;
 	}
 
+	public setPersistConnectionSelection(persist: boolean): void {
+		this._persistConnectionSelection = !!persist;
+	}
+
 	// ── Private helpers ───────────────────────────────────────────────────────
 
 	private _isFavorited(): boolean {
@@ -1164,6 +1178,8 @@ export class KwQuerySection extends LitElement implements SectionElement {
 						resultsWrapper.dataset.kustoPreviousHeight = curH;
 						// Mark as user-resized so the height is persisted to the .kqlx file
 						// and correctly restored when the file is reopened.
+						delete resultsWrapper.dataset.kustoRestoredHeight;
+						delete resultsWrapper.dataset.kustoRestoredHeightPx;
 						resultsWrapper.dataset.kustoUserResized = 'true';
 					}
 					// Collapse to just enough for the kw-data-table header bar.
@@ -1210,7 +1226,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 				resultsWrapper.style.height = '48px';
 				resultsWrapper.style.overflow = 'hidden';
 				if (resizer) resizer.style.display = 'none';
-			} else if (!resultsWrapper.dataset.kustoUserResized) {
+			} else if (!resultsWrapper.dataset.kustoUserResized && !resultsWrapper.dataset.kustoRestoredHeight) {
 				// Auto-fit: estimate height from row count, capped to show at most 10 visible rows.
 				// Row height is 27px (non-compact). Chrome includes header bar, thead, resizer,
 				// border/padding, and extra headroom for scrollbar/sub-pixel rounding.
@@ -1413,7 +1429,8 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		let resultsVisible = true;
 		try { const m = pState.resultsVisibleByBoxId; resultsVisible = !(m && m[b] === false); } catch (e) { console.error('[kusto]', e); }
 
-		const clusterUrl = this.getClusterUrl() || this._desiredClusterUrl;
+		const clusterUrl = this._persistConnectionSelection ? (this.getClusterUrl() || this._desiredClusterUrl) : '';
+		const databaseForPersistence = this._persistConnectionSelection ? database : '';
 
 		let query = '';
 		try {
@@ -1446,7 +1463,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		return {
 			id: b, type: 'query', name,
 			...(typeof favoritesMode === 'boolean' ? { favoritesMode } : {}),
-			clusterUrl, database, query, expanded, resultsVisible,
+			clusterUrl, database: databaseForPersistence, query, expanded, resultsVisible,
 			...(shouldPersist ? { resultJson } : {}),
 			runMode: String(runMode), cacheEnabled, cacheValue, cacheUnit,
 			...(editorHeightPx !== undefined ? { editorHeightPx } : {}),
@@ -1508,6 +1525,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			const wrapper = document.getElementById(this.boxId + '_results_wrapper') as HTMLElement | null;
 			if (!wrapper) return undefined;
 			if (!wrapper.dataset || wrapper.dataset.kustoUserResized !== 'true') return undefined;
+			if (wrapper.dataset.kustoRestoredHeight === 'true') {
+				const restored = parseInt(wrapper.dataset.kustoRestoredHeightPx || '', 10);
+				if (Number.isFinite(restored) && restored > 0) return restored;
+			}
 			let inlineH = wrapper.style.height?.trim();
 			// When results are hidden the wrapper is collapsed to 48px;
 			// return the remembered pre-collapse height instead.

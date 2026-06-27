@@ -3,6 +3,27 @@
 // The implementation is split into smaller files under media/queryEditor/.
 // This file remains as the stable entrypoint referenced by the webview HTML.
 (function bootstrapKustoQueryEditor() {
+	const perfMark = (name, detail) => {
+		try { window.__kustoPerf && window.__kustoPerf.mark && window.__kustoPerf.mark(name, detail); } catch (e) { console.error('[kusto]', e); }
+	};
+	perfMark('webview.bootstrap.start');
+
+	if (!Array.isArray(window.__kustoBufferedHostMessages)) {
+		window.__kustoBufferedHostMessages = [];
+	}
+	if (!window.__kustoBootstrapHostMessageBufferInstalled) {
+		window.__kustoBootstrapHostMessageBufferInstalled = true;
+		window.addEventListener('message', function (event) {
+			try {
+				if (window.__kustoHostMessageDispatcherReady) return;
+				const data = event && event.data;
+				if (data && typeof data === 'object' && typeof data.type === 'string') {
+					window.__kustoBufferedHostMessages.push(data);
+				}
+			} catch (e) { console.error('[kusto]', e); }
+		});
+	}
+
 	// If the user clicks one of the add buttons before scripts are fully loaded,
 	// queue those clicks and replay them once initialization completes.
 	if (!window.__kustoQueryEditorPendingAdds || typeof window.__kustoQueryEditorPendingAdds !== 'object') {
@@ -168,8 +189,18 @@
 
 	(async () => {
 		for (const path of scriptPaths) {
+			perfMark('webview.bootstrap.script.start', { path });
 			await loadScript(path);
+			perfMark('webview.bootstrap.script.done', { path });
+			if (path === 'vscodeApi.js' && window.vscode && !window.__kustoBootstrapRequestDocumentSent) {
+				try {
+					window.vscode.postMessage({ type: 'requestDocument' });
+					window.__kustoBootstrapRequestDocumentSent = true;
+					perfMark('webview.bootstrap.requestDocument.sent');
+				} catch (e) { console.error('[kusto]', e); }
+			}
 		}
+		perfMark('webview.bootstrap.done');
 	})().catch((err) => {
 		console.error('[kusto-query-editor] bootstrap failed', err);
 	});

@@ -174,7 +174,19 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.editorCursorStatusBar);
 		queryEditor.documentUri = document.uri.toString();
-		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false });
+		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
+		const queuedWebviewMessages: IncomingWebviewMessage[] = [];
+		const webviewMessageSubscription = webviewPanel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
+			if (!message || typeof message.type !== 'string') {
+				return;
+			}
+			if (!handleIncomingWebviewMessage) {
+				queuedWebviewMessages.push(message);
+				return;
+			}
+			return handleIncomingWebviewMessage(message);
+		});
+		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
 
 		// Sidecar support: if there is a sibling .sql.json file that links back to this .sql,
 		// use it to store multi-section metadata while keeping the SQL text in the plain file.
@@ -371,7 +383,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		};
 
 		// Track if the webview has initialized and whether it's currently being edited by the user.
-		const subscriptions: vscode.Disposable[] = [];
+		const subscriptions: vscode.Disposable[] = [webviewMessageSubscription];
 		let webviewInitialized = false;
 		let lastWebviewPersistAt = 0;
 
@@ -483,7 +495,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			}
 		});
 
-		webviewPanel.webview.onDidReceiveMessage(async (message: IncomingWebviewMessage) => {
+		handleIncomingWebviewMessage = async (message: IncomingWebviewMessage) => {
 			if (!message || typeof message.type !== 'string') {
 				return;
 			}
@@ -673,7 +685,11 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				default:
 					await queryEditor.handleWebviewMessage(message as any);
 			}
-		});
+		};
+
+		for (const queuedMessage of queuedWebviewMessages.splice(0)) {
+			await handleIncomingWebviewMessage(queuedMessage);
+		}
 	}
 
 	private static buildSidecarFileForCompat(compatUri: vscode.Uri, state: KqlxStateV1): KqlxFileV1 {

@@ -242,6 +242,10 @@ profile.
    This launches a fresh VS Code, executes all .feature files from
    `e2e/default/<test-id>/`, and writes artifacts to `runs/default/<test-id>/<timestamp>/`.
    Each run uses a unique timestamp so previous results are preserved.
+  If `tests/vscode-extension-tester/profiles/default/` exists, `--test-id` runs
+  for `e2e/default/<test-id>/` automatically reuse that prepared `default` named
+  profile. This preserves authenticated/default setup for existing suite scripts
+  that do not pass `--reuse-named-profile default` explicitly.
 
 3. **Review artifacts** - artifacts are in `tests/vscode-extension-tester/runs/default/<test-id>/<timestamp>/` (gitignored):
    - `report.md` - read this FIRST. It lists all results AND screenshot file paths.
@@ -308,6 +312,8 @@ recreate/sign in the affected profiles with `vscode-ext-test profile open`.
 - `When I click "<css selector>" in the webview` / `When I right click "<css selector>" in the webview` / `When I middle click "<css selector>" in the webview` / `When I double click "<css selector>" in the webview` - click a webview element by stable CSS selector
 - `When I click the webview element "<text>"` - click a webview control by visible text, aria-label, title, or role text when no stable selector exists
 - `When I evaluate "<js>" in the webview for <n> seconds` - run diagnostic JavaScript in a webview with a caller-provided timeout budget; the timeout must be less than the step timeout
+- `Then I collect JSON artifact "<name>" from webview expression "<js>"` - evaluate JavaScript in the active/current webview and save the returned strict JSON value as a run artifact
+- `Then I collect JSON artifact "<name>" from extension host expression "<js>"` - evaluate JavaScript in the extension host and save the returned strict JSON value as a run artifact
 - `When I move the mouse to <x>, <y>` - move the OS cursor to coordinates. In live sessions these are relative to the full Dev Host window/screenshot; in normal batch runs they are absolute screen coordinates.
 - `When I click` / `When I right click` / `When I middle click` / `When I double click` - click at the current mouse position
 - `When I click at <x>, <y>` / `When I right click at <x>, <y>` / `When I middle click at <x>, <y>` / `When I double click at <x>, <y>` - click coordinates. In live sessions these are relative to the full Dev Host window/screenshot, including title bar and borders; in normal batch runs they are absolute screen coordinates.
@@ -481,6 +487,8 @@ in the extension source is part of the testing process.
 | `When I scroll "<sel>" to the (top\\|bottom\\|left\\|right)` | Jump to an edge |
 | `When I scroll "<sel>" into view` | Scroll the element itself into view |
 | `When I evaluate "<js>" in the webview` | Run arbitrary JS (escape hatch) |
+| `Then I collect JSON artifact "<name>" from webview expression "<js>"` | Save strict JSON returned from a webview expression |
+| `Then I collect JSON artifact "<name>" from extension host expression "<js>"` | Save strict JSON returned from an extension-host expression |
 | `When I list the webviews` | Log all open webview titles, probed DOM titles, and URLs (debugging aid) |
 | `When I list the frame contexts` | Log all execution contexts (frames) inside webview targets — shows context IDs, origins, frame IDs, and the frame tree. Use to diagnose when evaluate/click steps can't find elements inside nested iframes. |
 | `When I list the frame contexts in the webview "<title>"` | Same, but restricted to a specific webview |
@@ -556,6 +564,19 @@ When I evaluate "document.querySelectorAll('.row').length" in the webview
 
 The expression is wrapped in an IIFE; return a value via the last expression.
 Async expressions are awaited.
+
+**Performance artifacts.** Use `--perf`, `--iterations <n>`, and `--warmup <n>` when a workflow needs repeated measurement. Warmup runs are written under `warmup-001/`; measured runs are written under `iteration-001/`, `iteration-002/`, and so on. JSON artifact steps and CLI collectors are listed in `results.json` and `report.md`. With `--perf`, the run also writes `perf-summary.json` and `perf-summary.md`, summarizing numeric fields in measured JSON artifacts with count, min, median, p95, max, and mean.
+
+For complex JavaScript artifact expressions, prefer a doc string so quotes do not need escaping:
+
+\`\`\`gherkin
+Then I collect JSON artifact "custom-state" from webview expression:
+  """
+  ({ title: document.title, sections: document.querySelectorAll('section').length })
+  """
+\`\`\`
+
+In `--attach-devhost` mode, repeat runs and artifact collection can use the existing Dev Host, but `--env` and `--vscode-arg` cannot change the already-running VS Code process.
 
 ### Capturing Output Channels
 
@@ -667,12 +688,23 @@ Then the editor should contain "hello world"
 Use these for test setup when you don't need to test the actual dialog interaction:
 - `Given a file "<path>" exists` - create an empty file (relative to cwd or absolute)
 - `Given a file "<path>" exists with content "<text>"` - create a file with content
+- `Given a file "<path>" exists with content:` plus a doc string - create a file from JSON or multiline content
 - `Given a temp file "<name>" exists` - create in OS temp directory
 - `Given a temp file "<name>" exists with content "<text>"` - create temp file with content
+- `Given a temp file "<name>" exists with content:` plus a doc string - create a temp file from JSON or multiline content
 - `When I open file "<path>" in the editor` - open file directly (no Open dialog)
 - `When I delete file "<path>"` - delete a file
 - `Then the file "<path>" should exist` - assert file exists on disk
 - `Then the file "<path>" should contain "<text>"` - assert file content
+
+Inline file content supports escaped quotes and common escapes: `\"`, `\\`, `\n`, `\r`, and `\t`. Literal backslashes in inline content must be escaped as `\\`, so write Windows-style content as `C:\\temp\\new.txt`. For JSON or multiline fixtures, prefer a doc string:
+
+\`\`\`gherkin
+Given a file "fixture.json" exists with content:
+  """
+  {"kind":"customEditor","version":1}
+  """
+\`\`\`
 
 ### Clean State
 

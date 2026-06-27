@@ -8,6 +8,7 @@ import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview, DIFF_NOISE_KEYS, COMPARISON_NOISE_KEYS } from './diffViewerUtils';
 import type { SectionChangeInfo } from './queryEditorTypes';
+import { perfBegin, perfMark } from './perfTrace';
 
 
 const normalizeClusterUrlKey = (url: string): string => {
@@ -148,6 +149,7 @@ export const normalizeSection = (section: unknown): Record<string, unknown> | un
 	for (const [key, value] of Object.entries(s)) {
 		if (key === 'type') continue; // Handled separately
 		if (COMPARISON_NOISE_KEYS.has(key)) continue; // Ephemeral UI state (heights kept for persistence)
+		if (__kustoIsImplicitSectionDefault(key, value)) continue;
 		const normalized = normalizeValue(value, key);
 		if (normalized !== undefined) {
 			raw[key] = normalized;
@@ -176,6 +178,16 @@ export const normalizeSection = (section: unknown): Record<string, unknown> | un
 
 	return result;
 };
+
+function __kustoIsImplicitSectionDefault(key: string, value: unknown): boolean {
+	if (key === 'expanded' && value === true) return true;
+	if (key === 'resultsVisible' && value === true) return true;
+	if (key === 'runMode' && (String(value || '') === 'take100' || String(value || '') === 'top100')) return true;
+	if (key === 'cacheEnabled' && value === true) return true;
+	if (key === 'cacheValue' && value === 1) return true;
+	if (key === 'cacheUnit' && String(value || '') === 'days') return true;
+	return false;
+}
 
 /**
  * Normalize an entire state for comparison. This is used to determine if the
@@ -545,6 +557,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		webviewPanel: vscode.WebviewPanel,
 		_token: vscode.CancellationToken
 	): Promise<void> {
+		const documentKindForPerf = KqlxEditorProvider.getDocumentKind(document);
+		perfBegin('host.kqlx.resolve', {
+			documentKind: documentKindForPerf,
+			scheme: document.uri.scheme,
+			path: document.uri.path,
+		});
 		// Detect if this editor is being opened as part of a diff view.
 		// VS Code uses special URI schemes for source control diffs (e.g., 'git', 'gitfs').
 		// When in diff mode, render our Monaco-based diff viewer directly in this webview.
@@ -595,7 +613,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		});
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
 
-		const documentKind = KqlxEditorProvider.getDocumentKind(document);
+		perfMark('host.kqlx.webviewInitialized');
+		const documentKind = documentKindForPerf;
 		const allowedSectionKinds = KqlxEditorProvider.getAllowedSectionKinds(documentKind);
 		const defaultSectionKind: 'query' | 'markdown' | 'sql' = documentKind === 'mdx' ? 'markdown' : documentKind === 'sqlx' ? 'sql' : 'query';
 
@@ -936,11 +955,15 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 		const postDocument = async (options?: { forceReload?: boolean }) => {
 			const forceReload = options?.forceReload ?? false;
+			perfMark('host.kqlx.postDocument.start', { forceReload });
 			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
-			const parsed = parseKqlxText(document.getText(), {
+			const rawText = document.getText();
+			perfMark('host.kqlx.documentText.read', { length: rawText.length });
+			const parsed = parseKqlxText(rawText, {
 				allowedKinds: ['kqlx', 'mdx', 'sqlx'],
 				defaultKind: documentKind
 			});
+			perfMark('host.kqlx.parse.done', { ok: parsed.ok });
 			if (!parsed.ok) {
 				void webviewPanel.webview.postMessage({
 					type: 'documentData',
@@ -955,7 +978,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 
 			const sanitizedState = sanitizeStateForKind(documentKind, parsed.file.state);
+			perfMark('host.kqlx.sanitize.done', { sections: Array.isArray(sanitizedState.sections) ? sanitizedState.sections.length : 0 });
 			const hydratedState = await injectLinkedQueryText(sanitizedState);
+			perfMark('host.kqlx.injectLinkedQuery.done', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
 
 			void webviewPanel.webview.postMessage({
 				type: 'documentData',
@@ -965,11 +990,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				htmlPowerBiCompatibilityCheckEnabled,
 				state: hydratedState
 			});
+			perfMark('host.kqlx.documentData.posted', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
 
 			void (async () => {
 				let connectionsChanged = false;
 				try {
+					perfMark('host.kqlx.ensureConnections.start');
 					connectionsChanged = await ensureConnectionsForState(hydratedState);
+					perfMark('host.kqlx.ensureConnections.done', { connectionsChanged });
 				} catch {
 					// ignore
 				}
@@ -1097,11 +1125,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			switch (message.type) {
 				case 'requestDocument':
+					perfMark('host.kqlx.requestDocument.received');
 					// Re-send mode/capabilities in response to a request (the webview is guaranteed to be listening).
 					postPersistenceMode();
 					// Only load from disk when explicitly requested by the webview.
 					await postDocument();
 					webviewInitialized = true;
+					perfMark('host.kqlx.requestDocument.completed');
 
 					// If we were upgraded and a specific "add" action triggered the upgrade,
 					// deliver that intent now (after the webview has definitely attached its message listener).

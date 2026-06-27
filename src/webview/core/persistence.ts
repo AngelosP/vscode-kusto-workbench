@@ -30,6 +30,7 @@ import { addTransformationBox, removeTransformationBox, transformationBoxes } fr
 import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } from '../sections/kw-markdown-section';
 import { setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons } from '../sections/kw-query-toolbar';
 import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } from '../sections/query-execution.controller';
+import { perfMark } from './perf.js';
 
 
 const _win = window;
@@ -316,6 +317,12 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 		if (!__kustoIsDeferredResultJobCurrent(job)) return;
 		pState.lastExecutedBox = job.boxId;
 		displayResultForBox(parsed, job.boxId, { label: 'Results', showExecutionTime: true });
+		if (job.kind === 'query') {
+			try {
+				__kustoSetQueryResultsOutputHeightPx(job.boxId, job.resultsHeightPx);
+			} catch (e) { console.error('[kusto]', e); }
+		}
+		__kustoSeedPersistSignatureFromCurrentState();
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -613,6 +620,9 @@ function __kustoBuildPersistSignatureState(value: any): any {
 		}
 		const copy: Record<string, unknown> = {};
 		for (const [key, child] of Object.entries(value)) {
+			if (__kustoIsImplicitPersistSignatureDefault(key, child)) {
+				continue;
+			}
 			if (key === 'resultJson' && typeof child === 'string' && child) {
 				copy[key] = __kustoGetStoredQueryResultToken((value as any).id, child);
 			} else {
@@ -623,6 +633,16 @@ function __kustoBuildPersistSignatureState(value: any): any {
 	} catch {
 		return value;
 	}
+}
+
+function __kustoIsImplicitPersistSignatureDefault(key: string, value: unknown): boolean {
+	if (key === 'expanded' && value === true) return true;
+	if (key === 'resultsVisible' && value === true) return true;
+	if (key === 'runMode' && (String(value || '') === 'take100' || String(value || '') === 'top100')) return true;
+	if (key === 'cacheEnabled' && value === true) return true;
+	if (key === 'cacheValue' && value === 1) return true;
+	if (key === 'cacheUnit' && String(value || '') === 'days') return true;
+	return false;
 }
 
 function __kustoGetPersistSignature(state: any) {
@@ -780,6 +800,10 @@ function __kustoSetQueryResultsOutputHeightPx(boxId: any, heightPx: any) {
 			return;
 		}
 		wrapper.style.height = clamped + 'px';
+		try {
+			wrapper.dataset.kustoRestoredHeight = 'true';
+			wrapper.dataset.kustoRestoredHeightPx = String(clamped);
+		} catch (e) { console.error('[kusto]', e); }
 		try { wrapper.dataset.kustoUserResized = 'true'; } catch (e) { console.error('[kusto]', e); }
 		// If this section currently has short non-table content (errors, etc.), clamp on next tick.
 		try {
@@ -970,6 +994,19 @@ let __kustoLastPersistSignature = '';
 // trigger unnecessary persistDocument messages that would dirty the file.
 let __kustoLastCompatQueryText = '';
 
+function __kustoSeedPersistSignatureFromCurrentState(): void {
+	try {
+		if (__kustoPersistTimer) {
+			clearTimeout(__kustoPersistTimer);
+			__kustoPersistTimer = null;
+		}
+		const sig = __kustoGetPersistSignature(getKqlxState());
+		if (sig) {
+			__kustoLastPersistSignature = sig;
+		}
+	} catch (e) { console.error('[kusto]', e); }
+}
+
 export function schedulePersist(reason?: any, immediate?: any) {
 	if (!__kustoPersistenceEnabled || pState.restoreInProgress) {
 		return;
@@ -1046,7 +1083,17 @@ try {
 			if (!__kustoPersistenceEnabled || pState.restoreInProgress) {
 				return;
 			}
+			if (!pState.isSessionFile) {
+				return;
+			}
 			const state = getKqlxState();
+			const sig = __kustoGetPersistSignature(state);
+			if (sig && sig === __kustoLastPersistSignature) {
+				return;
+			}
+			if (sig) {
+				__kustoLastPersistSignature = sig;
+			}
 			postMessageToHost({ type: 'persistDocument', state, flush: true, reason: 'flush' });
 		} catch (e) { console.error('[kusto]', e); }
 	});
@@ -1098,6 +1145,7 @@ function __kustoClearAllSections() {
 }
 
 function applyKqlxState(state: any) {
+	perfMark('webview.persistence.applyState.start');
 	pState.restoreInProgress = true;
 	try {
 		__kustoStartRestoreResultBatch();
@@ -1301,6 +1349,9 @@ function applyKqlxState(state: any) {
 						}
 					} catch (e) { console.error('[kusto]', e); }
 					if (kwEl) {
+						if (typeof kwEl.setPersistConnectionSelection === 'function') {
+							kwEl.setPersistConnectionSelection(!!(desiredClusterUrl || db));
+						}
 						if (db && typeof kwEl.setDesiredDatabase === 'function') {
 							kwEl.setDesiredDatabase(db);
 						}
@@ -1352,7 +1403,7 @@ function applyKqlxState(state: any) {
 					if (rj) {
 						// Keep in-memory cache aligned with restored boxes.
 						__kustoSetStoredQueryResultJson(boxId, rj);
-						__kustoQueueRestoredResult({ kind: 'query', boxId, resultJson: rj });
+						__kustoQueueRestoredResult({ kind: 'query', boxId, resultJson: rj, resultsHeightPx: section.resultsHeightPx });
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				try {
@@ -1676,6 +1727,7 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 		__kustoPersistenceEnabled = true;
 		// Do not auto-persist immediately after restore: Monaco editors may not be ready yet,
 		// and persisting too early can overwrite loaded content with empty strings.
+		perfMark('webview.persistence.applyState.end');
 	}
 }
 
@@ -1722,6 +1774,7 @@ function __kustoApplyPendingAdds() {
 
 export function handleDocumentDataMessage(message: any) {
 	__kustoDocumentDataApplyCount++;
+	perfMark('webview.persistence.documentData.handle.start');
 
 	// The extension host should only send documentData in response to requestDocument.
 	// If we receive it more than once, re-applying causes noticeable flicker and can leave
@@ -1809,6 +1862,7 @@ export function handleDocumentDataMessage(message: any) {
 			} catch (e) { console.error('[kusto]', e); }
 		}
 
+		perfMark('webview.persistence.restore.start');
 		applyKqlxState(message && message.state ? message.state : { sections: [] });
 
 		// If the doc is empty, initialize UX content.
@@ -1830,8 +1884,14 @@ export function handleDocumentDataMessage(message: any) {
 		} catch (e) { console.error('[kusto]', e); }
 
 		__kustoScheduleDeferredRestoredResults();
+		__kustoSeedPersistSignatureFromCurrentState();
+		perfMark('webview.persistence.restore.end', {
+			querySections: Array.isArray(queryBoxes) ? queryBoxes.length : 0,
+			sqlSections: Array.isArray(sqlBoxes) ? sqlBoxes.length : 0,
+		});
 	} finally {
 		__kustoSetDocumentLoading(false);
+		perfMark('webview.persistence.documentData.handle.end');
 	}
 
 	// ── Schema diagnostics: log all sections on file open ──
