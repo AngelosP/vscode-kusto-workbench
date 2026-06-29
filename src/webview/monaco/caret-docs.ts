@@ -1111,7 +1111,7 @@ const buildFunctionSignatureMarkdown = (name: any, doc: any, activeArgIndex: any
 	return `{{sig}}${name}(${formattedArgs})${ret}{{/sig}}`;
 };
 
-const getHoverInfoAt = (model: any, position: any, boxId: any) => {
+const getHoverInfoAt = (model: any, position: any, boxId: any = undefined, options: any = undefined) => {
 	try { __kustoEnsureGeneratedFunctionsMerged(); } catch (e) { console.error('[kusto]', e); }
 	let offset;
 	try {
@@ -1147,6 +1147,9 @@ const getHoverInfoAt = (model: any, position: any, boxId: any) => {
 			const leadingWsLen = ws ? ws[0].length : 0;
 			const opStartIdx = pipeIdx + 1 + leadingWsLen;
 			const opEndIdx = opStartIdx + m[0].trim().length;
+			if (col0 < opStartIdx || col0 > opEndIdx) {
+				return null;
+			}
 			const range = new _monacoRange(lineNumber, opStartIdx + 1, lineNumber, opEndIdx + 1);
 			const md = `{{sig}}${doc.signature}{{/sig}}\n\n${doc.description || ''}`.trim();
 			return { range, markdown: md };
@@ -1278,7 +1281,7 @@ const getHoverInfoAt = (model: any, position: any, boxId: any) => {
 	const token = getTokenAtPosition(model, position);
 	if (!token || !token.word) {
 		// Even if the caret isn't on a token, keep pipe-operator docs visible while typing the clause.
-		return inferPipeOperatorHoverFromContext();
+		return options?.inferPipeOperatorContext ? inferPipeOperatorHoverFromContext() : null;
 	}
 	const w = String(token.word).toLowerCase();
 	{
@@ -1311,7 +1314,7 @@ const getHoverInfoAt = (model: any, position: any, boxId: any) => {
 
 	// If the token under the caret isn't itself a keyword/function, infer the active pipe operator
 	// for this clause so docs keep showing while the user types the rest of the statement.
-	return inferPipeOperatorHoverFromContext();
+	return options?.inferPipeOperatorContext ? inferPipeOperatorHoverFromContext() : null;
 };
 
 /** Inject the AMD-scoped monaco reference. Call once after require() resolves. */

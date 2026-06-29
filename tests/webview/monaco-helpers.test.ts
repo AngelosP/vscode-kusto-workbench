@@ -141,7 +141,7 @@ describe('__kustoDisableMonacoKustoWorkerHover', () => {
 		expect(contributionLoadIndex).toBeGreaterThan(-1);
 		expect(disableCallIndex).toBeGreaterThan(contributionLoadIndex);
 		expect(localHoverIndex).toBeGreaterThan(disableCallIndex);
-		expect(source).toContain('hover: { enabled: true, above: true, sticky: true }');
+		expect(source).toContain('hover: { enabled: true, above: true, sticky: false }');
 	});
 
 	it('keeps the focused Kusto editor caret solid so hover widgets do not flicker on blink ticks', () => {

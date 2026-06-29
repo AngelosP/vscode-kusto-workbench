@@ -407,10 +407,10 @@ const __kustoCompletionProvider = {
 		const __kustoParseFullyQualifiedTableExpr = (text: any) => {
 			try {
 				const s = String(text || '');
-				// cluster('X').database('Y').Table
-				const m = s.match(/\bcluster\s*\(\s*'([^']+)'\s*\)\s*\.\s*database\s*\(\s*'([^']+)'\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
-				if (m && m[1] && m[2] && m[3]) {
-					return { cluster: String(m[1]), database: String(m[2]), table: String(m[3]) };
+				// cluster('X').database('Y').Table or cluster("X").database("Y").Table
+				const m = s.match(/\bcluster\s*\(\s*(['"])(.*?)\1\s*\)\s*\.\s*database\s*\(\s*(['"])(.*?)\3\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+				if (m && m[2] && m[4] && m[5]) {
+					return { cluster: String(m[2]), database: String(m[4]), table: String(m[5]) };
 				}
 				return null;
 			} catch {
@@ -546,6 +546,14 @@ const __kustoCompletionProvider = {
 		const shouldSuggestColumnsOrJoinOn = shouldSuggestColumns || __kustoIsJoinOrLookupOnContext;
 		const shouldSuggestFunctionsOrJoinOn = shouldSuggestFunctions || __kustoIsJoinOrLookupOnContext;
 
+		const __kustoStatementHasFullyQualifiedSource = (text: any) => {
+			try {
+				return !!__kustoParseFullyQualifiedTableExpr(String(text || ''));
+			} catch {
+				return false;
+			}
+		};
+
 		const __kustoExtractJoinOrLookupRightTable = (clauseText: any) => {
 			try {
 				const clause = String(clauseText || '');
@@ -669,6 +677,36 @@ const __kustoCompletionProvider = {
 			const columnsByTable = __kustoGetColumnsByTable(schema);
 			if (!schema || !columnsByTable) return null;
 
+			const __kustoResolveSchemaTableColumns = (targetSchema: any, tableName: any) => {
+				try {
+					if (!targetSchema || !tableName) return null;
+					const table = String(tableName || '').trim();
+					if (!table) return null;
+					const colsByTable = __kustoGetColumnsByTable(targetSchema);
+					if (!colsByTable || typeof colsByTable !== 'object') return null;
+					if (Array.isArray(colsByTable[table])) {
+						return { table, columns: Array.from(colsByTable[table]) };
+					}
+					const lower = table.toLowerCase();
+					let canonical = '';
+					try {
+						if (Array.isArray(targetSchema.tables)) {
+							const match = targetSchema.tables.find((t: any) => String(t || '').toLowerCase() === lower);
+							if (match) canonical = String(match);
+						}
+					} catch (e) { console.error('[kusto]', e); }
+					if (canonical && Array.isArray(colsByTable[canonical])) {
+						return { table: canonical, columns: Array.from(colsByTable[canonical]) };
+					}
+					for (const key of Object.keys(colsByTable)) {
+						if (String(key || '').toLowerCase() === lower && Array.isArray(colsByTable[key])) {
+							return { table: key, columns: Array.from(colsByTable[key]) };
+						}
+					}
+				} catch (e) { console.error('[kusto]', e); }
+				return null;
+			};
+
 			const __kustoParseJoinKind = (stageText: any) => {
 				try {
 					const m = String(stageText || '').match(/\bkind\s*=\s*([A-Za-z_][\w-]*)\b/i);
@@ -775,6 +813,8 @@ const __kustoCompletionProvider = {
 					if (line.startsWith('|') || line.startsWith('.') || line.startsWith('//')) continue;
 					const fq = __kustoParseFullyQualifiedTableExpr(line);
 					if (fq) return { kind: 'fq', cluster: fq.cluster, database: fq.database, table: fq.table };
+					const wrappedFq = __kustoParseFullyQualifiedTableExpr(line.replace(/^\(+\s*/g, ''));
+					if (wrappedFq) return { kind: 'fq', cluster: wrappedFq.cluster, database: wrappedFq.database, table: wrappedFq.table };
 					const m = line.match(/^([A-Za-z_][\w-]*)\b/);
 					if (m && m[1]) return { kind: 'ident', name: m[1] };
 				}
@@ -788,14 +828,13 @@ const __kustoCompletionProvider = {
 				let cols = null;
 				if (src && src.kind === 'fq') {
 					const otherSchema = await __kustoEnsureSchemaForClusterDb(src.cluster, src.database);
-						const otherColsByTable = __kustoGetColumnsByTable(otherSchema);
-						if (otherColsByTable && otherColsByTable[src.table as string]) {
-							cols = Array.from(otherColsByTable[src.table as string]);
-						}
+					const resolved = __kustoResolveSchemaTableColumns(otherSchema, src.table);
+					if (resolved) cols = resolved.columns;
 				} else if (src && src.kind === 'ident') {
 					const t = __kustoFindSchemaTableName(src.name);
-						if (t && columnsByTable && columnsByTable[t]) {
-							cols = Array.from(columnsByTable[t]);
+					const resolved = t ? __kustoResolveSchemaTableColumns(schema, t) : null;
+					if (resolved) {
+						cols = resolved.columns;
 					} else {
 					const lower = String(src.name).toLowerCase();
 					cols = await __kustoComputeLetColumns(lower);
@@ -1072,8 +1111,9 @@ const __kustoCompletionProvider = {
 				const resolveToContext = async (name: any) => {
 					let cur = String(name || '').toLowerCase();
 					for (let depth = 0; depth < 8; depth++) {
-						if (tablesByLower[cur]) {
-							return { schema, table: tablesByLower[cur] };
+						const localResolved = tablesByLower[cur] ? __kustoResolveSchemaTableColumns(schema, tablesByLower[cur]) : null;
+						if (localResolved) {
+							return { schema, table: localResolved.table, isFullyQualified: false };
 						}
 						const src = letSources[cur];
 						if (!src) return null;
@@ -1081,10 +1121,11 @@ const __kustoCompletionProvider = {
 						if (src && typeof src === 'object' && src.tableLower) {
 							if (src.cluster && src.database) {
 								const otherSchema = await __kustoEnsureSchemaForClusterDb(src.cluster, src.database);
-										if (otherSchema && __kustoGetColumnsByTable(otherSchema)) {
-									// Best-effort: keep original case as written in query
-									return { schema: otherSchema, table: src.table || String(src.tableLower) };
+								const remoteResolved = __kustoResolveSchemaTableColumns(otherSchema, src.table || String(src.tableLower));
+								if (remoteResolved) {
+									return { schema: otherSchema, table: remoteResolved.table, isFullyQualified: true };
 								}
+								return { schema: otherSchema, table: src.table || String(src.tableLower), isFullyQualified: true, unresolvedFullyQualified: true };
 							}
 							cur = String(src.tableLower);
 							continue;
@@ -1101,12 +1142,17 @@ const __kustoCompletionProvider = {
 			const statementStart = __kustoGetStatementStartAtOffset(fullText, offset);
 			const before = String(fullText || '').slice(statementStart, Math.max(statementStart, Math.max(0, offset)));
 			let resolvedCtx = null;
+			let sawFullyQualifiedSource = false;
 			// If the statement source is a fully-qualified cluster/database expression, prefer that schema.
 			const fq = __kustoParseFullyQualifiedTableExpr(before);
 			if (fq) {
+				sawFullyQualifiedSource = true;
 				const otherSchema = await __kustoEnsureSchemaForClusterDb(fq.cluster, fq.database);
-				if (otherSchema) {
-					resolvedCtx = { schema: otherSchema, table: fq.table };
+				const remoteResolved = __kustoResolveSchemaTableColumns(otherSchema, fq.table);
+				if (remoteResolved) {
+					resolvedCtx = { schema: otherSchema, table: remoteResolved.table, isFullyQualified: true };
+				} else {
+					resolvedCtx = { schema: otherSchema, table: fq.table, isFullyQualified: true, unresolvedFullyQualified: true };
 				}
 			}
 			if (!resolvedCtx) {
@@ -1115,28 +1161,30 @@ const __kustoCompletionProvider = {
 					const srcName = inferActiveTable(before);
 					if (srcName && resolveTabularNameToContext) {
 						resolvedCtx = await resolveTabularNameToContext(srcName);
+						if (resolvedCtx && resolvedCtx.isFullyQualified) sawFullyQualifiedSource = true;
 					}
 				} catch (e) { console.error('[kusto]', e); }
 			}
-			if (!resolvedCtx) {
+			if (resolvedCtx && resolvedCtx.unresolvedFullyQualified) {
+				return null;
+			}
+			if (!resolvedCtx && !sawFullyQualifiedSource) {
 				// Final fallback: current schema + canonical table name
 				const t = __kustoResolveToSchemaTableName(inferActiveTable(before));
 				if (t) resolvedCtx = { schema, table: t };
 			}
-			if (!resolvedCtx && schema.tables && schema.tables.length === 1) {
+			if (!resolvedCtx && !sawFullyQualifiedSource && schema.tables && schema.tables.length === 1) {
 				resolvedCtx = { schema, table: schema.tables[0] };
 			}
 			const activeSchema = resolvedCtx ? resolvedCtx.schema : schema;
 			let table = resolvedCtx ? resolvedCtx.table : null;
-			const activeColumnsByTable = __kustoGetColumnsByTable(activeSchema);
-			let cols = (table && activeColumnsByTable && activeColumnsByTable[table])
-				? Array.from(activeColumnsByTable[table])
-				: null;
+			const resolvedColumns = table ? __kustoResolveSchemaTableColumns(activeSchema, table) : null;
+			let cols = resolvedColumns ? resolvedColumns.columns : null;
 			// If the active source is a let-bound tabular variable, override columns with its projected shape.
 			try {
 				const srcName = inferActiveTable(before);
 				const letCols = srcName ? await __kustoComputeLetColumns(String(srcName).toLowerCase()) : null;
-				if (letCols && Array.isArray(letCols) && letCols.length) {
+				if (!sawFullyQualifiedSource && letCols && Array.isArray(letCols) && letCols.length) {
 					cols = Array.from(letCols);
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -1177,8 +1225,9 @@ const __kustoCompletionProvider = {
 					const schemaColumnsByTable = __kustoGetColumnsByTable(schema);
 					for (const m of unionBody.matchAll(/\b([A-Za-z_][\w-]*)\b/g)) {
 						const t = __kustoResolveToSchemaTableName(m[1]);
-						if (t && schemaColumnsByTable && schemaColumnsByTable[t]) {
-							for (const c of schemaColumnsByTable[t]) set.add(c);
+						const resolvedUnion = t ? __kustoResolveSchemaTableColumns(schema, t) : null;
+						if (resolvedUnion) {
+							for (const c of resolvedUnion.columns) set.add(c);
 						}
 					}
 					cols = Array.from(set);
@@ -1411,6 +1460,7 @@ const __kustoCompletionProvider = {
 		// Columns first when in '| where' / '| project' etc.
 		if (shouldSuggestColumnsOrJoinOn) {
 			let columns = null;
+			const currentStatementHasFullyQualifiedSource = __kustoStatementHasFullyQualifiedSource(statementTextUpToCursor);
 			try {
 				columns = await __kustoComputeAvailableColumnsAtOffset(model.getValue(), model.getOffsetAt(position));
 			} catch {
@@ -1443,7 +1493,17 @@ const __kustoCompletionProvider = {
 											}
 					const resolvedRight = __kustoResolveToSchemaTableNameForCompletion(rightName);
 					columnsByTable = __kustoGetColumnsByTable(schema);
-					const rightCols = (resolvedRight && columnsByTable && columnsByTable[resolvedRight]) ? columnsByTable[resolvedRight] : null;
+					const rightResolved = resolvedRight && columnsByTable ? (() => {
+						try {
+							if (Array.isArray(columnsByTable[resolvedRight])) return columnsByTable[resolvedRight];
+							const lower = String(resolvedRight || '').toLowerCase();
+							for (const key of Object.keys(columnsByTable)) {
+								if (String(key || '').toLowerCase() === lower && Array.isArray(columnsByTable[key])) return columnsByTable[key];
+							}
+						} catch (e) { console.error('[kusto]', e); }
+						return null;
+					})() : null;
+					const rightCols = rightResolved;
 					const set = new Set(Array.isArray(columns) ? columns : []);
 					if (rightCols) {
 						for (const c of rightCols) set.add(c);
@@ -1451,17 +1511,21 @@ const __kustoCompletionProvider = {
 					columns = Array.from(set);
 				} catch (e) { console.error('[kusto]', e); }
 			}
-			if (!columns && activeTable) {
+			if (!columns && !currentStatementHasFullyQualifiedSource && activeTable) {
 				const resolved = __kustoFindSchemaTableName(activeTable);
 				const key = resolved || activeTable;
-					if (columnsByTable && columnsByTable[key]) {
-						columns = columnsByTable[key];
-					activeTable = key;
+				if (columnsByTable && key) {
+					const lower = String(key || '').toLowerCase();
+					const resolvedKey = Object.keys(columnsByTable).find(k => String(k || '').toLowerCase() === lower);
+					if (resolvedKey && Array.isArray(columnsByTable[resolvedKey])) {
+						columns = columnsByTable[resolvedKey];
+						activeTable = resolvedKey;
+					}
 				}
 			}
-				if (!columns && schema.tables && schema.tables.length === 1 && columnsByTable && columnsByTable[schema.tables[0]]) {
+			if (!columns && !currentStatementHasFullyQualifiedSource && schema.tables && schema.tables.length === 1 && columnsByTable && columnsByTable[schema.tables[0]]) {
 				activeTable = schema.tables[0];
-					columns = columnsByTable[activeTable];
+				columns = columnsByTable[activeTable];
 			}
 
 			if (columns) {

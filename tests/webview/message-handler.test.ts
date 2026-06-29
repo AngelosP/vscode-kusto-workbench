@@ -34,6 +34,8 @@ const handlerState = vi.hoisted(() => ({
 
 const mocks = {
 	postMessageToHost: vi.fn(),
+	markCrossClusterSchemaError: vi.fn(),
+	releaseStaleCrossClusterResponse: vi.fn(),
 	handleDocumentDataMessage: vi.fn(),
 	updateConnectionSelects: vi.fn(),
 	updateDatabaseSelect: vi.fn(),
@@ -199,6 +201,10 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 	__kustoControlCommandDocCache: {},
 	__kustoControlCommandDocPending: {},
 	__kustoCrossClusterSchemas: {},
+	__kustoIsCurrentCrossClusterRequest: vi.fn(() => true),
+	__kustoMarkCrossClusterSchemaError: mocks.markCrossClusterSchemaError,
+	__kustoReleaseStaleCrossClusterResponse: mocks.releaseStaleCrossClusterResponse,
+	__kustoTraceCrossCluster: vi.fn(),
 }));
 
 vi.mock('../../src/webview/monaco/suggest.js', () => ({
@@ -442,7 +448,60 @@ describe('message-handler dispatch', () => {
 			'Telemetry',
 			'{"Databases":{}}',
 			'query_7',
+			'',
+			undefined,
 		);
+	});
+
+	it('drops stale cross-cluster schema responses before applying schema', async () => {
+		const monacoModule = await import('../../src/webview/monaco/monaco.js');
+		(monacoModule.__kustoIsCurrentCrossClusterRequest as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
+		const applyCrossClusterSchema = vi.fn();
+		(window as any).__kustoApplyCrossClusterSchema = applyCrossClusterSchema;
+
+		dispatchHostMessage({
+			type: 'crossClusterSchemaData',
+			boxId: 'query_7',
+			clusterName: 'remote',
+			clusterUrl: 'https://remote.kusto.windows.net',
+			database: 'Telemetry',
+			requestToken: 'old-token',
+			rawSchemaJson: '{"Databases":{}}',
+		});
+		await Promise.resolve();
+
+		expect(applyCrossClusterSchema).not.toHaveBeenCalled();
+		expect(mocks.releaseStaleCrossClusterResponse).toHaveBeenCalledWith('remote', 'Telemetry', 'Stale schema response ignored; request is retryable');
+	});
+
+	it('routes cross-cluster schema errors through the schema status helper', async () => {
+		dispatchHostMessage({
+			type: 'crossClusterSchemaError',
+			clusterName: 'remote',
+			database: 'Telemetry',
+			error: 'boom',
+		});
+		await Promise.resolve();
+
+		expect(mocks.markCrossClusterSchemaError).toHaveBeenCalledWith('remote', 'Telemetry', 'boom');
+	});
+
+	it('drops stale cross-cluster schema errors before marking schema state', async () => {
+		const monacoModule = await import('../../src/webview/monaco/monaco.js');
+		(monacoModule.__kustoIsCurrentCrossClusterRequest as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce(false);
+
+		dispatchHostMessage({
+			type: 'crossClusterSchemaError',
+			boxId: 'query_7',
+			clusterName: 'remote',
+			database: 'Telemetry',
+			requestToken: 'old-token',
+			error: 'boom',
+		});
+		await Promise.resolve();
+
+		expect(mocks.markCrossClusterSchemaError).not.toHaveBeenCalled();
+		expect(mocks.releaseStaleCrossClusterResponse).toHaveBeenCalledWith('remote', 'Telemetry', 'Stale schema error ignored; request is retryable');
 	});
 
 	it('routes queryCancelled and ensureResultsVisible', async () => {

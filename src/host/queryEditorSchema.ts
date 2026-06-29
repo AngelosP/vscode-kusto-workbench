@@ -542,6 +542,8 @@ export class SchemaService {
 					database,
 					boxId,
 					requestToken,
+					source: 'disk-cache-fresh',
+					cacheAgeMs: cachedAgeMs,
 					rawSchemaJson: cached.schema.rawSchemaJson
 				});
 				return;
@@ -555,8 +557,35 @@ export class SchemaService {
 					database,
 					boxId,
 					requestToken,
+					source: 'disk-cache-stale',
+					cacheAgeMs: cachedAgeMs,
 					rawSchemaJson: cached.schema.rawSchemaJson
 				});
+				void (async () => {
+					try {
+						const result = await this.host.kustoClient.getDatabaseSchema(connection, database, true);
+						const freshSchema = result.schema;
+						const timestamp = result.fromCache
+							? Date.now() - (result.cacheAgeMs ?? 0)
+							: Date.now();
+						await this.saveCachedSchemaToDisk(cacheKey, { schema: freshSchema, timestamp, version: SCHEMA_CACHE_VERSION });
+						if (freshSchema.rawSchemaJson) {
+							this.host.postMessage({
+								type: 'crossClusterSchemaData',
+								clusterName,
+								clusterUrl: connection.clusterUrl,
+								database,
+								boxId,
+								requestToken,
+								source: result.fromCache ? 'client-cache-after-stale-cache' : 'fresh-after-stale-cache',
+								cacheAgeMs: result.cacheAgeMs,
+								rawSchemaJson: freshSchema.rawSchemaJson
+							});
+						}
+					} catch (refreshError) {
+						this.host.output.appendLine(`[schema] cross-cluster stale cache background refresh failed cluster=${clusterName} db=${database}: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`);
+					}
+				})();
 				return;
 			}
 
@@ -576,6 +605,8 @@ export class SchemaService {
 					database,
 					boxId,
 					requestToken,
+					source: result.fromCache ? 'client-cache' : 'fresh',
+					cacheAgeMs: result.cacheAgeMs,
 					rawSchemaJson: schema.rawSchemaJson
 				});
 			} else {

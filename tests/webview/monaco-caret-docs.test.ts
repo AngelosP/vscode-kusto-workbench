@@ -606,10 +606,15 @@ describe('getHoverInfoAt', () => {
 		expect(result).toBeNull();
 	});
 
-	it('still shows pipe operator docs within same statement (no semicolon)', () => {
+	it('does not show contextual pipe operator docs in the hover popup across the clause', () => {
 		const model = makeModel('T\n| where x > 5\n    and y < 10');
-		// Cursor on 'and' in line 3 — should show 'where' docs (same statement)
 		const result = getHoverInfoAt(model, { lineNumber: 3, column: 8 });
+		expect(result).toBeNull();
+	});
+
+	it('can still infer pipe operator docs for the caret-doc banner', () => {
+		const model = makeModel('T\n| where x > 5\n    and y < 10');
+		const result = getHoverInfoAt(model, { lineNumber: 3, column: 8 }, undefined, { inferPipeOperatorContext: true });
 		expect(result).toBeTruthy();
 		expect(result!.markdown).toContain('where');
 	});
@@ -631,7 +636,7 @@ describe('getHoverInfoAt', () => {
 
 	it('provides pipe operator context when typing arguments', () => {
 		const model = makeModel('T\n| where ');
-		const result = getHoverInfoAt(model, { lineNumber: 2, column: 9 }); // after "where "
+		const result = getHoverInfoAt(model, { lineNumber: 2, column: 9 }, undefined, { inferPipeOperatorContext: true }); // after "where "
 		expect(result).toBeTruthy();
 		expect(result!.markdown).toContain('where');
 	});
@@ -1558,16 +1563,14 @@ describe('getHoverInfoAt — schema tables', () => {
 		expect(result).toBeNull();
 	});
 
-	it('falls through to pipe operator context when no table match', () => {
+	it('can fall through to pipe operator context for the caret-doc banner when no table matches', () => {
 		setSchema({
 			tables: ['StormEvents'],
 			columnTypesByTable: { StormEvents: {} },
 		});
 		const model = makeModel('StormEvents\n| where SomeCol > 5');
-		// Cursor on 'SomeCol' — not a table, function, or keyword
-		const result = getHoverInfoAt(model, { lineNumber: 2, column: 12 }, boxId);
+		const result = getHoverInfoAt(model, { lineNumber: 2, column: 12 }, boxId, { inferPipeOperatorContext: true });
 		expect(result).toBeTruthy();
-		// Should fall through to pipe operator context and show 'where' docs
 		expect(result!.markdown).toContain('where');
 	});
 });

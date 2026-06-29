@@ -45,7 +45,8 @@ import {
 } from './persistence';
 import {
 	__kustoControlCommandDocCache, __kustoControlCommandDocPending,
-	__kustoCrossClusterSchemas,
+	__kustoIsCurrentCrossClusterRequest, __kustoMarkCrossClusterSchemaError,
+	__kustoReleaseStaleCrossClusterResponse, __kustoTraceCrossCluster,
 } from '../monaco/monaco';
 import { __kustoFindSuggestWidgetForEditor, __kustoIsElementVisibleForSuggest } from '../monaco/suggest';
 import {
@@ -276,18 +277,23 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 		if (!modelUri) {
 			return false;
 		}
+		const isActiveAtApply = boxId === activeQueryEditorBoxId;
+		if (!isActiveAtApply && !isForceRefresh) {
+			return false;
+		}
+		const setAsContextAtApply = isActiveAtApply || isForceRefresh;
 		const applied = await window.__kustoSetMonacoKustoSchema(
 			message.schema.rawSchemaJson,
 			message.clusterUrl,
 			message.database,
-			shouldSetAsContext,
+			setAsContextAtApply,
 			modelUri,
 			isForceRefresh
 		);
 		if (!applied) {
 			return false;
 		}
-		if (shouldSetAsContext && typeof window.__kustoTriggerRevalidation === 'function') {
+		if (setAsContextAtApply && typeof window.__kustoTriggerRevalidation === 'function') {
 			window.__kustoTriggerRevalidation(boxId);
 		}
 		markSchemaWorkerReady(boxId, schemaKey, schemaSignature);
@@ -1058,9 +1064,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const clusterUrl = message.clusterUrl;
 				const database = message.database;
 				const rawSchemaJson = message.rawSchemaJson;
+				__kustoTraceCrossCluster('response-received', { clusterName, clusterUrl, database, boxId: message.boxId, requestToken: (message as any).requestToken || '', source: (message as any).source || '', cacheAgeMs: (message as any).cacheAgeMs });
+				if (!__kustoIsCurrentCrossClusterRequest(message.boxId, clusterName, database, (message as any).requestToken || '')) {
+					__kustoTraceCrossCluster('response-dropped-stale-token', { clusterName, database, boxId: message.boxId, requestToken: (message as any).requestToken || '' });
+					__kustoReleaseStaleCrossClusterResponse(clusterName, database, 'Stale schema response ignored; request is retryable');
+					break;
+				}
 				
 				if (rawSchemaJson && typeof window.__kustoApplyCrossClusterSchema === 'function') {
-					window.__kustoApplyCrossClusterSchema(clusterName, clusterUrl, database, rawSchemaJson, message.boxId);
+					window.__kustoApplyCrossClusterSchema(clusterName, clusterUrl, database, rawSchemaJson, message.boxId, (message as any).source || '', (message as any).cacheAgeMs);
 				}
 			} catch (e: any) {
 				console.error('[crossClusterSchemaData] Error:', e);
@@ -1071,10 +1083,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try {
 				const clusterName = message.clusterName;
 				const database = message.database;
-				const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
-				
-				// Mark as error so we don't keep retrying
-				__kustoCrossClusterSchemas[key] = { status: 'error', error: message.error };
+				__kustoTraceCrossCluster('response-error', { clusterName, database, boxId: (message as any).boxId || '', requestToken: (message as any).requestToken || '', error: (message as any).error || '' });
+				if (!__kustoIsCurrentCrossClusterRequest((message as any).boxId || '', clusterName, database, (message as any).requestToken || '')) {
+					__kustoTraceCrossCluster('response-error-dropped-stale-token', { clusterName, database, boxId: (message as any).boxId || '', requestToken: (message as any).requestToken || '' });
+					__kustoReleaseStaleCrossClusterResponse(clusterName, database, 'Stale schema error ignored; request is retryable');
+					break;
+				}
+				__kustoMarkCrossClusterSchemaError(clusterName, database, message.error);
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'openKustoAddConnectionDialog':

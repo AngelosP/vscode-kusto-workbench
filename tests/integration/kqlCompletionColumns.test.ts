@@ -5,7 +5,24 @@ import * as vm from 'vm';
 import { extractConstAssignment } from './helpers/vm-extract';
 
 suite('KQL completions - column inference', () => {
-	const createCompute = () => {
+	type ComputeOptions = {
+		currentSchema?: any;
+		remoteSchema?: any | null;
+		remoteDelayMs?: number;
+	};
+
+	const defaultCurrentSchema = {
+		tables: ['TableA', 'TableB', 'RawEventsVSCodeExt'],
+		__columnsByTable: {
+			TableA: ['DevDeviceId', 'ToolCount', 'OtherCol'],
+			TableB: ['DevDeviceId', 'RightCol'],
+			RawEventsVSCodeExt: ['ServerTimestamp', 'ServiceHierarchy', 'ExtensionName', 'EventName', 'OperationId']
+		}
+	};
+
+	const defaultRemoteSchema = defaultCurrentSchema;
+
+	const createCompute = (options: ComputeOptions = {}) => {
 		// When compiled, this test runs from `out/tests/integration`, so repo root is three levels up.
 		const repoRoot = path.resolve(__dirname, '..', '..', '..');
 		const monacoCompletionsPath = path.join(repoRoot, 'src', 'webview', 'monaco', 'completions.ts');
@@ -21,17 +38,12 @@ suite('KQL completions - column inference', () => {
 			.replace(/ as string\b/g, '')
 			.replace(/ as any\b/g, '');
 		const fnSrc = extractConstAssignment(monacoSource, '__kustoComputeAvailableColumnsAtOffset');
+		const parseFqSrc = extractConstAssignment(monacoSource, '__kustoParseFullyQualifiedTableExpr');
 
 		const sandbox: any = {
 			exports: {},
 			console,
-			schema: {
-				tables: ['TableA', 'TableB'],
-				__columnsByTable: {
-					TableA: ['DevDeviceId', 'ToolCount', 'OtherCol'],
-					TableB: ['DevDeviceId', 'RightCol']
-				}
-			},
+			schema: options.currentSchema ?? defaultCurrentSchema,
 			__kustoGetColumnsByTable: (sch: any) => sch && sch.__columnsByTable ? sch.__columnsByTable : null,
 			__kustoSplitCommaList: (s: string) => {
 				if (!s) return [];
@@ -40,8 +52,12 @@ suite('KQL completions - column inference', () => {
 					.map(x => x.trim())
 					.filter(Boolean);
 			},
-			__kustoEnsureSchemaForClusterDb: async () => null,
-			__kustoParseFullyQualifiedTableExpr: () => null,
+			__kustoEnsureSchemaForClusterDb: async () => {
+				if (options.remoteDelayMs) {
+					await new Promise(resolve => setTimeout(resolve, options.remoteDelayMs));
+				}
+				return Object.prototype.hasOwnProperty.call(options, 'remoteSchema') ? options.remoteSchema : defaultRemoteSchema;
+			},
 			__kustoSplitTopLevelStatements: (text: string) => {
 				// Simplified splitter for these test cases.
 				const raw = String(text || '');
@@ -66,6 +82,7 @@ suite('KQL completions - column inference', () => {
 				const lower = String(name || '').toLowerCase();
 				if (lower === 'tablea') return 'TableA';
 				if (lower === 'tableb') return 'TableB';
+				if (lower === 'raweventsvscodeext') return 'RawEventsVSCodeExt';
 				return null;
 			}
 		};
@@ -74,6 +91,12 @@ suite('KQL completions - column inference', () => {
 			/const\s+__kustoComputeAvailableColumnsAtOffset\s*=\s*/,
 			'exports.__kustoComputeAvailableColumnsAtOffset = '
 		);
+		const exportedParseFqSrc = parseFqSrc.replace(
+			/const\s+__kustoParseFullyQualifiedTableExpr\s*=\s*/,
+			'exports.__kustoParseFullyQualifiedTableExpr = '
+		);
+		vm.runInNewContext(exportedParseFqSrc, sandbox, { filename: 'monaco.fq.extract.js' });
+		sandbox.__kustoParseFullyQualifiedTableExpr = sandbox.exports.__kustoParseFullyQualifiedTableExpr;
 		vm.runInNewContext(exportedFnSrc, sandbox, { filename: 'monaco.extract.js' });
 		const compute = sandbox.exports.__kustoComputeAvailableColumnsAtOffset as (fullText: string, offset: number) => Promise<string[] | null>;
 		assert.ok(typeof compute === 'function', 'Expected extracted compute function');
@@ -157,5 +180,93 @@ suite('KQL completions - column inference', () => {
 		const cols = await compute(text, text.length);
 		assert.ok(cols && cols.includes('ToolCount'), 'Expected TableA column');
 		assert.ok(cols && cols.includes('RightCol'), 'Expected TableB column');
+	});
+
+	test('function body fully qualified double-quoted table returns table columns', async () => {
+		const compute = createCompute();
+		const text = [
+			'.create-or-alter function with',
+			'(',
+			'    folder = "AIP_SVC/orchestrate/FoundryHostedAgents"',
+			')',
+			'GetHostedAgentDeploymentsFromVsCode(startTime: datetime, endTime: datetime)',
+			'{',
+			'cluster("ddtelvscode").database("VSCodeExt").RawEventsVSCodeExt',
+			'| where '
+		].join('\n');
+		const cols = await compute(text, text.length);
+		assert.ok(Array.isArray(cols), 'Expected a column list');
+		assert.ok(cols.includes('ServiceHierarchy'), 'Expected fully-qualified table column ServiceHierarchy');
+		assert.ok(cols.includes('ServerTimestamp'), 'Expected fully-qualified table column ServerTimestamp');
+	});
+
+	test('function body fully qualified single-quoted table returns table columns', async () => {
+		const compute = createCompute();
+		const text = [
+			'.create-or-alter function with',
+			'(',
+			'    folder = "AIP_SVC/orchestrate/FoundryHostedAgents"',
+			')',
+			'GetHostedAgentDeploymentsFromVsCode(startTime: datetime, endTime: datetime)',
+			'{',
+			"cluster('ddtelvscode').database('VSCodeExt').RawEventsVSCodeExt",
+			'| where '
+		].join('\n');
+		const cols = await compute(text, text.length);
+		assert.ok(Array.isArray(cols), 'Expected a column list');
+		assert.ok(cols.includes('ServiceHierarchy'), 'Expected fully-qualified table column ServiceHierarchy');
+	});
+
+	test('materialize wrapped fully qualified source resolves canonical table casing', async () => {
+		const remoteSchema = {
+			tables: ['Log'],
+			__columnsByTable: {
+				Log: ['TIMESTAMP', 'source', 'message']
+			}
+		};
+		const compute = createCompute({ remoteSchema });
+		const text = [
+			'let submcpinvoked =',
+			"    materialize(cluster('aoaiagents1.westus').database('prod').log",
+			'    | where TIMESTAMP >= (startTime-12h)',
+			'    | project TIMESTAMP, source);',
+			'submcpinvoked | where '
+		].join('\n');
+		const cols = await compute(text, text.length);
+		assert.ok(Array.isArray(cols), 'Expected a column list');
+		assert.ok(cols.includes('TIMESTAMP'), 'Expected canonical remote Log.TIMESTAMP column');
+		assert.ok(cols.includes('source'), 'Expected projected remote source column');
+	});
+
+	test('fully qualified source waits for delayed remote schema and returns remote columns', async () => {
+		const remoteSchema = {
+			tables: ['RemoteEvents'],
+			__columnsByTable: {
+				RemoteEvents: ['RemoteTimestamp', 'RemotePayload']
+			}
+		};
+		const compute = createCompute({ remoteSchema, remoteDelayMs: 5 });
+		const text = [
+			"cluster('remote').database('prod').RemoteEvents",
+			'| where '
+		].join('\n');
+		const cols = await compute(text, text.length);
+		assert.ok(cols && cols.includes('RemoteTimestamp'), 'Expected delayed remote schema column');
+	});
+
+	test('unavailable fully qualified schema does not fall back to wrong local columns', async () => {
+		const currentSchema = {
+			tables: ['OnlyLocal'],
+			__columnsByTable: {
+				OnlyLocal: ['WrongLocalColumn']
+			}
+		};
+		const compute = createCompute({ currentSchema, remoteSchema: null });
+		const text = [
+			"cluster('remote').database('prod').RemoteEvents",
+			'| where '
+		].join('\n');
+		const cols = await compute(text, text.length);
+		assert.ok(!cols || !cols.includes('WrongLocalColumn'), 'Did not expect wrong local schema column');
 	});
 });

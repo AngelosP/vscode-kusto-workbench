@@ -707,9 +707,9 @@ export const __kustoScanIdentifiers = (text: any) => {
 export const __kustoParseFullyQualifiedTableExpr = (text: any) => {
 	try {
 		const s = String(text || '');
-		const m = s.match(/\bcluster\s*\(\s*'([^']+)'\s*\)\s*\.\s*database\s*\(\s*'([^']+)'\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
-		if (m && m[1] && m[2] && m[3]) {
-			return { cluster: String(m[1]), database: String(m[2]), table: String(m[3]) };
+		const m = s.match(/\bcluster\s*\(\s*(['"])(.*?)\1\s*\)\s*\.\s*database\s*\(\s*(['"])(.*?)\3\s*\)\s*\.\s*([A-Za-z_][\w-]*)\b/i);
+		if (m && m[2] && m[4] && m[5]) {
+			return { cluster: String(m[2]), database: String(m[4]), table: String(m[5]) };
 		}
 		return null;
 	} catch {

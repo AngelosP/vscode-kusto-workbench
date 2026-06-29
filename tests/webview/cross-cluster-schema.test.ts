@@ -44,6 +44,62 @@ describe('cross-cluster schema helpers', () => {
 		expect(refs).toEqual([{ clusterName: 'Remote', database: 'Telemetry' }]);
 	});
 
+	it('does not pair cluster with a later unrelated database call', () => {
+		const refs = extractCrossClusterRefs(`
+			cluster('Remote').foo().database('Ignored').Events
+			| union cluster('Remote2'). /* database('Commented') */ database('Telemetry').Events
+		`, { clusterUrl: 'https://current.kusto.windows.net', database: 'CurrentDb' });
+
+		expect(refs).toEqual([]);
+	});
+
+	it('extracts quoted cluster and database names that contain spaces', () => {
+		const refs = extractCrossClusterRefs(`
+			cluster("Remote Cluster").database("Telemetry Db").Events
+		`, { clusterUrl: 'https://current.kusto.windows.net', database: 'CurrentDb' });
+
+		expect(refs).toEqual([{ clusterName: 'Remote Cluster', database: 'Telemetry Db' }]);
+	});
+
+	it('extracts quoted names with escaped quote characters', () => {
+		const refs = extractCrossClusterRefs(`
+			cluster('Remote''Prod').database('Telemetry''Db').Events
+			| union cluster("Remote\\"Canary").database("Telemetry\\"Db").Events
+		`, { clusterUrl: 'https://current.kusto.windows.net', database: 'CurrentDb' });
+
+		expect(refs).toEqual([
+			{ clusterName: "Remote'Prod", database: "Telemetry'Db" },
+			{ clusterName: 'Remote"Canary', database: 'Telemetry"Db' },
+		]);
+	});
+
+	it('extracts fully qualified references inside function bodies and wrappers', () => {
+		const refs = extractCrossClusterRefs(`
+			.create-or-alter function with (folder = "debug") MyFn() {
+				let remoteRows = materialize(cluster("Remote").database("Telemetry").Events | where EventId > 0);
+				remoteRows
+				| join kind=leftouter (cluster('Remote2').database('Telemetry2').Lookups) on EventId
+				| project EventId, Name
+			}
+		`, { clusterUrl: 'https://current.kusto.windows.net', database: 'CurrentDb' });
+
+		expect(refs).toEqual([
+			{ clusterName: 'Remote', database: 'Telemetry' },
+			{ clusterName: 'Remote2', database: 'Telemetry2' },
+		]);
+	});
+
+	it('ignores cluster/database text in comments and standalone strings', () => {
+		const refs = extractCrossClusterRefs(`
+			// cluster("Commented").database("Ignored").Table
+			print text = "cluster('Literal').database('Ignored').Table"
+			/* database("AlsoIgnored").Table */
+			cluster("Remote").database("Telemetry").Events
+		`, { clusterUrl: 'https://current.kusto.windows.net', database: 'CurrentDb' });
+
+		expect(refs).toEqual([{ clusterName: 'Remote', database: 'Telemetry' }]);
+	});
+
 	it('defers schema checks until the editor has been idle long enough', () => {
 		expect(getCrossClusterSchemaCheckDelay(10_100, 10_000, 1_200)).toBe(1_100);
 		expect(getCrossClusterSchemaCheckDelay(11_200, 10_000, 1_200)).toBe(0);

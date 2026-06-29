@@ -131,6 +131,19 @@ describe('__kustoSplitTopLevelStatements', () => {
 		expect(result[1].text).toBe(' T | where x > 5');
 	});
 
+	it('can isolate a local statement after an earlier remote semicolon statement', () => {
+		const text = 'cluster("Remote").database("Telemetry").Events | count; LocalTable | where ';
+		const statements = __kustoSplitTopLevelStatements(text);
+		const cursorOffset = text.length;
+		const active = statements.find(statement => {
+			const start = Math.max(0, Number(statement.startOffset) || 0);
+			const end = start + String(statement.text || '').length;
+			return cursorOffset >= start && cursorOffset <= end;
+		});
+
+		expect(active?.text.trim()).toBe('LocalTable | where');
+	});
+
 	it('splits on blank lines', () => {
 		const result = __kustoSplitTopLevelStatements('Table1 | where x > 5\n\nTable2 | where y > 3');
 		expect(result).toHaveLength(2);
@@ -718,6 +731,19 @@ describe('__kustoParseFullyQualifiedTableExpr', () => {
 			database: 'MyDb',
 			table: 'MyTable',
 		});
+	});
+
+	it('parses double-quoted cluster.database.table', () => {
+		const result = __kustoParseFullyQualifiedTableExpr('cluster("mycluster.kusto.windows.net").database("MyDb").MyTable');
+		expect(result).toEqual({
+			cluster: 'mycluster.kusto.windows.net',
+			database: 'MyDb',
+			table: 'MyTable',
+		});
+	});
+
+	it('rejects malformed mixed quote delimiters', () => {
+		expect(__kustoParseFullyQualifiedTableExpr('cluster("mycluster\').database("MyDb").MyTable')).toBeNull();
 	});
 
 	it('ignores whitespace variations', () => {
