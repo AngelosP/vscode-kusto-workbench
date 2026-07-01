@@ -2304,8 +2304,31 @@ function e2eSuggestDiagnostics(context: string, editorSelector: string = E2E_SEC
 		markers,
 		schemaKeys: _win.schemaByBoxId ? Object.keys(_win.schemaByBoxId) : [],
 		schemaWorkerReady: _win.schemaWorkerReadyByBoxId?.[boxId] || null,
-		crossClusterSchemas: Object.fromEntries(Object.entries(__kustoCrossClusterSchemas || {}).map(([key, entry]: [string, any]) => [key, { status: entry?.status, clusterUrl: entry?.clusterUrl, error: entry?.error }])),
+		crossClusterSchemas: Object.fromEntries(Object.entries(__kustoCrossClusterSchemas || {}).map(([key, entry]: [string, any]) => [key, { status: entry?.status, clusterUrl: entry?.clusterUrl, clusterAliases: entry?.clusterAliases, error: entry?.error }])),
 		crossClusterTrace: typeof _win.__kustoGetCrossClusterTrace === 'function' ? _win.__kustoGetCrossClusterTrace() : [],
+	};
+}
+
+async function e2eKustoLiveSemanticDiagnostics(context: string = 'live semantic diagnostics'): Promise<any> {
+	const editor = e2eEditor('kusto') as any;
+	const boxId = e2eGetEditorBoxId(editor);
+	const model = editor?.getModel?.();
+	const position = editor?.getPosition?.();
+	let triggered = false;
+	try {
+		if (boxId && typeof _win.__kustoTriggerAutocompleteForBoxId === 'function') {
+			triggered = await _win.__kustoTriggerAutocompleteForBoxId(boxId);
+		}
+	} catch {
+		triggered = false;
+	}
+	await e2eDelay(500);
+	return {
+		...e2eSuggestDiagnostics(context, E2E_SECTION.kusto.editor),
+		triggered,
+		position,
+		boxId,
+		valuePreview: String(model?.getValue?.() || '').slice(0, 3000),
 	};
 }
 
@@ -2423,10 +2446,16 @@ async function e2eApplyKustoSemanticFixture(): Promise<string> {
 			WrongTimestamp: 'datetime',
 		},
 	};
-	const remoteClusterName = 'aoaiagents1.westus';
-	const remoteClusterUrl = remoteClusterName;
+	const remoteClusterName = 'aoaiagents1.westus.kusto.windows.net';
+	const remoteClusterUrl = 'aoaiagents1.westus';
 	const remoteDatabase = 'prod';
 	const remoteTables = {
+		bizops: {
+			TIMESTAMP: 'datetime',
+			TIMESTAMP_RemoteOnly: 'datetime',
+			EventName: 'string',
+			ResponseId: 'string',
+		},
 		Span: {
 			TIMESTAMP: 'datetime',
 			TIMESTAMP_RemoteOnly: 'datetime',
@@ -2555,7 +2584,7 @@ async function e2eAssertKustoSemanticSuggestAt(queryWithMarker: string, expected
 	throw new Error(`${context}: expected suggestions [${expected.join(', ')}] within ${timeoutMs}ms; last=${lastError}; diagnostics=${e2eSuggestDiagnosticsText(context)}`);
 }
 
-type KustoSemanticCompletionScenario = 'first-timestamp' | 'inline-and-timestamp' | 'bracketed-agent-column' | 'summarize-by-trace-id';
+type KustoSemanticCompletionScenario = 'first-timestamp' | 'inline-and-timestamp' | 'second-where-empty' | 'second-where-incomplete' | 'bracketed-agent-column' | 'summarize-by-trace-id';
 
 const E2E_KUSTO_SEMANTIC_QUERY_BASE = `// Cooking function for Hosted Agent runs (AgentsV2)
 .create-or-alter function with
@@ -2572,11 +2601,11 @@ GetAgentsV2HostedAgentRuns
 {
     let toolsByRsponseId = GetAgentsV2ToolCallsGroupedByResponseId((startTime-12h), (endTime+12h))
     ;
-    let hostedVersionByTraceId = cluster('aoaiagents1.westus').database('prod').Span
+	let hostedVersionByTraceId = cluster('aoaiagents1.westus.kusto.windows.net').database('prod').bizops
         | project-away startTime
         | where TIMESTAMP >= startTime-12h and TIMESTAMP < endTime+12h
-            and ['agent.kind'] == "hosted"
-        | summarize IsReplat = max((['agent.type'] == "vnext")) by env_dt_traceId
+			and EventName == "ResponseCompleted"
+		| summarize IsReplat = max((EventName == "ResponseCompleted")) by ResponseId
         | extend HostedVersion = case(isnull(IsReplat), "Unknown", IsReplat, "Replat/V2", "V1")
     ;
 }`;
@@ -2596,18 +2625,42 @@ function e2eKustoSemanticScenarioQuery(scenario: KustoSemanticCompletionScenario
 			context: 'inline and TIMESTAMP mid-token',
 		};
 	}
+	if (scenario === 'second-where-empty') {
+		return {
+			query: `// Bizops response logs, one with longer window
+let bizopsresps =
+    materialize(cluster('aoaiagents1.westus.kusto.windows.net').database('prod').bizops
+    | where TIMESTAMP >= startTime and TIMESTAMP < endTime
+    | where ⟦caret⟧)
+;`,
+			expected: 'TIMESTAMP,TIMESTAMP_RemoteOnly,EventName,ResponseId',
+			context: 'second where empty predicate in bizops materialize',
+		};
+	}
+	if (scenario === 'second-where-incomplete') {
+		return {
+			query: `// Bizops response logs, one with longer window
+let bizopsresps =
+    materialize(cluster('aoaiagents1.westus.kusto.windows.net').database('prod').bizops
+    | where TIMESTAMP >= startTime and TIMESTAMP < endTime
+    | where ⟦caret⟧
+;`,
+			expected: 'TIMESTAMP,TIMESTAMP_RemoteOnly,EventName,ResponseId',
+			context: 'second where incomplete bizops materialize',
+		};
+	}
 	if (scenario === 'bracketed-agent-column') {
 		return {
-			query: E2E_KUSTO_SEMANTIC_QUERY_BASE.replace("['agent.kind']", "['agent.⟦caret⟧']"),
-			expected: 'agent.kind,agent.type,agent.remoteOnly',
-			context: 'bracketed dotted agent column',
+			query: E2E_KUSTO_SEMANTIC_QUERY_BASE.replace('EventName ==', 'Event⟦caret⟧Name =='),
+			expected: 'EventName',
+			context: 'bizops event name column',
 		};
 	}
 	if (scenario === 'summarize-by-trace-id') {
 		return {
-			query: E2E_KUSTO_SEMANTIC_QUERY_BASE.replace('by env_dt_traceId', 'by env_dt_⟦caret⟧'),
-			expected: 'env_dt_traceId,env_dt_RemoteOnlyTrace',
-			context: 'summarize by env_dt_traceId',
+			query: E2E_KUSTO_SEMANTIC_QUERY_BASE.replace('by ResponseId', 'by Response⟦caret⟧Id'),
+			expected: 'ResponseId',
+			context: 'summarize by response id',
 		};
 	}
 	throw new Error(`Unknown Kusto semantic completion scenario: ${scenario}`);
@@ -2648,12 +2701,17 @@ async function e2eAssertKustoSemanticScenarioVisible(scenario: KustoSemanticComp
 
 function e2eAssertKustoCrossClusterTraceForSemanticFixture(): string {
 	const trace = typeof _win.__kustoGetCrossClusterTrace === 'function' ? _win.__kustoGetCrossClusterTrace() : [];
-	const remoteKey = 'aoaiagents1.westus|prod';
+	const remoteKey = 'aoaiagents1.westus.kusto.windows.net|prod';
 	const has = (event: string, predicate: (entry: any) => boolean = () => true) => trace.some((entry: any) => entry?.event === event && predicate(entry));
+	const hasBothAliases = (entry: any) => {
+		const aliases = Array.isArray(entry.aliases) ? entry.aliases.map((value: any) => String(value || '').toLowerCase()) : [];
+		return aliases.includes('aoaiagents1.westus') && aliases.includes('aoaiagents1.westus.kusto.windows.net');
+	};
 	const missing: string[] = [];
 	if (!has('request-posted', (entry: any) => entry.key === remoteKey)) missing.push('request-posted');
-	if (!has('response-received', (entry: any) => String(entry.clusterName || '').toLowerCase() === 'aoaiagents1.westus' && String(entry.database || '').toLowerCase() === 'prod')) missing.push('response-received');
+	if (!has('response-received', (entry: any) => String(entry.clusterName || '').toLowerCase() === 'aoaiagents1.westus.kusto.windows.net' && String(entry.database || '').toLowerCase() === 'prod')) missing.push('response-received');
 	if (!has('apply-start', (entry: any) => entry.key === remoteKey)) missing.push('apply-start');
+	if (!has('apply-internal-start', (entry: any) => entry.key === remoteKey && hasBothAliases(entry))) missing.push('apply-internal-start-aliases');
 	if (!has('apply-internal-success', (entry: any) => entry.key === remoteKey)) missing.push('apply-internal-success');
 	if (!has('schema-status', (entry: any) => entry.key === remoteKey && entry.status === 'loaded')) missing.push('schema-status-loaded');
 	if (!has('autocomplete-retry-trigger', (entry: any) => Array.isArray(entry.missingKeys) && entry.missingKeys.includes(remoteKey))) missing.push('autocomplete-retry-trigger');
@@ -4643,6 +4701,7 @@ _win.__e2e = {
 		assertSemanticScenarioVisible: (scenario: KustoSemanticCompletionScenario, timeoutMs?: number) => e2eAssertKustoSemanticScenarioVisible(scenario, timeoutMs),
 		assertSemanticCrossClusterTrace: () => e2eAssertKustoCrossClusterTraceForSemanticFixture(),
 		suggestDiagnostics: (context: string = 'kusto semantic suggestions') => e2eSuggestDiagnostics(context, E2E_SECTION.kusto.editor),
+		liveSemanticDiagnostics: (context: string = 'live semantic diagnostics') => e2eKustoLiveSemanticDiagnostics(context),
 		clearCrossClusterTrace: () => { if (typeof _win.__kustoClearCrossClusterTrace === 'function') _win.__kustoClearCrossClusterTrace(); return 'cross-cluster trace cleared'; },
 		getCrossClusterTrace: () => typeof _win.__kustoGetCrossClusterTrace === 'function' ? _win.__kustoGetCrossClusterTrace() : [],
 		assertStaleResults: () => {

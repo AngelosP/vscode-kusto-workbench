@@ -89,6 +89,17 @@ describe('cross-cluster schema helpers', () => {
 		]);
 	});
 
+	it('extracts full regional ADX host references inside materialize', () => {
+		const refs = extractCrossClusterRefs(`
+			let bizopsresps =
+				materialize(cluster('aoaiagents1.westus.kusto.windows.net').database('prod').bizops
+				| where TIMESTAMP >= startTime and TIMESTAMP < endTime
+				| where EventName == "ResponseCompleted")
+		`, { clusterUrl: 'https://current.kusto.windows.net', database: 'CurrentDb' });
+
+		expect(refs).toEqual([{ clusterName: 'aoaiagents1.westus.kusto.windows.net', database: 'prod' }]);
+	});
+
 	it('ignores cluster/database text in comments and standalone strings', () => {
 		const refs = extractCrossClusterRefs(`
 			// cluster("Commented").database("Ignored").Table

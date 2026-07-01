@@ -32,10 +32,16 @@ Feature: Kusto semantic autocomplete with deterministic schemas
     When I evaluate "window.__e2e.kusto.assertSemanticScenario('inline-and-timestamp')" in the webview
     Then I take a screenshot "03-inline-and-timestamp-suggests"
 
+    When I evaluate "window.__e2e.kusto.assertSemanticScenario('second-where-empty')" in the webview
+    Then I take a screenshot "04-second-where-empty-suggests"
+
+    When I evaluate "window.__e2e.kusto.assertSemanticScenario('second-where-incomplete')" in the webview
+    Then I take a screenshot "05-second-where-incomplete-suggests"
+
     When I evaluate "window.__e2e.kusto.assertSemanticScenario('bracketed-agent-column')" in the webview
-    Then I take a screenshot "04-bracketed-agent-column-suggests"
+    Then I take a screenshot "06-bracketed-agent-column-suggests"
 
     When I evaluate "window.__e2e.kusto.assertSemanticScenario('summarize-by-trace-id')" in the webview
-    Then I take a screenshot "05-summarize-by-column-suggests"
+    Then I take a screenshot "07-summarize-by-column-suggests"
 
     When I execute command "workbench.action.closeAllEditors"

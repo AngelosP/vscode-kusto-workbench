@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
-import { DatabaseSchemaIndex, KustoQueryClient } from './kustoClient';
+import { DatabaseSchemaIndex, KustoQueryClient, normalizeClusterEndpoint } from './kustoClient';
 import { classifyCachedSchema, SCHEMA_CACHE_TTL_MS, SCHEMA_CACHE_VERSION } from './schemaCache';
 import { getAutocompleteSchemaSignature, getSchemaSummary } from './schemaIndexUtils';
 import {
@@ -41,6 +41,18 @@ type BackgroundSchemaRefreshListener = {
 	silent?: boolean;
 	reason?: string;
 };
+
+function getNormalizedEndpointHost(clusterUrl: string): string {
+	try {
+		const endpoint = normalizeClusterEndpoint(clusterUrl);
+		if (!endpoint) {
+			return '';
+		}
+		return new URL(endpoint).hostname.toLowerCase();
+	} catch {
+		return '';
+	}
+}
 
 
 // ── SchemaService class ──
@@ -491,28 +503,19 @@ export class SchemaService {
 		boxId: string,
 		requestToken: string
 	): Promise<void> {
-		// Normalize the cluster name to a URL
-		let clusterUrl = clusterName.trim();
-		if (clusterUrl && !clusterUrl.includes('.')) {
-			clusterUrl = `https://${clusterUrl}.kusto.windows.net`;
-		} else if (clusterUrl && !clusterUrl.startsWith('https://') && !clusterUrl.startsWith('http://')) {
-			clusterUrl = `https://${clusterUrl}`;
-		}
+		const targetEndpoint = normalizeClusterEndpoint(clusterName);
+		const targetHost = getNormalizedEndpointHost(clusterName);
 
 		// Find a connection that matches this cluster URL
 		const connections = this.host.connectionManager.getConnections();
 
 		const connection = connections.find(c => {
-			const connUrl = String(c.clusterUrl || '').trim().toLowerCase();
-			const targetUrl = clusterUrl.toLowerCase();
-			if (connUrl === targetUrl) { return true; }
-			try {
-				const connHostname = new URL(connUrl.startsWith('http') ? connUrl : `https://${connUrl}`).hostname;
-				const targetHostname = new URL(targetUrl).hostname;
-				return connHostname === targetHostname;
-			} catch {
-				return false;
+			const connectionEndpoint = normalizeClusterEndpoint(c.clusterUrl || '');
+			if (connectionEndpoint && targetEndpoint && connectionEndpoint.toLowerCase() === targetEndpoint.toLowerCase()) {
+				return true;
 			}
+			const connectionHost = getNormalizedEndpointHost(c.clusterUrl || '');
+			return !!connectionHost && !!targetHost && connectionHost === targetHost;
 		});
 
 		if (!connection) {

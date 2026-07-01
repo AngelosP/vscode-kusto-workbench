@@ -643,7 +643,7 @@ export class KwConnectionManager extends LitElement {
 			const fullUrl = /^https?:\/\//i.test(conn.clusterUrl) ? conn.clusterUrl : 'https://' + conn.clusterUrl;
 
 			return html`
-				<div class="explorer-list-item" @click=${() => this._drillIntoCluster(conn.id)}>
+				<div class="explorer-list-item root-connection-row" @click=${() => this._drillIntoCluster(conn.id)}>
 					<span class="explorer-list-item-icon cluster">${ICONS.kustoCluster}</span>
 					<span class="explorer-list-item-name">${conn.name || shortClusterName(conn.clusterUrl)}</span>
 					${hasFav ? html`<span class="conn-badge fav-badge" title="Has favorites">${ICONS.starFilled}</span>` : nothing}
@@ -907,12 +907,7 @@ export class KwConnectionManager extends LitElement {
 									<div class="explorer-detail-section">
 										<div class="explorer-detail-label">Schema (${colNames.length} columns)</div>
 										<div class="explorer-detail-schema">
-											${colNames.map(col => html`
-												<div class="explorer-schema-row">
-													<span class="explorer-schema-col-name">${col}</span>
-													<span class="explorer-schema-col-type">${cols[col]}</span>
-												</div>
-											`)}
+											${colNames.map(col => this._renderKustoSchemaColumnRow(schema, table, col, cols[col]))}
 										</div>
 									</div>
 								` : nothing}
@@ -1008,6 +1003,31 @@ export class KwConnectionManager extends LitElement {
 			</div>`;
 	}
 
+	private _getKustoColumnDocString(schema: DatabaseSchema, table: string, column: string): string {
+		const docs = schema.columnDocStrings ?? {};
+		const exactKey = `${table}.${column}`;
+		const exact = docs[exactKey];
+		if (exact) return exact;
+		const lowerKey = exactKey.toLowerCase();
+		const matchedKey = Object.keys(docs).find(key => key.toLowerCase() === lowerKey);
+		return matchedKey ? docs[matchedKey] : '';
+	}
+
+	private _renderKustoSchemaColumnRow(schema: DatabaseSchema, table: string, column: string, columnType: string): TemplateResult {
+		const docString = this._getKustoColumnDocString(schema, table, column);
+		return html`
+			<div class="explorer-schema-row ${docString ? 'has-doc' : ''}">
+				<span class="explorer-schema-col-main">
+					<span class="explorer-schema-col-header">
+						<span class="explorer-schema-col-name">${column}</span>
+						${columnType ? html`<span class="explorer-schema-col-type">(${columnType})</span>` : nothing}
+					</span>
+					${docString ? html`<span class="explorer-schema-col-doc">${docString}</span>` : nothing}
+				</span>
+			</div>
+		`;
+	}
+
 	// ── SQL Content ───────────────────────────────────────────────────────────
 
 	private _renderSqlContent(): TemplateResult {
@@ -1050,6 +1070,7 @@ export class KwConnectionManager extends LitElement {
 				</div>
 			`}
 		`;
+
 	}
 
 	private _renderSqlConnectionList(connections: SqlConnectionInfo[], favConnIds: Set<string>, lntSet: Set<string>): TemplateResult {
@@ -1068,7 +1089,7 @@ export class KwConnectionManager extends LitElement {
 			const hasFav = favConnIds.has(conn.id);
 			const isLnt = lntSet.has(conn.id);
 			return html`
-				<div class="explorer-list-item" @click=${() => this._drillIntoSqlConnection(conn.id)}>
+				<div class="explorer-list-item root-connection-row" @click=${() => this._drillIntoSqlConnection(conn.id)}>
 					<span class="explorer-list-item-icon server">${ICONS.sqlServer}</span>
 					<span class="explorer-list-item-name">${conn.name || conn.serverUrl}</span>
 					${hasFav ? html`<span class="conn-badge fav-badge" title="Has favorites">${ICONS.starFilled}</span>` : nothing}
@@ -1350,12 +1371,7 @@ export class KwConnectionManager extends LitElement {
 									<div class="explorer-detail-section">
 										<div class="explorer-detail-label">Schema (${colNames.length} columns)</div>
 										<div class="explorer-detail-schema">
-											${colNames.map(col => html`
-												<div class="explorer-schema-row">
-													<span class="explorer-schema-col-name">${col}</span>
-													<span class="explorer-schema-col-type">${cols[col]}</span>
-												</div>
-											`)}
+											${colNames.map(col => this._renderKustoSchemaColumnRow(schema, table, col, cols[col]))}
 										</div>
 									</div>
 								` : nothing}
@@ -1983,7 +1999,7 @@ export class KwConnectionManager extends LitElement {
 				const previewData = this._tablePreviewData[tableKey];
 				return html`<div class="explorer-item-details">
 					${docString ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Description</div><div class="explorer-detail-docstring">${docString}</div></div>` : nothing}
-					${colNames.length > 0 ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Schema (${colNames.length} columns)</div><div class="explorer-detail-schema">${colNames.map(col => html`<div class="explorer-schema-row"><span class="explorer-schema-col-name">${col}</span><span class="explorer-schema-col-type">${cols[col]}</span></div>`)}</div></div>` : nothing}
+					${colNames.length > 0 ? html`<div class="explorer-detail-section"><div class="explorer-detail-label">Schema (${colNames.length} columns)</div><div class="explorer-detail-schema">${colNames.map(col => this._renderKustoSchemaColumnRow(schema, r.name, col, cols[col]))}</div></div>` : nothing}
 					${conn ? this._renderTablePreview(tableKey, r.name, previewData, conn, ep) : nothing}
 				</div>`;
 			}

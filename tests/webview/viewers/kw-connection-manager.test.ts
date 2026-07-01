@@ -74,6 +74,16 @@ function columnNames(el: KwConnectionManager): string[] {
 		.map(node => (node.textContent ?? '').trim());
 }
 
+function columnDocStrings(el: KwConnectionManager): string[] {
+	return Array.from(el.shadowRoot!.querySelectorAll('.explorer-schema-col-doc'))
+		.map(node => (node.textContent ?? '').trim());
+}
+
+function columnHeaders(el: KwConnectionManager): string[] {
+	return Array.from(el.shadowRoot!.querySelectorAll('.explorer-schema-col-header'))
+		.map(node => (node.textContent ?? '').replace(/\s+/g, ' ').trim());
+}
+
 function clickListItemByName(el: KwConnectionManager, name: string): void {
 	const row = Array.from(el.shadowRoot!.querySelectorAll('.explorer-list-item'))
 		.find(item => item.querySelector('.explorer-list-item-name')?.textContent?.trim() === name);
@@ -180,6 +190,38 @@ describe('kw-connection-manager', () => {
 			clickListItemByName(el, 'AlphaRoot');
 			await el.updateComplete;
 			expect(columnNames(el)).toEqual(['alphaCol', 'BetaCol', 'zCol']);
+		});
+
+		it('Kusto: shows column docstrings in expanded table schema rows', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				cachedDatabases: { 'mycluster.kusto.windows.net': ['AlphaDb'] },
+			}));
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MyCluster');
+			await el.updateComplete;
+			clickListItemByName(el, 'AlphaDb');
+			await el.updateComplete;
+			sendSchemaLoaded(el, 'c1', 'AlphaDb', {
+				tables: ['AlphaRoot'],
+				columnTypesByTable: {
+					AlphaRoot: { alphaCol: 'long', zCol: 'string' },
+				},
+				columnDocStrings: {
+					'AlphaRoot.alphaCol': 'Primary event count for the current window',
+				},
+			});
+			await el.updateComplete;
+
+			clickListItemByName(el, 'Tables');
+			await el.updateComplete;
+			clickListItemByName(el, 'AlphaRoot');
+			await el.updateComplete;
+
+			expect(columnNames(el)).toEqual(['alphaCol', 'zCol']);
+			expect(columnHeaders(el)).toEqual(['alphaCol (long)', 'zCol (string)']);
+			expect(columnDocStrings(el)).toEqual(['Primary event count for the current window']);
 		});
 
 		it('Kusto: sorts function folders and functions while keeping folders first', async () => {

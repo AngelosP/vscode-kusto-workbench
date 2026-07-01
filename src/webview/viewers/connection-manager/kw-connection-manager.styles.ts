@@ -83,6 +83,7 @@ export const styles = css`
 		.conn-badge svg { width: 14px; height: 14px; fill: currentColor; }
 		.lnt-badge { color: var(--vscode-charts-orange, #d18616); }
 		.fav-badge { color: #f5c518; }
+		.fav-badge svg { width: 15px; height: 15px; }
 		.loading-inline,.empty-inline { padding: 8px 12px 8px 44px; font-size: 11px; color: var(--vscode-descriptionForeground); }
 		.link-btn { background: none; border: none; color: var(--vscode-textLink-foreground); cursor: pointer; font-size: inherit; font-family: inherit; padding: 0; text-decoration: underline; }
 		.splitter-collapse-btn { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: 18px; height: 32px; background: var(--vscode-editorWidget-background); border: 1px solid var(--vscode-editorWidget-border); border-radius: 4px; cursor: pointer; display: flex; align-items: center; justify-content: center; color: var(--vscode-foreground); opacity: 0; transition: opacity 0.15s; z-index: 1; padding: 0; }
@@ -132,6 +133,10 @@ export const styles = css`
 		.explorer-list-item-meta { font-size: 11px; color: var(--vscode-descriptionForeground); flex-shrink: 0; white-space: nowrap; }
 		.item-sep { color: var(--vscode-descriptionForeground); opacity: 0.4; flex-shrink: 0; font-size: 12px; }
 		.explorer-list-item-params { font-size: 11px; color: var(--vscode-descriptionForeground); white-space: nowrap; opacity: 0; transition: opacity 0.15s; flex-shrink: 1; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+		.explorer-list-item.root-connection-row > .explorer-list-item-icon,
+		.explorer-list-item.root-connection-row > .explorer-list-item-name { transform: translateY(-1px); }
+		.explorer-list-item.root-connection-row > .explorer-list-item-url,
+		.explorer-list-item.root-connection-row > .explorer-list-item-meta { transform: translateY(1px); }
 		.explorer-list-item:hover .explorer-list-item-params { opacity: 1; }
 		.explorer-list-item:hover .explorer-list-item-name { flex-shrink: 0; max-width: 60%; }
 		.explorer-list-item-actions { display: flex; gap: 2px; flex-shrink: 0; }
@@ -156,8 +161,12 @@ export const styles = css`
 		.explorer-detail-body { font-family: var(--vscode-editor-font-family, monospace); font-size: 11px; line-height: 1.4; color: var(--vscode-editor-foreground); background: rgba(0, 0, 0, 0.15); border-radius: 4px; padding: 8px 10px; margin: 0; white-space: pre-wrap; word-wrap: break-word; overflow: hidden; }
 		.explorer-detail-schema { display: flex; flex-direction: column; gap: 2px; }
 		.explorer-schema-row { display: flex; align-items: center; gap: 8px; padding: 3px 8px; font-size: 11px; background: rgba(0, 0, 0, 0.08); border-radius: 3px; }
+		.explorer-schema-row.has-doc { align-items: flex-start; padding-top: 5px; padding-bottom: 5px; }
 		.explorer-schema-row:hover { background: rgba(0, 0, 0, 0.15); }
-		.explorer-schema-col-name { font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe); flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+		.explorer-schema-col-main { display: flex; flex-direction: column; gap: 2px; flex: 1; min-width: 0; }
+		.explorer-schema-col-header { display: flex; align-items: baseline; gap: 4px; min-width: 0; }
+		.explorer-schema-col-name { font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-symbolIcon-propertyForeground, #9cdcfe); min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+		.explorer-schema-col-doc { color: var(--vscode-descriptionForeground); font-size: 10px; line-height: 1.3; white-space: normal; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; }
 		.explorer-schema-col-type { font-family: var(--vscode-editor-font-family, monospace); color: var(--vscode-symbolIcon-typeParameterForeground, #4ec9b0); font-size: 10px; flex-shrink: 0; }
 
 		/* Preview */

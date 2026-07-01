@@ -476,8 +476,125 @@ function __kustoNormalizeCrossClusterBoxId(boxId: any): string {
 	return String(boxId || '').trim();
 }
 
+function __kustoNormalizeCrossClusterClusterName(clusterName: any): string {
+	const raw = String(clusterName || '').trim();
+	if (!raw) {
+		return '';
+	}
+	try {
+		const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
+		const u = new URL(withScheme);
+		let host = String(u.hostname || '').trim().toLowerCase();
+		if (host && !/\.kusto\./i.test(host)) {
+			host = `${host}.kusto.windows.net`;
+		}
+		return host;
+	} catch {
+		try {
+			const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
+			const u = new URL(withScheme);
+			let host = String(u.hostname || '').trim().toLowerCase();
+			if (host && !/\.kusto\./i.test(host)) {
+				host = `${host}.kusto.windows.net`;
+			}
+			return host || raw.replace(/^https?:\/\//i, '').replace(/\/+$/g, '').toLowerCase();
+		} catch {
+			return raw.replace(/^https?:\/\//i, '').replace(/\/+$/g, '').toLowerCase();
+		}
+	}
+}
+
+function __kustoGetCrossClusterClusterAliases(clusterName: any, clusterUrl?: any): string[] {
+	const candidates = [clusterName, clusterUrl].map(value => String(value || '').trim()).filter(Boolean);
+	const aliases: string[] = [];
+	const addAlias = (value: string, keepScheme = false) => {
+		const raw = String(value || '').trim().replace(/\/+$/g, '');
+		const trimmed = keepScheme ? raw : raw.replace(/^https?:\/\//i, '');
+		if (!trimmed) return;
+		const lower = trimmed.toLowerCase();
+		if (!aliases.some(alias => alias.toLowerCase() === lower)) {
+			aliases.push(trimmed);
+		}
+	};
+	for (const candidate of candidates) {
+		addAlias(candidate);
+		if (!/^https?:\/\//i.test(candidate)) {
+			addAlias(`https://${candidate}`, true);
+		} else {
+			addAlias(candidate, true);
+		}
+		try {
+			const canonical = __kustoNormalizeCrossClusterClusterName(candidate);
+			addAlias(canonical);
+			addAlias(`https://${canonical}`, true);
+			if (canonical.toLowerCase().endsWith('.kusto.windows.net')) {
+				addAlias(canonical.slice(0, -'.kusto.windows.net'.length));
+				addAlias(`https://${canonical.slice(0, -'.kusto.windows.net'.length)}`, true);
+			}
+		} catch {
+			// ignore non-public/custom endpoints
+		}
+	}
+	return aliases;
+}
+
+async function __kustoAddDatabaseAliasesToWorker(worker: any, modelUri: string, schemaObj: any, clusterName: any, clusterUrl: any, database: any): Promise<number> {
+	try {
+		if (!worker || typeof worker.addDatabaseToSchema !== 'function' || !modelUri || !schemaObj || !database) {
+			return 0;
+		}
+		let databaseSchema: any = null;
+		if (typeof worker.normalizeSchema === 'function') {
+			try {
+				const engineSchema = await worker.normalizeSchema(schemaObj, clusterUrl, database);
+				databaseSchema = engineSchema?.database;
+				if (!databaseSchema && engineSchema?.cluster?.databases) {
+					databaseSchema = engineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === String(database).toLowerCase());
+				}
+			} catch (e) { console.error('[kusto] normalizeSchema failed while adding aliases:', e); }
+		}
+		if (!databaseSchema) {
+			const dbSchema = schemaObj.Databases?.[database]
+				|| Object.entries(schemaObj.Databases || {}).find(([name]) => name.toLowerCase() === String(database).toLowerCase())?.[1]
+				|| Object.values(schemaObj.Databases || {})[0];
+			if (dbSchema) {
+				databaseSchema = {
+					name: database,
+					tables: Object.entries((dbSchema as any).Tables || {}).map(([name, table]) => ({
+						name,
+						entityType: (table as any).EntityType || 'Table',
+						columns: Object.entries((table as any).OrderedColumns || {}).map(([colName, col]) => ({
+							name: (col as any).Name || colName,
+							type: (col as any).CslType || (col as any).Type || 'string',
+							docstring: (col as any).Docstring || ''
+						})),
+						docstring: (table as any).Docstring || ''
+					})),
+					functions: [],
+					graphs: [],
+					entityGroups: [],
+					majorVersion: 1,
+					minorVersion: 0,
+				};
+			}
+		}
+		if (!databaseSchema) {
+			return 0;
+		}
+		let count = 0;
+		for (const alias of __kustoGetCrossClusterClusterAliases(clusterName, clusterUrl)) {
+			await worker.addDatabaseToSchema(modelUri, alias, databaseSchema);
+			count++;
+		}
+		return count;
+	} catch (e) {
+		console.error('[kusto] Failed to add database aliases:', e);
+		return 0;
+	}
+}
+
 function __kustoGetCrossClusterSchemaKey(clusterName: any, database: any): string {
-	const clusterKey = String(clusterName || '').trim().toLowerCase();
+	const clusterKey = __kustoNormalizeCrossClusterClusterName(clusterName);
 	const databaseKey = String(database || '').trim().toLowerCase();
 	return clusterKey && databaseKey ? `${clusterKey}|${databaseKey}` : '';
 }
@@ -785,7 +902,7 @@ function __kustoScheduleCrossClusterRefCheck(editor: any, boxId: any, initialDel
 }
 
 function __kustoScheduleCrossClusterSchemaApply(args: CrossClusterSchemaApplyArgs): void {
-	const key = `${String(args.clusterName || '').toLowerCase()}|${String(args.database || '').toLowerCase()}`;
+	const key = __kustoGetCrossClusterSchemaKey(args.clusterName, args.database);
 	if (!key || key === '|') {
 		return;
 	}
@@ -1525,7 +1642,12 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 															ccDbSchema = ccEngineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === ccDatabase.toLowerCase());
 														}
 														if (ccDbSchema) {
-															await worker.addDatabaseToSchema(modelKey, ccClusterName, ccDbSchema);
+															const ccAliases = Array.isArray(ccEntry.clusterAliases) && ccEntry.clusterAliases.length
+																? ccEntry.clusterAliases
+																: __kustoGetCrossClusterClusterAliases(ccClusterName, ccEntry.clusterUrl);
+															for (const alias of ccAliases.length ? ccAliases : [ccClusterName]) {
+																await worker.addDatabaseToSchema(modelKey, alias, ccDbSchema);
+															}
 														} else {
 															ccEntry.status = 'error';
 															ccEntry.error = 'Failed to re-add after replace';
@@ -1909,7 +2031,10 @@ __kustoRequestCrossClusterSchema = function (clusterName: any, database: any, bo
 							}
 						}
 						
-						const key = `${resolvedClusterName.toLowerCase()}|${database.toLowerCase()}`;
+						const key = __kustoGetCrossClusterSchemaKey(resolvedClusterName, database);
+						if (!key) {
+							return;
+						}
 						__kustoTrackCrossClusterInterest(key, boxId);
 						
 						// Skip if already loaded or pending. Previous errors are retryable.
@@ -1953,10 +2078,11 @@ __kustoRequestCrossClusterSchema = function (clusterName: any, database: any, bo
 					
 					// Internal implementation - called through the queue
 __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clusterUrl: any, database: any, rawSchemaJson: any, boxId: any = '', source: any = '', cacheAgeMs: any = undefined) {
-						const key = `${clusterName.toLowerCase()}|${database.toLowerCase()}`;
+						const key = __kustoGetCrossClusterSchemaKey(clusterName, database);
 						
 						try {
-							__kustoTraceCrossCluster('apply-internal-start', { key, boxId, clusterName, clusterUrl, database, source, cacheAgeMs });
+							const clusterAliases = __kustoGetCrossClusterClusterAliases(clusterName, clusterUrl);
+							__kustoTraceCrossCluster('apply-internal-start', { key, boxId, clusterName, clusterUrl, database, aliases: clusterAliases, source, cacheAgeMs });
 							// Parse the raw schema JSON
 							let schemaObj;
 							if (typeof rawSchemaJson === 'string') {
@@ -1988,7 +2114,6 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 
 									let appliedCount = 0;
 									let appliedToRequestedModel = false;
-									let databaseSchema: any = null;
 									let requestedUri = '';
 									try {
 										const requestedEditor = boxId ? queryEditors?.[__kustoNormalizeCrossClusterBoxId(boxId)] : null;
@@ -2012,63 +2137,18 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 										const schemaModel = requestedModel || modelCandidates[0] || models[0];
 										const worker2 = await workerAccessor(schemaModel.uri);
 										if (worker2 && typeof worker2.addDatabaseToSchema === 'function') {
-											// Use normalizeSchema (consistent with primary ADD path),
-											// falling back to manual construction if unavailable.
-											if (typeof worker2.normalizeSchema === 'function') {
+											for (const model of modelCandidates) {
 												try {
-													const engineSchema = await worker2.normalizeSchema(schemaObj, clusterUrl, database);
-													databaseSchema = engineSchema?.database;
-													if (!databaseSchema && engineSchema?.cluster?.databases) {
-														databaseSchema = engineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === database.toLowerCase());
+													if (!model || !model.uri) continue;
+													const modelUri = model.uri.toString();
+													const count = await __kustoAddDatabaseAliasesToWorker(worker2, modelUri, schemaObj, clusterName, clusterUrl, database);
+													appliedCount += count;
+													if (count > 0 && requestedUri && modelUri === requestedUri) {
+														appliedToRequestedModel = true;
 													}
-												} catch (e) { console.error('[kusto] normalizeSchema failed for cross-cluster, using fallback:', e); }
+												} catch (e) { console.error('[kusto]', e); }
 											}
-											if (!databaseSchema) {
-												// Fallback: manual conversion from raw show-schema JSON
-												const dbSchema = schemaObj.Databases[database] || Object.values(schemaObj.Databases)[0];
-												if (dbSchema) {
-													databaseSchema = {
-														name: database,
-														tables: Object.entries(dbSchema.Tables || {}).map(([name, table]) => ({
-															name,
-															entityType: (table as any).EntityType || 'Table',
-															columns: Object.entries((table as any).OrderedColumns || {}).map(([colName, col]) => ({
-																name: (col as any).Name || colName,
-																type: (col as any).CslType || (col as any).Type || 'string',
-																docstring: (col as any).Docstring || ''
-															})),
-															docstring: (table as any).Docstring || ''
-														})),
-														functions: Object.entries(dbSchema.Functions || {}).map(([name, func]) => ({
-															name,
-															inputParameters: ((func as any).InputParameters || []).map((p: any) => ({
-																name: p.Name || '',
-																type: p.CslType || p.Type || 'string',
-																cslDefaultValue: p.CslDefaultValue
-															})),
-															body: (func as any).Body || '',
-															docstring: (func as any).Docstring || ''
-														})),
-														graphs: [],
-														entityGroups: [],
-														majorVersion: 1,
-														minorVersion: 0
-													};
-												}
-											}
-											if (databaseSchema) {
-												for (const model of modelCandidates) {
-													try {
-														if (!model || !model.uri) continue;
-														const modelUri = model.uri.toString();
-														await worker2.addDatabaseToSchema(modelUri, clusterName, databaseSchema);
-														appliedCount++;
-														if (requestedUri && modelUri === requestedUri) {
-															appliedToRequestedModel = true;
-														}
-													} catch (e) { console.error('[kusto]', e); }
-												}
-											} else {
+											if (appliedCount === 0) {
 												__kustoSetCrossClusterSchemaEntry(key, { status: 'error', error: 'Database not found in schema' });
 											}
 										}
@@ -2087,7 +2167,8 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 										__kustoSetCrossClusterSchemaEntry(key, { 
 											status: 'loaded', 
 											rawSchemaJson: schemaObj,
-											clusterUrl
+											clusterUrl,
+											clusterAliases
 										});
 										// Clear stale diagnostics (e.g., KS208 "does not refer to any
 										// known database") so the language service re-validates with

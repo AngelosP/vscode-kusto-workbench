@@ -1354,6 +1354,10 @@ export class ConnectionManagerViewerV2 {
 		contentToggles: Record<string, boolean>,
 	): any[] {
 		const results: any[] = [];
+		const columnMatchContext = (name: string, type?: string, docString?: string): string => {
+			const typeText = type ? `${name}: ${type}` : '';
+			return docString ? (typeText ? `${typeText} - ${docString}` : docString) : typeText;
+		};
 		if (categories['tables']) {
 			for (const table of schema.tables ?? []) {
 				if (re.test(table)) results.push({ category: 'table', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database, name: table });
@@ -1361,8 +1365,9 @@ export class ConnectionManagerViewerV2 {
 			if (contentToggles['tables']) {
 				for (const [table, cols] of Object.entries(schema.columnTypesByTable ?? {})) {
 					for (const [col, colType] of Object.entries(cols)) {
-						if (re.test(col) || re.test(colType)) {
-							results.push({ category: 'column', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database, name: col, parentName: table, matchContext: `${col}: ${colType}` });
+						const docString = schema.columnDocStrings?.[`${table}.${col}`];
+						if (re.test(col) || re.test(colType) || (!!docString && re.test(docString))) {
+							results.push({ category: 'column', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database, name: col, parentName: table, matchContext: columnMatchContext(col, colType, docString) });
 						}
 					}
 				}
@@ -1457,7 +1462,9 @@ export class ConnectionManagerViewerV2 {
 				results.push({ category: 'table', kind: 'kusto', connectionId: connId, connectionName: connName, database: m.database, name: m.name, matchContext: m.docString });
 			} else if (m.kind === 'column' || m.kind === 'columnType' || m.kind === 'columnDocString') {
 				if (!categories['tables'] || !contentToggles['tables']) continue;
-				results.push({ category: 'column', kind: 'kusto', connectionId: connId, connectionName: connName, database: m.database, name: m.name, parentName: m.table, matchContext: m.type ? `${m.name}: ${m.type}` : m.docString });
+				const typeText = m.type ? `${m.name}: ${m.type}` : '';
+				const matchContext = m.docString ? (typeText ? `${typeText} - ${m.docString}` : m.docString) : typeText;
+				results.push({ category: 'column', kind: 'kusto', connectionId: connId, connectionName: connName, database: m.database, name: m.name, parentName: m.table, matchContext });
 			} else if (m.kind === 'function' || m.kind === 'functionDocString' || m.kind === 'functionFolder' || m.kind === 'functionParameter' || m.kind === 'functionBody') {
 				if (!categories['functions']) continue;
 				if ((m.kind === 'functionBody' || m.kind === 'functionParameter' || m.kind === 'functionDocString') && !contentToggles['functions']) continue;
