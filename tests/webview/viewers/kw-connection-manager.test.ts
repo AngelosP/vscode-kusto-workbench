@@ -104,6 +104,21 @@ function clickButtonByTestId(el: KwConnectionManager, testId: string): void {
 	button!.click();
 }
 
+function explorerContent(el: KwConnectionManager): HTMLElement {
+	const content = el.shadowRoot!.querySelector('.explorer-content') as HTMLElement | null;
+	expect(content).not.toBeNull();
+	return content!;
+}
+
+function setScrollMetrics(element: HTMLElement, scrollHeight: number, clientHeight: number): void {
+	Object.defineProperty(element, 'scrollHeight', { configurable: true, value: scrollHeight });
+	Object.defineProperty(element, 'clientHeight', { configurable: true, value: clientHeight });
+}
+
+async function nextFrame(): Promise<void> {
+	await new Promise(resolve => requestAnimationFrame(() => resolve(undefined)));
+}
+
 function messageTypes(): string[] {
 	return postedMessages
 		.map(message => (message && typeof message === 'object' && 'type' in message ? String((message as { type?: unknown }).type) : ''))
@@ -316,6 +331,123 @@ describe('kw-connection-manager', () => {
 	// ── Favorites ───────────────────────────────────────────────────────────────
 
 	describe('favorites', () => {
+		it('clamps impossible explorer scroll after content shrinks without a filter change', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				connections: Array.from({ length: 32 }, (_, index) =>
+					kustoConnection(`c-${index}`, `Cluster ${String(index).padStart(2, '0')}`, `https://cluster-${index}.kusto.windows.net`)
+				),
+				cachedDatabases: {},
+			}));
+			await el.updateComplete;
+
+			const content = explorerContent(el);
+			setScrollMetrics(content, 2400, 300);
+			content.scrollTop = 1600;
+
+			setScrollMetrics(content, 700, 300);
+			el.requestUpdate();
+			await el.updateComplete;
+
+			expect(content.scrollTop).toBe(400);
+		});
+
+		it('retries explorer scroll clamp until a zero-height viewport becomes measurable', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				connections: Array.from({ length: 32 }, (_, index) =>
+					kustoConnection(`c-${index}`, `Cluster ${String(index).padStart(2, '0')}`, `https://cluster-${index}.kusto.windows.net`)
+				),
+				cachedDatabases: {},
+			}));
+			await el.updateComplete;
+
+			const content = explorerContent(el);
+			setScrollMetrics(content, 700, 0);
+			content.scrollTop = 1600;
+
+			el.requestUpdate();
+			await el.updateComplete;
+			setScrollMetrics(content, 700, 300);
+			await nextFrame();
+
+			expect(content.scrollTop).toBe(400);
+		});
+
+		it('resets explorer scroll when a snapshot changes the active kind', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				connections: Array.from({ length: 32 }, (_, index) =>
+					kustoConnection(`c-${index}`, `Cluster ${String(index).padStart(2, '0')}`, `https://cluster-${index}.kusto.windows.net`)
+				),
+				cachedDatabases: {},
+				sqlConnections: [sqlConnection('sql-target', 'SQL Target')],
+				sqlCachedDatabases: { 'sql-target': ['SqlDb'] },
+			}));
+			await el.updateComplete;
+
+			const content = explorerContent(el);
+			setScrollMetrics(content, 2400, 300);
+			content.scrollTop = 900;
+
+			sendSnapshot(el, snapshot({
+				activeKind: 'sql',
+				connections: [],
+				cachedDatabases: {},
+				sqlConnections: [sqlConnection('sql-target', 'SQL Target')],
+				sqlCachedDatabases: { 'sql-target': ['SqlDb'] },
+			}));
+			await el.updateComplete;
+			await nextFrame();
+
+			expect(explorerContent(el).scrollTop).toBe(0);
+			expect(listItemNames(el)).toEqual(['SQL Target']);
+		});
+
+		it('Kusto: resets stale root scroll when Favorites shortens the connection list', async () => {
+			const connections = Array.from({ length: 32 }, (_, index) =>
+				kustoConnection(`c-${index}`, `Cluster ${String(index).padStart(2, '0')}`, `https://cluster-${index}.kusto.windows.net`)
+			);
+			const favoriteConnection = connections[29];
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				connections,
+				favorites: [{ name: 'Favorite DB', clusterUrl: favoriteConnection.clusterUrl, database: 'FavDb' }],
+				cachedDatabases: { [`cluster-29.kusto.windows.net`]: ['FavDb'] },
+			}));
+			await el.updateComplete;
+
+			const content = explorerContent(el);
+			setScrollMetrics(content, 2400, 300);
+			content.scrollTop = 1600;
+
+			clickButtonByTestId(el, 'cm-filter-favorites');
+			await el.updateComplete;
+			await nextFrame();
+
+			expect(content.scrollTop).toBe(0);
+			expect(listItemNames(el)).toEqual(['Cluster 29']);
+		});
+
+		it('Kusto: keeps valid scroll when clicking the already active All filter', async () => {
+			const connections = Array.from({ length: 32 }, (_, index) =>
+				kustoConnection(`c-${index}`, `Cluster ${String(index).padStart(2, '0')}`, `https://cluster-${index}.kusto.windows.net`)
+			);
+			const el = createElement();
+			sendSnapshot(el, snapshot({ connections, cachedDatabases: {} }));
+			await el.updateComplete;
+
+			const content = explorerContent(el);
+			setScrollMetrics(content, 2400, 300);
+			content.scrollTop = 600;
+
+			clickButtonByTestId(el, 'cm-filter-all');
+			await el.updateComplete;
+			await nextFrame();
+
+			expect(content.scrollTop).toBe(600);
+		});
+
 		it('Kusto: add favorite requests a friendly-name prompt', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot());
@@ -411,6 +543,34 @@ describe('kw-connection-manager', () => {
 
 			expect(listItemNames(el)).toEqual(['Friendly SQL DB']);
 			expect(el.shadowRoot!.textContent).toContain('sqldb1 · MySqlServer');
+		});
+
+		it('SQL: resets stale root scroll when Favorites shortens the connection list', async () => {
+			const sqlConnections = Array.from({ length: 32 }, (_, index) =>
+				sqlConnection(`sql-${index}`, `SQL Server ${String(index).padStart(2, '0')}`, `server-${index}.database.windows.net`)
+			);
+			const favoriteConnection = sqlConnections[29];
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				activeKind: 'sql',
+				connections: [],
+				cachedDatabases: {},
+				sqlConnections,
+				sqlCachedDatabases: { [favoriteConnection.id]: ['FavDb'] },
+				sqlFavorites: [{ name: 'Favorite SQL DB', connectionId: favoriteConnection.id, database: 'FavDb' }],
+			}));
+			await el.updateComplete;
+
+			const content = explorerContent(el);
+			setScrollMetrics(content, 2400, 300);
+			content.scrollTop = 1600;
+
+			clickButtonByTestId(el, 'cm-sql-filter-favorites');
+			await el.updateComplete;
+			await nextFrame();
+
+			expect(content.scrollTop).toBe(0);
+			expect(listItemNames(el)).toEqual(['SQL Server 29']);
 		});
 
 		it('SQL: rename and remove favorite actions post identity messages without navigating the row', async () => {

@@ -262,6 +262,10 @@ export class KwConnectionManager extends LitElement {
 
 	private _search = new ConnectionManagerSearchController(this as unknown as SearchControllerHost);
 	private _removeRefreshMenuScrollDismiss: (() => void) | null = null;
+	private _scrollResetGeneration = 0;
+	private _scrollClampRetryScheduled = false;
+	private _scrollClampRetryCount = 0;
+	private _scrollbarUpdateGeneration = 0;
 
 	/** Bridge for the search controller to send messages to the host. */
 	postMessage(msg: unknown): void {
@@ -287,6 +291,121 @@ export class KwConnectionManager extends LitElement {
 
 	protected override updated(): void {
 		this._syncScrollOwnerTestState();
+		this._clampExplorerScroll();
+	}
+
+	private _getExplorerScrollElement(): HTMLElement | null {
+		return this.shadowRoot?.querySelector<HTMLElement>('.explorer-content') ?? null;
+	}
+
+	private _updateExplorerScrollbar(scrollElement: HTMLElement): void {
+		this._forceUpdateExplorerScrollbar(scrollElement);
+		this._scheduleExplorerScrollbarUpdate(scrollElement, 2);
+	}
+
+	private _forceUpdateExplorerScrollbar(scrollElement: HTMLElement): void {
+		const instance = this._osCtrl.getInstance(scrollElement);
+		if (instance) {
+			instance.update(true);
+		} else {
+			this._osCtrl.rescan();
+		}
+	}
+
+	private _scheduleExplorerScrollbarUpdate(scrollElement: HTMLElement, remainingFrames: number): void {
+		const generation = ++this._scrollbarUpdateGeneration;
+		const updateOnNextFrame = (framesLeft: number): void => {
+			requestAnimationFrame(() => {
+				if (!this.isConnected || generation !== this._scrollbarUpdateGeneration || !scrollElement.isConnected) return;
+				this._forceUpdateExplorerScrollbar(scrollElement);
+				if (framesLeft > 1) updateOnNextFrame(framesLeft - 1);
+			});
+		};
+		updateOnNextFrame(remainingFrames);
+	}
+
+	private _clampExplorerScroll(): void {
+		const scrollElement = this._getExplorerScrollElement();
+		if (!scrollElement) return;
+		if (scrollElement.clientHeight <= 0) {
+			this._scheduleExplorerScrollClampRetry();
+			return;
+		}
+		this._scrollClampRetryCount = 0;
+		const maxScrollTop = Math.max(0, scrollElement.scrollHeight - scrollElement.clientHeight);
+		if (scrollElement.scrollTop <= maxScrollTop) return;
+		scrollElement.scrollTop = maxScrollTop;
+		this._updateExplorerScrollbar(scrollElement);
+	}
+
+	private _scheduleExplorerScrollClampRetry(): void {
+		if (this._scrollClampRetryScheduled) return;
+		if (this._scrollClampRetryCount >= 10) return;
+		this._scrollClampRetryCount += 1;
+		this._scrollClampRetryScheduled = true;
+		requestAnimationFrame(() => {
+			this._scrollClampRetryScheduled = false;
+			const scrollElement = this._getExplorerScrollElement();
+			if (!this.isConnected || !scrollElement) return;
+			if (scrollElement.clientHeight <= 0) {
+				this._scheduleExplorerScrollClampRetry();
+				return;
+			}
+			this._clampExplorerScroll();
+		});
+	}
+
+	private _scheduleExplorerScrollReset(): void {
+		const generation = ++this._scrollResetGeneration;
+		void this.updateComplete.then(() => new Promise<void>(resolve => requestAnimationFrame(() => resolve()))).then(() => {
+			if (!this.isConnected || generation !== this._scrollResetGeneration) return;
+			const scrollElement = this._getExplorerScrollElement();
+			if (!scrollElement) return;
+			if (scrollElement.scrollTop !== 0) {
+				scrollElement.scrollTop = 0;
+			}
+			this._updateExplorerScrollbar(scrollElement);
+		});
+	}
+
+	private _isSameExplorerPath(left: ExplorerPath | null, right: ExplorerPath | null): boolean {
+		if (!left || !right) return left === right;
+		const leftFolders = left.folderPath ?? [];
+		const rightFolders = right.folderPath ?? [];
+		return left.connectionId === right.connectionId
+			&& (left.database ?? '') === (right.database ?? '')
+			&& (left.section ?? '') === (right.section ?? '')
+			&& (left.tableName ?? '') === (right.tableName ?? '')
+			&& leftFolders.length === rightFolders.length
+			&& leftFolders.every((folder, index) => folder === rightFolders[index]);
+	}
+
+	private _setKustoExplorerPath(path: ExplorerPath | null): void {
+		if (this._isSameExplorerPath(this._explorerPath, path)) return;
+		this._explorerPath = path;
+		this._scheduleExplorerScrollReset();
+	}
+
+	private _setSqlExplorerPath(path: ExplorerPath | null): void {
+		if (this._isSameExplorerPath(this._sqlExplorerPath, path)) return;
+		this._sqlExplorerPath = path;
+		this._scheduleExplorerScrollReset();
+	}
+
+	private _setKustoFilter(filter: ActiveFilter): void {
+		if (filter === this._activeFilter) return;
+		this._activeFilter = filter;
+		if (filter === 'search' && this._search.kind !== 'kusto') this._search.setKind('kusto');
+		this._validateBreadcrumb();
+		this._scheduleExplorerScrollReset();
+	}
+
+	private _setSqlFilter(filter: ActiveFilter): void {
+		if (filter === this._activeFilter) return;
+		this._activeFilter = filter;
+		if (filter === 'search' && this._search.kind !== 'sql') this._search.setKind('sql');
+		this._validateSqlBreadcrumb();
+		this._scheduleExplorerScrollReset();
 	}
 
 	private _syncScrollOwnerTestState(): void {
@@ -348,6 +467,7 @@ export class KwConnectionManager extends LitElement {
 				this._snapshot = msg.snapshot;
 				// Auto-detect active kind
 				if (this._snapshot) {
+					const previousKind = this._activeKind;
 					const hasKusto = (this._snapshot.connections?.length ?? 0) > 0;
 					const hasSql = (this._snapshot.sqlConnections?.length ?? 0) > 0;
 					const persisted = this._snapshot.activeKind;
@@ -359,6 +479,9 @@ export class KwConnectionManager extends LitElement {
 						this._activeKind = 'sql';
 					} else {
 						this._activeKind = 'kusto';
+					}
+					if (this._activeKind !== previousKind) {
+						this._scheduleExplorerScrollReset();
 					}
 					// Restore search state
 					this._search.restoreState(this._snapshot.searchState as any, this._activeKind);
@@ -578,6 +701,7 @@ export class KwConnectionManager extends LitElement {
 		this._explorerPath = null;
 		this._sqlExplorerPath = null;
 		this._search.setKind(kind);
+		this._scheduleExplorerScrollReset();
 		this._vscode.postMessage({ type: 'setActiveKind', kind });
 	}
 
@@ -603,10 +727,10 @@ export class KwConnectionManager extends LitElement {
 		return html`
 			<!-- Filter tabs (always visible) -->
 			<div class="filter-bar" data-testid="cm-filter-bar">
-				<button class="filter-tab ${af === 'all' ? 'active' : ''}" data-testid="cm-filter-all" @click=${() => { this._activeFilter = 'all'; this._validateBreadcrumb(); }}>${ICONS.kustoCluster} <span class="filter-label">All</span></button>
-				${hasFavs ? html`<button class="filter-tab fav-tab ${af === 'favorites' ? 'active' : ''}" data-testid="cm-filter-favorites" @click=${() => { this._activeFilter = af === 'favorites' ? 'all' : 'favorites'; this._validateBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${favorites.length}</span></button>` : nothing}
-				${hasLnt ? html`<button class="filter-tab lnt-tab ${af === 'lnt' ? 'active' : ''}" @click=${() => { this._activeFilter = af === 'lnt' ? 'all' : 'lnt'; this._validateBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${lntClusters.length}</span></button>` : nothing}
-				<button class="filter-tab search-tab ${af === 'search' ? 'active' : ''}" data-testid="cm-filter-search" @click=${() => { this._activeFilter = af === 'search' ? 'all' : 'search'; if (this._search.kind !== 'kusto') this._search.setKind('kusto'); }}>${ICONS.toolbarSearch} <span class="filter-label">Search</span></button>
+				<button class="filter-tab ${af === 'all' ? 'active' : ''}" data-testid="cm-filter-all" @click=${() => this._setKustoFilter('all')}>${ICONS.kustoCluster} <span class="filter-label">All</span></button>
+				${hasFavs ? html`<button class="filter-tab fav-tab ${af === 'favorites' ? 'active' : ''}" data-testid="cm-filter-favorites" @click=${() => this._setKustoFilter(af === 'favorites' ? 'all' : 'favorites')}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${favorites.length}</span></button>` : nothing}
+				${hasLnt ? html`<button class="filter-tab lnt-tab ${af === 'lnt' ? 'active' : ''}" @click=${() => this._setKustoFilter(af === 'lnt' ? 'all' : 'lnt')}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${lntClusters.length}</span></button>` : nothing}
+				<button class="filter-tab search-tab ${af === 'search' ? 'active' : ''}" data-testid="cm-filter-search" @click=${() => this._setKustoFilter(af === 'search' ? 'all' : 'search')}>${ICONS.toolbarSearch} <span class="filter-label">Search</span></button>
 			</div>
 
 			${af === 'search' ? this._renderSearchContent() : html`
@@ -665,7 +789,7 @@ export class KwConnectionManager extends LitElement {
 
 	private _drillIntoCluster(connId: string): void {
 		this._selectedConnectionId = connId;
-		this._explorerPath = { connectionId: connId } as any;
+		this._setKustoExplorerPath({ connectionId: connId });
 		this._vscode.postMessage({ type: 'cluster.expand', connectionId: connId });
 	}
 
@@ -676,20 +800,20 @@ export class KwConnectionManager extends LitElement {
 
 		const connections = this._snapshot?.connections ?? [];
 		const conn = connections.find(c => c.id === ep.connectionId);
-		if (!conn) { this._explorerPath = null; return; }
+		if (!conn) { this._setKustoExplorerPath(null); return; }
 
 		// Check if the cluster is visible under current filter
 		if (this._activeFilter === 'favorites') {
 			const favUrls = new Set((this._snapshot?.favorites ?? []).map(f => normalizeClusterUrl(f.clusterUrl)));
-			if (!favUrls.has(normalizeClusterUrl(conn.clusterUrl))) { this._explorerPath = null; return; }
+			if (!favUrls.has(normalizeClusterUrl(conn.clusterUrl))) { this._setKustoExplorerPath(null); return; }
 			// If drilled into a database, check if it's a favorite
 			if (ep.database) {
-				if (!this._getFavorite(conn.clusterUrl, ep.database)) { this._explorerPath = { connectionId: ep.connectionId } as any; return; }
+				if (!this._getFavorite(conn.clusterUrl, ep.database)) { this._setKustoExplorerPath({ connectionId: ep.connectionId }); return; }
 			}
 		}
 		if (this._activeFilter === 'lnt') {
 			const lntUrls = new Set((this._snapshot?.leaveNoTraceClusters ?? []).map(u => normalizeClusterUrl(u)));
-			if (!lntUrls.has(normalizeClusterUrl(conn.clusterUrl))) { this._explorerPath = null; return; }
+			if (!lntUrls.has(normalizeClusterUrl(conn.clusterUrl))) { this._setKustoExplorerPath(null); return; }
 		}
 		// Path is valid — keep it as-is
 	}
@@ -725,11 +849,11 @@ export class KwConnectionManager extends LitElement {
 		return html`
 			<div class="explorer-breadcrumb">
 				<button class="btn-icon breadcrumb-back" data-testid="cm-breadcrumb-back" title="Go back" @click=${() => this._navigateBack()}>${ICONS.arrowLeft}</button>
-				<span class="breadcrumb-item" @click=${() => { this._explorerPath = null; }}>
+				<span class="breadcrumb-item" @click=${() => this._setKustoExplorerPath(null)}>
 					<span class="breadcrumb-icon">${rootIcon}</span>${rootLabel}
 				</span>
 				<span class="breadcrumb-separator">/</span>
-				<span class="breadcrumb-item ${!ep?.database ? 'current' : ''}" @click=${() => { this._explorerPath = { connectionId: conn.id, database: undefined } as any; }}>
+				<span class="breadcrumb-item ${!ep?.database ? 'current' : ''}" @click=${() => this._setKustoExplorerPath({ connectionId: conn.id })}>
 					<span class="breadcrumb-icon">${ICONS.kustoCluster}</span>${conn.name}
 				</span>
 				${!ep?.database ? html`
@@ -738,18 +862,18 @@ export class KwConnectionManager extends LitElement {
 				` : nothing}
 				${ep?.database ? html`
 					<span class="breadcrumb-separator">/</span>
-					<span class="breadcrumb-item ${!ep.section ? 'current' : ''}" @click=${() => { this._explorerPath = { ...ep, section: undefined, folderPath: undefined, tableName: undefined }; }}>
+					<span class="breadcrumb-item ${!ep.section ? 'current' : ''}" @click=${() => this._setKustoExplorerPath({ ...ep, section: undefined, folderPath: undefined, tableName: undefined })}>
 						<span class="breadcrumb-icon">${ICONS.database}</span>${ep.database}
 					</span>
 					${ep.section && ep.section !== 'table-columns' ? html`
 						<span class="breadcrumb-separator">/</span>
-						<span class="breadcrumb-item ${!ep.folderPath?.length ? 'current' : ''}" @click=${() => { this._explorerPath = { ...ep, folderPath: undefined }; }}>
+						<span class="breadcrumb-item ${!ep.folderPath?.length ? 'current' : ''}" @click=${() => this._setKustoExplorerPath({ ...ep, folderPath: undefined })}>
 							<span class="breadcrumb-icon">${ep.section === 'tables' ? ICONS.table : ICONS.function}</span>${ep.section === 'tables' ? 'Tables' : 'Functions'}
 						</span>
 						${(ep.folderPath ?? []).map((folder, i) => html`
 							<span class="breadcrumb-separator">/</span>
 							<span class="breadcrumb-item ${i === (ep.folderPath!.length - 1) ? 'current' : ''}"
-								@click=${() => { this._explorerPath = { ...ep, folderPath: ep.folderPath!.slice(0, i + 1) }; }}>
+								@click=${() => this._setKustoExplorerPath({ ...ep, folderPath: ep.folderPath!.slice(0, i + 1) })}>
 								<span class="breadcrumb-icon">${ICONS.folder}</span>${folder}
 							</span>
 						`)}
@@ -838,14 +962,14 @@ export class KwConnectionManager extends LitElement {
 			const fnCount = schema.functions?.length ?? 0;
 			return html`
 				${tableCount > 0 ? html`
-					<div class="explorer-list-item" @click=${() => { this._explorerPath = { ...ep, section: 'tables', folderPath: [] }; }}>
+					<div class="explorer-list-item" @click=${() => this._setKustoExplorerPath({ ...ep, section: 'tables', folderPath: [] })}>
 						<span class="explorer-list-item-icon table">${ICONS.table}</span>
 						<span class="explorer-list-item-name">Tables</span>
 						<span class="explorer-list-item-meta">${tableCount}</span>
 					</div>
 				` : nothing}
 				${fnCount > 0 ? html`
-					<div class="explorer-list-item" @click=${() => { this._explorerPath = { ...ep, section: 'functions', folderPath: [] }; }}>
+					<div class="explorer-list-item" @click=${() => this._setKustoExplorerPath({ ...ep, section: 'functions', folderPath: [] })}>
 						<span class="explorer-list-item-icon function">${ICONS.function}</span>
 						<span class="explorer-list-item-name">Functions</span>
 						<span class="explorer-list-item-meta">${fnCount}</span>
@@ -874,7 +998,7 @@ export class KwConnectionManager extends LitElement {
 			${folders.map(f => {
 				const childCount = this._countTreeItems(currentNode[f]);
 				return html`
-				<div class="explorer-list-item" @click=${() => { this._explorerPath = { ...ep, folderPath: [...(ep.folderPath ?? []), f] }; }}>
+				<div class="explorer-list-item" @click=${() => this._setKustoExplorerPath({ ...ep, folderPath: [...(ep.folderPath ?? []), f] })}>
 					<span class="explorer-list-item-icon folder">${ICONS.folder}</span>
 					<span class="explorer-list-item-name">${f}</span>
 					<span class="explorer-list-item-meta">${childCount} item${childCount !== 1 ? 's' : ''}</span>
@@ -931,7 +1055,7 @@ export class KwConnectionManager extends LitElement {
 			${folders.map(f => {
 				const childCount = this._countTreeItems(currentNode[f]);
 				return html`
-				<div class="explorer-list-item" @click=${() => { this._explorerPath = { ...ep, folderPath: [...(ep.folderPath ?? []), f] }; }}>
+				<div class="explorer-list-item" @click=${() => this._setKustoExplorerPath({ ...ep, folderPath: [...(ep.folderPath ?? []), f] })}>
 					<span class="explorer-list-item-icon folder">${ICONS.folder}</span>
 					<span class="explorer-list-item-name">${f}</span>
 					<span class="explorer-list-item-meta">${childCount} item${childCount !== 1 ? 's' : ''}</span>
@@ -1054,10 +1178,10 @@ export class KwConnectionManager extends LitElement {
 		return html`
 			<!-- Filter tabs (always visible) -->
 			<div class="filter-bar" data-testid="cm-sql-filter-bar">
-				<button class="filter-tab ${af === 'all' ? 'active' : ''}" data-testid="cm-sql-filter-all" @click=${() => { this._activeFilter = 'all'; this._validateSqlBreadcrumb(); }}>${ICONS.sqlServer} <span class="filter-label">All</span></button>
-				${hasFavs ? html`<button class="filter-tab fav-tab ${af === 'favorites' ? 'active' : ''}" data-testid="cm-sql-filter-favorites" @click=${() => { this._activeFilter = af === 'favorites' ? 'all' : 'favorites'; this._validateSqlBreadcrumb(); }}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${sqlFavorites.length}</span></button>` : nothing}
-				${hasLnt ? html`<button class="filter-tab lnt-tab ${af === 'lnt' ? 'active' : ''}" @click=${() => { this._activeFilter = af === 'lnt' ? 'all' : 'lnt'; this._validateSqlBreadcrumb(); }}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${sqlLntIds.length}</span></button>` : nothing}
-				<button class="filter-tab search-tab ${af === 'search' ? 'active' : ''}" data-testid="cm-sql-filter-search" @click=${() => { this._activeFilter = af === 'search' ? 'all' : 'search'; if (this._search.kind !== 'sql') this._search.setKind('sql'); }}>${ICONS.toolbarSearch} <span class="filter-label">Search</span></button>
+				<button class="filter-tab ${af === 'all' ? 'active' : ''}" data-testid="cm-sql-filter-all" @click=${() => this._setSqlFilter('all')}>${ICONS.sqlServer} <span class="filter-label">All</span></button>
+				${hasFavs ? html`<button class="filter-tab fav-tab ${af === 'favorites' ? 'active' : ''}" data-testid="cm-sql-filter-favorites" @click=${() => this._setSqlFilter(af === 'favorites' ? 'all' : 'favorites')}>${ICONS.starFilled} <span class="filter-label">Favorites</span> <span class="filter-count">${sqlFavorites.length}</span></button>` : nothing}
+				${hasLnt ? html`<button class="filter-tab lnt-tab ${af === 'lnt' ? 'active' : ''}" @click=${() => this._setSqlFilter(af === 'lnt' ? 'all' : 'lnt')}>${ICONS.shield} <span class="filter-label">Leave No Trace</span> <span class="filter-count">${sqlLntIds.length}</span></button>` : nothing}
+				<button class="filter-tab search-tab ${af === 'search' ? 'active' : ''}" data-testid="cm-sql-filter-search" @click=${() => this._setSqlFilter(af === 'search' ? 'all' : 'search')}>${ICONS.toolbarSearch} <span class="filter-label">Search</span></button>
 			</div>
 
 			${af === 'search' ? this._renderSearchContent() : html`
@@ -1110,7 +1234,7 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _drillIntoSqlConnection(connId: string): void {
-		this._sqlExplorerPath = { connectionId: connId };
+		this._setSqlExplorerPath({ connectionId: connId });
 		this._vscode.postMessage({ type: 'sql.cluster.expand', connectionId: connId });
 	}
 
@@ -1125,11 +1249,11 @@ export class KwConnectionManager extends LitElement {
 		return html`
 			<div class="explorer-breadcrumb">
 				<button class="btn-icon breadcrumb-back" data-testid="cm-sql-breadcrumb-back" title="Go back" @click=${() => this._navigateSqlBack()}>${ICONS.arrowLeft}</button>
-				<span class="breadcrumb-item" @click=${() => { this._sqlExplorerPath = null; }}>
+				<span class="breadcrumb-item" @click=${() => this._setSqlExplorerPath(null)}>
 					<span class="breadcrumb-icon">${rootIcon}</span>${rootLabel}
 				</span>
 				<span class="breadcrumb-separator">/</span>
-				<span class="breadcrumb-item ${!ep.database ? 'current' : ''}" @click=${() => { this._sqlExplorerPath = { connectionId: conn.id }; }}>
+				<span class="breadcrumb-item ${!ep.database ? 'current' : ''}" @click=${() => this._setSqlExplorerPath({ connectionId: conn.id })}>
 					<span class="breadcrumb-icon">${ICONS.sqlServer}</span>${conn.name}
 				</span>
 				${!ep.database ? html`
@@ -1138,7 +1262,7 @@ export class KwConnectionManager extends LitElement {
 				` : nothing}
 				${ep.database ? html`
 					<span class="breadcrumb-separator">/</span>
-					<span class="breadcrumb-item ${!ep.section ? 'current' : ''}" @click=${() => { this._sqlExplorerPath = { ...ep, section: undefined, folderPath: undefined }; }}>
+					<span class="breadcrumb-item ${!ep.section ? 'current' : ''}" @click=${() => this._setSqlExplorerPath({ ...ep, section: undefined, folderPath: undefined })}>
 						<span class="breadcrumb-icon">${ICONS.database}</span>${ep.database}
 					</span>
 					${ep.section === 'tables' ? html`
@@ -1249,21 +1373,21 @@ export class KwConnectionManager extends LitElement {
 			const spCount = schema.storedProcedures?.length ?? 0;
 			return html`
 				${tableCount > 0 ? html`
-					<div class="explorer-list-item" @click=${() => { this._sqlExplorerPath = { ...ep, section: 'tables' }; }}>
+					<div class="explorer-list-item" @click=${() => this._setSqlExplorerPath({ ...ep, section: 'tables' })}>
 						<span class="explorer-list-item-icon table">${ICONS.table}</span>
 						<span class="explorer-list-item-name">Tables</span>
 						<span class="explorer-list-item-meta">${tableCount}</span>
 					</div>
 				` : nothing}
 				${viewCount > 0 ? html`
-					<div class="explorer-list-item" @click=${() => { this._sqlExplorerPath = { ...ep, section: 'views' }; }}>
+					<div class="explorer-list-item" @click=${() => this._setSqlExplorerPath({ ...ep, section: 'views' })}>
 						<span class="explorer-list-item-icon table">${ICONS.table}</span>
 						<span class="explorer-list-item-name">Views</span>
 						<span class="explorer-list-item-meta">${viewCount}</span>
 					</div>
 				` : nothing}
 				${spCount > 0 ? html`
-					<div class="explorer-list-item" @click=${() => { this._sqlExplorerPath = { ...ep, section: 'functions' }; }}>
+					<div class="explorer-list-item" @click=${() => this._setSqlExplorerPath({ ...ep, section: 'functions' })}>
 						<span class="explorer-list-item-icon function">${ICONS.function}</span>
 						<span class="explorer-list-item-name">Stored Procedures</span>
 						<span class="explorer-list-item-meta">${spCount}</span>
@@ -1292,7 +1416,7 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _navigateToSqlDatabase(conn: SqlConnectionInfo, db: string): void {
-		this._sqlExplorerPath = { connectionId: conn.id, database: db };
+		this._setSqlExplorerPath({ connectionId: conn.id, database: db });
 		const dbKey = conn.id + '|' + db;
 		if (!this._sqlDatabaseSchemas[dbKey]) {
 			this._vscode.postMessage({ type: 'sql.database.getSchema', connectionId: conn.id, database: db });
@@ -1326,18 +1450,18 @@ export class KwConnectionManager extends LitElement {
 
 		const connections = this._snapshot?.sqlConnections ?? [];
 		const conn = connections.find(c => c.id === ep.connectionId);
-		if (!conn) { this._sqlExplorerPath = null; return; }
+		if (!conn) { this._setSqlExplorerPath(null); return; }
 
 		if (this._activeFilter === 'favorites') {
 			const favConnIds = new Set((this._snapshot?.sqlFavorites ?? []).map(f => f.connectionId));
-			if (!favConnIds.has(conn.id)) { this._sqlExplorerPath = null; return; }
+			if (!favConnIds.has(conn.id)) { this._setSqlExplorerPath(null); return; }
 			if (ep.database) {
-				if (!this._getSqlFavorite(conn.id, ep.database)) { this._sqlExplorerPath = { connectionId: ep.connectionId }; return; }
+				if (!this._getSqlFavorite(conn.id, ep.database)) { this._setSqlExplorerPath({ connectionId: ep.connectionId }); return; }
 			}
 		}
 		if (this._activeFilter === 'lnt') {
 			const lntSet = new Set(this._snapshot?.sqlLeaveNoTrace ?? []);
-			if (!lntSet.has(conn.id)) { this._sqlExplorerPath = null; return; }
+			if (!lntSet.has(conn.id)) { this._setSqlExplorerPath(null); return; }
 		}
 	}
 
@@ -1587,14 +1711,14 @@ export class KwConnectionManager extends LitElement {
 
 	private _selectConnection(connId: string): void {
 		this._selectedConnectionId = connId;
-		this._explorerPath = null;
+		this._setKustoExplorerPath(null);
 		this._vscode.postMessage({ type: 'cluster.expand', connectionId: connId });
 	}
 
 	private _selectFavorite(fav: KustoFavorite, conn: KustoConnection | undefined): void {
 		if (conn) {
 			this._selectedConnectionId = conn.id;
-			this._explorerPath = { connectionId: conn.id, database: fav.database };
+			this._setKustoExplorerPath({ connectionId: conn.id, database: fav.database });
 			this._vscode.postMessage({ type: 'cluster.expand', connectionId: conn.id });
 			const dbKey = conn.id + '|' + fav.database;
 			if (!this._databaseSchemas[dbKey]) {
@@ -1604,7 +1728,7 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _navigateToDatabase(conn: KustoConnection, db: string): void {
-		this._explorerPath = { connectionId: conn.id, database: db };
+		this._setKustoExplorerPath({ connectionId: conn.id, database: db });
 		const dbKey = conn.id + '|' + db;
 		if (!this._databaseSchemas[dbKey]) {
 			this._vscode.postMessage({ type: 'database.getSchema', connectionId: conn.id, database: db });
@@ -1791,13 +1915,13 @@ export class KwConnectionManager extends LitElement {
 		const ep = this._explorerPath;
 		if (!ep) return;
 		if (ep.folderPath && ep.folderPath.length > 0) {
-			this._explorerPath = { ...ep, folderPath: ep.folderPath.slice(0, -1) };
+			this._setKustoExplorerPath({ ...ep, folderPath: ep.folderPath.slice(0, -1) });
 		} else if (ep.section) {
-			this._explorerPath = { ...ep, section: undefined, folderPath: undefined, tableName: undefined };
+			this._setKustoExplorerPath({ ...ep, section: undefined, folderPath: undefined, tableName: undefined });
 		} else if (ep.database) {
-			this._explorerPath = { connectionId: ep.connectionId };
+			this._setKustoExplorerPath({ connectionId: ep.connectionId });
 		} else {
-			this._explorerPath = null;
+			this._setKustoExplorerPath(null);
 		}
 	}
 
@@ -1805,11 +1929,11 @@ export class KwConnectionManager extends LitElement {
 		const ep = this._sqlExplorerPath;
 		if (!ep) return;
 		if (ep.section) {
-			this._sqlExplorerPath = { ...ep, section: undefined, folderPath: undefined };
+			this._setSqlExplorerPath({ ...ep, section: undefined, folderPath: undefined });
 		} else if (ep.database) {
-			this._sqlExplorerPath = { connectionId: ep.connectionId };
+			this._setSqlExplorerPath({ connectionId: ep.connectionId });
 		} else {
-			this._sqlExplorerPath = null;
+			this._setSqlExplorerPath(null);
 		}
 	}
 
@@ -2039,10 +2163,13 @@ export class KwConnectionManager extends LitElement {
 	}
 
 	private _navigateToSearchResult(r: SearchResult): void {
-		this._activeFilter = 'all';
+		const filterChanged = this._activeFilter !== 'all';
+		if (filterChanged) {
+			this._activeFilter = 'all';
+		}
 		if (r.kind === 'kusto') {
 			if (r.category === 'cluster' || r.category === 'database') {
-				this._explorerPath = r.database ? { connectionId: r.connectionId, database: r.database } : { connectionId: r.connectionId };
+				this._setKustoExplorerPath(r.database ? { connectionId: r.connectionId, database: r.database } : { connectionId: r.connectionId });
 				this._vscode.postMessage({ type: 'cluster.expand', connectionId: r.connectionId });
 				if (r.database) {
 					const dbKey = r.connectionId + '|' + r.database;
@@ -2051,7 +2178,7 @@ export class KwConnectionManager extends LitElement {
 					}
 				}
 			} else if (r.category === 'table' || r.category === 'column') {
-				this._explorerPath = { connectionId: r.connectionId, database: r.database, section: 'tables', folderPath: [] };
+				this._setKustoExplorerPath({ connectionId: r.connectionId, database: r.database, section: 'tables', folderPath: [] });
 				this._vscode.postMessage({ type: 'cluster.expand', connectionId: r.connectionId });
 				if (r.database) {
 					const dbKey = r.connectionId + '|' + r.database;
@@ -2060,7 +2187,7 @@ export class KwConnectionManager extends LitElement {
 					}
 				}
 			} else if (r.category === 'function') {
-				this._explorerPath = { connectionId: r.connectionId, database: r.database, section: 'functions', folderPath: [] };
+				this._setKustoExplorerPath({ connectionId: r.connectionId, database: r.database, section: 'functions', folderPath: [] });
 				this._vscode.postMessage({ type: 'cluster.expand', connectionId: r.connectionId });
 				if (r.database) {
 					const dbKey = r.connectionId + '|' + r.database;
@@ -2071,7 +2198,7 @@ export class KwConnectionManager extends LitElement {
 			}
 		} else {
 			if (r.category === 'server' || r.category === 'database') {
-				this._sqlExplorerPath = r.database ? { connectionId: r.connectionId, database: r.database } : { connectionId: r.connectionId };
+				this._setSqlExplorerPath(r.database ? { connectionId: r.connectionId, database: r.database } : { connectionId: r.connectionId });
 				this._vscode.postMessage({ type: 'sql.cluster.expand', connectionId: r.connectionId });
 				if (r.database) {
 					const dbKey = r.connectionId + '|' + r.database;
@@ -2080,7 +2207,7 @@ export class KwConnectionManager extends LitElement {
 					}
 				}
 			} else if (r.category === 'table' || r.category === 'column') {
-				this._sqlExplorerPath = { connectionId: r.connectionId, database: r.database, section: 'tables' };
+				this._setSqlExplorerPath({ connectionId: r.connectionId, database: r.database, section: 'tables' });
 				this._vscode.postMessage({ type: 'sql.cluster.expand', connectionId: r.connectionId });
 				if (r.database) {
 					const dbKey = r.connectionId + '|' + r.database;
@@ -2089,7 +2216,7 @@ export class KwConnectionManager extends LitElement {
 					}
 				}
 			} else if (r.category === 'view') {
-				this._sqlExplorerPath = { connectionId: r.connectionId, database: r.database, section: 'views' };
+				this._setSqlExplorerPath({ connectionId: r.connectionId, database: r.database, section: 'views' });
 				this._vscode.postMessage({ type: 'sql.cluster.expand', connectionId: r.connectionId });
 				if (r.database) {
 					const dbKey = r.connectionId + '|' + r.database;
@@ -2098,7 +2225,7 @@ export class KwConnectionManager extends LitElement {
 					}
 				}
 			} else if (r.category === 'stored-procedure') {
-				this._sqlExplorerPath = { connectionId: r.connectionId, database: r.database, section: 'functions' };
+				this._setSqlExplorerPath({ connectionId: r.connectionId, database: r.database, section: 'functions' });
 				this._vscode.postMessage({ type: 'sql.cluster.expand', connectionId: r.connectionId });
 				if (r.database) {
 					const dbKey = r.connectionId + '|' + r.database;
@@ -2107,6 +2234,9 @@ export class KwConnectionManager extends LitElement {
 					}
 				}
 			}
+		}
+		if (filterChanged) {
+			this._scheduleExplorerScrollReset();
 		}
 	}
 
