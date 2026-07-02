@@ -224,6 +224,8 @@ export class KwConnectionManager extends LitElement {
 	@state() private _loadingDatabases = new Set<string>();
 	@state() private _databaseLoadErrors: Record<string, string> = {};
 	@state() private _schemaLoadErrors: Record<string, string> = {};
+	@state() private _loadingSchemaKeys = new Set<string>();
+	@state() private _refreshingSchemaKeys = new Set<string>();
 	@state() private _activeFilter: ActiveFilter = 'all';
 	@state() private _refreshMenuOpen = false;
 
@@ -253,6 +255,7 @@ export class KwConnectionManager extends LitElement {
 	@state() private _sqlLoadingDatabases = new Set<string>();
 	@state() private _sqlDatabaseLoadErrors: Record<string, string> = {};
 	@state() private _sqlSchemaLoadErrors: Record<string, string> = {};
+	@state() private _sqlLoadingSchemaKeys = new Set<string>();
 
 	// ── VS Code API ───────────────────────────────────────────────────────────
 
@@ -513,26 +516,31 @@ export class KwConnectionManager extends LitElement {
 				break;
 			case 'loadingSchema': {
 				const dbKey = msg.connectionId + '|' + msg.database;
+				this._loadingSchemaKeys = new Set([...this._loadingSchemaKeys, this._getKustoSchemaKey(msg.connectionId, msg.database)]);
 				this._schemaLoadErrors = { ...this._schemaLoadErrors, [dbKey]: '' };
 				break;
 			}
 			case 'schemaLoaded': {
 				const dbKey = msg.connectionId + '|' + msg.database;
+				this._loadingSchemaKeys = new Set([...this._loadingSchemaKeys].filter(key => key !== this._getKustoSchemaKey(msg.connectionId, msg.database)));
 				this._databaseSchemas = { ...this._databaseSchemas, [dbKey]: msg.schema };
 				this._schemaLoadErrors = { ...this._schemaLoadErrors, [dbKey]: '' };
 				break;
 			}
 			case 'schemaLoadError': {
 				const dbKey = msg.connectionId + '|' + msg.database;
+				this._loadingSchemaKeys = new Set([...this._loadingSchemaKeys].filter(key => key !== this._getKustoSchemaKey(msg.connectionId, msg.database)));
 				this._schemaLoadErrors = { ...this._schemaLoadErrors, [dbKey]: msg.error || 'Failed to load schema.' };
 				break;
 			}
-			case 'schemaRefreshStarted':
-				// Could add visual indicator
+			case 'schemaRefreshStarted': {
+				this._refreshingSchemaKeys = new Set([...this._refreshingSchemaKeys, this._getKustoRefreshSchemaKey(msg.clusterUrl, msg.database)]);
 				break;
-			case 'schemaRefreshCompleted':
-				// Could remove visual indicator
+			}
+			case 'schemaRefreshCompleted': {
+				this._refreshingSchemaKeys = new Set([...this._refreshingSchemaKeys].filter(key => key !== this._getKustoRefreshSchemaKey(msg.clusterUrl, msg.database)));
 				break;
+			}
 			case 'tablePreviewLoading': {
 				const prevKey = msg.connectionId + '|' + msg.database + '|table|' + msg.tableName;
 				this._tablePreviewData = { ...this._tablePreviewData, [prevKey]: { loading: true } };
@@ -569,17 +577,20 @@ export class KwConnectionManager extends LitElement {
 				break;
 			case 'sql.loadingSchema': {
 				const sqlDbKey = msg.connectionId + '|' + msg.database;
+				this._sqlLoadingSchemaKeys = new Set([...this._sqlLoadingSchemaKeys, this._getSqlSchemaKey(msg.connectionId, msg.database)]);
 				this._sqlSchemaLoadErrors = { ...this._sqlSchemaLoadErrors, [sqlDbKey]: '' };
 				break;
 			}
 			case 'sql.schemaLoaded': {
 				const sqlDbKey = msg.connectionId + '|' + msg.database;
+				this._sqlLoadingSchemaKeys = new Set([...this._sqlLoadingSchemaKeys].filter(key => key !== this._getSqlSchemaKey(msg.connectionId, msg.database)));
 				this._sqlDatabaseSchemas = { ...this._sqlDatabaseSchemas, [sqlDbKey]: msg.schema };
 				this._sqlSchemaLoadErrors = { ...this._sqlSchemaLoadErrors, [sqlDbKey]: '' };
 				break;
 			}
 			case 'sql.schemaLoadError': {
 				const sqlDbKey = msg.connectionId + '|' + msg.database;
+				this._sqlLoadingSchemaKeys = new Set([...this._sqlLoadingSchemaKeys].filter(key => key !== this._getSqlSchemaKey(msg.connectionId, msg.database)));
 				this._sqlSchemaLoadErrors = { ...this._sqlSchemaLoadErrors, [sqlDbKey]: msg.error || 'Failed to load schema.' };
 				break;
 			}
@@ -639,6 +650,31 @@ export class KwConnectionManager extends LitElement {
 		return this._snapshot.leaveNoTraceClusters.some(u => normalizeClusterUrl(u) === normalized);
 	}
 
+	private _getKustoSchemaKey(connectionId: string, database: string | undefined): string {
+		return `${String(connectionId || '').trim()}|${String(database || '').trim().toLowerCase()}`;
+	}
+
+	private _getKustoRefreshSchemaKey(clusterUrl: string, database: string | undefined): string {
+		return `${normalizeClusterUrl(clusterUrl)}|${String(database || '').trim().toLowerCase()}`;
+	}
+
+	private _getSqlSchemaKey(connectionId: string, database: string | undefined): string {
+		return `${String(connectionId || '').trim()}|${String(database || '').trim().toLowerCase()}`;
+	}
+
+	private _isKustoSchemaBusy(conn: KustoConnection, database: string | undefined): boolean {
+		return this._loadingSchemaKeys.has(this._getKustoSchemaKey(conn.id, database))
+			|| this._refreshingSchemaKeys.has(this._getKustoRefreshSchemaKey(conn.clusterUrl, database));
+	}
+
+	private _isSqlSchemaBusy(connectionId: string, database: string | undefined): boolean {
+		return this._sqlLoadingSchemaKeys.has(this._getSqlSchemaKey(connectionId, database));
+	}
+
+	private _renderRefreshIcon(isBusy: boolean): TemplateResult {
+		return isBusy ? ICONS.spinner : ICONS.refresh;
+	}
+
 	private _getFavorite(clusterUrl: string, database: string): KustoFavorite | undefined {
 		if (!this._snapshot?.favorites) return undefined;
 		const nUrl = normalizeClusterUrl(clusterUrl);
@@ -677,11 +713,11 @@ export class KwConnectionManager extends LitElement {
 						${ICONS.add} <span class="header-btn-label">Add connection</span>
 					</button>
 					${kind === 'kusto' ? html`
-						<button class="header-btn" title="Import" @click=${() => this._vscode.postMessage({ type: 'connection.importXml' })}>
-							${ICONS.importIcon} <span class="header-btn-label">Import</span>
+						<button class="header-btn secondary" title="Import" data-testid="cm-import-connections" @click=${() => this._vscode.postMessage({ type: 'connection.importXml' })}>
+							${ICONS.connectionImport} <span class="header-btn-label">Import</span>
 						</button>
-						<button class="header-btn" title="Export" @click=${() => this._vscode.postMessage({ type: 'connection.exportXml' })}>
-							${ICONS.save} <span class="header-btn-label">Export</span>
+						<button class="header-btn secondary" title="Export" data-testid="cm-export-connections" @click=${() => this._vscode.postMessage({ type: 'connection.exportXml' })}>
+							${ICONS.connectionExport} <span class="header-btn-label">Export</span>
 						</button>
 					` : nothing}
 				</div>
@@ -846,6 +882,7 @@ export class KwConnectionManager extends LitElement {
 		const ep = this._explorerPath;
 		const rootLabel = this._activeFilter === 'favorites' ? 'Favorites' : this._activeFilter === 'lnt' ? 'Leave No Trace' : 'All';
 		const rootIcon = this._activeFilter === 'favorites' ? ICONS.starFilled : this._activeFilter === 'lnt' ? ICONS.shield : ICONS.kustoCluster;
+		const schemaBusy = ep?.database ? this._isKustoSchemaBusy(conn, ep.database) : false;
 		return html`
 			<div class="explorer-breadcrumb">
 				<button class="btn-icon breadcrumb-back" data-testid="cm-breadcrumb-back" title="Go back" @click=${() => this._navigateBack()}>${ICONS.arrowLeft}</button>
@@ -879,7 +916,7 @@ export class KwConnectionManager extends LitElement {
 						`)}
 					` : nothing}
 					<button class="btn-icon breadcrumb-refresh" title="Refresh schema for ${ep.database}"
-						@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: conn.clusterUrl, database: ep.database, source: 'breadcrumb' }); }}>${ICONS.refresh}</button>
+						@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: conn.clusterUrl, database: ep.database, source: 'breadcrumb' }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
 				` : nothing}
 			</div>
 		`;
@@ -955,7 +992,7 @@ export class KwConnectionManager extends LitElement {
 				<button class="btn" @click=${() => this._vscode.postMessage({ type: 'database.getSchema', connectionId: conn.id, database: ep.database })}>Retry</button>
 			</div>`;
 		}
-		if (!schema) return html`<div class="loading-state">${ICONS.spinner} Loading schema...</div>`;
+		if (!schema) return html`<div class="loading-state">Loading schema...</div>`;
 
 		if (!ep.section) {
 			const tableCount = schema.tables?.length ?? 0;
@@ -993,6 +1030,7 @@ export class KwConnectionManager extends LitElement {
 		const folders = sortStringsAlphabetically(Object.keys(currentNode).filter(folderName => folderName !== '__items'));
 		const tables = sortStringsAlphabetically((currentNode as { __items?: string[] }).__items);
 		const dbKey = conn.id + '|' + ep.database;
+		const schemaBusy = this._isKustoSchemaBusy(conn, ep.database);
 
 		return html`
 			${folders.map(f => {
@@ -1021,7 +1059,7 @@ export class KwConnectionManager extends LitElement {
 							${colNames.length > 0 ? html`<span class="explorer-list-item-meta">${colNames.length} cols</span>` : nothing}
 							<div class="explorer-list-item-actions">
 								<button class="btn-icon" title="Refresh schema for ${ep.database}"
-									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: conn.clusterUrl, database: ep.database, source: 'table' }); }}>${ICONS.refresh}</button>
+									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: conn.clusterUrl, database: ep.database, source: 'table' }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
 							</div>
 						</div>
 						${isExpanded ? html`
@@ -1050,6 +1088,8 @@ export class KwConnectionManager extends LitElement {
 		const folders = sortStringsAlphabetically(Object.keys(currentNode).filter(folderName => folderName !== '__items'));
 		const functions = sortByAlphabeticLabels((currentNode as { __items?: KustoFunctionInfo[] }).__items, functionInfo => [functionInfo.name]);
 		const dbKey = (this._explorerPath?.connectionId ?? '') + '|' + ep.database;
+		const conn = this._snapshot?.connections?.find(c => c.id === this._explorerPath?.connectionId);
+		const schemaBusy = conn ? this._isKustoSchemaBusy(conn, ep.database) : false;
 
 		return html`
 			${folders.map(f => {
@@ -1073,7 +1113,7 @@ export class KwConnectionManager extends LitElement {
 							${fn.parametersText ? html`<span class="explorer-list-item-params">(${fn.parametersText})</span>` : nothing}
 							<div class="explorer-list-item-actions">
 								<button class="btn-icon" title="Refresh schema for ${ep.database}"
-									@click=${(e: Event) => { const conn = this._snapshot?.connections?.find(c => c.id === this._explorerPath?.connectionId); if (!conn) return; e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: conn.clusterUrl, database: ep.database, source: 'function' }); }}>${ICONS.refresh}</button>
+									@click=${(e: Event) => { if (!conn) return; e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: conn.clusterUrl, database: ep.database, source: 'function' }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
 							</div>
 						</div>
 						${isExpanded ? html`
@@ -1245,6 +1285,7 @@ export class KwConnectionManager extends LitElement {
 		if (!conn) return html``;
 		const rootLabel = this._activeFilter === 'favorites' ? 'Favorites' : this._activeFilter === 'lnt' ? 'Leave No Trace' : 'All';
 		const rootIcon = this._activeFilter === 'favorites' ? ICONS.starFilled : this._activeFilter === 'lnt' ? ICONS.shield : ICONS.sqlServer;
+		const schemaBusy = ep.database ? this._isSqlSchemaBusy(conn.id, ep.database) : false;
 
 		return html`
 			<div class="explorer-breadcrumb">
@@ -1284,7 +1325,7 @@ export class KwConnectionManager extends LitElement {
 						</span>
 					` : nothing}
 					<button class="btn-icon breadcrumb-refresh" title="Refresh schema for ${ep.database}"
-						@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.refreshSchema', connectionId: conn.id, database: ep.database, source: 'breadcrumb' }); }}>${ICONS.refresh}</button>
+						@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.refreshSchema', connectionId: conn.id, database: ep.database, source: 'breadcrumb' }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
 				` : nothing}
 			</div>
 		`;
@@ -1365,7 +1406,7 @@ export class KwConnectionManager extends LitElement {
 				<button class="btn" @click=${() => this._vscode.postMessage({ type: 'sql.database.getSchema', connectionId: conn.id, database: ep.database })}>Retry</button>
 			</div>`;
 		}
-		if (!schema) return html`<div class="loading-state">${ICONS.spinner} Loading schema...</div>`;
+		if (!schema) return html`<div class="loading-state">Loading schema...</div>`;
 
 		if (!ep.section) {
 			const tableCount = schema.tables?.length ?? 0;
@@ -1468,6 +1509,7 @@ export class KwConnectionManager extends LitElement {
 	private _renderSqlTablesLevel(conn: SqlConnectionInfo, schema: SqlDatabaseSchema, ep: ExplorerPath): TemplateResult {
 		const tables = sortStringsAlphabetically(schema.tables);
 		const dbKey = conn.id + '|' + ep.database;
+		const schemaBusy = this._isSqlSchemaBusy(conn.id, ep.database);
 
 		return html`
 			${tables.map(table => {
@@ -1486,7 +1528,7 @@ export class KwConnectionManager extends LitElement {
 							${colNames.length > 0 ? html`<span class="explorer-list-item-meta">${colNames.length} cols</span>` : nothing}
 							<div class="explorer-list-item-actions">
 								<button class="btn-icon" title="Refresh schema for ${ep.database}"
-									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.refreshSchema', connectionId: conn.id, database: ep.database }); }}>${ICONS.refresh}</button>
+									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.refreshSchema', connectionId: conn.id, database: ep.database }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
 							</div>
 						</div>
 						${isExpanded ? html`
@@ -1511,6 +1553,7 @@ export class KwConnectionManager extends LitElement {
 	private _renderSqlViewsLevel(conn: SqlConnectionInfo, schema: SqlDatabaseSchema, ep: ExplorerPath): TemplateResult {
 		const views = sortStringsAlphabetically(schema.views);
 		const dbKey = conn.id + '|' + ep.database;
+		const schemaBusy = this._isSqlSchemaBusy(conn.id, ep.database);
 
 		return html`
 			${views.map(view => {
@@ -1529,7 +1572,7 @@ export class KwConnectionManager extends LitElement {
 							${colNames.length > 0 ? html`<span class="explorer-list-item-meta">${colNames.length} cols</span>` : nothing}
 							<div class="explorer-list-item-actions">
 								<button class="btn-icon" title="Refresh schema for ${ep.database}"
-									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.refreshSchema', connectionId: conn.id, database: ep.database, source: 'view' }); }}>${ICONS.refresh}</button>
+									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.refreshSchema', connectionId: conn.id, database: ep.database, source: 'view' }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
 							</div>
 						</div>
 						${isExpanded ? html`
@@ -1560,6 +1603,7 @@ export class KwConnectionManager extends LitElement {
 		const procedures = sortByAlphabeticLabels(schema.storedProcedures, storedProcedure => [storedProcedure.name]);
 		const dbKey = (this._sqlExplorerPath?.connectionId ?? '') + '|' + ep.database;
 		const connectionId = this._sqlExplorerPath?.connectionId ?? '';
+		const schemaBusy = this._isSqlSchemaBusy(connectionId, ep.database);
 
 		return html`
 			${procedures.map(sp => {
@@ -1574,7 +1618,7 @@ export class KwConnectionManager extends LitElement {
 							${sp.parametersText ? html`<span class="explorer-list-item-params">(${sp.parametersText})</span>` : nothing}
 							<div class="explorer-list-item-actions">
 								<button class="btn-icon" title="Refresh schema for ${ep.database}"
-									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.refreshSchema', connectionId, database: ep.database, source: 'stored procedure' }); }}>${ICONS.refresh}</button>
+									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.refreshSchema', connectionId, database: ep.database, source: 'stored procedure' }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
 							</div>
 						</div>
 						${isExpanded ? html`

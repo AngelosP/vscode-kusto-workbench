@@ -3,9 +3,10 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [4.7.4] - 2026.06.30
+## [4.7.4] - 2026.07.02
 
 * Improved 'file open' performance.
+* Better icons for import and export connections.
 * Bugs
     * Some models would occasionally show tool call errors in versions v1.122.0+ of VS Code (more edge cases fixed)
     * Connection Manager would in certain cases require you to scroll before it would display the databases of the selected cluster (scroll view bug)

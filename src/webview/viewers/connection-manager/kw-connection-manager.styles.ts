@@ -47,9 +47,10 @@ export const styles = css`
 		.title-actions { display: flex; gap: 6px; flex-shrink: 0; }
 		.page-header { margin-bottom: 8px; }
 		.picker-actions-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 10px; flex-wrap: wrap; container-type: inline-size; }
-		.header-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; font-size: 12px; border-radius: 3px; border: 1px solid var(--vscode-button-border, transparent); background: var(--vscode-button-secondaryBackground); color: var(--vscode-button-secondaryForeground); cursor: pointer; font-family: inherit; white-space: nowrap; height: 28px; box-sizing: border-box; transition: padding 0.2s ease, gap 0.2s ease; overflow: hidden; }
-		.header-btn:hover { background: var(--vscode-button-secondaryHoverBackground); }
-		.header-btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); }
+		.header-btn { display: inline-flex; align-items: center; gap: 5px; padding: 4px 10px; font-size: 12px; border-radius: 3px; border: 1px solid transparent; background: transparent; color: var(--vscode-foreground); cursor: pointer; font-family: inherit; white-space: nowrap; height: 28px; box-sizing: border-box; transition: padding 0.2s ease, gap 0.2s ease; overflow: hidden; }
+		.header-btn.secondary { background: transparent; color: var(--vscode-foreground); border-color: transparent; }
+		.header-btn.secondary:hover:not(:disabled) { background: var(--vscode-list-hoverBackground); }
+		.header-btn.primary { background: var(--vscode-button-background); color: var(--vscode-button-foreground); border-color: var(--vscode-button-border, transparent); }
 		.header-btn.primary:hover { background: var(--vscode-button-hoverBackground); }
 		.header-btn svg { width: 14px; height: 14px; fill: currentColor; flex-shrink: 0; }
 		.header-btn-label { display: inline; transition: max-width 0.2s ease, opacity 0.15s ease; max-width: 120px; opacity: 1; overflow: hidden; }

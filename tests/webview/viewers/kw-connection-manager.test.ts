@@ -104,6 +104,10 @@ function clickButtonByTestId(el: KwConnectionManager, testId: string): void {
 	button!.click();
 }
 
+function hasSpinner(element: Element | null | undefined): boolean {
+	return !!element?.querySelector('.spin');
+}
+
 function explorerContent(el: KwConnectionManager): HTMLElement {
 	const content = el.shadowRoot!.querySelector('.explorer-content') as HTMLElement | null;
 	expect(content).not.toBeNull();
@@ -156,6 +160,30 @@ afterEach(() => {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('kw-connection-manager', () => {
+
+	// ── Header actions ─────────────────────────────────────────────────────────
+
+	describe('header actions', () => {
+		it('Kusto: import and export use secondary header button styling', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot());
+			await el.updateComplete;
+
+			const add = el.shadowRoot!.querySelector('[data-testid="cm-add-connection"]') as HTMLButtonElement | null;
+			const importButton = el.shadowRoot!.querySelector('[data-testid="cm-import-connections"]') as HTMLButtonElement | null;
+			const exportButton = el.shadowRoot!.querySelector('[data-testid="cm-export-connections"]') as HTMLButtonElement | null;
+
+			expect(add).not.toBeNull();
+			expect(importButton).not.toBeNull();
+			expect(exportButton).not.toBeNull();
+			expect(add!.classList.contains('primary')).toBe(true);
+			expect(add!.classList.contains('secondary')).toBe(false);
+			expect(importButton!.classList.contains('secondary')).toBe(true);
+			expect(importButton!.classList.contains('primary')).toBe(false);
+			expect(exportButton!.classList.contains('secondary')).toBe(true);
+			expect(exportButton!.classList.contains('primary')).toBe(false);
+		});
+	});
 
 	// ── Alphabetical ordering ──────────────────────────────────────────────────
 
@@ -783,6 +811,45 @@ describe('kw-connection-manager', () => {
 				expect.objectContaining({ type: 'database.refreshSchema', database: 'db1' })
 			);
 		});
+
+		it('Kusto: schema loading state has no duplicate inline spinner', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot());
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MyCluster');
+			await el.updateComplete;
+			clickListItemByName(el, 'db1');
+			await el.updateComplete;
+
+			const loading = el.shadowRoot!.querySelector('.loading-state');
+			expect(loading?.textContent).toContain('Loading schema...');
+			expect(hasSpinner(loading)).toBe(false);
+		});
+
+		it('Kusto: database-level refresh shows spinner while schema refresh is in flight', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot());
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MyCluster');
+			await el.updateComplete;
+			clickListItemByName(el, 'db1');
+			await el.updateComplete;
+
+			let refreshBtn = el.shadowRoot!.querySelector('.breadcrumb-refresh') as HTMLButtonElement | null;
+			expect(hasSpinner(refreshBtn)).toBe(false);
+
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'schemaRefreshStarted', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1' } }));
+			await el.updateComplete;
+			refreshBtn = el.shadowRoot!.querySelector('.breadcrumb-refresh') as HTMLButtonElement | null;
+			expect(hasSpinner(refreshBtn)).toBe(true);
+
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'schemaRefreshCompleted', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1', success: true } }));
+			await el.updateComplete;
+			refreshBtn = el.shadowRoot!.querySelector('.breadcrumb-refresh') as HTMLButtonElement | null;
+			expect(hasSpinner(refreshBtn)).toBe(false);
+		});
 	});
 
 	// ── Preview refresh ───────────────────────────────────────────────────────
@@ -1041,6 +1108,77 @@ describe('kw-connection-manager', () => {
 			expect(postedMessages).toContainEqual(
 				expect.objectContaining({ type: 'database.refreshSchema', database: 'db1' })
 			);
+		});
+
+		it('Kusto: function row refresh shows spinner while schema refresh is in flight', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot());
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MyCluster');
+			await el.updateComplete;
+			clickListItemByName(el, 'db1');
+			await el.updateComplete;
+
+			sendSchemaLoaded(el, 'c1', 'db1', { tables: [], functions: [{ name: 'AgentHealth', folder: 'Agents' }] });
+			await el.updateComplete;
+
+			clickListItemByName(el, 'Functions');
+			await el.updateComplete;
+			clickListItemByName(el, 'Agents');
+			await el.updateComplete;
+
+			let functionRow = Array.from(el.shadowRoot!.querySelectorAll('.explorer-list-item'))
+				.find(row => row.querySelector('.explorer-list-item-name')?.textContent?.trim() === 'AgentHealth');
+			let refreshBtn = functionRow?.querySelector('.explorer-list-item-actions .btn-icon');
+			expect(hasSpinner(refreshBtn)).toBe(false);
+
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'schemaRefreshStarted', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1' } }));
+			await el.updateComplete;
+
+			functionRow = Array.from(el.shadowRoot!.querySelectorAll('.explorer-list-item'))
+				.find(row => row.querySelector('.explorer-list-item-name')?.textContent?.trim() === 'AgentHealth');
+			refreshBtn = functionRow?.querySelector('.explorer-list-item-actions .btn-icon');
+			expect(hasSpinner(refreshBtn)).toBe(true);
+		});
+
+		it('SQL: database-level refresh shows spinner while schema load is in flight', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ activeKind: 'sql', connections: [], cachedDatabases: {} }));
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MySqlServer');
+			await el.updateComplete;
+			clickListItemByName(el, 'sqldb1');
+			await el.updateComplete;
+
+			let refreshBtn = el.shadowRoot!.querySelector('.breadcrumb-refresh') as HTMLButtonElement | null;
+			expect(hasSpinner(refreshBtn)).toBe(false);
+
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'sql.loadingSchema', connectionId: 'sql1', database: 'sqldb1' } }));
+			await el.updateComplete;
+			refreshBtn = el.shadowRoot!.querySelector('.breadcrumb-refresh') as HTMLButtonElement | null;
+			expect(hasSpinner(refreshBtn)).toBe(true);
+
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'sql.schemaLoaded', connectionId: 'sql1', database: 'sqldb1', schema: { tables: [], columnsByTable: {} } } }));
+			await el.updateComplete;
+			refreshBtn = el.shadowRoot!.querySelector('.breadcrumb-refresh') as HTMLButtonElement | null;
+			expect(hasSpinner(refreshBtn)).toBe(false);
+		});
+
+		it('SQL: schema loading state has no duplicate inline spinner', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ activeKind: 'sql', connections: [], cachedDatabases: {} }));
+			await el.updateComplete;
+
+			clickListItemByName(el, 'MySqlServer');
+			await el.updateComplete;
+			clickListItemByName(el, 'sqldb1');
+			await el.updateComplete;
+
+			const loading = el.shadowRoot!.querySelector('.loading-state');
+			expect(loading?.textContent).toContain('Loading schema...');
+			expect(hasSpinner(loading)).toBe(false);
 		});
 
 		it('Kusto: table row refresh click does not toggle expand', async () => {

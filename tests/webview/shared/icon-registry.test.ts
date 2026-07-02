@@ -33,6 +33,8 @@ describe('icon-registry', () => {
 			['newFile', ICONS.newFile],
 			['spinner', ICONS.spinner],
 			['sidebar', ICONS.sidebar],
+			['connectionImport', ICONS.connectionImport],
+			['connectionExport', ICONS.connectionExport],
 			['importIcon', ICONS.importIcon],
 		];
 
