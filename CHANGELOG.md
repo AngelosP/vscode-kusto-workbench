@@ -3,7 +3,7 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [4.7.4] - 2026.07.02
+## [4.7.4] - 2026.07.04
 
 * Improved 'file open' performance.
 * Better icons for import and export connections.
