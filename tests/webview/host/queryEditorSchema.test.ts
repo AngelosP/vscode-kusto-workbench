@@ -9,7 +9,7 @@ function makeRawSchema(database: string) {
 		Databases: {
 			[database]: {
 				Tables: {
-					bizops: {
+					Events: {
 						EntityType: 'Table',
 						OrderedColumns: {
 							TIMESTAMP: { Name: 'TIMESTAMP', CslType: 'datetime' },
@@ -25,11 +25,11 @@ function makeRawSchema(database: string) {
 
 function createService(connection: KustoConnection) {
 	const messages: any[] = [];
-	const rawSchemaJson = makeRawSchema('prod');
+	const rawSchemaJson = makeRawSchema('TelemetryDb');
 	const getDatabaseSchema = vi.fn(async () => ({
 		schema: {
-			tables: ['bizops'],
-			columnTypesByTable: { bizops: { TIMESTAMP: 'datetime', EventName: 'string' } },
+			tables: ['Events'],
+			columnTypesByTable: { Events: { TIMESTAMP: 'datetime', EventName: 'string' } },
 			rawSchemaJson,
 		},
 		fromCache: false,
@@ -55,44 +55,44 @@ function createService(connection: KustoConnection) {
 describe('SchemaService cross-cluster schema requests', () => {
 	it('matches a full ADX host request to a regional short-form configured connection', async () => {
 		const connection: KustoConnection = {
-			id: 'aoai-westus',
-			name: 'AOAI Agents West US',
-			clusterUrl: 'https://aoaiagents1.westus',
+			id: 'semantic-westus',
+			name: 'Synthetic West US',
+			clusterUrl: 'https://semantic-current.westus',
 		};
 		const { service, messages, getDatabaseSchema } = createService(connection);
 
-		await service.handleCrossClusterSchemaRequest('aoaiagents1.westus.kusto.windows.net', 'prod', 'query_1', 'token_1');
+		await service.handleCrossClusterSchemaRequest('semantic-current.westus.kusto.windows.net', 'TelemetryDb', 'query_1', 'token_1');
 
-		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'prod', false);
+		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'TelemetryDb', false);
 		expect(messages).toContainEqual(expect.objectContaining({
 			type: 'crossClusterSchemaData',
-			clusterName: 'aoaiagents1.westus.kusto.windows.net',
-			clusterUrl: 'https://aoaiagents1.westus',
-			database: 'prod',
+			clusterName: 'semantic-current.westus.kusto.windows.net',
+			clusterUrl: 'https://semantic-current.westus',
+			database: 'TelemetryDb',
 			boxId: 'query_1',
 			requestToken: 'token_1',
 			source: 'fresh',
-			rawSchemaJson: makeRawSchema('prod'),
+			rawSchemaJson: makeRawSchema('TelemetryDb'),
 		}));
 		expect(messages).not.toContainEqual(expect.objectContaining({ type: 'crossClusterSchemaError' }));
 	});
 
 	it('matches a regional short-form request to a full ADX host configured connection', async () => {
 		const connection: KustoConnection = {
-			id: 'aoai-westus-full',
-			name: 'AOAI Agents West US Full',
-			clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net',
+			id: 'semantic-westus-full',
+			name: 'Synthetic West US Full',
+			clusterUrl: 'https://semantic-current.westus.kusto.windows.net',
 		};
 		const { service, messages, getDatabaseSchema } = createService(connection);
 
-		await service.handleCrossClusterSchemaRequest('aoaiagents1.westus', 'prod', 'query_2', 'token_2');
+		await service.handleCrossClusterSchemaRequest('semantic-current.westus', 'TelemetryDb', 'query_2', 'token_2');
 
-		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'prod', false);
+		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'TelemetryDb', false);
 		expect(messages).toContainEqual(expect.objectContaining({
 			type: 'crossClusterSchemaData',
-			clusterName: 'aoaiagents1.westus',
-			clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net',
-			database: 'prod',
+			clusterName: 'semantic-current.westus',
+			clusterUrl: 'https://semantic-current.westus.kusto.windows.net',
+			database: 'TelemetryDb',
 			boxId: 'query_2',
 			requestToken: 'token_2',
 		}));

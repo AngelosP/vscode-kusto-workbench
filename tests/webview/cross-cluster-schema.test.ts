@@ -28,9 +28,9 @@ describe('cross-cluster schema helpers', () => {
 
 	it('skips current regional cluster when query uses short name and context uses full ADX host', () => {
 		const refs = extractCrossClusterRefs(`
-			let baseQuery = materialize(cluster('aoaiagents1.westus').database('prod').v_bizops()
+			let baseQuery = materialize(cluster('semantic-current.westus').database('TelemetryDb').v_autocomplete_events()
 			| where TIMESTAMP >= startTime)
-		`, { clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net', database: 'prod' });
+		`, { clusterUrl: 'https://semantic-current.westus.kusto.windows.net', database: 'TelemetryDb' });
 
 		expect(refs).toEqual([]);
 	});
@@ -100,13 +100,13 @@ describe('cross-cluster schema helpers', () => {
 
 	it('extracts full regional ADX host references inside materialize', () => {
 		const refs = extractCrossClusterRefs(`
-			let bizopsresps =
-				materialize(cluster('aoaiagents1.westus.kusto.windows.net').database('prod').bizops
+			let eventRows =
+				materialize(cluster('semantic-remote.westus.kusto.windows.net').database('TelemetryDb').Events
 				| where TIMESTAMP >= startTime and TIMESTAMP < endTime
 				| where EventName == "ResponseCompleted")
 		`, { clusterUrl: 'https://current.kusto.windows.net', database: 'CurrentDb' });
 
-		expect(refs).toEqual([{ clusterName: 'aoaiagents1.westus.kusto.windows.net', database: 'prod' }]);
+		expect(refs).toEqual([{ clusterName: 'semantic-remote.westus.kusto.windows.net', database: 'TelemetryDb' }]);
 	});
 
 	it('ignores cluster/database text in comments and standalone strings', () => {

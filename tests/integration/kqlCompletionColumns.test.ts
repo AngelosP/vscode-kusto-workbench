@@ -226,11 +226,11 @@ suite('KQL completions - column inference', () => {
 		};
 		const compute = createCompute({ remoteSchema });
 		const text = [
-			'let submcpinvoked =',
-			"    materialize(cluster('aoaiagents1.westus').database('prod').log",
+			'let remoteRows =',
+			"    materialize(cluster('semantic-remote.westus').database('TelemetryDb').log",
 			'    | where TIMESTAMP >= (startTime-12h)',
 			'    | project TIMESTAMP, source);',
-			'submcpinvoked | where '
+			'remoteRows | where '
 		].join('\n');
 		const cols = await compute(text, text.length);
 		assert.ok(Array.isArray(cols), 'Expected a column list');
@@ -247,7 +247,7 @@ suite('KQL completions - column inference', () => {
 		};
 		const compute = createCompute({ remoteSchema, remoteDelayMs: 5 });
 		const text = [
-			"cluster('remote').database('prod').RemoteEvents",
+			"cluster('remote').database('TelemetryDb').RemoteEvents",
 			'| where '
 		].join('\n');
 		const cols = await compute(text, text.length);
@@ -263,7 +263,7 @@ suite('KQL completions - column inference', () => {
 		};
 		const compute = createCompute({ currentSchema, remoteSchema: null });
 		const text = [
-			"cluster('remote').database('prod').RemoteEvents",
+			"cluster('remote').database('TelemetryDb').RemoteEvents",
 			'| where '
 		].join('\n');
 		const cols = await compute(text, text.length);

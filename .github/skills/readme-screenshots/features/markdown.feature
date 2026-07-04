@@ -11,7 +11,7 @@ Feature: Capture markdown screenshot
     And I wait 1 second
     When I start command "workbench.action.files.openFile"
     And I wait 3 seconds
-    And I open the file "C:\Users\angelpe\AppData\Local\Temp\toastui-demo.md"
+    And I open the file "C:\Temp\toastui-demo.md"
     And I wait 3 seconds
     And I start command "workbench.action.reopenWithEditor"
     And I wait 2 seconds

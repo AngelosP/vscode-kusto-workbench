@@ -100,12 +100,12 @@ describe('kw-query-section favorites dropdown', () => {
 		await el.updateComplete;
 
 		el.setConnections([
-			{ id: 'conn1', clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net' },
+			{ id: 'conn1', clusterUrl: 'https://semantic-current.westus.kusto.windows.net' },
 		]);
 		el.setConnectionId('conn1');
-		el.setDatabase('prod');
+		el.setDatabase('TelemetryDb');
 		el.setFavorites([
-			{ clusterUrl: 'aoaiagents1.westus', database: 'prod', name: 'Foundry Agents' },
+			{ clusterUrl: 'semantic-current.westus', database: 'TelemetryDb', name: 'Synthetic Favorite' },
 		]);
 		el.setFavoritesMode(true);
 		await el.updateComplete;
@@ -113,8 +113,8 @@ describe('kw-query-section favorites dropdown', () => {
 		const dropdown = getFavoritesDropdown(el);
 		expect(dropdown).not.toBeNull();
 		expect(dropdown!.selectedId).toBe('0');
-		expect(el.getClusterUrl()).toBe('https://aoaiagents1.westus.kusto.windows.net');
-		expect(el.getDatabase()).toBe('prod');
+		expect(el.getClusterUrl()).toBe('https://semantic-current.westus.kusto.windows.net');
+		expect(el.getDatabase()).toBe('TelemetryDb');
 	});
 
 	it('matches favorite full ADX host to short regional connection host', async () => {
@@ -122,12 +122,12 @@ describe('kw-query-section favorites dropdown', () => {
 		await el.updateComplete;
 
 		el.setConnections([
-			{ id: 'conn1', clusterUrl: 'aoaiagents1.westus' },
+			{ id: 'conn1', clusterUrl: 'semantic-current.westus' },
 		]);
 		el.setConnectionId('conn1');
-		el.setDatabase('prod');
+		el.setDatabase('TelemetryDb');
 		el.setFavorites([
-			{ clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net', database: 'prod', name: 'Foundry Agents' },
+			{ clusterUrl: 'https://semantic-current.westus.kusto.windows.net', database: 'TelemetryDb', name: 'Synthetic Favorite' },
 		]);
 		el.setFavoritesMode(true);
 		await el.updateComplete;
@@ -135,8 +135,8 @@ describe('kw-query-section favorites dropdown', () => {
 		const dropdown = getFavoritesDropdown(el);
 		expect(dropdown).not.toBeNull();
 		expect(dropdown!.selectedId).toBe('0');
-		expect(el.getClusterUrl()).toBe('aoaiagents1.westus');
-		expect(el.getDatabase()).toBe('prod');
+		expect(el.getClusterUrl()).toBe('semantic-current.westus');
+		expect(el.getDatabase()).toBe('TelemetryDb');
 	});
 
 	it('shows placeholder when no favorite matches current connection', async () => {

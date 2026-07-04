@@ -264,17 +264,12 @@ document.addEventListener('keydown', (event: any) => {
 		try {
 			const boxId = editor.__kustoBoxId;
 			if (boxId && typeof window.__kustoTriggerAutocompleteForBoxId === 'function') {
-				const result = window.__kustoTriggerAutocompleteForBoxId(boxId);
-				if (result && typeof result.then === 'function') {
-					result.then((triggered: boolean) => {
-						if (!triggered) triggerNativeSuggest();
-					}).catch((e: any) => {
-						console.error('[kusto]', e);
-						triggerNativeSuggest();
-					});
-				} else if (!result) {
+				void Promise.resolve(window.__kustoTriggerAutocompleteForBoxId(boxId)).then((triggered: boolean) => {
+					if (!triggered) triggerNativeSuggest();
+				}).catch((e: any) => {
+					console.error('[kusto]', e);
 					triggerNativeSuggest();
-				}
+				});
 				return;
 			}
 		} catch (e) { console.error('[kusto]', e); }

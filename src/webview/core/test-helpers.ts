@@ -1045,6 +1045,55 @@ _win.__testSendCtrlSpaceMonaco = (selector: string): string => {
 	return `${focusResult}; ctrl-space dispatched=${dispatched ? 'true' : 'false'}`;
 };
 
+_win.__testDispatchRawCtrlSpaceMonaco = (selector: string): string => {
+	let previousEditor: MonacoLike | null = null;
+	let previousPosition: any = null;
+	try {
+		previousEditor = e2eEditor('kusto');
+		previousPosition = previousEditor?.getPosition?.() || null;
+	} catch { /* ignore */ }
+	const match = deepQuerySelector(document, selector) as HTMLElement | null;
+	if (!match) {
+		throw new Error(`monaco target not found: ${selector}`);
+	}
+	const editorRoot = (match.closest('.monaco-editor') as HTMLElement | null)
+		|| (match.matches('.monaco-editor') ? match : null)
+		|| (match.querySelector('.monaco-editor') as HTMLElement | null)
+		|| match;
+	const editor = resolveMonacoEditorFromElement(editorRoot);
+	const position = previousEditor === editor && previousPosition ? previousPosition : (editor?.getPosition?.() || null);
+	try { editor?.focus?.(); } catch { /* ignore */ }
+	try { if (position) editor?.setPosition?.(position); } catch { /* ignore */ }
+	const textarea = (editorRoot.querySelector('textarea.inputarea') as HTMLTextAreaElement | null)
+		|| (editorRoot.querySelector('textarea') as HTMLTextAreaElement | null);
+	if (!textarea) {
+		throw new Error(`monaco textarea not found for: ${selector}`);
+	}
+	try { textarea.focus(); } catch { /* ignore */ }
+	dispatchKeyboardEventWithLegacyCodes(textarea, 'keydown', {
+		key: 'Control',
+		code: 'ControlLeft',
+		ctrlKey: true,
+	}, 17);
+	const dispatched = dispatchKeyboardEventWithLegacyCodes(textarea, 'keydown', {
+		key: ' ',
+		code: 'Space',
+		ctrlKey: true,
+	}, 32);
+	dispatchKeyboardEventWithLegacyCodes(textarea, 'keyup', {
+		key: ' ',
+		code: 'Space',
+		ctrlKey: true,
+	}, 32);
+	dispatchKeyboardEventWithLegacyCodes(textarea, 'keyup', {
+		key: 'Control',
+		code: 'ControlLeft',
+		ctrlKey: false,
+	}, 17);
+	const nextPosition = editor?.getPosition?.() || null;
+	return `focused monaco ${selector}; raw ctrl-space dispatched=${dispatched ? 'true' : 'false'}; position=${JSON.stringify(position)}; after=${JSON.stringify(nextPosition)}`;
+};
+
 /**
  * Read the current value of an input/select/textarea by data-testid.
  * Useful for assertions.
@@ -2358,6 +2407,138 @@ async function e2eWaitForVisibleSuggestAllColumnsInRenderedRows(context: string,
 	throw new Error(`${context}: no matching rendered column suggestion set within ${timeoutMs}ms: ${message}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
 }
 
+async function e2eAssertFirstStableRenderedSuggestColumns(context: string, expectedCsv: string = '', timeoutMs: number = 5000): Promise<any> {
+	const contextLabel = String(context || 'suggestions');
+	const expected = String(expectedCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	const started = performance.now();
+	let lastError: unknown;
+	while (performance.now() - started <= timeoutMs) {
+		try {
+			const labels = e2eActuallyVisibleSuggestLabels(contextLabel, E2E_SECTION.kusto.editor);
+			e2eAssertNoSuggestLoading(`${contextLabel} loading check`, E2E_SECTION.kusto.editor);
+			const normalizedLabels = new Set(labels.map(label => e2eNormalizeSuggestColumnLabel(label)));
+			const missing = expected.filter(candidate => !normalizedLabels.has(e2eNormalizeSuggestColumnLabel(candidate)));
+			if (missing.length) {
+				throw new Error(`${contextLabel}: first stable rendered dropdown missing [${missing.join(', ')}], got rendered rows: ${labels.slice(0, 40).join(', ')}`);
+			}
+			return { elapsedMs: performance.now() - started, labels };
+		} catch (error) {
+			lastError = error;
+			const message = error instanceof Error ? error.message : String(error || '');
+			if (/first stable rendered dropdown missing/.test(message)) {
+				throw new Error(`${message}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
+			}
+			await e2eDelay(50);
+		}
+	}
+	const message = lastError instanceof Error ? lastError.message : String(lastError || 'timed out');
+	throw new Error(`${contextLabel}: no stable rendered dropdown within ${timeoutMs}ms: ${message}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
+}
+
+function e2eRenderedSuggestLabelsSnapshot(context: string, editorSelector: string = E2E_SECTION.kusto.editor): string[] {
+	const widgets = e2eVisibleSuggestWidgets(context, editorSelector);
+	if (!widgets.length) return [];
+	const widget = widgets[widgets.length - 1];
+	const widgetRect = widget.getBoundingClientRect();
+	const listViewport = (widget.querySelector('.monaco-list') || widget.querySelector('.tree') || widget) as HTMLElement;
+	const viewportRect = listViewport.getBoundingClientRect ? listViewport.getBoundingClientRect() : widgetRect;
+	const clip = {
+		top: Math.max(widgetRect.top, viewportRect.top),
+		bottom: Math.min(widgetRect.bottom, viewportRect.bottom),
+		left: Math.max(widgetRect.left, viewportRect.left),
+		right: Math.min(widgetRect.right, viewportRect.right),
+	};
+	return (Array.from(widget.querySelectorAll('.monaco-list-row')) as HTMLElement[])
+		.filter(row => {
+			if (!e2eIsVisibleElement(row)) return false;
+			const rect = row.getBoundingClientRect();
+			return (Math.min(rect.bottom, clip.bottom) - Math.max(rect.top, clip.top)) > 2
+				&& (Math.min(rect.right, clip.right) - Math.max(rect.left, clip.left)) > 2;
+		})
+		.map(row => row.querySelector('.label-name') as HTMLElement | null)
+		.filter(labelElement => labelElement ? e2eIsVisibleElement(labelElement) : false)
+		.map(labelElement => (labelElement?.textContent || '').trim())
+		.filter(Boolean);
+}
+
+async function e2eAssertFirstRenderedColumnsAfterRawCtrlSpace(selector: string, context: string, expectedCsv: string = '', timeoutMs: number = 5000): Promise<any> {
+	const contextLabel = String(context || 'suggestions');
+	const expected = String(expectedCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	e2eHideSuggest('kusto');
+	await e2eDelay(100);
+	const dispatchResult = _win.__testDispatchRawCtrlSpaceMonaco(selector);
+	const started = performance.now();
+	let labels: string[] = [];
+	while (performance.now() - started <= timeoutMs) {
+		labels = e2eRenderedSuggestLabelsSnapshot(contextLabel, E2E_SECTION.kusto.editor);
+		if (labels.length) break;
+		await e2eDelay(25);
+	}
+	if (!labels.length) {
+		throw new Error(`${contextLabel}: raw Ctrl+Space produced no rendered suggestion rows; dispatch=${dispatchResult}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
+	}
+	const normalizedLabels = new Set(labels.map(label => e2eNormalizeSuggestColumnLabel(label)));
+	const missing = expected.filter(candidate => !normalizedLabels.has(e2eNormalizeSuggestColumnLabel(candidate)));
+	if (missing.length) {
+		throw new Error(`${contextLabel}: first rendered Ctrl+Space dropdown missing [${missing.join(', ')}], got rendered rows: ${labels.slice(0, 40).join(', ')}; dispatch=${dispatchResult}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
+	}
+	return { elapsedMs: performance.now() - started, dispatchResult, labels };
+}
+
+async function e2eAssertAllRenderedSnapshotsHaveColumns(context: string, expectedCsv: string = '', durationMs: number = 2500, intervalMs: number = 100): Promise<any> {
+	const contextLabel = String(context || 'suggestions');
+	const expected = String(expectedCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	const snapshots: Array<{ elapsedMs: number; labels: string[] }> = [];
+	const started = performance.now();
+	while (performance.now() - started <= durationMs) {
+		const labels = e2eRenderedSuggestLabelsSnapshot(contextLabel, E2E_SECTION.kusto.editor);
+		if (labels.length) {
+			const elapsedMs = performance.now() - started;
+			snapshots.push({ elapsedMs, labels });
+			const normalizedLabels = new Set(labels.map(label => e2eNormalizeSuggestColumnLabel(label)));
+			const missing = expected.filter(candidate => !normalizedLabels.has(e2eNormalizeSuggestColumnLabel(candidate)));
+			if (missing.length) {
+				throw new Error(`${contextLabel}: rendered dropdown snapshot at ${Math.round(elapsedMs)}ms missing [${missing.join(', ')}], got rows: ${labels.slice(0, 40).join(', ')}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
+			}
+		}
+		await e2eDelay(intervalMs);
+	}
+	if (!snapshots.length) {
+		throw new Error(`${contextLabel}: no rendered suggestion snapshots in ${durationMs}ms; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
+	}
+	return { snapshots: snapshots.map(snapshot => ({ elapsedMs: Math.round(snapshot.elapsedMs), labels: snapshot.labels.slice(0, 40) })) };
+}
+
+async function e2eAssertRenderedSnapshotsExcludeColumns(context: string, excludedCsv: string = '', durationMs: number = 1500, intervalMs: number = 100): Promise<any> {
+	const contextLabel = String(context || 'suggestions');
+	const excluded = String(excludedCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	const snapshots: Array<{ elapsedMs: number; labels: string[] }> = [];
+	const started = performance.now();
+	while (performance.now() - started <= durationMs) {
+		const labels = e2eRenderedSuggestLabelsSnapshot(contextLabel, E2E_SECTION.kusto.editor);
+		if (labels.length) {
+			const elapsedMs = performance.now() - started;
+			snapshots.push({ elapsedMs, labels });
+			const normalizedLabels = new Set(labels.map(label => e2eNormalizeSuggestColumnLabel(label)));
+			const present = excluded.filter(candidate => normalizedLabels.has(e2eNormalizeSuggestColumnLabel(candidate)));
+			if (present.length) {
+				throw new Error(`${contextLabel}: rendered dropdown snapshot at ${Math.round(elapsedMs)}ms unexpectedly included [${present.join(', ')}], rows: ${labels.slice(0, 40).join(', ')}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
+			}
+		}
+		await e2eDelay(intervalMs);
+	}
+	return { snapshots: snapshots.map(snapshot => ({ elapsedMs: Math.round(snapshot.elapsedMs), labels: snapshot.labels.slice(0, 40) })) };
+}
+
+async function e2eAssertRawCtrlSpaceDoesNotRenderColumns(selector: string, context: string, excludedCsv: string = '', durationMs: number = 1000, intervalMs: number = 100): Promise<any> {
+	const contextLabel = String(context || 'suggestions');
+	e2eHideSuggest('kusto');
+	await e2eDelay(100);
+	const dispatchResult = _win.__testDispatchRawCtrlSpaceMonaco(selector);
+	const result = await e2eAssertRenderedSnapshotsExcludeColumns(contextLabel, excludedCsv, durationMs, intervalMs);
+	return { dispatchResult, ...result };
+}
+
 function e2eCompactAutocompleteTrace(traceId?: string): any {
 	try {
 		return typeof _win.__kustoCompactAutocompleteTrace === 'function' ? _win.__kustoCompactAutocompleteTrace(traceId) : null;
@@ -2518,18 +2699,6 @@ function e2eVisibleSuggestLabelsWithDiagnostics(context: string, editorSelector:
 	}
 }
 
-function e2eKustoLiteralForType(type: string): string {
-	const normalized = String(type || '').trim().toLowerCase();
-	if (normalized === 'datetime') return 'datetime(2026-01-01)';
-	if (normalized === 'timespan') return '1s';
-	if (normalized === 'int' || normalized === 'long') return '1';
-	if (normalized === 'real' || normalized === 'double') return '1.0';
-	if (normalized === 'bool') return 'true';
-	if (normalized === 'guid') return 'guid(00000000-0000-0000-0000-000000000001)';
-	if (normalized === 'dynamic') return 'dynamic({})';
-	return '""';
-}
-
 function e2eBuildShowSchema(
 	database: string,
 	tables: Record<string, Record<string, string>>,
@@ -2570,10 +2739,12 @@ function e2eBuildShowSchema(
 			InputParameters: [],
 			OutputColumns: columns,
 			FunctionKind: 'Unknown',
-			Body: info.body || `{ print ${columns.map(column => `${column.Name} = ${e2eKustoLiteralForType(column.CslType)}`).join(', ')} }`,
 			DocString: '',
 			Folder: '',
 		};
+		if (info.body) {
+			dbFunctions[functionName].Body = info.body;
+		}
 	}
 	return {
 		Plugins: [],
@@ -2614,11 +2785,11 @@ async function e2eApplyKustoSemanticFixture(): Promise<string> {
 			WrongTimestamp: 'datetime',
 		},
 	};
-	const remoteClusterName = 'aoaiagents1.westus.kusto.windows.net';
-	const remoteClusterUrl = 'aoaiagents1.westus';
-	const remoteDatabase = 'prod';
+	const remoteClusterName = 'semantic-remote.westus.kusto.windows.net';
+	const remoteClusterUrl = 'semantic-remote.westus';
+	const remoteDatabase = 'TelemetryDb';
 	const remoteTables = {
-		bizops: {
+		Events: {
 			TIMESTAMP: 'datetime',
 			TIMESTAMP_RemoteOnly: 'datetime',
 			EventName: 'string',
@@ -2641,7 +2812,7 @@ async function e2eApplyKustoSemanticFixture(): Promise<string> {
 		},
 	};
 	const remoteFunctions = {
-		v_bizops: {
+		v_autocomplete_events: {
 			columns: {
 				TIMESTAMP: 'datetime',
 				TIMESTAMP_RemoteOnly: 'datetime',
@@ -2726,15 +2897,15 @@ async function e2eApplyKustoCurrentClusterWorkflowFixture(): Promise<string> {
 	if (!boxId || !modelUri) {
 		throw new Error(`Cannot apply current-cluster fixture: boxId=${boxId || '(none)'} modelUri=${modelUri || '(none)'}`);
 	}
-	const clusterUrl = 'https://aoaiagents1.westus.kusto.windows.net';
-	const database = 'prod';
+	const clusterUrl = 'https://semantic-current.westus.kusto.windows.net';
+	const database = 'TelemetryDb';
 	const tables = {
 		LocalOnly: {
 			LocalOnlyColumn: 'string',
 		},
 	};
 	const functions = {
-		v_bizops: {
+		v_autocomplete_events: {
 			columns: {
 				TIMESTAMP: 'datetime',
 				EventName: 'string',
@@ -2747,7 +2918,7 @@ async function e2eApplyKustoCurrentClusterWorkflowFixture(): Promise<string> {
 	};
 	const rawSchema = e2eBuildShowSchema(database, tables, functions);
 	const schema = e2eCompactSchemaFromTables(tables, rawSchema);
-	const connection = { id: 'e2e-current-workflow-conn', name: 'Foundry Agents (bizops)', clusterUrl };
+	const connection = { id: 'e2e-current-workflow-conn', name: 'E2E Autocomplete Cluster', clusterUrl };
 	const prevRestoreInProgress = !!pState.restoreInProgress;
 	try {
 		pState.restoreInProgress = true;
@@ -2761,7 +2932,7 @@ async function e2eApplyKustoCurrentClusterWorkflowFixture(): Promise<string> {
 		section.setConnectionId?.(connection.id);
 		section.setDesiredClusterUrl?.(clusterUrl);
 		section.setConnections?.(_win.connections, { lastConnectionId: connection.id });
-		section.setFavorites?.([{ clusterUrl, database, name: 'Foundry Agents (bizops)' }]);
+		section.setFavorites?.([{ clusterUrl, database, name: 'E2E Autocomplete Cluster' }]);
 		section.setFavoritesMode?.(true);
 		section.setDesiredDatabase?.(database);
 		section.setDatabases?.([database], database);
@@ -2805,6 +2976,38 @@ function e2eSetKustoQueryWithCaretMarker(queryWithMarker: string, marker: string
 	return `set kusto query with caret at ${lineNumber}:${column}`;
 }
 
+function e2eSetKustoQueryWithCaretMarkerStrict(queryWithMarker: string, marker: string = '⟦caret⟧'): string {
+	const raw = String(queryWithMarker || '');
+	const index = raw.indexOf(marker);
+	if (index < 0) {
+		throw new Error(`Caret marker ${marker} not found`);
+	}
+	if (raw.indexOf(marker, index + marker.length) >= 0) {
+		throw new Error(`Caret marker ${marker} appears more than once`);
+	}
+	const text = raw.slice(0, index) + raw.slice(index + marker.length);
+	const prefix = raw.slice(0, index);
+	const lines = prefix.split(/\r?\n/);
+	const lineNumber = lines.length;
+	const column = lines[lines.length - 1].length + 1;
+	const section = e2eSection('kusto');
+	const boxId = String(section.boxId || section.id || '').trim();
+	const editor = boxId ? (_win.queryEditors?.[boxId] as MonacoLike | undefined) : undefined;
+	if (!editor || typeof editor.setValue !== 'function' || typeof editor.setPosition !== 'function') {
+		throw new Error(`Strict Kusto editor unavailable for boxId=${boxId || '(none)'}`);
+	}
+	editor.setValue(text);
+	editor.setPosition({ lineNumber, column });
+	try { editor.focus?.(); } catch { /* ignore */ }
+	try { setActiveMonacoEditor(editor); } catch { /* ignore */ }
+	updateMonacoFocusDataset(editor);
+	const actual = editor.getPosition?.() || null;
+	if (!actual || actual.lineNumber !== lineNumber || actual.column !== column) {
+		throw new Error(`Strict caret verification failed: expected ${lineNumber}:${column}, got ${actual ? `${actual.lineNumber}:${actual.column}` : '(none)'}`);
+	}
+	return `strict set kusto query with caret at ${lineNumber}:${column}`;
+}
+
 async function e2eAssertKustoSemanticSuggestAt(queryWithMarker: string, expectedCsv: string, context: string, timeoutMs: number = 7000): Promise<string> {
 	e2eSetKustoQueryWithCaretMarker(queryWithMarker);
 	await e2eDelay(100);
@@ -2843,24 +3046,24 @@ async function e2eAssertKustoSemanticSuggestAt(queryWithMarker: string, expected
 	throw new Error(`${context}: expected suggestions [${expected.join(', ')}] within ${timeoutMs}ms; last=${lastError}; diagnostics=${e2eSuggestDiagnosticsText(context)}`);
 }
 
-type KustoSemanticCompletionScenario = 'first-timestamp' | 'inline-and-timestamp' | 'second-where-empty' | 'second-where-incomplete' | 'bracketed-agent-column' | 'summarize-by-trace-id' | 'workflow-v-bizops-timestamp' | 'workflow-v-bizops-event-name' | 'workflow-basequery-kind' | 'workflow-summarize-trace-id';
+type KustoSemanticCompletionScenario = 'first-timestamp' | 'inline-and-timestamp' | 'second-where-empty' | 'second-where-incomplete' | 'bracketed-agent-column' | 'summarize-by-trace-id' | 'workflow-function-timestamp' | 'workflow-function-event-name' | 'workflow-basequery-kind' | 'workflow-summarize-trace-id';
 
-const E2E_KUSTO_SEMANTIC_QUERY_BASE = `// Cooking function for Hosted Agent runs (AgentsV2)
+const E2E_KUSTO_SEMANTIC_QUERY_BASE = `// Synthetic hosted run function for autocomplete coverage
 .create-or-alter function with
 (
-    folder = "AIP_SVC/orchestrate/FoundryHostedAgents",
-    docstring = "Get Hosted Agents runs (AgentsV2).",
+	folder = "Synthetic/Autocomplete",
+	docstring = "Get synthetic hosted runs for autocomplete tests.",
     skipvalidation = "true"
 )
-GetAgentsV2HostedAgentRuns
+GetSyntheticHostedRuns
 (
     startTime: datetime,
     endTime: datetime
 )
 {
-    let toolsByRsponseId = GetAgentsV2ToolCallsGroupedByResponseId((startTime-12h), (endTime+12h))
+	let toolsByResponseId = GetSyntheticToolCallsGroupedByResponseId((startTime-12h), (endTime+12h))
     ;
-	let hostedVersionByTraceId = cluster('aoaiagents1.westus.kusto.windows.net').database('prod').bizops
+	let remoteEventsByTraceId = cluster('semantic-remote.westus.kusto.windows.net').database('TelemetryDb').Events
         | project-away startTime
         | where TIMESTAMP >= startTime-12h and TIMESTAMP < endTime+12h
 			and EventName == "ResponseCompleted"
@@ -2869,14 +3072,14 @@ GetAgentsV2HostedAgentRuns
     ;
 }`;
 
-const E2E_KUSTO_WORKFLOW_NOT_COMPLETED_QUERY_BASE = `// Shared function for getting Foundry Workflow runs (AgentsV2) that have not been completed.
+const E2E_KUSTO_WORKFLOW_NOT_COMPLETED_QUERY_BASE = `// Synthetic workflow function for autocomplete coverage.
 .create-or-alter function with
 (
-	folder = "AIP_SVC/orchestrate/FoundryWorkflows",
-	docstring = "Get Foundry Workflow runs (AgentsV2) that have not been completed.",
+	folder = "Synthetic/Autocomplete",
+	docstring = "Get synthetic workflow runs that have not been completed.",
 	skipvalidation = "true"
 )
-GetAgentsV2WorkflowRuns_NotCompleted
+GetSyntheticWorkflowRuns_NotCompleted
 (
 	startTime: datetime,
 	endTime: datetime
@@ -2885,9 +3088,9 @@ GetAgentsV2WorkflowRuns_NotCompleted
 	let ConstructAgentId = (AgentName:string, ProjectId:string) {
 		iff(isnotempty(AgentName), hash_sha1(strcat(AgentName, ProjectId)), "")
 	};
-	let workflowSubAgents = GetAgentsV2WorkflowSubAgentRuns(startTime + 12h, endTime - 12h)
+	let workflowSubAgents = GetSyntheticWorkflowSubAgentRuns(startTime + 12h, endTime - 12h)
 	;
-	let baseQuery = materialize(cluster('aoaiagents1.westus').database('prod').v_bizops()
+	let baseQuery = materialize(cluster('semantic-current.westus').database('TelemetryDb').v_autocomplete_events()
 		| where TIMESTAMP >= startTime
 			and TIMESTAMP < endTime
 			and EventName == "ResponseCompleted")
@@ -2915,33 +3118,33 @@ function e2eKustoSemanticScenarioQuery(scenario: KustoSemanticCompletionScenario
 	}
 	if (scenario === 'second-where-empty') {
 		return {
-			query: `// Bizops response logs, one with longer window
-let bizopsresps =
-    materialize(cluster('aoaiagents1.westus.kusto.windows.net').database('prod').bizops
+			query: `// Synthetic response logs, one with longer window
+let eventRows =
+    materialize(cluster('semantic-remote.westus.kusto.windows.net').database('TelemetryDb').Events
     | where TIMESTAMP >= startTime and TIMESTAMP < endTime
     | where ⟦caret⟧)
 ;`,
 			expected: 'TIMESTAMP,TIMESTAMP_RemoteOnly,EventName,ResponseId',
-			context: 'second where empty predicate in bizops materialize',
+			context: 'second where empty predicate in synthetic materialize',
 		};
 	}
 	if (scenario === 'second-where-incomplete') {
 		return {
-			query: `// Bizops response logs, one with longer window
-let bizopsresps =
-    materialize(cluster('aoaiagents1.westus.kusto.windows.net').database('prod').bizops
+			query: `// Synthetic response logs, one with longer window
+let eventRows =
+    materialize(cluster('semantic-remote.westus.kusto.windows.net').database('TelemetryDb').Events
     | where TIMESTAMP >= startTime and TIMESTAMP < endTime
     | where ⟦caret⟧
 ;`,
 			expected: 'TIMESTAMP,TIMESTAMP_RemoteOnly,EventName,ResponseId',
-			context: 'second where incomplete bizops materialize',
+			context: 'second where incomplete synthetic materialize',
 		};
 	}
 	if (scenario === 'bracketed-agent-column') {
 		return {
 			query: E2E_KUSTO_SEMANTIC_QUERY_BASE.replace('EventName ==', 'Event⟦caret⟧Name =='),
 			expected: 'EventName',
-			context: 'bizops event name column',
+			context: 'synthetic event name column',
 		};
 	}
 	if (scenario === 'summarize-by-trace-id') {
@@ -2951,18 +3154,18 @@ let bizopsresps =
 			context: 'summarize by response id',
 		};
 	}
-	if (scenario === 'workflow-v-bizops-timestamp') {
+	if (scenario === 'workflow-function-timestamp') {
 		return {
 			query: E2E_KUSTO_WORKFLOW_NOT_COMPLETED_QUERY_BASE.replace('| where TIMESTAMP >=', '| where TIME⟦caret⟧STAMP >='),
 			expected: 'TIMESTAMP,TIMESTAMP_RemoteOnly',
-			context: 'workflow v_bizops TIMESTAMP mid-token',
+			context: 'workflow synthetic function TIMESTAMP mid-token',
 		};
 	}
-	if (scenario === 'workflow-v-bizops-event-name') {
+	if (scenario === 'workflow-function-event-name') {
 		return {
 			query: E2E_KUSTO_WORKFLOW_NOT_COMPLETED_QUERY_BASE.replace('and EventName ==', 'and Event⟦caret⟧Name =='),
 			expected: 'EventName',
-			context: 'workflow v_bizops EventName mid-token',
+			context: 'workflow synthetic function EventName mid-token',
 		};
 	}
 	if (scenario === 'workflow-basequery-kind') {
@@ -2983,7 +3186,7 @@ let bizopsresps =
 }
 
 function e2eSetCurrentClusterWorkflowScenario(): string {
-	return e2eSetKustoQueryWithCaretMarker(`let baseQuery = materialize(cluster('aoaiagents1.westus').database('prod').v_bizops()
+	return e2eSetKustoQueryWithCaretMarker(`let baseQuery = materialize(cluster('semantic-current.westus').database('TelemetryDb').v_autocomplete_events()
 	| where TIME⟦caret⟧STAMP >= startTime
 		and TIMESTAMP < endTime
 		and EventName == "ResponseCompleted")`);
@@ -3024,15 +3227,15 @@ async function e2eAssertKustoSemanticScenarioVisible(scenario: KustoSemanticComp
 
 function e2eAssertKustoCrossClusterTraceForSemanticFixture(): string {
 	const trace = typeof _win.__kustoGetCrossClusterTrace === 'function' ? _win.__kustoGetCrossClusterTrace() : [];
-	const remoteKey = 'aoaiagents1.westus.kusto.windows.net|prod';
+	const remoteKey = 'semantic-remote.westus.kusto.windows.net|TelemetryDb';
 	const has = (event: string, predicate: (entry: any) => boolean = () => true) => trace.some((entry: any) => entry?.event === event && predicate(entry));
 	const hasBothAliases = (entry: any) => {
 		const aliases = Array.isArray(entry.aliases) ? entry.aliases.map((value: any) => String(value || '').toLowerCase()) : [];
-		return aliases.includes('aoaiagents1.westus') && aliases.includes('aoaiagents1.westus.kusto.windows.net');
+		return aliases.includes('semantic-remote.westus') && aliases.includes('semantic-remote.westus.kusto.windows.net');
 	};
 	const missing: string[] = [];
 	if (!has('request-posted', (entry: any) => entry.key === remoteKey)) missing.push('request-posted');
-	if (!has('response-received', (entry: any) => String(entry.clusterName || '').toLowerCase() === 'aoaiagents1.westus.kusto.windows.net' && String(entry.database || '').toLowerCase() === 'prod')) missing.push('response-received');
+	if (!has('response-received', (entry: any) => String(entry.clusterName || '').toLowerCase() === 'semantic-remote.westus.kusto.windows.net' && String(entry.database || '') === 'TelemetryDb')) missing.push('response-received');
 	if (!has('apply-start', (entry: any) => entry.key === remoteKey)) missing.push('apply-start');
 	if (!has('apply-internal-start', (entry: any) => entry.key === remoteKey && hasBothAliases(entry))) missing.push('apply-internal-start-aliases');
 	if (!has('apply-internal-success', (entry: any) => entry.key === remoteKey)) missing.push('apply-internal-success');
@@ -5016,6 +5219,7 @@ _win.__e2e = {
 		applySemanticCompletionFixture: () => e2eApplyKustoSemanticFixture(),
 		applyCurrentClusterWorkflowFixture: () => e2eApplyKustoCurrentClusterWorkflowFixture(),
 		setQueryWithCaretMarker: (queryWithMarker: string, marker?: string) => e2eSetKustoQueryWithCaretMarker(queryWithMarker, marker),
+		setQueryWithCaretMarkerStrict: (queryWithMarker: string, marker?: string) => e2eSetKustoQueryWithCaretMarkerStrict(queryWithMarker, marker),
 		setSemanticScenario: (scenario: KustoSemanticCompletionScenario) => {
 			const { query, context } = e2eKustoSemanticScenarioQuery(scenario);
 			return e2eSetKustoQueryWithCaretMarker(query) + ` for ${context}`;
@@ -5091,6 +5295,11 @@ _win.__e2e = {
 				throw new Error(`${context}: no matching column suggestion set within ${timeoutMs}ms: ${message}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
 			},
 			waitRenderedAllColumnsVisible: (context: string, expectedCsv: string = '', timeoutMs: number = 5000) => e2eWaitForVisibleSuggestAllColumnsInRenderedRows(context, expectedCsv, timeoutMs),
+			assertFirstStableRenderedColumns: (context: string, expectedCsv: string = '', timeoutMs: number = 5000) => e2eAssertFirstStableRenderedSuggestColumns(context, expectedCsv, timeoutMs),
+			assertFirstRenderedColumnsAfterRawCtrlSpace: (selector: string, context: string, expectedCsv: string = '', timeoutMs: number = 5000) => e2eAssertFirstRenderedColumnsAfterRawCtrlSpace(selector, context, expectedCsv, timeoutMs),
+			assertAllRenderedSnapshotsHaveColumns: (context: string, expectedCsv: string = '', durationMs: number = 2500, intervalMs: number = 100) => e2eAssertAllRenderedSnapshotsHaveColumns(context, expectedCsv, durationMs, intervalMs),
+			assertRenderedSnapshotsExcludeColumns: (context: string, excludedCsv: string = '', durationMs: number = 1500, intervalMs: number = 100) => e2eAssertRenderedSnapshotsExcludeColumns(context, excludedCsv, durationMs, intervalMs),
+			assertRawCtrlSpaceDoesNotRenderColumns: (selector: string, context: string, excludedCsv: string = '', durationMs: number = 1000, intervalMs: number = 100) => e2eAssertRawCtrlSpaceDoesNotRenderColumns(selector, context, excludedCsv, durationMs, intervalMs),
 			assertVisible: (context: string, expectedAnyCsv: string = '') => _win.__e2e.kusto.assertSuggestions(context, expectedAnyCsv),
 			assertAllVisible: (context: string, expectedCsv: string = '') => e2eAssertVisibleSuggestAll(context, expectedCsv, E2E_SECTION.kusto.editor),
 			assertAllColumnsVisible: (context: string, expectedCsv: string = '') => e2eAssertVisibleSuggestAllColumns(context, expectedCsv, E2E_SECTION.kusto.editor),

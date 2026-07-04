@@ -14,6 +14,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
     * Renaming files but keeping most of the filename the same would cause weird situations where both files would appear side-by-side.
     * Connection Manager: the text across a single row was not vertically aligned. 
     * Connection Manager: fixed some scrollbar bugs. 
+    * Kusto Editor: Schema auto-completion did not work for Kusto functions that returns tabular results.
 
 ## [4.7.3] - 2026.06.08
 

@@ -67,7 +67,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				{} as any
 			) as KqlCompatEditorProvider;
 
@@ -156,7 +156,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				{} as any
 			) as KqlCompatEditorProvider;
 
@@ -247,7 +247,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				{} as any
 			) as KqlCompatEditorProvider;
 
@@ -348,7 +348,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				{} as any
 			) as KqlCompatEditorProvider;
 
@@ -454,7 +454,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				{} as any
 			) as KqlCompatEditorProvider;
 
@@ -531,7 +531,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				{} as any
 			) as KqlCompatEditorProvider;
 
@@ -606,7 +606,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				{} as any
 			) as KqlCompatEditorProvider;
 
@@ -680,7 +680,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlxEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				{ getConnections: () => [], addConnection: async () => undefined } as any
 			) as KqlxEditorProvider;
 
@@ -762,7 +762,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlxEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				{ getConnections: () => [], addConnection: async () => undefined } as any
 			) as KqlxEditorProvider;
 
@@ -827,7 +827,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				{ getConnections: () => [] } as any
 			) as KqlCompatEditorProvider;
 
@@ -897,7 +897,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (SqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				{} as any
 			) as SqlCompatEditorProvider;
 
@@ -970,7 +970,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				connManager
 			) as KqlCompatEditorProvider;
 
@@ -1057,7 +1057,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				connManager
 			) as KqlCompatEditorProvider;
 
@@ -1133,7 +1133,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				connManager
 			) as KqlCompatEditorProvider;
 
@@ -1218,7 +1218,7 @@ suite('Sidecar .kql.json strategy', () => {
 			try {
 				const provider = new (KqlCompatEditorProvider as any)(
 					fakeContext,
-					vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 					connManager
 				) as KqlCompatEditorProvider;
 
@@ -1308,7 +1308,7 @@ suite('Sidecar .kql.json strategy', () => {
 			try {
 				const provider = new (KqlCompatEditorProvider as any)(
 					fakeContext,
-					vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 					connManager
 				) as KqlCompatEditorProvider;
 
@@ -1390,7 +1390,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const createEditorForPath = async (kqlPath: string, queryText: string) => {
 				const provider = new (KqlCompatEditorProvider as any)(
 					fakeContext,
-					vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 					connManager
 				) as KqlCompatEditorProvider;
 
@@ -1480,7 +1480,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
-				vscode.Uri.file('C:/Users/angelpe/source/my-tools/vscode-kusto-workbench'),
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
 				connManager
 			) as KqlCompatEditorProvider;
 
