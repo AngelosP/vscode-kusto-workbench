@@ -16,7 +16,9 @@ Feature: Custom editor open performance
     When I open file "tests/vscode-extension-tester/runs/default/open-performance/plain-open.kql" in the editor
     When I wait for "kw-query-section" in the webview for 30 seconds
     When I wait for "kw-query-section .monaco-editor" in the webview for 30 seconds
-    Then I collect JSON artifact "host-perf" from extension host expression "globalThis.__kustoPerf?.snapshot?.()"
+    Then I evaluate "window.__e2e.perf.markWebviewSnapshot('plain-kql-webview-perf', 'webview.message.documentData.received,webview.persistence.restore.start,webview.persistence.restore.end,webview.section.query.added,webview.monaco.queryEditor.ready')" in the webview
+    Then I wait for "[data-testid='e2e-proof-plain-kql-webview-perf']" in the webview for 5 seconds
+    Then I collect JSON artifact "host-perf" from extension host expression "(() => { const s = globalThis.__kustoPerf?.snapshot?.(); if (!s || s.enabled !== true) throw new Error('host perf disabled'); const c = s.current; if (!c || c.label !== 'host.kqlCompat.resolve') throw new Error('wrong host perf label: ' + JSON.stringify(c)); const names = (c.marks || []).map(m => m.name); const missing = ['host.kqlCompat.initializeWebview.start','host.kqlCompat.initializeWebview.done','host.kqlCompat.postDocument.start','host.kqlCompat.documentData.posted'].filter(n => !names.includes(n)); if (missing.length) throw new Error('missing host perf marks: ' + missing.join(',')); return s; })()"
     Then I collect JSON artifact "webview-perf" from webview expression "window.__e2e?.perf?.snapshot?.()"
 
   Scenario: Open two plain KQL files in one session
@@ -31,12 +33,16 @@ Feature: Custom editor open performance
 
     When I open file "tests/vscode-extension-tester/runs/default/open-performance/plain-first.kql" in the editor
     When I wait for "kw-query-section .monaco-editor" in the webview for 30 seconds
-    Then I collect JSON artifact "host-perf-first-kql" from extension host expression "globalThis.__kustoPerf?.snapshot?.()"
+    Then I evaluate "window.__e2e.perf.markWebviewSnapshot('first-kql-webview-perf', 'webview.message.documentData.received,webview.persistence.restore.start,webview.persistence.restore.end,webview.section.query.added,webview.monaco.queryEditor.ready')" in the webview
+    Then I wait for "[data-testid='e2e-proof-first-kql-webview-perf']" in the webview for 5 seconds
+    Then I collect JSON artifact "host-perf-first-kql" from extension host expression "(() => { const s = globalThis.__kustoPerf?.snapshot?.(); if (!s || s.enabled !== true) throw new Error('host perf disabled'); const c = s.current; if (!c || c.label !== 'host.kqlCompat.resolve') throw new Error('wrong host perf label: ' + JSON.stringify(c)); const names = (c.marks || []).map(m => m.name); const missing = ['host.kqlCompat.initializeWebview.start','host.kqlCompat.initializeWebview.done','host.kqlCompat.postDocument.start','host.kqlCompat.documentData.posted'].filter(n => !names.includes(n)); if (missing.length) throw new Error('missing host perf marks: ' + missing.join(',')); return s; })()"
     Then I collect JSON artifact "webview-perf-first-kql" from webview expression "window.__e2e?.perf?.snapshot?.()"
 
     When I open file "tests/vscode-extension-tester/runs/default/open-performance/plain-second.kql" in the editor
     When I wait for "kw-query-section .monaco-editor" in the webview for 30 seconds
-    Then I collect JSON artifact "host-perf-second-kql" from extension host expression "globalThis.__kustoPerf?.snapshot?.()"
+    Then I evaluate "window.__e2e.perf.markWebviewSnapshot('second-kql-webview-perf', 'webview.message.documentData.received,webview.persistence.restore.start,webview.persistence.restore.end,webview.section.query.added,webview.monaco.queryEditor.ready')" in the webview
+    Then I wait for "[data-testid='e2e-proof-second-kql-webview-perf']" in the webview for 5 seconds
+    Then I collect JSON artifact "host-perf-second-kql" from extension host expression "(() => { const s = globalThis.__kustoPerf?.snapshot?.(); if (!s || s.enabled !== true) throw new Error('host perf disabled'); const c = s.current; if (!c || c.label !== 'host.kqlCompat.resolve') throw new Error('wrong host perf label: ' + JSON.stringify(c)); const names = (c.marks || []).map(m => m.name); const missing = ['host.kqlCompat.initializeWebview.start','host.kqlCompat.initializeWebview.done','host.kqlCompat.postDocument.start','host.kqlCompat.documentData.posted'].filter(n => !names.includes(n)); if (missing.length) throw new Error('missing host perf marks: ' + missing.join(',')); return s; })()"
     Then I collect JSON artifact "webview-perf-second-kql" from webview expression "window.__e2e?.perf?.snapshot?.()"
 
   Scenario: Open a persisted-results KQLX file
@@ -44,7 +50,9 @@ Feature: Custom editor open performance
     When I wait for "kw-query-section" in the webview for 30 seconds
     When I wait for "kw-query-section .monaco-editor" in the webview for 30 seconds
     When I wait for "kw-query-section[data-test-has-results='true']" in the webview for 30 seconds
-    Then I collect JSON artifact "host-perf" from extension host expression "globalThis.__kustoPerf?.snapshot?.()"
+    Then I evaluate "window.__e2e.perf.markWebviewSnapshot('persisted-kqlx-webview-perf', 'webview.message.documentData.received,webview.persistence.restore.start,webview.persistence.restore.end,webview.section.query.added,webview.monaco.queryEditor.ready')" in the webview
+    Then I wait for "[data-testid='e2e-proof-persisted-kqlx-webview-perf']" in the webview for 5 seconds
+    Then I collect JSON artifact "host-perf" from extension host expression "(() => { const s = globalThis.__kustoPerf?.snapshot?.(); if (!s || s.enabled !== true) throw new Error('host perf disabled'); const c = s.current; if (!c || c.label !== 'host.kqlx.resolve') throw new Error('wrong host perf label: ' + JSON.stringify(c)); const names = (c.marks || []).map(m => m.name); const missing = ['host.kqlx.webviewInitialized','host.kqlx.postDocument.start','host.kqlx.documentText.read','host.kqlx.parse.done','host.kqlx.sanitize.done','host.kqlx.documentData.posted'].filter(n => !names.includes(n)); if (missing.length) throw new Error('missing host perf marks: ' + missing.join(',')); return s; })()"
     Then I collect JSON artifact "webview-perf" from webview expression "window.__e2e?.perf?.snapshot?.()"
 
   Scenario: Open a mixed KQLX file
@@ -58,5 +66,7 @@ Feature: Custom editor open performance
     When I wait for "kw-query-section .monaco-editor" in the webview for 30 seconds
     When I wait for "kw-markdown-section" in the webview for 30 seconds
     When I wait for "kw-html-section" in the webview for 30 seconds
-    Then I collect JSON artifact "host-perf" from extension host expression "globalThis.__kustoPerf?.snapshot?.()"
+    Then I evaluate "window.__e2e.perf.markWebviewSnapshot('mixed-kqlx-webview-perf', 'webview.message.documentData.received,webview.persistence.restore.start,webview.persistence.restore.end,webview.section.query.added,webview.monaco.queryEditor.ready')" in the webview
+    Then I wait for "[data-testid='e2e-proof-mixed-kqlx-webview-perf']" in the webview for 5 seconds
+    Then I collect JSON artifact "host-perf" from extension host expression "(() => { const s = globalThis.__kustoPerf?.snapshot?.(); if (!s || s.enabled !== true) throw new Error('host perf disabled'); const c = s.current; if (!c || c.label !== 'host.kqlx.resolve') throw new Error('wrong host perf label: ' + JSON.stringify(c)); const names = (c.marks || []).map(m => m.name); const missing = ['host.kqlx.webviewInitialized','host.kqlx.postDocument.start','host.kqlx.documentText.read','host.kqlx.parse.done','host.kqlx.sanitize.done','host.kqlx.documentData.posted'].filter(n => !names.includes(n)); if (missing.length) throw new Error('missing host perf marks: ' + missing.join(',')); return s; })()"
     Then I collect JSON artifact "webview-perf" from webview expression "window.__e2e?.perf?.snapshot?.()"

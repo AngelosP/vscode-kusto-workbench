@@ -6,14 +6,14 @@ suite('KQL Monaco schema - function output columns', () => {
 		const schema = {
 			Plugins: [],
 			Databases: {
-				prod: {
-					Name: 'prod',
+				TelemetryDb: {
+					Name: 'TelemetryDb',
 					Tables: {},
 					MaterializedViews: {},
 					ExternalTables: {},
 					Functions: {
-						v_bizops: {
-							Name: 'v_bizops',
+						v_autocomplete_events: {
+							Name: 'v_autocomplete_events',
 							InputParameters: [],
 							OutputColumns: [
 								{ Name: 'TIMESTAMP', CslType: 'datetime', Type: 'datetime' },
@@ -28,7 +28,7 @@ suite('KQL Monaco schema - function output columns', () => {
 		};
 
 		const result = ensureKustoFunctionBodiesForSchema(schema);
-		const fn = result.Databases.prod.Functions.v_bizops;
+		const fn = result.Databases.TelemetryDb.Functions.v_autocomplete_events;
 		assert.strictEqual(fn.Body, fn.body, 'Expected both raw and normalized body fields');
 		assert.ok(fn.Body.includes('TIMESTAMP = datetime(2026-01-01)'), 'Expected TIMESTAMP projection in synthetic body');
 		assert.ok(fn.Body.includes('EventName = ""'), 'Expected EventName projection in synthetic body');
@@ -39,11 +39,11 @@ suite('KQL Monaco schema - function output columns', () => {
 	test('prefers OutputColumns over existing body for worker inference', () => {
 		const schema = {
 			Databases: {
-				prod: {
+				TelemetryDb: {
 					Functions: {
-						v_bizops: {
-							Name: 'v_bizops',
-							Body: "{ cluster('aoaiagents1.westus').database('prod').bizops | where TIMESTAMP > ago(1d) }",
+						v_autocomplete_events: {
+							Name: 'v_autocomplete_events',
+							Body: "{ cluster('semantic-remote.westus').database('TelemetryDb').Events | where TIMESTAMP > ago(1d) }",
 							OutputColumns: [
 								{ Name: 'TIMESTAMP', CslType: 'datetime' },
 								{ Name: 'EventName', CslType: 'string' },
@@ -54,9 +54,9 @@ suite('KQL Monaco schema - function output columns', () => {
 			},
 		};
 		ensureKustoFunctionBodiesForSchema(schema);
-		const fn = schema.Databases.prod.Functions.v_bizops as any;
+		const fn = schema.Databases.TelemetryDb.Functions.v_autocomplete_events as any;
 		assert.ok(fn.Body.includes('TIMESTAMP = datetime(2026-01-01)'), 'Expected worker-facing body to expose TIMESTAMP');
 		assert.ok(fn.Body.includes('EventName = ""'), 'Expected worker-facing body to expose EventName');
-		assert.strictEqual(fn.__kustoOriginalBody, "{ cluster('aoaiagents1.westus').database('prod').bizops | where TIMESTAMP > ago(1d) }");
+		assert.strictEqual(fn.__kustoOriginalBody, "{ cluster('semantic-remote.westus').database('TelemetryDb').Events | where TIMESTAMP > ago(1d) }");
 	});
 });

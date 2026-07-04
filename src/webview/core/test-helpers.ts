@@ -357,6 +357,16 @@ function e2eEnableIsolatedKustoConnections(): string {
 	try { if (_win.cachedDatabases && typeof _win.cachedDatabases === 'object') { for (const key of Object.keys(_win.cachedDatabases)) delete _win.cachedDatabases[key]; } } catch { /* ignore */ }
 	return 'isolated Kusto connections enabled';
 }
+
+function e2eAssertIsolatedKustoConnections(): string {
+	const connectionCount = Array.isArray(_win.connections) ? _win.connections.length : 0;
+	const favoriteCount = Array.isArray(_win.kustoFavorites) ? _win.kustoFavorites.length : 0;
+	const cachedDatabaseCount = _win.cachedDatabases && typeof _win.cachedDatabases === 'object' ? Object.keys(_win.cachedDatabases).length : 0;
+	if (_win.__e2eIsolatedKustoConnections !== true || connectionCount || favoriteCount || cachedDatabaseCount) {
+		throw new Error(`isolated Kusto connections not clean: enabled=${_win.__e2eIsolatedKustoConnections === true}; connections=${connectionCount}; favorites=${favoriteCount}; cachedDatabases=${cachedDatabaseCount}`);
+	}
+	return 'isolated Kusto connections are clean';
+}
 _win.__testFind = (testId: string): Element | null => deepQueryByTestId(document, testId);
 _win.__testFindAll = (testId: string): Element[] => deepQueryAllByTestId(document, testId);
 _win.__testQuery = (selector: string): Element | null => deepQuerySelector(document, selector);
@@ -2464,25 +2474,43 @@ function e2eRenderedSuggestLabelsSnapshot(context: string, editorSelector: strin
 async function e2eAssertFirstRenderedColumnsAfterRawCtrlSpace(selector: string, context: string, expectedCsv: string = '', timeoutMs: number = 5000): Promise<any> {
 	const contextLabel = String(context || 'suggestions');
 	const expected = String(expectedCsv || '').split(',').map(value => value.trim()).filter(Boolean);
-	e2eHideSuggest('kusto');
-	await e2eDelay(100);
-	const dispatchResult = _win.__testDispatchRawCtrlSpaceMonaco(selector);
 	const started = performance.now();
 	let labels: string[] = [];
+	let traceId = '';
+	let dispatchResult = '';
+	let attempts = 0;
 	while (performance.now() - started <= timeoutMs) {
-		labels = e2eRenderedSuggestLabelsSnapshot(contextLabel, E2E_SECTION.kusto.editor);
-		if (labels.length) break;
-		await e2eDelay(25);
+		e2eHideSuggest('kusto');
+		await e2eDelay(100);
+		try { if (typeof _win.__kustoClearAutocompleteTrace === 'function') _win.__kustoClearAutocompleteTrace(); } catch { /* ignore */ }
+		try { _win.__e2eLastRawCtrlSpaceTraceId = ''; } catch { /* ignore */ }
+		const previousTraceId = String(_win.__kustoLastAutocompleteTraceId || '');
+		dispatchResult = _win.__testDispatchRawCtrlSpaceMonaco(selector);
+		attempts++;
+		const attemptStarted = performance.now();
+		const attemptTimeoutMs = Math.min(2500, Math.max(500, timeoutMs - (attemptStarted - started)));
+		while (performance.now() - attemptStarted <= attemptTimeoutMs) {
+			traceId = String(_win.__kustoLastAutocompleteTraceId || '');
+			labels = e2eRenderedSuggestLabelsSnapshot(contextLabel, E2E_SECTION.kusto.editor);
+			if (traceId && traceId !== previousTraceId && labels.length) break;
+			await e2eDelay(25);
+		}
+		if (traceId && traceId !== previousTraceId && labels.length) break;
+		await e2eDelay(250);
+	}
+	if (!traceId) {
+		throw new Error(`${contextLabel}: raw Ctrl+Space did not create an autocomplete trace after ${attempts} attempt(s); dispatch=${dispatchResult}`);
 	}
 	if (!labels.length) {
-		throw new Error(`${contextLabel}: raw Ctrl+Space produced no rendered suggestion rows; dispatch=${dispatchResult}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
+		throw new Error(`${contextLabel}: raw Ctrl+Space produced no rendered suggestion rows after ${attempts} attempt(s); dispatch=${dispatchResult}; trace=${JSON.stringify(e2eCompactAutocompleteTrace(traceId)).slice(0, 4000)}`);
 	}
 	const normalizedLabels = new Set(labels.map(label => e2eNormalizeSuggestColumnLabel(label)));
 	const missing = expected.filter(candidate => !normalizedLabels.has(e2eNormalizeSuggestColumnLabel(candidate)));
 	if (missing.length) {
 		throw new Error(`${contextLabel}: first rendered Ctrl+Space dropdown missing [${missing.join(', ')}], got rendered rows: ${labels.slice(0, 40).join(', ')}; dispatch=${dispatchResult}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
 	}
-	return { elapsedMs: performance.now() - started, dispatchResult, labels };
+	try { _win.__e2eLastRawCtrlSpaceTraceId = traceId; } catch { /* ignore */ }
+	return { elapsedMs: performance.now() - started, dispatchResult, attempts, traceId, labels };
 }
 
 async function e2eAssertAllRenderedSnapshotsHaveColumns(context: string, expectedCsv: string = '', durationMs: number = 2500, intervalMs: number = 100): Promise<any> {
@@ -2509,7 +2537,7 @@ async function e2eAssertAllRenderedSnapshotsHaveColumns(context: string, expecte
 	return { snapshots: snapshots.map(snapshot => ({ elapsedMs: Math.round(snapshot.elapsedMs), labels: snapshot.labels.slice(0, 40) })) };
 }
 
-async function e2eAssertRenderedSnapshotsExcludeColumns(context: string, excludedCsv: string = '', durationMs: number = 1500, intervalMs: number = 100): Promise<any> {
+async function e2eAssertRenderedSnapshotsExcludeColumns(context: string, excludedCsv: string = '', durationMs: number = 1500, intervalMs: number = 100, requireSnapshot: boolean = true): Promise<any> {
 	const contextLabel = String(context || 'suggestions');
 	const excluded = String(excludedCsv || '').split(',').map(value => value.trim()).filter(Boolean);
 	const snapshots: Array<{ elapsedMs: number; labels: string[] }> = [];
@@ -2527,16 +2555,87 @@ async function e2eAssertRenderedSnapshotsExcludeColumns(context: string, exclude
 		}
 		await e2eDelay(intervalMs);
 	}
+	if (requireSnapshot && !snapshots.length) {
+		throw new Error(`${contextLabel}: no rendered suggestion snapshots in ${durationMs}ms; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
+	}
 	return { snapshots: snapshots.map(snapshot => ({ elapsedMs: Math.round(snapshot.elapsedMs), labels: snapshot.labels.slice(0, 40) })) };
+}
+
+async function e2eAssertRenderedSnapshotsIncludeAndExcludeColumns(context: string, expectedCsv: string = '', excludedCsv: string = '', durationMs: number = 1500, intervalMs: number = 100): Promise<any> {
+	const contextLabel = String(context || 'suggestions');
+	const expected = String(expectedCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	const excluded = String(excludedCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	const snapshots: Array<{ elapsedMs: number; labels: string[] }> = [];
+	const started = performance.now();
+	while (performance.now() - started <= durationMs) {
+		const labels = e2eRenderedSuggestLabelsSnapshot(contextLabel, E2E_SECTION.kusto.editor);
+		if (labels.length) {
+			const elapsedMs = performance.now() - started;
+			snapshots.push({ elapsedMs, labels });
+			const normalizedLabels = new Set(labels.map(label => e2eNormalizeSuggestColumnLabel(label)));
+			const missing = expected.filter(candidate => !normalizedLabels.has(e2eNormalizeSuggestColumnLabel(candidate)));
+			const present = excluded.filter(candidate => normalizedLabels.has(e2eNormalizeSuggestColumnLabel(candidate)));
+			if (!missing.length && !present.length) {
+				return { snapshots: snapshots.map(snapshot => ({ elapsedMs: Math.round(snapshot.elapsedMs), labels: snapshot.labels.slice(0, 40) })) };
+			}
+			if (present.length) {
+				throw new Error(`${contextLabel}: rendered dropdown snapshot at ${Math.round(elapsedMs)}ms unexpectedly included [${present.join(', ')}], rows: ${labels.slice(0, 40).join(', ')}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
+			}
+		}
+		await e2eDelay(intervalMs);
+	}
+	if (!snapshots.length) {
+		throw new Error(`${contextLabel}: no rendered suggestion snapshots in ${durationMs}ms; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
+	}
+	const last = snapshots[snapshots.length - 1];
+	const normalizedLabels = new Set(last.labels.map(label => e2eNormalizeSuggestColumnLabel(label)));
+	const missing = expected.filter(candidate => !normalizedLabels.has(e2eNormalizeSuggestColumnLabel(candidate)));
+	throw new Error(`${contextLabel}: no rendered dropdown snapshot included [${expected.join(', ')}] while excluding [${excluded.join(', ')}]; last missing [${missing.join(', ')}], rows: ${last.labels.slice(0, 40).join(', ')}; trace=${JSON.stringify(e2eCompactAutocompleteTrace()).slice(0, 4000)}`);
 }
 
 async function e2eAssertRawCtrlSpaceDoesNotRenderColumns(selector: string, context: string, excludedCsv: string = '', durationMs: number = 1000, intervalMs: number = 100): Promise<any> {
 	const contextLabel = String(context || 'suggestions');
 	e2eHideSuggest('kusto');
 	await e2eDelay(100);
+	try { if (typeof _win.__kustoClearAutocompleteTrace === 'function') _win.__kustoClearAutocompleteTrace(); } catch { /* ignore */ }
+	try { _win.__e2eLastRawCtrlSpaceTraceId = ''; } catch { /* ignore */ }
+	const previousTraceId = String(_win.__kustoLastAutocompleteTraceId || '');
 	const dispatchResult = _win.__testDispatchRawCtrlSpaceMonaco(selector);
-	const result = await e2eAssertRenderedSnapshotsExcludeColumns(contextLabel, excludedCsv, durationMs, intervalMs);
-	return { dispatchResult, ...result };
+	const started = performance.now();
+	let traceId = '';
+	while (performance.now() - started <= Math.max(500, durationMs)) {
+		traceId = String(_win.__kustoLastAutocompleteTraceId || '');
+		if (traceId && traceId !== previousTraceId) break;
+		await e2eDelay(25);
+	}
+	if (!traceId || traceId === previousTraceId) {
+		throw new Error(`${contextLabel}: raw Ctrl+Space did not create a fresh autocomplete trace; dispatch=${dispatchResult}; previousTraceId=${previousTraceId}; currentTraceId=${traceId}`);
+	}
+	try { _win.__e2eLastRawCtrlSpaceTraceId = traceId; } catch { /* ignore */ }
+	const result = await e2eAssertRenderedSnapshotsExcludeColumns(contextLabel, excludedCsv, durationMs, intervalMs, false);
+	return { dispatchResult, traceId, ...result };
+}
+
+function e2eProofId(name: string): string {
+	const normalized = String(name || 'proof').trim().toLowerCase().replace(/[^a-z0-9_-]+/g, '-').replace(/^-+|-+$/g, '');
+	return `e2e-proof-${normalized || 'proof'}`;
+}
+
+function e2eClearProofMarker(name: string): string {
+	const id = e2eProofId(name);
+	try { document.getElementById(id)?.remove(); } catch { /* ignore */ }
+	return id;
+}
+
+function e2eSetProofMarker(name: string, detail?: unknown): string {
+	const id = e2eClearProofMarker(name);
+	const marker = document.createElement('div');
+	marker.id = id;
+	marker.setAttribute('data-testid', id);
+	marker.hidden = true;
+	try { marker.textContent = JSON.stringify(detail ?? { ok: true }).slice(0, 2000); } catch { marker.textContent = 'ok'; }
+	document.body.appendChild(marker);
+	return id;
 }
 
 function e2eCompactAutocompleteTrace(traceId?: string): any {
@@ -2545,6 +2644,146 @@ function e2eCompactAutocompleteTrace(traceId?: string): any {
 	} catch (error) {
 		return { error: error instanceof Error ? error.message : String(error) };
 	}
+}
+
+function e2eAssertAutocompleteTraceEvents(context: string, requiredCsv: string = '', forbiddenCsv: string = ''): any {
+	const contextLabel = String(context || 'autocomplete trace');
+	const trace = e2eCompactAutocompleteTrace();
+	if (!trace || typeof trace !== 'object' || Array.isArray(trace)) {
+		throw new Error(`${contextLabel}: compact autocomplete trace is unavailable: ${JSON.stringify(trace)}`);
+	}
+	const events = Array.isArray(trace.events) ? trace.events : [];
+	const names = events.map((event: any) => String(event?.event || '')).filter(Boolean);
+	const required = String(requiredCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	const forbidden = String(forbiddenCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	const missing = required.filter(name => !names.includes(name));
+	if (missing.length) {
+		throw new Error(`${contextLabel}: missing trace events [${missing.join(', ')}], got [${names.join(', ')}]; trace=${JSON.stringify(trace).slice(0, 4000)}`);
+	}
+	const presentForbidden = forbidden.filter(name => names.includes(name));
+	if (presentForbidden.length) {
+		throw new Error(`${contextLabel}: unexpected trace events [${presentForbidden.join(', ')}], got [${names.join(', ')}]; trace=${JSON.stringify(trace).slice(0, 4000)}`);
+	}
+	const status = String((trace as any).status || '');
+	if (status && status !== 'success' && status !== 'active') {
+		throw new Error(`${contextLabel}: expected active/success trace status, got ${status}; trace=${JSON.stringify(trace).slice(0, 4000)}`);
+	}
+	return { status, events: names };
+}
+
+async function e2eMarkAutocompleteTraceEvents(proofName: string, context: string, requiredCsv: string = '', forbiddenCsv: string = '', timeoutMs: number = 5000): Promise<any> {
+	let lastError: unknown;
+	const started = performance.now();
+	while (performance.now() - started <= timeoutMs) {
+		try {
+			const result = e2eAssertAutocompleteTraceEvents(context, requiredCsv, forbiddenCsv);
+			const markerId = e2eSetProofMarker(proofName, result);
+			return { markerId, ...result };
+		} catch (error) {
+			lastError = error;
+			await e2eDelay(50);
+		}
+	}
+	const message = lastError instanceof Error ? lastError.message : String(lastError || 'timed out');
+	throw new Error(`${context}: trace events did not satisfy requirements within ${timeoutMs}ms: ${message}`);
+}
+
+function e2eMarkAutocompleteTraceSanitized(proofName: string, context: string = 'autocomplete trace'): any {
+	const result = e2eAssertAutocompleteTraceSanitized(context);
+	const markerId = e2eSetProofMarker(proofName, result);
+	return { markerId, ...result };
+}
+
+function e2eAssertAutocompleteTraceSanitized(context: string = 'autocomplete trace'): any {
+	const contextLabel = String(context || 'autocomplete trace');
+	const traces = [e2eCompactAutocompleteTrace(), typeof _win.__kustoGetAutocompleteTrace === 'function' ? _win.__kustoGetAutocompleteTrace(_win.__kustoLastAutocompleteTraceId) : null];
+	const payloads = traces.filter(trace => trace && typeof trace === 'object' && !Array.isArray(trace));
+	if (!payloads.length) {
+		throw new Error(`${contextLabel}: no autocomplete trace payloads available to sanitize`);
+	}
+	const hasTraceEvents = payloads.some((trace: any) => Array.isArray(trace.events) && trace.events.some((event: any) => String(event?.event || '') === 'trace-start' || String(event?.event || '') === 'trigger-start'));
+	if (!hasTraceEvents) {
+		throw new Error(`${contextLabel}: autocomplete trace payloads have no trace-start/trigger-start events: ${JSON.stringify(payloads).slice(0, 2000)}`);
+	}
+	const text = JSON.stringify(payloads);
+	if (!text) {
+		throw new Error(`${contextLabel}: trace payload is empty`);
+	}
+	const forbiddenKeys = new Set(['rawschemajson', 'schemaobj', 'query', 'querytext', 'fulltext', 'textbefore', 'textafter', 'value', 'valuepreview', 'currentline', 'linenearcursor', 'wordnearcursor', 'widgetcontent', 'token', 'accesstoken', 'idtoken', 'password', 'secret', 'authorization', 'connectionstring', 'apikey', 'sas']);
+	const foundKeys: string[] = [];
+	const visit = (value: unknown): void => {
+		if (!value || typeof value !== 'object') return;
+		if (Array.isArray(value)) {
+			for (const item of value) visit(item);
+			return;
+		}
+		for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+			if (forbiddenKeys.has(String(key || '').toLowerCase())) foundKeys.push(key);
+			visit(child);
+		}
+	};
+	for (const trace of payloads) visit(trace);
+	if (foundKeys.length) {
+		throw new Error(`${contextLabel}: trace leaked forbidden keys [${Array.from(new Set(foundKeys)).join(', ')}]; trace=${text.slice(0, 4000)}`);
+	}
+	const stringMatches = text.match(/"(?:\\.|[^"\\])*"/g) || [];
+	const oversized = stringMatches
+		.map(value => value.slice(1, -1))
+		.filter(value => value.length > 820 && !value.includes('[redacted]'));
+	if (oversized.length) {
+		throw new Error(`${contextLabel}: trace contains oversized string length(s) ${oversized.map(value => value.length).join(', ')}`);
+	}
+	return { checkedPayloads: payloads.length, bytes: text.length };
+}
+
+function e2eAssertPerfSnapshot(kind: 'host' | 'webview', expectedLabelOrPrefix: string, requiredCsv: string = ''): any {
+	const expected = String(expectedLabelOrPrefix || '').trim();
+	const required = String(requiredCsv || '').split(',').map(value => value.trim()).filter(Boolean);
+	const snapshot = kind === 'host'
+		? (((globalThis as any).__kustoPerf && typeof (globalThis as any).__kustoPerf.snapshot === 'function') ? (globalThis as any).__kustoPerf.snapshot() : null)
+		: perfSnapshot();
+	if (!snapshot || typeof snapshot !== 'object') {
+		throw new Error(`${kind} perf snapshot unavailable`);
+	}
+	let marks: any[] = [];
+	let label = '';
+	if (kind === 'host') {
+		if ((snapshot as any).enabled !== true) {
+			throw new Error('host perf snapshot is disabled; run with KUSTO_WORKBENCH_PERF=1');
+		}
+		const current = (snapshot as any).current;
+		if (!current || typeof current !== 'object') {
+			throw new Error(`host perf current trace missing: ${JSON.stringify(snapshot).slice(0, 2000)}`);
+		}
+		label = String(current.label || '');
+		marks = Array.isArray(current.marks) ? current.marks : [];
+	} else {
+		marks = Array.isArray((snapshot as any).marks) ? (snapshot as any).marks : [];
+		label = 'webview';
+	}
+	if (expected && kind === 'host' && label !== expected) {
+		throw new Error(`host perf current label mismatch: expected ${expected}, got ${label}; snapshot=${JSON.stringify(snapshot).slice(0, 2000)}`);
+	}
+	const names = marks.map(mark => String(mark?.name || '')).filter(Boolean);
+	const missing = required.filter(name => !names.includes(name));
+	if (missing.length) {
+		throw new Error(`${kind} perf missing required marks [${missing.join(', ')}], got [${names.join(', ')}]; snapshot=${JSON.stringify(snapshot).slice(0, 3000)}`);
+	}
+	const measures = kind === 'webview' ? ((snapshot as any).measures || {}) : {};
+	if (kind === 'webview') {
+		for (const measure of ['documentDataToRestoreEndMs', 'documentDataToFirstQuerySectionMs', 'documentDataToFirstQueryEditorReadyMs']) {
+			if (required.includes('webview.monaco.queryEditor.ready') && typeof measures[measure] !== 'number') {
+				throw new Error(`webview perf missing measure ${measure}; snapshot=${JSON.stringify(snapshot).slice(0, 3000)}`);
+			}
+		}
+	}
+	return { label, marks: names, measures };
+}
+
+function e2eMarkPerfSnapshot(proofName: string, kind: 'host' | 'webview', expectedLabelOrPrefix: string, requiredCsv: string = ''): any {
+	const result = e2eAssertPerfSnapshot(kind, expectedLabelOrPrefix, requiredCsv);
+	const markerId = e2eSetProofMarker(proofName, result);
+	return { markerId, ...result };
 }
 
 function e2eSuggestDiagnostics(context: string, editorSelector: string = E2E_SECTION.kusto.editor): any {
@@ -5091,12 +5330,18 @@ async function e2eAssertKustoClickCaretFidelityAfterRestoredHtmlPreviewScroll():
 }
 
 _win.__e2e = {
+	proof: {
+		clear: e2eClearProofMarker,
+		id: e2eProofId,
+	},
 	perf: {
 		snapshot: perfSnapshot,
+		markWebviewSnapshot: (proofName: string, requiredCsv: string = '') => e2eMarkPerfSnapshot(proofName, 'webview', 'webview', requiredCsv),
 	},
 	workbench: {
 		clearSections: () => _win.__testRemoveAllSections(),
 		enableIsolatedKustoConnections: e2eEnableIsolatedKustoConnections,
+		assertIsolatedKustoConnections: e2eAssertIsolatedKustoConnections,
 		removeSection: (selector: string) => _win.__testRemoveSection(selector),
 	},
 	layout: {
@@ -5236,6 +5481,10 @@ _win.__e2e = {
 		getCrossClusterTrace: () => typeof _win.__kustoGetCrossClusterTrace === 'function' ? _win.__kustoGetCrossClusterTrace() : [],
 		getAutocompleteTrace: (traceId?: string) => typeof _win.__kustoGetAutocompleteTrace === 'function' ? _win.__kustoGetAutocompleteTrace(traceId) : null,
 		compactAutocompleteTrace: (traceId?: string) => e2eCompactAutocompleteTrace(traceId),
+		assertAutocompleteTraceEvents: (context: string, requiredCsv: string = '', forbiddenCsv: string = '') => e2eAssertAutocompleteTraceEvents(context, requiredCsv, forbiddenCsv),
+		markAutocompleteTraceEvents: (proofName: string, context: string, requiredCsv: string = '', forbiddenCsv: string = '', timeoutMs: number = 5000) => e2eMarkAutocompleteTraceEvents(proofName, context, requiredCsv, forbiddenCsv, timeoutMs),
+		assertAutocompleteTraceSanitized: (context?: string) => e2eAssertAutocompleteTraceSanitized(context),
+		markAutocompleteTraceSanitized: (proofName: string, context?: string) => e2eMarkAutocompleteTraceSanitized(proofName, context),
 		clearAutocompleteTrace: () => typeof _win.__kustoClearAutocompleteTrace === 'function' ? _win.__kustoClearAutocompleteTrace() : undefined,
 		lastAutocompleteTraceId: () => _win.__kustoLastAutocompleteTraceId,
 		assertStaleResults: () => {
@@ -5298,7 +5547,8 @@ _win.__e2e = {
 			assertFirstStableRenderedColumns: (context: string, expectedCsv: string = '', timeoutMs: number = 5000) => e2eAssertFirstStableRenderedSuggestColumns(context, expectedCsv, timeoutMs),
 			assertFirstRenderedColumnsAfterRawCtrlSpace: (selector: string, context: string, expectedCsv: string = '', timeoutMs: number = 5000) => e2eAssertFirstRenderedColumnsAfterRawCtrlSpace(selector, context, expectedCsv, timeoutMs),
 			assertAllRenderedSnapshotsHaveColumns: (context: string, expectedCsv: string = '', durationMs: number = 2500, intervalMs: number = 100) => e2eAssertAllRenderedSnapshotsHaveColumns(context, expectedCsv, durationMs, intervalMs),
-			assertRenderedSnapshotsExcludeColumns: (context: string, excludedCsv: string = '', durationMs: number = 1500, intervalMs: number = 100) => e2eAssertRenderedSnapshotsExcludeColumns(context, excludedCsv, durationMs, intervalMs),
+			assertRenderedSnapshotsExcludeColumns: (context: string, excludedCsv: string = '', durationMs: number = 1500, intervalMs: number = 100, requireSnapshot: boolean = true) => e2eAssertRenderedSnapshotsExcludeColumns(context, excludedCsv, durationMs, intervalMs, requireSnapshot),
+			assertRenderedSnapshotsIncludeAndExcludeColumns: (context: string, expectedCsv: string = '', excludedCsv: string = '', durationMs: number = 1500, intervalMs: number = 100) => e2eAssertRenderedSnapshotsIncludeAndExcludeColumns(context, expectedCsv, excludedCsv, durationMs, intervalMs),
 			assertRawCtrlSpaceDoesNotRenderColumns: (selector: string, context: string, excludedCsv: string = '', durationMs: number = 1000, intervalMs: number = 100) => e2eAssertRawCtrlSpaceDoesNotRenderColumns(selector, context, excludedCsv, durationMs, intervalMs),
 			assertVisible: (context: string, expectedAnyCsv: string = '') => _win.__e2e.kusto.assertSuggestions(context, expectedAnyCsv),
 			assertAllVisible: (context: string, expectedCsv: string = '') => e2eAssertVisibleSuggestAll(context, expectedCsv, E2E_SECTION.kusto.editor),
