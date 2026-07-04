@@ -95,6 +95,50 @@ describe('kw-query-section favorites dropdown', () => {
 		expect(text).toContain('My Favorite');
 	});
 
+	it('matches favorite short regional host to full ADX connection host', async () => {
+		const el = createSection();
+		await el.updateComplete;
+
+		el.setConnections([
+			{ id: 'conn1', clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net' },
+		]);
+		el.setConnectionId('conn1');
+		el.setDatabase('prod');
+		el.setFavorites([
+			{ clusterUrl: 'aoaiagents1.westus', database: 'prod', name: 'Foundry Agents' },
+		]);
+		el.setFavoritesMode(true);
+		await el.updateComplete;
+
+		const dropdown = getFavoritesDropdown(el);
+		expect(dropdown).not.toBeNull();
+		expect(dropdown!.selectedId).toBe('0');
+		expect(el.getClusterUrl()).toBe('https://aoaiagents1.westus.kusto.windows.net');
+		expect(el.getDatabase()).toBe('prod');
+	});
+
+	it('matches favorite full ADX host to short regional connection host', async () => {
+		const el = createSection();
+		await el.updateComplete;
+
+		el.setConnections([
+			{ id: 'conn1', clusterUrl: 'aoaiagents1.westus' },
+		]);
+		el.setConnectionId('conn1');
+		el.setDatabase('prod');
+		el.setFavorites([
+			{ clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net', database: 'prod', name: 'Foundry Agents' },
+		]);
+		el.setFavoritesMode(true);
+		await el.updateComplete;
+
+		const dropdown = getFavoritesDropdown(el);
+		expect(dropdown).not.toBeNull();
+		expect(dropdown!.selectedId).toBe('0');
+		expect(el.getClusterUrl()).toBe('aoaiagents1.westus');
+		expect(el.getDatabase()).toBe('prod');
+	});
+
 	it('shows placeholder when no favorite matches current connection', async () => {
 		const el = createSection();
 		await el.updateComplete;

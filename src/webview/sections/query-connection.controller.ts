@@ -485,6 +485,14 @@ export class QueryConnectionController implements ReactiveController {
 			.map((d: any) => String(d || '').trim())
 			.filter(Boolean)
 			.sort((a: any, b: any) => a.toLowerCase().localeCompare(b.toLowerCase()));
+		const currentDatabase = this.host.getDatabase();
+		const desiredDatabase = typeof (this.host as any).getDesiredDatabase === 'function' ? String((this.host as any).getDesiredDatabase() || '') : '';
+		const protectedDatabase = desiredDatabase || currentDatabase;
+		if (!responseConnectionId && protectedDatabase && !list.some((db: string) => db.toLowerCase() === String(protectedDatabase).toLowerCase())) {
+			this.host.setRefreshLoading(false);
+			this.host.setDatabasesLoading(false);
+			return;
+		}
 		const connectionId = this.host.getConnectionId();
 		if (connectionId) {
 			let clusterKey = '';
@@ -696,6 +704,16 @@ export function __kustoUpdateFavoritesUiForBox(boxId: any) {
 	if (!id) return;
 	const el = __kustoGetQuerySectionElement(id);
 	if (el?.connectionCtrl) {
+		el.connectionCtrl.updateFavoritesUi();
+	}
+}
+
+export function __kustoSetFavoritesModeForBox(boxId: any, enabled: boolean) {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const el = __kustoGetQuerySectionElement(id);
+	if (el?.connectionCtrl) {
+		el.connectionCtrl.applyFavoritesMode(!!enabled);
 		el.connectionCtrl.updateFavoritesUi();
 	}
 }
@@ -1057,6 +1075,8 @@ _win.__kustoGetSelectionOwnerBoxId = function (boxId: any) {
 _win.__kustoUpdateFavoritesUiForAllBoxes = __kustoUpdateFavoritesUiForAllBoxes;
 
 _win.__kustoUpdateFavoritesUiForBox = __kustoUpdateFavoritesUiForBox;
+
+_win.__kustoSetFavoritesModeForBox = __kustoSetFavoritesModeForBox;
 
 _win.__kustoEnterFavoritesModeForBox = function (boxId: any) {
 	const id = String(boxId || '').trim();

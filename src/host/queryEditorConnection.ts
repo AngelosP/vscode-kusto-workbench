@@ -13,6 +13,12 @@ import {
 	IncomingWebviewMessage
 } from './queryEditorTypes';
 
+export let testIsolateKustoConnections = false;
+
+export function setTestIsolateKustoConnections(enabled: boolean): void {
+	testIsolateKustoConnections = !!enabled;
+}
+
 
 // ── Pure utility functions (no instance state needed) ──
 
@@ -711,6 +717,20 @@ export class ConnectionService {
 		copilotInlineCompletionsEnabledUserSet: boolean;
 		copilotChatFirstTimeDismissed: boolean;
 	}): Promise<void> {
+		if (testIsolateKustoConnections) {
+			this.host.postMessage({
+				type: 'connectionsData',
+				connections: [],
+				lastConnectionId: null,
+				lastDatabase: null,
+				cachedDatabases: {},
+				favorites: [],
+				...settings,
+				leaveNoTraceClusters: [],
+				devNotesEnabled: true
+			});
+			return;
+		}
 		const connections = this.host.connectionManager.getConnections();
 		const cachedDatabases = this.getCachedDatabases();
 		const favorites = this.getFavorites();

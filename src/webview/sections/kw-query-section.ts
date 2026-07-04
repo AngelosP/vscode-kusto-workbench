@@ -33,7 +33,7 @@ import { QueryConnectionController } from './query-connection.controller.js';
 import { QueryExecutionController } from './query-execution.controller.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 
-import { formatClusterDisplayName as _formatClusterDisplayName, formatClusterShortName as _formatClusterShortName } from '../shared/clusterUtils.js';
+import { canonicalKustoClusterKey as _canonicalKustoClusterKey, formatClusterDisplayName as _formatClusterDisplayName, formatClusterShortName as _formatClusterShortName } from '../shared/clusterUtils.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -116,6 +116,10 @@ function normalizeClusterUrlKey(url: string): string {
 	if (!u) return '';
 	if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
 	try { return new URL(u).hostname.toLowerCase(); } catch { return u.toLowerCase(); }
+}
+
+function canonicalKustoClusterKey(url: string): string {
+	return _canonicalKustoClusterKey(url);
 }
 
 function clusterShortNameKey(url: string): string {
@@ -727,8 +731,8 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const fav = this._favorites[index];
 		if (!fav) return;
 		// Find the connection that matches this favorite's clusterUrl
-		const target = normalizeClusterUrlKey(fav.clusterUrl);
-		const conn = this._connections.find(c => normalizeClusterUrlKey(c.clusterUrl) === target);
+		const target = canonicalKustoClusterKey(fav.clusterUrl);
+		const conn = this._connections.find(c => canonicalKustoClusterKey(c.clusterUrl) === target);
 		if (conn) {
 			this._connectionId = conn.id;
 			this._persistConnectionSelection = true;
@@ -838,13 +842,32 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	/** Get the currently selected database name. */
 	public getDatabase(): string {
-		return this._database;
+		if (this._favoritesMode) {
+			const favIndex = this._getSelectedFavoriteIndex();
+			const fav = favIndex >= 0 ? this._favorites[favIndex] : null;
+			if (fav?.database) return fav.database;
+		}
+		return this._desiredDatabase || this._database;
+	}
+
+	/** Get the pending desired database from restore/favorite selection, if any. */
+	public getDesiredDatabase(): string {
+		return this._desiredDatabase;
 	}
 
 	/** Get the cluster URL for the current connection. */
 	public getClusterUrl(): string {
+		if (this._favoritesMode) {
+			const favIndex = this._getSelectedFavoriteIndex();
+			const fav = favIndex >= 0 ? this._favorites[favIndex] : null;
+			if (fav?.clusterUrl) {
+				const favKey = canonicalKustoClusterKey(fav.clusterUrl);
+				const conn = this._connections.find(c => canonicalKustoClusterKey(c.clusterUrl) === favKey);
+				return conn?.clusterUrl || fav.clusterUrl;
+			}
+		}
 		const conn = this._connections.find(c => c.id === this._connectionId);
-		return conn?.clusterUrl || '';
+		return this._desiredClusterUrl || conn?.clusterUrl || '';
 	}
 
 	/** Set the desired cluster URL (used during restoration). */
@@ -876,6 +899,8 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		let resolvedId = '';
 		let resolvedDesiredCluster = false;
 
+		const hadPendingDesiredCluster = this._desiredClusterUrlPendingMatch;
+
 		// 1. Try desired cluster URL
 		if (this._desiredClusterUrl) {
 			const target = normalizeClusterUrlKey(this._desiredClusterUrl);
@@ -894,7 +919,14 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			}
 		}
 
-		if (!resolvedDesiredCluster && this._desiredClusterUrlPendingMatch) {
+		if (!resolvedDesiredCluster && this._connectionId) {
+			const currentMatch = connections.find(c => c.id === this._connectionId);
+			if (currentMatch) {
+				resolvedId = currentMatch.id;
+			}
+		}
+
+		if (!resolvedId && !resolvedDesiredCluster && this._desiredClusterUrlPendingMatch) {
 			this._connectionId = '';
 			return;
 		}
@@ -921,12 +953,15 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const prev = this._connectionId;
 		this._connectionId = resolvedId;
 
-		// Update desired cluster URL from resolved connection
+		// Update desired cluster URL from resolved connection. If a file/restore desired
+		// cluster is still pending, keep it so a later connection-list refresh can match it.
 		if (resolvedId) {
 			const conn = connections.find(c => c.id === resolvedId);
 			if (conn) {
-				this._desiredClusterUrl = conn.clusterUrl;
-				this._desiredClusterUrlPendingMatch = false;
+				if (resolvedDesiredCluster || !hadPendingDesiredCluster) {
+					this._desiredClusterUrl = conn.clusterUrl;
+					this._desiredClusterUrlPendingMatch = false;
+				}
 			}
 		}
 
@@ -1060,13 +1095,15 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	// ── Private helpers ───────────────────────────────────────────────────────
 
 	private _isFavorited(): boolean {
-		if (!this._connectionId || !this._database) return false;
-		const clusterUrl = this.getClusterUrl();
+		const db = this._database || this._desiredDatabase;
+		if (!this._connectionId || !db) return false;
+		const conn = this._connections.find(c => c.id === this._connectionId);
+		const clusterUrl = this._desiredClusterUrl || conn?.clusterUrl || '';
 		if (!clusterUrl) return false;
-		const target = normalizeClusterUrlKey(clusterUrl);
-		const dbLower = this._database.toLowerCase();
+		const target = canonicalKustoClusterKey(clusterUrl);
+		const dbLower = db.toLowerCase();
 		return this._favorites.some(f =>
-			normalizeClusterUrlKey(f.clusterUrl) === target && (f.database || '').toLowerCase() === dbLower
+			canonicalKustoClusterKey(f.clusterUrl) === target && (f.database || '').toLowerCase() === dbLower
 		);
 	}
 
@@ -1075,12 +1112,13 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (!this._connectionId) return -1;
 		const db = this._database || this._desiredDatabase;
 		if (!db) return -1;
-		const clusterUrl = this.getClusterUrl();
+		const conn = this._connections.find(c => c.id === this._connectionId);
+		const clusterUrl = this._desiredClusterUrl || conn?.clusterUrl || '';
 		if (!clusterUrl) return -1;
-		const target = normalizeClusterUrlKey(clusterUrl);
+		const target = canonicalKustoClusterKey(clusterUrl);
 		const dbLower = db.toLowerCase();
 		return this._favorites.findIndex(f =>
-			normalizeClusterUrlKey(f.clusterUrl) === target && (f.database || '').toLowerCase() === dbLower
+			canonicalKustoClusterKey(f.clusterUrl) === target && (f.database || '').toLowerCase() === dbLower
 		);
 	}
 

@@ -9,11 +9,12 @@ export interface CrossClusterSchemaRef {
 }
 
 function normalizeClusterHost(value: string | null | undefined): string {
-	return String(value || '')
+	const host = String(value || '')
 		.trim()
 		.toLowerCase()
 		.replace(/^https?:\/\//, '')
 		.replace(/\/+$/, '');
+	return host.endsWith('.kusto.windows.net') ? host.slice(0, -'.kusto.windows.net'.length) : host;
 }
 
 function clusterShortName(value: string | null | undefined): string {

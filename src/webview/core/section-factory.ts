@@ -208,6 +208,7 @@ export function __kustoGetQuerySectionElement( boxId: any) {
 try {
 	window.__kustoGetConnectionId = __kustoGetConnectionId;
 	window.__kustoGetDatabase = __kustoGetDatabase;
+	window.__kustoGetClusterUrl = __kustoGetClusterUrl;
 	window.__kustoGetQuerySectionElement = __kustoGetQuerySectionElement;
 } catch (e) { console.error('[kusto]', e); }
 

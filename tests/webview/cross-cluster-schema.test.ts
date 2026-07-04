@@ -26,6 +26,15 @@ describe('cross-cluster schema helpers', () => {
 		expect(refs).toEqual([{ clusterName: 'Remote', database: 'CurrentDb' }]);
 	});
 
+	it('skips current regional cluster when query uses short name and context uses full ADX host', () => {
+		const refs = extractCrossClusterRefs(`
+			let baseQuery = materialize(cluster('aoaiagents1.westus').database('prod').v_bizops()
+			| where TIMESTAMP >= startTime)
+		`, { clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net', database: 'prod' });
+
+		expect(refs).toEqual([]);
+	});
+
 	it('keeps same-cluster database-only references as null-cluster refs', () => {
 		const refs = extractCrossClusterRefs(`
 			database('CurrentDb').AlreadyLoaded

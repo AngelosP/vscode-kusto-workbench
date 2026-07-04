@@ -2,6 +2,7 @@
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
 import { ConnectionManager } from './connectionManager';
+import { setTestIsolateKustoConnections, testIsolateKustoConnections } from './queryEditorConnection';
 import { CachedValuesViewerV2 } from './cachedValuesViewer';
 import { ConnectionManagerViewerV2 } from './connectionManagerViewer';
 import { SqlConnectionManager } from './sqlConnectionManager';
@@ -109,7 +110,13 @@ export function activate(context: vscode.ExtensionContext) {
 	context.subscriptions.push(editorCursorStatusBar);
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
 		context.subscriptions.push(
-			vscode.commands.registerCommand('kustoWorkbench.test.getCursorStatusBar', () => editorCursorStatusBar.getSnapshot())
+			vscode.commands.registerCommand('kustoWorkbench.test.getCursorStatusBar', () => editorCursorStatusBar.getSnapshot()),
+			vscode.commands.registerCommand('kustoWorkbench.test.setIsolatedKustoConnections', (enabled: boolean = true) => {
+				setTestIsolateKustoConnections(!!enabled);
+			}),
+			vscode.commands.registerCommand('kustoWorkbench.test.clearIsolatedKustoConnections', () => {
+				setTestIsolateKustoConnections(false);
+			})
 		);
 	}
 
@@ -1076,6 +1083,9 @@ export function activate(context: vscode.ExtensionContext) {
 			// Open the persistent session file (survives restarts/crashes).
 			await vscode.workspace.fs.createDirectory(context.globalStorageUri);
 			const sessionUri = vscode.Uri.joinPath(context.globalStorageUri, 'session.kqlx');
+			if (testIsolateKustoConnections) {
+				await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(''));
+			}
 			try {
 				await vscode.workspace.fs.stat(sessionUri);
 			} catch {

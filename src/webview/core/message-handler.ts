@@ -9,7 +9,7 @@ import { getResultsState, displayResultForBox, displayResult, displayCancelled }
 import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './error-renderer';
 import {
 	addQueryBox, removeQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName,
-	__kustoGetConnectionId, __kustoGetDatabase,
+	__kustoGetConnectionId, __kustoGetClusterUrl, __kustoGetDatabase,
 	updateConnectionSelects, updateDatabaseSelect, onDatabasesError,
 	parseKustoExplorerConnectionsXml,
 	__kustoUpdateFavoritesUiForAllBoxes, __kustoTryAutoEnterFavoritesModeForAllBoxes,
@@ -224,8 +224,9 @@ function getCurrentSchemaKeyForBoxId(boxId: string): string | null {
 		const connectionId = __kustoGetConnectionId(ownerId);
 		const database = __kustoGetDatabase(ownerId);
 		if (!connectionId || !database) return null;
+		const selectedClusterUrl = __kustoGetClusterUrl(ownerId);
 		const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === connectionId) : null;
-		const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
+		const clusterUrl = selectedClusterUrl || (conn && conn.clusterUrl ? String(conn.clusterUrl) : '');
 		if (!clusterUrl) return null;
 		return `${clusterUrl}|${database}`;
 	} catch {
@@ -568,6 +569,17 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'connectionsData':
+			if ((window as any).__e2eIsolatedKustoConnections) {
+				setConnections([]);
+				try { window.connections = connections; } catch (e) { console.error('[kusto]', e); }
+				setLastConnectionId(null);
+				setLastDatabase(null);
+				for (const k of Object.keys(cachedDatabases)) delete cachedDatabases[k];
+				setKustoFavorites([]);
+				setLeaveNoTraceClusters([]);
+				updateConnectionSelects();
+				break;
+			}
 			setConnections(message.connections);
 			try { window.connections = connections; } catch (e) { console.error('[kusto]', e); }
 			setLastConnectionId(message.lastConnectionId);

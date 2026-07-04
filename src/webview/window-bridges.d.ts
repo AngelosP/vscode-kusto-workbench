@@ -201,6 +201,7 @@ declare global {
 		// =====================================================================
 		__kustoGetConnectionId: (boxId: string) => string;
 		__kustoGetDatabase: (boxId: string) => string;
+		__kustoGetClusterUrl: (boxId: string) => string;
 		__kustoGetCurrentClusterUrlForBox: (boxId: string) => string;
 		__kustoGetCurrentDatabaseForBox: (boxId: string) => string;
 		__kustoGetQuerySectionElement: (boxId: string) => any;
@@ -470,6 +471,10 @@ declare global {
 		__kustoApplyCrossClusterSchema: (clusterName: string, clusterUrl: string, database: string, rawSchemaJson: any, boxId?: string, source?: string, cacheAgeMs?: number) => Promise<void>;
 		__kustoGetCrossClusterTrace: () => Array<Record<string, any>>;
 		__kustoClearCrossClusterTrace: () => void;
+		__kustoGetAutocompleteTrace: (traceId?: string) => any;
+		__kustoCompactAutocompleteTrace: (traceId?: string) => any;
+		__kustoClearAutocompleteTrace: () => void;
+		__kustoLastAutocompleteTraceId: string | undefined;
 		__kustoTriggerRevalidation: (boxId: string) => void;
 		__kustoGetStatementBlocksFromModel: (model: any) => any[];
 		__kustoExtractStatementTextAtCursor: (editor: any) => string | null;

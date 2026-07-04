@@ -37,6 +37,26 @@ export function normalizeClusterUrlKey(url: any): string {
 	}
 }
 
+export function canonicalKustoClusterKey(url: any): string {
+	try {
+		const raw = String(url || '').trim();
+		if (!raw) return '';
+		const withScheme = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw.replace(/^\/+/, ''));
+		const u = new URL(withScheme);
+		let host = String(u.hostname || '').trim().toLowerCase();
+		if (host.endsWith('.kusto.windows.net')) {
+			host = host.slice(0, -'.kusto.windows.net'.length);
+		}
+		return host || raw.toLowerCase().replace(/^https?:\/\//i, '').replace(/\/+$/g, '');
+	} catch {
+		let host = String(url || '').trim().toLowerCase().replace(/^https?:\/\//i, '').replace(/\/+$/g, '');
+		if (host.endsWith('.kusto.windows.net')) {
+			host = host.slice(0, -'.kusto.windows.net'.length);
+		}
+		return host;
+	}
+}
+
 export function formatClusterShortName(clusterUrl: any): string {
 	const raw = String(clusterUrl || '').trim();
 	if (!raw) return '';
