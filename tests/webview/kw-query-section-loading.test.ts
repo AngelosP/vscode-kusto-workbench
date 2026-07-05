@@ -195,7 +195,7 @@ describe('kw-query-section loading states', () => {
 		await el.updateComplete;
 
 		expect(el.getConnectionId()).toBe('');
-		expect(el.getClusterUrl()).toBe('');
+		expect(el.getClusterUrl()).toBe('https://saved.kusto.windows.net');
 		expect(connectionEvents).toHaveLength(0);
 
 		el.setConnections([
@@ -228,7 +228,7 @@ describe('kw-query-section loading states', () => {
 		await el.updateComplete;
 
 		expect(el.getConnectionId()).toBe('');
-		expect(el.getClusterUrl()).toBe('');
+		expect(el.getClusterUrl()).toBe('https://foo.region-a.kusto.windows.net');
 		expect(connectionEvents).toHaveLength(0);
 
 		el.setConnections([

@@ -163,9 +163,7 @@ describe('QueryEditorProvider Power BI publish help notification', () => {
 			expect.stringContaining('Ask for support for this chart type'),
 			'Ask for it',
 		);
-		expect(openExternal).toHaveBeenCalledWith(expect.objectContaining({
-			scheme: 'https',
-			path: 'https://github.com/AngelosP/vscode-kusto-workbench/issues',
-		}));
+		expect(openExternal).toHaveBeenCalledTimes(1);
+		expect(openExternal.mock.calls[0][0].toString()).toBe('https://github.com/AngelosP/vscode-kusto-workbench/issues');
 	});
 });
