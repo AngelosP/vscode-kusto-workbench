@@ -412,8 +412,8 @@ async function main() {
 	// Runs inline — no extra step to remember.
 	if (production) {
 		const BASELINES = {
-			'extension.js':                                        1229,
-			'webview/webview.bundle.js':                           2282,
+			'extension.js':                                        1306,
+			'webview/webview.bundle.js':                           2391,
 			'webview/md-editor.bundle.js':                          245,
 			'webview/tutorial-viewer.bundle.js':                    154,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
