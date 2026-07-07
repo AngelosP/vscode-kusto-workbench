@@ -68,6 +68,7 @@ import {
 	sqlConnections, sqlCachedDatabases, setSqlConnections,
 	sqlFavorites, setSqlFavorites, sqlFavoritesModeByBoxId,
 } from './state';
+import { kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
 
 const ASK_KUSTO_COPILOT_DEFAULT_MAX_RESULT_ROWS = 100;
 const ASK_KUSTO_COPILOT_MIN_MAX_RESULT_ROWS = 1;
@@ -228,7 +229,7 @@ function getCurrentSchemaKeyForBoxId(boxId: string): string | null {
 		const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === connectionId) : null;
 		const clusterUrl = selectedClusterUrl || (conn && conn.clusterUrl ? String(conn.clusterUrl) : '');
 		if (!clusterUrl) return null;
-		return `${clusterUrl}|${database}`;
+		return kustoDatabaseKey(clusterUrl, database);
 	} catch {
 		return null;
 	}
@@ -764,17 +765,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							try {
 								const conn = Array.isArray(connections) ? connections.find((c: any) => c && String(c.id || '').trim() === String(cid || '').trim()) : null;
 								const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
-								if (clusterUrl) {
-									let u = clusterUrl;
-									if (!/^https?:\/\//i.test(u)) {
-										u = 'https://' + u;
-									}
-									try {
-										clusterKey = String(new URL(u).hostname || '').trim().toLowerCase();
-									} catch {
-										clusterKey = String(clusterUrl || '').trim().toLowerCase();
-									}
-								}
+								if (clusterUrl) clusterKey = kustoClusterKey(clusterUrl);
 							} catch (e) { console.error('[kusto]', e); }
 							if (clusterKey) {
 								cachedDatabases[clusterKey] = list;
@@ -971,7 +962,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			// With aggregate schema approach, we always push schemas to monaco-kusto
 			// The __kustoSetMonacoKustoSchema function handles de-duplication and uses addDatabaseToSchema for subsequent loads
 			try {
-				const schemaKey = message.clusterUrl && message.database ? `${message.clusterUrl}|${message.database}` : '';
+				const schemaKey = message.clusterUrl && message.database ? kustoDatabaseKey(message.clusterUrl, message.database) : '';
 				const isForceRefresh = !!(message.schemaMeta && message.schemaMeta.forceRefresh);
 				if (schemaKey) {
 					applyKustoSchemaToWorkerFromMessage(message, schemaKey, isForceRefresh, message.schemaMeta?.schemaSignature);
@@ -1935,7 +1926,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						}
 						if (sectionId && input.clusterUrl) {
 							// Find connection by cluster URL
-							const conn = (connections || []).find((c: any) => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
+							const inputClusterKey = kustoClusterKey(input.clusterUrl);
+							const conn = (connections || []).find((c: any) => c && kustoClusterKey(c.clusterUrl || '') === inputClusterKey);
 							if (conn) {
 								const kwEl = __kustoGetQuerySectionElement(sectionId);
 								if (kwEl && typeof kwEl.setConnectionId === 'function') {
@@ -2199,7 +2191,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					
 					// Update cluster
 					if (input.clusterUrl) {
-						const conn = (connections || []).find((c: any) => c && String(c.clusterUrl || '').toLowerCase().includes(String(input.clusterUrl).toLowerCase()));
+						const inputClusterKey = kustoClusterKey(input.clusterUrl);
+						const conn = (connections || []).find((c: any) => c && kustoClusterKey(c.clusterUrl || '') === inputClusterKey);
 						if (conn) {
 							const kwEl = __kustoGetQuerySectionElement(sectionId);
 							if (kwEl && typeof kwEl.setConnectionId === 'function') {

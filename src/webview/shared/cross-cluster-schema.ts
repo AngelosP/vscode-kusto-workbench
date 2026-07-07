@@ -1,3 +1,5 @@
+import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
+
 export interface CrossClusterSchemaContext {
 	clusterUrl?: string | null;
 	database?: string | null;
@@ -9,12 +11,7 @@ export interface CrossClusterSchemaRef {
 }
 
 function normalizeClusterHost(value: string | null | undefined): string {
-	const host = String(value || '')
-		.trim()
-		.toLowerCase()
-		.replace(/^https?:\/\//, '')
-		.replace(/\/+$/, '');
-	return host.endsWith('.kusto.windows.net') ? host.slice(0, -'.kusto.windows.net'.length) : host;
+	return kustoClusterKey(value);
 }
 
 function clusterShortName(value: string | null | undefined): string {

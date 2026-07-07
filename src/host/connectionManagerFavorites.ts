@@ -1,3 +1,5 @@
+import { kustoClusterKey } from '../shared/kustoClusterUrls';
+
 export interface KustoFavorite {
 	name: string;
 	clusterUrl: string;
@@ -40,7 +42,7 @@ export function getKustoFavoriteDefaultName(clusterUrl: string, database: string
 }
 
 export function getKustoFavoriteKey(clusterUrl: string, database: string): string {
-	return `${normalizeFavoriteClusterUrl(clusterUrl)}|${trimText(database).toLowerCase()}`;
+	return `${kustoClusterKey(clusterUrl)}|${trimText(database).toLowerCase()}`;
 }
 
 export function getSqlFavoriteKey(connectionId: string, database: string): string {

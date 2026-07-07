@@ -1,5 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
+import * as os from 'os';
+import * as path from 'path';
 import { SchemaService } from '../../../src/host/queryEditorSchema';
 import type { KustoConnection } from '../../../src/host/connectionManager';
 
@@ -36,7 +38,7 @@ function createService(connection: KustoConnection) {
 	}));
 	const service = new SchemaService({
 		context: {
-			globalStorageUri: vscode.Uri.file('/tmp/kusto-workbench-query-editor-schema-test'),
+			globalStorageUri: vscode.Uri.file(path.join(os.tmpdir(), `kusto-workbench-query-editor-schema-test-${Date.now()}-${Math.random().toString(16).slice(2)}`)),
 			globalState: {
 				get: vi.fn(() => true),
 				update: vi.fn(async () => undefined),

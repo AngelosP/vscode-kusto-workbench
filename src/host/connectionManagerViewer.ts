@@ -5,12 +5,13 @@ import { ConnectionManager, KustoConnection } from './connectionManager';
 import { ConnectionService } from './queryEditorConnection';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
 import { createEmptyKqlxOrMdxFile } from './kqlxFormat';
-import { writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry, searchCachedSchemas, readAllCachedSchemasFromDisk, type SchemaSearchMatch } from './schemaCache';
+import { writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry, searchCachedSchemas, readAllCachedSchemasFromDisk, type SchemaSearchMatch, schemaCacheKey } from './schemaCache';
 import { searchCachedSqlSchemas, readAllCachedSqlSchemasFromDisk, type SqlSchemaSearchMatch } from './sqlEditorSchema';
 import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { SqlQueryClient } from './sqlClient';
 import { listDialects } from './sql/sqlDialectRegistry';
 import { selectBestKustoClusterUrl } from '../shared/kustoClusterUrls';
+import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { notifySavedFile, withCsvExtension } from './savedFileNotification';
 import {
 	addKustoFavoriteIfMissing,
@@ -204,10 +205,6 @@ export class ConnectionManagerViewerV2 {
 		ConnectionService.broadcastKustoFavoritesData(this.context);
 	}
 
-	private normalizeFavoriteClusterUrl(clusterUrl: string): string {
-		return normalizeStoredFavoriteClusterUrl(clusterUrl);
-	}
-
 	private getExpandedClusters(): string[] {
 		const raw = this.context.globalState.get<string[] | undefined>(STORAGE_KEYS.expandedClusters);
 		return Array.isArray(raw) ? raw.filter((s) => typeof s === 'string') : [];
@@ -221,9 +218,26 @@ export class ConnectionManagerViewerV2 {
 		const raw = this.context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases);
 		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
 		const result: Record<string, string[]> = {};
+		const connections = this.connectionManager.getConnections();
+		const connById = new Map(connections.map(conn => [conn.id, conn]));
+		let changed = false;
 		for (const [k, v] of Object.entries(raw)) {
-			if (typeof k === 'string' && Array.isArray(v)) result[k] = v.filter((d) => typeof d === 'string');
+			if (typeof k !== 'string' || !Array.isArray(v)) continue;
+			const conn = connById.get(k);
+			const key = this.getClusterCacheKey(conn?.clusterUrl || k);
+			if (!key) { changed = true; continue; }
+			if (key !== k) changed = true;
+			const existing = result[key] || [];
+			const merged = [...existing, ...v.filter((d) => typeof d === 'string')];
+			const seen = new Set<string>();
+			result[key] = merged.filter(database => {
+				const lower = String(database || '').trim().toLowerCase();
+				if (!lower || seen.has(lower)) return false;
+				seen.add(lower);
+				return true;
+			});
 		}
+		if (changed) void this.setCachedDatabases(result);
 		return result;
 	}
 
@@ -232,16 +246,7 @@ export class ConnectionManagerViewerV2 {
 	}
 
 	private getClusterCacheKey(clusterUrlRaw: string): string {
-		try {
-			let u = String(clusterUrlRaw || '').trim();
-			if (!u) return '';
-			if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
-			const parsed = new URL(u);
-			const host = String(parsed.hostname || '').trim().toLowerCase();
-			return host || String(clusterUrlRaw || '').trim().toLowerCase();
-		} catch {
-			return String(clusterUrlRaw || '').trim().toLowerCase();
-		}
+		return kustoClusterKey(clusterUrlRaw);
 	}
 
 	// ─── SQL data helpers ───────────────────────────────────────────────────
@@ -464,8 +469,8 @@ export class ConnectionManagerViewerV2 {
 				if (confirm !== 'Delete') return;
 				try {
 					if (conn) {
-						const normalizedUrl = this.normalizeFavoriteClusterUrl(conn.clusterUrl);
-						const favorites = this.getFavorites().filter((f) => this.normalizeFavoriteClusterUrl(f.clusterUrl) !== normalizedUrl);
+						const normalizedUrl = kustoClusterKey(conn.clusterUrl);
+						const favorites = this.getFavorites().filter((f) => kustoClusterKey(f.clusterUrl) !== normalizedUrl);
 						await this.setFavorites(favorites);
 					}
 					await this.connectionManager.removeConnection(id);
@@ -613,14 +618,14 @@ export class ConnectionManagerViewerV2 {
 				const source = String(msg.source || '').trim();
 				if (!clusterUrl || !database) return;
 				const connections = this.connectionManager.getConnections();
-				const normalizedUrl = this.normalizeFavoriteClusterUrl(clusterUrl);
-				const conn = connections.find((c) => this.normalizeFavoriteClusterUrl(c.clusterUrl) === normalizedUrl);
+				const normalizedUrl = kustoClusterKey(clusterUrl);
+				const conn = connections.find((c) => kustoClusterKey(c.clusterUrl) === normalizedUrl);
 				if (!conn) { void vscode.window.showWarningMessage(`No connection found for cluster: ${clusterUrl}`); return; }
 				this.panel.webview.postMessage({ type: 'schemaRefreshStarted', clusterUrl, database });
 				try {
 					const result = await this.kustoClient.getDatabaseSchema(conn, database, true);
 					const normalizedCluster = conn.clusterUrl.replace(/\/+$/, '');
-					const cacheKey = `${normalizedCluster}|${database}`;
+					const cacheKey = schemaCacheKey(normalizedCluster, database);
 					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
 					const diskEntry: CachedSchemaEntry = { schema: result.schema, timestamp, version: SCHEMA_CACHE_VERSION, clusterUrl: normalizedCluster, database };
 					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, diskEntry);
@@ -1243,7 +1248,7 @@ export class ConnectionManagerViewerV2 {
 					try {
 						const result = await this.kustoClient.getDatabaseSchema(conn, db, true);
 						const normalizedCluster = conn.clusterUrl.replace(/\/+$/, '');
-						const cacheKey = `${normalizedCluster}|${db}`;
+						const cacheKey = schemaCacheKey(normalizedCluster, db);
 						await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
 							schema: result.schema,
 							timestamp: Date.now(),
@@ -1264,16 +1269,13 @@ export class ConnectionManagerViewerV2 {
 					if (signal.aborted) return;
 					const entry = cachedEntries[i];
 					sendProgress(`Refreshing ${entry.database}…`, i + 1, total);
-					const conn = connections.find(c => {
-						const cUrl = c.clusterUrl.replace(/\/+$/, '').toLowerCase();
-						const eUrl = entry.clusterUrl.replace(/\/+$/, '').toLowerCase();
-						return cUrl === eUrl || cUrl.includes(eUrl) || eUrl.includes(cUrl);
-					});
+					const entryClusterKey = kustoClusterKey(entry.clusterUrl);
+					const conn = connections.find(c => kustoClusterKey(c.clusterUrl) === entryClusterKey);
 					if (!conn) continue;
 					try {
 						const result = await this.kustoClient.getDatabaseSchema(conn, entry.database, true);
 						const normalizedCluster = conn.clusterUrl.replace(/\/+$/, '');
-						const cacheKey = `${normalizedCluster}|${entry.database}`;
+						const cacheKey = schemaCacheKey(normalizedCluster, entry.database);
 						await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
 							schema: result.schema,
 							timestamp: Date.now(),
@@ -1449,11 +1451,8 @@ export class ConnectionManagerViewerV2 {
 		const connections = this.connectionManager.getConnections();
 		const results: any[] = [];
 		for (const m of matches) {
-			const conn = connections.find(c => {
-				const cUrl = c.clusterUrl.replace(/\/+$/, '').toLowerCase();
-				const mUrl = m.clusterUrl.replace(/\/+$/, '').toLowerCase();
-				return cUrl === mUrl || cUrl.includes(mUrl) || mUrl.includes(cUrl);
-			});
+			const matchClusterKey = kustoClusterKey(m.clusterUrl);
+			const conn = connections.find(c => kustoClusterKey(c.clusterUrl) === matchClusterKey);
 			const connId = conn?.id ?? '';
 			const connName = conn?.name ?? m.clusterUrl;
 
@@ -1592,13 +1591,7 @@ export class ConnectionManagerViewerV2 {
 	}
 
 	private normalizeClusterUrlKey(url: string): string {
-		try {
-			const raw = String(url || '').trim();
-			if (!raw) return '';
-			const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
-			const u = new URL(withScheme);
-			return (u.origin + u.pathname).replace(/\/+$/g, '').toLowerCase();
-		} catch { return String(url || '').trim().replace(/\/+$/g, '').toLowerCase(); }
+		return kustoClusterKey(url);
 	}
 
 	// ─── Alternating row color setting ──────────────────────────────────────

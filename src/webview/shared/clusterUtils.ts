@@ -3,10 +3,19 @@
 
 export {
 	canonicalizePowerBiKustoClusterUrl,
+	exportAzureDataExplorerClusterPath,
+	exportKustoClusterEndpoint,
+	exportKustoClusterForKql,
 	ensureKustoClusterUrlScheme,
 	isCompleteKustoClusterUrl,
+	kustoClusterKey,
+	kustoDatabaseKey,
+	kustoEntityKey,
+	parseKustoClusterRef,
 	selectBestKustoClusterUrl,
 } from '../../shared/kustoClusterUrls.js';
+
+import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
 
 export function formatClusterDisplayName(connection: any): string {
 	if (!connection) return '';
@@ -38,23 +47,7 @@ export function normalizeClusterUrlKey(url: any): string {
 }
 
 export function canonicalKustoClusterKey(url: any): string {
-	try {
-		const raw = String(url || '').trim();
-		if (!raw) return '';
-		const withScheme = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw.replace(/^\/+/, ''));
-		const u = new URL(withScheme);
-		let host = String(u.hostname || '').trim().toLowerCase();
-		if (host.endsWith('.kusto.windows.net')) {
-			host = host.slice(0, -'.kusto.windows.net'.length);
-		}
-		return host || raw.toLowerCase().replace(/^https?:\/\//i, '').replace(/\/+$/g, '');
-	} catch {
-		let host = String(url || '').trim().toLowerCase().replace(/^https?:\/\//i, '').replace(/\/+$/g, '');
-		if (host.endsWith('.kusto.windows.net')) {
-			host = host.slice(0, -'.kusto.windows.net'.length);
-		}
-		return host;
-	}
+	return kustoClusterKey(url);
 }
 
 export function formatClusterShortName(clusterUrl: any): string {
@@ -97,7 +90,7 @@ export function extractClusterUrlsFromQueryText(queryText: any): string[] {
 	const seen = new Set<string>();
 	const out: string[] = [];
 	for (const u of urls) {
-		const key = clusterShortNameKey(u);
+		const key = canonicalKustoClusterKey(u);
 		if (!key || seen.has(key)) continue;
 		seen.add(key);
 		out.push(u);
@@ -116,7 +109,7 @@ export function extractClusterDatabaseHintsFromQueryText(queryText: any): Record
 			const clusterUrl = String(m[2] || '').trim();
 			const database = String(m[4] || '').trim();
 			if (!clusterUrl || !database) continue;
-			const key = clusterShortNameKey(clusterUrl);
+			const key = canonicalKustoClusterKey(clusterUrl);
 			if (!key) continue;
 			if (!map[key]) map[key] = database;
 		}
@@ -130,12 +123,12 @@ export function computeMissingClusterUrls(detectedClusterUrls: any[], connection
 	const existingKeys = new Set<string>();
 	for (const c of (connections || [])) {
 		if (!c) continue;
-		const key = clusterShortNameKey(c.clusterUrl || '');
+		const key = canonicalKustoClusterKey(c.clusterUrl || '');
 		if (key) existingKeys.add(key);
 	}
 	const missing: string[] = [];
 	for (const u of detected) {
-		const key = clusterShortNameKey(u);
+		const key = canonicalKustoClusterKey(u);
 		if (!key) continue;
 		if (!existingKeys.has(key)) missing.push(u);
 	}
@@ -143,7 +136,7 @@ export function computeMissingClusterUrls(detectedClusterUrls: any[], connection
 }
 
 export function favoriteKey(clusterUrl: any, database: any): string {
-	const c = normalizeClusterUrlKey(String(clusterUrl || '').trim());
+	const c = canonicalKustoClusterKey(String(clusterUrl || '').trim());
 	const d = String(database || '').trim().toLowerCase();
 	return c + '|' + d;
 }
@@ -188,11 +181,11 @@ export function parseKustoConnectionString(cs: any): { dataSource: string; initi
 
 export function findConnectionIdForClusterUrl(clusterUrl: any, connections: any[]): string {
 	try {
-		const key = normalizeClusterUrlKey(String(clusterUrl || '').trim());
+		const key = canonicalKustoClusterKey(String(clusterUrl || '').trim());
 		if (!key) return '';
 		for (const c of (connections || [])) {
 			if (!c) continue;
-			if (normalizeClusterUrlKey(c.clusterUrl || '') === key) {
+			if (canonicalKustoClusterKey(c.clusterUrl || '') === key) {
 				return String(c.id || '').trim();
 			}
 		}

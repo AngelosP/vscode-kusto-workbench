@@ -9,6 +9,7 @@
  * Usage in tests: create a fresh instance per test with a mock worker.
  */
 import { decideSchemaOperation, type SchemaOperation } from './schema-decision';
+import { kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
 
 // ── Worker interface (mockable) ─────────────────────────────────────────────
 export interface ISchemaWorker {
@@ -72,7 +73,7 @@ export class SchemaTracker {
 	/** Decide which schema operation to perform (pure, no side-effects). */
 	decide(modelUri: string, clusterUrl: string, database: string, setAsContext: boolean, forceRefresh: boolean): { operation: SchemaOperation; alreadyLoaded: boolean } {
 		const perModel = this.ensureModelTracking(modelUri);
-		const schemaKey = `${clusterUrl}|${database}`;
+		const schemaKey = kustoDatabaseKey(clusterUrl, database);
 		if (forceRefresh && perModel[schemaKey]) {
 			delete perModel[schemaKey];
 		}
@@ -147,7 +148,7 @@ export class SchemaTracker {
 	// ── main entry point (for tests + can be used in production) ────────
 	async processSchema(input: ProcessSchemaInput, worker: ISchemaWorker): Promise<ProcessSchemaResult> {
 		const { rawSchemaJson, clusterUrl, database, setAsContext, modelUri, forceRefresh, syncedModelUri } = input;
-		const schemaKey = `${clusterUrl}|${database}`;
+		const schemaKey = kustoDatabaseKey(clusterUrl, database);
 
 		const { operation, alreadyLoaded } = this.decide(modelUri, clusterUrl, database, setAsContext, forceRefresh);
 

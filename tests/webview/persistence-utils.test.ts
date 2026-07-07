@@ -16,33 +16,38 @@ describe('normalizeClusterUrl', () => {
 		expect(normalizeClusterUrl(0)).toBe('');
 	});
 
-	it('adds https:// prefix when missing', () => {
-		expect(normalizeClusterUrl('mycluster.kusto.windows.net')).toBe('https://mycluster.kusto.windows.net');
+	it('returns canonical logical key when scheme is missing', () => {
+		expect(normalizeClusterUrl('mycluster.kusto.windows.net')).toBe('mycluster');
 	});
 
-	it('preserves existing https:// prefix', () => {
-		expect(normalizeClusterUrl('https://mycluster.kusto.windows.net')).toBe('https://mycluster.kusto.windows.net');
+	it('maps existing https:// prefix to canonical logical key', () => {
+		expect(normalizeClusterUrl('https://mycluster.kusto.windows.net')).toBe('mycluster');
 	});
 
-	it('preserves http:// prefix', () => {
-		expect(normalizeClusterUrl('http://mycluster.kusto.windows.net')).toBe('http://mycluster.kusto.windows.net');
+	it('maps http:// prefix to canonical logical key', () => {
+		expect(normalizeClusterUrl('http://mycluster.kusto.windows.net')).toBe('mycluster');
 	});
 
 	it('strips trailing slashes', () => {
-		expect(normalizeClusterUrl('https://mycluster.kusto.windows.net/')).toBe('https://mycluster.kusto.windows.net');
-		expect(normalizeClusterUrl('https://mycluster.kusto.windows.net///')).toBe('https://mycluster.kusto.windows.net');
+		expect(normalizeClusterUrl('https://mycluster.kusto.windows.net/')).toBe('mycluster');
+		expect(normalizeClusterUrl('https://mycluster.kusto.windows.net///')).toBe('mycluster');
 	});
 
-	it('lowercases the URL', () => {
-		expect(normalizeClusterUrl('https://MyCluster.Kusto.Windows.Net')).toBe('https://mycluster.kusto.windows.net');
+	it('lowercases the identity key', () => {
+		expect(normalizeClusterUrl('https://MyCluster.Kusto.Windows.Net')).toBe('mycluster');
 	});
 
 	it('trims whitespace', () => {
-		expect(normalizeClusterUrl('  https://mycluster.kusto.windows.net  ')).toBe('https://mycluster.kusto.windows.net');
+		expect(normalizeClusterUrl('  https://mycluster.kusto.windows.net  ')).toBe('mycluster');
 	});
 
-	it('handles URL with path', () => {
-		expect(normalizeClusterUrl('https://mycluster.kusto.windows.net/path')).toBe('https://mycluster.kusto.windows.net/path');
+	it('ignores URL path for identity', () => {
+		expect(normalizeClusterUrl('https://mycluster.kusto.windows.net/path')).toBe('mycluster');
+	});
+
+	it('maps regional short and full forms to the same key', () => {
+		expect(normalizeClusterUrl('aoaiagents1.westus')).toBe('aoaiagents1.westus');
+		expect(normalizeClusterUrl('https://aoaiagents1.westus.kusto.windows.net')).toBe('aoaiagents1.westus');
 	});
 });
 

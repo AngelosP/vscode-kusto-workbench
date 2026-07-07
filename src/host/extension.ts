@@ -29,6 +29,8 @@ import { EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWeb
 import type { TutorialViewerMode } from '../shared/tutorials/tutorialCatalog';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { createEmptyKqlxFile, stringifyKqlxFile, parseKqlxText, type KqlxFileV1 } from './kqlxFormat';
+import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import { STORAGE_KEYS } from './queryEditorTypes';
 
 import { stsProcessManagerSingleton } from './sql/stsProcessManager';
 
@@ -121,6 +123,79 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	const connectionManager = new ConnectionManager(context);
+	if (context.extensionMode !== vscode.ExtensionMode.Production) {
+		const testPrefix = 'E2E Identity Checklist';
+		const testClusters = [
+			'https://identity-prod.kusto.windows.net',
+			'https://identity-nonprod.kusto.windows.net',
+			'https://identity-foo.kusto.windows.net',
+			'https://identity-foobar.kusto.windows.net',
+			'https://identityadx.westus.kusto.windows.net',
+		];
+		const testClusterKeys = new Set(testClusters.map(cluster => kustoClusterKey(cluster)).filter(Boolean));
+		const isTestCluster = (value: unknown): boolean => testClusterKeys.has(kustoClusterKey(String(value || '')));
+		const cleanupIdentityChecklistState = async (): Promise<void> => {
+			for (const connection of connectionManager.getConnections()) {
+				if (String(connection.name || '').startsWith(testPrefix) || isTestCluster(connection.clusterUrl)) {
+					await connectionManager.removeConnection(connection.id);
+				}
+			}
+			const favoritesRaw = context.globalState.get<unknown>(STORAGE_KEYS.favorites);
+			if (Array.isArray(favoritesRaw)) {
+				await context.globalState.update(STORAGE_KEYS.favorites, favoritesRaw.filter((favorite: any) =>
+					!String(favorite?.name || '').startsWith(testPrefix) && !isTestCluster(favorite?.clusterUrl)
+				));
+			}
+			const cachedRaw = context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases) || {};
+			const cachedNext: Record<string, string[]> = {};
+			for (const [key, value] of Object.entries(cachedRaw)) {
+				if (!isTestCluster(key)) {
+					cachedNext[key] = value;
+				}
+			}
+			await context.globalState.update(STORAGE_KEYS.cachedDatabases, cachedNext);
+			for (const cluster of testClusters) {
+				await connectionManager.removeLeaveNoTrace(cluster);
+			}
+		};
+
+		context.subscriptions.push(
+			vscode.commands.registerCommand('kustoWorkbench.test.cleanupKustoIdentityChecklist', cleanupIdentityChecklistState),
+			vscode.commands.registerCommand('kustoWorkbench.test.seedKustoIdentityChecklist', async () => {
+				await cleanupIdentityChecklistState();
+				const seeds = [
+					{ name: `${testPrefix} Prod`, clusterUrl: 'https://identity-prod.kusto.windows.net', database: 'ChecklistDb' },
+					{ name: `${testPrefix} Nonprod`, clusterUrl: 'https://identity-nonprod.kusto.windows.net', database: 'ChecklistDb' },
+					{ name: `${testPrefix} Foo`, clusterUrl: 'https://identity-foo.kusto.windows.net', database: 'ChecklistDb' },
+					{ name: `${testPrefix} Foobar`, clusterUrl: 'https://identity-foobar.kusto.windows.net', database: 'ChecklistDb' },
+					{ name: `${testPrefix} Regional`, clusterUrl: 'https://identityadx.westus.kusto.windows.net', database: 'ChecklistDb' },
+				];
+				const added = [] as Array<{ id: string; name: string; clusterUrl: string; database?: string }>;
+				for (const seed of seeds) {
+					added.push(await connectionManager.addConnection(seed));
+				}
+				const cached = context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases) || {};
+				cached[kustoClusterKey('identityadx.westus')] = ['ChecklistDb', 'CachedOnlyDb'];
+				await context.globalState.update(STORAGE_KEYS.cachedDatabases, cached);
+				const favoritesRaw = context.globalState.get<unknown>(STORAGE_KEYS.favorites);
+				const favorites = Array.isArray(favoritesRaw) ? favoritesRaw.filter((favorite: any) =>
+					!String(favorite?.name || '').startsWith(testPrefix) && !isTestCluster(favorite?.clusterUrl)
+				) : [];
+				favorites.push({ name: `${testPrefix} Regional Favorite`, clusterUrl: 'https://identityadx.westus.kusto.windows.net', database: 'ChecklistDb' });
+				await context.globalState.update(STORAGE_KEYS.favorites, favorites);
+				await connectionManager.addLeaveNoTrace('https://identityadx.westus.kusto.windows.net');
+				return { added, cachedKey: kustoClusterKey('identityadx.westus') };
+			}),
+			vscode.commands.registerCommand('kustoWorkbench.test.assertClipboardContains', async (expected: string) => {
+				const text = await vscode.env.clipboard.readText();
+				const needle = String(expected || '');
+				if (!needle || !text.includes(needle)) {
+					throw new Error(`Clipboard did not contain ${JSON.stringify(needle)}. Clipboard=${JSON.stringify(text.slice(0, 500))}`);
+				}
+				return text;
+			})
+		);
+	}
 	const kqlLanguageHost = new KqlLanguageServiceHost(connectionManager, context);
 	const tutorialCatalogService = new TutorialCatalogService(context);
 	const tutorialSubscriptionService = new TutorialSubscriptionService(context);

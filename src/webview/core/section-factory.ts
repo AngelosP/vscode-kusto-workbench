@@ -57,7 +57,7 @@ import {
 	formatClusterDisplayName,
 	normalizeClusterUrlKey,
 	formatClusterShortName,
-	clusterShortNameKey,
+	canonicalKustoClusterKey,
 	extractClusterUrlsFromQueryText,
 	extractClusterDatabaseHintsFromQueryText,
 	computeMissingClusterUrls as _computeMissing,
@@ -375,12 +375,7 @@ export function addQueryBox( options?: any) {
 					const cid = String(detail.connectionId || '').trim();
 					const conn = Array.isArray(connections) ? connections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
 					const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
-					let clusterKey = '';
-					if (clusterUrl) {
-						let u = clusterUrl;
-						if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
-						try { clusterKey = String(new URL(u).hostname || '').trim().toLowerCase(); } catch { clusterKey = clusterUrl.trim().toLowerCase(); }
-					}
+					const clusterKey = clusterUrl ? canonicalKustoClusterKey(clusterUrl) : '';
 					const cached = (cachedDatabases && cachedDatabases[clusterKey]) || cachedDatabases[detail.connectionId];
 					if (cached && cached.length > 0) {
 						if (typeof kwEl.setDatabases === 'function') kwEl.setDatabases(cached);
@@ -1173,17 +1168,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 			try {
 				const conn = Array.isArray(connections) ? connections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
 				const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
-				if (clusterUrl) {
-					let u = clusterUrl;
-					if (!/^https?:\/\//i.test(u)) {
-						u = 'https://' + u;
-					}
-					try {
-						clusterKey = String(new URL(u).hostname || '').trim().toLowerCase();
-					} catch {
-						clusterKey = String(clusterUrl || '').trim().toLowerCase();
-					}
-				}
+				if (clusterUrl) clusterKey = canonicalKustoClusterKey(clusterUrl);
 			} catch (e) { console.error('[kusto]', e); }
 			const cached = cachedDatabases && cachedDatabases[String(clusterKey || '').trim()];
 			return Array.isArray(cached) ? cached : [];

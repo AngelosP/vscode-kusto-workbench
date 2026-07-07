@@ -154,9 +154,9 @@ describe('normalizeClusterEndpoint', () => {
 			.toBe('https://mycluster.westus.kusto.windows.net');
 	});
 
-	it('preserves http:// scheme', () => {
+	it('exports HTTPS even when input uses http://', () => {
 		const result = normalizeClusterEndpoint('http://mycluster.kusto.windows.net');
-		expect(result).toBe('http://mycluster.kusto.windows.net');
+		expect(result).toBe('https://mycluster.kusto.windows.net');
 	});
 
 	it('strips trailing slashes', () => {
@@ -187,6 +187,11 @@ describe('normalizeClusterEndpoint', () => {
 	it('does not expand URLs that already contain .kusto.', () => {
 		expect(normalizeClusterEndpoint('https://myspecial.kusto.data.microsoft.com'))
 			.toBe('https://myspecial.kusto.data.microsoft.com');
+	});
+
+	it('preserves non-public custom dotted hosts', () => {
+		expect(normalizeClusterEndpoint('https://adx.contoso.com'))
+			.toBe('https://adx.contoso.com');
 	});
 
 	it('handles https://help correctly', () => {

@@ -3,12 +3,13 @@ import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient, normalizeClusterEndpoint } from './kustoClient';
-import { classifyCachedSchema, SCHEMA_CACHE_TTL_MS, SCHEMA_CACHE_VERSION } from './schemaCache';
+import { classifyCachedSchema, getLegacySchemaCacheKeys, SCHEMA_CACHE_TTL_MS, SCHEMA_CACHE_VERSION, schemaCacheKey } from './schemaCache';
 import { getAutocompleteSchemaSignature, getSchemaSummary } from './schemaIndexUtils';
 import {
 	STORAGE_KEYS,
 	CachedSchemaEntry
 } from './queryEditorTypes';
+import { kustoClusterKey } from '../shared/kustoClusterUrls';
 
 
 // ── SchemaServiceHost interface ──
@@ -208,6 +209,14 @@ export class SchemaService {
 		}
 	}
 
+	private async getCachedSchemaFromDiskByCluster(clusterUrl: string, database: string): Promise<CachedSchemaEntry | undefined> {
+		for (const key of getLegacySchemaCacheKeys(clusterUrl, database)) {
+			const cached = await this.getCachedSchemaFromDisk(key);
+			if (cached?.schema) return cached;
+		}
+		return undefined;
+	}
+
 	async saveCachedSchemaToDisk(cacheKey: string, entry: CachedSchemaEntry): Promise<void> {
 		const dir = this.getSchemaCacheDirUri();
 		await vscode.workspace.fs.createDirectory(dir);
@@ -268,7 +277,7 @@ export class SchemaService {
 			return;
 		}
 
-		const cacheKey = `${connection.clusterUrl}|${database}`;
+		const cacheKey = schemaCacheKey(connection.clusterUrl, database);
 		// IMPORTANT: Never delete persisted schema cache up-front.
 		// If a refresh fails (e.g. offline/VPN), we want to keep using the cached schema
 		// for autocomplete until the next successful refresh.
@@ -279,7 +288,7 @@ export class SchemaService {
 			);
 
 			// Read persisted cache once so we can (a) use it when fresh, and (b) fall back to it on errors.
-			const cached = await this.getCachedSchemaFromDisk(cacheKey);
+			const cached = await this.getCachedSchemaFromDiskByCluster(connection.clusterUrl, database);
 			const cachedState = classifyCachedSchema(cached);
 			const cachedAgeMs = cachedState.cacheAgeMs;
 			const cachedSignature = cached?.schema ? getAutocompleteSchemaSignature(cached.schema) : undefined;
@@ -434,7 +443,7 @@ export class SchemaService {
 
 			const userMessage = this.host.formatQueryExecutionErrorForUser(error, connection, database);
 			try {
-				const cached = await this.getCachedSchemaFromDisk(cacheKey);
+				const cached = await this.getCachedSchemaFromDiskByCluster(connection.clusterUrl, database);
 				if (cached && cached.schema) {
 					const schema = cached.schema;
 					const summary = getSchemaSummary(schema);
@@ -531,9 +540,9 @@ export class SchemaService {
 		}
 
 		try {
-			const cacheKey = `${connection.clusterUrl}|${database}`;
+			const cacheKey = schemaCacheKey(connection.clusterUrl, database);
 
-			const cached = await this.getCachedSchemaFromDisk(cacheKey);
+			const cached = await this.getCachedSchemaFromDiskByCluster(connection.clusterUrl, database);
 			const cachedAgeMs = cached ? Date.now() - cached.timestamp : undefined;
 			const cachedIsFresh = !!(cached && typeof cachedAgeMs === 'number' && cachedAgeMs < SCHEMA_CACHE_TTL_MS);
 
@@ -639,8 +648,8 @@ export class SchemaService {
 
 	async refreshSchemaForTools(clusterUrl: string): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
 		const connections = this.host.connectionManager.getConnections();
-		const normalizedInput = clusterUrl.replace(/\/+$/, '').toLowerCase();
-		const connection = connections.find(c => c.clusterUrl.replace(/\/+$/, '').toLowerCase() === normalizedInput);
+		const inputKey = kustoClusterKey(clusterUrl);
+		const connection = connections.find(c => kustoClusterKey(c.clusterUrl || '') === inputKey);
 		if (!connection) {
 			const ephemeral: KustoConnection = { id: `ephemeral_${Date.now()}`, name: clusterUrl, clusterUrl };
 			return this.refreshSchemaForConnection(ephemeral);
@@ -662,7 +671,7 @@ export class SchemaService {
 					const result = await this.host.kustoClient.getDatabaseSchema(connection, db, true);
 					const schema = result.schema;
 
-					const cacheKey = `${connection.clusterUrl.replace(/\/+$/, '')}|${db}`;
+					const cacheKey = schemaCacheKey(connection.clusterUrl, db);
 					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
 					await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
 

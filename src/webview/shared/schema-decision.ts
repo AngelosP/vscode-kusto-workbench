@@ -7,6 +7,8 @@
  * Given the current tracking state, returns the *operation* the caller should perform.
  */
 
+import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
+
 export type SchemaOperation =
 	| { action: 'skip'; reason: string }
 	| { action: 'first-load' }
@@ -32,23 +34,14 @@ export interface SchemaDecisionInput {
 	forceRefresh: boolean;
 }
 
-/** Normalize a cluster URL for comparison (strip scheme, trailing slash, lowercase). */
-function normalizeClusterUrl(url: string | null | undefined): string {
-	if (!url) return '';
-	let normalized = String(url).trim().toLowerCase();
-	normalized = normalized.replace(/^https?:\/\//, '');
-	normalized = normalized.replace(/\/+$/, '');
-	return normalized;
-}
-
 /**
  * Determine which schema operation to perform.
  *
  * The caller is responsible for executing the operation against the Monaco worker.
  */
 export function decideSchemaOperation(input: SchemaDecisionInput): SchemaOperation {
-	const currentClusterNorm = normalizeClusterUrl(input.currentClusterUrl);
-	const newClusterNorm = normalizeClusterUrl(input.newClusterUrl);
+	const currentClusterNorm = kustoClusterKey(input.currentClusterUrl);
+	const newClusterNorm = kustoClusterKey(input.newClusterUrl);
 	const isSameCluster = !!currentClusterNorm && currentClusterNorm === newClusterNorm;
 	const isSameDatabase = isSameCluster &&
 		(input.currentDatabase || '').toLowerCase() === (input.newDatabase || '').toLowerCase();

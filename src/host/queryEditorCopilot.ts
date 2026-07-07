@@ -6,7 +6,8 @@ import type { SqlSchemaService } from './sqlEditorSchema';
 import type { SqlQueryClient } from './sqlClient';
 import { SqlQueryCancelledError } from './sqlClient';
 import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToolCallResults, decideNonToolResponse, groupConversationHistoryForProvider, type ToolCallHistoryEntry } from './copilotConversationUtils';
-import { SCHEMA_CACHE_VERSION, searchCachedSchemas } from './schemaCache';
+import { getLegacySchemaCacheKeys, SCHEMA_CACHE_VERSION, searchCachedSchemas } from './schemaCache';
+import { kustoDatabaseKey } from '../shared/kustoClusterUrls';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget, DEFAULT_SCHEMA_TOKEN_BUDGET_FRACTION, PRUNE_PHASE_DESCRIPTIONS, SchemaPruneResult } from './schemaIndexUtils';
 import {
 	STORAGE_KEYS,
@@ -975,9 +976,8 @@ Completion:`;
 		model?: vscode.LanguageModelChat
 	): Promise<{ result: string; label: string; prunePhase?: number }> {
 		const db = String(database || '').trim();
-		const clusterKey = this.host.normalizeClusterUrlKey(connection.clusterUrl || '');
-		const memCacheKey = `${clusterKey}|${db}`;
-		const diskCacheKey = `${String(connection.clusterUrl || '').trim()}|${db}`;
+		const diskCacheKey = kustoDatabaseKey(connection.clusterUrl || '', db);
+		const memCacheKey = diskCacheKey;
 		const now = Date.now();
 
 		if (token.isCancellationRequested) {
@@ -997,7 +997,11 @@ Completion:`;
 		let label = '';
 		let prunePhase: number | undefined;
 		try {
-			let cached = await this.host.getCachedSchemaFromDisk(diskCacheKey);
+			let cached;
+			for (const key of getLegacySchemaCacheKeys(connection.clusterUrl || '', db)) {
+				cached = await this.host.getCachedSchemaFromDisk(key);
+				if (cached?.schema) break;
+			}
 			if (token.isCancellationRequested) {
 				throw new Error('Copilot write-query canceled');
 			}

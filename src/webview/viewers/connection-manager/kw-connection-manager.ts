@@ -17,6 +17,7 @@ import {
 	type SearchResult,
 	type SearchControllerHost,
 } from './connection-manager-search.controller.js';
+import { kustoClusterKey } from '../../shared/clusterUtils.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -151,19 +152,11 @@ function shortClusterName(url: string): string {
 }
 
 function normalizeClusterUrl(url: string): string {
-	let s = String(url || '').trim();
-	if (!s) return '';
-	if (!/^https?:\/\//i.test(s)) s = 'https://' + s;
-	return s.replace(/\/+$/g, '').toLowerCase();
+	return kustoClusterKey(url);
 }
 
 function getClusterCacheKey(clusterUrl: string): string {
-	try {
-		let u = String(clusterUrl || '').trim();
-		if (!u) return '';
-		if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
-		return String(new URL(u).hostname || '').trim().toLowerCase() || u.toLowerCase();
-	} catch { return String(clusterUrl || '').trim().toLowerCase(); }
+	return kustoClusterKey(clusterUrl);
 }
 
 const alphabeticCollator = new Intl.Collator(undefined, { numeric: true, sensitivity: 'base' });

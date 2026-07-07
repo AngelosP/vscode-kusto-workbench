@@ -112,20 +112,11 @@ const cancelIconSvg = html`<svg viewBox="0 0 16 16" width="16" height="16" fill=
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function normalizeClusterUrlKey(url: string): string {
-	let u = String(url || '').trim();
-	if (!u) return '';
-	if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
-	try { return new URL(u).hostname.toLowerCase(); } catch { return u.toLowerCase(); }
+	return canonicalKustoClusterKey(url);
 }
 
 function canonicalKustoClusterKey(url: string): string {
 	return _canonicalKustoClusterKey(url);
-}
-
-function clusterShortNameKey(url: string): string {
-	const host = normalizeClusterUrlKey(url);
-	const dot = host.indexOf('.');
-	return dot > 0 ? host.substring(0, dot).toLowerCase() : host;
 }
 
 function formatClusterShortName(clusterUrl: string): string {
@@ -905,15 +896,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (this._desiredClusterUrl) {
 			const target = normalizeClusterUrlKey(this._desiredClusterUrl);
 			const match = connections.find(c => normalizeClusterUrlKey(c.clusterUrl) === target);
-			if (!match && !this._desiredClusterUrlPendingMatch) {
-				// Try short name
-				const targetShort = clusterShortNameKey(this._desiredClusterUrl);
-				const shortMatch = connections.find(c => clusterShortNameKey(c.clusterUrl) === targetShort);
-				if (shortMatch) {
-					resolvedId = shortMatch.id;
-					resolvedDesiredCluster = true;
-				}
-			} else if (match) {
+			if (match) {
 				resolvedId = match.id;
 				resolvedDesiredCluster = true;
 			}

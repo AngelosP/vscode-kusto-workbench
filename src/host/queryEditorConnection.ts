@@ -5,6 +5,8 @@ import * as path from 'path';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
 import { extractKqlSchemaMatchTokens, scoreSchemaMatch } from './kqlSchemaInference';
+import { kustoClusterKey, kustoDatabaseKey } from '../shared/kustoClusterUrls';
+import { getLegacySchemaCacheKeys } from './schemaCache';
 import {
 	STORAGE_KEYS,
 	KustoFavorite,
@@ -58,26 +60,11 @@ export function getClusterShortName(clusterUrl: string): string {
 }
 
 export function getClusterShortNameKey(clusterUrl: string): string {
-	try {
-		const withScheme = ensureHttpsUrl(clusterUrl);
-		const u = new URL(withScheme);
-		const host = String(u.hostname || '').trim();
-		const first = host ? host.split('.')[0] : '';
-		return String(first || host || clusterUrl || '').trim().toLowerCase();
-	} catch {
-		return String(clusterUrl || '').trim().toLowerCase();
-	}
+	return kustoClusterKey(clusterUrl);
 }
 
 export function getClusterCacheKey(clusterUrlRaw: string): string {
-	try {
-		const withScheme = ensureHttpsUrl(String(clusterUrlRaw || '').trim());
-		const u = new URL(withScheme);
-		const host = String(u.hostname || '').trim().toLowerCase();
-		return host || String(clusterUrlRaw || '').trim().toLowerCase();
-	} catch {
-		return String(clusterUrlRaw || '').trim().toLowerCase();
-	}
+	return kustoClusterKey(clusterUrlRaw);
 }
 
 export function normalizeFavoriteClusterUrl(clusterUrl: string): string {
@@ -181,7 +168,7 @@ export class ConnectionService {
 	}
 
 	private favoriteKey(clusterUrl: string, database: string): string {
-		const c = this.host.normalizeClusterUrlKey(clusterUrl);
+		const c = kustoClusterKey(clusterUrl);
 		const d = String(database || '').trim().toLowerCase();
 		return `${c}|${d}`;
 	}
@@ -973,8 +960,11 @@ export class ConnectionService {
 				if (!database) continue;
 				candidatesSeen++;
 
-				const cacheKey = `${clusterUrl}|${database}`;
-				const cached = await this.host.getCachedSchemaFromDisk(cacheKey);
+				let cached: CachedSchemaEntry | undefined;
+				for (const cacheKey of getLegacySchemaCacheKeys(clusterUrl, database)) {
+					cached = await this.host.getCachedSchemaFromDisk(cacheKey);
+					if (cached?.schema) break;
+				}
 				const schema = cached?.schema;
 				if (!schema) continue;
 
@@ -998,8 +988,8 @@ export class ConnectionService {
 						continue;
 					}
 					if (isFavorite === best.isFavorite) {
-						const a = `${clusterUrl.toLowerCase()}|${database.toLowerCase()}`;
-						const b = `${best.clusterUrl.toLowerCase()}|${best.database.toLowerCase()}`;
+						const a = kustoDatabaseKey(clusterUrl, database) || `${clusterUrl.toLowerCase()}|${database.toLowerCase()}`;
+						const b = kustoDatabaseKey(best.clusterUrl, best.database) || `${best.clusterUrl.toLowerCase()}|${best.database.toLowerCase()}`;
 						if (a < b) {
 							best = { clusterUrl, database, score, isFavorite };
 						}

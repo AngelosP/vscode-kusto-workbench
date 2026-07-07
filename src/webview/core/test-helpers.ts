@@ -9,6 +9,9 @@ import { perfSnapshot } from './perf.js';
 import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
 import { __kustoFindSuggestWidgetForEditor } from '../monaco/suggest.js';
 import { __kustoCrossClusterSchemas, __kustoTraceCrossCluster } from '../monaco/monaco.js';
+import { extractCrossClusterRefs } from '../shared/cross-cluster-schema.js';
+import { computeMissingClusterUrls } from '../shared/clusterUtils.js';
+import { kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
 
 type MonacoLike = {
 	getDomNode?: () => HTMLElement | null;
@@ -1359,15 +1362,7 @@ function e2eSetKustoCacheEnabled(enabled: boolean): string {
 }
 
 function e2eNormalizeClusterUrlKey(url: string): string {
-	try {
-		const raw = String(url || '').trim();
-		if (!raw) return '';
-		const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
-		const parsed = new URL(withScheme);
-		return (parsed.origin + parsed.pathname).replace(/\/+$/g, '').toLowerCase();
-	} catch {
-		return String(url || '').trim().replace(/\/+$/g, '').toLowerCase();
-	}
+	return kustoClusterKey(url);
 }
 
 function e2eKustoFavoriteSections(): any[] {
@@ -1537,6 +1532,434 @@ function e2eKustoAssertFavoritesSyncProbe(token: string): string {
 		throw new Error(`Target webview probe changed or disappeared; expected ${expected}, got ${actual || '<missing>'}`);
 	}
 	return `target probe still present: ${actual}`;
+}
+
+const E2E_KUSTO_IDENTITY_CHECKLIST = {
+	database: 'ChecklistDb',
+	cachedDatabase: 'CachedOnlyDb',
+	prodKey: 'identity-prod',
+	nonprodKey: 'identity-nonprod',
+	fooKey: 'identity-foo',
+	foobarKey: 'identity-foobar',
+	regionalKey: 'identityadx.westus',
+	regionalFullUrl: 'https://identityadx.westus.kusto.windows.net',
+	favoriteName: 'E2E Identity Checklist Regional Favorite',
+};
+
+type E2eIdentityConnection = { id: string; name?: string; clusterUrl?: string; database?: string };
+
+function e2eIdentityConnectionKey(connection: E2eIdentityConnection): string {
+	return e2eNormalizeClusterUrlKey(String(connection?.clusterUrl || ''));
+}
+
+function e2eIdentityFindConnection(connectionsRaw: unknown, clusterKey: string): E2eIdentityConnection {
+	const wantedKey = e2eNormalizeClusterUrlKey(clusterKey);
+	const connections = Array.isArray(connectionsRaw) ? connectionsRaw as E2eIdentityConnection[] : [];
+	const match = connections.find(connection => e2eIdentityConnectionKey(connection) === wantedKey);
+	if (!match) {
+		throw new Error(`Expected seeded connection ${clusterKey}; available=${connections.map(connection => `${connection.name || connection.id}:${connection.clusterUrl}`).join(', ')}`);
+	}
+	return match;
+}
+
+async function e2eIdentityWaitForConnections(timeoutMs = 6000): Promise<Record<string, E2eIdentityConnection>> {
+	try { postMessageToHost({ type: 'getConnections' }); } catch { /* ignore */ }
+	const started = performance.now();
+	let lastConnections: unknown = [];
+	while (performance.now() - started <= timeoutMs) {
+		lastConnections = _win.connections;
+		try {
+			const prod = e2eIdentityFindConnection(lastConnections, E2E_KUSTO_IDENTITY_CHECKLIST.prodKey);
+			const nonprod = e2eIdentityFindConnection(lastConnections, E2E_KUSTO_IDENTITY_CHECKLIST.nonprodKey);
+			const foo = e2eIdentityFindConnection(lastConnections, E2E_KUSTO_IDENTITY_CHECKLIST.fooKey);
+			const foobar = e2eIdentityFindConnection(lastConnections, E2E_KUSTO_IDENTITY_CHECKLIST.foobarKey);
+			const regional = e2eIdentityFindConnection(lastConnections, E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey);
+			return { prod, nonprod, foo, foobar, regional };
+		} catch {
+			await e2eDelay(100);
+		}
+	}
+	throw new Error(`Timed out waiting for seeded checklist connections; last=${JSON.stringify(lastConnections).slice(0, 2000)}`);
+}
+
+function e2eIdentityDispatchHostMessage(message: any): void {
+	window.dispatchEvent(new MessageEvent('message', { data: message }));
+}
+
+async function e2eIdentityToolConfigure(sectionId: string, input: Record<string, unknown>, timeoutMs = 7000): Promise<any> {
+	const requestId = `e2e-identity-configure-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+	e2eBeginHostMessageCapture();
+	try {
+		e2eIdentityDispatchHostMessage({ type: 'toolConfigureQuerySection', requestId, input: { ...input, sectionId } });
+		const started = performance.now();
+		while (performance.now() - started <= timeoutMs) {
+			const response = e2eCapturedHostMessages().find(message => message?.type === 'toolResponse' && message.requestId === requestId);
+			if (response) {
+				if (response.result?.success !== true) {
+					throw new Error(`toolConfigureQuerySection failed: ${JSON.stringify(response)}`);
+				}
+				return response;
+			}
+			await e2eDelay(100);
+		}
+		throw new Error(`Timed out waiting for toolConfigureQuerySection response; seen=${JSON.stringify(e2eCapturedHostMessages()).slice(0, 2000)}`);
+	} finally {
+		e2eRestoreHostMessageCapture();
+	}
+}
+
+async function e2eIdentityRequestDatabases(connectionId: string, timeoutMs = 6000): Promise<string[]> {
+	const requestId = `__e2e_identity_dbreq__${Date.now()}_${Math.random().toString(16).slice(2)}`;
+	return await new Promise<string[]>((resolve, reject) => {
+		const timer = window.setTimeout(() => {
+			window.removeEventListener('message', onMessage);
+			reject(new Error(`Timed out waiting for databasesData for ${connectionId}`));
+		}, timeoutMs);
+		const onMessage = (event: MessageEvent) => {
+			const message = event.data || {};
+			if (message.type !== 'databasesData' || message.boxId !== requestId) return;
+			window.clearTimeout(timer);
+			window.removeEventListener('message', onMessage);
+			resolve((Array.isArray(message.databases) ? message.databases : []).map((value: any) => String(value || '').trim()).filter(Boolean));
+		};
+		window.addEventListener('message', onMessage);
+		try {
+			postMessageToHost({ type: 'getDatabases', connectionId, boxId: requestId });
+		} catch (error) {
+			window.clearTimeout(timer);
+			window.removeEventListener('message', onMessage);
+			reject(error);
+		}
+	});
+}
+
+async function e2eIdentityWaitForInfoMessage(expectedText: string, timeoutMs = 6000): Promise<string> {
+	const needle = String(expectedText || '').trim();
+	if (!needle) throw new Error('expected info text is required');
+	return await new Promise<string>((resolve, reject) => {
+		const timer = window.setTimeout(() => {
+			window.removeEventListener('message', onMessage);
+			reject(new Error(`Timed out waiting for info message ${JSON.stringify(needle)}`));
+		}, timeoutMs);
+		const onMessage = (event: MessageEvent) => {
+			const message = event.data || {};
+			if (message.type !== 'showInfo' || !String(message.message || '').includes(needle)) return;
+			window.clearTimeout(timer);
+			window.removeEventListener('message', onMessage);
+			resolve(String(message.message || ''));
+		};
+		window.addEventListener('message', onMessage);
+	});
+}
+
+async function e2eIdentityAssertSectionFavoriteAlias(): Promise<any> {
+	const section = e2eSection('kusto') as any;
+	const shortConnection = { id: 'e2e-identity-regional-short', name: 'E2E Identity Short Regional', clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey };
+	section.setConnectionId?.(shortConnection.id);
+	section.setDesiredClusterUrl?.(shortConnection.clusterUrl);
+	section.setConnections?.([shortConnection], { lastConnectionId: shortConnection.id });
+	section.setDatabase?.(E2E_KUSTO_IDENTITY_CHECKLIST.database);
+	section.setDatabases?.([E2E_KUSTO_IDENTITY_CHECKLIST.database], E2E_KUSTO_IDENTITY_CHECKLIST.database);
+	section.setFavorites?.([{ name: E2E_KUSTO_IDENTITY_CHECKLIST.favoriteName, clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl, database: E2E_KUSTO_IDENTITY_CHECKLIST.database }]);
+	section.setFavoritesMode?.(true);
+	section.requestUpdate?.();
+	await section.updateComplete;
+	const labels = e2eKustoFavoriteDropdownLabels(section);
+	if (!labels.includes(E2E_KUSTO_IDENTITY_CHECKLIST.favoriteName)) {
+		throw new Error(`Regional short/full favorite alias did not render in section dropdown. Labels=${labels.join(', ')}`);
+	}
+	return { labels };
+}
+
+async function e2eIdentityAssertConnectionManagerAliases(foo: E2eIdentityConnection, foobar: E2eIdentityConnection): Promise<any> {
+	const existing = document.getElementById('e2e-identity-connection-manager');
+	if (existing) existing.remove();
+	const manager = document.createElement('kw-connection-manager') as any;
+	manager.id = 'e2e-identity-connection-manager';
+	manager.style.cssText = 'position:absolute;left:-10000px;top:0;width:900px;height:600px;';
+	document.body.appendChild(manager);
+	await manager.updateComplete;
+	const regionalShort = { id: 'cm-regional-short', name: 'E2E Regional Short', clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey };
+	const snapshot = {
+		connections: [regionalShort, foo, foobar],
+		sqlConnections: [],
+		favorites: [{ name: E2E_KUSTO_IDENTITY_CHECKLIST.favoriteName, clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl, database: E2E_KUSTO_IDENTITY_CHECKLIST.database }],
+		leaveNoTraceClusters: [E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl],
+		cachedDatabases: { [E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey]: [E2E_KUSTO_IDENTITY_CHECKLIST.database] },
+		sqlCachedDatabases: {},
+		activeKind: 'kusto',
+		searchState: {
+			query: 'NeedleTable',
+			scope: 'cached',
+			categories: { clusters: true, databases: true, tables: true, functions: true },
+			contentToggles: { tables: false, functions: false },
+			lastResults: [{ category: 'table', kind: 'kusto', connectionId: foo.id, connectionName: String(foo.name || ''), database: E2E_KUSTO_IDENTITY_CHECKLIST.database, name: 'NeedleTable' }],
+			lastSearchTimestamp: Date.now(),
+		},
+	};
+	await e2eDelay(150);
+	manager._snapshot = snapshot;
+	manager._activeKind = 'kusto';
+	manager._selectedConnectionId = regionalShort.id;
+	manager._search?.restoreState?.(snapshot.searchState, 'kusto');
+	manager.requestUpdate?.();
+	await manager.updateComplete;
+	manager._setKustoFilter?.('favorites');
+	await manager.updateComplete;
+	const favoritesText = String(manager.shadowRoot?.textContent || '');
+	const favoritesIncludesRegionalShort = favoritesText.includes('E2E Regional Short');
+	if (!favoritesIncludesRegionalShort) {
+		throw new Error(`Connection Manager Favorites filter did not include regional short/full alias. Text=${favoritesText.slice(0, 1000)}`);
+	}
+	manager._setKustoFilter?.('lnt');
+	await manager.updateComplete;
+	const lntText = String(manager.shadowRoot?.textContent || '');
+	const lntIncludesRegionalShort = lntText.includes('E2E Regional Short');
+	if (!lntIncludesRegionalShort) {
+		throw new Error(`Connection Manager Leave No Trace filter did not include regional short/full alias. Text=${lntText.slice(0, 1000)}`);
+	}
+	manager._setKustoFilter?.('search');
+	await manager.updateComplete;
+	const searchText = String(manager.shadowRoot?.querySelector('[data-testid="cm-search-results"]')?.textContent || '');
+	const searchIncludesFoo = searchText.includes('NeedleTable') && searchText.includes(String(foo.name || ''));
+	const searchIncludesFoobar = searchText.includes(String(foobar.name || ''));
+	if (!searchIncludesFoo) {
+		throw new Error(`Connection Manager search result did not render exact foo connection. Text=${searchText.slice(0, 1000)}`);
+	}
+	if (searchIncludesFoobar) {
+		throw new Error(`Connection Manager search result leaked overlapping foobar connection. Text=${searchText.slice(0, 1000)}`);
+	}
+	manager.remove();
+	return {
+		favoritesIncludesRegionalShort,
+		lntIncludesRegionalShort,
+		searchIncludesFoo,
+		searchIncludesFoobar,
+		searchConnectionId: foo.id,
+		overlapConnectionId: foobar.id,
+		favoritesText: favoritesText.slice(0, 1000),
+		lntText: lntText.slice(0, 1000),
+		searchText: searchText.slice(0, 1000),
+	};
+}
+
+async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentityConnection): Promise<any> {
+	while (e2eKustoFavoriteSections().length < 2) {
+		if (typeof _win.addQueryBox !== 'function') {
+			throw new Error('addQueryBox is not available for two-section alias diagnostics check');
+		}
+		_win.addQueryBox({
+			id: `query_identity_alias_${Date.now()}`,
+			initialQuery: 'print identity_alias = 1',
+			clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey,
+			database: E2E_KUSTO_IDENTITY_CHECKLIST.database,
+		});
+		await e2eDelay(80);
+	}
+	const sections = e2eKustoFavoriteSections().slice(0, 2) as any[];
+	const fullSection = sections[0];
+	const shortSection = sections[1];
+	const shortConnection = { id: 'e2e-identity-regional-short-diagnostics', name: 'E2E Identity Short Diagnostics', clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey };
+	const connectionsForSections = [regional, shortConnection];
+	const fullQuery = `cluster('${E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey}').database('${E2E_KUSTO_IDENTITY_CHECKLIST.database}').NeedleTable | take 1`;
+	const shortQuery = `cluster('${E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl}').database('${E2E_KUSTO_IDENTITY_CHECKLIST.database}').NeedleTable | take 1`;
+	const identityTables = {
+		NeedleTable: {
+			Id: 'string',
+			Timestamp: 'datetime',
+		},
+	};
+	const rawSchema = e2eBuildShowSchema(E2E_KUSTO_IDENTITY_CHECKLIST.database, identityTables);
+	const compactSchema = e2eCompactSchemaFromTables(identityTables, rawSchema);
+	const configure = async (section: any, connection: any, query: string) => {
+		section.setConnectionId?.(connection.id);
+		section.setDesiredClusterUrl?.(connection.clusterUrl);
+		section.setConnections?.(connectionsForSections, { lastConnectionId: connection.id });
+		section.setDatabase?.(E2E_KUSTO_IDENTITY_CHECKLIST.database);
+		section.setDatabases?.([E2E_KUSTO_IDENTITY_CHECKLIST.database], E2E_KUSTO_IDENTITY_CHECKLIST.database);
+		const boxId = String(section.boxId || section.id || '').trim();
+		const editor = boxId ? _win.queryEditors?.[boxId] as MonacoLike | undefined : undefined;
+		if (!editor || typeof editor.setValue !== 'function') {
+			throw new Error(`Kusto editor missing for two-section alias diagnostics check: ${boxId || '<missing>'}`);
+		}
+		const modelUri = editor.getModel?.()?.uri?.toString?.() || '';
+		if (!modelUri) {
+			throw new Error(`Kusto model URI missing for two-section alias diagnostics check: ${boxId}`);
+		}
+		_win.schemaByBoxId = _win.schemaByBoxId || {};
+		_win.schemaMetaByBoxId = _win.schemaMetaByBoxId || {};
+		_win.schemaByConnDb = _win.schemaByConnDb || {};
+		_win.schemaMetaByConnDb = _win.schemaMetaByConnDb || {};
+		_win.schemaByBoxId[boxId] = compactSchema;
+		_win.schemaMetaByBoxId[boxId] = { fromCache: false, schemaSignature: 'e2e-identity-alias' };
+		_win.schemaByConnDb[`${connection.clusterUrl}|${E2E_KUSTO_IDENTITY_CHECKLIST.database}`] = compactSchema;
+		_win.schemaMetaByConnDb[`${connection.clusterUrl}|${E2E_KUSTO_IDENTITY_CHECKLIST.database}`] = { fromCache: false, schemaSignature: 'e2e-identity-alias' };
+		const canonicalSchemaKey = kustoDatabaseKey(connection.clusterUrl, E2E_KUSTO_IDENTITY_CHECKLIST.database);
+		if (canonicalSchemaKey) {
+			_win.schemaByConnDb[canonicalSchemaKey] = compactSchema;
+			_win.schemaMetaByConnDb[canonicalSchemaKey] = { fromCache: false, schemaSignature: 'e2e-identity-alias' };
+		}
+		if (typeof _win.__kustoSetMonacoKustoSchema !== 'function') {
+			throw new Error('__kustoSetMonacoKustoSchema is not available for identity alias diagnostics check');
+		}
+		const applied = await _win.__kustoSetMonacoKustoSchema(rawSchema, connection.clusterUrl, E2E_KUSTO_IDENTITY_CHECKLIST.database, true, modelUri, true);
+		if (!applied) {
+			throw new Error(`Identity alias schema did not apply to Monaco worker for ${boxId}`);
+		}
+		section.setSchemaInfo?.({ status: 'loaded', statusText: 'E2E identity alias schema loaded' });
+		editor.setValue(query);
+		section.requestUpdate?.();
+		await section.updateComplete;
+		return { boxId, query };
+	};
+	const markerSnapshot = (boxId: string) => {
+		const editor = boxId ? _win.queryEditors?.[boxId] as MonacoLike | undefined : undefined;
+		const model = editor?.getModel?.();
+		const monacoApi = _win.monaco;
+		const markers = monacoApi?.editor?.getModelMarkers && model?.uri
+			? (monacoApi.editor.getModelMarkers({ resource: model.uri }) || []).map((marker: any) => ({
+				owner: marker.owner,
+				severity: marker.severity,
+				message: String(marker.message || ''),
+				code: typeof marker.code === 'string' ? marker.code : marker.code?.value,
+				startLineNumber: marker.startLineNumber,
+				startColumn: marker.startColumn,
+				endLineNumber: marker.endLineNumber,
+				endColumn: marker.endColumn,
+			}))
+			: [];
+		const suspiciousDecorations = typeof model?.getAllDecorations === 'function'
+			? (model.getAllDecorations() || [])
+				.map((decoration: any) => ({
+					range: decoration.range,
+					className: decoration.options?.className || '',
+					inlineClassName: decoration.options?.inlineClassName || '',
+					glyphMarginClassName: decoration.options?.glyphMarginClassName || '',
+					hoverMessage: Array.isArray(decoration.options?.hoverMessage)
+						? decoration.options.hoverMessage.map((message: any) => String(message?.value || message || '')).join('\n')
+						: String(decoration.options?.hoverMessage?.value || decoration.options?.hoverMessage || ''),
+				}))
+				.filter((decoration: any) => /squigg|warning|error|marker|diagnostic|kusto/i.test(`${decoration.className} ${decoration.inlineClassName} ${decoration.glyphMarginClassName} ${decoration.hoverMessage}`))
+			: [];
+		return { markers, suspiciousDecorations };
+	};
+	const fullConfigured = await configure(fullSection, regional, fullQuery);
+	const shortConfigured = await configure(shortSection, shortConnection, shortQuery);
+	await e2eDelay(1200);
+	const fullMarkerSnapshot = markerSnapshot(fullConfigured.boxId);
+	const shortMarkerSnapshot = markerSnapshot(shortConfigured.boxId);
+	const refsFromFullSection = extractCrossClusterRefs(fullConfigured.query, {
+		clusterUrl: regional.clusterUrl,
+		database: E2E_KUSTO_IDENTITY_CHECKLIST.database,
+	});
+	const refsFromShortSection = extractCrossClusterRefs(shortConfigured.query, {
+		clusterUrl: shortConnection.clusterUrl,
+		database: E2E_KUSTO_IDENTITY_CHECKLIST.database,
+	});
+	const remoteControlRefs = extractCrossClusterRefs(`cluster('identity-other.westus').database('${E2E_KUSTO_IDENTITY_CHECKLIST.database}').NeedleTable | take 1`, {
+		clusterUrl: regional.clusterUrl,
+		database: E2E_KUSTO_IDENTITY_CHECKLIST.database,
+	});
+	const missingFromFullConnection = computeMissingClusterUrls([E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey], [regional]);
+	const missingFromShortConnection = computeMissingClusterUrls([E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl], [shortConnection]);
+	const missingControl = computeMissingClusterUrls(['identity-other.westus'], [regional]);
+	if (refsFromFullSection.length) {
+		throw new Error(`Full regional section treated short regional current-cluster reference as remote: ${JSON.stringify(refsFromFullSection)}`);
+	}
+	if (refsFromShortSection.length) {
+		throw new Error(`Short regional section treated full regional current-cluster reference as remote: ${JSON.stringify(refsFromShortSection)}`);
+	}
+	if (remoteControlRefs.length !== 1 || remoteControlRefs[0]?.clusterName !== 'identity-other.westus') {
+		throw new Error(`Remote control did not detect a true cross-cluster reference: ${JSON.stringify(remoteControlRefs)}`);
+	}
+	if (missingFromFullConnection.length || missingFromShortConnection.length) {
+		throw new Error(`Short/full regional alias produced missing-cluster entries: full=${JSON.stringify(missingFromFullConnection)} short=${JSON.stringify(missingFromShortConnection)}`);
+	}
+	if (missingControl.length !== 1 || missingControl[0] !== 'identity-other.westus') {
+		throw new Error(`Missing-cluster control did not detect true missing cluster: ${JSON.stringify(missingControl)}`);
+	}
+	return {
+		fullSectionBoxId: fullConfigured.boxId,
+		shortSectionBoxId: shortConfigured.boxId,
+		fullSectionClusterUrl: regional.clusterUrl,
+		shortSectionClusterUrl: shortConnection.clusterUrl,
+		refsFromFullSection,
+		refsFromShortSection,
+		remoteControlRefs,
+		missingFromFullConnection,
+		missingFromShortConnection,
+		missingControl,
+		fullMarkerSnapshot,
+		shortMarkerSnapshot,
+	};
+}
+
+async function e2eKustoRunIdentityManualChecklist(): Promise<any> {
+	const seeded = await e2eIdentityWaitForConnections();
+	const section = e2eSection('kusto') as any;
+	const sectionId = String(section.boxId || section.id || '').trim();
+	if (!sectionId) throw new Error('Kusto section missing id for identity checklist');
+	const configureResponse = await e2eIdentityToolConfigure(sectionId, {
+		clusterUrl: E2E_KUSTO_IDENTITY_CHECKLIST.prodKey,
+		database: E2E_KUSTO_IDENTITY_CHECKLIST.database,
+		query: 'print exact_identity_prod = 1',
+	});
+	await section.updateComplete;
+	const selectedConnectionId = String(section.getConnectionId?.() || '');
+	if (selectedConnectionId !== seeded.prod.id) {
+		throw new Error(`Tool configure selected wrong connection. Expected ${seeded.prod.id} (${seeded.prod.clusterUrl}), got ${selectedConnectionId}; nonprod=${seeded.nonprod.id}`);
+	}
+	if (selectedConnectionId === seeded.nonprod.id) {
+		throw new Error('Tool configure selected overlapping nonprod connection');
+	}
+	const selectedDatabase = String(section.getDatabase?.() || '');
+	if (selectedDatabase !== E2E_KUSTO_IDENTITY_CHECKLIST.database) {
+		throw new Error(`Tool configure database mismatch. Expected ${E2E_KUSTO_IDENTITY_CHECKLIST.database}, got ${selectedDatabase}`);
+	}
+	const cachedDatabases = await e2eIdentityRequestDatabases(seeded.regional.id);
+	for (const expected of [E2E_KUSTO_IDENTITY_CHECKLIST.database, E2E_KUSTO_IDENTITY_CHECKLIST.cachedDatabase]) {
+		if (!cachedDatabases.includes(expected)) {
+			throw new Error(`Regional cached database lookup missed ${expected}; databases=${cachedDatabases.join(', ')}`);
+		}
+	}
+	const favoriteAlias = await e2eIdentityAssertSectionFavoriteAlias();
+	const managerAliases = await e2eIdentityAssertConnectionManagerAliases(seeded.foo, seeded.foobar);
+	const twoSectionAliasDiagnostics = await e2eIdentityAssertTwoSectionAliasDiagnostics(seeded.regional);
+	section.setConnectionId?.(seeded.regional.id);
+	section.setDesiredClusterUrl?.(seeded.regional.clusterUrl);
+	section.setConnections?.(Array.isArray(_win.connections) ? _win.connections : [], { lastConnectionId: seeded.regional.id });
+	section.setDatabase?.(E2E_KUSTO_IDENTITY_CHECKLIST.database);
+	section.setDatabases?.(cachedDatabases, E2E_KUSTO_IDENTITY_CHECKLIST.database);
+	section.requestUpdate?.();
+	await section.updateComplete;
+	const copyDone = e2eIdentityWaitForInfoMessage('Azure Data Explorer link copied to clipboard.', 7000);
+	postMessageToHost({
+		type: 'copyAdeLink',
+		boxId: sectionId,
+		query: 'print identity_adx = 1',
+		connectionId: seeded.regional.id,
+		database: E2E_KUSTO_IDENTITY_CHECKLIST.database,
+	});
+	const copyInfo = await copyDone;
+	const proof = {
+		selectedConnectionId,
+		prodConnectionId: seeded.prod.id,
+		nonprodConnectionId: seeded.nonprod.id,
+		configureResponse: configureResponse.result,
+		cachedDatabases,
+		favoriteAlias,
+		managerAliases,
+		twoSectionAliasDiagnostics,
+		copyInfo,
+		adxExpectedPath: '/clusters/identityadx.westus/databases/ChecklistDb?query=',
+	};
+	e2eSetProofMarker('kusto-identity-manual-checklist', proof);
+	(_win.__e2eKustoIdentityManualChecklist = proof);
+	return proof;
+}
+
+function e2eKustoIdentityManualChecklistSnapshot(): any {
+	return _win.__e2eKustoIdentityManualChecklist || null;
 }
 
 function e2eBeginHostMessageCapture(): string {
@@ -3089,6 +3512,11 @@ async function e2eApplyKustoSemanticFixture(): Promise<string> {
 	_win.schemaMetaByBoxId[boxId] = { fromCache: false, schemaSignature: 'e2e-semantic-primary' };
 	_win.schemaByConnDb[`${primaryClusterUrl}|${primaryDatabase}`] = primarySchema;
 	_win.schemaMetaByConnDb[`${primaryClusterUrl}|${primaryDatabase}`] = { fromCache: false, schemaSignature: 'e2e-semantic-primary' };
+	const primaryCanonicalSchemaKey = kustoDatabaseKey(primaryClusterUrl, primaryDatabase);
+	if (primaryCanonicalSchemaKey) {
+		_win.schemaByConnDb[primaryCanonicalSchemaKey] = primarySchema;
+		_win.schemaMetaByConnDb[primaryCanonicalSchemaKey] = { fromCache: false, schemaSignature: 'e2e-semantic-primary' };
+	}
 	try {
 		section.setConnectionId?.(semanticConnection.id);
 		section.setDatabase?.(primaryDatabase);
@@ -3186,6 +3614,11 @@ async function e2eApplyKustoCurrentClusterWorkflowFixture(): Promise<string> {
 	_win.schemaMetaByBoxId[boxId] = { fromCache: false, schemaSignature: 'e2e-current-workflow' };
 	_win.schemaByConnDb[`${clusterUrl}|${database}`] = schema;
 	_win.schemaMetaByConnDb[`${clusterUrl}|${database}`] = { fromCache: false, schemaSignature: 'e2e-current-workflow' };
+	const canonicalSchemaKey = kustoDatabaseKey(clusterUrl, database);
+	if (canonicalSchemaKey) {
+		_win.schemaByConnDb[canonicalSchemaKey] = schema;
+		_win.schemaMetaByConnDb[canonicalSchemaKey] = { fromCache: false, schemaSignature: 'e2e-current-workflow' };
+	}
 	if (typeof _win.__kustoSetMonacoKustoSchema !== 'function') {
 		throw new Error('__kustoSetMonacoKustoSchema is not available');
 	}
@@ -5443,6 +5876,10 @@ _win.__e2e = {
 			assertProbe: e2eKustoAssertFavoritesSyncProbe,
 			assertVisibleInAllSections: (name: string, expectedSectionCount?: number, timeoutMs?: number) => e2eKustoAssertFavoriteInAllSections(name, expectedSectionCount, true, timeoutMs),
 			assertAbsentInAllSections: (name: string, expectedSectionCount?: number, timeoutMs?: number) => e2eKustoAssertFavoriteInAllSections(name, expectedSectionCount, false, timeoutMs),
+		},
+		manualIdentityChecklist: {
+			run: e2eKustoRunIdentityManualChecklist,
+			snapshot: e2eKustoIdentityManualChecklistSnapshot,
 		},
 		assertClickCaretFidelityWithHtmlSection: () => e2eAssertKustoClickCaretFidelityWithHtmlSection(),
 		assertClickCaretFidelityAfterRestoredHtmlPreviewScroll: () => e2eAssertKustoClickCaretFidelityAfterRestoredHtmlPreviewScroll(),

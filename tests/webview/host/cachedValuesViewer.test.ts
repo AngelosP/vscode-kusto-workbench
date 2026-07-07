@@ -14,39 +14,44 @@ describe('getClusterCacheKey', () => {
 	});
 
 	it('extracts hostname from https URL', () => {
-		expect(getClusterCacheKey('https://mycluster.kusto.windows.net')).toBe('mycluster.kusto.windows.net');
+		expect(getClusterCacheKey('https://mycluster.kusto.windows.net')).toBe('mycluster');
 	});
 
 	it('extracts hostname from http URL', () => {
-		expect(getClusterCacheKey('http://mycluster.kusto.windows.net')).toBe('mycluster.kusto.windows.net');
+		expect(getClusterCacheKey('http://mycluster.kusto.windows.net')).toBe('mycluster');
 	});
 
 	it('adds https:// prefix when missing and extracts hostname', () => {
-		expect(getClusterCacheKey('mycluster.kusto.windows.net')).toBe('mycluster.kusto.windows.net');
+		expect(getClusterCacheKey('mycluster.kusto.windows.net')).toBe('mycluster');
 	});
 
 	it('lowercases the hostname', () => {
-		expect(getClusterCacheKey('https://MyCluster.Kusto.Windows.NET')).toBe('mycluster.kusto.windows.net');
+		expect(getClusterCacheKey('https://MyCluster.Kusto.Windows.NET')).toBe('mycluster');
 	});
 
 	it('strips path from URL', () => {
-		expect(getClusterCacheKey('https://mycluster.kusto.windows.net/some/path')).toBe('mycluster.kusto.windows.net');
+		expect(getClusterCacheKey('https://mycluster.kusto.windows.net/some/path')).toBe('mycluster');
 	});
 
 	it('handles URL with trailing slash', () => {
-		expect(getClusterCacheKey('https://mycluster.kusto.windows.net/')).toBe('mycluster.kusto.windows.net');
+		expect(getClusterCacheKey('https://mycluster.kusto.windows.net/')).toBe('mycluster');
 	});
 
-	it('handles bare hostname without scheme', () => {
+	it('handles public short cluster without scheme', () => {
 		expect(getClusterCacheKey('help')).toBe('help');
 	});
 
+	it('handles regional public short and full forms', () => {
+		expect(getClusterCacheKey('aoaiagents1.westus')).toBe('aoaiagents1.westus');
+		expect(getClusterCacheKey('https://aoaiagents1.westus.kusto.windows.net')).toBe('aoaiagents1.westus');
+	});
+
 	it('trims whitespace', () => {
-		expect(getClusterCacheKey('  https://mycluster.kusto.windows.net  ')).toBe('mycluster.kusto.windows.net');
+		expect(getClusterCacheKey('  https://mycluster.kusto.windows.net  ')).toBe('mycluster');
 	});
 
 	it('handles URL with port', () => {
-		expect(getClusterCacheKey('https://mycluster.kusto.windows.net:443')).toBe('mycluster.kusto.windows.net');
+		expect(getClusterCacheKey('https://mycluster.kusto.windows.net:443')).toBe('mycluster');
 	});
 
 	it('returns lowercased input for unparseable URL', () => {
@@ -64,13 +69,13 @@ describe('mergeCachedDatabaseKeys', () => {
 		expect(changed).toBe(false);
 	});
 
-	it('passes through entries already keyed by hostname', () => {
+	it('canonicalizes entries keyed by hostname', () => {
 		const { next, changed } = mergeCachedDatabaseKeys(
 			{ 'mycluster.kusto.windows.net': ['db1', 'db2'] },
 			new Map(),
 		);
-		expect(next['mycluster.kusto.windows.net']).toEqual(['db1', 'db2']);
-		expect(changed).toBe(false);
+		expect(next['mycluster']).toEqual(['db1', 'db2']);
+		expect(changed).toBe(true);
 	});
 
 	it('resolves connection IDs to cluster hostnames via connById', () => {
@@ -79,7 +84,7 @@ describe('mergeCachedDatabaseKeys', () => {
 			{ 'conn-1': ['db1'] },
 			connById,
 		);
-		expect(next['mycluster.kusto.windows.net']).toEqual(['db1']);
+		expect(next['mycluster']).toEqual(['db1']);
 		expect(changed).toBe(true);
 	});
 
@@ -92,7 +97,7 @@ describe('mergeCachedDatabaseKeys', () => {
 			{ 'conn-1': ['db1'], 'conn-2': ['db2'] },
 			connById,
 		);
-		expect(next['mycluster.kusto.windows.net']).toEqual(['db1', 'db2']);
+		expect(next['mycluster']).toEqual(['db1', 'db2']);
 	});
 
 	it('deduplicates databases case-insensitively', () => {
@@ -101,7 +106,7 @@ describe('mergeCachedDatabaseKeys', () => {
 			new Map(),
 		);
 		// Keeps first occurrence
-		expect(next['host.kusto.windows.net']).toEqual(['Db1']);
+		expect(next['host']).toEqual(['Db1']);
 	});
 
 	it('skips empty keys and marks changed', () => {
@@ -110,7 +115,7 @@ describe('mergeCachedDatabaseKeys', () => {
 			new Map(),
 		);
 		expect(next['']).toBeUndefined();
-		expect(next['host.kusto.windows.net']).toEqual(['db2']);
+		expect(next['host']).toEqual(['db2']);
 		expect(changed).toBe(true);
 	});
 
@@ -125,7 +130,7 @@ describe('mergeCachedDatabaseKeys', () => {
 			{ 'host.kusto.windows.net': ['db1', '', '  ', 'db2'] },
 			new Map(),
 		);
-		expect(next['host.kusto.windows.net']).toEqual(['db1', 'db2']);
+		expect(next['host']).toEqual(['db1', 'db2']);
 	});
 
 	it('handles non-array value gracefully', () => {
@@ -133,7 +138,7 @@ describe('mergeCachedDatabaseKeys', () => {
 			{ 'host.kusto.windows.net': 'not-an-array' as any },
 			new Map(),
 		);
-		expect(next['host.kusto.windows.net']).toEqual([]);
+		expect(next['host']).toEqual([]);
 	});
 });
 

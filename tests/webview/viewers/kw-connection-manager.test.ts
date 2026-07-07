@@ -31,7 +31,7 @@ function snapshot(overrides: Record<string, unknown> = {}) {
 	return {
 		connections: [kustoConnection()],
 		favorites: [],
-		cachedDatabases: { 'mycluster.kusto.windows.net': ['db1', 'db2'] },
+		cachedDatabases: { mycluster: ['db1', 'db2'] },
 		expandedClusters: ['c1'],
 		leaveNoTraceClusters: [],
 		sqlConnections: [sqlConnection()],
@@ -207,7 +207,7 @@ describe('kw-connection-manager', () => {
 		it('Kusto: sorts databases, folders, tables, and columns while keeping folders first', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({
-				cachedDatabases: { 'mycluster.kusto.windows.net': ['zetaDb', 'AlphaDb', 'betaDb'] },
+				cachedDatabases: { mycluster: ['zetaDb', 'AlphaDb', 'betaDb'] },
 			}));
 			await el.updateComplete;
 
@@ -238,7 +238,7 @@ describe('kw-connection-manager', () => {
 		it('Kusto: shows column docstrings in expanded table schema rows', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({
-				cachedDatabases: { 'mycluster.kusto.windows.net': ['AlphaDb'] },
+				cachedDatabases: { mycluster: ['AlphaDb'] },
 			}));
 			await el.updateComplete;
 
@@ -270,7 +270,7 @@ describe('kw-connection-manager', () => {
 		it('Kusto: sorts function folders and functions while keeping folders first', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({
-				cachedDatabases: { 'mycluster.kusto.windows.net': ['AlphaDb'] },
+				cachedDatabases: { mycluster: ['AlphaDb'] },
 			}));
 			await el.updateComplete;
 
@@ -441,7 +441,7 @@ describe('kw-connection-manager', () => {
 			sendSnapshot(el, snapshot({
 				connections,
 				favorites: [{ name: 'Favorite DB', clusterUrl: favoriteConnection.clusterUrl, database: 'FavDb' }],
-				cachedDatabases: { [`cluster-29.kusto.windows.net`]: ['FavDb'] },
+				cachedDatabases: { 'cluster-29': ['FavDb'] },
 			}));
 			await el.updateComplete;
 
@@ -857,7 +857,7 @@ describe('kw-connection-manager', () => {
 	describe('load error states', () => {
 		it('Kusto: drilled cluster with no cached databases shows an empty state, not a blank panel', async () => {
 			const el = createElement();
-			sendSnapshot(el, snapshot({ cachedDatabases: { 'mycluster.kusto.windows.net': [] } }));
+			sendSnapshot(el, snapshot({ cachedDatabases: { mycluster: [] } }));
 			await el.updateComplete;
 
 			clickListItemByName(el, 'MyCluster');
@@ -896,7 +896,7 @@ describe('kw-connection-manager', () => {
 
 		it('Kusto: schema load failure shows retry instead of loading forever', async () => {
 			const el = createElement();
-			sendSnapshot(el, snapshot({ cachedDatabases: { 'mycluster.kusto.windows.net': ['db1'] } }));
+			sendSnapshot(el, snapshot({ cachedDatabases: { mycluster: ['db1'] } }));
 			await el.updateComplete;
 
 			clickListItemByName(el, 'MyCluster');

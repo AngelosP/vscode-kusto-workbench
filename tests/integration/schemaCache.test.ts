@@ -3,7 +3,7 @@ import * as vscode from 'vscode';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { readAllCachedSchemasFromDisk, searchCachedSchemas, writeCachedSchemaToDisk, CachedSchemaEntry, SCHEMA_CACHE_VERSION } from '../../src/host/schemaCache';
+import { readAllCachedSchemasFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, CachedSchemaEntry, SCHEMA_CACHE_VERSION, schemaCacheKey } from '../../src/host/schemaCache';
 
 suite('readAllCachedSchemasFromDisk', () => {
 	let tmpDir: string;
@@ -121,6 +121,35 @@ suite('readAllCachedSchemasFromDisk', () => {
 
 		const results = await readAllCachedSchemasFromDisk(globalStorageUri, 'https://help.kusto.windows.net');
 		assert.strictEqual(results.length, 1);
+	});
+
+	test('clusterUrl filter treats public short and full host forms as the same cluster', async () => {
+		writeCacheFile('x.json', {
+			schema: { tables: ['T1'], columnTypesByTable: { T1: { c: 'string' } } },
+			timestamp: Date.now(), version: SCHEMA_CACHE_VERSION,
+			clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net', database: 'prod'
+		});
+
+		const results = await readAllCachedSchemasFromDisk(globalStorageUri, 'aoaiagents1.westus');
+		assert.strictEqual(results.length, 1);
+		assert.strictEqual(results[0].database, 'prod');
+	});
+
+	test('deduplicates cached schemas by logical cluster and database identity', async () => {
+		writeCacheFile('old.json', {
+			schema: { tables: ['Old'], columnTypesByTable: { Old: { c: 'string' } } },
+			timestamp: 1, version: SCHEMA_CACHE_VERSION,
+			clusterUrl: 'aoaiagents1.westus', database: 'prod'
+		});
+		writeCacheFile('new.json', {
+			schema: { tables: ['New'], columnTypesByTable: { New: { c: 'string' } } },
+			timestamp: 2, version: SCHEMA_CACHE_VERSION,
+			clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net', database: 'Prod'
+		});
+
+		const results = await readAllCachedSchemasFromDisk(globalStorageUri);
+		assert.strictEqual(results.length, 1);
+		assert.deepStrictEqual(results[0].tables, ['New']);
 	});
 
 	test('skips non-JSON files in cache directory', async () => {
@@ -676,7 +705,7 @@ suite('writeCachedSchemaToDisk', () => {
 			timestamp: Date.now(),
 			version: SCHEMA_CACHE_VERSION
 		};
-		const cacheKey = 'https://cluster.kusto.windows.net|Samples';
+		const cacheKey = schemaCacheKey('https://cluster.kusto.windows.net', 'Samples');
 		await writeCachedSchemaToDisk(globalStorageUri, cacheKey, entry);
 
 		const results = await searchCachedSchemas(globalStorageUri, 'deviceid|sku|region');
@@ -685,5 +714,22 @@ suite('writeCachedSchemaToDisk', () => {
 		assert.ok(names.includes('DeviceId'));
 		assert.ok(names.includes('SKU'));
 		assert.ok(names.includes('Region'));
+	});
+
+	test('reads canonical cache first and falls back to legacy raw cache key', async () => {
+		const entry: CachedSchemaEntry = {
+			schema: {
+				tables: ['LegacyEvents'],
+				columnTypesByTable: { LegacyEvents: { c: 'string' } }
+			},
+			timestamp: Date.now(),
+			version: SCHEMA_CACHE_VERSION,
+			clusterUrl: 'https://legacy.kusto.windows.net',
+			database: 'Samples'
+		};
+		await writeCachedSchemaToDisk(globalStorageUri, 'https://legacy.kusto.windows.net|Samples', entry);
+
+		const cached = await readCachedSchemaFromDiskByCluster(globalStorageUri, 'legacy', 'Samples');
+		assert.ok(cached?.schema?.tables.includes('LegacyEvents'));
 	});
 });

@@ -1,21 +1,15 @@
 // Pure persistence utility functions.
 // No DOM access, no window globals. Extracted from persistence.ts.
 
+import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
+
 /**
  * Normalize a cluster URL for consistent comparison.
  * Ensures https:// prefix, strips trailing slashes, lowercases.
  */
 export function normalizeClusterUrl(clusterUrl: unknown): string {
-	try {
-		let u = String(clusterUrl || '').trim();
-		if (!u) return '';
-		if (!/^https?:\/\//i.test(u)) {
-			u = 'https://' + u;
-		}
-		return u.replace(/\/+$/g, '').toLowerCase();
-	} catch {
-		return '';
-	}
+	if (!clusterUrl) return '';
+	return kustoClusterKey(clusterUrl);
 }
 
 /**

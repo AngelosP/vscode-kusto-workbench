@@ -19,7 +19,8 @@ import { getQueryEditorHtml } from './queryEditorHtml';
 import { toolOrchestrator } from './extension';
 import { CopilotService, CopilotServiceHost } from './queryEditorCopilot';
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
-import { ConnectionService, ConnectionServiceHost, getClusterShortName } from './queryEditorConnection';
+import { ConnectionService, ConnectionServiceHost } from './queryEditorConnection';
+import { exportAzureDataExplorerClusterPath, kustoClusterKey } from '../shared/kustoClusterUrls';
 import { SchemaService, SchemaServiceHost } from './queryEditorSchema';
 import {
 	getErrorMessage as getErrorMessageFn,
@@ -751,8 +752,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				vscode.window.showErrorMessage('Connection not found.');
 				return;
 			}
-			const clusterShortName = getClusterShortName(String(connection.clusterUrl || '').trim());
-			if (!clusterShortName) {
+			const adxClusterPath = exportAzureDataExplorerClusterPath(String(connection.clusterUrl || '').trim());
+			if (!adxClusterPath) {
 				vscode.window.showErrorMessage('Could not determine cluster name for the selected connection.');
 				return;
 			}
@@ -768,7 +769,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 
 			const url =
-				`https://dataexplorer.azure.com/clusters/${encodeURIComponent(clusterShortName)}` +
+				`https://dataexplorer.azure.com/clusters/${encodeURIComponent(adxClusterPath)}` +
 				`/databases/${encodeURIComponent(database)}` +
 				`?query=${encodeURIComponent(encoded)}`;
 
@@ -813,12 +814,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				if (trimmedQuery && trimmedConnectionId && trimmedDatabase) {
 					const connection = this.connection.findConnection(trimmedConnectionId);
 					if (connection) {
-						const clusterShortName = getClusterShortName(String(connection.clusterUrl || '').trim());
-						if (clusterShortName) {
+						const adxClusterPath = exportAzureDataExplorerClusterPath(String(connection.clusterUrl || '').trim());
+						if (adxClusterPath) {
 							const gz = zlib.gzipSync(Buffer.from(trimmedQuery, 'utf8'));
 							const encoded = gz.toString('base64').replace(/=+$/g, '');
 							adeUrl =
-								`https://dataexplorer.azure.com/clusters/${encodeURIComponent(clusterShortName)}` +
+								`https://dataexplorer.azure.com/clusters/${encodeURIComponent(adxClusterPath)}` +
 								`/databases/${encodeURIComponent(trimmedDatabase)}` +
 								`?query=${encodeURIComponent(encoded)}`;
 						}
@@ -1614,17 +1615,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 
 	normalizeClusterUrlKey(url: string): string {
-		try {
-			const raw = String(url || '').trim();
-			if (!raw) {
-				return '';
-			}
-			const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
-			const u = new URL(withScheme);
-			return (u.origin + u.pathname).replace(/\/+$/g, '').toLowerCase();
-		} catch {
-			return String(url || '').trim().replace(/\/+$/g, '').toLowerCase();
-		}
+		return kustoClusterKey(url);
 	}
 
 	// ── Delegating wrappers for ConnectionService methods ──

@@ -9,6 +9,7 @@ import {
 	finalizeSchema as finalizeSchemeFn,
 	parseDatabaseSchemaResultWithRaw as parseDatabaseSchemaResultWithRawFn
 } from './kustoClientUtils';
+import { exportKustoClusterEndpoint, kustoDatabaseKey } from '../shared/kustoClusterUrls';
 
 /**
  * Server-side resource usage statistics extracted from the Kusto response.
@@ -447,38 +448,7 @@ export class KustoQueryClient {
 	}
 
 	private normalizeClusterEndpoint(clusterUrl: string): string {
-		const raw = String(clusterUrl || '').trim();
-		if (!raw) {
-			return '';
-		}
-		try {
-			const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
-			const u = new URL(withScheme);
-			let host = String(u.hostname || '').trim();
-			// If we got a short name like "help" or "mycluster.westus", expand it.
-			// This intentionally targets the common public ADX domain.
-			if (host && !/\.kusto\./i.test(host)) {
-				host = `${host}.kusto.windows.net`;
-			}
-			const protocol = u.protocol && /^https?:$/i.test(u.protocol) ? u.protocol : 'https:';
-			return `${protocol}//${host}`;
-		} catch {
-			// Best-effort string fallback.
-			let v = raw;
-			if (!/^https?:\/\//i.test(v)) {
-				v = `https://${v.replace(/^\/+/, '')}`;
-			}
-			try {
-				const u2 = new URL(v);
-				let host = String(u2.hostname || '').trim();
-				if (host && !/\.kusto\./i.test(host)) {
-					host = `${host}.kusto.windows.net`;
-				}
-				return `${u2.protocol}//${host}`;
-			} catch {
-				return v;
-			}
-		}
+		return exportKustoClusterEndpoint(clusterUrl);
 	}
 
 	private async getOrCreateClient(connection: KustoConnection, opts?: { interactiveIfNeeded?: boolean }): Promise<any> {
@@ -1210,7 +1180,7 @@ export class KustoQueryClient {
 	): Promise<DatabaseSchemaResult> {
 		this.syncCacheClearEpoch();
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
-		const cacheKey = `${clusterEndpoint}|${database}`;
+		const cacheKey = kustoDatabaseKey(clusterEndpoint, database);
 		if (!forceRefresh) {
 			const cached = this.schemaCache.get(cacheKey);
 			if (cached && (Date.now() - cached.timestamp) < this.SCHEMA_CACHE_TTL) {

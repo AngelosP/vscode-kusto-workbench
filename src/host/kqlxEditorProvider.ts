@@ -9,21 +9,11 @@ import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileKin
 import { renderDiffInWebview, DIFF_NOISE_KEYS, COMPARISON_NOISE_KEYS } from './diffViewerUtils';
 import type { SectionChangeInfo } from './queryEditorTypes';
 import { perfBegin, perfMark } from './perfTrace';
+import { kustoClusterKey } from '../shared/kustoClusterUrls';
 
 
 const normalizeClusterUrlKey = (url: string): string => {
-	try {
-		const raw = String(url || '').trim();
-		if (!raw) {
-			return '';
-		}
-		const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
-		const u = new URL(withScheme);
-		// Lowercase host, drop trailing slashes.
-		return (u.origin + u.pathname).replace(/\/+$/g, '').toLowerCase();
-	} catch {
-		return String(url || '').trim().replace(/\/+$/g, '').toLowerCase();
-	}
+	return kustoClusterKey(url);
 };
 
 const getDefaultConnectionName = (clusterUrl: string): string => {

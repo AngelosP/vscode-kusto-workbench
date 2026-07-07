@@ -13,7 +13,14 @@ import {
 	parseKustoConnectionString,
 	findConnectionIdForClusterUrl,
 	canonicalizePowerBiKustoClusterUrl,
+	exportAzureDataExplorerClusterPath,
+	exportKustoClusterEndpoint,
+	exportKustoClusterForKql,
 	isCompleteKustoClusterUrl,
+	kustoClusterKey,
+	kustoDatabaseKey,
+	kustoEntityKey,
+	parseKustoClusterRef,
 	selectBestKustoClusterUrl,
 } from '../../src/webview/shared/clusterUtils';
 import { parseKustoExplorerConnectionsXml } from '../../src/webview/sections/query-connection.controller';
@@ -63,6 +70,57 @@ describe('normalizeClusterUrlKey', () => {
 	it('preserves paths', () => {
 		expect(normalizeClusterUrlKey('https://host.com/path'))
 			.toBe('https://host.com/path');
+	});
+});
+
+// ── Shared Kusto cluster identity ────────────────────────────────────────
+
+describe('Kusto cluster identity helpers', () => {
+	it('maps public short, scheme, and full-host forms to one key', () => {
+		const variants = [
+			'help',
+			'https://help',
+			'help.kusto.windows.net',
+			'https://help.kusto.windows.net/',
+			'HTTPS://HELP.KUSTO.WINDOWS.NET'
+		];
+		expect(new Set(variants.map(kustoClusterKey))).toEqual(new Set(['help']));
+	});
+
+	it('maps public regional short and full-host forms to one key', () => {
+		const variants = [
+			'aoaiagents1.westus',
+			'https://aoaiagents1.westus',
+			'aoaiagents1.westus.kusto.windows.net',
+			'https://aoaiagents1.westus.kusto.windows.net/'
+		];
+		expect(new Set(variants.map(kustoClusterKey))).toEqual(new Set(['aoaiagents1.westus']));
+	});
+
+	it('preserves custom dotted domains as exact logical hosts', () => {
+		expect(kustoClusterKey('https://adx.contoso.com')).toBe('adx.contoso.com');
+		expect(exportKustoClusterEndpoint('https://adx.contoso.com')).toBe('https://adx.contoso.com');
+		expect(exportAzureDataExplorerClusterPath('https://adx.contoso.com')).toBe('adx.contoso.com');
+	});
+
+	it('exports public endpoints, KQL arguments, and ADX path segments explicitly', () => {
+		expect(exportKustoClusterEndpoint('aoaiagents1.westus')).toBe('https://aoaiagents1.westus.kusto.windows.net');
+		expect(exportKustoClusterForKql('https://aoaiagents1.westus.kusto.windows.net')).toBe('aoaiagents1.westus');
+		expect(exportAzureDataExplorerClusterPath('https://aoaiagents1.westus.kusto.windows.net')).toBe('aoaiagents1.westus');
+	});
+
+	it('builds canonical database and entity keys without raw URL leakage', () => {
+		expect(kustoDatabaseKey('https://HELP.kusto.windows.net/', 'Samples')).toBe('help|samples');
+		expect(kustoEntityKey('aoaiagents1.westus.kusto.windows.net', 'Prod', 'BizOps')).toBe('aoaiagents1.westus|prod|bizops');
+		expect(kustoDatabaseKey('', 'Samples')).toBe('');
+	});
+
+	it('exposes parsed identity metadata separately from raw input', () => {
+		const parsed = parseKustoClusterRef('https://AOAIAGENTS1.WESTUS.kusto.windows.net/path?ignored=true');
+		expect(parsed.raw).toBe('https://AOAIAGENTS1.WESTUS.kusto.windows.net/path?ignored=true');
+		expect(parsed.key).toBe('aoaiagents1.westus');
+		expect(parsed.endpointUrl).toBe('https://aoaiagents1.westus.kusto.windows.net');
+		expect(parsed.isPublicKusto).toBe(true);
 	});
 });
 
@@ -297,8 +355,23 @@ describe('findFavorite', () => {
 		expect(result).toEqual(favorites[0]);
 	});
 
+	it('matches public short/regional and full-host variants logically', () => {
+		const result = findFavorite('aoaiagents1.westus', 'Prod', [
+			{ clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net', database: 'prod', name: 'Foundry Agents' },
+		]);
+		expect(result?.name).toBe('Foundry Agents');
+	});
+
 	it('handles empty favorites list', () => {
 		expect(findFavorite('https://x.kusto.windows.net', 'db', [])).toBeNull();
+	});
+});
+
+describe('findConnectionIdForClusterUrl', () => {
+	it('finds connections across short/full public ADX variants', () => {
+		expect(findConnectionIdForClusterUrl('aoaiagents1.westus', [
+			{ id: 'conn1', clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net' },
+		])).toBe('conn1');
 	});
 });
 

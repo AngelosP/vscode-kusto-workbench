@@ -3,6 +3,7 @@
 export {};
 
 import { normalizeClusterUrl, isLeaveNoTraceCluster, trySerializeQueryResult } from '../shared/persistence-utils';
+import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
 import { postMessageToHost } from '../shared/webview-messages';
 import { pState } from '../shared/persistence-state';
 import { displayResultForBox, getResultsStateRevision } from './results-state';
@@ -1265,52 +1266,15 @@ function applyKqlxState(state: any) {
 		}
 
 		const sections = Array.isArray(s.sections) ? s.sections : [];
-		const normalizeClusterUrlKey = (url: any) => {
-			try {
-				const raw = String(url || '').trim();
-				if (!raw) return '';
-				const withScheme = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw.replace(/^\/+/, ''));
-				const u = new URL(withScheme);
-				// Lowercase host, drop trailing slashes.
-				const out = (u.origin + u.pathname).replace(/\/+$/, '');
-				return out.toLowerCase();
-			} catch {
-				return String(url || '').trim().replace(/\/+$/, '').toLowerCase();
-			}
-		};
-		const clusterShortNameKey = (url: any) => {
-			try {
-				const raw = String(url || '').trim();
-				if (!raw) return '';
-				const withScheme = /^https?:\/\//i.test(raw) ? raw : ('https://' + raw.replace(/^\/+/, ''));
-				const u = new URL(withScheme);
-				const host = String(u.hostname || '').trim();
-				const first = host ? host.split('.')[0] : '';
-				return String(first || host || raw).trim().toLowerCase();
-			} catch {
-				return String(url || '').trim().toLowerCase();
-			}
-		};
 		const findConnectionIdByClusterUrl = (clusterUrl: any) => {
 			try {
-				const key = normalizeClusterUrlKey(clusterUrl);
+				const key = kustoClusterKey(clusterUrl);
 				if (!key) return '';
 				for (const c of (connections || [])) {
 					if (!c) continue;
-					const ck = normalizeClusterUrlKey(c.clusterUrl || '');
+					const ck = kustoClusterKey(c.clusterUrl || '');
 					if (ck && ck === key) {
 						return String(c.id || '');
-					}
-				}
-				// Fallback: match by short-name key.
-				const sk = clusterShortNameKey(clusterUrl);
-				if (sk) {
-					for (const c of (connections || [])) {
-						if (!c) continue;
-						const ck2 = clusterShortNameKey(c.clusterUrl || '');
-						if (ck2 && ck2 === sk) {
-							return String(c.id || '');
-						}
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }

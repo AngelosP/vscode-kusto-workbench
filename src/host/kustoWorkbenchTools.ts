@@ -3,13 +3,14 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { createEmptyKqlxOrMdxFile, DevNoteEntry, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
-import { readAllCachedSchemasFromDisk, readCachedSchemaFromDisk, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION } from './schemaCache';
+import { readAllCachedSchemasFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey } from './schemaCache';
 import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { KustoQueryClient } from './kustoClient';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
 import { getPowerBiHtmlValidationIssues, type PowerBiDataSource } from './powerBiExport';
 import { getLegacyDashboardWarnings } from '../shared/htmlDashboardUpgrade';
 import { classifyWorkbenchUri, classifyWorkbenchUriString, type WorkbenchFileInfo, type WorkbenchFileKind } from './workbenchFileTypes';
+import { kustoClusterKey } from '../shared/kustoClusterUrls';
 
 export type TargetFields = {
 	openFileId?: string;
@@ -1049,8 +1050,8 @@ export class KustoWorkbenchToolOrchestrator {
 	 */
 	private async refreshSchemaDirectly(clusterUrl: string): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
 		const connections = this.connectionManager.getConnections();
-		const normalizedInput = clusterUrl.replace(/\/+$/, '').toLowerCase();
-		const connection = connections.find(c => c.clusterUrl.replace(/\/+$/, '').toLowerCase() === normalizedInput)
+		const normalizedInput = kustoClusterKey(clusterUrl);
+		const connection = connections.find(c => kustoClusterKey(c.clusterUrl) === normalizedInput)
 			?? { id: `ephemeral_${Date.now()}`, name: clusterUrl, clusterUrl };
 
 		const schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> = [];
@@ -1066,9 +1067,9 @@ export class KustoWorkbenchToolOrchestrator {
 					const result = await this.kustoClient.getDatabaseSchema(connection, db, true);
 					const schema = result.schema;
 
-					const cacheKey = `${connection.clusterUrl.replace(/\/+$/, '')}|${db}`;
+					const cacheKey = schemaCacheKey(connection.clusterUrl, db);
 					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
-					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION, clusterUrl: connection.clusterUrl, database: db });
 
 					const tables = schema.tables || [];
 					const functions = (schema.functions || []).map(f => typeof f === 'string' ? f : f.name || '').filter(Boolean);
@@ -1111,8 +1112,7 @@ export class KustoWorkbenchToolOrchestrator {
 
 		// ── Single database requested ─────────────────────────────────
 		if (db) {
-			const cacheKey = `${clusterUrl.replace(/\/+$/, '')}|${db}`;
-			let cached = await readCachedSchemaFromDisk(this.context.globalStorageUri, cacheKey);
+			let cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, clusterUrl, db);
 
 				if (!cached?.schema) {
 				// Not in cache – try to fetch live
@@ -1124,7 +1124,7 @@ export class KustoWorkbenchToolOrchestrator {
 					return { error: refreshResult.error };
 				}
 				// Re-read from disk since the refresher persists to cache
-				cached = await readCachedSchemaFromDisk(this.context.globalStorageUri, cacheKey);
+				cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, clusterUrl, db);
 			}
 
 			if (!cached?.schema) {

@@ -34,9 +34,8 @@ import { buildSchemaInfo } from '../shared/schema-utils';
 import { syncSelectBackedDropdown } from '../core/dropdown';
 import {
 	formatClusterDisplayName,
-	normalizeClusterUrlKey,
 	formatClusterShortName,
-	clusterShortNameKey,
+	canonicalKustoClusterKey,
 	extractClusterUrlsFromQueryText,
 	extractClusterDatabaseHintsFromQueryText,
 	computeMissingClusterUrls as _computeMissing,
@@ -334,7 +333,7 @@ export class QueryConnectionController implements ReactiveController {
 				let chosenClusterUrl = '';
 				let chosenDb = '';
 				for (const u of clusters) {
-					const key = clusterShortNameKey(u);
+					const key = canonicalKustoClusterKey(u);
 					const db = key && hints ? String((hints as any)[key] || '') : '';
 					if (db) {
 						chosenClusterUrl = String(u || '').trim();
@@ -344,7 +343,7 @@ export class QueryConnectionController implements ReactiveController {
 				}
 				if (!chosenClusterUrl) {
 					chosenClusterUrl = String(clusters[0] || '').trim();
-					const key0 = clusterShortNameKey(chosenClusterUrl);
+					const key0 = canonicalKustoClusterKey(chosenClusterUrl);
 					chosenDb = key0 && hints ? String((hints as any)[key0] || '') : '';
 				}
 				if (typeof this.host.setDesiredClusterUrl === 'function') this.host.setDesiredClusterUrl(chosenClusterUrl);
@@ -500,11 +499,7 @@ export class QueryConnectionController implements ReactiveController {
 				const cid = String(connectionId || '').trim();
 				const conn = Array.isArray(connections) ? connections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
 				const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
-				if (clusterUrl) {
-					let u = clusterUrl;
-					if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
-					try { clusterKey = String(new URL(u).hostname || '').trim().toLowerCase(); } catch { clusterKey = clusterUrl.trim().toLowerCase(); }
-				}
+				if (clusterUrl) clusterKey = canonicalKustoClusterKey(clusterUrl);
 			} catch (e) { console.error('[kusto]', e); }
 			cachedDatabases[String(clusterKey || '').trim()] = list;
 		}
@@ -808,7 +803,7 @@ export function parseKustoExplorerConnectionsXml(xmlText: any) {
 	for (const r of results) {
 		let key = '';
 		try {
-			key = normalizeClusterUrlKey(r.clusterUrl || '');
+			key = canonicalKustoClusterKey(r.clusterUrl || '');
 		} catch {
 			key = String(r.clusterUrl || '').trim().replace(/\/+$/g, '').toLowerCase();
 		}
@@ -990,11 +985,7 @@ export async function __kustoRequestDatabases(connectionId: string, forceRefresh
 		try {
 			const conn = Array.isArray(connections) ? (connections as any[]).find((c: any) => c && String(c.id || '').trim() === cid) : null;
 			const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
-			if (clusterUrl) {
-				let u = clusterUrl;
-				if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
-				try { clusterKey = String(new URL(u).hostname || '').trim().toLowerCase(); } catch { clusterKey = String(clusterUrl || '').trim().toLowerCase(); }
-			}
+			if (clusterUrl) clusterKey = canonicalKustoClusterKey(clusterUrl);
 		} catch (e) { console.error('[kusto]', e); }
 		const cachedByCluster = cachedDatabases && cachedDatabases[String(clusterKey || '').trim()];
 		if (!forceRefresh && Array.isArray(cachedByCluster) && cachedByCluster.length) return cachedByCluster;

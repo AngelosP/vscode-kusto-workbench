@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { kustoClusterKey } from '../shared/kustoClusterUrls';
 
 export interface KustoConnection {
 	id: string;
@@ -93,7 +94,7 @@ export class ConnectionManager {
 	isLeaveNoTrace(clusterUrl: string): boolean {
 		const normalized = this.normalizeClusterUrl(clusterUrl);
 		if (!normalized) return false;
-		return this.getLeaveNoTraceClusters().includes(normalized);
+		return this.getLeaveNoTraceClusters().some(entry => this.normalizeClusterUrl(entry) === normalized);
 	}
 
 	/**
@@ -103,7 +104,7 @@ export class ConnectionManager {
 		const normalized = this.normalizeClusterUrl(clusterUrl);
 		if (!normalized) return;
 		const current = this.getLeaveNoTraceClusters();
-		if (!current.includes(normalized)) {
+		if (!current.some(entry => this.normalizeClusterUrl(entry) === normalized)) {
 			current.push(normalized);
 			await this.context.globalState.update(this.leaveNoTraceKey, current);
 		}
@@ -116,7 +117,7 @@ export class ConnectionManager {
 		const normalized = this.normalizeClusterUrl(clusterUrl);
 		if (!normalized) return;
 		const current = this.getLeaveNoTraceClusters();
-		const filtered = current.filter(u => u !== normalized);
+		const filtered = current.filter(u => this.normalizeClusterUrl(u) !== normalized);
 		await this.context.globalState.update(this.leaveNoTraceKey, filtered);
 	}
 
@@ -248,10 +249,5 @@ export class ConnectionManager {
  * Ensures `https://` prefix and lowercases the result. Strips trailing slashes.
  */
 export function normalizeClusterUrl(clusterUrl: string): string {
-	let u = String(clusterUrl || '').trim();
-	if (!u) return '';
-	if (!/^https?:\/\//i.test(u)) {
-		u = 'https://' + u;
-	}
-	return u.replace(/\/+$/g, '').toLowerCase();
+	return kustoClusterKey(clusterUrl);
 }

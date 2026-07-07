@@ -2,7 +2,7 @@ import * as vscode from 'vscode';
 
 import { ConnectionManager } from '../connectionManager';
 import { DatabaseSchemaIndex } from '../kustoClient';
-import { readCachedSchemaFromDisk } from '../schemaCache';
+import { readCachedSchemaFromDiskByCluster } from '../schemaCache';
 import { KqlLanguageService } from './service';
 import { type KqlFindTableReferencesParams, type KqlFindTableReferencesResult, type KqlGetDiagnosticsParams, type KqlGetDiagnosticsResult } from './protocol';
 
@@ -51,8 +51,7 @@ export class KqlLanguageServiceHost {
 		if (!conn?.clusterUrl) {
 			return undefined;
 		}
-		const cacheKey = `${conn.clusterUrl}|${db}`;
-		const cached = await readCachedSchemaFromDisk(this.context.globalStorageUri, cacheKey);
+		const cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, conn.clusterUrl, db);
 		return cached?.schema;
 	}
 

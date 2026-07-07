@@ -41,6 +41,14 @@ describe('connectionManagerFavorites', () => {
 			expect(getKustoFavorite(existing, 'example.kusto.windows.net', 'dbone')?.name).toBe('Original');
 		});
 
+		it('matches public regional short and full host forms as the same favorite', () => {
+			const favorites: KustoFavorite[] = [
+				{ name: 'Foundry Agents', clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net', database: 'prod' },
+			];
+
+			expect(getKustoFavorite(favorites, 'aoaiagents1.westus', 'PROD')?.name).toBe('Foundry Agents');
+		});
+
 		it('explicit add does not overwrite an existing friendly name', () => {
 			const result = addKustoFavoriteIfMissing(existing, {
 				name: 'Should not replace',

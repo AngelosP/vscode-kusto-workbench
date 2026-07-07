@@ -11,39 +11,39 @@ import {
 // Getting it wrong means silently connecting to the wrong cluster or losing cached data.
 
 describe('normalizeClusterUrl', () => {
-	it('adds https:// to bare hostname', () => {
+	it('returns canonical logical key for bare public hostname', () => {
 		expect(normalizeClusterUrl('mycluster.kusto.windows.net'))
-			.toBe('https://mycluster.kusto.windows.net');
+			.toBe('mycluster');
 	});
 
-	it('preserves https:// prefix', () => {
+	it('maps https:// prefix to canonical logical key', () => {
 		expect(normalizeClusterUrl('https://mycluster.kusto.windows.net'))
-			.toBe('https://mycluster.kusto.windows.net');
+			.toBe('mycluster');
 	});
 
-	it('preserves http:// prefix', () => {
+	it('maps http:// prefix to canonical logical key', () => {
 		expect(normalizeClusterUrl('http://mycluster.kusto.windows.net'))
-			.toBe('http://mycluster.kusto.windows.net');
+			.toBe('mycluster');
 	});
 
-	it('lowercases the entire URL', () => {
+	it('lowercases the identity key', () => {
 		expect(normalizeClusterUrl('HTTPS://MyCluster.Kusto.Windows.Net'))
-			.toBe('https://mycluster.kusto.windows.net');
+			.toBe('mycluster');
 	});
 
 	it('strips trailing slashes', () => {
 		expect(normalizeClusterUrl('https://mycluster.kusto.windows.net/'))
-			.toBe('https://mycluster.kusto.windows.net');
+			.toBe('mycluster');
 	});
 
 	it('strips multiple trailing slashes', () => {
 		expect(normalizeClusterUrl('https://mycluster.kusto.windows.net///'))
-			.toBe('https://mycluster.kusto.windows.net');
+			.toBe('mycluster');
 	});
 
 	it('trims whitespace', () => {
 		expect(normalizeClusterUrl('  mycluster.kusto.windows.net  '))
-			.toBe('https://mycluster.kusto.windows.net');
+			.toBe('mycluster');
 	});
 
 	it('returns empty string for empty input', () => {
@@ -59,24 +59,23 @@ describe('normalizeClusterUrl', () => {
 		expect(normalizeClusterUrl('   ')).toBe('');
 	});
 
-	it('handles short names (no scheme, no domain)', () => {
-		expect(normalizeClusterUrl('help')).toBe('https://help');
+	it('handles short public names', () => {
+		expect(normalizeClusterUrl('help')).toBe('help');
 	});
 
 	it('handles regional cluster names', () => {
 		expect(normalizeClusterUrl('mycluster.westus.kusto.windows.net'))
-			.toBe('https://mycluster.westus.kusto.windows.net');
+			.toBe('mycluster.westus');
 	});
 
-	it('preserves path segments', () => {
-		// Some special Kusto endpoints may have path segments
+	it('ignores path segments for identity', () => {
 		expect(normalizeClusterUrl('https://mycluster.kusto.windows.net/v1'))
-			.toBe('https://mycluster.kusto.windows.net/v1');
+			.toBe('mycluster');
 	});
 
 	it('handles HTTPS with mixed case', () => {
 		expect(normalizeClusterUrl('HTTPS://Help.kusto.windows.net'))
-			.toBe('https://help.kusto.windows.net');
+			.toBe('help');
 	});
 
 	it('two URLs differing only in case normalize to the same value', () => {
@@ -94,6 +93,12 @@ describe('normalizeClusterUrl', () => {
 	it('two URLs where one has scheme and one does not normalize to the same value', () => {
 		const a = normalizeClusterUrl('https://mycluster.kusto.windows.net');
 		const b = normalizeClusterUrl('mycluster.kusto.windows.net');
+		expect(a).toBe(b);
+	});
+
+	it('regional short and full forms normalize to the same value', () => {
+		const a = normalizeClusterUrl('aoaiagents1.westus');
+		const b = normalizeClusterUrl('https://aoaiagents1.westus.kusto.windows.net');
 		expect(a).toBe(b);
 	});
 });

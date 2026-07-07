@@ -2,6 +2,7 @@ import * as vscode from 'vscode';
 import * as crypto from 'crypto';
 
 import { DatabaseSchemaIndex, KustoFunctionInfo } from './kustoClient';
+import { exportKustoClusterEndpoint, kustoClusterKey, kustoDatabaseKey } from '../shared/kustoClusterUrls';
 
 // Increment when the persisted schema JSON shape or semantics change.
 // Used to automatically refresh stale cache entries created by older extension versions.
@@ -45,6 +46,23 @@ export const getSchemaCacheFileUri = (globalStorageUri: vscode.Uri, cacheKey: st
 	return vscode.Uri.joinPath(getSchemaCacheDirUri(globalStorageUri), `${hash}.json`);
 };
 
+export const schemaCacheKey = (clusterUrl: unknown, database: unknown): string => {
+	return kustoDatabaseKey(clusterUrl, database);
+};
+
+export const getLegacySchemaCacheKeys = (clusterUrl: unknown, database: unknown): string[] => {
+	const db = String(database || '').trim();
+	const rawCluster = String(clusterUrl || '').trim();
+	if (!db || !rawCluster) return [];
+	const keys = [
+		schemaCacheKey(clusterUrl, db),
+		`${rawCluster}|${db}`,
+		`${rawCluster.replace(/\/+$/g, '')}|${db}`,
+		`${exportKustoClusterEndpoint(clusterUrl)}|${db}`,
+	].map(key => String(key || '').trim()).filter(Boolean);
+	return [...new Set(keys)];
+};
+
 export const readCachedSchemaFromDisk = async (
 	globalStorageUri: vscode.Uri,
 	cacheKey: string
@@ -61,6 +79,18 @@ export const readCachedSchemaFromDisk = async (
 	} catch {
 		return undefined;
 	}
+};
+
+export const readCachedSchemaFromDiskByCluster = async (
+	globalStorageUri: vscode.Uri,
+	clusterUrl: unknown,
+	database: unknown
+): Promise<CachedSchemaEntry | undefined> => {
+	for (const key of getLegacySchemaCacheKeys(clusterUrl, database)) {
+		const cached = await readCachedSchemaFromDisk(globalStorageUri, key);
+		if (cached?.schema) return cached;
+	}
+	return undefined;
 };
 
 export const writeCachedSchemaToDisk = async (
@@ -91,7 +121,8 @@ export const readAllCachedSchemasFromDisk = async (
 	filterClusterUrl?: string,
 	filterDatabase?: string
 ): Promise<Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>> => {
-	const results: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> = [];
+	const resultsByKey = new Map<string, { timestamp: number; value: { clusterUrl: string; database: string; tables: string[]; functions: string[] } }>();
+	const filterClusterKey = filterClusterUrl ? kustoClusterKey(filterClusterUrl) : '';
 	try {
 		const cacheDir = getSchemaCacheDirUri(globalStorageUri);
 		const files = await vscode.workspace.fs.readDirectory(cacheDir);
@@ -111,13 +142,18 @@ export const readAllCachedSchemasFromDisk = async (
 				if (!entryCluster || !entryDatabase) continue;
 
 				// Apply optional filters
-				if (filterClusterUrl && entryCluster.replace(/\/+$/, '').toLowerCase() !== filterClusterUrl.replace(/\/+$/, '').toLowerCase()) continue;
+				if (filterClusterKey && kustoClusterKey(entryCluster) !== filterClusterKey) continue;
 				if (filterDatabase && entryDatabase.toLowerCase() !== filterDatabase.toLowerCase()) continue;
 
 				const schema = parsed.schema;
 				const tables = schema.tables || [];
 				const functions = (schema.functions || []).map(f => typeof f === 'string' ? f : (f as { name?: string }).name || '').filter(Boolean);
-				results.push({ clusterUrl: entryCluster, database: entryDatabase, tables, functions });
+				const identityKey = schemaCacheKey(entryCluster, entryDatabase) || `${entryCluster.toLowerCase()}|${entryDatabase.toLowerCase()}`;
+				const timestamp = typeof parsed.timestamp === 'number' && isFinite(parsed.timestamp) ? parsed.timestamp : 0;
+				const existing = resultsByKey.get(identityKey);
+				if (!existing || timestamp >= existing.timestamp) {
+					resultsByKey.set(identityKey, { timestamp, value: { clusterUrl: entryCluster, database: entryDatabase, tables, functions } });
+				}
 			} catch {
 				// Skip invalid cache files
 			}
@@ -125,7 +161,7 @@ export const readAllCachedSchemasFromDisk = async (
 	} catch {
 		// Cache directory doesn't exist or can't be read
 	}
-	return results;
+	return Array.from(resultsByKey.values()).map(entry => entry.value);
 };
 
 export type SchemaSearchMatch = {

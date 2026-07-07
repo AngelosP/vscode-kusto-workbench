@@ -77,6 +77,7 @@ import { decideSchemaOperation } from '../shared/schema-decision';
 import { SchemaTracker } from '../shared/schema-tracker';
 import { extractCrossClusterRefs, getCrossClusterSchemaCheckDelay } from '../shared/cross-cluster-schema';
 import { buildKustoFunctionBodyFromOutputColumns, ensureKustoFunctionBodiesForSchema } from '../shared/kusto-function-output-schema';
+import { kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
 import {
 	connections,
 	monacoReadyPromise,
@@ -154,7 +155,7 @@ function __kustoGetSchemaContextForBox(boxId: string): { connectionId: string; d
 		if (!clusterUrl) {
 			return null;
 		}
-		return { connectionId, database, clusterUrl, schemaKey: `${clusterUrl}|${database}` };
+		return { connectionId, database, clusterUrl, schemaKey: kustoDatabaseKey(clusterUrl, database) };
 	} catch {
 		return null;
 	}
@@ -923,31 +924,7 @@ function __kustoNormalizeCrossClusterBoxId(boxId: any): string {
 }
 
 function __kustoNormalizeCrossClusterClusterName(clusterName: any): string {
-	const raw = String(clusterName || '').trim();
-	if (!raw) {
-		return '';
-	}
-	try {
-		const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
-		const u = new URL(withScheme);
-		let host = String(u.hostname || '').trim().toLowerCase();
-		if (host && !/\.kusto\./i.test(host)) {
-			host = `${host}.kusto.windows.net`;
-		}
-		return host;
-	} catch {
-		try {
-			const withScheme = /^https?:\/\//i.test(raw) ? raw : `https://${raw.replace(/^\/+/, '')}`;
-			const u = new URL(withScheme);
-			let host = String(u.hostname || '').trim().toLowerCase();
-			if (host && !/\.kusto\./i.test(host)) {
-				host = `${host}.kusto.windows.net`;
-			}
-			return host || raw.replace(/^https?:\/\//i, '').replace(/\/+$/g, '').toLowerCase();
-		} catch {
-			return raw.replace(/^https?:\/\//i, '').replace(/\/+$/g, '').toLowerCase();
-		}
-	}
+	return kustoClusterKey(clusterName);
 }
 
 function __kustoGetCrossClusterClusterAliases(clusterName: any, clusterUrl?: any): string[] {
@@ -1118,9 +1095,7 @@ async function __kustoAddDatabaseAliasesToWorker(worker: any, modelUri: string, 
 }
 
 function __kustoGetCrossClusterSchemaKey(clusterName: any, database: any): string {
-	const clusterKey = __kustoNormalizeCrossClusterClusterName(clusterName);
-	const databaseKey = String(database || '').trim().toLowerCase();
-	return clusterKey && databaseKey ? `${clusterKey}|${databaseKey}` : '';
+	return kustoDatabaseKey(clusterName, database);
 }
 
 function __kustoGetCrossClusterRequestBoxKey(boxId: any, clusterName: any, database: any): string {
@@ -1819,9 +1794,8 @@ function ensureMonaco() {
 										const modelCluster = __kustoModelClusterMap[uri];
 										const currentCluster = __kustoSchemaTracker.databaseInContext?.clusterUrl;
 										if (modelCluster && currentCluster) {
-											const normalizeUrl = (url: any) => url ? url.replace(/^https?:\/\//, '').replace(/\/$/, '').toLowerCase() : '';
-											const modelClusterNorm = normalizeUrl(modelCluster);
-											const currentClusterNorm = normalizeUrl(currentCluster);
+											const modelClusterNorm = kustoClusterKey(modelCluster);
+											const currentClusterNorm = kustoClusterKey(currentCluster);
 											if (modelClusterNorm !== currentClusterNorm) {
 												// This model belongs to a different cluster - suppress markers
 												return;
@@ -2152,16 +2126,10 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 						__kustoMonacoDatabaseInContextByModel[modelKey] = __kustoMonacoDatabaseInContextByModel[modelKey] || null;
 						__kustoMonacoInitializedByModel[modelKey] = !!__kustoMonacoInitializedByModel[modelKey];
 
-						const schemaKey = `${clusterUrl}|${database}`;
+						const schemaKey = kustoDatabaseKey(clusterUrl, database);
 						
 						// Normalize cluster URLs for comparison (used for marker clearing)
-						const normalizeClusterUrl = (url: any) => {
-							if (!url) return '';
-							let normalized = String(url).trim().toLowerCase();
-							normalized = normalized.replace(/^https?:\/\//, '');
-							normalized = normalized.replace(/\/+$/, '');
-							return normalized;
-						};
+						const normalizeClusterUrl = (url: any) => kustoClusterKey(url);
 
 						// ── Decision: delegated to the tested SchemaTracker ──
 						const { operation, alreadyLoaded } = __kustoSchemaTracker.decide(modelKey, clusterUrl, database, setAsContext, forceRefresh);
@@ -2410,13 +2378,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 					// Returns true if context switch succeeded, false otherwise
 __kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, modelUri = null) {
 						// Normalize cluster URLs for comparison
-						const normalizeClusterUrl = (url: any) => {
-							if (!url) return '';
-							let normalized = String(url).trim().toLowerCase();
-							normalized = normalized.replace(/^https?:\/\//, '');
-							normalized = normalized.replace(/\/+$/, '');
-							return normalized;
-						};
+						const normalizeClusterUrl = (url: any) => kustoClusterKey(url);
 						
 						const models = monaco?.editor?.getModels ? monaco.editor.getModels() : [];
 						if (!models || models.length === 0) {
@@ -2578,7 +2540,7 @@ const connectionId = __kustoGetConnectionId(ownerId);
 							// Get rawSchemaJson from the existing schema cache (schemaByBoxId)
 							const schema = typeof schemaByBoxId !== 'undefined' ? schemaByBoxId[boxId] : null;
 							const rawSchemaJson = schema && schema.rawSchemaJson ? schema.rawSchemaJson : null;
-							const schemaKey = `${clusterUrl}|${database}`;
+							const schemaKey = kustoDatabaseKey(clusterUrl, database);
 							const schemaSignature = schemaMetaByBoxId && schemaMetaByBoxId[boxId]
 								? schemaMetaByBoxId[boxId].schemaSignature
 								: undefined;

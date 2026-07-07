@@ -1,11 +1,12 @@
 import * as vscode from 'vscode';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
-import { getSchemaCacheDirUri, getSchemaCacheFileUri, readCachedSchemaFromDisk, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION } from './schemaCache';
+import { getSchemaCacheDirUri, getSchemaCacheFileUri, readCachedSchemaFromDiskByCluster, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey } from './schemaCache';
 import { countColumns } from './schemaIndexUtils';
 import type { SqlConnectionManager, SqlConnection } from './sqlConnectionManager';
 import type { SqlQueryClient } from './sqlClient';
 import { getSqlSchemaCacheDirUri, getSqlSchemaCacheFileUri, readCachedSqlSchemaFromDisk, sqlSchemaCacheKey, SQL_SCHEMA_CACHE_VERSION } from './sqlEditorSchema';
+import { kustoClusterKey } from '../shared/kustoClusterUrls';
 
 /**
  * Cached Values Viewer — uses Lit web components for the UI.
@@ -18,16 +19,7 @@ import { getSqlSchemaCacheDirUri, getSqlSchemaCacheFileUri, readCachedSqlSchemaF
  * Pure function — no side-effects.
  */
 export function getClusterCacheKey(clusterUrlRaw: string): string {
-	try {
-		let u = String(clusterUrlRaw || '').trim();
-		if (!u) return '';
-		if (!/^https?:\/\//i.test(u)) u = 'https://' + u;
-		const parsed = new URL(u);
-		const host = String(parsed.hostname || '').trim().toLowerCase();
-		return host || String(clusterUrlRaw || '').trim().toLowerCase();
-	} catch {
-		return String(clusterUrlRaw || '').trim().toLowerCase();
-	}
+	return kustoClusterKey(clusterUrlRaw);
 }
 
 /**
@@ -342,7 +334,7 @@ export class CachedValuesViewerV2 {
 			try { for (const c of connections) { if (c?.clusterUrl && this.getClusterCacheKey(c.clusterUrl) === clusterKey) { clusterUrl = String(c.clusterUrl || '').trim(); break; } } } catch { /* ignore */ }
 			if (!clusterUrl) clusterUrl = /^https?:\/\//i.test(clusterKey) ? clusterKey : `https://${clusterKey}`;
 			for (const db of dbs) {
-				const cacheKey = `${clusterUrl}|${db}`;
+				const cacheKey = schemaCacheKey(clusterUrl || clusterKey, db);
 				try { await vscode.workspace.fs.stat(getSchemaCacheFileUri(globalStorageUri, cacheKey)); cachedSchemaKeys.push(`kusto:${clusterKey}|${db}`); } catch { /* no file = not cached */ }
 			}
 		}
@@ -483,11 +475,10 @@ export class CachedValuesViewerV2 {
 				let clusterUrl = '';
 				try { const conns = this.connectionManager.getConnections(); for (const c of conns) { if (!c?.clusterUrl) continue; if (this.getClusterCacheKey(c.clusterUrl) === clusterKey) { clusterUrl = String(c.clusterUrl || '').trim(); break; } } } catch { clusterUrl = ''; }
 				if (!clusterUrl) clusterUrl = /^https?:\/\//i.test(clusterKey) ? clusterKey : `https://${clusterKey}`;
-				const cacheKey = `${clusterUrl}|${database}`;
 				let jsonText = '';
 				let ok = false;
 				try {
-					const cached = await readCachedSchemaFromDisk(this.context.globalStorageUri, cacheKey);
+					const cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, clusterUrl, database);
 					if (!cached?.schema) {
 						jsonText = JSON.stringify({ cluster: clusterUrl, database, error: 'No cached schema was found for this database. Try loading schema for autocomplete (or refresh schema), then try again.' }, null, 2);
 						ok = false;
@@ -519,7 +510,7 @@ export class CachedValuesViewerV2 {
 				try {
 					const result = await this.kustoClient.getDatabaseSchema(connection, database, true);
 					const schema = result.schema;
-					const cacheKey = `${clusterUrl}|${database}`;
+					const cacheKey = schemaCacheKey(clusterUrl, database);
 					const entry = { schema, timestamp: Date.now(), version: SCHEMA_CACHE_VERSION, clusterUrl, database };
 					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, entry);
 					const tablesCount = schema.tables?.length ?? 0;

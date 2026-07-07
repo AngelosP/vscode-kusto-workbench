@@ -102,15 +102,20 @@ describe('getClusterShortNameKey', () => {
 
 describe('getClusterCacheKey', () => {
 	it('standard URL → lowercase hostname', () => {
-		expect(getClusterCacheKey('https://mycluster.kusto.windows.net')).toBe('mycluster.kusto.windows.net');
+		expect(getClusterCacheKey('https://mycluster.kusto.windows.net')).toBe('mycluster');
 	});
 
 	it('mixed case + trailing slash → normalized', () => {
-		expect(getClusterCacheKey('HTTPS://MyCluster.KUSTO.Windows.NET/')).toBe('mycluster.kusto.windows.net');
+		expect(getClusterCacheKey('HTTPS://MyCluster.KUSTO.Windows.NET/')).toBe('mycluster');
 	});
 
 	it('no scheme → adds https:// first, then normalizes', () => {
-		expect(getClusterCacheKey('mycluster.kusto.windows.net')).toBe('mycluster.kusto.windows.net');
+		expect(getClusterCacheKey('mycluster.kusto.windows.net')).toBe('mycluster');
+	});
+
+	it('regional short and full public ADX host produce the same key', () => {
+		expect(getClusterCacheKey('aoaiagents1.westus')).toBe('aoaiagents1.westus');
+		expect(getClusterCacheKey('https://aoaiagents1.westus.kusto.windows.net')).toBe('aoaiagents1.westus');
 	});
 
 	it('empty input → empty string', () => {
@@ -358,7 +363,7 @@ describe('ConnectionService — getCachedDatabases', () => {
 		});
 		const svc = new ConnectionService(host as any);
 		const result = svc.getCachedDatabases();
-		expect(result['test.kusto.windows.net']).toEqual(['db1', 'db2']);
+		expect(result.test).toEqual(['db1', 'db2']);
 	});
 });
 
@@ -441,16 +446,16 @@ describe('ConnectionService — migrateCachedDatabasesToClusterKeys', () => {
 		const result = svc.migrateCachedDatabasesToClusterKeys({
 			'conn-1': ['db1', 'db2'],
 		});
-		expect(result['test.kusto.windows.net']).toEqual(['db1', 'db2']);
+		expect(result.test).toEqual(['db1', 'db2']);
 	});
 
-	it('preserves entries already keyed by cluster URL', () => {
+	it('canonicalizes entries already keyed by cluster URL', () => {
 		const host = makeMockHost();
 		const svc = new ConnectionService(host as any);
 		const result = svc.migrateCachedDatabasesToClusterKeys({
 			'test.kusto.windows.net': ['db1'],
 		});
-		expect(result['test.kusto.windows.net']).toEqual(['db1']);
+		expect(result.test).toEqual(['db1']);
 	});
 
 	it('merges databases when id key and cluster key map to same cluster', () => {
@@ -464,8 +469,18 @@ describe('ConnectionService — migrateCachedDatabasesToClusterKeys', () => {
 			'test.kusto.windows.net': ['db2'],
 		});
 		// Should merge and deduplicate
-		expect(result['test.kusto.windows.net']).toContain('db1');
-		expect(result['test.kusto.windows.net']).toContain('db2');
+		expect(result.test).toContain('db1');
+		expect(result.test).toContain('db2');
+	});
+
+	it('merges regional short and full host cache keys', () => {
+		const host = makeMockHost();
+		const svc = new ConnectionService(host as any);
+		const result = svc.migrateCachedDatabasesToClusterKeys({
+			'aoaiagents1.westus': ['prod'],
+			'aoaiagents1.westus.kusto.windows.net': ['Prod2'],
+		});
+		expect(result['aoaiagents1.westus']).toEqual(['prod', 'Prod2']);
 	});
 
 	it('deduplicates database names (case-insensitive)', () => {
@@ -474,7 +489,7 @@ describe('ConnectionService — migrateCachedDatabasesToClusterKeys', () => {
 		const result = svc.migrateCachedDatabasesToClusterKeys({
 			'test.kusto.windows.net': ['MyDB', 'mydb', 'MYDB'],
 		});
-		expect(result['test.kusto.windows.net']).toHaveLength(1);
+		expect(result.test).toHaveLength(1);
 	});
 
 	it('skips empty keys', () => {
@@ -485,7 +500,7 @@ describe('ConnectionService — migrateCachedDatabasesToClusterKeys', () => {
 			'test.kusto.windows.net': ['db2'],
 		});
 		expect(result['']).toBeUndefined();
-		expect(result['test.kusto.windows.net']).toEqual(['db2']);
+		expect(result.test).toEqual(['db2']);
 	});
 
 	it('handles empty input', () => {
@@ -508,6 +523,6 @@ describe('ConnectionService — migrateCachedDatabasesToClusterKeys', () => {
 		const result = svc.migrateCachedDatabasesToClusterKeys({
 			'test.kusto.windows.net': ['db1', '', '  ', 'db2'],
 		});
-		expect(result['test.kusto.windows.net']).toEqual(['db1', 'db2']);
+		expect(result.test).toEqual(['db1', 'db2']);
 	});
 });
