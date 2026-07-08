@@ -31,6 +31,7 @@ import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { createEmptyKqlxFile, stringifyKqlxFile, parseKqlxText, type KqlxFileV1 } from './kqlxFormat';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { STORAGE_KEYS } from './queryEditorTypes';
+import { SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from './schemaCache';
 
 import { stsProcessManagerSingleton } from './sql/stsProcessManager';
 
@@ -125,6 +126,9 @@ export function activate(context: vscode.ExtensionContext) {
 	const connectionManager = new ConnectionManager(context);
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
 		const testPrefix = 'E2E Identity Checklist';
+		const textDiagnosticsTestName = 'E2E Text Diagnostics Seed';
+		const textDiagnosticsTestCluster = 'https://kw-diagnostics-seed.kusto.windows.net';
+		const textDiagnosticsTestDatabase = 'SeedDb';
 		const testClusters = [
 			'https://identity-prod.kusto.windows.net',
 			'https://identity-nonprod.kusto.windows.net',
@@ -161,6 +165,42 @@ export function activate(context: vscode.ExtensionContext) {
 
 		context.subscriptions.push(
 			vscode.commands.registerCommand('kustoWorkbench.test.cleanupKustoIdentityChecklist', cleanupIdentityChecklistState),
+			vscode.commands.registerCommand('kustoWorkbench.test.seedKustoTextDiagnosticsState', async () => {
+				for (const connection of connectionManager.getConnections()) {
+					if (String(connection.name || '') === textDiagnosticsTestName || kustoClusterKey(connection.clusterUrl) === kustoClusterKey(textDiagnosticsTestCluster)) {
+						await connectionManager.removeConnection(connection.id);
+					}
+				}
+				const seedConnection = await connectionManager.addConnection({
+					name: textDiagnosticsTestName,
+					clusterUrl: textDiagnosticsTestCluster,
+					database: textDiagnosticsTestDatabase
+				});
+				await context.globalState.update(STORAGE_KEYS.lastConnectionId, seedConnection.id);
+				await context.globalState.update(STORAGE_KEYS.lastDatabase, textDiagnosticsTestDatabase);
+				await context.globalState.update('kusto.fileConnectionCache', {});
+				const cachedDatabases = context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases) || {};
+				cachedDatabases[kustoClusterKey(textDiagnosticsTestCluster)] = [textDiagnosticsTestDatabase];
+				await context.globalState.update(STORAGE_KEYS.cachedDatabases, cachedDatabases);
+				const schema = {
+					tables: ['KnownOnly'],
+					columnTypesByTable: {
+						KnownOnly: {
+							Timestamp: 'datetime',
+							Value: 'long'
+						}
+					}
+				};
+				const cacheKey = schemaCacheKey(textDiagnosticsTestCluster, textDiagnosticsTestDatabase);
+				await writeCachedSchemaToDisk(context.globalStorageUri, cacheKey, {
+					schema,
+					timestamp: Date.now(),
+					version: SCHEMA_CACHE_VERSION,
+					clusterUrl: textDiagnosticsTestCluster,
+					database: textDiagnosticsTestDatabase
+				});
+				return { connectionId: seedConnection.id, clusterUrl: textDiagnosticsTestCluster, database: textDiagnosticsTestDatabase };
+			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.seedKustoIdentityChecklist', async () => {
 				await cleanupIdentityChecklistState();
 				const seeds = [

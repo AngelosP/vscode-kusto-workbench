@@ -12,6 +12,7 @@ import {
 	pendingFavoriteSelectionByBoxId,
 	queryEditors,
 	schemaByBoxId,
+	schemaDiagnosticsTrustedByBoxId,
 	schemaFetchInFlightByBoxId,
 	lastSchemaRequestAtByBoxId,
 	schemaByConnDb,
@@ -578,6 +579,7 @@ export class QueryConnectionController implements ReactiveController {
 
 	onDatabaseChanged(): void {
 		const boxId = this.host.boxId;
+		const diagnosticsTrusted = schemaDiagnosticsTrustedByBoxId[boxId] !== false;
 		delete schemaByBoxId[boxId];
 		delete schemaMetaByBoxId[boxId];
 		delete pendingSchemaWorkerUpdateByBoxId[boxId];
@@ -593,14 +595,16 @@ export class QueryConnectionController implements ReactiveController {
 			if (!pState.restoreInProgress) {
 				const connectionId = this.host.getConnectionId();
 				const database = this.host.getDatabase();
-				postMessageToHost({
-					type: 'saveLastSelection',
-					connectionId: String(connectionId || ''),
-					database: String(database || '')
-				});
+				if (diagnosticsTrusted) {
+					postMessageToHost({
+						type: 'saveLastSelection',
+						connectionId: String(connectionId || ''),
+						database: String(database || '')
+					});
+				}
 			}
 		} catch (e) { console.error('[kusto]', e); }
-		if (!pState.restoreInProgress) {
+		if (!pState.restoreInProgress && diagnosticsTrusted) {
 			this.ensureSchema(false);
 		}
 		// Only set the database-in-context when the user actually interacts.
@@ -609,7 +613,7 @@ export class QueryConnectionController implements ReactiveController {
 		// async schema responses and the last to arrive wins — which may not
 		// be the section the user later clicks into.
 		try {
-			if (!pState.restoreInProgress && typeof (_win.__kustoUpdateSchemaForFocusedBox) === 'function') {
+			if (!pState.restoreInProgress && diagnosticsTrusted && typeof (_win.__kustoUpdateSchemaForFocusedBox) === 'function') {
 				_win.__kustoUpdateSchemaForFocusedBox(boxId);
 			}
 		} catch (e) { console.error('[kusto]', e); }

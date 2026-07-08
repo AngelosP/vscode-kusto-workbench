@@ -1763,14 +1763,6 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 	const connectionsForSections = [regional, shortConnection];
 	const fullQuery = `cluster('${E2E_KUSTO_IDENTITY_CHECKLIST.regionalKey}').database('${E2E_KUSTO_IDENTITY_CHECKLIST.database}').NeedleTable | take 1`;
 	const shortQuery = `cluster('${E2E_KUSTO_IDENTITY_CHECKLIST.regionalFullUrl}').database('${E2E_KUSTO_IDENTITY_CHECKLIST.database}').NeedleTable | take 1`;
-	const identityTables = {
-		NeedleTable: {
-			Id: 'string',
-			Timestamp: 'datetime',
-		},
-	};
-	const rawSchema = e2eBuildShowSchema(E2E_KUSTO_IDENTITY_CHECKLIST.database, identityTables);
-	const compactSchema = e2eCompactSchemaFromTables(identityTables, rawSchema);
 	const configure = async (section: any, connection: any, query: string) => {
 		section.setConnectionId?.(connection.id);
 		section.setDesiredClusterUrl?.(connection.clusterUrl);
@@ -1782,72 +1774,13 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 		if (!editor || typeof editor.setValue !== 'function') {
 			throw new Error(`Kusto editor missing for two-section alias diagnostics check: ${boxId || '<missing>'}`);
 		}
-		const modelUri = editor.getModel?.()?.uri?.toString?.() || '';
-		if (!modelUri) {
-			throw new Error(`Kusto model URI missing for two-section alias diagnostics check: ${boxId}`);
-		}
-		_win.schemaByBoxId = _win.schemaByBoxId || {};
-		_win.schemaMetaByBoxId = _win.schemaMetaByBoxId || {};
-		_win.schemaByConnDb = _win.schemaByConnDb || {};
-		_win.schemaMetaByConnDb = _win.schemaMetaByConnDb || {};
-		_win.schemaByBoxId[boxId] = compactSchema;
-		_win.schemaMetaByBoxId[boxId] = { fromCache: false, schemaSignature: 'e2e-identity-alias' };
-		_win.schemaByConnDb[`${connection.clusterUrl}|${E2E_KUSTO_IDENTITY_CHECKLIST.database}`] = compactSchema;
-		_win.schemaMetaByConnDb[`${connection.clusterUrl}|${E2E_KUSTO_IDENTITY_CHECKLIST.database}`] = { fromCache: false, schemaSignature: 'e2e-identity-alias' };
-		const canonicalSchemaKey = kustoDatabaseKey(connection.clusterUrl, E2E_KUSTO_IDENTITY_CHECKLIST.database);
-		if (canonicalSchemaKey) {
-			_win.schemaByConnDb[canonicalSchemaKey] = compactSchema;
-			_win.schemaMetaByConnDb[canonicalSchemaKey] = { fromCache: false, schemaSignature: 'e2e-identity-alias' };
-		}
-		if (typeof _win.__kustoSetMonacoKustoSchema !== 'function') {
-			throw new Error('__kustoSetMonacoKustoSchema is not available for identity alias diagnostics check');
-		}
-		const applied = await _win.__kustoSetMonacoKustoSchema(rawSchema, connection.clusterUrl, E2E_KUSTO_IDENTITY_CHECKLIST.database, true, modelUri, true);
-		if (!applied) {
-			throw new Error(`Identity alias schema did not apply to Monaco worker for ${boxId}`);
-		}
-		section.setSchemaInfo?.({ status: 'loaded', statusText: 'E2E identity alias schema loaded' });
 		editor.setValue(query);
 		section.requestUpdate?.();
 		await section.updateComplete;
 		return { boxId, query };
 	};
-	const markerSnapshot = (boxId: string) => {
-		const editor = boxId ? _win.queryEditors?.[boxId] as MonacoLike | undefined : undefined;
-		const model = editor?.getModel?.();
-		const monacoApi = _win.monaco;
-		const markers = monacoApi?.editor?.getModelMarkers && model?.uri
-			? (monacoApi.editor.getModelMarkers({ resource: model.uri }) || []).map((marker: any) => ({
-				owner: marker.owner,
-				severity: marker.severity,
-				message: String(marker.message || ''),
-				code: typeof marker.code === 'string' ? marker.code : marker.code?.value,
-				startLineNumber: marker.startLineNumber,
-				startColumn: marker.startColumn,
-				endLineNumber: marker.endLineNumber,
-				endColumn: marker.endColumn,
-			}))
-			: [];
-		const suspiciousDecorations = typeof model?.getAllDecorations === 'function'
-			? (model.getAllDecorations() || [])
-				.map((decoration: any) => ({
-					range: decoration.range,
-					className: decoration.options?.className || '',
-					inlineClassName: decoration.options?.inlineClassName || '',
-					glyphMarginClassName: decoration.options?.glyphMarginClassName || '',
-					hoverMessage: Array.isArray(decoration.options?.hoverMessage)
-						? decoration.options.hoverMessage.map((message: any) => String(message?.value || message || '')).join('\n')
-						: String(decoration.options?.hoverMessage?.value || decoration.options?.hoverMessage || ''),
-				}))
-				.filter((decoration: any) => /squigg|warning|error|marker|diagnostic|kusto/i.test(`${decoration.className} ${decoration.inlineClassName} ${decoration.glyphMarginClassName} ${decoration.hoverMessage}`))
-			: [];
-		return { markers, suspiciousDecorations };
-	};
 	const fullConfigured = await configure(fullSection, regional, fullQuery);
 	const shortConfigured = await configure(shortSection, shortConnection, shortQuery);
-	await e2eDelay(1200);
-	const fullMarkerSnapshot = markerSnapshot(fullConfigured.boxId);
-	const shortMarkerSnapshot = markerSnapshot(shortConfigured.boxId);
 	const refsFromFullSection = extractCrossClusterRefs(fullConfigured.query, {
 		clusterUrl: regional.clusterUrl,
 		database: E2E_KUSTO_IDENTITY_CHECKLIST.database,
@@ -1889,8 +1822,6 @@ async function e2eIdentityAssertTwoSectionAliasDiagnostics(regional: E2eIdentity
 		missingFromFullConnection,
 		missingFromShortConnection,
 		missingControl,
-		fullMarkerSnapshot,
-		shortMarkerSnapshot,
 	};
 }
 

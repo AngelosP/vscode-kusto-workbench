@@ -18,6 +18,7 @@ export const queryEditorVisibilityObservers: Record<string, any> = {};
 export const queryEditorVisibilityMutationObservers: Record<string, any> = {};
 export const queryEditorBoxByModelUri: Record<string, any> = {};
 export const schemaByBoxId: Record<string, any> = {};
+export const schemaDiagnosticsTrustedByBoxId: Record<string, boolean> = {};
 export const schemaFetchInFlightByBoxId: Record<string, any> = {};
 export const lastSchemaRequestAtByBoxId: Record<string, any> = {};
 export const qualifyTablesInFlightByBoxId: Record<string, any> = {};

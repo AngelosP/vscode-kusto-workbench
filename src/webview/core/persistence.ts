@@ -1228,10 +1228,11 @@ function applyKqlxState(state: any) {
 			}
 			const desiredClusterUrl = String(suggestedClusterUrl || '').trim();
 			const db = String(suggestedDatabase || '').trim();
-			const boxId = addQueryBox((desiredClusterUrl || db) ? {
+			const hasExplicitSelection = !!(desiredClusterUrl || db);
+			const boxId = addQueryBox(hasExplicitSelection ? {
 				clusterUrl: desiredClusterUrl,
 				database: db,
-			} : undefined);
+			} : { schemaDiagnosticsTrusted: false });
 			// Apply optional suggested cluster/db selection for compatibility-mode query docs.
 			try {
 				const kwEl = __kustoGetQuerySectionElement(boxId);

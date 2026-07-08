@@ -3,6 +3,13 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
+## [4.7.5] - 2026.07.08
+
+* First launch experience for configuring some key experience settings before your first edit.
+* Bugs
+    * Better handling of Kusto URIs that can all look different but point to the same cluster. Some of the formats work better than others when embedded into HTML and URIs.
+    * No more stale errors being reported for .kql or .csl files, which used to depend on a stale schema instead of the live connection.
+
 ## [4.7.4] - 2026.07.04
 
 * Improved 'file open' performance.
@@ -12,8 +19,8 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
     * Connection Manager would in certain cases require you to scroll before it would display the databases of the selected cluster (scroll view bug)
     * Adding / removing from favorites while files were open meant the files had to be re-opened before they saw the changes.
     * Renaming files but keeping most of the filename the same would cause weird situations where both files would appear side-by-side.
-    * Connection Manager: the text across a single row was not vertically aligned. 
-    * Connection Manager: fixed some scrollbar bugs. 
+    * Connection Manager: the text across a single row was not vertically aligned.
+    * Connection Manager: fixed some scrollbar bugs.
     * Kusto Editor: Schema auto-completion did not work for Kusto functions that returns tabular results.
 
 ## [4.7.3] - 2026.06.08

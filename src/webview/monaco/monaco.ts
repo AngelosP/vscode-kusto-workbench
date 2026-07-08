@@ -91,6 +91,7 @@ import {
 	queryEditors,
 	queryEditorBoxByModelUri,
 	schemaByBoxId,
+	schemaDiagnosticsTrustedByBoxId,
 	schemaMetaByBoxId,
 	schemaWorkerReadyByBoxId,
 	schemaWorkerReadyWaitersByBoxId,
@@ -2501,6 +2502,9 @@ const connectionId = __kustoGetConnectionId(ownerId);
 							// Only enable markers (red squiggles) if both cluster and database are selected.
 							// Without a full connection context, diagnostics would show false positives.
 							if (!connectionId || !database) {
+								return;
+							}
+							if (enableMarkers && schemaDiagnosticsTrustedByBoxId[boxId] === false) {
 								return;
 							}
 							

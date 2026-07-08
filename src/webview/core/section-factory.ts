@@ -19,6 +19,7 @@ import {
 	queryEditorVisibilityObservers,
 	queryEditorVisibilityMutationObservers,
 	schemaByBoxId,
+	schemaDiagnosticsTrustedByBoxId,
 	schemaMetaByBoxId,
 	pendingSchemaWorkerUpdateByBoxId,
 	schemaFetchInFlightByBoxId,
@@ -291,6 +292,8 @@ export function addQueryBox( options?: any) {
 	const defaultComparisonSummaryVisible = isComparison ? true : ((options && typeof options.defaultComparisonSummaryVisible === 'boolean') ? !!options.defaultComparisonSummaryVisible : true);
 	const defaultExpanded = (options && typeof options.expanded === 'boolean') ? !!options.expanded : true;
 	const afterBoxId = (options && options.afterBoxId) ? String(options.afterBoxId) : '';
+	const schemaDiagnosticsTrusted = !options || options.schemaDiagnosticsTrusted !== false;
+	schemaDiagnosticsTrustedByBoxId[id] = schemaDiagnosticsTrusted;
 
 	// Insert into queryBoxes array at the right position.
 	if (afterBoxId) {
@@ -395,6 +398,12 @@ export function addQueryBox( options?: any) {
 		kwEl.addEventListener('database-changed', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
+			try {
+				const source = String(detail.source || '');
+				if (source !== 'global-last' && source !== 'auto-single') {
+					schemaDiagnosticsTrustedByBoxId[boxId] = true;
+				}
+			} catch (e) { console.error('[kusto]', e); }
 			try { onDatabaseChanged(boxId); } catch (e) { console.error('[kusto]', e); }
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		});
@@ -1447,6 +1456,7 @@ export function removeQueryBox( boxId: any) {
 	// Remove from tracked list
 	setQueryBoxes(queryBoxes.filter((id: any) => id !== boxId));
 	try { delete lastQueryTextByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+	try { delete schemaDiagnosticsTrustedByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { delete missingClusterUrlsByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try {
 		if (missingClusterDetectTimersByBoxId && missingClusterDetectTimersByBoxId[boxId]) {

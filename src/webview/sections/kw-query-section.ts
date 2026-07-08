@@ -990,7 +990,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			this._desiredDatabase = '';
 			if (prev !== desiredDb) {
 				this.dispatchEvent(new CustomEvent('database-changed', {
-					detail: { boxId: this.boxId, database: desiredDb },
+					detail: { boxId: this.boxId, database: desiredDb, source: 'global-last' },
 					bubbles: true, composed: true,
 				}));
 			}
@@ -1002,7 +1002,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			this._desiredDatabase = '';
 			if (prev !== db) {
 				this.dispatchEvent(new CustomEvent('database-changed', {
-					detail: { boxId: this.boxId, database: db },
+					detail: { boxId: this.boxId, database: db, source: 'auto-single' },
 					bubbles: true, composed: true,
 				}));
 			}

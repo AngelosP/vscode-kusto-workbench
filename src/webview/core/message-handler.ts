@@ -60,6 +60,7 @@ import {
 	setCopilotInlineCompletionsEnabled,
 	queryEditors, cachedDatabases, optimizationMetadataByBoxId,
 	schemaByConnDb, schemaRequestResolversByBoxId, schemaByBoxId,
+	schemaDiagnosticsTrustedByBoxId,
 	schemaMetaByConnDb, schemaMetaByBoxId,
 	schemaFetchInFlightByBoxId, databasesRequestResolversByBoxId,
 	markSchemaWorkerApplyFailed, markSchemaWorkerApplyPending, markSchemaWorkerReady,
@@ -247,6 +248,9 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 	}
 
 	const isActiveBox = boxId === activeQueryEditorBoxId;
+	if (schemaDiagnosticsTrustedByBoxId[boxId] === false) {
+		return;
+	}
 	if (!isActiveBox && !isForceRefresh) {
 		return;
 	}
