@@ -2,6 +2,46 @@ import { describe, it, expect } from 'vitest';
 import { KqlLanguageService, _splitTopLevelStatements } from '../../../src/host/kqlLanguageService/service';
 
 describe('KQL diagnostics', () => {
+	it('does not report string words as unknown tables inside create-or-alter function bodies', () => {
+		const text = [
+			'// Shared function for getting the top-level error category',
+			'.create-or-alter function with',
+			'(',
+			'    folder = "FoundryToolkit",',
+			'    docstring = "Get the top-level error category of VS Code Foundry extension failures based on the detailed error message included in the raw telemetry."',
+			')',
+			'getFoundryTkErrorCategory',
+			'(',
+			'    errorMessage: string',
+			')',
+			'{',
+			'    let message = tolower(errorMessage);',
+			'    let is_packaging_failure = message contains "failed to create zip package" or message contains "failed to create tar.gz archive";',
+			'    case(',
+			'        message contains "unsupported region" or message contains "hosted agents not available",',
+			'            "Unsupported region or Hosted Agents not available",',
+			'        ((message contains "acr tasks requests") and (message contains "not permitted")) or ((message contains "failed to schedule acr build run") and (message contains "not permitted" or message contains "not allowed" or message contains "blocked")),',
+			'            "ACR Tasks build scheduling blocked",',
+			'        message contains "projectblocked" or message contains "blocked from accessing the agents service",',
+			'            "Project blocked from Agents service",',
+			'        "Uncategorized error (catch-all)"',
+			'    )',
+			'}',
+		].join('\n');
+
+		const schema: any = {
+			tables: ['KnownOnly'],
+			columnTypesByTable: { KnownOnly: { Timestamp: 'datetime' } }
+		};
+
+		const svc = new KqlLanguageService();
+		const diags = svc.getDiagnostics(text, schema);
+		const unknownTables = diags.filter((d) => d.code === 'KW_UNKNOWN_TABLE');
+		expect(unknownTables.some((d) => String(d.message || '').includes('`failed`'))).toBe(false);
+		expect(unknownTables.some((d) => String(d.message || '').includes('`accessing`'))).toBe(false);
+		expect(unknownTables.some((d) => String(d.message || '').includes('`Agents`'))).toBe(false);
+	});
+
 	it('does not flag closing brace/semicolon after pipe inside let body', () => {
 		const text = [
 			'let Base = () {',

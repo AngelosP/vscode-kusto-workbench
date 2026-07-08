@@ -1185,6 +1185,7 @@ export class KqlLanguageService {
 			const stmts = statements.length ? statements : [{ startOffset: 0, text: rawForParse }];
 			for (const st of stmts) {
 				const stmtText = String(st?.text ?? '');
+				if (isDotCommandStatement(stmtText)) continue;
 				const baseOffset = Number(st?.startOffset ?? 0) || 0;
 				for (const m of stmtText.matchAll(/\b(join|lookup|from)\b/gi)) {
 					const kw = String(m[1] || '').toLowerCase();
