@@ -3,7 +3,6 @@
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
-    And I capture the output channel "Kusto Workbench: Remote File"
     And I wait 2 seconds
 
   Scenario: Open a remote .sqlx file from GitHub via Open Remote File command

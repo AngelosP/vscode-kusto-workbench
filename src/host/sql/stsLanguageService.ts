@@ -3,6 +3,7 @@ import { StsProcessManager } from './stsProcessManager';
 import type { SqlConnection } from '../sqlConnectionManager';
 import type { SqlConnectionManager } from '../sqlConnectionManager';
 import { resolveSqlAadAccessToken } from './sqlAuthState';
+import type { WorkbenchLogger } from '../workbenchLogger';
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -131,7 +132,7 @@ export interface StsSignatureHelpResult {
 
 export class StsLanguageService {
 	private readonly _process: StsProcessManager;
-	private readonly _output: vscode.OutputChannel;
+	private readonly _output: WorkbenchLogger;
 	private readonly _connectionManager: SqlConnectionManager;
 	private readonly _context: vscode.ExtensionContext;
 	private readonly _docVersions = new Map<string, number>();
@@ -148,7 +149,7 @@ export class StsLanguageService {
 	private readonly _closedUris = new Set<string>();
 	private _diagnosticsHandler?: (event: StsDiagnosticsEvent) => void;
 
-	constructor(process: StsProcessManager, connectionManager: SqlConnectionManager, context: vscode.ExtensionContext, output: vscode.OutputChannel) {
+	constructor(process: StsProcessManager, connectionManager: SqlConnectionManager, context: vscode.ExtensionContext, output: WorkbenchLogger) {
 		this._process = process;
 		this._connectionManager = connectionManager;
 		this._context = context;
@@ -157,10 +158,10 @@ export class StsLanguageService {
 		// Subscribe to connection completion notifications
 		this._process.onNotification('connection/complete', (params: any) => {
 			const uri = String(params?.ownerUri || '');
-			this._output.appendLine(`[sts-diag] connection/complete uri=${uri} connectionId=${params?.connectionId || '(none)'} error=${params?.errorMessage || '(none)'}`);
+			this._output.info(`[sts-diag] connection/complete uri=${uri} connectionId=${params?.connectionId || '(none)'} error=${params?.errorMessage || '(none)'}`);
 			const pending = this._pendingConnections.get(uri);
 			if (!pending) {
-				this._output.appendLine(`[sts-diag] connection/complete: no pending connection for uri=${uri} (pending: ${[...this._pendingConnections.keys()].join(', ')})`);
+				this._output.warn(`[sts-diag] connection/complete: no pending connection for uri=${uri} (pending: ${[...this._pendingConnections.keys()].join(', ')})`);
 				return;
 			}
 			this._pendingConnections.delete(uri);
@@ -176,7 +177,7 @@ export class StsLanguageService {
 		// Subscribe to IntelliSense-ready notifications — STS sends this after the schema cache is populated.
 		this._process.onNotification('textDocument/intelliSenseReady', (params: any) => {
 			const uri = String(params?.ownerUri || '');
-			this._output.appendLine(`[sts-diag] intelliSenseReady uri=${uri}`);
+			this._output.info(`[sts-diag] intelliSenseReady uri=${uri}`);
 			const pending = this._intelliSenseReadyByUri.get(uri);
 			if (pending) {
 				clearTimeout(pending.timer);
@@ -192,7 +193,7 @@ export class StsLanguageService {
 			const boxId = this._uriToBoxId(uri);
 			if (!boxId) return;
 			if (this._closedUris.has(uri) || this._documentUriByBoxId.get(boxId) !== uri) {
-				this._output.appendLine(`[sts-diag] publishDiagnostics ignored stale uri=${uri} boxId=${boxId}`);
+				this._output.info(`[sts-diag] publishDiagnostics ignored stale uri=${uri} boxId=${boxId}`);
 				return;
 			}
 
@@ -268,7 +269,7 @@ export class StsLanguageService {
 		this._documentUriByBoxId.set(boxId, uri);
 		this._closedUris.delete(uri);
 		this._docVersions.set(boxId, 1);
-		this._output.appendLine(`[sts-diag] reopenDocument boxId=${boxId} uri=${uri} textLen=${text.length}`);
+		this._output.info(`[sts-diag] reopenDocument boxId=${boxId} uri=${uri} textLen=${text.length}`);
 		this._process.sendNotification('textDocument/didOpen', {
 			textDocument: { uri, languageId: 'sql', version: 1, text },
 		});
@@ -294,7 +295,7 @@ export class StsLanguageService {
 		const uri = this._nextDocumentUri(boxId);
 		this._documentUriByBoxId.set(boxId, uri);
 		this._docTextByBoxId.set(boxId, text);
-		this._output.appendLine(`[sts-diag] openDocument boxId=${boxId} uri=${uri} textLen=${text.length}`);
+		this._output.info(`[sts-diag] openDocument boxId=${boxId} uri=${uri} textLen=${text.length}`);
 		this._closedUris.delete(uri);
 		this._docVersions.set(boxId, 1);
 		this._process.sendNotification('textDocument/didOpen', {
@@ -338,7 +339,7 @@ export class StsLanguageService {
 		const existing = this._connectOperationsByUri.get(uri);
 		if (existing) {
 			if (existing.key === key) {
-				this._output.appendLine(`[sts-diag] connectDocument boxId=${boxId} → duplicate connect joined`);
+				this._output.info(`[sts-diag] connectDocument boxId=${boxId} → duplicate connect joined`);
 				return existing.promise;
 			}
 			uri = this._replaceDocumentUri(boxId, uri);
@@ -385,12 +386,12 @@ export class StsLanguageService {
 
 		try {
 			const params: StsConnectParams = { ownerUri: uri, connection: { options } };
-			this._output.appendLine(`[sts-diag] connectDocument boxId=${boxId} → ${connection.serverUrl}/${database} (auth=${options.authenticationType})`);
+			this._output.info(`[sts-diag] connectDocument boxId=${boxId} → ${connection.serverUrl}/${database} (auth=${options.authenticationType})`);
 			await this._process.sendRequest<boolean>('connection/connect', params);
 			this._assertCurrentOperation(uri, key);
 			await connectPromise;
 			this._assertCurrentOperation(uri, key);
-			this._output.appendLine(`[sts-diag] connectDocument boxId=${boxId} → CONNECTED, waiting for schema cache...`);
+			this._output.info(`[sts-diag] connectDocument boxId=${boxId} → CONNECTED, waiting for schema cache...`);
 
 			// Wait for STS to load the database schema (intelliSenseReady).
 			// Without this, completions return only SQL keywords — no tables/columns.
@@ -401,14 +402,14 @@ export class StsLanguageService {
 					return;
 				}
 				const timer = setTimeout(() => {
-					this._output.appendLine(`[sts-diag] connectDocument boxId=${boxId} → intelliSenseReady timeout (120s), proceeding anyway`);
+					this._output.warn(`[sts-diag] connectDocument boxId=${boxId} → intelliSenseReady timeout (120s), proceeding anyway`);
 					this._intelliSenseReadyByUri.delete(uri);
 					resolve();
 				}, 120000);
 				this._intelliSenseReadyByUri.set(uri, { resolve, timer });
 			});
 			this._assertCurrentOperation(uri, key);
-			this._output.appendLine(`[sts-diag] connectDocument boxId=${boxId} → READY (schema loaded)`);
+			this._output.info(`[sts-diag] connectDocument boxId=${boxId} → READY (schema loaded)`);
 		} catch (err) {
 			const error = err instanceof Error ? err : new Error(String(err));
 			if (pendingEntry && this._pendingConnections.get(uri) === pendingEntry) {
@@ -425,15 +426,15 @@ export class StsLanguageService {
 		const uri = this._boxIdToUri(boxId);
 		const pending = this._connectPromiseByUri.get(uri);
 		if (!pending) return;
-		this._output.appendLine(`[sts-diag] _waitForConnection boxId=${boxId} — waiting for pending connect...`);
+		this._output.info(`[sts-diag] _waitForConnection boxId=${boxId} — waiting for pending connect...`);
 		try {
 			await Promise.race([
 				pending,
 				new Promise<void>((_, reject) => setTimeout(() => reject(new Error('wait timeout')), 15000)),
 			]);
-			this._output.appendLine(`[sts-diag] _waitForConnection boxId=${boxId} — done`);
+			this._output.info(`[sts-diag] _waitForConnection boxId=${boxId} — done`);
 		} catch {
-			this._output.appendLine(`[sts-diag] _waitForConnection boxId=${boxId} — timed out or failed`);
+			this._output.warn(`[sts-diag] _waitForConnection boxId=${boxId} — timed out or failed`);
 		}
 	}
 
@@ -469,7 +470,7 @@ export class StsLanguageService {
 
 	async getCompletions(boxId: string, line: number, column: number): Promise<StsCompletionResult> {
 		const uri = this._boxIdToUri(boxId);
-		this._output.appendLine(`[sts-diag] getCompletions boxId=${boxId} uri=${uri} L${line}:${column}`);
+		this._output.info(`[sts-diag] getCompletions boxId=${boxId} uri=${uri} L${line}:${column}`);
 		await this._waitForConnection(boxId);
 		try {
 			const result = await this._process.sendRequest<{ items?: StsCompletionItem[] } | StsCompletionItem[] | null>(
@@ -481,7 +482,7 @@ export class StsLanguageService {
 			);
 
 			const items = Array.isArray(result) ? result : (result?.items || []);
-			this._output.appendLine(`[sts-diag] getCompletions response boxId=${boxId} rawItems=${items.length} first=${items[0]?.label || '(none)'}`);
+			this._output.info(`[sts-diag] getCompletions response boxId=${boxId} rawItems=${items.length} first=${items[0]?.label || '(none)'}`);
 			return {
 				items: items.map(item => ({
 					label: typeof item.label === 'string' ? item.label : String(item.label),
@@ -494,7 +495,7 @@ export class StsLanguageService {
 				})),
 			};
 		} catch (err) {
-			this._output.appendLine(`[sts] Completion error: ${err instanceof Error ? err.message : String(err)}`);
+			this._output.error(`[sts] Completion error: ${err instanceof Error ? err.message : String(err)}`);
 			return { items: [] };
 		}
 	}
@@ -527,7 +528,7 @@ export class StsLanguageService {
 			}
 			return hoverResult;
 		} catch (err) {
-			this._output.appendLine(`[sts] Hover error: ${err instanceof Error ? err.message : String(err)}`);
+			this._output.error(`[sts] Hover error: ${err instanceof Error ? err.message : String(err)}`);
 			return null;
 		}
 	}
@@ -559,7 +560,7 @@ export class StsLanguageService {
 				activeParameter: result.activeParameter ?? 0,
 			};
 		} catch (err) {
-			this._output.appendLine(`[sts] SignatureHelp error: ${err instanceof Error ? err.message : String(err)}`);
+			this._output.error(`[sts] SignatureHelp error: ${err instanceof Error ? err.message : String(err)}`);
 			return null;
 		}
 	}

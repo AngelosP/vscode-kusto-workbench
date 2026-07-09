@@ -36,7 +36,13 @@ function createMockConnectionManager(): SqlConnectionManager {
 
 function createMockOutput(): any {
 	return {
-		appendLine: vi.fn(),
+		trace: vi.fn(),
+		debug: vi.fn(),
+		info: vi.fn(),
+		warn: vi.fn(),
+		error: vi.fn(),
+		log: vi.fn(),
+		show: vi.fn(),
 	};
 }
 

@@ -11,6 +11,7 @@ import {
 	type TutorialSummaryContent,
 	type TutorialViewerStatus,
 } from '../../shared/tutorials/tutorialCatalog';
+import { getWorkbenchLogger } from '../workbenchLogger';
 
 const DEFAULT_CATALOG_URL = 'https://raw.githubusercontent.com/AngelosP/vscode-kusto-workbench/main/media/tutorials/catalog.v1.json';
 const CATALOG_CACHE_FILE = 'catalog-cache.v1.json';
@@ -211,7 +212,7 @@ export class TutorialCatalogService {
 			return await this.fetchCatalog(settings.catalogUrl, cached?.validation.catalog ? cached.validation : null);
 		} catch (error) {
 			const message = `Could not refresh tutorial catalog from ${redactTutorialUrl(settings.catalogUrl)}: ${this.messageFromError(error)}`;
-			console.warn(`[Kusto Workbench] ${message}`);
+			getWorkbenchLogger().warn(`[Kusto Workbench] ${message}`);
 			if (cached) {
 				return { ...cached, stale: true, errors: [...cached.errors, message] };
 			}
@@ -283,7 +284,7 @@ export class TutorialCatalogService {
 			};
 		} catch (error) {
 			const message = `Could not load local development tutorial catalog from ${catalogUri.fsPath || catalogUri.toString()}: ${this.messageFromError(error)}`;
-			console.warn(`[Kusto Workbench] ${message}`);
+			getWorkbenchLogger().warn(`[Kusto Workbench] ${message}`);
 			return this.unavailableCatalog([message], catalogUri.toString());
 		}
 	}

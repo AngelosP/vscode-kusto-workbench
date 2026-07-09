@@ -31,6 +31,7 @@ import {
 	type KustoFavorite,
 	type SqlFavorite,
 } from './connectionManagerFavorites';
+import { getWorkbenchLogger } from './workbenchLogger';
 
 /**
  * Connection Manager Viewer — Lit web components edition.
@@ -337,7 +338,7 @@ export class ConnectionManagerViewerV2 {
 			await this.panel.webview.postMessage({ type: 'snapshot', snapshot });
 		} catch (error) {
 			// Ignore transient panel lifecycle races (dispose/reveal ordering), but keep diagnostics.
-			console.warn('[kusto] connection manager snapshot refresh failed', error);
+			getWorkbenchLogger().warn('[kusto] connection manager snapshot refresh failed', error);
 		}
 	}
 
@@ -1162,7 +1163,7 @@ export class ConnectionManagerViewerV2 {
 			if (!signal.aborted) sendResults([], true);
 		} catch (error) {
 			if (!signal.aborted) {
-				console.warn('[kusto] search error', error);
+				getWorkbenchLogger().warn('[kusto] search error', error);
 				sendResults([], true);
 			}
 		} finally {

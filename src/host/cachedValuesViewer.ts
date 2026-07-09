@@ -7,6 +7,7 @@ import type { SqlConnectionManager, SqlConnection } from './sqlConnectionManager
 import type { SqlQueryClient } from './sqlClient';
 import { getSqlSchemaCacheDirUri, getSqlSchemaCacheFileUri, readCachedSqlSchemaFromDisk, sqlSchemaCacheKey, SQL_SCHEMA_CACHE_VERSION } from './sqlEditorSchema';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import { getWorkbenchLogger } from './workbenchLogger';
 
 /**
  * Cached Values Viewer — uses Lit web components for the UI.
@@ -368,7 +369,7 @@ export class CachedValuesViewerV2 {
 			await this.panel.webview.postMessage({ type: 'snapshot', snapshot });
 		} catch (error) {
 			// Ignore transient panel lifecycle races (dispose/reveal ordering), but keep diagnostics.
-			console.warn('[kusto] cached values snapshot refresh failed', error);
+			getWorkbenchLogger().warn('[kusto] cached values snapshot refresh failed', error);
 		}
 	}
 

@@ -14,6 +14,7 @@ import {
 	CachedSchemaEntry,
 	IncomingWebviewMessage
 } from './queryEditorTypes';
+import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
 
 export let testIsolateKustoConnections = false;
 
@@ -80,7 +81,7 @@ export interface ConnectionServiceHost {
 	readonly sqlConnectionManager?: { getConnection(id: string): { name?: string; serverUrl?: string } | undefined };
 	readonly context: vscode.ExtensionContext;
 	readonly kustoClient: KustoQueryClient;
-	readonly output: vscode.OutputChannel;
+	readonly output: WorkbenchLogger;
 	postMessage(message: unknown): Thenable<boolean> | PromiseLike<boolean> | void;
 	formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, database?: string): string;
 	normalizeClusterUrlKey(url: string): string;
@@ -194,12 +195,12 @@ export class ConnectionService {
 		for (const listener of ConnectionService.kustoFavoritesListeners) {
 			try {
 				void Promise.resolve(listener(context)).catch((error: unknown) => {
-					try { console.warn('[kusto] Failed to notify Kusto favorites listener', error); } catch {
+					try { getWorkbenchLogger().warn('[favorites] Failed to notify Kusto favorites listener', error); } catch {
 						// ignore logging failures
 					}
 				});
 			} catch (error) {
-				try { console.warn('[kusto] Failed to notify Kusto favorites listener', error); } catch {
+				try { getWorkbenchLogger().warn('[favorites] Failed to notify Kusto favorites listener', error); } catch {
 					// ignore logging failures
 				}
 			}
@@ -223,7 +224,7 @@ export class ConnectionService {
 	}
 
 	private logFavoritesBroadcastError(error: unknown): void {
-		try { this.host.output.appendLine(`[favorites] Failed to broadcast favoritesData: ${error instanceof Error ? error.message : String(error)}`); } catch {
+		try { this.host.output.warn(`[favorites] Failed to broadcast favoritesData: ${error instanceof Error ? error.message : String(error)}`); } catch {
 			// ignore logging failures
 		}
 	}
@@ -369,7 +370,7 @@ export class ConnectionService {
 		try {
 			await this.sendSqlFavoritesData(boxId);
 		} catch (error) {
-			try { this.host.output.appendLine(`[favorites] Failed to send sqlFavoritesData: ${error instanceof Error ? error.message : String(error)}`); } catch {
+			try { this.host.output.warn(`[favorites] Failed to send sqlFavoritesData: ${error instanceof Error ? error.message : String(error)}`); } catch {
 				// ignore logging failures
 			}
 		}

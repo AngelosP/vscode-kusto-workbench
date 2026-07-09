@@ -46,7 +46,7 @@ function createService(connection: KustoConnection) {
 		} as any,
 		kustoClient: { getDatabaseSchema } as any,
 		connectionManager: { getConnections: vi.fn(() => [connection]) } as any,
-		output: { appendLine: vi.fn() } as any,
+		output: { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() } as any,
 		postMessage: (message: unknown) => { messages.push(message); },
 		formatQueryExecutionErrorForUser: (error: unknown) => String(error),
 		findConnection: vi.fn(),

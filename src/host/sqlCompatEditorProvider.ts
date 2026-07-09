@@ -9,6 +9,8 @@ import { parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } f
 import { renderDiffInWebview } from './diffViewerUtils';
 import { normalizeSection, computeChangedSections, formatSectionDiffContent, KqlxEditorProvider } from './kqlxEditorProvider';
 import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
+import { getWorkbenchLogger } from './workbenchLogger';
+import { createFileOpenTrace } from './fileOpenTrace';
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
@@ -159,7 +161,9 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		webviewPanel: vscode.WebviewPanel,
 		_token: vscode.CancellationToken
 	): Promise<void> {
+		const fileOpenTrace = createFileOpenTrace('sqlCompat', { scheme: document.uri.scheme, path: document.uri.path, visible: webviewPanel.visible, active: webviewPanel.active });
 		const diffContext = this.detectDiffContext(document);
+		fileOpenTrace.mark('diffContext.detected', { isDiff: diffContext.isDiff, hasOriginalUri: !!diffContext.originalUri });
 		if (diffContext.isDiff && diffContext.originalUri) {
 			await renderDiffInWebview(webviewPanel, this.extensionUri, diffContext.originalUri);
 			return;
@@ -171,8 +175,10 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			enableScripts: true,
 			localResourceRoots: [this.extensionUri]
 		};
+		fileOpenTrace.mark('webview.options.set');
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.editorCursorStatusBar);
+		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
 		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
 		const queuedWebviewMessages: IncomingWebviewMessage[] = [];
@@ -180,13 +186,17 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			if (!message || typeof message.type !== 'string') {
 				return;
 			}
+			fileOpenTrace.mark('webview.message.received', { type: message.type, handlerReady: !!handleIncomingWebviewMessage, queued: queuedWebviewMessages.length });
 			if (!handleIncomingWebviewMessage) {
 				queuedWebviewMessages.push(message);
+				fileOpenTrace.mark('webview.message.queued', { type: message.type, queued: queuedWebviewMessages.length });
 				return;
 			}
 			return handleIncomingWebviewMessage(message);
 		});
+		fileOpenTrace.mark('initializeWebviewPanel.start');
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
+		fileOpenTrace.mark('initializeWebviewPanel.done');
 
 		// Sidecar support: if there is a sibling .sql.json file that links back to this .sql,
 		// use it to store multi-section metadata while keeping the SQL text in the plain file.
@@ -339,8 +349,10 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 		const postDocument = (options?: { forceReload?: boolean }) => {
 			const forceReload = options?.forceReload ?? false;
+			fileOpenTrace.mark('postDocument.start', { forceReload, sidecarEnabled: !!sidecarFile });
 			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
 			const sqlText = document.getText();
+			fileOpenTrace.mark('postDocument.documentText.read', { length: sqlText.length });
 			const sidecarEnabled = !!sidecarFile;
 			const sidecarName = getSidecarDisplayName();
 			let state: KqlxStateV1;
@@ -380,6 +392,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				htmlPowerBiCompatibilityCheckEnabled,
 				state
 			});
+			fileOpenTrace.mark('postDocument.documentData.posted', { sections: state.sections.length, sidecarEnabled, forceReload });
 		};
 
 		// Track if the webview has initialized and whether it's currently being edited by the user.
@@ -501,9 +514,11 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			}
 			switch (message.type) {
 				case 'requestDocument':
+					fileOpenTrace.mark('requestDocument.received');
 					postPersistenceMode();
 					postDocument({ forceReload: true });
 					webviewInitialized = true;
+					fileOpenTrace.mark('requestDocument.completed');
 					return;
 				case 'requestUpgradeToSqlx': {
 					const addKind = (message && typeof message.addKind === 'string') ? message.addKind : '';
@@ -678,7 +693,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 							);
 						}
 					} catch (err) {
-						console.error('[kusto] showSectionDiff error:', err);
+							getWorkbenchLogger().error('[kusto] showSectionDiff error:', err instanceof Error ? err : String(err));
 					}
 					return;
 				}
@@ -688,6 +703,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		};
 
 		for (const queuedMessage of queuedWebviewMessages.splice(0)) {
+			fileOpenTrace.mark('webview.message.flushQueued', { type: queuedMessage.type });
 			await handleIncomingWebviewMessage(queuedMessage);
 		}
 	}

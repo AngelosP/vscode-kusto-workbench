@@ -10,6 +10,8 @@ import { renderDiffInWebview, DIFF_NOISE_KEYS, COMPARISON_NOISE_KEYS } from './d
 import type { SectionChangeInfo } from './queryEditorTypes';
 import { perfBegin, perfMark } from './perfTrace';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import { getWorkbenchLogger } from './workbenchLogger';
+import { createFileOpenTrace } from './fileOpenTrace';
 
 
 const normalizeClusterUrlKey = (url: string): string => {
@@ -548,6 +550,13 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		_token: vscode.CancellationToken
 	): Promise<void> {
 		const documentKindForPerf = KqlxEditorProvider.getDocumentKind(document);
+		const fileOpenTrace = createFileOpenTrace('kqlx', {
+			documentKind: documentKindForPerf,
+			scheme: document.uri.scheme,
+			path: document.uri.path,
+			visible: webviewPanel.visible,
+			active: webviewPanel.active,
+		});
 		perfBegin('host.kqlx.resolve', {
 			documentKind: documentKindForPerf,
 			scheme: document.uri.scheme,
@@ -557,6 +566,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		// VS Code uses special URI schemes for source control diffs (e.g., 'git', 'gitfs').
 		// When in diff mode, render our Monaco-based diff viewer directly in this webview.
 		const diffContext = this.detectDiffContext(document);
+		fileOpenTrace.mark('diffContext.detected', { isDiff: diffContext.isDiff, hasOriginalUri: !!diffContext.originalUri });
 		if (diffContext.isDiff && diffContext.originalUri) {
 			// This is the "original" side (git: scheme) of a diff view.
 			// Render a Monaco-based diff viewer showing original vs working copy.
@@ -586,8 +596,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			enableScripts: true,
 			localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean) as vscode.Uri[]
 		};
+		fileOpenTrace.mark('webview.options.set', { localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean).length });
 
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.editorCursorStatusBar);
+		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
 		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
 		const queuedWebviewMessages: IncomingWebviewMessage[] = [];
@@ -595,13 +607,17 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (!message || typeof message.type !== 'string') {
 				return;
 			}
+			fileOpenTrace.mark('webview.message.received', { type: message.type, handlerReady: !!handleIncomingWebviewMessage, queued: queuedWebviewMessages.length });
 			if (!handleIncomingWebviewMessage) {
 				queuedWebviewMessages.push(message);
+				fileOpenTrace.mark('webview.message.queued', { type: message.type, queued: queuedWebviewMessages.length });
 				return;
 			}
 			return handleIncomingWebviewMessage(message);
 		});
+		fileOpenTrace.mark('initializeWebviewPanel.start');
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
+		fileOpenTrace.mark('initializeWebviewPanel.done');
 
 		perfMark('host.kqlx.webviewInitialized');
 		const documentKind = documentKindForPerf;
@@ -946,14 +962,17 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const postDocument = async (options?: { forceReload?: boolean }) => {
 			const forceReload = options?.forceReload ?? false;
 			perfMark('host.kqlx.postDocument.start', { forceReload });
+			fileOpenTrace.mark('postDocument.start', { forceReload });
 			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
 			const rawText = document.getText();
 			perfMark('host.kqlx.documentText.read', { length: rawText.length });
+			fileOpenTrace.mark('postDocument.documentText.read', { length: rawText.length });
 			const parsed = parseKqlxText(rawText, {
 				allowedKinds: ['kqlx', 'mdx', 'sqlx'],
 				defaultKind: documentKind
 			});
 			perfMark('host.kqlx.parse.done', { ok: parsed.ok });
+			fileOpenTrace.mark('postDocument.parse.done', { ok: parsed.ok });
 			if (!parsed.ok) {
 				void webviewPanel.webview.postMessage({
 					type: 'documentData',
@@ -964,13 +983,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					htmlPowerBiCompatibilityCheckEnabled,
 					state: createEmptyKqlxFile().state
 				});
+				fileOpenTrace.mark('postDocument.documentData.posted', { ok: false, forceReload });
 				return;
 			}
 
 			const sanitizedState = sanitizeStateForKind(documentKind, parsed.file.state);
 			perfMark('host.kqlx.sanitize.done', { sections: Array.isArray(sanitizedState.sections) ? sanitizedState.sections.length : 0 });
+			fileOpenTrace.mark('postDocument.sanitize.done', { sections: Array.isArray(sanitizedState.sections) ? sanitizedState.sections.length : 0 });
 			const hydratedState = await injectLinkedQueryText(sanitizedState);
 			perfMark('host.kqlx.injectLinkedQuery.done', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
+			fileOpenTrace.mark('postDocument.injectLinkedQuery.done', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
 
 			void webviewPanel.webview.postMessage({
 				type: 'documentData',
@@ -981,13 +1003,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				state: hydratedState
 			});
 			perfMark('host.kqlx.documentData.posted', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
+			fileOpenTrace.mark('postDocument.documentData.posted', { ok: true, forceReload, sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
 
 			void (async () => {
 				let connectionsChanged = false;
 				try {
 					perfMark('host.kqlx.ensureConnections.start');
+					fileOpenTrace.mark('ensureConnections.start');
 					connectionsChanged = await ensureConnectionsForState(hydratedState);
 					perfMark('host.kqlx.ensureConnections.done', { connectionsChanged });
+					fileOpenTrace.mark('ensureConnections.done', { connectionsChanged });
 				} catch {
 					// ignore
 				}
@@ -1116,12 +1141,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			switch (message.type) {
 				case 'requestDocument':
 					perfMark('host.kqlx.requestDocument.received');
+					fileOpenTrace.mark('requestDocument.received');
 					// Re-send mode/capabilities in response to a request (the webview is guaranteed to be listening).
 					postPersistenceMode();
 					// Only load from disk when explicitly requested by the webview.
 					await postDocument();
 					webviewInitialized = true;
 					perfMark('host.kqlx.requestDocument.completed');
+					fileOpenTrace.mark('requestDocument.completed');
 
 					// If we were upgraded and a specific "add" action triggered the upgrade,
 					// deliver that intent now (after the webview has definitely attached its message listener).
@@ -1556,7 +1583,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							);
 						}
 					} catch (err) {
-						console.error('[kusto] showSectionDiff error:', err);
+							getWorkbenchLogger().error('[kusto] showSectionDiff error:', err instanceof Error ? err : String(err));
 					}
 					return;
 				}
@@ -1568,6 +1595,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 
 		for (const queuedMessage of queuedWebviewMessages.splice(0)) {
+			fileOpenTrace.mark('webview.message.flushQueued', { type: queuedMessage.type });
 			await handleIncomingWebviewMessage(queuedMessage);
 		}
 

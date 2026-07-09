@@ -70,7 +70,7 @@ function createProviderHarness() {
 	provider.buildCacheDirective = vi.fn(() => '');
 	provider.logQueryExecutionError = vi.fn();
 	provider.formatQueryExecutionErrorForUser = vi.fn((error: unknown) => error instanceof Error ? error.message : String(error));
-	provider.output = { appendLine: vi.fn() };
+	provider.output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() };
 	return provider;
 }
 

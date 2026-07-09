@@ -143,6 +143,7 @@ export type OutgoingPowerBiUnsupportedVisualHelpMessage = {
 // ── The union ──────────────────────────────────────────────────────────────
 
 export type OutgoingWebviewMessage =
+	| { type: 'fileOpenTrace'; event: string; timeMs?: number; sequence?: number; detail?: unknown }
 	// Connection & database
 	| { type: 'getConnections' }
 	| OutgoingEditorCursorPositionChangedMessage

@@ -4,20 +4,41 @@ import * as path from 'path';
 import { KqlxEditorProvider } from './kqlxEditorProvider';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
+import { getWorkbenchLogger, showWorkbenchLogChannel } from './workbenchLogger';
 
-/** Output channel for remote-file diagnostics. Lazily created on first use. */
-let _diagChannel: vscode.OutputChannel | undefined;
+export function redactRemoteUrlForLog(value: string): string {
+	return String(value ?? '').replace(/https?:\/\/[^\s<>"'`]+/gi, (match) => {
+		let candidate = match;
+		let suffix = '';
+		while (/[),.;\]]$/.test(candidate)) {
+			suffix = candidate.slice(-1) + suffix;
+			candidate = candidate.slice(0, -1);
+		}
+		try {
+			const parsed = new URL(candidate);
+			if (parsed.search) {
+				const redacted = new URLSearchParams();
+				for (const [key] of parsed.searchParams) {
+					redacted.append(key, 'redacted');
+				}
+				parsed.search = redacted.toString();
+			}
+			if (parsed.hash) {
+				parsed.hash = '#redacted';
+			}
+			return parsed.toString() + suffix;
+		} catch {
+			return match;
+		}
+	});
+}
+
 function diagLog(msg: string): void {
-	if (!_diagChannel) {
-		_diagChannel = vscode.window.createOutputChannel('Kusto Workbench: Remote File');
-	}
 	const ts = new Date().toISOString();
-	_diagChannel.appendLine(`[${ts}] ${msg}`);
+	getWorkbenchLogger().info(`[${ts}] [remote-file] ${redactRemoteUrlForLog(msg)}`);
 }
 function showDiagChannel(): void {
-	if (_diagChannel) {
-		_diagChannel.show(true);
-	}
+	showWorkbenchLogChannel(true);
 }
 
 /**

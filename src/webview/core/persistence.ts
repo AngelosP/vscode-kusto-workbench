@@ -32,6 +32,7 @@ import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } fro
 import { setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons } from '../sections/kw-query-toolbar';
 import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } from '../sections/query-execution.controller';
 import { perfMark } from './perf.js';
+import { traceFileOpen } from './file-open-trace.js';
 
 
 const _win = window;
@@ -1740,6 +1741,11 @@ function __kustoApplyPendingAdds() {
 export function handleDocumentDataMessage(message: any) {
 	__kustoDocumentDataApplyCount++;
 	perfMark('webview.persistence.documentData.handle.start');
+	traceFileOpen('persistence.documentData.handle.start', {
+		applyCount: __kustoDocumentDataApplyCount,
+		forceReload: !!(message && message.forceReload),
+		documentUri: typeof message?.documentUri === 'string' ? message.documentUri : '',
+	});
 
 	// The extension host should only send documentData in response to requestDocument.
 	// If we receive it more than once, re-applying causes noticeable flicker and can leave
@@ -1751,6 +1757,7 @@ export function handleDocumentDataMessage(message: any) {
 		const incomingDocumentUri = (message && typeof message.documentUri === 'string') ? String(message.documentUri) : '';
 		const isDifferentDocument = !!incomingDocumentUri && !!__kustoLastAppliedDocumentUri && incomingDocumentUri !== __kustoLastAppliedDocumentUri;
 		if (__kustoHasAppliedDocument && !(message && message.forceReload) && !isDifferentDocument) {
+			traceFileOpen('persistence.documentData.skippedAlreadyApplied', { incomingDocumentUri, lastAppliedDocumentUri: __kustoLastAppliedDocumentUri });
 			return;
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -1828,6 +1835,10 @@ export function handleDocumentDataMessage(message: any) {
 		}
 
 		perfMark('webview.persistence.restore.start');
+		traceFileOpen('persistence.restore.start', {
+			sections: Array.isArray(message?.state?.sections) ? message.state.sections.length : 0,
+			documentKind: typeof message?.documentKind === 'string' ? message.documentKind : '',
+		});
 		applyKqlxState(message && message.state ? message.state : { sections: [] });
 
 		// If the doc is empty, initialize UX content.
@@ -1854,9 +1865,15 @@ export function handleDocumentDataMessage(message: any) {
 			querySections: Array.isArray(queryBoxes) ? queryBoxes.length : 0,
 			sqlSections: Array.isArray(sqlBoxes) ? sqlBoxes.length : 0,
 		});
+		traceFileOpen('persistence.restore.end', {
+			querySections: Array.isArray(queryBoxes) ? queryBoxes.length : 0,
+			sqlSections: Array.isArray(sqlBoxes) ? sqlBoxes.length : 0,
+			markdownSections: Array.isArray(markdownBoxes) ? markdownBoxes.length : 0,
+		});
 	} finally {
 		__kustoSetDocumentLoading(false);
 		perfMark('webview.persistence.documentData.handle.end');
+		traceFileOpen('persistence.documentData.handle.end');
 	}
 
 	// ── Schema diagnostics: log all sections on file open ──

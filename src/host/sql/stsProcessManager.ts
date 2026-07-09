@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { spawn, type ChildProcess } from 'child_process';
 import { createMessageConnection, StreamMessageReader, StreamMessageWriter, type MessageConnection, type MessageReader, type DataCallback, type Disposable as JrpcDisposable, type Message } from 'vscode-jsonrpc/node';
+import type { WorkbenchLogger } from '../workbenchLogger';
 
 const MAX_RESTARTS = 2;
 const BACKOFF_MS = [1000, 3000]; // 1s, 3s
@@ -18,9 +19,9 @@ export class StsProcessManager {
 	private _failed = false;
 	private _binaryPath: string;
 	private _logPath: string;
-	private readonly _output: vscode.OutputChannel;
+	private readonly _output: WorkbenchLogger;
 
-	constructor(binaryPath: string, logPath: string, output: vscode.OutputChannel) {
+	constructor(binaryPath: string, logPath: string, output: WorkbenchLogger) {
 		this._binaryPath = binaryPath;
 		this._logPath = logPath;
 		this._output = output;
@@ -39,7 +40,7 @@ export class StsProcessManager {
 		if (this._stopped) return;
 
 		try {
-			this._output.appendLine(`[sts] Starting STS: ${this._binaryPath}`);
+			this._output.info(`[sts] Starting STS: ${this._binaryPath}`);
 
 			const proc = spawn(this._binaryPath, [], {
 				stdio: ['pipe', 'pipe', 'pipe'],
@@ -52,7 +53,7 @@ export class StsProcessManager {
 			proc.stderr?.on('data', (data: Buffer) => {
 				const text = data.toString().trimEnd();
 				stderrBuf += text + '\n';
-				this._output.appendLine(`[sts-stderr] ${text}`);
+				this._output.warn(`[sts-stderr] ${text}`);
 			});
 
 			// Guard: if the process exits before the handshake finishes, reject
@@ -60,15 +61,15 @@ export class StsProcessManager {
 			let earlyExitCode: number | null = null;
 			const earlyExitHandler = (code: number | null) => {
 				earlyExitCode = code ?? -1;
-				this._output.appendLine(`[sts] Process exited early with code ${code}`);
+				this._output.warn(`[sts] Process exited early with code ${code}`);
 				if (stderrBuf) {
-					this._output.appendLine(`[sts] Last stderr:\n${stderrBuf.slice(-500)}`);
+					this._output.warn(`[sts] Last stderr:\n${stderrBuf.slice(-500)}`);
 				}
 			};
 			proc.once('exit', earlyExitHandler);
 
 			proc.on('error', (err) => {
-				this._output.appendLine(`[sts] Process error: ${err.message}`);
+				this._output.error(`[sts] Process error: ${err.message}`);
 				this._handleExit(-1);
 			});
 
@@ -76,9 +77,9 @@ export class StsProcessManager {
 			// we finish writing the initialize request.
 			proc.stdin?.on('error', (err: NodeJS.ErrnoException) => {
 				if (err.code === 'EPIPE' || err.code === 'ECONNRESET' || err.code === 'ERR_STREAM_DESTROYED') {
-					this._output.appendLine(`[sts] stdin ${err.code} (process already exited)`);
+					this._output.warn(`[sts] stdin ${err.code} (process already exited)`);
 				} else {
-					this._output.appendLine(`[sts] stdin error: ${err.message}`);
+					this._output.error(`[sts] stdin error: ${err.message}`);
 				}
 			});
 
@@ -95,10 +96,10 @@ export class StsProcessManager {
 
 			// Catch JSON-RPC transport errors (EPIPE, broken pipe, etc.)
 			connection.onError(([err]) => {
-				this._output.appendLine(`[sts] JSON-RPC error: ${err.message}`);
+				this._output.error(`[sts] JSON-RPC error: ${err.message}`);
 			});
 			connection.onClose(() => {
-				this._output.appendLine('[sts] JSON-RPC connection closed');
+				this._output.warn('[sts] JSON-RPC connection closed');
 			});
 
 			connection.listen();
@@ -131,18 +132,18 @@ export class StsProcessManager {
 			// Remove the early-exit guard — replace with the long-running handler
 			proc.removeListener('exit', earlyExitHandler);
 			proc.on('exit', (code) => {
-				this._output.appendLine(`[sts] Process exited with code ${code}`);
+				this._output.info(`[sts] Process exited with code ${code}`);
 				this._handleExit(code ?? -1);
 			});
 
-			this._output.appendLine(`[sts] Initialized. Server capabilities: ${Object.keys((initResult as any)?.capabilities || {}).join(', ')}`);
+			this._output.info(`[sts] Initialized. Server capabilities: ${Object.keys((initResult as any)?.capabilities || {}).join(', ')}`);
 
 			connection.sendNotification('initialized', {});
 
 			// Log ALL notifications from STS for diagnostics.
 			connection.onNotification((method: string, params: any) => {
 				const uri = params?.ownerUri || params?.uri || '';
-				this._output.appendLine(`[sts-diag] NOTIFICATION ${method} uri=${uri} keys=${Object.keys(params || {}).join(',')}`);
+				this._output.trace(`[sts-diag] NOTIFICATION ${method} uri=${uri} keys=${Object.keys(params || {}).join(',')}`);
 			});
 
 			this._restartCount = 0;
@@ -150,7 +151,7 @@ export class StsProcessManager {
 			this._readyResolve?.();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			this._output.appendLine(`[sts] Start failed: ${msg}`);
+			this._output.error(`[sts] Start failed: ${msg}`);
 			this._rejectReady(msg);
 			this._handleExit(-1);
 		}
@@ -241,7 +242,7 @@ export class StsProcessManager {
 		if (this._restartCount < MAX_RESTARTS) {
 			const delay = BACKOFF_MS[this._restartCount] ?? 3000;
 			this._restartCount++;
-			this._output.appendLine(`[sts] Restarting (attempt ${this._restartCount}/${MAX_RESTARTS}) in ${delay}ms...`);
+			this._output.warn(`[sts] Restarting (attempt ${this._restartCount}/${MAX_RESTARTS}) in ${delay}ms...`);
 
 			// Reset the ready promise for the new attempt
 			this._readyPromise = new Promise<void>((resolve, reject) => {
@@ -252,13 +253,13 @@ export class StsProcessManager {
 			setTimeout(() => {
 				if (!this._stopped) {
 					this.start().catch((err) => {
-						this._output.appendLine(`[sts] Restart failed: ${err instanceof Error ? err.message : String(err)}`);
+						this._output.error(`[sts] Restart failed: ${err instanceof Error ? err.message : String(err)}`);
 					});
 				}
 			}, delay);
 		} else {
 			this._failed = true;
-			this._output.appendLine(`[sts] Max restarts (${MAX_RESTARTS}) exhausted. SQL IntelliSense unavailable.`);
+			this._output.error(`[sts] Max restarts (${MAX_RESTARTS}) exhausted. SQL IntelliSense unavailable.`);
 			this._rejectReady('Max restarts exhausted');
 		}
 	}

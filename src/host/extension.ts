@@ -34,6 +34,7 @@ import { STORAGE_KEYS } from './queryEditorTypes';
 import { SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from './schemaCache';
 
 import { stsProcessManagerSingleton } from './sql/stsProcessManager';
+import { getWorkbenchLogger, registerWorkbenchLogger } from './workbenchLogger';
 
 type TestOpenFileSummary = NonNullable<Awaited<ReturnType<KustoWorkbenchToolOrchestrator['listSections']>>['openFiles']>[number];
 
@@ -43,6 +44,7 @@ export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
 export function activate(context: vscode.ExtensionContext) {
+	registerWorkbenchLogger(context);
 	void vscode.commands.executeCommand('setContext', 'kustoWorkbench.devMode', context.extensionMode !== vscode.ExtensionMode.Production);
 
 	// Configure editor associations for .kql and .csl files based on settings
@@ -94,7 +96,7 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 		} catch (err) {
 			// Non-fatal: avoid breaking activation if we can't update associations
-			console.error('[Kusto Workbench] Failed to update editor associations:', err);
+			getWorkbenchLogger().error('[Kusto Workbench] Failed to update editor associations:', err instanceof Error ? err : String(err));
 		}
 	};
 

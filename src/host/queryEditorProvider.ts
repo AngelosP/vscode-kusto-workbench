@@ -32,7 +32,6 @@ import {
 } from './queryEditorUtils';
 import { appendSqlQueryMode as appendSqlQueryModeFn } from './sqlEditorUtils';
 import {
-	OUTPUT_CHANNEL_NAME,
 	STORAGE_KEYS,
 	CachedSchemaEntry,
 	CacheUnit,
@@ -52,6 +51,8 @@ import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
 import { notifySavedFile, withCsvExtension } from './savedFileNotification';
 import { perfMark } from './perfTrace';
+import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
+import type { FileOpenTrace } from './fileOpenTrace';
 
 type RunningQueryEntry = {
 	cancel: () => void;
@@ -68,7 +69,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private panel?: vscode.WebviewPanel;
 	private readonly cursorOwnerPrefix = `queryEditor:${++QueryEditorProvider.cursorOwnerSequence}:`;
 	readonly kustoClient: KustoQueryClient;
-	readonly output = vscode.window.createOutputChannel(OUTPUT_CHANNEL_NAME);
+	readonly output: WorkbenchLogger = getWorkbenchLogger();
 	readonly connection: ConnectionService;
 	readonly schema: SchemaService;
 	private readonly runningQueriesByBoxId = new Map<string, RunningQueryEntry>();
@@ -139,6 +140,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private configSubscription?: vscode.Disposable;
 	private embeddedTutorialHost?: EmbeddedTutorialWebviewHost;
 	private embeddedTutorialRegistration?: vscode.Disposable;
+	fileOpenTrace?: FileOpenTrace;
 
 	getErrorMessage(error: unknown): string {
 		return getErrorMessageFn(error);
@@ -153,19 +155,16 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		try {
 			const raw = this.getErrorMessage(error);
 			const cluster = String(connection.clusterUrl || '').trim();
-			this.output.appendLine(`[${new Date().toISOString()}] Query execution failed`);
-			this.output.appendLine(`  cluster: ${cluster}`);
-			if (database) {
-				this.output.appendLine(`  database: ${database}`);
-			}
-			if (boxId) {
-				this.output.appendLine(`  boxId: ${boxId}`);
-			}
-			this.output.appendLine('  query:');
-			this.output.appendLine(query);
-			this.output.appendLine('  error:');
-			this.output.appendLine(raw);
-			this.output.appendLine('');
+			this.output.error([
+				`[${new Date().toISOString()}] Query execution failed`,
+				`  cluster: ${cluster}`,
+				...(database ? [`  database: ${database}`] : []),
+				...(boxId ? [`  boxId: ${boxId}`] : []),
+				'  query:',
+				query,
+				'  error:',
+				raw,
+			].join('\n'));
 		} catch {
 			// ignore
 		}
@@ -189,36 +188,45 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		options?: { registerMessageHandler?: boolean; hideFooterControls?: boolean; initialDocumentLoading?: boolean }
 	): Promise<void> {
 		perfMark('host.queryEditorProvider.initialize.start', { initialDocumentLoading: !!options?.initialDocumentLoading });
+		this.fileOpenTrace?.mark('queryEditorProvider.initialize.start', { visible: panel.visible, active: panel.active, viewType: panel.viewType, documentUri: this.documentUri });
 		this.connection.activate();
+		this.fileOpenTrace?.mark('queryEditorProvider.connection.activate.done');
 		this.panel = panel;
 		// Do NOT set panel.iconPath here — this method is called for custom editors
 		// where VS Code owns the panel. Setting iconPath on a custom-editor panel
 		// can crash VS Code's renderer-side editor integration ("Unexpected type"
 		// in $setIconPath) and break the entire webview. Standalone panels set
 		// their icon in openEditor() instead.
+		this.fileOpenTrace?.mark('queryEditorProvider.html.load.start');
 		this.panel.webview.html = await getQueryEditorHtml(this.panel.webview, this.extensionUri, this.context, {
 			hideFooterControls: !!options?.hideFooterControls,
 			initialDocumentLoading: !!options?.initialDocumentLoading
 		});
 		perfMark('host.queryEditorProvider.htmlAssigned');
+		this.fileOpenTrace?.mark('queryEditorProvider.html.assigned');
 		this.embeddedTutorialHost = new EmbeddedTutorialWebviewHost(this.panel, this.documentUri);
 		this.embeddedTutorialRegistration = EmbeddedTutorialWebviewRegistry.register(this.embeddedTutorialHost);
+		this.fileOpenTrace?.mark('queryEditorProvider.embeddedTutorial.registered');
 
 		const shouldRegisterMessageHandler = options?.registerMessageHandler !== false;
 		if (shouldRegisterMessageHandler) {
 			// Ensure messages from the webview are handled in all host contexts (including custom editors).
 			// openEditor() also wires this up for the standalone panel, but custom editors call initializeWebviewPanel().
 			this.panel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
+				this.fileOpenTrace?.mark('queryEditorProvider.webviewMessage.received', { type: message?.type });
 				return this.handleWebviewMessage(message);
 			});
 		}
+		this.fileOpenTrace?.mark('queryEditorProvider.messageHandler.configured', { shouldRegisterMessageHandler });
 
 		// Connect the tool orchestrator to this webview instance
 		this.connectToolOrchestrator();
+		this.fileOpenTrace?.mark('queryEditorProvider.toolOrchestrator.connected');
 
 		// Reconnect the orchestrator when this panel becomes visible again
 		// (e.g. user switches from another .kqlx tab back to this one).
 		this.panel.onDidChangeViewState(() => {
+			this.fileOpenTrace?.mark('queryEditorProvider.viewState.changed', { visible: this.panel?.visible, active: this.panel?.active });
 			if (this.panel?.visible) {
 				this.connectToolOrchestrator();
 			} else {
@@ -227,6 +235,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 
 		this.panel.onDidDispose(() => {
+			this.fileOpenTrace?.mark('queryEditorProvider.dispose.start');
 			this.clearCursorStatusForProvider();
 			this.cancelAllRunningQueries();
 			this.disconnectToolOrchestrator();
@@ -242,6 +251,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.sendWorkbenchSettings();
 		this.watchWorkbenchSettings();
 		perfMark('host.queryEditorProvider.initialize.end');
+		this.fileOpenTrace?.mark('queryEditorProvider.initialize.end');
 	}
 
 	// Token returned by the orchestrator's connect(), used to guard disconnect.
@@ -388,6 +398,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	public async handleWebviewMessage(message: IncomingWebviewMessage): Promise<void> {
+		if (message?.type === 'fileOpenTrace') {
+			this.fileOpenTrace?.mark(`webview.${message.event}`, { timeMs: message.timeMs, sequence: message.sequence, detail: message.detail });
+			return;
+		}
 		if (this.embeddedTutorialHost?.handleMessage(message)) {
 			return;
 		}
@@ -1093,7 +1107,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				vscode.window.showInformationMessage(`Saved HTML to ${targetUri.fsPath}`);
 			}
 		} catch (e) {
-			console.error('[kusto] Dashboard export error:', e);
+			this.output.error('[kusto] Dashboard export error:', e instanceof Error ? e : String(e));
 			vscode.window.showErrorMessage('Failed to export dashboard: ' + (e instanceof Error ? e.message : String(e)));
 		}
 	}
@@ -1104,7 +1118,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.postMessage({ type: 'pbiWorkspacesResult', boxId: message.boxId, ok: true, workspaces });
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			console.error('[kusto] Power BI workspaces error:', e);
+			this.output.error('[kusto] Power BI workspaces error:', e instanceof Error ? e : String(e));
 			this.postMessage({ type: 'pbiWorkspacesResult', boxId: message.boxId, ok: false, error: msg });
 		}
 	}
@@ -1149,7 +1163,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				workspaceName: message.workspaceName });
 		} catch (e) {
 			const msg = e instanceof Error ? e.message : String(e);
-			console.error('[kusto] Power BI publish error:', e);
+			this.output.error('[kusto] Power BI publish error:', e instanceof Error ? e : String(e));
 			this.postMessage({ type: 'publishToPowerBIResult', boxId: message.boxId, ok: false, error: msg });
 		}
 	}
@@ -1159,7 +1173,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			const exists = await checkFabricItemExists(message.workspaceId, message.reportId);
 			this.postMessage({ type: 'pbiItemExistsResult', boxId: message.boxId, exists });
 		} catch (e) {
-			console.warn('[kusto] PBI item existence check failed:', e);
+			this.output.warn('[kusto] PBI item existence check failed:', e);
 			this.postMessage({ type: 'pbiItemExistsResult', boxId: message.boxId, exists: false });
 		}
 	}
@@ -1603,7 +1617,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 		} catch (error) {
 			const raw = this.getErrorMessage(error);
-			this.output.appendLine(`[kql-ls] request failed: ${raw}`);
+			this.output.error(`[kql-ls] request failed: ${raw}`);
 			this.postMessage({
 				type: 'kqlLanguageResponse',
 				requestId,
@@ -2124,10 +2138,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.postMessage({ type: 'sqlDatabasesData', databases: sorted, boxId, sqlConnectionId });
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error);
-			this.output.appendLine(`[${new Date().toISOString()}] Failed to load SQL databases`);
-			this.output.appendLine(`  server: ${connection.serverUrl}`);
-			this.output.appendLine(`  error: ${errorMessage}`);
-			this.output.appendLine('');
+			this.output.error([
+				`[${new Date().toISOString()}] Failed to load SQL databases`,
+				`  server: ${connection.serverUrl}`,
+				`  error: ${errorMessage}`,
+			].join('\n'));
 
 			if (cachedBefore.length > 0) {
 				this.postMessage({ type: 'sqlDatabasesData', databases: cachedBefore, boxId, sqlConnectionId });
@@ -2146,7 +2161,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			return;
 		}
 		try {
-			this.output.appendLine(`[sql-schema] request server=${connection.serverUrl} db=${database} forceRefresh=${forceRefresh}`);
+			this.output.info(`[sql-schema] request server=${connection.serverUrl} db=${database} forceRefresh=${forceRefresh}`);
 			const { schema, fromCache } = await this.sqlSchemaService.getSchema(connection, database, forceRefresh);
 			const tablesCount = schema.tables?.length ?? 0;
 			let columnsCount = 0;
@@ -2155,7 +2170,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					columnsCount += Object.keys(schema.columnsByTable[tbl] || {}).length;
 				}
 			}
-			this.output.appendLine(`[sql-schema] loaded db=${database} tables=${tablesCount} columns=${columnsCount} fromCache=${fromCache}`);
+			this.output.info(`[sql-schema] loaded db=${database} tables=${tablesCount} columns=${columnsCount} fromCache=${fromCache}`);
 			this.postMessage({
 				type: 'sqlSchemaData',
 				boxId,
@@ -2167,7 +2182,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			});
 		} catch (error) {
 			const msg = error instanceof Error ? error.message : String(error);
-			this.output.appendLine(`[sql-schema] error db=${database}: ${msg}`);
+			this.output.error(`[sql-schema] error db=${database}: ${msg}`);
 			this.postMessage({
 				type: 'sqlSchemaData',
 				boxId,
@@ -2194,7 +2209,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					const globalStoragePath = this.context.globalStorageUri.fsPath;
 					const binaryPath = await ensureSts(globalStoragePath, this.output);
 					if (!binaryPath) {
-						this.output.appendLine('[sts] STS binary not available — SQL IntelliSense disabled');
+						this.output.warn('[sts] STS binary not available — SQL IntelliSense disabled');
 						return null;
 					}
 
@@ -2218,7 +2233,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return languageService;
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
-				this.output.appendLine(`[sts] Init failed: ${msg}`);
+				this.output.error(`[sts] Init failed: ${msg}`);
 				return null;
 			}
 		})();
@@ -2227,10 +2242,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private async handleStsRequest(requestId: string, method: string, params: { boxId: string; line: number; column: number }): Promise<void> {
-		this.output.appendLine(`[sts-diag] handleStsRequest method=${method} boxId=${params.boxId} L${params.line}:${params.column}`);
+		this.output.info(`[sts-diag] handleStsRequest method=${method} boxId=${params.boxId} L${params.line}:${params.column}`);
 		const svc = await this.ensureStsLanguageService();
 		if (!svc) {
-			this.output.appendLine(`[sts-diag] handleStsRequest → svc=null, returning null`);
+			this.output.warn(`[sts-diag] handleStsRequest → svc=null, returning null`);
 			this.postMessage({ type: 'stsResponse', requestId, result: null } as any);
 			return;
 		}
@@ -2247,12 +2262,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					result = await svc.getSignatureHelp(params.boxId, params.line, params.column);
 					break;
 				default:
-					this.output.appendLine(`[sts] Unknown method: ${method}`);
+					this.output.warn(`[sts] Unknown method: ${method}`);
 			}
 			this.postMessage({ type: 'stsResponse', requestId, result } as any);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
-			this.output.appendLine(`[sts] Request error (${method}): ${msg}`);
+			this.output.error(`[sts] Request error (${method}): ${msg}`);
 			this.postMessage({ type: 'stsResponse', requestId, result: null } as any);
 		}
 	}
@@ -2261,7 +2276,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const id = String(boxId || '').trim();
 		if (!id) return;
 		this._closedStsBoxIds.delete(id);
-		this.output.appendLine(`[sts-diag] handleStsDidOpen boxId=${id} textLen=${text.length}`);
+		this.output.info(`[sts-diag] handleStsDidOpen boxId=${id} textLen=${text.length}`);
 		this.ensureStsLanguageService().then(svc => {
 			if (svc && !this._closedStsBoxIds.has(id)) svc.openDocument(id, text);
 		}).catch(() => { /* ignore */ });
@@ -2279,7 +2294,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		if (!id) return;
 		this._closedStsBoxIds.add(id);
 		this._latestStsConnectSequenceByBoxId.delete(id);
-		this.output.appendLine(`[sts-diag] handleStsDidClose boxId=${id}`);
+		this.output.info(`[sts-diag] handleStsDidClose boxId=${id}`);
 		if (this._stsLanguageService) {
 			this._stsLanguageService.closeDocument(id);
 		}
@@ -2298,53 +2313,53 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	private _postCurrentStsConnectError(boxId: string, sequence: number, message: string): void {
 		if (!this._isCurrentStsConnect(boxId, sequence)) {
-			this.output.appendLine(`[sts-diag] handleStsConnect → stale early failure suppressed boxId=${boxId}: ${message}`);
+			this.output.info(`[sts-diag] handleStsConnect → stale early failure suppressed boxId=${boxId}: ${message}`);
 			return;
 		}
-		this.output.appendLine(`[sts-diag] handleStsConnect → FAILED boxId=${boxId}: ${message}`);
+		this.output.error(`[sts-diag] handleStsConnect → FAILED boxId=${boxId}: ${message}`);
 		this.postMessage({ type: 'stsConnectionState', boxId, state: 'error', error: message } as any);
 	}
 
 	private async handleStsConnect(boxId: string, sqlConnectionId: string, database: string): Promise<void> {
 		const id = String(boxId || '').trim();
 		if (!id || this._closedStsBoxIds.has(id)) {
-			this.output.appendLine(`[sts-diag] handleStsConnect skipped closed boxId=${id || '(none)'}`);
+			this.output.info(`[sts-diag] handleStsConnect skipped closed boxId=${id || '(none)'}`);
 			return;
 		}
 		const connectSequence = this._nextStsConnectSequence(id);
-		this.output.appendLine(`[sts-diag] handleStsConnect boxId=${id} connId=${sqlConnectionId} db=${database}`);
+		this.output.info(`[sts-diag] handleStsConnect boxId=${id} connId=${sqlConnectionId} db=${database}`);
 		const svc = await this.ensureStsLanguageService();
 		if (!svc) {
-			this.output.appendLine(`[sts-diag] handleStsConnect → svc=null`);
+			this.output.warn(`[sts-diag] handleStsConnect → svc=null`);
 			this._postCurrentStsConnectError(id, connectSequence, 'SQL Tools Service unavailable');
 			return;
 		}
 		if (!this._isCurrentStsConnect(id, connectSequence)) {
-			this.output.appendLine(`[sts-diag] handleStsConnect skipped closed boxId=${id}`);
+			this.output.info(`[sts-diag] handleStsConnect skipped closed boxId=${id}`);
 			return;
 		}
 		const connection = this.sqlConnectionManager.getConnection(sqlConnectionId);
 		if (!connection) {
-			this.output.appendLine(`[sts-diag] handleStsConnect → connection not found: ${sqlConnectionId}`);
+			this.output.warn(`[sts-diag] handleStsConnect → connection not found: ${sqlConnectionId}`);
 			this._postCurrentStsConnectError(id, connectSequence, `SQL connection not found: ${sqlConnectionId}`);
 			return;
 		}
-		this.output.appendLine(`[sts-diag] handleStsConnect → connecting to ${connection.serverUrl}/${database} auth=${connection.authType}`);
+		this.output.info(`[sts-diag] handleStsConnect → connecting to ${connection.serverUrl}/${database} auth=${connection.authType}`);
 		try {
 			await svc.connectDocument(id, connection, database);
 			if (!this._isCurrentStsConnect(id, connectSequence)) {
-				this.output.appendLine(`[sts-diag] handleStsConnect → stale success suppressed boxId=${id}`);
+				this.output.info(`[sts-diag] handleStsConnect → stale success suppressed boxId=${id}`);
 				return;
 			}
-			this.output.appendLine(`[sts-diag] handleStsConnect → SUCCESS boxId=${id}`);
+			this.output.info(`[sts-diag] handleStsConnect → SUCCESS boxId=${id}`);
 			this.postMessage({ type: 'stsConnectionState', boxId: id, state: 'ready' } as any);
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			if (!this._isCurrentStsConnect(id, connectSequence)) {
-				this.output.appendLine(`[sts-diag] handleStsConnect → stale failure suppressed boxId=${id}: ${msg}`);
+				this.output.info(`[sts-diag] handleStsConnect → stale failure suppressed boxId=${id}: ${msg}`);
 				return;
 			}
-			this.output.appendLine(`[sts-diag] handleStsConnect → FAILED boxId=${id}: ${msg}`);
+			this.output.error(`[sts-diag] handleStsConnect → FAILED boxId=${id}: ${msg}`);
 			this.postMessage({ type: 'stsConnectionState', boxId: id, state: 'error', error: msg } as any);
 		}
 	}
@@ -2503,12 +2518,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 			if (isStillActiveRun()) {
 				const errorMessage = error instanceof Error ? error.message : String(error);
-				this.output.appendLine(`[${new Date().toISOString()}] SQL query execution failed`);
-				this.output.appendLine(`  server: ${connection.serverUrl}`);
-				this.output.appendLine(`  database: ${message.database}`);
-				this.output.appendLine(`  boxId: ${boxId}`);
-				this.output.appendLine(`  error: ${errorMessage}`);
-				this.output.appendLine('');
+				this.output.error([
+					`[${new Date().toISOString()}] SQL query execution failed`,
+					`  server: ${connection.serverUrl}`,
+					`  database: ${message.database}`,
+					`  boxId: ${boxId}`,
+					`  error: ${errorMessage}`,
+				].join('\n'));
 				// Error is displayed inline in the SQL section — no notification popup
 				// (avoids stealing keyboard focus from the Monaco editor).
 				this.postMessage({ type: 'queryError', error: errorMessage, boxId });

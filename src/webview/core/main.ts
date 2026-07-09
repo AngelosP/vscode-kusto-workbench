@@ -8,6 +8,7 @@ import { __kustoRequestAddSection, schedulePersist } from './persistence';
 import { queryEditors } from './state';
 import { registerPageScrollDismissable } from './page-scroll-dismiss.js';
 import { perfMark } from './perf.js';
+import { traceFileOpen } from './file-open-trace.js';
 
 // Side-effect imports — register event handlers on import.
 // Active-section-tracker must be imported before message-handler so its
@@ -23,6 +24,8 @@ export {};
 // like cached-values or connection-manager that also load the bundle).
 if (window.vscode) {
 	perfMark('webview.main.start');
+	traceFileOpen('main.start', { readyState: document.readyState });
+	traceFileOpen('main.requestConnections.send');
 	postMessageToHost({ type: 'getConnections' });
 	postMessageToHost({ type: 'getSqlConnections' });
 	// Global Copilot capability check (for add-controls Copilot button)
@@ -30,9 +33,11 @@ if (window.vscode) {
 	// Request document state on load (.kqlx custom editor)
 	try {
 		if (!(window as any).__kustoBootstrapRequestDocumentSent) {
+			traceFileOpen('main.requestDocument.send');
 			postMessageToHost({ type: 'requestDocument' });
 			perfMark('webview.main.requestDocument.sent');
 		} else {
+			traceFileOpen('main.requestDocument.skippedEarlySent');
 			perfMark('webview.main.requestDocument.skippedEarlySent');
 		}
 	} catch (e) { console.error('[kusto]', e); }

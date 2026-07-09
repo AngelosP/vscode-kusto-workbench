@@ -114,6 +114,7 @@ function extractMessageTypeComparisons(relativePath: string): string[] {
  * main query editor provider.
  */
 const INCOMING_WEBVIEW_MESSAGE_TYPES = [
+	'fileOpenTrace',
 	'getConnections',
 	'editorCursorPositionChanged',
 	'getEditorCursorStatusSnapshot',
@@ -203,6 +204,7 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
  * (webview-messages.ts). These are messages the webview can send out.
  */
 const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
+	'fileOpenTrace',
 	// Connection & database
 	'getConnections',
 	'editorCursorPositionChanged',

@@ -4,6 +4,7 @@
 import * as vscode from 'vscode';
 import * as os from 'os';
 import { exportHtmlToPowerBI, normalizePowerBiDataMode, type PowerBiDataMode, type PowerBiDataSource } from './powerBiExport';
+import { getWorkbenchLogger } from './workbenchLogger';
 
 // ── Auth ─────────────────────────────────────────────────────────────────────
 
@@ -290,7 +291,7 @@ export async function publishToPowerBIService(input: PublishInput): Promise<Publ
 			} catch (e) {
 				// 404 → items were deleted externally, fall through to create path
 				if (e instanceof FabricApiError && e.status === 404) {
-					console.warn('[kusto] Existing Power BI items not found (404), creating new items.');
+					getWorkbenchLogger().warn('[kusto] Existing Power BI items not found (404), creating new items.');
 				} else {
 					throw e; // Rename conflicts (409) and other errors bubble up
 				}
@@ -365,7 +366,7 @@ async function configureRefreshSchedule(workspaceId: string, datasetId: string, 
 	try {
 		const session = await vscode.authentication.getSession('microsoft', [PBI_SCOPE], { createIfNone: false });
 		if (!session) {
-			console.warn('[kusto] No Power BI auth session available for refresh schedule');
+			getWorkbenchLogger().warn('[kusto] No Power BI auth session available for refresh schedule');
 			return false;
 		}
 
@@ -392,10 +393,10 @@ async function configureRefreshSchedule(workspaceId: string, datasetId: string, 
 		if (res.ok) return true;
 
 		const text = await res.text().catch(() => '');
-		console.warn(`[kusto] Refresh schedule API ${res.status}: ${text}`);
+		getWorkbenchLogger().warn(`[kusto] Refresh schedule API ${res.status}: ${text}`);
 		return false;
 	} catch (e) {
-		console.warn('[kusto] Failed to configure refresh schedule:', e);
+		getWorkbenchLogger().warn('[kusto] Failed to configure refresh schedule:', e);
 		return false;
 	}
 }
@@ -421,10 +422,10 @@ async function triggerSemanticModelRefresh(workspaceId: string, datasetId: strin
 		if (res.ok) return true;
 
 		const text = await res.text().catch(() => '');
-		console.warn(`[kusto] Initial semantic model refresh API ${res.status}: ${text}`);
+		getWorkbenchLogger().warn(`[kusto] Initial semantic model refresh API ${res.status}: ${text}`);
 		return false;
 	} catch (e) {
-		console.warn('[kusto] Failed to trigger initial semantic model refresh:', e);
+		getWorkbenchLogger().warn('[kusto] Failed to trigger initial semantic model refresh:', e);
 		return false;
 	}
 }

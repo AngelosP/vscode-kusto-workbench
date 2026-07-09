@@ -168,7 +168,7 @@ function makeMockHost(overrides: Partial<Record<string, any>> = {}) {
 			getDatabases: overrides.getDatabases ?? (async () => []),
 			isAuthenticationError: overrides.isAuthenticationError ?? (() => false),
 		},
-		output: { appendLine: () => {} },
+		output: { trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, log: () => {}, show: () => {} },
 		postMessage: overrides.postMessage ?? (() => {}),
 		formatQueryExecutionErrorForUser: () => 'error',
 		normalizeClusterUrlKey: (url: string) => url.toLowerCase(),

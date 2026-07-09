@@ -10,6 +10,7 @@ import {
 	CachedSchemaEntry
 } from './queryEditorTypes';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import type { WorkbenchLogger } from './workbenchLogger';
 
 
 // ── SchemaServiceHost interface ──
@@ -18,7 +19,7 @@ export interface SchemaServiceHost {
 	readonly context: vscode.ExtensionContext;
 	readonly kustoClient: KustoQueryClient;
 	readonly connectionManager: ConnectionManager;
-	readonly output: vscode.OutputChannel;
+	readonly output: WorkbenchLogger;
 	postMessage(message: unknown): void;
 	formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, database?: string): string;
 	findConnection(connectionId: string): KustoConnection | undefined;
@@ -157,7 +158,7 @@ export class SchemaService {
 				}
 			} catch (error) {
 				const rawMessage = error instanceof Error ? error.message : String(error);
-				this.host.output.appendLine(`[schema] background refresh failed db=${listener.database}: ${rawMessage}`);
+				this.host.output.warn(`[schema] background refresh failed db=${listener.database}: ${rawMessage}`);
 				const snapshot = listeners.slice();
 				for (const item of snapshot) {
 					if (!item.forceRefresh) {
@@ -283,7 +284,7 @@ export class SchemaService {
 		// for autocomplete until the next successful refresh.
 
 		try {
-			this.host.output.appendLine(
+			this.host.output.info(
 				`[schema] request connectionId=${connectionId} db=${database} forceRefresh=${forceRefresh} cacheOnly=${!!options.cacheOnly}`
 			);
 
@@ -296,7 +297,7 @@ export class SchemaService {
 
 			if (options.cacheOnly) {
 				if (cached?.schema) {
-					this.host.output.appendLine(`[schema] loaded (cache-only) db=${database}`);
+					this.host.output.info(`[schema] loaded (cache-only) db=${database}`);
 					this.postSchemaData({
 						boxId,
 						connectionId,
@@ -318,7 +319,7 @@ export class SchemaService {
 					});
 					return;
 				}
-				this.host.output.appendLine(`[schema] cache-only miss db=${database}`);
+				this.host.output.info(`[schema] cache-only miss db=${database}`);
 				this.postSilentSchemaMiss(connectionId, database, boxId, requestToken, options);
 				return;
 			}
@@ -328,7 +329,7 @@ export class SchemaService {
 				const schema = cached.schema;
 				const summary = getSchemaSummary(schema);
 
-				this.host.output.appendLine(
+				this.host.output.info(
 					`[schema] loaded (persisted cache) db=${database} tables=${summary.tablesCount} columns=${summary.columnsCount}`
 				);
 				this.postSchemaData({
@@ -357,7 +358,7 @@ export class SchemaService {
 				const schema = cached.schema;
 				const summary = getSchemaSummary(schema);
 
-				this.host.output.appendLine(
+				this.host.output.info(
 					`[schema] loaded (persisted cache, stale/outdated) db=${database} tables=${summary.tablesCount} columns=${summary.columnsCount}`
 				);
 				this.postSchemaData({
@@ -397,7 +398,7 @@ export class SchemaService {
 
 			const summary = getSchemaSummary(schema);
 
-			this.host.output.appendLine(
+			this.host.output.info(
 				`[schema] loaded db=${database} tables=${summary.tablesCount} columns=${summary.columnsCount} fromCache=${result.fromCache}`
 			);
 
@@ -409,12 +410,12 @@ export class SchemaService {
 			if (summary.tablesCount === 0 || summary.columnsCount === 0) {
 				const d = result.debug;
 				if (d) {
-					this.host.output.appendLine(`[schema] debug command=${d.commandUsed ?? ''}`);
-					this.host.output.appendLine(`[schema] debug columns=${(d.primaryColumns ?? []).join(', ')}`);
-					this.host.output.appendLine(
+					this.host.output.debug(`[schema] debug command=${d.commandUsed ?? ''}`);
+					this.host.output.debug(`[schema] debug columns=${(d.primaryColumns ?? []).join(', ')}`);
+					this.host.output.debug(
 						`[schema] debug sampleRowType=${d.sampleRowType ?? ''} keys=${(d.sampleRowKeys ?? []).join(', ')}`
 					);
-					this.host.output.appendLine(`[schema] debug sampleRowPreview=${d.sampleRowPreview ?? ''}`);
+					this.host.output.debug(`[schema] debug sampleRowPreview=${d.sampleRowPreview ?? ''}`);
 				}
 			}
 
@@ -439,7 +440,7 @@ export class SchemaService {
 			});
 		} catch (error) {
 			const rawMessage = error instanceof Error ? error.message : String(error);
-			this.host.output.appendLine(`[schema] error db=${database}: ${rawMessage}`);
+			this.host.output.error(`[schema] error db=${database}: ${rawMessage}`);
 
 			const userMessage = this.host.formatQueryExecutionErrorForUser(error, connection, database);
 			try {
@@ -449,7 +450,7 @@ export class SchemaService {
 					const summary = getSchemaSummary(schema);
 					const hasRawSchemaJson = !!schema.rawSchemaJson;
 
-					this.host.output.appendLine(
+					this.host.output.warn(
 						`[schema] using cached schema after failure db=${database} tables=${summary.tablesCount} columns=${summary.columnsCount} hasRawSchemaJson=${hasRawSchemaJson}`
 					);
 					this.postSchemaData({
@@ -595,7 +596,7 @@ export class SchemaService {
 							});
 						}
 					} catch (refreshError) {
-						this.host.output.appendLine(`[schema] cross-cluster stale cache background refresh failed cluster=${clusterName} db=${database}: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`);
+						this.host.output.warn(`[schema] cross-cluster stale cache background refresh failed cluster=${clusterName} db=${database}: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`);
 					}
 				})();
 				return;

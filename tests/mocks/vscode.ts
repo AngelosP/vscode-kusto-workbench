@@ -153,7 +153,16 @@ export const window = {
 			return true;
 		},
 	},
-	createOutputChannel: () => ({ appendLine: () => {}, dispose: () => {} }),
+	createOutputChannel: () => ({
+		appendLine: () => {},
+		trace: () => {},
+		debug: () => {},
+		info: () => {},
+		warn: () => {},
+		error: () => {},
+		show: () => {},
+		dispose: () => {},
+	}),
 	showInputBox: () => Promise.resolve(undefined),
 	showSaveDialog: () => Promise.resolve(undefined),
 	showInformationMessage: () => Promise.resolve(undefined),

@@ -1,8 +1,6 @@
 import * as vscode from 'vscode';
 import { DatabaseSchemaIndex } from './kustoClient';
 
-export const OUTPUT_CHANNEL_NAME = 'Kusto Workbench';
-
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
 	lastDatabase: 'kusto.lastDatabase',
@@ -200,6 +198,7 @@ export type EditorCursorStatusSnapshotRequestMessage = {
 
 export type IncomingWebviewMessage =
 	| { type: 'getConnections' }
+	| { type: 'fileOpenTrace'; event: string; timeMs?: number; sequence?: number; detail?: unknown }
 	| EditorCursorPositionChangedMessage
 	| EditorCursorStatusSnapshotRequestMessage
 	| { type: 'getDatabases'; connectionId: string; boxId: string }

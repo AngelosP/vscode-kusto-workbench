@@ -88,7 +88,7 @@ function createHost(capturedQueries: string[], executeError?: Error): CopilotSer
 				};
 			}),
 		} as any,
-		output: { appendLine: vi.fn() } as any,
+		output: { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() } as any,
 		postMessage: vi.fn(),
 		findConnection: vi.fn(() => TEST_CONNECTION),
 		getErrorMessage: (error: unknown) => error instanceof Error ? error.message : String(error),

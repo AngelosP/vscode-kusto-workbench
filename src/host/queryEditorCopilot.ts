@@ -27,6 +27,7 @@ import {
 import { getCopilotFlavorById, type CopilotChatFlavor } from './copilotChatFlavor';
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { convertKustoFunctionDefinitionsToInline } from '../shared/kustoFunctionDefinitions';
+import type { WorkbenchLogger } from './workbenchLogger';
 
 /**
  * Interface that the CopilotService uses to call back into the host (QueryEditorProvider).
@@ -35,7 +36,7 @@ export interface CopilotServiceHost {
 	readonly extensionUri: vscode.Uri;
 	readonly context: vscode.ExtensionContext;
 	readonly kustoClient: KustoQueryClient;
-	readonly output: vscode.OutputChannel;
+	readonly output: WorkbenchLogger;
 
 	postMessage(message: unknown): void;
 	findConnection(connectionId: string): KustoConnection | undefined;
@@ -2306,7 +2307,7 @@ Completion:`;
 			});
 		} catch (err: any) {
 			const errorMsg = err?.message || String(err);
-			console.error('Failed to prepare optimize query options:', err);
+			this.host.output.error('Failed to prepare optimize query options:', err instanceof Error ? err : String(err));
 			this.host.postMessage({
 				type: 'optimizeQueryError',
 				boxId,
@@ -2438,7 +2439,7 @@ Completion:`;
 
 		} catch (err: any) {
 			const errorMsg = err?.message || String(err);
-			console.error('Query optimization failed:', err);
+			this.host.output.error('Query optimization failed:', err instanceof Error ? err : String(err));
 			const canceled = cts.token.isCancellationRequested || /cancel/i.test(errorMsg);
 			if (canceled) {
 				try {
@@ -2656,7 +2657,7 @@ Completion:`;
 						schemaText = parts.join('\n\n');
 					}
 				} catch (e) {
-					this.host.output.appendLine(`[sql-copilot] schema fetch error: ${e}`);
+					this.host.output.warn(`[sql-copilot] schema fetch error: ${e}`);
 				}
 			}
 
@@ -2968,7 +2969,7 @@ Completion:`;
 								if (!isActive() || cts.token.isCancellationRequested || error instanceof SqlQueryCancelledError || (error as any)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
 									throw new Error('SQL Copilot write-query canceled');
 								}
-								this.host.output.appendLine(`[sql-copilot] original query execution error: ${errMsg}`);
+								this.host.output.error(`[sql-copilot] original query execution error: ${errMsg}`);
 								try {
 									this.host.postMessage({ type: 'queryError', error: 'Original query failed to execute.', boxId });
 								} catch { /* ignore */ }
@@ -2982,7 +2983,7 @@ Completion:`;
 								if (!isActive() || cts.token.isCancellationRequested || error instanceof SqlQueryCancelledError || (error as any)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
 									throw new Error('SQL Copilot write-query canceled');
 								}
-								this.host.output.appendLine(`[sql-copilot] optimized query execution error: ${errMsg}`);
+								this.host.output.error(`[sql-copilot] optimized query execution error: ${errMsg}`);
 								try {
 									this.host.postMessage({ type: 'queryError', error: 'Optimized query failed to execute.', boxId: comparisonBoxId });
 								} catch { /* ignore */ }
@@ -3045,7 +3046,7 @@ Completion:`;
 									throw new Error('SQL Copilot write-query canceled');
 								}
 								const errorMessage = error instanceof Error ? error.message : String(error);
-								this.host.output.appendLine(`[sql-copilot] query execution error: ${errorMessage}`);
+								this.host.output.error(`[sql-copilot] query execution error: ${errorMessage}`);
 								if (isActive()) {
 									try { this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId }); } catch { /* ignore */ }
 								}
@@ -3123,7 +3124,7 @@ Completion:`;
 			if (canceled) {
 				try { this.host.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: false, message: 'Canceled.' }); } catch { /* ignore */ }
 			} else {
-				this.host.output.appendLine(`[sql-copilot] error: ${msg}`);
+				this.host.output.error(`[sql-copilot] error: ${msg}`);
 				this.host.postMessage({ type: 'copilotWriteQueryDone', boxId, ok: false, message: msg });
 			}
 		} finally {

@@ -5,6 +5,8 @@ import { sashSheet } from './shared/sash-styles.js';
 import { scrollbarSheet } from './shared/scrollbar-styles.js';
 document.adoptedStyleSheets = [...document.adoptedStyleSheets, sashSheet, scrollbarSheet];
 import './core/perf.js';
+import { traceFileOpen } from './core/file-open-trace.js';
+traceFileOpen('bundle.index.loaded', { readyState: document.readyState });
 import './core/state.js'; // Must be first — initializes all state globals on window
 import './core/overlay-scrollbars.js'; // DOM overlay scrollbars for body (before sections render)
 import './generated/controlCommands.generated.js';

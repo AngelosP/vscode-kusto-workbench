@@ -3,6 +3,7 @@
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
 import { perfMark } from './perf.js';
+import { traceFileOpen } from './file-open-trace.js';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { safeRun } from '../shared/safe-run';
 import { getResultsState, displayResultForBox, displayResult, displayCancelled } from './results-state';
@@ -239,19 +240,33 @@ function getCurrentSchemaKeyForBoxId(boxId: string): string | null {
 function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, isForceRefresh: boolean, schemaSignature?: string): void {
 	const boxId = String(message?.boxId || '');
 	if (!boxId || !message?.schema?.rawSchemaJson || !message.clusterUrl || !message.database) {
+		traceFileOpen('schema.worker.skip.invalidMessage', { boxId, hasRawSchemaJson: !!message?.schema?.rawSchemaJson, hasClusterUrl: !!message?.clusterUrl, hasDatabase: !!message?.database });
 		return;
 	}
 
 	const meta = message.schemaMeta || {};
+	traceFileOpen('schema.worker.consider', {
+		boxId,
+		schemaKey,
+		forceRefresh: isForceRefresh,
+		workerUpdateNeeded: meta.workerUpdateNeeded,
+		isBackgroundRefresh: !!meta.isBackgroundRefresh,
+		cacheState: meta.cacheState || '',
+		tablesCount: meta.tablesCount,
+		columnsCount: meta.columnsCount,
+	});
 	if (meta.workerUpdateNeeded === false) {
+		traceFileOpen('schema.worker.skip.workerUpdateNotNeeded', { boxId, schemaKey });
 		return;
 	}
 
 	const isActiveBox = boxId === activeQueryEditorBoxId;
 	if (schemaDiagnosticsTrustedByBoxId[boxId] === false) {
+		traceFileOpen('schema.worker.skip.diagnosticsUntrusted', { boxId, schemaKey });
 		return;
 	}
 	if (!isActiveBox && !isForceRefresh) {
+		traceFileOpen('schema.worker.skip.inactiveBox', { boxId, activeQueryEditorBoxId, schemaKey });
 		return;
 	}
 	const shouldDeferForSuggest = !!meta.isBackgroundRefresh && !isForceRefresh && isActiveBox && isSuggestVisibleForBoxId(boxId);
@@ -265,29 +280,36 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			forceRefresh: isForceRefresh,
 			reason: meta.refreshReason || 'background-refresh'
 		};
+		traceFileOpen('schema.worker.defer.suggestVisible', { boxId, schemaKey, reason: meta.refreshReason || 'background-refresh' });
 		return;
 	}
 
 	const shouldSetAsContext = isActiveBox || isForceRefresh;
 	markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature);
+	traceFileOpen('schema.worker.apply.pending', { boxId, schemaKey, shouldSetAsContext });
 
 	const applySchema = async () => {
 		if (typeof window.__kustoSetMonacoKustoSchema !== 'function') {
+			traceFileOpen('schema.worker.apply.waitingForSetter', { boxId, schemaKey });
 			return false;
 		}
 		const currentSchemaKey = getCurrentSchemaKeyForBoxId(boxId);
 		if (!currentSchemaKey || currentSchemaKey !== schemaKey) {
+			traceFileOpen('schema.worker.apply.skip.schemaKeyMismatch', { boxId, schemaKey, currentSchemaKey });
 			return false;
 		}
 		const modelUri = getModelUriForBoxId(boxId);
 		if (!modelUri) {
+			traceFileOpen('schema.worker.apply.waitingForModelUri', { boxId, schemaKey });
 			return false;
 		}
 		const isActiveAtApply = boxId === activeQueryEditorBoxId;
 		if (!isActiveAtApply && !isForceRefresh) {
+			traceFileOpen('schema.worker.apply.skip.inactiveAtApply', { boxId, activeQueryEditorBoxId, schemaKey });
 			return false;
 		}
 		const setAsContextAtApply = isActiveAtApply || isForceRefresh;
+		traceFileOpen('schema.worker.apply.call.start', { boxId, schemaKey, modelUri, setAsContextAtApply, forceRefresh: isForceRefresh });
 		const applied = await window.__kustoSetMonacoKustoSchema(
 			message.schema.rawSchemaJson,
 			message.clusterUrl,
@@ -296,11 +318,14 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			modelUri,
 			isForceRefresh
 		);
+		traceFileOpen('schema.worker.apply.call.done', { boxId, schemaKey, applied });
 		if (!applied) {
 			return false;
 		}
 		if (setAsContextAtApply && typeof window.__kustoTriggerRevalidation === 'function') {
+			traceFileOpen('schema.worker.revalidation.start', { boxId, schemaKey });
 			window.__kustoTriggerRevalidation(boxId);
+			traceFileOpen('schema.worker.revalidation.done', { boxId, schemaKey });
 		}
 		markSchemaWorkerReady(boxId, schemaKey, schemaSignature);
 		try { delete pendingSchemaWorkerUpdateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
@@ -310,19 +335,24 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 	const retryDelays = [100, 300, 600, 1000, 2000];
 	let retryIndex = 0;
 	const retry = () => {
+		traceFileOpen('schema.worker.retry.attempt', { boxId, schemaKey, attempt: retryIndex + 1 });
 		applySchema().then((applied: boolean) => {
 			if (applied) {
+				traceFileOpen('schema.worker.retry.applied', { boxId, schemaKey, attempt: retryIndex + 1 });
 				return;
 			}
 			if (retryIndex >= retryDelays.length) {
 				markSchemaWorkerApplyFailed(boxId, schemaKey);
+				traceFileOpen('schema.worker.retry.failed', { boxId, schemaKey });
 				return;
 			}
 			const delay = retryDelays[retryIndex++];
+			traceFileOpen('schema.worker.retry.scheduled', { boxId, schemaKey, delay });
 			setTimeout(retry, delay);
 		}).catch((error: unknown) => {
 			console.error('[schemaData] Worker schema apply failed:', error);
 			markSchemaWorkerApplyFailed(boxId, schemaKey);
+			traceFileOpen('schema.worker.retry.error', { boxId, schemaKey, error: error instanceof Error ? error.message : String(error) });
 		});
 	};
 	retry();
@@ -707,11 +737,18 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				sections: Array.isArray((message as any).state?.sections) ? (message as any).state.sections.length : 0,
 				documentKind: (message as any).documentKind || '',
 			});
+			traceFileOpen('message.documentData.received', {
+				ok: !!message.ok,
+				forceReload: !!message.forceReload,
+				sections: Array.isArray((message as any).state?.sections) ? (message as any).state.sections.length : 0,
+				documentKind: (message as any).documentKind || '',
+			});
 			try {
 				{
 					clearAllSectionAgentTouched();
 					handleDocumentDataMessage(message);
 				}
+				traceFileOpen('message.documentData.handled');
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'revealTextRange':
@@ -926,6 +963,16 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			// Handled by <kw-url-section> Lit component via window message listener.
 			break;
 		case 'schemaData':
+			traceFileOpen('message.schemaData.received', {
+				boxId: message.boxId,
+				database: message.database,
+				fromCache: !!message.schemaMeta?.fromCache,
+				cacheState: message.schemaMeta?.cacheState || '',
+				workerUpdateNeeded: message.schemaMeta?.workerUpdateNeeded,
+				tablesCount: message.schemaMeta?.tablesCount,
+				columnsCount: message.schemaMeta?.columnsCount,
+				hasRawSchemaJson: !!message.schema?.rawSchemaJson,
+			});
 			// Drop late responses from older selections (e.g., user switched favorites quickly).
 			try {
 				const tok = message && typeof message.requestToken === 'string' ? message.requestToken : '';

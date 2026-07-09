@@ -6,7 +6,24 @@
 	const perfMark = (name, detail) => {
 		try { window.__kustoPerf && window.__kustoPerf.mark && window.__kustoPerf.mark(name, detail); } catch (e) { console.error('[kusto]', e); }
 	};
+	const traceStartedAt = performance.now();
+	let traceSequence = 0;
+	const traceFileOpen = (event, detail) => {
+		try {
+			if (!window.vscode || typeof window.vscode.postMessage !== 'function') return;
+			window.vscode.postMessage({
+				type: 'fileOpenTrace',
+				event,
+				timeMs: Math.round((performance.now() - traceStartedAt) * 10) / 10,
+				sequence: ++traceSequence,
+				...(detail === undefined ? {} : { detail }),
+			});
+		} catch {
+			// Tracing must never affect bootstrap behavior.
+		}
+	};
 	perfMark('webview.bootstrap.start');
+	traceFileOpen('bootstrap.start', { readyState: document.readyState });
 
 	if (!Array.isArray(window.__kustoBufferedHostMessages)) {
 		window.__kustoBufferedHostMessages = [];
@@ -183,10 +200,13 @@
 	(async () => {
 		for (const path of scriptPaths) {
 			perfMark('webview.bootstrap.script.start', { path });
+			traceFileOpen('bootstrap.script.start', { path });
 			await loadScript(path);
 			perfMark('webview.bootstrap.script.done', { path });
+			traceFileOpen('bootstrap.script.done', { path });
 			if (path === 'vscodeApi.js' && window.vscode && !window.__kustoBootstrapRequestDocumentSent) {
 				try {
+					traceFileOpen('bootstrap.requestDocument.send');
 					window.vscode.postMessage({ type: 'requestDocument' });
 					window.__kustoBootstrapRequestDocumentSent = true;
 					perfMark('webview.bootstrap.requestDocument.sent');
@@ -194,6 +214,7 @@
 			}
 		}
 		perfMark('webview.bootstrap.done');
+		traceFileOpen('bootstrap.done');
 	})().catch((err) => {
 		console.error('[kusto-query-editor] bootstrap failed', err);
 	});

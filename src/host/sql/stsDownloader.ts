@@ -4,6 +4,7 @@ import * as path from 'path';
 import * as https from 'https';
 import * as yauzl from 'yauzl';
 import { spawn } from 'child_process';
+import type { WorkbenchLogger } from '../workbenchLogger';
 
 export const STS_VERSION = '6.0.20260409.1';
 
@@ -44,11 +45,11 @@ export function getBinaryPath(globalStoragePath: string, version: string, platfo
 
 export async function ensureSts(
 	globalStoragePath: string,
-	output: vscode.OutputChannel,
+	output: WorkbenchLogger,
 ): Promise<string | null> {
 	const platform = detectPlatform();
 	if (!platform) {
-		output.appendLine(`[sts] Unsupported platform: ${process.platform}/${process.arch}`);
+		output.warn(`[sts] Unsupported platform: ${process.platform}/${process.arch}`);
 		return null;
 	}
 
@@ -56,13 +57,13 @@ export async function ensureSts(
 
 	// Check cache
 	if (fs.existsSync(binaryPath)) {
-		output.appendLine(`[sts] Binary cached at ${binaryPath}`);
+		output.info(`[sts] Binary cached at ${binaryPath}`);
 		return binaryPath;
 	}
 
 	// Download with progress
 	const url = getDownloadUrl(STS_VERSION, platform);
-	output.appendLine(`[sts] Downloading STS ${STS_VERSION} for ${platform} from ${url}`);
+	output.info(`[sts] Downloading STS ${STS_VERSION} for ${platform} from ${url}`);
 
 	const result = await vscode.window.withProgress(
 		{
@@ -103,17 +104,17 @@ export async function ensureSts(
 				// Clean up archive
 				await safeUnlink(archivePath);
 
-				output.appendLine(`[sts] Extracted to ${cacheDir}`);
+				output.info(`[sts] Extracted to ${cacheDir}`);
 
 				if (!fs.existsSync(binaryPath)) {
-					output.appendLine(`[sts] ERROR: Binary not found after extraction at ${binaryPath}`);
+					output.error(`[sts] Binary not found after extraction at ${binaryPath}`);
 					return null;
 				}
 
 				return binaryPath;
 			} catch (err) {
 				const msg = err instanceof Error ? err.message : String(err);
-				output.appendLine(`[sts] Download/extract failed: ${msg}`);
+				output.error(`[sts] Download/extract failed: ${msg}`);
 				return null;
 			}
 		},

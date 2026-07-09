@@ -13,7 +13,7 @@ function makeHost(): CopilotServiceHost {
 			},
 		} as any,
 		kustoClient: {} as any,
-		output: { appendLine: () => {} } as any,
+		output: { trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, log: () => {}, show: () => {} } as any,
 		postMessage: () => {},
 		findConnection: () => undefined,
 		getErrorMessage: (error: unknown) => error instanceof Error ? error.message : String(error),

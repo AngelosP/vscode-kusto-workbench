@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import type { SqlConnection } from './sqlConnectionManager';
 import type { SqlQueryClient } from './sqlClient';
 import type { SqlDatabaseSchemaIndex } from './sql/sqlDialect';
+import type { WorkbenchLogger } from './workbenchLogger';
 
 // ---------------------------------------------------------------------------
 // Standalone SQL schema cache helpers (used by SqlSchemaService and CachedValuesViewer)
@@ -59,7 +60,7 @@ export async function readCachedSqlSchemaFromDisk(
 interface SqlSchemaServiceHost {
 	readonly context: vscode.ExtensionContext;
 	readonly sqlClient: SqlQueryClient;
-	readonly output: vscode.OutputChannel;
+	readonly output: WorkbenchLogger;
 	postMessage(message: unknown): void;
 }
 

@@ -4,6 +4,7 @@
 import { pState } from '../shared/persistence-state';
 import { schedulePersist } from '../core/persistence';
 import { perfMark } from '../core/perf.js';
+import { traceFileOpen } from '../core/file-open-trace.js';
 
 // Sub-modules (Phase 6 decomposition) — import ensures esbuild includes them in bundle.
 import {
@@ -1714,8 +1715,10 @@ export function __kustoAreEquivalentMonacoMarkers(currentMarkers: any, nextMarke
 
 function ensureMonaco() {
 	if (monacoReadyPromise) {
+		traceFileOpen('monaco.ensure.reuseExistingPromise');
 		return monacoReadyPromise;
 	}
+	traceFileOpen('monaco.ensure.start');
 
 	const waitForAmdLoader = () => {
 		return new Promise((resolve, reject) => {
@@ -1725,11 +1728,13 @@ function ensureMonaco() {
 				try {
 					const req = (typeof require !== 'undefined') ? require : (window && window.require ? window.require : undefined);
 					if (typeof req === 'function' && typeof req.config === 'function') {
+						traceFileOpen('monaco.amdLoader.ready', { attempts });
 						resolve(req);
 						return;
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				if (attempts >= 60) {
+					traceFileOpen('monaco.amdLoader.timeout', { attempts });
 					reject(new Error('Monaco AMD loader (require.js) not available in webview.'));
 					return;
 				}
@@ -1741,6 +1746,7 @@ function ensureMonaco() {
 
 	setMonacoReadyPromise(new Promise((resolve, reject) => {
 		try {
+			traceFileOpen('monaco.waitForAmdLoader.start');
 			waitForAmdLoader().then((req) => {
 				// Monaco workers run via AMD (workerMain.js → importScripts kustoWorker.js).
 				// MonacoEnvironment.getWorkerUrl is configured in queryEditor.html
@@ -1748,6 +1754,7 @@ function ensureMonaco() {
 
 				try {
 					(req as any).config({ paths: { vs: _win.__kustoQueryEditorConfig!.monacoVsUri } });
+					traceFileOpen('monaco.require.configured');
 				} catch (e) {
 					reject(e);
 					return;
@@ -1756,10 +1763,12 @@ function ensureMonaco() {
 				// Load Monaco editor first, then monaco-kusto contribution module
 				// (monaco-kusto depends on Monaco's Emitter and other core classes being available)
 				// NOTE: monaco-kusto requires 'vs/editor/editor.main' - not the hashed API file
+				traceFileOpen('monaco.editorMain.load.start');
 				(req as any)(
 					['vs/editor/editor.main'],
 					() => {
 						try {
+							traceFileOpen('monaco.editorMain.load.done');
 							if (typeof monaco === 'undefined' || !monaco || !monaco.editor) {
 								throw new Error('Monaco loaded but global `monaco` API is missing.');
 							}
@@ -1869,8 +1878,10 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 							} catch (e) { console.error('[kusto]', e); }
 
 							// Now load monaco-kusto after Monaco is fully initialized
+							traceFileOpen('monaco.kustoContribution.load.start');
 							(req as any)(['vs/language/kusto/monaco.contribution'], () => {
 								try {
+									traceFileOpen('monaco.kustoContribution.load.done');
 					__kustoDisableMonacoKustoWorkerHover(monaco);
 					// monaco.languages.register({ id: 'kusto' });
 
@@ -2087,10 +2098,15 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 					// subsequent schemas use addDatabaseToSchema to ADD without replacing
 					_win.__kustoSetMonacoKustoSchema = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false) {
 						// Serialize schema operations to prevent race conditions
+						traceFileOpen('monaco.schema.queue.requested', { clusterUrl, database, setAsContext, modelUri, forceRefresh });
 						const operationPromise = __kustoSchemaOperationQueue.then(async () => {
-							return await __kustoSetMonacoKustoSchemaInternal!(rawSchemaJson, clusterUrl, database, setAsContext, modelUri, forceRefresh);
+							traceFileOpen('monaco.schema.queue.start', { clusterUrl, database, setAsContext, modelUri, forceRefresh });
+							const result = await __kustoSetMonacoKustoSchemaInternal!(rawSchemaJson, clusterUrl, database, setAsContext, modelUri, forceRefresh);
+							traceFileOpen('monaco.schema.queue.done', { clusterUrl, database, result });
+							return result;
 						}).catch((e: any) => {
 							console.error('[monaco-kusto] Queued operation failed:', e);
+							traceFileOpen('monaco.schema.queue.error', { clusterUrl, database, error: e instanceof Error ? e.message : String(e) });
 							return false;
 						});
 						__kustoSchemaOperationQueue = operationPromise;
@@ -2101,7 +2117,9 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false) {
 						// Resolve which Monaco model this operation applies to
 						const models = monaco?.editor?.getModels ? monaco.editor.getModels() : [];
+						traceFileOpen('monaco.schema.internal.start', { clusterUrl, database, setAsContext, modelUri, forceRefresh, modelCount: models?.length || 0, rawKind: typeof rawSchemaJson });
 						if (!models || models.length === 0) {
+							traceFileOpen('monaco.schema.internal.skip.noModels', { clusterUrl, database });
 							return false;
 						}
 						// Install model-dispose hook (once) to clean up per-model caches.
@@ -2128,12 +2146,14 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 						__kustoMonacoInitializedByModel[modelKey] = !!__kustoMonacoInitializedByModel[modelKey];
 
 						const schemaKey = kustoDatabaseKey(clusterUrl, database);
+						traceFileOpen('monaco.schema.internal.modelResolved', { schemaKey, modelKey });
 						
 						// Normalize cluster URLs for comparison (used for marker clearing)
 						const normalizeClusterUrl = (url: any) => kustoClusterKey(url);
 
 						// ── Decision: delegated to the tested SchemaTracker ──
 						const { operation, alreadyLoaded } = __kustoSchemaTracker.decide(modelKey, clusterUrl, database, setAsContext, forceRefresh);
+						traceFileOpen('monaco.schema.decision', { schemaKey, modelKey, action: operation.action, alreadyLoaded, setAsContext, forceRefresh });
 
 						// ── Schema diagnostics: decision ──
 						console.log(
@@ -2156,6 +2176,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 						});
 
 						if (operation.action === 'skip') {
+							traceFileOpen('monaco.schema.internal.skip.decision', { schemaKey, modelKey });
 							return true;
 						}
 						// If the decision says we need to act but the schema was "already loaded",
@@ -2168,29 +2189,37 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 						try {
 							let applied = false;
 							if (!rawSchemaJson || !clusterUrl || !database) {
+								traceFileOpen('monaco.schema.internal.skip.missingInput', { hasRawSchemaJson: !!rawSchemaJson, hasClusterUrl: !!clusterUrl, hasDatabase: !!database });
 								return false;
 							}
 							
 							// Normalize the schema JSON
 							let schemaObj = rawSchemaJson;
 							if (typeof rawSchemaJson === 'string') {
+								traceFileOpen('monaco.schema.parse.start', { schemaKey });
 								try { schemaObj = JSON.parse(rawSchemaJson); } catch (e) { console.error('[monaco-kusto] Failed to parse schema JSON:', e); return false; }
+								traceFileOpen('monaco.schema.parse.done', { schemaKey });
 							}
 							if (schemaObj && schemaObj.Databases && !schemaObj.Plugins) {
 								schemaObj = { Plugins: [], ...schemaObj };
 							}
 							schemaObj = __kustoPrepareSchemaForKustoWorker(schemaObj);
+							traceFileOpen('monaco.schema.prepare.done', { schemaKey, databaseCount: schemaObj?.Databases ? Object.keys(schemaObj.Databases).length : undefined });
 							
 							// Get the kusto worker
 							if (monaco && monaco.languages && monaco.languages.kusto && typeof monaco.languages.kusto.getKustoWorker === 'function') {
 								const timeoutPromise = new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout getting kusto worker')), 10000));
+								traceFileOpen('monaco.schema.workerAccessor.start', { schemaKey });
 								const workerAccessor = await Promise.race([monaco.languages.kusto.getKustoWorker(), timeoutPromise]);
+								traceFileOpen('monaco.schema.workerAccessor.done', { schemaKey });
 								
 								if (modelKey) {
+									traceFileOpen('monaco.schema.workerProxy.start', { schemaKey, modelKey });
 									const worker = await Promise.race([
 										workerAccessor(monaco.Uri.parse(modelKey)),
 										new Promise((_, reject) => setTimeout(() => reject(new Error('Timeout getting worker proxy')), 10000))
 									]);
+									traceFileOpen('monaco.schema.workerProxy.done', { schemaKey, hasWorker: !!worker });
 									if (!worker) return false;
 									
 									// Resolve database name case from schema
@@ -2207,7 +2236,9 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 									if (operation.action === 'first-load') {
 										if (typeof worker.setSchemaFromShowSchema === 'function') {
 											try {
+												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.start', { schemaKey, action: operation.action });
 												await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
+												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.done', { schemaKey, action: operation.action });
 												recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-first-load', { modelKey, clusterUrl, database: databaseInContext });
 												await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext);
 												__kustoSchemaTracker.recordFirstLoad(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj);
@@ -2222,7 +2253,9 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 									} else if (operation.action === 'replace') {
 										if (typeof worker.setSchemaFromShowSchema === 'function') {
 											try {
+												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.start', { schemaKey, action: operation.action });
 												await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
+												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.done', { schemaKey, action: operation.action });
 												recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-replace', { modelKey, clusterUrl, database: databaseInContext });
 												await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext);
 												const otherKeys = __kustoSchemaTracker.recordReplace(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj);
@@ -2240,6 +2273,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												);
 												
 												// Re-add all other cached schemas
+												traceFileOpen('monaco.schema.readdCached.start', { schemaKey, count: otherKeys.length });
 												for (const otherKey of otherKeys) {
 													const cached = __kustoSchemaTracker.schemaCache[otherKey];
 													if (cached?.rawSchemaJson) {
@@ -2255,11 +2289,13 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 														} catch (readdError) { console.error('[kusto]', readdError); }
 													}
 												}
+												traceFileOpen('monaco.schema.readdCached.done', { schemaKey, count: otherKeys.length });
 
 												// Re-add cross-cluster schemas that were previously loaded.
 												// The replace above wiped the worker schema, but __kustoCrossClusterSchemas
 												// still has the cached rawSchemaJson — re-add them so autocomplete and
 												// diagnostics continue to work for cross-cluster/cross-database references.
+												traceFileOpen('monaco.schema.readdCrossCluster.start', { schemaKey, count: Object.keys(__kustoCrossClusterSchemas).length });
 												for (const [ccKey, ccEntry] of Object.entries(__kustoCrossClusterSchemas)) {
 													if (!ccEntry || ccEntry.status !== 'loaded' || !ccEntry.rawSchemaJson) continue;
 													try {
@@ -2301,6 +2337,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												console.error('[monaco-kusto] REPLACE: setSchemaFromShowSchema failed:', schemaError);
 											}
 										}
+										traceFileOpen('monaco.schema.readdCrossCluster.done', { schemaKey, count: Object.keys(__kustoCrossClusterSchemas).length });
 									// ── ADD ──────────────────────────────────────────────────
 									} else if (operation.action === 'add') {
 										let alreadyLoadedGlobally = !forceRefresh && __kustoSchemaTracker.isLoadedGlobally(schemaKey);
@@ -2318,13 +2355,17 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 										}
 										if (!alreadyLoadedGlobally && typeof worker.normalizeSchema === 'function' && typeof worker.addDatabaseToSchema === 'function') {
 											try {
+												traceFileOpen('monaco.schema.worker.normalizeSchema.start', { schemaKey });
 												const engineSchema = await worker.normalizeSchema(__kustoPrepareSchemaForKustoWorker(schemaObj), clusterUrl, databaseInContext);
+												traceFileOpen('monaco.schema.worker.normalizeSchema.done', { schemaKey });
 												let databaseSchema = engineSchema?.database;
 												if (!databaseSchema && engineSchema?.cluster?.databases) {
 													databaseSchema = engineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === databaseInContext.toLowerCase());
 												}
 												if (databaseSchema) {
+													traceFileOpen('monaco.schema.worker.addDatabaseToSchema.start', { schemaKey });
 													await worker.addDatabaseToSchema(modelKey, clusterUrl, databaseSchema);
+													traceFileOpen('monaco.schema.worker.addDatabaseToSchema.done', { schemaKey });
 													recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-add', { modelKey, clusterUrl, database: databaseInContext });
 													await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext);
 													__kustoSchemaTracker.recordAdd(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj, setAsContext);
@@ -3081,19 +3122,21 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 					// Start the theme observer to handle dynamic theme changes in VS Code
 					startMonacoThemeObserver(monaco);
 					
+					traceFileOpen('monaco.ensure.resolved');
 					resolve(monaco);
 								} catch (e) {
 									reject(e);
 								}
-							}, (e: any) => reject(e)); // monaco-kusto load error handler
+							}, (e: any) => { traceFileOpen('monaco.kustoContribution.load.error', { message: e instanceof Error ? e.message : String(e) }); reject(e); }); // monaco-kusto load error handler
 						} catch (e) {
 							reject(e);
 						}
 					},
-					(e: any) => reject(e)
+					(e: any) => { traceFileOpen('monaco.editorMain.load.error', { message: e instanceof Error ? e.message : String(e) }); reject(e); }
 				);
-			}).catch((e) => reject(e));
+			}).catch((e) => { traceFileOpen('monaco.waitForAmdLoader.error', { message: e instanceof Error ? e.message : String(e) }); reject(e); });
 		} catch (e) {
+			traceFileOpen('monaco.ensure.error', { message: e instanceof Error ? e.message : String(e) });
 			reject(e);
 		}
 	}));
@@ -4124,6 +4167,7 @@ function initQueryEditor(boxId: any) {
 
 		queryEditors[boxId] = editor;
 		perfMark('webview.monaco.queryEditor.ready', { boxId });
+		traceFileOpen('monaco.queryEditor.ready', { boxId, editorCount: Object.keys(queryEditors || {}).length });
 		try {
 			const cursorStatus = createMonacoCursorStatusPublisher({
 				editor,

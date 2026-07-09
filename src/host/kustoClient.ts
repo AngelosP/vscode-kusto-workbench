@@ -10,6 +10,7 @@ import {
 	parseDatabaseSchemaResultWithRaw as parseDatabaseSchemaResultWithRawFn
 } from './kustoClientUtils';
 import { exportKustoClusterEndpoint, kustoDatabaseKey } from '../shared/kustoClusterUrls';
+import { getWorkbenchLogger } from './workbenchLogger';
 
 /**
  * Server-side resource usage statistics extracted from the Kusto response.
@@ -923,7 +924,7 @@ export class KustoQueryClient {
 			
 			return databases;
 		} catch (error) {
-			console.error('Error fetching databases:', error);
+			getWorkbenchLogger().error('Error fetching databases:', error instanceof Error ? error : String(error));
 			throw new Error(`Failed to fetch databases: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
@@ -986,7 +987,7 @@ export class KustoQueryClient {
 				}
 			};
 		} catch (error) {
-			console.error('Error executing query:', error);
+			getWorkbenchLogger().error('Error executing query:', error instanceof Error ? error : String(error));
 			let errorMessage = 'Unknown error';
 			if (error instanceof Error) {
 				errorMessage = error.message;
@@ -1150,7 +1151,7 @@ export class KustoQueryClient {
 				} catch {
 					// ignore
 				}
-				console.error('Error executing query:', error);
+				getWorkbenchLogger().error('Error executing query:', error instanceof Error ? error : String(error));
 				let errorMessage = 'Unknown error';
 				if (error instanceof Error) {
 					errorMessage = error.message;

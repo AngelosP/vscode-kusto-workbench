@@ -1,6 +1,7 @@
 import * as vscode from 'vscode';
 import { isKustoTutorialTriggerDocument, isKustoTutorialTriggerUri } from './tutorialNotificationService';
 import type { TutorialNotificationService } from './tutorialNotificationService';
+import { getWorkbenchLogger } from '../workbenchLogger';
 
 type TutorialNotificationTriggerService = Pick<TutorialNotificationService, 'checkOnActivation' | 'checkOnKustoFileOpen'>;
 
@@ -25,7 +26,7 @@ export function registerTutorialNotificationTriggers(context: vscode.ExtensionCo
 		try {
 			return await vscode.workspace.openTextDocument(uri);
 		} catch (error) {
-			console.error('[Kusto Workbench] Failed to resolve Did you know trigger document:', error);
+			getWorkbenchLogger().error('[Kusto Workbench] Failed to resolve Did you know trigger document:', error instanceof Error ? error : String(error));
 			return undefined;
 		}
 	};
@@ -48,7 +49,7 @@ export function registerTutorialNotificationTriggers(context: vscode.ExtensionCo
 		}
 		pendingChecksByUri.add(key);
 		void notificationService.checkOnKustoFileOpen(doc).catch(error => {
-			console.error('[Kusto Workbench] Failed to check Did you know file-open notifications:', error);
+			getWorkbenchLogger().error('[Kusto Workbench] Failed to check Did you know file-open notifications:', error instanceof Error ? error : String(error));
 		}).finally(() => {
 			pendingChecksByUri.delete(key);
 		});
@@ -65,7 +66,7 @@ export function registerTutorialNotificationTriggers(context: vscode.ExtensionCo
 	void notificationService.checkOnActivation()
 		.then(() => checkOnKustoFileOpen(findOpenTriggerDocument()))
 		.catch(error => {
-			console.error('[Kusto Workbench] Failed to check Did you know activation notifications:', error);
+			getWorkbenchLogger().error('[Kusto Workbench] Failed to check Did you know activation notifications:', error instanceof Error ? error : String(error));
 		});
 
 	context.subscriptions.push(

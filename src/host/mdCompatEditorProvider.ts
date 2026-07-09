@@ -11,6 +11,7 @@ import { normalizeSection, formatSectionDiffContent, KqlxEditorProvider } from '
 import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
 import { EditorCursorStatusBar, type EditorCursorStatusPayload } from './editorCursorStatusBar';
 import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
+import { getWorkbenchLogger } from './workbenchLogger';
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
@@ -574,7 +575,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 							`${sectionLabel} — Markdown (Saved ↔ Current)`
 						);
 					} catch (err) {
-						console.error('[kusto] showSectionDiff error:', err);
+						getWorkbenchLogger().error('[kusto] showSectionDiff error:', err instanceof Error ? err : String(err));
 					}
 					return;
 				}
