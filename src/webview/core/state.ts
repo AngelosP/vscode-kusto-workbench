@@ -31,6 +31,7 @@ export type SchemaWorkerReadyState = {
 	status: 'pending' | 'ready' | 'error';
 	schemaKey?: string;
 	schemaSignature?: string;
+	modelUri?: string;
 	updatedAt: number;
 };
 export type PendingSchemaWorkerUpdate = {
@@ -43,7 +44,7 @@ export type PendingSchemaWorkerUpdate = {
 	reason?: string;
 };
 export const schemaWorkerReadyByBoxId: Record<string, SchemaWorkerReadyState | undefined> = {};
-export const schemaWorkerReadyWaitersByBoxId: Record<string, Array<{ schemaKey?: string; resolve: (ready: boolean) => void }>> = {};
+export const schemaWorkerReadyWaitersByBoxId: Record<string, Array<{ schemaKey?: string; modelUri?: string; resolve: (ready: boolean) => void }>> = {};
 export const pendingSchemaWorkerUpdateByBoxId: Record<string, PendingSchemaWorkerUpdate | undefined> = {};
 export const missingClusterDetectTimersByBoxId: Record<string, any> = {};
 export const lastQueryTextByBoxId: Record<string, any> = {};
@@ -91,7 +92,7 @@ export function setAutoTriggerAutocompleteEnabled(val: boolean) { autoTriggerAut
 export function setCopilotInlineCompletionsEnabled(val: boolean) { copilotInlineCompletionsEnabled = val; try { _win.copilotInlineCompletionsEnabled = val; } catch (e) { console.error('[kusto]', e); } }
 export function setSqlConnections(val: any[]) { sqlConnections.length = 0; sqlConnections.push(...val); try { _win.sqlConnections = sqlConnections; } catch (e) { console.error('[kusto]', e); } }
 
-function resolveSchemaWorkerWaiters(boxId: string, ready: boolean, schemaKey?: string): void {
+function resolveSchemaWorkerWaiters(boxId: string, ready: boolean, schemaKey?: string, modelUri?: string): void {
 	try {
 		const waiters = schemaWorkerReadyWaitersByBoxId[boxId];
 		if (!waiters || waiters.length === 0) {
@@ -99,7 +100,9 @@ function resolveSchemaWorkerWaiters(boxId: string, ready: boolean, schemaKey?: s
 		}
 		const remaining: typeof waiters = [];
 		for (const waiter of waiters) {
-			if (!waiter.schemaKey || !schemaKey || waiter.schemaKey === schemaKey) {
+			const schemaMatches = !waiter.schemaKey || !schemaKey || waiter.schemaKey === schemaKey;
+			const modelMatches = !waiter.modelUri || (!!modelUri && waiter.modelUri === modelUri);
+			if (schemaMatches && modelMatches) {
 				try { waiter.resolve(ready); } catch (e) { console.error('[kusto]', e); }
 			} else {
 				remaining.push(waiter);
@@ -113,38 +116,40 @@ function resolveSchemaWorkerWaiters(boxId: string, ready: boolean, schemaKey?: s
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-export function markSchemaWorkerApplyPending(boxId: string, schemaKey: string, schemaSignature?: string): void {
+export function markSchemaWorkerApplyPending(boxId: string, schemaKey: string, schemaSignature?: string, modelUri?: string): void {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	schemaWorkerReadyByBoxId[id] = { status: 'pending', schemaKey, schemaSignature, updatedAt: Date.now() };
+	schemaWorkerReadyByBoxId[id] = { status: 'pending', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() };
 }
 
-export function markSchemaWorkerReady(boxId: string, schemaKey: string, schemaSignature?: string): void {
+export function markSchemaWorkerReady(boxId: string, schemaKey: string, schemaSignature?: string, modelUri?: string): void {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	schemaWorkerReadyByBoxId[id] = { status: 'ready', schemaKey, schemaSignature, updatedAt: Date.now() };
-	resolveSchemaWorkerWaiters(id, true, schemaKey);
+	schemaWorkerReadyByBoxId[id] = { status: 'ready', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() };
+	resolveSchemaWorkerWaiters(id, true, schemaKey, modelUri);
 }
 
-export function markSchemaWorkerApplyFailed(boxId: string, schemaKey?: string): void {
+export function markSchemaWorkerApplyFailed(boxId: string, schemaKey?: string, modelUri?: string): void {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	schemaWorkerReadyByBoxId[id] = { status: 'error', schemaKey, updatedAt: Date.now() };
-	resolveSchemaWorkerWaiters(id, false, schemaKey);
+	schemaWorkerReadyByBoxId[id] = { status: 'error', schemaKey, modelUri, updatedAt: Date.now() };
+	resolveSchemaWorkerWaiters(id, false, schemaKey, modelUri);
 }
 
-export function isSchemaWorkerReady(boxId: string, schemaKey?: string): boolean {
+export function isSchemaWorkerReady(boxId: string, schemaKey?: string, modelUri?: string): boolean {
 	const id = String(boxId || '').trim();
 	if (!id) return false;
 	const state = schemaWorkerReadyByBoxId[id];
 	if (!state || state.status !== 'ready') return false;
-	return !schemaKey || !state.schemaKey || state.schemaKey === schemaKey;
+	if (schemaKey && state.schemaKey && state.schemaKey !== schemaKey) return false;
+	if (modelUri && state.modelUri && state.modelUri !== modelUri) return false;
+	return true;
 }
 
-export function waitForSchemaWorkerReady(boxId: string, schemaKey?: string, timeoutMs: number = 900): Promise<boolean> {
+export function waitForSchemaWorkerReady(boxId: string, schemaKey?: string, timeoutMs: number = 900, modelUri?: string): Promise<boolean> {
 	const id = String(boxId || '').trim();
 	if (!id) return Promise.resolve(false);
-	if (isSchemaWorkerReady(id, schemaKey)) {
+	if (isSchemaWorkerReady(id, schemaKey, modelUri)) {
 		return Promise.resolve(true);
 	}
 	return new Promise(resolve => {
@@ -159,7 +164,7 @@ export function waitForSchemaWorkerReady(boxId: string, schemaKey?: string, time
 			resolve(ready);
 		};
 		try {
-			(schemaWorkerReadyWaitersByBoxId[id] = schemaWorkerReadyWaitersByBoxId[id] || []).push({ schemaKey, resolve: finish });
+			(schemaWorkerReadyWaitersByBoxId[id] = schemaWorkerReadyWaitersByBoxId[id] || []).push({ schemaKey, modelUri, resolve: finish });
 			timeoutId = window.setTimeout(() => {
 				try {
 					const waiters = schemaWorkerReadyWaitersByBoxId[id] || [];
@@ -168,7 +173,7 @@ export function waitForSchemaWorkerReady(boxId: string, schemaKey?: string, time
 						delete schemaWorkerReadyWaitersByBoxId[id];
 					}
 				} catch (e) { console.error('[kusto]', e); }
-				finish(isSchemaWorkerReady(id, schemaKey));
+				finish(isSchemaWorkerReady(id, schemaKey, modelUri));
 			}, Math.max(0, timeoutMs));
 		} catch {
 			finish(false);

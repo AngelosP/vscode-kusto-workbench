@@ -10,6 +10,12 @@ export interface CrossClusterSchemaRef {
 	database: string;
 }
 
+export interface CrossClusterSchemaRefWithRange extends CrossClusterSchemaRef {
+	range: [number, number];
+	clusterNameRange?: [number, number];
+	databaseNameRange: [number, number];
+}
+
 function normalizeClusterHost(value: string | null | undefined): string {
 	return kustoClusterKey(value);
 }
@@ -120,7 +126,7 @@ function previousMeaningfulIndex(text: string, ranges: Array<[number, number]>, 
 	return -1;
 }
 
-function parseFunctionArgument(text: string, openParenIndex: number): { value: string; endIndex: number } | null {
+function parseFunctionArgument(text: string, openParenIndex: number): { value: string; valueRange: [number, number]; endIndex: number } | null {
 	let i = openParenIndex + 1;
 	while (i < text.length && /\s/.test(text[i])) i++;
 	if (i >= text.length) {
@@ -129,6 +135,7 @@ function parseFunctionArgument(text: string, openParenIndex: number): { value: s
 	const quote = text[i] === "'" || text[i] === '"' ? text[i] : '';
 	let value = '';
 	if (quote) {
+		const valueStart = i + 1;
 		i++;
 		while (i < text.length) {
 			const ch = text[i];
@@ -143,30 +150,33 @@ function parseFunctionArgument(text: string, openParenIndex: number): { value: s
 				continue;
 			}
 			if (ch === quote) {
+				const valueEnd = i;
 				i++;
 				while (i < text.length && /\s/.test(text[i])) i++;
 				if (text[i] !== ')') {
 					return null;
 				}
-				return { value, endIndex: i + 1 };
+				return { value, valueRange: [valueStart, valueEnd], endIndex: i + 1 };
 			}
 			value += ch;
 			i++;
 		}
 		return null;
 	}
+	const valueStart = i;
 	while (i < text.length && text[i] !== ')' && !/\s/.test(text[i])) {
 		value += text[i];
 		i++;
 	}
+	const valueEnd = i;
 	while (i < text.length && /\s/.test(text[i])) i++;
 	if (!value || text[i] !== ')') {
 		return null;
 	}
-	return { value, endIndex: i + 1 };
+	return { value, valueRange: [valueStart, valueEnd], endIndex: i + 1 };
 }
 
-function readFunctionCallArgument(text: string, functionName: string, startIndex: number): { value: string; callStart: number; callEnd: number } | null {
+function readFunctionCallArgument(text: string, functionName: string, startIndex: number): { value: string; valueRange: [number, number]; callStart: number; callEnd: number } | null {
 	const callStart = Math.max(0, startIndex);
 	let i = callStart;
 	while (i < text.length && /\s/.test(text[i])) i++;
@@ -188,11 +198,19 @@ function readFunctionCallArgument(text: string, functionName: string, startIndex
 	if (!parsed) {
 		return null;
 	}
-	return { value: parsed.value, callStart: i, callEnd: parsed.endIndex };
+	return { value: parsed.value, valueRange: parsed.valueRange, callStart: i, callEnd: parsed.endIndex };
 }
 
 export function extractCrossClusterRefs(queryText: unknown, currentContext?: CrossClusterSchemaContext | null): CrossClusterSchemaRef[] {
 	const refs: CrossClusterSchemaRef[] = [];
+	for (const ref of extractCrossClusterRefsWithRanges(queryText, currentContext)) {
+		addUniqueRef(refs, { clusterName: ref.clusterName, database: ref.database });
+	}
+	return refs;
+}
+
+export function extractCrossClusterRefsWithRanges(queryText: unknown, currentContext?: CrossClusterSchemaContext | null): CrossClusterSchemaRefWithRange[] {
+	const refs: CrossClusterSchemaRefWithRange[] = [];
 	if (typeof queryText !== 'string' || !queryText) {
 		return refs;
 	}
@@ -247,7 +265,13 @@ export function extractCrossClusterRefs(queryText: unknown, currentContext?: Cro
 			}
 		}
 
-		addUniqueRef(refs, { clusterName, database });
+		refs.push({
+			clusterName,
+			database,
+			range: [match.index, databaseParsed.callEnd],
+			clusterNameRange: clusterParsed.valueRange,
+			databaseNameRange: databaseParsed.valueRange,
+		});
 	}
 
 	const dbOnlyPattern = /\bdatabase\s*\(/gi;
@@ -270,7 +294,12 @@ export function extractCrossClusterRefs(queryText: unknown, currentContext?: Cro
 		if (!database || database.toLowerCase() === currentDbLower) {
 			continue;
 		}
-		addUniqueRef(refs, { clusterName: null, database });
+		refs.push({
+			clusterName: null,
+			database,
+			range: [match.index, databaseParsed.endIndex],
+			databaseNameRange: databaseParsed.valueRange,
+		});
 	}
 
 	return refs;

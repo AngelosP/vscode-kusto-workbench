@@ -21,6 +21,8 @@ import {
 	schemaByBoxId,
 	schemaDiagnosticsTrustedByBoxId,
 	schemaMetaByBoxId,
+	schemaWorkerReadyByBoxId,
+	schemaWorkerReadyWaitersByBoxId,
 	pendingSchemaWorkerUpdateByBoxId,
 	schemaFetchInFlightByBoxId,
 	lastSchemaRequestAtByBoxId,
@@ -1455,6 +1457,20 @@ export function removeQueryBox( boxId: any) {
 
 	// Remove from tracked list
 	setQueryBoxes(queryBoxes.filter((id: any) => id !== boxId));
+	try { delete schemaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+	try { delete schemaMetaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+	try { delete pendingSchemaWorkerUpdateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+	try { delete schemaWorkerReadyByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+	try {
+		const waiters = schemaWorkerReadyWaitersByBoxId[boxId] || [];
+		delete schemaWorkerReadyWaitersByBoxId[boxId];
+		for (const waiter of waiters) {
+			try { waiter.resolve(false); } catch (e) { console.error('[kusto]', e); }
+		}
+	} catch (e) { console.error('[kusto]', e); }
+	try { if (schemaFetchInFlightByBoxId) schemaFetchInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
+	try { if (lastSchemaRequestAtByBoxId) lastSchemaRequestAtByBoxId[boxId] = 0; } catch (e) { console.error('[kusto]', e); }
+	try { delete schemaRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { delete lastQueryTextByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { delete schemaDiagnosticsTrustedByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { delete missingClusterUrlsByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }

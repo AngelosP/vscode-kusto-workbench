@@ -77,7 +77,21 @@ import { createMonacoCursorStatusPublisher } from '../shared/editor-cursor-statu
 import { decideSchemaOperation } from '../shared/schema-decision';
 import { SchemaTracker } from '../shared/schema-tracker';
 import { extractCrossClusterRefs, getCrossClusterSchemaCheckDelay } from '../shared/cross-cluster-schema';
-import { buildKustoFunctionBodyFromOutputColumns, ensureKustoFunctionBodiesForSchema } from '../shared/kusto-function-output-schema';
+import {
+	applyKustoColumnPipelineStages,
+	buildKustoFunctionBodyFromOutputColumns,
+	enhanceKustoFunctionBodiesForSchemaChunked,
+	findKustoRawSchemaEntity,
+	getKustoColumnNamesFromSchemaEntity,
+	inferKustoRawFunctionBodyColumns,
+	prepareKustoSchemaForWorkerFast,
+	prepareKustoSchemaForWorkerFull,
+	resolveKustoRawSchemaEntityColumns,
+	resolveKustoRawSchemaEntityColumnsDeep,
+	syntheticKustoFunctionBodyForColumnNames,
+} from '../shared/kusto-function-output-schema';
+import { filterLoadedCrossClusterKs207Markers } from '../shared/kusto-diagnostic-marker-filter';
+import { decideKustoSupplementalCompletionPolicy } from '../shared/kusto-supplemental-completion-policy';
 import { kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
 import {
 	connections,
@@ -90,6 +104,7 @@ import {
 	copilotInlineCompletionsEnabled,
 	caretDocsEnabled,
 	queryEditors,
+	queryBoxes,
 	queryEditorBoxByModelUri,
 	schemaByBoxId,
 	schemaDiagnosticsTrustedByBoxId,
@@ -163,10 +178,15 @@ function __kustoGetSchemaContextForBox(boxId: string): { connectionId: string; d
 	}
 }
 
-async function __kustoFlushPendingSchemaWorkerUpdateForBox(boxId: string): Promise<boolean> {
+async function __kustoFlushPendingSchemaWorkerUpdateForBox(boxId: string, options: { setAsContext?: boolean } = {}): Promise<boolean> {
 	try {
 		const pending = pendingSchemaWorkerUpdateByBoxId[boxId];
 		if (!pending || !pending.rawSchemaJson) {
+			return false;
+		}
+		const setAsContext = options.setAsContext !== false;
+		if (!setAsContext) {
+			traceFileOpen('monaco.schema.pending.skip.contextSwitchNotAllowed', { boxId, schemaKey: pending.schemaKey, reason: pending.reason || '' });
 			return false;
 		}
 		const currentContext = __kustoGetSchemaContextForBox(boxId);
@@ -180,21 +200,21 @@ async function __kustoFlushPendingSchemaWorkerUpdateForBox(boxId: string): Promi
 		if (!modelUri || typeof _win.__kustoSetMonacoKustoSchema !== 'function') {
 			return false;
 		}
-		markSchemaWorkerApplyPending(boxId, pending.schemaKey, pending.schemaSignature);
+		markSchemaWorkerApplyPending(boxId, pending.schemaKey, pending.schemaSignature, modelUri);
 		const applied = await _win.__kustoSetMonacoKustoSchema(
 			pending.rawSchemaJson,
 			pending.clusterUrl,
 			pending.database,
-			true,
+			setAsContext,
 			modelUri,
 			!!pending.forceRefresh
 		);
 		if (!applied) {
-			markSchemaWorkerApplyFailed(boxId, pending.schemaKey);
+			markSchemaWorkerApplyFailed(boxId, pending.schemaKey, modelUri);
 			return false;
 		}
-		try { if (typeof __kustoTriggerRevalidation === 'function') __kustoTriggerRevalidation(boxId); } catch (e) { console.error('[kusto]', e); }
-		markSchemaWorkerReady(boxId, pending.schemaKey, pending.schemaSignature);
+		try { if (setAsContext && typeof __kustoTriggerRevalidation === 'function') __kustoTriggerRevalidation(boxId); } catch (e) { console.error('[kusto]', e); }
+		markSchemaWorkerReady(boxId, pending.schemaKey, pending.schemaSignature, modelUri);
 		try { delete pendingSchemaWorkerUpdateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 		return true;
 	} catch (error) {
@@ -263,11 +283,12 @@ async function __kustoPrepareSchemaForAutocomplete(ed: any, traceId?: string): P
 			return 'blocked';
 		}
 
-		if (!isSchemaWorkerReady(boxId, context.schemaKey)) {
+		const primaryModelUri = ed?.getModel?.()?.uri?.toString?.() || '';
+		if (!isSchemaWorkerReady(boxId, context.schemaKey, primaryModelUri || undefined)) {
 			if (typeof __kustoUpdateSchemaForFocusedBox === 'function') {
 				try { void __kustoUpdateSchemaForFocusedBox(boxId, false); } catch (e) { console.error('[kusto]', e); }
 			}
-			const primaryReady = await waitForSchemaWorkerReady(boxId, context.schemaKey, CROSS_CLUSTER_SCHEMA_AUTOCOMPLETE_WAIT_MS);
+			const primaryReady = await waitForSchemaWorkerReady(boxId, context.schemaKey, CROSS_CLUSTER_SCHEMA_AUTOCOMPLETE_WAIT_MS, primaryModelUri || undefined);
 			recordAutocompleteTrace(traceId, 'schema-prepare-primary-wait', { boxId, schemaKey: context.schemaKey, ready: primaryReady });
 			__kustoTraceCrossCluster('autocomplete-primary-wait-finished', { boxId, schemaKey: context.schemaKey, ready: primaryReady });
 			if (!primaryReady) {
@@ -362,14 +383,12 @@ async function __kustoPrepareSchemaForAutocomplete(ed: any, traceId?: string): P
 	}
 }
 
-function __kustoExtractAutocompleteSchemaScopeText(ed: any): string {
+function __kustoExtractAutocompleteSchemaScopeTextForModelPosition(model: any, position: any): string {
 	try {
-		const model = ed && typeof ed.getModel === 'function' ? ed.getModel() : null;
-		const pos = ed && typeof ed.getPosition === 'function' ? ed.getPosition() : null;
 		const fullText = model && typeof model.getValue === 'function' ? String(model.getValue() || '') : '';
-		if (model && pos && fullText) {
+		if (model && position && fullText) {
 			const offset = typeof model.getOffsetAt === 'function'
-				? model.getOffsetAt(pos)
+				? model.getOffsetAt(position)
 				: fullText.length;
 			const statements = __kustoSplitTopLevelStatements(fullText);
 			if (Array.isArray(statements) && statements.length) {
@@ -414,6 +433,16 @@ function __kustoExtractAutocompleteSchemaScopeText(ed: any): string {
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
+	return '';
+}
+
+function __kustoExtractAutocompleteSchemaScopeText(ed: any): string {
+	try {
+		const model = ed && typeof ed.getModel === 'function' ? ed.getModel() : null;
+		const pos = ed && typeof ed.getPosition === 'function' ? ed.getPosition() : null;
+		const scoped = __kustoExtractAutocompleteSchemaScopeTextForModelPosition(model, pos);
+		if (scoped) return scoped;
+	} catch (e) { console.error('[kusto]', e); }
 	try {
 		if (typeof __kustoExtractStatementTextAtCursor === 'function') {
 			const statementText = __kustoExtractStatementTextAtCursor(ed);
@@ -438,6 +467,9 @@ let __kustoGetHoverInfoAt: ((model: any, position: any, boxId?: string, options?
 let __kustoSchemaOperationQueue: Promise<any> = Promise.resolve();
 let __kustoSetMonacoKustoSchemaInternal: ((...args: any[]) => Promise<any>) | null = null;
 let __kustoSetDatabaseInContext: ((...args: any[]) => Promise<boolean>) | null = null;
+let __kustoSchemaEnhancementToken = 0;
+const __kustoSchemaEnhancementTokenByModelSchemaKey: Record<string, number> = {};
+const __kustoSchemaEnhancementPendingByModelSchemaKey = new Set<string>();
 export let __kustoUpdateSchemaForFocusedBox: ((...args: any[]) => Promise<void>) | null = null;
 let __kustoEnableMarkersForBox: ((boxId: any) => void) | null = null;
 let __kustoTriggerRevalidation: ((boxId: any) => void) | null = null;
@@ -451,6 +483,147 @@ const __kustoFocusUpdateRerunByBoxId: Record<string, boolean> = {};
 let __kustoStatementSeparatorMinBlankLines = 1;
 let __kustoGetStatementBlocksFromModel: ((model: any) => any[]) | null = null;
 let __kustoIsSeparatorBlankLine: ((model: any, lineNumber: any) => boolean) | null = null;
+
+function __kustoYieldForSchemaEnhancement(): Promise<void> {
+	return new Promise(resolve => {
+		try {
+			const ric = (window as any).requestIdleCallback;
+			if (typeof ric === 'function') {
+				ric(() => resolve(), { timeout: 2000 });
+				return;
+			}
+		} catch {
+			// fall back to timer below
+		}
+		setTimeout(resolve, 0);
+	});
+}
+
+function __kustoScheduleEnhancedSchemaApply(args: {
+	worker: any;
+	schemaObj: any;
+	clusterName?: string;
+	clusterUrl: string;
+	database: string;
+	databaseInContext: string;
+	schemaKey: string;
+	modelKey: string;
+	setAsContext: boolean;
+	isCurrent?: () => boolean;
+}): void {
+	const token = ++__kustoSchemaEnhancementToken;
+	const enhancementKey = `${args.modelKey}|${args.schemaKey}`;
+	__kustoSchemaEnhancementTokenByModelSchemaKey[enhancementKey] = token;
+	__kustoSchemaEnhancementPendingByModelSchemaKey.add(enhancementKey);
+	const isCurrent = () => {
+		try {
+			return __kustoSchemaEnhancementTokenByModelSchemaKey[enhancementKey] === token
+				&& (args.isCurrent ? args.isCurrent() : !!__kustoSchemaTracker.loadedSchemasByModel[args.modelKey]?.[args.schemaKey]);
+		} catch {
+			return false;
+		}
+	};
+	const isDesiredContextCurrent = () => {
+		if (!args.setAsContext) {
+			return true;
+		}
+		try {
+			const boxId = queryEditorBoxByModelUri?.[args.modelKey] || '';
+			if (!boxId) {
+				return false;
+			}
+			const context = __kustoGetSchemaContextForBox(boxId);
+			return !!context && context.schemaKey === args.schemaKey;
+		} catch {
+			return false;
+		}
+	};
+	traceFileOpen('monaco.schema.enhance.scheduled', { schemaKey: args.schemaKey, modelKey: args.modelKey });
+	void __kustoYieldForSchemaEnhancement().then(async () => {
+		if (!isCurrent()) {
+			__kustoSchemaEnhancementPendingByModelSchemaKey.delete(enhancementKey);
+			traceFileOpen('monaco.schema.enhance.canceledBeforeStart', { schemaKey: args.schemaKey, modelKey: args.modelKey });
+			return;
+		}
+		traceFileOpen('monaco.schema.enhance.start', { schemaKey: args.schemaKey, modelKey: args.modelKey });
+		const result = await enhanceKustoFunctionBodiesForSchemaChunked(args.schemaObj, {
+			shouldContinue: isCurrent,
+			maxBatchSize: 25,
+			maxSliceMs: 6,
+			yieldFn: __kustoYieldForSchemaEnhancement,
+		});
+		traceFileOpen('monaco.schema.enhance.done', { schemaKey: args.schemaKey, modelKey: args.modelKey, ...result });
+		if (result.canceled || result.enhancedCount === 0 || !isCurrent()) {
+			__kustoSchemaEnhancementPendingByModelSchemaKey.delete(enhancementKey);
+			return;
+		}
+		if (!args.worker || typeof args.worker.normalizeSchema !== 'function' || typeof args.worker.addDatabaseToSchema !== 'function') {
+			__kustoSchemaEnhancementPendingByModelSchemaKey.delete(enhancementKey);
+			traceFileOpen('monaco.schema.enhance.skip.workerMissingApis', { schemaKey: args.schemaKey, modelKey: args.modelKey });
+			return;
+		}
+		const mutationPromise = __kustoSchemaOperationQueue.then(async () => {
+			if (!isCurrent() || !isDesiredContextCurrent()) {
+				traceFileOpen('monaco.schema.enhance.canceledBeforeMutation', { schemaKey: args.schemaKey, modelKey: args.modelKey });
+				return false;
+			}
+			try {
+				traceFileOpen('monaco.schema.enhance.normalize.start', { schemaKey: args.schemaKey, modelKey: args.modelKey });
+				const engineSchema = await args.worker.normalizeSchema(prepareKustoSchemaForWorkerFast(args.schemaObj), args.clusterUrl, args.databaseInContext);
+				let databaseSchema = engineSchema?.database;
+				if (!databaseSchema && engineSchema?.cluster?.databases) {
+					databaseSchema = engineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === args.databaseInContext.toLowerCase());
+				}
+				traceFileOpen('monaco.schema.enhance.normalize.done', { schemaKey: args.schemaKey, modelKey: args.modelKey, hasDatabaseSchema: !!databaseSchema });
+				if (!databaseSchema || !isCurrent() || !isDesiredContextCurrent()) {
+					return false;
+				}
+				traceFileOpen('monaco.schema.enhance.addDatabase.start', { schemaKey: args.schemaKey, modelKey: args.modelKey });
+				await args.worker.addDatabaseToSchema(args.modelKey, args.clusterUrl, databaseSchema);
+				traceFileOpen('monaco.schema.enhance.addDatabase.done', { schemaKey: args.schemaKey, modelKey: args.modelKey });
+				if (args.setAsContext && isCurrent() && isDesiredContextCurrent() && typeof args.worker.getSchema === 'function' && typeof args.worker.setSchema === 'function') {
+					try {
+						const currentSchema = await args.worker.getSchema();
+						const currentDatabases = currentSchema?.cluster?.databases || [];
+						const existingDb = currentDatabases.find((db: any) => db?.name?.toLowerCase?.() === databaseSchema.name.toLowerCase());
+						const nextDatabases = existingDb
+							? currentDatabases.map((db: any) => db?.name?.toLowerCase?.() === databaseSchema.name.toLowerCase() ? databaseSchema : db)
+							: [...currentDatabases, databaseSchema];
+						await args.worker.setSchema({ ...currentSchema, cluster: { ...(currentSchema?.cluster || {}), databases: nextDatabases }, database: databaseSchema });
+						traceFileOpen('monaco.schema.enhance.contextUpdated', { schemaKey: args.schemaKey, modelKey: args.modelKey });
+					} catch (error) {
+						traceFileOpen('monaco.schema.enhance.contextUpdateFailed', { schemaKey: args.schemaKey, modelKey: args.modelKey, error: error instanceof Error ? error.message : String(error) });
+					}
+				}
+				__kustoSchemaTracker.schemaCache[args.schemaKey] = { rawSchemaJson: args.schemaObj, clusterUrl: args.clusterUrl, database: args.databaseInContext };
+				try {
+					await __kustoAddDatabaseAliasesToWorker(args.worker, args.modelKey, args.schemaObj, args.clusterName || args.clusterUrl, args.clusterUrl, args.databaseInContext);
+				} catch (error) {
+					traceFileOpen('monaco.schema.enhance.aliasesFailed', { schemaKey: args.schemaKey, modelKey: args.modelKey, error: error instanceof Error ? error.message : String(error) });
+				}
+				try {
+					const enhancedBoxId = queryEditorBoxByModelUri?.[args.modelKey] || '';
+					if (enhancedBoxId && typeof __kustoTriggerRevalidation === 'function' && isCurrent() && isDesiredContextCurrent()) {
+						__kustoTriggerRevalidation(enhancedBoxId);
+						traceFileOpen('monaco.schema.enhance.revalidationTriggered', { schemaKey: args.schemaKey, modelKey: args.modelKey, boxId: enhancedBoxId });
+					}
+				} catch (error) {
+					traceFileOpen('monaco.schema.enhance.revalidationFailed', { schemaKey: args.schemaKey, modelKey: args.modelKey, error: error instanceof Error ? error.message : String(error) });
+				}
+				return true;
+			} catch (error) {
+				traceFileOpen('monaco.schema.enhance.error', { schemaKey: args.schemaKey, modelKey: args.modelKey, error: error instanceof Error ? error.message : String(error) });
+				return false;
+			}
+		});
+		__kustoSchemaOperationQueue = mutationPromise.catch(() => false);
+		await mutationPromise;
+		__kustoSchemaEnhancementPendingByModelSchemaKey.delete(enhancementKey);
+	}).catch((error: unknown) => {
+		__kustoSchemaEnhancementPendingByModelSchemaKey.delete(enhancementKey);
+		traceFileOpen('monaco.schema.enhance.unhandledError', { schemaKey: args.schemaKey, modelKey: args.modelKey, error: error instanceof Error ? error.message : String(error) });
+	});
+}
 let __kustoExtractStatementTextAtCursor: ((editor: any) => string | null) | null = null;
 const KUSTO_MARKER_BLUR_CLEAR_DELAY_MS = 150;
 const __kustoMarkerBlurClearTimers: Record<string, any> = {};
@@ -470,9 +643,10 @@ const __kustoAutocompleteTraceByModelUri: Record<string, string> = {};
 function __kustoQueueAutocompleteRetryForPrimarySchema(ed: any, boxId: string, schemaKey: string): void {
 	try {
 		if (!ed || !boxId || !schemaKey || ed.__kustoRetrySuggestWhenPrimarySchemaReady) return;
+		const modelUri = ed?.getModel?.()?.uri?.toString?.() || '';
 		ed.__kustoAutocompleteRetryQueuedForSchema = true;
 		ed.__kustoRetrySuggestWhenPrimarySchemaReady = true;
-		void waitForSchemaWorkerReady(boxId, schemaKey, CROSS_CLUSTER_SCHEMA_AUTOCOMPLETE_RETRY_WAIT_MS).then((ready: boolean) => {
+		void waitForSchemaWorkerReady(boxId, schemaKey, CROSS_CLUSTER_SCHEMA_AUTOCOMPLETE_RETRY_WAIT_MS, modelUri || undefined).then((ready: boolean) => {
 			try {
 				ed.__kustoAutocompleteRetryQueuedForSchema = false;
 				ed.__kustoRetrySuggestWhenPrimarySchemaReady = false;
@@ -498,134 +672,23 @@ function __kustoGetAutocompleteTraceIdForModel(modelUri: any): string {
 }
 
 function __kustoColumnNamesFromSchemaEntity(entity: any): string[] {
-	try {
-		const source = entity?.OrderedColumns || entity?.orderedColumns || entity?.Columns || entity?.columns || entity?.OutputColumns || entity?.outputColumns || {};
-		if (Array.isArray(source)) {
-			return source.map((column: any, index: number) => {
-				if (Array.isArray(column)) return String(column[0] || column[1]?.Name || column[1]?.name || `Column${index + 1}`);
-				if (typeof column === 'string') return column;
-				return String(column?.Name || column?.name || column?.ColumnName || column?.columnName || `Column${index + 1}`);
-			}).filter(Boolean);
-		}
-		if (typeof source === 'string') {
-			return source.split(',').map(part => part.trim().split(':')[0]?.trim()).filter(Boolean);
-		}
-		return Object.entries(source).map(([name, column]: [string, any]) => String(column?.Name || column?.name || column?.ColumnName || column?.columnName || name)).filter(Boolean);
-	} catch {
-		return [];
-	}
+	return getKustoColumnNamesFromSchemaEntity(entity);
 }
 
 function __kustoResolveRawSchemaEntityColumns(rawSchemaJson: any, database: string, entityName: string): string[] {
-	try {
-		const dbs = rawSchemaJson?.Databases || {};
-		const dbEntry = dbs[database]
-			|| Object.entries(dbs).find(([name]) => String(name).toLowerCase() === String(database).toLowerCase())?.[1]
-			|| Object.values(dbs)[0];
-		if (!dbEntry) return [];
-		const nameLower = String(entityName || '').toLowerCase();
-		const containers = [dbEntry.Tables, dbEntry.MaterializedViews, dbEntry.ExternalTables, dbEntry.Functions];
-		for (const container of containers) {
-			if (!container || typeof container !== 'object') continue;
-			const entry = container[entityName]
-				|| Object.entries(container).find(([name, value]: [string, any]) => String(name).toLowerCase() === nameLower || String(value?.Name || '').toLowerCase() === nameLower)?.[1];
-			const columns = __kustoColumnNamesFromSchemaEntity(entry);
-			if (columns.length) return columns;
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	return [];
+	return resolveKustoRawSchemaEntityColumns(rawSchemaJson, database, entityName);
 }
 
 function __kustoFindRawSchemaEntity(rawSchemaJson: any, database: string, entityName: string): any {
-	try {
-		const dbs = rawSchemaJson?.Databases || {};
-		const dbEntry = dbs[database]
-			|| Object.entries(dbs).find(([name]) => String(name).toLowerCase() === String(database).toLowerCase())?.[1]
-			|| Object.values(dbs)[0];
-		if (!dbEntry) return null;
-		const nameLower = String(entityName || '').toLowerCase();
-		const containers = [dbEntry.Tables, dbEntry.MaterializedViews, dbEntry.ExternalTables, dbEntry.Functions];
-		for (const container of containers) {
-			if (!container || typeof container !== 'object') continue;
-			const entry = container[entityName]
-				|| Object.entries(container).find(([name, value]: [string, any]) => String(name).toLowerCase() === nameLower || String(value?.Name || '').toLowerCase() === nameLower)?.[1];
-			if (entry) return entry;
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	return null;
+	return findKustoRawSchemaEntity(rawSchemaJson, database, entityName);
 }
 
 function __kustoResolveRawSchemaEntityColumnsDeep(rawSchemaJson: any, database: string, entityName: string, seen: Set<string> = new Set()): string[] {
-	try {
-		const key = `${String(database || '').toLowerCase()}|${String(entityName || '').toLowerCase()}`;
-		if (!entityName || seen.has(key)) return [];
-		seen.add(key);
-		const direct = __kustoResolveRawSchemaEntityColumns(rawSchemaJson, database, entityName);
-		if (direct.length) return direct;
-		const entity = __kustoFindRawSchemaEntity(rawSchemaJson, database, entityName);
-		return __kustoInferRawFunctionBodyColumns(rawSchemaJson, database, entity?.Body || entity?.body || '', seen);
-	} catch (e) { console.error('[kusto]', e); }
-	return [];
+	return resolveKustoRawSchemaEntityColumnsDeep(rawSchemaJson, database, entityName, seen);
 }
 
 function __kustoInferRawFunctionBodyColumns(rawSchemaJson: any, database: string, body: any, seen: Set<string> = new Set()): string[] {
-	try {
-		const text = String(body || '').replace(/^\s*\{/, '').replace(/\}\s*$/, '').trim();
-		if (/^union\b/i.test(text)) {
-			const set = new Set<string>();
-			const unionBody = text
-				.replace(/^union\b/i, ' ')
-				.replace(/\b(kind|isfuzzy|withsource)\s*=\s*("[^"]*"|'[^']*'|[^\s,|)]+)/ig, ' ');
-			for (const match of unionBody.matchAll(/(?:cluster\s*\(\s*(['"])(.*?)\1\s*\)\s*\.\s*)?(?:database\s*\(\s*(['"])(.*?)\3\s*\)\s*\.\s*)?([A-Za-z_][\w-]*)\s*(?:\(\s*\))?/gi)) {
-				const name = match[5];
-				if (!name || /^(union|kind|isfuzzy|withsource|true|false)$/i.test(name)) continue;
-				for (const column of __kustoResolveRawSchemaEntityColumnsDeep(rawSchemaJson, match[4] || database, name, new Set(seen))) {
-					set.add(column);
-				}
-			}
-			if (set.size) return Array.from(set);
-		}
-		const sourceMatch = text.match(/(?:cluster\s*\(\s*(['"])(.*?)\1\s*\)\s*\.\s*)?(?:database\s*\(\s*(['"])(.*?)\3\s*\)\s*\.\s*)?([A-Za-z_][\w-]*)\s*(?:\(\s*\))?/i);
-		if (!sourceMatch) return [];
-		let columns = __kustoResolveRawSchemaEntityColumnsDeep(rawSchemaJson, sourceMatch[4] || database, sourceMatch[5], new Set(seen));
-		if (!columns.length) return [];
-		const stages = text.split('|').slice(1).map(stage => stage.trim()).filter(Boolean);
-		for (const stage of stages) {
-			if (/^(where|filter|take|limit|top|order\s+by|sort\s+by)\b/i.test(stage)) continue;
-			if (/^project-away\b/i.test(stage)) {
-				const remove = new Set((stage.replace(/^project-away\b/i, '').match(/[A-Za-z_][\w-]*/g) || []).map(name => name.toLowerCase()));
-				columns = columns.filter(column => !remove.has(column.toLowerCase()));
-				continue;
-			}
-			if (/^project(-keep)?\b/i.test(stage)) {
-				const bodyPart = stage.replace(/^project(-keep)?\b/i, '');
-				const next = bodyPart.split(',').map(part => {
-					const assignment = part.match(/^\s*([A-Za-z_][\w-]*)\s*=/);
-					if (assignment) return assignment[1];
-					const ident = part.match(/\b([A-Za-z_][\w-]*)\b/);
-					return ident ? ident[1] : '';
-				}).filter(Boolean);
-				if (next.length) columns = next;
-				continue;
-			}
-			if (/^extend\b/i.test(stage)) {
-				const set = new Set(columns);
-				for (const match of stage.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) set.add(match[1]);
-				columns = Array.from(set);
-				continue;
-			}
-			if (/^summarize\b/i.test(stage)) {
-				const by = stage.match(/\bby\b([\s\S]*)$/i)?.[1] || '';
-				const next: string[] = (by.match(/[A-Za-z_][\w-]*/g) || []);
-				const aggregatePart = stage.split(/\bby\b/i)[0];
-				for (const match of aggregatePart.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) next.push(match[1]);
-				if (!next.length && /\bcount\s*\(\s*\)/i.test(aggregatePart)) next.push('Count');
-				columns = Array.from(new Set(next));
-			}
-		}
-		return columns;
-	} catch (e) { console.error('[kusto]', e); }
-	return [];
+	return inferKustoRawFunctionBodyColumns(rawSchemaJson, database, body, seen);
 }
 
 function __kustoFindLoadedRawSchemaForColumnCompletions(clusterName: string, database: string): any {
@@ -639,102 +702,24 @@ function __kustoFindLoadedRawSchemaForColumnCompletions(clusterName: string, dat
 }
 
 function __kustoSyntheticBodyForColumnNames(columns: string[]): string {
-	const unique = Array.from(new Set((columns || []).map(column => String(column || '').trim()).filter(Boolean)));
-	if (!unique.length) return '';
-	return `{ print ${unique.map(column => {
-		const alias = /^[A-Za-z_][A-Za-z0-9_]*$/.test(column) ? column : `["${column.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"]`;
-		const literal = column.toLowerCase() === 'timestamp' || /time|date/i.test(column) ? 'datetime(2026-01-01)' : '""';
-		return `${alias} = ${literal}`;
-	}).join(', ')} }`;
+	return syntheticKustoFunctionBodyForColumnNames(columns);
 }
 
 function __kustoEnsureInferredFunctionBodiesForSchema(schemaObj: any): any {
-	try {
-		const dbs = schemaObj?.Databases || {};
-		for (const [databaseName, db] of Object.entries(dbs) as Array<[string, any]>) {
-			const functions = db?.Functions || {};
-			for (const fn of Object.values(functions) as any[]) {
-				if (!fn || typeof fn !== 'object') continue;
-				const existingOutputColumns = __kustoColumnNamesFromSchemaEntity({ OutputColumns: fn.OutputColumns || fn.outputColumns || [] });
-				if (existingOutputColumns.length) continue;
-				const inferred = __kustoInferRawFunctionBodyColumns(schemaObj, databaseName, fn.Body || fn.body || '');
-				const syntheticBody = __kustoSyntheticBodyForColumnNames(inferred);
-				if (!syntheticBody) continue;
-				const originalBody = String(fn.Body || fn.body || '').trim();
-				if (originalBody && !fn.__kustoOriginalBody) fn.__kustoOriginalBody = originalBody;
-				fn.OutputColumns = inferred.map((column: string, index: number) => ({
-					Name: column,
-					Type: /time|date/i.test(column) ? 'datetime' : 'string',
-					CslType: /time|date/i.test(column) ? 'datetime' : 'string',
-					Ordinal: index,
-				}));
-				fn.outputColumns = fn.OutputColumns;
-				fn.Body = syntheticBody;
-				fn.body = syntheticBody;
-			}
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	return schemaObj;
+	return prepareKustoSchemaForWorkerFull(schemaObj);
 }
 
 function __kustoPrepareSchemaForKustoWorker(schemaObj: any): any {
-	return __kustoEnsureInferredFunctionBodiesForSchema(ensureKustoFunctionBodiesForSchema(schemaObj));
+	return prepareKustoSchemaForWorkerFast(schemaObj);
+
+}
+
+function __kustoPrepareSchemaForKustoWorkerFull(schemaObj: any): any {
+	return __kustoEnsureInferredFunctionBodiesForSchema(schemaObj);
 }
 
 function __kustoApplyColumnPipelineStages(columns: string[], stages: string[]): string[] {
-	let current = Array.from(new Set(columns || []));
-	for (const rawStage of stages || []) {
-		const stage = String(rawStage || '').trim();
-		if (!stage) continue;
-		if (/^(where|filter|take|limit|top|order\s+by|sort\s+by)\b/i.test(stage)) continue;
-		if (/^project-away\b/i.test(stage)) {
-			const remove = new Set((stage.replace(/^project-away\b/i, '').match(/[A-Za-z_][\w-]*/g) || []).map(name => name.toLowerCase()));
-			current = current.filter(column => !remove.has(column.toLowerCase()));
-			continue;
-		}
-		if (/^project-rename\b/i.test(stage)) {
-			for (const match of stage.replace(/^project-rename\b/i, '').matchAll(/\b([A-Za-z_][\w-]*)\s*=\s*([A-Za-z_][\w-]*)\b/g)) {
-				const nextName = match[1];
-				const oldName = match[2];
-				current = current.map(column => column.toLowerCase() === oldName.toLowerCase() ? nextName : column);
-			}
-			continue;
-		}
-		if (/^project-reorder\b/i.test(stage)) {
-			continue;
-		}
-		if (/^project(-keep)?\b/i.test(stage)) {
-			const bodyPart = stage.replace(/^project(-keep)?\b/i, '');
-			const next = bodyPart.split(',').map(part => {
-				const assignment = part.match(/^\s*([A-Za-z_][\w-]*)\s*=/);
-				if (assignment) return assignment[1];
-				const ident = part.match(/\b([A-Za-z_][\w-]*)\b/);
-				return ident ? ident[1] : '';
-			}).filter(Boolean);
-			if (next.length) current = next;
-			continue;
-		}
-		if (/^extend\b/i.test(stage)) {
-			const set = new Set(current);
-			for (const match of stage.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) set.add(match[1]);
-			current = Array.from(set);
-			continue;
-		}
-		if (/^distinct\b/i.test(stage)) {
-			const next = (stage.replace(/^distinct\b/i, '').match(/[A-Za-z_][\w-]*/g) || []);
-			if (next.length) current = next;
-			continue;
-		}
-		if (/^summarize\b/i.test(stage)) {
-			const by = stage.match(/\bby\b([\s\S]*)$/i)?.[1] || '';
-			const next: string[] = (by.match(/[A-Za-z_][\w-]*/g) || []);
-			const aggregatePart = stage.split(/\bby\b/i)[0];
-			for (const match of aggregatePart.matchAll(/\b([A-Za-z_][\w-]*)\s*=/g)) next.push(match[1]);
-			if (!next.length && /\bcount\s*\(\s*\)/i.test(aggregatePart)) next.push('Count');
-			current = Array.from(new Set(next));
-		}
-	}
-	return current;
+	return applyKustoColumnPipelineStages(columns, stages);
 }
 
 function __kustoTextOffsetAtPosition(model: any, position: any): number {
@@ -814,6 +799,81 @@ function __kustoColumnCompletionsForModel(model: any, position: any): string[] {
 		return __kustoApplyColumnPipelineStages(columns, priorStages);
 	} catch (e) { console.error('[kusto]', e); }
 	return [];
+}
+
+function __kustoSupplementalCompletionDecisionForModel(model: any, position: any): {
+	allow: boolean;
+	reason: string;
+	boxId: string;
+	modelUri: string;
+	primaryReady: boolean;
+	enhancementPending: boolean;
+	refsCount: number;
+	missingCrossClusterCount: number;
+} {
+	const modelUri = model?.uri?.toString?.() || '';
+	const boxId = modelUri ? String(queryEditorBoxByModelUri?.[modelUri] || '') : '';
+	try {
+		if (!modelUri || !boxId || !position) {
+			const decision = decideKustoSupplementalCompletionPolicy({
+				hasModelUri: !!modelUri,
+				hasBoxId: !!boxId,
+				hasPrimarySchema: false,
+				primaryReady: false,
+				schemaSignatureMatches: false,
+				hasPendingWorkerUpdate: false,
+				enhancementPending: false,
+				missingCrossClusterCount: 0,
+			});
+			return { ...decision, boxId, modelUri, primaryReady: false, enhancementPending: false, refsCount: 0, missingCrossClusterCount: 0 };
+		}
+		const context = __kustoGetSchemaContextForBox(boxId);
+		const schema = schemaByBoxId?.[boxId] || null;
+		const schemaMeta = schemaMetaByBoxId?.[boxId] || {};
+		const schemaKey = context?.schemaKey || '';
+		const readyState = schemaWorkerReadyByBoxId?.[boxId];
+		const primaryReady = !!(schemaKey && isSchemaWorkerReady(boxId, schemaKey, modelUri));
+		const schemaSignature = typeof schemaMeta.schemaSignature === 'string' ? String(schemaMeta.schemaSignature) : '';
+		const schemaSignatureMatches = !schemaSignature || (readyState?.schemaSignature === schemaSignature && readyState?.schemaKey === schemaKey && readyState?.modelUri === modelUri);
+		const pendingWorkerUpdate = pendingSchemaWorkerUpdateByBoxId?.[boxId];
+		const hasPendingWorkerUpdate = !!(pendingWorkerUpdate && (!schemaKey || pendingWorkerUpdate.schemaKey === schemaKey));
+		let enhancementPending = !!(schemaKey && __kustoSchemaEnhancementPendingByModelSchemaKey.has(`${modelUri}|${schemaKey}`));
+		let refsCount = 0;
+		let missingCrossClusterCount = 0;
+		if (typeof model.getValue === 'function') {
+			const queryText = __kustoExtractAutocompleteSchemaScopeTextForModelPosition(model, position);
+			const refs = (typeof __kustoExtractCrossClusterRefs === 'function')
+				? __kustoExtractCrossClusterRefs(queryText, context || undefined)
+				: extractCrossClusterRefs(queryText, context || undefined);
+			refsCount = Array.isArray(refs) ? refs.length : 0;
+			const keys: string[] = [];
+			for (const ref of refs || []) {
+				try {
+					const clusterName = __kustoResolveCrossClusterNameForRef(ref, boxId, context);
+					const database = String(ref?.database || '').trim();
+					const key = __kustoGetCrossClusterSchemaKey(clusterName, database);
+					if (key && !keys.includes(key)) keys.push(key);
+				} catch (e) { console.error('[kusto]', e); }
+			}
+			missingCrossClusterCount = keys.filter(key => !__kustoIsCrossClusterSchemaLoadedForModel(key, modelUri)).length;
+			enhancementPending = enhancementPending || keys.some(key => __kustoSchemaEnhancementPendingByModelSchemaKey.has(`${modelUri}|${key}`));
+		}
+		const decision = decideKustoSupplementalCompletionPolicy({
+			hasModelUri: !!modelUri,
+			hasBoxId: !!boxId,
+			hasPrimarySchema: !!schema?.rawSchemaJson,
+			primaryReady,
+			schemaSignatureMatches,
+			hasPendingWorkerUpdate,
+			enhancementPending,
+			missingCrossClusterCount,
+		});
+		return { ...decision, boxId, modelUri, primaryReady, enhancementPending, refsCount, missingCrossClusterCount };
+	} catch (e) {
+		console.error('[kusto]', e);
+		const allow = !!(modelUri && boxId);
+		return { allow, reason: 'decision-error', boxId, modelUri, primaryReady: false, enhancementPending: false, refsCount: 0, missingCrossClusterCount: 0 };
+	}
 }
 
 function __kustoClearAutocompleteTraceForModel(modelUri: any, traceId?: string): void {
@@ -1490,6 +1550,40 @@ function __kustoHasLiveCrossClusterInterest(key: string): boolean {
 	return false;
 }
 
+function __kustoIsSoleQuerySectionBox(boxId: string): boolean {
+	try {
+		const id = String(boxId || '');
+		const queryBoxIds = Array.isArray(queryBoxes) ? queryBoxes.map(candidate => String(candidate || '')).filter(Boolean) : [];
+		return !!id && queryBoxIds.length === 1 && queryBoxIds[0] === id;
+	} catch {
+		return false;
+	}
+}
+
+function __kustoIsCrossClusterFreshAfterStaleSource(source: any): boolean {
+	const value = String(source || '').trim().toLowerCase();
+	return value === 'fresh-after-stale-cache' || value === 'client-cache-after-stale-cache';
+}
+
+function __kustoCanSkipLoadedCrossClusterApply(source: any): boolean {
+	const value = String(source || '').trim().toLowerCase();
+	if (__kustoIsCrossClusterFreshAfterStaleSource(value)) {
+		return false;
+	}
+	return !value
+		|| value === 'disk-cache-fresh'
+		|| value === 'disk-cache-stale'
+		|| value === 'client-cache'
+		|| value.includes('reapply');
+}
+
+function __kustoShouldNotifyCrossClusterSchemaReady(source: any, requestedUri: string, requestedWasLoadedBefore: boolean, appliedToRequestedModel: boolean): boolean {
+	if (!requestedUri || requestedWasLoadedBefore || !appliedToRequestedModel) {
+		return false;
+	}
+	return !__kustoIsCrossClusterFreshAfterStaleSource(source);
+}
+
 function __kustoScheduleCrossClusterRefCheck(editor: any, boxId: any, initialDelayMs: number): void {
 	const id = __kustoNormalizeCrossClusterBoxId(boxId);
 	if (!id || !editor) {
@@ -1814,6 +1908,21 @@ function ensureMonaco() {
 										normalizedMarkers = Array.isArray(markers)
 											? __kustoNormalizeCollapsedMonacoMarkers(model, markers)
 											: markers;
+										if (Array.isArray(normalizedMarkers) && uri) {
+											const boxId = queryEditorBoxByModelUri?.[uri] || '';
+											const context = boxId ? __kustoGetSchemaContextForBox(boxId) : __kustoSchemaTracker.databaseInContext;
+											normalizedMarkers = filterLoadedCrossClusterKs207Markers(
+												typeof model.getValue === 'function' ? String(model.getValue() || '') : '',
+												normalizedMarkers,
+												{
+													modelUri: uri,
+													currentContext: context || undefined,
+													getOffsetAt: (position) => typeof model.getOffsetAt === 'function' ? model.getOffsetAt(position) : 0,
+													isSchemaLoadedForModel: (schemaKey, modelUri) => __kustoIsCrossClusterSchemaLoadedForModel(schemaKey, modelUri),
+													trace: (event) => traceFileOpen('diagnostics.marker.suppressed', event),
+												}
+											);
+										}
 										try {
 											if (model && model.uri && Array.isArray(normalizedMarkers) && typeof monaco.editor.getModelMarkers === 'function') {
 												const currentMarkers = monaco.editor.getModelMarkers({ owner: 'kusto', resource: model.uri });
@@ -2406,6 +2515,18 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 											}
 										}
 									}
+									if (applied) {
+										__kustoScheduleEnhancedSchemaApply({
+											worker,
+											schemaObj,
+											clusterUrl,
+											database,
+											databaseInContext,
+											schemaKey,
+											modelKey,
+											setAsContext,
+										});
+									}
 								}
 							}
 							return applied;
@@ -2580,7 +2701,13 @@ const connectionId = __kustoGetConnectionId(ownerId);
 								return;
 							}
 
-							try { await __kustoFlushPendingSchemaWorkerUpdateForBox(boxId); } catch (e) { console.error('[kusto]', e); }
+							const allowContextSwitch = boxId === activeQueryEditorBoxId || (!activeQueryEditorBoxId && __kustoIsSoleQuerySectionBox(String(boxId)));
+							if (!allowContextSwitch) {
+								traceFileOpen('monaco.schema.focusedBox.skip.contextSwitchNotAllowed', { boxId, activeQueryEditorBoxId, enableMarkers });
+								return;
+							}
+
+							try { await __kustoFlushPendingSchemaWorkerUpdateForBox(boxId, { setAsContext: allowContextSwitch }); } catch (e) { console.error('[kusto]', e); }
 							
 							// Get rawSchemaJson from the existing schema cache (schemaByBoxId)
 							const schema = typeof schemaByBoxId !== 'undefined' ? schemaByBoxId[boxId] : null;
@@ -2596,13 +2723,13 @@ const connectionId = __kustoGetConnectionId(ownerId);
 								// state (global + per-model) is properly updated. The queued
 								// function handles first-load vs add vs replace logic correctly,
 								// including the "already loaded, just switch context" optimization.
-								markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature);
+								markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature, focusedModelUri);
 								const applied = await _win.__kustoSetMonacoKustoSchema(rawSchemaJson, clusterUrl, database, true, focusedModelUri);
 								if (!applied) {
-									markSchemaWorkerApplyFailed(boxId, schemaKey);
+									markSchemaWorkerApplyFailed(boxId, schemaKey, focusedModelUri);
 									return;
 								}
-								markSchemaWorkerReady(boxId, schemaKey, schemaSignature);
+								markSchemaWorkerReady(boxId, schemaKey, schemaSignature, focusedModelUri);
 								
 								// Trigger re-validation with the newly loaded schema
 								__kustoTriggerRevalidation!(boxId);
@@ -2611,13 +2738,13 @@ const connectionId = __kustoGetConnectionId(ownerId);
 								// was previously loaded and cached in __kustoSchemaTracker.schemaCache.
 								const cachedSchema = __kustoSchemaTracker.schemaCache[schemaKey];
 								if (cachedSchema && cachedSchema.rawSchemaJson) {
-									markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature);
+									markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature, focusedModelUri);
 									const applied = await _win.__kustoSetMonacoKustoSchema(cachedSchema.rawSchemaJson, clusterUrl, database, true, focusedModelUri);
 									if (!applied) {
-										markSchemaWorkerApplyFailed(boxId, schemaKey);
+										markSchemaWorkerApplyFailed(boxId, schemaKey, focusedModelUri);
 										return;
 									}
-									markSchemaWorkerReady(boxId, schemaKey, schemaSignature);
+									markSchemaWorkerReady(boxId, schemaKey, schemaSignature, focusedModelUri);
 									__kustoTriggerRevalidation!(boxId);
 								} else {
 									// No cached schema anywhere in the worker — trigger cache-first schema fetch.
@@ -2632,7 +2759,10 @@ const connectionId = __kustoGetConnectionId(ownerId);
 							console.error('[monaco-kusto] Error updating schema for focused box:', e);
 							try {
 								const ctx = __kustoGetSchemaContextForBox(boxId);
-								markSchemaWorkerApplyFailed(boxId, ctx?.schemaKey);
+								const editor = typeof queryEditors !== 'undefined' ? queryEditors[boxId] : null;
+								const model = editor && typeof editor.getModel === 'function' ? editor.getModel() : null;
+								const modelUri = model && model.uri ? model.uri.toString() : undefined;
+								markSchemaWorkerApplyFailed(boxId, ctx?.schemaKey, modelUri);
 							} catch (inner) { console.error('[kusto]', inner); }
 						} finally {
 							if (__kustoFocusInProgress === boxId) {
@@ -2750,10 +2880,16 @@ __kustoRequestCrossClusterSchema = function (clusterName: any, database: any, bo
 					// Internal implementation - called through the queue
 __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clusterUrl: any, database: any, rawSchemaJson: any, boxId: any = '', source: any = '', cacheAgeMs: any = undefined) {
 						const key = __kustoGetCrossClusterSchemaKey(clusterName, database);
+						const sourceText = String(source || '');
+						const normalizedBoxId = __kustoNormalizeCrossClusterBoxId(boxId);
+						const requestedEditor = normalizedBoxId ? queryEditors?.[normalizedBoxId] : null;
+						const requestedModel = requestedEditor && typeof requestedEditor.getModel === 'function' ? requestedEditor.getModel() : null;
+						const requestedUri = requestedModel && requestedModel.uri ? requestedModel.uri.toString() : '';
+						const requestedWasLoadedBefore = !!requestedUri && __kustoIsCrossClusterSchemaLoadedForModel(key, requestedUri);
 						
 						try {
 							const clusterAliases = __kustoGetCrossClusterClusterAliases(clusterName, clusterUrl);
-							__kustoTraceCrossCluster('apply-internal-start', { key, boxId, clusterName, clusterUrl, database, aliases: clusterAliases, source, cacheAgeMs });
+							__kustoTraceCrossCluster('apply-internal-start', { key, boxId, clusterName, clusterUrl, database, aliases: clusterAliases, source: sourceText, cacheAgeMs, requestedUri, requestedWasLoadedBefore });
 							// Parse the raw schema JSON
 							let schemaObj;
 							if (typeof rawSchemaJson === 'string') {
@@ -2786,11 +2922,9 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 									let appliedCount = 0;
 									let appliedToRequestedModel = false;
 									const appliedModelUris: string[] = [];
-									let requestedUri = '';
+									const skippedLoadedModelUris: string[] = [];
+									let schemaWorkerProxy: any = null;
 									try {
-										const requestedEditor = boxId ? queryEditors?.[__kustoNormalizeCrossClusterBoxId(boxId)] : null;
-										const requestedModel = requestedEditor && typeof requestedEditor.getModel === 'function' ? requestedEditor.getModel() : null;
-										requestedUri = requestedModel && requestedModel.uri ? requestedModel.uri.toString() : '';
 										const modelCandidates: any[] = [];
 										if (requestedModel) {
 											modelCandidates.push(requestedModel);
@@ -2807,13 +2941,23 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 											modelCandidates.push(models[0]);
 										}
 										const schemaModel = requestedModel || modelCandidates[0] || models[0];
-										const worker2 = await workerAccessor(schemaModel.uri);
-										if (worker2 && typeof worker2.addDatabaseToSchema === 'function') {
+										schemaWorkerProxy = await workerAccessor(schemaModel.uri);
+										if (schemaWorkerProxy && typeof schemaWorkerProxy.addDatabaseToSchema === 'function') {
 											for (const model of modelCandidates) {
 												try {
 													if (!model || !model.uri) continue;
 													const modelUri = model.uri.toString();
-													const count = await __kustoAddDatabaseAliasesToWorker(worker2, modelUri, schemaObj, clusterName, clusterUrl, database);
+													const wasLoadedForModel = __kustoIsCrossClusterSchemaLoadedForModel(key, modelUri);
+													if (wasLoadedForModel && __kustoCanSkipLoadedCrossClusterApply(sourceText)) {
+														if (!skippedLoadedModelUris.includes(modelUri)) {
+															skippedLoadedModelUris.push(modelUri);
+														}
+														if (requestedUri && modelUri === requestedUri) {
+															appliedToRequestedModel = true;
+														}
+														continue;
+													}
+													const count = await __kustoAddDatabaseAliasesToWorker(schemaWorkerProxy, modelUri, schemaObj, clusterName, clusterUrl, database);
 													appliedCount += count;
 													if (count > 0 && !appliedModelUris.includes(modelUri)) {
 														appliedModelUris.push(modelUri);
@@ -2824,6 +2968,10 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 												} catch (e) { console.error('[kusto]', e); }
 											}
 											if (appliedCount === 0) {
+												if (skippedLoadedModelUris.length > 0) {
+													__kustoTraceCrossCluster('apply-internal-noop.alreadyLoadedModels', { key, boxId, requestedUri, skippedLoadedModelUris, source: sourceText, cacheAgeMs });
+													return;
+												}
 												__kustoSetCrossClusterSchemaEntry(key, { status: 'error', error: 'Database not found in schema' });
 											}
 										}
@@ -2841,13 +2989,28 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 										for (const uri of appliedModelUris) {
 											__kustoRememberCrossClusterModelLoaded(key, uri);
 										}
-										__kustoTraceCrossCluster('apply-internal-success', { key, boxId, appliedCount, appliedToRequestedModel, requestedUri, appliedModelUris });
+										const shouldNotify = __kustoShouldNotifyCrossClusterSchemaReady(sourceText, requestedUri, requestedWasLoadedBefore, appliedToRequestedModel);
+										__kustoTraceCrossCluster('apply-internal-success', { key, boxId, appliedCount, appliedToRequestedModel, requestedUri, appliedModelUris, skippedLoadedModelUris, source: sourceText, cacheAgeMs, requestedWasLoadedBefore, notificationShown: shouldNotify });
 										__kustoSetCrossClusterSchemaEntry(key, { 
 											status: 'loaded', 
 											rawSchemaJson: schemaObj,
 											clusterUrl,
 											clusterAliases
 										});
+										for (const uri of appliedModelUris) {
+											__kustoScheduleEnhancedSchemaApply({
+												worker: schemaWorkerProxy,
+												schemaObj,
+												clusterName,
+												clusterUrl,
+												database,
+												databaseInContext: database,
+												schemaKey: key,
+												modelKey: uri,
+												setAsContext: false,
+												isCurrent: () => __kustoIsCrossClusterSchemaLoadedForModel(key, uri),
+											});
+										}
 										// Clear stale diagnostics (e.g., KS208 "does not refer to any
 										// known database") so the language service re-validates with
 										// the newly added schema on the next content/cursor change.
@@ -2857,13 +3020,14 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 												monaco.editor.setModelMarkers(m, 'kusto', []);
 											}
 										} catch (e) { console.error('[kusto]', e); }
-										// Show notification to user that cross-cluster schema was loaded
-										try {
-											postMessageToHost({
-												type: 'showInfo',
-												message: `Schema loaded for cluster('${clusterName}').database('${database}') — autocomplete is now available.`
-											});
-										} catch (e) { console.error('[kusto]', e); }
+										if (shouldNotify) {
+											try {
+												postMessageToHost({
+													type: 'showInfo',
+													message: `Autocomplete ready for cluster('${clusterName}').database('${database}').`
+												});
+											} catch (e) { console.error('[kusto]', e); }
+										}
 									} else if (!__kustoCrossClusterSchemas[key] || __kustoCrossClusterSchemas[key].status !== 'error') {
 										__kustoTraceCrossCluster('apply-internal-failed', { key, boxId, appliedCount, appliedToRequestedModel, requestedUri });
 										__kustoSetCrossClusterSchemaEntry(key, { status: 'error', error: appliedCount > 0 ? 'Requested editor model not updated' : 'API not available' });
@@ -3099,7 +3263,21 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 					monaco.languages.registerCompletionItemProvider('kusto', {
 						provideCompletionItems: (model: any, position: any) => {
 							try {
+								const decision = __kustoSupplementalCompletionDecisionForModel(model, position);
+								recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(decision.modelUri), 'supplemental-provider-decision', {
+									allow: decision.allow,
+									reason: decision.reason,
+									primaryReady: decision.primaryReady,
+									enhancementPending: decision.enhancementPending,
+									refsCount: decision.refsCount,
+									missingCrossClusterCount: decision.missingCrossClusterCount,
+								});
+								if (!decision.allow) return { suggestions: [] };
 								const columns = __kustoColumnCompletionsForModel(model, position);
+								recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(decision.modelUri), 'supplemental-provider-result', {
+									reason: decision.reason,
+									count: columns.length,
+								});
 								if (!columns.length) return { suggestions: [] };
 								const word = model.getWordUntilPosition(position);
 								const range = new monaco.Range(position.lineNumber, word.startColumn, position.lineNumber, word.endColumn);
@@ -4168,6 +4346,13 @@ function initQueryEditor(boxId: any) {
 		queryEditors[boxId] = editor;
 		perfMark('webview.monaco.queryEditor.ready', { boxId });
 		traceFileOpen('monaco.queryEditor.ready', { boxId, editorCount: Object.keys(queryEditors || {}).length });
+		try {
+			const editorIds = Object.keys(queryEditors || {}).filter(id => !!queryEditors[id]);
+			if (!activeQueryEditorBoxId && editorIds.length === 1 && editorIds[0] === boxId && __kustoIsSoleQuerySectionBox(String(boxId)) && pendingSchemaWorkerUpdateByBoxId[boxId] && __kustoUpdateSchemaForFocusedBox !== null) {
+				traceFileOpen('monaco.queryEditor.flushPendingSchema.openTime', { boxId });
+				void __kustoUpdateSchemaForFocusedBox(boxId);
+			}
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const cursorStatus = createMonacoCursorStatusPublisher({
 				editor,

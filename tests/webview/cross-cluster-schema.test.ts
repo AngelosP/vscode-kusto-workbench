@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { extractCrossClusterRefs, getCrossClusterSchemaCheckDelay } from '../../src/webview/shared/cross-cluster-schema';
+import { extractCrossClusterRefs, extractCrossClusterRefsWithRanges, getCrossClusterSchemaCheckDelay } from '../../src/webview/shared/cross-cluster-schema';
 
 describe('cross-cluster schema helpers', () => {
 	it('extracts and deduplicates fully qualified cluster/database references', () => {
@@ -13,6 +13,21 @@ describe('cross-cluster schema helpers', () => {
 			{ clusterName: 'OtherCluster', database: 'Telemetry' },
 			{ clusterName: 'UnquotedCluster', database: 'UnquotedDb' },
 		]);
+	});
+
+	it('range extraction returns every occurrence without deduping', () => {
+		const query = `cluster('Remote').database('Telemetry').Events
+| union cluster('Remote').database('Telemetry').MoreEvents`;
+		const refs = extractCrossClusterRefsWithRanges(query, { clusterUrl: 'https://current.kusto.windows.net', database: 'CurrentDb' });
+
+		expect(refs).toHaveLength(2);
+		expect(refs.map(ref => ({ clusterName: ref.clusterName, database: ref.database }))).toEqual([
+			{ clusterName: 'Remote', database: 'Telemetry' },
+			{ clusterName: 'Remote', database: 'Telemetry' },
+		]);
+		expect(query.slice(...refs[1].clusterNameRange!)).toBe('Remote');
+		expect(query.slice(...refs[1].databaseNameRange)).toBe('Telemetry');
+		expect(query.slice(...refs[1].range)).toBe("cluster('Remote').database('Telemetry')");
 	});
 
 	it('skips references that already match the current context', () => {
@@ -80,6 +95,17 @@ describe('cross-cluster schema helpers', () => {
 			{ clusterName: "Remote'Prod", database: "Telemetry'Db" },
 			{ clusterName: 'Remote"Canary', database: 'Telemetry"Db' },
 		]);
+	});
+
+	it('range extraction preserves quoted source spans when values contain escaped quotes', () => {
+		const query = `cluster('Remote''Prod').database("Telemetry\\\"Db").Events`;
+		const refs = extractCrossClusterRefsWithRanges(query, { clusterUrl: 'https://current.kusto.windows.net', database: 'CurrentDb' });
+
+		expect(refs).toHaveLength(1);
+		expect(refs[0].clusterName).toBe("Remote'Prod");
+		expect(refs[0].database).toBe('Telemetry"Db');
+		expect(query.slice(...refs[0].clusterNameRange!)).toBe("Remote''Prod");
+		expect(query.slice(...refs[0].databaseNameRange)).toBe('Telemetry\\"Db');
 	});
 
 	it('extracts fully qualified references inside function bodies and wrappers', () => {

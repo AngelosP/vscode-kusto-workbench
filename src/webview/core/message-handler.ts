@@ -60,11 +60,13 @@ import {
 	setCaretDocsEnabled, setAutoTriggerAutocompleteEnabled,
 	setCopilotInlineCompletionsEnabled,
 	queryEditors, cachedDatabases, optimizationMetadataByBoxId,
+	queryBoxes,
 	schemaByConnDb, schemaRequestResolversByBoxId, schemaByBoxId,
 	schemaDiagnosticsTrustedByBoxId,
 	schemaMetaByConnDb, schemaMetaByBoxId,
 	schemaFetchInFlightByBoxId, databasesRequestResolversByBoxId,
 	markSchemaWorkerApplyFailed, markSchemaWorkerApplyPending, markSchemaWorkerReady,
+	schemaWorkerReadyByBoxId,
 	pendingSchemaWorkerUpdateByBoxId,
 	favoritesModeByBoxId,
 	sqlConnections, sqlCachedDatabases, setSqlConnections,
@@ -237,6 +239,45 @@ function getCurrentSchemaKeyForBoxId(boxId: string): string | null {
 	}
 }
 
+function getQueryEditorModelUri(boxId: string): string {
+	try {
+		const editor = queryEditors ? queryEditors[boxId] : null;
+		const model = editor && typeof editor.getModel === 'function' ? editor.getModel() : null;
+		return model && model.uri ? String(model.uri.toString()) : '';
+	} catch {
+		return '';
+	}
+}
+
+function isOnlyQueryEditorBox(boxId: string): boolean {
+	try {
+		const queryBoxIds = Array.isArray(queryBoxes) ? queryBoxes.map(id => String(id || '')).filter(Boolean) : [];
+		if (queryBoxIds.length !== 1 || queryBoxIds[0] !== boxId) {
+			return false;
+		}
+		const editorIds = Object.keys(queryEditors || {}).filter(id => !!queryEditors[id]);
+		return editorIds.length === 1 && editorIds[0] === boxId;
+	} catch {
+		return false;
+	}
+}
+
+function queuePendingSchemaWorkerUpdate(message: any, schemaKey: string, isForceRefresh: boolean, schemaSignature: string | undefined, reason: string): void {
+	const boxId = String(message?.boxId || '');
+	if (!boxId || !message?.schema?.rawSchemaJson || !message.clusterUrl || !message.database) {
+		return;
+	}
+	pendingSchemaWorkerUpdateByBoxId[boxId] = {
+		rawSchemaJson: message.schema.rawSchemaJson,
+		clusterUrl: message.clusterUrl,
+		database: message.database,
+		schemaKey,
+		schemaSignature,
+		forceRefresh: isForceRefresh,
+		reason,
+	};
+}
+
 function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, isForceRefresh: boolean, schemaSignature?: string): void {
 	const boxId = String(message?.boxId || '');
 	if (!boxId || !message?.schema?.rawSchemaJson || !message.clusterUrl || !message.database) {
@@ -265,8 +306,22 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 		traceFileOpen('schema.worker.skip.diagnosticsUntrusted', { boxId, schemaKey });
 		return;
 	}
-	if (!isActiveBox && !isForceRefresh) {
-		traceFileOpen('schema.worker.skip.inactiveBox', { boxId, activeQueryEditorBoxId, schemaKey });
+	const currentModelUri = getQueryEditorModelUri(boxId);
+	const canApplyForSoleOpenEditor = !isActiveBox && !activeQueryEditorBoxId && !isForceRefresh && !!currentModelUri && isOnlyQueryEditorBox(boxId);
+	if (!isActiveBox && !canApplyForSoleOpenEditor) {
+		queuePendingSchemaWorkerUpdate(message, schemaKey, isForceRefresh, schemaSignature, isForceRefresh ? 'inactive-force-refresh' : (currentModelUri ? 'inactive-box' : 'waiting-for-model'));
+		traceFileOpen('schema.worker.defer.inactiveBox', { boxId, activeQueryEditorBoxId, schemaKey, hasModelUri: !!currentModelUri, forceRefresh: isForceRefresh });
+		return;
+	}
+	const readyState = schemaWorkerReadyByBoxId[boxId];
+	if (!isForceRefresh
+		&& schemaSignature
+		&& currentModelUri
+		&& readyState?.status === 'ready'
+		&& readyState.schemaKey === schemaKey
+		&& readyState.schemaSignature === schemaSignature
+		&& readyState.modelUri === currentModelUri) {
+		traceFileOpen('schema.worker.skip.sameSignatureReady', { boxId, schemaKey, schemaSignature, modelUri: currentModelUri });
 		return;
 	}
 	const shouldDeferForSuggest = !!meta.isBackgroundRefresh && !isForceRefresh && isActiveBox && isSuggestVisibleForBoxId(boxId);
@@ -284,9 +339,9 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 		return;
 	}
 
-	const shouldSetAsContext = isActiveBox || isForceRefresh;
-	markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature);
-	traceFileOpen('schema.worker.apply.pending', { boxId, schemaKey, shouldSetAsContext });
+	const shouldSetAsContext = isActiveBox || isForceRefresh || canApplyForSoleOpenEditor;
+	markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature, currentModelUri || undefined);
+	traceFileOpen('schema.worker.apply.pending', { boxId, schemaKey, shouldSetAsContext, modelUri: currentModelUri, openTimeSoleEditor: canApplyForSoleOpenEditor });
 
 	const applySchema = async () => {
 		if (typeof window.__kustoSetMonacoKustoSchema !== 'function') {
@@ -298,18 +353,20 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			traceFileOpen('schema.worker.apply.skip.schemaKeyMismatch', { boxId, schemaKey, currentSchemaKey });
 			return false;
 		}
-		const modelUri = getModelUriForBoxId(boxId);
+		const modelUri = getQueryEditorModelUri(boxId);
 		if (!modelUri) {
 			traceFileOpen('schema.worker.apply.waitingForModelUri', { boxId, schemaKey });
 			return false;
 		}
 		const isActiveAtApply = boxId === activeQueryEditorBoxId;
-		if (!isActiveAtApply && !isForceRefresh) {
-			traceFileOpen('schema.worker.apply.skip.inactiveAtApply', { boxId, activeQueryEditorBoxId, schemaKey });
+		const canApplyAtOpenForSoleEditor = !isActiveAtApply && !activeQueryEditorBoxId && !isForceRefresh && isOnlyQueryEditorBox(boxId);
+		if (!isActiveAtApply && !canApplyAtOpenForSoleEditor) {
+			queuePendingSchemaWorkerUpdate(message, schemaKey, isForceRefresh, schemaSignature, isForceRefresh ? 'inactive-force-refresh-at-apply' : 'inactive-at-apply');
+			traceFileOpen('schema.worker.apply.skip.inactiveAtApply', { boxId, activeQueryEditorBoxId, schemaKey, forceRefresh: isForceRefresh });
 			return false;
 		}
-		const setAsContextAtApply = isActiveAtApply || isForceRefresh;
-		traceFileOpen('schema.worker.apply.call.start', { boxId, schemaKey, modelUri, setAsContextAtApply, forceRefresh: isForceRefresh });
+		const setAsContextAtApply = isActiveAtApply || isForceRefresh || canApplyAtOpenForSoleEditor;
+		traceFileOpen('schema.worker.apply.call.start', { boxId, schemaKey, modelUri, setAsContextAtApply, forceRefresh: isForceRefresh, openTimeSoleEditor: canApplyAtOpenForSoleEditor });
 		const applied = await window.__kustoSetMonacoKustoSchema(
 			message.schema.rawSchemaJson,
 			message.clusterUrl,
@@ -327,7 +384,7 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			window.__kustoTriggerRevalidation(boxId);
 			traceFileOpen('schema.worker.revalidation.done', { boxId, schemaKey });
 		}
-		markSchemaWorkerReady(boxId, schemaKey, schemaSignature);
+		markSchemaWorkerReady(boxId, schemaKey, schemaSignature, modelUri);
 		try { delete pendingSchemaWorkerUpdateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 		return true;
 	};
@@ -342,7 +399,7 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 				return;
 			}
 			if (retryIndex >= retryDelays.length) {
-				markSchemaWorkerApplyFailed(boxId, schemaKey);
+				markSchemaWorkerApplyFailed(boxId, schemaKey, currentModelUri || undefined);
 				traceFileOpen('schema.worker.retry.failed', { boxId, schemaKey });
 				return;
 			}
@@ -351,7 +408,7 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			setTimeout(retry, delay);
 		}).catch((error: unknown) => {
 			console.error('[schemaData] Worker schema apply failed:', error);
-			markSchemaWorkerApplyFailed(boxId, schemaKey);
+			markSchemaWorkerApplyFailed(boxId, schemaKey, currentModelUri || undefined);
 			traceFileOpen('schema.worker.retry.error', { boxId, schemaKey, error: error instanceof Error ? error.message : String(error) });
 		});
 	};
