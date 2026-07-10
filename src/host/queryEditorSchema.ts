@@ -120,7 +120,11 @@ export class SchemaService {
 				const timestamp = result.fromCache
 					? Date.now() - (result.cacheAgeMs ?? 0)
 					: Date.now();
-				await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+				try {
+					await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+				} catch (cacheError) {
+					this.host.output.warn(`[schema] failed to persist background schema db=${listener.database}: ${cacheError instanceof Error ? cacheError.message : String(cacheError)}`);
+				}
 
 				const freshSignature = getAutocompleteSchemaSignature(schema);
 				const freshHasRawSchemaJson = !!schema.rawSchemaJson;
@@ -161,6 +165,20 @@ export class SchemaService {
 				this.host.output.warn(`[schema] background refresh failed db=${listener.database}: ${rawMessage}`);
 				const snapshot = listeners.slice();
 				for (const item of snapshot) {
+					if (!item.boxId.startsWith('__schema_req__')) {
+						this.host.postMessage({
+							type: 'schemaError',
+							boxId: item.boxId,
+							connectionId: item.connectionId,
+							database: item.database,
+							requestToken: item.requestToken,
+							silent: true,
+							isBackgroundRefresh: true,
+							refreshState: 'failed',
+							hasUsableFallback: item.cachedHasRawSchemaJson,
+							error: 'Background schema refresh failed.',
+						});
+					}
 					if (!item.forceRefresh) {
 						continue;
 					}
@@ -275,6 +293,16 @@ export class SchemaService {
 	): Promise<void> {
 		const connection = this.host.findConnection(connectionId);
 		if (!connection || !database) {
+			this.host.postMessage({
+				type: 'schemaError',
+				boxId,
+				connectionId,
+				database,
+				requestToken,
+				cacheOnly: !!options.cacheOnly,
+				silent: !!options.silent,
+				error: connection ? 'No database is selected.' : 'The selected Kusto connection is no longer available.',
+			});
 			return;
 		}
 
@@ -406,7 +434,11 @@ export class SchemaService {
 			const timestamp = result.fromCache
 				? Date.now() - (result.cacheAgeMs ?? 0)
 				: Date.now();
-			await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+			try {
+				await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+			} catch (cacheError) {
+				this.host.output.warn(`[schema] failed to persist schema db=${database}: ${cacheError instanceof Error ? cacheError.message : String(cacheError)}`);
+			}
 			if (summary.tablesCount === 0 || summary.columnsCount === 0) {
 				const d = result.debug;
 				if (d) {

@@ -130,6 +130,17 @@ describe('decideSchemaOperation', () => {
 			}));
 			expect(result.action).toBe('replace');
 		});
+
+		it('returns replace for a forced switch to the same database name on another cluster', () => {
+			const result = decideSchemaOperation(input({
+				currentClusterUrl: CLUSTER_A,
+				currentDatabase: DB_A,
+				newClusterUrl: CLUSTER_B,
+				newDatabase: DB_A,
+				forceRefresh: true,
+			}));
+			expect(result.action).toBe('replace');
+		});
 	});
 
 	// ── Round-trip scenario (the exact user bug) ─────────────────────────

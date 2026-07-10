@@ -1,0 +1,18 @@
+{
+  "kind": "kqlx",
+  "version": 1,
+  "state": {
+    "caretDocsEnabled": true,
+    "autoTriggerAutocompleteEnabled": true,
+    "sections": [
+      {
+        "id": "query_single_empty_restore",
+        "type": "query",
+        "query": "",
+        "expanded": true,
+        "clusterUrl": "https://1es.kusto.windows.net",
+        "database": "DevCLI"
+      }
+    ]
+  }
+}

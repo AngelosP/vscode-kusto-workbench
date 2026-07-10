@@ -148,8 +148,8 @@ export type OutgoingWebviewMessage =
 	| { type: 'getConnections' }
 	| OutgoingEditorCursorPositionChangedMessage
 	| OutgoingEditorCursorStatusSnapshotRequestMessage
-	| { type: 'getDatabases'; connectionId: string; boxId: string }
-	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
+	| { type: 'getDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string }
+	| { type: 'refreshDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string }
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }
 	| { type: 'promptAddConnection'; boxId?: string }
 	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; boxId?: string }

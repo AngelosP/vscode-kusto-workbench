@@ -25,6 +25,7 @@ anything new you learned. Structure it however makes sense for this repo.
 - Section tags are stable and usable through webview CSS/evaluate steps: `kw-query-section`, `kw-markdown-section`, `kw-html-section`, `kw-sql-section`.
 - Add buttons use `button[data-add-kind='<kind>']`, with kinds including `query`, `sql`, `html`, and `markdown`.
 - The section creation/removal window bridges are available in E2E webview evaluation: `addQueryBox`/`removeQueryBox`, `addMarkdownBox`/`removeMarkdownBox`, `addHtmlBox`/`removeHtmlBox`, `addSqlBox`/`removeSqlBox`.
+- Kusto preparation is observable on `kw-query-section` through `data-test-preparation-state`, `data-test-preparation-stage`, and `data-test-preparation-blockers`. The toolbar animation can be asserted with `getComputedStyle(toolbar, '::after').animationName`.
 
 ## Activation & Setup Quirks
 
@@ -42,6 +43,8 @@ anything new you learned. Structure it however makes sense for this repo.
 - Add explicit screenshots after scrolling to HTML/SQL sections; a top-of-document screenshot can pass assertions while hiding lower restored sections.
 - This installed `vscode-ext-test` CLI does not currently provide the documented `I set setting ...` / `setting ... should be ...` Gherkin steps. Use per-test `e2e.settings.json` `workspaceSettings` for deterministic settings, or assert settings indirectly through the extension UI/state.
 - In the Did you know viewer, DOM-driven `I evaluate` clicks on footer actions are more reliable than generic `I click "[data-testid='tutorial-standard-mute']" in the webview`; the selector click can miss that footer link even when the element exists.
+- On this multi-monitor Windows machine, screenshot scenarios should move the Dev Host to `0, 0`, resize it explicitly, and close `workbench.action.closeAuxiliaryBar`; otherwise foreground focus can drift and invalidate native captures.
+- A live force-refresh of the DevCLI schema can exceed the framework's effective 30-second step timeout. For deterministic preparation start/stop visual coverage, observe initial database-selection preparation; cover force-refresh success/failure with unit and host tests.
 
 ## Testability Recommendations
 

@@ -18,6 +18,7 @@ import {
 	schemaByConnDb,
 	schemaMetaByBoxId,
 	schemaMetaByConnDb,
+	databaseRequestTokenByBoxId,
 	pendingSchemaWorkerUpdateByBoxId,
 	schemaRequestResolversByBoxId,
 	databasesRequestResolversByBoxId,
@@ -30,6 +31,16 @@ import {
 	lastDatabase,
 	queryBoxes,
 	optimizationMetadataByBoxId,
+	beginKustoPreparation,
+	failKustoPreparation,
+	getKustoPreparationState,
+	getKustoPreparationToken,
+	invalidateSchemaWorkerReadinessForBox,
+	requireSchemaWorkerApply,
+	requestKustoSchemaApplyForBox,
+	setKustoPreparationIdle,
+	updateKustoPreparation,
+	type KustoPreparationToken,
 } from '../core/state';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { syncSelectBackedDropdown } from '../core/dropdown';
@@ -65,6 +76,7 @@ export interface QuerySectionHost extends ReactiveControllerHost, HTMLElement {
 	boxId: string;
 	getConnectionId(): string;
 	getDatabase(): string;
+	getDesiredDatabase?(): string;
 	getClusterUrl(): string;
 	setDatabases(databases: string[], desiredDb?: string): void;
 	setRefreshLoading(loading: boolean): void;
@@ -97,6 +109,40 @@ export class QueryConnectionController implements ReactiveController {
 	constructor(host: QuerySectionHost) {
 		this.host = host;
 		host.addController(this);
+	}
+
+	private beginDatabasePreparation(connectionId: string): KustoPreparationToken | undefined {
+		return beginKustoPreparation(this.host.boxId, {
+			stage: 'databases',
+			blockers: ['databases'],
+			target: { connectionId },
+		});
+	}
+
+	private retireDatabaseRequestToken(responseRequestToken?: any): void {
+		const receivedRequestToken = String(responseRequestToken || '');
+		if (receivedRequestToken && databaseRequestTokenByBoxId[this.host.boxId] === receivedRequestToken) {
+			delete databaseRequestTokenByBoxId[this.host.boxId];
+		}
+	}
+
+	private ensureSchemaPreparation(connectionId: string, database: string, forceRefresh: boolean): KustoPreparationToken | undefined {
+		const boxId = this.host.boxId;
+		const current = getKustoPreparationState(boxId);
+		const targetMatches = current.target.connectionId === connectionId && current.target.database === database;
+		if (targetMatches && current.status === 'preparing' && (!forceRefresh || current.stage === 'refreshing')) {
+			return getKustoPreparationToken(boxId);
+		}
+		if (!forceRefresh && targetMatches && current.status === 'ready') {
+			return getKustoPreparationToken(boxId);
+		}
+		const hasRawFallback = !!schemaByBoxId[boxId]?.rawSchemaJson;
+		return beginKustoPreparation(boxId, {
+			stage: forceRefresh ? 'refreshing' : 'schema',
+			blockers: forceRefresh ? ['schema', 'refresh', 'worker', 'enhancement'] : ['schema', 'worker', 'enhancement'],
+			target: { connectionId, database },
+			usableFallback: hasRawFallback,
+		});
 	}
 
 	hostConnected(): void {
@@ -377,23 +423,34 @@ export class QueryConnectionController implements ReactiveController {
 	refreshDatabases(): void {
 		const connectionId = this.host.getConnectionId();
 		if (!connectionId) return;
+		const requestToken = 'databases_' + Date.now() + '_' + Math.random().toString(16).slice(2);
+		databaseRequestTokenByBoxId[this.host.boxId] = requestToken;
+		if (!this.host.getDatabase()) {
+			this.beginDatabasePreparation(connectionId);
+		}
 		this.host.setRefreshLoading(true);
 		this.host.setDatabasesLoading(true);
 		postMessageToHost({
 			type: 'refreshDatabases',
 			connectionId,
-			boxId: this.host.boxId
+			boxId: this.host.boxId,
+			requestToken,
+			requiredDatabase: String(this.host.getDesiredDatabase?.() || ''),
 		});
 	}
 
-	onDatabasesError(error: any, responseConnectionId: any): void {
+	onDatabasesError(error: any, responseConnectionId: any, responseRequestToken?: any): void {
 		const boxId = this.host.boxId;
+		const expectedRequestToken = String(databaseRequestTokenByBoxId[boxId] || '');
+		const receivedRequestToken = String(responseRequestToken || '');
+		if ((expectedRequestToken || receivedRequestToken) && receivedRequestToken !== expectedRequestToken) return;
 		const errText = String(error || '');
 		const isEnotfound = /\bENOTFOUND\b/i.test(errText) || /getaddrinfo\s+ENOTFOUND/i.test(errText);
 		if (responseConnectionId) {
 			const currentConnectionId = this.host.getConnectionId();
 			const responseConnId = String(responseConnectionId || '').trim();
 			if (currentConnectionId && responseConnId && currentConnectionId !== responseConnId) {
+				this.retireDatabaseRequestToken(responseRequestToken);
 				this.host.setRefreshLoading(false);
 				this.host.setDatabasesLoading(false);
 				const refreshBtn = document.getElementById(boxId + '_refresh') as any;
@@ -464,6 +521,11 @@ export class QueryConnectionController implements ReactiveController {
 			this.host.setRefreshLoading(false);
 			this.host.setDatabasesLoading(false);
 		} catch (e) { console.error('[kusto]', e); }
+		const preparation = getKustoPreparationState(boxId);
+		if (preparation.status === 'preparing' && preparation.blockers.includes('databases')) {
+			failKustoPreparation(getKustoPreparationToken(boxId), 'Failed to load databases.');
+		}
+		this.retireDatabaseRequestToken(responseRequestToken);
 		try {
 			if (typeof _win.__kustoUpdateRunEnabledForBox === 'function') {
 				_win.__kustoUpdateRunEnabledForBox(boxId);
@@ -471,12 +533,16 @@ export class QueryConnectionController implements ReactiveController {
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
-	updateDatabaseSelect(databases: any, responseConnectionId: any): void {
+	updateDatabaseSelect(databases: any, responseConnectionId: any, responseRequestToken?: any, responseAuthoritative?: any, responseFallback?: any): void {
 		const boxId = this.host.boxId;
+		const expectedRequestToken = String(databaseRequestTokenByBoxId[boxId] || '');
+		const receivedRequestToken = String(responseRequestToken || '');
+		if ((expectedRequestToken || receivedRequestToken) && receivedRequestToken !== expectedRequestToken) return;
 		if (responseConnectionId) {
 			const currentConnectionId = this.host.getConnectionId();
 			const responseConnId = String(responseConnectionId || '').trim();
 			if (currentConnectionId && responseConnId && currentConnectionId !== responseConnId) {
+				this.retireDatabaseRequestToken(responseRequestToken);
 				this.host.setRefreshLoading(false);
 				return;
 			}
@@ -485,14 +551,6 @@ export class QueryConnectionController implements ReactiveController {
 			.map((d: any) => String(d || '').trim())
 			.filter(Boolean)
 			.sort((a: any, b: any) => a.toLowerCase().localeCompare(b.toLowerCase()));
-		const currentDatabase = this.host.getDatabase();
-		const desiredDatabase = typeof (this.host as any).getDesiredDatabase === 'function' ? String((this.host as any).getDesiredDatabase() || '') : '';
-		const protectedDatabase = desiredDatabase || currentDatabase;
-		if (!responseConnectionId && protectedDatabase && !list.some((db: string) => db.toLowerCase() === String(protectedDatabase).toLowerCase())) {
-			this.host.setRefreshLoading(false);
-			this.host.setDatabasesLoading(false);
-			return;
-		}
 		const connectionId = this.host.getConnectionId();
 		if (connectionId) {
 			let clusterKey = '';
@@ -506,6 +564,20 @@ export class QueryConnectionController implements ReactiveController {
 		}
 		this.host.setDatabases(list, lastDatabase || '');
 		this.host.setRefreshLoading(false);
+		const preparation = getKustoPreparationState(boxId);
+		if (preparation.status === 'preparing' && preparation.blockers.includes('databases')) {
+			const unresolvedDesiredDatabase = String(this.host.getDesiredDatabase?.() || '');
+			if (unresolvedDesiredDatabase) {
+				if (responseFallback === true) {
+					failKustoPreparation(getKustoPreparationToken(boxId), `Failed to verify database "${unresolvedDesiredDatabase}" against the live cluster.`);
+				} else if (responseAuthoritative !== false) {
+					failKustoPreparation(getKustoPreparationToken(boxId), `Database "${unresolvedDesiredDatabase}" is not available.`);
+				}
+			} else if (!this.host.getDatabase()) {
+				setKustoPreparationIdle(boxId);
+			}
+		}
+		this.retireDatabaseRequestToken(responseRequestToken);
 		try { this.tryAutoEnterFavoritesModeForNewBox(); } catch (e) { console.error('[kusto]', e); }
 		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		try {
@@ -520,17 +592,6 @@ export class QueryConnectionController implements ReactiveController {
 	ensureSchema(forceRefresh?: boolean): void {
 		const boxId = this.host.boxId;
 		if (!boxId) return;
-		if (!forceRefresh && schemaByBoxId[boxId]) {
-			const meta = schemaMetaByBoxId[boxId] || {};
-			const needsRefresh = !!meta.isStale || meta.cacheState === 'stale' || meta.cacheState === 'outdated';
-			if (!needsRefresh) return;
-		}
-		if (schemaFetchInFlightByBoxId[boxId]) return;
-		const now = Date.now();
-		const last = lastSchemaRequestAtByBoxId[boxId] || 0;
-		if (!forceRefresh && now - last < 1500) return;
-		lastSchemaRequestAtByBoxId[boxId] = now;
-
 		let ownerId = boxId;
 		try {
 			if (typeof (_win.__kustoGetSelectionOwnerBoxId) === 'function') {
@@ -539,10 +600,41 @@ export class QueryConnectionController implements ReactiveController {
 		} catch (e) { console.error('[kusto]', e); }
 		const connectionId = __kustoGetConnectionId(ownerId);
 		const database = __kustoGetDatabase(ownerId);
-		if (!connectionId || !database) return;
+		if (!connectionId || !database) {
+			setKustoPreparationIdle(boxId);
+			return;
+		}
+		let preparationToken = this.ensureSchemaPreparation(connectionId, database, !!forceRefresh);
+		const preparationState = getKustoPreparationState(boxId);
+		if (!forceRefresh && preparationState.status === 'ready'
+			&& preparationState.target.connectionId === connectionId
+			&& preparationState.target.database === database) {
+			return;
+		}
+		if (!forceRefresh && schemaByBoxId[boxId]?.rawSchemaJson) {
+			const meta = schemaMetaByBoxId[boxId] || {};
+			const needsRefresh = !!meta.isStale || meta.cacheState === 'stale' || meta.cacheState === 'outdated';
+			if (!needsRefresh) {
+				if (preparationToken) {
+					updateKustoPreparation(preparationToken, {
+						removeBlockers: ['schema'],
+						addBlockers: ['worker', 'enhancement'],
+						usableFallback: true,
+						target: { schemaSignature: meta.schemaSignature },
+					});
+				}
+				return;
+			}
+		}
+		if (schemaFetchInFlightByBoxId[boxId]) return;
+		const now = Date.now();
+		const last = lastSchemaRequestAtByBoxId[boxId] || 0;
+		if (!forceRefresh && now - last < 1500) return;
+		lastSchemaRequestAtByBoxId[boxId] = now;
+
 		try {
 			const connDbKey = connectionId + '|' + database;
-			if (!forceRefresh && schemaByConnDb && schemaByConnDb[connDbKey]) {
+			if (!forceRefresh && schemaByConnDb && schemaByConnDb[connDbKey]?.rawSchemaJson) {
 				schemaByBoxId[boxId] = schemaByConnDb[connDbKey];
 				schemaMetaByBoxId[boxId] = schemaMetaByConnDb[connDbKey] || {};
 				const schema = schemaByBoxId[boxId];
@@ -553,6 +645,14 @@ export class QueryConnectionController implements ReactiveController {
 				this.host.setSchemaInfo(buildSchemaInfo(`${tablesCount} tables, ${columnsCount} cols${meta.fromCache ? ' (cached)' : ''}`, false,
 					{ fromCache: !!meta.fromCache, tablesCount, columnsCount, functionsCount, hasRawSchemaJson: !!schema?.rawSchemaJson }));
 				const needsRefresh = !!meta.isStale || meta.cacheState === 'stale' || meta.cacheState === 'outdated';
+				if (preparationToken) {
+					updateKustoPreparation(preparationToken, {
+						removeBlockers: ['schema'],
+						addBlockers: needsRefresh ? ['worker', 'enhancement', 'refresh'] : ['worker', 'enhancement'],
+						usableFallback: true,
+						target: { schemaSignature: meta.schemaSignature },
+					});
+				}
 				if (!needsRefresh) return;
 			}
 		} catch (e) { console.error('[kusto]', e); }
@@ -566,6 +666,9 @@ export class QueryConnectionController implements ReactiveController {
 		try {
 			requestToken = 'schema_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 			schemaRequestTokenByBoxId[boxId] = requestToken;
+			if (preparationToken) {
+				updateKustoPreparation(preparationToken, { target: { requestToken } });
+			}
 		} catch (e) { console.error('[kusto]', e); }
 		postMessageToHost({
 			type: 'prefetchSchema',
@@ -577,9 +680,11 @@ export class QueryConnectionController implements ReactiveController {
 		});
 	}
 
-	onDatabaseChanged(): void {
+	onDatabaseChanged(source: string = ''): void {
 		const boxId = this.host.boxId;
 		const diagnosticsTrusted = schemaDiagnosticsTrustedByBoxId[boxId] !== false;
+		if (source === 'user') requireSchemaWorkerApply(boxId);
+		invalidateLinkedComparisonSchemaForSource(boxId);
 		delete schemaByBoxId[boxId];
 		delete schemaMetaByBoxId[boxId];
 		delete pendingSchemaWorkerUpdateByBoxId[boxId];
@@ -591,6 +696,17 @@ export class QueryConnectionController implements ReactiveController {
 		try {
 			this.host.setSchemaInfo(buildSchemaInfo('', false));
 		} catch (e) { console.error('[kusto]', e); }
+		const connectionId = this.host.getConnectionId();
+		const database = this.host.getDatabase();
+		if (pState.restoreInProgress || !diagnosticsTrusted || !connectionId || !database) {
+			setKustoPreparationIdle(boxId);
+		} else {
+			beginKustoPreparation(boxId, {
+				stage: 'schema',
+				blockers: ['schema', 'worker', 'enhancement'],
+				target: { connectionId, database },
+			});
+		}
 		try {
 			if (!pState.restoreInProgress) {
 				const connectionId = this.host.getConnectionId();
@@ -612,11 +728,9 @@ export class QueryConnectionController implements ReactiveController {
 		// calling __kustoUpdateSchemaForFocusedBox for each one races against
 		// async schema responses and the last to arrive wins — which may not
 		// be the section the user later clicks into.
-		try {
-			if (!pState.restoreInProgress && diagnosticsTrusted && typeof (_win.__kustoUpdateSchemaForFocusedBox) === 'function') {
-				_win.__kustoUpdateSchemaForFocusedBox(boxId);
-			}
-		} catch (e) { console.error('[kusto]', e); }
+		if (!pState.restoreInProgress && diagnosticsTrusted) {
+			requestKustoSchemaApplyForBox(boxId);
+		}
 		try {
 			if (typeof (_win.__kustoUpdateFavoritesUiForBox) === 'function') {
 				_win.__kustoUpdateFavoritesUiForBox(boxId);
@@ -638,12 +752,39 @@ export class QueryConnectionController implements ReactiveController {
 		try {
 			this.host.setSchemaInfo({ status: 'loading', statusText: 'Refreshing\u2026' });
 		} catch (e) { console.error('[kusto]', e); }
+		const connectionId = this.host.getConnectionId();
+		const database = this.host.getDatabase();
+		if (connectionId && database) {
+			const currentPreparation = getKustoPreparationState(boxId);
+			beginKustoPreparation(boxId, {
+				stage: 'refreshing',
+				blockers: ['schema', 'refresh', 'worker', 'enhancement'],
+				target: { connectionId, database },
+				usableFallback: currentPreparation.status === 'ready' && !!schemaByBoxId[boxId]?.rawSchemaJson,
+			});
+		}
 		lastSchemaRequestAtByBoxId[boxId] = 0;
 		this.ensureSchema(true);
 	}
 }
 
 // ── Standalone functions (cross-box, pure utilities, facade wrappers) ─────────
+
+export function invalidateLinkedComparisonSchemaForSource(sourceBoxId: string): void {
+	try {
+		const comparisonBoxId = String(optimizationMetadataByBoxId[sourceBoxId]?.comparisonBoxId || '').trim();
+		if (!comparisonBoxId) return;
+		delete schemaByBoxId[comparisonBoxId];
+		delete schemaMetaByBoxId[comparisonBoxId];
+		delete pendingSchemaWorkerUpdateByBoxId[comparisonBoxId];
+		schemaFetchInFlightByBoxId[comparisonBoxId] = false;
+		lastSchemaRequestAtByBoxId[comparisonBoxId] = 0;
+		delete schemaRequestTokenByBoxId[comparisonBoxId];
+		delete databaseRequestTokenByBoxId[comparisonBoxId];
+		requireSchemaWorkerApply(comparisonBoxId);
+		invalidateSchemaWorkerReadinessForBox(comparisonBoxId);
+	} catch (e) { console.error('[kusto]', e); }
+}
 
 export function computeMissingClusterUrls(detectedClusterUrls: any) {
 	return _computeMissing(detectedClusterUrls, connections || []);
@@ -837,17 +978,17 @@ export function refreshDatabases(boxId: any) {
 	}
 }
 
-export function onDatabasesError(boxId: any, error: any, responseConnectionId: any) {
+export function onDatabasesError(boxId: any, error: any, responseConnectionId: any, responseRequestToken?: any) {
 	const el = __kustoGetQuerySectionElement(boxId);
 	if (el?.connectionCtrl) {
-		el.connectionCtrl.onDatabasesError(error, responseConnectionId);
+		el.connectionCtrl.onDatabasesError(error, responseConnectionId, responseRequestToken);
 	}
 }
 
-export function updateDatabaseSelect(boxId: any, databases: any, responseConnectionId: any) {
+export function updateDatabaseSelect(boxId: any, databases: any, responseConnectionId: any, responseRequestToken?: any, responseAuthoritative?: any, responseFallback?: any) {
 	const el = __kustoGetQuerySectionElement(boxId);
 	if (el?.connectionCtrl) {
-		el.connectionCtrl.updateDatabaseSelect(databases, responseConnectionId);
+		el.connectionCtrl.updateDatabaseSelect(databases, responseConnectionId, responseRequestToken, responseAuthoritative, responseFallback);
 	}
 }
 
@@ -858,10 +999,10 @@ export function ensureSchemaForBox(boxId: string, forceRefresh?: boolean): void 
 	}
 }
 
-export function onDatabaseChanged(boxId: string): void {
+export function onDatabaseChanged(boxId: string, source: string = ''): void {
 	const el = __kustoGetQuerySectionElement(boxId);
 	if (el?.connectionCtrl) {
-		el.connectionCtrl.onDatabaseChanged();
+		el.connectionCtrl.onDatabaseChanged(source);
 	}
 }
 

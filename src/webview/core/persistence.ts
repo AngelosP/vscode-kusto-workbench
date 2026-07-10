@@ -23,6 +23,10 @@ import {
 	activeQueryEditorBoxId,
 	caretDocsEnabled, autoTriggerAutocompleteEnabled,
 	setCaretDocsEnabled, setAutoTriggerAutocompleteEnabled,
+	beginKustoPreparation,
+	getKustoPreparationState,
+	schemaDiagnosticsTrustedByBoxId,
+	schemaFetchInFlightByBoxId,
 	sqlFavoritesModeByBoxId,
 	queryExecutionTimers,
 } from './state';
@@ -33,6 +37,7 @@ import { setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocomplete
 import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } from '../sections/query-execution.controller';
 import { perfMark } from './perf.js';
 import { traceFileOpen } from './file-open-trace.js';
+import { shouldStartKustoSchemaPrewarm } from '../shared/schema-utils.js';
 
 
 const _win = window;
@@ -139,11 +144,26 @@ export function __kustoScheduleLocalSchemaPrewarm(reason: string = 'file-open'):
 				const connectionId = __kustoGetConnectionId(ownerId);
 				const database = __kustoGetDatabase(ownerId);
 				if (!connectionId || !database) return;
+				const authoritativeToken = String(schemaRequestTokenByBoxId[boxId] || '');
+				const preparation = getKustoPreparationState(boxId);
+				if (!shouldStartKustoSchemaPrewarm({
+					schemaFetchInFlight: !!schemaFetchInFlightByBoxId[boxId],
+					authoritativeRequestToken: authoritativeToken,
+					preparationStatus: preparation.status,
+					diagnosticsTrusted: schemaDiagnosticsTrustedByBoxId[boxId] !== false,
+				})) {
+					return;
+				}
 				const key = connectionId + '|' + database;
 				if (__kustoSchemaPrewarmSentKeys.has(key)) return;
 				__kustoSchemaPrewarmSentKeys.add(key);
 				const requestToken = 'schema_prewarm_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 				try { schemaRequestTokenByBoxId[boxId] = requestToken; } catch (e) { console.error('[kusto]', e); }
+				beginKustoPreparation(boxId, {
+					stage: 'schema',
+					blockers: ['schema', 'worker', 'enhancement'],
+					target: { connectionId, database, requestToken },
+				});
 				postMessageToHost({
 					type: 'prefetchSchema',
 					connectionId,
@@ -1150,6 +1170,7 @@ function applyKqlxState(state: any) {
 	perfMark('webview.persistence.applyState.start');
 	pState.restoreInProgress = true;
 	try {
+		__kustoSchemaPrewarmSentKeys.clear();
 		__kustoStartRestoreResultBatch();
 		__kustoPersistenceEnabled = false;
 

@@ -28,6 +28,7 @@ import {
 import type { KustoConnectionFormSubmitDetail } from '../components/kw-kusto-connection-form.js';
 import '../components/kw-kusto-connection-form.js';
 import { __kustoOpenShareModal, getRunModeForPersistence } from './kw-query-toolbar.js';
+import { subscribeKustoPreparation, type KustoPreparationState } from '../core/state.js';
 import { optimizeQueryWithCopilot, acceptOptimizations } from './query-execution.controller.js';
 import { QueryConnectionController } from './query-connection.controller.js';
 import { QueryExecutionController } from './query-execution.controller.js';
@@ -166,6 +167,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	// mutates these DOM nodes. The guard flag prevents re-creation on
 	// disconnect/reconnect (e.g. section reorder).
 	private _lightDomCreated = false;
+	private _unsubscribePreparation: (() => void) | null = null;
 
 	// ── Connection row reactive state ─────────────────────────────────────────
 
@@ -206,6 +208,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	override connectedCallback(): void {
 		super.connectedCallback();
+		if (!this._unsubscribePreparation && this.boxId) {
+			this._unsubscribePreparation = subscribeKustoPreparation(this.boxId, state => this._reflectPreparationState(state));
+		}
 		// Create the light DOM body once. See _lightDomCreated guard comment above.
 		if (!this._lightDomCreated && this.boxId) {
 			this._lightDomCreated = true;
@@ -218,7 +223,18 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 
 	override disconnectedCallback(): void {
+		this._unsubscribePreparation?.();
+		this._unsubscribePreparation = null;
 		super.disconnectedCallback();
+	}
+
+	private _reflectPreparationState(state: KustoPreparationState): void {
+		this.setAttribute('data-preparation-state', state.status);
+		this.setAttribute('data-preparation-stage', state.stage);
+		this.dataset.testPreparationState = state.status;
+		this.dataset.testPreparationStage = state.stage;
+		this.dataset.testPreparationBlockers = state.blockers.join(',');
+		this.setAttribute('aria-busy', state.status === 'preparing' ? 'true' : 'false');
 	}
 
 	override updated(changedProps: Map<string, unknown>): void {
@@ -689,7 +705,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		this._desiredDatabase = '';
 		if (prev !== database) {
 			this.dispatchEvent(new CustomEvent('database-changed', {
-				detail: { boxId: this.boxId, database },
+				detail: { boxId: this.boxId, database, source: 'user' },
 				bubbles: true, composed: true,
 			}));
 		}
@@ -962,6 +978,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	public setDatabases(databases: string[], desiredDb?: string): void {
 		this._databases = databases;
 		this._databasesLoading = false;
+		const findDatabase = (candidate: string): string | undefined => {
+			const normalized = String(candidate || '').toLowerCase();
+			return normalized ? databases.find(database => database.toLowerCase() === normalized) : undefined;
+		};
 
 		// Priority tiers (strict — no tier may override a higher one):
 		// 1. _desiredDatabase: set by file restore or favorite selection. Highest priority.
@@ -970,27 +990,30 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		// 3. desiredDb: global lastDatabase hint. Only used when nothing else is selected.
 		// 4. Auto-select: single-database clusters.
 
-		if (this._desiredDatabase && databases.includes(this._desiredDatabase)) {
-			// Tier 1: explicit desired database (from file or favorite)
+		if (this._desiredDatabase) {
+			const resolvedDesiredDatabase = findDatabase(this._desiredDatabase);
+			if (resolvedDesiredDatabase) {
+				const prev = this._database;
+				this._database = resolvedDesiredDatabase;
+				this._desiredDatabase = '';
+				if (prev !== this._database) {
+					this.dispatchEvent(new CustomEvent('database-changed', {
+						detail: { boxId: this.boxId, database: this._database },
+						bubbles: true, composed: true,
+					}));
+				}
+			}
+		} else if (this._database && findDatabase(this._database)) {
+			// Tier 2: keep current selection
+			this._database = findDatabase(this._database)!;
+		} else if (desiredDb && findDatabase(desiredDb)) {
+			// Tier 3: global lastDatabase fallback (only when nothing else selected)
 			const prev = this._database;
-			this._database = this._desiredDatabase;
+			this._database = findDatabase(desiredDb)!;
 			this._desiredDatabase = '';
 			if (prev !== this._database) {
 				this.dispatchEvent(new CustomEvent('database-changed', {
-					detail: { boxId: this.boxId, database: this._database },
-					bubbles: true, composed: true,
-				}));
-			}
-		} else if (this._database && databases.includes(this._database)) {
-			// Tier 2: keep current selection
-		} else if (desiredDb && databases.includes(desiredDb)) {
-			// Tier 3: global lastDatabase fallback (only when nothing else selected)
-			const prev = this._database;
-			this._database = desiredDb;
-			this._desiredDatabase = '';
-			if (prev !== desiredDb) {
-				this.dispatchEvent(new CustomEvent('database-changed', {
-					detail: { boxId: this.boxId, database: desiredDb, source: 'global-last' },
+					detail: { boxId: this.boxId, database: this._database, source: 'global-last' },
 					bubbles: true, composed: true,
 				}));
 			}

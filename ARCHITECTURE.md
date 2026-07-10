@@ -299,6 +299,21 @@ Power BI service publishing is implemented in `powerBiPublish.ts` using Fabric R
 * **On-disk:** SHA1-hashed JSON files in `globalStorageUri/schemaCache/`
 * **Version:** `SCHEMA_CACHE_VERSION` constant triggers cache invalidation on format changes
 
+### Kusto Section Preparation Readiness
+
+Kusto query sections expose a per-section preparation state in `src/webview/core/state.ts`. A section is not ready merely because `schemaData` reached the webview. Readiness requires the current primary database schema to match the current operation generation, delivery revision, schema key/signature, and Monaco model, with these blockers settled:
+
+1. Required database discovery and schema delivery are complete.
+2. Any scheduled stale-cache refresh has completed or ended with a usable prepared fallback.
+3. The schema is applied to the current Monaco Kusto worker model.
+4. Deferred primary function-output schema enhancement is complete.
+
+The state is reflected by `kw-query-section` through `data-preparation-state`, `data-preparation-stage`, and `aria-busy`. While the state is `preparing`, `queryEditor.css` renders an indeterminate blue segment over the bottom border of the Kusto editor toolbar. Ready, idle, and terminal-error states use the normal solid toolbar border. Reduced-motion mode uses a static accent, and forced-colors mode uses `Highlight`.
+
+Operation generations and delivery revisions prevent late database/schema/worker responses from completing newer work. Removal leaves a monotonic tombstone so recreating a persisted section ID cannot be revived by an old async operation. Worker-wide schema replacement invalidates other model readiness; those sections remain dormant until focus prepares them again.
+
+Cross-cluster schemas are intentionally excluded from section-level preparation. They depend on the current query text, load lazily for the focused editor, and retain their existing autocomplete-scoped wait and supplemental-completion fallback behavior.
+
 ## SQL Section Architecture
 
 SQL sections provide a near-identical notebook experience for T-SQL queries against SQL Server / Azure SQL databases. The system mirrors the Kusto architecture with full separation.

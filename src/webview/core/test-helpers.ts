@@ -3,12 +3,12 @@
 // Used by the vscode-ext-test E2E framework via `When I evaluate`.
 
 import { postMessageToHost } from '../shared/webview-messages.js';
-import { setActiveMonacoEditor } from './state.js';
+import { getKustoPreparationState, isSchemaEnhancementReady, isSchemaWorkerReady, requestKustoSchemaApplyForBox, setActiveMonacoEditor } from './state.js';
 import { pState } from '../shared/persistence-state.js';
 import { perfSnapshot } from './perf.js';
 import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
 import { __kustoFindSuggestWidgetForEditor } from '../monaco/suggest.js';
-import { __kustoCrossClusterSchemas, __kustoTraceCrossCluster } from '../monaco/monaco.js';
+import { __kustoCrossClusterSchemas, __kustoSchemaTracker, __kustoTraceCrossCluster } from '../monaco/monaco.js';
 import { extractCrossClusterRefs } from '../shared/cross-cluster-schema.js';
 import { computeMissingClusterUrls } from '../shared/clusterUtils.js';
 import { kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
@@ -921,6 +921,180 @@ _win.__testSelectKwDropdownItem = async (dropdownSelector: string, labelsCsv: st
 	}
 	return `selected dropdown item: ${label}`;
 };
+
+async function e2eSelectDifferentKustoDatabase(): Promise<string> {
+	const section = document.querySelector('kw-query-section') as any;
+	if (!section) throw new Error('Kusto section not found');
+	const current = String(section.getDatabase?.() || '').trim().toLowerCase();
+	const dropdownSelector = "kw-query-section .select-wrapper[title='Kusto Database'] kw-dropdown";
+	const dropdown = deepQuerySelector(document, dropdownSelector) as any;
+	const root = dropdown?.shadowRoot;
+	const button = root?.querySelector('.kusto-dropdown-btn') as HTMLElement | null;
+	if (!dropdown || !root || !button) throw new Error('Kusto database dropdown is unavailable');
+	button.click();
+	if (dropdown.updateComplete && typeof dropdown.updateComplete.then === 'function') await dropdown.updateComplete;
+	const items = Array.from(root.querySelectorAll('.kusto-dropdown-item[role="option"]')) as HTMLElement[];
+	const alternate = items.find(item => {
+		const id = String(item.getAttribute('data-id') || '').trim().toLowerCase();
+		const label = String(item.textContent || '').trim().toLowerCase();
+		return !!label && label !== current && id !== current;
+	});
+	if (!alternate) {
+		throw new Error(`No alternate Kusto database found. Current=${current}; available=${items.map(item => String(item.textContent || '').trim()).join(', ')}`);
+	}
+	const label = String(alternate.textContent || '').trim();
+	alternate.click();
+	if (dropdown.updateComplete && typeof dropdown.updateComplete.then === 'function') await dropdown.updateComplete;
+	return `switched database from ${current || '(none)'} to ${label}`;
+}
+
+async function e2eSelectSampleKustoDatabase(sectionIndex: number = 0): Promise<string> {
+	const sectionSelector = `kw-query-section:nth-of-type(${sectionIndex + 1})`;
+	return _win.__testSelectKwDropdownItem(`${sectionSelector} .select-wrapper[title='Kusto Database'] kw-dropdown`, 'sample,storm,ads,devcli', true);
+}
+
+function e2eAssertKustoPreparationReady(sectionIndex: number = 0): string {
+	const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
+	const section = sections[sectionIndex];
+	if (!section) throw new Error(`Kusto section ${sectionIndex} not found`);
+	const boxId = String(section.boxId || section.id || '');
+	const database = String(section.getDatabase?.() || '');
+	const clusterUrl = String(section.getClusterUrl?.() || '');
+	const schemaKey = kustoDatabaseKey(clusterUrl, database);
+	const editor = (window as any).queryEditors?.[boxId];
+	const modelUri = String(editor?.getModel?.()?.uri?.toString?.() || '');
+	const preparation = getKustoPreparationState(boxId);
+	if (preparation.status !== 'ready') throw new Error(`Preparation is ${preparation.status}/${preparation.stage}`);
+	if (preparation.target.database !== database || preparation.target.schemaKey !== schemaKey || preparation.target.modelUri !== modelUri) {
+		throw new Error(`Preparation target mismatch: expected ${schemaKey}/${modelUri}, got ${JSON.stringify(preparation.target)}`);
+	}
+	if (!isSchemaWorkerReady(boxId, schemaKey, modelUri)) throw new Error(`Worker is not ready for ${schemaKey}/${modelUri}`);
+	if (!isSchemaEnhancementReady(boxId, schemaKey, preparation.target.schemaSignature, modelUri)) {
+		throw new Error(`Enhancement is not ready for ${schemaKey}/${modelUri}`);
+	}
+	return `preparation ready for ${database} (${schemaKey})`;
+}
+
+async function e2eWaitForKustoPreparationReady(sectionIndex: number = 0, timeoutMs: number = 25000): Promise<string> {
+	const started = performance.now();
+	while (performance.now() - started <= timeoutMs) {
+		const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
+		const section = sections[sectionIndex];
+		if (!section) throw new Error(`Kusto section ${sectionIndex} not found`);
+		const boxId = String(section.boxId || section.id || '');
+		const preparation = getKustoPreparationState(boxId);
+		if (preparation.status === 'ready') return e2eAssertKustoPreparationReady(sectionIndex);
+		if (preparation.status === 'error') {
+			throw new Error(`Preparation failed for section ${sectionIndex}: ${JSON.stringify(preparation)}`);
+		}
+		await e2eDelay(100);
+	}
+	const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
+	const section = sections[sectionIndex];
+	const boxId = String(section?.boxId || section?.id || '');
+	const database = String(section?.getDatabase?.() || '');
+	const clusterUrl = String(section?.getClusterUrl?.() || '');
+	const schemaKey = kustoDatabaseKey(clusterUrl, database);
+	const modelUri = String(_win.queryEditors?.[boxId]?.getModel?.()?.uri?.toString?.() || '');
+	const preparation = getKustoPreparationState(boxId);
+	throw new Error(`Preparation timed out for section ${sectionIndex}: ${JSON.stringify({
+		preparation,
+		database,
+		schemaKey,
+		modelUri,
+		workerReady: isSchemaWorkerReady(boxId, schemaKey, modelUri),
+		enhancementReady: isSchemaEnhancementReady(boxId, schemaKey, preparation.target.schemaSignature, modelUri),
+	})}`);
+}
+
+function e2eAssertKustoWorkerContext(sectionIndex: number = 0): string {
+	const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
+	const section = sections[sectionIndex];
+	if (!section) throw new Error(`Kusto section ${sectionIndex} not found`);
+	const database = String(section.getDatabase?.() || '');
+	const clusterUrl = String(section.getClusterUrl?.() || '');
+	const expectedSchemaKey = kustoDatabaseKey(clusterUrl, database);
+	const context = __kustoSchemaTracker.databaseInContext;
+	const actualSchemaKey = context ? kustoDatabaseKey(context.clusterUrl, context.database) : '';
+	if (!expectedSchemaKey || actualSchemaKey !== expectedSchemaKey) {
+		throw new Error(`Worker context mismatch for section ${sectionIndex}: expected ${expectedSchemaKey}, got ${actualSchemaKey || '(none)'}`);
+	}
+	return `worker context remains ${database} (${expectedSchemaKey})`;
+}
+
+async function e2eWaitForKustoWorkerContext(sectionIndex: number = 0, timeoutMs: number = 10000): Promise<string> {
+	const started = performance.now();
+	let lastError: unknown;
+	while (performance.now() - started <= timeoutMs) {
+		try {
+			return e2eAssertKustoWorkerContext(sectionIndex);
+		} catch (error) {
+			lastError = error;
+			await e2eDelay(100);
+		}
+	}
+	throw lastError instanceof Error ? lastError : new Error(`Worker context did not settle for section ${sectionIndex}`);
+}
+
+async function e2eAssertActualKustoWorkerContext(sectionIndex: number = 0): Promise<string> {
+	const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
+	const section = sections[sectionIndex];
+	if (!section) throw new Error(`Kusto section ${sectionIndex} not found`);
+	const boxId = String(section.boxId || section.id || '');
+	const expectedDatabase = String(section.getDatabase?.() || '');
+	const expectedClusterUrl = String(section.getClusterUrl?.() || '');
+	const modelUri = String(_win.queryEditors?.[boxId]?.getModel?.()?.uri?.toString?.() || '');
+	const monacoApi = _win.monaco;
+	if (!modelUri || !monacoApi?.languages?.kusto?.getKustoWorker || !monacoApi?.Uri?.parse) {
+		throw new Error(`Kusto worker is unavailable for section ${sectionIndex}`);
+	}
+	const workerAccessor = await monacoApi.languages.kusto.getKustoWorker();
+	const worker = await workerAccessor(monacoApi.Uri.parse(modelUri));
+	const workerSchema = await worker?.getSchema?.();
+	const actualDatabase = String(workerSchema?.database?.name || '');
+	const actualClusterUrl = String(workerSchema?.cluster?.connectionString || workerSchema?.cluster?.dataSource || workerSchema?.cluster?.uri || '');
+	if (actualDatabase.toLowerCase() !== expectedDatabase.toLowerCase()) {
+		throw new Error(`Actual worker database mismatch for section ${sectionIndex}: expected ${expectedDatabase}, got ${actualDatabase || '(none)'}`);
+	}
+	if (actualClusterUrl && kustoClusterKey(actualClusterUrl) !== kustoClusterKey(expectedClusterUrl)) {
+		throw new Error(`Actual worker cluster mismatch for section ${sectionIndex}: expected ${expectedClusterUrl}, got ${actualClusterUrl}`);
+	}
+	return `actual worker context is ${actualClusterUrl || '(cluster unavailable)'}/${actualDatabase}`;
+}
+
+async function e2eAssertKustoTableCompletionForSection(sectionIndex: number = 0, timeoutMs: number = 5000): Promise<string> {
+	const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
+	const section = sections[sectionIndex];
+	if (!section) throw new Error(`Kusto section ${sectionIndex} not found`);
+	const boxId = String(section.boxId || section.id || '');
+	const schema = _win.schemaByBoxId?.[boxId];
+	const tableNames = e2eIdentifierNames(Array.isArray(schema?.tables) ? schema.tables : Object.keys(schema?.columnTypesByTable || {}));
+	const table = tableNames.find((name: string) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
+	if (!table) throw new Error(`No identifier-safe table found for section ${sectionIndex}`);
+	const prefix = e2eUniquePrefix(table, tableNames, 3);
+	const editor = _win.queryEditors?.[boxId] as MonacoLike | undefined;
+	if (!editor) throw new Error(`Kusto editor ${boxId} not found`);
+	editor.setValue?.(prefix);
+	editor.setPosition?.({ lineNumber: 1, column: prefix.length + 1 });
+	const triggered = await _win.__kustoTriggerAutocompleteForBoxId?.(boxId);
+	if (!triggered) throw new Error(`Autocomplete trigger was not accepted for section ${sectionIndex}`);
+	const editorSelector = `kw-query-section:nth-of-type(${sectionIndex + 1}) .query-editor`;
+	const started = performance.now();
+	let lastError: unknown;
+	while (performance.now() - started <= timeoutMs) {
+		try {
+			const labels = e2eVisibleSuggestLabelsWithDiagnostics(`section ${sectionIndex} table completion`, editorSelector);
+			if (labels.some(label => e2eNormalizeSuggestLabel(label).toLowerCase() === table.toLowerCase())) {
+				return `section ${sectionIndex} suggests ${table} for ${prefix}`;
+			}
+			lastError = new Error(`Expected ${table}, got ${labels.slice(0, 20).join(', ')}`);
+		} catch (error) {
+			lastError = error;
+		}
+		await e2eDelay(50);
+	}
+	throw lastError instanceof Error ? lastError : new Error(`No table completion for section ${sectionIndex}`);
+}
 
 _win.__testAssertKwDropdownHasItems = async (dropdownSelector: string, minCount: number = 1): Promise<string> => {
 	const dropdown = deepQuerySelector(document, dropdownSelector) as HTMLElement | null;
@@ -5816,7 +5990,18 @@ _win.__e2e = {
 		assertClickCaretFidelityAfterRestoredHtmlPreviewScroll: () => e2eAssertKustoClickCaretFidelityAfterRestoredHtmlPreviewScroll(),
 		prepareRestoredHtmlPreviewNativeClickTarget: () => e2ePrepareRestoredHtmlPreviewNativeClickTarget(),
 		assertRestoredHtmlPreviewNativeClickTarget: () => e2eAssertRestoredHtmlPreviewNativeClickTarget(),
-		selectSampleDatabase: () => _win.__testSelectKwDropdownItem(E2E_SECTION.kusto.databaseDropdown, 'sample,storm,ads,devcli', true),
+		selectSampleDatabase: (sectionIndex: number = 0) => e2eSelectSampleKustoDatabase(sectionIndex),
+		selectDifferentDatabase: () => e2eSelectDifferentKustoDatabase(),
+		assertPreparationReady: (sectionIndex: number = 0) => e2eAssertKustoPreparationReady(sectionIndex),
+		waitForPreparationReady: (sectionIndex: number = 0, timeoutMs: number = 25000) => e2eWaitForKustoPreparationReady(sectionIndex, timeoutMs),
+		assertWorkerContext: (sectionIndex: number = 0) => e2eAssertKustoWorkerContext(sectionIndex),
+		waitForWorkerContext: (sectionIndex: number = 0, timeoutMs: number = 10000) => e2eWaitForKustoWorkerContext(sectionIndex, timeoutMs),
+		assertActualWorkerContext: (sectionIndex: number = 0) => e2eAssertActualKustoWorkerContext(sectionIndex),
+		assertTableCompletionForSection: (sectionIndex: number = 0, timeoutMs: number = 5000) => e2eAssertKustoTableCompletionForSection(sectionIndex, timeoutMs),
+		requestSchemaApply: () => {
+			const section = document.querySelector('kw-query-section') as any;
+			return requestKustoSchemaApplyForBox(String(section?.boxId || section?.id || ''), true);
+		},
 		prepareCompletionTargets: () => e2ePrepareKustoCompletionTargets(),
 		waitForCompletionTargets: (timeoutMs: number = 25000) => e2eWaitForKustoCompletionTargets(timeoutMs),
 		startCompletionTargetProbe: (timeoutMs: number = 25000) => e2eStartKustoCompletionTargetProbe(timeoutMs),

@@ -1762,6 +1762,48 @@
 			position: relative;
 		}
 
+		/* Primary Kusto schema/autocomplete preparation. The normal toolbar border
+		   remains underneath so completion returns to the default solid edge. */
+		kw-query-section[data-preparation-state="preparing"] > .query-editor-wrapper > kw-query-toolbar > .query-editor-toolbar::after {
+			content: '';
+			position: absolute;
+			left: 0;
+			right: 0;
+			bottom: -1px;
+			height: 2px;
+			pointer-events: none;
+			background-image: linear-gradient(
+				90deg,
+				transparent 0%,
+				var(--vscode-progressBar-background, #0e70c0) 42%,
+				var(--vscode-progressBar-background, #0e70c0) 58%,
+				transparent 100%
+			);
+			background-repeat: no-repeat;
+			background-size: 34% 100%;
+			animation: kusto-section-preparing 1.15s linear infinite;
+			z-index: 2;
+		}
+
+		@keyframes kusto-section-preparing {
+			from { background-position: -52% 0; }
+			to { background-position: 152% 0; }
+		}
+
+		@media (prefers-reduced-motion: reduce) {
+			kw-query-section[data-preparation-state="preparing"] > .query-editor-wrapper > kw-query-toolbar > .query-editor-toolbar::after {
+				animation: none;
+				background: var(--vscode-progressBar-background, #0e70c0);
+			}
+		}
+
+		@media (forced-colors: active) {
+			kw-query-section[data-preparation-state="preparing"] > .query-editor-wrapper > kw-query-toolbar > .query-editor-toolbar::after {
+				animation: none;
+				background: Highlight;
+			}
+		}
+
 		/* Container for toolbar items that can overflow */
 		.qe-toolbar-items {
 			display: flex;

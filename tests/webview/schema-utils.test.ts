@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildSchemaInfo } from '../../src/webview/shared/schema-utils';
+import { buildSchemaInfo, shouldForceKustoFocusedSchemaApply, shouldScheduleKustoSupplementalSchemaEnhancement, shouldStartKustoSchemaPrewarm } from '../../src/webview/shared/schema-utils';
 
 describe('buildSchemaInfo', () => {
 	it('returns not-loaded when text is empty', () => {
@@ -97,5 +97,64 @@ describe('buildSchemaInfo', () => {
 		expect(info.tables).toBe(0);
 		expect(info.cols).toBe(0);
 		expect(info.funcs).toBe(0);
+	});
+});
+
+describe('shouldStartKustoSchemaPrewarm', () => {
+	it('does not supersede an active full fetch or preparation transaction', () => {
+		expect(shouldStartKustoSchemaPrewarm({ schemaFetchInFlight: true })).toBe(false);
+		expect(shouldStartKustoSchemaPrewarm({ schemaFetchInFlight: false, authoritativeRequestToken: 'schema_full_1' })).toBe(false);
+		expect(shouldStartKustoSchemaPrewarm({ schemaFetchInFlight: false, preparationStatus: 'preparing' })).toBe(false);
+		expect(shouldStartKustoSchemaPrewarm({ schemaFetchInFlight: false, diagnosticsTrusted: false })).toBe(false);
+	});
+
+	it('allows an idle cache-only prewarm and its own replacement token', () => {
+		expect(shouldStartKustoSchemaPrewarm({ schemaFetchInFlight: false, preparationStatus: 'idle' })).toBe(true);
+		expect(shouldStartKustoSchemaPrewarm({ schemaFetchInFlight: false, authoritativeRequestToken: 'schema_prewarm_old', preparationStatus: 'idle' })).toBe(true);
+	});
+});
+
+describe('shouldForceKustoFocusedSchemaApply', () => {
+	it('forces the first focus after same-key target invalidation', () => {
+		expect(shouldForceKustoFocusedSchemaApply({
+			workerApplyRequired: true,
+			enhancementFailed: false,
+			baseWorkerReady: false,
+			enhancementReady: false,
+			enhancementPending: false,
+		})).toBe(true);
+	});
+
+	it('reuses only complete or actively enhancing worker state', () => {
+		expect(shouldForceKustoFocusedSchemaApply({
+			workerApplyRequired: false,
+			enhancementFailed: false,
+			baseWorkerReady: true,
+			enhancementReady: true,
+			enhancementPending: false,
+		})).toBe(false);
+		expect(shouldForceKustoFocusedSchemaApply({
+			workerApplyRequired: false,
+			enhancementFailed: false,
+			baseWorkerReady: true,
+			enhancementReady: false,
+			enhancementPending: true,
+		})).toBe(false);
+	});
+});
+
+describe('shouldScheduleKustoSupplementalSchemaEnhancement', () => {
+	it('skips supplemental work that would supersede the same primary schema enhancement', () => {
+		expect(shouldScheduleKustoSupplementalSchemaEnhancement({
+			primarySchemaKey: 'cluster|db',
+			supplementalSchemaKey: 'cluster|db',
+		})).toBe(false);
+	});
+
+	it('keeps supplemental work for a distinct cross-cluster schema', () => {
+		expect(shouldScheduleKustoSupplementalSchemaEnhancement({
+			primarySchemaKey: 'cluster-a|db',
+			supplementalSchemaKey: 'cluster-b|db',
+		})).toBe(true);
 	});
 });

@@ -38,6 +38,7 @@ import {
 	__kustoGetWordNearCursor,
 	__kustoFindSuggestWidgetForEditor,
 	__kustoRegisterGlobalSuggestMutationHandler,
+	__kustoShouldFlushPendingSchemaAfterSuggestMutation,
 	__kustoInstallSmartSuggestWidgetSizing,
 } from './suggest';
 import {
@@ -75,6 +76,7 @@ import { initToolbarOverflow } from '../sections/kw-query-toolbar';
 import { postMessageToHost } from '../shared/webview-messages';
 import { createMonacoCursorStatusPublisher } from '../shared/editor-cursor-status';
 import { decideSchemaOperation } from '../shared/schema-decision';
+import { canUseKustoDatabaseContextFastPath, KustoSchemaContextIntentTracker, type KustoSchemaContextIntent } from '../shared/schema-context-intent';
 import { SchemaTracker } from '../shared/schema-tracker';
 import { extractCrossClusterRefs, getCrossClusterSchemaCheckDelay } from '../shared/cross-cluster-schema';
 import {
@@ -110,22 +112,39 @@ import {
 	schemaDiagnosticsTrustedByBoxId,
 	schemaMetaByBoxId,
 	schemaWorkerReadyByBoxId,
-	schemaWorkerReadyWaitersByBoxId,
 	pendingSchemaWorkerUpdateByBoxId,
+	discardStalePendingSchemaWorkerUpdate,
 	markSchemaWorkerApplyFailed,
 	markSchemaWorkerApplyPending,
 	markSchemaWorkerReady,
 	waitForSchemaWorkerReady,
 	isSchemaWorkerReady,
+	getKustoPreparationState,
+	getKustoPreparationToken,
+	invalidateSchemaWorkerReadiness,
+	invalidateSchemaWorkerReadinessForBox,
+	isKustoPreparationCurrent,
+	isSchemaWorkerApplyRequired,
+	isSchemaEnhancementFailed,
+	isSchemaEnhancementPending,
+	isSchemaEnhancementReady,
+	markSchemaEnhancementFailed,
+	markSchemaEnhancementPending,
+	markSchemaEnhancementReady,
+	registerKustoSchemaApplyRequester,
+	updateKustoPreparation,
+	type KustoPreparationToken,
 	copilotInlineCompletionRequests,
 	queryEditorResizeObservers,
 	queryEditorVisibilityObservers,
 	queryEditorVisibilityMutationObservers,
 	caretDocOverlaysByBoxId,
 } from '../core/state';
+import { shouldForceKustoFocusedSchemaApply, shouldScheduleKustoSupplementalSchemaEnhancement } from '../shared/schema-utils.js';
 
 // ── Schema state singleton (the ONLY source of truth for schema tracking) ───
 export const __kustoSchemaTracker = new SchemaTracker();
+const __kustoSchemaContextIntents = new KustoSchemaContextIntentTracker();
 
 const _win = window;
 
@@ -178,17 +197,18 @@ function __kustoGetSchemaContextForBox(boxId: string): { connectionId: string; d
 	}
 }
 
-async function __kustoFlushPendingSchemaWorkerUpdateForBox(boxId: string, options: { setAsContext?: boolean } = {}): Promise<boolean> {
+async function __kustoFlushPendingSchemaWorkerUpdateForBox(boxId: string, options: { setAsContext?: boolean; contextIntent?: KustoSchemaContextIntent } = {}): Promise<boolean> {
+	let failureOwner: { token: KustoPreparationToken; schemaKey: string; schemaSignature?: string; modelUri: string } | undefined;
 	try {
 		const pending = pendingSchemaWorkerUpdateByBoxId[boxId];
 		if (!pending || !pending.rawSchemaJson) {
 			return false;
 		}
-		const setAsContext = options.setAsContext !== false;
-		if (!setAsContext) {
-			traceFileOpen('monaco.schema.pending.skip.contextSwitchNotAllowed', { boxId, schemaKey: pending.schemaKey, reason: pending.reason || '' });
+		if (discardStalePendingSchemaWorkerUpdate(boxId)) {
+			traceFileOpen('monaco.schema.pending.discard.stalePreparation', { boxId, schemaKey: pending.schemaKey });
 			return false;
 		}
+		const setAsContext = options.setAsContext !== false;
 		const currentContext = __kustoGetSchemaContextForBox(boxId);
 		if (!currentContext || pending.schemaKey !== currentContext.schemaKey) {
 			try { delete pendingSchemaWorkerUpdateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
@@ -200,28 +220,57 @@ async function __kustoFlushPendingSchemaWorkerUpdateForBox(boxId: string, option
 		if (!modelUri || typeof _win.__kustoSetMonacoKustoSchema !== 'function') {
 			return false;
 		}
-		markSchemaWorkerApplyPending(boxId, pending.schemaKey, pending.schemaSignature, modelUri);
+		const preparationToken = pending.preparationToken || getKustoPreparationToken(boxId);
+		if (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey: pending.schemaKey, schemaSignature: pending.schemaSignature })) {
+			if (pendingSchemaWorkerUpdateByBoxId[boxId] === pending) delete pendingSchemaWorkerUpdateByBoxId[boxId];
+			return false;
+		}
+		markSchemaWorkerApplyPending(boxId, pending.schemaKey, pending.schemaSignature, modelUri, preparationToken);
+		if (preparationToken && isKustoPreparationCurrent(preparationToken, {
+			schemaKey: pending.schemaKey,
+			schemaSignature: pending.schemaSignature,
+			modelUri,
+		})) {
+			failureOwner = { token: preparationToken, schemaKey: pending.schemaKey, schemaSignature: pending.schemaSignature, modelUri };
+		}
 		const applied = await _win.__kustoSetMonacoKustoSchema(
 			pending.rawSchemaJson,
 			pending.clusterUrl,
 			pending.database,
 			setAsContext,
 			modelUri,
-			!!pending.forceRefresh
+			!!pending.forceRefresh,
+			() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey: pending.schemaKey, schemaSignature: pending.schemaSignature, modelUri }),
+			preparationToken,
+			options.contextIntent,
 		);
 		if (!applied) {
-			markSchemaWorkerApplyFailed(boxId, pending.schemaKey, modelUri);
+			if (failureOwner && isKustoPreparationCurrent(failureOwner.token, {
+				schemaKey: failureOwner.schemaKey,
+				schemaSignature: failureOwner.schemaSignature,
+				modelUri: failureOwner.modelUri,
+			})) {
+				markSchemaWorkerApplyFailed(boxId, failureOwner.schemaKey, failureOwner.modelUri, failureOwner.token);
+			}
 			return false;
 		}
 		try { if (setAsContext && typeof __kustoTriggerRevalidation === 'function') __kustoTriggerRevalidation(boxId); } catch (e) { console.error('[kusto]', e); }
-		markSchemaWorkerReady(boxId, pending.schemaKey, pending.schemaSignature, modelUri);
-		try { delete pendingSchemaWorkerUpdateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+		if (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey: pending.schemaKey, schemaSignature: pending.schemaSignature, modelUri })) return false;
+		markSchemaWorkerReady(boxId, pending.schemaKey, pending.schemaSignature, modelUri, preparationToken);
+		try {
+			if (pendingSchemaWorkerUpdateByBoxId[boxId] === pending) delete pendingSchemaWorkerUpdateByBoxId[boxId];
+		} catch (e) { console.error('[kusto]', e); }
 		return true;
 	} catch (error) {
 		console.error('[monaco-kusto] Failed to flush pending schema update:', error);
 		try {
-			const pending = pendingSchemaWorkerUpdateByBoxId[boxId];
-			markSchemaWorkerApplyFailed(boxId, pending?.schemaKey);
+			if (failureOwner && isKustoPreparationCurrent(failureOwner.token, {
+				schemaKey: failureOwner.schemaKey,
+				schemaSignature: failureOwner.schemaSignature,
+				modelUri: failureOwner.modelUri,
+			})) {
+				markSchemaWorkerApplyFailed(boxId, failureOwner.schemaKey, failureOwner.modelUri, failureOwner.token);
+			}
 		} catch (e) { console.error('[kusto]', e); }
 		return false;
 	}
@@ -484,6 +533,40 @@ let __kustoStatementSeparatorMinBlankLines = 1;
 let __kustoGetStatementBlocksFromModel: ((model: any) => any[]) | null = null;
 let __kustoIsSeparatorBlankLine: ((model: any, lineNumber: any) => boolean) | null = null;
 
+function __kustoClaimSchemaContextIntent(boxId: string, clusterUrl: string, database: string, modelUri: string): KustoSchemaContextIntent {
+	return __kustoSchemaContextIntents.claim({
+		boxId: String(boxId || ''),
+		schemaKey: kustoDatabaseKey(clusterUrl, database),
+		modelUri: String(modelUri || ''),
+	});
+}
+
+function __kustoQueueDatabaseContextSwitch(clusterUrl: string, database: string, modelUri: string, contextIntent: KustoSchemaContextIntent): Promise<boolean> {
+	const mutationPromise = __kustoSchemaOperationQueue.then(async () => {
+		if (!__kustoSchemaContextIntents.isCurrent(contextIntent) || !__kustoSetDatabaseInContext) return false;
+		return __kustoSetDatabaseInContext(
+			clusterUrl,
+			database,
+			modelUri,
+			() => __kustoSchemaContextIntents.isCurrent(contextIntent),
+		);
+	}).catch((error: unknown) => {
+		traceFileOpen('monaco.schema.contextSwitch.error', { clusterUrl, database, modelUri, error: error instanceof Error ? error.message : String(error) });
+		return false;
+	});
+	__kustoSchemaOperationQueue = mutationPromise;
+	return mutationPromise;
+}
+
+const __kustoRegisteredSchemaApplyRequester = (boxId: string, enableMarkers: boolean): boolean => {
+	const updater = __kustoUpdateSchemaForFocusedBox;
+	const modelUri = queryEditors?.[boxId]?.getModel?.()?.uri?.toString?.();
+	if (!updater || !modelUri) return false;
+	void updater(boxId, enableMarkers);
+	return true;
+};
+registerKustoSchemaApplyRequester(__kustoRegisteredSchemaApplyRequester);
+
 function __kustoYieldForSchemaEnhancement(): Promise<void> {
 	return new Promise(resolve => {
 		try {
@@ -510,9 +593,18 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 	modelKey: string;
 	setAsContext: boolean;
 	isCurrent?: () => boolean;
+	preparationToken?: KustoPreparationToken;
+	contextIntent?: KustoSchemaContextIntent;
 }): void {
 	const token = ++__kustoSchemaEnhancementToken;
 	const enhancementKey = `${args.modelKey}|${args.schemaKey}`;
+	const preparationToken = args.preparationToken;
+	const preparationState = preparationToken ? getKustoPreparationState(preparationToken.boxId) : undefined;
+	const schemaSignature = preparationState?.target.schemaSignature;
+	const preparationBoxId = preparationToken?.boxId || String(queryEditorBoxByModelUri?.[args.modelKey] || '');
+	if (preparationToken && isKustoPreparationCurrent(preparationToken, { schemaKey: args.schemaKey, schemaSignature, modelUri: args.modelKey })) {
+		markSchemaEnhancementPending(preparationToken.boxId, args.schemaKey, schemaSignature, args.modelKey, preparationToken);
+	}
 	__kustoSchemaEnhancementTokenByModelSchemaKey[enhancementKey] = token;
 	__kustoSchemaEnhancementPendingByModelSchemaKey.add(enhancementKey);
 	const isCurrent = () => {
@@ -538,6 +630,8 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 			return false;
 		}
 	};
+	const maySetWorkerContext = () => args.setAsContext
+		&& (!args.contextIntent || __kustoSchemaContextIntents.isCurrent(args.contextIntent));
 	traceFileOpen('monaco.schema.enhance.scheduled', { schemaKey: args.schemaKey, modelKey: args.modelKey });
 	void __kustoYieldForSchemaEnhancement().then(async () => {
 		if (!isCurrent()) {
@@ -555,11 +649,17 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 		traceFileOpen('monaco.schema.enhance.done', { schemaKey: args.schemaKey, modelKey: args.modelKey, ...result });
 		if (result.canceled || result.enhancedCount === 0 || !isCurrent()) {
 			__kustoSchemaEnhancementPendingByModelSchemaKey.delete(enhancementKey);
+			if (!result.canceled && result.enhancedCount === 0 && preparationToken && isKustoPreparationCurrent(preparationToken)) {
+				markSchemaEnhancementReady(preparationToken.boxId, args.schemaKey, schemaSignature, args.modelKey, preparationToken);
+			}
 			return;
 		}
 		if (!args.worker || typeof args.worker.normalizeSchema !== 'function' || typeof args.worker.addDatabaseToSchema !== 'function') {
 			__kustoSchemaEnhancementPendingByModelSchemaKey.delete(enhancementKey);
 			traceFileOpen('monaco.schema.enhance.skip.workerMissingApis', { schemaKey: args.schemaKey, modelKey: args.modelKey });
+			if (preparationToken && isKustoPreparationCurrent(preparationToken)) {
+				markSchemaEnhancementFailed(preparationToken.boxId, args.schemaKey, schemaSignature, args.modelKey, preparationToken);
+			}
 			return;
 		}
 		const mutationPromise = __kustoSchemaOperationQueue.then(async () => {
@@ -581,7 +681,7 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 				traceFileOpen('monaco.schema.enhance.addDatabase.start', { schemaKey: args.schemaKey, modelKey: args.modelKey });
 				await args.worker.addDatabaseToSchema(args.modelKey, args.clusterUrl, databaseSchema);
 				traceFileOpen('monaco.schema.enhance.addDatabase.done', { schemaKey: args.schemaKey, modelKey: args.modelKey });
-				if (args.setAsContext && isCurrent() && isDesiredContextCurrent() && typeof args.worker.getSchema === 'function' && typeof args.worker.setSchema === 'function') {
+				if (maySetWorkerContext() && isCurrent() && isDesiredContextCurrent() && typeof args.worker.getSchema === 'function' && typeof args.worker.setSchema === 'function') {
 					try {
 						const currentSchema = await args.worker.getSchema();
 						const currentDatabases = currentSchema?.cluster?.databases || [];
@@ -589,8 +689,10 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 						const nextDatabases = existingDb
 							? currentDatabases.map((db: any) => db?.name?.toLowerCase?.() === databaseSchema.name.toLowerCase() ? databaseSchema : db)
 							: [...currentDatabases, databaseSchema];
-						await args.worker.setSchema({ ...currentSchema, cluster: { ...(currentSchema?.cluster || {}), databases: nextDatabases }, database: databaseSchema });
-						traceFileOpen('monaco.schema.enhance.contextUpdated', { schemaKey: args.schemaKey, modelKey: args.modelKey });
+						if (maySetWorkerContext()) {
+							await args.worker.setSchema({ ...currentSchema, cluster: { ...(currentSchema?.cluster || {}), databases: nextDatabases }, database: databaseSchema });
+							traceFileOpen('monaco.schema.enhance.contextUpdated', { schemaKey: args.schemaKey, modelKey: args.modelKey });
+						}
 					} catch (error) {
 						traceFileOpen('monaco.schema.enhance.contextUpdateFailed', { schemaKey: args.schemaKey, modelKey: args.modelKey, error: error instanceof Error ? error.message : String(error) });
 					}
@@ -617,11 +719,18 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 			}
 		});
 		__kustoSchemaOperationQueue = mutationPromise.catch(() => false);
-		await mutationPromise;
+		const enhanced = await mutationPromise;
 		__kustoSchemaEnhancementPendingByModelSchemaKey.delete(enhancementKey);
+		if (preparationToken && isKustoPreparationCurrent(preparationToken)) {
+			if (enhanced) markSchemaEnhancementReady(preparationToken.boxId, args.schemaKey, schemaSignature, args.modelKey, preparationToken);
+			else if (isCurrent() && isDesiredContextCurrent()) markSchemaEnhancementFailed(preparationToken.boxId, args.schemaKey, schemaSignature, args.modelKey, preparationToken);
+		}
 	}).catch((error: unknown) => {
 		__kustoSchemaEnhancementPendingByModelSchemaKey.delete(enhancementKey);
 		traceFileOpen('monaco.schema.enhance.unhandledError', { schemaKey: args.schemaKey, modelKey: args.modelKey, error: error instanceof Error ? error.message : String(error) });
+		if (preparationToken && isKustoPreparationCurrent(preparationToken)) {
+			markSchemaEnhancementFailed(preparationToken.boxId, args.schemaKey, schemaSignature, args.modelKey, preparationToken);
+		}
 	});
 }
 let __kustoExtractStatementTextAtCursor: ((editor: any) => string | null) | null = null;
@@ -1295,16 +1404,7 @@ function __kustoForgetCrossClusterModelLoadedForUri(modelUri: string): void {
 
 function __kustoForgetAllSchemaWorkerReady(): void {
 	try {
-		for (const key of Object.keys(schemaWorkerReadyByBoxId || {})) {
-			delete schemaWorkerReadyByBoxId[key];
-		}
-		for (const key of Object.keys(schemaWorkerReadyWaitersByBoxId || {})) {
-			const waiters = schemaWorkerReadyWaitersByBoxId[key] || [];
-			for (const waiter of waiters) {
-				try { waiter.resolve(false); } catch (e) { console.error('[kusto]', e); }
-			}
-			delete schemaWorkerReadyWaitersByBoxId[key];
-		}
+		invalidateSchemaWorkerReadiness();
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -2194,6 +2294,7 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 					__kustoSchemaTracker.globalInitialized = false; // legacy/global (kept for logs)
 					// Track the current database in context: { clusterUrl, database }
 					__kustoSchemaTracker.databaseInContext = null; // legacy/global (current focused model)
+					__kustoSchemaContextIntents.clear();
 					
 					// Cache all raw schema data we receive, so we can re-add them after cluster switches
 					// Key: `${clusterUrl}|${database}`, Value: { rawSchemaJson, clusterUrl, database }
@@ -2205,12 +2306,26 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 					// Function to set/add schema in monaco-kusto worker for full IntelliSense support
 					// Uses aggregate approach: first schema uses setSchemaFromShowSchema, 
 					// subsequent schemas use addDatabaseToSchema to ADD without replacing
-					_win.__kustoSetMonacoKustoSchema = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false) {
+					_win.__kustoSetMonacoKustoSchema = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false, guard?: () => boolean, preparationToken?: KustoPreparationToken, contextIntent?: KustoSchemaContextIntent) {
 						// Serialize schema operations to prevent race conditions
 						traceFileOpen('monaco.schema.queue.requested', { clusterUrl, database, setAsContext, modelUri, forceRefresh });
+						const requestedModelKey = modelUri ? (typeof modelUri === 'string' ? modelUri : modelUri.toString()) : '';
+						const claimedContextIntent = setAsContext
+							? (contextIntent || __kustoClaimSchemaContextIntent(
+								String(preparationToken?.boxId || queryEditorBoxByModelUri?.[requestedModelKey] || activeQueryEditorBoxId || ''),
+								String(clusterUrl || ''),
+								String(database || ''),
+								requestedModelKey,
+							))
+							: undefined;
 						const operationPromise = __kustoSchemaOperationQueue.then(async () => {
-							traceFileOpen('monaco.schema.queue.start', { clusterUrl, database, setAsContext, modelUri, forceRefresh });
-							const result = await __kustoSetMonacoKustoSchemaInternal!(rawSchemaJson, clusterUrl, database, setAsContext, modelUri, forceRefresh);
+							if (guard && !guard()) {
+								traceFileOpen('monaco.schema.queue.skip.stalePreparation', { clusterUrl, database, modelUri });
+								return false;
+							}
+							const effectiveSetAsContext = setAsContext && (!claimedContextIntent || __kustoSchemaContextIntents.isCurrent(claimedContextIntent));
+							traceFileOpen('monaco.schema.queue.start', { clusterUrl, database, setAsContext: effectiveSetAsContext, requestedSetAsContext: setAsContext, modelUri, forceRefresh });
+							const result = await __kustoSetMonacoKustoSchemaInternal!(rawSchemaJson, clusterUrl, database, effectiveSetAsContext, modelUri, forceRefresh, guard, preparationToken, claimedContextIntent);
 							traceFileOpen('monaco.schema.queue.done', { clusterUrl, database, result });
 							return result;
 						}).catch((e: any) => {
@@ -2223,7 +2338,10 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 					};
 					
 					// Internal implementation - called through the queue
-__kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false) {
+__kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false, guard?: () => boolean, preparationToken?: KustoPreparationToken, contextIntent?: KustoSchemaContextIntent) {
+						const isOperationCurrent = () => !guard || guard();
+						const isContextIntentCurrent = () => !contextIntent || __kustoSchemaContextIntents.isCurrent(contextIntent);
+						if (!isOperationCurrent()) return false;
 						// Resolve which Monaco model this operation applies to
 						const models = monaco?.editor?.getModels ? monaco.editor.getModels() : [];
 						traceFileOpen('monaco.schema.internal.start', { clusterUrl, database, setAsContext, modelUri, forceRefresh, modelCount: models?.length || 0, rawKind: typeof rawSchemaJson });
@@ -2251,6 +2369,8 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 						} catch (e) { console.error('[kusto]', e); }
 
 						const modelKey = modelUri ? (typeof modelUri === 'string' ? modelUri : modelUri.toString()) : models[0].uri.toString();
+						if (!isOperationCurrent()) return false;
+						const preparationBoxId = String(queryEditorBoxByModelUri?.[modelKey] || preparationToken?.boxId || '');
 						__kustoMonacoDatabaseInContextByModel[modelKey] = __kustoMonacoDatabaseInContextByModel[modelKey] || null;
 						__kustoMonacoInitializedByModel[modelKey] = !!__kustoMonacoInitializedByModel[modelKey];
 
@@ -2345,8 +2465,12 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 									if (operation.action === 'first-load') {
 										if (typeof worker.setSchemaFromShowSchema === 'function') {
 											try {
+												if (!isOperationCurrent()) return false;
+												if (setAsContext && !isContextIntentCurrent()) return false;
 												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.start', { schemaKey, action: operation.action });
 												await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
+												invalidateSchemaWorkerReadiness(preparationBoxId);
+												if (!isOperationCurrent()) return false;
 												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.done', { schemaKey, action: operation.action });
 												recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-first-load', { modelKey, clusterUrl, database: databaseInContext });
 												await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext);
@@ -2362,8 +2486,12 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 									} else if (operation.action === 'replace') {
 										if (typeof worker.setSchemaFromShowSchema === 'function') {
 											try {
+												if (!isOperationCurrent()) return false;
+												if (setAsContext && !isContextIntentCurrent()) return false;
 												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.start', { schemaKey, action: operation.action });
 												await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
+												invalidateSchemaWorkerReadiness(preparationBoxId);
+												if (!isOperationCurrent()) return false;
 												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.done', { schemaKey, action: operation.action });
 												recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-replace', { modelKey, clusterUrl, database: databaseInContext });
 												await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext);
@@ -2454,9 +2582,12 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 											__kustoSchemaTracker.recordAdoptGlobal(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj);
 											applied = true;
 											if (setAsContext) {
-												const switched = await __kustoSetDatabaseInContext!(clusterUrl, databaseInContext, modelKey);
-												applied = switched;
-												if (!switched) {
+												if (isContextIntentCurrent()) {
+													if (!isOperationCurrent()) return false;
+													const switched = await __kustoSetDatabaseInContext!(clusterUrl, databaseInContext, modelKey, isContextIntentCurrent);
+													applied = switched || !isContextIntentCurrent();
+												}
+												if (!applied) {
 													__kustoSchemaTracker.invalidateGlobal(schemaKey, modelKey);
 													alreadyLoadedGlobally = false;
 												}
@@ -2472,16 +2603,17 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 													databaseSchema = engineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === databaseInContext.toLowerCase());
 												}
 												if (databaseSchema) {
+													if (!isOperationCurrent()) return false;
 													traceFileOpen('monaco.schema.worker.addDatabaseToSchema.start', { schemaKey });
 													await worker.addDatabaseToSchema(modelKey, clusterUrl, databaseSchema);
+													if (!isOperationCurrent()) return false;
 													traceFileOpen('monaco.schema.worker.addDatabaseToSchema.done', { schemaKey });
 													recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-add', { modelKey, clusterUrl, database: databaseInContext });
 													await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext);
-													__kustoSchemaTracker.recordAdd(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj, setAsContext);
-													__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
+													__kustoSchemaTracker.recordAdd(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj, false);
 													applied = true;
 													// For setAsContext, also try getSchema/setSchema for reliable context switch
-													if (setAsContext) {
+													if (setAsContext && isContextIntentCurrent()) {
 														try {
 															if (typeof worker.getSchema === 'function' && typeof worker.setSchema === 'function') {
 																const currentSchema = await worker.getSchema();
@@ -2490,7 +2622,14 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 																const nextDatabases = existingDb
 																	? currentDatabases.map((db: any) => db?.name?.toLowerCase?.() === databaseSchema.name.toLowerCase() ? databaseSchema : db)
 																	: [...currentDatabases, databaseSchema];
-																await worker.setSchema({ ...currentSchema, cluster: { ...(currentSchema?.cluster || {}), databases: nextDatabases }, database: databaseSchema });
+																if (!isOperationCurrent()) return false;
+																if (isContextIntentCurrent()) {
+																	await worker.setSchema({ ...currentSchema, cluster: { ...(currentSchema?.cluster || {}), databases: nextDatabases }, database: databaseSchema });
+																	if (isContextIntentCurrent()) {
+																		__kustoSchemaTracker.recordAdd(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj, true);
+																		__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
+																	}
+																}
 															}
 														} catch { /* best effort */ }
 													}
@@ -2498,11 +2637,14 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 											} catch (addError) {
 												console.error('[monaco-kusto] ADD: addDatabaseToSchema failed:', addError);
 											}
-										} else if (!alreadyLoadedGlobally) {
+										} else if (!alreadyLoadedGlobally && setAsContext && isContextIntentCurrent()) {
 											// Fallback: setSchemaFromShowSchema (will replace, but better than nothing)
 											if (typeof worker.setSchemaFromShowSchema === 'function') {
 												try {
+													if (!isOperationCurrent()) return false;
 													await worker.setSchemaFromShowSchema(__kustoPrepareSchemaForKustoWorker(schemaObj), clusterUrl, databaseInContext);
+													invalidateSchemaWorkerReadiness(preparationBoxId);
+													if (!isOperationCurrent()) return false;
 													recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-fallback-first-load', { modelKey, clusterUrl, database: databaseInContext });
 													await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext);
 													__kustoSchemaTracker.recordFirstLoad(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj);
@@ -2525,6 +2667,8 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 											schemaKey,
 											modelKey,
 											setAsContext,
+											preparationToken,
+											contextIntent,
 										});
 									}
 								}
@@ -2539,16 +2683,18 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 					// Function to switch the "database in context" without reloading schemas
 					// This allows unqualified table names to resolve to the correct database
 					// Returns true if context switch succeeded, false otherwise
-__kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, modelUri = null) {
+__kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, modelUri = null, guard?: () => boolean) {
 						// Normalize cluster URLs for comparison
 						const normalizeClusterUrl = (url: any) => kustoClusterKey(url);
+						const isCurrent = () => !guard || guard();
+						if (!isCurrent()) return false;
 						
 						const models = monaco?.editor?.getModels ? monaco.editor.getModels() : [];
 						if (!models || models.length === 0) {
 							return false;
 						}
 						const modelKey = modelUri ? (typeof modelUri === 'string' ? modelUri : (modelUri as any).toString()) : models[0].uri.toString();
-						const currentContext = __kustoMonacoDatabaseInContextByModel?.[modelKey] || __kustoSchemaTracker.databaseInContext;
+						const currentContext = __kustoSchemaTracker.databaseInContext;
 						
 						// Check if already in this context (use normalized comparison for cluster URL)
 						const currentClusterNorm = normalizeClusterUrl(currentContext?.clusterUrl);
@@ -2566,6 +2712,7 @@ __kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, mo
 							
 							const workerAccessor = await monaco.languages.kusto.getKustoWorker();
 							const worker = await workerAccessor(monaco.Uri.parse(modelKey));
+							if (!isCurrent()) return false;
 							
 							if (!worker || typeof worker.getSchema !== 'function' || typeof worker.setSchema !== 'function') {
 								return false;
@@ -2573,8 +2720,22 @@ __kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, mo
 							
 							// Get the current aggregated schema
 							const currentSchema = await worker.getSchema();
+							if (!isCurrent()) return false;
 
 							if (!currentSchema || currentSchema.clusterType !== 'Engine') {
+								return false;
+							}
+							const workerClusterUrl = String(
+								currentSchema.cluster?.connectionString
+								|| currentSchema.cluster?.dataSource
+								|| currentSchema.cluster?.uri
+								|| '',
+							);
+							if (!canUseKustoDatabaseContextFastPath({
+								targetClusterUrl: String(clusterUrl || ''),
+								trackedClusterUrl: currentContext?.clusterUrl,
+								workerClusterUrl,
+							})) {
 								return false;
 							}
 							
@@ -2597,9 +2758,9 @@ __kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, mo
 								...currentSchema,
 								database: targetDatabase
 							};
-							
+							if (!isCurrent()) return false;
 							await worker.setSchema(updatedSchema);
-							
+							if (!isCurrent()) return false;
 							__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: targetDatabase.name };
 							__kustoSchemaTracker.databaseInContext = __kustoMonacoDatabaseInContextByModel[modelKey];
 							return true;
@@ -2616,6 +2777,7 @@ __kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, mo
 					// enableMarkers: if true (default), enables red squiggles for this box; set to false
 					//                when just making a section visible without giving it focus
 __kustoUpdateSchemaForFocusedBox = async function (boxId: any, enableMarkers = true) {
+						let failureOwner: { token: KustoPreparationToken; schemaKey: string; schemaSignature?: string; modelUri: string } | undefined;
 						try {
 							if (!boxId) return;
 							
@@ -2670,11 +2832,6 @@ const connectionId = __kustoGetConnectionId(ownerId);
 								return;
 							}
 							
-							// Enable markers for this editor's model AFTER confirming connection context (lazy diagnostics)
-							if (enableMarkers) {
-								__kustoEnableMarkersForBox!(boxId);
-							}
-							
 							// Get the cluster URL for this section's current selection.
 							const selectedClusterUrl = __kustoGetClusterUrl(ownerId);
 							const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === connectionId) : null;
@@ -2701,51 +2858,127 @@ const connectionId = __kustoGetConnectionId(ownerId);
 								return;
 							}
 
-							const allowContextSwitch = boxId === activeQueryEditorBoxId || (!activeQueryEditorBoxId && __kustoIsSoleQuerySectionBox(String(boxId)));
-							if (!allowContextSwitch) {
+							const setAsContext = boxId === activeQueryEditorBoxId
+								|| (!activeQueryEditorBoxId && __kustoIsSoleQuerySectionBox(String(boxId)))
+								|| (!activeQueryEditorBoxId && isSchemaWorkerApplyRequired(String(boxId)));
+							const allowSchemaApply = setAsContext || isSchemaWorkerApplyRequired(String(boxId));
+							if (!allowSchemaApply) {
 								traceFileOpen('monaco.schema.focusedBox.skip.contextSwitchNotAllowed', { boxId, activeQueryEditorBoxId, enableMarkers });
 								return;
 							}
+							if (enableMarkers && setAsContext) {
+								__kustoEnableMarkersForBox!(boxId);
+							}
 
-							try { await __kustoFlushPendingSchemaWorkerUpdateForBox(boxId, { setAsContext: allowContextSwitch }); } catch (e) { console.error('[kusto]', e); }
+							const expectedSchemaKey = kustoDatabaseKey(clusterUrl, database);
+							const contextIntent = setAsContext
+								? __kustoClaimSchemaContextIntent(String(boxId), clusterUrl, database, focusedModelUri)
+								: undefined;
+							try { await __kustoFlushPendingSchemaWorkerUpdateForBox(boxId, { setAsContext, contextIntent }); } catch (e) { console.error('[kusto]', e); }
+							const currentContextAfterFlush = __kustoGetSchemaContextForBox(boxId);
+							if (!currentContextAfterFlush || currentContextAfterFlush.schemaKey !== expectedSchemaKey) {
+								__kustoFocusUpdateRerunByBoxId[String(boxId)] = true;
+								traceFileOpen('monaco.schema.focusedBox.retry.contextChanged', {
+									boxId,
+									expectedSchemaKey,
+									currentSchemaKey: currentContextAfterFlush?.schemaKey || '',
+								});
+								return;
+							}
 							
 							// Get rawSchemaJson from the existing schema cache (schemaByBoxId)
 							const schema = typeof schemaByBoxId !== 'undefined' ? schemaByBoxId[boxId] : null;
 							const rawSchemaJson = schema && schema.rawSchemaJson ? schema.rawSchemaJson : null;
-							const schemaKey = kustoDatabaseKey(clusterUrl, database);
+							const schemaKey = expectedSchemaKey;
 							const schemaSignature = schemaMetaByBoxId && schemaMetaByBoxId[boxId]
 								? schemaMetaByBoxId[boxId].schemaSignature
 								: undefined;
+							const preparationToken = getKustoPreparationToken(boxId);
+							const baseWorkerReady = isSchemaWorkerReady(boxId, schemaKey, focusedModelUri);
+							const enhancementReady = isSchemaEnhancementReady(boxId, schemaKey, schemaSignature, focusedModelUri);
+							const enhancementPending = isSchemaEnhancementPending(boxId, schemaKey, schemaSignature, focusedModelUri);
+							const enhancementFailed = isSchemaEnhancementFailed(boxId, schemaKey, schemaSignature, focusedModelUri);
+							const workerApplyRequired = isSchemaWorkerApplyRequired(boxId);
+							let workerContextMatches = !setAsContext || (!!__kustoSchemaTracker.databaseInContext
+								&& kustoDatabaseKey(__kustoSchemaTracker.databaseInContext.clusterUrl, __kustoSchemaTracker.databaseInContext.database) === schemaKey);
+							if (!workerApplyRequired && baseWorkerReady && setAsContext && !workerContextMatches && contextIntent) {
+								workerContextMatches = await __kustoQueueDatabaseContextSwitch(clusterUrl, database, focusedModelUri, contextIntent);
+								traceFileOpen('monaco.schema.focusedBox.contextSwitch', { boxId, schemaKey, switched: workerContextMatches });
+							}
+							if (!workerApplyRequired && baseWorkerReady && enhancementReady && workerContextMatches) {
+								if (preparationToken) updateKustoPreparation(preparationToken, { removeBlockers: ['worker', 'enhancement'] });
+								__kustoTriggerRevalidation!(boxId);
+								return;
+							}
+							if (!workerApplyRequired && baseWorkerReady && enhancementPending && workerContextMatches) {
+								if (preparationToken) updateKustoPreparation(preparationToken, { removeBlockers: ['worker'] });
+								return;
+							}
+							const forceEnhancementRetry = shouldForceKustoFocusedSchemaApply({
+								workerApplyRequired,
+								enhancementFailed,
+								baseWorkerReady,
+								enhancementReady,
+								enhancementPending,
+							});
 							
 							if (rawSchemaJson) {
-								// Delegate to the queued schema loader with setAsContext=true.
+								// Delegate to the queued schema loader. An explicit inactive-section
+								// apply loads its schema without replacing the focused context.
 								// This ensures all schema operations are serialized and tracking
 								// state (global + per-model) is properly updated. The queued
 								// function handles first-load vs add vs replace logic correctly,
 								// including the "already loaded, just switch context" optimization.
-								markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature, focusedModelUri);
-								const applied = await _win.__kustoSetMonacoKustoSchema(rawSchemaJson, clusterUrl, database, true, focusedModelUri);
+								markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature, focusedModelUri, preparationToken);
+								if (preparationToken && isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri: focusedModelUri })) {
+									failureOwner = { token: preparationToken, schemaKey, schemaSignature, modelUri: focusedModelUri };
+								}
+								const applied = await _win.__kustoSetMonacoKustoSchema(
+									rawSchemaJson,
+									clusterUrl,
+									database,
+									setAsContext,
+									focusedModelUri,
+									forceEnhancementRetry,
+									() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri: focusedModelUri! }),
+									preparationToken,
+									contextIntent,
+								);
 								if (!applied) {
-									markSchemaWorkerApplyFailed(boxId, schemaKey, focusedModelUri);
+									if (preparationToken && !isKustoPreparationCurrent(preparationToken)) return;
+									markSchemaWorkerApplyFailed(boxId, schemaKey, focusedModelUri, preparationToken);
 									return;
 								}
-								markSchemaWorkerReady(boxId, schemaKey, schemaSignature, focusedModelUri);
+								markSchemaWorkerReady(boxId, schemaKey, schemaSignature, focusedModelUri, preparationToken);
 								
-								// Trigger re-validation with the newly loaded schema
-								__kustoTriggerRevalidation!(boxId);
+								if (setAsContext) __kustoTriggerRevalidation!(boxId);
 							} else {
 								// No rawSchemaJson in schemaByBoxId yet. Check if the schema
 								// was previously loaded and cached in __kustoSchemaTracker.schemaCache.
 								const cachedSchema = __kustoSchemaTracker.schemaCache[schemaKey];
 								if (cachedSchema && cachedSchema.rawSchemaJson) {
-									markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature, focusedModelUri);
-									const applied = await _win.__kustoSetMonacoKustoSchema(cachedSchema.rawSchemaJson, clusterUrl, database, true, focusedModelUri);
+									markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature, focusedModelUri, preparationToken);
+									if (preparationToken && isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri: focusedModelUri })) {
+										failureOwner = { token: preparationToken, schemaKey, schemaSignature, modelUri: focusedModelUri };
+									}
+									const applied = await _win.__kustoSetMonacoKustoSchema(
+										cachedSchema.rawSchemaJson,
+										clusterUrl,
+										database,
+										setAsContext,
+										focusedModelUri,
+										forceEnhancementRetry,
+										() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri: focusedModelUri! }),
+										preparationToken,
+										contextIntent,
+									);
 									if (!applied) {
-										markSchemaWorkerApplyFailed(boxId, schemaKey, focusedModelUri);
+										if (preparationToken && !isKustoPreparationCurrent(preparationToken)) return;
+										markSchemaWorkerApplyFailed(boxId, schemaKey, focusedModelUri, preparationToken);
 										return;
 									}
-									markSchemaWorkerReady(boxId, schemaKey, schemaSignature, focusedModelUri);
-									__kustoTriggerRevalidation!(boxId);
+									markSchemaWorkerReady(boxId, schemaKey, schemaSignature, focusedModelUri, preparationToken);
+									if (setAsContext) __kustoTriggerRevalidation!(boxId);
 								} else {
 									// No cached schema anywhere in the worker — trigger cache-first schema fetch.
 									// When the schema arrives via 'schemaData' message, the handler
@@ -2758,11 +2991,13 @@ const connectionId = __kustoGetConnectionId(ownerId);
 						} catch (e) {
 							console.error('[monaco-kusto] Error updating schema for focused box:', e);
 							try {
-								const ctx = __kustoGetSchemaContextForBox(boxId);
-								const editor = typeof queryEditors !== 'undefined' ? queryEditors[boxId] : null;
-								const model = editor && typeof editor.getModel === 'function' ? editor.getModel() : null;
-								const modelUri = model && model.uri ? model.uri.toString() : undefined;
-								markSchemaWorkerApplyFailed(boxId, ctx?.schemaKey, modelUri);
+								if (failureOwner && isKustoPreparationCurrent(failureOwner.token, {
+									schemaKey: failureOwner.schemaKey,
+									schemaSignature: failureOwner.schemaSignature,
+									modelUri: failureOwner.modelUri,
+								})) {
+									markSchemaWorkerApplyFailed(boxId, failureOwner.schemaKey, failureOwner.modelUri, failureOwner.token);
+								}
 							} catch (inner) { console.error('[kusto]', inner); }
 						} finally {
 							if (__kustoFocusInProgress === boxId) {
@@ -2774,6 +3009,7 @@ const connectionId = __kustoGetConnectionId(ownerId);
 							}
 						}
 					};
+					registerKustoSchemaApplyRequester(__kustoRegisteredSchemaApplyRequester);
 					
 					// Helper to enable markers for a specific box's editor
 __kustoEnableMarkersForBox = function(boxId: any) {
@@ -2998,6 +3234,12 @@ __kustoApplyCrossClusterSchemaInternal = async function (clusterName: any, clust
 											clusterAliases
 										});
 										for (const uri of appliedModelUris) {
+											const primaryBoxId = String(queryEditorBoxByModelUri?.[uri] || '');
+											const primarySchemaKey = primaryBoxId ? __kustoGetSchemaContextForBox(primaryBoxId)?.schemaKey : '';
+											if (!shouldScheduleKustoSupplementalSchemaEnhancement({ primarySchemaKey, supplementalSchemaKey: key })) {
+												traceFileOpen('monaco.schema.enhance.supplementalSkippedPrimary', { schemaKey: key, modelKey: uri, boxId: primaryBoxId });
+												continue;
+											}
 											__kustoScheduleEnhancedSchemaApply({
 												worker: schemaWorkerProxy,
 												schemaObj,
@@ -3375,6 +3617,7 @@ try {
 				try { __kustoMonacoInitializedByModel = {}; } catch (e) { console.error('[kusto]', e); }
 				try { for (const key of Object.keys(__kustoAutocompleteTraceByModelUri)) delete __kustoAutocompleteTraceByModelUri[key]; } catch (e) { console.error('[kusto]', e); }
 				__kustoSchemaTracker.databaseInContext = null;
+				__kustoSchemaContextIntents.clear();
 				
 				// Clear the schema from the worker through the schema queue so it cannot
 				// race after a newer visible-tab schema apply.
@@ -4344,6 +4587,24 @@ function initQueryEditor(boxId: any) {
 		} catch (e) { console.error('[kusto]', e); }
 
 		queryEditors[boxId] = editor;
+		registerKustoSchemaApplyRequester(__kustoRegisteredSchemaApplyRequester);
+		let unregisterPendingSchemaSuggestMutation: (() => void) | null = null;
+		try {
+			const updateSuggestVisibility = () => {
+				const widget = __kustoFindSuggestWidgetForEditor(editor, { requireVisible: true, maxDistancePx: 320 });
+				const visible = !!(widget && __kustoIsElementVisibleForSuggest(widget));
+				if (__kustoShouldFlushPendingSchemaAfterSuggestMutation({
+					suggestVisible: visible,
+					isActiveBox: activeQueryEditorBoxId === boxId,
+					hasPendingSchema: !!pendingSchemaWorkerUpdateByBoxId[boxId],
+				}) && __kustoUpdateSchemaForFocusedBox !== null) {
+					traceFileOpen('monaco.schema.pending.flush.suggestClosed', { boxId, reason: pendingSchemaWorkerUpdateByBoxId[boxId]?.reason || '' });
+					void __kustoUpdateSchemaForFocusedBox(boxId);
+				}
+			};
+			unregisterPendingSchemaSuggestMutation = __kustoRegisterGlobalSuggestMutationHandler(document, updateSuggestVisibility);
+			updateSuggestVisibility();
+		} catch (e) { console.error('[kusto]', e); }
 		perfMark('webview.monaco.queryEditor.ready', { boxId });
 		traceFileOpen('monaco.queryEditor.ready', { boxId, editorCount: Object.keys(queryEditors || {}).length });
 		try {
@@ -5777,6 +6038,8 @@ function initQueryEditor(boxId: any) {
 						disposedModelUri = disposedModel && disposedModel.uri ? String(disposedModel.uri.toString()) : '';
 					} catch (e) { console.error('[kusto]', e); }
 					try { clickFidelityGuard.dispose(); } catch (e) { console.error('[kusto]', e); }
+					try { unregisterPendingSchemaSuggestMutation?.(); } catch (e) { console.error('[kusto]', e); }
+					unregisterPendingSchemaSuggestMutation = null;
 					try { if (pageScrollRelayoutFrame) cancelAnimationFrame(pageScrollRelayoutFrame); } catch (e) { console.error('[kusto]', e); }
 					pageScrollRelayoutFrame = 0;
 					try { if (disposePageScrollRelayout) disposePageScrollRelayout(); } catch (e) { console.error('[kusto]', e); }
@@ -5794,6 +6057,7 @@ function initQueryEditor(boxId: any) {
 					try { __kustoRemoveCrossClusterInterestForBox(boxId); } catch (e) { console.error('[kusto]', e); }
 					try { delete __kustoLastCrossClusterInteractionAtByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 					try { delete __kustoCrossClusterPointerDownByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+					try { invalidateSchemaWorkerReadinessForBox(String(boxId || '')); } catch (e) { console.error('[kusto]', e); }
 					try { document.removeEventListener('mouseup', onCrossClusterPointerUp, true); } catch (e) { console.error('[kusto]', e); }
 					try { document.removeEventListener('pointerup', onCrossClusterPointerUp, true); } catch (e) { console.error('[kusto]', e); }
 					try { document.removeEventListener('pointercancel', onCrossClusterPointerUp, true); } catch (e) { console.error('[kusto]', e); }
@@ -6228,7 +6492,6 @@ Object.defineProperty(window, '__kustoLastAutocompleteTraceId', { get: () => get
 // These module-level lets are populated inside the ensureMonaco().then() callback.
 // External modules access them via window.__kustoXxx; the bridge is set via
 // Object.defineProperty so it always reads the current value of the module-level let.
-Object.defineProperty(window, '__kustoUpdateSchemaForFocusedBox', { get: () => __kustoUpdateSchemaForFocusedBox, configurable: true });
 Object.defineProperty(window, '__kustoTriggerRevalidation', { get: () => __kustoTriggerRevalidation, configurable: true });
 Object.defineProperty(window, '__kustoGetCrossClusterTrace', { get: () => __kustoGetCrossClusterTrace, configurable: true });
 Object.defineProperty(window, '__kustoClearCrossClusterTrace', { get: () => __kustoClearCrossClusterTrace, configurable: true });

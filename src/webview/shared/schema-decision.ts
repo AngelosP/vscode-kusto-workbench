@@ -67,7 +67,7 @@ export function decideSchemaOperation(input: SchemaDecisionInput): SchemaOperati
 	// When setAsContext is true and database differs, we MUST use
 	// setSchemaFromShowSchema (replace) to guarantee autocomplete switches.
 	// forceRefresh deliberately uses the ADD path to avoid disrupting context.
-	const needsReplace = input.setAsContext && !isSameDatabase && !input.forceRefresh;
+	const needsReplace = input.setAsContext && !isSameDatabase && (!input.forceRefresh || !isSameCluster);
 	if (needsReplace) {
 		const reason = !isSameCluster ? 'different-cluster' : 'different-database';
 		return { action: 'replace', reason };

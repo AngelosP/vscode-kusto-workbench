@@ -518,16 +518,39 @@ export class ConnectionService {
 
 	// ── Send databases ──
 
-	async sendDatabases(connectionId: string, boxId: string, forceRefresh: boolean): Promise<void> {
+	async sendDatabases(connectionId: string, boxId: string, forceRefresh: boolean, requestToken?: string, requiredDatabase?: string): Promise<void> {
 		const connection = this.findConnection(connectionId);
 		if (!connection) {
+			this.host.postMessage({
+				type: 'databasesError',
+				boxId,
+				connectionId,
+				requestToken,
+				error: 'The selected Kusto connection is no longer available.',
+			});
 			return;
 		}
 		const clusterKey = getClusterCacheKey(connection.clusterUrl);
 		const cachedBefore = (this.getCachedDatabases()[clusterKey] ?? []).filter(Boolean);
+		const requiredDatabaseName = String(requiredDatabase || '').trim();
+		const cachedHasRequiredDatabase = !!requiredDatabaseName
+			&& cachedBefore.some(database => database.toLowerCase() === requiredDatabaseName.toLowerCase());
+		const requireLiveDiscovery = !!requiredDatabaseName && !cachedHasRequiredDatabase;
+		const effectiveForceRefresh = forceRefresh || requireLiveDiscovery;
+		const postDatabases = (databases: string[], provenance: 'cache' | 'live' | 'fallback') => {
+			this.host.postMessage({
+				type: 'databasesData',
+				databases,
+				boxId,
+				connectionId,
+				requestToken,
+				authoritative: provenance === 'live',
+				fallback: provenance === 'fallback',
+			});
+		};
 
-		if (!forceRefresh && cachedBefore.length > 0) {
-			this.host.postMessage({ type: 'databasesData', databases: cachedBefore, boxId, connectionId });
+		if (!effectiveForceRefresh && cachedBefore.length > 0) {
+			postDatabases(cachedBefore, 'cache');
 			return;
 		}
 
@@ -540,13 +563,13 @@ export class ConnectionService {
 		};
 
 		try {
-			let databasesRaw = await this.host.kustoClient.getDatabases(connection, forceRefresh, { allowInteractive: false });
+			let databasesRaw = await this.host.kustoClient.getDatabases(connection, effectiveForceRefresh, { allowInteractive: false });
 			let databases = (Array.isArray(databasesRaw) ? databasesRaw : [])
 				.map((d) => String(d || '').trim())
 				.filter(Boolean)
 				.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 
-			if (forceRefresh && databases.length === 0 && cachedBefore.length === 0) {
+			if (effectiveForceRefresh && databases.length === 0 && cachedBefore.length === 0) {
 				try {
 					await this.host.kustoClient.reauthenticate(connection, 'clearPreference');
 					databases = await fetchAndNormalize();
@@ -575,13 +598,13 @@ export class ConnectionService {
 				}
 			}
 
-			if (!forceRefresh || databases.length > 0 || cachedBefore.length === 0) {
+			if (!effectiveForceRefresh || databases.length > 0 || cachedBefore.length === 0) {
 				await this.saveCachedDatabases(connectionId, databases);
-				this.host.postMessage({ type: 'databasesData', databases, boxId, connectionId });
+				postDatabases(databases, 'live');
 				return;
 			}
 
-			this.host.postMessage({ type: 'databasesData', databases: cachedBefore, boxId, connectionId });
+			postDatabases(cachedBefore, 'fallback');
 			void vscode.window.showWarningMessage(
 				`Couldn't refresh the database list (received 0 databases). Using cached list.`,
 				'More Info'
@@ -595,8 +618,8 @@ export class ConnectionService {
 			});
 		} catch (error) {
 			const isAuthErr = this.host.kustoClient.isAuthenticationError(error);
-			if (isAuthErr && !forceRefresh && cachedBefore.length > 0) {
-				this.host.postMessage({ type: 'databasesData', databases: cachedBefore, boxId, connectionId });
+			if (isAuthErr && !effectiveForceRefresh && cachedBefore.length > 0) {
+				postDatabases(cachedBefore, 'fallback');
 				const now = Date.now();
 				const lastShown = this.lastDbErrorNotificationByCluster.get(clusterKey) ?? 0;
 				if ((now - lastShown) > 5000) {
@@ -616,12 +639,12 @@ export class ConnectionService {
 				return;
 			}
 
-			if ((forceRefresh || cachedBefore.length === 0) && isAuthErr) {
+			if ((effectiveForceRefresh || cachedBefore.length === 0) && isAuthErr) {
 				try {
 					await this.host.kustoClient.reauthenticate(connection, 'clearPreference');
 					const databases = await fetchAndNormalize();
 					await this.saveCachedDatabases(connectionId, databases);
-					this.host.postMessage({ type: 'databasesData', databases, boxId, connectionId });
+					postDatabases(databases, 'live');
 					return;
 				} catch {
 					try {
@@ -635,14 +658,14 @@ export class ConnectionService {
 							await this.host.kustoClient.reauthenticate(connection, 'clearPreference');
 							const databases = await fetchAndNormalize();
 							await this.saveCachedDatabases(connectionId, databases);
-							this.host.postMessage({ type: 'databasesData', databases, boxId, connectionId });
+							postDatabases(databases, 'live');
 							return;
 						}
 						if (choice === 'Add account') {
 							await this.host.kustoClient.reauthenticate(connection, 'forceNewSession');
 							const databases = await fetchAndNormalize();
 							await this.saveCachedDatabases(connectionId, databases);
-							this.host.postMessage({ type: 'databasesData', databases, boxId, connectionId });
+							postDatabases(databases, 'live');
 							return;
 						}
 					} catch {
@@ -664,7 +687,7 @@ export class ConnectionService {
 			}
 
 			if (cachedBefore.length > 0) {
-				this.host.postMessage({ type: 'databasesData', databases: cachedBefore, boxId, connectionId });
+				postDatabases(cachedBefore, 'fallback');
 				if (shouldShowNotification) {
 					void vscode.window.showWarningMessage(
 						`Failed to ${action} database list. Using cached list.`,
@@ -689,6 +712,7 @@ export class ConnectionService {
 				type: 'databasesError',
 				boxId,
 				connectionId,
+				requestToken,
 				error: `Failed to ${action} database list.\n${userMessage}`
 			});
 		}

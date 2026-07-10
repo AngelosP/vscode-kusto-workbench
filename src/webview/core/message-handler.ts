@@ -64,10 +64,23 @@ import {
 	schemaByConnDb, schemaRequestResolversByBoxId, schemaByBoxId,
 	schemaDiagnosticsTrustedByBoxId,
 	schemaMetaByConnDb, schemaMetaByBoxId,
-	schemaFetchInFlightByBoxId, databasesRequestResolversByBoxId,
+	schemaFetchInFlightByBoxId, lastSchemaRequestAtByBoxId, databasesRequestResolversByBoxId,
 	markSchemaWorkerApplyFailed, markSchemaWorkerApplyPending, markSchemaWorkerReady,
 	schemaWorkerReadyByBoxId,
 	pendingSchemaWorkerUpdateByBoxId,
+	beginKustoPreparation,
+	failKustoPreparation,
+	getKustoPreparationState,
+	getKustoPreparationToken,
+	isKustoPreparationCurrent,
+	isSchemaWorkerApplyRequired,
+	isSchemaEnhancementFailed,
+	isSchemaEnhancementPending,
+	isSchemaEnhancementReady,
+	reviseKustoPreparation,
+	setKustoPreparationIdle,
+	updateKustoPreparation,
+	type KustoPreparationToken,
 	favoritesModeByBoxId,
 	sqlConnections, sqlCachedDatabases, setSqlConnections,
 	sqlFavorites, setSqlFavorites, sqlFavoritesModeByBoxId,
@@ -262,7 +275,7 @@ function isOnlyQueryEditorBox(boxId: string): boolean {
 	}
 }
 
-function queuePendingSchemaWorkerUpdate(message: any, schemaKey: string, isForceRefresh: boolean, schemaSignature: string | undefined, reason: string): void {
+function queuePendingSchemaWorkerUpdate(message: any, schemaKey: string, isForceRefresh: boolean, schemaSignature: string | undefined, reason: string, preparationToken?: KustoPreparationToken): void {
 	const boxId = String(message?.boxId || '');
 	if (!boxId || !message?.schema?.rawSchemaJson || !message.clusterUrl || !message.database) {
 		return;
@@ -275,10 +288,11 @@ function queuePendingSchemaWorkerUpdate(message: any, schemaKey: string, isForce
 		schemaSignature,
 		forceRefresh: isForceRefresh,
 		reason,
+		preparationToken,
 	};
 }
 
-function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, isForceRefresh: boolean, schemaSignature?: string): void {
+function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, isForceRefresh: boolean, schemaSignature?: string, preparationToken?: KustoPreparationToken): void {
 	const boxId = String(message?.boxId || '');
 	if (!boxId || !message?.schema?.rawSchemaJson || !message.clusterUrl || !message.database) {
 		traceFileOpen('schema.worker.skip.invalidMessage', { boxId, hasRawSchemaJson: !!message?.schema?.rawSchemaJson, hasClusterUrl: !!message?.clusterUrl, hasDatabase: !!message?.database });
@@ -296,21 +310,19 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 		tablesCount: meta.tablesCount,
 		columnsCount: meta.columnsCount,
 	});
-	if (meta.workerUpdateNeeded === false) {
-		traceFileOpen('schema.worker.skip.workerUpdateNotNeeded', { boxId, schemaKey });
-		return;
-	}
-
 	const isActiveBox = boxId === activeQueryEditorBoxId;
 	if (schemaDiagnosticsTrustedByBoxId[boxId] === false) {
+		setKustoPreparationIdle(boxId);
 		traceFileOpen('schema.worker.skip.diagnosticsUntrusted', { boxId, schemaKey });
 		return;
 	}
 	const currentModelUri = getQueryEditorModelUri(boxId);
+	const explicitContextSwitch = isSchemaWorkerApplyRequired(boxId);
 	const canApplyForSoleOpenEditor = !isActiveBox && !activeQueryEditorBoxId && !isForceRefresh && !!currentModelUri && isOnlyQueryEditorBox(boxId);
-	if (!isActiveBox && !canApplyForSoleOpenEditor) {
-		queuePendingSchemaWorkerUpdate(message, schemaKey, isForceRefresh, schemaSignature, isForceRefresh ? 'inactive-force-refresh' : (currentModelUri ? 'inactive-box' : 'waiting-for-model'));
-		traceFileOpen('schema.worker.defer.inactiveBox', { boxId, activeQueryEditorBoxId, schemaKey, hasModelUri: !!currentModelUri, forceRefresh: isForceRefresh });
+	if (!currentModelUri || (!isActiveBox && !canApplyForSoleOpenEditor && !explicitContextSwitch)) {
+		const reason = !currentModelUri ? 'waiting-for-model' : (isForceRefresh ? 'inactive-force-refresh' : 'inactive-box');
+		queuePendingSchemaWorkerUpdate(message, schemaKey, isForceRefresh, schemaSignature, reason, preparationToken);
+		traceFileOpen('schema.worker.defer.inactiveBox', { boxId, activeQueryEditorBoxId, schemaKey, hasModelUri: !!currentModelUri, forceRefresh: isForceRefresh, explicitContextSwitch });
 		return;
 	}
 	const readyState = schemaWorkerReadyByBoxId[boxId];
@@ -333,17 +345,22 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			schemaKey,
 			schemaSignature,
 			forceRefresh: isForceRefresh,
-			reason: meta.refreshReason || 'background-refresh'
+			reason: meta.refreshReason || 'background-refresh',
+			preparationToken,
 		};
 		traceFileOpen('schema.worker.defer.suggestVisible', { boxId, schemaKey, reason: meta.refreshReason || 'background-refresh' });
 		return;
 	}
 
-	const shouldSetAsContext = isActiveBox || isForceRefresh || canApplyForSoleOpenEditor;
-	markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature, currentModelUri || undefined);
+	const shouldSetAsContext = isActiveBox || canApplyForSoleOpenEditor || (explicitContextSwitch && !activeQueryEditorBoxId);
+	markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature, currentModelUri || undefined, preparationToken);
 	traceFileOpen('schema.worker.apply.pending', { boxId, schemaKey, shouldSetAsContext, modelUri: currentModelUri, openTimeSoleEditor: canApplyForSoleOpenEditor });
 
 	const applySchema = async () => {
+		if (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature })) {
+			traceFileOpen('schema.worker.apply.skip.stalePreparation', { boxId, schemaKey });
+			return false;
+		}
 		if (typeof window.__kustoSetMonacoKustoSchema !== 'function') {
 			traceFileOpen('schema.worker.apply.waitingForSetter', { boxId, schemaKey });
 			return false;
@@ -360,12 +377,13 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 		}
 		const isActiveAtApply = boxId === activeQueryEditorBoxId;
 		const canApplyAtOpenForSoleEditor = !isActiveAtApply && !activeQueryEditorBoxId && !isForceRefresh && isOnlyQueryEditorBox(boxId);
-		if (!isActiveAtApply && !canApplyAtOpenForSoleEditor) {
-			queuePendingSchemaWorkerUpdate(message, schemaKey, isForceRefresh, schemaSignature, isForceRefresh ? 'inactive-force-refresh-at-apply' : 'inactive-at-apply');
-			traceFileOpen('schema.worker.apply.skip.inactiveAtApply', { boxId, activeQueryEditorBoxId, schemaKey, forceRefresh: isForceRefresh });
+		const explicitContextSwitchAtApply = isSchemaWorkerApplyRequired(boxId);
+		if (!isActiveAtApply && !canApplyAtOpenForSoleEditor && !explicitContextSwitchAtApply) {
+			queuePendingSchemaWorkerUpdate(message, schemaKey, isForceRefresh, schemaSignature, isForceRefresh ? 'inactive-force-refresh-at-apply' : 'inactive-at-apply', preparationToken);
+			traceFileOpen('schema.worker.apply.skip.inactiveAtApply', { boxId, activeQueryEditorBoxId, schemaKey, forceRefresh: isForceRefresh, explicitContextSwitchAtApply });
 			return false;
 		}
-		const setAsContextAtApply = isActiveAtApply || isForceRefresh || canApplyAtOpenForSoleEditor;
+		const setAsContextAtApply = isActiveAtApply || canApplyAtOpenForSoleEditor || (explicitContextSwitchAtApply && !activeQueryEditorBoxId);
 		traceFileOpen('schema.worker.apply.call.start', { boxId, schemaKey, modelUri, setAsContextAtApply, forceRefresh: isForceRefresh, openTimeSoleEditor: canApplyAtOpenForSoleEditor });
 		const applied = await window.__kustoSetMonacoKustoSchema(
 			message.schema.rawSchemaJson,
@@ -373,7 +391,9 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			message.database,
 			setAsContextAtApply,
 			modelUri,
-			isForceRefresh
+			isForceRefresh,
+			() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }),
+			preparationToken
 		);
 		traceFileOpen('schema.worker.apply.call.done', { boxId, schemaKey, applied });
 		if (!applied) {
@@ -384,8 +404,14 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			window.__kustoTriggerRevalidation(boxId);
 			traceFileOpen('schema.worker.revalidation.done', { boxId, schemaKey });
 		}
-		markSchemaWorkerReady(boxId, schemaKey, schemaSignature, modelUri);
-		try { delete pendingSchemaWorkerUpdateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+		if (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri })) return false;
+		markSchemaWorkerReady(boxId, schemaKey, schemaSignature, modelUri, preparationToken);
+		try {
+			const pending = pendingSchemaWorkerUpdateByBoxId[boxId];
+			if (!pending || pending.preparationToken?.generation === preparationToken?.generation && pending.preparationToken?.revision === preparationToken?.revision) {
+				delete pendingSchemaWorkerUpdateByBoxId[boxId];
+			}
+		} catch (e) { console.error('[kusto]', e); }
 		return true;
 	};
 
@@ -398,8 +424,12 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 				traceFileOpen('schema.worker.retry.applied', { boxId, schemaKey, attempt: retryIndex + 1 });
 				return;
 			}
+			if (preparationToken && !isKustoPreparationCurrent(preparationToken)) {
+				traceFileOpen('schema.worker.retry.stopped.stalePreparation', { boxId, schemaKey });
+				return;
+			}
 			if (retryIndex >= retryDelays.length) {
-				markSchemaWorkerApplyFailed(boxId, schemaKey, currentModelUri || undefined);
+				markSchemaWorkerApplyFailed(boxId, schemaKey, currentModelUri || undefined, preparationToken);
 				traceFileOpen('schema.worker.retry.failed', { boxId, schemaKey });
 				return;
 			}
@@ -408,7 +438,7 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			setTimeout(retry, delay);
 		}).catch((error: unknown) => {
 			console.error('[schemaData] Worker schema apply failed:', error);
-			markSchemaWorkerApplyFailed(boxId, schemaKey, currentModelUri || undefined);
+			markSchemaWorkerApplyFailed(boxId, schemaKey, currentModelUri || undefined, preparationToken);
 			traceFileOpen('schema.worker.retry.error', { boxId, schemaKey, error: error instanceof Error ? error.message : String(error) });
 		});
 	};
@@ -876,7 +906,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 
-			updateDatabaseSelect(message.boxId, message.databases, message.connectionId);
+			updateDatabaseSelect(message.boxId, message.databases, message.connectionId, message.requestToken, message.authoritative, message.fallback);
 			break;
 		case 'databasesError':
 			// Reject pending database list request if this was a synthetic request id.
@@ -889,7 +919,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			try {
-				onDatabasesError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.', message.connectionId);
+				onDatabasesError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.', message.connectionId, message.requestToken);
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'importConnectionsXmlText':
@@ -1065,15 +1095,118 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			schemaByBoxId[message.boxId] = message.schema;
 			schemaMetaByBoxId[message.boxId] = message.schemaMeta || {};
 			schemaFetchInFlightByBoxId[message.boxId] = false;
+			const schemaMessageMeta = message.schemaMeta || {};
+			const schemaMessageKey = message.clusterUrl && message.database ? kustoDatabaseKey(message.clusterUrl, message.database) : '';
+			const schemaMessageSignature = typeof schemaMessageMeta.schemaSignature === 'string' ? schemaMessageMeta.schemaSignature : undefined;
+			const schemaMessageModelUri = getQueryEditorModelUri(String(message.boxId || '')) || undefined;
+			const hasRawSchemaJson = !!message.schema?.rawSchemaJson;
+			const refreshScheduled = schemaMessageMeta.refreshState === 'scheduled';
+			let preparationToken = getKustoPreparationToken(message.boxId);
+			let preparationState = getKustoPreparationState(message.boxId);
+			const readyStateAtDelivery = schemaWorkerReadyByBoxId[message.boxId];
+			const exactWorkerReadyAtDelivery = !!(schemaMessageKey && schemaMessageModelUri
+				&& readyStateAtDelivery?.status === 'ready'
+				&& readyStateAtDelivery.schemaKey === schemaMessageKey
+				&& readyStateAtDelivery.schemaSignature === schemaMessageSignature
+				&& readyStateAtDelivery.modelUri === schemaMessageModelUri);
+			const exactEnhancementReadyAtDelivery = !!(schemaMessageKey && schemaMessageModelUri
+				&& isSchemaEnhancementReady(message.boxId, schemaMessageKey, schemaMessageSignature, schemaMessageModelUri));
+			const exactEnhancementPendingAtDelivery = !!(schemaMessageKey && schemaMessageModelUri
+				&& isSchemaEnhancementPending(message.boxId, schemaMessageKey, schemaMessageSignature, schemaMessageModelUri));
+			const canAwaitExistingEnhancement = preparationState.status === 'preparing'
+				&& preparationState.target.schemaKey === schemaMessageKey
+				&& preparationState.target.schemaSignature === schemaMessageSignature
+				&& preparationState.target.modelUri === schemaMessageModelUri
+				&& exactEnhancementPendingAtDelivery;
+			const forceLocalRecovery = preparationState.status === 'error' || isSchemaWorkerApplyRequired(message.boxId);
+			const localRecoveryRequired = forceLocalRecovery
+				|| !exactWorkerReadyAtDelivery
+				|| (!exactEnhancementReadyAtDelivery && !canAwaitExistingEnhancement);
+			const workerUpdateRequired = hasRawSchemaJson && (schemaMessageMeta.workerUpdateNeeded !== false || localRecoveryRequired);
+			const preparationTargetMatches = preparationState.target.connectionId === message.connectionId
+				&& preparationState.target.database === message.database
+				&& (!message.requestToken || !preparationState.target.requestToken || preparationState.target.requestToken === message.requestToken);
+			if (!preparationToken || !preparationTargetMatches || preparationState.status === 'idle' || preparationState.status === 'error') {
+				preparationToken = beginKustoPreparation(message.boxId, {
+					stage: refreshScheduled ? 'refreshing' : 'schema',
+					blockers: [
+						'schema',
+						...refreshScheduled ? ['refresh' as const] : [],
+						...workerUpdateRequired ? ['worker' as const, 'enhancement' as const] : [],
+					],
+					target: {
+						connectionId: message.connectionId,
+						database: message.database,
+						schemaKey: schemaMessageKey || undefined,
+						schemaSignature: schemaMessageSignature,
+						modelUri: schemaMessageModelUri,
+						requestToken: message.requestToken,
+					},
+					usableFallback: hasRawSchemaJson,
+				});
+				preparationState = getKustoPreparationState(message.boxId);
+			}
+
+			if (preparationToken) {
+				if (!hasRawSchemaJson) {
+					if (refreshScheduled) {
+						updateKustoPreparation(preparationToken, {
+							stage: 'refreshing',
+							replaceBlockers: ['refresh'],
+							target: { schemaKey: schemaMessageKey || undefined, schemaSignature: schemaMessageSignature },
+							usableFallback: false,
+						});
+					} else {
+						lastSchemaRequestAtByBoxId[message.boxId] = 0;
+						failKustoPreparation(preparationToken, 'Schema data is unavailable for autocomplete.');
+					}
+				} else if (!workerUpdateRequired) {
+					updateKustoPreparation(preparationToken, {
+						removeBlockers: ['schema', ...refreshScheduled ? [] : ['refresh' as const]],
+						addBlockers: refreshScheduled ? ['refresh'] : [],
+						target: { schemaKey: schemaMessageKey || undefined, schemaSignature: schemaMessageSignature, modelUri: schemaMessageModelUri },
+						usableFallback: true,
+					});
+				} else {
+					preparationToken = reviseKustoPreparation(preparationToken, {
+						removeBlockers: ['schema', ...refreshScheduled ? [] : ['refresh' as const]],
+						addBlockers: ['worker', 'enhancement', ...refreshScheduled ? ['refresh' as const] : []],
+						target: { schemaKey: schemaMessageKey || undefined, schemaSignature: schemaMessageSignature, modelUri: schemaMessageModelUri },
+						usableFallback: true,
+					});
+					preparationState = getKustoPreparationState(message.boxId);
+				}
+			}
 			
 			// Update monaco-kusto with the raw schema JSON if available
 			// With aggregate schema approach, we always push schemas to monaco-kusto
 			// The __kustoSetMonacoKustoSchema function handles de-duplication and uses addDatabaseToSchema for subsequent loads
 			try {
-				const schemaKey = message.clusterUrl && message.database ? kustoDatabaseKey(message.clusterUrl, message.database) : '';
+				const schemaKey = schemaMessageKey;
 				const isForceRefresh = !!(message.schemaMeta && message.schemaMeta.forceRefresh);
-				if (schemaKey) {
-					applyKustoSchemaToWorkerFromMessage(message, schemaKey, isForceRefresh, message.schemaMeta?.schemaSignature);
+				const readyState = schemaWorkerReadyByBoxId[message.boxId];
+				const exactReadyFallback = !!(readyState?.status === 'ready'
+					&& readyState.schemaKey === schemaKey
+					&& readyState.schemaSignature === schemaMessageSignature
+					&& readyState.modelUri === schemaMessageModelUri
+					&& preparationState.usableFallback);
+				const enhancementReady = !!(schemaKey && schemaMessageModelUri && isSchemaEnhancementReady(message.boxId, schemaKey, schemaMessageSignature, schemaMessageModelUri));
+				const enhancementPending = !!(schemaKey && schemaMessageModelUri && isSchemaEnhancementPending(message.boxId, schemaKey, schemaMessageSignature, schemaMessageModelUri));
+				const enhancementFailed = !!(schemaKey && schemaMessageModelUri && isSchemaEnhancementFailed(message.boxId, schemaKey, schemaMessageSignature, schemaMessageModelUri));
+				const forceWorkerRefresh = isForceRefresh
+					|| !!schemaMessageMeta.autocompleteChanged
+					|| forceLocalRecovery
+					|| !!(readyState?.status === 'ready' && readyState.schemaKey === schemaKey && readyState.schemaSignature !== schemaMessageSignature)
+					|| enhancementFailed
+					|| (exactReadyFallback && !enhancementReady && !enhancementPending);
+				if (schemaKey && workerUpdateRequired) {
+					if (exactReadyFallback && !forceWorkerRefresh) {
+						if (preparationToken) {
+							updateKustoPreparation(preparationToken, { removeBlockers: enhancementReady ? ['worker', 'enhancement'] : ['worker'] });
+						}
+					} else {
+						applyKustoSchemaToWorkerFromMessage(message, schemaKey, forceWorkerRefresh, schemaMessageSignature, preparationToken);
+					}
 				}
 			} catch (e: any) { console.error('[schemaData] Error:', e); }
 			
@@ -1096,7 +1229,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				let tooltipText = 'Schema loaded for autocomplete';
 				let isError = false;
 				
-				if (meta.fromCache) {
+				if (!hasRawSchemaJson && meta.refreshState !== 'scheduled') {
+					displayText = 'Schema unavailable';
+					tooltipText = 'Schema data required for autocomplete is unavailable. Try refreshing the schema.';
+					isError = true;
+				} else if (meta.fromCache) {
 					if (isFailoverToCache && !hasRawSchemaJson) {
 						// Cached schema from failover but missing rawSchemaJson - autocomplete won't work
 						displayText = 'Schema outdated';
@@ -1145,6 +1282,23 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			// Non-fatal; keep any previously loaded schema + counts if present.
 			schemaFetchInFlightByBoxId[message.boxId] = false;
+			lastSchemaRequestAtByBoxId[message.boxId] = 0;
+			try {
+				const preparation = getKustoPreparationState(message.boxId);
+				const preparationToken = getKustoPreparationToken(message.boxId);
+				const responseMatchesPreparation = !message.requestToken || preparation.target.requestToken === message.requestToken;
+				if (message.cacheOnly && message.silent) {
+					if (responseMatchesPreparation) {
+						setKustoPreparationIdle(message.boxId);
+					}
+				} else if (preparationToken && preparation.status !== 'idle' && responseMatchesPreparation) {
+					failKustoPreparation(
+						preparationToken,
+						message.error || 'Schema preparation failed.',
+						!!(message.isBackgroundRefresh && message.hasUsableFallback)
+					);
+				}
+			} catch (e) { console.error('[kusto]', e); }
 			if (message.silent || message.cacheOnly) {
 				break;
 			}

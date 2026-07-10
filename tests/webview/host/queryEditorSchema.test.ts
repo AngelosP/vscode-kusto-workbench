@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { SchemaService } from '../../../src/host/queryEditorSchema';
 import type { KustoConnection } from '../../../src/host/connectionManager';
+import { SCHEMA_CACHE_TTL_MS, SCHEMA_CACHE_VERSION } from '../../../src/host/schemaCache';
 
 function makeRawSchema(database: string) {
 	return {
@@ -49,7 +50,7 @@ function createService(connection: KustoConnection) {
 		output: { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() } as any,
 		postMessage: (message: unknown) => { messages.push(message); },
 		formatQueryExecutionErrorForUser: (error: unknown) => String(error),
-		findConnection: vi.fn(),
+		findConnection: vi.fn(() => connection),
 	});
 	return { service, messages, getDatabaseSchema };
 }
@@ -97,6 +98,79 @@ describe('SchemaService cross-cluster schema requests', () => {
 			database: 'TelemetryDb',
 			boxId: 'query_2',
 			requestToken: 'token_2',
+		}));
+	});
+});
+
+describe('SchemaService primary schema preparation', () => {
+	const connection: KustoConnection = {
+		id: 'primary',
+		name: 'Primary',
+		clusterUrl: 'https://primary.kusto.windows.net',
+	};
+
+	it('posts a terminal background-refresh error with usable fallback capability', async () => {
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		const cachedSchema = {
+			tables: ['Events'],
+			columnTypesByTable: { Events: { TIMESTAMP: 'datetime' } },
+			rawSchemaJson: makeRawSchema('TelemetryDb'),
+		};
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue({
+			schema: cachedSchema,
+			timestamp: Date.now() - SCHEMA_CACHE_TTL_MS - 1000,
+			version: SCHEMA_CACHE_VERSION,
+		});
+		getDatabaseSchema.mockRejectedValueOnce(new Error('offline'));
+
+		await service.prefetchSchema('primary', 'TelemetryDb', 'query_1', false, 'schema_1');
+
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaData',
+			boxId: 'query_1',
+			requestToken: 'schema_1',
+			schemaMeta: expect.objectContaining({ refreshState: 'scheduled', isStale: true }),
+		}));
+		await vi.waitFor(() => {
+			expect(messages).toContainEqual(expect.objectContaining({
+				type: 'schemaError',
+				boxId: 'query_1',
+				requestToken: 'schema_1',
+				silent: true,
+				isBackgroundRefresh: true,
+				refreshState: 'failed',
+				hasUsableFallback: true,
+			}));
+		});
+	});
+
+	it('delivers a fetched schema even when persisting the cache fails', async () => {
+		const { service, messages } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+		vi.spyOn(service, 'saveCachedSchemaToDisk').mockRejectedValue(new Error('disk full'));
+
+		await service.prefetchSchema('primary', 'TelemetryDb', 'query_2', false, 'schema_2');
+
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaData',
+			boxId: 'query_2',
+			requestToken: 'schema_2',
+			schemaMeta: expect.objectContaining({ refreshState: 'completed' }),
+		}));
+		expect(messages).not.toContainEqual(expect.objectContaining({ type: 'schemaError', boxId: 'query_2' }));
+	});
+
+	it('terminates a tokened schema request when the connection no longer exists', async () => {
+		const { service, messages } = createService(connection);
+		(service as any).host.findConnection = vi.fn(() => undefined);
+
+		await service.prefetchSchema('missing', 'TelemetryDb', 'query_3', false, 'schema_missing');
+
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaError',
+			boxId: 'query_3',
+			connectionId: 'missing',
+			requestToken: 'schema_missing',
 		}));
 	});
 });

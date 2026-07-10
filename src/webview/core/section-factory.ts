@@ -29,6 +29,7 @@ import {
 	schemaByConnDb,
 	schemaRequestResolversByBoxId,
 	databasesRequestResolversByBoxId,
+	databaseRequestTokenByBoxId,
 	missingClusterDetectTimersByBoxId,
 	lastQueryTextByBoxId,
 	missingClusterUrlsByBoxId,
@@ -48,6 +49,11 @@ import {
 	sqlCachedDatabases,
 	sqlFavorites,
 	sqlFavoritesModeByBoxId,
+	beginKustoPreparation,
+	disposeKustoPreparation,
+	requireSchemaWorkerApply,
+	requestKustoSchemaApplyForBox,
+	setKustoPreparationIdle,
 } from './state';
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from '../sections/query-execution.controller';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
@@ -353,6 +359,9 @@ export function addQueryBox( options?: any) {
 			try { if (schemaFetchInFlightByBoxId) schemaFetchInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
 			try { if (lastSchemaRequestAtByBoxId) lastSchemaRequestAtByBoxId[boxId] = 0; } catch (e) { console.error('[kusto]', e); }
 			try { delete schemaRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+			try { delete databaseRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+			requireSchemaWorkerApply(String(boxId));
+			invalidateLinkedComparisonSchemaForSource(String(boxId));
 			// Persist selection.
 			try {
 				if (!pState.restoreInProgress) {
@@ -365,6 +374,7 @@ export function addQueryBox( options?: any) {
 			} catch (e) { console.error('[kusto]', e); }
 			// Load database list.
 			if (pState.restoreInProgress) {
+				setKustoPreparationIdle(boxId);
 				const restoredDatabase = String(detail.database || '').trim();
 				if (restoredDatabase && typeof kwEl.setDatabases === 'function') {
 					kwEl.setDatabases([restoredDatabase], restoredDatabase);
@@ -377,19 +387,28 @@ export function addQueryBox( options?: any) {
 			}
 			if (detail.connectionId) {
 				try {
+					beginKustoPreparation(boxId, {
+						stage: 'databases',
+						blockers: ['databases'],
+						target: { connectionId: String(detail.connectionId || '') },
+					});
 					const cid = String(detail.connectionId || '').trim();
 					const conn = Array.isArray(connections) ? connections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
 					const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
 					const clusterKey = clusterUrl ? canonicalKustoClusterKey(clusterUrl) : '';
 					const cached = (cachedDatabases && cachedDatabases[clusterKey]) || cachedDatabases[detail.connectionId];
+					const requestToken = 'databases_' + Date.now() + '_' + Math.random().toString(16).slice(2);
+					const requiredDatabase = String(kwEl.getDesiredDatabase?.() || detail.database || '').trim();
+					databaseRequestTokenByBoxId[boxId] = requestToken;
 					if (cached && cached.length > 0) {
 						if (typeof kwEl.setDatabases === 'function') kwEl.setDatabases(cached);
+						if (!kwEl.getDatabase?.() && !kwEl.getDesiredDatabase?.()) setKustoPreparationIdle(boxId);
 						// Background refresh
-						postMessageToHost({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
+						postMessageToHost({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId, requestToken, requiredDatabase });
 						try { if (typeof kwEl.setRefreshLoading === 'function') kwEl.setRefreshLoading(true); } catch (e) { console.error('[kusto]', e); }
 					} else {
 						if (typeof kwEl.setDatabasesLoading === 'function') kwEl.setDatabasesLoading(true);
-						postMessageToHost({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId });
+						postMessageToHost({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId, requestToken, requiredDatabase });
 					}
 				} catch (e) { console.error('[kusto]', e); }
 			}
@@ -406,7 +425,7 @@ export function addQueryBox( options?: any) {
 					schemaDiagnosticsTrustedByBoxId[boxId] = true;
 				}
 			} catch (e) { console.error('[kusto]', e); }
-			try { onDatabaseChanged(boxId); } catch (e) { console.error('[kusto]', e); }
+			try { onDatabaseChanged(boxId, String(detail.source || '')); } catch (e) { console.error('[kusto]', e); }
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 		});
 		kwEl.addEventListener('refresh-databases', (e: any) => {
@@ -909,9 +928,7 @@ function __kustoApplyQueryBoxVisibility( boxId: any) {
 					if (ed && typeof ed.layout === 'function') {
 						ed.layout();
 					}
-					if (!pState.restoreInProgress && typeof window.__kustoUpdateSchemaForFocusedBox === 'function') {
-						window.__kustoUpdateSchemaForFocusedBox(boxId, false);
-					}
+					if (!pState.restoreInProgress) requestKustoSchemaApplyForBox(String(boxId), false);
 				} catch (e) { console.error('[kusto]', e); }
 			}, 0);
 		} catch (e) { console.error('[kusto]', e); }
@@ -1457,6 +1474,7 @@ export function removeQueryBox( boxId: any) {
 
 	// Remove from tracked list
 	setQueryBoxes(queryBoxes.filter((id: any) => id !== boxId));
+	disposeKustoPreparation(String(boxId || ''));
 	try { delete schemaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { delete schemaMetaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { delete pendingSchemaWorkerUpdateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
@@ -1471,6 +1489,7 @@ export function removeQueryBox( boxId: any) {
 	try { if (schemaFetchInFlightByBoxId) schemaFetchInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
 	try { if (lastSchemaRequestAtByBoxId) lastSchemaRequestAtByBoxId[boxId] = 0; } catch (e) { console.error('[kusto]', e); }
 	try { delete schemaRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+	try { delete databaseRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { delete lastQueryTextByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { delete schemaDiagnosticsTrustedByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { delete missingClusterUrlsByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
@@ -1578,6 +1597,7 @@ import {
 	parseKustoExplorerConnectionsXml,
 	refreshDatabases, onDatabasesError, updateDatabaseSelect,
 	ensureSchemaForBox, onDatabaseChanged, refreshSchema,
+	invalidateLinkedComparisonSchemaForSource,
 	__kustoRequestSchema, __kustoRequestDatabases,
 	toggleFavoriteForBox, removeFavorite, closeAllFavoritesDropdowns,
 	__kustoUpdateFavoritesUiForBox, __kustoMarkNewBoxForFavoritesAutoEnter,

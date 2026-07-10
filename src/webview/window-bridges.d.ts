@@ -466,8 +466,7 @@ declare global {
 		// monaco.ts
 		// =====================================================================
 		__kustoFunctionDocs: Record<string, any>;
-		__kustoSetMonacoKustoSchema: (rawSchemaJson: any, clusterUrl: string, database: string, setAsContext?: boolean, modelUri?: string, forceRefresh?: boolean) => Promise<boolean>;
-		__kustoUpdateSchemaForFocusedBox: (boxId: string, enableMarkers?: boolean) => Promise<void>;
+		__kustoSetMonacoKustoSchema: (rawSchemaJson: any, clusterUrl: string, database: string, setAsContext?: boolean, modelUri?: string, forceRefresh?: boolean, guard?: () => boolean, preparationToken?: import('./core/state').KustoPreparationToken, contextIntent?: import('./shared/schema-context-intent').KustoSchemaContextIntent) => Promise<boolean>;
 		__kustoApplyCrossClusterSchema: (clusterName: string, clusterUrl: string, database: string, rawSchemaJson: any, boxId?: string, source?: string, cacheAgeMs?: number) => Promise<void>;
 		__kustoGetCrossClusterTrace: () => Array<Record<string, any>>;
 		__kustoClearCrossClusterTrace: () => void;

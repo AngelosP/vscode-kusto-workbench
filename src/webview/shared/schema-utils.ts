@@ -11,6 +11,40 @@ export interface SchemaInfoData {
 	errorMessage?: string;
 }
 
+export function shouldStartKustoSchemaPrewarm(args: {
+	schemaFetchInFlight: boolean;
+	authoritativeRequestToken?: string;
+	preparationStatus?: string;
+	diagnosticsTrusted?: boolean;
+}): boolean {
+	const token = String(args.authoritativeRequestToken || '');
+	return args.diagnosticsTrusted !== false
+		&& !args.schemaFetchInFlight
+		&& (!token || token.startsWith('schema_prewarm_'))
+		&& args.preparationStatus !== 'preparing';
+}
+
+export function shouldForceKustoFocusedSchemaApply(args: {
+	workerApplyRequired: boolean;
+	enhancementFailed: boolean;
+	baseWorkerReady: boolean;
+	enhancementReady: boolean;
+	enhancementPending: boolean;
+}): boolean {
+	return args.workerApplyRequired
+		|| args.enhancementFailed
+		|| (args.baseWorkerReady && !args.enhancementReady && !args.enhancementPending);
+}
+
+export function shouldScheduleKustoSupplementalSchemaEnhancement(args: {
+	primarySchemaKey?: string | null;
+	supplementalSchemaKey: string;
+}): boolean {
+	const primarySchemaKey = String(args.primarySchemaKey || '');
+	const supplementalSchemaKey = String(args.supplementalSchemaKey || '');
+	return !!supplementalSchemaKey && (!primarySchemaKey || primarySchemaKey !== supplementalSchemaKey);
+}
+
 /**
  * Build a schema info object from display text, error flag, and optional metadata.
  * Pure function — no DOM or window access.

@@ -222,6 +222,66 @@ describe('ConnectionService — findConnection', () => {
 	});
 });
 
+describe('ConnectionService — database request identity', () => {
+	it('echoes the request token on database responses', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const postMessage = vi.fn();
+		const host = makeMockHost({
+			connections: [connection],
+			getDatabases: async () => ['Db1'],
+			postMessage,
+		});
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', false, 'databases_1');
+
+		expect(postMessage).toHaveBeenCalledWith({
+			type: 'databasesData',
+			databases: ['Db1'],
+			boxId: 'query_1',
+			connectionId: 'c1',
+			requestToken: 'databases_1',
+			authoritative: true,
+			fallback: false,
+		});
+	});
+
+	it('bypasses stale cache when it omits an explicitly required database', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const getDatabases = vi.fn(async () => ['CachedDb', 'SavedDb']);
+		const postMessage = vi.fn();
+		const host = makeMockHost({ connections: [connection], globalState, getDatabases, postMessage });
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', false, 'databases_saved', 'SavedDb');
+
+		expect(getDatabases).toHaveBeenCalledWith(connection, true, { allowInteractive: false });
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesData',
+			databases: ['CachedDb', 'SavedDb'],
+			requestToken: 'databases_saved',
+			authoritative: true,
+			fallback: false,
+		}));
+	});
+
+	it('terminates a tokened request when the connection no longer exists', async () => {
+		const postMessage = vi.fn();
+		const host = makeMockHost({ connections: [], postMessage });
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('missing', 'query_1', false, 'databases_missing');
+
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesError',
+			boxId: 'query_1',
+			connectionId: 'missing',
+			requestToken: 'databases_missing',
+		}));
+	});
+});
+
 describe('ConnectionService — getFavorites', () => {
 	it('returns empty array when no favorites stored', () => {
 		const host = makeMockHost();

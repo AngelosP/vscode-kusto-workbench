@@ -3,6 +3,9 @@ Feature: Kusto autocomplete schema contexts
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
+    When I move the Dev Host to 0, 0
+    When I resize the Dev Host to 1280x1000
+    When I execute command "workbench.action.closeAuxiliaryBar"
     And I wait 2 seconds
 
   Scenario: Kusto suggestions are correct across table, pipe, column, and function contexts
@@ -20,9 +23,12 @@ Feature: Kusto autocomplete schema contexts
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
     When I evaluate "window.__e2e.kusto.selectSampleDatabase()" in the webview
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
+    When I wait for "kw-query-section[data-test-preparation-state='ready']" in the webview for 60 seconds
     When I evaluate "window.__e2e.kusto.startCompletionTargetProbe(25000)" in the webview
     When I wait for "kw-query-section[data-test-completion-targets-ready='true']" in the webview for 30 seconds
     When I evaluate "window.__e2e.kusto.assertCompletionTargetsReady()" in the webview
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    When I click at 950, 15
     Then I take a screenshot "01-schema-ready"
 
     When I scroll "kw-query-section .query-editor" into view
@@ -36,10 +42,13 @@ Feature: Kusto autocomplete schema contexts
     When I evaluate "window.__e2e.kusto.assertCompletionLatency('table-prefix', 3000)" in the webview
     When I evaluate "window.__e2e.kusto.assertCompletionVisible('table-prefix')" in the webview
     When I evaluate "window.__e2e.kusto.assertCompletionStaysVisible('table-prefix', 800)" in the webview
+    When I press "Down"
     Then I take a screenshot "02-table-suggestions-visible"
     When I evaluate "window.__e2e.kusto.acceptSuggestion('table-prefix')" in the webview
     And I wait 1 second
     When I evaluate "window.__e2e.kusto.assertAcceptedCompletion('table-prefix')" in the webview
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    When I click at 950, 15
     Then I take a screenshot "03-table-accepted"
 
     When I press "Escape"
@@ -85,6 +94,8 @@ Feature: Kusto autocomplete schema contexts
     When I evaluate "window.__e2e.kusto.setCompletionContext('valid-query')" in the webview
     And I wait 2 seconds
     When I evaluate "window.__e2e.kusto.assertMarkers('none', '', 'error')" in the webview
+    When I execute command "workbench.action.focusActiveEditorGroup"
+    When I click at 950, 15
     Then I take a screenshot "04-valid-query-no-errors"
 
     When I evaluate "window.__e2e.autoTrigger.ensureEnabled('kusto', true)" in the webview

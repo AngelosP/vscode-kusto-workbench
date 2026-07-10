@@ -283,6 +283,17 @@ export function __kustoRegisterGlobalSuggestMutationHandler(doc: any, handler: a
 		}
 
 		const hub = win.__kustoSuggestMutationHub;
+		try {
+			if (!hub.mo && typeof MutationObserver !== 'undefined' && doc.body) {
+				hub.mo = new MutationObserver(() => hub.schedule());
+				hub.mo.observe(doc.body, {
+					subtree: true,
+					childList: true,
+					attributes: true,
+					attributeFilter: ['aria-hidden', 'class', 'style']
+				});
+			}
+		} catch { hub.mo = null; }
 		try { hub.handlers.add(handler); } catch (e) { console.error('[kusto]', e); }
 		try { hub.schedule(); } catch (e) { console.error('[kusto]', e); }
 
@@ -298,6 +309,14 @@ export function __kustoRegisterGlobalSuggestMutationHandler(doc: any, handler: a
 	} catch {
 		return () => { };
 	}
+}
+
+export function __kustoShouldFlushPendingSchemaAfterSuggestMutation(args: {
+	suggestVisible: boolean;
+	isActiveBox: boolean;
+	hasPendingSchema: boolean;
+}): boolean {
+	return !args.suggestVisible && args.isActiveBox && args.hasPendingSchema;
 }
 
 export function __kustoInstallSmartSuggestWidgetSizing(editor: any) {

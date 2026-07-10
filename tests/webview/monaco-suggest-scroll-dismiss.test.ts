@@ -1,5 +1,5 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { __kustoShouldDismissSuggestOnScrollTarget } from '../../src/webview/monaco/suggest.js';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { __kustoRegisterGlobalSuggestMutationHandler, __kustoShouldDismissSuggestOnScrollTarget, __kustoShouldFlushPendingSchemaAfterSuggestMutation } from '../../src/webview/monaco/suggest.js';
 
 function editorWithFocus(textFocus: boolean, widgetFocus = false): Record<string, any> {
 	return {
@@ -12,6 +12,9 @@ function editorWithFocus(textFocus: boolean, widgetFocus = false): Record<string
 
 describe('__kustoShouldDismissSuggestOnScrollTarget', () => {
 	afterEach(() => {
+		const hub = (window as any).__kustoSuggestMutationHub;
+		try { hub?.mo?.disconnect?.(); } catch { /* ignore */ }
+		delete (window as any).__kustoSuggestMutationHub;
 		document.body.innerHTML = '';
 	});
 
@@ -87,5 +90,38 @@ describe('__kustoShouldDismissSuggestOnScrollTarget', () => {
 		document.body.appendChild(scrollViewport);
 
 		expect(__kustoShouldDismissSuggestOnScrollTarget(innerScrollTarget, editorWithFocus(true))).toBe(true);
+	});
+
+	it('recreates the mutation observer and observes mutations after teardown', async () => {
+		const firstDispose = __kustoRegisterGlobalSuggestMutationHandler(document, () => undefined);
+		const hub = (window as any).__kustoSuggestMutationHub;
+		expect(hub?.mo).toBeTruthy();
+
+		firstDispose();
+		expect(hub?.mo).toBeNull();
+
+		const secondHandler = vi.fn();
+		const secondDispose = __kustoRegisterGlobalSuggestMutationHandler(document, secondHandler);
+		expect(hub?.mo).toBeTruthy();
+		await vi.waitFor(() => expect(secondHandler).toHaveBeenCalled());
+		secondHandler.mockClear();
+
+		const mutation = document.createElement('div');
+		document.body.appendChild(mutation);
+		await vi.waitFor(() => expect(secondHandler).toHaveBeenCalled());
+		secondDispose();
+	});
+
+	it('flushes a pending schema whenever the current mutation observes suggestions closed', () => {
+		expect(__kustoShouldFlushPendingSchemaAfterSuggestMutation({
+			suggestVisible: false,
+			isActiveBox: true,
+			hasPendingSchema: true,
+		})).toBe(true);
+		expect(__kustoShouldFlushPendingSchemaAfterSuggestMutation({
+			suggestVisible: true,
+			isActiveBox: true,
+			hasPendingSchema: true,
+		})).toBe(false);
 	});
 });

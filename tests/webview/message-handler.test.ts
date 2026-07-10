@@ -224,7 +224,10 @@ vi.mock('../../src/webview/monaco/sql-sts-providers.js', () => ({
 	handleStsDiagnostics: mocks.handleStsDiagnostics,
 }));
 
-vi.mock('../../src/webview/core/state.js', () => ({
+vi.mock('../../src/webview/core/state.js', async () => {
+	const actual = await vi.importActual<typeof import('../../src/webview/core/state.js')>('../../src/webview/core/state.js');
+	return {
+	...actual,
 	get activeQueryEditorBoxId() { return handlerState.activeQueryEditorBoxId; },
 	connections: handlerState.connections,
 	setConnections: mocks.setConnections,
@@ -271,7 +274,8 @@ vi.mock('../../src/webview/core/state.js', () => ({
 	schemaWorkerReadyWaitersByBoxId: {},
 	pendingSchemaWorkerUpdateByBoxId: handlerState.pendingSchemaWorkerUpdateByBoxId,
 	databasesRequestResolversByBoxId: {},
-}));
+};
+});
 
 type FakeSqlSection = HTMLElement & {
 	_stsReady?: boolean;
@@ -379,7 +383,10 @@ describe('message-handler dispatch', () => {
 		await import('../../src/webview/core/message-handler.js');
 	});
 
-	beforeEach(() => {
+	beforeEach(async () => {
+		const state = await import('../../src/webview/core/state.js');
+		for (const key of Object.keys(state.schemaEnhancementReadyByBoxId)) delete state.schemaEnhancementReadyByBoxId[key];
+		for (const key of Object.keys(state.kustoPreparationByBoxId)) delete state.kustoPreparationByBoxId[key];
 		document.body.innerHTML = '';
 		handlerState.activeQueryEditorBoxId = '';
 		handlerState.connections.splice(0, handlerState.connections.length);
@@ -442,8 +449,8 @@ describe('message-handler dispatch', () => {
 		dispatchHostMessage({ type: 'databasesData', boxId: 'query_1', databases: ['db2', 'db1'], connectionId: 'c1' });
 		dispatchHostMessage({ type: 'databasesError', boxId: 'query_1', error: 'boom', connectionId: 'c1' });
 		await Promise.resolve();
-		expect(mocks.updateDatabaseSelect).toHaveBeenCalledWith('query_1', ['db2', 'db1'], 'c1');
-		expect(mocks.onDatabasesError).toHaveBeenCalledWith('query_1', 'boom', 'c1');
+		expect(mocks.updateDatabaseSelect).toHaveBeenCalledWith('query_1', ['db2', 'db1'], 'c1', undefined, undefined, undefined);
+		expect(mocks.onDatabasesError).toHaveBeenCalledWith('query_1', 'boom', 'c1', undefined);
 	});
 
 	it('routes cross-cluster schema responses with their originating box id', async () => {
@@ -773,6 +780,234 @@ describe('message-handler dispatch', () => {
 		expect(errorRenderer.__kustoDisplayBoxError).not.toHaveBeenCalled();
 	});
 
+	it('settles a failed background refresh to ready when the prepared fallback remains usable', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_refresh';
+		state.beginKustoPreparation('query_1', {
+			stage: 'refreshing',
+			blockers: ['refresh'],
+			target: { connectionId: 'c1', database: 'Samples', requestToken: 'schema_refresh' },
+			usableFallback: true,
+		});
+
+		dispatchHostMessage({
+			type: 'schemaError',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'Samples',
+			requestToken: 'schema_refresh',
+			silent: true,
+			isBackgroundRefresh: true,
+			refreshState: 'failed',
+			hasUsableFallback: true,
+			error: 'Background schema refresh failed.',
+		});
+
+		expect(state.getKustoPreparationState('query_1')).toMatchObject({ status: 'ready', stage: 'ready', blockers: [] });
+	});
+
+	it('does not promote an invalidated section from a late unchanged refresh', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const setSchema = vi.fn(async () => true);
+		handlerState.activeQueryEditorBoxId = 'query_1';
+		handlerState.queryBoxes.push('query_1');
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue('https://cluster.kusto.windows.net');
+		mocks.getDatabase.mockReturnValue('Samples');
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/current' } })) };
+		state.beginKustoPreparation('query_1', {
+			stage: 'refreshing',
+			blockers: ['refresh'],
+			target: { connectionId: 'c1', database: 'Samples', requestToken: 'schema_late' },
+			usableFallback: true,
+		});
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_late';
+		state.invalidateSchemaWorkerReadinessForBox('query_1');
+		(window as any).__kustoSetMonacoKustoSchema = setSchema;
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'Samples',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			requestToken: 'schema_late',
+			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Samples: {} } } },
+			schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: false, isBackgroundRefresh: true, refreshState: 'completed' },
+		});
+
+		await vi.waitFor(() => expect(setSchema).toHaveBeenCalled());
+		expect(state.getKustoPreparationState('query_1').status).toBe('preparing');
+	});
+
+	it('ignores a late background error after worker invalidation reset preparation to idle', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_late_error';
+		state.beginKustoPreparation('query_1', {
+			stage: 'refreshing',
+			blockers: ['refresh'],
+			target: { connectionId: 'c1', database: 'Samples', requestToken: 'schema_late_error' },
+			usableFallback: true,
+		});
+		state.invalidateSchemaWorkerReadinessForBox('query_1');
+
+		dispatchHostMessage({
+			type: 'schemaError',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'Samples',
+			requestToken: 'schema_late_error',
+			silent: true,
+			isBackgroundRefresh: true,
+			hasUsableFallback: true,
+			error: 'Background schema refresh failed.',
+		});
+
+		expect(state.getKustoPreparationState('query_1')).toMatchObject({ status: 'idle', stage: 'idle', blockers: [] });
+	});
+
+	it('clears schema request throttling after a terminal schema error', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_failed';
+		state.lastSchemaRequestAtByBoxId.query_1 = Date.now();
+		state.beginKustoPreparation('query_1', {
+			stage: 'schema',
+			blockers: ['schema'],
+			target: { connectionId: 'c1', database: 'Samples', requestToken: 'schema_failed' },
+		});
+
+		dispatchHostMessage({
+			type: 'schemaError',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'Samples',
+			requestToken: 'schema_failed',
+			error: 'Schema fetch failed.',
+		});
+
+		expect(state.lastSchemaRequestAtByBoxId.query_1).toBe(0);
+		expect(state.getKustoPreparationState('query_1').status).toBe('error');
+	});
+
+	it('does not let an unchanged refresh bypass a failed exact enhancement', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const database = 'Samples';
+		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		handlerState.activeQueryEditorBoxId = 'query_1';
+		handlerState.queryBoxes.push('query_1');
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue(clusterUrl);
+		mocks.getDatabase.mockReturnValue(database);
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/current' } })) };
+		const failedToken = state.beginKustoPreparation('query_1', {
+			stage: 'enhancing',
+			blockers: ['enhancement'],
+			target: { connectionId: 'c1', database, schemaKey, schemaSignature: 'sig-1', modelUri: 'inmemory://model/current' },
+		})!;
+		state.markSchemaEnhancementFailed('query_1', schemaKey, 'sig-1', 'inmemory://model/current', failedToken);
+		expect(state.getKustoPreparationState('query_1').status).toBe('error');
+		expect(state.isSchemaEnhancementFailed('query_1', schemaKey, 'sig-1', 'inmemory://model/current')).toBe(true);
+		(window as any).__kustoSetMonacoKustoSchema = vi.fn(async () => true);
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database,
+			clusterUrl,
+			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Samples: {} } } },
+			schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: false, isBackgroundRefresh: true, refreshState: 'completed' },
+		});
+
+		expect(state.markSchemaWorkerApplyPending).toHaveBeenCalledWith(
+			'query_1', schemaKey, 'sig-1', 'inmemory://model/current', expect.any(Object),
+		);
+		expect((window as any).__kustoSetMonacoKustoSchema).toHaveBeenCalledWith(
+			{ Databases: { Samples: {} } }, clusterUrl, database, true, 'inmemory://model/current', true, expect.any(Function), expect.any(Object),
+		);
+		expect(state.getKustoPreparationState('query_1').status).not.toBe('ready');
+	});
+
+	it('ends preparation with an error when terminal schema data cannot populate autocomplete', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const queryEl = { setSchemaInfo: vi.fn() };
+		mocks.getQuerySectionElement.mockReturnValue(queryEl);
+		state.lastSchemaRequestAtByBoxId.query_1 = Date.now();
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'Samples',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			schema: { tables: ['Events'], columnTypesByTable: {} },
+			schemaMeta: { schemaSignature: 'legacy', workerUpdateNeeded: true, refreshState: 'completed' },
+		});
+
+		expect(state.getKustoPreparationState('query_1')).toMatchObject({ status: 'error', stage: 'error' });
+		expect(state.lastSchemaRequestAtByBoxId.query_1).toBe(0);
+		expect(queryEl.setSchemaInfo).toHaveBeenCalledWith(expect.objectContaining({ isError: true }));
+	});
+
+	it('returns diagnostics-untrusted schema preparation to idle instead of waiting forever', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		handlerState.activeQueryEditorBoxId = 'query_1';
+		handlerState.queryBoxes.push('query_1');
+		handlerState.schemaDiagnosticsTrustedByBoxId.query_1 = false;
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue('https://cluster.kusto.windows.net');
+		mocks.getDatabase.mockReturnValue('Samples');
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/current' } })) };
+		(window as any).__kustoSetMonacoKustoSchema = vi.fn(async () => true);
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'Samples',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Samples: {} } } },
+			schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: true },
+		});
+
+		expect(state.getKustoPreparationState('query_1').status).toBe('idle');
+		expect((window as any).__kustoSetMonacoKustoSchema).not.toHaveBeenCalled();
+	});
+
+	it('applies an explicit inactive switch without replacing the focused worker context', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const setSchema = vi.fn(async () => true);
+		handlerState.activeQueryEditorBoxId = 'query_2';
+		handlerState.queryBoxes.push('query_1', 'query_2');
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue('https://cluster.kusto.windows.net');
+		mocks.getDatabase.mockReturnValue('Db1');
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/one' } })) };
+		handlerState.queryEditors.query_2 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/two' } })) };
+		(window as any).__kustoSetMonacoKustoSchema = setSchema;
+		state.requireSchemaWorkerApply('query_1');
+
+		try {
+			dispatchHostMessage({
+				type: 'schemaData',
+				boxId: 'query_1',
+				connectionId: 'c1',
+				database: 'Db1',
+				clusterUrl: 'https://cluster.kusto.windows.net',
+				schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Db1: {} } } },
+				schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: true },
+			});
+
+			await vi.waitFor(() => expect(setSchema).toHaveBeenCalled());
+			expect(setSchema.mock.calls[0][3]).toBe(false);
+			expect(setSchema.mock.calls[0][5]).toBe(true);
+		} finally {
+			state.disposeKustoPreparation('query_1');
+		}
+	});
+
 	it('updates Kusto schema caches without touching the worker when schema metadata says it is unchanged', async () => {
 		const state = await import('../../src/webview/core/state.js');
 		const schema = { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: {} } };
@@ -811,6 +1046,7 @@ describe('message-handler dispatch', () => {
 			modelUri: 'inmemory://model/current',
 			updatedAt: Date.now(),
 		};
+		state.markSchemaEnhancementReady('query_1', schemaKey, 'sig-1', 'inmemory://model/current');
 		(window as any).__kustoSetMonacoKustoSchema = vi.fn(async () => true);
 
 		dispatchHostMessage({
@@ -857,7 +1093,7 @@ describe('message-handler dispatch', () => {
 			schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: true },
 		});
 
-		expect(state.markSchemaWorkerApplyPending).toHaveBeenCalledWith('query_1', schemaKey, 'sig-1', 'inmemory://model/new');
+		expect(state.markSchemaWorkerApplyPending).toHaveBeenCalledWith('query_1', schemaKey, 'sig-1', 'inmemory://model/new', expect.any(Object));
 		expect((window as any).__kustoSetMonacoKustoSchema).toHaveBeenCalledWith(
 			{ Databases: { Samples: {} } },
 			clusterUrl,
@@ -865,6 +1101,52 @@ describe('message-handler dispatch', () => {
 			true,
 			'inmemory://model/new',
 			false,
+			expect.any(Function),
+			expect.any(Object),
+		);
+	});
+
+	it('forces a worker refresh when a background delivery changes the schema signature', async () => {
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const database = 'Samples';
+		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		handlerState.activeQueryEditorBoxId = 'query_1';
+		handlerState.queryBoxes.push('query_1');
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue(clusterUrl);
+		mocks.getDatabase.mockReturnValue(database);
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/current' } })) };
+		handlerState.schemaWorkerReadyByBoxId.query_1 = {
+			status: 'ready', schemaKey, schemaSignature: 'sig-old', modelUri: 'inmemory://model/current', updatedAt: Date.now(),
+		};
+		(window as any).__kustoSetMonacoKustoSchema = vi.fn(async () => true);
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database,
+			clusterUrl,
+			schema: { tables: ['Events', 'NewEvents'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Samples: {} } } },
+			schemaMeta: {
+				schemaSignature: 'sig-new',
+				workerUpdateNeeded: true,
+				autocompleteChanged: true,
+				isBackgroundRefresh: true,
+				refreshState: 'completed',
+			},
+		});
+
+		expect((window as any).__kustoSetMonacoKustoSchema).toHaveBeenCalledWith(
+			{ Databases: { Samples: {} } },
+			clusterUrl,
+			database,
+			true,
+			'inmemory://model/current',
+			true,
+			expect.any(Function),
+			expect.any(Object),
 		);
 	});
 
@@ -900,6 +1182,40 @@ describe('message-handler dispatch', () => {
 		expect((window as any).__kustoSetMonacoKustoSchema).not.toHaveBeenCalled();
 	});
 
+	it('queues mandatory schema data until its Monaco model exists', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const database = 'Samples';
+		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		handlerState.activeQueryEditorBoxId = '';
+		handlerState.queryBoxes.push('query_1');
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue(clusterUrl);
+		mocks.getDatabase.mockReturnValue(database);
+		state.requireSchemaWorkerApply('query_1');
+		(window as any).__kustoSetMonacoKustoSchema = vi.fn(async () => true);
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database,
+			clusterUrl,
+			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Samples: {} } } },
+			schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: false },
+		});
+
+		expect(state.pendingSchemaWorkerUpdateByBoxId.query_1).toEqual(expect.objectContaining({
+			schemaKey,
+			schemaSignature: 'sig-1',
+			reason: 'waiting-for-model',
+		}));
+		expect(state.markSchemaWorkerApplyPending).not.toHaveBeenCalled();
+		expect((window as any).__kustoSetMonacoKustoSchema).not.toHaveBeenCalled();
+		state.disposeKustoPreparation('query_1');
+	});
+
 	it('applies open-time schema data for the sole query editor before focus settles', async () => {
 		const state = await import('../../src/webview/core/state.js');
 		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
@@ -926,7 +1242,7 @@ describe('message-handler dispatch', () => {
 		});
 		await Promise.resolve();
 
-		expect(state.markSchemaWorkerApplyPending).toHaveBeenCalledWith('query_1', schemaKey, 'sig-1', 'inmemory://model/open');
+		expect(state.markSchemaWorkerApplyPending).toHaveBeenCalledWith('query_1', schemaKey, 'sig-1', 'inmemory://model/open', expect.any(Object));
 		expect((window as any).__kustoSetMonacoKustoSchema).toHaveBeenCalledWith(
 			{ Databases: { Samples: {} } },
 			clusterUrl,
@@ -934,6 +1250,8 @@ describe('message-handler dispatch', () => {
 			true,
 			'inmemory://model/open',
 			false,
+			expect.any(Function),
+			expect.any(Object),
 		);
 		expect((window as any).__kustoTriggerRevalidation).toHaveBeenCalledWith('query_1');
 	});
@@ -1007,6 +1325,46 @@ describe('message-handler dispatch', () => {
 		expect(state.markSchemaWorkerApplyPending).not.toHaveBeenCalled();
 		expect((window as any).__kustoSetMonacoKustoSchema).not.toHaveBeenCalled();
 		expect((window as any).__kustoTriggerRevalidation).not.toHaveBeenCalled();
+	});
+
+	it('loads an explicit user database switch even when another section owns Monaco focus', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const database = 'Samples';
+		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		handlerState.activeQueryEditorBoxId = 'query_2';
+		handlerState.queryBoxes.push('query_1', 'query_2');
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue(clusterUrl);
+		mocks.getDatabase.mockReturnValue(database);
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/one' } })) };
+		state.requireSchemaWorkerApply('query_1');
+		(window as any).__kustoSetMonacoKustoSchema = vi.fn(async () => true);
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database,
+			clusterUrl,
+			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Samples: {} } } },
+			schemaMeta: { schemaSignature: 'sig-user-switch', workerUpdateNeeded: false },
+		});
+		await Promise.resolve();
+
+		expect(state.pendingSchemaWorkerUpdateByBoxId.query_1).toBeUndefined();
+		expect((window as any).__kustoSetMonacoKustoSchema).toHaveBeenCalledWith(
+			{ Databases: { Samples: {} } },
+			clusterUrl,
+			database,
+			false,
+			'inmemory://model/one',
+			true,
+			expect.any(Function),
+			expect.any(Object),
+		);
+		state.disposeKustoPreparation('query_1');
 	});
 });
 

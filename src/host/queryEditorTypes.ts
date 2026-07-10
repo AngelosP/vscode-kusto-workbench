@@ -201,8 +201,8 @@ export type IncomingWebviewMessage =
 	| { type: 'fileOpenTrace'; event: string; timeMs?: number; sequence?: number; detail?: unknown }
 	| EditorCursorPositionChangedMessage
 	| EditorCursorStatusSnapshotRequestMessage
-	| { type: 'getDatabases'; connectionId: string; boxId: string }
-	| { type: 'refreshDatabases'; connectionId: string; boxId: string }
+	| { type: 'getDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string }
+	| { type: 'refreshDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string }
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }
 	| { type: 'seeCachedValues' }
 	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
