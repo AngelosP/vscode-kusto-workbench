@@ -510,10 +510,18 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.copilot.handleCopilotInlineCompletionRequest(message);
 				return;
 			case 'getDatabases':
-				await this.connection.sendDatabases(message.connectionId, message.boxId, false, message.requestToken, message.requiredDatabase);
+				await this.connection.sendDatabases(message.connectionId, message.boxId, {
+					mode: 'passive',
+					requestToken: message.requestToken,
+					requiredDatabase: message.requiredDatabase,
+				});
 				return;
 			case 'refreshDatabases':
-				await this.connection.sendDatabases(message.connectionId, message.boxId, true, message.requestToken, message.requiredDatabase);
+				await this.connection.sendDatabases(message.connectionId, message.boxId, {
+					mode: 'interactive-refresh',
+					requestToken: message.requestToken,
+					requiredDatabase: message.requiredDatabase,
+				});
 				return;
 			case 'saveLastSelection':
 				{

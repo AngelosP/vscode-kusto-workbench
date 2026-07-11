@@ -23,6 +23,53 @@ import {
 
 export let testIsolateKustoConnections = false;
 
+type DatabaseDiscoveryRequest =
+	| { mode: 'passive'; requestToken?: string; requiredDatabase?: string }
+	| { mode: 'interactive-refresh'; requestToken?: string; requiredDatabase?: string };
+
+type ZeroResultRecoveryOutcome =
+	| { kind: 'dismissed' }
+	| { kind: 'fetched'; databases: string[] };
+
+function isDatabaseDiscoveryCancellation(error: unknown): boolean {
+	const pending: unknown[] = [error];
+	const seen = new Set<unknown>();
+	while (pending.length > 0 && seen.size < 12) {
+		const candidate = pending.shift();
+		if (!candidate || seen.has(candidate)) {
+			continue;
+		}
+		seen.add(candidate);
+		if (typeof candidate !== 'object' && typeof candidate !== 'function') {
+			continue;
+		}
+		try {
+			const record = candidate as Record<string, unknown>;
+			const name = typeof record.name === 'string' ? record.name : '';
+			const message = typeof record.message === 'string' ? record.message : '';
+			if (record.isCancelled === true || name === 'QueryCancelledError') {
+				return true;
+			}
+			if (/\b(?:sign[ -]?in cancelled|user cancel(?:l)?ed authentication|user did not consent|did not consent|consent denied)\b/i.test(message)) {
+				return true;
+			}
+		} catch {
+			// Continue through the bounded error graph.
+		}
+		for (const key of ['cause', 'innerError', 'error', 'originalError']) {
+			try {
+				const nested = (candidate as Record<string, unknown>)[key];
+				if (nested) {
+					pending.push(nested);
+				}
+			} catch {
+				// Ignore malformed SDK error properties.
+			}
+		}
+	}
+	return false;
+}
+
 export function setTestIsolateKustoConnections(enabled: boolean): void {
 	testIsolateKustoConnections = !!enabled;
 }
@@ -99,6 +146,8 @@ export interface ConnectionServiceHost {
 export class ConnectionService {
 	private static readonly liveServices = new Set<ConnectionService>();
 	private static readonly kustoFavoritesListeners = new Set<(context: vscode.ExtensionContext) => void | PromiseLike<void>>();
+	private static readonly zeroResultRecoveryByCluster = new Map<string, Promise<ZeroResultRecoveryOutcome>>();
+	private static readonly databaseCacheSettlementByCluster = new Map<string, Promise<void>>();
 
 	private lastConnectionId?: string;
 	private lastDatabase?: string;
@@ -108,6 +157,23 @@ export class ConnectionService {
 
 	private traceDatabaseList(traceId: string, event: string, details: Record<string, unknown> = {}): void {
 		traceDatabaseList(this.host.output, traceId, 'service', event, details);
+	}
+
+	private static async withDatabaseCacheSettlement<T>(clusterKey: string, operation: () => Promise<T>): Promise<T> {
+		const previous = this.databaseCacheSettlementByCluster.get(clusterKey) ?? Promise.resolve();
+		let release!: () => void;
+		const lock = new Promise<void>((resolve) => { release = resolve; });
+		const tail = previous.catch(() => undefined).then(() => lock);
+		this.databaseCacheSettlementByCluster.set(clusterKey, tail);
+		await previous.catch(() => undefined);
+		try {
+			return await operation();
+		} finally {
+			release();
+			if (this.databaseCacheSettlementByCluster.get(clusterKey) === tail) {
+				this.databaseCacheSettlementByCluster.delete(clusterKey);
+			}
+		}
 	}
 
 	constructor(private readonly host: ConnectionServiceHost) {
@@ -527,8 +593,11 @@ export class ConnectionService {
 
 	// ── Send databases ──
 
-	async sendDatabases(connectionId: string, boxId: string, forceRefresh: boolean, requestToken?: string, requiredDatabase?: string): Promise<void> {
+	async sendDatabases(connectionId: string, boxId: string, request: DatabaseDiscoveryRequest): Promise<void> {
 		const traceId = createDatabaseListTraceId();
+		const forceRefresh = request.mode === 'interactive-refresh';
+		const allowInteractive = request.mode === 'interactive-refresh';
+		const { requestToken, requiredDatabase } = request;
 		const connection = this.findConnection(connectionId);
 		if (!connection) {
 			this.traceDatabaseList(traceId, 'connection-missing', {
@@ -536,6 +605,7 @@ export class ConnectionService {
 				boxId,
 				requestToken,
 				forceRefresh,
+				allowInteractive,
 			});
 			this.host.postMessage({
 				type: 'databasesError',
@@ -547,7 +617,12 @@ export class ConnectionService {
 			return;
 		}
 		const clusterKey = getClusterCacheKey(connection.clusterUrl);
-		const cachedBefore = (this.getCachedDatabases()[clusterKey] ?? []).filter(Boolean);
+		const normalizeDatabases = (databasesRaw: unknown): string[] => (Array.isArray(databasesRaw) ? databasesRaw : [])
+			.map((database) => String(database || '').trim())
+			.filter(Boolean)
+			.sort((left, right) => left.toLowerCase().localeCompare(right.toLowerCase()));
+		const getCurrentCachedDatabases = (): string[] => normalizeDatabases(this.getCachedDatabases()[clusterKey] ?? []);
+		const cachedBefore = getCurrentCachedDatabases();
 		const requiredDatabaseName = String(requiredDatabase || '').trim();
 		const cachedHasRequiredDatabase = !!requiredDatabaseName
 			&& cachedBefore.some(database => database.toLowerCase() === requiredDatabaseName.toLowerCase());
@@ -576,8 +651,10 @@ export class ConnectionService {
 			boxId,
 			requestToken,
 			clusterKey,
+			requestMode: request.mode,
 			forceRefresh,
 			effectiveForceRefresh,
+			allowInteractive,
 			persistedCacheCount: cachedBefore.length,
 			requiredDatabaseSpecified: !!requiredDatabaseName,
 			cachedHasRequiredDatabase,
@@ -592,19 +669,19 @@ export class ConnectionService {
 			return;
 		}
 
-		const normalizeDatabases = (databasesRaw: unknown): string[] => (Array.isArray(databasesRaw) ? databasesRaw : [])
-			.map((d) => String(d || '').trim())
-			.filter(Boolean)
-			.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-		const fetchAndNormalize = async (reason: string, refresh: boolean = true): Promise<string[]> => {
+		const fetchAndNormalize = async (
+			reason: string,
+			refresh: boolean = true,
+			interactive: boolean = allowInteractive
+		): Promise<string[]> => {
 			this.traceDatabaseList(traceId, 'live-fetch.start', {
 				reason,
 				forceRefresh: refresh,
-				allowInteractive: false,
+				allowInteractive: interactive,
 			});
 			try {
 				const databasesRaw = await this.host.kustoClient.getDatabases(connection, refresh, {
-					allowInteractive: false,
+					allowInteractive: interactive,
 					traceId,
 					source: 'query-editor',
 				});
@@ -645,174 +722,136 @@ export class ConnectionService {
 				databaseCount: databases.length,
 			});
 		};
+		const recoverFromZeroResult = async (): Promise<ZeroResultRecoveryOutcome> => {
+			const existing = ConnectionService.zeroResultRecoveryByCluster.get(clusterKey);
+			if (existing) {
+				this.traceDatabaseList(traceId, 'account-choice.joined', { reason: 'zero-result' });
+				return existing;
+			}
+
+			const recovery = (async (): Promise<ZeroResultRecoveryOutcome> => {
+				this.traceDatabaseList(traceId, 'account-choice.prompt', { reason: 'zero-result' });
+				const choice = await vscode.window.showWarningMessage(
+					"No databases were returned. This is often because the selected account doesn't have access to this cluster.",
+					'Try another account',
+					'Add account',
+					'Cancel'
+				);
+				this.traceDatabaseList(traceId, 'account-choice.result', {
+					reason: 'zero-result',
+					choice: choice ?? 'dismissed',
+				});
+				if (choice === 'Try another account') {
+					await reauthenticate('clearPreference', 'zero-result-user-choice');
+					return {
+						kind: 'fetched',
+						databases: await fetchAndNormalize('zero-result-after-clear-preference', true, false),
+					};
+				}
+				if (choice === 'Add account') {
+					await reauthenticate('forceNewSession', 'zero-result-user-choice');
+					return {
+						kind: 'fetched',
+						databases: await fetchAndNormalize('zero-result-after-force-new-session', true, false),
+					};
+				}
+				return { kind: 'dismissed' };
+			})();
+
+			ConnectionService.zeroResultRecoveryByCluster.set(clusterKey, recovery);
+			try {
+				return await recovery;
+			} finally {
+				if (ConnectionService.zeroResultRecoveryByCluster.get(clusterKey) === recovery) {
+					ConnectionService.zeroResultRecoveryByCluster.delete(clusterKey);
+				}
+			}
+		};
+		const postCurrentCachedFallback = async (reason: string): Promise<boolean> =>
+			ConnectionService.withDatabaseCacheSettlement(clusterKey, async () => {
+				const currentCached = getCurrentCachedDatabases();
+				if (currentCached.length === 0) {
+					return false;
+				}
+				this.traceDatabaseList(traceId, 'fallback.selected', {
+					reason,
+					persistedCacheCount: currentCached.length,
+				});
+				postDatabases(currentCached, 'fallback');
+				return true;
+			});
+		const settleDatabases = async (databases: string[], reason: string): Promise<void> =>
+			ConnectionService.withDatabaseCacheSettlement(clusterKey, async () => {
+				const currentCached = getCurrentCachedDatabases();
+				if (databases.length === 0 && currentCached.length > 0) {
+					this.traceDatabaseList(traceId, 'fallback.selected', {
+						reason: 'live-result-empty',
+						persistedCacheCount: currentCached.length,
+					});
+					postDatabases(currentCached, 'fallback');
+					return;
+				}
+				await saveLiveDatabases(databases, reason);
+				postDatabases(databases, 'live');
+			});
 
 		try {
 			let databases = await fetchAndNormalize('initial', effectiveForceRefresh);
 
-			if (effectiveForceRefresh && databases.length === 0 && cachedBefore.length === 0) {
+			if (allowInteractive && effectiveForceRefresh && databases.length === 0) {
 				this.traceDatabaseList(traceId, 'zero-result.recovery-start', {
-					reason: 'no-persisted-cache',
+					reason: cachedBefore.length > 0 ? 'persisted-cache-available' : 'no-persisted-cache',
 				});
-				try {
-					await reauthenticate('clearPreference', 'zero-result');
-					databases = await fetchAndNormalize('zero-result-after-clear-preference');
-				} catch (error) {
-					this.traceDatabaseList(traceId, 'zero-result.recovery-failed', {
-						stage: 'clear-preference',
-						...getDatabaseListErrorDetails(error),
-					});
-				}
-
-				if (databases.length === 0) {
-					try {
-						this.traceDatabaseList(traceId, 'account-choice.prompt', { reason: 'zero-result' });
-						const choice = await vscode.window.showWarningMessage(
-							"No databases were returned. This is often because the selected account doesn't have access to this cluster.",
-							'Try another account',
-							'Add account',
-							'Cancel'
-						);
-						this.traceDatabaseList(traceId, 'account-choice.result', {
-							reason: 'zero-result',
-							choice: choice ?? 'dismissed',
-						});
-						if (choice === 'Try another account') {
-							await reauthenticate('clearPreference', 'zero-result-user-choice');
-							databases = await fetchAndNormalize('zero-result-user-choice-clear-preference');
-						} else if (choice === 'Add account') {
-							await reauthenticate('forceNewSession', 'zero-result-user-choice');
-							databases = await fetchAndNormalize('zero-result-user-choice-force-new-session');
-						}
-					} catch (error) {
-						this.traceDatabaseList(traceId, 'account-choice.failed', {
-							reason: 'zero-result',
-							...getDatabaseListErrorDetails(error),
-						});
-					}
+				const recovery = await recoverFromZeroResult();
+				if (recovery.kind === 'fetched') {
+					databases = recovery.databases;
 				}
 			}
 
-			if (!effectiveForceRefresh || databases.length > 0 || cachedBefore.length === 0) {
-				await saveLiveDatabases(databases, 'live-result');
-				postDatabases(databases, 'live');
-				return;
-			}
-
-			this.traceDatabaseList(traceId, 'fallback.selected', {
-				reason: 'live-result-empty',
-				persistedCacheCount: cachedBefore.length,
-			});
-			postDatabases(cachedBefore, 'fallback');
-			void vscode.window.showWarningMessage(
-				`Couldn't refresh the database list (received 0 databases). Using cached list.`,
-				'More Info'
-			).then(selection => {
-				if (selection === 'More Info') {
-					void vscode.window.showInformationMessage(
-						`If you expected databases here, try refreshing again and sign in with a different account.`,
-						{ modal: true }
-					);
-				}
-			});
+			await settleDatabases(databases, 'live-result');
+			return;
 		} catch (error) {
 			const isAuthErr = this.host.kustoClient.isAuthenticationError(error);
+			const isCancelled = isDatabaseDiscoveryCancellation(error);
+			const action = forceRefresh ? 'refresh' : 'load';
 			this.traceDatabaseList(traceId, 'failed', {
 				isAuthError: isAuthErr,
+				isCancelled,
 				...getDatabaseListErrorDetails(error),
 				effectiveForceRefresh,
 				persistedCacheCount: cachedBefore.length,
 			});
-			if (isAuthErr && !effectiveForceRefresh && cachedBefore.length > 0) {
-				this.traceDatabaseList(traceId, 'fallback.selected', {
-					reason: 'authentication-error',
-					persistedCacheCount: cachedBefore.length,
-				});
-				postDatabases(cachedBefore, 'fallback');
-				const now = Date.now();
-				const lastShown = this.lastDbErrorNotificationByCluster.get(clusterKey) ?? 0;
-				if ((now - lastShown) > 5000) {
-					this.lastDbErrorNotificationByCluster.set(clusterKey, now);
-					void vscode.window.showWarningMessage(
-						`Couldn't refresh the database list due to an authentication error. Using cached list.`,
-						'More Info'
-					).then(selection => {
-						if (selection === 'More Info') {
-							void vscode.window.showInformationMessage(
-								`Use the refresh button and sign in with the correct account for this cluster.`,
-								{ modal: true }
-							);
-						}
-					});
+			if (isCancelled) {
+				if (await postCurrentCachedFallback('cancelled')) {
+					return;
 				}
+				this.traceDatabaseList(traceId, 'cancelled', { action });
+				this.host.postMessage({
+					type: 'databasesError',
+					boxId,
+					connectionId,
+					requestToken,
+					error: `Database ${action} cancelled.`,
+				});
 				return;
 			}
 
-			if ((effectiveForceRefresh || cachedBefore.length === 0) && isAuthErr) {
-				try {
-					await reauthenticate('clearPreference', 'authentication-error');
-					const databases = await fetchAndNormalize('authentication-error-after-clear-preference');
-					await saveLiveDatabases(databases, 'authentication-error-recovery');
-					postDatabases(databases, 'live');
-					return;
-				} catch (reauthenticationError) {
-					this.traceDatabaseList(traceId, 'authentication-error.recovery-failed', {
-						stage: 'clear-preference',
-						...getDatabaseListErrorDetails(reauthenticationError),
-					});
-					try {
-						this.traceDatabaseList(traceId, 'account-choice.prompt', { reason: 'authentication-error' });
-						const choice = await vscode.window.showWarningMessage(
-							"Authentication succeeded but the cluster still rejected the request (401/403). Try a different account?",
-							'Try another account',
-							'Add account',
-							'Cancel'
-						);
-						this.traceDatabaseList(traceId, 'account-choice.result', {
-							reason: 'authentication-error',
-							choice: choice ?? 'dismissed',
-						});
-						if (choice === 'Try another account') {
-							await reauthenticate('clearPreference', 'authentication-error-user-choice');
-							const databases = await fetchAndNormalize('authentication-error-user-choice-clear-preference');
-							await saveLiveDatabases(databases, 'authentication-error-user-choice');
-							postDatabases(databases, 'live');
-							return;
-						}
-						if (choice === 'Add account') {
-							await reauthenticate('forceNewSession', 'authentication-error-user-choice');
-							const databases = await fetchAndNormalize('authentication-error-user-choice-force-new-session');
-							await saveLiveDatabases(databases, 'authentication-error-user-choice');
-							postDatabases(databases, 'live');
-							return;
-						}
-					} catch (accountChoiceError) {
-						this.traceDatabaseList(traceId, 'account-choice.failed', {
-							reason: 'authentication-error',
-							...getDatabaseListErrorDetails(accountChoiceError),
-						});
-						// fall through to error UI
-					}
-				}
+			if (isAuthErr && !allowInteractive && await postCurrentCachedFallback('authentication-error')) {
+				return;
 			}
 
 			const userMessage = this.host.formatQueryExecutionErrorForUser(error, connection);
-			const action = forceRefresh ? 'refresh' : 'load';
 
 			// Throttle error notifications: suppress if we showed one for this cluster within the last 5 seconds.
 			// This prevents spamming when multiple query sections all fail for the same cluster (e.g. VPN disconnect).
 			const now = Date.now();
 			const lastShown = this.lastDbErrorNotificationByCluster.get(clusterKey) ?? 0;
-			const shouldShowNotification = (now - lastShown) > 5000;
+			const shouldShowNotification = allowInteractive && (now - lastShown) > 5000;
 			if (shouldShowNotification) {
 				this.lastDbErrorNotificationByCluster.set(clusterKey, now);
 			}
 
-			if (cachedBefore.length > 0) {
-				this.traceDatabaseList(traceId, 'fallback.selected', {
-					reason: 'unrecovered-error',
-					persistedCacheCount: cachedBefore.length,
-				});
-				postDatabases(cachedBefore, 'fallback');
+			if (await postCurrentCachedFallback('unrecovered-error')) {
 				if (shouldShowNotification) {
 					void vscode.window.showWarningMessage(
 						`Failed to ${action} database list. Using cached list.`,
@@ -941,7 +980,11 @@ export class ConnectionService {
 		this.traceDatabaseList(traceId, 'test.start', { connectionId: connection.id, boxId: data.boxId });
 		this.host.postMessage({ type: 'kustoConnectionTestStarted', boxId: data.boxId });
 		try {
-			const databases = await this.host.kustoClient.getDatabases(connection, true, { traceId, source: 'query-editor-connection-test' });
+			const databases = await this.host.kustoClient.getDatabases(connection, true, {
+				allowInteractive: true,
+				traceId,
+				source: 'query-editor-connection-test',
+			});
 			const databaseList = (Array.isArray(databases) ? databases : []).map(d => String(d || '').trim()).filter(Boolean);
 			this.traceDatabaseList(traceId, 'test.success', { connectionId: connection.id, databaseCount: databaseList.length });
 			this.host.postMessage({

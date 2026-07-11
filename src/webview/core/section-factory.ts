@@ -1186,9 +1186,9 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 		return null;
 	};
 
-	const requestDatabases = async (connectionId: any, forceRefresh: any) => {
+	const requestDatabases = async (connectionId: any) => {
 		try {
-			return await __kustoRequestDatabases(connectionId, !!forceRefresh);
+			return await __kustoRequestDatabases(connectionId);
 		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const cid = String(connectionId || '').trim();
@@ -1329,7 +1329,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 	if (unresolvedLower.size > 0) {
 		// Fetch missing schemas for current connection first.
 		const cid = String(opts.connectionId || '').trim();
-		let dbs = await requestDatabases(cid, false);
+		let dbs = await requestDatabases(cid);
 		for (const db of (Array.isArray(dbs) ? dbs : [])) {
 			if (unresolvedLower.size === 0) break;
 			const dbName = String(db || '').trim();
@@ -1366,7 +1366,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 
 		for (const c of otherConns) {
 			if (unresolvedLower.size === 0) break;
-			let dbs = await requestDatabases(c.cid, false);
+			let dbs = await requestDatabases(c.cid);
 			for (const db of (Array.isArray(dbs) ? dbs : [])) {
 				if (unresolvedLower.size === 0) break;
 				const dbName = String(db || '').trim();

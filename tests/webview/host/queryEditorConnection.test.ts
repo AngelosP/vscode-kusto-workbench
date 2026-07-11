@@ -15,6 +15,8 @@ import { databaseListTraceRef } from '../../../src/host/databaseListTrace';
 afterEach(() => {
 	vi.restoreAllMocks();
 	(ConnectionService as any).liveServices?.clear?.();
+	(ConnectionService as any).zeroResultRecoveryByCluster?.clear?.();
+	(ConnectionService as any).databaseCacheSettlementByCluster?.clear?.();
 });
 
 describe('ensureHttpsUrl', () => {
@@ -179,6 +181,24 @@ function makeMockHost(overrides: Partial<Record<string, any>> = {}) {
 	};
 }
 
+function wrappedDatabaseCancellation(): Error {
+	const cancellation = Object.assign(new Error('Sign-in cancelled'), {
+		name: 'QueryCancelledError',
+		isCancelled: true,
+	});
+	return new Error('Failed to fetch databases: Sign-in cancelled', { cause: cancellation });
+}
+
+function deferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	let reject!: (reason?: unknown) => void;
+	const promise = new Promise<T>((res, rej) => {
+		resolve = res;
+		reject = rej;
+	});
+	return { promise, resolve, reject };
+}
+
 describe('ConnectionService — saveLastSelection & getters', () => {
 	it('saves and retrieves lastConnectionId', async () => {
 		const host = makeMockHost();
@@ -225,6 +245,565 @@ describe('ConnectionService — findConnection', () => {
 });
 
 describe('ConnectionService — database request identity', () => {
+	it('allows an explicit refresh to acquire a missing account interactively', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const postMessage = vi.fn();
+		const getDatabases = vi.fn(async (_connection: unknown, _refresh: boolean, options?: { allowInteractive?: boolean }) => {
+			if (!options?.allowInteractive) {
+				throw wrappedDatabaseCancellation();
+			}
+			return ['Db1'];
+		});
+		const host = makeMockHost({ connections: [connection], getDatabases, postMessage });
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: 'databases_refresh',
+		});
+
+		expect(getDatabases).toHaveBeenCalledWith(connection, true, expect.objectContaining({
+			allowInteractive: true,
+			source: 'query-editor',
+			traceId: expect.any(String),
+		}));
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesData',
+			databases: ['Db1'],
+			requestToken: 'databases_refresh',
+			authoritative: true,
+			fallback: false,
+		}));
+	});
+
+	it('keeps required-database discovery silent and falls back without reauthenticating', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const authError = Object.assign(new Error('Forbidden'), { statusCode: 403 });
+		const getDatabases = vi.fn(async () => { throw authError; });
+		const reauthenticate = vi.fn(async () => undefined);
+		const postMessage = vi.fn();
+		const warning = vi.spyOn(vscode.window, 'showWarningMessage');
+		const errorNotification = vi.spyOn(vscode.window, 'showErrorMessage');
+		const information = vi.spyOn(vscode.window, 'showInformationMessage');
+		const host = makeMockHost({
+			connections: [connection],
+			globalState,
+			getDatabases,
+			reauthenticate,
+			postMessage,
+			isAuthenticationError: (error: unknown) => error === authError,
+		});
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'passive',
+			requestToken: 'databases_required',
+			requiredDatabase: 'SavedDb',
+		});
+
+		expect(getDatabases).toHaveBeenCalledWith(connection, true, expect.objectContaining({ allowInteractive: false }));
+		expect(reauthenticate).not.toHaveBeenCalled();
+		expect(warning).not.toHaveBeenCalled();
+		expect(errorNotification).not.toHaveBeenCalled();
+		expect(information).not.toHaveBeenCalled();
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesData',
+			databases: ['CachedDb'],
+			requestToken: 'databases_required',
+			authoritative: false,
+			fallback: true,
+		}));
+	});
+
+	it.each([
+		{ label: 'authentication failure without cache', isAuthError: true, cached: false },
+		{ label: 'network failure with cache', isAuthError: false, cached: true },
+		{ label: 'network failure without cache', isAuthError: false, cached: false },
+	])('keeps passive $label notification-free', async ({ isAuthError, cached }) => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const globalState = new Map<string, any>(cached
+			? [[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]
+			: []);
+		const failure = Object.assign(new Error(isAuthError ? 'Forbidden' : 'Network unavailable'), isAuthError ? { statusCode: 403 } : {});
+		const postMessage = vi.fn();
+		const warning = vi.spyOn(vscode.window, 'showWarningMessage');
+		const errorNotification = vi.spyOn(vscode.window, 'showErrorMessage');
+		const information = vi.spyOn(vscode.window, 'showInformationMessage');
+		const host = makeMockHost({
+			connections: [connection],
+			globalState,
+			getDatabases: vi.fn(async () => { throw failure; }),
+			postMessage,
+			isAuthenticationError: () => isAuthError,
+		});
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'passive',
+			requestToken: `passive_${isAuthError}_${cached}`,
+			...(cached ? { requiredDatabase: 'MissingDb' } : {}),
+		});
+
+		expect(warning).not.toHaveBeenCalled();
+		expect(errorNotification).not.toHaveBeenCalled();
+		expect(information).not.toHaveBeenCalled();
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining(cached ? {
+			type: 'databasesData',
+			databases: ['CachedDb'],
+			fallback: true,
+		} : {
+			type: 'databasesError',
+		}));
+	});
+
+	it('settles a passive no-cache authentication cancellation without notifications', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const postMessage = vi.fn();
+		const warning = vi.spyOn(vscode.window, 'showWarningMessage');
+		const errorNotification = vi.spyOn(vscode.window, 'showErrorMessage');
+		const host = makeMockHost({
+			connections: [connection],
+			getDatabases: vi.fn(async () => { throw wrappedDatabaseCancellation(); }),
+			postMessage,
+		});
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'passive',
+			requestToken: 'passive_cancelled',
+		});
+
+		expect(warning).not.toHaveBeenCalled();
+		expect(errorNotification).not.toHaveBeenCalled();
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesError',
+			requestToken: 'passive_cancelled',
+			error: 'Database load cancelled.',
+		}));
+	});
+
+	it('treats a cancelled interactive refresh as terminal without another prompt', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const getDatabases = vi.fn(async () => { throw wrappedDatabaseCancellation(); });
+		const reauthenticate = vi.fn(async () => undefined);
+		const postMessage = vi.fn();
+		const warning = vi.spyOn(vscode.window, 'showWarningMessage');
+		const errorNotification = vi.spyOn(vscode.window, 'showErrorMessage');
+		const information = vi.spyOn(vscode.window, 'showInformationMessage');
+		const host = makeMockHost({ connections: [connection], getDatabases, reauthenticate, postMessage });
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: 'databases_cancelled',
+		});
+
+		expect(reauthenticate).not.toHaveBeenCalled();
+		expect(warning).not.toHaveBeenCalled();
+		expect(errorNotification).not.toHaveBeenCalled();
+		expect(information).not.toHaveBeenCalled();
+		expect(postMessage).toHaveBeenCalledTimes(1);
+		expect(postMessage).toHaveBeenCalledWith({
+			type: 'databasesError',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			requestToken: 'databases_cancelled',
+			error: 'Database refresh cancelled.',
+		});
+	});
+
+	it('uses cached databases silently when an interactive refresh is cancelled', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const getDatabases = vi.fn(async () => { throw wrappedDatabaseCancellation(); });
+		const postMessage = vi.fn();
+		const warning = vi.spyOn(vscode.window, 'showWarningMessage');
+		const errorNotification = vi.spyOn(vscode.window, 'showErrorMessage');
+		const host = makeMockHost({ connections: [connection], globalState, getDatabases, postMessage });
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: 'databases_cancelled_cached',
+		});
+
+		expect(warning).not.toHaveBeenCalled();
+		expect(errorNotification).not.toHaveBeenCalled();
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesData',
+			databases: ['CachedDb'],
+			requestToken: 'databases_cancelled_cached',
+			authoritative: false,
+			fallback: true,
+		}));
+	});
+
+	it('does not classify a transport AbortError as user cancellation', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const transportAbort = Object.assign(new Error('Request aborted after transport timeout'), { name: 'AbortError' });
+		const postMessage = vi.fn();
+		const errorNotification = vi.spyOn(vscode.window, 'showErrorMessage');
+		const host = makeMockHost({
+			connections: [connection],
+			getDatabases: vi.fn(async () => { throw transportAbort; }),
+			postMessage,
+		});
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: 'transport_abort',
+		});
+
+		expect(errorNotification).toHaveBeenCalledWith('Failed to refresh database list.', 'More Info');
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesError',
+			requestToken: 'transport_abort',
+			error: expect.stringContaining('Failed to refresh database list.'),
+		}));
+	});
+
+	it.each([401, 403])('does not duplicate client-owned interactive recovery after status %s', async (statusCode) => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const authError = Object.assign(new Error('Authentication failed'), { statusCode });
+		const getDatabases = vi.fn(async () => { throw authError; });
+		const reauthenticate = vi.fn(async () => undefined);
+		const postMessage = vi.fn();
+		const accountChoice = vi.spyOn(vscode.window, 'showWarningMessage');
+		const host = makeMockHost({
+			connections: [connection],
+			getDatabases,
+			reauthenticate,
+			postMessage,
+			isAuthenticationError: (error: unknown) => error === authError,
+		});
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: `databases_auth_${statusCode}`,
+		});
+
+		expect(getDatabases).toHaveBeenCalledTimes(1);
+		expect(reauthenticate).not.toHaveBeenCalled();
+		expect(accountChoice).not.toHaveBeenCalled();
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesError',
+			requestToken: `databases_auth_${statusCode}`,
+		}));
+	});
+
+	it('keeps a dismissed zero-result account choice as an authoritative empty result', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const getDatabases = vi.fn(async () => []);
+		const reauthenticate = vi.fn(async () => undefined);
+		const postMessage = vi.fn();
+		vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as any);
+		const host = makeMockHost({ connections: [connection], getDatabases, reauthenticate, postMessage });
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: 'databases_empty',
+		});
+
+		expect(reauthenticate).not.toHaveBeenCalled();
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesData',
+			databases: [],
+			requestToken: 'databases_empty',
+			authoritative: true,
+			fallback: false,
+		}));
+	});
+
+	it('keeps cached databases when a zero-result account choice is dismissed', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const postMessage = vi.fn();
+		const accountChoice = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as any);
+		const host = makeMockHost({
+			connections: [connection],
+			globalState,
+			getDatabases: vi.fn(async () => []),
+			postMessage,
+		});
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: 'cached_empty_dismissed',
+		});
+
+		expect(accountChoice).toHaveBeenCalledWith(
+			"No databases were returned. This is often because the selected account doesn't have access to this cluster.",
+			'Try another account',
+			'Add account',
+			'Cancel'
+		);
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesData',
+			databases: ['CachedDb'],
+			authoritative: false,
+			fallback: true,
+		}));
+	});
+
+	it.each([
+		['Try another account', 'clearPreference'],
+		['Add account', 'forceNewSession'],
+	] as const)('reauthenticates only after the user selects %s for a zero result', async (choice, promptMode) => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const getDatabases = vi.fn()
+			.mockResolvedValueOnce([])
+			.mockResolvedValueOnce(['Db2']);
+		const reauthenticate = vi.fn(async () => undefined);
+		const postMessage = vi.fn();
+		vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(choice as any);
+		const host = makeMockHost({ connections: [connection], getDatabases, reauthenticate, postMessage });
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: `databases_${promptMode}`,
+		});
+
+		expect(reauthenticate).toHaveBeenCalledWith(connection, promptMode, expect.any(String));
+		expect(getDatabases).toHaveBeenCalledTimes(2);
+		expect(getDatabases.mock.calls[1][2]).toEqual(expect.objectContaining({ allowInteractive: false }));
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesData',
+			databases: ['Db2'],
+			authoritative: true,
+			fallback: false,
+		}));
+	});
+
+	it('replaces cached databases after choosing another account for a zero result', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const getDatabases = vi.fn()
+			.mockResolvedValueOnce([])
+			.mockResolvedValueOnce(['NewDb']);
+		const reauthenticate = vi.fn(async () => undefined);
+		const postMessage = vi.fn();
+		vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Try another account' as any);
+		const host = makeMockHost({ connections: [connection], globalState, getDatabases, reauthenticate, postMessage });
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: 'cached_empty_switched',
+		});
+
+		expect(reauthenticate).toHaveBeenCalledWith(connection, 'clearPreference', expect.any(String));
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesData',
+			databases: ['NewDb'],
+			authoritative: true,
+			fallback: false,
+		}));
+		expect(globalState.get(STORAGE_KEYS.cachedDatabases)).toEqual({ test: ['NewDb'] });
+	});
+
+	it('retains cached databases when the post-choice fetch fails', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const getDatabases = vi.fn()
+			.mockResolvedValueOnce([])
+			.mockRejectedValueOnce(new Error('Network unavailable'));
+		const postMessage = vi.fn();
+		vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValueOnce('Try another account' as any);
+		const host = makeMockHost({
+			connections: [connection],
+			globalState,
+			getDatabases,
+			reauthenticate: vi.fn(async () => undefined),
+			postMessage,
+		});
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: 'cached_empty_fetch_failed',
+		});
+
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesData',
+			databases: ['CachedDb'],
+			authoritative: false,
+			fallback: true,
+		}));
+		expect(globalState.get(STORAGE_KEYS.cachedDatabases)).toEqual({ test: ['CachedDb'] });
+	});
+
+	it('propagates cancellation after a zero-result account choice to the terminal handler', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const getDatabases = vi.fn(async () => []);
+		const reauthenticate = vi.fn(async () => { throw wrappedDatabaseCancellation(); });
+		const postMessage = vi.fn();
+		const warning = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Try another account' as any);
+		const errorNotification = vi.spyOn(vscode.window, 'showErrorMessage');
+		const host = makeMockHost({ connections: [connection], getDatabases, reauthenticate, postMessage });
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: 'databases_choice_cancelled',
+		});
+
+		expect(warning).toHaveBeenCalledTimes(1);
+		expect(reauthenticate).toHaveBeenCalledTimes(1);
+		expect(errorNotification).not.toHaveBeenCalled();
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesError',
+			requestToken: 'databases_choice_cancelled',
+			error: 'Database refresh cancelled.',
+		}));
+	});
+
+	it('shares one zero-result account choice across concurrent same-cluster refreshes', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const choice = deferred<string | undefined>();
+		const accountChoice = vi.spyOn(vscode.window, 'showWarningMessage').mockReturnValue(choice.promise as any);
+		const postMessage = vi.fn();
+		const host = makeMockHost({
+			connections: [connection],
+			getDatabases: vi.fn(async () => []),
+			postMessage,
+		});
+		const svc = new ConnectionService(host as any);
+
+		const first = svc.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: 'concurrent_1',
+		});
+		const second = svc.sendDatabases('c1', 'query_2', {
+			mode: 'interactive-refresh',
+			requestToken: 'concurrent_2',
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(accountChoice).toHaveBeenCalledTimes(1);
+		choice.resolve(undefined);
+		await Promise.all([first, second]);
+
+		const terminalMessages = postMessage.mock.calls
+			.map(([message]) => message)
+			.filter(message => message?.type === 'databasesData');
+		expect(terminalMessages).toHaveLength(2);
+		expect(terminalMessages.map(message => message.requestToken).sort()).toEqual(['concurrent_1', 'concurrent_2']);
+	});
+
+	it('shares one post-auth database result across separate providers', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const globalState = new Map<string, any>();
+		const choice = deferred<string | undefined>();
+		const accountChoice = vi.spyOn(vscode.window, 'showWarningMessage').mockReturnValue(choice.promise as any);
+		const firstGetDatabases = vi.fn()
+			.mockResolvedValueOnce([])
+			.mockResolvedValueOnce(['NewDb']);
+		const secondGetDatabases = vi.fn()
+			.mockResolvedValueOnce([])
+			.mockRejectedValueOnce(new Error('A second provider fetch should not run'));
+		const firstPostMessage = vi.fn();
+		const secondPostMessage = vi.fn();
+		const firstService = new ConnectionService(makeMockHost({
+			connections: [connection],
+			globalState,
+			getDatabases: firstGetDatabases,
+			reauthenticate: vi.fn(async () => undefined),
+			postMessage: firstPostMessage,
+		}) as any);
+		const secondService = new ConnectionService(makeMockHost({
+			connections: [connection],
+			globalState,
+			getDatabases: secondGetDatabases,
+			reauthenticate: vi.fn(async () => undefined),
+			postMessage: secondPostMessage,
+		}) as any);
+
+		const first = firstService.sendDatabases('c1', 'query_1', {
+			mode: 'interactive-refresh',
+			requestToken: 'provider_1',
+		});
+		await Promise.resolve();
+		const second = secondService.sendDatabases('c1', 'query_2', {
+			mode: 'interactive-refresh',
+			requestToken: 'provider_2',
+		});
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(accountChoice).toHaveBeenCalledTimes(1);
+		choice.resolve('Try another account');
+		await Promise.all([first, second]);
+
+		expect(firstGetDatabases).toHaveBeenCalledTimes(2);
+		expect(secondGetDatabases).toHaveBeenCalledTimes(1);
+		for (const postMessage of [firstPostMessage, secondPostMessage]) {
+			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'databasesData',
+				databases: ['NewDb'],
+				authoritative: true,
+				fallback: false,
+			}));
+		}
+		expect(globalState.get(STORAGE_KEYS.cachedDatabases)).toEqual({ test: ['NewDb'] });
+	});
+
+	it('cleans up rejected shared recovery before the next refresh', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const globalState = new Map<string, any>();
+		const accountChoice = vi.spyOn(vscode.window, 'showWarningMessage')
+			.mockResolvedValueOnce('Try another account' as any)
+			.mockResolvedValueOnce(undefined as any);
+		const rejectedReauthentication = vi.fn(async () => { throw new Error('Reauthentication failed'); });
+		const firstPostMessage = vi.fn();
+		const secondPostMessage = vi.fn();
+		const firstService = new ConnectionService(makeMockHost({
+			connections: [connection],
+			globalState,
+			getDatabases: vi.fn(async () => []),
+			reauthenticate: rejectedReauthentication,
+			postMessage: firstPostMessage,
+		}) as any);
+		const secondService = new ConnectionService(makeMockHost({
+			connections: [connection],
+			globalState,
+			getDatabases: vi.fn(async () => []),
+			reauthenticate: vi.fn(async () => undefined),
+			postMessage: secondPostMessage,
+		}) as any);
+
+		await Promise.all([
+			firstService.sendDatabases('c1', 'query_1', { mode: 'interactive-refresh', requestToken: 'rejected_1' }),
+			secondService.sendDatabases('c1', 'query_2', { mode: 'interactive-refresh', requestToken: 'rejected_2' }),
+		]);
+		expect(accountChoice).toHaveBeenCalledTimes(1);
+		expect((ConnectionService as any).zeroResultRecoveryByCluster.size).toBe(0);
+
+		const thirdPostMessage = vi.fn();
+		const thirdService = new ConnectionService(makeMockHost({
+			connections: [connection],
+			globalState,
+			getDatabases: vi.fn(async () => []),
+			postMessage: thirdPostMessage,
+		}) as any);
+		await thirdService.sendDatabases('c1', 'query_3', {
+			mode: 'interactive-refresh',
+			requestToken: 'after_rejection',
+		});
+
+		expect(accountChoice).toHaveBeenCalledTimes(2);
+		expect(thirdPostMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesData',
+			requestToken: 'after_rejection',
+		}));
+	});
+
 	it('echoes the request token on database responses', async () => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
 		const postMessage = vi.fn();
@@ -238,7 +817,7 @@ describe('ConnectionService — database request identity', () => {
 		});
 		const svc = new ConnectionService(host as any);
 
-		await svc.sendDatabases('c1', 'query_1', false, 'databases_1');
+		await svc.sendDatabases('c1', 'query_1', { mode: 'passive', requestToken: 'databases_1' });
 
 		expect(postMessage).toHaveBeenCalledWith({
 			type: 'databasesData',
@@ -270,7 +849,11 @@ describe('ConnectionService — database request identity', () => {
 		const host = makeMockHost({ connections: [connection], globalState, getDatabases, postMessage });
 		const svc = new ConnectionService(host as any);
 
-		await svc.sendDatabases('c1', 'query_1', false, 'databases_saved', 'SavedDb');
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'passive',
+			requestToken: 'databases_saved',
+			requiredDatabase: 'SavedDb',
+		});
 
 		expect(getDatabases).toHaveBeenCalledWith(connection, true, expect.objectContaining({
 			allowInteractive: false,
@@ -301,7 +884,7 @@ describe('ConnectionService — database request identity', () => {
 		});
 		const svc = new ConnectionService(host as any);
 
-		await svc.sendDatabases('c1', 'query_1', false, 'databases_cached');
+		await svc.sendDatabases('c1', 'query_1', { mode: 'passive', requestToken: 'databases_cached' });
 
 		expect(getDatabases).not.toHaveBeenCalled();
 		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
@@ -334,8 +917,8 @@ describe('ConnectionService — database request identity', () => {
 		});
 		const svc = new ConnectionService(host as any);
 
-		const first = svc.sendDatabases('c1', 'box-1', true, 'request-1');
-		const second = svc.sendDatabases('c2', 'box-2', true, 'request-2');
+		const first = svc.sendDatabases('c1', 'box-1', { mode: 'interactive-refresh', requestToken: 'request-1' });
+		const second = svc.sendDatabases('c2', 'box-2', { mode: 'interactive-refresh', requestToken: 'request-2' });
 		await Promise.resolve();
 		pending.get('c2')?.resolve(['DbTwo']);
 		await second;
@@ -357,7 +940,7 @@ describe('ConnectionService — database request identity', () => {
 		const host = makeMockHost({ connections: [], postMessage });
 		const svc = new ConnectionService(host as any);
 
-		await svc.sendDatabases('missing', 'query_1', false, 'databases_missing');
+		await svc.sendDatabases('missing', 'query_1', { mode: 'passive', requestToken: 'databases_missing' });
 
 		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'databasesError',
@@ -567,6 +1150,7 @@ describe('ConnectionService — add/test connection UI routing', () => {
 			clusterUrl: 'https://draft.kusto.windows.net',
 			database: 'Samples',
 		}), true, expect.objectContaining({
+			allowInteractive: true,
 			traceId: expect.any(String),
 			source: 'query-editor-connection-test',
 		}));

@@ -1128,7 +1128,7 @@ export async function __kustoRequestSchema(connectionId: string, database: strin
 	} catch { return null; }
 }
 
-export async function __kustoRequestDatabases(connectionId: string, forceRefresh?: boolean): Promise<any[]> {
+export async function __kustoRequestDatabases(connectionId: string): Promise<any[]> {
 	const cid = String(connectionId || '').trim();
 	if (!cid) return [];
 	try {
@@ -1139,9 +1139,9 @@ export async function __kustoRequestDatabases(connectionId: string, forceRefresh
 			if (clusterUrl) clusterKey = canonicalKustoClusterKey(clusterUrl);
 		} catch (e) { console.error('[kusto]', e); }
 		const cachedByCluster = cachedDatabases && cachedDatabases[String(clusterKey || '').trim()];
-		if (!forceRefresh && Array.isArray(cachedByCluster) && cachedByCluster.length) return cachedByCluster;
+		if (Array.isArray(cachedByCluster) && cachedByCluster.length) return cachedByCluster;
 		const cachedByConnectionId = cachedDatabases && cachedDatabases[cid];
-		if (!forceRefresh && Array.isArray(cachedByConnectionId) && cachedByConnectionId.length) return cachedByConnectionId;
+		if (Array.isArray(cachedByConnectionId) && cachedByConnectionId.length) return cachedByConnectionId;
 	} catch (e) { console.error('[kusto]', e); }
 	const requestId = '__kusto_dbreq__' + encodeURIComponent(cid) + '__' + Date.now() + '_' + Math.random().toString(16).slice(2);
 	return await new Promise((resolve, reject) => {
@@ -1153,7 +1153,7 @@ export async function __kustoRequestDatabases(connectionId: string, forceRefresh
 		}
 		try {
 			postMessageToHost({
-				type: forceRefresh ? 'refreshDatabases' : 'getDatabases',
+				type: 'getDatabases',
 				connectionId: cid,
 				boxId: requestId
 			});

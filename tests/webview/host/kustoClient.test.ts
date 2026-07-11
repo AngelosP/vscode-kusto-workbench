@@ -545,4 +545,59 @@ describe('executeQueryCancelable', () => {
 		expect(traceText).toContain('auth.retry.known-accounts.start knownAccountCount=0');
 		expect(traceText).toContain('auth.retry.interactive.skipped reason=interactive-disabled');
 	});
+
+	it('owns the clear-preference then force-new-session interactive retry sequence', async () => {
+		const kustoClient = new KustoQueryClient();
+		const authError = Object.assign(new Error('Unauthorized'), { statusCode: 401 });
+		const clearPreferenceClient = { id: 'clear-preference' };
+		const forceNewSessionClient = { id: 'force-new-session' };
+		(kustoClient as any).getOrCreateClient = vi.fn(async () => { throw authError; });
+		const createClientWithRetry = vi.fn()
+			.mockResolvedValueOnce({ client: clearPreferenceClient, clusterEndpoint: TEST_CONNECTION.clusterUrl, accountId: 'account-1' })
+			.mockResolvedValueOnce({ client: forceNewSessionClient, clusterEndpoint: TEST_CONNECTION.clusterUrl, accountId: 'account-2' });
+		(kustoClient as any).createClientWithRetry = createClientWithRetry;
+		const operation = vi.fn(async (client: { id: string }) => {
+			if (client === clearPreferenceClient) {
+				throw authError;
+			}
+			return 'ok';
+		});
+
+		await expect((kustoClient as any).executeWithAuthRetry(
+			TEST_CONNECTION,
+			operation,
+			{ allowInteractive: true, traceId: 'interactive-retry' }
+		)).resolves.toBe('ok');
+
+		expect(createClientWithRetry).toHaveBeenNthCalledWith(1, TEST_CONNECTION, expect.objectContaining({
+			interactiveIfNeeded: true,
+			promptMode: 'clearPreference',
+			skipSilent: true,
+		}));
+		expect(createClientWithRetry).toHaveBeenNthCalledWith(2, TEST_CONNECTION, expect.objectContaining({
+			interactiveIfNeeded: true,
+			promptMode: 'forceNewSession',
+			skipSilent: true,
+		}));
+	});
+
+	it('does not force a new session after the clear-preference prompt is cancelled', async () => {
+		const kustoClient = new KustoQueryClient();
+		const authError = Object.assign(new Error('Unauthorized'), { statusCode: 401 });
+		(kustoClient as any).getOrCreateClient = vi.fn(async () => { throw authError; });
+		const cancellation = new QueryCancelledError('Sign-in cancelled');
+		const createClientWithRetry = vi.fn(async () => { throw cancellation; });
+		(kustoClient as any).createClientWithRetry = createClientWithRetry;
+
+		await expect((kustoClient as any).executeWithAuthRetry(
+			TEST_CONNECTION,
+			async () => 'unused',
+			{ allowInteractive: true, traceId: 'interactive-cancel' }
+		)).rejects.toBe(cancellation);
+
+		expect(createClientWithRetry).toHaveBeenCalledTimes(1);
+		expect(createClientWithRetry).toHaveBeenCalledWith(TEST_CONNECTION, expect.objectContaining({
+			promptMode: 'clearPreference',
+		}));
+	});
 });
