@@ -206,6 +206,128 @@ describe('normalizeClusterEndpoint', () => {
 	});
 });
 
+// ── getDatabases diagnostics ─────────────────────────────────────────────────
+
+describe('getDatabases diagnostics', () => {
+	it('traces live discovery stages without logging database names', async () => {
+		const trace = vi.fn();
+		const logger = {
+			trace,
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
+			show: vi.fn(),
+			log: vi.fn(),
+		};
+		const kustoClient = new KustoQueryClient(undefined, logger);
+		const executeWithAuthRetry = vi.fn(async (_connection: KustoConnection, operation: (client: any) => Promise<unknown>) => {
+			return operation({
+				execute: vi.fn(async () => ({
+					primaryResults: [{
+						columns: [{ name: 'DatabaseName', type: 'string' }],
+						rows: function* rows() {
+							yield { DatabaseName: 'SensitiveDatabaseName' };
+						},
+					}],
+				})),
+			});
+		});
+		(kustoClient as any).executeWithAuthRetry = executeWithAuthRetry;
+
+		const result = await kustoClient.getDatabases(TEST_CONNECTION, true, {
+			allowInteractive: false,
+			traceId: 'trace-123',
+			source: 'unit-test',
+		});
+
+		expect(result).toEqual(['SensitiveDatabaseName']);
+		const traceText = trace.mock.calls.map(([message]) => String(message)).join('\n');
+		expect(traceText).toContain('[database-list:trace-123] client.start source=unit-test');
+		expect(traceText).toContain('client.cache.miss reason=force-refresh');
+		expect(traceText).toContain('client.request.start');
+		expect(traceText).toContain('command=.show databases');
+		expect(traceText).toContain('client.response.shape columnCount=1 columnNames=DatabaseName');
+		expect(traceText).toContain('client.success databaseCount=1');
+		expect(traceText).not.toContain('SensitiveDatabaseName');
+	});
+
+	it('preserves auth classification while keeping sensitive failure text out of logs', async () => {
+		const trace = vi.fn();
+		const error = vi.fn();
+		const logger = {
+			trace,
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+			error,
+			show: vi.fn(),
+			log: vi.fn(),
+		};
+		const kustoClient = new KustoQueryClient(undefined, logger);
+		const sdkError = Object.assign(
+			new Error('Database SecretDb rejected person@example.com Bearer TRACE_SECRET_TOKEN'),
+			{ statusCode: 401 }
+		);
+		(kustoClient as any).executeWithAuthRetry = vi.fn(async () => { throw sdkError; });
+
+		let caught: unknown;
+		try {
+			await kustoClient.getDatabases(TEST_CONNECTION, true, {
+				allowInteractive: false,
+				traceId: 'trace-auth-wrap',
+				source: 'unit-test',
+			});
+		} catch (failure) {
+			caught = failure;
+		}
+
+		expect(caught).toBeInstanceOf(Error);
+		expect(kustoClient.isAuthenticationError(caught)).toBe(true);
+		expect((caught as Error).cause).toBe(sdkError);
+		const logText = [...trace.mock.calls, ...error.mock.calls].map(([message]) => String(message)).join('\n');
+		expect(logText).toContain('[database-list:trace-auth-wrap] client.failure');
+		expect(logText).toContain('isAuthError=true');
+		expect(logText).toContain('status=401');
+		expect(logText).toContain('Failed to fetch databases. Trace ID: trace-auth-wrap');
+		for (const secret of ['SecretDb', 'person@example.com', 'TRACE_SECRET_TOKEN']) {
+			expect(logText).not.toContain(secret);
+		}
+	});
+});
+
+describe('getDatabaseSchema discovery policy', () => {
+	it('forwards silent background auth policy and emits redacted bounded traces', async () => {
+		const trace = vi.fn();
+		const logger = { trace, debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), show: vi.fn(), log: vi.fn() };
+		const kustoClient = new KustoQueryClient(undefined, logger);
+		const executeWithAuthRetry = vi.fn(async (_connection: KustoConnection, operation: (client: any) => Promise<unknown>) => operation({
+			execute: vi.fn(async () => ({
+				primaryResults: [{ columns: [{ name: 'Schema', type: 'string' }], rows: function* rows() { yield { Schema: JSON.stringify({ Databases: { SensitiveDb: { Tables: {}, Functions: {} } } }) }; } }],
+			})),
+		}));
+		(kustoClient as any).executeWithAuthRetry = executeWithAuthRetry;
+
+		await kustoClient.getDatabaseSchema(TEST_CONNECTION, 'SensitiveDb', true, {
+			allowInteractive: false,
+			traceId: 'schema-trace',
+			source: 'supplemental-background',
+		});
+
+		expect(executeWithAuthRetry).toHaveBeenCalledWith(TEST_CONNECTION, expect.any(Function), expect.objectContaining({
+			allowInteractive: false,
+			traceId: 'schema-trace',
+			operationName: 'get-schema',
+		}));
+		const traceText = trace.mock.calls.map(([message]) => String(message)).join('\n');
+		expect(traceText).toContain('schema.start');
+		expect(traceText).toContain('source=supplemental-background');
+		expect(traceText).toContain('schema.success');
+		expect(traceText).not.toContain('SensitiveDb');
+		expect(traceText).not.toContain('Databases');
+	});
+});
+
 // ── executeQueryCancelable ───────────────────────────────────────────────────
 
 describe('executeQueryCancelable', () => {
@@ -364,7 +486,17 @@ describe('executeQueryCancelable', () => {
 	});
 
 	it('honors non-interactive auth during the first executeWithAuthRetry client acquisition', async () => {
-		const kustoClient = new KustoQueryClient();
+		const trace = vi.fn();
+		const logger = {
+			trace,
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
+			show: vi.fn(),
+			log: vi.fn(),
+		};
+		const kustoClient = new KustoQueryClient(undefined, logger);
 		const client = { execute: vi.fn(async () => 'ok') };
 		const getOrCreateClient = vi.fn(async () => client);
 		(kustoClient as any).getOrCreateClient = getOrCreateClient;
@@ -372,11 +504,45 @@ describe('executeQueryCancelable', () => {
 		const result = await (kustoClient as any).executeWithAuthRetry(
 			TEST_CONNECTION,
 			(c: typeof client) => c.execute(),
-			{ allowInteractive: false }
+			{ allowInteractive: false, traceId: 'auth-trace', operationName: 'get-databases' }
 		);
 
 		expect(result).toBe('ok');
-		expect(getOrCreateClient).toHaveBeenCalledWith(TEST_CONNECTION, { interactiveIfNeeded: false });
+		expect(getOrCreateClient).toHaveBeenCalledWith(TEST_CONNECTION, { interactiveIfNeeded: false, traceId: 'auth-trace' });
 		expect(client.execute).toHaveBeenCalledTimes(1);
+		const traceText = trace.mock.calls.map(([message]) => String(message)).join('\n');
+		expect(traceText).toContain('[database-list:auth-trace] auth.execute.start operation=get-databases');
+		expect(traceText).toContain('allowInteractive=false');
+		expect(traceText).toContain('auth.operation.start attempt=initial');
+		expect(traceText).toContain('auth.operation.complete attempt=initial');
+	});
+
+	it('traces when an auth failure cannot use interactive recovery', async () => {
+		const trace = vi.fn();
+		const logger = {
+			trace,
+			debug: vi.fn(),
+			info: vi.fn(),
+			warn: vi.fn(),
+			error: vi.fn(),
+			show: vi.fn(),
+			log: vi.fn(),
+		};
+		const kustoClient = new KustoQueryClient(undefined, logger);
+		const authError = Object.assign(new Error('Request rejected'), { statusCode: 401 });
+		(kustoClient as any).getOrCreateClient = vi.fn(async () => { throw authError; });
+
+		await expect((kustoClient as any).executeWithAuthRetry(
+			TEST_CONNECTION,
+			async () => 'unused',
+			{ allowInteractive: false, traceId: 'auth-failure', operationName: 'get-databases' }
+		)).rejects.toBe(authError);
+
+		const traceText = trace.mock.calls.map(([message]) => String(message)).join('\n');
+		expect(traceText).toContain('[database-list:auth-failure] auth.operation.failed attempt=initial isAuthError=true');
+		expect(traceText).toContain('status=401');
+		expect(traceText).toContain('auth.retry.clients-evicted');
+		expect(traceText).toContain('auth.retry.known-accounts.start knownAccountCount=0');
+		expect(traceText).toContain('auth.retry.interactive.skipped reason=interactive-disabled');
 	});
 });

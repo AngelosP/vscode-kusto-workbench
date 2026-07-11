@@ -137,9 +137,12 @@ export class QueryConnectionController implements ReactiveController {
 			return getKustoPreparationToken(boxId);
 		}
 		const hasRawFallback = !!schemaByBoxId[boxId]?.rawSchemaJson;
+		if (forceRefresh && targetMatches && current.status === 'ready' && hasRawFallback) {
+			return getKustoPreparationToken(boxId);
+		}
 		return beginKustoPreparation(boxId, {
 			stage: forceRefresh ? 'refreshing' : 'schema',
-			blockers: forceRefresh ? ['schema', 'refresh', 'worker', 'enhancement'] : ['schema', 'worker', 'enhancement'],
+			blockers: ['schema', 'worker'],
 			target: { connectionId, database },
 			usableFallback: hasRawFallback,
 		});
@@ -618,7 +621,7 @@ export class QueryConnectionController implements ReactiveController {
 				if (preparationToken) {
 					updateKustoPreparation(preparationToken, {
 						removeBlockers: ['schema'],
-						addBlockers: ['worker', 'enhancement'],
+						addBlockers: ['worker'],
 						usableFallback: true,
 						target: { schemaSignature: meta.schemaSignature },
 					});
@@ -648,7 +651,7 @@ export class QueryConnectionController implements ReactiveController {
 				if (preparationToken) {
 					updateKustoPreparation(preparationToken, {
 						removeBlockers: ['schema'],
-						addBlockers: needsRefresh ? ['worker', 'enhancement', 'refresh'] : ['worker', 'enhancement'],
+						addBlockers: ['worker'],
 						usableFallback: true,
 						target: { schemaSignature: meta.schemaSignature },
 					});
@@ -703,7 +706,7 @@ export class QueryConnectionController implements ReactiveController {
 		} else {
 			beginKustoPreparation(boxId, {
 				stage: 'schema',
-				blockers: ['schema', 'worker', 'enhancement'],
+				blockers: ['schema', 'worker'],
 				target: { connectionId, database },
 			});
 		}
@@ -756,12 +759,15 @@ export class QueryConnectionController implements ReactiveController {
 		const database = this.host.getDatabase();
 		if (connectionId && database) {
 			const currentPreparation = getKustoPreparationState(boxId);
-			beginKustoPreparation(boxId, {
-				stage: 'refreshing',
-				blockers: ['schema', 'refresh', 'worker', 'enhancement'],
-				target: { connectionId, database },
-				usableFallback: currentPreparation.status === 'ready' && !!schemaByBoxId[boxId]?.rawSchemaJson,
-			});
+			const hasUsableFallback = currentPreparation.status === 'ready' && !!schemaByBoxId[boxId]?.rawSchemaJson;
+			if (!hasUsableFallback) {
+				beginKustoPreparation(boxId, {
+					stage: 'refreshing',
+					blockers: ['schema', 'worker'],
+					target: { connectionId, database },
+					usableFallback: false,
+				});
+			}
 		}
 		lastSchemaRequestAtByBoxId[boxId] = 0;
 		this.ensureSchema(true);

@@ -1,0 +1,28 @@
+{
+  "kind": "kqlx",
+  "version": 1,
+  "state": {
+    "caretDocsEnabled": true,
+    "autoTriggerAutocompleteEnabled": true,
+    "sections": [
+      {
+        "id": "query_supplemental_first",
+        "type": "query",
+        "name": "Remote one",
+        "query": "cluster('supplemental-remote.westus.kusto.windows.net').database('TelemetryDb').RemoteEvents\n| project RemoteOnly",
+        "expanded": true,
+        "clusterUrl": "https://supplemental-current.westus.kusto.windows.net",
+        "database": "TelemetryDb"
+      },
+      {
+        "id": "query_supplemental_second",
+        "type": "query",
+        "name": "Remote two",
+        "query": "cluster('supplemental-remote.westus').database('TelemetryDb').RemoteEvents\n| project RemoteOnly",
+        "expanded": true,
+        "clusterUrl": "https://supplemental-current.westus.kusto.windows.net",
+        "database": "TelemetryDb"
+      }
+    ]
+  }
+}

@@ -101,25 +101,61 @@ function extractHttpStatusCode(e: any): number | undefined {
 	return undefined;
 }
 
+function getErrorChain(error: unknown): unknown[] {
+	const pending: unknown[] = [error];
+	const seen = new Set<unknown>();
+	const chain: unknown[] = [];
+	while (pending.length > 0 && chain.length < 12) {
+		const candidate = pending.shift();
+		if (!candidate || (typeof candidate !== 'object' && typeof candidate !== 'function') || seen.has(candidate)) {
+			continue;
+		}
+		seen.add(candidate);
+		chain.push(candidate);
+		for (const key of ['cause', 'innerError', 'error', 'originalError', 'response']) {
+			try {
+				const nested = (candidate as Record<string, unknown>)[key];
+				if (nested) {
+					pending.push(nested);
+				}
+			} catch {
+				// Ignore malformed SDK error properties.
+			}
+		}
+	}
+	return chain;
+}
+
 export function isAuthError(error: unknown): boolean {
-	const anyErr = error as Record<string, unknown>;
-	if (anyErr?.isCancelled === true || isLikelyCancellationError(error)) {
+	const chain = getErrorChain(error);
+	if (chain.some(candidate => {
+		try {
+			return (candidate as Record<string, unknown>)?.isCancelled === true || isLikelyCancellationError(candidate);
+		} catch {
+			return false;
+		}
+	})) {
 		return false;
 	}
-	const msg = typeof anyErr?.message === 'string' ? anyErr.message : String(error || '');
-	const lower = msg.toLowerCase();
-	if (lower.includes('aadsts') || lower.includes('aads')) {
-		return true;
+	for (const candidate of chain.length > 0 ? chain : [error]) {
+		try {
+			const anyErr = candidate as Record<string, unknown>;
+			const msg = typeof anyErr?.message === 'string' ? anyErr.message : String(candidate || '');
+			const lower = msg.toLowerCase();
+			if (lower.includes('aadsts') || lower.includes('aads')) {
+				return true;
+			}
+			if (lower.includes('unauthorized') || lower.includes('authentication') || lower.includes('authorization')) {
+				return true;
+			}
+		} catch {
+			// Continue checking structured status fields.
+		}
 	}
-	if (lower.includes('unauthorized') || lower.includes('authentication') || lower.includes('authorization')) {
-		return true;
-	}
-	const status = extractHttpStatusCode(anyErr)
-		?? extractHttpStatusCode(anyErr?.cause)
-		?? extractHttpStatusCode(anyErr?.innerError)
-		?? extractHttpStatusCode(anyErr?.error)
-		?? extractHttpStatusCode(anyErr?.originalError);
-	return status === 401 || status === 403;
+	return chain.some(candidate => {
+		const status = extractHttpStatusCode(candidate);
+		return status === 401 || status === 403;
+	});
 }
 
 // ---------------------------------------------------------------------------

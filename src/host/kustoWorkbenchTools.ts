@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { randomUUID } from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
 import { ConnectionManager, KustoConnection } from './connectionManager';
@@ -1056,7 +1057,10 @@ export class KustoWorkbenchToolOrchestrator {
 
 		const schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> = [];
 		try {
-			const databases = await this.kustoClient.getDatabases(connection, true);
+			const databases = await this.kustoClient.getDatabases(connection, true, {
+				traceId: randomUUID(),
+				source: 'language-model-tool-schema-refresh',
+			});
 			if (databases.length === 0) {
 				return { schemas: [], error: 'No databases found on this cluster, or insufficient permissions.' };
 			}

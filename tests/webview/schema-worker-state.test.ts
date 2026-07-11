@@ -11,6 +11,7 @@ import {
 	isSchemaEnhancementPending,
 	isSchemaEnhancementReady,
 	markSchemaEnhancementFailed,
+	markSchemaEnhancementCanceled,
 	markSchemaEnhancementPending,
 	markSchemaEnhancementReady,
 	markSchemaWorkerApplyFailed,
@@ -121,7 +122,19 @@ describe('schema worker readiness state', () => {
 		expect(isSchemaWorkerReady('query_worker', 'cluster|db', 'inmemory://model/1')).toBe(true);
 	});
 
-	it('keeps preparation active until exact schema enhancement completes', () => {
+	it('clears schema and worker blockers when an already-loaded schema is adopted by the exact model', () => {
+		const token = beginKustoPreparation('query_adopted', {
+			stage: 'schema',
+			blockers: ['schema', 'worker'],
+			target: { schemaKey: 'cluster|db', modelUri: 'inmemory://model/1' },
+		})!;
+
+		markSchemaWorkerReady('query_adopted', 'cluster|db', undefined, 'inmemory://model/1', token);
+
+		expect(getKustoPreparationState('query_adopted')).toMatchObject({ status: 'ready', stage: 'ready', blockers: [] });
+	});
+
+	it('ends preparation when the exact base worker is ready while enhancement continues', () => {
 		const token = beginKustoPreparation('query_enhancement', {
 			stage: 'waiting-worker',
 			blockers: ['worker', 'enhancement'],
@@ -131,14 +144,14 @@ describe('schema worker readiness state', () => {
 		markSchemaWorkerReady('query_enhancement', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
 
 		expect(isSchemaEnhancementPending('query_enhancement', 'cluster|db', 'sig-1', 'inmemory://model/1')).toBe(true);
-		expect(getKustoPreparationState('query_enhancement')).toMatchObject({ status: 'preparing', stage: 'enhancing', blockers: ['enhancement'] });
+		expect(getKustoPreparationState('query_enhancement')).toMatchObject({ status: 'ready', stage: 'ready', blockers: [] });
 
 		markSchemaEnhancementReady('query_enhancement', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
 		expect(isSchemaEnhancementReady('query_enhancement', 'cluster|db', 'sig-1', 'inmemory://model/1')).toBe(true);
 		expect(getKustoPreparationState('query_enhancement').status).toBe('ready');
 	});
 
-	it('invalidates reusable worker readiness when exact enhancement fails', () => {
+	it('keeps reusable worker readiness when background enhancement fails', () => {
 		const token = beginKustoPreparation('query_enhancement_error', {
 			stage: 'enhancing',
 			blockers: ['enhancement'],
@@ -148,8 +161,40 @@ describe('schema worker readiness state', () => {
 		markSchemaEnhancementFailed('query_enhancement_error', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
 
 		expect(isSchemaEnhancementFailed('query_enhancement_error', 'cluster|db', 'sig-1', 'inmemory://model/1')).toBe(true);
-		expect(isSchemaWorkerReady('query_enhancement_error', 'cluster|db', 'inmemory://model/1')).toBe(false);
-		expect(getKustoPreparationState('query_enhancement_error')).toMatchObject({ status: 'error', stage: 'error' });
+		expect(isSchemaWorkerReady('query_enhancement_error', 'cluster|db', 'inmemory://model/1')).toBe(true);
+		expect(getKustoPreparationState('query_enhancement_error')).toMatchObject({ status: 'ready', stage: 'ready', blockers: [] });
+	});
+
+	it('settles a canceled background enhancement without changing readiness', () => {
+		const token = beginKustoPreparation('query_enhancement_canceled', {
+			stage: 'waiting-worker',
+			blockers: ['worker'],
+			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-1', modelUri: 'inmemory://model/1' },
+		})!;
+		markSchemaEnhancementPending('query_enhancement_canceled', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
+		markSchemaWorkerReady('query_enhancement_canceled', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
+		markSchemaEnhancementCanceled('query_enhancement_canceled', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
+
+		expect(isSchemaEnhancementFailed('query_enhancement_canceled', 'cluster|db', 'sig-1', 'inmemory://model/1')).toBe(true);
+		expect(getKustoPreparationState('query_enhancement_canceled')).toMatchObject({ status: 'ready', stage: 'ready', blockers: [] });
+	});
+
+	it('settles exact canceled enhancement state after its preparation token is superseded', () => {
+		const token = beginKustoPreparation('query_enhancement_superseded', {
+			stage: 'waiting-worker',
+			blockers: ['worker'],
+			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-1', modelUri: 'inmemory://model/1' },
+		})!;
+		markSchemaEnhancementPending('query_enhancement_superseded', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
+		beginKustoPreparation('query_enhancement_superseded', {
+			stage: 'schema',
+			blockers: ['schema'],
+			target: { schemaKey: 'cluster|other', schemaSignature: 'sig-2', modelUri: 'inmemory://model/1' },
+		});
+
+		markSchemaEnhancementCanceled('query_enhancement_superseded', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
+
+		expect(isSchemaEnhancementFailed('query_enhancement_superseded', 'cluster|db', 'sig-1', 'inmemory://model/1')).toBe(true);
 	});
 
 	it('keeps an error terminal when old worker and enhancement callbacks finish late', () => {

@@ -94,6 +94,7 @@ export type PendingSchemaWorkerUpdate = {
 	forceRefresh?: boolean;
 	reason?: string;
 	preparationToken?: KustoPreparationToken;
+	backgroundOnly?: boolean;
 };
 export const kustoPreparationByBoxId: Record<string, KustoPreparationState | undefined> = {};
 export const schemaWorkerReadyByBoxId: Record<string, SchemaWorkerReadyState | undefined> = {};
@@ -440,7 +441,10 @@ export function markSchemaWorkerReady(boxId: string, schemaKey: string, schemaSi
 	delete schemaWorkerApplyRequiredByBoxId[id];
 	resolveSchemaWorkerWaiters(id, true, schemaKey, modelUri);
 	if (preparationToken) {
-		updateKustoPreparation(preparationToken, { removeBlockers: ['worker'] });
+		// The base worker schema is the user-visible readiness boundary. Function
+		// output inference continues in the background and must not hold the toolbar
+		// progress indicator after Monaco can already serve semantic completions.
+		updateKustoPreparation(preparationToken, { removeBlockers: ['schema', 'worker', 'enhancement'] });
 	}
 }
 
@@ -465,7 +469,6 @@ export function markSchemaEnhancementPending(boxId: string, schemaKey: string, s
 	const id = String(boxId || '').trim();
 	if (!id || (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }))) return;
 	schemaEnhancementReadyByBoxId[id] = { status: 'pending', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() };
-	if (preparationToken) updateKustoPreparation(preparationToken, { stage: 'enhancing', addBlockers: ['enhancement'] });
 }
 
 export function markSchemaEnhancementReady(boxId: string, schemaKey: string, schemaSignature: string | undefined, modelUri: string, preparationToken?: KustoPreparationToken): void {
@@ -479,8 +482,17 @@ export function markSchemaEnhancementFailed(boxId: string, schemaKey: string, sc
 	const id = String(boxId || '').trim();
 	if (!id || (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }))) return;
 	schemaEnhancementReadyByBoxId[id] = { status: 'error', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() };
-	invalidateSchemaWorkerReadinessForBox(id, false, false);
-	if (preparationToken) failKustoPreparation(preparationToken, 'Failed to finish preparing autocomplete.');
+	// Enhancement is retryable background enrichment. The exact base worker
+	// schema remains valid even when inference fails.
+	if (preparationToken) updateKustoPreparation(preparationToken, { removeBlockers: ['enhancement'] });
+}
+
+export function markSchemaEnhancementCanceled(boxId: string, schemaKey: string, schemaSignature: string | undefined, modelUri: string, preparationToken?: KustoPreparationToken): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const state = schemaEnhancementReadyByBoxId[id];
+	if (!schemaEnhancementMatches(state, schemaKey, schemaSignature, modelUri) || state?.status !== 'pending') return;
+	schemaEnhancementReadyByBoxId[id] = { status: 'error', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() };
 }
 
 export function isSchemaEnhancementReady(boxId: string, schemaKey: string, schemaSignature: string | undefined, modelUri: string): boolean {

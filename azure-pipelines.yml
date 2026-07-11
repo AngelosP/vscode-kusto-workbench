@@ -1,0 +1,257 @@
+# Official 1ES Pipeline Templates equivalent of .github/workflows/build.yml.
+# The VSIX is published through templateContext.outputs so 1ES can run its
+# governed SDL and SBOM processing before the release stage consumes it.
+#
+# Onboarding requirements:
+# - Defaults use Vienna's existing 1es-evals-pool and its approved images.
+#   Select another team-owned 1ES hosted pool when queueing if required.
+# - Define secret pipeline variables VSCE_PAT and GITHUB_TOKEN. The GitHub PAT
+#   needs permission to create releases in AngelosP/vscode-kusto-workbench.
+
+name: $(Date:yyyyMMdd).$(Rev:r)
+
+trigger:
+  branches:
+    include:
+      - main
+  tags:
+    include:
+      - v*
+  paths:
+    exclude:
+      - '**/*.md'
+      - '**/*.gitignore'
+      - '**/*.gitattributes'
+      - '.github/**'
+      - 'resources/**'
+      - 'docs/**'
+      - 'sample/**'
+      - 'scripts/**'
+      - 'browser-ext/**'
+      - 'web/**'
+
+pr: none
+
+parameters:
+  - name: publish
+    displayName: Publish to Marketplace and create a GitHub release
+    type: string
+    default: 'false'
+    values:
+      - 'false'
+      - 'true'
+  - name: linuxPoolName
+    displayName: Linux 1ES hosted pool
+    type: string
+    default: 1es-evals-pool
+  - name: linuxPoolImage
+    displayName: Linux pool image
+    type: string
+    default: 1es-pt-ubuntu22
+  - name: windowsPoolName
+    displayName: Windows 1ES hosted pool for source analysis
+    type: string
+    default: 1es-evals-pool
+  - name: windowsPoolImage
+    displayName: Windows source-analysis image
+    type: string
+    default: 1ES-pt-win-2022
+
+resources:
+  repositories:
+    - repository: 1esPipelines
+      type: git
+      name: 1ESPipelineTemplates/1ESPipelineTemplates
+      ref: refs/tags/release
+
+variables:
+  - name: npm_config_cache
+    value: $(Pipeline.Workspace)/.npm
+  - name: PublishRequested
+    value: ${{ parameters.publish }}
+  - name: GitHubRepository
+    value: AngelosP/vscode-kusto-workbench
+
+extends:
+  template: v1/1ES.Official.PipelineTemplate.yml@1esPipelines
+  parameters:
+    pool:
+      name: ${{ parameters.linuxPoolName }}
+      image: ${{ parameters.linuxPoolImage }}
+      os: linux
+    sdl:
+      sourceAnalysisPool:
+        name: ${{ parameters.windowsPoolName }}
+        image: ${{ parameters.windowsPoolImage }}
+        os: windows
+    stages:
+      - stage: Build
+        displayName: Build and test VSIX
+        jobs:
+          - job: BuildVsix
+            displayName: Build, test, and package
+            timeoutInMinutes: 120
+            templateContext:
+              outputs:
+                - output: pipelineArtifact
+                  displayName: Publish governed VSIX artifact
+                  targetPath: $(Build.ArtifactStagingDirectory)/vsix
+                  artifactName: vsix
+            steps:
+              - checkout: self
+                displayName: Checkout with full history
+                clean: true
+                fetchDepth: 0
+                fetchTags: true
+
+              - task: UseNode@1
+                displayName: Use Node.js 20
+                inputs:
+                  version: 20.x
+
+              - task: UseDotNet@2
+                displayName: Use .NET SDK 8
+                inputs:
+                  packageType: sdk
+                  version: 8.0.x
+
+              - task: Cache@2
+                displayName: Cache npm downloads
+                inputs:
+                  key: 'npm | "$(Agent.OS)" | package-lock.json'
+                  restoreKeys: |
+                    npm | "$(Agent.OS)"
+                  path: $(npm_config_cache)
+
+              - bash: |
+                  set -euo pipefail
+                  nbgv_dir="$(Agent.TempDirectory)/nbgv"
+                  dotnet tool install --tool-path "$nbgv_dir" nbgv
+                  echo "##vso[task.prependpath]$nbgv_dir"
+                displayName: Install NB.GV tool
+
+              - bash: npm ci
+                displayName: Install dependencies
+
+              - bash: |
+                  set -euo pipefail
+                  nbgv cloud
+
+                  version_json="$(nbgv get-version -f json)"
+                  printf '%s' "$version_json" | head -c 2000
+                  echo
+
+                  version="$(VERSION_JSON="$version_json" node -e "const value = JSON.parse(process.env.VERSION_JSON); process.stdout.write(String(value.SemVer2 || value.SemVer || value.Version));")"
+                  if [ -z "$version" ]; then
+                    echo "##vso[task.logissue type=error]NB.GV did not return a version."
+                    exit 1
+                  fi
+
+                  echo "Computed version: $version"
+                  echo "##vso[task.setvariable variable=ExtensionVersion]$version"
+                displayName: Compute version with NB.GV
+
+              - bash: |
+                  set -euo pipefail
+                  echo "Stamping package.json => $(ExtensionVersion)"
+                  npm version "$(ExtensionVersion)" --no-git-tag-version
+                displayName: Stamp package.json version
+
+              - bash: npm run lint
+                displayName: Lint
+
+              - bash: npm run package
+                displayName: Build package
+
+              - bash: |
+                  set -euo pipefail
+                  if ! command -v xvfb-run >/dev/null 2>&1; then
+                    sudo apt-get update
+                    sudo apt-get install -y xvfb
+                  fi
+                displayName: Install Xvfb
+
+              - bash: xvfb-run -a npm test
+                displayName: Run VS Code tests
+
+              - bash: |
+                  set -euo pipefail
+                  npm install --global @vscode/vsce
+
+                  artifact_dir="$(Build.ArtifactStagingDirectory)/vsix"
+                  package_name="$(node -p "require('./package.json').name")"
+                  vsix_name="$package_name-$(ExtensionVersion).vsix"
+                  mkdir -p "$artifact_dir"
+
+                  vsce package -o "$artifact_dir/$vsix_name"
+                  printf '%s\n' "$(ExtensionVersion)" > "$artifact_dir/version.txt"
+                  echo "Created $vsix_name"
+                displayName: Package VSIX
+
+      - stage: Publish
+        displayName: Publish release
+        dependsOn: Build
+        condition: and(succeeded(), or(startsWith(variables['Build.SourceBranch'], 'refs/tags/v'), eq(variables['PublishRequested'], 'true')))
+        jobs:
+          - job: PublishRelease
+            displayName: Publish Marketplace and GitHub release
+            timeoutInMinutes: 30
+            templateContext:
+              inputs:
+                - input: pipelineArtifact
+                  artifactName: vsix
+                  targetPath: $(Pipeline.Workspace)/vsix
+            steps:
+              - checkout: none
+
+              - task: UseNode@1
+                displayName: Use Node.js 20
+                inputs:
+                  version: 20.x
+
+              - bash: |
+                  set -euo pipefail
+                  if [ -z "${VSCE_PAT:-}" ]; then
+                    echo "##vso[task.logissue type=error]VSCE_PAT is not configured as a secret pipeline variable."
+                    exit 1
+                  fi
+
+                  vsix_path="$(find "$(Pipeline.Workspace)/vsix" -maxdepth 1 -type f -name '*.vsix' -print -quit)"
+                  if [ -z "$vsix_path" ]; then
+                    echo "##vso[task.logissue type=error]The governed artifact does not contain a VSIX."
+                    exit 1
+                  fi
+
+                  npm install --global @vscode/vsce
+                  vsce publish --packagePath "$vsix_path" --pat "$VSCE_PAT"
+                displayName: Publish to VS Code Marketplace
+                env:
+                  VSCE_PAT: $(VSCE_PAT)
+
+              - bash: |
+                  set -euo pipefail
+                  if [ -z "${GH_TOKEN:-}" ]; then
+                    echo "##vso[task.logissue type=error]GITHUB_TOKEN is not configured as a secret pipeline variable."
+                    exit 1
+                  fi
+                  if ! command -v gh >/dev/null 2>&1; then
+                    echo "##vso[task.logissue type=error]GitHub CLI is not available on the selected pool image."
+                    exit 1
+                  fi
+
+                  version="$(tr -d '\r\n' < "$(Pipeline.Workspace)/vsix/version.txt")"
+                  vsix_path="$(find "$(Pipeline.Workspace)/vsix" -maxdepth 1 -type f -name '*.vsix' -print -quit)"
+                  if [ -z "$version" ] || [ -z "$vsix_path" ]; then
+                    echo "##vso[task.logissue type=error]The governed artifact is missing release metadata."
+                    exit 1
+                  fi
+
+                  tag="v$version"
+                  gh release create "$tag" "$vsix_path" \
+                    --repo "$(GitHubRepository)" \
+                    --target "$(Build.SourceVersion)" \
+                    --title "$tag" \
+                    --generate-notes
+                displayName: Create GitHub release
+                env:
+                  GH_TOKEN: $(GITHUB_TOKEN)

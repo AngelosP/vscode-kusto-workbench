@@ -10,6 +10,7 @@ import {
 	ConnectionService
 } from '../../../src/host/queryEditorConnection';
 import { STORAGE_KEYS } from '../../../src/host/queryEditorTypes';
+import { databaseListTraceRef } from '../../../src/host/databaseListTrace';
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -167,8 +168,9 @@ function makeMockHost(overrides: Partial<Record<string, any>> = {}) {
 		kustoClient: {
 			getDatabases: overrides.getDatabases ?? (async () => []),
 			isAuthenticationError: overrides.isAuthenticationError ?? (() => false),
+			reauthenticate: overrides.reauthenticate ?? (async () => undefined),
 		},
-		output: { trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, log: () => {}, show: () => {} },
+		output: overrides.output ?? { trace: () => {}, debug: () => {}, info: () => {}, warn: () => {}, error: () => {}, log: () => {}, show: () => {} },
 		postMessage: overrides.postMessage ?? (() => {}),
 		formatQueryExecutionErrorForUser: () => 'error',
 		normalizeClusterUrlKey: (url: string) => url.toLowerCase(),
@@ -226,10 +228,13 @@ describe('ConnectionService — database request identity', () => {
 	it('echoes the request token on database responses', async () => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
 		const postMessage = vi.fn();
+		const trace = vi.fn();
+		const getDatabases = vi.fn(async () => ['Db1']);
 		const host = makeMockHost({
 			connections: [connection],
-			getDatabases: async () => ['Db1'],
+			getDatabases,
 			postMessage,
+			output: { trace, debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() },
 		});
 		const svc = new ConnectionService(host as any);
 
@@ -244,6 +249,17 @@ describe('ConnectionService — database request identity', () => {
 			authoritative: true,
 			fallback: false,
 		});
+		const getDatabasesOptions = getDatabases.mock.calls[0][2];
+		const traceText = trace.mock.calls.map(([message]) => String(message)).join('\n');
+		expect(getDatabasesOptions).toEqual(expect.objectContaining({
+			allowInteractive: false,
+			source: 'query-editor',
+			traceId: expect.any(String),
+		}));
+		expect(traceText).toContain(`service.start connectionIdRef=${databaseListTraceRef('c1')} boxIdRef=${databaseListTraceRef('query_1')} requestTokenRef=${databaseListTraceRef('databases_1')} clusterKeyRef=${databaseListTraceRef('test')}`);
+		expect(traceText).toContain('service.live-fetch.start reason=initial');
+		expect(traceText).toContain(`service.webview.post connectionIdRef=${databaseListTraceRef('c1')} provenance=live databaseCount=1`);
+		expect(traceText).toContain(`[database-list:${getDatabasesOptions.traceId}]`);
 	});
 
 	it('bypasses stale cache when it omits an explicitly required database', async () => {
@@ -256,7 +272,11 @@ describe('ConnectionService — database request identity', () => {
 
 		await svc.sendDatabases('c1', 'query_1', false, 'databases_saved', 'SavedDb');
 
-		expect(getDatabases).toHaveBeenCalledWith(connection, true, { allowInteractive: false });
+		expect(getDatabases).toHaveBeenCalledWith(connection, true, expect.objectContaining({
+			allowInteractive: false,
+			source: 'query-editor',
+			traceId: expect.any(String),
+		}));
 		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'databasesData',
 			databases: ['CachedDb', 'SavedDb'],
@@ -264,6 +284,72 @@ describe('ConnectionService — database request identity', () => {
 			authoritative: true,
 			fallback: false,
 		}));
+	});
+
+	it('traces a persisted cache hit without calling the Kusto client', async () => {
+		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
+		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const getDatabases = vi.fn(async () => ['LiveDb']);
+		const postMessage = vi.fn();
+		const trace = vi.fn();
+		const host = makeMockHost({
+			connections: [connection],
+			globalState,
+			getDatabases,
+			postMessage,
+			output: { trace, debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() },
+		});
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', false, 'databases_cached');
+
+		expect(getDatabases).not.toHaveBeenCalled();
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesData',
+			databases: ['CachedDb'],
+			authoritative: false,
+			fallback: false,
+		}));
+		const traceText = trace.mock.calls.map(([message]) => String(message)).join('\n');
+		expect(traceText).toContain('service.persisted-cache.hit databaseCount=1');
+		expect(traceText).toContain(`service.webview.post connectionIdRef=${databaseListTraceRef('c1')} provenance=cache databaseCount=1`);
+	});
+
+	it('keeps concurrent database requests on distinct correlated traces', async () => {
+		const connections = [
+			{ id: 'c1', name: 'One', clusterUrl: 'https://one.kusto.windows.net' },
+			{ id: 'c2', name: 'Two', clusterUrl: 'https://two.kusto.windows.net' },
+		];
+		const pending = new Map<string, { resolve: (databases: string[]) => void }>();
+		const getDatabases = vi.fn((connection: { id: string }) => new Promise<string[]>((resolve) => {
+			pending.set(connection.id, { resolve });
+		}));
+		const postMessage = vi.fn();
+		const trace = vi.fn();
+		const host = makeMockHost({
+			connections,
+			getDatabases,
+			postMessage,
+			output: { trace, debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() },
+		});
+		const svc = new ConnectionService(host as any);
+
+		const first = svc.sendDatabases('c1', 'box-1', true, 'request-1');
+		const second = svc.sendDatabases('c2', 'box-2', true, 'request-2');
+		await Promise.resolve();
+		pending.get('c2')?.resolve(['DbTwo']);
+		await second;
+		pending.get('c1')?.resolve(['DbOne']);
+		await first;
+
+		const firstTraceId = getDatabases.mock.calls[0][2].traceId;
+		const secondTraceId = getDatabases.mock.calls[1][2].traceId;
+		expect(firstTraceId).not.toBe(secondTraceId);
+		const traceText = trace.mock.calls.map(([message]) => String(message)).join('\n');
+		expect(traceText).toContain(`[database-list:${firstTraceId}] service.start connectionIdRef=${databaseListTraceRef('c1')} boxIdRef=${databaseListTraceRef('box-1')} requestTokenRef=${databaseListTraceRef('request-1')}`);
+		expect(traceText).toContain(`[database-list:${secondTraceId}] service.start connectionIdRef=${databaseListTraceRef('c2')} boxIdRef=${databaseListTraceRef('box-2')} requestTokenRef=${databaseListTraceRef('request-2')}`);
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'c1', requestToken: 'request-1', databases: ['DbOne'] }));
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'c2', requestToken: 'request-2', databases: ['DbTwo'] }));
 	});
 
 	it('terminates a tokened request when the connection no longer exists', async () => {
@@ -480,7 +566,10 @@ describe('ConnectionService — add/test connection UI routing', () => {
 			name: 'Draft',
 			clusterUrl: 'https://draft.kusto.windows.net',
 			database: 'Samples',
-		}), true);
+		}), true, expect.objectContaining({
+			traceId: expect.any(String),
+			source: 'query-editor-connection-test',
+		}));
 		expect(postMessage).toHaveBeenNthCalledWith(1, { type: 'kustoConnectionTestStarted', boxId: 'query_1' });
 		expect(postMessage).toHaveBeenNthCalledWith(2, {
 			type: 'kustoConnectionTestResult',

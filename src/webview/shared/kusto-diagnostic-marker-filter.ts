@@ -11,7 +11,7 @@ export type KustoDiagnosticMarkerLike = {
 };
 
 export type KustoMarkerFilterTrace = {
-	event: 'suppress-loaded-cross-cluster-ks207';
+	event: 'suppress-supplemental-diagnostic';
 	code: string;
 	schemaKey: string;
 };
@@ -29,38 +29,30 @@ function markerCodeValue(code: unknown): string {
 	return '';
 }
 
-export function isKustoUnreachableClusterMarker(marker: { code?: unknown; message?: unknown }): boolean {
+export function getKustoSupplementalDiagnosticCode(marker: { code?: unknown }): 'KS207' | 'KS208' | '' {
 	const code = markerCodeValue(marker?.code).toUpperCase();
-	if (code === 'KS207') {
-		return true;
-	}
-	if (code) {
-		return false;
-	}
-	const message = String(marker?.message || '').toLowerCase();
-	return message.includes('does not refer to a reachable cluster')
-		|| (message.includes('no schema from it') && message.includes('currently available'));
+	return code === 'KS207' || code === 'KS208' ? code : '';
 }
 
-function rangesOverlap(a: [number, number], b: [number, number]): boolean {
-	return a[0] < b[1] && b[0] < a[1];
+function rangeContains(outer: [number, number], inner: [number, number]): boolean {
+	return inner[0] >= outer[0] && inner[1] <= outer[1];
 }
 
-export function filterLoadedCrossClusterKs207Markers<T extends KustoDiagnosticMarkerLike>(
+export function filterResolvableCrossClusterMarkers<T extends KustoDiagnosticMarkerLike>(
 	text: string,
 	markers: T[],
 	options: {
 		modelUri: string;
 		currentContext?: CrossClusterSchemaContext | null;
 		getOffsetAt(position: { lineNumber: number; column: number }): number;
-		isSchemaLoadedForModel(schemaKey: string, modelUri: string): boolean;
+		shouldSuppressDiagnostic(schemaKey: string, modelUri: string): boolean;
 		trace?: (event: KustoMarkerFilterTrace) => void;
 	}
 ): T[] {
 	if (!Array.isArray(markers) || markers.length === 0 || !options.modelUri) {
 		return markers;
 	}
-	const candidateMarkers = markers.filter(isKustoUnreachableClusterMarker);
+	const candidateMarkers = markers.filter(marker => !!getKustoSupplementalDiagnosticCode(marker));
 	if (candidateMarkers.length === 0) {
 		return markers;
 	}
@@ -69,7 +61,8 @@ export function filterLoadedCrossClusterKs207Markers<T extends KustoDiagnosticMa
 		return markers;
 	}
 	return markers.filter(marker => {
-		if (!isKustoUnreachableClusterMarker(marker)) {
+		const code = getKustoSupplementalDiagnosticCode(marker);
+		if (!code) {
 			return true;
 		}
 		let markerRange: [number, number];
@@ -84,17 +77,20 @@ export function filterLoadedCrossClusterKs207Markers<T extends KustoDiagnosticMa
 			if (!ref.clusterName) {
 				continue;
 			}
-			const overlapsRef = rangesOverlap(markerRange, ref.range)
-				|| (!!ref.clusterNameRange && rangesOverlap(markerRange, ref.clusterNameRange));
-			if (!overlapsRef) {
+			const targetRange = code === 'KS207'
+				? ref.clusterCallRange || ref.clusterNameRange
+				: ref.databaseCallRange || ref.databaseNameRange;
+			if (!targetRange || !rangeContains(targetRange, markerRange)) {
 				continue;
 			}
 			const schemaKey = kustoDatabaseKey(ref.clusterName, ref.database);
-			if (schemaKey && options.isSchemaLoadedForModel(schemaKey, options.modelUri)) {
-				options.trace?.({ event: 'suppress-loaded-cross-cluster-ks207', code: markerCodeValue(marker.code), schemaKey });
+			if (schemaKey && options.shouldSuppressDiagnostic(schemaKey, options.modelUri)) {
+				options.trace?.({ event: 'suppress-supplemental-diagnostic', code, schemaKey });
 				return false;
 			}
 		}
 		return true;
 	});
 }
+
+export const filterLoadedCrossClusterKs207Markers = filterResolvableCrossClusterMarkers;

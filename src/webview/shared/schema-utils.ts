@@ -26,14 +26,11 @@ export function shouldStartKustoSchemaPrewarm(args: {
 
 export function shouldForceKustoFocusedSchemaApply(args: {
 	workerApplyRequired: boolean;
-	enhancementFailed: boolean;
 	baseWorkerReady: boolean;
-	enhancementReady: boolean;
-	enhancementPending: boolean;
+	workerContextMatches: boolean;
 }): boolean {
 	return args.workerApplyRequired
-		|| args.enhancementFailed
-		|| (args.baseWorkerReady && !args.enhancementReady && !args.enhancementPending);
+		|| (args.baseWorkerReady && !args.workerContextMatches);
 }
 
 export function shouldScheduleKustoSupplementalSchemaEnhancement(args: {

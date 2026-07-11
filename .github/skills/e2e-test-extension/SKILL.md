@@ -297,6 +297,8 @@ recreate/sign in the affected profiles with `vscode-ext-test profile open`.
 - `When I execute command "<command-id>" with args '<json>'` - run a VS Code command with arguments (JSON array in single quotes, e.g. `'["arg1","arg2"]'`)
 - `When I start command "<command-id>"` - start a VS Code command without waiting (use for commands that show QuickInput dialogs, then interact with the dialog in the next step)
 - `When I start command "<command-id>" with args '<json>'` - start a VS Code command with arguments without waiting
+- `When I set the output channel "<name>" log level to "<level>"` - set a named `LogOutputChannel` level without manually driving the VS Code picker; supported levels are Trace, Debug, Info, Warning, Error, and Off
+- `When I set the global log level to "<level>"` - set VS Code's global log level and wait until the observed level matches
 - `When I add folder "<path>" to the workspace` - add a folder to the workspace without reloading the window
 - `When I inspect the QuickInput` - print the current QuickInput title, value, validation, and item IDs from captured extension-host state or the visible workbench widget
 - `When I select QuickInput item "<label>"` / `When I select "<label>" from the QuickInput` - pick an item from captured QuickInput state or the visible workbench widget
@@ -332,6 +334,8 @@ recreate/sign in the affected profiles with `vscode-ext-test profile open`.
 - `Then the editor should contain "<text>"` - assert the active editor has text
 - `Then the output channel "<name>" should contain "<text>"` - assert output channel content
 - `Then the output channel "<name>" should not contain "<text>"` - assert output channel does NOT contain text
+- `Then the output channel "<name>" log level should be "<level>"` - assert the actual named-channel level reported by VS Code
+- `Then the global log level should be "<level>"` - assert VS Code's actual global level
 - `Then I wait <n> second(s)` - pause for n seconds
 
 ### Reliable Input Targeting
@@ -605,6 +609,8 @@ controller into allow-list mode, so only the declared channels are dumped):
 | `Then the output channel "<name>" should have been captured` | Asserts non-empty |
 | `Then the output channel "<name>" should contain "<text>"` | Substring assertion |
 | `Then the output channel "<name>" should not contain "<text>"` | Negative assertion |
+| `When I set the output channel "<name>" log level to "<level>"` | Set a named log channel level |
+| `Then the output channel "<name>" log level should be "<level>"` | Assert the actual channel level |
 
 Example - capture a specific channel and verify a log line:
 
@@ -615,20 +621,19 @@ Feature: Query execution writes a structured trace
     And I capture the output channel "Kusto Workbench"
 
   Scenario: Trace contains the executed query
+    When I set the output channel "Kusto Workbench" log level to "Trace"
+    Then the output channel "Kusto Workbench" log level should be "Trace"
     When I execute command "kusto.runQuery"
     And I wait 3 seconds
     Then the output channel "Kusto Workbench" should contain "StormEvents | take 10"
     And the output channel "Kusto Workbench" should have been captured
 \\`\\`\\`
 
-**Important caveat.** Channels created by the target extension *before the
-controller activates* cannot be captured retroactively - VS Code's API does
-not expose enumeration of existing output channels. The controller declares
-`activationEvents: ["*"]` so it activates as early as possible, but if your
-extension creates a channel synchronously inside its own `activate()` and
-loses the activation race, the channel will not be wrapped. The fix is to
-defer channel creation by one tick (`queueMicrotask` / `setImmediate`) inside
-your extension, or to call `createOutputChannel` lazily on first use.
+Controller interception can still miss channels created before the controller
+activates. At scenario end, the runner now falls back to the same VS Code
+backing-log/CDP reader used by live output assertions whenever controller
+content is empty. `_capture-manifest.json` records each non-empty artifact's
+source as `controller` or `cdp-fallback`, plus the controller-captured length.
 
 ### Native OS Automation (Windows)
 

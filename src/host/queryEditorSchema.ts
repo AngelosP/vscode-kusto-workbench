@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { randomUUID } from 'crypto';
 import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
@@ -10,6 +11,7 @@ import {
 	CachedSchemaEntry
 } from './queryEditorTypes';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import { databaseListTraceRef, getDatabaseListErrorDetails } from './databaseListTrace';
 import type { WorkbenchLogger } from './workbenchLogger';
 
 
@@ -54,6 +56,16 @@ function getNormalizedEndpointHost(clusterUrl: string): string {
 	} catch {
 		return '';
 	}
+}
+
+type SupplementalFailureKind = 'missing-connection' | 'auth-required' | 'not-found' | 'fetch-failed' | 'invalid-schema';
+
+function supplementalFailureKind(error: unknown, isAuthenticationError?: (error: unknown) => boolean): SupplementalFailureKind {
+	if (isAuthenticationError?.(error)) return 'auth-required';
+	const details = getDatabaseListErrorDetails(error);
+	if (details.status === 401 || details.status === 403 || /^AADSTS/i.test(details.code || '')) return 'auth-required';
+	if (details.status === 404) return 'not-found';
+	return 'fetch-failed';
 }
 
 
@@ -402,6 +414,7 @@ export class SchemaService {
 						deliveryKind: 'cache',
 						cacheState: cachedState.isLatestVersion ? 'stale' : 'outdated',
 						isStale: true,
+						isBackgroundRefresh: true,
 						refreshState: 'scheduled',
 						refreshReason: cachedState.isLatestVersion ? 'stale-cache' : 'cache-version-mismatch',
 						workerUpdateNeeded: true,
@@ -543,8 +556,14 @@ export class SchemaService {
 		clusterName: string,
 		database: string,
 		boxId: string,
-		requestToken: string
+		requestToken: string,
+		requestSource: 'background' | 'autocomplete',
+		traceId?: string
 	): Promise<void> {
+		const trace = (event: string, details: Record<string, unknown> = {}) => {
+			this.host.output.trace(`[supplemental-schema:${traceId || 'none'}] host.${event} requestSource=${requestSource} clusterRef=${databaseListTraceRef(clusterName)} databaseRef=${databaseListTraceRef(database)} boxRef=${databaseListTraceRef(boxId)} tokenRef=${databaseListTraceRef(requestToken)}${Object.entries(details).map(([key, value]) => ` ${key}=${String(value)}`).join('')}`);
+		};
+		trace('request.start');
 		const targetEndpoint = normalizeClusterEndpoint(clusterName);
 		const targetHost = getNormalizedEndpointHost(clusterName);
 
@@ -561,12 +580,15 @@ export class SchemaService {
 		});
 
 		if (!connection) {
+			trace('request.failed', { failureKind: 'missing-connection' });
 			this.host.postMessage({
 				type: 'crossClusterSchemaError',
 				clusterName,
 				database,
 				boxId,
 				requestToken,
+				requestSource,
+				failureKind: 'missing-connection',
 				error: `No connection available for cluster "${clusterName}". Add a connection to get autocomplete support.`
 			});
 			return;
@@ -577,9 +599,11 @@ export class SchemaService {
 
 			const cached = await this.getCachedSchemaFromDiskByCluster(connection.clusterUrl, database);
 			const cachedAgeMs = cached ? Date.now() - cached.timestamp : undefined;
-			const cachedIsFresh = !!(cached && typeof cachedAgeMs === 'number' && cachedAgeMs < SCHEMA_CACHE_TTL_MS);
+			const cachedIsLatestVersion = cached?.version === SCHEMA_CACHE_VERSION;
+			const cachedIsFresh = !!(cached && cachedIsLatestVersion && typeof cachedAgeMs === 'number' && cachedAgeMs < SCHEMA_CACHE_TTL_MS);
 
 			if (cached && cachedIsFresh && cached.schema.rawSchemaJson) {
+				trace('cache.hit', { deliverySource: 'disk-cache-fresh', cacheAgeMs: cachedAgeMs });
 				this.host.postMessage({
 					type: 'crossClusterSchemaData',
 					clusterName,
@@ -587,14 +611,16 @@ export class SchemaService {
 					database,
 					boxId,
 					requestToken,
-					source: 'disk-cache-fresh',
+					requestSource,
+					deliverySource: 'disk-cache-fresh',
 					cacheAgeMs: cachedAgeMs,
 					rawSchemaJson: cached.schema.rawSchemaJson
 				});
 				return;
 			}
 
-			if (cached && cached.schema.rawSchemaJson) {
+			if (cached && cachedIsLatestVersion && cached.schema.rawSchemaJson && requestSource === 'background') {
+				trace('cache.hit', { deliverySource: 'disk-cache-stale', cacheAgeMs: cachedAgeMs });
 				this.host.postMessage({
 					type: 'crossClusterSchemaData',
 					clusterName,
@@ -602,18 +628,22 @@ export class SchemaService {
 					database,
 					boxId,
 					requestToken,
-					source: 'disk-cache-stale',
+					requestSource,
+					deliverySource: 'disk-cache-stale',
 					cacheAgeMs: cachedAgeMs,
 					rawSchemaJson: cached.schema.rawSchemaJson
 				});
 				void (async () => {
 					try {
-						const result = await this.host.kustoClient.getDatabaseSchema(connection, database, true);
+						const result = await this.host.kustoClient.getDatabaseSchema(connection, database, true, {
+							allowInteractive: false,
+							traceId,
+							source: 'supplemental-background-refresh',
+						});
 						const freshSchema = result.schema;
 						const timestamp = result.fromCache
 							? Date.now() - (result.cacheAgeMs ?? 0)
 							: Date.now();
-						await this.saveCachedSchemaToDisk(cacheKey, { schema: freshSchema, timestamp, version: SCHEMA_CACHE_VERSION });
 						if (freshSchema.rawSchemaJson) {
 							this.host.postMessage({
 								type: 'crossClusterSchemaData',
@@ -622,27 +652,37 @@ export class SchemaService {
 								database,
 								boxId,
 								requestToken,
-								source: result.fromCache ? 'client-cache-after-stale-cache' : 'fresh-after-stale-cache',
+								requestSource,
+								deliverySource: result.fromCache ? 'client-cache-after-stale-cache' : 'fresh-after-stale-cache',
 								cacheAgeMs: result.cacheAgeMs,
 								rawSchemaJson: freshSchema.rawSchemaJson
 							});
 						}
+						try {
+							await this.saveCachedSchemaToDisk(cacheKey, { schema: freshSchema, timestamp, version: SCHEMA_CACHE_VERSION });
+						} catch (cacheError) {
+							this.host.output.warn(`[schema] failed to persist supplemental background schema clusterRef=${databaseListTraceRef(clusterName)} databaseRef=${databaseListTraceRef(database)} errorType=${cacheError instanceof Error ? cacheError.name : 'Error'}`);
+						}
 					} catch (refreshError) {
-						this.host.output.warn(`[schema] cross-cluster stale cache background refresh failed cluster=${clusterName} db=${database}: ${refreshError instanceof Error ? refreshError.message : String(refreshError)}`);
+						trace('refresh.failed', { failureKind: supplementalFailureKind(refreshError, candidate => this.host.kustoClient.isAuthenticationError?.(candidate) === true) });
 					}
 				})();
 				return;
 			}
 
-			const result = await this.host.kustoClient.getDatabaseSchema(connection, database, false);
+			const forceClientRefresh = !!cached && (!cachedIsLatestVersion || requestSource === 'autocomplete');
+			const result = await this.host.kustoClient.getDatabaseSchema(connection, database, forceClientRefresh, {
+				allowInteractive: requestSource === 'autocomplete',
+				traceId,
+				source: `supplemental-${requestSource}`,
+			});
 			const schema = result.schema;
 
 			const timestamp = result.fromCache
 				? Date.now() - (result.cacheAgeMs ?? 0)
 				: Date.now();
-			await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
-
 			if (schema.rawSchemaJson) {
+				trace('request.success', { deliverySource: result.fromCache ? 'client-cache' : 'fresh' });
 				this.host.postMessage({
 					type: 'crossClusterSchemaData',
 					clusterName,
@@ -650,21 +690,32 @@ export class SchemaService {
 					database,
 					boxId,
 					requestToken,
-					source: result.fromCache ? 'client-cache' : 'fresh',
+					requestSource,
+					deliverySource: result.fromCache ? 'client-cache' : 'fresh',
 					cacheAgeMs: result.cacheAgeMs,
 					rawSchemaJson: schema.rawSchemaJson
 				});
+				try {
+					await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+				} catch (cacheError) {
+					this.host.output.warn(`[schema] failed to persist supplemental schema clusterRef=${databaseListTraceRef(clusterName)} databaseRef=${databaseListTraceRef(database)} errorType=${cacheError instanceof Error ? cacheError.name : 'Error'}`);
+				}
 			} else {
+				trace('request.failed', { failureKind: 'invalid-schema' });
 				this.host.postMessage({
 					type: 'crossClusterSchemaError',
 					clusterName,
 					database,
 					boxId,
 					requestToken,
+					requestSource,
+					failureKind: 'invalid-schema',
 					error: `Schema loaded but missing raw format required for autocomplete.`
 				});
 			}
 		} catch (error) {
+			const failureKind = supplementalFailureKind(error, candidate => this.host.kustoClient.isAuthenticationError?.(candidate) === true);
+			trace('request.failed', { failureKind });
 			const userMessage = this.host.formatQueryExecutionErrorForUser(error, connection, database);
 			this.host.postMessage({
 				type: 'crossClusterSchemaError',
@@ -672,6 +723,8 @@ export class SchemaService {
 				database,
 				boxId,
 				requestToken,
+				requestSource,
+				failureKind,
 				error: `Failed to load schema for ${clusterName}.${database}.\n${userMessage}`
 			});
 		}
@@ -693,7 +746,10 @@ export class SchemaService {
 	private async refreshSchemaForConnection(connection: KustoConnection): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
 		const schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> = [];
 		try {
-			const databases = await this.host.kustoClient.getDatabases(connection, true);
+			const databases = await this.host.kustoClient.getDatabases(connection, true, {
+				traceId: randomUUID(),
+				source: 'query-editor-tool-schema-refresh',
+			});
 			if (databases.length === 0) {
 				return { schemas: [], error: 'No databases found on this cluster, or insufficient permissions.' };
 			}

@@ -159,6 +159,11 @@ describe('isAuthError', () => {
 		expect(isAuthError({ response: { status: 401 }, message: 'fail' })).toBe(true);
 	});
 
+	it('returns true for deeply nested status after an error is wrapped', () => {
+		const original = { innerError: { response: { status: 403 } }, message: 'request failed' };
+		expect(isAuthError(new Error('Failed to fetch databases', { cause: original }))).toBe(true);
+	});
+
 	it('returns true for status code in message text', () => {
 		expect(isAuthError(new Error('status code 401 received'))).toBe(true);
 	});

@@ -10,7 +10,25 @@ import {
 	parseDatabaseSchemaResultWithRaw as parseDatabaseSchemaResultWithRawFn
 } from './kustoClientUtils';
 import { exportKustoClusterEndpoint, kustoDatabaseKey } from '../shared/kustoClusterUrls';
-import { getWorkbenchLogger } from './workbenchLogger';
+import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
+import {
+	createDatabaseListTraceId,
+	databaseListTraceRef,
+	getDatabaseListErrorDetails,
+	traceDatabaseList,
+} from './databaseListTrace';
+
+type DatabaseDiscoveryOptions = {
+	allowInteractive?: boolean;
+	traceId?: string;
+	source?: string;
+};
+
+export type SchemaDiscoveryOptions = {
+	allowInteractive?: boolean;
+	traceId?: string;
+	source?: string;
+};
 
 /**
  * Server-side resource usage statistics extracted from the Kusto response.
@@ -195,15 +213,21 @@ export class KustoQueryClient {
 	private static readonly AUTH_CANCEL_SUPPRESS_MS = 2500;
 
 	private readonly context?: vscode.ExtensionContext;
+	private readonly output: WorkbenchLogger;
 	private readonly authLocksByCluster = new Map<string, Promise<void>>();
 	private readonly authCancelledAtByCluster = new Map<string, number>();
 	private lastSeenCacheClearEpoch = 0;
 
-	constructor(context?: vscode.ExtensionContext) {
+	constructor(context?: vscode.ExtensionContext, output?: WorkbenchLogger) {
 		this.context = context;
+		this.output = output ?? getWorkbenchLogger();
 	}
 
 	private static readonly APPLICATION_NAME = 'KustoWorkbench';
+
+	private traceDatabaseDiscovery(traceId: string | undefined, event: string, details: Record<string, unknown> = {}): void {
+		traceDatabaseList(this.output, traceId, '', event, details);
+	}
 
 	/**
 	 * Creates a {@link ClientRequestProperties} with the `Application` and `ClientActivityId` headers set.
@@ -409,17 +433,31 @@ export class KustoQueryClient {
 		}
 	}
 
-	private async getEffectiveAccessToken(session: vscode.AuthenticationSession): Promise<string> {
+	private async getEffectiveAccessToken(session: vscode.AuthenticationSession, traceId?: string): Promise<string> {
 		const token = String(session?.accessToken || '');
 		if (!this.context) {
+			this.traceDatabaseDiscovery(traceId, 'auth.token.selected', {
+				accountRef: databaseListTraceRef(session?.account?.id),
+				source: 'vscode-session',
+				tokenPresent: !!token,
+			});
 			return token;
 		}
 		try {
 			const key = `kusto.auth.tokenOverride.${session.account.id}`;
 			const override = await this.context.secrets.get(key);
 			const trimmed = String(override || '').trim();
+			this.traceDatabaseDiscovery(traceId, 'auth.token.selected', {
+				accountRef: databaseListTraceRef(session.account.id),
+				source: trimmed ? 'secret-override' : 'vscode-session',
+				tokenPresent: !!(trimmed || token),
+			});
 			return trimmed ? trimmed : token;
-		} catch {
+		} catch (error) {
+			this.traceDatabaseDiscovery(traceId, 'auth.token.override-read-failed', {
+				accountRef: databaseListTraceRef(session?.account?.id),
+				...getDatabaseListErrorDetails(error),
+			});
 			return token;
 		}
 	}
@@ -428,8 +466,17 @@ export class KustoQueryClient {
 	 * Forces an interactive auth prompt for the given connection and refreshes the cached client.
 	 * Useful for explicit user actions like "Refresh databases" when the current account has no access.
 	 */
-	public async reauthenticate(connection: KustoConnection, promptMode: 'clearPreference' | 'forceNewSession' = 'clearPreference'): Promise<void> {
+	public async reauthenticate(
+		connection: KustoConnection,
+		promptMode: 'clearPreference' | 'forceNewSession' = 'clearPreference',
+		traceId?: string
+	): Promise<void> {
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
+		this.traceDatabaseDiscovery(traceId, 'auth.reauthenticate.start', {
+			connectionId: connection.id,
+			clusterEndpoint,
+			promptMode,
+		});
 		if (!clusterEndpoint) {
 			throw new Error('Cluster URL is missing.');
 		}
@@ -441,7 +488,11 @@ export class KustoQueryClient {
 			// ignore
 		}
 		// Explicit user action: skip silent selection so VS Code shows an account picker/sign-in.
-		await this.createClientWithRetry(connection, { interactiveIfNeeded: true, promptMode, skipSilent: true });
+		await this.createClientWithRetry(connection, { interactiveIfNeeded: true, promptMode, skipSilent: true, traceId });
+		this.traceDatabaseDiscovery(traceId, 'auth.reauthenticate.complete', {
+			connectionId: connection.id,
+			promptMode,
+		});
 	}
 
 	public isAuthenticationError(error: unknown): boolean {
@@ -452,22 +503,37 @@ export class KustoQueryClient {
 		return exportKustoClusterEndpoint(clusterUrl);
 	}
 
-	private async getOrCreateClient(connection: KustoConnection, opts?: { interactiveIfNeeded?: boolean }): Promise<any> {
+	private async getOrCreateClient(connection: KustoConnection, opts?: { interactiveIfNeeded?: boolean; traceId?: string }): Promise<any> {
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		if (!clusterEndpoint) {
 			throw new Error('Cluster URL is missing.');
 		}
 
 		const mappedAccountId = this.getClusterAccountId(clusterEndpoint);
+		const existing = this.clients.get(connection.id);
+		this.traceDatabaseDiscovery(opts?.traceId, 'auth.client.lookup', {
+			connectionId: connection.id,
+			clusterEndpoint,
+			mappedAccountRef: databaseListTraceRef(mappedAccountId),
+			cachedClientPresent: !!existing,
+			cachedEndpointMatches: existing?.clusterEndpoint === clusterEndpoint,
+			cachedAccountMatches: !!mappedAccountId && existing?.accountId === mappedAccountId,
+		});
 		if (mappedAccountId) {
-			const existing = this.clients.get(connection.id);
 			if (existing && existing.clusterEndpoint === clusterEndpoint && existing.accountId === mappedAccountId) {
+				this.traceDatabaseDiscovery(opts?.traceId, 'auth.client.reused', {
+					connectionId: connection.id,
+					accountRef: databaseListTraceRef(existing.accountId),
+				});
 				return existing.client;
 			}
 		}
 
 		// Create/refresh client via auth flow (may use silent retries and only prompt if needed).
-		const { client } = await this.createClientWithRetry(connection, { interactiveIfNeeded: opts?.interactiveIfNeeded !== false });
+		const { client } = await this.createClientWithRetry(connection, {
+			interactiveIfNeeded: opts?.interactiveIfNeeded !== false,
+			traceId: opts?.traceId,
+		});
 		return client;
 	}
 
@@ -598,22 +664,41 @@ export class KustoQueryClient {
 
 	private async getSessionForCluster(
 		clusterEndpoint: string,
-		opts: { interactiveIfNeeded: boolean; promptMode?: SessionPromptMode; skipSilent?: boolean }
+		opts: { interactiveIfNeeded: boolean; promptMode?: SessionPromptMode; skipSilent?: boolean; traceId?: string }
 	): Promise<{ session: vscode.AuthenticationSession | undefined; accountId: string | undefined }>
 	{
+		this.traceDatabaseDiscovery(opts.traceId, 'auth.session.discovery.start', {
+			clusterEndpoint,
+			contextAvailable: !!this.context,
+			interactiveIfNeeded: opts.interactiveIfNeeded,
+			promptMode: opts.promptMode ?? 'default',
+			skipSilent: !!opts.skipSilent,
+		});
 		// If we have no storage (e.g. unit tests), just fall back to interactive.
 		if (!this.context) {
 			try {
+				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.start', {
+					reason: 'no-extension-context',
+					promptMode: 'createIfNone',
+				});
 				const session = await vscode.authentication.getSession(
 					KustoQueryClient.AUTH_PROVIDER_ID,
 					[...KustoQueryClient.AUTH_SCOPES],
 					{ createIfNone: true }
 				);
+				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.complete', {
+					sessionFound: !!session,
+					accountRef: databaseListTraceRef(session?.account?.id),
+				});
 				return { session, accountId: session?.account?.id };
 			} catch (e) {
 				if (this.isLikelyCancellationError(e)) {
+					this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.cancelled', {});
 					throw this.createAuthCancelledError();
 				}
+				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.failed', {
+					...getDatabaseListErrorDetails(e),
+				});
 				throw e;
 			}
 		}
@@ -635,32 +720,64 @@ export class KustoQueryClient {
 				candidates.push(a);
 			}
 		}
+		this.traceDatabaseDiscovery(opts.traceId, 'auth.session.candidates', {
+			mappedAccountRef: databaseListTraceRef(mapped),
+			knownAccountCount: known.length,
+			candidateCount: candidates.length,
+		});
 
 		// Silent attempts first (unless explicitly skipped).
 		if (!opts.skipSilent) {
-			for (const account of candidates) {
+			for (let index = 0; index < candidates.length; index++) {
+				const account = candidates[index];
 				try {
+					this.traceDatabaseDiscovery(opts.traceId, 'auth.session.silent.start', {
+						candidate: index + 1,
+						candidateCount: candidates.length,
+						accountRef: databaseListTraceRef(account.id),
+					});
 					const session = await vscode.authentication.getSession(
 						KustoQueryClient.AUTH_PROVIDER_ID,
 						[...KustoQueryClient.AUTH_SCOPES],
 						{ silent: true, account: { id: account.id, label: account.label } }
 					);
 					if (session) {
+						this.traceDatabaseDiscovery(opts.traceId, 'auth.session.silent.complete', {
+							candidate: index + 1,
+							sessionFound: true,
+							accountRef: databaseListTraceRef(session.account.id),
+						});
 						return { session, accountId: session.account.id };
 					}
-				} catch {
+					this.traceDatabaseDiscovery(opts.traceId, 'auth.session.silent.complete', {
+						candidate: index + 1,
+						sessionFound: false,
+						accountRef: databaseListTraceRef(account.id),
+					});
+				} catch (error) {
 					// Silent path shouldn't throw, but be defensive.
+					this.traceDatabaseDiscovery(opts.traceId, 'auth.session.silent.failed', {
+						candidate: index + 1,
+						accountRef: databaseListTraceRef(account.id),
+						...getDatabaseListErrorDetails(error),
+					});
 				}
 			}
 		}
 
 		if (!opts.interactiveIfNeeded) {
+			this.traceDatabaseDiscovery(opts.traceId, 'auth.session.unavailable', {
+				reason: 'interactive-disabled',
+			});
 			return { session: undefined, accountId: undefined };
 		}
 
 		// If the user just cancelled an auth prompt for this cluster, avoid prompting again
 		// back-to-back (common when multiple features request auth in quick succession).
 		if (this.wasAuthCancelledRecently(clusterEndpoint)) {
+			this.traceDatabaseDiscovery(opts.traceId, 'auth.session.unavailable', {
+				reason: 'recent-cancellation-suppression',
+			});
 			return { session: undefined, accountId: undefined };
 		}
 
@@ -676,6 +793,9 @@ export class KustoQueryClient {
 					: { createIfNone: true };
 
 		try {
+			this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.start', {
+				promptMode,
+			});
 			const session = await vscode.authentication.getSession(
 				KustoQueryClient.AUTH_PROVIDER_ID,
 				[...KustoQueryClient.AUTH_SCOPES],
@@ -685,19 +805,34 @@ export class KustoQueryClient {
 			if (!session) {
 				this.markAuthCancelled(clusterEndpoint);
 				try { await this.clearClusterAccountId(clusterEndpoint); } catch { /* ignore */ }
+				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.cancelled', {
+					promptMode,
+				});
 				return { session: undefined, accountId: undefined };
 			}
 			if (session?.account) {
 				await this.upsertKnownAccount(session.account);
 				await this.setClusterAccountId(clusterEndpoint, session.account.id);
 			}
+			this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.complete', {
+				promptMode,
+				sessionFound: !!session,
+				accountRef: databaseListTraceRef(session?.account?.id),
+			});
 			return { session, accountId: session?.account?.id };
 		} catch (e) {
 			if (this.isLikelyCancellationError(e)) {
 				this.markAuthCancelled(clusterEndpoint);
 				try { await this.clearClusterAccountId(clusterEndpoint); } catch { /* ignore */ }
+				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.cancelled', {
+					promptMode,
+				});
 				return { session: undefined, accountId: undefined };
 			}
+			this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.failed', {
+				promptMode,
+				...getDatabaseListErrorDetails(e),
+			});
 			throw e;
 		}
 	}
@@ -720,21 +855,38 @@ export class KustoQueryClient {
 
 	private async createClientWithRetry(
 		connection: KustoConnection,
-		opts: { interactiveIfNeeded: boolean; storeInMainClientCache?: boolean; promptMode?: SessionPromptMode; skipSilent?: boolean }
+		opts: { interactiveIfNeeded: boolean; storeInMainClientCache?: boolean; promptMode?: SessionPromptMode; skipSilent?: boolean; traceId?: string }
 	): Promise<CachedClientEntry>
 	{
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		const storeInMain = opts.storeInMainClientCache !== false;
+		this.traceDatabaseDiscovery(opts.traceId, 'auth.client.create.start', {
+			connectionId: connection.id,
+			clusterEndpoint,
+			interactiveIfNeeded: opts.interactiveIfNeeded,
+			promptMode: opts.promptMode ?? 'default',
+			skipSilent: !!opts.skipSilent,
+			storeInMainCache: storeInMain,
+			waitingForClusterAuthLock: this.authLocksByCluster.has(clusterEndpoint),
+		});
 
 		// Ensure we don't race multiple auth prompts for the same cluster.
 		let created: CachedClientEntry | undefined;
-		await this.withClusterAuthLock(clusterEndpoint, async () => {
+		try {
+			await this.withClusterAuthLock(clusterEndpoint, async () => {
+			this.traceDatabaseDiscovery(opts.traceId, 'auth.client.create.lock-acquired', {
+				clusterEndpoint,
+			});
 			// Re-check cache after waiting.
 			const mappedAccountId = this.getClusterAccountId(clusterEndpoint);
 			if (storeInMain && mappedAccountId) {
 				const existing = this.clients.get(connection.id);
 				if (existing && existing.clusterEndpoint === clusterEndpoint && existing.accountId === mappedAccountId) {
 					created = existing;
+					this.traceDatabaseDiscovery(opts.traceId, 'auth.client.reused-after-lock', {
+						connectionId: connection.id,
+						accountRef: databaseListTraceRef(existing.accountId),
+					});
 					return;
 				}
 			}
@@ -745,7 +897,8 @@ export class KustoQueryClient {
 			const { session, accountId } = await this.getSessionForCluster(clusterEndpoint2, {
 				interactiveIfNeeded: opts.interactiveIfNeeded,
 				promptMode: opts.promptMode ?? 'default',
-				skipSilent: !!opts.skipSilent
+				skipSilent: !!opts.skipSilent,
+				traceId: opts.traceId,
 			});
 			if (!session || !accountId) {
 				// If the user cancelled the auth prompt, treat as a cancellation so callers can
@@ -759,7 +912,7 @@ export class KustoQueryClient {
 				// ignore
 			}
 			const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
-			const effectiveToken = await this.getEffectiveAccessToken(session);
+			const effectiveToken = await this.getEffectiveAccessToken(session, opts.traceId);
 			const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint2, effectiveToken);
 			kcsb.applicationNameForTracing = KustoQueryClient.APPLICATION_NAME;
 			const entry: CachedClientEntry = { client: new Client(kcsb), clusterEndpoint: clusterEndpoint2, accountId };
@@ -767,7 +920,20 @@ export class KustoQueryClient {
 				this.clients.set(connection.id, entry);
 			}
 			created = entry;
-		});
+			this.traceDatabaseDiscovery(opts.traceId, 'auth.client.created', {
+				connectionId: connection.id,
+				clusterEndpoint: clusterEndpoint2,
+				accountRef: databaseListTraceRef(accountId),
+				storedInMainCache: storeInMain,
+			});
+			});
+		} catch (error) {
+			this.traceDatabaseDiscovery(opts.traceId, 'auth.client.create.failed', {
+				connectionId: connection.id,
+				...getDatabaseListErrorDetails(error),
+			});
+			throw error;
+		}
 		if (!created) {
 			throw new Error('Failed to authenticate with Microsoft');
 		}
@@ -777,20 +943,36 @@ export class KustoQueryClient {
 	private async executeWithAuthRetry<T>(
 		connection: KustoConnection,
 		operation: (client: any) => Promise<T>,
-		opts?: { allowInteractive?: boolean; cancelableKey?: string; onClient?: (client: any) => void }
+		opts?: { allowInteractive?: boolean; cancelableKey?: string; onClient?: (client: any) => void; traceId?: string; operationName?: string }
 	): Promise<T> {
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		const allowInteractive = opts?.allowInteractive !== false;
+		this.traceDatabaseDiscovery(opts?.traceId, 'auth.execute.start', {
+			operation: opts?.operationName ?? 'kusto-operation',
+			connectionId: connection.id,
+			clusterEndpoint,
+			allowInteractive,
+			cancelable: !!opts?.cancelableKey,
+		});
 
 		// First attempt: use existing cached client (if any).
 		try {
 			const client = opts?.cancelableKey
 				? await this.getOrCreateCancelableClient(connection, opts.cancelableKey, { interactiveIfNeeded: allowInteractive })
-				: await this.getOrCreateClient(connection, { interactiveIfNeeded: allowInteractive });
+				: await this.getOrCreateClient(connection, { interactiveIfNeeded: allowInteractive, traceId: opts?.traceId });
 			try { opts?.onClient?.(client); } catch { /* ignore */ }
-			return await operation(client);
+			this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.start', { attempt: 'initial' });
+			const result = await operation(client);
+			this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.complete', { attempt: 'initial' });
+			return result;
 		} catch (error) {
-			if (!this.isAuthError(error)) {
+			const isAuthError = this.isAuthError(error);
+			this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.failed', {
+				attempt: 'initial',
+				isAuthError,
+				...getDatabaseListErrorDetails(error),
+			});
+			if (!isAuthError) {
 				throw error;
 			}
 			// Evict cached clients for this connection so we can retry with a different session/account.
@@ -810,21 +992,37 @@ export class KustoQueryClient {
 					// ignore
 				}
 			}
+			this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.clients-evicted', {
+				connectionId: connection.id,
+			});
 			// Retry path: try known accounts silently in order; if still failing and allowed, prompt.
 			// We model this by attempting to (re)create a client and then re-run operation.
 			const known = this.getKnownAccounts().sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0));
-			for (const acct of known) {
+			this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.known-accounts.start', {
+				knownAccountCount: known.length,
+			});
+			for (let index = 0; index < known.length; index++) {
+				const acct = known[index];
 				try {
+					this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.known-account.start', {
+						candidate: index + 1,
+						candidateCount: known.length,
+						accountRef: databaseListTraceRef(acct.id),
+					});
 					const session = await vscode.authentication.getSession(
 						KustoQueryClient.AUTH_PROVIDER_ID,
 						[...KustoQueryClient.AUTH_SCOPES],
 						{ silent: true, account: { id: acct.id, label: acct.label } }
 					);
 					if (!session) {
+						this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.known-account.unavailable', {
+							candidate: index + 1,
+							accountRef: databaseListTraceRef(acct.id),
+						});
 						continue;
 					}
 					const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
-					const effectiveToken = await this.getEffectiveAccessToken(session);
+					const effectiveToken = await this.getEffectiveAccessToken(session, opts?.traceId);
 					const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, effectiveToken);
 					kcsb.applicationNameForTracing = KustoQueryClient.APPLICATION_NAME;
 					const client = new Client(kcsb);
@@ -836,9 +1034,25 @@ export class KustoQueryClient {
 						this.clients.set(connection.id, { client, clusterEndpoint, accountId: session.account.id });
 					}
 					try { opts?.onClient?.(client); } catch { /* ignore */ }
-					return await operation(client);
+					this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.start', {
+						attempt: `known-account-${index + 1}`,
+						accountRef: databaseListTraceRef(session.account.id),
+					});
+					const result = await operation(client);
+					this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.complete', {
+						attempt: `known-account-${index + 1}`,
+						accountRef: databaseListTraceRef(session.account.id),
+					});
+					return result;
 				} catch (err2) {
-					if (this.isAuthError(err2)) {
+					const retryIsAuthError = this.isAuthError(err2);
+					this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.known-account.failed', {
+						candidate: index + 1,
+						accountRef: databaseListTraceRef(acct.id),
+						isAuthError: retryIsAuthError,
+						...getDatabaseListErrorDetails(err2),
+					});
+					if (retryIsAuthError) {
 						continue;
 					}
 					throw err2;
@@ -846,6 +1060,9 @@ export class KustoQueryClient {
 			}
 
 			if (!allowInteractive) {
+				this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.interactive.skipped', {
+					reason: 'interactive-disabled',
+				});
 				throw error;
 			}
 
@@ -853,20 +1070,40 @@ export class KustoQueryClient {
 			// 1) Clear session preference so the user can pick another existing account.
 			// 2) If we still get an auth error, force a new session (sign in / add account).
 			const tryInteractive = async (promptMode: SessionPromptMode) => {
-				if (opts?.cancelableKey) {
+				this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.interactive.start', { promptMode });
+				try {
+					if (opts?.cancelableKey) {
+						const created = await this.createClientWithRetry(connection, {
+							interactiveIfNeeded: true,
+							storeInMainClientCache: false,
+							promptMode,
+							skipSilent: true,
+							traceId: opts.traceId,
+						});
+						this.cancelableClientsByKey.set(opts.cancelableKey, created);
+						try { opts?.onClient?.(created.client); } catch { /* ignore */ }
+						const result = await operation(created.client);
+						this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.interactive.complete', { promptMode });
+						return result;
+					}
 					const created = await this.createClientWithRetry(connection, {
 						interactiveIfNeeded: true,
-						storeInMainClientCache: false,
 						promptMode,
-						skipSilent: true
+						skipSilent: true,
+						traceId: opts?.traceId,
 					});
-					this.cancelableClientsByKey.set(opts.cancelableKey, created);
 					try { opts?.onClient?.(created.client); } catch { /* ignore */ }
-					return await operation(created.client);
+					const result = await operation(created.client);
+					this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.interactive.complete', { promptMode });
+					return result;
+				} catch (interactiveError) {
+					this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.interactive.failed', {
+						promptMode,
+						isAuthError: this.isAuthError(interactiveError),
+						...getDatabaseListErrorDetails(interactiveError),
+					});
+					throw interactiveError;
 				}
-				const created = await this.createClientWithRetry(connection, { interactiveIfNeeded: true, promptMode, skipSilent: true });
-				try { opts?.onClient?.(created.client); } catch { /* ignore */ }
-				return await operation(created.client);
 			};
 
 			try {
@@ -884,29 +1121,68 @@ export class KustoQueryClient {
 		return isLikelyCancellationErrorFn(error);
 	}
 
-	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false, opts?: { allowInteractive?: boolean }): Promise<string[]> {
+	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false, opts?: DatabaseDiscoveryOptions): Promise<string[]> {
+		const traceId = String(opts?.traceId || createDatabaseListTraceId());
+		const startedAt = Date.now();
 		try {
 			this.syncCacheClearEpoch();
 			const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
+			const cached = this.databaseCache.get(clusterEndpoint);
+			const cacheAgeMs = cached ? Date.now() - cached.timestamp : undefined;
+			this.traceDatabaseDiscovery(traceId, 'client.start', {
+				source: opts?.source ?? 'direct',
+				connectionId: connection.id,
+				clusterEndpoint,
+				forceRefresh,
+				allowInteractive: opts?.allowInteractive !== false,
+				cachePresent: !!cached,
+				cacheAgeMs,
+				cachedCount: cached?.databases.length,
+			});
 			// Check cache first
 			if (!forceRefresh) {
-				const cached = this.databaseCache.get(clusterEndpoint);
-				if (cached && (Date.now() - cached.timestamp) < this.CACHE_TTL) {
+				if (cached && cacheAgeMs !== undefined && cacheAgeMs < this.CACHE_TTL) {
+					this.traceDatabaseDiscovery(traceId, 'client.cache.hit', {
+						cacheAgeMs,
+						databaseCount: cached.databases.length,
+					});
 					return cached.databases;
 				}
 			}
+			this.traceDatabaseDiscovery(traceId, 'client.cache.miss', {
+				reason: forceRefresh ? 'force-refresh' : cached ? 'expired' : 'absent',
+			});
 
 			const props = await this.createRequestProperties('get_databases');
+			this.traceDatabaseDiscovery(traceId, 'client.request.start', {
+				clientRequestId: props.clientRequestId,
+				command: '.show databases',
+			});
 			const result = await this.executeWithAuthRetry<any>(
 				connection,
 				(client) => client.execute('', '.show databases', props),
-				{ allowInteractive: opts?.allowInteractive }
+				{ allowInteractive: opts?.allowInteractive, traceId, operationName: 'get-databases' }
 			);
+			this.traceDatabaseDiscovery(traceId, 'client.request.complete', {
+				clientRequestId: props.clientRequestId,
+				elapsedMs: Date.now() - startedAt,
+				primaryResultCount: Array.isArray(result?.primaryResults) ? result.primaryResults.length : 0,
+			});
 			
 			const databases: string[] = [];
 			
 			// Extract database names from the result
-			const primaryResults = result.primaryResults[0];
+			const primaryResults = result?.primaryResults?.[0];
+			if (!primaryResults || typeof primaryResults.rows !== 'function') {
+				throw new Error('Kusto returned no readable primary result for .show databases.');
+			}
+			const columnNames = Array.isArray(primaryResults.columns)
+				? primaryResults.columns.map((column: any) => String(column?.name ?? column?.type ?? 'unknown').slice(0, 100)).join(',')
+				: '';
+			this.traceDatabaseDiscovery(traceId, 'client.response.shape', {
+				columnCount: Array.isArray(primaryResults.columns) ? primaryResults.columns.length : undefined,
+				columnNames,
+			});
 			
 			for (const row of primaryResults.rows()) {
 				// Database name is typically in the first column
@@ -921,11 +1197,25 @@ export class KustoQueryClient {
 				databases,
 				timestamp: Date.now()
 			});
+			this.traceDatabaseDiscovery(traceId, 'client.success', {
+				databaseCount: databases.length,
+				elapsedMs: Date.now() - startedAt,
+				cacheUpdated: true,
+			});
 			
 			return databases;
 		} catch (error) {
-			getWorkbenchLogger().error('Error fetching databases:', error instanceof Error ? error : String(error));
-			throw new Error(`Failed to fetch databases: ${error instanceof Error ? error.message : String(error)}`);
+			this.traceDatabaseDiscovery(traceId, 'client.failure', {
+				elapsedMs: Date.now() - startedAt,
+				isAuthError: this.isAuthError(error),
+				...getDatabaseListErrorDetails(error),
+			});
+			try {
+				this.output.error(`Failed to fetch databases. Trace ID: ${traceId}`);
+			} catch {
+				// Diagnostics must not replace the connection failure.
+			}
+			throw new Error(`Failed to fetch databases: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
 		}
 	}
 
@@ -1177,14 +1467,24 @@ export class KustoQueryClient {
 	async getDatabaseSchema(
 		connection: KustoConnection,
 		database: string,
-		forceRefresh: boolean = false
+		forceRefresh: boolean = false,
+		opts?: SchemaDiscoveryOptions
 	): Promise<DatabaseSchemaResult> {
 		this.syncCacheClearEpoch();
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		const cacheKey = kustoDatabaseKey(clusterEndpoint, database);
+		const traceId = String(opts?.traceId || '').trim() || undefined;
+		const trace = (event: string, details: Record<string, unknown> = {}) => this.traceDatabaseDiscovery(traceId, `schema.${event}`, {
+			source: opts?.source || 'schema',
+			clusterRef: databaseListTraceRef(clusterEndpoint),
+			databaseRef: databaseListTraceRef(database),
+			...details,
+		});
+		trace('start', { forceRefresh, allowInteractive: opts?.allowInteractive !== false });
 		if (!forceRefresh) {
 			const cached = this.schemaCache.get(cacheKey);
 			if (cached && (Date.now() - cached.timestamp) < this.SCHEMA_CACHE_TTL) {
+				trace('cache.hit', { cacheAgeMs: Date.now() - cached.timestamp, hasRawSchemaJson: !!cached.schema.rawSchemaJson });
 				return {
 					schema: cached.schema,
 					fromCache: true,
@@ -1192,6 +1492,7 @@ export class KustoQueryClient {
 				};
 			}
 		}
+		trace('cache.miss', { reason: forceRefresh ? 'force-refresh' : 'not-fresh' });
 
 		const tryCommands = [
 			'.show database schema as json',
@@ -1199,10 +1500,16 @@ export class KustoQueryClient {
 		];
 
 		let lastError: unknown = null;
-		for (const command of tryCommands) {
+		for (let commandIndex = 0; commandIndex < tryCommands.length; commandIndex++) {
+			const command = tryCommands[commandIndex];
 			try {
+				trace('command.start', { commandKind: command.endsWith('as json') ? 'json' : 'tabular', attempt: commandIndex + 1 });
 				const props = await this.createRequestProperties('get_schema');
-				const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, command, props));
+				const result = await this.executeWithAuthRetry<any>(
+					connection,
+					(client) => client.execute(database, command, props),
+					{ allowInteractive: opts?.allowInteractive, traceId, operationName: 'get-schema' }
+				);
 				const debug = this.buildSchemaDebug(result, command);
 				const { schema, rawSchemaJson } = this.parseDatabaseSchemaResultWithRaw(result, command);
 
@@ -1212,14 +1519,27 @@ export class KustoQueryClient {
 				}
 
 				this.schemaCache.set(cacheKey, { schema, timestamp: Date.now() });
+				trace('success', {
+					commandKind: command.endsWith('as json') ? 'json' : 'tabular',
+					tableCount: Array.isArray(schema.tables) ? schema.tables.length : 0,
+					functionCount: Array.isArray(schema.functions) ? schema.functions.length : 0,
+					hasRawSchemaJson: !!schema.rawSchemaJson,
+				});
 				return { schema, fromCache: false, debug };
 			} catch (e) {
 				lastError = e;
+				trace('command.failed', {
+					commandKind: command.endsWith('as json') ? 'json' : 'tabular',
+					attempt: commandIndex + 1,
+					...getDatabaseListErrorDetails(e),
+				});
 			}
 		}
+		trace('failed', getDatabaseListErrorDetails(lastError));
 
 		throw new Error(
-			`Failed to fetch database schema: ${lastError instanceof Error ? lastError.message : String(lastError)}`
+			`Failed to fetch database schema: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
+			{ cause: lastError }
 		);
 	}
 

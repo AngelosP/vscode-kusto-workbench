@@ -3,12 +3,13 @@
 // Used by the vscode-ext-test E2E framework via `When I evaluate`.
 
 import { postMessageToHost } from '../shared/webview-messages.js';
-import { getKustoPreparationState, isSchemaEnhancementReady, isSchemaWorkerReady, requestKustoSchemaApplyForBox, setActiveMonacoEditor } from './state.js';
+import { beginKustoPreparation, getKustoPreparationState, isSchemaEnhancementReady, isSchemaWorkerReady, markSchemaEnhancementReady, markSchemaWorkerReady, requestKustoSchemaApplyForBox, setActiveMonacoEditor } from './state.js';
 import { pState } from '../shared/persistence-state.js';
 import { perfSnapshot } from './perf.js';
 import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
 import { __kustoFindSuggestWidgetForEditor } from '../monaco/suggest.js';
-import { __kustoCrossClusterSchemas, __kustoSchemaTracker, __kustoTraceCrossCluster } from '../monaco/monaco.js';
+import { __kustoCrossClusterSchemas, __kustoGetSupplementalSchemaSnapshot, __kustoInjectSupplementalSchemaForTest, __kustoSchemaTracker, __kustoTraceCrossCluster } from '../monaco/monaco.js';
+import { kustoSupplementalTraceId } from '../shared/kusto-supplemental-schema-coordinator.js';
 import { extractCrossClusterRefs } from '../shared/cross-cluster-schema.js';
 import { computeMissingClusterUrls } from '../shared/clusterUtils.js';
 import { kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
@@ -966,13 +967,10 @@ function e2eAssertKustoPreparationReady(sectionIndex: number = 0): string {
 	const preparation = getKustoPreparationState(boxId);
 	if (preparation.status !== 'ready') throw new Error(`Preparation is ${preparation.status}/${preparation.stage}`);
 	if (preparation.target.database !== database || preparation.target.schemaKey !== schemaKey || preparation.target.modelUri !== modelUri) {
-		throw new Error(`Preparation target mismatch: expected ${schemaKey}/${modelUri}, got ${JSON.stringify(preparation.target)}`);
+		throw new Error(`Preparation target mismatch for section ${sectionIndex}: expectedSchemaId=${kustoSupplementalTraceId(schemaKey)} expectedModelId=${kustoSupplementalTraceId(modelUri)} actualSchemaId=${kustoSupplementalTraceId(String(preparation.target.schemaKey || ''))} actualModelId=${kustoSupplementalTraceId(String(preparation.target.modelUri || ''))}`);
 	}
-	if (!isSchemaWorkerReady(boxId, schemaKey, modelUri)) throw new Error(`Worker is not ready for ${schemaKey}/${modelUri}`);
-	if (!isSchemaEnhancementReady(boxId, schemaKey, preparation.target.schemaSignature, modelUri)) {
-		throw new Error(`Enhancement is not ready for ${schemaKey}/${modelUri}`);
-	}
-	return `preparation ready for ${database} (${schemaKey})`;
+	if (!isSchemaWorkerReady(boxId, schemaKey, modelUri)) throw new Error(`Worker is not ready for section ${sectionIndex}: schemaId=${kustoSupplementalTraceId(schemaKey)} modelId=${kustoSupplementalTraceId(modelUri)}`);
+	return `preparation ready for section ${sectionIndex}: schemaId=${kustoSupplementalTraceId(schemaKey)} modelId=${kustoSupplementalTraceId(modelUri)}`;
 }
 
 async function e2eWaitForKustoPreparationReady(sectionIndex: number = 0, timeoutMs: number = 25000): Promise<string> {
@@ -985,7 +983,7 @@ async function e2eWaitForKustoPreparationReady(sectionIndex: number = 0, timeout
 		const preparation = getKustoPreparationState(boxId);
 		if (preparation.status === 'ready') return e2eAssertKustoPreparationReady(sectionIndex);
 		if (preparation.status === 'error') {
-			throw new Error(`Preparation failed for section ${sectionIndex}: ${JSON.stringify(preparation)}`);
+			throw new Error(`Preparation failed for section ${sectionIndex}: stage=${preparation.stage} generation=${preparation.generation} revision=${preparation.revision} blockers=${preparation.blockers.join(',')} schemaId=${kustoSupplementalTraceId(String(preparation.target.schemaKey || ''))} modelId=${kustoSupplementalTraceId(String(preparation.target.modelUri || ''))}`);
 		}
 		await e2eDelay(100);
 	}
@@ -997,14 +995,7 @@ async function e2eWaitForKustoPreparationReady(sectionIndex: number = 0, timeout
 	const schemaKey = kustoDatabaseKey(clusterUrl, database);
 	const modelUri = String(_win.queryEditors?.[boxId]?.getModel?.()?.uri?.toString?.() || '');
 	const preparation = getKustoPreparationState(boxId);
-	throw new Error(`Preparation timed out for section ${sectionIndex}: ${JSON.stringify({
-		preparation,
-		database,
-		schemaKey,
-		modelUri,
-		workerReady: isSchemaWorkerReady(boxId, schemaKey, modelUri),
-		enhancementReady: isSchemaEnhancementReady(boxId, schemaKey, preparation.target.schemaSignature, modelUri),
-	})}`);
+	throw new Error(`Preparation timed out for section ${sectionIndex}: status=${preparation.status} stage=${preparation.stage} generation=${preparation.generation} revision=${preparation.revision} blockers=${preparation.blockers.join(',')} schemaId=${kustoSupplementalTraceId(schemaKey)} modelId=${kustoSupplementalTraceId(modelUri)} workerReady=${isSchemaWorkerReady(boxId, schemaKey, modelUri)} enhancementReady=${isSchemaEnhancementReady(boxId, schemaKey, preparation.target.schemaSignature, modelUri)}`);
 }
 
 function e2eAssertKustoWorkerContext(sectionIndex: number = 0): string {
@@ -1094,6 +1085,101 @@ async function e2eAssertKustoTableCompletionForSection(sectionIndex: number = 0,
 		await e2eDelay(50);
 	}
 	throw lastError instanceof Error ? lastError : new Error(`No table completion for section ${sectionIndex}`);
+}
+
+async function e2eWaitForKustoSupplementalState(sectionIndex: number, status: string, timeoutMs: number = 15000): Promise<string> {
+	const started = performance.now();
+	let stableLoadedSamples = 0;
+	let latest: Array<Record<string, unknown>> = [];
+	while (performance.now() - started <= timeoutMs) {
+		const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
+		const section = sections[sectionIndex];
+		if (!section) throw new Error(`Kusto section ${sectionIndex} not found`);
+		const boxId = String(section.boxId || section.id || '');
+		const modelUri = String(_win.queryEditors?.[boxId]?.getModel?.()?.uri?.toString?.() || '');
+		latest = __kustoGetSupplementalSchemaSnapshot(modelUri);
+		if (latest.length > 0 && latest.every(state => state.status === status)) {
+			stableLoadedSamples++;
+			if (stableLoadedSamples >= 3) return `section ${sectionIndex} supplemental states=${latest.length} status=${status} stable=${stableLoadedSamples}`;
+			await e2eDelay(100);
+			continue;
+		}
+		stableLoadedSamples = 0;
+		if (latest.some(state => state.status === 'failed')) {
+			throw new Error(`Supplemental schema failed for section ${sectionIndex}: ${JSON.stringify(latest)}`);
+		}
+		await e2eDelay(100);
+	}
+	throw new Error(`Supplemental state timed out for section ${sectionIndex}: expected=${status} latest=${JSON.stringify(latest)}`);
+}
+
+function e2eAssertNoKustoSupplementalWarnings(sectionIndex: number = 0): string {
+	const diagnostics = e2eSuggestDiagnostics(`section ${sectionIndex} supplemental diagnostics`, `kw-query-section:nth-of-type(${sectionIndex + 1}) .query-editor`, sectionIndex);
+	const forbidden = (diagnostics.markers || []).filter((marker: any) => {
+		const code = typeof marker.code === 'object' ? String(marker.code?.value || '') : String(marker.code || '');
+		return code.toUpperCase() === 'KS207' || code.toUpperCase() === 'KS208';
+	});
+	if (forbidden.length) {
+		throw new Error(`Section ${sectionIndex} has supplemental warnings: ${JSON.stringify(forbidden)}; diagnostics=${JSON.stringify(diagnostics)}`);
+	}
+	return `section ${sectionIndex} has no KS207/KS208 markers`;
+}
+
+function e2eAssertKustoSupplementalBackgroundTrace(sectionIndex: number = 0): string {
+	const diagnostics = e2eSuggestDiagnostics(`section ${sectionIndex} supplemental trace`, `kw-query-section:nth-of-type(${sectionIndex + 1}) .query-editor`, sectionIndex);
+	const states = diagnostics.supplementalSchemas || [];
+	if (!states.length || !states.every((state: any) => state.requestSource === 'background' && state.status === 'loaded')) {
+		throw new Error(`Expected background-loaded supplemental state for section ${sectionIndex}: ${JSON.stringify(states)}`);
+	}
+	const trace = diagnostics.crossClusterTrace || [];
+	if (!trace.some((event: any) => event.event === 'request-posted' && event.requestSource === 'background')) {
+		throw new Error(`Expected background request trace for section ${sectionIndex}: ${JSON.stringify(trace.slice(-80))}`);
+	}
+	if (!trace.some((event: any) => event.event === 'revalidation.done')) {
+		throw new Error(`Expected direct revalidation trace for section ${sectionIndex}: ${JSON.stringify(trace.slice(-80))}`);
+	}
+	const modelId = String(states[0]?.modelId || '');
+	if (!trace.some((event: any) => event.event === 'apply-internal-success' && event.modelId === modelId && event.appliedCount > 0)) {
+		throw new Error(`Expected model-scoped supplemental apply success for section ${sectionIndex}: ${JSON.stringify(trace.slice(-80))}`);
+	}
+	const diagnosticsText = JSON.stringify(diagnostics).toLowerCase();
+	for (const sentinel of ['supplemental-remote', 'supplemental-current', 'telemetrydb', 'remoteonly', 'file:///', 'inmemory://']) {
+		if (diagnosticsText.includes(sentinel)) {
+			throw new Error(`Supplemental diagnostics leaked ${sentinel}`);
+		}
+	}
+	return `section ${sectionIndex} background supplemental trace verified`;
+}
+
+async function e2eAssertKustoColumnCompletionForSection(sectionIndex: number, column: string, timeoutMs: number = 5000): Promise<string> {
+	const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
+	const section = sections[sectionIndex];
+	if (!section) throw new Error(`Kusto section ${sectionIndex} not found`);
+	const boxId = String(section.boxId || section.id || '');
+	const editor = _win.queryEditors?.[boxId] as MonacoLike | undefined;
+	const model = editor?.getModel?.() as any;
+	if (!editor || !model) throw new Error(`Kusto editor ${sectionIndex} not found`);
+	const text = String(editor.getValue?.() || '');
+	const needle = `| project ${column.slice(0, Math.max(2, Math.min(column.length, 6)))}`;
+	const index = text.lastIndexOf('| project ');
+	const next = index >= 0 ? `${text.slice(0, index)}${needle}` : `${text}\n${needle}`;
+	try {
+		model.setValue(next);
+		const lines = next.split(/\r?\n/);
+		editor.setPosition?.({ lineNumber: lines.length, column: lines[lines.length - 1].length + 1 });
+		editor.focus?.();
+		const triggered = await _win.__kustoTriggerAutocompleteForBoxId?.(boxId);
+		if (!triggered) throw new Error(`Autocomplete trigger was not accepted for section ${sectionIndex}`);
+		const selector = `kw-query-section:nth-of-type(${sectionIndex + 1}) .query-editor`;
+		const result = await e2eWaitForExistingSuggest('kusto', `section ${sectionIndex} remote column`, column, timeoutMs, false);
+		const labels = e2eVisibleSuggestLabelsWithDiagnostics(`section ${sectionIndex} remote column`, selector);
+		if (!labels.some(label => e2eNormalizeSuggestColumnLabel(label).toLowerCase() === column.toLowerCase())) {
+			throw new Error(`Expected remote columnId=${kustoSupplementalTraceId(column)} for section ${sectionIndex}; visibleLabelCount=${labels.length}`);
+		}
+		return `${result.result}; section ${sectionIndex} suggests columnId=${kustoSupplementalTraceId(column)}`;
+	} finally {
+		try { model.setValue(text); } catch { /* best effort test cleanup */ }
+	}
 }
 
 _win.__testAssertKwDropdownHasItems = async (dropdownSelector: string, minCount: number = 1): Promise<string> => {
@@ -3254,6 +3340,11 @@ function e2eAssertAutocompleteTraceSanitized(context: string = 'autocomplete tra
 	if (foundKeys.length) {
 		throw new Error(`${contextLabel}: trace leaked forbidden keys [${Array.from(new Set(foundKeys)).join(', ')}]; trace=${text.slice(0, 4000)}`);
 	}
+	for (const sentinel of ['semantic-current', 'semantic-remote', 'TelemetryDb', 'LocalDb', 'RemoteOnly', 'env_dt_traceId', 'agent.remoteOnly']) {
+		if (text.toLowerCase().includes(sentinel.toLowerCase())) {
+			throw new Error(`${contextLabel}: trace leaked query-derived sentinel ${sentinel}; trace=${text.slice(0, 4000)}`);
+		}
+	}
 	const stringMatches = text.match(/"(?:\\.|[^"\\])*"/g) || [];
 	const oversized = stringMatches
 		.map(value => value.slice(1, -1))
@@ -3314,7 +3405,16 @@ function e2eMarkPerfSnapshot(proofName: string, kind: 'host' | 'webview', expect
 	return { markerId, ...result };
 }
 
-function e2eSuggestDiagnostics(context: string, editorSelector: string = E2E_SECTION.kusto.editor): any {
+function e2eSuggestDiagnostics(context: string, editorSelector: string = E2E_SECTION.kusto.editor, sectionIndex: number = 0): any {
+	const strictJson = (value: any): any => {
+		if (Array.isArray(value)) return value.map(strictJson);
+		if (value && typeof value === 'object') {
+			return Object.fromEntries(Object.entries(value)
+				.filter(([, child]) => child !== undefined && typeof child !== 'function')
+				.map(([key, child]) => [key, strictJson(child)]));
+		}
+		return value;
+	};
 	const contextLabel = String(context || 'suggestions');
 	let editor: MonacoLike | null = null;
 	let boxId = '';
@@ -3322,7 +3422,11 @@ function e2eSuggestDiagnostics(context: string, editorSelector: string = E2E_SEC
 	let modelUri = '';
 	let value = '';
 	try {
-		editor = e2eEditor('kusto');
+		const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
+		const section = sections[sectionIndex];
+		const sectionBoxId = String(section?.boxId || section?.id || '');
+		editor = sectionBoxId ? _win.queryEditors?.[sectionBoxId] || null : e2eEditor('kusto');
+		if (!editor) throw new Error(`Kusto editor ${sectionIndex} not found`);
 		boxId = e2eGetEditorBoxId(editor);
 		position = editor.getPosition?.() || null;
 		modelUri = editor.getModel?.()?.uri?.toString?.() || '';
@@ -3341,15 +3445,15 @@ function e2eSuggestDiagnostics(context: string, editorSelector: string = E2E_SEC
 					.map(labelElement => (labelElement?.textContent || '').trim())
 					.filter(Boolean);
 				return {
-					text: (widget.textContent || '').trim().slice(0, 800),
-					labels,
+					textLength: String(widget.textContent || '').length,
+					labelCount: labels.length,
 					hasLoading: /\bloading\b/i.test(widget.textContent || ''),
 					hasNoSuggestions: /no suggestions/i.test(widget.textContent || ''),
 					rowCount: rows.length,
 				};
 			});
 		} catch (error) {
-			return [{ error: error instanceof Error ? error.message : String(error) }];
+			return [{ errorType: error instanceof Error ? error.name : 'Error' }];
 		}
 	})();
 	const markers = (() => {
@@ -3359,9 +3463,8 @@ function e2eSuggestDiagnostics(context: string, editorSelector: string = E2E_SEC
 			const resource = model?.uri;
 			if (!monacoApi?.editor?.getModelMarkers || !resource) return [];
 			return (monacoApi.editor.getModelMarkers({ resource }) || []).map((marker: any) => ({
-				owner: marker.owner,
-				code: marker.code,
-				message: marker.message,
+				owner: String(marker.owner || '').replace(/[^a-z0-9_.-]/gi, '').slice(0, 40),
+				code: String(typeof marker.code === 'object' ? marker.code?.value || '' : marker.code || '').replace(/[^a-z0-9_.-]/gi, '').slice(0, 40),
 				severity: marker.severity,
 				startLineNumber: marker.startLineNumber,
 				startColumn: marker.startColumn,
@@ -3369,23 +3472,39 @@ function e2eSuggestDiagnostics(context: string, editorSelector: string = E2E_SEC
 				endColumn: marker.endColumn,
 			}));
 		} catch (error) {
-			return [{ error: error instanceof Error ? error.message : String(error) }];
+			return [{ errorType: error instanceof Error ? error.name : 'Error' }];
 		}
 	})();
+	const schemaKeys = _win.schemaByBoxId ? Object.keys(_win.schemaByBoxId) : [];
+	const workerReady = _win.schemaWorkerReadyByBoxId?.[boxId] || null;
 	return {
-		context: contextLabel,
-		boxId,
+		contextId: kustoSupplementalTraceId(contextLabel),
+		boxId: kustoSupplementalTraceId(boxId),
 		position,
-		modelUri,
+		modelId: kustoSupplementalTraceId(modelUri),
 		valueLength: value.length,
 		currentLineLength: position && value ? String(value.split(/\r?\n/)[Math.max(0, position.lineNumber - 1)] || '').length : 0,
 		widgets,
 		markers,
-		schemaKeys: _win.schemaByBoxId ? Object.keys(_win.schemaByBoxId) : [],
-		schemaWorkerReady: _win.schemaWorkerReadyByBoxId?.[boxId] || null,
-		crossClusterSchemas: Object.fromEntries(Object.entries(__kustoCrossClusterSchemas || {}).map(([key, entry]: [string, any]) => [key, { status: entry?.status, clusterUrl: entry?.clusterUrl, clusterAliases: entry?.clusterAliases, error: entry?.error }])),
-		crossClusterTrace: typeof _win.__kustoGetCrossClusterTrace === 'function' ? _win.__kustoGetCrossClusterTrace() : [],
-		autocompleteTrace: e2eCompactAutocompleteTrace(),
+		schemaKeyCount: schemaKeys.length,
+		schemaKeyIds: schemaKeys.map(kustoSupplementalTraceId),
+		schemaWorkerReady: workerReady ? {
+			status: workerReady.status,
+			schemaId: kustoSupplementalTraceId(String(workerReady.schemaKey || '')),
+			modelId: kustoSupplementalTraceId(String(workerReady.modelUri || '')),
+		} : null,
+		crossClusterSchemas: Object.entries(__kustoCrossClusterSchemas || {}).map(([key, entry]: [string, any]) => ({
+			schemaId: kustoSupplementalTraceId(key),
+			status: entry?.status ?? null,
+			deliverySource: entry?.deliverySource ?? null,
+			requestSource: entry?.requestSource ?? null,
+			failureKind: entry?.failureKind ?? null,
+			hasRawSchema: !!entry?.rawSchemaJson,
+			revision: Number(entry?.revision || 0),
+		})),
+		crossClusterTrace: strictJson(typeof _win.__kustoGetCrossClusterTrace === 'function' ? _win.__kustoGetCrossClusterTrace() : []),
+		supplementalSchemas: __kustoGetSupplementalSchemaSnapshot(modelUri),
+		autocompleteTrace: strictJson(e2eCompactAutocompleteTrace()),
 	};
 }
 
@@ -3636,14 +3755,34 @@ async function e2eApplyKustoSemanticFixture(): Promise<string> {
 	if (!primaryApplied) {
 		throw new Error('Primary semantic fixture schema did not apply to Monaco worker');
 	}
-	if (typeof _win.__kustoApplyCrossClusterSchema !== 'function') {
-		throw new Error('__kustoApplyCrossClusterSchema is not available');
+	const preparationToken = beginKustoPreparation(boxId, {
+		stage: 'waiting-worker',
+		blockers: ['worker', 'enhancement'],
+		target: {
+			connectionId: semanticConnection.id,
+			database: primaryDatabase,
+			schemaKey: primaryCanonicalSchemaKey,
+			schemaSignature: 'e2e-semantic-primary',
+			modelUri,
+		},
+	});
+	if (!preparationToken) throw new Error('Primary semantic fixture preparation did not start');
+	markSchemaWorkerReady(boxId, primaryCanonicalSchemaKey, 'e2e-semantic-primary', modelUri, preparationToken);
+	markSchemaEnhancementReady(boxId, primaryCanonicalSchemaKey, 'e2e-semantic-primary', modelUri, preparationToken);
+	const originalQuery = String(editor.getValue?.() || '');
+	const fixtureReference = `cluster('${remoteClusterName}').database('${remoteDatabase}').Events`;
+	if (!originalQuery.includes(fixtureReference)) editor.setValue?.(`${fixtureReference}\n| take 1`);
+	if (!__kustoInjectSupplementalSchemaForTest({
+		clusterName: remoteClusterName,
+		clusterUrl: remoteClusterUrl,
+		database: remoteDatabase,
+		boxId,
+		rawSchemaJson: remoteRaw,
+	})) {
+		throw new Error('Coordinator-backed supplemental semantic fixture injection failed');
 	}
-	__kustoTraceCrossCluster('request-posted', { key: `${remoteClusterName.toLowerCase()}|${remoteDatabase.toLowerCase()}`, boxId, clusterName: remoteClusterName, database: remoteDatabase, source: 'e2e-fixture' });
-	__kustoTraceCrossCluster('response-received', { clusterName: remoteClusterName, clusterUrl: remoteClusterUrl, database: remoteDatabase, boxId, source: 'e2e-fixture' });
-	await _win.__kustoApplyCrossClusterSchema(remoteClusterName, remoteClusterUrl, remoteDatabase, remoteRaw, boxId, 'e2e-fixture');
 
-	const remoteKey = `${remoteClusterName.toLowerCase()}|${remoteDatabase.toLowerCase()}`;
+	const remoteKey = kustoDatabaseKey(remoteClusterName, remoteDatabase);
 	const started = performance.now();
 	while (performance.now() - started < 8000) {
 		const entry = __kustoCrossClusterSchemas?.[remoteKey];
@@ -4004,21 +4143,22 @@ async function e2eAssertKustoSemanticScenarioVisible(scenario: KustoSemanticComp
 
 function e2eAssertKustoCrossClusterTraceForSemanticFixture(): string {
 	const trace = typeof _win.__kustoGetCrossClusterTrace === 'function' ? _win.__kustoGetCrossClusterTrace() : [];
-	const remoteKey = 'semantic-remote.westus.kusto.windows.net|TelemetryDb';
+	const remoteKey = kustoDatabaseKey('semantic-remote.westus.kusto.windows.net', 'TelemetryDb');
+	const remoteSchemaId = kustoSupplementalTraceId(remoteKey);
 	const has = (event: string, predicate: (entry: any) => boolean = () => true) => trace.some((entry: any) => entry?.event === event && predicate(entry));
-	const hasBothAliases = (entry: any) => {
-		const aliases = Array.isArray(entry.aliases) ? entry.aliases.map((value: any) => String(value || '').toLowerCase()) : [];
-		return aliases.includes('semantic-remote.westus') && aliases.includes('semantic-remote.westus.kusto.windows.net');
-	};
 	const missing: string[] = [];
-	if (!has('request-posted', (entry: any) => entry.key === remoteKey)) missing.push('request-posted');
-	if (!has('response-received', (entry: any) => String(entry.clusterName || '').toLowerCase() === 'semantic-remote.westus.kusto.windows.net' && String(entry.database || '') === 'TelemetryDb')) missing.push('response-received');
-	if (!has('apply-start', (entry: any) => entry.key === remoteKey)) missing.push('apply-start');
-	if (!has('apply-internal-start', (entry: any) => entry.key === remoteKey && hasBothAliases(entry))) missing.push('apply-internal-start-aliases');
-	if (!has('apply-internal-success', (entry: any) => entry.key === remoteKey)) missing.push('apply-internal-success');
-	if (!has('schema-status', (entry: any) => entry.key === remoteKey && entry.status === 'loaded')) missing.push('schema-status-loaded');
-	if (!has('autocomplete-retry-trigger', (entry: any) => Array.isArray(entry.missingKeys) && entry.missingKeys.includes(remoteKey))) missing.push('autocomplete-retry-trigger');
+	if (!has('request-posted', (entry: any) => entry.schemaId === remoteSchemaId && entry.requestSource === 'background')) missing.push('request-posted');
+	if (!has('response-received', (entry: any) => !!entry.clusterId && !!entry.databaseId)) missing.push('response-received');
+	if (!has('apply-start', (entry: any) => entry.schemaId === remoteSchemaId)) missing.push('apply-start');
+	if (!has('apply-internal-start', (entry: any) => entry.schemaId === remoteSchemaId && entry.aliasesCount >= 2)) missing.push('apply-internal-start-alias-count');
+	if (!has('apply-internal-success', (entry: any) => entry.schemaId === remoteSchemaId && entry.appliedCount > 0)) missing.push('apply-internal-success');
+	if (!has('schema-status', (entry: any) => entry.schemaId === remoteSchemaId && entry.status === 'loaded')) missing.push('schema-status-loaded');
+	if (!has('autocomplete-retry-trigger', (entry: any) => entry.missingKeysCount > 0)) missing.push('autocomplete-retry-trigger');
 	if (has('autocomplete-retry-skipped-no-focus')) missing.push('unexpected-autocomplete-retry-skipped-no-focus');
+	const traceText = JSON.stringify(trace);
+	for (const sentinel of ['semantic-remote', 'TelemetryDb', 'LocalDb', 'RemoteOnly', 'agent.remoteOnly']) {
+		if (traceText.toLowerCase().includes(sentinel.toLowerCase())) missing.push(`leaked-${sentinel}`);
+	}
 	if (missing.length) {
 		throw new Error(`Missing/invalid cross-cluster trace events: ${missing.join(', ')}; trace=${JSON.stringify(trace)}`);
 	}
@@ -5998,6 +6138,10 @@ _win.__e2e = {
 		waitForWorkerContext: (sectionIndex: number = 0, timeoutMs: number = 10000) => e2eWaitForKustoWorkerContext(sectionIndex, timeoutMs),
 		assertActualWorkerContext: (sectionIndex: number = 0) => e2eAssertActualKustoWorkerContext(sectionIndex),
 		assertTableCompletionForSection: (sectionIndex: number = 0, timeoutMs: number = 5000) => e2eAssertKustoTableCompletionForSection(sectionIndex, timeoutMs),
+		waitForSupplementalState: (sectionIndex: number = 0, status: string = 'loaded', timeoutMs: number = 15000) => e2eWaitForKustoSupplementalState(sectionIndex, status, timeoutMs),
+		assertNoSupplementalWarnings: (sectionIndex: number = 0) => e2eAssertNoKustoSupplementalWarnings(sectionIndex),
+		assertSupplementalBackgroundTrace: (sectionIndex: number = 0) => e2eAssertKustoSupplementalBackgroundTrace(sectionIndex),
+		assertColumnCompletionForSection: (sectionIndex: number, column: string, timeoutMs: number = 5000) => e2eAssertKustoColumnCompletionForSection(sectionIndex, column, timeoutMs),
 		requestSchemaApply: () => {
 			const section = document.querySelector('kw-query-section') as any;
 			return requestKustoSchemaApplyForBox(String(section?.boxId || section?.id || ''), true);
@@ -6028,7 +6172,7 @@ _win.__e2e = {
 		assertSemanticScenario: (scenario: KustoSemanticCompletionScenario, timeoutMs?: number) => e2eAssertKustoSemanticScenario(scenario, timeoutMs),
 		assertSemanticScenarioVisible: (scenario: KustoSemanticCompletionScenario, timeoutMs?: number) => e2eAssertKustoSemanticScenarioVisible(scenario, timeoutMs),
 		assertSemanticCrossClusterTrace: () => e2eAssertKustoCrossClusterTraceForSemanticFixture(),
-		suggestDiagnostics: (context: string = 'kusto semantic suggestions') => e2eSuggestDiagnostics(context, E2E_SECTION.kusto.editor),
+		suggestDiagnostics: (context: string = 'kusto semantic suggestions', sectionIndex: number = 0) => e2eSuggestDiagnostics(context, `kw-query-section:nth-of-type(${sectionIndex + 1}) .query-editor`, sectionIndex),
 		liveSemanticDiagnostics: (context: string = 'live semantic diagnostics') => e2eKustoLiveSemanticDiagnostics(context),
 		clearCrossClusterTrace: () => { if (typeof _win.__kustoClearCrossClusterTrace === 'function') _win.__kustoClearCrossClusterTrace(); return 'cross-cluster trace cleared'; },
 		getCrossClusterTrace: () => typeof _win.__kustoGetCrossClusterTrace === 'function' ? _win.__kustoGetCrossClusterTrace() : [],

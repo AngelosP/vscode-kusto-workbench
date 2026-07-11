@@ -32,6 +32,12 @@ import {
 	type SqlFavorite,
 } from './connectionManagerFavorites';
 import { getWorkbenchLogger } from './workbenchLogger';
+import {
+	createDatabaseListTraceId,
+	databaseListTraceRef,
+	getDatabaseListErrorDetails,
+	traceDatabaseList,
+} from './databaseListTrace';
 
 /**
  * Connection Manager Viewer — Lit web components edition.
@@ -146,6 +152,10 @@ export class ConnectionManagerViewerV2 {
 	private configSubscription: vscode.Disposable | undefined;
 	private _activeSearchRequestId: string | null = null;
 	private _searchAbortController: AbortController | null = null;
+
+	private traceDatabaseList(traceId: string, event: string, details: Record<string, unknown> = {}): void {
+		traceDatabaseList(getWorkbenchLogger(), traceId, 'connection-manager', event, details);
+	}
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -482,6 +492,7 @@ export class ConnectionManagerViewerV2 {
 				return;
 			}
 			case 'connection.test': {
+				const traceId = createDatabaseListTraceId();
 				const id = String(msg.id || '').trim();
 				const connections = this.connectionManager.getConnections();
 				let conn = id ? connections.find((c) => c.id === id) : undefined;
@@ -489,16 +500,39 @@ export class ConnectionManagerViewerV2 {
 					const clusterUrl = String(msg.clusterUrl || '').trim();
 					conn = { id: `draft:${clusterUrl}`, name: String(msg.name || '').trim() || clusterUrl, clusterUrl, database: msg.database ? String(msg.database).trim() : undefined };
 				}
-				if (!conn) { void vscode.window.showErrorMessage('Connection not found.'); return; }
+				if (!conn) {
+					this.traceDatabaseList(traceId, 'test.connection-missing', { connectionId: id || 'draft' });
+					void vscode.window.showErrorMessage('Connection not found.');
+					return;
+				}
+				this.traceDatabaseList(traceId, 'test.start', { connectionId: id || conn.id });
 				this.panel.webview.postMessage({ type: 'testConnectionStarted', connectionId: id || conn.id });
 				try {
-					const databases = await this.kustoClient.getDatabases(conn, true);
-					this.panel.webview.postMessage({ type: 'testConnectionResult', connectionId: id || conn.id, success: true, message: `Connected successfully! Found ${databases.length} database(s).`, databases });
+					const databases = await this.kustoClient.getDatabases(conn, true, { traceId, source: 'connection-manager-test' });
 					const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
-					if (clusterKey && databases.length > 0) { const cached = this.getCachedDatabases(); cached[clusterKey] = databases; await this.setCachedDatabases(cached); }
+					if (clusterKey && databases.length > 0) {
+						try {
+							const cached = this.getCachedDatabases();
+							cached[clusterKey] = databases;
+							await this.setCachedDatabases(cached);
+							this.traceDatabaseList(traceId, 'test.persisted-cache-updated', { clusterKey, databaseCount: databases.length });
+						} catch (cacheError) {
+							this.traceDatabaseList(traceId, 'test.persisted-cache-update-failed', {
+								clusterKey,
+								...getDatabaseListErrorDetails(cacheError),
+							});
+						}
+					}
+					this.traceDatabaseList(traceId, 'test.success', { connectionId: id || conn.id, databaseCount: databases.length });
+					this.panel.webview.postMessage({ type: 'testConnectionResult', connectionId: id || conn.id, success: true, message: `Connected successfully! Found ${databases.length} database(s).`, databases });
 				} catch (error) {
 					const errorMsg = error instanceof Error ? error.message : String(error);
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
+					this.traceDatabaseList(traceId, 'test.failed', {
+						connectionId: id || conn.id,
+						isAuthError,
+						...getDatabaseListErrorDetails(error),
+					});
 					this.panel.webview.postMessage({ type: 'testConnectionResult', connectionId: id || conn.id, success: false, message: isAuthError ? 'Authentication failed. Please sign in when prompted.' : `Connection failed: ${errorMsg}`, isAuthError });
 				}
 				return;
@@ -551,8 +585,12 @@ export class ConnectionManagerViewerV2 {
 				return;
 			}
 			case 'cluster.expand': {
+				const traceId = createDatabaseListTraceId();
 				const connectionId = String(msg.connectionId || '').trim();
-				if (!connectionId) return;
+				if (!connectionId) {
+					this.traceDatabaseList(traceId, 'expand.invalid-request', { reason: 'missing-connection-id' });
+					return;
+				}
 				const expanded = this.getExpandedClusters();
 				if (!expanded.includes(connectionId)) { expanded.push(connectionId); await this.setExpandedClusters(expanded); }
 				const connections = this.connectionManager.getConnections();
@@ -560,15 +598,33 @@ export class ConnectionManagerViewerV2 {
 				if (conn) {
 					const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
 					const cached = this.getCachedDatabases();
+					const cachedCount = cached[clusterKey]?.length ?? 0;
+					this.traceDatabaseList(traceId, 'expand.start', { connectionId, clusterKey, persistedCacheCount: cachedCount });
 					if (!cached[clusterKey] || cached[clusterKey].length === 0) {
 						this.panel.webview.postMessage({ type: 'loadingDatabases', connectionId });
 						try {
-							const databases = await this.kustoClient.getDatabases(conn, false, { allowInteractive: false });
+							const databases = await this.kustoClient.getDatabases(conn, false, {
+								allowInteractive: false,
+								traceId,
+								source: 'connection-manager-expand',
+							});
 							cached[clusterKey] = databases;
 							await this.setCachedDatabases(cached);
+							this.traceDatabaseList(traceId, 'expand.live-success', { connectionId, databaseCount: databases.length, persistedCacheUpdated: true });
 							this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases });
-						} catch (error) { this.panel.webview.postMessage({ type: 'databasesLoadError', connectionId, error: error instanceof Error ? error.message : String(error) }); }
+						} catch (error) {
+							this.traceDatabaseList(traceId, 'expand.failed', {
+								connectionId,
+								isAuthError: this.kustoClient.isAuthenticationError(error),
+								...getDatabaseListErrorDetails(error),
+							});
+							this.panel.webview.postMessage({ type: 'databasesLoadError', connectionId, error: error instanceof Error ? error.message : String(error) });
+						}
+					} else {
+						this.traceDatabaseList(traceId, 'expand.persisted-cache-hit', { connectionId, databaseCount: cachedCount });
 					}
+				} else {
+					this.traceDatabaseList(traceId, 'expand.connection-missing', { connectionId });
 				}
 				return;
 			}
@@ -580,21 +636,35 @@ export class ConnectionManagerViewerV2 {
 				return;
 			}
 			case 'cluster.refreshDatabases': {
+				const traceId = createDatabaseListTraceId();
 				const connectionId = String(msg.connectionId || '').trim();
-				if (!connectionId) return;
+				if (!connectionId) {
+					this.traceDatabaseList(traceId, 'refresh.invalid-request', { reason: 'missing-connection-id' });
+					return;
+				}
 				const connections = this.connectionManager.getConnections();
 				const conn = connections.find((c) => c.id === connectionId);
-				if (!conn) return;
+				if (!conn) {
+					this.traceDatabaseList(traceId, 'refresh.connection-missing', { connectionId });
+					return;
+				}
+				this.traceDatabaseList(traceId, 'refresh.start', { connectionId });
 				this.panel.webview.postMessage({ type: 'loadingDatabases', connectionId });
 				try {
-					const databases = await this.kustoClient.getDatabases(conn, true);
+					const databases = await this.kustoClient.getDatabases(conn, true, { traceId, source: 'connection-manager-refresh' });
 					const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
 					const cached = this.getCachedDatabases();
 					cached[clusterKey] = databases;
 					await this.setCachedDatabases(cached);
+					this.traceDatabaseList(traceId, 'refresh.success', { connectionId, databaseCount: databases.length, persistedCacheUpdated: true });
 					this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases });
 				} catch (error) {
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
+					this.traceDatabaseList(traceId, 'refresh.failed', {
+						connectionId,
+						isAuthError,
+						...getDatabaseListErrorDetails(error),
+					});
 					this.panel.webview.postMessage({ type: 'databasesLoadError', connectionId, error: isAuthError ? 'Authentication required. Please test the connection to sign in.' : error instanceof Error ? error.message : String(error) });
 				}
 				return;
@@ -641,6 +711,7 @@ export class ConnectionManagerViewerV2 {
 				return;
 			}
 			case 'cluster.refreshSchema': {
+				const traceId = createDatabaseListTraceId();
 				const connectionId = String(msg.connectionId || '').trim();
 				if (!connectionId) return;
 				const connections = this.connectionManager.getConnections();
@@ -648,7 +719,7 @@ export class ConnectionManagerViewerV2 {
 				if (!conn) return;
 				this.panel.webview.postMessage({ type: 'loadingDatabases', connectionId });
 				try {
-					const databases = await this.kustoClient.getDatabases(conn, true);
+					const databases = await this.kustoClient.getDatabases(conn, true, { traceId, source: 'connection-manager-cluster-schema-refresh' });
 					const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
 					const cached = this.getCachedDatabases();
 					cached[clusterKey] = databases;
@@ -1209,7 +1280,7 @@ export class ConnectionManagerViewerV2 {
 		query: string,
 		categories: Record<string, boolean>,
 		contentToggles: Record<string, boolean>,
-		_requestId: string,
+		requestId: string,
 		signal: AbortSignal,
 		sendResults: (results: any[], completed: boolean) => void,
 		sendProgress: (message: string, current?: number, total?: number) => void,
@@ -1221,24 +1292,63 @@ export class ConnectionManagerViewerV2 {
 			const connections = this.connectionManager.getConnections();
 
 			if (scope === 'everything') {
+				const searchTraceId = createDatabaseListTraceId();
+				const requestRef = databaseListTraceRef(requestId);
+				this.traceDatabaseList(searchTraceId, 'search-everything.start', {
+					requestId,
+					connectionCount: connections.length,
+				});
 				// Tier 3: refresh all databases for all connections, then schemas
 				let step = 0;
 				const totalConns = connections.length;
 				const dbPairs: Array<{ conn: KustoConnection; db: string }> = [];
 
 				for (const conn of connections) {
-					if (signal.aborted) return;
+					if (signal.aborted) {
+						this.traceDatabaseList(searchTraceId, 'search-everything.cancelled', { requestId, completedConnections: step });
+						return;
+					}
 					step++;
 					sendProgress(`Connecting to ${conn.name || conn.clusterUrl}…`, step, totalConns);
+					const childTraceId = createDatabaseListTraceId();
+					this.traceDatabaseList(searchTraceId, 'search-everything.connection-start', {
+						requestId,
+						connectionId: conn.id,
+						childTraceId,
+						position: step,
+					});
 					try {
-						const dbs = await this.kustoClient.getDatabases(conn, true);
+						const dbs = await this.kustoClient.getDatabases(conn, true, {
+							traceId: childTraceId,
+							source: 'connection-manager-search-everything',
+						});
 						const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
 						const cached = this.getCachedDatabases();
 						cached[clusterKey] = dbs;
 						await this.setCachedDatabases(cached);
 						for (const db of dbs) dbPairs.push({ conn, db });
-					} catch { /* skip connection errors */ }
+						this.traceDatabaseList(searchTraceId, 'search-everything.connection-complete', {
+							requestId,
+							connectionId: conn.id,
+							childTraceId,
+							databaseCount: dbs.length,
+						});
+					} catch (error) {
+						this.traceDatabaseList(searchTraceId, 'search-everything.connection-failed', {
+							requestId,
+							connectionId: conn.id,
+							childTraceId,
+							isAuthError: this.kustoClient.isAuthenticationError(error),
+							...getDatabaseListErrorDetails(error),
+						});
+					}
 				}
+				this.traceDatabaseList(searchTraceId, 'search-everything.discovery-complete', {
+					requestId,
+					requestRef,
+					connectionCount: totalConns,
+					databaseCount: dbPairs.length,
+				});
 
 				// Now refresh all schemas
 				const totalSchemas = dbPairs.length;

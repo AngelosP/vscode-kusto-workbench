@@ -1,7 +1,8 @@
 // The module 'vscode' contains the VS Code extensibility API
 // Import the module and reference it with the alias vscode in your code below
 import * as vscode from 'vscode';
-import { ConnectionManager } from './connectionManager';
+import * as path from 'path';
+import { ConnectionManager, normalizeFilePath, type FileConnectionCacheEntry } from './connectionManager';
 import { setTestIsolateKustoConnections, testIsolateKustoConnections } from './queryEditorConnection';
 import { CachedValuesViewerV2 } from './cachedValuesViewer';
 import { ConnectionManagerViewerV2 } from './connectionManagerViewer';
@@ -31,7 +32,7 @@ import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { createEmptyKqlxFile, stringifyKqlxFile, parseKqlxText, type KqlxFileV1 } from './kqlxFormat';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { STORAGE_KEYS } from './queryEditorTypes';
-import { SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from './schemaCache';
+import { getSchemaCacheFileUri, SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from './schemaCache';
 
 import { stsProcessManagerSingleton } from './sql/stsProcessManager';
 import { getWorkbenchLogger, registerWorkbenchLogger } from './workbenchLogger';
@@ -131,6 +132,124 @@ export function activate(context: vscode.ExtensionContext) {
 		const textDiagnosticsTestName = 'E2E Text Diagnostics Seed';
 		const textDiagnosticsTestCluster = 'https://kw-diagnostics-seed.kusto.windows.net';
 		const textDiagnosticsTestDatabase = 'SeedDb';
+		const supplementalTestPrefix = 'E2E Supplemental Schema';
+		const supplementalCurrentCluster = 'https://supplemental-current.westus.kusto.windows.net';
+		const supplementalRemoteCluster = 'https://supplemental-remote.westus.kusto.windows.net';
+		const supplementalDatabase = 'TelemetryDb';
+		const supplementalPreviousSelectionKey = 'kusto.test.supplementalPreviousSelection';
+		type SupplementalPreviousState = {
+			lastConnectionId?: string;
+			lastConnectionIdPresent?: boolean;
+			lastDatabase?: string;
+			lastDatabasePresent?: boolean;
+			cachedDatabaseEntries?: Record<string, string[] | null>;
+			fileConnectionEntries?: Record<string, FileConnectionCacheEntry | null>;
+		};
+		const supplementalClusterKeys = new Set([supplementalCurrentCluster, supplementalRemoteCluster].map(kustoClusterKey));
+		const isSupplementalConnection = (connection: { name?: string; clusterUrl?: string }): boolean =>
+			String(connection.name || '').startsWith(supplementalTestPrefix)
+			|| supplementalClusterKeys.has(kustoClusterKey(connection.clusterUrl));
+		const cleanupSupplementalSchemaDiagnosticsState = async (preservePreviousSelection: boolean = false): Promise<{ verified: boolean; restoredFilePinCount: number; restoredCachedDatabaseCount: number }> => {
+			const connections = connectionManager.getConnections();
+			const lastConnectionId = context.globalState.get<string | undefined>(STORAGE_KEYS.lastConnectionId);
+			const lastConnection = connections.find(connection => connection.id === lastConnectionId);
+			const lastDatabase = context.globalState.get<string | undefined>(STORAGE_KEYS.lastDatabase);
+			const globalStateKeys = typeof context.globalState.keys === 'function'
+				? new Set(context.globalState.keys())
+				: undefined;
+			const fileConnectionCache = {
+				...(context.globalState.get<Record<string, FileConnectionCacheEntry> | undefined>('kusto.fileConnectionCache') || {}),
+			};
+			const cachedDatabases = {
+				...(context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases) || {}),
+			};
+			let previousSelection = context.globalState.get<SupplementalPreviousState | undefined>(supplementalPreviousSelectionKey);
+			if (!previousSelection) {
+				const preserveSelection = !lastConnection || !isSupplementalConnection(lastConnection);
+				const cachedDatabaseEntries: Record<string, string[] | null> = {};
+				for (const [clusterKey, databases] of Object.entries(cachedDatabases)) {
+					if (supplementalClusterKeys.has(kustoClusterKey(clusterKey))) cachedDatabaseEntries[clusterKey] = [...databases];
+				}
+				const fileConnectionEntries: Record<string, FileConnectionCacheEntry | null> = {};
+				for (const [filePath, entry] of Object.entries(fileConnectionCache)) {
+					if (supplementalClusterKeys.has(kustoClusterKey(entry?.clusterUrl))) fileConnectionEntries[filePath] = { ...entry };
+				}
+				previousSelection = {
+					lastConnectionId: preserveSelection ? lastConnectionId : undefined,
+					lastConnectionIdPresent: preserveSelection && (globalStateKeys?.has(STORAGE_KEYS.lastConnectionId) ?? lastConnectionId !== undefined),
+					lastDatabase: preserveSelection ? lastDatabase : undefined,
+					lastDatabasePresent: preserveSelection && (globalStateKeys?.has(STORAGE_KEYS.lastDatabase) ?? lastDatabase !== undefined),
+					cachedDatabaseEntries,
+					fileConnectionEntries,
+				};
+				await context.globalState.update(supplementalPreviousSelectionKey, previousSelection);
+			}
+			for (const connection of connections) {
+				if (isSupplementalConnection(connection)) await connectionManager.removeConnection(connection.id);
+			}
+			for (const clusterKey of Object.keys(cachedDatabases)) {
+				if (supplementalClusterKeys.has(kustoClusterKey(clusterKey))) delete cachedDatabases[clusterKey];
+			}
+			for (const [clusterKey, databases] of Object.entries(previousSelection.cachedDatabaseEntries || {})) {
+				if (databases) cachedDatabases[clusterKey] = [...databases];
+				else delete cachedDatabases[clusterKey];
+			}
+			await context.globalState.update(STORAGE_KEYS.cachedDatabases, cachedDatabases);
+			for (const [filePath, entry] of Object.entries(fileConnectionCache)) {
+				if (supplementalClusterKeys.has(kustoClusterKey(entry?.clusterUrl))) delete fileConnectionCache[filePath];
+			}
+			for (const [filePath, entry] of Object.entries(previousSelection.fileConnectionEntries || {})) {
+				if (entry) fileConnectionCache[filePath] = entry;
+				else delete fileConnectionCache[filePath];
+			}
+			await context.globalState.update('kusto.fileConnectionCache', fileConnectionCache);
+			for (const clusterUrl of [supplementalCurrentCluster, supplementalRemoteCluster]) {
+				const cacheFile = getSchemaCacheFileUri(context.globalStorageUri, schemaCacheKey(clusterUrl, supplementalDatabase));
+				try { await vscode.workspace.fs.delete(cacheFile, { useTrash: false }); } catch { /* absent fixture cache */ }
+			}
+			const restoreLastConnectionId = previousSelection.lastConnectionIdPresent ?? previousSelection.lastConnectionId !== undefined;
+			const restoreLastDatabase = previousSelection.lastDatabasePresent ?? previousSelection.lastDatabase !== undefined;
+			await context.globalState.update(STORAGE_KEYS.lastConnectionId, restoreLastConnectionId ? previousSelection.lastConnectionId : undefined);
+			await context.globalState.update(STORAGE_KEYS.lastDatabase, restoreLastDatabase ? previousSelection.lastDatabase : undefined);
+			const restoredFileConnectionCache = context.globalState.get<Record<string, FileConnectionCacheEntry> | undefined>('kusto.fileConnectionCache') || {};
+			for (const [filePath, entry] of Object.entries(previousSelection.fileConnectionEntries || {})) {
+				const restored = restoredFileConnectionCache[filePath];
+				if (entry ? JSON.stringify(restored) !== JSON.stringify(entry) : restored !== undefined) {
+					throw new Error('Supplemental E2E cleanup did not restore an exact file connection entry.');
+				}
+			}
+			const restoredCachedDatabases = context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases) || {};
+			for (const [clusterKey, databases] of Object.entries(previousSelection.cachedDatabaseEntries || {})) {
+				const restored = restoredCachedDatabases[clusterKey];
+				if (databases ? JSON.stringify(restored) !== JSON.stringify(databases) : restored !== undefined) {
+					throw new Error('Supplemental E2E cleanup did not restore an exact cached database entry.');
+				}
+			}
+			const restoredKeys = typeof context.globalState.keys === 'function' ? new Set(context.globalState.keys()) : undefined;
+			const actualLastConnectionPresent = restoredKeys?.has(STORAGE_KEYS.lastConnectionId)
+				?? context.globalState.get(STORAGE_KEYS.lastConnectionId) !== undefined;
+			const actualLastDatabasePresent = restoredKeys?.has(STORAGE_KEYS.lastDatabase)
+				?? context.globalState.get(STORAGE_KEYS.lastDatabase) !== undefined;
+			if (actualLastConnectionPresent !== restoreLastConnectionId
+				|| actualLastDatabasePresent !== restoreLastDatabase
+				|| context.globalState.get(STORAGE_KEYS.lastConnectionId) !== (restoreLastConnectionId ? previousSelection.lastConnectionId : undefined)
+				|| context.globalState.get(STORAGE_KEYS.lastDatabase) !== (restoreLastDatabase ? previousSelection.lastDatabase : undefined)) {
+				throw new Error('Supplemental E2E cleanup did not restore exact selection key state.');
+			}
+			await context.globalState.update(supplementalPreviousSelectionKey, preservePreviousSelection ? previousSelection : undefined);
+			return {
+				verified: true,
+				restoredFilePinCount: Object.keys(previousSelection.fileConnectionEntries || {}).length,
+				restoredCachedDatabaseCount: Object.keys(previousSelection.cachedDatabaseEntries || {}).length,
+			};
+		};
+		const hasSupplementalStartupResidue = !!context.globalState.get(supplementalPreviousSelectionKey)
+			|| connectionManager.getConnections().some(isSupplementalConnection);
+		const supplementalStartupCleanup = hasSupplementalStartupResidue
+			? cleanupSupplementalSchemaDiagnosticsState(false).catch(error => {
+				getWorkbenchLogger().warn(`[e2e] failed to clean interrupted supplemental schema fixture: ${error instanceof Error ? error.name : 'Error'}`);
+			})
+			: Promise.resolve();
 		const testClusters = [
 			'https://identity-prod.kusto.windows.net',
 			'https://identity-nonprod.kusto.windows.net',
@@ -167,6 +286,10 @@ export function activate(context: vscode.ExtensionContext) {
 
 		context.subscriptions.push(
 			vscode.commands.registerCommand('kustoWorkbench.test.cleanupKustoIdentityChecklist', cleanupIdentityChecklistState),
+			vscode.commands.registerCommand('kustoWorkbench.test.cleanupSupplementalSchemaDiagnosticsState', async () => {
+				await supplementalStartupCleanup;
+				await cleanupSupplementalSchemaDiagnosticsState(false);
+			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.seedKustoTextDiagnosticsState', async () => {
 				for (const connection of connectionManager.getConnections()) {
 					if (String(connection.name || '') === textDiagnosticsTestName || kustoClusterKey(connection.clusterUrl) === kustoClusterKey(textDiagnosticsTestCluster)) {
@@ -202,6 +325,82 @@ export function activate(context: vscode.ExtensionContext) {
 					database: textDiagnosticsTestDatabase
 				});
 				return { connectionId: seedConnection.id, clusterUrl: textDiagnosticsTestCluster, database: textDiagnosticsTestDatabase };
+			}),
+			vscode.commands.registerCommand('kustoWorkbench.test.seedSupplementalSchemaDiagnosticsState', async (fixturePath?: string) => {
+				await supplementalStartupCleanup;
+				await cleanupSupplementalSchemaDiagnosticsState(true);
+				const currentConnection = await connectionManager.addConnection({
+					name: `${supplementalTestPrefix} Current`,
+					clusterUrl: supplementalCurrentCluster,
+					database: supplementalDatabase,
+				});
+				await connectionManager.addConnection({
+					name: `${supplementalTestPrefix} Remote`,
+					clusterUrl: supplementalRemoteCluster,
+					database: supplementalDatabase,
+				});
+				await context.globalState.update(STORAGE_KEYS.lastConnectionId, currentConnection.id);
+				await context.globalState.update(STORAGE_KEYS.lastDatabase, supplementalDatabase);
+				const cachedDatabases = context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases) || {};
+				cachedDatabases[kustoClusterKey(supplementalCurrentCluster)] = [supplementalDatabase];
+				cachedDatabases[kustoClusterKey(supplementalRemoteCluster)] = [supplementalDatabase];
+				await context.globalState.update(STORAGE_KEYS.cachedDatabases, cachedDatabases);
+				const makeSchema = (tableName: string, uniqueColumn: string) => ({
+					tables: [tableName],
+					columnTypesByTable: { [tableName]: { TIMESTAMP: 'datetime', [uniqueColumn]: 'string' } },
+					rawSchemaJson: {
+						Plugins: [],
+						Databases: {
+							[supplementalDatabase]: {
+								Tables: {
+									[tableName]: {
+										EntityType: 'Table',
+										OrderedColumns: {
+											TIMESTAMP: { Name: 'TIMESTAMP', CslType: 'datetime' },
+											[uniqueColumn]: { Name: uniqueColumn, CslType: 'string' },
+										},
+									},
+								},
+								Functions: {},
+							},
+						},
+					},
+				});
+				for (const seed of [
+					{ clusterUrl: supplementalCurrentCluster, tableName: 'CurrentEvents', uniqueColumn: 'CurrentOnlyColumn' },
+					{ clusterUrl: supplementalRemoteCluster, tableName: 'RemoteEvents', uniqueColumn: 'RemoteOnlyColumn' },
+				]) {
+					const schema = makeSchema(seed.tableName, seed.uniqueColumn);
+					await writeCachedSchemaToDisk(context.globalStorageUri, schemaCacheKey(seed.clusterUrl, supplementalDatabase), {
+						schema,
+						timestamp: Date.now(),
+						version: SCHEMA_CACHE_VERSION,
+						clusterUrl: seed.clusterUrl,
+						database: supplementalDatabase,
+					});
+				}
+				if (fixturePath) {
+					const absolutePath = path.isAbsolute(fixturePath) ? fixturePath : path.join(context.extensionPath, fixturePath);
+					const fileKey = normalizeFilePath(absolutePath);
+					const previousState = context.globalState.get<SupplementalPreviousState | undefined>(supplementalPreviousSelectionKey) || {};
+					if (!Object.prototype.hasOwnProperty.call(previousState.fileConnectionEntries || {}, fileKey)) {
+						const fileConnectionCache = context.globalState.get<Record<string, FileConnectionCacheEntry> | undefined>('kusto.fileConnectionCache') || {};
+						await context.globalState.update(supplementalPreviousSelectionKey, {
+							...previousState,
+							fileConnectionEntries: {
+								...(previousState.fileConnectionEntries || {}),
+								[fileKey]: fileConnectionCache[fileKey] ? { ...fileConnectionCache[fileKey] } : null,
+							},
+						});
+					}
+					await connectionManager.setFileConnection(absolutePath, supplementalCurrentCluster, supplementalDatabase);
+				}
+				return {
+					connectionId: currentConnection.id,
+					currentCluster: supplementalCurrentCluster,
+					remoteCluster: supplementalRemoteCluster,
+					database: supplementalDatabase,
+				};
 			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.seedKustoIdentityChecklist', async () => {
 				await cleanupIdentityChecklistState();

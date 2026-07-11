@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { SchemaService } from '../../../src/host/queryEditorSchema';
 import type { KustoConnection } from '../../../src/host/connectionManager';
+import { isAuthError } from '../../../src/host/kustoClientUtils';
 import { SCHEMA_CACHE_TTL_MS, SCHEMA_CACHE_VERSION } from '../../../src/host/schemaCache';
 
 function makeRawSchema(database: string) {
@@ -45,7 +46,7 @@ function createService(connection: KustoConnection) {
 				update: vi.fn(async () => undefined),
 			},
 		} as any,
-		kustoClient: { getDatabaseSchema } as any,
+		kustoClient: { getDatabaseSchema, isAuthenticationError: isAuthError } as any,
 		connectionManager: { getConnections: vi.fn(() => [connection]) } as any,
 		output: { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() } as any,
 		postMessage: (message: unknown) => { messages.push(message); },
@@ -64,9 +65,13 @@ describe('SchemaService cross-cluster schema requests', () => {
 		};
 		const { service, messages, getDatabaseSchema } = createService(connection);
 
-		await service.handleCrossClusterSchemaRequest('semantic-current.westus.kusto.windows.net', 'TelemetryDb', 'query_1', 'token_1');
+		await service.handleCrossClusterSchemaRequest('semantic-current.westus.kusto.windows.net', 'TelemetryDb', 'query_1', 'token_1', 'background', 'trace-1');
 
-		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'TelemetryDb', false);
+		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'TelemetryDb', false, expect.objectContaining({
+			allowInteractive: false,
+			traceId: 'trace-1',
+			source: 'supplemental-background',
+		}));
 		expect(messages).toContainEqual(expect.objectContaining({
 			type: 'crossClusterSchemaData',
 			clusterName: 'semantic-current.westus.kusto.windows.net',
@@ -74,7 +79,8 @@ describe('SchemaService cross-cluster schema requests', () => {
 			database: 'TelemetryDb',
 			boxId: 'query_1',
 			requestToken: 'token_1',
-			source: 'fresh',
+			requestSource: 'background',
+			deliverySource: 'fresh',
 			rawSchemaJson: makeRawSchema('TelemetryDb'),
 		}));
 		expect(messages).not.toContainEqual(expect.objectContaining({ type: 'crossClusterSchemaError' }));
@@ -88,9 +94,9 @@ describe('SchemaService cross-cluster schema requests', () => {
 		};
 		const { service, messages, getDatabaseSchema } = createService(connection);
 
-		await service.handleCrossClusterSchemaRequest('semantic-current.westus', 'TelemetryDb', 'query_2', 'token_2');
+		await service.handleCrossClusterSchemaRequest('semantic-current.westus', 'TelemetryDb', 'query_2', 'token_2', 'autocomplete', 'trace-2');
+		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'TelemetryDb', false, expect.objectContaining({ allowInteractive: true }));
 
-		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'TelemetryDb', false);
 		expect(messages).toContainEqual(expect.objectContaining({
 			type: 'crossClusterSchemaData',
 			clusterName: 'semantic-current.westus',
@@ -98,6 +104,111 @@ describe('SchemaService cross-cluster schema requests', () => {
 			database: 'TelemetryDb',
 			boxId: 'query_2',
 			requestToken: 'token_2',
+			requestSource: 'autocomplete',
+		}));
+	});
+
+	it('delivers fetched supplemental schema before best-effort persistence failure', async () => {
+		const connection: KustoConnection = { id: 'fresh', name: 'Fresh', clusterUrl: 'https://fresh.kusto.windows.net' };
+		const { service, messages } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+		vi.spyOn(service, 'saveCachedSchemaToDisk').mockRejectedValue(new Error('disk full'));
+
+		await service.handleCrossClusterSchemaRequest('fresh', 'TelemetryDb', 'query_3', 'token_3', 'background', 'trace-3');
+
+		expect(messages).toContainEqual(expect.objectContaining({ type: 'crossClusterSchemaData', boxId: 'query_3', requestToken: 'token_3' }));
+		expect(messages).not.toContainEqual(expect.objectContaining({ type: 'crossClusterSchemaError', boxId: 'query_3' }));
+	});
+
+	it('rejects version-mismatched supplemental cache and fetches silently', async () => {
+		const connection: KustoConnection = { id: 'versioned', name: 'Versioned', clusterUrl: 'https://versioned.kusto.windows.net' };
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue({
+			schema: { tables: ['Old'], columnTypesByTable: {}, rawSchemaJson: makeRawSchema('TelemetryDb') },
+			timestamp: Date.now(),
+			version: SCHEMA_CACHE_VERSION - 1,
+		});
+
+		await service.handleCrossClusterSchemaRequest('versioned', 'TelemetryDb', 'query_4', 'token_4', 'background', 'trace-4');
+
+		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'TelemetryDb', true, expect.objectContaining({ allowInteractive: false }));
+		expect(messages).not.toContainEqual(expect.objectContaining({ type: 'crossClusterSchemaData', deliverySource: 'disk-cache-fresh' }));
+	});
+
+	it('classifies wrapped background authentication failures without prompting', async () => {
+		const connection: KustoConnection = { id: 'auth', name: 'Auth', clusterUrl: 'https://auth.kusto.windows.net' };
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+		getDatabaseSchema.mockRejectedValueOnce(new Error('Failed to fetch database schema', {
+			cause: Object.assign(new Error('forbidden'), { statusCode: 403 }),
+		}));
+
+		await service.handleCrossClusterSchemaRequest('auth', 'TelemetryDb', 'query_auth', 'token_auth', 'background', 'trace-auth');
+
+		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'TelemetryDb', false, expect.objectContaining({ allowInteractive: false }));
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'crossClusterSchemaError',
+			requestToken: 'token_auth',
+			failureKind: 'auth-required',
+		}));
+	});
+
+	it('classifies wrapped message-only unauthorized failures as auth-required', async () => {
+		const connection: KustoConnection = { id: 'auth-message', name: 'Auth Message', clusterUrl: 'https://auth-message.kusto.windows.net' };
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+		getDatabaseSchema.mockRejectedValueOnce(new Error('Failed to fetch database schema', {
+			cause: new Error('Unauthorized request for this cluster'),
+		}));
+
+		await service.handleCrossClusterSchemaRequest('auth-message', 'TelemetryDb', 'query_auth_message', 'token_auth_message', 'background', 'trace-auth-message');
+
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'crossClusterSchemaError',
+			requestToken: 'token_auth_message',
+			failureKind: 'auth-required',
+		}));
+	});
+
+	it('keeps stale supplemental fallback loaded when silent refresh fails', async () => {
+		const connection: KustoConnection = { id: 'stale', name: 'Stale', clusterUrl: 'https://stale.kusto.windows.net' };
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue({
+			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: makeRawSchema('TelemetryDb') },
+			timestamp: Date.now() - SCHEMA_CACHE_TTL_MS - 1000,
+			version: SCHEMA_CACHE_VERSION,
+		});
+		getDatabaseSchema.mockRejectedValueOnce(new Error('offline'));
+
+		await service.handleCrossClusterSchemaRequest('stale', 'TelemetryDb', 'query_5', 'token_5', 'background', 'trace-5');
+
+		expect(messages).toContainEqual(expect.objectContaining({ type: 'crossClusterSchemaData', deliverySource: 'disk-cache-stale', requestToken: 'token_5' }));
+		expect(messages).not.toContainEqual(expect.objectContaining({ type: 'crossClusterSchemaError', requestToken: 'token_5' }));
+		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'TelemetryDb', true, expect.objectContaining({ allowInteractive: false }));
+	});
+
+	it('forces an interactive live refresh instead of redelivering stale disk cache for autocomplete', async () => {
+		const connection: KustoConnection = { id: 'stale-interactive', name: 'Stale Interactive', clusterUrl: 'https://stale-interactive.kusto.windows.net' };
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue({
+			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: makeRawSchema('TelemetryDb') },
+			timestamp: Date.now() - SCHEMA_CACHE_TTL_MS - 1000,
+			version: SCHEMA_CACHE_VERSION,
+		});
+
+		await service.handleCrossClusterSchemaRequest('stale-interactive', 'TelemetryDb', 'query_6', 'token_6', 'autocomplete', 'trace-6');
+
+		expect(messages).not.toContainEqual(expect.objectContaining({ type: 'crossClusterSchemaData', deliverySource: 'disk-cache-stale' }));
+		expect(getDatabaseSchema).toHaveBeenCalledWith(connection, 'TelemetryDb', true, expect.objectContaining({
+			allowInteractive: true,
+			traceId: 'trace-6',
+			source: 'supplemental-autocomplete',
+		}));
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'crossClusterSchemaData',
+			requestToken: 'token_6',
+			requestSource: 'autocomplete',
+			deliverySource: 'fresh',
 		}));
 	});
 });
@@ -129,7 +240,7 @@ describe('SchemaService primary schema preparation', () => {
 			type: 'schemaData',
 			boxId: 'query_1',
 			requestToken: 'schema_1',
-			schemaMeta: expect.objectContaining({ refreshState: 'scheduled', isStale: true }),
+			schemaMeta: expect.objectContaining({ refreshState: 'scheduled', isStale: true, isBackgroundRefresh: true }),
 		}));
 		await vi.waitFor(() => {
 			expect(messages).toContainEqual(expect.objectContaining({

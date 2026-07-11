@@ -12,7 +12,9 @@ export interface CrossClusterSchemaRef {
 
 export interface CrossClusterSchemaRefWithRange extends CrossClusterSchemaRef {
 	range: [number, number];
+	clusterCallRange?: [number, number];
 	clusterNameRange?: [number, number];
+	databaseCallRange: [number, number];
 	databaseNameRange: [number, number];
 }
 
@@ -269,7 +271,9 @@ export function extractCrossClusterRefsWithRanges(queryText: unknown, currentCon
 			clusterName,
 			database,
 			range: [match.index, databaseParsed.callEnd],
+			clusterCallRange: [match.index, clusterParsed.endIndex],
 			clusterNameRange: clusterParsed.valueRange,
+			databaseCallRange: [databaseParsed.callStart, databaseParsed.callEnd],
 			databaseNameRange: databaseParsed.valueRange,
 		});
 	}
@@ -298,6 +302,7 @@ export function extractCrossClusterRefsWithRanges(queryText: unknown, currentCon
 			clusterName: null,
 			database,
 			range: [match.index, databaseParsed.endIndex],
+			databaseCallRange: [match.index, databaseParsed.endIndex],
 			databaseNameRange: databaseParsed.valueRange,
 		});
 	}

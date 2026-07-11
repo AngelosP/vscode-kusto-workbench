@@ -161,7 +161,7 @@ export function __kustoScheduleLocalSchemaPrewarm(reason: string = 'file-open'):
 				try { schemaRequestTokenByBoxId[boxId] = requestToken; } catch (e) { console.error('[kusto]', e); }
 				beginKustoPreparation(boxId, {
 					stage: 'schema',
-					blockers: ['schema', 'worker', 'enhancement'],
+					blockers: ['schema', 'worker'],
 					target: { connectionId, database, requestToken },
 				});
 				postMessageToHost({

@@ -1,0 +1,2 @@
+cluster('supplemental-remote.westus.kusto.windows.net').database('TelemetryDb').RemoteEvents
+| project RemoteOnly

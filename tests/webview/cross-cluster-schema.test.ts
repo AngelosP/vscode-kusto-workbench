@@ -26,7 +26,9 @@ describe('cross-cluster schema helpers', () => {
 			{ clusterName: 'Remote', database: 'Telemetry' },
 		]);
 		expect(query.slice(...refs[1].clusterNameRange!)).toBe('Remote');
+		expect(query.slice(...refs[1].clusterCallRange!)).toBe("cluster('Remote')");
 		expect(query.slice(...refs[1].databaseNameRange)).toBe('Telemetry');
+		expect(query.slice(...refs[1].databaseCallRange)).toBe("database('Telemetry')");
 		expect(query.slice(...refs[1].range)).toBe("cluster('Remote').database('Telemetry')");
 	});
 

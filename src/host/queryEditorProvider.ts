@@ -702,7 +702,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				});
 				return;
 			case 'requestCrossClusterSchema':
-				await this.schema.handleCrossClusterSchemaRequest(message.clusterName, message.database, message.boxId, message.requestToken);
+				await this.schema.handleCrossClusterSchemaRequest(message.clusterName, message.database, message.boxId, message.requestToken, message.requestSource, message.traceId);
 				return;
 			case 'importConnectionsFromXml':
 				await this.connection.importConnectionsFromXml(message.connections);

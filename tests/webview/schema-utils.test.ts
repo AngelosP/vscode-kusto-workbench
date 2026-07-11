@@ -118,28 +118,25 @@ describe('shouldForceKustoFocusedSchemaApply', () => {
 	it('forces the first focus after same-key target invalidation', () => {
 		expect(shouldForceKustoFocusedSchemaApply({
 			workerApplyRequired: true,
-			enhancementFailed: false,
 			baseWorkerReady: false,
-			enhancementReady: false,
-			enhancementPending: false,
+			workerContextMatches: false,
 		})).toBe(true);
 	});
 
-	it('reuses only complete or actively enhancing worker state', () => {
+	it('reuses a ready worker when its primary context matches', () => {
 		expect(shouldForceKustoFocusedSchemaApply({
 			workerApplyRequired: false,
-			enhancementFailed: false,
 			baseWorkerReady: true,
-			enhancementReady: true,
-			enhancementPending: false,
+			workerContextMatches: true,
 		})).toBe(false);
+	});
+
+	it('forces a ready worker whose primary context could not be switched', () => {
 		expect(shouldForceKustoFocusedSchemaApply({
 			workerApplyRequired: false,
-			enhancementFailed: false,
 			baseWorkerReady: true,
-			enhancementReady: false,
-			enhancementPending: true,
-		})).toBe(false);
+			workerContextMatches: false,
+		})).toBe(true);
 	});
 });
 

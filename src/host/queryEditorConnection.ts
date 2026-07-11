@@ -15,6 +15,11 @@ import {
 	IncomingWebviewMessage
 } from './queryEditorTypes';
 import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
+import {
+	createDatabaseListTraceId,
+	getDatabaseListErrorDetails,
+	traceDatabaseList,
+} from './databaseListTrace';
 
 export let testIsolateKustoConnections = false;
 
@@ -100,6 +105,10 @@ export class ConnectionService {
 	private disposed = false;
 	/** Tracks when we last showed a DB-load error notification per cluster (to avoid spamming). */
 	private lastDbErrorNotificationByCluster = new Map<string, number>();
+
+	private traceDatabaseList(traceId: string, event: string, details: Record<string, unknown> = {}): void {
+		traceDatabaseList(this.host.output, traceId, 'service', event, details);
+	}
 
 	constructor(private readonly host: ConnectionServiceHost) {
 		this.activate();
@@ -519,8 +528,15 @@ export class ConnectionService {
 	// ── Send databases ──
 
 	async sendDatabases(connectionId: string, boxId: string, forceRefresh: boolean, requestToken?: string, requiredDatabase?: string): Promise<void> {
+		const traceId = createDatabaseListTraceId();
 		const connection = this.findConnection(connectionId);
 		if (!connection) {
+			this.traceDatabaseList(traceId, 'connection-missing', {
+				connectionId,
+				boxId,
+				requestToken,
+				forceRefresh,
+			});
 			this.host.postMessage({
 				type: 'databasesError',
 				boxId,
@@ -538,6 +554,13 @@ export class ConnectionService {
 		const requireLiveDiscovery = !!requiredDatabaseName && !cachedHasRequiredDatabase;
 		const effectiveForceRefresh = forceRefresh || requireLiveDiscovery;
 		const postDatabases = (databases: string[], provenance: 'cache' | 'live' | 'fallback') => {
+			this.traceDatabaseList(traceId, 'webview.post', {
+				connectionId,
+				provenance,
+				databaseCount: databases.length,
+				authoritative: provenance === 'live',
+				fallback: provenance === 'fallback',
+			});
 			this.host.postMessage({
 				type: 'databasesData',
 				databases,
@@ -548,62 +571,137 @@ export class ConnectionService {
 				fallback: provenance === 'fallback',
 			});
 		};
+		this.traceDatabaseList(traceId, 'start', {
+			connectionId,
+			boxId,
+			requestToken,
+			clusterKey,
+			forceRefresh,
+			effectiveForceRefresh,
+			persistedCacheCount: cachedBefore.length,
+			requiredDatabaseSpecified: !!requiredDatabaseName,
+			cachedHasRequiredDatabase,
+			requireLiveDiscovery,
+		});
 
 		if (!effectiveForceRefresh && cachedBefore.length > 0) {
+			this.traceDatabaseList(traceId, 'persisted-cache.hit', {
+				databaseCount: cachedBefore.length,
+			});
 			postDatabases(cachedBefore, 'cache');
 			return;
 		}
 
-		const fetchAndNormalize = async (): Promise<string[]> => {
-			const databasesRaw = await this.host.kustoClient.getDatabases(connection, true, { allowInteractive: false });
-			return (Array.isArray(databasesRaw) ? databasesRaw : [])
-				.map((d) => String(d || '').trim())
-				.filter(Boolean)
-				.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+		const normalizeDatabases = (databasesRaw: unknown): string[] => (Array.isArray(databasesRaw) ? databasesRaw : [])
+			.map((d) => String(d || '').trim())
+			.filter(Boolean)
+			.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+		const fetchAndNormalize = async (reason: string, refresh: boolean = true): Promise<string[]> => {
+			this.traceDatabaseList(traceId, 'live-fetch.start', {
+				reason,
+				forceRefresh: refresh,
+				allowInteractive: false,
+			});
+			try {
+				const databasesRaw = await this.host.kustoClient.getDatabases(connection, refresh, {
+					allowInteractive: false,
+					traceId,
+					source: 'query-editor',
+				});
+				const databases = normalizeDatabases(databasesRaw);
+				this.traceDatabaseList(traceId, 'live-fetch.complete', {
+					reason,
+					databaseCount: databases.length,
+				});
+				return databases;
+			} catch (error) {
+				this.traceDatabaseList(traceId, 'live-fetch.failed', {
+					reason,
+					isAuthError: this.host.kustoClient.isAuthenticationError(error),
+					...getDatabaseListErrorDetails(error),
+				});
+				throw error;
+			}
+		};
+		const reauthenticate = async (promptMode: 'clearPreference' | 'forceNewSession', reason: string): Promise<void> => {
+			this.traceDatabaseList(traceId, 'reauthenticate.start', { reason, promptMode });
+			try {
+				await this.host.kustoClient.reauthenticate(connection, promptMode, traceId);
+				this.traceDatabaseList(traceId, 'reauthenticate.complete', { reason, promptMode });
+			} catch (error) {
+				this.traceDatabaseList(traceId, 'reauthenticate.failed', {
+					reason,
+					promptMode,
+					isAuthError: this.host.kustoClient.isAuthenticationError(error),
+					...getDatabaseListErrorDetails(error),
+				});
+				throw error;
+			}
+		};
+		const saveLiveDatabases = async (databases: string[], reason: string): Promise<void> => {
+			await this.saveCachedDatabases(connectionId, databases);
+			this.traceDatabaseList(traceId, 'persisted-cache.updated', {
+				reason,
+				databaseCount: databases.length,
+			});
 		};
 
 		try {
-			let databasesRaw = await this.host.kustoClient.getDatabases(connection, effectiveForceRefresh, { allowInteractive: false });
-			let databases = (Array.isArray(databasesRaw) ? databasesRaw : [])
-				.map((d) => String(d || '').trim())
-				.filter(Boolean)
-				.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+			let databases = await fetchAndNormalize('initial', effectiveForceRefresh);
 
 			if (effectiveForceRefresh && databases.length === 0 && cachedBefore.length === 0) {
+				this.traceDatabaseList(traceId, 'zero-result.recovery-start', {
+					reason: 'no-persisted-cache',
+				});
 				try {
-					await this.host.kustoClient.reauthenticate(connection, 'clearPreference');
-					databases = await fetchAndNormalize();
-				} catch {
-					// ignore
+					await reauthenticate('clearPreference', 'zero-result');
+					databases = await fetchAndNormalize('zero-result-after-clear-preference');
+				} catch (error) {
+					this.traceDatabaseList(traceId, 'zero-result.recovery-failed', {
+						stage: 'clear-preference',
+						...getDatabaseListErrorDetails(error),
+					});
 				}
 
 				if (databases.length === 0) {
 					try {
+						this.traceDatabaseList(traceId, 'account-choice.prompt', { reason: 'zero-result' });
 						const choice = await vscode.window.showWarningMessage(
 							"No databases were returned. This is often because the selected account doesn't have access to this cluster.",
 							'Try another account',
 							'Add account',
 							'Cancel'
 						);
+						this.traceDatabaseList(traceId, 'account-choice.result', {
+							reason: 'zero-result',
+							choice: choice ?? 'dismissed',
+						});
 						if (choice === 'Try another account') {
-							await this.host.kustoClient.reauthenticate(connection, 'clearPreference');
-							databases = await fetchAndNormalize();
+							await reauthenticate('clearPreference', 'zero-result-user-choice');
+							databases = await fetchAndNormalize('zero-result-user-choice-clear-preference');
 						} else if (choice === 'Add account') {
-							await this.host.kustoClient.reauthenticate(connection, 'forceNewSession');
-							databases = await fetchAndNormalize();
+							await reauthenticate('forceNewSession', 'zero-result-user-choice');
+							databases = await fetchAndNormalize('zero-result-user-choice-force-new-session');
 						}
-					} catch {
-						// ignore
+					} catch (error) {
+						this.traceDatabaseList(traceId, 'account-choice.failed', {
+							reason: 'zero-result',
+							...getDatabaseListErrorDetails(error),
+						});
 					}
 				}
 			}
 
 			if (!effectiveForceRefresh || databases.length > 0 || cachedBefore.length === 0) {
-				await this.saveCachedDatabases(connectionId, databases);
+				await saveLiveDatabases(databases, 'live-result');
 				postDatabases(databases, 'live');
 				return;
 			}
 
+			this.traceDatabaseList(traceId, 'fallback.selected', {
+				reason: 'live-result-empty',
+				persistedCacheCount: cachedBefore.length,
+			});
 			postDatabases(cachedBefore, 'fallback');
 			void vscode.window.showWarningMessage(
 				`Couldn't refresh the database list (received 0 databases). Using cached list.`,
@@ -618,7 +716,17 @@ export class ConnectionService {
 			});
 		} catch (error) {
 			const isAuthErr = this.host.kustoClient.isAuthenticationError(error);
+			this.traceDatabaseList(traceId, 'failed', {
+				isAuthError: isAuthErr,
+				...getDatabaseListErrorDetails(error),
+				effectiveForceRefresh,
+				persistedCacheCount: cachedBefore.length,
+			});
 			if (isAuthErr && !effectiveForceRefresh && cachedBefore.length > 0) {
+				this.traceDatabaseList(traceId, 'fallback.selected', {
+					reason: 'authentication-error',
+					persistedCacheCount: cachedBefore.length,
+				});
 				postDatabases(cachedBefore, 'fallback');
 				const now = Date.now();
 				const lastShown = this.lastDbErrorNotificationByCluster.get(clusterKey) ?? 0;
@@ -641,34 +749,47 @@ export class ConnectionService {
 
 			if ((effectiveForceRefresh || cachedBefore.length === 0) && isAuthErr) {
 				try {
-					await this.host.kustoClient.reauthenticate(connection, 'clearPreference');
-					const databases = await fetchAndNormalize();
-					await this.saveCachedDatabases(connectionId, databases);
+					await reauthenticate('clearPreference', 'authentication-error');
+					const databases = await fetchAndNormalize('authentication-error-after-clear-preference');
+					await saveLiveDatabases(databases, 'authentication-error-recovery');
 					postDatabases(databases, 'live');
 					return;
-				} catch {
+				} catch (reauthenticationError) {
+					this.traceDatabaseList(traceId, 'authentication-error.recovery-failed', {
+						stage: 'clear-preference',
+						...getDatabaseListErrorDetails(reauthenticationError),
+					});
 					try {
+						this.traceDatabaseList(traceId, 'account-choice.prompt', { reason: 'authentication-error' });
 						const choice = await vscode.window.showWarningMessage(
 							"Authentication succeeded but the cluster still rejected the request (401/403). Try a different account?",
 							'Try another account',
 							'Add account',
 							'Cancel'
 						);
+						this.traceDatabaseList(traceId, 'account-choice.result', {
+							reason: 'authentication-error',
+							choice: choice ?? 'dismissed',
+						});
 						if (choice === 'Try another account') {
-							await this.host.kustoClient.reauthenticate(connection, 'clearPreference');
-							const databases = await fetchAndNormalize();
-							await this.saveCachedDatabases(connectionId, databases);
+							await reauthenticate('clearPreference', 'authentication-error-user-choice');
+							const databases = await fetchAndNormalize('authentication-error-user-choice-clear-preference');
+							await saveLiveDatabases(databases, 'authentication-error-user-choice');
 							postDatabases(databases, 'live');
 							return;
 						}
 						if (choice === 'Add account') {
-							await this.host.kustoClient.reauthenticate(connection, 'forceNewSession');
-							const databases = await fetchAndNormalize();
-							await this.saveCachedDatabases(connectionId, databases);
+							await reauthenticate('forceNewSession', 'authentication-error-user-choice');
+							const databases = await fetchAndNormalize('authentication-error-user-choice-force-new-session');
+							await saveLiveDatabases(databases, 'authentication-error-user-choice');
 							postDatabases(databases, 'live');
 							return;
 						}
-					} catch {
+					} catch (accountChoiceError) {
+						this.traceDatabaseList(traceId, 'account-choice.failed', {
+							reason: 'authentication-error',
+							...getDatabaseListErrorDetails(accountChoiceError),
+						});
 						// fall through to error UI
 					}
 				}
@@ -687,6 +808,10 @@ export class ConnectionService {
 			}
 
 			if (cachedBefore.length > 0) {
+				this.traceDatabaseList(traceId, 'fallback.selected', {
+					reason: 'unrecovered-error',
+					persistedCacheCount: cachedBefore.length,
+				});
 				postDatabases(cachedBefore, 'fallback');
 				if (shouldShowNotification) {
 					void vscode.window.showWarningMessage(
@@ -708,6 +833,10 @@ export class ConnectionService {
 					}
 				});
 			}
+			this.traceDatabaseList(traceId, 'webview.error', {
+				action,
+				notificationShown: shouldShowNotification,
+			});
 			this.host.postMessage({
 				type: 'databasesError',
 				boxId,
@@ -793,8 +922,10 @@ export class ConnectionService {
 	}
 
 	async testConnectionFromWebview(data: { name?: string; clusterUrl: string; database?: string; boxId?: string }): Promise<void> {
+		const traceId = createDatabaseListTraceId();
 		let clusterUrl = String(data.clusterUrl || '').trim();
 		if (!clusterUrl) {
+			this.traceDatabaseList(traceId, 'test.invalid-request', { reason: 'missing-cluster-url' });
 			this.host.postMessage({ type: 'kustoConnectionTestResult', boxId: data.boxId, success: false, message: 'Enter a cluster URL before testing.' });
 			return;
 		}
@@ -807,10 +938,12 @@ export class ConnectionService {
 			database: String(data.database || '').trim() || undefined,
 		};
 
+		this.traceDatabaseList(traceId, 'test.start', { connectionId: connection.id, boxId: data.boxId });
 		this.host.postMessage({ type: 'kustoConnectionTestStarted', boxId: data.boxId });
 		try {
-			const databases = await this.host.kustoClient.getDatabases(connection, true);
+			const databases = await this.host.kustoClient.getDatabases(connection, true, { traceId, source: 'query-editor-connection-test' });
 			const databaseList = (Array.isArray(databases) ? databases : []).map(d => String(d || '').trim()).filter(Boolean);
+			this.traceDatabaseList(traceId, 'test.success', { connectionId: connection.id, databaseCount: databaseList.length });
 			this.host.postMessage({
 				type: 'kustoConnectionTestResult',
 				boxId: data.boxId,
@@ -821,6 +954,12 @@ export class ConnectionService {
 		} catch (error) {
 			const errorMsg = error instanceof Error ? error.message : String(error);
 			const isAuthError = this.host.kustoClient.isAuthenticationError(error);
+			this.traceDatabaseList(traceId, 'test.failed', {
+				connectionId: connection.id,
+				boxId: data.boxId,
+				isAuthError,
+				...getDatabaseListErrorDetails(error),
+			});
 			this.host.postMessage({
 				type: 'kustoConnectionTestResult',
 				boxId: data.boxId,

@@ -17,6 +17,8 @@ import {
 	schemaByBoxId,
 	schemaFetchInFlightByBoxId,
 	schemaMetaByBoxId,
+	markSchemaEnhancementPending,
+	markSchemaWorkerReady,
 	schemaWorkerReadyByBoxId,
 	updateKustoPreparation,
 } from '../../src/webview/core/state.js';
@@ -97,6 +99,24 @@ describe('kw-query-section loading states', () => {
 		expect(el.getAttribute('aria-busy')).toBe('false');
 		expect(el.querySelector('kw-query-toolbar')).toBe(toolbar);
 		expect(el.querySelector('.query-editor')).toBe(editor);
+	});
+
+	it('stops the progress state when the base worker is ready while enhancement remains pending', async () => {
+		const el = createSection();
+		await el.updateComplete;
+		const token = beginKustoPreparation('test1', {
+			stage: 'waiting-worker',
+			blockers: ['worker', 'enhancement'],
+			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-1', modelUri: 'inmemory://model/1' },
+		})!;
+
+		markSchemaEnhancementPending('test1', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
+		markSchemaWorkerReady('test1', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
+
+		expect(schemaEnhancementReadyByBoxId.test1?.status).toBe('pending');
+		expect(el.dataset.testPreparationState).toBe('ready');
+		expect(el.dataset.testPreparationBlockers).toBe('');
+		expect(el.getAttribute('aria-busy')).toBe('false');
 	});
 
 	it('refresh button shows spinner when setRefreshLoading(true)', async () => {

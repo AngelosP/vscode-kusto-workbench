@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { randomUUID } from 'crypto';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
 import { getSchemaCacheDirUri, getSchemaCacheFileUri, readCachedSchemaFromDiskByCluster, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey } from './schemaCache';
@@ -451,7 +452,10 @@ export class CachedValuesViewerV2 {
 				try { const conns = this.connectionManager.getConnections(); for (const c of conns) { if (!c?.clusterUrl) continue; if (this.getClusterCacheKey(c.clusterUrl) === clusterKey) { connection = c; break; } } } catch { connection = undefined; }
 				if (!connection) { const url = /^https?:\/\//i.test(clusterKey) ? clusterKey : `https://${clusterKey}`; connection = { id: `cluster_${clusterKey}`, name: clusterKey, clusterUrl: url }; }
 				try {
-					const databasesRaw = await this.kustoClient.getDatabases(connection, true);
+					const databasesRaw = await this.kustoClient.getDatabases(connection, true, {
+						traceId: randomUUID(),
+						source: 'cached-values-refresh',
+					});
 					const databases = (Array.isArray(databasesRaw) ? databasesRaw : []).map((d) => String(d || '').trim()).filter(Boolean).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
 					if (databases.length > 0 || cachedBefore.length === 0) { cached[clusterKey] = databases; await this.context.globalState.update(STORAGE_KEYS.cachedDatabases, cached); return; }
 					void vscode.window.showWarningMessage("Couldn't refresh the database list (received 0 databases). Keeping the previous cached list.");
