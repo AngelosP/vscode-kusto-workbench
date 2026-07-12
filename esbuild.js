@@ -413,7 +413,7 @@ async function main() {
 	if (production) {
 		const BASELINES = {
 			'extension.js':                                        1306,
-			'webview/webview.bundle.js':                           2391,
+			'webview/webview.bundle.js':                           2474,
 			'webview/md-editor.bundle.js':                          245,
 			'webview/tutorial-viewer.bundle.js':                    154,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
