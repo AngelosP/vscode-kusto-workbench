@@ -895,6 +895,7 @@ export class ConnectionService {
 		autoTriggerAutocompleteEnabledUserSet: boolean;
 		copilotInlineCompletionsEnabled: boolean;
 		copilotInlineCompletionsEnabledUserSet: boolean;
+		editingPreferencesRevision: number;
 		copilotChatFirstTimeDismissed: boolean;
 	}): Promise<void> {
 		if (testIsolateKustoConnections) {

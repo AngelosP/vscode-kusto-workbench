@@ -18,6 +18,7 @@ import {
 	schemaFetchInFlightByBoxId,
 	schemaMetaByBoxId,
 	markSchemaEnhancementPending,
+	markSchemaWorkerApplyFailed,
 	markSchemaWorkerReady,
 	schemaWorkerReadyByBoxId,
 	updateKustoPreparation,
@@ -115,6 +116,23 @@ describe('kw-query-section loading states', () => {
 
 		expect(schemaEnhancementReadyByBoxId.test1?.status).toBe('pending');
 		expect(el.dataset.testPreparationState).toBe('ready');
+		expect(el.dataset.testPreparationBlockers).toBe('');
+		expect(el.getAttribute('aria-busy')).toBe('false');
+	});
+
+	it('stops the progress state when worker preparation fails terminally', async () => {
+		const el = createSection();
+		await el.updateComplete;
+		const token = beginKustoPreparation('test1', {
+			stage: 'waiting-worker',
+			blockers: ['worker'],
+			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-1', modelUri: 'inmemory://model/1' },
+		})!;
+
+		markSchemaWorkerApplyFailed('test1', 'cluster|db', 'inmemory://model/1', token);
+
+		expect(el.dataset.testPreparationState).toBe('error');
+		expect(el.dataset.testPreparationStage).toBe('error');
 		expect(el.dataset.testPreparationBlockers).toBe('');
 		expect(el.getAttribute('aria-busy')).toBe('false');
 	});

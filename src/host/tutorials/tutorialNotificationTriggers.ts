@@ -12,7 +12,11 @@ function getTabInputUri(input: unknown): vscode.Uri | undefined {
 	return undefined;
 }
 
-export function registerTutorialNotificationTriggers(context: vscode.ExtensionContext, notificationService: TutorialNotificationTriggerService): void {
+export function registerTutorialNotificationTriggers(
+	context: vscode.ExtensionContext,
+	notificationService: TutorialNotificationTriggerService,
+	waitForAutomaticContent?: () => Promise<void>,
+): void {
 	const pendingChecksByUri = new Set<string>();
 
 	const resolveTriggerDocument = async (uri: vscode.Uri): Promise<vscode.TextDocument | undefined> => {
@@ -48,7 +52,10 @@ export function registerTutorialNotificationTriggers(context: vscode.ExtensionCo
 			return;
 		}
 		pendingChecksByUri.add(key);
-		void notificationService.checkOnKustoFileOpen(doc).catch(error => {
+		const delivery = waitForAutomaticContent
+			? waitForAutomaticContent().then(() => notificationService.checkOnKustoFileOpen(doc))
+			: notificationService.checkOnKustoFileOpen(doc);
+		void delivery.catch(error => {
 			getWorkbenchLogger().error('[Kusto Workbench] Failed to check Did you know file-open notifications:', error instanceof Error ? error : String(error));
 		}).finally(() => {
 			pendingChecksByUri.delete(key);
@@ -63,8 +70,10 @@ export function registerTutorialNotificationTriggers(context: vscode.ExtensionCo
 		void resolveTriggerDocument(uri).then(checkOnKustoFileOpen);
 	};
 
-	void notificationService.checkOnActivation()
-		.then(() => checkOnKustoFileOpen(findOpenTriggerDocument()))
+	const activationDelivery = waitForAutomaticContent
+		? waitForAutomaticContent().then(() => notificationService.checkOnActivation()).then(() => checkOnKustoFileOpen(findOpenTriggerDocument()))
+		: notificationService.checkOnActivation().then(() => checkOnKustoFileOpen(findOpenTriggerDocument()));
+	void activationDelivery
 		.catch(error => {
 			getWorkbenchLogger().error('[Kusto Workbench] Failed to check Did you know activation notifications:', error instanceof Error ? error : String(error));
 		});

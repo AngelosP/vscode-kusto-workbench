@@ -366,6 +366,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				sections[0] = { ...(sections[0] as any), type: 'sql', query: sqlText };
 				state = {
 					caretDocsEnabled: sidecarFile.state.caretDocsEnabled,
+					autoTriggerAutocompleteEnabled: sidecarFile.state.autoTriggerAutocompleteEnabled,
 					sections
 				};
 			} else {
@@ -531,6 +532,10 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 							lastKnownSidecarState = {
 								caretDocsEnabled:
 									rawState && typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
+								autoTriggerAutocompleteEnabled:
+									rawState && typeof rawState.autoTriggerAutocompleteEnabled === 'boolean'
+										? rawState.autoTriggerAutocompleteEnabled
+										: undefined,
 								sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
 							};
 						}
@@ -562,6 +567,10 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					const incomingState: KqlxStateV1 = {
 						caretDocsEnabled:
 							rawState && typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
+						autoTriggerAutocompleteEnabled:
+							rawState && typeof rawState.autoTriggerAutocompleteEnabled === 'boolean'
+								? rawState.autoTriggerAutocompleteEnabled
+								: undefined,
 						sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
 					};
 					lastKnownSidecarState = incomingState;
@@ -727,6 +736,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			version: 1,
 			state: {
 				caretDocsEnabled: state.caretDocsEnabled,
+				autoTriggerAutocompleteEnabled: state.autoTriggerAutocompleteEnabled,
 				sections
 			}
 		};
@@ -796,6 +806,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				if (lastKnownWebviewState && Array.isArray(lastKnownWebviewState.sections) && lastKnownWebviewState.sections.length > 0) {
 					return {
 						caretDocsEnabled: lastKnownWebviewState.caretDocsEnabled,
+						autoTriggerAutocompleteEnabled: lastKnownWebviewState.autoTriggerAutocompleteEnabled,
 						sections: lastKnownWebviewState.sections
 					};
 				}

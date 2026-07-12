@@ -82,6 +82,7 @@ const mocks = {
 	updateCaretDocsToggleButtons: vi.fn(),
 	updateAutoTriggerAutocompleteToggleButtons: vi.fn(),
 	updateCopilotInlineCompletionsToggleButtons: vi.fn(),
+	applyEditingPreferencesData: vi.fn(),
 };
 
 vi.mock('../../src/webview/shared/persistence-state.js', () => ({
@@ -180,6 +181,10 @@ vi.mock('../../src/webview/sections/kw-query-toolbar.js', () => ({
 	functionRunDialogOpenByBoxId: {},
 }));
 
+vi.mock('../../src/webview/core/editing-preferences.js', () => ({
+	applyEditingPreferencesData: mocks.applyEditingPreferencesData,
+}));
+
 vi.mock('../../src/webview/sections/query-execution.controller.js', async () => {
 	const actual = await vi.importActual<typeof import('../../src/webview/sections/query-execution.controller.js')>('../../src/webview/sections/query-execution.controller.js');
 	return {
@@ -273,7 +278,7 @@ vi.mock('../../src/webview/core/state.js', async () => {
 	schemaMetaByBoxId: handlerState.schemaMetaByBoxId,
 	schemaDiagnosticsTrustedByBoxId: handlerState.schemaDiagnosticsTrustedByBoxId,
 	schemaFetchInFlightByBoxId: {},
-	markSchemaWorkerApplyFailed: vi.fn(),
+	markSchemaWorkerApplyFailed: vi.fn(actual.markSchemaWorkerApplyFailed),
 	markSchemaWorkerApplyPending: vi.fn(),
 	markSchemaWorkerReady: vi.fn(),
 	schemaWorkerReadyByBoxId: handlerState.schemaWorkerReadyByBoxId,
@@ -448,7 +453,28 @@ describe('message-handler dispatch', () => {
 		await Promise.resolve();
 		expect(mocks.setConnections).toHaveBeenCalledTimes(1);
 		expect(mocks.updateConnectionSelects).toHaveBeenCalledTimes(1);
-		expect(mocks.updateCaretDocsToggleButtons).toHaveBeenCalledTimes(1);
+		expect(mocks.applyEditingPreferencesData).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'editingPreferencesData',
+			caretDocsEnabled: true,
+		}));
+	});
+
+	it('routes revisioned editing preferences without touching document persistence', () => {
+		const message = {
+			type: 'editingPreferencesData',
+			revision: 3,
+			caretDocsEnabled: false,
+			caretDocsEnabledUserSet: true,
+			autoTriggerAutocompleteEnabled: true,
+			autoTriggerAutocompleteEnabledUserSet: true,
+			copilotInlineCompletionsEnabled: false,
+			copilotInlineCompletionsEnabledUserSet: true,
+		};
+
+		dispatchHostMessage(message);
+
+		expect(mocks.applyEditingPreferencesData).toHaveBeenCalledWith(message);
+		expect(mocks.postMessageToHost).not.toHaveBeenCalled();
 	});
 
 	it('routes databasesData and databasesError to database handlers', async () => {
@@ -1106,6 +1132,82 @@ describe('message-handler dispatch', () => {
 		expect(queryEl.setSchemaInfo).toHaveBeenCalledWith(expect.objectContaining({ isError: true }));
 	});
 
+	it('ends preparation when worker schema apply stalls for a fully qualified function body', async () => {
+		vi.useFakeTimers();
+		try {
+			const state = await import('../../src/webview/core/state.js');
+			const { KUSTO_SCHEMA_PREPARATION_TIMEOUT_MS } = await import('../../src/webview/shared/kusto-schema-preparation-deadline.js');
+			const { extractCrossClusterRefs } = await import('../../src/webview/shared/cross-cluster-schema.js');
+			const clusterUrl = 'https://current.kusto.windows.net';
+			const database = 'CurrentDb';
+			const query = [
+				'.create-or-alter function with',
+				'(',
+				'    folder = "ARM",',
+				'    docstring = "Returns the number attempts to provision Azure Resources by Cloud Customer GUID, Azure Resource Provider, and Azure Resource Type."',
+				')',
+				'getResourceProvisionAttempts_ByCcid',
+				'(',
+				'    startDate: datetime = datetime(null),',
+				'    endDate: datetime = datetime(null)',
+				')',
+				'{',
+				"    cluster('apadata.westus.kusto.windows.net').database('CxPlat').ARM_PUT_Requests_Details_Final",
+				'    | where (isnull(startDate) or PreciseTimeStamp >= startDate)',
+				'        and (isnull(endDate) or PreciseTimeStamp < endDate)',
+				'    | summarize ProvisionAttempts = count()',
+				'        by CloudCustomerGuid = toguid(CloudCustomerGuid)',
+				'}',
+			].join('\n');
+			expect(extractCrossClusterRefs(query, { clusterUrl, database })).toEqual([
+				{ clusterName: 'apadata.westus.kusto.windows.net', database: 'CxPlat' },
+			]);
+			handlerState.activeQueryEditorBoxId = 'query_1';
+			handlerState.queryBoxes.push('query_1');
+			mocks.getConnectionId.mockReturnValue('c1');
+			mocks.getClusterUrl.mockReturnValue(clusterUrl);
+			mocks.getDatabase.mockReturnValue(database);
+			handlerState.queryEditors.query_1 = {
+				getValue: vi.fn(() => query),
+				getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/current' } })),
+			};
+			state.beginKustoPreparation('query_1', {
+				stage: 'schema',
+				blockers: ['schema', 'worker'],
+				target: { connectionId: 'c1', database, requestToken: 'schema_stalled' },
+			});
+			handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_stalled';
+			(window as any).__kustoSetMonacoKustoSchema = vi.fn(() => new Promise<boolean>(() => undefined));
+
+			dispatchHostMessage({
+				type: 'schemaData',
+				boxId: 'query_1',
+				connectionId: 'c1',
+				database,
+				clusterUrl,
+				requestToken: 'schema_stalled',
+				schema: { tables: ['CurrentEvents'], columnTypesByTable: {}, rawSchemaJson: { Databases: { CurrentDb: {} } } },
+				schemaMeta: { schemaSignature: 'sig-stalled', workerUpdateNeeded: true, refreshState: 'completed' },
+			});
+			await vi.advanceTimersByTimeAsync(KUSTO_SCHEMA_PREPARATION_TIMEOUT_MS + 1);
+
+			expect((window as any).__kustoSetMonacoKustoSchema).toHaveBeenCalledOnce();
+			expect(state.markSchemaWorkerApplyFailed).toHaveBeenCalledWith(
+				'query_1',
+				expect.any(String),
+				'inmemory://model/current',
+				expect.any(Object),
+			);
+			expect(state.getKustoPreparationState('query_1')).toMatchObject({
+				status: 'error',
+				stage: 'error',
+				blockers: [],
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('returns diagnostics-untrusted schema preparation to idle instead of waiting forever', async () => {
 		const state = await import('../../src/webview/core/state.js');
 		handlerState.activeQueryEditorBoxId = 'query_1';
@@ -1397,7 +1499,7 @@ describe('message-handler dispatch', () => {
 			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Samples: {} } } },
 			schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: true },
 		});
-		await Promise.resolve();
+		await vi.waitFor(() => expect((window as any).__kustoTriggerRevalidation).toHaveBeenCalledWith('query_1'));
 
 		expect(state.markSchemaWorkerApplyPending).toHaveBeenCalledWith('query_1', schemaKey, 'sig-1', 'inmemory://model/open', expect.any(Object));
 		expect((window as any).__kustoSetMonacoKustoSchema).toHaveBeenCalledWith(
@@ -1410,7 +1512,6 @@ describe('message-handler dispatch', () => {
 			expect.any(Function),
 			expect.any(Object),
 		);
-		expect((window as any).__kustoTriggerRevalidation).toHaveBeenCalledWith('query_1');
 	});
 
 	it('queues schema data during multi-section restore even if one Monaco editor is ready', async () => {

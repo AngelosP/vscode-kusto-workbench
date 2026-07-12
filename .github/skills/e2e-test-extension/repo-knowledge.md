@@ -36,6 +36,7 @@ anything new you learned. Structure it however makes sense for this repo.
 - For reliable multi-line strings inside `I evaluate` steps, build newlines with `String.fromCharCode(10)` rather than relying on `\n` escaping through Gherkin and JavaScript string layers.
 - In default launch mode, SQL sections may show `No SQL connections configured.`. This is expected unless the test uses a prepared profile or attach mode with SQL auth state.
 - `kustoWorkbench.test.seedSupplementalSchemaDiagnosticsState` creates two synthetic Kusto connections and current-version raw schema caches without network/auth. Always call `kustoWorkbench.test.cleanupSupplementalSchemaDiagnosticsState` after closing fixture editors; it removes only synthetic cluster/cache/file-pin state and restores the previous selection.
+- The supplemental diagnostics seed currently stores table `OrderedColumns` as an object. Monaco-Kusto first-load expects an array and can reject it with `TypeError: e.map is not a function`; prime the worker through an existing valid schema before using this seed, or use a valid array-shaped schema when testing first-load behavior.
 
 ## Known Issues & Workarounds
 

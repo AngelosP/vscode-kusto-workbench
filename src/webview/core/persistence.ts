@@ -21,7 +21,6 @@ import {
 import {
 	connections, queryBoxes, queryEditors, favoritesModeByBoxId, leaveNoTraceClusters,
 	activeQueryEditorBoxId,
-	caretDocsEnabled, autoTriggerAutocompleteEnabled,
 	setCaretDocsEnabled, setAutoTriggerAutocompleteEnabled,
 	beginKustoPreparation,
 	getKustoPreparationState,
@@ -72,6 +71,14 @@ type DeferredRestoredResultJob = {
 };
 
 let __kustoDeferredRestoredResultJobs: DeferredRestoredResultJob[] = [];
+let __kustoLegacyDocumentPreferences: {
+	caretDocsEnabled?: boolean;
+	autoTriggerAutocompleteEnabled?: boolean;
+} = {};
+
+function legacyDocumentPreferencesForPersistence() {
+	return { ...__kustoLegacyDocumentPreferences };
+}
 
 // Thin wrapper kept for the window bridge export.
 function __kustoNormalizeClusterUrl(clusterUrl: any) {
@@ -871,8 +878,7 @@ export function getKqlxState() {
 					} catch (e) { console.error('[kusto]', e); }
 				}
 				return {
-					caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
-					autoTriggerAutocompleteEnabled: (typeof autoTriggerAutocompleteEnabled === 'boolean') ? autoTriggerAutocompleteEnabled : false,
+					...legacyDocumentPreferencesForPersistence(),
 					sections: [{ type: 'markdown', ...(firstMarkdownBoxId ? { id: firstMarkdownBoxId } : {}), text }]
 				};
 			}
@@ -908,8 +914,7 @@ export function getKqlxState() {
 					} catch (e) { console.error('[kusto]', e); }
 				}
 				return {
-					caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
-					autoTriggerAutocompleteEnabled: (typeof autoTriggerAutocompleteEnabled === 'boolean') ? autoTriggerAutocompleteEnabled : false,
+					...legacyDocumentPreferencesForPersistence(),
 					sections: [{ type: 'sql', ...(firstSqlBoxId ? { id: firstSqlBoxId } : {}), query }]
 				};
 			}
@@ -959,8 +964,7 @@ export function getKqlxState() {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			return {
-				caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
-				autoTriggerAutocompleteEnabled: (typeof autoTriggerAutocompleteEnabled === 'boolean') ? autoTriggerAutocompleteEnabled : false,
+				...legacyDocumentPreferencesForPersistence(),
 				sections: [
 					{
 						type: 'query',
@@ -1004,8 +1008,7 @@ export function getKqlxState() {
 	} catch (e) { console.error('[kusto]', e); }
 
 	return {
-		caretDocsEnabled: (typeof caretDocsEnabled === 'boolean') ? caretDocsEnabled : true,
-		autoTriggerAutocompleteEnabled: (typeof autoTriggerAutocompleteEnabled === 'boolean') ? autoTriggerAutocompleteEnabled : false,
+		...legacyDocumentPreferencesForPersistence(),
 		sections
 	};
 }
@@ -1180,6 +1183,12 @@ function applyKqlxState(state: any) {
 		__kustoClearAllSections();
 
 		const s = state && typeof state === 'object' ? state : { sections: [] };
+		__kustoLegacyDocumentPreferences = {
+			...(typeof s.caretDocsEnabled === 'boolean' ? { caretDocsEnabled: s.caretDocsEnabled } : {}),
+			...(typeof s.autoTriggerAutocompleteEnabled === 'boolean'
+				? { autoTriggerAutocompleteEnabled: s.autoTriggerAutocompleteEnabled }
+				: {}),
+		};
 
 		// Respect a global user preference (persisted in extension globalState) once it exists.
 		// Only fall back to document state if the user has never explicitly toggled the feature.

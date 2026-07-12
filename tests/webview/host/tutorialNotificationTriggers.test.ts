@@ -121,4 +121,36 @@ describe('registerTutorialNotificationTriggers', () => {
 		expect(service.checkOnKustoFileOpen).toHaveBeenCalledOnce();
 		expect(service.checkOnKustoFileOpen).toHaveBeenLastCalledWith((vscode.workspace as any).textDocuments[1]);
 	});
+
+	it('defers and deduplicates file delivery until first-launch setup settles', async () => {
+		let onOpenDocument: ((document: vscode.TextDocument) => void) | undefined;
+		vi.spyOn(vscode.workspace, 'onDidOpenTextDocument').mockImplementation((listener: any) => {
+			onOpenDocument = listener;
+			return { dispose: vi.fn() } as any;
+		});
+		vi.spyOn(vscode.window, 'onDidChangeActiveTextEditor').mockReturnValue({ dispose: vi.fn() } as any);
+		vi.spyOn(vscode.window.tabGroups, 'onDidChangeTabs').mockReturnValue({ dispose: vi.fn() } as any);
+		vi.spyOn(vscode.window.tabGroups, 'onDidChangeTabGroups').mockReturnValue({ dispose: vi.fn() } as any);
+		const service = {
+			checkOnActivation: vi.fn(async () => undefined),
+			checkOnKustoFileOpen: vi.fn(async () => undefined),
+		};
+		let release!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; });
+		const waitForAutomaticContent = vi.fn(() => gate);
+		const opened = doc('C:\\work\\query.kql');
+
+		registerTutorialNotificationTriggers({ subscriptions: [] } as any, service, waitForAutomaticContent);
+		onOpenDocument?.(opened);
+		onOpenDocument?.(opened);
+		await flushMicrotasks();
+		expect(service.checkOnActivation).not.toHaveBeenCalled();
+		expect(service.checkOnKustoFileOpen).not.toHaveBeenCalled();
+
+		release();
+		await flushMicrotasks();
+		await flushMicrotasks();
+		expect(service.checkOnActivation).toHaveBeenCalledOnce();
+		expect(service.checkOnKustoFileOpen).toHaveBeenCalledOnce();
+	});
 });

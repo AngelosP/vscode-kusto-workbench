@@ -310,6 +310,32 @@ describe('persistence round-trip', () => {
 		expect(state.sections.map((s) => s.type)).toEqual(['query', 'markdown', 'html', 'sql']);
 	});
 
+	it('does not serialize application editing preferences into a new document', () => {
+		handleDocumentDataMessage({ ok: true, forceReload: true, state: { sections: [] } });
+
+		const state = getKqlxState() as Record<string, unknown>;
+
+		expect(state).not.toHaveProperty('caretDocsEnabled');
+		expect(state).not.toHaveProperty('autoTriggerAutocompleteEnabled');
+	});
+
+	it('round-trips legacy document preferences unchanged instead of current application values', () => {
+		handleDocumentDataMessage({
+			ok: true,
+			forceReload: true,
+			state: {
+				caretDocsEnabled: false,
+				autoTriggerAutocompleteEnabled: false,
+				sections: [],
+			},
+		});
+
+		const state = getKqlxState() as Record<string, unknown>;
+
+		expect(state.caretDocsEnabled).toBe(false);
+		expect(state.autoTriggerAutocompleteEnabled).toBe(false);
+	});
+
 	it('restores HTML section code, legacy dataSourceIds input, dashboard publish metadata, and Power BI dismissal state', () => {
 		const pbiPublishInfo = {
 			workspaceId: 'workspace-1',

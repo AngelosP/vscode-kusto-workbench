@@ -28,6 +28,7 @@ exports[`Message Payload Factories > connectionsData payload shape 1`] = `
   "copilotInlineCompletionsEnabled": true,
   "copilotInlineCompletionsEnabledUserSet": false,
   "devNotesEnabled": false,
+  "editingPreferencesRevision": 0,
   "favorites": [
     {
       "clusterUrl": "https://cluster1.kusto.windows.net",

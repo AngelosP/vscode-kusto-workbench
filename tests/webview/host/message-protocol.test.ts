@@ -354,6 +354,7 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'enabledKqlxSidecar',
 	'enabledSqlSidecar',
 	'connectionsData',
+	'editingPreferencesData',
 	'updateDevNotes',
 	'favoritesData',
 	'confirmRemoveFavoriteResult',
@@ -484,6 +485,7 @@ const HOST_TO_WEBVIEW_TYPES = [
 	'databasesData',
 	'databasesError',
 	'connectionsData',
+	'editingPreferencesData',
 	'connectionAdded',
 	'openKustoAddConnectionDialog',
 	'kustoConnectionTestStarted',
@@ -835,6 +837,7 @@ function makeConnectionsDataMessage() {
 		caretDocsEnabledUserSet: false,
 		autoTriggerAutocompleteEnabledUserSet: false,
 		copilotInlineCompletionsEnabledUserSet: false,
+		editingPreferencesRevision: 0,
 	};
 }
 

@@ -40,6 +40,13 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `kustoClientUtils.ts` | Pure schema parsing (`extractSchemaFromJson`, `finalizeSchema`), cell formatting, error classification |
 | `queryEditorUtils.ts` | Pure query helpers: error formatting, control command detection, query mode, cache directives |
 | `remoteFileOpener.ts` | Remote file opening support |
+| `editingPreferences.ts` | Revisioned application-backed editing preferences shared across Kusto, SQL, and VS Code windows |
+| `firstLaunch/firstLaunchState.ts` | Versioned first-use state, legacy-user detection, and resumable write-journal parsing |
+| `firstLaunch/editorAssociationManager.ts` | Serialized ownership-aware updates to global `workbench.editorAssociations` |
+| `firstLaunch/firstLaunchCoordinator.ts` | Coalesces file, Activity Bar, and command triggers; commits or recovers setup transactions |
+| `firstLaunch/firstLaunchSetupPanel.ts` | Secure singleton host for the first-launch setup webview |
+| `firstLaunch/firstLaunchTriggers.ts` | Diff- and sidecar-aware supported-file trigger registration |
+| `firstLaunch/firstLaunchProfileLease.ts` | `proper-lockfile`-backed profile lease preventing concurrent setup across VS Code windows |
 | `sqlConnectionManager.ts` | Persists SQL connections in VS Code global state, passwords in SecretStorage |
 | `sqlClient.ts` | SQL query client with pool management, cancelable execution, AAD/SQL Login auth |
 | `sqlEditorSchema.ts` | SQL schema caching + webview wiring (`prefetchSqlSchema`/`sqlSchemaData`) |
@@ -79,6 +86,7 @@ The notebook UI runs as a VS Code webview, built with Lit web components and leg
 | `shared/` | Pure utility modules importable by both components and modules |
 | `styles/` | CSS files |
 | `viewers/` | Viewer components (cell viewer, object viewer, etc.) |
+| `first-launch/` | Standalone Lit first-launch form for file associations and editing defaults |
 
 ### Key Runtime Modules (`src/webview/`)
 
@@ -91,6 +99,7 @@ The webview runtime is split into `core/` and `monaco/`:
 | ------ | ------- |
 | `core/main.ts` | Event handlers and webview-level message orchestration |
 | `core/message-handler.ts` | Host `postMessage` dispatcher and routing |
+| `core/editing-preferences.ts` | Persistence-free application of revisioned editing preferences to Kusto and SQL controls |
 | `core/state.ts` | Global state: connections, editors, schemas, caches |
 | `core/persistence.ts` | State serialization/restore for `.kqlx` files |
 | `core/results-state.ts` | Results display state management |
@@ -103,6 +112,17 @@ The webview runtime is split into `core/` and `monaco/`:
 | `monaco/completions.ts` | Completion providers (columns, functions, tables) |
 | `monaco/diagnostics.ts` | Real-time KQL diagnostics overlay |
 | `core/section-factory.ts` | Section creation for all types (query, chart, python, URL, etc.), data-source utilities |
+
+### First-Launch Setup
+
+First-use setup is profile-scoped and may be triggered by the first supported-file open, Activity Bar reveal, or contributed Kusto Workbench command. The coordinator coalesces concurrent triggers into one panel and defers automatic Did you know? delivery until setup settles.
+
+- File choices are application-scoped extension settings; only `.kql`, `.csl`, `.md`, and `.sql` are configurable. `.kqlx`, `.mdx`, and `.sqlx` always use Workbench.
+- Editor associations are read and written only at global scope. Ownership metadata preserves an absent or foreign prior mapping and restores it only while the current mapping remains Workbench-owned.
+- Fresh installs write a current-install marker before other extension infrastructure starts. Save writes a transaction journal before settings, associations, or editing preferences. A later activation resumes any valid journal before terminal or legacy-user detection, preventing Close or interrupted setup from being misclassified as an upgrade.
+- An atomic lock-directory lease in extension global storage permits only one setup owner across VS Code windows. Waiting windows re-read profile state after the lease is released.
+- Editing defaults are application-scoped settings. Legacy global-state values migrate into those settings once and are then removed, so Reset Setting returns to the declared default. Configuration changes produce timestamp-monotonic revisions and update every live webview in every window without invoking document persistence. Legacy root preference fields loaded from old notebooks round-trip unchanged, but new global choices never enter the document signature. Automatic completion and Copilot ghost text are shared by Kusto and SQL; Smart documentation is Kusto-only.
+- Closing automatic setup writes nothing and suppresses another automatic prompt for that extension-host session. Skip records a terminal state while preserving inherited editing preferences.
 
 ### Lit Section Components (`src/webview/sections/`)
 
@@ -313,6 +333,8 @@ Because Monaco-Kusto uses a shared worker schema, another section targeting the 
 The state is reflected by `kw-query-section` through `data-preparation-state`, `data-preparation-stage`, and `aria-busy`. While the state is `preparing`, `queryEditor.css` renders an indeterminate blue segment over the bottom border of the Kusto editor toolbar. Ready, idle, and terminal-error states use the normal solid toolbar border. Reduced-motion mode uses a static accent, and forced-colors mode uses `Highlight`.
 
 Operation generations and delivery revisions prevent late database/schema/worker responses from completing newer work. Removal leaves a monotonic tombstone so recreating a persisted section ID cannot be revived by an old async operation. Worker-wide schema replacement invalidates other model readiness; those sections remain dormant until focus prepares them again.
+
+Each active primary worker-preparation episode has one 30-second absolute budget, shared by retries and fallback paths. Ready, error, and idle states retire the episode so a later worker preparation receives a fresh budget, while stale older generations cannot reset a newer active deadline. Expiry moves the owning section to a terminal error state so `aria-busy` and the toolbar indicator stop, but it does not cancel or release the underlying Monaco worker operation; that operation remains serialized until it settles because Monaco-Kusto exposes no worker-mutation cancellation API.
 
 ### Supplemental Fully Qualified Schemas
 

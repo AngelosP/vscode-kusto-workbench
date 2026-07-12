@@ -473,7 +473,7 @@ type ActivationResult = {
 
 interface LiveWorkbenchConnection {
 	token: number;
-	poster: (message: unknown) => void;
+	poster: (message: unknown) => unknown;
 	stateGetter: () => Promise<ToolSection[] | undefined>;
 	schemaRefresher: (clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>;
 	documentUri?: string;
@@ -526,7 +526,7 @@ export class KustoWorkbenchToolOrchestrator {
 	 * instance can clear the callbacks.
 	 */
 	connect(
-		poster: (message: unknown) => void,
+		poster: (message: unknown) => unknown,
 		stateGetter: () => Promise<ToolSection[] | undefined>,
 		schemaRefresher: (clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>,
 		documentUri?: string
@@ -959,6 +959,22 @@ export class KustoWorkbenchToolOrchestrator {
 		if (target.connection) {
 			target.connection.poster(message);
 		}
+	}
+
+	async postToAllWebviews(message: unknown): Promise<{ attempted: number; delivered: number }> {
+		const connections = [...this.liveConnections.values()];
+		let delivered = 0;
+		await Promise.all(connections.map(async connection => {
+			try {
+				const result = await Promise.resolve(connection.poster(message));
+				if (result !== false) {
+					delivered++;
+				}
+			} catch {
+				// A disposed webview must not prevent other live editors from updating.
+			}
+		}));
+		return { attempted: connections.length, delivered };
 	}
 
 	handleWebviewResponse(requestId: string, result: unknown, error?: string): void {

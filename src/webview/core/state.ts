@@ -1,3 +1,7 @@
+import {
+	completeKustoSchemaPreparationDeadline,
+	observeKustoSchemaPreparationOwnerTimeout,
+} from '../shared/kusto-schema-preparation-deadline.js';
 // State module — central webview state.
 // All state variables are exported for direct ES module import within the
 // esbuild-bundled IIFE.  Window assignments are kept alongside exports so
@@ -191,6 +195,9 @@ function stageForPreparationBlockers(blockers: readonly KustoPreparationBlocker[
 
 function publishKustoPreparation(boxId: string, state: KustoPreparationState): void {
 	kustoPreparationByBoxId[boxId] = state;
+	if (state.status !== 'preparing') {
+		completeKustoSchemaPreparationDeadline({ boxId, generation: state.generation });
+	}
 	const listeners = kustoPreparationListenersByBoxId.get(boxId);
 	if (!listeners) return;
 	for (const listener of Array.from(listeners)) {
@@ -430,6 +437,11 @@ export function markSchemaWorkerApplyPending(boxId: string, schemaKey: string, s
 			stage: 'waiting-worker',
 			addBlockers: ['worker'],
 			target: { schemaKey, schemaSignature, modelUri },
+		});
+		observeKustoSchemaPreparationOwnerTimeout(preparationToken, () => {
+			if (isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri })) {
+				markSchemaWorkerApplyFailed(boxId, schemaKey, modelUri, preparationToken);
+			}
 		});
 	}
 }

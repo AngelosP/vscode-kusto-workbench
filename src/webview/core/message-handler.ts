@@ -2,6 +2,7 @@
 // Dispatches incoming postMessage from the extension host to the right module.
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
+import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
 import { traceFileOpen } from './file-open-trace.js';
 import { buildSchemaInfo } from '../shared/schema-utils';
@@ -28,10 +29,8 @@ import { addMarkdownBox, removeMarkdownBox, __kustoMaximizeMarkdownBox } from '.
 import { addChartBox, removeChartBox } from '../sections/kw-chart-section';
 import { addTransformationBox, removeTransformationBox } from '../sections/kw-transformation-section';
 
-import {
-	updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons,
-	updateCopilotInlineCompletionsToggleButtons, setRunMode,
-} from '../sections/kw-query-toolbar';
+import { setRunMode } from '../sections/kw-query-toolbar';
+import { applyEditingPreferencesData } from './editing-preferences.js';
 import {
 	executeQuery, setQueryExecuting, __kustoSetResultsVisible,
 	__kustoSetLinkedOptimizationMode, displayComparisonSummary,
@@ -58,8 +57,6 @@ import {
 	activeQueryEditorBoxId,
 	connections, setConnections, setLastConnectionId, setLastDatabase,
 	kustoFavorites, setKustoFavorites, setLeaveNoTraceClusters,
-	setCaretDocsEnabled, setAutoTriggerAutocompleteEnabled,
-	setCopilotInlineCompletionsEnabled,
 	queryEditors, cachedDatabases, optimizationMetadataByBoxId,
 	queryBoxes,
 	schemaByConnDb, schemaRequestResolversByBoxId, schemaByBoxId,
@@ -389,7 +386,7 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 		}
 		const setAsContextAtApply = isActiveAtApply || canApplyAtOpenForSoleEditor || (explicitContextSwitchAtApply && !activeQueryEditorBoxId);
 		traceFileOpen('schema.worker.apply.call.start', { boxId, schemaKey, modelUri, setAsContextAtApply, forceRefresh: isForceRefresh, openTimeSoleEditor: canApplyAtOpenForSoleEditor });
-		const applied = await window.__kustoSetMonacoKustoSchema(
+		const workerApply = Promise.resolve(window.__kustoSetMonacoKustoSchema(
 			message.schema.rawSchemaJson,
 			message.clusterUrl,
 			message.database,
@@ -398,7 +395,16 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			isForceRefresh,
 			() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }),
 			preparationToken
-		);
+		));
+		const applied = await awaitKustoSchemaPreparation(workerApply, preparationToken).catch((error: unknown) => {
+			traceFileOpen(
+				error instanceof KustoSchemaPreparationTimeoutError
+					? 'schema.worker.apply.call.timeout'
+					: 'schema.worker.apply.call.error',
+				{ boxId, schemaKey, modelUri },
+			);
+			throw error;
+		});
 		traceFileOpen('schema.worker.apply.call.done', { boxId, schemaKey, applied });
 		if (!applied) {
 			return false;
@@ -695,6 +701,16 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'connectionsData':
+			applyEditingPreferencesData({
+				type: 'editingPreferencesData',
+				revision: typeof message.editingPreferencesRevision === 'number' ? message.editingPreferencesRevision : 0,
+				caretDocsEnabled: typeof message.caretDocsEnabled === 'boolean' ? message.caretDocsEnabled : true,
+				caretDocsEnabledUserSet: !!message.caretDocsEnabledUserSet,
+				autoTriggerAutocompleteEnabled: typeof message.autoTriggerAutocompleteEnabled === 'boolean' ? message.autoTriggerAutocompleteEnabled : true,
+				autoTriggerAutocompleteEnabledUserSet: !!message.autoTriggerAutocompleteEnabledUserSet,
+				copilotInlineCompletionsEnabled: typeof message.copilotInlineCompletionsEnabled === 'boolean' ? message.copilotInlineCompletionsEnabled : true,
+				copilotInlineCompletionsEnabledUserSet: !!message.copilotInlineCompletionsEnabledUserSet,
+			});
 			if ((window as any).__e2eIsolatedKustoConnections) {
 				setConnections([]);
 				try { window.connections = connections; } catch (e) { console.error('[kusto]', e); }
@@ -716,20 +732,6 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			setLeaveNoTraceClusters(Array.isArray(message.leaveNoTraceClusters) ? message.leaveNoTraceClusters : []);
 			try { window.__kustoDevNotesEnabled = !!message.devNotesEnabled; } catch (e) { console.error('[kusto]', e); }
 			try { pState.copilotChatFirstTimeDismissed = !!message.copilotChatFirstTimeDismissed; } catch (e) { console.error('[kusto]', e); }
-			setCaretDocsEnabled((typeof message.caretDocsEnabled === 'boolean') ? message.caretDocsEnabled : true);
-			setAutoTriggerAutocompleteEnabled((typeof message.autoTriggerAutocompleteEnabled === 'boolean') ? message.autoTriggerAutocompleteEnabled : true);
-			setCopilotInlineCompletionsEnabled((typeof message.copilotInlineCompletionsEnabled === 'boolean') ? message.copilotInlineCompletionsEnabled : true);
-			try {
-				// Indicates whether the user has explicitly chosen a value (on/off) before.
-				// When true, document-level restore should not override this global preference.
-				window.__kustoCaretDocsEnabledUserSet = !!message.caretDocsEnabledUserSet;
-			} catch (e) { console.error('[kusto]', e); }
-			try {
-				window.__kustoAutoTriggerAutocompleteEnabledUserSet = !!message.autoTriggerAutocompleteEnabledUserSet;
-			} catch (e) { console.error('[kusto]', e); }
-			try {
-				window.__kustoCopilotInlineCompletionsEnabledUserSet = !!message.copilotInlineCompletionsEnabledUserSet;
-			} catch (e) { console.error('[kusto]', e); }
 			updateConnectionSelects();
 			try {
 				__kustoUpdateFavoritesUiForAllBoxes();
@@ -743,10 +745,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try {
 				__kustoOnConnectionsUpdated();
 			} catch (e) { console.error('[kusto]', e); }
-			try { updateCaretDocsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
-			try { updateAutoTriggerAutocompleteToggleButtons(); } catch (e) { console.error('[kusto]', e); }
-			try { updateCopilotInlineCompletionsToggleButtons(); } catch (e) { console.error('[kusto]', e); }
 			try { __kustoScheduleLocalSchemaPrewarm('connections-data'); } catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'editingPreferencesData':
+			applyEditingPreferencesData(message);
 			break;
 		case 'updateDevNotes': {
 			// Mutate passthrough dev notes sections from extension host (Copilot / agent tool calls)

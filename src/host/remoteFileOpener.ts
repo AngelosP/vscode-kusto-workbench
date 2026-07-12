@@ -978,7 +978,10 @@ function validateRemoteUrl(value: string): string | undefined {
  *
  * And the "Open Remote File" palette command.
  */
-export function registerRemoteFileOpener(context: vscode.ExtensionContext): void {
+export function registerRemoteFileOpener(
+	context: vscode.ExtensionContext,
+	beforeOpen: () => Promise<void> = async () => undefined,
+): void {
 	// URI Handler: vscode://angelos-petropoulos.vscode-kusto-workbench/open?file=<encoded-url>
 	context.subscriptions.push(
 		vscode.window.registerUriHandler({
@@ -1000,7 +1003,13 @@ export function registerRemoteFileOpener(context: vscode.ExtensionContext): void
 						);
 						return;
 					}
+					const validationError = validateRemoteUrl(fileUrl);
+					if (validationError) {
+						void vscode.window.showErrorMessage(validationError);
+						return;
+					}
 
+					await beforeOpen();
 					await openRemoteFile(context, fileUrl);
 				} catch (err: unknown) {
 					const message = err instanceof Error ? err.message : String(err);
@@ -1013,6 +1022,7 @@ export function registerRemoteFileOpener(context: vscode.ExtensionContext): void
 	// Palette command: "Open Remote File"
 	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.openRemoteFile', async () => {
+			await beforeOpen();
 			const url = await vscode.window.showInputBox({
 				title: 'Open Remote File',
 				prompt: 'Enter the URL of the file to open (direct link or SharePoint / OneDrive sharing link)',

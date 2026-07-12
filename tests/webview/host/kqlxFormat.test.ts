@@ -230,7 +230,7 @@ describe('parseKqlxText edge cases', () => {
 		}
 	});
 
-	it('state-level extra fields beyond caretDocsEnabled are NOT preserved', () => {
+	it('unknown state-level fields beyond supported legacy preferences are not preserved', () => {
 		const text = JSON.stringify({
 			kind: 'kqlx',
 			version: 1,
@@ -240,6 +240,42 @@ describe('parseKqlxText edge cases', () => {
 		expect(parsed.ok).toBe(true);
 		if (parsed.ok) {
 			expect((parsed.file.state as any).customState).toBeUndefined();
+		}
+	});
+
+	it('preserves both legacy preference fields through parse, section edit, and stringify', () => {
+		const parsed = parseKqlxText(JSON.stringify({
+			kind: 'kqlx',
+			version: 1,
+			state: {
+				caretDocsEnabled: false,
+				autoTriggerAutocompleteEnabled: false,
+				sections: [{ type: 'query', query: 'print before = 1' }],
+			},
+		}));
+		expect(parsed.ok).toBe(true);
+		if (!parsed.ok) return;
+		(parsed.file.state.sections[0] as any).query = 'print after = 2';
+
+		const reparsed = parseKqlxText(stringifyKqlxFile(parsed.file));
+
+		expect(reparsed.ok).toBe(true);
+		if (reparsed.ok) {
+			expect(reparsed.file.state.caretDocsEnabled).toBe(false);
+			expect(reparsed.file.state.autoTriggerAutocompleteEnabled).toBe(false);
+			expect((reparsed.file.state.sections[0] as any).query).toBe('print after = 2');
+		}
+	});
+
+	it('omits autoTriggerAutocompleteEnabled when it is not boolean', () => {
+		const parsed = parseKqlxText(JSON.stringify({
+			kind: 'kqlx',
+			version: 1,
+			state: { sections: [], autoTriggerAutocompleteEnabled: 'no' },
+		}));
+		expect(parsed.ok).toBe(true);
+		if (parsed.ok) {
+			expect(parsed.file.state.autoTriggerAutocompleteEnabled).toBeUndefined();
 		}
 	});
 

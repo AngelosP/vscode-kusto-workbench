@@ -153,6 +153,7 @@ import {
 } from '../core/state';
 import { shouldForceKustoFocusedSchemaApply } from '../shared/schema-utils.js';
 import { raceSupplementalOperationLease } from '../shared/supplemental-operation-lease.js';
+import { awaitKustoSchemaPreparation, observeKustoSchemaPreparationTimeout, shouldStopKustoSchemaApplyAfterPendingFlush } from '../shared/kusto-schema-preparation-deadline.js';
 
 // ── Schema state singleton (the ONLY source of truth for schema tracking) ───
 export const __kustoSchemaTracker = new SchemaTracker();
@@ -245,7 +246,7 @@ async function __kustoFlushPendingSchemaWorkerUpdateForBox(boxId: string, option
 		})) {
 			failureOwner = { token: preparationToken, schemaKey: pending.schemaKey, schemaSignature: pending.schemaSignature, modelUri };
 		}
-		const applied = await _win.__kustoSetMonacoKustoSchema(
+		const applied = await awaitKustoSchemaPreparation(Promise.resolve(_win.__kustoSetMonacoKustoSchema(
 			pending.rawSchemaJson,
 			pending.clusterUrl,
 			pending.database,
@@ -255,7 +256,7 @@ async function __kustoFlushPendingSchemaWorkerUpdateForBox(boxId: string, option
 			() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey: pending.schemaKey, schemaSignature: pending.schemaSignature, modelUri }),
 			preparationToken,
 			options.contextIntent,
-		);
+		)), preparationToken);
 		if (!applied) {
 			if (failureOwner && isKustoPreparationCurrent(failureOwner.token, {
 				schemaKey: failureOwner.schemaKey,
@@ -1607,7 +1608,7 @@ async function __kustoRestoreOtherPrimaryApplicationsAfterWorkerReplace(worker: 
 		const cached = __kustoSchemaTracker.schemaCache[readyState.schemaKey];
 		let restored = false;
 		if (cached?.rawSchemaJson) {
-			const aliasCount = await __kustoAddDatabaseAliasesToWorker(
+			const restoreOperation = __kustoAddDatabaseAliasesToWorker(
 				worker,
 				readyState.modelUri,
 				cached.rawSchemaJson,
@@ -1615,6 +1616,31 @@ async function __kustoRestoreOtherPrimaryApplicationsAfterWorkerReplace(worker: 
 				cached.clusterUrl,
 				cached.database,
 			);
+			let aliasCount: number;
+			try {
+				aliasCount = await restoreOperation;
+			} catch (error) {
+				traceFileOpen('monaco.schema.primaryRestore.error', {
+					boxId,
+					schemaKey: readyState.schemaKey,
+					errorType: error instanceof Error ? error.name : 'Error',
+				});
+				if (preparationToken && isKustoPreparationCurrent(preparationToken, {
+					schemaKey: readyState.schemaKey,
+					schemaSignature: readyState.schemaSignature,
+					modelUri: readyState.modelUri,
+				})) {
+					markSchemaWorkerApplyFailed(boxId, readyState.schemaKey, readyState.modelUri, preparationToken);
+				}
+				continue;
+			}
+			if (preparationToken && !isKustoPreparationCurrent(preparationToken, {
+				schemaKey: readyState.schemaKey,
+				schemaSignature: readyState.schemaSignature,
+				modelUri: readyState.modelUri,
+			})) {
+				continue;
+			}
 			restored = aliasCount > 0;
 		}
 		if (restored) {
@@ -3667,7 +3693,12 @@ const connectionId = __kustoGetConnectionId(ownerId);
 							const contextIntent = setAsContext
 								? __kustoClaimSchemaContextIntent(String(boxId), clusterUrl, database, focusedModelUri)
 								: undefined;
-							try { await __kustoFlushPendingSchemaWorkerUpdateForBox(boxId, { setAsContext, contextIntent }); } catch (e) { console.error('[kusto]', e); }
+							let pendingSchemaApplied = false;
+							try { pendingSchemaApplied = await __kustoFlushPendingSchemaWorkerUpdateForBox(boxId, { setAsContext, contextIntent }); } catch (e) { console.error('[kusto]', e); }
+							if (shouldStopKustoSchemaApplyAfterPendingFlush(pendingSchemaApplied, getKustoPreparationState(boxId).status)) {
+								traceFileOpen('monaco.schema.focusedBox.stop.terminalPendingFailure', { boxId, expectedSchemaKey });
+								return;
+							}
 							const currentContextAfterFlush = __kustoGetSchemaContextForBox(boxId);
 							if (!currentContextAfterFlush || currentContextAfterFlush.schemaKey !== expectedSchemaKey) {
 								__kustoFocusUpdateRerunByBoxId[String(boxId)] = true;
@@ -3687,8 +3718,10 @@ const connectionId = __kustoGetConnectionId(ownerId);
 								? schemaMetaByBoxId[boxId].schemaSignature
 								: undefined;
 							const preparationToken = getKustoPreparationToken(boxId);
+							let preparationDeadlineOwner: KustoPreparationToken | undefined;
 							if (preparationToken) {
 								const preparationState = getKustoPreparationState(boxId);
+								if (preparationState.status === 'preparing') preparationDeadlineOwner = preparationToken;
 								if (preparationState.status === 'preparing'
 									&& preparationState.target.database === database
 									&& (!preparationState.target.schemaKey || preparationState.target.schemaKey === schemaKey)
@@ -3705,7 +3738,14 @@ const connectionId = __kustoGetConnectionId(ownerId);
 							let workerContextMatches = !setAsContext || (!!__kustoSchemaTracker.databaseInContext
 								&& kustoDatabaseKey(__kustoSchemaTracker.databaseInContext.clusterUrl, __kustoSchemaTracker.databaseInContext.database) === schemaKey);
 							if (!workerApplyRequired && baseWorkerReady && setAsContext && !workerContextMatches && contextIntent) {
-								workerContextMatches = await __kustoQueueDatabaseContextSwitch(clusterUrl, database, focusedModelUri, contextIntent);
+								if (preparationToken && getKustoPreparationState(boxId).status === 'preparing'
+									&& isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri: focusedModelUri })) {
+									failureOwner = { token: preparationToken, schemaKey, schemaSignature, modelUri: focusedModelUri };
+								}
+								workerContextMatches = await awaitKustoSchemaPreparation(
+									__kustoQueueDatabaseContextSwitch(clusterUrl, database, focusedModelUri, contextIntent),
+									preparationDeadlineOwner,
+								);
 								traceFileOpen('monaco.schema.focusedBox.contextSwitch', { boxId, schemaKey, switched: workerContextMatches });
 							}
 							if (!workerApplyRequired && baseWorkerReady && workerContextMatches) {
@@ -3743,7 +3783,7 @@ const connectionId = __kustoGetConnectionId(ownerId);
 								if (preparationToken && isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri: focusedModelUri })) {
 									failureOwner = { token: preparationToken, schemaKey, schemaSignature, modelUri: focusedModelUri };
 								}
-								const applied = await _win.__kustoSetMonacoKustoSchema(
+								const applied = await awaitKustoSchemaPreparation(Promise.resolve(_win.__kustoSetMonacoKustoSchema(
 									rawSchemaJson,
 									clusterUrl,
 									database,
@@ -3753,7 +3793,7 @@ const connectionId = __kustoGetConnectionId(ownerId);
 									() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri: focusedModelUri! }),
 									preparationToken,
 									contextIntent,
-								);
+								)), preparationToken);
 								if (!applied) {
 									if (preparationToken && !isKustoPreparationCurrent(preparationToken)) return;
 									markSchemaWorkerApplyFailed(boxId, schemaKey, focusedModelUri, preparationToken);
@@ -3772,7 +3812,7 @@ const connectionId = __kustoGetConnectionId(ownerId);
 									if (preparationToken && isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri: focusedModelUri })) {
 										failureOwner = { token: preparationToken, schemaKey, schemaSignature, modelUri: focusedModelUri };
 									}
-									const applied = await _win.__kustoSetMonacoKustoSchema(
+									const applied = await awaitKustoSchemaPreparation(Promise.resolve(_win.__kustoSetMonacoKustoSchema(
 										cachedSchema.rawSchemaJson,
 										clusterUrl,
 										database,
@@ -3782,7 +3822,7 @@ const connectionId = __kustoGetConnectionId(ownerId);
 										() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri: focusedModelUri! }),
 										preparationToken,
 										contextIntent,
-									);
+									)), preparationToken);
 									if (!applied) {
 										if (preparationToken && !isKustoPreparationCurrent(preparationToken)) return;
 										markSchemaWorkerApplyFailed(boxId, schemaKey, focusedModelUri, preparationToken);

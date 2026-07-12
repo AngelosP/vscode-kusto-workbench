@@ -8,6 +8,7 @@ const FILES = [
   'webview/webview.bundle.js',
   'webview/md-editor.bundle.js',
   'webview/tutorial-viewer.bundle.js',
+  'webview/first-launch-setup.bundle.js',
   'queryEditor/vendor/echarts/echarts.webview.js',
   'queryEditor/vendor/toastui-editor/toastui-editor.webview.js',
 ];

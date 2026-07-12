@@ -20,6 +20,10 @@
   "activationEvents": [
     "onLanguage:kql",
     "onLanguage:kqlx",
+    "onLanguage:sqlx",
+    "onLanguage:sql",
+    "onLanguage:markdown",
+    "onUri",
     "workspaceContains:**/*.kql",
     "workspaceContains:**/*.csl",
     "workspaceContains:**/*.kqlx",
@@ -30,7 +34,8 @@
     "onCommand:kustoWorkbench.test.openMdCompatFile",
     "onCommand:kustoWorkbench.test.openMdCompatFileViaAssociation",
     "onCommand:kustoWorkbench.test.runOpenFileTargetingScenario",
-    "onCommand:kustoWorkbench.test.runRenameOpenFilesScenario"
+    "onCommand:kustoWorkbench.test.runRenameOpenFilesScenario",
+    "onCommand:kustoWorkbench.test.resetFirstLaunchSetup"
   ],
   "main": "./dist/extension.js",
   "contributes": {
@@ -46,26 +51,51 @@
         "kustoWorkbench.openKqlFiles": {
           "order": 2,
           "type": "boolean",
+          "scope": "application",
           "default": true,
           "description": "Use Kusto Workbench to open .kql files by default. When disabled, .kql files will open with VS Code's default text editor."
         },
         "kustoWorkbench.openCslFiles": {
           "order": 3,
           "type": "boolean",
+          "scope": "application",
           "default": true,
           "description": "Use Kusto Workbench to open .csl files by default. When disabled, .csl files will open with VS Code's default text editor."
         },
         "kustoWorkbench.openMdFiles": {
           "order": 4,
           "type": "boolean",
+          "scope": "application",
           "default": false,
           "description": "Use Kusto Workbench to open .md files by default. When disabled, .md files will open with VS Code's default text editor."
         },
         "kustoWorkbench.openSqlFiles": {
           "order": 5,
           "type": "boolean",
+          "scope": "application",
           "default": false,
           "description": "Use Kusto Workbench to open .sql files by default. When disabled, .sql files will open with VS Code's default text editor."
+        },
+        "kustoWorkbench.editing.autoTriggerAutocompleteEnabled": {
+          "order": 20,
+          "type": "boolean",
+          "scope": "application",
+          "default": true,
+          "description": "Automatically show schema-aware Kusto and SQL completions while typing. Manual Ctrl+Space remains available when disabled."
+        },
+        "kustoWorkbench.editing.copilotInlineCompletionsEnabled": {
+          "order": 21,
+          "type": "boolean",
+          "scope": "application",
+          "default": true,
+          "description": "Automatically request GitHub Copilot inline suggestions for Kusto and SQL while typing. Manual Ctrl+Shift+Space remains available when disabled."
+        },
+        "kustoWorkbench.editing.caretDocsEnabled": {
+          "order": 22,
+          "type": "boolean",
+          "scope": "application",
+          "default": true,
+          "description": "Show cursor-based Smart documentation in Kusto query sections."
         },
         "kustoWorkbench.alternatingRowColor": {
           "order": 6,
@@ -229,6 +259,12 @@
           "light": "./media/images/kusto-file-light.svg",
           "dark": "./media/images/kusto-file-dark.svg"
         }
+      },
+      {
+        "command": "kusto.configureFirstLaunchSetup",
+        "title": "Configure File and Editor Defaults",
+        "category": "Kusto Workbench",
+        "icon": "$(settings-gear)"
       },
       {
         "command": "kusto.openKqlxFile",
@@ -1831,7 +1867,7 @@
     "watch": "npm-run-all -p watch:*",
     "watch:esbuild": "node esbuild.js --watch",
     "watch:tsc": "tsc --noEmit --watch --project tsconfig.json",
-    "package": "npm run check-types && npm run lint && node esbuild.js --production",
+    "package": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\" && npm run check-types && npm run lint && node esbuild.js --production",
     "vsix": "npm run package && node scripts/package-vsix.mjs",
     "compile-tests": "node -e \"require('fs').rmSync('out/tests',{recursive:true,force:true})\" && tsc -p tests/integration/tsconfig.json",
     "watch-tests": "tsc -p tests/integration/tsconfig.json -w",
@@ -1859,6 +1895,7 @@
     "@types/chai": "^4.3.20",
     "@types/mocha": "^10.0.10",
     "@types/node": "22.x",
+    "@types/proper-lockfile": "^4.1.4",
     "@types/vscode": "^1.107.0",
     "@types/yauzl": "^2.10.3",
     "@vitest/coverage-v8": "^4.1.0",
@@ -1886,6 +1923,7 @@
     "monaco-editor": "^0.52.0",
     "mssql": "^11.0.1",
     "overlayscrollbars": "^2.15.1",
+    "proper-lockfile": "^4.1.2",
     "sql-formatter": "^15.7.3",
     "vscode-jsonrpc": "^8.2.1",
     "yauzl": "^3.3.0"

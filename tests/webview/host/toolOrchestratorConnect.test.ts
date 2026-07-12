@@ -115,6 +115,22 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(posterB).toHaveBeenCalledWith({ type: 'test' });
 	});
 
+	it('postToAllWebviews snapshots live connections and isolates disposed posters', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const posterA = vi.fn(async () => true);
+		const posterB = vi.fn(() => { throw new Error('disposed'); });
+		const posterC = vi.fn(async () => false);
+		orch.connect(posterA, vi.fn(async () => []), vi.fn());
+		orch.connect(posterB, vi.fn(async () => []), vi.fn());
+		orch.connect(posterC, vi.fn(async () => []), vi.fn());
+
+		const message = { type: 'editingPreferencesData', revision: 1 };
+		await expect(orch.postToAllWebviews(message)).resolves.toEqual({ attempted: 3, delivered: 1 });
+		expect(posterA).toHaveBeenCalledWith(message);
+		expect(posterB).toHaveBeenCalledWith(message);
+		expect(posterC).toHaveBeenCalledWith(message);
+	});
+
 	it('successive connects increment the token', () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const t1 = orch.connect(vi.fn(), vi.fn(async () => []), vi.fn());

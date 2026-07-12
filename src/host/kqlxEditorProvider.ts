@@ -202,6 +202,9 @@ export const normalizeStateForComparison = (s: KqlxStateV1): Record<string, unkn
 
 	return {
 		caretDocsEnabled: typeof s.caretDocsEnabled === 'boolean' ? s.caretDocsEnabled : true,
+		...(typeof s.autoTriggerAutocompleteEnabled === 'boolean'
+			? { autoTriggerAutocompleteEnabled: s.autoTriggerAutocompleteEnabled }
+			: {}),
 		sections
 	};
 };
@@ -395,6 +398,7 @@ export function sanitizeStateForKind(kind: KqlxFileKind, state: KqlxStateV1): Kq
 	});
 	return {
 		caretDocsEnabled: state.caretDocsEnabled,
+		autoTriggerAutocompleteEnabled: state.autoTriggerAutocompleteEnabled,
 		sections: filtered
 	};
 }
@@ -859,7 +863,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					return state;
 				}
 				const first = { ...(sections[0] as any), query: text };
-				return { caretDocsEnabled: state.caretDocsEnabled, sections: [first, ...sections.slice(1)] as any };
+				return {
+					caretDocsEnabled: state.caretDocsEnabled,
+					autoTriggerAutocompleteEnabled: state.autoTriggerAutocompleteEnabled,
+					sections: [first, ...sections.slice(1)] as any,
+				};
 			} catch {
 				return state;
 			}
@@ -1186,6 +1194,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					const incomingState: KqlxStateV1 = {
 						caretDocsEnabled:
 							rawState && typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
+						autoTriggerAutocompleteEnabled:
+							rawState && typeof rawState.autoTriggerAutocompleteEnabled === 'boolean'
+								? rawState.autoTriggerAutocompleteEnabled
+								: undefined,
 						sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
 					};
 					const state = sanitizeStateForKind(documentKind, incomingState);
@@ -1244,7 +1256,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									const first = secs[0] as any;
 									if (!first || !String(first.linkedQueryPath || '')) return parsedSaved.file.state;
 									const injected = { ...first, query: lastSavedLinkedQueryText };
-									return { caretDocsEnabled: parsedSaved.file.state.caretDocsEnabled, sections: [injected, ...secs.slice(1)] as any };
+									return {
+										caretDocsEnabled: parsedSaved.file.state.caretDocsEnabled,
+										autoTriggerAutocompleteEnabled: parsedSaved.file.state.autoTriggerAutocompleteEnabled,
+										sections: [injected, ...secs.slice(1)] as any,
+									};
 								} catch {
 									return parsedSaved.file.state;
 								}
@@ -1283,7 +1299,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 											linkedText = lastSavedLinkedQueryText;
 										}
 										const injected = { ...first, query: linkedText };
-										return { caretDocsEnabled: parsedDisk.file.state.caretDocsEnabled, sections: [injected, ...secs.slice(1)] as any };
+										return {
+											caretDocsEnabled: parsedDisk.file.state.caretDocsEnabled,
+											autoTriggerAutocompleteEnabled: parsedDisk.file.state.autoTriggerAutocompleteEnabled,
+											sections: [injected, ...secs.slice(1)] as any,
+										};
 									} catch {
 										return parsedDisk.file.state;
 									}
@@ -1348,7 +1368,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 											linkedText = lastSavedLinkedQueryText;
 										}
 										const injected = { ...first, query: linkedText };
-										return { caretDocsEnabled: parsedCurrent.file.state.caretDocsEnabled, sections: [injected, ...secs.slice(1)] as any };
+										return {
+											caretDocsEnabled: parsedCurrent.file.state.caretDocsEnabled,
+											autoTriggerAutocompleteEnabled: parsedCurrent.file.state.autoTriggerAutocompleteEnabled,
+											sections: [injected, ...secs.slice(1)] as any,
+										};
 									} catch {
 										return parsedCurrent.file.state;
 									}
@@ -1398,7 +1422,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									}
 									delete first.query;
 								}
-								return { caretDocsEnabled: state.caretDocsEnabled, sections: sections as any };
+								return {
+									caretDocsEnabled: state.caretDocsEnabled,
+									autoTriggerAutocompleteEnabled: state.autoTriggerAutocompleteEnabled,
+									sections: sections as any,
+								};
 							} catch {
 								return state;
 							}

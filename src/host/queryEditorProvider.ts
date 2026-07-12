@@ -53,6 +53,7 @@ import { notifySavedFile, withCsvExtension } from './savedFileNotification';
 import { perfMark } from './perfTrace';
 import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
 import type { FileOpenTrace } from './fileOpenTrace';
+import { getEditingPreferencesData, setEditingPreference } from './editingPreferences';
 
 type RunningQueryEntry = {
 	cancel: () => void;
@@ -498,13 +499,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.connection.promptImportConnectionsXml(message.boxId);
 				return;
 			case 'setCaretDocsEnabled':
-				await this.context.globalState.update(STORAGE_KEYS.caretDocsEnabled, !!message.enabled);
+				await this.updateEditingPreference(STORAGE_KEYS.caretDocsEnabled, !!message.enabled);
 				return;
 			case 'setAutoTriggerAutocompleteEnabled':
-				await this.context.globalState.update(STORAGE_KEYS.autoTriggerAutocompleteEnabled, !!message.enabled);
+				await this.updateEditingPreference(STORAGE_KEYS.autoTriggerAutocompleteEnabled, !!message.enabled);
 				return;
 			case 'setCopilotInlineCompletionsEnabled':
-				await this.context.globalState.update(STORAGE_KEYS.copilotInlineCompletionsEnabled, !!message.enabled);
+				await this.updateEditingPreference(STORAGE_KEYS.copilotInlineCompletionsEnabled, !!message.enabled);
 				return;
 			case 'requestCopilotInlineCompletion':
 				await this.copilot.handleCopilotInlineCompletionRequest(message);
@@ -1651,6 +1652,18 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		await this.sendConnectionsData();
 	}
 
+	private async updateEditingPreference(
+		key: typeof STORAGE_KEYS.caretDocsEnabled | typeof STORAGE_KEYS.autoTriggerAutocompleteEnabled | typeof STORAGE_KEYS.copilotInlineCompletionsEnabled,
+		enabled: boolean,
+	): Promise<void> {
+		const preferences = await setEditingPreference(this.context, key, enabled);
+		if (toolOrchestrator) {
+			await toolOrchestrator.postToAllWebviews(preferences);
+		} else {
+			await this.postMessage(preferences);
+		}
+	}
+
 	public async inferClusterDatabaseForKqlQuery(
 		queryText: string
 	): Promise<{ clusterUrl: string; database: string } | undefined> {
@@ -1658,25 +1671,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private async sendConnectionsData(): Promise<void> {
-		const caretDocsEnabledStored = this.context.globalState.get<boolean>(STORAGE_KEYS.caretDocsEnabled);
-		const caretDocsEnabled = typeof caretDocsEnabledStored === 'boolean' ? caretDocsEnabledStored : true;
-		const caretDocsEnabledUserSet = typeof caretDocsEnabledStored === 'boolean';
-		const autoTriggerAutocompleteEnabledStored = this.context.globalState.get<boolean>(STORAGE_KEYS.autoTriggerAutocompleteEnabled);
-		const autoTriggerAutocompleteEnabled = typeof autoTriggerAutocompleteEnabledStored === 'boolean' ? autoTriggerAutocompleteEnabledStored : true;
-		const autoTriggerAutocompleteEnabledUserSet = typeof autoTriggerAutocompleteEnabledStored === 'boolean';
-		const copilotInlineCompletionsEnabledStored = this.context.globalState.get<boolean>(STORAGE_KEYS.copilotInlineCompletionsEnabled);
-		const vscodeInlineSuggestEnabled = vscode.workspace.getConfiguration('editor').get<boolean>('inlineSuggest.enabled', true);
-		const copilotInlineCompletionsEnabled = typeof copilotInlineCompletionsEnabledStored === 'boolean'
-			? copilotInlineCompletionsEnabledStored
-			: vscodeInlineSuggestEnabled;
-		const copilotInlineCompletionsEnabledUserSet = typeof copilotInlineCompletionsEnabledStored === 'boolean';
+		const { type: _type, revision: editingPreferencesRevision, ...editingPreferences } = getEditingPreferencesData(this.context);
 		await this.connection.sendConnectionsData({
-			caretDocsEnabled,
-			caretDocsEnabledUserSet,
-			autoTriggerAutocompleteEnabled,
-			autoTriggerAutocompleteEnabledUserSet,
-			copilotInlineCompletionsEnabled,
-			copilotInlineCompletionsEnabledUserSet,
+			...editingPreferences,
+			editingPreferencesRevision,
 			copilotChatFirstTimeDismissed: !!this.context.globalState.get<boolean>(STORAGE_KEYS.copilotChatFirstTimeDismissed)
 		});
 	}

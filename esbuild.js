@@ -75,7 +75,14 @@ async function main() {
 			path.join(webviewSrcDir, 'tutorial-viewer.html'),
 			path.join(webviewDistDir, 'tutorial-viewer.html')
 		);
+		await fs.promises.copyFile(
+			path.join(webviewSrcDir, 'first-launch-setup.html'),
+			path.join(webviewDistDir, 'first-launch-setup.html')
+		);
 	} catch (e) {
+		if (production) {
+			throw e;
+		}
 		console.warn('[watch] failed to copy webview runtime assets:', e && e.message ? e.message : e);
 	}
 
@@ -345,6 +352,35 @@ async function main() {
 		console.warn('[watch] failed to bundle tutorial viewer:', e && e.message ? e.message : e);
 	}
 
+	// Lightweight first-launch setup bundle (browser target, IIFE).
+	try {
+		const firstLaunchCtx = await esbuild.context({
+			entryPoints: ['src/webview/first-launch/first-launch-entry.ts'],
+			bundle: true,
+			format: 'iife',
+			platform: 'browser',
+			target: 'es2022',
+			minify: production,
+			sourcemap: !production,
+			sourcesContent: false,
+			outfile: 'dist/webview/first-launch-setup.bundle.js',
+			tsconfig: 'tsconfig.webview.json',
+			logLevel: 'silent',
+			plugins: [esbuildProblemMatcherPlugin],
+		});
+		if (watch) {
+			await firstLaunchCtx.watch();
+		} else {
+			await firstLaunchCtx.rebuild();
+			await firstLaunchCtx.dispose();
+		}
+	} catch (e) {
+		if (production) {
+			throw e;
+		}
+		console.warn('[watch] failed to bundle first-launch setup:', e && e.message ? e.message : e);
+	}
+
 	const ctx = await esbuild.context({
 		entryPoints: [
 			'src/host/extension.ts'
@@ -377,6 +413,7 @@ async function main() {
 			{ src: path.join(webviewSrcDir, 'vscodeApi.js'), dest: path.join(webviewDistDir, 'vscodeApi.js') },
 			{ src: path.join(webviewSrcDir, 'md-editor.html'), dest: path.join(webviewDistDir, 'md-editor.html') },
 			{ src: path.join(webviewSrcDir, 'tutorial-viewer.html'), dest: path.join(webviewDistDir, 'tutorial-viewer.html') },
+			{ src: path.join(webviewSrcDir, 'first-launch-setup.html'), dest: path.join(webviewDistDir, 'first-launch-setup.html') },
 		];
 		for (const { src, dest } of watchCopyTargets) {
 			try {
@@ -411,11 +448,20 @@ async function main() {
 	// Automatically checks that no bundle has grown beyond its baseline + buffer.
 	// Runs inline — no extra step to remember.
 	if (production) {
+		for (const requiredArtifact of [
+			'webview/first-launch-setup.html',
+			'webview/first-launch-setup.bundle.js',
+		]) {
+			if (!fs.existsSync(path.join(__dirname, 'dist', requiredArtifact))) {
+				throw new Error(`Missing required production artifact: ${requiredArtifact}`);
+			}
+		}
 		const BASELINES = {
-			'extension.js':                                        1306,
+			'extension.js':                                        1356,
 			'webview/webview.bundle.js':                           2474,
 			'webview/md-editor.bundle.js':                          245,
 			'webview/tutorial-viewer.bundle.js':                    154,
+			'webview/first-launch-setup.bundle.js':                  40,
 			'queryEditor/vendor/echarts/echarts.webview.js':        646,
 			'queryEditor/vendor/toastui-editor/toastui-editor.webview.js': 603,
 			'monaco/':                                            11445,

@@ -37,7 +37,6 @@ import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { canonicalizePowerBiKustoClusterUrl } from '../../shared/kustoClusterUrls.js';
 import {
 	activeQueryEditorBoxId,
-	caretDocOverlaysByBoxId,
 	qualifyTablesInFlightByBoxId,
 	runModesByBoxId,
 	optimizationMetadataByBoxId,
@@ -52,44 +51,25 @@ import {
 	queryEditors,
 	connections,
 } from '../core/state.js';
+import {
+	applyCaretDocsPresentation,
+	updateAutoTriggerAutocompleteToggleButtons,
+	updateCaretDocsToggleButtons,
+	updateCopilotInlineCompletionsToggleButtons,
+} from '../core/editing-preferences.js';
+
+export {
+	updateAutoTriggerAutocompleteToggleButtons,
+	updateCaretDocsToggleButtons,
+	updateCopilotInlineCompletionsToggleButtons,
+} from '../core/editing-preferences.js';
 
 // Toolbar runtime logic previously in modules/queryBoxes-toolbar.ts
-
-export function updateCaretDocsToggleButtons(): void {
-	for (const boxId of queryBoxes) {
-		try {
-			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
-			if (toolbar && typeof toolbar.setCaretDocsActive === 'function') {
-				toolbar.setCaretDocsActive(!!caretDocsEnabled);
-			}
-		} catch (e) { console.error('[kusto]', e); }
-	}
-}
-
-export function updateAutoTriggerAutocompleteToggleButtons(): void {
-	for (const boxId of queryBoxes) {
-		try {
-			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
-			if (toolbar && typeof toolbar.setAutoCompleteActive === 'function') {
-				toolbar.setAutoCompleteActive(!!autoTriggerAutocompleteEnabled);
-			}
-		} catch (e) { console.error('[kusto]', e); }
-	}
-	for (const boxId of sqlBoxes) {
-		try {
-			const toolbar = document.querySelector('kw-sql-toolbar[box-id="' + boxId + '"]') as any;
-			if (toolbar && typeof toolbar.setAutoCompleteActive === 'function') {
-				toolbar.setAutoCompleteActive(!!autoTriggerAutocompleteEnabled);
-			}
-		} catch (e) { console.error('[kusto]', e); }
-	}
-}
 
 export function toggleAutoTriggerAutocompleteEnabled(): void {
 	setAutoTriggerAutocompleteEnabled(!autoTriggerAutocompleteEnabled);
 	try { window.__kustoAutoTriggerAutocompleteEnabledUserSet = true; } catch (e) { console.error('[kusto]', e); }
 	updateAutoTriggerAutocompleteToggleButtons();
-	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try { postMessageToHost({ type: 'setAutoTriggerAutocompleteEnabled', enabled: !!autoTriggerAutocompleteEnabled }); } catch (e) { console.error('[kusto]', e); }
 
 	if (autoTriggerAutocompleteEnabled) {
@@ -102,82 +82,18 @@ export function toggleAutoTriggerAutocompleteEnabled(): void {
 	}
 }
 
-export function updateCopilotInlineCompletionsToggleButtons(): void {
-	for (const boxId of queryBoxes) {
-		try {
-			const toolbar = document.querySelector('kw-query-toolbar[box-id="' + boxId + '"]') as any;
-			if (toolbar && typeof toolbar.setCopilotInlineActive === 'function') {
-				toolbar.setCopilotInlineActive(!!copilotInlineCompletionsEnabled);
-			}
-		} catch (e) { console.error('[kusto]', e); }
-	}
-	for (const boxId of sqlBoxes) {
-		try {
-			const toolbar = document.querySelector('kw-sql-toolbar[box-id="' + boxId + '"]') as any;
-			if (toolbar && typeof toolbar.setCopilotInlineActive === 'function') {
-				toolbar.setCopilotInlineActive(!!copilotInlineCompletionsEnabled);
-			}
-		} catch (e) { console.error('[kusto]', e); }
-	}
-}
-
 export function toggleCopilotInlineCompletionsEnabled(): void {
 	setCopilotInlineCompletionsEnabled(!copilotInlineCompletionsEnabled);
 	try { window.__kustoCopilotInlineCompletionsEnabledUserSet = true; } catch (e) { console.error('[kusto]', e); }
 	updateCopilotInlineCompletionsToggleButtons();
-	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 	try { postMessageToHost({ type: 'setCopilotInlineCompletionsEnabled', enabled: !!copilotInlineCompletionsEnabled }); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function toggleCaretDocsEnabled(): void {
 	setCaretDocsEnabled(!caretDocsEnabled);
 	updateCaretDocsToggleButtons();
-	if (!caretDocsEnabled) {
-		try {
-			for (const key of Object.keys(caretDocOverlaysByBoxId || {})) {
-				const overlay = caretDocOverlaysByBoxId[key];
-				if (overlay && typeof overlay.hide === 'function') {
-					overlay.hide();
-				}
-			}
-		} catch (e) { console.error('[kusto]', e); }
-	} else {
-		try {
-			const watermarkTitle = 'Smart documentation';
-			const watermarkBody = 'Kusto documentation will appear here as the cursor moves around';
-			for (const boxId of queryBoxes) {
-				try {
-					const banner = document.getElementById(boxId + '_caret_docs') as any;
-					const text = document.getElementById(boxId + '_caret_docs_text') || banner;
-					if (banner) banner.style.display = 'flex';
-					if (text) {
-						text.innerHTML =
-							'<div class="qe-caret-docs-line qe-caret-docs-watermark-title">' +
-							watermarkTitle +
-							'</div>' +
-							'<div class="qe-caret-docs-line qe-caret-docs-watermark-body">' +
-							watermarkBody +
-							'</div>';
-						if (text.classList) text.classList.add('is-watermark');
-					}
-				} catch (e) { console.error('[kusto]', e); }
-			}
-		} catch (e) { console.error('[kusto]', e); }
-
-		try {
-			const overlays = (typeof caretDocOverlaysByBoxId !== 'undefined') ? caretDocOverlaysByBoxId : null;
-			if (overlays && typeof overlays === 'object') {
-				for (const key of Object.keys(overlays)) {
-					try {
-						const o = overlays[key];
-						if (o && typeof o.update === 'function') o.update();
-					} catch (e) { console.error('[kusto]', e); }
-				}
-			}
-		} catch (e) { console.error('[kusto]', e); }
-	}
+	applyCaretDocsPresentation(caretDocsEnabled);
 	try { postMessageToHost({ type: 'setCaretDocsEnabled', enabled: !!caretDocsEnabled }); } catch (e) { console.error('[kusto]', e); }
-	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
 export function onQueryEditorToolbarAction(boxId: any, action: any): void {

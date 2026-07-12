@@ -36,6 +36,16 @@ import { getSchemaCacheFileUri, SCHEMA_CACHE_VERSION, schemaCacheKey, writeCache
 
 import { stsProcessManagerSingleton } from './sql/stsProcessManager';
 import { getWorkbenchLogger, registerWorkbenchLogger } from './workbenchLogger';
+import { EditorAssociationManager } from './firstLaunch/editorAssociationManager';
+import type { FilePreferenceKey } from './firstLaunch/editorAssociationManager';
+import { FirstLaunchCoordinator } from './firstLaunch/firstLaunchCoordinator';
+import { FirstLaunchSetupPanel } from './firstLaunch/firstLaunchSetupPanel';
+import { registerFirstLaunchTriggers } from './firstLaunch/firstLaunchTriggers';
+import {
+	EDITING_PREFERENCE_CONFIGURATION_KEYS,
+	migrateLegacyEditingPreferences,
+	refreshEditingPreferences,
+} from './editingPreferences';
 
 type TestOpenFileSummary = NonNullable<Awaited<ReturnType<KustoWorkbenchToolOrchestrator['listSections']>>['openFiles']>[number];
 
@@ -44,69 +54,45 @@ export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
-export function activate(context: vscode.ExtensionContext) {
+export async function activate(context: vscode.ExtensionContext): Promise<void> {
 	registerWorkbenchLogger(context);
 	void vscode.commands.executeCommand('setContext', 'kustoWorkbench.devMode', context.extensionMode !== vscode.ExtensionMode.Production);
 
-	// Configure editor associations for .kql and .csl files based on settings
-	const updateEditorAssociations = async (): Promise<void> => {
-		try {
-			const config = vscode.workspace.getConfiguration('kustoWorkbench');
-			const openKqlFiles = config.get<boolean>('openKqlFiles', true);
-			const openCslFiles = config.get<boolean>('openCslFiles', true);
-			const openMdFiles = config.get<boolean>('openMdFiles', false);
-			const openSqlFiles = config.get<boolean>('openSqlFiles', false);
-
-			const workbenchConfig = vscode.workspace.getConfiguration('workbench');
-			const currentAssociations = workbenchConfig.get<Record<string, string>>('editorAssociations') || {};
-
-			// Create a copy to modify
-			const newAssociations = { ...currentAssociations };
-			let changed = false;
-
-			// Handle .kql files
-			const kqlAssociation = openKqlFiles ? KqlCompatEditorProvider.viewType : 'default';
-			if (newAssociations['*.kql'] !== kqlAssociation) {
-				newAssociations['*.kql'] = kqlAssociation;
-				changed = true;
+	const editorAssociationManager = new EditorAssociationManager(context.globalState);
+	const firstLaunchCoordinator = new FirstLaunchCoordinator({
+		context,
+		associationManager: editorAssociationManager,
+		openPanel: request => FirstLaunchSetupPanel.open(context, context.extensionUri, request),
+		broadcastEditingPreferences: async message => {
+			if (toolOrchestrator) {
+				await toolOrchestrator.postToAllWebviews(message);
 			}
-
-			// Handle .csl files
-			const cslAssociation = openCslFiles ? KqlCompatEditorProvider.viewType : 'default';
-			if (newAssociations['*.csl'] !== cslAssociation) {
-				newAssociations['*.csl'] = cslAssociation;
-				changed = true;
-			}
-
-			// Handle .md files
-			const mdAssociation = openMdFiles ? MdCompatEditorProvider.viewType : 'default';
-			if (newAssociations['*.md'] !== mdAssociation) {
-				newAssociations['*.md'] = mdAssociation;
-				changed = true;
-			}
-
-			// Handle .sql files
-			const sqlAssociation = openSqlFiles ? SqlCompatEditorProvider.viewType : 'default';
-			if (newAssociations['*.sql'] !== sqlAssociation) {
-				newAssociations['*.sql'] = sqlAssociation;
-				changed = true;
-			}
-
-			if (changed) {
-				await workbenchConfig.update('editorAssociations', newAssociations, vscode.ConfigurationTarget.Global);
-			}
-		} catch (err) {
-			// Non-fatal: avoid breaking activation if we can't update associations
-			getWorkbenchLogger().error('[Kusto Workbench] Failed to update editor associations:', err instanceof Error ? err : String(err));
-		}
-	};
-
-	// Update associations on activation and when settings change
-	void updateEditorAssociations();
+		},
+		migrateFreshProfileByDefault: context.extensionMode !== vscode.ExtensionMode.Production,
+	});
+	try {
+		await firstLaunchCoordinator.initialize();
+		await migrateLegacyEditingPreferences(context);
+	} catch (error) {
+		getWorkbenchLogger().error('[Kusto Workbench] Failed to initialize first-launch setup:', error instanceof Error ? error : String(error));
+		throw error;
+	}
+	registerFirstLaunchTriggers(context, firstLaunchCoordinator);
 	context.subscriptions.push(
 		vscode.workspace.onDidChangeConfiguration((e) => {
-			if (e.affectsConfiguration('kustoWorkbench.openKqlFiles') || e.affectsConfiguration('kustoWorkbench.openCslFiles') || e.affectsConfiguration('kustoWorkbench.openMdFiles') || e.affectsConfiguration('kustoWorkbench.openSqlFiles')) {
-				void updateEditorAssociations();
+			const changedPreferenceKeys = (['openKqlFiles', 'openCslFiles', 'openMdFiles', 'openSqlFiles'] as const)
+				.filter(key => e.affectsConfiguration(`kustoWorkbench.${key}`)) as FilePreferenceKey[];
+			if (changedPreferenceKeys.length > 0) {
+				void firstLaunchCoordinator.reconcileFileAssociationsFromSettings(changedPreferenceKeys).catch(error => {
+					getWorkbenchLogger().error('[Kusto Workbench] Failed to reconcile editor associations:', error instanceof Error ? error : String(error));
+				});
+			}
+			const editingConfigurationChanged = Object.values(EDITING_PREFERENCE_CONFIGURATION_KEYS)
+				.some(key => e.affectsConfiguration(`kustoWorkbench.${key}`));
+			if (editingConfigurationChanged) {
+				void refreshEditingPreferences(context).then(message => toolOrchestrator?.postToAllWebviews(message)).catch(error => {
+					getWorkbenchLogger().error('[Kusto Workbench] Failed to refresh editing preferences:', error instanceof Error ? error : String(error));
+				});
 			}
 		})
 	);
@@ -455,7 +441,7 @@ export function activate(context: vscode.ExtensionContext) {
 		return true;
 	};
 	const tutorialNotificationService = new TutorialNotificationService(context, tutorialCatalogService, tutorialSubscriptionService, openTutorialPopup);
-	registerTutorialNotificationTriggers(context, tutorialNotificationService);
+	registerTutorialNotificationTriggers(context, tutorialNotificationService, () => firstLaunchCoordinator.waitForAutomaticSetup());
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
 		const getActiveTutorialTriggerDocument = async (): Promise<vscode.TextDocument | undefined> => {
 			const activeDocument = vscode.window.activeTextEditor?.document;
@@ -1144,12 +1130,19 @@ export function activate(context: vscode.ExtensionContext) {
 	}
 
 	// Register URI handler and "Open Remote File" command
-	registerRemoteFileOpener(context);
+	registerRemoteFileOpener(context, () => firstLaunchCoordinator.gateCommand());
 
 	// Register Activity Bar quick access view
 	context.subscriptions.push(
 		vscode.window.registerWebviewViewProvider('kustoWorkbench.quickAccess', {
 			resolveWebviewView(webviewView: vscode.WebviewView) {
+				const triggerFirstLaunch = (): void => {
+					if (webviewView.visible) {
+						void firstLaunchCoordinator.triggerAutomatic('activity-bar');
+					}
+				};
+				context.subscriptions.push(webviewView.onDidChangeVisibility(triggerFirstLaunch));
+				triggerFirstLaunch();
 				webviewView.webview.options = {
 					enableScripts: true,
 					localResourceRoots: [context.extensionUri]
@@ -1394,8 +1387,13 @@ export function activate(context: vscode.ExtensionContext) {
 	);
 
 	// Register commands
+	const afterFirstLaunch = <T extends unknown[], R>(handler: (...args: T) => R | Promise<R>) => async (...args: T): Promise<R> => {
+		await firstLaunchCoordinator.gateCommand();
+		return await handler(...args);
+	};
+
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.openQueryEditor', async () => {
+		vscode.commands.registerCommand('kusto.openQueryEditor', afterFirstLaunch(async () => {
 			// Open the persistent session file (survives restarts/crashes).
 			await vscode.workspace.fs.createDirectory(context.globalStorageUri);
 			const sessionUri = vscode.Uri.joinPath(context.globalStorageUri, 'session.kqlx');
@@ -1412,23 +1410,23 @@ export function activate(context: vscode.ExtensionContext) {
 			await vscode.commands.executeCommand('vscode.openWith', sessionUri, KqlxEditorProvider.viewType, {
 				viewColumn: vscode.ViewColumn.One
 			});
-		})
+		}))
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.openTutorials', async (categoryId?: string) => {
+		vscode.commands.registerCommand('kusto.openTutorials', afterFirstLaunch(async (categoryId?: string) => {
 			await openTutorials(typeof categoryId === 'string' ? categoryId : undefined, 'standard');
-		})
+		}))
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.manageConnections', () => {
+		vscode.commands.registerCommand('kusto.manageConnections', afterFirstLaunch(() => {
 			ConnectionManagerViewerV2.open(context, context.extensionUri, connectionManager, { getSqlConnectionManager, getSqlClient });
-		})
+		}))
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.deleteAllConnections', async () => {
+		vscode.commands.registerCommand('kusto.deleteAllConnections', afterFirstLaunch(async () => {
 			const confirm = await vscode.window.showWarningMessage(
 				'Delete all saved Kusto connections?',
 				{ modal: true, detail: 'This removes all saved cluster connections from this machine.' },
@@ -1441,11 +1439,11 @@ export function activate(context: vscode.ExtensionContext) {
 			void vscode.window.showInformationMessage(
 				removed > 0 ? `Deleted ${removed} connection${removed === 1 ? '' : 's'}.` : 'No saved connections to delete.'
 			);
-		})
+		}))
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.openKqlxFile', async () => {
+		vscode.commands.registerCommand('kusto.openKqlxFile', afterFirstLaunch(async () => {
 			const pick = await vscode.window.showOpenDialog({
 				canSelectMany: false,
 				openLabel: 'Open .kqlx',
@@ -1457,11 +1455,11 @@ export function activate(context: vscode.ExtensionContext) {
 			await vscode.commands.executeCommand('vscode.openWith', pick[0], KqlxEditorProvider.viewType, {
 				viewColumn: vscode.ViewColumn.One
 			});
-		})
+		}))
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.openMdxFile', async () => {
+		vscode.commands.registerCommand('kusto.openMdxFile', afterFirstLaunch(async () => {
 			const pick = await vscode.window.showOpenDialog({
 				canSelectMany: false,
 				openLabel: 'Open .mdx',
@@ -1473,24 +1471,24 @@ export function activate(context: vscode.ExtensionContext) {
 			await vscode.commands.executeCommand('vscode.openWith', pick[0], KqlxEditorProvider.viewType, {
 				viewColumn: vscode.ViewColumn.One
 			});
-		})
+		}))
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.saveKqlxAs', async () => {
+		vscode.commands.registerCommand('kusto.saveKqlxAs', afterFirstLaunch(async () => {
 			// Delegate to VS Code's built-in Save As for the active editor/document.
 			await vscode.commands.executeCommand('workbench.action.files.saveAs');
-		})
+		}))
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.seeCachedValues', async () => {
+		vscode.commands.registerCommand('kusto.seeCachedValues', afterFirstLaunch(async () => {
 			CachedValuesViewerV2.open(context, context.extensionUri, connectionManager, { getSqlConnectionManager, getSqlClient });
-		})
+		}))
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.showDevelopmentNotes', async () => {
+		vscode.commands.registerCommand('kusto.showDevelopmentNotes', afterFirstLaunch(async () => {
 			if (!toolOrchestrator) {
 				vscode.window.showWarningMessage('Kusto Workbench is not initialized yet.');
 				return;
@@ -1530,11 +1528,11 @@ export function activate(context: vscode.ExtensionContext) {
 			} catch (err) {
 				vscode.window.showErrorMessage(`Failed to read development notes: ${err instanceof Error ? err.message : String(err)}`);
 			}
-		})
+		}))
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.resetCopilotModelSelection', async () => {
+		vscode.commands.registerCommand('kusto.resetCopilotModelSelection', afterFirstLaunch(async () => {
 			// Clear extension globalState (this is the source of truth now).
 			try {
 				await context.globalState.update('kusto.optimize.lastCopilotModelId', undefined);
@@ -1550,20 +1548,30 @@ export function activate(context: vscode.ExtensionContext) {
 			}
 
 			void vscode.window.showInformationMessage('Reset Copilot model selection. New editors will use the default model.');
-		})
+		}))
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.openCustomAgent', async () => {
+		vscode.commands.registerCommand('kusto.openCustomAgent', afterFirstLaunch(async () => {
 			await openKustoWorkbenchAgentChat();
-		})
+		}))
 	);
 
 	context.subscriptions.push(
-		vscode.commands.registerCommand('kusto.exportSkill', async () => {
+		vscode.commands.registerCommand('kusto.exportSkill', afterFirstLaunch(async () => {
 			await exportSkillCommand(context);
-		})
+		}))
 	);
+
+	context.subscriptions.push(
+		vscode.commands.registerCommand('kusto.configureFirstLaunchSetup', () => firstLaunchCoordinator.openConfiguration())
+	);
+
+	if (context.extensionMode !== vscode.ExtensionMode.Production) {
+		context.subscriptions.push(
+			vscode.commands.registerCommand('kustoWorkbench.test.resetFirstLaunchSetup', () => firstLaunchCoordinator.resetForDevelopment())
+		);
+	}
 
 	// Fire-and-forget: update previously exported skill files if the template changed.
 	void checkAndUpdateSkillFiles(context);

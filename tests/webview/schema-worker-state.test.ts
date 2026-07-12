@@ -30,6 +30,9 @@ import {
 	updateKustoPreparation,
 	waitForSchemaWorkerReady,
 } from '../../src/webview/core/state';
+import {
+	KUSTO_SCHEMA_PREPARATION_TIMEOUT_MS,
+} from '../../src/webview/shared/kusto-schema-preparation-deadline.js';
 
 describe('schema worker readiness state', () => {
 	beforeEach(() => {
@@ -163,6 +166,62 @@ describe('schema worker readiness state', () => {
 		expect(isSchemaEnhancementFailed('query_enhancement_error', 'cluster|db', 'sig-1', 'inmemory://model/1')).toBe(true);
 		expect(isSchemaWorkerReady('query_enhancement_error', 'cluster|db', 'inmemory://model/1')).toBe(true);
 		expect(getKustoPreparationState('query_enhancement_error')).toMatchObject({ status: 'ready', stage: 'ready', blockers: [] });
+	});
+
+	it('terminalizes a secondary restore owner and rejects late readiness after its deadline', async () => {
+		vi.useFakeTimers();
+		try {
+			const boxId = 'query_secondary_restore';
+			const schemaKey = 'cluster|db';
+			const schemaSignature = 'sig-1';
+			const modelUri = 'inmemory://model/secondary';
+			const token = beginKustoPreparation(boxId, {
+				stage: 'ready',
+				blockers: [],
+				target: { schemaKey, schemaSignature, modelUri },
+			})!;
+			markSchemaWorkerReady(boxId, schemaKey, schemaSignature, modelUri, token);
+			markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature, modelUri, token);
+			let resolveRestore!: (value: number) => void;
+			const restoreOperation = new Promise<number>(resolve => { resolveRestore = resolve; });
+			await vi.advanceTimersByTimeAsync(KUSTO_SCHEMA_PREPARATION_TIMEOUT_MS);
+			expect(getKustoPreparationState(boxId)).toMatchObject({ status: 'error', stage: 'error', blockers: [] });
+
+			resolveRestore(1);
+			await restoreOperation;
+			markSchemaWorkerReady(boxId, schemaKey, schemaSignature, modelUri, token);
+			expect(getKustoPreparationState(boxId)).toMatchObject({ status: 'error', stage: 'error', blockers: [] });
+			expect(isSchemaWorkerReady(boxId, schemaKey, modelUri)).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('gives an aged ready section a fresh worker-preparation episode', async () => {
+		vi.useFakeTimers();
+		try {
+			const boxId = 'query_aged_ready';
+			const schemaKey = 'cluster|db';
+			const schemaSignature = 'sig-1';
+			const modelUri = 'inmemory://model/aged';
+			const token = beginKustoPreparation(boxId, {
+				stage: 'waiting-worker',
+				blockers: ['worker'],
+				target: { schemaKey, schemaSignature, modelUri },
+			})!;
+			markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature, modelUri, token);
+			markSchemaWorkerReady(boxId, schemaKey, schemaSignature, modelUri, token);
+			await vi.advanceTimersByTimeAsync(KUSTO_SCHEMA_PREPARATION_TIMEOUT_MS + 5_000);
+
+			markSchemaWorkerApplyPending(boxId, schemaKey, schemaSignature, modelUri, token);
+			await vi.advanceTimersByTimeAsync(KUSTO_SCHEMA_PREPARATION_TIMEOUT_MS - 1);
+			expect(getKustoPreparationState(boxId)).toMatchObject({ status: 'preparing', blockers: ['worker'] });
+
+			await vi.advanceTimersByTimeAsync(1);
+			expect(getKustoPreparationState(boxId)).toMatchObject({ status: 'error', stage: 'error', blockers: [] });
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it('settles a canceled background enhancement without changing readiness', () => {

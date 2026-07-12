@@ -114,6 +114,10 @@ export class TabInputCustom {
 	constructor(public readonly uri: Uri, public readonly viewType: string) {}
 }
 
+export class TabInputTextDiff {
+	constructor(public readonly original: Uri, public readonly modified: Uri) {}
+}
+
 export const __mockStatusBarItems: any[] = [];
 export const __mockCommandCalls: Array<{ command: string; args: unknown[] }> = [];
 

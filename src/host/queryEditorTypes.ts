@@ -9,6 +9,7 @@ export const STORAGE_KEYS = {
 	caretDocsEnabled: 'kusto.caretDocsEnabled',
 	autoTriggerAutocompleteEnabled: 'kusto.autoTriggerAutocompleteEnabled',
 	copilotInlineCompletionsEnabled: 'kusto.copilotInlineCompletionsEnabled',
+	editingPreferencesRevision: 'kusto.editingPreferencesRevision',
 	cachedSchemasMigratedToDisk: 'kusto.cachedSchemasMigratedToDisk',
 	lastOptimizeCopilotModelId: 'kusto.optimize.lastCopilotModelId',
 	favorites: 'kusto.favorites',
@@ -304,3 +305,5 @@ export type ChangedSectionsMessage = {
 	type: 'changedSections';
 	changes: SectionChangeInfo[];
 };
+
+export type { EditingPreferencesDataMessage } from '../shared/editingPreferences';

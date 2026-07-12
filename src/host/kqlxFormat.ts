@@ -256,6 +256,7 @@ export interface DevNoteEntry {
 
 export interface KqlxStateV1 {
 	caretDocsEnabled?: boolean;
+	autoTriggerAutocompleteEnabled?: boolean;
 	sections: KqlxSectionV1[];
 }
 
@@ -343,6 +344,9 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 	const parsedState: KqlxStateV1 = { sections };
 	if (typeof (state as any).caretDocsEnabled === 'boolean') {
 		parsedState.caretDocsEnabled = (state as any).caretDocsEnabled;
+	}
+	if (typeof (state as any).autoTriggerAutocompleteEnabled === 'boolean') {
+		parsedState.autoTriggerAutocompleteEnabled = (state as any).autoTriggerAutocompleteEnabled;
 	}
 
 	return {
