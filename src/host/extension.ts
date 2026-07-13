@@ -3,7 +3,7 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { ConnectionManager, normalizeFilePath, type FileConnectionCacheEntry } from './connectionManager';
-import { setTestIsolateKustoConnections, testIsolateKustoConnections } from './queryEditorConnection';
+import { ConnectionService, setTestIsolateKustoConnections, testIsolateKustoConnections } from './queryEditorConnection';
 import { CachedValuesViewerV2 } from './cachedValuesViewer';
 import { ConnectionManagerViewerV2 } from './connectionManagerViewer';
 import { SqlConnectionManager } from './sqlConnectionManager';
@@ -32,7 +32,10 @@ import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { createEmptyKqlxFile, stringifyKqlxFile, parseKqlxText, type KqlxFileV1 } from './kqlxFormat';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { STORAGE_KEYS } from './queryEditorTypes';
-import { getSchemaCacheFileUri, SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from './schemaCache';
+import { deleteCachedSchemasForConnections, getSchemaCacheFileUri, SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from './schemaCache';
+import { KustoAuthPreferenceService } from './kustoAuthPreferenceService';
+import { KustoConnectionCache } from './kustoConnectionCache';
+import { normalizeKustoAuthorityId } from '../shared/kustoAuth';
 
 import { stsProcessManagerSingleton } from './sql/stsProcessManager';
 import { getWorkbenchLogger, registerWorkbenchLogger } from './workbenchLogger';
@@ -48,6 +51,15 @@ import {
 } from './editingPreferences';
 
 type TestOpenFileSummary = NonNullable<Awaited<ReturnType<KustoWorkbenchToolOrchestrator['listSections']>>['openFiles']>[number];
+
+export async function clearAllKustoConnectionsAndFavorites(
+	context: Pick<vscode.ExtensionContext, 'globalState'>,
+	connectionManager: Pick<ConnectionManager, 'clearConnections'>,
+): Promise<number> {
+	const removed = await connectionManager.clearConnections();
+	await context.globalState.update(STORAGE_KEYS.favorites, []);
+	return removed;
+}
 
 // Export the tool orchestrator instance so other modules can access it
 export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
@@ -132,6 +144,128 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			fileConnectionEntries?: Record<string, FileConnectionCacheEntry | null>;
 		};
 		const supplementalClusterKeys = new Set([supplementalCurrentCluster, supplementalRemoteCluster].map(kustoClusterKey));
+		const testAuthAccount = { id: 'kusto-workbench-test-account', label: 'Kusto Workbench test account' };
+		const testAuthPreferences = KustoAuthPreferenceService.getInstance(context);
+		const testConnectionCache = new KustoConnectionCache(context);
+		const authorityLivePrefix = 'E2E Authority ID Live';
+		const authorityLiveJournalKey = 'kusto.test.authorityLiveFixture.v1';
+		type AuthorityLiveJournal = { connectionIds: string[] };
+		const readAuthorityLiveJournal = (): AuthorityLiveJournal => {
+			const raw = context.globalState.get<Partial<AuthorityLiveJournal> | undefined>(authorityLiveJournalKey);
+			return { connectionIds: Array.isArray(raw?.connectionIds) ? raw.connectionIds.map(String).filter(Boolean) : [] };
+		};
+		const journalAuthorityLiveConnection = async (connectionId: string): Promise<void> => {
+			const journal = readAuthorityLiveJournal();
+			if (!journal.connectionIds.includes(connectionId)) journal.connectionIds.push(connectionId);
+			await context.globalState.update(authorityLiveJournalKey, journal);
+		};
+		const cleanupAuthorityLiveState = async (): Promise<void> => {
+			const fixtureConnectionIds = new Set(readAuthorityLiveJournal().connectionIds);
+			if (fixtureConnectionIds.size === 0) return;
+			const favorites = context.globalState.get<unknown>(STORAGE_KEYS.favorites);
+			if (Array.isArray(favorites)) {
+				await context.globalState.update(STORAGE_KEYS.favorites, favorites.filter((favorite: any) =>
+					!fixtureConnectionIds.has(String(favorite?.connectionId || ''))
+				));
+			}
+			for (const connectionId of fixtureConnectionIds) {
+				await testConnectionCache.clearConnection(connectionId);
+				await testAuthPreferences.removeConnection(connectionId);
+				await connectionManager.removeConnection(connectionId);
+			}
+			await context.globalState.update(authorityLiveJournalKey, undefined);
+		};
+		const authorityLiveStartupCleanup = (process.env.KUSTO_AUTH_REPRO_LIVE === '1' ? cleanupAuthorityLiveState() : Promise.resolve()).catch(error => {
+			getWorkbenchLogger().warn(`[e2e] failed to clean interrupted Authority ID fixture: ${error instanceof Error ? error.name : 'Error'}`);
+		});
+		const getAuthorityLiveConfig = () => {
+			if (process.env.KUSTO_AUTH_REPRO_LIVE !== '1') {
+				throw new Error('Set KUSTO_AUTH_REPRO_LIVE=1 to enable the opt-in Authority ID fixture.');
+			}
+			const clusterRaw = String(process.env.KUSTO_AUTH_REPRO_CLUSTER || '').trim();
+			const database = String(process.env.KUSTO_AUTH_REPRO_DATABASE || '').trim();
+			const resourceAuthority = normalizeKustoAuthorityId(process.env.KUSTO_AUTH_REPRO_RESOURCE_AUTHORITY);
+			const wrongAuthority = normalizeKustoAuthorityId(process.env.KUSTO_AUTH_REPRO_WRONG_AUTHORITY);
+			const expectedAccount = String(process.env.KUSTO_AUTH_REPRO_EXPECTED_ACCOUNT || '').trim();
+			let clusterUrl = '';
+			try {
+				const parsed = new URL(clusterRaw);
+				if (parsed.protocol !== 'https:' || parsed.username || parsed.password || parsed.port || parsed.search || parsed.hash || (parsed.pathname && parsed.pathname !== '/')) {
+					throw new Error();
+				}
+				clusterUrl = parsed.origin;
+			} catch {
+				throw new Error('KUSTO_AUTH_REPRO_CLUSTER must be an HTTPS root URL.');
+			}
+			if (!database || !resourceAuthority || !wrongAuthority || !expectedAccount) {
+				throw new Error('KUSTO_AUTH_REPRO_DATABASE, KUSTO_AUTH_REPRO_RESOURCE_AUTHORITY, KUSTO_AUTH_REPRO_WRONG_AUTHORITY, and KUSTO_AUTH_REPRO_EXPECTED_ACCOUNT are required.');
+			}
+			if (resourceAuthority === wrongAuthority) throw new Error('Live fixture authorities must differ.');
+			return { clusterUrl, database, resourceAuthority, wrongAuthority, expectedAccount };
+		};
+		const runAuthorityLiveFixture = async () => {
+			await authorityLiveStartupCleanup;
+			await cleanupAuthorityLiveState();
+			const config = getAuthorityLiveConfig();
+			const accounts = await testAuthPreferences.getAccounts();
+			const expectedAccountKey = config.expectedAccount.toLowerCase();
+			const account = accounts.find(candidate =>
+				candidate.id.toLowerCase() === expectedAccountKey || candidate.label.toLowerCase() === expectedAccountKey
+			);
+			if (!account) throw new Error('The expected Microsoft account is unavailable in the prepared VS Code profile.');
+
+			try {
+				const wrongConnection = await connectionManager.addConnection({
+					name: `${authorityLivePrefix} Wrong authority`,
+					clusterUrl: config.clusterUrl,
+					database: config.database,
+					authorityId: config.wrongAuthority,
+				});
+				await journalAuthorityLiveConnection(wrongConnection.id);
+				const resourceConnection = await connectionManager.addConnection({
+					name: `${authorityLivePrefix} Resource authority`,
+					clusterUrl: config.clusterUrl,
+					database: config.database,
+					authorityId: config.resourceAuthority,
+				});
+				await journalAuthorityLiveConnection(resourceConnection.id);
+				await testAuthPreferences.setExplicitAccount(wrongConnection.id, account);
+				await testAuthPreferences.setExplicitAccount(resourceConnection.id, account);
+
+				const client = new KustoQueryClient(context, undefined, connectionManager);
+				try {
+					const wrongDatabases = await client.getDatabases(wrongConnection, true, {
+						allowInteractive: false,
+						source: 'authority-live-e2e-wrong',
+					});
+					const resourceDatabases = await client.getDatabases(resourceConnection, true, {
+						allowInteractive: false,
+						source: 'authority-live-e2e-resource',
+					});
+					const target = config.database.toLowerCase();
+					const wrongTargetVisible = wrongDatabases.some(database => database.toLowerCase() === target);
+					const resourceTargetVisible = resourceDatabases.some(database => database.toLowerCase() === target);
+					if (wrongTargetVisible) throw new Error('Wrong authority unexpectedly exposed the target database.');
+					if (!resourceTargetVisible) throw new Error('Resource authority did not expose the target database.');
+					return {
+						verified: true,
+						clusterUrl: config.clusterUrl,
+						database: config.database,
+						wrongConnectionId: wrongConnection.id,
+						resourceConnectionId: resourceConnection.id,
+						wrongDatabaseCount: wrongDatabases.length,
+						resourceDatabaseCount: resourceDatabases.length,
+						wrongTargetVisible,
+						resourceTargetVisible,
+					};
+				} finally {
+					client.dispose();
+				}
+			} catch (error) {
+				await cleanupAuthorityLiveState();
+				throw error;
+			}
+		};
 		const isSupplementalConnection = (connection: { name?: string; clusterUrl?: string }): boolean =>
 			String(connection.name || '').startsWith(supplementalTestPrefix)
 			|| supplementalClusterKeys.has(kustoClusterKey(connection.clusterUrl));
@@ -170,8 +304,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				};
 				await context.globalState.update(supplementalPreviousSelectionKey, previousSelection);
 			}
-			for (const connection of connections) {
-				if (isSupplementalConnection(connection)) await connectionManager.removeConnection(connection.id);
+			const supplementalConnections = connections.filter(isSupplementalConnection);
+			for (const connection of supplementalConnections) {
+				await testConnectionCache.clearConnection(connection.id);
+				await testAuthPreferences.removeConnection(connection.id);
+				await connectionManager.removeConnection(connection.id);
 			}
 			for (const clusterKey of Object.keys(cachedDatabases)) {
 				if (supplementalClusterKeys.has(kustoClusterKey(clusterKey))) delete cachedDatabases[clusterKey];
@@ -189,8 +326,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				else delete fileConnectionCache[filePath];
 			}
 			await context.globalState.update('kusto.fileConnectionCache', fileConnectionCache);
-			for (const clusterUrl of [supplementalCurrentCluster, supplementalRemoteCluster]) {
-				const cacheFile = getSchemaCacheFileUri(context.globalStorageUri, schemaCacheKey(clusterUrl, supplementalDatabase));
+			for (const connection of supplementalConnections) {
+				const partition = testAuthPreferences.getAccountPartition(connection.authorityId, testAuthAccount.id);
+				const cacheFile = getSchemaCacheFileUri(context.globalStorageUri, schemaCacheKey(connection.clusterUrl, supplementalDatabase, connection.id, partition));
 				try { await vscode.workspace.fs.delete(cacheFile, { useTrash: false }); } catch { /* absent fixture cache */ }
 			}
 			const restoreLastConnectionId = previousSelection.lastConnectionIdPresent ?? previousSelection.lastConnectionId !== undefined;
@@ -246,11 +384,16 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		const testClusterKeys = new Set(testClusters.map(cluster => kustoClusterKey(cluster)).filter(Boolean));
 		const isTestCluster = (value: unknown): boolean => testClusterKeys.has(kustoClusterKey(String(value || '')));
 		const cleanupIdentityChecklistState = async (): Promise<void> => {
+			const removedConnectionIds = new Set<string>();
 			for (const connection of connectionManager.getConnections()) {
 				if (String(connection.name || '').startsWith(testPrefix) || isTestCluster(connection.clusterUrl)) {
+					removedConnectionIds.add(connection.id);
+					await testConnectionCache.clearConnection(connection.id);
+					await testAuthPreferences.removeConnection(connection.id);
 					await connectionManager.removeConnection(connection.id);
 				}
 			}
+			await deleteCachedSchemasForConnections(context.globalStorageUri, removedConnectionIds);
 			const favoritesRaw = context.globalState.get<unknown>(STORAGE_KEYS.favorites);
 			if (Array.isArray(favoritesRaw)) {
 				await context.globalState.update(STORAGE_KEYS.favorites, favoritesRaw.filter((favorite: any) =>
@@ -271,6 +414,11 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		};
 
 		context.subscriptions.push(
+			vscode.commands.registerCommand('kustoWorkbench.test.runAuthorityLiveFixture', runAuthorityLiveFixture),
+			vscode.commands.registerCommand('kustoWorkbench.test.cleanupAuthorityLiveFixture', async () => {
+				await authorityLiveStartupCleanup;
+				await cleanupAuthorityLiveState();
+			}),
 			vscode.commands.registerCommand('kustoWorkbench.test.cleanupKustoIdentityChecklist', cleanupIdentityChecklistState),
 			vscode.commands.registerCommand('kustoWorkbench.test.cleanupSupplementalSchemaDiagnosticsState', async () => {
 				await supplementalStartupCleanup;
@@ -290,9 +438,9 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				await context.globalState.update(STORAGE_KEYS.lastConnectionId, seedConnection.id);
 				await context.globalState.update(STORAGE_KEYS.lastDatabase, textDiagnosticsTestDatabase);
 				await context.globalState.update('kusto.fileConnectionCache', {});
-				const cachedDatabases = context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases) || {};
-				cachedDatabases[kustoClusterKey(textDiagnosticsTestCluster)] = [textDiagnosticsTestDatabase];
-				await context.globalState.update(STORAGE_KEYS.cachedDatabases, cachedDatabases);
+				await testAuthPreferences.setExplicitAccount(seedConnection.id, testAuthAccount);
+				const accountPartition = testAuthPreferences.getAccountPartition(seedConnection.authorityId, testAuthAccount.id);
+				await testConnectionCache.setDatabases(seedConnection.id, accountPartition, [textDiagnosticsTestDatabase]);
 				const schema = {
 					tables: ['KnownOnly'],
 					columnTypesByTable: {
@@ -302,13 +450,15 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 						}
 					}
 				};
-				const cacheKey = schemaCacheKey(textDiagnosticsTestCluster, textDiagnosticsTestDatabase);
+				const cacheKey = schemaCacheKey(textDiagnosticsTestCluster, textDiagnosticsTestDatabase, seedConnection.id, accountPartition);
 				await writeCachedSchemaToDisk(context.globalStorageUri, cacheKey, {
 					schema,
 					timestamp: Date.now(),
 					version: SCHEMA_CACHE_VERSION,
 					clusterUrl: textDiagnosticsTestCluster,
-					database: textDiagnosticsTestDatabase
+					database: textDiagnosticsTestDatabase,
+					connectionId: seedConnection.id,
+					accountPartition,
 				});
 				return { connectionId: seedConnection.id, clusterUrl: textDiagnosticsTestCluster, database: textDiagnosticsTestDatabase };
 			}),
@@ -320,17 +470,19 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					clusterUrl: supplementalCurrentCluster,
 					database: supplementalDatabase,
 				});
-				await connectionManager.addConnection({
+				const remoteConnection = await connectionManager.addConnection({
 					name: `${supplementalTestPrefix} Remote`,
 					clusterUrl: supplementalRemoteCluster,
 					database: supplementalDatabase,
 				});
 				await context.globalState.update(STORAGE_KEYS.lastConnectionId, currentConnection.id);
 				await context.globalState.update(STORAGE_KEYS.lastDatabase, supplementalDatabase);
-				const cachedDatabases = context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases) || {};
-				cachedDatabases[kustoClusterKey(supplementalCurrentCluster)] = [supplementalDatabase];
-				cachedDatabases[kustoClusterKey(supplementalRemoteCluster)] = [supplementalDatabase];
-				await context.globalState.update(STORAGE_KEYS.cachedDatabases, cachedDatabases);
+				await testAuthPreferences.setExplicitAccount(currentConnection.id, testAuthAccount);
+				await testAuthPreferences.setExplicitAccount(remoteConnection.id, testAuthAccount);
+				const currentPartition = testAuthPreferences.getAccountPartition(currentConnection.authorityId, testAuthAccount.id);
+				const remotePartition = testAuthPreferences.getAccountPartition(remoteConnection.authorityId, testAuthAccount.id);
+				await testConnectionCache.setDatabases(currentConnection.id, currentPartition, [supplementalDatabase]);
+				await testConnectionCache.setDatabases(remoteConnection.id, remotePartition, [supplementalDatabase]);
 				const makeSchema = (tableName: string, uniqueColumn: string) => ({
 					tables: [tableName],
 					columnTypesByTable: { [tableName]: { TIMESTAMP: 'datetime', [uniqueColumn]: 'string' } },
@@ -353,16 +505,18 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 					},
 				});
 				for (const seed of [
-					{ clusterUrl: supplementalCurrentCluster, tableName: 'CurrentEvents', uniqueColumn: 'CurrentOnlyColumn' },
-					{ clusterUrl: supplementalRemoteCluster, tableName: 'RemoteEvents', uniqueColumn: 'RemoteOnlyColumn' },
+					{ connection: currentConnection, accountPartition: currentPartition, tableName: 'CurrentEvents', uniqueColumn: 'CurrentOnlyColumn' },
+					{ connection: remoteConnection, accountPartition: remotePartition, tableName: 'RemoteEvents', uniqueColumn: 'RemoteOnlyColumn' },
 				]) {
 					const schema = makeSchema(seed.tableName, seed.uniqueColumn);
-					await writeCachedSchemaToDisk(context.globalStorageUri, schemaCacheKey(seed.clusterUrl, supplementalDatabase), {
+					await writeCachedSchemaToDisk(context.globalStorageUri, schemaCacheKey(seed.connection.clusterUrl, supplementalDatabase, seed.connection.id, seed.accountPartition), {
 						schema,
 						timestamp: Date.now(),
 						version: SCHEMA_CACHE_VERSION,
-						clusterUrl: seed.clusterUrl,
+						clusterUrl: seed.connection.clusterUrl,
 						database: supplementalDatabase,
+						connectionId: seed.connection.id,
+						accountPartition: seed.accountPartition,
 					});
 				}
 				if (fixturePath) {
@@ -510,7 +664,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	};
 
 	// Register Kusto Workbench tools for VS Code Copilot Chat integration
-	const toolKustoClient = new KustoQueryClient(context);
+	const toolKustoClient = new KustoQueryClient(context, undefined, connectionManager);
+	context.subscriptions.push(toolKustoClient);
 	toolOrchestrator = registerKustoWorkbenchTools(context, connectionManager, getSqlConnectionManager, toolKustoClient);
 	context.subscriptions.push(
 		vscode.workspace.onDidRenameFiles((event) => {
@@ -1435,7 +1590,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			if (confirm !== 'Delete') {
 				return;
 			}
-			const removed = await connectionManager.clearConnections();
+			const removed = await clearAllKustoConnectionsAndFavorites(context, connectionManager);
+			ConnectionService.broadcastKustoFavoritesData(context);
 			void vscode.window.showInformationMessage(
 				removed > 0 ? `Deleted ${removed} connection${removed === 1 ? '' : 's'}.` : 'No saved connections to delete.'
 			);

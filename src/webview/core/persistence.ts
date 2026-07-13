@@ -4,6 +4,7 @@ export {};
 
 import { normalizeClusterUrl, isLeaveNoTraceCluster, trySerializeQueryResult } from '../shared/persistence-utils';
 import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
+import { resolveKustoConnection } from '../../shared/kustoAuth.js';
 import { postMessageToHost } from '../shared/webview-messages';
 import { pState } from '../shared/persistence-state';
 import { displayResultForBox, getResultsStateRevision } from './results-state';
@@ -933,6 +934,8 @@ export function getKqlxState() {
 				? (queryEditors[firstQueryBoxId].getValue() || '')
 				: '';
 			let clusterUrl = '';
+			let authorityId = '';
+			let connectionIdHint = '';
 			let database = '';
 			let resultJson = '';
 			let favoritesMode;
@@ -944,6 +947,8 @@ export function getKqlxState() {
 						if (connectionId && Array.isArray(connections)) {
 							const conn = (connections || []).find((c: any) => c && String(c.id || '') === String(connectionId));
 							clusterUrl = conn ? String(conn.clusterUrl || '') : '';
+							authorityId = conn ? String(conn.authorityId || '') : '';
+							connectionIdHint = conn ? String(conn.id || '') : '';
 						}
 					} catch (e) { console.error('[kusto]', e); }
 					try {
@@ -971,6 +976,8 @@ export function getKqlxState() {
 						...(firstQueryBoxId ? { id: firstQueryBoxId } : {}),
 						query: q,
 						...(clusterUrl ? { clusterUrl } : {}),
+						...(authorityId ? { authorityId } : {}),
+						...(connectionIdHint ? { connectionIdHint } : {}),
 						...(database ? { database } : {}),
 						// Leave no trace: don't persist results from sensitive clusters
 						...(resultJson && !__kustoIsLeaveNoTraceCluster(clusterUrl) ? { resultJson } : {}),
@@ -1221,6 +1228,8 @@ function applyKqlxState(state: any) {
 			const singleKind = String(pState.compatibilitySingleKind || 'query');
 			let singleText = '';
 			let suggestedClusterUrl = '';
+			let suggestedAuthorityId = '';
+			let suggestedConnectionIdHint = '';
 			let suggestedDatabase = '';
 			try {
 				const sections = Array.isArray(s.sections) ? s.sections : [];
@@ -1232,6 +1241,8 @@ function applyKqlxState(state: any) {
 					// Optional: extension host can provide a best-effort suggested selection for .kql/.csl.
 					try {
 						suggestedClusterUrl = first ? String(first.clusterUrl || '') : '';
+						suggestedAuthorityId = first ? String(first.authorityId || '') : '';
+						suggestedConnectionIdHint = first ? String(first.connectionIdHint || '') : '';
 						suggestedDatabase = first ? String(first.database || '') : '';
 					} catch (e) { console.error('[kusto]', e); }
 				}
@@ -1271,6 +1282,9 @@ function applyKqlxState(state: any) {
 					if (desiredClusterUrl && typeof kwEl.setDesiredClusterUrl === 'function') {
 						kwEl.setDesiredClusterUrl(desiredClusterUrl);
 					}
+					if (typeof kwEl.setDesiredConnectionIdentity === 'function') {
+						kwEl.setDesiredConnectionIdentity(suggestedAuthorityId, suggestedConnectionIdHint);
+					}
 					if (db && typeof kwEl.setDesiredDatabase === 'function') {
 						kwEl.setDesiredDatabase(db);
 					}
@@ -1298,17 +1312,10 @@ function applyKqlxState(state: any) {
 		}
 
 		const sections = Array.isArray(s.sections) ? s.sections : [];
-		const findConnectionIdByClusterUrl = (clusterUrl: any) => {
+		const resolveConnectionId = (clusterUrl: any, authorityId: any, connectionIdHint: any) => {
 			try {
-				const key = kustoClusterKey(clusterUrl);
-				if (!key) return '';
-				for (const c of (connections || [])) {
-					if (!c) continue;
-					const ck = kustoClusterKey(c.clusterUrl || '');
-					if (ck && ck === key) {
-						return String(c.id || '');
-					}
-				}
+				const resolution = resolveKustoConnection(connections || [], { clusterUrl, authorityId, connectionIdHint });
+				return resolution.kind === 'matched' ? String(resolution.connection.id || '') : '';
 			} catch (e) { console.error('[kusto]', e); }
 			return '';
 		};
@@ -1328,6 +1335,8 @@ function applyKqlxState(state: any) {
 					id: (section.id ? String(section.id) : undefined),
 					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true,
 					clusterUrl: String(section.clusterUrl || ''),
+					authorityId: String(section.authorityId || ''),
+					connectionIdHint: String(section.connectionIdHint || ''),
 					database: String(section.database || '')
 				});
 				try {
@@ -1335,7 +1344,9 @@ function applyKqlxState(state: any) {
 				} catch (e) { console.error('[kusto]', e); }
 				try {
 					const desiredClusterUrl = String(section.clusterUrl || '');
-					const resolvedConnectionId = desiredClusterUrl ? findConnectionIdByClusterUrl(desiredClusterUrl) : '';
+					const desiredAuthorityId = String(section.authorityId || '');
+					const connectionIdHint = String(section.connectionIdHint || '');
+					const resolvedConnectionId = desiredClusterUrl ? resolveConnectionId(desiredClusterUrl, desiredAuthorityId, connectionIdHint) : '';
 					const db = String(section.database || '');
 					const kwEl = __kustoGetQuerySectionElement(boxId);
 					// If this saved selection exists in favorites, switch to Favorites mode by default.
@@ -1353,6 +1364,9 @@ function applyKqlxState(state: any) {
 						}
 						if (desiredClusterUrl && typeof kwEl.setDesiredClusterUrl === 'function') {
 							kwEl.setDesiredClusterUrl(desiredClusterUrl);
+						}
+						if (typeof kwEl.setDesiredConnectionIdentity === 'function') {
+							kwEl.setDesiredConnectionIdentity(desiredAuthorityId, connectionIdHint);
 						}
 						if (resolvedConnectionId && typeof kwEl.setConnectionId === 'function') {
 							kwEl.setConnectionId(resolvedConnectionId);

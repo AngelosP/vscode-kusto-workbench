@@ -449,6 +449,10 @@
               "type": "string",
               "description": "The Kusto cluster URL (e.g., 'https://help.kusto.windows.net')"
             },
+            "connectionId": {
+              "type": "string",
+              "description": "Optional saved connection ID from #listKustoConnections. Required when multiple authority-specific connections share the cluster URL."
+            },
             "database": {
               "type": "string",
               "description": "Optional: a specific database name. When omitted, returns a summary of all databases on the cluster."
@@ -481,6 +485,18 @@
             "clusterUrl": {
               "type": "string",
               "description": "The Kusto cluster URL to refresh schemas for (e.g., 'https://help.kusto.windows.net')"
+            },
+            "connectionId": {
+              "type": "string",
+              "description": "Optional saved connection ID from #listKustoConnections. Required when multiple authority-specific connections share the cluster URL."
+            },
+            "openFileId": {
+              "type": "string",
+              "description": "Optional open Workbench file ID from #listSections. Routes live schema updates to that file."
+            },
+            "targetFileUri": {
+              "type": "string",
+              "description": "Optional URI or path of an open Workbench file to receive live schema updates."
             }
           },
           "required": [
@@ -574,6 +590,10 @@
             "clusterUrl": {
               "type": "string",
               "description": "For query sections: the Kusto cluster URL to connect to"
+            },
+            "connectionId": {
+              "type": "string",
+              "description": "For query sections: exact saved connection ID from #listKustoConnections. Required when multiple connections share the cluster URL."
             },
             "database": {
               "type": "string",
@@ -778,6 +798,10 @@
             "clusterUrl": {
               "type": "string",
               "description": "The Kusto cluster URL to connect to"
+            },
+            "connectionId": {
+              "type": "string",
+              "description": "Exact saved connection ID from #listKustoConnections. Required when multiple connections share the cluster URL."
             },
             "database": {
               "type": "string",
@@ -1526,6 +1550,10 @@
               "type": "string",
               "description": "Optional: Cluster URL to connect to (e.g., 'https://help.kusto.windows.net'). If not provided, uses the current connection."
             },
+            "connectionId": {
+              "type": "string",
+              "description": "Optional exact saved connection ID from #listKustoConnections. Required when multiple connections share clusterUrl."
+            },
             "database": {
               "type": "string",
               "description": "Optional: Database name to use. If not provided, uses the current database."
@@ -1886,6 +1914,7 @@
     "test:e2e:full:dry-run": "node scripts/e2e-full-suite.mjs --dry-run",
     "test:e2e:profile-check": "node scripts/e2e-full-suite.mjs --profile-check-only --profiles sql-auth,kusto-auth",
     "test:e2e:profile-check:repair": "node scripts/e2e-full-suite.mjs --profile-check-only --profiles sql-auth,kusto-auth --repair-profile-residue",
+    "repro:kusto-authority": "node scripts/repro-kusto-authority.mjs",
     "test:coverage-gate": "node scripts/coverage-gate.mjs",
     "validate:tutorials": "node scripts/validate-tutorial-catalog.mjs",
     "bundle-size": "node scripts/bundle-size.mjs",

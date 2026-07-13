@@ -4,6 +4,7 @@
 // Window bridge exports at bottom for remaining callers.
 import { __kustoGeneratedFunctionsMerged, setGeneratedFunctionsMerged } from './monaco';
 import { queryEditorBoxByModelUri, activeQueryEditorBoxId, schemaByBoxId, connections, schemaByConnDb } from '../core/state';
+import { getKustoSchemaIdentityKey, resolveKustoConnection } from '../../shared/kustoAuth.js';
 export {};
 
 const _win = window;
@@ -418,29 +419,22 @@ const __kustoCompletionProvider = {
 			}
 		};
 
-		const __kustoFindConnectionIdByClusterName = (clusterName: any) => {
+		const __kustoFindConnectionByClusterName = (clusterName: any) => {
 			try {
-				const target = __kustoNormalizeClusterForKusto(clusterName).toLowerCase();
-				if (!target) return null;
-				for (const c of (connections || [])) {
-					if (!c || !c.id) continue;
-					const url = String(c.clusterUrl || '').trim();
-					if (!url) continue;
-					const norm = __kustoNormalizeClusterForKusto(url).toLowerCase();
-					if (norm === target) {
-						return String(c.id);
-					}
-				}
+				const resolution = resolveKustoConnection(connections || [], { clusterUrl: clusterName });
+				return resolution.kind === 'matched' ? resolution.connection : null;
 			} catch (e) { console.error('[kusto]', e); }
 			return null;
 		};
 
 		const __kustoEnsureSchemaForClusterDb = async (clusterName: any, databaseName: any) => {
 			try {
-				const cid = __kustoFindConnectionIdByClusterName(clusterName);
+				const connection = __kustoFindConnectionByClusterName(clusterName);
 				const db = String(databaseName || '').trim();
-				if (!cid || !db) return null;
-				const key = cid + '|' + db;
+				const cid = String(connection?.id || '').trim();
+				const accountPartition = String(connection?.accountPartition || '').trim();
+				if (!cid || !accountPartition || !db) return null;
+				const key = getKustoSchemaIdentityKey(cid, accountPartition, connection.clusterUrl, db);
 				try {
 					if (schemaByConnDb && schemaByConnDb[key]) {
 						return schemaByConnDb[key];

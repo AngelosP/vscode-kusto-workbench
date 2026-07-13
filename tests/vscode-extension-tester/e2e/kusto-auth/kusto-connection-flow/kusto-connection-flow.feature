@@ -42,7 +42,7 @@ Feature: Kusto connection flow — cluster select, database loading, schema
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
 
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); if (el.dataset.testDatabaseSelected !== 'true') throw new Error('Database not selected'); const db = el.dataset.testDatabase || el.getDatabase(); if (!db) throw new Error('No database name'); return 'database selected: ' + db + ' ✓'; })()" in the webview
-    When I wait for "kw-query-section[data-test-preparation-state='ready']" in the webview for 60 seconds
+    When I evaluate "window.__e2e.kusto.waitForPreparationReady(0, 60000)" in the webview for 65 seconds
     When I evaluate "(() => { const el = document.querySelector('kw-query-section'); const toolbar = el.querySelector('.query-editor-toolbar'); const progress = toolbar ? getComputedStyle(toolbar, '::after') : null; if (el.getAttribute('aria-busy') !== 'false') throw new Error('Section remained aria-busy after preparation'); if (progress && String(progress.content || '') !== 'none') throw new Error('Progress pseudo-element remained visible after preparation'); return 'schema preparation complete'; })()" in the webview
     When I execute command "workbench.action.focusActiveEditorGroup"
     When I click at 600, 350
@@ -105,7 +105,7 @@ Feature: Kusto connection flow — cluster select, database loading, schema
     When I wait for "kw-query-section:nth-of-type(2)" in the webview for 20 seconds
     When I wait for "kw-query-section:nth-of-type(2)[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
     When I evaluate "window.__e2e.kusto.selectSampleDatabase(1)" in the webview
-    When I wait for "kw-query-section:nth-of-type(2)[data-test-preparation-state='ready']" in the webview for 60 seconds
+    When I evaluate "window.__e2e.kusto.waitForPreparationReady(1, 60000)" in the webview for 65 seconds
     When I click "kw-query-section:nth-of-type(2) .query-editor" in the webview
     When I evaluate "window.__e2e.kusto.waitForWorkerContext(1, 10000)" in the webview
     When I evaluate "window.__e2e.kusto.assertActualWorkerContext(1)" in the webview

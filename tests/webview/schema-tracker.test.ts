@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { SchemaTracker, type ISchemaWorker, type ProcessSchemaInput } from '../../src/webview/shared/schema-tracker';
-import { kustoDatabaseKey } from '../../src/shared/kustoClusterUrls';
+import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 const CLUSTER_A = 'https://clusterA.kusto.windows.net';
@@ -13,6 +13,12 @@ const MODEL_1 = 'inmemory://model/1';
 const MODEL_2 = 'inmemory://model/2';
 const MODEL_3 = 'inmemory://model/3';
 const SYNCED = 'inmemory://model/1'; // first model
+const CONNECTION_A = 'connection-a';
+const PARTITION_A = 'partition-a';
+
+function schemaKey(clusterUrl: string, database: string, connectionId = CONNECTION_A, accountPartition = PARTITION_A): string {
+	return getKustoSchemaIdentityKey(connectionId, accountPartition, clusterUrl, database);
+}
 
 /** Minimal schema object that mimics the Kusto showSchema format. */
 function makeSchema(database: string) {
@@ -33,6 +39,8 @@ function input(overrides: Partial<ProcessSchemaInput> = {}): ProcessSchemaInput 
 		rawSchemaJson: makeSchema(overrides.database ?? DB_1),
 		clusterUrl: CLUSTER_A,
 		database: DB_1,
+		connectionId: CONNECTION_A,
+		accountPartition: PARTITION_A,
 		setAsContext: true,
 		modelUri: MODEL_1,
 		forceRefresh: false,
@@ -78,8 +86,8 @@ describe('SchemaTracker', () => {
 			expect(result.operation.action).toBe('first-load');
 			expect(result.workerCall).toBe('setSchemaFromShowSchema');
 			expect(tracker.globalInitialized).toBe(true);
-			expect(tracker.databaseInContext).toEqual({ clusterUrl: CLUSTER_A, database: DB_1 });
-			expect(tracker.loadedSchemas[kustoDatabaseKey(CLUSTER_A, DB_1)]).toBe(true);
+			expect(tracker.databaseInContext).toEqual(expect.objectContaining({ clusterUrl: CLUSTER_A, database: DB_1, connectionId: CONNECTION_A, accountPartition: PARTITION_A }));
+			expect(tracker.loadedSchemas[schemaKey(CLUSTER_A, DB_1)]).toBe(true);
 		});
 	});
 
@@ -96,7 +104,7 @@ describe('SchemaTracker', () => {
 
 			expect(result.operation.action).toBe('skip');
 			expect(worker.calls).toHaveLength(0);
-			expect(Object.keys(tracker.loadedSchemas)).toEqual([kustoDatabaseKey('aoaiagents1.westus', DB_1)]);
+			expect(Object.keys(tracker.loadedSchemas)).toEqual([schemaKey('aoaiagents1.westus', DB_1)]);
 		});
 	});
 
@@ -136,8 +144,8 @@ describe('SchemaTracker', () => {
 				worker,
 			);
 
-			expect(tracker.loadedSchemasByModel[MODEL_1]?.[kustoDatabaseKey(CLUSTER_A, DB_1)]).toBe(true);
-			expect(tracker.loadedSchemasByModel[MODEL_2]?.[kustoDatabaseKey(CLUSTER_A, DB_2)]).toBe(true);
+			expect(tracker.loadedSchemasByModel[MODEL_1]?.[schemaKey(CLUSTER_A, DB_1)]).toBe(true);
+			expect(tracker.loadedSchemasByModel[MODEL_2]?.[schemaKey(CLUSTER_A, DB_2)]).toBe(true);
 
 			// Now replace via model 2 setting context
 			await tracker.processSchema(
@@ -148,7 +156,7 @@ describe('SchemaTracker', () => {
 			// Model 1's tracking should have been wiped
 			expect(Object.keys(tracker.loadedSchemasByModel[MODEL_1] || {}).length).toBe(0);
 			// Model 2's tracking should only have DB2
-			expect(tracker.loadedSchemasByModel[MODEL_2]?.[kustoDatabaseKey(CLUSTER_A, DB_2)]).toBe(true);
+			expect(tracker.loadedSchemasByModel[MODEL_2]?.[schemaKey(CLUSTER_A, DB_2)]).toBe(true);
 		});
 	});
 
@@ -232,11 +240,51 @@ describe('SchemaTracker', () => {
 			);
 
 			expect(r.operation.action).toBe('replace');
-			expect(r.reAddedSchemas).toContain(kustoDatabaseKey(CLUSTER_A, DB_1));
-			expect(r.reAddedSchemas).toContain(kustoDatabaseKey(CLUSTER_A, DB_2));
+			expect(r.reAddedSchemas).toContain(schemaKey(CLUSTER_A, DB_1));
+			expect(r.reAddedSchemas).toContain(schemaKey(CLUSTER_A, DB_2));
 			// Worker should have: 1 setSchemaFromShowSchema + 2 addDatabaseToSchema (re-adds)
 			expect(worker.calls.filter(c => c.method === 'setSchemaFromShowSchema')).toHaveLength(1);
 			expect(worker.calls.filter(c => c.method === 'addDatabaseToSchema')).toHaveLength(2);
+		});
+
+		it('does not re-add a schema cached under another account partition', async () => {
+			await tracker.processSchema(input({ modelUri: MODEL_1, database: DB_1 }), worker);
+			await tracker.processSchema(input({
+				modelUri: MODEL_2,
+				database: DB_2,
+				connectionId: 'connection-b',
+				accountPartition: 'partition-b',
+				setAsContext: false,
+				rawSchemaJson: makeSchema(DB_2),
+			}), worker);
+			worker.calls.length = 0;
+
+			const result = await tracker.processSchema(input({
+				modelUri: MODEL_3,
+				database: DB_3,
+				rawSchemaJson: makeSchema(DB_3),
+			}), worker);
+
+			expect(result.operation.action).toBe('replace');
+			expect(result.reAddedSchemas).toContain(schemaKey(CLUSTER_A, DB_1));
+			expect(result.reAddedSchemas).not.toContain(schemaKey(CLUSTER_A, DB_2, 'connection-b', 'partition-b'));
+			expect(worker.calls.filter(call => call.method === 'addDatabaseToSchema')).toHaveLength(1);
+		});
+
+		it('replaces the worker when the same physical database changes account partition', async () => {
+			await tracker.processSchema(input(), worker);
+			worker.calls.length = 0;
+
+			const result = await tracker.processSchema(input({
+				connectionId: 'connection-b',
+				accountPartition: 'partition-b',
+			}), worker);
+
+			expect(result.operation.action).toBe('replace');
+			expect(tracker.databaseInContext).toEqual(expect.objectContaining({
+				connectionId: 'connection-b',
+				accountPartition: 'partition-b',
+			}));
 		});
 	});
 
@@ -309,7 +357,7 @@ describe('SchemaTracker', () => {
 				worker,
 			);
 			expect(step1.operation.action).toBe('replace');
-			expect(tracker.databaseInContext).toEqual({ clusterUrl: CLUSTER_B, database: DB_1 });
+			expect(tracker.databaseInContext).toEqual(expect.objectContaining({ clusterUrl: CLUSTER_B, database: DB_1 }));
 
 			// ── Step 2: User moves up to model 13 (ClusterB/DB2) ──
 			const step2 = await tracker.processSchema(
@@ -323,7 +371,7 @@ describe('SchemaTracker', () => {
 				worker,
 			);
 			expect(step2.operation.action).toBe('replace');
-			expect(tracker.databaseInContext).toEqual({ clusterUrl: CLUSTER_B, database: DB_2 });
+			expect(tracker.databaseInContext).toEqual(expect.objectContaining({ clusterUrl: CLUSTER_B, database: DB_2 }));
 
 			// ── Step 3: User goes back to model 14 (ClusterB/DB1) — THIS WAS THE BUG ──
 			const step3 = await tracker.processSchema(
@@ -337,7 +385,7 @@ describe('SchemaTracker', () => {
 			);
 			// MUST be replace, NOT skip!
 			expect(step3.operation.action).toBe('replace');
-			expect(tracker.databaseInContext).toEqual({ clusterUrl: CLUSTER_B, database: DB_1 });
+			expect(tracker.databaseInContext).toEqual(expect.objectContaining({ clusterUrl: CLUSTER_B, database: DB_1 }));
 		});
 	});
 
@@ -447,7 +495,7 @@ describe('SchemaTracker', () => {
 				worker,
 			);
 			expect(result.operation.action).toBe('first-load');
-			expect(tracker.databaseInContext).toEqual({ clusterUrl: CLUSTER_B, database: DB_2 });
+			expect(tracker.databaseInContext).toEqual(expect.objectContaining({ clusterUrl: CLUSTER_B, database: DB_2 }));
 		});
 	});
 });

@@ -585,10 +585,10 @@ function __kustoHasValidFavoriteSelection(ownerBoxId: any) {
 	try {
 		const id = String(ownerBoxId || '').trim();
 		if (!id) return false;
-		const clusterUrl = String(__kustoGetCurrentClusterUrlForBox(id) || '').trim();
+		const connectionId = String(__kustoGetConnectionId(id) || '').trim();
 		const db = String(__kustoGetCurrentDatabaseForBox(id) || '').trim();
-		if (!clusterUrl || !db) return false;
-		return !!__kustoFindFavorite(clusterUrl, db);
+		if (!connectionId || !db) return false;
+		return !!__kustoFindFavorite(connectionId, db);
 	} catch { return false; }
 }
 

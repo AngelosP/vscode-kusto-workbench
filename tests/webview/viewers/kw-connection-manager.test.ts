@@ -18,7 +18,7 @@ function installVsCodeMock(): void {
 
 /** Minimal Kusto connection. */
 function kustoConnection(id = 'c1', name = 'MyCluster', clusterUrl = 'https://mycluster.kusto.windows.net') {
-	return { id, name, clusterUrl };
+	return { id, name, clusterUrl, accountPreference: { mode: 'automatic' as const } };
 }
 
 /** Minimal SQL connection. */
@@ -30,8 +30,9 @@ function sqlConnection(id = 'sql1', name = 'MySqlServer', serverUrl = 'myserver.
 function snapshot(overrides: Record<string, unknown> = {}) {
 	return {
 		connections: [kustoConnection()],
+		accounts: [],
 		favorites: [],
-		cachedDatabases: { mycluster: ['db1', 'db2'] },
+		cachedDatabases: { c1: ['db1', 'db2'] },
 		expandedClusters: ['c1'],
 		leaveNoTraceClusters: [],
 		sqlConnections: [sqlConnection()],
@@ -207,7 +208,7 @@ describe('kw-connection-manager', () => {
 		it('Kusto: sorts databases, folders, tables, and columns while keeping folders first', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({
-				cachedDatabases: { mycluster: ['zetaDb', 'AlphaDb', 'betaDb'] },
+				cachedDatabases: { c1: ['zetaDb', 'AlphaDb', 'betaDb'] },
 			}));
 			await el.updateComplete;
 
@@ -238,7 +239,7 @@ describe('kw-connection-manager', () => {
 		it('Kusto: shows column docstrings in expanded table schema rows', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({
-				cachedDatabases: { mycluster: ['AlphaDb'] },
+				cachedDatabases: { c1: ['AlphaDb'] },
 			}));
 			await el.updateComplete;
 
@@ -270,7 +271,7 @@ describe('kw-connection-manager', () => {
 		it('Kusto: sorts function folders and functions while keeping folders first', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({
-				cachedDatabases: { mycluster: ['AlphaDb'] },
+				cachedDatabases: { c1: ['AlphaDb'] },
 			}));
 			await el.updateComplete;
 
@@ -440,8 +441,8 @@ describe('kw-connection-manager', () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({
 				connections,
-				favorites: [{ name: 'Favorite DB', clusterUrl: favoriteConnection.clusterUrl, database: 'FavDb' }],
-				cachedDatabases: { 'cluster-29': ['FavDb'] },
+				favorites: [{ name: 'Favorite DB', connectionId: 'c-29', clusterUrl: favoriteConnection.clusterUrl, database: 'FavDb' }],
+				cachedDatabases: { 'c-29': ['FavDb'] },
 			}));
 			await el.updateComplete;
 
@@ -489,14 +490,14 @@ describe('kw-connection-manager', () => {
 			await el.updateComplete;
 
 			expect(postedMessages).toEqual([
-				expect.objectContaining({ type: 'favorite.promptAdd', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1' }),
+				expect.objectContaining({ type: 'favorite.promptAdd', connectionId: 'c1', database: 'db1' }),
 			]);
 		});
 
 		it('Kusto: renders favorite friendly names in Favorites mode with case-insensitive database matching', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({
-				favorites: [{ name: 'Friendly Kusto DB', clusterUrl: 'https://MYCLUSTER.kusto.windows.net/', database: 'DB1' }],
+				favorites: [{ name: 'Friendly Kusto DB', connectionId: 'c1', clusterUrl: 'https://MYCLUSTER.kusto.windows.net/', database: 'DB1' }],
 			}));
 			await el.updateComplete;
 
@@ -512,7 +513,7 @@ describe('kw-connection-manager', () => {
 		it('Kusto: rename and remove favorite actions post identity messages without navigating the row', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot({
-				favorites: [{ name: 'Friendly Kusto DB', clusterUrl: 'https://MYCLUSTER.kusto.windows.net/', database: 'DB1' }],
+				favorites: [{ name: 'Friendly Kusto DB', connectionId: 'c1', clusterUrl: 'https://MYCLUSTER.kusto.windows.net/', database: 'DB1' }],
 			}));
 			await el.updateComplete;
 
@@ -524,7 +525,7 @@ describe('kw-connection-manager', () => {
 			await el.updateComplete;
 
 			expect(postedMessages).toEqual([
-				expect.objectContaining({ type: 'favorite.promptRename', clusterUrl: 'https://MYCLUSTER.kusto.windows.net/', database: 'DB1' }),
+				expect.objectContaining({ type: 'favorite.promptRename', connectionId: 'c1', database: 'DB1' }),
 			]);
 			expect(messageTypes()).not.toContain('database.getSchema');
 
@@ -533,7 +534,7 @@ describe('kw-connection-manager', () => {
 			await el.updateComplete;
 
 			expect(postedMessages).toEqual([
-				expect.objectContaining({ type: 'favorite.remove', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1' }),
+				expect.objectContaining({ type: 'favorite.remove', connectionId: 'c1', database: 'db1' }),
 			]);
 		});
 
@@ -840,12 +841,12 @@ describe('kw-connection-manager', () => {
 			let refreshBtn = el.shadowRoot!.querySelector('.breadcrumb-refresh') as HTMLButtonElement | null;
 			expect(hasSpinner(refreshBtn)).toBe(false);
 
-			window.dispatchEvent(new MessageEvent('message', { data: { type: 'schemaRefreshStarted', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1' } }));
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'schemaRefreshStarted', connectionId: 'c1', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1' } }));
 			await el.updateComplete;
 			refreshBtn = el.shadowRoot!.querySelector('.breadcrumb-refresh') as HTMLButtonElement | null;
 			expect(hasSpinner(refreshBtn)).toBe(true);
 
-			window.dispatchEvent(new MessageEvent('message', { data: { type: 'schemaRefreshCompleted', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1', success: true } }));
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'schemaRefreshCompleted', connectionId: 'c1', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1', success: true } }));
 			await el.updateComplete;
 			refreshBtn = el.shadowRoot!.querySelector('.breadcrumb-refresh') as HTMLButtonElement | null;
 			expect(hasSpinner(refreshBtn)).toBe(false);
@@ -857,7 +858,7 @@ describe('kw-connection-manager', () => {
 	describe('load error states', () => {
 		it('Kusto: drilled cluster with no cached databases shows an empty state, not a blank panel', async () => {
 			const el = createElement();
-			sendSnapshot(el, snapshot({ cachedDatabases: { mycluster: [] } }));
+			sendSnapshot(el, snapshot({ cachedDatabases: { c1: [] } }));
 			await el.updateComplete;
 
 			clickListItemByName(el, 'MyCluster');
@@ -896,7 +897,7 @@ describe('kw-connection-manager', () => {
 
 		it('Kusto: schema load failure shows retry instead of loading forever', async () => {
 			const el = createElement();
-			sendSnapshot(el, snapshot({ cachedDatabases: { mycluster: ['db1'] } }));
+			sendSnapshot(el, snapshot({ cachedDatabases: { c1: ['db1'] } }));
 			await el.updateComplete;
 
 			clickListItemByName(el, 'MyCluster');
@@ -959,6 +960,98 @@ describe('kw-connection-manager', () => {
 	// ── Preview refresh ───────────────────────────────────────────────────────
 
 	describe('preview refresh', () => {
+		it('evicts Kusto schema and preview state when the connection identity changes', async () => {
+			const el = createElement();
+			const identityA = kustoConnection();
+			sendSnapshot(el, snapshot({
+				connections: [{ ...identityA, authorityId: 'tenant-a', selectedAccountId: 'account', accountPartition: 'partition-a' }],
+			}));
+			await el.updateComplete;
+			sendSchemaLoaded(el, 'c1', 'db1', { tables: ['SecretA'], columnTypesByTable: { SecretA: {} } });
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'tablePreviewResult', connectionId: 'c1', database: 'db1', tableName: 'SecretA',
+				success: true, columns: [{ name: 'value' }], rows: [['from-a']], rowCount: 1,
+			} }));
+			expect((el as any)._databaseSchemas['c1|db1']).toBeDefined();
+			expect((el as any)._tablePreviewData['c1|db1|table|SecretA']).toBeDefined();
+			(el as any)._search.results = [{ category: 'table', kind: 'kusto', connectionId: 'c1', connectionName: 'Cluster', database: 'db1', name: 'SecretA' }];
+
+			sendSnapshot(el, snapshot({
+				connections: [{ ...identityA, authorityId: 'tenant-a', selectedAccountId: 'account', accountPartition: 'partition-b' }],
+				searchState: {
+					query: 'SecretA', scope: 'cached', categories: {}, contentToggles: {},
+					lastResults: [{ category: 'table', kind: 'kusto', connectionId: 'c1', connectionName: 'Cluster', database: 'db1', name: 'SecretA' }],
+					lastSearchTimestamp: Date.now(),
+				},
+			}));
+			await el.updateComplete;
+
+			expect((el as any)._databaseSchemas['c1|db1']).toBeUndefined();
+			expect((el as any)._tablePreviewData['c1|db1|table|SecretA']).toBeUndefined();
+			expect((el as any)._search.results).toEqual([]);
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'schemaLoaded', connectionId: 'c1', database: 'db1', accountPartition: 'partition-a',
+				schema: { tables: ['LateSecretA'], columnTypesByTable: { LateSecretA: {} } },
+			} }));
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'tablePreviewResult', connectionId: 'c1', database: 'db1', tableName: 'LateSecretA', accountPartition: 'partition-a',
+				success: true, columns: [{ name: 'value' }], rows: [['late-a']], rowCount: 1,
+			} }));
+
+			expect((el as any)._databaseSchemas['c1|db1']).toBeUndefined();
+			expect((el as any)._tablePreviewData['c1|db1|table|LateSecretA']).toBeUndefined();
+		});
+
+		it('ignores stale schema and preview terminal messages after a newer request starts', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				connections: [{ ...kustoConnection(), accountPartition: 'partition-b' }],
+			}));
+			await el.updateComplete;
+
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'loadingSchema', connectionId: 'c1', database: 'db1', requestId: 'schema-b' } }));
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'tablePreviewLoading', connectionId: 'c1', database: 'db1', tableName: 'Events', requestId: 'preview-b' } }));
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'schemaLoadError', connectionId: 'c1', database: 'db1', requestId: 'schema-a', error: 'old error' } }));
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'tablePreviewResult', connectionId: 'c1', database: 'db1', tableName: 'Events', requestId: 'preview-a',
+				success: true, rows: [['old']], columns: [{ name: 'value' }], rowCount: 1,
+			} }));
+
+			expect((el as any)._loadingSchemaKeys.has('c1|db1')).toBe(true);
+			expect((el as any)._schemaLoadErrors['c1|db1']).toBe('');
+			expect((el as any)._tablePreviewData['c1|db1|table|Events']).toEqual({ loading: true });
+		});
+
+		it('applies schemaLoaded owned by an in-flight refresh request', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ connections: [{ ...kustoConnection(), accountPartition: 'partition-a' }] }));
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'schemaRefreshStarted', connectionId: 'c1', database: 'db1', requestId: 'refresh-1', accountPartition: 'partition-a',
+			} }));
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'schemaLoaded', connectionId: 'c1', database: 'db1', requestId: 'refresh-1', accountPartition: 'partition-a',
+				schema: { tables: ['RefreshedTable'], columnTypesByTable: { RefreshedTable: {} } },
+			} }));
+
+			expect((el as any)._databaseSchemas['c1|db1']).toEqual(expect.objectContaining({ tables: ['RefreshedTable'] }));
+		});
+
+		it('preserves an unresolved first-sign-in preview request through the establishing snapshot', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ connections: [{ ...kustoConnection(), accountPartition: undefined }] }));
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'tablePreviewLoading', connectionId: 'c1', database: 'db1', tableName: 'Events', requestId: 'preview-first',
+			} }));
+			sendSnapshot(el, snapshot({ connections: [{ ...kustoConnection(), accountPartition: 'partition-first' }] }));
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'tablePreviewResult', connectionId: 'c1', database: 'db1', tableName: 'Events', requestId: 'preview-first', accountPartition: 'partition-first',
+				success: true, columns: [{ name: 'value' }], rows: [['ready']], rowCount: 1,
+			} }));
+
+			expect((el as any)._tablePreviewData['c1|db1|table|Events']).toEqual(expect.objectContaining({ loading: false, rows: [['ready']] }));
+		});
+
 		it('Kusto: empty table shows refresh button', async () => {
 			const el = createElement();
 			sendSnapshot(el, snapshot());
@@ -1133,7 +1226,7 @@ describe('kw-connection-manager', () => {
 			let refreshBtn = functionRow?.querySelector('.explorer-list-item-actions .btn-icon');
 			expect(hasSpinner(refreshBtn)).toBe(false);
 
-			window.dispatchEvent(new MessageEvent('message', { data: { type: 'schemaRefreshStarted', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1' } }));
+			window.dispatchEvent(new MessageEvent('message', { data: { type: 'schemaRefreshStarted', connectionId: 'c1', clusterUrl: 'https://mycluster.kusto.windows.net', database: 'db1' } }));
 			await el.updateComplete;
 
 			functionRow = Array.from(el.shadowRoot!.querySelectorAll('.explorer-list-item'))

@@ -25,6 +25,8 @@ import {
 } from '../../src/webview/core/state.js';
 import { invalidateLinkedComparisonSchemaForSource } from '../../src/webview/sections/query-connection.controller.js';
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/section-factory.js';
+import { pState } from '../../src/webview/shared/persistence-state.js';
+import { getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -50,6 +52,7 @@ afterEach(() => {
 	delete databaseRequestTokenByBoxId.comparison_1;
 	delete schemaWorkerReadyByBoxId.comparison_1;
 	delete schemaEnhancementReadyByBoxId.comparison_1;
+	delete pState.queryResultJsonByBoxId.test1;
 	disposeKustoPreparation('comparison_1');
 });
 
@@ -416,6 +419,37 @@ describe('kw-query-section loading states', () => {
 
 		expect(el.getConnectionId()).toBe('c2');
 		expect(el.getClusterUrl()).toBe('https://second.kusto.windows.net');
+	});
+
+	it('clears the selected database and reloads when the same connection ID changes account partition', async () => {
+		const el = createSection();
+		const connectionEvents: CustomEvent[] = [];
+		el.addEventListener('connection-changed', event => connectionEvents.push(event as CustomEvent));
+
+		el.setConnections([{ id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net', accountPartition: 'partition-a' }]);
+		el.setDatabases(['AccountADb'], 'AccountADb');
+		el.displayResult({ columns: ['value'], rows: [['account-a']], metadata: {} });
+		setResultsState('test1', { boxId: 'test1', columns: ['value'], rows: [['account-a']] });
+		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['value'], rows: [['account-a']] });
+		connectionEvents.length = 0;
+		expect(el.getDatabase()).toBe('AccountADb');
+
+		el.setConnections([{ id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net', accountPartition: 'partition-b' }]);
+		await el.updateComplete;
+
+		expect(el.getConnectionId()).toBe('c1');
+		expect((el as any)._database).toBe('');
+		expect(el.getDatabase()).toBe('AccountADb');
+		expect(el.getDesiredDatabase()).toBe('AccountADb');
+		expect((el as any)._testHasResults).toBe(false);
+		expect(getResultsState('test1')).toBeNull();
+		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
+		expect(connectionEvents).toHaveLength(1);
+		expect(connectionEvents[0].detail).toMatchObject({ connectionId: 'c1', database: 'AccountADb' });
+
+		el.setDatabases(['AccountADb', 'OtherDb']);
+		expect(el.getDatabase()).toBe('AccountADb');
+		expect(el.getDesiredDatabase()).toBe('');
 	});
 
 	it('preserves restored cluster intent until the saved cluster is auto-added', async () => {

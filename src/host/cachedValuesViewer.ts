@@ -2,13 +2,16 @@ import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
-import { getSchemaCacheDirUri, getSchemaCacheFileUri, readCachedSchemaFromDiskByCluster, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey } from './schemaCache';
+import { clearCachedSchemas, deleteCachedSchemasForAccountPartitions, getSchemaCacheFileUri, readCachedSchemaFromDiskByCluster, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey } from './schemaCache';
+import { KustoAuthPreferenceService, type KustoAccountPreference, type KustoKnownAccount } from './kustoAuthPreferenceService';
+import { KustoConnectionCache } from './kustoConnectionCache';
 import { countColumns } from './schemaIndexUtils';
 import type { SqlConnectionManager, SqlConnection } from './sqlConnectionManager';
 import type { SqlQueryClient } from './sqlClient';
 import { getSqlSchemaCacheDirUri, getSqlSchemaCacheFileUri, readCachedSqlSchemaFromDisk, sqlSchemaCacheKey, SQL_SCHEMA_CACHE_VERSION } from './sqlEditorSchema';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { getWorkbenchLogger } from './workbenchLogger';
+import { getKustoAuthScopes, normalizeKustoAuthorityId } from '../shared/kustoAuth';
 
 /**
  * Cached Values Viewer — uses Lit web components for the UI.
@@ -55,18 +58,10 @@ export function mergeCachedDatabaseKeys(
 const VIEW_TITLE = 'Cached Values';
 
 const STORAGE_KEYS = {
-	knownAccounts: 'kusto.auth.knownAccounts',
-	clusterAccountMap: 'kusto.auth.clusterAccountMap',
 	connections: 'kusto.connections',
-	cachedDatabases: 'kusto.cachedDatabases',
 	activeKind: 'cachedValues.activeKind',
 	sqlServerAccountMap: 'sql.auth.serverAccountMap',
 	sqlCachedDatabases: 'sql.connectionManager.cachedDatabases',
-} as const;
-
-const AUTH = {
-	providerId: 'microsoft',
-	scope: 'https://kusto.kusto.windows.net/.default'
 } as const;
 
 const SQL_AUTH = {
@@ -75,39 +70,33 @@ const SQL_AUTH = {
 } as const;
 
 const SECRET_KEYS = {
-	tokenOverrideByAccountId: (accountId: string) => `kusto.auth.tokenOverride.${accountId}`,
 	sqlTokenOverrideByAccountId: (accountId: string) => `sql.auth.tokenOverride.${accountId}`
 } as const;
 
-type StoredAuthAccount = {
-	id: string;
-	label: string;
-	lastUsedAt: number;
+type SnapshotKustoConnection = KustoConnection & {
+	accountPreference: KustoAccountPreference;
+	selectedAccountId?: string;
+	selectedAccountLabel?: string;
+	accountPartition?: string;
+	hasTokenOverride: boolean;
 };
 
 type Snapshot = {
+	revision: number;
 	timestamp: number;
 	activeKind: 'kusto' | 'sql';
 	auth: {
 		sessions: Array<{
-			sessionId?: string;
 			account: { id: string; label: string };
-			scopes: string[];
-			accessToken?: string;
-			effectiveToken: string;
-			overrideToken?: string;
 		}>;
-		knownAccounts: StoredAuthAccount[];
-		clusterAccountMap: Record<string, string>;
+		knownAccounts: KustoKnownAccount[];
 	};
-	connections: KustoConnection[];
+	connections: SnapshotKustoConnection[];
 	cachedDatabases: Record<string, string[]>;
 	sqlAuth: {
 		sessions: Array<{
 			account: { id: string; label: string };
-			accessToken?: string;
-			effectiveToken: string;
-			overrideToken?: string;
+			hasOverride: boolean;
 		}>;
 	};
 	sqlConnections: Array<{ id: string; name: string; serverUrl: string; authType: string }>;
@@ -120,17 +109,17 @@ type IncomingMessage =
 	| { type: 'requestSnapshot' }
 	| { type: 'copyToClipboard'; text: string }
 	| { type: 'setActiveKind'; kind: 'kusto' | 'sql' }
-	| { type: 'auth.setTokenOverride'; accountId: string; token: string }
-	| { type: 'auth.clearTokenOverride'; accountId: string }
+	| { type: 'auth.copyToken'; connectionId: string; accountId: string }
+	| { type: 'auth.setTokenOverride'; connectionId: string; accountId: string; token: string }
+	| { type: 'auth.clearTokenOverride'; connectionId: string; accountId: string }
+	| { type: 'auth.forgetAccount'; accountId: string }
 	| { type: 'auth.resetAll' }
-	| { type: 'clusterMap.set'; clusterEndpoint: string; accountId: string }
-	| { type: 'clusterMap.delete'; clusterEndpoint: string }
-	| { type: 'clusterMap.resetAll' }
-	| { type: 'databases.delete'; clusterKey: string }
-	| { type: 'databases.refresh'; clusterKey: string }
+	| { type: 'connectionPreference.set'; connectionId: string; accountId?: string }
+	| { type: 'databases.delete'; connectionId: string }
+	| { type: 'databases.refresh'; connectionId: string }
 	| { type: 'schema.clearAll' }
-	| { type: 'schema.get'; clusterKey: string; database: string }
-	| { type: 'schema.refresh'; clusterKey: string; database: string }
+	| { type: 'schema.get'; requestId: string; connectionId: string; database: string }
+	| { type: 'schema.refresh'; requestId: string; connectionId: string; database: string }
 	| { type: 'sqlServerMap.set'; serverUrl: string; accountId: string }
 	| { type: 'sqlServerMap.delete'; serverUrl: string }
 	| { type: 'sqlDatabases.delete'; connectionId: string }
@@ -139,6 +128,7 @@ type IncomingMessage =
 	| { type: 'sqlSchema.refresh'; serverUrl: string; database: string; connectionId: string }
 	| { type: 'sqlSchema.clearAll' }
 	| { type: 'sqlAuth.editConnection'; connectionId: string }
+	| { type: 'sqlAuth.copyToken'; accountId: string }
 	| { type: 'sqlAuth.setTokenOverride'; accountId: string; token: string }
 	| { type: 'sqlAuth.clearTokenOverride'; accountId: string };
 
@@ -163,7 +153,10 @@ export class CachedValuesViewerV2 {
 	private readonly panel: vscode.WebviewPanel;
 	private readonly disposables: vscode.Disposable[] = [];
 	private readonly kustoClient: KustoQueryClient;
+	private readonly authPreferences: KustoAuthPreferenceService;
+	private readonly connectionCache: KustoConnectionCache;
 	private sqlDeps: CachedValuesSqlDeps | undefined;
+	private snapshotRevision = 0;
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -172,7 +165,9 @@ export class CachedValuesViewerV2 {
 		sqlDeps: CachedValuesSqlDeps | undefined,
 		viewColumn: vscode.ViewColumn
 	) {
-		this.kustoClient = new KustoQueryClient(this.context);
+		this.authPreferences = KustoAuthPreferenceService.getInstance(this.context);
+		this.connectionCache = new KustoConnectionCache(this.context);
+		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.sqlDeps = sqlDeps;
 		this.panel = vscode.window.createWebviewPanel(
 			'kusto.cachedValuesV2',
@@ -192,12 +187,15 @@ export class CachedValuesViewerV2 {
 				void this.sendSnapshotToWebview();
 			}
 		}, null, this.disposables);
+		this.disposables.push(this.authPreferences.onDidChange(() => { void this.sendSnapshotToWebview(); }));
+		this.disposables.push(this.connectionManager.onDidChangeConnections(() => { void this.sendSnapshotToWebview(); }));
 		this.panel.webview.onDidReceiveMessage((msg: IncomingMessage) => void this.onMessage(msg), null, this.disposables);
 		this.panel.webview.html = this.buildHtml(this.panel.webview);
 	}
 
 	private dispose(): void {
 		CachedValuesViewerV2.current = undefined;
+		this.kustoClient.dispose();
 		for (const d of this.disposables) {
 			try { d.dispose(); } catch { /* ignore */ }
 		}
@@ -205,45 +203,26 @@ export class CachedValuesViewerV2 {
 
 	// ─── Data layer ────────────────────────────────────────────────────────
 
-	private readKnownAccounts(): StoredAuthAccount[] {
-		const raw = this.context.globalState.get<StoredAuthAccount[] | undefined>(STORAGE_KEYS.knownAccounts);
-		return Array.isArray(raw)
-			? raw.filter(a => a && typeof a.id === 'string' && typeof a.label === 'string' && typeof (a as any).lastUsedAt === 'number')
-			: [];
-	}
-
-	private readClusterAccountMap(): Record<string, string> {
-		const raw = this.context.globalState.get<Record<string, string> | undefined>(STORAGE_KEYS.clusterAccountMap);
-		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
-		const next: Record<string, string> = {};
-		for (const [k, v] of Object.entries(raw)) {
-			if (typeof k === 'string' && typeof v === 'string' && k.trim() && v.trim()) next[k] = v;
+	private readCachedDatabases(): Record<string, string[]> {
+		const next: Record<string, string[]> = {};
+		for (const connection of this.connectionManager.getConnections()) {
+			let accountPartition: string | undefined;
+			let allowLegacy = false;
+			try {
+				const preference = this.authPreferences.getPreference(connection.id);
+				accountPartition = this.kustoClient.getAccountPartition(connection);
+				allowLegacy = preference.mode === 'automatic' && normalizeKustoAuthorityId(connection.authorityId) === undefined;
+			} catch {
+				continue;
+			}
+			const databases = this.connectionCache.getDatabases(connection.id, accountPartition, allowLegacy);
+			if (databases.length > 0) next[connection.id] = databases;
 		}
 		return next;
-	}
-
-	private readCachedDatabases(): Record<string, string[]> {
-		const raw = this.context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases);
-		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
-		const next: Record<string, string[]> = {};
-		for (const [k, v] of Object.entries(raw)) {
-			if (typeof k !== 'string' || !k.trim()) continue;
-			if (!Array.isArray(v)) continue;
-			next[k] = v.map(x => String(x || '').trim()).filter(Boolean);
-		}
-		return this.migrateCachedDatabasesToClusterKeys(next);
 	}
 
 	private getClusterCacheKey(clusterUrlRaw: string): string {
 		return getClusterCacheKey(clusterUrlRaw);
-	}
-
-	private migrateCachedDatabasesToClusterKeys(raw: Record<string, string[]>): Record<string, string[]> {
-		const connections = this.connectionManager.getConnections();
-		const connById = new Map<string, KustoConnection>(connections.map((c) => [c.id, c]));
-		const { next, changed } = mergeCachedDatabaseKeys(raw, connById);
-		if (changed) void this.context.globalState.update(STORAGE_KEYS.cachedDatabases, next);
-		return next;
 	}
 
 	private readSqlServerAccountMap(): Record<string, string> {
@@ -268,27 +247,34 @@ export class CachedValuesViewerV2 {
 		return next;
 	}
 
-	private async buildSnapshot(): Promise<Snapshot> {
-		const knownAccounts = this.readKnownAccounts();
-		const clusterAccountMap = this.readClusterAccountMap();
-		const connections = this.connectionManager.getConnections();
+	private async buildSnapshot(revision: number): Promise<Snapshot> {
+		const knownAccounts = await this.authPreferences.getAccounts();
+		const baseConnections = this.connectionManager.getConnections();
 		const cachedDatabases = this.readCachedDatabases();
 		const accountsById = new Map<string, { id: string; label: string }>();
 		for (const a of knownAccounts) accountsById.set(a.id, { id: a.id, label: a.label });
-		for (const accountId of Object.values(clusterAccountMap)) {
-			if (!accountsById.has(accountId)) accountsById.set(accountId, { id: accountId, label: accountId });
-		}
-		const sessionRows = await Promise.all(
-			[...accountsById.values()].map(async (account) => {
-				let session: vscode.AuthenticationSession | undefined;
-				try { session = await vscode.authentication.getSession(AUTH.providerId, [AUTH.scope], { silent: true, account }); } catch { session = undefined; }
-				let overrideToken: string | undefined;
-				try { overrideToken = (await this.context.secrets.get(SECRET_KEYS.tokenOverrideByAccountId(account.id))) ?? undefined; } catch { overrideToken = undefined; }
-				const accessToken = session?.accessToken;
-				const effectiveToken = (overrideToken && overrideToken.trim()) ? overrideToken : (accessToken ?? '');
-				return { sessionId: session?.id, account: { id: account.id, label: account.label }, scopes: session?.scopes ? [...session.scopes] : [AUTH.scope], accessToken, effectiveToken, overrideToken };
-			})
-		);
+		const sessionRows = [...accountsById.values()].map(account => ({ account }));
+		const connections: SnapshotKustoConnection[] = await Promise.all(baseConnections.map(async connection => {
+			const accountPreference = this.authPreferences.getPreference(connection.id);
+			const selectedAccountId = this.authPreferences.getPreferredAccountId(connection.id);
+			const selectedAccountLabel = selectedAccountId ? accountsById.get(selectedAccountId)?.label ?? selectedAccountId : undefined;
+			let hasTokenOverride = false;
+			let accountPartition: string | undefined;
+			try { accountPartition = this.kustoClient.getAccountPartition(connection); } catch { accountPartition = undefined; }
+			try {
+				hasTokenOverride = selectedAccountId
+					? !!(await this.authPreferences.getTokenOverride(connection.authorityId, selectedAccountId))
+					: false;
+			} catch { /* malformed legacy authority */ }
+			return {
+				...connection,
+				accountPreference,
+				...(selectedAccountId ? { selectedAccountId } : {}),
+				...(selectedAccountLabel ? { selectedAccountLabel } : {}),
+				...(accountPartition ? { accountPartition } : {}),
+				hasTokenOverride,
+			};
+		}));
 
 		// SQL data
 		const activeKind = (this.context.globalState.get<string>(STORAGE_KEYS.activeKind) === 'sql' ? 'sql' : 'kusto') as 'kusto' | 'sql';
@@ -319,9 +305,7 @@ export class CachedValuesViewerV2 {
 					if (!session) return null;
 					let overrideToken: string | undefined;
 					try { overrideToken = (await this.context.secrets.get(SECRET_KEYS.sqlTokenOverrideByAccountId(account.id))) ?? undefined; } catch { overrideToken = undefined; }
-					const accessToken = session.accessToken;
-					const effectiveToken = (overrideToken && overrideToken.trim()) ? overrideToken : (accessToken ?? '');
-					return { account: { id: account.id, label: account.label }, accessToken, effectiveToken, overrideToken };
+					return { account: { id: account.id, label: account.label }, hasOverride: !!(overrideToken && overrideToken.trim()) };
 				})
 			);
 			for (const row of sqlSessionRows) { if (row) sqlAuthSessions.push(row); }
@@ -331,13 +315,15 @@ export class CachedValuesViewerV2 {
 		const cachedSchemaKeys: string[] = [];
 		const globalStorageUri = this.context.globalStorageUri;
 		// Kusto schemas
-		for (const [clusterKey, dbs] of Object.entries(cachedDatabases)) {
-			let clusterUrl = '';
-			try { for (const c of connections) { if (c?.clusterUrl && this.getClusterCacheKey(c.clusterUrl) === clusterKey) { clusterUrl = String(c.clusterUrl || '').trim(); break; } } } catch { /* ignore */ }
-			if (!clusterUrl) clusterUrl = /^https?:\/\//i.test(clusterKey) ? clusterKey : `https://${clusterKey}`;
+		for (const [connectionId, dbs] of Object.entries(cachedDatabases)) {
+			const connection = connections.find(candidate => candidate.id === connectionId);
+			if (!connection) continue;
+			let accountPartition: string | undefined;
+			try { accountPartition = this.kustoClient.getAccountPartition(connection); } catch { accountPartition = undefined; }
+			if (!accountPartition) continue;
 			for (const db of dbs) {
-				const cacheKey = schemaCacheKey(clusterUrl || clusterKey, db);
-				try { await vscode.workspace.fs.stat(getSchemaCacheFileUri(globalStorageUri, cacheKey)); cachedSchemaKeys.push(`kusto:${clusterKey}|${db}`); } catch { /* no file = not cached */ }
+				const cacheKey = schemaCacheKey(connection.clusterUrl, db, connection.id, accountPartition);
+				try { await vscode.workspace.fs.stat(getSchemaCacheFileUri(globalStorageUri, cacheKey)); cachedSchemaKeys.push(`kusto:${connectionId}|${db}`); } catch { /* no file = not cached */ }
 			}
 		}
 		// SQL schemas
@@ -351,9 +337,10 @@ export class CachedValuesViewerV2 {
 		}
 
 		return {
+			revision,
 			timestamp: Date.now(),
 			activeKind,
-			auth: { sessions: sessionRows, knownAccounts, clusterAccountMap },
+			auth: { sessions: sessionRows, knownAccounts },
 			connections,
 			cachedDatabases,
 			sqlAuth: { sessions: sqlAuthSessions },
@@ -366,12 +353,47 @@ export class CachedValuesViewerV2 {
 
 	private async sendSnapshotToWebview(): Promise<void> {
 		try {
-			const snapshot = await this.buildSnapshot();
+			const revision = ++this.snapshotRevision;
+			const snapshot = await this.buildSnapshot(revision);
 			await this.panel.webview.postMessage({ type: 'snapshot', snapshot });
 		} catch (error) {
 			// Ignore transient panel lifecycle races (dispose/reveal ordering), but keep diagnostics.
 			getWorkbenchLogger().warn('[kusto] cached values snapshot refresh failed', error);
 		}
+	}
+
+	private async completeKustoMutation(): Promise<void> {
+		await this.sendSnapshotToWebview();
+		try { await this.panel.webview.postMessage({ type: 'kustoMutationComplete' }); } catch { /* panel disposed */ }
+	}
+
+	private async clearKustoAccountCachedData(accountId: string): Promise<void> {
+		const accountPartitions = new Set<string>();
+		for (const connection of this.connectionManager.getConnections()) {
+			try {
+				const partition = this.authPreferences.getAccountPartition(connection.authorityId, accountId);
+				if (partition) accountPartitions.add(partition);
+			} catch {
+				// A malformed legacy authority must not block cleanup for other connections.
+			}
+		}
+		for (const partition of accountPartitions) {
+			await this.connectionCache.clearAccountPartition(partition);
+		}
+		await deleteCachedSchemasForAccountPartitions(this.context.globalStorageUri, accountPartitions);
+	}
+
+	private getConnectionsForAccountPartition(accountId: string, accountPartition: string): string[] {
+		return this.connectionManager.getConnections().flatMap(connection => {
+			try {
+				return this.authPreferences.getPreferredAccountId(connection.id) === accountId
+					&& this.authPreferences.getAccountPartition(connection.authorityId, accountId) === accountPartition
+					? [connection.id]
+					: [];
+			} catch {
+				return [];
+			}
+		});
 	}
 
 	// ─── Message handling ──────────────────────────────────────────────────
@@ -391,101 +413,142 @@ export class CachedValuesViewerV2 {
 				await this.context.globalState.update(STORAGE_KEYS.activeKind, kind);
 				return;
 			}
-			case 'auth.setTokenOverride': {
+			case 'auth.copyToken': {
+				const connection = this.connectionManager.getConnections().find(candidate => candidate.id === String(msg.connectionId || '').trim());
 				const accountId = String(msg.accountId || '').trim();
-				if (!accountId) return;
-				await this.context.secrets.store(SECRET_KEYS.tokenOverrideByAccountId(accountId), String(msg.token ?? ''));
+				if (!connection || !accountId) return;
+				try {
+					let token = await this.authPreferences.getTokenOverride(connection.authorityId, accountId);
+					if (!token) {
+						const account = (await this.authPreferences.getAccounts()).find(candidate => candidate.id === accountId)
+							?? { id: accountId, label: accountId };
+						const session = await vscode.authentication.getSession('microsoft', getKustoAuthScopes(connection.authorityId), { silent: true, account });
+						if (!session || session.account.id !== accountId) throw new Error('The selected Microsoft account session is unavailable.');
+						token = session.accessToken;
+					}
+					await vscode.env.clipboard.writeText(token);
+					void vscode.window.setStatusBarMessage('Copied token to clipboard', 1500);
+				} catch {
+					void vscode.window.showErrorMessage('Could not retrieve the token for this connection and account.');
+				}
+				return;
+			}
+			case 'auth.setTokenOverride': {
+				const connection = this.connectionManager.getConnections().find(candidate => candidate.id === String(msg.connectionId || '').trim());
+				const accountId = String(msg.accountId || '').trim();
+				if (!connection || !accountId) return;
+				const accountPartition = this.authPreferences.getAccountPartition(connection.authorityId, accountId);
+				await this.authPreferences.setTokenOverride(
+					connection.authorityId,
+					accountId,
+					String(msg.token ?? ''),
+					this.getConnectionsForAccountPartition(accountId, accountPartition),
+				);
+				await this.completeKustoMutation();
 				return;
 			}
 			case 'auth.clearTokenOverride': {
+				const connection = this.connectionManager.getConnections().find(candidate => candidate.id === String(msg.connectionId || '').trim());
+				const accountId = String(msg.accountId || '').trim();
+				if (!connection || !accountId) return;
+				const accountPartition = this.authPreferences.getAccountPartition(connection.authorityId, accountId);
+				await this.authPreferences.clearTokenOverride(
+					connection.authorityId,
+					accountId,
+					this.getConnectionsForAccountPartition(accountId, accountPartition),
+				);
+				await this.completeKustoMutation();
+				return;
+			}
+			case 'auth.forgetAccount': {
 				const accountId = String(msg.accountId || '').trim();
 				if (!accountId) return;
-				try { await this.context.secrets.delete(SECRET_KEYS.tokenOverrideByAccountId(accountId)); } catch { /* ignore */ }
-				try { const prevKnown = this.readKnownAccounts(); const nextKnown = prevKnown.filter(a => String(a?.id || '').trim() !== accountId); await this.context.globalState.update(STORAGE_KEYS.knownAccounts, nextKnown); } catch { /* ignore */ }
-				try { await this.context.globalState.update(STORAGE_KEYS.clusterAccountMap, {}); } catch { /* ignore */ }
+				const choice = await vscode.window.showWarningMessage(
+					'Forget this account and remove only its Kusto preferences and cached data?',
+					{ modal: true },
+					'Forget Account',
+				);
+				if (choice !== 'Forget Account') { await this.completeKustoMutation(); return; }
+				await this.authPreferences.forgetAccount(accountId);
+				await this.clearKustoAccountCachedData(accountId);
+				await this.completeKustoMutation();
 				return;
 			}
 			case 'auth.resetAll': {
-				const known = this.readKnownAccounts();
-				const map = this.readClusterAccountMap();
-				const accountIds = new Set<string>([...known.map(a => a.id), ...Object.values(map)]);
-				await Promise.all([...accountIds].filter(Boolean).map(async (accountId) => { try { await this.context.secrets.delete(SECRET_KEYS.tokenOverrideByAccountId(accountId)); } catch { /* ignore */ } }));
-				await this.context.globalState.update(STORAGE_KEYS.knownAccounts, undefined);
-				await this.context.globalState.update(STORAGE_KEYS.clusterAccountMap, undefined);
+				for (const account of await this.authPreferences.getAccounts()) {
+					await this.authPreferences.forgetAccount(account.id);
+				}
+				await this.connectionCache.clearAll();
+				try { await this.context.globalState.update('kusto.cacheClearEpoch', Date.now()); } catch { /* ignore */ }
+				await clearCachedSchemas(this.context.globalStorageUri);
+				await this.completeKustoMutation();
 				return;
 			}
-			case 'clusterMap.set': {
-				const clusterEndpoint = String(msg.clusterEndpoint || '').trim();
+			case 'connectionPreference.set': {
+				const connectionId = String(msg.connectionId || '').trim();
 				const accountId = String(msg.accountId || '').trim();
-				if (!clusterEndpoint || !accountId) return;
-				const prev = this.readClusterAccountMap();
-				prev[clusterEndpoint] = accountId;
-				await this.context.globalState.update(STORAGE_KEYS.clusterAccountMap, prev);
-				return;
-			}
-			case 'clusterMap.delete': {
-				const clusterEndpoint = String(msg.clusterEndpoint || '').trim();
-				if (!clusterEndpoint) return;
-				const prev = this.readClusterAccountMap();
-				delete prev[clusterEndpoint];
-				await this.context.globalState.update(STORAGE_KEYS.clusterAccountMap, prev);
-				return;
-			}
-			case 'clusterMap.resetAll': {
-				await this.context.globalState.update(STORAGE_KEYS.clusterAccountMap, {});
+				if (!connectionId) return;
+				if (!accountId) {
+					await this.authPreferences.setAutomatic(connectionId);
+				} else {
+					const account = (await this.authPreferences.getAccounts()).find(candidate => candidate.id === accountId)
+						?? { id: accountId, label: accountId };
+					await this.authPreferences.setExplicitAccount(connectionId, account);
+				}
+				await this.completeKustoMutation();
 				return;
 			}
 			case 'databases.delete': {
-				const clusterKey = String(msg.clusterKey || '').trim().toLowerCase();
-				if (!clusterKey) return;
-				const cached = this.readCachedDatabases();
-				delete cached[clusterKey];
-				await this.context.globalState.update(STORAGE_KEYS.cachedDatabases, cached);
+				const connectionId = String(msg.connectionId || '').trim();
+				if (!connectionId) return;
+				await this.connectionCache.clearConnection(connectionId);
+				await this.completeKustoMutation();
 				return;
 			}
 			case 'databases.refresh': {
-				const clusterKey = String(msg.clusterKey || '').trim().toLowerCase();
-				if (!clusterKey) return;
-				const cached = this.readCachedDatabases();
-				const cachedBefore = (cached[clusterKey] ?? []).filter(Boolean);
-				let connection: KustoConnection | undefined;
-				try { const conns = this.connectionManager.getConnections(); for (const c of conns) { if (!c?.clusterUrl) continue; if (this.getClusterCacheKey(c.clusterUrl) === clusterKey) { connection = c; break; } } } catch { connection = undefined; }
-				if (!connection) { const url = /^https?:\/\//i.test(clusterKey) ? clusterKey : `https://${clusterKey}`; connection = { id: `cluster_${clusterKey}`, name: clusterKey, clusterUrl: url }; }
+				const connectionId = String(msg.connectionId || '').trim();
+				const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+				if (!connection) return;
+				const cachedBefore = this.readCachedDatabases()[connectionId] ?? [];
 				try {
 					const databasesRaw = await this.kustoClient.getDatabases(connection, true, {
 						traceId: randomUUID(),
 						source: 'cached-values-refresh',
 					});
 					const databases = (Array.isArray(databasesRaw) ? databasesRaw : []).map((d) => String(d || '').trim()).filter(Boolean).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-					if (databases.length > 0 || cachedBefore.length === 0) { cached[clusterKey] = databases; await this.context.globalState.update(STORAGE_KEYS.cachedDatabases, cached); return; }
-					void vscode.window.showWarningMessage("Couldn't refresh the database list (received 0 databases). Keeping the previous cached list.");
+					if (databases.length > 0) return;
+					if (cachedBefore.length === 0) void vscode.window.showWarningMessage('The selected identity can connect but no databases are visible. Check the Authority / Tenant ID and account.');
+					else void vscode.window.showWarningMessage("Couldn't refresh the database list (received 0 databases). Keeping the previous cached list.");
 					return;
 				} catch (error) {
 					const msgText = this.kustoClient.isAuthenticationError(error) ? 'Failed to refresh the database list due to an authentication error. Try running a query against the cluster to sign in, then refresh again.' : 'Failed to refresh the database list. Check your connection and try again.';
 					void vscode.window.showErrorMessage(msgText);
 					return;
+				} finally {
+					await this.completeKustoMutation();
 				}
 			}
 			case 'schema.clearAll': {
-				try { await this.context.globalState.update(STORAGE_KEYS.cachedDatabases, {}); } catch { /* ignore */ }
+				try { await this.connectionCache.clearAll(); } catch { /* ignore */ }
 				try { await this.context.globalState.update('kusto.cacheClearEpoch', Date.now()); } catch { /* ignore */ }
-				try { const dir = getSchemaCacheDirUri(this.context.globalStorageUri); await vscode.workspace.fs.delete(dir, { recursive: true, useTrash: false }); } catch { /* ignore */ }
+				await clearCachedSchemas(this.context.globalStorageUri);
 				try { void vscode.window.setStatusBarMessage('Cleared cached schema data', 2000); } catch { /* ignore */ }
+				await this.completeKustoMutation();
 				return;
 			}
 			case 'schema.get': {
-				const clusterKey = String(msg.clusterKey || '').trim().toLowerCase();
+				const requestId = String(msg.requestId || '').trim();
+				const connectionId = String(msg.connectionId || '').trim();
 				const database = String(msg.database || '').trim();
-				if (!clusterKey || !database) return;
-				let clusterUrl = '';
-				try { const conns = this.connectionManager.getConnections(); for (const c of conns) { if (!c?.clusterUrl) continue; if (this.getClusterCacheKey(c.clusterUrl) === clusterKey) { clusterUrl = String(c.clusterUrl || '').trim(); break; } } } catch { clusterUrl = ''; }
-				if (!clusterUrl) clusterUrl = /^https?:\/\//i.test(clusterKey) ? clusterKey : `https://${clusterKey}`;
+				const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+				if (!requestId || !connection || !database) return;
+				const accountPartition = this.kustoClient.getAccountPartition(connection);
 				let jsonText = '';
 				let ok = false;
 				try {
-					const cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, clusterUrl, database);
+					const cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, connection.clusterUrl, database, connection.id, accountPartition);
 					if (!cached?.schema) {
-						jsonText = JSON.stringify({ cluster: clusterUrl, database, error: 'No cached schema was found for this database. Try loading schema for autocomplete (or refresh schema), then try again.' }, null, 2);
+						jsonText = JSON.stringify({ cluster: connection.clusterUrl, database, error: 'No cached schema was found for this database and account. Try loading schema for autocomplete (or refresh schema), then try again.' }, null, 2);
 						ok = false;
 					} else {
 						const schema = cached.schema;
@@ -493,36 +556,39 @@ export class CachedValuesViewerV2 {
 						const columnsCount = countColumns(schema);
 						const functionsCount = schema.functions?.length ?? 0;
 						const cacheAgeMs = Math.max(0, Date.now() - cached.timestamp);
-						jsonText = JSON.stringify({ cluster: clusterUrl, database, schema, meta: { cacheAgeMs, tablesCount, columnsCount, functionsCount, timestamp: cached.timestamp } }, null, 2);
+						jsonText = JSON.stringify({ cluster: connection.clusterUrl, database, schema, meta: { cacheAgeMs, tablesCount, columnsCount, functionsCount, timestamp: cached.timestamp } }, null, 2);
 						ok = true;
 					}
 				} catch {
-					jsonText = JSON.stringify({ cluster: clusterUrl, database, error: 'Failed to read cached schema from disk.' }, null, 2);
+					jsonText = JSON.stringify({ cluster: connection.clusterUrl, database, error: 'Failed to read cached schema from disk.' }, null, 2);
 					ok = false;
 				}
-				try { this.panel.webview.postMessage({ type: 'schemaResult', clusterKey, database, ok, json: jsonText }); } catch { /* ignore */ }
+				if (this.kustoClient.getAccountPartition(connection) !== accountPartition) return;
+				try { this.panel.webview.postMessage({ type: 'schemaResult', requestId, connectionId, accountPartition, database, ok, json: jsonText }); } catch { /* ignore */ }
 				return;
 			}
 			case 'schema.refresh': {
-				const clusterKey = String(msg.clusterKey || '').trim().toLowerCase();
+				const requestId = String(msg.requestId || '').trim();
+				const connectionId = String(msg.connectionId || '').trim();
 				const database = String(msg.database || '').trim();
-				if (!clusterKey || !database) return;
-				let clusterUrl = '';
-				let connection: KustoConnection | undefined;
-				try { const conns = this.connectionManager.getConnections(); for (const c of conns) { if (!c?.clusterUrl) continue; if (this.getClusterCacheKey(c.clusterUrl) === clusterKey) { clusterUrl = String(c.clusterUrl || '').trim(); connection = c; break; } } } catch { /* ignore */ }
-				if (!clusterUrl) clusterUrl = /^https?:\/\//i.test(clusterKey) ? clusterKey : `https://${clusterKey}`;
-				if (!connection) connection = { id: `cluster_${clusterKey}`, name: clusterKey, clusterUrl };
+				const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+				if (!requestId || !connection || !database) return;
+				const startingAccountPartition = this.kustoClient.getAccountPartition(connection);
 				try {
 					const result = await this.kustoClient.getDatabaseSchema(connection, database, true);
 					const schema = result.schema;
-					const cacheKey = schemaCacheKey(clusterUrl, database);
-					const entry = { schema, timestamp: Date.now(), version: SCHEMA_CACHE_VERSION, clusterUrl, database };
-					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, entry);
+					const accountPartition = result.accountPartition;
+					if (!accountPartition) throw new Error('Schema authentication identity could not be resolved.');
+					const cacheKey = schemaCacheKey(connection.clusterUrl, database, connection.id, accountPartition);
+					const entry = { schema, timestamp: Date.now(), version: SCHEMA_CACHE_VERSION, clusterUrl: connection.clusterUrl, database, connectionId: connection.id, accountPartition };
+					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, entry, result.cacheGeneration);
 					const tablesCount = schema.tables?.length ?? 0;
 					const columnsCount = countColumns(schema);
 					const functionsCount = schema.functions?.length ?? 0;
-					const jsonText = JSON.stringify({ cluster: clusterUrl, database, schema, meta: { cacheAgeMs: 0, tablesCount, columnsCount, functionsCount, timestamp: entry.timestamp } }, null, 2);
-					try { this.panel.webview.postMessage({ type: 'schemaResult', clusterKey, database, ok: true, json: jsonText }); } catch { /* ignore */ }
+					const jsonText = JSON.stringify({ cluster: connection.clusterUrl, database, schema, meta: { cacheAgeMs: 0, tablesCount, columnsCount, functionsCount, timestamp: entry.timestamp } }, null, 2);
+					await this.sendSnapshotToWebview();
+					if (this.kustoClient.getAccountPartition(connection) !== accountPartition) return;
+					try { this.panel.webview.postMessage({ type: 'schemaResult', requestId, connectionId, accountPartition, database, ok: true, json: jsonText }); } catch { /* ignore */ }
 					void vscode.window.setStatusBarMessage(`Refreshed schema for ${database}`, 2000);
 				} catch (error) {
 					const isAuth = this.kustoClient.isAuthenticationError(error);
@@ -530,7 +596,9 @@ export class CachedValuesViewerV2 {
 						? 'Failed to refresh schema due to an authentication error. Try running a query first.'
 						: 'Failed to refresh schema. Check your connection and try again.';
 					void vscode.window.showErrorMessage(msgText);
-					try { this.panel.webview.postMessage({ type: 'schemaResult', clusterKey, database, ok: false, json: '' }); } catch { /* ignore */ }
+					if (this.kustoClient.getAccountPartition(connection) === startingAccountPartition) {
+						try { this.panel.webview.postMessage({ type: 'schemaResult', requestId, connectionId, accountPartition: startingAccountPartition, database, ok: false, json: '' }); } catch { /* ignore */ }
+					}
 				}
 				return;
 			}
@@ -648,6 +716,22 @@ export class CachedValuesViewerV2 {
 			}
 			case 'sqlAuth.editConnection': {
 				void vscode.commands.executeCommand('kusto.manageConnections');
+				return;
+			}
+			case 'sqlAuth.copyToken': {
+				const accountId = String(msg.accountId || '').trim();
+				if (!accountId) return;
+				try {
+					const account = (await this.authPreferences.getAccounts()).find(candidate => candidate.id === accountId)
+						?? { id: accountId, label: accountId };
+					const session = await vscode.authentication.getSession(SQL_AUTH.providerId, [SQL_AUTH.scope], { silent: true, account });
+					if (!session || session.account.id !== accountId) throw new Error('SQL account session unavailable.');
+					const override = await this.context.secrets.get(SECRET_KEYS.sqlTokenOverrideByAccountId(accountId));
+					await vscode.env.clipboard.writeText(String(override || '').trim() || session.accessToken);
+					void vscode.window.setStatusBarMessage('Copied token to clipboard', 1500);
+				} catch {
+					void vscode.window.showErrorMessage('Could not retrieve the SQL token for this account.');
+				}
 				return;
 			}
 			case 'sqlAuth.setTokenOverride': {

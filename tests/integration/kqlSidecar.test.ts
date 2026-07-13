@@ -12,6 +12,15 @@ import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
 import { SqlCompatEditorProvider } from '../../src/host/sqlCompatEditorProvider';
 
 type DisposableLike = { dispose(): void };
+function connectionManagerStub(overrides: Record<string, unknown> = {}) {
+	const changeEmitter = new vscode.EventEmitter<unknown>();
+	return {
+		getConnections: () => [],
+		addConnection: async () => undefined,
+		onDidChangeConnections: changeEmitter.event,
+		...overrides,
+	} as any;
+}
 
 suite('Sidecar .kql.json strategy', () => {
 	const originalInitializeWebviewPanel = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
@@ -68,7 +77,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				{} as any
+				connectionManagerStub()
 			) as KqlCompatEditorProvider;
 
 			const document: vscode.TextDocument = {
@@ -157,7 +166,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				{} as any
+				connectionManagerStub()
 			) as KqlCompatEditorProvider;
 
 			const document: vscode.TextDocument = {
@@ -248,7 +257,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				{} as any
+				connectionManagerStub()
 			) as KqlCompatEditorProvider;
 
 			const document: vscode.TextDocument = {
@@ -349,7 +358,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				{} as any
+				connectionManagerStub()
 			) as KqlCompatEditorProvider;
 
 			const document: vscode.TextDocument = {
@@ -455,7 +464,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				{} as any
+				connectionManagerStub()
 			) as KqlCompatEditorProvider;
 
 			const document: vscode.TextDocument = {
@@ -532,7 +541,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				{} as any
+				connectionManagerStub()
 			) as KqlCompatEditorProvider;
 
 			// Simulate TextDocument with CRLF.
@@ -607,7 +616,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				{} as any
+				connectionManagerStub()
 			) as KqlCompatEditorProvider;
 
 			const document: vscode.TextDocument = {
@@ -681,7 +690,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const provider = new (KqlxEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				{ getConnections: () => [], addConnection: async () => undefined } as any
+				connectionManagerStub()
 			) as KqlxEditorProvider;
 
 			const kqlxText = fs.readFileSync(kqlxPath, 'utf8');
@@ -763,7 +772,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const provider = new (KqlxEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				{ getConnections: () => [], addConnection: async () => undefined } as any
+				connectionManagerStub()
 			) as KqlxEditorProvider;
 
 			const document: vscode.TextDocument = {
@@ -828,7 +837,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				{ getConnections: () => [] } as any
+				connectionManagerStub()
 			) as KqlCompatEditorProvider;
 
 			const document: vscode.TextDocument = {
@@ -898,7 +907,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const provider = new (SqlCompatEditorProvider as any)(
 				fakeContext,
 				vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
-				{} as any
+				connectionManagerStub()
 			) as SqlCompatEditorProvider;
 
 			const document: vscode.TextDocument = {
@@ -1051,7 +1060,8 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 			const connManager = new ConnectionManager(fakeContext);
-			await connManager.setFileConnection(kqlPath, 'https://cluster-a.kusto.windows.net', 'DBA');
+			const connA = await connManager.addConnection({ name: 'ClusterA', clusterUrl: 'https://cluster-a.kusto.windows.net' });
+			await connManager.setFileConnection(kqlPath, connA.clusterUrl, 'DBA', { connectionIdHint: connA.id });
 			await connManager.addConnection({ name: 'ClusterC', clusterUrl: 'https://cluster-c.kusto.windows.net' });
 			const connC = connManager.getConnections().find(c => c.clusterUrl === 'https://cluster-c.kusto.windows.net')!;
 
@@ -1204,7 +1214,8 @@ suite('Sidecar .kql.json strategy', () => {
 
 			const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 			const connManager = new ConnectionManager(fakeContext);
-			await connManager.setFileConnection(kqlPath, 'https://cached-cluster.kusto.windows.net', 'CachedDB');
+			const cachedConnection = await connManager.addConnection({ name: 'Cached Cluster', clusterUrl: 'https://cached-cluster.kusto.windows.net' });
+			await connManager.setFileConnection(kqlPath, cachedConnection.clusterUrl, 'CachedDB', { connectionIdHint: cachedConnection.id });
 
 			// Set up the inferClusterDatabaseForKqlQuery mock to return a DIFFERENT connection
 			// to verify the cached one wins.
@@ -1474,7 +1485,8 @@ suite('Sidecar .kql.json strategy', () => {
 			const { ConnectionManager } = await import('../../src/host/connectionManager.js');
 			const connManager = new ConnectionManager(fakeContext);
 			// Pre-populate with connection A.
-			await connManager.setFileConnection(kqlPath, 'https://cluster-a.kusto.windows.net', 'DBA');
+			const connA = await connManager.addConnection({ name: 'ClusterA', clusterUrl: 'https://cluster-a.kusto.windows.net' });
+			await connManager.setFileConnection(kqlPath, connA.clusterUrl, 'DBA', { connectionIdHint: connA.id });
 			await connManager.addConnection({ name: 'ClusterC', clusterUrl: 'https://cluster-c.kusto.windows.net' });
 			const connC = connManager.getConnections().find(c => c.clusterUrl === 'https://cluster-c.kusto.windows.net')!;
 

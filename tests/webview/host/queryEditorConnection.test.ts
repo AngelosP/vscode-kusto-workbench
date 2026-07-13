@@ -11,6 +11,7 @@ import {
 } from '../../../src/host/queryEditorConnection';
 import { STORAGE_KEYS } from '../../../src/host/queryEditorTypes';
 import { databaseListTraceRef } from '../../../src/host/databaseListTrace';
+import { KustoConnectionCache } from '../../../src/host/kustoConnectionCache';
 
 afterEach(() => {
 	vi.restoreAllMocks();
@@ -156,6 +157,7 @@ describe('normalizeFavoriteClusterUrl', () => {
 
 function makeMockHost(overrides: Partial<Record<string, any>> = {}) {
 	const globalState = overrides.globalState ?? new Map<string, any>();
+	const getDatabases = overrides.getDatabases ?? (async () => []);
 	return {
 		connectionManager: {
 			getConnections: () => overrides.connections ?? [],
@@ -168,7 +170,14 @@ function makeMockHost(overrides: Partial<Record<string, any>> = {}) {
 			},
 		},
 		kustoClient: {
-			getDatabases: overrides.getDatabases ?? (async () => []),
+			getDatabases,
+			getDatabasesWithIdentity: overrides.getDatabasesWithIdentity ?? (async (...args: any[]) => ({
+				databases: await getDatabases(...args),
+				accountPartition: 'test-partition',
+				fromCache: false,
+			})),
+			getAccountPartition: overrides.getAccountPartition ?? (() => 'test-partition'),
+			withTransientAuthPreference: overrides.withTransientAuthPreference ?? (async (_connection: unknown, _preference: unknown, operation: () => Promise<unknown>) => operation()),
 			isAuthenticationError: overrides.isAuthenticationError ?? (() => false),
 			reauthenticate: overrides.reauthenticate ?? (async () => undefined),
 		},
@@ -176,7 +185,7 @@ function makeMockHost(overrides: Partial<Record<string, any>> = {}) {
 		postMessage: overrides.postMessage ?? (() => {}),
 		formatQueryExecutionErrorForUser: () => 'error',
 		normalizeClusterUrlKey: (url: string) => url.toLowerCase(),
-		getCachedSchemaFromDisk: async () => undefined,
+		getCachedSchemaFromDisk: overrides.getCachedSchemaFromDisk ?? (async () => undefined),
 		_globalState: globalState,
 	};
 }
@@ -187,6 +196,10 @@ function wrappedDatabaseCancellation(): Error {
 		isCancelled: true,
 	});
 	return new Error('Failed to fetch databases: Sign-in cancelled', { cause: cancellation });
+}
+
+async function seedPrincipalDatabases(host: ReturnType<typeof makeMockHost>, databases: string[] = ['CachedDb']): Promise<void> {
+	await new KustoConnectionCache(host.context as any).setDatabases('c1', 'test-partition', databases);
 }
 
 function deferred<T>() {
@@ -278,7 +291,7 @@ describe('ConnectionService — database request identity', () => {
 
 	it('keeps required-database discovery silent and falls back without reauthenticating', async () => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
-		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const globalState = new Map<string, any>();
 		const authError = Object.assign(new Error('Forbidden'), { statusCode: 403 });
 		const getDatabases = vi.fn(async () => { throw authError; });
 		const reauthenticate = vi.fn(async () => undefined);
@@ -294,6 +307,7 @@ describe('ConnectionService — database request identity', () => {
 			postMessage,
 			isAuthenticationError: (error: unknown) => error === authError,
 		});
+		await seedPrincipalDatabases(host);
 		const svc = new ConnectionService(host as any);
 
 		await svc.sendDatabases('c1', 'query_1', {
@@ -322,9 +336,7 @@ describe('ConnectionService — database request identity', () => {
 		{ label: 'network failure without cache', isAuthError: false, cached: false },
 	])('keeps passive $label notification-free', async ({ isAuthError, cached }) => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
-		const globalState = new Map<string, any>(cached
-			? [[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]
-			: []);
+		const globalState = new Map<string, any>();
 		const failure = Object.assign(new Error(isAuthError ? 'Forbidden' : 'Network unavailable'), isAuthError ? { statusCode: 403 } : {});
 		const postMessage = vi.fn();
 		const warning = vi.spyOn(vscode.window, 'showWarningMessage');
@@ -337,6 +349,7 @@ describe('ConnectionService — database request identity', () => {
 			postMessage,
 			isAuthenticationError: () => isAuthError,
 		});
+		if (cached) await seedPrincipalDatabases(host);
 		const svc = new ConnectionService(host as any);
 
 		await svc.sendDatabases('c1', 'query_1', {
@@ -415,12 +428,13 @@ describe('ConnectionService — database request identity', () => {
 
 	it('uses cached databases silently when an interactive refresh is cancelled', async () => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
-		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const globalState = new Map<string, any>();
 		const getDatabases = vi.fn(async () => { throw wrappedDatabaseCancellation(); });
 		const postMessage = vi.fn();
 		const warning = vi.spyOn(vscode.window, 'showWarningMessage');
 		const errorNotification = vi.spyOn(vscode.window, 'showErrorMessage');
 		const host = makeMockHost({ connections: [connection], globalState, getDatabases, postMessage });
+		await seedPrincipalDatabases(host);
 		const svc = new ConnectionService(host as any);
 
 		await svc.sendDatabases('c1', 'query_1', {
@@ -520,7 +534,7 @@ describe('ConnectionService — database request identity', () => {
 
 	it('keeps cached databases when a zero-result account choice is dismissed', async () => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
-		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const globalState = new Map<string, any>();
 		const postMessage = vi.fn();
 		const accountChoice = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as any);
 		const host = makeMockHost({
@@ -529,6 +543,7 @@ describe('ConnectionService — database request identity', () => {
 			getDatabases: vi.fn(async () => []),
 			postMessage,
 		});
+		await seedPrincipalDatabases(host);
 		const svc = new ConnectionService(host as any);
 
 		await svc.sendDatabases('c1', 'query_1', {
@@ -537,10 +552,8 @@ describe('ConnectionService — database request identity', () => {
 		});
 
 		expect(accountChoice).toHaveBeenCalledWith(
-			"No databases were returned. This is often because the selected account doesn't have access to this cluster.",
-			'Try another account',
-			'Add account',
-			'Cancel'
+			'No databases are visible with the available accounts. Check the connection Authority / Tenant ID or choose an explicit account.',
+			'Edit Connections'
 		);
 		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'databasesData',
@@ -550,46 +563,40 @@ describe('ConnectionService — database request identity', () => {
 		}));
 	});
 
-	it.each([
-		['Try another account', 'clearPreference'],
-		['Add account', 'forceNewSession'],
-	] as const)('reauthenticates only after the user selects %s for a zero result', async (choice, promptMode) => {
+	it('does not start a second account-switch loop after a zero result', async () => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
-		const getDatabases = vi.fn()
-			.mockResolvedValueOnce([])
-			.mockResolvedValueOnce(['Db2']);
+		const getDatabases = vi.fn().mockResolvedValue([]);
 		const reauthenticate = vi.fn(async () => undefined);
 		const postMessage = vi.fn();
-		vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(choice as any);
+		vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Edit Connections' as any);
 		const host = makeMockHost({ connections: [connection], getDatabases, reauthenticate, postMessage });
 		const svc = new ConnectionService(host as any);
 
 		await svc.sendDatabases('c1', 'query_1', {
 			mode: 'interactive-refresh',
-			requestToken: `databases_${promptMode}`,
+			requestToken: 'databases_zero_fail_closed',
 		});
 
-		expect(reauthenticate).toHaveBeenCalledWith(connection, promptMode, expect.any(String));
-		expect(getDatabases).toHaveBeenCalledTimes(2);
-		expect(getDatabases.mock.calls[1][2]).toEqual(expect.objectContaining({ allowInteractive: false }));
+		expect(reauthenticate).not.toHaveBeenCalled();
+		expect(getDatabases).toHaveBeenCalledTimes(1);
 		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'databasesData',
-			databases: ['Db2'],
+			databases: [],
+			accountPartition: 'test-partition',
 			authoritative: true,
 			fallback: false,
 		}));
 	});
 
-	it('replaces cached databases after choosing another account for a zero result', async () => {
+	it('keeps cached databases and does not switch accounts after a zero result', async () => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
-		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
-		const getDatabases = vi.fn()
-			.mockResolvedValueOnce([])
-			.mockResolvedValueOnce(['NewDb']);
+		const globalState = new Map<string, any>();
+		const getDatabases = vi.fn().mockResolvedValue([]);
 		const reauthenticate = vi.fn(async () => undefined);
 		const postMessage = vi.fn();
-		vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Try another account' as any);
+		vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as any);
 		const host = makeMockHost({ connections: [connection], globalState, getDatabases, reauthenticate, postMessage });
+		await seedPrincipalDatabases(host);
 		const svc = new ConnectionService(host as any);
 
 		await svc.sendDatabases('c1', 'query_1', {
@@ -597,19 +604,19 @@ describe('ConnectionService — database request identity', () => {
 			requestToken: 'cached_empty_switched',
 		});
 
-		expect(reauthenticate).toHaveBeenCalledWith(connection, 'clearPreference', expect.any(String));
+		expect(reauthenticate).not.toHaveBeenCalled();
 		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'databasesData',
-			databases: ['NewDb'],
-			authoritative: true,
-			fallback: false,
+			databases: ['CachedDb'],
+			authoritative: false,
+			fallback: true,
 		}));
-		expect(globalState.get(STORAGE_KEYS.cachedDatabases)).toEqual({ test: ['NewDb'] });
+		expect(svc.getCachedDatabases().c1).toEqual(['CachedDb']);
 	});
 
 	it('retains cached databases when the post-choice fetch fails', async () => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
-		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const globalState = new Map<string, any>();
 		const getDatabases = vi.fn()
 			.mockResolvedValueOnce([])
 			.mockRejectedValueOnce(new Error('Network unavailable'));
@@ -622,6 +629,7 @@ describe('ConnectionService — database request identity', () => {
 			reauthenticate: vi.fn(async () => undefined),
 			postMessage,
 		});
+		await seedPrincipalDatabases(host);
 		const svc = new ConnectionService(host as any);
 
 		await svc.sendDatabases('c1', 'query_1', {
@@ -635,15 +643,15 @@ describe('ConnectionService — database request identity', () => {
 			authoritative: false,
 			fallback: true,
 		}));
-		expect(globalState.get(STORAGE_KEYS.cachedDatabases)).toEqual({ test: ['CachedDb'] });
+		expect(svc.getCachedDatabases().c1).toEqual(['CachedDb']);
 	});
 
-	it('propagates cancellation after a zero-result account choice to the terminal handler', async () => {
+	it('does not call legacy reauthentication after a zero result', async () => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
 		const getDatabases = vi.fn(async () => []);
 		const reauthenticate = vi.fn(async () => { throw wrappedDatabaseCancellation(); });
 		const postMessage = vi.fn();
-		const warning = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue('Try another account' as any);
+		const warning = vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as any);
 		const errorNotification = vi.spyOn(vscode.window, 'showErrorMessage');
 		const host = makeMockHost({ connections: [connection], getDatabases, reauthenticate, postMessage });
 		const svc = new ConnectionService(host as any);
@@ -654,12 +662,12 @@ describe('ConnectionService — database request identity', () => {
 		});
 
 		expect(warning).toHaveBeenCalledTimes(1);
-		expect(reauthenticate).toHaveBeenCalledTimes(1);
+		expect(reauthenticate).not.toHaveBeenCalled();
 		expect(errorNotification).not.toHaveBeenCalled();
 		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
-			type: 'databasesError',
+			type: 'databasesData',
 			requestToken: 'databases_choice_cancelled',
-			error: 'Database refresh cancelled.',
+			databases: [],
 		}));
 	});
 
@@ -683,10 +691,7 @@ describe('ConnectionService — database request identity', () => {
 			mode: 'interactive-refresh',
 			requestToken: 'concurrent_2',
 		});
-		await Promise.resolve();
-		await Promise.resolve();
-
-		expect(accountChoice).toHaveBeenCalledTimes(1);
+		await vi.waitFor(() => expect(accountChoice).toHaveBeenCalledTimes(1));
 		choice.resolve(undefined);
 		await Promise.all([first, second]);
 
@@ -697,17 +702,13 @@ describe('ConnectionService — database request identity', () => {
 		expect(terminalMessages.map(message => message.requestToken).sort()).toEqual(['concurrent_1', 'concurrent_2']);
 	});
 
-	it('shares one post-auth database result across separate providers', async () => {
+	it('does not share a post-auth database result across separate providers', async () => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
 		const globalState = new Map<string, any>();
 		const choice = deferred<string | undefined>();
 		const accountChoice = vi.spyOn(vscode.window, 'showWarningMessage').mockReturnValue(choice.promise as any);
-		const firstGetDatabases = vi.fn()
-			.mockResolvedValueOnce([])
-			.mockResolvedValueOnce(['NewDb']);
-		const secondGetDatabases = vi.fn()
-			.mockResolvedValueOnce([])
-			.mockRejectedValueOnce(new Error('A second provider fetch should not run'));
+		const firstGetDatabases = vi.fn().mockResolvedValue([]);
+		const secondGetDatabases = vi.fn().mockResolvedValue([]);
 		const firstPostMessage = vi.fn();
 		const secondPostMessage = vi.fn();
 		const firstService = new ConnectionService(makeMockHost({
@@ -738,20 +739,20 @@ describe('ConnectionService — database request identity', () => {
 		await Promise.resolve();
 
 		expect(accountChoice).toHaveBeenCalledTimes(1);
-		choice.resolve('Try another account');
+		choice.resolve(undefined);
 		await Promise.all([first, second]);
 
-		expect(firstGetDatabases).toHaveBeenCalledTimes(2);
+		expect(firstGetDatabases).toHaveBeenCalledTimes(1);
 		expect(secondGetDatabases).toHaveBeenCalledTimes(1);
 		for (const postMessage of [firstPostMessage, secondPostMessage]) {
 			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
 				type: 'databasesData',
-				databases: ['NewDb'],
+				databases: [],
 				authoritative: true,
 				fallback: false,
 			}));
 		}
-		expect(globalState.get(STORAGE_KEYS.cachedDatabases)).toEqual({ test: ['NewDb'] });
+		expect(globalState.get(STORAGE_KEYS.cachedDatabases)).toBeUndefined();
 	});
 
 	it('cleans up rejected shared recovery before the next refresh', async () => {
@@ -824,6 +825,7 @@ describe('ConnectionService — database request identity', () => {
 			databases: ['Db1'],
 			boxId: 'query_1',
 			connectionId: 'c1',
+			accountPartition: 'test-partition',
 			requestToken: 'databases_1',
 			authoritative: true,
 			fallback: false,
@@ -843,10 +845,11 @@ describe('ConnectionService — database request identity', () => {
 
 	it('bypasses stale cache when it omits an explicitly required database', async () => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
-		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const globalState = new Map<string, any>();
 		const getDatabases = vi.fn(async () => ['CachedDb', 'SavedDb']);
 		const postMessage = vi.fn();
 		const host = makeMockHost({ connections: [connection], globalState, getDatabases, postMessage });
+		await seedPrincipalDatabases(host);
 		const svc = new ConnectionService(host as any);
 
 		await svc.sendDatabases('c1', 'query_1', {
@@ -871,7 +874,7 @@ describe('ConnectionService — database request identity', () => {
 
 	it('traces a persisted cache hit without calling the Kusto client', async () => {
 		const connection = { id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' };
-		const globalState = new Map<string, any>([[STORAGE_KEYS.cachedDatabases, { test: ['CachedDb'] }]]);
+		const globalState = new Map<string, any>();
 		const getDatabases = vi.fn(async () => ['LiveDb']);
 		const postMessage = vi.fn();
 		const trace = vi.fn();
@@ -882,6 +885,7 @@ describe('ConnectionService — database request identity', () => {
 			postMessage,
 			output: { trace, debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() },
 		});
+		await seedPrincipalDatabases(host);
 		const svc = new ConnectionService(host as any);
 
 		await svc.sendDatabases('c1', 'query_1', { mode: 'passive', requestToken: 'databases_cached' });
@@ -959,21 +963,21 @@ describe('ConnectionService — getFavorites', () => {
 	});
 
 	it('returns valid favorites from storage', async () => {
-		const host = makeMockHost();
-		const favs = [{ name: 'My Fav', clusterUrl: 'https://test', database: 'db1' }];
+		const host = makeMockHost({ connections: [{ id: 'c1', name: 'Test', clusterUrl: 'https://test' }] });
+		const favs = [{ name: 'My Fav', connectionId: 'c1', clusterUrl: 'https://test', database: 'db1' }];
 		await host.context.globalState.update(STORAGE_KEYS.favorites, favs);
 		const svc = new ConnectionService(host as any);
 		const result = svc.getFavorites();
 		expect(result).toHaveLength(1);
-		expect(result[0].name).toBe('My Fav');
+		expect(result[0]).toEqual(favs[0]);
 	});
 
 	it('skips invalid favorites (missing fields)', async () => {
-		const host = makeMockHost();
+		const host = makeMockHost({ connections: [{ id: 'c1', name: 'Test', clusterUrl: 'https://test' }] });
 		const favs = [
-			{ name: 'Good', clusterUrl: 'https://test', database: 'db1' },
-			{ name: '', clusterUrl: 'https://test', database: 'db1' }, // empty name
-			{ clusterUrl: 'https://test', database: 'db1' }, // missing name
+			{ name: 'Good', connectionId: 'c1', clusterUrl: 'https://test', database: 'db1' },
+			{ name: '', connectionId: 'c1', clusterUrl: 'https://test', database: 'db1' }, // empty name
+			{ connectionId: 'c1', clusterUrl: 'https://test', database: 'db1' }, // missing name
 			null,
 			42,
 		];
@@ -1019,26 +1023,52 @@ describe('ConnectionService — promptAddFavorite', () => {
 	it('stores the favorite and notifies the originating provider', async () => {
 		const postMessage = vi.fn();
 		vi.spyOn(vscode.window, 'showInputBox').mockResolvedValue('Friendly Favorite' as any);
-		const host = makeMockHost({ postMessage });
+		const host = makeMockHost({
+			postMessage,
+			connections: [{ id: 'c1', name: 'Cluster One', clusterUrl: 'https://cluster-one.kusto.windows.net' }],
+		});
 		const svc = new ConnectionService(host as any);
 
 		await svc.promptAddFavorite({
 			type: 'requestAddFavorite',
+			connectionId: 'c1',
 			clusterUrl: 'cluster-one.kusto.windows.net/',
 			database: 'Samples',
 			boxId: 'query_origin',
 		});
 
 		expect(host._globalState.get(STORAGE_KEYS.favorites)).toEqual([
-			{ name: 'Friendly Favorite', clusterUrl: 'https://cluster-one.kusto.windows.net', database: 'Samples' },
+			{ name: 'Friendly Favorite', connectionId: 'c1', clusterUrl: 'https://cluster-one.kusto.windows.net', database: 'Samples', accountPartition: 'test-partition' },
 		]);
 		expect(postMessage).toHaveBeenCalledWith({
 			type: 'favoritesData',
 			boxId: 'query_origin',
 			favorites: [
-				{ name: 'Friendly Favorite', clusterUrl: 'https://cluster-one.kusto.windows.net', database: 'Samples' },
+				{ name: 'Friendly Favorite', connectionId: 'c1', clusterUrl: 'https://cluster-one.kusto.windows.net', database: 'Samples' },
 			],
 		});
+	});
+
+	it('does not assign an A favorite to B when identity changes while the prompt is open', async () => {
+		const connection = { id: 'c1', name: 'Cluster One', clusterUrl: 'https://cluster-one.kusto.windows.net' };
+		let partition = 'partition-a';
+		const picked = deferred<string | undefined>();
+		vi.spyOn(vscode.window, 'showInputBox').mockReturnValue(picked.promise as any);
+		const host = makeMockHost({
+			connections: [connection],
+			getAccountPartition: () => partition,
+		});
+		const svc = new ConnectionService(host as any);
+
+		const prompt = svc.promptAddFavorite({
+			type: 'requestAddFavorite', connectionId: 'c1', clusterUrl: connection.clusterUrl, database: 'SecretA', boxId: 'query_1',
+		});
+		await Promise.resolve();
+		partition = 'partition-b';
+		picked.resolve('A favorite');
+		await prompt;
+
+		expect(host._globalState.get(STORAGE_KEYS.favorites)).toBeUndefined();
 	});
 
 	it.each(providerSyncPermutations)(
@@ -1050,20 +1080,23 @@ describe('ConnectionService — promptAddFavorite', () => {
 		const key = `${shape}-${source.id}-to-${target.id}-${sourceSections}-${targetSections}`;
 		const favoriteName = `Cross File Favorite ${key}`;
 		const clusterUrl = `cross-file-${source.id}-to-${target.id}-${sourceSections}-${targetSections}.kusto.windows.net`;
+		const connectionId = `connection-${key}`;
 		const database = `CrossDb${sourceSections}${targetSections}`;
 		vi.spyOn(vscode.window, 'showInputBox').mockResolvedValue(favoriteName as any);
-		const originatingHost = makeMockHost({ postMessage: originatingPostMessage, globalState: sharedGlobalState });
-		const otherOpenProviderHost = makeMockHost({ postMessage: otherOpenProviderPostMessage, globalState: sharedGlobalState });
+		const connections = [{ id: connectionId, name: key, clusterUrl: `https://${clusterUrl}` }];
+		const originatingHost = makeMockHost({ postMessage: originatingPostMessage, globalState: sharedGlobalState, connections });
+		const otherOpenProviderHost = makeMockHost({ postMessage: otherOpenProviderPostMessage, globalState: sharedGlobalState, connections });
 		const originatingService = new ConnectionService(originatingHost as any);
 		const otherOpenService = new ConnectionService(otherOpenProviderHost as any);
 
 		await originatingService.promptAddFavorite({
 			type: 'requestAddFavorite',
+			connectionId,
 			clusterUrl,
 			database,
 			boxId: 'query_origin',
 		});
-		const favorite = { name: favoriteName, clusterUrl: `https://${clusterUrl}`, database };
+		const favorite = { name: favoriteName, connectionId, clusterUrl: `https://${clusterUrl}`, database };
 
 		expect(otherOpenService.getFavorites()).toEqual([favorite]);
 		expect(originatingPostMessage).toHaveBeenCalledWith({
@@ -1085,34 +1118,131 @@ describe('ConnectionService — getCachedDatabases', () => {
 		expect(svc.getCachedDatabases()).toEqual({});
 	});
 
-	it('returns cached databases', async () => {
-		const host = makeMockHost();
+	it('uses raw legacy cached databases only before a principal is resolved', async () => {
+		const host = makeMockHost({
+			connections: [{ id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' }],
+			getAccountPartition: () => undefined,
+		});
 		await host.context.globalState.update(STORAGE_KEYS.cachedDatabases, {
-			'test.kusto.windows.net': ['db1', 'db2'],
+			test: ['db1', 'db2'],
 		});
 		const svc = new ConnectionService(host as any);
 		const result = svc.getCachedDatabases();
-		expect(result.test).toEqual(['db1', 'db2']);
+		expect(result.c1).toEqual(['db1', 'db2']);
+	});
+
+	it('does not expose raw legacy cached databases to a resolved principal', async () => {
+		const host = makeMockHost({ connections: [{ id: 'c1', name: 'Test', clusterUrl: 'https://test.kusto.windows.net' }] });
+		await host.context.globalState.update(STORAGE_KEYS.cachedDatabases, { test: ['SecretA'] });
+		const svc = new ConnectionService(host as any);
+
+		expect(svc.getCachedDatabases()).toEqual({});
+	});
+});
+
+describe('ConnectionService — plain-file schema inference', () => {
+	it('uses each connection account partition when connections share a cluster', async () => {
+		const clusterUrl = 'https://shared.kusto.windows.net';
+		const connections = [
+			{ id: 'account-one', name: 'Account one', clusterUrl, authorityId: 'tenant-one.onmicrosoft.com' },
+			{ id: 'account-two', name: 'Account two', clusterUrl, authorityId: 'tenant-two.onmicrosoft.com' },
+		];
+		const host = makeMockHost({
+			connections,
+			getAccountPartition: (connection: { id: string }) => `${connection.id}-partition`,
+			getCachedSchemaFromDisk: async (key: string) => {
+				if (key.includes('account-one') && key.endsWith('|dbone')) {
+					return { schema: { tables: ['AccountOneTable'], functions: [] } };
+				}
+				if (key.includes('account-two') && key.endsWith('|dbtwo')) {
+					return { schema: { tables: ['AccountTwoTable'], functions: [] } };
+				}
+				return undefined;
+			},
+		});
+		const cache = new KustoConnectionCache(host.context as any);
+		await cache.setDatabases('account-one', 'account-one-partition', ['DbOne']);
+		await cache.setDatabases('account-two', 'account-two-partition', ['DbTwo']);
+
+		const service = new ConnectionService(host as any);
+		await expect(service.inferClusterDatabaseForKqlQuery('AccountTwoTable | take 1')).resolves.toEqual({
+			clusterUrl,
+			database: 'DbTwo',
+			authorityId: 'tenant-two.onmicrosoft.com',
+			connectionIdHint: 'account-two',
+		});
+	});
+
+	it('stays unresolved when equal top schema matches belong to different authority connections', async () => {
+		const clusterUrl = 'https://shared.kusto.windows.net';
+		const connections = [
+			{ id: 'home', name: 'Home', clusterUrl, authorityId: 'home.onmicrosoft.com' },
+			{ id: 'guest', name: 'Guest', clusterUrl, authorityId: 'resource.onmicrosoft.com' },
+		];
+		const host = makeMockHost({
+			connections,
+			getAccountPartition: (connection: { id: string }) => `${connection.id}-partition`,
+			getCachedSchemaFromDisk: async () => ({ schema: { tables: ['SharedTable'], functions: [] } }),
+		});
+		const cache = new KustoConnectionCache(host.context as any);
+		await cache.setDatabases('home', 'home-partition', ['SharedDb']);
+		await cache.setDatabases('guest', 'guest-partition', ['SharedDb']);
+
+		const service = new ConnectionService(host as any);
+		await expect(service.inferClusterDatabaseForKqlQuery('SharedTable | take 1')).resolves.toBeUndefined();
+	});
+
+	it('uses a connection-owned favorite to disambiguate equal authority matches', async () => {
+		const clusterUrl = 'https://shared.kusto.windows.net';
+		const connections = [
+			{ id: 'home', name: 'Home', clusterUrl, authorityId: 'home.onmicrosoft.com' },
+			{ id: 'guest', name: 'Guest', clusterUrl, authorityId: 'resource.onmicrosoft.com' },
+		];
+		const host = makeMockHost({
+			connections,
+			getAccountPartition: (connection: { id: string }) => `${connection.id}-partition`,
+			getCachedSchemaFromDisk: async () => ({ schema: { tables: ['SharedTable'], functions: [] } }),
+		});
+		await host.context.globalState.update(STORAGE_KEYS.favorites, [
+			{ name: 'Guest favorite', connectionId: 'guest', clusterUrl, database: 'SharedDb' },
+		]);
+		const cache = new KustoConnectionCache(host.context as any);
+		await cache.setDatabases('home', 'home-partition', ['SharedDb']);
+		await cache.setDatabases('guest', 'guest-partition', ['SharedDb']);
+
+		const service = new ConnectionService(host as any);
+		await expect(service.inferClusterDatabaseForKqlQuery('SharedTable | take 1')).resolves.toEqual({
+			clusterUrl,
+			database: 'SharedDb',
+			authorityId: 'resource.onmicrosoft.com',
+			connectionIdHint: 'guest',
+		});
 	});
 });
 
 describe('ConnectionService — removeFavorite', () => {
 	it('removes matching favorite', async () => {
 		const postMessage = () => {};
-		const host = makeMockHost({ postMessage });
+		const host = makeMockHost({
+			postMessage,
+			connections: [
+				{ id: 'keep', name: 'Keep', clusterUrl: 'https://keep' },
+				{ id: 'remove', name: 'Remove', clusterUrl: 'https://remove' },
+			],
+		});
 		const favs = [
-			{ name: 'Keep', clusterUrl: 'https://keep', database: 'db' },
-			{ name: 'Remove', clusterUrl: 'https://remove', database: 'db' },
+			{ name: 'Keep', connectionId: 'keep', clusterUrl: 'https://keep', database: 'db' },
+			{ name: 'Remove', connectionId: 'remove', clusterUrl: 'https://remove', database: 'db' },
 		];
 		await host.context.globalState.update(STORAGE_KEYS.favorites, favs);
 		const svc = new ConnectionService(host as any);
-		await svc.removeFavorite('https://remove', 'db');
+		await svc.removeFavorite('remove', 'db');
 		const result = svc.getFavorites();
 		expect(result).toHaveLength(1);
 		expect(result[0].name).toBe('Keep');
 	});
 
-	it('does nothing when clusterUrl is empty', async () => {
+	it('does nothing when connection ID is empty', async () => {
 		const host = makeMockHost();
 		const svc = new ConnectionService(host as any);
 		await svc.removeFavorite('', 'db'); // should not throw
@@ -1121,7 +1251,7 @@ describe('ConnectionService — removeFavorite', () => {
 	it('does nothing when database is empty', async () => {
 		const host = makeMockHost();
 		const svc = new ConnectionService(host as any);
-		await svc.removeFavorite('https://test', ''); // should not throw
+		await svc.removeFavorite('c1', ''); // should not throw
 	});
 });
 
@@ -1145,7 +1275,7 @@ describe('ConnectionService — add/test connection UI routing', () => {
 		await svc.testConnectionFromWebview({ name: 'Draft', clusterUrl: 'draft.kusto.windows.net', database: 'Samples', boxId: 'query_1' });
 
 		expect(getDatabases).toHaveBeenCalledWith(expect.objectContaining({
-			id: 'draft:https://draft.kusto.windows.net',
+			id: expect.stringMatching(/^draft:/),
 			name: 'Draft',
 			clusterUrl: 'https://draft.kusto.windows.net',
 			database: 'Samples',
@@ -1153,6 +1283,7 @@ describe('ConnectionService — add/test connection UI routing', () => {
 			allowInteractive: true,
 			traceId: expect.any(String),
 			source: 'query-editor-connection-test',
+			persistIdentity: false,
 		}));
 		expect(postMessage).toHaveBeenNthCalledWith(1, { type: 'kustoConnectionTestStarted', boxId: 'query_1' });
 		expect(postMessage).toHaveBeenNthCalledWith(2, {
@@ -1162,6 +1293,70 @@ describe('ConnectionService — add/test connection UI routing', () => {
 			message: 'Connected successfully! Found 2 database(s).',
 			databases: ['Samples', 'Telemetry'],
 		});
+	});
+
+	it.each(['add', 'test'] as const)('returns a terminal form error for malformed Authority during %s', async action => {
+		const postMessage = vi.fn();
+		const host = makeMockHost({ postMessage });
+		host.connectionManager.addConnection = vi.fn();
+		const svc = new ConnectionService(host as any);
+
+		if (action === 'add') {
+			await svc.addConnectionFromWebview({ clusterUrl: 'https://cluster.kusto.windows.net', authorityId: 'https://login.microsoftonline.com/tenant', boxId: 'query_1' });
+			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoConnectionMutationResult', boxId: 'query_1', success: false }));
+			expect(host.connectionManager.addConnection).not.toHaveBeenCalled();
+		} else {
+			await svc.testConnectionFromWebview({ clusterUrl: 'https://cluster.kusto.windows.net', authorityId: 'https://login.microsoftonline.com/tenant', boxId: 'query_1' });
+			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoConnectionTestResult', boxId: 'query_1', success: false }));
+		}
+	});
+});
+
+describe('ConnectionService — XML import resilience', () => {
+	it('imports a valid connection when an existing historical authority is malformed', async () => {
+		const connections: any[] = [
+			{ id: 'legacy', name: 'Legacy', clusterUrl: 'https://legacy.kusto.windows.net', authorityId: 'not a tenant' },
+		];
+		const addConnection = vi.fn(async (connection: any) => {
+			const added = { id: 'valid', ...connection };
+			connections.push(added);
+			return added;
+		});
+		const host = makeMockHost({ connections });
+		host.connectionManager.getConnections = () => connections;
+		host.connectionManager.addConnection = addConnection;
+		const service = new ConnectionService(host as any);
+
+		await service.importConnectionsFromXml([
+			{ name: 'Valid', clusterUrl: 'https://valid.kusto.windows.net', authorityId: 'resource.onmicrosoft.com' },
+		]);
+
+		expect(addConnection).toHaveBeenCalledWith(expect.objectContaining({
+			name: 'Valid',
+			clusterUrl: 'https://valid.kusto.windows.net',
+			authorityId: 'resource.onmicrosoft.com',
+		}));
+	});
+
+	it('skips a malformed imported authority and still adds the later valid connection', async () => {
+		const connections: any[] = [];
+		const addConnection = vi.fn(async (connection: any) => {
+			const added = { id: `added-${connections.length}`, ...connection };
+			connections.push(added);
+			return added;
+		});
+		const host = makeMockHost({ connections });
+		host.connectionManager.getConnections = () => connections;
+		host.connectionManager.addConnection = addConnection;
+		const service = new ConnectionService(host as any);
+
+		await service.importConnectionsFromXml([
+			{ name: 'Malformed', clusterUrl: 'https://bad.kusto.windows.net', authorityId: 'not a tenant' },
+			{ name: 'Valid', clusterUrl: 'https://valid.kusto.windows.net', authorityId: 'resource.onmicrosoft.com' },
+		]);
+
+		expect(addConnection).toHaveBeenCalledTimes(1);
+		expect(addConnection).toHaveBeenCalledWith(expect.objectContaining({ name: 'Valid', authorityId: 'resource.onmicrosoft.com' }));
 	});
 });
 

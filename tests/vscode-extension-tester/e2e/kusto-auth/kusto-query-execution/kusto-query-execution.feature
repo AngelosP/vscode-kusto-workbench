@@ -3,6 +3,9 @@ Feature: Kusto query execution end-to-end
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
+    When I move the Dev Host to 0, 0
+    When I resize the Dev Host to 1280x1000
+    When I execute command "workbench.action.closeAuxiliaryBar"
     And I wait 2 seconds
 
   Scenario: Execute KQL query, verify results, test error handling and run controls

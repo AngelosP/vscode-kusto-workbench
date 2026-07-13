@@ -499,16 +499,10 @@ const getSchemaTableDoc = (boxId: any, name: any) => {
 		if (!boxId || !name) return null;
 		const needle = String(name).toLowerCase();
 
-		// Search the active box's schema first, then fall back to all loaded schemas.
+		// Documentation must stay within the active box's resolved principal schema.
 		const schemas: any[] = [];
 		const primary = (_win as any).schemaByBoxId?.[boxId];
 		if (primary) schemas.push(primary);
-		const byConnDb = (_win as any).schemaByConnDb;
-		if (byConnDb && typeof byConnDb === 'object') {
-			for (const s of Object.values(byConnDb)) {
-				if (s && s !== primary) schemas.push(s);
-			}
-		}
 
 		for (const schema of schemas) {
 			const tables = schema.tables;

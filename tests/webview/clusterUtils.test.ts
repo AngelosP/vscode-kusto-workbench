@@ -24,6 +24,7 @@ import {
 	selectBestKustoClusterUrl,
 } from '../../src/webview/shared/clusterUtils';
 import { parseKustoExplorerConnectionsXml } from '../../src/webview/sections/query-connection.controller';
+import { stringifyKustoExplorerConnectionsXml } from '../../src/shared/kustoExplorerConnections';
 
 // ── formatClusterDisplayName ──────────────────────────────────────────────
 
@@ -202,6 +203,19 @@ describe('parseKustoExplorerConnectionsXml', () => {
 
 		expect(imported).toEqual([{ name: 'https://ddtelinsights', clusterUrl: 'https://ddtelinsights', database: undefined }]);
 	});
+
+	it('round-trips quoted database values and Authority ID through XML', () => {
+		const connection = {
+			name: 'Ops & "West"',
+			clusterUrl: 'https://shared.westus.kusto.windows.net',
+			database: 'Ops; "West"',
+			authorityId: 'Contoso.OnMicrosoft.com',
+		};
+
+		const xml = stringifyKustoExplorerConnectionsXml([connection]);
+
+		expect(parseKustoExplorerConnectionsXml(xml)).toEqual([connection]);
+	});
 });
 
 // ── formatClusterShortName ────────────────────────────────────────────────
@@ -322,10 +336,8 @@ describe('computeMissingClusterUrls', () => {
 // ── favoriteKey ───────────────────────────────────────────────────────────
 
 describe('favoriteKey', () => {
-	it('normalizes cluster URL and lowercases database', () => {
-		const key = favoriteKey('https://MyCluster.kusto.windows.net/', 'MyDB');
-		expect(key).toContain('mycluster');
-		expect(key).toContain('mydb');
+	it('preserves connection identity and lowercases database', () => {
+		expect(favoriteKey('conn-1', 'MyDB')).toBe('conn-1|mydb');
 	});
 
 	it('handles empty inputs', () => {
@@ -337,33 +349,34 @@ describe('favoriteKey', () => {
 
 describe('findFavorite', () => {
 	const favorites = [
-		{ clusterUrl: 'https://clusterA.kusto.windows.net', database: 'db1', name: 'fav1' },
-		{ clusterUrl: 'https://clusterB.kusto.windows.net', database: 'db2', name: 'fav2' },
+		{ connectionId: 'conn-a', clusterUrl: 'https://clusterA.kusto.windows.net', database: 'db1', name: 'fav1' },
+		{ connectionId: 'conn-b', clusterUrl: 'https://clusterB.kusto.windows.net', database: 'db2', name: 'fav2' },
 	];
 
 	it('finds matching favorite', () => {
-		const result = findFavorite('https://clusterA.kusto.windows.net', 'db1', favorites);
+		const result = findFavorite('conn-a', 'db1', favorites);
 		expect(result).toEqual(favorites[0]);
 	});
 
 	it('returns null when not found', () => {
-		expect(findFavorite('https://noexist.kusto.windows.net', 'db1', favorites)).toBeNull();
+		expect(findFavorite('missing', 'db1', favorites)).toBeNull();
 	});
 
-	it('matches case-insensitively', () => {
-		const result = findFavorite('https://CLUSTERA.kusto.windows.net', 'DB1', favorites);
+	it('matches database case-insensitively', () => {
+		const result = findFavorite('conn-a', 'DB1', favorites);
 		expect(result).toEqual(favorites[0]);
 	});
 
-	it('matches public short/regional and full-host variants logically', () => {
-		const result = findFavorite('aoaiagents1.westus', 'Prod', [
-			{ clusterUrl: 'https://aoaiagents1.westus.kusto.windows.net', database: 'prod', name: 'Foundry Agents' },
+	it('selects the correct connection when two favorites share an endpoint', () => {
+		const result = findFavorite('guest', 'Prod', [
+			{ connectionId: 'home', clusterUrl: 'https://shared.kusto.windows.net', database: 'prod', name: 'Home' },
+			{ connectionId: 'guest', clusterUrl: 'https://shared.kusto.windows.net', database: 'prod', name: 'Guest' },
 		]);
-		expect(result?.name).toBe('Foundry Agents');
+		expect(result?.name).toBe('Guest');
 	});
 
 	it('handles empty favorites list', () => {
-		expect(findFavorite('https://x.kusto.windows.net', 'db', [])).toBeNull();
+		expect(findFavorite('conn-x', 'db', [])).toBeNull();
 	});
 });
 
@@ -423,6 +436,17 @@ describe('parseKustoConnectionString', () => {
 	it('handles server key', () => {
 		const result = parseKustoConnectionString('Server=https://example.com');
 		expect(result.dataSource).toBe('https://example.com');
+	});
+
+	it('parses quoted semicolons, doubled quotes, and Authority ID', () => {
+		const result = parseKustoConnectionString(
+			'Data Source="https://shared.westus.kusto.windows.net";Initial Catalog="Ops; ""West""";Authority Id="Contoso.OnMicrosoft.com"'
+		);
+		expect(result).toEqual({
+			dataSource: 'https://shared.westus.kusto.windows.net',
+			initialCatalog: 'Ops; "West"',
+			authorityId: 'Contoso.OnMicrosoft.com',
+		});
 	});
 });
 

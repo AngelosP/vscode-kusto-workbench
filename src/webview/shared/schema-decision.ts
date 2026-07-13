@@ -24,10 +24,18 @@ export interface SchemaDecisionInput {
 	currentClusterUrl: string | null;
 	/** Database name currently in context for this model (null if none). */
 	currentDatabase: string | null;
+	/** Principal-aware key of the current schema context. */
+	currentIdentity?: string | null;
+	/** Connection/account principal of the current worker context. */
+	currentPrincipalIdentity?: string | null;
 	/** Cluster URL of the schema being loaded. */
 	newClusterUrl: string;
 	/** Database name of the schema being loaded. */
 	newDatabase: string;
+	/** Principal-aware key of the incoming schema. */
+	newIdentity?: string | null;
+	/** Connection/account principal of the incoming schema. */
+	newPrincipalIdentity?: string | null;
 	/** Should this schema become the active autocomplete context? */
 	setAsContext: boolean;
 	/** Is this a force-refresh of the same database's schema? */
@@ -43,8 +51,14 @@ export function decideSchemaOperation(input: SchemaDecisionInput): SchemaOperati
 	const currentClusterNorm = kustoClusterKey(input.currentClusterUrl);
 	const newClusterNorm = kustoClusterKey(input.newClusterUrl);
 	const isSameCluster = !!currentClusterNorm && currentClusterNorm === newClusterNorm;
-	const isSameDatabase = isSameCluster &&
+	const isSameIdentity = !input.currentIdentity && !input.newIdentity
+		? true
+		: !!input.currentIdentity && input.currentIdentity === input.newIdentity;
+	const isSameDatabase = isSameIdentity && isSameCluster &&
 		(input.currentDatabase || '').toLowerCase() === (input.newDatabase || '').toLowerCase();
+	const isSamePrincipal = !input.currentPrincipalIdentity && !input.newPrincipalIdentity
+		? true
+		: !!input.currentPrincipalIdentity && input.currentPrincipalIdentity === input.newPrincipalIdentity;
 
 	// ── Already loaded? ──────────────────────────────────────────────────
 	if (input.perModelLoaded) {
@@ -67,9 +81,9 @@ export function decideSchemaOperation(input: SchemaDecisionInput): SchemaOperati
 	// When setAsContext is true and database differs, we MUST use
 	// setSchemaFromShowSchema (replace) to guarantee autocomplete switches.
 	// forceRefresh deliberately uses the ADD path to avoid disrupting context.
-	const needsReplace = input.setAsContext && !isSameDatabase && (!input.forceRefresh || !isSameCluster);
+	const needsReplace = input.setAsContext && !isSameDatabase && (!input.forceRefresh || !isSameCluster || !isSamePrincipal);
 	if (needsReplace) {
-		const reason = !isSameCluster ? 'different-cluster' : 'different-database';
+		const reason = !isSamePrincipal ? 'different-principal' : !isSameCluster ? 'different-cluster' : 'different-database';
 		return { action: 'replace', reason };
 	}
 

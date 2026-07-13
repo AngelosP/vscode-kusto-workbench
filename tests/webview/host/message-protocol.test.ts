@@ -354,6 +354,8 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'enabledKqlxSidecar',
 	'enabledSqlSidecar',
 	'connectionsData',
+	'kustoAuthIdentityChanged',
+	'kustoCopilotIdentityChanged',
 	'editingPreferencesData',
 	'updateDevNotes',
 	'favoritesData',
@@ -369,6 +371,7 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'openKustoAddConnectionDialog',
 	'kustoConnectionTestStarted',
 	'kustoConnectionTestResult',
+	'kustoConnectionMutationResult',
 	'queryResult',
 	'queryError',
 	'queryCancelled',
@@ -454,6 +457,8 @@ const HOST_TO_WEBVIEW_TYPES = [
 	'queryResult',
 	'queryError',
 	'ensureComparisonBox',
+	'kustoAuthIdentityChanged',
+	'kustoCopilotIdentityChanged',
 
 	// queryEditorCopilot.ts
 	'copilotWriteQueryStatus',
@@ -490,6 +495,7 @@ const HOST_TO_WEBVIEW_TYPES = [
 	'openKustoAddConnectionDialog',
 	'kustoConnectionTestStarted',
 	'kustoConnectionTestResult',
+	'kustoConnectionMutationResult',
 	'importConnectionsXmlText',
 	'importConnectionsXmlError',
 	'sqlFavoritesData',

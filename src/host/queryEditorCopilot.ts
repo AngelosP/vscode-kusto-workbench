@@ -1,12 +1,12 @@
 import * as vscode from 'vscode';
-import { KustoConnection } from './connectionManager';
+import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
 import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { SqlSchemaService } from './sqlEditorSchema';
 import type { SqlQueryClient } from './sqlClient';
 import { SqlQueryCancelledError } from './sqlClient';
 import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToolCallResults, decideNonToolResponse, groupConversationHistoryForProvider, type ToolCallHistoryEntry } from './copilotConversationUtils';
-import { getLegacySchemaCacheKeys, SCHEMA_CACHE_VERSION, searchCachedSchemas } from './schemaCache';
+import { schemaCacheKey, schemaPrincipalIdentity, searchCachedSchemas } from './schemaCache';
 import { kustoDatabaseKey } from '../shared/kustoClusterUrls';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget, DEFAULT_SCHEMA_TOKEN_BUDGET_FRACTION, PRUNE_PHASE_DESCRIPTIONS, SchemaPruneResult } from './schemaIndexUtils';
 import {
@@ -36,6 +36,7 @@ export interface CopilotServiceHost {
 	readonly extensionUri: vscode.Uri;
 	readonly context: vscode.ExtensionContext;
 	readonly kustoClient: KustoQueryClient;
+	readonly connectionManager: ConnectionManager;
 	readonly output: WorkbenchLogger;
 
 	postMessage(message: unknown): void;
@@ -49,6 +50,7 @@ export interface CopilotServiceHost {
 	registerRunningQuery(boxId: string, cancel: () => void, runSeq: number, clientActivityId?: string): void;
 	unregisterRunningQuery(boxId: string, cancel: () => void, runSeq: number): void;
 	nextQueryRunSeq(): number;
+	refreshConnectionsData?(): Promise<void>;
 
 	isControlCommand(query: string): boolean;
 	appendQueryMode(query: string, mode?: string): string;
@@ -70,6 +72,13 @@ type RunningCopilotWriteQuery = {
 	cts: vscode.CancellationTokenSource;
 	seq: number;
 	queryCancels: Set<() => void>;
+	kustoAccountPartitionGetters: Set<() => string | undefined>;
+};
+
+type CopilotConversationOwner = {
+	flavor: 'kusto' | 'sql';
+	connectionId: string;
+	accountPartition?: string;
 };
 
 class CopilotExecutionQueryError extends Error {
@@ -96,6 +105,7 @@ export class CopilotService {
 	private readonly copilotGeneralRulesSentPerBox = new Set<string>();
 	private readonly copilotDevNotesSentPerBox = new Set<string>();
 	private readonly copilotConversationHistoryByBoxId = new Map<string, ConversationHistoryEntry[]>();
+	private readonly copilotConversationOwnerByBoxId = new Map<string, CopilotConversationOwner>();
 	private readonly copilotExtendedSchemaCache = new Map<string, { timestamp: number; result: string; label: string }>();
 	private readonly SCHEMA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
@@ -107,7 +117,7 @@ export class CopilotService {
 	constructor(private readonly host: CopilotServiceHost) {}
 
 	private createRunningCopilotWriteQuery(boxId: string, cts: vscode.CancellationTokenSource, seq: number): RunningCopilotWriteQuery {
-		const running: RunningCopilotWriteQuery = { cts, seq, queryCancels: new Set() };
+		const running: RunningCopilotWriteQuery = { cts, seq, queryCancels: new Set(), kustoAccountPartitionGetters: new Set() };
 		this.runningCopilotWriteQueryByBoxId.set(boxId, running);
 		return running;
 	}
@@ -127,15 +137,18 @@ export class CopilotService {
 		boxId: string,
 		cts: vscode.CancellationTokenSource,
 		seq: number,
-		cancel: () => void
+		cancel: () => void,
+		getAccountPartition?: () => string | undefined,
 	): () => void {
 		const running = this.runningCopilotWriteQueryByBoxId.get(boxId);
 		if (!running || running.cts !== cts || running.seq !== seq) {
 			return () => { /* inactive run */ };
 		}
 		running.queryCancels.add(cancel);
+		if (getAccountPartition) running.kustoAccountPartitionGetters.add(getAccountPartition);
 		return () => {
 			running.queryCancels.delete(cancel);
+			if (getAccountPartition) running.kustoAccountPartitionGetters.delete(getAccountPartition);
 		};
 	}
 
@@ -746,6 +759,38 @@ export class CopilotService {
 		}
 	}
 
+	invalidateKustoConnections(connectionIds: readonly string[], options?: { preserveEstablishingAccountPartition?: string }): void {
+		const affected = new Set(connectionIds.map(connectionId => String(connectionId || '').trim()).filter(Boolean));
+		const affectsAll = affected.size === 0;
+		const affectedBoxIds: string[] = [];
+		for (const [boxId, owner] of [...this.copilotConversationOwnerByBoxId]) {
+			if (owner.flavor !== 'kusto' || (!affectsAll && !affected.has(owner.connectionId))) continue;
+			const running = this.runningCopilotWriteQueryByBoxId.get(boxId);
+			const establishingPartition = String(options?.preserveEstablishingAccountPartition || '');
+			const preservesFirstEstablishment = !!running
+				&& !owner.accountPartition
+				&& !!establishingPartition
+				&& [...running.kustoAccountPartitionGetters].some(getPartition => getPartition() === establishingPartition);
+			if (preservesFirstEstablishment) {
+				owner.accountPartition = establishingPartition;
+				continue;
+			}
+			affectedBoxIds.push(boxId);
+			if (running) {
+				this.cancelTrackedCopilotQueries(running);
+				this.host.cancelRunningQuery(boxId);
+				try { running.cts.cancel(); } catch { /* ignore */ }
+				this.runningCopilotWriteQueryByBoxId.delete(boxId);
+			}
+			this.clearCopilotConversation(boxId);
+			this.copilotDevNotesSentPerBox.delete(boxId);
+			this.copilotConversationOwnerByBoxId.delete(boxId);
+		}
+		if (affectedBoxIds.length > 0) {
+			this.host.postMessage({ type: 'kustoCopilotIdentityChanged', boxIds: affectedBoxIds });
+		}
+	}
+
 	removeFromCopilotHistory(boxId: string, entryId: string): void {
 		const id = String(boxId || '').trim();
 		const eid = String(entryId || '').trim();
@@ -977,7 +1022,10 @@ Completion:`;
 		model?: vscode.LanguageModelChat
 	): Promise<{ result: string; label: string; prunePhase?: number }> {
 		const db = String(database || '').trim();
-		const diskCacheKey = kustoDatabaseKey(connection.clusterUrl || '', db);
+		const accountPartition = this.host.kustoClient.getAccountPartition(connection);
+		const diskCacheKey = accountPartition
+			? schemaCacheKey(connection.clusterUrl || '', db, connection.id, accountPartition)
+			: '';
 		const memCacheKey = diskCacheKey;
 		const now = Date.now();
 
@@ -998,27 +1046,9 @@ Completion:`;
 		let label = '';
 		let prunePhase: number | undefined;
 		try {
-			let cached;
-			for (const key of getLegacySchemaCacheKeys(connection.clusterUrl || '', db)) {
-				cached = await this.host.getCachedSchemaFromDisk(key);
-				if (cached?.schema) break;
-			}
+			const cached = diskCacheKey ? await this.host.getCachedSchemaFromDisk(diskCacheKey) : undefined;
 			if (token.isCancellationRequested) {
 				throw new Error('Copilot write-query canceled');
-			}
-
-			if (cached?.schema && (cached.version ?? 0) !== SCHEMA_CACHE_VERSION) {
-				try {
-					const refreshed = await this.host.kustoClient.getDatabaseSchema(connection, db, true);
-					if (token.isCancellationRequested) {
-						throw new Error('Copilot write-query canceled');
-					}
-					const timestamp = Date.now();
-					await this.host.saveCachedSchemaToDisk(diskCacheKey, { schema: refreshed.schema, timestamp, version: SCHEMA_CACHE_VERSION });
-					cached = { schema: refreshed.schema, timestamp, version: SCHEMA_CACHE_VERSION };
-				} catch {
-					// If refresh fails, continue with the cached schema
-				}
 			}
 
 			if (!cached || !cached.schema) {
@@ -1071,7 +1101,7 @@ Completion:`;
 		}
 
 		try {
-			this.copilotExtendedSchemaCache.set(memCacheKey, { timestamp: now, result: jsonText, label });
+			if (memCacheKey) this.copilotExtendedSchemaCache.set(memCacheKey, { timestamp: now, result: jsonText, label });
 		} catch {
 			// ignore
 		}
@@ -1243,6 +1273,26 @@ Completion:`;
 			);
 			return;
 		}
+		const connection = this.host.findConnection(connectionId);
+		if (!connection) {
+			this.host.postMessage({
+				type: 'copilotWriteQueryDone',
+				boxId,
+				ok: false,
+				message: 'Connection not found. Select a valid connection and try again.'
+			});
+			return;
+		}
+
+		const previousOwner = this.copilotConversationOwnerByBoxId.get(boxId);
+		if (previousOwner && (previousOwner.flavor !== 'kusto' || previousOwner.connectionId !== connectionId)) {
+			this.clearCopilotConversation(boxId);
+		}
+		this.copilotConversationOwnerByBoxId.set(boxId, {
+			flavor: 'kusto',
+			connectionId,
+			accountPartition: this.host.kustoClient.getAccountPartition(connection),
+		});
 
 		try {
 			const existing = this.runningCopilotWriteQueryByBoxId.get(boxId);
@@ -1310,17 +1360,6 @@ Completion:`;
 				await this.host.context.globalState.update(STORAGE_KEYS.lastOptimizeCopilotModelId, String(model.id));
 			} catch {
 				// ignore
-			}
-
-			const connection = this.host.findConnection(connectionId);
-			if (!connection) {
-				this.host.postMessage({
-					type: 'copilotWriteQueryDone',
-					boxId,
-					ok: false,
-					message: 'Connection not found. Select a valid connection and try again.'
-				});
-				return;
 			}
 
 			const history = this.getOrCreateConversationHistory(boxId);
@@ -1603,9 +1642,18 @@ Completion:`;
 							const executionQuery = this.host.normalizeControlCommandForExecution(finalQuery);
 							const cancelClientKey = `${boxId}::${connection.id}::executeForCopilot`;
 							const execution = this.host.kustoClient.executeQueryCancelable(connection, database, executionQuery, cancelClientKey);
-							const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, execution.cancel);
+							const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, execution.cancel, execution.getAccountPartition);
 							const result = await execution.promise.finally(untrack);
 							if (!isActive() || cts.token.isCancellationRequested) {
+								throw new Error('Copilot write-query canceled');
+							}
+							const producingAccountPartition = execution.getAccountPartition();
+							await this.host.refreshConnectionsData?.();
+							if (!producingAccountPartition
+								|| this.host.kustoClient.getAccountPartition(connection) !== producingAccountPartition
+								|| !isActive()
+								|| cts.token.isCancellationRequested) {
+								this.invalidateKustoConnections([connection.id]);
 								throw new Error('Copilot write-query canceled');
 							}
 
@@ -1705,7 +1753,14 @@ Completion:`;
 						}
 
 						try {
-							const searchMatches = await searchCachedSchemas(this.host.context.globalStorageUri, rawPattern);
+							const principalIdentities = new Set<string>();
+							for (const connection of this.host.connectionManager.getConnections()) {
+								let partition: string | undefined;
+								try { partition = this.host.kustoClient.getAccountPartition(connection); } catch { partition = undefined; }
+								const identity = schemaPrincipalIdentity(connection.id, partition);
+								if (identity) principalIdentities.add(identity);
+							}
+							const searchMatches = await searchCachedSchemas(this.host.context.globalStorageUri, rawPattern, 200, principalIdentities);
 							let resultText: string;
 							if (searchMatches.length === 0) {
 								resultText = `No matches found for pattern: ${rawPattern}`;
@@ -1805,14 +1860,21 @@ Completion:`;
 							const executionQuery = this.host.normalizeControlCommandForExecution(finalQuery);
 							const cancelClientKey = `${targetBoxId}::${connection.id}::validatePerformanceImprovements::${cancelSuffix}`;
 							const execution = this.host.kustoClient.executeQueryCancelable(connection, database, executionQuery, cancelClientKey);
-							const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, execution.cancel);
+							const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, execution.cancel, execution.getAccountPartition);
 							try {
 								const result = await execution.promise;
 								if (!isActive() || cts.token.isCancellationRequested) {
 									return;
 								}
+								const producingAccountPartition = execution.getAccountPartition();
 								try {
-									this.host.postMessage({ type: 'queryResult', result, boxId: targetBoxId });
+									await this.host.refreshConnectionsData?.();
+									if (producingAccountPartition
+										&& this.host.kustoClient.getAccountPartition(connection) === producingAccountPartition
+										&& isActive()
+										&& !cts.token.isCancellationRequested) {
+										this.host.postMessage({ type: 'queryResult', result, boxId: targetBoxId });
+									}
 								} catch {
 									// ignore
 								}
@@ -2014,17 +2076,27 @@ Completion:`;
 						const executionQuery = this.host.normalizeControlCommandForExecution(finalQuery);
 
 						const cancelClientKey = `${boxId}::${connection.id}::copilot`;
-						const { promise, cancel, clientActivityId } = this.host.kustoClient.executeQueryCancelable(
+						const execution = this.host.kustoClient.executeQueryCancelable(
 							connection,
 							database,
 							executionQuery,
 							cancelClientKey
 						);
+						const { promise, cancel, clientActivityId } = execution;
+						const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, cancel, execution.getAccountPartition);
 						const runSeq = this.host.nextQueryRunSeq();
 						this.host.registerRunningQuery(boxId, cancel, runSeq, clientActivityId);
 						try {
-							const result = await promise;
+							const result = await promise.finally(untrack);
 							if (isActive()) {
+								const producingAccountPartition = execution.getAccountPartition();
+								await this.host.refreshConnectionsData?.();
+								if (!producingAccountPartition
+									|| this.host.kustoClient.getAccountPartition(connection) !== producingAccountPartition
+									|| !isActive()) {
+									this.invalidateKustoConnections([connection.id]);
+									return;
+								}
 								this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: effectiveQuery }, 'Query ran successfully.');
 								this.host.postMessage({ type: 'queryResult', result, boxId });
 								this.host.postMessage({ type: 'ensureResultsVisible', boxId });
@@ -2596,6 +2668,11 @@ Completion:`;
 			});
 			return;
 		}
+		const previousOwner = this.copilotConversationOwnerByBoxId.get(boxId);
+		if (previousOwner && (previousOwner.flavor !== 'sql' || previousOwner.connectionId !== sqlConnectionId)) {
+			this.clearCopilotConversation(boxId);
+		}
+		this.copilotConversationOwnerByBoxId.set(boxId, { flavor: 'sql', connectionId: sqlConnectionId });
 
 		// Cancel any existing request for this box.
 		try {

@@ -1,16 +1,24 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
-import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { DatabaseSchemaIndex, KustoQueryClient, normalizeClusterEndpoint } from './kustoClient';
-import { classifyCachedSchema, getLegacySchemaCacheKeys, SCHEMA_CACHE_TTL_MS, SCHEMA_CACHE_VERSION, schemaCacheKey } from './schemaCache';
+import {
+	classifyCachedSchema,
+	readCachedSchemaFromDisk,
+	SCHEMA_CACHE_TTL_MS,
+	SCHEMA_CACHE_VERSION,
+	schemaCacheKey,
+	type SchemaCacheGeneration,
+	writeCachedSchemaToDisk,
+} from './schemaCache';
 import { getAutocompleteSchemaSignature, getSchemaSummary } from './schemaIndexUtils';
 import {
 	STORAGE_KEYS,
 	CachedSchemaEntry
 } from './queryEditorTypes';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import { resolveKustoConnection, resolveStrictKustoConnection } from '../shared/kustoAuth';
 import { databaseListTraceRef, getDatabaseListErrorDetails } from './databaseListTrace';
 import type { WorkbenchLogger } from './workbenchLogger';
 
@@ -37,6 +45,7 @@ type BackgroundSchemaRefreshListener = {
 	connection: KustoConnection;
 	connectionId: string;
 	database: string;
+	accountPartition: string;
 	boxId: string;
 	requestToken?: string;
 	cachedSignature?: string;
@@ -46,19 +55,7 @@ type BackgroundSchemaRefreshListener = {
 	reason?: string;
 };
 
-function getNormalizedEndpointHost(clusterUrl: string): string {
-	try {
-		const endpoint = normalizeClusterEndpoint(clusterUrl);
-		if (!endpoint) {
-			return '';
-		}
-		return new URL(endpoint).hostname.toLowerCase();
-	} catch {
-		return '';
-	}
-}
-
-type SupplementalFailureKind = 'missing-connection' | 'auth-required' | 'not-found' | 'fetch-failed' | 'invalid-schema';
+type SupplementalFailureKind = 'missing-connection' | 'ambiguous-connection' | 'auth-required' | 'not-found' | 'fetch-failed' | 'invalid-schema';
 
 function supplementalFailureKind(error: unknown, isAuthenticationError?: (error: unknown) => boolean): SupplementalFailureKind {
 	if (isAuthenticationError?.(error)) return 'auth-required';
@@ -83,6 +80,7 @@ export class SchemaService {
 		connectionId: string;
 		database: string;
 		clusterUrl: string;
+		accountPartition: string;
 		requestToken?: string;
 		schema: DatabaseSchemaIndex;
 		meta?: Record<string, unknown>;
@@ -94,6 +92,7 @@ export class SchemaService {
 			connectionId: args.connectionId,
 			database: args.database,
 			clusterUrl: args.clusterUrl,
+			accountPartition: args.accountPartition,
 			requestToken: args.requestToken,
 			schema: args.schema,
 			schemaMeta: {
@@ -127,13 +126,26 @@ export class SchemaService {
 		const listeners: BackgroundSchemaRefreshListener[] = [listener];
 		const promise = (async () => {
 			try {
-				const result = await this.host.kustoClient.getDatabaseSchema(listener.connection, listener.database, true);
+				const result = await this.host.kustoClient.getDatabaseSchema(listener.connection, listener.database, true, {
+					allowInteractive: false,
+					source: 'background-refresh',
+				});
+				const accountPartition = result.accountPartition;
+				if (!accountPartition || accountPartition !== listener.accountPartition) return;
 				const schema = result.schema;
 				const timestamp = result.fromCache
 					? Date.now() - (result.cacheAgeMs ?? 0)
 					: Date.now();
 				try {
-					await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+					await this.saveCachedSchemaToDisk(cacheKey, {
+						schema,
+						timestamp,
+						version: SCHEMA_CACHE_VERSION,
+						clusterUrl: listener.connection.clusterUrl,
+						database: listener.database,
+						connectionId: listener.connectionId,
+						accountPartition,
+					}, result.cacheGeneration);
 				} catch (cacheError) {
 					this.host.output.warn(`[schema] failed to persist background schema db=${listener.database}: ${cacheError instanceof Error ? cacheError.message : String(cacheError)}`);
 				}
@@ -153,6 +165,7 @@ export class SchemaService {
 						connectionId: item.connectionId,
 						database: item.database,
 						clusterUrl: item.connection.clusterUrl,
+						accountPartition: item.accountPartition,
 						requestToken: item.requestToken,
 						schema,
 						meta: {
@@ -216,50 +229,18 @@ export class SchemaService {
 
 	// ── Disk cache infrastructure ──
 
-	private getSchemaCacheDirUri(): vscode.Uri {
-		return vscode.Uri.joinPath(this.host.context.globalStorageUri, 'schemaCache');
-	}
-
-	private getSchemaCacheFileUri(cacheKey: string): vscode.Uri {
-		const hash = crypto.createHash('sha1').update(cacheKey, 'utf8').digest('hex');
-		return vscode.Uri.joinPath(this.getSchemaCacheDirUri(), `${hash}.json`);
-	}
-
 	async getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined> {
-		try {
-			const fileUri = this.getSchemaCacheFileUri(cacheKey);
-			const buf = await vscode.workspace.fs.readFile(fileUri);
-			const parsed = JSON.parse(Buffer.from(buf).toString('utf8')) as Partial<CachedSchemaEntry>;
-			if (!parsed || !parsed.schema || typeof parsed.timestamp !== 'number') {
-				return undefined;
-			}
-			const version = typeof parsed.version === 'number' && isFinite(parsed.version) ? parsed.version : 0;
-			return { schema: parsed.schema, timestamp: parsed.timestamp, version };
-		} catch {
-			return undefined;
-		}
+		const cached = await readCachedSchemaFromDisk(this.host.context.globalStorageUri, cacheKey);
+		return classifyCachedSchema(cached).isUsable ? cached : undefined;
 	}
 
-	private async getCachedSchemaFromDiskByCluster(clusterUrl: string, database: string): Promise<CachedSchemaEntry | undefined> {
-		for (const key of getLegacySchemaCacheKeys(clusterUrl, database)) {
-			const cached = await this.getCachedSchemaFromDisk(key);
-			if (cached?.schema) return cached;
-		}
-		return undefined;
+	private async getCachedSchemaFromDiskByCluster(connection: KustoConnection, database: string, accountPartition: string | undefined): Promise<CachedSchemaEntry | undefined> {
+		if (!accountPartition) return undefined;
+		return this.getCachedSchemaFromDisk(schemaCacheKey(connection.clusterUrl, database, connection.id, accountPartition));
 	}
 
-	async saveCachedSchemaToDisk(cacheKey: string, entry: CachedSchemaEntry): Promise<void> {
-		const dir = this.getSchemaCacheDirUri();
-		await vscode.workspace.fs.createDirectory(dir);
-		const fileUri = this.getSchemaCacheFileUri(cacheKey);
-		const pipeIdx = cacheKey.indexOf('|');
-		const enriched: CachedSchemaEntry = {
-			...entry,
-			clusterUrl: entry.clusterUrl ?? (pipeIdx >= 0 ? cacheKey.slice(0, pipeIdx) : undefined),
-			database: entry.database ?? (pipeIdx >= 0 ? cacheKey.slice(pipeIdx + 1) : undefined)
-		};
-		const json = JSON.stringify(enriched);
-		await vscode.workspace.fs.writeFile(fileUri, Buffer.from(json, 'utf8'));
+	async saveCachedSchemaToDisk(cacheKey: string, entry: CachedSchemaEntry, expectedGeneration?: SchemaCacheGeneration): Promise<void> {
+		await writeCachedSchemaToDisk(this.host.context.globalStorageUri, cacheKey, entry, expectedGeneration);
 	}
 
 	private async migrateCachedSchemasToDiskOnce(): Promise<void> {
@@ -268,24 +249,7 @@ export class SchemaService {
 			if (already) {
 				return;
 			}
-			// Legacy cache stored in globalState (pre disk-cache migration) did not include a schema version.
-			const legacy = this.host.context.globalState.get<Record<string, { schema: DatabaseSchemaIndex; timestamp: number }> | undefined>(
-				STORAGE_KEYS.cachedSchemas
-			);
-			if (legacy && typeof legacy === 'object') {
-				const entries = Object.entries(legacy)
-					.filter(([, v]) => !!v && typeof v === 'object' && !!(v as any).schema)
-					.sort((a, b) => (b[1].timestamp ?? 0) - (a[1].timestamp ?? 0))
-					.slice(0, 25);
-				for (const [key, entry] of entries) {
-					try {
-						await this.saveCachedSchemaToDisk(key, { schema: entry.schema, timestamp: entry.timestamp, version: SCHEMA_CACHE_VERSION });
-					} catch {
-						// ignore
-					}
-				}
-			}
-			// Clear legacy cache to stop VS Code "large extension state" warnings.
+			// Unpartitioned legacy schemas cannot be assigned to a principal safely.
 			await this.host.context.globalState.update(STORAGE_KEYS.cachedSchemas, undefined);
 			await this.host.context.globalState.update(STORAGE_KEYS.cachedSchemasMigratedToDisk, true);
 		} catch {
@@ -318,7 +282,10 @@ export class SchemaService {
 			return;
 		}
 
-		const cacheKey = schemaCacheKey(connection.clusterUrl, database);
+		const initialAccountPartition = this.host.kustoClient.getAccountPartition(connection);
+		const cacheKey = initialAccountPartition
+			? schemaCacheKey(connection.clusterUrl, database, connection.id, initialAccountPartition)
+			: '';
 		// IMPORTANT: Never delete persisted schema cache up-front.
 		// If a refresh fails (e.g. offline/VPN), we want to keep using the cached schema
 		// for autocomplete until the next successful refresh.
@@ -329,7 +296,7 @@ export class SchemaService {
 			);
 
 			// Read persisted cache once so we can (a) use it when fresh, and (b) fall back to it on errors.
-			const cached = await this.getCachedSchemaFromDiskByCluster(connection.clusterUrl, database);
+			const cached = await this.getCachedSchemaFromDiskByCluster(connection, database, initialAccountPartition);
 			const cachedState = classifyCachedSchema(cached);
 			const cachedAgeMs = cachedState.cacheAgeMs;
 			const cachedSignature = cached?.schema ? getAutocompleteSchemaSignature(cached.schema) : undefined;
@@ -343,6 +310,7 @@ export class SchemaService {
 						connectionId,
 						database,
 						clusterUrl: connection.clusterUrl,
+						accountPartition: initialAccountPartition!,
 						requestToken,
 						schema: cached.schema,
 						meta: {
@@ -377,6 +345,7 @@ export class SchemaService {
 					connectionId,
 					database,
 					clusterUrl: connection.clusterUrl,
+					accountPartition: initialAccountPartition!,
 					requestToken,
 					schema,
 					meta: {
@@ -406,6 +375,7 @@ export class SchemaService {
 					connectionId,
 					database,
 					clusterUrl: connection.clusterUrl,
+					accountPartition: initialAccountPartition!,
 					requestToken,
 					schema,
 					meta: {
@@ -424,6 +394,7 @@ export class SchemaService {
 					connection,
 					connectionId,
 					database,
+					accountPartition: initialAccountPartition!,
 					boxId,
 					requestToken,
 					cachedSignature,
@@ -436,6 +407,11 @@ export class SchemaService {
 
 			const result = await this.host.kustoClient.getDatabaseSchema(connection, database, forceRefresh);
 			const schema = result.schema;
+			const resolvedAccountPartition = result.accountPartition;
+			if (!resolvedAccountPartition) {
+				throw new Error('The schema response did not include a resolved Microsoft account identity.');
+			}
+			const resolvedCacheKey = schemaCacheKey(connection.clusterUrl, database, connection.id, resolvedAccountPartition);
 
 			const summary = getSchemaSummary(schema);
 
@@ -448,7 +424,15 @@ export class SchemaService {
 				? Date.now() - (result.cacheAgeMs ?? 0)
 				: Date.now();
 			try {
-				await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+				await this.saveCachedSchemaToDisk(resolvedCacheKey, {
+					schema,
+					timestamp,
+					version: SCHEMA_CACHE_VERSION,
+					clusterUrl: connection.clusterUrl,
+					database,
+					connectionId,
+					accountPartition: resolvedAccountPartition,
+				}, result.cacheGeneration);
 			} catch (cacheError) {
 				this.host.output.warn(`[schema] failed to persist schema db=${database}: ${cacheError instanceof Error ? cacheError.message : String(cacheError)}`);
 			}
@@ -469,6 +453,7 @@ export class SchemaService {
 				connectionId,
 				database,
 				clusterUrl: connection.clusterUrl,
+				accountPartition: resolvedAccountPartition,
 				requestToken,
 				schema,
 				meta: {
@@ -489,7 +474,8 @@ export class SchemaService {
 
 			const userMessage = this.host.formatQueryExecutionErrorForUser(error, connection, database);
 			try {
-				const cached = await this.getCachedSchemaFromDiskByCluster(connection.clusterUrl, database);
+				const failoverPartition = this.host.kustoClient.getAccountPartition(connection);
+				const cached = await this.getCachedSchemaFromDiskByCluster(connection, database, failoverPartition);
 				if (cached && cached.schema) {
 					const schema = cached.schema;
 					const summary = getSchemaSummary(schema);
@@ -503,6 +489,7 @@ export class SchemaService {
 						connectionId,
 						database,
 						clusterUrl: connection.clusterUrl,
+						accountPartition: failoverPartition!,
 						requestToken,
 						schema,
 						meta: {
@@ -564,23 +551,12 @@ export class SchemaService {
 			this.host.output.trace(`[supplemental-schema:${traceId || 'none'}] host.${event} requestSource=${requestSource} clusterRef=${databaseListTraceRef(clusterName)} databaseRef=${databaseListTraceRef(database)} boxRef=${databaseListTraceRef(boxId)} tokenRef=${databaseListTraceRef(requestToken)}${Object.entries(details).map(([key, value]) => ` ${key}=${String(value)}`).join('')}`);
 		};
 		trace('request.start');
-		const targetEndpoint = normalizeClusterEndpoint(clusterName);
-		const targetHost = getNormalizedEndpointHost(clusterName);
-
-		// Find a connection that matches this cluster URL
 		const connections = this.host.connectionManager.getConnections();
+		const resolution = resolveKustoConnection(connections, { clusterUrl: normalizeClusterEndpoint(clusterName) });
 
-		const connection = connections.find(c => {
-			const connectionEndpoint = normalizeClusterEndpoint(c.clusterUrl || '');
-			if (connectionEndpoint && targetEndpoint && connectionEndpoint.toLowerCase() === targetEndpoint.toLowerCase()) {
-				return true;
-			}
-			const connectionHost = getNormalizedEndpointHost(c.clusterUrl || '');
-			return !!connectionHost && !!targetHost && connectionHost === targetHost;
-		});
-
-		if (!connection) {
-			trace('request.failed', { failureKind: 'missing-connection' });
+		if (resolution.kind !== 'matched') {
+			const failureKind: SupplementalFailureKind = resolution.kind === 'ambiguous' ? 'ambiguous-connection' : 'missing-connection';
+			trace('request.failed', { failureKind });
 			this.host.postMessage({
 				type: 'crossClusterSchemaError',
 				clusterName,
@@ -588,16 +564,22 @@ export class SchemaService {
 				boxId,
 				requestToken,
 				requestSource,
-				failureKind: 'missing-connection',
-				error: `No connection available for cluster "${clusterName}". Add a connection to get autocomplete support.`
+				failureKind,
+				error: resolution.kind === 'ambiguous'
+					? `Multiple connections match cluster "${clusterName}". Select an authority-specific connection before loading supplemental schema.`
+					: `No connection available for cluster "${clusterName}". Add a connection to get autocomplete support.`
 			});
 			return;
 		}
+		const connection = resolution.connection;
 
 		try {
-			const cacheKey = schemaCacheKey(connection.clusterUrl, database);
+			const initialAccountPartition = this.host.kustoClient.getAccountPartition(connection);
+			const cacheKey = initialAccountPartition
+				? schemaCacheKey(connection.clusterUrl, database, connection.id, initialAccountPartition)
+				: '';
 
-			const cached = await this.getCachedSchemaFromDiskByCluster(connection.clusterUrl, database);
+			const cached = await this.getCachedSchemaFromDiskByCluster(connection, database, initialAccountPartition);
 			const cachedAgeMs = cached ? Date.now() - cached.timestamp : undefined;
 			const cachedIsLatestVersion = cached?.version === SCHEMA_CACHE_VERSION;
 			const cachedIsFresh = !!(cached && cachedIsLatestVersion && typeof cachedAgeMs === 'number' && cachedAgeMs < SCHEMA_CACHE_TTL_MS);
@@ -608,6 +590,8 @@ export class SchemaService {
 					type: 'crossClusterSchemaData',
 					clusterName,
 					clusterUrl: connection.clusterUrl,
+					connectionId: connection.id,
+					accountPartition: initialAccountPartition,
 					database,
 					boxId,
 					requestToken,
@@ -625,6 +609,8 @@ export class SchemaService {
 					type: 'crossClusterSchemaData',
 					clusterName,
 					clusterUrl: connection.clusterUrl,
+					connectionId: connection.id,
+					accountPartition: initialAccountPartition,
 					database,
 					boxId,
 					requestToken,
@@ -641,6 +627,8 @@ export class SchemaService {
 							source: 'supplemental-background-refresh',
 						});
 						const freshSchema = result.schema;
+						const resolvedAccountPartition = result.accountPartition;
+						if (!resolvedAccountPartition || resolvedAccountPartition !== initialAccountPartition) return;
 						const timestamp = result.fromCache
 							? Date.now() - (result.cacheAgeMs ?? 0)
 							: Date.now();
@@ -649,6 +637,8 @@ export class SchemaService {
 								type: 'crossClusterSchemaData',
 								clusterName,
 								clusterUrl: connection.clusterUrl,
+								connectionId: connection.id,
+								accountPartition: resolvedAccountPartition,
 								database,
 								boxId,
 								requestToken,
@@ -659,7 +649,15 @@ export class SchemaService {
 							});
 						}
 						try {
-							await this.saveCachedSchemaToDisk(cacheKey, { schema: freshSchema, timestamp, version: SCHEMA_CACHE_VERSION });
+							await this.saveCachedSchemaToDisk(cacheKey, {
+								schema: freshSchema,
+								timestamp,
+								version: SCHEMA_CACHE_VERSION,
+								clusterUrl: connection.clusterUrl,
+								database,
+								connectionId: connection.id,
+								accountPartition: resolvedAccountPartition,
+							}, result.cacheGeneration);
 						} catch (cacheError) {
 							this.host.output.warn(`[schema] failed to persist supplemental background schema clusterRef=${databaseListTraceRef(clusterName)} databaseRef=${databaseListTraceRef(database)} errorType=${cacheError instanceof Error ? cacheError.name : 'Error'}`);
 						}
@@ -677,6 +675,9 @@ export class SchemaService {
 				source: `supplemental-${requestSource}`,
 			});
 			const schema = result.schema;
+			const resolvedAccountPartition = result.accountPartition;
+			if (!resolvedAccountPartition) throw new Error('Supplemental schema authentication identity could not be resolved.');
+			const resolvedCacheKey = schemaCacheKey(connection.clusterUrl, database, connection.id, resolvedAccountPartition);
 
 			const timestamp = result.fromCache
 				? Date.now() - (result.cacheAgeMs ?? 0)
@@ -687,6 +688,8 @@ export class SchemaService {
 					type: 'crossClusterSchemaData',
 					clusterName,
 					clusterUrl: connection.clusterUrl,
+					connectionId: connection.id,
+					accountPartition: resolvedAccountPartition,
 					database,
 					boxId,
 					requestToken,
@@ -696,7 +699,15 @@ export class SchemaService {
 					rawSchemaJson: schema.rawSchemaJson
 				});
 				try {
-					await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+					await this.saveCachedSchemaToDisk(resolvedCacheKey, {
+						schema,
+						timestamp,
+						version: SCHEMA_CACHE_VERSION,
+						clusterUrl: connection.clusterUrl,
+						database,
+						connectionId: connection.id,
+						accountPartition: resolvedAccountPartition,
+					}, result.cacheGeneration);
 				} catch (cacheError) {
 					this.host.output.warn(`[schema] failed to persist supplemental schema clusterRef=${databaseListTraceRef(clusterName)} databaseRef=${databaseListTraceRef(database)} errorType=${cacheError instanceof Error ? cacheError.name : 'Error'}`);
 				}
@@ -732,18 +743,22 @@ export class SchemaService {
 
 	// ── Tool orchestrator schema refresh ──
 
-	async refreshSchemaForTools(clusterUrl: string): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
+	async refreshSchemaForTools(
+		clusterUrl: string,
+		connectionId?: string,
+		targets: readonly { boxId: string; database: string; requestToken?: string }[] = [],
+	): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
 		const connections = this.host.connectionManager.getConnections();
-		const inputKey = kustoClusterKey(clusterUrl);
-		const connection = connections.find(c => kustoClusterKey(c.clusterUrl || '') === inputKey);
-		if (!connection) {
-			const ephemeral: KustoConnection = { id: `ephemeral_${Date.now()}`, name: clusterUrl, clusterUrl };
-			return this.refreshSchemaForConnection(ephemeral);
-		}
-		return this.refreshSchemaForConnection(connection);
+		const resolution = connectionId
+			? resolveStrictKustoConnection(connections, { clusterUrl, connectionId })
+			: resolveKustoConnection(connections, { clusterUrl });
+		if (resolution.kind === 'ambiguous') return { schemas: [], error: 'Multiple saved connections match this cluster. Use a connection-specific schema request.' };
+		if (resolution.kind === 'mismatch') return { schemas: [], error: 'The supplied connection does not match this cluster.' };
+		if (resolution.kind === 'missing') return { schemas: [], error: 'No saved connection matches this cluster.' };
+		return this.refreshSchemaForConnection(resolution.connection, targets);
 	}
 
-	private async refreshSchemaForConnection(connection: KustoConnection): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
+	private async refreshSchemaForConnection(connection: KustoConnection, targets: readonly { boxId: string; database: string; requestToken?: string }[] = []): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
 		const schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> = [];
 		try {
 			const databases = await this.host.kustoClient.getDatabases(connection, true, {
@@ -759,10 +774,43 @@ export class SchemaService {
 				try {
 					const result = await this.host.kustoClient.getDatabaseSchema(connection, db, true);
 					const schema = result.schema;
+					const accountPartition = result.accountPartition;
+					if (!accountPartition) throw new Error('Schema authentication identity could not be resolved.');
 
-					const cacheKey = schemaCacheKey(connection.clusterUrl, db);
+					const cacheKey = schemaCacheKey(connection.clusterUrl, db, connection.id, accountPartition);
 					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
-					await this.saveCachedSchemaToDisk(cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION });
+					await this.saveCachedSchemaToDisk(cacheKey, {
+						schema,
+						timestamp,
+						version: SCHEMA_CACHE_VERSION,
+						clusterUrl: connection.clusterUrl,
+						database: db,
+						connectionId: connection.id,
+						accountPartition,
+					}, result.cacheGeneration);
+
+					for (const target of targets) {
+						if (target.database.toLowerCase() !== db.toLowerCase()) continue;
+						this.postSchemaData({
+							boxId: target.boxId,
+							connectionId: connection.id,
+							database: db,
+							clusterUrl: connection.clusterUrl,
+							accountPartition,
+							requestToken: target.requestToken,
+							schema,
+							meta: {
+								fromCache: result.fromCache,
+								cacheAgeMs: result.cacheAgeMs,
+								forceRefresh: true,
+								deliveryKind: result.fromCache ? 'memory-cache' : 'fresh',
+								cacheState: 'fresh',
+								isStale: false,
+								refreshState: 'completed',
+								workerUpdateNeeded: true,
+							},
+						});
+					}
 
 					const tables = schema.tables || [];
 					const functions = (schema.functions || []).map(f => typeof f === 'string' ? f : f.name || '').filter(Boolean);

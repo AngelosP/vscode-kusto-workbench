@@ -326,6 +326,18 @@ describe('getDatabaseSchema discovery policy', () => {
 		expect(traceText).not.toContain('SensitiveDb');
 		expect(traceText).not.toContain('Databases');
 	});
+
+	it('does not run the tabular fallback after schema discovery is cancelled', async () => {
+		const kustoClient = new KustoQueryClient();
+		const executeWithAuthRetry = vi.fn(async () => {
+			throw new QueryCancelledError('Cached values changed while schema discovery was running');
+		});
+		(kustoClient as any).executeWithAuthRetry = executeWithAuthRetry;
+
+		await expect(kustoClient.getDatabaseSchema(TEST_CONNECTION, 'Samples', true))
+			.rejects.toBeInstanceOf(QueryCancelledError);
+		expect(executeWithAuthRetry).toHaveBeenCalledOnce();
+	});
 });
 
 // ── executeQueryCancelable ───────────────────────────────────────────────────
@@ -552,9 +564,19 @@ describe('executeQueryCancelable', () => {
 		const clearPreferenceClient = { id: 'clear-preference' };
 		const forceNewSessionClient = { id: 'force-new-session' };
 		(kustoClient as any).getOrCreateClient = vi.fn(async () => { throw authError; });
+		const auth = (accountId: string) => ({
+			connectionId: TEST_CONNECTION.id,
+			connectionIdentityKey: TEST_CONNECTION.clusterUrl,
+			clusterEndpoint: TEST_CONNECTION.clusterUrl,
+			scopes: ['https://kusto.kusto.windows.net/.default'],
+			account: { id: accountId, label: accountId },
+			accountId,
+			accountPartition: `partition-${accountId}`,
+			preferenceMode: 'automatic',
+		});
 		const createClientWithRetry = vi.fn()
-			.mockResolvedValueOnce({ client: clearPreferenceClient, clusterEndpoint: TEST_CONNECTION.clusterUrl, accountId: 'account-1' })
-			.mockResolvedValueOnce({ client: forceNewSessionClient, clusterEndpoint: TEST_CONNECTION.clusterUrl, accountId: 'account-2' });
+			.mockResolvedValueOnce({ client: clearPreferenceClient, auth: auth('account-1') })
+			.mockResolvedValueOnce({ client: forceNewSessionClient, auth: auth('account-2') });
 		(kustoClient as any).createClientWithRetry = createClientWithRetry;
 		const operation = vi.fn(async (client: { id: string }) => {
 			if (client === clearPreferenceClient) {

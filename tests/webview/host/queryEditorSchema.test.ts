@@ -37,7 +37,9 @@ function createService(connection: KustoConnection) {
 			rawSchemaJson,
 		},
 		fromCache: false,
+		accountPartition: 'test-partition',
 	}));
+	const getDatabases = vi.fn(async () => ['TelemetryDb']);
 	const service = new SchemaService({
 		context: {
 			globalStorageUri: vscode.Uri.file(path.join(os.tmpdir(), `kusto-workbench-query-editor-schema-test-${Date.now()}-${Math.random().toString(16).slice(2)}`)),
@@ -46,14 +48,14 @@ function createService(connection: KustoConnection) {
 				update: vi.fn(async () => undefined),
 			},
 		} as any,
-		kustoClient: { getDatabaseSchema, isAuthenticationError: isAuthError } as any,
+		kustoClient: { getDatabases, getDatabaseSchema, getAccountPartition: vi.fn(() => 'test-partition'), isAuthenticationError: isAuthError } as any,
 		connectionManager: { getConnections: vi.fn(() => [connection]) } as any,
 		output: { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() } as any,
 		postMessage: (message: unknown) => { messages.push(message); },
 		formatQueryExecutionErrorForUser: (error: unknown) => String(error),
 		findConnection: vi.fn(() => connection),
 	});
-	return { service, messages, getDatabaseSchema };
+	return { service, messages, getDatabases, getDatabaseSchema };
 }
 
 describe('SchemaService cross-cluster schema requests', () => {
@@ -282,6 +284,25 @@ describe('SchemaService primary schema preparation', () => {
 			boxId: 'query_3',
 			connectionId: 'missing',
 			requestToken: 'schema_missing',
+		}));
+	});
+
+	it('pushes a tool-refreshed schema into matching active editor boxes', async () => {
+		const { service, messages, getDatabases } = createService(connection);
+
+		const result = await service.refreshSchemaForTools(connection.clusterUrl, connection.id, [
+			{ boxId: 'query_live', database: 'TelemetryDb' },
+		]);
+
+		expect(getDatabases).toHaveBeenCalledWith(connection, true, expect.objectContaining({ source: 'query-editor-tool-schema-refresh' }));
+		expect(result.schemas).toContainEqual(expect.objectContaining({ database: 'TelemetryDb', tables: ['Events'] }));
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaData',
+			boxId: 'query_live',
+			connectionId: 'primary',
+			database: 'TelemetryDb',
+			accountPartition: 'test-partition',
+			schemaMeta: expect.objectContaining({ refreshState: 'completed', workerUpdateNeeded: true }),
 		}));
 	});
 });

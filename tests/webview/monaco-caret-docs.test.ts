@@ -1437,8 +1437,7 @@ describe('getSchemaTableDoc', () => {
 		expect(result!.columnSummary).toContain('Col2 `string`');
 	});
 
-	it('finds table from cross-database schema via schemaByConnDb', () => {
-		// Primary schema has no match, but a cross-db schema does
+	it('does not fall back to another cached principal schema', () => {
 		(window as any).schemaByBoxId = { [boxId]: { tables: ['LocalT'], columnTypesByTable: { LocalT: {} } } };
 		(window as any).schemaByConnDb = {
 			'conn|otherDb': {
@@ -1448,10 +1447,7 @@ describe('getSchemaTableDoc', () => {
 			},
 		};
 		const result = getSchemaTableDoc(boxId, 'remotetable');
-		expect(result).toBeTruthy();
-		expect(result!.name).toBe('RemoteTable');
-		expect(result!.columnSummary).toContain('X `long`');
-		expect(result!.description).toBe('From another database.');
+		expect(result).toBeNull();
 	});
 
 	it('prefers primary schema over cross-database for same table name', () => {

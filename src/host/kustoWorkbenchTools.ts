@@ -4,7 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { createEmptyKqlxOrMdxFile, DevNoteEntry, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
-import { readAllCachedSchemasFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey } from './schemaCache';
+import { readAllCachedSchemasFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey, schemaPrincipalIdentity } from './schemaCache';
 import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { KustoQueryClient } from './kustoClient';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
@@ -12,6 +12,8 @@ import { getPowerBiHtmlValidationIssues, type PowerBiDataSource } from './powerB
 import { getLegacyDashboardWarnings } from '../shared/htmlDashboardUpgrade';
 import { classifyWorkbenchUri, classifyWorkbenchUriString, type WorkbenchFileInfo, type WorkbenchFileKind } from './workbenchFileTypes';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import { resolveStrictKustoConnection } from '../shared/kustoAuth';
+import { filterKustoFavoritesForActivePrincipals, migrateKustoFavorites } from './connectionManagerFavorites';
 
 export type TargetFields = {
 	openFileId?: string;
@@ -83,6 +85,8 @@ export interface ListFavoritesInput {
 export interface GetSchemaInput {
 	/** The Kusto cluster URL (e.g., 'https://help.kusto.windows.net'). */
 	clusterUrl: string;
+	/** Optional saved connection ID. Required when multiple authority-specific connections share a cluster URL. */
+	connectionId?: string;
 	/** Optional: a specific database name. When omitted, returns schemas for all cached databases on the cluster. */
 	database?: string;
 }
@@ -101,9 +105,11 @@ export type GetSchemaResult = {
 	databases?: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>;
 };
 
-export interface RefreshKustoSchemaInput {
+export interface RefreshKustoSchemaInput extends TargetFields {
 	/** The cluster URL for which to refresh the schema (e.g., 'https://help.kusto.windows.net'). */
 	clusterUrl: string;
+	/** Optional saved connection ID. Required when multiple authority-specific connections share a cluster URL. */
+	connectionId?: string;
 }
 
 export interface SearchCachedSchemasInput {
@@ -121,6 +127,8 @@ export interface AddSectionInput extends TargetFields {
 	query?: string;
 	/** For query sections: cluster URL to connect to */
 	clusterUrl?: string;
+	/** For query sections: exact saved connection ID from listKustoConnections. Required when the endpoint is ambiguous. */
+	connectionId?: string;
 	/** For query sections: database to connect to */
 	database?: string;
 	/** For markdown sections: initial text content */
@@ -159,6 +167,8 @@ export interface ConfigureQuerySectionInput extends TargetFields {
 	name?: string;
 	query?: string;
 	clusterUrl?: string;
+	/** Exact saved connection ID from listKustoConnections. Required when the endpoint is ambiguous. */
+	connectionId?: string;
 	database?: string;
 	execute?: boolean;
 }
@@ -266,6 +276,8 @@ export interface DelegateToKustoWorkbenchCopilotInput extends TargetFields {
 	sectionId?: string;
 	/** Optional: Cluster URL to connect to (e.g., 'https://help.kusto.windows.net'). If not provided, uses the current connection. */
 	clusterUrl?: string;
+	/** Optional exact saved connection ID from listKustoConnections. Required when clusterUrl is ambiguous. */
+	connectionId?: string;
 	/** Optional: Database name to use. If not provided, uses the current database. */
 	database?: string;
 	/** Optional: Maximum rows returned in the tool response. Defaults to 100. */
@@ -399,6 +411,7 @@ export interface DelegateToSqlCopilotInput extends TargetFields {
 
 interface KustoFavorite {
 	name: string;
+	connectionId: string;
 	clusterUrl: string;
 	database: string;
 }
@@ -475,7 +488,7 @@ interface LiveWorkbenchConnection {
 	token: number;
 	poster: (message: unknown) => unknown;
 	stateGetter: () => Promise<ToolSection[] | undefined>;
-	schemaRefresher: (clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>;
+	schemaRefresher: (clusterUrl: string, connectionId: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>;
 	documentUri?: string;
 	documentInfo?: WorkbenchFileInfo;
 	logicalUriKey?: string;
@@ -488,7 +501,7 @@ export class KustoWorkbenchToolOrchestrator {
 	// Legacy fallback callbacks for the latest connected editor, including the standalone Query Editor.
 	private webviewMessagePoster: ((message: unknown) => void) | undefined;
 	private stateGetter: (() => Promise<ToolSection[] | undefined>) | undefined;
-	private schemaRefresher: ((clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>) | undefined;
+	private schemaRefresher: ((clusterUrl: string, connectionId: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>) | undefined;
 	private activeDocumentUri: string | undefined;
 	private latestConnectionToken: number | undefined;
 	private readonly liveConnections = new Map<number, LiveWorkbenchConnection>();
@@ -528,7 +541,7 @@ export class KustoWorkbenchToolOrchestrator {
 	connect(
 		poster: (message: unknown) => unknown,
 		stateGetter: () => Promise<ToolSection[] | undefined>,
-		schemaRefresher: (clusterUrl: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>,
+		schemaRefresher: (clusterUrl: string, connectionId: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>,
 		documentUri?: string
 	): number {
 		this.connectionToken++;
@@ -1023,27 +1036,58 @@ export class KustoWorkbenchToolOrchestrator {
 	// Tool implementations
 	// ─────────────────────────────────────────────────────────────────────────
 
-	async listConnections(): Promise<{ connections: KustoConnection[] }> {
-		const connections = this.connectionManager.getConnections();
+	async listConnections(): Promise<{ connections: Array<{ id: string; name: string; clusterUrl: string; database?: string }> }> {
+		const connections = this.connectionManager.getConnections().map(connection => ({
+			id: connection.id,
+			name: connection.name,
+			clusterUrl: connection.clusterUrl,
+			...(connection.database ? { database: connection.database } : {}),
+		}));
 		return { connections };
+	}
+
+	private resolveSavedKustoConnection(clusterUrl: string, connectionId?: string): { connection?: KustoConnection; error?: string } {
+		const connections = this.connectionManager.getConnections();
+		const resolution = resolveStrictKustoConnection(connections, { clusterUrl, connectionId });
+		if (resolution.kind === 'matched') return { connection: resolution.connection };
+		if (resolution.kind === 'ambiguous') return { error: 'Multiple saved connections match this cluster. Pass connectionId from list-connections.' };
+		if (resolution.kind === 'mismatch') return { error: 'The supplied connectionId does not match the requested cluster URL.' };
+		return { error: 'No saved connection matches this cluster and connectionId.' };
+	}
+
+	private preflightKustoToolTarget<T extends { clusterUrl?: string; connectionId?: string }>(input: T): { input?: T; error?: string } {
+		const clusterUrl = String(input.clusterUrl || '').trim();
+		const connectionId = String(input.connectionId || '').trim();
+		if (!clusterUrl) {
+			return connectionId
+				? { error: 'connectionId requires clusterUrl.' }
+				: { input };
+		}
+		const resolved = this.resolveSavedKustoConnection(clusterUrl, connectionId);
+		if (!resolved.connection) return { error: resolved.error };
+		return { input: { ...input, clusterUrl: resolved.connection.clusterUrl, connectionId: resolved.connection.id } };
+	}
+
+	private activeSchemaPrincipalIdentities(): Set<string> {
+		const identities = new Set<string>();
+		for (const connection of this.connectionManager.getConnections()) {
+			let partition: string | undefined;
+			try { partition = this.kustoClient.getAccountPartition(connection); } catch { partition = undefined; }
+			const identity = schemaPrincipalIdentity(connection.id, partition);
+			if (identity) identities.add(identity);
+		}
+		return identities;
 	}
 
 	async listFavorites(): Promise<{ favorites: KustoFavorite[] }> {
 		const raw = this.context.globalState.get<unknown>('kusto.favorites');
-		if (!Array.isArray(raw)) {
-			return { favorites: [] };
-		}
-		const favorites: KustoFavorite[] = [];
-		for (const item of raw) {
-			if (!item || typeof item !== 'object') continue;
-			const maybe = item as Partial<KustoFavorite>;
-			const name = String(maybe.name || '').trim();
-			const clusterUrl = String(maybe.clusterUrl || '').trim();
-			const database = String(maybe.database || '').trim();
-			if (name && clusterUrl && database) {
-				favorites.push({ name, clusterUrl, database });
-			}
-		}
+		const connections = this.connectionManager.getConnections();
+		const partitions = new Map(connections.map(connection => {
+			let partition: string | undefined;
+			try { partition = this.kustoClient.getAccountPartition(connection); } catch { partition = undefined; }
+			return [connection.id, partition];
+		}));
+		const favorites = filterKustoFavoritesForActivePrincipals(migrateKustoFavorites(raw, connections, partitions), partitions);
 		return { favorites };
 	}
 
@@ -1052,24 +1096,23 @@ export class KustoWorkbenchToolOrchestrator {
 		if (!clusterUrl) {
 			return { schemas: [], error: 'clusterUrl is required.' };
 		}
-		// Prefer the webview-connected refresher (also updates the editor's live state),
-		// but fall back to a direct Kusto client refresh when no file is open.
-		const target = this.resolveToolTarget();
-		if (target.connection?.schemaRefresher) {
-			return target.connection.schemaRefresher(clusterUrl);
+		const resolved = this.resolveSavedKustoConnection(clusterUrl, input.connectionId);
+		if (!resolved.connection) return { schemas: [], error: resolved.error };
+		const target = this.resolveToolTarget(input);
+		if (target.connection) {
+			return target.connection.schemaRefresher(resolved.connection.clusterUrl, resolved.connection.id);
 		}
-		return this.refreshSchemaDirectly(clusterUrl);
+		return this.refreshSchemaDirectly(resolved.connection.clusterUrl, resolved.connection.id);
 	}
 
 	/**
 	 * Refresh schema directly via the Kusto client, without requiring an open editor.
 	 * Mirrors the logic in QueryEditorSchema.refreshSchemaForTools.
 	 */
-	private async refreshSchemaDirectly(clusterUrl: string): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
-		const connections = this.connectionManager.getConnections();
-		const normalizedInput = kustoClusterKey(clusterUrl);
-		const connection = connections.find(c => kustoClusterKey(c.clusterUrl) === normalizedInput)
-			?? { id: `ephemeral_${Date.now()}`, name: clusterUrl, clusterUrl };
+	private async refreshSchemaDirectly(clusterUrl: string, connectionId?: string): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
+		const resolved = this.resolveSavedKustoConnection(clusterUrl, connectionId);
+		if (!resolved.connection) return { schemas: [], error: resolved.error };
+		const connection = resolved.connection;
 
 		const schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> = [];
 		try {
@@ -1086,10 +1129,20 @@ export class KustoWorkbenchToolOrchestrator {
 				try {
 					const result = await this.kustoClient.getDatabaseSchema(connection, db, true);
 					const schema = result.schema;
+					const accountPartition = result.accountPartition;
+					if (!accountPartition) throw new Error('Schema authentication identity could not be resolved.');
 
-					const cacheKey = schemaCacheKey(connection.clusterUrl, db);
+					const cacheKey = schemaCacheKey(connection.clusterUrl, db, connection.id, accountPartition);
 					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
-					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, { schema, timestamp, version: SCHEMA_CACHE_VERSION, clusterUrl: connection.clusterUrl, database: db });
+					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
+						schema,
+						timestamp,
+						version: SCHEMA_CACHE_VERSION,
+						clusterUrl: connection.clusterUrl,
+						database: db,
+						connectionId: connection.id,
+						accountPartition,
+					}, result.cacheGeneration);
 
 					const tables = schema.tables || [];
 					const functions = (schema.functions || []).map(f => typeof f === 'string' ? f : f.name || '').filter(Boolean);
@@ -1129,22 +1182,24 @@ export class KustoWorkbenchToolOrchestrator {
 		}
 
 		const db = (input.database || '').trim();
+		const resolved = this.resolveSavedKustoConnection(clusterUrl, input.connectionId);
+		if (!resolved.connection) return { error: resolved.error };
+		const connection = resolved.connection;
 
 		// ── Single database requested ─────────────────────────────────
 		if (db) {
-			let cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, clusterUrl, db);
+			let accountPartition = this.kustoClient.getAccountPartition(connection);
+			let cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, connection.clusterUrl, db, connection.id, accountPartition);
 
 				if (!cached?.schema) {
 				// Not in cache – try to fetch live
-				const target = this.resolveToolTarget();
-				const refreshResult = target.connection?.schemaRefresher
-					? await target.connection.schemaRefresher(clusterUrl)
-					: await this.refreshSchemaDirectly(clusterUrl);
+				const refreshResult = await this.refreshSchemaDirectly(clusterUrl, connection.id);
 				if (refreshResult.error && refreshResult.schemas.length === 0) {
 					return { error: refreshResult.error };
 				}
 				// Re-read from disk since the refresher persists to cache
-				cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, clusterUrl, db);
+				accountPartition = this.kustoClient.getAccountPartition(connection);
+				cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, connection.clusterUrl, db, connection.id, accountPartition);
 			}
 
 			if (!cached?.schema) {
@@ -1156,7 +1211,7 @@ export class KustoWorkbenchToolOrchestrator {
 			}
 
 			return {
-				clusterUrl,
+				clusterUrl: connection.clusterUrl,
 				database: db,
 				schema: cached.schema,
 				cacheAgeMs: Math.max(0, Date.now() - cached.timestamp),
@@ -1164,24 +1219,23 @@ export class KustoWorkbenchToolOrchestrator {
 		}
 
 		// ── No specific database – return summaries for the cluster ──
-		const schemas = await readAllCachedSchemasFromDisk(
-			this.context.globalStorageUri,
-			clusterUrl
-		);
+		const identity = schemaPrincipalIdentity(connection.id, this.kustoClient.getAccountPartition(connection));
+		const allowed = new Set<string>(identity ? [identity] : []);
+		const schemas = await readAllCachedSchemasFromDisk(this.context.globalStorageUri, connection.clusterUrl, undefined, allowed);
 
 		if (schemas.length === 0) {
 			// Nothing cached – try a live fetch
-			const target = this.resolveToolTarget();
-			const refreshResult = target.connection?.schemaRefresher
-				? await target.connection.schemaRefresher(clusterUrl)
-				: await this.refreshSchemaDirectly(clusterUrl);
+			const refreshResult = await this.refreshSchemaDirectly(clusterUrl, connection.id);
 			if (refreshResult.error && refreshResult.schemas.length === 0) {
 				return { error: refreshResult.error };
 			}
 			// Re-read from disk
+			const refreshedIdentity = schemaPrincipalIdentity(connection.id, this.kustoClient.getAccountPartition(connection));
 			const refreshed = await readAllCachedSchemasFromDisk(
 				this.context.globalStorageUri,
-				clusterUrl
+				connection.clusterUrl,
+				undefined,
+				new Set<string>(refreshedIdentity ? [refreshedIdentity] : []),
 			);
 			return { databases: refreshed };
 		}
@@ -1194,8 +1248,9 @@ export class KustoWorkbenchToolOrchestrator {
 		if (!pattern) {
 			return { matches: [], count: 0, pattern: '', error: 'pattern is required and must be a non-empty string.' };
 		}
-		const matches = await searchCachedSchemas(this.context.globalStorageUri, pattern);
-		return { matches, count: matches.length, pattern };
+		const matches = await searchCachedSchemas(this.context.globalStorageUri, pattern, 200, this.activeSchemaPrincipalIdentities());
+		const publicMatches = matches.map(({ connectionId, ...match }) => ({ connectionId, ...match }));
+		return { matches: publicMatches, count: publicMatches.length, pattern };
 	}
 
 	private summarizeToolSection(s: ToolSection, idx: number): ToolSectionSummary {
@@ -1377,6 +1432,11 @@ export class KustoWorkbenchToolOrchestrator {
 		if (input.code !== undefined) {
 			input = { ...input, code: unescapeLLMText(input.code) };
 		}
+		if (input.type === 'query') {
+			const preflight = this.preflightKustoToolTarget(input);
+			if (!preflight.input) return { sectionId: '', success: false, error: preflight.error } as { sectionId: string; success: boolean };
+			input = preflight.input;
+		}
 		return this.sendToWebview('toolAddSection', { input }, 30000, target);
 	}
 
@@ -1402,6 +1462,9 @@ export class KustoWorkbenchToolOrchestrator {
 		if (input.query !== undefined) {
 			input = { ...input, query: unescapeLLMText(input.query) };
 		}
+		const preflight = this.preflightKustoToolTarget(input);
+		if (!preflight.input) return { success: false, resultPreview: '', error: preflight.error } as { success: boolean; resultPreview?: string };
+		input = preflight.input;
 		return this.sendToWebview('toolConfigureQuerySection', { input }, 30000, target);
 	}
 
@@ -1544,8 +1607,10 @@ export class KustoWorkbenchToolOrchestrator {
 		timedOut?: boolean;
 	}> {
 		const { target, rest } = this.splitTargetFields(input);
+		const preflight = this.preflightKustoToolTarget(rest);
+		if (!preflight.input) return { success: false, answer: '', error: preflight.error };
 		const normalizedInput = {
-			...rest,
+			...preflight.input,
 			maxResultRows: normalizeAskKustoCopilotMaxResultRows(input.maxResultRows)
 		};
 		return this.sendToWebview('toolDelegateToKustoWorkbenchCopilot', { input: normalizedInput }, 180000, target); // 3 minute timeout for Copilot + query execution

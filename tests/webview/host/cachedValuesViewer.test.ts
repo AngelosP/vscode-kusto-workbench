@@ -1,5 +1,15 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
+import * as vscode from 'vscode';
 import { CachedValuesViewerV2, getClusterCacheKey, mergeCachedDatabaseKeys } from '../../../src/host/cachedValuesViewer';
+import { captureSchemaCacheGeneration, clearCachedSchemas, deleteCachedSchemasForAccountPartitions, deleteCachedSchemasForConnections, SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from '../../../src/host/schemaCache';
+
+afterEach(() => {
+	vi.restoreAllMocks();
+});
+
+function createViewerHarness(): CachedValuesViewerV2 & Record<string, any> {
+	return Object.create(CachedValuesViewerV2.prototype) as CachedValuesViewerV2 & Record<string, any>;
+}
 
 // ── getClusterCacheKey ───────────────────────────────────────────────────────
 
@@ -139,6 +149,156 @@ describe('mergeCachedDatabaseKeys', () => {
 			new Map(),
 		);
 		expect(next['host']).toEqual([]);
+	});
+});
+
+describe('deleteCachedSchemasForAccountPartitions', () => {
+	it('deletes only schema files owned by the forgotten account partitions', async () => {
+		const files = new Map<string, string>([
+			['forgotten.json', JSON.stringify({ accountPartition: 'forgotten-partition' })],
+			['retained.json', JSON.stringify({ accountPartition: 'retained-partition' })],
+			['malformed.json', '{not json'],
+		]);
+		const deleted: string[] = [];
+		const fsApi = vscode.workspace.fs as any;
+		const originalReadDirectory = fsApi.readDirectory;
+		const originalReadFile = fsApi.readFile;
+		const originalDelete = fsApi.delete;
+		fsApi.readDirectory = vi.fn(async () => [...files.keys()].map(fileName => [fileName, 1]));
+		fsApi.readFile = vi.fn(async (uri: vscode.Uri) => {
+			const fileName = uri.toString().split('/').pop() || '';
+			return Buffer.from(files.get(fileName) || '', 'utf8');
+		});
+		fsApi.delete = vi.fn(async (uri: vscode.Uri) => {
+			deleted.push(uri.toString().split('/').pop() || '');
+		});
+
+		try {
+			const count = await deleteCachedSchemasForAccountPartitions(
+				vscode.Uri.file('/global-storage'),
+				new Set(['forgotten-partition']),
+			);
+
+			expect(count).toBe(1);
+			expect(deleted).toEqual(['forgotten.json']);
+		} finally {
+			if (originalReadDirectory === undefined) delete fsApi.readDirectory;
+			else fsApi.readDirectory = originalReadDirectory;
+			fsApi.readFile = originalReadFile;
+			if (originalDelete === undefined) delete fsApi.delete;
+			else fsApi.delete = originalDelete;
+		}
+	});
+});
+
+describe('schema cache clear durability', () => {
+	it('does not allow a paused old-generation write to recreate schema after Clear All', async () => {
+		const storageUri = vscode.Uri.file('/schema-clear-race');
+		const cacheKey = schemaCacheKey('https://cluster.kusto.windows.net', 'Db', 'connection-1', 'account-partition');
+		const oldGeneration = captureSchemaCacheGeneration(storageUri);
+		let releaseDirectory!: () => void;
+		const directoryGate = new Promise<void>(resolve => { releaseDirectory = resolve; });
+		const createDirectory = vi.spyOn(vscode.workspace.fs, 'createDirectory').mockImplementation(async () => {
+			await directoryGate;
+		});
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile').mockResolvedValue(undefined);
+		const fsApi = vscode.workspace.fs as any;
+		const originalDelete = fsApi.delete;
+		const deletePath = vi.fn(async () => undefined);
+		fsApi.delete = deletePath;
+		const entry = {
+			schema: { tables: ['LateTable'], columnTypesByTable: {}, functions: [] },
+			timestamp: Date.now(),
+			version: SCHEMA_CACHE_VERSION,
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			database: 'Db',
+			connectionId: 'connection-1',
+			accountPartition: 'account-partition',
+		};
+
+		try {
+			const oldWrite = writeCachedSchemaToDisk(storageUri, cacheKey, entry, oldGeneration);
+			await vi.waitFor(() => expect(createDirectory).toHaveBeenCalledOnce());
+			const clear = clearCachedSchemas(storageUri);
+			releaseDirectory();
+			await Promise.all([oldWrite, clear]);
+
+			expect(writeFile).not.toHaveBeenCalled();
+			expect(deletePath).toHaveBeenCalledWith(expect.anything(), { recursive: true, useTrash: false });
+		} finally {
+			if (originalDelete === undefined) delete fsApi.delete;
+			else fsApi.delete = originalDelete;
+		}
+	});
+
+	it('does not invalidate a connection A schema write when connection B schemas are deleted', async () => {
+		const storageUri = vscode.Uri.file('/schema-connection-isolation');
+		const cacheKey = schemaCacheKey('https://a.kusto.windows.net', 'DbA', 'connection-a', 'partition-a');
+		const generationA = captureSchemaCacheGeneration(storageUri, 'connection-a', 'partition-a');
+		const fsApi = vscode.workspace.fs as any;
+		const originalReadDirectory = fsApi.readDirectory;
+		const originalCreateDirectory = fsApi.createDirectory;
+		const originalWriteFile = fsApi.writeFile;
+		fsApi.readDirectory = vi.fn(async () => []);
+		fsApi.createDirectory = vi.fn(async () => undefined);
+		fsApi.writeFile = vi.fn(async () => undefined);
+
+		try {
+			await deleteCachedSchemasForConnections(storageUri, new Set(['connection-b']));
+			await writeCachedSchemaToDisk(storageUri, cacheKey, {
+				schema: { tables: ['TableA'], columnTypesByTable: {}, functions: [] },
+				timestamp: Date.now(), version: SCHEMA_CACHE_VERSION,
+				clusterUrl: 'https://a.kusto.windows.net', database: 'DbA', connectionId: 'connection-a', accountPartition: 'partition-a',
+			}, generationA);
+
+			expect(fsApi.writeFile).toHaveBeenCalledOnce();
+		} finally {
+			fsApi.readDirectory = originalReadDirectory;
+			fsApi.createDirectory = originalCreateDirectory;
+			fsApi.writeFile = originalWriteFile;
+		}
+	});
+});
+
+describe('CachedValuesViewerV2 Kusto mutation completion', () => {
+	it('posts the refreshed snapshot only after an account preference mutation settles', async () => {
+		let settleMutation!: () => void;
+		const mutationGate = new Promise<void>(resolve => { settleMutation = resolve; });
+		const events: string[] = [];
+		const viewer = createViewerHarness();
+		viewer.authPreferences = {
+			getAccounts: vi.fn(async () => [{ id: 'account-1', label: 'Account one' }]),
+			setExplicitAccount: vi.fn(async () => {
+				await mutationGate;
+				events.push('mutation');
+			}),
+		};
+		viewer.sendSnapshotToWebview = vi.fn(async () => { events.push('snapshot'); });
+		viewer.panel = { webview: { postMessage: vi.fn(async (message: { type: string }) => { events.push(message.type); }) } };
+
+		const completion = viewer.onMessage({ type: 'connectionPreference.set', connectionId: 'connection-1', accountId: 'account-1' });
+		await Promise.resolve();
+		expect(events).toEqual([]);
+
+		settleMutation();
+		await completion;
+		expect(events).toEqual(['mutation', 'snapshot', 'kustoMutationComplete']);
+	});
+
+	it('refreshes and completes when Forget Account is cancelled', async () => {
+		vi.spyOn(vscode.window, 'showWarningMessage').mockResolvedValue(undefined as any);
+		const viewer = createViewerHarness();
+		viewer.clearKustoAccountCachedData = vi.fn();
+		viewer.authPreferences = { forgetAccount: vi.fn() };
+		viewer.sendSnapshotToWebview = vi.fn(async () => undefined);
+		viewer.panel = { webview: { postMessage: vi.fn(async () => true) } };
+
+		await viewer.onMessage({ type: 'auth.forgetAccount', accountId: 'account-1' });
+
+		expect(viewer.clearKustoAccountCachedData).not.toHaveBeenCalled();
+		expect(viewer.authPreferences.forgetAccount).not.toHaveBeenCalled();
+		expect(viewer.sendSnapshotToWebview).toHaveBeenCalledOnce();
+		expect(viewer.panel.webview.postMessage).toHaveBeenCalledWith({ type: 'kustoMutationComplete' });
 	});
 });
 

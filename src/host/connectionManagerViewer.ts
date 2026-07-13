@@ -5,19 +5,29 @@ import { ConnectionManager, KustoConnection } from './connectionManager';
 import { ConnectionService } from './queryEditorConnection';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
 import { createEmptyKqlxOrMdxFile } from './kqlxFormat';
-import { writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry, searchCachedSchemas, readAllCachedSchemasFromDisk, type SchemaSearchMatch, schemaCacheKey } from './schemaCache';
+import { deleteCachedSchemasForConnections, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry, searchCachedSchemas, readAllCachedSchemasFromDisk, type SchemaSearchMatch, schemaCacheKey, schemaPrincipalIdentity } from './schemaCache';
 import { searchCachedSqlSchemas, readAllCachedSqlSchemasFromDisk, type SqlSchemaSearchMatch } from './sqlEditorSchema';
 import type { SqlConnectionManager } from './sqlConnectionManager';
 import type { SqlQueryClient } from './sqlClient';
 import { listDialects } from './sql/sqlDialectRegistry';
 import { selectBestKustoClusterUrl } from '../shared/kustoClusterUrls';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import { resolveKustoConnection } from '../shared/kustoAuth';
+import { KustoAuthPreferenceService, type KustoAccountPreference } from './kustoAuthPreferenceService';
+import { KustoConnectionCache } from './kustoConnectionCache';
+import { normalizeKustoAuthorityId } from '../shared/kustoAuth';
+import { getKustoConnectionIdentityKey } from '../shared/kustoAuth';
+import { parseKustoExplorerConnectionsXml, stringifyKustoExplorerConnectionsXml } from '../shared/kustoExplorerConnections';
 import { notifySavedFile, withCsvExtension } from './savedFileNotification';
 import {
 	addKustoFavoriteIfMissing,
+	filterKustoFavoritesForActivePrincipals,
 	addSqlFavoriteIfMissing,
 	getKustoFavorite,
 	getKustoFavoriteDefaultName,
+	migrateKustoFavorites,
+	migrateKustoFavoritesWithStatus,
+	mergeKustoFavoritesForActivePrincipals,
 	getSqlFavorite,
 	normalizeFavoriteClusterUrl as normalizeStoredFavoriteClusterUrl,
 	removeKustoFavorite,
@@ -65,15 +75,15 @@ export type ConnectionKind = 'kusto' | 'sql';
 
 type IncomingMessage =
 	| { type: 'requestSnapshot' }
-	| { type: 'connection.add'; name: string; clusterUrl: string; database?: string }
-	| { type: 'connection.edit'; id: string; name: string; clusterUrl: string; database?: string }
+	| { type: 'connection.add'; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string }
+	| { type: 'connection.edit'; id: string; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string }
 	| { type: 'connection.delete'; id: string }
-	| { type: 'connection.test'; id?: string; name?: string; clusterUrl?: string; database?: string }
+	| { type: 'connection.test'; id?: string; name?: string; clusterUrl?: string; database?: string; authorityId?: string; accountId?: string }
 	| { type: 'connection.duplicate'; id: string }
-	| { type: 'favorite.add'; clusterUrl: string; database: string; name: string }
-	| { type: 'favorite.promptAdd'; clusterUrl: string; database: string; defaultName?: string }
-	| { type: 'favorite.promptRename'; clusterUrl: string; database: string }
-	| { type: 'favorite.remove'; clusterUrl: string; database: string }
+	| { type: 'favorite.add'; connectionId: string; database: string; name: string }
+	| { type: 'favorite.promptAdd'; connectionId: string; database: string; defaultName?: string }
+	| { type: 'favorite.promptRename'; connectionId: string; database: string }
+	| { type: 'favorite.remove'; connectionId: string; database: string }
 	| { type: 'favorite.reorder'; favorites: KustoFavorite[] }
 	| { type: 'cluster.expand'; connectionId: string }
 	| { type: 'cluster.collapse'; connectionId: string }
@@ -85,8 +95,8 @@ type IncomingMessage =
 	| { type: 'leaveNoTrace.remove'; clusterUrl: string }
 	| { type: 'connection.importXml' }
 	| { type: 'connection.exportXml' }
-	| { type: 'database.openInNewFile'; clusterUrl: string; database: string }
-	| { type: 'database.refreshSchema'; clusterUrl: string; database: string; source?: string }
+	| { type: 'database.openInNewFile'; connectionId: string; clusterUrl: string; database: string }
+	| { type: 'database.refreshSchema'; connectionId: string; clusterUrl: string; database: string; source?: string }
 	| { type: 'cluster.refreshSchema'; connectionId: string }
 	| { type: 'table.preview'; connectionId: string; database: string; tableName: string }
 	| { type: 'saveResultsCsv'; csv: string; suggestedFileName?: string }
@@ -147,6 +157,8 @@ export class ConnectionManagerViewerV2 {
 	private readonly panel: vscode.WebviewPanel;
 	private readonly disposables: vscode.Disposable[] = [];
 	private readonly kustoClient: KustoQueryClient;
+	private readonly authPreferences: KustoAuthPreferenceService;
+	private readonly connectionCache: KustoConnectionCache;
 	private schemaCache: Map<string, { schema: DatabaseSchemaIndex; timestamp: number }> = new Map();
 	private sqlDeps: ConnectionManagerSqlDeps | undefined;
 	private configSubscription: vscode.Disposable | undefined;
@@ -164,7 +176,9 @@ export class ConnectionManagerViewerV2 {
 		sqlDeps: ConnectionManagerSqlDeps | undefined,
 		viewColumn: vscode.ViewColumn
 	) {
-		this.kustoClient = new KustoQueryClient(this.context);
+		this.authPreferences = KustoAuthPreferenceService.getInstance(this.context);
+		this.connectionCache = new KustoConnectionCache(this.context);
+		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.sqlDeps = sqlDeps;
 		this.panel = vscode.window.createWebviewPanel(
 			'kusto.connectionManagerV2',
@@ -185,6 +199,7 @@ export class ConnectionManagerViewerV2 {
 			}
 			return undefined;
 		}));
+		this.disposables.push(this.authPreferences.onDidChange(() => this.sendSnapshotToWebview()));
 		this.panel.onDidChangeViewState((e) => {
 			if (e.webviewPanel.visible) {
 				void this.sendSnapshotToWebview();
@@ -197,6 +212,7 @@ export class ConnectionManagerViewerV2 {
 
 	private dispose(): void {
 		ConnectionManagerViewerV2.current = undefined;
+		this.kustoClient.dispose();
 		this.configSubscription?.dispose();
 		for (const d of this.disposables) {
 			try { d.dispose(); } catch { /* ignore */ }
@@ -205,14 +221,42 @@ export class ConnectionManagerViewerV2 {
 	}
 
 	// ─── Data helpers (identical to original) ───────────────────────────────
+	private getFavoriteAccountPartitions(): Map<string, string | undefined> {
+		return new Map(this.connectionManager.getConnections().map(connection => {
+			let partition: string | undefined;
+			try { partition = this.kustoClient.getAccountPartition(connection); } catch { partition = undefined; }
+			return [connection.id, partition];
+		}));
+	}
 
 	private getFavorites(): KustoFavorite[] {
 		const raw = this.context.globalState.get<unknown>(STORAGE_KEYS.favorites);
-		return sanitizeKustoFavorites(raw);
+		const partitions = this.getFavoriteAccountPartitions();
+		const { favorites, unresolved } = migrateKustoFavoritesWithStatus(raw, this.connectionManager.getConnections(), partitions);
+		if (unresolved === 0 && JSON.stringify(raw ?? []) !== JSON.stringify(favorites)) void this.context.globalState.update(STORAGE_KEYS.favorites, favorites);
+		return filterKustoFavoritesForActivePrincipals(favorites, partitions);
 	}
 
-	private async setFavorites(favorites: KustoFavorite[]): Promise<void> {
-		await this.context.globalState.update(STORAGE_KEYS.favorites, favorites);
+	private getActiveSchemaPrincipalIdentities(): Set<string> {
+		const identities = new Set<string>();
+		for (const connection of this.connectionManager.getConnections()) {
+			let partition: string | undefined;
+			try { partition = this.kustoClient.getAccountPartition(connection); } catch { partition = undefined; }
+			const identity = schemaPrincipalIdentity(connection.id, partition);
+			if (identity) identities.add(identity);
+		}
+		return identities;
+	}
+
+	private async setFavorites(
+		favorites: KustoFavorite[],
+		expectedOwner?: { connectionId: string; accountPartition?: string },
+	): Promise<void> {
+		const raw = this.context.globalState.get<unknown>(STORAGE_KEYS.favorites);
+		const partitions = this.getFavoriteAccountPartitions();
+		if (expectedOwner && partitions.get(expectedOwner.connectionId) !== expectedOwner.accountPartition) return;
+		const allFavorites = migrateKustoFavoritesWithStatus(raw, this.connectionManager.getConnections(), partitions).favorites;
+		await this.context.globalState.update(STORAGE_KEYS.favorites, mergeKustoFavoritesForActivePrincipals(allFavorites, favorites, partitions));
 		ConnectionService.broadcastKustoFavoritesData(this.context);
 	}
 
@@ -226,34 +270,22 @@ export class ConnectionManagerViewerV2 {
 	}
 
 	private getCachedDatabases(): Record<string, string[]> {
-		const raw = this.context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases);
-		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
 		const result: Record<string, string[]> = {};
 		const connections = this.connectionManager.getConnections();
-		const connById = new Map(connections.map(conn => [conn.id, conn]));
-		let changed = false;
-		for (const [k, v] of Object.entries(raw)) {
-			if (typeof k !== 'string' || !Array.isArray(v)) continue;
-			const conn = connById.get(k);
-			const key = this.getClusterCacheKey(conn?.clusterUrl || k);
-			if (!key) { changed = true; continue; }
-			if (key !== k) changed = true;
-			const existing = result[key] || [];
-			const merged = [...existing, ...v.filter((d) => typeof d === 'string')];
-			const seen = new Set<string>();
-			result[key] = merged.filter(database => {
-				const lower = String(database || '').trim().toLowerCase();
-				if (!lower || seen.has(lower)) return false;
-				seen.add(lower);
-				return true;
-			});
+		for (const connection of connections) {
+			let partition: string | undefined;
+			let allowLegacy = false;
+			try {
+				const preference = this.authPreferences.getPreference(connection.id);
+				partition = this.kustoClient.getAccountPartition(connection);
+				allowLegacy = preference.mode === 'automatic' && normalizeKustoAuthorityId(connection.authorityId) === undefined;
+			} catch {
+				continue;
+			}
+			const databases = this.connectionCache.getDatabases(connection.id, partition, allowLegacy);
+			if (databases.length > 0) result[connection.id] = databases;
 		}
-		if (changed) void this.setCachedDatabases(result);
 		return result;
-	}
-
-	private async setCachedDatabases(cached: Record<string, string[]>): Promise<void> {
-		await this.context.globalState.update(STORAGE_KEYS.cachedDatabases, cached);
 	}
 
 	private getClusterCacheKey(clusterUrlRaw: string): string {
@@ -312,20 +344,48 @@ export class ConnectionManagerViewerV2 {
 		await this.context.globalState.update(STORAGE_KEYS.activeKind, kind);
 	}
 
+	private getKustoSearchPrincipalFingerprint(): string {
+		return [...this.getActiveSchemaPrincipalIdentities()].sort().join(';');
+	}
+
 	private getSearchState(): unknown {
-		return this.context.globalState.get<unknown>(STORAGE_KEYS.searchState) ?? null;
+		const raw = this.context.globalState.get<unknown>(STORAGE_KEYS.searchState) ?? null;
+		if (this.getActiveKind() !== 'kusto' || !raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+		const state = raw as Record<string, unknown>;
+		return state.kustoPrincipalFingerprint === this.getKustoSearchPrincipalFingerprint()
+			? state
+			: { ...state, lastResults: [], lastSearchTimestamp: 0 };
 	}
 
 	private async setSearchState(state: unknown): Promise<void> {
+		if (this.getActiveKind() === 'kusto' && state && typeof state === 'object' && !Array.isArray(state)) {
+			await this.context.globalState.update(STORAGE_KEYS.searchState, {
+				...(state as Record<string, unknown>),
+				kustoPrincipalFingerprint: this.getKustoSearchPrincipalFingerprint(),
+			});
+			return;
+		}
 		await this.context.globalState.update(STORAGE_KEYS.searchState, state);
 	}
 
 	private async buildSnapshot() {
 		const sqlConnections = this.sqlDeps ? this.sqlDeps.getSqlConnectionManager().getConnections() : [];
+		const accounts = await this.authPreferences.getAccounts();
+		const connections = this.connectionManager.getConnections().map(connection => {
+			let accountPartition: string | undefined;
+			try { accountPartition = this.kustoClient.getAccountPartition(connection); } catch { accountPartition = undefined; }
+			return {
+				...connection,
+				accountPreference: this.authPreferences.getPreference(connection.id),
+				selectedAccountId: this.authPreferences.getPreferredAccountId(connection.id),
+				accountPartition,
+			};
+		});
 		return {
 			timestamp: Date.now(),
 			activeKind: this.getActiveKind(),
-			connections: this.connectionManager.getConnections(),
+			connections,
+			accounts,
 			favorites: this.getFavorites(),
 			cachedDatabases: this.getCachedDatabases(),
 			expandedClusters: this.getExpandedClusters(),
@@ -352,10 +412,13 @@ export class ConnectionManagerViewerV2 {
 		}
 	}
 
-	private async promptAddFavorite(clusterUrlRaw: string, databaseRaw: string, defaultNameRaw?: string): Promise<void> {
-		const clusterUrl = normalizeStoredFavoriteClusterUrl(clusterUrlRaw);
+	private async promptAddFavorite(connectionIdRaw: string, databaseRaw: string, defaultNameRaw?: string): Promise<void> {
+		const connectionId = String(connectionIdRaw || '').trim();
+		const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+		const clusterUrl = connection ? normalizeStoredFavoriteClusterUrl(connection.clusterUrl) : '';
 		const database = String(databaseRaw || '').trim();
 		if (!clusterUrl || !database) return;
+		const startingAccountPartition = connection ? this.kustoClient.getAccountPartition(connection) : undefined;
 		const defaultName = String(defaultNameRaw || '').trim() || getKustoFavoriteDefaultName(clusterUrl, database);
 		const picked = await vscode.window.showInputBox({
 			title: 'Add to favorites',
@@ -365,19 +428,22 @@ export class ConnectionManagerViewerV2 {
 		});
 		const name = typeof picked === 'string' ? picked.trim() : '';
 		if (!name) return;
-		const result = upsertKustoFavorite(this.getFavorites(), { name, clusterUrl, database });
+		if (!connection || this.kustoClient.getAccountPartition(connection) !== startingAccountPartition) return;
+		const result = upsertKustoFavorite(this.getFavorites(), { name, connectionId, clusterUrl, database, accountPartition: startingAccountPartition });
 		if (result.changed) {
-			await this.setFavorites(result.favorites);
+			await this.setFavorites(result.favorites, { connectionId, accountPartition: startingAccountPartition });
 			void vscode.window.setStatusBarMessage(`Favorite "${name}" saved`, 2000);
 		}
 		await this.sendSnapshotToWebview();
 	}
 
-	private async promptRenameFavorite(clusterUrlRaw: string, databaseRaw: string): Promise<void> {
-		const clusterUrl = String(clusterUrlRaw || '').trim();
+	private async promptRenameFavorite(connectionIdRaw: string, databaseRaw: string): Promise<void> {
+		const connectionId = String(connectionIdRaw || '').trim();
 		const database = String(databaseRaw || '').trim();
-		if (!clusterUrl || !database) return;
-		const current = getKustoFavorite(this.getFavorites(), clusterUrl, database);
+		if (!connectionId || !database) return;
+		const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+		const startingAccountPartition = connection ? this.kustoClient.getAccountPartition(connection) : undefined;
+		const current = getKustoFavorite(this.getFavorites(), connectionId, database);
 		if (!current) { await this.sendSnapshotToWebview(); return; }
 		const picked = await vscode.window.showInputBox({
 			title: 'Rename favorite',
@@ -387,9 +453,15 @@ export class ConnectionManagerViewerV2 {
 		});
 		const name = typeof picked === 'string' ? picked.trim() : '';
 		if (!name) return;
-		const result = renameKustoFavorite(this.getFavorites(), clusterUrl, database, name);
+		if (!connection || this.kustoClient.getAccountPartition(connection) !== startingAccountPartition) return;
+		const result = renameKustoFavorite(this.getFavorites(), connectionId, database, name);
+		for (const favorite of result.favorites) {
+			if (favorite.connectionId === connectionId && favorite.database.toLowerCase() === database.toLowerCase()) {
+				favorite.accountPartition = startingAccountPartition;
+			}
+		}
 		if (result.changed) {
-			await this.setFavorites(result.favorites);
+			await this.setFavorites(result.favorites, { connectionId, accountPartition: startingAccountPartition });
 			void vscode.window.setStatusBarMessage(`Favorite renamed to "${name}"`, 2000);
 		}
 		await this.sendSnapshotToWebview();
@@ -457,8 +529,30 @@ export class ConnectionManagerViewerV2 {
 				const name = String(msg.name || '').trim();
 				const clusterUrl = String(msg.clusterUrl || '').trim();
 				const database = msg.database ? String(msg.database).trim() : undefined;
-				if (!name || !clusterUrl) { void vscode.window.showErrorMessage('Connection name and cluster URL are required.'); return; }
-				try { await this.connectionManager.addConnection({ name, clusterUrl, database }); void vscode.window.setStatusBarMessage(`Connection "${name}" added successfully`, 2000); } catch (error) { void vscode.window.showErrorMessage(`Failed to add connection: ${error instanceof Error ? error.message : String(error)}`); }
+				const accountId = String(msg.accountId || '').trim();
+				if (!name || !clusterUrl) {
+					const error = 'Connection name and cluster URL are required.';
+					void vscode.window.showErrorMessage(error);
+					this.panel.webview.postMessage({ type: 'connectionMutationComplete', success: false, error });
+					return;
+				}
+				let success = false;
+				let errorMessage = '';
+				try {
+					const authorityId = normalizeKustoAuthorityId(msg.authorityId);
+					const added = await this.connectionManager.addConnection({ name, clusterUrl, database, authorityId });
+					if (accountId) {
+						const account = (await this.authPreferences.getAccounts()).find(candidate => candidate.id === accountId) ?? { id: accountId, label: accountId };
+						await this.authPreferences.setExplicitAccount(added.id, account);
+					}
+					void vscode.window.setStatusBarMessage(`Connection "${name}" added successfully`, 2000);
+					success = true;
+				} catch (error) {
+					errorMessage = error instanceof Error ? error.message : String(error);
+					void vscode.window.showErrorMessage(`Failed to add connection: ${errorMessage}`);
+				}
+				await this.sendSnapshotToWebview();
+				this.panel.webview.postMessage({ type: 'connectionMutationComplete', success, ...(errorMessage ? { error: errorMessage } : {}) });
 				return;
 			}
 			case 'connection.edit': {
@@ -466,8 +560,34 @@ export class ConnectionManagerViewerV2 {
 				const name = String(msg.name || '').trim();
 				const clusterUrl = String(msg.clusterUrl || '').trim();
 				const database = msg.database ? String(msg.database).trim() : undefined;
-				if (!id || !name || !clusterUrl) { void vscode.window.showErrorMessage('Connection ID, name, and cluster URL are required.'); return; }
-				try { await this.connectionManager.updateConnection(id, { name, clusterUrl, database }); void vscode.window.setStatusBarMessage(`Connection "${name}" updated successfully`, 2000); } catch (error) { void vscode.window.showErrorMessage(`Failed to update connection: ${error instanceof Error ? error.message : String(error)}`); }
+				const accountId = String(msg.accountId || '').trim();
+				if (!id || !name || !clusterUrl) {
+					const error = 'Connection ID, name, and cluster URL are required.';
+					void vscode.window.showErrorMessage(error);
+					this.panel.webview.postMessage({ type: 'connectionMutationComplete', success: false, error });
+					return;
+				}
+				let success = false;
+				let errorMessage = '';
+				try {
+					const authorityId = normalizeKustoAuthorityId(msg.authorityId);
+					await this.connectionCache.clearConnection(id);
+					await deleteCachedSchemasForConnections(this.context.globalStorageUri, new Set([id]));
+					await this.connectionManager.updateConnection(id, { name, clusterUrl, database, authorityId });
+					if (accountId) {
+						const account = (await this.authPreferences.getAccounts()).find(candidate => candidate.id === accountId) ?? { id: accountId, label: accountId };
+						await this.authPreferences.setExplicitAccount(id, account);
+					} else {
+						await this.authPreferences.setAutomatic(id);
+					}
+					void vscode.window.setStatusBarMessage(`Connection "${name}" updated successfully`, 2000);
+					success = true;
+				} catch (error) {
+					errorMessage = error instanceof Error ? error.message : String(error);
+					void vscode.window.showErrorMessage(`Failed to update connection: ${errorMessage}`);
+				}
+				await this.sendSnapshotToWebview();
+				this.panel.webview.postMessage({ type: 'connectionMutationComplete', success, ...(errorMessage ? { error: errorMessage } : {}) });
 				return;
 			}
 			case 'connection.delete': {
@@ -480,10 +600,14 @@ export class ConnectionManagerViewerV2 {
 				if (confirm !== 'Delete') return;
 				try {
 					if (conn) {
-						const normalizedUrl = kustoClusterKey(conn.clusterUrl);
-						const favorites = this.getFavorites().filter((f) => kustoClusterKey(f.clusterUrl) !== normalizedUrl);
-						await this.setFavorites(favorites);
+						const raw = this.context.globalState.get<unknown>(STORAGE_KEYS.favorites);
+						const allFavorites = migrateKustoFavorites(raw, connections, this.getFavoriteAccountPartitions())
+							.filter(favorite => favorite.connectionId !== conn.id);
+						await this.context.globalState.update(STORAGE_KEYS.favorites, allFavorites);
+						ConnectionService.broadcastKustoFavoritesData(this.context);
 					}
+					await this.connectionCache.clearConnection(id);
+					await deleteCachedSchemasForConnections(this.context.globalStorageUri, new Set([id]));
 					await this.connectionManager.removeConnection(id);
 					void vscode.window.setStatusBarMessage(`Connection "${connName}" deleted`, 2000);
 					const snapshot = await this.buildSnapshot();
@@ -494,11 +618,21 @@ export class ConnectionManagerViewerV2 {
 			case 'connection.test': {
 				const traceId = createDatabaseListTraceId();
 				const id = String(msg.id || '').trim();
-				const connections = this.connectionManager.getConnections();
-				let conn = id ? connections.find((c) => c.id === id) : undefined;
-				if (!conn && msg.clusterUrl) {
-					const clusterUrl = String(msg.clusterUrl || '').trim();
-					conn = { id: `draft:${clusterUrl}`, name: String(msg.name || '').trim() || clusterUrl, clusterUrl, database: msg.database ? String(msg.database).trim() : undefined };
+				const stored = id ? this.connectionManager.getConnections().find((connection) => connection.id === id) : undefined;
+				const clusterUrl = String(msg.clusterUrl || stored?.clusterUrl || '').trim();
+				let conn: KustoConnection | undefined;
+				try {
+					conn = clusterUrl ? {
+						id: `draft:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+						name: String(msg.name || stored?.name || '').trim() || clusterUrl,
+						clusterUrl,
+						database: String(msg.database || stored?.database || '').trim() || undefined,
+						authorityId: normalizeKustoAuthorityId(msg.authorityId ?? stored?.authorityId),
+					} : undefined;
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					this.panel.webview.postMessage({ type: 'testConnectionResult', connectionId: id || 'draft', success: false, message });
+					return;
 				}
 				if (!conn) {
 					this.traceDatabaseList(traceId, 'test.connection-missing', { connectionId: id || 'draft' });
@@ -508,23 +642,17 @@ export class ConnectionManagerViewerV2 {
 				this.traceDatabaseList(traceId, 'test.start', { connectionId: id || conn.id });
 				this.panel.webview.postMessage({ type: 'testConnectionStarted', connectionId: id || conn.id });
 				try {
-					const databases = await this.kustoClient.getDatabases(conn, true, { traceId, source: 'connection-manager-test' });
-					const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
-					if (clusterKey && databases.length > 0) {
-						try {
-							const cached = this.getCachedDatabases();
-							cached[clusterKey] = databases;
-							await this.setCachedDatabases(cached);
-							this.traceDatabaseList(traceId, 'test.persisted-cache-updated', { clusterKey, databaseCount: databases.length });
-						} catch (cacheError) {
-							this.traceDatabaseList(traceId, 'test.persisted-cache-update-failed', {
-								clusterKey,
-								...getDatabaseListErrorDetails(cacheError),
-							});
-						}
-					}
+					const accountId = String(msg.accountId || '').trim();
+					const preference: KustoAccountPreference = accountId ? { mode: 'explicit', accountId } : { mode: 'automatic' };
+					const databases = await this.kustoClient.withTransientAuthPreference(conn, preference, () =>
+						this.kustoClient.getDatabases(conn, true, { traceId, source: 'connection-manager-test', persistIdentity: false })
+					);
 					this.traceDatabaseList(traceId, 'test.success', { connectionId: id || conn.id, databaseCount: databases.length });
-					this.panel.webview.postMessage({ type: 'testConnectionResult', connectionId: id || conn.id, success: true, message: `Connected successfully! Found ${databases.length} database(s).`, databases });
+					if (databases.length === 0) {
+						this.panel.webview.postMessage({ type: 'testConnectionResult', connectionId: id || conn.id, success: false, warning: true, message: 'Connected, but no databases are visible. Check the Authority / Tenant ID and account.', databases });
+					} else {
+						this.panel.webview.postMessage({ type: 'testConnectionResult', connectionId: id || conn.id, success: true, message: `Connected successfully! Found ${databases.length} database(s).`, databases });
+					}
 				} catch (error) {
 					const errorMsg = error instanceof Error ? error.message : String(error);
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
@@ -543,15 +671,25 @@ export class ConnectionManagerViewerV2 {
 				const connections = this.connectionManager.getConnections();
 				const conn = connections.find((c) => c.id === id);
 				if (!conn) { void vscode.window.showErrorMessage('Connection not found.'); return; }
-				try { await this.connectionManager.addConnection({ name: `${conn.name} (copy)`, clusterUrl: conn.clusterUrl, database: conn.database }); void vscode.window.setStatusBarMessage(`Connection duplicated`, 2000); } catch (error) { void vscode.window.showErrorMessage(`Failed to duplicate connection: ${error instanceof Error ? error.message : String(error)}`); }
+				try {
+					const duplicate = await this.connectionManager.addConnection({ name: `${conn.name} (copy)`, clusterUrl: conn.clusterUrl, database: conn.database, authorityId: conn.authorityId });
+					const preference = this.authPreferences.getPreference(conn.id);
+					if (preference.mode === 'explicit') {
+						const account = (await this.authPreferences.getAccounts()).find(candidate => candidate.id === preference.accountId) ?? { id: preference.accountId, label: preference.accountId };
+						await this.authPreferences.setExplicitAccount(duplicate.id, account);
+					}
+					void vscode.window.setStatusBarMessage('Connection duplicated', 2000);
+				} catch (error) { void vscode.window.showErrorMessage(`Failed to duplicate connection: ${error instanceof Error ? error.message : String(error)}`); }
 				return;
 			}
 			case 'favorite.add': {
-				const clusterUrl = String(msg.clusterUrl || '').trim();
+				const connectionId = String(msg.connectionId || '').trim();
+				const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+				const clusterUrl = String(connection?.clusterUrl || '').trim();
 				const database = String(msg.database || '').trim();
 				const name = String(msg.name || '').trim();
 				if (!clusterUrl || !database || !name) return;
-				const result = addKustoFavoriteIfMissing(this.getFavorites(), { name, clusterUrl, database });
+				const result = addKustoFavoriteIfMissing(this.getFavorites(), { name, connectionId, clusterUrl, database });
 				if (result.changed) {
 					await this.setFavorites(result.favorites);
 				}
@@ -559,18 +697,18 @@ export class ConnectionManagerViewerV2 {
 				return;
 			}
 			case 'favorite.promptAdd': {
-				await this.promptAddFavorite(msg.clusterUrl, msg.database, msg.defaultName);
+				await this.promptAddFavorite(msg.connectionId, msg.database, msg.defaultName);
 				return;
 			}
 			case 'favorite.promptRename': {
-				await this.promptRenameFavorite(msg.clusterUrl, msg.database);
+				await this.promptRenameFavorite(msg.connectionId, msg.database);
 				return;
 			}
 			case 'favorite.remove': {
-				const clusterUrl = String(msg.clusterUrl || '').trim();
+				const connectionId = String(msg.connectionId || '').trim();
 				const database = String(msg.database || '').trim();
-				if (!clusterUrl || !database) return;
-				const result = removeKustoFavorite(this.getFavorites(), clusterUrl, database);
+				if (!connectionId || !database) return;
+				const result = removeKustoFavorite(this.getFavorites(), connectionId, database);
 				if (result.changed) {
 					await this.setFavorites(result.favorites);
 				}
@@ -579,7 +717,7 @@ export class ConnectionManagerViewerV2 {
 			}
 			case 'favorite.reorder': {
 				if (Array.isArray(msg.favorites)) {
-					await this.setFavorites(sanitizeKustoFavorites(msg.favorites));
+					await this.setFavorites(migrateKustoFavorites(msg.favorites, this.connectionManager.getConnections()));
 					await this.sendSnapshotToWebview();
 				}
 				return;
@@ -598,9 +736,9 @@ export class ConnectionManagerViewerV2 {
 				if (conn) {
 					const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
 					const cached = this.getCachedDatabases();
-					const cachedCount = cached[clusterKey]?.length ?? 0;
+					const cachedCount = cached[connectionId]?.length ?? 0;
 					this.traceDatabaseList(traceId, 'expand.start', { connectionId, clusterKey, persistedCacheCount: cachedCount });
-					if (!cached[clusterKey] || cached[clusterKey].length === 0) {
+					if (!cached[connectionId] || cached[connectionId].length === 0) {
 						this.panel.webview.postMessage({ type: 'loadingDatabases', connectionId });
 						try {
 							const databases = await this.kustoClient.getDatabases(conn, false, {
@@ -608,8 +746,6 @@ export class ConnectionManagerViewerV2 {
 								traceId,
 								source: 'connection-manager-expand',
 							});
-							cached[clusterKey] = databases;
-							await this.setCachedDatabases(cached);
 							this.traceDatabaseList(traceId, 'expand.live-success', { connectionId, databaseCount: databases.length, persistedCacheUpdated: true });
 							this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases });
 						} catch (error) {
@@ -648,14 +784,22 @@ export class ConnectionManagerViewerV2 {
 					this.traceDatabaseList(traceId, 'refresh.connection-missing', { connectionId });
 					return;
 				}
+				const cachedBefore = this.getCachedDatabases()[connectionId] ?? [];
 				this.traceDatabaseList(traceId, 'refresh.start', { connectionId });
 				this.panel.webview.postMessage({ type: 'loadingDatabases', connectionId });
 				try {
 					const databases = await this.kustoClient.getDatabases(conn, true, { traceId, source: 'connection-manager-refresh' });
+					if (databases.length === 0) {
+						if (cachedBefore.length > 0) {
+							this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases: cachedBefore, warning: true });
+							void vscode.window.showWarningMessage("Couldn't refresh the database list (received 0 databases). Keeping the previous cached list.");
+						} else {
+							this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases: [], warning: true });
+							void vscode.window.showWarningMessage('The selected identity can connect but no databases are visible. Check the Authority / Tenant ID and account.');
+						}
+						return;
+					}
 					const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
-					const cached = this.getCachedDatabases();
-					cached[clusterKey] = databases;
-					await this.setCachedDatabases(cached);
 					this.traceDatabaseList(traceId, 'refresh.success', { connectionId, databaseCount: databases.length, persistedCacheUpdated: true });
 					this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases });
 				} catch (error) {
@@ -670,42 +814,67 @@ export class ConnectionManagerViewerV2 {
 				return;
 			}
 			case 'database.getSchema': {
+				const requestId = createDatabaseListTraceId();
 				const connectionId = String(msg.connectionId || '').trim();
 				const database = String(msg.database || '').trim();
 				if (!connectionId || !database) return;
 				const connections = this.connectionManager.getConnections();
 				const conn = connections.find((c) => c.id === connectionId);
 				if (!conn) return;
-				this.panel.webview.postMessage({ type: 'loadingSchema', connectionId, database });
+				let startingAccountPartition: string | undefined;
+				try { startingAccountPartition = this.kustoClient.getAccountPartition(conn); } catch { startingAccountPartition = undefined; }
+				this.panel.webview.postMessage({ type: 'loadingSchema', connectionId, database, requestId, accountPartition: startingAccountPartition });
 				try {
 					const result = await this.kustoClient.getDatabaseSchema(conn, database, false);
-					this.panel.webview.postMessage({ type: 'schemaLoaded', connectionId, database, schema: result.schema, fromCache: result.fromCache, cacheAgeMs: result.cacheAgeMs });
-				} catch (error) { this.panel.webview.postMessage({ type: 'schemaLoadError', connectionId, database, error: error instanceof Error ? error.message : String(error) }); }
+					await this.sendSnapshotToWebview();
+					if (!result.accountPartition || this.kustoClient.getAccountPartition(conn) !== result.accountPartition) {
+						this.panel.webview.postMessage({ type: 'schemaLoadError', connectionId, database, requestId, error: 'Authentication changed while schema was loading.' });
+						return;
+					}
+					this.panel.webview.postMessage({ type: 'schemaLoaded', connectionId, database, requestId, accountPartition: result.accountPartition, schema: result.schema, fromCache: result.fromCache, cacheAgeMs: result.cacheAgeMs });
+				} catch (error) { this.panel.webview.postMessage({ type: 'schemaLoadError', connectionId, database, requestId, error: error instanceof Error ? error.message : String(error) }); }
 				return;
 			}
 			case 'database.refreshSchema': {
+				const requestId = createDatabaseListTraceId();
+				const connectionId = String(msg.connectionId || '').trim();
 				const clusterUrl = String(msg.clusterUrl || '').trim();
 				const database = String(msg.database || '').trim();
 				const source = String(msg.source || '').trim();
-				if (!clusterUrl || !database) return;
-				const connections = this.connectionManager.getConnections();
-				const normalizedUrl = kustoClusterKey(clusterUrl);
-				const conn = connections.find((c) => kustoClusterKey(c.clusterUrl) === normalizedUrl);
-				if (!conn) { void vscode.window.showWarningMessage(`No connection found for cluster: ${clusterUrl}`); return; }
-				this.panel.webview.postMessage({ type: 'schemaRefreshStarted', clusterUrl, database });
+				if (!connectionId || !clusterUrl || !database) return;
+				const conn = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+				if (!conn || kustoClusterKey(conn.clusterUrl) !== kustoClusterKey(clusterUrl)) return;
+				let startingAccountPartition: string | undefined;
+				try { startingAccountPartition = this.kustoClient.getAccountPartition(conn); } catch { startingAccountPartition = undefined; }
+				this.panel.webview.postMessage({ type: 'schemaRefreshStarted', connectionId, clusterUrl, database, requestId, accountPartition: startingAccountPartition });
 				try {
 					const result = await this.kustoClient.getDatabaseSchema(conn, database, true);
+					const accountPartition = result.accountPartition;
+					if (!accountPartition) throw new Error('Schema authentication identity could not be resolved.');
 					const normalizedCluster = conn.clusterUrl.replace(/\/+$/, '');
-					const cacheKey = schemaCacheKey(normalizedCluster, database);
+					const cacheKey = schemaCacheKey(normalizedCluster, database, conn.id, accountPartition);
 					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
-					const diskEntry: CachedSchemaEntry = { schema: result.schema, timestamp, version: SCHEMA_CACHE_VERSION, clusterUrl: normalizedCluster, database };
-					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, diskEntry);
-					this.panel.webview.postMessage({ type: 'schemaLoaded', connectionId: conn.id, database, schema: result.schema, fromCache: false, cacheAgeMs: 0 });
-					this.panel.webview.postMessage({ type: 'schemaRefreshCompleted', clusterUrl, database, success: true });
+					const diskEntry: CachedSchemaEntry = {
+						schema: result.schema,
+						timestamp,
+						version: SCHEMA_CACHE_VERSION,
+						clusterUrl: normalizedCluster,
+						database,
+						connectionId: conn.id,
+						accountPartition,
+					};
+					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, diskEntry, result.cacheGeneration);
+					await this.sendSnapshotToWebview();
+					if (this.kustoClient.getAccountPartition(conn) !== accountPartition) {
+						this.panel.webview.postMessage({ type: 'schemaRefreshCompleted', connectionId, clusterUrl, database, requestId, success: false, error: 'Authentication changed while schema was loading.' });
+						return;
+					}
+					this.panel.webview.postMessage({ type: 'schemaLoaded', connectionId: conn.id, database, requestId, accountPartition, schema: result.schema, fromCache: false, cacheAgeMs: 0 });
+					this.panel.webview.postMessage({ type: 'schemaRefreshCompleted', connectionId, clusterUrl, database, requestId, success: true });
 					void vscode.window.showInformationMessage(`Schema refreshed: ${database}${source ? ` (via ${source})` : ''}`);
 				} catch (error) {
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
-					this.panel.webview.postMessage({ type: 'schemaRefreshCompleted', clusterUrl, database, success: false, error: isAuthError ? 'Authentication required. Please test the connection to sign in.' : error instanceof Error ? error.message : String(error) });
+					this.panel.webview.postMessage({ type: 'schemaRefreshCompleted', connectionId, clusterUrl, database, requestId, success: false, error: isAuthError ? 'Authentication required. Please test the connection to sign in.' : error instanceof Error ? error.message : String(error) });
 					void vscode.window.showErrorMessage(`Failed to refresh schema for ${database}: ${isAuthError ? 'Authentication required.' : (error instanceof Error ? error.message : String(error))}`);
 				}
 				return;
@@ -720,10 +889,6 @@ export class ConnectionManagerViewerV2 {
 				this.panel.webview.postMessage({ type: 'loadingDatabases', connectionId });
 				try {
 					const databases = await this.kustoClient.getDatabases(conn, true, { traceId, source: 'connection-manager-cluster-schema-refresh' });
-					const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
-					const cached = this.getCachedDatabases();
-					cached[clusterKey] = databases;
-					await this.setCachedDatabases(cached);
 					this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases });
 				} catch (error) {
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
@@ -740,12 +905,22 @@ export class ConnectionManagerViewerV2 {
 				return;
 			}
 			case 'database.openInNewFile': {
+				const connectionId = String(msg.connectionId || '').trim();
 				const clusterUrl = String(msg.clusterUrl || '').trim();
 				const database = String(msg.database || '').trim();
-				if (!clusterUrl || !database) return;
+				const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+				if (!connection || kustoClusterKey(connection.clusterUrl) !== kustoClusterKey(clusterUrl) || !database) return;
 				try {
 					const file = createEmptyKqlxOrMdxFile('kqlx');
-					file.state.sections.push({ type: 'query', expanded: true, clusterUrl, database, query: '' });
+					file.state.sections.push({
+						type: 'query',
+						expanded: true,
+						clusterUrl: connection.clusterUrl,
+						authorityId: connection.authorityId,
+						connectionIdHint: connection.id,
+						database,
+						query: '',
+					});
 					const defaultName = `${database}.kqlx`;
 					const uri = await vscode.window.showSaveDialog({ filters: { 'Kusto Notebook': ['kqlx'] }, saveLabel: 'Create', title: 'Create new .kqlx file', defaultUri: vscode.workspace.workspaceFolders?.[0] ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, defaultName) : undefined });
 					if (uri) {
@@ -789,22 +964,31 @@ export class ConnectionManagerViewerV2 {
 				return;
 			}
 			case 'table.preview': {
+				const requestId = createDatabaseListTraceId();
 				const connectionId = String(msg.connectionId || '').trim();
 				const database = String(msg.database || '').trim();
 				const tableName = String(msg.tableName || '').trim();
 				if (!connectionId || !database || !tableName) return;
 				const connections = this.connectionManager.getConnections();
 				const conn = connections.find((c) => c.id === connectionId);
-				if (!conn) { this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, success: false, error: 'Connection not found.' }); return; }
-				this.panel.webview.postMessage({ type: 'tablePreviewLoading', connectionId, database, tableName });
+				if (!conn) { this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, requestId, success: false, error: 'Connection not found.' }); return; }
+				let startingAccountPartition: string | undefined;
+				try { startingAccountPartition = this.kustoClient.getAccountPartition(conn); } catch { startingAccountPartition = undefined; }
+				this.panel.webview.postMessage({ type: 'tablePreviewLoading', connectionId, database, tableName, requestId, accountPartition: startingAccountPartition });
 				try {
 					const safeTableName = `['${tableName.replace(/'/g, "''")}']`;
 					const query = `${safeTableName} | take 100`;
-					const result = await this.kustoClient.executeQuery(conn, database, query);
-					this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, success: true, columns: result.columns, rows: result.rows, rowCount: result.rows.length, executionTime: result.metadata?.executionTime });
+					const execution = await this.kustoClient.executeQueryWithIdentity(conn, database, query);
+					const { result, accountPartition } = execution;
+					await this.sendSnapshotToWebview();
+					if (!accountPartition || this.kustoClient.getAccountPartition(conn) !== accountPartition) {
+						this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, requestId, success: false, error: 'Authentication changed while preview was loading.' });
+						return;
+					}
+					this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, requestId, accountPartition, success: true, columns: result.columns, rows: result.rows, rowCount: result.rows.length, executionTime: result.metadata?.executionTime });
 				} catch (error) {
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
-					this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, success: false, error: isAuthError ? 'Authentication required. Please test the connection to sign in.' : error instanceof Error ? error.message : String(error) });
+					this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, requestId, success: false, error: isAuthError ? 'Authentication required. Please test the connection to sign in.' : error instanceof Error ? error.message : String(error) });
 				}
 				return;
 			}
@@ -1195,7 +1379,7 @@ export class ConnectionManagerViewerV2 {
 					}
 					if (categories['databases']) {
 						const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
-						for (const db of cachedDbs[clusterKey] ?? []) {
+						for (const db of cachedDbs[conn.id] ?? []) {
 							if (re.test(db)) {
 								nameResults.push({ category: 'database', kind: 'kusto', connectionId: conn.id, connectionName: conn.name, database: db, name: db });
 							}
@@ -1261,7 +1445,7 @@ export class ConnectionManagerViewerV2 {
 		if (!wantsSchemaSearch) return;
 
 		if (kind === 'kusto') {
-			const matches = await searchCachedSchemas(this.context.globalStorageUri, query, 500);
+			const matches = await searchCachedSchemas(this.context.globalStorageUri, query, 500, this.getActiveSchemaPrincipalIdentities());
 			if (signal.aborted) return;
 			const results = this._mapKustoSchemaMatches(matches, categories, contentToggles);
 			if (results.length > 0) sendResults(results, false);
@@ -1322,10 +1506,6 @@ export class ConnectionManagerViewerV2 {
 							traceId: childTraceId,
 							source: 'connection-manager-search-everything',
 						});
-						const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
-						const cached = this.getCachedDatabases();
-						cached[clusterKey] = dbs;
-						await this.setCachedDatabases(cached);
 						for (const db of dbs) dbPairs.push({ conn, db });
 						this.traceDatabaseList(searchTraceId, 'search-everything.connection-complete', {
 							requestId,
@@ -1358,15 +1538,19 @@ export class ConnectionManagerViewerV2 {
 					sendProgress(`Loading schema: ${db}`, i + 1, totalSchemas);
 					try {
 						const result = await this.kustoClient.getDatabaseSchema(conn, db, true);
+						const accountPartition = result.accountPartition;
+						if (!accountPartition) continue;
 						const normalizedCluster = conn.clusterUrl.replace(/\/+$/, '');
-						const cacheKey = schemaCacheKey(normalizedCluster, db);
+						const cacheKey = schemaCacheKey(normalizedCluster, db, conn.id, accountPartition);
 						await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
 							schema: result.schema,
 							timestamp: Date.now(),
 							version: SCHEMA_CACHE_VERSION,
 							clusterUrl: normalizedCluster,
 							database: db,
-						});
+							connectionId: conn.id,
+							accountPartition,
+						}, result.cacheGeneration);
 						// Search the freshly loaded schema
 						const schemaResults = this._searchSingleKustoSchema(result.schema, normalizedCluster, db, conn, re, categories, contentToggles);
 						if (schemaResults.length > 0) sendResults(schemaResults, false);
@@ -1374,26 +1558,34 @@ export class ConnectionManagerViewerV2 {
 				}
 			} else {
 				// Tier 2: refresh only already-cached schemas
-				const cachedEntries = await readAllCachedSchemasFromDisk(this.context.globalStorageUri);
+				const cachedEntries = await readAllCachedSchemasFromDisk(
+					this.context.globalStorageUri,
+					undefined,
+					undefined,
+					this.getActiveSchemaPrincipalIdentities(),
+				);
 				const total = cachedEntries.length;
 				for (let i = 0; i < cachedEntries.length; i++) {
 					if (signal.aborted) return;
 					const entry = cachedEntries[i];
 					sendProgress(`Refreshing ${entry.database}…`, i + 1, total);
-					const entryClusterKey = kustoClusterKey(entry.clusterUrl);
-					const conn = connections.find(c => kustoClusterKey(c.clusterUrl) === entryClusterKey);
+					const conn = connections.find(c => c.id === entry.connectionId);
 					if (!conn) continue;
 					try {
 						const result = await this.kustoClient.getDatabaseSchema(conn, entry.database, true);
+						const accountPartition = result.accountPartition;
+						if (!accountPartition) continue;
 						const normalizedCluster = conn.clusterUrl.replace(/\/+$/, '');
-						const cacheKey = schemaCacheKey(normalizedCluster, entry.database);
+						const cacheKey = schemaCacheKey(normalizedCluster, entry.database, conn.id, accountPartition);
 						await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
 							schema: result.schema,
 							timestamp: Date.now(),
 							version: SCHEMA_CACHE_VERSION,
 							clusterUrl: normalizedCluster,
 							database: entry.database,
-						});
+							connectionId: conn.id,
+							accountPartition,
+						}, result.cacheGeneration);
 						const schemaResults = this._searchSingleKustoSchema(result.schema, normalizedCluster, entry.database, conn, re, categories, contentToggles);
 						if (schemaResults.length > 0) sendResults(schemaResults, false);
 					} catch { /* skip schema errors */ }
@@ -1562,8 +1754,7 @@ export class ConnectionManagerViewerV2 {
 		const connections = this.connectionManager.getConnections();
 		const results: any[] = [];
 		for (const m of matches) {
-			const matchClusterKey = kustoClusterKey(m.clusterUrl);
-			const conn = connections.find(c => kustoClusterKey(c.clusterUrl) === matchClusterKey);
+			const conn = connections.find(c => c.id === m.connectionId);
 			const connId = conn?.id ?? '';
 			const connName = conn?.name ?? m.clusterUrl;
 
@@ -1626,17 +1817,29 @@ export class ConnectionManagerViewerV2 {
 			const uri = picked[0];
 			const bytes = await vscode.workspace.fs.readFile(uri);
 			const text = new TextDecoder('utf-8').decode(bytes);
-			const connections = this.parseKustoExplorerConnectionsXml(text);
+			const connections = parseKustoExplorerConnectionsXml(text);
 			if (!connections.length) { void vscode.window.showInformationMessage('No connections found in the selected XML file.'); return; }
 			const existing = this.connectionManager.getConnections();
-			const existingKeys = new Set(existing.map((c) => this.normalizeClusterUrlKey(c.clusterUrl || '')).filter(Boolean));
+			const existingKeys = new Set(existing.flatMap((connection) => {
+				try {
+					const key = getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId);
+					return key ? [key] : [];
+				} catch {
+					return [];
+				}
+			}));
 			let added = 0;
 			for (const c of connections) {
-				const key = this.normalizeClusterUrlKey(c.clusterUrl);
-				if (existingKeys.has(key)) continue;
-				await this.connectionManager.addConnection({ name: c.name || c.clusterUrl, clusterUrl: c.clusterUrl, database: c.database });
-				existingKeys.add(key);
-				added++;
+				try {
+					const authorityId = normalizeKustoAuthorityId(c.authorityId);
+					const key = getKustoConnectionIdentityKey(c.clusterUrl, authorityId);
+					if (existingKeys.has(key)) continue;
+					await this.connectionManager.addConnection({ name: c.name || c.clusterUrl, clusterUrl: c.clusterUrl, database: c.database, authorityId });
+					existingKeys.add(key);
+					added++;
+				} catch {
+					// Skip malformed imported identities without blocking later valid entries.
+				}
 			}
 			if (added > 0) { void vscode.window.showInformationMessage(`Imported ${added} Kusto connection${added === 1 ? '' : 's'}.`); } else { void vscode.window.showInformationMessage('No new connections were imported (they may already exist).'); }
 			const snapshot = await this.buildSnapshot();
@@ -1648,57 +1851,13 @@ export class ConnectionManagerViewerV2 {
 		try {
 			const connections = this.connectionManager.getConnections();
 			if (connections.length === 0) { void vscode.window.showInformationMessage('No connections to export.'); return; }
-			const xmlBlocks = connections.map(c => {
-				const url = /^https?:\/\//i.test(c.clusterUrl) ? c.clusterUrl : 'https://' + c.clusterUrl;
-				const dbPart = c.database ? `Initial Catalog=${this.escapeXml(c.database)};` : '';
-				return `  <ServerDescriptionBase>\n    <Name>${this.escapeXml(c.name || c.clusterUrl)}</Name>\n    <Details>${this.escapeXml(url)}</Details>\n    <ConnectionString>Data Source=${this.escapeXml(url)};${dbPart}AAD Federated Security=True</ConnectionString>\n  </ServerDescriptionBase>`;
-			});
-			const xml = `<?xml version="1.0" encoding="utf-8"?>\n<ArrayOfServerDescriptionBase xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema">\n${xmlBlocks.join('\n')}\n</ArrayOfServerDescriptionBase>\n`;
+			const xml = stringifyKustoExplorerConnectionsXml(connections);
 			const uri = await vscode.window.showSaveDialog({ filters: { 'XML files': ['xml'] }, saveLabel: 'Export', title: 'Export connections', defaultUri: vscode.workspace.workspaceFolders?.[0] ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, 'connections.xml') : undefined });
 			if (uri) {
 				await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(xml));
 				void vscode.window.setStatusBarMessage(`Exported ${connections.length} connection${connections.length !== 1 ? 's' : ''} to ${uri.fsPath}`, 3000);
 			}
 		} catch (e: any) { void vscode.window.showErrorMessage(`Failed to export connections: ${e instanceof Error ? e.message : String(e)}`); }
-	}
-
-	private escapeXml(s: string): string {
-		return s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&apos;');
-	}
-
-	private parseKustoExplorerConnectionsXml(xmlText: string): Array<{ name: string; clusterUrl: string; database?: string }> {
-		const text = String(xmlText || '').trim();
-		if (!text) return [];
-		const results: Array<{ name: string; clusterUrl: string; database?: string }> = [];
-		const blockRegex = /<ServerDescriptionBase[^>]*>([\s\S]*?)<\/ServerDescriptionBase>/gi;
-		let blockMatch: RegExpExecArray | null;
-		while ((blockMatch = blockRegex.exec(text)) !== null) {
-			const block = blockMatch[1];
-			const name = this.getXmlChildText(block, 'Name');
-			const details = this.getXmlChildText(block, 'Details');
-			const connectionString = this.getXmlChildText(block, 'ConnectionString');
-			const parsed = this.parseKustoConnectionString(connectionString);
-			let clusterUrl = selectBestKustoClusterUrl(parsed.dataSource, details).trim();
-			if (!clusterUrl) continue;
-			if (!/^https?:\/\//i.test(clusterUrl)) clusterUrl = 'https://' + clusterUrl.replace(/^\/+/, '');
-			results.push({ name: name.trim() || clusterUrl, clusterUrl: clusterUrl.trim(), database: parsed.initialCatalog.trim() || undefined });
-		}
-		const seen = new Set<string>();
-		return results.filter((r) => { const key = this.normalizeClusterUrlKey(r.clusterUrl); if (!key || seen.has(key)) return false; seen.add(key); return true; });
-	}
-
-	private getXmlChildText(parentContent: string, tagName: string): string {
-		const regex = new RegExp(`<${tagName}[^>]*>([\\s\\S]*?)<\\/${tagName}>`, 'i');
-		const match = regex.exec(parentContent);
-		return match ? match[1].trim() : '';
-	}
-
-	private parseKustoConnectionString(cs: string): { dataSource: string; initialCatalog: string } {
-		const raw = String(cs || '');
-		const parts = raw.split(';').map((p) => p.trim()).filter(Boolean);
-		const map: Record<string, string> = {};
-		for (const part of parts) { const idx = part.indexOf('='); if (idx <= 0) continue; map[part.slice(0, idx).trim().toLowerCase()] = part.slice(idx + 1).trim(); }
-		return { dataSource: map['data source'] || map['datasource'] || map['server'] || map['address'] || '', initialCatalog: map['initial catalog'] || map['database'] || '' };
 	}
 
 	private normalizeClusterUrlKey(url: string): string {

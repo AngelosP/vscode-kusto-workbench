@@ -57,12 +57,14 @@ function createProviderHarness() {
 	provider.runningQueriesByBoxId = new Map();
 	provider.queryRunSeq = 0;
 	provider.postMessage = vi.fn();
+	provider.refreshConnectionsData = vi.fn(async () => undefined);
 	provider.connection = {
 		saveLastSelection: vi.fn(async () => undefined),
 		findConnection: vi.fn(() => TEST_CONNECTION),
 	};
 	provider.kustoClient = {
 		executeQueryCancelable: vi.fn(),
+		getAccountPartition: vi.fn(() => 'partition-current'),
 	};
 	provider.appendQueryMode = vi.fn((query: string) => query);
 	provider.isControlCommand = vi.fn(() => false);
@@ -107,8 +109,8 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const secondCancel = vi.fn();
 		const secondResult = queryResult('second');
 		provider.kustoClient.executeQueryCancelable
-			.mockReturnValueOnce({ promise: first.promise, cancel: firstCancel, clientActivityId: 'KW.execute_query;first' })
-			.mockReturnValueOnce({ promise: Promise.resolve(secondResult), cancel: secondCancel, clientActivityId: 'KW.execute_query;second' });
+			.mockReturnValueOnce({ promise: first.promise, cancel: firstCancel, clientActivityId: 'KW.execute_query;first', getAccountPartition: () => 'partition-current' })
+			.mockReturnValueOnce({ promise: Promise.resolve(secondResult), cancel: secondCancel, clientActivityId: 'KW.execute_query;second', getAccountPartition: () => 'partition-current' });
 
 		const firstTask = provider.executeQueryFromWebview(executeMessage('query_1', 'print label="first"'));
 		await flushPromises();
@@ -127,6 +129,50 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			.filter((message: any) => message?.type === 'queryResult');
 		expect(queryResults).toHaveLength(1);
 		expect(queryResults[0].result).toBe(secondResult);
+	});
+
+	it('does not publish a result superseded while its identity snapshot is pending', async () => {
+		const provider = createProviderHarness();
+		const snapshot = deferred<void>();
+		const firstResult = queryResult('first');
+		const secondResult = queryResult('second');
+		provider.refreshConnectionsData.mockImplementationOnce(async () => snapshot.promise);
+		provider.kustoClient.executeQueryCancelable
+			.mockReturnValueOnce({ promise: Promise.resolve(firstResult), cancel: vi.fn(), clientActivityId: 'KW.execute_query;first', getAccountPartition: () => 'partition-current' })
+			.mockReturnValueOnce({ promise: Promise.resolve(secondResult), cancel: vi.fn(), clientActivityId: 'KW.execute_query;second', getAccountPartition: () => 'partition-current' });
+
+		const firstTask = provider.executeQueryFromWebview(executeMessage('query_1', 'print label="first"'));
+		await flushPromises();
+		const secondTask = provider.executeQueryFromWebview(executeMessage('query_1', 'print label="second"'));
+		snapshot.resolve();
+		await Promise.all([firstTask, secondTask]);
+
+		const queryResults = provider.postMessage.mock.calls
+			.map((call: unknown[]) => call[0] as any)
+			.filter((message: any) => message?.type === 'queryResult');
+		expect(queryResults).toEqual([{ type: 'queryResult', result: secondResult, boxId: 'query_1' }]);
+	});
+
+	it('does not publish account A rows after the snapshot adopts account B', async () => {
+		const provider = createProviderHarness();
+		const snapshot = deferred<void>();
+		let currentPartition = 'partition-a';
+		provider.kustoClient.getAccountPartition.mockImplementation(() => currentPartition);
+		provider.refreshConnectionsData.mockImplementationOnce(async () => snapshot.promise);
+		provider.kustoClient.executeQueryCancelable.mockReturnValueOnce({
+			promise: Promise.resolve(queryResult('account-a')),
+			cancel: vi.fn(),
+			clientActivityId: 'KW.execute_query;account-a',
+			getAccountPartition: () => 'partition-a',
+		});
+
+		const task = provider.executeQueryFromWebview(executeMessage('query_1'));
+		await flushPromises();
+		currentPartition = 'partition-b';
+		snapshot.resolve();
+		await task;
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
 	});
 
 	it('explicit cancel with no running query still unsticks the webview', async () => {

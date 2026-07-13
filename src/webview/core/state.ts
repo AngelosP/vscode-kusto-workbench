@@ -93,6 +93,8 @@ export type PendingSchemaWorkerUpdate = {
 	rawSchemaJson: any;
 	clusterUrl: string;
 	database: string;
+	connectionId: string;
+	accountPartition: string;
 	schemaKey: string;
 	schemaSignature?: string;
 	forceRefresh?: boolean;

@@ -46,6 +46,35 @@ README screenshot generators are intentionally excluded from the product signal 
 node scripts/e2e-full-suite.mjs --profiles "default,kusto-auth,sql-auth" --include-screenshot-generators --repair-profile-residue
 ```
 
+## Opt-In Live Authority ID Fixture
+
+Live tenant fixtures set `"optIn": true` in their `e2e.settings.json` and are excluded from all ordinary/full-suite discovery. `--test-id` alone does not bypass this gate. To exercise the guest-tenant Authority ID scenario, prepare the `kusto-auth` profile with the guest account, start the existing ADX fixture, and set:
+
+```powershell
+$env:KUSTO_AUTH_REPRO_LIVE = '1'
+$env:KUSTO_AUTH_REPRO_CLUSTER = 'https://<cluster>.<region>.kusto.windows.net'
+$env:KUSTO_AUTH_REPRO_DATABASE = '<target-database>'
+$env:KUSTO_AUTH_REPRO_RESOURCE_AUTHORITY = '<resource-tenant-guid-or-domain>'
+$env:KUSTO_AUTH_REPRO_WRONG_AUTHORITY = '<home-tenant-guid-or-domain>'
+$env:KUSTO_AUTH_REPRO_EXPECTED_ACCOUNT = '<prepared-profile-account-id-or-label>'
+```
+
+Run the extension E2E explicitly:
+
+```powershell
+node scripts/e2e-full-suite.mjs --profile kusto-auth --test-id kusto-authority-live --include-opt-in-tests --repair-profile-residue
+```
+
+The scenario creates only profile-local test connections/preferences, performs database discovery under both authorities, checks Connection Manager and Cached Values, and removes its fixture state. It does not create Azure resources, ingest data, or execute a data query.
+
+For a UI-independent repro using the same read-only `.show databases` contract, set the same variables (plus optional `KUSTO_AUTH_REPRO_SUBSCRIPTION`) and run:
+
+```powershell
+npm run repro:kusto-authority
+```
+
+The CLI acquires two Azure CLI tokens serially and calls only the ADX management endpoint. It prints hashed account identity and database visibility metadata, never tokens or response bodies.
+
 ## Artifacts
 
 The orchestrator writes ignored artifacts under `tests/vscode-extension-tester/history/`:

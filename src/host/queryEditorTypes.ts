@@ -17,7 +17,7 @@ export const STORAGE_KEYS = {
 	copilotChatFirstTimeDismissed: 'kusto.copilotChatFirstTimeDismissed'
 } as const;
 
-export type KustoFavorite = { name: string; clusterUrl: string; database: string };
+export type KustoFavorite = { name: string; connectionId: string; clusterUrl: string; database: string };
 export type SqlFavorite = { name: string; connectionId: string; database: string };
 
 export const DEFAULT_PREFERRED_COPILOT_MODEL_ID = 'gpt-5.5';
@@ -30,7 +30,15 @@ export function findPreferredDefaultCopilotModel(models: vscode.LanguageModelCha
 	return preferredModel || models[0];
 }
 
-export type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number; version: number; clusterUrl?: string; database?: string };
+export type CachedSchemaEntry = {
+	schema: DatabaseSchemaIndex;
+	timestamp: number;
+	version: number;
+	clusterUrl?: string;
+	database?: string;
+	connectionId?: string;
+	accountPartition?: string;
+};
 
 export type CacheUnit = 'minutes' | 'hours' | 'days';
 
@@ -113,7 +121,7 @@ export type ShareToClipboardMessage = {
 
 export type ImportConnectionsFromXmlMessage = {
 	type: 'importConnectionsFromXml';
-	connections: Array<{ name: string; clusterUrl: string; database?: string }>;
+	connections: Array<{ name: string; clusterUrl: string; database?: string; authorityId?: string }>;
 	boxId?: string;
 };
 
@@ -207,9 +215,9 @@ export type IncomingWebviewMessage =
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }
 	| { type: 'seeCachedValues' }
 	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
-	| { type: 'requestAddFavorite'; clusterUrl: string; database: string; defaultName?: string; boxId?: string }
-	| { type: 'removeFavorite'; clusterUrl: string; database: string; boxId?: string }
-	| { type: 'confirmRemoveFavorite'; requestId: string; label?: string; clusterUrl: string; database: string; boxId?: string }
+	| { type: 'requestAddFavorite'; connectionId: string; clusterUrl: string; database: string; defaultName?: string; boxId?: string }
+	| { type: 'removeFavorite'; connectionId: string; clusterUrl: string; database: string; boxId?: string }
+	| { type: 'confirmRemoveFavorite'; requestId: string; label?: string; connectionId: string; clusterUrl: string; database: string; boxId?: string }
 	| { type: 'promptImportConnectionsXml'; boxId?: string }
 	| { type: 'addConnectionsForClusters'; clusterUrls: string[]; boxId?: string }
 	| { type: 'showInfo'; message: string }
@@ -267,8 +275,8 @@ export type IncomingWebviewMessage =
 	| { type: 'stsDidClose'; boxId: string }
 	| { type: 'stsConnect'; boxId: string; sqlConnectionId: string; database: string }
 	| { type: 'promptAddConnection'; boxId?: string }
-	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; boxId?: string }
-	| { type: 'testKustoConnection'; name?: string; clusterUrl: string; database?: string; boxId?: string }
+	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }
+	| { type: 'testKustoConnection'; name?: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }
 	| ImportConnectionsFromXmlMessage
 	| KqlLanguageRequestMessage
 	| FetchControlCommandSyntaxMessage

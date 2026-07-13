@@ -12,6 +12,7 @@ import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTyp
 import { perfBegin, perfMark } from './perfTrace';
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
+import { resolveKustoConnection } from '../shared/kustoAuth';
 
 /**
  * Compute the sidecar .kqlx URI for a .kql/.csl compat file.
@@ -270,14 +271,22 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		// Best-effort default selection for plain `.kql/.csl` files (no embedded metadata).
 		// Priority: 1) cached file connection, 2) query-based inference.
 		// This is intentionally non-fatal: if we can't resolve, the UI falls back to last selection.
-		let cachedFileConnection: { clusterUrl: string; database: string } | undefined;
+		let cachedFileConnection: { clusterUrl: string; database: string; authorityId?: string; connectionIdHint?: string } | undefined;
 		perfMark('host.kqlCompat.cachedFileConnection.start');
 		fileOpenTrace.mark('cachedFileConnection.start');
 		try {
 			if (document.uri.scheme === 'file') {
 				const cached = this.connectionManager.getFileConnection(document.uri.fsPath);
 				if (cached) {
-					cachedFileConnection = cached;
+					const resolution = resolveKustoConnection(this.connectionManager.getConnections(), cached);
+					if (resolution.kind === 'matched') {
+						cachedFileConnection = {
+							clusterUrl: resolution.connection.clusterUrl,
+							database: cached.database,
+							authorityId: resolution.connection.authorityId,
+							connectionIdHint: resolution.connection.id,
+						};
+					}
 				}
 			}
 		} catch {
@@ -286,7 +295,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		perfMark('host.kqlCompat.cachedFileConnection.done', { found: !!cachedFileConnection });
 		fileOpenTrace.mark('cachedFileConnection.done', { found: !!cachedFileConnection });
 
-		let inferredSelection: { clusterUrl: string; database: string } | undefined;
+		let inferredSelection: { clusterUrl: string; database: string; authorityId?: string; connectionIdHint?: string } | undefined;
 		if (cachedFileConnection) {
 			// Use the cached connection — skip query-based inference.
 			inferredSelection = cachedFileConnection;
@@ -484,7 +493,12 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						{
 							type: 'query',
 							query: queryText,
-							...(inferredSelection ? { clusterUrl: inferredSelection.clusterUrl, database: inferredSelection.database } : {})
+							...(inferredSelection ? {
+								clusterUrl: inferredSelection.clusterUrl,
+								authorityId: inferredSelection.authorityId,
+								connectionIdHint: inferredSelection.connectionIdHint,
+								database: inferredSelection.database,
+							} : {})
 						}
 					]
 				};
@@ -695,10 +709,13 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 								const conn = this.connectionManager.getConnections().find(c => c.id === connectionId);
 								const clusterUrl = conn ? String(conn.clusterUrl || '').trim() : '';
 								if (clusterUrl) {
-									await this.connectionManager.setFileConnection(document.uri.fsPath, clusterUrl, database);
+									await this.connectionManager.setFileConnection(document.uri.fsPath, clusterUrl, database, {
+										authorityId: conn?.authorityId,
+										connectionIdHint: conn?.id,
+									});
 									// Keep inferredSelection in sync so postDocument() reflects
 									// the latest connection on external-change reload or re-init.
-									inferredSelection = { clusterUrl, database };
+									inferredSelection = { clusterUrl, database, authorityId: conn?.authorityId, connectionIdHint: conn?.id };
 								}
 							}
 						}
@@ -909,7 +926,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 	private async enableSidecarKqlxForCompat(
 		document: vscode.TextDocument,
-		inferredSelection: { clusterUrl: string; database: string } | undefined,
+		inferredSelection: { clusterUrl: string; database: string; authorityId?: string; connectionIdHint?: string } | undefined,
 		lastKnownWebviewState?: KqlxStateV1
 	): Promise<{ uri: vscode.Uri; file: KqlxFileV1 } | undefined> {
 		if (document.uri.scheme !== 'file') {
@@ -984,7 +1001,12 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				sections: [
 					{
 						type: 'query',
-						...(inferredSelection ? { clusterUrl: inferredSelection.clusterUrl, database: inferredSelection.database } : {})
+						...(inferredSelection ? {
+							clusterUrl: inferredSelection.clusterUrl,
+							authorityId: inferredSelection.authorityId,
+							connectionIdHint: inferredSelection.connectionIdHint,
+							database: inferredSelection.database,
+						} : {})
 					} as any
 				]
 			};

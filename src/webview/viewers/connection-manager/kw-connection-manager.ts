@@ -26,10 +26,15 @@ interface KustoConnection {
 	name: string;
 	clusterUrl: string;
 	database?: string;
+	authorityId?: string;
+	accountPartition?: string;
+	accountPreference: { mode: 'automatic'; lastSuccessfulAccountId?: string; legacyAccountId?: string } | { mode: 'explicit'; accountId: string };
+	selectedAccountId?: string;
 }
 
 interface KustoFavorite {
 	name: string;
+	connectionId: string;
 	clusterUrl: string;
 	database: string;
 }
@@ -38,6 +43,7 @@ interface Snapshot {
 	timestamp: number;
 	activeKind?: ConnectionKind;
 	connections: KustoConnection[];
+	accounts: Array<{ id: string; label: string }>;
 	favorites: KustoFavorite[];
 	cachedDatabases: Record<string, string[]>;
 	expandedClusters: string[];
@@ -121,6 +127,8 @@ interface TablePreview {
 	error?: string;
 }
 
+type KustoRequestOwner = { requestId: string; accountPartition: string };
+
 interface ExplorerPath {
 	connectionId: string;
 	database?: string;
@@ -190,6 +198,10 @@ function sortKustoConnections(connections: readonly KustoConnection[] | undefine
 	return sortByAlphabeticLabels(connections, connection => [getKustoConnectionLabel(connection), connection.clusterUrl, connection.id]);
 }
 
+function kustoConnectionIdentity(connection: KustoConnection): string {
+	return [connection.clusterUrl, connection.authorityId || '', connection.selectedAccountId || '', connection.accountPartition || '', connection.accountPreference?.mode || 'automatic'].join('|');
+}
+
 function getSqlConnectionLabel(connection: SqlConnectionInfo): string {
 	return connection.name || connection.serverUrl;
 }
@@ -219,6 +231,9 @@ export class KwConnectionManager extends LitElement {
 	@state() private _schemaLoadErrors: Record<string, string> = {};
 	@state() private _loadingSchemaKeys = new Set<string>();
 	@state() private _refreshingSchemaKeys = new Set<string>();
+	private _schemaRequestIds = new Map<string, KustoRequestOwner>();
+	private _schemaRefreshRequestIds = new Map<string, KustoRequestOwner>();
+	private _previewRequestIds = new Map<string, KustoRequestOwner>();
 	@state() private _activeFilter: ActiveFilter = 'all';
 	@state() private _refreshMenuOpen = false;
 
@@ -229,6 +244,8 @@ export class KwConnectionManager extends LitElement {
 	@state() private _modalName = '';
 	@state() private _modalUrl = '';
 	@state() private _modalDb = '';
+	@state() private _modalAuthorityId = '';
+	@state() private _modalAccountId = '';
 	@state() private _testResult = '';
 
 	// SQL modal state
@@ -452,6 +469,43 @@ export class KwConnectionManager extends LitElement {
 		this._removeRefreshMenuScrollDismiss = null;
 	}
 
+	private _evictChangedKustoIdentityState(previous: Snapshot | null, next: Snapshot): boolean {
+		if (!previous) return false;
+		const previousById = new Map(previous.connections.map(connection => [connection.id, connection]));
+		const nextById = new Map(next.connections.map(connection => [connection.id, connection]));
+		const changedIds = new Set<string>();
+		const firstEstablishedIds = new Set<string>();
+		for (const [connectionId, previousConnection] of previousById) {
+			const nextConnection = nextById.get(connectionId);
+			if (!nextConnection || kustoConnectionIdentity(previousConnection) !== kustoConnectionIdentity(nextConnection)) {
+				changedIds.add(connectionId);
+				if (!previousConnection.accountPartition && nextConnection?.accountPartition) firstEstablishedIds.add(connectionId);
+			}
+		}
+		if (changedIds.size === 0) return false;
+		this._search.invalidateKustoResults();
+		const belongsToChangedConnection = (key: string) => changedIds.has(String(key || '').split('|')[0]);
+		const preserveEstablishingRequest = (key: string, owners: Map<string, KustoRequestOwner>) => {
+			const connectionId = String(key || '').split('|')[0];
+			const owner = owners.get(key);
+			return firstEstablishedIds.has(connectionId) && !!owner && !owner.accountPartition;
+		};
+		this._databaseSchemas = Object.fromEntries(Object.entries(this._databaseSchemas).filter(([key]) => !belongsToChangedConnection(key)));
+		this._tablePreviewData = Object.fromEntries(Object.entries(this._tablePreviewData).filter(([key]) => !belongsToChangedConnection(key)));
+		this._schemaLoadErrors = Object.fromEntries(Object.entries(this._schemaLoadErrors).filter(([key]) => !belongsToChangedConnection(key)));
+		this._databaseLoadErrors = Object.fromEntries(Object.entries(this._databaseLoadErrors).filter(([key]) => !changedIds.has(key)));
+		this._loadingDatabases = new Set([...this._loadingDatabases].filter(connectionId => !changedIds.has(connectionId)));
+		this._loadingSchemaKeys = new Set([...this._loadingSchemaKeys].filter(key => !belongsToChangedConnection(key) || preserveEstablishingRequest(key, this._schemaRequestIds)));
+		this._refreshingSchemaKeys = new Set([...this._refreshingSchemaKeys].filter(key => !belongsToChangedConnection(key) || preserveEstablishingRequest(key, this._schemaRefreshRequestIds)));
+		for (const key of [...this._schemaRequestIds.keys()]) if (belongsToChangedConnection(key) && !preserveEstablishingRequest(key, this._schemaRequestIds)) this._schemaRequestIds.delete(key);
+		for (const key of [...this._schemaRefreshRequestIds.keys()]) if (belongsToChangedConnection(key) && !preserveEstablishingRequest(key, this._schemaRefreshRequestIds)) this._schemaRefreshRequestIds.delete(key);
+		for (const key of [...this._previewRequestIds.keys()]) if (belongsToChangedConnection(key) && !preserveEstablishingRequest(key, this._previewRequestIds)) this._previewRequestIds.delete(key);
+		this._expandedTables = new Set([...this._expandedTables].filter(key => !belongsToChangedConnection(key)));
+		this._expandedFunctions = new Set([...this._expandedFunctions].filter(key => !belongsToChangedConnection(key)));
+		this._expandedFolders = new Set([...this._expandedFolders].filter(key => !belongsToChangedConnection(key)));
+		return true;
+	}
+
 	// ── Message handling ──────────────────────────────────────────────────────
 
 	private _onMessage = (event: MessageEvent) => {
@@ -459,7 +513,8 @@ export class KwConnectionManager extends LitElement {
 		if (!msg) return;
 
 		switch (msg.type) {
-			case 'snapshot':
+			case 'snapshot': {
+				const kustoIdentityChanged = this._evictChangedKustoIdentityState(this._snapshot, msg.snapshot);
 				this._snapshot = msg.snapshot;
 				// Auto-detect active kind
 				if (this._snapshot) {
@@ -480,7 +535,10 @@ export class KwConnectionManager extends LitElement {
 						this._scheduleExplorerScrollReset();
 					}
 					// Restore search state
-					this._search.restoreState(this._snapshot.searchState as any, this._activeKind);
+					const searchState = kustoIdentityChanged && this._activeKind === 'kusto'
+						? { ...(this._snapshot.searchState as any), lastResults: [] }
+						: this._snapshot.searchState;
+					this._search.restoreState(searchState as any, this._activeKind);
 				}
 				if (!this._selectedConnectionId && this._snapshot?.connections?.length) {
 					const sortedConnections = sortKustoConnections(this._snapshot.connections);
@@ -488,11 +546,16 @@ export class KwConnectionManager extends LitElement {
 					this._vscode.postMessage({ type: 'cluster.expand', connectionId: this._selectedConnectionId });
 				}
 				break;
+			}
 			case 'testConnectionStarted':
 				this._testResult = 'loading';
 				break;
 			case 'testConnectionResult':
-				this._testResult = msg.success ? `✓ ${msg.message}` : `✗ ${msg.message}`;
+				this._testResult = msg.success ? `✓ ${msg.message}` : msg.warning ? `⚠ ${msg.message}` : `✗ ${msg.message}`;
+				break;
+			case 'connectionMutationComplete':
+				if (msg.success) this._closeModal();
+				else this._testResult = `✗ ${String(msg.error || 'Connection could not be saved.')}`;
 				break;
 			case 'loadingDatabases':
 				this._loadingDatabases = new Set([...this._loadingDatabases, msg.connectionId]);
@@ -509,12 +572,20 @@ export class KwConnectionManager extends LitElement {
 				break;
 			case 'loadingSchema': {
 				const dbKey = msg.connectionId + '|' + msg.database;
+				if (msg.requestId) this._schemaRequestIds.set(dbKey, { requestId: msg.requestId, accountPartition: String(msg.accountPartition || '') });
 				this._loadingSchemaKeys = new Set([...this._loadingSchemaKeys, this._getKustoSchemaKey(msg.connectionId, msg.database)]);
 				this._schemaLoadErrors = { ...this._schemaLoadErrors, [dbKey]: '' };
 				break;
 			}
 			case 'schemaLoaded': {
 				const dbKey = msg.connectionId + '|' + msg.database;
+				const refreshKey = this._getKustoRefreshSchemaKey(msg.connectionId, msg.database);
+				const ordinaryOwner = this._schemaRequestIds.get(dbKey);
+				const refreshOwner = this._schemaRefreshRequestIds.get(refreshKey);
+				if (msg.requestId && ordinaryOwner?.requestId !== msg.requestId && refreshOwner?.requestId !== msg.requestId) break;
+				const connection = this._snapshot?.connections.find(candidate => candidate.id === msg.connectionId);
+				if (msg.accountPartition && connection?.accountPartition && connection.accountPartition !== msg.accountPartition) break;
+				if (ordinaryOwner?.requestId === msg.requestId) this._schemaRequestIds.delete(dbKey);
 				this._loadingSchemaKeys = new Set([...this._loadingSchemaKeys].filter(key => key !== this._getKustoSchemaKey(msg.connectionId, msg.database)));
 				this._databaseSchemas = { ...this._databaseSchemas, [dbKey]: msg.schema };
 				this._schemaLoadErrors = { ...this._schemaLoadErrors, [dbKey]: '' };
@@ -522,25 +593,37 @@ export class KwConnectionManager extends LitElement {
 			}
 			case 'schemaLoadError': {
 				const dbKey = msg.connectionId + '|' + msg.database;
+				if (msg.requestId && this._schemaRequestIds.get(dbKey)?.requestId !== msg.requestId) break;
+				this._schemaRequestIds.delete(dbKey);
 				this._loadingSchemaKeys = new Set([...this._loadingSchemaKeys].filter(key => key !== this._getKustoSchemaKey(msg.connectionId, msg.database)));
 				this._schemaLoadErrors = { ...this._schemaLoadErrors, [dbKey]: msg.error || 'Failed to load schema.' };
 				break;
 			}
 			case 'schemaRefreshStarted': {
-				this._refreshingSchemaKeys = new Set([...this._refreshingSchemaKeys, this._getKustoRefreshSchemaKey(msg.clusterUrl, msg.database)]);
+				const refreshKey = this._getKustoRefreshSchemaKey(msg.connectionId, msg.database);
+				if (msg.requestId) this._schemaRefreshRequestIds.set(refreshKey, { requestId: msg.requestId, accountPartition: String(msg.accountPartition || '') });
+				this._refreshingSchemaKeys = new Set([...this._refreshingSchemaKeys, refreshKey]);
 				break;
 			}
 			case 'schemaRefreshCompleted': {
-				this._refreshingSchemaKeys = new Set([...this._refreshingSchemaKeys].filter(key => key !== this._getKustoRefreshSchemaKey(msg.clusterUrl, msg.database)));
+				const refreshKey = this._getKustoRefreshSchemaKey(msg.connectionId, msg.database);
+				if (msg.requestId && this._schemaRefreshRequestIds.get(refreshKey)?.requestId !== msg.requestId) break;
+				this._schemaRefreshRequestIds.delete(refreshKey);
+				this._refreshingSchemaKeys = new Set([...this._refreshingSchemaKeys].filter(key => key !== refreshKey));
 				break;
 			}
 			case 'tablePreviewLoading': {
 				const prevKey = msg.connectionId + '|' + msg.database + '|table|' + msg.tableName;
+				if (msg.requestId) this._previewRequestIds.set(prevKey, { requestId: msg.requestId, accountPartition: String(msg.accountPartition || '') });
 				this._tablePreviewData = { ...this._tablePreviewData, [prevKey]: { loading: true } };
 				break;
 			}
 			case 'tablePreviewResult': {
 				const prevKey = msg.connectionId + '|' + msg.database + '|table|' + msg.tableName;
+				if (msg.requestId && this._previewRequestIds.get(prevKey)?.requestId !== msg.requestId) break;
+				const connection = this._snapshot?.connections.find(candidate => candidate.id === msg.connectionId);
+				if (msg.accountPartition && connection?.accountPartition && connection.accountPartition !== msg.accountPartition) break;
+				this._previewRequestIds.delete(prevKey);
 				if (msg.success) {
 					this._tablePreviewData = { ...this._tablePreviewData, [prevKey]: { loading: false, columns: msg.columns, rows: msg.rows, rowCount: msg.rowCount, executionTime: msg.executionTime } };
 				} else {
@@ -647,8 +730,8 @@ export class KwConnectionManager extends LitElement {
 		return `${String(connectionId || '').trim()}|${String(database || '').trim().toLowerCase()}`;
 	}
 
-	private _getKustoRefreshSchemaKey(clusterUrl: string, database: string | undefined): string {
-		return `${normalizeClusterUrl(clusterUrl)}|${String(database || '').trim().toLowerCase()}`;
+	private _getKustoRefreshSchemaKey(connectionId: string, database: string | undefined): string {
+		return `${String(connectionId || '').trim()}|${String(database || '').trim().toLowerCase()}`;
 	}
 
 	private _getSqlSchemaKey(connectionId: string, database: string | undefined): string {
@@ -657,7 +740,7 @@ export class KwConnectionManager extends LitElement {
 
 	private _isKustoSchemaBusy(conn: KustoConnection, database: string | undefined): boolean {
 		return this._loadingSchemaKeys.has(this._getKustoSchemaKey(conn.id, database))
-			|| this._refreshingSchemaKeys.has(this._getKustoRefreshSchemaKey(conn.clusterUrl, database));
+			|| this._refreshingSchemaKeys.has(this._getKustoRefreshSchemaKey(conn.id, database));
 	}
 
 	private _isSqlSchemaBusy(connectionId: string, database: string | undefined): boolean {
@@ -668,12 +751,11 @@ export class KwConnectionManager extends LitElement {
 		return isBusy ? ICONS.spinner : ICONS.refresh;
 	}
 
-	private _getFavorite(clusterUrl: string, database: string): KustoFavorite | undefined {
+	private _getFavorite(connectionId: string, database: string): KustoFavorite | undefined {
 		if (!this._snapshot?.favorites) return undefined;
-		const nUrl = normalizeClusterUrl(clusterUrl);
 		const nDb = String(database || '').trim().toLowerCase();
 		return this._snapshot.favorites.find(f =>
-			normalizeClusterUrl(f.clusterUrl) === nUrl && String(f.database || '').trim().toLowerCase() === nDb
+			f.connectionId === connectionId && String(f.database || '').trim().toLowerCase() === nDb
 		);
 	}
 
@@ -740,13 +822,13 @@ export class KwConnectionManager extends LitElement {
 		const lntClusters = this._snapshot?.leaveNoTraceClusters ?? [];
 		const hasFavs = favorites.length > 0;
 		const hasLnt = lntClusters.length > 0;
-		const favClusterUrls = new Set(favorites.map(f => normalizeClusterUrl(f.clusterUrl)));
+		const favoriteConnectionIds = new Set(favorites.map(f => f.connectionId));
 		const af = this._activeFilter;
 
 		// Apply filters
 		let visibleConnections = connections;
 		if (af === 'favorites') {
-			visibleConnections = connections.filter(c => favClusterUrls.has(normalizeClusterUrl(c.clusterUrl)));
+			visibleConnections = connections.filter(c => favoriteConnectionIds.has(c.id));
 		}
 		if (af === 'lnt') {
 			const lntUrls = new Set(lntClusters.map(u => normalizeClusterUrl(u)));
@@ -768,7 +850,7 @@ export class KwConnectionManager extends LitElement {
 
 				<!-- Explorer content -->
 				<div class="explorer-content" data-overlay-scroll="x:hidden">
-					${this._explorerPath?.connectionId ? this._renderDrilledContent() : this._renderClusterList(visibleConnections, favClusterUrls, lntClusters)}
+					${this._explorerPath?.connectionId ? this._renderDrilledContent() : this._renderClusterList(visibleConnections, favoriteConnectionIds, lntClusters)}
 				</div>
 			`}
 		`;
@@ -776,7 +858,7 @@ export class KwConnectionManager extends LitElement {
 
 	// ── Cluster list (root level — flat, click to drill in) ──────────────────
 
-	private _renderClusterList(connections: KustoConnection[], favClusterUrls: Set<string>, lntClusters: string[]): TemplateResult {
+	private _renderClusterList(connections: KustoConnection[], favoriteConnectionIds: Set<string>, lntClusters: string[]): TemplateResult {
 		if (connections.length === 0) {
 			const hasFilter = this._activeFilter === 'favorites' || this._activeFilter === 'lnt';
 			return html`<div class="empty-state" data-testid="cm-empty-state">
@@ -789,20 +871,20 @@ export class KwConnectionManager extends LitElement {
 		const lntUrls = new Set(lntClusters.map(u => normalizeClusterUrl(u)));
 
 		return html`${connections.map(conn => {
-			const hasFav = favClusterUrls.has(normalizeClusterUrl(conn.clusterUrl));
+			const hasFav = favoriteConnectionIds.has(conn.id);
 			const isLnt = lntUrls.has(normalizeClusterUrl(conn.clusterUrl));
-			const clusterKey = getClusterCacheKey(conn.clusterUrl);
-			const dbCount = this._snapshot?.cachedDatabases?.[clusterKey]?.length ?? 0;
+			const dbCount = this._snapshot?.cachedDatabases?.[conn.id]?.length ?? 0;
 			const fullUrl = /^https?:\/\//i.test(conn.clusterUrl) ? conn.clusterUrl : 'https://' + conn.clusterUrl;
 
 			return html`
-				<div class="explorer-list-item root-connection-row" @click=${() => this._drillIntoCluster(conn.id)}>
+				<div class="explorer-list-item root-connection-row" data-testid="cm-kusto-connection-row" data-connection-id=${conn.id} @click=${() => this._drillIntoCluster(conn.id)}>
 					<span class="explorer-list-item-icon cluster">${ICONS.kustoCluster}</span>
 					<span class="explorer-list-item-name">${conn.name || shortClusterName(conn.clusterUrl)}</span>
 					${hasFav ? html`<span class="conn-badge fav-badge" title="Has favorites">${ICONS.starFilled}</span>` : nothing}
 					${isLnt ? html`<span class="conn-badge lnt-badge" title="Leave No Trace">${ICONS.shield}</span>` : nothing}
 					<span class="item-sep">·</span>
 					<span class="explorer-list-item-url">${fullUrl}</span>
+					${conn.authorityId ? html`<span class="item-sep">·</span><span class="explorer-list-item-meta">Tenant: ${conn.authorityId}</span>` : nothing}
 					<span class="item-sep">·</span>
 					<span class="explorer-list-item-meta">${dbCount > 0 ? `${dbCount} database${dbCount !== 1 ? 's' : ''}` : 'click to explore'}</span>
 					<div class="explorer-list-item-actions">
@@ -833,11 +915,11 @@ export class KwConnectionManager extends LitElement {
 
 		// Check if the cluster is visible under current filter
 		if (this._activeFilter === 'favorites') {
-			const favUrls = new Set((this._snapshot?.favorites ?? []).map(f => normalizeClusterUrl(f.clusterUrl)));
-			if (!favUrls.has(normalizeClusterUrl(conn.clusterUrl))) { this._setKustoExplorerPath(null); return; }
+			const favoriteConnectionIds = new Set((this._snapshot?.favorites ?? []).map(f => f.connectionId));
+			if (!favoriteConnectionIds.has(conn.id)) { this._setKustoExplorerPath(null); return; }
 			// If drilled into a database, check if it's a favorite
 			if (ep.database) {
-				if (!this._getFavorite(conn.clusterUrl, ep.database)) { this._setKustoExplorerPath({ connectionId: ep.connectionId }); return; }
+				if (!this._getFavorite(conn.id, ep.database)) { this._setKustoExplorerPath({ connectionId: ep.connectionId }); return; }
 			}
 		}
 		if (this._activeFilter === 'lnt') {
@@ -860,8 +942,7 @@ export class KwConnectionManager extends LitElement {
 	private _renderDrilledContent(): TemplateResult {
 		const conn = this._snapshot?.connections?.find(c => c.id === this._explorerPath?.connectionId);
 		if (!conn) return html`<div class="empty-state"><div class="empty-state-text">Connection not found.</div></div>`;
-		const clusterKey = getClusterCacheKey(conn.clusterUrl);
-		const databases = this._snapshot?.cachedDatabases?.[clusterKey] ?? [];
+		const databases = this._snapshot?.cachedDatabases?.[conn.id] ?? [];
 		const isLoading = this._loadingDatabases.has(conn.id);
 
 		return html`
@@ -909,7 +990,7 @@ export class KwConnectionManager extends LitElement {
 						`)}
 					` : nothing}
 					<button class="btn-icon breadcrumb-refresh" title="Refresh schema for ${ep.database}"
-						@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: conn.clusterUrl, database: ep.database, source: 'breadcrumb' }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
+						@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', connectionId: conn.id, clusterUrl: conn.clusterUrl, database: ep.database, source: 'breadcrumb' }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
 				` : nothing}
 			</div>
 		`;
@@ -926,7 +1007,7 @@ export class KwConnectionManager extends LitElement {
 			// Filter databases when Favorites filter is active
 			let visibleDbs = sortStringsAlphabetically(databases);
 			if (this._activeFilter === 'favorites') {
-				visibleDbs = visibleDbs.filter(db => this._getFavorite(conn.clusterUrl, db));
+				visibleDbs = visibleDbs.filter(db => this._getFavorite(conn.id, db));
 			}
 
 			if (visibleDbs.length === 0 && databaseLoadError) {return html`
@@ -944,7 +1025,7 @@ export class KwConnectionManager extends LitElement {
 				</div>`;}
 
 			return html`${visibleDbs.map(db => {
-				const favorite = this._getFavorite(conn.clusterUrl, db);
+				const favorite = this._getFavorite(conn.id, db);
 				const isFav = !!favorite;
 				const displayName = this._activeFilter === 'favorites' && favorite ? favorite.name : db;
 				return html`
@@ -967,7 +1048,7 @@ export class KwConnectionManager extends LitElement {
 							<button class="btn-icon" title="Refresh"
 								@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id }); }}>${ICONS.refresh}</button>
 							<button class="btn-icon" title="Open in new .kqlx file"
-								@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.openInNewFile', clusterUrl: conn.clusterUrl, database: db }); }}>${ICONS.newFile}</button>
+								@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.openInNewFile', connectionId: conn.id, clusterUrl: conn.clusterUrl, database: db }); }}>${ICONS.newFile}</button>
 						</div>
 					</div>`;
 			})}`;
@@ -1052,7 +1133,7 @@ export class KwConnectionManager extends LitElement {
 							${colNames.length > 0 ? html`<span class="explorer-list-item-meta">${colNames.length} cols</span>` : nothing}
 							<div class="explorer-list-item-actions">
 								<button class="btn-icon" title="Refresh schema for ${ep.database}"
-									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: conn.clusterUrl, database: ep.database, source: 'table' }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
+									@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', connectionId: conn.id, clusterUrl: conn.clusterUrl, database: ep.database, source: 'table' }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
 							</div>
 						</div>
 						${isExpanded ? html`
@@ -1106,7 +1187,7 @@ export class KwConnectionManager extends LitElement {
 							${fn.parametersText ? html`<span class="explorer-list-item-params">(${fn.parametersText})</span>` : nothing}
 							<div class="explorer-list-item-actions">
 								<button class="btn-icon" title="Refresh schema for ${ep.database}"
-									@click=${(e: Event) => { if (!conn) return; e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', clusterUrl: conn.clusterUrl, database: ep.database, source: 'function' }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
+									@click=${(e: Event) => { if (!conn) return; e.stopPropagation(); this._vscode.postMessage({ type: 'database.refreshSchema', connectionId: conn.id, clusterUrl: conn.clusterUrl, database: ep.database, source: 'function' }); }}>${this._renderRefreshIcon(schemaBusy)}</button>
 							</div>
 						</div>
 						${isExpanded ? html`
@@ -1686,6 +1767,9 @@ export class KwConnectionManager extends LitElement {
 							.name=${this._modalName}
 							.clusterUrl=${this._modalUrl}
 							.database=${this._modalDb}
+							.authorityId=${this._modalAuthorityId}
+							.accountId=${this._modalAccountId}
+							.accounts=${this._snapshot?.accounts ?? []}
 							.showTestButton=${true}
 							.testResult=${this._testResult}
 							@connection-form-submit=${this._onKustoFormSubmit}
@@ -1774,16 +1858,16 @@ export class KwConnectionManager extends LitElement {
 
 	private _toggleFavorite(conn: KustoConnection, db: string, isFav: boolean): void {
 		if (isFav) {
-			this._vscode.postMessage({ type: 'favorite.remove', clusterUrl: conn.clusterUrl, database: db });
+			this._vscode.postMessage({ type: 'favorite.remove', connectionId: conn.id, database: db });
 		} else {
-			this._vscode.postMessage({ type: 'favorite.promptAdd', clusterUrl: conn.clusterUrl, database: db });
+			this._vscode.postMessage({ type: 'favorite.promptAdd', connectionId: conn.id, database: db });
 		}
 	}
 
 	private _renameFavorite(conn: KustoConnection, db: string): void {
-		const favorite = this._getFavorite(conn.clusterUrl, db);
+		const favorite = this._getFavorite(conn.id, db);
 		if (!favorite) return;
-		this._vscode.postMessage({ type: 'favorite.promptRename', clusterUrl: favorite.clusterUrl, database: favorite.database });
+		this._vscode.postMessage({ type: 'favorite.promptRename', connectionId: favorite.connectionId, database: favorite.database });
 	}
 
 	private _toggleTable(tableKey: string): void {
@@ -1827,6 +1911,8 @@ export class KwConnectionManager extends LitElement {
 				this._modalUsername = '';
 				this._modalPassword = '';
 				this._modalDb = '';
+				this._modalAuthorityId = '';
+				this._modalAccountId = '';
 			}
 		} else {
 			// Kusto modal
@@ -1836,11 +1922,15 @@ export class KwConnectionManager extends LitElement {
 					this._modalName = conn.name || '';
 					this._modalUrl = conn.clusterUrl || '';
 					this._modalDb = conn.database || '';
+					this._modalAuthorityId = conn.authorityId || '';
+					this._modalAccountId = conn.accountPreference?.mode === 'explicit' ? conn.accountPreference.accountId : '';
 				}
 			} else {
 				this._modalName = '';
 				this._modalUrl = '';
 				this._modalDb = '';
+				this._modalAuthorityId = '';
+				this._modalAccountId = '';
 			}
 		}
 		this._modalVisible = true;
@@ -1864,6 +1954,8 @@ export class KwConnectionManager extends LitElement {
 			name: detail?.name,
 			clusterUrl: detail?.clusterUrl,
 			database: detail?.database,
+			authorityId: detail?.authorityId,
+			accountId: detail?.accountId,
 		});
 	}
 
@@ -1884,15 +1976,14 @@ export class KwConnectionManager extends LitElement {
 	};
 
 	private _onKustoFormSubmit(e: CustomEvent<KustoConnectionFormSubmitDetail>): void {
-		const { name, clusterUrl, database } = e.detail;
+		const { name, clusterUrl, database, authorityId, accountId } = e.detail;
 		if (!clusterUrl) return;
 		if (this._editingConnectionId) {
-			this._vscode.postMessage({ type: 'connection.edit', id: this._editingConnectionId, name, clusterUrl, database });
+			this._vscode.postMessage({ type: 'connection.edit', id: this._editingConnectionId, name, clusterUrl, database, authorityId, accountId });
 		} else {
-			this._vscode.postMessage({ type: 'connection.add', name, clusterUrl, database });
+			this._vscode.postMessage({ type: 'connection.add', name, clusterUrl, database, authorityId, accountId });
 		}
-		this._closeModal();
-		setTimeout(() => this._vscode.postMessage({ type: 'requestSnapshot' }), 100);
+		this._testResult = 'loading';
 	}
 
 	private _onSqlFormSubmit(e: CustomEvent<SqlConnectionFormSubmitDetail>): void {

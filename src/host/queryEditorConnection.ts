@@ -6,7 +6,11 @@ import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
 import { extractKqlSchemaMatchTokens, scoreSchemaMatch } from './kqlSchemaInference';
 import { kustoClusterKey, kustoDatabaseKey } from '../shared/kustoClusterUrls';
-import { getLegacySchemaCacheKeys } from './schemaCache';
+import { schemaCacheKey } from './schemaCache';
+import { KustoConnectionCache } from './kustoConnectionCache';
+import { KustoAuthPreferenceService, type KustoAccountPreference } from './kustoAuthPreferenceService';
+import { getKustoConnectionIdentityKey, normalizeKustoAuthorityId } from '../shared/kustoAuth';
+import { filterKustoFavoritesForActivePrincipals, mergeKustoFavoritesForActivePrincipals, migrateKustoFavoritesWithStatus } from './connectionManagerFavorites';
 import {
 	STORAGE_KEYS,
 	KustoFavorite,
@@ -30,6 +34,8 @@ type DatabaseDiscoveryRequest =
 type ZeroResultRecoveryOutcome =
 	| { kind: 'dismissed' }
 	| { kind: 'fetched'; databases: string[] };
+
+type DatabaseFetchResult = { databases: string[]; accountPartition?: string };
 
 function isDatabaseDiscoveryCancellation(error: unknown): boolean {
 	const pending: unknown[] = [error];
@@ -138,6 +144,7 @@ export interface ConnectionServiceHost {
 	formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, database?: string): string;
 	normalizeClusterUrlKey(url: string): string;
 	getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined>;
+	refreshConnectionsData?(): Promise<void>;
 }
 
 
@@ -151,6 +158,8 @@ export class ConnectionService {
 
 	private lastConnectionId?: string;
 	private lastDatabase?: string;
+	private readonly connectionCache: KustoConnectionCache;
+	private readonly authPreferences: KustoAuthPreferenceService;
 	private disposed = false;
 	/** Tracks when we last showed a DB-load error notification per cluster (to avoid spamming). */
 	private lastDbErrorNotificationByCluster = new Map<string, number>();
@@ -177,8 +186,18 @@ export class ConnectionService {
 	}
 
 	constructor(private readonly host: ConnectionServiceHost) {
+		this.connectionCache = new KustoConnectionCache(host.context);
+		this.authPreferences = KustoAuthPreferenceService.getInstance(host.context);
+		void this.connectionCache.migrateLegacy(host.connectionManager.getConnections());
 		this.activate();
 		this.loadLastSelection();
+	}
+
+	private getResolvedAccountPartition(connection: KustoConnection): string | undefined {
+		const resolver = (this.host.kustoClient as unknown as { getAccountPartition?: (candidate: KustoConnection) => string | undefined }).getAccountPartition;
+		if (typeof resolver === 'function') return resolver.call(this.host.kustoClient, connection);
+		const accountId = this.authPreferences.getPreferredAccountId(connection.id);
+		return accountId ? this.authPreferences.getAccountPartition(connection.authorityId, accountId) : undefined;
 	}
 
 	activate(): void {
@@ -220,37 +239,34 @@ export class ConnectionService {
 	}
 
 	// ── Favorites ──
+	private getFavoriteAccountPartitions(): Map<string, string | undefined> {
+		return new Map(this.host.connectionManager.getConnections().map(connection => [connection.id, this.getResolvedAccountPartition(connection)]));
+	}
 
 	getFavorites(): KustoFavorite[] {
 		const raw = this.host.context.globalState.get<unknown>(STORAGE_KEYS.favorites);
-		if (!Array.isArray(raw)) {
-			return [];
-		}
-		const out: KustoFavorite[] = [];
-		for (const item of raw) {
-			if (!item || typeof item !== 'object') {
-				continue;
-			}
-			const maybe = item as Partial<KustoFavorite>;
-			const name = String(maybe.name || '').trim();
-			const clusterUrl = String(maybe.clusterUrl || '').trim();
-			const database = String(maybe.database || '').trim();
-			if (!name || !clusterUrl || !database) {
-				continue;
-			}
-			out.push({ name, clusterUrl, database });
-		}
-		return out;
+		const partitions = this.getFavoriteAccountPartitions();
+		const { favorites, unresolved } = migrateKustoFavoritesWithStatus(raw, this.host.connectionManager.getConnections(), partitions);
+		if (unresolved === 0 && JSON.stringify(raw ?? []) !== JSON.stringify(favorites)) void this.host.context.globalState.update(STORAGE_KEYS.favorites, favorites);
+		return filterKustoFavoritesForActivePrincipals(favorites, partitions);
 	}
 
-	private favoriteKey(clusterUrl: string, database: string): string {
-		const c = kustoClusterKey(clusterUrl);
+	private favoriteKey(connectionId: string, database: string): string {
+		const c = String(connectionId || '').trim();
 		const d = String(database || '').trim().toLowerCase();
 		return `${c}|${d}`;
 	}
 
-	private async setFavorites(favorites: KustoFavorite[], boxId?: string): Promise<void> {
-		await this.host.context.globalState.update(STORAGE_KEYS.favorites, favorites);
+	private async setFavorites(
+		favorites: KustoFavorite[],
+		boxId?: string,
+		expectedOwner?: { connectionId: string; accountPartition?: string },
+	): Promise<void> {
+		const raw = this.host.context.globalState.get<unknown>(STORAGE_KEYS.favorites);
+		const partitions = this.getFavoriteAccountPartitions();
+		if (expectedOwner && partitions.get(expectedOwner.connectionId) !== expectedOwner.accountPartition) return;
+		const allFavorites = migrateKustoFavoritesWithStatus(raw, this.host.connectionManager.getConnections(), partitions).favorites;
+		await this.host.context.globalState.update(STORAGE_KEYS.favorites, mergeKustoFavoritesForActivePrincipals(allFavorites, favorites, partitions));
 		ConnectionService.broadcastKustoFavoritesData(this.host.context, boxId, this);
 	}
 
@@ -316,12 +332,15 @@ export class ConnectionService {
 		message: Extract<IncomingWebviewMessage, { type: 'requestAddFavorite' }>
 	): Promise<void> {
 		const clusterUrlRaw = String(message.clusterUrl || '').trim();
+		const connectionId = String(message.connectionId || '').trim();
 		const databaseRaw = String(message.database || '').trim();
-		if (!clusterUrlRaw || !databaseRaw) {
+		if (!connectionId || !clusterUrlRaw || !databaseRaw) {
 			return;
 		}
 		const clusterUrl = normalizeFavoriteClusterUrl(clusterUrlRaw);
 		const database = databaseRaw;
+		const connection = this.findConnection(connectionId);
+		const startingAccountPartition = connection ? this.getResolvedAccountPartition(connection) : undefined;
 		const defaultName =
 			String(message.defaultName || '').trim() || `${getClusterShortName(clusterUrl)}.${database}`;
 
@@ -335,44 +354,46 @@ export class ConnectionService {
 		if (!name) {
 			return;
 		}
-		await this.addOrUpdateFavorite({ name, clusterUrl, database }, message.boxId);
+		if (!connection || this.getResolvedAccountPartition(connection) !== startingAccountPartition) return;
+		await this.addOrUpdateFavorite({ name, connectionId, clusterUrl, database }, message.boxId, startingAccountPartition);
 	}
 
-	private async addOrUpdateFavorite(favorite: KustoFavorite, boxId?: string): Promise<void> {
+	private async addOrUpdateFavorite(favorite: KustoFavorite, boxId?: string, accountPartition?: string): Promise<void> {
 		const name = String(favorite.name || '').trim();
+		const connectionId = String(favorite.connectionId || '').trim();
 		const clusterUrl = normalizeFavoriteClusterUrl(String(favorite.clusterUrl || '').trim());
 		const database = String(favorite.database || '').trim();
-		if (!name || !clusterUrl || !database) {
+		if (!name || !connectionId || !clusterUrl || !database) {
 			return;
 		}
-		const key = this.favoriteKey(clusterUrl, database);
+		const key = this.favoriteKey(connectionId, database);
 		const current = this.getFavorites();
 		const next: KustoFavorite[] = [];
 		let replaced = false;
 		for (const f of current) {
-			const fk = this.favoriteKey(f.clusterUrl, f.database);
+			const fk = this.favoriteKey(f.connectionId, f.database);
 			if (fk === key) {
-				next.push({ name, clusterUrl, database });
+				next.push({ name, connectionId, clusterUrl, database, ...(accountPartition ? { accountPartition } : {}) } as KustoFavorite);
 				replaced = true;
 			} else {
 				next.push(f);
 			}
 		}
 		if (!replaced) {
-			next.push({ name, clusterUrl, database });
+			next.push({ name, connectionId, clusterUrl, database, ...(accountPartition ? { accountPartition } : {}) } as KustoFavorite);
 		}
-		await this.setFavorites(next, boxId);
+		await this.setFavorites(next, boxId, { connectionId, accountPartition });
 	}
 
-	async removeFavorite(clusterUrlRaw: string, databaseRaw: string): Promise<void> {
-		const clusterUrl = normalizeFavoriteClusterUrl(String(clusterUrlRaw || '').trim());
+	async removeFavorite(connectionIdRaw: string, databaseRaw: string): Promise<void> {
+		const connectionId = String(connectionIdRaw || '').trim();
 		const database = String(databaseRaw || '').trim();
-		if (!clusterUrl || !database) {
+		if (!connectionId || !database) {
 			return;
 		}
-		const key = this.favoriteKey(clusterUrl, database);
+		const key = this.favoriteKey(connectionId, database);
 		const current = this.getFavorites();
-		const next = current.filter((f) => this.favoriteKey(f.clusterUrl, f.database) !== key);
+		const next = current.filter((f) => this.favoriteKey(f.connectionId, f.database) !== key);
 		await this.setFavorites(next);
 	}
 
@@ -381,6 +402,7 @@ export class ConnectionService {
 	): Promise<void> {
 		const requestId = String(message.requestId || '').trim();
 		const clusterUrl = normalizeFavoriteClusterUrl(String(message.clusterUrl || '').trim());
+		const connectionId = String(message.connectionId || '').trim();
 		const database = String(message.database || '').trim();
 		const label = String(message.label || '').trim();
 		if (!requestId) {
@@ -404,6 +426,7 @@ export class ConnectionService {
 			type: 'confirmRemoveFavoriteResult',
 			requestId,
 			ok,
+			connectionId,
 			clusterUrl,
 			database,
 			boxId: message.boxId
@@ -455,7 +478,7 @@ export class ConnectionService {
 		const payload: any = { type: 'sqlFavoritesData', favorites: this.getSqlFavorites() };
 		if (boxId) {
 			payload.boxId = boxId;
-		}
+		};
 		await Promise.resolve(this.host.postMessage(payload));
 	}
 
@@ -464,25 +487,19 @@ export class ConnectionService {
 	): Promise<void> {
 		const connectionId = String(message.connectionId || '').trim();
 		const databaseRaw = String(message.database || '').trim();
-		if (!connectionId || !databaseRaw) {
-			return;
-		}
+		if (!connectionId || !databaseRaw) return;
 		const database = databaseRaw;
 		const conn = this.host.sqlConnectionManager?.getConnection(connectionId);
 		const serverName = conn ? (conn.name || conn.serverUrl || connectionId) : connectionId;
-		const defaultName =
-			String(message.defaultName || '').trim() || `${serverName}.${database}`;
-
+		const defaultName = String(message.defaultName || '').trim() || `${serverName}.${database}`;
 		const picked = await vscode.window.showInputBox({
 			title: 'Add to favorites',
 			prompt: 'Enter a friendly name for this server + database',
 			value: defaultName,
-			ignoreFocusOut: true
+			ignoreFocusOut: true,
 		});
 		const name = typeof picked === 'string' ? picked.trim() : '';
-		if (!name) {
-			return;
-		}
+		if (!name) return;
 		await this.addOrUpdateSqlFavorite({ name, connectionId, database }, message.boxId);
 	}
 
@@ -527,8 +544,32 @@ export class ConnectionService {
 	// ── Cached databases ──
 
 	getCachedDatabases(): Record<string, string[]> {
-		const raw = this.host.context.globalState.get<Record<string, string[]>>(STORAGE_KEYS.cachedDatabases, {});
-		return this.migrateCachedDatabasesToClusterKeys(raw);
+		const cached: Record<string, string[]> = {};
+		const connections = this.host.connectionManager.getConnections();
+		const legacy = this.host.context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.cachedDatabases) ?? {};
+		for (const connection of connections) {
+			let allowLegacy = false;
+			let partition: string | undefined;
+			try {
+				const preference = this.authPreferences.getPreference(connection.id);
+				partition = this.getResolvedAccountPartition(connection);
+				allowLegacy = preference.mode === 'automatic' && normalizeKustoAuthorityId(connection.authorityId) === undefined;
+			} catch {
+				continue;
+			}
+			let databases = this.connectionCache.getDatabases(connection.id, partition, allowLegacy);
+			if (databases.length === 0 && allowLegacy && !partition) {
+				const sameCluster = connections.filter(candidate => getClusterCacheKey(candidate.clusterUrl) === getClusterCacheKey(connection.clusterUrl));
+				if (sameCluster.length === 1) {
+					databases = legacy[connection.id]
+						?? legacy[getClusterCacheKey(connection.clusterUrl)]
+						?? legacy[String(connection.clusterUrl || '').trim()]
+						?? [];
+				}
+			}
+			if (databases.length > 0) cached[connection.id] = databases;
+		}
+		return cached;
 	}
 
 	migrateCachedDatabasesToClusterKeys(raw: Record<string, string[]>): Record<string, string[]> {
@@ -579,16 +620,9 @@ export class ConnectionService {
 
 	private async saveCachedDatabases(connectionId: string, databases: string[]): Promise<void> {
 		const connection = this.findConnection(connectionId);
-		if (!connection) {
-			return;
-		}
-		const clusterKey = getClusterCacheKey(connection.clusterUrl);
-		if (!clusterKey) {
-			return;
-		}
-		const cached = this.getCachedDatabases();
-		cached[clusterKey] = databases;
-		await this.host.context.globalState.update(STORAGE_KEYS.cachedDatabases, cached);
+		const partition = connection ? this.getResolvedAccountPartition(connection) : undefined;
+		if (!connection || !partition || databases.length === 0) return;
+		await this.connectionCache.setDatabases(connectionId, partition, databases);
 	}
 
 	// ── Send databases ──
@@ -617,18 +651,19 @@ export class ConnectionService {
 			return;
 		}
 		const clusterKey = getClusterCacheKey(connection.clusterUrl);
+		const settlementKey = () => `${connection.id}|${this.getResolvedAccountPartition(connection) || 'unresolved'}`;
 		const normalizeDatabases = (databasesRaw: unknown): string[] => (Array.isArray(databasesRaw) ? databasesRaw : [])
 			.map((database) => String(database || '').trim())
 			.filter(Boolean)
 			.sort((left, right) => left.toLowerCase().localeCompare(right.toLowerCase()));
-		const getCurrentCachedDatabases = (): string[] => normalizeDatabases(this.getCachedDatabases()[clusterKey] ?? []);
+		const getCurrentCachedDatabases = (): string[] => normalizeDatabases(this.getCachedDatabases()[connection.id] ?? []);
 		const cachedBefore = getCurrentCachedDatabases();
 		const requiredDatabaseName = String(requiredDatabase || '').trim();
 		const cachedHasRequiredDatabase = !!requiredDatabaseName
 			&& cachedBefore.some(database => database.toLowerCase() === requiredDatabaseName.toLowerCase());
 		const requireLiveDiscovery = !!requiredDatabaseName && !cachedHasRequiredDatabase;
 		const effectiveForceRefresh = forceRefresh || requireLiveDiscovery;
-		const postDatabases = (databases: string[], provenance: 'cache' | 'live' | 'fallback') => {
+		const postDatabases = (databases: string[], provenance: 'cache' | 'live' | 'fallback', accountPartition?: string) => {
 			this.traceDatabaseList(traceId, 'webview.post', {
 				connectionId,
 				provenance,
@@ -641,6 +676,7 @@ export class ConnectionService {
 				databases,
 				boxId,
 				connectionId,
+				accountPartition,
 				requestToken,
 				authoritative: provenance === 'live',
 				fallback: provenance === 'fallback',
@@ -665,7 +701,7 @@ export class ConnectionService {
 			this.traceDatabaseList(traceId, 'persisted-cache.hit', {
 				databaseCount: cachedBefore.length,
 			});
-			postDatabases(cachedBefore, 'cache');
+			postDatabases(cachedBefore, 'cache', this.getResolvedAccountPartition(connection));
 			return;
 		}
 
@@ -673,24 +709,24 @@ export class ConnectionService {
 			reason: string,
 			refresh: boolean = true,
 			interactive: boolean = allowInteractive
-		): Promise<string[]> => {
+		): Promise<DatabaseFetchResult> => {
 			this.traceDatabaseList(traceId, 'live-fetch.start', {
 				reason,
 				forceRefresh: refresh,
 				allowInteractive: interactive,
 			});
 			try {
-				const databasesRaw = await this.host.kustoClient.getDatabases(connection, refresh, {
+				const discovery = await this.host.kustoClient.getDatabasesWithIdentity(connection, refresh, {
 					allowInteractive: interactive,
 					traceId,
 					source: 'query-editor',
 				});
-				const databases = normalizeDatabases(databasesRaw);
+				const databases = normalizeDatabases(discovery.databases);
 				this.traceDatabaseList(traceId, 'live-fetch.complete', {
 					reason,
 					databaseCount: databases.length,
 				});
-				return databases;
+				return { databases, accountPartition: discovery.accountPartition };
 			} catch (error) {
 				this.traceDatabaseList(traceId, 'live-fetch.failed', {
 					reason,
@@ -700,30 +736,9 @@ export class ConnectionService {
 				throw error;
 			}
 		};
-		const reauthenticate = async (promptMode: 'clearPreference' | 'forceNewSession', reason: string): Promise<void> => {
-			this.traceDatabaseList(traceId, 'reauthenticate.start', { reason, promptMode });
-			try {
-				await this.host.kustoClient.reauthenticate(connection, promptMode, traceId);
-				this.traceDatabaseList(traceId, 'reauthenticate.complete', { reason, promptMode });
-			} catch (error) {
-				this.traceDatabaseList(traceId, 'reauthenticate.failed', {
-					reason,
-					promptMode,
-					isAuthError: this.host.kustoClient.isAuthenticationError(error),
-					...getDatabaseListErrorDetails(error),
-				});
-				throw error;
-			}
-		};
-		const saveLiveDatabases = async (databases: string[], reason: string): Promise<void> => {
-			await this.saveCachedDatabases(connectionId, databases);
-			this.traceDatabaseList(traceId, 'persisted-cache.updated', {
-				reason,
-				databaseCount: databases.length,
-			});
-		};
 		const recoverFromZeroResult = async (): Promise<ZeroResultRecoveryOutcome> => {
-			const existing = ConnectionService.zeroResultRecoveryByCluster.get(clusterKey);
+			const recoveryKey = settlementKey();
+			const existing = ConnectionService.zeroResultRecoveryByCluster.get(recoveryKey);
 			if (existing) {
 				this.traceDatabaseList(traceId, 'account-choice.joined', { reason: 'zero-result' });
 				return existing;
@@ -731,44 +746,32 @@ export class ConnectionService {
 
 			const recovery = (async (): Promise<ZeroResultRecoveryOutcome> => {
 				this.traceDatabaseList(traceId, 'account-choice.prompt', { reason: 'zero-result' });
+				const preference = this.authPreferences.getPreference(connection.id);
 				const choice = await vscode.window.showWarningMessage(
-					"No databases were returned. This is often because the selected account doesn't have access to this cluster.",
-					'Try another account',
-					'Add account',
-					'Cancel'
+					preference.mode === 'explicit'
+						? 'The selected account can connect, but no databases are visible. Check the connection Authority / Tenant ID and account.'
+						: 'No databases are visible with the available accounts. Check the connection Authority / Tenant ID or choose an explicit account.',
+					'Edit Connections',
 				);
 				this.traceDatabaseList(traceId, 'account-choice.result', {
 					reason: 'zero-result',
 					choice: choice ?? 'dismissed',
 				});
-				if (choice === 'Try another account') {
-					await reauthenticate('clearPreference', 'zero-result-user-choice');
-					return {
-						kind: 'fetched',
-						databases: await fetchAndNormalize('zero-result-after-clear-preference', true, false),
-					};
-				}
-				if (choice === 'Add account') {
-					await reauthenticate('forceNewSession', 'zero-result-user-choice');
-					return {
-						kind: 'fetched',
-						databases: await fetchAndNormalize('zero-result-after-force-new-session', true, false),
-					};
-				}
+				if (choice === 'Edit Connections') void vscode.commands.executeCommand('kusto.manageConnections');
 				return { kind: 'dismissed' };
 			})();
 
-			ConnectionService.zeroResultRecoveryByCluster.set(clusterKey, recovery);
+			ConnectionService.zeroResultRecoveryByCluster.set(recoveryKey, recovery);
 			try {
 				return await recovery;
 			} finally {
-				if (ConnectionService.zeroResultRecoveryByCluster.get(clusterKey) === recovery) {
-					ConnectionService.zeroResultRecoveryByCluster.delete(clusterKey);
+				if (ConnectionService.zeroResultRecoveryByCluster.get(recoveryKey) === recovery) {
+					ConnectionService.zeroResultRecoveryByCluster.delete(recoveryKey);
 				}
 			}
 		};
 		const postCurrentCachedFallback = async (reason: string): Promise<boolean> =>
-			ConnectionService.withDatabaseCacheSettlement(clusterKey, async () => {
+			ConnectionService.withDatabaseCacheSettlement(settlementKey(), async () => {
 				const currentCached = getCurrentCachedDatabases();
 				if (currentCached.length === 0) {
 					return false;
@@ -777,26 +780,27 @@ export class ConnectionService {
 					reason,
 					persistedCacheCount: currentCached.length,
 				});
-				postDatabases(currentCached, 'fallback');
+				postDatabases(currentCached, 'fallback', this.getResolvedAccountPartition(connection));
 				return true;
 			});
-		const settleDatabases = async (databases: string[], reason: string): Promise<void> =>
-			ConnectionService.withDatabaseCacheSettlement(clusterKey, async () => {
+		const settleDatabases = async (discovery: DatabaseFetchResult): Promise<void> =>
+			ConnectionService.withDatabaseCacheSettlement(settlementKey(), async () => {
+				const databases = discovery.databases;
 				const currentCached = getCurrentCachedDatabases();
 				if (databases.length === 0 && currentCached.length > 0) {
 					this.traceDatabaseList(traceId, 'fallback.selected', {
 						reason: 'live-result-empty',
 						persistedCacheCount: currentCached.length,
 					});
-					postDatabases(currentCached, 'fallback');
+					postDatabases(currentCached, 'fallback', this.getResolvedAccountPartition(connection));
 					return;
 				}
-				await saveLiveDatabases(databases, reason);
-				postDatabases(databases, 'live');
+				postDatabases(databases, 'live', discovery.accountPartition);
 			});
 
 		try {
-			let databases = await fetchAndNormalize('initial', effectiveForceRefresh);
+			let discovery = await fetchAndNormalize('initial', effectiveForceRefresh);
+			let databases = discovery.databases;
 
 			if (allowInteractive && effectiveForceRefresh && databases.length === 0) {
 				this.traceDatabaseList(traceId, 'zero-result.recovery-start', {
@@ -805,10 +809,11 @@ export class ConnectionService {
 				const recovery = await recoverFromZeroResult();
 				if (recovery.kind === 'fetched') {
 					databases = recovery.databases;
+					discovery = { databases };
 				}
 			}
 
-			await settleDatabases(databases, 'live-result');
+			await settleDatabases(discovery);
 			return;
 		} catch (error) {
 			const isAuthErr = this.host.kustoClient.isAuthenticationError(error);
@@ -897,6 +902,7 @@ export class ConnectionService {
 		copilotInlineCompletionsEnabledUserSet: boolean;
 		editingPreferencesRevision: number;
 		copilotChatFirstTimeDismissed: boolean;
+		connectionsRevision: number;
 	}): Promise<void> {
 		if (testIsolateKustoConnections) {
 			this.host.postMessage({
@@ -912,13 +918,19 @@ export class ConnectionService {
 			});
 			return;
 		}
-		const connections = this.host.connectionManager.getConnections();
+		const connections = this.host.connectionManager.getConnections().map(connection => {
+			let accountPartition: string | undefined;
+			try { accountPartition = this.getResolvedAccountPartition(connection); } catch { accountPartition = undefined; }
+			return { ...connection, accountPartition };
+		});
 		const cachedDatabases = this.getCachedDatabases();
+		const accounts = await this.authPreferences.getAccounts();
 		const favorites = this.getFavorites();
 		const leaveNoTraceClusters = this.host.connectionManager.getLeaveNoTraceClusters();
 		this.host.postMessage({
 			type: 'connectionsData',
 			connections,
+			accounts,
 			lastConnectionId: this.lastConnectionId,
 			lastDatabase: this.lastDatabase,
 			cachedDatabases,
@@ -935,33 +947,50 @@ export class ConnectionService {
 		this.host.postMessage({ type: 'openKustoAddConnectionDialog', boxId });
 	}
 
-	async addConnectionFromWebview(data: { name: string; clusterUrl: string; database?: string; boxId?: string }): Promise<void> {
+	async addConnectionFromWebview(data: { name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }): Promise<void> {
 		let clusterUrl = String(data.clusterUrl || '').trim();
 		if (!clusterUrl) return;
 		clusterUrl = ensureHttpsUrl(clusterUrl);
 
 		const name = String(data.name || '').trim() || clusterUrl;
 		const database = String(data.database || '').trim() || undefined;
+		const accountId = String(data.accountId || '').trim();
+		let authorityId: string | undefined;
+		try {
+			authorityId = normalizeKustoAuthorityId(data.authorityId);
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			this.host.postMessage({ type: 'kustoConnectionMutationResult', boxId: data.boxId, success: false, message });
+			return;
+		}
 
-		const newConn = await this.host.connectionManager.addConnection({
-			name,
-			clusterUrl,
-			database,
-		});
-		await this.saveLastSelection(newConn.id, newConn.database);
+		try {
+			const newConn = await this.host.connectionManager.addConnection({ name, clusterUrl, database, authorityId });
+			if (accountId) {
+				const account = (await this.authPreferences.getAccounts()).find(candidate => candidate.id === accountId) ?? { id: accountId, label: accountId };
+				await this.authPreferences.setExplicitAccount(newConn.id, account);
+			}
+			await this.saveLastSelection(newConn.id, newConn.database);
+			await this.host.refreshConnectionsData?.();
 
-		this.host.postMessage({
-			type: 'connectionAdded',
-			boxId: data.boxId,
-			connectionId: newConn.id,
-			lastConnectionId: this.lastConnectionId,
-			lastDatabase: this.lastDatabase,
-			connections: this.host.connectionManager.getConnections(),
-			cachedDatabases: this.getCachedDatabases()
-		});
+			this.host.postMessage({
+				type: 'connectionAdded',
+				boxId: data.boxId,
+				connectionId: newConn.id,
+				lastConnectionId: this.lastConnectionId,
+				lastDatabase: this.lastDatabase,
+			});
+		} catch (error) {
+			this.host.postMessage({
+				type: 'kustoConnectionMutationResult',
+				boxId: data.boxId,
+				success: false,
+				message: error instanceof Error ? error.message : String(error),
+			});
+		}
 	}
 
-	async testConnectionFromWebview(data: { name?: string; clusterUrl: string; database?: string; boxId?: string }): Promise<void> {
+	async testConnectionFromWebview(data: { name?: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }): Promise<void> {
 		const traceId = createDatabaseListTraceId();
 		let clusterUrl = String(data.clusterUrl || '').trim();
 		if (!clusterUrl) {
@@ -971,24 +1000,45 @@ export class ConnectionService {
 		}
 		clusterUrl = ensureHttpsUrl(clusterUrl);
 
-		const connection: KustoConnection = {
-			id: `draft:${clusterUrl}`,
-			name: String(data.name || '').trim() || clusterUrl,
-			clusterUrl,
-			database: String(data.database || '').trim() || undefined,
-		};
+		let connection: KustoConnection;
+		try {
+			connection = {
+				id: `draft:${Date.now()}:${Math.random().toString(36).slice(2)}`,
+				name: String(data.name || '').trim() || clusterUrl,
+				clusterUrl,
+				database: String(data.database || '').trim() || undefined,
+				authorityId: normalizeKustoAuthorityId(data.authorityId),
+			};
+		} catch (error) {
+			this.host.postMessage({ type: 'kustoConnectionTestResult', boxId: data.boxId, success: false, message: error instanceof Error ? error.message : String(error) });
+			return;
+		}
 
 		this.traceDatabaseList(traceId, 'test.start', { connectionId: connection.id, boxId: data.boxId });
 		this.host.postMessage({ type: 'kustoConnectionTestStarted', boxId: data.boxId });
 		try {
-			const databases = await this.host.kustoClient.getDatabases(connection, true, {
-				allowInteractive: true,
-				traceId,
-				source: 'query-editor-connection-test',
-			});
+			const accountId = String(data.accountId || '').trim();
+			const preference: KustoAccountPreference = accountId ? { mode: 'explicit', accountId } : { mode: 'automatic' };
+			const operation = () => this.host.kustoClient.getDatabases(connection, true, {
+					allowInteractive: true,
+					traceId,
+					source: 'query-editor-connection-test',
+					persistIdentity: false,
+				});
+			const transient = (this.host.kustoClient as unknown as { withTransientAuthPreference?: <T>(candidate: KustoConnection, authPreference: KustoAccountPreference, callback: () => Promise<T>) => Promise<T> }).withTransientAuthPreference;
+			const databases = typeof transient === 'function'
+				? await transient.call(this.host.kustoClient, connection, preference, operation)
+				: await operation();
 			const databaseList = (Array.isArray(databases) ? databases : []).map(d => String(d || '').trim()).filter(Boolean);
 			this.traceDatabaseList(traceId, 'test.success', { connectionId: connection.id, databaseCount: databaseList.length });
-			this.host.postMessage({
+			this.host.postMessage(databaseList.length === 0 ? {
+				type: 'kustoConnectionTestResult',
+				boxId: data.boxId,
+				success: false,
+				warning: true,
+				message: 'Connected, but no databases are visible. Check the Authority / Tenant ID and account.',
+				databases: databaseList,
+			} : {
 				type: 'kustoConnectionTestResult',
 				boxId: data.boxId,
 				success: true,
@@ -1043,7 +1093,7 @@ export class ConnectionService {
 	}
 
 	async importConnectionsFromXml(
-		connections: Array<{ name: string; clusterUrl: string; database?: string }>
+		connections: Array<{ name: string; clusterUrl: string; database?: string; authorityId?: string }>
 	): Promise<void> {
 		const incoming = Array.isArray(connections) ? connections : [];
 		if (!incoming.length) {
@@ -1051,28 +1101,32 @@ export class ConnectionService {
 		}
 
 		const existing = this.host.connectionManager.getConnections();
-		const existingByCluster = new Set(existing.map((c) => this.host.normalizeClusterUrlKey(c.clusterUrl || '')).filter(Boolean));
+		const existingIdentities = new Set(existing.flatMap((connection) => {
+			try {
+				const key = getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId);
+				return key ? [key] : [];
+			} catch {
+				return [];
+			}
+		}));
 
 		let added = 0;
 		for (const c of incoming) {
-			const name = String(c?.name || '').trim();
-			const clusterUrlRaw = String(c?.clusterUrl || '').trim();
-			const database = c?.database ? String(c.database).trim() : undefined;
-			if (!clusterUrlRaw) {
-				continue;
+			try {
+				const name = String(c?.name || '').trim();
+				const clusterUrlRaw = String(c?.clusterUrl || '').trim();
+				const database = c?.database ? String(c.database).trim() : undefined;
+				const authorityId = normalizeKustoAuthorityId(c?.authorityId);
+				if (!clusterUrlRaw) continue;
+				const clusterUrl = ensureHttpsUrl(clusterUrlRaw).replace(/\/+$/g, '');
+				const key = getKustoConnectionIdentityKey(clusterUrl, authorityId);
+				if (existingIdentities.has(key)) continue;
+				await this.host.connectionManager.addConnection({ name: name || clusterUrl, clusterUrl, database, authorityId });
+				existingIdentities.add(key);
+				added++;
+			} catch {
+				// Skip malformed imported identities without blocking later valid entries.
 			}
-			const clusterUrl = ensureHttpsUrl(clusterUrlRaw).replace(/\/+$/g, '');
-			const key = this.host.normalizeClusterUrlKey(clusterUrl);
-			if (existingByCluster.has(key)) {
-				continue;
-			}
-			await this.host.connectionManager.addConnection({
-				name: name || clusterUrl,
-				clusterUrl,
-				database
-			});
-			existingByCluster.add(key);
-			added++;
 		}
 
 		if (added > 0) {
@@ -1124,7 +1178,7 @@ export class ConnectionService {
 
 	async inferClusterDatabaseForKqlQuery(
 		queryText: string
-	): Promise<{ clusterUrl: string; database: string } | undefined> {
+	): Promise<{ clusterUrl: string; database: string; authorityId?: string; connectionIdHint: string } | undefined> {
 		const text = String(queryText ?? '').trim();
 		if (!text) {
 			return undefined;
@@ -1139,7 +1193,7 @@ export class ConnectionService {
 		const favoriteKeys = new Set<string>();
 		for (const f of favorites) {
 			try {
-				favoriteKeys.add(this.favoriteKey(f.clusterUrl, f.database));
+				favoriteKeys.add(this.favoriteKey(f.connectionId, f.database));
 			} catch {
 				// ignore
 			}
@@ -1152,14 +1206,14 @@ export class ConnectionService {
 		let candidatesSeen = 0;
 
 		let best:
-			| { clusterUrl: string; database: string; score: number; isFavorite: boolean }
+			| { clusterUrl: string; database: string; authorityId?: string; connectionIdHint: string; score: number; isFavorite: boolean }
 			| undefined;
+		const topConnectionIds = new Set<string>();
 
 		for (const conn of connections) {
 			const clusterUrl = String(conn?.clusterUrl || '').trim();
 			if (!clusterUrl) continue;
-			const clusterKey = getClusterCacheKey(clusterUrl);
-			const dbList = (cachedDatabases && clusterKey && cachedDatabases[clusterKey]) ? cachedDatabases[clusterKey] : [];
+			const dbList = cachedDatabases[conn.id] ?? [];
 			if (!Array.isArray(dbList) || dbList.length === 0) continue;
 
 			for (const dbRaw of dbList) {
@@ -1168,38 +1222,44 @@ export class ConnectionService {
 				if (!database) continue;
 				candidatesSeen++;
 
-				let cached: CachedSchemaEntry | undefined;
-				for (const cacheKey of getLegacySchemaCacheKeys(clusterUrl, database)) {
-					cached = await this.host.getCachedSchemaFromDisk(cacheKey);
-					if (cached?.schema) break;
-				}
+				const accountPartition = this.getResolvedAccountPartition(conn);
+				if (!accountPartition) continue;
+				const cached: CachedSchemaEntry | undefined = await this.host.getCachedSchemaFromDisk(
+					schemaCacheKey(clusterUrl, database, conn.id, accountPartition),
+				);
 				const schema = cached?.schema;
 				if (!schema) continue;
 
 				const score = scoreSchemaMatch(tokens, schema);
 				if (score <= 0) continue;
 
-				const isFavorite = favoriteKeys.has(this.favoriteKey(clusterUrl, database));
+				const isFavorite = favoriteKeys.has(this.favoriteKey(conn.id, database));
 
 				if (!best) {
-					best = { clusterUrl, database, score, isFavorite };
+					best = { clusterUrl, database, authorityId: conn.authorityId, connectionIdHint: conn.id, score, isFavorite };
+					topConnectionIds.add(conn.id);
 					continue;
 				}
 
 				if (score > best.score) {
-					best = { clusterUrl, database, score, isFavorite };
+					best = { clusterUrl, database, authorityId: conn.authorityId, connectionIdHint: conn.id, score, isFavorite };
+					topConnectionIds.clear();
+					topConnectionIds.add(conn.id);
 					continue;
 				}
 				if (score === best.score) {
 					if (isFavorite && !best.isFavorite) {
-						best = { clusterUrl, database, score, isFavorite };
+						best = { clusterUrl, database, authorityId: conn.authorityId, connectionIdHint: conn.id, score, isFavorite };
+						topConnectionIds.clear();
+						topConnectionIds.add(conn.id);
 						continue;
 					}
 					if (isFavorite === best.isFavorite) {
+						topConnectionIds.add(conn.id);
 						const a = kustoDatabaseKey(clusterUrl, database) || `${clusterUrl.toLowerCase()}|${database.toLowerCase()}`;
 						const b = kustoDatabaseKey(best.clusterUrl, best.database) || `${best.clusterUrl.toLowerCase()}|${best.database.toLowerCase()}`;
 						if (a < b) {
-							best = { clusterUrl, database, score, isFavorite };
+							best = { clusterUrl, database, authorityId: conn.authorityId, connectionIdHint: conn.id, score, isFavorite };
 						}
 					}
 				}
@@ -1208,9 +1268,9 @@ export class ConnectionService {
 			if (candidatesSeen >= MAX_CANDIDATES) break;
 		}
 
-		if (!best) {
+		if (!best || topConnectionIds.size > 1) {
 			return undefined;
 		}
-		return { clusterUrl: best.clusterUrl, database: best.database };
+		return { clusterUrl: best.clusterUrl, database: best.database, authorityId: best.authorityId, connectionIdHint: best.connectionIdHint };
 	}
 }

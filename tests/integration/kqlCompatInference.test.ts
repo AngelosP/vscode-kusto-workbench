@@ -25,7 +25,12 @@ suite('KQL compat editor - inferred cluster/db wiring', () => {
 			};
 			(QueryEditorProvider as any).prototype.inferClusterDatabaseForKqlQuery = async (queryText: string) => {
 				assert.ok(queryText.includes('MyTable'), 'expected query text to be passed to inference');
-				return { clusterUrl: 'https://cluster.example.kusto.windows.net', database: 'MyDb' };
+				return {
+					clusterUrl: 'https://cluster.example.kusto.windows.net',
+					database: 'MyDb',
+					authorityId: 'resource.onmicrosoft.com',
+					connectionIdHint: 'guest-connection',
+				};
 			};
 
 			const fakeContext: vscode.ExtensionContext = {
@@ -41,11 +46,15 @@ suite('KQL compat editor - inferred cluster/db wiring', () => {
 			} as any;
 
 			const extensionUri = vscode.Uri.file(path.resolve(__dirname, '..', '..', '..'));
+			const changeEmitter = new vscode.EventEmitter<unknown>();
 
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
 				extensionUri,
-				{} as any // ConnectionManager not needed for this test (webview init is stubbed)
+				{
+					getConnections: () => [],
+					onDidChangeConnections: changeEmitter.event,
+				} as any
 			) as KqlCompatEditorProvider;
 
 			const document: vscode.TextDocument = {
@@ -87,6 +96,8 @@ suite('KQL compat editor - inferred cluster/db wiring', () => {
 			assert.ok(docMsg.state && Array.isArray(docMsg.state.sections), 'expected documentData.state.sections');
 			assert.strictEqual(docMsg.state.sections[0].clusterUrl, 'https://cluster.example.kusto.windows.net');
 			assert.strictEqual(docMsg.state.sections[0].database, 'MyDb');
+			assert.strictEqual(docMsg.state.sections[0].authorityId, 'resource.onmicrosoft.com');
+			assert.strictEqual(docMsg.state.sections[0].connectionIdHint, 'guest-connection');
 		} finally {
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitializeWebviewPanel;
 			(QueryEditorProvider as any).prototype.inferClusterDatabaseForKqlQuery = originalInfer;

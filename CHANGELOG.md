@@ -3,9 +3,11 @@
 All notable changes to the "vscode-kusto-workbench" extension will be documented in this file.
 Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how to structure this file.
 
-## [4.7.5] - 2026.07.08
+## [4.8.0] - 2026.07.13
 
 * First launch experience for configuring some key experience settings before your first edit.
+* Support for additional Kusto authentication methods (e.g., your Entra ID is a guest on a tenant hosting the Kusto cluster).
+* Readiness indicator for each Kusto section as a thin progress line moving from left to right letting you know if things are still happening in the background.
 * Bugs
     * Better handling of Kusto URIs that can all look different but point to the same cluster. Some of the formats work better than others when embedded into HTML and URIs.
     * No more stale errors being reported for .kql or .csl files, which used to depend on a stale schema instead of the live connection.

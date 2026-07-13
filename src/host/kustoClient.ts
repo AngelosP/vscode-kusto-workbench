@@ -1,4 +1,4 @@
-import { KustoConnection } from './connectionManager';
+import { ConnectionManager, KustoConnection } from './connectionManager';
 import { randomUUID } from 'crypto';
 import * as vscode from 'vscode';
 import {
@@ -9,8 +9,17 @@ import {
 	finalizeSchema as finalizeSchemeFn,
 	parseDatabaseSchemaResultWithRaw as parseDatabaseSchemaResultWithRawFn
 } from './kustoClientUtils';
-import { exportKustoClusterEndpoint, kustoDatabaseKey } from '../shared/kustoClusterUrls';
+import { exportKustoClusterEndpoint } from '../shared/kustoClusterUrls';
 import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
+import {
+	getKustoAuthScopes,
+	getKustoConnectionIdentityKey,
+	KUSTO_AUTH_PROVIDER_ID,
+	normalizeKustoAuthorityId,
+} from '../shared/kustoAuth';
+import { KustoAuthPreferenceService, type KustoAccountPreference } from './kustoAuthPreferenceService';
+import { KustoConnectionCache, type KustoConnectionCacheGeneration } from './kustoConnectionCache';
+import { captureSchemaCacheGeneration, deleteCachedSchemasForAccountPartitions, deleteCachedSchemasForConnections, type SchemaCacheGeneration } from './schemaCache';
 import {
 	createDatabaseListTraceId,
 	databaseListTraceRef,
@@ -22,6 +31,7 @@ type DatabaseDiscoveryOptions = {
 	allowInteractive?: boolean;
 	traceId?: string;
 	source?: string;
+	persistIdentity?: boolean;
 };
 
 export type SchemaDiscoveryOptions = {
@@ -80,10 +90,16 @@ export interface QueryResult {
 	};
 }
 
+export interface QueryResultWithIdentity {
+	result: QueryResult;
+	accountPartition?: string;
+}
+
 export interface CancelableQueryExecution {
 	promise: Promise<QueryResult>;
 	cancel: () => void;
 	clientActivityId: string;
+	getAccountPartition: () => string | undefined;
 }
 
 export interface DatabaseSchemaIndex {
@@ -139,6 +155,8 @@ export type KustoFunctionInfo = {
 export interface DatabaseSchemaResult {
 	schema: DatabaseSchemaIndex;
 	fromCache: boolean;
+	accountPartition?: string;
+	cacheGeneration?: SchemaCacheGeneration;
 	cacheAgeMs?: number;
 	debug?: {
 		commandUsed?: string;
@@ -147,6 +165,13 @@ export interface DatabaseSchemaResult {
 		sampleRowKeys?: string[];
 		sampleRowPreview?: string;
 	};
+}
+
+export interface KustoDatabaseDiscoveryResult {
+	databases: string[];
+	accountPartition?: string;
+	cacheGeneration?: KustoConnectionCacheGeneration;
+	fromCache: boolean;
 }
 
 export class QueryCancelledError extends Error {
@@ -166,23 +191,33 @@ export class QueryExecutionError extends Error {
 	}
 }
 
-type StoredAuthAccount = {
-	/** VS Code AuthenticationSession.account.id */
-	id: string;
-	/** VS Code AuthenticationSession.account.label */
-	label: string;
-	/** Last time we successfully used this account for any cluster. */
-	lastUsedAt: number;
-};
-
-type StoredClusterAccountMap = Record<string, string>; // clusterEndpoint -> accountId
-
 type SessionPromptMode = 'default' | 'clearPreference' | 'forceNewSession';
+
+export type KustoAuthContext = Readonly<{
+	connectionId: string;
+	connectionIdentityKey: string;
+	clusterEndpoint: string;
+	authorityId?: string;
+	scopes: readonly string[];
+	account: vscode.AuthenticationSessionAccountInformation;
+	accountId: string;
+	accountPartition: string;
+	preferenceMode: KustoAccountPreference['mode'];
+}>;
 
 type CachedClientEntry = {
 	client: any;
-	clusterEndpoint: string;
-	accountId: string;
+	auth: KustoAuthContext;
+};
+
+type AuthOperationOptions<T> = {
+	allowInteractive?: boolean;
+	cancelableKey?: string;
+	onClient?: (client: any, auth: KustoAuthContext) => void;
+	traceId?: string;
+	operationName?: string;
+	isSuccessfulResult?: (result: T) => boolean;
+	persistAuthSuccess?: boolean;
 };
 
 export class KustoQueryClient {
@@ -198,11 +233,7 @@ export class KustoQueryClient {
 	private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 	private readonly SCHEMA_CACHE_TTL = 24 * 60 * 60 * 1000; // 1 day
 
-	private static readonly AUTH_PROVIDER_ID = 'microsoft';
-	private static readonly AUTH_SCOPES = ['https://kusto.kusto.windows.net/.default'] as const;
 	private static readonly STORAGE_KEYS = {
-		knownAccounts: 'kusto.auth.knownAccounts',
-		clusterAccountMap: 'kusto.auth.clusterAccountMap',
 		/** Global epoch used to invalidate in-memory caches across extension instances. */
 		cacheClearEpoch: 'kusto.cacheClearEpoch'
 	} as const;
@@ -214,16 +245,146 @@ export class KustoQueryClient {
 
 	private readonly context?: vscode.ExtensionContext;
 	private readonly output: WorkbenchLogger;
-	private readonly authLocksByCluster = new Map<string, Promise<void>>();
-	private readonly authCancelledAtByCluster = new Map<string, number>();
+	private readonly authLocksByIdentity = new Map<string, Promise<void>>();
+	private readonly authCancelledAtByIdentity = new Map<string, number>();
+	private readonly authPreferences?: KustoAuthPreferenceService;
+	private readonly connectionCache?: KustoConnectionCache;
+	private readonly subscriptions: vscode.Disposable[] = [];
+	private readonly connectionRevisions = new Map<string, number>();
+	private readonly accountRevisions = new Map<string, number>();
+	private readonly authContextByClient = new WeakMap<object, KustoAuthContext>();
+	private readonly transientPreferences = new Map<string, KustoAccountPreference>();
+	private authRevision = 0;
 	private lastSeenCacheClearEpoch = 0;
+	private disposed = false;
 
-	constructor(context?: vscode.ExtensionContext, output?: WorkbenchLogger) {
+	constructor(context?: vscode.ExtensionContext, output?: WorkbenchLogger, connectionManager?: ConnectionManager) {
 		this.context = context;
 		this.output = output ?? getWorkbenchLogger();
+		if (context) {
+			this.authPreferences = KustoAuthPreferenceService.getInstance(context);
+			this.connectionCache = new KustoConnectionCache(context);
+			this.subscriptions.push(this.authPreferences.onDidChange(change => {
+				if (change.connectionIds.length > 0) {
+					for (const connectionId of change.connectionIds) this.bumpConnectionRevision(connectionId);
+				}
+				if (change.reason === 'account-forgotten' && change.accountId) {
+					this.bumpAccountRevision(change.accountId);
+				} else if (change.connectionIds.length === 0) {
+					this.authRevision++;
+				}
+				this.invalidateClients(change.connectionIds, change.accountId);
+				if (change.reason === 'override' && change.accountPartition) {
+					void this.connectionCache?.clearAccountPartition(change.accountPartition);
+					if (this.context) void deleteCachedSchemasForAccountPartitions(this.context.globalStorageUri, new Set([change.accountPartition]));
+				}
+			}));
+		}
+		if (connectionManager) {
+			this.subscriptions.push(connectionManager.onDidChangeConnections(change => {
+				const ids = change.type === 'cleared'
+					? change.connections.map(connection => connection.id)
+					: change.type === 'updated'
+						? [change.previous.id, change.connection.id]
+						: [change.connection.id];
+				for (const id of ids) this.bumpConnectionRevision(id);
+				this.invalidateClients(ids);
+				for (const id of ids) void this.connectionCache?.clearConnection(id);
+				if (context) void deleteCachedSchemasForConnections(context.globalStorageUri, new Set(ids));
+				if (change.type === 'removed') void this.authPreferences?.removeConnection(change.connection.id);
+				if (change.type === 'cleared') {
+					for (const connection of change.connections) void this.authPreferences?.removeConnection(connection.id);
+				}
+			}));
+			void this.authPreferences?.migrateLegacyMappings(connectionManager.getConnections());
+			void this.connectionCache?.migrateLegacy(connectionManager.getConnections());
+		}
 	}
 
 	private static readonly APPLICATION_NAME = 'KustoWorkbench';
+
+	private getConnectionRevision(connectionId: string): number {
+		return this.connectionRevisions.get(connectionId) ?? 0;
+	}
+
+	private bumpConnectionRevision(connectionId: string): void {
+		const id = String(connectionId || '').trim();
+		if (id) this.connectionRevisions.set(id, this.getConnectionRevision(id) + 1);
+	}
+
+	private getAccountRevision(accountId: string): number {
+		return this.accountRevisions.get(String(accountId || '').trim()) ?? 0;
+	}
+
+	private bumpAccountRevision(accountId: string): void {
+		const id = String(accountId || '').trim();
+		if (id) this.accountRevisions.set(id, this.getAccountRevision(id) + 1);
+	}
+
+	private connectionIdentityKey(connection: KustoConnection): string {
+		return getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId);
+	}
+
+	private dataCachePrefix(connection: KustoConnection, accountPartition: string): string {
+		return `${encodeURIComponent(connection.id)}|${this.connectionIdentityKey(connection)}|${accountPartition}`;
+	}
+
+	private databaseCacheKey(connection: KustoConnection, accountPartition: string): string {
+		return this.dataCachePrefix(connection, accountPartition);
+	}
+
+	private schemaCacheKey(connection: KustoConnection, accountPartition: string, database: string): string {
+		return `${this.dataCachePrefix(connection, accountPartition)}|${String(database || '').trim().toLowerCase()}`;
+	}
+
+	private authLockKey(connection: KustoConnection, preference: KustoAccountPreference): string {
+		const account = preference.mode === 'explicit'
+			? preference.accountId
+			: preference.lastSuccessfulAccountId ?? preference.legacyAccountId ?? '';
+		return `${encodeURIComponent(connection.id)}|${this.connectionIdentityKey(connection)}|${preference.mode}|${account}`;
+	}
+
+	private cancelableCacheKey(connection: KustoConnection, callerKey: string, preference: KustoAccountPreference): string {
+		return `${this.authLockKey(connection, preference)}|${callerKey}`;
+	}
+
+	private isEntryCompatible(entry: CachedClientEntry | undefined, connection: KustoConnection, preference: KustoAccountPreference): boolean {
+		if (!entry || entry.auth.connectionIdentityKey !== this.connectionIdentityKey(connection)) return false;
+		if (preference.mode === 'explicit') return entry.auth.accountId === preference.accountId;
+		const preferred = preference.lastSuccessfulAccountId ?? preference.legacyAccountId;
+		return !preferred || entry.auth.accountId === preferred;
+	}
+
+	private closeEntry(entry: CachedClientEntry | undefined): void {
+		try { entry?.client?.close?.(); } catch { /* ignore */ }
+	}
+
+	private invalidateClients(connectionIds: readonly string[], accountId?: string): void {
+		const ids = new Set(connectionIds.map(id => String(id || '').trim()).filter(Boolean));
+		for (const [key, entry] of [...this.clients]) {
+			if ((ids.size === 0 && (!accountId || entry.auth.accountId === accountId)) || ids.has(entry.auth.connectionId)) {
+				this.clients.delete(key);
+				this.closeEntry(entry);
+			}
+		}
+		for (const [key, entry] of [...this.cancelableClientsByKey]) {
+			if ((ids.size === 0 && (!accountId || entry.auth.accountId === accountId)) || ids.has(entry.auth.connectionId)) {
+				this.cancelableClientsByKey.delete(key);
+				this.closeEntry(entry);
+			}
+		}
+		if (ids.size === 0) {
+			this.databaseCache.clear();
+			this.schemaCache.clear();
+			return;
+		}
+		for (const key of [...this.databaseCache.keys()]) {
+			if ([...ids].some(id => key.startsWith(`${encodeURIComponent(id)}|`))) this.databaseCache.delete(key);
+		}
+		for (const key of [...this.schemaCache.keys()]) {
+			if ([...ids].some(id => key.startsWith(`${encodeURIComponent(id)}|`))) this.schemaCache.delete(key);
+		}
+	}
 
 	private traceDatabaseDiscovery(traceId: string | undefined, event: string, details: Record<string, unknown> = {}): void {
 		traceDatabaseList(this.output, traceId, '', event, details);
@@ -254,7 +415,8 @@ export class KustoQueryClient {
 		connection: KustoConnection,
 		database: string,
 		clientActivityId: string,
-		reason: string = 'Canceled from Kusto Workbench'
+		reason: string = 'Canceled from Kusto Workbench',
+		capturedAuth?: KustoAuthContext,
 	): Promise<void> {
 		const id = String(clientActivityId || '').trim();
 		if (!id) {
@@ -262,6 +424,28 @@ export class KustoQueryClient {
 		}
 		const command = `.cancel query ${KustoQueryClient.quoteKustoStringLiteral(id)} with (reason = ${KustoQueryClient.quoteKustoStringLiteral(reason)})`;
 		const props = await this.createRequestProperties('cancel_query');
+		if (capturedAuth) {
+			const capturedConnection: KustoConnection = {
+				...connection,
+				id: capturedAuth.connectionId,
+				clusterUrl: capturedAuth.clusterEndpoint,
+				authorityId: capturedAuth.authorityId,
+			};
+			const exactPreference: KustoAccountPreference = { mode: 'explicit', accountId: capturedAuth.accountId };
+			const requested = await this.requestSession(capturedConnection, exactPreference, capturedAuth.account, {
+				interactiveIfNeeded: false,
+			});
+			if (!requested.session) {
+				throw new Error('The Microsoft account used by the running query is no longer available for cancellation.');
+			}
+			const entry = await this.createClientEntry(capturedConnection, requested.session, exactPreference);
+			try {
+				await entry.client.execute(database, command, props);
+			} finally {
+				this.closeEntry(entry);
+			}
+			return;
+		}
 		await this.executeWithAuthRetry<any>(
 			connection,
 			(client) => client.execute(database, command, props),
@@ -433,9 +617,37 @@ export class KustoQueryClient {
 		}
 	}
 
-	private async getEffectiveAccessToken(session: vscode.AuthenticationSession, traceId?: string): Promise<string> {
+	private getPreference(connection: KustoConnection): KustoAccountPreference {
+		return this.transientPreferences.get(connection.id)
+			?? this.authPreferences?.getPreference(connection.id)
+			?? { mode: 'automatic' };
+	}
+
+	public async withTransientAuthPreference<T>(
+		connection: KustoConnection,
+		preference: KustoAccountPreference,
+		operation: () => Promise<T>,
+	): Promise<T> {
+		if (this.transientPreferences.has(connection.id)) {
+			throw new Error('A transient authentication operation is already running for this connection.');
+		}
+		this.transientPreferences.set(connection.id, preference);
+		try {
+			return await operation();
+		} finally {
+			this.transientPreferences.delete(connection.id);
+			this.invalidateClients([connection.id]);
+			await this.connectionCache?.clearConnection(connection.id);
+		}
+	}
+
+	private async getEffectiveAccessToken(
+		session: vscode.AuthenticationSession,
+		authorityId: string | undefined,
+		traceId?: string,
+	): Promise<string> {
 		const token = String(session?.accessToken || '');
-		if (!this.context) {
+		if (!this.authPreferences) {
 			this.traceDatabaseDiscovery(traceId, 'auth.token.selected', {
 				accountRef: databaseListTraceRef(session?.account?.id),
 				source: 'vscode-session',
@@ -444,8 +656,7 @@ export class KustoQueryClient {
 			return token;
 		}
 		try {
-			const key = `kusto.auth.tokenOverride.${session.account.id}`;
-			const override = await this.context.secrets.get(key);
+			const override = await this.authPreferences.getTokenOverride(authorityId, session.account.id);
 			const trimmed = String(override || '').trim();
 			this.traceDatabaseDiscovery(traceId, 'auth.token.selected', {
 				accountRef: databaseListTraceRef(session.account.id),
@@ -460,6 +671,49 @@ export class KustoQueryClient {
 			});
 			return token;
 		}
+	}
+
+	private buildAuthContext(
+		connection: KustoConnection,
+		session: vscode.AuthenticationSession,
+		preference: KustoAccountPreference,
+	): KustoAuthContext {
+		const authorityId = normalizeKustoAuthorityId(connection.authorityId);
+		const accountId = String(session.account.id || '').trim();
+		const accountPartition = this.authPreferences?.getAccountPartition(authorityId, accountId)
+			?? `ephemeral:${accountId}`;
+		return Object.freeze({
+			connectionId: connection.id,
+			connectionIdentityKey: this.connectionIdentityKey(connection),
+			clusterEndpoint: this.normalizeClusterEndpoint(connection.clusterUrl),
+			...(authorityId ? { authorityId } : {}),
+			scopes: Object.freeze(getKustoAuthScopes(authorityId)),
+			account: Object.freeze({ id: accountId, label: session.account.label }),
+			accountId,
+			accountPartition,
+			preferenceMode: preference.mode,
+		});
+	}
+
+	private registerEntry(entry: CachedClientEntry): CachedClientEntry {
+		if (entry.client && (typeof entry.client === 'object' || typeof entry.client === 'function')) {
+			this.authContextByClient.set(entry.client, entry.auth);
+		}
+		return entry;
+	}
+
+	private async createClientEntry(
+		connection: KustoConnection,
+		session: vscode.AuthenticationSession,
+		preference: KustoAccountPreference,
+		traceId?: string,
+	): Promise<CachedClientEntry> {
+		const auth = this.buildAuthContext(connection, session, preference);
+		const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
+		const effectiveToken = await this.getEffectiveAccessToken(session, auth.authorityId, traceId);
+		const kcsb = KustoConnectionStringBuilder.withAccessToken(auth.clusterEndpoint, effectiveToken);
+		kcsb.applicationNameForTracing = KustoQueryClient.APPLICATION_NAME;
+		return this.registerEntry({ client: new Client(kcsb), auth });
 	}
 
 	/**
@@ -480,13 +734,7 @@ export class KustoQueryClient {
 		if (!clusterEndpoint) {
 			throw new Error('Cluster URL is missing.');
 		}
-		try {
-			const existing = this.clients.get(connection.id);
-			this.clients.delete(connection.id);
-			existing?.client?.close?.();
-		} catch {
-			// ignore
-		}
+		this.invalidateClients([connection.id]);
 		// Explicit user action: skip silent selection so VS Code shows an account picker/sign-in.
 		await this.createClientWithRetry(connection, { interactiveIfNeeded: true, promptMode, skipSilent: true, traceId });
 		this.traceDatabaseDiscovery(traceId, 'auth.reauthenticate.complete', {
@@ -509,24 +757,29 @@ export class KustoQueryClient {
 			throw new Error('Cluster URL is missing.');
 		}
 
-		const mappedAccountId = this.getClusterAccountId(clusterEndpoint);
+		const preference = this.getPreference(connection);
+		const preferredAccountId = preference.mode === 'explicit'
+			? preference.accountId
+			: preference.lastSuccessfulAccountId ?? preference.legacyAccountId;
 		const existing = this.clients.get(connection.id);
 		this.traceDatabaseDiscovery(opts?.traceId, 'auth.client.lookup', {
 			connectionId: connection.id,
 			clusterEndpoint,
-			mappedAccountRef: databaseListTraceRef(mappedAccountId),
+			mappedAccountRef: databaseListTraceRef(preferredAccountId),
 			cachedClientPresent: !!existing,
-			cachedEndpointMatches: existing?.clusterEndpoint === clusterEndpoint,
-			cachedAccountMatches: !!mappedAccountId && existing?.accountId === mappedAccountId,
+			cachedEndpointMatches: existing?.auth.clusterEndpoint === clusterEndpoint,
+			cachedAccountMatches: !!preferredAccountId && existing?.auth.accountId === preferredAccountId,
 		});
-		if (mappedAccountId) {
-			if (existing && existing.clusterEndpoint === clusterEndpoint && existing.accountId === mappedAccountId) {
-				this.traceDatabaseDiscovery(opts?.traceId, 'auth.client.reused', {
-					connectionId: connection.id,
-					accountRef: databaseListTraceRef(existing.accountId),
-				});
-				return existing.client;
-			}
+		if (this.isEntryCompatible(existing, connection, preference)) {
+			this.traceDatabaseDiscovery(opts?.traceId, 'auth.client.reused', {
+				connectionId: connection.id,
+				accountRef: databaseListTraceRef(existing?.auth.accountId),
+			});
+			return existing?.client;
+		}
+		if (existing) {
+			this.clients.delete(connection.id);
+			this.closeEntry(existing);
 		}
 
 		// Create/refresh client via auth flow (may use silent retries and only prompt if needed).
@@ -538,119 +791,53 @@ export class KustoQueryClient {
 	}
 
 	private async createDedicatedClient(connection: KustoConnection, opts?: { interactiveIfNeeded?: boolean }): Promise<CachedClientEntry> {
-		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
-		if (!clusterEndpoint) {
-			throw new Error('Cluster URL is missing.');
-		}
-		const { session, accountId } = await this.getSessionForCluster(clusterEndpoint, {
+		return this.createClientWithRetry(connection, {
 			interactiveIfNeeded: !!opts?.interactiveIfNeeded,
-			promptMode: 'default'
+			storeInMainClientCache: false,
 		});
-		if (!session || !accountId) {
-			throw new Error('Failed to authenticate with Microsoft');
-		}
-		// Persist successful auth selection for this cluster.
-		try {
-			await this.upsertKnownAccount(session.account);
-			await this.setClusterAccountId(clusterEndpoint, session.account.id);
-		} catch {
-			// Non-fatal: auth still works even if persistence fails.
-		}
-		const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
-		const effectiveToken = await this.getEffectiveAccessToken(session);
-		const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, effectiveToken);
-		kcsb.applicationNameForTracing = KustoQueryClient.APPLICATION_NAME;
-		return { client: new Client(kcsb), clusterEndpoint, accountId };
 	}
 
 	private async getOrCreateCancelableClient(connection: KustoConnection, key: string, opts?: { interactiveIfNeeded?: boolean }): Promise<any> {
-		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
-		const mappedAccountId = this.getClusterAccountId(clusterEndpoint);
-		const existing = this.cancelableClientsByKey.get(key);
-		if (existing && mappedAccountId && existing.clusterEndpoint === clusterEndpoint && existing.accountId === mappedAccountId) {
-			return existing.client;
+		const preference = this.getPreference(connection);
+		const cacheKey = this.cancelableCacheKey(connection, key, preference);
+		const existing = this.cancelableClientsByKey.get(cacheKey);
+		if (this.isEntryCompatible(existing, connection, preference)) {
+			return existing?.client;
 		}
 		if (existing) {
-			try { existing.client?.close?.(); } catch { /* ignore */ }
-			this.cancelableClientsByKey.delete(key);
+			this.closeEntry(existing);
+			this.cancelableClientsByKey.delete(cacheKey);
 		}
 		const created = await this.createClientWithRetry(connection, { interactiveIfNeeded: opts?.interactiveIfNeeded !== false, storeInMainClientCache: false });
-		this.cancelableClientsByKey.set(key, created);
+		this.cancelableClientsByKey.set(cacheKey, created);
 		return created.client;
 	}
 
-	private getKnownAccounts(): StoredAuthAccount[] {
-		if (!this.context) {
-			return [];
+	private evictCancelableClient(connection: KustoConnection, callerKey: string, client?: any): void {
+		let matched = false;
+		for (const [cacheKey, entry] of [...this.cancelableClientsByKey]) {
+			if (entry.auth.connectionId !== connection.id) continue;
+			if (client && entry.client !== client) continue;
+			if (!client && !cacheKey.endsWith(`|${callerKey}`)) continue;
+			matched = true;
+			this.cancelableClientsByKey.delete(cacheKey);
+			this.closeEntry(entry);
 		}
-		const raw = this.context.globalState.get<StoredAuthAccount[] | undefined>(KustoQueryClient.STORAGE_KEYS.knownAccounts);
-		return Array.isArray(raw) ? raw.filter(a => a && typeof a.id === 'string' && typeof a.label === 'string') : [];
+		if (client && !matched) {
+			try { client.close?.(); } catch { /* ignore */ }
+		}
 	}
 
-	private async upsertKnownAccount(account: vscode.AuthenticationSessionAccountInformation): Promise<void> {
-		if (!this.context) {
-			return;
-		}
-		const now = Date.now();
-		const existing = this.getKnownAccounts();
-		const filtered = existing.filter(a => a.id !== account.id);
-		filtered.unshift({ id: account.id, label: account.label, lastUsedAt: now });
-		// Keep list bounded.
-		await this.context.globalState.update(KustoQueryClient.STORAGE_KEYS.knownAccounts, filtered.slice(0, 10));
-	}
-
-	private getClusterAccountId(clusterEndpoint: string): string | undefined {
-		if (!this.context) {
-			return undefined;
-		}
-		const map = this.context.globalState.get<StoredClusterAccountMap | undefined>(KustoQueryClient.STORAGE_KEYS.clusterAccountMap);
-		if (!map || typeof map !== 'object') {
-			return undefined;
-		}
-		const v = map[clusterEndpoint];
-		return typeof v === 'string' && v ? v : undefined;
-	}
-
-	private async setClusterAccountId(clusterEndpoint: string, accountId: string): Promise<void> {
-		if (!this.context) {
-			return;
-		}
-		// If the user just cancelled an auth prompt for this cluster, don't persist any mapping.
-		if (this.wasAuthCancelledRecently(clusterEndpoint)) {
-			return;
-		}
-		const prev = this.context.globalState.get<StoredClusterAccountMap | undefined>(KustoQueryClient.STORAGE_KEYS.clusterAccountMap);
-		const next: StoredClusterAccountMap = { ...(prev && typeof prev === 'object' ? prev : {}) };
-		next[clusterEndpoint] = accountId;
-		await this.context.globalState.update(KustoQueryClient.STORAGE_KEYS.clusterAccountMap, next);
-	}
-
-	private async clearClusterAccountId(clusterEndpoint: string): Promise<void> {
-		if (!this.context) {
-			return;
-		}
-		const prev = this.context.globalState.get<StoredClusterAccountMap | undefined>(KustoQueryClient.STORAGE_KEYS.clusterAccountMap);
-		if (!prev || typeof prev !== 'object') {
-			return;
-		}
-		const next: StoredClusterAccountMap = { ...(prev && typeof prev === 'object' ? prev : {}) };
-		if (!Object.prototype.hasOwnProperty.call(next, clusterEndpoint)) {
-			return;
-		}
-		delete next[clusterEndpoint];
-		await this.context.globalState.update(KustoQueryClient.STORAGE_KEYS.clusterAccountMap, next);
-	}
-
-	private markAuthCancelled(clusterEndpoint: string): void {
+	private markAuthCancelled(authIdentity: string): void {
 		try {
-			this.authCancelledAtByCluster.set(clusterEndpoint, Date.now());
+			this.authCancelledAtByIdentity.set(authIdentity, Date.now());
 		} catch {
 			// ignore
 		}
 	}
 
-	private wasAuthCancelledRecently(clusterEndpoint: string): boolean {
-		const t = this.authCancelledAtByCluster.get(clusterEndpoint) ?? 0;
+	private wasAuthCancelledRecently(authIdentity: string): boolean {
+		const t = this.authCancelledAtByIdentity.get(authIdentity) ?? 0;
 		return !!(t && (Date.now() - t) < KustoQueryClient.AUTH_CANCEL_SUPPRESS_MS);
 	}
 
@@ -662,106 +849,68 @@ export class KustoQueryClient {
 		return isAuthErrorFn(error);
 	}
 
-	private async getSessionForCluster(
-		clusterEndpoint: string,
-		opts: { interactiveIfNeeded: boolean; promptMode?: SessionPromptMode; skipSilent?: boolean; traceId?: string }
-	): Promise<{ session: vscode.AuthenticationSession | undefined; accountId: string | undefined }>
-	{
+	private async getAccountCandidates(preference: KustoAccountPreference): Promise<vscode.AuthenticationSessionAccountInformation[]> {
+		const accounts = await this.authPreferences?.getAccounts() ?? [];
+		const byId = new Map(accounts.map(account => [account.id, { id: account.id, label: account.label }]));
+		if (preference.mode === 'explicit') {
+			return [byId.get(preference.accountId) ?? { id: preference.accountId, label: preference.accountId }];
+		}
+		const candidates: vscode.AuthenticationSessionAccountInformation[] = [];
+		const preferred = preference.lastSuccessfulAccountId ?? preference.legacyAccountId;
+		if (preferred) candidates.push(byId.get(preferred) ?? { id: preferred, label: preferred });
+		for (const account of accounts) {
+			if (!candidates.some(candidate => candidate.id === account.id)) {
+				candidates.push({ id: account.id, label: account.label });
+			}
+		}
+		return candidates;
+	}
+
+	private async requestSession(
+		connection: KustoConnection,
+		preference: KustoAccountPreference,
+		requestedAccount: vscode.AuthenticationSessionAccountInformation | undefined,
+		opts: { interactiveIfNeeded: boolean; promptMode?: SessionPromptMode; skipSilent?: boolean; traceId?: string },
+	): Promise<{ session: vscode.AuthenticationSession | undefined; interactive: boolean }> {
+		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
+		const scopes = getKustoAuthScopes(connection.authorityId);
+		const authIdentity = `${this.authLockKey(connection, preference)}|${requestedAccount?.id ?? 'picker'}`;
 		this.traceDatabaseDiscovery(opts.traceId, 'auth.session.discovery.start', {
 			clusterEndpoint,
 			contextAvailable: !!this.context,
 			interactiveIfNeeded: opts.interactiveIfNeeded,
 			promptMode: opts.promptMode ?? 'default',
 			skipSilent: !!opts.skipSilent,
+			accountRef: databaseListTraceRef(requestedAccount?.id),
+			authorityRef: databaseListTraceRef(normalizeKustoAuthorityId(connection.authorityId)),
 		});
-		// If we have no storage (e.g. unit tests), just fall back to interactive.
-		if (!this.context) {
+
+		const validateExactAccount = (session: vscode.AuthenticationSession | undefined): vscode.AuthenticationSession | undefined => {
+			if (!session || !requestedAccount) return session;
+			if (session.account.id !== requestedAccount.id) {
+				throw new Error(`Microsoft authentication returned a different account than the one selected for connection "${connection.name}".`);
+			}
+			return session;
+		};
+
+		if (!opts.skipSilent) {
 			try {
-				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.start', {
-					reason: 'no-extension-context',
-					promptMode: 'createIfNone',
+				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.silent.start', {
+					accountRef: databaseListTraceRef(requestedAccount?.id),
 				});
-				const session = await vscode.authentication.getSession(
-					KustoQueryClient.AUTH_PROVIDER_ID,
-					[...KustoQueryClient.AUTH_SCOPES],
-					{ createIfNone: true }
-				);
-				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.complete', {
+				const session = validateExactAccount(await vscode.authentication.getSession(
+					KUSTO_AUTH_PROVIDER_ID,
+					scopes,
+					requestedAccount ? { silent: true, account: requestedAccount } : { silent: true },
+				));
+				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.silent.complete', {
 					sessionFound: !!session,
 					accountRef: databaseListTraceRef(session?.account?.id),
 				});
-				return { session, accountId: session?.account?.id };
-			} catch (e) {
-				if (this.isLikelyCancellationError(e)) {
-					this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.cancelled', {});
-					throw this.createAuthCancelledError();
-				}
-				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.failed', {
-					...getDatabaseListErrorDetails(e),
-				});
-				throw e;
-			}
-		}
-
-		const mapped = this.getClusterAccountId(clusterEndpoint);
-		const known = this.getKnownAccounts().sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0));
-		const candidates: StoredAuthAccount[] = [];
-		if (mapped) {
-			const inKnown = known.find(a => a.id === mapped);
-			if (inKnown) {
-				candidates.push(inKnown);
-			} else {
-				// Keep label best-effort; VS Code uses id to match.
-				candidates.push({ id: mapped, label: mapped, lastUsedAt: 0 });
-			}
-		}
-		for (const a of known) {
-			if (!candidates.some(c => c.id === a.id)) {
-				candidates.push(a);
-			}
-		}
-		this.traceDatabaseDiscovery(opts.traceId, 'auth.session.candidates', {
-			mappedAccountRef: databaseListTraceRef(mapped),
-			knownAccountCount: known.length,
-			candidateCount: candidates.length,
-		});
-
-		// Silent attempts first (unless explicitly skipped).
-		if (!opts.skipSilent) {
-			for (let index = 0; index < candidates.length; index++) {
-				const account = candidates[index];
-				try {
-					this.traceDatabaseDiscovery(opts.traceId, 'auth.session.silent.start', {
-						candidate: index + 1,
-						candidateCount: candidates.length,
-						accountRef: databaseListTraceRef(account.id),
-					});
-					const session = await vscode.authentication.getSession(
-						KustoQueryClient.AUTH_PROVIDER_ID,
-						[...KustoQueryClient.AUTH_SCOPES],
-						{ silent: true, account: { id: account.id, label: account.label } }
-					);
-					if (session) {
-						this.traceDatabaseDiscovery(opts.traceId, 'auth.session.silent.complete', {
-							candidate: index + 1,
-							sessionFound: true,
-							accountRef: databaseListTraceRef(session.account.id),
-						});
-						return { session, accountId: session.account.id };
-					}
-					this.traceDatabaseDiscovery(opts.traceId, 'auth.session.silent.complete', {
-						candidate: index + 1,
-						sessionFound: false,
-						accountRef: databaseListTraceRef(account.id),
-					});
-				} catch (error) {
-					// Silent path shouldn't throw, but be defensive.
-					this.traceDatabaseDiscovery(opts.traceId, 'auth.session.silent.failed', {
-						candidate: index + 1,
-						accountRef: databaseListTraceRef(account.id),
-						...getDatabaseListErrorDetails(error),
-					});
-				}
+				if (session) return { session, interactive: false };
+			} catch (error) {
+				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.silent.failed', getDatabaseListErrorDetails(error));
+				if (preference.mode === 'explicit') throw error;
 			}
 		}
 
@@ -769,65 +918,62 @@ export class KustoQueryClient {
 			this.traceDatabaseDiscovery(opts.traceId, 'auth.session.unavailable', {
 				reason: 'interactive-disabled',
 			});
-			return { session: undefined, accountId: undefined };
+			return { session: undefined, interactive: false };
 		}
 
 		// If the user just cancelled an auth prompt for this cluster, avoid prompting again
 		// back-to-back (common when multiple features request auth in quick succession).
-		if (this.wasAuthCancelledRecently(clusterEndpoint)) {
+		if (this.wasAuthCancelledRecently(authIdentity)) {
 			this.traceDatabaseDiscovery(opts.traceId, 'auth.session.unavailable', {
 				reason: 'recent-cancellation-suppression',
 			});
-			return { session: undefined, accountId: undefined };
+			return { session: undefined, interactive: false };
 		}
 
 		// Finally: interactive prompt.
 		// IMPORTANT: In multi-account scenarios, VS Code may return an existing session without
 		// prompting unless we clear preference / force a new session.
 		const promptMode: SessionPromptMode = opts.promptMode ?? 'default';
-		const interactiveOptions: vscode.AuthenticationGetSessionOptions =
+		const promptOptions: vscode.AuthenticationGetSessionOptions =
 			promptMode === 'forceNewSession'
 				? { forceNewSession: true }
 				: promptMode === 'clearPreference'
 					? { createIfNone: true, clearSessionPreference: true }
 					: { createIfNone: true };
+		const interactiveOptions: vscode.AuthenticationGetSessionOptions = requestedAccount
+			? { ...promptOptions, account: requestedAccount }
+			: promptOptions;
 
 		try {
 			this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.start', {
 				promptMode,
 			});
-			const session = await vscode.authentication.getSession(
-				KustoQueryClient.AUTH_PROVIDER_ID,
-				[...KustoQueryClient.AUTH_SCOPES],
+			const session = validateExactAccount(await vscode.authentication.getSession(
+				KUSTO_AUTH_PROVIDER_ID,
+				scopes,
 				interactiveOptions
-			);
+			));
 			// VS Code may return `undefined` when the user cancels the consent/sign-in UI.
 			if (!session) {
-				this.markAuthCancelled(clusterEndpoint);
-				try { await this.clearClusterAccountId(clusterEndpoint); } catch { /* ignore */ }
+				this.markAuthCancelled(authIdentity);
 				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.cancelled', {
 					promptMode,
 				});
-				return { session: undefined, accountId: undefined };
-			}
-			if (session?.account) {
-				await this.upsertKnownAccount(session.account);
-				await this.setClusterAccountId(clusterEndpoint, session.account.id);
+				return { session: undefined, interactive: true };
 			}
 			this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.complete', {
 				promptMode,
 				sessionFound: !!session,
 				accountRef: databaseListTraceRef(session?.account?.id),
 			});
-			return { session, accountId: session?.account?.id };
+			return { session, interactive: true };
 		} catch (e) {
 			if (this.isLikelyCancellationError(e)) {
-				this.markAuthCancelled(clusterEndpoint);
-				try { await this.clearClusterAccountId(clusterEndpoint); } catch { /* ignore */ }
+				this.markAuthCancelled(authIdentity);
 				this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.cancelled', {
 					promptMode,
 				});
-				return { session: undefined, accountId: undefined };
+				return { session: undefined, interactive: true };
 			}
 			this.traceDatabaseDiscovery(opts.traceId, 'auth.session.interactive.failed', {
 				promptMode,
@@ -837,19 +983,18 @@ export class KustoQueryClient {
 		}
 	}
 
-	private async withClusterAuthLock(clusterEndpoint: string, fn: () => Promise<void>): Promise<void> {
-		const existing = this.authLocksByCluster.get(clusterEndpoint);
-		if (existing) {
-			await existing;
-		}
-		let resolveFn: (() => void) | undefined;
-		const p = new Promise<void>((resolve) => { resolveFn = resolve; });
-		this.authLocksByCluster.set(clusterEndpoint, p);
+	private async withAuthLock<T>(authIdentity: string, fn: () => Promise<T>): Promise<T> {
+		const previous = this.authLocksByIdentity.get(authIdentity) ?? Promise.resolve();
+		let release!: () => void;
+		const current = new Promise<void>(resolve => { release = resolve; });
+		const tail = previous.catch(() => undefined).then(() => current);
+		this.authLocksByIdentity.set(authIdentity, tail);
+		await previous.catch(() => undefined);
 		try {
-			await fn();
+			return await fn();
 		} finally {
-			try { resolveFn?.(); } catch { /* ignore */ }
-			this.authLocksByCluster.delete(clusterEndpoint);
+			release();
+			if (this.authLocksByIdentity.get(authIdentity) === tail) this.authLocksByIdentity.delete(authIdentity);
 		}
 	}
 
@@ -859,7 +1004,10 @@ export class KustoQueryClient {
 	): Promise<CachedClientEntry>
 	{
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
+		if (!clusterEndpoint) throw new Error('Cluster URL is missing.');
 		const storeInMain = opts.storeInMainClientCache !== false;
+		const preference = this.getPreference(connection);
+		const lockKey = this.authLockKey(connection, preference);
 		this.traceDatabaseDiscovery(opts.traceId, 'auth.client.create.start', {
 			connectionId: connection.id,
 			clusterEndpoint,
@@ -867,63 +1015,74 @@ export class KustoQueryClient {
 			promptMode: opts.promptMode ?? 'default',
 			skipSilent: !!opts.skipSilent,
 			storeInMainCache: storeInMain,
-			waitingForClusterAuthLock: this.authLocksByCluster.has(clusterEndpoint),
+			waitingForClusterAuthLock: this.authLocksByIdentity.has(lockKey),
 		});
 
 		// Ensure we don't race multiple auth prompts for the same cluster.
 		let created: CachedClientEntry | undefined;
 		try {
-			await this.withClusterAuthLock(clusterEndpoint, async () => {
+			await this.withAuthLock(lockKey, async () => {
 			this.traceDatabaseDiscovery(opts.traceId, 'auth.client.create.lock-acquired', {
 				clusterEndpoint,
 			});
 			// Re-check cache after waiting.
-			const mappedAccountId = this.getClusterAccountId(clusterEndpoint);
-			if (storeInMain && mappedAccountId) {
+			if (storeInMain && !opts.skipSilent) {
 				const existing = this.clients.get(connection.id);
-				if (existing && existing.clusterEndpoint === clusterEndpoint && existing.accountId === mappedAccountId) {
+				if (this.isEntryCompatible(existing, connection, preference)) {
 					created = existing;
 					this.traceDatabaseDiscovery(opts.traceId, 'auth.client.reused-after-lock', {
 						connectionId: connection.id,
-						accountRef: databaseListTraceRef(existing.accountId),
+						accountRef: databaseListTraceRef(existing?.auth.accountId),
 					});
 					return;
 				}
 			}
 
-			// Create client with the best session we can get (silent first, then optional interactive).
-			// promptMode is only used for the final interactive step.
-			const clusterEndpoint2 = this.normalizeClusterEndpoint(connection.clusterUrl);
-			const { session, accountId } = await this.getSessionForCluster(clusterEndpoint2, {
-				interactiveIfNeeded: opts.interactiveIfNeeded,
-				promptMode: opts.promptMode ?? 'default',
-				skipSilent: !!opts.skipSilent,
-				traceId: opts.traceId,
-			});
-			if (!session || !accountId) {
-				// If the user cancelled the auth prompt, treat as a cancellation so callers can
-				// avoid retrying or surfacing scary error UI.
-				throw this.createAuthCancelledError();
+			const candidates = await this.getAccountCandidates(preference);
+			if (!opts.skipSilent) {
+				for (const candidate of candidates) {
+					const requested = await this.requestSession(connection, preference, candidate, {
+						interactiveIfNeeded: false,
+						traceId: opts.traceId,
+					});
+					if (requested.session) {
+						created = await this.createClientEntry(connection, requested.session, preference, opts.traceId);
+						break;
+					}
+				}
+				if (!created && preference.mode === 'automatic') {
+					const requested = await this.requestSession(connection, preference, undefined, {
+						interactiveIfNeeded: false,
+						traceId: opts.traceId,
+					});
+					if (requested.session) created = await this.createClientEntry(connection, requested.session, preference, opts.traceId);
+				}
 			}
-			try {
-				await this.upsertKnownAccount(session.account);
-				await this.setClusterAccountId(clusterEndpoint2, session.account.id);
-			} catch {
-				// ignore
+
+			if (!created && opts.interactiveIfNeeded) {
+				const requestedAccount = preference.mode === 'explicit' ? candidates[0] : undefined;
+				const requested = await this.requestSession(connection, preference, requestedAccount, {
+					interactiveIfNeeded: true,
+					promptMode: opts.promptMode ?? 'default',
+					skipSilent: true,
+					traceId: opts.traceId,
+				});
+				if (!requested.session) throw this.createAuthCancelledError();
+				created = await this.createClientEntry(connection, requested.session, preference, opts.traceId);
 			}
-			const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
-			const effectiveToken = await this.getEffectiveAccessToken(session, opts.traceId);
-			const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint2, effectiveToken);
-			kcsb.applicationNameForTracing = KustoQueryClient.APPLICATION_NAME;
-			const entry: CachedClientEntry = { client: new Client(kcsb), clusterEndpoint: clusterEndpoint2, accountId };
+
+			if (!created) {
+				throw Object.assign(new Error(preference.mode === 'explicit'
+					? `The selected Microsoft account is unavailable for connection "${connection.name}".`
+					: 'No Microsoft account session is available.'), { statusCode: 401 });
+			}
 			if (storeInMain) {
-				this.clients.set(connection.id, entry);
+				this.clients.set(connection.id, created);
 			}
-			created = entry;
 			this.traceDatabaseDiscovery(opts.traceId, 'auth.client.created', {
 				connectionId: connection.id,
-				clusterEndpoint: clusterEndpoint2,
-				accountRef: databaseListTraceRef(accountId),
+				clusterEndpoint,
+				accountRef: databaseListTraceRef(created.auth.accountId),
 				storedInMainCache: storeInMain,
 			});
 			});
@@ -942,192 +1101,246 @@ export class KustoQueryClient {
 
 	private async executeWithAuthRetry<T>(
 		connection: KustoConnection,
-		operation: (client: any) => Promise<T>,
-		opts?: { allowInteractive?: boolean; cancelableKey?: string; onClient?: (client: any) => void; traceId?: string; operationName?: string }
+		operation: (client: any, auth?: KustoAuthContext) => Promise<T>,
+		opts?: AuthOperationOptions<T>,
 	): Promise<T> {
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		const allowInteractive = opts?.allowInteractive !== false;
+		const preference = this.getPreference(connection);
+		let revision = this.getConnectionRevision(connection.id);
+		let authRevision = this.authRevision;
+		const candidates = await this.getAccountCandidates(preference);
+		const attemptedAccounts = new Set<string>();
+		let lastAuthError: unknown;
+		let rejectedResult: { result: T; auth: KustoAuthContext } | undefined;
+		const returnRejectedResult = (): T => {
+			if (!rejectedResult) throw new Error('No rejected authentication result is available.');
+			try { opts?.onClient?.(undefined, rejectedResult.auth); } catch { /* ignore */ }
+			return rejectedResult.result;
+		};
 		this.traceDatabaseDiscovery(opts?.traceId, 'auth.execute.start', {
 			operation: opts?.operationName ?? 'kusto-operation',
 			connectionId: connection.id,
 			clusterEndpoint,
 			allowInteractive,
 			cancelable: !!opts?.cancelableKey,
+			preferenceMode: preference.mode,
 		});
 
-		// First attempt: use existing cached client (if any).
-		try {
-			const client = opts?.cancelableKey
-				? await this.getOrCreateCancelableClient(connection, opts.cancelableKey, { interactiveIfNeeded: allowInteractive })
-				: await this.getOrCreateClient(connection, { interactiveIfNeeded: allowInteractive, traceId: opts?.traceId });
-			try { opts?.onClient?.(client); } catch { /* ignore */ }
-			this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.start', { attempt: 'initial' });
-			const result = await operation(client);
-			this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.complete', { attempt: 'initial' });
-			return result;
-		} catch (error) {
-			const isAuthError = this.isAuthError(error);
-			this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.failed', {
-				attempt: 'initial',
-				isAuthError,
-				...getDatabaseListErrorDetails(error),
-			});
-			if (!isAuthError) {
-				throw error;
+		const assertCurrentRevision = (accountId?: string, accountRevision?: number) => {
+			if (this.getConnectionRevision(connection.id) !== revision || this.authRevision !== authRevision) {
+				throw new QueryCancelledError('Authentication changed while the Kusto operation was running');
 			}
-			// Evict cached clients for this connection so we can retry with a different session/account.
-			try {
-				const existing = this.clients.get(connection.id);
-				this.clients.delete(connection.id);
-				existing?.client?.close?.();
-			} catch {
-				// ignore
+			if (accountId && accountRevision !== undefined && this.getAccountRevision(accountId) !== accountRevision) {
+				throw new QueryCancelledError('The Microsoft account changed while the Kusto operation was running');
 			}
+		};
+
+		const cacheEntry = (entry: CachedClientEntry) => {
 			if (opts?.cancelableKey) {
-				try {
-					const existing = this.cancelableClientsByKey.get(opts.cancelableKey);
-					this.cancelableClientsByKey.delete(opts.cancelableKey);
-					existing?.client?.close?.();
-				} catch {
-					// ignore
-				}
+				this.cancelableClientsByKey.set(this.cancelableCacheKey(connection, opts.cancelableKey, preference), entry);
+			} else {
+				this.clients.set(connection.id, entry);
 			}
-			this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.clients-evicted', {
-				connectionId: connection.id,
-			});
-			// Retry path: try known accounts silently in order; if still failing and allowed, prompt.
-			// We model this by attempting to (re)create a client and then re-run operation.
-			const known = this.getKnownAccounts().sort((a, b) => (b.lastUsedAt ?? 0) - (a.lastUsedAt ?? 0));
-			this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.known-accounts.start', {
-				knownAccountCount: known.length,
-			});
-			for (let index = 0; index < known.length; index++) {
-				const acct = known[index];
-				try {
-					this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.known-account.start', {
-						candidate: index + 1,
-						candidateCount: known.length,
-						accountRef: databaseListTraceRef(acct.id),
-					});
-					const session = await vscode.authentication.getSession(
-						KustoQueryClient.AUTH_PROVIDER_ID,
-						[...KustoQueryClient.AUTH_SCOPES],
-						{ silent: true, account: { id: acct.id, label: acct.label } }
-					);
-					if (!session) {
-						this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.known-account.unavailable', {
-							candidate: index + 1,
-							accountRef: databaseListTraceRef(acct.id),
-						});
-						continue;
-					}
-					const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
-					const effectiveToken = await this.getEffectiveAccessToken(session, opts?.traceId);
-					const kcsb = KustoConnectionStringBuilder.withAccessToken(clusterEndpoint, effectiveToken);
-					kcsb.applicationNameForTracing = KustoQueryClient.APPLICATION_NAME;
-					const client = new Client(kcsb);
-					await this.setClusterAccountId(clusterEndpoint, session.account.id);
-					await this.upsertKnownAccount(session.account);
-					if (opts?.cancelableKey) {
-						this.cancelableClientsByKey.set(opts.cancelableKey, { client, clusterEndpoint, accountId: session.account.id });
-					} else {
-						this.clients.set(connection.id, { client, clusterEndpoint, accountId: session.account.id });
-					}
-					try { opts?.onClient?.(client); } catch { /* ignore */ }
-					this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.start', {
-						attempt: `known-account-${index + 1}`,
-						accountRef: databaseListTraceRef(session.account.id),
-					});
-					const result = await operation(client);
-					this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.complete', {
-						attempt: `known-account-${index + 1}`,
-						accountRef: databaseListTraceRef(session.account.id),
-					});
-					return result;
-				} catch (err2) {
-					const retryIsAuthError = this.isAuthError(err2);
-					this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.known-account.failed', {
-						candidate: index + 1,
-						accountRef: databaseListTraceRef(acct.id),
-						isAuthError: retryIsAuthError,
-						...getDatabaseListErrorDetails(err2),
-					});
-					if (retryIsAuthError) {
-						continue;
-					}
-					throw err2;
-				}
+		};
+
+		const evictEntry = (entry: CachedClientEntry | undefined) => {
+			if (!entry) return;
+			for (const [key, candidate] of [...this.clients]) {
+				if (candidate === entry || candidate.client === entry.client) this.clients.delete(key);
 			}
-
-			if (!allowInteractive) {
-				this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.interactive.skipped', {
-					reason: 'interactive-disabled',
-				});
-				throw error;
+			for (const [key, candidate] of [...this.cancelableClientsByKey]) {
+				if (candidate === entry || candidate.client === entry.client) this.cancelableClientsByKey.delete(key);
 			}
+			this.closeEntry(entry);
+		};
 
-			// Interactive recovery:
-			// 1) Clear session preference so the user can pick another existing account.
-			// 2) If we still get an auth error, force a new session (sign in / add account).
-			const tryInteractive = async (promptMode: SessionPromptMode) => {
-				this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.interactive.start', { promptMode });
-				try {
-					if (opts?.cancelableKey) {
-						const created = await this.createClientWithRetry(connection, {
-							interactiveIfNeeded: true,
-							storeInMainClientCache: false,
-							promptMode,
-							skipSilent: true,
-							traceId: opts.traceId,
-						});
-						this.cancelableClientsByKey.set(opts.cancelableKey, created);
-						try { opts?.onClient?.(created.client); } catch { /* ignore */ }
-						const result = await operation(created.client);
-						this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.interactive.complete', { promptMode });
-						return result;
-					}
-					const created = await this.createClientWithRetry(connection, {
-						interactiveIfNeeded: true,
-						promptMode,
-						skipSilent: true,
-						traceId: opts?.traceId,
-					});
-					try { opts?.onClient?.(created.client); } catch { /* ignore */ }
-					const result = await operation(created.client);
-					this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.interactive.complete', { promptMode });
-					return result;
-				} catch (interactiveError) {
-					this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.interactive.failed', {
-						promptMode,
-						isAuthError: this.isAuthError(interactiveError),
-						...getDatabaseListErrorDetails(interactiveError),
-					});
-					throw interactiveError;
-				}
-			};
-
+		type Attempt = { kind: 'accepted'; result: T } | { kind: 'rejected' } | { kind: 'auth-error'; error: unknown };
+		const adoptAcquiredSessionRevision = () => {
+			if (this.getConnectionRevision(connection.id) !== revision) {
+				throw new QueryCancelledError('Authentication changed while the Kusto client was being acquired');
+			}
+			authRevision = this.authRevision;
+		};
+		const attempt = async (entry: CachedClientEntry, label: string): Promise<Attempt> => {
+			attemptedAccounts.add(entry.auth.accountId);
+			const accountRevision = this.getAccountRevision(entry.auth.accountId);
 			try {
-				return await tryInteractive('clearPreference');
-			} catch (e2) {
-				if (!this.isAuthError(e2)) {
-					throw e2;
+				assertCurrentRevision(entry.auth.accountId, accountRevision);
+				try { opts?.onClient?.(entry.client, entry.auth); } catch { /* ignore */ }
+				this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.start', {
+					attempt: label,
+					accountRef: databaseListTraceRef(entry.auth.accountId),
+				});
+				const result = await operation(entry.client, entry.auth);
+				assertCurrentRevision(entry.auth.accountId, accountRevision);
+				if (opts?.isSuccessfulResult && !opts.isSuccessfulResult(result)) {
+					rejectedResult = { result, auth: entry.auth };
+					this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.rejected-result', {
+						attempt: label,
+						accountRef: databaseListTraceRef(entry.auth.accountId),
+					});
+					if (preference.mode === 'automatic') evictEntry(entry);
+					return { kind: 'rejected' };
 				}
-				return await tryInteractive('forceNewSession');
+				if (opts?.persistAuthSuccess !== false) {
+					const identityChanged = await this.authPreferences?.recordSuccessfulAccount(connection.id, entry.auth.account, entry.auth.accountPartition) ?? false;
+					if (identityChanged) {
+						revision = this.getConnectionRevision(connection.id);
+						authRevision = this.authRevision;
+					}
+					assertCurrentRevision(entry.auth.accountId, accountRevision);
+				}
+				this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.complete', {
+					attempt: label,
+					accountRef: databaseListTraceRef(entry.auth.accountId),
+				});
+				return { kind: 'accepted', result };
+			} catch (error) {
+				const isAuthError = this.isAuthError(error);
+				this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.failed', {
+					attempt: label,
+					isAuthError,
+					...getDatabaseListErrorDetails(error),
+				});
+				if (!isAuthError) throw error;
+				lastAuthError = error;
+				evictEntry(entry);
+				return { kind: 'auth-error', error };
+			}
+		};
+
+		const initialClient = opts?.cancelableKey
+			? await this.getOrCreateCancelableClient(connection, opts.cancelableKey, { interactiveIfNeeded: false }).catch(error => {
+				lastAuthError = error;
+				this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.failed', {
+					attempt: 'initial',
+					isAuthError: this.isAuthError(error),
+					...getDatabaseListErrorDetails(error),
+				});
+				return undefined;
+			})
+			: await this.getOrCreateClient(connection, { interactiveIfNeeded: false, traceId: opts?.traceId }).catch(error => {
+				lastAuthError = error;
+				this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.failed', {
+					attempt: 'initial',
+					isAuthError: this.isAuthError(error),
+					...getDatabaseListErrorDetails(error),
+				});
+				return undefined;
+			});
+		if (initialClient) {
+			const auth = this.authContextByClient.get(initialClient);
+			if (!auth) {
+				try {
+					this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.start', { attempt: 'initial' });
+					const result = await operation(initialClient);
+					this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.complete', { attempt: 'initial' });
+					return result;
+				} catch (error) {
+					const isAuthError = this.isAuthError(error);
+					this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.failed', {
+						attempt: 'initial',
+						isAuthError,
+						...getDatabaseListErrorDetails(error),
+					});
+					if (!isAuthError) throw error;
+					lastAuthError = error;
+				}
+			} else {
+				adoptAcquiredSessionRevision();
+				const initial = await attempt({ client: initialClient, auth }, 'initial');
+				if (initial.kind === 'accepted') return initial.result;
+				if (initial.kind === 'rejected' && preference.mode === 'explicit') return returnRejectedResult();
 			}
 		}
+
+		this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.clients-evicted', { connectionId: connection.id });
+		this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.known-accounts.start', { knownAccountCount: candidates.length });
+
+		for (let index = 0; index < candidates.length; index++) {
+			const candidate = candidates[index];
+			if (attemptedAccounts.has(candidate.id)) continue;
+			try {
+				const requested = await this.requestSession(connection, preference, candidate, {
+					interactiveIfNeeded: false,
+					traceId: opts?.traceId,
+				});
+				if (!requested.session) continue;
+				const entry = await this.createClientEntry(connection, requested.session, preference, opts?.traceId);
+				cacheEntry(entry);
+				adoptAcquiredSessionRevision();
+				const result = await attempt(entry, `known-account-${index + 1}`);
+				if (result.kind === 'accepted') return result.result;
+				if (result.kind === 'rejected' && preference.mode === 'explicit') return returnRejectedResult();
+			} catch (error) {
+				if (!this.isAuthError(error)) throw error;
+				lastAuthError = error;
+			}
+		}
+
+		if (!allowInteractive) {
+			this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.failed', {
+				attempt: 'all-silent',
+				isAuthError: true,
+				...getDatabaseListErrorDetails(lastAuthError),
+			});
+			this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.interactive.skipped', { reason: 'interactive-disabled' });
+			if (rejectedResult !== undefined) return returnRejectedResult();
+			throw lastAuthError ?? Object.assign(new Error('No Microsoft account session is available.'), { statusCode: 401 });
+		}
+
+		const interactiveModes: SessionPromptMode[] = preference.mode === 'explicit'
+			? ['clearPreference']
+			: ['clearPreference', 'forceNewSession'];
+		for (const promptMode of interactiveModes) {
+			this.traceDatabaseDiscovery(opts?.traceId, 'auth.retry.interactive.start', { promptMode });
+			try {
+				const created = await this.createClientWithRetry(connection, {
+					interactiveIfNeeded: true,
+					storeInMainClientCache: false,
+					promptMode,
+					skipSilent: true,
+					traceId: opts?.traceId,
+				});
+				cacheEntry(created);
+				adoptAcquiredSessionRevision();
+				const result = await attempt(created, `interactive-${promptMode}`);
+				if (result.kind === 'accepted') return result.result;
+				if (result.kind === 'rejected' && preference.mode === 'explicit') return returnRejectedResult();
+			} catch (error) {
+				if (error instanceof QueryCancelledError || this.isLikelyCancellationError(error)) throw error;
+				if (!this.isAuthError(error)) throw error;
+				lastAuthError = error;
+			}
+		}
+
+		if (rejectedResult !== undefined) return returnRejectedResult();
+		throw lastAuthError ?? Object.assign(new Error('Failed to authenticate with Microsoft.'), { statusCode: 401 });
 	}
 
 	private isLikelyCancellationError(error: unknown): boolean {
 		return isLikelyCancellationErrorFn(error);
 	}
 
-	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false, opts?: DatabaseDiscoveryOptions): Promise<string[]> {
+	public getAccountPartition(connection: KustoConnection): string | undefined {
+		const accountId = this.authPreferences?.getPreferredAccountId(connection.id);
+		return accountId ? this.authPreferences?.getAccountPartition(connection.authorityId, accountId) : undefined;
+	}
+
+	async getDatabasesWithIdentity(connection: KustoConnection, forceRefresh: boolean = false, opts?: DatabaseDiscoveryOptions): Promise<KustoDatabaseDiscoveryResult> {
 		const traceId = String(opts?.traceId || createDatabaseListTraceId());
 		const startedAt = Date.now();
 		try {
 			this.syncCacheClearEpoch();
 			const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
-			const cached = this.databaseCache.get(clusterEndpoint);
+			const preference = this.getPreference(connection);
+			const preferredPartition = this.getAccountPartition(connection);
+			const cacheGeneration = this.connectionCache?.captureGeneration(connection.id, preferredPartition);
+			const cacheKey = preferredPartition ? this.databaseCacheKey(connection, preferredPartition) : undefined;
+			const cached = cacheKey ? this.databaseCache.get(cacheKey) : undefined;
+			const allowLegacy = preference.mode === 'automatic' && normalizeKustoAuthorityId(connection.authorityId) === undefined;
+			const persisted = this.connectionCache?.getDatabases(connection.id, preferredPartition, allowLegacy) ?? [];
 			const cacheAgeMs = cached ? Date.now() - cached.timestamp : undefined;
 			this.traceDatabaseDiscovery(traceId, 'client.start', {
 				source: opts?.source ?? 'direct',
@@ -1137,7 +1350,7 @@ export class KustoQueryClient {
 				allowInteractive: opts?.allowInteractive !== false,
 				cachePresent: !!cached,
 				cacheAgeMs,
-				cachedCount: cached?.databases.length,
+				cachedCount: cached?.databases.length ?? persisted.length,
 			});
 			// Check cache first
 			if (!forceRefresh) {
@@ -1146,7 +1359,14 @@ export class KustoQueryClient {
 						cacheAgeMs,
 						databaseCount: cached.databases.length,
 					});
-					return cached.databases;
+					return { databases: cached.databases, accountPartition: preferredPartition, cacheGeneration, fromCache: true };
+				}
+				if (persisted.length > 0) {
+					this.traceDatabaseDiscovery(traceId, 'client.cache.hit', {
+						source: 'persisted',
+						databaseCount: persisted.length,
+					});
+					return { databases: persisted, accountPartition: preferredPartition, cacheGeneration, fromCache: true };
 				}
 			}
 			this.traceDatabaseDiscovery(traceId, 'client.cache.miss', {
@@ -1158,10 +1378,33 @@ export class KustoQueryClient {
 				clientRequestId: props.clientRequestId,
 				command: '.show databases',
 			});
+			let operationAuth: KustoAuthContext | undefined;
+			let operationCacheGeneration = cacheGeneration;
+			const generationsByPartition = new Map<string, KustoConnectionCacheGeneration>();
 			const result = await this.executeWithAuthRetry<any>(
 				connection,
 				(client) => client.execute('', '.show databases', props),
-				{ allowInteractive: opts?.allowInteractive, traceId, operationName: 'get-databases' }
+				{
+					allowInteractive: opts?.allowInteractive,
+					traceId,
+					operationName: 'get-databases',
+					persistAuthSuccess: opts?.persistIdentity !== false,
+					onClient: (_client, auth) => {
+						operationAuth = auth;
+						let generation = generationsByPartition.get(auth.accountPartition);
+						if (!generation) {
+							generation = this.connectionCache?.captureGeneration(connection.id, auth.accountPartition);
+							if (generation) generationsByPartition.set(auth.accountPartition, generation);
+						}
+						operationCacheGeneration = generation;
+					},
+					isSuccessfulResult: response => {
+						const primary = response?.primaryResults?.[0];
+						if (!primary || typeof primary.rows !== 'function') return false;
+						for (const _row of primary.rows()) return true;
+						return false;
+					},
+				}
 			);
 			this.traceDatabaseDiscovery(traceId, 'client.request.complete', {
 				clientRequestId: props.clientRequestId,
@@ -1192,18 +1435,38 @@ export class KustoQueryClient {
 				}
 			}
 			
-			// Update cache
-			this.databaseCache.set(clusterEndpoint, {
-				databases,
-				timestamp: Date.now()
-			});
+			const resolvedPartition = databases.length === 0
+				? this.getAccountPartition(connection)
+				: operationAuth?.accountPartition;
+			const resolvedCacheGeneration = databases.length === 0 && resolvedPartition
+				? generationsByPartition.get(resolvedPartition) ?? cacheGeneration
+				: operationCacheGeneration;
+			let cacheUpdated = false;
+			if (opts?.persistIdentity !== false && databases.length > 0 && resolvedPartition) {
+				cacheUpdated = await this.connectionCache?.setDatabases(connection.id, resolvedPartition, databases, resolvedCacheGeneration) ?? true;
+			}
+			const currentGeneration = resolvedPartition
+				? this.connectionCache?.captureGeneration(connection.id, resolvedPartition)
+				: this.connectionCache?.captureGeneration(connection.id, preferredPartition);
+			if (resolvedCacheGeneration !== undefined && currentGeneration !== undefined
+				&& (currentGeneration.global !== resolvedCacheGeneration.global
+					|| currentGeneration.connection !== resolvedCacheGeneration.connection
+					|| currentGeneration.partition !== resolvedCacheGeneration.partition)) {
+				throw new QueryCancelledError('Cached values changed while database discovery was running');
+			}
+			if (cacheUpdated && resolvedPartition) {
+				this.databaseCache.set(this.databaseCacheKey(connection, resolvedPartition), {
+					databases,
+					timestamp: Date.now(),
+				});
+			}
 			this.traceDatabaseDiscovery(traceId, 'client.success', {
 				databaseCount: databases.length,
 				elapsedMs: Date.now() - startedAt,
-				cacheUpdated: true,
+				cacheUpdated,
 			});
 			
-			return databases;
+			return { databases, accountPartition: resolvedPartition, cacheGeneration: resolvedCacheGeneration, fromCache: false };
 		} catch (error) {
 			this.traceDatabaseDiscovery(traceId, 'client.failure', {
 				elapsedMs: Date.now() - startedAt,
@@ -1219,20 +1482,35 @@ export class KustoQueryClient {
 		}
 	}
 
+	async getDatabases(connection: KustoConnection, forceRefresh: boolean = false, opts?: DatabaseDiscoveryOptions): Promise<string[]> {
+		return (await this.getDatabasesWithIdentity(connection, forceRefresh, opts)).databases;
+	}
+
 	async executeQuery(
 		connection: KustoConnection,
 		database: string,
 		query: string
 	): Promise<QueryResult> {
+		return (await this.executeQueryWithIdentity(connection, database, query)).result;
+	}
+
+	async executeQueryWithIdentity(
+		connection: KustoConnection,
+		database: string,
+		query: string
+	): Promise<QueryResultWithIdentity> {
 		const startTime = Date.now();
 		
 		let requestClientActivityId: string | undefined;
+		let operationAuth: KustoAuthContext | undefined;
 		try {
 			const queryTimeoutMin = vscode.workspace.getConfiguration('kustoWorkbench').get<number>('queryTimeout', 20);
 			const clientTimeoutMs = queryTimeoutMin > 0 ? queryTimeoutMin * 60 * 1000 : undefined;
 			const props = await this.createRequestProperties('execute_query', clientTimeoutMs);
 			requestClientActivityId = props.clientRequestId;
-			const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, query, props));
+			const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, query, props), {
+				onClient: (_client, auth) => { operationAuth = auth; },
+			});
 			const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
 			const clientActivityId = this.extractClientActivityId(result);
 			const serverStats = this.extractServerStats(result);
@@ -1266,15 +1544,18 @@ export class KustoQueryClient {
 			}
 			
 			return {
-				columns,
-				rows,
-				metadata: {
-					cluster: connection.clusterUrl,
-					database: database,
-					executionTime,
-					clientActivityId,
-					serverStats
-				}
+				result: {
+					columns,
+					rows,
+					metadata: {
+						cluster: connection.clusterUrl,
+						database: database,
+						executionTime,
+						clientActivityId,
+						serverStats
+					}
+				},
+				accountPartition: operationAuth?.accountPartition,
 			};
 		} catch (error) {
 			getWorkbenchLogger().error('Error executing query:', error instanceof Error ? error : String(error));
@@ -1302,6 +1583,7 @@ export class KustoQueryClient {
 		const key = String(clientKey || connection.id || '').trim() || 'default';
 		const clientActivityId = `KW.execute_query;${randomUUID()}`;
 		let client: any | undefined;
+		let capturedAuth: KustoAuthContext | undefined;
 		let cancelled = false;
 		let settled = false;
 		let submitted = false;
@@ -1324,7 +1606,10 @@ export class KustoQueryClient {
 				return;
 			}
 			serverCancelStarted = true;
-			void this.cancelQueryByClientActivityId(connection, database, clientActivityId).catch(() => {
+			const cancellation = capturedAuth
+				? this.cancelQueryByClientActivityId(connection, database, clientActivityId, 'Canceled from Kusto Workbench', capturedAuth)
+				: this.cancelQueryByClientActivityId(connection, database, clientActivityId);
+			void cancellation.catch(() => {
 				// Server-side cancellation is best-effort. Local cancellation already won.
 			});
 		};
@@ -1343,8 +1628,8 @@ export class KustoQueryClient {
 			}
 			try {
 				// Evict the client for this key so the next run starts clean.
-				this.cancelableClientsByKey.delete(key);
-				client?.close?.();
+				this.evictCancelableClient(connection, key, client);
+				if (!client) this.evictCancelableClient(connection, key);
 			} catch {
 				// ignore
 			}
@@ -1357,11 +1642,13 @@ export class KustoQueryClient {
 				throw new QueryCancelledError();
 			}
 			client = await this.getOrCreateCancelableClient(connection, key);
+			if (client && (typeof client === 'object' || typeof client === 'function')) {
+				capturedAuth = this.authContextByClient.get(client);
+			}
 			// If we were cancelled while acquiring/creating the client, do not execute.
 			if (cancelled) {
 				try {
-					this.cancelableClientsByKey.delete(key);
-					client?.close?.();
+					this.evictCancelableClient(connection, key, client);
 				} catch {
 					// ignore
 				}
@@ -1390,7 +1677,11 @@ export class KustoQueryClient {
 						submitted = true;
 						return c.execute(database, query, props);
 					},
-					{ allowInteractive: true, cancelableKey: key, onClient: (c2) => { client = c2; } }
+					{
+						allowInteractive: true,
+						cancelableKey: key,
+						onClient: (c2, auth) => { client = c2; capturedAuth = auth; },
+					}
 				);
 				const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
 				const responseClientActivityId = this.extractClientActivityId(result) || requestClientActivityId;
@@ -1436,8 +1727,7 @@ export class KustoQueryClient {
 				// If we hit a non-cancellation error, evict+close this client so a subsequent run
 				// can recreate a fresh connection/session.
 				try {
-					this.cancelableClientsByKey.delete(key);
-					client?.close?.();
+					this.evictCancelableClient(connection, key, client);
 				} catch {
 					// ignore
 				}
@@ -1461,7 +1751,7 @@ export class KustoQueryClient {
 			settled = true;
 		});
 
-		return { promise, cancel, clientActivityId };
+		return { promise, cancel, clientActivityId, getAccountPartition: () => capturedAuth?.accountPartition };
 	}
 
 	async getDatabaseSchema(
@@ -1472,7 +1762,9 @@ export class KustoQueryClient {
 	): Promise<DatabaseSchemaResult> {
 		this.syncCacheClearEpoch();
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
-		const cacheKey = kustoDatabaseKey(clusterEndpoint, database);
+		const preferredPartition = this.getAccountPartition(connection);
+		const cacheGeneration = this.context ? captureSchemaCacheGeneration(this.context.globalStorageUri, connection.id, preferredPartition) : undefined;
+		const cacheKey = preferredPartition ? this.schemaCacheKey(connection, preferredPartition, database) : undefined;
 		const traceId = String(opts?.traceId || '').trim() || undefined;
 		const trace = (event: string, details: Record<string, unknown> = {}) => this.traceDatabaseDiscovery(traceId, `schema.${event}`, {
 			source: opts?.source || 'schema',
@@ -1482,12 +1774,14 @@ export class KustoQueryClient {
 		});
 		trace('start', { forceRefresh, allowInteractive: opts?.allowInteractive !== false });
 		if (!forceRefresh) {
-			const cached = this.schemaCache.get(cacheKey);
+			const cached = cacheKey ? this.schemaCache.get(cacheKey) : undefined;
 			if (cached && (Date.now() - cached.timestamp) < this.SCHEMA_CACHE_TTL) {
 				trace('cache.hit', { cacheAgeMs: Date.now() - cached.timestamp, hasRawSchemaJson: !!cached.schema.rawSchemaJson });
 				return {
 					schema: cached.schema,
 					fromCache: true,
+					accountPartition: preferredPartition,
+					cacheGeneration,
 					cacheAgeMs: Date.now() - cached.timestamp
 				};
 			}
@@ -1505,10 +1799,26 @@ export class KustoQueryClient {
 			try {
 				trace('command.start', { commandKind: command.endsWith('as json') ? 'json' : 'tabular', attempt: commandIndex + 1 });
 				const props = await this.createRequestProperties('get_schema');
+				let operationAuth: KustoAuthContext | undefined;
+				let operationCacheGeneration = cacheGeneration;
+				const generationsByPartition = new Map<string, SchemaCacheGeneration>();
 				const result = await this.executeWithAuthRetry<any>(
 					connection,
 					(client) => client.execute(database, command, props),
-					{ allowInteractive: opts?.allowInteractive, traceId, operationName: 'get-schema' }
+					{
+						allowInteractive: opts?.allowInteractive,
+						traceId,
+						operationName: 'get-schema',
+						onClient: (_client, auth) => {
+							operationAuth = auth;
+							let generation = generationsByPartition.get(auth.accountPartition);
+							if (!generation && this.context) {
+								generation = captureSchemaCacheGeneration(this.context.globalStorageUri, connection.id, auth.accountPartition);
+								generationsByPartition.set(auth.accountPartition, generation);
+							}
+							operationCacheGeneration = generation;
+						},
+					}
 				);
 				const debug = this.buildSchemaDebug(result, command);
 				const { schema, rawSchemaJson } = this.parseDatabaseSchemaResultWithRaw(result, command);
@@ -1518,15 +1828,28 @@ export class KustoQueryClient {
 					schema.rawSchemaJson = rawSchemaJson;
 				}
 
-				this.schemaCache.set(cacheKey, { schema, timestamp: Date.now() });
 				trace('success', {
 					commandKind: command.endsWith('as json') ? 'json' : 'tabular',
 					tableCount: Array.isArray(schema.tables) ? schema.tables.length : 0,
 					functionCount: Array.isArray(schema.functions) ? schema.functions.length : 0,
 					hasRawSchemaJson: !!schema.rawSchemaJson,
 				});
-				return { schema, fromCache: false, debug };
+				const resolvedPartition = operationAuth?.accountPartition;
+				const currentGeneration = resolvedPartition && this.context
+					? captureSchemaCacheGeneration(this.context.globalStorageUri, connection.id, resolvedPartition)
+					: undefined;
+				if (operationCacheGeneration !== undefined && currentGeneration !== undefined
+					&& (currentGeneration.global !== operationCacheGeneration.global
+						|| currentGeneration.connection !== operationCacheGeneration.connection
+						|| currentGeneration.partition !== operationCacheGeneration.partition)) {
+					throw new QueryCancelledError('Cached values changed while schema discovery was running');
+				}
+				if (resolvedPartition) {
+					this.schemaCache.set(this.schemaCacheKey(connection, resolvedPartition, database), { schema, timestamp: Date.now() });
+				}
+				return { schema, fromCache: false, accountPartition: resolvedPartition, cacheGeneration: operationCacheGeneration, debug };
 			} catch (e) {
+				if (e instanceof QueryCancelledError) throw e;
 				lastError = e;
 				trace('command.failed', {
 					commandKind: command.endsWith('as json') ? 'json' : 'tabular',
@@ -1598,8 +1921,18 @@ export class KustoQueryClient {
 		return finalizeSchemeFn(columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
 	}
 
-	dispose() {
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		for (const entry of this.clients.values()) this.closeEntry(entry);
+		for (const entry of this.cancelableClientsByKey.values()) this.closeEntry(entry);
 		this.clients.clear();
+		this.cancelableClientsByKey.clear();
+		this.databaseCache.clear();
+		this.schemaCache.clear();
+		this.authLocksByIdentity.clear();
+		this.authCancelledAtByIdentity.clear();
+		for (const subscription of this.subscriptions.splice(0)) subscription.dispose();
 	}
 }
 

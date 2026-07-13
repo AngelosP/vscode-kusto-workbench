@@ -9,10 +9,16 @@
  * Wired via `resolve.alias` in vitest.config.ts.
  */
 
-export class EventEmitter {
-	event = () => ({ dispose: () => {} });
-	fire() {}
-	dispose() {}
+export class EventEmitter<T = unknown> {
+	private readonly listeners = new Set<(event: T) => unknown>();
+	event = (listener: (event: T) => unknown) => {
+		this.listeners.add(listener);
+		return { dispose: () => { this.listeners.delete(listener); } };
+	};
+	fire(event: T) {
+		for (const listener of [...this.listeners]) listener(event);
+	}
+	dispose() { this.listeners.clear(); }
 }
 
 export interface Disposable {
@@ -245,6 +251,8 @@ export const workspace = {
 
 export const authentication = {
 	getSession: () => Promise.resolve(undefined),
+	getAccounts: () => Promise.resolve([]),
+	onDidChangeSessions: () => ({ dispose: () => {} }),
 };
 
 export const lm = {

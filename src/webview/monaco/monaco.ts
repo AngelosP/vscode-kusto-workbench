@@ -103,6 +103,7 @@ import {
 import { filterResolvableCrossClusterMarkers } from '../shared/kusto-diagnostic-marker-filter';
 import { decideKustoSupplementalCompletionPolicy } from '../shared/kusto-supplemental-completion-policy';
 import { kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
+import { getKustoSchemaIdentityKey, resolveKustoConnection } from '../../shared/kustoAuth.js';
 import {
 	connections,
 	monacoReadyPromise,
@@ -177,7 +178,7 @@ function __kustoGetBoxIdForEditor(ed: any): string {
 	return '';
 }
 
-function __kustoGetSchemaContextForBox(boxId: string): { connectionId: string; database: string; clusterUrl: string; schemaKey: string } | null {
+function __kustoGetSchemaContextForBox(boxId: string): { connectionId: string; accountPartition: string; database: string; clusterUrl: string; schemaKey: string } | null {
 	try {
 		let ownerId = boxId;
 		try {
@@ -201,10 +202,11 @@ function __kustoGetSchemaContextForBox(boxId: string): { connectionId: string; d
 		const selectedClusterUrl = ids.map(id => __kustoGetClusterUrl(id)).find(Boolean) || (typeof section?.getClusterUrl === 'function' ? String(section.getClusterUrl() || '') : '');
 		const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === connectionId) : null;
 		const clusterUrl = selectedClusterUrl || (conn && conn.clusterUrl ? String(conn.clusterUrl) : '');
-		if (!clusterUrl) {
+		const accountPartition = String(conn?.accountPartition || '').trim();
+		if (!clusterUrl || !connectionId || !accountPartition) {
 			return null;
 		}
-		return { connectionId, database, clusterUrl, schemaKey: kustoDatabaseKey(clusterUrl, database) };
+		return { connectionId, accountPartition, database, clusterUrl, schemaKey: getKustoSchemaIdentityKey(connectionId, accountPartition, clusterUrl, database) };
 	} catch {
 		return null;
 	}
@@ -256,6 +258,8 @@ async function __kustoFlushPendingSchemaWorkerUpdateForBox(boxId: string, option
 			() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey: pending.schemaKey, schemaSignature: pending.schemaSignature, modelUri }),
 			preparationToken,
 			options.contextIntent,
+			pending.connectionId,
+			pending.accountPartition,
 		)), preparationToken);
 		if (!applied) {
 			if (failureOwner && isKustoPreparationCurrent(failureOwner.token, {
@@ -576,15 +580,15 @@ let __kustoStatementSeparatorMinBlankLines = 1;
 let __kustoGetStatementBlocksFromModel: ((model: any) => any[]) | null = null;
 let __kustoIsSeparatorBlankLine: ((model: any, lineNumber: any) => boolean) | null = null;
 
-function __kustoClaimSchemaContextIntent(boxId: string, clusterUrl: string, database: string, modelUri: string): KustoSchemaContextIntent {
+function __kustoClaimSchemaContextIntent(boxId: string, clusterUrl: string, database: string, modelUri: string, connectionId: string, accountPartition: string): KustoSchemaContextIntent {
 	return __kustoSchemaContextIntents.claim({
 		boxId: String(boxId || ''),
-		schemaKey: kustoDatabaseKey(clusterUrl, database),
+		schemaKey: getKustoSchemaIdentityKey(connectionId, accountPartition, clusterUrl, database),
 		modelUri: String(modelUri || ''),
 	});
 }
 
-function __kustoQueueDatabaseContextSwitch(clusterUrl: string, database: string, modelUri: string, contextIntent: KustoSchemaContextIntent): Promise<boolean> {
+function __kustoQueueDatabaseContextSwitch(clusterUrl: string, database: string, modelUri: string, contextIntent: KustoSchemaContextIntent, connectionId: string, accountPartition: string): Promise<boolean> {
 	__kustoPrimarySchemaQueueGeneration++;
 	const mutationPromise = __kustoSchemaOperationQueue.then(async () => {
 		if (!__kustoSchemaContextIntents.isCurrent(contextIntent) || !__kustoSetDatabaseInContext) return false;
@@ -593,6 +597,8 @@ function __kustoQueueDatabaseContextSwitch(clusterUrl: string, database: string,
 			database,
 			modelUri,
 			() => __kustoSchemaContextIntents.isCurrent(contextIntent),
+			connectionId,
+			accountPartition,
 		);
 	}).catch((error: unknown) => {
 		traceFileOpen('monaco.schema.contextSwitch.error', { clusterUrl, database, modelUri, error: error instanceof Error ? error.message : String(error) });
@@ -634,6 +640,8 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 	clusterName?: string;
 	clusterUrl: string;
 	database: string;
+	connectionId: string;
+	accountPartition: string;
 	databaseInContext: string;
 	schemaKey: string;
 	modelKey: string;
@@ -757,7 +765,13 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 					cancelOwned();
 					return false;
 				}
-				__kustoSchemaTracker.schemaCache[args.schemaKey] = { rawSchemaJson: args.schemaObj, clusterUrl: args.clusterUrl, database: args.databaseInContext };
+				__kustoSchemaTracker.schemaCache[args.schemaKey] = {
+					rawSchemaJson: args.schemaObj,
+					clusterUrl: args.clusterUrl,
+					database: args.databaseInContext,
+					connectionId: args.connectionId,
+					accountPartition: args.accountPartition,
+				};
 				try {
 					await __kustoAddDatabaseAliasesToWorker(args.worker, args.modelKey, args.schemaObj, args.clusterName || args.clusterUrl, args.clusterUrl, args.databaseInContext, isCurrent);
 					if (!isCurrent()) {
@@ -817,6 +831,8 @@ export function __kustoRetryPrimarySchemaEnhancement(args: {
 	rawSchemaJson: any;
 	clusterUrl: string;
 	database: string;
+	connectionId: string;
+	accountPartition: string;
 	schemaKey: string;
 	modelUri: string;
 }): boolean {
@@ -865,6 +881,8 @@ export function __kustoRetryPrimarySchemaEnhancement(args: {
 				schemaObj: args.rawSchemaJson,
 				clusterUrl: args.clusterUrl,
 				database: args.database,
+				connectionId: args.connectionId,
+				accountPartition: args.accountPartition,
 				databaseInContext: args.database,
 				schemaKey,
 				modelKey: modelUri,
@@ -899,7 +917,7 @@ let __kustoAutoFindStateByBoxId: Record<string, any> = {};
 let __kustoMarkersEnabledModels: Set<string> = new Set();
 let __kustoPublishExactKustoMarkers: ((model: any, markers: any[]) => void) | null = null;
 let __kustoModelClusterMap: Record<string, string> = {};
-let __kustoMonacoDatabaseInContextByModel: Record<string, { clusterUrl: string; database: string } | null> = {};
+let __kustoMonacoDatabaseInContextByModel: Record<string, { clusterUrl: string; database: string; connectionId: string; accountPartition: string; schemaKey: string } | null> = {};
 let __kustoMonacoInitializedByModel: Record<string, boolean> = {};
 const __kustoAutocompleteTraceByModelUri: Record<string, string> = {};
 
@@ -1209,6 +1227,36 @@ const __kustoCrossClusterTrace: Array<Record<string, any>> = [];
 const __kustoSupplementalCoordinator = new KustoSupplementalSchemaCoordinator((event) => {
 	__kustoTraceCrossCluster(`supplemental.${event.event}`, event);
 });
+export function invalidateKustoSchemaIdentityState(): void {
+	__kustoSchemaClearGeneration++;
+	__kustoSchemaTracker.globalInitialized = false;
+	__kustoSchemaTracker.loadedSchemas = {};
+	__kustoSchemaTracker.loadedSchemasByModel = {};
+	__kustoSchemaTracker.databaseInContext = null;
+	__kustoSchemaTracker.schemaCache = {};
+	__kustoSchemaContextIntents.clear();
+	__kustoMonacoDatabaseInContextByModel = {};
+	__kustoMonacoInitializedByModel = {};
+	invalidateSchemaWorkerReadiness();
+	for (const modelUri of new Set(__kustoSupplementalCoordinator.getAllStates().map(state => state.modelUri))) {
+		__kustoSupplementalCoordinator.disposeModel(modelUri);
+	}
+	__kustoCrossClusterSchemas = {};
+	const clearPromise = __kustoSchemaOperationQueue.then(async () => {
+		if (!monaco?.languages?.kusto?.getKustoWorker) return;
+		const workerAccessor = await monaco.languages.kusto.getKustoWorker();
+		for (const model of monaco.editor.getModels?.() || []) {
+			try {
+				const worker = await workerAccessor(model.uri);
+				if (worker?.setSchema) {
+					await worker.setSchema({ cluster: { connectionString: '', databases: [] } });
+					__kustoWorkerSchemaRevision++;
+				}
+			} catch { /* best effort */ }
+		}
+	});
+	__kustoSchemaOperationQueue = clearPromise.catch(() => undefined);
+}
 
 function __kustoSanitizeTraceDetail(detail: Record<string, any>): Record<string, any> {
 	const out: Record<string, any> = {};
@@ -1599,13 +1647,20 @@ function __kustoInvalidateSupplementalApplicationsAfterWorkerReplace(reason: str
 
 async function __kustoRestoreOtherPrimaryApplicationsAfterWorkerReplace(worker: any, currentModelUri: string, reason: string): Promise<void> {
 	const currentBoxId = String(queryEditorBoxByModelUri?.[currentModelUri] || '');
+	const activeAccountPartition = __kustoSchemaTracker.databaseInContext?.accountPartition || '';
 	let restoredCount = 0;
 	let fallbackCount = 0;
 	for (const [boxId, readyState] of Object.entries(schemaWorkerReadyByBoxId)) {
 		if (!readyState || boxId === currentBoxId || readyState.status !== 'ready' || !readyState.schemaKey || !readyState.modelUri) continue;
 		const preparationToken = getKustoPreparationToken(boxId);
-		markSchemaWorkerApplyPending(boxId, readyState.schemaKey, readyState.schemaSignature, readyState.modelUri, preparationToken);
 		const cached = __kustoSchemaTracker.schemaCache[readyState.schemaKey];
+		if (!activeAccountPartition || cached?.accountPartition !== activeAccountPartition) {
+			invalidateSchemaWorkerReadinessForBox(boxId);
+			requireSchemaWorkerApply(boxId);
+			fallbackCount++;
+			continue;
+		}
+		markSchemaWorkerApplyPending(boxId, readyState.schemaKey, readyState.schemaSignature, readyState.modelUri, preparationToken);
 		let restored = false;
 		if (cached?.rawSchemaJson) {
 			const restoreOperation = __kustoAddDatabaseAliasesToWorker(
@@ -1940,7 +1995,14 @@ async function __kustoAddDatabaseAliasesToWorker(
 }
 
 function __kustoGetCrossClusterSchemaKey(clusterName: any, database: any): string {
-	return kustoDatabaseKey(clusterName, database);
+	try {
+		const resolution = resolveKustoConnection(connections || [], { clusterUrl: clusterName });
+		if (resolution.kind !== 'matched') return '';
+		const accountPartition = String((resolution.connection as any).accountPartition || '').trim();
+		return getKustoSchemaIdentityKey(resolution.connection.id, accountPartition, resolution.connection.clusterUrl, database);
+	} catch {
+		return '';
+	}
 }
 
 export function __kustoIsCurrentCrossClusterRequest(boxId: any, clusterName: any, database: any, requestToken: any): boolean {
@@ -2080,6 +2142,8 @@ export function __kustoMarkCrossClusterSchemaError(clusterName: any, database: a
 export function __kustoHandleCrossClusterSchemaData(message: {
 	clusterName: string;
 	clusterUrl: string;
+	connectionId: string;
+	accountPartition: string;
 	database: string;
 	boxId: string;
 	requestToken: string;
@@ -2089,8 +2153,9 @@ export function __kustoHandleCrossClusterSchemaData(message: {
 	rawSchemaJson: any;
 }): boolean {
 	const key = __kustoGetCrossClusterSchemaKey(message.clusterName, message.database);
+	const responseKey = getKustoSchemaIdentityKey(message.connectionId, message.accountPartition, message.clusterUrl, message.database);
 	const broker = key ? __kustoCrossClusterSchemas[key] : undefined;
-	if (!key || !message.requestToken || !broker || broker.requestToken !== message.requestToken) return false;
+	if (!key || responseKey !== key || !message.requestToken || !broker || broker.requestToken !== message.requestToken) return false;
 	broker.status = 'loaded';
 	broker.deadlineAt = undefined;
 	broker.revision = (broker.revision || 0) + 1;
@@ -2163,8 +2228,12 @@ export function __kustoInjectSupplementalSchemaForTest(args: {
 	rawSchemaJson: any;
 }): boolean {
 	const boxId = __kustoNormalizeCrossClusterBoxId(args.boxId);
+	const resolution = resolveKustoConnection(connections || [], { clusterUrl: args.clusterName });
+	if (resolution.kind !== 'matched') return false;
+	const connectionId = String(resolution.connection.id || '');
+	const accountPartition = String((resolution.connection as any).accountPartition || '');
 	const schemaKey = __kustoGetCrossClusterSchemaKey(args.clusterName, args.database);
-	if (!boxId || !schemaKey || !args.rawSchemaJson) return false;
+	if (!boxId || !schemaKey || !connectionId || !accountPartition || !args.rawSchemaJson) return false;
 	const states = __kustoSyncSupplementalReferencesForBox(boxId, 'background')
 		.filter(state => state.schemaKey === schemaKey);
 	if (states.length === 0) return false;
@@ -2194,6 +2263,8 @@ export function __kustoInjectSupplementalSchemaForTest(args: {
 	__kustoTraceCrossCluster('response-received', {
 		clusterName: args.clusterName,
 		clusterUrl: args.clusterUrl,
+		connectionId,
+		accountPartition,
 		database: args.database,
 		boxId,
 		requestToken,
@@ -2203,6 +2274,8 @@ export function __kustoInjectSupplementalSchemaForTest(args: {
 	return __kustoHandleCrossClusterSchemaData({
 		clusterName: args.clusterName,
 		clusterUrl: args.clusterUrl,
+		connectionId,
+		accountPartition,
 		database: args.database,
 		boxId,
 		requestToken,
@@ -3132,7 +3205,9 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 					// Function to set/add schema in monaco-kusto worker for full IntelliSense support
 					// Uses aggregate approach: first schema uses setSchemaFromShowSchema, 
 					// subsequent schemas use addDatabaseToSchema to ADD without replacing
-					_win.__kustoSetMonacoKustoSchema = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false, guard?: () => boolean, preparationToken?: KustoPreparationToken, contextIntent?: KustoSchemaContextIntent) {
+					_win.__kustoSetMonacoKustoSchema = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false, guard?: () => boolean, preparationToken?: KustoPreparationToken, contextIntent?: KustoSchemaContextIntent, connectionId = '', accountPartition = '') {
+						const schemaKey = getKustoSchemaIdentityKey(connectionId, accountPartition, clusterUrl, database);
+						if (!schemaKey) return false;
 						// Serialize schema operations to prevent race conditions
 						__kustoPrimarySchemaQueueGeneration++;
 						traceFileOpen('monaco.schema.queue.requested', { clusterUrl, database, setAsContext, modelUri, forceRefresh });
@@ -3143,6 +3218,8 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 								String(clusterUrl || ''),
 								String(database || ''),
 								requestedModelKey,
+								String(connectionId || ''),
+								String(accountPartition || ''),
 							))
 							: undefined;
 						const operationPromise = __kustoSchemaOperationQueue.then(async () => {
@@ -3152,7 +3229,7 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 							}
 							const effectiveSetAsContext = setAsContext && (!claimedContextIntent || __kustoSchemaContextIntents.isCurrent(claimedContextIntent));
 							traceFileOpen('monaco.schema.queue.start', { clusterUrl, database, setAsContext: effectiveSetAsContext, requestedSetAsContext: setAsContext, modelUri, forceRefresh });
-							const result = await __kustoSetMonacoKustoSchemaInternal!(rawSchemaJson, clusterUrl, database, effectiveSetAsContext, modelUri, forceRefresh, guard, preparationToken, claimedContextIntent);
+							const result = await __kustoSetMonacoKustoSchemaInternal!(rawSchemaJson, clusterUrl, database, effectiveSetAsContext, modelUri, forceRefresh, guard, preparationToken, claimedContextIntent, connectionId, accountPartition);
 							traceFileOpen('monaco.schema.queue.done', { clusterUrl, database, result });
 							return result;
 						}).catch((e: any) => {
@@ -3165,7 +3242,7 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 					};
 					
 					// Internal implementation - called through the queue
-__kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false, guard?: () => boolean, preparationToken?: KustoPreparationToken, contextIntent?: KustoSchemaContextIntent) {
+__kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, clusterUrl: any, database: any, setAsContext = false, modelUri: any = null, forceRefresh = false, guard?: () => boolean, preparationToken?: KustoPreparationToken, contextIntent?: KustoSchemaContextIntent, connectionId = '', accountPartition = '') {
 						const isOperationCurrent = () => !guard || guard();
 						const isContextIntentCurrent = () => !contextIntent || __kustoSchemaContextIntents.isCurrent(contextIntent);
 						if (!isOperationCurrent()) return false;
@@ -3201,7 +3278,8 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 						__kustoMonacoDatabaseInContextByModel[modelKey] = __kustoMonacoDatabaseInContextByModel[modelKey] || null;
 						__kustoMonacoInitializedByModel[modelKey] = !!__kustoMonacoInitializedByModel[modelKey];
 
-						const schemaKey = kustoDatabaseKey(clusterUrl, database);
+						const schemaKey = getKustoSchemaIdentityKey(connectionId, accountPartition, clusterUrl, database);
+						if (!schemaKey) return false;
 						traceFileOpen('monaco.schema.internal.modelResolved', { schemaKey, modelKey });
 						
 						// Normalize cluster URLs for comparison (used for marker clearing)
@@ -3209,7 +3287,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 
 						// ── Decision: delegated to the tested SchemaTracker ──
 						const forcePrimaryReplace = !!preparationBoxId && __kustoForcePrimaryReplaceByBoxId.delete(preparationBoxId);
-						const decision = __kustoSchemaTracker.decide(modelKey, clusterUrl, database, setAsContext, forceRefresh);
+						const decision = __kustoSchemaTracker.decide(modelKey, clusterUrl, database, connectionId, accountPartition, setAsContext, forceRefresh);
 						const operation = forcePrimaryReplace && __kustoSchemaTracker.globalInitialized
 							? { action: 'replace' as const, reason: 'supplemental-timeout-recovery' }
 							: decision.operation;
@@ -3308,9 +3386,9 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.done', { schemaKey, action: operation.action });
 												recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-first-load', { modelKey, clusterUrl, database: databaseInContext });
 												await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext);
-												__kustoSchemaTracker.recordFirstLoad(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj);
+												__kustoSchemaTracker.recordFirstLoad(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
 												__kustoMonacoInitializedByModel[modelKey] = true;
-												__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
+												__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext, connectionId, accountPartition, schemaKey };
 												applied = true;
 											} catch (schemaError) {
 												console.error('[monaco-kusto] setSchemaFromShowSchema failed:', schemaError);
@@ -3331,9 +3409,9 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.done', { schemaKey, action: operation.action });
 												recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-replace', { modelKey, clusterUrl, database: databaseInContext });
 												await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext);
-												const otherKeys = __kustoSchemaTracker.recordReplace(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj);
+												const otherKeys = __kustoSchemaTracker.recordReplace(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
 												__kustoMonacoInitializedByModel[modelKey] = true;
-												__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
+												__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext, connectionId, accountPartition, schemaKey };
 												applied = true;
 
 												// ── Schema diagnostics: replace completed ──
@@ -3389,12 +3467,12 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 									} else if (operation.action === 'add') {
 										let alreadyLoadedGlobally = !forceRefresh && __kustoSchemaTracker.isLoadedGlobally(schemaKey);
 										if (alreadyLoadedGlobally) {
-											__kustoSchemaTracker.recordAdoptGlobal(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj);
+											__kustoSchemaTracker.recordAdoptGlobal(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
 											applied = true;
 											if (setAsContext) {
 												if (isContextIntentCurrent()) {
 													if (!isOperationCurrent()) return false;
-													const switched = await __kustoSetDatabaseInContext!(clusterUrl, databaseInContext, modelKey, isContextIntentCurrent);
+													const switched = await __kustoSetDatabaseInContext!(clusterUrl, databaseInContext, modelKey, isContextIntentCurrent, connectionId, accountPartition);
 													applied = switched || !isContextIntentCurrent();
 												}
 												if (!applied) {
@@ -3421,7 +3499,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 													traceFileOpen('monaco.schema.worker.addDatabaseToSchema.done', { schemaKey });
 													recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-add', { modelKey, clusterUrl, database: databaseInContext });
 													await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext);
-													__kustoSchemaTracker.recordAdd(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj, false);
+													__kustoSchemaTracker.recordAdd(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj, false);
 													applied = true;
 													// For setAsContext, also try getSchema/setSchema for reliable context switch
 													if (setAsContext && isContextIntentCurrent()) {
@@ -3440,8 +3518,8 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 																		__kustoInvalidateSupplementalApplicationsAfterWorkerReplace('primary-add-context');
 																		await __kustoRestoreOtherPrimaryApplicationsAfterWorkerReplace(worker, modelKey, 'primary-add-context');
 																	if (isContextIntentCurrent()) {
-																		__kustoSchemaTracker.recordAdd(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj, true);
-																		__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
+																		__kustoSchemaTracker.recordAdd(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj, true);
+																		__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext, connectionId, accountPartition, schemaKey };
 																	}
 																}
 															}
@@ -3463,9 +3541,9 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 													if (!isOperationCurrent()) return false;
 													recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-fallback-first-load', { modelKey, clusterUrl, database: databaseInContext });
 													await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext);
-													__kustoSchemaTracker.recordFirstLoad(modelKey, schemaKey, clusterUrl, databaseInContext, schemaObj);
+															__kustoSchemaTracker.recordFirstLoad(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
 													__kustoMonacoInitializedByModel[modelKey] = true;
-													__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext };
+															__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext, connectionId, accountPartition, schemaKey };
 													applied = true;
 												} catch (e) {
 													console.error('[monaco-kusto] Fallback setSchemaFromShowSchema failed:', e);
@@ -3479,6 +3557,8 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 											schemaObj,
 											clusterUrl,
 											database,
+											connectionId,
+											accountPartition,
 											databaseInContext,
 											schemaKey,
 											modelKey,
@@ -3499,7 +3579,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 					// Function to switch the "database in context" without reloading schemas
 					// This allows unqualified table names to resolve to the correct database
 					// Returns true if context switch succeeded, false otherwise
-__kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, modelUri = null, guard?: () => boolean) {
+__kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, modelUri = null, guard?: () => boolean, connectionId = '', accountPartition = '') {
 						// Normalize cluster URLs for comparison
 						const normalizeClusterUrl = (url: any) => kustoClusterKey(url);
 						const isCurrent = () => !guard || guard();
@@ -3511,6 +3591,8 @@ __kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, mo
 						}
 						const modelKey = modelUri ? (typeof modelUri === 'string' ? modelUri : (modelUri as any).toString()) : models[0].uri.toString();
 						const currentContext = __kustoSchemaTracker.databaseInContext;
+						const targetSchemaKey = getKustoSchemaIdentityKey(connectionId, accountPartition, clusterUrl, database);
+						if (!targetSchemaKey || currentContext?.accountPartition !== accountPartition) return false;
 						
 						// Check if already in this context (use normalized comparison for cluster URL)
 						const currentClusterNorm = normalizeClusterUrl(currentContext?.clusterUrl);
@@ -3580,7 +3662,7 @@ __kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, mo
 							__kustoInvalidateSupplementalApplicationsAfterWorkerReplace('primary-context-switch');
 							await __kustoRestoreOtherPrimaryApplicationsAfterWorkerReplace(worker, modelKey, 'primary-context-switch');
 							if (!isCurrent()) return false;
-							__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: targetDatabase.name };
+							__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: targetDatabase.name, connectionId, accountPartition, schemaKey: targetSchemaKey };
 							__kustoSchemaTracker.databaseInContext = __kustoMonacoDatabaseInContextByModel[modelKey];
 							return true;
 							
@@ -3655,8 +3737,9 @@ const connectionId = __kustoGetConnectionId(ownerId);
 							const selectedClusterUrl = __kustoGetClusterUrl(ownerId);
 							const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === connectionId) : null;
 							const clusterUrl = selectedClusterUrl || (conn && conn.clusterUrl ? String(conn.clusterUrl) : '');
+							const accountPartition = String(conn?.accountPartition || '').trim();
 							
-							if (!clusterUrl) {
+							if (!clusterUrl || !accountPartition) {
 								return;
 							}
 							
@@ -3689,9 +3772,9 @@ const connectionId = __kustoGetConnectionId(ownerId);
 								__kustoEnableMarkersForBox!(boxId);
 							}
 
-							const expectedSchemaKey = kustoDatabaseKey(clusterUrl, database);
+							const expectedSchemaKey = getKustoSchemaIdentityKey(connectionId, accountPartition, clusterUrl, database);
 							const contextIntent = setAsContext
-								? __kustoClaimSchemaContextIntent(String(boxId), clusterUrl, database, focusedModelUri)
+								? __kustoClaimSchemaContextIntent(String(boxId), clusterUrl, database, focusedModelUri, connectionId, accountPartition)
 								: undefined;
 							let pendingSchemaApplied = false;
 							try { pendingSchemaApplied = await __kustoFlushPendingSchemaWorkerUpdateForBox(boxId, { setAsContext, contextIntent }); } catch (e) { console.error('[kusto]', e); }
@@ -3735,15 +3818,14 @@ const connectionId = __kustoGetConnectionId(ownerId);
 							const enhancementReady = isSchemaEnhancementReady(boxId, schemaKey, schemaSignature, focusedModelUri);
 							const enhancementPending = isSchemaEnhancementPending(boxId, schemaKey, schemaSignature, focusedModelUri);
 							const workerApplyRequired = isSchemaWorkerApplyRequired(boxId);
-							let workerContextMatches = !setAsContext || (!!__kustoSchemaTracker.databaseInContext
-								&& kustoDatabaseKey(__kustoSchemaTracker.databaseInContext.clusterUrl, __kustoSchemaTracker.databaseInContext.database) === schemaKey);
+							let workerContextMatches = !setAsContext || __kustoSchemaTracker.databaseInContext?.schemaKey === schemaKey;
 							if (!workerApplyRequired && baseWorkerReady && setAsContext && !workerContextMatches && contextIntent) {
 								if (preparationToken && getKustoPreparationState(boxId).status === 'preparing'
 									&& isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri: focusedModelUri })) {
 									failureOwner = { token: preparationToken, schemaKey, schemaSignature, modelUri: focusedModelUri };
 								}
 								workerContextMatches = await awaitKustoSchemaPreparation(
-									__kustoQueueDatabaseContextSwitch(clusterUrl, database, focusedModelUri, contextIntent),
+									__kustoQueueDatabaseContextSwitch(clusterUrl, database, focusedModelUri, contextIntent, connectionId, accountPartition),
 									preparationDeadlineOwner,
 								);
 								traceFileOpen('monaco.schema.focusedBox.contextSwitch', { boxId, schemaKey, switched: workerContextMatches });
@@ -3758,6 +3840,8 @@ const connectionId = __kustoGetConnectionId(ownerId);
 											rawSchemaJson: enhancementSchema,
 											clusterUrl,
 											database,
+											connectionId,
+											accountPartition,
 											schemaKey,
 											modelUri: focusedModelUri,
 										});
@@ -3793,6 +3877,8 @@ const connectionId = __kustoGetConnectionId(ownerId);
 									() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri: focusedModelUri! }),
 									preparationToken,
 									contextIntent,
+									connectionId,
+									accountPartition,
 								)), preparationToken);
 								if (!applied) {
 									if (preparationToken && !isKustoPreparationCurrent(preparationToken)) return;
@@ -3822,6 +3908,8 @@ const connectionId = __kustoGetConnectionId(ownerId);
 										() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri: focusedModelUri! }),
 										preparationToken,
 										contextIntent,
+										connectionId,
+										accountPartition,
 									)), preparationToken);
 									if (!applied) {
 										if (preparationToken && !isKustoPreparationCurrent(preparationToken)) return;

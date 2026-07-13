@@ -311,6 +311,17 @@ export class ConnectionManagerSearchController implements ReactiveController {
 		this.host.requestUpdate();
 	}
 
+	invalidateKustoResults(): void {
+		if (this._kind !== 'kusto') return;
+		this._cancelActiveSearch();
+		this.results = [];
+		this.loading = false;
+		this.refreshing = false;
+		this.progressMessage = '';
+		this._saveStateNow();
+		this.host.requestUpdate();
+	}
+
 	// ── Message handling (called by host component's _onMessage) ──────────
 
 	handleSearchResults(requestId: string, results: SearchResult[], completed: boolean): void {

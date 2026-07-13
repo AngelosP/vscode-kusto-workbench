@@ -24,6 +24,8 @@ export type KqlxSectionV1 =
 			favoritesMode?: boolean;
 			// Persist the actual cluster URL so sessions are portable across machines.
 			clusterUrl?: string;
+			authorityId?: string;
+			connectionIdHint?: string;
 			database?: string;
 			/**
 			 * Optional link to an external plain-text query file (e.g. sibling .kql/.csl).
@@ -54,6 +56,8 @@ export type KqlxSectionV1 =
 			resultsVisible?: boolean;
 			favoritesMode?: boolean;
 			clusterUrl?: string;
+			authorityId?: string;
+			connectionIdHint?: string;
 			database?: string;
 			linkedQueryPath?: string;
 			query?: string;

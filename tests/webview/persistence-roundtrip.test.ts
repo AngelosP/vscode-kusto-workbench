@@ -568,6 +568,8 @@ describe('persistence round-trip', () => {
 				expanded: true,
 				clusterUrl: 'https://persisted.example.kusto.windows.net',
 				database: 'Samples',
+				authorityId: '',
+				connectionIdHint: '',
 			});
 			expect(pState.pendingQueryTextByBoxId.query_saved_results).toContain('persisted_alpha');
 			expect(pState.queryResultJsonByBoxId.query_saved_results).toBe(resultJson);

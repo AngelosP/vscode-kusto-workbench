@@ -10,6 +10,8 @@ export interface KustoConnectionFormSubmitDetail {
 	name: string;
 	clusterUrl: string;
 	database?: string;
+	authorityId?: string;
+	accountId?: string;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -22,6 +24,9 @@ export class KwKustoConnectionForm extends LitElement {
 	@property() name = '';
 	@property() clusterUrl = '';
 	@property() database = '';
+	@property() authorityId = '';
+	@property() accountId = '';
+	@property({ attribute: false }) accounts: Array<{ id: string; label: string }> = [];
 	@property({ type: Boolean }) showTestButton = false;
 	@property() testResult = '';
 
@@ -29,14 +34,18 @@ export class KwKustoConnectionForm extends LitElement {
 	@state() private _name = '';
 	@state() private _clusterUrl = '';
 	@state() private _database = '';
+	@state() private _authorityId = '';
+	@state() private _accountId = '';
 	@state() private _initialized = false;
 
 	override willUpdate(changed: Map<string | number | symbol, unknown>): void {
 		// Sync external properties into internal state when they change from outside
-		if (!this._initialized || changed.has('name') || changed.has('clusterUrl') || changed.has('database') || changed.has('mode')) {
+		if (!this._initialized || changed.has('name') || changed.has('clusterUrl') || changed.has('database') || changed.has('authorityId') || changed.has('accountId') || changed.has('mode')) {
 			this._name = this.name;
 			this._clusterUrl = this.clusterUrl;
 			this._database = this.database;
+			this._authorityId = this.authorityId;
+			this._accountId = this.accountId;
 			this._initialized = true;
 		}
 	}
@@ -46,6 +55,13 @@ export class KwKustoConnectionForm extends LitElement {
 		const firstInput = this.shadowRoot?.querySelector('input') as HTMLInputElement | null;
 		if (firstInput) {
 			requestAnimationFrame(() => firstInput.focus());
+		}
+	}
+
+	override updated(): void {
+		const accountSelect = this.shadowRoot?.querySelector('[data-testid="kusto-conn-account"]') as HTMLSelectElement | null;
+		if (accountSelect && accountSelect.value !== this._accountId) {
+			accountSelect.value = this._accountId;
 		}
 	}
 
@@ -69,6 +85,20 @@ export class KwKustoConnectionForm extends LitElement {
 					<input data-testid="kusto-conn-database" type="text" .value=${this._database}
 						@input=${(e: Event) => this._database = (e.target as HTMLInputElement).value}
 						placeholder="(optional)" />
+				</div>
+				<div class="form-group">
+					<label>Authority / Tenant ID</label>
+					<input data-testid="kusto-conn-authority-id" type="text" .value=${this._authorityId}
+						@input=${(e: Event) => this._authorityId = (e.target as HTMLInputElement).value}
+						placeholder="Tenant GUID or tenant domain (optional)" />
+				</div>
+				<div class="form-group">
+					<label>Microsoft Account</label>
+					<select data-testid="kusto-conn-account"
+						@change=${(e: Event) => this._accountId = (e.target as HTMLSelectElement).value}>
+						<option value="" ?selected=${!this._accountId}>Automatic</option>
+						${this.accounts.map(account => html`<option value="${account.id}" ?selected=${account.id === this._accountId}>${account.label}</option>`)}
+					</select>
 				</div>
 				${this.showTestButton ? html`
 					<button class="btn" data-testid="kusto-conn-test" @click=${this._onTest}>Test Connection</button>
@@ -112,11 +142,13 @@ export class KwKustoConnectionForm extends LitElement {
 			name: this._name.trim() || clusterUrl,
 			clusterUrl,
 			database: this._database.trim() || undefined,
+			authorityId: this._authorityId.trim() || undefined,
+			accountId: this._accountId.trim() || undefined,
 		};
 	}
 
 	private _onKeydown = (e: KeyboardEvent): void => {
-		if (e.key === 'Enter') {
+		if (e.key === 'Enter' && e.target instanceof HTMLInputElement) {
 			e.preventDefault();
 			e.stopPropagation();
 			this.submit();

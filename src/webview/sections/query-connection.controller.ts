@@ -54,11 +54,11 @@ import {
 	favoriteKey as __kustoFavoriteKey,
 	findFavorite as __kustoFindFavorite_pure,
 	getFavoritesSorted as __kustoGetFavoritesSorted_pure,
-	parseKustoConnectionString,
-	selectBestKustoClusterUrl,
+	parseKustoExplorerConnectionsXml as parseKustoExplorerConnectionsXmlPure,
 	findConnectionIdForClusterUrl as _findConnIdPure,
 } from '../shared/clusterUtils';
 import { escapeHtml } from '../core/utils';
+import { getKustoSchemaIdentityKey } from '../../shared/kustoAuth.js';
 import {
 	__kustoGetQuerySectionElement,
 	__kustoGetConnectionId,
@@ -86,6 +86,7 @@ export interface QuerySectionHost extends ReactiveControllerHost, HTMLElement {
 	setFavoritesMode(mode: boolean): void;
 	setDesiredClusterUrl(url: string): void;
 	setDesiredDatabase(db: string): void;
+	clearDesiredDatabase?(): void;
 	setConnectionId(connectionId: string): void;
 	setConnections(conns: any[], opts?: any): void;
 }
@@ -96,6 +97,12 @@ let __kustoAutoEnterFavoritesByBoxId: Record<string, { clusterUrl: string; datab
 let __kustoAutoEnterFavoritesForNewBoxByBoxId: Record<string, boolean> = Object.create(null);
 let __kustoDidDefaultFirstBoxToFavorites = false;
 let __kustoConfirmRemoveFavoriteCallbacksById: Record<string, ((ok: boolean) => void) | null> = Object.create(null);
+
+function schemaIdentityKeyForConnection(connectionId: unknown, database: unknown): string {
+	const id = String(connectionId || '').trim();
+	const connection = (connections || []).find((candidate: any) => String(candidate?.id || '') === id);
+	return getKustoSchemaIdentityKey(id, connection?.accountPartition, connection?.clusterUrl, database);
+}
 
 // ── ReactiveController ────────────────────────────────────────────────────────
 
@@ -239,10 +246,10 @@ export class QueryConnectionController implements ReactiveController {
 		} catch (e) { console.error('[kusto]', e); }
 		const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
 		if (!hasAny) return;
-		const clusterUrl = this.host.getClusterUrl();
+		const connectionId = this.host.getConnectionId();
 		const db = this.host.getDatabase();
-		if (!clusterUrl || !db) return;
-		const fav = __kustoFindFavorite(clusterUrl, db);
+		if (!connectionId || !db) return;
+		const fav = __kustoFindFavorite(connectionId, db);
 		try {
 			if (fav) {
 				this.applyFavoritesMode(true);
@@ -275,7 +282,7 @@ export class QueryConnectionController implements ReactiveController {
 		if (!desired) return;
 		const hasAny = Array.isArray(kustoFavorites) && kustoFavorites.length > 0;
 		if (!hasAny) return;
-		const fav = __kustoFindFavorite(desired.clusterUrl, desired.database);
+		const fav = __kustoFindFavorite(this.host.getConnectionId(), desired.database);
 		if (!fav) {
 			try {
 				const isInFavMode = !!(favoritesModeByBoxId && favoritesModeByBoxId[id]);
@@ -355,14 +362,15 @@ export class QueryConnectionController implements ReactiveController {
 	toggleFavorite(): void {
 		const id = this.host.boxId;
 		if (!id) return;
+		const connectionId = this.host.getConnectionId();
 		const clusterUrl = this.host.getClusterUrl();
 		const database = this.host.getDatabase();
-		if (!clusterUrl || !database) return;
-		const existing = __kustoFindFavorite(clusterUrl, database);
+		if (!connectionId || !clusterUrl || !database) return;
+		const existing = __kustoFindFavorite(connectionId, database);
 		if (existing) {
-			postMessageToHost({ type: 'removeFavorite', clusterUrl, database, boxId: id });
+			postMessageToHost({ type: 'removeFavorite', connectionId, clusterUrl, database, boxId: id });
 		} else {
-			postMessageToHost({ type: 'requestAddFavorite', clusterUrl, database, boxId: id });
+			postMessageToHost({ type: 'requestAddFavorite', connectionId, clusterUrl, database, boxId: id });
 		}
 	}
 
@@ -556,14 +564,7 @@ export class QueryConnectionController implements ReactiveController {
 			.sort((a: any, b: any) => a.toLowerCase().localeCompare(b.toLowerCase()));
 		const connectionId = this.host.getConnectionId();
 		if (connectionId) {
-			let clusterKey = '';
-			try {
-				const cid = String(connectionId || '').trim();
-				const conn = Array.isArray(connections) ? connections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
-				const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
-				if (clusterUrl) clusterKey = canonicalKustoClusterKey(clusterUrl);
-			} catch (e) { console.error('[kusto]', e); }
-			cachedDatabases[String(clusterKey || '').trim()] = list;
+			cachedDatabases[String(connectionId).trim()] = list;
 		}
 		this.host.setDatabases(list, lastDatabase || '');
 		this.host.setRefreshLoading(false);
@@ -575,6 +576,7 @@ export class QueryConnectionController implements ReactiveController {
 					failKustoPreparation(getKustoPreparationToken(boxId), `Failed to verify database "${unresolvedDesiredDatabase}" against the live cluster.`);
 				} else if (responseAuthoritative !== false) {
 					failKustoPreparation(getKustoPreparationToken(boxId), `Database "${unresolvedDesiredDatabase}" is not available.`);
+					this.host.clearDesiredDatabase?.();
 				}
 			} else if (!this.host.getDatabase()) {
 				setKustoPreparationIdle(boxId);
@@ -636,7 +638,7 @@ export class QueryConnectionController implements ReactiveController {
 		lastSchemaRequestAtByBoxId[boxId] = now;
 
 		try {
-			const connDbKey = connectionId + '|' + database;
+			const connDbKey = schemaIdentityKeyForConnection(connectionId, database);
 			if (!forceRefresh && schemaByConnDb && schemaByConnDb[connDbKey]?.rawSchemaJson) {
 				schemaByBoxId[boxId] = schemaByConnDb[connDbKey];
 				schemaMetaByBoxId[boxId] = schemaMetaByConnDb[connDbKey] || {};
@@ -808,8 +810,8 @@ export function __kustoGetCurrentDatabaseForBox(boxId: any) {
 	return __kustoGetDatabase(boxId);
 }
 
-export function __kustoFindFavorite(clusterUrl: any, database: any) {
-	return __kustoFindFavorite_pure(clusterUrl, database, Array.isArray(kustoFavorites) ? kustoFavorites : []);
+export function __kustoFindFavorite(connectionId: any, database: any) {
+	return __kustoFindFavorite_pure(connectionId, database, Array.isArray(kustoFavorites) ? kustoFavorites : []);
 }
 
 // ── Facade functions — match old API signatures, delegate to controller ───────
@@ -879,11 +881,13 @@ export function toggleFavoriteForBox(boxId: any) {
 	}
 }
 
-export function removeFavorite(clusterUrl: any, database: any) {
+
+export function removeFavorite(connectionId: any, clusterUrl: any, database: any) {
+	const id = String(connectionId || '').trim();
 	const c = String(clusterUrl || '').trim();
 	const d = String(database || '').trim();
-	if (!c || !d) return;
-	postMessageToHost({ type: 'removeFavorite', clusterUrl: c, database: d });
+	if (!id || !c || !d) return;
+	postMessageToHost({ type: 'removeFavorite', connectionId: id, clusterUrl: c, database: d });
 }
 
 export function closeAllFavoritesDropdowns() {
@@ -925,56 +929,7 @@ export function importConnectionsFromXmlFile(boxId: any) {
 }
 
 export function parseKustoExplorerConnectionsXml(xmlText: any) {
-	const text = String(xmlText || '');
-	if (!text.trim()) return [];
-	let doc;
-	try { doc = new DOMParser().parseFromString(text, 'application/xml'); } catch { return []; }
-	try {
-		const err = doc.getElementsByTagName('parsererror');
-		if (err && err.length) return [];
-	} catch (e) { console.error('[kusto]', e); }
-	const nodes = Array.from(doc.getElementsByTagName('ServerDescriptionBase'));
-	const results: { name: string; clusterUrl: string; database?: string }[] = [];
-	for (const node of nodes) {
-		const name = getChildText(node, 'Name');
-		const details = getChildText(node, 'Details');
-		const connectionString = getChildText(node, 'ConnectionString');
-		const parsed = parseKustoConnectionString(connectionString);
-		let clusterUrl = selectBestKustoClusterUrl(parsed.dataSource, details).trim();
-		if (!clusterUrl) continue;
-		if (!/^https?:\/\//i.test(clusterUrl)) clusterUrl = 'https://' + clusterUrl.replace(/^\/+/, '');
-		results.push({
-			name: (name || '').trim() || clusterUrl,
-			clusterUrl: clusterUrl.trim(),
-			database: (parsed.initialCatalog || '').trim() || undefined
-		});
-	}
-	const seen = new Set<string>();
-	const deduped: typeof results = [];
-	for (const r of results) {
-		let key = '';
-		try {
-			key = canonicalKustoClusterKey(r.clusterUrl || '');
-		} catch {
-			key = String(r.clusterUrl || '').trim().replace(/\/+$/g, '').toLowerCase();
-		}
-		if (!key || seen.has(key)) continue;
-		seen.add(key);
-		deduped.push(r);
-	}
-	return deduped;
-}
-
-function getChildText(node: any, localName: any): string {
-	if (!node || !node.childNodes) return '';
-	for (const child of Array.from(node.childNodes) as any[]) {
-		if (!child || child.nodeType !== 1) continue;
-		const ln = child.localName || child.nodeName;
-		if (String(ln).toLowerCase() === String(localName).toLowerCase()) {
-			return String(child.textContent || '');
-		}
-	}
-	return '';
+	return parseKustoExplorerConnectionsXmlPure(xmlText);
 }
 
 export function refreshDatabases(boxId: any) {
@@ -1079,7 +1034,7 @@ export function __kustoMaybeDefaultFirstBoxToFavoritesMode() {
 			}
 			if (!desiredDb) desiredDb = __kustoGetDatabase(id);
 			if (desiredCluster && desiredDb) {
-				const fav = __kustoFindFavorite(desiredCluster, desiredDb);
+				const fav = __kustoFindFavorite(__kustoGetConnectionId(id), desiredDb);
 				if (!fav) {
 					__kustoDidDefaultFirstBoxToFavorites = true;
 					return;
@@ -1102,7 +1057,7 @@ export async function __kustoRequestSchema(connectionId: string, database: strin
 		const cid = String(connectionId || '').trim();
 		const db = String(database || '').trim();
 		if (!cid || !db) return null;
-		const key = cid + '|' + db;
+		const key = schemaIdentityKeyForConnection(cid, db);
 		try {
 			if (!forceRefresh && schemaByConnDb && schemaByConnDb[key]) return schemaByConnDb[key];
 		} catch (e) { console.error('[kusto]', e); }
@@ -1132,14 +1087,6 @@ export async function __kustoRequestDatabases(connectionId: string): Promise<any
 	const cid = String(connectionId || '').trim();
 	if (!cid) return [];
 	try {
-		let clusterKey = '';
-		try {
-			const conn = Array.isArray(connections) ? (connections as any[]).find((c: any) => c && String(c.id || '').trim() === cid) : null;
-			const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
-			if (clusterUrl) clusterKey = canonicalKustoClusterKey(clusterUrl);
-		} catch (e) { console.error('[kusto]', e); }
-		const cachedByCluster = cachedDatabases && cachedDatabases[String(clusterKey || '').trim()];
-		if (Array.isArray(cachedByCluster) && cachedByCluster.length) return cachedByCluster;
 		const cachedByConnectionId = cachedDatabases && cachedDatabases[cid];
 		if (Array.isArray(cachedByConnectionId) && cachedByConnectionId.length) return cachedByConnectionId;
 	} catch (e) { console.error('[kusto]', e); }

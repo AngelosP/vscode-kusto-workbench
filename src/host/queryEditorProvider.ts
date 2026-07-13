@@ -48,6 +48,8 @@ import {
 import { exportHtmlToPowerBI, findUnsupportedPowerBiBindings, normalizePowerBiDataMode, type PowerBiDataMode } from './powerBiExport';
 import { listFabricWorkspaces, publishToPowerBIService, checkFabricItemExists } from './powerBiPublish';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
+import { KustoAuthPreferenceService } from './kustoAuthPreferenceService';
+import { resolveKustoConnection, resolveStrictKustoConnection } from '../shared/kustoAuth';
 import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
 import { notifySavedFile, withCsvExtension } from './savedFileNotification';
 import { perfMark } from './perfTrace';
@@ -139,6 +141,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private readonly CONTROL_COMMAND_SYNTAX_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 	private readonly copilot: CopilotService;
 	private configSubscription?: vscode.Disposable;
+	private authPreferenceSubscription?: vscode.Disposable;
 	private embeddedTutorialHost?: EmbeddedTutorialWebviewHost;
 	private embeddedTutorialRegistration?: vscode.Disposable;
 	fileOpenTrace?: FileOpenTrace;
@@ -177,7 +180,16 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		readonly context: vscode.ExtensionContext,
 		private readonly editorCursorStatusBar?: EditorCursorStatusBar
 	) {
-		this.kustoClient = new KustoQueryClient(this.context);
+		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
+		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
+			this.copilot.invalidateKustoConnections(change.connectionIds, {
+				preserveEstablishingAccountPartition: change.reason === 'success' ? change.accountPartition : undefined,
+			});
+			if (change.reason !== 'success') {
+				this.postMessage({ type: 'kustoAuthIdentityChanged', connectionIds: change.connectionIds, reason: change.reason });
+			}
+			void this.sendConnectionsData();
+		});
 		this.kqlLanguageHost = new KqlLanguageServiceHost(this.connectionManager, this.context);
 		this.connection = new ConnectionService(this);
 		this.schema = new SchemaService(this);
@@ -239,6 +251,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.fileOpenTrace?.mark('queryEditorProvider.dispose.start');
 			this.clearCursorStatusForProvider();
 			this.cancelAllRunningQueries();
+			this.kustoClient.dispose();
 			this.disconnectToolOrchestrator();
 			this.connection.dispose();
 			this.embeddedTutorialRegistration?.dispose();
@@ -246,6 +259,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.embeddedTutorialHost = undefined;
 			this.configSubscription?.dispose();
 			this.configSubscription = undefined;
+			this.authPreferenceSubscription?.dispose();
+			this.authPreferenceSubscription = undefined;
 			this.panel = undefined;
 		});
 
@@ -274,7 +289,24 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				const sections = await this.requestSectionsFromWebview();
 				return sections as Array<{ id?: string; type: string; [key: string]: unknown }> | undefined;
 			},
-			async (clusterUrl: string) => this.schema.refreshSchemaForTools(clusterUrl),
+			async (clusterUrl: string, connectionId: string) => {
+				const sections = await this.requestSectionsFromWebview() ?? [];
+				const connections = this.connectionManager.getConnections();
+				const targets = sections.flatMap(section => {
+					const candidate = section as { id?: unknown; type?: unknown; connectionId?: unknown; schemaRequestToken?: unknown; clusterUrl?: unknown; authorityId?: unknown; connectionIdHint?: unknown; database?: unknown };
+					if (candidate.type !== 'query' && candidate.type !== 'copilotQuery') return [];
+					const boxId = String(candidate.id || '').trim();
+					const database = String(candidate.database || '').trim();
+					const runtimeConnectionId = String(candidate.connectionId || '').trim();
+					const resolution = runtimeConnectionId
+						? resolveStrictKustoConnection(connections, { clusterUrl: candidate.clusterUrl, connectionId: runtimeConnectionId })
+						: resolveKustoConnection(connections, candidate);
+					return boxId && database && resolution.kind === 'matched' && resolution.connection.id === connectionId
+						? [{ boxId, database, requestToken: String(candidate.schemaRequestToken || '').trim() || undefined }]
+						: [];
+				});
+				return this.schema.refreshSchemaForTools(clusterUrl, connectionId, targets);
+			},
 			this.documentUri
 		);
 	}
@@ -318,6 +350,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private toolStateResponseResolvers = new Map<string, (sections: unknown[]) => void>();
+	private connectionsDataRevision = 0;
+	private connectionsDataTail: Promise<void> = Promise.resolve();
 
 	async requestSectionsFromWebview(): Promise<unknown[] | undefined> {
 		if (!this.panel) return undefined;
@@ -387,10 +421,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.panel.onDidDispose(() => {
 			this.clearCursorStatusForProvider();
 			this.cancelAllRunningQueries();
+			this.kustoClient.dispose();
 			this.disconnectToolOrchestrator();
 			this.connection.dispose();
 			this.configSubscription?.dispose();
 			this.configSubscription = undefined;
+			this.authPreferenceSubscription?.dispose();
+			this.authPreferenceSubscription = undefined;
 			this.panel = undefined;
 		});
 
@@ -480,7 +517,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.connection.promptAddFavorite(message);
 				return;
 			case 'removeFavorite':
-				await this.connection.removeFavorite(message.clusterUrl, message.database);
+				await this.connection.removeFavorite(message.connectionId, message.database);
 				return;
 			case 'confirmRemoveFavorite':
 				await this.connection.confirmRemoveFavorite(message);
@@ -1666,17 +1703,23 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 	public async inferClusterDatabaseForKqlQuery(
 		queryText: string
-	): Promise<{ clusterUrl: string; database: string } | undefined> {
+	): Promise<{ clusterUrl: string; database: string; authorityId?: string; connectionIdHint: string } | undefined> {
 		return this.connection.inferClusterDatabaseForKqlQuery(queryText);
 	}
 
 	private async sendConnectionsData(): Promise<void> {
-		const { type: _type, revision: editingPreferencesRevision, ...editingPreferences } = getEditingPreferencesData(this.context);
-		await this.connection.sendConnectionsData({
-			...editingPreferences,
-			editingPreferencesRevision,
-			copilotChatFirstTimeDismissed: !!this.context.globalState.get<boolean>(STORAGE_KEYS.copilotChatFirstTimeDismissed)
-		});
+		const revision = ++this.connectionsDataRevision;
+		const send = async () => {
+			const { type: _type, revision: editingPreferencesRevision, ...editingPreferences } = getEditingPreferencesData(this.context);
+			await this.connection.sendConnectionsData({
+				...editingPreferences,
+				editingPreferencesRevision,
+				connectionsRevision: revision,
+				copilotChatFirstTimeDismissed: !!this.context.globalState.get<boolean>(STORAGE_KEYS.copilotChatFirstTimeDismissed)
+			});
+		};
+		this.connectionsDataTail = this.connectionsDataTail.then(send, send);
+		await this.connectionsDataTail;
 	}
 
 	cancelRunningQuery(boxId: string, options?: { notifyWebview?: boolean }): void {
@@ -2059,7 +2102,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const executionQuery = this.normalizeControlCommandForExecution(finalQuery);
 
 		const cancelClientKey = boxId ? `${boxId}::${connection.id}` : connection.id;
-		const { promise, cancel, clientActivityId } = this.kustoClient.executeQueryCancelable(connection, message.database, executionQuery, cancelClientKey);
+		const execution = this.kustoClient.executeQueryCancelable(connection, message.database, executionQuery, cancelClientKey);
+		const { promise, cancel, clientActivityId } = execution;
 		const runSeq = ++this.queryRunSeq;
 		const isStillActiveRun = () => {
 			if (!boxId) {
@@ -2074,7 +2118,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		try {
 			const result = await promise;
 			if (isStillActiveRun()) {
-				this.postMessage({ type: 'queryResult', result, boxId });
+				const producingAccountPartition = execution.getAccountPartition();
+				await this.refreshConnectionsData();
+				if (isStillActiveRun()
+					&& producingAccountPartition
+					&& this.kustoClient.getAccountPartition(connection) === producingAccountPartition) {
+					this.postMessage({ type: 'queryResult', result, boxId });
+				}
 			}
 		} catch (error) {
 			if ((error as any)?.name === 'QueryCancelledError' || (error as any)?.isCancelled === true) {

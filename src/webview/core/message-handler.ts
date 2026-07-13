@@ -1,3 +1,5 @@
+let kustoAuthIdentityInvalidated = false;
+let latestConnectionsRevision = 0;
 // Message handler — extracted from main.ts
 // Dispatches incoming postMessage from the extension host to the right module.
 import { pState } from '../shared/persistence-state';
@@ -7,7 +9,7 @@ import { perfMark } from './perf.js';
 import { traceFileOpen } from './file-open-trace.js';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { safeRun } from '../shared/safe-run';
-import { getResultsState, displayResultForBox, displayResult, displayCancelled } from './results-state';
+import { clearResultsState, getResultsState, displayResultForBox, displayResult, displayCancelled } from './results-state';
 import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './error-renderer';
 import {
 	addQueryBox, removeQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName,
@@ -48,6 +50,7 @@ import {
 	__kustoHandleCrossClusterSchemaData, __kustoHandleCrossClusterSchemaError,
 	__kustoIsCurrentCrossClusterRequest, __kustoMarkCrossClusterSchemaError,
 	__kustoReleaseStaleCrossClusterResponse, __kustoRetryPrimarySchemaEnhancement, __kustoTraceCrossCluster,
+	invalidateKustoSchemaIdentityState,
 } from '../monaco/monaco';
 import { __kustoFindSuggestWidgetForEditor, __kustoIsElementVisibleForSuggest } from '../monaco/suggest';
 import {
@@ -63,6 +66,7 @@ import {
 	schemaDiagnosticsTrustedByBoxId,
 	schemaMetaByConnDb, schemaMetaByBoxId,
 	schemaFetchInFlightByBoxId, lastSchemaRequestAtByBoxId, databasesRequestResolversByBoxId,
+	databaseRequestTokenByBoxId,
 	markSchemaWorkerApplyFailed, markSchemaWorkerApplyPending, markSchemaWorkerReady,
 	schemaWorkerReadyByBoxId,
 	pendingSchemaWorkerUpdateByBoxId,
@@ -75,6 +79,8 @@ import {
 	isSchemaWorkerApplyRequired,
 	isSchemaEnhancementPending,
 	isSchemaEnhancementReady,
+	requireSchemaWorkerApply,
+	requestKustoSchemaApplyForBox,
 	reviseKustoPreparation,
 	setKustoPreparationIdle,
 	updateKustoPreparation,
@@ -83,7 +89,7 @@ import {
 	sqlConnections, sqlCachedDatabases, setSqlConnections,
 	sqlFavorites, setSqlFavorites, sqlFavoritesModeByBoxId,
 } from './state';
-import { kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
+import { getKustoSchemaIdentityKey, resolveStrictKustoConnection } from '../../shared/kustoAuth.js';
 
 const ASK_KUSTO_COPILOT_DEFAULT_MAX_RESULT_ROWS = 100;
 const ASK_KUSTO_COPILOT_MIN_MAX_RESULT_ROWS = 1;
@@ -101,6 +107,42 @@ function normalizeAskKustoCopilotMaxResultRows(value: unknown): number {
 }
 
 const _win = window;
+
+function resolveToolKustoConnection(input: any): { connection?: any; error?: string } {
+	const clusterUrl = String(input?.clusterUrl || '').trim();
+	const connectionId = String(input?.connectionId || '').trim();
+	if (!clusterUrl) return connectionId ? { error: 'connectionId requires clusterUrl.' } : {};
+	const resolution = resolveStrictKustoConnection(connections || [], { clusterUrl, connectionId });
+	if (resolution.kind === 'matched') return { connection: resolution.connection };
+	if (resolution.kind === 'ambiguous') return { error: `Multiple saved connections match cluster "${clusterUrl}". Pass connectionId from listKustoConnections.` };
+	if (resolution.kind === 'mismatch') return { error: 'The supplied connectionId does not match the requested cluster URL.' };
+	return { error: `No saved connection matches cluster "${clusterUrl}" and connectionId.` };
+}
+
+function applyToolKustoTarget(sectionId: string, input: any): { success: boolean; error?: string } {
+	const resolved = resolveToolKustoConnection(input);
+	if (resolved.error) return { success: false, error: resolved.error };
+	const kwEl = __kustoGetQuerySectionElement(sectionId);
+	if (!kwEl) return { success: false, error: `Query section "${sectionId}" was not found.` };
+	if (resolved.connection) {
+		kwEl.setConnectionId?.(resolved.connection.id);
+		kwEl.setDesiredConnectionIdentity?.(resolved.connection.authorityId, resolved.connection.id);
+		kwEl.setDesiredClusterUrl?.(resolved.connection.clusterUrl);
+		kwEl.dispatchEvent(new CustomEvent('connection-changed', {
+			detail: { boxId: sectionId, connectionId: resolved.connection.id, clusterUrl: resolved.connection.clusterUrl },
+			bubbles: true, composed: true,
+		}));
+	}
+	if (input?.database) {
+		kwEl.setDesiredDatabase?.(String(input.database));
+		kwEl.setDatabase?.(String(input.database));
+		kwEl.dispatchEvent(new CustomEvent('database-changed', {
+			detail: { boxId: sectionId, database: String(input.database) },
+			bubbles: true, composed: true,
+		}));
+	}
+	return { success: true };
+}
 
 // ── Agent-touched helper ─────────────────────────────────────────────────
 // Tracks whether a section's current dirty state came from Copilot/tooling.
@@ -243,8 +285,9 @@ function getCurrentSchemaKeyForBoxId(boxId: string): string | null {
 		const selectedClusterUrl = __kustoGetClusterUrl(ownerId);
 		const conn = Array.isArray(connections) ? connections.find(c => c && String(c.id || '') === connectionId) : null;
 		const clusterUrl = selectedClusterUrl || (conn && conn.clusterUrl ? String(conn.clusterUrl) : '');
-		if (!clusterUrl) return null;
-		return kustoDatabaseKey(clusterUrl, database);
+		const accountPartition = String(conn?.accountPartition || '').trim();
+		if (!clusterUrl || !accountPartition) return null;
+		return getKustoSchemaIdentityKey(connectionId, accountPartition, clusterUrl, database);
 	} catch {
 		return null;
 	}
@@ -282,6 +325,8 @@ function queuePendingSchemaWorkerUpdate(message: any, schemaKey: string, isForce
 		rawSchemaJson: message.schema.rawSchemaJson,
 		clusterUrl: message.clusterUrl,
 		database: message.database,
+		connectionId: String(message.connectionId || '').trim(),
+		accountPartition: String(message.accountPartition || '').trim(),
 		schemaKey,
 		schemaSignature,
 		forceRefresh: isForceRefresh,
@@ -293,7 +338,7 @@ function queuePendingSchemaWorkerUpdate(message: any, schemaKey: string, isForce
 
 function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, isForceRefresh: boolean, schemaSignature?: string, preparationToken?: KustoPreparationToken): void {
 	const boxId = String(message?.boxId || '');
-	if (!boxId || !message?.schema?.rawSchemaJson || !message.clusterUrl || !message.database) {
+	if (!boxId || !message?.schema?.rawSchemaJson || !message.clusterUrl || !message.database || !message.connectionId || !message.accountPartition) {
 		traceFileOpen('schema.worker.skip.invalidMessage', { boxId, hasRawSchemaJson: !!message?.schema?.rawSchemaJson, hasClusterUrl: !!message?.clusterUrl, hasDatabase: !!message?.database });
 		return;
 	}
@@ -342,6 +387,8 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			rawSchemaJson: message.schema.rawSchemaJson,
 			clusterUrl: message.clusterUrl,
 			database: message.database,
+			connectionId: String(message.connectionId || '').trim(),
+			accountPartition: String(message.accountPartition || '').trim(),
 			schemaKey,
 			schemaSignature,
 			forceRefresh: isForceRefresh,
@@ -394,7 +441,10 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			modelUri,
 			isForceRefresh,
 			() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }),
-			preparationToken
+			preparationToken,
+			undefined,
+			String(message.connectionId || ''),
+			String(message.accountPartition || ''),
 		));
 		const applied = await awaitKustoSchemaPreparation(workerApply, preparationToken).catch((error: unknown) => {
 			traceFileOpen(
@@ -701,6 +751,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'connectionsData':
+			if (typeof message.connectionsRevision === 'number') {
+				if (message.connectionsRevision < latestConnectionsRevision) break;
+				latestConnectionsRevision = message.connectionsRevision;
+			}
+			try { (window as any).__kustoAccounts = Array.isArray(message.accounts) ? message.accounts : []; } catch (e) { console.error('[kusto]', e); }
 			applyEditingPreferencesData({
 				type: 'editingPreferencesData',
 				revision: typeof message.editingPreferencesRevision === 'number' ? message.editingPreferencesRevision : 0,
@@ -733,6 +788,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try { window.__kustoDevNotesEnabled = !!message.devNotesEnabled; } catch (e) { console.error('[kusto]', e); }
 			try { pState.copilotChatFirstTimeDismissed = !!message.copilotChatFirstTimeDismissed; } catch (e) { console.error('[kusto]', e); }
 			updateConnectionSelects();
+			if (kustoAuthIdentityInvalidated) {
+				kustoAuthIdentityInvalidated = false;
+				for (const boxId of Object.keys(queryEditors || {})) {
+					requireSchemaWorkerApply(boxId);
+					requestKustoSchemaApplyForBox(boxId, false);
+				}
+			}
 			try {
 				__kustoUpdateFavoritesUiForAllBoxes();
 			} catch (e) { console.error('[kusto]', e); }
@@ -746,6 +808,49 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				__kustoOnConnectionsUpdated();
 			} catch (e) { console.error('[kusto]', e); }
 			try { __kustoScheduleLocalSchemaPrewarm('connections-data'); } catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'kustoAuthIdentityChanged':
+			try {
+				kustoAuthIdentityInvalidated = true;
+				const changedConnectionIds = new Set<string>(
+					(Array.isArray(message.connectionIds) ? message.connectionIds : [])
+						.map((connectionId: unknown) => String(connectionId || '').trim())
+						.filter(Boolean),
+				);
+				const affectsAllConnections = changedConnectionIds.size === 0;
+				for (const boxId of Object.keys(queryEditors || {})) {
+					const connectionId = String(__kustoGetConnectionId(boxId) || '').trim();
+					if (!affectsAllConnections && !changedConnectionIds.has(connectionId)) continue;
+					schemaRequestTokenByBoxId[boxId] = `identity-invalidated-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+					delete pendingSchemaWorkerUpdateByBoxId[boxId];
+					schemaFetchInFlightByBoxId[boxId] = false;
+					lastSchemaRequestAtByBoxId[boxId] = 0;
+					requireSchemaWorkerApply(boxId);
+					clearResultsState(boxId);
+					delete pState.queryResultJsonByBoxId[boxId];
+					const section = __kustoGetQuerySectionElement(boxId);
+					if (typeof section?.clearResults === 'function') section.clearResults();
+					const chat = typeof section?.getCopilotChatEl === 'function' ? section.getCopilotChatEl() : null;
+					if (typeof chat?.clearConversation === 'function') chat.clearConversation();
+				}
+				for (const connectionId of affectsAllConnections ? Object.keys(cachedDatabases) : changedConnectionIds) {
+					delete cachedDatabases[connectionId];
+				}
+				for (const key of Object.keys(schemaByConnDb)) delete schemaByConnDb[key];
+				for (const key of Object.keys(schemaMetaByConnDb)) delete schemaMetaByConnDb[key];
+				for (const key of Object.keys(schemaByBoxId)) delete schemaByBoxId[key];
+				for (const key of Object.keys(schemaMetaByBoxId)) delete schemaMetaByBoxId[key];
+				invalidateKustoSchemaIdentityState();
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'kustoCopilotIdentityChanged':
+			try {
+				for (const boxId of Array.isArray(message.boxIds) ? message.boxIds : []) {
+					const section = __kustoGetQuerySectionElement(String(boxId || ''));
+					const chat = typeof section?.getCopilotChatEl === 'function' ? section.getCopilotChatEl() : null;
+					if (typeof chat?.clearConversation === 'function') chat.clearConversation();
+				}
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'editingPreferencesData':
 			applyEditingPreferencesData(message);
@@ -875,6 +980,16 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'databasesData':
+			try {
+				const connectionId = String(message.connectionId || '').trim();
+				const accountPartition = String(message.accountPartition || '').trim();
+				const expectedToken = databaseRequestTokenByBoxId[String(message.boxId || '')];
+				const responseToken = String(message.requestToken || '');
+				const connection = connections.find(candidate => String(candidate?.id || '').trim() === connectionId);
+				const currentPartition = String(connection?.accountPartition || '').trim();
+				if (responseToken && expectedToken && responseToken !== expectedToken) break;
+				if (accountPartition && currentPartition && currentPartition !== accountPartition) break;
+			} catch (e) { console.error('[kusto]', e); break; }
 			// Resolve pending database list request if this was a synthetic request id.
 			try {
 				const r = databasesRequestResolversByBoxId && databasesRequestResolversByBoxId[message.boxId];
@@ -895,15 +1010,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						.sort((a: any, b: any) => a.toLowerCase().localeCompare(b.toLowerCase()));
 					try {
 						if (cid) {
-							let clusterKey = '';
-							try {
-								const conn = Array.isArray(connections) ? connections.find((c: any) => c && String(c.id || '').trim() === String(cid || '').trim()) : null;
-								const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
-								if (clusterUrl) clusterKey = kustoClusterKey(clusterUrl);
-							} catch (e) { console.error('[kusto]', e); }
-							if (clusterKey) {
-								cachedDatabases[clusterKey] = list;
-							}
+							cachedDatabases[String(cid).trim()] = list;
 						}
 					} catch (e) { console.error('[kusto]', e); }
 					try { r.resolve(list); } catch (e) { console.error('[kusto]', e); }
@@ -1075,14 +1182,29 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						break;
 					}
 				}
+				const connectionId = String(message.connectionId || '').trim();
+				const accountPartition = String(message.accountPartition || '').trim();
+				const connection = connections.find(candidate => String(candidate?.id || '').trim() === connectionId);
+				const currentPartition = String(connection?.accountPartition || '').trim();
+				if (accountPartition && currentPartition && currentPartition !== accountPartition) {
+					break;
+				}
 			} catch (e) { console.error('[kusto]', e); }
 			
 			try {
 				const cid = String(message.connectionId || '').trim();
 				const db = String(message.database || '').trim();
-				if (cid && db) {
-					schemaByConnDb[cid + '|' + db] = message.schema;
-					schemaMetaByConnDb[cid + '|' + db] = message.schemaMeta || {};
+				const accountPartition = String(message.accountPartition || '').trim();
+				const identityKey = getKustoSchemaIdentityKey(cid, accountPartition, message.clusterUrl, db);
+				if (identityKey) {
+					schemaByConnDb[identityKey] = message.schema;
+					schemaMetaByConnDb[identityKey] = {
+						...(message.schemaMeta || {}),
+						connectionId: cid,
+						accountPartition,
+						database: db,
+						clusterUrl: message.clusterUrl,
+					};
 				}
 			} catch (e) { console.error('[kusto]', e); }
 
@@ -1102,7 +1224,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			schemaMetaByBoxId[message.boxId] = message.schemaMeta || {};
 			schemaFetchInFlightByBoxId[message.boxId] = false;
 			const schemaMessageMeta = message.schemaMeta || {};
-			const schemaMessageKey = message.clusterUrl && message.database ? kustoDatabaseKey(message.clusterUrl, message.database) : '';
+			const schemaMessageKey = getKustoSchemaIdentityKey(message.connectionId, message.accountPartition, message.clusterUrl, message.database);
 			const schemaMessageSignature = typeof schemaMessageMeta.schemaSignature === 'string' ? schemaMessageMeta.schemaSignature : undefined;
 			const schemaMessageModelUri = getQueryEditorModelUri(String(message.boxId || '')) || undefined;
 			const hasRawSchemaJson = !!message.schema?.rawSchemaJson;
@@ -1236,6 +1358,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						rawSchemaJson: message.schema.rawSchemaJson,
 						clusterUrl: message.clusterUrl,
 						database: message.database,
+						connectionId: String(message.connectionId || ''),
+						accountPartition: String(message.accountPartition || ''),
 						schemaKey,
 						modelUri: schemaMessageModelUri,
 					});
@@ -1376,6 +1500,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					__kustoHandleCrossClusterSchemaData({
 						clusterName,
 						clusterUrl,
+						connectionId: String((message as any).connectionId || ''),
+						accountPartition: String((message as any).accountPartition || ''),
 						database,
 						boxId: message.boxId,
 						requestToken: (message as any).requestToken || '',
@@ -1434,12 +1560,16 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
-			case 'connectionAdded':
-				// Refresh list and preselect the new connection in the originating box.
-				if (Array.isArray(message.connections)) {
-					setConnections(message.connections);
-					try { window.connections = connections; } catch (e) { console.error('[kusto]', e); }
+		case 'kustoConnectionMutationResult':
+			try {
+				const kwEl = message.boxId ? __kustoGetQuerySectionElement(message.boxId) : null;
+				if (kwEl && typeof kwEl.completeAddConnection === 'function') {
+					kwEl.completeAddConnection(!!message.success, message.message);
 				}
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+			case 'connectionAdded':
+				// The enriched connectionsData snapshot is published before this acknowledgement.
 				if (message.lastConnectionId) {
 					setLastConnectionId(message.lastConnectionId);
 				}
@@ -1454,6 +1584,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					const boxId = message.boxId || null;
 					if (boxId && message.connectionId) {
 						const kwEl = __kustoGetQuerySectionElement(boxId);
+						if (kwEl && typeof kwEl.completeAddConnection === 'function') kwEl.completeAddConnection(true);
 						if (kwEl && typeof kwEl.setConnectionId === 'function') {
 							kwEl.setConnectionId(message.connectionId);
 							kwEl.dispatchEvent(new CustomEvent('connection-changed', {
@@ -2207,7 +2338,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const requestId = String(message.requestId || '');
 				if (requestId) {
 					const state = getKqlxState();
-					const sections = (state && state.sections) ? state.sections : [];
+					const sections = (state && state.sections) ? state.sections.map((section: any) => {
+						if (section?.type !== 'query' && section?.type !== 'copilotQuery') return section;
+						const boxId = String(section.id || '').trim();
+						const connectionId = boxId ? String(__kustoGetConnectionId(boxId) || '').trim() : '';
+						const requestToken = boxId ? String(schemaRequestTokenByBoxId[boxId] || '') : '';
+						return connectionId ? { ...section, connectionId, ...(requestToken ? { schemaRequestToken: requestToken } : {}) } : section;
+					}) : [];
 					postMessageToHost({ type: 'toolStateResponse', requestId, sections });
 				}
 			} catch (err: any) {
@@ -2239,30 +2376,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						if (sectionId && input.name) {
 							__kustoSetSectionName(sectionId, input.name);
 						}
-						if (sectionId && input.clusterUrl) {
-							// Find connection by cluster URL
-							const inputClusterKey = kustoClusterKey(input.clusterUrl);
-							const conn = (connections || []).find((c: any) => c && kustoClusterKey(c.clusterUrl || '') === inputClusterKey);
-							if (conn) {
-								const kwEl = __kustoGetQuerySectionElement(sectionId);
-								if (kwEl && typeof kwEl.setConnectionId === 'function') {
-									kwEl.setConnectionId(conn.id);
-									kwEl.dispatchEvent(new CustomEvent('connection-changed', {
-										detail: { boxId: sectionId, connectionId: conn.id, clusterUrl: conn.clusterUrl },
-										bubbles: true, composed: true,
-									}));
-								}
-							}
-						}
-						if (sectionId && input.database) {
-							const kwEl = __kustoGetQuerySectionElement(sectionId);
-							if (kwEl && typeof kwEl.setDatabase === 'function') {
-								kwEl.setDatabase(input.database);
-								kwEl.dispatchEvent(new CustomEvent('database-changed', {
-									detail: { boxId: sectionId, database: input.database },
-									bubbles: true, composed: true,
-								}));
-							}
+						if (sectionId && (input.clusterUrl || input.connectionId || input.database)) {
+							const applied = applyToolKustoTarget(sectionId, input);
+							if (!applied.success) throw new Error(applied.error);
 						}
 					} else if (sectionType === 'markdown') {
 						// Pass text as option so it's available when the editor initializes
@@ -2504,51 +2620,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						success = true;
 					}
 					
-					// Update cluster
-					if (input.clusterUrl) {
-						const inputClusterKey = kustoClusterKey(input.clusterUrl);
-						const conn = (connections || []).find((c: any) => c && kustoClusterKey(c.clusterUrl || '') === inputClusterKey);
-						if (conn) {
-							const kwEl = __kustoGetQuerySectionElement(sectionId);
-							if (kwEl && typeof kwEl.setConnectionId === 'function') {
-								kwEl.setConnectionId(conn.id);
-								kwEl.dispatchEvent(new CustomEvent('connection-changed', {
-									detail: { boxId: sectionId, connectionId: conn.id, clusterUrl: conn.clusterUrl },
-									bubbles: true, composed: true,
-								}));
-								success = true;
-							}
-						} else {
-							// Connection not found - return error with available connections
-							const availableConnections = (connections || []).map((c: any) => c && c.clusterUrl ? String(c.clusterUrl) : '').filter(Boolean);
-							postMessageToHost({ 
-								type: 'toolResponse', 
-								requestId, 
-								result: { 
-									success: false, 
-									error: `Cluster "${input.clusterUrl}" not found in configured connections.`,
-									availableConnections,
-									fix: 'Use #listKustoConnections to see available clusters.'
-								}
-							});
-							return;
-						}
-					}
-					
-					// Update database (wait a bit for database list to populate after connection change)
-					if (input.database) {
-						if (input.clusterUrl) {
-							await new Promise((r: any) => setTimeout(r, 500));
-						}
-						const kwEl = __kustoGetQuerySectionElement(sectionId);
-						if (kwEl && typeof kwEl.setDatabase === 'function') {
-							kwEl.setDatabase(input.database);
-							kwEl.dispatchEvent(new CustomEvent('database-changed', {
-								detail: { boxId: sectionId, database: input.database },
-								bubbles: true, composed: true,
-							}));
-							success = true;
-						}
+					if (input.clusterUrl || input.connectionId || input.database) {
+						const applied = applyToolKustoTarget(sectionId, input);
+						if (!applied.success) throw new Error(applied.error);
+						success = true;
 					}
 					
 					// Execute if requested — defer the tool response until results arrive (B1 + B2 fix)
@@ -2619,7 +2694,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								postMessageToHost({
 									type: 'toolResponse',
 									requestId,
-									result: { success: true, resultPreview: '' }
+									result: { success: false, error: 'Timed out waiting for query execution to start or complete.' }
 								});
 							}, 120000);
 
@@ -3027,6 +3102,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						} else {
 							sectionId = addQueryBox();
 							markSectionAgentTouched(sectionId);
+						}
+					}
+					if (input.clusterUrl || input.connectionId || input.database) {
+						const applied = applyToolKustoTarget(sectionId, input);
+						if (!applied.success) {
+							postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: applied.error } });
+							return;
 						}
 					}
 					

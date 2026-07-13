@@ -47,10 +47,13 @@ declare global {
 		name?: string;
 		clusterUrl: string;
 		database?: string;
+		authorityId?: string;
+		accountPartition?: string;
 	}
 
-	/** Favorite (pinned cluster + database pair). */
+	/** Favorite owned by a saved connection and database pair. */
 	interface KustoFavoriteInfo {
+		connectionId: string;
 		clusterUrl: string;
 		database: string;
 		name?: string;
@@ -214,7 +217,7 @@ declare global {
 		__kustoUpdateFavoritesUiForBox: (boxId: string) => void;
 		__kustoUpdateFavoritesUiForAllBoxes: () => void;
 		__kustoTryAutoEnterFavoritesModeForAllBoxes: () => void;
-		__kustoFindFavorite: (clusterUrl: string, database: string) => KustoFavoriteInfo | null;
+		__kustoFindFavorite: (connectionId: string, database: string) => KustoFavoriteInfo | null;
 		__kustoMarkNewBoxForFavoritesAutoEnter: (boxId: string) => void;
 		__kustoTryAutoEnterFavoritesModeForNewBox: (boxId: string) => void;
 		__kustoIsRunSelectionReady: (boxId: string) => boolean;
@@ -230,7 +233,7 @@ declare global {
 		setFavorites: (boxId: string, favorites: KustoFavoriteInfo[]) => void;
 		setFavoritesMode: (boxId: string, enabled: boolean) => void;
 		addMissingClusterConnections: (boxId: string) => void;
-		__kustoFavoriteKey: (clusterUrl: string, database: string) => string;
+		__kustoFavoriteKey: (connectionId: string, database: string) => string;
 		__kustoGetFavoritesSorted: () => KustoFavoriteInfo[];
 		__kustoTryAutoEnterFavoritesModeForBox: (boxId: string) => void;
 		__kustoFindConnectionIdForClusterUrl: (clusterUrl: string) => string;
@@ -466,7 +469,7 @@ declare global {
 		// monaco.ts
 		// =====================================================================
 		__kustoFunctionDocs: Record<string, any>;
-		__kustoSetMonacoKustoSchema: (rawSchemaJson: any, clusterUrl: string, database: string, setAsContext?: boolean, modelUri?: string, forceRefresh?: boolean, guard?: () => boolean, preparationToken?: import('./core/state').KustoPreparationToken, contextIntent?: import('./shared/schema-context-intent').KustoSchemaContextIntent) => Promise<boolean>;
+		__kustoSetMonacoKustoSchema: (rawSchemaJson: any, clusterUrl: string, database: string, setAsContext?: boolean, modelUri?: string, forceRefresh?: boolean, guard?: () => boolean, preparationToken?: import('./core/state').KustoPreparationToken, contextIntent?: import('./shared/schema-context-intent').KustoSchemaContextIntent, connectionId?: string, accountPartition?: string) => Promise<boolean>;
 		__kustoApplyCrossClusterSchema: (clusterName: string, clusterUrl: string, database: string, rawSchemaJson: any, boxId?: string, source?: string, cacheAgeMs?: number) => Promise<void>;
 		__kustoGetCrossClusterTrace: () => Array<Record<string, any>>;
 		__kustoClearCrossClusterTrace: () => void;

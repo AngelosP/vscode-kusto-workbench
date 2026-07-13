@@ -12,7 +12,8 @@ import { __kustoCrossClusterSchemas, __kustoGetSupplementalSchemaSnapshot, __kus
 import { kustoSupplementalTraceId } from '../shared/kusto-supplemental-schema-coordinator.js';
 import { extractCrossClusterRefs } from '../shared/cross-cluster-schema.js';
 import { computeMissingClusterUrls } from '../shared/clusterUtils.js';
-import { kustoClusterKey, kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
+import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
+import { getKustoSchemaIdentityKey } from '../../shared/kustoAuth.js';
 
 type MonacoLike = {
 	getDomNode?: () => HTMLElement | null;
@@ -954,14 +955,22 @@ async function e2eSelectSampleKustoDatabase(sectionIndex: number = 0): Promise<s
 	return _win.__testSelectKwDropdownItem(`${sectionSelector} .select-wrapper[title='Kusto Database'] kw-dropdown`, 'sample,storm,ads,devcli', true);
 }
 
+function e2eKustoSchemaIdentityForSection(section: any): { connectionId: string; accountPartition: string; clusterUrl: string; database: string; schemaKey: string } {
+	const connectionId = String(section?.getConnectionId?.() || '').trim();
+	const clusterUrl = String(section?.getClusterUrl?.() || '').trim();
+	const database = String(section?.getDatabase?.() || '').trim();
+	const connection = (_win.connections || []).find((candidate: any) => String(candidate?.id || '') === connectionId);
+	const accountPartition = String(connection?.accountPartition || '').trim();
+	const schemaKey = getKustoSchemaIdentityKey(connectionId, accountPartition, clusterUrl, database);
+	return { connectionId, accountPartition, clusterUrl, database, schemaKey };
+}
+
 function e2eAssertKustoPreparationReady(sectionIndex: number = 0): string {
 	const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
 	const section = sections[sectionIndex];
 	if (!section) throw new Error(`Kusto section ${sectionIndex} not found`);
 	const boxId = String(section.boxId || section.id || '');
-	const database = String(section.getDatabase?.() || '');
-	const clusterUrl = String(section.getClusterUrl?.() || '');
-	const schemaKey = kustoDatabaseKey(clusterUrl, database);
+	const { database, schemaKey } = e2eKustoSchemaIdentityForSection(section);
 	const editor = (window as any).queryEditors?.[boxId];
 	const modelUri = String(editor?.getModel?.()?.uri?.toString?.() || '');
 	const preparation = getKustoPreparationState(boxId);
@@ -990,9 +999,7 @@ async function e2eWaitForKustoPreparationReady(sectionIndex: number = 0, timeout
 	const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
 	const section = sections[sectionIndex];
 	const boxId = String(section?.boxId || section?.id || '');
-	const database = String(section?.getDatabase?.() || '');
-	const clusterUrl = String(section?.getClusterUrl?.() || '');
-	const schemaKey = kustoDatabaseKey(clusterUrl, database);
+	const { schemaKey } = e2eKustoSchemaIdentityForSection(section);
 	const modelUri = String(_win.queryEditors?.[boxId]?.getModel?.()?.uri?.toString?.() || '');
 	const preparation = getKustoPreparationState(boxId);
 	throw new Error(`Preparation timed out for section ${sectionIndex}: status=${preparation.status} stage=${preparation.stage} generation=${preparation.generation} revision=${preparation.revision} blockers=${preparation.blockers.join(',')} schemaId=${kustoSupplementalTraceId(schemaKey)} modelId=${kustoSupplementalTraceId(modelUri)} workerReady=${isSchemaWorkerReady(boxId, schemaKey, modelUri)} enhancementReady=${isSchemaEnhancementReady(boxId, schemaKey, preparation.target.schemaSignature, modelUri)}`);
@@ -1002,11 +1009,9 @@ function e2eAssertKustoWorkerContext(sectionIndex: number = 0): string {
 	const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
 	const section = sections[sectionIndex];
 	if (!section) throw new Error(`Kusto section ${sectionIndex} not found`);
-	const database = String(section.getDatabase?.() || '');
-	const clusterUrl = String(section.getClusterUrl?.() || '');
-	const expectedSchemaKey = kustoDatabaseKey(clusterUrl, database);
+	const { database, schemaKey: expectedSchemaKey } = e2eKustoSchemaIdentityForSection(section);
 	const context = __kustoSchemaTracker.databaseInContext;
-	const actualSchemaKey = context ? kustoDatabaseKey(context.clusterUrl, context.database) : '';
+	const actualSchemaKey = String(context?.schemaKey || '');
 	if (!expectedSchemaKey || actualSchemaKey !== expectedSchemaKey) {
 		throw new Error(`Worker context mismatch for section ${sectionIndex}: expected ${expectedSchemaKey}, got ${actualSchemaKey || '(none)'}`);
 	}
@@ -1694,7 +1699,10 @@ async function e2eKustoCleanFavorite(options: any = {}): Promise<string> {
 		}
 	};
 	window.addEventListener('message', onMessage as EventListener);
-	postMessageToHost({ type: 'removeFavorite', clusterUrl, database });
+	const existing = e2eKustoGlobalFavorites().find(favorite => e2eKustoFavoriteMatches(favorite, clusterUrl, database));
+	const connectionId = String(existing?.connectionId || '').trim();
+	if (!connectionId) throw new Error(`No connection-owned favorite found for ${clusterUrl}/${database}`);
+	postMessageToHost({ type: 'removeFavorite', connectionId, clusterUrl, database });
 	const started = performance.now();
 	try {
 		while (performance.now() - started <= timeoutMs) {
@@ -3717,15 +3725,24 @@ async function e2eApplyKustoSemanticFixture(): Promise<string> {
 	const primaryRaw = e2eBuildShowSchema(primaryDatabase, primaryTables);
 	const remoteRaw = e2eBuildShowSchema(remoteDatabase, remoteTables, remoteFunctions);
 	const primarySchema = e2eCompactSchemaFromTables(primaryTables, primaryRaw);
+	const semanticAccountPartition = 'e2e-semantic-partition';
 	const semanticConnection = {
 		id: 'e2e-semantic-conn',
 		name: 'E2E Semantic Cluster',
 		clusterUrl: primaryClusterUrl,
+		accountPartition: semanticAccountPartition,
+	};
+	const semanticRemoteConnection = {
+		id: 'e2e-semantic-remote-conn',
+		name: 'E2E Semantic Remote Cluster',
+		clusterUrl: remoteClusterUrl,
+		accountPartition: semanticAccountPartition,
 	};
 	try {
 		const existingConnections = Array.isArray(_win.connections) ? _win.connections : [];
-		const others = existingConnections.filter((conn: any) => String(conn?.id || '') !== semanticConnection.id);
-		others.push(semanticConnection);
+		const fixtureConnectionIds = new Set([semanticConnection.id, semanticRemoteConnection.id]);
+		const others = existingConnections.filter((conn: any) => !fixtureConnectionIds.has(String(conn?.id || '')));
+		others.push(semanticConnection, semanticRemoteConnection);
 		_win.connections.length = 0;
 		_win.connections.push(...others);
 		if (typeof section.setConnections === 'function') section.setConnections(_win.connections, { lastConnectionId: semanticConnection.id });
@@ -3734,12 +3751,10 @@ async function e2eApplyKustoSemanticFixture(): Promise<string> {
 
 	_win.schemaByBoxId[boxId] = primarySchema;
 	_win.schemaMetaByBoxId[boxId] = { fromCache: false, schemaSignature: 'e2e-semantic-primary' };
-	_win.schemaByConnDb[`${primaryClusterUrl}|${primaryDatabase}`] = primarySchema;
-	_win.schemaMetaByConnDb[`${primaryClusterUrl}|${primaryDatabase}`] = { fromCache: false, schemaSignature: 'e2e-semantic-primary' };
-	const primaryCanonicalSchemaKey = kustoDatabaseKey(primaryClusterUrl, primaryDatabase);
+	const primaryCanonicalSchemaKey = getKustoSchemaIdentityKey(semanticConnection.id, semanticAccountPartition, primaryClusterUrl, primaryDatabase);
 	if (primaryCanonicalSchemaKey) {
 		_win.schemaByConnDb[primaryCanonicalSchemaKey] = primarySchema;
-		_win.schemaMetaByConnDb[primaryCanonicalSchemaKey] = { fromCache: false, schemaSignature: 'e2e-semantic-primary' };
+		_win.schemaMetaByConnDb[primaryCanonicalSchemaKey] = { fromCache: false, schemaSignature: 'e2e-semantic-primary', connectionId: semanticConnection.id, accountPartition: semanticAccountPartition, clusterUrl: primaryClusterUrl, database: primaryDatabase };
 	}
 	try {
 		section.setConnectionId?.(semanticConnection.id);
@@ -3751,7 +3766,7 @@ async function e2eApplyKustoSemanticFixture(): Promise<string> {
 	if (typeof _win.__kustoSetMonacoKustoSchema !== 'function') {
 		throw new Error('__kustoSetMonacoKustoSchema is not available');
 	}
-	const primaryApplied = await _win.__kustoSetMonacoKustoSchema(primaryRaw, primaryClusterUrl, primaryDatabase, true, modelUri, true);
+	const primaryApplied = await _win.__kustoSetMonacoKustoSchema(primaryRaw, primaryClusterUrl, primaryDatabase, true, modelUri, true, undefined, undefined, undefined, semanticConnection.id, semanticAccountPartition);
 	if (!primaryApplied) {
 		throw new Error('Primary semantic fixture schema did not apply to Monaco worker');
 	}
@@ -3782,7 +3797,7 @@ async function e2eApplyKustoSemanticFixture(): Promise<string> {
 		throw new Error('Coordinator-backed supplemental semantic fixture injection failed');
 	}
 
-	const remoteKey = kustoDatabaseKey(remoteClusterName, remoteDatabase);
+	const remoteKey = getKustoSchemaIdentityKey(semanticRemoteConnection.id, semanticAccountPartition, remoteClusterUrl, remoteDatabase);
 	const started = performance.now();
 	while (performance.now() - started < 8000) {
 		const entry = __kustoCrossClusterSchemas?.[remoteKey];
@@ -3829,7 +3844,7 @@ async function e2eApplyKustoCurrentClusterWorkflowFixture(): Promise<string> {
 	};
 	const rawSchema = e2eBuildShowSchema(database, tables, functions);
 	const schema = e2eCompactSchemaFromTables(tables, rawSchema);
-	const connection = { id: 'e2e-current-workflow-conn', name: 'E2E Autocomplete Cluster', clusterUrl };
+	const connection = { id: 'e2e-current-workflow-conn', name: 'E2E Autocomplete Cluster', clusterUrl, accountPartition: 'e2e-current-workflow-partition' };
 	const prevRestoreInProgress = !!pState.restoreInProgress;
 	try {
 		pState.restoreInProgress = true;
@@ -3843,7 +3858,7 @@ async function e2eApplyKustoCurrentClusterWorkflowFixture(): Promise<string> {
 		section.setConnectionId?.(connection.id);
 		section.setDesiredClusterUrl?.(clusterUrl);
 		section.setConnections?.(_win.connections, { lastConnectionId: connection.id });
-		section.setFavorites?.([{ clusterUrl, database, name: 'E2E Autocomplete Cluster' }]);
+		section.setFavorites?.([{ connectionId: connection.id, clusterUrl, database, name: 'E2E Autocomplete Cluster' }]);
 		section.setFavoritesMode?.(true);
 		section.setDesiredDatabase?.(database);
 		section.setDatabases?.([database], database);
@@ -3856,17 +3871,15 @@ async function e2eApplyKustoCurrentClusterWorkflowFixture(): Promise<string> {
 
 	_win.schemaByBoxId[boxId] = schema;
 	_win.schemaMetaByBoxId[boxId] = { fromCache: false, schemaSignature: 'e2e-current-workflow' };
-	_win.schemaByConnDb[`${clusterUrl}|${database}`] = schema;
-	_win.schemaMetaByConnDb[`${clusterUrl}|${database}`] = { fromCache: false, schemaSignature: 'e2e-current-workflow' };
-	const canonicalSchemaKey = kustoDatabaseKey(clusterUrl, database);
+	const canonicalSchemaKey = getKustoSchemaIdentityKey(connection.id, connection.accountPartition, clusterUrl, database);
 	if (canonicalSchemaKey) {
 		_win.schemaByConnDb[canonicalSchemaKey] = schema;
-		_win.schemaMetaByConnDb[canonicalSchemaKey] = { fromCache: false, schemaSignature: 'e2e-current-workflow' };
+		_win.schemaMetaByConnDb[canonicalSchemaKey] = { fromCache: false, schemaSignature: 'e2e-current-workflow', connectionId: connection.id, accountPartition: connection.accountPartition, clusterUrl, database };
 	}
 	if (typeof _win.__kustoSetMonacoKustoSchema !== 'function') {
 		throw new Error('__kustoSetMonacoKustoSchema is not available');
 	}
-	const applied = await _win.__kustoSetMonacoKustoSchema(rawSchema, clusterUrl, database, true, modelUri, true);
+	const applied = await _win.__kustoSetMonacoKustoSchema(rawSchema, clusterUrl, database, true, modelUri, true, undefined, undefined, undefined, connection.id, connection.accountPartition);
 	if (!applied) {
 		throw new Error('Current-cluster workflow fixture schema did not apply to Monaco worker');
 	}
@@ -4143,7 +4156,7 @@ async function e2eAssertKustoSemanticScenarioVisible(scenario: KustoSemanticComp
 
 function e2eAssertKustoCrossClusterTraceForSemanticFixture(): string {
 	const trace = typeof _win.__kustoGetCrossClusterTrace === 'function' ? _win.__kustoGetCrossClusterTrace() : [];
-	const remoteKey = kustoDatabaseKey('semantic-remote.westus.kusto.windows.net', 'TelemetryDb');
+	const remoteKey = getKustoSchemaIdentityKey('e2e-semantic-remote-conn', 'e2e-semantic-partition', 'semantic-remote.westus', 'TelemetryDb');
 	const remoteSchemaId = kustoSupplementalTraceId(remoteKey);
 	const has = (event: string, predicate: (entry: any) => boolean = () => true) => trace.some((entry: any) => entry?.event === event && predicate(entry));
 	const missing: string[] = [];

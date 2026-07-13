@@ -1,11 +1,13 @@
 import * as vscode from 'vscode';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import { normalizeKustoAuthorityId } from '../shared/kustoAuth';
 
 export interface KustoConnection {
 	id: string;
 	name: string;
 	clusterUrl: string;
 	database?: string;
+	authorityId?: string;
 }
 
 /**
@@ -14,7 +16,15 @@ export interface KustoConnection {
 export interface FileConnectionEntry {
 	clusterUrl: string;
 	database: string;
+	authorityId?: string;
+	connectionIdHint?: string;
 }
+
+export type KustoConnectionChange =
+	| { type: 'added'; connection: KustoConnection }
+	| { type: 'updated'; connection: KustoConnection; previous: KustoConnection }
+	| { type: 'removed'; connection: KustoConnection }
+	| { type: 'cleared'; connections: KustoConnection[] };
 
 /**
  * Internal storage format for file connection cache entries.
@@ -57,6 +67,8 @@ export class ConnectionManager {
 	private readonly storageKey = 'kusto.connections';
 	private readonly leaveNoTraceKey = 'kusto.leaveNoTraceClusters';
 	private readonly fileConnectionCacheKey = 'kusto.fileConnectionCache';
+	private readonly changeEmitter = new vscode.EventEmitter<KustoConnectionChange>();
+	readonly onDidChangeConnections = this.changeEmitter.event;
 
 	constructor(private context: vscode.ExtensionContext) {
 		this.loadConnections();
@@ -65,7 +77,17 @@ export class ConnectionManager {
 	private loadConnections() {
 		const stored = this.context.globalState.get<KustoConnection[]>(this.storageKey);
 		if (stored) {
-			this.connections = stored;
+			this.connections = stored.flatMap(connection => {
+				if (!connection || typeof connection !== 'object') return [];
+				const id = String(connection.id || '').trim();
+				const name = String(connection.name || '').trim();
+				const clusterUrl = String(connection.clusterUrl || '').trim();
+				if (!id || !name || !clusterUrl) return [];
+				const authorityIdRaw = String(connection.authorityId || '').trim();
+				let authorityId: string | undefined;
+				try { authorityId = normalizeKustoAuthorityId(authorityIdRaw); } catch { authorityId = authorityIdRaw || undefined; }
+				return [{ id, name, clusterUrl, database: String(connection.database || '').trim() || undefined, ...(authorityId ? { authorityId } : {}) }];
+			});
 		}
 		void vscode.commands.executeCommand('setContext', 'kusto.hasConnections', this.connections.length > 0);
 	}
@@ -154,7 +176,12 @@ export class ConnectionManager {
 		// awaited writes from setFileConnection(), causing data loss.
 		// The 30-day expiry window is long enough that write-only touch is sufficient.
 
-		return { clusterUrl: entry.clusterUrl, database: entry.database };
+		return {
+			clusterUrl: entry.clusterUrl,
+			database: entry.database,
+			...(String(entry.authorityId || '').trim() ? { authorityId: String(entry.authorityId).trim() } : {}),
+			...(String(entry.connectionIdHint || '').trim() ? { connectionIdHint: String(entry.connectionIdHint).trim() } : {}),
+		};
 	}
 
 	/**
@@ -162,7 +189,12 @@ export class ConnectionManager {
 	 * Used to remember the last connection used for .kql/.csl files without sidecars.
 	 * Sets the expiry timer to 30 days from now.
 	 */
-	async setFileConnection(filePath: string, clusterUrl: string, database: string): Promise<void> {
+	async setFileConnection(
+		filePath: string,
+		clusterUrl: string,
+		database: string,
+		options?: { authorityId?: string; connectionIdHint?: string },
+	): Promise<void> {
 		const key = this.normalizeFilePath(filePath);
 		if (!key) return;
 		const trimmedCluster = String(clusterUrl || '').trim();
@@ -170,7 +202,15 @@ export class ConnectionManager {
 		if (!trimmedCluster) return;
 		const cache = this.context.globalState.get<Record<string, FileConnectionCacheEntry>>(this.fileConnectionCacheKey) || {};
 		const now = Date.now();
-		cache[key] = { clusterUrl: trimmedCluster, database: trimmedDb, lastAccessedAt: now };
+		const authorityId = normalizeKustoAuthorityId(options?.authorityId);
+		const connectionIdHint = String(options?.connectionIdHint || '').trim() || undefined;
+		cache[key] = {
+			clusterUrl: trimmedCluster,
+			database: trimmedDb,
+			lastAccessedAt: now,
+			...(authorityId ? { authorityId } : {}),
+			...(connectionIdHint ? { connectionIdHint } : {}),
+		};
 		// Opportunistically prune expired entries on write.
 		this.pruneExpiredFileConnectionsSync(cache, now);
 		await this.context.globalState.update(this.fileConnectionCacheKey, cache);
@@ -211,32 +251,44 @@ export class ConnectionManager {
 	}
 
 	async addConnection(connection: Omit<KustoConnection, 'id'>): Promise<KustoConnection> {
+		const authorityId = normalizeKustoAuthorityId(connection.authorityId);
 		const newConnection: KustoConnection = {
 			...connection,
+			...(authorityId ? { authorityId } : { authorityId: undefined }),
 			id: `conn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 		};
 		this.connections.push(newConnection);
 		await this.saveConnections();
+		this.changeEmitter.fire({ type: 'added', connection: { ...newConnection } });
 		return newConnection;
 	}
 
 	async removeConnection(id: string): Promise<void> {
+		const removed = this.connections.find(c => c.id === id);
 		this.connections = this.connections.filter(c => c.id !== id);
 		await this.saveConnections();
+		if (removed) this.changeEmitter.fire({ type: 'removed', connection: { ...removed } });
 	}
 
 	async clearConnections(): Promise<number> {
-		const removed = this.connections.length;
+		const previous = this.connections.map(connection => ({ ...connection }));
+		const removed = previous.length;
 		this.connections = [];
 		await this.saveConnections();
+		if (previous.length) this.changeEmitter.fire({ type: 'cleared', connections: previous });
 		return removed;
 	}
 
 	async updateConnection(id: string, updates: Partial<KustoConnection>): Promise<void> {
 		const index = this.connections.findIndex(c => c.id === id);
 		if (index !== -1) {
-			this.connections[index] = { ...this.connections[index], ...updates };
+			const previous = { ...this.connections[index] };
+			const authorityId = Object.prototype.hasOwnProperty.call(updates, 'authorityId')
+				? normalizeKustoAuthorityId(updates.authorityId)
+				: previous.authorityId;
+			this.connections[index] = { ...previous, ...updates, ...(authorityId ? { authorityId } : { authorityId: undefined }) };
 			await this.saveConnections();
+			this.changeEmitter.fire({ type: 'updated', connection: { ...this.connections[index] }, previous });
 		}
 	}
 

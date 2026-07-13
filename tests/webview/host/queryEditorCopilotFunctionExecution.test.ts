@@ -39,6 +39,12 @@ function streamParts(parts: unknown[]): AsyncIterable<unknown> {
 	})();
 }
 
+function deferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	const promise = new Promise<T>(res => { resolve = res; });
+	return { promise, resolve };
+}
+
 function createModel(partsByRequest: unknown[][]): any {
 	let requestIndex = 0;
 	return {
@@ -79,12 +85,14 @@ function createHost(capturedQueries: string[], executeError?: Error): CopilotSer
 			},
 		} as any,
 		kustoClient: {
+			getAccountPartition: vi.fn(() => 'partition-current'),
 			executeQueryCancelable: vi.fn((_connection: KustoConnection, _database: string, query: string) => {
 				capturedQueries.push(query);
 				return {
 					promise: executeError ? Promise.reject(executeError) : Promise.resolve({ columns: ['x'], rows: [[1]], metadata: {} }),
 					cancel: vi.fn(),
 					clientActivityId: 'KW.execute_query;test',
+					getAccountPartition: () => 'partition-current',
 				};
 			}),
 		} as any,
@@ -131,6 +139,7 @@ function createHostWithQueryErrors(capturedQueries: string[], errorsByQuery: Rec
 			promise: error ? Promise.reject(error) : Promise.resolve({ columns: ['x'], rows: [[1]], metadata: {} }),
 			cancel: vi.fn(),
 			clientActivityId: 'KW.execute_query;test',
+			getAccountPartition: () => 'partition-current',
 		};
 	});
 	return host;
@@ -290,6 +299,56 @@ function startMessage(queryMode = 'plain') {
 }
 
 describe('Kusto Copilot function execution', () => {
+	it('clears only Copilot state owned by affected Kusto connections', () => {
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		const cancelA = vi.fn();
+		const cancelB = vi.fn();
+		const ctsA = { cancel: vi.fn() };
+		const ctsB = { cancel: vi.fn() };
+		(service as any).copilotConversationOwnerByBoxId.set('box-a', { flavor: 'kusto', connectionId: 'conn-a' });
+		(service as any).copilotConversationOwnerByBoxId.set('box-b', { flavor: 'kusto', connectionId: 'conn-b' });
+		(service as any).copilotConversationOwnerByBoxId.set('box-sql', { flavor: 'sql', connectionId: 'sql-a' });
+		(service as any).copilotConversationHistoryByBoxId.set('box-a', [{ type: 'user-message', id: 'a', text: 'secret-a' }]);
+		(service as any).copilotConversationHistoryByBoxId.set('box-b', [{ type: 'user-message', id: 'b', text: 'keep-b' }]);
+		(service as any).copilotConversationHistoryByBoxId.set('box-sql', [{ type: 'user-message', id: 'sql', text: 'keep-sql' }]);
+		(service as any).runningCopilotWriteQueryByBoxId.set('box-a', { cts: ctsA, seq: 1, queryCancels: new Set([cancelA]) });
+		(service as any).runningCopilotWriteQueryByBoxId.set('box-b', { cts: ctsB, seq: 2, queryCancels: new Set([cancelB]) });
+
+		service.invalidateKustoConnections(['conn-a']);
+
+		expect(cancelA).toHaveBeenCalledOnce();
+		expect(ctsA.cancel).toHaveBeenCalledOnce();
+		expect(host.cancelRunningQuery).toHaveBeenCalledWith('box-a');
+		expect((service as any).copilotConversationHistoryByBoxId.has('box-a')).toBe(false);
+		expect((service as any).copilotConversationOwnerByBoxId.has('box-a')).toBe(false);
+		expect(cancelB).not.toHaveBeenCalled();
+		expect((service as any).copilotConversationHistoryByBoxId.get('box-b')[0].text).toBe('keep-b');
+		expect((service as any).copilotConversationHistoryByBoxId.get('box-sql')[0].text).toBe('keep-sql');
+	});
+
+	it('adopts the first established Copilot owner and cancels a later rotation', () => {
+		const host = createHost([]);
+		const service = new CopilotService(host);
+		let producingPartition = 'partition-a';
+		const cancel = vi.fn();
+		const cts = { cancel: vi.fn() };
+		(service as any).copilotConversationOwnerByBoxId.set('box-a', { flavor: 'kusto', connectionId: 'conn-a' });
+		(service as any).copilotConversationHistoryByBoxId.set('box-a', [{ type: 'user-message', id: 'a', text: 'secret-a' }]);
+		(service as any).runningCopilotWriteQueryByBoxId.set('box-a', {
+			cts, seq: 1, queryCancels: new Set([cancel]), kustoAccountPartitionGetters: new Set([() => producingPartition]),
+		});
+
+		service.invalidateKustoConnections(['conn-a'], { preserveEstablishingAccountPartition: 'partition-a' });
+		expect((service as any).copilotConversationOwnerByBoxId.get('box-a').accountPartition).toBe('partition-a');
+		expect(cancel).not.toHaveBeenCalled();
+
+		producingPartition = 'partition-b';
+		service.invalidateKustoConnections(['conn-a'], { preserveEstablishingAccountPartition: 'partition-b' });
+		expect(cancel).toHaveBeenCalledOnce();
+		expect(cts.cancel).toHaveBeenCalledOnce();
+		expect((service as any).copilotConversationHistoryByBoxId.has('box-a')).toBe(false);
+	});
 	beforeEach(() => {
 		vscodeMocks.selectChatModels.mockReset();
 	});
@@ -701,6 +760,35 @@ describe('Kusto Copilot function execution', () => {
 		const executedMessages = hostMessagesOfType(host, 'copilotExecutedQuery');
 		expect(executedMessages).toHaveLength(1);
 		expectInlineFilterRowsQuery(executedMessages[0].query);
+	});
+
+	it('does not publish or retain account A tool results after the snapshot adopts account B', async () => {
+		const model = createModel([
+			[new vscode.LanguageModelToolCallPart('execute-call', 'execute_kusto_query', { query: 'print marker="value"' })],
+			[new vscode.LanguageModelTextPart('Done.')],
+		]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		const snapshot = deferred<void>();
+		let currentPartition = 'partition-a';
+		(host.kustoClient.getAccountPartition as any).mockImplementation(() => currentPartition);
+		(host.kustoClient.executeQueryCancelable as any).mockReturnValue({
+			promise: Promise.resolve({ columns: ['marker'], rows: [['SECRET_A']], metadata: {} }),
+			cancel: vi.fn(),
+			clientActivityId: 'KW.execute_query;account-a',
+			getAccountPartition: () => 'partition-a',
+		});
+		host.refreshConnectionsData = vi.fn(async () => snapshot.promise);
+		const service = new CopilotService(host);
+
+		const run = service.startCopilotWriteQuery(startMessage());
+		await vi.waitFor(() => expect(host.refreshConnectionsData).toHaveBeenCalled());
+		currentPartition = 'partition-b';
+		snapshot.resolve();
+		await run;
+
+		expect(hostMessagesOfType(host, 'copilotExecutedQuery')).toEqual([]);
+		expect(JSON.stringify((service as any).copilotConversationHistoryByBoxId.get('query_1') || [])).not.toContain('SECRET_A');
 	});
 
 	it('strips leading comments from raw control commands in execute_kusto_query while preserving visible tool text', async () => {

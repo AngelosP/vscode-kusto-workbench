@@ -66,6 +66,7 @@ const mocks = {
 	handleStsResponse: vi.fn(),
 	handleStsDiagnostics: vi.fn(),
 	displayCancelled: vi.fn(),
+	clearResultsState: vi.fn(),
 	setQueryExecuting: vi.fn(),
 	setResultsVisible: vi.fn(),
 	setConnections: vi.fn(),
@@ -104,6 +105,7 @@ vi.mock('../../src/webview/shared/safe-run.js', () => ({
 vi.mock('../../src/webview/core/results-state.js', () => ({
 	getResultsState: vi.fn(() => null),
 	getResultsStateRevision: vi.fn(() => 0),
+	clearResultsState: mocks.clearResultsState,
 	displayResultForBox: vi.fn(),
 	displayResult: vi.fn(),
 	displayCancelled: mocks.displayCancelled,
@@ -376,6 +378,19 @@ function createQueryCacheControls(boxId: string): void {
 }
 
 function dispatchHostMessage(data: Record<string, unknown>): void {
+	if (data.type === 'schemaData') {
+		const connectionId = String(data.connectionId || 'c1');
+		const clusterUrl = String(data.clusterUrl || 'https://cluster.kusto.windows.net');
+		const accountPartition = String(data.accountPartition || 'partition-1');
+		const existing = handlerState.connections.find(connection => String(connection.id || '') === connectionId);
+		if (existing) {
+			if (!existing.clusterUrl) existing.clusterUrl = clusterUrl;
+			if (!existing.accountPartition) existing.accountPartition = accountPartition;
+		} else {
+			handlerState.connections.push({ id: connectionId, clusterUrl, accountPartition });
+		}
+		data = { ...data, connectionId, clusterUrl, accountPartition };
+	}
 	window.dispatchEvent(new MessageEvent('message', { data }));
 }
 
@@ -459,6 +474,30 @@ describe('message-handler dispatch', () => {
 		}));
 	});
 
+	it('ignores an older connection snapshot after a newer principal revision', async () => {
+		dispatchHostMessage({
+			type: 'connectionsData',
+			connectionsRevision: 200,
+			connections: [{ id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net', accountPartition: 'partition-b' }],
+			cachedDatabases: { c1: ['DbB'] },
+			favorites: [],
+			leaveNoTraceClusters: [],
+		});
+		dispatchHostMessage({
+			type: 'connectionsData',
+			connectionsRevision: 199,
+			connections: [{ id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net', accountPartition: 'partition-a' }],
+			cachedDatabases: { c1: ['DbA'] },
+			favorites: [],
+			leaveNoTraceClusters: [],
+		});
+
+		expect(mocks.setConnections).toHaveBeenCalledTimes(1);
+		expect(mocks.setConnections).toHaveBeenCalledWith([
+			expect.objectContaining({ accountPartition: 'partition-b' }),
+		]);
+	});
+
 	it('routes revisioned editing preferences without touching document persistence', () => {
 		const message = {
 			type: 'editingPreferencesData',
@@ -483,6 +522,54 @@ describe('message-handler dispatch', () => {
 		await Promise.resolve();
 		expect(mocks.updateDatabaseSelect).toHaveBeenCalledWith('query_1', ['db2', 'db1'], 'c1', undefined, undefined, undefined);
 		expect(mocks.onDatabasesError).toHaveBeenCalledWith('query_1', 'boom', 'c1', undefined);
+	});
+
+	it('drops database responses from an old account partition', async () => {
+		handlerState.connections.splice(0, handlerState.connections.length, {
+			id: 'c1',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			accountPartition: 'partition-b',
+		});
+
+		dispatchHostMessage({
+			type: 'databasesData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			accountPartition: 'partition-a',
+			databases: ['AccountADb'],
+		});
+		await Promise.resolve();
+
+		expect(mocks.updateDatabaseSelect).not.toHaveBeenCalled();
+	});
+
+	it('keeps an in-flight database token until host cancellation settles after session invalidation', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		state.databaseRequestTokenByBoxId.query_1 = 'database-refresh-current';
+
+		dispatchHostMessage({ type: 'kustoAuthIdentityChanged', connectionIds: [], reason: 'sessions-changed' });
+		dispatchHostMessage({
+			type: 'databasesError', boxId: 'query_1', connectionId: 'c1', requestToken: 'database-refresh-current', error: 'Database refresh cancelled.',
+		});
+
+		expect(state.databaseRequestTokenByBoxId.query_1).toBe('database-refresh-current');
+		expect(mocks.onDatabasesError).toHaveBeenCalledWith('query_1', 'Database refresh cancelled.', 'c1', 'database-refresh-current');
+	});
+
+	it('clears rendered and persisted results immediately when Kusto identity is invalidated', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		handlerState.queryEditors.query_1 = {};
+		mocks.getConnectionId.mockReturnValue('c1');
+		const clearResults = vi.fn();
+		mocks.getQuerySectionElement.mockReturnValue({ clearResults });
+		handlerState.pState.queryResultJsonByBoxId = { query_1: '{"rows":[["secret-a"]]}' };
+
+		dispatchHostMessage({ type: 'kustoAuthIdentityChanged', connectionIds: ['c1'], reason: 'selection' });
+
+		expect(mocks.clearResultsState).toHaveBeenCalledWith('query_1');
+		expect((handlerState.pState.queryResultJsonByBoxId as Record<string, string>).query_1).toBeUndefined();
+		expect(clearResults).toHaveBeenCalledOnce();
+		expect(state.isSchemaWorkerApplyRequired('query_1')).toBe(true);
 	});
 
 	it('routes cross-cluster schema responses with their originating box id', async () => {
@@ -802,6 +889,51 @@ describe('message-handler dispatch', () => {
 		expect(handlerState.schemaByConnDb['c1|Samples']).toBeUndefined();
 	});
 
+	it('drops a late tool schema refresh after the box target token changes', async () => {
+		handlerState.connections.splice(0, handlerState.connections.length, {
+			id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net', accountPartition: 'partition-1',
+		});
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema-new-target';
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'OldDb',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			accountPartition: 'partition-1',
+			requestToken: 'schema-old-target',
+			schema: { tables: ['OldTargetTable'], columnTypesByTable: {}, rawSchemaJson: { Databases: {} } },
+			schemaMeta: { workerUpdateNeeded: true },
+		});
+
+		expect(handlerState.schemaByBoxId.query_1).toBeUndefined();
+	});
+
+	it('drops Kusto schema responses from an old account partition', async () => {
+		handlerState.connections.splice(0, handlerState.connections.length, {
+			id: 'c1',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			accountPartition: 'partition-b',
+		});
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema_current';
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'Samples',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			accountPartition: 'partition-a',
+			requestToken: 'schema_current',
+			schema: { tables: ['AccountATable'], columnTypesByTable: {}, rawSchemaJson: { Databases: {} } },
+			schemaMeta: { schemaSignature: 'account-a', workerUpdateNeeded: true },
+		});
+
+		expect(handlerState.schemaByBoxId.query_1).toBeUndefined();
+		expect(Object.keys(handlerState.schemaByConnDb)).toHaveLength(0);
+	});
+
 	it('suppresses visible UI for silent cache-only schema misses', async () => {
 		const errorRenderer = await import('../../src/webview/core/error-renderer.js');
 		const sectionFactory = await import('../../src/webview/core/section-factory.js');
@@ -852,15 +984,16 @@ describe('message-handler dispatch', () => {
 
 	it('does not keep refresh as a blocker while stale cached schema is being applied', async () => {
 		const state = await import('../../src/webview/core/state.js');
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		handlerState.activeQueryEditorBoxId = 'query_1';
 		handlerState.queryBoxes.push('query_1');
 		mocks.getConnectionId.mockReturnValue('c1');
 		mocks.getClusterUrl.mockReturnValue(clusterUrl);
 		mocks.getDatabase.mockReturnValue(database);
+		handlerState.connections.push({ id: 'c1', clusterUrl, accountPartition: 'partition-1' });
 		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/current' } })) };
 		state.beginKustoPreparation('query_1', {
 			stage: 'schema',
@@ -896,10 +1029,10 @@ describe('message-handler dispatch', () => {
 
 	it('applies changed background schema silently while prepared autocomplete stays ready', async () => {
 		const state = await import('../../src/webview/core/state.js');
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		handlerState.activeQueryEditorBoxId = 'query_1';
 		handlerState.queryBoxes.push('query_1');
 		mocks.getConnectionId.mockReturnValue('c1');
@@ -1030,13 +1163,14 @@ describe('message-handler dispatch', () => {
 
 	it('does not demote preparation when a duplicate schema request fails after exact worker adoption', async () => {
 		const state = await vi.importActual<typeof import('../../src/webview/core/state.js')>('../../src/webview/core/state.js');
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		mocks.getConnectionId.mockReturnValue('c1');
 		mocks.getClusterUrl.mockReturnValue(clusterUrl);
 		mocks.getDatabase.mockReturnValue(database);
+		handlerState.connections.push({ id: 'c1', clusterUrl, accountPartition: 'partition-1' });
 		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/current' } })) };
 		const token = state.beginKustoPreparation('query_1', {
 			stage: 'schema',
@@ -1061,10 +1195,10 @@ describe('message-handler dispatch', () => {
 
 	it('retries failed exact enhancement without making enhancement a preparation blocker', async () => {
 		const state = await import('../../src/webview/core/state.js');
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		handlerState.activeQueryEditorBoxId = 'query_1';
 		handlerState.queryBoxes.push('query_1');
 		mocks.getConnectionId.mockReturnValue('c1');
@@ -1105,6 +1239,8 @@ describe('message-handler dispatch', () => {
 			rawSchemaJson: { Databases: { Samples: {} } },
 			clusterUrl,
 			database,
+			connectionId: 'c1',
+			accountPartition: 'partition-1',
 			schemaKey,
 			modelUri: 'inmemory://model/current',
 		});
@@ -1267,30 +1403,34 @@ describe('message-handler dispatch', () => {
 
 	it('updates Kusto schema caches without touching the worker when schema metadata says it is unchanged', async () => {
 		const state = await import('../../src/webview/core/state.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const database = 'Samples';
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		const schema = { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: {} } };
 
 		dispatchHostMessage({
 			type: 'schemaData',
 			boxId: 'query_1',
 			connectionId: 'c1',
-			database: 'Samples',
-			clusterUrl: 'https://cluster.kusto.windows.net',
+			database,
+			clusterUrl,
 			schema,
 			schemaMeta: { schemaSignature: 'same', workerUpdateNeeded: false, isBackgroundRefresh: true },
 		});
 
 		expect(handlerState.schemaByBoxId.query_1).toBe(schema);
-		expect(handlerState.schemaByConnDb['c1|Samples']).toBe(schema);
+		expect(handlerState.schemaByConnDb[schemaKey]).toBe(schema);
 		expect(state.markSchemaWorkerApplyPending).not.toHaveBeenCalled();
 		expect(state.markSchemaWorkerReady).not.toHaveBeenCalled();
 	});
 
 	it('skips duplicate schema worker apply only when schema key, signature, and model URI still match', async () => {
 		const state = await import('../../src/webview/core/state.js');
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		handlerState.activeQueryEditorBoxId = 'query_1';
 		mocks.getConnectionId.mockReturnValue('c1');
 		mocks.getClusterUrl.mockReturnValue(clusterUrl);
@@ -1322,10 +1462,10 @@ describe('message-handler dispatch', () => {
 
 	it('does not let stale ready state for an old model suppress schema apply for a new model', async () => {
 		const state = await import('../../src/webview/core/state.js');
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		handlerState.activeQueryEditorBoxId = 'query_1';
 		mocks.getConnectionId.mockReturnValue('c1');
 		mocks.getClusterUrl.mockReturnValue(clusterUrl);
@@ -1360,6 +1500,9 @@ describe('message-handler dispatch', () => {
 			false,
 			expect.any(Function),
 			expect.any(Object),
+			undefined,
+			'c1',
+			'partition-1',
 		);
 	});
 
@@ -1367,8 +1510,8 @@ describe('message-handler dispatch', () => {
 		const state = await import('../../src/webview/core/state.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		handlerState.activeQueryEditorBoxId = 'query_1';
 		handlerState.queryBoxes.push('query_1');
 		mocks.getConnectionId.mockReturnValue('c1');
@@ -1405,16 +1548,19 @@ describe('message-handler dispatch', () => {
 			true,
 			expect.any(Function),
 			undefined,
+			undefined,
+			'c1',
+			'partition-1',
 		);
 		expect(state.markSchemaWorkerApplyPending).not.toHaveBeenCalled();
 	});
 
 	it('queues inactive schema data when no Monaco model exists yet', async () => {
 		const state = await import('../../src/webview/core/state.js');
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		handlerState.activeQueryEditorBoxId = '';
 		handlerState.queryBoxes.push('query_1');
 		mocks.getConnectionId.mockReturnValue('c1');
@@ -1443,10 +1589,10 @@ describe('message-handler dispatch', () => {
 
 	it('queues mandatory schema data until its Monaco model exists', async () => {
 		const state = await import('../../src/webview/core/state.js');
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		handlerState.activeQueryEditorBoxId = '';
 		handlerState.queryBoxes.push('query_1');
 		mocks.getConnectionId.mockReturnValue('c1');
@@ -1477,10 +1623,10 @@ describe('message-handler dispatch', () => {
 
 	it('applies open-time schema data for the sole query editor before focus settles', async () => {
 		const state = await import('../../src/webview/core/state.js');
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		handlerState.activeQueryEditorBoxId = '';
 		handlerState.queryBoxes.push('query_1');
 		mocks.getConnectionId.mockReturnValue('c1');
@@ -1511,15 +1657,18 @@ describe('message-handler dispatch', () => {
 			false,
 			expect.any(Function),
 			expect.any(Object),
+			undefined,
+			'c1',
+			'partition-1',
 		);
 	});
 
 	it('queues schema data during multi-section restore even if one Monaco editor is ready', async () => {
 		const state = await import('../../src/webview/core/state.js');
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		handlerState.activeQueryEditorBoxId = '';
 		handlerState.queryBoxes.push('query_1', 'query_2');
 		mocks.getConnectionId.mockReturnValue('c1');
@@ -1551,10 +1700,10 @@ describe('message-handler dispatch', () => {
 
 	it('queues inactive force-refresh schema data instead of stealing context', async () => {
 		const state = await import('../../src/webview/core/state.js');
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		handlerState.activeQueryEditorBoxId = 'query_active';
 		handlerState.queryBoxes.push('query_active', 'query_1');
 		mocks.getConnectionId.mockReturnValue('c1');
@@ -1587,10 +1736,10 @@ describe('message-handler dispatch', () => {
 
 	it('loads an explicit user database switch even when another section owns Monaco focus', async () => {
 		const state = await import('../../src/webview/core/state.js');
-		const { kustoDatabaseKey } = await import('../../src/shared/kustoClusterUrls.js');
+		const { getKustoSchemaIdentityKey } = await import('../../src/shared/kustoAuth.js');
 		const clusterUrl = 'https://cluster.kusto.windows.net';
 		const database = 'Samples';
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-1', clusterUrl, database);
 		handlerState.activeQueryEditorBoxId = 'query_2';
 		handlerState.queryBoxes.push('query_1', 'query_2');
 		mocks.getConnectionId.mockReturnValue('c1');
@@ -1621,6 +1770,9 @@ describe('message-handler dispatch', () => {
 			true,
 			expect.any(Function),
 			expect.any(Object),
+			undefined,
+			'c1',
+			'partition-1',
 		);
 		state.disposeKustoPreparation('query_1');
 	});

@@ -4,7 +4,21 @@ import {
 	pruneExpiredFileConnectionsSync,
 	normalizeFilePath,
 	FILE_CONNECTION_MAX_AGE_MS,
+	ConnectionManager,
 } from '../../../src/host/connectionManager';
+
+function connectionManagerHarness(initialConnections: unknown[] = []) {
+	const values = new Map<string, unknown>([['kusto.connections', initialConnections]]);
+	return {
+		values,
+		manager: new ConnectionManager({
+			globalState: {
+				get: <T>(key: string) => values.get(key) as T,
+				update: async (key: string, value: unknown) => { values.set(key, value); },
+			},
+		} as any),
+	};
+}
 
 // ── normalizeClusterUrl ───────────────────────────────────────────────────────
 // This function is used throughout the extension for connection identity comparison.
@@ -100,6 +114,45 @@ describe('normalizeClusterUrl', () => {
 		const a = normalizeClusterUrl('aoaiagents1.westus');
 		const b = normalizeClusterUrl('https://aoaiagents1.westus.kusto.windows.net');
 		expect(a).toBe(b);
+	});
+});
+
+describe('ConnectionManager authority identity', () => {
+	it('normalizes authority on add and emits a connection mutation', async () => {
+		const test = connectionManagerHarness();
+		const changes: unknown[] = [];
+		test.manager.onDidChangeConnections(change => changes.push(change));
+
+		const connection = await test.manager.addConnection({
+			name: 'Guest',
+			clusterUrl: 'https://same.kusto.windows.net',
+			authorityId: 'CONTOSO.ONMICROSOFT.COM',
+		});
+
+		expect(connection.authorityId).toBe('contoso.onmicrosoft.com');
+		expect(changes).toContainEqual({ type: 'added', connection });
+	});
+
+	it('round-trips authority and connection hint in a plain-file pin', async () => {
+		const test = connectionManagerHarness();
+		await test.manager.setFileConnection('C:\\queries\\guest.kql', 'https://same.kusto.windows.net', 'Db', {
+			authorityId: 'contoso.com',
+			connectionIdHint: 'conn-guest',
+		});
+
+		expect(test.manager.getFileConnection('C:\\queries\\guest.kql')).toEqual({
+			clusterUrl: 'https://same.kusto.windows.net',
+			database: 'Db',
+			authorityId: 'contoso.com',
+			connectionIdHint: 'conn-guest',
+		});
+	});
+
+	it('preserves malformed historical authority for actionable validation later', () => {
+		const test = connectionManagerHarness([{
+			id: 'legacy', name: 'Legacy', clusterUrl: 'https://same.kusto.windows.net', authorityId: 'not a tenant',
+		}]);
+		expect(test.manager.getConnections()[0].authorityId).toBe('not a tenant');
 	});
 });
 

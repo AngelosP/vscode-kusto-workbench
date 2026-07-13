@@ -155,6 +155,86 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(result.sections).toHaveLength(1);
 	});
 
+	it('requires connectionId when schema refresh matches multiple saved connections', async () => {
+		const getDatabases = vi.fn();
+		const connectionManager = {
+			getConnections: () => [
+				{ id: 'home', name: 'Home tenant', clusterUrl: 'https://shared.kusto.windows.net' },
+				{ id: 'guest', name: 'Guest tenant', clusterUrl: 'shared' },
+			],
+		} as any;
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext,
+			connectionManager,
+			fakeGetSqlConnMgr,
+			{ getDatabases } as any,
+		);
+
+		const result = await orchestrator.refreshSchema({ clusterUrl: 'https://shared.kusto.windows.net' });
+
+		expect(result).toEqual({ schemas: [], error: 'Multiple saved connections match this cluster. Pass connectionId from list-connections.' });
+		expect(getDatabases).not.toHaveBeenCalled();
+	});
+
+	it('rejects a schema refresh connectionId that belongs to another cluster', async () => {
+		const getDatabases = vi.fn();
+		const connectionManager = {
+			getConnections: () => [
+				{ id: 'first', name: 'First', clusterUrl: 'https://first.kusto.windows.net' },
+				{ id: 'second', name: 'Second', clusterUrl: 'https://second.kusto.windows.net' },
+			],
+		} as any;
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext,
+			connectionManager,
+			fakeGetSqlConnMgr,
+			{ getDatabases } as any,
+		);
+
+		const result = await orchestrator.refreshSchema({
+			clusterUrl: 'https://second.kusto.windows.net',
+			connectionId: 'first',
+		});
+
+		expect(result).toEqual({ schemas: [], error: 'The supplied connectionId does not match the requested cluster URL.' });
+		expect(getDatabases).not.toHaveBeenCalled();
+	});
+
+	it('routes authority-specific schema refresh through the active live editor with the exact connectionId', async () => {
+		const getDatabases = vi.fn();
+		const activeRefresher = vi.fn(async () => ({
+			schemas: [{ clusterUrl: 'shared', database: 'GuestDb', tables: ['GuestTable'], functions: [] }],
+		}));
+		const laterRefresher = vi.fn(async () => ({ schemas: [] }));
+		const connectionManager = {
+			getConnections: () => [
+				{ id: 'home', name: 'Home tenant', clusterUrl: 'https://shared.kusto.windows.net', authorityId: 'home.onmicrosoft.com' },
+				{ id: 'guest', name: 'Guest tenant', clusterUrl: 'shared', authorityId: 'resource.onmicrosoft.com' },
+			],
+		} as any;
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext,
+			connectionManager,
+			fakeGetSqlConnMgr,
+			{ getDatabases } as any,
+		);
+		const activeUri = vscode.Uri.file('/work/active.kqlx');
+		const laterUri = vscode.Uri.file('/work/later.kqlx');
+		orchestrator.connect(vi.fn(), vi.fn(async () => []), activeRefresher, activeUri.toString());
+		orchestrator.connect(vi.fn(), vi.fn(async () => []), laterRefresher, laterUri.toString());
+		setActiveCustomTab(activeUri, 'kusto.kqlxEditor');
+
+		const result = await orchestrator.refreshSchema({
+			clusterUrl: 'https://shared.kusto.windows.net',
+			connectionId: 'guest',
+		});
+
+		expect(activeRefresher).toHaveBeenCalledWith('shared', 'guest');
+		expect(laterRefresher).not.toHaveBeenCalled();
+		expect(getDatabases).not.toHaveBeenCalled();
+		expect(result.schemas[0]).toMatchObject({ database: 'GuestDb', tables: ['GuestTable'] });
+	});
+
 	it('listSections uses the active .kql Workbench file instead of the later-connected notebook', async () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const kqlUri = vscode.Uri.file('/work/active-query.kql');

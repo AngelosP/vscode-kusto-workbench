@@ -11,12 +11,7 @@ import type { KwObjectViewer } from '../../components/kw-object-viewer.js';
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface AuthSession {
-	sessionId?: string;
 	account: { id: string; label: string };
-	scopes: string[];
-	accessToken?: string;
-	effectiveToken: string;
-	overrideToken?: string;
 }
 
 interface StoredAuthAccount {
@@ -26,21 +21,29 @@ interface StoredAuthAccount {
 }
 
 interface Snapshot {
+	revision: number;
 	timestamp: number;
 	activeKind: 'kusto' | 'sql';
 	auth: {
 		sessions: AuthSession[];
 		knownAccounts: StoredAuthAccount[];
-		clusterAccountMap: Record<string, string>;
 	};
-	connections: Array<{ id: string; name: string; clusterUrl: string }>;
+	connections: Array<{
+		id: string;
+		name: string;
+		clusterUrl: string;
+		authorityId?: string;
+		accountPreference: { mode: 'automatic'; lastSuccessfulAccountId?: string; legacyAccountId?: string } | { mode: 'explicit'; accountId: string };
+		selectedAccountId?: string;
+		selectedAccountLabel?: string;
+		accountPartition?: string;
+		hasTokenOverride: boolean;
+	}>;
 	cachedDatabases: Record<string, string[]>;
 	sqlAuth: {
 		sessions: Array<{
 			account: { id: string; label: string };
-			accessToken?: string;
-			effectiveToken: string;
-			overrideToken?: string;
+			hasOverride: boolean;
 		}>;
 	};
 	sqlConnections: Array<{ id: string; name: string; serverUrl: string; authType: string }>;
@@ -188,29 +191,15 @@ function buildAccountsKey(snapshot: Snapshot): string {
 }
 
 function buildAuthKey(snapshot: Snapshot, accountsKey: string): string {
-	const sessions = Array.isArray(snapshot?.auth?.sessions) ? snapshot.auth.sessions : [];
-	const ids: string[] = [];
-	const byId: Record<string, string> = {};
-	for (const s of sessions) {
-		const acc = s?.account;
-		if (acc?.id) {
-			const id = String(acc.id);
-			ids.push(id);
-			byId[id] = s?.overrideToken ? String(s.overrideToken) : '';
-		}
-	}
-	ids.sort();
-	const parts = ['accounts=' + String(accountsKey || '')];
-	for (const id of ids) parts.push(id + ':ov=' + (byId[id] || ''));
-	return parts.join('|');
+	const connections = Array.isArray(snapshot?.connections) ? snapshot.connections : [];
+	return ['accounts=' + String(accountsKey || ''), ...connections.map(connection => `${connection.id}:${connection.selectedAccountId || ''}:${connection.hasTokenOverride ? 'override' : ''}`)].join('|');
 }
 
 function buildClusterKey(snapshot: Snapshot, accountsKey: string): string {
-	const map = snapshot?.auth?.clusterAccountMap && typeof snapshot.auth.clusterAccountMap === 'object' ? snapshot.auth.clusterAccountMap : {};
-	const clusters = Object.keys(map);
-	clusters.sort();
 	const parts = ['accounts=' + String(accountsKey || '')];
-	for (const c of clusters) parts.push(String(c) + '=' + String(map[c] || ''));
+	for (const connection of snapshot.connections || []) {
+		parts.push(`${connection.id}=${connection.accountPreference.mode}:${connection.selectedAccountId || ''}`);
+	}
 	return parts.join('|');
 }
 
@@ -218,11 +207,11 @@ function buildDbKey(snapshot: Snapshot): string {
 	const cached = snapshot?.cachedDatabases && typeof snapshot.cachedDatabases === 'object' ? snapshot.cachedDatabases : {};
 	const clusterKeys = Object.keys(cached);
 	clusterKeys.sort();
-	const labelByCluster = getClusterLabelMap(Array.isArray(snapshot?.connections) ? snapshot.connections : []);
+	const connectionById = new Map((snapshot?.connections || []).map(connection => [connection.id, connection]));
 	const parts: string[] = [];
 	for (const id of clusterKeys) {
 		const list = Array.isArray(cached[id]) ? cached[id] : [];
-		parts.push(id + ':' + (labelByCluster[id] || '') + ':' + list.join(String.fromCharCode(31)));
+		parts.push(id + ':' + (connectionById.get(id)?.clusterUrl || '') + ':' + list.join(String.fromCharCode(31)));
 	}
 	return parts.join(String.fromCharCode(30));
 }
@@ -246,6 +235,9 @@ export class KwCachedValues extends LitElement {
 	@state() private _kustoSchemaRefreshDb = '';
 	/** Set of account IDs whose override input is expanded. */
 	@state() private _expandedOverrides = new Set<string>();
+	private _latestSnapshotRevision = 0;
+	private _schemaRequestOwner: { requestId: string; connectionId: string; accountPartition: string } | undefined;
+	private _objectViewerOwner: { connectionId: string; accountPartition: string } | undefined;
 
 	@query('kw-object-viewer') private _objectViewer!: KwObjectViewer;
 
@@ -280,8 +272,26 @@ export class KwCachedValues extends LitElement {
 	private _onMessage = async (event: MessageEvent) => {
 		const msg = event.data;
 		if (msg?.type === 'snapshot') {
+			const revision = Number(msg.snapshot?.revision) || 0;
+			if (revision && revision < this._latestSnapshotRevision) return;
+			if (revision) this._latestSnapshotRevision = revision;
 			this._requestPending = false;
 			const snap = msg.snapshot as Snapshot;
+			const partitionFor = (connectionId: string) => String(snap.connections?.find(connection => connection.id === connectionId)?.accountPartition || '');
+			if (this._schemaRequestOwner) {
+				const nextPartition = partitionFor(this._schemaRequestOwner.connectionId);
+				if (!this._schemaRequestOwner.accountPartition && nextPartition) {
+					this._schemaRequestOwner = { ...this._schemaRequestOwner, accountPartition: nextPartition };
+				} else if (nextPartition !== this._schemaRequestOwner.accountPartition) {
+					this._schemaRequestOwner = undefined;
+					this._schemaRequestInFlight = false;
+					this._kustoSchemaRefreshDb = '';
+				}
+			}
+			if (this._objectViewerOwner && partitionFor(this._objectViewerOwner.connectionId) !== this._objectViewerOwner.accountPartition) {
+				this._objectViewerOwner = undefined;
+				this._objectViewer?.hide();
+			}
 			this._snapshot = snap;
 
 			// Auto-detect active kind from persisted value + available data (same logic as Connection Manager)
@@ -296,6 +306,16 @@ export class KwCachedValues extends LitElement {
 			}
 		}
 		if (msg?.type === 'schemaResult') {
+			const requestId = String(msg.requestId || '');
+			const connectionId = String(msg.connectionId || '');
+			const accountPartition = String(msg.accountPartition || '');
+			const isKustoResult = !!requestId && !!connectionId;
+			if (isKustoResult) {
+				const owner = this._schemaRequestOwner;
+				const currentPartition = String(this._snapshot?.connections.find(connection => connection.id === connectionId)?.accountPartition || '');
+				if (!owner || owner.requestId !== requestId || owner.connectionId !== connectionId
+					|| owner.accountPartition !== accountPartition || currentPartition !== accountPartition) return;
+			}
 			this._schemaRequestInFlight = false;
 			this._sqlSchemaRefreshDb = '';
 			this._kustoSchemaRefreshDb = '';
@@ -304,11 +324,19 @@ export class KwCachedValues extends LitElement {
 			const jsonText = String(msg.json || '');
 			// Wait for the component to be available in the shadow DOM
 			await this.updateComplete;
+			if (isKustoResult) {
+				const owner = this._schemaRequestOwner;
+				const currentPartition = String(this._snapshot?.connections.find(connection => connection.id === connectionId)?.accountPartition || '');
+				if (!owner || owner.requestId !== requestId || owner.accountPartition !== accountPartition || currentPartition !== accountPartition) return;
+				this._schemaRequestOwner = undefined;
+				this._objectViewerOwner = { connectionId, accountPartition };
+			}
 			if (this._objectViewer) {
 				this._objectViewer.copyCallback = (msg: unknown) => this._vscode.postMessage(msg);
 				this._objectViewer.show(title, jsonText);
 			}
 		}
+		if (msg?.type === 'kustoMutationComplete') this._requestPending = false;
 	};
 
 	private _requestSnapshot(): void {
@@ -379,8 +407,8 @@ export class KwCachedValues extends LitElement {
 			<section>
 				<header>
 					<div>
-						<div><strong>Cached associations of clusters to authentication accounts</strong></div>
-						<div class="small">Cluster → preferred account mapping (auth preference cache).</div>
+						<div><strong>Connection authentication preferences</strong></div>
+						<div class="small">Tenant and account selection are scoped to each saved connection.</div>
 					</div>
 				</header>
 				<div class="sectionBody">${this._renderClusterMap()}</div>
@@ -389,8 +417,8 @@ export class KwCachedValues extends LitElement {
 			<section class="dbSection">
 				<header>
 					<div>
-						<div><strong>Cached list of databases (per cluster)</strong></div>
-						<div class="small">Select a cluster on the left to view its cached databases.</div>
+						<div><strong>Cached list of databases (per connection and account)</strong></div>
+						<div class="small">Select a connection on the left to view databases cached for its current identity.</div>
 					</div>
 					<div class="rowActions">
 						<button class="iconButton" type="button" title="clear all cached schema data" aria-label="clear all cached schema data"
@@ -422,47 +450,18 @@ export class KwCachedValues extends LitElement {
 
 	private _renderAuthRow(session: AuthSession): TemplateResult {
 		const account = session.account ?? { id: '', label: '' };
-		const overrideVal = session.overrideToken ? String(session.overrideToken) : '';
-		const hasOverride = !!overrideVal;
-		const isExpanded = this._expandedOverrides.has(account.id);
 		return html`
 			<div class="authCard">
 				<div class="authCardRow">
-					${hasOverride ? html`<div class="overrideDot" title="Token override active"></div>` : nothing}
 					<div class="authCardInfo">
 						<div class="authCardLabel">${account.label}</div>
 						<div class="authCardId" title="${account.id}">${account.id}</div>
 					</div>
 					<div class="authCardActions">
-						<button class="iconButton" title="Copy effective token" aria-label="Copy effective token"
-							@click=${() => this._copyToken(account.id)}>
-							${ICONS.copy}
-						</button>
-						<button class="iconButton" title="${isExpanded ? 'Hide override' : 'Set token override'}" aria-label="Toggle override"
-							@click=${() => this._toggleOverride(account.id)}>
-							${ICONS.edit}
-						</button>
-						${hasOverride ? html`
-							<button class="iconButton" title="Clear override" aria-label="Clear override"
-								@click=${() => this._clearOverride(account.id)}>
-								${ICONS.trash}
-							</button>
-						` : nothing}
+						<button class="iconButton" title="Forget account" aria-label="Forget account"
+							@click=${() => this._forgetAccount(account.id)}>${ICONS.trash}</button>
 					</div>
 				</div>
-				${isExpanded ? html`
-					<div class="authOverrideRow">
-						<span class="overrideLabel">Override</span>
-						<input type="text" data-override-for="${account.id}"
-							placeholder="Paste token to override"
-							.value=${overrideVal}
-							@keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') this._saveOverride(account.id); }} />
-						<button class="iconButton" title="Save override" aria-label="Save override"
-							@click=${() => this._saveOverride(account.id)}>
-							${ICONS.save}
-						</button>
-					</div>
-				` : nothing}
 			</div>
 		`;
 	}
@@ -472,10 +471,9 @@ export class KwCachedValues extends LitElement {
 	private _renderClusterMap(): TemplateResult | typeof nothing {
 		const snap = this._snapshot;
 		if (!snap) return nothing;
-		const map = snap.auth?.clusterAccountMap && typeof snap.auth.clusterAccountMap === 'object' ? snap.auth.clusterAccountMap : {};
-		const clusters = Object.keys(map);
-		if (clusters.length === 0) {
-			return html`<div class="small">No cached cluster/account mapping.</div>`;
+		const connections = Array.isArray(snap.connections) ? snap.connections : [];
+		if (connections.length === 0) {
+			return html`<div class="small">No saved Kusto connections.</div>`;
 		}
 
 		// Build unique accounts list.
@@ -490,11 +488,10 @@ export class KwCachedValues extends LitElement {
 				accountsById.set(s.account.id, { id: s.account.id, label: s.account.label || s.account.id });
 			}
 		}
-		// Ensure current values appear even if not in known list.
-		for (const cluster of clusters) {
-			const accountId = map[cluster] ? String(map[cluster]) : '';
+		for (const connection of connections) {
+			const accountId = String(connection.selectedAccountId || '');
 			if (accountId && !accountsById.has(accountId)) {
-				accountsById.set(accountId, { id: accountId, label: accountId });
+				accountsById.set(accountId, { id: accountId, label: connection.selectedAccountLabel || accountId });
 			}
 		}
 		const accounts = [...accountsById.values()];
@@ -502,25 +499,52 @@ export class KwCachedValues extends LitElement {
 		return html`
 			<table>
 				<thead><tr>
-					<th>Cluster</th>
+					<th>Connection</th>
+					<th>Authority / Tenant</th>
 					<th>Account</th>
+					<th></th>
 				</tr></thead>
 				<tbody>
-					${clusters.map(cluster => html`
-						<tr>
-							<td class="mono" title="${cluster}">${shortClusterEndpoint(cluster)}</td>
+					${connections.map(connection => {
+						const selectedAccountId = String(connection.selectedAccountId || '');
+						const overrideKey = `${connection.id}|${selectedAccountId}`;
+						const isExpanded = !!selectedAccountId && this._expandedOverrides.has(overrideKey);
+						return html`
+						<tr data-testid="cv-kusto-connection-auth-row" data-connection-id="${connection.id}">
+							<td title="${connection.clusterUrl}">${connection.name}</td>
+							<td class="mono">${connection.authorityId || 'organizations (default)'}</td>
 							<td>
 								<div class="select-wrapper" title="Select account">
-									<select @change=${(e: Event) => this._onClusterAccountChange(cluster, e)}>
-										<option value="">(none)</option>
+									<select @change=${(e: Event) => this._onConnectionAccountChange(connection.id, e)}>
+										<option value="">Automatic</option>
 										${accounts.map(a => html`
-											<option value="${a.id}" ?selected=${a.id === map[cluster]}>${a.label}</option>
+											<option value="${a.id}" ?selected=${connection.accountPreference.mode === 'explicit' && a.id === selectedAccountId}>${a.label}</option>
 										`)}
 									</select>
 								</div>
 							</td>
+							<td class="rowActions">
+								${selectedAccountId ? html`
+									<button class="iconButton" title="Copy effective token" aria-label="Copy effective token"
+										@click=${() => this._copyToken(connection.id, selectedAccountId)}>${ICONS.copy}</button>
+									<button class="iconButton" title="${isExpanded ? 'Hide override' : 'Set token override'}" aria-label="Toggle override"
+										@click=${() => this._toggleOverride(overrideKey)}>${ICONS.edit}</button>
+									${connection.hasTokenOverride ? html`
+										<button class="iconButton" title="Clear override" aria-label="Clear override"
+											@click=${() => this._clearOverride(connection.id, selectedAccountId)}>${ICONS.trash}</button>
+									` : nothing}
+								` : nothing}
+							</td>
 						</tr>
-					`)}
+						${isExpanded ? html`<tr><td colspan="4"><div class="authOverrideRow">
+							<span class="overrideLabel">Override</span>
+							<input type="password" data-override-for="${overrideKey}" placeholder="Paste token to override"
+								@keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') this._saveOverride(connection.id, selectedAccountId, overrideKey); }} />
+							<button class="iconButton" title="Save override" aria-label="Save override"
+								@click=${() => this._saveOverride(connection.id, selectedAccountId, overrideKey)}>${ICONS.save}</button>
+						</div></td></tr>` : nothing}
+					`;
+					})}
 				</tbody>
 			</table>
 		`;
@@ -538,7 +562,7 @@ export class KwCachedValues extends LitElement {
 			return html`<div class="small">No cached database lists.</div>`;
 		}
 
-		const labelByCluster = getClusterLabelMap(Array.isArray(snap.connections) ? snap.connections : []);
+		const connectionById = new Map((snap.connections || []).map(connection => [connection.id, connection]));
 
 		// Ensure selection is stable.
 		let selected = this._selectedDbClusterKey;
@@ -548,20 +572,22 @@ export class KwCachedValues extends LitElement {
 		}
 
 		const selectedList = Array.isArray(cached[selected]) ? cached[selected] : [];
-		const selectedTitle = labelByCluster[selected] || selected;
+		const selectedConnection = connectionById.get(selected);
+		const selectedTitle = selectedConnection ? `${selectedConnection.name} — ${selectedConnection.clusterUrl}` : selected;
 
 		return html`
 			<div class="twoPane">
-				<div class="pane listPane list scrollPane" data-overlay-scroll="x:hidden" tabindex="0" role="listbox" aria-label="Clusters"
+				<div class="pane listPane list scrollPane" data-overlay-scroll="x:hidden" tabindex="0" role="listbox" aria-label="Connections"
 					@keydown=${this._onDbListKeydown}>
 					${clusterKeys.map(ck => {
 						const list = Array.isArray(cached[ck]) ? cached[ck] : [];
-						const title = labelByCluster[ck] || ck;
+						const connection = connectionById.get(ck);
+						const title = connection?.clusterUrl || ck;
 						const isSelected = ck === selected;
 						return html`
 							<div class="listItem ${isSelected ? 'selected' : ''}"
 								@click=${() => this._selectDbCluster(ck)}>
-								<div class="listItemName" title="${title}">${shortClusterName(ck)}</div>
+								<div class="listItemName" title="${title}">${connection?.name || ck}</div>
 								<div class="count">${list.length}</div>
 							</div>`;
 					})}
@@ -666,10 +692,9 @@ export class KwCachedValues extends LitElement {
 		`;
 	}
 
-	private _renderSqlAuthRow(session: { account: { id: string; label: string }; accessToken?: string; overrideToken?: string }): TemplateResult {
+	private _renderSqlAuthRow(session: { account: { id: string; label: string }; hasOverride: boolean }): TemplateResult {
 		const account = session.account ?? { id: '', label: '' };
-		const overrideVal = session.overrideToken ? String(session.overrideToken) : '';
-		const hasOverride = !!overrideVal;
+		const hasOverride = session.hasOverride;
 		const isExpanded = this._expandedOverrides.has('sql:' + account.id);
 		return html`
 			<div class="authCard">
@@ -699,9 +724,8 @@ export class KwCachedValues extends LitElement {
 				${isExpanded ? html`
 					<div class="authOverrideRow">
 						<span class="overrideLabel">Override</span>
-						<input type="text" data-sql-override-for="${account.id}"
+						<input type="password" data-sql-override-for="${account.id}"
 							placeholder="Paste token to override"
-							.value=${overrideVal}
 							@keydown=${(e: KeyboardEvent) => { if (e.key === 'Enter') this._saveSqlOverride(account.id); }} />
 						<button class="iconButton" title="Save override" aria-label="Save override"
 							@click=${() => this._saveSqlOverride(account.id)}>
@@ -898,46 +922,37 @@ export class KwCachedValues extends LitElement {
 		this._expandedOverrides = next;
 	}
 
-	private _copyToken(accountId: string): void {
-		const snap = this._snapshot;
-		let token = '';
-		if (snap?.auth?.sessions) {
-			for (const s of snap.auth.sessions) {
-				if (s?.account?.id === accountId) {
-					token = String(s.effectiveToken || '');
-					break;
-				}
-			}
-		}
-		this._vscode.postMessage({ type: 'copyToClipboard', text: token });
+	private _copyToken(connectionId: string, accountId: string): void {
+		this._vscode.postMessage({ type: 'auth.copyToken', connectionId, accountId });
 	}
 
-	private _clearOverride(accountId: string): void {
-		this._vscode.postMessage({ type: 'auth.clearTokenOverride', accountId });
-		this._requestSnapshot();
+	private _clearOverride(connectionId: string, accountId: string): void {
+		this._requestPending = true;
+		this._vscode.postMessage({ type: 'auth.clearTokenOverride', connectionId, accountId });
 	}
 
-	private _saveOverride(accountId: string): void {
-		const el = this.shadowRoot?.querySelector(`input[data-override-for="${CSS.escape(accountId)}"]`) as HTMLInputElement | null;
+	private _saveOverride(connectionId: string, accountId: string, overrideKey: string): void {
+		const el = this.shadowRoot?.querySelector(`input[data-override-for="${CSS.escape(overrideKey)}"]`) as HTMLInputElement | null;
 		const token = el?.value ?? '';
-		this._vscode.postMessage({ type: 'auth.setTokenOverride', accountId, token });
-		this._requestSnapshot();
+		this._requestPending = true;
+		this._vscode.postMessage({ type: 'auth.setTokenOverride', connectionId, accountId, token });
+	}
+
+	private _forgetAccount(accountId: string): void {
+		this._requestPending = true;
+		this._vscode.postMessage({ type: 'auth.forgetAccount', accountId });
 	}
 
 	private _onSchemaClearAll(): void {
+		this._requestPending = true;
 		this._vscode.postMessage({ type: 'schema.clearAll' });
-		this._requestSnapshot();
 	}
 
-	private _onClusterAccountChange(clusterEndpoint: string, e: Event): void {
+	private _onConnectionAccountChange(connectionId: string, e: Event): void {
 		const target = e.target as HTMLSelectElement;
 		const accountId = target.value;
-		if (accountId) {
-			this._vscode.postMessage({ type: 'clusterMap.set', clusterEndpoint, accountId });
-		} else {
-			this._vscode.postMessage({ type: 'clusterMap.delete', clusterEndpoint });
-		}
-		this._requestSnapshot();
+		this._requestPending = true;
+		this._vscode.postMessage({ type: 'connectionPreference.set', connectionId, ...(accountId ? { accountId } : {}) });
 	}
 
 	private _selectDbCluster(clusterKey: string): void {
@@ -988,43 +1003,39 @@ export class KwCachedValues extends LitElement {
 		e.preventDefault();
 	}
 
-	private _refreshDatabases(clusterKey: string): void {
-		this._vscode.postMessage({ type: 'databases.refresh', clusterKey });
-		this._requestSnapshot();
+	private _refreshDatabases(connectionId: string): void {
+		this._requestPending = true;
+		this._vscode.postMessage({ type: 'databases.refresh', connectionId });
 	}
 
-	private _deleteDatabases(clusterKey: string): void {
-		this._vscode.postMessage({ type: 'databases.delete', clusterKey });
-		this._requestSnapshot();
+	private _deleteDatabases(connectionId: string): void {
+		this._requestPending = true;
+		this._vscode.postMessage({ type: 'databases.delete', connectionId });
 	}
 
-	private _viewSchema(clusterKey: string, database: string): void {
+	private _viewSchema(connectionId: string, database: string): void {
 		if (this._schemaRequestInFlight) return;
+		const requestId = `schema-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+		const accountPartition = String(this._snapshot?.connections.find(connection => connection.id === connectionId)?.accountPartition || '');
+		this._schemaRequestOwner = { requestId, connectionId, accountPartition };
 		this._schemaRequestInFlight = true;
-		this._vscode.postMessage({ type: 'schema.get', clusterKey, database });
+		this._vscode.postMessage({ type: 'schema.get', requestId, connectionId, database });
 	}
 
-	private _refreshKustoSchema(clusterKey: string, database: string): void {
+	private _refreshKustoSchema(connectionId: string, database: string): void {
 		if (this._kustoSchemaRefreshDb) return;
+		const requestId = `schema-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+		const accountPartition = String(this._snapshot?.connections.find(connection => connection.id === connectionId)?.accountPartition || '');
+		this._schemaRequestOwner = { requestId, connectionId, accountPartition };
 		this._kustoSchemaRefreshDb = database;
 		this._schemaRequestInFlight = true;
-		this._vscode.postMessage({ type: 'schema.refresh', clusterKey, database });
+		this._vscode.postMessage({ type: 'schema.refresh', requestId, connectionId, database });
 	}
 
 	// ── SQL event handlers ────────────────────────────────────────────────────
 
 	private _copySqlToken(accountId: string): void {
-		const snap = this._snapshot;
-		let token = '';
-		if (snap?.sqlAuth?.sessions) {
-			for (const s of snap.sqlAuth.sessions) {
-				if (s?.account?.id === accountId) {
-					token = String(s.effectiveToken || '');
-					break;
-				}
-			}
-		}
-		this._vscode.postMessage({ type: 'copyToClipboard', text: token });
+		this._vscode.postMessage({ type: 'sqlAuth.copyToken', accountId });
 	}
 
 	private _clearSqlOverride(accountId: string): void {

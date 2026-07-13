@@ -12,7 +12,8 @@ export const styles = css`
 
 	.form-group { margin-bottom: 12px; }
 	.form-group label { display: block; font-size: 12px; margin-bottom: 4px; }
-	.form-group input {
+	.form-group input,
+	.form-group select {
 		width: 100%;
 		padding: 6px 8px;
 		background: var(--vscode-input-background);
@@ -22,7 +23,8 @@ export const styles = css`
 		font-family: inherit;
 		font-size: 13px;
 	}
-	.form-group input:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
+	.form-group input:focus,
+	.form-group select:focus { outline: 1px solid var(--vscode-focusBorder); outline-offset: -1px; }
 	.form-group input::placeholder { color: var(--vscode-input-placeholderForeground); }
 
 	/* Spinner animation */

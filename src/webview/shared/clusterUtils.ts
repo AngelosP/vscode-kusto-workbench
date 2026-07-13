@@ -14,8 +14,10 @@ export {
 	parseKustoClusterRef,
 	selectBestKustoClusterUrl,
 } from '../../shared/kustoClusterUrls.js';
+export { parseKustoConnectionString, parseKustoExplorerConnectionsXml } from '../../shared/kustoExplorerConnections.js';
 
 import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
+import { resolveKustoConnection } from '../../shared/kustoAuth.js';
 
 export function formatClusterDisplayName(connection: any): string {
 	if (!connection) return '';
@@ -135,18 +137,18 @@ export function computeMissingClusterUrls(detectedClusterUrls: any[], connection
 	return missing;
 }
 
-export function favoriteKey(clusterUrl: any, database: any): string {
-	const c = canonicalKustoClusterKey(String(clusterUrl || '').trim());
+export function favoriteKey(connectionId: any, database: any): string {
+	const c = String(connectionId || '').trim();
 	const d = String(database || '').trim().toLowerCase();
 	return c + '|' + d;
 }
 
-export function findFavorite(clusterUrl: any, database: any, favorites: any[]): any {
-	const key = favoriteKey(clusterUrl, database);
+export function findFavorite(connectionId: any, database: any, favorites: any[]): any {
+	const key = favoriteKey(connectionId, database);
 	const list = Array.isArray(favorites) ? favorites : [];
 	for (const f of list) {
 		if (!f) continue;
-		const fk = favoriteKey(f.clusterUrl, f.database);
+		const fk = favoriteKey(f.connectionId, f.database);
 		if (fk === key) return f;
 	}
 	return null;
@@ -162,33 +164,10 @@ export function getFavoritesSorted(favorites: any[]): any[] {
 	return list;
 }
 
-export function parseKustoConnectionString(cs: any): { dataSource: string; initialCatalog: string } {
-	const raw = String(cs || '');
-	const parts = raw.split(';').map((p: any) => p.trim()).filter(Boolean);
-	const map: Record<string, string> = {};
-	for (const part of parts) {
-		const idx = part.indexOf('=');
-		if (idx <= 0) continue;
-		const key = part.slice(0, idx).trim().toLowerCase();
-		const val = part.slice(idx + 1).trim();
-		map[key] = val;
-	}
-	return {
-		dataSource: map['data source'] || map['datasource'] || map['server'] || map['address'] || '',
-		initialCatalog: map['initial catalog'] || map['database'] || ''
-	};
-}
-
 export function findConnectionIdForClusterUrl(clusterUrl: any, connections: any[]): string {
 	try {
-		const key = canonicalKustoClusterKey(String(clusterUrl || '').trim());
-		if (!key) return '';
-		for (const c of (connections || [])) {
-			if (!c) continue;
-			if (canonicalKustoClusterKey(c.clusterUrl || '') === key) {
-				return String(c.id || '').trim();
-			}
-		}
+		const resolution = resolveKustoConnection(connections || [], { clusterUrl });
+		return resolution.kind === 'matched' ? String(resolution.connection.id || '').trim() : '';
 	} catch { /* ignore */ }
 	return '';
 }

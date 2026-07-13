@@ -10,6 +10,7 @@ import { renderDiffInWebview, DIFF_NOISE_KEYS, COMPARISON_NOISE_KEYS } from './d
 import type { SectionChangeInfo } from './queryEditorTypes';
 import { perfBegin, perfMark } from './perfTrace';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import { getKustoConnectionIdentityKey, normalizeKustoAuthorityId } from '../shared/kustoAuth';
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
 
@@ -916,26 +917,29 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 
 		const ensureConnectionsForState = async (state: KqlxStateV1): Promise<boolean> => {
-			const urls: string[] = [];
-			try {
-				for (const sec of Array.isArray(state.sections) ? state.sections : []) {
+			const requestedConnections: Array<{ clusterUrl: string; authorityId?: string }> = [];
+			for (const sec of Array.isArray(state.sections) ? state.sections : []) {
+				try {
 					const t = (sec as any)?.type;
 					if (!sec || (t !== 'query' && t !== 'copilotQuery')) {
 						continue;
 					}
 					const clusterUrl = String((sec as any).clusterUrl || '').trim();
 					if (clusterUrl) {
-						urls.push(clusterUrl);
+						requestedConnections.push({
+							clusterUrl,
+							authorityId: normalizeKustoAuthorityId((sec as any).authorityId),
+						});
 					}
+				} catch {
+					// Keep malformed portable authorities unresolved without blocking valid sections.
 				}
-			} catch {
-				// ignore
 			}
-			const uniqueKeys = new Map<string, string>();
-			for (const u of urls) {
-				const k = normalizeClusterUrlKey(u);
+			const uniqueKeys = new Map<string, { clusterUrl: string; authorityId?: string }>();
+			for (const requested of requestedConnections) {
+				const k = getKustoConnectionIdentityKey(requested.clusterUrl, requested.authorityId);
 				if (k && !uniqueKeys.has(k)) {
-					uniqueKeys.set(k, u);
+					uniqueKeys.set(k, requested);
 				}
 			}
 
@@ -944,11 +948,19 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 
 			const existing = this.connectionManager.getConnections();
-			const existingKeys = new Set(existing.map((c) => normalizeClusterUrlKey(c.clusterUrl || '')).filter(Boolean));
+			const existingKeys = new Set(existing.flatMap((connection) => {
+				try {
+					const key = getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId);
+					return key ? [key] : [];
+				} catch {
+					return [];
+				}
+			}));
 
 			let added = 0;
-			for (const [, originalUrl] of uniqueKeys) {
-				const key = normalizeClusterUrlKey(originalUrl);
+			for (const [, requested] of uniqueKeys) {
+				const originalUrl = requested.clusterUrl;
+				const key = getKustoConnectionIdentityKey(originalUrl, requested.authorityId);
 				if (!key || existingKeys.has(key)) {
 					continue;
 				}
@@ -958,7 +970,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				}
 				await this.connectionManager.addConnection({
 					name: getClusterShortName(clusterUrl || originalUrl) || getDefaultConnectionName(clusterUrl || originalUrl),
-					clusterUrl: clusterUrl || originalUrl
+					clusterUrl: clusterUrl || originalUrl,
+					authorityId: requested.authorityId,
 				});
 				existingKeys.add(key);
 				added++;

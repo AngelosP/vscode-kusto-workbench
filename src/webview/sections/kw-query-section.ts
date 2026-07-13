@@ -17,6 +17,7 @@ import '../components/kw-section-shell.js';
 import { CopilotChatManagerController } from './copilot-chat-manager.controller.js';
 import { kustoWebviewFlavor } from './copilot-chat-flavor.js';
 import { schedulePersist } from '../core/persistence.js';
+import { clearResultsState } from '../core/results-state.js';
 import {
 	removeQueryBox,
 	__kustoMaximizeQueryBox,
@@ -35,6 +36,7 @@ import { QueryExecutionController } from './query-execution.controller.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 
 import { canonicalKustoClusterKey as _canonicalKustoClusterKey, formatClusterDisplayName as _formatClusterDisplayName, formatClusterShortName as _formatClusterShortName } from '../shared/clusterUtils.js';
+import { resolveKustoConnection } from '../../shared/kustoAuth.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -45,6 +47,9 @@ export interface QuerySectionData {
 	name: string;
 	favoritesMode?: boolean;
 	clusterUrl: string;
+	authorityId?: string;
+	accountPartition?: string;
+	connectionIdHint?: string;
 	database: string;
 	query: string;
 	expanded: boolean;
@@ -65,10 +70,13 @@ export interface KustoConnection {
 	id: string;
 	name?: string;
 	clusterUrl: string;
+	authorityId?: string;
+	accountPartition?: string;
 }
 
 /** Favorite entry (cluster+database pair). */
 export interface KustoFavorite {
+	connectionId: string;
 	clusterUrl: string;
 	database: string;
 	name?: string;
@@ -174,6 +182,8 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	@state() private _connections: KustoConnection[] = [];
 	@state() private _connectionId = '';
 	@state() private _desiredClusterUrl = '';
+	private _desiredAuthorityId = '';
+	private _connectionIdHint = '';
 	private _desiredClusterUrlPendingMatch = false;
 	private _persistConnectionSelection = false;
 	@state() private _databases: string[] = [];
@@ -612,8 +622,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 
 	private _onAddConnectionSubmit(e: CustomEvent<KustoConnectionFormSubmitDetail>): void {
-		this._showAddConnectionModal = false;
-		this._addConnectionTestResult = '';
+		this._addConnectionTestResult = 'loading';
 		this.dispatchEvent(new CustomEvent('kusto-add-connection', {
 			detail: { ...e.detail, boxId: this.boxId },
 			bubbles: true, composed: true,
@@ -638,6 +647,15 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		this._addConnectionTestResult = result;
 	}
 
+	completeAddConnection(success: boolean, message?: string): void {
+		if (success) {
+			this._showAddConnectionModal = false;
+			this._addConnectionTestResult = '';
+		} else {
+			this._addConnectionTestResult = `✗ ${String(message || 'Connection could not be saved.')}`;
+		}
+	}
+
 	private _renderAddConnectionModal(): TemplateResult {
 		return html`
 			<div class="add-connection-overlay" @click=${() => this._onAddConnectionCancel()} @keydown=${(e: KeyboardEvent) => {
@@ -654,6 +672,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 						<kw-kusto-connection-form
 							mode="add"
 							.showTestButton=${true}
+							.accounts=${(window as any).__kustoAccounts ?? []}
 							.testResult=${this._addConnectionTestResult}
 							@connection-form-submit=${this._onAddConnectionSubmit}
 							@connection-form-cancel=${() => this._onAddConnectionCancel()}
@@ -674,6 +693,13 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (form) form.submit();
 	}
 
+	private _syncDesiredConnectionIdentity(connection: KustoConnection): void {
+		this._desiredClusterUrl = connection.clusterUrl || '';
+		this._desiredAuthorityId = String(connection.authorityId || '').trim();
+		this._connectionIdHint = String(connection.id || '').trim();
+		this._desiredClusterUrlPendingMatch = false;
+	}
+
 	private _onClusterSelected(e: CustomEvent): void {
 		const connectionId = e.detail?.id;
 		if (!connectionId) return;
@@ -682,8 +708,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		this._persistConnectionSelection = true;
 		const conn = this._connections.find(c => c.id === connectionId);
 		if (conn) {
-			this._desiredClusterUrl = conn.clusterUrl || '';
-			this._desiredClusterUrlPendingMatch = false;
+			this._syncDesiredConnectionIdentity(conn);
 		}
 		if (prev !== connectionId) {
 			this._database = '';
@@ -737,14 +762,11 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const index = parseInt(e.detail?.id, 10);
 		const fav = this._favorites[index];
 		if (!fav) return;
-		// Find the connection that matches this favorite's clusterUrl
-		const target = canonicalKustoClusterKey(fav.clusterUrl);
-		const conn = this._connections.find(c => canonicalKustoClusterKey(c.clusterUrl) === target);
+		const conn = this._connections.find(c => c.id === fav.connectionId);
 		if (conn) {
 			this._connectionId = conn.id;
 			this._persistConnectionSelection = true;
-			this._desiredClusterUrl = conn.clusterUrl;
-			this._desiredClusterUrlPendingMatch = false;
+			this._syncDesiredConnectionIdentity(conn);
 			this._desiredDatabase = fav.database;
 			// Clear current database and list so schema/autocomplete reloads.
 			this._database = '';
@@ -767,7 +789,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const fav = this._favorites[index];
 		if (!fav) return;
 		this.dispatchEvent(new CustomEvent('favorite-removed', {
-			detail: { boxId: this.boxId, clusterUrl: fav.clusterUrl, database: fav.database },
+			detail: { boxId: this.boxId, connectionId: fav.connectionId, clusterUrl: fav.clusterUrl, database: fav.database },
 			bubbles: true, composed: true,
 		}));
 	}
@@ -868,8 +890,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			const favIndex = this._getSelectedFavoriteIndex();
 			const fav = favIndex >= 0 ? this._favorites[favIndex] : null;
 			if (fav?.clusterUrl) {
-				const favKey = canonicalKustoClusterKey(fav.clusterUrl);
-				const conn = this._connections.find(c => canonicalKustoClusterKey(c.clusterUrl) === favKey);
+				const conn = this._connections.find(c => c.id === fav.connectionId);
 				return conn?.clusterUrl || fav.clusterUrl;
 			}
 		}
@@ -886,6 +907,11 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		}
 	}
 
+	public setDesiredConnectionIdentity(authorityId?: string, connectionIdHint?: string): void {
+		this._desiredAuthorityId = String(authorityId || '').trim();
+		this._connectionIdHint = String(connectionIdHint || '').trim();
+	}
+
 	/** Set the desired database (used during restoration). */
 	public setDesiredDatabase(db: string): void {
 		this._desiredDatabase = db;
@@ -894,11 +920,16 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		}
 	}
 
+	public clearDesiredDatabase(): void {
+		this._desiredDatabase = '';
+	}
+
 	/** Update available connections. Resolves desired/current/last selection. */
 	public setConnections(
 		connections: KustoConnection[],
 		opts?: { lastConnectionId?: string }
 	): void {
+		const previousConnection = this._connections.find(connection => connection.id === this._connectionId);
 		this._connections = connections;
 		const lastConnId = opts?.lastConnectionId || '';
 
@@ -910,10 +941,13 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 		// 1. Try desired cluster URL
 		if (this._desiredClusterUrl) {
-			const target = normalizeClusterUrlKey(this._desiredClusterUrl);
-			const match = connections.find(c => normalizeClusterUrlKey(c.clusterUrl) === target);
-			if (match) {
-				resolvedId = match.id;
+			const resolution = resolveKustoConnection(connections, {
+				clusterUrl: this._desiredClusterUrl,
+				authorityId: this._desiredAuthorityId,
+				connectionIdHint: this._connectionIdHint,
+			});
+			if (resolution.kind === 'matched') {
+				resolvedId = resolution.connection.id;
 				resolvedDesiredCluster = true;
 			}
 		}
@@ -951,6 +985,18 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 		const prev = this._connectionId;
 		this._connectionId = resolvedId;
+		const nextConnection = connections.find(connection => connection.id === resolvedId);
+		const identityChanged = !!previousConnection && !!nextConnection && previousConnection.id === nextConnection.id
+			&& (String(previousConnection.authorityId || '') !== String(nextConnection.authorityId || '')
+				|| String(previousConnection.accountPartition || '') !== String(nextConnection.accountPartition || ''));
+		if (identityChanged) {
+			this._desiredDatabase = this._desiredDatabase || this._database;
+			this._database = '';
+			this._databases = [];
+			clearResultsState(this.boxId);
+			delete pState.queryResultJsonByBoxId[this.boxId];
+			this.clearResults();
+		}
 
 		// Update desired cluster URL from resolved connection. If a file/restore desired
 		// cluster is still pending, keep it so a later connection-list refresh can match it.
@@ -958,15 +1004,14 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			const conn = connections.find(c => c.id === resolvedId);
 			if (conn) {
 				if (resolvedDesiredCluster || !hadPendingDesiredCluster) {
-					this._desiredClusterUrl = conn.clusterUrl;
-					this._desiredClusterUrlPendingMatch = false;
+					this._syncDesiredConnectionIdentity(conn);
 				}
 			}
 		}
 
 
 		// If connection changed, fire event so databases get loaded
-		if (prev !== resolvedId && resolvedId) {
+		if ((prev !== resolvedId || identityChanged) && resolvedId) {
 			this.dispatchEvent(new CustomEvent('connection-changed', {
 				detail: { boxId: this.boxId, connectionId: resolvedId, clusterUrl: this.getClusterUrl(), database: this._desiredDatabase || this._database },
 				bubbles: true, composed: true,
@@ -1083,8 +1128,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			this._connectionId = connectionId;
 			const conn = this._connections.find(c => c.id === connectionId);
 			if (conn) {
-				this._desiredClusterUrl = conn.clusterUrl;
-				this._desiredClusterUrlPendingMatch = false;
+				this._syncDesiredConnectionIdentity(conn);
 			}
 		}
 	}
@@ -1103,13 +1147,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	private _isFavorited(): boolean {
 		const db = this._database || this._desiredDatabase;
 		if (!this._connectionId || !db) return false;
-		const conn = this._connections.find(c => c.id === this._connectionId);
-		const clusterUrl = this._desiredClusterUrl || conn?.clusterUrl || '';
-		if (!clusterUrl) return false;
-		const target = canonicalKustoClusterKey(clusterUrl);
 		const dbLower = db.toLowerCase();
 		return this._favorites.some(f =>
-			canonicalKustoClusterKey(f.clusterUrl) === target && (f.database || '').toLowerCase() === dbLower
+			f.connectionId === this._connectionId && (f.database || '').toLowerCase() === dbLower
 		);
 	}
 
@@ -1118,13 +1158,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (!this._connectionId) return -1;
 		const db = this._database || this._desiredDatabase;
 		if (!db) return -1;
-		const conn = this._connections.find(c => c.id === this._connectionId);
-		const clusterUrl = this._desiredClusterUrl || conn?.clusterUrl || '';
-		if (!clusterUrl) return -1;
-		const target = canonicalKustoClusterKey(clusterUrl);
 		const dbLower = db.toLowerCase();
 		return this._favorites.findIndex(f =>
-			canonicalKustoClusterKey(f.clusterUrl) === target && (f.database || '').toLowerCase() === dbLower
+			f.connectionId === this._connectionId && (f.database || '').toLowerCase() === dbLower
 		);
 	}
 
@@ -1450,6 +1486,25 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		this.displayError('Cancelled.');
 	}
 
+	public clearResults(): void {
+		this._testExecuting = false;
+		this._testHasError = false;
+		this._testHasResults = false;
+		const resultsDiv = document.getElementById(this.boxId + '_results');
+		const resultsWrapper = document.getElementById(this.boxId + '_results_wrapper');
+		const resizer = document.getElementById(this.boxId + '_results_resizer');
+		if (resultsDiv) {
+			resultsDiv.innerHTML = '';
+			resultsDiv.classList.remove('visible', 'is-stale');
+		}
+		if (resultsWrapper) {
+			resultsWrapper.style.display = 'none';
+			resultsWrapper.style.height = '';
+			resultsWrapper.style.overflow = '';
+		}
+		if (resizer) resizer.style.display = 'none';
+	}
+
 	// ── Persistence ───────────────────────────────────────────────────────────
 
 	/**
@@ -1474,6 +1529,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		try { const m = pState.resultsVisibleByBoxId; resultsVisible = !(m && m[b] === false); } catch (e) { console.error('[kusto]', e); }
 
 		const clusterUrl = this._persistConnectionSelection ? (this.getClusterUrl() || this._desiredClusterUrl) : '';
+		const selectedConnection = this._connections.find(connection => connection.id === connectionId);
+		const authorityId = this._persistConnectionSelection ? (selectedConnection?.authorityId || this._desiredAuthorityId) : '';
+		const connectionIdHint = this._persistConnectionSelection ? (connectionId || this._connectionIdHint) : '';
 		const databaseForPersistence = this._persistConnectionSelection ? database : '';
 
 		let query = '';
@@ -1507,7 +1565,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		return {
 			id: b, type: 'query', name,
 			...(typeof favoritesMode === 'boolean' ? { favoritesMode } : {}),
-			clusterUrl, database: databaseForPersistence, query, expanded, resultsVisible,
+			clusterUrl,
+			...(authorityId ? { authorityId } : {}),
+			...(connectionIdHint ? { connectionIdHint } : {}),
+			database: databaseForPersistence, query, expanded, resultsVisible,
 			...(shouldPersist ? { resultJson } : {}),
 			runMode: String(runMode), cacheEnabled, cacheValue, cacheUnit,
 			...(editorHeightPx !== undefined ? { editorHeightPx } : {}),

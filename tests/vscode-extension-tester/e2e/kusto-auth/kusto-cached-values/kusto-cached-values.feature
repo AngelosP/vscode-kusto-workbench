@@ -3,6 +3,9 @@ Feature: Cached Values Viewer with Kusto data — auth, cluster map, databases
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
+    When I move the Dev Host to 0, 0
+    When I resize the Dev Host to 1280x1000
+    When I execute command "workbench.action.closeAuxiliaryBar"
     And I wait 2 seconds
 
   Scenario: Cached Values shows real auth sessions, cluster map, and databases

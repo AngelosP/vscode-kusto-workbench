@@ -3,6 +3,7 @@ import * as vscode from 'vscode';
 import { ConnectionManager } from '../connectionManager';
 import { DatabaseSchemaIndex } from '../kustoClient';
 import { readCachedSchemaFromDiskByCluster } from '../schemaCache';
+import { KustoAuthPreferenceService } from '../kustoAuthPreferenceService';
 import { KqlLanguageService } from './service';
 import { type KqlFindTableReferencesParams, type KqlFindTableReferencesResult, type KqlGetDiagnosticsParams, type KqlGetDiagnosticsResult } from './protocol';
 
@@ -13,13 +14,16 @@ const STORAGE_KEYS = {
 
 export class KqlLanguageServiceHost {
 	private readonly service = new KqlLanguageService();
+	private readonly authPreferences: KustoAuthPreferenceService;
 
 	constructor(
 		private readonly connectionManager: ConnectionManager,
 		private readonly context: vscode.ExtensionContext
-	) {}
+	) {
+		this.authPreferences = KustoAuthPreferenceService.getInstance(context);
+	}
 
-	private findConnection(connectionId: string | undefined): { id: string; clusterUrl: string } | undefined {
+	private findConnection(connectionId: string | undefined): { id: string; clusterUrl: string; authorityId?: string } | undefined {
 		const cid = String(connectionId || '').trim();
 		if (!cid) {
 			return undefined;
@@ -28,7 +32,7 @@ export class KqlLanguageServiceHost {
 		if (!c) {
 			return undefined;
 		}
-		return { id: c.id, clusterUrl: String(c.clusterUrl || '').trim() };
+		return { id: c.id, clusterUrl: String(c.clusterUrl || '').trim(), authorityId: c.authorityId };
 	}
 
 	private resolveContext(params: KqlGetDiagnosticsParams): { connectionId?: string; database?: string } {
@@ -51,7 +55,10 @@ export class KqlLanguageServiceHost {
 		if (!conn?.clusterUrl) {
 			return undefined;
 		}
-		const cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, conn.clusterUrl, db);
+		const accountId = this.authPreferences.getPreferredAccountId(conn.id);
+		if (!accountId) return undefined;
+		const accountPartition = this.authPreferences.getAccountPartition(conn.authorityId, accountId);
+		const cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, conn.clusterUrl, db, conn.id, accountPartition);
 		return cached?.schema;
 	}
 

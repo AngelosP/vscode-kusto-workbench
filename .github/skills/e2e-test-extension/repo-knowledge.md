@@ -54,6 +54,8 @@ anything new you learned. Structure it however makes sense for this repo.
 - After upgrading the CLI/controller, run `vscode-ext-test update` before using named profiles. A stale versioned controller extension can activate before `_controller-dev` and produce `Unknown method: getLogLevel` even when the linked development controller is current.
 - v0.1.18 persists target-extension output through CDP fallback when controller interception is empty. Verify `_capture-manifest.json` reports `source: "cdp-fallback"`, then read the scenario-specific `Kusto_Workbench.log` artifact.
 - A live `.show databases` request can exceed 30 seconds. Database-list Trace E2E uses a 45-second output wait and should run with `--timeout 60000` so cluster latency does not mask log-capture behavior.
+- `kusto-authority-live` is a deliberately opt-in guest-tenant fixture. Its `e2e.settings.json` sets `optIn=true`; run it only with `--include-opt-in-tests` and the `KUSTO_AUTH_REPRO_*` environment contract documented in `tests/vscode-extension-tester/FULL_SUITE.md`.
+- `kustoWorkbench.test.runAuthorityLiveFixture` is development-only. It seeds two same-endpoint connections with different authorities, uses one exact prepared-profile account, and asserts the target database is visible only through the resource authority. Always pair it with `kustoWorkbench.test.cleanupAuthorityLiveFixture`.
 
 ## Testability Recommendations
 

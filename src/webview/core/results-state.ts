@@ -45,6 +45,14 @@ export function setResultsState(boxId: any, state: any) {
 	try { __kustoNotifyResultsUpdated(boxId); } catch (e) { console.error('[kusto]', e); }
 }
 
+export function clearResultsState(boxId: any) {
+	if (!boxId) return;
+	delete _resultsByBoxId[boxId];
+	_resultsRevisionByBoxId[boxId] = (_resultsRevisionByBoxId[boxId] || 0) + 1;
+	if (currentResult?.boxId === boxId) currentResult = null;
+	try { __kustoNotifyResultsUpdated(boxId); } catch (e) { console.error('[kusto]', e); }
+}
+
 // ── Raw cell value extraction ────────────────────────────────────────────────
 // Used by charts, transformations, and other cross-section consumers.
 

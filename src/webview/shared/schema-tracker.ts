@@ -9,7 +9,11 @@
  * Usage in tests: create a fresh instance per test with a mock worker.
  */
 import { decideSchemaOperation, type SchemaOperation } from './schema-decision';
-import { kustoDatabaseKey } from '../../shared/kustoClusterUrls.js';
+import { getKustoSchemaIdentityKey } from '../../shared/kustoAuth.js';
+
+function principalIdentity(connectionId: string, accountPartition: string): string {
+	return `${encodeURIComponent(connectionId)}|${accountPartition}`;
+}
 
 // ── Worker interface (mockable) ─────────────────────────────────────────────
 export interface ISchemaWorker {
@@ -23,6 +27,8 @@ export interface ProcessSchemaInput {
 	rawSchemaJson: any;
 	clusterUrl: string;
 	database: string;
+	connectionId: string;
+	accountPartition: string;
 	setAsContext: boolean;
 	modelUri: string;
 	forceRefresh: boolean;
@@ -52,10 +58,10 @@ export class SchemaTracker {
 	loadedSchemasByModel: Record<string, Record<string, boolean>> = {};
 
 	/** Global "database in context" — reflects the ACTUAL worker state after last replace/first-load. */
-	databaseInContext: { clusterUrl: string; database: string } | null = null;
+	databaseInContext: { clusterUrl: string; database: string; connectionId: string; accountPartition: string; schemaKey: string } | null = null;
 
 	/** Raw schema cache for re-adds after replace. `clusterUrl|database` → data. */
-	schemaCache: Record<string, { rawSchemaJson: any; clusterUrl: string; database: string }> = {};
+	schemaCache: Record<string, { rawSchemaJson: any; clusterUrl: string; database: string; connectionId: string; accountPartition: string }> = {};
 
 	// ── helpers ──────────────────────────────────────────────────────────
 	private ensureModelTracking(modelUri: string): Record<string, boolean> {
@@ -71,9 +77,9 @@ export class SchemaTracker {
 	}
 
 	/** Decide which schema operation to perform (pure, no side-effects). */
-	decide(modelUri: string, clusterUrl: string, database: string, setAsContext: boolean, forceRefresh: boolean): { operation: SchemaOperation; alreadyLoaded: boolean } {
+	decide(modelUri: string, clusterUrl: string, database: string, connectionId: string, accountPartition: string, setAsContext: boolean, forceRefresh: boolean): { operation: SchemaOperation; alreadyLoaded: boolean } {
 		const perModel = this.ensureModelTracking(modelUri);
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const schemaKey = getKustoSchemaIdentityKey(connectionId, accountPartition, clusterUrl, database);
 		if (forceRefresh && perModel[schemaKey]) {
 			delete perModel[schemaKey];
 		}
@@ -83,8 +89,14 @@ export class SchemaTracker {
 			perModelLoaded: alreadyLoaded,
 			currentClusterUrl: this.databaseInContext?.clusterUrl ?? null,
 			currentDatabase: this.databaseInContext?.database ?? null,
+			currentIdentity: this.databaseInContext?.schemaKey ?? null,
+			currentPrincipalIdentity: this.databaseInContext
+				? principalIdentity(this.databaseInContext.connectionId, this.databaseInContext.accountPartition)
+				: null,
 			newClusterUrl: clusterUrl,
 			newDatabase: database,
+			newIdentity: schemaKey,
+			newPrincipalIdentity: principalIdentity(connectionId, accountPartition),
 			setAsContext,
 			forceRefresh,
 		});
@@ -92,16 +104,16 @@ export class SchemaTracker {
 	}
 
 	/** Record state after a successful first-load (setSchemaFromShowSchema). */
-	recordFirstLoad(modelUri: string, schemaKey: string, clusterUrl: string, database: string, rawSchemaJson: any): void {
+	recordFirstLoad(modelUri: string, schemaKey: string, clusterUrl: string, database: string, connectionId: string, accountPartition: string, rawSchemaJson: any): void {
 		this.globalInitialized = true;
 		this.ensureModelTracking(modelUri)[schemaKey] = true;
 		this.loadedSchemas[schemaKey] = true;
-		this.databaseInContext = { clusterUrl, database };
-		this.schemaCache[schemaKey] = { rawSchemaJson, clusterUrl, database };
+		this.databaseInContext = { clusterUrl, database, connectionId, accountPartition, schemaKey };
+		this.schemaCache[schemaKey] = { rawSchemaJson, clusterUrl, database, connectionId, accountPartition };
 	}
 
 	/** Record state after a successful replace (setSchemaFromShowSchema). Returns cache keys to re-add. */
-	recordReplace(modelUri: string, schemaKey: string, clusterUrl: string, database: string, rawSchemaJson: any): string[] {
+	recordReplace(modelUri: string, schemaKey: string, clusterUrl: string, database: string, connectionId: string, accountPartition: string, rawSchemaJson: any): string[] {
 		// Clear ALL models' per-model tracking — the worker schema was completely replaced
 		for (const uri of Object.keys(this.loadedSchemasByModel)) {
 			const map = this.loadedSchemasByModel[uri];
@@ -112,25 +124,25 @@ export class SchemaTracker {
 		this.ensureModelTracking(modelUri)[schemaKey] = true;
 		this.loadedSchemas = {};
 		this.loadedSchemas[schemaKey] = true;
-		this.databaseInContext = { clusterUrl, database };
-		this.schemaCache[schemaKey] = { rawSchemaJson, clusterUrl, database };
-		return Object.keys(this.schemaCache).filter(k => k !== schemaKey);
+		this.databaseInContext = { clusterUrl, database, connectionId, accountPartition, schemaKey };
+		this.schemaCache[schemaKey] = { rawSchemaJson, clusterUrl, database, connectionId, accountPartition };
+		return Object.keys(this.schemaCache).filter(key => key !== schemaKey && this.schemaCache[key]?.accountPartition === accountPartition);
 	}
 
 	/** Record state after a successful add (addDatabaseToSchema). */
-	recordAdd(modelUri: string, schemaKey: string, clusterUrl: string, database: string, rawSchemaJson: any, setAsContext: boolean): void {
+	recordAdd(modelUri: string, schemaKey: string, clusterUrl: string, database: string, connectionId: string, accountPartition: string, rawSchemaJson: any, setAsContext: boolean): void {
 		this.ensureModelTracking(modelUri)[schemaKey] = true;
 		this.loadedSchemas[schemaKey] = true;
-		this.schemaCache[schemaKey] = { rawSchemaJson, clusterUrl, database };
+		this.schemaCache[schemaKey] = { rawSchemaJson, clusterUrl, database, connectionId, accountPartition };
 		if (setAsContext) {
-			this.databaseInContext = { clusterUrl, database };
+			this.databaseInContext = { clusterUrl, database, connectionId, accountPartition, schemaKey };
 		}
 	}
 
 	/** Record that a globally-loaded schema was adopted by this model (no worker call needed). */
-	recordAdoptGlobal(modelUri: string, schemaKey: string, clusterUrl: string, database: string, rawSchemaJson: any): void {
+	recordAdoptGlobal(modelUri: string, schemaKey: string, clusterUrl: string, database: string, connectionId: string, accountPartition: string, rawSchemaJson: any): void {
 		this.ensureModelTracking(modelUri)[schemaKey] = true;
-		this.schemaCache[schemaKey] = this.schemaCache[schemaKey] || { rawSchemaJson, clusterUrl, database };
+		this.schemaCache[schemaKey] = this.schemaCache[schemaKey] || { rawSchemaJson, clusterUrl, database, connectionId, accountPartition };
 	}
 
 	/** Check if a schema is loaded globally (by any model). */
@@ -147,10 +159,11 @@ export class SchemaTracker {
 
 	// ── main entry point (for tests + can be used in production) ────────
 	async processSchema(input: ProcessSchemaInput, worker: ISchemaWorker): Promise<ProcessSchemaResult> {
-		const { rawSchemaJson, clusterUrl, database, setAsContext, modelUri, forceRefresh, syncedModelUri } = input;
-		const schemaKey = kustoDatabaseKey(clusterUrl, database);
+		const { rawSchemaJson, clusterUrl, database, connectionId, accountPartition, setAsContext, modelUri, forceRefresh, syncedModelUri } = input;
+		const schemaKey = getKustoSchemaIdentityKey(connectionId, accountPartition, clusterUrl, database);
+		if (!schemaKey) throw new Error('Schema identity requires connectionId and accountPartition.');
 
-		const { operation, alreadyLoaded } = this.decide(modelUri, clusterUrl, database, setAsContext, forceRefresh);
+		const { operation, alreadyLoaded } = this.decide(modelUri, clusterUrl, database, connectionId, accountPartition, setAsContext, forceRefresh);
 
 		if (operation.action === 'skip') {
 			return { operation, workerCall: 'none', reAddedSchemas: [] };
@@ -180,14 +193,14 @@ export class SchemaTracker {
 		// ── FIRST-LOAD ──────────────────────────────────────────────────
 		if (operation.action === 'first-load') {
 			await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
-			this.recordFirstLoad(modelUri, schemaKey, clusterUrl, databaseInContext, schemaObj);
+			this.recordFirstLoad(modelUri, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
 			return { operation, workerCall: 'setSchemaFromShowSchema', reAddedSchemas: [] };
 		}
 
 		// ── REPLACE ─────────────────────────────────────────────────────
 		if (operation.action === 'replace') {
 			await worker.setSchemaFromShowSchema(schemaObj, clusterUrl, databaseInContext);
-			const otherKeys = this.recordReplace(modelUri, schemaKey, clusterUrl, databaseInContext, schemaObj);
+			const otherKeys = this.recordReplace(modelUri, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
 
 			// Re-add all other cached schemas
 			for (const otherKey of otherKeys) {
@@ -210,7 +223,7 @@ export class SchemaTracker {
 		// ── ADD ──────────────────────────────────────────────────────────
 		const alreadyGlobally = !forceRefresh && this.isLoadedGlobally(schemaKey);
 		if (alreadyGlobally) {
-			this.recordAdoptGlobal(modelUri, schemaKey, clusterUrl, databaseInContext, schemaObj);
+			this.recordAdoptGlobal(modelUri, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
 			return { operation, workerCall: 'none', reAddedSchemas: [] };
 		}
 
@@ -220,7 +233,7 @@ export class SchemaTracker {
 
 		if (databaseSchema) {
 			await worker.addDatabaseToSchema(syncedModelUri, clusterUrl, databaseSchema);
-			this.recordAdd(modelUri, schemaKey, clusterUrl, databaseInContext, schemaObj, setAsContext);
+			this.recordAdd(modelUri, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj, setAsContext);
 			return { operation, workerCall: 'addDatabaseToSchema', reAddedSchemas: [] };
 		}
 

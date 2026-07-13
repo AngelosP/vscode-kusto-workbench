@@ -6,11 +6,63 @@ import { exportKustoClusterEndpoint, kustoClusterKey, kustoDatabaseKey } from '.
 
 // Increment when the persisted schema JSON shape or semantics change.
 // Used to automatically refresh stale cache entries created by older extension versions.
-// Version 4: Extract function docString and folder from JSON schema (2025-01-24)
-export const SCHEMA_CACHE_VERSION = 4;
+// Version 5: bind every schema to a connection and effective account partition.
+export const SCHEMA_CACHE_VERSION = 5;
 export const SCHEMA_CACHE_TTL_MS = 24 * 60 * 60 * 1000;
 
-export type CachedSchemaEntry = { schema: DatabaseSchemaIndex; timestamp: number; version: number; clusterUrl?: string; database?: string };
+export type SchemaCacheGeneration = Readonly<{ global: number; connection: number; partition: number }>;
+type SchemaCacheMutationState = {
+	globalGeneration: number;
+	connectionGenerations: Map<string, number>;
+	partitionGenerations: Map<string, number>;
+	tail: Promise<unknown>;
+};
+const schemaCacheMutations = new Map<string, SchemaCacheMutationState>();
+
+function schemaCacheOwnerKey(globalStorageUri: vscode.Uri): string {
+	return globalStorageUri.toString();
+}
+
+function getSchemaCacheMutationState(globalStorageUri: vscode.Uri): SchemaCacheMutationState {
+	const key = schemaCacheOwnerKey(globalStorageUri);
+	let state = schemaCacheMutations.get(key);
+	if (!state) {
+		state = { globalGeneration: 0, connectionGenerations: new Map(), partitionGenerations: new Map(), tail: Promise.resolve() };
+		schemaCacheMutations.set(key, state);
+	}
+	return state;
+}
+
+function enqueueSchemaCacheMutation<T>(globalStorageUri: vscode.Uri, operation: () => Promise<T>): Promise<T> {
+	const state = getSchemaCacheMutationState(globalStorageUri);
+	const next = state.tail.then(operation, operation);
+	state.tail = next.catch(() => undefined);
+	return next;
+}
+
+export function captureSchemaCacheGeneration(globalStorageUri: vscode.Uri, connectionId: string = '', accountPartition: string = ''): SchemaCacheGeneration {
+	const state = getSchemaCacheMutationState(globalStorageUri);
+	return {
+		global: state.globalGeneration,
+		connection: state.connectionGenerations.get(String(connectionId || '').trim()) ?? 0,
+		partition: state.partitionGenerations.get(String(accountPartition || '').trim()) ?? 0,
+	};
+}
+
+function isSchemaCacheGenerationCurrent(globalStorageUri: vscode.Uri, connectionId: string, accountPartition: string, expected: SchemaCacheGeneration): boolean {
+	const current = captureSchemaCacheGeneration(globalStorageUri, connectionId, accountPartition);
+	return current.global === expected.global && current.connection === expected.connection && current.partition === expected.partition;
+}
+
+export type CachedSchemaEntry = {
+	schema: DatabaseSchemaIndex;
+	timestamp: number;
+	version: number;
+	clusterUrl?: string;
+	database?: string;
+	connectionId?: string;
+	accountPartition?: string;
+};
 export type CachedSchemaClassification = {
 	exists: boolean;
 	cacheAgeMs?: number;
@@ -28,12 +80,13 @@ export const classifyCachedSchema = (
 	}
 	const cacheAgeMs = Math.max(0, now - entry.timestamp);
 	const isLatestVersion = (entry.version ?? 0) === SCHEMA_CACHE_VERSION;
+	const hasPrincipalIdentity = !!String(entry.connectionId || '').trim() && !!String(entry.accountPartition || '').trim();
 	return {
 		exists: true,
 		cacheAgeMs,
 		isFresh: cacheAgeMs < SCHEMA_CACHE_TTL_MS,
 		isLatestVersion,
-		isUsable: true,
+		isUsable: isLatestVersion && hasPrincipalIdentity,
 	};
 };
 
@@ -46,8 +99,23 @@ export const getSchemaCacheFileUri = (globalStorageUri: vscode.Uri, cacheKey: st
 	return vscode.Uri.joinPath(getSchemaCacheDirUri(globalStorageUri), `${hash}.json`);
 };
 
-export const schemaCacheKey = (clusterUrl: unknown, database: unknown): string => {
-	return kustoDatabaseKey(clusterUrl, database);
+export const schemaCacheKey = (
+	clusterUrl: unknown,
+	database: unknown,
+	connectionId: unknown,
+	accountPartition: unknown,
+): string => {
+	const physicalKey = kustoDatabaseKey(clusterUrl, database);
+	const id = String(connectionId || '').trim();
+	const partition = String(accountPartition || '').trim();
+	if (!physicalKey || !id || !partition) return '';
+	return `v5|${encodeURIComponent(id)}|${partition}|${physicalKey}`;
+};
+
+export const schemaPrincipalIdentity = (connectionId: unknown, accountPartition: unknown): string => {
+	const id = String(connectionId || '').trim();
+	const partition = String(accountPartition || '').trim();
+	return id && partition ? `${encodeURIComponent(id)}|${partition}` : '';
 };
 
 export const getLegacySchemaCacheKeys = (clusterUrl: unknown, database: unknown): string[] => {
@@ -55,7 +123,7 @@ export const getLegacySchemaCacheKeys = (clusterUrl: unknown, database: unknown)
 	const rawCluster = String(clusterUrl || '').trim();
 	if (!db || !rawCluster) return [];
 	const keys = [
-		schemaCacheKey(clusterUrl, db),
+		kustoDatabaseKey(clusterUrl, db),
 		`${rawCluster}|${db}`,
 		`${rawCluster.replace(/\/+$/g, '')}|${db}`,
 		`${exportKustoClusterEndpoint(clusterUrl)}|${db}`,
@@ -75,7 +143,15 @@ export const readCachedSchemaFromDisk = async (
 			return undefined;
 		}
 		const version = typeof parsed.version === 'number' && isFinite(parsed.version) ? parsed.version : 0;
-		return { schema: parsed.schema, timestamp: parsed.timestamp, version };
+		return {
+			schema: parsed.schema,
+			timestamp: parsed.timestamp,
+			version,
+			clusterUrl: typeof parsed.clusterUrl === 'string' ? parsed.clusterUrl : undefined,
+			database: typeof parsed.database === 'string' ? parsed.database : undefined,
+			connectionId: typeof parsed.connectionId === 'string' ? parsed.connectionId : undefined,
+			accountPartition: typeof parsed.accountPartition === 'string' ? parsed.accountPartition : undefined,
+		};
 	} catch {
 		return undefined;
 	}
@@ -84,32 +160,102 @@ export const readCachedSchemaFromDisk = async (
 export const readCachedSchemaFromDiskByCluster = async (
 	globalStorageUri: vscode.Uri,
 	clusterUrl: unknown,
-	database: unknown
+	database: unknown,
+	connectionId: unknown,
+	accountPartition: unknown,
 ): Promise<CachedSchemaEntry | undefined> => {
-	for (const key of getLegacySchemaCacheKeys(clusterUrl, database)) {
-		const cached = await readCachedSchemaFromDisk(globalStorageUri, key);
-		if (cached?.schema) return cached;
-	}
-	return undefined;
+	const id = String(connectionId || '').trim();
+	const partition = String(accountPartition || '').trim();
+	const key = schemaCacheKey(clusterUrl, database, id, partition);
+	if (!key) return undefined;
+	const cached = await readCachedSchemaFromDisk(globalStorageUri, key);
+	if (!cached || !classifyCachedSchema(cached).isUsable) return undefined;
+	if (cached.connectionId !== id || cached.accountPartition !== partition) return undefined;
+	return cached;
 };
 
 export const writeCachedSchemaToDisk = async (
 	globalStorageUri: vscode.Uri,
 	cacheKey: string,
-	entry: CachedSchemaEntry
+	entry: CachedSchemaEntry,
+	expectedGeneration: SchemaCacheGeneration = captureSchemaCacheGeneration(globalStorageUri, entry.connectionId, entry.accountPartition),
 ): Promise<void> => {
-	const dir = getSchemaCacheDirUri(globalStorageUri);
-	await vscode.workspace.fs.createDirectory(dir);
-	const fileUri = getSchemaCacheFileUri(globalStorageUri, cacheKey);
-	// Ensure clusterUrl and database are always persisted so enumeration/search
-	// can identify schemas without needing to reverse the SHA1 filename hash.
-	const pipeIdx = cacheKey.indexOf('|');
-	const enriched: CachedSchemaEntry = {
-		...entry,
-		clusterUrl: entry.clusterUrl ?? (pipeIdx >= 0 ? cacheKey.slice(0, pipeIdx) : undefined),
-		database: entry.database ?? (pipeIdx >= 0 ? cacheKey.slice(pipeIdx + 1) : undefined)
-	};
-	await vscode.workspace.fs.writeFile(fileUri, Buffer.from(JSON.stringify(enriched), 'utf8'));
+	if (!cacheKey || !classifyCachedSchema(entry).isUsable || !entry.clusterUrl || !entry.database) {
+		throw new Error('Kusto schema cache entries require version 5 connection and account identity metadata.');
+	}
+	await enqueueSchemaCacheMutation(globalStorageUri, async () => {
+		if (!isSchemaCacheGenerationCurrent(globalStorageUri, entry.connectionId || '', entry.accountPartition || '', expectedGeneration)) return;
+		const dir = getSchemaCacheDirUri(globalStorageUri);
+		await vscode.workspace.fs.createDirectory(dir);
+		if (!isSchemaCacheGenerationCurrent(globalStorageUri, entry.connectionId || '', entry.accountPartition || '', expectedGeneration)) return;
+		const fileUri = getSchemaCacheFileUri(globalStorageUri, cacheKey);
+		await vscode.workspace.fs.writeFile(fileUri, Buffer.from(JSON.stringify(entry), 'utf8'));
+	});
+};
+
+export const clearCachedSchemas = async (globalStorageUri: vscode.Uri): Promise<void> => {
+	const state = getSchemaCacheMutationState(globalStorageUri);
+	state.globalGeneration++;
+	await enqueueSchemaCacheMutation(globalStorageUri, async () => {
+		try {
+			await vscode.workspace.fs.delete(getSchemaCacheDirUri(globalStorageUri), { recursive: true, useTrash: false });
+		} catch {
+			// The schema cache directory may not exist yet.
+		}
+	});
+};
+
+const deleteCachedSchemasMatching = async (
+	globalStorageUri: vscode.Uri,
+	matches: (entry: Partial<CachedSchemaEntry>) => boolean,
+): Promise<number> => {
+	return enqueueSchemaCacheMutation(globalStorageUri, async () => {
+		let deleted = 0;
+		try {
+			const cacheDir = getSchemaCacheDirUri(globalStorageUri);
+			const files = await vscode.workspace.fs.readDirectory(cacheDir);
+			for (const [fileName] of files) {
+				if (!fileName.endsWith('.json')) continue;
+				const fileUri = vscode.Uri.joinPath(cacheDir, fileName);
+				try {
+					const bytes = await vscode.workspace.fs.readFile(fileUri);
+					const parsed = JSON.parse(Buffer.from(bytes).toString('utf8')) as Partial<CachedSchemaEntry>;
+					if (!matches(parsed)) continue;
+					await vscode.workspace.fs.delete(fileUri, { recursive: false, useTrash: false });
+					deleted++;
+				} catch {
+					// Ignore malformed or concurrently removed cache files.
+				}
+			}
+		} catch {
+			// The schema cache directory may not exist yet.
+		}
+		return deleted;
+	});
+};
+
+export const deleteCachedSchemasForAccountPartitions = async (
+	globalStorageUri: vscode.Uri,
+	accountPartitions: ReadonlySet<string>,
+): Promise<number> => {
+	const partitions = new Set(
+		[...accountPartitions].map(partition => String(partition || '').trim()).filter(Boolean),
+	);
+	if (partitions.size === 0) return 0;
+	const state = getSchemaCacheMutationState(globalStorageUri);
+	for (const partition of partitions) state.partitionGenerations.set(partition, (state.partitionGenerations.get(partition) ?? 0) + 1);
+	return deleteCachedSchemasMatching(globalStorageUri, entry => partitions.has(String(entry.accountPartition || '').trim()));
+};
+
+export const deleteCachedSchemasForConnections = async (
+	globalStorageUri: vscode.Uri,
+	connectionIds: ReadonlySet<string>,
+): Promise<number> => {
+	const ids = new Set([...connectionIds].map(connectionId => String(connectionId || '').trim()).filter(Boolean));
+	if (ids.size === 0) return 0;
+	const state = getSchemaCacheMutationState(globalStorageUri);
+	for (const id of ids) state.connectionGenerations.set(id, (state.connectionGenerations.get(id) ?? 0) + 1);
+	return deleteCachedSchemasMatching(globalStorageUri, entry => ids.has(String(entry.connectionId || '').trim()));
 };
 
 /**
@@ -119,9 +265,10 @@ export const writeCachedSchemaToDisk = async (
 export const readAllCachedSchemasFromDisk = async (
 	globalStorageUri: vscode.Uri,
 	filterClusterUrl?: string,
-	filterDatabase?: string
-): Promise<Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>> => {
-	const resultsByKey = new Map<string, { timestamp: number; value: { clusterUrl: string; database: string; tables: string[]; functions: string[] } }>();
+	filterDatabase?: string,
+	allowedPrincipalIdentities?: ReadonlySet<string>,
+): Promise<Array<{ connectionId: string; clusterUrl: string; database: string; tables: string[]; functions: string[] }>> => {
+	const resultsByKey = new Map<string, { timestamp: number; value: { connectionId: string; clusterUrl: string; database: string; tables: string[]; functions: string[] } }>();
 	const filterClusterKey = filterClusterUrl ? kustoClusterKey(filterClusterUrl) : '';
 	try {
 		const cacheDir = getSchemaCacheDirUri(globalStorageUri);
@@ -136,10 +283,14 @@ export const readAllCachedSchemasFromDisk = async (
 
 				const entryCluster = typeof parsed.clusterUrl === 'string' ? parsed.clusterUrl : '';
 				const entryDatabase = typeof parsed.database === 'string' ? parsed.database : '';
+				const connectionId = typeof parsed.connectionId === 'string' ? parsed.connectionId : '';
+				const accountPartition = typeof parsed.accountPartition === 'string' ? parsed.accountPartition : '';
+				const principalIdentity = schemaPrincipalIdentity(connectionId, accountPartition);
 
 				// Skip entries that don't have origin metadata — they are from an older
 				// cache version and cannot be reliably identified.
-				if (!entryCluster || !entryDatabase) continue;
+				if (!entryCluster || !entryDatabase || !principalIdentity || !classifyCachedSchema(parsed as CachedSchemaEntry).isUsable) continue;
+				if (allowedPrincipalIdentities && !allowedPrincipalIdentities.has(principalIdentity)) continue;
 
 				// Apply optional filters
 				if (filterClusterKey && kustoClusterKey(entryCluster) !== filterClusterKey) continue;
@@ -148,11 +299,12 @@ export const readAllCachedSchemasFromDisk = async (
 				const schema = parsed.schema;
 				const tables = schema.tables || [];
 				const functions = (schema.functions || []).map(f => typeof f === 'string' ? f : (f as { name?: string }).name || '').filter(Boolean);
-				const identityKey = schemaCacheKey(entryCluster, entryDatabase) || `${entryCluster.toLowerCase()}|${entryDatabase.toLowerCase()}`;
+				const identityKey = schemaCacheKey(entryCluster, entryDatabase, connectionId, accountPartition);
+				if (!identityKey) continue;
 				const timestamp = typeof parsed.timestamp === 'number' && isFinite(parsed.timestamp) ? parsed.timestamp : 0;
 				const existing = resultsByKey.get(identityKey);
 				if (!existing || timestamp >= existing.timestamp) {
-					resultsByKey.set(identityKey, { timestamp, value: { clusterUrl: entryCluster, database: entryDatabase, tables, functions } });
+					resultsByKey.set(identityKey, { timestamp, value: { connectionId, clusterUrl: entryCluster, database: entryDatabase, tables, functions } });
 				}
 			} catch {
 				// Skip invalid cache files
@@ -165,6 +317,7 @@ export const readAllCachedSchemasFromDisk = async (
 };
 
 export type SchemaSearchMatch = {
+	connectionId: string;
 	clusterUrl: string;
 	database: string;
 	/** 'table' | 'column' | 'function' | 'tableDocString' | 'columnDocString' | 'functionDocString' */
@@ -190,7 +343,8 @@ export type SchemaSearchMatch = {
 export const searchCachedSchemas = async (
 	globalStorageUri: vscode.Uri,
 	pattern: string,
-	maxResults: number = 200
+	maxResults: number = 200,
+	allowedPrincipalIdentities?: ReadonlySet<string>,
 ): Promise<SchemaSearchMatch[]> => {
 	let re: RegExp;
 	try {
@@ -215,10 +369,14 @@ export const searchCachedSchemas = async (
 
 				const cluster = typeof parsed.clusterUrl === 'string' ? parsed.clusterUrl : '';
 				const database = typeof parsed.database === 'string' ? parsed.database : '';
-				if (!cluster || !database) continue;
+				const connectionId = typeof parsed.connectionId === 'string' ? parsed.connectionId : '';
+				const accountPartition = typeof parsed.accountPartition === 'string' ? parsed.accountPartition : '';
+				const principalIdentity = schemaPrincipalIdentity(connectionId, accountPartition);
+				if (!cluster || !database || !principalIdentity || !classifyCachedSchema(parsed as CachedSchemaEntry).isUsable) continue;
+				if (allowedPrincipalIdentities && !allowedPrincipalIdentities.has(principalIdentity)) continue;
 
 				const schema = parsed.schema;
-				const base = { clusterUrl: cluster, database };
+				const base = { connectionId, clusterUrl: cluster, database };
 
 				// Track what has already matched to avoid duplicates
 				const matchedTables = new Set<string>();

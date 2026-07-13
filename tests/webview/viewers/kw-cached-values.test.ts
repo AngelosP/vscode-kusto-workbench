@@ -48,12 +48,20 @@ function createElement(): KwCachedValues {
 	return container.querySelector('kw-cached-values')!;
 }
 
-function snapshot() {
+function snapshot(accountPartition = 'partition-a', revision = 1) {
 	return {
+		revision,
 		timestamp: Date.now(),
 		activeKind: 'kusto',
 		auth: { sessions: [], knownAccounts: [], clusterAccountMap: {} },
-		connections: [{ id: 'c1', name: 'Cluster', clusterUrl: 'https://cluster.kusto.windows.net' }],
+		connections: [{
+			id: 'c1',
+			name: 'Cluster',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			accountPreference: { mode: 'automatic' },
+			accountPartition,
+			hasTokenOverride: false,
+		}],
 		cachedDatabases: {
 			'cluster.kusto.windows.net': Array.from({ length: 40 }, (_, index) => `db${index + 1}`),
 		},
@@ -145,5 +153,28 @@ describe('kw-cached-values scrollbars', () => {
 		} finally {
 			document.removeEventListener('wheel', documentWheel);
 		}
+	});
+
+	it('drops a late Kusto schema response after the connection identity changes', async () => {
+		const el = createElement();
+		await el.updateComplete;
+		window.dispatchEvent(new MessageEvent('message', { data: { type: 'snapshot', snapshot: snapshot('partition-a', 10) } }));
+		await el.updateComplete;
+
+		(el as any)._viewSchema('c1', 'db1');
+		const request = postedMessages.find((message: any) => message?.type === 'schema.get') as any;
+		expect(request).toEqual(expect.objectContaining({ connectionId: 'c1', database: 'db1', requestId: expect.any(String) }));
+
+		window.dispatchEvent(new MessageEvent('message', { data: { type: 'snapshot', snapshot: snapshot('partition-b', 11) } }));
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'schemaResult', requestId: request.requestId, connectionId: 'c1', accountPartition: 'partition-a', database: 'db1', ok: true,
+			json: JSON.stringify({ schema: { tables: ['SecretA'] } }),
+		} }));
+		await el.updateComplete;
+		await Promise.resolve();
+
+		expect((el as any)._schemaRequestInFlight).toBe(false);
+		expect((el as any)._objectViewerOwner).toBeUndefined();
+		expect((el as any)._objectViewer?.open).not.toBe(true);
 	});
 });

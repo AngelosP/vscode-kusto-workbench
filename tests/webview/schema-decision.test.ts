@@ -94,6 +94,21 @@ describe('decideSchemaOperation', () => {
 			expect(result.action).toBe('add');
 		});
 
+		it('returns replace when force refresh crosses principals on the same cluster', () => {
+			const result = decideSchemaOperation(input({
+				currentClusterUrl: CLUSTER_A,
+				currentDatabase: DB_A,
+				currentIdentity: 'schema-a',
+				currentPrincipalIdentity: 'conn|partition-a',
+				newClusterUrl: CLUSTER_A,
+				newDatabase: DB_B,
+				newIdentity: 'schema-b',
+				newPrincipalIdentity: 'conn|partition-b',
+				forceRefresh: true,
+			}));
+			expect(result).toEqual({ action: 'replace', reason: 'different-principal' });
+		});
+
 		it('returns add when setAsContext=false even if database differs', () => {
 			const result = decideSchemaOperation(input({
 				currentClusterUrl: CLUSTER_A,

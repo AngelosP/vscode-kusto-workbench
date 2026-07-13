@@ -3,6 +3,9 @@ Feature: Connection Manager with Kusto connections — explorer, drill-down, fav
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
+    When I move the Dev Host to 0, 0
+    When I resize the Dev Host to 1280x1000
+    When I execute command "workbench.action.closeAuxiliaryBar"
     And I wait 2 seconds
 
   Scenario: Connection list, drill into cluster, explore databases

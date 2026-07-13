@@ -55,7 +55,7 @@ describe('kw-query-section favorites dropdown', () => {
 
 		setQueryBoxes(['query_a', 'query_b']);
 		setKustoFavorites([
-			{ clusterUrl: 'https://shared.kusto.windows.net', database: 'Samples', name: 'Shared Favorite' },
+			{ connectionId: 'shared', clusterUrl: 'https://shared.kusto.windows.net', database: 'Samples', name: 'Shared Favorite' },
 		]);
 		__kustoUpdateFavoritesUiForAllBoxes();
 		for (const el of sections) await el.updateComplete;
@@ -77,7 +77,7 @@ describe('kw-query-section favorites dropdown', () => {
 		el.setConnectionId('conn1');
 		el.setDatabase('MyDb');
 		el.setFavorites([
-			{ clusterUrl: 'https://cluster1.kusto.windows.net', database: 'MyDb', name: 'My Favorite' },
+			{ connectionId: 'conn1', clusterUrl: 'https://cluster1.kusto.windows.net', database: 'MyDb', name: 'My Favorite' },
 		]);
 		el.setFavoritesMode(true);
 		await el.updateComplete;
@@ -105,7 +105,7 @@ describe('kw-query-section favorites dropdown', () => {
 		el.setConnectionId('conn1');
 		el.setDatabase('TelemetryDb');
 		el.setFavorites([
-			{ clusterUrl: 'semantic-current.westus', database: 'TelemetryDb', name: 'Synthetic Favorite' },
+			{ connectionId: 'conn1', clusterUrl: 'semantic-current.westus', database: 'TelemetryDb', name: 'Synthetic Favorite' },
 		]);
 		el.setFavoritesMode(true);
 		await el.updateComplete;
@@ -127,7 +127,7 @@ describe('kw-query-section favorites dropdown', () => {
 		el.setConnectionId('conn1');
 		el.setDatabase('TelemetryDb');
 		el.setFavorites([
-			{ clusterUrl: 'https://semantic-current.westus.kusto.windows.net', database: 'TelemetryDb', name: 'Synthetic Favorite' },
+			{ connectionId: 'conn1', clusterUrl: 'https://semantic-current.westus.kusto.windows.net', database: 'TelemetryDb', name: 'Synthetic Favorite' },
 		]);
 		el.setFavoritesMode(true);
 		await el.updateComplete;
@@ -149,7 +149,7 @@ describe('kw-query-section favorites dropdown', () => {
 		el.setConnectionId('conn1');
 		el.setDatabase('OtherDb');
 		el.setFavorites([
-			{ clusterUrl: 'https://cluster1.kusto.windows.net', database: 'MyDb', name: 'My Favorite' },
+			{ connectionId: 'conn1', clusterUrl: 'https://cluster1.kusto.windows.net', database: 'MyDb', name: 'My Favorite' },
 		]);
 		el.setFavoritesMode(true);
 		await el.updateComplete;
@@ -173,8 +173,8 @@ describe('kw-query-section favorites dropdown', () => {
 		el.setConnectionId('conn2');
 		el.setDatabase('ProdDb');
 		el.setFavorites([
-			{ clusterUrl: 'https://cluster1.kusto.windows.net', database: 'DevDb', name: 'Dev' },
-			{ clusterUrl: 'https://cluster2.kusto.windows.net', database: 'ProdDb', name: 'Production' },
+			{ connectionId: 'conn1', clusterUrl: 'https://cluster1.kusto.windows.net', database: 'DevDb', name: 'Dev' },
+			{ connectionId: 'conn2', clusterUrl: 'https://cluster2.kusto.windows.net', database: 'ProdDb', name: 'Production' },
 		]);
 		el.setFavoritesMode(true);
 		await el.updateComplete;
@@ -187,5 +187,29 @@ describe('kw-query-section favorites dropdown', () => {
 
 		await dropdown!.updateComplete;
 		expect(getDropdownButtonText(dropdown!)).toContain('Production');
+	});
+
+	it('keeps a user-selected same-endpoint authority after connections refresh', async () => {
+		const el = createSection();
+		await el.updateComplete;
+		const connections = [
+			{ id: 'home', clusterUrl: 'https://shared.kusto.windows.net', authorityId: 'home.example.com' },
+			{ id: 'guest', clusterUrl: 'https://shared.kusto.windows.net', authorityId: 'guest.example.com' },
+		];
+		el.setConnections(connections);
+		el.setDesiredClusterUrl(connections[0].clusterUrl);
+		el.setDesiredConnectionIdentity(connections[0].authorityId, connections[0].id);
+		el.setConnections(connections);
+		expect(el.getConnectionId()).toBe('home');
+
+		el.setConnectionId('guest');
+		el.setConnections(connections);
+
+		expect(el.getConnectionId()).toBe('guest');
+		expect(el.serialize()).toEqual(expect.objectContaining({
+			clusterUrl: connections[1].clusterUrl,
+			authorityId: 'guest.example.com',
+			connectionIdHint: 'guest',
+		}));
 	});
 });

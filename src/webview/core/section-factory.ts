@@ -27,6 +27,7 @@ import {
 	schemaFetchInFlightByBoxId,
 	lastSchemaRequestAtByBoxId,
 	schemaByConnDb,
+	schemaMetaByConnDb,
 	schemaRequestResolversByBoxId,
 	databasesRequestResolversByBoxId,
 	databaseRequestTokenByBoxId,
@@ -55,6 +56,7 @@ import {
 	requestKustoSchemaApplyForBox,
 	setKustoPreparationIdle,
 } from './state';
+import { clearResultsState } from './results-state';
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from '../sections/query-execution.controller';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
@@ -76,6 +78,7 @@ import {
 	parseKustoConnectionString,
 	findConnectionIdForClusterUrl as _findConnIdPure,
 } from '../shared/clusterUtils';
+import { getKustoSchemaIdentityKey } from '../../shared/kustoAuth.js';
 import {
 	getRawCellValue as _getRawCellValue,
 	cellToChartString as _cellToChartString,
@@ -362,6 +365,9 @@ export function addQueryBox( options?: any) {
 			try { delete databaseRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 			requireSchemaWorkerApply(String(boxId));
 			invalidateLinkedComparisonSchemaForSource(String(boxId));
+			try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
+			try { delete pState.queryResultJsonByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+			try { if (typeof kwEl.clearResults === 'function') kwEl.clearResults(); } catch (e) { console.error('[kusto]', e); }
 			// Persist selection.
 			try {
 				if (!pState.restoreInProgress) {
@@ -393,10 +399,7 @@ export function addQueryBox( options?: any) {
 						target: { connectionId: String(detail.connectionId || '') },
 					});
 					const cid = String(detail.connectionId || '').trim();
-					const conn = Array.isArray(connections) ? connections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
-					const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
-					const clusterKey = clusterUrl ? canonicalKustoClusterKey(clusterUrl) : '';
-					const cached = (cachedDatabases && cachedDatabases[clusterKey]) || cachedDatabases[detail.connectionId];
+					const cached = cachedDatabases && cachedDatabases[cid];
 					const requestToken = 'databases_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 					const requiredDatabase = String(kwEl.getDesiredDatabase?.() || detail.database || '').trim();
 					databaseRequestTokenByBoxId[boxId] = requestToken;
@@ -458,7 +461,7 @@ export function addQueryBox( options?: any) {
 		});
 		kwEl.addEventListener('favorite-removed', (e: any) => {
 			const detail = e.detail || {};
-			try { removeFavorite(detail.clusterUrl, detail.database); } catch (e) { console.error('[kusto]', e); }
+			try { removeFavorite(detail.connectionId, detail.clusterUrl, detail.database); } catch (e) { console.error('[kusto]', e); }
 		});
 		kwEl.addEventListener('schema-refresh', (e: any) => {
 			const detail = e.detail || {};
@@ -474,6 +477,8 @@ export function addQueryBox( options?: any) {
 						name: detail.name,
 						clusterUrl: detail.clusterUrl,
 						database: detail.database,
+						authorityId: detail.authorityId,
+						accountId: detail.accountId,
 						boxId: detail.boxId || id,
 					});
 				} catch (e) { console.error('[kusto]', e); }
@@ -488,6 +493,8 @@ export function addQueryBox( options?: any) {
 						name: detail.name,
 						clusterUrl: detail.clusterUrl,
 						database: detail.database,
+						authorityId: detail.authorityId,
+						accountId: detail.accountId,
 						boxId: detail.boxId || id,
 					});
 				} catch (e) { console.error('[kusto]', e); }
@@ -1176,8 +1183,10 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 				try {
 					const cid = String(connectionId || '').trim();
 					const db = String(database || '').trim();
-					if (cid && db && sch) {
-						schemaByConnDb[cid + '|' + db] = sch;
+					const connection = (connections || []).find((candidate: any) => String(candidate?.id || '') === cid);
+					const key = getKustoSchemaIdentityKey(cid, connection?.accountPartition, connection?.clusterUrl, db);
+					if (key && sch) {
+						schemaByConnDb[key] = sch;
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				return sch;
@@ -1192,13 +1201,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const cid = String(connectionId || '').trim();
-			let clusterKey = '';
-			try {
-				const conn = Array.isArray(connections) ? connections.find((c: any) => c && String(c.id || '').trim() === cid) : null;
-				const clusterUrl = conn && conn.clusterUrl ? String(conn.clusterUrl) : '';
-				if (clusterUrl) clusterKey = canonicalKustoClusterKey(clusterUrl);
-			} catch (e) { console.error('[kusto]', e); }
-			const cached = cachedDatabases && cachedDatabases[String(clusterKey || '').trim()];
+			const cached = cachedDatabases && cachedDatabases[cid];
 			return Array.isArray(cached) ? cached : [];
 		} catch {
 			return [];
@@ -1249,12 +1252,12 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 	const getCachedSchemasForConnection = (connectionId: any) => {
 		const cid = String(connectionId || '').trim();
 		if (!cid) return [];
-		const prefix = cid + '|';
 		const list = [];
 		try {
 			for (const key of Object.keys(schemaByConnDb || {})) {
-				if (!key || !key.startsWith(prefix)) continue;
-				const dbName = key.slice(prefix.length);
+				const meta = schemaMetaByConnDb?.[key];
+				if (!meta || String(meta.connectionId || '') !== cid) continue;
+				const dbName = String(meta.database || '').trim();
 				if (!dbName) continue;
 				list.push({ database: dbName, schema: schemaByConnDb[key] });
 			}
@@ -1334,7 +1337,8 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 			if (unresolvedLower.size === 0) break;
 			const dbName = String(db || '').trim();
 			if (!dbName || dbName === String(opts.currentDatabase)) continue;
-			const key = cid + '|' + dbName;
+			const connection = (connections || []).find((candidate: any) => String(candidate?.id || '') === cid);
+			const key = getKustoSchemaIdentityKey(cid, connection?.accountPartition, connection?.clusterUrl, dbName);
 			if (schemaByConnDb && schemaByConnDb[key]) continue;
 			const sch = await requestSchema(cid, dbName);
 			tryResolveFromSchema(sch, opts.currentClusterUrl, dbName);
@@ -1371,7 +1375,8 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 				if (unresolvedLower.size === 0) break;
 				const dbName = String(db || '').trim();
 				if (!dbName) continue;
-				const key = c.cid + '|' + dbName;
+				const connection = (connections || []).find((candidate: any) => String(candidate?.id || '') === c.cid);
+				const key = getKustoSchemaIdentityKey(c.cid, connection?.accountPartition, connection?.clusterUrl, dbName);
 				if (schemaByConnDb && schemaByConnDb[key]) continue;
 				const sch = await requestSchema(c.cid, dbName);
 				tryResolveFromSchema(sch, c.clusterUrl, dbName);

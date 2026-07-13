@@ -36,6 +36,7 @@ Options:
   --profile <name>                  Add one profile to run. Can be repeated.
   --test-id <id>                    Add one test id to run. Can be repeated.
   --include-screenshot-generators   Include readme-ss-* screenshot generator features.
+	--include-opt-in-tests            Include tests whose e2e.settings.json sets optIn=true.
   --run-quarantined                 Run quarantined tests instead of skipping them.
   --dry-run                         Discover and report the suite without running tests.
   --no-build                        Skip the one-time npm run compile before test execution.
@@ -56,6 +57,7 @@ function parseArgs(argv) {
 		profiles: [],
 		testIds: [],
 		includeScreenshotGenerators: false,
+		includeOptInTests: false,
 		runQuarantined: false,
 		dryRun: false,
 		noBuild: false,
@@ -91,6 +93,9 @@ function parseArgs(argv) {
 				break;
 			case '--include-screenshot-generators':
 				options.includeScreenshotGenerators = true;
+				break;
+			case '--include-opt-in-tests':
+				options.includeOptInTests = true;
 				break;
 			case '--run-quarantined':
 				options.runQuarantined = true;
@@ -191,6 +196,7 @@ function discoverCases(options, quarantineEntries) {
 	const testIdFilter = new Set(options.testIds);
 	const cases = [];
 	const excludedScreenshotGenerators = [];
+	const excludedOptInTests = [];
 
 	for (const profile of profiles) {
 		const profileDir = path.join(featuresRoot, profile);
@@ -222,8 +228,14 @@ function discoverCases(options, quarantineEntries) {
 				featureFiles: featureFiles.map(name => relativePath(path.join(testDir, name))),
 				workspaceSettings: testSettings.workspaceSettings,
 				timeout: testSettings.timeout,
+				optIn: testSettings.optIn,
 				quarantine,
 			};
+
+			if (testCase.optIn && !options.includeOptInTests) {
+				excludedOptInTests.push(testCase);
+				continue;
+			}
 
 			if (category === 'screenshot-generator' && !options.includeScreenshotGenerators) {
 				excludedScreenshotGenerators.push(testCase);
@@ -234,13 +246,13 @@ function discoverCases(options, quarantineEntries) {
 		}
 	}
 
-	return { cases, excludedScreenshotGenerators };
+	return { cases, excludedScreenshotGenerators, excludedOptInTests };
 }
 
 function readTestSettings(testDir) {
 	const configPath = path.join(testDir, perTestConfigFile);
 	if (!existsSync(configPath)) {
-		return { workspaceSettings: null, timeout: '' };
+		return { workspaceSettings: null, timeout: '', optIn: false };
 	}
 
 	const config = readJson(configPath, {});
@@ -261,7 +273,15 @@ function readTestSettings(testDir) {
 		timeout = value;
 	}
 
-	return { workspaceSettings, timeout };
+	let optIn = false;
+	if (config.optIn !== undefined) {
+		if (typeof config.optIn !== 'boolean') {
+			throw new Error(`${relativePath(configPath)} property optIn must be a boolean.`);
+		}
+		optIn = config.optIn;
+	}
+
+	return { workspaceSettings, timeout, optIn };
 }
 
 function findQuarantine(entries, profile, testId) {
@@ -577,7 +597,7 @@ function updateLedger(outputRoot, runRecords) {
 	return ledger;
 }
 
-function summarizeSuite({ runStartedAt, completedAt, options, cases, excludedScreenshotGenerators, runRecords, quarantineErrors, profileResidueRecords, ledger }) {
+function summarizeSuite({ runStartedAt, completedAt, options, cases, excludedScreenshotGenerators, excludedOptInTests, runRecords, quarantineErrors, profileResidueRecords, ledger }) {
 	const executed = runRecords.filter(record => record.status === 'passed' || record.status === 'failed');
 	const passed = runRecords.filter(record => record.status === 'passed');
 	const failed = runRecords.filter(record => record.status === 'failed');
@@ -594,8 +614,9 @@ function summarizeSuite({ runStartedAt, completedAt, options, cases, excludedScr
 		vscodeVersion: options.vscodeVersion,
 		profiles: options.profiles.length > 0 ? options.profiles : discoverProfiles(),
 		includeScreenshotGenerators: options.includeScreenshotGenerators,
+		includeOptInTests: options.includeOptInTests,
 		dryRun: options.dryRun,
-		totalDiscovered: cases.length + excludedScreenshotGenerators.length,
+		totalDiscovered: cases.length + excludedScreenshotGenerators.length + excludedOptInTests.length,
 		totalSelected: cases.length,
 		executed: executed.length + allowedFailures.length,
 		passed: passed.length,
@@ -604,6 +625,7 @@ function summarizeSuite({ runStartedAt, completedAt, options, cases, excludedScr
 		quarantined: quarantined.length,
 		skipped: skipped.length,
 		excludedScreenshotGenerators: excludedScreenshotGenerators.length,
+		excludedOptInTests: excludedOptInTests.length,
 		quarantinePolicyErrors: quarantineErrors,
 		profileResidueFailures: residueFailures.length,
 		flakeSuspects: flakeSuspects.map(entry => ({
@@ -636,6 +658,7 @@ function toMarkdown(summary) {
 	lines.push(`- Allowed failures: ${summary.allowedFailures}`);
 	lines.push(`- Quarantined/skipped: ${summary.quarantined}`);
 	lines.push(`- Screenshot generators excluded: ${summary.excludedScreenshotGenerators}`);
+	lines.push(`- Opt-in tests excluded: ${summary.excludedOptInTests}`);
 	lines.push(`- Profile residue failures: ${summary.profileResidueFailures}`);
 	lines.push('');
 
@@ -729,7 +752,7 @@ function shouldFailSuite(summary) {
 	return summary.failed > 0 || summary.quarantinePolicyErrors.length > 0 || summary.profileResidueFailures > 0;
 }
 
-function printCaseList(cases, excludedScreenshotGenerators) {
+function printCaseList(cases, excludedScreenshotGenerators, excludedOptInTests) {
 	console.log(`Selected ${cases.length} E2E tests.`);
 	for (const testCase of cases) {
 		const quarantine = testCase.quarantine ? ` quarantined:${testCase.quarantine.mode}` : '';
@@ -737,6 +760,9 @@ function printCaseList(cases, excludedScreenshotGenerators) {
 	}
 	if (excludedScreenshotGenerators.length > 0) {
 		console.log(`Excluded ${excludedScreenshotGenerators.length} screenshot generators. Use --include-screenshot-generators to run them.`);
+	}
+	if (excludedOptInTests.length > 0) {
+		console.log(`Excluded ${excludedOptInTests.length} opt-in tests. Use --include-opt-in-tests to run them.`);
 	}
 }
 
@@ -760,11 +786,11 @@ function main() {
 	mkdirSync(suiteOutputDir, { recursive: true });
 
 	const quarantine = loadQuarantine(options);
-	const { cases, excludedScreenshotGenerators } = discoverCases(options, quarantine.entries);
+	const { cases, excludedScreenshotGenerators, excludedOptInTests } = discoverCases(options, quarantine.entries);
 	const profileResidueRecords = [];
 	const runRecords = [];
 
-	printCaseList(cases, excludedScreenshotGenerators);
+	printCaseList(cases, excludedScreenshotGenerators, excludedOptInTests);
 
 	const namedProfiles = unique(cases.map(testCase => testCase.profile).filter(profile => profile !== 'default'));
 	for (const profile of namedProfiles) {
@@ -788,6 +814,7 @@ function main() {
 			options,
 			cases,
 			excludedScreenshotGenerators,
+			excludedOptInTests,
 			runRecords,
 			quarantineErrors: quarantine.validationErrors,
 			profileResidueRecords,
@@ -809,6 +836,7 @@ function main() {
 			options,
 			cases,
 			excludedScreenshotGenerators,
+			excludedOptInTests,
 			runRecords,
 			quarantineErrors: quarantine.validationErrors,
 			profileResidueRecords,
@@ -827,6 +855,7 @@ function main() {
 			options,
 			cases,
 			excludedScreenshotGenerators,
+			excludedOptInTests,
 			runRecords,
 			quarantineErrors: quarantine.validationErrors,
 			profileResidueRecords,
@@ -910,6 +939,7 @@ function main() {
 		options,
 		cases,
 		excludedScreenshotGenerators,
+		excludedOptInTests,
 		runRecords,
 		quarantineErrors: quarantine.validationErrors,
 		profileResidueRecords,

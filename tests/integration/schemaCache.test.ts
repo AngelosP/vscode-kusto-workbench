@@ -22,7 +22,10 @@ suite('readAllCachedSchemasFromDisk', () => {
 	});
 
 	function writeCacheFile(fileName: string, content: object): void {
-		fs.writeFileSync(path.join(cacheDir, fileName), JSON.stringify(content), 'utf8');
+		const stored = Object.prototype.hasOwnProperty.call(content, 'schema')
+			? { connectionId: 'test-connection', accountPartition: 'test-partition', ...content }
+			: content;
+		fs.writeFileSync(path.join(cacheDir, fileName), JSON.stringify(stored), 'utf8');
 	}
 
 	test('returns schemas from cache files that include clusterUrl and database', async () => {
@@ -229,6 +232,8 @@ suite('searchCachedSchemas', () => {
 			},
 			timestamp: Date.now(),
 			version: SCHEMA_CACHE_VERSION,
+			connectionId: 'test-connection',
+			accountPartition: 'test-partition',
 			...overrides
 		};
 	}
@@ -655,7 +660,7 @@ suite('writeCachedSchemaToDisk', () => {
 		fs.rmSync(tmpDir, { recursive: true, force: true });
 	});
 
-	test('enriches entry with clusterUrl and database from cacheKey', async () => {
+	test('rejects writes without explicit principal and origin metadata', async () => {
 		const entry: CachedSchemaEntry = {
 			schema: {
 				tables: ['T1'],
@@ -665,17 +670,14 @@ suite('writeCachedSchemaToDisk', () => {
 			version: SCHEMA_CACHE_VERSION
 		};
 		const cacheKey = 'https://cluster.kusto.windows.net|Samples';
-		await writeCachedSchemaToDisk(globalStorageUri, cacheKey, entry);
-
-		// Read back the file and verify clusterUrl and database were added
-		const files = fs.readdirSync(cacheDir).filter(f => f.endsWith('.json'));
-		assert.strictEqual(files.length, 1);
-		const content = JSON.parse(fs.readFileSync(path.join(cacheDir, files[0]), 'utf8'));
-		assert.strictEqual(content.clusterUrl, 'https://cluster.kusto.windows.net');
-		assert.strictEqual(content.database, 'Samples');
+		await assert.rejects(
+			writeCachedSchemaToDisk(globalStorageUri, cacheKey, entry),
+			/require version 5 connection and account identity metadata/,
+		);
+		assert.ok(!fs.existsSync(cacheDir) || fs.readdirSync(cacheDir).length === 0, 'Invalid schema write must not create cache files');
 	});
 
-	test('does not overwrite explicit clusterUrl and database on entry', async () => {
+	test('preserves explicit connection, account, cluster, and database metadata', async () => {
 		const entry: CachedSchemaEntry = {
 			schema: {
 				tables: ['T1'],
@@ -684,9 +686,11 @@ suite('writeCachedSchemaToDisk', () => {
 			timestamp: Date.now(),
 			version: SCHEMA_CACHE_VERSION,
 			clusterUrl: 'https://explicit.kusto.windows.net',
-			database: 'ExplicitDB'
+			database: 'ExplicitDB',
+			connectionId: 'conn-explicit',
+			accountPartition: 'partition-explicit',
 		};
-		const cacheKey = 'https://other.kusto.windows.net|OtherDB';
+		const cacheKey = schemaCacheKey(entry.clusterUrl, entry.database, entry.connectionId, entry.accountPartition);
 		await writeCachedSchemaToDisk(globalStorageUri, cacheKey, entry);
 
 		const files = fs.readdirSync(cacheDir).filter(f => f.endsWith('.json'));
@@ -694,6 +698,8 @@ suite('writeCachedSchemaToDisk', () => {
 		const content = JSON.parse(fs.readFileSync(path.join(cacheDir, files[0]), 'utf8'));
 		assert.strictEqual(content.clusterUrl, 'https://explicit.kusto.windows.net');
 		assert.strictEqual(content.database, 'ExplicitDB');
+		assert.strictEqual(content.connectionId, 'conn-explicit');
+		assert.strictEqual(content.accountPartition, 'partition-explicit');
 	});
 
 	test('written schemas are searchable via searchCachedSchemas', async () => {
@@ -703,9 +709,13 @@ suite('writeCachedSchemaToDisk', () => {
 				columnTypesByTable: { DeviceEvents: { DeviceId: 'string', SKU: 'string', Region: 'string' } }
 			},
 			timestamp: Date.now(),
-			version: SCHEMA_CACHE_VERSION
+			version: SCHEMA_CACHE_VERSION,
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			database: 'Samples',
+			connectionId: 'conn-search',
+			accountPartition: 'partition-search',
 		};
-		const cacheKey = schemaCacheKey('https://cluster.kusto.windows.net', 'Samples');
+		const cacheKey = schemaCacheKey(entry.clusterUrl, entry.database, entry.connectionId, entry.accountPartition);
 		await writeCachedSchemaToDisk(globalStorageUri, cacheKey, entry);
 
 		const results = await searchCachedSchemas(globalStorageUri, 'deviceid|sku|region');
@@ -716,7 +726,7 @@ suite('writeCachedSchemaToDisk', () => {
 		assert.ok(names.includes('Region'));
 	});
 
-	test('reads canonical cache first and falls back to legacy raw cache key', async () => {
+	test('reads only the exact principal cache and ignores a legacy raw cache key', async () => {
 		const entry: CachedSchemaEntry = {
 			schema: {
 				tables: ['LegacyEvents'],
@@ -725,11 +735,23 @@ suite('writeCachedSchemaToDisk', () => {
 			timestamp: Date.now(),
 			version: SCHEMA_CACHE_VERSION,
 			clusterUrl: 'https://legacy.kusto.windows.net',
-			database: 'Samples'
+			database: 'Samples',
+			connectionId: 'conn-legacy',
+			accountPartition: 'partition-current',
 		};
 		await writeCachedSchemaToDisk(globalStorageUri, 'https://legacy.kusto.windows.net|Samples', entry);
+		assert.strictEqual(
+			await readCachedSchemaFromDiskByCluster(globalStorageUri, 'legacy', 'Samples', 'conn-legacy', 'partition-current'),
+			undefined,
+		);
 
-		const cached = await readCachedSchemaFromDiskByCluster(globalStorageUri, 'legacy', 'Samples');
+		const cacheKey = schemaCacheKey(entry.clusterUrl, entry.database, entry.connectionId, entry.accountPartition);
+		await writeCachedSchemaToDisk(globalStorageUri, cacheKey, entry);
+		const cached = await readCachedSchemaFromDiskByCluster(globalStorageUri, 'legacy', 'Samples', 'conn-legacy', 'partition-current');
 		assert.ok(cached?.schema?.tables.includes('LegacyEvents'));
+		assert.strictEqual(
+			await readCachedSchemaFromDiskByCluster(globalStorageUri, 'legacy', 'Samples', 'conn-legacy', 'partition-other'),
+			undefined,
+		);
 	});
 });

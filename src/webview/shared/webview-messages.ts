@@ -91,7 +91,7 @@ export type OutgoingFetchControlCommandSyntaxMessage = {
 
 export type OutgoingImportConnectionsFromXmlMessage = {
 	type: 'importConnectionsFromXml';
-	connections: Array<{ name: string; clusterUrl: string; database?: string }>;
+	connections: Array<{ name: string; clusterUrl: string; database?: string; authorityId?: string }>;
 	boxId?: string;
 };
 
@@ -152,16 +152,16 @@ export type OutgoingWebviewMessage =
 	| { type: 'refreshDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string }
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }
 	| { type: 'promptAddConnection'; boxId?: string }
-	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; boxId?: string }
-	| { type: 'testKustoConnection'; name?: string; clusterUrl: string; database?: string; boxId?: string }
+	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }
+	| { type: 'testKustoConnection'; name?: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }
 	| { type: 'promptImportConnectionsXml'; boxId?: string }
 	| { type: 'addConnectionsForClusters'; clusterUrls: string[]; boxId?: string }
 	| OutgoingImportConnectionsFromXmlMessage
 
 	// Favorites
-	| { type: 'requestAddFavorite'; clusterUrl: string; database: string; defaultName?: string; boxId?: string }
-	| { type: 'removeFavorite'; clusterUrl: string; database: string; boxId?: string }
-	| { type: 'confirmRemoveFavorite'; requestId: string; label?: string; clusterUrl: string; database: string; boxId?: string }
+	| { type: 'requestAddFavorite'; connectionId: string; clusterUrl: string; database: string; defaultName?: string; boxId?: string }
+	| { type: 'removeFavorite'; connectionId: string; clusterUrl: string; database: string; boxId?: string }
+	| { type: 'confirmRemoveFavorite'; requestId: string; label?: string; connectionId: string; clusterUrl: string; database: string; boxId?: string }
 
 	// SQL favorites
 	| { type: 'requestAddSqlFavorite'; connectionId: string; database: string; defaultName?: string; boxId?: string }
