@@ -29,7 +29,11 @@ import {
 	schemaFetchInFlightByBoxId,
 	sqlFavoritesModeByBoxId,
 	queryExecutionTimers,
+	sqlLeaveNoTraceConnectionIds,
+	sqlConnections,
+	optimizationMetadataByBoxId,
 } from './state';
+import { sqlConnectionTargetSignatureMatches } from '../../shared/sqlConnectionIdentity.js';
 import { addChartBox, removeChartBox, chartBoxes } from '../sections/kw-chart-section';
 import { addTransformationBox, removeTransformationBox, transformationBoxes } from '../sections/kw-transformation-section';
 import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } from '../sections/kw-markdown-section';
@@ -50,6 +54,7 @@ const _win = window;
 // - debounced write-through: postMessage({type:'persistDocument'})
 
 let __kustoPersistenceEnabled = false;
+let __kustoPersistenceSuppressedForTest = false;
 let __kustoPersistTimer: any = null;
 let __kustoDocumentDataApplyCount = 0;
 let __kustoHasAppliedDocument = false;
@@ -69,9 +74,20 @@ type DeferredRestoredResultJob = {
 	kind: 'query' | 'sql';
 	resultsHeightPx?: number;
 	initialResultsRevision: number;
+	sqlOwnerConnectionId?: string;
 };
 
 let __kustoDeferredRestoredResultJobs: DeferredRestoredResultJob[] = [];
+type PendingSqlOwnedRestore = {
+	generation: number;
+	documentUri: string;
+	boxId: string;
+	resultJson: string;
+	kind: 'query' | 'sql';
+	resultsHeightPx?: number;
+	persistedOwner: { connectionIdHint?: unknown; targetSignature?: unknown; principalFingerprint?: unknown; revocationGeneration?: unknown; sourceBoxId?: unknown };
+};
+let __kustoPendingSqlOwnedRestores: PendingSqlOwnedRestore[] = [];
 let __kustoLegacyDocumentPreferences: {
 	caretDocsEnabled?: boolean;
 	autoTriggerAutocompleteEnabled?: boolean;
@@ -270,8 +286,74 @@ function __kustoSetDocumentLoading(loading: boolean, text?: string): void {
 function __kustoStartRestoreResultBatch(): number {
 	__kustoRestoreResultGeneration++;
 	__kustoDeferredRestoredResultJobs = [];
+	__kustoPendingSqlOwnedRestores = [];
 	__kustoDeferredRestoredResultScheduled = false;
 	return __kustoRestoreResultGeneration;
+}
+
+function __kustoSqlOwnerMatchesPersisted(element: any, persistedSection: any): boolean {
+	const expectedConnectionId = String(persistedSection?.connectionIdHint || '').trim();
+	const expectedTargetSignature = String(persistedSection?.targetSignature || '');
+	if (!expectedConnectionId || !expectedTargetSignature) return false;
+	const currentConnectionId = String(element?.getConnectionId?.() || element?.getSqlConnectionId?.() || '').trim();
+	if (!currentConnectionId || currentConnectionId !== expectedConnectionId) return false;
+	const currentConnection = sqlConnections.find(connection => String(connection?.id || '') === currentConnectionId);
+	if (!currentConnection || !sqlConnectionTargetSignatureMatches(currentConnection, expectedTargetSignature)) return false;
+	const expectedPrincipalFingerprint = String(persistedSection?.principalFingerprint || '').trim();
+	const currentPrincipalFingerprint = String(currentConnection.principalFingerprint || '').trim();
+	const expectedRevocationGeneration = Number(persistedSection?.revocationGeneration ?? 0);
+	const currentRevocationGeneration = Number(currentConnection.revocationGeneration ?? 0);
+	if (!Number.isSafeInteger(expectedRevocationGeneration)
+		|| expectedRevocationGeneration < 0
+		|| expectedRevocationGeneration !== currentRevocationGeneration) return false;
+	const authType = String(currentConnection.authType || '').trim().toLowerCase();
+	if (authType === 'aad') return !!expectedPrincipalFingerprint && expectedPrincipalFingerprint === currentPrincipalFingerprint;
+	return !expectedPrincipalFingerprint || expectedPrincipalFingerprint === currentPrincipalFingerprint;
+}
+
+function __kustoQueuePendingSqlOwnedRestore(job: Omit<PendingSqlOwnedRestore, 'generation' | 'documentUri'>): void {
+	const connectionIdHint = String(job.persistedOwner?.connectionIdHint || '').trim();
+	const targetSignature = String(job.persistedOwner?.targetSignature || '');
+	if (!job.boxId || !job.resultJson || !connectionIdHint || !targetSignature) return;
+	__kustoPendingSqlOwnedRestores.push({
+		...job,
+		generation: __kustoRestoreResultGeneration,
+		documentUri: String(pState.documentUri || ''),
+	});
+}
+
+export function resolvePendingSqlResultRestores(): void {
+	const pending = __kustoPendingSqlOwnedRestores;
+	__kustoPendingSqlOwnedRestores = [];
+	for (const job of pending) {
+		if (job.generation !== __kustoRestoreResultGeneration || job.documentUri !== String(pState.documentUri || '')) continue;
+		const ownerElement = job.kind === 'sql'
+			? __kustoGetSqlSectionElement(job.boxId)
+			: __kustoGetSqlSectionElement(String((job.persistedOwner as any).sourceBoxId || ''));
+		if (!__kustoSqlOwnerMatchesPersisted(ownerElement, job.persistedOwner)) continue;
+		if (typeof ownerElement?.canPersistResults === 'function' && !ownerElement.canPersistResults()) continue;
+		__kustoSetStoredQueryResultJson(job.boxId, job.resultJson);
+		__kustoQueueRestoredResult({
+			kind: job.kind,
+			boxId: job.boxId,
+			resultJson: job.resultJson,
+			resultsHeightPx: job.resultsHeightPx,
+			sqlOwnerConnectionId: String(job.persistedOwner.connectionIdHint || '').trim(),
+		});
+	}
+	__kustoScheduleDeferredRestoredResults();
+}
+
+export function discardPendingSqlResultRestores(protectedConnectionIds: readonly string[]): void {
+	const protectedIds = new Set(protectedConnectionIds.map(id => String(id || '').trim()).filter(Boolean));
+	__kustoPendingSqlOwnedRestores = __kustoPendingSqlOwnedRestores.filter(job => {
+		const connectionId = String(job.persistedOwner.connectionIdHint || '').trim();
+		return !!connectionId && !protectedIds.has(connectionId);
+	});
+	__kustoDeferredRestoredResultJobs = __kustoDeferredRestoredResultJobs.filter(job => {
+		if (!job.sqlOwnerConnectionId) return job.kind === 'query';
+		return !protectedIds.has(job.sqlOwnerConnectionId);
+	});
 }
 
 function __kustoQueueRestoredResult(job: Omit<DeferredRestoredResultJob, 'generation' | 'documentUri' | 'initialResultsRevision'>): void {
@@ -279,6 +361,10 @@ function __kustoQueueRestoredResult(job: Omit<DeferredRestoredResultJob, 'genera
 		const boxId = String(job.boxId || '');
 		const resultJson = String(job.resultJson || '');
 		if (!boxId || !resultJson) return;
+		if (job.kind === 'sql') {
+			const section = __kustoGetSqlSectionElement(boxId);
+			if (typeof section?.canPersistResults === 'function' && !section.canPersistResults()) return;
+		}
 		__kustoDeferredRestoredResultJobs.push({
 			...job,
 			boxId,
@@ -303,6 +389,7 @@ function __kustoIsDeferredResultJobCurrent(job: DeferredRestoredResultJob): bool
 			if (queryExecutionTimers?.[job.boxId]) return false;
 			return job.boxId.startsWith('query_') || tag === 'kw-query-section';
 		}
+		if (typeof (sectionEl as any).canPersistResults === 'function' && !(sectionEl as any).canPersistResults()) return false;
 		if ((sectionEl as any)._executing === true || (sectionEl as HTMLElement).dataset?.testExecuting === 'true') return false;
 		return job.boxId.startsWith('sql_') || tag === 'kw-sql-section';
 	} catch {
@@ -352,7 +439,6 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 				__kustoSetQueryResultsOutputHeightPx(job.boxId, job.resultsHeightPx);
 			} catch (e) { console.error('[kusto]', e); }
 		}
-		__kustoSeedPersistSignatureFromCurrentState();
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -519,19 +605,14 @@ export function __kustoRequestAddSection(kind: any, afterBoxId?: string) {
 						state = getKqlxState();
 					}
 				} catch (e) { console.error('[kusto]', e); }
-				// Best-effort immediate persist so the extension has the latest state even if it
-				// doesn't look at the upgrade payload (or if ordering differs).
-				try {
-					if (state) {
-						postMessageToHost({ type: 'persistDocument', state, reason: 'upgrade' });
-					}
-				} catch (e) { console.error('[kusto]', e); }
+				try { schedulePersist('upgrade', true); } catch (e) { console.error('[kusto]', e); }
+				const editRevision = pState.documentEditRevision;
 				if (pState.upgradeRequestType === 'requestUpgradeToMdx') {
-					postMessageToHost({ type: 'requestUpgradeToMdx', addKind: k, state });
+					postMessageToHost({ type: 'requestUpgradeToMdx', addKind: k, state, editRevision });
 				} else if (pState.upgradeRequestType === 'requestUpgradeToSqlx') {
-					postMessageToHost({ type: 'requestUpgradeToSqlx', addKind: k, state });
+					postMessageToHost({ type: 'requestUpgradeToSqlx', addKind: k, state, editRevision });
 				} else {
-					postMessageToHost({ type: 'requestUpgradeToKqlx', addKind: k, state });
+					postMessageToHost({ type: 'requestUpgradeToKqlx', addKind: k, state, editRevision });
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			return;
@@ -686,6 +767,15 @@ function __kustoGetPersistSignature(state: any) {
 export function __kustoTryStoreQueryResult(boxId: any, result: any) {
 	try {
 		if (!boxId) return;
+		const id = String(boxId || '');
+		const section = (document.getElementById(id)
+			|| Array.from(document.querySelectorAll('kw-sql-section')).find(element =>
+				String((element as any).boxId || element.getAttribute('box-id') || '') === id
+			)) as any;
+		if (typeof section?.canPersistResults === 'function' && !section.canPersistResults()) {
+			__kustoDeleteStoredQueryResultJson(boxId);
+			return;
+		}
 		const { json } = trySerializeQueryResult(result, __kustoMaxPersistedResultBytes, __kustoMaxPersistedResultRowsHardCap);
 		if (json) {
 			__kustoSetStoredQueryResultJson(boxId, json);
@@ -1021,6 +1111,12 @@ export function getKqlxState() {
 }
 
 let __kustoLastPersistSignature = '';
+let __kustoLastPersistRevision = 0;
+let __kustoLastSentPersistSignature = '';
+let __kustoLastSentPersistRevision = 0;
+let __kustoPersistSnapshotSequence = 0;
+const __kustoPendingPersistSnapshots = new Map<string, { signature: string; revision: number }>();
+const MAX_PENDING_PERSIST_SNAPSHOTS = 32;
 // In compatibility mode (no sidecar), only the query text is saved to disk.
 // Track the last query text separately so cluster/database-only changes don't
 // trigger unnecessary persistDocument messages that would dirty the file.
@@ -1035,19 +1131,76 @@ function __kustoSeedPersistSignatureFromCurrentState(): void {
 		const sig = __kustoGetPersistSignature(getKqlxState());
 		if (sig) {
 			__kustoLastPersistSignature = sig;
+			__kustoLastPersistRevision = pState.documentEditRevision;
+			__kustoLastSentPersistSignature = sig;
+			__kustoLastSentPersistRevision = pState.documentEditRevision;
 		}
+		__kustoPendingPersistSnapshots.clear();
 	} catch (e) { console.error('[kusto]', e); }
 }
 
+function trackPendingPersistSnapshot(snapshotId: string, signature: string, revision: number): void {
+	__kustoPendingPersistSnapshots.set(snapshotId, { signature, revision });
+	while (__kustoPendingPersistSnapshots.size > MAX_PENDING_PERSIST_SNAPSHOTS) {
+		const oldest = __kustoPendingPersistSnapshots.keys().next().value;
+		if (typeof oldest !== 'string') break;
+		__kustoPendingPersistSnapshots.delete(oldest);
+	}
+}
+
+function preparePersistRevision(signature: string): number {
+	if (signature !== __kustoLastSentPersistSignature
+		|| __kustoLastSentPersistRevision !== pState.documentEditRevision) {
+		pState.documentEditRevision += 1;
+		__kustoLastSentPersistSignature = signature;
+		__kustoLastSentPersistRevision = pState.documentEditRevision;
+	}
+	return pState.documentEditRevision;
+}
+
+export function adoptCurrentStateAsCleanForTest(): void {
+	__kustoSeedPersistSignatureFromCurrentState();
+}
+
+export function suppressPersistenceForTest(suppressed = true): void {
+	__kustoPersistenceSuppressedForTest = suppressed;
+	if (suppressed && __kustoPersistTimer) {
+		clearTimeout(__kustoPersistTimer);
+		__kustoPersistTimer = null;
+	}
+}
+
+export function isPersistenceSuppressedForTest(): boolean {
+	return __kustoPersistenceSuppressedForTest;
+}
+
 export function schedulePersist(reason?: any, immediate?: any) {
-	if (!__kustoPersistenceEnabled || pState.restoreInProgress) {
+	if (!__kustoPersistenceEnabled || __kustoPersistenceSuppressedForTest || pState.restoreInProgress) {
 		return;
 	}
 	try {
+		const tracksEditRevision = pState.documentKind === 'kql' || pState.documentKind === 'sql';
 		if (__kustoPersistTimer) {
 			clearTimeout(__kustoPersistTimer);
+			__kustoPersistTimer = null;
 		}
 		const r = (typeof reason === 'string' && reason) ? reason : '';
+		if (tracksEditRevision) {
+			const state = getKqlxState();
+			const sig = __kustoGetPersistSignature(state);
+			if (sig && sig === __kustoLastPersistSignature
+				&& __kustoLastPersistRevision === pState.documentEditRevision) {
+				return;
+			}
+			const editRevision = preparePersistRevision(sig);
+			const snapshotId = `compat-snapshot-${Date.now()}-${++__kustoPersistSnapshotSequence}`;
+			trackPendingPersistSnapshot(snapshotId, sig, editRevision);
+			postMessageToHost({
+				type: 'persistDocument', state, reason: r,
+				editRevision, snapshotId,
+			});
+			return;
+		}
 		const doPersist = () => {
 			try {
 				const state = getKqlxState();
@@ -1094,7 +1247,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 				if (sig) {
 					__kustoLastPersistSignature = sig;
 				}
-				postMessageToHost({ type: 'persistDocument', state, reason: r });
+				postMessageToHost({ type: 'persistDocument', state, reason: r, editRevision: pState.documentEditRevision });
 			} catch (e) { console.error('[kusto]', e); }
 		};
 		if (immediate) {
@@ -1106,13 +1259,66 @@ export function schedulePersist(reason?: any, immediate?: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
+export function flushCompatibilityPersist(requestId?: string, reason = 'flush'): void {
+	try {
+		if (!__kustoPersistenceEnabled || pState.restoreInProgress
+			|| (pState.documentKind !== 'kql' && pState.documentKind !== 'sql')) return;
+		if (__kustoPersistTimer) {
+			clearTimeout(__kustoPersistTimer);
+			__kustoPersistTimer = null;
+		}
+		const state = getKqlxState();
+		if (__kustoPersistenceSuppressedForTest) {
+			const snapshotId = `compat-snapshot-${Date.now()}-${++__kustoPersistSnapshotSequence}`;
+			const sig = __kustoGetPersistSignature(state);
+			trackPendingPersistSnapshot(snapshotId, sig, pState.documentEditRevision);
+			postMessageToHost({
+				type: 'persistDocument', state, flush: true, reason,
+				editRevision: pState.documentEditRevision, snapshotId,
+				...(requestId ? { flushRequestId: requestId } : {}),
+				testOnlyNoop: true,
+			});
+			return;
+		}
+		const sig = __kustoGetPersistSignature(state);
+		const editRevision = preparePersistRevision(sig);
+		const snapshotId = `compat-snapshot-${Date.now()}-${++__kustoPersistSnapshotSequence}`;
+		trackPendingPersistSnapshot(snapshotId, sig, editRevision);
+		postMessageToHost({
+			type: 'persistDocument', state, flush: true, reason,
+			editRevision, snapshotId,
+			...(requestId ? { flushRequestId: requestId } : {}),
+		});
+	} catch (e) { console.error('[kusto]', e); }
+}
+
+export function acknowledgePersistDocument(snapshotId: unknown, editRevision: unknown): void {
+	const id = String(snapshotId || '').trim();
+	if (!id) return;
+	const pending = __kustoPendingPersistSnapshots.get(id);
+	if (!pending) return;
+	const revision = Number(editRevision);
+	if (!Number.isSafeInteger(revision) || revision !== pending.revision) return;
+	__kustoPendingPersistSnapshots.delete(id);
+	if (revision < __kustoLastPersistRevision) return;
+	__kustoLastPersistSignature = pending.signature;
+	__kustoLastPersistRevision = revision;
+	for (const [pendingId, snapshot] of __kustoPendingPersistSnapshots) {
+		if (snapshot.revision <= revision) __kustoPendingPersistSnapshots.delete(pendingId);
+	}
+}
+
 // Best-effort flush: when the user closes the editor, try to persist the latest state immediately.
 // (The extension decides whether to actually auto-save to disk; for session.kqlx it does.)
 try {
 	window.addEventListener('beforeunload', () => {
 		try {
 			__kustoCancelHtmlPowerBiCompatibilityCheck();
-			if (!__kustoPersistenceEnabled || pState.restoreInProgress) {
+			if (!__kustoPersistenceEnabled || __kustoPersistenceSuppressedForTest || pState.restoreInProgress) {
+				return;
+			}
+			if (pState.documentKind === 'kql' || pState.documentKind === 'sql') {
+				flushCompatibilityPersist(undefined, 'beforeunload');
 				return;
 			}
 			if (!pState.isSessionFile) {
@@ -1126,7 +1332,7 @@ try {
 			if (sig) {
 				__kustoLastPersistSignature = sig;
 			}
-			postMessageToHost({ type: 'persistDocument', state, flush: true, reason: 'flush' });
+			postMessageToHost({ type: 'persistDocument', state, flush: true, reason: 'flush', editRevision: pState.documentEditRevision });
 		} catch (e) { console.error('[kusto]', e); }
 	});
 } catch (e) { console.error('[kusto]', e); }
@@ -1331,14 +1537,31 @@ function applyKqlxState(state: any) {
 			}
 			if (t === 'query' || t === 'copilotQuery') {
 				const isLegacyCopilotQuerySection = t === 'copilotQuery';
+				const comparisonSourceBoxId = String(section.comparisonSourceBoxId || '').trim();
+				const comparisonSource = comparisonSourceBoxId ? sections.find((candidate: any) =>
+					String(candidate?.id || '').trim() === comparisonSourceBoxId
+				) : undefined;
+				const comparisonSourceExists = !!comparisonSource;
+				if (comparisonSourceBoxId && !comparisonSourceExists) {
+					delete optimizationMetadataByBoxId[String(section.id || '')];
+					continue;
+				}
 				const boxId = addQueryBox({
 					id: (section.id ? String(section.id) : undefined),
+					...(comparisonSourceBoxId ? { isComparison: true } : {}),
 					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true,
 					clusterUrl: String(section.clusterUrl || ''),
 					authorityId: String(section.authorityId || ''),
 					connectionIdHint: String(section.connectionIdHint || ''),
 					database: String(section.database || '')
 				});
+				if (comparisonSourceExists) {
+					optimizationMetadataByBoxId[boxId] = { sourceBoxId: comparisonSourceBoxId, isComparison: true };
+					optimizationMetadataByBoxId[comparisonSourceBoxId] = {
+						...(optimizationMetadataByBoxId[comparisonSourceBoxId] || {}),
+						comparisonBoxId: boxId,
+					};
+				}
 				try {
 					__kustoSetSectionName(boxId, String(section.name || ''));
 				} catch (e) { console.error('[kusto]', e); }
@@ -1409,11 +1632,32 @@ function applyKqlxState(state: any) {
 				} catch (e) { console.error('[kusto]', e); }
 				// Restore last result (if present + parseable).
 				try {
-					const rj = section.resultJson ? String(section.resultJson) : '';
+					const legacySqlComparison = !comparisonSourceBoxId && String(section.connectionIdHint || '').trim().startsWith('sql_');
+					const sqlComparisonSource = String(comparisonSource?.type || '') === 'sql';
+					const sourceSqlElement = sqlComparisonSource ? __kustoGetSqlSectionElement(comparisonSourceBoxId) : null;
+					const sourceOwnerResolved = !sqlComparisonSource || __kustoSqlOwnerMatchesPersisted(sourceSqlElement, comparisonSource);
+					const rj = (comparisonSourceBoxId && (!comparisonSourceExists || !sourceOwnerResolved)) || legacySqlComparison
+						? ''
+						: (section.resultJson ? String(section.resultJson) : '');
+					if (sqlComparisonSource && !sourceOwnerResolved && sqlConnections.length === 0 && section.resultJson) {
+						__kustoQueuePendingSqlOwnedRestore({
+							kind: 'query', boxId, resultJson: String(section.resultJson), resultsHeightPx: section.resultsHeightPx,
+							persistedOwner: {
+								connectionIdHint: comparisonSource.connectionIdHint,
+								targetSignature: comparisonSource.targetSignature,
+								principalFingerprint: comparisonSource.principalFingerprint,
+								revocationGeneration: comparisonSource.revocationGeneration,
+								sourceBoxId: comparisonSourceBoxId,
+							},
+						});
+					}
 					if (rj) {
 						// Keep in-memory cache aligned with restored boxes.
 						__kustoSetStoredQueryResultJson(boxId, rj);
-						__kustoQueueRestoredResult({ kind: 'query', boxId, resultJson: rj, resultsHeightPx: section.resultsHeightPx });
+						__kustoQueueRestoredResult({
+							kind: 'query', boxId, resultJson: rj, resultsHeightPx: section.resultsHeightPx,
+							...(sqlComparisonSource ? { sqlOwnerConnectionId: String(comparisonSource.connectionIdHint || '').trim() } : {}),
+						});
 					}
 				} catch (e) { console.error('[kusto]', e); }
 				try {
@@ -1694,12 +1938,18 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					id: pendingId,
 					name: String(section.name || ''),
 					serverUrl: section.serverUrl ? String(section.serverUrl) : undefined,
+					connectionIdHint: section.connectionIdHint ? String(section.connectionIdHint) : undefined,
+					targetSignature: section.targetSignature ? String(section.targetSignature) : undefined,
 					database: section.database ? String(section.database) : undefined,
 					expanded: (typeof section.expanded === 'boolean') ? section.expanded : true,
 					editorHeightPx: section.editorHeightPx,
 					copilotChatVisible: section.copilotChatVisible,
 					copilotChatWidthPx: section.copilotChatWidthPx,
 				});
+				const restoredSqlEl = __kustoGetSqlSectionElement(pendingId);
+				if (typeof restoredSqlEl?.setLeaveNoTraceConnectionIds === 'function') {
+					restoredSqlEl.setLeaveNoTraceConnectionIds(sqlLeaveNoTraceConnectionIds);
+				}
 				// Restore run mode.
 				try {
 					setRunMode(pendingId, String(section.runMode || 'top100'));
@@ -1719,13 +1969,26 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 				// Restore persisted query results.
 				try {
 					const rj = section.resultJson ? String(section.resultJson) : '';
-					if (rj) {
+					if (rj
+						&& __kustoSqlOwnerMatchesPersisted(restoredSqlEl, section)
+						&& (typeof restoredSqlEl?.canPersistResults !== 'function' || restoredSqlEl.canPersistResults())) {
 						__kustoSetStoredQueryResultJson(pendingId, rj);
 						__kustoQueueRestoredResult({
 							kind: 'sql',
 							boxId: pendingId,
 							resultJson: rj,
 							resultsHeightPx: section.resultsHeightPx,
+							sqlOwnerConnectionId: String(section.connectionIdHint || '').trim(),
+						});
+					} else if (rj && sqlConnections.length === 0) {
+						__kustoQueuePendingSqlOwnedRestore({
+							kind: 'sql', boxId: pendingId, resultJson: rj, resultsHeightPx: section.resultsHeightPx,
+							persistedOwner: {
+								connectionIdHint: section.connectionIdHint,
+								targetSignature: section.targetSignature,
+								principalFingerprint: section.principalFingerprint,
+								revocationGeneration: section.revocationGeneration,
+							},
 						});
 					}
 				} catch (e) { console.error('[kusto]', e); }
@@ -1805,7 +2068,12 @@ export function handleDocumentDataMessage(message: any) {
 			return;
 		}
 	} catch (e) { console.error('[kusto]', e); }
+	const incomingEditRevision = Number(message?.editRevision);
+	if (Number.isSafeInteger(incomingEditRevision) && incomingEditRevision >= 0) {
+		pState.documentEditRevision = incomingEditRevision;
+	}
 	__kustoSetDocumentLoading(true, 'Opening notebook...');
+	suppressPersistenceForTest(message?.suppressPersistenceForTest === true);
 	__kustoCancelHtmlPowerBiCompatibilityCheck();
 	__kustoHasAppliedDocument = true;
 	try {

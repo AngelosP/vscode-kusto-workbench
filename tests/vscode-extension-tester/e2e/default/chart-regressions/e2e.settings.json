@@ -1,0 +1,5 @@
+{
+  "env": {
+    "KUSTO_WORKBENCH_E2E_SUPPRESS_PERSISTENCE": "1"
+  }
+}

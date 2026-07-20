@@ -91,6 +91,8 @@ The suite summaries record the VS Code version requested for the run. Scheduled 
 
 Tests can include an `e2e.settings.json` file next to their `.feature` file with a `workspaceSettings` object. The suite runner creates an isolated workspace under that run's history folder, writes those settings to `.vscode/settings.json`, and launches VS Code with that workspace for the test. Use this for deterministic feature flags or network-sensitive settings that should be expressed through normal VS Code configuration rather than through UI editing.
 
+The same file may include an `env` object whose values are non-secret strings passed only to that test's launched VS Code process. Do not put credentials, tokens, or other secrets in tracked E2E settings.
+
 After any failure, inspect in this order:
 
 1. `tests/vscode-extension-tester/history/latest-summary.md`
@@ -130,7 +132,9 @@ Triage rules:
 
 Named profiles keep authentication state under `tests/vscode-extension-tester/profiles/`, which is gitignored. They must not keep restored editor/workspace state between tests.
 
-The orchestrator checks each named profile's `user-data/User/workspaceStorage` and allows only the controller workspace `ext-dev`. Any other entry is profile residue because it can make `Given the extension is in a clean state` hang on `workbench.action.closeAllEditors`.
+The reusable `default` profile follows the same workspace-residue rule when it exists locally. Ordinary suite cases also set `KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH=1`, which settles stale development-only onboarding state before commands run. The `first-launch-setup` test is explicitly excluded so it continues to exercise the real onboarding flow.
+
+The orchestrator checks each reusable profile's `user-data/User/workspaceStorage` and allows only the controller workspace `ext-dev`. When a test uses a generated per-test workspace, its matching workspaceStorage entry is moved into that run's managed artifact backup before the generic residue check. Any other entry is profile residue because it can make `Given the extension is in a clean state` hang on `workbench.action.closeAllEditors`.
 
 Use `--repair-profile-residue` to move residue into the current history artifact folder without deleting auth state. Do not delete `globalStorage`, `Local Storage`, or SecretStorage when cleaning profiles.
 

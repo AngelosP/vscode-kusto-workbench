@@ -31,6 +31,7 @@ vi.mock('../../src/webview/shared/chart-renderer.js', () => {
 	return {
 		maximizeChartBox: vi.fn(),
 		disposeChartEcharts: vi.fn(),
+		purgeChartEcharts: vi.fn(),
 		renderChart: vi.fn(),
 		getChartState: (id: string) => {
 			if (!stateMap[id]) stateMap[id] = { mode: 'edit', expanded: true, legendPosition: 'top' };

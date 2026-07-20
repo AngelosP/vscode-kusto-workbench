@@ -34,6 +34,8 @@ export type KqlxSectionV1 =
 			 */
 			linkedQueryPath?: string;
 			query?: string;
+			/** Optional lineage for a generated optimization comparison section. */
+			comparisonSourceBoxId?: string;
 			// Optional persisted query result for this box.
 			// Stored as JSON text to keep comparisons stable and cap size.
 			// Only present when <= 200KB.
@@ -61,6 +63,7 @@ export type KqlxSectionV1 =
 			database?: string;
 			linkedQueryPath?: string;
 			query?: string;
+			comparisonSourceBoxId?: string;
 			resultJson?: string;
 			runMode?: string;
 			cacheEnabled?: boolean;
@@ -225,6 +228,10 @@ export type KqlxSectionV1 =
 			name?: string;
 			query?: string;
 			serverUrl?: string;
+			connectionIdHint?: string;
+			targetSignature?: string;
+			principalFingerprint?: string;
+			revocationGeneration?: number;
 			database?: string;
 			expanded?: boolean;
 			resultsVisible?: boolean;

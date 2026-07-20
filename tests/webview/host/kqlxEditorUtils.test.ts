@@ -8,8 +8,31 @@ import {
 	sanitizeStateForKind,
 	computeChangedSections,
 	formatSectionDiffContent,
-	stripDiffNoise
+	stripDiffNoise,
+	hasSqlOwnedDocumentState,
 } from '../../../src/host/kqlxEditorProvider';
+
+describe('hasSqlOwnedDocumentState', () => {
+	it('isolates non-SQL sections and Kusto comparisons from SQL privacy state', () => {
+		expect(hasSqlOwnedDocumentState({ sections: [
+			{ id: 'query_source', type: 'query', query: 'T | count' },
+			{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'query_source', query: 'T | summarize count()' },
+			{ id: 'markdown_1', type: 'markdown', text: 'Notes' },
+			{ id: 'chart_1', type: 'chart' },
+		] as any })).toBe(false);
+	});
+
+	it('requires SQL privacy state for SQL sections and SQL-derived comparisons', () => {
+		expect(hasSqlOwnedDocumentState({ sections: [{ id: 'sql_1', type: 'sql', query: 'SELECT 1' }] as any })).toBe(true);
+		expect(hasSqlOwnedDocumentState({ sections: [
+			{ id: 'sql_1', type: 'sql', query: 'SELECT 1' },
+			{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'sql_1', query: 'SELECT 2' },
+		] as any })).toBe(true);
+		expect(hasSqlOwnedDocumentState({ sections: [
+			{ id: 'legacy_sql_cmp', type: 'query', connectionIdHint: 'sql_old', resultJson: '{"secret":true}' },
+		] as any })).toBe(true);
+	});
+});
 
 // ---------------------------------------------------------------------------
 // normalizeValue

@@ -504,7 +504,7 @@ in the extension source is part of the testing process.
 
 **Webview targeting.** When multiple webviews are open at once (walkthroughs,
 panels, sidebar views), pass a `<title>` substring to disambiguate. The
-framework uses a 3-tier matching strategy (all case-insensitive):
+framework uses a 4-tier matching strategy (all case-insensitive):
 
 1. **CDP target title / URL** — the fastest check; matches the title and URL
    that Chrome DevTools Protocol reports for each webview target.
@@ -515,6 +515,10 @@ framework uses a 3-tier matching strategy (all case-insensitive):
    `document.title` across all frames (including nested cross-origin
    iframes). This catches webviews whose CDP target title is generic but
    whose inner HTML sets a meaningful `<title>`.
+4. **Unique visible webview** — after a successful tab-label activation, a
+  generic-title custom editor can be selected when exactly one webview is
+  visible. If multiple webviews remain visible, targeting fails as ambiguous
+  instead of interacting with an arbitrary panel.
 
 **Cross-origin iframe support.** VS Code webview panels use deeply nested
 cross-origin iframes (main renderer → `vscode-webview://` outer → inner
@@ -702,6 +706,12 @@ Use these for test setup when you don't need to test the actual dialog interacti
 - `Then the file "<path>" should exist` - assert file exists on disk
 - `Then the file "<path>" should contain "<text>"` - assert file content
 
+File and temp-file setup steps only write when the requested content differs
+from the existing bytes. Identical fixtures preserve their modification time,
+which avoids invalidating retained VS Code text/custom-editor models between
+scenario outlines. Use an explicit edit or touch operation when filesystem
+watcher behavior is the feature under test.
+
 Inline file content supports escaped quotes and common escapes: `\"`, `\\`, `\n`, `\r`, and `\t`. Literal backslashes in inline content must be escaped as `\\`, so write Windows-style content as `C:\\temp\\new.txt`. For JSON or multiline fixtures, prefer a doc string:
 
 \`\`\`gherkin
@@ -714,6 +724,12 @@ Given a file "fixture.json" exists with content:
 ### Clean State
 
 Every test should start from a known state. Use Background to reset before each scenario:
+
+Clean-state reset discards dirty test editors before closing them, so an
+unattended save-confirmation dialog cannot block the run. An explicit
+`workbench.action.closeAllEditors` step also discards dirty editors but fails
+the step with their filenames. This preserves the dirty-state regression signal
+without leaving VS Code waiting for user input.
 
 \\`\\`\\`gherkin
 Feature: My tests

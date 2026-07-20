@@ -40,6 +40,7 @@ interface KustoFavorite {
 }
 
 interface Snapshot {
+	revision?: number;
 	timestamp: number;
 	activeKind?: ConnectionKind;
 	connections: KustoConnection[];
@@ -55,6 +56,8 @@ interface Snapshot {
 	sqlDialects?: SqlDialectInfo[];
 	sqlFavorites?: SqlFavorite[];
 	sqlLeaveNoTrace?: string[];
+	sqlStateVersions?: { policy: number; principals: number; connections: number };
+	sqlAvailable?: boolean;
 	// Search
 	searchState?: unknown;
 }
@@ -72,6 +75,7 @@ interface SqlConnectionInfo {
 	database?: string;
 	authType: string;
 	username?: string;
+	credentialRevision?: number;
 }
 
 interface KustoFunctionInfo {
@@ -266,6 +270,11 @@ export class KwConnectionManager extends LitElement {
 	@state() private _sqlDatabaseLoadErrors: Record<string, string> = {};
 	@state() private _sqlSchemaLoadErrors: Record<string, string> = {};
 	@state() private _sqlLoadingSchemaKeys = new Set<string>();
+	private _sqlDatabaseRequestIds = new Map<string, string>();
+	private _sqlSchemaRequestIds = new Map<string, string>();
+	private _sqlPreviewRequestIds = new Map<string, string>();
+	private _sqlTestConnectionRequestId: string | null = null;
+	private _latestSnapshotRevision = 0;
 
 	// ── VS Code API ───────────────────────────────────────────────────────────
 
@@ -506,6 +515,38 @@ export class KwConnectionManager extends LitElement {
 		return true;
 	}
 
+	private _evictProtectedSqlState(next: Snapshot): void {
+		if (next.sqlAvailable === false) {
+			this._sqlDatabaseSchemas = {};
+			this._sqlTablePreviewData = {};
+			this._sqlSchemaLoadErrors = {};
+			this._sqlDatabaseLoadErrors = {};
+			this._sqlLoadingDatabases = new Set();
+			this._sqlLoadingSchemaKeys = new Set();
+			this._sqlDatabaseRequestIds.clear();
+			this._sqlSchemaRequestIds.clear();
+			this._sqlPreviewRequestIds.clear();
+			this._sqlTestConnectionRequestId = null;
+			this._testResult = '';
+			this._setSqlExplorerPath(null);
+			this._search.invalidateSqlResults();
+			return;
+		}
+		const protectedIds = new Set(next.sqlLeaveNoTrace ?? []);
+		const isProtectedKey = (key: string) => protectedIds.has(String(key || '').split('|')[0]);
+		this._sqlDatabaseSchemas = Object.fromEntries(Object.entries(this._sqlDatabaseSchemas).filter(([key]) => !isProtectedKey(key)));
+		this._sqlTablePreviewData = Object.fromEntries(Object.entries(this._sqlTablePreviewData).filter(([key]) => !isProtectedKey(key)));
+		this._sqlSchemaLoadErrors = Object.fromEntries(Object.entries(this._sqlSchemaLoadErrors).filter(([key]) => !isProtectedKey(key)));
+		this._sqlDatabaseLoadErrors = Object.fromEntries(Object.entries(this._sqlDatabaseLoadErrors).filter(([key]) => !protectedIds.has(key)));
+		this._sqlLoadingDatabases = new Set([...this._sqlLoadingDatabases].filter(id => !protectedIds.has(id)));
+		this._sqlLoadingSchemaKeys = new Set([...this._sqlLoadingSchemaKeys].filter(key => !isProtectedKey(key)));
+		for (const key of [...this._sqlDatabaseRequestIds.keys()]) if (protectedIds.has(key)) this._sqlDatabaseRequestIds.delete(key);
+		for (const key of [...this._sqlSchemaRequestIds.keys()]) if (isProtectedKey(key)) this._sqlSchemaRequestIds.delete(key);
+		for (const key of [...this._sqlPreviewRequestIds.keys()]) if (isProtectedKey(key)) this._sqlPreviewRequestIds.delete(key);
+		if (this._sqlExplorerPath && protectedIds.has(this._sqlExplorerPath.connectionId)) this._setSqlExplorerPath(null);
+		this._search.invalidateSqlResults();
+	}
+
 	// ── Message handling ──────────────────────────────────────────────────────
 
 	private _onMessage = (event: MessageEvent) => {
@@ -514,7 +555,11 @@ export class KwConnectionManager extends LitElement {
 
 		switch (msg.type) {
 			case 'snapshot': {
+				const revision = Number(msg.snapshot?.revision) || 0;
+				if (revision && revision < this._latestSnapshotRevision) break;
+				if (revision) this._latestSnapshotRevision = revision;
 				const kustoIdentityChanged = this._evictChangedKustoIdentityState(this._snapshot, msg.snapshot);
+				this._evictProtectedSqlState(msg.snapshot);
 				this._snapshot = msg.snapshot;
 				// Auto-detect active kind
 				if (this._snapshot) {
@@ -535,7 +580,9 @@ export class KwConnectionManager extends LitElement {
 						this._scheduleExplorerScrollReset();
 					}
 					// Restore search state
-					const searchState = kustoIdentityChanged && this._activeKind === 'kusto'
+					const searchState = this._snapshot.sqlAvailable === false
+						? { query: '', scope: 'cached', categories: {}, contentToggles: {}, lastResults: [], lastSearchTimestamp: 0 }
+						: kustoIdentityChanged && this._activeKind === 'kusto'
 						? { ...(this._snapshot.searchState as any), lastResults: [] }
 						: this._snapshot.searchState;
 					this._search.restoreState(searchState as any, this._activeKind);
@@ -545,6 +592,28 @@ export class KwConnectionManager extends LitElement {
 					this._selectedConnectionId = sortedConnections[0].id;
 					this._vscode.postMessage({ type: 'cluster.expand', connectionId: this._selectedConnectionId });
 				}
+				break;
+			}
+			case 'sqlPrincipalChanged':
+			case 'sqlOwnerChanged': {
+				const changedIds = new Set<string>((Array.isArray(msg.connectionIds) ? msg.connectionIds : []).map((id: unknown) => String(id)));
+				const isChangedKey = (key: string) => changedIds.has(String(key || '').split('|')[0]);
+				this._sqlDatabaseSchemas = Object.fromEntries(Object.entries(this._sqlDatabaseSchemas).filter(([key]) => !isChangedKey(key)));
+				this._sqlTablePreviewData = Object.fromEntries(Object.entries(this._sqlTablePreviewData).filter(([key]) => !isChangedKey(key)));
+				this._sqlSchemaLoadErrors = Object.fromEntries(Object.entries(this._sqlSchemaLoadErrors).filter(([key]) => !isChangedKey(key)));
+				for (const id of changedIds) delete this._sqlDatabaseLoadErrors[id];
+				this._sqlLoadingDatabases = new Set([...this._sqlLoadingDatabases].filter(id => !changedIds.has(id)));
+				this._sqlLoadingSchemaKeys = new Set([...this._sqlLoadingSchemaKeys].filter(key => !isChangedKey(key)));
+				for (const key of [...this._sqlDatabaseRequestIds.keys()]) if (changedIds.has(key)) this._sqlDatabaseRequestIds.delete(key);
+				for (const key of [...this._sqlSchemaRequestIds.keys()]) if (isChangedKey(key)) this._sqlSchemaRequestIds.delete(key);
+				for (const key of [...this._sqlPreviewRequestIds.keys()]) if (isChangedKey(key)) this._sqlPreviewRequestIds.delete(key);
+				if (this._sqlExplorerPath && changedIds.has(this._sqlExplorerPath.connectionId)) this._setSqlExplorerPath(null);
+				if (this._editingConnectionId && changedIds.has(this._editingConnectionId) && this._sqlTestConnectionRequestId) {
+					this._sqlTestConnectionRequestId = null;
+					if (this._testResult === 'loading') this._testResult = '✗ SQL connection owner changed. Retry the test.';
+				}
+				this._search.invalidateSqlResults();
+				this.requestUpdate();
 				break;
 			}
 			case 'testConnectionStarted':
@@ -633,50 +702,75 @@ export class KwConnectionManager extends LitElement {
 			}
 			// SQL messages
 			case 'sql.testConnectionStarted':
+				if (msg.connectionId && this._editingConnectionId !== msg.connectionId) break;
+				if (msg.requestId) this._sqlTestConnectionRequestId = msg.requestId;
 				this._testResult = 'loading';
 				break;
 			case 'sql.testConnectionResult':
+				if (msg.requestId && this._sqlTestConnectionRequestId !== msg.requestId) break;
+				if (msg.connectionId && this._editingConnectionId !== msg.connectionId) break;
+				this._sqlTestConnectionRequestId = null;
 				this._testResult = msg.success ? `✓ ${msg.message}` : `✗ ${msg.message}`;
 				break;
 			case 'sql.loadingDatabases':
+				if (msg.requestId) this._sqlDatabaseRequestIds.set(msg.connectionId, msg.requestId);
 				this._sqlLoadingDatabases = new Set([...this._sqlLoadingDatabases, msg.connectionId]);
 				this._sqlDatabaseLoadErrors = { ...this._sqlDatabaseLoadErrors, [msg.connectionId]: '' };
 				break;
 			case 'sql.databasesLoaded':
+				if (this._snapshot?.sqlLeaveNoTrace?.includes(msg.connectionId)) break;
+				if (msg.requestId && this._sqlDatabaseRequestIds.get(msg.connectionId) !== msg.requestId) break;
+				this._sqlDatabaseRequestIds.delete(msg.connectionId);
 				this._sqlLoadingDatabases = new Set([...this._sqlLoadingDatabases].filter(id => id !== msg.connectionId));
 				this._sqlDatabaseLoadErrors = { ...this._sqlDatabaseLoadErrors, [msg.connectionId]: '' };
 				this._vscode.postMessage({ type: 'requestSnapshot' });
 				break;
 			case 'sql.databasesLoadError':
+				if (this._snapshot?.sqlLeaveNoTrace?.includes(msg.connectionId)) break;
+				if (msg.requestId && this._sqlDatabaseRequestIds.get(msg.connectionId) !== msg.requestId) break;
+				this._sqlDatabaseRequestIds.delete(msg.connectionId);
 				this._sqlLoadingDatabases = new Set([...this._sqlLoadingDatabases].filter(id => id !== msg.connectionId));
 				this._sqlDatabaseLoadErrors = { ...this._sqlDatabaseLoadErrors, [msg.connectionId]: msg.error || 'Failed to load databases.' };
 				break;
 			case 'sql.loadingSchema': {
+				if (this._snapshot?.sqlLeaveNoTrace?.includes(msg.connectionId)) break;
 				const sqlDbKey = msg.connectionId + '|' + msg.database;
+				if (msg.requestId) this._sqlSchemaRequestIds.set(sqlDbKey, msg.requestId);
 				this._sqlLoadingSchemaKeys = new Set([...this._sqlLoadingSchemaKeys, this._getSqlSchemaKey(msg.connectionId, msg.database)]);
 				this._sqlSchemaLoadErrors = { ...this._sqlSchemaLoadErrors, [sqlDbKey]: '' };
 				break;
 			}
 			case 'sql.schemaLoaded': {
+				if (this._snapshot?.sqlLeaveNoTrace?.includes(msg.connectionId)) break;
 				const sqlDbKey = msg.connectionId + '|' + msg.database;
+				if (msg.requestId && this._sqlSchemaRequestIds.get(sqlDbKey) !== msg.requestId) break;
+				this._sqlSchemaRequestIds.delete(sqlDbKey);
 				this._sqlLoadingSchemaKeys = new Set([...this._sqlLoadingSchemaKeys].filter(key => key !== this._getSqlSchemaKey(msg.connectionId, msg.database)));
 				this._sqlDatabaseSchemas = { ...this._sqlDatabaseSchemas, [sqlDbKey]: msg.schema };
 				this._sqlSchemaLoadErrors = { ...this._sqlSchemaLoadErrors, [sqlDbKey]: '' };
 				break;
 			}
 			case 'sql.schemaLoadError': {
+				if (this._snapshot?.sqlLeaveNoTrace?.includes(msg.connectionId)) break;
 				const sqlDbKey = msg.connectionId + '|' + msg.database;
+				if (msg.requestId && this._sqlSchemaRequestIds.get(sqlDbKey) !== msg.requestId) break;
+				this._sqlSchemaRequestIds.delete(sqlDbKey);
 				this._sqlLoadingSchemaKeys = new Set([...this._sqlLoadingSchemaKeys].filter(key => key !== this._getSqlSchemaKey(msg.connectionId, msg.database)));
 				this._sqlSchemaLoadErrors = { ...this._sqlSchemaLoadErrors, [sqlDbKey]: msg.error || 'Failed to load schema.' };
 				break;
 			}
 			case 'sql.tablePreviewLoading': {
+				if (this._snapshot?.sqlLeaveNoTrace?.includes(msg.connectionId)) break;
 				const sqlPrevKey = msg.connectionId + '|' + msg.database + '|table|' + msg.tableName;
+				if (msg.requestId) this._sqlPreviewRequestIds.set(sqlPrevKey, msg.requestId);
 				this._sqlTablePreviewData = { ...this._sqlTablePreviewData, [sqlPrevKey]: { loading: true } };
 				break;
 			}
 			case 'sql.tablePreviewResult': {
+				if (this._snapshot?.sqlLeaveNoTrace?.includes(msg.connectionId)) break;
 				const sqlPrevKey = msg.connectionId + '|' + msg.database + '|table|' + msg.tableName;
+				if (msg.requestId && this._sqlPreviewRequestIds.get(sqlPrevKey) !== msg.requestId) break;
+				this._sqlPreviewRequestIds.delete(sqlPrevKey);
 				if (msg.success) {
 					this._sqlTablePreviewData = { ...this._sqlTablePreviewData, [sqlPrevKey]: { loading: false, columns: msg.columns, rows: msg.rows, rowCount: msg.rowCount, executionTime: msg.executionTime } };
 				} else {
@@ -699,6 +793,10 @@ export class KwConnectionManager extends LitElement {
 			}
 			// Search messages
 			case 'searchResults':
+				if (this._activeKind === 'sql' && Array.isArray(msg.results)) {
+					const protectedIds = new Set(this._snapshot?.sqlLeaveNoTrace ?? []);
+					msg.results = msg.results.filter((result: any) => !protectedIds.has(String(result?.connectionId || '')));
+				}
 				this._search.handleSearchResults(msg.requestId, msg.results, msg.completed);
 				break;
 			case 'searchProgress':
@@ -1462,7 +1560,7 @@ export class KwConnectionManager extends LitElement {
 								${isFav ? ICONS.starFilled : ICONS.star}
 							</button>
 							<button class="btn-icon" title="Refresh" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.cluster.refreshDatabases', connectionId: conn.id }); }}>${ICONS.refresh}</button>
-							<button class="btn-icon" title="Open in new .sqlx file" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.openInNewFile', serverUrl: conn.serverUrl, database: db }); }}>${ICONS.newFile}</button>
+							<button class="btn-icon" title="Open in new .sqlx file" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'sql.database.openInNewFile', connectionId: conn.id, database: db }); }}>${ICONS.newFile}</button>
 						</div>
 					</div>`;
 			})}`;
@@ -1814,7 +1912,7 @@ export class KwConnectionManager extends LitElement {
 							.changePassword=${this._modalChangePassword}
 							@sql-connection-form-submit=${this._onSqlFormSubmit}
 							@sql-connection-form-cancel=${() => this._closeModal()}
-							@sql-connection-form-test=${() => this._testSqlConnection()}
+							@sql-connection-form-test=${this._testSqlConnection}
 						></kw-sql-connection-form>
 					</div>
 					<div class="modal-footer">
@@ -1885,6 +1983,7 @@ export class KwConnectionManager extends LitElement {
 	private _openModal(mode: 'add' | 'edit', connId?: string): void {
 		this._modalMode = mode;
 		this._editingConnectionId = connId ?? null;
+		this._sqlTestConnectionRequestId = null;
 		this._testResult = '';
 		this._modalChangePassword = false;
 
@@ -1939,6 +2038,7 @@ export class KwConnectionManager extends LitElement {
 	private _closeModal(): void {
 		this._modalVisible = false;
 		this._editingConnectionId = null;
+		this._sqlTestConnectionRequestId = null;
 	}
 
 	private _testConnection(e?: CustomEvent<KustoConnectionFormSubmitDetail>): void {
@@ -1959,15 +2059,10 @@ export class KwConnectionManager extends LitElement {
 		});
 	}
 
-	private _testSqlConnection(): void {
+	private _testSqlConnection = (event: CustomEvent<SqlConnectionFormSubmitDetail>): void => {
 		if (!this._editingConnectionId) return;
-		const payload: Record<string, unknown> = { id: this._editingConnectionId };
-		// Pass password if authType is sql-login and password was changed
-		if (this._modalAuthType === 'sql-login' && this._modalChangePassword && this._modalPassword) {
-			payload.password = this._modalPassword;
-		}
-		this._vscode.postMessage({ type: 'sql.connection.test', ...payload });
-	}
+		this._vscode.postMessage({ type: 'sql.connection.test', id: this._editingConnectionId, ...event.detail });
+	};
 
 	private _onModalKeydown = (e: KeyboardEvent) => {
 		// Escape on the overlay level (form handles Enter/Escape internally,

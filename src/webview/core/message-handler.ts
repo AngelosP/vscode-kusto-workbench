@@ -40,10 +40,12 @@ import {
 	__kustoHideOptimizePromptForBox, __kustoApplyOptimizeQueryOptions,
 } from '../sections/query-execution.controller';
 import {
-	schedulePersist, handleDocumentDataMessage, getKqlxState,
+	schedulePersist, handleDocumentDataMessage, getKqlxState, flushCompatibilityPersist, acknowledgePersistDocument,
 	__kustoSetCompatibilityMode, __kustoApplyDocumentCapabilities,
 	__kustoRequestAddSection, __kustoOnQueryResult, __kustoScheduleLocalSchemaPrewarm,
 	__kustoSetHtmlPowerBiCompatibilityCheckEnabled,
+	resolvePendingSqlResultRestores,
+	discardPendingSqlResultRestores,
 } from './persistence';
 import {
 	__kustoControlCommandDocCache, __kustoControlCommandDocPending,
@@ -86,10 +88,11 @@ import {
 	updateKustoPreparation,
 	type KustoPreparationToken,
 	favoritesModeByBoxId,
-	sqlConnections, sqlCachedDatabases, setSqlConnections,
-	sqlFavorites, setSqlFavorites, sqlFavoritesModeByBoxId,
+	sqlConnections, sqlCachedDatabases, setSqlConnections, setSqlLeaveNoTraceConnectionIds,
+	sqlFavorites, setSqlFavorites, sqlFavoritesModeByBoxId, sqlTargetGenerationByBoxId, sqlDatabaseRequestIdByBoxId,
 } from './state';
 import { getKustoSchemaIdentityKey, resolveStrictKustoConnection } from '../../shared/kustoAuth.js';
+import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
 
 const ASK_KUSTO_COPILOT_DEFAULT_MAX_RESULT_ROWS = 100;
 const ASK_KUSTO_COPILOT_MIN_MAX_RESULT_ROWS = 1;
@@ -107,6 +110,61 @@ function normalizeAskKustoCopilotMaxResultRows(value: unknown): number {
 }
 
 const _win = window;
+const sqlPolicyBlockedBoxIds = new Set<string>();
+let latestSqlConnectionsRevision = 0;
+const sqlCopilotToolCancellationByRequestId = new Map<string, () => void>();
+
+function clearSqlPolicyBox(boxId: string): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	clearResultsState(id);
+	delete pState.queryResultJsonByBoxId[id];
+	const section = __kustoGetSqlSectionElement(id) || __kustoGetQuerySectionElement(id);
+	if (typeof section?.clearResults === 'function') section.clearResults();
+}
+
+function applySqlLeaveNoTraceConnectionIds(value: unknown): void {
+	const ids = Array.isArray(value) ? value.map(id => String(id || '').trim()).filter(Boolean) : [];
+	const protectedIds = new Set(ids);
+	setSqlLeaveNoTraceConnectionIds(ids);
+	if (ids.length > 0) discardPendingSqlResultRestores(ids);
+	for (const boxId of Array.isArray(sqlBoxes) ? sqlBoxes : []) {
+		const section = __kustoGetSqlSectionElement(String(boxId || ''));
+		if (typeof section?.setLeaveNoTraceConnectionIds === 'function') section.setLeaveNoTraceConnectionIds(ids);
+		const connectionId = typeof section?.getConnectionId === 'function' ? String(section.getConnectionId() || '').trim() : '';
+		if (!protectedIds.has(connectionId)) continue;
+		delete schemaByBoxId[boxId];
+		delete schemaMetaByBoxId[boxId];
+		if (typeof section?.clearSchemaForLeaveNoTrace === 'function') section.clearSchemaForLeaveNoTrace();
+		handleStsDiagnostics(String(boxId || ''), []);
+	}
+	for (const [boxId, metadata] of Object.entries(optimizationMetadataByBoxId || {})) {
+		if (!metadata || typeof metadata !== 'object' || !(metadata as any).isComparison) continue;
+		const sourceBoxId = String((metadata as any).sourceBoxId || '').trim();
+		const comparisonSection = __kustoGetQuerySectionElement(boxId);
+		const sourceSection = sourceBoxId ? __kustoGetSqlSectionElement(sourceBoxId) : null;
+		const kustoSourceSection = sourceBoxId ? __kustoGetQuerySectionElement(sourceBoxId) : null;
+		if (!sourceSection && kustoSourceSection) continue;
+		if (!comparisonSection) {
+			clearSqlPolicyBox(boxId);
+			delete optimizationMetadataByBoxId[boxId];
+			if (sourceBoxId && optimizationMetadataByBoxId[sourceBoxId]?.comparisonBoxId === boxId) {
+				delete optimizationMetadataByBoxId[sourceBoxId];
+			}
+			sqlPolicyBlockedBoxIds.delete(boxId);
+			continue;
+		}
+		const sourceConnectionId = typeof sourceSection?.getConnectionId === 'function'
+			? String(sourceSection.getConnectionId() || '').trim()
+			: '';
+		if (protectedIds.has(sourceConnectionId)) {
+			sqlPolicyBlockedBoxIds.add(boxId);
+			clearSqlPolicyBox(boxId);
+		} else {
+			sqlPolicyBlockedBoxIds.delete(boxId);
+		}
+	}
+}
 
 function resolveToolKustoConnection(input: any): { connection?: any; error?: string } {
 	const clusterUrl = String(input?.clusterUrl || '').trim();
@@ -598,9 +656,54 @@ try {
 } catch (e) { console.error('[kusto]', e); }
 
 // --- Extension host message dispatcher ---
+const sqlOwnerSensitiveMessageTypes = new Set([
+	'queryResult', 'queryError', 'queryCancelled', 'ensureResultsVisible',
+	'copilotWriteQueryStatus', 'copilotWriteQueryToolResult', 'copilotExecutedQuery',
+	'copilotGeneralQueryRulesLoaded', 'copilotUserQuerySnapshot', 'copilotWriteQuerySetQuery',
+	'copilotWriteQueryExecuting', 'copilotDevNotesContextLoaded', 'copilotDevNoteToolCall',
+	'copilotClarifyingQuestion', 'copilotWriteQueryDone',
+	'copilotInlineCompletionResult',
+]);
+
+const kustoTerminalMessageTypes = new Set(['queryResult', 'queryError', 'queryCancelled']);
+const ADMITTED_KUSTO_TERMINAL_EVENT = 'kusto-workbench-query-terminal';
+
+function acceptsKustoTerminal(message: any): boolean {
+	const boxId = String(message?.boxId || '').trim();
+	if (!boxId || !kustoTerminalMessageTypes.has(String(message?.type || ''))) return true;
+	const section = __kustoGetQuerySectionElement(boxId);
+	if (!section) return true;
+	return typeof section.acceptsQueryTerminal === 'function'
+		&& section.acceptsQueryTerminal(String(message.executionId || ''));
+}
+
+function completeKustoTerminal(message: any): void {
+	const boxId = String(message?.boxId || '').trim();
+	const executionId = String(message?.executionId || '').trim();
+	if (!boxId || !executionId) return;
+	const section = __kustoGetQuerySectionElement(boxId);
+	if (typeof section?.completeQueryExecution === 'function') section.completeQueryExecution(executionId);
+}
+
+function emitAdmittedKustoTerminal(message: any): void {
+	window.dispatchEvent(new CustomEvent(ADMITTED_KUSTO_TERMINAL_EVENT, { detail: message }));
+}
+
 const __kustoDispatchHostMessage = async (message: any) => {
 	message = (message && typeof message === 'object') ? message : {};
 	const messageType = String(message.type || '');
+	const ownerBoxId = String(message.boxId || '').trim();
+	if (!acceptsKustoTerminal(message)) return;
+	if (ownerBoxId && sqlOwnerSensitiveMessageTypes.has(messageType)) {
+		const sqlEl = __kustoGetSqlSectionElement(ownerBoxId);
+		if (sqlEl) {
+			const currentToken = String(sqlEl.getCopilotOwnerToken?.() || '');
+			if (!currentToken || currentToken !== String(message.ownerToken || '')) return;
+			if ((messageType === 'queryResult' || messageType === 'queryError' || messageType === 'queryCancelled')
+				&& typeof sqlEl.acceptsQueryTerminal === 'function'
+				&& !sqlEl.acceptsQueryTerminal(message.executionId ? String(message.executionId) : undefined)) return;
+		}
+	}
 	switch (messageType) {
 		case 'settingsUpdate':
 			try {
@@ -723,6 +826,12 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					__kustoRequestAddSection(k);
 				}
 			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'requestFinalPersist':
+			flushCompatibilityPersist(String(message.requestId || ''), String(message.reason || 'host-flush'));
+			break;
+		case 'persistDocumentAck':
+			acknowledgePersistDocument(message.snapshotId, message.editRevision);
 			break;
 		case 'enabledKqlxSidecar':
 			// The extension host has enabled a companion .kqlx metadata file for a .kql/.csl document.
@@ -929,6 +1038,17 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'documentData':
+			if (message.expectedEditRevision !== undefined
+				&& Number(message.expectedEditRevision) !== pState.documentEditRevision) {
+				if (message.reloadRequestId) {
+					postMessageToHost({
+						type: 'documentReloadResult', requestId: String(message.reloadRequestId),
+						applied: false, editRevision: pState.documentEditRevision,
+					});
+				}
+				break;
+			}
+			sqlPolicyBlockedBoxIds.clear();
 			perfMark('webview.message.documentData.received', {
 				ok: !!message.ok,
 				forceReload: !!message.forceReload,
@@ -945,6 +1065,12 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				{
 					clearAllSectionAgentTouched();
 					handleDocumentDataMessage(message);
+					if (message.reloadRequestId) {
+						postMessageToHost({
+							type: 'documentReloadResult', requestId: String(message.reloadRequestId),
+							applied: true, editRevision: pState.documentEditRevision,
+						});
+					}
 				}
 				traceFileOpen('message.documentData.handled');
 			} catch (e) { console.error('[kusto]', e); }
@@ -1052,6 +1178,19 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try { postMessageToHost({ type: 'showInfo', message: 'Failed to import connections: ' + (message && message.error ? String(message.error) : 'Unknown error') }); } catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'queryResult':
+			if (message.boxId && sqlPolicyBlockedBoxIds.has(String(message.boxId))) {
+				const blockedId = String(message.boxId);
+				const blockedMetadata = optimizationMetadataByBoxId[blockedId];
+				if (!__kustoGetSqlSectionElement(blockedId) && !blockedMetadata?.isComparison) {
+					sqlPolicyBlockedBoxIds.delete(blockedId);
+				} else {
+					try { setQueryExecuting(message.boxId, false); } catch (e) { console.error('[kusto]', e); }
+					try { clearSqlPolicyBox(blockedId); } catch (e) { console.error('[kusto]', e); }
+					completeKustoTerminal(message);
+					break;
+				}
+			}
+			let resultAccepted = !message.boxId;
 			try {
 				if (message.boxId) {
 					pState.lastExecutedBox = message.boxId;
@@ -1064,16 +1203,24 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					try {
 						setQueryExecuting(message.boxId, false);
 					} catch (e) { console.error('[kusto]', e); }
-					displayResultForBox(message.result, message.boxId, { label: 'Results', showExecutionTime: true });
+					resultAccepted = displayResultForBox(message.result, message.boxId, {
+						label: 'Results', showExecutionTime: true,
+						...(message.executionId ? { executionId: String(message.executionId) } : {}),
+					}) !== false;
 				} else {
 					displayResult(message.result);
 				}
 			} catch (e: any) {
 				console.error('Failed to render query results:', e);
 			}
+			if (!resultAccepted) {
+				completeKustoTerminal(message);
+				break;
+			}
 			try {
 				if (message.boxId) {
 					__kustoOnQueryResult(message.boxId, message.result);
+					if (message.ensureResultsVisible === true) __kustoSetResultsVisible(message.boxId, true);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			// Check if this is a comparison box result
@@ -1103,6 +1250,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
+			emitAdmittedKustoTerminal(message);
+			completeKustoTerminal(message);
 			break;
 		case 'queryError':
 			try {
@@ -1120,13 +1269,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				} catch (e) { console.error('[kusto]', e); }
 				if (boxId) {
 					const clientActivityId = (message && typeof message.clientActivityId === 'string') ? message.clientActivityId : undefined;
-					__kustoRenderErrorUx(boxId, err, clientActivityId);
+					__kustoRenderErrorUx(boxId, err, clientActivityId, message.executionId ? String(message.executionId) : undefined);
 				} else {
 					console.error('Query error (no error renderer available):', err);
 				}
 			} catch (e: any) {
 				console.error('Failed to render query error:', e);
 			}
+			emitAdmittedKustoTerminal(message);
+			completeKustoTerminal(message);
 			break;
 		case 'queryCancelled':
 			try {
@@ -1138,9 +1289,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const cancelledBoxId = (message && message.boxId) ? String(message.boxId) : (pState.lastExecutedBox ? String(pState.lastExecutedBox) : '');
 				if (cancelledBoxId) {
 					setQueryExecuting(cancelledBoxId, false);
+					const sqlEl = __kustoGetSqlSectionElement(cancelledBoxId);
+					if (typeof sqlEl?.notifyToolRunCancelled === 'function') {
+						sqlEl.notifyToolRunCancelled(message.executionId ? String(message.executionId) : undefined);
+					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			displayCancelled();
+			emitAdmittedKustoTerminal(message);
+			completeKustoTerminal(message);
 			break;
 		case 'ensureResultsVisible':
 			try {
@@ -1598,14 +1755,55 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		// ── SQL connection messages ────────────────────────────────────
 		case 'sqlConnectionsData':
 			try {
+				const revision = Number(message.revision) || 0;
+				if (revision && revision < latestSqlConnectionsRevision) break;
+				if (revision) latestSqlConnectionsRevision = revision;
 				setSqlConnections(Array.isArray(message.connections) ? message.connections : []);
 				for (const k of Object.keys(sqlCachedDatabases)) delete sqlCachedDatabases[k];
 				Object.assign(sqlCachedDatabases, message.cachedDatabases || {});
 				try { (window as any).__kustoSqlLastConnectionId = message.lastConnectionId || ''; } catch (e) { console.error('[kusto]', e); }
 				try { (window as any).__kustoSqlLastDatabase = message.lastDatabase || ''; } catch (e) { console.error('[kusto]', e); }
 				setSqlFavorites(Array.isArray(message.sqlFavorites) ? message.sqlFavorites : []);
+				applySqlLeaveNoTraceConnectionIds(message.sqlLeaveNoTrace);
 				updateSqlConnectionSelects();
+				resolvePendingSqlResultRestores();
 				try { updateSqlFavoritesUiForAllBoxes(); } catch (e) { console.error('[kusto]', e); }
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlLeaveNoTraceData':
+			try { applySqlLeaveNoTraceConnectionIds(message.connectionIds); } catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlConnectionOwnerChanged':
+			try {
+				const boxId = String(message.boxId || '').trim();
+				if (!boxId) break;
+				const targetGeneration = Number(message.targetGeneration);
+				if (!Number.isSafeInteger(targetGeneration)
+					|| targetGeneration < (sqlTargetGenerationByBoxId[boxId] ?? 0)) break;
+				sqlTargetGenerationByBoxId[boxId] = targetGeneration;
+				delete sqlDatabaseRequestIdByBoxId[boxId];
+				delete schemaByBoxId[boxId];
+				delete schemaMetaByBoxId[boxId];
+				handleStsDiagnostics(boxId, []);
+				const sqlEl = __kustoGetSqlSectionElement(boxId);
+				if (typeof sqlEl?.invalidateOwner === 'function') sqlEl.invalidateOwner();
+				else if (typeof sqlEl?.setSqlConnectionId === 'function') sqlEl.setSqlConnectionId('');
+				if (typeof sqlEl?.clearResults === 'function') sqlEl.clearResults();
+				clearSqlPolicyBox(boxId);
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlCopilotPolicyChanged':
+			try {
+				for (const boxId of Array.isArray(message.boxIds) ? message.boxIds : []) {
+					const id = String(boxId || '').trim();
+					if (!id) continue;
+					const sqlEl = __kustoGetSqlSectionElement(id);
+					if (sqlEl) sqlPolicyBlockedBoxIds.delete(id);
+					else sqlPolicyBlockedBoxIds.add(id);
+					if (typeof sqlEl?.copilotWriteQueryCancel === 'function') sqlEl.copilotWriteQueryCancel();
+					if (typeof sqlEl?.copilotClearConversation === 'function') sqlEl.copilotClearConversation();
+					clearSqlPolicyBox(id);
+				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'sqlFavoritesData':
@@ -1628,12 +1826,26 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			break;
 		case 'sqlDatabasesData':
 			try {
+				if (message.requestId && sqlDatabaseRequestIdByBoxId[message.boxId] !== message.requestId) break;
+				if ((sqlTargetGenerationByBoxId[message.boxId] ?? 0) !== Number(message.targetGeneration ?? 0)) break;
 				updateSqlDatabaseSelect(message.boxId, message.databases, message.sqlConnectionId);
+				delete sqlDatabaseRequestIdByBoxId[message.boxId];
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlDatabasesLoading':
+			try {
+				if ((sqlTargetGenerationByBoxId[message.boxId] ?? 0) !== Number(message.targetGeneration ?? 0)) break;
+				sqlDatabaseRequestIdByBoxId[message.boxId] = String(message.requestId || '');
+				const sqlEl = __kustoGetSqlSectionElement(String(message.boxId || ''));
+				if (typeof sqlEl?.setDatabasesLoading === 'function') sqlEl.setDatabasesLoading(true);
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'sqlDatabasesError':
 			try {
+				if (message.requestId && sqlDatabaseRequestIdByBoxId[message.boxId] !== message.requestId) break;
+				if ((sqlTargetGenerationByBoxId[message.boxId] ?? 0) !== Number(message.targetGeneration ?? 0)) break;
 				onSqlDatabasesError(message.boxId, message.error, message.sqlConnectionId);
+				delete sqlDatabaseRequestIdByBoxId[message.boxId];
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'sqlConnectionAdded':
@@ -1659,10 +1871,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try {
 				const bid = String(message.boxId || '').trim();
 				if (!bid) break;
+				const sqlEl = __kustoGetSqlSectionElement(bid);
+				const currentConnectionId = typeof sqlEl?.getSqlConnectionId === 'function' ? String(sqlEl.getSqlConnectionId() || '') : '';
+				const currentDatabase = typeof sqlEl?.getDatabase === 'function' ? String(sqlEl.getDatabase() || '') : '';
+				if (currentConnectionId !== String(message.sqlConnectionId || '')
+					|| currentDatabase !== String(message.database || '')
+					|| (sqlTargetGenerationByBoxId[bid] ?? 0) !== Number(message.targetGeneration ?? 0)) break;
 				const meta = message.schemaMeta || {};
 				if (meta.error) {
 					// Schema fetch failed
-					const sqlEl = __kustoGetSqlSectionElement(bid);
 					if (sqlEl && typeof sqlEl.setSchemaInfo === 'function') {
 						sqlEl.setSchemaInfo(buildSchemaInfo(meta.errorMessage || 'Schema failed', true));
 					}
@@ -1678,7 +1895,6 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					}
 					const fromCache = !!meta.fromCache;
 					const displayText = tablesCount + ' tables, ' + columnsCount + ' cols' + (fromCache ? ' (cached)' : '');
-					const sqlEl = __kustoGetSqlSectionElement(bid);
 					if (sqlEl && typeof sqlEl.setSchemaInfo === 'function') {
 						sqlEl.setSchemaInfo(buildSchemaInfo(displayText, false,
 							{ fromCache, tablesCount, columnsCount, functionsCount: 0 }));
@@ -1689,7 +1905,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		case 'stsResponse':
 			try {
 				const reqId = String(message.requestId || '');
-				handleStsResponse(reqId, message.result);
+				handleStsResponse(reqId, message.result, message.ownerToken, message.targetGeneration);
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'stsDiagnostics':
@@ -1712,8 +1928,18 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const bid = String(message.boxId || '').trim();
 				if (!bid) break;
 				const sqlEl = __kustoGetSqlSectionElement(bid);
-				if (sqlEl && typeof sqlEl.setStsReady === 'function') {
-					sqlEl.setStsReady(String(message.state || '') === 'ready');
+				if (message.targetGeneration !== undefined
+					&& (sqlTargetGenerationByBoxId[bid] ?? 0) !== Number(message.targetGeneration)) break;
+				if (String(message.state || '') === 'ready' && (
+					String(sqlEl?.getConnectionId?.() || '') !== String(message.connectionId || '')
+					|| String(sqlEl?.getDatabase?.() || '') !== String(message.database || '')
+				)) break;
+				if (sqlEl && String(message.state || '') === 'error' && typeof sqlEl.notifyStsConnectionError === 'function') {
+					sqlEl.notifyStsConnectionError(String(message.error || 'SQL Tools Service connection failed.'));
+				} else if (sqlEl && typeof sqlEl.setStsReady === 'function') {
+					sqlEl.setStsReady(
+						String(message.state || '') === 'ready', String(message.ownerToken || ''), Number(message.targetGeneration),
+					);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -2121,7 +2347,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const boxId = String(message.boxId || '');
 				const executing = !!message.executing;
 				if (boxId) {
-					setQueryExecuting(boxId, executing);
+					const executionId = String(message.executionId || '');
+					const sqlEl = __kustoGetSqlSectionElement(boxId);
+					if (sqlEl && typeof sqlEl.setExternalQueryExecuting === 'function'
+						&& !sqlEl.setExternalQueryExecuting(executing, executionId)) break;
+					const queryEl = __kustoGetQuerySectionElement(boxId);
+					if (queryEl && typeof queryEl.setExternalQueryExecuting === 'function'
+						&& !queryEl.setExternalQueryExecuting(executing, executionId)) break;
+					if (!queryEl) setQueryExecuting(boxId, executing);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -2339,6 +2572,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				if (requestId) {
 					const state = getKqlxState();
 					const sections = (state && state.sections) ? state.sections.map((section: any) => {
+						if (section?.type === 'sql') {
+							const sqlEl = __kustoGetSqlSectionElement(String(section.id || ''));
+							return {
+								...section,
+								connectionId: String(sqlEl?.getSqlConnectionId?.() || section.connectionIdHint || ''),
+								database: String(sqlEl?.getDatabase?.() || section.database || ''),
+								ownerToken: String(sqlEl?.getCopilotOwnerToken?.() || ''),
+							};
+						}
 						if (section?.type !== 'query' && section?.type !== 'copilotQuery') return section;
 						const boxId = String(section.id || '').trim();
 						const connectionId = boxId ? String(__kustoGetConnectionId(boxId) || '').trim() : '';
@@ -2638,13 +2880,20 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							try { setRunMode(sectionId, 'plain'); } catch (e) { console.error('[kusto]', e); }
 
 							let responded = false;
-							const resultHandler = (resultEvent: any) => {
+							let executionId = '';
+							let timeoutId: ReturnType<typeof setTimeout> | undefined;
+							const cleanup = () => {
+								window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener);
+								if (timeoutId) clearTimeout(timeoutId);
+							};
+							const resultHandler = (resultEvent: Event) => {
 								try {
-									const resultMsg = resultEvent && resultEvent.data;
+									const resultMsg = (resultEvent as CustomEvent).detail;
+									if (!executionId || String(resultMsg?.executionId || '') !== executionId) return;
 									if (resultMsg && resultMsg.type === 'queryResult' && resultMsg.boxId === sectionId) {
 										if (responded) return;
 										responded = true;
-										window.removeEventListener('message', resultHandler);
+										cleanup();
 
 										const result = resultMsg.result || {};
 										const rows = result.rows || [];
@@ -2665,7 +2914,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 									} else if (resultMsg && resultMsg.type === 'queryError' && resultMsg.boxId === sectionId) {
 										if (responded) return;
 										responded = true;
-										window.removeEventListener('message', resultHandler);
+										cleanup();
 										postMessageToHost({
 											type: 'toolResponse',
 											requestId,
@@ -2674,7 +2923,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 									} else if (resultMsg && resultMsg.type === 'queryCancelled' && resultMsg.boxId === sectionId) {
 										if (responded) return;
 										responded = true;
-										window.removeEventListener('message', resultHandler);
+										cleanup();
 										postMessageToHost({
 											type: 'toolResponse',
 											requestId,
@@ -2684,13 +2933,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								} catch (e) { console.error('[kusto]', e); }
 							};
 
-							window.addEventListener('message', resultHandler);
+							window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener);
 
 							// Timeout safety net — send a response if nothing arrives
-							setTimeout(() => {
+							timeoutId = setTimeout(() => {
 								if (responded) return;
 								responded = true;
-								window.removeEventListener('message', resultHandler);
+								cleanup();
 								postMessageToHost({
 									type: 'toolResponse',
 									requestId,
@@ -2698,7 +2947,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								});
 							}, 120000);
 
-							executeQuery(sectionId);
+							executionId = executeQuery(sectionId) || '';
+							if (!executionId) {
+								responded = true;
+								cleanup();
+								postMessageToHost({
+									type: 'toolResponse', requestId,
+									result: { success: false, error: 'Query execution did not start.' },
+								});
+							}
 						}
 					}
 				} catch (err: any) {
@@ -2722,11 +2979,18 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const sectionId = String(message.sectionId || '');
 				
 				// Set up a one-time listener for the result
-				const resultHandler = (resultEvent: any) => {
+				let executionId = '';
+				let timeoutId: ReturnType<typeof setTimeout> | undefined;
+				const cleanup = () => {
+					window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener);
+					if (timeoutId) clearTimeout(timeoutId);
+				};
+				const resultHandler = (resultEvent: Event) => {
 					try {
-						const resultMsg = resultEvent && resultEvent.data;
+						const resultMsg = (resultEvent as CustomEvent).detail;
+						if (!executionId || String(resultMsg?.executionId || '') !== executionId) return;
 						if (resultMsg && resultMsg.type === 'queryResult' && resultMsg.boxId === sectionId) {
-							window.removeEventListener('message', resultHandler);
+							cleanup();
 							
 							const result = resultMsg.result || {};
 							const rows = result.rows || [];
@@ -2746,7 +3010,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								result: { success: true, rowCount, columns, resultPreview: preview }
 							});
 						} else if (resultMsg && resultMsg.type === 'queryError' && resultMsg.boxId === sectionId) {
-							window.removeEventListener('message', resultHandler);
+							cleanup();
 							postMessageToHost({ 
 								type: 'toolResponse', 
 								requestId, 
@@ -2756,14 +3020,21 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					} catch (e) { console.error('[kusto]', e); }
 				};
 				
-				window.addEventListener('message', resultHandler);
+				window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener);
 				
 				// Set timeout to clean up listener
-				setTimeout(() => {
-					window.removeEventListener('message', resultHandler);
+				timeoutId = setTimeout(() => {
+					cleanup();
 				}, 120000); // 2 minute timeout
 				
-				executeQuery(sectionId);
+				executionId = executeQuery(sectionId) || '';
+				if (!executionId) {
+					cleanup();
+					postMessageToHost({
+						type: 'toolResponse', requestId,
+						result: { success: false, error: 'Query execution did not start.' },
+					});
+				}
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -3016,6 +3287,34 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				let success = false;
 				const sqlEl = __kustoGetSqlSectionElement(sectionId);
 				const beforeSignature = getSectionSerializedSignature(sectionId);
+				if (!sqlEl) throw new Error(`SQL section "${sectionId}" was not found.`);
+				if (input.connectionId || input.serverUrl || (input.execute && input.resolvedConnection)) {
+					const requestedConnectionId = String(input.connectionId || input.resolvedConnection?.id || '');
+					const conn = (Array.isArray(sqlConnections) ? sqlConnections : []).find((candidate: any) =>
+						candidate && (requestedConnectionId
+							? String(candidate.id || '') === requestedConnectionId
+							: String(candidate.serverUrl || '').toLowerCase().includes(String(input.serverUrl).toLowerCase()))
+					) || (input.resolvedConnection && String(input.resolvedConnection.id || '') === requestedConnectionId
+						? input.resolvedConnection
+						: undefined);
+					if (!conn || (requestedConnectionId && String(conn.id || '') !== requestedConnectionId)) {
+						throw new Error('The exact requested SQL connection is not available in this editor.');
+					}
+					if (input.requestedTargetSignature && sqlConnectionTargetSignature(conn) !== String(input.requestedTargetSignature)) {
+						throw new Error('The requested SQL connection target changed before adoption.');
+					}
+					if (typeof sqlEl.configureToolTarget !== 'function') throw new Error('SQL section does not support exact tool targeting.');
+					sqlEl.configureToolTarget(
+						conn,
+						input.database !== undefined ? String(input.database) : undefined,
+						input.execute ? input.expectedExecutionOwner : undefined,
+					);
+					success = true;
+				}
+				if (input.execute && input.expectedExecutionOwner && !input.connectionId && !input.serverUrl && !input.resolvedConnection) {
+					if (typeof sqlEl.setToolExpectedOwner !== 'function') throw new Error('SQL section does not support exact tool ownership.');
+					sqlEl.setToolExpectedOwner(input.expectedExecutionOwner);
+				}
 
 				if (input.name !== undefined && sqlEl && typeof sqlEl.setName === 'function') {
 					sqlEl.setName(String(input.name));
@@ -3025,20 +3324,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					sqlEl.setQuery(String(input.query));
 					success = true;
 				}
-				if (input.serverUrl && sqlEl) {
-					const conn = (Array.isArray(sqlConnections) ? sqlConnections : []).find(
-						(c: any) => c && String(c.serverUrl || '').toLowerCase().includes(String(input.serverUrl).toLowerCase())
-					);
-					if (conn && typeof sqlEl.setSqlConnectionId === 'function') {
-						sqlEl.setSqlConnectionId(conn.id);
-						sqlEl.dispatchEvent(new CustomEvent('sql-connection-changed', {
-							detail: { boxId: sectionId, connectionId: conn.id, serverUrl: conn.serverUrl },
-							bubbles: true, composed: true,
-						}));
-						success = true;
-					}
-				}
-				if (input.database && sqlEl && typeof sqlEl.setDatabase === 'function') {
+				if (input.database && !input.connectionId && !input.serverUrl && !input.execute && sqlEl && typeof sqlEl.setDatabase === 'function') {
 					if (input.serverUrl) await new Promise((r: any) => setTimeout(r, 500));
 					sqlEl.setDatabase(String(input.database));
 					sqlEl.dispatchEvent(new CustomEvent('sql-database-changed', {
@@ -3051,18 +3337,51 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					// Force 'Run Query' mode (plain) — agent-generated queries must not
 					// have TOP 100 limits silently appended.
 					try { setRunMode(sectionId, 'plain'); } catch (e) { console.error('[kusto]', e); }
-					// Trigger execution via event
-					sqlEl.dispatchEvent(new CustomEvent('sql-run', { bubbles: true, composed: true }));
+					if (typeof sqlEl.runForTool !== 'function') throw new Error('SQL section does not support tool execution.');
+					const execution = await sqlEl.runForTool(String(input.executionId || ''));
+					(message as any).__resultPreview = `${execution.rowCount} row${execution.rowCount === 1 ? '' : 's'}`;
+					(message as any).__executionOwner = execution.owner;
+					(message as any).__executionId = execution.executionId;
 					success = true;
 				}
 				if (success) {
 					markSectionAgentTouched(sectionId, beforeSignature);
 					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				}
-				postMessageToHost({ type: 'toolResponse', requestId, result: { success } });
+				postMessageToHost({
+					type: 'toolResponse', requestId,
+					result: {
+						success,
+						...((message as any).__resultPreview ? { resultPreview: (message as any).__resultPreview } : {}),
+						...((message as any).__executionOwner ? { executionOwner: (message as any).__executionOwner } : {}),
+						...((message as any).__executionId ? { executionId: (message as any).__executionId } : {}),
+					},
+				});
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
+			break;
+
+		case 'toolCancelSqlExecution':
+			try {
+				const sqlEl = __kustoGetSqlSectionElement(String(message.sectionId || ''));
+				if (typeof sqlEl?.cancelToolRun === 'function') sqlEl.cancelToolRun(String(message.executionId || ''));
+			} catch (e) { console.error('[kusto]', e); }
+			break;
+
+		case 'toolCancelSqlCopilot':
+			try {
+				const requestId = String(message.requestId || '');
+				const cancellation = sqlCopilotToolCancellationByRequestId.get(requestId);
+				if (cancellation) {
+					cancellation();
+					break;
+				}
+				const sqlEl = __kustoGetSqlSectionElement(String(message.sectionId || ''));
+				if (sqlEl && String(sqlEl.getCopilotOwnerToken?.() || '') === String(message.expectedOwnerToken || '')) {
+					sqlEl.copilotWriteQueryCancel?.();
+				}
+			} catch (e) { console.error('[kusto]', e); }
 			break;
 
 		case 'toolGetSqlSchema':
@@ -3070,10 +3389,16 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const requestId = String(message.requestId || '');
 				const sectionId = String(message.sectionId || '');
 				const schema = schemaByBoxId[sectionId];
+				const sqlEl = __kustoGetSqlSectionElement(sectionId);
+				const owner = {
+					connectionId: typeof sqlEl?.getConnectionId === 'function' ? String(sqlEl.getConnectionId() || '') : '',
+					database: typeof sqlEl?.getDatabase === 'function' ? String(sqlEl.getDatabase() || '') : '',
+					ownerToken: typeof sqlEl?.getCopilotOwnerToken === 'function' ? String(sqlEl.getCopilotOwnerToken() || '') : '',
+				};
 				if (schema) {
-					postMessageToHost({ type: 'toolResponse', requestId, result: { success: true, schema } });
+					postMessageToHost({ type: 'toolResponse', requestId, result: { success: true, schema, owner } });
 				} else {
-					postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'No schema loaded for this section. Connect to a server and select a database first.' } });
+					postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'No schema loaded for this section. Connect to a server and select a database first.', owner } });
 				}
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
@@ -3191,17 +3516,20 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				let responded = false;
 				let generatedQuery = '';
 				let queryGenerated = false;
-				let pendingQueryResult: any = null; // Store queryResult if it arrives before copilotWriteQueryDone
+				let expectedExecutionId = '';
+				let pendingQueryTerminal: any = null;
 				let timeoutId: ReturnType<typeof setTimeout> | undefined;
+				const cleanup = () => {
+					window.removeEventListener('message', resultHandler);
+					window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
+					if (timeoutId !== undefined) clearTimeout(timeoutId);
+				};
 				
 				// Helper to send successful response
 				const sendSuccessResponse = (msg: any) => {
 					if (responded) return;
 					responded = true;
-					window.removeEventListener('message', resultHandler);
-					if (timeoutId !== undefined) {
-						clearTimeout(timeoutId);
-					}
+					cleanup();
 					
 					// Get current query from editor
 					try {
@@ -3261,6 +3589,17 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					try {
 						const msg = event && event.data;
 						if (!msg || responded) return;
+
+						if (msg.type === 'copilotWriteQueryExecuting' && msg.boxId === sectionId && msg.executing === true) {
+							const candidateExecutionId = String(msg.executionId || '');
+							const section = __kustoGetQuerySectionElement(sectionId);
+							if (candidateExecutionId
+								&& typeof section?.getActiveExecutionId === 'function'
+								&& section.getActiveExecutionId() === candidateExecutionId) {
+								expectedExecutionId = candidateExecutionId;
+							}
+							return;
+						}
 						
 						// Copilot finished generating/writing query
 						if (msg.type === 'copilotWriteQueryDone' && msg.boxId === sectionId) {
@@ -3272,10 +3611,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							
 							if (!msg.ok) {
 								responded = true;
-								window.removeEventListener('message', resultHandler);
-								if (timeoutId !== undefined) {
-									clearTimeout(timeoutId);
-								}
+								cleanup();
 								
 								// Don't call __kustoCopilotWriteQueryDone here — the regular
 								// 'copilotWriteQueryDone' handler already does it, and calling
@@ -3293,55 +3629,62 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								return;
 							}
 							
-							// If we already received queryResult, process it now
-							if (pendingQueryResult) {
-								sendSuccessResponse(pendingQueryResult);
+							if (pendingQueryTerminal?.type === 'queryResult') {
+								sendSuccessResponse(pendingQueryTerminal);
 								return;
 							}
-							// Otherwise wait for queryResult
-						}
-						
-						// Query results arrived
-						if (msg.type === 'queryResult' && msg.boxId === sectionId) {
-							if (queryGenerated) {
-								// copilotWriteQueryDone already arrived with ok=true, send response now
-								sendSuccessResponse(msg);
-							} else {
-								// copilotWriteQueryDone hasn't arrived yet, store for later
-								pendingQueryResult = msg;
+							if (pendingQueryTerminal?.type === 'queryError') {
+								responded = true;
+								cleanup();
+								postMessageToHost({
+									type: 'toolResponse', requestId,
+									result: {
+										success: false, query: generatedQuery || undefined,
+										error: pendingQueryTerminal.error || 'Query execution failed',
+									},
+								});
+								return;
 							}
-						}
-						
-						// Query execution error
-						if (msg.type === 'queryError' && msg.boxId === sectionId && queryGenerated) {
-							responded = true;
-							window.removeEventListener('message', resultHandler);
-							if (timeoutId !== undefined) {
-								clearTimeout(timeoutId);
-							}
-							
-							postMessageToHost({ 
-								type: 'toolResponse', 
-								requestId, 
-								result: { 
-									success: false,
-									query: generatedQuery || undefined,
-									error: msg.error || 'Query execution failed'
-								}
-							});
 						}
 					} catch (err: any) {
 						console.error('[Kusto Tools] Error in result handler:', err);
 					}
 				};
+
+				const terminalHandler = (event: Event) => {
+					const msg = (event as CustomEvent).detail;
+					if (!msg || responded || msg.boxId !== sectionId
+						|| !expectedExecutionId || String(msg.executionId || '') !== expectedExecutionId) return;
+					if (msg.type === 'queryResult') {
+						if (queryGenerated) sendSuccessResponse(msg);
+						else pendingQueryTerminal = msg;
+						return;
+					}
+					if (msg.type === 'queryError') {
+						if (!queryGenerated) {
+							pendingQueryTerminal = msg;
+							return;
+						}
+						responded = true;
+						cleanup();
+						postMessageToHost({
+							type: 'toolResponse', requestId,
+							result: {
+								success: false, query: generatedQuery || undefined,
+								error: msg.error || 'Query execution failed',
+							},
+						});
+					}
+				};
 				
 				window.addEventListener('message', resultHandler);
+				window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
 				
 				// Timeout after 3 minutes
 				timeoutId = setTimeout(() => {
 					if (!responded) {
 						responded = true;
-						window.removeEventListener('message', resultHandler);
+						cleanup();
 						
 						// Clear the Copilot chat "thinking..." state on timeout
 						// (unlike cancel/error, no regular handler will clear this)
@@ -3377,8 +3720,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					kwEl2.copilotWriteQuerySend();
 				} else {
 					// Clean up and report error
-					clearTimeout(timeoutId);
-					window.removeEventListener('message', resultHandler);
+					cleanup();
 					postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'Could not find send button or send function' } });
 				}
 				
@@ -3396,6 +3738,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					const requestId = String(message.requestId || '');
 					const input = message.input || {};
 					const question = String(input.question || '');
+					const expectedOwnerToken = String(input.expectedOwnerToken || '');
+					const expectedConnectionId = String(input.expectedConnectionId || '');
+					const expectedDatabase = String(input.expectedDatabase || '');
 					let sectionId = String(input.sectionId || '');
 					
 					// If no section specified, use the first SQL section
@@ -3421,6 +3766,40 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: `SQL section "${sectionId}" not found.` } });
 						return;
 					}
+					const capturedOwner = {
+						connectionId: expectedConnectionId,
+						database: expectedDatabase,
+						ownerToken: expectedOwnerToken,
+					};
+					const ownerIsCurrent = () => !!expectedOwnerToken
+						&& String(sqlEl.getCopilotOwnerToken?.() || '') === expectedOwnerToken
+						&& String(sqlEl.getConnectionId?.() || '') === expectedConnectionId
+						&& String(sqlEl.getDatabase?.() || '') === expectedDatabase;
+					const postOwnedFailure = (error: string, extra: Record<string, unknown> = {}) => postMessageToHost({
+						type: 'toolResponse', requestId,
+						result: { success: false, error, owner: capturedOwner, ...extra },
+					});
+					if (!ownerIsCurrent()) {
+						postOwnedFailure('SQL Copilot owner changed before dispatch.');
+						return;
+					}
+					let responded = false;
+					let resultHandler: ((event: any) => void) | undefined;
+					let timeoutId: ReturnType<typeof setTimeout> | undefined;
+					const cleanupDelegation = () => {
+						if (resultHandler) window.removeEventListener('message', resultHandler);
+						if (timeoutId) clearTimeout(timeoutId);
+						if (sqlCopilotToolCancellationByRequestId.get(requestId) === cancelDelegation) {
+							sqlCopilotToolCancellationByRequestId.delete(requestId);
+						}
+					};
+					const cancelDelegation = () => {
+						if (responded) return;
+						responded = true;
+						cleanupDelegation();
+						if (ownerIsCurrent()) sqlEl.copilotWriteQueryCancel?.();
+					};
+					sqlCopilotToolCancellationByRequestId.set(requestId, cancelDelegation);
 					
 					// Ensure copilot chat is visible
 					if (typeof sqlEl.setCopilotChatVisible === 'function') {
@@ -3434,27 +3813,40 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					markSectionAgentTouched(sectionId, beforeSignature);
 
 					await new Promise((r: any) => setTimeout(r, 150));
+					if (responded) return;
+					if (!ownerIsCurrent()) {
+						cleanupDelegation();
+						postOwnedFailure('SQL Copilot owner changed before dispatch.');
+						return;
+					}
 					
 					// Find the chat element
 					const chatEl = typeof sqlEl.getCopilotChatEl === 'function' ? sqlEl.getCopilotChatEl() : null;
 					if (!chatEl || typeof chatEl.setInputText !== 'function') {
+						cleanupDelegation();
 						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'SQL Copilot chat not available. Is Copilot enabled?' } });
 						return;
 					}
 					
+					if (!ownerIsCurrent()) {
+						cleanupDelegation();
+						postOwnedFailure('SQL Copilot owner changed before dispatch.');
+						return;
+					}
 					chatEl.setInputText(question);
 					
 					// Listen for results
-					let responded = false;
 					let generatedQuery = '';
 					
-					const resultHandler = (event: any) => {
+					resultHandler = (event: any) => {
 						try {
 							const msg = event && event.data;
 							if (!msg || responded) return;
-							if (msg.type === 'copilotWriteQueryDone' && msg.boxId === sectionId) {
+							if (msg.type === 'copilotWriteQueryDone' && msg.boxId === sectionId
+								&& String(msg.ownerToken || '') === expectedOwnerToken
+								&& String(sqlEl.getCopilotOwnerToken?.() || '') === expectedOwnerToken) {
 								responded = true;
-								window.removeEventListener('message', resultHandler);
+								cleanupDelegation();
 								try {
 									if (typeof sqlEl.getCopilotEditorValue === 'function') {
 										generatedQuery = sqlEl.getCopilotEditorValue() || '';
@@ -3462,27 +3854,39 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								} catch (e) { console.error('[kusto]', e); }
 								postMessageToHost({
 									type: 'toolResponse', requestId,
-									result: { success: !!msg.ok, answer: msg.ok ? 'Query generated successfully.' : (msg.message || 'Failed'), query: generatedQuery || undefined, error: msg.ok ? undefined : (msg.message || 'Failed') }
+									result: {
+										success: !!msg.ok,
+										answer: msg.ok ? 'Query generated successfully.' : (msg.message || 'Failed'),
+										query: generatedQuery || undefined,
+										error: msg.ok ? undefined : (msg.message || 'Failed'),
+										owner: {
+											connectionId: typeof sqlEl.getConnectionId === 'function' ? String(sqlEl.getConnectionId() || '') : '',
+											database: typeof sqlEl.getDatabase === 'function' ? String(sqlEl.getDatabase() || '') : '',
+											ownerToken: typeof sqlEl.getCopilotOwnerToken === 'function' ? String(sqlEl.getCopilotOwnerToken() || '') : '',
+										},
+									}
 								});
 							}
 						} catch (err: any) { console.error('[kusto]', err); }
 					};
 					
 					window.addEventListener('message', resultHandler);
-					setTimeout(() => {
+					timeoutId = setTimeout(() => {
 						if (!responded) {
-							responded = true;
-							window.removeEventListener('message', resultHandler);
-							postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, timedOut: true, error: 'Request timed out after 3 minutes' } });
+							cancelDelegation();
+							postOwnedFailure('Request timed out after 3 minutes', { timedOut: true });
 						}
 					}, 180000);
 					
 					// Send the message
 					const sendBtn = chatEl.shadowRoot?.querySelector('.send-btn') as HTMLElement | null;
-					if (sendBtn) sendBtn.click();
+					if (!ownerIsCurrent()) {
+						cleanupDelegation();
+						postOwnedFailure('SQL Copilot owner changed before dispatch.');
+					} else if (sendBtn) sendBtn.click();
 					else {
-						window.removeEventListener('message', resultHandler);
-						postMessageToHost({ type: 'toolResponse', requestId, result: { success: false, error: 'Could not find send button' } });
+						cleanupDelegation();
+						postOwnedFailure('Could not find send button');
 					}
 				} catch (err: any) {
 					console.error('[kusto]', err);

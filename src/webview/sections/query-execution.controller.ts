@@ -64,6 +64,7 @@ export interface ExecutionSectionHost extends ReactiveControllerHost, HTMLElemen
  */
 export class QueryExecutionController implements ReactiveController {
 	host: ExecutionSectionHost;
+	private activeExecutionId = '';
 
 	constructor(host: ExecutionSectionHost) {
 		this.host = host;
@@ -75,6 +76,7 @@ export class QueryExecutionController implements ReactiveController {
 	}
 
 	hostDisconnected(): void {
+		this.activeExecutionId = '';
 		// Clean up execution timer for this box.
 		const id = this.host.boxId;
 		if (id && queryExecutionTimers[id]) {
@@ -212,6 +214,52 @@ export class QueryExecutionController implements ReactiveController {
 	}
 
 	// ── Execution state ───────────────────────────────────────────────────────
+
+	beginQueryExecution(executionId: string): boolean {
+		const id = String(executionId || '').trim();
+		if (!id) return false;
+		this.activeExecutionId = id;
+		this.setQueryExecuting(true);
+		return true;
+	}
+
+	setExternalQueryExecuting(executing: boolean, executionId: string): boolean {
+		const id = String(executionId || '').trim();
+		if (!id) return false;
+		if (executing) {
+			if (this.activeExecutionId && this.activeExecutionId !== id) return false;
+			this.activeExecutionId = id;
+			this.setQueryExecuting(true);
+			return true;
+		}
+		if (this.activeExecutionId !== id) return false;
+		this.activeExecutionId = '';
+		this.setQueryExecuting(false);
+		return true;
+	}
+
+	getActiveExecutionId(): string {
+		return this.activeExecutionId;
+	}
+
+	acceptsQueryTerminal(executionId: string): boolean {
+		const id = String(executionId || '').trim();
+		return !!id && this.activeExecutionId === id;
+	}
+
+	completeQueryExecution(executionId: string): boolean {
+		if (!this.acceptsQueryTerminal(executionId)) return false;
+		this.activeExecutionId = '';
+		return true;
+	}
+
+	cancelActiveQueryExecution(): string | undefined {
+		const executionId = this.activeExecutionId;
+		if (!executionId) return undefined;
+		this.activeExecutionId = '';
+		this.setQueryExecuting(false);
+		return executionId;
+	}
 
 	setQueryExecuting(executing: any): void {
 		const boxId = this.host.boxId;
@@ -1254,12 +1302,16 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 
 // ── executeQuery — cross-box (comparison rerun logic), standalone ──────────────
 
-export function executeQuery(boxId: any, mode?: any) {
+function createKustoExecutionId(): string {
+	return `kusto-run-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
+}
+
+export function executeQuery(boxId: any, mode?: any): string | undefined {
 	const effectiveMode = mode || getRunMode(boxId);
 	// Run Function mode — divert to the dedicated async handler.
 	if (effectiveMode === 'runFunction') {
 		executeRunFunction(String(boxId || '').trim());
-		return;
+		return undefined;
 	}
 	try { if (typeof _win.__kustoClearAutoFindInQueryEditor === 'function') _win.__kustoClearAutoFindInQueryEditor(boxId); } catch (e) { console.error('[kusto]', e); }
 	const __kustoExtractStatementAtCursor = (editor: any) => {
@@ -1325,7 +1377,7 @@ export function executeQuery(boxId: any, mode?: any) {
 				if (statement) query = statement;
 				else {
 					try { postMessageToHost({ type: 'showInfo', message: 'Place the cursor inside a query statement (not on a separator) to run that statement.' }); } catch (e) { console.error('[kusto]', e); }
-					return;
+					return undefined;
 				}
 			}
 		}
@@ -1371,36 +1423,44 @@ export function executeQuery(boxId: any, mode?: any) {
 		if (pending || desiredPending || dbDisabled) {
 			__kustoLog(boxId, 'run.blocked', 'Blocked run because selection is still updating', { pending, desiredPending, dbDisabled, connectionId, database }, 'warn');
 			try { postMessageToHost({ type: 'showInfo', message: 'Waiting for the selected favorite to finish applying (loading databases/schema). Try Run again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
-			return;
+			return undefined;
 		}
 	} catch (e) { console.error('[kusto]', e); }
-	if (!query.trim()) return;
-	if (!connectionId) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); } return; }
-	if (!database) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); } return; }
+	if (!query.trim()) return undefined;
+	if (!connectionId) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); } return undefined; }
+	if (!database) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); } return undefined; }
 	__kustoLog(boxId, 'run.start', 'Executing query', { connectionId, database, queryMode: effectiveMode });
 	try { delete pState.queryResultJsonByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-	setQueryExecuting(boxId, true);
+	const executionId = createKustoExecutionId();
+	const section = __kustoGetQuerySectionElement(String(boxId || ''));
+	if (typeof section?.beginQueryExecution === 'function') section.beginQueryExecution(executionId);
+	else setQueryExecuting(boxId, true);
 	closeRunMenu(boxId);
 	try { lastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled; } catch (e) { console.error('[kusto]', e); }
 	pState.lastExecutedBox = boxId;
-	postMessageToHost({ type: 'executeQuery', query, queryMode: effectiveMode, connectionId, database, boxId, cacheEnabled, cacheValue, cacheUnit });
+	postMessageToHost({ type: 'executeQuery', query, queryMode: effectiveMode, connectionId, database, boxId, executionId, cacheEnabled, cacheValue, cacheUnit });
+	return executionId;
 }
 
 // ── executeQueryDirect — execute an arbitrary query string for a given box ─────
 
-export function executeQueryDirect(boxId: string, query: string): void {
+export function executeQueryDirect(boxId: string, query: string): string | undefined {
 	const id = String(boxId || '').trim();
-	if (!id || !query.trim()) return;
+	if (!id || !query.trim()) return undefined;
 	const connectionId = __kustoGetConnectionId(id);
 	const database = __kustoGetDatabase(id);
-	if (!connectionId) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); } return; }
-	if (!database) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); } return; }
+	if (!connectionId) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a cluster connection' }); } catch (e) { console.error('[kusto]', e); } return undefined; }
+	if (!database) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); } return undefined; }
 	__kustoLog(id, 'run.start', 'Executing inline function query', { connectionId, database, queryMode: 'plain' });
 	try { delete pState.queryResultJsonByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
-	setQueryExecuting(id, true);
+	const executionId = createKustoExecutionId();
+	const section = __kustoGetQuerySectionElement(id);
+	if (typeof section?.beginQueryExecution === 'function') section.beginQueryExecution(executionId);
+	else setQueryExecuting(id, true);
 	closeRunMenu(id);
 	pState.lastExecutedBox = id;
-	postMessageToHost({ type: 'executeQuery', query, queryMode: 'plain', connectionId, database, boxId: id, cacheEnabled: false, cacheValue: 1, cacheUnit: 'h' });
+	postMessageToHost({ type: 'executeQuery', query, queryMode: 'plain', connectionId, database, boxId: id, executionId, cacheEnabled: false, cacheValue: 1, cacheUnit: 'h' });
+	return executionId;
 }
 
 // ── executeRunFunction — parse function def, collect params, assemble, run ─────
@@ -1544,11 +1604,17 @@ export async function executeRunFunction(boxId: string): Promise<void> {
 // ── Window bridges (module-scope, assigned at load time) ──────────────────────
 
 _win.cancelQuery = function cancelQuery(boxId: any) {
+	const section = __kustoGetQuerySectionElement(String(boxId || ''));
+	const executionId = typeof section?.cancelActiveQueryExecution === 'function'
+		? section.cancelActiveQueryExecution()
+		: undefined;
+	if (!executionId) return;
 	try {
 		const cancelBtn = document.getElementById(boxId + '_cancel_btn') as any;
 		if (cancelBtn) cancelBtn.disabled = true;
 	} catch (e) { console.error('[kusto]', e); }
-	try { postMessageToHost({ type: 'cancelQuery', boxId }); } catch (e) { console.error('[kusto]', e); }
+	try { section.displayCancelled?.(); } catch (e) { console.error('[kusto]', e); }
+	try { postMessageToHost({ type: 'cancelQuery', boxId, executionId }); } catch (e) { console.error('[kusto]', e); }
 };
 
 _win.executeQuery = executeQuery;

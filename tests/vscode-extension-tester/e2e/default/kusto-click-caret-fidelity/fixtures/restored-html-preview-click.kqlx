@@ -2,8 +2,6 @@
   "kind": "kqlx",
   "version": 1,
   "state": {
-    "caretDocsEnabled": true,
-    "autoTriggerAutocompleteEnabled": false,
     "sections": [
       {
         "id": "html_click_fidelity_restored",
@@ -24,6 +22,8 @@
         "editorHeightPx": 260,
         "resultsVisible": false
       }
-    ]
+    ],
+    "caretDocsEnabled": true,
+    "autoTriggerAutocompleteEnabled": false
   }
 }

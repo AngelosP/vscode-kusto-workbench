@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { __kustoGetChartDatasetsInDomOrder } from '../../src/webview/core/section-factory';
-import { setResultsState } from '../../src/webview/core/results-state';
+import { clearResultsState, setResultsState } from '../../src/webview/core/results-state';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -165,5 +165,31 @@ describe('__kustoGetChartDatasetsInDomOrder', () => {
 		// query_1 is section #1, markdown is #2, query_2 is section #3
 		expect(datasets[0].label).toBe('First [section #1]');
 		expect(datasets[1].label).toBe('Second [section #3]');
+	});
+});
+
+describe('dependent chart cascade', () => {
+	afterEach(() => {
+		teardownDom();
+		const chartState = (window as any).chartStateByBoxId || {};
+		for (const key of Object.keys(chartState)) delete chartState[key];
+	});
+
+	it('uses chart.refresh when source results are cleared', async () => {
+		const container = setupDom([{ id: 'sql_source', name: 'SQL' }]);
+		const chart = document.createElement('div') as HTMLDivElement & { refresh: ReturnType<typeof vi.fn> };
+		chart.id = 'chart_1';
+		chart.refresh = vi.fn();
+		container.appendChild(chart);
+		const chartState = (window as any).chartStateByBoxId || ((window as any).chartStateByBoxId = {});
+		chartState.chart_1 = { dataSourceId: 'sql_source' };
+		const legacyRender = vi.fn();
+		(window as any).__kustoRenderChart = legacyRender;
+		setFakeResults('sql_source');
+
+		clearResultsState('sql_source');
+		await vi.waitFor(() => expect(chart.refresh).toHaveBeenCalled());
+
+		expect(legacyRender).not.toHaveBeenCalled();
 	});
 });

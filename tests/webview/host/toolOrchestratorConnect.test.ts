@@ -22,8 +22,37 @@ const fakeConnectionManager = {
 	getConnections: () => [],
 } as any;
 
-const fakeGetSqlConnMgr = () => ({ getConnections: () => [] }) as any;
+const defaultSqlConnection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'aad' };
+const fakeGetSqlConnMgr = () => ({
+	getConnections: () => [],
+	getConnection: (id: string) => id === defaultSqlConnection.id ? defaultSqlConnection : undefined,
+	assertConnectionCurrent: vi.fn(async () => undefined),
+}) as any;
 const fakeKustoClient = {} as any;
+
+function deferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	const promise = new Promise<T>(res => { resolve = res; });
+	return { promise, resolve };
+}
+
+function cancellationToken() {
+	let cancelled = false;
+	const listeners = new Set<() => void>();
+	return {
+		token: {
+			get isCancellationRequested() { return cancelled; },
+			onCancellationRequested(listener: () => void) {
+				listeners.add(listener);
+				return { dispose: () => listeners.delete(listener) };
+			},
+		} as vscode.CancellationToken,
+		cancel() {
+			cancelled = true;
+			for (const listener of [...listeners]) listener();
+		},
+	};
+}
 
 function resetOpenEditorState(): void {
 	(vscode.window as any).activeTextEditor = undefined;
@@ -72,6 +101,24 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(result.sections[0].id).toBe('q1');
 	});
 
+	it('keeps Kusto optimization comparisons in tool inventory when SQL privacy is enabled elsewhere', async () => {
+		const connection = { id: 'sql-sensitive', name: 'Sensitive', serverUrl: 'secret.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const refreshPolicy = vi.fn(async () => ['sql-sensitive']);
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient,
+			refreshPolicy, vi.fn(async () => undefined),
+		);
+		orch.connect(vi.fn(), vi.fn(async () => [
+			{ id: 'query_source', type: 'query', clusterUrl: 'https://cluster.kusto.windows.net', database: 'Db' },
+			{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'query_source', clusterUrl: 'https://cluster.kusto.windows.net', database: 'Db' },
+		]), vi.fn(), undefined, () => undefined);
+
+		const result = await orch.listSections();
+		expect(result.sections.map(section => section.id)).toEqual(['query_source', 'query_cmp']);
+		expect(refreshPolicy).not.toHaveBeenCalled();
+	});
+
 	it('disconnectIfOwner with matching token clears callbacks', async () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const token = orch.connect(vi.fn(), vi.fn(async () => []), vi.fn());
@@ -113,6 +160,319 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		orch.postToActiveWebview({ type: 'test' });
 		expect(posterA).not.toHaveBeenCalled();
 		expect(posterB).toHaveBeenCalledWith({ type: 'test' });
+	});
+
+	it('blocks SQL schema agent dispatch when the live owner is Leave No Trace', async () => {
+		const connection = { id: 'sql-sensitive', name: 'Sensitive', serverUrl: 'secret.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const refreshPolicy = vi.fn(async () => ['sql-sensitive']);
+		const assertAllowed = vi.fn(async () => { throw new Error('Leave No Trace blocked'); });
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext,
+			fakeConnectionManager,
+			() => sqlManager,
+			fakeKustoClient,
+			refreshPolicy,
+			assertAllowed,
+		);
+		const poster = vi.fn(() => true);
+		orch.connect(
+			poster,
+			vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]),
+			vi.fn(),
+			undefined,
+			sectionId => sectionId === 'sql_1' ? 'sql-sensitive' : undefined,
+		);
+
+		await expect(orch.getSqlSchema({ sectionId: 'sql_1' })).rejects.toThrow('Leave No Trace blocked');
+		expect(refreshPolicy).toHaveBeenCalledTimes(1);
+		expect(poster).not.toHaveBeenCalled();
+	});
+
+	it('rejects SQL schema agent data when policy changes before response admission', async () => {
+		const connection = { id: 'sql-sensitive', name: 'Sensitive', serverUrl: 'secret.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		let allowed = true;
+		const refreshPolicy = vi.fn(async () => allowed ? [] : ['sql-sensitive']);
+		const assertAllowed = vi.fn(async () => {
+			if (!allowed) throw new Error('Leave No Trace blocked');
+		});
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext,
+			fakeConnectionManager,
+			() => sqlManager,
+			fakeKustoClient,
+			refreshPolicy,
+			assertAllowed,
+		);
+		const poster = vi.fn(() => true);
+		orch.connect(
+			poster,
+			vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]),
+			vi.fn(),
+			undefined,
+			sectionId => sectionId === 'sql_1' ? 'sql-sensitive' : undefined,
+		);
+
+		const request = orch.getSqlSchema({ sectionId: 'sql_1' });
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledTimes(1));
+		const message = poster.mock.calls[0][0] as any;
+		allowed = false;
+		orch.handleWebviewResponse(message.requestId, {
+			success: true,
+			schema: { tables: ['Secret'] },
+			owner: { connectionId: 'sql-sensitive', database: 'Db', ownerToken: 'owner-a' },
+		});
+
+		await expect(request).rejects.toThrow('Leave No Trace blocked');
+		expect(refreshPolicy).toHaveBeenCalledTimes(2);
+	});
+
+	it('rejects SQL schema agent data when composite owner admission fails after response validation', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const dispatchOwner = vi.fn(async () => { throw new Error('canonical owner changed'); });
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient,
+			vi.fn(async () => []), vi.fn(async () => undefined), () => 0, dispatchOwner,
+		);
+		const poster = vi.fn(() => true);
+		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
+
+		const request = orch.getSqlSchema({ sectionId: 'sql_1' });
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		const message = poster.mock.calls[0][0] as any;
+		orch.handleWebviewResponse(message.requestId, {
+			success: true, schema: { tables: ['Secret'] },
+			owner: { connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-a' },
+		});
+
+		await expect(request).rejects.toThrow('canonical owner changed');
+		expect(dispatchOwner).toHaveBeenCalledOnce();
+	});
+
+	it('rejects delegated SQL Copilot data when composite owner admission fails after response validation', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const dispatchOwner = vi.fn(async () => { throw new Error('canonical owner changed'); });
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient,
+			vi.fn(async () => []), vi.fn(async () => undefined), () => 0, dispatchOwner,
+		);
+		const poster = vi.fn(() => true);
+		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
+
+		const request = orch.delegateToSqlCopilot({ sectionId: 'sql_1', question: 'Write a query' });
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		const message = poster.mock.calls[0][0] as any;
+		orch.handleWebviewResponse(message.requestId, {
+			success: true, answer: 'done', query: 'SELECT Secret FROM T',
+			owner: { connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-a' },
+		});
+
+		await expect(request).rejects.toThrow('canonical owner changed');
+		expect(dispatchOwner).toHaveBeenCalledOnce();
+	});
+
+	it.each(['schema', 'copilot'] as const)('rejects %s data when the local database changes inside composite admission', async kind => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		let liveOwner = { connectionId: 'sql-test', database: 'DbA', ownerToken: 'owner-a', generation: 1 };
+		const dispatchOwner = vi.fn(async (_connection: unknown, _principal: string, _revocation: number, dispatch: () => unknown) => {
+			liveOwner = { ...liveOwner, database: 'DbB', generation: 2 };
+			return await dispatch();
+		});
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient,
+			vi.fn(async () => []), vi.fn(async () => undefined), () => 0, dispatchOwner,
+		);
+		const poster = vi.fn(() => true);
+		orch.connect(
+			poster,
+			vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'DbA', ownerToken: 'owner-a' }]),
+			vi.fn(), undefined, () => 'sql-test', () => liveOwner,
+		);
+
+		const request = kind === 'schema'
+			? orch.getSqlSchema({ sectionId: 'sql_1' })
+			: orch.delegateToSqlCopilot({ sectionId: 'sql_1', question: 'Write a query' });
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		const message = poster.mock.calls[0][0] as any;
+		orch.handleWebviewResponse(message.requestId, kind === 'schema'
+			? { success: true, schema: { tables: ['Secret'] }, owner: { connectionId: 'sql-test', database: 'DbA', ownerToken: 'owner-a' } }
+			: { success: true, answer: 'done', query: 'SELECT 1', owner: { connectionId: 'sql-test', database: 'DbA', ownerToken: 'owner-a' } });
+
+		await expect(request).rejects.toThrow('owner changed');
+	});
+
+	it('rejects SQL schema data when the full live owner disappears inside composite admission', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		let liveOwner: { connectionId: string; database: string; ownerToken: string; generation: number } | undefined = {
+			connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-a', generation: 1,
+		};
+		const dispatchOwner = vi.fn(async (_connection: unknown, _principal: string, _revocation: number, dispatch: () => unknown) => {
+			liveOwner = undefined;
+			return await dispatch();
+		});
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient,
+			vi.fn(async () => []), vi.fn(async () => undefined), () => 0, dispatchOwner,
+		);
+		const poster = vi.fn(() => true);
+		orch.connect(
+			poster,
+			vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]),
+			vi.fn(), undefined, () => 'sql-test', () => liveOwner,
+		);
+
+		const request = orch.getSqlSchema({ sectionId: 'sql_1' });
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		const message = poster.mock.calls[0][0] as any;
+		orch.handleWebviewResponse(message.requestId, {
+			success: true, schema: { tables: ['Secret'] },
+			owner: { connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-a' },
+		});
+
+		await expect(request).rejects.toThrow('owner disappeared');
+	});
+
+	it('keeps SQL schema dispatch bound to the editor captured before preflight', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const preflight = deferred<void>();
+		let assertions = 0;
+		const sqlManager = {
+			getConnections: () => [connection],
+			getConnection: () => connection,
+			assertConnectionCurrent: vi.fn(async () => { if (++assertions === 1) await preflight.promise; }),
+		} as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
+		const firstPoster = vi.fn(() => true);
+		const secondPoster = vi.fn(() => true);
+		orch.connect(firstPoster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
+
+		const request = orch.getSqlSchema({ sectionId: 'sql_1' });
+		await vi.waitFor(() => expect(sqlManager.assertConnectionCurrent).toHaveBeenCalledOnce());
+		orch.connect(secondPoster, vi.fn(async () => [{ id: 'sql_2', type: 'sql' }]), vi.fn(), undefined, () => 'sql-test');
+		preflight.resolve();
+
+		await vi.waitFor(() => expect(firstPoster).toHaveBeenCalledOnce());
+		expect(secondPoster).not.toHaveBeenCalled();
+		const message = firstPoster.mock.calls[0][0] as any;
+		orch.handleWebviewResponse(message.requestId, {
+			success: true, schema: { tables: ['A'] },
+			owner: { connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-a' },
+		});
+		await expect(request).resolves.toMatchObject({ success: true, schema: { tables: ['A'] } });
+	});
+
+	it('keeps SQL Copilot dispatch bound to the editor captured before preflight', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const preflight = deferred<void>();
+		let assertions = 0;
+		const sqlManager = {
+			getConnections: () => [connection],
+			getConnection: () => connection,
+			assertConnectionCurrent: vi.fn(async () => { if (++assertions === 1) await preflight.promise; }),
+		} as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
+		const firstPoster = vi.fn(() => true);
+		const secondPoster = vi.fn(() => true);
+		orch.connect(firstPoster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
+
+		const request = orch.delegateToSqlCopilot({ sectionId: 'sql_1', question: 'Write a query' });
+		await vi.waitFor(() => expect(sqlManager.assertConnectionCurrent).toHaveBeenCalledOnce());
+		orch.connect(secondPoster, vi.fn(async () => [{ id: 'sql_2', type: 'sql' }]), vi.fn(), undefined, () => 'sql-test');
+		preflight.resolve();
+
+		await vi.waitFor(() => expect(firstPoster).toHaveBeenCalledOnce());
+		expect(secondPoster).not.toHaveBeenCalled();
+		const message = firstPoster.mock.calls[0][0] as any;
+		orch.handleWebviewResponse(message.requestId, {
+			success: true, answer: 'Query generated successfully.', query: 'SELECT 1',
+			owner: { connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-a' },
+		});
+		await expect(request).resolves.toMatchObject({ success: true, query: 'SELECT 1' });
+	});
+
+	it('tears down the captured SQL Copilot owner when tool cancellation is requested', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
+		const poster = vi.fn(() => true);
+		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
+		const cancellation = cancellationToken();
+
+		const request = orch.delegateToSqlCopilot({ sectionId: 'sql_1', question: 'Write a query' }, cancellation.token);
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		const dispatch = poster.mock.calls[0][0] as any;
+		cancellation.cancel();
+
+		await expect(request).rejects.toMatchObject({ name: 'Canceled' });
+		expect(poster).toHaveBeenCalledWith({
+			type: 'toolCancelSqlCopilot', requestId: dispatch.requestId,
+			sectionId: 'sql_1', expectedOwnerToken: 'owner-a',
+		});
+	});
+
+	it('preserves an actionable schema-unavailable failure after host owner revalidation', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
+		const poster = vi.fn(() => true);
+		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
+
+		const request = orch.getSqlSchema({ sectionId: 'sql_1' });
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		const message = poster.mock.calls[0][0] as any;
+		orch.handleWebviewResponse(message.requestId, { success: false, error: 'No schema loaded.' });
+
+		await expect(request).resolves.toEqual({ success: false, error: 'No schema loaded.' });
+	});
+
+	it('preserves an actionable SQL Copilot timeout after host owner revalidation', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
+		const poster = vi.fn(() => true);
+		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
+
+		const request = orch.delegateToSqlCopilot({ sectionId: 'sql_1', question: 'Write a query' });
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		const message = poster.mock.calls[0][0] as any;
+		orch.handleWebviewResponse(message.requestId, { success: false, answer: '', timedOut: true, error: 'Request timed out.' });
+
+		await expect(request).resolves.toMatchObject({ success: false, timedOut: true, error: 'Request timed out.' });
+	});
+
+	it('rejects SQL schema data when the section database changes before completion', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
+		const poster = vi.fn(() => true);
+		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'DbA', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
+
+		const request = orch.getSqlSchema({ sectionId: 'sql_1' });
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		const message = poster.mock.calls[0][0] as any;
+		orch.handleWebviewResponse(message.requestId, { success: true, schema: {}, owner: { connectionId: 'sql-test', database: 'DbB', ownerToken: 'owner-a' } });
+
+		await expect(request).rejects.toThrow('owner changed');
+	});
+
+	it('rejects SQL Copilot data when the section owner token changes before completion', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, vi.fn(async () => []), vi.fn(async () => undefined));
+		const poster = vi.fn(() => true);
+		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db', ownerToken: 'owner-a' }]), vi.fn(), undefined, () => 'sql-test');
+
+		const request = orch.delegateToSqlCopilot({ sectionId: 'sql_1', question: 'Write a query' });
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		const message = poster.mock.calls[0][0] as any;
+		orch.handleWebviewResponse(message.requestId, { success: true, answer: 'done', owner: { connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-b' } });
+
+		await expect(request).rejects.toThrow('owner changed');
 	});
 
 	it('postToAllWebviews snapshots live connections and isolates disposed posters', async () => {
@@ -376,12 +736,12 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
 		const sqlUri = vscode.Uri.file('/work/query.sql');
 		const notebookUri = vscode.Uri.file('/work/later-notebook.kqlx');
-		const sqlPoster = vi.fn();
+		const sqlPoster = vi.fn(() => true);
 		const notebookPoster = vi.fn();
 		const sqlStateGetter = vi.fn(async () => [{ id: 'sql_1', type: 'sql', name: 'SQL', serverUrl: 'server.example', database: 'db' }]);
 		const notebookStateGetter = vi.fn(async () => [{ id: 'notebook_query', type: 'query' }]);
 
-		orch.connect(sqlPoster, sqlStateGetter, vi.fn(), sqlUri.toString());
+		orch.connect(sqlPoster, sqlStateGetter, vi.fn(), sqlUri.toString(), sectionId => sectionId === 'sql_1' ? 'sql-test' : undefined);
 		orch.connect(notebookPoster, notebookStateGetter, vi.fn(), notebookUri.toString());
 		setActiveCustomTab(sqlUri, 'kusto.sqlCompatEditor');
 
@@ -392,12 +752,253 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(result.fileName).toBe('query.sql');
 
 		const configurePromise = orch.configureSqlSection({ sectionId: 'sql_1', query: 'select 1' });
-		expect(sqlPoster).toHaveBeenCalledTimes(1);
+		await vi.waitFor(() => expect(sqlPoster).toHaveBeenCalledTimes(1));
 		expect(notebookPoster).not.toHaveBeenCalled();
 		const postedMessage = sqlPoster.mock.calls[0][0] as any;
 		expect(postedMessage.type).toBe('toolConfigureSqlSection');
 		orch.handleWebviewResponse(postedMessage.requestId, { success: true });
 		await expect(configurePromise).resolves.toEqual({ success: true });
+	});
+
+	it('rejects SQL tool success when the same connection ID changes target before response admission', async () => {
+		let connection = {
+			id: 'sql-test', name: 'SQL', serverUrl: 'server-a.example', dialect: 'mssql', authType: 'aad',
+		};
+		const sqlManager = {
+			getConnections: () => [connection],
+			getConnection: () => connection,
+			assertConnectionCurrent: vi.fn(async () => undefined),
+		} as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient);
+		const poster = vi.fn(() => true);
+		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql' }]), vi.fn(), undefined, () => 'sql-test');
+
+		const request = orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', query: 'SELECT 1' });
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		const message = poster.mock.calls[0][0] as any;
+		connection = { ...connection, serverUrl: 'server-b.example' };
+		orch.handleWebviewResponse(message.requestId, { success: true });
+
+		await expect(request).rejects.toThrow('target changed during tool execution');
+	});
+
+	it('admits configure-and-execute against the post-adoption SQL owner', async () => {
+		const connectionA = {
+			id: 'sql-a', name: 'SQL A', serverUrl: 'server-a.example', dialect: 'mssql', authType: 'sql-login', username: 'user-a',
+		};
+		const connectionB = {
+			id: 'sql-b', name: 'SQL B', serverUrl: 'server-b.example', dialect: 'mssql', authType: 'sql-login', username: 'user-b',
+		};
+		const sqlManager = {
+			getConnections: () => [connectionA, connectionB],
+			getConnection: (id: string) => id === connectionA.id ? connectionA : id === connectionB.id ? connectionB : undefined,
+			assertConnectionCurrent: vi.fn(async () => undefined),
+		} as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient);
+		const poster = vi.fn(() => true);
+		let liveOwner = { connectionId: 'sql-a', database: 'DbA', ownerToken: 'owner-a', generation: 1 };
+		orch.connect(
+			poster,
+			vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: liveOwner.database, ownerToken: liveOwner.ownerToken }]),
+			vi.fn(), undefined,
+			() => liveOwner.connectionId,
+			() => ({ ...liveOwner }),
+		);
+
+		const request = orch.configureSqlSection({
+			sectionId: 'sql_1', connectionId: 'sql-b', database: 'DbB', query: 'SELECT 1', execute: true,
+		});
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		const message = poster.mock.calls[0][0] as any;
+		expect(message.input.resolvedConnection.id).toBe('sql-b');
+		expect(message.input.expectedExecutionOwner).toMatchObject({ connectionId: 'sql-b', database: 'DbB' });
+		liveOwner = { connectionId: 'sql-b', database: 'DbB', ownerToken: 'owner-b', generation: 2 };
+		orch.handleWebviewResponse(message.requestId, {
+			success: true, resultPreview: '1 row', executionId: message.input.executionId, executionOwner: { ...liveOwner },
+		});
+
+		await expect(request).resolves.toEqual({ success: true, resultPreview: '1 row' });
+	});
+
+	it('dispatches SQL configuration to the editor captured before asynchronous preflight', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'aad' };
+		const preflight = deferred<void>();
+		const assertAllowed = vi.fn(async () => preflight.promise);
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, undefined, assertAllowed);
+		const firstPoster = vi.fn(() => true);
+		const secondPoster = vi.fn();
+		orch.connect(firstPoster, vi.fn(async () => [{ id: 'sql_1', type: 'sql' }]), vi.fn(), undefined, () => 'sql-test');
+
+		const request = orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', query: 'SELECT 1' });
+		await vi.waitFor(() => expect(assertAllowed).toHaveBeenCalled());
+		orch.connect(secondPoster, vi.fn(async () => [{ id: 'sql_2', type: 'sql' }]), vi.fn(), undefined, () => 'sql-test');
+		preflight.resolve();
+
+		await vi.waitFor(() => expect(firstPoster).toHaveBeenCalledOnce());
+		expect(secondPoster).not.toHaveBeenCalled();
+		const message = firstPoster.mock.calls[0][0] as any;
+		orch.handleWebviewResponse(message.requestId, { success: true });
+		await expect(request).resolves.toEqual({ success: true });
+	});
+
+	it('does not acquire an editor that opens after SQL configuration starts without one', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'aad' };
+		const assertAllowed = vi.fn(async () => undefined);
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, undefined, assertAllowed);
+		const latePoster = vi.fn(() => true);
+
+		const request = orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', query: 'SELECT 1' });
+		orch.connect(latePoster, vi.fn(async () => [{ id: 'sql_1', type: 'sql' }]), vi.fn(), undefined, () => 'sql-test');
+
+		await expect(request).rejects.toThrow('not currently open with a live editor');
+		expect(assertAllowed).not.toHaveBeenCalled();
+		expect(latePoster).not.toHaveBeenCalled();
+	});
+
+	it('does not dispatch SQL configuration when cancellation occurs during preflight', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'aad' };
+		const preflight = deferred<void>();
+		const assertAllowed = vi.fn(async () => preflight.promise);
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, undefined, assertAllowed);
+		const poster = vi.fn(() => true);
+		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql' }]), vi.fn(), undefined, () => 'sql-test');
+		const cancellation = cancellationToken();
+
+		const request = orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', query: 'SELECT 1' }, cancellation.token);
+		await vi.waitFor(() => expect(assertAllowed).toHaveBeenCalled());
+		cancellation.cancel();
+		preflight.resolve();
+
+		await expect(request).rejects.toMatchObject({ name: 'Canceled' });
+		expect(poster).not.toHaveBeenCalled();
+	});
+
+	it('rejects when the captured editor closes during preflight before dispatch registration', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'aad' };
+		const preflight = deferred<void>();
+		const assertAllowed = vi.fn(async () => preflight.promise);
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient, undefined, assertAllowed);
+		const poster = vi.fn(() => true);
+		const token = orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql' }]), vi.fn(), undefined, () => 'sql-test');
+
+		const request = orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', query: 'SELECT 1' });
+		await vi.waitFor(() => expect(assertAllowed).toHaveBeenCalled());
+		orch.disconnectIfOwner(token);
+		preflight.resolve();
+
+		await expect(request).rejects.toThrow('closed before the request was dispatched');
+		expect(poster).not.toHaveBeenCalled();
+	});
+
+	it('rejects when the captured editor refuses post delivery', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'aad' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient);
+		const poster = vi.fn(() => false);
+		orch.connect(poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql' }]), vi.fn(), undefined, () => 'sql-test');
+
+		await expect(orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', query: 'SELECT 1' }))
+			.rejects.toThrow('rejected the request');
+	});
+
+	it('rejects an unbounded pending tool request when its editor disconnects', async () => {
+		const connection = {
+			id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user',
+		};
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient);
+		const poster = vi.fn(() => true);
+		const owner = { connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-token', generation: 1 };
+		const token = orch.connect(
+			poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db' }]), vi.fn(), undefined,
+			() => 'sql-test', () => ({ ...owner }),
+		);
+		vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({ get: vi.fn(() => 0) } as any);
+
+		const request = orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', query: 'WAITFOR DELAY', execute: true });
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		orch.disconnectIfOwner(token);
+
+		await expect(request).rejects.toThrow('editor closed');
+	});
+
+	it('keeps an unbounded pending tool request alive when its editor is reactivated', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient);
+		const poster = vi.fn(() => true);
+		const owner = { connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-token', generation: 1 };
+		const token = orch.connect(
+			poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db' }]), vi.fn(), undefined,
+			() => 'sql-test', () => ({ ...owner }),
+		);
+		vi.spyOn(vscode.workspace, 'getConfiguration').mockReturnValue({ get: vi.fn(() => 0) } as any);
+
+		const request = orch.configureSqlSection({ sectionId: 'sql_1', connectionId: 'sql-test', query: 'WAITFOR DELAY', execute: true });
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		orch.activateConnection(token);
+		const message = poster.mock.calls[0][0] as any;
+		orch.handleWebviewResponse(message.requestId, { success: true, executionId: message.input.executionId, executionOwner: { ...owner } });
+
+		await expect(request).resolves.toEqual({ success: true });
+	});
+
+	it('cancels only the execution ID minted for the pending SQL tool request', async () => {
+		const connection = { id: 'sql-test', name: 'SQL', serverUrl: 'server.example', dialect: 'mssql', authType: 'sql-login', username: 'user' };
+		const sqlManager = { getConnections: () => [connection], getConnection: () => connection, assertConnectionCurrent: vi.fn(async () => undefined) } as any;
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, () => sqlManager, fakeKustoClient);
+		const poster = vi.fn(() => true);
+		const owner = { connectionId: 'sql-test', database: 'Db', ownerToken: 'owner-token', generation: 1 };
+		orch.connect(
+			poster, vi.fn(async () => [{ id: 'sql_1', type: 'sql', database: 'Db' }]), vi.fn(), undefined,
+			() => 'sql-test', () => ({ ...owner }),
+		);
+		const cancellation = cancellationToken();
+
+		const request = orch.configureSqlSection({
+			sectionId: 'sql_1', connectionId: 'sql-test', query: 'WAITFOR DELAY', execute: true,
+		}, cancellation.token);
+		await vi.waitFor(() => expect(poster).toHaveBeenCalledOnce());
+		const configureMessage = poster.mock.calls[0][0] as any;
+		cancellation.cancel();
+
+		await expect(request).rejects.toMatchObject({ name: 'Canceled' });
+		expect(poster).toHaveBeenCalledWith({
+			type: 'toolCancelSqlExecution', sectionId: 'sql_1', executionId: configureMessage.input.executionId,
+		});
+	});
+
+	it('omits protected SQL connections and sections from tool inventory', async () => {
+		const sqlManager = {
+			getConnections: () => [{ id: 'sql-sensitive', name: 'Sensitive', serverUrl: 'secret.example', dialect: 'mssql' }],
+		} as any;
+		const refreshPolicy = vi.fn(async () => ['sql-sensitive']);
+		const assertAllowed = vi.fn(async () => { throw new Error('Leave No Trace blocked'); });
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext,
+			fakeConnectionManager,
+			() => sqlManager,
+			fakeKustoClient,
+			refreshPolicy,
+			assertAllowed,
+		);
+		const poster = vi.fn();
+		orch.connect(
+			poster,
+			vi.fn(async () => [{ id: 'sql_1', type: 'sql', serverUrl: 'secret.example', database: 'SecretDb' }]),
+			vi.fn(),
+			undefined,
+			() => 'sql-sensitive',
+		);
+
+		expect(await orch.listSqlConnections()).toEqual({ connections: [] });
+		expect((await orch.listSections()).sections).toEqual([]);
+		await expect(orch.configureSqlSection({ sectionId: 'sql_1', query: 'SELECT 1' })).rejects.toThrow('Leave No Trace blocked');
+		expect(poster).not.toHaveBeenCalled();
 	});
 
 	it('matches an active SQL sidecar tab to the live primary .sql Workbench file', async () => {

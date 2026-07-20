@@ -1038,6 +1038,30 @@ export function disposeChartEcharts(boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
+export function purgeChartEcharts(boxId: any) {
+	const id = String(boxId || '');
+	try {
+		const st = getChartState(id);
+		if (st?.__echarts?.instance) {
+			try { st.__echarts.instance.dispose(); } catch (e) { console.error('[kusto]', e); }
+		}
+		if (st) {
+			try { uninstallZoomPanPointerCaptureBridge(st); } catch (e) { console.error('[kusto]', e); }
+			try { clearZoomPanViewport(st); } catch (e) { console.error('[kusto]', e); }
+			try {
+				if (st.__resizeObserver && typeof st.__resizeObserver.disconnect === 'function') st.__resizeObserver.disconnect();
+			} catch (e) { console.error('[kusto]', e); }
+			for (const key of Object.keys(st)) {
+				if (key.startsWith('__')) delete st[key];
+			}
+			st.__wasRendering = false;
+		}
+		_chartMouseOverBoxes.delete(id);
+		_chartDeferredRenders.delete(id);
+		try { dismissHoverTooltip(id); } catch (e) { console.error('[kusto]', e); }
+	} catch (e) { console.error('[kusto]', e); }
+}
+
 // ── Render ─────────────────────────────────────────────────────────────────────
 
 // Per-box mouse-hover tracking.  When the mouse is over a chart canvas we must

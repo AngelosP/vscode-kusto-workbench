@@ -88,6 +88,7 @@ describe('first-launch integration inventory', () => {
 		const bootstrap = extensionSource.slice(extensionSource.indexOf('const firstLaunchCoordinator = new FirstLaunchCoordinator'));
 		expect(bootstrap.indexOf('await firstLaunchCoordinator.initialize();')).toBeGreaterThan(-1);
 		expect(bootstrap.indexOf('throw error;')).toBeGreaterThan(bootstrap.indexOf('await firstLaunchCoordinator.initialize();'));
+		expect(bootstrap).toContain("process.env.KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH === '1'");
 		expect(bootstrap.indexOf('const editorCursorStatusBar = new EditorCursorStatusBar();'))
 			.toBeGreaterThan(bootstrap.indexOf('throw error;'));
 	});

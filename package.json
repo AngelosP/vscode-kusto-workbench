@@ -681,9 +681,9 @@
               "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
           },
-          "required": [
-            "sectionId"
-          ]
+		  "required": [
+			"sectionId"
+		  ]
         }
       },
       {
@@ -1779,6 +1779,10 @@
               "type": "string",
               "description": "The new T-SQL query text"
             },
+            "connectionId": {
+              "type": "string",
+              "description": "Exact saved SQL connection ID returned by listSqlConnections. Required when serverUrl is ambiguous."
+            },
             "serverUrl": {
               "type": "string",
               "description": "The SQL Server URL to connect to"
@@ -1833,10 +1837,7 @@
               "type": "string",
               "description": "Optional: Target a specific Kusto Workbench file URI. Sidecar URIs are resolved to their primary logical file."
             }
-          },
-          "required": [
-            "sectionId"
-          ]
+		  }
         }
       },
       {
@@ -1926,7 +1927,6 @@
     "@types/node": "22.x",
     "@types/proper-lockfile": "^4.1.4",
     "@types/vscode": "^1.107.0",
-    "@types/yauzl": "^2.10.3",
     "@vitest/coverage-v8": "^4.1.0",
     "@vscode/test-cli": "^0.0.12",
     "@vscode/test-electron": "^2.5.2",
@@ -1950,11 +1950,9 @@
     "echarts": "^5.5.1",
     "lit": "^3.3.2",
     "monaco-editor": "^0.52.0",
-    "mssql": "^11.0.1",
     "overlayscrollbars": "^2.15.1",
     "proper-lockfile": "^4.1.2",
     "sql-formatter": "^15.7.3",
-    "vscode-jsonrpc": "^8.2.1",
-    "yauzl": "^3.3.0"
+    "vscode-jsonrpc": "^8.2.1"
   }
 }

@@ -5,7 +5,7 @@ import * as path from 'path';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { createEmptyKqlxOrMdxFile, DevNoteEntry, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
 import { readAllCachedSchemasFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey, schemaPrincipalIdentity } from './schemaCache';
-import type { SqlConnectionManager } from './sqlConnectionManager';
+import type { SqlConnection, SqlConnectionManager } from './sqlConnectionManager';
 import type { KustoQueryClient } from './kustoClient';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
 import { getPowerBiHtmlValidationIssues, type PowerBiDataSource } from './powerBiExport';
@@ -14,6 +14,8 @@ import { classifyWorkbenchUri, classifyWorkbenchUriString, type WorkbenchFileInf
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { resolveStrictKustoConnection } from '../shared/kustoAuth';
 import { filterKustoFavoritesForActivePrincipals, migrateKustoFavorites } from './connectionManagerFavorites';
+import { sqlConnectionTargetSignature } from '../shared/sqlConnectionIdentity';
+import { readCurrentSqlSchemaPrincipalFingerprint } from './sqlEditorSchema';
 
 export type TargetFields = {
 	openFileId?: string;
@@ -29,6 +31,21 @@ function getToolInput<T>(options: vscode.LanguageModelToolInvocationOptions<T> |
 	// Try 'input' first (original API), then 'parameters' (new API)
 	const opts = options as any;
 	return opts.input ?? opts.parameters ?? ({} as T);
+}
+
+function raceCancellation<T>(promise: Promise<T>, token: vscode.CancellationToken): Promise<T> {
+	if (token.isCancellationRequested) return Promise.reject(new vscode.CancellationError());
+	return new Promise<T>((resolve, reject) => {
+		let subscription: vscode.Disposable | undefined;
+		subscription = token.onCancellationRequested(() => {
+			subscription?.dispose();
+			reject(new vscode.CancellationError());
+		});
+		promise.then(
+			value => { subscription?.dispose(); resolve(value); },
+			error => { subscription?.dispose(); reject(error); },
+		);
+	});
 }
 
 const ASK_KUSTO_COPILOT_DEFAULT_MAX_RESULT_ROWS = 100;
@@ -385,13 +402,15 @@ export interface ConfigureSqlSectionInput extends TargetFields {
 	sectionId: string;
 	name?: string;
 	query?: string;
+	connectionId?: string;
 	serverUrl?: string;
 	database?: string;
 	execute?: boolean;
 }
 
 export interface GetSqlSchemaInput extends TargetFields {
-	sectionId: string;
+	/** Optional: defaults to the first ready SQL section in the targeted editor. */
+	sectionId?: string;
 }
 
 export interface DelegateToSqlCopilotInput extends TargetFields {
@@ -489,6 +508,13 @@ interface LiveWorkbenchConnection {
 	poster: (message: unknown) => unknown;
 	stateGetter: () => Promise<ToolSection[] | undefined>;
 	schemaRefresher: (clusterUrl: string, connectionId: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>;
+	sqlConnectionResolver?: (sectionId?: string) => string | undefined;
+	sqlOwnerResolver?: (sectionId: string) => {
+		connectionId: string;
+		database: string;
+		ownerToken: string;
+		generation: number;
+	} | undefined;
 	documentUri?: string;
 	documentInfo?: WorkbenchFileInfo;
 	logicalUriKey?: string;
@@ -507,7 +533,7 @@ export class KustoWorkbenchToolOrchestrator {
 	private readonly liveConnections = new Map<number, LiveWorkbenchConnection>();
 	private readonly renamedWorkbenchFiles = new Map<string, WorkbenchFileInfo>();
 	// Pending responses from webview
-	private pendingResponses = new Map<string, { resolve: (value: unknown) => void; reject: (err: Error) => void; timer: ReturnType<typeof setTimeout> }>();
+	private pendingResponses = new Map<string, { resolve: (value: unknown) => void; reject: (err: Error) => void; timer?: ReturnType<typeof setTimeout>; cancellationSubscription?: vscode.Disposable; connectionToken: number }>();
 	private responseSeq = 0;
 	// Monotonically increasing token to track which editor instance is currently connected.
 	// disconnectIfOwner() only clears the callbacks when the caller's token matches,
@@ -518,17 +544,39 @@ export class KustoWorkbenchToolOrchestrator {
 		private readonly context: vscode.ExtensionContext,
 		private readonly connectionManager: ConnectionManager,
 		private readonly getSqlConnectionManager: () => SqlConnectionManager,
-		private readonly kustoClient: KustoQueryClient
+		private readonly kustoClient: KustoQueryClient,
+		private readonly refreshSqlLeaveNoTracePolicy?: () => Promise<string[]>,
+		private readonly assertSqlConnectionAllowed?: (connectionId: string) => Promise<void>,
+		private readonly getSqlRevocationGeneration?: (connectionId: string) => number,
+		private readonly dispatchSqlOwnerAllowed?: <T>(
+			connection: SqlConnection,
+			principalFingerprint: string,
+			revocationGeneration: number,
+			dispatch: () => T | PromiseLike<T>,
+		) => Promise<T>,
 	) {}
 
 	static getInstance(
 		context: vscode.ExtensionContext,
 		connectionManager: ConnectionManager,
 		getSqlConnectionManager: () => SqlConnectionManager,
-		kustoClient: KustoQueryClient
+		kustoClient: KustoQueryClient,
+		refreshSqlLeaveNoTracePolicy?: () => Promise<string[]>,
+		assertSqlConnectionAllowed?: (connectionId: string) => Promise<void>,
+		getSqlRevocationGeneration?: (connectionId: string) => number,
+		dispatchSqlOwnerAllowed?: <T>(connection: SqlConnection, principalFingerprint: string, revocationGeneration: number, dispatch: () => T | PromiseLike<T>) => Promise<T>,
 	): KustoWorkbenchToolOrchestrator {
 		if (!KustoWorkbenchToolOrchestrator.instance) {
-			KustoWorkbenchToolOrchestrator.instance = new KustoWorkbenchToolOrchestrator(context, connectionManager, getSqlConnectionManager, kustoClient);
+			KustoWorkbenchToolOrchestrator.instance = new KustoWorkbenchToolOrchestrator(
+				context,
+				connectionManager,
+				getSqlConnectionManager,
+				kustoClient,
+				refreshSqlLeaveNoTracePolicy,
+				assertSqlConnectionAllowed,
+				getSqlRevocationGeneration,
+				dispatchSqlOwnerAllowed,
+			);
 		}
 		return KustoWorkbenchToolOrchestrator.instance;
 	}
@@ -542,7 +590,9 @@ export class KustoWorkbenchToolOrchestrator {
 		poster: (message: unknown) => unknown,
 		stateGetter: () => Promise<ToolSection[] | undefined>,
 		schemaRefresher: (clusterUrl: string, connectionId: string) => Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }>,
-		documentUri?: string
+		documentUri?: string,
+		sqlConnectionResolver?: (sectionId?: string) => string | undefined,
+		sqlOwnerResolver?: LiveWorkbenchConnection['sqlOwnerResolver'],
 	): number {
 		this.connectionToken++;
 		const classifiedDocumentInfo = documentUri
@@ -556,6 +606,8 @@ export class KustoWorkbenchToolOrchestrator {
 			poster,
 			stateGetter,
 			schemaRefresher,
+			...(sqlConnectionResolver ? { sqlConnectionResolver } : {}),
+			...(sqlOwnerResolver ? { sqlOwnerResolver } : {}),
 			...(documentUri ? { documentUri } : {}),
 			...(documentInfo ? { documentInfo, logicalUriKey: documentInfo.logicalUriKey } : {}),
 			sequence: this.connectionToken,
@@ -565,12 +617,24 @@ export class KustoWorkbenchToolOrchestrator {
 		return this.connectionToken;
 	}
 
+	activateConnection(token: number): void {
+		const connection = this.liveConnections.get(token);
+		if (connection) this.applyLatestConnection(connection);
+	}
+
 	/**
 	 * Disconnect only if the caller holds the current connection token.
 	 * This prevents a closing editor from disconnecting a different active one.
 	 */
 	disconnectIfOwner(token: number): void {
 		this.liveConnections.delete(token);
+		for (const [requestId, pending] of [...this.pendingResponses]) {
+			if (pending.connectionToken !== token) continue;
+			this.pendingResponses.delete(requestId);
+			if (pending.timer) clearTimeout(pending.timer);
+			pending.cancellationSubscription?.dispose();
+			pending.reject(new Error('The owning Kusto Workbench editor closed before the request completed.'));
+		}
 		if (this.latestConnectionToken !== token) {
 			return;
 		}
@@ -994,7 +1058,8 @@ export class KustoWorkbenchToolOrchestrator {
 		const pending = this.pendingResponses.get(requestId);
 		if (!pending) return;
 		this.pendingResponses.delete(requestId);
-		clearTimeout(pending.timer);
+		if (pending.timer) clearTimeout(pending.timer);
+		pending.cancellationSubscription?.dispose();
 		if (error) {
 			pending.reject(new Error(error));
 		} else {
@@ -1002,8 +1067,18 @@ export class KustoWorkbenchToolOrchestrator {
 		}
 	}
 
-	private async sendToWebview<T>(type: string, payload: Record<string, unknown>, timeoutMs = 30000, targetFields: TargetFields = {}): Promise<T> {
-		const target = this.resolveToolTarget(targetFields);
+	private async sendToWebview<T>(
+		type: string,
+		payload: Record<string, unknown>,
+		timeoutMs: number | null = 30000,
+		targetFields: TargetFields = {},
+		onTimeout?: (connection: LiveWorkbenchConnection, requestId: string) => void,
+		capturedConnection?: LiveWorkbenchConnection,
+		cancellationToken?: vscode.CancellationToken,
+	): Promise<T> {
+		const target = capturedConnection
+			? { connection: capturedConnection, openFiles: [], hasActiveUnsupportedFile: false, explicitTargetRequested: false }
+			: this.resolveToolTarget(targetFields);
 		if (!target.connection) {
 			if (target.explicitTarget) {
 				throw new Error('The targeted Kusto Workbench file is open without a live Workbench editor. Reopen it with Kusto Workbench before editing or executing sections.');
@@ -1013,22 +1088,68 @@ export class KustoWorkbenchToolOrchestrator {
 			}
 			throw new Error('Kusto Workbench is not currently open. Please open a supported Kusto Workbench file or use the Query Editor first.');
 		}
+		if (!this.liveConnections.has(target.connection.token)) {
+			throw new Error('The targeted Kusto Workbench editor closed before the request was dispatched.');
+		}
+		if (cancellationToken?.isCancellationRequested) throw new vscode.CancellationError();
 		
 		const requestId = `tool_${++this.responseSeq}_${Date.now()}`;
 		
 		return new Promise<T>((resolve, reject) => {
-			const timer = setTimeout(() => {
-				this.pendingResponses.delete(requestId);
-				reject(new Error('Request timed out'));
-			}, timeoutMs);
-			
-			this.pendingResponses.set(requestId, { 
+			const timer = timeoutMs === null
+				? undefined
+				: setTimeout(() => {
+					const pending = this.pendingResponses.get(requestId);
+					if (!pending) return;
+					this.pendingResponses.delete(requestId);
+					pending.cancellationSubscription?.dispose();
+					try { onTimeout?.(target.connection!, requestId); } catch { /* preserve timeout */ }
+					reject(new Error('Request timed out'));
+				}, timeoutMs);
+			const pending = {
 				resolve: resolve as (value: unknown) => void, 
 				reject, 
-				timer 
+				timer,
+				connectionToken: target.connection!.token,
+			} as { resolve: (value: unknown) => void; reject: (err: Error) => void; timer?: ReturnType<typeof setTimeout>; cancellationSubscription?: vscode.Disposable; connectionToken: number };
+			this.pendingResponses.set(requestId, pending);
+			const cancelPending = () => {
+				if (this.pendingResponses.get(requestId) !== pending) return;
+				this.pendingResponses.delete(requestId);
+				if (timer) clearTimeout(timer);
+				pending.cancellationSubscription?.dispose();
+				try { onTimeout?.(target.connection!, requestId); } catch { /* preserve cancellation */ }
+				reject(new vscode.CancellationError());
+			};
+			pending.cancellationSubscription = cancellationToken?.onCancellationRequested(cancelPending);
+			if (cancellationToken?.isCancellationRequested) {
+				if (this.pendingResponses.get(requestId) === pending) cancelPending();
+				else pending.cancellationSubscription?.dispose();
+				return;
+			}
+			let posted: unknown;
+			try {
+				posted = target.connection!.poster({ type, requestId, ...payload });
+			} catch (error) {
+				this.pendingResponses.delete(requestId);
+				if (timer) clearTimeout(timer);
+				pending.cancellationSubscription?.dispose();
+				reject(error instanceof Error ? error : new Error(String(error)));
+				return;
+			}
+			void Promise.resolve(posted).then(delivered => {
+				if (delivered === true || this.pendingResponses.get(requestId) !== pending) return;
+				this.pendingResponses.delete(requestId);
+				if (timer) clearTimeout(timer);
+				pending.cancellationSubscription?.dispose();
+				reject(new Error('The targeted Kusto Workbench editor rejected the request.'));
+			}, error => {
+				if (this.pendingResponses.get(requestId) !== pending) return;
+				this.pendingResponses.delete(requestId);
+				if (timer) clearTimeout(timer);
+				pending.cancellationSubscription?.dispose();
+				reject(error instanceof Error ? error : new Error(String(error)));
 			});
-			
-			target.connection!.poster({ type, requestId, ...payload });
 		});
 	}
 
@@ -1273,7 +1394,29 @@ export class KustoWorkbenchToolOrchestrator {
 
 	private async getSectionsForConnection(connection: LiveWorkbenchConnection): Promise<ToolSectionSummary[] | undefined> {
 		const rawSections = await connection.stateGetter();
-		return rawSections?.map((section, index) => this.summarizeToolSection(section, index));
+		const sectionTypeById = new Map((rawSections ?? []).map(section => [String(section?.id || '').trim(), String(section?.type || '')]));
+		const hasSqlOwner = (rawSections ?? []).some(section => {
+			if (String(section?.type || '') === 'sql') return true;
+			const sourceBoxId = String((section as any)?.comparisonSourceBoxId || '').trim();
+			return !!sourceBoxId && sectionTypeById.get(sourceBoxId) === 'sql';
+		});
+		const protectedIds = hasSqlOwner ? await this.getProtectedSqlConnectionIds() : new Set<string>();
+		return rawSections
+			?.filter(section => {
+				const sectionId = String(section?.id || '').trim();
+				const connectionId = connection.sqlConnectionResolver?.(sectionId);
+				const comparisonSourceBoxId = String((section as any)?.comparisonSourceBoxId || '').trim();
+				if (String(section?.type || '') === 'sql' || (comparisonSourceBoxId && sectionTypeById.get(comparisonSourceBoxId) === 'sql')) {
+					return !!connectionId && !protectedIds.has(connectionId);
+				}
+				return true;
+			})
+			.map((section, index) => this.summarizeToolSection(section, index));
+	}
+
+	private async getProtectedSqlConnectionIds(): Promise<Set<string>> {
+		const ids = await this.refreshSqlLeaveNoTracePolicy?.() ?? [];
+		return new Set(ids.map(id => String(id || '').trim()).filter(Boolean));
 	}
 
 	async listSections(): Promise<ListSectionsResult> {
@@ -1389,25 +1532,300 @@ export class KustoWorkbenchToolOrchestrator {
 	// ── SQL tools ─────────────────────────────────────────────────────────────
 
 	async listSqlConnections(): Promise<{ connections: Array<{ id: string; name: string; serverUrl: string; dialect: string }> }> {
-		const conns = this.getSqlConnectionManager().getConnections();
+		const protectedIds = await this.getProtectedSqlConnectionIds();
+		const conns = this.getSqlConnectionManager().getConnections().filter(connection => !protectedIds.has(connection.id));
 		return { connections: conns.map(c => ({ id: c.id, name: c.name, serverUrl: c.serverUrl, dialect: c.dialect })) };
 	}
 
-	async configureSqlSection(input: ConfigureSqlSectionInput): Promise<{ success: boolean; resultPreview?: string }> {
+	private async resolveSqlToolSection(
+		capturedConnection: LiveWorkbenchConnection | undefined,
+		sectionId?: string,
+	): Promise<{ sectionId: string; connectionId: string; database: string; ownerToken: string; generation?: number }> {
+		if (!capturedConnection || !this.liveConnections.has(capturedConnection.token)) {
+			throw new Error('The targeted Kusto Workbench editor is not available for SQL tool preflight.');
+		}
+		const sections = await capturedConnection.stateGetter();
+		const requestedId = String(sectionId || '').trim();
+		const sqlSections = (Array.isArray(sections) ? sections : []).filter(section => section?.type === 'sql');
+		const section = requestedId
+			? sqlSections.find(candidate => String(candidate.id || '') === requestedId)
+			: sqlSections.find(candidate => String((candidate as any).ownerToken || '').trim()) ?? sqlSections[0];
+		if (!section) throw new Error(requestedId ? `SQL section "${requestedId}" was not found.` : 'No SQL section is available in the targeted editor.');
+		const resolvedSectionId = String(section.id || '').trim();
+		const connectionId = String((section as any).connectionId || capturedConnection.sqlConnectionResolver?.(resolvedSectionId) || '').trim();
+		const database = String((section as any).database || '').trim();
+		const ownerToken = String((section as any).ownerToken || '').trim();
+		if (!connectionId || !database || !ownerToken) throw new Error('SQL section owner is not ready.');
+		const liveOwner = capturedConnection.sqlOwnerResolver?.(resolvedSectionId);
+		if (capturedConnection.sqlOwnerResolver) {
+			if (!liveOwner) throw new Error('SQL section owner disappeared during tool preflight.');
+			if (liveOwner.connectionId !== connectionId || liveOwner.database !== database || liveOwner.ownerToken !== ownerToken) {
+				throw new Error('SQL section owner changed during tool preflight.');
+			}
+		}
+		return { sectionId: resolvedSectionId, connectionId, database, ownerToken, ...(liveOwner ? { generation: liveOwner.generation } : {}) };
+	}
+
+	private assertLiveSqlToolOwner(
+		capturedConnection: LiveWorkbenchConnection,
+		expected: { sectionId: string; connectionId: string; database: string; ownerToken: string; generation?: number },
+	): void {
+		if (!this.liveConnections.has(capturedConnection.token)) {
+			throw new Error('The targeted Kusto Workbench editor closed before tool result admission.');
+		}
+		if (capturedConnection.sqlOwnerResolver) {
+			const liveOwner = capturedConnection.sqlOwnerResolver(expected.sectionId);
+			if (!liveOwner) throw new Error('SQL section owner disappeared before tool result admission.');
+			if (liveOwner.connectionId !== expected.connectionId
+				|| liveOwner.database !== expected.database
+				|| liveOwner.ownerToken !== expected.ownerToken
+				|| (expected.generation !== undefined && liveOwner.generation !== expected.generation)) {
+				throw new Error('SQL section owner changed before tool result admission.');
+			}
+			return;
+		}
+		if (capturedConnection.sqlConnectionResolver?.(expected.sectionId) !== expected.connectionId) {
+			throw new Error('SQL section connection changed before tool result admission.');
+		}
+	}
+
+	private async admitSqlToolResult<T>(
+		connection: SqlConnection,
+		principalFingerprint: string,
+		revocationGeneration: number,
+		validate: () => void,
+		result: T,
+	): Promise<T> {
+		if (this.dispatchSqlOwnerAllowed) {
+			return this.dispatchSqlOwnerAllowed(connection, principalFingerprint, revocationGeneration, () => {
+				validate();
+				return result;
+			});
+		}
+		await this.assertSqlConnectionAllowed?.(connection.id);
+		await this.getSqlConnectionManager().assertConnectionCurrent(connection);
+		if (await readCurrentSqlSchemaPrincipalFingerprint(this.context, connection) !== principalFingerprint) {
+			throw new Error('SQL connection principal changed before tool result admission.');
+		}
+		validate();
+		return result;
+	}
+
+	async configureSqlSection(input: ConfigureSqlSectionInput, cancellationToken?: vscode.CancellationToken): Promise<{ success: boolean; resultPreview?: string }> {
 		const { target, rest } = this.splitTargetFields(input);
 		input = rest as ConfigureSqlSectionInput;
+		const resolvedTarget = this.resolveToolTarget(target);
+		const capturedConnection = resolvedTarget.connection;
+		if (!capturedConnection || !this.liveConnections.has(capturedConnection.token)) {
+			throw new Error('Kusto Workbench is not currently open with a live editor for SQL configuration.');
+		}
+		const existingConnectionId = capturedConnection?.sqlConnectionResolver?.(input.sectionId);
+		let requestedConnectionId: string | undefined;
+		let requestedConnection: ReturnType<SqlConnectionManager['getConnection']>;
+		let requestedTargetSignature: string | undefined;
+		if (input.connectionId) {
+			const connection = this.getSqlConnectionManager().getConnection(String(input.connectionId));
+			if (!connection) throw new Error(`SQL connection "${input.connectionId}" was not found. Use list-sql-connections first.`);
+			requestedConnectionId = connection.id;
+			requestedConnection = connection;
+			requestedTargetSignature = sqlConnectionTargetSignature(connection);
+			await this.refreshSqlLeaveNoTracePolicy?.();
+			await this.assertSqlConnectionAllowed?.(connection.id);
+		} else if (input.serverUrl) {
+			const matching = this.getSqlConnectionManager().getConnections().filter(connection =>
+				String(connection.serverUrl || '').trim().toLowerCase().includes(String(input.serverUrl || '').trim().toLowerCase()),
+			);
+			if (matching.length !== 1) throw new Error('SQL server target is missing or ambiguous. Pass connectionId from list-sql-connections.');
+			requestedConnectionId = matching[0].id;
+			requestedConnection = matching[0];
+			requestedTargetSignature = sqlConnectionTargetSignature(matching[0]);
+			await this.refreshSqlLeaveNoTracePolicy?.();
+			await this.assertSqlConnectionAllowed?.(matching[0].id);
+		}
+		if (!existingConnectionId && !requestedConnectionId) {
+			throw new Error(`SQL section "${input.sectionId}" has no live connection owner. Pass connectionId from list-sql-connections.`);
+		}
+		if (existingConnectionId) {
+			await this.refreshSqlLeaveNoTracePolicy?.();
+			await this.assertSqlConnectionAllowed?.(existingConnectionId);
+		}
+		const operationConnectionId = requestedConnectionId ?? existingConnectionId!;
+		const operationConnection = this.getSqlConnectionManager().getConnection(operationConnectionId);
+		if (!operationConnection) throw new Error('SQL section connection owner disappeared before configuration.');
+		const operationTargetSignature = sqlConnectionTargetSignature(operationConnection);
+		await this.getSqlConnectionManager().assertConnectionCurrent(operationConnection);
+		const operationPrincipalFingerprint = input.execute
+			? await readCurrentSqlSchemaPrincipalFingerprint(this.context, operationConnection)
+			: undefined;
+		const operationRevocationGeneration = this.getSqlRevocationGeneration?.(operationConnectionId) ?? 0;
+		if (input.execute && !operationPrincipalFingerprint) throw new Error('SQL section principal is unavailable before execution.');
+		let operationDatabase = String(input.database || '').trim();
+		if (input.execute && !operationDatabase) {
+			const sections = await capturedConnection.stateGetter();
+			const section = sections?.find(candidate => String(candidate?.id || '') === String(input.sectionId || ''));
+			operationDatabase = String(section?.database || '').trim();
+		}
+		if (input.execute && !operationDatabase) throw new Error('SQL section database is unavailable before execution.');
+		const requestsTargetConfiguration = !!requestedConnection || input.database !== undefined;
+		if (input.execute && !capturedConnection.sqlOwnerResolver) {
+			throw new Error('SQL section owner resolver is unavailable before execution.');
+		}
+		if (input.execute && !requestsTargetConfiguration) {
+			const liveOwner = capturedConnection.sqlOwnerResolver?.(String(input.sectionId || ''));
+			if (!liveOwner || liveOwner.connectionId !== operationConnectionId || liveOwner.database !== operationDatabase) {
+				throw new Error('SQL section owner changed before execution.');
+			}
+		}
 		if (input.query !== undefined) {
 			input = { ...input, query: unescapeLLMText(input.query) };
 		}
-		return this.sendToWebview('toolConfigureSqlSection', { input }, 30000, target);
+		const configuredMinutes = vscode.workspace.getConfiguration('kustoWorkbench').get<number>('sqlQueryTimeout', 20);
+		const executionTimeoutMs = configuredMinutes > 0 ? (configuredMinutes * 60_000) + 30_000 : null;
+		const executionId = input.execute ? `sql-tool-${randomUUID()}` : undefined;
+		const result = await this.sendToWebview<{
+			success: boolean;
+			resultPreview?: string;
+			executionOwner?: { connectionId?: string; database?: string; ownerToken?: string; generation?: number };
+			executionId?: string;
+		}>(
+			'toolConfigureSqlSection',
+			{
+				input: {
+					...input,
+					...(executionId ? { executionId } : {}),
+					...(requestsTargetConfiguration ? {
+						resolvedConnection: requestedConnection ?? operationConnection,
+						requestedTargetSignature: requestedTargetSignature ?? operationTargetSignature,
+					} : {}),
+					...(input.execute ? {
+						expectedExecutionOwner: {
+							connectionId: operationConnectionId,
+							database: operationDatabase,
+							targetSignature: operationTargetSignature,
+							principalFingerprint: operationPrincipalFingerprint,
+								revocationGeneration: operationRevocationGeneration,
+						},
+					} : {}),
+				},
+			},
+			input.execute ? executionTimeoutMs : 30_000,
+			target,
+			input.execute
+				? connection => { connection.poster({ type: 'toolCancelSqlExecution', sectionId: input.sectionId, executionId }); }
+				: undefined,
+			capturedConnection,
+			cancellationToken,
+		);
+		if (!this.liveConnections.has(capturedConnection.token)) {
+			throw new Error('The targeted Kusto Workbench editor closed during SQL configuration.');
+		}
+		const finalConnectionId = capturedConnection.sqlConnectionResolver?.(input.sectionId);
+		if (!finalConnectionId) throw new Error('SQL section connection owner disappeared during configuration.');
+		if (finalConnectionId !== operationConnectionId) {
+			throw new Error('SQL section did not adopt the requested connection owner.');
+		}
+		const finalConnection = this.getSqlConnectionManager().getConnection(operationConnectionId);
+		if (!finalConnection || sqlConnectionTargetSignature(finalConnection) !== operationTargetSignature) {
+			throw new Error('SQL connection target changed during tool execution.');
+		}
+		await this.getSqlConnectionManager().assertConnectionCurrent(finalConnection);
+		if (operationPrincipalFingerprint
+			&& await readCurrentSqlSchemaPrincipalFingerprint(this.context, finalConnection) !== operationPrincipalFingerprint) {
+			throw new Error('SQL connection principal changed during tool execution.');
+		}
+		await this.refreshSqlLeaveNoTracePolicy?.();
+		await this.assertSqlConnectionAllowed?.(finalConnectionId);
+		const publicResult = {
+			success: result.success,
+			...(result.resultPreview !== undefined ? { resultPreview: result.resultPreview } : {}),
+		};
+		if (!input.execute || !operationPrincipalFingerprint) return publicResult;
+		if (!executionId || String(result.executionId || '') !== executionId) {
+			throw new Error('SQL tool execution receipt ID is invalid.');
+		}
+		const executionOwner = {
+			connectionId: String(result.executionOwner?.connectionId || '').trim(),
+			database: String(result.executionOwner?.database || '').trim(),
+			ownerToken: String(result.executionOwner?.ownerToken || '').trim(),
+			generation: Number(result.executionOwner?.generation),
+		};
+		if (executionOwner.connectionId !== operationConnectionId
+			|| executionOwner.database !== operationDatabase
+			|| !executionOwner.ownerToken
+			|| !Number.isSafeInteger(executionOwner.generation)) {
+			throw new Error('SQL tool execution owner receipt is invalid.');
+		}
+		this.assertLiveSqlToolOwner(capturedConnection, {
+			sectionId: String(input.sectionId || ''), ...executionOwner,
+		});
+		return this.admitSqlToolResult(
+			operationConnection,
+			operationPrincipalFingerprint,
+			operationRevocationGeneration,
+			() => {
+				if (!this.liveConnections.has(capturedConnection.token)
+					|| capturedConnection.sqlConnectionResolver?.(input.sectionId) !== operationConnectionId) {
+					throw new Error('SQL section owner changed before tool result admission.');
+				}
+				this.assertLiveSqlToolOwner(capturedConnection, {
+					sectionId: String(input.sectionId || ''), ...executionOwner,
+				});
+			},
+			publicResult,
+		);
 	}
 
 	async getSqlSchema(input: GetSqlSchemaInput): Promise<{ success: boolean; schema?: unknown; error?: string }> {
 		const { target, rest } = this.splitTargetFields(input);
-		return this.sendToWebview('toolGetSqlSchema', { sectionId: rest.sectionId }, 30000, target);
+		const resolvedTarget = this.resolveToolTarget(target);
+		const capturedConnection = resolvedTarget.connection;
+		const resolvedSection = await this.resolveSqlToolSection(capturedConnection, rest.sectionId);
+		const { sectionId, connectionId, database: expectedDatabase, ownerToken: expectedOwnerToken, generation } = resolvedSection;
+		await this.refreshSqlLeaveNoTracePolicy?.();
+		await this.assertSqlConnectionAllowed?.(connectionId);
+		const connection = this.getSqlConnectionManager().getConnection(connectionId);
+		if (!connection) throw new Error('SQL section connection owner disappeared while reading schema.');
+		const targetSignature = sqlConnectionTargetSignature(connection);
+		await this.getSqlConnectionManager().assertConnectionCurrent(connection);
+		const principalFingerprint = await readCurrentSqlSchemaPrincipalFingerprint(this.context, connection);
+		if (!principalFingerprint) throw new Error('SQL section principal is unavailable while reading schema.');
+		const revocationGeneration = this.getSqlRevocationGeneration?.(connectionId) ?? 0;
+		const result = await this.sendToWebview<{ success: boolean; schema?: unknown; error?: string; owner?: { connectionId?: string; database?: string; ownerToken?: string } }>('toolGetSqlSchema', { sectionId }, 30000, target, undefined, capturedConnection);
+		if (capturedConnection?.sqlConnectionResolver?.(sectionId) !== connectionId) {
+			throw new Error('SQL section connection changed while reading schema.');
+		}
+		const finalConnection = this.getSqlConnectionManager().getConnection(connectionId);
+		if (!finalConnection || sqlConnectionTargetSignature(finalConnection) !== targetSignature) throw new Error('SQL connection target changed while reading schema.');
+		await this.getSqlConnectionManager().assertConnectionCurrent(finalConnection);
+		if (await readCurrentSqlSchemaPrincipalFingerprint(this.context, finalConnection) !== principalFingerprint) throw new Error('SQL connection principal changed while reading schema.');
+		const responseOwnerMatches = String(result.owner?.connectionId || '') === connectionId
+			&& String(result.owner?.database || '') === expectedDatabase
+			&& String(result.owner?.ownerToken || '') === expectedOwnerToken;
+		if (!responseOwnerMatches && (result.success !== false || result.schema !== undefined)) {
+			throw new Error('SQL schema response owner changed before admission.');
+		}
+		await this.refreshSqlLeaveNoTracePolicy?.();
+		await this.assertSqlConnectionAllowed?.(connectionId);
+		return this.admitSqlToolResult(
+			connection,
+			principalFingerprint,
+			revocationGeneration,
+			() => {
+				this.assertLiveSqlToolOwner(capturedConnection, {
+					sectionId, connectionId, database: expectedDatabase, ownerToken: expectedOwnerToken, generation,
+				});
+				const ownerMatches = String(result.owner?.connectionId || '') === connectionId
+					&& String(result.owner?.database || '') === expectedDatabase
+					&& String(result.owner?.ownerToken || '') === expectedOwnerToken;
+				if (!ownerMatches && (result.success !== false || result.schema !== undefined)) {
+					throw new Error('SQL schema response owner changed before admission.');
+				}
+			},
+			result,
+		);
 	}
 
-	async delegateToSqlCopilot(input: DelegateToSqlCopilotInput): Promise<{
+	async delegateToSqlCopilot(input: DelegateToSqlCopilotInput, cancellationToken?: vscode.CancellationToken): Promise<{
 		success: boolean;
 		answer: string;
 		query?: string;
@@ -1415,7 +1833,72 @@ export class KustoWorkbenchToolOrchestrator {
 		timedOut?: boolean;
 	}> {
 		const { target, rest } = this.splitTargetFields(input);
-		return this.sendToWebview('toolDelegateToSqlCopilot', { input: rest }, 180000, target);
+		const resolvedTarget = this.resolveToolTarget(target);
+		const capturedConnection = resolvedTarget.connection;
+		const resolvedSection = await this.resolveSqlToolSection(capturedConnection, rest.sectionId);
+		const { sectionId, connectionId, database: expectedDatabase, ownerToken: expectedOwnerToken, generation } = resolvedSection;
+		await this.refreshSqlLeaveNoTracePolicy?.();
+		await this.assertSqlConnectionAllowed?.(connectionId);
+		const connection = this.getSqlConnectionManager().getConnection(connectionId);
+		if (!connection) throw new Error('SQL section connection owner disappeared during Copilot delegation.');
+		const targetSignature = sqlConnectionTargetSignature(connection);
+		await this.getSqlConnectionManager().assertConnectionCurrent(connection);
+		const principalFingerprint = await readCurrentSqlSchemaPrincipalFingerprint(this.context, connection);
+		if (!principalFingerprint) throw new Error('SQL section principal is unavailable during Copilot delegation.');
+		const revocationGeneration = this.getSqlRevocationGeneration?.(connectionId) ?? 0;
+		const result = await this.sendToWebview<{
+			success: boolean;
+			answer: string;
+			query?: string;
+			error?: string;
+			timedOut?: boolean;
+			owner?: { connectionId?: string; database?: string; ownerToken?: string };
+		}>('toolDelegateToSqlCopilot', {
+			input: {
+				...rest,
+				sectionId,
+				expectedOwnerToken,
+				expectedConnectionId: connectionId,
+				expectedDatabase,
+			},
+		}, 180000, target, (editor, requestId) => {
+			editor.poster({
+				type: 'toolCancelSqlCopilot', requestId, sectionId,
+				expectedOwnerToken,
+			});
+		}, capturedConnection, cancellationToken);
+		if (capturedConnection?.sqlConnectionResolver?.(sectionId) !== connectionId) {
+			throw new Error('SQL section connection changed during Copilot delegation.');
+		}
+		const finalConnection = this.getSqlConnectionManager().getConnection(connectionId);
+		if (!finalConnection || sqlConnectionTargetSignature(finalConnection) !== targetSignature) throw new Error('SQL connection target changed during Copilot delegation.');
+		await this.getSqlConnectionManager().assertConnectionCurrent(finalConnection);
+		if (await readCurrentSqlSchemaPrincipalFingerprint(this.context, finalConnection) !== principalFingerprint) throw new Error('SQL connection principal changed during Copilot delegation.');
+		const responseOwnerMatches = String(result.owner?.connectionId || '') === connectionId
+			&& String(result.owner?.database || '') === expectedDatabase
+			&& String(result.owner?.ownerToken || '') === expectedOwnerToken;
+		if (!responseOwnerMatches && (result.success !== false || !!result.query)) {
+			throw new Error('SQL Copilot response owner changed before admission.');
+		}
+		await this.refreshSqlLeaveNoTracePolicy?.();
+		await this.assertSqlConnectionAllowed?.(connectionId);
+		return this.admitSqlToolResult(
+			connection,
+			principalFingerprint,
+			revocationGeneration,
+			() => {
+				this.assertLiveSqlToolOwner(capturedConnection, {
+					sectionId, connectionId, database: expectedDatabase, ownerToken: expectedOwnerToken, generation,
+				});
+				const ownerMatches = String(result.owner?.connectionId || '') === connectionId
+					&& String(result.owner?.database || '') === expectedDatabase
+					&& String(result.owner?.ownerToken || '') === expectedOwnerToken;
+				if (!ownerMatches && (result.success !== false || !!result.query)) {
+					throw new Error('SQL Copilot response owner changed before admission.');
+				}
+			},
+			result,
+		);
 	}
 
 	async addSection(input: AddSectionInput): Promise<{ sectionId: string; success: boolean }> {
@@ -2445,10 +2928,10 @@ export class ConfigureSqlSectionTool implements vscode.LanguageModelTool<Configu
 	constructor(private orchestrator: KustoWorkbenchToolOrchestrator) {}
 	async invoke(
 		options: vscode.LanguageModelToolInvocationOptions<ConfigureSqlSectionInput>,
-		_token: vscode.CancellationToken
+		token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.configureSqlSection(getToolInput(options));
+			const result = await raceCancellation(this.orchestrator.configureSqlSection(getToolInput(options), token), token);
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -2465,10 +2948,10 @@ export class DelegateToSqlCopilotTool implements vscode.LanguageModelTool<Delega
 
 	async invoke(
 		options: vscode.LanguageModelToolInvocationOptions<DelegateToSqlCopilotInput>,
-		_token: vscode.CancellationToken
+		token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.delegateToSqlCopilot(getToolInput(options));
+			const result = await this.orchestrator.delegateToSqlCopilot(getToolInput(options), token);
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -2514,9 +2997,22 @@ export function registerKustoWorkbenchTools(
 	context: vscode.ExtensionContext,
 	connectionManager: ConnectionManager,
 	getSqlConnectionManager: () => SqlConnectionManager,
-	kustoClient: KustoQueryClient
+	kustoClient: KustoQueryClient,
+	refreshSqlLeaveNoTracePolicy?: () => Promise<string[]>,
+	assertSqlConnectionAllowed?: (connectionId: string) => Promise<void>,
+	getSqlRevocationGeneration?: (connectionId: string) => number,
+	dispatchSqlOwnerAllowed?: <T>(connection: SqlConnection, principalFingerprint: string, revocationGeneration: number, dispatch: () => T | PromiseLike<T>) => Promise<T>,
 ): KustoWorkbenchToolOrchestrator {
-	const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(context, connectionManager, getSqlConnectionManager, kustoClient);
+	const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+		context,
+		connectionManager,
+		getSqlConnectionManager,
+		kustoClient,
+		refreshSqlLeaveNoTracePolicy,
+		assertSqlConnectionAllowed,
+		getSqlRevocationGeneration,
+		dispatchSqlOwnerAllowed,
+	);
 
 	// Register all tools using the languageModelTools[].name values from package.json
 	// This is how VS Code binds the manifest contribution to the implementation

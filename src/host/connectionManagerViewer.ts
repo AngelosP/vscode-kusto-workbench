@@ -1,13 +1,14 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import * as os from 'os';
+import { randomUUID } from 'crypto';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { ConnectionService } from './queryEditorConnection';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
 import { createEmptyKqlxOrMdxFile } from './kqlxFormat';
 import { deleteCachedSchemasForConnections, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry, searchCachedSchemas, readAllCachedSchemasFromDisk, type SchemaSearchMatch, schemaCacheKey, schemaPrincipalIdentity } from './schemaCache';
-import { searchCachedSqlSchemas, readAllCachedSqlSchemasFromDisk, type SqlSchemaSearchMatch } from './sqlEditorSchema';
-import type { SqlConnectionManager } from './sqlConnectionManager';
+import { readCurrentSqlSchemaPrincipalFingerprint, searchCachedSqlSchemas, readAllCachedSqlSchemasFromDisk, sqlSchemaPrincipalFingerprint, sqlSchemaPrincipalFingerprintForPrincipal, sqlSchemaTargetSignature, type SqlSchemaCacheOwner, type SqlSchemaSearchMatch } from './sqlEditorSchema';
+import type { SqlConnectionManager, SqlConnection } from './sqlConnectionManager';
 import type { SqlQueryClient } from './sqlClient';
 import { listDialects } from './sql/sqlDialectRegistry';
 import { selectBestKustoClusterUrl } from '../shared/kustoClusterUrls';
@@ -15,6 +16,7 @@ import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { resolveKustoConnection } from '../shared/kustoAuth';
 import { KustoAuthPreferenceService, type KustoAccountPreference } from './kustoAuthPreferenceService';
 import { KustoConnectionCache } from './kustoConnectionCache';
+import { normalizeSqlServerUrl } from './sql/sqlAuthState';
 import { normalizeKustoAuthorityId } from '../shared/kustoAuth';
 import { getKustoConnectionIdentityKey } from '../shared/kustoAuth';
 import { parseKustoExplorerConnectionsXml, stringifyKustoExplorerConnectionsXml } from '../shared/kustoExplorerConnections';
@@ -48,6 +50,17 @@ import {
 	getDatabaseListErrorDetails,
 	traceDatabaseList,
 } from './databaseListTrace';
+import {
+	assertSqlDatabaseCacheTargetCurrent,
+	beginSqlDatabaseCacheRequest,
+	blockSqlDatabaseCacheConnection,
+	getOwnedSqlDatabaseCacheEntry,
+	getOwnedSqlDatabaseLists,
+	sqlDatabaseTargetSignature,
+	SQL_DATABASE_CACHE_STORAGE_KEY,
+	unblockSqlDatabaseCacheConnection,
+	writeOwnedSqlDatabaseCacheEntry,
+} from './sqlDatabaseCache';
 
 /**
  * Connection Manager Viewer — Lit web components edition.
@@ -65,7 +78,7 @@ const STORAGE_KEYS = {
 	cachedDatabases: 'kusto.cachedDatabases',
 	activeKind: 'connectionManager.activeKind',
 	sqlExpandedConnections: 'sql.connectionManager.expandedConnections',
-	sqlCachedDatabases: 'sql.connectionManager.cachedDatabases',
+	sqlCachedDatabases: SQL_DATABASE_CACHE_STORAGE_KEY,
 	sqlFavorites: 'sql.favorites',
 	sqlLeaveNoTrace: 'sql.leaveNoTraceConnections',
 	searchState: 'connectionManager.searchState',
@@ -105,14 +118,14 @@ type IncomingMessage =
 	| { type: 'sql.connection.add'; name: string; serverUrl: string; port?: number; dialect: string; authType: string; username?: string; password?: string; database?: string }
 	| { type: 'sql.connection.edit'; id: string; name: string; serverUrl: string; port?: number; dialect: string; authType: string; username?: string; password?: string; database?: string }
 	| { type: 'sql.connection.delete'; id: string }
-	| { type: 'sql.connection.test'; id: string; password?: string }
+	| { type: 'sql.connection.test'; id: string; name: string; serverUrl: string; port?: number; dialect: string; authType: string; username?: string; password?: string; database?: string }
 	| { type: 'sql.connection.duplicate'; id: string }
 	| { type: 'sql.cluster.expand'; connectionId: string }
 	| { type: 'sql.cluster.collapse'; connectionId: string }
 	| { type: 'sql.cluster.refreshDatabases'; connectionId: string }
 	| { type: 'sql.database.getSchema'; connectionId: string; database: string }
 	| { type: 'sql.database.refreshSchema'; connectionId: string; database: string; source?: string }
-	| { type: 'sql.database.openInNewFile'; serverUrl: string; database: string }
+	| { type: 'sql.database.openInNewFile'; connectionId: string; database: string }
 	| { type: 'sql.table.preview'; connectionId: string; database: string; tableName: string }
 	| { type: 'sql.favorite.add'; connectionId: string; database: string; name: string }
 	| { type: 'sql.favorite.promptAdd'; connectionId: string; database: string; defaultName?: string }
@@ -123,11 +136,34 @@ type IncomingMessage =
 	// Search
 	| { type: 'search'; requestId: string; query: string; scope: string; kind: ConnectionKind; categories: Record<string, boolean>; contentToggles: Record<string, boolean> }
 	| { type: 'search.cancel'; requestId: string }
-	| { type: 'search.saveState'; state: unknown };
+	| { type: 'search.saveState'; kind: ConnectionKind; state: unknown };
 
 export interface ConnectionManagerSqlDeps {
 	getSqlConnectionManager: () => SqlConnectionManager;
 	getSqlClient: () => SqlQueryClient;
+	setSqlLeaveNoTrace?: (connectionId: string, enabled: boolean) => Promise<void>;
+	assertSqlConnectionAllowed?: (connectionId: string) => Promise<void>;
+	dispatchSqlConnectionAllowed?: <T>(connectionId: string, dispatch: () => T | PromiseLike<T>) => Promise<T>;
+	dispatchSqlPolicySnapshot?: <T>(dispatch: (snapshot: { connectionIds: readonly string[]; version: number; globallyBlocked: boolean }) => T | PromiseLike<T>) => Promise<T>;
+	dispatchSqlOwnerAllowed?: <T>(connection: SqlConnection, principalFingerprint: string, revocationGeneration: number, dispatch: () => T | PromiseLike<T>) => Promise<T>;
+	dispatchSqlOwnerSnapshot?: <T>(dispatch: (snapshot: {
+		policy: { connectionIds: readonly string[]; version: number; globallyBlocked: boolean; revocationGenerations: Readonly<Record<string, number>> };
+		connections: readonly SqlConnection[];
+		connectionVersion: number;
+		accountsByServer: Readonly<Record<string, string>>;
+		principalVersion: number;
+	}) => T | PromiseLike<T>) => Promise<T>;
+	refreshSqlLeaveNoTracePolicy?: () => Promise<string[]>;
+	getSqlLeaveNoTraceConnectionIds?: () => string[];
+	getSqlRevocationGeneration?: (connectionId: string) => number;
+	getSqlStateVersions?: () => { policy: number; principals: number; connections: number };
+	onDidChangeSqlLeaveNoTrace?: (listener: (change: { invalidatedConnectionIds: string[] }) => void) => vscode.Disposable;
+	onDidChangeSqlPrincipals?: (listener: (change: { connectionIds: string[] }) => void) => vscode.Disposable;
+	onDidChangeSqlConnections?: (listener: (change: { connectionIds: string[] }) => void) => vscode.Disposable;
+}
+
+function sqlConnectionTargetSignature(connection: SqlConnection): string {
+	return sqlDatabaseTargetSignature(connection);
 }
 
 export class ConnectionManagerViewerV2 {
@@ -164,6 +200,9 @@ export class ConnectionManagerViewerV2 {
 	private configSubscription: vscode.Disposable | undefined;
 	private _activeSearchRequestId: string | null = null;
 	private _searchAbortController: AbortController | null = null;
+	private readonly _sqlViewerAbortController = new AbortController();
+	private readonly _sqlTestConnectionRequestIdByConnectionId = new Map<string, string>();
+	private snapshotRevision = 0;
 
 	private traceDatabaseList(traceId: string, event: string, details: Record<string, unknown> = {}): void {
 		traceDatabaseList(getWorkbenchLogger(), traceId, 'connection-manager', event, details);
@@ -200,6 +239,26 @@ export class ConnectionManagerViewerV2 {
 			return undefined;
 		}));
 		this.disposables.push(this.authPreferences.onDidChange(() => this.sendSnapshotToWebview()));
+		const sqlPolicySubscription = this.sqlDeps?.onDidChangeSqlLeaveNoTrace?.(change => {
+			this._searchAbortController?.abort();
+			if (change.invalidatedConnectionIds.length > 0) {
+				try { this.panel.webview.postMessage({ type: 'sqlOwnerChanged', connectionIds: change.invalidatedConnectionIds }); } catch { /* panel disposed */ }
+			}
+			void this.sendSnapshotToWebview();
+		});
+		if (sqlPolicySubscription) this.disposables.push(sqlPolicySubscription);
+		const sqlPrincipalSubscription = this.sqlDeps?.onDidChangeSqlPrincipals?.(change => {
+			this._searchAbortController?.abort();
+			try { this.panel.webview.postMessage({ type: 'sqlPrincipalChanged', connectionIds: change.connectionIds }); } catch { /* panel disposed */ }
+			void this.sendSnapshotToWebview();
+		});
+		if (sqlPrincipalSubscription) this.disposables.push(sqlPrincipalSubscription);
+		const sqlConnectionSubscription = this.sqlDeps?.onDidChangeSqlConnections?.(change => {
+			this._searchAbortController?.abort();
+			try { this.panel.webview.postMessage({ type: 'sqlOwnerChanged', connectionIds: change.connectionIds }); } catch { /* panel disposed */ }
+			void this.sendSnapshotToWebview();
+		});
+		if (sqlConnectionSubscription) this.disposables.push(sqlConnectionSubscription);
 		this.panel.onDidChangeViewState((e) => {
 			if (e.webviewPanel.visible) {
 				void this.sendSnapshotToWebview();
@@ -218,6 +277,7 @@ export class ConnectionManagerViewerV2 {
 			try { d.dispose(); } catch { /* ignore */ }
 		}
 		this._searchAbortController?.abort();
+		this._sqlViewerAbortController.abort();
 	}
 
 	// ─── Data helpers (identical to original) ───────────────────────────────
@@ -303,18 +363,27 @@ export class ConnectionManagerViewerV2 {
 		await this.context.globalState.update(STORAGE_KEYS.sqlExpandedConnections, expanded);
 	}
 
-	private getSqlCachedDatabases(): Record<string, string[]> {
-		const raw = this.context.globalState.get<Record<string, string[]> | undefined>(STORAGE_KEYS.sqlCachedDatabases);
-		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {};
-		const result: Record<string, string[]> = {};
-		for (const [k, v] of Object.entries(raw)) {
-			if (typeof k === 'string' && Array.isArray(v)) result[k] = v.filter((d) => typeof d === 'string');
-		}
-		return result;
+	private async getSqlCachedDatabases(): Promise<Record<string, string[]>> {
+		const connections = this.sqlDeps?.getSqlConnectionManager().getConnections() ?? [];
+		return getOwnedSqlDatabaseLists(this.context, STORAGE_KEYS.sqlCachedDatabases, connections);
 	}
 
-	private async setSqlCachedDatabases(cached: Record<string, string[]>): Promise<void> {
-		await this.context.globalState.update(STORAGE_KEYS.sqlCachedDatabases, cached);
+	private async writeSqlCachedDatabases(
+		connection: SqlConnection,
+		principalFingerprint: string,
+		databases: readonly string[],
+		request: Awaited<ReturnType<typeof beginSqlDatabaseCacheRequest>>,
+		assertOwner: () => Promise<void>,
+	): Promise<void> {
+		await writeOwnedSqlDatabaseCacheEntry(
+			this.context,
+			STORAGE_KEYS.sqlCachedDatabases,
+			connection,
+			principalFingerprint,
+			databases,
+			request,
+			assertOwner,
+		);
 	}
 
 	private getSqlFavorites(): SqlFavorite[] {
@@ -329,6 +398,118 @@ export class ConnectionManagerViewerV2 {
 	private getSqlLeaveNoTrace(): string[] {
 		const raw = this.context.globalState.get<string[] | undefined>(STORAGE_KEYS.sqlLeaveNoTrace);
 		return Array.isArray(raw) ? raw.filter((s) => typeof s === 'string') : [];
+	}
+
+	private assertCurrentSqlOwner(
+		connectionId: string,
+		startingConnection: SqlConnection,
+		principalFingerprint: string,
+		requestId?: string,
+	): SqlConnection {
+		const current = this.sqlDeps?.getSqlConnectionManager().getConnection(connectionId);
+		if (!current
+			|| sqlConnectionTargetSignature(current) !== sqlConnectionTargetSignature(startingConnection)
+			|| sqlSchemaPrincipalFingerprint(this.context, current) !== principalFingerprint
+			|| (requestId !== undefined && this._sqlTestConnectionRequestIdByConnectionId.get(connectionId) !== requestId)) {
+			throw new Error('SQL connection changed while the request was running.');
+		}
+		return current;
+	}
+
+	private async assertCanonicalSqlOwner(
+		connectionId: string,
+		startingConnection: SqlConnection,
+		principalFingerprint: string,
+		revocationGeneration: number,
+		requestId?: string,
+	): Promise<SqlConnection> {
+		await this.sqlDeps?.assertSqlConnectionAllowed?.(connectionId);
+		await this.sqlDeps?.getSqlConnectionManager().assertConnectionCurrent(startingConnection);
+		const current = this.assertCurrentSqlOwner(connectionId, startingConnection, principalFingerprint, requestId);
+		if (await readCurrentSqlSchemaPrincipalFingerprint(this.context, current) !== principalFingerprint) {
+			throw new Error('SQL connection identity changed while the request was running.');
+		}
+		await this.dispatchSqlAllowed(startingConnection, principalFingerprint, revocationGeneration, () => undefined);
+		return current;
+	}
+
+	private async dispatchSqlAllowed<T>(
+		connection: SqlConnection,
+		principalFingerprint: string,
+		revocationGeneration: number,
+		dispatch: () => T | PromiseLike<T>,
+	): Promise<T> {
+		if (this.sqlDeps?.dispatchSqlOwnerAllowed) {
+			return this.sqlDeps.dispatchSqlOwnerAllowed(connection, principalFingerprint, revocationGeneration, dispatch);
+		}
+		await this.sqlDeps?.assertSqlConnectionAllowed?.(connection.id);
+		return await dispatch();
+	}
+
+	private async dispatchSqlPolicySnapshot<T>(
+		dispatch: (snapshot: { connectionIds: readonly string[]; version: number; globallyBlocked: boolean }) => T | PromiseLike<T>,
+	): Promise<T> {
+		if (this.sqlDeps?.dispatchSqlPolicySnapshot) return this.sqlDeps.dispatchSqlPolicySnapshot(dispatch);
+		await this.sqlDeps?.refreshSqlLeaveNoTracePolicy?.();
+		return await dispatch({
+			connectionIds: this.sqlDeps?.getSqlLeaveNoTraceConnectionIds?.() ?? [],
+			version: this.sqlDeps?.getSqlStateVersions?.().policy ?? 0,
+			globallyBlocked: false,
+		});
+	}
+
+	private async dispatchSqlOwnerSnapshot<T>(
+		dispatch: NonNullable<ConnectionManagerSqlDeps['dispatchSqlOwnerSnapshot']> extends (callback: infer C) => Promise<T> ? C : never,
+	): Promise<T> {
+		if (!this.sqlDeps?.dispatchSqlOwnerSnapshot) throw new Error('Canonical SQL owner snapshot is unavailable.');
+		return this.sqlDeps.dispatchSqlOwnerSnapshot(dispatch as any) as Promise<T>;
+	}
+
+	private assertCurrentSqlTarget(connectionId: string, startingConnection: SqlConnection, requestId?: string): SqlConnection {
+		const current = this.sqlDeps?.getSqlConnectionManager().getConnection(connectionId);
+		if (!current
+			|| sqlConnectionTargetSignature(current) !== sqlConnectionTargetSignature(startingConnection)
+			|| (requestId !== undefined && this._sqlTestConnectionRequestIdByConnectionId.get(connectionId) !== requestId)) {
+			throw new Error('SQL connection changed while the request was running.');
+		}
+		return current;
+	}
+
+	private async resolveCurrentSqlPrincipal(
+		connectionId: string,
+		startingConnection: SqlConnection,
+		revocationGeneration: number,
+		startingPrincipal?: string,
+		requestId?: string,
+	): Promise<string> {
+		await this.sqlDeps?.assertSqlConnectionAllowed?.(connectionId);
+		await this.sqlDeps?.getSqlConnectionManager().assertConnectionCurrent(startingConnection);
+		const current = this.assertCurrentSqlTarget(connectionId, startingConnection, requestId);
+		const principal = await readCurrentSqlSchemaPrincipalFingerprint(this.context, current);
+		if (!principal || (startingPrincipal && principal !== startingPrincipal)) {
+			throw new Error('SQL connection identity changed while the request was running.');
+		}
+		await this.dispatchSqlAllowed(startingConnection, principal, revocationGeneration, () => undefined);
+		return principal;
+	}
+
+	private async assertCurrentSqlSearchOwner(
+		requestId: string,
+		connection: SqlConnection,
+		startingPrincipal: string,
+		signal: AbortSignal,
+	): Promise<void> {
+		if (signal.aborted || this._activeSearchRequestId !== requestId) throw new Error('Search request changed.');
+		await this.sqlDeps?.refreshSqlLeaveNoTracePolicy?.();
+		await this.sqlDeps?.assertSqlConnectionAllowed?.(connection.id);
+		await assertSqlDatabaseCacheTargetCurrent(this.context, STORAGE_KEYS.sqlCachedDatabases, connection);
+		const current = this.sqlDeps?.getSqlConnectionManager().getConnection(connection.id);
+		if (!current
+			|| sqlDatabaseTargetSignature(current) !== sqlDatabaseTargetSignature(connection)
+			|| await readCurrentSqlSchemaPrincipalFingerprint(this.context, current) !== startingPrincipal
+			|| signal.aborted || this._activeSearchRequestId !== requestId) {
+			throw new Error('SQL search owner changed.');
+		}
 	}
 
 	private async setSqlLeaveNoTrace(connectionIds: string[]): Promise<void> {
@@ -350,14 +531,33 @@ export class ConnectionManagerViewerV2 {
 
 	private getSearchState(): unknown {
 		const raw = this.context.globalState.get<unknown>(STORAGE_KEYS.searchState) ?? null;
-		if (this.getActiveKind() !== 'kusto' || !raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return raw;
 		const state = raw as Record<string, unknown>;
-		return state.kustoPrincipalFingerprint === this.getKustoSearchPrincipalFingerprint()
-			? state
-			: { ...state, lastResults: [], lastSearchTimestamp: 0 };
+		const results = Array.isArray(state.lastResults) ? state.lastResults : [];
+		const withoutSqlResults = results.filter(result => String((result as any)?.kind || '') !== 'sql');
+		const removedSqlResults = withoutSqlResults.length !== results.length;
+		const sanitizedState = removedSqlResults
+			? { ...state, lastResults: withoutSqlResults, lastSearchTimestamp: 0 }
+			: state;
+		if (this.getActiveKind() === 'sql') return { ...state, lastResults: [], lastSearchTimestamp: 0 };
+		return sanitizedState.kustoPrincipalFingerprint === this.getKustoSearchPrincipalFingerprint()
+			? sanitizedState
+			: { ...sanitizedState, lastResults: [], lastSearchTimestamp: 0 };
 	}
 
-	private async setSearchState(state: unknown): Promise<void> {
+	private async setSearchState(state: unknown, sourceKind: ConnectionKind = this.getActiveKind()): Promise<void> {
+		if (state && typeof state === 'object' && !Array.isArray(state)) {
+			const record = state as Record<string, unknown>;
+			const results = Array.isArray(record.lastResults) ? record.lastResults : [];
+			if (sourceKind === 'sql' || results.some(result => String((result as any)?.kind || '') === 'sql')) {
+				await this.context.globalState.update(STORAGE_KEYS.searchState, {
+					...record,
+					lastResults: sourceKind === 'sql' ? [] : results.filter(result => String((result as any)?.kind || '') !== 'sql'),
+					lastSearchTimestamp: 0,
+				});
+				return;
+			}
+		}
 		if (this.getActiveKind() === 'kusto' && state && typeof state === 'object' && !Array.isArray(state)) {
 			await this.context.globalState.update(STORAGE_KEYS.searchState, {
 				...(state as Record<string, unknown>),
@@ -368,8 +568,42 @@ export class ConnectionManagerViewerV2 {
 		await this.context.globalState.update(STORAGE_KEYS.searchState, state);
 	}
 
-	private async buildSnapshot() {
-		const sqlConnections = this.sqlDeps ? this.sqlDeps.getSqlConnectionManager().getConnections() : [];
+	private getSqlSearchOwner(connection: SqlConnection): {
+		targetSignature: string;
+		principalFingerprint: string;
+		revocationGeneration: number;
+	} | undefined {
+		const principalFingerprint = sqlSchemaPrincipalFingerprint(this.context, connection);
+		if (!principalFingerprint) return undefined;
+		return {
+			targetSignature: sqlDatabaseTargetSignature(connection),
+			principalFingerprint,
+			revocationGeneration: this.sqlDeps?.getSqlRevocationGeneration?.(connection.id) ?? 0,
+		};
+	}
+
+	private async buildSnapshot(revision: number = this.snapshotRevision, forceSqlUnavailable = false) {
+		let sqlAvailable = !forceSqlUnavailable;
+		if (sqlAvailable) {
+			try { await this.sqlDeps?.refreshSqlLeaveNoTracePolicy?.(); } catch { sqlAvailable = false; }
+		}
+		const sqlStateVersions = sqlAvailable ? this.sqlDeps?.getSqlStateVersions?.() : undefined;
+		const protectedSqlConnectionIds = new Set(this.sqlDeps?.getSqlLeaveNoTraceConnectionIds?.() ?? []);
+		const sqlConnections = sqlAvailable && this.sqlDeps ? this.sqlDeps.getSqlConnectionManager().getConnections() : [];
+		const sqlCachedDatabases: Record<string, string[]> = {};
+		const sqlCacheOwners: Record<string, { targetSignature: string; principalFingerprint: string }> = {};
+		if (sqlAvailable) {
+			for (const connection of sqlConnections) {
+				if (protectedSqlConnectionIds.has(connection.id)) continue;
+				const entry = await getOwnedSqlDatabaseCacheEntry(this.context, STORAGE_KEYS.sqlCachedDatabases, connection);
+				if (!entry) continue;
+				sqlCachedDatabases[connection.id] = [...entry.databases];
+				sqlCacheOwners[connection.id] = {
+					targetSignature: entry.targetSignature,
+					principalFingerprint: entry.principalFingerprint,
+				};
+			}
+		}
 		const accounts = await this.authPreferences.getAccounts();
 		const connections = this.connectionManager.getConnections().map(connection => {
 			let accountPartition: string | undefined;
@@ -382,6 +616,7 @@ export class ConnectionManagerViewerV2 {
 			};
 		});
 		return {
+			revision,
 			timestamp: Date.now(),
 			activeKind: this.getActiveKind(),
 			connections,
@@ -391,21 +626,91 @@ export class ConnectionManagerViewerV2 {
 			expandedClusters: this.getExpandedClusters(),
 			leaveNoTraceClusters: this.connectionManager.getLeaveNoTraceClusters(),
 			// SQL
+			sqlAvailable,
 			sqlConnections,
-			sqlCachedDatabases: this.getSqlCachedDatabases(),
-			sqlExpandedConnections: this.getSqlExpandedConnections(),
-			sqlFavorites: this.getSqlFavorites(),
-			sqlLeaveNoTrace: this.getSqlLeaveNoTrace(),
+			sqlCachedDatabases,
+			sqlExpandedConnections: sqlAvailable ? this.getSqlExpandedConnections() : [],
+			sqlFavorites: sqlAvailable ? this.getSqlFavorites().filter(favorite => !protectedSqlConnectionIds.has(favorite.connectionId)) : [],
+			sqlLeaveNoTrace: sqlAvailable ? [...protectedSqlConnectionIds] : [],
+			sqlStateVersions,
+			sqlCacheOwners,
 			sqlDialects: listDialects().map(d => ({ id: d.id, displayName: d.displayName, defaultPort: d.defaultPort, authTypes: d.authTypes.map(a => ({ id: a.id, displayName: a.label })) })),
 			// Search
-			searchState: this.getSearchState(),
+			searchState: sqlAvailable ? this.getSearchState() : {
+				query: '', scope: 'cached', categories: {}, contentToggles: {}, lastResults: [], lastSearchTimestamp: 0,
+			},
 		};
 	}
 
 	private async sendSnapshotToWebview(): Promise<void> {
 		try {
-			const snapshot = await this.buildSnapshot();
-			await this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+			const revision = ++this.snapshotRevision;
+			let snapshot;
+			while (true) {
+				snapshot = await this.buildSnapshot(revision);
+				let sqlRefreshSucceeded = true;
+				try { await this.sqlDeps?.refreshSqlLeaveNoTracePolicy?.(); } catch { sqlRefreshSucceeded = false; }
+				if (revision !== this.snapshotRevision) return;
+				if (!sqlRefreshSucceeded) {
+					snapshot = await this.buildSnapshot(revision, true);
+					break;
+				}
+				if (snapshot.sqlAvailable === false) continue;
+				const currentVersions = this.sqlDeps?.getSqlStateVersions?.();
+				if (JSON.stringify(currentVersions) === JSON.stringify(snapshot.sqlStateVersions)) break;
+			}
+			if (snapshot.sqlAvailable === false) {
+				await this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+				return;
+			}
+			await this.dispatchSqlOwnerSnapshot((canonical: any) => {
+				if (revision !== this.snapshotRevision) return;
+				const protectedIds = canonical.policy.globallyBlocked
+					? new Set(canonical.connections.map((connection: SqlConnection) => connection.id))
+					: new Set(canonical.policy.connectionIds);
+				const principalById = new Map<string, string>();
+				for (const connection of canonical.connections as SqlConnection[]) {
+					const authType = String(connection.authType || '').trim().toLowerCase();
+					const principal = authType === 'aad'
+						? canonical.accountsByServer[normalizeSqlServerUrl(connection.serverUrl)]
+						: String(connection.username || '').trim();
+					const fingerprint = sqlSchemaPrincipalFingerprintForPrincipal(connection, principal);
+					if (fingerprint) principalById.set(connection.id, fingerprint);
+				}
+				const searchState = snapshot.searchState && typeof snapshot.searchState === 'object'
+					? {
+						...snapshot.searchState,
+						lastResults: Array.isArray((snapshot.searchState as any).lastResults)
+							? (snapshot.searchState as any).lastResults.filter((result: any) => !protectedIds.has(String(result?.connectionId || '')))
+							: [],
+					}
+					: snapshot.searchState;
+				const { sqlCacheOwners, ...publicSnapshot } = snapshot;
+				const admittedSnapshot = {
+					...publicSnapshot,
+					sqlAvailable: snapshot.sqlAvailable && !canonical.policy.globallyBlocked,
+					// Keep metadata-only rows so protected connections can still be unmarked, edited, or deleted.
+					sqlConnections: (canonical.connections as SqlConnection[]).map(connection => ({ ...connection })),
+					sqlCachedDatabases: Object.fromEntries(Object.entries(snapshot.sqlCachedDatabases)
+						.filter(([connectionId]) => {
+							if (protectedIds.has(connectionId)) return false;
+							const captured = sqlCacheOwners[connectionId];
+							const current = (canonical.connections as SqlConnection[]).find(connection => connection.id === connectionId);
+							return !!captured && !!current
+								&& captured.targetSignature === sqlDatabaseTargetSignature(current)
+								&& captured.principalFingerprint === principalById.get(connectionId);
+						})),
+					sqlFavorites: snapshot.sqlFavorites.filter((favorite: SqlFavorite) => !protectedIds.has(favorite.connectionId)),
+					sqlLeaveNoTrace: [...protectedIds],
+					sqlStateVersions: {
+						policy: canonical.policy.version,
+						connections: canonical.connectionVersion,
+						principals: canonical.principalVersion,
+					},
+					searchState,
+				};
+				return this.panel.webview.postMessage({ type: 'snapshot', snapshot: admittedSnapshot });
+			});
 		} catch (error) {
 			// Ignore transient panel lifecycle races (dispose/reveal ordering), but keep diagnostics.
 			getWorkbenchLogger().warn('[kusto] connection manager snapshot refresh failed', error);
@@ -610,8 +915,7 @@ export class ConnectionManagerViewerV2 {
 					await deleteCachedSchemasForConnections(this.context.globalStorageUri, new Set([id]));
 					await this.connectionManager.removeConnection(id);
 					void vscode.window.setStatusBarMessage(`Connection "${connName}" deleted`, 2000);
-					const snapshot = await this.buildSnapshot();
-					this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+					await this.sendSnapshotToWebview();
 				} catch (error) { void vscode.window.showErrorMessage(`Failed to delete connection: ${error instanceof Error ? error.message : String(error)}`); }
 				return;
 			}
@@ -938,8 +1242,7 @@ export class ConnectionManagerViewerV2 {
 				if (!clusterUrl) return;
 				try {
 					await this.connectionManager.addLeaveNoTrace(clusterUrl);
-					const snapshot = await this.buildSnapshot();
-					this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+					await this.sendSnapshotToWebview();
 					void vscode.window.setStatusBarMessage('Cluster marked as "Leave no trace"', 2000);
 				} catch (error) { void vscode.window.showErrorMessage(`Failed to mark cluster: ${error instanceof Error ? error.message : String(error)}`); }
 				return;
@@ -949,8 +1252,7 @@ export class ConnectionManagerViewerV2 {
 				if (!clusterUrl) return;
 				try {
 					await this.connectionManager.removeLeaveNoTrace(clusterUrl);
-					const snapshot = await this.buildSnapshot();
-					this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+					await this.sendSnapshotToWebview();
 					void vscode.window.setStatusBarMessage('Cluster removed from "Leave no trace"', 2000);
 				} catch (error) { void vscode.window.showErrorMessage(`Failed to remove cluster from "Leave no trace": ${error instanceof Error ? error.message : String(error)}`); }
 				return;
@@ -1044,9 +1346,13 @@ export class ConnectionManagerViewerV2 {
 				const name = String(msg.name || '').trim();
 				const serverUrl = String(msg.serverUrl || '').trim();
 				if (!id || !name || !serverUrl) { void vscode.window.showErrorMessage('Connection ID, name, and server URL are required.'); return; }
+				this._sqlTestConnectionRequestIdByConnectionId.delete(id);
+				const mgr = this.sqlDeps.getSqlConnectionManager();
+				let cacheBlocked = false;
 				try {
-					const mgr = this.sqlDeps.getSqlConnectionManager();
-					await mgr.updateConnection(id, {
+					await blockSqlDatabaseCacheConnection(this.context, STORAGE_KEYS.sqlCachedDatabases, id);
+					cacheBlocked = true;
+					await mgr.updateConnectionAndPassword(id, {
 						name,
 						serverUrl,
 						port: msg.port,
@@ -1054,13 +1360,17 @@ export class ConnectionManagerViewerV2 {
 						authType: String(msg.authType || 'aad'),
 						username: msg.username,
 						database: msg.database ? String(msg.database).trim() : undefined,
-					});
-					if (msg.password !== undefined && msg.password !== null) {
-						await mgr.setPassword(id, msg.password);
-					}
+					}, msg.password);
+					await unblockSqlDatabaseCacheConnection(this.context, STORAGE_KEYS.sqlCachedDatabases, mgr.getConnection(id)!);
+					cacheBlocked = false;
 					void vscode.window.setStatusBarMessage(`SQL connection "${name}" updated successfully`, 2000);
 					await this.sendSnapshotToWebview();
-				} catch (error) { void vscode.window.showErrorMessage(`Failed to update SQL connection: ${error instanceof Error ? error.message : String(error)}`); }
+				} catch (error) {
+					if (cacheBlocked && mgr.getConnection(id)) {
+						try { await unblockSqlDatabaseCacheConnection(this.context, STORAGE_KEYS.sqlCachedDatabases, mgr.getConnection(id)!); } catch { /* keep the mutation error */ }
+					}
+					void vscode.window.showErrorMessage(`Failed to update SQL connection: ${error instanceof Error ? error.message : String(error)}`);
+				}
 				return;
 			}
 			case 'sql.connection.delete': {
@@ -1072,16 +1382,25 @@ export class ConnectionManagerViewerV2 {
 				const connName = conn?.name || id;
 				const confirm = await vscode.window.showWarningMessage(`Delete SQL connection "${connName}"?`, { modal: true }, 'Delete');
 				if (confirm !== 'Delete') return;
+				this._sqlTestConnectionRequestIdByConnectionId.delete(id);
+				let cacheBlocked = false;
 				try {
-					// Clean up associated favorites and LNT
-					const sqlFavorites = this.getSqlFavorites().filter(f => f.connectionId !== id);
-					await this.setSqlFavorites(sqlFavorites);
-					const sqlLnt = this.getSqlLeaveNoTrace().filter(cid => cid !== id);
-					await this.setSqlLeaveNoTrace(sqlLnt);
+					await blockSqlDatabaseCacheConnection(this.context, STORAGE_KEYS.sqlCachedDatabases, id);
+					cacheBlocked = true;
 					await mgr.removeConnection(id);
+					try { await this.setSqlFavorites(this.getSqlFavorites().filter(f => f.connectionId !== id)); } catch { /* stale favorites are hidden without the connection */ }
+					try {
+						if (this.sqlDeps?.setSqlLeaveNoTrace) await this.sqlDeps.setSqlLeaveNoTrace(id, false);
+						else await this.setSqlLeaveNoTrace(this.getSqlLeaveNoTrace().filter(cid => cid !== id));
+					} catch { /* a stale protected ID is safe and can be cleaned later */ }
 					void vscode.window.setStatusBarMessage(`SQL connection "${connName}" deleted`, 2000);
 					await this.sendSnapshotToWebview();
-				} catch (error) { void vscode.window.showErrorMessage(`Failed to delete SQL connection: ${error instanceof Error ? error.message : String(error)}`); }
+				} catch (error) {
+					if (cacheBlocked && mgr.getConnection(id)) {
+						try { await unblockSqlDatabaseCacheConnection(this.context, STORAGE_KEYS.sqlCachedDatabases, mgr.getConnection(id)!); } catch { /* keep the mutation error */ }
+					}
+					void vscode.window.showErrorMessage(`Failed to delete SQL connection: ${error instanceof Error ? error.message : String(error)}`);
+				}
 				return;
 			}
 			case 'sql.connection.test': {
@@ -1089,22 +1408,97 @@ export class ConnectionManagerViewerV2 {
 				const id = String(msg.id || '').trim();
 				if (!id) return;
 				const mgr = this.sqlDeps.getSqlConnectionManager();
-				const conn = mgr.getConnection(id);
-				if (!conn) { void vscode.window.showErrorMessage('SQL connection not found.'); return; }
-				// If a password was passed (testing before save), store it temporarily
-				if (msg.password !== undefined && msg.password !== null) {
-					await mgr.setPassword(id, msg.password);
-				}
-				this.panel.webview.postMessage({ type: 'sql.testConnectionStarted', connectionId: id });
+				const savedConnection = mgr.getConnection(id);
+				if (!savedConnection) { void vscode.window.showErrorMessage('SQL connection not found.'); return; }
+				const conn: SqlConnection = {
+					id,
+					name: String(msg.name || '').trim() || savedConnection.name,
+					serverUrl: String(msg.serverUrl || '').trim(),
+					port: msg.port,
+					dialect: String(msg.dialect || 'mssql'),
+					authType: String(msg.authType || 'aad'),
+					username: msg.username,
+					database: msg.database ? String(msg.database).trim() : undefined,
+					credentialRevision: savedConnection.credentialRevision,
+				};
+				if (!conn.serverUrl) { void vscode.window.showErrorMessage('SQL Server address is required.'); return; }
+				const requestId = `sql-test-${randomUUID()}`;
+				this._sqlTestConnectionRequestIdByConnectionId.set(id, requestId);
+				const startingPrincipal = sqlSchemaPrincipalFingerprint(this.context, savedConnection);
+				const revocationGeneration = this.sqlDeps.getSqlRevocationGeneration?.(id) ?? 0;
+				this.panel.webview.postMessage({ type: 'sql.testConnectionStarted', connectionId: id, requestId });
 				try {
+					await this.sqlDeps.assertSqlConnectionAllowed?.(id);
+				} catch {
+					this.panel.webview.postMessage({
+						type: 'sql.testConnectionResult', connectionId: id, requestId, success: false,
+						message: 'Leave No Trace blocks SQL connection testing until this connection is unmarked.',
+					});
+					if (this._sqlTestConnectionRequestIdByConnectionId.get(id) === requestId) this._sqlTestConnectionRequestIdByConnectionId.delete(id);
+					return;
+				}
+				const testingDraftTarget = sqlDatabaseTargetSignature(conn) !== sqlDatabaseTargetSignature(savedConnection);
+				if (testingDraftTarget && conn.authType === 'sql-login' && msg.password === undefined) {
+					this.panel.webview.postMessage({
+						type: 'sql.testConnectionResult', connectionId: id, requestId, success: false,
+						message: 'Enter the password to test a changed SQL Login target.',
+					});
+					if (this._sqlTestConnectionRequestIdByConnectionId.get(id) === requestId) this._sqlTestConnectionRequestIdByConnectionId.delete(id);
+					return;
+				}
+				try {
+					const cacheRequest = testingDraftTarget ? undefined : await beginSqlDatabaseCacheRequest(this.context, STORAGE_KEYS.sqlCachedDatabases, savedConnection);
+					const before = this.assertCurrentSqlTarget(id, savedConnection, requestId);
+					if (startingPrincipal && sqlSchemaPrincipalFingerprint(this.context, before) !== startingPrincipal) {
+						throw new Error('SQL connection changed while the request was running.');
+					}
+					await this.sqlDeps.assertSqlConnectionAllowed?.(id);
 					const client = this.sqlDeps.getSqlClient();
-					const databases = await client.getDatabases(conn);
-					this.panel.webview.postMessage({ type: 'sql.testConnectionResult', connectionId: id, success: true, message: `Connected successfully! Found ${databases.length} database(s).` });
-					const cached = this.getSqlCachedDatabases();
-					cached[id] = databases;
-					await this.setSqlCachedDatabases(cached);
+					const databases = await client.getDatabases(conn, {
+						passwordOverride: msg.password,
+						allowUncommittedTarget: testingDraftTarget,
+						signal: this._sqlViewerAbortController?.signal,
+					});
+					await this.sqlDeps.assertSqlConnectionAllowed?.(id);
+					this.assertCurrentSqlTarget(id, savedConnection, requestId);
+					if (cacheRequest) {
+						const principal = await this.resolveCurrentSqlPrincipal(id, savedConnection, revocationGeneration, startingPrincipal, requestId);
+						await this.assertCanonicalSqlOwner(id, savedConnection, principal, revocationGeneration, requestId);
+						await this.writeSqlCachedDatabases(
+							savedConnection,
+							principal,
+							databases,
+							cacheRequest,
+							async () => {
+								await this.sqlDeps?.assertSqlConnectionAllowed?.(id);
+								await this.assertCanonicalSqlOwner(id, savedConnection, principal, revocationGeneration, requestId);
+							},
+						);
+					}
+					await this.sqlDeps.assertSqlConnectionAllowed?.(id);
+					this.assertCurrentSqlTarget(id, savedConnection, requestId);
+					const publicationPrincipal = await readCurrentSqlSchemaPrincipalFingerprint(this.context, savedConnection);
+					if (!publicationPrincipal) throw new Error('SQL identity unavailable.');
+					await this.dispatchSqlAllowed(savedConnection, publicationPrincipal, revocationGeneration, () => {
+						this.assertCurrentSqlTarget(id, savedConnection, requestId);
+						return this.panel.webview.postMessage({ type: 'sql.testConnectionResult', connectionId: id, requestId, success: true, message: `Connected successfully! Found ${databases.length} database(s).` });
+					});
 				} catch (error) {
-					this.panel.webview.postMessage({ type: 'sql.testConnectionResult', connectionId: id, success: false, message: `Connection failed: ${error instanceof Error ? error.message : String(error)}` });
+					let mayPostFailure = this._sqlTestConnectionRequestIdByConnectionId.get(id) === requestId;
+					try {
+						await this.sqlDeps.assertSqlConnectionAllowed?.(id);
+						const current = this.assertCurrentSqlTarget(id, savedConnection, requestId);
+						if (startingPrincipal && sqlSchemaPrincipalFingerprint(this.context, current) !== startingPrincipal) mayPostFailure = false;
+					} catch {
+						mayPostFailure = false;
+					}
+					if (mayPostFailure) {
+						this.panel.webview.postMessage({ type: 'sql.testConnectionResult', connectionId: id, requestId, success: false, message: `Connection failed: ${error instanceof Error ? error.message : String(error)}` });
+					}
+				} finally {
+					if (this._sqlTestConnectionRequestIdByConnectionId.get(id) === requestId) {
+						this._sqlTestConnectionRequestIdByConnectionId.delete(id);
+					}
 				}
 				return;
 			}
@@ -1127,20 +1521,30 @@ export class ConnectionManagerViewerV2 {
 				const connectionId = String(msg.connectionId || '').trim();
 				if (!connectionId) return;
 				const expanded = this.getSqlExpandedConnections();
-				if (!expanded.includes(connectionId)) { expanded.push(connectionId); await this.setSqlExpandedConnections(expanded); }
 				const mgr = this.sqlDeps.getSqlConnectionManager();
 				const conn = mgr.getConnection(connectionId);
+				const revocationGeneration = conn ? this.sqlDeps.getSqlRevocationGeneration?.(connectionId) ?? 0 : 0;
+				if (!expanded.includes(connectionId)) { expanded.push(connectionId); await this.setSqlExpandedConnections(expanded); }
 				if (conn) {
-					const cached = this.getSqlCachedDatabases();
-					if (!cached[connectionId] || cached[connectionId].length === 0) {
-						this.panel.webview.postMessage({ type: 'sql.loadingDatabases', connectionId });
+					const cached = await getOwnedSqlDatabaseCacheEntry(this.context, STORAGE_KEYS.sqlCachedDatabases, conn);
+					if (!cached || cached.databases.length === 0) {
+						const requestId = `sql-db-${randomUUID()}`;
+						const startingPrincipal = sqlSchemaPrincipalFingerprint(this.context, conn);
+						this.panel.webview.postMessage({ type: 'sql.loadingDatabases', requestId, connectionId });
 						try {
+							const cacheRequest = await beginSqlDatabaseCacheRequest(this.context, STORAGE_KEYS.sqlCachedDatabases, conn);
+							await this.sqlDeps.assertSqlConnectionAllowed?.(connectionId);
 							const client = this.sqlDeps.getSqlClient();
-							const databases = await client.getDatabases(conn);
-							cached[connectionId] = databases;
-							await this.setSqlCachedDatabases(cached);
-							this.panel.webview.postMessage({ type: 'sql.databasesLoaded', connectionId, databases });
-						} catch (error) { this.panel.webview.postMessage({ type: 'sql.databasesLoadError', connectionId, error: error instanceof Error ? error.message : String(error) }); }
+							const databases = await client.getDatabases(conn, { signal: this._sqlViewerAbortController?.signal });
+							const principal = await this.resolveCurrentSqlPrincipal(connectionId, conn, revocationGeneration, startingPrincipal);
+							await this.writeSqlCachedDatabases(conn, principal, databases, cacheRequest, async () => {
+								await this.resolveCurrentSqlPrincipal(connectionId, conn, revocationGeneration, principal);
+							});
+							await this.dispatchSqlAllowed(conn, principal, revocationGeneration, () => {
+								this.assertCurrentSqlOwner(connectionId, conn, principal);
+								return this.panel.webview.postMessage({ type: 'sql.databasesLoaded', requestId, connectionId, databases });
+							});
+						} catch (error) { this.panel.webview.postMessage({ type: 'sql.databasesLoadError', requestId, connectionId, error: error instanceof Error ? error.message : String(error) }); }
 					}
 				}
 				return;
@@ -1159,16 +1563,25 @@ export class ConnectionManagerViewerV2 {
 				const mgr = this.sqlDeps.getSqlConnectionManager();
 				const conn = mgr.getConnection(connectionId);
 				if (!conn) return;
-				this.panel.webview.postMessage({ type: 'sql.loadingDatabases', connectionId });
+				const requestId = `sql-db-${randomUUID()}`;
+				const startingPrincipal = sqlSchemaPrincipalFingerprint(this.context, conn);
+				const revocationGeneration = this.sqlDeps.getSqlRevocationGeneration?.(connectionId) ?? 0;
+				this.panel.webview.postMessage({ type: 'sql.loadingDatabases', requestId, connectionId });
 				try {
+					const cacheRequest = await beginSqlDatabaseCacheRequest(this.context, STORAGE_KEYS.sqlCachedDatabases, conn);
+					await this.sqlDeps.assertSqlConnectionAllowed?.(connectionId);
 					const client = this.sqlDeps.getSqlClient();
-					const databases = await client.getDatabases(conn);
-					const cached = this.getSqlCachedDatabases();
-					cached[connectionId] = databases;
-					await this.setSqlCachedDatabases(cached);
-					this.panel.webview.postMessage({ type: 'sql.databasesLoaded', connectionId, databases });
+					const databases = await client.getDatabases(conn, { signal: this._sqlViewerAbortController?.signal });
+					const principal = await this.resolveCurrentSqlPrincipal(connectionId, conn, revocationGeneration, startingPrincipal);
+					await this.writeSqlCachedDatabases(conn, principal, databases, cacheRequest, async () => {
+						await this.resolveCurrentSqlPrincipal(connectionId, conn, revocationGeneration, principal);
+					});
+					await this.dispatchSqlAllowed(conn, principal, revocationGeneration, () => {
+						this.assertCurrentSqlOwner(connectionId, conn, principal);
+						return this.panel.webview.postMessage({ type: 'sql.databasesLoaded', requestId, connectionId, databases });
+					});
 				} catch (error) {
-					this.panel.webview.postMessage({ type: 'sql.databasesLoadError', connectionId, error: error instanceof Error ? error.message : String(error) });
+					this.panel.webview.postMessage({ type: 'sql.databasesLoadError', requestId, connectionId, error: error instanceof Error ? error.message : String(error) });
 				}
 				return;
 			}
@@ -1180,12 +1593,22 @@ export class ConnectionManagerViewerV2 {
 				const mgr = this.sqlDeps.getSqlConnectionManager();
 				const conn = mgr.getConnection(connectionId);
 				if (!conn) return;
-				this.panel.webview.postMessage({ type: 'sql.loadingSchema', connectionId, database });
+				const revocationGeneration = this.sqlDeps.getSqlRevocationGeneration?.(connectionId) ?? 0;
+				const requestId = `sql-schema-${randomUUID()}`;
+				this.panel.webview.postMessage({ type: 'sql.loadingSchema', requestId, connectionId, database });
 				try {
+					await this.sqlDeps.assertSqlConnectionAllowed?.(connectionId);
+					const principal = await readCurrentSqlSchemaPrincipalFingerprint(this.context, conn);
+					if (!principal) throw new Error('SQL identity unavailable.');
 					const client = this.sqlDeps.getSqlClient();
-					const schema = await client.getDatabaseSchema(conn, database);
-					this.panel.webview.postMessage({ type: 'sql.schemaLoaded', connectionId, database, schema });
-				} catch (error) { this.panel.webview.postMessage({ type: 'sql.schemaLoadError', connectionId, database, error: error instanceof Error ? error.message : String(error) }); }
+					const schema = await client.getDatabaseSchema(conn, database, { signal: this._sqlViewerAbortController?.signal });
+					await this.sqlDeps.assertSqlConnectionAllowed?.(connectionId);
+					await this.assertCanonicalSqlOwner(connectionId, conn, principal, revocationGeneration);
+					await this.dispatchSqlAllowed(conn, principal, revocationGeneration, () => {
+						this.assertCurrentSqlOwner(connectionId, conn, principal);
+						return this.panel.webview.postMessage({ type: 'sql.schemaLoaded', requestId, connectionId, database, schema });
+					});
+				} catch (error) { this.panel.webview.postMessage({ type: 'sql.schemaLoadError', requestId, connectionId, database, error: error instanceof Error ? error.message : String(error) }); }
 				return;
 			}
 			case 'sql.database.refreshSchema': {
@@ -1197,22 +1620,43 @@ export class ConnectionManagerViewerV2 {
 				const mgr = this.sqlDeps.getSqlConnectionManager();
 				const conn = mgr.getConnection(connectionId);
 				if (!conn) return;
-				this.panel.webview.postMessage({ type: 'sql.loadingSchema', connectionId, database });
+				const revocationGeneration = this.sqlDeps.getSqlRevocationGeneration?.(connectionId) ?? 0;
+				const requestId = `sql-schema-${randomUUID()}`;
+				this.panel.webview.postMessage({ type: 'sql.loadingSchema', requestId, connectionId, database });
 				try {
+					await this.sqlDeps.assertSqlConnectionAllowed?.(connectionId);
+					const principal = await readCurrentSqlSchemaPrincipalFingerprint(this.context, conn);
+					if (!principal) throw new Error('SQL identity unavailable.');
 					const client = this.sqlDeps.getSqlClient();
-					const schema = await client.getDatabaseSchema(conn, database);
-					this.panel.webview.postMessage({ type: 'sql.schemaLoaded', connectionId, database, schema });
+					const schema = await client.getDatabaseSchema(conn, database, { signal: this._sqlViewerAbortController?.signal });
+					await this.sqlDeps.assertSqlConnectionAllowed?.(connectionId);
+					await this.assertCanonicalSqlOwner(connectionId, conn, principal, revocationGeneration);
+					await this.dispatchSqlAllowed(conn, principal, revocationGeneration, () => {
+						this.assertCurrentSqlOwner(connectionId, conn, principal);
+						return this.panel.webview.postMessage({ type: 'sql.schemaLoaded', requestId, connectionId, database, schema });
+					});
 					void vscode.window.showInformationMessage(`SQL schema refreshed: ${database}${source ? ` (via ${source})` : ''}`);
-				} catch (error) { this.panel.webview.postMessage({ type: 'sql.schemaLoadError', connectionId, database, error: error instanceof Error ? error.message : String(error) }); }
+				} catch (error) { this.panel.webview.postMessage({ type: 'sql.schemaLoadError', requestId, connectionId, database, error: error instanceof Error ? error.message : String(error) }); }
 				return;
 			}
 			case 'sql.database.openInNewFile': {
-				const serverUrl = String(msg.serverUrl || '').trim();
+				if (!this.sqlDeps) return;
+				const connectionId = String(msg.connectionId || '').trim();
 				const database = String(msg.database || '').trim();
-				if (!serverUrl || !database) return;
+				if (!connectionId || !database) return;
 				try {
+					const connection = this.sqlDeps.getSqlConnectionManager().getConnection(connectionId);
+					if (!connection) throw new Error('SQL connection not found.');
+					await this.sqlDeps.assertSqlConnectionAllowed?.(connectionId);
+					await this.sqlDeps.getSqlConnectionManager().assertConnectionCurrent(connection);
 					const file = createEmptyKqlxOrMdxFile('sqlx');
-					file.state.sections.push({ type: 'sql', expanded: true, serverUrl, database, query: '' });
+					file.state.sections.push({
+						type: 'sql', expanded: true,
+						serverUrl: connection.serverUrl,
+						connectionIdHint: connection.id,
+						targetSignature: sqlConnectionTargetSignature(connection),
+						database, query: '',
+					});
 					const defaultName = `${database}.sqlx`;
 					const uri = await vscode.window.showSaveDialog({ filters: { 'SQL Notebook': ['sqlx'] }, saveLabel: 'Create', title: 'Create new .sqlx file', defaultUri: vscode.workspace.workspaceFolders?.[0] ? vscode.Uri.joinPath(vscode.workspace.workspaceFolders[0].uri, defaultName) : undefined });
 					if (uri) {
@@ -1233,16 +1677,27 @@ export class ConnectionManagerViewerV2 {
 				if (!connectionId || !database || !tableName) return;
 				const mgr = this.sqlDeps.getSqlConnectionManager();
 				const conn = mgr.getConnection(connectionId);
-				if (!conn) { this.panel.webview.postMessage({ type: 'sql.tablePreviewResult', connectionId, database, tableName, success: false, error: 'Connection not found.' }); return; }
-				this.panel.webview.postMessage({ type: 'sql.tablePreviewLoading', connectionId, database, tableName });
+				const requestId = `sql-preview-${randomUUID()}`;
+				if (!conn) { this.panel.webview.postMessage({ type: 'sql.tablePreviewResult', requestId, connectionId, database, tableName, success: false, error: 'Connection not found.' }); return; }
+				const revocationGeneration = this.sqlDeps.getSqlRevocationGeneration?.(connectionId) ?? 0;
+				this.panel.webview.postMessage({ type: 'sql.tablePreviewLoading', requestId, connectionId, database, tableName });
 				try {
+					await this.sqlDeps.assertSqlConnectionAllowed?.(connectionId);
+					const principal = await readCurrentSqlSchemaPrincipalFingerprint(this.context, conn);
+					if (!principal) throw new Error('SQL identity unavailable.');
 					const safeTableName = tableName.split('.').map(part => `[${part.replace(/\]/g, ']]')}]`).join('.');
 					const query = `SELECT TOP 100 * FROM ${safeTableName}`;
 					const client = this.sqlDeps.getSqlClient();
-					const result = await client.executeQuery(conn, database, query);
-					this.panel.webview.postMessage({ type: 'sql.tablePreviewResult', connectionId, database, tableName, success: true, columns: result.columns, rows: result.rows, rowCount: result.rows.length, executionTime: result.metadata?.executionTime });
+					const result = await client.executeQuery(conn, database, query, { signal: this._sqlViewerAbortController?.signal });
+					await this.sqlDeps.assertSqlConnectionAllowed?.(connectionId);
+					await mgr.assertConnectionCurrent(conn);
+					await this.assertCanonicalSqlOwner(connectionId, conn, principal, revocationGeneration);
+					await this.dispatchSqlAllowed(conn, principal, revocationGeneration, () => {
+						this.assertCurrentSqlOwner(connectionId, conn, principal);
+						return this.panel.webview.postMessage({ type: 'sql.tablePreviewResult', requestId, connectionId, database, tableName, success: true, columns: result.columns, rows: result.rows, rowCount: result.rows.length, executionTime: result.metadata?.executionTime });
+					});
 				} catch (error) {
-					this.panel.webview.postMessage({ type: 'sql.tablePreviewResult', connectionId, database, tableName, success: false, error: error instanceof Error ? error.message : String(error) });
+					this.panel.webview.postMessage({ type: 'sql.tablePreviewResult', requestId, connectionId, database, tableName, success: false, error: error instanceof Error ? error.message : String(error) });
 				}
 				return;
 			}
@@ -1280,16 +1735,24 @@ export class ConnectionManagerViewerV2 {
 			case 'sql.leaveNoTrace.add': {
 				const connectionId = String(msg.connectionId || '').trim();
 				if (!connectionId) return;
-				const lnt = this.getSqlLeaveNoTrace();
-				if (!lnt.includes(connectionId)) { lnt.push(connectionId); await this.setSqlLeaveNoTrace(lnt); }
+				if (this.sqlDeps?.setSqlLeaveNoTrace) {
+					await this.sqlDeps.setSqlLeaveNoTrace(connectionId, true);
+				} else {
+					const lnt = this.getSqlLeaveNoTrace();
+					if (!lnt.includes(connectionId)) { lnt.push(connectionId); await this.setSqlLeaveNoTrace(lnt); }
+				}
 				await this.sendSnapshotToWebview();
 				return;
 			}
 			case 'sql.leaveNoTrace.remove': {
 				const connectionId = String(msg.connectionId || '').trim();
 				if (!connectionId) return;
-				const lnt = this.getSqlLeaveNoTrace().filter(id => id !== connectionId);
-				await this.setSqlLeaveNoTrace(lnt);
+				if (this.sqlDeps?.setSqlLeaveNoTrace) {
+					await this.sqlDeps.setSqlLeaveNoTrace(connectionId, false);
+				} else {
+					const lnt = this.getSqlLeaveNoTrace().filter(id => id !== connectionId);
+					await this.setSqlLeaveNoTrace(lnt);
+				}
 				await this.sendSnapshotToWebview();
 				return;
 			}
@@ -1324,7 +1787,7 @@ export class ConnectionManagerViewerV2 {
 				return;
 			}
 			case 'search.saveState': {
-				await this.setSearchState(msg.state);
+				await this.setSearchState(msg.state, msg.kind);
 				return;
 			}
 
@@ -1352,11 +1815,37 @@ export class ConnectionManagerViewerV2 {
 			name: string;
 			parentName?: string;
 			matchContext?: string;
+			_sqlOwner?: { targetSignature: string; principalFingerprint: string; revocationGeneration: number };
 		};
 
-		const sendResults = (results: SearchResult[], completed: boolean) => {
+		const sendResults = async (results: SearchResult[], completed: boolean) => {
 			if (signal.aborted) return;
-			try { this.panel.webview.postMessage({ type: 'searchResults', requestId, results, completed }); } catch { /* panel disposed */ }
+			if (kind === 'sql') {
+				try {
+					await this.dispatchSqlOwnerSnapshot((canonical: any) => {
+						if (signal.aborted || this._activeSearchRequestId !== requestId) return;
+						const protectedIds = canonical.policy.globallyBlocked
+							? new Set(results.map(result => result.connectionId))
+							: new Set(canonical.policy.connectionIds);
+						const connectionsById = new Map((canonical.connections as SqlConnection[]).map(connection => [connection.id, connection]));
+						const admitted = results.filter(result => {
+							if (protectedIds.has(result.connectionId) || !result._sqlOwner) return false;
+							const connection = connectionsById.get(result.connectionId);
+							if (!connection || sqlDatabaseTargetSignature(connection) !== result._sqlOwner.targetSignature) return false;
+							const authType = String(connection.authType || '').trim().toLowerCase();
+							const principal = authType === 'aad'
+								? canonical.accountsByServer[normalizeSqlServerUrl(connection.serverUrl)]
+								: String(connection.username || '').trim();
+							return sqlSchemaPrincipalFingerprintForPrincipal(connection, principal) === result._sqlOwner.principalFingerprint
+								&& (canonical.policy.revocationGenerations[result.connectionId] ?? 0) === result._sqlOwner.revocationGeneration;
+						}).map(({ _sqlOwner: _owner, ...result }) => result);
+						return this.panel.webview.postMessage({ type: 'searchResults', requestId, results: admitted, completed });
+					});
+				} catch { /* canonical SQL policy denial suppresses search data */ }
+				return;
+			}
+			if (signal.aborted || this._activeSearchRequestId !== requestId) return;
+			try { await this.panel.webview.postMessage({ type: 'searchResults', requestId, results, completed }); } catch { /* panel disposed */ }
 		};
 		const sendProgress = (message: string, current?: number, total?: number) => {
 			if (signal.aborted) return;
@@ -1364,7 +1853,7 @@ export class ConnectionManagerViewerV2 {
 		};
 
 		let re: RegExp;
-		try { re = new RegExp(query, 'i'); } catch { sendResults([], true); return; }
+		try { re = new RegExp(query, 'i'); } catch { await sendResults([], true); return; }
 
 		try {
 			// ── Phase 1: Connection/database name matches (instant, from snapshot) ──
@@ -1387,23 +1876,35 @@ export class ConnectionManagerViewerV2 {
 					}
 				}
 			} else {
-				const sqlConns = this.sqlDeps ? this.sqlDeps.getSqlConnectionManager().getConnections() : [];
-				const sqlCachedDbs = this.getSqlCachedDatabases();
+				await this.sqlDeps?.refreshSqlLeaveNoTracePolicy?.();
+				const protectedIds = new Set(this.sqlDeps?.getSqlLeaveNoTraceConnectionIds?.() ?? []);
+				const sqlConns = this.sqlDeps
+					? this.sqlDeps.getSqlConnectionManager().getConnections().filter(connection => !protectedIds.has(connection.id))
+					: [];
+				const ownerByConnectionId = new Map(sqlConns.flatMap(connection => {
+					const owner = this.getSqlSearchOwner(connection);
+					return owner ? [[connection.id, owner] as const] : [];
+				}));
+				const sqlCachedDbs = Object.fromEntries(
+					Object.entries(await this.getSqlCachedDatabases()).filter(([connectionId]) => !protectedIds.has(connectionId)),
+				);
 				for (const conn of sqlConns) {
+					const sqlOwner = ownerByConnectionId.get(conn.id);
+					if (!sqlOwner) continue;
 					if (categories['servers'] && (re.test(conn.name) || re.test(conn.serverUrl))) {
-						nameResults.push({ category: 'server', kind: 'sql', connectionId: conn.id, connectionName: conn.name, name: conn.name || conn.serverUrl });
+						nameResults.push({ category: 'server', kind: 'sql', connectionId: conn.id, connectionName: conn.name, name: conn.name || conn.serverUrl, _sqlOwner: sqlOwner });
 					}
 					if (categories['databases']) {
 						for (const db of sqlCachedDbs[conn.id] ?? []) {
 							if (re.test(db)) {
-								nameResults.push({ category: 'database', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database: db, name: db });
+								nameResults.push({ category: 'database', kind: 'sql', connectionId: conn.id, connectionName: conn.name, database: db, name: db, _sqlOwner: sqlOwner });
 							}
 						}
 					}
 				}
 			}
 
-			if (nameResults.length > 0) sendResults(nameResults, false);
+			if (nameResults.length > 0) await sendResults(nameResults, false);
 			if (signal.aborted) return;
 
 			// ── Phase 2: Schema search (scope-dependent) ──
@@ -1415,11 +1916,11 @@ export class ConnectionManagerViewerV2 {
 				await this._searchCachedSchemasForSearch(kind, query, categories, contentToggles, requestId, signal, sendResults);
 			}
 
-			if (!signal.aborted) sendResults([], true);
+			if (!signal.aborted) await sendResults([], true);
 		} catch (error) {
 			if (!signal.aborted) {
 				getWorkbenchLogger().warn('[kusto] search error', error);
-				sendResults([], true);
+				await sendResults([], true);
 			}
 		} finally {
 			if (this._activeSearchRequestId === requestId) {
@@ -1435,9 +1936,9 @@ export class ConnectionManagerViewerV2 {
 		query: string,
 		categories: Record<string, boolean>,
 		contentToggles: Record<string, boolean>,
-		_requestId: string,
+		requestId: string,
 		signal: AbortSignal,
-		sendResults: (results: any[], completed: boolean) => void,
+		sendResults: (results: any[], completed: boolean) => Promise<void>,
 	): Promise<void> {
 		const wantsSchemaSearch = kind === 'kusto'
 			? (categories['tables'] || categories['functions'])
@@ -1448,12 +1949,59 @@ export class ConnectionManagerViewerV2 {
 			const matches = await searchCachedSchemas(this.context.globalStorageUri, query, 500, this.getActiveSchemaPrincipalIdentities());
 			if (signal.aborted) return;
 			const results = this._mapKustoSchemaMatches(matches, categories, contentToggles);
-			if (results.length > 0) sendResults(results, false);
+			if (results.length > 0) await sendResults(results, false);
 		} else {
-			const matches = await searchCachedSqlSchemas(this.context.globalStorageUri, query, 500);
-			if (signal.aborted) return;
-			const results = this._mapSqlSchemaMatches(matches, categories, contentToggles);
-			if (results.length > 0) sendResults(results, false);
+			await this.sqlDeps?.refreshSqlLeaveNoTracePolicy?.();
+			const protectedIds = new Set(this.sqlDeps?.getSqlLeaveNoTraceConnectionIds?.() ?? []);
+			const ownerContext = new Map<string, {
+				connection: SqlConnection;
+				principalFingerprint: string;
+				revocationGeneration: number;
+			}>();
+			const allowedOwners = new Map<string, SqlSchemaCacheOwner>();
+			for (const connection of this.sqlDeps?.getSqlConnectionManager().getConnections() ?? []) {
+				if (protectedIds.has(connection.id)) continue;
+				const principalFingerprint = await readCurrentSqlSchemaPrincipalFingerprint(this.context, connection);
+				if (!principalFingerprint) continue;
+				ownerContext.set(connection.id, {
+					connection: { ...connection }, principalFingerprint,
+					revocationGeneration: this.sqlDeps?.getSqlRevocationGeneration?.(connection.id) ?? 0,
+				});
+				allowedOwners.set(connection.id, { principalFingerprint, targetSignature: sqlSchemaTargetSignature(connection) });
+			}
+			const matches = await searchCachedSqlSchemas(this.context.globalStorageUri, query, 500, allowedOwners);
+			if (signal.aborted || this._activeSearchRequestId !== requestId) return;
+			for (const connectionId of new Set(matches.map(match => match.connectionId))) {
+				const owner = ownerContext.get(connectionId);
+				if (!owner) return;
+				try {
+					await this.assertCurrentSqlSearchOwner(requestId, owner.connection, owner.principalFingerprint, signal);
+				} catch {
+					return;
+				}
+			}
+			const results = this._mapSqlSchemaMatches(matches, categories, contentToggles).flatMap(result => {
+				const owner = ownerContext.get(String(result.connectionId || ''));
+				if (!owner) return [];
+				return [{
+					...result,
+					_sqlOwner: {
+						targetSignature: sqlDatabaseTargetSignature(owner.connection),
+						principalFingerprint: owner.principalFingerprint,
+						revocationGeneration: owner.revocationGeneration,
+					},
+				}];
+			});
+			for (const connectionId of new Set(matches.map(match => match.connectionId))) {
+				const owner = ownerContext.get(connectionId);
+				if (!owner) return;
+				try {
+					await this.assertCurrentSqlSearchOwner(requestId, owner.connection, owner.principalFingerprint, signal);
+				} catch {
+					return;
+				}
+			}
+			if (!signal.aborted && this._activeSearchRequestId === requestId && results.length > 0) await sendResults(results, false);
 		}
 	}
 
@@ -1466,7 +2014,7 @@ export class ConnectionManagerViewerV2 {
 		contentToggles: Record<string, boolean>,
 		requestId: string,
 		signal: AbortSignal,
-		sendResults: (results: any[], completed: boolean) => void,
+		sendResults: (results: any[], completed: boolean) => Promise<void>,
 		sendProgress: (message: string, current?: number, total?: number) => void,
 	): Promise<void> {
 		let re: RegExp;
@@ -1553,7 +2101,7 @@ export class ConnectionManagerViewerV2 {
 						}, result.cacheGeneration);
 						// Search the freshly loaded schema
 						const schemaResults = this._searchSingleKustoSchema(result.schema, normalizedCluster, db, conn, re, categories, contentToggles);
-						if (schemaResults.length > 0) sendResults(schemaResults, false);
+						if (schemaResults.length > 0) await sendResults(schemaResults, false);
 					} catch { /* skip schema errors */ }
 				}
 			} else {
@@ -1587,61 +2135,92 @@ export class ConnectionManagerViewerV2 {
 							accountPartition,
 						}, result.cacheGeneration);
 						const schemaResults = this._searchSingleKustoSchema(result.schema, normalizedCluster, entry.database, conn, re, categories, contentToggles);
-						if (schemaResults.length > 0) sendResults(schemaResults, false);
+						if (schemaResults.length > 0) await sendResults(schemaResults, false);
 					} catch { /* skip schema errors */ }
 				}
 			}
 		} else {
 			// SQL Tier 2/3
 			if (!this.sqlDeps) return;
+			await this.sqlDeps.refreshSqlLeaveNoTracePolicy?.();
+			const protectedIds = new Set(this.sqlDeps.getSqlLeaveNoTraceConnectionIds?.() ?? []);
 			const mgr = this.sqlDeps.getSqlConnectionManager();
 			const client = this.sqlDeps.getSqlClient();
-			const sqlConns = mgr.getConnections();
+			const sqlConns = mgr.getConnections().filter(connection => !protectedIds.has(connection.id));
 
 			if (scope === 'everything') {
 				let step = 0;
 				const totalConns = sqlConns.length;
-				const dbPairs: Array<{ conn: any; db: string }> = [];
+				const dbPairs: Array<{
+					conn: SqlConnection;
+					db: string;
+					owner: { targetSignature: string; principalFingerprint: string; revocationGeneration: number };
+				}> = [];
 
 				for (const conn of sqlConns) {
 					if (signal.aborted) return;
 					step++;
 					sendProgress(`Connecting to ${conn.name || conn.serverUrl}…`, step, totalConns);
 					try {
-						const dbs = await client.getDatabases(conn);
-						const cached = this.getSqlCachedDatabases();
-						cached[conn.id] = dbs;
-						await this.setSqlCachedDatabases(cached);
-						for (const db of dbs) dbPairs.push({ conn, db });
+						const startingPrincipal = sqlSchemaPrincipalFingerprint(this.context, conn);
+						const revocationGeneration = this.sqlDeps.getSqlRevocationGeneration?.(conn.id) ?? 0;
+						const cacheRequest = await beginSqlDatabaseCacheRequest(this.context, STORAGE_KEYS.sqlCachedDatabases, conn);
+						const dbs = await client.getDatabases(conn, { signal });
+						const principal = await this.resolveCurrentSqlPrincipal(conn.id, conn, revocationGeneration, startingPrincipal);
+						await this.writeSqlCachedDatabases(conn, principal, dbs, cacheRequest, async () => {
+							if (signal.aborted) throw new Error('Search cancelled.');
+							await this.resolveCurrentSqlPrincipal(conn.id, conn, revocationGeneration, principal);
+						});
+						const owner = {
+							targetSignature: sqlDatabaseTargetSignature(conn),
+							principalFingerprint: principal,
+							revocationGeneration,
+						};
+						for (const db of dbs) dbPairs.push({ conn, db, owner });
 					} catch { /* skip */ }
 				}
 
 				const totalSchemas = dbPairs.length;
 				for (let i = 0; i < dbPairs.length; i++) {
 					if (signal.aborted) return;
-					const { conn, db } = dbPairs[i];
+					const { conn, db, owner } = dbPairs[i];
 					sendProgress(`Loading schema: ${db}`, i + 1, totalSchemas);
 					try {
-						const schema = await client.getDatabaseSchema(conn, db);
+						const schema = await client.getDatabaseSchema(conn, db, { signal });
+						await this.assertCurrentSqlSearchOwner(requestId, conn, owner.principalFingerprint, signal);
 						// Search the fresh schema inline
-						const schemaResults = this._searchSingleSqlSchema(schema, conn, db, re, categories, contentToggles);
-						if (schemaResults.length > 0) sendResults(schemaResults, false);
+						const schemaResults = this._searchSingleSqlSchema(schema, conn, db, owner, re, categories, contentToggles);
+						if (schemaResults.length > 0) await sendResults(schemaResults, false);
 					} catch { /* skip */ }
 				}
 			} else {
 				// Tier 2: refresh cached SQL schemas
-				const cachedEntries = await readAllCachedSqlSchemasFromDisk(this.context.globalStorageUri);
+				const cachedEntries = await readAllCachedSqlSchemasFromDisk(
+					this.context.globalStorageUri,
+					new Map<string, SqlSchemaCacheOwner>(sqlConns.flatMap(connection => {
+						const principalFingerprint = sqlSchemaPrincipalFingerprint(this.context, connection);
+						return principalFingerprint ? [[connection.id, { principalFingerprint, targetSignature: sqlSchemaTargetSignature(connection) }] as const] : [];
+					})),
+				);
 				const total = cachedEntries.length;
 				for (let i = 0; i < cachedEntries.length; i++) {
 					if (signal.aborted) return;
 					const entry = cachedEntries[i];
 					sendProgress(`Refreshing ${entry.database}…`, i + 1, total);
-					const conn = sqlConns.find(c => c.serverUrl.toLowerCase() === entry.serverUrl.toLowerCase());
+					const conn = sqlConns.find(c => c.id === entry.connectionId);
 					if (!conn) continue;
 					try {
-						const schema = await client.getDatabaseSchema(conn, entry.database);
-						const schemaResults = this._searchSingleSqlSchema(schema, conn, entry.database, re, categories, contentToggles);
-						if (schemaResults.length > 0) sendResults(schemaResults, false);
+						const startingPrincipal = sqlSchemaPrincipalFingerprint(this.context, conn);
+						if (!startingPrincipal) continue;
+						const owner = {
+							targetSignature: sqlDatabaseTargetSignature(conn),
+							principalFingerprint: startingPrincipal,
+							revocationGeneration: this.sqlDeps.getSqlRevocationGeneration?.(conn.id) ?? 0,
+						};
+						const schema = await client.getDatabaseSchema(conn, entry.database, { signal });
+						await this.assertCurrentSqlSearchOwner(requestId, conn, startingPrincipal, signal);
+						const schemaResults = this._searchSingleSqlSchema(schema, conn, entry.database, owner, re, categories, contentToggles);
+						if (schemaResults.length > 0) await sendResults(schemaResults, false);
 					} catch { /* skip */ }
 				}
 			}
@@ -1697,8 +2276,9 @@ export class ConnectionManagerViewerV2 {
 	/** Search a single SQL schema against a regex. */
 	private _searchSingleSqlSchema(
 		schema: import('./sql/sqlDialect').SqlDatabaseSchemaIndex,
-		conn: { id: string; name: string; serverUrl: string },
+		conn: SqlConnection,
 		database: string,
+		owner: { targetSignature: string; principalFingerprint: string; revocationGeneration: number },
 		re: RegExp,
 		categories: Record<string, boolean>,
 		contentToggles: Record<string, boolean>,
@@ -1746,7 +2326,7 @@ export class ConnectionManagerViewerV2 {
 				}
 			}
 		}
-		return results;
+		return results.map(result => ({ ...result, _sqlOwner: owner }));
 	}
 
 	/** Map Kusto SchemaSearchMatch results to the webview SearchResult format. */
@@ -1780,7 +2360,7 @@ export class ConnectionManagerViewerV2 {
 		const sqlConns = this.sqlDeps ? this.sqlDeps.getSqlConnectionManager().getConnections() : [];
 		const results: any[] = [];
 		for (const m of matches) {
-			const conn = sqlConns.find(c => c.serverUrl.toLowerCase() === m.serverUrl.toLowerCase());
+			const conn = sqlConns.find(c => c.id === m.connectionId);
 			const connId = conn?.id ?? '';
 			const connName = conn?.name ?? m.serverUrl;
 
@@ -1842,8 +2422,7 @@ export class ConnectionManagerViewerV2 {
 				}
 			}
 			if (added > 0) { void vscode.window.showInformationMessage(`Imported ${added} Kusto connection${added === 1 ? '' : 's'}.`); } else { void vscode.window.showInformationMessage('No new connections were imported (they may already exist).'); }
-			const snapshot = await this.buildSnapshot();
-			this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+			await this.sendSnapshotToWebview();
 		} catch (e: any) { void vscode.window.showErrorMessage(`Failed to import connections: ${e instanceof Error ? e.message : String(e)}`); }
 	}
 

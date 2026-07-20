@@ -8,62 +8,47 @@
 // Hover and signature help also use STS over JSON-RPC.
 
 import { postMessageToHost } from '../shared/webview-messages.js';
+import { SqlStsRequestCoordinator, type SqlStsRequestOwner } from './sql-sts-request-coordinator.js';
 
 const _win = window as any;
 
 // ── STS readiness tracking per boxId ───────────────────────────────────────
-const _stsReadyByBoxId: Record<string, boolean> = {};
+const _stsRequests = new SqlStsRequestCoordinator();
 
 /** Mark a boxId as STS-ready (called from kw-sql-section when stsConnectionState arrives). */
-export function setStsReady(boxId: string, ready: boolean): void {
-	_stsReadyByBoxId[boxId] = ready;
+export function setStsReady(boxId: string, ready: boolean, ownerToken = '', targetGeneration?: number): void {
+	const owner = ready && ownerToken && Number.isSafeInteger(targetGeneration)
+		? { ownerToken, targetGeneration: Number(targetGeneration) }
+		: undefined;
+	_stsRequests.setOwner(boxId, owner);
 }
 
 // ── STS request/resolver (used for hover, signature help) ──────────────────
 
-const _stsResolversById: Record<string, { resolve: (result: any) => void; timer: ReturnType<typeof setTimeout> }> = {};
-
 const STS_TIMEOUT_MS = 60000;
 
-function stsRequest<T>(method: string, params: Record<string, unknown>, timeoutMs: number = STS_TIMEOUT_MS): Promise<T | null> {
-	return new Promise((resolve) => {
-		const requestId = 'sts_' + Date.now() + '_' + Math.random().toString(16).slice(2);
-
-		const timer = setTimeout(() => {
-			delete _stsResolversById[requestId];
-			resolve(null);
-		}, timeoutMs);
-
-		_stsResolversById[requestId] = {
-			resolve: (result: any) => {
-				clearTimeout(timer);
-				resolve(result);
-			},
-			timer,
-		};
-
-		try {
+function stsRequest<T>(
+	method: string,
+	params: { boxId: string; line: number; column: number },
+	timeoutMs: number = STS_TIMEOUT_MS,
+): Promise<T | null> {
+	const boxId = String(params.boxId || '');
+	return _stsRequests.request<T>(boxId, timeoutMs, (requestId, owner) => {
 			postMessageToHost({
 				type: 'stsRequest',
 				requestId,
 				method,
-				params,
-			} as any);
-		} catch {
-			clearTimeout(timer);
-			delete _stsResolversById[requestId];
-			resolve(null);
-		}
+				params: { ...params, ownerToken: owner.ownerToken, targetGeneration: owner.targetGeneration },
+			});
 	});
 }
 
 /** Called from message-handler when an stsResponse arrives. */
-export function handleStsResponse(requestId: string, result: unknown): void {
-	const entry = _stsResolversById[requestId];
-	if (entry) {
-		delete _stsResolversById[requestId];
-		entry.resolve(result);
-	}
+export function handleStsResponse(requestId: string, result: unknown, ownerToken?: string, targetGeneration?: number): void {
+	const responseOwner: SqlStsRequestOwner | undefined = ownerToken && Number.isSafeInteger(targetGeneration)
+		? { ownerToken: String(ownerToken), targetGeneration: Number(targetGeneration) }
+		: undefined;
+	_stsRequests.resolve(requestId, result, responseOwner);
 }
 
 // ── Model URI → boxId mapping ──────────────────────────────────────────────
@@ -77,7 +62,9 @@ export function registerStsEditorModel(modelUri: string, boxId: string): void {
 
 /** Unregister a model URI mapping. */
 export function unregisterStsEditorModel(modelUri: string): void {
+	const boxId = _modelUriToBoxId[modelUri];
 	delete _modelUriToBoxId[modelUri];
+	if (boxId && !Object.values(_modelUriToBoxId).includes(boxId)) _stsRequests.clearBox(boxId);
 }
 
 function getBoxIdForModel(modelUri: string): string | null {
@@ -159,7 +146,7 @@ export function registerStsProviders(): void {
 			// because STS's schema cache may not be fully loaded.
 			let stsItemCount = 0;
 			let stsHasSchemaObjects = false;
-			if (_stsReadyByBoxId[boxId]) {
+			if (_stsRequests.getOwner(boxId)) {
 				try {
 					const stsResult = await stsRequest<{ items?: any[] }>('textDocument/completion', {
 						boxId,

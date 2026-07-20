@@ -4423,6 +4423,13 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 								} catch (e) { console.error('[kusto]', e); }
 
 								// Show spinner
+								let ownerToken = '';
+								if (flavor === 'sql') {
+									const sqlEl = boxId ? document.getElementById(boxId) as any : null;
+									ownerToken = String(sqlEl?.getCopilotOwnerToken?.() || '');
+									if (!ownerToken) return { items: [] };
+								}
+
 								if (editorForModel && boxId) {
 									__kustoShowInlineSpinner(editorForModel, boxId, position.lineNumber, position.column);
 								}
@@ -4453,7 +4460,8 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 										boxId,
 										textBefore,
 										textAfter,
-										flavor
+										flavor,
+										...(ownerToken ? { ownerToken } : {})
 									});
 								} catch (err) {
 									delete copilotInlineCompletionRequests[requestId];

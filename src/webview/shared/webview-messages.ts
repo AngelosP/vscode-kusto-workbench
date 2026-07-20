@@ -13,6 +13,7 @@ export type OutgoingExecuteQueryMessage = {
 	query: string;
 	connectionId: string;
 	boxId: string;
+	executionId: string;
 	database?: string;
 	queryMode?: string;
 	cacheEnabled?: boolean;
@@ -58,6 +59,7 @@ export type OutgoingStartCopilotWriteQueryMessage = {
 	enabledTools?: string[];
 	queryMode?: string;
 	requireToolUse?: boolean;
+	sqlOwnerToken?: string;
 };
 
 export type OutgoingOptimizeQueryMessage = {
@@ -188,14 +190,14 @@ export type OutgoingWebviewMessage =
 
 	// Query execution
 	| OutgoingExecuteQueryMessage
-	| { type: 'cancelQuery'; boxId: string }
+	| { type: 'cancelQuery'; boxId: string; executionId: string }
 	| OutgoingCopyAdeLinkMessage
 	| OutgoingShareToClipboardMessage
 
 	// SQL connections & databases
 	| { type: 'getSqlConnections' }
-	| { type: 'getSqlDatabases'; sqlConnectionId: string; boxId: string }
-	| { type: 'refreshSqlDatabases'; sqlConnectionId: string; boxId: string }
+	| { type: 'getSqlDatabases'; sqlConnectionId: string; boxId: string; targetGeneration: number }
+	| { type: 'refreshSqlDatabases'; sqlConnectionId: string; boxId: string; targetGeneration: number }
 	| { type: 'saveSqlLastSelection'; sqlConnectionId: string; database?: string }
 	| { type: 'promptAddSqlConnection'; boxId?: string }
 	| { type: 'addSqlConnection'; name: string; serverUrl: string; dialect: string; authType: string; database?: string; port?: number; username?: string; password?: string; boxId?: string }
@@ -203,11 +205,16 @@ export type OutgoingWebviewMessage =
 	| { type: 'testClearSqlAuthOverride'; accountId: string }
 
 	// SQL query execution
-	| { type: 'executeSqlQuery'; query: string; sqlConnectionId: string; boxId: string; database?: string; queryMode?: string }
-	| { type: 'cancelSqlQuery'; boxId: string }
+	| {
+		type: 'executeSqlQuery'; query: string; sqlConnectionId: string; boxId: string; database: string; queryMode?: string; ownerToken: string;
+		executionId: string;
+		toolExecution?: boolean;
+		expectedOwner?: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number };
+	}
+	| { type: 'cancelSqlQuery'; boxId: string; executionId?: string }
 
 	// SQL schema
-	| { type: 'prefetchSqlSchema'; sqlConnectionId: string; database: string; boxId: string; forceRefresh?: boolean }
+	| { type: 'prefetchSqlSchema'; sqlConnectionId: string; database: string; boxId: string; targetGeneration: number; forceRefresh?: boolean }
 
 	// SQL copilot — unified into Copilot section below
 
@@ -218,11 +225,15 @@ export type OutgoingWebviewMessage =
 	// Schema
 	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string; cacheOnly?: boolean; silent?: boolean; reason?: string }
 	| { type: 'requestCrossClusterSchema'; clusterName: string; database: string; boxId: string; requestToken: string; requestSource: 'background' | 'autocomplete'; traceId?: string }
-	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; line: number; column: number } }
+	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; line: number; column: number; ownerToken?: string; targetGeneration?: number } }
 	| { type: 'stsDidOpen'; boxId: string; text: string }
 	| { type: 'stsDidChange'; boxId: string; text: string }
 	| { type: 'stsDidClose'; boxId: string }
-	| { type: 'stsConnect'; boxId: string; sqlConnectionId: string; database: string }
+	| { type: 'sqlComparisonRemoved'; boxId: string; sourceBoxId?: string }
+	| {
+		type: 'stsConnect'; boxId: string; sqlConnectionId: string; database: string; targetGeneration: number;
+		expectedOwner?: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number };
+	}
 	| OutgoingKqlLanguageRequestMessage
 	| OutgoingFetchControlCommandSyntaxMessage
 
@@ -233,7 +244,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'cancelCopilotWriteQuery'; boxId: string }
 	| { type: 'clearCopilotConversation'; boxId: string }
 	| { type: 'removeFromCopilotHistory'; boxId: string; entryId: string }
-	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string; flavor?: 'kusto' | 'sql' }
+	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string; flavor?: 'kusto' | 'sql'; ownerToken?: string }
 
 	// Optimize
 	| { type: 'prepareOptimizeQuery'; query: string; boxId: string }
@@ -257,10 +268,11 @@ export type OutgoingWebviewMessage =
 
 	// Provider messages (kqlx, kqlCompat, mdCompat editors)
 	| { type: 'requestDocument' }
-	| { type: 'persistDocument'; state: unknown; flush?: boolean; reason?: string }
-	| { type: 'requestUpgradeToKqlx'; addKind?: string; state?: unknown }
-	| { type: 'requestUpgradeToMdx'; addKind?: string; state?: unknown }
-	| { type: 'requestUpgradeToSqlx'; addKind?: string; state?: unknown };
+	| { type: 'persistDocument'; state: unknown; flush?: boolean; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; testOnlyNoop?: boolean }
+	| { type: 'documentReloadResult'; requestId: string; applied: boolean; editRevision: number }
+	| { type: 'requestUpgradeToKqlx'; addKind?: string; state?: unknown; editRevision?: number }
+	| { type: 'requestUpgradeToMdx'; addKind?: string; state?: unknown; editRevision?: number }
+	| { type: 'requestUpgradeToSqlx'; addKind?: string; state?: unknown; editRevision?: number };
 
 
 /**

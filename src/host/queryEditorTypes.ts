@@ -62,6 +62,7 @@ export type StartCopilotWriteQueryMessage = {
 	enabledTools?: string[];
 	queryMode?: string;
 	requireToolUse?: boolean;
+	sqlOwnerToken?: string;
 };
 
 export type OptimizeQueryMessage = {
@@ -80,6 +81,7 @@ export type ExecuteQueryMessage = {
 	query: string;
 	connectionId: string;
 	boxId: string;
+	executionId: string;
 	database?: string;
 	queryMode?: string;
 	cacheEnabled?: boolean;
@@ -92,8 +94,18 @@ export type ExecuteSqlQueryMessage = {
 	query: string;
 	sqlConnectionId: string;
 	boxId: string;
-	database?: string;
+	database: string;
 	queryMode?: string;
+	ownerToken: string;
+	executionId: string;
+	toolExecution?: boolean;
+	expectedOwner?: {
+		connectionId: string;
+		database: string;
+		targetSignature: string;
+		principalFingerprint: string;
+		revocationGeneration: number;
+	};
 };
 
 export type CopyAdeLinkMessage = {
@@ -233,10 +245,10 @@ export type IncomingWebviewMessage =
 	| { type: 'setCaretDocsEnabled'; enabled: boolean }
 	| { type: 'setAutoTriggerAutocompleteEnabled'; enabled: boolean }
 	| { type: 'setCopilotInlineCompletionsEnabled'; enabled: boolean }
-	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string; flavor?: 'kusto' | 'sql' }
+	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string; flavor?: 'kusto' | 'sql'; ownerToken?: string }
 	| { type: 'executePython'; boxId: string; code: string }
 	| { type: 'fetchUrl'; boxId: string; url: string }
-	| { type: 'cancelQuery'; boxId: string }
+	| { type: 'cancelQuery'; boxId: string; executionId: string }
 	| { type: 'checkCopilotAvailability'; boxId: string }
 	| { type: 'prepareCopilotWriteQuery'; boxId: string; flavor?: 'kusto' | 'sql' }
 	| StartCopilotWriteQueryMessage
@@ -248,32 +260,31 @@ export type IncomingWebviewMessage =
 	| OptimizeQueryMessage
 	| ExecuteQueryMessage
 	| { type: 'getSqlConnections' }
-	| { type: 'getSqlDatabases'; sqlConnectionId: string; boxId: string }
-	| { type: 'refreshSqlDatabases'; sqlConnectionId: string; boxId: string }
+	| { type: 'getSqlDatabases'; sqlConnectionId: string; boxId: string; targetGeneration: number }
+	| { type: 'refreshSqlDatabases'; sqlConnectionId: string; boxId: string; targetGeneration: number }
 	| { type: 'saveSqlLastSelection'; sqlConnectionId: string; database?: string }
 	| { type: 'promptAddSqlConnection'; boxId?: string }
 	| { type: 'addSqlConnection'; name: string; serverUrl: string; dialect: string; authType: string; database?: string; port?: number; username?: string; password?: string; boxId?: string }
 	| { type: 'testSetSqlAuthOverride'; serverUrl: string; accountId: string; token: string }
 	| { type: 'testClearSqlAuthOverride'; accountId: string }
 	| ExecuteSqlQueryMessage
-	| { type: 'cancelSqlQuery'; boxId: string }
-	| { type: 'prefetchSqlSchema'; sqlConnectionId: string; database: string; boxId: string; forceRefresh?: boolean }
-	| { type: 'prepareSqlCopilotWriteQuery'; boxId: string }
-	| { type: 'startSqlCopilotWriteQuery'; boxId: string; sqlConnectionId: string; database: string; request: string; modelId?: string; enabledTools?: string[] }
-	| { type: 'cancelSqlCopilotWriteQuery'; boxId: string }
-	| { type: 'clearSqlCopilotConversation'; boxId: string }
-	| { type: 'removeFromSqlCopilotHistory'; boxId: string; entryId: string }
+	| { type: 'cancelSqlQuery'; boxId: string; executionId?: string }
+	| { type: 'prefetchSqlSchema'; sqlConnectionId: string; database: string; boxId: string; targetGeneration: number; forceRefresh?: boolean }
 	| { type: 'requestAddSqlFavorite'; connectionId: string; database: string; defaultName?: string; boxId?: string }
 	| { type: 'removeSqlFavorite'; connectionId: string; database: string; boxId?: string }
 	| CopyAdeLinkMessage
 	| ShareToClipboardMessage
 	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string; cacheOnly?: boolean; silent?: boolean; reason?: string }
 	| { type: 'requestCrossClusterSchema'; clusterName: string; database: string; boxId: string; requestToken: string; requestSource: 'background' | 'autocomplete'; traceId?: string }
-	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; line: number; column: number } }
+	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; line: number; column: number; ownerToken?: string; targetGeneration?: number } }
 	| { type: 'stsDidOpen'; boxId: string; text: string }
 	| { type: 'stsDidChange'; boxId: string; text: string }
 	| { type: 'stsDidClose'; boxId: string }
-	| { type: 'stsConnect'; boxId: string; sqlConnectionId: string; database: string }
+	| { type: 'sqlComparisonRemoved'; boxId: string; sourceBoxId?: string }
+	| {
+		type: 'stsConnect'; boxId: string; sqlConnectionId: string; database: string; targetGeneration: number;
+		expectedOwner?: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number };
+	}
 	| { type: 'promptAddConnection'; boxId?: string }
 	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }
 	| { type: 'testKustoConnection'; name?: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }

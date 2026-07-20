@@ -112,7 +112,7 @@ try {
 // Centralized error UX renderer — delegates to section's displayError() method
 // when available, falls back to raw HTML injection for non-Lit sections.
 
-export function __kustoRenderErrorUx(boxId: any, error: any, clientActivityId?: string) {
+export function __kustoRenderErrorUx(boxId: any, error: any, clientActivityId?: string, executionId?: string) {
 	const bid = String(boxId || '').trim();
 	if (!bid) return;
 	try { ensureResultsShownForTool(bid); } catch (e) { console.error('[kusto]', e); }
@@ -136,7 +136,7 @@ export function __kustoRenderErrorUx(boxId: any, error: any, clientActivityId?: 
 	// Delegate to the Lit section element if it has displayError().
 	const sectionEl = document.getElementById(bid);
 	if (sectionEl && typeof (sectionEl as any).displayError === 'function') {
-		(sectionEl as any).displayError(model, clientActivityId);
+		(sectionEl as any).displayError(model, clientActivityId, executionId);
 		return;
 	}
 

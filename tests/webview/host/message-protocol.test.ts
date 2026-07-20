@@ -161,11 +161,6 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'executeSqlQuery',
 	'cancelSqlQuery',
 	'prefetchSqlSchema',
-	'prepareSqlCopilotWriteQuery',
-	'startSqlCopilotWriteQuery',
-	'cancelSqlCopilotWriteQuery',
-	'clearSqlCopilotConversation',
-	'removeFromSqlCopilotHistory',
 	'requestAddSqlFavorite',
 	'removeSqlFavorite',
 	'copyAdeLink',
@@ -187,6 +182,7 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'openMarkdownPreview',
 	'comparisonBoxEnsured',
 	'comparisonSummary',
+	'sqlComparisonRemoved',
 	'toolResponse',
 	'toolStateResponse',
 	'openCopilotAgent',
@@ -266,6 +262,7 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	// Comparisons
 	'comparisonBoxEnsured',
 	'comparisonSummary',
+	'sqlComparisonRemoved',
 
 	// Schema
 	'prefetchSchema',
@@ -311,6 +308,7 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	// Provider messages (kqlx, kqlCompat, mdCompat, sqlCompat editors — NOT in IncomingWebviewMessage)
 	'requestDocument',
 	'persistDocument',
+	'documentReloadResult',
 	'requestUpgradeToKqlx',
 	'requestUpgradeToMdx',
 	'requestUpgradeToSqlx',
@@ -324,6 +322,7 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 const PROVIDER_ONLY_OUTGOING_TYPES = new Set([
 	'requestDocument',
 	'persistDocument',
+	'documentReloadResult',
 	'requestUpgradeToKqlx',
 	'requestUpgradeToMdx',
 	'requestUpgradeToSqlx',
@@ -334,11 +333,6 @@ const PROVIDER_ONLY_OUTGOING_TYPES = new Set([
  * current webview uses the shared Copilot messages with `flavor: 'sql'` instead.
  */
 const INCOMING_ONLY_WEBVIEW_MESSAGE_TYPES = new Set([
-	'prepareSqlCopilotWriteQuery',
-	'startSqlCopilotWriteQuery',
-	'cancelSqlCopilotWriteQuery',
-	'clearSqlCopilotConversation',
-	'removeFromSqlCopilotHistory',
 ]);
 
 /**
@@ -350,6 +344,8 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'controlCommandSyntaxResult',
 	'ensureComparisonBox',
 	'persistenceMode',
+	'requestFinalPersist',
+	'persistDocumentAck',
 	'upgradedToKqlx',
 	'enabledKqlxSidecar',
 	'enabledSqlSidecar',
@@ -387,8 +383,12 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'connectionAdded',
 	'sqlConnectionsData',
 	'sqlFavoritesData',
+	'sqlLeaveNoTraceData',
+	'sqlConnectionOwnerChanged',
+	'sqlCopilotPolicyChanged',
 	'sqlDatabasesData',
 	'sqlDatabasesError',
+	'sqlDatabasesLoading',
 	'sqlConnectionAdded',
 	'sqlSchemaData',
 	'stsResponse',
@@ -428,6 +428,8 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'toolConfigureHtmlSection',
 	'toolGetHtmlDashboardContext',
 	'toolConfigureSqlSection',
+	'toolCancelSqlExecution',
+	'toolCancelSqlCopilot',
 	'toolGetSqlSchema',
 	'toolDelegateToKustoWorkbenchCopilot',
 	'toolDelegateToSqlCopilot',
@@ -502,8 +504,12 @@ const HOST_TO_WEBVIEW_TYPES = [
 
 	// SQL connection/schema/queryEditorProvider.ts
 	'sqlConnectionsData',
+	'sqlLeaveNoTraceData',
+	'sqlConnectionOwnerChanged',
+	'sqlCopilotPolicyChanged',
 	'sqlDatabasesData',
 	'sqlDatabasesError',
+	'sqlDatabasesLoading',
 	'sqlConnectionAdded',
 	'sqlSchemaData',
 	'stsResponse',
@@ -518,6 +524,8 @@ const HOST_TO_WEBVIEW_TYPES = [
 
 	// Editor providers (kqlx/kqlCompat/mdCompat) — same webview
 	'persistenceMode',
+	'requestFinalPersist',
+	'persistDocumentAck',
 	'documentData',
 	'upgradedToKqlx',
 	'enabledKqlxSidecar',
@@ -557,6 +565,8 @@ const TOOL_FRAMEWORK_HANDLER_TYPES = new Set([
 	'toolConfigureHtmlSection',
 	'toolGetHtmlDashboardContext',
 	'toolConfigureSqlSection',
+	'toolCancelSqlExecution',
+	'toolCancelSqlCopilot',
 	'toolGetSqlSchema',
 	'toolDelegateToKustoWorkbenchCopilot',
 	'toolDelegateToSqlCopilot',

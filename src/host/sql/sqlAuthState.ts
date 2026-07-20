@@ -1,4 +1,5 @@
 import * as vscode from 'vscode';
+import { establishCanonicalSqlServerAccount, readCurrentSqlServerAccountMap, setCanonicalSqlServerAccount, verifyCanonicalSqlServerAccount } from './sqlServerAccountMapStore';
 
 const STORAGE_KEYS = {
 	sqlServerAccountMap: 'sql.auth.serverAccountMap',
@@ -54,9 +55,16 @@ export async function setSqlServerAccountMapEntry(
 	if (!normalizedServer || !normalizedAccountId) {
 		return;
 	}
-	const next = readSqlServerAccountMap(context);
-	next[normalizedServer] = normalizedAccountId;
-	await context.globalState.update(STORAGE_KEYS.sqlServerAccountMap, next);
+	await setCanonicalSqlServerAccount(context, normalizedServer, normalizedAccountId);
+}
+
+export async function deleteSqlServerAccountMapEntry(
+	context: vscode.ExtensionContext,
+	serverUrl: string,
+): Promise<void> {
+	const normalizedServer = normalizeSqlServerUrl(serverUrl);
+	if (!normalizedServer) return;
+	await setCanonicalSqlServerAccount(context, normalizedServer, undefined);
 }
 
 export async function setSqlTokenOverride(
@@ -117,40 +125,62 @@ function readEnvOverride(serverUrl: string): SqlAadTokenResolution {
 	return { token, accountId, source: 'env' };
 }
 
+async function assertCanonicalSqlAccount(
+	context: vscode.ExtensionContext,
+	serverUrl: string,
+	accountId: string | undefined,
+	establishedBeforeResolution: boolean,
+): Promise<void> {
+	if (!serverUrl || !accountId) return;
+	const matches = establishedBeforeResolution
+		? await verifyCanonicalSqlServerAccount(context, serverUrl, accountId)
+		: await establishCanonicalSqlServerAccount(context, serverUrl, accountId) === accountId;
+	if (!matches) {
+		throw new Error('SQL principal changed while authentication was being resolved.');
+	}
+}
+
 export async function resolveSqlAadAccessToken(
 	context: vscode.ExtensionContext,
 	serverUrl: string,
 ): Promise<SqlAadTokenResolution> {
 	const normalizedServer = normalizeSqlServerUrl(serverUrl);
+	const serverAccountMap = await readCurrentSqlServerAccountMap(context);
+	const establishedAccountId = normalizedServer ? serverAccountMap[normalizedServer] : undefined;
 
 	const envOverride = readEnvOverride(normalizedServer);
 	if (envOverride.token) {
-		if (normalizedServer && envOverride.accountId) {
-			await setSqlServerAccountMapEntry(context, normalizedServer, envOverride.accountId);
+		const resolvedAccountId = envOverride.accountId ?? establishedAccountId;
+		if (establishedAccountId && resolvedAccountId !== establishedAccountId) {
+			throw new Error('SQL principal changed while authentication was being resolved.');
 		}
-		return envOverride;
+		await assertCanonicalSqlAccount(context, normalizedServer, resolvedAccountId, !!establishedAccountId);
+		return { ...envOverride, ...(resolvedAccountId ? { accountId: resolvedAccountId } : {}) };
 	}
 
-	const serverAccountMap = readSqlServerAccountMap(context);
-	const accountId = normalizedServer ? serverAccountMap[normalizedServer] : undefined;
-	if (accountId) {
-		const overrideToken = await getSqlTokenOverride(context, accountId);
+	if (establishedAccountId) {
+		const overrideToken = await getSqlTokenOverride(context, establishedAccountId);
 		if (overrideToken) {
-			return { token: overrideToken, accountId, source: 'override' };
+			await assertCanonicalSqlAccount(context, normalizedServer, establishedAccountId, true);
+			return { token: overrideToken, accountId: establishedAccountId, source: 'override' };
 		}
 	}
 
 	const session = await vscode.authentication.getSession(
 		AUTH_PROVIDER_ID,
 		[...AUTH_SCOPES],
-		{ createIfNone: true },
+		{
+			createIfNone: true,
+			...(establishedAccountId ? { account: { id: establishedAccountId, label: establishedAccountId } } : {}),
+		},
 	);
 	if (!session) {
 		return { source: 'none' };
 	}
-	if (normalizedServer && session.account?.id) {
-		await setSqlServerAccountMapEntry(context, normalizedServer, session.account.id);
+	if (establishedAccountId && session.account?.id !== establishedAccountId) {
+		throw new Error('SQL principal changed while authentication was being resolved.');
 	}
+	await assertCanonicalSqlAccount(context, normalizedServer, session.account?.id, !!establishedAccountId);
 	return {
 		token: session.accessToken,
 		accountId: session.account?.id,

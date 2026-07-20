@@ -76,6 +76,29 @@ function hasSpinner(el: KwQuerySection): boolean {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('kw-query-section loading states', () => {
+	it('admits terminals only for the exact active Kusto execution', () => {
+		const el = createSection();
+
+		expect(el.beginQueryExecution('execution-old')).toBe(true);
+		expect(el.beginQueryExecution('execution-new')).toBe(true);
+		expect(el.getActiveExecutionId()).toBe('execution-new');
+		expect(el.acceptsQueryTerminal('execution-old')).toBe(false);
+		expect(el.completeQueryExecution('execution-old')).toBe(false);
+		expect(el.acceptsQueryTerminal('execution-new')).toBe(true);
+		expect(el.completeQueryExecution('execution-new')).toBe(true);
+		expect(el.getActiveExecutionId()).toBe('');
+	});
+
+	it('locally retires the exact active execution before sending Cancel', () => {
+		const el = createSection();
+		el.beginQueryExecution('execution-cancel');
+
+		expect(el.cancelActiveQueryExecution()).toBe('execution-cancel');
+		expect(el.getActiveExecutionId()).toBe('');
+		expect(el.acceptsQueryTerminal('execution-cancel')).toBe(false);
+		expect(el.cancelActiveQueryExecution()).toBeUndefined();
+	});
+
 	it('reflects preparation state without replacing the toolbar or editor nodes', async () => {
 		const el = createSection();
 		await el.updateComplete;

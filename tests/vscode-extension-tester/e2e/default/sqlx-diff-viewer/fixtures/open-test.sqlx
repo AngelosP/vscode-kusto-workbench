@@ -2,7 +2,6 @@
   "kind": "sqlx",
   "version": 1,
   "state": {
-    "caretDocsEnabled": true,
     "sections": [
       {
         "id": "sql_1",
@@ -12,6 +11,7 @@
         "database": "SalesDB",
         "query": "SELECT TOP 10 * FROM Orders"
       }
-    ]
+    ],
+    "caretDocsEnabled": true
   }
 }

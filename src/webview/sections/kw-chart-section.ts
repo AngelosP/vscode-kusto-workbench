@@ -14,6 +14,7 @@ import { cellToChartString } from '../shared/data-utils.js';
 import {
 	maximizeChartBox,
 	disposeChartEcharts,
+	purgeChartEcharts,
 	renderChart,
 	getChartState,
 	getChartMinResizeHeight,
@@ -2150,6 +2151,12 @@ export class KwChartSection extends LitElement implements SectionElement {
 	 */
 	public refresh(): void {
 		this.dataSourceCtrl.refreshDatasets();
+		const sourceExists = !!this._dataSourceId && this._datasets.some(dataset => dataset.id === this._dataSourceId);
+		if (!sourceExists || !this._expanded) {
+			try { purgeChartEcharts(this.boxId); } catch (e) { console.error('[kusto]', e); }
+			this._isChartRendering = false;
+			if (!this._expanded) return;
+		}
 		this._renderChart();
 	}
 

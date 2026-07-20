@@ -1,14 +1,101 @@
 import { afterEach, describe, it, expect, vi } from 'vitest';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import * as vscode from 'vscode';
 import { CachedValuesViewerV2, getClusterCacheKey, mergeCachedDatabaseKeys } from '../../../src/host/cachedValuesViewer';
 import { captureSchemaCacheGeneration, clearCachedSchemas, deleteCachedSchemasForAccountPartitions, deleteCachedSchemasForConnections, SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from '../../../src/host/schemaCache';
+import { readSqlServerAccountMap, setSqlServerAccountMapEntry } from '../../../src/host/sql/sqlAuthState';
+import { sqlSchemaPrincipalFingerprint, sqlSchemaPrincipalFingerprintForPrincipal, sqlSchemaTargetSignature, SQL_SCHEMA_CACHE_VERSION } from '../../../src/host/sqlEditorSchema';
+import { captureSqlSchemaCacheGeneration } from '../../../src/host/sqlSchemaCacheGeneration';
+
+const tempDirectories: string[] = [];
 
 afterEach(() => {
 	vi.restoreAllMocks();
+	for (const directory of tempDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 });
 
 function createViewerHarness(): CachedValuesViewerV2 & Record<string, any> {
 	return Object.create(CachedValuesViewerV2.prototype) as CachedValuesViewerV2 & Record<string, any>;
+}
+
+function deferred<T>() {
+	let resolve!: (value: T | PromiseLike<T>) => void;
+	const promise = new Promise<T>(res => { resolve = res; });
+	return { promise, resolve };
+}
+
+function createSqlViewerHarness() {
+	const viewer = createViewerHarness();
+	const storageDirectory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-cached-values-sql-'));
+	tempDirectories.push(storageDirectory);
+	let accountId: string | undefined;
+	let revocationGeneration = 0;
+	let cacheStore: unknown = {};
+	const accountMapStore: Record<string, string> = {};
+	const context = {
+		globalStorageUri: vscode.Uri.file(storageDirectory),
+		globalState: {
+			get: vi.fn((key: string) => {
+				if (key === 'sql.auth.serverAccountMap') return { ...accountMapStore };
+				if (key === 'sql.connectionManager.cachedDatabases') return cacheStore;
+				return undefined;
+			}),
+			update: vi.fn(async (key: string, value: unknown) => {
+				if (key === 'sql.auth.serverAccountMap') {
+					for (const existing of Object.keys(accountMapStore)) delete accountMapStore[existing];
+					Object.assign(accountMapStore, value);
+				}
+				if (key === 'sql.connectionManager.cachedDatabases') cacheStore = structuredClone(value);
+			}),
+		},
+	} as any;
+	let connection = { id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'MixedCase.Server.Example', port: 1433, authType: 'aad', database: 'master' } as any;
+	const getDatabases = vi.fn<() => Promise<string[]>>();
+	const getDatabaseSchema = vi.fn<() => Promise<any>>();
+	const dispatchSqlConnectionAllowed = vi.fn(async (_connectionId: string, dispatch: () => unknown) => await dispatch());
+	const sqlConnectionManager = {
+		getConnection: () => connection,
+		getConnections: () => [connection],
+		assertConnectionCurrent: vi.fn(async () => undefined),
+	};
+	viewer.context = context;
+	viewer.sqlDeps = {
+		getSqlConnectionManager: () => sqlConnectionManager,
+		getSqlClient: () => ({ getDatabases, getDatabaseSchema }),
+		assertSqlConnectionAllowed: vi.fn(async () => undefined),
+		dispatchSqlConnectionAllowed,
+		dispatchSqlOwnerAllowed: async (captured: any, _principal: string, expectedRevocation: number, dispatch: () => unknown) => {
+			if (expectedRevocation !== revocationGeneration) throw new Error('Leave No Trace generation changed');
+			return dispatchSqlConnectionAllowed(captured.id, dispatch);
+		},
+		getSqlRevocationGeneration: () => revocationGeneration,
+		dispatchSqlOwnerSnapshot: async (dispatch: (snapshot: any) => unknown) => await dispatch({
+			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
+			connections: [connection], connectionVersion: 1,
+			accountsByServer: accountId ? { 'mixedcase.server.example': accountId } : {}, principalVersion: 1,
+		}),
+		dispatchSqlPolicySnapshot: async (dispatch: (policy: any) => unknown) => await dispatch({ connectionIds: [], version: 1, globallyBlocked: false }),
+	};
+	viewer.panel = { webview: { postMessage: vi.fn() } };
+	return {
+		viewer,
+		context,
+		connection,
+		getDatabases,
+		getDatabaseSchema,
+		dispatchSqlConnectionAllowed,
+		sqlConnectionManager,
+		getCacheStore: () => cacheStore as any,
+		setConnection: (value: any) => { connection = value; },
+		setAccountId: async (value: string | undefined) => {
+			accountId = value;
+			if (value) await setSqlServerAccountMapEntry(context, connection.serverUrl, value);
+		},
+		setRevocationGeneration: (value: number) => { revocationGeneration = value; },
+		getAccountId: () => accountId,
+	};
 }
 
 // ── getClusterCacheKey ───────────────────────────────────────────────────────
@@ -299,6 +386,243 @@ describe('CachedValuesViewerV2 Kusto mutation completion', () => {
 		expect(viewer.authPreferences.forgetAccount).not.toHaveBeenCalled();
 		expect(viewer.sendSnapshotToWebview).toHaveBeenCalledOnce();
 		expect(viewer.panel.webview.postMessage).toHaveBeenCalledWith({ type: 'kustoMutationComplete' });
+	});
+});
+
+describe('CachedValuesViewerV2 SQL database ownership', () => {
+	it('publishes Kusto cached values while omitting SQL when SQL policy refresh fails', async () => {
+		const viewer = createViewerHarness();
+		const postMessage = vi.fn();
+		viewer.snapshotRevision = 0;
+		viewer.context = {
+			globalStorageUri: vscode.Uri.file('/cached-values-kusto-only'),
+			globalState: { get: vi.fn(() => undefined), update: vi.fn(async () => undefined) },
+			secrets: { get: vi.fn(async () => undefined) },
+		};
+		viewer.panel = { webview: { postMessage } };
+		viewer.sqlDeps = {
+			refreshSqlLeaveNoTracePolicy: vi.fn(async () => { throw new Error('SQL policy unavailable'); }),
+			getSqlConnectionManager: () => ({ getConnections: () => [{ id: 'sql-secret' }] }),
+		};
+		viewer.authPreferences = {
+			getAccounts: vi.fn(async () => []), getPreference: vi.fn(() => ({ mode: 'automatic' })),
+			getPreferredAccountId: vi.fn(() => undefined), getTokenOverride: vi.fn(async () => undefined),
+		};
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => [{ id: 'c1', name: 'Kusto', clusterUrl: 'https://cluster.kusto.windows.net' }]),
+		};
+		viewer.kustoClient = { getAccountPartition: vi.fn(() => 'partition-a') };
+		viewer.readCachedDatabases = vi.fn(() => ({ c1: ['Db'] }));
+
+		await viewer.sendSnapshotToWebview();
+
+		expect(postMessage).toHaveBeenCalledWith({
+			type: 'snapshot',
+			snapshot: expect.objectContaining({
+				sqlAvailable: false,
+				connections: [expect.objectContaining({ id: 'c1' })],
+				sqlConnections: [], sqlCachedDatabases: {}, sqlServerAccountMap: {},
+			}),
+		});
+	});
+
+	it('filters a SQL schema key whose captured owner differs from the canonical snapshot owner', async () => {
+		const viewer = createViewerHarness();
+		const postMessage = vi.fn(async () => true);
+		const connection = {
+			id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example',
+			authType: 'sql-login', username: 'alice', database: 'DbA', credentialRevision: 1,
+		} as any;
+		const targetSignature = sqlSchemaTargetSignature(connection);
+		const principalFingerprint = sqlSchemaPrincipalFingerprintForPrincipal(connection, 'alice')!;
+		const sqlStateVersions = { policy: 1, connections: 1, principals: 1 };
+		viewer.snapshotRevision = 0;
+		viewer.panel = { webview: { postMessage } };
+		viewer.sqlDeps = {
+			refreshSqlLeaveNoTracePolicy: vi.fn(async () => undefined),
+			getSqlStateVersions: () => sqlStateVersions,
+			dispatchSqlOwnerSnapshot: async (dispatch: (snapshot: any) => unknown) => await dispatch({
+				policy: { connectionIds: [], globallyBlocked: false, version: 1 },
+				connections: [connection], connectionVersion: 1, accountsByServer: {}, principalVersion: 1,
+			}),
+		};
+		viewer.buildSnapshot = vi.fn(async (revision: number) => ({
+			revision, timestamp: Date.now(), activeKind: 'sql', auth: { sessions: [], knownAccounts: [] },
+			connections: [], cachedDatabases: {}, sqlAuth: { sessions: [] },
+			sqlConnections: [{ id: connection.id, name: connection.name, serverUrl: connection.serverUrl, authType: connection.authType }],
+			sqlCachedDatabases: { 'sql-1': ['DbA'] }, sqlLeaveNoTrace: [], sqlStateVersions, sqlAvailable: true,
+			sqlServerAccountMap: {}, cachedSchemaKeys: ['kusto:kusto-1|Db', 'sql:sql-1|DbA'],
+			sqlCacheOwners: { 'sql-1': { targetSignature, principalFingerprint } },
+			sqlSchemaKeyOwners: { 'sql:sql-1|DbA': { targetSignature: `${targetSignature}-stale`, principalFingerprint } },
+		}));
+
+		await viewer.sendSnapshotToWebview();
+
+		const published = postMessage.mock.calls[0][0].snapshot;
+		expect(published.sqlCachedDatabases).toEqual({ 'sql-1': ['DbA'] });
+		expect(published.cachedSchemaKeys).toEqual(['kusto:kusto-1|Db']);
+		expect(published.sqlSchemaKeyOwners).toBeUndefined();
+	});
+
+	it('returns a correlated terminal response when cached schema identity is unavailable', async () => {
+		const harness = createSqlViewerHarness();
+
+		await harness.viewer.onMessage({
+			type: 'sqlSchema.get', requestId: 'schema-missing-identity', connectionId: 'sql-1',
+			serverUrl: harness.connection.serverUrl, database: 'DbA',
+		});
+
+		expect(harness.viewer.panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'schemaResult', requestId: 'schema-missing-identity', connectionId: 'sql-1', ok: false,
+		}));
+	});
+
+	it('returns a correlated terminal response when live schema refresh fails', async () => {
+		const harness = createSqlViewerHarness();
+		await harness.setAccountId('account-a');
+		harness.getDatabaseSchema.mockRejectedValue(new Error('refresh failed'));
+
+		await harness.viewer.onMessage({
+			type: 'sqlSchema.refresh', requestId: 'schema-refresh-failed', connectionId: 'sql-1',
+			serverUrl: harness.connection.serverUrl, database: 'DbA',
+		});
+
+		expect(harness.viewer.panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'schemaResult', requestId: 'schema-refresh-failed', connectionId: 'sql-1', ok: false,
+		}));
+	});
+
+	it('allows first AAD refresh to establish the principal', async () => {
+		const harness = createSqlViewerHarness();
+		harness.getDatabases.mockImplementation(async () => {
+			await harness.setAccountId('account-a');
+			return ['DbA'];
+		});
+
+		await harness.viewer.onMessage({ type: 'sqlDatabases.refresh', connectionId: 'sql-1' });
+
+		expect(harness.getCacheStore().entries['sql-1']).toEqual(expect.objectContaining({ databases: ['DbA'] }));
+	});
+
+	it('does not resurrect databases when Clear All runs during refresh', async () => {
+		const harness = createSqlViewerHarness();
+		await harness.setAccountId('account-a');
+		const pending = deferred<string[]>();
+		harness.getDatabases.mockReturnValue(pending.promise);
+
+		const refresh = harness.viewer.onMessage({ type: 'sqlDatabases.refresh', connectionId: 'sql-1' });
+		await vi.waitFor(() => expect(harness.getDatabases).toHaveBeenCalledOnce());
+		await harness.viewer.onMessage({ type: 'sqlSchema.clearAll' });
+		pending.resolve(['StaleDb']);
+		await refresh;
+
+		expect(harness.getCacheStore().entries).toEqual({});
+	});
+
+	it('removes a mixed-case server mapping through the canonical normalized key', async () => {
+		const harness = createSqlViewerHarness();
+		await setSqlServerAccountMapEntry(harness.context, harness.connection.serverUrl, 'account-a');
+		expect(readSqlServerAccountMap(harness.context)).toEqual({ 'mixedcase.server.example': 'account-a' });
+
+		await harness.viewer.onMessage({ type: 'sqlServerMap.delete', serverUrl: harness.connection.serverUrl });
+
+		expect(readSqlServerAccountMap(harness.context)).toEqual({});
+	});
+
+	it('drops a cached SQL schema response when the target changes during the disk read', async () => {
+		const harness = createSqlViewerHarness();
+		await harness.setAccountId('account-a');
+		const principalFingerprint = sqlSchemaPrincipalFingerprint(harness.viewer.context, harness.connection)!;
+		const cacheGeneration = await captureSqlSchemaCacheGeneration(harness.viewer.context.globalStorageUri);
+		const entry = {
+			version: SQL_SCHEMA_CACHE_VERSION,
+			schema: { tables: ['SecretTable'], columnsByTable: {} },
+			timestamp: Date.now(),
+			serverUrl: harness.connection.serverUrl,
+			database: 'DbA',
+			connectionId: harness.connection.id,
+			cacheGeneration,
+			principalFingerprint,
+			targetSignature: sqlSchemaTargetSignature(harness.connection),
+		};
+		const pendingRead = deferred<Uint8Array>();
+		const readFile = vi.spyOn(vscode.workspace.fs, 'readFile').mockReturnValue(pendingRead.promise);
+
+		const request = harness.viewer.onMessage({
+			type: 'sqlSchema.get', requestId: 'schema-get-1', connectionId: 'sql-1',
+			serverUrl: harness.connection.serverUrl, database: 'DbA',
+		});
+		await vi.waitFor(() => expect(readFile).toHaveBeenCalledOnce());
+		harness.setConnection({ ...harness.connection, port: 1434 });
+		pendingRead.resolve(Buffer.from(JSON.stringify(entry), 'utf8'));
+		await request;
+
+		expect(harness.viewer.panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'schemaResult', requestId: 'schema-get-1', connectionId: 'sql-1', ok: false,
+		}));
+		expect(harness.viewer.panel.webview.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+	});
+
+	it('drops a refreshed SQL schema when the target changes during the live request', async () => {
+		const harness = createSqlViewerHarness();
+		await harness.setAccountId('account-a');
+		const pendingSchema = deferred<any>();
+		harness.getDatabaseSchema.mockReturnValue(pendingSchema.promise);
+
+		const request = harness.viewer.onMessage({
+			type: 'sqlSchema.refresh', requestId: 'schema-refresh-1', connectionId: 'sql-1',
+			serverUrl: harness.connection.serverUrl, database: 'DbA',
+		});
+		await vi.waitFor(() => expect(harness.getDatabaseSchema).toHaveBeenCalledOnce());
+		harness.setConnection({ ...harness.connection, port: 1434 });
+		pendingSchema.resolve({ tables: ['SecretTable'], columnsByTable: {} });
+		await request;
+
+		expect(harness.viewer.panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'schemaResult', requestId: 'schema-refresh-1', connectionId: 'sql-1', ok: false,
+		}));
+		expect(harness.viewer.panel.webview.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+	});
+
+	it('does not publish a refreshed SQL schema when canonical LNT admission rejects', async () => {
+		const harness = createSqlViewerHarness();
+		await harness.setAccountId('account-a');
+		harness.getDatabaseSchema.mockResolvedValue({ tables: ['SecretTable'], columnsByTable: {} });
+		harness.dispatchSqlConnectionAllowed.mockRejectedValueOnce(new Error('Leave No Trace committed'));
+
+		await harness.viewer.onMessage({
+			type: 'sqlSchema.refresh', requestId: 'schema-refresh-lnt', connectionId: 'sql-1',
+			serverUrl: harness.connection.serverUrl, database: 'DbA',
+		});
+
+		expect(harness.viewer.panel.webview.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'schemaResult', requestId: 'schema-refresh-lnt', ok: true,
+		}));
+		expect(harness.viewer.panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'schemaResult', requestId: 'schema-refresh-lnt', ok: false,
+		}));
+	});
+
+	it('does not publish or cache SQL schema after an LNT enable-disable interval', async () => {
+		const harness = createSqlViewerHarness();
+		await harness.setAccountId('account-a');
+		const pendingSchema = deferred<any>();
+		harness.getDatabaseSchema.mockReturnValue(pendingSchema.promise);
+
+		const request = harness.viewer.onMessage({
+			type: 'sqlSchema.refresh', requestId: 'schema-refresh-revoked', connectionId: 'sql-1',
+			serverUrl: harness.connection.serverUrl, database: 'DbA',
+		});
+		await vi.waitFor(() => expect(harness.getDatabaseSchema).toHaveBeenCalledOnce());
+		harness.setRevocationGeneration(2);
+		pendingSchema.resolve({ tables: ['SecretTable'], columnsByTable: {} });
+		await request;
+
+		expect(harness.viewer.panel.webview.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'schemaResult', requestId: 'schema-refresh-revoked', ok: true,
+		}));
+		const cacheDirectory = path.join(harness.context.globalStorageUri.fsPath, 'sqlSchemaCache');
+		expect(fs.existsSync(cacheDirectory) ? fs.readdirSync(cacheDirectory) : []).toEqual([]);
 	});
 });
 

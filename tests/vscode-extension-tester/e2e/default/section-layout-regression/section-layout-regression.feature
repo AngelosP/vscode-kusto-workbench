@@ -2,6 +2,8 @@ Feature: Section layout regression across all section types
 
   Background:
     Given the extension is in a clean state
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 1300 by 950
     And I capture the output channel "Kusto Workbench"
     And I wait 2 seconds
     When I execute command "kusto.openQueryEditor"

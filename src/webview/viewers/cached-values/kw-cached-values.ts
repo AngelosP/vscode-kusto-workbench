@@ -48,6 +48,9 @@ interface Snapshot {
 	};
 	sqlConnections: Array<{ id: string; name: string; serverUrl: string; authType: string }>;
 	sqlCachedDatabases: Record<string, string[]>;
+	sqlLeaveNoTrace: string[];
+	sqlStateVersions?: { policy: number; principals: number; connections: number };
+	sqlAvailable?: boolean;
 	sqlServerAccountMap: Record<string, string>;
 	cachedSchemaKeys: string[];
 }
@@ -143,30 +146,41 @@ function shortServerName(serverUrl: string): string {
 	return s || String(serverUrl || '');
 }
 
-/** Group SQL cached databases (keyed by connectionId) into a server-keyed map, using connection metadata for labelling. */
-function groupSqlDatabasesByServer(
+/** Keep SQL cached databases partitioned by their exact connection owner. */
+export function groupSqlDatabasesByConnection(
 	sqlCachedDatabases: Record<string, string[]>,
-	sqlConnections: Array<{ id: string; serverUrl: string }>,
-): { byServer: Record<string, { connectionIds: string[]; databases: string[] }>; serverOrder: string[] } {
+	sqlConnections: Array<{ id: string; name?: string; serverUrl: string }>,
+): {
+	byConnection: Record<string, { connectionId: string; connectionName: string; serverUrl: string; databases: string[] }>;
+	connectionOrder: string[];
+} {
 	const connById = new Map(sqlConnections.map(c => [c.id, c]));
-	const byServer: Record<string, { connectionIds: string[]; databases: string[] }> = {};
+	const byConnection: Record<string, { connectionId: string; connectionName: string; serverUrl: string; databases: string[] }> = {};
 	for (const [connId, dbs] of Object.entries(sqlCachedDatabases)) {
 		const conn = connById.get(connId);
-		const serverUrl = conn ? conn.serverUrl : connId;
-		if (!byServer[serverUrl]) {
-			byServer[serverUrl] = { connectionIds: [], databases: [] };
-		}
-		const existing = byServer[serverUrl];
-		if (!existing.connectionIds.includes(connId)) existing.connectionIds.push(connId);
-		const seen = new Set(existing.databases.map(d => d.toLowerCase()));
+		if (!conn) continue;
+		const databases: string[] = [];
+		const seen = new Set<string>();
 		for (const db of dbs) {
 			const lower = db.toLowerCase();
-			if (!seen.has(lower)) { seen.add(lower); existing.databases.push(db); }
+			if (!seen.has(lower)) { seen.add(lower); databases.push(db); }
 		}
+		byConnection[connId] = {
+			connectionId: connId,
+			connectionName: String(conn.name || '').trim(),
+			serverUrl: conn.serverUrl,
+			databases,
+		};
 	}
-	const serverOrder = Object.keys(byServer);
-	serverOrder.sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
-	return { byServer, serverOrder };
+	const connectionOrder = Object.keys(byConnection);
+	connectionOrder.sort((left, right) => {
+		const leftEntry = byConnection[left];
+		const rightEntry = byConnection[right];
+		const leftLabel = leftEntry.connectionName || leftEntry.serverUrl;
+		const rightLabel = rightEntry.connectionName || rightEntry.serverUrl;
+		return leftLabel.toLowerCase().localeCompare(rightLabel.toLowerCase()) || left.localeCompare(right);
+	});
+	return { byConnection, connectionOrder };
 }
 
 // ─── Change-detection keys (replicate original behavior) ─────────────────────
@@ -238,6 +252,8 @@ export class KwCachedValues extends LitElement {
 	private _latestSnapshotRevision = 0;
 	private _schemaRequestOwner: { requestId: string; connectionId: string; accountPartition: string } | undefined;
 	private _objectViewerOwner: { connectionId: string; accountPartition: string } | undefined;
+	private _sqlSchemaRequestOwner: { requestId: string; connectionId: string } | undefined;
+	private _sqlObjectViewerConnectionId = '';
 
 	@query('kw-object-viewer') private _objectViewer!: KwObjectViewer;
 
@@ -271,6 +287,19 @@ export class KwCachedValues extends LitElement {
 
 	private _onMessage = async (event: MessageEvent) => {
 		const msg = event.data;
+		if (msg?.type === 'sqlPrincipalChanged' || msg?.type === 'sqlOwnerChanged') {
+			const changedIds = new Set((Array.isArray(msg.connectionIds) ? msg.connectionIds : []).map(String));
+			if (this._sqlSchemaRequestOwner && changedIds.has(this._sqlSchemaRequestOwner.connectionId)) {
+				this._sqlSchemaRequestOwner = undefined;
+				this._schemaRequestInFlight = false;
+				this._sqlSchemaRefreshDb = '';
+			}
+			if (this._sqlObjectViewerConnectionId && changedIds.has(this._sqlObjectViewerConnectionId)) {
+				this._sqlObjectViewerConnectionId = '';
+				this._objectViewer?.hide();
+			}
+			return;
+		}
 		if (msg?.type === 'snapshot') {
 			const revision = Number(msg.snapshot?.revision) || 0;
 			if (revision && revision < this._latestSnapshotRevision) return;
@@ -292,6 +321,16 @@ export class KwCachedValues extends LitElement {
 				this._objectViewerOwner = undefined;
 				this._objectViewer?.hide();
 			}
+			const allowedSqlIds = new Set((snap.sqlConnections ?? []).map(connection => connection.id));
+			if (this._sqlSchemaRequestOwner && !allowedSqlIds.has(this._sqlSchemaRequestOwner.connectionId)) {
+				this._sqlSchemaRequestOwner = undefined;
+				this._schemaRequestInFlight = false;
+				this._sqlSchemaRefreshDb = '';
+			}
+			if (this._sqlObjectViewerConnectionId && !allowedSqlIds.has(this._sqlObjectViewerConnectionId)) {
+				this._sqlObjectViewerConnectionId = '';
+				this._objectViewer?.hide();
+			}
 			this._snapshot = snap;
 
 			// Auto-detect active kind from persisted value + available data (same logic as Connection Manager)
@@ -310,7 +349,13 @@ export class KwCachedValues extends LitElement {
 			const connectionId = String(msg.connectionId || '');
 			const accountPartition = String(msg.accountPartition || '');
 			const isKustoResult = !!requestId && !!connectionId;
-			if (isKustoResult) {
+			const isSqlResult = !!requestId && !!connectionId && !accountPartition;
+			if (isSqlResult) {
+				const owner = this._sqlSchemaRequestOwner;
+				const allowed = this._snapshot?.sqlConnections.some(connection => connection.id === connectionId)
+					&& !this._snapshot?.sqlLeaveNoTrace?.includes(connectionId);
+				if (!owner || owner.requestId !== requestId || owner.connectionId !== connectionId || !allowed) return;
+			} else if (isKustoResult) {
 				const owner = this._schemaRequestOwner;
 				const currentPartition = String(this._snapshot?.connections.find(connection => connection.id === connectionId)?.accountPartition || '');
 				if (!owner || owner.requestId !== requestId || owner.connectionId !== connectionId
@@ -324,7 +369,14 @@ export class KwCachedValues extends LitElement {
 			const jsonText = String(msg.json || '');
 			// Wait for the component to be available in the shadow DOM
 			await this.updateComplete;
-			if (isKustoResult) {
+			if (isSqlResult) {
+				const owner = this._sqlSchemaRequestOwner;
+				const allowed = this._snapshot?.sqlConnections.some(connection => connection.id === connectionId)
+					&& !this._snapshot?.sqlLeaveNoTrace?.includes(connectionId);
+				if (!owner || owner.requestId !== requestId || owner.connectionId !== connectionId || !allowed) return;
+				this._sqlSchemaRequestOwner = undefined;
+				this._sqlObjectViewerConnectionId = connectionId;
+			} else if (isKustoResult) {
 				const owner = this._schemaRequestOwner;
 				const currentPartition = String(this._snapshot?.connections.find(connection => connection.id === connectionId)?.accountPartition || '');
 				if (!owner || owner.requestId !== requestId || owner.accountPartition !== accountPartition || currentPartition !== accountPartition) return;
@@ -810,34 +862,36 @@ export class KwCachedValues extends LitElement {
 		if (!snap) return nothing;
 		const sqlCached = snap.sqlCachedDatabases && typeof snap.sqlCachedDatabases === 'object' ? snap.sqlCachedDatabases : {};
 		const sqlConns = Array.isArray(snap.sqlConnections) ? snap.sqlConnections : [];
-		const { byServer, serverOrder } = groupSqlDatabasesByServer(sqlCached, sqlConns);
+		const { byConnection, connectionOrder } = groupSqlDatabasesByConnection(sqlCached, sqlConns);
 
-		if (serverOrder.length === 0) {
+		if (connectionOrder.length === 0) {
 			return html`<div class="small">No cached database lists.</div>`;
 		}
 
 		// Ensure selection is stable
 		let selected = this._selectedSqlServerKey;
-		if (!selected || !serverOrder.includes(selected)) {
-			selected = serverOrder[0];
+		if (!selected || !connectionOrder.includes(selected)) {
+			selected = connectionOrder[0];
 			this._selectedSqlServerKey = selected;
 		}
 
-		const entry = byServer[selected];
+		const entry = byConnection[selected];
 		const selectedList = entry ? entry.databases : [];
-		const selectedConnIds = entry ? entry.connectionIds : [];
+		const selectedConnectionId = entry?.connectionId ?? '';
+		const selectedServerUrl = entry?.serverUrl ?? '';
 
 		return html`
 			<div class="twoPane">
 				<div class="pane listPane list scrollPane" data-overlay-scroll="x:hidden" tabindex="0" role="listbox" aria-label="Servers"
 					@keydown=${this._onSqlDbListKeydown}>
-					${serverOrder.map(srv => {
-						const e = byServer[srv];
-						const isSelected = srv === selected;
+					${connectionOrder.map(connectionId => {
+						const e = byConnection[connectionId];
+						const isSelected = connectionId === selected;
+						const label = e.connectionName || shortServerName(e.serverUrl);
 						return html`
 							<div class="listItem ${isSelected ? 'selected' : ''}"
-								@click=${() => this._selectSqlServer(srv)}>
-								<div class="listItemName" title="${srv}">${shortServerName(srv)}</div>
+								@click=${() => this._selectSqlServer(connectionId)}>
+								<div class="listItemName" title="${e.serverUrl}">${label}</div>
 								<div class="count">${e.databases.length}</div>
 							</div>`;
 					})}
@@ -846,14 +900,14 @@ export class KwCachedValues extends LitElement {
 				<div class="pane detailPane scrollPane" data-overlay-scroll="x:hidden" tabindex="0" aria-label="Databases">
 					<div style="padding:10px;">
 						<div class="dbDetailHeader">
-							<div class="detailUrl" title="${selected}">${selected}</div>
+							<div class="detailUrl" title="${selectedServerUrl}">${selectedServerUrl}</div>
 							<div class="rowActions">
-								<button class="iconButton" title="Refresh the list of cached databases for selected server" aria-label="Refresh the list of cached databases for selected server"
-									@click=${() => { for (const cid of selectedConnIds) this._refreshSqlDatabases(cid); }}>
+								<button class="iconButton" title="Refresh this connection's cached databases" aria-label="Refresh this connection's cached databases"
+									@click=${() => this._refreshSqlDatabases(selectedConnectionId)}>
 									${ICONS.refresh}
 								</button>
-								<button class="iconButton" title="Delete the list of cached databases for the selected server" aria-label="Delete the list of cached databases for the selected server"
-									@click=${() => { for (const cid of selectedConnIds) this._deleteSqlDatabases(cid); }}>
+								<button class="iconButton" title="Delete this connection's cached databases" aria-label="Delete this connection's cached databases"
+									@click=${() => this._deleteSqlDatabases(selectedConnectionId)}>
 									${ICONS.trash}
 								</button>
 							</div>
@@ -861,19 +915,19 @@ export class KwCachedValues extends LitElement {
 						<div class="dbList">
 							${selectedList.filter(Boolean).map(db => {
 								const isRefreshing = this._sqlSchemaRefreshDb === String(db);
-								const hasCachedSchema = snap.cachedSchemaKeys?.includes(`sql:${selected}|${db}`);
+								const hasCachedSchema = !!selectedConnectionId && snap.cachedSchemaKeys?.includes(`sql:${selectedConnectionId}|${db}`);
 								return html`
 								<div class="dbItem">
 									<span class="dbIcon">${ICONS.database}</span>
 									${hasCachedSchema
 										? html`<button class="linkButton mono" title="View cached SQL schema"
-											@click=${() => this._viewSqlSchema(selected, String(db))}>${db}</button>`
+											@click=${() => this._viewSqlSchema(selectedServerUrl, String(db), selectedConnectionId)}>${db}</button>`
 										: html`<span class="dbName" title="No cached schema">${db}</span>`
 									}
 									<div class="dbActions">
 										<button class="iconButton${isRefreshing ? ' spinning' : ''}" title="Refresh schema for ${db}" aria-label="Refresh schema for ${db}"
 											?disabled=${isRefreshing}
-											@click=${() => this._refreshSqlSchema(selected, String(db), selectedConnIds[0] ?? '')}>
+											@click=${() => this._refreshSqlSchema(selectedServerUrl, String(db), selectedConnectionId)}>
 											${ICONS.refresh}
 										</button>
 									</div>
@@ -1081,13 +1135,13 @@ export class KwCachedValues extends LitElement {
 		if (!snap) return;
 		const sqlCached = snap.sqlCachedDatabases && typeof snap.sqlCachedDatabases === 'object' ? snap.sqlCachedDatabases : {};
 		const sqlConns = Array.isArray(snap.sqlConnections) ? snap.sqlConnections : [];
-		const { serverOrder } = groupSqlDatabasesByServer(sqlCached, sqlConns);
-		if (serverOrder.length === 0) return;
-		let idx = serverOrder.indexOf(this._selectedSqlServerKey);
+		const { connectionOrder } = groupSqlDatabasesByConnection(sqlCached, sqlConns);
+		if (connectionOrder.length === 0) return;
+		let idx = connectionOrder.indexOf(this._selectedSqlServerKey);
 		if (idx < 0) idx = 0;
 		if (key === 'ArrowUp') idx = Math.max(0, idx - 1);
-		else idx = Math.min(serverOrder.length - 1, idx + 1);
-		this._selectedSqlServerKey = serverOrder[idx];
+		else idx = Math.min(connectionOrder.length - 1, idx + 1);
+		this._selectedSqlServerKey = connectionOrder[idx];
 		e.preventDefault();
 	}
 
@@ -1101,17 +1155,21 @@ export class KwCachedValues extends LitElement {
 		this._requestSnapshot();
 	}
 
-	private _viewSqlSchema(serverUrl: string, database: string): void {
+	private _viewSqlSchema(serverUrl: string, database: string, connectionId: string): void {
 		if (this._schemaRequestInFlight) return;
+		const requestId = `sql-schema-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+		this._sqlSchemaRequestOwner = { requestId, connectionId };
 		this._schemaRequestInFlight = true;
-		this._vscode.postMessage({ type: 'sqlSchema.get', serverUrl, database });
+		this._vscode.postMessage({ type: 'sqlSchema.get', requestId, serverUrl, database, connectionId });
 	}
 
 	private _refreshSqlSchema(serverUrl: string, database: string, connectionId: string): void {
 		if (this._sqlSchemaRefreshDb) return;
+		const requestId = `sql-schema-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+		this._sqlSchemaRequestOwner = { requestId, connectionId };
 		this._sqlSchemaRefreshDb = database;
 		this._schemaRequestInFlight = true;
-		this._vscode.postMessage({ type: 'sqlSchema.refresh', serverUrl, database, connectionId });
+		this._vscode.postMessage({ type: 'sqlSchema.refresh', requestId, serverUrl, database, connectionId });
 	}
 
 	/** Read SQL server → account map from snapshot (webview-side helper). */

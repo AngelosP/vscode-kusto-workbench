@@ -27,7 +27,7 @@ vi.mock('../../src/webview/monaco/theme.js', () => ({
 
 vi.mock('../../src/webview/shared/chart-pinned-tooltip.js', () => tooltipMocks);
 
-import { disposeChartEcharts, renderChart } from '../../src/webview/shared/chart-renderer.js';
+import { disposeChartEcharts, purgeChartEcharts, renderChart } from '../../src/webview/shared/chart-renderer.js';
 
 describe('chart-renderer zoom/pan controls', () => {
 	let setOption: ReturnType<typeof vi.fn>;
@@ -730,6 +730,39 @@ describe('chart-renderer zoom/pan controls', () => {
 			expect.objectContaining({ dataZoomIndex: 0, start: 30, end: 70 }),
 		]);
 		expect(scenario.state.__zoomPanViewportSignature).toBeTypeOf('string');
+	});
+
+	it('purges sentinel-bearing zoom state without preserving viewport data', () => {
+		const scenario = renderScenario('line', { legendColumn: 'Category' });
+		scenario.state.__zoomPanViewportSignature = 'PROTECTED_SENTINEL_ROW';
+		scenario.state.__zoomPanUndoStack = [[{ start: 10, end: 20, marker: 'PROTECTED_SENTINEL_ROW' }]];
+		scenario.state.__zoomPanPendingUndoViewport = [{ marker: 'PROTECTED_SENTINEL_ROW' }];
+		scenario.state.__lastCategoryAxis = { labelCount: 1, marker: 'PROTECTED_SENTINEL_ROW' };
+		scenario.state.__applyingZoomPanViewport = true;
+		scenario.state.__wasRendering = true;
+		instance.getOption.mockReturnValue({ dataZoom: [{ start: 30, end: 70 }] });
+
+		purgeChartEcharts(scenario.id);
+
+		expect(instance.dispose).toHaveBeenCalled();
+		expect(JSON.stringify(scenario.state)).not.toContain('PROTECTED_SENTINEL_ROW');
+		expect(Object.keys(scenario.state).filter(key => key.startsWith('__'))).toEqual(['__wasRendering']);
+		expect(scenario.state.__wasRendering).toBe(false);
+		expect(scenario.state.__echarts).toBeUndefined();
+	});
+
+	it('purges immediately while the chart mouse guard is active', () => {
+		const scenario = renderScenario('line', { legendColumn: 'Category' });
+		scenario.state.__zoomPanViewportSignature = 'HOVERED_PROTECTED_SENTINEL';
+		const canvas = document.getElementById(`${scenario.id}_chart_canvas_edit`)!;
+		canvas.dispatchEvent(new Event('mouseenter'));
+
+		purgeChartEcharts(scenario.id);
+
+		expect(instance.dispose).toHaveBeenCalled();
+		expect(scenario.state.__echarts).toBeUndefined();
+		expect(scenario.state.__wasRendering).toBe(false);
+		expect(JSON.stringify(scenario.state)).not.toContain('HOVERED_PROTECTED_SENTINEL');
 	});
 
 	it('does not reapply captured zoom state after the data source changes', () => {

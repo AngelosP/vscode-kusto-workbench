@@ -2468,7 +2468,12 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	/** Public refresh — called by cross-section dependency refresh loops. */
 	public refresh(): void {
 		this._forceRefreshDatasets();
-		this._computeTransformation();
+		if (this._expanded) {
+			this._computeTransformation();
+			return;
+		}
+		this._computeTransformationImpl();
+		this._syncResultsToGlobal();
 	}
 
 	/** Public lightweight refresh — updates only data-source picker options/labels. */

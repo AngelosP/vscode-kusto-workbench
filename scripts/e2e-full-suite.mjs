@@ -227,6 +227,7 @@ function discoverCases(options, quarantineEntries) {
 				category,
 				featureFiles: featureFiles.map(name => relativePath(path.join(testDir, name))),
 				workspaceSettings: testSettings.workspaceSettings,
+				env: testSettings.env,
 				timeout: testSettings.timeout,
 				optIn: testSettings.optIn,
 				quarantine,
@@ -252,7 +253,7 @@ function discoverCases(options, quarantineEntries) {
 function readTestSettings(testDir) {
 	const configPath = path.join(testDir, perTestConfigFile);
 	if (!existsSync(configPath)) {
-		return { workspaceSettings: null, timeout: '', optIn: false };
+		return { workspaceSettings: null, env: null, timeout: '', optIn: false };
 	}
 
 	const config = readJson(configPath, {});
@@ -262,6 +263,15 @@ function readTestSettings(testDir) {
 			throw new Error(`${relativePath(configPath)} property workspaceSettings must be an object.`);
 		}
 		workspaceSettings = config.workspaceSettings;
+	}
+
+	let env = null;
+	if (config.env !== undefined) {
+		if (!config.env || typeof config.env !== 'object' || Array.isArray(config.env)
+			|| Object.values(config.env).some(value => typeof value !== 'string')) {
+			throw new Error(`${relativePath(configPath)} property env must be an object of string values.`);
+		}
+		env = config.env;
 	}
 
 	let timeout = '';
@@ -281,7 +291,7 @@ function readTestSettings(testDir) {
 		optIn = config.optIn;
 	}
 
-	return { workspaceSettings, timeout, optIn };
+	return { workspaceSettings, env, timeout, optIn };
 }
 
 function findQuarantine(entries, profile, testId) {
@@ -335,7 +345,7 @@ function profileSettingsPath(profile) {
 }
 
 function ensureQuietProfileSettings(profile) {
-	if (profile === 'default') {
+	if (profile === 'default' && !existsSync(path.join(e2eRoot, 'profiles', profile))) {
 		return null;
 	}
 
@@ -361,12 +371,11 @@ function ensureQuietProfileSettings(profile) {
 }
 
 function listProfileResidue(profile) {
-	if (profile === 'default') {
-		return [];
-	}
-
 	const storageRoot = profileWorkspaceStorageRoot(profile);
 	if (!existsSync(storageRoot)) {
+		if (profile === 'default') {
+			return [];
+		}
 		return [{ profile, name: '<missing workspaceStorage>', path: storageRoot, kind: 'missing-workspace-storage' }];
 	}
 
@@ -377,6 +386,41 @@ function listProfileResidue(profile) {
 			name: entry.name,
 			path: path.join(storageRoot, entry.name),
 			kind: entry.isDirectory() ? 'directory' : 'file',
+		}));
+}
+
+function listManagedWorkspaceStorage(profile, workspaceDir) {
+	if (!workspaceDir) {
+		return [];
+	}
+	const storageRoot = profileWorkspaceStorageRoot(profile);
+	if (!existsSync(storageRoot)) {
+		return [];
+	}
+	const comparablePath = value => {
+		const resolved = path.resolve(value);
+		return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+	};
+	const expected = comparablePath(workspaceDir);
+	return readdirSync(storageRoot, { withFileTypes: true })
+		.filter(entry => entry.isDirectory() && !workspaceStorageAllowlist.has(entry.name))
+		.filter(entry => {
+			const workspacePath = path.join(storageRoot, entry.name, 'workspace.json');
+			const metadata = readJson(workspacePath, {});
+			if (typeof metadata.folder !== 'string') {
+				return false;
+			}
+			try {
+				return comparablePath(fileURLToPath(metadata.folder)) === expected;
+			} catch {
+				return false;
+			}
+		})
+		.map(entry => ({
+			profile,
+			name: entry.name,
+			path: path.join(storageRoot, entry.name),
+			kind: 'directory',
 		}));
 }
 
@@ -792,8 +836,8 @@ function main() {
 
 	printCaseList(cases, excludedScreenshotGenerators, excludedOptInTests);
 
-	const namedProfiles = unique(cases.map(testCase => testCase.profile).filter(profile => profile !== 'default'));
-	for (const profile of namedProfiles) {
+	const reusableProfiles = unique(cases.map(testCase => testCase.profile));
+	for (const profile of reusableProfiles) {
 		const settingsPath = ensureQuietProfileSettings(profile);
 		if (settingsPath) {
 			console.log(`Seeded quiet VS Code settings for ${profile}: ${relativePath(settingsPath)}`);
@@ -890,9 +934,15 @@ function main() {
 		if (timeout) {
 			args.push('--timeout', timeout);
 		}
+		for (const [key, value] of Object.entries(testCase.env ?? {})) {
+			args.push('--env', `${key}=${value}`);
+		}
 
 		const preparedWorkspace = prepareTestWorkspace(testCase, suiteOutputDir);
-		const envOverrides = preparedWorkspace ? { VSCODE_EXT_TEST_WORKSPACE: preparedWorkspace.workspaceDir } : {};
+		const envOverrides = {
+			...(preparedWorkspace ? { VSCODE_EXT_TEST_WORKSPACE: preparedWorkspace.workspaceDir } : {}),
+			...(testCase.testId === 'first-launch-setup' ? {} : { KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH: '1' }),
+		};
 		if (preparedWorkspace) {
 			console.log(`Seeded per-test VS Code workspace settings for ${testCase.profile}/${testCase.testId}: ${relativePath(preparedWorkspace.settingsPath)}`);
 		}
@@ -923,12 +973,15 @@ function main() {
 			commandOutput: outputFile,
 		});
 
-		if (testCase.profile !== 'default') {
-			const residues = listProfileResidue(testCase.profile);
-			if (residues.length > 0) {
-				const repaired = options.repairProfileResidue ? repairProfileResidue(residues, path.join(residueBackupRoot, 'post-run', testCase.profile, testCase.testId)) : [];
-				profileResidueRecords.push(profileResidueRecord(testCase.profile, `post-run:${testCase.testId}`, residues, options.allowProfileResidue ? 'warning' : 'failure', repaired));
-			}
+		const managedWorkspaceStorage = listManagedWorkspaceStorage(testCase.profile, preparedWorkspace?.workspaceDir);
+		repairProfileResidue(
+			managedWorkspaceStorage,
+			path.join(residueBackupRoot, 'managed-workspace-storage', testCase.profile, testCase.testId),
+		);
+		const residues = listProfileResidue(testCase.profile);
+		if (residues.length > 0) {
+			const repaired = options.repairProfileResidue ? repairProfileResidue(residues, path.join(residueBackupRoot, 'post-run', testCase.profile, testCase.testId)) : [];
+			profileResidueRecords.push(profileResidueRecord(testCase.profile, `post-run:${testCase.testId}`, residues, options.allowProfileResidue || options.repairProfileResidue ? 'warning' : 'failure', repaired));
 		}
 	}
 

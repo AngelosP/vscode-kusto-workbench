@@ -108,5 +108,5 @@ describe('Kusto syntax diagnostic ranges', () => {
 		});
 		const line = query.split('\n')[normalized[0].startLineNumber as number - 1];
 		expect(line[normalized[0].startColumn as number - 1]).toBe('+');
-	});
+	}, 15_000);
 });

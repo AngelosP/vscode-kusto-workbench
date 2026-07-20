@@ -161,6 +161,113 @@ afterEach(() => {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('kw-connection-manager', () => {
+	it('keeps a protected SQL connection visible with an unmark action', async () => {
+		const el = createElement();
+		sendSnapshot(el, snapshot({
+			activeKind: 'sql',
+			connections: [],
+			sqlConnections: [sqlConnection('sql1', 'Protected SQL')],
+			sqlLeaveNoTrace: ['sql1'],
+			sqlCachedDatabases: {},
+		}));
+		await el.updateComplete;
+		(el as any)._activeKind = 'sql';
+		(el as any)._activeFilter = 'lnt';
+		el.requestUpdate();
+		await el.updateComplete;
+
+		expect(el.shadowRoot!.textContent).toContain('Protected SQL');
+		const unmark = el.shadowRoot!.querySelector('button[title="Remove from Leave No Trace"]') as HTMLButtonElement;
+		expect(unmark).toBeTruthy();
+		unmark.click();
+		expect(postedMessages).toContainEqual({ type: 'sql.leaveNoTrace.remove', connectionId: 'sql1' });
+	});
+
+	it('settles an in-flight SQL test when its owner is invalidated', async () => {
+		const el = createElement();
+		(el as any)._editingConnectionId = 'sql1';
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'sql.testConnectionStarted', connectionId: 'sql1', requestId: 'test-1',
+		} }));
+		expect((el as any)._testResult).toBe('loading');
+
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'sqlOwnerChanged', connectionIds: ['sql1'],
+		} }));
+
+		expect((el as any)._sqlTestConnectionRequestId).toBeNull();
+		expect((el as any)._testResult).toContain('owner changed');
+	});
+
+	it('ignores a SQL snapshot delivered after a newer revision', async () => {
+		const el = createElement() as KwConnectionManager & Record<string, any>;
+		sendSnapshot(el, snapshot({ revision: 2, sqlLeaveNoTrace: ['sql1'], sqlCachedDatabases: {} }));
+		sendSnapshot(el, snapshot({ revision: 1, sqlLeaveNoTrace: [], sqlCachedDatabases: { sql1: ['StaleDb'] } }));
+		await el.updateComplete;
+
+		expect(el._snapshot.sqlLeaveNoTrace).toEqual(['sql1']);
+		expect(el._snapshot.sqlCachedDatabases).toEqual({});
+	});
+
+	it('purges affected SQL schema, preview, loading, and request state when the principal changes', async () => {
+		const el = createElement() as KwConnectionManager & Record<string, any>;
+		el._activeKind = 'sql';
+		el._sqlExplorerPath = { kind: 'sql', connectionId: 'sql1', database: 'Db', segments: [] };
+		el._sqlDatabaseSchemas = { 'sql1|Db': { tables: ['Secret'] }, 'sql2|Db': { tables: ['Safe'] } };
+		el._sqlTablePreviewData = { 'sql1|Db|Secret': { rows: [['secret']] }, 'sql2|Db|Safe': { rows: [['safe']] } };
+		el._sqlSchemaLoadErrors = { 'sql1|Db': 'old', 'sql2|Db': 'keep' };
+		el._sqlDatabaseLoadErrors = { sql1: 'old', sql2: 'keep' };
+		el._sqlLoadingDatabases = new Set(['sql1', 'sql2']);
+		el._sqlLoadingSchemaKeys = new Set(['sql1|Db', 'sql2|Db']);
+		el._sqlDatabaseRequestIds = new Map([['sql1', 'request-1'], ['sql2', 'request-2']]);
+		el._sqlSchemaRequestIds = new Map([['sql1|Db', 'schema-1'], ['sql2|Db', 'schema-2']]);
+		el._sqlPreviewRequestIds = new Map([['sql1|Db|Secret', 'preview-1'], ['sql2|Db|Safe', 'preview-2']]);
+
+		window.dispatchEvent(new MessageEvent('message', { data: { type: 'sqlPrincipalChanged', connectionIds: ['sql1'] } }));
+		await el.updateComplete;
+
+		expect(el._sqlDatabaseSchemas).toEqual({ 'sql2|Db': { tables: ['Safe'] } });
+		expect(el._sqlTablePreviewData).toEqual({ 'sql2|Db|Safe': { rows: [['safe']] } });
+		expect(el._sqlLoadingDatabases).toEqual(new Set(['sql2']));
+		expect(el._sqlLoadingSchemaKeys).toEqual(new Set(['sql2|Db']));
+		expect(el._sqlDatabaseRequestIds.has('sql1')).toBe(false);
+		expect(el._sqlSchemaRequestIds.has('sql1|Db')).toBe(false);
+		expect(el._sqlPreviewRequestIds.has('sql1|Db|Secret')).toBe(false);
+		expect(el._sqlExplorerPath).toBeNull();
+	});
+
+	it('purges affected SQL state when the saved target changes under the same ID', async () => {
+		const el = createElement() as KwConnectionManager & Record<string, any>;
+		el._sqlDatabaseSchemas = { 'sql1|Db': { tables: ['OldTarget'] } };
+		el._sqlTablePreviewData = { 'sql1|Db|OldTarget': { rows: [['old']] } };
+
+		window.dispatchEvent(new MessageEvent('message', { data: { type: 'sqlOwnerChanged', connectionIds: ['sql1'] } }));
+		await el.updateComplete;
+
+		expect(el._sqlDatabaseSchemas).toEqual({});
+		expect(el._sqlTablePreviewData).toEqual({});
+	});
+
+	it('purges every SQL state surface when SQL becomes unavailable', async () => {
+		const el = createElement() as KwConnectionManager & Record<string, any>;
+		el._activeKind = 'sql';
+		el._sqlExplorerPath = { connectionId: 'sql1', database: 'SecretDb' };
+		el._sqlDatabaseSchemas = { 'sql1|SecretDb': { tables: ['Secret'] } };
+		el._sqlTablePreviewData = { 'sql1|SecretDb|Secret': { rows: [['secret']] } };
+		el._sqlTestConnectionRequestId = 'test-secret';
+
+		sendSnapshot(el, snapshot({
+			revision: 2, sqlAvailable: false, sqlConnections: [], sqlCachedDatabases: {},
+			searchState: { query: 'Secret', scope: 'cached', lastResults: [{ kind: 'sql', name: 'Secret' }] },
+		}));
+		await el.updateComplete;
+
+		expect(el._sqlExplorerPath).toBeNull();
+		expect(el._sqlDatabaseSchemas).toEqual({});
+		expect(el._sqlTablePreviewData).toEqual({});
+		expect(el._sqlTestConnectionRequestId).toBeNull();
+		expect(el._search.results).toEqual([]);
+	});
 
 	// ── Header actions ─────────────────────────────────────────────────────────
 
@@ -673,6 +780,69 @@ describe('kw-connection-manager', () => {
 				database: 'Samples',
 			}));
 		});
+
+		it('SQL: ignores stale test completions and accepts only the current modal request', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({ activeKind: 'sql', connections: [], cachedDatabases: {} }));
+			await el.updateComplete;
+			(el as any)._openModal('edit', 'sql1');
+			await el.updateComplete;
+
+			window.dispatchEvent(new MessageEvent('message', {
+				data: { type: 'sql.testConnectionStarted', connectionId: 'sql1', requestId: 'test-old' },
+			}));
+			window.dispatchEvent(new MessageEvent('message', {
+				data: { type: 'sql.testConnectionStarted', connectionId: 'sql1', requestId: 'test-current' },
+			}));
+			window.dispatchEvent(new MessageEvent('message', {
+				data: { type: 'sql.testConnectionResult', connectionId: 'sql1', requestId: 'test-old', success: true, message: 'old success' },
+			}));
+
+			expect((el as any)._testResult).toBe('loading');
+
+			window.dispatchEvent(new MessageEvent('message', {
+				data: { type: 'sql.testConnectionResult', connectionId: 'sql1', requestId: 'test-current', success: true, message: 'current success' },
+			}));
+
+			expect((el as any)._testResult).toBe('✓ current success');
+
+			(el as any)._closeModal();
+			window.dispatchEvent(new MessageEvent('message', {
+				data: { type: 'sql.testConnectionResult', connectionId: 'sql1', requestId: 'test-current', success: false, message: 'late failure' },
+			}));
+			expect((el as any)._testResult).toBe('✓ current success');
+		});
+
+		it('SQL: Test Connection forwards the child form draft password without saving', async () => {
+			const el = createElement();
+			sendSnapshot(el, snapshot({
+				activeKind: 'sql', connections: [], cachedDatabases: {},
+				sqlConnections: [{ ...sqlConnection(), authType: 'sql-login', username: 'ReportUser' }],
+			}));
+			await el.updateComplete;
+			(el as any)._openModal('edit', 'sql1');
+			await el.updateComplete;
+			const form = el.shadowRoot!.querySelector('kw-sql-connection-form') as HTMLElement & { updateComplete: Promise<unknown> };
+			await form.updateComplete;
+			const changePassword = form.shadowRoot!.querySelector('[data-testid="sql-conn-change-password"]') as HTMLInputElement;
+			changePassword.checked = true;
+			changePassword.dispatchEvent(new Event('change', { bubbles: true, composed: true }));
+			await form.updateComplete;
+			const password = form.shadowRoot!.querySelector('[data-testid="sql-conn-password"]') as HTMLInputElement;
+			password.value = 'draft-password';
+			password.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+			postedMessages = [];
+
+			(form.shadowRoot!.querySelector('[data-testid="sql-conn-test"]') as HTMLButtonElement).click();
+
+			expect(postedMessages).toContainEqual({
+				type: 'sql.connection.test', id: 'sql1', name: 'MySqlServer',
+				serverUrl: 'myserver.database.windows.net', port: 1433, dialect: 'mssql',
+				authType: 'sql-login', username: 'ReportUser', database: undefined,
+				password: 'draft-password',
+			});
+			expect(messageTypes()).not.toContain('sql.connection.edit');
+	});
 	});
 
 	// ── Search state ───────────────────────────────────────────────────────────

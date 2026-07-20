@@ -85,6 +85,38 @@ describe('results-state displayResultForBox', () => {
 		expect(getResultsStateRevision('query_1')).toBeGreaterThan(0);
 	});
 
+	it('does not admit a late result when the owning section rejects it', () => {
+		const section = document.createElement('div') as HTMLDivElement & {
+			displayResult: ReturnType<typeof vi.fn>;
+		};
+		section.id = 'sql_protected';
+		section.displayResult = vi.fn(() => false);
+		document.body.appendChild(section);
+
+		const accepted = displayResultForBox(
+			{ columns: [{ name: 'Secret' }], rows: [['late-secret']], metadata: {} },
+			'sql_protected',
+			{ label: 'Results' },
+		);
+
+		expect(accepted).toBe(false);
+		expect(getResultsState('sql_protected')).toBeNull();
+		expect(currentResult).toBeNull();
+	});
+
+	it('does not recreate shared result state when the owning section no longer exists', () => {
+		setResultsState('removed_sql_comparison', { columns: [], rows: [['old']] });
+
+		const accepted = displayResultForBox(
+			{ columns: [{ name: 'Secret' }], rows: [['late-secret']], metadata: {} },
+			'removed_sql_comparison',
+			{ label: 'Results' },
+		);
+
+		expect(accepted).toBe(false);
+		expect(getResultsState('removed_sql_comparison')).toBeNull();
+	});
+
 	it('increments a revision whenever shared result state is replaced', () => {
 		const id = 'query_revision_test';
 		expect(getResultsStateRevision(id)).toBe(0);

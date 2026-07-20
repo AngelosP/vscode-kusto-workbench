@@ -86,13 +86,21 @@ export function ensureResultsShownForTool(boxId: any) {
 
 // ── Lit-only display routing ─────────────────────────────────────────────────
 
-export function displayResultForBox(result: any, boxId: any, options: any) {
-	if (!boxId) { return; }
+export function displayResultForBox(result: any, boxId: any, options: any): boolean {
+	if (!boxId) { return false; }
 
 	// Resolve the section element and delegate to its displayResult() method.
 	const sectionEl = document.getElementById(boxId);
+	if (!sectionEl) {
+		clearResultsState(boxId);
+		return false;
+	}
 	if (sectionEl && typeof (sectionEl as any).displayResult === 'function') {
-		(sectionEl as any).displayResult(result, options);
+		const accepted = (sectionEl as any).displayResult(result, options);
+		if (accepted === false) {
+			clearResultsState(boxId);
+			return false;
+		}
 	}
 
 	// Update global results state for cross-section dependencies (charts, diff, etc.).
@@ -114,6 +122,7 @@ export function displayResultForBox(result: any, boxId: any, options: any) {
 		sortSpec: [], columnFilters: {}, filteredRowIndices: null,
 		displayRowIndices, rowIndexToDisplayIndex
 	});
+	return true;
 }
 
 /**

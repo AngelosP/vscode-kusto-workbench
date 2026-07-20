@@ -10,6 +10,22 @@ type QueryEditorHtmlAssets = {
 let cachedAssetsPromise: Promise<QueryEditorHtmlAssets> | undefined;
 const sessionCacheBuster = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 
+export function escapeQueryEditorDocumentTitle(value: string): string {
+	return String(value || '')
+		.replaceAll('&', '&amp;')
+		.replaceAll('<', '&lt;')
+		.replaceAll('>', '&gt;')
+		.replaceAll('"', '&quot;')
+		.replaceAll("'", '&#39;');
+}
+
+export function queryEditorBodyAttributes(initialDocumentLoading: boolean, extensionMode: vscode.ExtensionMode): string {
+	const attributes: string[] = [];
+	if (initialDocumentLoading) attributes.push('data-kusto-document-loading="true"');
+	if (extensionMode !== vscode.ExtensionMode.Production) attributes.push('data-kusto-e2e-enabled="true"');
+	return attributes.length > 0 ? ` ${attributes.join(' ')}` : '';
+}
+
 async function getCachedQueryEditorHtmlAssets(extensionUri: vscode.Uri): Promise<QueryEditorHtmlAssets> {
 	if (cachedAssetsPromise) {
 		perfMark('host.queryEditorHtml.assetsCache.hit');
@@ -39,12 +55,18 @@ export async function getQueryEditorHtml(
 	webview: vscode.Webview,
 	extensionUri: vscode.Uri,
 	context: vscode.ExtensionContext,
-	options?: { hideFooterControls?: boolean; initialDocumentLoading?: boolean }
+	options?: { hideFooterControls?: boolean; initialDocumentLoading?: boolean; documentTitle?: string }
 ): Promise<string> {
 	perfMark('host.queryEditorHtml.start');
 	const assets = await getCachedQueryEditorHtmlAssets(extensionUri);
 	let template = assets.template;
 	const appCssInline = assets.appCssInline;
+	if (options?.documentTitle) {
+		template = template.replace(
+			'<title>Kusto Query Editor</title>',
+			`<title>${escapeQueryEditorDocumentTitle(options.documentTitle)}</title>`,
+		);
+	}
 
 	// For certain modes (e.g. .md compatibility mode), we want to avoid rendering footer UI
 	// (Add Section buttons + feedback link) entirely so it doesn't take up layout/scroll space.
@@ -160,9 +182,10 @@ export async function getQueryEditorHtml(
 	}
 
 	const initialDocumentLoading = options?.initialDocumentLoading === true;
+	const bodyAttributes = queryEditorBodyAttributes(initialDocumentLoading, context.extensionMode);
 
 	const html = template
-		.replaceAll('{{documentLoadingBodyAttributes}}', initialDocumentLoading ? ' data-kusto-document-loading="true"' : '')
+		.replaceAll('{{documentLoadingBodyAttributes}}', bodyAttributes)
 		.replaceAll('{{documentLoadingContainerAttributes}}', initialDocumentLoading ? ' aria-busy="true"' : '')
 		.replaceAll('{{alternatingRowStyle}}', altRowCss)
 		.replaceAll('{{queryEditorJsUri}}', queryEditorJsUri)

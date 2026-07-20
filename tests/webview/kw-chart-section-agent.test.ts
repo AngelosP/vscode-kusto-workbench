@@ -11,6 +11,11 @@ const fakeDatasets = [
 		rows: [],
 	},
 ];
+const { mockDisposeChartEcharts, mockPurgeChartEcharts, mockRenderChart } = vi.hoisted(() => ({
+	mockDisposeChartEcharts: vi.fn(),
+	mockPurgeChartEcharts: vi.fn(),
+	mockRenderChart: vi.fn(),
+}));
 
 // Mock modules that kw-chart-section imports directly
 vi.mock('../../src/webview/core/section-factory.js', () => ({
@@ -21,8 +26,9 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 
 vi.mock('../../src/webview/shared/chart-renderer.js', () => ({
 	maximizeChartBox: vi.fn(),
-	disposeChartEcharts: vi.fn(),
-	renderChart: vi.fn(),
+	disposeChartEcharts: mockDisposeChartEcharts,
+	purgeChartEcharts: mockPurgeChartEcharts,
+	renderChart: mockRenderChart,
 	getChartState: (id: string) => {
 		const states = (window as any).chartStateByBoxId || ((window as any).chartStateByBoxId = {});
 		return states[id] || (states[id] = {});
@@ -41,6 +47,9 @@ import { ICONS } from '../../src/webview/shared/icon-registry.js';
 beforeEach(() => {
 	// Stub globals that kw-chart-section reads
 	(window as any).chartStateByBoxId = {};
+	mockDisposeChartEcharts.mockClear();
+	mockPurgeChartEcharts.mockClear();
+	mockRenderChart.mockClear();
 });
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
@@ -97,6 +106,29 @@ afterEach(() => {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('kw-chart-section agent configuration', () => {
+		it('disposes retained chart data when an upstream refresh arrives while collapsed', () => {
+			const el = createChartSection();
+			el.setExpanded(false);
+
+			el.refresh();
+
+			expect(mockPurgeChartEcharts).toHaveBeenCalledWith('chart_test_1');
+			expect(mockRenderChart).not.toHaveBeenCalled();
+		});
+
+		it('purges an expanded chart before rendering when its selected source disappears', () => {
+			const el = createChartSection();
+			expect(el.configure({ chartType: 'line', dataSourceId: 'q1', xColumn: 'Timestamp', yColumns: ['Count'] })).toBe(true);
+			const removed = fakeDatasets.splice(0, fakeDatasets.length);
+			try {
+				el.setExpanded(true);
+				el.refresh();
+
+				expect(mockPurgeChartEcharts).toHaveBeenCalledWith('chart_test_1');
+			} finally {
+				fakeDatasets.push(...removed);
+			}
+		});
 	/**
 	 * Regression: when the agent configures a chart via the tool, the global
 	 * chartStateByBoxId is updated and __kustoUpdateChartBuilderUI is called.

@@ -17,6 +17,8 @@ import {
 import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId } from './query-execution.controller.js';
 import { __kustoPrettifyKustoTextWithSemicolonStatements } from '../monaco/prettify.js';
 import type { WebviewCopilotFlavor } from './copilot-chat-flavor.js';
+import { sqlConnections } from '../core/state.js';
+import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
 
 // ── Host interface (avoids circular import with kw-query-section.ts) ──────────
 
@@ -27,6 +29,7 @@ export interface CopilotChatManagerHost extends ReactiveControllerHost, HTMLElem
 	getCopilotConnectionId(): string;
 	/** Server URL (Kusto clusterUrl or SQL serverUrl). */
 	getCopilotServerUrl(): string;
+	getCopilotOwnerToken?(): string;
 	getDatabase(): string;
 	/** Set query text in the section's editor. */
 	setCopilotQueryText(text: string): void;
@@ -42,6 +45,14 @@ export interface CopilotChatManagerHost extends ReactiveControllerHost, HTMLElem
 
 const DEFAULT_CHAT_WIDTH_PX = 500;
 const MIN_CHAT_WIDTH_PX = 160;
+
+export function getSqlCopilotInsertOwner(connectionId: string): { connectionIdHint?: string; targetSignature?: string } {
+	const id = String(connectionId || '').trim();
+	const connection = sqlConnections.find(candidate => String(candidate?.id || '') === id);
+	return connection
+		? { connectionIdHint: id, targetSignature: sqlConnectionTargetSignature(connection) }
+		: {};
+}
 const MIN_EDITOR_WIDTH_PX = 240;
 
 // ── Helpers (module-level) ────────────────────────────────────────────────────
@@ -370,6 +381,9 @@ export class CopilotChatManagerController implements ReactiveController {
 					enabledTools,
 					queryMode: this.flavor.includesQueryContext ? 'plain' : undefined,
 					requireToolUse: requireToolUse || undefined
+					,...(this.flavor.id === 'sql' && this.host.getCopilotOwnerToken?.()
+						? { sqlOwnerToken: this.host.getCopilotOwnerToken!() }
+						: {})
 				});
 			} catch { chatEl.setRunning(false, 'Failed to start Copilot request.'); }
 		}) as EventListener);
@@ -405,6 +419,8 @@ export class CopilotChatManagerController implements ReactiveController {
 				try {
 					const sourceServerUrl = this.host.getCopilotServerUrl();
 					const sourceDatabase = this.host.getDatabase();
+					const sourceConnectionId = this.host.getCopilotConnectionId();
+					const sourceOwner = getSqlCopilotInsertOwner(sourceConnectionId);
 
 					const scrollContainer = document.documentElement;
 					const savedScroll = scrollContainer.scrollTop;
@@ -426,6 +442,7 @@ export class CopilotChatManagerController implements ReactiveController {
 							query: queryText,
 							afterBoxId: boxId,
 							serverUrl: sourceServerUrl || undefined,
+							...sourceOwner,
 							database: sourceDatabase || undefined,
 						})
 						: addQueryBox({
@@ -441,7 +458,7 @@ export class CopilotChatManagerController implements ReactiveController {
 						window.__kustoMarkSectionAgentTouched?.(newBoxId);
 						setTimeout(() => {
 							if (!isSql) setQueryText(newBoxId, e.detail.query);
-							if (e.detail.result) {
+							if (!isSql && e.detail.result) {
 								displayResultForBox(e.detail.result, newBoxId, { label: 'Results', showExecutionTime: true });
 								__kustoOnQueryResult(newBoxId, e.detail.result);
 							}

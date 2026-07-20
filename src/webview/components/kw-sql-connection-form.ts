@@ -146,19 +146,19 @@ export class KwSqlConnectionForm extends LitElement {
 				${isSqlLogin ? html`
 					<div class="form-group">
 						<label>Username *</label>
-						<input type="text" .value=${this._username}
+						<input type="text" data-testid="sql-conn-username" .value=${this._username}
 							@input=${(e: Event) => this._username = (e.target as HTMLInputElement).value}
 							placeholder="sa" />
 					</div>
 					${isEditing ? html`
 						<div class="form-group">
 							<label>
-								<input type="checkbox" .checked=${this._changePassword}
+								<input type="checkbox" data-testid="sql-conn-change-password" .checked=${this._changePassword}
 									@change=${(e: Event) => this._changePassword = (e.target as HTMLInputElement).checked} />
 								Change password
 							</label>
 							${this._changePassword ? html`
-								<input type="password" .value=${this._password}
+								<input type="password" data-testid="sql-conn-password" .value=${this._password}
 									@input=${(e: Event) => this._password = (e.target as HTMLInputElement).value}
 									placeholder="New password" style="margin-top: 4px" />
 							` : nothing}
@@ -166,7 +166,7 @@ export class KwSqlConnectionForm extends LitElement {
 					` : html`
 						<div class="form-group">
 							<label>Password *</label>
-							<input type="password" .value=${this._password}
+							<input type="password" data-testid="sql-conn-password" .value=${this._password}
 								@input=${(e: Event) => this._password = (e.target as HTMLInputElement).value}
 								placeholder="Password" />
 						</div>
@@ -179,7 +179,7 @@ export class KwSqlConnectionForm extends LitElement {
 						placeholder="(optional)" />
 				</div>
 				${this.showTestButton ? html`
-					<button class="btn" @click=${this._onTest}>Test Connection</button>
+					<button class="btn" data-testid="sql-conn-test" @click=${this._onTest}>Test Connection</button>
 					${this.testResult === 'loading'
 						? html`<div class="test-result">${ICONS.spinner} Testing connection...</div>`
 						: this.testResult
@@ -193,8 +193,17 @@ export class KwSqlConnectionForm extends LitElement {
 	// ── Actions ───────────────────────────────────────────────────────────────
 
 	submit(): void {
+		const payload = this._buildPayload();
+		if (!payload) return;
+		this.dispatchEvent(new CustomEvent<SqlConnectionFormSubmitDetail>('sql-connection-form-submit', {
+			detail: payload,
+			bubbles: true, composed: true,
+		}));
+	}
+
+	private _buildPayload(): SqlConnectionFormSubmitDetail | undefined {
 		const serverUrl = this._serverUrl.trim();
-		if (!serverUrl) return;
+		if (!serverUrl) return undefined;
 		const name = this._name.trim() || serverUrl;
 		const database = this._database.trim() || undefined;
 
@@ -210,15 +219,14 @@ export class KwSqlConnectionForm extends LitElement {
 			if (!isNaN(parsed) && parsed > 0) payload.port = parsed;
 		}
 		if (this._authType === 'sql-login') {
-			payload.username = this._username.trim();
+			const username = this._username.trim();
+			if (!username) return undefined;
+			payload.username = username;
 			if (this.mode === 'add' || this._changePassword) {
 				payload.password = this._password;
 			}
 		}
-		this.dispatchEvent(new CustomEvent<SqlConnectionFormSubmitDetail>('sql-connection-form-submit', {
-			detail: payload,
-			bubbles: true, composed: true,
-		}));
+		return payload;
 	}
 
 	cancel(): void {
@@ -228,7 +236,10 @@ export class KwSqlConnectionForm extends LitElement {
 	}
 
 	private _onTest(): void {
-		this.dispatchEvent(new CustomEvent('sql-connection-form-test', {
+		const payload = this._buildPayload();
+		if (!payload) return;
+		this.dispatchEvent(new CustomEvent<SqlConnectionFormSubmitDetail>('sql-connection-form-test', {
+			detail: payload,
 			bubbles: true, composed: true,
 		}));
 	}

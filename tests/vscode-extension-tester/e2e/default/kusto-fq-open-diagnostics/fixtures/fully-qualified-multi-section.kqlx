@@ -2,8 +2,6 @@
   "kind": "kqlx",
   "version": 1,
   "state": {
-    "caretDocsEnabled": true,
-    "autoTriggerAutocompleteEnabled": true,
     "sections": [
       {
         "id": "query_supplemental_first",
@@ -23,6 +21,8 @@
         "clusterUrl": "https://supplemental-current.westus.kusto.windows.net",
         "database": "TelemetryDb"
       }
-    ]
+    ],
+    "caretDocsEnabled": true,
+    "autoTriggerAutocompleteEnabled": true
   }
 }

@@ -10,6 +10,7 @@ import { customElement, property, state } from 'lit/decorators.js';
 import type { DropdownItem, DropdownAction } from '../components/kw-dropdown.js';
 import type { KwSchemaInfo } from '../components/kw-schema-info.js';
 import type { SchemaInfoState } from '../components/kw-schema-info.js';
+import { buildSchemaInfo } from '../shared/schema-utils.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import '../components/kw-dropdown.js';
 import '../components/kw-schema-info.js';
@@ -21,8 +22,7 @@ import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { schedulePersist, __kustoClearStoredQueryResult } from '../core/persistence.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
 import { registerStsProviders, registerStsEditorModel, unregisterStsEditorModel, setStsReady } from '../monaco/sql-sts-providers.js';
-import { setActiveMonacoEditor, queryEditorBoxByModelUri, queryEditors } from '../core/state.js';
-import { autoTriggerAutocompleteEnabled } from '../core/state.js';
+import { autoTriggerAutocompleteEnabled, setActiveMonacoEditor, queryEditorBoxByModelUri, queryEditors, sqlTargetGenerationByBoxId } from '../core/state.js';
 import { getRunMode, setRunMode } from './kw-query-toolbar.js';
 import { getRunModeLabelText } from '../shared/comparisonUtils.js';
 import { getCurrentMonacoThemeName } from '../monaco/theme.js';
@@ -33,8 +33,11 @@ import type { SqlConnectionFormSubmitDetail } from '../components/kw-sql-connect
 import '../components/kw-sql-connection-form.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
+import { clearResultsState } from '../core/results-state.js';
+import { normalizeSqlConnectionTargetSignature, sqlConnectionTargetSignature, sqlConnectionTargetSignatureMatches } from '../../shared/sqlConnectionIdentity.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
+const SQL_LEAVE_NO_TRACE_ERROR = 'Leave No Trace blocks SQL execution for this connection.';
 
 /** Serialized shape for .kqlx persistence — must match KqlxSectionV1 sql variant. */
 export interface SqlSectionData {
@@ -43,6 +46,10 @@ export interface SqlSectionData {
 	name: string;
 	query: string;
 	serverUrl?: string;
+	connectionIdHint?: string;
+	targetSignature?: string;
+	principalFingerprint?: string;
+	revocationGeneration?: number;
 	database?: string;
 	expanded: boolean;
 	resultsVisible?: boolean;
@@ -92,6 +99,9 @@ export interface SqlConnectionInfo {
 	database?: string;
 	authType: string;
 	username?: string;
+	credentialRevision?: number;
+	principalFingerprint?: string;
+	revocationGeneration?: number;
 }
 
 // ─── SVG Icons ────────────────────────────────────────────────────────────────
@@ -170,6 +180,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	@state() private _connections: SqlConnectionInfo[] = [];
 	@state() private _connectionId = '';
 	@state() private _desiredServerUrl = '';
+	private _desiredConnectionIdHint = '';
+	private _desiredTargetSignature = '';
+	private _pendingPersistedTargetAdoption = false;
+	private _pendingHostOwnerReadoption = false;
+	private _hostOwnerReadoptionDatabase = '';
 	private _desiredServerUrlPendingMatch = false;
 	@state() private _databases: string[] = [];
 	@state() private _database = '';
@@ -187,6 +202,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	/** SQL connection ID from SqlConnectionManager. */
 	private _sqlConnectionId = '';
+	private _leaveNoTraceConnectionIds = new Set<string>();
 	private _elapsedTimer: ReturnType<typeof setInterval> | null = null;
 	private _elapsedStart = 0;
 
@@ -206,7 +222,18 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _stsDocumentOpened = false;
 	private _stsConnectTarget = '';
 	private _stsConnectPending = false;
+	private _ownerToken = '';
 	private _removeRunMenuScrollDismiss: (() => void) | null = null;
+	private _pendingToolRun: {
+		resolve: (result: { rowCount: number; executionId: string; owner: { connectionId: string; database: string; ownerToken: string; generation: number } }) => void;
+		reject: (error: Error) => void;
+		executionId: string;
+		owner?: { connectionId: string; database: string; ownerToken: string; generation: number };
+	} | undefined;
+	private _pendingToolReadyTimer: ReturnType<typeof setTimeout> | undefined;
+	private _toolExpectedOwner: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number } | undefined;
+	private _activeQueryExecutionId = '';
+	private readonly _cancelledQueryExecutionIds: string[] = [];
 
 	// ── Auto-trigger autocomplete state ──────────────────────────────────────
 	private _autoSuggestTimer: ReturnType<typeof setTimeout> | undefined;
@@ -469,11 +496,18 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const errorLabel = document.getElementById(id + '_sql_error_label') as HTMLElement | null;
 
 		if (runBtn) {
-			runBtn.disabled = !this._sqlConnectionId || !this._database || this._executing;
+			const protectedByLeaveNoTrace = this._leaveNoTraceConnectionIds.has(this._sqlConnectionId);
+			const waitingForOwner = !!this._sqlConnectionId && !!this._database && !protectedByLeaveNoTrace && !this._ownerToken;
+			runBtn.disabled = !this._sqlConnectionId || !this._database || !this._ownerToken || this._executing;
 			const labelText = this._getSqlRunModeLabel();
 			const labelSpan = runBtn.querySelector('.run-btn-label');
 			if (labelSpan) labelSpan.textContent = ' ' + labelText;
-			runBtn.title = labelText + (runBtn.disabled ? '\nSelect a server and database first (or select a favorite)' : '');
+			const disabledReason = protectedByLeaveNoTrace
+				? 'Leave No Trace blocks SQL execution for this connection'
+				: waitingForOwner
+					? 'Waiting for SQL Tools Service to connect'
+					: 'Select a server and database first (or select a favorite)';
+			runBtn.title = labelText + (runBtn.disabled ? `\n${disabledReason}` : '');
 		}
 		if (cancelBtn) cancelBtn.style.display = this._executing ? '' : 'none';
 		if (execStatus) execStatus.style.display = this._executing ? '' : 'none';
@@ -666,12 +700,14 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const targetConnId = fav.connectionId;
 		const conn = this._connections.find(c => c.id === targetConnId);
 		if (conn) {
+			this._clearTargetData();
 			this._connectionId = conn.id;
 			this._sqlConnectionId = conn.id;
 			this._desiredServerUrl = conn.serverUrl;
 			this._desiredDatabase = fav.database;
 			this._database = '';
 			this._databases = [];
+			this._enforceLeaveNoTracePolicy();
 			this.dispatchEvent(new CustomEvent('sql-connection-changed', {
 				detail: { boxId: this.boxId, connectionId: conn.id },
 				bubbles: true, composed: true,
@@ -789,27 +825,28 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _connectionTargetSignature(connectionId = this._connectionId, connections = this._connections): string {
 		const conn = connections.find(c => c.id === connectionId);
 		if (!conn) return String(connectionId || '');
-		return JSON.stringify({
-			id: String(conn.id || ''),
-			serverUrl: String(conn.serverUrl || '').trim().toLowerCase(),
-			port: conn.port || '',
-			authType: String(conn.authType || '').trim().toLowerCase(),
-			username: String(conn.username || '').trim().toLowerCase(),
-		});
+		return sqlConnectionTargetSignature(conn);
 	}
 
 	private _onServerSelected(e: CustomEvent): void {
 		const connectionId = e.detail?.id;
 		if (!connectionId) return;
+		this._pendingPersistedTargetAdoption = false;
+		this._pendingHostOwnerReadoption = false;
+		this._hostOwnerReadoptionDatabase = '';
 		const prev = this._connectionId;
 		this._connectionId = connectionId;
 		this._sqlConnectionId = connectionId;
 		const conn = this._connections.find(c => c.id === connectionId);
 		if (conn) {
 			this._desiredServerUrl = conn.serverUrl || '';
+			this._desiredConnectionIdHint = conn.id;
+			this._desiredTargetSignature = sqlConnectionTargetSignature(conn);
 			this._desiredServerUrlPendingMatch = false;
 		}
+		this._enforceLeaveNoTracePolicy();
 		if (prev !== connectionId) {
+			this._clearTargetData();
 			this._database = '';
 			this._desiredDatabase = '';
 			this._databases = [];
@@ -824,10 +861,14 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _onDatabaseSelected(e: CustomEvent): void {
 		const database = e.detail?.id;
 		if (!database) return;
+		this._pendingPersistedTargetAdoption = false;
+		this._pendingHostOwnerReadoption = false;
+		this._hostOwnerReadoptionDatabase = '';
 		const prev = this._database;
 		this._database = database;
 		this._desiredDatabase = '';
 		if (prev !== database) {
+			this._clearTargetData();
 			this._resetSchemaReadiness('loading');
 			this.dispatchEvent(new CustomEvent('sql-database-changed', {
 				detail: { boxId: this.boxId, database },
@@ -860,6 +901,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	public getCopilotConnectionId(): string { return this._sqlConnectionId; }
 	public getCopilotServerUrl(): string { return this.getServerUrl(); }
+	public getCopilotOwnerToken(): string { return this._ownerToken; }
 	public setCopilotQueryText(text: string): void {
 		if (this._editor) {
 			this._editor.setValue(text);
@@ -1177,7 +1219,14 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		try {
 			this._stsConnectTarget = target;
 			this._stsConnectPending = true;
-			postMessageToHost({ type: 'stsConnect', boxId: this.boxId, sqlConnectionId: this._sqlConnectionId, database: this._database } as any);
+			postMessageToHost({
+				type: 'stsConnect',
+				boxId: this.boxId,
+				sqlConnectionId: this._sqlConnectionId,
+				database: this._database,
+				targetGeneration: sqlTargetGenerationByBoxId[this.boxId] ?? 0,
+				...(this._toolExpectedOwner ? { expectedOwner: this._toolExpectedOwner } : {}),
+			} as any);
 		} catch (e) {
 			this._stsConnectPending = false;
 			console.error('[kusto]', e);
@@ -1185,6 +1234,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	private _disposeEditor(): void {
+		if (this._pendingToolReadyTimer) clearTimeout(this._pendingToolReadyTimer);
+		this._pendingToolReadyTimer = undefined;
+		const pendingToolRun = this._pendingToolRun;
+		this._pendingToolRun = undefined;
+		pendingToolRun?.reject(new Error('SQL editor closed during tool execution.'));
 		this._stsReady = false;
 		this._stsConnectPending = false;
 		this._stsConnectTarget = '';
@@ -1265,6 +1319,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (serverUrl) {
 			data.serverUrl = serverUrl;
 		}
+		const connection = this._connections.find(candidate => candidate.id === this._connectionId);
+		const connectionIdHint = connection?.id || this._desiredConnectionIdHint;
+		const targetSignature = connection ? sqlConnectionTargetSignature(connection) : this._desiredTargetSignature;
+		if (connectionIdHint) data.connectionIdHint = connectionIdHint;
+		if (targetSignature) data.targetSignature = targetSignature;
 		if (database) {
 			data.database = database;
 		}
@@ -1313,8 +1372,10 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		// Persist query results (stored in-memory by results-state.ts after execution).
 		try {
 			const rj = pState.queryResultJsonByBoxId?.[this.boxId];
-			if (rj) {
+			if (rj && this.canPersistResults()) {
 				data.resultJson = String(rj);
+				if (connection?.principalFingerprint) data.principalFingerprint = connection.principalFingerprint;
+				data.revocationGeneration = connection?.revocationGeneration ?? 0;
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
@@ -1383,6 +1444,13 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._desiredServerUrlPendingMatch = !!String(url || '').trim();
 	}
 
+	public setDesiredConnectionOwner(connectionIdHint?: string, targetSignature?: string): void {
+		this._desiredConnectionIdHint = String(connectionIdHint || '').trim();
+		this._desiredTargetSignature = normalizeSqlConnectionTargetSignature(String(targetSignature || ''));
+		this._pendingPersistedTargetAdoption = !!this._desiredConnectionIdHint && !!this._desiredTargetSignature;
+		if (this._desiredConnectionIdHint || this._desiredTargetSignature) this._desiredServerUrlPendingMatch = true;
+	}
+
 	/** Set the desired database (used during restoration). */
 	public setDesiredDatabase(db: string): void {
 		this._desiredDatabase = db;
@@ -1396,7 +1464,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	public getDatabase(): string { return this._database; }
 	public setDatabase(db: string): void {
+		this._pendingPersistedTargetAdoption = false;
 		if (this._database !== db) {
+			this._clearTargetData();
 			this._database = db;
 			this._resetSchemaReadiness(db ? 'loading' : 'not-loaded');
 			return;
@@ -1408,12 +1478,149 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	public getSqlConnectionId(): string { return this._sqlConnectionId; }
 	public setSqlConnectionId(id: string): void {
+		this._pendingPersistedTargetAdoption = false;
+		if (this._sqlConnectionId && this._sqlConnectionId !== id) this._clearTargetData();
 		this._sqlConnectionId = id;
 		this._connectionId = id;
 		if (id) {
 			this._desiredServerUrlPendingMatch = false;
 		}
 		if (!id) this._resetSchemaReadiness('not-loaded');
+		this._enforceLeaveNoTracePolicy();
+	}
+
+	public configureToolTarget(connection: SqlConnectionInfo, database?: string, expectedOwner?: unknown): void {
+		if (!connection?.id) throw new Error('The requested SQL connection is unavailable.');
+		this._pendingPersistedTargetAdoption = false;
+		const previousConnectionId = this._sqlConnectionId;
+		const previousTargetSignature = previousConnectionId ? this._connectionTargetSignature(previousConnectionId, this._connections) : '';
+		const nextTargetSignature = sqlConnectionTargetSignature(connection);
+		const connectionChanged = previousConnectionId !== connection.id || previousTargetSignature !== nextTargetSignature;
+		const nextDatabase = database !== undefined ? String(database || '').trim() : this._database;
+		const databaseChanged = database !== undefined && this._database !== nextDatabase;
+		const existing = this._connections.filter(candidate => candidate.id !== connection.id);
+		this._connections = [...existing, connection];
+		if (connectionChanged || databaseChanged) this._clearTargetData();
+		this._connectionId = connection.id;
+		this._sqlConnectionId = connection.id;
+		this._desiredServerUrl = connection.serverUrl;
+		this._desiredConnectionIdHint = connection.id;
+		this._desiredTargetSignature = sqlConnectionTargetSignature(connection);
+		this._desiredServerUrlPendingMatch = false;
+		if (database !== undefined) {
+			this._database = nextDatabase;
+			this._desiredDatabase = '';
+		}
+		if (expectedOwner !== undefined) this.setToolExpectedOwner(expectedOwner);
+		if (connectionChanged || databaseChanged) this.setStsReady(false);
+		if (connectionChanged) {
+			this.dispatchEvent(new CustomEvent('sql-connection-changed', {
+				detail: {
+					boxId: this.boxId, connectionId: connection.id, serverUrl: connection.serverUrl, database: this._database,
+					suppressMetadataRefresh: expectedOwner !== undefined,
+				},
+				bubbles: true, composed: true,
+			}));
+		}
+		if (databaseChanged && this._database) {
+			this.dispatchEvent(new CustomEvent('sql-database-changed', {
+				detail: { boxId: this.boxId, database: this._database, suppressMetadataRefresh: expectedOwner !== undefined },
+				bubbles: true, composed: true,
+			}));
+		}
+		this._connectStsIfReady('tool-configure');
+	}
+
+	public setToolExpectedOwner(owner: unknown): void {
+		const candidate = owner as Partial<{ connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number }> | undefined;
+		const connectionId = String(candidate?.connectionId || '').trim();
+		const database = String(candidate?.database || '').trim();
+		const targetSignature = String(candidate?.targetSignature || '');
+		const principalFingerprint = String(candidate?.principalFingerprint || '').trim();
+		const revocationGeneration = Number(candidate?.revocationGeneration);
+		if (!connectionId || !database || !targetSignature || !principalFingerprint
+			|| !Number.isSafeInteger(revocationGeneration) || revocationGeneration < 0) throw new Error('SQL tool execution owner is unavailable.');
+		this._toolExpectedOwner = { connectionId, database, targetSignature, principalFingerprint, revocationGeneration };
+	}
+
+	public setLeaveNoTraceConnectionIds(ids: string[]): void {
+		const wasProtected = this._leaveNoTraceConnectionIds.has(this._sqlConnectionId);
+		this._leaveNoTraceConnectionIds = new Set((Array.isArray(ids) ? ids : []).map(id => String(id || '').trim()).filter(Boolean));
+		if (!this._enforceLeaveNoTracePolicy() && wasProtected) {
+			if (this._lastError === SQL_LEAVE_NO_TRACE_ERROR) this._lastError = '';
+			if (this._sqlConnectionId && this._database) this._connectStsIfReady('leave-no-trace-disabled');
+		}
+		this._syncTestStateAttrs();
+		this._syncActionBar();
+	}
+
+	public invalidateOwner(): void {
+		this._pendingHostOwnerReadoption = true;
+		this._hostOwnerReadoptionDatabase = this._database;
+		this._clearTargetData();
+		this._resetSchemaReadiness('not-loaded');
+		const schemaInfo = this._getSchemaInfoEl();
+		schemaInfo?.setInfo({
+			status: 'not-loaded', statusText: '', tables: undefined, cols: undefined,
+			funcs: undefined, cached: false, errorMessage: undefined,
+		});
+		schemaInfo?.close();
+		this._databases = [];
+		this._databasesLoading = false;
+		this._database = '';
+		this._connectionId = '';
+		this._sqlConnectionId = '';
+		this._syncTestStateAttrs();
+		this._syncActionBar();
+	}
+
+	public canPersistResults(): boolean {
+		return !this._leaveNoTraceConnectionIds.has(this._sqlConnectionId);
+	}
+
+	private _enforceLeaveNoTracePolicy(): boolean {
+		if (!this._leaveNoTraceConnectionIds.has(this._sqlConnectionId)) return false;
+		if (this._pendingToolReadyTimer) clearTimeout(this._pendingToolReadyTimer);
+		this._pendingToolReadyTimer = undefined;
+		const pendingToolRun = this._pendingToolRun;
+		this._pendingToolRun = undefined;
+		this._toolExpectedOwner = undefined;
+		pendingToolRun?.reject(new Error('SQL execution was cancelled because Leave No Trace is enabled.'));
+		this._executing = false;
+		this._activeQueryExecutionId = '';
+		this._databases = [];
+		this._databasesLoading = false;
+		this._stopElapsedTimer();
+		this._clearResultData();
+		this._lastError = SQL_LEAVE_NO_TRACE_ERROR;
+		this.setStsReady(false);
+		try { schedulePersist('sql-leave-no-trace', true); } catch (e) { console.error('[kusto]', e); }
+		return true;
+	}
+
+	private _clearTargetData(): void {
+		if (this._executing) {
+			try { postMessageToHost({ type: 'cancelSqlQuery', boxId: this.boxId }); } catch (e) { console.error('[kusto]', e); }
+		}
+		if (this._pendingToolReadyTimer) clearTimeout(this._pendingToolReadyTimer);
+		this._pendingToolReadyTimer = undefined;
+		this._toolExpectedOwner = undefined;
+		this._executing = false;
+		this._activeQueryExecutionId = '';
+		this._stopElapsedTimer();
+		this._clearResultData();
+		this.setStsReady(false);
+		const pendingToolRun = this._pendingToolRun;
+		this._pendingToolRun = undefined;
+		pendingToolRun?.reject(new Error('SQL target changed during tool execution.'));
+		try { this.copilotWriteQueryCancel(); } catch (e) { console.error('[kusto]', e); }
+		try { this.copilotClearConversation(); } catch (e) { console.error('[kusto]', e); }
+		this.dispatchEvent(new CustomEvent('sql-target-owner-changed', {
+			detail: { boxId: this.boxId },
+			bubbles: true,
+			composed: true,
+		}));
+		try { schedulePersist('sql-target-changed', true); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	// ── Favorites public API ──────────────────────────────────────────────────
@@ -1442,18 +1649,46 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	): void {
 		const prev = this._connectionId;
 		const prevSignature = this._connectionTargetSignature(prev);
+		const previousConnection = this._connections.find(connection => connection.id === prev);
+		const previousPrincipalFingerprint = String(previousConnection?.principalFingerprint || '');
+		const previousRevocationGeneration = previousConnection?.revocationGeneration ?? 0;
 		this._connections = conns;
 		const lastConnId = opts?.lastConnectionId || '';
 
 		let resolvedId = '';
 
-		// 1. Try desired server URL
-		if (this._desiredServerUrl) {
+		// 1. Prefer the durable connection owner. A recreated connection may be
+		// adopted only when the persisted target signature has one exact match.
+		if (this._desiredConnectionIdHint || this._desiredTargetSignature) {
+			const hinted = this._desiredConnectionIdHint
+				? conns.find(connection => connection.id === this._desiredConnectionIdHint)
+				: undefined;
+			if (hinted && (this._pendingHostOwnerReadoption
+				|| !this._desiredTargetSignature
+				|| sqlConnectionTargetSignatureMatches(hinted, this._desiredTargetSignature))) {
+				resolvedId = hinted.id;
+			} else if (this._desiredTargetSignature) {
+				const matches = conns.filter(connection => sqlConnectionTargetSignatureMatches(connection, this._desiredTargetSignature));
+				if (matches.length === 1) resolvedId = matches[0].id;
+			}
+			if (!resolvedId) {
+				this._connectionId = '';
+				this._sqlConnectionId = '';
+				return;
+			}
+		}
+
+		// 2. Legacy server-only state is safe only when the endpoint is unique.
+		if (!resolvedId && this._desiredServerUrl) {
 			const target = this._desiredServerUrl.trim().toLowerCase();
-			const match = conns.find(c => (c.serverUrl || '').trim().toLowerCase() === target);
-			if (match) {
-				resolvedId = match.id;
+			const matches = conns.filter(c => (c.serverUrl || '').trim().toLowerCase() === target);
+			if (matches.length === 1) {
+				resolvedId = matches[0].id;
 				this._desiredServerUrlPendingMatch = false;
+			} else if (matches.length > 1) {
+				this._connectionId = '';
+				this._sqlConnectionId = '';
+				return;
 			}
 		}
 
@@ -1477,9 +1712,24 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 		this._connectionId = resolvedId;
 		this._sqlConnectionId = resolvedId;
+		this._enforceLeaveNoTracePolicy();
 		const nextSignature = this._connectionTargetSignature(resolvedId);
-		const connectionTargetChanged = prev !== resolvedId || Boolean(resolvedId && prevSignature !== nextSignature);
+		const nextConnection = conns.find(connection => connection.id === resolvedId);
+		const connectionTargetChanged = prev !== resolvedId
+			|| Boolean(resolvedId && prevSignature !== nextSignature)
+			|| Boolean(resolvedId && previousPrincipalFingerprint !== String(nextConnection?.principalFingerprint || ''))
+			|| Boolean(resolvedId && previousRevocationGeneration !== (nextConnection?.revocationGeneration ?? 0));
+		const adoptingPersistedConnection = this._pendingPersistedTargetAdoption
+			&& !prev
+			&& !!resolvedId
+			&& conns.some(connection => connection.id === resolvedId
+				&& sqlConnectionTargetSignatureMatches(connection, this._desiredTargetSignature));
+		const reAdoptingHostInvalidatedOwner = this._pendingHostOwnerReadoption && !prev && !!resolvedId;
 		if (connectionTargetChanged) {
+			if (!adoptingPersistedConnection && !reAdoptingHostInvalidatedOwner) {
+				this._pendingPersistedTargetAdoption = false;
+				this._clearTargetData();
+			}
 			if (prev === resolvedId) {
 				this._database = '';
 				this._desiredDatabase = '';
@@ -1492,26 +1742,50 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			const conn = conns.find(c => c.id === resolvedId);
 			if (conn) {
 				this._desiredServerUrl = conn.serverUrl;
+				this._desiredConnectionIdHint = conn.id;
+				this._desiredTargetSignature = sqlConnectionTargetSignature(conn);
 				this._desiredServerUrlPendingMatch = false;
 			}
 		}
+		if (adoptingPersistedConnection && !this._desiredDatabase) this._pendingPersistedTargetAdoption = false;
 
 		if (connectionTargetChanged && resolvedId) {
 			this.dispatchEvent(new CustomEvent('sql-connection-changed', {
-				detail: { boxId: this.boxId, connectionId: resolvedId, serverUrl: this.getServerUrl(), database: this._desiredDatabase || this._database },
+				detail: {
+					boxId: this.boxId, connectionId: resolvedId, serverUrl: this.getServerUrl(),
+					database: this._hostOwnerReadoptionDatabase || this._desiredDatabase || this._database,
+					...(reAdoptingHostInvalidatedOwner ? { preserveTargetGeneration: true } : {}),
+				},
 				bubbles: true, composed: true,
 			}));
 		}
+		if (resolvedId && !this._hostOwnerReadoptionDatabase) this._pendingHostOwnerReadoption = false;
 	}
 
 	/** Update available databases. Applies desired database if set. */
 	public setDatabases(databases: string[], desiredDb?: string): void {
 		const previousDatabase = this._database;
+		const adoptingPersistedDatabase = this._pendingPersistedTargetAdoption
+			&& !previousDatabase
+			&& !!this._desiredDatabase
+			&& databases.includes(this._desiredDatabase);
 		this._databases = databases;
 		this._databasesLoading = false;
+		const hostReadoptionDatabase = this._pendingHostOwnerReadoption
+			&& databases.includes(this._hostOwnerReadoptionDatabase)
+			? this._hostOwnerReadoptionDatabase
+			: '';
 
 		// Priority: desiredDatabase > current > desiredDb (global last) > auto-select single
-		if (this._desiredDatabase && databases.includes(this._desiredDatabase)) {
+		if (hostReadoptionDatabase) {
+			this._database = hostReadoptionDatabase;
+			this._hostOwnerReadoptionDatabase = '';
+			this._resetSchemaReadiness('loading');
+			this.dispatchEvent(new CustomEvent('sql-database-changed', {
+				detail: { boxId: this.boxId, database: this._database, preserveTargetGeneration: true },
+				bubbles: true, composed: true,
+			}));
+		} else if (this._desiredDatabase && databases.includes(this._desiredDatabase)) {
 			const prev = this._database;
 			this._database = this._desiredDatabase;
 			this._desiredDatabase = '';
@@ -1549,6 +1823,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			}
 		}
 		if (this._database && this._database !== previousDatabase) {
+			if (!adoptingPersistedDatabase && !hostReadoptionDatabase) this._clearTargetData();
+			this._pendingPersistedTargetAdoption = false;
+			this._pendingHostOwnerReadoption = false;
 			this._connectStsIfReady('database-list');
 		}
 	}
@@ -1571,16 +1848,38 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._syncTestStateAttrs();
 	}
 
-	public setStsReady(ready: boolean): void {
+	public clearSchemaForLeaveNoTrace(): void {
+		const info = buildSchemaInfo('', false);
+		this._schemaInfoState = info;
+		this._getSchemaInfoEl()?.setInfo(info);
+		this.setStsReady(false);
+	}
+
+	public setStsReady(ready: boolean, ownerToken = '', targetGeneration?: number): void {
 		this._stsReady = ready;
+		this._ownerToken = ready ? String(ownerToken || '') : '';
 		this._stsConnectPending = false;
 		if (ready) {
 			this._stsConnectTarget = this._sqlConnectionId && this._database ? `${this._connectionTargetSignature(this._sqlConnectionId)}\n${this._database}` : this._stsConnectTarget;
 		} else {
 			this._stsConnectTarget = '';
 		}
-		setStsReady(this.boxId, ready);
+		setStsReady(this.boxId, ready, this._ownerToken, targetGeneration);
 		this._syncTestStateAttrs();
+		this._syncActionBar();
+		if (ready && this._ownerToken) this._startPendingToolRunIfReady();
+	}
+
+	public notifyStsConnectionError(error: string): void {
+		this.setStsReady(false);
+		this._lastError = String(error || 'SQL Tools Service connection failed.');
+		this._syncTestStateAttrs();
+		this._syncActionBar();
+		if (this._pendingToolReadyTimer) clearTimeout(this._pendingToolReadyTimer);
+		this._pendingToolReadyTimer = undefined;
+		const pendingToolRun = this._pendingToolRun;
+		this._pendingToolRun = undefined;
+		pendingToolRun?.reject(new Error(error || 'SQL Tools Service connection failed.'));
 	}
 
 	// ── Auto-trigger autocomplete ─────────────────────────────────────────────
@@ -1707,8 +2006,12 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	 */
 	public displayResult(
 		result: { columns?: { name: string; type?: string }[]; rows?: unknown[][]; metadata?: Record<string, unknown> },
-		options?: { label?: string; showExecutionTime?: boolean },
-	): void {
+		options?: { label?: string; showExecutionTime?: boolean; executionId?: string },
+	): boolean {
+		if (this._leaveNoTraceConnectionIds.has(this._sqlConnectionId)) {
+			this.setLeaveNoTraceConnectionIds([...this._leaveNoTraceConnectionIds]);
+			return false;
+		}
 		this._executing = false;
 		this._stopElapsedTimer();
 		this._clearResultsStale();
@@ -1722,12 +2025,20 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const rows = Array.isArray(result?.rows) ? result.rows : [];
 		const metadata = (result?.metadata && typeof result.metadata === 'object') ? result.metadata : {};
 		const rowCount = rows.length;
+		const pendingToolRun = this._pendingToolRun;
+		if (pendingToolRun && options?.executionId === pendingToolRun.executionId) {
+			this._pendingToolRun = undefined;
+			this._toolExpectedOwner = undefined;
+			if (pendingToolRun.owner) pendingToolRun.resolve({ rowCount, executionId: pendingToolRun.executionId, owner: pendingToolRun.owner });
+			else pendingToolRun.reject(new Error('SQL tool execution owner was unavailable.'));
+		}
+		if (options?.executionId && this._activeQueryExecutionId === options.executionId) this._activeQueryExecutionId = '';
 		const execTime = typeof metadata.executionTime === 'string' ? metadata.executionTime : '';
 
 		const resultsBody = document.getElementById(this.boxId + '_sql_results_body');
 		const resultsWrapper = document.getElementById(this.boxId + '_sql_results_wrapper');
 		const resultsResizer = document.getElementById(this.boxId + '_sql_results_resizer');
-		if (!resultsBody) return;
+		if (!resultsBody) return false;
 
 		resultsBody.innerHTML = '';
 		this._hasResults = true;
@@ -1735,7 +2046,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (!columns.length && !rows.length) {
 			resultsBody.innerHTML = '<div style="padding:8px 12px;font-size:12px;color:var(--vscode-descriptionForeground)">No results</div>';
 			if (resultsWrapper) { resultsWrapper.style.display = 'block'; resultsWrapper.style.height = ''; }
-			return;
+			return true;
 		}
 
 		const dt = document.createElement('kw-data-table') as any;
@@ -1847,16 +2158,17 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			setTimeout(() => this._fitResultsToContents(), 150);
 			setTimeout(() => this._fitResultsToContents(), 300);
 		}
+		return true;
 	}
 
 	/**
 	 * Called when the host reports an error for this boxId.
 	 * Matches the duck-typed contract used by __kustoRenderErrorUx.
 	 */
-	public displayError(errorOrModel: unknown, _clientActivityId?: string): void {
+	public displayError(errorOrModel: unknown, _clientActivityId?: string, executionId?: string): void {
 		this._executing = false;
 		this._stopElapsedTimer();
-		this._clearResultsStale();
+		this._clearResultData();
 
 		// Extract a display string from the error. The error-renderer may pass a
 		// pre-built ErrorUxModel ({ kind, message?, text?, pretty? }) or a raw string.
@@ -1870,6 +2182,13 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			msg = String(errorOrModel);
 		}
 		this._lastError = msg;
+		const pendingToolRun = this._pendingToolRun;
+		if (pendingToolRun && executionId === pendingToolRun.executionId) {
+			this._pendingToolRun = undefined;
+			this._toolExpectedOwner = undefined;
+			pendingToolRun.reject(new Error(msg));
+		}
+		if (executionId && this._activeQueryExecutionId === executionId) this._activeQueryExecutionId = '';
 
 		const resultsBody = document.getElementById(this.boxId + '_sql_results_body');
 		const resultsWrapper = document.getElementById(this.boxId + '_sql_results_wrapper');
@@ -1886,22 +2205,142 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			resultsWrapper.style.display = 'block';
 			resultsWrapper.style.height = '';
 		}
+		this._syncTestStateAttrs();
+		this._syncActionBar();
+	}
+
+	public clearResults(): void {
+		this._hasResults = false;
+		this._lastError = '';
+		const body = document.getElementById(this.boxId + '_sql_results_body');
+		const wrapper = document.getElementById(this.boxId + '_sql_results_wrapper');
+		const resizer = document.getElementById(this.boxId + '_sql_results_resizer');
+		if (body) body.innerHTML = '';
+		if (wrapper) {
+			wrapper.style.display = 'none';
+			wrapper.style.height = '';
+			wrapper.classList.remove('is-stale');
+		}
+		if (resizer) resizer.style.display = 'none';
+	}
+
+	private _clearResultData(): void {
+		try { __kustoClearStoredQueryResult(this.boxId); } catch (e) { console.error('[kusto]', e); }
+		try { clearResultsState(this.boxId); } catch (e) { console.error('[kusto]', e); }
+		this.clearResults();
 	}
 
 	// ── Execution ─────────────────────────────────────────────────────────────
 
-	private _runQuery(): void {
+	public runForTool(executionId: string): Promise<{ rowCount: number; executionId: string; owner: { connectionId: string; database: string; ownerToken: string; generation: number } }> {
+		if (this._pendingToolRun) return Promise.reject(new Error('A SQL tool query is already running for this section.'));
+		if (!String(executionId || '').trim()) return Promise.reject(new Error('SQL tool execution ID is unavailable.'));
+		if (!this._sqlConnectionId || !this._database || !this._getQueryText().trim()) {
+			return Promise.reject(new Error('Select a SQL connection and database and provide a query before executing.'));
+		}
+		return new Promise((resolve, reject) => {
+			this._pendingToolRun = { resolve, reject, executionId: String(executionId) };
+			this._pendingToolReadyTimer = setTimeout(() => {
+				const pendingToolRun = this._pendingToolRun;
+				this._pendingToolRun = undefined;
+				this._pendingToolReadyTimer = undefined;
+				this._toolExpectedOwner = undefined;
+				pendingToolRun?.reject(new Error('SQL Tools Service did not become ready for tool execution.'));
+			}, 30_000);
+			this._connectStsIfReady('tool-execution');
+			this._startPendingToolRunIfReady();
+		});
+	}
+
+	private _startPendingToolRunIfReady(): void {
+		if (!this._pendingToolRun || !this._ownerToken || this._executing) return;
+		this._pendingToolRun.owner = {
+			connectionId: this._sqlConnectionId,
+			database: this._database,
+			ownerToken: this._ownerToken,
+			generation: sqlTargetGenerationByBoxId[this.boxId] ?? 0,
+		};
+		if (this._pendingToolReadyTimer) clearTimeout(this._pendingToolReadyTimer);
+		this._pendingToolReadyTimer = undefined;
+		if (!this._runQuery()) {
+			const pendingToolRun = this._pendingToolRun;
+			this._pendingToolRun = undefined;
+			pendingToolRun.reject(new Error('SQL query could not start.'));
+		}
+	}
+
+	public cancelToolRun(expectedExecutionId?: string): void {
+		if (expectedExecutionId !== undefined && this._pendingToolRun?.executionId !== expectedExecutionId) return;
+		this._cancelQuery();
+		this.notifyToolRunCancelled(expectedExecutionId);
+	}
+
+	public acceptsQueryTerminal(executionId?: string): boolean {
+		const id = String(executionId || '').trim();
+		if (id && this._cancelledQueryExecutionIds.includes(id)) return false;
+		return !!id && id === this._activeQueryExecutionId;
+	}
+
+	private _rememberCancelledExecution(executionId?: string): void {
+		const id = String(executionId || '').trim();
+		if (!id || this._cancelledQueryExecutionIds.includes(id)) return;
+		this._cancelledQueryExecutionIds.push(id);
+		if (this._cancelledQueryExecutionIds.length > 16) this._cancelledQueryExecutionIds.splice(0, this._cancelledQueryExecutionIds.length - 16);
+	}
+
+	public setExternalQueryExecuting(executing: boolean, executionId?: string): boolean {
+		const id = String(executionId || '').trim();
+		if (executing) {
+			if (!id) return false;
+			if (this._activeQueryExecutionId && this._activeQueryExecutionId !== id) return false;
+			this._activeQueryExecutionId = id;
+			this._executing = true;
+			this._startElapsedTimer();
+			this._syncActionBar();
+			return true;
+		}
+		if (this._activeQueryExecutionId && this._activeQueryExecutionId !== id) return false;
+		this._activeQueryExecutionId = '';
+		this._executing = false;
+		this._stopElapsedTimer();
+		this._syncActionBar();
+		return true;
+	}
+
+	public notifyToolRunCancelled(executionId?: string): void {
+		if (this._pendingToolRun && executionId !== this._pendingToolRun.executionId) return;
+		if (this._pendingToolReadyTimer) clearTimeout(this._pendingToolReadyTimer);
+		this._pendingToolReadyTimer = undefined;
+		const pendingToolRun = this._pendingToolRun;
+		this._pendingToolRun = undefined;
+		this._toolExpectedOwner = undefined;
+		pendingToolRun?.reject(new Error('SQL query was cancelled.'));
+		this._rememberCancelledExecution(executionId);
+		if (executionId && this._activeQueryExecutionId === executionId) this._activeQueryExecutionId = '';
+	}
+
+	private _runQuery(): boolean {
 		if (this._executing || !this._sqlConnectionId || !this._database) {
-			return;
+			return false;
+		}
+		if (!this._ownerToken) {
+			this._lastError = this._leaveNoTraceConnectionIds.has(this._sqlConnectionId)
+				? SQL_LEAVE_NO_TRACE_ERROR
+				: 'SQL Tools Service is still connecting. Try again when Run becomes available.';
+			this._syncActionBar();
+			return false;
 		}
 		const query = this._getQueryText().trim();
 		if (!query) {
-			return;
+			return false;
 		}
 		this._executing = true;
+		const executionId = this._pendingToolRun?.executionId
+			|| `sql-run-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
+		this._activeQueryExecutionId = executionId;
 		this._lastError = '';
 		this._startElapsedTimer();
-		try { __kustoClearStoredQueryResult(this.boxId); } catch (e) { console.error('[kusto]', e); }
+		this._clearResultData();
 		postMessageToHost({
 			type: 'executeSqlQuery',
 			query,
@@ -1909,7 +2348,12 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			database: this._database,
 			boxId: this.boxId,
 			queryMode: getRunMode(this.boxId),
+			ownerToken: this._ownerToken,
+			executionId,
+			...(this._pendingToolRun ? { toolExecution: true } : {}),
+			...(this._pendingToolRun?.executionId && this._toolExpectedOwner ? { expectedOwner: { ...this._toolExpectedOwner } } : {}),
 		});
+		return true;
 	}
 
 	// ── Run mode ──────────────────────────────────────────────────────────────
@@ -1955,10 +2399,18 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	private _cancelQuery(): void {
+		const cancelledExecutionId = this._activeQueryExecutionId;
+		const pendingToolRun = this._pendingToolRun;
+		this._pendingToolRun = undefined;
+		this._toolExpectedOwner = undefined;
+		pendingToolRun?.reject(new Error('SQL execution was cancelled.'));
 		postMessageToHost({
 			type: 'cancelSqlQuery',
 			boxId: this.boxId,
+			...(this._activeQueryExecutionId ? { executionId: this._activeQueryExecutionId } : {}),
 		});
+		this._rememberCancelledExecution(cancelledExecutionId);
+		this._activeQueryExecutionId = '';
 		this._executing = false;
 		this._stopElapsedTimer();
 	}

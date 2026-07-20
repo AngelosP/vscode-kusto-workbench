@@ -26,15 +26,6 @@ describe('SqlDialectRegistry', () => {
 			displayName: 'Fake DB',
 			defaultPort: 9999,
 			authTypes: [],
-			createPool: async () => ({}),
-			closePool: async () => {},
-			executeQuery: async () => ({ columns: [], rows: [], metadata: { cluster: '', database: '', executionTime: '' } }),
-			cancelQuery: async () => {},
-			getDatabases: async () => [],
-			getDatabaseSchema: async () => ({ tables: [], columnsByTable: {} }),
-			formatError: (e) => String(e),
-			isAuthError: () => false,
-			isCancelError: () => false,
 		};
 		registerDialect(fake);
 		expect(getDialect('fake')).toBe(fake);

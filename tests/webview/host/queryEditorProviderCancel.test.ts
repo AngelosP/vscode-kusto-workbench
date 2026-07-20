@@ -3,6 +3,8 @@ import { QueryEditorProvider } from '../../../src/host/queryEditorProvider';
 import type { KustoConnection } from '../../../src/host/connectionManager';
 import type { ExecuteQueryMessage } from '../../../src/host/queryEditorTypes';
 import { appendQueryMode, isControlCommand, normalizeControlCommandForExecution } from '../../../src/host/queryEditorUtils';
+import { sqlConnectionTargetSignature } from '../../../src/shared/sqlConnectionIdentity';
+import { sqlSchemaPrincipalFingerprintForPrincipal } from '../../../src/host/sqlEditorSchema';
 
 const TEST_CONNECTION: KustoConnection = {
 	id: 'conn-1',
@@ -38,6 +40,8 @@ function queryResult(label: string) {
 	};
 }
 
+let executionSequence = 0;
+
 function executeMessage(boxId: string, query: string = 'print x=1'): ExecuteQueryMessage {
 	return {
 		type: 'executeQuery',
@@ -45,6 +49,7 @@ function executeMessage(boxId: string, query: string = 'print x=1'): ExecuteQuer
 		connectionId: TEST_CONNECTION.id,
 		database: 'Samples',
 		boxId,
+		executionId: `kusto-test-${++executionSequence}`,
 		queryMode: 'plain',
 		cacheEnabled: false,
 		cacheValue: 1,
@@ -54,8 +59,6 @@ function executeMessage(boxId: string, query: string = 'print x=1'): ExecuteQuer
 
 function createProviderHarness() {
 	const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
-	provider.runningQueriesByBoxId = new Map();
-	provider.queryRunSeq = 0;
 	provider.postMessage = vi.fn();
 	provider.refreshConnectionsData = vi.fn(async () => undefined);
 	provider.connection = {
@@ -76,7 +79,1455 @@ function createProviderHarness() {
 	return provider;
 }
 
+function createSqlProviderHarness() {
+	const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+	provider._sqlConnectionIdByBoxId = new Map([['sql_1', 'sql-1']]);
+	provider._sqlComparisonOwnerByBoxId = new Map();
+	provider._comparisonOwnerByBoxId = new Map();
+	provider._sqlDatabaseByBoxId = new Map([['sql_1', 'Db']]);
+	provider._sqlDatabaseRequestIdByBoxId = new Map();
+	provider._sqlRunAdmissionGenerationByBoxId = new Map();
+	provider._pendingSqlRunAdmissionByBoxId = new Map();
+	provider._sqlCopilotPreflightByBoxId = new Map();
+	provider._sqlTargetGenerationByBoxId = new Map([['sql_1', 1]]);
+	provider._sqlOwnerTokenByBoxId = new Map();
+	provider.postMessage = vi.fn();
+	provider.output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+	provider.context = {
+		globalState: {
+			get: vi.fn((key: string) => key === 'sql.auth.serverAccountMap' ? { 'server.example': 'account-a' } : undefined),
+		},
+	};
+	const connectionManager = {
+		getConnection: vi.fn(() => ({ id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' })),
+		getConnections: vi.fn(() => [{ id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' }]),
+		assertConnectionCurrent: vi.fn(async () => undefined),
+	};
+	const client = { executeQueryCancelable: vi.fn(() => { throw new Error('Leave No Trace blocked'); }) };
+	provider.sqlWorkbench = {
+		connectionManager,
+		client,
+		serverAccountMap: {
+			getAccountsByServer: vi.fn(() => ({ 'server.example': 'account-a' })),
+			refresh: vi.fn(async () => ({ 'server.example': 'account-a' })),
+		},
+		ready: vi.fn(async () => undefined),
+		leaveNoTracePolicy: { getRevocationGeneration: vi.fn(() => 0) },
+		isLeaveNoTraceConnection: vi.fn((id: string) => id === 'sql-1'),
+		assertSqlConnectionAllowed: vi.fn(async () => undefined),
+		dispatchSqlConnectionAllowed: vi.fn(async (_connectionId: string, dispatch: () => unknown) => await dispatch()),
+		dispatchSqlOwnerAllowed: vi.fn(async (_connection: unknown, _principal: string, _revocation: number, dispatch: () => unknown) => await dispatch()),
+		dispatchSqlOwnerSnapshot: vi.fn(async (dispatch: (snapshot: any) => unknown) => await dispatch({
+			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
+			connections: connectionManager.getConnections(), connectionVersion: 1,
+			accountsByServer: { 'server.example': 'account-a' }, principalVersion: 1,
+		})),
+		runWithSqlOwnerSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
+			connections: connectionManager.getConnections(), connectionVersion: 1,
+			accountsByServer: { 'server.example': 'account-a' }, principalVersion: 1,
+		})),
+	};
+	provider.sendSqlConnectionsData = vi.fn(async () => undefined);
+	provider._sqlOwnerTokenByBoxId.set('sql_1', { token: 'owner-token', owner: provider.getSqlResultOwner('sql_1') });
+	return provider;
+}
+
 describe('QueryEditorProvider cancellation orchestration', () => {
+	it('delegates SQL owner and token validation to the shared ownership registry', async () => {
+		const provider = createSqlProviderHarness();
+		const expectedOwner = provider.getSqlResultOwner('sql_1');
+		const issued = { token: 'registry-token', owner: expectedOwner };
+		const registry = {
+			matches: vi.fn(() => true),
+			getOwner: vi.fn(() => expectedOwner),
+			assertOwnerToken: vi.fn(async () => issued),
+		};
+		provider._sqlOwnershipRegistry = registry;
+
+		expect(provider.getSqlResultOwner('sql_1')).toBe(expectedOwner);
+		await expect(provider.assertSqlOwnerToken('sql_1', 'registry-token')).resolves.toBe(issued);
+		expect(registry.getOwner).toHaveBeenCalledWith('sql_1');
+		expect(registry.assertOwnerToken).toHaveBeenCalledWith(
+			'sql_1', 'registry-token', expect.any(Function),
+		);
+	});
+
+	it('rejects an owner token removed while canonical validation is pending', async () => {
+		const provider = createSqlProviderHarness();
+		const validation = deferred<void>();
+		const issued = provider._sqlOwnerTokenByBoxId.get('sql_1');
+		provider.assertSqlResultOwnerAllowed = vi.fn(() => validation.promise);
+
+		const assertion = provider.assertSqlOwnerToken('sql_1', 'owner-token');
+		await vi.waitFor(() => expect(provider.assertSqlResultOwnerAllowed).toHaveBeenCalledOnce());
+		provider._sqlOwnerTokenByBoxId.delete('sql_1');
+		validation.resolve();
+
+		await expect(assertion).rejects.toThrow('owner token changed');
+		expect(issued).toBeTruthy();
+	});
+
+	it('posts a correlated generic terminal response when SQL owner preflight rejects', async () => {
+			const provider = createSqlProviderHarness();
+			provider.assertSqlOwnerToken = vi.fn(async () => { throw new Error('C:\\private\\sql-policy.lock failed'); });
+			provider.copilot = {
+				startCopilotWriteQuery: vi.fn(),
+			};
+
+			await provider.handleWebviewMessage({
+				type: 'startCopilotWriteQuery', boxId: 'sql_1', flavor: 'sql', sqlOwnerToken: 'owner-token',
+			} as any);
+
+			expect(provider.postMessage).toHaveBeenCalledWith({
+				type: 'copilotWriteQueryDone', boxId: 'sql_1', ok: false,
+				message: 'SQL section owner changed. Retry the request.', ownerToken: 'owner-token',
+			});
+			expect(JSON.stringify(provider.postMessage.mock.calls)).not.toContain('sql-policy.lock');
+			expect(provider.copilot.startCopilotWriteQuery).not.toHaveBeenCalled();
+	});
+
+	it('Stop during SQL owner preflight prevents service dispatch', async () => {
+		const provider = createSqlProviderHarness();
+		const ownerValidation = deferred<any>();
+		provider.assertSqlOwnerToken = vi.fn(() => ownerValidation.promise);
+		provider.copilot = {
+			startCopilotWriteQuery: vi.fn(),
+			cancelCopilotWriteQuery: vi.fn(),
+		};
+
+		const start = provider.handleWebviewMessage({
+			type: 'startCopilotWriteQuery', boxId: 'sql_1', flavor: 'sql', sqlOwnerToken: 'owner-token',
+		} as any);
+		await vi.waitFor(() => expect(provider.assertSqlOwnerToken).toHaveBeenCalledOnce());
+		await provider.handleWebviewMessage({ type: 'cancelCopilotWriteQuery', boxId: 'sql_1' } as any);
+		ownerValidation.resolve(provider._sqlOwnerTokenByBoxId.get('sql_1'));
+		await start;
+
+		expect(provider.copilot.startCopilotWriteQuery).not.toHaveBeenCalled();
+		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith('sql_1');
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'copilotWriteQueryDone', boxId: 'sql_1', ok: false, message: 'Canceled.', ownerToken: 'owner-token',
+		});
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ message: 'SQL section owner changed. Retry the request.' }));
+	});
+
+	it('disposes Copilot and settles webview waiters before panel disposal clears editor state', () => {
+		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+		let disposePanel!: () => void;
+		const panel = { onDidDispose: vi.fn((handler: () => void) => { disposePanel = handler; }) } as any;
+		provider.panel = panel;
+		provider._panelDisposed = false;
+		provider._sqlComparisonOwnerByBoxId = new Map([['comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-a' }]]);
+		provider.copilot = { dispose: vi.fn() };
+		const ensureReject = vi.fn();
+		const summaryReject = vi.fn();
+		const toolStateResolve = vi.fn();
+		provider.pendingComparisonEnsureByRequestId = new Map([['ensure-1', {
+			resolve: vi.fn(), reject: ensureReject, timer: setTimeout(() => undefined, 60_000), sourceBoxId: 'query_1',
+		}]]);
+		provider.pendingComparisonSummaryByKey = new Map([['query_1::comparison_1', [{
+			resolve: vi.fn(), reject: summaryReject, timer: setTimeout(() => undefined, 60_000),
+		}]]]);
+		provider.latestComparisonSummaryByKey = new Map([['query_1::comparison_1', {
+			dataMatches: true, headersMatch: true, timestamp: Date.now(),
+		}]]);
+		provider.toolStateResponseResolvers = new Map([['state-1', toolStateResolve]]);
+		provider.sqlLeaveNoTraceSubscription = { dispose: vi.fn() };
+		provider.stsRuntimeSubscription = { dispose: vi.fn() };
+		provider.sqlConnectionsSubscription = { dispose: vi.fn() };
+		provider.sqlPrincipalsSubscription = { dispose: vi.fn() };
+		provider.sqlPersistenceInvalidationEmitter = { dispose: vi.fn() };
+		provider.disposeSqlEditorSession = vi.fn();
+		provider.clearCursorStatusForProvider = vi.fn();
+		provider.cancelAllRunningQueries = vi.fn();
+		provider.kustoClient = { dispose: vi.fn() };
+		provider.disconnectToolOrchestrator = vi.fn();
+		provider.connection = { dispose: vi.fn() };
+
+		provider.registerPanelDisposal(panel);
+		disposePanel();
+
+		expect(provider.copilot.dispose).toHaveBeenCalledOnce();
+		expect(ensureReject).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('closed') }));
+		expect(summaryReject).toHaveBeenCalledWith(expect.objectContaining({ message: expect.stringContaining('closed') }));
+		expect(toolStateResolve).toHaveBeenCalledWith(undefined);
+		expect(provider.pendingComparisonEnsureByRequestId).toHaveLength(0);
+		expect(provider.pendingComparisonSummaryByKey).toHaveLength(0);
+		expect(provider.latestComparisonSummaryByKey).toHaveLength(0);
+		expect(provider.toolStateResponseResolvers).toHaveLength(0);
+		expect(provider.disposeSqlEditorSession).toHaveBeenCalledOnce();
+	});
+
+	it('ignores policy messages after the panel webview getter is disposed', () => {
+		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+		provider._panelDisposed = true;
+		provider.output = { warn: vi.fn() };
+		provider.panel = Object.defineProperty({}, 'webview', {
+			get: () => { throw new Error('Webview is disposed'); },
+		});
+
+		expect(() => provider.postMessage({ type: 'sqlLeaveNoTraceData', connectionIds: ['sql-1'] })).not.toThrow();
+		expect(provider.output.warn).not.toHaveBeenCalled();
+	});
+
+	it('contains a rejected live webview post without an unhandled rejection', async () => {
+		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+		provider._panelDisposed = false;
+		provider.output = { warn: vi.fn() };
+		provider.panel = { webview: { postMessage: vi.fn(() => Promise.reject(new Error('delivery failed'))) } };
+
+		await expect(provider.postMessage({ type: 'test' })).resolves.toBe(false);
+		expect(provider.output.warn).toHaveBeenCalledWith('[webview] postMessage failed: delivery failed');
+	});
+
+	it('retries SQL language initialization in the same editor after a canceled startup', async () => {
+		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+		const manager = {
+			onNotification: vi.fn(() => ({ dispose: vi.fn() })),
+			onDidEndEpoch: vi.fn(() => ({ dispose: vi.fn() })),
+			onDidStartEpoch: vi.fn(() => ({ dispose: vi.fn() })),
+			sendNotification: vi.fn(),
+			sendRequest: vi.fn(),
+		};
+		provider._sqlEditorSessionDisposed = false;
+		provider.panel = { webview: {} };
+		provider._stsLanguageService = undefined;
+		provider._stsInitPromise = undefined;
+		provider.context = { globalState: { get: vi.fn() } };
+		provider.output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+		provider.postMessage = vi.fn();
+		provider.sqlWorkbench = {
+			runtime: { getProcessManager: vi.fn().mockRejectedValueOnce(new Error('Canceled')).mockResolvedValueOnce(manager) },
+			connectionManager: { getPassword: vi.fn() },
+			leaveNoTracePolicy: {
+				getConnectionIds: () => [], isProtected: () => false,
+				assertAllowed: vi.fn(async () => undefined), refresh: vi.fn(async () => []),
+			},
+		};
+
+		await expect(provider.ensureStsLanguageService()).resolves.toBeNull();
+		expect(provider._stsInitPromise).toBeUndefined();
+		await expect(provider.ensureStsLanguageService()).resolves.not.toBeNull();
+		expect(provider._stsLanguageService).toBeDefined();
+		expect(provider.sqlWorkbench.runtime.getProcessManager).toHaveBeenCalledTimes(2);
+	});
+
+	it('does not replay SQL documents when manager publication completes a successful initializer', async () => {
+		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+		const service = { openDocument: vi.fn(), connectDocument: vi.fn() };
+		provider._sqlEditorSessionDisposed = false;
+		provider._stsLanguageService = undefined;
+		provider._stsInitPromise = Promise.resolve(service);
+		provider._sqlConnectionIdByBoxId = new Map([['sql_1', 'sql-a']]);
+		provider._sqlDatabaseByBoxId = new Map([['sql_1', 'Db']]);
+		provider._closedStsBoxIds = new Set();
+		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT 1']]);
+		provider._openedStsBoxIds = new Set();
+		provider.sqlWorkbench = { connectionManager: { getConnection: vi.fn() } };
+
+		await provider.handleStsRuntimeManagerChange(true);
+
+		expect(service.openDocument).not.toHaveBeenCalled();
+		expect(service.connectDocument).not.toHaveBeenCalled();
+	});
+
+	it('owner-closes a runtime replay candidate when connect fails after didOpen', async () => {
+		const provider = createSqlProviderHarness();
+		provider._sqlEditorSessionDisposed = false;
+		provider._closedStsBoxIds = new Set();
+		provider._openedStsBoxIds = new Set();
+		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT 1']]);
+		provider._sqlConnectionIdByBoxId = new Map([['sql_1', 'sql-1']]);
+		provider._sqlDatabaseByBoxId = new Map([['sql_1', 'Db']]);
+		provider._sqlTargetGenerationByBoxId = new Map([['sql_1', 1]]);
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider._stsConnectSequenceByBoxId = new Map();
+		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(async () => undefined);
+		const expectedOwner = provider.getSqlResultOwner('sql_1');
+		provider.getCanonicalSqlResultOwner = vi.fn(async () => expectedOwner);
+		const service = {
+			openDocument: vi.fn(async () => undefined),
+			connectDocument: vi.fn(async () => { throw new Error('replay connect failed'); }),
+			closeDocumentForOwner: vi.fn(() => true),
+		};
+		provider.ensureStsLanguageService = vi.fn(async () => service);
+
+		await provider.handleStsRuntimeManagerChange(true);
+
+		expect(service.openDocument).toHaveBeenCalledWith('sql_1', 'SELECT 1', expect.anything(), expectedOwner);
+		expect(service.closeDocumentForOwner).toHaveBeenCalledWith('sql_1', expectedOwner);
+		expect(provider._openedStsBoxIds.has('sql_1')).toBe(false);
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'stsConnectionState', boxId: 'sql_1', state: 'error', error: 'replay connect failed',
+		}));
+	});
+
+	it('owner-closes a runtime replay candidate when openDocument rejects after didOpen', async () => {
+		const provider = createSqlProviderHarness();
+		provider._sqlEditorSessionDisposed = false;
+		provider._closedStsBoxIds = new Set();
+		provider._openedStsBoxIds = new Set();
+		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT 1']]);
+		provider._sqlConnectionIdByBoxId = new Map([['sql_1', 'sql-1']]);
+		provider._sqlDatabaseByBoxId = new Map([['sql_1', 'Db']]);
+		provider._sqlTargetGenerationByBoxId = new Map([['sql_1', 1]]);
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider._stsConnectSequenceByBoxId = new Map();
+		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(async () => undefined);
+		const expectedOwner = provider.getSqlResultOwner('sql_1');
+		provider.getCanonicalSqlResultOwner = vi.fn(async () => expectedOwner);
+		const service = {
+			openDocument: vi.fn(async () => { throw new Error('post-didOpen failure'); }),
+			connectDocument: vi.fn(),
+			closeDocumentForOwner: vi.fn(() => true),
+		};
+		provider.ensureStsLanguageService = vi.fn(async () => service);
+
+		await provider.handleStsRuntimeManagerChange(true);
+
+		expect(service.closeDocumentForOwner).toHaveBeenCalledWith('sql_1', expectedOwner);
+		expect(service.connectDocument).not.toHaveBeenCalled();
+		expect(provider._openedStsBoxIds.has('sql_1')).toBe(false);
+	});
+
+	it('does not let an older host STS connect continue after a replacement owner opens', async () => {
+		const provider = createSqlProviderHarness();
+		const connectionA = { id: 'sql-a', name: 'A', dialect: 'mssql', serverUrl: 'a.example', authType: 'sql-login', username: 'alice' } as any;
+		const connectionB = { id: 'sql-b', name: 'B', dialect: 'mssql', serverUrl: 'b.example', authType: 'sql-login', username: 'bob' } as any;
+		provider.sqlWorkbench.connectionManager.getConnection = vi.fn((id: string) => id === 'sql-a' ? connectionA : id === 'sql-b' ? connectionB : undefined);
+		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(async () => undefined);
+		provider._closedStsBoxIds = new Set();
+		provider._openedStsBoxIds = new Set();
+		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT 1']]);
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider._stsConnectSequenceByBoxId = new Map();
+		provider._sqlConnectionIdByBoxId = new Map();
+		provider._sqlDatabaseByBoxId = new Map();
+		provider._sqlTargetGenerationByBoxId = new Map();
+		let currentServiceOwner: any;
+		let markAOpened!: () => void;
+		let releaseA!: () => void;
+		const aOpened = new Promise<void>(resolve => { markAOpened = resolve; });
+		const aGate = new Promise<void>(resolve => { releaseA = resolve; });
+		const service = {
+			openDocument: vi.fn(async (_boxId: string, _text: string, _connection: unknown, owner: any) => {
+				currentServiceOwner = owner;
+				if (owner.connectionId === 'sql-a') { markAOpened(); await aGate; }
+			}),
+			connectDocument: vi.fn(async () => undefined),
+			closeDocumentForOwner: vi.fn((_boxId: string, owner: any) => {
+				if (currentServiceOwner?.connectionId !== owner.connectionId || currentServiceOwner?.generation !== owner.generation) return false;
+				currentServiceOwner = undefined;
+				return true;
+			}),
+		};
+		provider.ensureStsLanguageService = vi.fn(async () => service);
+		provider.issueSqlOwnerToken = vi.fn(async (_boxId: string, owner: any) => `token-${owner.connectionId}`);
+		provider.getCanonicalSqlResultOwner = vi.fn(async (boxId: string) => {
+			const connectionId = provider._sqlConnectionIdByBoxId.get(boxId);
+			const connection = connectionId === 'sql-a' ? connectionA : connectionB;
+			const database = provider._sqlDatabaseByBoxId.get(boxId);
+			return {
+				connectionId, database, generation: provider._sqlTargetGenerationByBoxId.get(boxId),
+				targetSignature: sqlConnectionTargetSignature(connection),
+				principalFingerprint: sqlSchemaPrincipalFingerprintForPrincipal(connection, connection.username),
+				revocationGeneration: 0,
+			};
+		});
+		const ownerA = {
+			connectionId: 'sql-a', database: 'DbA', generation: 1,
+			targetSignature: sqlConnectionTargetSignature(connectionA),
+			principalFingerprint: sqlSchemaPrincipalFingerprintForPrincipal(connectionA, connectionA.username)!, revocationGeneration: 0,
+		};
+		const ownerB = {
+			connectionId: 'sql-b', database: 'DbB', generation: 2,
+			targetSignature: sqlConnectionTargetSignature(connectionB),
+			principalFingerprint: sqlSchemaPrincipalFingerprintForPrincipal(connectionB, connectionB.username)!, revocationGeneration: 0,
+		};
+
+		const connectA = provider.handleStsConnect('sql_1', 'sql-a', 'DbA', 1, ownerA);
+		await aOpened;
+		const connectB = provider.handleStsConnect('sql_1', 'sql-b', 'DbB', 2, ownerB);
+		await connectB;
+		releaseA();
+		await connectA;
+
+		expect(service.connectDocument).toHaveBeenCalledTimes(1);
+		expect(service.connectDocument).toHaveBeenCalledWith('sql_1', connectionB, 'DbB', expect.objectContaining({ connectionId: 'sql-b', generation: 2 }));
+		expect(provider._openedStsBoxIds.has('sql_1')).toBe(true);
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'stsConnectionState', state: 'ready', connectionId: 'sql-b' }));
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'stsConnectionState', state: 'ready', connectionId: 'sql-a' }));
+	});
+
+	it('owner-closes A before a failed B replacement can serve language data', async () => {
+		const provider = createSqlProviderHarness();
+		const connectionA = { id: 'sql-a', name: 'A', dialect: 'mssql', serverUrl: 'a.example', authType: 'sql-login', username: 'alice' } as any;
+		const connectionB = { id: 'sql-b', name: 'B', dialect: 'mssql', serverUrl: 'b.example', authType: 'sql-login', username: 'bob' } as any;
+		const ownerA = {
+			connectionId: 'sql-a', database: 'DbA', generation: 1,
+			targetSignature: sqlConnectionTargetSignature(connectionA),
+			principalFingerprint: sqlSchemaPrincipalFingerprintForPrincipal(connectionA, connectionA.username)!, revocationGeneration: 0,
+		};
+		const ownerB = {
+			connectionId: 'sql-b', database: 'DbB', generation: 2,
+			targetSignature: sqlConnectionTargetSignature(connectionB),
+			principalFingerprint: sqlSchemaPrincipalFingerprintForPrincipal(connectionB, connectionB.username)!, revocationGeneration: 0,
+		};
+		provider._sqlConnectionIdByBoxId = new Map([['sql_1', 'sql-a']]);
+		provider._sqlDatabaseByBoxId = new Map([['sql_1', 'DbA']]);
+		provider._sqlTargetGenerationByBoxId = new Map([['sql_1', 1]]);
+		provider._sqlOwnerTokenByBoxId = new Map([['sql_1', { token: 'owner-a', owner: ownerA }]]);
+		provider._openedStsBoxIds = new Set(['sql_1']);
+		provider._closedStsBoxIds = new Set();
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider._stsConnectSequenceByBoxId = new Map();
+		provider.sqlWorkbench.connectionManager.getConnection = vi.fn((id: string) => id === 'sql-a' ? connectionA : id === 'sql-b' ? connectionB : undefined);
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => false);
+		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(async (id: string) => {
+			if (id === 'sql-b') throw new Error('B policy rejected');
+		});
+		const service = {
+			closeDocumentForOwner: vi.fn(() => true),
+			getHover: vi.fn(async () => ({ contents: 'A secret' })),
+			openDocument: vi.fn(), connectDocument: vi.fn(),
+		};
+		provider._stsLanguageService = service;
+
+		await provider.handleStsConnect('sql_1', 'sql-b', 'DbB', 2, ownerB);
+		await provider.handleStsRequest('hover-b', 'textDocument/hover', {
+			boxId: 'sql_1', line: 1, column: 1, ownerToken: 'owner-b', targetGeneration: 2,
+		});
+
+		expect(service.closeDocumentForOwner).toHaveBeenCalledWith('sql_1', ownerA);
+		expect(provider._openedStsBoxIds.has('sql_1')).toBe(false);
+		expect(service.openDocument).not.toHaveBeenCalled();
+		expect(service.connectDocument).not.toHaveBeenCalled();
+		expect(service.getHover).not.toHaveBeenCalled();
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'stsResponse', requestId: 'hover-b', result: null, ownerToken: 'owner-b', targetGeneration: 2,
+		}));
+		expect(JSON.stringify(provider.postMessage.mock.calls)).not.toContain('A secret');
+	});
+
+	it.each(['schema-result', 'schema-error'] as const)('suppresses %s details when schema owner admission rejects', async mode => {
+		const provider = createSqlProviderHarness();
+		provider._sqlSchemaService = {
+			getSchema: vi.fn(async () => {
+				if (mode === 'schema-error') throw new Error('SECRET_SCHEMA_ERROR');
+				return {
+					schema: { tables: ['SECRET_SCHEMA_TABLE'], columnsByTable: { SECRET_SCHEMA_TABLE: { SecretColumn: 'string' } } },
+					fromCache: false,
+				};
+			}),
+		};
+		provider.dispatchSqlResultOwnerAllowed = vi.fn(async () => { throw new Error('owner invalid'); });
+
+		await provider.prefetchSqlSchema('sql-1', 'Db', 'sql_1', false);
+
+		expect(JSON.stringify(provider.output.info.mock.calls)).not.toContain('SECRET_SCHEMA');
+		expect(JSON.stringify(provider.output.error.mock.calls)).not.toContain('SECRET_SCHEMA');
+		expect(provider.output.warn).toHaveBeenCalledWith(expect.stringContaining('details suppressed'));
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'sqlSchemaData' }));
+	});
+
+	it('suppresses host STS request error details when final owner admission rejects', async () => {
+		const provider = createSqlProviderHarness();
+		provider._openedStsBoxIds = new Set(['sql_1']);
+		provider._closedStsBoxIds = new Set();
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => false);
+		const service = { getHover: vi.fn(async () => { throw new Error('SECRET_HOST_STS_ERROR'); }) };
+		provider._stsLanguageService = service;
+		provider.ensureStsLanguageService = vi.fn(async () => service);
+		provider.dispatchSqlResultOwnerAllowed = vi.fn(async () => { throw new Error('owner invalid'); });
+
+		await provider.handleStsRequest('request-1', 'textDocument/hover', {
+			boxId: 'sql_1', line: 1, column: 1, ownerToken: 'owner-token', targetGeneration: 1,
+		});
+
+		expect(JSON.stringify(provider.output.error.mock.calls)).not.toContain('SECRET_HOST_STS_ERROR');
+		expect(provider.output.warn).toHaveBeenCalledWith(expect.stringContaining('details suppressed'));
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'stsResponse', requestId: 'request-1', result: null }));
+	});
+
+	it('owner-closes a normal STS candidate when the full owner drifts during connect', async () => {
+		const provider = createSqlProviderHarness();
+		provider._closedStsBoxIds = new Set();
+		provider._openedStsBoxIds = new Set();
+		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT 1']]);
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider._stsConnectSequenceByBoxId = new Map();
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => false);
+		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(async () => undefined);
+		const ownerA = provider.getSqlResultOwner('sql_1');
+		const ownerB = { ...ownerA, principalFingerprint: 'principal-b' };
+		provider.getCanonicalSqlResultOwner = vi.fn()
+			.mockResolvedValueOnce(ownerA)
+			.mockResolvedValueOnce(ownerB);
+		const service = {
+			openDocument: vi.fn(async () => undefined),
+			connectDocument: vi.fn(async () => undefined),
+			closeDocumentForOwner: vi.fn(() => true),
+		};
+		provider.ensureStsLanguageService = vi.fn(async () => service);
+		provider.issueSqlOwnerToken = vi.fn();
+
+		await provider.handleStsConnect('sql_1', 'sql-1', 'Db', 1);
+
+		expect(service.connectDocument).toHaveBeenCalledWith('sql_1', expect.anything(), 'Db', ownerA);
+		expect(service.closeDocumentForOwner).toHaveBeenCalledWith('sql_1', ownerA);
+		expect(provider.issueSqlOwnerToken).not.toHaveBeenCalled();
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'stsConnectionState', state: 'ready' }));
+	});
+
+	it('posts queryError when SQL setup fails synchronously', async () => {
+		const provider = createSqlProviderHarness();
+
+		await provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db', query: 'SELECT 1', queryMode: 'plain', ownerToken: 'owner-token',
+		});
+
+		expect(provider.postMessage).toHaveBeenCalledWith({ type: 'queryError', error: 'Leave No Trace blocked', boxId: 'sql_1', ownerToken: 'owner-token' });
+	});
+
+	it('does not dispatch SQL after Cancel during asynchronous owner validation', async () => {
+		const provider = createSqlProviderHarness();
+		const ownerValidation = deferred<any>();
+		provider.assertSqlOwnerToken = vi.fn(() => ownerValidation.promise);
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn();
+
+		const run = provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'UPDATE dbo.T SET Value = 1', queryMode: 'plain', ownerToken: 'owner-token',
+		});
+		await Promise.resolve();
+		await provider.handleWebviewMessage({ type: 'cancelSqlQuery', boxId: 'sql_1' });
+		ownerValidation.resolve({ token: 'owner-token', owner: provider.getSqlResultOwner('sql_1') });
+		await run;
+
+		expect(provider.sqlWorkbench.client.executeQueryCancelable).not.toHaveBeenCalled();
+	});
+
+	it('does not dispatch an older SQL run after Copilot supersedes its paused owner validation', async () => {
+		const provider = createSqlProviderHarness();
+		const ownerValidation = deferred<any>();
+		provider.assertSqlOwnerToken = vi.fn(() => ownerValidation.promise);
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn();
+
+		const oldRun = provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'SELECT old', queryMode: 'plain', ownerToken: 'owner-token', executionId: 'manual-old',
+		});
+		await vi.waitFor(() => expect(provider.assertSqlOwnerToken).toHaveBeenCalledOnce());
+		provider.supersedeSqlRunAdmission('sql_1', { notifyWebview: true });
+		ownerValidation.resolve(provider._sqlOwnerTokenByBoxId.get('sql_1'));
+		await oldRun;
+
+		expect(provider.sqlWorkbench.client.executeQueryCancelable).not.toHaveBeenCalled();
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'queryCancelled', boxId: 'sql_1', ownerToken: 'owner-token', executionId: 'manual-old',
+		});
+	});
+
+	it('does not let Copilot dispatch after a newer manual run claims admission', () => {
+		const provider = createSqlProviderHarness();
+		const copilotGeneration = provider.supersedeSqlRunAdmission('sql_1');
+		const manualGeneration = provider.supersedeSqlRunAdmission('sql_1');
+		const manualCancel = vi.fn();
+		const manualRun = provider.startSqlRunUnderAdmission('sql_1', manualGeneration, () => ({ cancel: manualCancel, promise: Promise.resolve() }));
+		const copilotStart = vi.fn(() => ({ cancel: vi.fn(), promise: Promise.resolve() }));
+
+		expect(() => provider.startSqlRunUnderAdmission('sql_1', copilotGeneration, copilotStart))
+			.toThrow('SQL Copilot write-query canceled');
+		expect(copilotStart).not.toHaveBeenCalled();
+		expect(provider.isSqlRunAdmissionCurrent('sql_1', manualGeneration, manualCancel, manualRun.runSeq)).toBe(true);
+	});
+
+	it('cancels and observes a SQL execution when admission changes synchronously during start', async () => {
+		const provider = createSqlProviderHarness();
+		const generation = provider.supersedeSqlRunAdmission('sql_1');
+		const execution = deferred<void>();
+		const cancel = vi.fn(() => execution.reject(new Error('cancelled during admission')));
+
+		expect(() => provider.startSqlRunUnderAdmission('sql_1', generation, () => {
+			provider.supersedeSqlRunAdmission('sql_1');
+			return { cancel, promise: execution.promise };
+		})).toThrow('SQL Copilot write-query canceled');
+
+		expect(cancel).toHaveBeenCalledOnce();
+		expect(provider.isRunningQueryCurrent('sql_1', cancel, 1)).toBe(false);
+		await Promise.resolve();
+	});
+
+	it('snapshots SQL cancellation correlation before a reentrant cancel callback', () => {
+		const provider = createSqlProviderHarness();
+		const generation = provider.supersedeSqlRunAdmission('sql_1');
+		const cancel = vi.fn(() => provider._sqlOwnerTokenByBoxId.delete('sql_1'));
+		provider.startSqlRunUnderAdmission('sql_1', generation, () => ({ cancel }), 'execution-1');
+
+		provider.cancelRunningQuery('sql_1', { notifyWebview: true });
+
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'queryCancelled', boxId: 'sql_1', ownerToken: 'owner-token', executionId: 'execution-1',
+		});
+	});
+
+	it('does not emit an ID-less cancellation when SQL supersession finds no active run', () => {
+		const provider = createSqlProviderHarness();
+		provider.postMessage.mockClear();
+
+		provider.supersedeSqlRunAdmission('sql_1', { notifyWebview: true });
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryCancelled', boxId: 'sql_1',
+		}));
+	});
+
+	it('clears derived SQL ownership and resets the registry on editor-session disposal', () => {
+		const provider = createSqlProviderHarness();
+		provider._sqlComparisonOwnerByBoxId.set('comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-1' });
+		provider._comparisonOwnerByBoxId.set('comparison_1', { sourceBoxId: 'sql_1' });
+		provider._sqlOwnershipRegistry = { matches: vi.fn(() => true) };
+		provider._stsLanguageService = { dispose: vi.fn() };
+		provider._closedStsBoxIds = new Set(['sql_1']);
+		provider._openedStsBoxIds = new Set(['sql_1']);
+		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT 1']]);
+		provider._latestStsConnectSequenceByBoxId = new Map([['sql_1', 1]]);
+		provider._stsConnectSequenceByBoxId = new Map([['sql_1', 1]]);
+
+		provider.disposeSqlEditorSession();
+
+		expect(provider._sqlComparisonOwnerByBoxId).toHaveLength(0);
+		expect(provider._comparisonOwnerByBoxId).toHaveLength(0);
+		expect(provider._sqlOwnerTokenByBoxId).toHaveLength(0);
+		expect(provider._sqlRunAdmissionGenerationByBoxId).toHaveLength(0);
+		expect(provider._sqlOwnershipRegistry).toBeUndefined();
+	});
+
+	it('preserves SQL cancellation correlation when Leave No Trace invalidates an active run', () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlPersistenceInvalidationEmitter = { fire: vi.fn() };
+		provider.copilot = {
+			invalidateSqlConnections: vi.fn(() => provider.cancelRunningQuery('sql_1')),
+		};
+		provider._openedStsBoxIds = new Set();
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		const generation = provider.supersedeSqlRunAdmission('sql_1');
+		const cancel = vi.fn();
+		provider.startSqlRunUnderAdmission('sql_1', generation, () => ({ cancel }), 'execution-lnt');
+
+		provider.applySqlLeaveNoTraceChange(['sql-1'], ['sql-1']);
+
+		expect(cancel).toHaveBeenCalledOnce();
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'queryCancelled', boxId: 'sql_1', ownerToken: 'owner-token', executionId: 'execution-lnt',
+		});
+		expect(provider.postMessage.mock.calls.filter((call: unknown[]) =>
+			(call[0] as any)?.type === 'queryCancelled' && (call[0] as any)?.boxId === 'sql_1')).toHaveLength(1);
+		const cancellationIndex = provider.postMessage.mock.calls.findIndex((call: unknown[]) =>
+			(call[0] as any)?.type === 'queryCancelled' && (call[0] as any)?.boxId === 'sql_1');
+		const policyIndex = provider.postMessage.mock.calls.findIndex((call: unknown[]) =>
+			(call[0] as any)?.type === 'sqlLeaveNoTraceData');
+		expect(cancellationIndex).toBeGreaterThanOrEqual(0);
+		expect(policyIndex).toBeGreaterThan(cancellationIndex);
+		expect(provider._sqlOwnerTokenByBoxId.has('sql_1')).toBe(false);
+	});
+
+	it('rotates and reconnects an invalidated SQL owner when LNT is already disabled', () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlPersistenceInvalidationEmitter = { fire: vi.fn() };
+		provider.copilot = { invalidateSqlConnections: vi.fn() };
+		provider._openedStsBoxIds = new Set(['sql_1']);
+		provider._stsLanguageService = { closeDocument: vi.fn() };
+		provider._latestStsConnectSequenceByBoxId = new Map([['sql_1', 1]]);
+		provider.postMessage.mockClear();
+
+		provider.applySqlLeaveNoTraceChange([], ['sql-1']);
+
+		expect(provider._stsLanguageService.closeDocument).toHaveBeenCalledWith('sql_1');
+		expect(provider._sqlOwnerTokenByBoxId.has('sql_1')).toBe(false);
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'sqlLeaveNoTraceData', connectionIds: [],
+		});
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'sqlConnectionOwnerChanged', boxId: 'sql_1', connectionId: 'sql-1', targetGeneration: 2,
+		});
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'stsConnectionState', state: 'error',
+		}));
+	});
+
+	it('requests exact owner re-adoption when the first AAD principal is established', async () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlPersistenceInvalidationEmitter = { fire: vi.fn() };
+		provider.copilot = { invalidateSqlConnections: vi.fn() };
+		provider._openedStsBoxIds = new Set();
+		provider._latestStsConnectSequenceByBoxId = new Map([['sql_1', 1]]);
+		provider.postMessage.mockClear();
+
+		await provider.handleSqlPrincipalsChanged(['sql-1']);
+
+		expect(provider._sqlTargetGenerationByBoxId.get('sql_1')).toBe(2);
+		expect(provider._sqlOwnerTokenByBoxId.has('sql_1')).toBe(false);
+		expect(provider._latestStsConnectSequenceByBoxId.has('sql_1')).toBe(false);
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'sqlConnectionOwnerChanged', boxId: 'sql_1', connectionId: 'sql-1', targetGeneration: 2,
+		});
+		expect(provider.sendSqlConnectionsData).toHaveBeenCalledOnce();
+	});
+
+	it('does not post a stale validation error after Cancel supersedes SQL preflight', async () => {
+		const provider = createSqlProviderHarness();
+		const ownerValidation = deferred<any>();
+		provider.assertSqlOwnerToken = vi.fn(() => ownerValidation.promise);
+
+		const run = provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'SELECT 1', queryMode: 'plain', ownerToken: 'owner-token',
+		});
+		await Promise.resolve();
+		await provider.handleWebviewMessage({ type: 'cancelSqlQuery', boxId: 'sql_1' });
+		ownerValidation.reject(new Error('stale owner failure'));
+		await run;
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryError', error: 'stale owner failure' }));
+	});
+
+	it('does not post an older validation error after a newer SQL Run starts', async () => {
+		const provider = createSqlProviderHarness();
+		const firstValidation = deferred<any>();
+		const issued = provider._sqlOwnerTokenByBoxId.get('sql_1');
+		provider.assertSqlOwnerToken = vi.fn()
+			.mockReturnValueOnce(firstValidation.promise)
+			.mockResolvedValueOnce(issued);
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({
+			promise: Promise.resolve({ columns: [{ name: 'Value' }], rows: [[2]], metadata: {} }),
+			cancel: vi.fn(),
+		}));
+
+		const first = provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'SELECT 1', queryMode: 'plain', ownerToken: 'owner-token',
+		});
+		await Promise.resolve();
+		const second = provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'SELECT 2', queryMode: 'plain', ownerToken: 'owner-token',
+		});
+		firstValidation.reject(new Error('older validation failed'));
+		await Promise.all([first, second]);
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryError', error: 'older validation failed' }));
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
+	});
+
+	it('echoes the SQL tool execution ID on the accepted terminal result', async () => {
+		const provider = createSqlProviderHarness();
+		const owner = provider.getSqlResultOwner('sql_1');
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({
+			promise: Promise.resolve({ columns: [{ name: 'Value' }], rows: [[1]], metadata: {} }), cancel: vi.fn(),
+		}));
+
+		await provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'SELECT 1', queryMode: 'plain', ownerToken: 'owner-token', executionId: 'tool-execution-1', toolExecution: true,
+			expectedOwner: {
+				connectionId: owner.connectionId, database: owner.database, targetSignature: owner.targetSignature,
+				principalFingerprint: owner.principalFingerprint, revocationGeneration: owner.revocationGeneration,
+			},
+		});
+
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryResult', boxId: 'sql_1', ownerToken: 'owner-token', executionId: 'tool-execution-1',
+		}));
+	});
+
+	it('rejects a changed SQL tool principal before query dispatch', async () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn();
+
+		await provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'UPDATE Sensitive SET Value = 1', queryMode: 'plain', ownerToken: 'owner-token', executionId: 'tool-execution-drift', toolExecution: true,
+			expectedOwner: {
+				connectionId: 'sql-1', database: 'Db', targetSignature: provider.getSqlResultOwner('sql_1').targetSignature,
+				principalFingerprint: 'stale-principal', revocationGeneration: 0,
+			},
+		});
+
+		expect(provider.sqlWorkbench.client.executeQueryCancelable).not.toHaveBeenCalled();
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryError', executionId: 'tool-execution-drift', error: 'SQL tool execution owner changed before query dispatch.',
+		}));
+	});
+
+	it('accepts the real manual SQL payload without a tool expected owner', async () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({
+			promise: Promise.resolve({ columns: [{ name: 'Value' }], rows: [[1]], metadata: {} }), cancel: vi.fn(),
+		}));
+
+		await provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'SELECT 1 AS Value', queryMode: 'plain', ownerToken: 'owner-token', executionId: 'sql-run-manual-1',
+		});
+
+		expect(provider.sqlWorkbench.client.executeQueryCancelable).toHaveBeenCalledOnce();
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryResult', executionId: 'sql-run-manual-1', result: expect.objectContaining({ rows: [[1]] }),
+		}));
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			error: 'SQL tool execution owner changed before query dispatch.',
+		}));
+	});
+
+	it.each([
+		['error', () => Promise.reject(new Error('SECRET_OBJECT_NAME'))],
+		['cancellation', () => Promise.reject({ isCancelled: true })],
+	] as const)('suppresses a stale SQL %s terminal when canonical owner admission rejects', async (_label, terminalPromise) => {
+		const provider = createSqlProviderHarness();
+		const admission = deferred<void>();
+		provider.dispatchSqlResultOwnerAllowed = vi.fn(async () => {
+			await admission.promise;
+			throw new Error('Leave No Trace committed');
+		});
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({
+			promise: terminalPromise(), cancel: vi.fn(),
+		}));
+
+		const run = provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'SELECT * FROM SensitiveObject', queryMode: 'plain', ownerToken: 'owner-token', executionId: `manual-${_label}`,
+		});
+		await vi.waitFor(() => expect(provider.dispatchSqlResultOwnerAllowed).toHaveBeenCalledOnce());
+		admission.resolve();
+		await run;
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryError' }));
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryCancelled' }));
+		expect(JSON.stringify(provider.postMessage.mock.calls)).not.toContain('SECRET_OBJECT_NAME');
+		expect(JSON.stringify(provider.output.error.mock.calls)).not.toContain('SECRET_OBJECT_NAME');
+		if (_label === 'error') expect(provider.output.warn).toHaveBeenCalledWith(expect.stringContaining('details suppressed'));
+	});
+
+	it('notifies the exact tool execution before a newer SQL run supersedes it', async () => {
+		const provider = createSqlProviderHarness();
+		const toolCancel = vi.fn();
+		const toolGeneration = provider.supersedeSqlRunAdmission('sql_1');
+		provider.startSqlRunUnderAdmission(
+			'sql_1', toolGeneration, () => ({ cancel: toolCancel }), 'tool-execution-1',
+		);
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({
+			promise: Promise.resolve({ columns: [], rows: [], metadata: {} }), cancel: vi.fn(),
+		}));
+
+		await provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'SELECT newer', queryMode: 'plain', ownerToken: 'owner-token',
+		});
+
+		expect(toolCancel).toHaveBeenCalledOnce();
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'queryCancelled', boxId: 'sql_1', ownerToken: 'owner-token', executionId: 'tool-execution-1',
+		});
+	});
+
+	it('suppresses a completed SQL result when the final Leave No Trace assertion fails', async () => {
+		const provider = createSqlProviderHarness();
+		const pending = deferred<any>();
+		const cancel = vi.fn();
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({ promise: pending.promise, cancel }));
+		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(async () => { throw new Error('Leave No Trace blocked'); });
+
+		const task = provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db', query: 'SELECT 1', queryMode: 'plain', ownerToken: 'owner-token',
+		});
+		await flushPromises();
+		pending.resolve({ columns: [{ name: 'Value', type: 'int' }], rows: [[1]], metadata: {} });
+		await task;
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
+		expect(provider.postMessage).toHaveBeenCalledWith({ type: 'queryError', error: 'Leave No Trace blocked', boxId: 'sql_1', ownerToken: 'owner-token' });
+	});
+
+	it('suppresses a completed SQL result when canonical publication admission rejects', async () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({
+			promise: Promise.resolve({ columns: [{ name: 'Secret' }], rows: [['blocked-row']], metadata: {} }),
+			cancel: vi.fn(),
+		}));
+		provider.sqlWorkbench.dispatchSqlOwnerAllowed.mockRejectedValueOnce(new Error('Leave No Trace committed'));
+
+		await provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'SELECT Secret FROM T', queryMode: 'plain', ownerToken: 'owner-token',
+		});
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryError', error: 'Leave No Trace committed', boxId: 'sql_1',
+		}));
+	});
+
+	it('rejects delayed SQL rows after the section switches target', async () => {
+		const provider = createSqlProviderHarness();
+		const pending = deferred<any>();
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({ promise: pending.promise, cancel: vi.fn() }));
+
+		const task = provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db', query: 'SELECT 1', queryMode: 'plain', ownerToken: 'owner-token',
+		});
+		await flushPromises();
+		provider._sqlConnectionIdByBoxId.set('sql_1', 'sql-2');
+		provider._sqlDatabaseByBoxId.set('sql_1', 'OtherDb');
+		provider._sqlTargetGenerationByBoxId.set('sql_1', 2);
+		pending.resolve({ columns: [{ name: 'Value', type: 'int' }], rows: [[1]], metadata: {} });
+		await task;
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryError' }));
+	});
+
+	it('rejects delayed SQL rows after the saved connection target changes under the same ID', async () => {
+		const provider = createSqlProviderHarness();
+		const pending = deferred<any>();
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({ promise: pending.promise, cancel: vi.fn() }));
+
+		const task = provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db', query: 'SELECT 1', queryMode: 'plain', ownerToken: 'owner-token',
+		});
+		await flushPromises();
+		provider.sqlWorkbench.connectionManager.getConnection.mockReturnValue({
+			id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', port: 1434, authType: 'aad',
+		});
+		pending.resolve({ columns: [{ name: 'Value', type: 'int' }], rows: [[1]], metadata: {} });
+		await task;
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryError' }));
+	});
+
+	it('rejects delayed SQL rows after the AAD principal rotates under the same ID', async () => {
+		const provider = createSqlProviderHarness();
+		const pending = deferred<any>();
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({ promise: pending.promise, cancel: vi.fn() }));
+
+		const task = provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db', query: 'SELECT 1', queryMode: 'plain', ownerToken: 'owner-token',
+		});
+		await flushPromises();
+		provider.context.globalState.get.mockImplementation((key: string) => key === 'sql.auth.serverAccountMap'
+			? { 'server.example': 'account-b' }
+			: undefined);
+		provider.sqlWorkbench.serverAccountMap.getAccountsByServer.mockReturnValue({
+			'server.example': 'account-b',
+		});
+		pending.resolve({ columns: [{ name: 'Value', type: 'int' }], rows: [[1]], metadata: {} });
+		await task;
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryError' }));
+	});
+
+	it('strips persisted SQL results for a protected runtime connection', () => {
+		const provider = createSqlProviderHarness();
+		const state = {
+			sections: [
+				{ id: 'sql_1', type: 'sql', query: 'SELECT 1', principalFingerprint: 'principal-a', resultJson: '{"secret":true}' },
+				{ id: 'chart_1', type: 'chart', dataSourceId: 'sql_1' },
+			],
+		};
+
+		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
+		expect(sanitized).not.toBe(state);
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized.sections[0]).not.toHaveProperty('principalFingerprint');
+		expect(sanitized.sections[1]).toEqual(state.sections[1]);
+	});
+
+	it('removes an orphaned SQL principal fingerprint even when no result remains', () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => false);
+		const state = { sections: [{
+			id: 'sql_1', type: 'sql', query: 'SELECT 1', principalFingerprint: 'principal-a',
+		}] };
+
+		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
+
+		expect(sanitized.sections[0]).not.toHaveProperty('principalFingerprint');
+	});
+
+	it('strips restored SQL results by protected server before box ownership is known', () => {
+		const provider = createSqlProviderHarness();
+		provider._sqlConnectionIdByBoxId.clear();
+		const state = {
+			sections: [{ id: 'sql_restored', type: 'sql', serverUrl: 'server.example', resultJson: '{"secret":true}' }],
+		};
+
+		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+	});
+
+	it('strips restored SQL results by protected connection hint after target-signature drift', () => {
+		const provider = createSqlProviderHarness();
+		provider._sqlConnectionIdByBoxId.clear();
+		const state = {
+			sections: [{
+				id: 'sql_restored', type: 'sql', connectionIdHint: 'sql-1',
+				serverUrl: 'old.example', targetSignature: 'old-target', resultJson: '{"secret":true}',
+			}],
+		};
+
+		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+	});
+
+	it('resolves a stale SQL hint through one exact target signature and strips protected rows', () => {
+		const provider = createSqlProviderHarness();
+		const recreated = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
+		const targetSignature = sqlConnectionTargetSignature(recreated);
+		const state = { sections: [{
+			id: 'sql_restored', type: 'sql', connectionIdHint: 'sql_deleted', targetSignature,
+			serverUrl: recreated.serverUrl, resultJson: '{"secret":true}',
+		}] };
+
+		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+	});
+
+	it('fails closed when restored SQL result ownership is ambiguous', () => {
+		const provider = createSqlProviderHarness();
+		const connection = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
+		provider.sqlWorkbench.connectionManager.getConnections = vi.fn(() => [connection, { ...connection, id: 'sql-2' }]);
+		provider.sqlWorkbench.connectionManager.getConnection = vi.fn((id: string) => id === 'sql-1' ? connection : id === 'sql-2' ? { ...connection, id: 'sql-2' } : undefined);
+		const targetSignature = sqlConnectionTargetSignature(connection);
+		const state = { sections: [{ id: 'sql_restored', type: 'sql', connectionIdHint: 'sql_deleted', targetSignature, resultJson: '{"secret":true}' }] };
+
+		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+	});
+
+	it('strips persisted comparison results by durable SQL source lineage', () => {
+		const provider = createSqlProviderHarness();
+		provider._sqlConnectionIdByBoxId.clear();
+		const state = {
+			sections: [
+				{ id: 'sql_source', type: 'sql', serverUrl: 'server.example', query: 'SELECT 1' },
+				{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'sql_source', query: 'SELECT 2', resultJson: '{"secret":true}' },
+			],
+		};
+
+		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
+		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+		expect(sanitized.sections[1]).toMatchObject({ comparisonSourceBoxId: 'sql_source', query: 'SELECT 2' });
+	});
+
+	it('strips SQL comparison rows when the persisted source owner cannot be resolved', () => {
+		const provider = createSqlProviderHarness();
+		provider._sqlConnectionIdByBoxId.clear();
+		const state = {
+			sections: [
+				{ id: 'sql_source', type: 'sql', connectionIdHint: 'missing', targetSignature: 'missing-target', serverUrl: 'unknown.example', query: 'SELECT 1' },
+				{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'sql_source', query: 'SELECT 2', resultJson: '{"secret":true}' },
+			],
+		};
+
+		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
+		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+	});
+
+	it('uses persisted SQL owner B instead of a stale same-box live owner A during reload', () => {
+		const provider = createSqlProviderHarness();
+		const ownerA = { id: 'sql-a', name: 'A', dialect: 'mssql', serverUrl: 'shared.example', authType: 'sql-login', username: 'UserA' };
+		const ownerB = { id: 'sql-b', name: 'B', dialect: 'mssql', serverUrl: 'shared.example', authType: 'sql-login', username: 'UserB' };
+		provider._sqlConnectionIdByBoxId = new Map([['sql_source', 'sql-a']]);
+		provider.sqlWorkbench.connectionManager.getConnection = vi.fn((id: string) => id === 'sql-a' ? ownerA : id === 'sql-b' ? ownerB : undefined);
+		provider.sqlWorkbench.connectionManager.getConnections = vi.fn(() => [ownerA, ownerB]);
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn((id: string) => id === 'sql-b');
+		const state = { sections: [
+			{
+				id: 'sql_source', type: 'sql', connectionIdHint: 'sql-b',
+				targetSignature: sqlConnectionTargetSignature(ownerB), serverUrl: 'shared.example',
+				query: 'SELECT 1', resultJson: '{"owner":"B"}',
+			},
+			{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'sql_source', query: 'SELECT 2', resultJson: '{"owner":"B-comparison"}' },
+		] };
+
+		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+	});
+
+	it('preserves persisted Kusto comparison results during SQL privacy sanitization', () => {
+		const provider = createSqlProviderHarness();
+		const state = {
+			sections: [
+				{ id: 'query_source', type: 'query', clusterUrl: 'https://cluster.kusto.windows.net', database: 'Db', query: 'T | count' },
+				{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'query_source', query: 'T | summarize count()', resultJson: '{"value":2}' },
+			],
+		};
+
+		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
+		expect(sanitized.sections[1]).toHaveProperty('resultJson', '{"value":2}');
+		expect(provider._sqlComparisonOwnerByBoxId.has('query_cmp')).toBe(false);
+	});
+
+	it('does not mutate live comparison ownership while sanitizing stale persisted state', () => {
+		const provider = createSqlProviderHarness();
+		const liveOwner = {
+			sourceBoxId: 'sql_live', connectionId: 'sql-1', copilotSequence: 7,
+		};
+		provider._sqlComparisonOwnerByBoxId.set('query_live_comparison', liveOwner);
+
+		provider.sanitizeSqlLeaveNoTraceState({
+			sections: [
+				{ id: 'sql_stale', type: 'sql', connectionIdHint: 'missing', targetSignature: 'stale', query: 'SELECT 1' },
+				{ id: 'query_stale_comparison', type: 'query', comparisonSourceBoxId: 'sql_stale', resultJson: '{"secret":true}' },
+			],
+		});
+
+		expect(provider._sqlComparisonOwnerByBoxId.get('query_live_comparison')).toBe(liveOwner);
+	});
+
+	it('does not read SQL policy storage for pure Kusto, Markdown, and Chart state', async () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.refreshLeaveNoTracePolicy = vi.fn(async () => { throw new Error('SQL policy unavailable'); });
+		const state = {
+			sections: [
+				{ id: 'query_1', type: 'query', query: 'T | count' },
+				{ id: 'markdown_1', type: 'markdown', text: 'Notes' },
+				{ id: 'chart_1', type: 'chart', dataSourceId: 'query_1' },
+			],
+		};
+
+		await expect(provider.sanitizeSqlLeaveNoTraceStateFresh(state)).resolves.toBe(state);
+		expect(provider.sqlWorkbench.refreshLeaveNoTracePolicy).not.toHaveBeenCalled();
+	});
+
+	it('holds canonical SQL owner admission through publication and never exposes pre-admission rows', async () => {
+		const provider = createSqlProviderHarness();
+		const connection = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
+		const principal = sqlSchemaPrincipalFingerprintForPrincipal(connection, 'account-a')!;
+		let lockHeld = false;
+		provider.sqlWorkbench.runWithSqlOwnerSnapshotLock = vi.fn(async (run: (snapshot: any) => unknown) => {
+			lockHeld = true;
+			try {
+				return await run({
+					policy: { connectionIds: ['sql-1'], version: 2, globallyBlocked: false, revocationGenerations: { 'sql-1': 1 } },
+					connections: [connection], connectionVersion: 1,
+					accountsByServer: { 'server.example': 'account-a' }, principalVersion: 1,
+				});
+			} finally {
+				lockHeld = false;
+			}
+		});
+		let releasePublish!: () => void;
+		const publishGate = new Promise<void>(resolve => { releasePublish = resolve; });
+		const state = { sections: [{
+			id: 'sql_1', type: 'sql', connectionIdHint: 'sql-1',
+			targetSignature: sqlConnectionTargetSignature(connection), principalFingerprint: principal,
+			revocationGeneration: 0, resultJson: '{"secret":true}',
+		}] };
+
+		const publishing = provider.publishSqlLeaveNoTraceStateFresh(state, async (sanitized: typeof state) => {
+			expect(lockHeld).toBe(true);
+			expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+			await publishGate;
+			expect(lockHeld).toBe(true);
+			return 'published';
+		});
+		await vi.waitFor(() => expect(provider.sqlWorkbench.runWithSqlOwnerSnapshotLock).toHaveBeenCalledOnce());
+		expect(lockHeld).toBe(true);
+		releasePublish();
+
+		await expect(publishing).resolves.toBe('published');
+		expect(lockHeld).toBe(false);
+	});
+
+	it('strips orphaned comparison rows before SQL policy I/O during fresh save', async () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.refreshLeaveNoTracePolicy = vi.fn(async () => { throw new Error('SQL policy unavailable'); });
+		const state = { sections: [{
+			id: 'query_orphan', type: 'query', comparisonSourceBoxId: 'missing_source',
+			query: 'SELECT 2', resultJson: '{"secret":true}',
+		}] };
+
+		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(provider.sqlWorkbench.refreshLeaveNoTracePolicy).not.toHaveBeenCalled();
+	});
+
+	it('strips legacy SQL comparison rows when policy refresh fails during fresh save', async () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.refreshLeaveNoTracePolicy = vi.fn(async () => { throw new Error('SQL policy unavailable'); });
+		const state = { sections: [{
+			id: 'legacy_sql_cmp', type: 'query', connectionIdHint: 'sql_old',
+			query: 'SELECT 2', resultJson: '{"secret":true}',
+		}] };
+
+		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(provider.sqlWorkbench.dispatchSqlOwnerSnapshot).toHaveBeenCalledOnce();
+	});
+
+	it('strips persisted AAD source and comparison rows after the canonical principal rotates', async () => {
+		const provider = createSqlProviderHarness();
+		const connection = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
+		const principalA = sqlSchemaPrincipalFingerprintForPrincipal(connection, 'account-a')!;
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => false);
+		provider.sqlWorkbench.refreshLeaveNoTracePolicy = vi.fn(async () => []);
+		provider.sqlWorkbench.dispatchSqlOwnerSnapshot = vi.fn(async (dispatch: (snapshot: any) => unknown) => await dispatch({
+			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
+			connections: [connection], connectionVersion: 1,
+			accountsByServer: { 'server.example': 'account-b' }, principalVersion: 2,
+		}));
+		const state = {
+			sections: [
+				{
+					id: 'sql_1', type: 'sql', connectionIdHint: 'sql-1', serverUrl: 'server.example',
+					targetSignature: sqlConnectionTargetSignature(connection), principalFingerprint: principalA,
+					resultJson: '{"rows":[["source-a"]]}',
+				},
+				{
+					id: 'comparison_1', type: 'query', comparisonSourceBoxId: 'sql_1',
+					resultJson: '{"rows":[["comparison-a"]]}',
+				},
+			],
+		};
+
+		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
+
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized.sections[0]).not.toHaveProperty('principalFingerprint');
+		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+	});
+
+	it('strips persisted SQL rows when the canonical connection target changed before the watcher refresh', async () => {
+		const provider = createSqlProviderHarness();
+		const connection = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
+		const principal = sqlSchemaPrincipalFingerprintForPrincipal(connection, 'account-a')!;
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => false);
+		provider.sqlWorkbench.refreshLeaveNoTracePolicy = vi.fn(async () => []);
+		provider.sqlWorkbench.dispatchSqlOwnerSnapshot = vi.fn(async (dispatch: (snapshot: any) => unknown) => await dispatch({
+			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
+			connections: [{ ...connection, port: 1444 }], connectionVersion: 2,
+			accountsByServer: { 'server.example': 'account-a' }, principalVersion: 1,
+		}));
+		const state = { sections: [{
+			id: 'sql_1', type: 'sql', connectionIdHint: 'sql-1', serverUrl: 'server.example',
+			targetSignature: sqlConnectionTargetSignature(connection), principalFingerprint: principal,
+			resultJson: '{"rows":[["old-target"]]}',
+		}] };
+
+		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
+
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized.sections[0]).not.toHaveProperty('principalFingerprint');
+	});
+
+	it('strips pre-lineage SQL comparison rows while preserving Kusto, Markdown, and Chart state', () => {
+		const provider = createSqlProviderHarness();
+		const state = {
+			sections: [
+				{ id: 'legacy_sql_cmp', type: 'query', connectionIdHint: 'sql_legacy', query: 'SELECT 2', resultJson: '{"secret":true}' },
+				{ id: 'kusto_query', type: 'query', connectionIdHint: 'kusto-1', query: 'T | count', resultJson: '{"count":1}' },
+				{ id: 'markdown_1', type: 'markdown', text: 'Keep me' },
+				{ id: 'chart_1', type: 'chart', chartType: 'bar' },
+			],
+		};
+
+		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized.sections[1]).toHaveProperty('resultJson', '{"count":1}');
+		expect(sanitized.sections[2]).toMatchObject({ text: 'Keep me' });
+		expect(sanitized.sections[3]).toMatchObject({ chartType: 'bar' });
+	});
+
+	it('prunes derived comparison owners immediately when their SQL source closes', () => {
+		const provider = createSqlProviderHarness();
+		provider._closedStsBoxIds = new Set();
+		provider._openedStsBoxIds = new Set(['sql_1', 'sql_2']);
+		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT 1'], ['sql_2', 'SELECT 2']]);
+		provider._latestStsConnectSequenceByBoxId = new Map([['sql_1', 1], ['sql_2', 1]]);
+		provider._sqlOwnerTokenByBoxId = new Map();
+		provider._sqlComparisonOwnerByBoxId.set('comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-1' });
+		provider._sqlComparisonOwnerByBoxId.set('comparison_2', { sourceBoxId: 'sql_2', connectionId: 'sql-2' });
+		provider.cancelRunningQuery = vi.fn();
+		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
+
+		provider.handleStsDidClose('sql_1');
+
+		expect(provider.cancelRunningQuery).toHaveBeenCalledWith('sql_1', { notifyWebview: true });
+		expect(provider.cancelRunningQuery).toHaveBeenCalledWith('comparison_1', { notifyWebview: true });
+		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith('sql_1');
+		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith('comparison_1');
+		expect(provider._sqlComparisonOwnerByBoxId.has('comparison_1')).toBe(false);
+		expect(provider._sqlComparisonOwnerByBoxId.get('comparison_2')).toEqual({ sourceBoxId: 'sql_2', connectionId: 'sql-2' });
+	});
+
+	it('cancels and removes a SQL comparison owner immediately when the webview removes it', async () => {
+		const provider = createSqlProviderHarness();
+		provider._sqlComparisonOwnerByBoxId.set('comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-1', copilotSequence: 7 });
+		provider._sqlOwnerTokenByBoxId.set('comparison_1', { token: 'token', owner: {} });
+		provider.latestComparisonSummaryByKey = new Map([['sql_1::comparison_1', { dataMatches: true, headersMatch: true, timestamp: 1 }]]);
+		provider.cancelRunningQuery = vi.fn();
+		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
+
+		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'comparison_1', sourceBoxId: 'sql_1' } as any);
+
+		expect(provider.cancelRunningQuery).toHaveBeenCalledWith('comparison_1', { notifyWebview: true });
+		expect(provider.cancelRunningQuery).not.toHaveBeenCalledWith('sql_1', expect.anything());
+		expect(provider.copilot.cancelCopilotQueryTarget).toHaveBeenCalledWith('sql_1', 'comparison_1', 7);
+		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith('sql_1', 7);
+		expect(provider._sqlComparisonOwnerByBoxId.has('comparison_1')).toBe(false);
+		expect(provider._sqlOwnerTokenByBoxId.has('comparison_1')).toBe(false);
+		expect(provider.latestComparisonSummaryByKey.has('sql_1::comparison_1')).toBe(false);
+	});
+
+	it('ignores comparison removal events that are not tracked as SQL comparisons', async () => {
+		const provider = createSqlProviderHarness();
+		provider.cancelRunningQuery = vi.fn();
+		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
+
+		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'kusto_comparison', sourceBoxId: 'kusto_1' } as any);
+
+		expect(provider.cancelRunningQuery).not.toHaveBeenCalled();
+		expect(provider.copilot.cancelCopilotWriteQuery).not.toHaveBeenCalled();
+	});
+
+	it('cancels a tracked Kusto comparison and its exact Copilot sequence when removed', async () => {
+		const provider = createSqlProviderHarness();
+		provider.pendingComparisonEnsureByRequestId = new Map();
+		provider._comparisonOwnerByBoxId.set('kusto_comparison', {
+			sourceBoxId: 'kusto_1', copilotSequence: 9, comparisonRequestId: 'request-kusto',
+		});
+		provider.latestComparisonSummaryByKey = new Map();
+		provider.cancelRunningQuery = vi.fn();
+		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
+
+		await provider.handleWebviewMessage({
+			type: 'sqlComparisonRemoved', boxId: 'kusto_comparison', sourceBoxId: 'kusto_1',
+		} as any);
+
+		expect(provider.cancelRunningQuery).toHaveBeenCalledWith('kusto_comparison', { notifyWebview: true });
+		expect(provider.copilot.cancelCopilotQueryTarget).toHaveBeenCalledWith('kusto_1', 'kusto_comparison', 9);
+		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith('kusto_1', 9);
+		expect(provider._comparisonOwnerByBoxId.has('kusto_comparison')).toBe(false);
+	});
+
+	it('tombstones a SQL comparison but rejects a mismatched source cancellation', async () => {
+		const provider = createSqlProviderHarness();
+		provider._sqlComparisonOwnerByBoxId.set('comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-1', copilotSequence: 7 });
+		provider._sqlOwnerTokenByBoxId.set('comparison_1', { token: 'token', owner: {} });
+		provider.latestComparisonSummaryByKey = new Map();
+		provider.cancelRunningQuery = vi.fn();
+		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
+
+		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'comparison_1', sourceBoxId: 'sql_new' } as any);
+
+		expect(provider.cancelRunningQuery).toHaveBeenCalledWith('comparison_1', { notifyWebview: true });
+		expect(provider.copilot.cancelCopilotQueryTarget).toHaveBeenCalledWith('sql_1', 'comparison_1', 7);
+		expect(provider.copilot.cancelCopilotWriteQuery).not.toHaveBeenCalled();
+		expect(provider._sqlComparisonOwnerByBoxId.has('comparison_1')).toBe(false);
+		expect(provider._sqlOwnerTokenByBoxId.has('comparison_1')).toBe(false);
+	});
+
+	it('tombstones a SQL comparison but rejects whole-sequence cancellation when the source is omitted', async () => {
+		const provider = createSqlProviderHarness();
+		provider._sqlComparisonOwnerByBoxId.set('comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-1', copilotSequence: 7 });
+		provider.latestComparisonSummaryByKey = new Map();
+		provider.cancelRunningQuery = vi.fn();
+		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
+
+		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'comparison_1' } as any);
+
+		expect(provider.copilot.cancelCopilotQueryTarget).toHaveBeenCalledWith('sql_1', 'comparison_1', 7);
+		expect(provider.copilot.cancelCopilotWriteQuery).not.toHaveBeenCalled();
+		expect(provider._sqlComparisonOwnerByBoxId.has('comparison_1')).toBe(false);
+	});
+
+	it('does not cancel newer source work for a restored comparison without a live sequence', async () => {
+		const provider = createSqlProviderHarness();
+		provider._sqlComparisonOwnerByBoxId.set('comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-1' });
+		provider.latestComparisonSummaryByKey = new Map();
+		provider.cancelRunningQuery = vi.fn();
+		provider.copilot = { cancelCopilotWriteQuery: vi.fn() };
+
+		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'comparison_1', sourceBoxId: 'sql_1' } as any);
+
+		expect(provider.copilot.cancelCopilotWriteQuery).not.toHaveBeenCalled();
+		expect(provider.cancelRunningQuery).toHaveBeenCalledWith('comparison_1', { notifyWebview: true });
+	});
+
+	it('preserves a live comparison sequence while rebuilding owners from persisted state', () => {
+		const provider = createSqlProviderHarness();
+		const liveOwner = { sourceBoxId: 'sql_1', connectionId: 'sql-1', copilotSequence: 7, comparisonRequestId: 'request-1' };
+		provider._sqlComparisonOwnerByBoxId.set('comparison_1', liveOwner);
+
+		provider.rebuildSqlComparisonOwners([
+			{ id: 'sql_1', type: 'sql' },
+			{ id: 'comparison_1', type: 'query', comparisonSourceBoxId: 'sql_1' },
+		]);
+
+		expect(provider._sqlComparisonOwnerByBoxId.get('comparison_1')).toBe(liveOwner);
+		expect(provider._sqlComparisonOwnerByBoxId.get('comparison_1')?.copilotSequence).toBe(7);
+	});
+
+	it('tombstones a comparison removed while SQL policy admission is pending', async () => {
+		const provider = createSqlProviderHarness();
+		const policy = deferred<void>();
+		const resolve = vi.fn();
+		const reject = vi.fn();
+		provider.pendingComparisonEnsureByRequestId = new Map([['request-1', {
+			resolve,
+			reject,
+			timer: setTimeout(() => undefined, 10_000),
+			sourceBoxId: 'sql_1',
+			sqlConnectionId: 'sql-1',
+			copilotSequence: 7,
+		}]]);
+		provider.latestComparisonSummaryByKey = new Map();
+		provider.cancelRunningQuery = vi.fn();
+		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
+		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(() => policy.promise);
+
+		const ensured = provider.handleWebviewMessage({
+			type: 'comparisonBoxEnsured', requestId: 'request-1', comparisonBoxId: 'comparison_1',
+		} as any);
+		await vi.waitFor(() => expect(provider.sqlWorkbench.assertSqlConnectionAllowed).toHaveBeenCalledOnce());
+		expect(provider._sqlComparisonOwnerByBoxId.get('comparison_1')).toMatchObject({
+			sourceBoxId: 'sql_1', copilotSequence: 7, comparisonRequestId: 'request-1',
+		});
+
+		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'comparison_1', sourceBoxId: 'sql_1' } as any);
+
+		expect(reject).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' }));
+		expect(provider.pendingComparisonEnsureByRequestId.has('request-1')).toBe(false);
+		expect(provider._sqlComparisonOwnerByBoxId.has('comparison_1')).toBe(false);
+		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith('sql_1', 7);
+
+		policy.resolve(undefined);
+		await ensured;
+		expect(resolve).not.toHaveBeenCalled();
+		expect(provider._sqlComparisonOwnerByBoxId.has('comparison_1')).toBe(false);
+	});
+
+	it('sends metadata-only SQL connection changes without invalidating an equivalent endpoint', async () => {
+		const provider = createSqlProviderHarness();
+		const previous = {
+			id: 'sql-1', name: 'Old name', dialect: 'mssql', serverUrl: 'server.example',
+			authType: 'sql-login', username: 'user',
+		};
+		const next = { ...previous, name: 'New name', port: 1433 };
+		provider.sqlConnectionSignatureById = new Map([['sql-1', sqlConnectionTargetSignature(previous)]]);
+		provider.sendSqlConnectionsData = vi.fn(async () => undefined);
+		provider.copilot = { invalidateSqlConnections: vi.fn() };
+
+		await provider.handleSqlConnectionsChanged([next]);
+
+		expect(provider.sendSqlConnectionsData).toHaveBeenCalledOnce();
+		expect(provider.copilot.invalidateSqlConnections).not.toHaveBeenCalled();
+	});
 	it('explicit user cancel posts queryCancelled immediately and suppresses a late result', async () => {
 		const provider = createProviderHarness();
 		const pending = deferred<any>();
@@ -87,19 +1538,87 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			clientActivityId: 'KW.execute_query;manual-cancel',
 		});
 
-		const task = provider.executeQueryFromWebview(executeMessage('query_1'));
+		const message = executeMessage('query_1');
+		const task = provider.executeQueryFromWebview(message);
 		await flushPromises();
 
 		provider.cancelRunningQuery('query_1', { notifyWebview: true });
 
 		expect(cancel).toHaveBeenCalledTimes(1);
-		expect(provider.runningQueriesByBoxId.has('query_1')).toBe(false);
-		expect(provider.postMessage).toHaveBeenCalledWith({ type: 'queryCancelled', boxId: 'query_1' });
+		expect(provider.isRunningQueryCurrent('query_1', cancel, 1)).toBe(false);
+		expect(provider.postMessage).toHaveBeenCalledWith({ type: 'queryCancelled', boxId: 'query_1', executionId: message.executionId });
 
 		pending.resolve(queryResult('late'));
 		await task;
 
-		expect(provider.postMessage).not.toHaveBeenCalledWith({ type: 'queryResult', result: queryResult('late'), boxId: 'query_1' });
+		expect(provider.postMessage).not.toHaveBeenCalledWith({ type: 'queryResult', result: queryResult('late'), boxId: 'query_1', executionId: message.executionId });
+	});
+
+	it('does not create a Kusto transport after Cancel retires selection preflight', async () => {
+		const provider = createProviderHarness();
+		const selection = deferred<void>();
+		provider.connection.saveLastSelection.mockReturnValue(selection.promise);
+		const message = executeMessage('query_1');
+
+		const run = provider.executeQueryFromWebview(message);
+		await vi.waitFor(() => expect(provider.connection.saveLastSelection).toHaveBeenCalledOnce());
+		await provider.handleWebviewMessage({
+			type: 'cancelQuery', boxId: message.boxId, executionId: message.executionId,
+		} as any);
+		selection.resolve();
+		await run;
+
+		expect(provider.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'queryCancelled', boxId: message.boxId, executionId: message.executionId,
+		});
+	});
+
+	it('continues Kusto execution when saving the last selection fails', async () => {
+		const provider = createProviderHarness();
+		const message = executeMessage('query_1');
+		provider.connection.saveLastSelection.mockRejectedValue(new Error('storage unavailable'));
+		provider.kustoClient.executeQueryCancelable.mockReturnValue({
+			promise: Promise.resolve(queryResult('current')), cancel: vi.fn(),
+			clientActivityId: 'KW.execute_query;selection-failure', getAccountPartition: () => 'partition-current',
+		});
+
+		await provider.executeQueryFromWebview(message);
+
+		expect(provider.kustoClient.executeQueryCancelable).toHaveBeenCalledOnce();
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'queryResult', result: queryResult('current'), boxId: message.boxId, executionId: message.executionId,
+		});
+		expect(provider.output.warn).toHaveBeenCalledWith('[query] Failed to save the last selection: storage unavailable');
+	});
+
+	it('cancels a stale transport when a newer run wins during preflight promotion', async () => {
+		const provider = createProviderHarness();
+		const staleCancel = vi.fn();
+		const newerCancel = vi.fn();
+		const message = executeMessage('query_1');
+		provider.kustoClient.executeQueryCancelable.mockImplementationOnce(() => {
+			provider.queryRuns.register(message.boxId, {
+				cancel: newerCancel, runSeq: 99, executionId: 'newer-execution',
+			});
+			return {
+				promise: Promise.resolve(queryResult('stale')),
+				cancel: staleCancel,
+				clientActivityId: 'KW.execute_query;stale-promotion',
+				getAccountPartition: () => 'partition-current',
+			};
+		});
+
+		await provider.executeQueryFromWebview(message);
+
+		expect(staleCancel).toHaveBeenCalledOnce();
+		expect(newerCancel).not.toHaveBeenCalled();
+		expect(provider.queryRuns.get(message.boxId)).toEqual({
+			cancel: newerCancel, runSeq: 99, executionId: 'newer-execution',
+		});
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryResult', executionId: message.executionId,
+		}));
 	});
 
 	it('rerunning the same box silently cancels the old run and only posts the new result', async () => {
@@ -112,14 +1631,16 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			.mockReturnValueOnce({ promise: first.promise, cancel: firstCancel, clientActivityId: 'KW.execute_query;first', getAccountPartition: () => 'partition-current' })
 			.mockReturnValueOnce({ promise: Promise.resolve(secondResult), cancel: secondCancel, clientActivityId: 'KW.execute_query;second', getAccountPartition: () => 'partition-current' });
 
-		const firstTask = provider.executeQueryFromWebview(executeMessage('query_1', 'print label="first"'));
+		const firstMessage = executeMessage('query_1', 'print label="first"');
+		const secondMessage = executeMessage('query_1', 'print label="second"');
+		const firstTask = provider.executeQueryFromWebview(firstMessage);
 		await flushPromises();
 
-		await provider.executeQueryFromWebview(executeMessage('query_1', 'print label="second"'));
+		await provider.executeQueryFromWebview(secondMessage);
 
 		expect(firstCancel).toHaveBeenCalledTimes(1);
 		expect(provider.postMessage).not.toHaveBeenCalledWith({ type: 'queryCancelled', boxId: 'query_1' });
-		expect(provider.postMessage).toHaveBeenCalledWith({ type: 'queryResult', result: secondResult, boxId: 'query_1' });
+		expect(provider.postMessage).toHaveBeenCalledWith({ type: 'queryResult', result: secondResult, boxId: 'query_1', executionId: secondMessage.executionId });
 
 		first.resolve(queryResult('first'));
 		await firstTask;
@@ -141,16 +1662,20 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			.mockReturnValueOnce({ promise: Promise.resolve(firstResult), cancel: vi.fn(), clientActivityId: 'KW.execute_query;first', getAccountPartition: () => 'partition-current' })
 			.mockReturnValueOnce({ promise: Promise.resolve(secondResult), cancel: vi.fn(), clientActivityId: 'KW.execute_query;second', getAccountPartition: () => 'partition-current' });
 
-		const firstTask = provider.executeQueryFromWebview(executeMessage('query_1', 'print label="first"'));
+		const firstMessage = executeMessage('query_1', 'print label="first"');
+		const secondMessage = executeMessage('query_1', 'print label="second"');
+		const firstTask = provider.executeQueryFromWebview(firstMessage);
 		await flushPromises();
-		const secondTask = provider.executeQueryFromWebview(executeMessage('query_1', 'print label="second"'));
+		const secondTask = provider.executeQueryFromWebview(secondMessage);
 		snapshot.resolve();
 		await Promise.all([firstTask, secondTask]);
 
 		const queryResults = provider.postMessage.mock.calls
 			.map((call: unknown[]) => call[0] as any)
 			.filter((message: any) => message?.type === 'queryResult');
-		expect(queryResults).toEqual([{ type: 'queryResult', result: secondResult, boxId: 'query_1' }]);
+		expect(queryResults).toEqual([{
+			type: 'queryResult', result: secondResult, boxId: 'query_1', executionId: secondMessage.executionId,
+		}]);
 	});
 
 	it('does not publish account A rows after the snapshot adopts account B', async () => {
@@ -175,12 +1700,12 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
 	});
 
-	it('explicit cancel with no running query still unsticks the webview', async () => {
+	it('ignores an explicit cancel whose execution ID has no running owner', async () => {
 		const provider = createProviderHarness();
 
-		await provider.handleWebviewMessage({ type: 'cancelQuery', boxId: 'query_missing' } as any);
+		await provider.handleWebviewMessage({ type: 'cancelQuery', boxId: 'query_missing', executionId: 'missing' } as any);
 
-		expect(provider.postMessage).toHaveBeenCalledWith({ type: 'queryCancelled', boxId: 'query_missing' });
+		expect(provider.postMessage).not.toHaveBeenCalled();
 	});
 
 	it('cancels only the requested box when multiple boxes are running', () => {
@@ -194,9 +1719,10 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 
 		expect(cancelA).toHaveBeenCalledTimes(1);
 		expect(cancelB).not.toHaveBeenCalled();
-		expect(provider.runningQueriesByBoxId.has('query_a')).toBe(false);
-		expect(provider.runningQueriesByBoxId.has('query_b')).toBe(true);
 		expect(provider.postMessage).toHaveBeenCalledWith({ type: 'queryCancelled', boxId: 'query_a' });
+
+		provider.cancelRunningQuery('query_b');
+		expect(cancelB).toHaveBeenCalledTimes(1);
 	});
 
 	it('unregisters only the matching running query handle', () => {
@@ -208,9 +1734,9 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.registerRunningQuery('query_1', newCancel, 2, 'KW.execute_query;new');
 		provider.unregisterRunningQuery('query_1', oldCancel, 1);
 
-		expect(provider.runningQueriesByBoxId.has('query_1')).toBe(true);
+		expect(provider.isRunningQueryCurrent('query_1', newCancel, 2)).toBe(true);
 		provider.unregisterRunningQuery('query_1', newCancel, 2);
-		expect(provider.runningQueriesByBoxId.has('query_1')).toBe(false);
+		expect(provider.isRunningQueryCurrent('query_1', newCancel, 2)).toBe(false);
 	});
 
 	it('strips leading comments only from the control-command payload sent to Kusto', async () => {

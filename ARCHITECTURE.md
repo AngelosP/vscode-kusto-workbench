@@ -17,6 +17,7 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `queryEditorCopilot.ts` | Copilot integration (extracted from provider) |
 | `queryEditorConnection.ts` | Connection management (extracted from provider) |
 | `queryEditorSchema.ts` | Schema handling (extracted from provider) |
+| `queryRunCoordinator.ts` | Transport-neutral active-query sequence, identity, cancellation, and guarded cleanup |
 | `queryEditorTypes.ts` | Shared types, including `IncomingWebviewMessage` |
 | `powerBiExport.ts` | HTML dashboard export: generates `.pbip`/PBIR/TMDL Power BI projects backed by Kusto data sources |
 | `powerBiPublish.ts` | Fabric/Power BI service publishing: creates or updates SemanticModel and Report items from generated PBIR/TMDL artifacts |
@@ -48,16 +49,25 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `firstLaunch/firstLaunchTriggers.ts` | Diff- and sidecar-aware supported-file trigger registration |
 | `firstLaunch/firstLaunchProfileLease.ts` | `proper-lockfile`-backed profile lease preventing concurrent setup across VS Code windows |
 | `sqlConnectionManager.ts` | Persists SQL connections in VS Code global state, passwords in SecretStorage |
-| `sqlClient.ts` | SQL query client with pool management, cancelable execution, AAD/SQL Login auth |
+| `sqlClient.ts` | Stable SQL data-plane facade over SQL Tools Service: database/schema discovery, cancelable execution |
 | `sqlEditorSchema.ts` | SQL schema caching + webview wiring (`prefetchSqlSchema`/`sqlSchemaData`) |
 | `copilotChatFlavor.ts` | Flavor configuration for Copilot chat (Kusto vs SQL) |
-| `sql/sqlDialect.ts` | SqlDialect interface + shared types for pluggable SQL backends |
-| `sql/mssqlDialect.ts` | MSSQL dialect (pool, execute, schema, error classification) |
-| `sql/sqlDialectRegistry.ts` | Dialect registry: register/get/list SQL dialects |
+| `sql/sqlDialect.ts` | Persisted SQL dialect metadata and shared schema types |
+| `sql/mssqlDialect.ts` | MSSQL connection-form metadata (`mssql` ID, auth modes, default port) |
+| `sql/sqlDialectRegistry.ts` | Dialect metadata registry used by connection UIs |
+| `sql/mssqlSchema.ts` | MSSQL schema catalog queries and transport-neutral parsers |
+| `sql/sqlWorkbenchService.ts` | Extension-scoped owner for SQL connections, STS runtime, query broker, and client facade |
+| `sql/sqlEditorOwnershipRegistry.ts` | Editor-scoped SQL target, principal, revocation, comparison, and owner-token admission |
+| `sql/sqlLeaveNoTracePolicyStore.ts` | Versioned, lock-protected, cross-extension-host SQL privacy policy with atomic updates and watcher propagation |
 | `sql/sqlAuthState.ts` | Per-connection auth state tracking (AAD vs SQL Login) |
+| `sql/stsProtocol.ts` | Typed contracts for the pinned SQL Tools Service JSON-RPC protocol |
+| `sql/stsRuntime.ts` | Lazy, extension-scoped SQL Tools Service startup and shutdown |
+| `sql/stsQueryService.ts` | Query execution state machine: connect, execute, subset paging, cancel, dispose, disconnect |
+| `sql/stsResultAdapter.ts` | Converts STS column/cell envelopes into the shared `QueryResult` shape |
+| `sql/stsConnectionOptions.ts` | Purpose-specific STS authentication, TLS, and timeout options |
 | `sql/stsProcessManager.ts` | SQL Tools Service (STS) process lifecycle: spawn, restart with backoff, JSON-RPC connection |
 | `sql/stsLanguageService.ts` | STS language service client: initialize, completion requests, document sync |
-| `sql/stsDownloader.ts` | Downloads and extracts the STS binary on first use |
+| `sql/stsDownloader.ts` | Downloads, verifies, atomically installs, and caches the STS binary on first use |
 
 ## KQL Language Service (`src/host/kqlLanguageService/`)
 
@@ -352,25 +362,30 @@ Supplemental traces are bounded and sanitized: model, schema, request, box, clus
 
 SQL sections provide a near-identical notebook experience for T-SQL queries against SQL Server / Azure SQL databases. The system mirrors the Kusto architecture with full separation.
 
-### Dialect System
+### Dialect Metadata
 
-* **`SqlDialect`** interface (`sql/sqlDialect.ts`) — pluggable backend contract: `createPool`, `closePool`, `executeQuery`, `getDatabases`, `getDatabaseSchema`, `isAuthError`, `isCancelError`, `formatError`
-* **`MssqlDialect`** (`sql/mssqlDialect.ts`) — first dialect implementation using the `mssql` npm package
-* **`SqlDialectRegistry`** (`sql/sqlDialectRegistry.ts`) — register/get/list dialects. Future backends (PostgreSQL, MySQL) require only a new dialect file + registration
+* **`SqlDialect`** (`sql/sqlDialect.ts`) — persisted/UI metadata contract: ID, display name, default port, and authentication modes
+* **`MssqlDialect`** (`sql/mssqlDialect.ts`) — Microsoft SQL Server / Azure SQL metadata; saved connections continue to use `dialect: "mssql"`
+* **`SqlDialectRegistry`** (`sql/sqlDialectRegistry.ts`) — register/get/list metadata for connection forms and viewers
 
 ### Host Services
 
 * **`SqlConnectionManager`** — CRUD for SQL connections. IDs use `sql_` prefix. Connections in `globalState`, passwords in `SecretStorage`
-* **`SqlQueryClient`** — pool management with serialization locks, cancelable query execution (deferred race pattern matching `KustoQueryClient`), AAD auth via `vscode.authentication`
+* **`SqlWorkbenchService`** — one extension-scoped SQL owner shared by editors, Connection Manager, Cached Values, Copilot, and tools
+* **`SqlEditorOwnershipRegistry`** — one editor-scoped authority for section/comparison result ownership and owner tokens
+* **`SqlQueryClient`** — stable caller-facing facade over STS database discovery, schema queries, execution, and cancellation
 * **`SqlSchemaService`** (`sqlEditorSchema.ts`) — disk + memory schema cache, webview wiring via `prefetchSqlSchema`/`sqlSchemaData` messages
 
-### SQL Tools Service (STS) — IntelliSense Engine
+### SQL Tools Service (STS) — Language And Data Engine
 
-Inline completions for SQL sections are powered by Microsoft's SQL Tools Service, the same engine behind the official SQL Server extension. The STS runs as a separate process communicating over JSON-RPC.
+SQL sections use Microsoft's SQL Tools Service, the same engine behind the official SQL Server extension. One lazily started process communicates over JSON-RPC and serves both language sessions and the SQL data plane.
 
-* **`StsDownloader`** (`sql/stsDownloader.ts`) — downloads the platform-specific STS binary on first activation. Stores it in the extension's global storage
-* **`StsProcessManager`** (`sql/stsProcessManager.ts`) — spawns the STS process, establishes a `vscode-jsonrpc` `MessageConnection`, handles restarts with exponential backoff (max 2 restarts), and enforces timeouts (15s initialize, 10s per request)
-* **`StsLanguageService`** (`sql/stsLanguageService.ts`) — LSP client layer: sends `textDocument/completion` requests, manages document open/change/close lifecycle, translates Monaco positions to LSP positions
+* **`StsDownloader`** — pins release `6.0.20260409.1`, verifies each platform archive with SHA-256, installs through a locked staging directory, and validates the cached binary manifest
+* **`StsProcessManager`** — spawns STS, establishes a `vscode-jsonrpc` connection, exposes process epochs, settles failed readiness generations, rebinds subscriptions after restart, and supports per-request timeouts
+* **`StsLanguageService`** — editor-scoped LSP client with session-unique owner URIs, document lifecycle, schema-ready handling, restart replay, and disposal
+* **`StsQueryService`** — extension-scoped data-plane broker using `connection/connect`, `connection/listdatabases`, `query/executeString`, `query/complete`, paged `query/subset`, `query/cancel`, `query/dispose`, and `connection/disconnect`
+
+Every query execution gets a unique owner URI. The public `QueryResult`, host/webview messages, and `.kqlx`/`.sqlx` formats remain shared with Kusto and unchanged. STS results are converted before entering shared table, chart, transformation, HTML, comparison, and persistence paths.
 
 ### Webview Components
 
@@ -396,7 +411,11 @@ SQL Copilot rules: `copilot-instructions/sql-query-rules.md`, optimization rules
 * SQL events use `sql-` prefix (e.g. `sql-connection-changed`, `sql-database-changed`)
 * SQL state is separate: `sqlConnections` / `sqlCachedDatabases` in `state.ts`
 * Connection resolution matches by `serverUrl` (lowercase) instead of Kusto's hostname normalization
-* `mssql` is externalized in esbuild (native/complex transitive deps)
+* SQL Tools Service is downloaded on first SQL use; it is not bundled in the VSIX
+* Data-plane TLS uses mandatory encryption with certificate validation; language connections preserve their existing compatibility policy
+* SQL Leave No Trace policy is versioned in extension global storage, serialized with a filesystem lock, atomically replaced, and watched by every extension host so toggles propagate across VS Code windows
+* SQL Leave No Trace connections fail closed before STS/model dispatch because STS may spool query results to disk; enabling the policy cancels data/Copilot work, closes language owners, clears shared/dependent results, and blocks cached or persisted SQL result restoration
+* A terminally exhausted STS manager is replaced by `StsRuntime`; open editors recreate language services and replay their latest document/target state against the replacement manager
 * File format: `.kqlx` supports mixed Kusto+SQL; `.sqlx` allows only SQL sections
 
 ## Diagnostic Codes
@@ -558,9 +577,8 @@ Schema-specific tools still include `kusto-workbench_refresh-schema` and `kusto-
 * `monaco-editor` — Code editor
 * `@toast-ui/editor` — WYSIWYG markdown editor
 * `echarts` — Charting library
-* `mssql` — Node.js SQL Server client (uses tedious). Externalized in esbuild
 * `vscode-jsonrpc` — JSON-RPC protocol for STS communication
-* Microsoft SQL Tools Service — bundled binary for SQL IntelliSense (downloaded on first use)
+* Microsoft SQL Tools Service — downloaded and integrity-checked on first SQL use; provides IntelliSense and query execution
 
 ## Test Coverage
 
@@ -587,10 +605,16 @@ Tests are organized under `tests/`:
 | `kqlDiagnostics.test.ts` | KQL error detection, pipe operator validation, statement splitting |
 | `message-protocol.test.ts` | Host↔webview message type alignment, payload shape contracts, including dashboard export/publish messages |
 | `powerBiExport.test.ts` | HTML dashboard provenance parsing, DAX generation, PBIR/TMDL output, native slicers, Import/DirectQuery model generation, and CSS patching |
-| `mssqlDialect.test.ts` | MSSQL dialect: pool creation, query execution, schema extraction, error classification |
+| `mssqlDialect.test.ts` | MSSQL persisted/UI dialect metadata |
+| `mssqlSchema.test.ts` | MSSQL schema catalog query and parser compatibility |
 | `sqlDialectRegistry.test.ts` | Dialect registry: register, get, list, unknown dialect handling |
 | `sqlFormat.test.ts` | `.sqlx` file parsing, serialization, section type validation |
-| `sqlClient.test.ts` | SQL query client: pool management, cancellation, auth flows |
+| `sqlClient.test.ts` | SQL client error contract |
+| `stsProcessManager.test.ts` | STS process epochs, request timeouts, and restart-safe subscriptions |
+| `stsQueryService.test.ts` | STS connection, execution, paging, cancellation, cleanup, and database listing |
+| `stsResultAdapter.test.ts` | STS column and cell conversion into shared query results |
+| `stsConnectionOptions.test.ts` | STS authentication, TLS, server/port, and timeout options |
+| `sqlLeaveNoTrace.test.ts` | SQL Leave No Trace fail-closed policy before STS startup |
 | `sqlPrettify.test.ts` | SQL formatting via sql-formatter |
 | `sqlAuthState.test.ts` | Per-connection auth state tracking |
 | `sqlFavorites.test.ts` | SQL favorites: add, remove, match, persistence |

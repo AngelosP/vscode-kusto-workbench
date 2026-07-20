@@ -29,7 +29,7 @@ import {
 import type { KustoConnectionFormSubmitDetail } from '../components/kw-kusto-connection-form.js';
 import '../components/kw-kusto-connection-form.js';
 import { __kustoOpenShareModal, getRunModeForPersistence } from './kw-query-toolbar.js';
-import { subscribeKustoPreparation, type KustoPreparationState } from '../core/state.js';
+import { optimizationMetadataByBoxId, subscribeKustoPreparation, type KustoPreparationState } from '../core/state.js';
 import { optimizeQueryWithCopilot, acceptOptimizations } from './query-execution.controller.js';
 import { QueryConnectionController } from './query-connection.controller.js';
 import { QueryExecutionController } from './query-execution.controller.js';
@@ -52,6 +52,7 @@ export interface QuerySectionData {
 	connectionIdHint?: string;
 	database: string;
 	query: string;
+	comparisonSourceBoxId?: string;
 	expanded: boolean;
 	resultsVisible: boolean;
 	resultJson?: string;
@@ -208,6 +209,15 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	// ── ReactiveControllers ──────────────────────────────────────────────────
 	public connectionCtrl = new QueryConnectionController(this as any);
 	public executionCtrl = new QueryExecutionController(this as any);
+
+	public beginQueryExecution(executionId: string): boolean { return this.executionCtrl.beginQueryExecution(executionId); }
+	public getActiveExecutionId(): string { return this.executionCtrl.getActiveExecutionId(); }
+	public acceptsQueryTerminal(executionId: string): boolean { return this.executionCtrl.acceptsQueryTerminal(executionId); }
+	public completeQueryExecution(executionId: string): boolean { return this.executionCtrl.completeQueryExecution(executionId); }
+	public cancelActiveQueryExecution(): string | undefined { return this.executionCtrl.cancelActiveQueryExecution(); }
+	public setExternalQueryExecuting(executing: boolean, executionId: string): boolean {
+		return this.executionCtrl.setExternalQueryExecuting(executing, executionId);
+	}
 	public copilotChatCtrl = new CopilotChatManagerController(this as any, kustoWebviewFlavor);
 
 	// ── Styles ────────────────────────────────────────────────────────────────
@@ -1173,8 +1183,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	 */
 	public displayResult(
 		result: { columns?: { name: string; type?: string }[]; rows?: unknown[][]; metadata?: Record<string, unknown> },
-		options?: { label?: string; showExecutionTime?: boolean }
-	): void {
+		options?: { label?: string; showExecutionTime?: boolean; executionId?: string }
+	): boolean {
+		if (options?.executionId && !this.acceptsQueryTerminal(options.executionId)) return false;
 		this._testExecuting = false;
 		this._testHasError = false;
 		this._testHasResults = true;
@@ -1191,7 +1202,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const resultsDiv = document.getElementById(this.boxId + '_results');
 		const resultsWrapper = document.getElementById(this.boxId + '_results_wrapper');
 		const resizer = document.getElementById(this.boxId + '_results_resizer');
-		if (!resultsDiv) return;
+		if (!resultsDiv) return false;
 
 		// Remove stale overlay — fresh results are arriving.
 		try { resultsDiv.classList.remove('is-stale'); } catch (e) { console.error('[kusto]', e); }
@@ -1201,7 +1212,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			resultsDiv.innerHTML = '<div class="results-header"><span class="results-title">No results</span></div>';
 			if (resultsWrapper) { resultsWrapper.style.display = 'block'; resultsWrapper.style.height = ''; }
 			if (resizer) resizer.style.display = 'none';
-			return;
+			return true;
 		}
 
 		const dt = document.createElement('kw-data-table') as any;
@@ -1338,6 +1349,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			setTimeout(() => __kustoAutoSizeResults(this.boxId), 50);
 			setTimeout(() => __kustoAutoSizeResults(this.boxId), 150);
 		}
+		return true;
 	}
 
 	// ── Error display ─────────────────────────────────────────────────────────
@@ -1353,15 +1365,17 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	 */
 	public displayError(
 		errorOrModel: unknown,
-		clientActivityId?: string
-	): void {
+		clientActivityId?: string,
+		executionId?: string,
+	): boolean {
+		if (executionId && !this.acceptsQueryTerminal(executionId)) return false;
 		this._testExecuting = false;
 		this._testHasError = true;
 		this._testHasResults = false;
 		const resultsDiv = document.getElementById(this.boxId + '_results');
 		const resultsWrapper = document.getElementById(this.boxId + '_results_wrapper');
 		const resizer = document.getElementById(this.boxId + '_results_resizer');
-		if (!resultsDiv) return;
+		if (!resultsDiv) return false;
 
 		// Remove stale overlay.
 		try { resultsDiv.classList.remove('is-stale'); } catch (e) { console.error('[kusto]', e); }
@@ -1379,7 +1393,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (model) {
 			if (model.kind === 'none') {
 				resultsDiv.classList.remove('visible');
-				return;
+				return true;
 			}
 			if (model.kind === 'badrequest') {
 				const msgEl = document.createElement('div');
@@ -1477,13 +1491,14 @@ export class KwQuerySection extends LitElement implements SectionElement {
 				try { window.__kustoAutoFindInQueryEditor(this.boxId, String(autoFind)); } catch (e) { console.error('[kusto]', e); }
 			}, 0);
 		}
+		return true;
 	}
 
 	/**
 	 * Display a cancellation message in the results area.
 	 */
-	public displayCancelled(): void {
-		this.displayError('Cancelled.');
+	public displayCancelled(executionId?: string): boolean {
+		return this.displayError('Cancelled.', undefined, executionId);
 	}
 
 	public clearResults(): void {
@@ -1559,6 +1574,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		try { const w = this.copilotChatCtrl.getCopilotChatWidthPx(); if (typeof w === 'number' && Number.isFinite(w)) copilotChatWidthPx = w; } catch (e) { console.error('[kusto]', e); }
 
 		const shouldPersist = !!(resultJson && !this._isLeaveNoTrace(clusterUrl));
+		const comparisonSourceBoxId = String(optimizationMetadataByBoxId[b]?.sourceBoxId || '').trim();
 		const editorHeightPx = this._getEditorHeightPx();
 		const resultsHeightPx = this._getResultsHeightPx();
 
@@ -1569,6 +1585,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			...(authorityId ? { authorityId } : {}),
 			...(connectionIdHint ? { connectionIdHint } : {}),
 			database: databaseForPersistence, query, expanded, resultsVisible,
+			...(comparisonSourceBoxId ? { comparisonSourceBoxId } : {}),
 			...(shouldPersist ? { resultJson } : {}),
 			runMode: String(runMode), cacheEnabled, cacheValue, cacheUnit,
 			...(editorHeightPx !== undefined ? { editorHeightPx } : {}),

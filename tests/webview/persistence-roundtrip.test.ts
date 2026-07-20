@@ -12,9 +12,15 @@ const testState = vi.hoisted(() => {
 	const queryEditors: Record<string, { getValue: () => string; layout?: () => void }> = {};
 	const markdownEditors: Record<string, { getValue: () => string }> = {};
 	const queryExecutionTimers: Record<string, unknown> = {};
+	const optimizationMetadataByBoxId: Record<string, unknown> = {};
 	const sqlElements: Record<string, HTMLElement & {
 		setFavoritesMode: ReturnType<typeof vi.fn>;
+		setLeaveNoTraceConnectionIds: ReturnType<typeof vi.fn>;
+		canPersistResults: () => boolean;
+		getConnectionId: () => string;
 	}> = {};
+	const sqlLeaveNoTraceConnectionIds: string[] = [];
+	const sqlConnections: Array<{ id: string; serverUrl: string }> = [];
 	const postMessageToHost = vi.fn();
 
 	const addQueryBox = vi.fn((options: { id?: string } = {}) => {
@@ -54,9 +60,22 @@ const testState = vi.hoisted(() => {
 	const addSqlBox = vi.fn((options: { id?: string } = {}) => {
 		const id = options.id || `sql_restored_${sqlBoxes.length + 1}`;
 		sqlBoxes.push(id);
-		const el = document.createElement('div') as HTMLElement & { setFavoritesMode: ReturnType<typeof vi.fn> };
+		let protectedConnectionIds = new Set<string>();
+		const selectedConnectionId = sqlConnections.find(connection => connection.serverUrl === (options as any).serverUrl)?.id || '';
+		const el = document.createElement('div') as HTMLElement & {
+			setFavoritesMode: ReturnType<typeof vi.fn>;
+			setLeaveNoTraceConnectionIds: ReturnType<typeof vi.fn>;
+			canPersistResults: () => boolean;
+			getConnectionId: () => string;
+		};
 		el.id = id;
 		el.setFavoritesMode = vi.fn();
+		el.setLeaveNoTraceConnectionIds = vi.fn((ids: string[]) => { protectedConnectionIds = new Set(ids); });
+		el.getConnectionId = () => selectedConnectionId;
+		el.canPersistResults = () => {
+			const currentConnectionId = el.getConnectionId();
+			return !currentConnectionId || !protectedConnectionIds.has(currentConnectionId);
+		};
 		sqlElements[id] = el;
 		const resultsWrapper = document.createElement('div');
 		resultsWrapper.id = `${id}_sql_results_wrapper`;
@@ -76,7 +95,10 @@ const testState = vi.hoisted(() => {
 		queryEditors,
 		markdownEditors,
 		queryExecutionTimers,
+		optimizationMetadataByBoxId,
 		sqlElements,
+		sqlLeaveNoTraceConnectionIds,
+		sqlConnections,
 		addQueryBox,
 		addMarkdownBox,
 		addHtmlBox,
@@ -104,6 +126,7 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 		defaultSectionKind: 'query',
 		upgradeRequestType: 'requestUpgradeToKqlx',
 		documentKind: 'kqlx',
+		documentEditRevision: 0,
 		documentUri: '',
 		compatibilityTooltip: '',
 		htmlPowerBiCompatibilityCheckEnabled: true,
@@ -185,6 +208,7 @@ vi.mock('../../src/webview/core/state.js', () => ({
 	queryBoxes: testState.queryBoxes,
 	queryEditors: testState.queryEditors,
 	queryExecutionTimers: testState.queryExecutionTimers,
+	optimizationMetadataByBoxId: testState.optimizationMetadataByBoxId,
 	favoritesModeByBoxId: {},
 	leaveNoTraceClusters: [],
 	caretDocsEnabled: true,
@@ -192,6 +216,8 @@ vi.mock('../../src/webview/core/state.js', () => ({
 	setCaretDocsEnabled: vi.fn(),
 	setAutoTriggerAutocompleteEnabled: vi.fn(),
 	sqlFavoritesModeByBoxId: {},
+	sqlLeaveNoTraceConnectionIds: testState.sqlLeaveNoTraceConnectionIds,
+	sqlConnections: testState.sqlConnections,
 }));
 
 vi.mock('../../src/webview/sections/kw-chart-section.js', () => ({
@@ -239,10 +265,11 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 import { pState } from '../../src/webview/shared/persistence-state.js';
 import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
 import { displayResult, displayResultForBox } from '../../src/webview/core/results-state.js';
-import { sqlFavoritesModeByBoxId } from '../../src/webview/core/state.js';
+import { optimizationMetadataByBoxId, sqlFavoritesModeByBoxId } from '../../src/webview/core/state.js';
 import { updateConnectionSelects, __kustoSetAutoEnterFavoritesForBox } from '../../src/webview/core/section-factory.js';
 import { setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
-import { getKqlxState, handleDocumentDataMessage, schedulePersist, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
+import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, discardPendingSqlResultRestores, flushCompatibilityPersist, getKqlxState, handleDocumentDataMessage, resolvePendingSqlResultRestores, schedulePersist, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
+import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
 
 describe('persistence round-trip', () => {
 	beforeEach(() => {
@@ -254,6 +281,8 @@ describe('persistence round-trip', () => {
 		testState.urlBoxes.splice(0, testState.urlBoxes.length);
 		testState.htmlBoxes.splice(0, testState.htmlBoxes.length);
 		testState.sqlBoxes.splice(0, testState.sqlBoxes.length);
+		testState.sqlLeaveNoTraceConnectionIds.splice(0, testState.sqlLeaveNoTraceConnectionIds.length);
+		testState.sqlConnections.splice(0, testState.sqlConnections.length);
 		for (const k of Object.keys(testState.queryEditors)) delete testState.queryEditors[k];
 		for (const k of Object.keys(testState.markdownEditors)) delete testState.markdownEditors[k];
 		for (const k of Object.keys(testState.queryExecutionTimers)) delete testState.queryExecutionTimers[k];
@@ -267,9 +296,11 @@ describe('persistence round-trip', () => {
 		for (const k of Object.keys(pState.resultsVisibleByBoxId)) delete pState.resultsVisibleByBoxId[k];
 		for (const k of Object.keys(pState.queryResultJsonByBoxId)) delete pState.queryResultJsonByBoxId[k];
 		for (const k of Object.keys(sqlFavoritesModeByBoxId)) delete sqlFavoritesModeByBoxId[k];
+		for (const k of Object.keys(optimizationMetadataByBoxId)) delete optimizationMetadataByBoxId[k];
 		vi.clearAllMocks();
 		pState.compatibilityMode = false;
 		pState.documentKind = 'kqlx';
+		pState.documentEditRevision = 0;
 		pState.documentUri = '';
 		pState.devNotesSections = [];
 		pState.lastExecutedBox = '';
@@ -280,6 +311,25 @@ describe('persistence round-trip', () => {
 
 	function flushDeferredRestoreTimers() {
 		vi.advanceTimersByTime(25);
+	}
+
+	function createRevisionedQueryHarness(uri: string, initialQuery: string) {
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, editRevision: 0,
+			documentKind: 'kql', compatibilityMode: false, documentUri: uri,
+			state: { sections: [{ type: 'query', id: 'query_ack_flow', query: initialQuery }] },
+		});
+		const queryId = testState.queryBoxes.at(-1)!;
+		const query = document.getElementById(queryId) as HTMLElement & { serialize: () => unknown };
+		let currentQuery = initialQuery;
+		query.serialize = () => ({ id: queryId, type: 'query', query: currentQuery });
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		container.appendChild(query);
+		document.body.appendChild(container);
+		adoptCurrentStateAsCleanForTest();
+		vi.mocked(postMessageToHost).mockClear();
+		return { setQuery: (value: string) => { currentQuery = value; } };
 	}
 
 	it('serializes section DOM via getKqlxState', () => {
@@ -461,6 +511,12 @@ describe('persistence round-trip', () => {
 
 	it('restores SQL section query, state, favorites mode, and persisted results', () => {
 		vi.useFakeTimers();
+		const sqlConnection = {
+			id: 'sql-warehouse', name: 'Warehouse', dialect: 'mssql', serverUrl: 'tcp:sql.example.test,1433',
+			database: 'Warehouse', authType: 'sql-login', username: 'ReportUser',
+		};
+		testState.sqlConnections.push(sqlConnection);
+		const targetSignature = sqlConnectionTargetSignature(sqlConnection);
 		const resultJson = JSON.stringify({
 			columns: [{ name: 'Value', type: 'int' }],
 			rows: [[1]],
@@ -486,6 +542,8 @@ describe('persistence round-trip', () => {
 							name: 'Warehouse Query',
 							query: 'select top 10 * from dbo.Events',
 							serverUrl: 'tcp:sql.example.test,1433',
+							connectionIdHint: 'sql-warehouse',
+							targetSignature,
 							database: 'Warehouse',
 							expanded: false,
 							resultsVisible: false,
@@ -506,6 +564,8 @@ describe('persistence round-trip', () => {
 				id: 'sql_saved_1',
 				name: 'Warehouse Query',
 				serverUrl: 'tcp:sql.example.test,1433',
+				connectionIdHint: 'sql-warehouse',
+				targetSignature,
 				database: 'Warehouse',
 				expanded: false,
 				editorHeightPx: 310,
@@ -526,6 +586,297 @@ describe('persistence round-trip', () => {
 			expect(displayResultForBox).toHaveBeenCalledWith(JSON.parse(resultJson), 'sql_saved_1', { label: 'Results', showExecutionTime: true });
 			expect(document.getElementById('sql_saved_1_sql_results_wrapper')?.style.height).toBe('420px');
 			expect(document.getElementById('sql_saved_1_sql_results_wrapper')?.dataset.kustoUserResized).toBe('true');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		{ connectionIdHint: 'sql-a' },
+		{ targetSignature: 'target-a' },
+	])('does not restore SQL rows with partial owner metadata: %j', partialOwner => {
+		const resultJson = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['partial-owner']] });
+		testState.sqlConnections.push({ id: 'sql-a', serverUrl: 'shared.example' });
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/partial.sqlx',
+			state: { sections: [{
+				type: 'sql', id: 'sql_partial', serverUrl: 'shared.example',
+				...partialOwner, query: 'SELECT 1', resultJson,
+			}] },
+		});
+
+		expect(pState.queryResultJsonByBoxId.sql_partial).toBeUndefined();
+	});
+
+	it('defers a complete-owner SQL result until the cold connection snapshot validates it', () => {
+		const connection = {
+			id: 'sql-cold', name: 'Cold', dialect: 'mssql', serverUrl: 'cold.example',
+			database: 'Db', authType: 'sql-login', username: 'ColdUser',
+		};
+		const targetSignature = sqlConnectionTargetSignature(connection);
+		const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [[1]] });
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/cold.sqlx',
+			state: { sections: [{
+				type: 'sql', id: 'sql_cold', serverUrl: 'cold.example', database: 'Db',
+				connectionIdHint: 'sql-cold', targetSignature, query: 'SELECT 1', resultJson,
+			}] },
+		});
+		expect(pState.queryResultJsonByBoxId.sql_cold).toBeUndefined();
+
+		testState.sqlConnections.push(connection);
+		testState.sqlElements.sql_cold.getConnectionId = () => 'sql-cold';
+		resolvePendingSqlResultRestores();
+
+		expect(pState.queryResultJsonByBoxId.sql_cold).toBe(resultJson);
+	});
+
+	it('preserves safe pending SQL results when another connection is Leave No Trace', () => {
+		const safe = {
+			id: 'sql-safe', name: 'Safe', dialect: 'mssql', serverUrl: 'safe.example',
+			database: 'Db', authType: 'sql-login', username: 'SafeUser',
+		};
+		const protectedConnection = {
+			id: 'sql-protected', name: 'Protected', dialect: 'mssql', serverUrl: 'protected.example',
+			database: 'Db', authType: 'sql-login', username: 'ProtectedUser',
+		};
+		const safeResult = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['safe']] });
+		const protectedResult = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['protected']] });
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/mixed-lnt.sqlx',
+			state: { sections: [
+				{
+					type: 'sql', id: 'sql_safe', serverUrl: safe.serverUrl, database: 'Db', query: 'SELECT 1',
+					connectionIdHint: safe.id, targetSignature: sqlConnectionTargetSignature(safe), resultJson: safeResult,
+				},
+				{
+					type: 'sql', id: 'sql_protected', serverUrl: protectedConnection.serverUrl, database: 'Db', query: 'SELECT 2',
+					connectionIdHint: protectedConnection.id, targetSignature: sqlConnectionTargetSignature(protectedConnection), resultJson: protectedResult,
+				},
+			] },
+		});
+
+		discardPendingSqlResultRestores([protectedConnection.id]);
+		testState.sqlConnections.push(safe, protectedConnection);
+		testState.sqlElements.sql_safe.getConnectionId = () => safe.id;
+		testState.sqlElements.sql_protected.getConnectionId = () => protectedConnection.id;
+		resolvePendingSqlResultRestores();
+
+		expect(pState.queryResultJsonByBoxId.sql_safe).toBe(safeResult);
+		expect(pState.queryResultJsonByBoxId.sql_protected).toBeUndefined();
+	});
+
+	it.each([
+		{ label: 'rotated', persistedPrincipal: 'principal-a', currentPrincipal: 'principal-b' },
+		{ label: 'legacy-missing', persistedPrincipal: undefined, currentPrincipal: 'principal-b' },
+	])('does not restore $label AAD rows or SQL comparison rows under another principal', ({ persistedPrincipal, currentPrincipal }) => {
+		const connection = {
+			id: 'sql-aad', name: 'AAD', dialect: 'mssql', serverUrl: 'aad.example',
+			database: 'Db', authType: 'aad',
+		};
+		const sourceResult = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['source-a']] });
+		const comparisonResult = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['comparison-a']] });
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/aad-rotation.sqlx',
+			state: { sections: [
+				{
+					type: 'sql', id: 'sql_aad', serverUrl: connection.serverUrl, database: 'Db', query: 'SELECT 1',
+					connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection),
+					...(persistedPrincipal ? { principalFingerprint: persistedPrincipal } : {}),
+					resultJson: sourceResult,
+				},
+				{ type: 'query', id: 'query_cmp_aad', comparisonSourceBoxId: 'sql_aad', query: 'SELECT 2', resultJson: comparisonResult },
+			] },
+		});
+
+		testState.sqlConnections.push({ ...connection, principalFingerprint: currentPrincipal });
+		testState.sqlElements.sql_aad.getConnectionId = () => connection.id;
+		resolvePendingSqlResultRestores();
+
+		expect(pState.queryResultJsonByBoxId.sql_aad).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.query_cmp_aad).toBeUndefined();
+	});
+
+	it('restores AAD source and comparison rows only for the exact persisted principal', () => {
+		const connection = {
+			id: 'sql-aad-match', name: 'AAD', dialect: 'mssql', serverUrl: 'aad-match.example',
+			database: 'Db', authType: 'aad', principalFingerprint: 'principal-a',
+		};
+		const sourceResult = JSON.stringify({ columns: [{ name: 'Value' }], rows: [[1]] });
+		const comparisonResult = JSON.stringify({ columns: [{ name: 'Value' }], rows: [[2]] });
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/aad-match.sqlx',
+			state: { sections: [
+				{
+					type: 'sql', id: 'sql_aad_match', serverUrl: connection.serverUrl, database: 'Db', query: 'SELECT 1',
+					connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection),
+					principalFingerprint: connection.principalFingerprint, resultJson: sourceResult,
+				},
+				{ type: 'query', id: 'query_cmp_aad_match', comparisonSourceBoxId: 'sql_aad_match', query: 'SELECT 2', resultJson: comparisonResult },
+			] },
+		});
+
+		testState.sqlConnections.push(connection);
+		testState.sqlElements.sql_aad_match.getConnectionId = () => connection.id;
+		resolvePendingSqlResultRestores();
+
+		expect(pState.queryResultJsonByBoxId.sql_aad_match).toBe(sourceResult);
+		expect(pState.queryResultJsonByBoxId.query_cmp_aad_match).toBe(comparisonResult);
+	});
+
+	it('does not restore SQL rows after a later LNT revocation generation', () => {
+		const connection = {
+			id: 'sql-revoked', name: 'Revoked', dialect: 'mssql', serverUrl: 'revoked.example',
+			database: 'Db', authType: 'sql-login', username: 'user', revocationGeneration: 1,
+		};
+		const resultJson = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['pre-revocation']] });
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/revoked.sqlx',
+			state: { sections: [{
+				type: 'sql', id: 'sql_revoked', serverUrl: connection.serverUrl, database: 'Db', query: 'SELECT 1',
+				connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection),
+				revocationGeneration: 0, resultJson,
+			}] },
+		});
+
+		testState.sqlConnections.push(connection);
+		testState.sqlElements.sql_revoked.getConnectionId = () => connection.id;
+		resolvePendingSqlResultRestores();
+
+		expect(pState.queryResultJsonByBoxId.sql_revoked).toBeUndefined();
+	});
+
+	it('does not admit a cold SQL comparison after Leave No Trace is applied', () => {
+		const connection = {
+			id: 'sql-sensitive', name: 'Sensitive', dialect: 'mssql', serverUrl: 'sensitive.example',
+			database: 'Db', authType: 'sql-login', username: 'SensitiveUser',
+		};
+		const targetSignature = sqlConnectionTargetSignature(connection);
+		const sourceResult = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['source']] });
+		const comparisonResult = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['comparison']] });
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/cold-lnt.sqlx',
+			state: { sections: [
+				{
+					type: 'sql', id: 'sql_sensitive', serverUrl: 'sensitive.example', database: 'Db',
+					connectionIdHint: connection.id, targetSignature, query: 'SELECT 1', resultJson: sourceResult,
+				},
+				{ type: 'query', id: 'query_cmp', comparisonSourceBoxId: 'sql_sensitive', query: 'SELECT 2', resultJson: comparisonResult },
+			] },
+		});
+		testState.sqlConnections.push(connection);
+		const source = testState.sqlElements.sql_sensitive;
+		source.getConnectionId = () => connection.id;
+		source.setLeaveNoTraceConnectionIds([connection.id]);
+
+		resolvePendingSqlResultRestores();
+
+		expect(pState.queryResultJsonByBoxId.sql_sensitive).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.query_cmp).toBeUndefined();
+	});
+
+	it('skips an orphaned SQL comparison before creating or restoring its data', () => {
+		const resultJson = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['orphaned-row']] });
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/orphan.sqlx',
+			state: {
+				sections: [{
+					type: 'query', id: 'query_cmp_orphan', comparisonSourceBoxId: 'sql_missing',
+					query: 'SELECT 2', resultJson,
+				}],
+			},
+		});
+
+		expect(testState.addQueryBox).not.toHaveBeenCalledWith(expect.objectContaining({ id: 'query_cmp_orphan' }));
+		expect(testState.queryBoxes).not.toContain('query_cmp_orphan');
+		expect(pState.pendingQueryTextByBoxId.query_cmp_orphan).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.query_cmp_orphan).toBeUndefined();
+		expect(optimizationMetadataByBoxId.query_cmp_orphan).toBeUndefined();
+	});
+
+	it('does not restore SQL comparison rows while the existing source owner is unresolved', () => {
+		const resultJson = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['unresolved-row']] });
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/unresolved.sqlx',
+			state: {
+				sections: [
+					{ type: 'sql', id: 'sql_source', connectionIdHint: 'missing', targetSignature: 'missing-target', serverUrl: 'unknown.example', query: 'SELECT 1' },
+					{ type: 'query', id: 'query_cmp', comparisonSourceBoxId: 'sql_source', query: 'SELECT 2', resultJson },
+				],
+			},
+		});
+
+		expect(testState.queryBoxes).toContain('query_cmp');
+		expect(pState.queryResultJsonByBoxId.query_cmp).toBeUndefined();
+	});
+
+	it('does not restore SQL source or comparison rows through a stale same-box owner', () => {
+		const sourceResult = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['owner-b']] });
+		const comparisonResult = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['owner-b-comparison']] });
+		testState.sqlConnections.push({ id: 'sql-a', serverUrl: 'shared.example' });
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/owner-b.sqlx',
+			state: { sections: [
+				{
+					type: 'sql', id: 'sql_source', serverUrl: 'shared.example', connectionIdHint: 'sql-b',
+					targetSignature: 'owner-b-target', query: 'SELECT 1', resultJson: sourceResult,
+				},
+				{ type: 'query', id: 'query_cmp', comparisonSourceBoxId: 'sql_source', query: 'SELECT 2', resultJson: comparisonResult },
+			] },
+		});
+
+		expect(pState.queryResultJsonByBoxId.sql_source).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.query_cmp).toBeUndefined();
+	});
+
+	it('restores a Kusto optimization comparison and its persisted result', () => {
+		const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [[2]] });
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/comparison.kqlx',
+			state: {
+				sections: [
+					{ type: 'query', id: 'query_source', clusterUrl: 'https://cluster.kusto.windows.net', database: 'Db', query: 'T | count' },
+					{ type: 'query', id: 'query_cmp', comparisonSourceBoxId: 'query_source', clusterUrl: 'https://cluster.kusto.windows.net', database: 'Db', query: 'T | summarize count()', resultJson },
+				],
+			},
+		});
+
+		expect(testState.queryBoxes).toEqual(expect.arrayContaining(['query_source', 'query_cmp']));
+		expect(optimizationMetadataByBoxId.query_cmp).toMatchObject({ sourceBoxId: 'query_source', isComparison: true });
+		expect(pState.queryResultJsonByBoxId.query_cmp).toBe(resultJson);
+	});
+
+	it('does not restore pre-lineage SQL comparison rows from a SQL connection hint', () => {
+		const resultJson = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['legacy-secret']] });
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/legacy.sqlx',
+			state: { sections: [{ type: 'query', id: 'legacy_sql_cmp', connectionIdHint: 'sql_old', query: 'SELECT 2', resultJson }] },
+		});
+
+		expect(testState.queryBoxes).toContain('legacy_sql_cmp');
+		expect(pState.pendingQueryTextByBoxId.legacy_sql_cmp).toBe('SELECT 2');
+		expect(pState.queryResultJsonByBoxId.legacy_sql_cmp).toBeUndefined();
+	});
+
+	it('does not restore protected SQL resultJson into storage or shared results', () => {
+		vi.useFakeTimers();
+		const resultJson = JSON.stringify({ columns: [{ name: 'Secret' }], rows: [['protected-row']], metadata: {} });
+		testState.sqlLeaveNoTraceConnectionIds.push('sql-sensitive');
+		testState.sqlConnections.push({ id: 'sql-sensitive', serverUrl: 'server.example' });
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/protected.sqlx',
+				state: { sections: [{ type: 'sql', id: 'sql_protected', serverUrl: 'server.example', resultJson }] },
+			});
+			const sqlEl = testState.sqlElements.sql_protected;
+			expect(sqlEl.setLeaveNoTraceConnectionIds).toHaveBeenCalledWith(['sql-sensitive']);
+			expect(pState.queryResultJsonByBoxId.sql_protected).toBeUndefined();
+			vi.advanceTimersByTime(25);
+			expect(displayResultForBox).not.toHaveBeenCalled();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -612,6 +963,223 @@ describe('persistence round-trip', () => {
 		} finally {
 			vi.useRealTimers();
 		}
+	});
+
+	it('publishes compatibility state and revision atomically without a debounce gap', () => {
+		vi.useFakeTimers();
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'sql', compatibilityMode: false,
+				documentUri: 'file:///tmp/revision.sql',
+				state: { sections: [{ type: 'query', id: 'query_revision', query: 'print 1' }] },
+			});
+			document.body.innerHTML = '';
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			document.body.appendChild(container);
+			let queryText = 'print 2';
+			const queryEl = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+			queryEl.id = 'query_revision';
+			queryEl.serialize = () => ({ id: 'query_revision', type: 'query', query: queryText });
+			container.appendChild(queryEl);
+			if (!testState.queryBoxes.includes('query_revision')) testState.queryBoxes.push('query_revision');
+			testState.queryEditors.query_revision = { getValue: () => 'print 1' };
+			pState.documentKind = 'sql';
+			pState.compatibilityMode = false;
+
+			vi.mocked(postMessageToHost).mockClear();
+			schedulePersist('immediate', true);
+			queryText = 'print 3';
+			schedulePersist('debounced', false);
+
+			const messages = vi.mocked(postMessageToHost).mock.calls.map(call => call[0] as any);
+			const persistMessages = messages.filter(message => message.type === 'persistDocument');
+			expect(persistMessages).toHaveLength(2);
+			expect(persistMessages[0].editRevision).toBe(1);
+			expect(persistMessages[0].state.sections[0].query).toBe('print 2');
+			expect(persistMessages[1]).toMatchObject({ reason: 'debounced', editRevision: 2 });
+			expect(persistMessages[1].state.sections[0].query).toBe('print 3');
+			expect(messages.some(message => message.type === 'documentEditRevision')).toBe(false);
+
+			vi.advanceTimersByTime(400);
+			expect(postMessageToHost).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('resends unchanged compatibility state until the exact snapshot is acknowledged', () => {
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'sql', compatibilityMode: false,
+			documentUri: 'file:///tmp/retry.sql',
+			state: { sections: [{ type: 'sql', id: 'sql_retry', query: 'select 1' }] },
+		});
+		document.body.innerHTML = '';
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		const sql = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		sql.id = 'sql_retry';
+		sql.serialize = () => ({ id: 'sql_retry', type: 'sql', query: 'select 2' });
+		container.appendChild(sql);
+		document.body.appendChild(container);
+		pState.documentKind = 'sql';
+		pState.compatibilityMode = false;
+		vi.mocked(postMessageToHost).mockClear();
+
+		schedulePersist('first', true);
+		schedulePersist('retry', true);
+
+		const messages = vi.mocked(postMessageToHost).mock.calls.map(call => call[0] as any);
+		expect(messages).toHaveLength(2);
+		expect(messages.map(message => message.editRevision)).toEqual([1, 1]);
+		expect(messages[1].snapshotId).not.toBe(messages[0].snapshotId);
+
+		acknowledgePersistDocument(messages[1].snapshotId, messages[1].editRevision);
+		schedulePersist('after-ack', true);
+		expect(postMessageToHost).toHaveBeenCalledTimes(2);
+	});
+
+	it('does not mark compatibility state clean from a mismatched acknowledgement', () => {
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kql', compatibilityMode: false,
+			documentUri: 'file:///tmp/mismatched.kql',
+			state: { sections: [{ type: 'query', id: 'query_ack', query: 'print 1' }] },
+		});
+		document.body.innerHTML = '';
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		const query = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		query.id = 'query_ack';
+		query.serialize = () => ({ id: 'query_ack', type: 'query', query: 'print 2' });
+		container.appendChild(query);
+		document.body.appendChild(container);
+		pState.documentKind = 'kql';
+		pState.compatibilityMode = false;
+		vi.mocked(postMessageToHost).mockClear();
+
+		schedulePersist('first', true);
+		const first = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+		acknowledgePersistDocument(first.snapshotId, first.editRevision + 1);
+		schedulePersist('retry', true);
+
+		expect(postMessageToHost).toHaveBeenCalledTimes(2);
+	});
+
+	it('ignores an unknown snapshot acknowledgement and accepts a later exact retry acknowledgement', () => {
+		const harness = createRevisionedQueryHarness('file:///tmp/unknown-ack.kql', 'print value=1');
+		harness.setQuery('print value=2');
+
+		schedulePersist('first', true);
+		const first = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+		acknowledgePersistDocument('unknown-snapshot', first.editRevision);
+		schedulePersist('retry', true);
+
+		const retry = vi.mocked(postMessageToHost).mock.calls[1][0] as any;
+		expect(retry.editRevision).toBe(first.editRevision);
+		acknowledgePersistDocument(retry.snapshotId, retry.editRevision);
+		schedulePersist('after-ack', true);
+		expect(postMessageToHost).toHaveBeenCalledTimes(2);
+	});
+
+	it('does not let an older acknowledgement replace a newer acknowledged snapshot', () => {
+		const harness = createRevisionedQueryHarness('file:///tmp/out-of-order-ack.kql', 'print value=0');
+		harness.setQuery('print value=1');
+		schedulePersist('first', true);
+		harness.setQuery('print value=2');
+		schedulePersist('second', true);
+		const [first, second] = vi.mocked(postMessageToHost).mock.calls.map(call => call[0] as any);
+
+		acknowledgePersistDocument(second.snapshotId, second.editRevision);
+		acknowledgePersistDocument(first.snapshotId, first.editRevision);
+		schedulePersist('after-acks', true);
+
+		expect([first.editRevision, second.editRevision]).toEqual([1, 2]);
+		expect(postMessageToHost).toHaveBeenCalledTimes(2);
+	});
+
+	it('tracks a return to acknowledged content as a newer snapshot while another state is pending', () => {
+		const harness = createRevisionedQueryHarness('file:///tmp/revert-ack.kql', 'print value=0');
+		harness.setQuery('print value=1');
+		schedulePersist('changed', true);
+		harness.setQuery('print value=0');
+		schedulePersist('reverted', true);
+		const [changed, reverted] = vi.mocked(postMessageToHost).mock.calls.map(call => call[0] as any);
+
+		acknowledgePersistDocument(changed.snapshotId, changed.editRevision);
+		acknowledgePersistDocument(reverted.snapshotId, reverted.editRevision);
+		schedulePersist('after-revert-ack', true);
+
+		expect([changed.editRevision, reverted.editRevision]).toEqual([1, 2]);
+		expect(postMessageToHost).toHaveBeenCalledTimes(2);
+	});
+
+	it('fails closed when an acknowledgement arrives for a pending snapshot evicted after 32 retries', () => {
+		const harness = createRevisionedQueryHarness('file:///tmp/evicted-ack.kql', 'print value=0');
+		harness.setQuery('print value=1');
+		for (let index = 0; index < 33; index++) schedulePersist(`retry-${index}`, true);
+		const messages = vi.mocked(postMessageToHost).mock.calls.map(call => call[0] as any);
+		expect(new Set(messages.map(message => message.editRevision))).toEqual(new Set([1]));
+
+		acknowledgePersistDocument(messages[0].snapshotId, messages[0].editRevision);
+		schedulePersist('after-evicted-ack', true);
+		expect(postMessageToHost).toHaveBeenCalledTimes(34);
+
+		const latest = vi.mocked(postMessageToHost).mock.calls.at(-1)![0] as any;
+		acknowledgePersistDocument(latest.snapshotId, latest.editRevision);
+		schedulePersist('after-current-ack', true);
+		expect(postMessageToHost).toHaveBeenCalledTimes(34);
+	});
+
+	it('answers a host final-snapshot request with correlated revisioned state', () => {
+		pState.documentKind = 'sql';
+		pState.compatibilityMode = false;
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		const sql = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		sql.id = 'sql_flush';
+		sql.serialize = () => ({ id: 'sql_flush', type: 'sql', query: 'select 42' });
+		container.appendChild(sql);
+		document.body.appendChild(container);
+
+		vi.mocked(postMessageToHost).mockClear();
+		flushCompatibilityPersist('flush-request-1', 'save');
+
+		expect(postMessageToHost).toHaveBeenCalledTimes(1);
+		expect(vi.mocked(postMessageToHost).mock.calls[0][0]).toMatchObject({
+			type: 'persistDocument', flush: true, reason: 'save',
+			flushRequestId: 'flush-request-1', editRevision: 1,
+			state: { sections: [{ id: 'sql_flush', type: 'sql', query: 'select 42' }] },
+		});
+		expect((vi.mocked(postMessageToHost).mock.calls[0][0] as any).snapshotId).toMatch(/^compat-snapshot-/);
+	});
+
+	it('sends a compatibility upgrade with the exact persisted revision', () => {
+		pState.documentKind = 'sql';
+		pState.compatibilityMode = true;
+		pState.compatibilitySingleKind = 'sql';
+		pState.upgradeRequestType = 'requestUpgradeToSqlx';
+		pState.allowedSectionKinds = ['sql', 'markdown'];
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		const sql = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		sql.id = 'sql_upgrade';
+		sql.serialize = () => ({ id: 'sql_upgrade', type: 'sql', query: 'select latest' });
+		container.appendChild(sql);
+		document.body.appendChild(container);
+
+		vi.mocked(postMessageToHost).mockClear();
+		__kustoRequestAddSection('markdown');
+
+		const messages = vi.mocked(postMessageToHost).mock.calls.map(call => call[0] as any);
+		expect(messages).toHaveLength(2);
+		expect(messages[0]).toMatchObject({ type: 'persistDocument', reason: 'upgrade', editRevision: 1 });
+		expect(messages[1]).toMatchObject({
+			type: 'requestUpgradeToSqlx', addKind: 'markdown', editRevision: 1,
+		});
+		expect(messages[1].state).toEqual(messages[0].state);
 	});
 
 	it('does not persist load-time query defaults immediately after restoring persisted results', () => {
@@ -766,6 +1334,37 @@ describe('persistence round-trip', () => {
 		}
 	});
 
+	it('does not mark an unacknowledged edit clean when deferred results render', () => {
+		vi.useFakeTimers();
+		try {
+			const resultJson = JSON.stringify({ columns: [{ name: 'Saved', type: 'string' }], rows: [['saved']], metadata: {} });
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, editRevision: 0,
+				documentKind: 'kql', compatibilityMode: false,
+				documentUri: 'file:///tmp/deferred-ack.kql',
+				state: { sections: [{ type: 'query', id: 'query_deferred_ack', query: 'print value=1', resultJson }] },
+			});
+			const query = document.getElementById('query_deferred_ack') as HTMLElement & { serialize: () => unknown };
+			query.serialize = () => ({ id: 'query_deferred_ack', type: 'query', query: 'print value=2', resultJson });
+			const container = document.createElement('div');
+			container.id = 'queries-container';
+			container.appendChild(query);
+			document.body.appendChild(container);
+			vi.mocked(postMessageToHost).mockClear();
+
+			schedulePersist('edit-before-result-restore', true);
+			flushDeferredRestoreTimers();
+			schedulePersist('retry-after-result-restore', true);
+
+			const snapshots = vi.mocked(postMessageToHost).mock.calls.map(call => call[0] as any);
+			expect(snapshots).toHaveLength(2);
+			expect(snapshots.map(snapshot => snapshot.editRevision)).toEqual([1, 1]);
+			expect(snapshots[1].snapshotId).not.toBe(snapshots[0].snapshotId);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('does not stringify unchanged stored result JSON when schedulePersist runs again', () => {
 		handleDocumentDataMessage({
 			type: 'documentData',
@@ -911,5 +1510,38 @@ describe('persistence round-trip', () => {
 		});
 
 		expect(testState.addQueryBox).toHaveBeenCalledTimes(2);
+	});
+
+	it('seeds a reused preview document with its incoming lower edit revision', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, editRevision: 25,
+			documentKind: 'kql', compatibilityMode: false,
+			documentUri: 'file:///tmp/high-revision.kql',
+			state: { sections: [{ type: 'query', id: 'query_high', query: 'print high=1' }] },
+		});
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, editRevision: 0,
+			documentKind: 'kql', compatibilityMode: false,
+			documentUri: 'file:///tmp/reused-preview.kql',
+			state: { sections: [{ type: 'query', id: 'query_reused', query: 'print value=1' }] },
+		});
+
+		expect(pState.documentEditRevision).toBe(0);
+		const queryId = testState.queryBoxes.at(-1)!;
+		const query = document.getElementById(queryId) as HTMLElement & { serialize: () => unknown };
+		query.serialize = () => ({ id: queryId, type: 'query', query: 'print value=2' });
+		container.appendChild(query);
+		vi.mocked(postMessageToHost).mockClear();
+
+		schedulePersist('preview-edit', true);
+
+		const persist = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+		expect(persist).toMatchObject({ type: 'persistDocument', editRevision: 1 });
+		acknowledgePersistDocument(persist.snapshotId, persist.editRevision);
+		schedulePersist('after-ack', true);
+		expect(postMessageToHost).toHaveBeenCalledTimes(1);
 	});
 });

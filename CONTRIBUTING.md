@@ -146,12 +146,13 @@ SQL sections follow the same patterns as Kusto query sections. Key differences:
 
 * **Connections**: `SqlConnectionManager` (not `ConnectionManager`). IDs use `sql_` prefix. Separate `sqlConnections` state in `state.ts`.
 * **Events**: All SQL custom events use `sql-` prefix (e.g. `sql-connection-changed`, `sql-database-changed`).
-* **Dialects**: Adding a new SQL backend (e.g. PostgreSQL) requires implementing `SqlDialect` interface, registering in `SqlDialectRegistry`, and adding a Copilot rules file.
+* **Dialects**: `SqlDialect` stores connection/UI metadata. Adding a non-MSSQL backend also requires a reviewed data-plane implementation; the current runtime data plane is SQL Tools Service and supports Microsoft SQL Server / Azure SQL.
 * **Copilot**: Uses flavor system — host-side `sqlCopilotFlavor` in `copilotChatFlavor.ts`, webview-side `sqlWebviewFlavor` in `copilot-chat-flavor.ts`.
 * **File format**: `.sqlx` files use the same JSON schema as `.kqlx` but only allow SQL sections. Mixed `.kqlx` files can contain both Kusto and SQL sections.
-* **IntelliSense**: SQL inline completions are powered by Microsoft's SQL Tools Service (STS), a separate process communicating over JSON-RPC via `vscode-jsonrpc`. The STS binary is downloaded on first use (`stsDownloader.ts`), managed by `StsProcessManager`, and the LSP client layer lives in `StsLanguageService`. See [ARCHITECTURE.md](ARCHITECTURE.md) for the full STS architecture.
-* **Build**: `mssql` is externalized in esbuild. `sql-formatter` is bundled for the webview prettify feature.
-* **Tests**: SQL unit tests in `tests/webview/host/` (`mssqlDialect.test.ts`, `sqlDialectRegistry.test.ts`, `sqlFormat.test.ts`, `sqlClient.test.ts`, `sqlPrettify.test.ts`, `sqlAuthState.test.ts`, `sqlFavorites.test.ts`, `sqlEditorUtils.test.ts`). E2E tests in `tests/vscode-extension-tester/e2e/sql-auth/`.
+* **Runtime**: SQL Tools Service powers IntelliSense, database/schema discovery, query execution, and cancellation. The runtime is downloaded and SHA-256 verified on first use (`stsDownloader.ts`), owned by `SqlWorkbenchService`, managed by `StsRuntime`/`StsProcessManager`, and consumed by editor-scoped `StsLanguageService` plus extension-scoped `StsQueryService`. Installer hashing/extraction is cancellable, failed request generations settle, and exhausted managers are replaced with editor replay.
+* **SQL Leave No Trace**: `SqlLeaveNoTracePolicyStore` is the cross-window source of truth. Every SQL data, language, schema-cache, Copilot, and restoration entry point must refresh/revalidate it immediately before dispatch or data admission. Enabling it must cancel active owners and clear host, webview, shared-result, dependent-section, and Copilot history state.
+* **Build**: Only `vscode` is externalized from the extension host bundle. `sql-formatter` is bundled for the webview prettify feature; STS is a verified first-use download.
+* **Tests**: SQL host tests include process epochs, manager replacement, protocol execution, paging, cancellation, result adaptation, schema parsing, TLS/auth options, cross-host LNT propagation/restoration/Copilot invalidation, and dialect metadata. Authenticated behavior E2E lives under `tests/vscode-extension-tester/e2e/sql-auth/`.
 
 ---
 

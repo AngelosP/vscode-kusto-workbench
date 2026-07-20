@@ -120,6 +120,8 @@ export const copilotInlineCompletionRequests: Record<string, any> = {};
 export const sqlConnections: any[] = [];
 export const sqlCachedDatabases: Record<string, any> = {};
 export const sqlFavoritesModeByBoxId: Record<string, any> = {};
+export const sqlTargetGenerationByBoxId: Record<string, number> = {};
+export const sqlDatabaseRequestIdByBoxId: Record<string, string> = {};
 
 // ---------------------------------------------------------------------------
 // Primitive / reassigned state (need setter functions for cross-module writes)
@@ -131,6 +133,7 @@ export let lastDatabase: string | null = null;
 export let kustoFavorites: any[] = [];
 export let sqlFavorites: any[] = [];
 export let leaveNoTraceClusters: string[] = [];
+export let sqlLeaveNoTraceConnectionIds: string[] = [];
 export let activeQueryEditorBoxId: string | null = null;
 export let monacoReadyPromise: Promise<void> | null = null;
 export let activeMonacoEditor: any = null;
@@ -150,6 +153,7 @@ export function setLastDatabase(val: string | null) { lastDatabase = val; try { 
 export function setKustoFavorites(val: any[]) { kustoFavorites = val; try { _win.kustoFavorites = val; } catch (e) { console.error('[kusto]', e); } }
 export function setSqlFavorites(val: any[]) { sqlFavorites = val; try { _win.sqlFavorites = val; } catch (e) { console.error('[kusto]', e); } }
 export function setLeaveNoTraceClusters(val: string[]) { leaveNoTraceClusters = val; try { _win.leaveNoTraceClusters = val; } catch (e) { console.error('[kusto]', e); } }
+export function setSqlLeaveNoTraceConnectionIds(val: string[]) { sqlLeaveNoTraceConnectionIds = val; }
 export function setActiveQueryEditorBoxId(val: string | null) { activeQueryEditorBoxId = val; try { _win.activeQueryEditorBoxId = val; } catch (e) { console.error('[kusto]', e); } }
 export function setMonacoReadyPromise(val: Promise<void> | null) { monacoReadyPromise = val; try { _win.monacoReadyPromise = val; } catch (e) { console.error('[kusto]', e); } }
 export function setActiveMonacoEditor(val: any) { activeMonacoEditor = val; try { _win.activeMonacoEditor = val; } catch (e) { console.error('[kusto]', e); } }

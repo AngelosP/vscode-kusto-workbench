@@ -11,6 +11,9 @@
  */
 
 export const pState = {
+	/** Monotonic local UI edit revision used to reject stale host reloads. */
+	documentEditRevision: 0,
+
 	// ── State maps (keyed by boxId) ──────────────────────────────────
 
 	/** Per-box results visibility (false = collapsed). */

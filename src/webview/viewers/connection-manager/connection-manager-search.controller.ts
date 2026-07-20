@@ -174,10 +174,16 @@ export class ConnectionManagerSearchController implements ReactiveController {
 
 	setKind(kind: ConnectionKind): void {
 		if (kind === this._kind) return;
+		if (this._saveDebounceTimer) {
+			clearTimeout(this._saveDebounceTimer);
+			this._saveDebounceTimer = null;
+		}
+		if (this._kind === 'sql') this.results = [];
 		this._kind = kind;
-		// Reset to kind-appropriate defaults but preserve query/scope/results
+		// Reset to kind-appropriate defaults; result ownership never crosses kinds.
 		this.categories = defaultCategories(kind);
 		this.contentToggles = defaultContentToggles(kind);
+		this.results = [];
 		this.loading = false;
 		this.progressMessage = '';
 		this._cancelActiveSearch();
@@ -322,6 +328,17 @@ export class ConnectionManagerSearchController implements ReactiveController {
 		this.host.requestUpdate();
 	}
 
+	invalidateSqlResults(): void {
+		if (this._kind !== 'sql') return;
+		this._cancelActiveSearch();
+		this.results = [];
+		this.loading = false;
+		this.refreshing = false;
+		this.progressMessage = '';
+		this._saveStateNow();
+		this.host.requestUpdate();
+	}
+
 	// ── Message handling (called by host component's _onMessage) ──────────
 
 	handleSearchResults(requestId: string, results: SearchResult[], completed: boolean): void {
@@ -382,6 +399,7 @@ export class ConnectionManagerSearchController implements ReactiveController {
 		}
 		this.host.postMessage({
 			type: 'search.saveState',
+			kind: this._kind,
 			state: {
 				query: this.query,
 				scope: this.scope,

@@ -56,6 +56,10 @@ anything new you learned. Structure it however makes sense for this repo.
 - A live `.show databases` request can exceed 30 seconds. Database-list Trace E2E uses a 45-second output wait and should run with `--timeout 60000` so cluster latency does not mask log-capture behavior.
 - `kusto-authority-live` is a deliberately opt-in guest-tenant fixture. Its `e2e.settings.json` sets `optIn=true`; run it only with `--include-opt-in-tests` and the `KUSTO_AUTH_REPRO_*` environment contract documented in `tests/vscode-extension-tester/FULL_SUITE.md`.
 - `kustoWorkbench.test.runAuthorityLiveFixture` is development-only. It seeds two same-endpoint connections with different authorities, uses one exact prepared-profile account, and asserts the target database is visible only through the resource authority. Always pair it with `kustoWorkbench.test.cleanupAuthorityLiveFixture`.
+- VS Code 1.129 requires the framework custom-tab fix: activating `TabInputCustom` must use `vscode.openWith(uri, viewType, ...)`, never `showTextDocument`, or a raw-text twin is created and title-targeted webview steps hit the wrong tab.
+- Kusto Workbench custom editors use a generic HTML title. After tab-label activation, the framework may target the unique visible webview; multiple visible webviews must fail as ambiguous rather than choosing one.
+- Repeated Gherkin fixture setup must not rewrite identical file content. Preserving mtime avoids `File Modified Since` conflicts with retained custom-editor models across scenario outlines.
+- The fixed controller never leaves save-confirmation dialogs unattended: clean-state reset discards dirty test editors; explicit `workbench.action.closeAllEditors` discards them and fails with the dirty filenames.
 
 ## Testability Recommendations
 

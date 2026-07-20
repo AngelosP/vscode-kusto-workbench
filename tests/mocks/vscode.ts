@@ -259,6 +259,13 @@ export const lm = {
 	selectChatModels: () => Promise.resolve([]),
 };
 
+export class CancellationError extends Error {
+	constructor() {
+		super('Canceled');
+		this.name = 'Canceled';
+	}
+}
+
 export enum LanguageModelChatMessageRole {
 	User = 1,
 	Assistant = 2,

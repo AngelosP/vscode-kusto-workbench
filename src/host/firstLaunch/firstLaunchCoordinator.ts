@@ -63,6 +63,7 @@ interface FirstLaunchCoordinatorOptions {
 	openPanel: (request: FirstLaunchPanelRequest) => Promise<FirstLaunchPanelOutcome>;
 	broadcastEditingPreferences: (message: EditingPreferencesDataMessage) => Promise<unknown>;
 	migrateFreshProfileByDefault?: boolean;
+	migratePendingProfileByDefault?: boolean;
 	profileLease?: FirstLaunchProfileLeaseLike;
 }
 
@@ -219,7 +220,11 @@ export class FirstLaunchCoordinator {
 			explicitFilePreferenceValues: forcePending ? [] : explicitFilePreferenceValues,
 			globalEditorAssociations: forcePending ? {} : readGlobalEditorAssociations(),
 		}, installMarkerValue);
-		if (this.resolution.kind === 'pending' && this.options.migrateFreshProfileByDefault === true && !forcePending) {
+		const migratePendingProfile = this.options.migratePendingProfileByDefault === true;
+		if (this.resolution.kind === 'pending' && (migratePendingProfile || (this.options.migrateFreshProfileByDefault === true && !forcePending))) {
+			if (forcePending && migratePendingProfile) {
+				await context.globalState.update(FIRST_LAUNCH_FORCE_PENDING_KEY, undefined);
+			}
 			this.resolution = {
 				kind: 'terminal',
 				record: {

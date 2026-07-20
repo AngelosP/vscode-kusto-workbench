@@ -14,6 +14,7 @@ function harness(options: {
 	legacy?: boolean;
 	failOnceOnKey?: string;
 	migrateFreshProfileByDefault?: boolean;
+	migratePendingProfileByDefault?: boolean;
 	state?: Map<string, unknown>;
 	configValues?: Map<string, boolean>;
 	profileLease?: FirstLaunchProfileLeaseLike;
@@ -68,6 +69,7 @@ function harness(options: {
 		openPanel,
 		broadcastEditingPreferences: broadcast,
 		migrateFreshProfileByDefault: options.migrateFreshProfileByDefault,
+		migratePendingProfileByDefault: options.migratePendingProfileByDefault,
 		profileLease,
 	});
 	return {
@@ -205,6 +207,17 @@ describe('FirstLaunchCoordinator', () => {
 
 		await expect(test.coordinator.triggerAutomatic('command')).resolves.toBe('completed');
 		expect(test.openPanel).not.toHaveBeenCalled();
+		expect((test.state.get(FIRST_LAUNCH_STATE_KEY) as any).status).toBe('migrated');
+	});
+
+	it('can migrate an explicitly pending E2E profile without opening setup', async () => {
+		const state = new Map<string, unknown>([[FIRST_LAUNCH_FORCE_PENDING_KEY, true]]);
+		const test = harness({ state, migratePendingProfileByDefault: true });
+
+		await expect(test.coordinator.triggerAutomatic('command')).resolves.toBe('completed');
+
+		expect(test.openPanel).not.toHaveBeenCalled();
+		expect(test.state.has(FIRST_LAUNCH_FORCE_PENDING_KEY)).toBe(false);
 		expect((test.state.get(FIRST_LAUNCH_STATE_KEY) as any).status).toBe('migrated');
 	});
 

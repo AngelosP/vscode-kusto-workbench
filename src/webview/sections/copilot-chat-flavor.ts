@@ -38,7 +38,7 @@ export interface WebviewCopilotFlavor {
 	readonly insertQueryToolName: string | null;
 
 	// ── Feature flags ──────────────────────────────────────────────────────
-	/** Whether the `copilot-insert-query` event should create a new query section. */
+	/** Whether the `copilot-insert-query` event should create a new query section. SQL insertion copies query text only. */
 	readonly supportsInsertQuery: boolean;
 	/** Whether the `copilot-open-agent` event should be wired. */
 	readonly supportsOpenAgent: boolean;

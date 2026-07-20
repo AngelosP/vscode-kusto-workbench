@@ -6,8 +6,7 @@ import { ConnectionManager, normalizeFilePath, type FileConnectionCacheEntry } f
 import { ConnectionService, setTestIsolateKustoConnections, testIsolateKustoConnections } from './queryEditorConnection';
 import { CachedValuesViewerV2 } from './cachedValuesViewer';
 import { ConnectionManagerViewerV2 } from './connectionManagerViewer';
-import { SqlConnectionManager } from './sqlConnectionManager';
-import { SqlQueryClient } from './sqlClient';
+import { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
 import { KqlxEditorProvider } from './kqlxEditorProvider';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
@@ -37,7 +36,6 @@ import { KustoAuthPreferenceService } from './kustoAuthPreferenceService';
 import { KustoConnectionCache } from './kustoConnectionCache';
 import { normalizeKustoAuthorityId } from '../shared/kustoAuth';
 
-import { stsProcessManagerSingleton } from './sql/stsProcessManager';
 import { getWorkbenchLogger, registerWorkbenchLogger } from './workbenchLogger';
 import { EditorAssociationManager } from './firstLaunch/editorAssociationManager';
 import type { FilePreferenceKey } from './firstLaunch/editorAssociationManager';
@@ -63,6 +61,7 @@ export async function clearAllKustoConnectionsAndFavorites(
 
 // Export the tool orchestrator instance so other modules can access it
 export let toolOrchestrator: KustoWorkbenchToolOrchestrator | undefined;
+let sqlWorkbenchService: SqlWorkbenchService | undefined;
 
 // This method is called when your extension is activated
 // Your extension is activated the very first time the command is executed
@@ -81,6 +80,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 			}
 		},
 		migrateFreshProfileByDefault: context.extensionMode !== vscode.ExtensionMode.Production,
+		migratePendingProfileByDefault: context.extensionMode !== vscode.ExtensionMode.Production
+			&& process.env.KUSTO_WORKBENCH_E2E_BYPASS_FIRST_LAUNCH === '1',
 	});
 	try {
 		await firstLaunchCoordinator.initialize();
@@ -89,6 +90,10 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		getWorkbenchLogger().error('[Kusto Workbench] Failed to initialize first-launch setup:', error instanceof Error ? error : String(error));
 		throw error;
 	}
+	sqlWorkbenchService = new SqlWorkbenchService(context, getWorkbenchLogger());
+	void sqlWorkbenchService.ready().catch(error => {
+		getWorkbenchLogger().error('[Kusto Workbench] SQL services failed to initialize; non-SQL features remain available:', error instanceof Error ? error : String(error));
+	});
 	registerFirstLaunchTriggers(context, firstLaunchCoordinator);
 	context.subscriptions.push(
 		vscode.workspace.onDidChangeConfiguration((e) => {
@@ -651,22 +656,64 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 		);
 	}
 
-	// Shared SQL lazy-init (used by both editor provider and connection manager viewer)
-	let _sqlConnectionManager: SqlConnectionManager | undefined;
-	let _sqlClient: SqlQueryClient | undefined;
-	const getSqlConnectionManager = (): SqlConnectionManager => {
-		if (!_sqlConnectionManager) { _sqlConnectionManager = new SqlConnectionManager(context); }
-		return _sqlConnectionManager;
-	};
-	const getSqlClient = (): SqlQueryClient => {
-		if (!_sqlClient) { _sqlClient = new SqlQueryClient(getSqlConnectionManager(), context); }
-		return _sqlClient;
-	};
+	const getSqlConnectionManager = () => sqlWorkbenchService!.connectionManager;
+	const getSqlClient = () => sqlWorkbenchService!.client;
+	if (context.extensionMode !== vscode.ExtensionMode.Production) {
+		context.subscriptions.push(
+			vscode.commands.registerCommand('kustoWorkbench.test.setSqlLeaveNoTrace', async (connectionId: string, enabled: boolean = true) => {
+				const requested = String(connectionId || '');
+				const resolved = requested === '__CURRENT_SQL_CONNECTION__'
+					? String(
+						context.globalState.get<string>('sql.lastConnectionId')
+						|| (sqlWorkbenchService!.connectionManager.getConnections().length === 1
+							? sqlWorkbenchService!.connectionManager.getConnections()[0].id
+							: '')
+					)
+					: requested;
+				if (!resolved) throw new Error('No current SQL connection is available for the test policy command.');
+				await sqlWorkbenchService!.setLeaveNoTraceConnection(resolved, !!enabled);
+				return {
+					connectionId: resolved,
+					connectionIds: sqlWorkbenchService!.getLeaveNoTraceConnectionIds(),
+					policyPath: sqlWorkbenchService!.leaveNoTracePolicy.getFilePath(),
+				};
+			}),
+			vscode.commands.registerCommand('kustoWorkbench.test.getSqlLeaveNoTrace', async () => {
+				await sqlWorkbenchService!.refreshLeaveNoTracePolicy();
+				return sqlWorkbenchService!.getLeaveNoTraceConnectionIds();
+			}),
+			vscode.commands.registerCommand('kustoWorkbench.test.assertSqlLeaveNoTrace', async (connectionId: string, expected: boolean) => {
+				const requested = String(connectionId || '');
+				const resolved = requested === '__CURRENT_SQL_CONNECTION__'
+					? String(
+						context.globalState.get<string>('sql.lastConnectionId')
+						|| (sqlWorkbenchService!.connectionManager.getConnections().length === 1
+							? sqlWorkbenchService!.connectionManager.getConnections()[0].id
+							: '')
+					)
+					: requested;
+				if (!resolved) throw new Error('No current SQL connection is available for the test policy assertion.');
+				await sqlWorkbenchService!.refreshLeaveNoTracePolicy();
+				const actual = sqlWorkbenchService!.isLeaveNoTraceConnection(resolved);
+				if (actual !== !!expected) throw new Error(`SQL Leave No Trace state for ${resolved} was ${actual}, expected ${!!expected}.`);
+				return actual;
+			}),
+		);
+	}
 
 	// Register Kusto Workbench tools for VS Code Copilot Chat integration
 	const toolKustoClient = new KustoQueryClient(context, undefined, connectionManager);
 	context.subscriptions.push(toolKustoClient);
-	toolOrchestrator = registerKustoWorkbenchTools(context, connectionManager, getSqlConnectionManager, toolKustoClient);
+	toolOrchestrator = registerKustoWorkbenchTools(
+		context,
+		connectionManager,
+		getSqlConnectionManager,
+		toolKustoClient,
+		() => sqlWorkbenchService!.refreshLeaveNoTracePolicy(),
+		connectionId => sqlWorkbenchService!.assertSqlConnectionAllowed(connectionId),
+		connectionId => sqlWorkbenchService!.leaveNoTracePolicy.getRevocationGeneration(connectionId),
+		(connection, principal, revocation, dispatch) => sqlWorkbenchService!.dispatchSqlOwnerAllowed(connection, principal, revocation, dispatch),
+	);
 	context.subscriptions.push(
 		vscode.workspace.onDidRenameFiles((event) => {
 			void toolOrchestrator?.handleFilesRenamed(event.files).catch(() => {
@@ -1242,13 +1289,13 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	}
 
 	// Register .kqlx custom editor
-	context.subscriptions.push(KqlxEditorProvider.register(context, context.extensionUri, connectionManager, editorCursorStatusBar));
+	context.subscriptions.push(KqlxEditorProvider.register(context, context.extensionUri, connectionManager, sqlWorkbenchService, editorCursorStatusBar));
 	// Register .kql/.csl compatibility custom editor
-	context.subscriptions.push(KqlCompatEditorProvider.register(context, context.extensionUri, connectionManager, editorCursorStatusBar));
+	context.subscriptions.push(KqlCompatEditorProvider.register(context, context.extensionUri, connectionManager, sqlWorkbenchService, editorCursorStatusBar));
 	// Register .md compatibility custom editor (upgrade to .mdx for multi-section)
 	context.subscriptions.push(MdCompatEditorProvider.register(context, context.extensionUri, connectionManager, editorCursorStatusBar));
 	// Register .sql compatibility custom editor (upgrade to .sqlx for multi-section)
-	context.subscriptions.push(SqlCompatEditorProvider.register(context, context.extensionUri, connectionManager, editorCursorStatusBar));
+	context.subscriptions.push(SqlCompatEditorProvider.register(context, context.extensionUri, connectionManager, sqlWorkbenchService, editorCursorStatusBar));
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
 		const resolveDevMarkdownUri = (relativePath = 'CHANGELOG.md'): vscode.Uri => {
 			const root = vscode.workspace.workspaceFolders?.[0]?.uri ?? context.extensionUri;
@@ -1576,7 +1623,23 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.manageConnections', afterFirstLaunch(() => {
-			ConnectionManagerViewerV2.open(context, context.extensionUri, connectionManager, { getSqlConnectionManager, getSqlClient });
+			ConnectionManagerViewerV2.open(context, context.extensionUri, connectionManager, {
+				getSqlConnectionManager,
+				getSqlClient,
+				setSqlLeaveNoTrace: (connectionId, enabled) => sqlWorkbenchService!.setLeaveNoTraceConnection(connectionId, enabled),
+				assertSqlConnectionAllowed: connectionId => sqlWorkbenchService!.assertSqlConnectionAllowed(connectionId),
+				dispatchSqlConnectionAllowed: (connectionId, dispatch) => sqlWorkbenchService!.dispatchSqlConnectionAllowed(connectionId, dispatch),
+				dispatchSqlPolicySnapshot: dispatch => sqlWorkbenchService!.dispatchSqlPolicySnapshot(dispatch),
+				dispatchSqlOwnerAllowed: (connection, principal, revocation, dispatch) => sqlWorkbenchService!.dispatchSqlOwnerAllowed(connection, principal, revocation, dispatch),
+				dispatchSqlOwnerSnapshot: dispatch => sqlWorkbenchService!.dispatchSqlOwnerSnapshot(dispatch),
+				refreshSqlLeaveNoTracePolicy: () => sqlWorkbenchService!.refreshLeaveNoTracePolicy(),
+				getSqlLeaveNoTraceConnectionIds: () => sqlWorkbenchService!.getLeaveNoTraceConnectionIds(),
+				getSqlRevocationGeneration: connectionId => sqlWorkbenchService!.leaveNoTracePolicy.getRevocationGeneration(connectionId),
+				getSqlStateVersions: () => sqlWorkbenchService!.getStateVersions(),
+				onDidChangeSqlLeaveNoTrace: listener => sqlWorkbenchService!.onDidChangeLeaveNoTrace(listener),
+				onDidChangeSqlPrincipals: listener => sqlWorkbenchService!.onDidChangeSqlPrincipals(listener),
+				onDidChangeSqlConnections: listener => sqlWorkbenchService!.onDidChangeSqlConnections(listener),
+			});
 		}))
 	);
 
@@ -1639,7 +1702,22 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 	context.subscriptions.push(
 		vscode.commands.registerCommand('kusto.seeCachedValues', afterFirstLaunch(async () => {
-			CachedValuesViewerV2.open(context, context.extensionUri, connectionManager, { getSqlConnectionManager, getSqlClient });
+			CachedValuesViewerV2.open(context, context.extensionUri, connectionManager, {
+				getSqlConnectionManager,
+				getSqlClient,
+				assertSqlConnectionAllowed: connectionId => sqlWorkbenchService!.assertSqlConnectionAllowed(connectionId),
+				dispatchSqlConnectionAllowed: (connectionId, dispatch) => sqlWorkbenchService!.dispatchSqlConnectionAllowed(connectionId, dispatch),
+				dispatchSqlPolicySnapshot: dispatch => sqlWorkbenchService!.dispatchSqlPolicySnapshot(dispatch),
+				dispatchSqlOwnerAllowed: (connection, principal, revocation, dispatch) => sqlWorkbenchService!.dispatchSqlOwnerAllowed(connection, principal, revocation, dispatch),
+				dispatchSqlOwnerSnapshot: dispatch => sqlWorkbenchService!.dispatchSqlOwnerSnapshot(dispatch),
+				refreshSqlLeaveNoTracePolicy: () => sqlWorkbenchService!.refreshLeaveNoTracePolicy(),
+				getSqlLeaveNoTraceConnectionIds: () => sqlWorkbenchService!.getLeaveNoTraceConnectionIds(),
+				getSqlRevocationGeneration: connectionId => sqlWorkbenchService!.leaveNoTracePolicy.getRevocationGeneration(connectionId),
+				getSqlStateVersions: () => sqlWorkbenchService!.getStateVersions(),
+				onDidChangeSqlLeaveNoTrace: listener => sqlWorkbenchService!.onDidChangeLeaveNoTrace(listener),
+				onDidChangeSqlPrincipals: listener => sqlWorkbenchService!.onDidChangeSqlPrincipals(listener),
+				onDidChangeSqlConnections: listener => sqlWorkbenchService!.onDidChangeSqlConnections(listener),
+			});
 		}))
 	);
 
@@ -1735,8 +1813,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 // This method is called when your extension is deactivated
 export async function deactivate() {
-	const pm = stsProcessManagerSingleton.get();
-	if (pm) {
-		await pm.stop();
-	}
+	const service = sqlWorkbenchService;
+	sqlWorkbenchService = undefined;
+	if (service) await service.dispose();
 }

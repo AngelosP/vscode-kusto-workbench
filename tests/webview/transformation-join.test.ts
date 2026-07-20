@@ -127,6 +127,22 @@ describe('transformation-join', () => {
 			[4, 'Dave', 'HR'],
 		],
 	};
+		it('clears shared derived rows on upstream refresh while collapsed', () => {
+			const el = createSection({ dataSourceId: 'sql-source', transformationType: 'derive' });
+			mockGetChartDatasetsInDomOrder.mockReturnValue([{
+				id: 'sql-source', label: 'SQL', columns: ['Value'], rows: [['secret']],
+			}]);
+			el.setExpanded(false);
+			el.refresh();
+			expect((mockSetResultsState.mock.calls.at(-1)?.[1] as any).rows).toEqual([['secret']]);
+
+			mockGetChartDatasetsInDomOrder.mockReturnValue([]);
+			el.refresh();
+
+			expect(mockSetResultsState).toHaveBeenLastCalledWith('transformation_test', expect.objectContaining({
+				columns: [], rows: [],
+			}));
+		});
 
 	const rightDs = {
 		id: 'query_2',

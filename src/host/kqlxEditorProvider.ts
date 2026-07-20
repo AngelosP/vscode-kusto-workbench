@@ -4,6 +4,7 @@ import * as path from 'path';
 
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
+import type { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { createEmptyKqlxFile, parseKqlxText, stringifyKqlxFile, type KqlxFileKind, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview, DIFF_NOISE_KEYS, COMPARISON_NOISE_KEYS } from './diffViewerUtils';
@@ -18,6 +19,18 @@ import { createFileOpenTrace } from './fileOpenTrace';
 const normalizeClusterUrlKey = (url: string): string => {
 	return kustoClusterKey(url);
 };
+
+export function hasSqlOwnedDocumentState(state: Pick<KqlxStateV1, 'sections'>): boolean {
+	const sections = state.sections ?? [];
+	const sectionTypesById = new Map(sections.map(section => [String(section.id || '').trim(), String(section.type || '')]));
+	return sections.some(section => {
+		if (String(section.type || '') === 'sql') return true;
+		if (String(section.type || '') === 'query'
+			&& String((section as { connectionIdHint?: string }).connectionIdHint || '').trim().startsWith('sql_')) return true;
+		const sourceBoxId = String((section as { comparisonSourceBoxId?: string }).comparisonSourceBoxId || '').trim();
+		return !!sourceBoxId && sectionTypesById.get(sourceBoxId) === 'sql';
+	});
+}
 
 const getDefaultConnectionName = (clusterUrl: string): string => {
 	try {
@@ -457,6 +470,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		context: vscode.ExtensionContext,
 		extensionUri: vscode.Uri,
 		connectionManager: ConnectionManager,
+		sqlWorkbench: SqlWorkbenchService,
 		editorCursorStatusBar?: EditorCursorStatusBar
 	): vscode.Disposable {
 		// Register the virtual document provider for section diffs (once).
@@ -471,7 +485,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			);
 		}
 
-		const provider = new KqlxEditorProvider(context, extensionUri, connectionManager, editorCursorStatusBar);
+		const provider = new KqlxEditorProvider(context, extensionUri, connectionManager, sqlWorkbench, editorCursorStatusBar);
 		return vscode.window.registerCustomEditorProvider(KqlxEditorProvider.viewType, provider, {
 			// VS Code supports a built-in Find widget for webviews.
 			// Our `vscode` typings may lag the runtime API, so we set this defensively.
@@ -483,6 +497,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		private readonly context: vscode.ExtensionContext,
 		private readonly extensionUri: vscode.Uri,
 		private readonly connectionManager: ConnectionManager,
+		private readonly sqlWorkbench: SqlWorkbenchService,
 		private readonly editorCursorStatusBar?: EditorCursorStatusBar
 	) {}
 
@@ -603,7 +618,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		fileOpenTrace.mark('webview.options.set', { localResourceRoots: [this.extensionUri, docDir, workspaceFolderUri].filter(Boolean).length });
 
-		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.editorCursorStatusBar);
+		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.sqlWorkbench, this.editorCursorStatusBar);
 		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
 		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
@@ -620,8 +635,15 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			return handleIncomingWebviewMessage(message);
 		});
+		let outerDisposed = false;
+		const outerDisposalSubscription = webviewPanel.onDidDispose(() => { outerDisposed = true; });
 		fileOpenTrace.mark('initializeWebviewPanel.start');
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
+		if (outerDisposed) {
+			webviewMessageSubscription.dispose();
+			outerDisposalSubscription.dispose();
+			return;
+		}
 		fileOpenTrace.mark('initializeWebviewPanel.done');
 
 		perfMark('host.kqlx.webviewInitialized');
@@ -874,6 +896,34 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 		};
 
+		const sanitizeSerializedNotebookTextFresh = async (text: string): Promise<string> => {
+			const parsed = parseKqlxText(text, {
+				allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+				defaultKind: documentKind,
+			});
+			if (!parsed.ok) return text;
+			const state = sanitizeStateForKind(
+				documentKind,
+				await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(parsed.file.state),
+			);
+			return normalizeTextToEol(stringifyKqlxFile({
+				kind: documentKind,
+				version: 1,
+				state,
+			}), document.eol);
+		};
+
+		let _persistChain: Promise<void> = Promise.resolve();
+		let lastWebviewPersistAt = 0;
+		let sqlSaveRepairTail: Promise<void> = Promise.resolve();
+		const serializeSqlSaveRepair = async <T>(work: () => Promise<T>): Promise<T> => {
+			let result!: T;
+			const run = sqlSaveRepairTail.catch(() => undefined).then(async () => { result = await work(); });
+			sqlSaveRepairTail = run.then(() => undefined, () => undefined);
+			await run;
+			return result;
+		};
+
 		// For session files, write directly to disk without going through the document edit cycle.
 		// This avoids the dirty indicator flickering that happens with applyEdit→save.
 		const saveSessionFileToDisk = async (text: string): Promise<boolean> => {
@@ -881,20 +931,69 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				return false;
 			}
 			try {
+				return await serializeSqlSaveRepair(async () => {
+				text = await sanitizeSerializedNotebookTextFresh(text);
 				// Skip if the text is identical to what we last wrote.
 				if (text === lastDirectDiskWrite) {
 					return true;
 				}
-				const bytes = new TextEncoder().encode(text);
-				await vscode.workspace.fs.writeFile(document.uri, bytes);
+				await vscode.workspace.fs.writeFile(document.uri, new TextEncoder().encode(text));
+				const writtenText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+				const repairedText = await sanitizeSerializedNotebookTextFresh(writtenText);
+				if (repairedText !== writtenText) {
+					await vscode.workspace.fs.writeFile(document.uri, new TextEncoder().encode(repairedText));
+					text = repairedText;
+				}
 				lastDirectDiskWrite = text;
 				lastSavedText = text;
 				lastSavedEol = document.eol;
 				return true;
+				});
 			} catch {
 				return false;
 			}
 		};
+
+		const repairPersistedSqlState = (): Promise<void> => serializeSqlSaveRepair(async () => {
+			const startingText = document.getText();
+			const startedDirty = document.isDirty;
+			const currentFile = parseKqlxText(startingText, {
+				allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+				defaultKind: documentKind,
+			});
+			if (currentFile.ok && !hasSqlOwnedDocumentState(currentFile.file.state)) {
+				return;
+			}
+			if (isSessionFile) {
+				const diskText = new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+				const repairedText = await sanitizeSerializedNotebookTextFresh(diskText);
+				if (repairedText !== diskText) await vscode.workspace.fs.writeFile(document.uri, new TextEncoder().encode(repairedText));
+				lastDirectDiskWrite = repairedText;
+				lastSavedText = repairedText;
+				return;
+			}
+			const repairedText = await sanitizeSerializedNotebookTextFresh(startingText);
+			if (repairedText === startingText) return;
+			let repairedBufferText = '';
+			let mayAutoSaveRepair = false;
+			await (_persistChain = _persistChain.then(async () => {
+				const latestText = document.getText();
+				const latestRepair = await sanitizeSerializedNotebookTextFresh(latestText);
+				if (latestRepair === latestText) return;
+				mayAutoSaveRepair = !startedDirty && !document.isDirty && latestText === startingText;
+				const edit = new vscode.WorkspaceEdit();
+				edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(latestText.length)), latestRepair);
+				lastWebviewPersistAt = Date.now();
+				if (!await vscode.workspace.applyEdit(edit)) {
+					throw new Error('VS Code rejected the SQL privacy repair edit.');
+				}
+				repairedBufferText = latestRepair;
+			}));
+			if (mayAutoSaveRepair && repairedBufferText
+				&& document.isDirty && document.getText() === repairedBufferText) {
+				await document.save();
+			}
+		});
 
 		const scheduleSave = () => {
 			// Only auto-save the persistent session file.
@@ -982,6 +1081,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 		const postDocument = async (options?: { forceReload?: boolean }) => {
 			const forceReload = options?.forceReload ?? false;
+			const suppressPersistenceForTest = this.context.extensionMode !== vscode.ExtensionMode.Production
+				&& process.env.KUSTO_WORKBENCH_E2E_SUPPRESS_PERSISTENCE === '1';
 			perfMark('host.kqlx.postDocument.start', { forceReload });
 			fileOpenTrace.mark('postDocument.start', { forceReload });
 			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
@@ -1000,6 +1101,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					ok: false,
 					forceReload,
 					documentUri: document.uri.toString(),
+					suppressPersistenceForTest,
 					error: parsed.error,
 					htmlPowerBiCompatibilityCheckEnabled,
 					state: createEmptyKqlxFile().state
@@ -1008,30 +1110,37 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				return;
 			}
 
-			const sanitizedState = sanitizeStateForKind(documentKind, parsed.file.state);
+			let sanitizedState = sanitizeStateForKind(documentKind, parsed.file.state);
+			if (hasSqlOwnedDocumentState(sanitizedState)) {
+				sanitizedState = sanitizeStateForKind(documentKind, await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(sanitizedState));
+			}
 			perfMark('host.kqlx.sanitize.done', { sections: Array.isArray(sanitizedState.sections) ? sanitizedState.sections.length : 0 });
 			fileOpenTrace.mark('postDocument.sanitize.done', { sections: Array.isArray(sanitizedState.sections) ? sanitizedState.sections.length : 0 });
 			const hydratedState = await injectLinkedQueryText(sanitizedState);
 			perfMark('host.kqlx.injectLinkedQuery.done', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
 			fileOpenTrace.mark('postDocument.injectLinkedQuery.done', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
+			const outboundState = hasSqlOwnedDocumentState(hydratedState)
+				? await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(hydratedState)
+				: queryEditor.sanitizeSqlLeaveNoTraceState(hydratedState);
 
 			void webviewPanel.webview.postMessage({
 				type: 'documentData',
 				ok: true,
 				forceReload,
 				documentUri: document.uri.toString(),
+				suppressPersistenceForTest,
 				htmlPowerBiCompatibilityCheckEnabled,
-				state: hydratedState
+				state: outboundState
 			});
-			perfMark('host.kqlx.documentData.posted', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
-			fileOpenTrace.mark('postDocument.documentData.posted', { ok: true, forceReload, sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
+			perfMark('host.kqlx.documentData.posted', { sections: Array.isArray(outboundState.sections) ? outboundState.sections.length : 0 });
+			fileOpenTrace.mark('postDocument.documentData.posted', { ok: true, forceReload, sections: Array.isArray(outboundState.sections) ? outboundState.sections.length : 0 });
 
 			void (async () => {
 				let connectionsChanged = false;
 				try {
 					perfMark('host.kqlx.ensureConnections.start');
 					fileOpenTrace.mark('ensureConnections.start');
-					connectionsChanged = await ensureConnectionsForState(hydratedState);
+					connectionsChanged = await ensureConnectionsForState(outboundState);
 					perfMark('host.kqlx.ensureConnections.done', { connectionsChanged });
 					fileOpenTrace.mark('ensureConnections.done', { connectionsChanged });
 				} catch {
@@ -1047,7 +1156,24 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			})();
 		};
 
-		const subscriptions: vscode.Disposable[] = [webviewMessageSubscription];
+		const subscriptions: vscode.Disposable[] = [webviewMessageSubscription, outerDisposalSubscription];
+		subscriptions.push(queryEditor.onDidInvalidateSqlPersistence(() => {
+			void repairPersistedSqlState().catch(() => undefined);
+		}));
+		if (!isSessionFile) {
+			subscriptions.push(vscode.workspace.onWillSaveTextDocument(event => {
+				if (event.document.uri.toString() !== document.uri.toString()) return;
+				event.waitUntil((async () => {
+					const currentText = document.getText();
+					const sanitizedText = await sanitizeSerializedNotebookTextFresh(currentText);
+					if (sanitizedText === currentText) return [];
+					return [vscode.TextEdit.replace(
+						new vscode.Range(document.positionAt(0), document.positionAt(currentText.length)),
+						sanitizedText,
+					)];
+				})());
+			}));
+		}
 		subscriptions.push(
 			vscode.workspace.onDidSaveTextDocument((saved) => {
 				try {
@@ -1070,6 +1196,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					} catch {
 						// ignore
 					}
+					void repairPersistedSqlState().catch(() => undefined);
 				} catch {
 					// ignore
 				}
@@ -1079,12 +1206,10 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		// Track if the webview has initialized and whether it's currently being edited by the user.
 		// This helps us avoid refreshing the webview for changes that originated from the webview itself.
 		let webviewInitialized = false;
-		let lastWebviewPersistAt = 0;
 
 		// Serialization chain: each applyEdit waits for the previous one to finish.
 		// This prevents concurrent applyEdit calls that cause VS Code's
 		// "has changed in the meantime" validation error.
-		let _persistChain: Promise<void> = Promise.resolve();
 
 		// Listen for external file changes (e.g., from Copilot, git, or other processes).
 		// When the document changes externally, refresh the webview to show the new content.
@@ -1127,32 +1252,25 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 
 		webviewPanel.onDidDispose(() => {
-			// For session files, we use direct disk writes (saveSessionFileToDisk) which bypass
-			// the in-memory document. The in-memory document may be stale, so we should NOT
-			// save it here as that would overwrite the correct content on disk.
-			// For non-session files, ensure any pending saves complete.
-			if (!isSessionFile) {
+			void (async () => {
 				try {
 					if (saveTimer) {
 						clearTimeout(saveTimer);
 						saveTimer = undefined;
 					}
-					void document.save();
+					await repairPersistedSqlState();
+					await _persistChain;
+					// onDidSave may enqueue one final repair; drain it before disposing subscriptions.
+					await sqlSaveRepairTail;
+					await _persistChain;
 				} catch {
-					// ignore
+					// The document may already have been closed by VS Code.
+				} finally {
+					for (const s of subscriptions) {
+						try { s.dispose(); } catch { /* ignore */ }
+					}
 				}
-			}
-			for (const s of subscriptions) {
-				try { s.dispose(); } catch { /* ignore */ }
-			}
-			try {
-				if (saveTimer) {
-					clearTimeout(saveTimer);
-					saveTimer = undefined;
-				}
-			} catch {
-				// ignore
-			}
+			})();
 		});
 
 		handleIncomingWebviewMessage = async (message: IncomingWebviewMessage) => {
@@ -1168,6 +1286,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// Only load from disk when explicitly requested by the webview.
 					await postDocument();
 					webviewInitialized = true;
+					await repairPersistedSqlState();
 					perfMark('host.kqlx.requestDocument.completed');
 					fileOpenTrace.mark('requestDocument.completed');
 
@@ -1204,7 +1323,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 					})();
 					const rawState = (message as any).state;
-					const incomingState: KqlxStateV1 = {
+					const incomingState = queryEditor.sanitizeSqlLeaveNoTraceState<KqlxStateV1>({
 						caretDocsEnabled:
 							rawState && typeof rawState.caretDocsEnabled === 'boolean' ? rawState.caretDocsEnabled : undefined,
 						autoTriggerAutocompleteEnabled:
@@ -1212,7 +1331,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								? rawState.autoTriggerAutocompleteEnabled
 								: undefined,
 						sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
-					};
+					});
 					const state = sanitizeStateForKind(documentKind, incomingState);
 
 					// ── Section-level change detection ──────────────────────────────
@@ -1417,15 +1536,23 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 					}
 
-					if (!nextText) {
+					const freshState = sanitizeStateForKind(
+						documentKind,
+						await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state),
+					);
+					const policyChangedState = !deepEqual(
+						normalizeStateForComparison(freshState),
+						normalizeStateForComparison(state),
+					);
+					if (!nextText || policyChangedState) {
 						const stateForSave: KqlxStateV1 = (() => {
 							try {
 								if (!linkedQueryUri) {
-									return state;
+									return freshState;
 								}
-								const sections = Array.isArray(state.sections) ? state.sections.map((s) => ({ ...(s as any) })) : [];
+								const sections = Array.isArray(freshState.sections) ? freshState.sections.map((s) => ({ ...(s as any) })) : [];
 								if (sections.length === 0) {
-									return state;
+									return freshState;
 								}
 								const first = sections[0] as any;
 								const t = String(first?.type ?? '');
@@ -1436,12 +1563,12 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 									delete first.query;
 								}
 								return {
-									caretDocsEnabled: state.caretDocsEnabled,
-									autoTriggerAutocompleteEnabled: state.autoTriggerAutocompleteEnabled,
+									caretDocsEnabled: freshState.caretDocsEnabled,
+									autoTriggerAutocompleteEnabled: freshState.autoTriggerAutocompleteEnabled,
 									sections: sections as any,
 								};
 							} catch {
-								return state;
+								return freshState;
 							}
 						})();
 						const file: KqlxFileV1 = {
@@ -1484,6 +1611,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					// For non-session files, use the standard edit→save cycle.
 					// Serialize through _persistChain so applyEdit calls never overlap.
 					await (_persistChain = _persistChain.then(async () => {
+						nextText = await sanitizeSerializedNotebookTextFresh(nextText);
 						// Re-read the document text immediately before building the edit range.
 						// The earlier `currentText` may be stale if async processing or another
 						// persist cycle modified the document in the meantime.

@@ -4,13 +4,13 @@ Feature: Kusto favorites synchronize across sections and open files
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
     And I wait 2 seconds
-    Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/single-many.kqlx" exists with content "{\"kind\":\"kqlx\",\"version\":1,\"state\":{\"sections\":[]}}"
+    Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/single-many.kqlx" exists with content "{\"kind\":\"kqlx\",\"version\":1,\"state\":{\"sections\":[{\"type\":\"query\",\"id\":\"query_single_many\",\"query\":\"print single_many_kqlx=1\"}]}}"
     Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/single-many-sidecar.kql" exists with content "print single_many_sidecar_kql=1"
     Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/single-many-sidecar.kql.json" exists with content "{\"kind\":\"kqlx\",\"version\":1,\"state\":{\"sections\":[{\"type\":\"query\",\"linkedQueryPath\":\"single-many-sidecar.kql\"}]}}"
     Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/single-many-sidecar.csl" exists with content "print single_many_sidecar_csl=1"
     Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/single-many-sidecar.csl.json" exists with content "{\"kind\":\"kqlx\",\"version\":1,\"state\":{\"sections\":[{\"type\":\"query\",\"linkedQueryPath\":\"single-many-sidecar.csl\"}]}}"
-    Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/one-source.kqlx" exists with content "{\"kind\":\"kqlx\",\"version\":1,\"state\":{\"sections\":[]}}"
-    Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/one-target.kqlx" exists with content "{\"kind\":\"kqlx\",\"version\":1,\"state\":{\"sections\":[]}}"
+    Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/one-source.kqlx" exists with content "{\"kind\":\"kqlx\",\"version\":1,\"state\":{\"sections\":[{\"type\":\"query\",\"id\":\"query_one_source\",\"query\":\"print one_source_kqlx=1\"}]}}"
+    Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/one-target.kqlx" exists with content "{\"kind\":\"kqlx\",\"version\":1,\"state\":{\"sections\":[{\"type\":\"query\",\"id\":\"query_one_target\",\"query\":\"print one_target_kqlx=1\"}]}}"
     Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/one-source.kql" exists with content "print source_plain_kql=1"
     Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/one-target.kql" exists with content "print target_plain_kql=1"
     Given a file "tests/vscode-extension-tester/runs/default/kusto-favorites-sync/one-source.csl" exists with content "print source_plain_csl=1"
@@ -35,6 +35,7 @@ Feature: Kusto favorites synchronize across sections and open files
     And I press "Enter"
     When I evaluate "window.__e2e.kusto.favorites.assertVisibleInAllSections('<favoriteName>', 3, 10000)" in the webview "<title>" for 12 seconds
     And I evaluate "window.__e2e.kusto.favorites.clean({ clusterUrl: '<clusterUrl>', database: '<database>' })" in the webview "<title>" for 10 seconds
+    And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 3, 10000)" in the webview "<title>" for 12 seconds
     When I execute command "workbench.action.closeAllEditors"
 
     Examples:
@@ -62,6 +63,8 @@ Feature: Kusto favorites synchronize across sections and open files
     And I evaluate "window.__e2e.kusto.favorites.assertProbe(window.__favsyncProbeToken || '<missing>')" in the webview "<targetTitle>" for 5 seconds
     When I evaluate "window.__e2e.kusto.favorites.assertVisibleInAllSections('<favoriteName>', 1, 10000)" in the webview "<targetTitle>" for 12 seconds
     And I evaluate "window.__e2e.kusto.favorites.clean({ clusterUrl: '<clusterUrl>', database: '<database>' })" in the webview "<sourceTitle>" for 10 seconds
+    And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 1, 10000)" in the webview "<sourceTitle>" for 12 seconds
+    And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 1, 10000)" in the webview "<targetTitle>" for 12 seconds
     When I execute command "workbench.action.closeAllEditors"
 
     Examples:
@@ -111,6 +114,8 @@ Feature: Kusto favorites synchronize across sections and open files
     And I evaluate "window.__e2e.kusto.favorites.assertProbe(window.__favsyncProbeToken || '<missing>')" in the webview "<targetTitle>" for 5 seconds
     When I evaluate "window.__e2e.kusto.favorites.assertVisibleInAllSections('<favoriteName>', 3, 10000)" in the webview "<targetTitle>" for 12 seconds
     And I evaluate "window.__e2e.kusto.favorites.clean({ clusterUrl: '<clusterUrl>', database: '<database>' })" in the webview "<sourceTitle>" for 10 seconds
+    And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 3, 10000)" in the webview "<sourceTitle>" for 12 seconds
+    And I evaluate "window.__e2e.kusto.favorites.assertAbsentInAllSections('<favoriteName>', 3, 10000)" in the webview "<targetTitle>" for 12 seconds
     When I execute command "workbench.action.closeAllEditors"
 
     Examples:

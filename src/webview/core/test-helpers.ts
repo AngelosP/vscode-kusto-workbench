@@ -3,7 +3,7 @@
 // Used by the vscode-ext-test E2E framework via `When I evaluate`.
 
 import { postMessageToHost } from '../shared/webview-messages.js';
-import { beginKustoPreparation, getKustoPreparationState, isSchemaEnhancementReady, isSchemaWorkerReady, markSchemaEnhancementReady, markSchemaWorkerReady, requestKustoSchemaApplyForBox, setActiveMonacoEditor } from './state.js';
+import { beginKustoPreparation, getKustoPreparationState, isSchemaEnhancementReady, isSchemaWorkerReady, markSchemaEnhancementReady, markSchemaWorkerReady, requestKustoSchemaApplyForBox, setActiveMonacoEditor, sqlTargetGenerationByBoxId } from './state.js';
 import { pState } from '../shared/persistence-state.js';
 import { perfSnapshot } from './perf.js';
 import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
@@ -14,6 +14,8 @@ import { extractCrossClusterRefs } from '../shared/cross-cluster-schema.js';
 import { computeMissingClusterUrls } from '../shared/clusterUtils.js';
 import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
 import { getKustoSchemaIdentityKey } from '../../shared/kustoAuth.js';
+import { displayResultForBox, getResultsState } from './results-state.js';
+import { adoptCurrentStateAsCleanForTest, isPersistenceSuppressedForTest } from './persistence.js';
 
 type MonacoLike = {
 	getDomNode?: () => HTMLElement | null;
@@ -1647,6 +1649,7 @@ function e2eKustoGlobalFavorites(): any[] {
 }
 
 async function e2eKustoPrepareFavoriteDocument(options: any = {}): Promise<string> {
+	if (!isPersistenceSuppressedForTest()) throw new Error('Favorites E2E persistence suppression was not active before document setup');
 	const clusterUrl = String(options.clusterUrl || '').trim();
 	const database = String(options.database || '').trim();
 	const sectionCount = Math.max(1, Number(options.sectionCount || 1));
@@ -1683,6 +1686,7 @@ async function e2eKustoPrepareFavoriteDocument(options: any = {}): Promise<strin
 		section.requestUpdate?.();
 	}
 	for (const section of sections) await section.updateComplete;
+	adoptCurrentStateAsCleanForTest();
 	return `prepared ${sections.length} Kusto section(s) for ${clusterUrl}/${database}`;
 }
 
@@ -1727,6 +1731,7 @@ async function e2eKustoSetFavoritesModeForInspection(section: any): Promise<void
 	}
 	section.requestUpdate?.();
 	await section.updateComplete;
+	adoptCurrentStateAsCleanForTest();
 }
 
 function e2eKustoFavoriteDropdownLabels(section: any): string[] {
@@ -1783,6 +1788,8 @@ async function e2eKustoAddFavoriteFromSection(index = 0): Promise<string> {
 		throw new Error(`Favorite star is already active in ${section.boxId || section.id}; choose a unique cluster/database for this scenario`);
 	}
 	star.click();
+	await e2eDelay(0);
+	adoptCurrentStateAsCleanForTest();
 	return `clicked favorite star in ${section.boxId || section.id}`;
 }
 
@@ -4675,8 +4682,14 @@ function e2eQueryApi(kind: E2eSectionKind) {
 			return e2eAssertKustoCancelHiddenDisabled();
 		},
 		clickCancel: () => {
-			if (kind !== 'kusto') {
-				throw new Error('clickCancel is only implemented for kusto sections');
+			if (kind === 'sql') {
+				const section = e2eSection('sql');
+				const button = document.getElementById(`${section.boxId}_sql_cancel_btn`) as HTMLButtonElement | null;
+				if (!button || button.style.display === 'none' || button.disabled) {
+					throw new Error('SQL cancel button is not visible and enabled');
+				}
+				button.click();
+				return 'sql cancel clicked';
 			}
 			return e2eClickKustoCancel();
 		},
@@ -5206,12 +5219,6 @@ function e2eLayoutSampleResult(): any {
 	};
 }
 
-function e2eLayoutDispatchQueryResult(boxId: string, result: any): void {
-	window.dispatchEvent(new MessageEvent('message', {
-		data: { type: 'queryResult', boxId, result },
-	}));
-}
-
 function e2eChartRegressionResult(): any {
 	return {
 		columns: [
@@ -5292,21 +5299,31 @@ function e2eChartAssertRegressionState(chartId: string): string {
 }
 
 async function e2eChartAssertTitleSyncAndHeatmapNumericCategories(): Promise<string> {
-	const queryId = e2eLayoutAddSection('addQueryBox', {
-		id: 'query_e2e_chart_regression',
-		initialQuery: 'datatable(Bucket:string, Lane:string, Value:long)[]',
-		defaultResultsVisible: true,
-		expanded: true,
+	const sourceId = e2eLayoutAddSection('addUrlBox', {
+		id: 'url_e2e_chart_regression',
+		name: 'Chart regression data',
+		url: 'https://example.invalid/chart-regression.csv',
+		expanded: false,
 	});
-	await e2eLayoutWaitFor(() => !!document.getElementById(queryId), 'chart regression query section');
-	e2eLayoutDispatchQueryResult(queryId, e2eChartRegressionResult());
+	await e2eLayoutWaitFor(() => !!document.getElementById(sourceId), 'chart regression data section');
+	const source = e2eChartRegressionResult();
+	const csvBody = [
+		source.columns.map((column: any) => column.name).join(','),
+		...source.rows.map((row: unknown[]) => row.join(',')),
+	].join('\n');
+	window.dispatchEvent(new MessageEvent('message', { data: {
+		type: 'urlContent', boxId: sourceId,
+		url: 'https://example.invalid/chart-regression.csv',
+		kind: 'csv', contentType: 'text/csv', status: 200, body: csvBody,
+	} }));
+	await e2eLayoutWaitFor(() => (getResultsState(sourceId)?.columns || []).length === 3, 'chart regression CSV data');
 
 	const chartId = e2eLayoutAddSection('addChartBox', {
 		id: 'chart_e2e_heatmap_regression',
 		name: 'Chart Regression Heatmap',
 		mode: 'preview',
 		expanded: true,
-		dataSourceId: queryId,
+		dataSourceId: sourceId,
 		chartType: 'heatmap',
 		xColumn: 'Bucket',
 		yColumn: 'Lane',
@@ -5319,8 +5336,8 @@ async function e2eChartAssertTitleSyncAndHeatmapNumericCategories(): Promise<str
 		editorHeightPx: 260,
 	});
 	await e2eLayoutWaitFor(() => !!document.getElementById(chartId), 'chart regression chart section');
-
 	const chartSection = document.getElementById(chartId) as any;
+	chartSection.refresh?.();
 	await e2eLayoutWaitForUpdate(chartSection as HTMLElement);
 	_win.chartStateByBoxId = _win.chartStateByBoxId || {};
 	_win.chartStateByBoxId[chartId] = {
@@ -5332,15 +5349,48 @@ async function e2eChartAssertTitleSyncAndHeatmapNumericCategories(): Promise<str
 	if (typeof chartSection.syncFromGlobalState !== 'function') {
 		throw new Error(`Chart section cannot sync global state: ${chartId}`);
 	}
-	chartSection.syncFromGlobalState();
+	await e2eLayoutWaitFor(() => !!chartSection.shadowRoot, 'chart shadow root', 10000);
+	for (let attempt = 0; attempt < 5; attempt++) {
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'urlContent', boxId: sourceId,
+			url: 'https://example.invalid/chart-regression.csv',
+			kind: 'csv', contentType: 'text/csv', status: 200, body: csvBody,
+		} }));
+		chartSection.syncFromGlobalState();
+		await e2eLayoutWaitForUpdate(chartSection as HTMLElement);
+		chartSection.refresh?.();
+		await e2eLayoutWaitForUpdate(chartSection as HTMLElement);
+		await e2eLayoutDelay(200);
+		if (!String(chartSection.shadowRoot?.textContent || '').includes('No data available yet.')) break;
+	}
+	await e2eLayoutDelay(500);
+	if (String(chartSection.shadowRoot?.textContent || '').includes('No data available yet.')) {
+		throw new Error('Chart returned to its empty state after local E2E data stabilization');
+	}
+	chartSection.setExpanded?.(true);
+	const chartWrapper = document.getElementById(chartId + '_chart_wrapper') as HTMLElement | null;
+	if (chartWrapper) {
+		chartWrapper.style.display = '';
+		chartWrapper.style.height = '320px';
+		chartWrapper.dataset.kustoUserResized = 'true';
+	}
+	chartSection.refresh?.();
 	await e2eLayoutWaitForUpdate(chartSection as HTMLElement);
+	await e2eLayoutWaitFor(() => {
+		const canvas = document.getElementById(chartId + '_chart_canvas_preview') as HTMLElement | null;
+		return chartSection.getBoundingClientRect().height > 200
+			&& !!canvas
+			&& canvas.getBoundingClientRect().height > 100
+			&& !canvas.querySelector('.error-message');
+	}, 'visible chart geometry', 10000);
 
 	await e2eLayoutWaitFor(() => {
 		e2eChartAssertRegressionState(chartId);
 		return true;
 	}, 'chart regression state', 10000);
 	const summary = e2eChartAssertRegressionState(chartId);
-	chartSection.scrollIntoView({ block: 'start' });
+	setPageScrollTop(Math.max(0, chartSection.offsetTop - 24));
+	await e2eLayoutDelay(100);
 	return summary;
 }
 
@@ -5424,8 +5474,6 @@ async function e2eLayoutCreateStressNotebook(): Promise<string> {
 	});
 
 	await e2eLayoutWaitFor(() => !!document.getElementById(queryId) && !!document.getElementById(sqlId), 'query and SQL sections');
-	e2eLayoutDispatchQueryResult(queryId, e2eLayoutSampleResult());
-	e2eLayoutDispatchQueryResult(sqlId, e2eLayoutSampleResult());
 
 	e2eLayoutAddSection('addChartBox', {
 		id: e2eLayoutSpec('chart').id,
@@ -5471,6 +5519,8 @@ async function e2eLayoutCreateStressNotebook(): Promise<string> {
 	e2eLayoutAddSection('addPythonBox', { id: e2eLayoutSpec('python').id });
 
 	await e2eLayoutWaitFor(() => E2E_LAYOUT_SPECS.every(spec => !!document.getElementById(spec.id)), 'all layout sections');
+	await e2eSeedQueryResult(queryId, e2eLayoutSampleResult());
+	await e2eSeedQueryResult(sqlId, e2eLayoutSampleResult());
 	e2eLayoutDispatchUrlContent(e2eLayoutSpec('url').id);
 
 	const pythonSection = e2eLayoutSection(e2eLayoutSpec('python')) as any;
@@ -6020,7 +6070,30 @@ async function e2eAssertKustoClickCaretFidelityAfterRestoredHtmlPreviewScroll():
 	return `Restored HTML preview click kept Kusto caret at ${position.lineNumber}:${position.column}; pageScrollTop=${e2ePageScrollTop(scrollElement)}/${maxScrollTop}; ${scrollContract}; target=${e2eDescribeElement(target)}`;
 }
 
-_win.__e2e = {
+async function e2eSeedQueryResult(boxId: string, result: unknown): Promise<string> {
+	const id = String(boxId || '').trim();
+	const section = document.getElementById(id) as any;
+	if (!id || !section) throw new Error(`Result owner not found: ${id || '(empty)'}`);
+	if (section.updateComplete && typeof section.updateComplete.then === 'function') await section.updateComplete;
+	await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
+	let accepted = displayResultForBox(result, id, { label: 'Results', showExecutionTime: true });
+	if (!accepted) throw new Error(`Result owner rejected local E2E data: ${id}`);
+	if (section.updateComplete && typeof section.updateComplete.then === 'function') await section.updateComplete;
+	const hasTabularData = Array.isArray((result as any)?.columns) || Array.isArray((result as any)?.rows);
+	let table = section.querySelector?.('kw-data-table') || section.shadowRoot?.querySelector?.('kw-data-table');
+	if (hasTabularData && !table) {
+		accepted = displayResultForBox(result, id, { label: 'Results', showExecutionTime: true });
+		if (!accepted) throw new Error(`Result owner rejected replayed local E2E data: ${id}`);
+		if (section.updateComplete && typeof section.updateComplete.then === 'function') await section.updateComplete;
+		table = section.querySelector?.('kw-data-table') || section.shadowRoot?.querySelector?.('kw-data-table');
+	}
+	if (hasTabularData && !table) throw new Error(`Result table did not survive local E2E rendering: ${id}`);
+	if (table?.updateComplete && typeof table.updateComplete.then === 'function') await table.updateComplete;
+	return `seeded local result for ${id}`;
+}
+
+if (document.body.dataset.kustoE2eEnabled === 'true') {
+	_win.__e2e = {
 	proof: {
 		clear: e2eClearProofMarker,
 		id: e2eProofId,
@@ -6031,6 +6104,7 @@ _win.__e2e = {
 	},
 	workbench: {
 		clearSections: () => _win.__testRemoveAllSections(),
+		seedResult: e2eSeedQueryResult,
 		enableIsolatedKustoConnections: e2eEnableIsolatedKustoConnections,
 		assertIsolatedKustoConnections: e2eAssertIsolatedKustoConnections,
 		removeSection: (selector: string) => _win.__testRemoveSection(selector),
@@ -6066,6 +6140,38 @@ _win.__e2e = {
 	},
 	sql: {
 		...e2eQueryApi('sql'),
+		resultContract: () => {
+			const section = e2eSection('sql');
+			const state = getResultsState(section.boxId);
+			if (!state) throw new Error('SQL result state is unavailable');
+			return {
+				columns: state.columns,
+				rows: state.rows,
+				metadata: state.metadata,
+			};
+		},
+		assertTypeContract: () => {
+			const result = _win.__e2e.sql.resultContract();
+			const row = result.rows[0];
+			const byName = Object.fromEntries(result.columns.map((column: any, index: number) => [column.name, row[index]]));
+			const expected: Record<string, string> = {
+				NullValue: 'null',
+				BitValue: 'true',
+				BigValue: '9007199254740993',
+				DecimalValue: '1234567890.123456789',
+				GuidValue: '12345678-1234-1234-1234-1234567890ab',
+			};
+			for (const [name, value] of Object.entries(expected)) {
+				if (String(byName[name]?.full) !== value) {
+					throw new Error(`${name} full=${byName[name]?.full} expected=${value}`);
+				}
+			}
+			if (!String(byName.BinaryValue?.full).toLowerCase().includes('0102ff')) throw new Error(`BinaryValue full=${byName.BinaryValue?.full}`);
+			if (!String(byName.OffsetValue?.full).includes('+05:30')) throw new Error(`OffsetValue lost offset: ${byName.OffsetValue?.full}`);
+			if (!String(byName.JsonText?.full).includes('{"a":1}')) throw new Error(`JsonText full=${byName.JsonText?.full}`);
+			if (!String(byName.XmlValue?.full).includes('<root>')) throw new Error(`XmlValue full=${byName.XmlValue?.full}`);
+			return 'SQL type contract preserved';
+		},
 		connectSts: () => {
 			const section = e2eSection('sql');
 			if (section.dataset.testStsReady === 'true') {
@@ -6079,7 +6185,10 @@ _win.__e2e = {
 			if (!database) {
 				throw new Error('SQL database missing before STS connect');
 			}
-			postMessageToHost({ type: 'stsConnect', boxId: section.boxId, sqlConnectionId, database });
+			postMessageToHost({
+				type: 'stsConnect', boxId: section.boxId, sqlConnectionId, database,
+				targetGeneration: sqlTargetGenerationByBoxId[section.boxId] ?? 0,
+			});
 			return `sql STS connect posted for ${database}`;
 		},
 		assertExecutingTimerVisible: () => {
@@ -6413,4 +6522,5 @@ _win.__e2e = {
 			return `editor map cleanup verified for ${key}`;
 		},
 	},
-};
+	};
+}

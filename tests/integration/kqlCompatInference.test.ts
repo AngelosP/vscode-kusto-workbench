@@ -7,6 +7,23 @@ import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
 
 type DisposableLike = { dispose(): void };
 
+function sqlWorkbenchStub() {
+	return {
+		connectionManager: {
+			getConnections: () => [], getConnection: () => undefined,
+			onDidChangeConnections: () => ({ dispose() {} }),
+		},
+		client: {}, runtime: { onDidChangeProcessManager: () => ({ dispose() {} }) }, queryService: {},
+		onDidChangeLeaveNoTrace: () => ({ dispose() {} }),
+		onDidChangeSqlPrincipals: () => ({ dispose() {} }),
+		getLeaveNoTraceConnectionIds: () => [],
+		isLeaveNoTraceConnection: () => false,
+		refreshLeaveNoTracePolicy: async () => [],
+		assertSqlConnectionAllowed: async () => undefined,
+		ready: async () => undefined,
+	} as any;
+}
+
 suite('KQL compat editor - inferred cluster/db wiring', () => {
 	test('includes inferred clusterUrl/database in documentData for .kql files', async () => {
 		const originalInitializeWebviewPanel = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
@@ -48,13 +65,16 @@ suite('KQL compat editor - inferred cluster/db wiring', () => {
 			const extensionUri = vscode.Uri.file(path.resolve(__dirname, '..', '..', '..'));
 			const changeEmitter = new vscode.EventEmitter<unknown>();
 
+			const sqlWorkbench = sqlWorkbenchStub();
+			sqlWorkbench.refreshLeaveNoTracePolicy = async () => { throw new Error('corrupt SQL privacy state'); };
 			const provider = new (KqlCompatEditorProvider as any)(
 				fakeContext,
 				extensionUri,
 				{
 					getConnections: () => [],
 					onDidChangeConnections: changeEmitter.event,
-				} as any
+				} as any,
+				sqlWorkbench
 			) as KqlCompatEditorProvider;
 
 			const document: vscode.TextDocument = {

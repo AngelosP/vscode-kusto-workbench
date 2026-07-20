@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { html, nothing, render } from 'lit';
-import type { KwCachedValues } from '../../../src/webview/viewers/cached-values/kw-cached-values.js';
+import { groupSqlDatabasesByConnection, type KwCachedValues } from '../../../src/webview/viewers/cached-values/kw-cached-values.js';
 
 const overlayMocks = vi.hoisted(() => {
 	const instances: any[] = [];
@@ -90,6 +90,66 @@ afterEach(() => {
 });
 
 describe('kw-cached-values scrollbars', () => {
+	it('ignores a SQL snapshot delivered after a newer revision', async () => {
+		const el = createElement() as KwCachedValues & Record<string, any>;
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'snapshot', snapshot: { ...snapshot('partition-a', 2), sqlLeaveNoTrace: ['sql1'], sqlCachedDatabases: {} },
+		} }));
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'snapshot', snapshot: { ...snapshot('partition-a', 1), sqlLeaveNoTrace: [], sqlCachedDatabases: { sql1: ['StaleDb'] } },
+		} }));
+		await el.updateComplete;
+
+		expect(el._snapshot.sqlLeaveNoTrace).toEqual(['sql1']);
+		expect(el._snapshot.sqlCachedDatabases).toEqual({});
+	});
+
+	it('closes affected SQL schema requests and object viewers when the principal changes', async () => {
+		const el = createElement() as KwCachedValues & Record<string, any>;
+		await el.updateComplete;
+		const hide = vi.fn();
+		Object.defineProperty(el, '_objectViewer', { configurable: true, value: { hide } });
+		el._sqlSchemaRequestOwner = { requestId: 'schema-1', connectionId: 'sql1' };
+		el._schemaRequestInFlight = true;
+		el._sqlSchemaRefreshDb = 'Db';
+		el._sqlObjectViewerConnectionId = 'sql1';
+
+		window.dispatchEvent(new MessageEvent('message', { data: { type: 'sqlPrincipalChanged', connectionIds: ['sql1'] } }));
+
+		expect(el._sqlSchemaRequestOwner).toBeUndefined();
+		expect(el._schemaRequestInFlight).toBe(false);
+		expect(el._sqlSchemaRefreshDb).toBe('');
+		expect(el._sqlObjectViewerConnectionId).toBe('');
+		expect(hide).toHaveBeenCalledOnce();
+	});
+
+	it('closes affected SQL object state when the saved target changes', async () => {
+		const el = createElement() as KwCachedValues & Record<string, any>;
+		await el.updateComplete;
+		const hide = vi.fn();
+		Object.defineProperty(el, '_objectViewer', { configurable: true, value: { hide } });
+		el._sqlSchemaRequestOwner = { requestId: 'schema-1', connectionId: 'sql1' };
+		el._sqlObjectViewerConnectionId = 'sql1';
+
+		window.dispatchEvent(new MessageEvent('message', { data: { type: 'sqlOwnerChanged', connectionIds: ['sql1'] } }));
+
+		expect(el._sqlSchemaRequestOwner).toBeUndefined();
+		expect(el._sqlObjectViewerConnectionId).toBe('');
+		expect(hide).toHaveBeenCalledOnce();
+	});
+	it('keeps duplicate SQL server endpoints partitioned by connection owner', () => {
+		const grouped = groupSqlDatabasesByConnection({
+			'connection-a': ['DbA'],
+			'connection-b': ['DbB'],
+		}, [
+			{ id: 'connection-a', name: 'Admin', serverUrl: 'shared.example' },
+			{ id: 'connection-b', name: 'Reporting', serverUrl: 'shared.example' },
+		]);
+
+		expect(grouped.connectionOrder).toEqual(['connection-a', 'connection-b']);
+		expect(grouped.byConnection['connection-a'].databases).toEqual(['DbA']);
+		expect(grouped.byConnection['connection-b'].databases).toEqual(['DbB']);
+	});
 	it('renders page content as a normal full-width block', async () => {
 		const el = createElement();
 		await el.updateComplete;

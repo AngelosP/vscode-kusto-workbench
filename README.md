@@ -81,7 +81,7 @@ Uses the official Microsoft Kusto editor ([GitHub](https://github.com/Azure/mona
 
 ### The T-SQL editor is powered by the same engine behind the official SQL Server extension
 
-Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files or add SQL sections to any workbook. The auto-complete experience is powered by Microsoft's SQL Tools Service, the same engine behind the official SQL Server extension. so you get reliable, schema-aware IntelliSense as you type. You also get schema-aware Copilot chat, query execution with full result rendering, and all the same toolbar actions (run modes, favorites, persistence) you already know from the Kusto side.
+Write and run T-SQL queries right alongside your KQL. Open existing `.sql` files or add SQL sections to any workbook. IntelliSense, database and schema discovery, query execution, and cancellation are powered by Microsoft's SQL Tools Service, the same engine behind the official SQL Server extension. The platform-specific runtime is downloaded, integrity-checked, and cached in VS Code extension storage on first SQL use. You also get schema-aware Copilot chat, full result rendering, and the same toolbar actions (run modes, favorites, persistence) you already know from the Kusto side.
 
 ![SQL sections](./media/marketplace/sql-sections.png)
 
@@ -169,6 +169,8 @@ Explore the Kusto clusters and SQL Server connections you have added with ease. 
 Are you connecting to a Kusto cluster for which you should never export data or save data locally due to access restrictions, legal requirements, etc? Just flag the cluster and the extension will never save any of its data to disk, or even in temporary files. It will still allow you to save the queries and the chart settings, but the data itself will have to be retrieved each time you connect to the cluster.
 
 Power BI publishing keeps Leave No Trace sources in DirectQuery mode because Import mode stores refreshed query results in the Power BI semantic model.
+
+SQL connections marked Leave No Trace fail closed: Kusto Workbench will not connect through SQL Tools Service because that service may buffer query results on disk. The policy is shared across VS Code windows; enabling it cancels active SQL and Copilot work, closes language sessions, clears retained source and dependent results, and blocks cached or persisted SQL results from being restored. Unmark the connection only when SQL Tools Service storage is permitted.
 
 ![Leave No Trace](media/marketplace/cluster-explorer.png)
 
@@ -270,7 +272,8 @@ This extension is designed to keep your work local by default, and only sends da
 * **Optional persisted query results**: When enabled/available, the extension may embed recent query results into the `.kqlx` / `.sqlx` state as JSON (capped at \~200KB per section). If you save a `.kqlx` or `.sqlx`, those embedded results become part of the file.
 * **Schema cache**: Database schemas are cached on disk (in the extension's global storage) to speed up iteration. The cache is versioned and automatically invalidated when the format changes.
 * **Development notes**: AI-generated development notes are stored within the `.kqlx` / `.sqlx` file alongside your sections.
-* **SQL Server connections**: Saved in VS Code extension global state on your machine (server hostname, port, database, and authentication mode). Passwords are not stored by the extension; integrated authentication or token-based login is used.
+* **SQL Server connections**: Saved in VS Code extension global state on your machine (server hostname, port, database, and authentication mode). SQL Login passwords are stored through VS Code `SecretStorage`, separate from the connection record. Microsoft Entra authentication uses an access token obtained through VS Code authentication.
+* **SQL Tools Service runtime**: Downloaded on first SQL use, verified against the pinned release digest, and cached in the extension's global storage.
 
 ### What gets sent to your Kusto cluster
 
@@ -290,9 +293,9 @@ When you click **Run** in a SQL section, the extension sends:
 
 * Your **T-SQL query text**
 * The target **server** and **database**
-* Your **credentials** (Windows integrated authentication or the authentication mode you selected)
+* Your **Microsoft Entra access token** or **SQL Login username/password**, depending on the authentication mode you selected
 
-The connection is established via Microsoft's SQL Tools Service (the same engine behind the official SQL Server extension for VS Code). The extension does not store passwords on disk.
+The connection and query are handled by Microsoft's SQL Tools Service. SQL Login passwords are retrieved from VS Code `SecretStorage` when needed and are not written into notebook files, connection records, or logs.
 
 ### What gets sent to GitHub Copilot
 
@@ -341,7 +344,6 @@ This extension is built on top of some fantastic open-source projects. Huge than
 | **marked** | MIT | marked contributors | [github.com/markedjs/marked](https://github.com/markedjs/marked) |
 | **DOMPurify** | Apache 2.0 / MPL 2.0 | Cure53 | [github.com/cure53/DOMPurify](https://github.com/cure53/DOMPurify) |
 | **Microsoft SQL Tools Service** | MIT | Microsoft | [github.com/microsoft/sqltoolsservice](https://github.com/microsoft/sqltoolsservice) |
-| **node-mssql** | MIT | Tediousjs contributors | [github.com/tediousjs/node-mssql](https://github.com/tediousjs/node-mssql) |
 | **vscode-jsonrpc** | MIT | Microsoft | [github.com/microsoft/vscode-languageserver-node](https://github.com/microsoft/vscode-languageserver-node) |
 | **esbuild** | MIT | Evan Wallace | [github.com/evanw/esbuild](https://github.com/evanw/esbuild) |
 | **HTML Content** (Power BI visual) | MIT | Daniel Marsh-Patrick / Coacervo | [html-content.com](https://html-content.com/) · [GitHub](https://github.com/dm-p/powerbi-visuals-html-content) |

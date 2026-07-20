@@ -11,6 +11,10 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 * Bugs
     * Better handling of Kusto URIs that can all look different but point to the same cluster. Some of the formats work better than others when embedded into HTML and URIs.
     * No more stale errors being reported for .kql or .csl files, which used to depend on a stale schema instead of the live connection.
+    * SQL query execution, database discovery, schema loading, and cancellation now use the same first-use-downloaded Microsoft SQL Tools Service as SQL IntelliSense. This fixes SQL execution in installed VSIX builds where the previous external Node runtime was unavailable.
+    * SQL Tools Service downloads are SHA-256 verified, installed atomically, and shared safely across editor windows.
+    * SQL connections marked Leave No Trace now fail closed before SQL Tools Service or Copilot starts, propagate across VS Code windows, cancel active work, clear retained/dependent results and chat history, and block protected cached or persisted results from restoration.
+    * SQL Tools Service recovery now settles failed waiters, resets its retry budget after stable recovery, replaces exhausted process managers, and replays open SQL editor language sessions.
 
 ## [4.7.4] - 2026.07.04
 

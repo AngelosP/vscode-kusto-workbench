@@ -1,17 +1,25 @@
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import {
 	clearSqlTokenOverride,
+	deleteSqlServerAccountMapEntry,
 	readSqlServerAccountMap,
 	resolveSqlAadAccessToken,
 	setSqlServerAccountMapEntry,
 	setSqlTokenOverride,
 } from '../../../src/host/sql/sqlAuthState';
+import { readCurrentSqlServerAccountMap } from '../../../src/host/sql/sqlServerAccountMapStore';
 
-function createMockContext(): any {
+const tempDirectories: string[] = [];
+
+function createMockContext(globalStorageDirectory?: string): any {
 	const globalStateStore = new Map<string, unknown>();
 	const secretStore = new Map<string, string>();
 	return {
+		...(globalStorageDirectory ? { globalStorageUri: vscode.Uri.file(globalStorageDirectory) } : {}),
 		globalState: {
 			get: <T>(key: string, fallback?: T) => globalStateStore.has(key) ? globalStateStore.get(key) as T : fallback,
 			update: vi.fn(async (key: string, value: unknown) => {
@@ -50,6 +58,7 @@ describe('sqlAuthState', () => {
 	});
 
 	afterEach(() => {
+		for (const directory of tempDirectories.splice(0)) fs.rmSync(directory, { recursive: true, force: true });
 		if (originalEnv.serverUrl === undefined) delete process.env.KUSTO_WORKBENCH_TEST_SQL_AAD_SERVER_URL;
 		else process.env.KUSTO_WORKBENCH_TEST_SQL_AAD_SERVER_URL = originalEnv.serverUrl;
 		if (originalEnv.accountId === undefined) delete process.env.KUSTO_WORKBENCH_TEST_SQL_AAD_ACCOUNT_ID;
@@ -94,6 +103,81 @@ describe('sqlAuthState', () => {
 
 		expect(resolved).toEqual({ token: 'session-token', accountId: 'session-account', source: 'session' });
 		expect(readSqlServerAccountMap(context)).toEqual({ 'live.database.windows.net': 'session-account' });
+	});
+
+	it('rejects a session that differs from the established canonical account', async () => {
+		const context = createMockContext();
+		await setSqlServerAccountMapEntry(context, 'live.database.windows.net', 'account-a');
+		vi.spyOn(vscode.authentication, 'getSession').mockResolvedValue({
+			accessToken: 'account-b-token', account: { id: 'account-b', label: 'Account B' },
+		} as any);
+
+		await expect(resolveSqlAadAccessToken(context, 'live.database.windows.net'))
+			.rejects.toThrow('principal changed');
+
+		expect(vscode.authentication.getSession).toHaveBeenCalledWith(
+			'microsoft', expect.any(Array),
+			expect.objectContaining({ account: { id: 'account-a', label: 'account-a' } }),
+		);
+		expect(readSqlServerAccountMap(context)).toEqual({ 'live.database.windows.net': 'account-a' });
+	});
+
+	it('rejects a first-session candidate that loses concurrent canonical adoption', async () => {
+		const context = createMockContext();
+		let resolveSession!: (session: any) => void;
+		vi.spyOn(vscode.authentication, 'getSession').mockImplementation(() => new Promise(resolve => {
+			resolveSession = resolve;
+		}));
+
+		const resolving = resolveSqlAadAccessToken(context, 'live.database.windows.net');
+		await vi.waitFor(() => expect(vscode.authentication.getSession).toHaveBeenCalled());
+		await setSqlServerAccountMapEntry(context, 'live.database.windows.net', 'account-a');
+		resolveSession({ accessToken: 'account-b-token', account: { id: 'account-b', label: 'Account B' } });
+
+		await expect(resolving).rejects.toThrow('principal changed');
+		expect(readSqlServerAccountMap(context)).toEqual({ 'live.database.windows.net': 'account-a' });
+	});
+
+	it('rejects an established session when another context rotates the canonical account during sign-in', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-auth-rotation-'));
+		tempDirectories.push(directory);
+		const resolvingContext = createMockContext(directory);
+		const rotatingContext = createMockContext(directory);
+		await setSqlServerAccountMapEntry(resolvingContext, 'live.database.windows.net', 'account-a');
+		let resolveSession!: (session: any) => void;
+		vi.spyOn(vscode.authentication, 'getSession').mockImplementation(() => new Promise(resolve => {
+			resolveSession = resolve;
+		}));
+
+		const resolving = resolveSqlAadAccessToken(resolvingContext, 'live.database.windows.net');
+		await vi.waitFor(() => expect(vscode.authentication.getSession).toHaveBeenCalled());
+		await setSqlServerAccountMapEntry(rotatingContext, 'live.database.windows.net', 'account-b');
+		resolveSession({ accessToken: 'account-a-token', account: { id: 'account-a', label: 'Account A' } });
+
+		await expect(resolving).rejects.toThrow('principal changed');
+		expect(await readCurrentSqlServerAccountMap(resolvingContext)).toEqual({
+			'live.database.windows.net': 'account-b',
+		});
+	});
+
+	it('rejects an established session when another context removes the canonical account during sign-in', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-auth-removal-'));
+		tempDirectories.push(directory);
+		const resolvingContext = createMockContext(directory);
+		const removingContext = createMockContext(directory);
+		await setSqlServerAccountMapEntry(resolvingContext, 'live.database.windows.net', 'account-a');
+		let resolveSession!: (session: any) => void;
+		vi.spyOn(vscode.authentication, 'getSession').mockImplementation(() => new Promise(resolve => {
+			resolveSession = resolve;
+		}));
+
+		const resolving = resolveSqlAadAccessToken(resolvingContext, 'live.database.windows.net');
+		await vi.waitFor(() => expect(vscode.authentication.getSession).toHaveBeenCalled());
+		await deleteSqlServerAccountMapEntry(removingContext, 'live.database.windows.net');
+		resolveSession({ accessToken: 'account-a-token', account: { id: 'account-a', label: 'Account A' } });
+
+		await expect(resolving).rejects.toThrow('principal changed');
+		expect(await readCurrentSqlServerAccountMap(resolvingContext)).toEqual({});
 	});
 
 	it('clears a stored override token', async () => {
