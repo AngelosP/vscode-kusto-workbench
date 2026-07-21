@@ -120,8 +120,6 @@ export const copilotInlineCompletionRequests: Record<string, any> = {};
 export const sqlConnections: any[] = [];
 export const sqlCachedDatabases: Record<string, any> = {};
 export const sqlFavoritesModeByBoxId: Record<string, any> = {};
-export const sqlTargetGenerationByBoxId: Record<string, number> = {};
-export const sqlDatabaseRequestIdByBoxId: Record<string, string> = {};
 
 // ---------------------------------------------------------------------------
 // Primitive / reassigned state (need setter functions for cross-module writes)

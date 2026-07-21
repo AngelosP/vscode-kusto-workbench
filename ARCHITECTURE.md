@@ -26,6 +26,9 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `connectionManagerViewer.ts` | Connection manager webview panel |
 | `kqlxEditorProvider.ts` | Custom editor for `.kqlx` and `.mdx` notebook files |
 | `kqlCompatEditorProvider.ts` | Custom editor for `.kql`/`.csl` files (compatibility mode) |
+| `compatSidecarFormat.ts` | Shared pure linked-sidecar URI, validation, hydration, and canonicalization helpers for KQL/SQL compatibility editors |
+| `compatSidecarStore.ts` | Shared serialized, lock-protected CAS publication, repair, recovery, and drain mechanics for established compatibility sidecars |
+| `compatSidecarSession.ts` | Shared revision, persist queue, upgrade barrier, dirty baseline, final-snapshot, reload, beforeunload, and close state machine |
 | `mdCompatEditorProvider.ts` | Custom editor for `.md` files with embedded KQL |
 | `kqlxFormat.ts` | Type definitions for the `.kqlx` JSON file format (`KqlxSectionV1`, `KqlxStateV1`) |
 | `schemaCache.ts` | Disk-based caching for database schemas |
@@ -57,7 +60,8 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `sql/sqlDialectRegistry.ts` | Dialect metadata registry used by connection UIs |
 | `sql/mssqlSchema.ts` | MSSQL schema catalog queries and transport-neutral parsers |
 | `sql/sqlWorkbenchService.ts` | Extension-scoped owner for SQL connections, STS runtime, query broker, and client facade |
-| `sql/sqlEditorOwnershipRegistry.ts` | Editor-scoped SQL target, principal, revocation, comparison, and owner-token admission |
+| `sql/sqlEditorSessionRegistry.ts` | State-owning editor-scoped SQL target, principal, revocation, comparison, and owner-token authority |
+| `sql/sqlExecutionBroker.ts` | Editor-scoped SQL admission, exact execution identity, cancellation, currentness, and guarded lease cleanup shared by manual and Copilot runs |
 | `sql/sqlLeaveNoTracePolicyStore.ts` | Versioned, lock-protected, cross-extension-host SQL privacy policy with atomic updates and watcher propagation |
 | `sql/sqlAuthState.ts` | Per-connection auth state tracking (AAD vs SQL Login) |
 | `sql/stsProtocol.ts` | Typed contracts for the pinned SQL Tools Service JSON-RPC protocol |
@@ -372,7 +376,8 @@ SQL sections provide a near-identical notebook experience for T-SQL queries agai
 
 * **`SqlConnectionManager`** — CRUD for SQL connections. IDs use `sql_` prefix. Connections in `globalState`, passwords in `SecretStorage`
 * **`SqlWorkbenchService`** — one extension-scoped SQL owner shared by editors, Connection Manager, Cached Values, Copilot, and tools
-* **`SqlEditorOwnershipRegistry`** — one editor-scoped authority for section/comparison result ownership and owner tokens
+* **`SqlEditorSessionRegistry`** — one state-owning editor-scoped authority for section/comparison targets, generations, result ownership, lineage, and owner tokens
+* **`SqlExecutionBroker`** — one editor-scoped authority for SQL preflight reservations, single-attempt transport admission, exact cancellation, currentness, and guarded release. Manual and Copilot callers retain query shaping, retries, user-facing terminals, and conversation history
 * **`SqlQueryClient`** — stable caller-facing facade over STS database discovery, schema queries, execution, and cancellation
 * **`SqlSchemaService`** (`sqlEditorSchema.ts`) — disk + memory schema cache, webview wiring via `prefetchSqlSchema`/`sqlSchemaData` messages
 
@@ -386,6 +391,15 @@ SQL sections use Microsoft's SQL Tools Service, the same engine behind the offic
 * **`StsQueryService`** — extension-scoped data-plane broker using `connection/connect`, `connection/listdatabases`, `query/executeString`, `query/complete`, paged `query/subset`, `query/cancel`, `query/dispose`, and `connection/disconnect`
 
 Every query execution gets a unique owner URI. The public `QueryResult`, host/webview messages, and `.kqlx`/`.sqlx` formats remain shared with Kusto and unchanged. STS results are converted before entering shared table, chart, transformation, HTML, comparison, and persistence paths.
+
+### Compatibility Sidecars
+
+Plain `.kql`/`.csl` and `.sql` editors share one compatibility-sidecar architecture while retaining language-specific adapters:
+
+* **`CompatSidecarFormat`** owns linked-path resolution, exact linkage validation, primary-text hydration, and canonical sidecar serialization.
+* **`CompatSidecarStore`** owns established-sidecar write serialization, cross-window locks, compare-and-swap publication, three-attempt repair, recovery files, and drain barriers.
+* **`CompatSidecarSession`** owns revision admission, persist sequencing, upgrade barriers, dirty baselines, correlated final snapshots/reloads, beforeunload, and close settlement.
+* **Providers** retain primary-text edits, KQL inference/connection caching, language-specific sidecar creation/adoption prompts, diff UI, protocol names, and user-facing copy.
 
 ### Webview Components
 

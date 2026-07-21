@@ -58,6 +58,7 @@ import { __kustoFindSuggestWidgetForEditor, __kustoIsElementVisibleForSuggest } 
 import {
 	handleStsResponse, handleStsDiagnostics,
 } from '../monaco/sql-sts-providers.js';
+import { routeSqlSectionMessage } from './sql-section-message-router.js';
 import {
 	activeQueryEditorBoxId,
 	connections, setConnections, setLastConnectionId, setLastDatabase,
@@ -89,7 +90,7 @@ import {
 	type KustoPreparationToken,
 	favoritesModeByBoxId,
 	sqlConnections, sqlCachedDatabases, setSqlConnections, setSqlLeaveNoTraceConnectionIds,
-	sqlFavorites, setSqlFavorites, sqlFavoritesModeByBoxId, sqlTargetGenerationByBoxId, sqlDatabaseRequestIdByBoxId,
+	sqlFavorites, setSqlFavorites, sqlFavoritesModeByBoxId,
 } from './state';
 import { getKustoSchemaIdentityKey, resolveStrictKustoConnection } from '../../shared/kustoAuth.js';
 import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
@@ -656,15 +657,6 @@ try {
 } catch (e) { console.error('[kusto]', e); }
 
 // --- Extension host message dispatcher ---
-const sqlOwnerSensitiveMessageTypes = new Set([
-	'queryResult', 'queryError', 'queryCancelled', 'ensureResultsVisible',
-	'copilotWriteQueryStatus', 'copilotWriteQueryToolResult', 'copilotExecutedQuery',
-	'copilotGeneralQueryRulesLoaded', 'copilotUserQuerySnapshot', 'copilotWriteQuerySetQuery',
-	'copilotWriteQueryExecuting', 'copilotDevNotesContextLoaded', 'copilotDevNoteToolCall',
-	'copilotClarifyingQuestion', 'copilotWriteQueryDone',
-	'copilotInlineCompletionResult',
-]);
-
 const kustoTerminalMessageTypes = new Set(['queryResult', 'queryError', 'queryCancelled']);
 const ADMITTED_KUSTO_TERMINAL_EVENT = 'kusto-workbench-query-terminal';
 
@@ -692,18 +684,26 @@ function emitAdmittedKustoTerminal(message: any): void {
 const __kustoDispatchHostMessage = async (message: any) => {
 	message = (message && typeof message === 'object') ? message : {};
 	const messageType = String(message.type || '');
-	const ownerBoxId = String(message.boxId || '').trim();
 	if (!acceptsKustoTerminal(message)) return;
-	if (ownerBoxId && sqlOwnerSensitiveMessageTypes.has(messageType)) {
-		const sqlEl = __kustoGetSqlSectionElement(ownerBoxId);
-		if (sqlEl) {
-			const currentToken = String(sqlEl.getCopilotOwnerToken?.() || '');
-			if (!currentToken || currentToken !== String(message.ownerToken || '')) return;
-			if ((messageType === 'queryResult' || messageType === 'queryError' || messageType === 'queryCancelled')
-				&& typeof sqlEl.acceptsQueryTerminal === 'function'
-				&& !sqlEl.acceptsQueryTerminal(message.executionId ? String(message.executionId) : undefined)) return;
-		}
-	}
+	const sqlRoute = routeSqlSectionMessage(message, {
+		getSection: __kustoGetSqlSectionElement,
+		getDerivedSourceBoxId: boxId => {
+			const metadata = optimizationMetadataByBoxId[boxId];
+			const sourceBoxId = metadata?.isComparison ? String(metadata.sourceBoxId || '').trim() : '';
+			return sourceBoxId && __kustoGetSqlSectionElement(sourceBoxId) ? sourceBoxId : undefined;
+		},
+		clearSchema: boxId => {
+			delete schemaByBoxId[boxId];
+			delete schemaMetaByBoxId[boxId];
+		},
+		setSchema: (boxId, schema) => { schemaByBoxId[boxId] = schema; },
+		updateDatabases: updateSqlDatabaseSelect,
+		reportDatabasesError: onSqlDatabasesError,
+		handleStsResponse,
+		handleStsDiagnostics,
+		clearPolicyBox: clearSqlPolicyBox,
+	});
+	if (sqlRoute !== 'not-sql') return;
 	switch (messageType) {
 		case 'settingsUpdate':
 			try {
@@ -1773,25 +1773,6 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		case 'sqlLeaveNoTraceData':
 			try { applySqlLeaveNoTraceConnectionIds(message.connectionIds); } catch (e) { console.error('[kusto]', e); }
 			break;
-		case 'sqlConnectionOwnerChanged':
-			try {
-				const boxId = String(message.boxId || '').trim();
-				if (!boxId) break;
-				const targetGeneration = Number(message.targetGeneration);
-				if (!Number.isSafeInteger(targetGeneration)
-					|| targetGeneration < (sqlTargetGenerationByBoxId[boxId] ?? 0)) break;
-				sqlTargetGenerationByBoxId[boxId] = targetGeneration;
-				delete sqlDatabaseRequestIdByBoxId[boxId];
-				delete schemaByBoxId[boxId];
-				delete schemaMetaByBoxId[boxId];
-				handleStsDiagnostics(boxId, []);
-				const sqlEl = __kustoGetSqlSectionElement(boxId);
-				if (typeof sqlEl?.invalidateOwner === 'function') sqlEl.invalidateOwner();
-				else if (typeof sqlEl?.setSqlConnectionId === 'function') sqlEl.setSqlConnectionId('');
-				if (typeof sqlEl?.clearResults === 'function') sqlEl.clearResults();
-				clearSqlPolicyBox(boxId);
-			} catch (e) { console.error('[kusto]', e); }
-			break;
 		case 'sqlCopilotPolicyChanged':
 			try {
 				for (const boxId of Array.isArray(message.boxIds) ? message.boxIds : []) {
@@ -1824,30 +1805,6 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				} catch (e) { console.error('[kusto]', e); }
 			} catch (e) { console.error('[kusto]', e); }
 			break;
-		case 'sqlDatabasesData':
-			try {
-				if (message.requestId && sqlDatabaseRequestIdByBoxId[message.boxId] !== message.requestId) break;
-				if ((sqlTargetGenerationByBoxId[message.boxId] ?? 0) !== Number(message.targetGeneration ?? 0)) break;
-				updateSqlDatabaseSelect(message.boxId, message.databases, message.sqlConnectionId);
-				delete sqlDatabaseRequestIdByBoxId[message.boxId];
-			} catch (e) { console.error('[kusto]', e); }
-			break;
-		case 'sqlDatabasesLoading':
-			try {
-				if ((sqlTargetGenerationByBoxId[message.boxId] ?? 0) !== Number(message.targetGeneration ?? 0)) break;
-				sqlDatabaseRequestIdByBoxId[message.boxId] = String(message.requestId || '');
-				const sqlEl = __kustoGetSqlSectionElement(String(message.boxId || ''));
-				if (typeof sqlEl?.setDatabasesLoading === 'function') sqlEl.setDatabasesLoading(true);
-			} catch (e) { console.error('[kusto]', e); }
-			break;
-		case 'sqlDatabasesError':
-			try {
-				if (message.requestId && sqlDatabaseRequestIdByBoxId[message.boxId] !== message.requestId) break;
-				if ((sqlTargetGenerationByBoxId[message.boxId] ?? 0) !== Number(message.targetGeneration ?? 0)) break;
-				onSqlDatabasesError(message.boxId, message.error, message.sqlConnectionId);
-				delete sqlDatabaseRequestIdByBoxId[message.boxId];
-			} catch (e) { console.error('[kusto]', e); }
-			break;
 		case 'sqlConnectionAdded':
 			try {
 				if (Array.isArray(message.connections)) {
@@ -1864,82 +1821,6 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							bubbles: true, composed: true,
 						}));
 					}
-				}
-			} catch (e) { console.error('[kusto]', e); }
-			break;
-		case 'sqlSchemaData':
-			try {
-				const bid = String(message.boxId || '').trim();
-				if (!bid) break;
-				const sqlEl = __kustoGetSqlSectionElement(bid);
-				const currentConnectionId = typeof sqlEl?.getSqlConnectionId === 'function' ? String(sqlEl.getSqlConnectionId() || '') : '';
-				const currentDatabase = typeof sqlEl?.getDatabase === 'function' ? String(sqlEl.getDatabase() || '') : '';
-				if (currentConnectionId !== String(message.sqlConnectionId || '')
-					|| currentDatabase !== String(message.database || '')
-					|| (sqlTargetGenerationByBoxId[bid] ?? 0) !== Number(message.targetGeneration ?? 0)) break;
-				const meta = message.schemaMeta || {};
-				if (meta.error) {
-					// Schema fetch failed
-					if (sqlEl && typeof sqlEl.setSchemaInfo === 'function') {
-						sqlEl.setSchemaInfo(buildSchemaInfo(meta.errorMessage || 'Schema failed', true));
-					}
-				} else if (message.schema) {
-					// Store schema for autocomplete
-					schemaByBoxId[bid] = message.schema;
-					const tablesCount = meta.tablesCount ?? (message.schema.tables?.length ?? 0);
-					let columnsCount = meta.columnsCount ?? 0;
-					if (!columnsCount && message.schema.columnsByTable) {
-						for (const tbl of Object.keys(message.schema.columnsByTable)) {
-							columnsCount += Object.keys(message.schema.columnsByTable[tbl] || {}).length;
-						}
-					}
-					const fromCache = !!meta.fromCache;
-					const displayText = tablesCount + ' tables, ' + columnsCount + ' cols' + (fromCache ? ' (cached)' : '');
-					if (sqlEl && typeof sqlEl.setSchemaInfo === 'function') {
-						sqlEl.setSchemaInfo(buildSchemaInfo(displayText, false,
-							{ fromCache, tablesCount, columnsCount, functionsCount: 0 }));
-					}
-				}
-			} catch (e) { console.error('[kusto]', e); }
-			break;
-		case 'stsResponse':
-			try {
-				const reqId = String(message.requestId || '');
-				handleStsResponse(reqId, message.result, message.ownerToken, message.targetGeneration);
-			} catch (e) { console.error('[kusto]', e); }
-			break;
-		case 'stsDiagnostics':
-			try {
-				const bid = String(message.boxId || '').trim();
-				if (bid) {
-					const markers = message.markers || [];
-					// Suppress diagnostics until STS schema is loaded (_stsReady).
-					// Before intelliSenseReady, STS doesn't know about schema objects
-					// and produces false "Incorrect syntax" errors for valid table names.
-					const diagSqlEl = __kustoGetSqlSectionElement(bid);
-					if (diagSqlEl && (diagSqlEl._stsReady || markers.length === 0)) {
-						handleStsDiagnostics(bid, markers);
-					}
-				}
-			} catch (e) { console.error('[kusto]', e); }
-			break;
-		case 'stsConnectionState':
-			try {
-				const bid = String(message.boxId || '').trim();
-				if (!bid) break;
-				const sqlEl = __kustoGetSqlSectionElement(bid);
-				if (message.targetGeneration !== undefined
-					&& (sqlTargetGenerationByBoxId[bid] ?? 0) !== Number(message.targetGeneration)) break;
-				if (String(message.state || '') === 'ready' && (
-					String(sqlEl?.getConnectionId?.() || '') !== String(message.connectionId || '')
-					|| String(sqlEl?.getDatabase?.() || '') !== String(message.database || '')
-				)) break;
-				if (sqlEl && String(message.state || '') === 'error' && typeof sqlEl.notifyStsConnectionError === 'function') {
-					sqlEl.notifyStsConnectionError(String(message.error || 'SQL Tools Service connection failed.'));
-				} else if (sqlEl && typeof sqlEl.setStsReady === 'function') {
-					sqlEl.setStsReady(
-						String(message.state || '') === 'ready', String(message.ownerToken || ''), Number(message.targetGeneration),
-					);
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -3280,6 +3161,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		// ── SQL tool messages ───────────────────────────────────────────
 
 		case 'toolConfigureSqlSection':
+			let reservedSqlElement: any;
+			let reservedExecutionId = '';
+			let reservedExecution: Promise<any> | undefined;
 			try {
 				const requestId = String(message.requestId || '');
 				const input = message.input || {};
@@ -3288,6 +3172,16 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const sqlEl = __kustoGetSqlSectionElement(sectionId);
 				const beforeSignature = getSectionSerializedSignature(sectionId);
 				if (!sqlEl) throw new Error(`SQL section "${sectionId}" was not found.`);
+				if (input.execute) {
+					reservedExecutionId = String(input.executionId || '').trim();
+					if (typeof sqlEl.reserveToolRun !== 'function' || typeof sqlEl.startReservedToolRun !== 'function') {
+						throw new Error('SQL section does not support tool execution reservation.');
+					}
+					reservedSqlElement = sqlEl;
+					const execution = sqlEl.reserveToolRun(reservedExecutionId) as Promise<any>;
+					reservedExecution = execution;
+					void execution.catch(() => undefined);
+				}
 				if (input.connectionId || input.serverUrl || (input.execute && input.resolvedConnection)) {
 					const requestedConnectionId = String(input.connectionId || input.resolvedConnection?.id || '');
 					const conn = (Array.isArray(sqlConnections) ? sqlConnections : []).find((candidate: any) =>
@@ -3337,8 +3231,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					// Force 'Run Query' mode (plain) — agent-generated queries must not
 					// have TOP 100 limits silently appended.
 					try { setRunMode(sectionId, 'plain'); } catch (e) { console.error('[kusto]', e); }
-					if (typeof sqlEl.runForTool !== 'function') throw new Error('SQL section does not support tool execution.');
-					const execution = await sqlEl.runForTool(String(input.executionId || ''));
+					sqlEl.startReservedToolRun(reservedExecutionId);
+					const execution = await reservedExecution!;
 					(message as any).__resultPreview = `${execution.rowCount} row${execution.rowCount === 1 ? '' : 's'}`;
 					(message as any).__executionOwner = execution.owner;
 					(message as any).__executionId = execution.executionId;
@@ -3358,6 +3252,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					},
 				});
 			} catch (err: any) {
+				reservedSqlElement?.abortReservedToolRun?.(reservedExecutionId, err);
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
 			break;

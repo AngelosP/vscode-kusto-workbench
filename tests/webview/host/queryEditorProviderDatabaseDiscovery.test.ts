@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { QueryEditorProvider } from '../../../src/host/queryEditorProvider';
+import { SqlEditorSessionRegistry } from '../../../src/host/sql/sqlEditorSessionRegistry';
 
 function createProviderHarness(): QueryEditorProvider & Record<string, any> {
 	const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
@@ -68,8 +69,10 @@ function createSqlDiscoveryHarness(options: { accountId?: string; authType?: 'aa
 	provider.output = { error: vi.fn() };
 	provider.postMessage = vi.fn();
 	provider._sqlDatabaseRequestIdByBoxId = new Map();
-	provider._sqlConnectionIdByBoxId = new Map([['sql-box', 'sql-1']]);
-	provider._sqlTargetGenerationByBoxId = new Map([['sql-box', 7]]);
+	provider._closedStsBoxIds = new Set();
+	provider._sqlSectionInstanceIdByBoxId = new Map([['sql-box', 'instance-sql-box']]);
+	provider.sqlOwnership = new SqlEditorSessionRegistry({ context: provider.context, sqlWorkbench: provider.sqlWorkbench });
+	provider.sqlOwnership.adoptTarget('sql-box', 'sql-1', undefined, 7, () => undefined);
 	return {
 		provider,
 		getDatabases,
@@ -130,7 +133,7 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 		const harness = createSqlDiscoveryHarness();
 		harness.getDatabases.mockResolvedValue(['DbB', 'DbA']);
 
-		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', true);
+		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
 
 		const messages = harness.provider.postMessage.mock.calls.map((call: any[]) => call[0]);
 		const loading = messages.find((message: any) => message.type === 'sqlDatabasesLoading');
@@ -148,7 +151,7 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 			throw new Error('Leave No Trace committed');
 		});
 
-		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', true);
+		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
 
 		expect(harness.provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
 			type: 'sqlDatabasesData',
@@ -162,7 +165,7 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 			return ['DbA'];
 		});
 
-		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', true);
+		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
 
 		expect((harness.cachedDatabases as any).entries['sql-1']).toEqual(expect.objectContaining({
 			version: 1,
@@ -181,9 +184,9 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 		let invocation = 0;
 		harness.getDatabases.mockImplementation(() => (++invocation === 1 ? first.promise : second.promise));
 
-		const firstRun = harness.provider.sendSqlDatabases('sql-1', 'sql-box', true);
+		const firstRun = harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
 		await vi.waitFor(() => expect(harness.getDatabases).toHaveBeenCalledTimes(1));
-		const secondRun = harness.provider.sendSqlDatabases('sql-1', 'sql-box', true);
+		const secondRun = harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
 		await vi.waitFor(() => expect(harness.getDatabases).toHaveBeenCalledTimes(2));
 		first.resolve(['OldDb']);
 		await firstRun;
@@ -225,7 +228,7 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 		}
 		harness.getDatabases.mockResolvedValue(['FreshDb']);
 
-		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', false);
+		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', false);
 
 		expect(harness.getDatabases).toHaveBeenCalledOnce();
 		expect(harness.provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'sqlDatabasesData', databases: ['FreshDb'] }));
@@ -235,7 +238,7 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 	it('omits a populated cache from connection snapshots after principal rotation', async () => {
 		const harness = createSqlDiscoveryHarness({ accountId: 'account-a', authType: 'aad' });
 		harness.getDatabases.mockResolvedValue(['AccountADb']);
-		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', true);
+		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
 
 		harness.provider.postMessage.mockClear();
 		harness.setAccountId('account-b');
@@ -272,12 +275,12 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 		const pending = deferred<string[]>();
 		harness.getDatabases.mockReturnValue(pending.promise);
 
-		const run = harness.provider.sendSqlDatabases('sql-1', 'sql-box', true);
+		const run = harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
 		await vi.waitFor(() => expect(harness.getDatabases).toHaveBeenCalledOnce());
 		if (change === 'edited') harness.setConnection({ ...harness.getConnection(), database: 'OtherDb' });
 		if (change === 'deleted') harness.setConnection(undefined);
 		if (change === 'principal-rotated') harness.setConnection({ ...harness.getConnection(), username: 'user-b' });
-		if (change === 'generation-changed') harness.provider._sqlTargetGenerationByBoxId.set('sql-box', 8);
+		if (change === 'generation-changed') harness.provider.sqlOwnership.rotateTargetOwner('sql-box');
 		pending.resolve(['StaleDb']);
 		await run;
 

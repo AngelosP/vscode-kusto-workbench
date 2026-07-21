@@ -37,6 +37,20 @@ describe('SQL schema cache generation', () => {
 		}
 	});
 
+	it('quarantines a numeric generation instead of coercing it to a string', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-schema-generation-numeric-'));
+		const storageUri = vscode.Uri.file(directory);
+		fs.writeFileSync(path.join(directory, 'sql-schema-cache-generation.v1.json'), JSON.stringify({ generation: 42 }), 'utf8');
+		try {
+			const generation = await captureSqlSchemaCacheGeneration(storageUri);
+			expect(generation).toMatch(/^[0-9a-f-]{36}$/);
+			expect(generation).not.toBe('42');
+			expect(fs.readdirSync(directory).some(name => name.startsWith('sql-schema-cache-generation.v1.json.corrupt-'))).toBe(true);
+		} finally {
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
 	it('deletes the final schema file when ownership changes after rename', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-schema-publish-owner-'));
 		const storageUri = vscode.Uri.file(directory);

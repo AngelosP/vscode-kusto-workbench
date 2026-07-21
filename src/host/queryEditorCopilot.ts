@@ -8,8 +8,8 @@ import type { SqlQueryClient } from './sqlClient';
 import { SqlQueryCancelledError } from './sqlClient';
 import { formatQueryResultForCopilot } from './copilotResultPreview';
 import { sanitizeStsLogText } from './sql/stsLogSanitizer';
+import type { SqlExecutionBroker } from './sql/sqlExecutionBroker';
 import { SqlLeaveNoTraceBlockedError } from './sql/sqlLeaveNoTrace';
-import type { SqlResultOwner } from './sql/sqlEditorOwnershipRegistry';
 import { ConversationHistoryEntry, sanitizeConversationHistory, insertMissingToolCallResults, decideNonToolResponse, groupConversationHistoryForProvider, type ToolCallHistoryEntry } from './copilotConversationUtils';
 import { schemaCacheKey, schemaPrincipalIdentity, searchCachedSchemas } from './schemaCache';
 import { kustoDatabaseKey } from '../shared/kustoClusterUrls';
@@ -45,37 +45,17 @@ export interface CopilotServiceHost {
 	readonly kustoClient: KustoQueryClient;
 	readonly connectionManager: ConnectionManager;
 	readonly output: WorkbenchLogger;
+	readonly sqlExecutionBroker: SqlExecutionBroker;
 
-	postMessage(message: unknown): boolean | Thenable<boolean>;
+	postMessage(message: unknown): void | boolean | Thenable<boolean>;
 	findConnection(connectionId: string): KustoConnection | undefined;
 	getErrorMessage(error: unknown): string;
 	formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, db?: string): string;
 	logQueryExecutionError(error: unknown, connection: KustoConnection, db: string | undefined, boxId: string, query: string): void;
 	normalizeClusterUrlKey(url: string): string;
 
-	cancelRunningQuery(boxId: string, options?: { notifyWebview?: boolean }): void | boolean | Thenable<boolean>;
-	supersedeSqlRunAdmission(boxId: string, options?: { notifyWebview?: boolean }): number;
-	startSqlRunUnderAdmission<T extends { cancel: () => void; promise?: PromiseLike<unknown> }>(
-		boxId: string,
-		expectedGeneration: number,
-		start: () => T,
-		executionId?: string,
-	): { execution: T; runSeq: number };
-	isSqlRunAdmissionCurrent(boxId: string, expectedGeneration: number, cancel: () => void, runSeq: number): boolean;
-	reserveRunningQueryReplacement(boxId: string, executionId: string): {
-		cancel: () => void;
-		runSeq: number;
-		previousCancellationDelivery: Promise<boolean>;
-	};
-	promoteRunningQueryReservation(
-		boxId: string,
-		reservationCancel: () => void,
-		runSeq: number,
-		cancel: () => void,
-		clientActivityId: string | undefined,
-		executionId: string,
-	): boolean;
-	registerRunningQuery(boxId: string, cancel: () => void, runSeq: number, clientActivityId?: string, executionId?: string): void;
+	cancelRunningQuery(boxId: string, options?: { notifyWebview?: boolean }): void;
+	registerRunningQuery(boxId: string, cancel: () => void, runSeq: number, clientActivityId?: string): void;
 	unregisterRunningQuery(boxId: string, cancel: () => void, runSeq: number): void;
 	nextQueryRunSeq(): number;
 	isRunningQueryCurrent(boxId: string, cancel: () => void, runSeq: number): boolean;
@@ -103,13 +83,22 @@ export interface CopilotServiceHost {
 	revealPanel(): void;
 }
 
+export type SqlResultOwner = Readonly<{
+	connectionId: string;
+	database: string;
+	generation: number;
+	targetSignature: string;
+	principalFingerprint: string;
+	revocationGeneration: number;
+}>;
+
 type RunningCopilotWriteQuery = {
 	cts: vscode.CancellationTokenSource;
 	seq: number;
 	queryCancels: Set<() => void>;
 	queryCancelsByTargetBoxId: Map<string, Set<() => void>>;
 	kustoAccountPartitionGetters: Set<() => string | undefined>;
-	kustoFinalRun?: { cancel: () => void; runSeq: number; executionId: string; executionSettled: boolean };
+	kustoFinalRun?: { cancel: () => void; runSeq: number; executionSettled: boolean };
 	sqlFinalRun?: { isCurrent: () => boolean; settleExecution: () => void };
 	cleanupCurrentToolTurn?: () => void;
 	cleanupCurrentRequestHistory?: () => void;
@@ -128,17 +117,13 @@ type CopilotConversationOwner = {
 class CopilotExecutionQueryError extends Error {
 	readonly originalError: unknown;
 	readonly executionQuery: string;
-	readonly executionId: string;
-	readonly targetBoxId: string;
 	readonly isCancelled?: boolean;
 
-	constructor(error: unknown, executionQuery: string, executionId: string, targetBoxId: string) {
+	constructor(error: unknown, executionQuery: string) {
 		super(error instanceof Error ? error.message : String(error));
 		this.name = error instanceof Error ? error.name : 'CopilotExecutionQueryError';
 		this.originalError = error;
 		this.executionQuery = executionQuery;
-		this.executionId = executionId;
-		this.targetBoxId = targetBoxId;
 		if ((error as Record<string, unknown>)?.isCancelled === true) {
 			this.isCancelled = true;
 		}
@@ -146,7 +131,6 @@ class CopilotExecutionQueryError extends Error {
 }
 
 export class CopilotService {
-	private disposed = false;
 	private copilotWriteSeq = 0;
 	private copilotHistoryEntrySeq = 0;
 	private readonly runningOptimizeByBoxId = new Map<string, vscode.CancellationTokenSource>();
@@ -161,41 +145,10 @@ export class CopilotService {
 	// Cache for Copilot model selection — avoids calling selectChatModels() on every inline completion request.
 	private _cachedInlineModel: vscode.LanguageModelChat | null = null;
 	private _cachedInlineModelAt = 0;
-	private readonly runningKustoInlineCompletionByBoxId = new Map<string, vscode.CancellationTokenSource>();
 	private readonly runningSqlInlineCompletionByBoxId = new Map<string, { connectionId: string; cts: vscode.CancellationTokenSource }>();
 	private static readonly INLINE_MODEL_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
 
 	constructor(private readonly host: CopilotServiceHost) {}
-
-	dispose(): void {
-		if (this.disposed) return;
-		this.disposed = true;
-		for (const cts of this.runningOptimizeByBoxId.values()) {
-			try { cts.cancel(); } catch { /* ignore */ }
-			try { cts.dispose(); } catch { /* ignore */ }
-		}
-		this.runningOptimizeByBoxId.clear();
-		for (const running of this.runningCopilotWriteQueryByBoxId.values()) {
-			try { running.cleanupCurrentRequestHistory?.(); } catch { /* ignore */ }
-			this.cancelTrackedCopilotQueries(running);
-			try { running.cts.cancel(); } catch { /* ignore */ }
-			try { running.cts.dispose(); } catch { /* ignore */ }
-		}
-		this.runningCopilotWriteQueryByBoxId.clear();
-		for (const cts of this.runningKustoInlineCompletionByBoxId.values()) {
-			try { cts.cancel(); } catch { /* ignore */ }
-			try { cts.dispose(); } catch { /* ignore */ }
-		}
-		this.runningKustoInlineCompletionByBoxId.clear();
-		for (const running of this.runningSqlInlineCompletionByBoxId.values()) {
-			try { running.cts.cancel(); } catch { /* ignore */ }
-			try { running.cts.dispose(); } catch { /* ignore */ }
-		}
-		this.runningSqlInlineCompletionByBoxId.clear();
-		this.copilotConversationOwnerByBoxId.clear();
-		this._cachedInlineModel = null;
-		this._cachedInlineModelAt = 0;
-	}
 
 	private createRunningCopilotWriteQuery(boxId: string, cts: vscode.CancellationTokenSource, seq: number): RunningCopilotWriteQuery {
 		const running: RunningCopilotWriteQuery = {
@@ -231,53 +184,15 @@ export class CopilotService {
 	}
 
 	private async postRequiredMessage(message: unknown): Promise<void> {
-		let delivered: boolean;
-		try {
-			delivered = await Promise.resolve(this.host.postMessage(message));
-		} catch {
-			throw Object.assign(new Error('Copilot write-query canceled'), { isCancelled: true });
-		}
-		if (delivered !== true) {
-			throw Object.assign(new Error('Copilot write-query canceled'), { isCancelled: true });
-		}
+		const delivered = await Promise.resolve(this.host.postMessage(message));
+		if (delivered === false) throw new Error('Copilot write-query canceled');
 	}
 
-	private async reserveRunningQueryReplacement(
-		boxId: string,
-		executionId: string,
-		token: vscode.CancellationToken,
-	): Promise<{ cancel: () => void; runSeq: number }> {
-		const reservation = this.host.reserveRunningQueryReplacement(boxId, executionId);
-		let cancellationDisposable: vscode.Disposable | undefined;
-		const cancellation = new Promise<boolean>(resolve => {
-			if (token.isCancellationRequested) {
-				resolve(false);
-				return;
-			}
-			cancellationDisposable = token.onCancellationRequested(() => resolve(false));
-		});
-		let delivered: boolean;
-		try {
-			delivered = await Promise.race([
-				reservation.previousCancellationDelivery.then(value => value, () => false),
-				cancellation,
-			]);
-		} finally {
-			cancellationDisposable?.dispose();
-		}
-		if (delivered !== true || token.isCancellationRequested
-			|| !this.host.isRunningQueryCurrent(boxId, reservation.cancel, reservation.runSeq)) {
-			this.host.unregisterRunningQuery(boxId, reservation.cancel, reservation.runSeq);
-			throw Object.assign(new Error('Copilot write-query canceled'), { isCancelled: true });
-		}
-		return reservation;
-	}
-
-	private settleKustoFinalRunExecution(boxId: string, run: { executionId: string; executionSettled: boolean }): void {
+	private settleKustoFinalRunExecution(boxId: string, run: { executionSettled: boolean }): void {
 		if (run.executionSettled) return;
 		run.executionSettled = true;
 		try {
-			this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false, executionId: run.executionId });
+			this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false });
 		} catch {
 			// ignore
 		}
@@ -1053,7 +968,6 @@ export class CopilotService {
 		expectedSqlOwner?: SqlResultOwner,
 		ownerToken?: string,
 	): Promise<void> {
-		if (this.disposed) return;
 		const requestId = String(message.requestId || '').trim();
 		const boxId = String(message.boxId || '').trim();
 		const textBefore = String(message.textBefore || '');
@@ -1065,36 +979,23 @@ export class CopilotService {
 		}
 		if (flavor === 'sql' && !expectedSqlOwner) return;
 
+		const postResult = (completions: Array<{ insertText: string }>, error?: string) => this.host.postMessage({
+			type: 'copilotInlineCompletionResult', requestId, boxId, completions,
+			...(ownerToken ? { ownerToken } : {}), ...(error ? { error } : {}),
+		});
 		const cts = new vscode.CancellationTokenSource();
 		if (expectedSqlOwner) {
 			const previous = this.runningSqlInlineCompletionByBoxId.get(boxId);
 			try { previous?.cts.cancel(); } catch { /* ignore */ }
 			previous?.cts.dispose();
 			this.runningSqlInlineCompletionByBoxId.set(boxId, { connectionId: expectedSqlOwner.connectionId, cts });
-		} else {
-			const previous = this.runningKustoInlineCompletionByBoxId.get(boxId);
-			try { previous?.cancel(); } catch { /* ignore */ }
-			previous?.dispose();
-			this.runningKustoInlineCompletionByBoxId.set(boxId, cts);
 		}
-		const postResult = (completions: Array<{ insertText: string }>, error?: string) => {
-			if (this.disposed) return true;
-			return this.host.postMessage({
-				type: 'copilotInlineCompletionResult', requestId, boxId, completions,
-				...(ownerToken ? { ownerToken } : {}), ...(error ? { error } : {}),
-			});
-		};
 		let timeoutId: ReturnType<typeof setTimeout> | undefined;
 		const assertInlineOwner = async () => {
-			const isCurrent = expectedSqlOwner
-				? this.runningSqlInlineCompletionByBoxId.get(boxId)?.cts === cts
-				: this.runningKustoInlineCompletionByBoxId.get(boxId) === cts;
-			if (this.disposed || cts.token.isCancellationRequested || !isCurrent) throw new vscode.CancellationError();
-			if (expectedSqlOwner) await this.host.assertSqlResultOwnerAllowed(boxId, expectedSqlOwner);
-			const remainsCurrent = expectedSqlOwner
-				? this.runningSqlInlineCompletionByBoxId.get(boxId)?.cts === cts
-				: this.runningKustoInlineCompletionByBoxId.get(boxId) === cts;
-			if (this.disposed || cts.token.isCancellationRequested || !remainsCurrent) throw new vscode.CancellationError();
+			if (!expectedSqlOwner) return;
+			if (cts.token.isCancellationRequested) throw new vscode.CancellationError();
+			await this.host.assertSqlResultOwnerAllowed(boxId, expectedSqlOwner);
+			if (cts.token.isCancellationRequested) throw new vscode.CancellationError();
 		};
 
 		try {
@@ -1103,7 +1004,6 @@ export class CopilotService {
 			let model = this._cachedInlineModel;
 			if (!model || Date.now() - this._cachedInlineModelAt > CopilotService.INLINE_MODEL_CACHE_TTL_MS) {
 				const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
-				await assertInlineOwner();
 				if (models.length === 0) {
 					postResult([], 'Copilot not available');
 					return;
@@ -1200,9 +1100,6 @@ Completion:`;
 			postResult([], errorMsg);
 		} finally {
 			if (timeoutId) clearTimeout(timeoutId);
-			if (this.runningKustoInlineCompletionByBoxId.get(boxId) === cts) {
-				this.runningKustoInlineCompletionByBoxId.delete(boxId);
-			}
 			if (this.runningSqlInlineCompletionByBoxId.get(boxId)?.cts === cts) {
 				this.runningSqlInlineCompletionByBoxId.delete(boxId);
 			}
@@ -1491,7 +1388,6 @@ Completion:`;
 		sqlSchemaService?: SqlSchemaService,
 		sqlClient?: SqlQueryClient,
 	): Promise<void> {
-		if (this.disposed) return;
 		const boxId = String(message.boxId || '').trim();
 		const connectionId = String(message.connectionId || '').trim();
 		const database = String(message.database || '').trim();
@@ -1521,16 +1417,8 @@ Completion:`;
 
 		// If this is a SQL-flavored request, delegate to the SQL flow
 		if (message.flavor === 'sql' && sqlConnectionManager && sqlSchemaService && sqlClient) {
-			const sqlOwnerToken = String(message.sqlOwnerToken || '').trim();
-			if (!sqlOwnerToken) {
-				this.host.postMessage({
-					type: 'copilotWriteQueryDone', boxId, ok: false,
-					message: 'SQL section owner changed. Retry the request.',
-				});
-				return;
-			}
 			await this.startSqlCopilotWriteQuery(
-				{ boxId, sqlConnectionId: connectionId, database, request, currentQuery, modelId: requestedModelId, enabledTools, sqlOwnerToken },
+				{ boxId, sqlConnectionId: connectionId, database, request, currentQuery, modelId: requestedModelId, enabledTools, sqlOwnerToken: message.sqlOwnerToken } as any,
 				sqlConnectionManager,
 				sqlSchemaService,
 				sqlClient
@@ -2172,29 +2060,12 @@ Completion:`;
 							const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 							const executionQuery = this.host.normalizeControlCommandForExecution(finalQuery);
 							const cancelClientKey = `${targetBoxId}::${connection.id}::validatePerformanceImprovements::${cancelSuffix}`;
-							const executionId = `kusto-comparison-${randomUUID()}`;
-							const reservation = await this.reserveRunningQueryReplacement(targetBoxId, executionId, cts.token);
-							let execution: ReturnType<KustoQueryClient['executeQueryCancelable']>;
-							try {
-								execution = this.host.kustoClient.executeQueryCancelable(connection, database, executionQuery, cancelClientKey);
-							} catch (error) {
-								this.host.unregisterRunningQuery(targetBoxId, reservation.cancel, reservation.runSeq);
-								throw error;
-							}
-							const outcome = execution.promise.then(
-								value => ({ ok: true as const, value }),
-								error => ({ ok: false as const, error }),
-							);
+							this.host.cancelRunningQuery(targetBoxId);
+							const execution = this.host.kustoClient.executeQueryCancelable(connection, database, executionQuery, cancelClientKey);
 							const cancel = this.createOneShotCancel(execution.cancel);
-							if (!this.host.promoteRunningQueryReservation(
-								targetBoxId, reservation.cancel, reservation.runSeq,
-								cancel, execution.clientActivityId, executionId,
-							)) {
-								cancel();
-								throw Object.assign(new Error('Copilot write-query canceled'), { isCancelled: true });
-							}
 							const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, cancel, execution.getAccountPartition, targetBoxId);
-							const runSeq = reservation.runSeq;
+							const runSeq = this.host.nextQueryRunSeq();
+							this.host.registerRunningQuery(targetBoxId, cancel, runSeq, execution.clientActivityId);
 							const isCurrentRun = () => this.host.isRunningQueryCurrent(targetBoxId, cancel, runSeq);
 							let retained = false;
 							const release = () => {
@@ -2202,12 +2073,7 @@ Completion:`;
 								this.host.unregisterRunningQuery(targetBoxId, cancel, runSeq);
 							};
 							try {
-								await this.postRequiredMessage({
-									type: 'copilotWriteQueryExecuting', boxId: targetBoxId, executing: true, executionId,
-								});
-								const settled = await outcome;
-								if (!settled.ok) throw settled.error;
-								const result = settled.value;
+								const result = await execution.promise;
 								if (!isActive() || cts.token.isCancellationRequested || !isCurrentRun()) {
 									throw new Error('Copilot write-query canceled');
 								}
@@ -2221,19 +2087,16 @@ Completion:`;
 									this.invalidateKustoConnections([connection.id]);
 									throw new Error('Copilot write-query canceled');
 								}
-								await this.postRequiredMessage({ type: 'queryResult', result, boxId: targetBoxId, executionId });
+								await this.postRequiredMessage({ type: 'queryResult', result, boxId: targetBoxId });
 								if (!isActive() || cts.token.isCancellationRequested || !isCurrentRun()) {
 									throw new Error('Copilot write-query canceled');
 								}
 								retained = true;
 								return { isCurrent: isCurrentRun, release };
 							} catch (error) {
-								throw new CopilotExecutionQueryError(error, executionQuery, executionId, targetBoxId);
+								throw new CopilotExecutionQueryError(error, executionQuery);
 							} finally {
-								if (!retained) {
-									cancel();
-									release();
-								}
+								if (!retained) release();
 							}
 						};
 
@@ -2251,22 +2114,13 @@ Completion:`;
 								const originalError = error instanceof CopilotExecutionQueryError ? error.originalError : error;
 								const errMsg = this.host.getErrorMessage(originalError);
 								if (!isActive() || cts.token.isCancellationRequested || (originalError as Record<string, unknown>)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
-									if (error instanceof CopilotExecutionQueryError) {
-										try { this.host.postMessage({
-											type: 'copilotWriteQueryExecuting', boxId: error.targetBoxId,
-											executing: false, executionId: error.executionId,
-										}); } catch { /* stale execution settlement */ }
-									}
 									throw new Error('Copilot write-query canceled');
 								}
 								const executionQuery = error instanceof CopilotExecutionQueryError ? error.executionQuery : originalQueryForCompare;
 								this.host.logQueryExecutionError(originalError, connection, database, boxId, executionQuery);
 								this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: candidate }, `Error: original query failed to execute: ${this.host.formatQueryExecutionErrorForUser(originalError, connection, database)}`);
 								try {
-									this.host.postMessage({
-										type: 'queryError', error: 'Query failed to execute.', boxId,
-										...(error instanceof CopilotExecutionQueryError ? { executionId: error.executionId } : {}),
-									});
+									this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId });
 								} catch {
 									// ignore
 								}
@@ -2313,12 +2167,6 @@ Completion:`;
 									const originalError = error instanceof CopilotExecutionQueryError ? error.originalError : error;
 									const errMsg = this.host.getErrorMessage(originalError);
 									if (!isActive() || cts.token.isCancellationRequested || comparisonLeases.some(lease => !lease.isCurrent()) || (originalError as Record<string, unknown>)?.isCancelled === true || /canceled|cancelled/i.test(errMsg)) {
-										if (error instanceof CopilotExecutionQueryError) {
-											try { this.host.postMessage({
-												type: 'copilotWriteQueryExecuting', boxId: error.targetBoxId,
-												executing: false, executionId: error.executionId,
-											}); } catch { /* stale execution settlement */ }
-										}
 										throw new Error('Copilot write-query canceled');
 									}
 									const executionQuery = error instanceof CopilotExecutionQueryError ? error.executionQuery : candidate;
@@ -2328,8 +2176,7 @@ Completion:`;
 										this.host.postMessage({
 											type: 'queryError',
 											error: 'Query failed to execute.',
-											boxId: comparisonBoxId,
-											...(error instanceof CopilotExecutionQueryError ? { executionId: error.executionId } : {}),
+											boxId: comparisonBoxId
 										});
 									} catch {
 										// ignore
@@ -2431,53 +2278,36 @@ Completion:`;
 						}
 
 						postStatus('Running query…');
+						try {
+							this.host.postMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: true });
+						} catch {
+							// ignore
+						}
+
+						this.host.cancelRunningQuery(boxId);
 						const queryWithMode = this.host.appendQueryMode(effectiveQuery, copilotQueryMode);
 						const cacheDirective = this.host.isControlCommand(effectiveQuery) ? '' : this.host.buildCacheDirective(true, 1, 'days');
 						const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 						const executionQuery = this.host.normalizeControlCommandForExecution(finalQuery);
 
 						const cancelClientKey = `${boxId}::${connection.id}::copilot`;
-						const executionId = `kusto-copilot-${randomUUID()}`;
-						const reservation = await this.reserveRunningQueryReplacement(boxId, executionId, cts.token);
-						let execution: ReturnType<KustoQueryClient['executeQueryCancelable']>;
-						try {
-							execution = this.host.kustoClient.executeQueryCancelable(
-								connection,
-								database,
-								executionQuery,
-								cancelClientKey
-							);
-						} catch (error) {
-							this.host.unregisterRunningQuery(boxId, reservation.cancel, reservation.runSeq);
-							throw error;
-						}
-						const outcome = execution.promise.then(
-							value => ({ ok: true as const, value }),
-							error => ({ ok: false as const, error }),
+						const execution = this.host.kustoClient.executeQueryCancelable(
+							connection,
+							database,
+							executionQuery,
+							cancelClientKey
 						);
-						const { clientActivityId } = execution;
+						const { promise, clientActivityId } = execution;
 						const cancel = this.createOneShotCancel(execution.cancel);
-						if (!this.host.promoteRunningQueryReservation(
-							boxId, reservation.cancel, reservation.runSeq,
-							cancel, clientActivityId, executionId,
-						)) {
-							cancel();
-							throw Object.assign(new Error('Copilot write-query canceled'), { isCancelled: true });
-						}
 						const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, cancel, execution.getAccountPartition);
-						const runSeq = reservation.runSeq;
+						const runSeq = this.host.nextQueryRunSeq();
+						this.host.registerRunningQuery(boxId, cancel, runSeq, clientActivityId);
 						const runningRequest = this.runningCopilotWriteQueryByBoxId.get(boxId);
-						const finalRun = { cancel, runSeq, executionId, executionSettled: false };
-						let resultTerminalPublished = false;
+						const finalRun = { cancel, runSeq, executionSettled: false };
 						if (runningRequest?.cts === cts && runningRequest.seq === seq) runningRequest.kustoFinalRun = finalRun;
 						const isCurrentRun = () => this.host.isRunningQueryCurrent(boxId, cancel, runSeq);
 						try {
-							await this.postRequiredMessage({
-								type: 'copilotWriteQueryExecuting', boxId, executing: true, executionId,
-							});
-							const settled = await outcome;
-							if (!settled.ok) throw settled.error;
-							const result = settled.value;
+							const result = await promise.finally(untrack);
 							if (cts.token.isCancellationRequested) {
 								if (isCurrentRun()) this.settleKustoFinalRunExecution(boxId, finalRun);
 								throw new Error('Copilot write-query canceled');
@@ -2506,16 +2336,10 @@ Completion:`;
 								this.invalidateKustoConnections([connection.id]);
 								return;
 							}
-							await this.postRequiredMessage({
-								type: 'queryResult', result, boxId, executionId, ensureResultsVisible: true,
-							});
-							resultTerminalPublished = true;
-							finalRun.executionSettled = true;
-							if (!isActive() || cts.token.isCancellationRequested || !isCurrentRun()) {
-								settleSupersededQueryRun();
-								return;
-							}
 							this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query: effectiveQuery }, 'Query ran successfully.');
+							this.host.postMessage({ type: 'queryResult', result, boxId });
+							this.host.postMessage({ type: 'ensureResultsVisible', boxId });
+							this.settleKustoFinalRunExecution(boxId, finalRun);
 							this.host.postMessage({
 								type: 'copilotWriteQueryDone',
 								boxId,
@@ -2548,9 +2372,7 @@ Completion:`;
 							this.host.logQueryExecutionError(error, connection, database, boxId, executionQuery);
 							if (isActive()) {
 								try {
-									this.host.postMessage({
-										type: 'queryError', error: 'Query failed to execute.', boxId, executionId,
-									});
+									this.host.postMessage({ type: 'queryError', error: 'Query failed to execute.', boxId });
 								} catch {
 									// ignore
 								}
@@ -2562,8 +2384,6 @@ Completion:`;
 							shouldRetryAttempt = true;
 							break;
 						} finally {
-							untrack();
-							if (!resultTerminalPublished) cancel();
 							const currentRequest = this.runningCopilotWriteQueryByBoxId.get(boxId);
 							if (currentRequest?.kustoFinalRun === finalRun) currentRequest.kustoFinalRun = undefined;
 							this.host.unregisterRunningQuery(boxId, cancel, runSeq);
@@ -2848,7 +2668,6 @@ Completion:`;
 	async optimizeQueryWithCopilot(
 		message: Extract<IncomingWebviewMessage, { type: 'optimizeQuery' }>
 	): Promise<void> {
-		if (this.disposed) return;
 		const { query, connectionId, database, boxId, queryName, modelId, promptText } = message;
 		const id = String(boxId || '').trim();
 		if (!id) {
@@ -2866,16 +2685,9 @@ Completion:`;
 		}
 		const cts = new vscode.CancellationTokenSource();
 		this.runningOptimizeByBoxId.set(id, cts);
-		const isCurrentOptimization = () => !this.disposed
-			&& !cts.token.isCancellationRequested
-			&& this.runningOptimizeByBoxId.get(id) === cts;
-		const assertCurrentOptimization = () => {
-			if (!isCurrentOptimization()) throw new vscode.CancellationError();
-		};
 
 		const postStatus = (status: string) => {
 			try {
-				if (!isCurrentOptimization()) return;
 				this.host.postMessage({ type: 'optimizeQueryStatus', boxId: id, status });
 			} catch {
 				// ignore
@@ -2884,7 +2696,6 @@ Completion:`;
 
 		try {
 			const models = await vscode.lm.selectChatModels({ vendor: 'copilot' });
-			assertCurrentOptimization();
 			if (models.length === 0) {
 				vscode.window.showWarningMessage('GitHub Copilot is not available. Please enable Copilot to use query optimization.');
 				this.host.postMessage({
@@ -2907,7 +2718,6 @@ Completion:`;
 			} catch {
 				// ignore
 			}
-			assertCurrentOptimization();
 
 			postStatus('Sending request to Copilot…');
 
@@ -2918,13 +2728,14 @@ Completion:`;
 				{},
 				cts.token
 			);
-			assertCurrentOptimization();
 
 			postStatus('Waiting for Copilot response…');
 
 			let optimizedQuery = '';
 			for await (const fragment of response.text) {
-				assertCurrentOptimization();
+				if (cts.token.isCancellationRequested) {
+					throw new Error('Optimization canceled');
+				}
 				optimizedQuery += fragment;
 			}
 
@@ -2942,7 +2753,6 @@ Completion:`;
 			}
 
 			optimizedQuery = this.getRunnableKustoQuery(optimizedQuery);
-			assertCurrentOptimization();
 
 			postStatus('Done. Creating comparison…');
 
@@ -2956,7 +2766,6 @@ Completion:`;
 			});
 
 		} catch (err: any) {
-			if (this.disposed || this.runningOptimizeByBoxId.get(id) !== cts) return;
 			const errorMsg = err?.message || String(err);
 			this.host.output.error('Query optimization failed:', err instanceof Error ? err : String(err));
 			const canceled = cts.token.isCancellationRequested || /cancel/i.test(errorMsg);
@@ -2986,7 +2795,7 @@ Completion:`;
 			});
 		} finally {
 			try {
-				if (this.runningOptimizeByBoxId.get(id) === cts) this.runningOptimizeByBoxId.delete(id);
+				this.runningOptimizeByBoxId.delete(id);
 			} catch {
 				// ignore
 			}
@@ -3095,7 +2904,7 @@ Completion:`;
 			currentQuery?: string;
 			modelId?: string;
 			enabledTools?: string[];
-			sqlOwnerToken: string;
+			sqlOwnerToken?: string;
 		},
 		sqlConnectionManager: SqlConnectionManager,
 		sqlSchemaService: SqlSchemaService,
@@ -3204,30 +3013,31 @@ Completion:`;
 			start: () => T,
 		) => {
 			const executionId = `sql-copilot-${randomUUID()}`;
-			const admissionGeneration = this.host.supersedeSqlRunAdmission(targetBoxId, { notifyWebview: true });
-			await assertActiveOwner(targetBoxId);
-			const { execution, runSeq } = this.host.startSqlRunUnderAdmission(
-				targetBoxId,
-				admissionGeneration,
-				() => {
+			const preflight = this.host.sqlExecutionBroker.reservePreflight(targetBoxId, executionId);
+			let lease;
+			try {
+				await assertActiveOwner(targetBoxId);
+				const admission = this.host.sqlExecutionBroker.promotePreflight(preflight);
+				if (!admission) throw new Error('SQL Copilot write-query canceled');
+				lease = this.host.sqlExecutionBroker.start(admission, () => {
 					const started = start();
 					const originalCancel = started.cancel;
 					started.cancel = this.createOneShotCancel(() => originalCancel.call(started));
 					return started;
-				},
-				executionId,
-			);
-			const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, execution.cancel, undefined, targetBoxId);
+				});
+			} catch (error) {
+				this.host.sqlExecutionBroker.clearPreflight(preflight);
+				throw error;
+			}
+			const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, lease.cancel, undefined, targetBoxId);
 			return {
-				execution,
-				runSeq,
-				executionId,
-				isCurrent: () => this.host.isSqlRunAdmissionCurrent(
-					targetBoxId, admissionGeneration, execution.cancel, runSeq,
-				),
+				execution: lease.execution,
+				runSeq: lease.runSeq,
+				executionId: lease.executionId,
+				isCurrent: lease.isCurrent,
 				release: () => {
 					untrack();
-					this.host.unregisterRunningQuery(targetBoxId, execution.cancel, runSeq);
+					lease.release();
 				},
 			};
 		};
@@ -3494,7 +3304,6 @@ Completion:`;
 							isCurrent: () => boolean;
 							release: () => void;
 						} | undefined;
-						let retained = false;
 						try {
 							const limitedQuery = query.replace(/;\s*$/, '');
 							const hasTop = /\bTOP\b/i.test(limitedQuery);
@@ -3520,20 +3329,21 @@ Completion:`;
 								await this.host.refreshSqlConnectionsData?.();
 								await assertActiveOwner();
 								if (!activeAdmission.isCurrent()) throw new Error('SQL Copilot write-query canceled');
-							await this.host.dispatchSqlResultOwnerAllowed(boxId, requestOwner, async () => {
+							await this.host.dispatchSqlResultOwnerAllowed(boxId, requestOwner, () => {
 								if (!activeAdmission.isCurrent() || !isActive() || cts.token.isCancellationRequested) throw new Error('SQL Copilot write-query canceled');
-								await this.postRequiredMessage({
-									type: 'copilotExecutedQuery', boxId,
-									entryId: execEntryId, query,
-									resultSummary: rows.length > 0 ? `${rows.length} rows` : 'No results', executionId: activeAdmission.executionId,
-									result, ownerToken,
-								});
-								history.push({
-									type: 'tool-call', id: execEntryId, callId: tc.callId,
-									tool: 'execute_sql_query', args: { query },
-									result: queryResultText, timestamp: Date.now(),
-								});
-								retained = true;
+									history.push({
+										type: 'tool-call', id: execEntryId, callId: tc.callId,
+										tool: 'execute_sql_query', args: { query },
+										result: queryResultText, timestamp: Date.now()
+									});
+									try {
+										postSqlMessage({
+											type: 'copilotExecutedQuery', boxId,
+											entryId: execEntryId, query,
+											resultSummary: rows.length > 0 ? `${rows.length} rows` : 'No results', executionId: activeAdmission.executionId,
+											result
+										});
+									} catch { /* ignore */ }
 							});
 							hasOptionalToolCalls = true;
 							continue;
@@ -3546,25 +3356,21 @@ Completion:`;
 								throw new Error('SQL Copilot write-query canceled');
 							}
 							const execErrEntryId = this.nextHistoryEntryId(boxId);
-							await dispatchActiveOwner(boxId, async () => {
+							await dispatchActiveOwner(boxId, () => {
 								if (!admitted?.isCurrent()) throw new Error('SQL Copilot write-query canceled');
-								await this.postRequiredMessage({
-									type: 'copilotExecutedQuery', boxId, entryId: execErrEntryId, query,
-									resultSummary: 'Error', errorMessage: errMsg, executionId: admitted.executionId, ownerToken,
-								});
 								history.push({
 									type: 'tool-call', id: execErrEntryId, callId: tc.callId,
 									tool: 'execute_sql_query', args: { query },
 									result: `Query execution error: ${errMsg}`, timestamp: Date.now(),
 								});
-								retained = true;
+								try { postSqlMessage({
+									type: 'copilotExecutedQuery', boxId, entryId: execErrEntryId, query,
+									resultSummary: 'Error', errorMessage: errMsg, executionId: admitted.executionId,
+								}); } catch { /* ignore */ }
 							});
 							hasOptionalToolCalls = true;
 							continue;
 						} finally {
-							if (admitted && !retained) {
-								try { admitted.execution.cancel(); } catch { /* one-shot cancellation is best effort */ }
-							}
 							admitted?.release();
 						}
 					}
@@ -3622,20 +3428,9 @@ Completion:`;
 									targetBoxId,
 									() => sqlClient.executeQueryCancelable(connection, database, queryText),
 								);
-								const outcome = admitted.execution.promise.then(
-									value => ({ ok: true as const, value }),
-									error => ({ ok: false as const, error }),
-								);
 								let retained = false;
 								try {
-									await this.host.dispatchSqlResultOwnerAllowed(targetBoxId, requestOwner, () =>
-										this.postRequiredMessage({
-											type: 'copilotWriteQueryExecuting', boxId: targetBoxId,
-											executing: true, executionId: admitted.executionId, ownerToken,
-										}));
-									const settled = await outcome;
-									if (!settled.ok) throw settled.error;
-									const result = settled.value;
+									const result = await admitted.execution.promise;
 									if (!admitted.isCurrent() || !isActive() || cts.token.isCancellationRequested) throw new Error('SQL Copilot write-query canceled');
 									await assertActiveOwner(targetBoxId);
 									if (!admitted.isCurrent() || !isActive() || cts.token.isCancellationRequested) throw new Error('SQL Copilot write-query canceled');
@@ -3667,17 +3462,7 @@ Completion:`;
 									});
 									throw error;
 								} finally {
-									if (!retained) {
-										try { admitted.execution.cancel(); } catch { /* ignore */ }
-										try {
-											await this.host.dispatchSqlResultOwnerAllowed(targetBoxId, requestOwner, () =>
-												this.postRequiredMessage({
-													type: 'copilotWriteQueryExecuting', boxId: targetBoxId,
-													executing: false, executionId: admitted.executionId, ownerToken,
-												}));
-										} catch { /* stale owner or closed webview */ }
-										admitted.release();
-									}
+									if (!retained) admitted.release();
 								}
 							};
 
@@ -3758,23 +3543,18 @@ Completion:`;
 									await this.host.refreshSqlConnectionsData?.();
 									await assertActiveOwner();
 									if (!admitted.isCurrent()) throw new Error('SQL Copilot write-query canceled');
-									await this.host.dispatchSqlResultOwnerAllowed(boxId, requestOwner, async () => {
+									await this.host.dispatchSqlResultOwnerAllowed(boxId, requestOwner, () => {
 										if (!admitted.isCurrent() || !isActive() || cts.token.isCancellationRequested) throw new Error('SQL Copilot write-query canceled');
-										await this.postRequiredMessage({
-											type: 'queryResult', result, boxId, executionId: admitted.executionId, ownerToken,
-										});
-										await this.postRequiredMessage({
-											type: 'copilotWriteQueryExecuting', boxId, executing: false,
-											executionId: admitted.executionId, ownerToken,
-										});
-										executionSettled = true;
-										await this.postRequiredMessage({
-											type: 'copilotWriteQueryDone', boxId, ok: true,
-											message: 'Query ran successfully. Review the results and adjust if needed.', ownerToken,
-										});
 										this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query }, 'Query ran successfully.');
 										this.copilotConversationHistoryByBoxId.set(boxId, history);
 										if (requestIncludesGeneralRules) this.copilotGeneralRulesSentPerBox.add(boxId);
+										postSqlMessage({ type: 'queryResult', result, boxId, executionId: admitted.executionId });
+										postSqlMessage({ type: 'ensureResultsVisible', boxId });
+										settleExecution();
+										postSqlMessage({
+											type: 'copilotWriteQueryDone', boxId,
+											ok: true, message: 'Query ran successfully. Review the results and adjust if needed.'
+										});
 									});
 									return;
 								}
@@ -3784,7 +3564,6 @@ Completion:`;
 								await assertActiveOwner();
 								if (error instanceof SqlQueryCancelledError || (error as any)?.isCancelled === true) {
 									if (isActive() && admitted.isCurrent()) {
-										try { admitted.execution.cancel(); } catch { /* one-shot cancellation is best effort */ }
 										await dispatchActiveOwner(boxId, () => {
 											if (!admitted.isCurrent()) throw new Error('SQL Copilot write-query canceled');
 											settleExecution();

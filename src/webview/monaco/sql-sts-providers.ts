@@ -8,19 +8,14 @@
 // Hover and signature help also use STS over JSON-RPC.
 
 import { postMessageToHost } from '../shared/webview-messages.js';
-import { SqlStsRequestCoordinator, type SqlStsRequestOwner } from './sql-sts-request-coordinator.js';
+import { getSqlSectionSession } from '../core/sql-section-message-router.js';
 
 const _win = window as any;
 
 // ── STS readiness tracking per boxId ───────────────────────────────────────
-const _stsRequests = new SqlStsRequestCoordinator();
-
 /** Mark a boxId as STS-ready (called from kw-sql-section when stsConnectionState arrives). */
 export function setStsReady(boxId: string, ready: boolean, ownerToken = '', targetGeneration?: number): void {
-	const owner = ready && ownerToken && Number.isSafeInteger(targetGeneration)
-		? { ownerToken, targetGeneration: Number(targetGeneration) }
-		: undefined;
-	_stsRequests.setOwner(boxId, owner);
+	getSqlSectionSession(boxId)?.setStsReady(ready, ownerToken, targetGeneration);
 }
 
 // ── STS request/resolver (used for hover, signature help) ──────────────────
@@ -33,22 +28,24 @@ function stsRequest<T>(
 	timeoutMs: number = STS_TIMEOUT_MS,
 ): Promise<T | null> {
 	const boxId = String(params.boxId || '');
-	return _stsRequests.request<T>(boxId, timeoutMs, (requestId, owner) => {
+	const session = getSqlSectionSession(boxId);
+	if (!session) return Promise.resolve(null);
+	return session.requestSts<T>(method, params.line, params.column, timeoutMs, (requestId, owner) => {
 			postMessageToHost({
 				type: 'stsRequest',
 				requestId,
 				method,
-				params: { ...params, ownerToken: owner.ownerToken, targetGeneration: owner.targetGeneration },
+				params: {
+					...params, sectionInstanceId: session.instanceId,
+					ownerToken: owner.ownerToken, targetGeneration: owner.targetGeneration,
+				},
 			});
 	});
 }
 
 /** Called from message-handler when an stsResponse arrives. */
-export function handleStsResponse(requestId: string, result: unknown, ownerToken?: string, targetGeneration?: number): void {
-	const responseOwner: SqlStsRequestOwner | undefined = ownerToken && Number.isSafeInteger(targetGeneration)
-		? { ownerToken: String(ownerToken), targetGeneration: Number(targetGeneration) }
-		: undefined;
-	_stsRequests.resolve(requestId, result, responseOwner);
+export function handleStsResponse(boxId: string, requestId: string, result: unknown, ownerToken?: string, targetGeneration?: number): void {
+	getSqlSectionSession(boxId)?.resolveStsResponse(requestId, result, ownerToken, targetGeneration);
 }
 
 // ── Model URI → boxId mapping ──────────────────────────────────────────────
@@ -62,9 +59,7 @@ export function registerStsEditorModel(modelUri: string, boxId: string): void {
 
 /** Unregister a model URI mapping. */
 export function unregisterStsEditorModel(modelUri: string): void {
-	const boxId = _modelUriToBoxId[modelUri];
 	delete _modelUriToBoxId[modelUri];
-	if (boxId && !Object.values(_modelUriToBoxId).includes(boxId)) _stsRequests.clearBox(boxId);
 }
 
 function getBoxIdForModel(modelUri: string): string | null {
@@ -146,7 +141,7 @@ export function registerStsProviders(): void {
 			// because STS's schema cache may not be fully loaded.
 			let stsItemCount = 0;
 			let stsHasSchemaObjects = false;
-			if (_stsRequests.getOwner(boxId)) {
+			if (getSqlSectionSession(boxId)?.stsReady) {
 				try {
 					const stsResult = await stsRequest<{ items?: any[] }>('textDocument/completion', {
 						boxId,

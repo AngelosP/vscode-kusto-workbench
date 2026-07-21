@@ -215,8 +215,9 @@ export class KwSqlConnectionForm extends LitElement {
 			database,
 		};
 		if (this._port.trim()) {
-			const parsed = parseInt(this._port.trim(), 10);
-			if (!isNaN(parsed) && parsed > 0) payload.port = parsed;
+			const parsed = Number(this._port.trim());
+			if (!Number.isSafeInteger(parsed) || parsed <= 0 || parsed > 65_535) return undefined;
+			payload.port = parsed;
 		}
 		if (this._authType === 'sql-login') {
 			const username = this._username.trim();

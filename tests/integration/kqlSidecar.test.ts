@@ -10,6 +10,8 @@ import { KqlxEditorProvider } from '../../src/host/kqlxEditorProvider';
 import { MdCompatEditorProvider } from '../../src/host/mdCompatEditorProvider';
 import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
 import { SqlCompatEditorProvider } from '../../src/host/sqlCompatEditorProvider';
+import { CompatSidecarStore } from '../../src/host/compatSidecarStore';
+import { CompatSidecarSession } from '../../src/host/compatSidecarSession';
 
 type DisposableLike = { dispose(): void };
 function connectionManagerStub(overrides: Record<string, unknown> = {}) {
@@ -1444,6 +1446,101 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('compat editor disposal waits for an active companion upgrade', async () => {
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const restorePublisher = mirrorFreshSqlSanitizerIntoPublisher();
+		const originalShowInformationMessage = vscode.window.showInformationMessage;
+		const originalDrain = CompatSidecarStore.prototype.drain;
+		const originalSettleClose = CompatSidecarSession.prototype.settleClose;
+		const variants = [
+			{ extension: '.kql', Provider: KqlCompatEditorProvider, requestType: 'requestUpgradeToKqlx', firstType: 'query' },
+			{ extension: '.sql', Provider: SqlCompatEditorProvider, requestType: 'requestUpgradeToSqlx', firstType: 'sql' },
+		] as const;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-close-upgrade-'));
+
+		try {
+			(vscode.window as any).showInformationMessage = async () => 'Create companion file';
+			for (const [index, variant] of variants.entries()) {
+				const sourcePath = path.join(tmpDir, `close-upgrade-${index}${variant.extension}`);
+				fs.writeFileSync(sourcePath, 'select 1', 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const disposeHandlers: Array<() => void> = [];
+				let markPaused!: () => void;
+				let release!: () => void;
+				const sanitationPaused = new Promise<void>(resolve => { markPaused = resolve; });
+				const sanitationGate = new Promise<void>(resolve => { release = resolve; });
+				let pauseUpgrade = false;
+				(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => {
+					if (pauseUpgrade) {
+						pauseUpgrade = false;
+						markPaused();
+						await sanitationGate;
+					}
+					return state;
+				};
+				let drainStarted = false;
+				let closeSettled = false;
+				CompatSidecarStore.prototype.drain = async function () {
+					drainStarted = true;
+					await originalDrain.call(this);
+				};
+				CompatSidecarSession.prototype.settleClose = function () {
+					originalSettleClose.call(this);
+					closeSettled = true;
+				};
+				const provider = new (variant.Provider as any)(
+					{ subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined }, globalState: { get: () => undefined, update: async () => undefined } } as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => 'select 1', lineCount: 1,
+					lineAt: () => ({ text: 'select 1' }), isDirty: false, save: async () => true,
+				} as any;
+				const panel = {
+					visible: false,
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+						onDidReceiveMessage: (handler: (message: any) => unknown) => {
+							receiveHandler = handler;
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+				} as any;
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				assert.ok(receiveHandler);
+				pauseUpgrade = true;
+				const upgrade = Promise.resolve(receiveHandler!({
+					type: variant.requestType, addKind: 'markdown', editRevision: 1,
+					state: { sections: [
+						{ type: variant.firstType, query: 'select 1' },
+						{ type: 'markdown', text: 'UPGRADE_IN_PROGRESS' },
+					] },
+				}));
+				await sanitationPaused;
+				for (const dispose of disposeHandlers) dispose();
+				await new Promise<void>(resolve => setImmediate(resolve));
+				assert.strictEqual(drainStarted, false, `${variant.extension} close must wait for the active upgrade`);
+
+				release();
+				await upgrade;
+				await waitForCondition(() => drainStarted, `${variant.extension} close should drain after the upgrade finishes`);
+				await waitForCondition(() => closeSettled, `${variant.extension} close should settle before the next case`);
+				await new Promise<void>(resolve => setImmediate(resolve));
+				CompatSidecarStore.prototype.drain = originalDrain;
+				CompatSidecarSession.prototype.settleClose = originalSettleClose;
+			}
+		} finally {
+			restorePublisher();
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(vscode.window as any).showInformationMessage = originalShowInformationMessage;
+			CompatSidecarStore.prototype.drain = originalDrain;
+			CompatSidecarSession.prototype.settleClose = originalSettleClose;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('a newer snapshot arriving during companion upgrade is serialized and wins on Save', async () => {
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
 		const originalShowInformationMessage = vscode.window.showInformationMessage;
@@ -1675,7 +1772,7 @@ suite('Sidecar .kql.json strategy', () => {
 				await Promise.resolve(saveHandler!(document));
 
 				assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), externalText, `${variant.extension} must preserve the newer external edit`);
-				assert.ok(errors.some(message => message.includes('changed in another window')));
+				assert.ok(errors.some(message => message.includes('changed in another window')), `${variant.extension} must report the external edit conflict`);
 				errors.length = 0;
 			}
 		} finally {
@@ -1768,7 +1865,7 @@ suite('Sidecar .kql.json strategy', () => {
 				await Promise.resolve(saveHandler!(document));
 
 				const finalText = fs.readFileSync(sidecarPath, 'utf8');
-				assert.ok(finalText.includes('EXTERNAL_CLEAN + LOCAL_EDIT'));
+				assert.ok(finalText.includes('EXTERNAL_CLEAN + LOCAL_EDIT'), `${variant.extension} must persist the local edit on the repaired baseline`);
 				assert.ok(!finalText.includes('ORIGINAL'));
 			}
 		} finally {
@@ -2274,6 +2371,12 @@ suite('Sidecar .kql.json strategy', () => {
 					}
 					release();
 					await Promise.all([persistOne, persistTwo, lifecycle]);
+					if (mode === 'dispose') {
+						await waitForCondition(
+							() => fs.readFileSync(sidecarPath, 'utf8').includes('REVISION_TWO'),
+							`${variant.extension} disposal must publish revision 2 before assertion`,
+						);
+					}
 
 					const finalText = fs.readFileSync(sidecarPath, 'utf8');
 					assert.ok(finalText.includes('REVISION_TWO'), `${mode} ${variant.extension} must persist revision 2`);

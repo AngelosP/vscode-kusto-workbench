@@ -196,8 +196,9 @@ export type OutgoingWebviewMessage =
 
 	// SQL connections & databases
 	| { type: 'getSqlConnections' }
-	| { type: 'getSqlDatabases'; sqlConnectionId: string; boxId: string; targetGeneration: number }
-	| { type: 'refreshSqlDatabases'; sqlConnectionId: string; boxId: string; targetGeneration: number }
+	| { type: 'sqlSectionOpen'; boxId: string; sectionInstanceId: string }
+	| { type: 'getSqlDatabases'; sqlConnectionId: string; boxId: string; sectionInstanceId: string; targetGeneration: number }
+	| { type: 'refreshSqlDatabases'; sqlConnectionId: string; boxId: string; sectionInstanceId: string; targetGeneration: number }
 	| { type: 'saveSqlLastSelection'; sqlConnectionId: string; database?: string }
 	| { type: 'promptAddSqlConnection'; boxId?: string }
 	| { type: 'addSqlConnection'; name: string; serverUrl: string; dialect: string; authType: string; database?: string; port?: number; username?: string; password?: string; boxId?: string }
@@ -206,15 +207,15 @@ export type OutgoingWebviewMessage =
 
 	// SQL query execution
 	| {
-		type: 'executeSqlQuery'; query: string; sqlConnectionId: string; boxId: string; database: string; queryMode?: string; ownerToken: string;
+		type: 'executeSqlQuery'; query: string; sqlConnectionId: string; boxId: string; sectionInstanceId: string; database: string; queryMode?: string; ownerToken: string;
 		executionId: string;
 		toolExecution?: boolean;
 		expectedOwner?: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number };
 	}
-	| { type: 'cancelSqlQuery'; boxId: string; executionId?: string }
+	| { type: 'cancelSqlQuery'; boxId: string; sectionInstanceId: string; executionId?: string }
 
 	// SQL schema
-	| { type: 'prefetchSqlSchema'; sqlConnectionId: string; database: string; boxId: string; targetGeneration: number; forceRefresh?: boolean }
+	| { type: 'prefetchSqlSchema'; sqlConnectionId: string; database: string; boxId: string; sectionInstanceId: string; targetGeneration: number; forceRefresh?: boolean }
 
 	// SQL copilot — unified into Copilot section below
 
@@ -225,13 +226,13 @@ export type OutgoingWebviewMessage =
 	// Schema
 	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string; cacheOnly?: boolean; silent?: boolean; reason?: string }
 	| { type: 'requestCrossClusterSchema'; clusterName: string; database: string; boxId: string; requestToken: string; requestSource: 'background' | 'autocomplete'; traceId?: string }
-	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; line: number; column: number; ownerToken?: string; targetGeneration?: number } }
-	| { type: 'stsDidOpen'; boxId: string; text: string }
-	| { type: 'stsDidChange'; boxId: string; text: string }
-	| { type: 'stsDidClose'; boxId: string }
+	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; sectionInstanceId: string; line: number; column: number; ownerToken?: string; targetGeneration?: number } }
+	| { type: 'stsDidOpen'; boxId: string; sectionInstanceId: string; text: string }
+	| { type: 'stsDidChange'; boxId: string; sectionInstanceId: string; text: string }
+	| { type: 'stsDidClose'; boxId: string; sectionInstanceId: string }
 	| { type: 'sqlComparisonRemoved'; boxId: string; sourceBoxId?: string }
 	| {
-		type: 'stsConnect'; boxId: string; sqlConnectionId: string; database: string; targetGeneration: number;
+		type: 'stsConnect'; boxId: string; sectionInstanceId: string; sqlConnectionId: string; database: string; targetGeneration: number;
 		expectedOwner?: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number };
 	}
 	| OutgoingKqlLanguageRequestMessage

@@ -2,9 +2,11 @@ import { describe, expect, it } from 'vitest';
 import * as vscode from 'vscode';
 import { CopilotService, type CopilotServiceHost } from '../../../src/host/queryEditorCopilot';
 import type { ConversationHistoryEntry } from '../../../src/host/copilotConversationUtils';
+import { QueryRunCoordinator } from '../../../src/host/queryRunCoordinator';
+import { SqlExecutionBroker } from '../../../src/host/sql/sqlExecutionBroker';
 
 function makeHost(): CopilotServiceHost {
-	return {
+	const host: any = {
 		extensionUri: vscode.Uri.file('/extension'),
 		context: {
 			globalState: {
@@ -21,9 +23,6 @@ function makeHost(): CopilotServiceHost {
 		logQueryExecutionError: () => {},
 		normalizeClusterUrlKey: (url: string) => url,
 		cancelRunningQuery: () => {},
-		supersedeSqlRunAdmission: () => 1,
-		startSqlRunUnderAdmission: (_boxId: string, _generation: number, start: () => any, _executionId?: string) => ({ execution: start(), runSeq: 1 }),
-		isSqlRunAdmissionCurrent: () => true,
 		reserveRunningQueryReplacement: (_boxId: string, _executionId: string) => ({
 			cancel: () => {}, runSeq: 1, previousCancellationDelivery: Promise.resolve(true),
 		}),
@@ -52,6 +51,12 @@ function makeHost(): CopilotServiceHost {
 		}),
 		assertSqlResultOwnerAllowed: () => Promise.resolve(),
 	};
+	host.sqlExecutionBroker = new SqlExecutionBroker({
+		queryRuns: new QueryRunCoordinator(),
+		getOwnerToken: () => undefined,
+		postMessage: (message: unknown) => host.postMessage(message),
+	});
+	return host;
 }
 
 function buildSqlMessages(history: ConversationHistoryEntry[], priorAttempts: Array<{ attempt: number; query?: string; error?: string }> = []) {

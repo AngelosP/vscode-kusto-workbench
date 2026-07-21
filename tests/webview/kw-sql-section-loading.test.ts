@@ -448,7 +448,9 @@ describe('kw-sql-section loading states', () => {
 		expect(clearConversation).toHaveBeenCalled();
 		expect(ownerChanges).toHaveLength(1);
 		expect(ownerChanges[0].detail).toEqual({ boxId: 'sql_test1' });
-		expect(postMessage).toHaveBeenCalledWith({ type: 'cancelSqlQuery', boxId: 'sql_test1' });
+		expect(postMessage).toHaveBeenCalledWith({
+			type: 'cancelSqlQuery', boxId: 'sql_test1', sectionInstanceId: el.sqlSession.instanceId,
+		});
 		window.vscode = previousVsCode;
 	});
 
@@ -558,6 +560,27 @@ describe('kw-sql-section loading states', () => {
 		expect((el as any)._executing).toBe(true);
 	});
 
+	it('preserves owner and active execution across a synchronous DOM reorder', async () => {
+		const el = createSection();
+		el.setStsReady(true, 'owner-token');
+		expect(el.setExternalQueryExecuting(true, 'execution-a')).toBe(true);
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			container.removeChild(el);
+			container.appendChild(el);
+			await Promise.resolve();
+
+			expect(el.getCopilotOwnerToken()).toBe('owner-token');
+			expect(el.acceptsQueryTerminal('execution-a')).toBe(true);
+			expect((el as any)._executing).toBe(true);
+			expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'stsDidClose' }));
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
 	it('rejects an older SQL terminal after a newer execution has completed', () => {
 		const el = createSection();
 		expect(el.setExternalQueryExecuting(true, 'execution-a')).toBe(true);
@@ -633,5 +656,45 @@ describe('kw-sql-section loading states', () => {
 			window.vscode = previousVsCode;
 			vi.useRealTimers();
 		}
+	});
+
+	it('cancels the exact active transport and clears UI when the terminal watchdog expires', async () => {
+		vi.useFakeTimers();
+		const el = createSection();
+		el.setConnections([{ id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' }], { lastConnectionId: 'sql-a' });
+		el.setDatabase('Db');
+		el.setQuery('WAITFOR DELAY');
+		el.setStsReady(true, 'owner-token');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			const run = el.sqlSession.beginToolRun('tool-timeout', 25, 50);
+			(el as any)._startPendingToolRunIfReady();
+			const completion = expect(run).rejects.toThrow('terminal response');
+			await vi.advanceTimersByTimeAsync(50);
+			await completion;
+
+			expect(postMessage).toHaveBeenCalledWith({
+				type: 'cancelSqlQuery', boxId: 'sql_test1', sectionInstanceId: el.sqlSession.instanceId,
+				executionId: 'tool-timeout',
+			});
+			expect(el.acceptsQueryTerminal('tool-timeout')).toBe(false);
+			expect((el as any)._executing).toBe(false);
+		} finally {
+			window.vscode = previousVsCode;
+			vi.useRealTimers();
+		}
+	});
+
+	it('releases staged tool ownership when execution fails before admission', async () => {
+		const el = createSection();
+		el.setToolExpectedOwner({
+			connectionId: 'sql-a', database: 'Db', targetSignature: 'target-a',
+			principalFingerprint: 'principal-a', revocationGeneration: 0,
+		});
+
+		await expect(el.runForTool('tool-preflight')).rejects.toThrow('Select a SQL connection');
+		expect(el.sqlSession.toolExpectedOwner).toBeUndefined();
 	});
 });

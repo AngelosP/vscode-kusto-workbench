@@ -1,12 +1,18 @@
 import * as crypto from 'crypto';
 import * as fs from 'fs';
 import * as path from 'path';
-import * as lockfile from 'proper-lockfile';
 import * as vscode from 'vscode';
 
 import { sqlConnectionServerSignature, sqlConnectionTargetSignature } from '../shared/sqlConnectionIdentity';
 import { quarantineCorruptSqlStateFile } from './sql/sqlStateFile';
 import type { SqlDispatchHandle } from './sql/sqlDispatch';
+import {
+	atomicReplaceSqlStateFile,
+	readCommittedSqlStateBackup,
+	readRecoverableSqlStateSnapshot,
+	withSqlStateFileLock,
+	writeRecoverableSqlStateSnapshot,
+} from './sql/sqlStateTransaction';
 
 export interface SqlConnection {
 	id: string;
@@ -47,12 +53,6 @@ type ConnectionSnapshot = {
 	mutationLeases: Record<string, MutationLease>;
 };
 
-type SnapshotCommit = {
-	schemaVersion: typeof SNAPSHOT_SCHEMA_VERSION;
-	version: number;
-	sha256: string;
-};
-
 type MemoryRuntime = {
 	tail: Promise<void>;
 	snapshot?: ConnectionSnapshot;
@@ -91,6 +91,41 @@ function normalizeConnection(value: unknown): SqlConnection | undefined {
 			? { credentialRevision: candidate.credentialRevision }
 			: {}),
 	};
+}
+
+function parseCanonicalConnection(value: unknown): SqlConnection | undefined {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+	const candidate = value as Partial<SqlConnection>;
+	if (typeof candidate.id !== 'string' || !candidate.id.trim()
+		|| typeof candidate.name !== 'string' || !candidate.name.trim()
+		|| typeof candidate.dialect !== 'string' || !candidate.dialect.trim()
+		|| typeof candidate.serverUrl !== 'string' || !candidate.serverUrl.trim()
+		|| typeof candidate.authType !== 'string' || !candidate.authType.trim()) return undefined;
+	if (candidate.port !== undefined
+		&& (typeof candidate.port !== 'number' || !Number.isSafeInteger(candidate.port)
+			|| candidate.port <= 0 || candidate.port > 65_535)) return undefined;
+	if (candidate.database !== undefined && (typeof candidate.database !== 'string' || !candidate.database)) return undefined;
+	if (candidate.username !== undefined && typeof candidate.username !== 'string') return undefined;
+	if (candidate.credentialRevision !== undefined
+		&& (typeof candidate.credentialRevision !== 'number' || !Number.isSafeInteger(candidate.credentialRevision)
+			|| candidate.credentialRevision <= 0)) return undefined;
+	return {
+		id: candidate.id.trim(),
+		name: candidate.name.trim(),
+		dialect: candidate.dialect.trim(),
+		serverUrl: candidate.serverUrl.trim(),
+		...(candidate.port !== undefined ? { port: candidate.port } : {}),
+		...(candidate.database !== undefined ? { database: candidate.database } : {}),
+		authType: candidate.authType.trim(),
+		...(candidate.username !== undefined ? { username: candidate.username } : {}),
+		...(candidate.credentialRevision !== undefined ? { credentialRevision: candidate.credentialRevision } : {}),
+	};
+}
+
+function validateConnectionForWrite(value: unknown): SqlConnection {
+	const connection = parseCanonicalConnection(value);
+	if (!connection) throw new Error('SQL connection fields are invalid. Use strings for connection text and a port between 1 and 65535.');
+	return connection;
 }
 
 function normalizeConnections(value: unknown): SqlConnection[] {
@@ -138,7 +173,33 @@ function parseCanonicalSnapshot(value: unknown): ConnectionSnapshot | undefined 
 		|| !Number.isSafeInteger(candidate.version) || Number(candidate.version) < 0
 		|| !Array.isArray(candidate.connections)
 		|| !candidate.mutationLeases || typeof candidate.mutationLeases !== 'object' || Array.isArray(candidate.mutationLeases)) return undefined;
-	return parseSnapshot(value);
+	const connections: SqlConnection[] = [];
+	const seenIds = new Set<string>();
+	for (const value of candidate.connections) {
+		const connection = parseCanonicalConnection(value);
+		if (!connection || seenIds.has(connection.id)) return undefined;
+		seenIds.add(connection.id);
+		connections.push(connection);
+	}
+	for (const [connectionId, value] of Object.entries(candidate.mutationLeases)) {
+		if (!connectionId.trim() || !value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+		const lease = value as Partial<MutationLease>;
+		if (typeof lease.operationId !== 'string' || !lease.operationId.trim()
+			|| typeof lease.expiresAt !== 'number' || !Number.isFinite(lease.expiresAt)
+			|| (lease.failed !== undefined && typeof lease.failed !== 'boolean')) return undefined;
+	}
+	return {
+		schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+		version: Number(candidate.version),
+		connections,
+		mutationLeases: Object.fromEntries(Object.entries(candidate.mutationLeases).map(([connectionId, value]) => {
+			const lease = value as MutationLease;
+			return [connectionId, {
+				operationId: lease.operationId.trim(), expiresAt: lease.expiresAt,
+				...(lease.failed !== undefined ? { failed: lease.failed } : {}),
+			}];
+		})),
+	};
 }
 
 function activeLeases(snapshot: ConnectionSnapshot, now = Date.now()): Record<string, MutationLease> {
@@ -220,11 +281,11 @@ export class SqlConnectionManager implements vscode.Disposable {
 			throw new Error('Passwords can only be stored for SQL Login connections.');
 		}
 		return this.enqueueMutation(async () => this.withSnapshotLock(async current => {
-			const newConnection: SqlConnection = {
+			const newConnection = validateConnectionForWrite({
 				...connection,
 				id: `sql_${crypto.randomUUID()}`,
 				...(authType === 'sql-login' ? { credentialRevision: 1 } : {}),
-			};
+			});
 			const leased = await this.publishLeases(current, [newConnection.id], crypto.randomUUID());
 			let passwordWriteAttempted = false;
 			try {
@@ -284,9 +345,9 @@ export class SqlConnectionManager implements vscode.Disposable {
 				throw new Error('SQL credentials are in an uncertain state. Enter a replacement password or delete the connection.');
 			}
 			const mutatesPassword = password !== undefined || removeStoredPassword;
-			const nextConnection: SqlConnection = mutatesPassword
+			const nextConnection = validateConnectionForWrite(mutatesPassword
 				? { ...proposedConnection, credentialRevision: (previousConnection.credentialRevision ?? 0) + 1 }
-				: proposedConnection;
+				: proposedConnection);
 			const previousPassword = mutatesPassword ? await this.readPasswordRaw(id) : undefined;
 			const leased = await this.publishLeases(current, [id], crypto.randomUUID());
 			let passwordAttempted = false;
@@ -546,14 +607,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 
 	private async withSnapshotLock<T>(action: (snapshot: ConnectionSnapshot) => Promise<T>, allowLegacyMigration = false): Promise<T> {
 		if (this.snapshotPath && this.lockTarget) {
-			await fs.promises.mkdir(path.dirname(this.snapshotPath), { recursive: true });
-			const release = await lockfile.lock(this.lockTarget, {
-				realpath: false,
-				stale: LOCK_STALE_MS,
-				update: 5_000,
-				retries: { retries: 100, factor: 1, minTimeout: 25, maxTimeout: 25 },
-			});
-			try {
+			return withSqlStateFileLock(this.lockTarget, async () => {
 				const snapshot = await this.readSnapshot(allowLegacyMigration);
 				const recovered = this.failSurvivingMutationLeases(snapshot);
 				if (recovered !== snapshot) {
@@ -561,9 +615,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 					this.applySnapshot(recovered);
 				}
 				return await action(recovered);
-			} finally {
-				await release();
-			}
+			}, { staleMs: LOCK_STALE_MS });
 		}
 		const runtime = memoryRuntime(this.context.globalState as object);
 		const previous = runtime.tail;
@@ -582,33 +634,40 @@ export class SqlConnectionManager implements vscode.Disposable {
 			const runtime = memoryRuntime(this.context.globalState as object);
 			return runtime.snapshot ?? parseSnapshot(undefined, normalizeConnections(this.context.globalState.get<unknown>(STORAGE_KEYS.connections)));
 		}
-		try {
-			const parsed = parseCanonicalSnapshot(JSON.parse(await fs.promises.readFile(this.snapshotPath, 'utf8')));
-			if (parsed) return parsed;
-			return this.recoverCorruptSnapshot();
-		} catch (error) {
-			if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
-				const committed = await this.readCommittedSnapshotBackup();
-				if (committed) {
-					await this.writeSnapshotFile(committed);
-					return committed;
-				}
-				const migrationCompleted = !!this.snapshotMigrationPath && fs.existsSync(this.snapshotMigrationPath);
-				if (allowLegacyMigration && !migrationCompleted) {
-					const migrated: ConnectionSnapshot = {
-						schemaVersion: SNAPSHOT_SCHEMA_VERSION,
-						version: 1,
-						connections: normalizeConnections(this.context.globalState.get<unknown>(STORAGE_KEYS.connections)),
-						mutationLeases: {},
-					};
-					await this.writeSnapshotFile(migrated);
-					return migrated;
-				}
-				return this.recoverMissingSnapshot();
+		if (!this.snapshotBackupPath || !this.snapshotCommitPath) return this.recoverMissingSnapshot();
+		const migrationCompleted = !!this.snapshotMigrationPath && fs.existsSync(this.snapshotMigrationPath);
+		const read = await readRecoverableSqlStateSnapshot({
+			primaryPath: this.snapshotPath,
+			backupPath: this.snapshotBackupPath,
+			commitPath: this.snapshotCommitPath,
+			parseSnapshot: parseCanonicalSnapshot,
+			getIdentity: snapshot => ({ schemaVersion: snapshot.schemaVersion, version: snapshot.version }),
+			allowUncommittedPrimary: allowLegacyMigration && !migrationCompleted,
+		});
+		if (read.kind === 'valid') {
+			if (read.source === 'backup') {
+				if (read.primaryState === 'invalid') await quarantineCorruptSqlStateFile(this.snapshotPath);
+				await this.writeAtomic(this.snapshotPath, read.text);
 			}
-			if (!(error instanceof SyntaxError)) throw error;
-			return this.recoverCorruptSnapshot();
+			return read.value;
 		}
+		if (read.kind === 'invalid') return this.recoverCorruptSnapshot();
+		const committed = await this.readCommittedSnapshotBackup();
+		if (committed) {
+			await this.writeSnapshotFile(committed);
+			return committed;
+		}
+		if (allowLegacyMigration && !migrationCompleted) {
+			const migrated: ConnectionSnapshot = {
+				schemaVersion: SNAPSHOT_SCHEMA_VERSION,
+				version: 1,
+				connections: normalizeConnections(this.context.globalState.get<unknown>(STORAGE_KEYS.connections)),
+				mutationLeases: {},
+			};
+			await this.writeSnapshotFile(migrated);
+			return migrated;
+		}
+		return this.recoverMissingSnapshot();
 	}
 
 	private async recoverCorruptSnapshot(): Promise<ConnectionSnapshot> {
@@ -643,19 +702,12 @@ export class SqlConnectionManager implements vscode.Disposable {
 
 	private async readCommittedSnapshotBackup(): Promise<ConnectionSnapshot | undefined> {
 		if (!this.snapshotBackupPath || !this.snapshotCommitPath) return undefined;
-		try {
-			const backupText = await fs.promises.readFile(this.snapshotBackupPath, 'utf8');
-			const snapshot = parseCanonicalSnapshot(JSON.parse(backupText));
-			const commit = JSON.parse(await fs.promises.readFile(this.snapshotCommitPath, 'utf8')) as Partial<SnapshotCommit>;
-			const sha256 = crypto.createHash('sha256').update(backupText, 'utf8').digest('hex');
-			if (!snapshot
-				|| commit.schemaVersion !== SNAPSHOT_SCHEMA_VERSION
-				|| commit.version !== snapshot.version
-				|| commit.sha256 !== sha256) return undefined;
-			return snapshot;
-		} catch {
-			return undefined;
-		}
+		return readCommittedSqlStateBackup({
+			backupPath: this.snapshotBackupPath,
+			commitPath: this.snapshotCommitPath,
+			parseSnapshot: parseCanonicalSnapshot,
+			getIdentity: snapshot => ({ schemaVersion: snapshot.schemaVersion, version: snapshot.version }),
+		});
 	}
 
 	private async readOrphanCleanupIds(): Promise<string[]> {
@@ -681,11 +733,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 
 	private async writeOrphanCleanupIds(connectionIds: readonly string[]): Promise<void> {
 		if (!this.orphanCleanupPath) return;
-		await fs.promises.mkdir(path.dirname(this.orphanCleanupPath), { recursive: true });
-		const tempPath = `${this.orphanCleanupPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
-		await fs.promises.writeFile(tempPath, `${JSON.stringify({ connectionIds: [...new Set(connectionIds)] })}\n`, 'utf8');
-		try { await fs.promises.rename(tempPath, this.orphanCleanupPath); }
-		finally { try { await fs.promises.rm(tempPath, { force: true }); } catch { /* ignore */ } }
+		await this.writeAtomic(this.orphanCleanupPath, `${JSON.stringify({ connectionIds: [...new Set(connectionIds)] })}\n`);
 	}
 
 	private async writeSnapshotFile(snapshot: ConnectionSnapshot): Promise<void> {
@@ -694,31 +742,20 @@ export class SqlConnectionManager implements vscode.Disposable {
 			return;
 		}
 		if (!this.snapshotBackupPath || !this.snapshotCommitPath || !this.snapshotMigrationPath) return;
-		await fs.promises.mkdir(path.dirname(this.snapshotPath), { recursive: true });
 		const snapshotText = `${JSON.stringify(snapshot, null, 2)}\n`;
-		const commit: SnapshotCommit = {
-			schemaVersion: SNAPSHOT_SCHEMA_VERSION,
-			version: snapshot.version,
-			sha256: crypto.createHash('sha256').update(snapshotText, 'utf8').digest('hex'),
-		};
-		await this.writeAtomic(this.snapshotBackupPath, snapshotText);
-		await this.writeAtomic(this.snapshotPath, snapshotText);
-		try {
-			await this.writeAtomic(this.snapshotCommitPath, `${JSON.stringify(commit)}\n`);
-		} catch {
-			// The primary snapshot is the commit point. A stale marker only disables backup recovery.
-		}
-		if (!fs.existsSync(this.snapshotMigrationPath)) {
-			try { await this.writeAtomic(this.snapshotMigrationPath, 'migrated\n'); }
-			catch { /* a valid primary snapshot makes migration-marker retry safe */ }
-		}
+		await writeRecoverableSqlStateSnapshot({
+			primaryPath: this.snapshotPath,
+			backupPath: this.snapshotBackupPath,
+			commitPath: this.snapshotCommitPath,
+			migrationPath: this.snapshotMigrationPath,
+			text: snapshotText,
+			identity: { schemaVersion: snapshot.schemaVersion, version: snapshot.version },
+			writeAtomic: (filePath, contents) => this.writeAtomic(filePath, contents),
+		});
 	}
 
 	private async writeAtomic(filePath: string, contents: string): Promise<void> {
-		const tempPath = `${filePath}.${process.pid}.${crypto.randomUUID()}.tmp`;
-		await fs.promises.writeFile(tempPath, contents, 'utf8');
-		try { await fs.promises.rename(tempPath, filePath); }
-		finally { try { await fs.promises.rm(tempPath, { force: true }); } catch { /* ignore */ } }
+		await atomicReplaceSqlStateFile(filePath, contents);
 	}
 
 	private async mirrorConnections(connections: readonly SqlConnection[]): Promise<void> {

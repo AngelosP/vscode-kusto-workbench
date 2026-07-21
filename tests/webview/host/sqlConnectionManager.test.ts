@@ -85,6 +85,18 @@ describe('SqlConnectionManager transactions', () => {
 		expect(harness.secretStore).not.toHaveBeenCalled();
 	});
 
+	it.each([0, 65_536, 70_000, 1433.5])('rejects invalid port %s before adding a connection', async port => {
+		const harness = createHarness();
+
+		await expect(harness.manager.addConnection({
+			name: 'Invalid', dialect: 'mssql', serverUrl: 'invalid.example', authType: 'aad', port,
+		})).rejects.toThrow('port between 1 and 65535');
+
+		expect(harness.manager.getConnections()).toEqual([]);
+		expect(harness.getPersisted()).toEqual([]);
+		expect(harness.secretStore).not.toHaveBeenCalled();
+	});
+
 	it('rejects an empty SQL Login replacement before changing the target', async () => {
 		const harness = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' });
 
@@ -136,6 +148,18 @@ describe('SqlConnectionManager transactions', () => {
 
 		expect(harness.manager.getConnection('sql-1')).toEqual({ ...ORIGINAL, port: 1433 });
 		expect(harness.passwords.get('sql.password.sql-1')).toBe('old-password');
+	});
+
+	it('rejects an invalid updated port before leasing or replacing credentials', async () => {
+		const harness = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' });
+
+		await expect(harness.manager.updateConnectionAndPassword('sql-1', { port: 70_000 }, 'new-password'))
+			.rejects.toThrow('port between 1 and 65535');
+
+		expect(harness.manager.getConnection('sql-1')).toEqual(ORIGINAL);
+		expect(harness.getPersisted()).toEqual([ORIGINAL]);
+		expect(harness.passwords.get('sql.password.sql-1')).toBe('old-password');
+		expect(harness.secretStore).not.toHaveBeenCalled();
 	});
 
 	it('deletes the stored password when leaving SQL Login and requires one to return', async () => {
@@ -458,7 +482,10 @@ describe('SqlConnectionManager transactions', () => {
 			const manager = first.manager as any;
 			const realWriteAtomic = manager.writeAtomic.bind(manager);
 			vi.spyOn(manager, 'writeAtomic').mockImplementation(async (filePath: string, contents: string) => {
-				if (filePath.endsWith(failedFile) && contents.includes('new.example') && !contents.includes('mutationLeases": {\n    "sql-1"')) {
+				const matchesFailedStage = failedFile === 'sql-connections.backup.v1.json'
+					? filePath.includes('sql-connections.backup.v1.json')
+					: filePath.endsWith(failedFile);
+				if (matchesFailedStage && contents.includes('new.example') && !contents.includes('mutationLeases": {\n    "sql-1"')) {
 					throw new Error(`${failedFile} failed`);
 				}
 				await realWriteAtomic(filePath, contents);
@@ -479,7 +506,7 @@ describe('SqlConnectionManager transactions', () => {
 		}
 	});
 
-	it('keeps the committed target and password when the recovery marker write fails', async () => {
+	it('rolls back target and password when the recovery pointer cannot commit', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-marker-failure-'));
 		try {
 			const first = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' }, directory);
@@ -492,16 +519,15 @@ describe('SqlConnectionManager transactions', () => {
 			});
 
 			await expect(first.manager.updateConnectionAndPassword('sql-1', { serverUrl: 'new.example' }, 'new-password'))
-				.resolves.toBeUndefined();
-			const updated = { ...ORIGINAL, serverUrl: 'new.example', credentialRevision: 1 };
-			expect(first.manager.getConnection('sql-1')).toEqual(updated);
-			expect(first.passwords.get('sql.password.sql-1')).toBe('new-password');
+				.rejects.toThrow('marker failed');
+			expect(first.manager.getConnection('sql-1')).toEqual(ORIGINAL);
+			expect(first.passwords.get('sql.password.sql-1')).toBe('old-password');
 			first.manager.dispose();
 
-			const second = createHarness([], { 'sql.password.sql-1': 'new-password' }, directory);
+			const second = createHarness([], { 'sql.password.sql-1': 'old-password' }, directory);
 			await second.manager.ready();
-			expect(second.manager.getConnection('sql-1')).toEqual(updated);
-			await expect(second.manager.getPasswordForConnection(updated)).resolves.toBe('new-password');
+			expect(second.manager.getConnection('sql-1')).toEqual(ORIGINAL);
+			await expect(second.manager.getPasswordForConnection(ORIGINAL)).resolves.toBe('old-password');
 			second.manager.dispose();
 		} finally {
 			fs.rmSync(directory, { recursive: true, force: true });
@@ -587,6 +613,74 @@ describe('SqlConnectionManager transactions', () => {
 			await expect(harness.manager.getPasswordForConnection(ORIGINAL)).rejects.toThrow('SQL connection changed');
 			expect(JSON.parse(fs.readFileSync(path.join(directory, 'sql-connections.v1.json'), 'utf8')).connections).toEqual([]);
 			harness.manager.dispose();
+		} finally {
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('restores the committed snapshot when a nested mutation lease is malformed', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-connections-nested-corrupt-'));
+		try {
+			const first = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' }, directory);
+			await first.manager.ready();
+			first.manager.dispose();
+			const snapshotPath = path.join(directory, 'sql-connections.v1.json');
+			const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+			snapshot.mutationLeases['sql-1'] = { operationId: '', expiresAt: 'invalid' };
+			fs.writeFileSync(snapshotPath, JSON.stringify(snapshot), 'utf8');
+
+			const second = createHarness([], { 'sql.password.sql-1': 'old-password' }, directory);
+			await second.manager.ready();
+			expect(second.manager.getConnection('sql-1')).toEqual(ORIGINAL);
+			expect(fs.readdirSync(directory).some(name => name.startsWith('sql-connections.v1.json.corrupt-'))).toBe(true);
+			second.manager.dispose();
+		} finally {
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it.each([
+		['numeric connection ID', (connection: any) => { connection.id = 42; }],
+		['string port', (connection: any) => { connection.port = '1433'; }],
+		['numeric optional database', (connection: any) => { connection.database = 42; }],
+	] as const)('rejects a pointerless canonical snapshot with %s', async (_label, mutate) => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-connections-primitive-'));
+		try {
+			const connection = structuredClone(ORIGINAL) as any;
+			mutate(connection);
+			fs.writeFileSync(path.join(directory, 'sql-connections.v1.json'), JSON.stringify({
+				schemaVersion: 1, version: 1, connections: [connection], mutationLeases: {},
+			}), 'utf8');
+			const harness = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' }, directory);
+
+			await harness.manager.ready();
+
+			expect(harness.manager.getConnections()).toEqual([]);
+			expect(fs.readdirSync(directory).some(name => name.startsWith('sql-connections.v1.json.corrupt-'))).toBe(true);
+			harness.manager.dispose();
+		} finally {
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('rolls back a valid connection primary left ahead of its commit pointer', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-connections-crash-window-'));
+		try {
+			const first = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' }, directory);
+			await first.manager.ready();
+			first.manager.dispose();
+			const snapshotPath = path.join(directory, 'sql-connections.v1.json');
+			const uncommitted = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+			uncommitted.version += 1;
+			uncommitted.connections[0].serverUrl = 'uncommitted.example';
+			fs.writeFileSync(snapshotPath, `${JSON.stringify(uncommitted, null, 2)}\n`, 'utf8');
+
+			const second = createHarness([], { 'sql.password.sql-1': 'old-password' }, directory);
+			await second.manager.ready();
+
+			expect(second.manager.getConnection('sql-1')).toEqual(ORIGINAL);
+			expect(JSON.parse(fs.readFileSync(snapshotPath, 'utf8')).connections).toEqual([ORIGINAL]);
+			second.manager.dispose();
 		} finally {
 			fs.rmSync(directory, { recursive: true, force: true });
 		}

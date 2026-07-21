@@ -1,13 +1,16 @@
 import * as crypto from 'crypto';
-import * as fs from 'fs';
 import * as path from 'path';
-import * as lockfile from 'proper-lockfile';
 import type * as vscode from 'vscode';
 
 import type { SqlConnection } from './sqlConnectionManager';
 import { readCurrentSqlSchemaPrincipalFingerprint } from './sqlEditorSchema';
 import { sqlConnectionTargetSignature } from '../shared/sqlConnectionIdentity';
 import { quarantineCorruptSqlStateFile } from './sql/sqlStateFile';
+import {
+	atomicReplaceSqlStateFile,
+	readSqlJsonStateFile,
+	withSqlStateFileLock,
+} from './sql/sqlStateTransaction';
 
 export const SQL_DATABASE_CACHE_VERSION = 1;
 export const SQL_DATABASE_CACHE_STORAGE_KEY = 'sql.connectionManager.cachedDatabases';
@@ -95,94 +98,109 @@ function normalizeDatabases(value: unknown): string[] {
 		: [];
 }
 
+function parseDatabases(value: unknown): string[] | undefined {
+	if (!Array.isArray(value) || value.some(database => typeof database !== 'string' || !database.trim())) return undefined;
+	return value.map(database => database.trim());
+}
+
 function parseEntry(key: string, value: unknown): SqlDatabaseCacheEntry | undefined {
 	if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
 	const candidate = value as Partial<SqlDatabaseCacheEntry>;
-	const connectionId = String(candidate.connectionId || '').trim();
-	const targetSignature = String(candidate.targetSignature || '');
-	const principalFingerprint = String(candidate.principalFingerprint || '').trim();
-	const writeId = String(candidate.writeId || '').trim();
-	const requestId = String(candidate.requestId || '').trim();
+	if (typeof candidate.connectionId !== 'string'
+		|| typeof candidate.targetSignature !== 'string'
+		|| typeof candidate.principalFingerprint !== 'string'
+		|| typeof candidate.writeId !== 'string'
+		|| typeof candidate.requestId !== 'string') return undefined;
+	const connectionId = candidate.connectionId.trim();
+	const targetSignature = candidate.targetSignature;
+	const principalFingerprint = candidate.principalFingerprint.trim();
+	const writeId = candidate.writeId.trim();
+	const requestId = candidate.requestId.trim();
+	const databases = parseDatabases(candidate.databases);
 	if (candidate.version !== SQL_DATABASE_CACHE_VERSION || !connectionId || connectionId !== key
-		|| !targetSignature || !principalFingerprint || !writeId || !requestId
-		|| !Number.isSafeInteger(candidate.requestVersion) || Number(candidate.requestVersion) <= 0
-		|| !Number.isFinite(candidate.updatedAt)) return undefined;
+		|| !targetSignature || !principalFingerprint || !writeId || !requestId || !databases
+		|| typeof candidate.requestVersion !== 'number' || !Number.isSafeInteger(candidate.requestVersion) || candidate.requestVersion <= 0
+		|| typeof candidate.updatedAt !== 'number' || !Number.isFinite(candidate.updatedAt)) return undefined;
 	return {
 		version: SQL_DATABASE_CACHE_VERSION,
 		connectionId,
 		targetSignature,
 		principalFingerprint,
-		databases: normalizeDatabases(candidate.databases),
+		databases,
 		writeId,
 		requestId,
-		requestVersion: Number(candidate.requestVersion),
-		updatedAt: Number(candidate.updatedAt),
+		requestVersion: candidate.requestVersion,
+		updatedAt: candidate.updatedAt,
 	};
 }
 
-function parseSnapshot(value: unknown): SqlDatabaseCacheSnapshot {
-	if (!value || typeof value !== 'object' || Array.isArray(value)) return emptySnapshot();
+function parseSnapshot(value: unknown): SqlDatabaseCacheSnapshot | undefined {
+	if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
 	const candidate = value as Partial<SqlDatabaseCacheSnapshot>;
 	if (candidate.schemaVersion !== SQL_DATABASE_CACHE_VERSION
 		|| !Number.isSafeInteger(candidate.version) || Number(candidate.version) < 0
-		|| !candidate.entries || typeof candidate.entries !== 'object' || Array.isArray(candidate.entries)) return emptySnapshot();
+		|| !candidate.entries || typeof candidate.entries !== 'object' || Array.isArray(candidate.entries)) return undefined;
 	const snapshot = emptySnapshot();
 	snapshot.version = Number(candidate.version);
 	for (const [connectionId, entryValue] of Object.entries(candidate.entries)) {
 		const entry = parseEntry(connectionId, entryValue);
-		if (entry) snapshot.entries[connectionId] = entry;
+		if (!entry) return undefined;
+		snapshot.entries[connectionId] = entry;
 	}
-	if (candidate.latestRequestByConnectionId && typeof candidate.latestRequestByConnectionId === 'object' && !Array.isArray(candidate.latestRequestByConnectionId)) {
+	if (candidate.latestRequestByConnectionId !== undefined) {
+		if (!candidate.latestRequestByConnectionId || typeof candidate.latestRequestByConnectionId !== 'object' || Array.isArray(candidate.latestRequestByConnectionId)) return undefined;
 		for (const [connectionId, requestValue] of Object.entries(candidate.latestRequestByConnectionId)) {
-			if (!requestValue || typeof requestValue !== 'object' || Array.isArray(requestValue)) continue;
+			if (!connectionId.trim() || !requestValue || typeof requestValue !== 'object' || Array.isArray(requestValue)) return undefined;
 			const request = requestValue as { requestId?: unknown; version?: unknown };
-			const requestId = String(request.requestId || '').trim();
-			const version = Number(request.version || 0);
-			if (connectionId.trim() && requestId && Number.isSafeInteger(version) && version > 0) {
-				snapshot.latestRequestByConnectionId[connectionId] = { requestId, version };
-			}
+			if (typeof request.requestId !== 'string') return undefined;
+			const requestId = request.requestId.trim();
+			if (!requestId || typeof request.version !== 'number' || !Number.isSafeInteger(request.version) || request.version <= 0) return undefined;
+			snapshot.latestRequestByConnectionId[connectionId] = { requestId, version: request.version };
 		}
 	}
-	if (candidate.deletedAtVersionByConnectionId && typeof candidate.deletedAtVersionByConnectionId === 'object' && !Array.isArray(candidate.deletedAtVersionByConnectionId)) {
+	if (candidate.deletedAtVersionByConnectionId !== undefined) {
+		if (!candidate.deletedAtVersionByConnectionId || typeof candidate.deletedAtVersionByConnectionId !== 'object' || Array.isArray(candidate.deletedAtVersionByConnectionId)) return undefined;
 		for (const [connectionId, versionValue] of Object.entries(candidate.deletedAtVersionByConnectionId)) {
-			const version = Number(versionValue || 0);
-			if (connectionId.trim() && Number.isSafeInteger(version) && version > 0) snapshot.deletedAtVersionByConnectionId[connectionId] = version;
+			if (!connectionId.trim() || typeof versionValue !== 'number' || !Number.isSafeInteger(versionValue) || versionValue <= 0) return undefined;
+			snapshot.deletedAtVersionByConnectionId[connectionId] = versionValue;
 		}
 	}
-	if (candidate.blockedAtVersionByConnectionId && typeof candidate.blockedAtVersionByConnectionId === 'object' && !Array.isArray(candidate.blockedAtVersionByConnectionId)) {
+	if (candidate.blockedAtVersionByConnectionId !== undefined) {
+		if (!candidate.blockedAtVersionByConnectionId || typeof candidate.blockedAtVersionByConnectionId !== 'object' || Array.isArray(candidate.blockedAtVersionByConnectionId)) return undefined;
 		for (const [connectionId, versionValue] of Object.entries(candidate.blockedAtVersionByConnectionId)) {
-			if (!versionValue || typeof versionValue !== 'object' || Array.isArray(versionValue)) continue;
+			if (!connectionId.trim() || !versionValue || typeof versionValue !== 'object' || Array.isArray(versionValue)) return undefined;
 			const block = versionValue as { version?: unknown; expiresAt?: unknown };
-			const version = Number(block.version || 0);
-			const expiresAt = Number(block.expiresAt || 0);
-			if (connectionId.trim() && Number.isSafeInteger(version) && version > 0 && Number.isFinite(expiresAt) && expiresAt > 0) {
-				snapshot.blockedAtVersionByConnectionId[connectionId] = { version, expiresAt };
-			}
+			if (typeof block.version !== 'number' || !Number.isSafeInteger(block.version) || block.version <= 0
+				|| typeof block.expiresAt !== 'number' || !Number.isFinite(block.expiresAt) || block.expiresAt <= 0) return undefined;
+			snapshot.blockedAtVersionByConnectionId[connectionId] = { version: block.version, expiresAt: block.expiresAt };
 		}
 	}
-	if (candidate.targetSignatureByConnectionId && typeof candidate.targetSignatureByConnectionId === 'object' && !Array.isArray(candidate.targetSignatureByConnectionId)) {
+	if (candidate.targetSignatureByConnectionId !== undefined) {
+		if (!candidate.targetSignatureByConnectionId || typeof candidate.targetSignatureByConnectionId !== 'object' || Array.isArray(candidate.targetSignatureByConnectionId)) return undefined;
 		for (const [connectionId, signatureValue] of Object.entries(candidate.targetSignatureByConnectionId)) {
-			const signature = String(signatureValue || '');
-			if (connectionId.trim() && signature) snapshot.targetSignatureByConnectionId[connectionId] = signature;
+			if (!connectionId.trim() || typeof signatureValue !== 'string' || !signatureValue) return undefined;
+			snapshot.targetSignatureByConnectionId[connectionId] = signatureValue;
 		}
 	}
-	if (candidate.principalFingerprintByConnectionId && typeof candidate.principalFingerprintByConnectionId === 'object' && !Array.isArray(candidate.principalFingerprintByConnectionId)) {
+	if (candidate.principalFingerprintByConnectionId !== undefined) {
+		if (!candidate.principalFingerprintByConnectionId || typeof candidate.principalFingerprintByConnectionId !== 'object' || Array.isArray(candidate.principalFingerprintByConnectionId)) return undefined;
 		for (const [connectionId, fingerprintValue] of Object.entries(candidate.principalFingerprintByConnectionId)) {
-			if (!connectionId.trim()) continue;
+			if (!connectionId.trim()) return undefined;
 			if (fingerprintValue === null) snapshot.principalFingerprintByConnectionId[connectionId] = null;
 			else {
-				const fingerprint = String(fingerprintValue || '').trim();
-				if (fingerprint) snapshot.principalFingerprintByConnectionId[connectionId] = fingerprint;
+				if (typeof fingerprintValue !== 'string' || !fingerprintValue.trim()) return undefined;
+				snapshot.principalFingerprintByConnectionId[connectionId] = fingerprintValue.trim();
 			}
 		}
 	}
-	const clearedAtVersion = Number(candidate.clearedAtVersion || 0);
-	snapshot.clearedAtVersion = Number.isSafeInteger(clearedAtVersion) && clearedAtVersion > 0 ? clearedAtVersion : 0;
+	if (candidate.clearedAtVersion !== undefined
+		&& (typeof candidate.clearedAtVersion !== 'number' || !Number.isSafeInteger(candidate.clearedAtVersion) || candidate.clearedAtVersion < 0)) return undefined;
+	snapshot.clearedAtVersion = candidate.clearedAtVersion ?? 0;
 	return snapshot;
 }
 
 export function parseSqlDatabaseCacheStore(value: unknown): Record<string, SqlDatabaseCacheEntry> {
-	return parseSnapshot(value).entries;
+	return parseSnapshot(value)?.entries ?? {};
 }
 
 function getSnapshotPath(context: SqlDatabaseCacheContext, storageKey: string): string | undefined {
@@ -192,25 +210,29 @@ function getSnapshotPath(context: SqlDatabaseCacheContext, storageKey: string): 
 	return path.join(root, `sql-database-cache-${suffix}.v1.json`);
 }
 
-async function readDiskSnapshot(snapshotPath: string): Promise<SqlDatabaseCacheSnapshot | undefined> {
-	try {
-		return parseSnapshot(JSON.parse(await fs.promises.readFile(snapshotPath, 'utf8')));
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException)?.code === 'ENOENT') return undefined;
-		if (!(error instanceof SyntaxError)) throw error;
-		await quarantineCorruptSqlStateFile(snapshotPath);
-		return emptySnapshot();
-	}
+async function readDiskSnapshotUnderLock(snapshotPath: string): Promise<SqlDatabaseCacheSnapshot | undefined> {
+	const read = await readSqlJsonStateFile(snapshotPath, parseSnapshot);
+	if (read.kind === 'valid') return read.value;
+	if (read.kind === 'missing') return undefined;
+	await quarantineCorruptSqlStateFile(snapshotPath);
+	const recovered = emptySnapshot();
+	recovered.version = Date.now();
+	recovered.clearedAtVersion = recovered.version;
+	await atomicReplaceSqlStateFile(snapshotPath, `${JSON.stringify(recovered, null, 2)}\n`);
+	return recovered;
 }
 
 function readMemorySnapshot(context: SqlDatabaseCacheContext, storageKey: string): SqlDatabaseCacheSnapshot {
 	const runtime = getRuntime(context);
-	return runtime.snapshots.get(storageKey) ?? parseSnapshot(context.globalState.get<unknown>(storageKey));
+	return runtime.snapshots.get(storageKey) ?? parseSnapshot(context.globalState.get<unknown>(storageKey)) ?? emptySnapshot();
 }
 
 async function readCurrentSnapshot(context: SqlDatabaseCacheContext, storageKey: string): Promise<SqlDatabaseCacheSnapshot> {
 	const snapshotPath = getSnapshotPath(context, storageKey);
-	if (snapshotPath) return await readDiskSnapshot(snapshotPath) ?? emptySnapshot();
+	if (snapshotPath) {
+		return withSqlStateFileLock(`${snapshotPath}.write`, async () =>
+			await readDiskSnapshotUnderLock(snapshotPath) ?? emptySnapshot(), { staleMs: CACHE_LOCK_STALE_MS });
+	}
 	return readMemorySnapshot(context, storageKey);
 }
 
@@ -223,14 +245,7 @@ function nextVersion(snapshot: SqlDatabaseCacheSnapshot, context: SqlDatabaseCac
 async function writeSnapshot(context: SqlDatabaseCacheContext, storageKey: string, snapshot: SqlDatabaseCacheSnapshot): Promise<void> {
 	const snapshotPath = getSnapshotPath(context, storageKey);
 	if (snapshotPath) {
-		await fs.promises.mkdir(path.dirname(snapshotPath), { recursive: true });
-		const tempPath = `${snapshotPath}.${process.pid}.${crypto.randomUUID()}.tmp`;
-		await fs.promises.writeFile(tempPath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
-		try {
-			await fs.promises.rename(tempPath, snapshotPath);
-		} finally {
-			try { await fs.promises.rm(tempPath, { force: true }); } catch { /* ignore */ }
-		}
+		await atomicReplaceSqlStateFile(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`);
 	}
 	getRuntime(context).snapshots.set(storageKey, structuredClone(snapshot));
 	try { await context.globalState.update(storageKey, snapshot); } catch {
@@ -245,19 +260,10 @@ async function withSnapshotLock<T>(
 ): Promise<T> {
 	const snapshotPath = getSnapshotPath(context, storageKey);
 	if (snapshotPath) {
-		await fs.promises.mkdir(path.dirname(snapshotPath), { recursive: true });
 		const lockTarget = `${snapshotPath}.write`;
-		const release = await lockfile.lock(lockTarget, {
-			realpath: false,
-			stale: CACHE_LOCK_STALE_MS,
-			update: 5_000,
-			retries: { retries: 100, factor: 1, minTimeout: 25, maxTimeout: 25 },
-		});
-		try {
-			return await action(await readDiskSnapshot(snapshotPath) ?? emptySnapshot());
-		} finally {
-			await release();
-		}
+		return withSqlStateFileLock(lockTarget, async () => {
+			return await action(await readDiskSnapshotUnderLock(snapshotPath) ?? emptySnapshot());
+		}, { staleMs: CACHE_LOCK_STALE_MS });
 	}
 	const runtime = getRuntime(context);
 	const previous = runtime.writeTails.get(storageKey) ?? Promise.resolve();

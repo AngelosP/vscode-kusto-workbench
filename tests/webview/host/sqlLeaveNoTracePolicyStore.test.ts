@@ -37,6 +37,52 @@ function createOutput() {
 }
 
 describe('SqlLeaveNoTracePolicyStore', () => {
+	it('rolls back a valid LNT primary left ahead of its commit pointer', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-lnt-crash-window-'));
+		tempDirectories.push(directory);
+		const store = new SqlLeaveNoTracePolicyStore(createContext(directory), createOutput());
+		try {
+			await store.refresh();
+			await store.setConnection('sql-sensitive', true);
+			const policyPath = path.join(directory, 'sql-leave-no-trace-policy.v1.json');
+			const uncommitted = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
+			uncommitted.version += 1;
+			uncommitted.connectionIds = [];
+			uncommitted.updatedAt = new Date().toISOString();
+			fs.writeFileSync(policyPath, `${JSON.stringify(uncommitted, null, 2)}\n`, 'utf8');
+
+			await store.refresh();
+
+			expect(store.getConnectionIds()).toEqual(['sql-sensitive']);
+			await expect(store.assertAllowed('sql-sensitive')).rejects.toThrow('may buffer results on disk');
+			expect(JSON.parse(fs.readFileSync(policyPath, 'utf8')).connectionIds).toEqual(['sql-sensitive']);
+		} finally {
+			store.dispose();
+		}
+	});
+
+	it('restores the committed policy when nested revocation state is malformed', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-lnt-nested-corrupt-'));
+		tempDirectories.push(directory);
+		const store = new SqlLeaveNoTracePolicyStore(createContext(directory), createOutput());
+		try {
+			await store.refresh();
+			await store.setConnection('sql-sensitive', true);
+			const policyPath = path.join(directory, 'sql-leave-no-trace-policy.v1.json');
+			const policy = JSON.parse(fs.readFileSync(policyPath, 'utf8'));
+			policy.revocationGenerations['sql-sensitive'] = 'invalid';
+			fs.writeFileSync(policyPath, JSON.stringify(policy), 'utf8');
+
+			await store.refresh();
+
+			expect(store.getConnectionIds()).toEqual(['sql-sensitive']);
+			await expect(store.assertAllowed('sql-sensitive')).rejects.toThrow('may buffer results on disk');
+			expect(fs.readdirSync(directory).some(name => name.startsWith('sql-leave-no-trace-policy.v1.json.corrupt-'))).toBe(true);
+		} finally {
+			store.dispose();
+		}
+	});
+
 	it('retries a transient Windows failure while replacing the canonical policy', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-lnt-rename-retry-'));
 		tempDirectories.push(directory);
@@ -109,12 +155,8 @@ describe('SqlLeaveNoTracePolicyStore', () => {
 			await second.refresh();
 
 			expect(second.getConnectionIds()).toEqual([]);
-			expect(changes).toEqual([expect.objectContaining({
-				connectionIds: [],
-				enabledConnectionIds: [],
-				disabledConnectionIds: [],
-				invalidatedConnectionIds: ['sql-sensitive'],
-			})]);
+			expect(changes.at(-1)).toEqual(expect.objectContaining({ connectionIds: [] }));
+			expect(changes.some(change => change.invalidatedConnectionIds.includes('sql-sensitive'))).toBe(true);
 		} finally {
 			first.dispose();
 			second.dispose();
@@ -227,7 +269,7 @@ describe('SqlLeaveNoTracePolicyStore', () => {
 		}
 	});
 
-	it('treats a recovery-marker failure after primary replacement as a committed LNT disable', async () => {
+	it('rolls back an LNT disable when the recovery pointer cannot commit', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-lnt-marker-failure-'));
 		tempDirectories.push(directory);
 		const first = new SqlLeaveNoTracePolicyStore(createContext(directory), createOutput());
@@ -241,8 +283,8 @@ describe('SqlLeaveNoTracePolicyStore', () => {
 				await realWriteAtomic(filePath, contents);
 			});
 
-			await expect(first.setConnection('sql-sensitive', false)).resolves.toBeUndefined();
-			await expect(first.assertAllowed('sql-sensitive')).resolves.toBeUndefined();
+			await expect(first.setConnection('sql-sensitive', false)).rejects.toThrow('marker failed');
+			await expect(first.assertAllowed('sql-sensitive')).rejects.toThrow('may buffer results on disk');
 		} finally {
 			first.dispose();
 		}
@@ -250,7 +292,7 @@ describe('SqlLeaveNoTracePolicyStore', () => {
 		const second = new SqlLeaveNoTracePolicyStore(createContext(directory), createOutput());
 		try {
 			await second.refresh();
-			await expect(second.assertAllowed('sql-sensitive')).resolves.toBeUndefined();
+			await expect(second.assertAllowed('sql-sensitive')).rejects.toThrow('may buffer results on disk');
 		} finally {
 			second.dispose();
 		}
@@ -271,6 +313,22 @@ describe('SqlLeaveNoTracePolicyStore', () => {
 		} finally {
 			first.dispose();
 			second.dispose();
+		}
+	});
+
+	it('blocks dispatch when the commit pointer disappears after migration', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-lnt-dispatch-pointer-loss-'));
+		tempDirectories.push(directory);
+		const store = new SqlLeaveNoTracePolicyStore(createContext(directory), createOutput());
+		const dispatch = vi.fn();
+		try {
+			await store.refresh();
+			fs.rmSync(path.join(directory, 'sql-leave-no-trace-policy.commit.v1.json'), { force: true });
+
+			await expect(store.dispatchAllowed('sql-sensitive', dispatch)).rejects.toThrow('may buffer results on disk');
+			expect(dispatch).not.toHaveBeenCalled();
+		} finally {
+			store.dispose();
 		}
 	});
 

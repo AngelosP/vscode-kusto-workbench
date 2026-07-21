@@ -51,14 +51,17 @@ import {
 	sqlFavorites,
 	sqlLeaveNoTraceConnectionIds,
 	sqlFavoritesModeByBoxId,
-	sqlTargetGenerationByBoxId,
-	sqlDatabaseRequestIdByBoxId,
 	beginKustoPreparation,
 	disposeKustoPreparation,
 	requireSchemaWorkerApply,
 	requestKustoSchemaApplyForBox,
 	setKustoPreparationIdle,
 } from './state';
+import {
+	getSqlSectionSession,
+	unregisterSqlDerivedComparisonSession,
+	unregisterSqlDerivedComparisonsForSource,
+} from './sql-section-message-router.js';
 import { clearResultsState } from './results-state';
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from '../sections/query-execution.controller';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
@@ -1414,6 +1417,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 }
 
 export function removeQueryBox( boxId: any) {
+	unregisterSqlDerivedComparisonSession(String(boxId || ''));
 	// Retire the transient execution owner before removing the DOM instance. This
 	// prevents a late terminal from being accepted by a recreated section ID.
 	try {
@@ -2962,6 +2966,18 @@ export function addSqlBox(options?: any) {
 	litEl.className = 'query-box';
 	litEl.id = id;
 	litEl.setAttribute('box-id', id);
+	litEl.sqlSession?.configureLifecycleEffects({
+		isRestoreInProgress: () => !!pState.restoreInProgress,
+		clearSchema: (boxId: string) => { delete schemaByBoxId[boxId]; },
+		setSchemaStatus: (info: { status: 'not-loaded' | 'loading'; statusText: string }) => litEl.setSchemaInfo?.(info),
+		setDatabases: (databases: string[], desiredDatabase?: string) => litEl.setDatabases?.(databases, desiredDatabase),
+		setDatabasesLoading: (loading: boolean) => litEl.setDatabasesLoading?.(loading),
+		setRefreshLoading: (loading: boolean) => litEl.setRefreshLoading?.(loading),
+		getConnectionId: (boxId: string) => String(__kustoGetSqlSectionElement(boxId)?.getSqlConnectionId?.() || ''),
+		getDatabase: (boxId: string) => String(__kustoGetSqlSectionElement(boxId)?.getDatabase?.() || ''),
+		postMessage: (message: Record<string, unknown>) => postMessageToHost(message as any),
+		persist: () => { try { schedulePersist(); } catch (error) { console.error('[kusto]', error); } },
+	});
 	if (typeof litEl.setLeaveNoTraceConnectionIds === 'function') {
 		litEl.setLeaveNoTraceConnectionIds(sqlLeaveNoTraceConnectionIds);
 	}
@@ -2981,87 +2997,11 @@ export function addSqlBox(options?: any) {
 	});
 
 	litEl.addEventListener('sql-connection-changed', (e: any) => {
-		const detail = e.detail || {};
-		const boxId = detail.boxId || id;
-		if (detail.preserveTargetGeneration !== true) {
-			sqlTargetGenerationByBoxId[boxId] = (sqlTargetGenerationByBoxId[boxId] ?? 0) + 1;
-		}
-		delete sqlDatabaseRequestIdByBoxId[boxId];
-		// Clear schema when server changes.
-		try { delete schemaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-		try {
-			if (typeof litEl.setSchemaInfo === 'function') {
-				litEl.setSchemaInfo({ status: 'not-loaded', statusText: 'Not loaded' });
-			}
-		} catch (e) { console.error('[kusto]', e); }
-		// Persist selection.
-		try {
-			if (!pState.restoreInProgress) {
-				postMessageToHost({
-					type: 'saveSqlLastSelection',
-					sqlConnectionId: String(detail.connectionId || ''),
-					database: '',
-				});
-			}
-		} catch (e) { console.error('[kusto]', e); }
-		// Load database list.
-		if (detail.connectionId && !detail.suppressMetadataRefresh) {
-			try {
-				if (pState.restoreInProgress) {
-					const restoredDatabase = String(detail.database || '').trim();
-					if (restoredDatabase && typeof litEl.setDatabases === 'function') {
-						litEl.setDatabases([restoredDatabase], restoredDatabase);
-					}
-					return;
-				}
-				if (typeof litEl.setDatabasesLoading === 'function') litEl.setDatabasesLoading(true);
-				postMessageToHost({
-					type: 'getSqlDatabases', sqlConnectionId: detail.connectionId, boxId,
-					targetGeneration: sqlTargetGenerationByBoxId[boxId] ?? 0,
-				});
-			} catch (e) { console.error('[kusto]', e); }
-		}
-		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		litEl.sqlSession?.handleConnectionChanged(e.detail || {});
 	});
 
 	litEl.addEventListener('sql-database-changed', (e: any) => {
-		const detail = e.detail || {};
-		const boxId = detail.boxId || id;
-		if (detail.preserveTargetGeneration !== true) {
-			sqlTargetGenerationByBoxId[boxId] = (sqlTargetGenerationByBoxId[boxId] ?? 0) + 1;
-		}
-		// Clear stale schema for previous database.
-		try { delete schemaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-		try {
-			if (!pState.restoreInProgress && !detail.suppressMetadataRefresh) {
-				const el2 = __kustoGetSqlSectionElement(boxId);
-				const connId = el2 && typeof el2.getSqlConnectionId === 'function' ? el2.getSqlConnectionId() : '';
-				if (connId) {
-					postMessageToHost({
-						type: 'saveSqlLastSelection',
-						sqlConnectionId: connId,
-						database: detail.database || '',
-					});
-				}
-			}
-		} catch (e) { console.error('[kusto]', e); }
-		// Request schema for the new database.
-		try {
-			if (!pState.restoreInProgress && !detail.suppressMetadataRefresh) {
-				const el2 = __kustoGetSqlSectionElement(boxId);
-				const connId = el2 && typeof el2.getSqlConnectionId === 'function' ? el2.getSqlConnectionId() : '';
-				const db = detail.database || '';
-				if (connId && db) {
-					try {
-						if (typeof litEl.setSchemaInfo === 'function') {
-							litEl.setSchemaInfo({ status: 'loading', statusText: 'Loading\u2026' });
-						}
-					} catch (e) { console.error('[kusto]', e); }
-					postMessageToHost({ type: 'prefetchSqlSchema', sqlConnectionId: connId, database: db, boxId, targetGeneration: sqlTargetGenerationByBoxId[boxId] ?? 0 });
-				}
-			}
-		} catch (e) { console.error('[kusto]', e); }
-		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		litEl.sqlSession?.handleDatabaseChanged(e.detail || {});
 	});
 
 	litEl.addEventListener('sql-target-owner-changed', (e: any) => {
@@ -3081,16 +3021,7 @@ export function addSqlBox(options?: any) {
 	});
 
 	litEl.addEventListener('sql-refresh-databases', (e: any) => {
-		const detail = e.detail || {};
-		const boxId = detail.boxId || id;
-		const connId = detail.connectionId || '';
-		if (connId) {
-			try { if (typeof litEl.setRefreshLoading === 'function') litEl.setRefreshLoading(true); } catch (e) { console.error('[kusto]', e); }
-			postMessageToHost({
-				type: 'refreshSqlDatabases', sqlConnectionId: connId, boxId,
-				targetGeneration: sqlTargetGenerationByBoxId[boxId] ?? 0,
-			});
-		}
+		litEl.sqlSession?.handleRefreshDatabases(e.detail || {});
 	});
 
 	litEl.addEventListener('sql-add-connection', (e: any) => {
@@ -3118,20 +3049,7 @@ export function addSqlBox(options?: any) {
 	});
 
 	litEl.addEventListener('sql-schema-refresh', (e: any) => {
-		const detail = e.detail || {};
-		const boxId = detail.boxId || id;
-		const el2 = __kustoGetSqlSectionElement(boxId);
-		const connId = el2 && typeof el2.getSqlConnectionId === 'function' ? el2.getSqlConnectionId() : '';
-		const db = el2 && typeof el2.getDatabase === 'function' ? el2.getDatabase() : '';
-		if (connId && db) {
-			try { delete schemaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-			try {
-				if (typeof litEl.setSchemaInfo === 'function') {
-					litEl.setSchemaInfo({ status: 'loading', statusText: 'Refreshing\u2026' });
-				}
-			} catch (e) { console.error('[kusto]', e); }
-			postMessageToHost({ type: 'prefetchSqlSchema', sqlConnectionId: connId, database: db, boxId, targetGeneration: sqlTargetGenerationByBoxId[boxId] ?? 0, forceRefresh: true });
-		}
+		litEl.sqlSession?.handleSchemaRefresh(e.detail || {});
 	});
 
 	// ── Favorites event wiring ──
@@ -3240,6 +3158,7 @@ export function addSqlBox(options?: any) {
 }
 
 export function removeSqlBox(boxId: any) {
+	unregisterSqlDerivedComparisonsForSource(String(boxId || ''));
 	try {
 		for (const [candidateId, metadata] of Object.entries(optimizationMetadataByBoxId || {})) {
 			if (!metadata || typeof metadata !== 'object') continue;
@@ -3251,8 +3170,7 @@ export function removeSqlBox(boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
 	try { delete pState.queryResultJsonByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-	delete sqlTargetGenerationByBoxId[boxId];
-	delete sqlDatabaseRequestIdByBoxId[boxId];
+	try { getSqlSectionSession(String(boxId))?.clear(); } catch (e) { console.error('[kusto]', e); }
 	sqlBoxes = sqlBoxes.filter((id: any) => id !== boxId);
 	const box = document.getElementById(boxId) as any;
 	if (box && box.parentNode) {

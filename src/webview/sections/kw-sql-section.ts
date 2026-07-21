@@ -21,8 +21,8 @@ import { maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { schedulePersist, __kustoClearStoredQueryResult } from '../core/persistence.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
-import { registerStsProviders, registerStsEditorModel, unregisterStsEditorModel, setStsReady } from '../monaco/sql-sts-providers.js';
-import { autoTriggerAutocompleteEnabled, setActiveMonacoEditor, queryEditorBoxByModelUri, queryEditors, sqlTargetGenerationByBoxId } from '../core/state.js';
+import { registerStsProviders, registerStsEditorModel, unregisterStsEditorModel } from '../monaco/sql-sts-providers.js';
+import { autoTriggerAutocompleteEnabled, setActiveMonacoEditor, queryEditorBoxByModelUri, queryEditors } from '../core/state.js';
 import { getRunMode, setRunMode } from './kw-query-toolbar.js';
 import { getRunModeLabelText } from '../shared/comparisonUtils.js';
 import { getCurrentMonacoThemeName } from '../monaco/theme.js';
@@ -35,6 +35,7 @@ import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
 import { clearResultsState } from '../core/results-state.js';
 import { normalizeSqlConnectionTargetSignature, sqlConnectionTargetSignature, sqlConnectionTargetSignatureMatches } from '../../shared/sqlConnectionIdentity.js';
+import { SqlSectionSessionController, type SqlToolRunResult } from './sql-section-session.controller.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 const SQL_LEAVE_NO_TRACE_ERROR = 'Leave No Trace blocks SQL execution for this connection.';
@@ -208,6 +209,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	/** Copilot chat controller. */
 	readonly copilotCtrl = new CopilotChatManagerController(this as any, sqlWebviewFlavor);
+	readonly sqlSession = new SqlSectionSessionController(this);
 
 	private _editor: MonacoEditor | null = null;
 	private _cursorStatus: EditorCursorStatusPublisher | null = null;
@@ -218,22 +220,14 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _lastFitHeight = 0;
 	private _savedEditorHeightPx: number | undefined;
 	private _schemaInfoState: SchemaInfoState = { status: 'not-loaded' };
-	private _stsReady = false;
-	private _stsDocumentOpened = false;
-	private _stsConnectTarget = '';
-	private _stsConnectPending = false;
-	private _ownerToken = '';
+	private get _stsReady(): boolean { return this.sqlSession.stsReady; }
+	private get _stsDocumentOpened(): boolean { return this.sqlSession.stsDocumentOpened; }
+	private get _stsConnectTarget(): string { return this.sqlSession.stsConnectTarget; }
+	private get _stsConnectPending(): boolean { return this.sqlSession.stsConnectPending; }
+	private get _ownerToken(): string { return this.sqlSession.ownerToken; }
 	private _removeRunMenuScrollDismiss: (() => void) | null = null;
-	private _pendingToolRun: {
-		resolve: (result: { rowCount: number; executionId: string; owner: { connectionId: string; database: string; ownerToken: string; generation: number } }) => void;
-		reject: (error: Error) => void;
-		executionId: string;
-		owner?: { connectionId: string; database: string; ownerToken: string; generation: number };
-	} | undefined;
-	private _pendingToolReadyTimer: ReturnType<typeof setTimeout> | undefined;
-	private _toolExpectedOwner: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number } | undefined;
-	private _activeQueryExecutionId = '';
-	private readonly _cancelledQueryExecutionIds: string[] = [];
+	private get _activeQueryExecutionId(): string { return this.sqlSession.currentExecutionId; }
+	private set _activeQueryExecutionId(value: string) { this.sqlSession.setCurrentExecutionId(value); }
 
 	// ── Auto-trigger autocomplete state ──────────────────────────────────────
 	private _autoSuggestTimer: ReturnType<typeof setTimeout> | undefined;
@@ -251,6 +245,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	override connectedCallback(): void {
 		super.connectedCallback();
+		this.sqlSession.attach(this.boxId);
+		this.sqlSession.configureToolRunTimeout(executionId => this._timeoutToolRun(executionId));
+		postMessageToHost({
+			type: 'sqlSectionOpen', boxId: this.boxId, sectionInstanceId: this.sqlSession.instanceId,
+		} as any);
 		// Create the light DOM body once. See _lightDomCreated guard comment above.
 		if (!this._lightDomCreated && this.boxId) {
 			this._lightDomCreated = true;
@@ -267,6 +266,13 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
+		queueMicrotask(() => {
+			if (this.isConnected) return;
+			this._disposeDisconnectedSection();
+		});
+	}
+
+	private _disposeDisconnectedSection(): void {
 		this._closeSqlRunMenu();
 		this._stopElapsedTimer();
 		if (this._autoSuggestTimer !== undefined) { clearTimeout(this._autoSuggestTimer); this._autoSuggestTimer = undefined; }
@@ -963,10 +969,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	private _resetSchemaReadiness(status: SchemaInfoState['status'] = 'not-loaded'): void {
 		this._schemaInfoState = { status };
-		this._stsReady = false;
-		this._stsConnectPending = false;
-		this._stsConnectTarget = '';
-		setStsReady(this.boxId, false);
+		this.sqlSession.setStsReady(false);
 		this._syncTestStateAttrs();
 	}
 
@@ -1099,7 +1102,10 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 			if (this._stsDocumentOpened) {
 				try {
-					postMessageToHost({ type: 'stsDidChange', boxId: this.boxId, text: editor.getValue() } as any);
+					postMessageToHost({
+						type: 'stsDidChange', boxId: this.boxId,
+						sectionInstanceId: this.sqlSession.instanceId, text: editor.getValue(),
+					} as any);
 				} catch (e) { console.error('[kusto]', e); }
 			}
 			try { this._maybeAutoTriggerAutocomplete(changeEvt); } catch (err) { console.error('[kusto]', err); }
@@ -1191,8 +1197,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		try {
 			const text = this._editor.getValue();
 			console.log(`[sts-diag] stsDidOpen boxId=${this.boxId} textLen=${text.length}`);
-			postMessageToHost({ type: 'stsDidOpen', boxId: this.boxId, text } as any);
-			this._stsDocumentOpened = true;
+			postMessageToHost({
+				type: 'stsDidOpen', boxId: this.boxId,
+				sectionInstanceId: this.sqlSession.instanceId, text,
+			} as any);
+			this.sqlSession.markStsDocumentOpened();
 			return true;
 		} catch (e) {
 			console.error('[kusto]', e);
@@ -1215,40 +1224,33 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			return;
 		}
 		if (!this._openStsDocumentIfNeeded()) return;
+		if (!this.sqlSession.beginStsConnect(target)) return;
 		console.log(`[sts-diag] stsConnect (${reason}) boxId=${this.boxId} connId=${this._sqlConnectionId} db=${this._database}`);
 		try {
-			this._stsConnectTarget = target;
-			this._stsConnectPending = true;
 			postMessageToHost({
 				type: 'stsConnect',
 				boxId: this.boxId,
+				sectionInstanceId: this.sqlSession.instanceId,
 				sqlConnectionId: this._sqlConnectionId,
 				database: this._database,
-				targetGeneration: sqlTargetGenerationByBoxId[this.boxId] ?? 0,
-				...(this._toolExpectedOwner ? { expectedOwner: this._toolExpectedOwner } : {}),
+				targetGeneration: this.sqlSession.targetGeneration,
+				...(this.sqlSession.toolExpectedOwner ? { expectedOwner: this.sqlSession.toolExpectedOwner } : {}),
 			} as any);
 		} catch (e) {
-			this._stsConnectPending = false;
+			this.sqlSession.failStsConnectStart();
 			console.error('[kusto]', e);
 		}
 	}
 
 	private _disposeEditor(): void {
-		if (this._pendingToolReadyTimer) clearTimeout(this._pendingToolReadyTimer);
-		this._pendingToolReadyTimer = undefined;
-		const pendingToolRun = this._pendingToolRun;
-		this._pendingToolRun = undefined;
-		pendingToolRun?.reject(new Error('SQL editor closed during tool execution.'));
-		this._stsReady = false;
-		this._stsConnectPending = false;
-		this._stsConnectTarget = '';
-		setStsReady(this.boxId, false);
-		if (this._stsDocumentOpened) {
-			try {
-				postMessageToHost({ type: 'stsDidClose', boxId: this.boxId } as any);
-			} catch { /* ignore */ }
-			this._stsDocumentOpened = false;
-		}
+		this.sqlSession.rejectPendingToolRun(new Error('SQL editor closed during tool execution.'));
+		this.sqlSession.setStsReady(false);
+		try {
+			postMessageToHost({
+				type: 'stsDidClose', boxId: this.boxId, sectionInstanceId: this.sqlSession.instanceId,
+			} as any);
+		} catch { /* ignore */ }
+		if (this._stsDocumentOpened) this.sqlSession.markStsDocumentClosed();
 
 		// Unregister model URI mapping and shared editor maps.
 		if (this._editor) {
@@ -1532,15 +1534,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	public setToolExpectedOwner(owner: unknown): void {
-		const candidate = owner as Partial<{ connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number }> | undefined;
-		const connectionId = String(candidate?.connectionId || '').trim();
-		const database = String(candidate?.database || '').trim();
-		const targetSignature = String(candidate?.targetSignature || '');
-		const principalFingerprint = String(candidate?.principalFingerprint || '').trim();
-		const revocationGeneration = Number(candidate?.revocationGeneration);
-		if (!connectionId || !database || !targetSignature || !principalFingerprint
-			|| !Number.isSafeInteger(revocationGeneration) || revocationGeneration < 0) throw new Error('SQL tool execution owner is unavailable.');
-		this._toolExpectedOwner = { connectionId, database, targetSignature, principalFingerprint, revocationGeneration };
+		this.sqlSession.setToolExpectedOwner(owner);
 	}
 
 	public setLeaveNoTraceConnectionIds(ids: string[]): void {
@@ -1580,12 +1574,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	private _enforceLeaveNoTracePolicy(): boolean {
 		if (!this._leaveNoTraceConnectionIds.has(this._sqlConnectionId)) return false;
-		if (this._pendingToolReadyTimer) clearTimeout(this._pendingToolReadyTimer);
-		this._pendingToolReadyTimer = undefined;
-		const pendingToolRun = this._pendingToolRun;
-		this._pendingToolRun = undefined;
-		this._toolExpectedOwner = undefined;
-		pendingToolRun?.reject(new Error('SQL execution was cancelled because Leave No Trace is enabled.'));
+		this.sqlSession.rejectPendingToolRun(new Error('SQL execution was cancelled because Leave No Trace is enabled.'));
 		this._executing = false;
 		this._activeQueryExecutionId = '';
 		this._databases = [];
@@ -1600,19 +1589,16 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	private _clearTargetData(): void {
 		if (this._executing) {
-			try { postMessageToHost({ type: 'cancelSqlQuery', boxId: this.boxId }); } catch (e) { console.error('[kusto]', e); }
+			try {
+				postMessageToHost({ type: 'cancelSqlQuery', boxId: this.boxId, sectionInstanceId: this.sqlSession.instanceId });
+			} catch (e) { console.error('[kusto]', e); }
 		}
-		if (this._pendingToolReadyTimer) clearTimeout(this._pendingToolReadyTimer);
-		this._pendingToolReadyTimer = undefined;
-		this._toolExpectedOwner = undefined;
 		this._executing = false;
 		this._activeQueryExecutionId = '';
 		this._stopElapsedTimer();
 		this._clearResultData();
 		this.setStsReady(false);
-		const pendingToolRun = this._pendingToolRun;
-		this._pendingToolRun = undefined;
-		pendingToolRun?.reject(new Error('SQL target changed during tool execution.'));
+		this.sqlSession.rejectPendingToolRun(new Error('SQL target changed during tool execution.'));
 		try { this.copilotWriteQueryCancel(); } catch (e) { console.error('[kusto]', e); }
 		try { this.copilotClearConversation(); } catch (e) { console.error('[kusto]', e); }
 		this.dispatchEvent(new CustomEvent('sql-target-owner-changed', {
@@ -1856,15 +1842,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	public setStsReady(ready: boolean, ownerToken = '', targetGeneration?: number): void {
-		this._stsReady = ready;
-		this._ownerToken = ready ? String(ownerToken || '') : '';
-		this._stsConnectPending = false;
+		if (!this.sqlSession.setStsReady(ready, ownerToken, targetGeneration)) return;
 		if (ready) {
-			this._stsConnectTarget = this._sqlConnectionId && this._database ? `${this._connectionTargetSignature(this._sqlConnectionId)}\n${this._database}` : this._stsConnectTarget;
-		} else {
-			this._stsConnectTarget = '';
+			const target = this._sqlConnectionId && this._database ? `${this._connectionTargetSignature(this._sqlConnectionId)}\n${this._database}` : this._stsConnectTarget;
+			this.sqlSession.markStsConnectedTarget(target);
 		}
-		setStsReady(this.boxId, ready, this._ownerToken, targetGeneration);
 		this._syncTestStateAttrs();
 		this._syncActionBar();
 		if (ready && this._ownerToken) this._startPendingToolRunIfReady();
@@ -1875,11 +1857,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._lastError = String(error || 'SQL Tools Service connection failed.');
 		this._syncTestStateAttrs();
 		this._syncActionBar();
-		if (this._pendingToolReadyTimer) clearTimeout(this._pendingToolReadyTimer);
-		this._pendingToolReadyTimer = undefined;
-		const pendingToolRun = this._pendingToolRun;
-		this._pendingToolRun = undefined;
-		pendingToolRun?.reject(new Error(error || 'SQL Tools Service connection failed.'));
+		this.sqlSession.rejectPendingToolRun(new Error(error || 'SQL Tools Service connection failed.'));
 	}
 
 	// ── Auto-trigger autocomplete ─────────────────────────────────────────────
@@ -2025,13 +2003,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const rows = Array.isArray(result?.rows) ? result.rows : [];
 		const metadata = (result?.metadata && typeof result.metadata === 'object') ? result.metadata : {};
 		const rowCount = rows.length;
-		const pendingToolRun = this._pendingToolRun;
-		if (pendingToolRun && options?.executionId === pendingToolRun.executionId) {
-			this._pendingToolRun = undefined;
-			this._toolExpectedOwner = undefined;
-			if (pendingToolRun.owner) pendingToolRun.resolve({ rowCount, executionId: pendingToolRun.executionId, owner: pendingToolRun.owner });
-			else pendingToolRun.reject(new Error('SQL tool execution owner was unavailable.'));
-		}
+		this.sqlSession.resolvePendingToolRun(options?.executionId, rowCount);
 		if (options?.executionId && this._activeQueryExecutionId === options.executionId) this._activeQueryExecutionId = '';
 		const execTime = typeof metadata.executionTime === 'string' ? metadata.executionTime : '';
 
@@ -2182,12 +2154,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			msg = String(errorOrModel);
 		}
 		this._lastError = msg;
-		const pendingToolRun = this._pendingToolRun;
-		if (pendingToolRun && executionId === pendingToolRun.executionId) {
-			this._pendingToolRun = undefined;
-			this._toolExpectedOwner = undefined;
-			pendingToolRun.reject(new Error(msg));
-		}
+		this.sqlSession.rejectPendingToolRun(new Error(msg), executionId);
 		if (executionId && this._activeQueryExecutionId === executionId) this._activeQueryExecutionId = '';
 
 		const resultsBody = document.getElementById(this.boxId + '_sql_results_body');
@@ -2232,75 +2199,89 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	// ── Execution ─────────────────────────────────────────────────────────────
 
-	public runForTool(executionId: string): Promise<{ rowCount: number; executionId: string; owner: { connectionId: string; database: string; ownerToken: string; generation: number } }> {
-		if (this._pendingToolRun) return Promise.reject(new Error('A SQL tool query is already running for this section.'));
-		if (!String(executionId || '').trim()) return Promise.reject(new Error('SQL tool execution ID is unavailable.'));
+	public reserveToolRun(executionId: string): Promise<SqlToolRunResult> {
+		if (this.sqlSession.hasPendingToolRun) throw new Error('A SQL tool query is already running for this section.');
+		const id = String(executionId || '').trim();
+		if (!id) throw new Error('SQL tool execution ID is unavailable.');
+		return this.sqlSession.beginToolRun(id);
+	}
+
+	public startReservedToolRun(executionId: string): void {
+		const id = String(executionId || '').trim();
 		if (!this._sqlConnectionId || !this._database || !this._getQueryText().trim()) {
-			return Promise.reject(new Error('Select a SQL connection and database and provide a query before executing.'));
+			this.sqlSession.rejectPendingToolRun(
+				new Error('Select a SQL connection and database and provide a query before executing.'), id,
+			);
+			throw new Error('Select a SQL connection and database and provide a query before executing.');
 		}
-		return new Promise((resolve, reject) => {
-			this._pendingToolRun = { resolve, reject, executionId: String(executionId) };
-			this._pendingToolReadyTimer = setTimeout(() => {
-				const pendingToolRun = this._pendingToolRun;
-				this._pendingToolRun = undefined;
-				this._pendingToolReadyTimer = undefined;
-				this._toolExpectedOwner = undefined;
-				pendingToolRun?.reject(new Error('SQL Tools Service did not become ready for tool execution.'));
-			}, 30_000);
-			this._connectStsIfReady('tool-execution');
-			this._startPendingToolRunIfReady();
+		if (!this.sqlSession.capturePendingToolQuery(id, this._getQueryText())) {
+			throw new Error('SQL tool execution reservation changed before query admission.');
+		}
+		this._connectStsIfReady('tool-execution');
+		this._startPendingToolRunIfReady();
+	}
+
+	public abortReservedToolRun(executionId: string, error: unknown): void {
+		this.sqlSession.rejectPendingToolRun(
+			error instanceof Error ? error : new Error(String(error)),
+			String(executionId || '').trim(),
+		);
+	}
+
+	public runForTool(executionId: string): Promise<SqlToolRunResult> {
+		let result: Promise<SqlToolRunResult>;
+		try {
+			result = this.reserveToolRun(executionId);
+		} catch (error) {
+			this.sqlSession.clearToolExpectedOwner();
+			return Promise.reject(error);
+		}
+		try {
+			this.startReservedToolRun(executionId);
+		} catch (error) {
+			this.abortReservedToolRun(executionId, error);
+			this.sqlSession.clearToolExpectedOwner();
+			return result;
+		}
+		void result.catch(() => {
+			if (!this.sqlSession.hasPendingToolRun) this.sqlSession.clearToolExpectedOwner();
 		});
+		return result;
 	}
 
 	private _startPendingToolRunIfReady(): void {
-		if (!this._pendingToolRun || !this._ownerToken || this._executing) return;
-		this._pendingToolRun.owner = {
-			connectionId: this._sqlConnectionId,
-			database: this._database,
-			ownerToken: this._ownerToken,
-			generation: sqlTargetGenerationByBoxId[this.boxId] ?? 0,
-		};
-		if (this._pendingToolReadyTimer) clearTimeout(this._pendingToolReadyTimer);
-		this._pendingToolReadyTimer = undefined;
+		if (!this.sqlSession.hasPendingToolRun || !this._ownerToken || this._executing) return;
+		if (!this.sqlSession.capturePendingToolOwner(this._sqlConnectionId, this._database)) return;
 		if (!this._runQuery()) {
-			const pendingToolRun = this._pendingToolRun;
-			this._pendingToolRun = undefined;
-			pendingToolRun.reject(new Error('SQL query could not start.'));
+			this.sqlSession.rejectPendingToolRun(new Error('SQL query could not start.'));
 		}
 	}
 
 	public cancelToolRun(expectedExecutionId?: string): void {
-		if (expectedExecutionId !== undefined && this._pendingToolRun?.executionId !== expectedExecutionId) return;
+		if (expectedExecutionId !== undefined && this.sqlSession.pendingToolExecutionId !== expectedExecutionId) return;
 		this._cancelQuery();
 		this.notifyToolRunCancelled(expectedExecutionId);
 	}
 
 	public acceptsQueryTerminal(executionId?: string): boolean {
-		const id = String(executionId || '').trim();
-		if (id && this._cancelledQueryExecutionIds.includes(id)) return false;
-		return !!id && id === this._activeQueryExecutionId;
+		return this.sqlSession.acceptsExecutionTerminal(executionId);
 	}
 
 	private _rememberCancelledExecution(executionId?: string): void {
-		const id = String(executionId || '').trim();
-		if (!id || this._cancelledQueryExecutionIds.includes(id)) return;
-		this._cancelledQueryExecutionIds.push(id);
-		if (this._cancelledQueryExecutionIds.length > 16) this._cancelledQueryExecutionIds.splice(0, this._cancelledQueryExecutionIds.length - 16);
+		this.sqlSession.rememberCancelledExecution(executionId);
 	}
 
 	public setExternalQueryExecuting(executing: boolean, executionId?: string): boolean {
 		const id = String(executionId || '').trim();
 		if (executing) {
 			if (!id) return false;
-			if (this._activeQueryExecutionId && this._activeQueryExecutionId !== id) return false;
-			this._activeQueryExecutionId = id;
+			if (!this.sqlSession.beginExecution(id)) return false;
 			this._executing = true;
 			this._startElapsedTimer();
 			this._syncActionBar();
 			return true;
 		}
-		if (this._activeQueryExecutionId && this._activeQueryExecutionId !== id) return false;
-		this._activeQueryExecutionId = '';
+		if (!this.sqlSession.completeExecution(id)) return false;
 		this._executing = false;
 		this._stopElapsedTimer();
 		this._syncActionBar();
@@ -2308,15 +2289,23 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	public notifyToolRunCancelled(executionId?: string): void {
-		if (this._pendingToolRun && executionId !== this._pendingToolRun.executionId) return;
-		if (this._pendingToolReadyTimer) clearTimeout(this._pendingToolReadyTimer);
-		this._pendingToolReadyTimer = undefined;
-		const pendingToolRun = this._pendingToolRun;
-		this._pendingToolRun = undefined;
-		this._toolExpectedOwner = undefined;
-		pendingToolRun?.reject(new Error('SQL query was cancelled.'));
+		if (this.sqlSession.hasPendingToolRun && executionId !== this.sqlSession.pendingToolExecutionId) return;
+		this.sqlSession.rejectPendingToolRun(new Error('SQL query was cancelled.'));
 		this._rememberCancelledExecution(executionId);
 		if (executionId && this._activeQueryExecutionId === executionId) this._activeQueryExecutionId = '';
+	}
+
+	private _timeoutToolRun(executionId: string): void {
+		if (!executionId || this._activeQueryExecutionId !== executionId) return;
+		postMessageToHost({
+			type: 'cancelSqlQuery', boxId: this.boxId, sectionInstanceId: this.sqlSession.instanceId, executionId,
+		});
+		this._rememberCancelledExecution(executionId);
+		this._activeQueryExecutionId = '';
+		this._executing = false;
+		this._stopElapsedTimer();
+		this._syncTestStateAttrs();
+		this._syncActionBar();
 	}
 
 	private _runQuery(): boolean {
@@ -2330,12 +2319,12 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			this._syncActionBar();
 			return false;
 		}
-		const query = this._getQueryText().trim();
+		const query = this.sqlSession.pendingToolQuery || this._getQueryText().trim();
 		if (!query) {
 			return false;
 		}
 		this._executing = true;
-		const executionId = this._pendingToolRun?.executionId
+		const executionId = this.sqlSession.pendingToolExecutionId
 			|| `sql-run-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
 		this._activeQueryExecutionId = executionId;
 		this._lastError = '';
@@ -2347,11 +2336,12 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			sqlConnectionId: this._sqlConnectionId,
 			database: this._database,
 			boxId: this.boxId,
+			sectionInstanceId: this.sqlSession.instanceId,
 			queryMode: getRunMode(this.boxId),
 			ownerToken: this._ownerToken,
 			executionId,
-			...(this._pendingToolRun ? { toolExecution: true } : {}),
-			...(this._pendingToolRun?.executionId && this._toolExpectedOwner ? { expectedOwner: { ...this._toolExpectedOwner } } : {}),
+			...(this.sqlSession.hasPendingToolRun ? { toolExecution: true } : {}),
+			...(this.sqlSession.pendingToolExecutionId && this.sqlSession.toolExpectedOwner ? { expectedOwner: { ...this.sqlSession.toolExpectedOwner } } : {}),
 		});
 		return true;
 	}
@@ -2400,13 +2390,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	private _cancelQuery(): void {
 		const cancelledExecutionId = this._activeQueryExecutionId;
-		const pendingToolRun = this._pendingToolRun;
-		this._pendingToolRun = undefined;
-		this._toolExpectedOwner = undefined;
-		pendingToolRun?.reject(new Error('SQL execution was cancelled.'));
+		this.sqlSession.rejectPendingToolRun(new Error('SQL execution was cancelled.'));
 		postMessageToHost({
 			type: 'cancelSqlQuery',
 			boxId: this.boxId,
+			sectionInstanceId: this.sqlSession.instanceId,
 			...(this._activeQueryExecutionId ? { executionId: this._activeQueryExecutionId } : {}),
 		});
 		this._rememberCancelledExecution(cancelledExecutionId);

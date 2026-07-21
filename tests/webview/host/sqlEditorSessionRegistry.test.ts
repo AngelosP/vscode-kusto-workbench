@@ -80,7 +80,20 @@ function createHarness(options: { accountId?: string; canonicalAccountId?: strin
 	};
 }
 
-describe('SqlEditorOwnershipRegistry', () => {
+describe('SqlEditorSessionRegistry', () => {
+	it('preserves a monotonic generation tombstone when a target is removed', () => {
+		const harness = createHarness();
+		try {
+			expect(harness.registry.removeTarget('sql_1')).toMatchObject({ generation: 4 });
+			expect(harness.registry.getTarget('sql_1')).toBeUndefined();
+			expect(harness.registry.getGeneration('sql_1')).toBe(5);
+			expect(harness.registry.adoptTarget('sql_1', 'sql-1', 'Db', 4, () => undefined)).toBe('rejected');
+			expect(harness.registry.adoptTarget('sql_1', 'sql-1', 'Db', 5, () => undefined)).toBe('unchanged');
+		} finally {
+			fs.rmSync(harness.directory, { recursive: true, force: true });
+		}
+	});
+
 	it('adopts a newer target only after retiring the previous owner', async () => {
 		const harness = createHarness();
 		try {

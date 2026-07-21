@@ -299,7 +299,17 @@ vi.mock('../../src/webview/core/state.js', async () => {
 });
 
 type FakeSqlSection = HTMLElement & {
-	_stsReady?: boolean;
+	sqlSession: {
+		instanceId: string;
+		targetGeneration: number;
+		stsReady: boolean;
+		databaseRequestId: string;
+		adoptHostGeneration: ReturnType<typeof vi.fn>;
+		beginDatabaseRequest: ReturnType<typeof vi.fn>;
+		acceptDatabaseResponse: ReturnType<typeof vi.fn>;
+		completeDatabaseRequest: ReturnType<typeof vi.fn>;
+		admitOwnedMessage: ReturnType<typeof vi.fn>;
+	};
 	setSqlConnectionId: ReturnType<typeof vi.fn>;
 	setFavoritesMode: ReturnType<typeof vi.fn>;
 	setSchemaInfo: ReturnType<typeof vi.fn>;
@@ -319,12 +329,44 @@ type FakeHtmlSection = HTMLElement & {
 
 function createFakeSqlSection(): FakeSqlSection {
 	const el = document.createElement('div') as FakeSqlSection;
+	const sqlSession = {
+		instanceId: 'instance-sql_1',
+		targetGeneration: 0,
+		stsReady: false,
+		databaseRequestId: '',
+		adoptHostGeneration: vi.fn((generation: number) => {
+			if (!Number.isSafeInteger(generation) || generation < sqlSession.targetGeneration) return false;
+			sqlSession.targetGeneration = generation;
+			sqlSession.databaseRequestId = '';
+			return true;
+		}),
+		beginDatabaseRequest: vi.fn((requestId: string, generation: number) => {
+			if (generation !== sqlSession.targetGeneration) return false;
+			sqlSession.databaseRequestId = requestId;
+			return true;
+		}),
+		acceptDatabaseResponse: vi.fn((requestId: string | undefined, generation: number) =>
+			generation === sqlSession.targetGeneration
+			&& (!requestId || requestId === sqlSession.databaseRequestId)),
+		completeDatabaseRequest: vi.fn(() => { sqlSession.databaseRequestId = ''; }),
+		admitOwnedMessage: vi.fn((message: Record<string, unknown>) => {
+			const ownerToken = String((el as any).getCopilotOwnerToken?.() || '');
+			if (!ownerToken || ownerToken !== String(message.ownerToken || '')) return false;
+			if (['queryResult', 'queryError', 'queryCancelled'].includes(String(message.type || ''))
+				&& typeof (el as any).acceptsQueryTerminal === 'function') {
+				return (el as any).acceptsQueryTerminal(String(message.executionId || ''));
+			}
+			return true;
+		}),
+	};
+	el.sqlSession = sqlSession;
 	el.setSqlConnectionId = vi.fn();
 	el.setFavoritesMode = vi.fn();
 	el.setSchemaInfo = vi.fn();
 	el.setDatabasesLoading = vi.fn();
-	el.setStsReady = vi.fn((ready: boolean) => {
-		el._stsReady = ready;
+	el.setStsReady = vi.fn((ready: boolean, _ownerToken?: string, targetGeneration?: number) => {
+		if (targetGeneration !== undefined && targetGeneration !== sqlSession.targetGeneration) return;
+		sqlSession.stsReady = ready;
 	});
 	return el;
 }
@@ -1138,8 +1180,10 @@ describe('message-handler dispatch', () => {
 	});
 
 	it('routes sqlDatabasesData and sqlDatabasesError to SQL database handlers', async () => {
-		dispatchHostMessage({ type: 'sqlDatabasesData', boxId: 'sql_1', databases: ['B', 'A'], sqlConnectionId: 'sql_conn_1' });
-		dispatchHostMessage({ type: 'sqlDatabasesError', boxId: 'sql_1', error: 'failed', sqlConnectionId: 'sql_conn_1' });
+		const sqlEl = createFakeSqlSection();
+		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
+		dispatchHostMessage({ type: 'sqlDatabasesData', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, databases: ['B', 'A'], sqlConnectionId: 'sql_conn_1' });
+		dispatchHostMessage({ type: 'sqlDatabasesError', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, error: 'failed', sqlConnectionId: 'sql_conn_1' });
 		await Promise.resolve();
 
 		expect(mocks.updateSqlDatabaseSelect).toHaveBeenCalledWith('sql_1', ['B', 'A'], 'sql_conn_1');
@@ -1181,12 +1225,14 @@ describe('message-handler dispatch', () => {
 		dispatchHostMessage({
 			type: 'sqlSchemaData',
 			boxId: 'sql_1',
+			sectionInstanceId: sqlEl.sqlSession.instanceId,
 			schema,
 			schemaMeta: { tablesCount: 2, columnsCount: 2, fromCache: true },
 		});
 		dispatchHostMessage({
 			type: 'sqlSchemaData',
 			boxId: 'sql_1',
+			sectionInstanceId: sqlEl.sqlSession.instanceId,
 			schemaMeta: { error: true, errorMessage: 'Schema failed' },
 		});
 		await Promise.resolve();
@@ -1205,33 +1251,31 @@ describe('message-handler dispatch', () => {
 	});
 
 	it('admits only the current SQL database request and generation', async () => {
-		const state = await import('../../src/webview/core/state.js');
 		const sqlEl = createFakeSqlSection();
 		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
-		state.sqlTargetGenerationByBoxId.sql_1 = 4;
+		sqlEl.sqlSession.targetGeneration = 4;
 
 		dispatchHostMessage({
-			type: 'sqlDatabasesLoading', boxId: 'sql_1', sqlConnectionId: 'sql-a', requestId: 'db-current', targetGeneration: 4,
+			type: 'sqlDatabasesLoading', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, sqlConnectionId: 'sql-a', requestId: 'db-current', targetGeneration: 4,
 		});
 		dispatchHostMessage({
-			type: 'sqlDatabasesData', boxId: 'sql_1', sqlConnectionId: 'sql-a', requestId: 'db-stale', targetGeneration: 4, databases: ['StaleDb'],
+			type: 'sqlDatabasesData', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, sqlConnectionId: 'sql-a', requestId: 'db-stale', targetGeneration: 4, databases: ['StaleDb'],
 		});
 		dispatchHostMessage({
-			type: 'sqlDatabasesError', boxId: 'sql_1', sqlConnectionId: 'sql-a', requestId: 'db-current', targetGeneration: 3, error: 'stale generation',
+			type: 'sqlDatabasesError', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, sqlConnectionId: 'sql-a', requestId: 'db-current', targetGeneration: 3, error: 'stale generation',
 		});
 
-		expect(state.sqlDatabaseRequestIdByBoxId.sql_1).toBe('db-current');
+		expect(sqlEl.sqlSession.databaseRequestId).toBe('db-current');
 		expect(sqlEl.setDatabasesLoading).toHaveBeenCalledWith(true);
 		expect(mocks.updateSqlDatabaseSelect).not.toHaveBeenCalled();
 		expect(mocks.onSqlDatabasesError).not.toHaveBeenCalled();
 
 		dispatchHostMessage({
-			type: 'sqlDatabasesData', boxId: 'sql_1', sqlConnectionId: 'sql-a', requestId: 'db-current', targetGeneration: 4, databases: ['CurrentDb'],
+			type: 'sqlDatabasesData', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, sqlConnectionId: 'sql-a', requestId: 'db-current', targetGeneration: 4, databases: ['CurrentDb'],
 		});
 
 		expect(mocks.updateSqlDatabaseSelect).toHaveBeenCalledWith('sql_1', ['CurrentDb'], 'sql-a');
-		expect(state.sqlDatabaseRequestIdByBoxId.sql_1).toBeUndefined();
-		delete state.sqlTargetGenerationByBoxId.sql_1;
+		expect(sqlEl.sqlSession.databaseRequestId).toBe('');
 	});
 
 	it('rejects a delayed SQL result after the owner token rotates', () => {
@@ -1252,32 +1296,30 @@ describe('message-handler dispatch', () => {
 	});
 
 	it('routes STS response, diagnostics, and connection state messages', async () => {
-		const state = await import('../../src/webview/core/state.js');
-		state.sqlTargetGenerationByBoxId.sql_1 = 4;
 		const sqlEl = createFakeSqlSection() as FakeSqlSection & {
 			getConnectionId: ReturnType<typeof vi.fn>;
 			getDatabase: ReturnType<typeof vi.fn>;
 		};
+		sqlEl.sqlSession.targetGeneration = 4;
 		sqlEl.getConnectionId = vi.fn(() => 'sql-a');
 		sqlEl.getDatabase = vi.fn(() => 'Db');
 		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
 
-		dispatchHostMessage({ type: 'stsResponse', requestId: 'sts_1', result: { items: [] }, ownerToken: 'owner-1', targetGeneration: 4 });
-		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', markers: [{ message: 'before ready' }] });
-		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', markers: [] });
+		dispatchHostMessage({ type: 'stsResponse', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, requestId: 'sts_1', result: { items: [] }, ownerToken: 'owner-1', targetGeneration: 4 });
+		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, markers: [{ message: 'before ready' }] });
+		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, markers: [] });
 		dispatchHostMessage({
-			type: 'stsConnectionState', boxId: 'sql_1', state: 'ready', ownerToken: 'owner-1', targetGeneration: 4,
+			type: 'stsConnectionState', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, state: 'ready', ownerToken: 'owner-1', targetGeneration: 4,
 			connectionId: 'sql-a', database: 'Db',
 		});
-		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', markers: [{ message: 'after ready' }] });
+		dispatchHostMessage({ type: 'stsDiagnostics', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, markers: [{ message: 'after ready' }] });
 		await Promise.resolve();
 
-		expect(mocks.handleStsResponse).toHaveBeenCalledWith('sts_1', { items: [] }, 'owner-1', 4);
+		expect(mocks.handleStsResponse).toHaveBeenCalledWith('sql_1', 'sts_1', { items: [] }, 'owner-1', 4);
 		expect(sqlEl.setStsReady).toHaveBeenCalledWith(true, 'owner-1', 4);
 		expect(mocks.handleStsDiagnostics).toHaveBeenCalledTimes(2);
 		expect(mocks.handleStsDiagnostics).toHaveBeenNthCalledWith(1, 'sql_1', []);
 		expect(mocks.handleStsDiagnostics).toHaveBeenNthCalledWith(2, 'sql_1', [{ message: 'after ready' }]);
-		delete state.sqlTargetGenerationByBoxId.sql_1;
 	});
 
 	it('routes STS connection errors to pending SQL tool settlement', () => {
@@ -1285,24 +1327,25 @@ describe('message-handler dispatch', () => {
 		sqlEl.notifyStsConnectionError = vi.fn();
 		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
 
-		dispatchHostMessage({ type: 'stsConnectionState', boxId: 'sql_1', state: 'error', error: 'Login failed' });
+		dispatchHostMessage({ type: 'stsConnectionState', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, state: 'error', error: 'Login failed' });
 
 		expect(sqlEl.notifyStsConnectionError).toHaveBeenCalledWith('Login failed');
 		expect(sqlEl.setStsReady).not.toHaveBeenCalled();
 	});
 
 	it('clears STS diagnostics when a SQL owner is invalidated', async () => {
-		const state = await import('../../src/webview/core/state.js');
 		const sqlEl = createFakeSqlSection() as FakeSqlSection & { invalidateOwner: ReturnType<typeof vi.fn> };
 		sqlEl.invalidateOwner = vi.fn();
 		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
 
-		dispatchHostMessage({ type: 'sqlConnectionOwnerChanged', boxId: 'sql_1', connectionId: 'sql-a', targetGeneration: 7 });
+		dispatchHostMessage({
+			type: 'sqlConnectionOwnerChanged', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId,
+			connectionId: 'sql-a', targetGeneration: 7,
+		});
 
 		expect(mocks.handleStsDiagnostics).toHaveBeenCalledWith('sql_1', []);
 		expect(sqlEl.invalidateOwner).toHaveBeenCalledOnce();
-		expect(state.sqlTargetGenerationByBoxId.sql_1).toBe(7);
-		delete state.sqlTargetGenerationByBoxId.sql_1;
+		expect(sqlEl.sqlSession.targetGeneration).toBe(7);
 	});
 
 	it('preserves Kusto optimization comparison state during SQL policy refresh', () => {
@@ -3109,6 +3152,36 @@ describe('tool section name persistence', () => {
 
 		expect((section as any).setName).toHaveBeenCalledWith('Renamed SQL');
 		expect(persistence.schedulePersist).toHaveBeenCalledWith(undefined, true);
+	});
+
+	it('rejects an overlapping SQL tool execution before mutating its query', async () => {
+		const { section } = createSectionWithShell('sql_overlap', { id: 'sql_overlap', type: 'sql', query: 'select A' });
+		let resolveFirst!: (value: unknown) => void;
+		const firstResult = new Promise(resolve => { resolveFirst = resolve; });
+		(section as any).reserveToolRun = vi.fn()
+			.mockReturnValueOnce(firstResult)
+			.mockImplementationOnce(() => { throw new Error('A SQL tool query is already running for this section.'); });
+		(section as any).startReservedToolRun = vi.fn();
+		(section as any).abortReservedToolRun = vi.fn();
+		(section as any).setQuery = vi.fn();
+		mocks.getSqlSectionElement.mockReturnValue(section);
+
+		dispatchHostMessage({
+			type: 'toolConfigureSqlSection', requestId: 'sql-tool-a',
+			input: { sectionId: 'sql_overlap', query: 'select A', execute: true, executionId: 'execution-a' },
+		});
+		await Promise.resolve();
+		dispatchHostMessage({
+			type: 'toolConfigureSqlSection', requestId: 'sql-tool-b',
+			input: { sectionId: 'sql_overlap', query: 'update B', execute: true, executionId: 'execution-b' },
+		});
+		await Promise.resolve();
+
+		expect((section as any).setQuery).toHaveBeenCalledTimes(1);
+		expect((section as any).setQuery).toHaveBeenCalledWith('select A');
+		expect((section as any).startReservedToolRun).toHaveBeenCalledOnce();
+		resolveFirst({ rowCount: 0, executionId: 'execution-a', owner: {} });
+		await Promise.resolve();
 	});
 
 	it('toolConfigureHtmlSection auto-fits when code changes', async () => {

@@ -34,6 +34,78 @@ function output() {
 }
 
 describe('SqlServerAccountMapStore', () => {
+	it('promotes the previous primary-plus-sentinel account format without losing pins', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-legacy-primary-'));
+		tempDirectories.push(directory);
+		const context = createContext(directory);
+		context._values.set('sql.auth.serverAccountMap', { 'server.example': 'stale-mirror' });
+		fs.writeFileSync(path.join(directory, 'sql-server-account-map.v1.json'), JSON.stringify({
+			schemaVersion: 1,
+			version: 7,
+			accountsByServer: { 'server.example': 'account-a' },
+		}), 'utf8');
+		fs.writeFileSync(path.join(directory, 'sql-server-account-map-migrated.v1'), 'migrated\n', 'utf8');
+
+		const store = new SqlServerAccountMapStore(context, output());
+		try {
+			await store.ready();
+			expect(store.getAccountsByServer()).toEqual({ 'server.example': 'account-a' });
+			await expect(readCurrentSqlServerAccountMap(context, 'server.example')).resolves.toEqual({
+				'server.example': 'account-a',
+			});
+			expect(fs.existsSync(path.join(directory, 'sql-server-account-map.backup.v1.json'))).toBe(true);
+			expect(fs.existsSync(path.join(directory, 'sql-server-account-map.commit.v1.json'))).toBe(true);
+		} finally {
+			store.dispose();
+		}
+	});
+
+	it('rolls back a valid account-map primary left ahead of its commit pointer', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-crash-window-'));
+		tempDirectories.push(directory);
+		const context = createContext(directory);
+		const store = new SqlServerAccountMapStore(context, output());
+		try {
+			await store.ready();
+			await setCanonicalSqlServerAccount(context, 'server.example', 'account-a');
+			const snapshotPath = path.join(directory, 'sql-server-account-map.v1.json');
+			const uncommitted = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+			uncommitted.version += 1;
+			uncommitted.accountsByServer['server.example'] = 'account-b';
+			fs.writeFileSync(snapshotPath, `${JSON.stringify(uncommitted, null, 2)}\n`, 'utf8');
+
+			await store.refresh();
+
+			expect(store.getAccountsByServer()).toEqual({ 'server.example': 'account-a' });
+			expect(JSON.parse(fs.readFileSync(snapshotPath, 'utf8')).accountsByServer)
+				.toEqual({ 'server.example': 'account-a' });
+		} finally {
+			store.dispose();
+		}
+	});
+
+	it('restores the committed account pin when a nested mapping is malformed', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-nested-corrupt-'));
+		tempDirectories.push(directory);
+		const context = createContext(directory);
+		const store = new SqlServerAccountMapStore(context, output());
+		try {
+			await store.ready();
+			await setCanonicalSqlServerAccount(context, 'server.example', 'account-a');
+			const snapshotPath = path.join(directory, 'sql-server-account-map.v1.json');
+			const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+			snapshot.accountsByServer['server.example'] = 42;
+			fs.writeFileSync(snapshotPath, JSON.stringify(snapshot), 'utf8');
+
+			await store.refresh();
+
+			expect(store.getAccountsByServer()).toEqual({ 'server.example': 'account-a' });
+			expect(fs.readdirSync(directory).some(name => name.startsWith('sql-server-account-map.v1.json.corrupt-'))).toBe(true);
+		} finally {
+			store.dispose();
+		}
+	});
+
 	it('atomically preserves the winner of concurrent first-owner adoption', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-adoption-'));
 		tempDirectories.push(directory);
@@ -199,7 +271,7 @@ describe('SqlServerAccountMapStore', () => {
 		}
 	});
 
-	it('publishes a newer empty snapshot and invalidates an active principal after live corruption', async () => {
+	it('restores the committed account pin after live canonical corruption', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-live-corrupt-'));
 		tempDirectories.push(directory);
 		const context = createContext(directory);
@@ -210,25 +282,20 @@ describe('SqlServerAccountMapStore', () => {
 			await store.ready();
 			await setCanonicalSqlServerAccount(context, 'server.example', 'account-a');
 			await store.refresh();
-			const establishedVersion = changes.at(-1).version;
 			changes.length = 0;
 
 			fs.writeFileSync(path.join(directory, 'sql-server-account-map.v1.json'), '{broken', 'utf8');
 			await store.refresh();
 
-			expect(store.getAccountsByServer()).toEqual({});
-			expect(changes).toEqual([expect.objectContaining({
-				changedServerUrls: ['server.example'],
-				invalidatedServerUrls: ['server.example'],
-			})]);
-			expect(changes[0].version).toBeGreaterThan(establishedVersion);
-			expect(await readCurrentSqlServerAccountMap(context)).toEqual({});
+			expect(store.getAccountsByServer()).toEqual({ 'server.example': 'account-a' });
+			expect(changes).toEqual([]);
+			expect(await readCurrentSqlServerAccountMap(context)).toEqual({ 'server.example': 'account-a' });
 		} finally {
 			store.dispose();
 		}
 	});
 
-	it('publishes a newer empty snapshot when the live canonical account map disappears', async () => {
+	it('restores the committed account pin when the live canonical map disappears', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-live-missing-'));
 		tempDirectories.push(directory);
 		const context = createContext(directory);
@@ -239,23 +306,21 @@ describe('SqlServerAccountMapStore', () => {
 			await store.ready();
 			await setCanonicalSqlServerAccount(context, 'server.example', 'account-a');
 			await store.refresh();
-			const establishedVersion = store.getVersion();
 			context._values.set('sql.auth.serverAccountMap', { 'server.example': 'stale-account' });
 			fs.unlinkSync(path.join(directory, 'sql-server-account-map.v1.json'));
 			changes.length = 0;
 
 			await store.refresh();
 
-			expect(store.getAccountsByServer()).toEqual({});
-			expect(store.getVersion()).toBeGreaterThan(establishedVersion);
-			expect(changes).toEqual([expect.objectContaining({ invalidatedServerUrls: ['server.example'] })]);
-			expect(await readCurrentSqlServerAccountMap(context)).toEqual({});
+			expect(store.getAccountsByServer()).toEqual({ 'server.example': 'account-a' });
+			expect(changes).toEqual([]);
+			expect(await readCurrentSqlServerAccountMap(context)).toEqual({ 'server.example': 'account-a' });
 		} finally {
 			store.dispose();
 		}
 	});
 
-	it('does not replay a stale mirror after restart when the migrated canonical map is missing', async () => {
+	it('restores the committed pin instead of replaying a stale mirror after restart', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-restart-missing-'));
 		tempDirectories.push(directory);
 		const firstContext = createContext(directory);
@@ -274,10 +339,114 @@ describe('SqlServerAccountMapStore', () => {
 		const second = new SqlServerAccountMapStore(staleContext, output());
 		try {
 			await second.ready();
-			expect(second.getAccountsByServer()).toEqual({});
-			expect(staleContext._values.get('sql.auth.serverAccountMap')).toEqual({});
+			expect(second.getAccountsByServer()).toEqual({ 'server.example': 'account-a' });
+			expect(staleContext._values.get('sql.auth.serverAccountMap')).toEqual({ 'server.example': 'account-a' });
 		} finally {
 			second.dispose();
+		}
+	});
+
+	it('blocks account resolution when primary and committed backup are unrecoverable', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-unrecoverable-'));
+		tempDirectories.push(directory);
+		const context = createContext(directory);
+		const first = new SqlServerAccountMapStore(context, output());
+		try {
+			await first.ready();
+			await setCanonicalSqlServerAccount(context, 'server.example', 'account-a');
+		} finally {
+			first.dispose();
+		}
+		for (const name of [
+			'sql-server-account-map.v1.json',
+			'sql-server-account-map.backup.v1.json',
+			'sql-server-account-map.commit.v1.json',
+		]) fs.rmSync(path.join(directory, name), { force: true });
+		context._values.set('sql.auth.serverAccountMap', { 'server.example': 'stale-account' });
+
+		const restarted = new SqlServerAccountMapStore(context, output());
+		try {
+			await restarted.ready();
+			expect(restarted.getAccountsByServer()).toEqual({});
+			await expect(readCurrentSqlServerAccountMap(context)).rejects.toThrow('could not be recovered');
+			await setCanonicalSqlServerAccount(context, 'server.example', undefined);
+			await expect(readCurrentSqlServerAccountMap(context)).rejects.toThrow('could not be recovered');
+			await setCanonicalSqlServerAccount(context, 'server.example', 'account-b');
+			await expect(readCurrentSqlServerAccountMap(context, 'server.example')).resolves.toEqual({ 'server.example': 'account-b' });
+		} finally {
+			restarted.dispose();
+		}
+	});
+
+	it('unblocks only the explicitly repaired server after multi-server recovery loss', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-multi-recovery-'));
+		tempDirectories.push(directory);
+		const context = createContext(directory);
+		const first = new SqlServerAccountMapStore(context, output());
+		try {
+			await first.ready();
+			await setCanonicalSqlServerAccount(context, 'server-a.example', 'account-a');
+			await setCanonicalSqlServerAccount(context, 'server-b.example', 'account-b');
+		} finally {
+			first.dispose();
+		}
+		for (const name of [
+			'sql-server-account-map.v1.json',
+			'sql-server-account-map.backup.v1.json',
+			'sql-server-account-map.backup.v1.json.slot1',
+			'sql-server-account-map.commit.v1.json',
+		]) fs.rmSync(path.join(directory, name), { force: true });
+		context._values.set('sql.auth.serverAccountMap', {
+			'server-a.example': 'stale-a',
+			'server-b.example': 'stale-b',
+		});
+		const restarted = new SqlServerAccountMapStore(context, output());
+		try {
+			await restarted.ready();
+			await setCanonicalSqlServerAccount(context, 'server-a.example', 'account-a2');
+			await expect(restarted.runWithSnapshotLock(async snapshot => snapshot.accountsByServer)).resolves.toEqual({
+				'server-a.example': 'account-a2',
+			});
+			await expect(readCurrentSqlServerAccountMap(context, 'server-a.example')).resolves.toEqual({
+				'server-a.example': 'account-a2',
+			});
+			await expect(readCurrentSqlServerAccountMap(context, 'server-b.example')).rejects.toThrow('could not be recovered');
+		} finally {
+			restarted.dispose();
+		}
+	});
+
+	it('keeps unknown servers blocked after one explicit repair from empty-mirror recovery', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-account-empty-recovery-'));
+		tempDirectories.push(directory);
+		const context = createContext(directory);
+		const first = new SqlServerAccountMapStore(context, output());
+		try {
+			await first.ready();
+			await setCanonicalSqlServerAccount(context, 'server-a.example', 'account-a');
+		} finally {
+			first.dispose();
+		}
+		for (const name of [
+			'sql-server-account-map.v1.json',
+			'sql-server-account-map.backup.v1.json',
+			'sql-server-account-map.backup.v1.json.slot1',
+			'sql-server-account-map.commit.v1.json',
+		]) fs.rmSync(path.join(directory, name), { force: true });
+		context._values.set('sql.auth.serverAccountMap', {});
+
+		const restarted = new SqlServerAccountMapStore(context, output());
+		try {
+			await restarted.ready();
+			await setCanonicalSqlServerAccount(context, 'server-a.example', 'account-a2');
+			await expect(readCurrentSqlServerAccountMap(context, 'server-a.example')).resolves.toEqual({
+				'server-a.example': 'account-a2',
+			});
+			await expect(readCurrentSqlServerAccountMap(context, 'server-b.example')).rejects.toThrow('could not be recovered');
+			await expect(establishCanonicalSqlServerAccount(context, 'server-b.example', 'account-b'))
+				.rejects.toThrow('could not be recovered');
+		} finally {
+			restarted.dispose();
 		}
 	});
 });

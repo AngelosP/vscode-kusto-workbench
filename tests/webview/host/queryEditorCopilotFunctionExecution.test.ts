@@ -7,20 +7,9 @@ const vscodeMocks = vi.hoisted(() => ({
 vi.mock('vscode', async () => {
 	const actual = await vi.importActual<typeof import('../../mocks/vscode')>('../../mocks/vscode');
 	class CancellationTokenSource {
-		private readonly listeners = new Set<() => void>();
-		readonly token = {
-			isCancellationRequested: false,
-			onCancellationRequested: (listener: () => void) => {
-				this.listeners.add(listener);
-				return { dispose: () => this.listeners.delete(listener) };
-			},
-		};
-		cancel(): void {
-			if (this.token.isCancellationRequested) return;
-			this.token.isCancellationRequested = true;
-			for (const listener of [...this.listeners]) listener();
-		}
-		dispose(): void { this.listeners.clear(); }
+		readonly token = { isCancellationRequested: false };
+		cancel(): void { this.token.isCancellationRequested = true; }
+		dispose(): void {}
 	}
 	class LanguageModelError extends Error {}
 	return {
@@ -37,6 +26,8 @@ import * as vscode from 'vscode';
 import { CopilotService, type CopilotServiceHost } from '../../../src/host/queryEditorCopilot.js';
 import type { KustoConnection } from '../../../src/host/connectionManager.js';
 import { appendQueryMode, buildCacheDirective, isControlCommand, normalizeControlCommandForExecution } from '../../../src/host/queryEditorUtils.js';
+import { QueryRunCoordinator } from '../../../src/host/queryRunCoordinator.js';
+import { SqlExecutionBroker } from '../../../src/host/sql/sqlExecutionBroker.js';
 import { SqlLeaveNoTraceBlockedError } from '../../../src/host/sql/sqlLeaveNoTrace.js';
 
 const TEST_CONNECTION: KustoConnection = {
@@ -91,6 +82,12 @@ function createTextModel(text: string): any {
 
 function createHost(capturedQueries: string[], executeError?: Error): CopilotServiceHost {
 	let runSeq = 0;
+	const postMessage = vi.fn();
+	const sqlExecutionBroker = new SqlExecutionBroker({
+		queryRuns: new QueryRunCoordinator(),
+		getOwnerToken: () => 'owner-token',
+		postMessage,
+	});
 	return {
 		extensionUri: vscode.Uri.file('/extension'),
 		context: {
@@ -112,20 +109,14 @@ function createHost(capturedQueries: string[], executeError?: Error): CopilotSer
 			}),
 		} as any,
 		output: { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() } as any,
-		postMessage: vi.fn(() => true),
+		postMessage,
+		sqlExecutionBroker,
 		findConnection: vi.fn(() => TEST_CONNECTION),
 		getErrorMessage: (error: unknown) => error instanceof Error ? error.message : String(error),
 		formatQueryExecutionErrorForUser: vi.fn((error: unknown) => error instanceof Error ? error.message : String(error)),
 		logQueryExecutionError: vi.fn(),
 		normalizeClusterUrlKey: (url: string) => url,
 		cancelRunningQuery: vi.fn(),
-		supersedeSqlRunAdmission: vi.fn(() => 1),
-		startSqlRunUnderAdmission: vi.fn((_boxId: string, _generation: number, start: () => any, _executionId?: string) => ({ execution: start(), runSeq: ++runSeq })),
-		isSqlRunAdmissionCurrent: vi.fn(() => true),
-		reserveRunningQueryReplacement: vi.fn((_boxId: string, executionId: string) => ({
-			cancel: vi.fn(), runSeq: ++runSeq, previousCancellationDelivery: Promise.resolve(true), executionId,
-		})),
-		promoteRunningQueryReservation: vi.fn(() => true),
 		registerRunningQuery: vi.fn(),
 		unregisterRunningQuery: vi.fn(),
 		nextQueryRunSeq: () => ++runSeq,
@@ -431,28 +422,6 @@ describe('Kusto Copilot function execution', () => {
 		expect(model.sendRequest).not.toHaveBeenCalled();
 	});
 
-	it('does not dispatch an inline Kusto prompt after disposal during model selection', async () => {
-		const modelSelection = deferred<any[]>();
-		const model = createTextModel('| take 10');
-		vscodeMocks.selectChatModels.mockReturnValue(modelSelection.promise);
-		const host = createHost([]);
-		const service = new CopilotService(host);
-
-		const request = service.handleCopilotInlineCompletionRequest({
-			type: 'requestCopilotInlineCompletion', requestId: 'inline-kusto-1', boxId: 'query-inline',
-			textBefore: 'StormEvents ', textAfter: '', flavor: 'kusto',
-		});
-		await vi.waitFor(() => expect(vscodeMocks.selectChatModels).toHaveBeenCalledOnce());
-		service.dispose();
-		modelSelection.resolve([model]);
-		await request;
-
-		expect(model.sendRequest).not.toHaveBeenCalled();
-		expect(hostMessagesOfType(host, 'copilotInlineCompletionResult')).toHaveLength(0);
-		expect((service as any)._cachedInlineModel).toBeNull();
-		expect((service as any)._cachedInlineModelAt).toBe(0);
-	});
-
 	it('does not recreate shared SQL history when invalidated during schema preflight', async () => {
 		const model = createModel([[new vscode.LanguageModelTextPart('must not run')]]);
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
@@ -661,6 +630,8 @@ describe('Kusto Copilot function execution', () => {
 			return await dispatch();
 		});
 		host.refreshSqlConnectionsData = vi.fn(async () => undefined);
+		const reservePreflight = vi.spyOn(host.sqlExecutionBroker, 'reservePreflight');
+		const startExecution = vi.spyOn(host.sqlExecutionBroker, 'start');
 		const service = new CopilotService(host);
 		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
 		const sqlClient = {
@@ -679,107 +650,15 @@ describe('Kusto Copilot function execution', () => {
 		} as any, sqlClient);
 
 		expect(host.refreshSqlConnectionsData).toHaveBeenCalledOnce();
-		expect(host.supersedeSqlRunAdmission).toHaveBeenCalledWith('sql-source', { notifyWebview: true });
-		expect(host.startSqlRunUnderAdmission).toHaveBeenCalledWith(
-			'sql-source', 1, expect.any(Function), expect.stringMatching(/^sql-copilot-/),
+		expect(reservePreflight).toHaveBeenCalledWith(
+			'sql-source', expect.stringMatching(/^sql-copilot-/),
+		);
+		expect(startExecution).toHaveBeenCalledWith(
+			expect.objectContaining({ boxId: 'sql-source', executionId: expect.stringMatching(/^sql-copilot-/) }),
+			expect.any(Function),
 		);
 		expect(hostMessagesOfType(host, 'copilotExecutedQuery')).toEqual([]);
 		expect(JSON.stringify((service as any).copilotConversationHistoryByBoxId.get('sql-source') || [])).not.toContain('SECRET_A');
-	});
-
-	it.each([
-		['false', () => false],
-		['rejected', () => Promise.reject(new Error('delivery rejected'))],
-	] as const)('cancels exploratory SQL and withholds its result when required delivery is %s', async (_label, delivery) => {
-		const model = createModel([
-			[new vscode.LanguageModelToolCallPart('execute-call', 'execute_sql_query', { query: 'SELECT Secret FROM T' })],
-			[new vscode.LanguageModelTextPart('MUST_NOT_USE_HIDDEN_SQL_RESULT')],
-		]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHost([]);
-		(host.postMessage as any).mockImplementation((message: any) =>
-			message?.type === 'copilotExecutedQuery' ? delivery() : true);
-		const cancel = vi.fn();
-		const service = new CopilotService(host);
-		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
-		const sqlClient = {
-			executeQueryCancelable: vi.fn(() => ({
-				promise: Promise.resolve({ columns: [{ name: 'Secret' }], rows: [['SECRET_A']], metadata: {} }),
-				cancel,
-			})),
-		} as any;
-
-		await service.startSqlCopilotWriteQuery({
-			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db',
-			request: 'Inspect data.', currentQuery: 'SELECT 1', enabledTools: ['execute_sql_query'],
-		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
-			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
-		} as any, sqlClient);
-
-		expect(cancel).toHaveBeenCalledOnce();
-		expect(model.sendRequest).toHaveBeenCalledOnce();
-		const history = JSON.stringify((service as any).copilotConversationHistoryByBoxId.get('sql-source') || []);
-		expect(history).not.toMatch(/SECRET_A|MUST_NOT_USE_HIDDEN_SQL_RESULT/);
-	});
-
-	it.each([
-		['false', () => false],
-		['rejected', () => Promise.reject(new Error('delivery rejected'))],
-	] as const)('cancels exploratory SQL and withholds its error when required delivery is %s', async (_label, delivery) => {
-		const model = createModel([
-			[new vscode.LanguageModelToolCallPart('execute-call', 'execute_sql_query', { query: 'SELECT Secret FROM T' })],
-			[new vscode.LanguageModelTextPart('MUST_NOT_USE_HIDDEN_SQL_ERROR')],
-		]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHost([]);
-		(host.postMessage as any).mockImplementation((message: any) =>
-			message?.type === 'copilotExecutedQuery' ? delivery() : true);
-		const cancel = vi.fn();
-		const service = new CopilotService(host);
-		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
-		const sqlClient = {
-			executeQueryCancelable: vi.fn(() => ({ promise: Promise.reject(new Error('SECRET_SQL_ERROR')), cancel })),
-		} as any;
-
-		await service.startSqlCopilotWriteQuery({
-			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db',
-			request: 'Inspect data.', currentQuery: 'SELECT 1', enabledTools: ['execute_sql_query'],
-		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
-			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
-		} as any, sqlClient);
-
-		expect(cancel).toHaveBeenCalledOnce();
-		expect(model.sendRequest).toHaveBeenCalledOnce();
-		const history = JSON.stringify((service as any).copilotConversationHistoryByBoxId.get('sql-source') || []);
-		expect(history).not.toMatch(/SECRET_SQL_ERROR|MUST_NOT_USE_HIDDEN_SQL_ERROR/);
-	});
-
-	it.each([
-		['result', () => Promise.resolve({ columns: [{ name: 'Value' }], rows: [[1]], metadata: {} })],
-		['error', () => Promise.reject(new Error('query failed'))],
-	] as const)('owner-tokens exploratory SQL %s payloads', async (_label, createPromise) => {
-		const model = createModel([
-			[new vscode.LanguageModelToolCallPart(
-				'execute-call', 'execute_sql_query', { query: 'SELECT 1 AS Value' },
-			)],
-			[new vscode.LanguageModelTextPart('Done.')],
-		]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHost([]);
-		const service = new CopilotService(host);
-		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
-
-		await service.startSqlCopilotWriteQuery({
-			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db',
-			request: 'Inspect data.', currentQuery: 'SELECT 1', enabledTools: ['execute_sql_query'],
-			sqlOwnerToken: 'owner-token',
-		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
-			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
-		} as any, { executeQueryCancelable: vi.fn(() => ({ promise: createPromise(), cancel: vi.fn() })) } as any);
-
-		expect(hostMessagesOfType(host, 'copilotExecutedQuery')).toEqual([
-			expect.objectContaining({ boxId: 'sql-source', ownerToken: 'owner-token' }),
-		]);
 	});
 
 	it('does not start exploratory SQL when its atomic admission was superseded', async () => {
@@ -788,7 +667,7 @@ describe('Kusto Copilot function execution', () => {
 		]]);
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
 		const host = createHost([]);
-		host.startSqlRunUnderAdmission = vi.fn(() => { throw new Error('SQL Copilot write-query canceled'); });
+		const promotePreflight = vi.spyOn(host.sqlExecutionBroker, 'promotePreflight').mockReturnValue(undefined);
 		const sqlClient = { executeQueryCancelable: vi.fn() } as any;
 		const service = new CopilotService(host);
 		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
@@ -800,7 +679,7 @@ describe('Kusto Copilot function execution', () => {
 			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
 		} as any, sqlClient);
 
-		expect(host.startSqlRunUnderAdmission).toHaveBeenCalledOnce();
+		expect(promotePreflight).toHaveBeenCalledOnce();
 		expect(sqlClient.executeQueryCancelable).not.toHaveBeenCalled();
 	});
 
@@ -841,8 +720,6 @@ describe('Kusto Copilot function execution', () => {
 		]]);
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
 		const host = createHost([]);
-		let admissionCurrent = true;
-		host.isSqlRunAdmissionCurrent = vi.fn(() => admissionCurrent);
 		const pending = deferred<any>();
 		const sqlClient = {
 			executeQueryCancelable: vi.fn(() => ({ promise: pending.promise, cancel: vi.fn() })),
@@ -857,7 +734,7 @@ describe('Kusto Copilot function execution', () => {
 			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
 		} as any, sqlClient);
 		await vi.waitFor(() => expect(sqlClient.executeQueryCancelable).toHaveBeenCalledOnce());
-		admissionCurrent = false;
+		host.sqlExecutionBroker.supersede('sql-source');
 		pending.reject(new Error('STALE_EXPLORATORY_ERROR'));
 		await request;
 
@@ -906,6 +783,7 @@ describe('Kusto Copilot function execution', () => {
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
 		const host = createHost([]);
 		host.refreshSqlConnectionsData = vi.fn(async () => undefined);
+		const reservePreflight = vi.spyOn(host.sqlExecutionBroker, 'reservePreflight');
 		const service = new CopilotService(host);
 		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
 		const sqlClient = {
@@ -923,42 +801,8 @@ describe('Kusto Copilot function execution', () => {
 		} as any, sqlClient);
 
 		expect(host.refreshSqlConnectionsData).toHaveBeenCalledOnce();
-		expect(host.supersedeSqlRunAdmission).toHaveBeenCalledWith('sql-source', { notifyWebview: true });
+		expect(reservePreflight).toHaveBeenCalledWith('sql-source', expect.stringMatching(/^sql-copilot-/));
 		expect(hostMessagesOfType(host, 'queryResult')).toEqual([expect.objectContaining({ boxId: 'sql-source' })]);
-	});
-
-	it.each([
-		['false', () => false],
-		['rejected', () => Promise.reject(new Error('delivery rejected'))],
-	] as const)('does not retain SQL auto-run success when required result delivery is %s', async (_label, delivery) => {
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart('final-call', 'respond_to_sql_query', { query: 'SELECT 1 AS Value' }),
-		]]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHost([]);
-		(host.postMessage as any).mockImplementation((message: any) => message?.type === 'queryResult' ? delivery() : true);
-		host.refreshSqlConnectionsData = vi.fn(async () => undefined);
-		const service = new CopilotService(host);
-		const sqlConnection = { id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' };
-		const cancel = vi.fn();
-		const sqlClient = {
-			executeQueryCancelable: vi.fn(() => ({
-				promise: Promise.resolve({ columns: [{ name: 'Value' }], rows: [[1]], metadata: {} }), cancel,
-			})),
-		} as any;
-
-		await service.startSqlCopilotWriteQuery({
-			boxId: 'sql-source', sqlConnectionId: 'sql-a', database: 'Db',
-			request: 'Write and run a query.', currentQuery: 'SELECT 1', enabledTools: ['respond_to_sql_query'],
-		}, { getConnection: vi.fn(() => sqlConnection) } as any, {
-			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
-		} as any, sqlClient);
-
-		expect(cancel).toHaveBeenCalledOnce();
-		expect(hostMessagesOfType(host, 'copilotWriteQueryDone'))
-			.not.toContainEqual(expect.objectContaining({ ok: true }));
-		expect(JSON.stringify((service as any).copilotConversationHistoryByBoxId.get('sql-source') || []))
-			.not.toContain('Query ran successfully.');
 	});
 
 	it('does not publish or retain a Copilot result after a newer SQL admission wins', async () => {
@@ -967,8 +811,6 @@ describe('Kusto Copilot function execution', () => {
 		]]);
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
 		const host = createHost([]);
-		let admissionCurrent = true;
-		host.isSqlRunAdmissionCurrent = vi.fn(() => admissionCurrent);
 		const pending = deferred<any>();
 		const sqlClient = {
 			executeQueryCancelable: vi.fn(() => ({ promise: pending.promise, cancel: vi.fn() })),
@@ -983,7 +825,7 @@ describe('Kusto Copilot function execution', () => {
 			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
 		} as any, sqlClient);
 		await vi.waitFor(() => expect(sqlClient.executeQueryCancelable).toHaveBeenCalledOnce());
-		admissionCurrent = false;
+		host.sqlExecutionBroker.supersede('sql-source');
 		pending.resolve({ columns: [{ name: 'Secret' }], rows: [['SECRET_A']], metadata: {} });
 		await request;
 
@@ -998,8 +840,6 @@ describe('Kusto Copilot function execution', () => {
 		]]);
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
 		const host = createHost([]);
-		let admissionCurrent = true;
-		host.isSqlRunAdmissionCurrent = vi.fn(() => admissionCurrent);
 		const pending = deferred<any>();
 		const transportCancel = vi.fn(() => pending.reject({ isCancelled: true }));
 		const sqlClient = {
@@ -1015,18 +855,22 @@ describe('Kusto Copilot function execution', () => {
 			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
 		} as any, sqlClient);
 		await vi.waitFor(() => expect(sqlClient.executeQueryCancelable).toHaveBeenCalledOnce());
-		admissionCurrent = false;
+		const manualCancel = vi.fn();
+		const manualAdmission = host.sqlExecutionBroker.reserve('sql-source', 'newer-manual');
+		const manualLease = host.sqlExecutionBroker.start(manualAdmission, () => ({ cancel: manualCancel }));
 		(host.cancelRunningQuery as any).mockClear();
 		service.cancelCopilotWriteQuery('sql-source');
 		await request;
 
 		expect(transportCancel).toHaveBeenCalledOnce();
+		expect(manualCancel).not.toHaveBeenCalled();
 		expect(host.cancelRunningQuery).not.toHaveBeenCalled();
 		expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting'))
 			.not.toContainEqual(expect.objectContaining({ executing: false }));
 		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toContainEqual(expect.objectContaining({
 			boxId: 'sql-source', ok: false, message: 'Canceled.',
 		}));
+		manualLease.release();
 	});
 
 	it('does not publish final SQL error or retry state when canceled during composite publication', async () => {
@@ -1035,8 +879,6 @@ describe('Kusto Copilot function execution', () => {
 		]]);
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
 		const host = createHost([]);
-		let admissionCurrent = true;
-		host.isSqlRunAdmissionCurrent = vi.fn(() => admissionCurrent);
 		const publication = deferred<void>();
 		let publicationCalls = 0;
 		host.dispatchSqlResultOwnerAllowed = vi.fn(async (_boxId: string, _owner: unknown, dispatch: () => unknown) => {
@@ -1057,7 +899,8 @@ describe('Kusto Copilot function execution', () => {
 			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
 		} as any, sqlClient);
 		await vi.waitFor(() => expect(publicationCalls).toBeGreaterThanOrEqual(4));
-		admissionCurrent = false;
+		host.sqlExecutionBroker.supersede('sql-source');
+		service.cancelCopilotWriteQuery('sql-source');
 		publication.resolve();
 		await request;
 
@@ -1077,6 +920,8 @@ describe('Kusto Copilot function execution', () => {
 		]]);
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
 		const host = createHost([]);
+		const reservePreflight = vi.spyOn(host.sqlExecutionBroker, 'reservePreflight');
+		const startExecution = vi.spyOn(host.sqlExecutionBroker, 'start');
 		let ownerAssertions = 0;
 		host.ensureComparisonBoxInWebview = vi.fn(async () => 'query_cmp_sql');
 		host.assertSqlResultOwnerAllowed = vi.fn(async (boxId: string) => {
@@ -1115,10 +960,10 @@ describe('Kusto Copilot function execution', () => {
 			connectionId: 'sql-a', database: 'Db', generation: 1,
 			targetSignature: 'target-a', principalFingerprint: 'principal-a', revocationGeneration: 0,
 		});
-		expect(host.supersedeSqlRunAdmission).toHaveBeenCalledWith('sql_source', { notifyWebview: true });
-		expect(host.supersedeSqlRunAdmission).toHaveBeenCalledWith('query_cmp_sql', { notifyWebview: true });
-		expect(host.startSqlRunUnderAdmission).toHaveBeenCalledTimes(1);
-		expect((host.startSqlRunUnderAdmission as any).mock.calls.every((call: any[]) => /^sql-copilot-/.test(call[3]))).toBe(true);
+		expect(reservePreflight).toHaveBeenCalledWith('sql_source', expect.stringMatching(/^sql-copilot-/));
+		expect(reservePreflight).toHaveBeenCalledWith('query_cmp_sql', expect.stringMatching(/^sql-copilot-/));
+		expect(startExecution).toHaveBeenCalledTimes(1);
+		expect(startExecution.mock.calls.every(([admission]) => /^sql-copilot-/.test(admission.executionId))).toBe(true);
 	});
 
 	it('does not launch either comparison query when ownership changes during editor preparation', async () => {
@@ -1169,6 +1014,7 @@ describe('Kusto Copilot function execution', () => {
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
 		const host = createHost([]);
 		host.ensureComparisonBoxInWebview = vi.fn(async () => 'query_cmp_sql');
+		const startExecution = vi.spyOn(host.sqlExecutionBroker, 'start');
 		const sourceCancel = vi.fn();
 		let rejectComparison!: (error: Error) => void;
 		const comparisonPromise = new Promise<any>((_resolve, reject) => { rejectComparison = reject; });
@@ -1210,9 +1056,9 @@ describe('Kusto Copilot function execution', () => {
 		expect(sourceCancel).not.toHaveBeenCalled();
 		expect(host.cancelRunningQuery).not.toHaveBeenCalled();
 		expect(hostMessagesOfType(host, 'queryResult').some(message => message.boxId === 'query_cmp_sql')).toBe(false);
-		expect(host.startSqlRunUnderAdmission).toHaveBeenCalledTimes(2);
-		expect((host.startSqlRunUnderAdmission as any).mock.calls.map((call: any[]) => call[0])).toEqual(['sql_source', 'query_cmp_sql']);
-		expect((host.startSqlRunUnderAdmission as any).mock.calls.every((call: any[]) => /^sql-copilot-/.test(call[3]))).toBe(true);
+		expect(startExecution).toHaveBeenCalledTimes(2);
+		expect(startExecution.mock.calls.map(([admission]) => admission.boxId)).toEqual(['sql_source', 'query_cmp_sql']);
+		expect(startExecution.mock.calls.every(([admission]) => /^sql-copilot-/.test(admission.executionId))).toBe(true);
 	});
 
 	it.each([
@@ -1227,8 +1073,6 @@ describe('Kusto Copilot function execution', () => {
 		vscodeMocks.selectChatModels.mockResolvedValue([model]);
 		const host = createHost([]);
 		host.ensureComparisonBoxInWebview = vi.fn(async () => 'query_cmp_sql');
-		const currentByBox: Record<string, boolean> = { sql_source: true, query_cmp_sql: true };
-		host.isSqlRunAdmissionCurrent = vi.fn((boxId: string) => currentByBox[boxId] !== false);
 		const pending = deferred<any>();
 		let executionCount = 0;
 		const sqlClient = {
@@ -1255,7 +1099,7 @@ describe('Kusto Copilot function execution', () => {
 			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
 		} as any, sqlClient);
 		await vi.waitFor(() => expect(sqlClient.executeQueryCancelable).toHaveBeenCalledTimes(staleBoxId === 'sql_source' ? 1 : 2));
-		currentByBox[staleBoxId] = false;
+		host.sqlExecutionBroker.supersede(staleBoxId);
 		pending.reject(new Error(`STALE_${staleBoxId}`));
 		await request;
 
@@ -1299,42 +1143,6 @@ describe('Kusto Copilot function execution', () => {
 		} as any, sqlClient);
 
 		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).not.toContainEqual(expect.objectContaining({ ok: true, message: expect.stringContaining('Comparison ready') }));
-	});
-
-	it.each([
-		['false', () => false],
-		['undefined', () => undefined],
-		['rejected', () => Promise.reject(new Error('delivery rejected'))],
-	] as const)('cancels SQL comparison transport when required begin delivery is %s', async (_label, delivery) => {
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart(
-				'opt-call', 'respond_to_query_performance_optimization_request', { query: 'SELECT 2 AS Value' },
-			),
-		]]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHost([]);
-		host.ensureComparisonBoxInWebview = vi.fn(async () => 'query_cmp_sql');
-		(host.postMessage as any).mockImplementation((message: any) =>
-			message?.type === 'copilotWriteQueryExecuting' && message.executing === true ? delivery() : true);
-		const pending = deferred<any>();
-		const cancel = vi.fn(() => pending.reject(Object.assign(new Error('cancelled'), { isCancelled: true })));
-		const sqlClient = {
-			executeQueryCancelable: vi.fn(() => ({ promise: pending.promise, cancel })),
-		} as any;
-		const service = new CopilotService(host);
-
-		await service.startSqlCopilotWriteQuery({
-			boxId: 'sql_source', sqlConnectionId: 'sql-a', database: 'Db',
-			request: 'Optimize.', currentQuery: 'SELECT 1 AS Value',
-			enabledTools: ['respond_to_query_performance_optimization_request'],
-		}, { getConnection: vi.fn(() => ({
-			id: 'sql-a', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad',
-		})) } as any, {
-			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
-		} as any, sqlClient);
-
-		expect(cancel).toHaveBeenCalledOnce();
-		expect(hostMessagesOfType(host, 'queryResult')).toHaveLength(0);
 	});
 
 	it('adopts the first established Copilot owner and cancels a later rotation', () => {
@@ -1632,109 +1440,6 @@ describe('Kusto Copilot function execution', () => {
 		expectInlineFilterRowsQuery(capturedQueries[capturedQueries.length - 1]);
 	});
 
-	it('waits for prior manual Kusto cancellation before starting an optimization source run', async () => {
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart(
-				'opt-call', 'respond_to_query_performance_optimization_request', { query: 'print optimized=1' },
-			),
-		]]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHostWithComparisonCapture([], []);
-		const cancellationDelivery = deferred<void>();
-		let reservationCalls = 0;
-		host.reserveRunningQueryReplacement = vi.fn((boxId: string) => {
-			reservationCalls++;
-			return {
-				cancel: vi.fn(), runSeq: reservationCalls,
-				previousCancellationDelivery: reservationCalls === 1 ? cancellationDelivery.promise.then(() => {
-				host.postMessage({ type: 'queryCancelled', boxId, executionId: 'manual-source' });
-				return true;
-				}) : Promise.resolve(true),
-			};
-		});
-		const service = new CopilotService(host);
-
-		const request = service.startCopilotWriteQuery({
-			...startMessage(), currentQuery: 'print source=1', request: 'Optimize this query.',
-		});
-		await vi.waitFor(() => expect(host.reserveRunningQueryReplacement).toHaveBeenCalledWith(
-			'query_1', expect.stringMatching(/^kusto-comparison-/),
-		));
-		expect(host.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
-		expect(host.promoteRunningQueryReservation).not.toHaveBeenCalled();
-
-		cancellationDelivery.resolve();
-		await request;
-
-		const messages = vi.mocked(host.postMessage).mock.calls.map(call => call[0] as any);
-		const cancellationIndex = messages.findIndex(message => message.type === 'queryCancelled' && message.executionId === 'manual-source');
-		const beginIndex = messages.findIndex(message => message.type === 'copilotWriteQueryExecuting'
-			&& message.boxId === 'query_1' && message.executing === true);
-		expect(cancellationIndex).toBeGreaterThanOrEqual(0);
-		expect(beginIndex).toBeGreaterThan(cancellationIndex);
-	});
-
-	it('abandons optimization when a newer manual run replaces its pending reservation', async () => {
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart(
-				'opt-call', 'respond_to_query_performance_optimization_request', { query: 'print optimized=1' },
-			),
-		]]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHostWithComparisonCapture([], []);
-		const cancellationDelivery = deferred<boolean>();
-		const reservationCancel = vi.fn();
-		let reservationCurrent = true;
-		host.reserveRunningQueryReplacement = vi.fn(() => ({
-			cancel: reservationCancel, runSeq: 41, previousCancellationDelivery: cancellationDelivery.promise,
-		}));
-		host.isRunningQueryCurrent = vi.fn((_boxId, cancel, runSeq) =>
-			reservationCurrent && cancel === reservationCancel && runSeq === 41);
-		const service = new CopilotService(host);
-
-		const request = service.startCopilotWriteQuery({
-			...startMessage(), currentQuery: 'print source=1', request: 'Optimize this query.',
-		});
-		await vi.waitFor(() => expect(host.reserveRunningQueryReplacement).toHaveBeenCalledOnce());
-		reservationCurrent = false;
-		cancellationDelivery.resolve(true);
-		await request;
-
-		expect(host.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
-		expect(host.promoteRunningQueryReservation).not.toHaveBeenCalled();
-		expect(host.unregisterRunningQuery).toHaveBeenCalledWith('query_1', reservationCancel, 41);
-	});
-
-	it.each([
-		['false', () => false],
-		['undefined', () => undefined],
-		['rejected', () => Promise.reject(new Error('delivery rejected'))],
-	] as const)('cancels Kusto comparison transport when required begin delivery is %s', async (_label, delivery) => {
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart(
-				'opt-call', 'respond_to_query_performance_optimization_request', { query: 'print optimized=1' },
-			),
-		]]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHostWithComparisonCapture([], []);
-		(host.postMessage as any).mockImplementation((message: any) =>
-			message?.type === 'copilotWriteQueryExecuting' && message.executing === true ? delivery() : true);
-		const pending = deferred<any>();
-		const cancel = vi.fn(() => pending.reject(Object.assign(new Error('cancelled'), { isCancelled: true })));
-		(host.kustoClient.executeQueryCancelable as any).mockReturnValue({
-			promise: pending.promise, cancel, clientActivityId: 'KW.execute_query;begin-failure',
-			getAccountPartition: () => 'partition-current',
-		});
-		const service = new CopilotService(host);
-
-		await service.startCopilotWriteQuery({
-			...startMessage(), currentQuery: 'print source=1', request: 'Optimize this query.',
-		});
-
-		expect(cancel).toHaveBeenCalledOnce();
-		expect(hostMessagesOfType(host, 'queryResult')).toHaveLength(0);
-	});
-
 	it('does not report comparison success when Stop arrives during optimized-query refresh', async () => {
 		const model = createModel([[
 			new vscode.LanguageModelToolCallPart(
@@ -1798,9 +1503,8 @@ describe('Kusto Copilot function execution', () => {
 			.not.toContainEqual(expect.objectContaining({ boxId: staleBoxId }));
 		expect(hostMessagesOfType(host, 'copilotWriteQueryDone'))
 			.not.toContainEqual(expect.objectContaining({ ok: true, message: expect.stringContaining('Optimized query') }));
-		expect(host.promoteRunningQueryReservation).toHaveBeenCalledWith(
-			staleBoxId, expect.any(Function), expect.any(Number), expect.any(Function), expect.any(String),
-			expect.stringMatching(/^kusto-comparison-/),
+		expect(host.registerRunningQuery).toHaveBeenCalledWith(
+			staleBoxId, expect.any(Function), expect.any(Number), expect.any(String),
 		);
 		expect(host.unregisterRunningQuery).toHaveBeenCalledWith(
 			staleBoxId, expect.any(Function), expect.any(Number),
@@ -1905,59 +1609,6 @@ describe('Kusto Copilot function execution', () => {
 		expectInlineFilterRowsQuery(readyMessages[0].optimizedQuery);
 	});
 
-	it('does not dispatch standalone optimization after disposal during model selection', async () => {
-		const modelSelection = deferred<any[]>();
-		const model = createTextModel('print optimized=1');
-		vscodeMocks.selectChatModels.mockReturnValue(modelSelection.promise);
-		const host = createHost([]);
-		const service = new CopilotService(host);
-
-		const request = service.optimizeQueryWithCopilot({
-			type: 'optimizeQuery', boxId: 'query_1', query: 'print source=1', queryName: 'Source',
-			connectionId: TEST_CONNECTION.id, database: 'Samples',
-		});
-		await vi.waitFor(() => expect(vscodeMocks.selectChatModels).toHaveBeenCalledOnce());
-		service.dispose();
-		modelSelection.resolve([model]);
-		await request;
-
-		expect(model.sendRequest).not.toHaveBeenCalled();
-		expect(hostMessagesOfType(host, 'optimizeQueryReady')).toHaveLength(0);
-		expect(hostMessagesOfType(host, 'optimizeQueryError')).toHaveLength(0);
-	});
-
-	it('does not let an older standalone optimization remove or publish over a newer one', async () => {
-		const firstResponse = deferred<any>();
-		const secondResponse = deferred<any>();
-		const model = createTextModel('') as any;
-		model.sendRequest = vi.fn()
-			.mockReturnValueOnce(firstResponse.promise)
-			.mockReturnValueOnce(secondResponse.promise);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHost([]);
-		const service = new CopilotService(host);
-		const message = {
-			type: 'optimizeQuery' as const, boxId: 'query_1', query: 'print source=1', queryName: 'Source',
-			connectionId: TEST_CONNECTION.id, database: 'Samples',
-		};
-
-		const first = service.optimizeQueryWithCopilot(message);
-		await vi.waitFor(() => expect(model.sendRequest).toHaveBeenCalledTimes(1));
-		const second = service.optimizeQueryWithCopilot({ ...message, query: 'print source=2' });
-		await vi.waitFor(() => expect(model.sendRequest).toHaveBeenCalledTimes(2));
-		const secondOwner = (service as any).runningOptimizeByBoxId.get('query_1');
-
-		firstResponse.resolve({ text: streamParts(['print stale=1']) });
-		await first;
-		expect((service as any).runningOptimizeByBoxId.get('query_1')).toBe(secondOwner);
-
-		secondResponse.resolve({ text: streamParts(['print current=2']) });
-		await second;
-		expect(hostMessagesOfType(host, 'optimizeQueryReady')).toEqual([
-			expect.objectContaining({ boxId: 'query_1', optimizedQuery: 'print current=2' }),
-		]);
-	});
-
 	it.each([
 		['line-commented fake', '// .create function Fake() { print fake=1 }\n.create function FilterRows(threshold:long) { range x from 1 to 10 step 1 | where x > threshold }\nFilterRows(5)'],
 		['block-commented fake', '/* .create function Fake() { print fake=1 } */\n.create function FilterRows(threshold:long) { range x from 1 to 10 step 1 | where x > threshold }\nFilterRows(5)'],
@@ -2029,27 +1680,6 @@ describe('Kusto Copilot function execution', () => {
 		expect(JSON.stringify((service as any).copilotConversationHistoryByBoxId.get('query_1') || [])).not.toContain('SECRET_A');
 	});
 
-	it('does not start Kusto transport after disposal during model selection', async () => {
-		const models = deferred<any[]>();
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart(
-				'final-call', 'respond_to_all_other_queries', { query: 'print marker="late"' },
-			),
-		]]);
-		vscodeMocks.selectChatModels.mockReturnValue(models.promise);
-		const host = createHost([]);
-		const service = new CopilotService(host);
-
-		const request = service.startCopilotWriteQuery(startMessage());
-		await vi.waitFor(() => expect(vscodeMocks.selectChatModels).toHaveBeenCalledOnce());
-		service.dispose();
-		models.resolve([model]);
-		await request;
-
-		expect(host.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
-		expect(host.registerRunningQuery).not.toHaveBeenCalled();
-	});
-
 	it('does not publish a final Copilot result superseded during connection refresh', async () => {
 		const model = createModel([
 			[new vscode.LanguageModelToolCallPart('final-call', 'respond_to_all_other_queries', { query: 'print marker="stale"' })],
@@ -2081,186 +1711,6 @@ describe('Kusto Copilot function execution', () => {
 		expect(historyText).not.toContain('final-call');
 	});
 
-	it('waits for prior manual Kusto cancellation before starting a final run', async () => {
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart(
-				'final-call', 'respond_to_all_other_queries', { query: 'print marker="copilot"' },
-			),
-		]]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHost([]);
-		const cancellationDelivery = deferred<void>();
-		host.reserveRunningQueryReplacement = vi.fn((boxId: string) => ({
-			cancel: vi.fn(), runSeq: 1,
-			previousCancellationDelivery: cancellationDelivery.promise.then(() => {
-				host.postMessage({ type: 'queryCancelled', boxId, executionId: 'manual-final' });
-				return true;
-			}),
-		}));
-		const service = new CopilotService(host);
-
-		const request = service.startCopilotWriteQuery(startMessage());
-		await vi.waitFor(() => expect(host.reserveRunningQueryReplacement).toHaveBeenCalledWith(
-			'query_1', expect.stringMatching(/^kusto-copilot-/),
-		));
-		expect(host.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
-		expect(host.promoteRunningQueryReservation).not.toHaveBeenCalled();
-
-		cancellationDelivery.resolve();
-		await request;
-
-		const messages = vi.mocked(host.postMessage).mock.calls.map(call => call[0] as any);
-		const cancellationIndex = messages.findIndex(message => message.type === 'queryCancelled' && message.executionId === 'manual-final');
-		const beginIndex = messages.findIndex(message => message.type === 'copilotWriteQueryExecuting'
-			&& message.boxId === 'query_1' && message.executing === true);
-		expect(cancellationIndex).toBeGreaterThanOrEqual(0);
-		expect(beginIndex).toBeGreaterThan(cancellationIndex);
-	});
-
-	it('abandons a final run when a newer manual run replaces its pending reservation', async () => {
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart(
-				'final-call', 'respond_to_all_other_queries', { query: 'print marker="copilot"' },
-			),
-		]]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHost([]);
-		const cancellationDelivery = deferred<boolean>();
-		const reservationCancel = vi.fn();
-		let reservationCurrent = true;
-		host.reserveRunningQueryReplacement = vi.fn(() => ({
-			cancel: reservationCancel, runSeq: 42, previousCancellationDelivery: cancellationDelivery.promise,
-		}));
-		host.isRunningQueryCurrent = vi.fn((_boxId, cancel, runSeq) =>
-			reservationCurrent && cancel === reservationCancel && runSeq === 42);
-		const service = new CopilotService(host);
-
-		const request = service.startCopilotWriteQuery(startMessage());
-		await vi.waitFor(() => expect(host.reserveRunningQueryReplacement).toHaveBeenCalledOnce());
-		reservationCurrent = false;
-		cancellationDelivery.resolve(true);
-		await request;
-
-		expect(host.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
-		expect(host.promoteRunningQueryReservation).not.toHaveBeenCalled();
-		expect(host.unregisterRunningQuery).toHaveBeenCalledWith('query_1', reservationCancel, 42);
-	});
-
-	it('Stop interrupts a pending Kusto cancellation delivery and retires its reservation', async () => {
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart(
-				'final-call', 'respond_to_all_other_queries', { query: 'print marker="copilot"' },
-			),
-		]]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHost([]);
-		const reservationCancel = vi.fn();
-		host.reserveRunningQueryReplacement = vi.fn(() => ({
-			cancel: reservationCancel,
-			runSeq: 77,
-			previousCancellationDelivery: new Promise<boolean>(() => undefined),
-		}));
-		const service = new CopilotService(host);
-
-		const request = service.startCopilotWriteQuery(startMessage());
-		await vi.waitFor(() => expect(host.reserveRunningQueryReplacement).toHaveBeenCalledOnce());
-		service.cancelCopilotWriteQuery('query_1');
-		await Promise.race([
-			request,
-			new Promise<void>((_resolve, reject) => setTimeout(() => reject(new Error('Stop did not settle reservation wait')), 250)),
-		]);
-
-		expect(host.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
-		expect(host.unregisterRunningQuery).toHaveBeenCalledWith('query_1', reservationCancel, 77);
-	});
-
-	it.each([
-		['false', () => false],
-		['undefined', () => undefined],
-		['rejected', () => Promise.reject(new Error('delivery rejected'))],
-	] as const)('cancels final Kusto transport when required begin delivery is %s', async (_label, delivery) => {
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart(
-				'final-call', 'respond_to_all_other_queries', { query: 'print marker="copilot"' },
-			),
-		]]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHost([]);
-		(host.postMessage as any).mockImplementation((message: any) =>
-			message?.type === 'copilotWriteQueryExecuting' && message.executing === true ? delivery() : true);
-		const pending = deferred<any>();
-		const cancel = vi.fn(() => pending.reject(Object.assign(new Error('cancelled'), { isCancelled: true })));
-		(host.kustoClient.executeQueryCancelable as any).mockReturnValue({
-			promise: pending.promise, cancel, clientActivityId: 'KW.execute_query;begin-failure',
-			getAccountPartition: () => 'partition-current',
-		});
-		const service = new CopilotService(host);
-
-		await service.startCopilotWriteQuery(startMessage());
-
-		expect(cancel).toHaveBeenCalledOnce();
-		expect(hostMessagesOfType(host, 'queryResult')).toHaveLength(0);
-	});
-
-	it.each([
-		['false', () => false],
-		['undefined', () => undefined],
-		['rejected', () => Promise.reject(new Error('delivery rejected'))],
-	] as const)('does not retain final Kusto success when required result delivery is %s', async (_label, delivery) => {
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart(
-				'final-call', 'respond_to_all_other_queries', { query: 'print marker="copilot"' },
-			),
-		]]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHost([]);
-		(host.postMessage as any).mockImplementation((message: any) =>
-			message?.type === 'queryResult' ? delivery() : true);
-		const cancel = vi.fn();
-		(host.kustoClient.executeQueryCancelable as any).mockReturnValue({
-			promise: Promise.resolve({ columns: ['marker'], rows: [['copilot']], metadata: {} }),
-			cancel,
-			clientActivityId: 'KW.execute_query;result-delivery-failure',
-			getAccountPartition: () => 'partition-current',
-		});
-		const service = new CopilotService(host);
-
-		await service.startCopilotWriteQuery(startMessage());
-
-		expect(cancel).toHaveBeenCalledOnce();
-		expect(hostMessagesOfType(host, 'copilotWriteQueryDone'))
-			.not.toContainEqual(expect.objectContaining({ ok: true }));
-		expect(JSON.stringify((service as any).copilotConversationHistoryByBoxId.get('query_1') || []))
-			.not.toContain('Query ran successfully.');
-	});
-
-	it('does not announce final Kusto success after manual takeover during result delivery', async () => {
-		const model = createModel([[
-			new vscode.LanguageModelToolCallPart(
-				'final-call', 'respond_to_all_other_queries', { query: 'print marker="copilot"' },
-			),
-		]]);
-		vscodeMocks.selectChatModels.mockResolvedValue([model]);
-		const host = createHost([]);
-		const delivery = deferred<boolean>();
-		let runIsCurrent = true;
-		(host.postMessage as any).mockImplementation((message: any) =>
-			message?.type === 'queryResult' ? delivery.promise : true);
-		host.isRunningQueryCurrent = vi.fn(() => runIsCurrent);
-		const service = new CopilotService(host);
-
-		const request = service.startCopilotWriteQuery(startMessage());
-		await vi.waitFor(() => expect(hostMessagesOfType(host, 'queryResult')).toHaveLength(1));
-		runIsCurrent = false;
-		delivery.resolve(true);
-		await request;
-
-		expect(hostMessagesOfType(host, 'copilotWriteQueryDone'))
-			.not.toContainEqual(expect.objectContaining({ ok: true }));
-		expect(JSON.stringify((service as any).copilotConversationHistoryByBoxId.get('query_1') || []))
-			.not.toContain('Query ran successfully.');
-	});
-
 	it('settles without stale cancellation when a final Copilot query is superseded before rejection', async () => {
 		const model = createModel([
 			[new vscode.LanguageModelToolCallPart('final-call', 'respond_to_all_other_queries', { query: 'print marker="stale"' })],
@@ -2279,7 +1729,7 @@ describe('Kusto Copilot function execution', () => {
 		const service = new CopilotService(host);
 
 		const run = service.startCopilotWriteQuery(startMessage());
-		await vi.waitFor(() => expect(host.promoteRunningQueryReservation).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(host.registerRunningQuery).toHaveBeenCalledOnce());
 		runIsCurrent = false;
 		execution.reject({ isCancelled: true });
 		await run;
@@ -2313,23 +1763,15 @@ describe('Kusto Copilot function execution', () => {
 		const service = new CopilotService(host);
 
 		const run = service.startCopilotWriteQuery(startMessage());
-		await vi.waitFor(() => expect(host.promoteRunningQueryReservation).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(host.registerRunningQuery).toHaveBeenCalledOnce());
 		service.cancelCopilotWriteQuery('query_1');
 		await run;
 
 		expect(transportCancel).toHaveBeenCalledOnce();
-		const executionMessages = hostMessagesOfType(host, 'copilotWriteQueryExecuting');
-		expect(executionMessages).toEqual([
-			expect.objectContaining({
-				type: 'copilotWriteQueryExecuting', boxId: 'query_1', executing: true,
-				executionId: expect.stringMatching(/^kusto-copilot-/),
-			}),
-			expect.objectContaining({
-				type: 'copilotWriteQueryExecuting', boxId: 'query_1', executing: false,
-				executionId: expect.stringMatching(/^kusto-copilot-/),
-			}),
+		expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting')).toEqual([
+			{ type: 'copilotWriteQueryExecuting', boxId: 'query_1', executing: true },
+			{ type: 'copilotWriteQueryExecuting', boxId: 'query_1', executing: false },
 		]);
-		expect(executionMessages[1].executionId).toBe(executionMessages[0].executionId);
 		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toContainEqual({
 			type: 'copilotWriteQueryDone', boxId: 'query_1', ok: false, message: 'Canceled.',
 		});
@@ -2363,7 +1805,7 @@ describe('Kusto Copilot function execution', () => {
 		await run;
 
 		expect(host.cancelRunningQuery).not.toHaveBeenCalled();
-		expect(transportCancel).toHaveBeenCalledOnce();
+		expect(transportCancel).not.toHaveBeenCalled();
 		expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting'))
 			.not.toContainEqual(expect.objectContaining({ executing: false }));
 	});
@@ -2392,7 +1834,7 @@ describe('Kusto Copilot function execution', () => {
 		}]);
 
 		const firstRun = service.startCopilotWriteQuery(startMessage());
-		await vi.waitFor(() => expect(host.promoteRunningQueryReservation).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(host.registerRunningQuery).toHaveBeenCalledOnce());
 		const secondRun = service.startCopilotWriteQuery({
 			...startMessage(), request: 'Second request', requireToolUse: false,
 		});

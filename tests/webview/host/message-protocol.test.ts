@@ -85,6 +85,12 @@ function extractMessageHandlerCaseLabels(): string[] {
 	return [...new Set(labels)].sort();
 }
 
+function extractSqlSectionRouterCaseLabels(): string[] {
+	const source = readWorkspaceFile('src/webview/core/sql-section-message-router.ts');
+	const labels = [...source.matchAll(/case\s+['"]([^'"]+)['"]\s*:/g)].map(match => match[1]);
+	return [...new Set(labels)].sort();
+}
+
 function extractPostMessageTypes(relativePath: string): string[] {
 	const source = readWorkspaceFile(relativePath);
 	const labels = [...source.matchAll(/postMessage\(\s*\{[\s\S]*?type:\s*['"]([^'"]+)['"]/g)].map(match => match[1]);
@@ -151,6 +157,7 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'optimizeQuery',
 	'executeQuery',
 	'getSqlConnections',
+	'sqlSectionOpen',
 	'getSqlDatabases',
 	'refreshSqlDatabases',
 	'saveSqlLastSelection',
@@ -250,6 +257,7 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 
 	// SQL connections & schema
 	'getSqlConnections',
+	'sqlSectionOpen',
 	'getSqlDatabases',
 	'refreshSqlDatabases',
 	'saveSqlLastSelection',
@@ -438,6 +446,17 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'changedSections',
 ] as const;
 
+const SQL_SECTION_ROUTER_CASE_LABELS = [
+	'sqlConnectionOwnerChanged',
+	'sqlDatabasesData',
+	'sqlDatabasesError',
+	'sqlDatabasesLoading',
+	'sqlSchemaData',
+	'stsConnectionState',
+	'stsDiagnostics',
+	'stsResponse',
+] as const;
+
 /**
  * All host→webview message types sent to the MAIN query editor webview.
  * Excludes messages for other webviews (cachedValuesViewer, connectionManagerViewer).
@@ -617,8 +636,13 @@ describe('Message Protocol Contract', () => {
 		);
 	});
 
-	it('MESSAGE_HANDLER_CASE_LABELS matches the message-handler switch cases', () => {
-		expect([...MESSAGE_HANDLER_CASE_LABELS].sort()).toEqual(extractMessageHandlerCaseLabels());
+	it('handled message inventory matches the generic handler and SQL router cases', () => {
+		const routerLabels = new Set<string>(SQL_SECTION_ROUTER_CASE_LABELS);
+		const genericLabels = MESSAGE_HANDLER_CASE_LABELS.filter(label => !routerLabels.has(label));
+		expect([...genericLabels].sort()).toEqual(extractMessageHandlerCaseLabels());
+		expect([...SQL_SECTION_ROUTER_CASE_LABELS].sort()).toEqual(extractSqlSectionRouterCaseLabels());
+		expect([...new Set([...genericLabels, ...SQL_SECTION_ROUTER_CASE_LABELS])].sort())
+			.toEqual([...MESSAGE_HANDLER_CASE_LABELS].sort());
 	});
 
 	// ─── Webview → Host direction ──────────────────────────────────────────

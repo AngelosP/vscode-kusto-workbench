@@ -4,6 +4,7 @@ import { spawn } from 'child_process';
 import * as os from 'os';
 import * as path from 'path';
 import * as zlib from 'zlib';
+import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { KustoQueryClient, QueryExecutionError } from './kustoClient';
@@ -13,10 +14,15 @@ import { StsProcessManager } from './sql/stsProcessManager';
 import { StsLanguageService } from './sql/stsLanguageService';
 import { SqlWorkbenchService, type SqlOwnerSnapshot } from './sql/sqlWorkbenchService';
 import {
-	SqlEditorOwnershipRegistry,
+	SqlEditorSessionRegistry,
 	sqlResultOwnersEqual,
 	type SqlResultOwner,
-} from './sql/sqlEditorOwnershipRegistry';
+} from './sql/sqlEditorSessionRegistry';
+import {
+	SqlExecutionBroker,
+	type SqlExecutionAdmission,
+	type SqlExecutionLease,
+} from './sql/sqlExecutionBroker';
 import { sanitizeStsLogText } from './sql/stsLogSanitizer';
 import { normalizeSqlServerUrl } from './sql/sqlAuthState';
 import { clearSqlTokenOverride, setSqlServerAccountMapEntry, setSqlTokenOverride } from './sql/sqlAuthState';
@@ -85,6 +91,7 @@ type PendingComparisonEnsure = {
 };
 
 const GITHUB_ISSUES_URL = 'https://github.com/AngelosP/vscode-kusto-workbench/issues';
+const SQL_COPILOT_PREFLIGHT_EXECUTION_ID = 'sql-copilot-owner-preflight';
 
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
@@ -111,26 +118,15 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private readonly _closedStsBoxIds = new Set<string>();
 	private readonly _openedStsBoxIds = new Set<string>();
 	private readonly _pendingStsTextByBoxId = new Map<string, string>();
-	private readonly _sqlConnectionIdByBoxId = new Map<string, string>();
-	private readonly _sqlComparisonOwnerByBoxId = new Map<string, {
-		sourceBoxId: string;
-		connectionId: string;
-		copilotSequence?: number;
-		comparisonRequestId?: string;
-	}>();
+	private readonly _sqlSectionInstanceIdByBoxId = new Map<string, string>();
 	private readonly _comparisonOwnerByBoxId = new Map<string, {
 		sourceBoxId: string;
 		copilotSequence?: number;
 		comparisonRequestId?: string;
 	}>();
-	private readonly _sqlDatabaseByBoxId = new Map<string, string>();
-	private readonly _sqlTargetGenerationByBoxId = new Map<string, number>();
-	private readonly _sqlOwnerTokenByBoxId = new Map<string, { token: string; owner: SqlResultOwner }>();
-	private _sqlOwnershipRegistry?: SqlEditorOwnershipRegistry;
 	private readonly _sqlDatabaseRequestIdByBoxId = new Map<string, string>();
-	private readonly _sqlRunAdmissionGenerationByBoxId = new Map<string, number>();
-	private readonly _pendingSqlRunAdmissionByBoxId = new Map<string, { generation: number; executionId: string; ownerToken?: string }>();
-	private readonly _sqlCopilotPreflightByBoxId = new Map<string, { generation: number; active: boolean }>();
+	private readonly sqlOwnership: SqlEditorSessionRegistry;
+	readonly sqlExecutionBroker: SqlExecutionBroker;
 	private _sqlConnectionsSnapshotRevision = 0;
 	private readonly _latestStsConnectSequenceByBoxId = new Map<string, number>();
 	private readonly _stsConnectSequenceByBoxId = new Map<string, number>();
@@ -162,22 +158,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			});
 		}
 		return this._sqlSchemaService;
-	}
-
-	private get sqlOwnership(): SqlEditorOwnershipRegistry {
-		const options = {
-			context: this.context,
-			sqlWorkbench: this.sqlWorkbench,
-			connectionIdByBoxId: this._sqlConnectionIdByBoxId,
-			comparisonOwnerByBoxId: this._sqlComparisonOwnerByBoxId,
-			databaseByBoxId: this._sqlDatabaseByBoxId,
-			targetGenerationByBoxId: this._sqlTargetGenerationByBoxId,
-			ownerTokenByBoxId: this._sqlOwnerTokenByBoxId,
-		};
-		if (!this._sqlOwnershipRegistry?.matches(options)) {
-			this._sqlOwnershipRegistry = new SqlEditorOwnershipRegistry(options);
-		}
-		return this._sqlOwnershipRegistry;
 	}
 
 	assertSqlConnectionAllowed(connectionId: string): Promise<void> {
@@ -213,20 +193,32 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private async issueSqlOwnerToken(boxId: string, expectedOwner: SqlResultOwner): Promise<string> {
-		return this.sqlOwnership.issueOwnerToken(
-			boxId,
-			expectedOwner,
-			id => this.getCanonicalSqlResultOwner(id),
-			(id, owner, dispatch) => this.dispatchSqlResultOwnerAllowed(id, owner, dispatch),
-		);
+		return this.sqlOwnership.issueOwnerToken(boxId, expectedOwner);
 	}
 
 	private async assertSqlOwnerToken(boxId: string, token: string | undefined): Promise<{ token: string; owner: SqlResultOwner }> {
-		return this.sqlOwnership.assertOwnerToken(
-			boxId,
-			token,
-			(id, owner) => this.assertSqlResultOwnerAllowed(id, owner),
-		);
+		return this.sqlOwnership.assertOwnerToken(boxId, token);
+	}
+
+	private adoptSqlTarget(
+		boxId: string,
+		sectionInstanceId: string,
+		connectionId: string,
+		database: string | undefined,
+		targetGeneration: number,
+	): boolean {
+		const id = String(boxId || '').trim();
+		if (!id
+			|| this._sqlSectionInstanceIdByBoxId.get(id) !== String(sectionInstanceId || '').trim()
+			|| this._closedStsBoxIds.has(id)) return false;
+		const previousStsOwner = this.sqlOwnership.getIssuedOwner(id)?.owner ?? this.sqlOwnership.getOwner(id);
+		return this.sqlOwnership.adoptTarget(id, connectionId, database, targetGeneration, () => {
+			this.sqlExecutionBroker.supersede(id, { notifyWebview: true });
+			if (previousStsOwner && this._openedStsBoxIds.delete(id)) {
+				this._stsLanguageService?.closeDocumentForOwner(id, previousStsOwner);
+			}
+			this._latestStsConnectSequenceByBoxId.delete(id);
+		}) !== 'rejected';
 	}
 
 	private readonly pendingComparisonEnsureByRequestId = new Map<string, PendingComparisonEnsure>();
@@ -247,8 +239,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				this._comparisonOwnerByBoxId.delete(comparisonBoxId);
 			}
 			if (comparisonBoxId
-				&& this._sqlComparisonOwnerByBoxId.get(comparisonBoxId)?.comparisonRequestId === requestId) {
-				this._sqlComparisonOwnerByBoxId.delete(comparisonBoxId);
+				&& this.sqlOwnership.getComparisonOwner(comparisonBoxId)?.comparisonRequestId === requestId) {
+				this.sqlOwnership.removeComparisonOwner(comparisonBoxId);
 			}
 			pending.reject(outcome.error);
 			return;
@@ -326,9 +318,15 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.kqlLanguageHost = new KqlLanguageServiceHost(this.connectionManager, this.context);
 		this.connection = new ConnectionService(this);
 		this.schema = new SchemaService(this);
+		this.sqlOwnership = new SqlEditorSessionRegistry({ context: this.context, sqlWorkbench: this.sqlWorkbench });
+		this.sqlExecutionBroker = new SqlExecutionBroker({
+			queryRuns: this.queryRuns,
+			getOwnerToken: boxId => this.sqlOwnership.getOwnerToken(boxId),
+			postMessage: message => this.postMessage(message),
+		});
 		this.copilot = new CopilotService(this);
 		this.sqlLeaveNoTraceSubscription = this.sqlWorkbench.onDidChangeLeaveNoTrace(change => {
-			this.applySqlLeaveNoTraceChange(change.connectionIds, change.invalidatedConnectionIds);
+			this.applySqlLeaveNoTraceChange(change.connectionIds, change.invalidatedConnectionIds, change.disabledConnectionIds);
 		});
 		this.stsRuntimeSubscription = this.sqlWorkbench.runtime.onDidChangeProcessManager(change => {
 			void this.handleStsRuntimeManagerChange(!!change.current);
@@ -448,20 +446,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.documentUri,
 			(sectionId?: string) => {
 				const id = String(sectionId || '').trim();
-				if (id) return this._sqlComparisonOwnerByBoxId.get(id)?.connectionId ?? this._sqlConnectionIdByBoxId.get(id);
-				for (const connectionId of this._sqlConnectionIdByBoxId.values()) return connectionId;
-				return undefined;
+				if (id) return this.sqlOwnership.getConnectionId(id);
+				return this.sqlOwnership.listTargets()[0]?.connectionId;
 			},
 			(sectionId: string) => {
 				const id = String(sectionId || '').trim();
-				if (!id) return undefined;
-				const derivedOwner = this._sqlComparisonOwnerByBoxId.get(id);
-				const sourceBoxId = derivedOwner?.sourceBoxId ?? id;
-				const issued = this._sqlOwnerTokenByBoxId.get(id) ?? this._sqlOwnerTokenByBoxId.get(sourceBoxId);
-				const connectionId = derivedOwner?.connectionId ?? this._sqlConnectionIdByBoxId.get(sourceBoxId);
-				const database = this._sqlDatabaseByBoxId.get(sourceBoxId);
-				if (!issued || !connectionId || !database || issued.owner.connectionId !== connectionId || issued.owner.database !== database) return undefined;
-				return { connectionId, database, ownerToken: issued.token, generation: issued.owner.generation };
+				return id ? this.sqlOwnership.getReadyToolOwner(id) : undefined;
 			},
 		);
 	}
@@ -504,7 +494,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.editorCursorStatusBar?.clearOwnerPrefix(this.cursorOwnerPrefix);
 	}
 
-	private toolStateResponseResolvers = new Map<string, (sections?: unknown[]) => void>();
+	private toolStateResponseResolvers = new Map<string, (sections: unknown[]) => void>();
 	private connectionsDataRevision = 0;
 	private connectionsDataTail: Promise<void> = Promise.resolve();
 
@@ -522,7 +512,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.toolStateResponseResolvers.set(requestId, (sections) => {
 				clearTimeout(timer);
 				this.toolStateResponseResolvers.delete(requestId);
-				if (sections) this.rebuildSqlComparisonOwners(sections);
+				this.rebuildSqlComparisonOwners(sections);
 				resolve(sections);
 			});
 			
@@ -531,26 +521,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private rebuildSqlComparisonOwners(sections: unknown[]): void {
-		const records = (Array.isArray(sections) ? sections : [])
-			.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object');
-		const ids = new Set(records.map(section => String(section.id || '').trim()).filter(Boolean));
-		for (const boxId of [...this._sqlComparisonOwnerByBoxId.keys()]) {
-			const owner = this._sqlComparisonOwnerByBoxId.get(boxId);
-			if (!ids.has(boxId) || !owner || !ids.has(owner.sourceBoxId)) this._sqlComparisonOwnerByBoxId.delete(boxId);
-		}
-		for (const section of records) {
-			const comparisonBoxId = String(section.id || '').trim();
-			const sourceBoxId = String(section.comparisonSourceBoxId || '').trim();
-			if (!comparisonBoxId || !sourceBoxId || !ids.has(sourceBoxId)) continue;
-			const source = records.find(candidate => String(candidate.id || '').trim() === sourceBoxId);
-			if (String(source?.type || '') !== 'sql') continue;
-			const connectionId = this._sqlConnectionIdByBoxId.get(sourceBoxId);
-			if (!connectionId) continue;
-			const existing = this._sqlComparisonOwnerByBoxId.get(comparisonBoxId);
-			if (!existing || existing.sourceBoxId !== sourceBoxId || existing.connectionId !== connectionId) {
-				this._sqlComparisonOwnerByBoxId.set(comparisonBoxId, { sourceBoxId, connectionId });
-			}
-		}
+		this.sqlOwnership.reconcileComparisonOwners(sections);
 	}
 
 	async openEditor(): Promise<void> {
@@ -630,7 +601,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					const pending = requestId ? this.pendingComparisonEnsureByRequestId.get(requestId) : undefined;
 					if (pending) {
 						pending.comparisonBoxId = comparisonBoxId;
-						if (comparisonBoxId) {
+						if (comparisonBoxId && !pending.sqlConnectionId) {
 							this._comparisonOwnerByBoxId.set(comparisonBoxId, {
 								sourceBoxId: pending.sourceBoxId,
 								...(pending.copilotSequence !== undefined ? { copilotSequence: pending.copilotSequence } : {}),
@@ -644,11 +615,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 								...(pending.copilotSequence !== undefined ? { copilotSequence: pending.copilotSequence } : {}),
 								comparisonRequestId: requestId,
 							};
-							this._sqlComparisonOwnerByBoxId.set(comparisonBoxId, provisionalOwner);
+							this.sqlOwnership.setComparisonOwner(comparisonBoxId, provisionalOwner);
 							try {
 								await this.sqlWorkbench.assertSqlConnectionAllowed(pending.sqlConnectionId);
 								const currentPending = this.pendingComparisonEnsureByRequestId.get(requestId);
-								const currentOwner = this._sqlComparisonOwnerByBoxId.get(comparisonBoxId);
+								const currentOwner = this.sqlOwnership.getComparisonOwner(comparisonBoxId);
 								if (currentPending !== pending || currentOwner?.comparisonRequestId !== requestId) {
 									if (currentPending === pending) {
 										this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
@@ -658,7 +629,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 							} catch (error) {
 								const currentPending = this.pendingComparisonEnsureByRequestId.get(requestId);
 								if (currentPending !== pending
-									|| this._sqlComparisonOwnerByBoxId.get(comparisonBoxId)?.comparisonRequestId !== requestId) {
+									|| this.sqlOwnership.getComparisonOwner(comparisonBoxId)?.comparisonRequestId !== requestId) {
 									if (currentPending === pending) {
 										this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 									}
@@ -834,16 +805,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'startCopilotWriteQuery':
 				if (message.flavor === 'sql') {
-					const previous = this._sqlCopilotPreflightByBoxId.get(message.boxId);
-					const generation = (previous?.generation ?? 0) + 1;
-					this._sqlCopilotPreflightByBoxId.set(message.boxId, { generation, active: true });
-					const isCurrentPreflight = () => {
-						const current = this._sqlCopilotPreflightByBoxId.get(message.boxId);
-						return current?.generation === generation && current.active;
-					};
+					const preflight = this.sqlExecutionBroker.reservePreflight(
+						message.boxId, SQL_COPILOT_PREFLIGHT_EXECUTION_ID, message.sqlOwnerToken,
+					);
 					try { await this.assertSqlOwnerToken(message.boxId, message.sqlOwnerToken); }
 					catch {
-						if (isCurrentPreflight()) {
+						if (this.sqlExecutionBroker.clearPreflight(preflight)) {
 							this.postMessage({
 								type: 'copilotWriteQueryDone', boxId: message.boxId, ok: false,
 								message: SQL_COPILOT_OWNER_CHANGED_MESSAGE, ownerToken: String(message.sqlOwnerToken || ''),
@@ -851,20 +818,19 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 						}
 						return;
 					}
-					if (!isCurrentPreflight()) return;
-					const run = this.copilot.startCopilotWriteQuery(message, this.sqlConnectionManager, this.sqlSchemaService, this.sqlClient);
-					if (isCurrentPreflight()) this._sqlCopilotPreflightByBoxId.set(message.boxId, { generation, active: false });
-					await run;
+					if (!this.sqlExecutionBroker.clearPreflight(preflight)) return;
+					await this.copilot.startCopilotWriteQuery(message, this.sqlConnectionManager, this.sqlSchemaService, this.sqlClient);
 					return;
 				}
 				await this.copilot.startCopilotWriteQuery(message, this.sqlConnectionManager, this.sqlSchemaService, this.sqlClient);
 				return;
 			case 'cancelCopilotWriteQuery':
 				{
-					const preflight = this._sqlCopilotPreflightByBoxId.get(message.boxId);
-					if (preflight?.active) {
-						this._sqlCopilotPreflightByBoxId.set(message.boxId, { generation: preflight.generation + 1, active: false });
-						const ownerToken = this._sqlOwnerTokenByBoxId.get(message.boxId)?.token;
+					const canceledPreflight = this.sqlExecutionBroker.cancelExpected(
+						message.boxId, SQL_COPILOT_PREFLIGHT_EXECUTION_ID, false,
+					);
+					if (canceledPreflight) {
+						const ownerToken = this.sqlOwnership.getOwnerToken(message.boxId);
 						this.postMessage({ type: 'copilotWriteQueryDone', boxId: message.boxId, ok: false, message: 'Canceled.', ...(ownerToken ? { ownerToken } : {}) });
 					}
 				}
@@ -903,13 +869,42 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'getSqlConnections':
 				await this.sendSqlConnectionsData();
 				return;
+			case 'sqlSectionOpen': {
+				const boxId = String(message.boxId || '').trim();
+				const sectionInstanceId = String(message.sectionInstanceId || '').trim();
+				if (!boxId || !sectionInstanceId) return;
+				const previousInstanceId = this._sqlSectionInstanceIdByBoxId.get(boxId);
+				if (previousInstanceId && previousInstanceId !== sectionInstanceId) {
+					const previousStsOwner = this.sqlOwnership.getIssuedOwner(boxId)?.owner ?? this.sqlOwnership.getOwner(boxId);
+					const comparisonBoxIds = this.sqlOwnership.listComparisonOwners()
+						.filter(({ owner }) => owner.sourceBoxId === boxId)
+						.map(({ boxId: comparisonBoxId }) => comparisonBoxId);
+					this.sqlExecutionBroker.supersede(boxId, { notifyWebview: true });
+					for (const comparisonBoxId of comparisonBoxIds) {
+						this.sqlExecutionBroker.supersede(comparisonBoxId, { notifyWebview: true });
+					}
+					if (previousStsOwner && this._openedStsBoxIds.delete(boxId)) {
+						this._stsLanguageService?.closeDocumentForOwner(boxId, previousStsOwner);
+					}
+					this.sqlOwnership.removeTarget(boxId);
+					this.sqlOwnership.removeComparisonOwnersForSource(boxId);
+				}
+				this._sqlSectionInstanceIdByBoxId.set(boxId, sectionInstanceId);
+				this._closedStsBoxIds.delete(boxId);
+				this.sqlOwnership.resetRetiredTarget(boxId);
+				return;
+			}
 			case 'getSqlDatabases':
-				if (!this.adoptSqlTarget(message.boxId, message.sqlConnectionId, undefined, message.targetGeneration)) return;
-				await this.sendSqlDatabases(message.sqlConnectionId, message.boxId, false);
+				if (!this.adoptSqlTarget(
+					message.boxId, message.sectionInstanceId, message.sqlConnectionId, undefined, message.targetGeneration,
+				)) return;
+				await this.sendSqlDatabases(message.sqlConnectionId, message.boxId, message.sectionInstanceId, false);
 				return;
 			case 'refreshSqlDatabases':
-				if (!this.adoptSqlTarget(message.boxId, message.sqlConnectionId, undefined, message.targetGeneration)) return;
-				await this.sendSqlDatabases(message.sqlConnectionId, message.boxId, true);
+				if (!this.adoptSqlTarget(
+					message.boxId, message.sectionInstanceId, message.sqlConnectionId, undefined, message.targetGeneration,
+				)) return;
+				await this.sendSqlDatabases(message.sqlConnectionId, message.boxId, message.sectionInstanceId, true);
 				return;
 			case 'saveSqlLastSelection':
 				{
@@ -945,39 +940,43 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.executeSqlQueryFromWebview(message);
 				return;
 			case 'cancelSqlQuery':
-				if (message.executionId) {
-					const pendingExecutionId = this._pendingSqlRunAdmissionByBoxId.get(message.boxId)?.executionId;
-					const runningExecutionId = this.queryRuns.get(message.boxId)?.executionId;
-					if (message.executionId !== pendingExecutionId && message.executionId !== runningExecutionId) return;
-				}
-				this.supersedeSqlRunAdmission(message.boxId, { notifyWebview: true });
+				if (this._sqlSectionInstanceIdByBoxId.get(message.boxId) !== message.sectionInstanceId) return;
+				this.sqlExecutionBroker.cancelExpected(message.boxId, message.executionId, true);
 				return;
 			case 'prefetchSqlSchema':
-				if (!this.adoptSqlTarget(message.boxId, message.sqlConnectionId, message.database, message.targetGeneration)) return;
+				if (!this.adoptSqlTarget(
+					message.boxId, message.sectionInstanceId, message.sqlConnectionId, message.database, message.targetGeneration,
+				)) return;
 				await this.prefetchSqlSchema(message.sqlConnectionId, message.database, message.boxId, !!message.forceRefresh);
 				return;
 			case 'stsRequest':
+				if (this._sqlSectionInstanceIdByBoxId.get(message.params.boxId) !== message.params.sectionInstanceId) return;
 				await this.handleStsRequest(message.requestId, message.method, message.params);
 				return;
 			case 'stsDidOpen':
+				if (this._sqlSectionInstanceIdByBoxId.get(message.boxId) !== message.sectionInstanceId) return;
 				this.handleStsDidOpen(message.boxId, message.text);
 				return;
 			case 'stsDidChange':
+				if (this._sqlSectionInstanceIdByBoxId.get(message.boxId) !== message.sectionInstanceId) return;
 				await this.handleStsDidChange(message.boxId, message.text);
 				return;
 			case 'stsDidClose':
+				if (this._sqlSectionInstanceIdByBoxId.get(message.boxId) !== message.sectionInstanceId) return;
 				this.handleStsDidClose(message.boxId);
 				return;
 			case 'sqlComparisonRemoved': {
 				const comparisonBoxId = String(message.boxId || '').trim();
 				if (!comparisonBoxId) return;
-				const comparisonOwner = this._comparisonOwnerByBoxId.get(comparisonBoxId);
-				const sqlOwner = this._sqlComparisonOwnerByBoxId.get(comparisonBoxId);
-				const owner = sqlOwner ?? comparisonOwner;
+				const sqlOwner = this.sqlOwnership.getComparisonOwner(comparisonBoxId);
+				const owner = sqlOwner ?? this._comparisonOwnerByBoxId.get(comparisonBoxId);
 				if (!owner) return;
-				this._comparisonOwnerByBoxId.delete(comparisonBoxId);
-				this._sqlComparisonOwnerByBoxId.delete(comparisonBoxId);
-				this._sqlOwnerTokenByBoxId.delete(comparisonBoxId);
+				if (sqlOwner) {
+					this.sqlExecutionBroker.supersede(comparisonBoxId, { notifyWebview: true });
+					this.sqlOwnership.removeComparisonOwner(comparisonBoxId);
+				} else {
+					this._comparisonOwnerByBoxId.delete(comparisonBoxId);
+				}
 				this.deleteComparisonSummary(`${owner.sourceBoxId}::${comparisonBoxId}`);
 				if (owner.comparisonRequestId) {
 					const pending = this.pendingComparisonEnsureByRequestId.get(owner.comparisonRequestId);
@@ -985,8 +984,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 						this.settlePendingComparisonEnsure(owner.comparisonRequestId, pending, { error: new Error('Canceled') });
 					}
 				}
-				if (sqlOwner) this.supersedeSqlRunAdmission(comparisonBoxId, { notifyWebview: true });
-				else this.cancelRunningQuery(comparisonBoxId, { notifyWebview: true });
+				if (!sqlOwner) this.cancelRunningQuery(comparisonBoxId, { notifyWebview: true });
 				if (owner.copilotSequence !== undefined) {
 					this.copilot.cancelCopilotQueryTarget(owner.sourceBoxId, comparisonBoxId, owner.copilotSequence);
 				}
@@ -998,7 +996,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			}
 			case 'stsConnect':
-				await this.handleStsConnect(message.boxId, message.sqlConnectionId, message.database, message.targetGeneration, message.expectedOwner);
+				await this.handleStsConnect(
+					message.boxId, message.sectionInstanceId, message.sqlConnectionId, message.database,
+					message.targetGeneration, message.expectedOwner,
+				);
 				return;
 			case 'copyAdeLink':
 				await this.copyAdeLinkFromWebview(message);
@@ -1007,7 +1008,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.shareToClipboardFromWebview(message);
 				return;
 			case 'cancelQuery':
-				if (this.queryRuns.get(message.boxId)?.executionId !== message.executionId) return;
 				this.cancelRunningQuery(message.boxId, { notifyWebview: true });
 				return;
 			case 'executePython':
@@ -1596,7 +1596,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			throw new Error('Webview panel is not available');
 		}
 		const requestId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
-		const sqlConnectionId = this._sqlConnectionIdByBoxId.get(sourceBoxId);
+		const sqlConnectionId = this.sqlOwnership.getConnectionId(sourceBoxId);
 		if (sqlConnectionId) await this.sqlWorkbench.assertSqlConnectionAllowed(sqlConnectionId);
 		return await new Promise<string>((resolve, reject) => {
 			if (token.isCancellationRequested) {
@@ -1976,10 +1976,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		expectedOwner: SqlResultOwner,
 		message: Record<string, unknown>,
 		isCurrent: () => boolean = () => true,
-	): Promise<boolean> {
-		return this.dispatchSqlResultOwnerAllowed(boxId, expectedOwner, async () => {
-			if (!isCurrent()) return false;
-			return await this.postMessage(message) === true;
+	): Promise<void> {
+		await this.dispatchSqlResultOwnerAllowed(boxId, expectedOwner, () => {
+			if (isCurrent()) this.postMessage(message);
 		});
 	}
 
@@ -1987,16 +1986,15 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		connection: import('./sqlConnectionManager').SqlConnection,
 		message: Record<string, unknown>,
 		isCurrent: () => boolean = () => true,
-	): Promise<boolean> {
+	): Promise<void> {
 		const principalFingerprint = await readCurrentSqlSchemaPrincipalFingerprint(this.context, connection);
 		if (!principalFingerprint) throw new Error('SQL principal is unavailable before canonical dispatch admission.');
-		return this.sqlWorkbench.dispatchSqlOwnerAllowed(
+		await this.sqlWorkbench.dispatchSqlOwnerAllowed(
 			connection,
 			principalFingerprint,
 			this.sqlWorkbench.leaveNoTracePolicy.getRevocationGeneration(connection.id),
-			async () => {
-				if (!isCurrent()) return false;
-				return await this.postMessage(message) === true;
+			() => {
+			if (isCurrent()) this.postMessage(message);
 			},
 		);
 	}
@@ -2034,118 +2032,29 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		await this.connectionsDataTail;
 	}
 
-	cancelRunningQuery(boxId: string, options?: { notifyWebview?: boolean }): Thenable<boolean> | undefined {
+	cancelRunningQuery(boxId: string, options?: { notifyWebview?: boolean }): void {
 		const id = String(boxId || '').trim();
 		if (!id) {
 			return;
 		}
-		const ownerToken = this._sqlOwnerTokenByBoxId?.get(id)?.token;
 		const running = this.queryRuns.get(id);
 		if (!running) {
+			if (options?.notifyWebview) {
+				this.postMessage({ type: 'queryCancelled', boxId: id });
+			}
 			return;
 		}
 		this.queryRuns.cancel(id);
 		if (options?.notifyWebview) {
-			return this.postMessage({
+			this.postMessage({
 				type: 'queryCancelled', boxId: id,
-				...(ownerToken ? { ownerToken } : {}),
 				...(running.executionId ? { executionId: running.executionId } : {}),
 			});
 		}
-		return undefined;
 	}
 
-	supersedeSqlRunAdmission(boxId: string, options?: { notifyWebview?: boolean }): number {
-		const id = String(boxId || '').trim();
-		if (!id) return 0;
-		const generation = (this._sqlRunAdmissionGenerationByBoxId.get(id) ?? 0) + 1;
-		this._sqlRunAdmissionGenerationByBoxId.set(id, generation);
-		const retiredPending = this.retirePendingSqlRunAdmission(id, options?.notifyWebview === true);
-		this.cancelRunningQuery(id, retiredPending ? { notifyWebview: false } : options);
-		return generation;
-	}
-
-	private retirePendingSqlRunAdmission(boxId: string, notifyWebview: boolean): boolean {
-		const pending = this._pendingSqlRunAdmissionByBoxId.get(boxId);
-		if (!pending) return false;
-		this._pendingSqlRunAdmissionByBoxId.delete(boxId);
-		if (notifyWebview) {
-			this.postMessage({
-				type: 'queryCancelled', boxId,
-				...(pending.ownerToken ? { ownerToken: pending.ownerToken } : {}),
-				executionId: pending.executionId,
-			});
-		}
-		return true;
-	}
-
-	startSqlRunUnderAdmission<T extends { cancel: () => void; promise?: PromiseLike<unknown> }>(
-		boxId: string,
-		expectedGeneration: number,
-		start: () => T,
-		executionId?: string,
-	): { execution: T; runSeq: number } {
-		const id = String(boxId || '').trim();
-		if (!id || this._sqlRunAdmissionGenerationByBoxId.get(id) !== expectedGeneration) {
-			throw new Error('SQL Copilot write-query canceled');
-		}
-		const execution = start();
-		if (this._sqlRunAdmissionGenerationByBoxId.get(id) !== expectedGeneration) {
-			if (execution.promise) void Promise.resolve(execution.promise).catch(() => undefined);
-			try { execution.cancel(); } catch { /* ignore */ }
-			throw new Error('SQL Copilot write-query canceled');
-		}
-		const runSeq = this.queryRuns.nextSequence();
-		this.queryRuns.register(id, { cancel: execution.cancel, runSeq, ...(executionId ? { executionId } : {}) });
-		return { execution, runSeq };
-	}
-
-	isSqlRunAdmissionCurrent(boxId: string, expectedGeneration: number, cancel: () => void, runSeq: number): boolean {
-		const id = String(boxId || '').trim();
-		return !!id
-			&& this._sqlRunAdmissionGenerationByBoxId.get(id) === expectedGeneration
-			&& this.queryRuns.isCurrent(id, cancel, runSeq);
-	}
-
-	reserveRunningQueryReplacement(boxId: string, executionId: string): {
-		cancel: () => void;
-		runSeq: number;
-		previousCancellationDelivery: Promise<boolean>;
-	} {
-		const id = String(boxId || '').trim();
-		const reservationCancel = () => { /* coordinator reservation */ };
-		const runSeq = this.queryRuns.nextSequence();
-		const previous = this.queryRuns.replaceAndCancel(id, {
-			cancel: reservationCancel,
-			runSeq,
-			executionId,
-		});
-		const previousCancellationDelivery = previous?.executionId
-			? Promise.resolve(this.postMessage({
-				type: 'queryCancelled', boxId: id, executionId: previous.executionId,
-			})).then(delivered => delivered === true, () => false)
-			: Promise.resolve(true);
-		return { cancel: reservationCancel, runSeq, previousCancellationDelivery };
-	}
-
-	promoteRunningQueryReservation(
-		boxId: string,
-		reservationCancel: () => void,
-		runSeq: number,
-		cancel: () => void,
-		clientActivityId: string | undefined,
-		executionId: string,
-	): boolean {
-		return this.queryRuns.replaceIfCurrent(boxId, reservationCancel, runSeq, {
-			cancel,
-			runSeq,
-			clientActivityId,
-			executionId,
-		});
-	}
-
-	registerRunningQuery(boxId: string, cancel: () => void, runSeq: number, clientActivityId?: string, executionId?: string): void {
-		this.queryRuns.register(boxId, { cancel, runSeq, clientActivityId, ...(executionId ? { executionId } : {}) });
+	registerRunningQuery(boxId: string, cancel: () => void, runSeq: number, clientActivityId?: string): void {
+		this.queryRuns.register(boxId, { cancel, runSeq, clientActivityId });
 	}
 
 	unregisterRunningQuery(boxId: string, cancel: () => void, runSeq: number): void {
@@ -2458,8 +2367,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		panel.onDidDispose(() => {
 			if (this.panel !== panel) return;
 			this._panelDisposed = true;
-			this.copilot.dispose();
-			this.disposePendingWebviewRequests();
+			this.copilot.invalidateSqlConnections(
+				[], this.sqlOwnership.listComparisonOwners().map(({ boxId }) => boxId),
+			);
 			this.sqlLeaveNoTraceSubscription.dispose();
 			this.stsRuntimeSubscription.dispose();
 			this.sqlConnectionsSubscription.dispose();
@@ -2481,23 +2391,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.authPreferenceSubscription = undefined;
 			this.panel = undefined;
 		});
-	}
-
-	private disposePendingWebviewRequests(): void {
-		const error = new Error('The query editor closed before the webview request completed.');
-		for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
-			this.settlePendingComparisonEnsure(requestId, pending, { error });
-		}
-		for (const pending of this.pendingComparisonSummaryByKey.values()) {
-			for (const entry of pending) {
-				try { clearTimeout(entry.timer); } catch { /* ignore */ }
-				entry.reject(error);
-			}
-		}
-		this.pendingComparisonSummaryByKey.clear();
-		this.latestComparisonSummaryByKey.clear();
-		for (const resolve of this.toolStateResponseResolvers.values()) resolve(undefined);
-		this.toolStateResponseResolvers.clear();
 	}
 
 	// ── Alternating row color setting ──────────────────────────────────────────
@@ -2531,36 +2424,22 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private async executeQueryFromWebview(
 		message: Extract<IncomingWebviewMessage, { type: 'executeQuery' }>
 	): Promise<void> {
+		await this.connection.saveLastSelection(message.connectionId, message.database);
+
 		const boxId = String(message.boxId || '').trim();
-		const executionId = String(message.executionId || '').trim();
-		if (!boxId || !executionId) return;
 		if (boxId) {
 			// If the user runs again in the same box, cancel the previous run.
 			this.cancelRunningQuery(boxId);
 		}
-		let preflightCancelled = false;
-		const cancelPreflight = () => { preflightCancelled = true; };
-		const runSeq = this.queryRuns.nextSequence();
-		this.queryRuns.register(boxId, { cancel: cancelPreflight, runSeq, executionId });
-		try {
-			await this.connection.saveLastSelection(message.connectionId, message.database);
-		} catch (error) {
-			this.output.warn(`[query] Failed to save the last selection: ${sanitizeStsLogText(error instanceof Error ? error.message : error)}`);
-		}
-		if (preflightCancelled || !this.queryRuns.isCurrent(boxId, cancelPreflight, runSeq)) return;
 
 		const connection = this.connection.findConnection(message.connectionId);
 		if (!connection) {
 			vscode.window.showErrorMessage('Connection not found');
-			this.postMessage({ type: 'queryError', error: 'Connection not found', boxId, executionId });
-			this.queryRuns.unregister(boxId, cancelPreflight, runSeq);
 			return;
 		}
 
 		if (!message.database) {
 			vscode.window.showErrorMessage('Please select a database');
-			this.postMessage({ type: 'queryError', error: 'Please select a database', boxId, executionId });
-			this.queryRuns.unregister(boxId, cancelPreflight, runSeq);
 			return;
 		}
 
@@ -2572,28 +2451,18 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const executionQuery = this.normalizeControlCommandForExecution(finalQuery);
 
 		const cancelClientKey = boxId ? `${boxId}::${connection.id}` : connection.id;
-		let execution;
-		try {
-			execution = this.kustoClient.executeQueryCancelable(connection, message.database, executionQuery, cancelClientKey);
-		} catch (error) {
-			if (this.queryRuns.isCurrent(boxId, cancelPreflight, runSeq)) {
-				this.queryRuns.unregister(boxId, cancelPreflight, runSeq);
-				const userMessage = this.formatQueryExecutionErrorForUser(error, connection, message.database);
-				this.postMessage({ type: 'queryError', error: userMessage, boxId, executionId });
-			}
-			return;
-		}
+		const execution = this.kustoClient.executeQueryCancelable(connection, message.database, executionQuery, cancelClientKey);
 		const { promise, cancel, clientActivityId } = execution;
-		if (!this.queryRuns.replaceIfCurrent(boxId, cancelPreflight, runSeq, { cancel, runSeq, clientActivityId, executionId })) {
-			try { cancel(); } catch { /* stale transport cleanup */ }
-			return;
-		}
+		const runSeq = this.nextQueryRunSeq();
 		const isStillActiveRun = () => {
 			if (!boxId) {
 				return true;
 			}
 			return this.isRunningQueryCurrent(boxId, cancel, runSeq);
 		};
+		if (boxId) {
+			this.registerRunningQuery(boxId, cancel, runSeq, clientActivityId);
+		}
 		try {
 			const result = await promise;
 			if (isStillActiveRun()) {
@@ -2602,13 +2471,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				if (isStillActiveRun()
 					&& producingAccountPartition
 					&& this.kustoClient.getAccountPartition(connection) === producingAccountPartition) {
-					this.postMessage({ type: 'queryResult', result, boxId, executionId });
+					this.postMessage({ type: 'queryResult', result, boxId });
 				}
 			}
 		} catch (error) {
 			if ((error as any)?.name === 'QueryCancelledError' || (error as any)?.isCancelled === true) {
 				if (isStillActiveRun()) {
-					this.postMessage({ type: 'queryCancelled', boxId, executionId });
+					this.postMessage({ type: 'queryCancelled', boxId });
 				}
 				return;
 			}
@@ -2617,7 +2486,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				const userMessage = this.formatQueryExecutionErrorForUser(error, connection, message.database);
 				const clientActivityId = error instanceof QueryExecutionError ? error.clientActivityId : undefined;
 				vscode.window.showErrorMessage(userMessage);
-				this.postMessage({ type: 'queryError', error: userMessage, boxId, clientActivityId, executionId });
+				this.postMessage({ type: 'queryError', error: userMessage, boxId, clientActivityId });
 			}
 		} finally {
 			if (boxId) {
@@ -2684,52 +2553,22 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 	}
 
-	private adoptSqlTarget(
+	private async sendSqlDatabases(
+		sqlConnectionId: string,
 		boxId: string,
-		connectionId: string,
-		database: string | undefined,
-		targetGeneration: number,
-	): boolean {
-		const id = String(boxId || '').trim();
-		const nextConnectionId = String(connectionId || '').trim();
-		const generation = Number(targetGeneration);
-		if (!id || !nextConnectionId || !Number.isSafeInteger(generation) || generation < 0) return false;
-
-		const currentGeneration = this._sqlTargetGenerationByBoxId.get(id);
-		if (currentGeneration !== undefined && generation < currentGeneration) return false;
-		const currentConnectionId = this._sqlConnectionIdByBoxId.get(id);
-		const currentDatabase = this._sqlDatabaseByBoxId.get(id);
-		const hasDatabase = database !== undefined;
-		const nextDatabase = hasDatabase ? String(database || '').trim() : undefined;
-
-		if (currentGeneration === generation) {
-			if ((currentConnectionId && currentConnectionId !== nextConnectionId)
-				|| (hasDatabase && currentDatabase !== undefined && currentDatabase !== nextDatabase)) return false;
-			this._sqlConnectionIdByBoxId.set(id, nextConnectionId);
-			if (hasDatabase) {
-				if (nextDatabase) this._sqlDatabaseByBoxId.set(id, nextDatabase);
-				else this._sqlDatabaseByBoxId.delete(id);
-			}
-			return true;
-		}
-
-		this.supersedeSqlRunAdmission(id, { notifyWebview: true });
-		this._sqlTargetGenerationByBoxId.set(id, generation);
-		this._sqlConnectionIdByBoxId.set(id, nextConnectionId);
-		this._sqlOwnerTokenByBoxId.delete(id);
-		if (hasDatabase && nextDatabase) this._sqlDatabaseByBoxId.set(id, nextDatabase);
-		else this._sqlDatabaseByBoxId.delete(id);
-		return true;
-	}
-
-	private async sendSqlDatabases(sqlConnectionId: string, boxId: string, forceRefresh: boolean): Promise<void> {
+		sectionInstanceId: string,
+		forceRefresh: boolean,
+	): Promise<void> {
+		if (this._sqlSectionInstanceIdByBoxId.get(boxId) !== sectionInstanceId) return;
+		const target = this.sqlOwnership.getTarget(boxId);
+		if (!target || target.connectionId !== sqlConnectionId) return;
 		const connection = this.sqlConnectionManager.getConnection(sqlConnectionId);
 		const requestId = `sql-db-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 		this._sqlDatabaseRequestIdByBoxId.set(boxId, requestId);
-		const generation = this._sqlTargetGenerationByBoxId.get(boxId) ?? 0;
-		this.postMessage({ type: 'sqlDatabasesLoading', requestId, targetGeneration: generation, boxId, sqlConnectionId });
+		const generation = target.generation;
+		this.postMessage({ type: 'sqlDatabasesLoading', requestId, targetGeneration: generation, boxId, sectionInstanceId, sqlConnectionId });
 		if (!connection) {
-			this.postMessage({ type: 'sqlDatabasesError', requestId, targetGeneration: generation, boxId, sqlConnectionId, error: 'SQL connection not found.' });
+			this.postMessage({ type: 'sqlDatabasesError', requestId, targetGeneration: generation, boxId, sectionInstanceId, sqlConnectionId, error: 'SQL connection not found.' });
 			return;
 		}
 		const targetSignature = sqlDatabaseTargetSignature(connection);
@@ -2739,7 +2578,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			cacheRequest = await beginSqlDatabaseCacheRequest(this.context, SQL_DATABASE_CACHE_STORAGE_KEY, connection);
 		} catch {
 			if (this._sqlDatabaseRequestIdByBoxId.get(boxId) === requestId) {
-				this.postMessage({ type: 'sqlDatabasesError', requestId, targetGeneration: generation, boxId, sqlConnectionId, error: 'SQL connection is changing. Try again when the update completes.' });
+				this.postMessage({ type: 'sqlDatabasesError', requestId, targetGeneration: generation, boxId, sectionInstanceId, sqlConnectionId, error: 'SQL connection is changing. Try again when the update completes.' });
 			}
 			return;
 		}
@@ -2751,8 +2590,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				&& sqlDatabaseTargetSignature(current) === targetSignature
 				&& (acceptedPrincipalFingerprint === undefined || currentPrincipalFingerprint === acceptedPrincipalFingerprint)
 				&& this._sqlDatabaseRequestIdByBoxId.get(boxId) === requestId
-				&& this._sqlConnectionIdByBoxId.get(boxId) === sqlConnectionId
-				&& (this._sqlTargetGenerationByBoxId.get(boxId) ?? 0) === generation;
+				&& this._sqlSectionInstanceIdByBoxId.get(boxId) === sectionInstanceId
+				&& this.sqlOwnership.isTargetCurrent(boxId, sqlConnectionId, undefined, generation);
 		};
 		const assertCurrentOwner = async (requireEstablishedPrincipal = false): Promise<void> => {
 			await this.sqlWorkbench.assertSqlConnectionAllowed(connection.id);
@@ -2777,7 +2616,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.postMessage({ type: 'sqlDatabasesError', requestId, targetGeneration: generation, boxId, sqlConnectionId, error: error instanceof Error ? error.message : String(error) });
 			return;
 		}
-		const isCurrentOwner = () => this._sqlConnectionIdByBoxId.get(boxId) === sqlConnectionId;
+		const isCurrentOwner = () => this._sqlSectionInstanceIdByBoxId.get(boxId) === sectionInstanceId
+			&& this.sqlOwnership.getConnectionId(boxId) === sqlConnectionId;
 
 		const cachedBefore = (await getOwnedSqlDatabaseCacheEntry(this.context, SQL_DATABASE_CACHE_STORAGE_KEY, connection))?.databases ?? [];
 
@@ -2785,7 +2625,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			try {
 				await assertCurrentOwner();
 				await this.postSqlConnectionMessageAllowed(connection, {
-					type: 'sqlDatabasesData', requestId, targetGeneration: generation, databases: cachedBefore, boxId, sqlConnectionId,
+					type: 'sqlDatabasesData', requestId, targetGeneration: generation, databases: cachedBefore, boxId, sectionInstanceId, sqlConnectionId,
 				}, isCurrentRequestOwner);
 			} catch {
 				// A newer request or target owns this section now.
@@ -2808,7 +2648,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				);
 			await assertCurrentOwner();
 				await this.postSqlConnectionMessageAllowed(connection, {
-					type: 'sqlDatabasesData', requestId, targetGeneration: generation, databases: sorted, boxId, sqlConnectionId,
+					type: 'sqlDatabasesData', requestId, targetGeneration: generation, databases: sorted, boxId, sectionInstanceId, sqlConnectionId,
 				}, isCurrentRequestOwner);
 		} catch (error) {
 			const errorMessage = error instanceof Error ? error.message : String(error);
@@ -2827,7 +2667,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				try {
 					await assertCurrentOwner();
 					await this.postSqlConnectionMessageAllowed(connection, {
-						type: 'sqlDatabasesData', requestId, targetGeneration: generation, databases: cachedBefore, boxId, sqlConnectionId,
+						type: 'sqlDatabasesData', requestId, targetGeneration: generation, databases: cachedBefore, boxId, sectionInstanceId, sqlConnectionId,
 					}, isCurrentRequestOwner);
 				} catch { /* Leave No Trace blocks fallback metadata. */ }
 				vscode.window.showWarningMessage(`Failed to refresh SQL database list. Using cached list.`);
@@ -2835,13 +2675,14 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 
 			vscode.window.showErrorMessage(`Failed to load SQL database list: ${errorMessage}`);
-			if (isCurrentOwner()) this.postMessage({ type: 'sqlDatabasesError', requestId, targetGeneration: generation, boxId, sqlConnectionId, error: errorMessage });
+			if (isCurrentOwner()) this.postMessage({ type: 'sqlDatabasesError', requestId, targetGeneration: generation, boxId, sectionInstanceId, sqlConnectionId, error: errorMessage });
 		}
 	}
 
 	private async prefetchSqlSchema(sqlConnectionId: string, database: string, boxId: string, forceRefresh: boolean): Promise<void> {
 		const connection = this.sqlConnectionManager.getConnection(sqlConnectionId);
-		if (!connection || !database) {
+		const sectionInstanceId = this._sqlSectionInstanceIdByBoxId.get(boxId);
+		if (!connection || !database || !sectionInstanceId) {
 			return;
 		}
 		const owner = this.getSqlResultOwner(boxId);
@@ -2857,11 +2698,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				}
 			}
 			await this.dispatchSqlResultOwnerAllowed(boxId, owner, () => {
-				if (!this.sqlResultOwnersEqual(this.getSqlResultOwner(boxId), owner)) return;
+				if (this._sqlSectionInstanceIdByBoxId.get(boxId) !== sectionInstanceId
+					|| !this.sqlResultOwnersEqual(this.getSqlResultOwner(boxId), owner)) return;
 				this.output.info(`[sql-schema] loaded tables=${tablesCount} columns=${columnsCount} fromCache=${fromCache}`);
 				this.postMessage({
 					type: 'sqlSchemaData',
 					boxId,
+					sectionInstanceId,
 					sqlConnectionId,
 					database,
 					targetGeneration: owner.generation,
@@ -2874,11 +2717,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			const msg = error instanceof Error ? error.message : String(error);
 			try {
 				await this.dispatchSqlResultOwnerAllowed(boxId, owner, () => {
-					if (!this.sqlResultOwnersEqual(this.getSqlResultOwner(boxId), owner)) return;
+					if (this._sqlSectionInstanceIdByBoxId.get(boxId) !== sectionInstanceId
+						|| !this.sqlResultOwnersEqual(this.getSqlResultOwner(boxId), owner)) return;
 					this.output.error(`[sql-schema] error: ${sanitizeStsLogText(msg)}`);
 					this.postMessage({
 						type: 'sqlSchemaData',
 						boxId,
+						sectionInstanceId,
 						sqlConnectionId,
 						database,
 						targetGeneration: owner.generation,
@@ -2921,8 +2766,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					if (!event.owner || !Number.isSafeInteger(event.owner.generation)) return;
 					const owner: SqlResultOwner = { ...event.owner, generation: Number(event.owner.generation) };
 					if (!this.sqlResultOwnersEqual(this.getSqlResultOwner(event.boxId), owner)) return;
+					const sectionInstanceId = this._sqlSectionInstanceIdByBoxId.get(event.boxId);
+					if (!sectionInstanceId) return;
 					// StsLanguageService invokes this callback synchronously inside composite owner admission.
-					this.postMessage({ type: 'stsDiagnostics', boxId: event.boxId, markers: event.markers });
+					this.postMessage({ type: 'stsDiagnostics', boxId: event.boxId, sectionInstanceId, markers: event.markers });
 				});
 
 				return languageService;
@@ -2941,14 +2788,14 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private async handleStsRequest(requestId: string, method: string, params: {
-		boxId: string; line: number; column: number; ownerToken?: string; targetGeneration?: number;
+		boxId: string; sectionInstanceId: string; line: number; column: number; ownerToken?: string; targetGeneration?: number;
 	}): Promise<void> {
 		this.output.info(`[sts-diag] handleStsRequest method=${method} boxId=${params.boxId} L${params.line}:${params.column}`);
 		const postNull = () => this.postMessage({
-			type: 'stsResponse', requestId, result: null,
+			type: 'stsResponse', boxId: params.boxId, sectionInstanceId: params.sectionInstanceId, requestId, result: null,
 			ownerToken: String(params.ownerToken || ''), targetGeneration: Number(params.targetGeneration),
 		} as any);
-		const connectionId = this._sqlConnectionIdByBoxId.get(params.boxId);
+		const connectionId = this.sqlOwnership.getConnectionId(params.boxId);
 		if (!connectionId || this.sqlWorkbench.isLeaveNoTraceConnection(connectionId) || !this._openedStsBoxIds.has(params.boxId)) {
 			postNull();
 			return;
@@ -2990,9 +2837,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			await this.assertSqlResultOwnerAllowed(params.boxId, expectedOwner);
 			if (this._stsLanguageService !== svc) throw new Error('SQL language service changed before response admission.');
 			await this.postSqlOwnerMessageAllowed(params.boxId, expectedOwner, {
-				type: 'stsResponse', requestId, result, ownerToken: issuedOwnerToken, targetGeneration: expectedOwner.generation,
+				type: 'stsResponse', boxId: params.boxId, sectionInstanceId: params.sectionInstanceId,
+				requestId, result, ownerToken: issuedOwnerToken, targetGeneration: expectedOwner.generation,
 			}, () =>
-				this._stsLanguageService === svc && this.sqlResultOwnersEqual(this.getSqlResultOwner(params.boxId), expectedOwner));
+				this._stsLanguageService === svc
+				&& this._sqlSectionInstanceIdByBoxId.get(params.boxId) === params.sectionInstanceId
+				&& this.sqlResultOwnersEqual(this.getSqlResultOwner(params.boxId), expectedOwner));
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
 			try {
@@ -3019,7 +2869,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const id = String(boxId || '').trim();
 		if (id) this._pendingStsTextByBoxId.set(id, text);
 		if (id && !this._closedStsBoxIds.has(id) && this._openedStsBoxIds.has(id) && this._stsLanguageService) {
-			const connectionId = this._sqlConnectionIdByBoxId.get(id);
+			const connectionId = this.sqlOwnership.getConnectionId(id);
 			if (!connectionId) return;
 			try {
 				await this.sqlWorkbench.assertSqlConnectionAllowed(connectionId);
@@ -3033,49 +2883,50 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private handleStsDidClose(boxId: string): void {
 		const id = String(boxId || '').trim();
 		if (!id) return;
-		this.supersedeSqlRunAdmission(id, { notifyWebview: true });
+		const previousStsOwner = this.sqlOwnership.getIssuedOwner(id)?.owner ?? this.sqlOwnership.getOwner(id);
+		const comparisonBoxIds = this.sqlOwnership.listComparisonOwners()
+			.filter(({ owner }) => owner.sourceBoxId === id)
+			.map(({ boxId: comparisonBoxId }) => comparisonBoxId);
+		this.sqlExecutionBroker.supersede(id, { notifyWebview: true });
+		for (const comparisonBoxId of comparisonBoxIds) {
+			this.sqlExecutionBroker.supersede(comparisonBoxId, { notifyWebview: true });
+		}
 		this.copilot.cancelCopilotWriteQuery(id);
 		this._closedStsBoxIds.add(id);
-		this._openedStsBoxIds.delete(id);
 		this._pendingStsTextByBoxId.delete(id);
-		this._sqlConnectionIdByBoxId.delete(id);
-		this._sqlDatabaseByBoxId.delete(id);
 		this._sqlDatabaseRequestIdByBoxId.delete(id);
-		this._sqlRunAdmissionGenerationByBoxId.delete(id);
-		this._sqlTargetGenerationByBoxId.delete(id);
-		this._sqlOwnerTokenByBoxId.delete(id);
-		for (const [comparisonBoxId, owner] of [...this._sqlComparisonOwnerByBoxId]) {
-			if (owner.sourceBoxId !== id) continue;
-			this.supersedeSqlRunAdmission(comparisonBoxId, { notifyWebview: true });
+		for (const comparisonBoxId of comparisonBoxIds) {
 			this.copilot.cancelCopilotWriteQuery(comparisonBoxId);
-			this._sqlComparisonOwnerByBoxId.delete(comparisonBoxId);
 		}
+		if (previousStsOwner && this._openedStsBoxIds.delete(id)) {
+			this._stsLanguageService?.closeDocumentForOwner(id, previousStsOwner);
+		}
+		this.sqlOwnership.removeTarget(id);
+		this.sqlOwnership.removeComparisonOwnersForSource(id);
 		this._latestStsConnectSequenceByBoxId.delete(id);
+		this._sqlSectionInstanceIdByBoxId.delete(id);
 		this.output.info(`[sts-diag] handleStsDidClose boxId=${id}`);
-		if (this._stsLanguageService) {
-			this._stsLanguageService.closeDocument(id);
-		}
 	}
 
 	private disposeSqlEditorSession(): void {
 		this._sqlEditorSessionDisposed = true;
+		for (const { boxId } of this.sqlOwnership.listTargets()) {
+			this.sqlExecutionBroker.supersede(boxId);
+		}
+		for (const { boxId } of this.sqlOwnership.listComparisonOwners()) {
+			this.sqlExecutionBroker.supersede(boxId);
+		}
 		try { this._stsLanguageService?.dispose(); } catch { /* ignore */ }
 		this._stsLanguageService = undefined;
 		this._stsInitPromise = undefined;
 		this._closedStsBoxIds.clear();
 		this._openedStsBoxIds.clear();
 		this._pendingStsTextByBoxId.clear();
-		this._sqlConnectionIdByBoxId.clear();
-		this._sqlDatabaseByBoxId.clear();
+		this._sqlSectionInstanceIdByBoxId.clear();
 		this._sqlDatabaseRequestIdByBoxId.clear();
-		this._sqlRunAdmissionGenerationByBoxId.clear();
-		this._pendingSqlRunAdmissionByBoxId.clear();
-		this._sqlCopilotPreflightByBoxId.clear();
-		this._sqlTargetGenerationByBoxId.clear();
-		this._sqlOwnerTokenByBoxId.clear();
+		this.sqlExecutionBroker.clear();
+		this.sqlOwnership.clear();
 		this._comparisonOwnerByBoxId.clear();
-		this._sqlComparisonOwnerByBoxId.clear();
-		this._sqlOwnershipRegistry = undefined;
 		this._latestStsConnectSequenceByBoxId.clear();
 		this._stsConnectSequenceByBoxId.clear();
 	}
@@ -3091,45 +2942,38 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		return !this._closedStsBoxIds.has(boxId) && this._latestStsConnectSequenceByBoxId.get(boxId) === sequence;
 	}
 
-	private _postCurrentStsConnectError(boxId: string, sequence: number, message: string): void {
-		if (!this._isCurrentStsConnect(boxId, sequence)) {
+	private _postCurrentStsConnectError(boxId: string, sectionInstanceId: string, sequence: number, message: string): void {
+		if (!this._isCurrentStsConnect(boxId, sequence)
+			|| this._sqlSectionInstanceIdByBoxId.get(boxId) !== sectionInstanceId) {
 			this.output.info(`[sts-diag] handleStsConnect → stale early failure suppressed boxId=${boxId}: ${sanitizeStsLogText(message)}`);
 			return;
 		}
 		this.output.error(`[sts-diag] handleStsConnect → FAILED boxId=${boxId}: ${sanitizeStsLogText(message)}`);
 		this.postMessage({
-			type: 'stsConnectionState', boxId, state: 'error', error: message,
-			targetGeneration: this._sqlTargetGenerationByBoxId.get(boxId) ?? 0,
+			type: 'stsConnectionState', boxId, sectionInstanceId, state: 'error', error: message,
+			targetGeneration: this.sqlOwnership.getGeneration(boxId),
 		} as any);
 	}
 
 	private async handleStsConnect(
 		boxId: string,
+		sectionInstanceId: string,
 		sqlConnectionId: string,
 		database: string,
-		targetGeneration?: number,
+		targetGeneration: number,
 		expectedOwner?: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number },
 	): Promise<void> {
 		const id = String(boxId || '').trim();
-		if (!id || this._closedStsBoxIds.has(id)) {
+		if (!this.adoptSqlTarget(id, sectionInstanceId, sqlConnectionId, database, targetGeneration)) {
 			this.output.info(`[sts-diag] handleStsConnect skipped closed boxId=${id || '(none)'}`);
 			return;
 		}
-		const previousOwner = this._sqlOwnerTokenByBoxId.get(id)?.owner ?? this.getSqlResultOwner(id);
-		if (!this.adoptSqlTarget(id, sqlConnectionId, database, Number(targetGeneration))) {
-			this.output.info(`[sts-diag] handleStsConnect skipped stale target boxId=${id}`);
-			return;
-		}
 		const connectSequence = this._nextStsConnectSequence(id);
-		if (this._openedStsBoxIds.has(id)) {
-			if (previousOwner) this._stsLanguageService?.closeDocumentForOwner(id, previousOwner);
-			this._openedStsBoxIds.delete(id);
-		}
 		this.output.info(`[sts-diag] handleStsConnect boxId=${id}`);
 		const connection = this.sqlConnectionManager.getConnection(sqlConnectionId);
 		if (!connection) {
 			this.output.warn('[sts-diag] handleStsConnect → connection not found');
-			this._postCurrentStsConnectError(id, connectSequence, `SQL connection not found: ${sqlConnectionId}`);
+			this._postCurrentStsConnectError(id, sectionInstanceId, connectSequence, `SQL connection not found: ${sqlConnectionId}`);
 			return;
 		}
 		const assertExpectedOwner = async () => {
@@ -3146,31 +2990,31 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 		};
 		if (this.sqlWorkbench.isLeaveNoTraceConnection(connection.id)) {
-			this._postCurrentStsConnectError(id, connectSequence, 'SQL Tools Service cannot be used with this Leave No Trace connection because it may buffer results on disk.');
+			this._postCurrentStsConnectError(id, sectionInstanceId, connectSequence, 'SQL Tools Service cannot be used with this Leave No Trace connection because it may buffer results on disk.');
 			return;
 		}
 		try {
 			await this.sqlWorkbench.assertSqlConnectionAllowed(connection.id);
 			await assertExpectedOwner();
 		} catch (error) {
-			this._postCurrentStsConnectError(id, connectSequence, error instanceof Error ? error.message : String(error));
+			this._postCurrentStsConnectError(id, sectionInstanceId, connectSequence, error instanceof Error ? error.message : String(error));
 			return;
 		}
 		const stsOwner = await this.getCanonicalSqlResultOwner(id);
 		if (!stsOwner || stsOwner.connectionId !== connection.id || stsOwner.database !== database) {
-			this._postCurrentStsConnectError(id, connectSequence, 'SQL result owner changed before STS connection.');
+			this._postCurrentStsConnectError(id, sectionInstanceId, connectSequence, 'SQL result owner changed before STS connection.');
 			return;
 		}
 		if (expectedOwner && (expectedOwner.targetSignature !== stsOwner.targetSignature
 			|| expectedOwner.principalFingerprint !== stsOwner.principalFingerprint
 			|| expectedOwner.revocationGeneration !== stsOwner.revocationGeneration)) {
-			this._postCurrentStsConnectError(id, connectSequence, 'SQL tool execution owner changed before STS connection.');
+			this._postCurrentStsConnectError(id, sectionInstanceId, connectSequence, 'SQL tool execution owner changed before STS connection.');
 			return;
 		}
 		const svc = await this.ensureStsLanguageService();
 		if (!svc) {
 			this.output.warn(`[sts-diag] handleStsConnect → svc=null`);
-			this._postCurrentStsConnectError(id, connectSequence, 'SQL Tools Service unavailable');
+			this._postCurrentStsConnectError(id, sectionInstanceId, connectSequence, 'SQL Tools Service unavailable');
 			return;
 		}
 		if (!this._isCurrentStsConnect(id, connectSequence)) {
@@ -3231,7 +3075,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 			this.output.info(`[sts-diag] handleStsConnect → SUCCESS boxId=${id}`);
 			this.postMessage({
-				type: 'stsConnectionState', boxId: id, state: 'ready', ownerToken,
+				type: 'stsConnectionState', boxId: id, sectionInstanceId, state: 'ready', ownerToken,
 				connectionId: connectedOwner.connectionId, database: connectedOwner.database,
 				targetGeneration: connectedOwner.generation,
 			} as any);
@@ -3244,8 +3088,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 			this.output.error(`[sts-diag] handleStsConnect → FAILED boxId=${id}: ${sanitizeStsLogText(msg)}`);
 			this.postMessage({
-				type: 'stsConnectionState', boxId: id, state: 'error', error: msg,
-				targetGeneration: this._sqlTargetGenerationByBoxId.get(id) ?? 0,
+				type: 'stsConnectionState', boxId: id, sectionInstanceId, state: 'error', error: msg,
+				targetGeneration: this.sqlOwnership.getGeneration(id),
 			} as any);
 		}
 	}
@@ -3264,23 +3108,24 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			const initialized = await this._stsInitPromise;
 			if (initialized) return;
 		}
-		const targets = [...this._sqlConnectionIdByBoxId.entries()]
-			.filter(([boxId]) => !this._closedStsBoxIds.has(boxId) && !!this._sqlDatabaseByBoxId.get(boxId))
-			.map(([boxId, connectionId]) => ({
-				boxId, connectionId,
-				database: this._sqlDatabaseByBoxId.get(boxId) || '',
-				generation: this._sqlTargetGenerationByBoxId.get(boxId) ?? 0,
-				sequence: this._nextStsConnectSequence(boxId),
+		const targets = this.sqlOwnership.listTargets()
+			.filter(target => !this._closedStsBoxIds.has(target.boxId)
+				&& !!target.database && !!this._sqlSectionInstanceIdByBoxId.get(target.boxId))
+			.map(target => ({
+				boxId: target.boxId, connectionId: target.connectionId,
+				database: target.database || '',
+				generation: target.generation,
+				sectionInstanceId: this._sqlSectionInstanceIdByBoxId.get(target.boxId)!,
+				sequence: this._nextStsConnectSequence(target.boxId),
 			}));
 		if (targets.length === 0) return;
 		const service = await this.ensureStsLanguageService();
 		if (!service) return;
 		for (const target of targets) {
-			const { boxId, connectionId, database, generation, sequence } = target;
+			const { boxId, connectionId, database, generation, sectionInstanceId, sequence } = target;
 			const isCurrent = () => this._isCurrentStsConnect(boxId, sequence)
-				&& this._sqlConnectionIdByBoxId.get(boxId) === connectionId
-				&& this._sqlDatabaseByBoxId.get(boxId) === database
-				&& (this._sqlTargetGenerationByBoxId.get(boxId) ?? 0) === generation;
+				&& this._sqlSectionInstanceIdByBoxId.get(boxId) === sectionInstanceId
+				&& this.sqlOwnership.isTargetCurrent(boxId, connectionId, database, generation);
 			const connection = this.sqlConnectionManager.getConnection(connectionId);
 			if (!connection || !database || !isCurrent()) continue;
 			let expectedOwner: SqlResultOwner | undefined;
@@ -3307,7 +3152,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				const ownerToken = await this.issueSqlOwnerToken(boxId, expectedOwner);
 				if (!isCurrent()) { closeCandidate(); continue; }
 				this.postMessage({
-					type: 'stsConnectionState', boxId, state: 'ready', ownerToken,
+					type: 'stsConnectionState', boxId, sectionInstanceId, state: 'ready', ownerToken,
 					connectionId, database, targetGeneration: generation,
 				} as any);
 				candidateOpenAttempted = false;
@@ -3315,7 +3160,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				closeCandidate();
 				if (!isCurrent()) continue;
 				this.postMessage({
-					type: 'stsConnectionState', boxId, state: 'error',
+					type: 'stsConnectionState', boxId, sectionInstanceId, state: 'error',
 					error: error instanceof Error ? error.message : String(error),
 				} as any);
 			}
@@ -3338,21 +3183,28 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		}
 		this.sqlPersistenceInvalidationEmitter.fire();
 
-		const comparisonBoxIds = [...this._sqlComparisonOwnerByBoxId]
-			.filter(([, owner]) => changedIds.has(owner.connectionId))
-			.map(([boxId]) => boxId);
+		const comparisonBoxIds = this.sqlOwnership.listComparisonOwners()
+			.filter(({ owner }) => changedIds.has(owner.connectionId))
+			.map(({ boxId }) => boxId);
 		this.copilot.invalidateSqlConnections([...changedIds], comparisonBoxIds);
-		for (const comparisonBoxId of comparisonBoxIds) this.supersedeSqlRunAdmission(comparisonBoxId, { notifyWebview: true });
-		for (const [boxId, connectionId] of this._sqlConnectionIdByBoxId) {
-			if (!changedIds.has(connectionId)) continue;
-			this.supersedeSqlRunAdmission(boxId, { notifyWebview: true });
-			const targetGeneration = (this._sqlTargetGenerationByBoxId.get(boxId) ?? 0) + 1;
-			this._sqlTargetGenerationByBoxId.set(boxId, targetGeneration);
-			this._sqlOwnerTokenByBoxId.delete(boxId);
-			this._sqlDatabaseRequestIdByBoxId.delete(boxId);
-			if (this._openedStsBoxIds.delete(boxId)) this._stsLanguageService?.closeDocument(boxId);
-			this._latestStsConnectSequenceByBoxId.delete(boxId);
-			this.postMessage({ type: 'sqlConnectionOwnerChanged', boxId, connectionId, targetGeneration });
+		for (const comparisonBoxId of comparisonBoxIds) this.sqlExecutionBroker.supersede(comparisonBoxId, { notifyWebview: true });
+		for (const target of this.sqlOwnership.listTargets()) {
+			if (!changedIds.has(target.connectionId)) continue;
+			const previousStsOwner = this.sqlOwnership.getIssuedOwner(target.boxId)?.owner ?? this.sqlOwnership.getOwner(target.boxId);
+			this.sqlExecutionBroker.supersede(target.boxId, { notifyWebview: true });
+			const rotatedTarget = this.sqlOwnership.rotateTargetOwner(target.boxId);
+			this._sqlDatabaseRequestIdByBoxId.delete(target.boxId);
+			if (previousStsOwner && this._openedStsBoxIds.delete(target.boxId)) {
+				this._stsLanguageService?.closeDocumentForOwner(target.boxId, previousStsOwner);
+			}
+			this._latestStsConnectSequenceByBoxId.delete(target.boxId);
+			const sectionInstanceId = this._sqlSectionInstanceIdByBoxId.get(target.boxId);
+			if (rotatedTarget && sectionInstanceId) {
+				this.postMessage({
+					type: 'sqlConnectionOwnerChanged', boxId: target.boxId, sectionInstanceId,
+					connectionId: target.connectionId, targetGeneration: rotatedTarget.generation,
+				});
+			}
 		}
 		await this.sendSqlConnectionsData();
 	}
@@ -3361,68 +3213,78 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const changedIds = new Set(connectionIds);
 		if (changedIds.size === 0) return;
 		this.sqlPersistenceInvalidationEmitter.fire();
-		const comparisonBoxIds = [...this._sqlComparisonOwnerByBoxId]
-			.filter(([, owner]) => changedIds.has(owner.connectionId))
-			.map(([boxId]) => boxId);
+		const comparisonBoxIds = this.sqlOwnership.listComparisonOwners()
+			.filter(({ owner }) => changedIds.has(owner.connectionId))
+			.map(({ boxId }) => boxId);
 		this.copilot.invalidateSqlConnections([...changedIds], comparisonBoxIds);
-		for (const comparisonBoxId of comparisonBoxIds) this.supersedeSqlRunAdmission(comparisonBoxId, { notifyWebview: true });
-		for (const [boxId, connectionId] of this._sqlConnectionIdByBoxId) {
-			if (!changedIds.has(connectionId)) continue;
-			this.supersedeSqlRunAdmission(boxId, { notifyWebview: true });
-			const targetGeneration = (this._sqlTargetGenerationByBoxId.get(boxId) ?? 0) + 1;
-			this._sqlTargetGenerationByBoxId.set(boxId, targetGeneration);
-			this._sqlOwnerTokenByBoxId.delete(boxId);
-			if (this._openedStsBoxIds.delete(boxId)) this._stsLanguageService?.closeDocument(boxId);
-			this._latestStsConnectSequenceByBoxId.delete(boxId);
-			this.postMessage({ type: 'sqlConnectionOwnerChanged', boxId, connectionId, targetGeneration });
+		for (const comparisonBoxId of comparisonBoxIds) this.sqlExecutionBroker.supersede(comparisonBoxId, { notifyWebview: true });
+		for (const target of this.sqlOwnership.listTargets()) {
+			if (!changedIds.has(target.connectionId)) continue;
+			const previousStsOwner = this.sqlOwnership.getIssuedOwner(target.boxId)?.owner ?? this.sqlOwnership.getOwner(target.boxId);
+			this.sqlExecutionBroker.supersede(target.boxId, { notifyWebview: true });
+			const rotatedTarget = this.sqlOwnership.rotateTargetOwner(target.boxId);
+			if (previousStsOwner && this._openedStsBoxIds.delete(target.boxId)) {
+				this._stsLanguageService?.closeDocumentForOwner(target.boxId, previousStsOwner);
+			}
+			this._latestStsConnectSequenceByBoxId.delete(target.boxId);
+			const sectionInstanceId = this._sqlSectionInstanceIdByBoxId.get(target.boxId);
+			if (rotatedTarget && sectionInstanceId) {
+				this.postMessage({
+					type: 'sqlConnectionOwnerChanged', boxId: target.boxId, sectionInstanceId,
+					connectionId: target.connectionId, targetGeneration: rotatedTarget.generation,
+				});
+			}
 		}
 		await this.sendSqlConnectionsData();
 	}
 
-	private applySqlLeaveNoTraceChange(connectionIds: string[], invalidatedConnectionIds: string[]): void {
-		const currentlyProtected = new Set(connectionIds);
-		const invalidated = new Set(invalidatedConnectionIds);
-		const comparisonBoxIds = [...this._sqlComparisonOwnerByBoxId]
-			.filter(([, owner]) => invalidated.has(owner.connectionId))
-			.map(([boxId]) => boxId);
-		const sourceBoxIds = [...this._sqlConnectionIdByBoxId]
-			.filter(([, connectionId]) => invalidated.has(connectionId))
-			.map(([boxId]) => boxId);
+	private applySqlLeaveNoTraceChange(connectionIds: string[], enabledConnectionIds: string[], _disabledConnectionIds: string[]): void {
+		const enabled = new Set(enabledConnectionIds);
+		const comparisonBoxIds = this.sqlOwnership.listComparisonOwners()
+			.filter(({ owner }) => enabled.has(owner.connectionId))
+			.map(({ boxId }) => boxId);
+		const sourceBoxIds = this.sqlOwnership.listTargets()
+			.filter(target => enabled.has(target.connectionId))
+			.map(target => target.boxId);
+		const stsOwners = new Map(sourceBoxIds.map(boxId => [
+			boxId, this.sqlOwnership.getIssuedOwner(boxId)?.owner ?? this.sqlOwnership.getOwner(boxId),
+		]));
 		for (const comparisonBoxId of comparisonBoxIds) {
-			this.supersedeSqlRunAdmission(comparisonBoxId, { notifyWebview: true });
+			this.sqlExecutionBroker.supersede(comparisonBoxId, { notifyWebview: true });
 		}
 		for (const boxId of sourceBoxIds) {
-			this.supersedeSqlRunAdmission(boxId, { notifyWebview: true });
+			this.sqlExecutionBroker.supersede(boxId, { notifyWebview: true });
 		}
 		this.postMessage({ type: 'sqlLeaveNoTraceData', connectionIds });
 		void this.sendSqlConnectionsData();
-		if (invalidatedConnectionIds.length === 0) return;
+		if (enabledConnectionIds.length === 0) return;
 		this.sqlPersistenceInvalidationEmitter.fire();
-		this.copilot.invalidateSqlConnections(invalidatedConnectionIds, comparisonBoxIds);
+		this.copilot.invalidateSqlConnections(enabledConnectionIds, comparisonBoxIds);
 		for (const comparisonBoxId of comparisonBoxIds) {
-			const owner = this._sqlComparisonOwnerByBoxId.get(comparisonBoxId);
+			const owner = this.sqlOwnership.getComparisonOwner(comparisonBoxId);
 			if (owner) this.deleteComparisonSummary(`${owner.sourceBoxId}::${comparisonBoxId}`);
+			this.sqlOwnership.revokeOwnerToken(comparisonBoxId);
 		}
 		for (const boxId of sourceBoxIds) {
-			const connectionId = this._sqlConnectionIdByBoxId.get(boxId);
-			this._sqlOwnerTokenByBoxId.delete(boxId);
-			if (this._openedStsBoxIds.delete(boxId)) this._stsLanguageService?.closeDocument(boxId);
-			this._latestStsConnectSequenceByBoxId.delete(boxId);
-			if (connectionId && currentlyProtected.has(connectionId)) {
-				this.postMessage({
-					type: 'stsConnectionState', boxId, state: 'error',
-					error: 'SQL Tools Service is disabled for this Leave No Trace connection.',
-				} as any);
-			} else if (connectionId) {
-				const targetGeneration = (this._sqlTargetGenerationByBoxId.get(boxId) ?? 0) + 1;
-				this._sqlTargetGenerationByBoxId.set(boxId, targetGeneration);
-				this.postMessage({ type: 'sqlConnectionOwnerChanged', boxId, connectionId, targetGeneration });
+			this.sqlOwnership.revokeOwnerToken(boxId);
+			const previousStsOwner = stsOwners.get(boxId);
+			if (previousStsOwner && this._openedStsBoxIds.delete(boxId)) {
+				this._stsLanguageService?.closeDocumentForOwner(boxId, previousStsOwner);
 			}
+			this._latestStsConnectSequenceByBoxId.delete(boxId);
+			const sectionInstanceId = this._sqlSectionInstanceIdByBoxId.get(boxId);
+			if (!sectionInstanceId) continue;
+			this.postMessage({
+				type: 'stsConnectionState', boxId, sectionInstanceId, state: 'error',
+				error: 'SQL Tools Service is disabled for this Leave No Trace connection.',
+				targetGeneration: this.sqlOwnership.getGeneration(boxId),
+			} as any);
 		}
 	}
 
 	public sanitizeSqlLeaveNoTraceState<T extends { sections?: unknown[] }>(state: T): T {
 		const sections = Array.isArray(state?.sections) ? state.sections : [];
+		this.rebuildSqlComparisonOwners(sections);
 		const sectionsById = new Map(
 			sections
 				.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object')
@@ -3442,13 +3304,14 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				delete clone.resultJson;
 				return clone;
 			}
+			const derivedOwner = boxId ? this.sqlOwnership.getComparisonOwner(boxId) : undefined;
 			const persistedSqlSource = String((persistedSource as any)?.type || '') === 'sql' ? persistedSource : undefined;
 			const directConnectionHint = String((section as any).connectionIdHint || '').trim();
 			const legacySqlComparison = sectionType === 'query' && !persistedSourceBoxId
 				&& directConnectionHint.startsWith('sql_');
-			if (sectionType !== 'sql' && !persistedSqlSource && !legacySqlComparison) return section;
-			const connectionId = boxId ? this._sqlConnectionIdByBoxId.get(boxId) : undefined;
-			const sourceConnectionId = persistedSourceBoxId ? this._sqlConnectionIdByBoxId.get(persistedSourceBoxId) : undefined;
+			if (sectionType !== 'sql' && !derivedOwner && !persistedSqlSource && !legacySqlComparison) return section;
+			const connectionId = derivedOwner?.connectionId ?? (boxId ? this.sqlOwnership.getConnectionId(boxId) : undefined);
+			const sourceConnectionId = persistedSourceBoxId ? this.sqlOwnership.getConnectionId(persistedSourceBoxId) : undefined;
 			const persistedConnectionId = String(
 				(persistedSqlSource as any)?.connectionIdHint
 				|| (section as any).connectionIdHint
@@ -3479,7 +3342,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				this.sqlWorkbench.isLeaveNoTraceConnection(connection.id)
 				&& String(connection.serverUrl || '').trim().toLowerCase() === serverUrl
 			);
-			const sqlOwnedSection = sectionType === 'sql' || !!persistedSqlSource || legacySqlComparison;
+			const sqlOwnedSection = sectionType === 'sql' || !!derivedOwner || !!persistedSqlSource || legacySqlComparison;
 			const unresolvedPersistedOwner = sqlOwnedSection && !effectiveConnectionId;
 			if ((!protectedByRuntimeOwner && !protectedByRestoredServer && !unresolvedPersistedOwner) || !('resultJson' in section)) return section;
 			changed = true;
@@ -3722,61 +3585,56 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	): Promise<void> {
 		const boxId = String(message.boxId || '').trim();
 		const executionId = String(message.executionId || '').trim();
-		if (boxId) this.retirePendingSqlRunAdmission(boxId, true);
-		const admissionGeneration = boxId
-			? (this._sqlRunAdmissionGenerationByBoxId.get(boxId) ?? 0) + 1
-			: 0;
-		if (boxId) {
-			this._sqlRunAdmissionGenerationByBoxId.set(boxId, admissionGeneration);
-			if (executionId) {
-				this._pendingSqlRunAdmissionByBoxId.set(boxId, {
-					generation: admissionGeneration, executionId,
-					...(message.ownerToken ? { ownerToken: message.ownerToken } : {}),
-				});
-			}
-		}
-		const admissionIsCurrent = () => !boxId || this._sqlRunAdmissionGenerationByBoxId.get(boxId) === admissionGeneration;
-		const clearPendingAdmission = () => {
-			const pending = this._pendingSqlRunAdmissionByBoxId.get(boxId);
-			if (pending?.generation === admissionGeneration && pending.executionId === executionId) {
-				this._pendingSqlRunAdmissionByBoxId.delete(boxId);
-			}
+		if (!boxId || !executionId
+			|| this._sqlSectionInstanceIdByBoxId.get(boxId) !== message.sectionInstanceId
+			|| this._closedStsBoxIds.has(boxId)) return;
+
+		const preflight = this.sqlExecutionBroker.reservePreflight(boxId, executionId, message.ownerToken);
+		let admission: SqlExecutionAdmission | undefined;
+		let lease: SqlExecutionLease<ReturnType<SqlQueryClient['executeQueryCancelable']>> | undefined;
+		const isStillActiveRun = () => {
+			if (lease) return lease.isCurrent();
+			if (admission) return this.sqlExecutionBroker.isAdmissionCurrent(admission);
+			return this.sqlExecutionBroker.isPreflightCurrent(preflight);
+		};
+		const postCurrentError = (error: string, ownerToken?: string) => {
+			const isCurrent = isStillActiveRun();
+			this.sqlExecutionBroker.clearPreflight(preflight);
+			if (!isCurrent) return;
+			this.postMessage({
+				type: 'queryError', error, boxId,
+				...(ownerToken ? { ownerToken } : {}),
+				executionId,
+			});
 		};
 		let issuedOwner: { token: string; owner: SqlResultOwner } | undefined;
-		if (boxId) {
-			const superseded = this.queryRuns.get(boxId);
-			this.cancelRunningQuery(boxId, { notifyWebview: !!superseded?.executionId });
-			try {
-				issuedOwner = await this.assertSqlOwnerToken(boxId, message.ownerToken);
-				if (!admissionIsCurrent()) return;
-			} catch (error) {
-				if (!admissionIsCurrent()) return;
-				clearPendingAdmission();
-				this.postMessage({
-					type: 'queryError', error: error instanceof Error ? error.message : String(error), boxId, ownerToken: message.ownerToken,
-					...(message.executionId ? { executionId: message.executionId } : {}),
-				});
+		try {
+			issuedOwner = await this.assertSqlOwnerToken(boxId, message.ownerToken);
+			if (!isStillActiveRun()
+				|| this._sqlSectionInstanceIdByBoxId.get(boxId) !== message.sectionInstanceId
+				|| this._closedStsBoxIds.has(boxId)) {
+				this.sqlExecutionBroker.clearPreflight(preflight);
 				return;
 			}
+		} catch (error) {
+			postCurrentError(error instanceof Error ? error.message : String(error), message.ownerToken);
+			return;
 		}
 
 		const connection = this.sqlConnectionManager.getConnection(message.sqlConnectionId);
 		if (!connection) {
-			clearPendingAdmission();
-			this.postMessage({ type: 'queryError', error: 'SQL connection not found. Please configure a connection.', boxId, ownerToken: issuedOwner?.token ?? message.ownerToken, ...(executionId ? { executionId } : {}) });
+			postCurrentError('SQL connection not found. Please configure a connection.', issuedOwner.token);
 			return;
 		}
 
 		if (!message.database) {
-			clearPendingAdmission();
-			this.postMessage({ type: 'queryError', error: 'Please select a database.', boxId, ownerToken: issuedOwner?.token ?? message.ownerToken, ...(executionId ? { executionId } : {}) });
+			postCurrentError('Please select a database.', issuedOwner.token);
 			return;
 		}
 
-		const resultOwner = issuedOwner?.owner ?? (boxId ? this.getSqlResultOwner(boxId) : undefined);
-		if (boxId && (!resultOwner || resultOwner.connectionId !== connection.id || resultOwner.database !== message.database)) {
-			clearPendingAdmission();
-			this.postMessage({ type: 'queryError', error: 'SQL section target changed. Run the query again.', boxId, ownerToken: issuedOwner?.token ?? message.ownerToken, ...(executionId ? { executionId } : {}) });
+		const resultOwner = issuedOwner.owner;
+		if (resultOwner.connectionId !== connection.id || resultOwner.database !== message.database) {
+			postCurrentError('SQL section target changed. Run the query again.', issuedOwner.token);
 			return;
 		}
 		if (message.toolExecution) {
@@ -3787,70 +3645,40 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				|| expected.targetSignature !== resultOwner.targetSignature
 				|| expected.principalFingerprint !== resultOwner.principalFingerprint
 				|| expected.revocationGeneration !== resultOwner.revocationGeneration) {
-				clearPendingAdmission();
-				this.postMessage({
-					type: 'queryError', error: 'SQL tool execution owner changed before query dispatch.', boxId,
-					ownerToken: issuedOwner?.token, executionId: message.executionId,
-				});
+				postCurrentError('SQL tool execution owner changed before query dispatch.', issuedOwner.token);
 				return;
 			}
 		}
 		const queryWithMode = appendSqlQueryModeFn(message.query, message.queryMode);
-		let cancel: (() => void) | undefined;
-		let runSeq = 0;
-		const isStillActiveRun = () => {
-			if (!admissionIsCurrent()) return false;
-			if (!cancel) { return true; }
-			if (!boxId) { return true; }
-			return this.isRunningQueryCurrent(boxId, cancel, runSeq);
-		};
 		try {
-			if (!admissionIsCurrent()) return;
-			if (boxId && executionId) {
-				const pending = this._pendingSqlRunAdmissionByBoxId.get(boxId);
-				if (pending?.generation !== admissionGeneration || pending.executionId !== executionId) return;
-			}
-			const handle = this.sqlClient.executeQueryCancelable(connection, message.database, queryWithMode);
-			cancel = handle.cancel;
-			runSeq = this.nextQueryRunSeq();
-			if (boxId) {
-				clearPendingAdmission();
-				this.queryRuns.register(boxId, { cancel, runSeq, ...(executionId ? { executionId } : {}) });
-			}
-			const { promise } = handle;
-			const result = await promise;
+			if (!isStillActiveRun()
+				|| this._sqlSectionInstanceIdByBoxId.get(boxId) !== message.sectionInstanceId) return;
+			admission = this.sqlExecutionBroker.promotePreflight(preflight);
+			if (!admission) return;
+			lease = this.sqlExecutionBroker.start(admission, () =>
+				this.sqlClient.executeQueryCancelable(connection, message.database, queryWithMode));
+			const result = await lease.execution.promise;
 			if (isStillActiveRun()) {
 				await this.sendSqlConnectionsData();
-				if (boxId && resultOwner) await this.assertSqlResultOwnerAllowed(boxId, resultOwner);
-				else await this.sqlWorkbench.assertSqlConnectionAllowed(connection.id);
+				await this.assertSqlResultOwnerAllowed(boxId, resultOwner);
 				if (!isStillActiveRun()) return;
-				const delivered = await this.postSqlOwnerMessageAllowed(
+				await this.postSqlOwnerMessageAllowed(
 					boxId,
-					resultOwner!,
-					{ type: 'queryResult', result, boxId, ownerToken: issuedOwner?.token, ...(message.executionId ? { executionId: message.executionId } : {}) },
+					resultOwner,
+					{ type: 'queryResult', result, boxId, ownerToken: issuedOwner.token, executionId },
 					isStillActiveRun,
 				);
-				if (!delivered && isStillActiveRun()) {
-					this.output.warn(`[sql] Result delivery failed for execution ${executionId}.`);
-				}
 			}
 		} catch (error) {
 			if ((error as any)?.isCancelled === true || error instanceof SqlQueryCancelledError) {
 				if (isStillActiveRun()) {
 					try {
-						if (boxId && resultOwner) {
-							const delivered = await this.postSqlOwnerMessageAllowed(
-								boxId,
-								resultOwner,
-								{ type: 'queryCancelled', boxId, ownerToken: issuedOwner?.token, ...(executionId ? { executionId } : {}) },
-								isStillActiveRun,
-							);
-							if (!delivered && isStillActiveRun()) {
-								this.output.warn(`[sql] Cancellation delivery failed for execution ${executionId}.`);
-							}
-						} else if (isStillActiveRun()) {
-							this.postMessage({ type: 'queryCancelled', boxId, ...(executionId ? { executionId } : {}) });
-						}
+						await this.postSqlOwnerMessageAllowed(
+							boxId,
+							resultOwner,
+							{ type: 'queryCancelled', boxId, ownerToken: issuedOwner.token, executionId },
+							isStillActiveRun,
+						);
 					} catch { /* owner invalidation provides the terminal UI state */ }
 				}
 				return;
@@ -3860,27 +3688,23 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				// Error is displayed inline in the SQL section — no notification popup
 				// (avoids stealing keyboard focus from the Monaco editor).
 				try {
-					if (boxId && resultOwner) {
-						await this.dispatchSqlResultOwnerAllowed(boxId, resultOwner, () => {
-							if (!isStillActiveRun()) return;
-							this.output.error([
-								`[${new Date().toISOString()}] SQL query execution failed`,
-								`  boxId: ${boxId}`,
-								`  error: ${sanitizeStsLogText(errorMessage)}`,
-							].join('\n'));
-							this.postMessage({ type: 'queryError', error: errorMessage, boxId, ownerToken: issuedOwner?.token, ...(executionId ? { executionId } : {}) });
-						});
-					} else if (isStillActiveRun()) {
-						this.output.error(`[sql] Query execution failed without an owned section: ${sanitizeStsLogText(errorMessage)}`);
-						this.postMessage({ type: 'queryError', error: errorMessage, boxId, ...(executionId ? { executionId } : {}) });
-					}
+					await this.dispatchSqlResultOwnerAllowed(boxId, resultOwner, () => {
+						if (!isStillActiveRun()) return;
+						this.output.error([
+							`[${new Date().toISOString()}] SQL query execution failed`,
+							`  boxId: ${boxId}`,
+							`  error: ${sanitizeStsLogText(errorMessage)}`,
+						].join('\n'));
+						this.postMessage({ type: 'queryError', error: errorMessage, boxId, ownerToken: issuedOwner.token, executionId });
+					});
 				} catch {
 					this.output.warn('[sql] Query failed after owner invalidation; error details suppressed.');
 				}
 			}
 		} finally {
-			clearPendingAdmission();
-			if (boxId && cancel) this.unregisterRunningQuery(boxId, cancel, runSeq);
+			this.sqlExecutionBroker.clearPreflight(preflight);
+			if (admission) this.sqlExecutionBroker.clearPending(admission);
+			lease?.release();
 		}
 	}
 

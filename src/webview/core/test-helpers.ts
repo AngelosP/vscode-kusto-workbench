@@ -3,7 +3,8 @@
 // Used by the vscode-ext-test E2E framework via `When I evaluate`.
 
 import { postMessageToHost } from '../shared/webview-messages.js';
-import { beginKustoPreparation, getKustoPreparationState, isSchemaEnhancementReady, isSchemaWorkerReady, markSchemaEnhancementReady, markSchemaWorkerReady, requestKustoSchemaApplyForBox, setActiveMonacoEditor, sqlTargetGenerationByBoxId } from './state.js';
+import { beginKustoPreparation, getKustoPreparationState, isSchemaEnhancementReady, isSchemaWorkerReady, markSchemaEnhancementReady, markSchemaWorkerReady, requestKustoSchemaApplyForBox, setActiveMonacoEditor } from './state.js';
+import { getSqlSectionSession } from './sql-section-message-router.js';
 import { pState } from '../shared/persistence-state.js';
 import { perfSnapshot } from './perf.js';
 import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
@@ -6186,8 +6187,10 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 				throw new Error('SQL database missing before STS connect');
 			}
 			postMessageToHost({
-				type: 'stsConnect', boxId: section.boxId, sqlConnectionId, database,
-				targetGeneration: sqlTargetGenerationByBoxId[section.boxId] ?? 0,
+					type: 'stsConnect', boxId: section.boxId,
+					sectionInstanceId: getSqlSectionSession(section.boxId)?.instanceId ?? 'test-instance',
+					sqlConnectionId, database,
+				targetGeneration: getSqlSectionSession(section.boxId)?.targetGeneration ?? 0,
 			});
 			return `sql STS connect posted for ${database}`;
 		},

@@ -145,7 +145,7 @@ export async function resolveSqlAadAccessToken(
 	serverUrl: string,
 ): Promise<SqlAadTokenResolution> {
 	const normalizedServer = normalizeSqlServerUrl(serverUrl);
-	const serverAccountMap = await readCurrentSqlServerAccountMap(context);
+	const serverAccountMap = await readCurrentSqlServerAccountMap(context, normalizedServer);
 	const establishedAccountId = normalizedServer ? serverAccountMap[normalizedServer] : undefined;
 
 	const envOverride = readEnvOverride(normalizedServer);

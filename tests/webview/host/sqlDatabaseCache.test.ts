@@ -16,6 +16,7 @@ import {
 	writeOwnedSqlDatabaseCacheEntry,
 } from '../../../src/host/sqlDatabaseCache';
 import { sqlSchemaPrincipalFingerprintForPrincipal } from '../../../src/host/sqlEditorSchema';
+import { createSqlStateCommit } from '../../../src/host/sql/sqlStateTransaction';
 
 const tempDirectories: string[] = [];
 
@@ -48,11 +49,20 @@ function createHarness(options: { disk?: boolean } = {}) {
 		const root = String(context.globalStorageUri?.fsPath || '');
 		if (!root) return;
 		fs.mkdirSync(root, { recursive: true });
-		fs.writeFileSync(path.join(root, 'sql-server-account-map.v1.json'), JSON.stringify({
+		const snapshot = {
 			schemaVersion: 1,
 			version: accountVersion++,
 			accountsByServer: value ? { 'server.example': value } : {},
-		}), 'utf8');
+			recoveryBlocked: false,
+			blockedServerUrls: [],
+		};
+		const text = `${JSON.stringify(snapshot)}\n`;
+		fs.writeFileSync(path.join(root, 'sql-server-account-map.v1.json'), text, 'utf8');
+		fs.writeFileSync(path.join(root, 'sql-server-account-map.backup.v1.json'), text, 'utf8');
+		fs.writeFileSync(path.join(root, 'sql-server-account-map.commit.v1.json'), `${JSON.stringify(
+			createSqlStateCommit(text, { schemaVersion: 1, version: snapshot.version }),
+		)}\n`, 'utf8');
+		fs.writeFileSync(path.join(root, 'sql-server-account-map-migrated.v1'), 'migrated\n', 'utf8');
 	};
 	writeCanonicalAccount(accountId);
 	const connection = {
@@ -75,6 +85,64 @@ describe('SQL database cache ownership', () => {
 	it('ignores legacy arrays and malformed entries', () => {
 		expect(parseSqlDatabaseCacheStore({ 'sql-1': ['LegacyDb'] })).toEqual({});
 		expect(parseSqlDatabaseCacheStore({ schemaVersion: 1, version: 1, entries: { 'sql-1': { version: 1, databases: ['Db'] } } })).toEqual({});
+	});
+
+	it('quarantines structural disk corruption and invalidates pre-corruption requests durably', async () => {
+		const harness = createHarness({ disk: true });
+		const request = await beginSqlDatabaseCacheRequest(harness.context, 'cache', harness.connection);
+		const directory = harness.context.globalStorageUri.fsPath as string;
+		const snapshotName = fs.readdirSync(directory).find(name => name.startsWith('sql-database-cache-'))!;
+		const snapshotPath = path.join(directory, snapshotName);
+		fs.writeFileSync(snapshotPath, '{}', 'utf8');
+
+		await expect(writeOwnedSqlDatabaseCacheEntry(
+			harness.context, 'cache', harness.connection, ACCOUNT_A_FINGERPRINT, ['StaleDb'], request, async () => undefined,
+		)).rejects.toThrow('superseded');
+
+		const recovered = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+		expect(recovered.version).toBeGreaterThan(request.version);
+		expect(recovered.clearedAtVersion).toBe(recovered.version);
+		expect(recovered.entries).toEqual({});
+		expect(fs.readdirSync(directory).some(name => name.startsWith(`${snapshotName}.corrupt-`))).toBe(true);
+	});
+
+	it('rejects malformed nested clear tombstones instead of resetting them to zero', async () => {
+		const harness = createHarness({ disk: true });
+		const request = await beginSqlDatabaseCacheRequest(harness.context, 'cache', harness.connection);
+		const directory = harness.context.globalStorageUri.fsPath as string;
+		const snapshotName = fs.readdirSync(directory).find(name => name.startsWith('sql-database-cache-'))!;
+		const snapshotPath = path.join(directory, snapshotName);
+		const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+		snapshot.clearedAtVersion = 'invalid';
+		fs.writeFileSync(snapshotPath, JSON.stringify(snapshot), 'utf8');
+
+		await expect(writeOwnedSqlDatabaseCacheEntry(
+			harness.context, 'cache', harness.connection, ACCOUNT_A_FINGERPRINT, ['StaleDb'], request, async () => undefined,
+		)).rejects.toThrow('superseded');
+		const recovered = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+		expect(recovered.clearedAtVersion).toBe(recovered.version);
+		expect(recovered.version).toBeGreaterThan(request.version);
+	});
+
+	it.each([
+		['numeric entry request ID', (snapshot: any) => { snapshot.entries['sql-1'].requestId = 42; }],
+		['string request version', (snapshot: any) => { snapshot.entries['sql-1'].requestVersion = '1'; }],
+		['numeric latest request ID', (snapshot: any) => { snapshot.latestRequestByConnectionId['sql-1'].requestId = 42; }],
+	] as const)('quarantines %s instead of coercing it', async (_label, mutate) => {
+		const harness = createHarness({ disk: true });
+		const request = await beginSqlDatabaseCacheRequest(harness.context, 'cache', harness.connection);
+		await writeOwnedSqlDatabaseCacheEntry(
+			harness.context, 'cache', harness.connection, ACCOUNT_A_FINGERPRINT, ['Db'], request, async () => undefined,
+		);
+		const directory = harness.context.globalStorageUri.fsPath as string;
+		const snapshotName = fs.readdirSync(directory).find(name => name.startsWith('sql-database-cache-'))!;
+		const snapshotPath = path.join(directory, snapshotName);
+		const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+		mutate(snapshot);
+		fs.writeFileSync(snapshotPath, JSON.stringify(snapshot), 'utf8');
+
+		await expect(getOwnedSqlDatabaseCacheEntry(harness.context, 'cache', harness.connection)).resolves.toBeUndefined();
+		expect(fs.readdirSync(directory).some(name => name.startsWith(`${snapshotName}.corrupt-`))).toBe(true);
 	});
 
 	it('admits only the exact current target and principal', async () => {

@@ -505,7 +505,7 @@ class StsExecutionOperation {
 		if (!this.allowUncommittedTarget) await this.connectionManager.assertConnectionCurrent(this.connection);
 		const authType = String(this.connection.authType || '').trim().toLowerCase();
 		const principal = authType === 'aad'
-			? (await readCurrentSqlServerAccountMap(this.context))[normalizeSqlServerUrl(this.connection.serverUrl)]
+			? (await readCurrentSqlServerAccountMap(this.context, this.connection.serverUrl))[normalizeSqlServerUrl(this.connection.serverUrl)]
 			: String(this.connection.username || '').trim();
 		const currentFingerprint = sqlSchemaPrincipalFingerprintForPrincipal(this.connection, principal);
 		if (authType === 'aad' && this.resolvedAadAccountId) {

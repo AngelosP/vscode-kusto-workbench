@@ -150,9 +150,20 @@ SQL sections follow the same patterns as Kusto query sections. Key differences:
 * **Copilot**: Uses flavor system — host-side `sqlCopilotFlavor` in `copilotChatFlavor.ts`, webview-side `sqlWebviewFlavor` in `copilot-chat-flavor.ts`.
 * **File format**: `.sqlx` files use the same JSON schema as `.kqlx` but only allow SQL sections. Mixed `.kqlx` files can contain both Kusto and SQL sections.
 * **Runtime**: SQL Tools Service powers IntelliSense, database/schema discovery, query execution, and cancellation. The runtime is downloaded and SHA-256 verified on first use (`stsDownloader.ts`), owned by `SqlWorkbenchService`, managed by `StsRuntime`/`StsProcessManager`, and consumed by editor-scoped `StsLanguageService` plus extension-scoped `StsQueryService`. Installer hashing/extraction is cancellable, failed request generations settle, and exhausted managers are replaced with editor replay.
+* **Execution ownership**: `SqlEditorSessionRegistry` owns section/comparison target identity and owner tokens. `SqlExecutionBroker` owns editor-scoped SQL admission, pending execution IDs, exact cancellation, currentness, and lease cleanup for both manual and Copilot runs. Keep query shaping, retry policy, UI copy, and Copilot history outside the broker.
 * **SQL Leave No Trace**: `SqlLeaveNoTracePolicyStore` is the cross-window source of truth. Every SQL data, language, schema-cache, Copilot, and restoration entry point must refresh/revalidate it immediately before dispatch or data admission. Enabling it must cancel active owners and clear host, webview, shared-result, dependent-section, and Copilot history state.
 * **Build**: Only `vscode` is externalized from the extension host bundle. `sql-formatter` is bundled for the webview prettify feature; STS is a verified first-use download.
 * **Tests**: SQL host tests include process epochs, manager replacement, protocol execution, paging, cancellation, result adaptation, schema parsing, TLS/auth options, cross-host LNT propagation/restoration/Copilot invalidation, and dialect metadata. Authenticated behavior E2E lives under `tests/vscode-extension-tester/e2e/sql-auth/`.
+
+## Compatibility Sidecar Development
+
+The `.kql`/`.csl` and `.sql` compatibility providers share three load-bearing abstractions:
+
+* `CompatSidecarFormat` for pure linkage/hydration/canonicalization.
+* `CompatSidecarStore` for lock/CAS/repair/recovery publication.
+* `CompatSidecarSession` for revision, queue, upgrade, dirty, final-save, reload, and close coordination.
+
+Keep KQL inference, connection caching, primary-text application, protocol message names, and language-specific sidecar create/adopt UX in provider adapters. Any sidecar lifecycle change must run the full parameterized `tests/integration/kqlSidecar.test.ts` matrix for both KQL and SQL variants.
 
 ---
 

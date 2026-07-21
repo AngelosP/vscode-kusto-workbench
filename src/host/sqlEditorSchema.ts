@@ -61,7 +61,7 @@ export async function readCurrentSqlSchemaPrincipalFingerprint(
 ): Promise<string | undefined> {
 	const authType = String(connection.authType || '').trim().toLowerCase();
 	const principal = authType === 'aad'
-		? (await readCurrentSqlServerAccountMap(context as vscode.ExtensionContext))[normalizeSqlServerUrl(connection.serverUrl)]
+		? (await readCurrentSqlServerAccountMap(context as vscode.ExtensionContext, connection.serverUrl))[normalizeSqlServerUrl(connection.serverUrl)]
 		: String(connection.username || '').trim();
 	return sqlSchemaPrincipalFingerprintForPrincipal(connection, principal);
 }

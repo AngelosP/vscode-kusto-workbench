@@ -101,6 +101,7 @@ export interface StsDiagnosticsEvent {
 }
 
 export type StsExpectedOwner = {
+	sectionInstanceId?: string;
 	connectionId: string;
 	database: string;
 	targetSignature: string;
@@ -329,6 +330,7 @@ export class StsLanguageService {
 
 	private _sameExpectedOwner(left: StsExpectedOwner | undefined, right: StsExpectedOwner | undefined): boolean {
 		return !!left && !!right
+			&& left.sectionInstanceId === right.sectionInstanceId
 			&& left.connectionId === right.connectionId
 			&& left.database === right.database
 			&& left.targetSignature === right.targetSignature
@@ -479,11 +481,15 @@ export class StsLanguageService {
 		if (this._targetGenerationByBoxId.get(boxId) !== targetGeneration) throw new Error('STS document target changed while opening.');
 	}
 
-	async changeDocument(boxId: string, text: string): Promise<void> {
+	async changeDocument(boxId: string, text: string, sectionInstanceId?: string): Promise<void> {
 		if (this._disposed) return;
 		const target = this._targetByBoxId.get(boxId);
-		if (!target) return;
+		if (!target || (sectionInstanceId !== undefined
+			&& target.expectedOwner?.sectionInstanceId !== sectionInstanceId)) return;
 		await this._leaveNoTracePolicy.assertAllowed(target.connection.id);
+		if (!this._isTargetCurrent(boxId, target)
+			|| (sectionInstanceId !== undefined
+				&& this._targetByBoxId.get(boxId)?.expectedOwner?.sectionInstanceId !== sectionInstanceId)) return;
 		const uri = this._boxIdToUri(boxId);
 		this._docTextByBoxId.set(boxId, text);
 		const version = (this._docVersions.get(boxId) ?? 0) + 1;
