@@ -4,7 +4,7 @@ import type * as vscode from 'vscode';
 
 import type { SqlConnection } from './sqlConnectionManager';
 import { readCurrentSqlSchemaPrincipalFingerprint } from './sqlEditorSchema';
-import { sqlConnectionTargetSignature } from '../shared/sqlConnectionIdentity';
+import { sqlConnectionTargetSignature, sqlConnectionTargetSignatureMatches } from '../shared/sqlConnectionIdentity';
 import { quarantineCorruptSqlStateFile } from './sql/sqlStateFile';
 import {
 	atomicReplaceSqlStateFile,
@@ -290,7 +290,20 @@ export async function beginSqlDatabaseCacheRequest(
 		}
 		const currentTargetSignature = snapshot.targetSignatureByConnectionId[id];
 		if (currentTargetSignature && currentTargetSignature !== targetSignature) {
-			throw new Error('SQL connection target changed in another window.');
+			if (!sqlConnectionTargetSignatureMatches(connection, currentTargetSignature)) {
+				throw new Error('SQL connection target changed in another window.');
+			}
+			snapshot.targetSignatureByConnectionId[id] = targetSignature;
+		}
+		const cachedEntry = snapshot.entries[id];
+		if (cachedEntry && cachedEntry.targetSignature !== targetSignature) {
+			if (principalFingerprint
+				&& cachedEntry.principalFingerprint === principalFingerprint
+				&& sqlConnectionTargetSignatureMatches(connection, cachedEntry.targetSignature)) {
+				snapshot.entries[id] = { ...cachedEntry, targetSignature };
+			} else {
+				delete snapshot.entries[id];
+			}
 		}
 		if (Object.prototype.hasOwnProperty.call(snapshot.principalFingerprintByConnectionId, id)) {
 			const currentPrincipal = snapshot.principalFingerprintByConnectionId[id];

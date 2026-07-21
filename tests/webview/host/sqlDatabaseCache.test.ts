@@ -17,6 +17,7 @@ import {
 } from '../../../src/host/sqlDatabaseCache';
 import { sqlSchemaPrincipalFingerprintForPrincipal } from '../../../src/host/sqlEditorSchema';
 import { createSqlStateCommit } from '../../../src/host/sql/sqlStateTransaction';
+import { legacySqlConnectionTargetSignature } from '../../../src/shared/sqlConnectionIdentity';
 
 const tempDirectories: string[] = [];
 
@@ -85,6 +86,32 @@ describe('SQL database cache ownership', () => {
 	it('ignores legacy arrays and malformed entries', () => {
 		expect(parseSqlDatabaseCacheStore({ 'sql-1': ['LegacyDb'] })).toEqual({});
 		expect(parseSqlDatabaseCacheStore({ schemaVersion: 1, version: 1, entries: { 'sql-1': { version: 1, databases: ['Db'] } } })).toEqual({});
+	});
+
+	it('migrates an exact revision-zero legacy target signature without discarding databases', async () => {
+		const harness = createHarness({ disk: true });
+		const request = await beginSqlDatabaseCacheRequest(harness.context, 'cache', harness.connection);
+		await writeOwnedSqlDatabaseCacheEntry(
+			harness.context, 'cache', harness.connection, ACCOUNT_A_FINGERPRINT, ['DbA'], request, async () => undefined,
+		);
+		const directory = harness.context.globalStorageUri.fsPath as string;
+		const snapshotName = fs.readdirSync(directory).find(name => name.startsWith('sql-database-cache-'))!;
+		const snapshotPath = path.join(directory, snapshotName);
+		const snapshot = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+		const legacySignature = legacySqlConnectionTargetSignature(harness.connection);
+		snapshot.targetSignatureByConnectionId[harness.connection.id] = legacySignature;
+		snapshot.entries[harness.connection.id].targetSignature = legacySignature;
+		fs.writeFileSync(snapshotPath, `${JSON.stringify(snapshot, null, 2)}\n`, 'utf8');
+
+		await expect(beginSqlDatabaseCacheRequest(harness.context, 'cache', harness.connection))
+			.resolves.toMatchObject({ connectionId: harness.connection.id });
+
+		const migrated = JSON.parse(fs.readFileSync(snapshotPath, 'utf8'));
+		expect(migrated.targetSignatureByConnectionId[harness.connection.id]).toBe(sqlDatabaseTargetSignature(harness.connection));
+		expect(migrated.entries[harness.connection.id]).toMatchObject({
+			targetSignature: sqlDatabaseTargetSignature(harness.connection), databases: ['DbA'],
+		});
+		expect(JSON.stringify(migrated)).not.toContain('"serverUrl"');
 	});
 
 	it('quarantines structural disk corruption and invalidates pre-corruption requests durably', async () => {
