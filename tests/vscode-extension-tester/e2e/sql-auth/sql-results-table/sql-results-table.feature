@@ -2,6 +2,9 @@ Feature: SQL results table — display, stale overlay, metadata
 
   Background:
     Given the extension is in a clean state
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 900 by 1050
+    And I execute command "workbench.action.closeAuxiliaryBar"
     And I capture the output channel "Kusto Workbench"
     And I wait 2 seconds
 
@@ -23,6 +26,7 @@ Feature: SQL results table — display, stale overlay, metadata
     When I evaluate "window.__e2e.sql.selectDatabase('sampledb')" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
+    When I wait for "kw-sql-section[data-test-sts-ready='true']" in the webview for 120 seconds
 
     # Focus editor
     When I scroll "kw-sql-section .query-editor" into view
@@ -39,6 +43,8 @@ Feature: SQL results table — display, stale overlay, metadata
     And I wait 1 second
 
     When I evaluate "window.__e2e.sql.assertResultColumns('TABLE_SCHEMA,TABLE_NAME,TABLE_TYPE')" in the webview
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "01-multi-column-results"
 
     # ── TEST 2: Results have correct row count ────────────────────────────
@@ -49,6 +55,8 @@ Feature: SQL results table — display, stale overlay, metadata
     And I wait 1 second
 
     When I evaluate "window.__e2e.sql.assertStaleResults()" in the webview
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "02-stale-overlay"
 
     # ── TEST 4: Re-run → stale overlay clears ────────────────────────────
@@ -57,5 +65,7 @@ Feature: SQL results table — display, stale overlay, metadata
     And I wait 1 second
 
     When I evaluate "window.__e2e.sql.assertResultsNotStale()" in the webview
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "03-stale-cleared"
     When I execute command "workbench.action.closeAllEditors"

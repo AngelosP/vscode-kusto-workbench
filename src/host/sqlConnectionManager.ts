@@ -10,6 +10,7 @@ import {
 	atomicReplaceSqlStateFile,
 	readCommittedSqlStateBackup,
 	readRecoverableSqlStateSnapshot,
+	type SqlStateLockOptions,
 	withSqlStateFileLock,
 	writeRecoverableSqlStateSnapshot,
 } from './sql/sqlStateTransaction';
@@ -448,22 +449,33 @@ export class SqlConnectionManager implements vscode.Disposable {
 
 	async prepareSnapshotDispatch<T>(
 		prepare: (snapshot: { connections: readonly SqlConnection[]; version: number }) => Promise<SqlDispatchHandle<T>>,
+		lockOptions: SqlStateLockOptions = {},
 	): Promise<SqlDispatchHandle<T>> {
 		await this.readyPromise;
 		return this.withSnapshotLock(async snapshot => prepare({
 			connections: snapshot.connections.map(connection => ({ ...connection })),
 			version: snapshot.version,
-		}));
+		}), false, false, lockOptions);
+	}
+
+	async awaitSnapshotLockReady(): Promise<void> {
+		await this.readyPromise;
+		if (!this.lockTarget) return;
+		await withSqlStateFileLock(this.lockTarget, async () => undefined, {
+			staleMs: LOCK_STALE_MS,
+			retryUntilStale: true,
+		});
 	}
 
 	async runWithSnapshotLock<T>(
 		run: (snapshot: { connections: readonly SqlConnection[]; version: number }) => Promise<T>,
+		lockOptions: SqlStateLockOptions = {},
 	): Promise<T> {
 		await this.readyPromise;
 		return this.withSnapshotLock(async snapshot => run({
 			connections: snapshot.connections.map(connection => ({ ...connection })),
 			version: snapshot.version,
-		}));
+		}), false, false, lockOptions);
 	}
 
 	async getPasswordForConnection(connection: SqlConnection): Promise<string | undefined> {
@@ -509,7 +521,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 				await this.writeSnapshotFile(current);
 			}
 			this.applySnapshot(current);
-		}, true);
+		}, true, true);
 	}
 
 	private async refresh(): Promise<void> {
@@ -605,7 +617,12 @@ export class SqlConnectionManager implements vscode.Disposable {
 		return changed ? { ...snapshot, version: snapshot.version + 1, mutationLeases } : snapshot;
 	}
 
-	private async withSnapshotLock<T>(action: (snapshot: ConnectionSnapshot) => Promise<T>, allowLegacyMigration = false): Promise<T> {
+	private async withSnapshotLock<T>(
+		action: (snapshot: ConnectionSnapshot) => Promise<T>,
+		allowLegacyMigration = false,
+		retryUntilStale = false,
+		lockOptions: SqlStateLockOptions = {},
+	): Promise<T> {
 		if (this.snapshotPath && this.lockTarget) {
 			return withSqlStateFileLock(this.lockTarget, async () => {
 				const snapshot = await this.readSnapshot(allowLegacyMigration);
@@ -615,7 +632,7 @@ export class SqlConnectionManager implements vscode.Disposable {
 					this.applySnapshot(recovered);
 				}
 				return await action(recovered);
-			}, { staleMs: LOCK_STALE_MS });
+			}, { staleMs: LOCK_STALE_MS, retryUntilStale, ...lockOptions });
 		}
 		const runtime = memoryRuntime(this.context.globalState as object);
 		const previous = runtime.tail;

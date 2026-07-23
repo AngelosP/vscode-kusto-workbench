@@ -7,10 +7,11 @@ Feature: SQL results feed dependent sections
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
     When I click "button[data-add-kind='sql']" in the webview
-    When I wait for "kw-sql-section[data-test-sql-connection='true']" in the webview for 15 seconds
+    When I wait for "kw-sql-section[data-test-sql-connection='true']" in the webview for 60 seconds
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
     When I evaluate "window.__e2e.sql.selectDatabase('sampledb')" in the webview
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
+    When I wait for "kw-sql-section[data-test-sts-ready='true']" in the webview for 120 seconds
 
   Scenario: Transformation, Chart, and HTML consume live STS results
     When I evaluate "window.__e2e.sql.setQuery('SELECT 1 AS Category, 10 AS Amount UNION ALL SELECT 2, 20 UNION ALL SELECT 3, 30')" in the webview

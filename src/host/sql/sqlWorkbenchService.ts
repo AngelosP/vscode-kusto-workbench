@@ -11,6 +11,16 @@ import { sqlSchemaPrincipalFingerprintForPrincipal } from '../sqlEditorSchema';
 import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity';
 import type { SqlConnection } from '../sqlConnectionManager';
 import { startSqlDispatch, unwrapSqlDispatch } from './sqlDispatch';
+import { isSqlStateLockContentionError } from './sqlStateTransaction';
+
+const SQL_OWNER_SNAPSHOT_LOCK_RETRY_DELAY_MS = 25;
+const SQL_OWNER_SNAPSHOT_LOCK_RETRIES = Math.ceil(30_000 / SQL_OWNER_SNAPSHOT_LOCK_RETRY_DELAY_MS) + 4;
+
+class SqlOwnerSnapshotCallbackError extends Error {
+	constructor(readonly callbackError: unknown) {
+		super('SQL owner snapshot callback failed.');
+	}
+}
 
 export interface SqlLeaveNoTraceChange {
 	connectionIds: string[];
@@ -229,35 +239,53 @@ export class SqlWorkbenchService {
 	}
 
 	async dispatchSqlOwnerSnapshot<T>(dispatch: (snapshot: SqlOwnerSnapshot) => T | PromiseLike<T>): Promise<T> {
-		const handle = await this.leaveNoTracePolicy.prepareSnapshotDispatch(async policy => {
-			return this.connectionManager.prepareSnapshotDispatch(async connections => {
-				return this.serverAccountMap.prepareSnapshotDispatch(principals => {
-					return startSqlDispatch(() => dispatch({
-						policy,
-						connections: connections.connections,
-						connectionVersion: connections.version,
-						accountsByServer: principals.accountsByServer,
-						principalVersion: principals.version,
-					}));
-				});
-			});
-		});
+		await this.readyPromise;
+		const lockOptions = { retries: 0 } as const;
+		const handle = await this.retrySqlOwnerSnapshotLocks(() =>
+			this.leaveNoTracePolicy.prepareSnapshotDispatch(async policy =>
+				this.connectionManager.prepareSnapshotDispatch(async connections =>
+					this.serverAccountMap.prepareSnapshotDispatch(principals =>
+						startSqlDispatch(() => dispatch({
+							policy,
+							connections: connections.connections,
+							connectionVersion: connections.version,
+							accountsByServer: principals.accountsByServer,
+							principalVersion: principals.version,
+						})), lockOptions), lockOptions), lockOptions));
 		return unwrapSqlDispatch(handle);
 	}
 
 	async runWithSqlOwnerSnapshotLock<T>(run: (snapshot: SqlOwnerSnapshot) => Promise<T>): Promise<T> {
 		await this.readyPromise;
-		return this.leaveNoTracePolicy.runWithSnapshotLock(async policy => {
-			return this.connectionManager.runWithSnapshotLock(async connections => {
-				return this.serverAccountMap.runWithSnapshotLock(async principals => run({
-					policy,
-					connections: connections.connections,
-					connectionVersion: connections.version,
-					accountsByServer: principals.accountsByServer,
-					principalVersion: principals.version,
-				}));
-			});
-		});
+		const lockOptions = { retries: 0 } as const;
+		return this.retrySqlOwnerSnapshotLocks(() =>
+			this.leaveNoTracePolicy.runWithSnapshotLock(async policy =>
+				this.connectionManager.runWithSnapshotLock(async connections =>
+					this.serverAccountMap.runWithSnapshotLock(async principals => {
+						try {
+							return await run({
+								policy,
+								connections: connections.connections,
+								connectionVersion: connections.version,
+								accountsByServer: principals.accountsByServer,
+								principalVersion: principals.version,
+							});
+						} catch (error) {
+							throw new SqlOwnerSnapshotCallbackError(error);
+						}
+					}, lockOptions), lockOptions), lockOptions));
+	}
+
+	private async retrySqlOwnerSnapshotLocks<T>(attempt: () => Promise<T>): Promise<T> {
+		for (let retry = 0; ; retry += 1) {
+			try {
+				return await attempt();
+			} catch (error) {
+				if (error instanceof SqlOwnerSnapshotCallbackError) throw error.callbackError;
+				if (!isSqlStateLockContentionError(error) || retry >= SQL_OWNER_SNAPSHOT_LOCK_RETRIES) throw error;
+				await new Promise<void>(resolve => setTimeout(resolve, SQL_OWNER_SNAPSHOT_LOCK_RETRY_DELAY_MS));
+			}
+		}
 	}
 
 	async setLeaveNoTraceConnection(connectionId: string, enabled: boolean): Promise<void> {

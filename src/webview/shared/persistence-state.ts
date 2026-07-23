@@ -95,6 +95,9 @@ export const pState = {
 	/** True while applyKqlxState is rebuilding the UI from a document payload. */
 	restoreInProgress: false,
 
+	/** Number of documentData payloads whose restore completed in this webview. */
+	documentDataApplyCount: 0,
+
 	/** Box ID of the last executed query (used by results routing). */
 	lastExecutedBox: null as string | null,
 

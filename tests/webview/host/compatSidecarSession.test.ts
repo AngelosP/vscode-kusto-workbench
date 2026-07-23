@@ -93,13 +93,14 @@ describe('CompatSidecarSession', () => {
 	it('correlates final persist and reload responses', async () => {
 		const session = new CompatSidecarSession(true, 'SQL');
 		let finalRequestId = '';
-		const final = session.requestFinalPersist(message => {
+		const final = session.requestFinalPersist<{ marker: string }>(message => {
 			finalRequestId = String((message as any).requestId);
 			return true;
 		}, 'save');
 		await vi.waitFor(() => expect(session.hasPendingFinalPersist).toBe(true));
-		session.completeFinalPersist(finalRequestId);
-		await final;
+		expect(session.completeFinalPersist('stale-request', undefined, { marker: 'stale' })).toBe(false);
+		expect(session.completeFinalPersist(finalRequestId, undefined, { marker: 'current' })).toBe(true);
+		await expect(final).resolves.toEqual({ marker: 'current' });
 
 		const reload = session.createReloadRequest();
 		expect(session.completeReload(reload.requestId, true, 4)).toBe(true);

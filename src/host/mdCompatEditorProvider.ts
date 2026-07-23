@@ -12,6 +12,7 @@ import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTyp
 import { EditorCursorStatusBar, type EditorCursorStatusPayload } from './editorCursorStatusBar';
 import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
 import { getWorkbenchLogger } from './workbenchLogger';
+import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
@@ -109,15 +110,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 	}
 
 	private static pendingAddKindKeyForUri(uri: vscode.Uri): string {
-		// Keep in sync with KqlxEditorProvider's pendingAddKindKeyForUri implementation.
-		try {
-			if (uri.scheme === 'file') {
-				return `kusto.pendingAddKind:${uri.fsPath.toLowerCase()}`;
-			}
-		} catch {
-			// ignore
-		}
-		return `kusto.pendingAddKind:${uri.toString()}`;
+		return `kusto.pendingAddKind:${normalizeWorkbenchUriKey(uri)}`;
 	}
 
 	public async resolveCustomTextEditor(

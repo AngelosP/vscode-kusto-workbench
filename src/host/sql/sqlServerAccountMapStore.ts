@@ -10,6 +10,7 @@ import { quarantineCorruptSqlStateFile } from './sqlStateFile';
 import {
 	readCommittedSqlStateBackup,
 	readRecoverableSqlStateSnapshot,
+	type SqlStateLockOptions,
 	withSqlStateFileLock,
 	writeRecoverableSqlStateSnapshot,
 	writeSqlStateMarkerIfMissing,
@@ -188,16 +189,25 @@ async function writeSnapshotFile(resolved: AccountMapPaths, snapshot: AccountMap
 async function withSnapshotLock<T>(
 	context: AccountMapContext,
 	action: (snapshot: AccountMapSnapshot, snapshotPath?: string) => Promise<T>,
-	minimumRecoveryVersion = 1,
-	allowUncommittedPrimary = false,
+	options: {
+		minimumRecoveryVersion?: number;
+		allowUncommittedPrimary?: boolean;
+		retryUntilStale?: boolean;
+		lockOptions?: SqlStateLockOptions;
+	} = {},
 ): Promise<T> {
 	const resolved = snapshotPaths(context);
 	const legacy = normalizeMap(context.globalState.get<unknown>(STORAGE_KEY));
 	if (!resolved) return action(emptySnapshot(legacy));
 	return withSqlStateFileLock(resolved.lockTarget, async () => {
-		const snapshot = await readSnapshotFile(resolved, legacy, minimumRecoveryVersion, allowUncommittedPrimary);
+		const snapshot = await readSnapshotFile(
+			resolved,
+			legacy,
+			options.minimumRecoveryVersion ?? 1,
+			options.allowUncommittedPrimary ?? false,
+		);
 		return await action(snapshot, resolved.snapshotPath);
-	}, { staleMs: LOCK_STALE_MS });
+	}, { staleMs: LOCK_STALE_MS, retryUntilStale: options.retryUntilStale, ...options.lockOptions });
 }
 
 export async function readCurrentSqlServerAccountMap(context: AccountMapContext, serverUrl?: string): Promise<Record<string, string>> {
@@ -206,7 +216,7 @@ export async function readCurrentSqlServerAccountMap(context: AccountMapContext,
 	return withSnapshotLock(context, async snapshot => {
 		assertAccountMapAvailable(snapshot, serverUrl);
 		return snapshot.accountsByServer;
-	}, Date.now());
+	}, { minimumRecoveryVersion: Date.now(), retryUntilStale: true });
 }
 
 export async function establishCanonicalSqlServerAccount(
@@ -249,7 +259,7 @@ export async function verifyCanonicalSqlServerAccount(
 	return withSnapshotLock(context, async snapshot => {
 		assertAccountMapAvailable(snapshot, server);
 		return snapshot.accountsByServer[server] === expected;
-	}, Date.now());
+	}, { minimumRecoveryVersion: Date.now() });
 }
 
 export async function setCanonicalSqlServerAccount(context: AccountMapContext, serverUrl: string, accountId?: string): Promise<void> {
@@ -336,11 +346,12 @@ export class SqlServerAccountMapStore implements vscode.Disposable {
 				throw new Error('SQL principal changed before canonical dispatch admission.');
 			}
 			return startSqlDispatch(dispatch);
-		}, this.snapshot.version + 1);
+		}, { minimumRecoveryVersion: this.snapshot.version + 1 });
 	}
 
 	async prepareSnapshotDispatch<T>(
 		prepare: (snapshot: { accountsByServer: Readonly<Record<string, string>>; version: number }) => SqlDispatchHandle<T>,
+		lockOptions: SqlStateLockOptions = {},
 	): Promise<SqlDispatchHandle<T>> {
 		await this.readyPromise;
 		return withSnapshotLock(this.context, async snapshot => {
@@ -348,11 +359,22 @@ export class SqlServerAccountMapStore implements vscode.Disposable {
 				accountsByServer: { ...snapshot.accountsByServer },
 				version: snapshot.version,
 			});
-		}, this.snapshot.version + 1);
+		}, { minimumRecoveryVersion: this.snapshot.version + 1, lockOptions });
+	}
+
+	async awaitSnapshotLockReady(): Promise<void> {
+		await this.readyPromise;
+		const lockTarget = snapshotPaths(this.context)?.lockTarget;
+		if (!lockTarget) return;
+		await withSqlStateFileLock(lockTarget, async () => undefined, {
+			staleMs: LOCK_STALE_MS,
+			retryUntilStale: true,
+		});
 	}
 
 	async runWithSnapshotLock<T>(
 		run: (snapshot: { accountsByServer: Readonly<Record<string, string>>; version: number }) => Promise<T>,
+		lockOptions: SqlStateLockOptions = {},
 	): Promise<T> {
 		await this.readyPromise;
 		return withSnapshotLock(this.context, async snapshot => {
@@ -360,13 +382,15 @@ export class SqlServerAccountMapStore implements vscode.Disposable {
 				accountsByServer: { ...snapshot.accountsByServer },
 				version: snapshot.version,
 			});
-		}, this.snapshot.version + 1);
+		}, { minimumRecoveryVersion: this.snapshot.version + 1, lockOptions });
 	}
 
 	async refresh(): Promise<Record<string, string>> {
 		await this.readyPromise;
 		if (!this.snapshotPath) return this.getAccountsByServer();
-		await withSnapshotLock(this.context, snapshot => this.applySnapshot(snapshot), this.snapshot.version + 1);
+		await withSnapshotLock(this.context, snapshot => this.applySnapshot(snapshot), {
+			minimumRecoveryVersion: this.snapshot.version + 1,
+		});
 		return this.getAccountsByServer();
 	}
 
@@ -386,7 +410,7 @@ export class SqlServerAccountMapStore implements vscode.Disposable {
 				if (resolved) await writeSnapshotFile(resolved, current);
 			}
 			await this.applySnapshot(current, false);
-		}, 1, true);
+		}, { minimumRecoveryVersion: 1, allowUncommittedPrimary: true, retryUntilStale: true });
 	}
 
 	private async applySnapshot(snapshot: AccountMapSnapshot, emit = true): Promise<void> {

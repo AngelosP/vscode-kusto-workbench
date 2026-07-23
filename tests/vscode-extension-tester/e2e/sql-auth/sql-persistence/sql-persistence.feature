@@ -2,11 +2,16 @@ Feature: SQL persistence — save and reopen .sqlx file
 
   Background:
     Given the extension is in a clean state
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 900 by 1050
+    And I execute command "workbench.action.closeAuxiliaryBar"
     And I capture the output channel "Kusto Workbench"
     And I wait 2 seconds
 
   Scenario: Save and reopen a SQL document with section state
     Given a file "tests/vscode-extension-tester/runs/sql-auth/sql-persistence/workfile.sqlx" exists
+    When I execute command "workbench.action.closeAllEditors"
+    And I wait 1 second
 
     When I open file "tests/vscode-extension-tester/runs/sql-auth/sql-persistence/workfile.sqlx" in the editor
     And I wait 6 seconds
@@ -44,6 +49,8 @@ Feature: SQL persistence — save and reopen .sqlx file
     And I wait 1 second
 
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const data = el.serialize(); const checks = []; if (data.type !== 'sql') checks.push('type=' + data.type); if (!data.query || !data.query.includes('sql_persistence_marker')) checks.push('query missing sql_persistence_marker'); if (!data.serverUrl) checks.push('no serverUrl'); if (!data.database) checks.push('no database'); if (data.runMode !== 'plain') checks.push('runMode=' + data.runMode); if (data.expanded !== false) checks.push('expanded=' + data.expanded); if (checks.length) throw new Error('Pre-save serialization issues: ' + checks.join('; ')); return 'pre-save SQL state verified'; })()" in the webview
+    When I move the Dev Host to 0, 0
+    When I click at 800, 800
     Then I take a screenshot "01-before-save-collapsed"
 
     When I execute command "workbench.action.files.save"
@@ -57,6 +64,8 @@ Feature: SQL persistence — save and reopen .sqlx file
     When I open file "tests/vscode-extension-tester/runs/sql-auth/sql-persistence/workfile.sqlx" in the editor
     And I wait 8 seconds
     When I wait for "kw-sql-section" in the webview for 20 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 800, 800
     Then I take a screenshot "02-after-reopen"
 
     When I evaluate "(() => { const sections = Array.from(document.querySelectorAll('kw-sql-section')); if (sections.length !== 1) throw new Error('Expected exactly one SQL section after reopen, found ' + sections.length); const data = sections[0].serialize(); const checks = []; if (data.type !== 'sql') checks.push('type=' + data.type); if (!data.query || !data.query.includes('sql_persistence_marker')) checks.push('query missing sql_persistence_marker'); if (!data.serverUrl) checks.push('no serverUrl'); if (!data.database) checks.push('no database'); if (data.runMode !== 'plain') checks.push('runMode=' + data.runMode); if (data.expanded !== false) checks.push('expanded=' + data.expanded); if (checks.length) throw new Error('Reopened SQL state issues: ' + checks.join('; ')); return 'reopened SQL state verified'; })()" in the webview

@@ -35,10 +35,15 @@ export interface SqlStateLockOptions {
 	updateMs?: number;
 	retries?: number;
 	retryDelayMs?: number;
+	retryUntilStale?: boolean;
 }
 
 export interface AtomicReplaceSqlStateFileOptions {
 	retryDelaysMs?: readonly number[];
+}
+
+export function isSqlStateLockContentionError(error: unknown): boolean {
+	return String((error as NodeJS.ErrnoException | undefined)?.code || '') === 'ELOCKED';
 }
 
 export interface RecoverableSqlStateSnapshotOptions {
@@ -58,12 +63,16 @@ export async function withSqlStateFileLock<T>(
 ): Promise<T> {
 	await fs.promises.mkdir(path.dirname(lockTarget), { recursive: true });
 	const retryDelayMs = options.retryDelayMs ?? 25;
+	const staleMs = options.staleMs ?? DEFAULT_LOCK_STALE_MS;
+	const retries = options.retries ?? (options.retryUntilStale
+		? Math.ceil(staleMs / Math.max(1, retryDelayMs)) + 4
+		: 100);
 	const release = await lockfile.lock(lockTarget, {
 		realpath: false,
-		stale: options.staleMs ?? DEFAULT_LOCK_STALE_MS,
+		stale: staleMs,
 		update: options.updateMs ?? 5_000,
 		retries: {
-			retries: options.retries ?? 100,
+			retries,
 			factor: 1,
 			minTimeout: retryDelayMs,
 			maxTimeout: retryDelayMs,

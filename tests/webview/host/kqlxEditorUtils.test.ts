@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
 	normalizeValue,
 	normalizeSection,
@@ -10,7 +10,85 @@ import {
 	formatSectionDiffContent,
 	stripDiffNoise,
 	hasSqlOwnedDocumentState,
+	OwnedSessionWriteTracker,
+	publishKqlxTextFresh,
+	shouldReloadKqlxAfterDocumentChange,
 } from '../../../src/host/kqlxEditorProvider';
+import * as vscode from 'vscode';
+
+describe('publishKqlxTextFresh', () => {
+	it('blocks malformed text before invoking either publication callback', async () => {
+		const publishStateFresh = vi.fn();
+		const publishText = vi.fn();
+		const malformed = '{"kind":"sqlx","state":{"sections":[{"type":"sql","resultJson":"secret"}]}';
+
+		await expect(publishKqlxTextFresh(
+			malformed, 'sqlx', vscode.EndOfLine.LF, publishStateFresh, publishText,
+		)).rejects.toThrow('SQL privacy state cannot be verified');
+		expect(publishStateFresh).not.toHaveBeenCalled();
+		expect(publishText).not.toHaveBeenCalled();
+	});
+
+	it('serializes and publishes while canonical SQL ownership remains held', async () => {
+		let lockHeld = false;
+		let releasePublish!: () => void;
+		const publishGate = new Promise<void>(resolve => { releasePublish = resolve; });
+		const publishStateFresh = async <R>(state: any, publish: (sanitized: any) => Promise<R>): Promise<R> => {
+			lockHeld = true;
+			try {
+				const sections = state.sections.map((section: any) => {
+					const sanitized = { ...section };
+					delete sanitized.resultJson;
+					return sanitized;
+				});
+				return await publish({ ...state, sections });
+			} finally {
+				lockHeld = false;
+			}
+		};
+		const input = JSON.stringify({
+			kind: 'sqlx', version: 1,
+			state: { sections: [{ id: 'sql_1', type: 'sql', resultJson: '{"secret":true}' }] },
+		});
+		const publishing = publishKqlxTextFresh(
+			input, 'sqlx', vscode.EndOfLine.LF, publishStateFresh,
+			async text => {
+				expect(lockHeld).toBe(true);
+				expect(text).not.toContain('secret');
+				await publishGate;
+				expect(lockHeld).toBe(true);
+				return text;
+			},
+		);
+
+		await vi.waitFor(() => expect(lockHeld).toBe(true));
+		releasePublish();
+		await expect(publishing).resolves.not.toContain('secret');
+		expect(lockHeld).toBe(false);
+	});
+});
+
+describe('OwnedSessionWriteTracker', () => {
+	it('recognizes independently observed writes even when a newer write already completed', () => {
+		const tracker = new OwnedSessionWriteTracker('initial');
+		tracker.begin('write-a');
+		tracker.begin('write-b');
+
+		expect(tracker.latest).toBe('write-b');
+		expect(tracker.observe('write-a')).toBe(true);
+		expect(tracker.observe('write-b')).toBe(true);
+		expect(tracker.observe('write-a')).toBe(false);
+	});
+
+	it('restores the prior latest text when a direct write fails', () => {
+		const tracker = new OwnedSessionWriteTracker('initial');
+		const token = tracker.begin('failed');
+		tracker.rollback(token);
+
+		expect(tracker.latest).toBe('initial');
+		expect(tracker.observe('failed')).toBe(false);
+	});
+});
 
 describe('hasSqlOwnedDocumentState', () => {
 	it('isolates non-SQL sections and Kusto comparisons from SQL privacy state', () => {
@@ -31,6 +109,46 @@ describe('hasSqlOwnedDocumentState', () => {
 		expect(hasSqlOwnedDocumentState({ sections: [
 			{ id: 'legacy_sql_cmp', type: 'query', connectionIdHint: 'sql_old', resultJson: '{"secret":true}' },
 		] as any })).toBe(true);
+	});
+});
+
+describe('shouldReloadKqlxAfterDocumentChange', () => {
+	it('never reloads the extension-owned session file after its direct disk writes', () => {
+		expect(shouldReloadKqlxAfterDocumentChange({
+			isSessionFile: true,
+			matchesOwnedSessionWrite: true,
+			webviewInitialized: true,
+			contentChangeCount: 1,
+			lastWebviewPersistAt: 0,
+			now: 10_000,
+		})).toBe(false);
+		expect(shouldReloadKqlxAfterDocumentChange({
+			isSessionFile: true,
+			matchesOwnedSessionWrite: false,
+			webviewInitialized: true,
+			contentChangeCount: 1,
+			lastWebviewPersistAt: 9_900,
+			now: 10_000,
+		})).toBe(true);
+	});
+
+	it('reloads initialized user files only for external content changes', () => {
+		expect(shouldReloadKqlxAfterDocumentChange({
+			isSessionFile: false,
+			matchesOwnedSessionWrite: false,
+			webviewInitialized: true,
+			contentChangeCount: 1,
+			lastWebviewPersistAt: 1_000,
+			now: 2_000,
+		})).toBe(true);
+		expect(shouldReloadKqlxAfterDocumentChange({
+			isSessionFile: false,
+			matchesOwnedSessionWrite: false,
+			webviewInitialized: true,
+			contentChangeCount: 1,
+			lastWebviewPersistAt: 1_700,
+			now: 2_000,
+		})).toBe(false);
 	});
 });
 

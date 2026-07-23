@@ -2878,10 +2878,15 @@ export function __kustoGetSqlSectionElement(boxId: string): any {
 /** Push connections to all SQL section dropdowns. */
 export function updateSqlConnectionSelects() {
 	const lastSqlConnId = (window as any).__kustoSqlLastConnectionId || '';
+	const lastSqlDatabase = (window as any).__kustoSqlLastDatabase || '';
 	sqlBoxes.forEach((id: any) => {
 		const el = __kustoGetSqlSectionElement(id);
 		if (el && typeof el.setConnections === 'function') {
-			el.setConnections(sqlConnections || [], { lastConnectionId: lastSqlConnId });
+			el.setConnections(sqlConnections || [], {
+				lastConnectionId: lastSqlConnId,
+				lastDatabase: lastSqlDatabase,
+				cachedDatabases: sqlCachedDatabases,
+			});
 		}
 		if (el && typeof el.setFavorites === 'function') {
 			el.setFavorites(sqlFavorites || []);

@@ -84,7 +84,12 @@ function createSqlProviderHarness() {
 	provider._comparisonOwnerByBoxId = new Map();
 	provider._sqlDatabaseRequestIdByBoxId = new Map();
 	provider._sqlSectionInstanceIdByBoxId = new Map([['sql_1', 'instance-1']]);
+	provider._retiredSqlSectionInstanceIdByBoxId = new Map();
+	provider._stsChangeSequenceByBoxId = new Map();
+	provider._stsChangeTailByBoxId = new Map();
 	provider._closedStsBoxIds = new Set();
+	provider._pendingStsTextByBoxId = new Map();
+	provider._stsDocumentSequenceByBoxId = new Map();
 	provider.pendingComparisonEnsureByRequestId = new Map();
 	provider.postMessage = vi.fn();
 	provider.output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
@@ -144,7 +149,117 @@ function createSqlProviderHarness() {
 	return provider;
 }
 
+function stsOwner(owner: Record<string, unknown> | undefined, sectionInstanceId = 'instance-1') {
+	return owner ? { ...owner, sectionInstanceId } : owner;
+}
+
 describe('QueryEditorProvider cancellation orchestration', () => {
+	it('preserves a retired target tombstone across same-instance section reorder', async () => {
+		const provider = createSqlProviderHarness();
+		provider._openedStsBoxIds = new Set();
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider.copilot = { cancelCopilotWriteQuery: vi.fn() };
+
+		expect(provider.retireSqlTarget('sql_1', 'instance-1', 2)).toBe(true);
+		await provider.handleWebviewMessage({
+			type: 'sqlSectionOpen', boxId: 'sql_1', sectionInstanceId: 'instance-1',
+		} as any);
+
+		expect(provider.sqlOwnership.getGeneration('sql_1')).toBe(2);
+		expect(provider.sqlOwnership.adoptTarget('sql_1', 'sql-1', 'Db', 1, () => undefined)).toBe('rejected');
+	});
+
+	it('resets a retired target tombstone for a new section incarnation', async () => {
+		const provider = createSqlProviderHarness();
+		provider._openedStsBoxIds = new Set();
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider.copilot = { cancelCopilotWriteQuery: vi.fn() };
+
+		provider.handleStsDidClose('sql_1');
+		expect(provider.sqlOwnership.getGeneration('sql_1')).toBe(2);
+		await provider.handleWebviewMessage({
+			type: 'sqlSectionOpen', boxId: 'sql_1', sectionInstanceId: 'instance-2',
+		} as any);
+
+		expect(provider.sqlOwnership.getGeneration('sql_1')).toBe(0);
+		expect(provider.sqlOwnership.adoptTarget('sql_1', 'sql-1', 'Db', 1, () => undefined)).toBe('changed');
+	});
+
+	it('retires in-flight work before replacing a live section incarnation', async () => {
+		const provider = createSqlProviderHarness();
+		provider._openedStsBoxIds = new Set(['sql_1']);
+		provider._latestStsConnectSequenceByBoxId = new Map([['sql_1', 4]]);
+		provider._sqlDatabaseRequestIdByBoxId = new Map([['sql_1', 'database-request']]);
+		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT old']]);
+		provider._stsLanguageService = { closeDocumentForOwner: vi.fn(() => true) };
+		provider.copilot = {
+			cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn(),
+		};
+		provider.sqlOwnership.setComparisonOwner('comparison-1', {
+			sourceBoxId: 'sql_1', connectionId: 'sql-1', copilotSequence: 7,
+		});
+		const reject = vi.fn();
+		provider.pendingComparisonEnsureByRequestId.set('comparison-request', {
+			resolve: vi.fn(), reject, timer: setTimeout(() => undefined, 10_000),
+			sourceBoxId: 'sql_1', sqlConnectionId: 'sql-1', copilotSequence: 7,
+		});
+
+		await provider.handleWebviewMessage({
+			type: 'sqlSectionOpen', boxId: 'sql_1', sectionInstanceId: 'instance-2',
+		} as any);
+
+		expect(provider._sqlSectionInstanceIdByBoxId.get('sql_1')).toBe('instance-2');
+		expect(provider._latestStsConnectSequenceByBoxId.has('sql_1')).toBe(false);
+		expect(provider._sqlDatabaseRequestIdByBoxId.has('sql_1')).toBe(false);
+		expect(provider._pendingStsTextByBoxId.has('sql_1')).toBe(false);
+		expect(provider.sqlOwnership.getComparisonOwner('comparison-1')).toBeUndefined();
+		expect(reject).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' }));
+		expect(provider.copilot.cancelCopilotQueryTarget).toHaveBeenCalledWith('sql_1', 'comparison-1', 7);
+	});
+
+	it('retires an active target when its connection is deleted', async () => {
+		const provider = createSqlProviderHarness();
+		const connection = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
+		provider.sqlConnectionSignatureById = new Map([['sql-1', sqlConnectionTargetSignature(connection)]]);
+		provider.sqlPersistenceInvalidationEmitter = { fire: vi.fn() };
+		provider._openedStsBoxIds = new Set(['sql_1']);
+		provider._latestStsConnectSequenceByBoxId = new Map([['sql_1', 3]]);
+		provider._stsLanguageService = { closeDocumentForOwner: vi.fn(() => true) };
+		provider.copilot = { invalidateSqlConnections: vi.fn(), cancelCopilotWriteQuery: vi.fn() };
+		provider.sendSqlConnectionsData = vi.fn(async () => undefined);
+
+		await provider.handleSqlConnectionsChanged([]);
+
+		expect(provider.sqlOwnership.getTarget('sql_1')).toBeUndefined();
+		expect(provider.sqlOwnership.getGeneration('sql_1')).toBe(2);
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'sqlConnectionOwnerChanged', boxId: 'sql_1', sectionInstanceId: 'instance-1',
+			targetGeneration: 2,
+		}));
+	});
+
+	it('retires SQL ownership without closing the live section when its database disappears', () => {
+		const provider = createSqlProviderHarness();
+		const previousOwner = provider.getSqlResultOwner('sql_1');
+		provider._openedStsBoxIds = new Set(['sql_1']);
+		provider._latestStsConnectSequenceByBoxId = new Map([['sql_1', 3]]);
+		provider._sqlDatabaseRequestIdByBoxId = new Map([['sql_1', 'request-1']]);
+		provider._stsLanguageService = { closeDocumentForOwner: vi.fn(() => true) };
+		provider.copilot = { cancelCopilotWriteQuery: vi.fn() };
+		provider.sqlOwnership.setComparisonOwner('comparison-1', { sourceBoxId: 'sql_1', connectionId: 'sql-1' });
+
+		expect(provider.retireSqlTarget('sql_1', 'instance-1', 2)).toBe(true);
+
+		expect(provider._stsLanguageService.closeDocumentForOwner).toHaveBeenCalledWith('sql_1', stsOwner(previousOwner));
+		expect(provider.sqlOwnership.getTarget('sql_1')).toBeUndefined();
+		expect(provider.sqlOwnership.getGeneration('sql_1')).toBe(2);
+		expect(provider.sqlOwnership.getComparisonOwner('comparison-1')).toBeUndefined();
+		expect(provider._closedStsBoxIds.has('sql_1')).toBe(false);
+		expect(provider._sqlSectionInstanceIdByBoxId.get('sql_1')).toBe('instance-1');
+		expect(provider._latestStsConnectSequenceByBoxId.has('sql_1')).toBe(false);
+		expect(provider._sqlDatabaseRequestIdByBoxId.has('sql_1')).toBe(false);
+	});
+
 	it('rejects an owner token removed while canonical validation is pending', async () => {
 		const provider = createSqlProviderHarness();
 		const validation = deferred<void>();
@@ -312,24 +427,51 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT 1']]);
 		provider._latestStsConnectSequenceByBoxId = new Map();
 		provider._stsConnectSequenceByBoxId = new Map();
+		provider._stsDocumentSequenceByBoxId = new Map();
 		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(async () => undefined);
 		const expectedOwner = provider.getSqlResultOwner('sql_1');
 		provider.getCanonicalSqlResultOwner = vi.fn(async () => expectedOwner);
 		const service = {
-			openDocument: vi.fn(async () => undefined),
+			openDocument: vi.fn(async () => 'replay-uri'),
 			connectDocument: vi.fn(async () => { throw new Error('replay connect failed'); }),
+			closeDocumentUriForOwner: vi.fn(() => true),
+		};
+		provider.ensureStsLanguageService = vi.fn(async () => service);
+
+		await provider.handleStsRuntimeManagerChange(true);
+
+		expect(service.openDocument).toHaveBeenCalledWith('sql_1', 'SELECT 1', expect.anything(), stsOwner(expectedOwner));
+		expect(service.closeDocumentUriForOwner).toHaveBeenCalledWith('sql_1', 'replay-uri', stsOwner(expectedOwner));
+		expect(provider._openedStsBoxIds.has('sql_1')).toBe(false);
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'stsConnectionState', boxId: 'sql_1', state: 'error', error: 'replay connect failed',
+		}));
+	});
+
+	it('owner-closes the replacement URI created by a current replay connect failure', async () => {
+		const provider = createSqlProviderHarness();
+		provider._sqlEditorSessionDisposed = false;
+		provider._closedStsBoxIds = new Set();
+		provider._openedStsBoxIds = new Set();
+		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT 1']]);
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider._stsConnectSequenceByBoxId = new Map();
+		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(async () => undefined);
+		const expectedOwner = provider.getSqlResultOwner('sql_1');
+		provider.getCanonicalSqlResultOwner = vi.fn(async () => expectedOwner);
+		const service = {
+			openDocument: vi.fn(async () => 'replay-uri-a'),
+			connectDocument: vi.fn(async () => { throw new Error('submitted connect failed'); }),
+			closeDocumentUriForOwner: vi.fn(() => false),
 			closeDocumentForOwner: vi.fn(() => true),
 		};
 		provider.ensureStsLanguageService = vi.fn(async () => service);
 
 		await provider.handleStsRuntimeManagerChange(true);
 
-		expect(service.openDocument).toHaveBeenCalledWith('sql_1', 'SELECT 1', expect.anything(), expectedOwner);
-		expect(service.closeDocumentForOwner).toHaveBeenCalledWith('sql_1', expectedOwner);
+		expect(service.closeDocumentUriForOwner).toHaveBeenCalledWith('sql_1', 'replay-uri-a', stsOwner(expectedOwner));
+		expect(service.closeDocumentForOwner).toHaveBeenCalledWith('sql_1', stsOwner(expectedOwner));
 		expect(provider._openedStsBoxIds.has('sql_1')).toBe(false);
-		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
-			type: 'stsConnectionState', boxId: 'sql_1', state: 'error', error: 'replay connect failed',
-		}));
 	});
 
 	it('owner-closes a runtime replay candidate when openDocument rejects after didOpen', async () => {
@@ -347,12 +489,14 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			openDocument: vi.fn(async () => { throw new Error('post-didOpen failure'); }),
 			connectDocument: vi.fn(),
 			closeDocumentForOwner: vi.fn(() => true),
+			closeDocumentUriForOwner: vi.fn(() => true),
 		};
 		provider.ensureStsLanguageService = vi.fn(async () => service);
 
 		await provider.handleStsRuntimeManagerChange(true);
 
-		expect(service.closeDocumentForOwner).toHaveBeenCalledWith('sql_1', expectedOwner);
+		expect(service.closeDocumentForOwner).not.toHaveBeenCalled();
+		expect(service.closeDocumentUriForOwner).not.toHaveBeenCalled();
 		expect(service.connectDocument).not.toHaveBeenCalled();
 		expect(provider._openedStsBoxIds.has('sql_1')).toBe(false);
 	});
@@ -425,6 +569,155 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'stsConnectionState', state: 'ready', connectionId: 'sql-a' }));
 	});
 
+	it('does not let a stale same-owner connect close its replacement document', async () => {
+		const provider = createSqlProviderHarness();
+		const connection = { id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' } as any;
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => false);
+		provider._openedStsBoxIds = new Set();
+		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT 1']]);
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider._stsConnectSequenceByBoxId = new Map();
+		let releaseFirstOpen!: () => void;
+		const firstOpenGate = new Promise<void>(resolve => { releaseFirstOpen = resolve; });
+		let signalFirstOpen!: () => void;
+		const firstOpenStarted = new Promise<void>(resolve => { signalFirstOpen = resolve; });
+		let openCount = 0;
+		let nextUri = 0;
+		let currentUri = '';
+		const service = {
+			openDocument: vi.fn(async () => {
+				openCount += 1;
+				const uri = `uri-${++nextUri}`;
+				currentUri = uri;
+				if (openCount === 1) {
+					signalFirstOpen();
+					await firstOpenGate;
+				}
+				return uri;
+			}),
+			connectDocument: vi.fn(async () => undefined),
+			closeDocumentForOwner: vi.fn(() => true),
+			closeDocumentUriForOwner: vi.fn((_boxId: string, uri: string) => {
+				if (uri !== currentUri) return false;
+				currentUri = '';
+				return true;
+			}),
+		};
+		provider.ensureStsLanguageService = vi.fn(async () => service);
+		provider.issueSqlOwnerToken = vi.fn(async () => 'owner-token');
+		provider.getCanonicalSqlResultOwner = vi.fn(async () => provider.getSqlResultOwner('sql_1'));
+		const owner = provider.getSqlResultOwner('sql_1');
+
+		const first = provider.handleStsConnect('sql_1', 'instance-1', connection.id, 'Db', 1, owner);
+		await firstOpenStarted;
+		const replacement = provider.handleStsConnect('sql_1', 'instance-1', connection.id, 'Db', 1, owner);
+		await replacement;
+		releaseFirstOpen();
+		await first;
+
+		expect(service.openDocument).toHaveBeenCalledTimes(2);
+		expect(service.closeDocumentForOwner).not.toHaveBeenCalled();
+		expect(service.closeDocumentUriForOwner).not.toHaveBeenCalled();
+		expect(provider._openedStsBoxIds.has('sql_1')).toBe(true);
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'stsConnectionState', state: 'ready', connectionId: connection.id,
+		}));
+	});
+
+	it('transfers a shared same-owner STS connect to the newest host sequence', async () => {
+		const provider = createSqlProviderHarness();
+		const connection = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => false);
+		provider._openedStsBoxIds = new Set();
+		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT 1']]);
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider._stsConnectSequenceByBoxId = new Map();
+		provider._stsDocumentSequenceByBoxId = new Map();
+		const sharedConnect = deferred<void>();
+		let connectCalls = 0;
+		const service = {
+			openDocument: vi.fn(async () => 'shared-uri'),
+			connectDocument: vi.fn(async () => {
+				connectCalls += 1;
+				await sharedConnect.promise;
+			}),
+			closeDocumentForOwner: vi.fn(() => true),
+			closeDocumentUriForOwner: vi.fn(() => true),
+		};
+		provider.ensureStsLanguageService = vi.fn(async () => service);
+		provider.issueSqlOwnerToken = vi.fn(async () => 'owner-token');
+		provider.getCanonicalSqlResultOwner = vi.fn(async () => provider.getSqlResultOwner('sql_1'));
+		const owner = provider.getSqlResultOwner('sql_1');
+
+		const first = provider.handleStsConnect('sql_1', 'instance-1', connection.id, 'Db', 1, owner);
+		await vi.waitFor(() => expect(connectCalls).toBe(1));
+		const second = provider.handleStsConnect('sql_1', 'instance-1', connection.id, 'Db', 1, owner);
+		await vi.waitFor(() => expect(connectCalls).toBe(2));
+		sharedConnect.resolve();
+		await Promise.all([first, second]);
+
+		expect(service.openDocument).toHaveBeenCalledOnce();
+		expect(service.closeDocumentUriForOwner).not.toHaveBeenCalled();
+		expect(service.closeDocumentForOwner).not.toHaveBeenCalled();
+		expect(provider._openedStsBoxIds.has('sql_1')).toBe(true);
+		expect(provider.postMessage).toHaveBeenCalledTimes(1);
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'stsConnectionState', state: 'ready', connectionId: connection.id,
+		}));
+	});
+
+	it('closes an in-flight STS document when its section closes', async () => {
+		const provider = createSqlProviderHarness();
+		const connection = { id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' } as any;
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => false);
+		provider._openedStsBoxIds = new Set();
+		provider._pendingStsTextByBoxId = new Map([['sql_1', 'SELECT 1']]);
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider._stsConnectSequenceByBoxId = new Map();
+		provider.copilot = { cancelCopilotWriteQuery: vi.fn() };
+		let releaseOpen!: () => void;
+		let signalOpen!: () => void;
+		const openGate = new Promise<void>(resolve => { releaseOpen = resolve; });
+		const openStarted = new Promise<void>(resolve => { signalOpen = resolve; });
+		const service = {
+			openDocument: vi.fn(async () => { signalOpen(); await openGate; return 'uri-in-flight'; }),
+			connectDocument: vi.fn(async () => undefined),
+			closeDocumentForOwner: vi.fn(() => true),
+			closeDocumentUriForOwner: vi.fn(() => true),
+		};
+		provider.ensureStsLanguageService = vi.fn(async () => service);
+		provider.getCanonicalSqlResultOwner = vi.fn(async () => provider.getSqlResultOwner('sql_1'));
+		const owner = provider.getSqlResultOwner('sql_1');
+
+		const connecting = provider.handleStsConnect('sql_1', 'instance-1', connection.id, 'Db', 1, owner);
+		await openStarted;
+		provider.handleStsDidClose('sql_1');
+		releaseOpen();
+		await connecting;
+
+		expect(service.closeDocumentUriForOwner).toHaveBeenCalledWith('sql_1', 'uri-in-flight', stsOwner(owner));
+		expect(service.connectDocument).not.toHaveBeenCalled();
+	});
+
+	it('republishes schema after principal rotation under the new owner generation', async () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlPersistenceInvalidationEmitter = { fire: vi.fn() };
+		provider.copilot = { invalidateSqlConnections: vi.fn() };
+		provider._openedStsBoxIds = new Set();
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider.prefetchSqlSchema = vi.fn(async () => undefined);
+
+		await provider.handleSqlPrincipalsChanged(['sql-1']);
+
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'sqlConnectionOwnerChanged', boxId: 'sql_1', connectionId: 'sql-1', targetGeneration: 2,
+		}));
+		expect(provider.sendSqlConnectionsData).toHaveBeenCalledOnce();
+		expect(provider.prefetchSqlSchema).toHaveBeenCalledWith('sql-1', 'Db', 'sql_1', false);
+		expect(provider.sendSqlConnectionsData.mock.invocationCallOrder[0])
+			.toBeLessThan(provider.prefetchSqlSchema.mock.invocationCallOrder[0]);
+	});
+
 	it('owner-closes A before a failed B replacement can serve language data', async () => {
 		const provider = createSqlProviderHarness();
 		const connectionA = { id: 'sql-a', name: 'A', dialect: 'mssql', serverUrl: 'a.example', authType: 'sql-login', username: 'alice' } as any;
@@ -463,7 +756,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			boxId: 'sql_1', line: 1, column: 1, ownerToken: 'owner-b', targetGeneration: 2,
 		});
 
-		expect(service.closeDocumentForOwner).toHaveBeenCalledWith('sql_1', ownerA);
+		expect(service.closeDocumentForOwner).toHaveBeenCalledWith('sql_1', stsOwner(ownerA));
 		expect(provider._openedStsBoxIds.has('sql_1')).toBe(false);
 		expect(service.openDocument).not.toHaveBeenCalled();
 		expect(service.connectDocument).not.toHaveBeenCalled();
@@ -506,7 +799,8 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.dispatchSqlResultOwnerAllowed = vi.fn(async () => { throw new Error('owner invalid'); });
 
 		await provider.handleStsRequest('request-1', 'textDocument/hover', {
-			boxId: 'sql_1', line: 1, column: 1, ownerToken: 'owner-token', targetGeneration: 1,
+			boxId: 'sql_1', sectionInstanceId: 'instance-1', line: 1, column: 1,
+			ownerToken: 'owner-token', targetGeneration: 1,
 		});
 
 		expect(JSON.stringify(provider.output.error.mock.calls)).not.toContain('SECRET_HOST_STS_ERROR');
@@ -529,17 +823,19 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			.mockResolvedValueOnce(ownerA)
 			.mockResolvedValueOnce(ownerB);
 		const service = {
-			openDocument: vi.fn(async () => undefined),
+			openDocument: vi.fn(async () => 'candidate-uri'),
 			connectDocument: vi.fn(async () => undefined),
 			closeDocumentForOwner: vi.fn(() => true),
+			closeDocumentUriForOwner: vi.fn(() => true),
 		};
 		provider.ensureStsLanguageService = vi.fn(async () => service);
 		provider.issueSqlOwnerToken = vi.fn();
 
 		await provider.handleStsConnect('sql_1', 'instance-1', 'sql-1', 'Db', 1);
 
-		expect(service.connectDocument).toHaveBeenCalledWith('sql_1', expect.anything(), 'Db', ownerA);
-		expect(service.closeDocumentForOwner).toHaveBeenCalledWith('sql_1', ownerA);
+		expect(service.connectDocument).toHaveBeenCalledWith('sql_1', expect.anything(), 'Db', stsOwner(ownerA));
+		expect(service.closeDocumentUriForOwner).toHaveBeenCalledWith('sql_1', 'candidate-uri', stsOwner(ownerA));
+		expect(service.closeDocumentForOwner).not.toHaveBeenCalled();
 		expect(provider.issueSqlOwnerToken).not.toHaveBeenCalled();
 		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'stsConnectionState', state: 'ready' }));
 	});
@@ -1389,6 +1685,49 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		await ensured;
 		expect(resolve).not.toHaveBeenCalled();
 		expect(provider.sqlOwnership.getComparisonOwner('comparison_1')).toBeUndefined();
+	});
+
+	it('drops a delayed STS change when the section instance is replaced', async () => {
+		const provider = createSqlProviderHarness();
+		const policy = deferred<void>();
+		provider._openedStsBoxIds = new Set(['sql_1']);
+		provider._closedStsBoxIds = new Set();
+		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(() => policy.promise);
+		const service = { changeDocument: vi.fn(async () => undefined) };
+		provider._stsLanguageService = service;
+
+		const changing = provider.handleWebviewMessage({
+			type: 'stsDidChange', boxId: 'sql_1', sectionInstanceId: 'instance-1', text: 'SELECT old',
+		} as any);
+		await vi.waitFor(() => expect(provider.sqlWorkbench.assertSqlConnectionAllowed).toHaveBeenCalledOnce());
+		provider._sqlSectionInstanceIdByBoxId.set('sql_1', 'instance-2');
+
+		policy.resolve(undefined);
+		await changing;
+
+		expect(service.changeDocument).not.toHaveBeenCalled();
+	});
+
+	it('applies only the latest same-instance STS text when policy admission is delayed', async () => {
+		const provider = createSqlProviderHarness();
+		const firstPolicy = deferred<void>();
+		provider._openedStsBoxIds = new Set(['sql_1']);
+		provider._closedStsBoxIds = new Set();
+		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn()
+			.mockImplementationOnce(() => firstPolicy.promise)
+			.mockResolvedValue(undefined);
+		const service = { changeDocument: vi.fn(async () => undefined) };
+		provider._stsLanguageService = service;
+
+		const first = provider.handleStsDidChange('sql_1', 'instance-1', 'SELECT old');
+		await vi.waitFor(() => expect(provider.sqlWorkbench.assertSqlConnectionAllowed).toHaveBeenCalledOnce());
+		const second = provider.handleStsDidChange('sql_1', 'instance-1', 'SELECT newest');
+
+		firstPolicy.resolve(undefined);
+		await Promise.all([first, second]);
+
+		expect(service.changeDocument).toHaveBeenCalledOnce();
+		expect(service.changeDocument).toHaveBeenCalledWith('sql_1', 'SELECT newest', 'instance-1');
 	});
 
 	it('sends metadata-only SQL connection changes without invalidating an equivalent endpoint', async () => {

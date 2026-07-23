@@ -150,6 +150,14 @@ export class SqlSectionSessionController implements ReactiveController, SqlSecti
 				sqlConnectionId: connectionId,
 				database: '',
 			});
+			if (!connectionId) {
+				effects.postMessage({
+					type: 'retireSqlTarget',
+					boxId,
+					sectionInstanceId: this.instanceId,
+					targetGeneration,
+				});
+			}
 		}
 
 		if (connectionId && !detail.suppressMetadataRefresh) {
@@ -185,6 +193,14 @@ export class SqlSectionSessionController implements ReactiveController, SqlSecti
 					type: 'saveSqlLastSelection',
 					sqlConnectionId: connectionId,
 					database,
+				});
+			}
+			if (!database) {
+				effects.postMessage({
+					type: 'retireSqlTarget',
+					boxId,
+					sectionInstanceId: this.instanceId,
+					targetGeneration,
 				});
 			}
 			if (connectionId && database) {

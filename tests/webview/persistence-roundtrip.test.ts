@@ -369,6 +369,41 @@ describe('persistence round-trip', () => {
 		expect(state).not.toHaveProperty('autoTriggerAutocompleteEnabled');
 	});
 
+	it('preserves the last good state and blocks persistence after a malformed external reload', () => {
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri: 'file:///tmp/report.kqlx',
+			state: { sections: [{ type: 'query', id: 'query_good', query: 'print 1' }] },
+		});
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		const query = document.getElementById('query_good')!;
+		container.appendChild(query);
+		document.body.appendChild(container);
+		vi.mocked(postMessageToHost).mockClear();
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: false, forceReload: true,
+			documentKind: 'kqlx', documentUri: 'file:///tmp/report.kqlx',
+			error: 'Invalid JSON',
+		});
+
+		expect(document.getElementById('query_good')).toBe(query);
+		expect((container as HTMLElement & { inert?: boolean }).inert).toBe(true);
+		expect(document.getElementById('kusto-malformed-document-banner')?.textContent).toContain('Editing is disabled');
+		schedulePersist('malformed', true);
+		expect(vi.mocked(postMessageToHost).mock.calls.some(call => (call[0] as any)?.type === 'persistDocument')).toBe(false);
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri: 'file:///tmp/report.kqlx',
+			state: { sections: [{ type: 'query', id: 'query_repaired', query: 'print 2' }] },
+		});
+
+		expect(document.getElementById('kusto-malformed-document-banner')).toBeNull();
+		expect((container as HTMLElement & { inert?: boolean }).inert).toBe(false);
+	});
+
 	it('round-trips legacy document preferences unchanged instead of current application values', () => {
 		handleDocumentDataMessage({
 			ok: true,
@@ -1149,11 +1184,45 @@ describe('persistence round-trip', () => {
 
 		expect(postMessageToHost).toHaveBeenCalledTimes(1);
 		expect(vi.mocked(postMessageToHost).mock.calls[0][0]).toMatchObject({
-			type: 'persistDocument', flush: true, reason: 'save',
+			type: 'persistDocument',
 			flushRequestId: 'flush-request-1', editRevision: 1,
 			state: { sections: [{ id: 'sql_flush', type: 'sql', query: 'select 42' }] },
 		});
 		expect((vi.mocked(postMessageToHost).mock.calls[0][0] as any).snapshotId).toMatch(/^compat-snapshot-/);
+	});
+
+	it('answers a rich-document save request with the current correlated state', () => {
+		pState.documentKind = 'sqlx';
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		const sql = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		sql.id = 'sql_rich_flush';
+		sql.serialize = () => ({ id: 'sql_rich_flush', type: 'sql', query: 'select latest' });
+		container.appendChild(sql);
+		document.body.appendChild(container);
+
+		vi.mocked(postMessageToHost).mockClear();
+		flushCompatibilityPersist('rich-flush-1', 'save');
+
+		expect(vi.mocked(postMessageToHost).mock.calls[0][0]).toMatchObject({
+			type: 'persistDocument',
+			flushRequestId: 'rich-flush-1',
+			state: { sections: [{ id: 'sql_rich_flush', type: 'sql', query: 'select latest' }] },
+		});
+	});
+
+	it('answers a final snapshot request explicitly while restore is in progress', () => {
+		pState.restoreInProgress = true;
+		vi.mocked(postMessageToHost).mockClear();
+		try {
+			flushCompatibilityPersist('restore-flush-1', 'save');
+			expect(vi.mocked(postMessageToHost).mock.calls[0][0]).toMatchObject({
+				type: 'persistDocument', flushRequestId: 'restore-flush-1',
+				flushUnavailableReason: 'restore-in-progress',
+			});
+		} finally {
+			pState.restoreInProgress = false;
+		}
 	});
 
 	it('sends a compatibility upgrade with the exact persisted revision', () => {

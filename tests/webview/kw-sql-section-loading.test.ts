@@ -265,6 +265,77 @@ describe('kw-sql-section loading states', () => {
 		});
 	});
 
+	it('applies the canonical cached databases for the resolved connection', () => {
+		const el = createSection();
+		const connection = {
+			id: 'sql-a', name: 'SQL', serverUrl: 'sql.example', dialect: 'mssql', authType: 'aad',
+		};
+
+		el.setConnections([connection], {
+			lastConnectionId: connection.id,
+			lastDatabase: 'Warehouse',
+			cachedDatabases: {
+				'sql-a': ['master', 'Warehouse'],
+				'sql-b': ['Other'],
+			},
+		});
+
+		expect(el.getConnectionId()).toBe('sql-a');
+		expect(el.getDatabase()).toBe('Warehouse');
+		expect((el as any)._databases).toEqual(['master', 'Warehouse']);
+		expect((el as any)._databasesLoading).toBe(false);
+	});
+
+	it('does not retarget a restored database that is omitted from a stale cache', async () => {
+		const el = createSection();
+		const connection = {
+			id: 'sql-a', name: 'SQL', serverUrl: 'sql.example', dialect: 'mssql', authType: 'aad',
+		};
+		el.setDesiredConnectionOwner(connection.id, sqlConnectionTargetSignature(connection));
+		el.setDesiredDatabase('Warehouse');
+		el.setConnections([connection]);
+		el.setDatabases(['Warehouse']);
+		const refreshes: CustomEvent[] = [];
+		const databaseChanges: CustomEvent[] = [];
+		el.addEventListener('sql-refresh-databases', event => refreshes.push(event as CustomEvent));
+		el.addEventListener('sql-database-changed', event => databaseChanges.push(event as CustomEvent));
+
+		el.setConnections([connection], {
+			lastConnectionId: connection.id,
+			lastDatabase: 'master',
+			cachedDatabases: { 'sql-a': ['master'] },
+		});
+		await Promise.resolve();
+
+		expect(el.getDatabase()).toBe('Warehouse');
+		expect((el as any)._databases).toEqual(['master']);
+		expect(refreshes).toHaveLength(1);
+		expect(refreshes[0].detail).toMatchObject({ connectionId: connection.id });
+
+		el.setDatabases(['master'], 'master');
+
+		expect(el.getDatabase()).toBe('');
+		expect(databaseChanges.at(-1)?.detail).toMatchObject({ database: '' });
+	});
+
+	it('retires a desired database that is absent from the first live list', () => {
+		const el = createSection();
+		const connection = {
+			id: 'sql-a', name: 'SQL', serverUrl: 'sql.example', dialect: 'mssql', authType: 'aad',
+		};
+		el.setDesiredConnectionOwner(connection.id, sqlConnectionTargetSignature(connection));
+		el.setDesiredDatabase('MissingDb');
+		el.setConnections([connection]);
+		const databaseChanges: CustomEvent[] = [];
+		el.addEventListener('sql-database-changed', event => databaseChanges.push(event as CustomEvent));
+
+		el.setDatabases(['master']);
+
+		expect(el.getDatabase()).toBe('');
+		expect(databaseChanges).toHaveLength(1);
+		expect(databaseChanges[0].detail).toMatchObject({ boxId: 'sql_test1', database: '' });
+	});
+
 	it.each([
 		{ persistedPort: '', currentPort: 1433 },
 		{ persistedPort: 1433, currentPort: undefined },
@@ -394,6 +465,34 @@ describe('kw-sql-section loading states', () => {
 		expect(el.getDatabase()).toBe('');
 		expect(el.dataset.testHasDatabases).toBe('false');
 		expect(el.serialize()).not.toHaveProperty('database');
+	});
+
+	it('preserves an active owner when the first canonical AAD fingerprint is published', () => {
+		const el = createSection();
+		const connection = {
+			id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad',
+		};
+		el.setConnections([connection], { lastConnectionId: connection.id });
+		el.setDatabase('Db');
+		el.setQuery('SELECT 1 AS Value');
+		el.setStsReady(true, 'owner-token');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			expect((el as any)._runQuery()).toBe(true);
+			const executionId = postMessage.mock.calls[0][0].executionId;
+			postMessage.mockClear();
+
+			el.setConnections([{ ...connection, principalFingerprint: 'principal-a' }]);
+
+			expect(el.getDatabase()).toBe('Db');
+			expect(el.getCopilotOwnerToken()).toBe('owner-token');
+			expect(el.acceptsQueryTerminal(executionId)).toBe(true);
+			expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'cancelSqlQuery' }));
+		} finally {
+			window.vscode = previousVsCode;
+		}
 	});
 
 	it.each(['principal', 'revocation'] as const)('clears retained rows before adopting a new %s owner snapshot', change => {

@@ -27,6 +27,7 @@ import {
 } from './compatSidecarFormat';
 import { CompatSidecarStore } from './compatSidecarStore';
 import { CompatSidecarSession } from './compatSidecarSession';
+import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 
 const KQL_COMPAT_SIDECAR_FORMAT: CompatSidecarFormat = {
 	primaryKind: 'query',
@@ -62,20 +63,13 @@ export function isLinkedSidecarForCompatFile(sidecarUri: vscode.Uri, sidecarFile
  * Generate a stable cache key for pending add-kind operations.
  */
 export function pendingAddKindKeyForUri(uri: vscode.Uri): string {
-	try {
-		if (uri.scheme === 'file') {
-			return `kusto.pendingAddKind:${uri.fsPath.toLowerCase()}`;
-		}
-	} catch {
-		// ignore
-	}
-	return `kusto.pendingAddKind:${uri.toString()}`;
+	return `kusto.pendingAddKind:${normalizeWorkbenchUriKey(uri)}`;
 }
 
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
-	| { type: 'persistDocument'; state: KqlxStateV1; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; testOnlyNoop?: boolean }
+	| { type: 'persistDocument'; state: KqlxStateV1; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }
 	| { type: 'documentReloadResult'; requestId: string; applied: boolean; editRevision: number }
 	| { type: 'requestUpgradeToKqlx'; addKind?: string; state?: KqlxStateV1; editRevision?: number }
 	| { type: string; [key: string]: unknown };
@@ -851,6 +845,11 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				case 'persistDocument': {
 					const snapshotId = String((message as any).snapshotId || '').trim();
 					const flushRequestId = String((message as any).flushRequestId || '').trim();
+					if (flushRequestId && (message as any).flushUnavailableReason) {
+						getWorkbenchLogger().warn('[kusto] KQL metadata snapshot unavailable during save; saving primary text only.');
+						sidecarSession.completeFinalPersist(flushRequestId);
+						return;
+					}
 					const testOnlyNoop = (message as any).testOnlyNoop === true
 						&& this.context.extensionMode !== vscode.ExtensionMode.Production;
 					if (testOnlyNoop) {

@@ -36,6 +36,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
 
     # Wait for schema to load (prefetchSqlSchema → sqlSchemaData → schemaByBoxId)
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "00-setup-ready"
 
     # Dump schema state for diagnostics
@@ -56,6 +58,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "01-select-column-list"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T1-SELECT-COLS', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
@@ -69,6 +73,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "02-mid-column-list"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T2-MID-COLS', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
@@ -82,6 +88,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "03-where-clause"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T3-WHERE', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
@@ -95,6 +103,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "04-order-by"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T4-ORDERBY', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
@@ -108,6 +118,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "05-group-by"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T5-GROUPBY', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
@@ -121,6 +133,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "06-inside-aggregate"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T6-COUNT', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
@@ -134,6 +148,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "07-join-on-alias"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T7-JOIN-ON', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
@@ -146,6 +162,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "08-join-second-alias"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T8-JOIN-C', 'ProductCategoryID,Name')" in the webview
     When I press "Escape"
@@ -159,6 +177,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "09-update-set"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T9-UPDATE', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
@@ -172,6 +192,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "10-insert-into-cols"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T10-INSERT', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
@@ -185,6 +207,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "11-from-tables"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T11-FROM', 'Product,Customer,Address,SalesOrder')" in the webview
     When I press "Escape"
@@ -198,6 +222,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "12-saleslt-dot"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T12-SALESLT', 'Product,Customer,Address,SalesOrder')" in the webview
     When I press "Escape"
@@ -211,6 +237,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "13-keyword-sel"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T13-SEL', 'SELECT')" in the webview
     When I press "Escape"
@@ -224,6 +252,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "14-having"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T14-HAVING', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
@@ -237,6 +267,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "15-cte-select"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T15-CTE', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
@@ -250,6 +282,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "16-partial-table"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T16-PARTIAL', 'Product')" in the webview
     When I press "Escape"
@@ -263,6 +297,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "17-where-partial-col"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T17-WHERECOL', 'Color')" in the webview
     When I press "Escape"
@@ -276,6 +312,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "18-where-and"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T18-AND', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
@@ -289,6 +327,8 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "19-subquery"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T19-SUBQ', 'ProductCategoryID,Name')" in the webview
     When I press "Escape"
@@ -302,11 +342,15 @@ Feature: Comprehensive T-SQL autocomplete exploration
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 5 seconds
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "20-join-table"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('T20-JOIN', 'Product,ProductCategory,Customer,Address,SalesOrder')" in the webview
     When I press "Escape"
     And I wait 1 second
 
+    When I move the Dev Host to 0, 0
+    When I click at 400, 15
     Then I take a screenshot "99-final"
     When I execute command "workbench.action.closeAllEditors"
   And I wait 1 second

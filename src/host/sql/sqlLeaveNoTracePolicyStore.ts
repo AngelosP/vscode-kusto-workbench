@@ -8,6 +8,7 @@ import {
 	atomicReplaceSqlStateFile,
 	readCommittedSqlStateBackup,
 	readRecoverableSqlStateSnapshot,
+	type SqlStateLockOptions,
 	withSqlStateFileLock,
 	writeRecoverableSqlStateSnapshot,
 } from './sqlStateTransaction';
@@ -212,7 +213,7 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 		version: number;
 		globallyBlocked: boolean;
 		revocationGenerations: Readonly<Record<string, number>>;
-	}) => Promise<T>): Promise<T> {
+	}) => Promise<T>, lockOptions: SqlStateLockOptions = {}): Promise<T> {
 		await this.readyPromise;
 		if (!this.policyPath || !this.lockTarget) {
 			return run({
@@ -235,7 +236,7 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 					connectionIds: [], version: this.snapshot.version, globallyBlocked: true,
 					revocationGenerations: { ...this.snapshot.revocationGenerations },
 				});
-		}, { staleMs: POLICY_LOCK_STALE_MS });
+		}, { staleMs: POLICY_LOCK_STALE_MS, ...lockOptions });
 	}
 
 	async prepareSnapshotDispatch<T>(prepare: (snapshot: {
@@ -243,7 +244,7 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 		version: number;
 		globallyBlocked: boolean;
 		revocationGenerations: Readonly<Record<string, number>>;
-	}) => Promise<SqlDispatchHandle<T>>): Promise<SqlDispatchHandle<T>> {
+	}) => Promise<SqlDispatchHandle<T>>, lockOptions: SqlStateLockOptions = {}): Promise<SqlDispatchHandle<T>> {
 		await this.readyPromise;
 		if (!this.policyPath || !this.lockTarget) {
 			return await prepare({
@@ -267,7 +268,16 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 					revocationGenerations: { ...this.snapshot.revocationGenerations },
 				};
 			return await prepare(canonical);
-		}, { staleMs: POLICY_LOCK_STALE_MS });
+		}, { staleMs: POLICY_LOCK_STALE_MS, ...lockOptions });
+	}
+
+	async awaitSnapshotLockReady(): Promise<void> {
+		await this.readyPromise;
+		if (!this.lockTarget) return;
+		await withSqlStateFileLock(this.lockTarget, async () => undefined, {
+			staleMs: POLICY_LOCK_STALE_MS,
+			retryUntilStale: true,
+		});
 	}
 
 	async refresh(): Promise<string[]> {
@@ -327,7 +337,7 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 			};
 			await this.writeSnapshot(updated);
 			return updated;
-		}, { staleMs: POLICY_LOCK_STALE_MS });
+		}, { staleMs: POLICY_LOCK_STALE_MS, retryUntilStale: true });
 		await this.applySnapshot(next);
 	}
 
@@ -352,7 +362,7 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 			return read.kind === 'corrupt'
 				? this.recoverCorruptPolicyUnderLock()
 				: this.recoverMissingPolicyUnderLock(true);
-		}, { staleMs: POLICY_LOCK_STALE_MS });
+		}, { staleMs: POLICY_LOCK_STALE_MS, retryUntilStale: true });
 		await this.applySnapshot(snapshot, false);
 	}
 

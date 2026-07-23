@@ -88,7 +88,27 @@ describe('SqlEditorSessionRegistry', () => {
 			expect(harness.registry.getTarget('sql_1')).toBeUndefined();
 			expect(harness.registry.getGeneration('sql_1')).toBe(5);
 			expect(harness.registry.adoptTarget('sql_1', 'sql-1', 'Db', 4, () => undefined)).toBe('rejected');
-			expect(harness.registry.adoptTarget('sql_1', 'sql-1', 'Db', 5, () => undefined)).toBe('unchanged');
+			expect(harness.registry.adoptTarget('sql_1', 'sql-1', 'Db', 5, () => undefined)).toBe('rejected');
+			expect(harness.registry.adoptTarget('sql_1', 'sql-1', 'Db', 6, () => undefined)).toBe('changed');
+		} finally {
+			fs.rmSync(harness.directory, { recursive: true, force: true });
+		}
+	});
+
+	it('retires a target at the supplied generation and rejects older resurrection', async () => {
+		const harness = createHarness();
+		try {
+			await harness.registry.issueOwnerToken('sql_1', harness.registry.getOwner('sql_1')!);
+			const beforeOwnerChange = vi.fn();
+
+			expect(harness.registry.retireTarget('sql_1', 7, beforeOwnerChange)).toBe('changed');
+			expect(beforeOwnerChange).toHaveBeenCalledOnce();
+			expect(harness.registry.getTarget('sql_1')).toBeUndefined();
+			expect(harness.registry.getOwnerToken('sql_1')).toBeUndefined();
+			expect(harness.registry.getGeneration('sql_1')).toBe(7);
+			expect(harness.registry.adoptTarget('sql_1', 'sql-1', 'Db', 6, () => undefined)).toBe('rejected');
+			expect(harness.registry.adoptTarget('sql_1', 'sql-1', 'Db', 7, () => undefined)).toBe('rejected');
+			expect(harness.registry.adoptTarget('sql_1', 'sql-1', 'Db', 8, () => undefined)).toBe('changed');
 		} finally {
 			fs.rmSync(harness.directory, { recursive: true, force: true });
 		}

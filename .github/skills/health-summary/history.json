@@ -1,6 +1,29 @@
 {
   "recent": [
     {
+      "ts": "2026-07-21T07:53:28Z",
+      "commit": "8080ceb",
+      "commitMsg": "Enhance SQL database cache handling and add readiness handshake feature tests",
+      "tests": 4718,
+      "testFiles": 184,
+      "stmtCov": 40.14,
+      "lineCov": 42.3,
+      "branchCov": 36.18,
+      "fnCov": 42.11,
+      "distTotalKB": 22737.2,
+      "extensionKB": 1624.0,
+      "webviewKB": 2549.8,
+      "echartsKB": 667.6,
+      "toastuiKB": 604.1,
+      "monacoKB": 11445.7,
+      "hostLines": 46350,
+      "webviewLines": 84335,
+      "testLines": 65135,
+      "tscOk": true,
+      "lintErrors": 0,
+      "lintWarnings": 0
+    },
+    {
       "ts": "2026-04-21T10:25:00Z",
       "commit": "15c55d4",
       "commitMsg": "Add feature tests for screenshot captures in various scenarios",
@@ -94,6 +117,29 @@
     }
   ],
   "commits": [
+    {
+      "ts": "2026-07-21T07:53:28Z",
+      "commit": "8080ceb",
+      "commitMsg": "Enhance SQL database cache handling and add readiness handshake feature tests",
+      "tests": 4718,
+      "testFiles": 184,
+      "stmtCov": 40.14,
+      "lineCov": 42.3,
+      "branchCov": 36.18,
+      "fnCov": 42.11,
+      "distTotalKB": 22737.2,
+      "extensionKB": 1624.0,
+      "webviewKB": 2549.8,
+      "echartsKB": 667.6,
+      "toastuiKB": 604.1,
+      "monacoKB": 11445.7,
+      "hostLines": 46350,
+      "webviewLines": 84335,
+      "testLines": 65135,
+      "tscOk": true,
+      "lintErrors": 0,
+      "lintWarnings": 0
+    },
     {
       "ts": "2026-04-21T10:25:00Z",
       "commit": "15c55d4",

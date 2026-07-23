@@ -16,7 +16,7 @@ import { computeMissingClusterUrls } from '../shared/clusterUtils.js';
 import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
 import { getKustoSchemaIdentityKey } from '../../shared/kustoAuth.js';
 import { displayResultForBox, getResultsState } from './results-state.js';
-import { adoptCurrentStateAsCleanForTest, isPersistenceSuppressedForTest } from './persistence.js';
+import { adoptCurrentStateAsCleanForTest, isPersistenceSuppressedForTest, suppressPersistenceForTest } from './persistence.js';
 
 type MonacoLike = {
 	getDomNode?: () => HTMLElement | null;
@@ -409,6 +409,43 @@ _win.__testRemoveAllSections = (): string => {
 	const remaining = Array.from(document.querySelectorAll(TEST_SECTION_SELECTOR)).map(element => element.tagName.toLowerCase());
 	throw new Error(`Timed out removing sections; remaining=${remaining.join(', ')}`);
 };
+
+async function e2eClearSectionsStable(timeoutMs = 10_000, quietMs = 750): Promise<string> {
+	const started = performance.now();
+	let quietSince = 0;
+	let removed = 0;
+	const wasSuppressed = isPersistenceSuppressedForTest();
+	if (!wasSuppressed) suppressPersistenceForTest(true);
+	try {
+		while (performance.now() - started <= timeoutMs) {
+			if (pState.documentDataApplyCount < 1 || pState.restoreInProgress) {
+				quietSince = 0;
+				await e2eDelay(100);
+				continue;
+			}
+			const sections = Array.from(document.querySelectorAll(TEST_SECTION_SELECTOR)) as HTMLElement[];
+			if (sections.length > 0) {
+				quietSince = 0;
+				for (const section of sections) {
+					if (!section.isConnected) continue;
+					clickTestSectionClose(section);
+					removed++;
+				}
+			} else {
+				if (!quietSince) quietSince = performance.now();
+				if (performance.now() - quietSince >= quietMs) {
+					adoptCurrentStateAsCleanForTest();
+					return `removed ${removed} sections; stable empty for ${Math.round(performance.now() - quietSince)}ms`;
+				}
+			}
+			await e2eDelay(100);
+		}
+		const remaining = Array.from(document.querySelectorAll(TEST_SECTION_SELECTOR)).map(element => element.tagName.toLowerCase());
+		throw new Error(`Timed out stabilizing empty workbench; removed=${removed}; remaining=${remaining.join(', ')}`);
+	} finally {
+		if (!wasSuppressed) suppressPersistenceForTest(false);
+	}
+}
 
 _win.__testRemoveSection = (selector: string = TEST_SECTION_SELECTOR): string => {
 	const section = document.querySelector(selector) as HTMLElement | null;
@@ -4708,6 +4745,9 @@ function e2eQueryApi(kind: E2eSectionKind) {
 		},
 		run: () => {
 			const button = e2eRunButton(kind);
+			if (button.disabled) {
+				throw new Error(`${kind} run button is disabled: ${button.title || 'no disabled reason'}`);
+			}
 			button.click();
 			return `${kind} run clicked`;
 		},
@@ -6104,7 +6144,7 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		markWebviewSnapshot: (proofName: string, requiredCsv: string = '') => e2eMarkPerfSnapshot(proofName, 'webview', 'webview', requiredCsv),
 	},
 	workbench: {
-		clearSections: () => _win.__testRemoveAllSections(),
+		clearSections: () => e2eClearSectionsStable(),
 		seedResult: e2eSeedQueryResult,
 		enableIsolatedKustoConnections: e2eEnableIsolatedKustoConnections,
 		assertIsolatedKustoConnections: e2eAssertIsolatedKustoConnections,

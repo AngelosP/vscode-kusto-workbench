@@ -3,15 +3,17 @@ Feature: SQL Tools Service execution contract
   Background:
     Given the extension is in a clean state
     And I capture the output channel "Kusto Workbench"
+    When I execute command "kustoWorkbench.test.closeQueryEditorSession"
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
     When I click "button[data-add-kind='sql']" in the webview
-    When I wait for "kw-sql-section[data-test-sql-connection='true']" in the webview for 15 seconds
+    When I wait for "kw-sql-section[data-test-sql-connection='true']" in the webview for 30 seconds
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
     When I evaluate "window.__e2e.sql.selectDatabase('sampledb')" in the webview
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
+    When I wait for "kw-sql-section[data-test-sts-ready='true']" in the webview for 120 seconds
 
   Scenario: Execute, reject errors, cancel, recover, and page results through STS
     When I evaluate "window.__e2e.sql.setQuery('SELECT 1 AS test_col, 2 AS test_col2')" in the webview

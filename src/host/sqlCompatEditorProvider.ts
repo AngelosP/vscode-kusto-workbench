@@ -31,7 +31,7 @@ const SQL_COMPAT_SIDECAR_FORMAT: CompatSidecarFormat = {
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
-	| { type: 'persistDocument'; state: KqlxStateV1; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; testOnlyNoop?: boolean }
+	| { type: 'persistDocument'; state: KqlxStateV1; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }
 	| { type: 'documentReloadResult'; requestId: string; applied: boolean; editRevision: number }
 	| { type: 'requestUpgradeToSqlx'; addKind?: string; state?: KqlxStateV1; editRevision?: number }
 	| { type: string; [key: string]: unknown };
@@ -672,6 +672,11 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				case 'persistDocument': {
 					const snapshotId = String((message as any).snapshotId || '').trim();
 					const flushRequestId = String((message as any).flushRequestId || '').trim();
+					if (flushRequestId && (message as any).flushUnavailableReason) {
+						getWorkbenchLogger().warn('[kusto] SQL metadata snapshot unavailable during save; saving primary text only.');
+						sidecarSession.completeFinalPersist(flushRequestId);
+						return;
+					}
 					const testOnlyNoop = (message as any).testOnlyNoop === true
 						&& this.context.extensionMode !== vscode.ExtensionMode.Production;
 					if (testOnlyNoop) {

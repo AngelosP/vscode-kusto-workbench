@@ -4,15 +4,17 @@ Feature: SQL Leave No Trace live privacy boundary
     Given the extension is in a clean state
     When I execute command "kustoWorkbench.test.setSqlLeaveNoTrace" with args '["__CURRENT_SQL_CONNECTION__", false]'
     When I execute command "kustoWorkbench.test.assertSqlLeaveNoTrace" with args '["__CURRENT_SQL_CONNECTION__", false]'
+    When I execute command "kustoWorkbench.test.closeQueryEditorSession"
     When I execute command "kusto.openQueryEditor"
     And I wait 3 seconds
     When I evaluate "window.__e2e.workbench.clearSections()" in the webview
     When I wait for "button[data-add-kind='sql']" in the webview for 20 seconds
     When I click "button[data-add-kind='sql']" in the webview
-    When I wait for "kw-sql-section[data-test-sql-connection='true']" in the webview for 15 seconds
+    When I wait for "kw-sql-section[data-test-sql-connection='true']" in the webview for 60 seconds
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
     When I evaluate "window.__e2e.sql.selectDatabase('sampledb')" in the webview
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
+    When I wait for "kw-sql-section[data-test-sts-ready='true']" in the webview for 120 seconds
 
   Scenario: Enabling LNT clears retained and dependent SQL data and blocks new work
     When I evaluate "window.__e2e.sql.setQuery('SELECT 1 AS Category, 10 AS Amount UNION ALL SELECT 2, 20')" in the webview

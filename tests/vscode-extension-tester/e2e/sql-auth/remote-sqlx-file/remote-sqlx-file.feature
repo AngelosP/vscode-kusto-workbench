@@ -1,7 +1,10 @@
-﻿Feature: Remote .sqlx file — open from GitHub and verify SQL notebook
+Feature: Remote .sqlx file — open from GitHub and verify SQL notebook
 
   Background:
     Given the extension is in a clean state
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 900 by 1050
+    And I execute command "workbench.action.closeAuxiliaryBar"
     And I capture the output channel "Kusto Workbench"
     And I wait 2 seconds
 
@@ -10,19 +13,24 @@
     And I wait 2 seconds
     When I type "https://raw.githubusercontent.com/AngelosP/vscode-kusto-workbench/main/tests/vscode-extension-tester/e2e/default/sqlx-diff-viewer/fixtures/open-test.sqlx" into the InputBox
     And I press "Enter"
+    When I click at 400, 15
     Then I take a screenshot "01-url-submitted"
 
     And I wait 25 seconds
+    When I click at 400, 15
     Then I take a screenshot "02-after-download"
 
     Then I should not see notification "Unsupported file type"
     Then I should not see notification "Failed to open remote file"
 
     When I wait for "kw-sql-section" in the webview for 30 seconds
+    When I click at 400, 15
     Then I take a screenshot "03-webview-loaded"
 
     When I evaluate "(() => { const sqlSections = document.querySelectorAll('kw-sql-section').length; const kqlSections = document.querySelectorAll('kw-query-section').length; if (sqlSections === 0 && kqlSections > 0) throw new Error('Found ' + kqlSections + ' Kusto sections but 0 SQL — .sqlx treated as kqlx'); if (sqlSections === 0) throw new Error('No SQL sections found'); return 'SQL=' + sqlSections + ' KQL=' + kqlSections + ' ✓'; })()" in the webview
+    When I click at 400, 15
     Then I take a screenshot "04-sections-verified"
 
     When I evaluate "(() => { const kind = document.body.dataset.kustoDocumentKind; if (kind !== 'sqlx') throw new Error('Expected documentKind=sqlx, got: ' + kind); return 'documentKind=' + kind + ' ✓'; })()" in the webview
+    When I click at 400, 15
     Then I take a screenshot "05-final"

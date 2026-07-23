@@ -2,6 +2,9 @@ Feature: SQL query execution end-to-end
 
   Background:
     Given the extension is in a clean state
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 900 by 1050
+    And I execute command "workbench.action.closeAuxiliaryBar"
     And I capture the output channel "Kusto Workbench"
     And I wait 2 seconds
 
@@ -24,6 +27,7 @@ Feature: SQL query execution end-to-end
     When I evaluate "window.__e2e.sql.selectDatabase('sampledb')" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
+    When I wait for "kw-sql-section[data-test-sts-ready='true']" in the webview for 120 seconds
     Then I take a screenshot "01-setup-ready"
 
     # Focus the SQL editor

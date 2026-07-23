@@ -66,6 +66,7 @@ export class SqlEditorSessionRegistry {
 	private readonly comparisonOwnerByBoxId = new Map<string, SqlComparisonOwner>();
 	private readonly databaseByBoxId = new Map<string, string>();
 	private readonly targetGenerationByBoxId = new Map<string, number>();
+	private readonly retiredGenerationByBoxId = new Map<string, number>();
 	private readonly ownerTokenByBoxId = new Map<string, SqlIssuedOwnerToken>();
 
 	constructor(private readonly options: SqlEditorSessionRegistryOptions) {}
@@ -131,17 +132,47 @@ export class SqlEditorSessionRegistry {
 		const target = this.getTarget(boxId);
 		const id = String(boxId || '').trim();
 		if (!id) return undefined;
-		if (target) this.targetGenerationByBoxId.set(id, target.generation + 1);
+		if (target) {
+			const retiredGeneration = target.generation + 1;
+			this.targetGenerationByBoxId.set(id, retiredGeneration);
+			this.retiredGenerationByBoxId.set(id, retiredGeneration);
+		}
 		this.connectionIdByBoxId.delete(id);
 		this.databaseByBoxId.delete(id);
 		this.ownerTokenByBoxId.delete(id);
 		return target;
 	}
 
+	retireTarget(
+		boxId: string,
+		targetGeneration: number,
+		beforeOwnerChange: () => void,
+	): SqlTargetAdoptionResult {
+		const id = String(boxId || '').trim();
+		const generation = Number(targetGeneration);
+		if (!id || !Number.isSafeInteger(generation) || generation < 0) return 'rejected';
+
+		const currentGeneration = this.targetGenerationByBoxId.get(id);
+		if (currentGeneration !== undefined && generation < currentGeneration) return 'rejected';
+		const hasTargetState = this.connectionIdByBoxId.has(id)
+			|| this.databaseByBoxId.has(id)
+			|| this.ownerTokenByBoxId.has(id);
+		if (currentGeneration === generation && !hasTargetState) return 'unchanged';
+
+		beforeOwnerChange();
+		this.targetGenerationByBoxId.set(id, generation);
+		this.retiredGenerationByBoxId.set(id, generation);
+		this.connectionIdByBoxId.delete(id);
+		this.databaseByBoxId.delete(id);
+		this.ownerTokenByBoxId.delete(id);
+		return 'changed';
+	}
+
 	resetRetiredTarget(boxId: string): void {
 		const id = String(boxId || '').trim();
 		if (!id || this.connectionIdByBoxId.has(id)) return;
 		this.targetGenerationByBoxId.delete(id);
+		this.retiredGenerationByBoxId.delete(id);
 	}
 
 	getComparisonOwner(boxId: string): SqlComparisonOwner | undefined {
@@ -235,6 +266,7 @@ export class SqlEditorSessionRegistry {
 		this.comparisonOwnerByBoxId.clear();
 		this.databaseByBoxId.clear();
 		this.targetGenerationByBoxId.clear();
+		this.retiredGenerationByBoxId.clear();
 		this.ownerTokenByBoxId.clear();
 	}
 
@@ -252,6 +284,7 @@ export class SqlEditorSessionRegistry {
 
 		const currentGeneration = this.targetGenerationByBoxId.get(id);
 		if (currentGeneration !== undefined && generation < currentGeneration) return 'rejected';
+		if (this.retiredGenerationByBoxId.get(id) === generation) return 'rejected';
 		const currentConnectionId = this.connectionIdByBoxId.get(id);
 		const currentDatabase = this.databaseByBoxId.get(id);
 		const hasDatabase = database !== undefined;
@@ -270,6 +303,7 @@ export class SqlEditorSessionRegistry {
 
 		beforeOwnerChange();
 		this.targetGenerationByBoxId.set(id, generation);
+		this.retiredGenerationByBoxId.delete(id);
 		this.connectionIdByBoxId.set(id, nextConnectionId);
 		this.ownerTokenByBoxId.delete(id);
 		if (hasDatabase && nextDatabase) this.databaseByBoxId.set(id, nextDatabase);

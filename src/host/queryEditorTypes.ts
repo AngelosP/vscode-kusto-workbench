@@ -264,6 +264,7 @@ export type IncomingWebviewMessage =
 	| { type: 'sqlSectionOpen'; boxId: string; sectionInstanceId: string }
 	| { type: 'getSqlDatabases'; sqlConnectionId: string; boxId: string; sectionInstanceId: string; targetGeneration: number }
 	| { type: 'refreshSqlDatabases'; sqlConnectionId: string; boxId: string; sectionInstanceId: string; targetGeneration: number }
+	| { type: 'retireSqlTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number }
 	| { type: 'saveSqlLastSelection'; sqlConnectionId: string; database?: string }
 	| { type: 'promptAddSqlConnection'; boxId?: string }
 	| { type: 'addSqlConnection'; name: string; serverUrl: string; dialect: string; authType: string; database?: string; port?: number; username?: string; password?: string; boxId?: string }

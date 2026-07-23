@@ -829,6 +829,366 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('malformed KQLX opens without an interactive persistence channel', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-malformed-'));
+		const filePath = path.join(tmpDir, 'malformed.kqlx');
+		const malformedText = '{"kind":"kqlx","version":1,"state":';
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let postedMessages = 0;
+		let disposeRegistrations = 0;
+		let disposeHandler: (() => void) | undefined;
+		let revealCount = 0;
+
+		try {
+			fs.writeFileSync(filePath, malformedText, 'utf8');
+			const provider = new (KqlxEditorProvider as any)(
+				{ subscriptions: [] } as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath),
+				getText: () => malformedText,
+			} as any;
+			const webview = {
+				options: {}, html: '',
+				postMessage: async () => { postedMessages++; return true; },
+				onDidReceiveMessage: (handler: (message: any) => unknown) => {
+					receiveHandler = handler;
+					return { dispose() {} };
+				},
+			} as any;
+			const panel = {
+				visible: true, active: true, webview,
+				reveal: () => { revealCount++; },
+				onDidDispose: (handler: () => void) => {
+					disposeRegistrations++;
+					disposeHandler = handler;
+					return { dispose() {} };
+				},
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+
+			assert.strictEqual(webview.options.enableScripts, false);
+			assert.ok(webview.html.includes('Read-only'));
+			assert.strictEqual(receiveHandler, undefined, 'malformed content must not receive an editor message handler');
+			assert.strictEqual(postedMessages, 0, 'malformed content must not receive editor state');
+			assert.strictEqual(disposeRegistrations, 1, 'malformed content should register panel ownership cleanup');
+			assert.strictEqual(
+				await KqlxEditorProvider.revealOpenEditorWhenReady(document.uri, vscode.ViewColumn.One),
+				true,
+				'a malformed session tab should remain revealable',
+			);
+			assert.strictEqual(revealCount, 1);
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), malformedText, 'malformed source bytes must remain untouched');
+			disposeHandler?.();
+			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 100), true);
+		} finally {
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('KQLX close bounds non-persistence handlers that do not settle', async () => {
+		const originalHandleWebviewMessage = (QueryEditorProvider as any).prototype.handleWebviewMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-close-timeout-'));
+		const filePath = path.join(tmpDir, 'close-timeout.kqlx');
+		const text = JSON.stringify({ kind: 'kqlx', version: 1, state: { sections: [] } });
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const disposeHandlers: Array<() => void> = [];
+		let releaseHandler!: () => void;
+		const handlerGate = new Promise<void>(resolve => { releaseHandler = resolve; });
+
+		try {
+			fs.writeFileSync(filePath, text, 'utf8');
+			(QueryEditorProvider as any).prototype.handleWebviewMessage = async (message: any) => {
+				if (message?.type === 'pauseNonPersistenceForCloseTest') await handlerGate;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(tmpDir),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => text,
+				eol: vscode.EndOfLine.LF, isDirty: false,
+				positionAt: () => new vscode.Position(0, 0), save: async () => true,
+			} as any;
+			const panel = {
+				visible: true, active: true,
+				webview: {
+					options: {}, postMessage: async () => true,
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = handler;
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			assert.ok(receiveHandler);
+			void Promise.resolve(receiveHandler!({ type: 'pauseNonPersistenceForCloseTest' }));
+			for (const dispose of disposeHandlers) dispose();
+
+			assert.strictEqual(
+				await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 3_000),
+				true,
+				'non-persistence work must not block close indefinitely',
+			);
+		} finally {
+			releaseHandler();
+			(QueryEditorProvider as any).prototype.handleWebviewMessage = originalHandleWebviewMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('KQLX close waits for every admitted webview handler', async () => {
+		const originalHandleWebviewMessage = (QueryEditorProvider as any).prototype.handleWebviewMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-close-barrier-'));
+		const filePath = path.join(tmpDir, 'close-barrier.kqlx');
+		const text = JSON.stringify({
+			kind: 'kqlx', version: 1,
+			state: { sections: [{ id: 'query_1', type: 'query', query: 'print value=1' }] },
+		});
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const disposeHandlers: Array<() => void> = [];
+		let handlerStarted = false;
+		let releaseHandler!: () => void;
+		const handlerGate = new Promise<void>(resolve => { releaseHandler = resolve; });
+
+		try {
+			fs.writeFileSync(filePath, text, 'utf8');
+			(QueryEditorProvider as any).prototype.handleWebviewMessage = async (message: any) => {
+				if (message?.type !== 'pauseForCloseBarrierTest') return;
+				handlerStarted = true;
+				await handlerGate;
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [],
+					workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(tmpDir),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => text,
+				eol: vscode.EndOfLine.LF, isDirty: false,
+				positionAt: () => new vscode.Position(0, 0), save: async () => true,
+			} as any;
+			const panel = {
+				visible: true, active: true,
+				webview: {
+					options: {}, postMessage: async () => true,
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = handler;
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			assert.ok(receiveHandler);
+			const inbound = Promise.resolve(receiveHandler!({ type: 'pauseForCloseBarrierTest' }));
+			assert.strictEqual(handlerStarted, true, 'the admitted handler should start immediately');
+			for (const dispose of disposeHandlers) dispose();
+
+			assert.strictEqual(
+				await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 50),
+				false,
+				'close finalization must remain pending while an admitted handler is running',
+			);
+			releaseHandler();
+			await inbound;
+			assert.strictEqual(
+				await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 1_000),
+				true,
+				'close finalization should complete after the admitted handler settles',
+			);
+		} finally {
+			releaseHandler();
+			(QueryEditorProvider as any).prototype.handleWebviewMessage = originalHandleWebviewMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('KQLX Save falls back to fail-closed SQL text when canonical owner locks are busy', async () => {
+		const originalOnWillSaveTextDocument = vscode.workspace.onWillSaveTextDocument;
+		const originalFresh = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalFailClosed = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFailClosed;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-save-budget-'));
+		const filePath = path.join(tmpDir, 'save-budget.kqlx');
+		let releaseCanonical!: () => void;
+		const canonicalGate = new Promise<void>(resolve => { releaseCanonical = resolve; });
+		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		const state = {
+			sections: [
+				{ id: 'sql_1', type: 'sql', query: 'SELECT 1', resultJson: 'PROTECTED_SQL_RESULT' },
+				{ id: 'query_1', type: 'query', query: 'print value=1', resultJson: 'KEEP_KUSTO_RESULT' },
+			],
+		};
+		const text = JSON.stringify({ kind: 'kqlx', version: 1, state }, null, 2);
+
+		try {
+			fs.writeFileSync(filePath, text, 'utf8');
+			(vscode.workspace as any).onWillSaveTextDocument = (handler: (event: vscode.TextDocumentWillSaveEvent) => unknown) => {
+				willSaveHandler = handler;
+				return { dispose() {} };
+			};
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (value: unknown) => value;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFailClosed = (value: any) => ({
+				...value,
+				sections: value.sections.map((section: any) => {
+					if (section.type !== 'sql') return section;
+					const clone = { ...section };
+					delete clone.resultJson;
+					return clone;
+				}),
+			});
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (value: unknown, publish: (sanitized: unknown) => Promise<unknown>) => {
+				await canonicalGate;
+				return publish(value);
+			};
+
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [],
+					workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(tmpDir),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath),
+				getText: () => text,
+				eol: vscode.EndOfLine.LF,
+				positionAt: (_offset: number) => new vscode.Position(0, 0),
+			} as any;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.type === 'requestFinalPersist') {
+							void Promise.resolve().then(() => receiveHandler?.({
+								type: 'persistDocument', state,
+								flush: true, reason: 'save', editRevision: 0,
+								snapshotId: 'save-budget-snapshot', flushRequestId: message.requestId,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: (message: any) => unknown) => {
+						receiveHandler = handler;
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			assert.ok(willSaveHandler);
+			let barrier: Promise<vscode.TextEdit[]> | undefined;
+			const startedAt = Date.now();
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { barrier = Promise.resolve(thenable); },
+			} as any);
+			assert.ok(barrier);
+			const edits = await barrier!;
+			assert.ok(Date.now() - startedAt < 1_500, 'Save fallback must resolve inside the VS Code save budget');
+			assert.strictEqual(edits.length, 1);
+			const replacement = edits[0].newText;
+			assert.ok(!replacement.includes('PROTECTED_SQL_RESULT'));
+			assert.ok(replacement.includes('KEEP_KUSTO_RESULT'));
+		} finally {
+			releaseCanonical();
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalFresh;
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFailClosed = originalFailClosed;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSaveTextDocument;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('KQLX Save writes fail-closed text when the final webview snapshot is unavailable', async () => {
+		const originalOnWillSaveTextDocument = vscode.workspace.onWillSaveTextDocument;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-save-unavailable-'));
+		const filePath = path.join(tmpDir, 'save-unavailable.sqlx');
+		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+		let currentText = JSON.stringify({
+			kind: 'sqlx', version: 1,
+			state: { sections: [
+				{ id: 'sql_1', type: 'sql', query: 'SELECT 1', resultJson: 'PROTECTED_SQL_RESULT' },
+				{ id: 'query_1', type: 'query', query: 'print 1', resultJson: 'KEEP_KUSTO_RESULT' },
+			] },
+		}, null, 2);
+		const latestText = JSON.stringify({
+			kind: 'sqlx', version: 1,
+			state: { sections: [
+				{ id: 'sql_1', type: 'sql', query: 'SELECT 2 AS latest_edit', resultJson: 'PROTECTED_SQL_RESULT' },
+				{ id: 'query_1', type: 'query', query: 'print 1', resultJson: 'KEEP_KUSTO_RESULT' },
+			] },
+		}, null, 2);
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(vscode.workspace as any).onWillSaveTextDocument = (handler: (event: vscode.TextDocumentWillSaveEvent) => unknown) => {
+				willSaveHandler = handler;
+				return { dispose() {} };
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(tmpDir),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText,
+				eol: vscode.EndOfLine.LF,
+				positionAt: (offset: number) => new vscode.Position(0, offset),
+			} as any;
+			const panel = {
+				visible: true,
+				webview: {
+					options: {}, postMessage: async () => true,
+					onDidReceiveMessage: () => ({ dispose() {} }),
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			assert.ok(willSaveHandler);
+			let barrier: Promise<vscode.TextEdit[]> | undefined;
+			const startedAt = Date.now();
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { barrier = Promise.resolve(thenable); },
+			} as any);
+			currentText = latestText;
+
+			const edits = await barrier!;
+			assert.ok(Date.now() - startedAt < 1_500, 'unanswered snapshot fallback must stay inside the VS Code save budget');
+			assert.strictEqual(edits.length, 1);
+			assert.ok(!edits[0].newText.includes('PROTECTED_SQL_RESULT'));
+			assert.ok(edits[0].newText.includes('KEEP_KUSTO_RESULT'));
+			assert.ok(edits[0].newText.includes('latest_edit'));
+			assert.strictEqual(edits[0].range.end.character, latestText.length);
+		} finally {
+			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSaveTextDocument;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('.kqlx requestDocument sent during webview initialization is replayed', async () => {
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		const posted: any[] = [];
@@ -1154,10 +1514,15 @@ suite('Sidecar .kql.json strategy', () => {
 
 				releaseSanitize();
 				await waitForCondition(
-					() => invalidation.isDisposed(),
-					`${variant.extension} cleanup should run after the queued write`,
+					() => {
+						const text = fs.readFileSync(sidecarPath, 'utf8');
+						return invalidation.isDisposed()
+							&& text.includes('EXTERNAL_COMMITTED')
+							&& !text.includes('retained');
+					},
+					`${variant.extension} close should drain the sanitized queued write`,
 				);
-				assert.strictEqual(invalidation.isDisposed(), true, `${variant.extension} cleanup should run after the queued write`);
+				assert.strictEqual(invalidation.isDisposed(), true, `${variant.extension} close should dispose the invalidation subscription`);
 				const finalText = fs.readFileSync(sidecarPath, 'utf8');
 				assert.ok(finalText.includes('EXTERNAL_COMMITTED'), `${variant.extension} must preserve newer committed sidecar content`);
 				assert.ok(!finalText.includes('UNSAVED_DRAFT'), `${variant.extension} Discard must not write unsaved metadata`);
@@ -1260,11 +1625,12 @@ suite('Sidecar .kql.json strategy', () => {
 				);
 				for (const dispose of disposeHandlers) dispose();
 				await waitForCondition(
-					() => invalidation.isDisposed(),
-					`${variant.extension} close should finish after saving the rebased draft`,
+					() => fs.readFileSync(sidecarPath, 'utf8').includes('DRAFT_TO_SAVE'),
+					`${variant.extension} close should save the rebased draft`,
 				);
 
 				const finalText = fs.readFileSync(sidecarPath, 'utf8');
+				assert.strictEqual(invalidation.isDisposed(), true, `${variant.extension} close should dispose the invalidation subscription`);
 				assert.ok(finalText.includes('DRAFT_TO_SAVE'), `${variant.extension} should save the rebased draft`);
 				assert.ok(!finalText.includes('retained'), `${variant.extension} should keep protected SQL payload sanitized`);
 				assert.ok(!fs.readdirSync(tmpDir).some(name => name.startsWith(path.basename(sidecarPath) + '.recovery-')),
@@ -2553,6 +2919,75 @@ suite('Sidecar .kql.json strategy', () => {
 				await assert.rejects(saveBarrier!, /final .* metadata snapshot request was not delivered/i);
 				assert.ok(errors.some(message => message.includes('snapshot request was not delivered')));
 				errors.length = 0;
+			}
+		} finally {
+			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSaveTextDocument;
+			(vscode.window as any).showErrorMessage = originalShowErrorMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('Save continues primary text when compatibility metadata is unavailable during restore', async () => {
+		const originalOnWillSaveTextDocument = vscode.workspace.onWillSaveTextDocument;
+		const originalShowErrorMessage = vscode.window.showErrorMessage;
+		const variants = [
+			{ extension: '.kql', Provider: KqlCompatEditorProvider },
+			{ extension: '.sql', Provider: SqlCompatEditorProvider },
+		] as const;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-save-restore-'));
+
+		try {
+			const errors: string[] = [];
+			(vscode.window as any).showErrorMessage = async (message: unknown) => { errors.push(String(message)); return undefined; };
+			for (const [index, variant] of variants.entries()) {
+				const sourcePath = path.join(tmpDir, `save-restore-${index}${variant.extension}`);
+				fs.writeFileSync(sourcePath, 'select 1', 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+				(vscode.workspace as any).onWillSaveTextDocument = (handler: (event: vscode.TextDocumentWillSaveEvent) => unknown) => {
+					willSaveHandler = handler;
+					return { dispose() {} };
+				};
+				const provider = new (variant.Provider as any)(
+					{ subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined }, globalState: { get: () => undefined, update: async () => undefined } } as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(sourcePath), getText: () => 'select 1', lineCount: 1,
+					lineAt: () => ({ text: 'select 1' }), isDirty: false, save: async () => true,
+				} as any;
+				const panel = {
+					webview: {
+						options: {},
+						postMessage: async (message: any) => {
+							if (message?.type === 'requestFinalPersist') {
+								void Promise.resolve().then(() => receiveHandler?.({
+									type: 'persistDocument', state: { sections: [] },
+									flushRequestId: message.requestId,
+									flushUnavailableReason: 'restore-in-progress',
+								}));
+							}
+							return true;
+						},
+						onDidReceiveMessage: (handler: (message: any) => unknown) => {
+							receiveHandler = handler;
+							return { dispose() {} };
+						},
+					},
+					onDidDispose: () => ({ dispose() {} }),
+				} as any;
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				assert.ok(willSaveHandler && receiveHandler);
+				let saveBarrier: Promise<vscode.TextEdit[]> | undefined;
+				willSaveHandler!({
+					document,
+					waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { saveBarrier = Promise.resolve(thenable); },
+				} as any);
+
+				await assert.doesNotReject(saveBarrier!);
+				assert.deepStrictEqual(await saveBarrier!, []);
+				assert.deepStrictEqual(errors, []);
 			}
 		} finally {
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSaveTextDocument;

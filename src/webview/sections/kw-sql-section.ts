@@ -614,11 +614,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	private _renderDatabaseDropdown(): TemplateResult {
 		const dbItems: DropdownItem[] = (this._databases || []).map(db => ({ id: db, label: db }));
-		const restoredDatabase = !this._database && this._desiredDatabase ? this._desiredDatabase : '';
+		const restoredDatabase = this._database || this._desiredDatabase;
 		if (restoredDatabase && !dbItems.some(item => item.id === restoredDatabase)) {
 			dbItems.unshift({ id: restoredDatabase, label: restoredDatabase, disabled: true });
 		}
-		const selectedDatabase = this._database || restoredDatabase;
+		const selectedDatabase = restoredDatabase;
 		return html`
 			<div class="select-wrapper half-width" title="SQL Database">
 				<kw-dropdown
@@ -1631,7 +1631,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	/** Update available SQL connections. Resolves desired/current/last selection. */
 	public setConnections(
 		conns: SqlConnectionInfo[],
-		opts?: { lastConnectionId?: string },
+		opts?: {
+			lastConnectionId?: string;
+			lastDatabase?: string;
+			cachedDatabases?: Readonly<Record<string, readonly string[]>>;
+		},
 	): void {
 		const prev = this._connectionId;
 		const prevSignature = this._connectionTargetSignature(prev);
@@ -1701,9 +1705,12 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._enforceLeaveNoTracePolicy();
 		const nextSignature = this._connectionTargetSignature(resolvedId);
 		const nextConnection = conns.find(connection => connection.id === resolvedId);
+		const nextPrincipalFingerprint = String(nextConnection?.principalFingerprint || '');
+		const principalOwnerChanged = !!previousPrincipalFingerprint
+			&& previousPrincipalFingerprint !== nextPrincipalFingerprint;
 		const connectionTargetChanged = prev !== resolvedId
 			|| Boolean(resolvedId && prevSignature !== nextSignature)
-			|| Boolean(resolvedId && previousPrincipalFingerprint !== String(nextConnection?.principalFingerprint || ''))
+			|| Boolean(resolvedId && principalOwnerChanged)
 			|| Boolean(resolvedId && previousRevocationGeneration !== (nextConnection?.revocationGeneration ?? 0));
 		const adoptingPersistedConnection = this._pendingPersistedTargetAdoption
 			&& !prev
@@ -1745,12 +1752,34 @@ export class KwSqlSection extends LitElement implements SectionElement {
 				bubbles: true, composed: true,
 			}));
 		}
+		const cachedDatabases = resolvedId ? opts?.cachedDatabases?.[resolvedId] : undefined;
+		if (cachedDatabases?.length) {
+			const explicitDatabase = this._hostOwnerReadoptionDatabase || this._desiredDatabase || this._database;
+			const refreshMissingDatabase = !!explicitDatabase && !cachedDatabases.includes(explicitDatabase);
+			this.setDatabases([...cachedDatabases], opts?.lastDatabase, { preserveMissingSelection: true });
+			if (refreshMissingDatabase) {
+				queueMicrotask(() => {
+					if (!this.isConnected || this._sqlConnectionId !== resolvedId) return;
+					this.dispatchEvent(new CustomEvent('sql-refresh-databases', {
+						detail: { boxId: this.boxId, connectionId: resolvedId },
+						bubbles: true, composed: true,
+					}));
+				});
+			}
+		}
 		if (resolvedId && !this._hostOwnerReadoptionDatabase) this._pendingHostOwnerReadoption = false;
 	}
 
 	/** Update available databases. Applies desired database if set. */
-	public setDatabases(databases: string[], desiredDb?: string): void {
+	public setDatabases(
+		databases: string[],
+		desiredDb?: string,
+		options: { preserveMissingSelection?: boolean } = {},
+	): void {
 		const previousDatabase = this._database;
+		const hadExplicitDatabaseTarget = !!(
+			this._database || this._desiredDatabase || this._hostOwnerReadoptionDatabase
+		);
 		const adoptingPersistedDatabase = this._pendingPersistedTargetAdoption
 			&& !previousDatabase
 			&& !!this._desiredDatabase
@@ -1784,6 +1813,21 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			}
 		} else if (this._database && databases.includes(this._database)) {
 			// Keep current selection
+		} else if (options.preserveMissingSelection
+			&& (this._database || this._desiredDatabase || this._hostOwnerReadoptionDatabase)) {
+			// Cached lists are hints. Keep an explicit target provisional until a live list confirms it.
+		} else if (this._database || this._desiredDatabase || this._hostOwnerReadoptionDatabase) {
+			this._database = '';
+			this._desiredDatabase = '';
+			this._hostOwnerReadoptionDatabase = '';
+			if (hadExplicitDatabaseTarget) {
+				this._clearTargetData();
+				this._resetSchemaReadiness('not-loaded');
+				this.dispatchEvent(new CustomEvent('sql-database-changed', {
+					detail: { boxId: this.boxId, database: '' },
+					bubbles: true, composed: true,
+				}));
+			}
 		} else if (desiredDb && databases.includes(desiredDb)) {
 			const prev = this._database;
 			this._database = desiredDb;

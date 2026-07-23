@@ -295,6 +295,34 @@ describe('StsLanguageService', () => {
 			});
 		});
 
+		it('does not let a failed didOpen close its replacement document', async () => {
+			const connection = createTestConnection();
+			let releaseFirstOpen!: () => void;
+			let markFirstOpen!: () => void;
+			const firstOpenGate = new Promise<void>(resolve => { releaseFirstOpen = resolve; });
+			const firstOpenStarted = new Promise<void>(resolve => { markFirstOpen = resolve; });
+			mockPm.sendNotification.mockImplementation(async (method: string, params: any) => {
+				if (method === 'textDocument/didOpen' && params.textDocument.uri.endsWith('/1.sql')) {
+					markFirstOpen();
+					await firstOpenGate;
+					throw new Error('didOpen failed');
+				}
+			});
+
+			const firstOpen = service.openDocument('box-race', 'SELECT 1', connection);
+			await firstOpenStarted;
+			await expect(service.openDocument('box-race', 'SELECT 2', connection))
+				.resolves.toBe('kw-sql://language/test-session/2.sql');
+			releaseFirstOpen();
+			await expect(firstOpen).rejects.toThrow('didOpen failed');
+
+			expect((service as any)._documentUriByBoxId.get('box-race')).toBe('kw-sql://language/test-session/2.sql');
+			const closedUris = mockPm.sendNotification.mock.calls
+				.filter((call: any[]) => call[0] === 'textDocument/didClose')
+				.map((call: any[]) => call[1].textDocument.uri);
+			expect(closedUris).not.toContain('kw-sql://language/test-session/2.sql');
+		});
+
 		it('changeDocument increments version', async () => {
 			await service.openDocument('box-1', 'SELECT 1', createTestConnection());
 			await service.changeDocument('box-1', 'SELECT 2');

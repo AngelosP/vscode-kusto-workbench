@@ -1,5 +1,9 @@
 import * as vscode from 'vscode';
+import * as crypto from 'crypto';
+import * as fs from 'fs/promises';
+import type { Dirent } from 'fs';
 import * as path from 'path';
+import * as lockfile from 'proper-lockfile';
 
 import { KqlxEditorProvider } from './kqlxEditorProvider';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
@@ -16,19 +20,11 @@ export function redactRemoteUrlForLog(value: string): string {
 		}
 		try {
 			const parsed = new URL(candidate);
-			if (parsed.search) {
-				const redacted = new URLSearchParams();
-				for (const [key] of parsed.searchParams) {
-					redacted.append(key, 'redacted');
-				}
-				parsed.search = redacted.toString();
-			}
-			if (parsed.hash) {
-				parsed.hash = '#redacted';
-			}
-			return parsed.toString() + suffix;
+			const identity = crypto.createHash('sha256').update(parsed.toString(), 'utf8').digest('hex').slice(0, 12);
+			const port = parsed.port ? `:${parsed.port}` : '';
+			return `${parsed.protocol}//${parsed.hostname}${port}/[remote:${identity}]${suffix}`;
 		} catch {
-			return match;
+			return `[remote-url-redacted]${suffix}`;
 		}
 	});
 }
@@ -39,6 +35,467 @@ function diagLog(msg: string): void {
 }
 function showDiagChannel(): void {
 	showWorkbenchLogChannel(true);
+}
+
+export function remoteContentSnapshotId(contents: readonly string[]): string {
+	const hash = crypto.createHash('sha256');
+	for (const content of contents) {
+		hash.update(String(Buffer.byteLength(content, 'utf8')));
+		hash.update(':');
+		hash.update(content, 'utf8');
+		hash.update('\n');
+	}
+	return hash.digest('hex').slice(0, 24);
+}
+
+export function remoteSnapshotDirectoryPath(remoteRootPath: string, candidatePath: string): string | undefined {
+	const resolvedRoot = path.resolve(remoteRootPath);
+	const relative = path.relative(resolvedRoot, path.resolve(candidatePath));
+	if (!relative || relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)) {
+		return undefined;
+	}
+	const segments = relative.split(path.sep).filter(Boolean);
+	if (segments.length < 3 || segments[0] === '.leases') {
+		return undefined;
+	}
+	return path.join(resolvedRoot, segments[0], segments[1]);
+}
+
+export function remoteSnapshotTabInputUris(input: unknown): readonly vscode.Uri[] {
+	try {
+		if (input instanceof vscode.TabInputText || input instanceof vscode.TabInputCustom) {
+			return [input.uri];
+		}
+		if (input instanceof vscode.TabInputTextDiff) {
+			return [input.original, input.modified];
+		}
+	} catch {
+		// Fall through for older VS Code versions and test doubles.
+	}
+	const candidate = input as { uri?: unknown; original?: unknown; modified?: unknown } | undefined;
+	const values = candidate?.uri ? [candidate.uri] : [candidate?.original, candidate?.modified];
+	return values.filter((value): value is vscode.Uri => !!value
+		&& typeof (value as vscode.Uri).toString === 'function');
+}
+
+function normalizedPathKey(value: string): string {
+	const resolved = path.resolve(value);
+	return process.platform === 'win32' ? resolved.toLowerCase() : resolved;
+}
+
+type SnapshotIdentity = Readonly<{
+	key: string;
+	snapshotPath: string;
+	leaseDirectory: string;
+	gateTarget: string;
+	claimGateTarget: string;
+}>;
+
+const REMOTE_SNAPSHOT_LEASE_STALE_MS = 90_000;
+const REMOTE_SNAPSHOT_LEASE_UPDATE_MS = 15_000;
+const REMOTE_SNAPSHOT_STARTUP_CLEANUP_DELAY_MS = 120_000;
+const MAX_REMOTE_TEXT_BYTES = 16 * 1024 * 1024;
+const MAX_REMOTE_METADATA_BYTES = 1024 * 1024;
+const MAX_REMOTE_DIAGNOSTIC_BYTES = 64 * 1024;
+
+function errorCode(error: unknown): string {
+	return String((error as NodeJS.ErrnoException | undefined)?.code || '');
+}
+
+export async function readRemoteTextBody(response: Response, maxBytes = MAX_REMOTE_TEXT_BYTES): Promise<string> {
+	if (!Number.isSafeInteger(maxBytes) || maxBytes <= 0) throw new Error('Remote response size limit is invalid.');
+	const declaredLength = Number(response.headers.get('content-length'));
+	if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+		try { await response.body?.cancel(); } catch { /* ignore */ }
+		throw new Error(`Remote response exceeds the ${maxBytes}-byte size limit.`);
+	}
+	if (!response.body) return '';
+	const reader = response.body.getReader();
+	const decoder = new TextDecoder();
+	let totalBytes = 0;
+	let text = '';
+	try {
+		for (;;) {
+			const { done, value } = await reader.read();
+			if (done) break;
+			totalBytes += value.byteLength;
+			if (totalBytes > maxBytes) {
+				try { await reader.cancel(); } catch { /* ignore */ }
+				throw new Error(`Remote response exceeds the ${maxBytes}-byte size limit.`);
+			}
+			text += decoder.decode(value, { stream: true });
+		}
+		return text + decoder.decode();
+	} finally {
+		reader.releaseLock();
+	}
+}
+
+export function sanitizeRemoteFilename(value: string): string {
+	const filename = String(value || '').trim();
+	if (!filename || filename === '.' || filename === '..'
+		|| filename !== path.basename(filename)
+		|| /[\\/]/.test(filename)
+		|| /^[A-Za-z]:/.test(filename)
+		|| /[<>:"|?*\x00-\x1f]/.test(filename)
+		|| Buffer.byteLength(filename, 'utf8') > 255) {
+		throw new Error('The remote file name is unsafe.');
+	}
+	return filename;
+}
+
+export function remoteSnapshotChildUri(snapshotDir: vscode.Uri, filename: string): vscode.Uri {
+	const safeFilename = sanitizeRemoteFilename(filename);
+	const candidate = vscode.Uri.joinPath(snapshotDir, safeFilename);
+	const resolvedSnapshot = path.resolve(snapshotDir.fsPath);
+	const resolvedCandidate = path.resolve(candidate.fsPath);
+	if (path.dirname(resolvedCandidate) !== resolvedSnapshot
+		|| path.relative(resolvedSnapshot, resolvedCandidate) !== safeFilename) {
+		throw new Error('The remote file path escaped its snapshot directory.');
+	}
+	return candidate;
+}
+
+export class RemoteSnapshotLeaseStore {
+	private readonly leases = new Map<string, Promise<() => Promise<void>>>();
+
+	constructor(
+		private readonly remoteRootPath: string,
+		private readonly instanceId: string = crypto.randomUUID(),
+	) {}
+
+	async acquire(snapshotPath: string): Promise<void> {
+		const identity = this.identity(snapshotPath);
+		if (!identity) throw new Error('Remote snapshot lease path is outside remote storage.');
+		await this.acquireIdentity(identity, false);
+	}
+
+	async createAndAcquire(snapshotPath: string): Promise<void> {
+		const identity = this.identity(snapshotPath);
+		if (!identity) throw new Error('Remote snapshot lease path is outside remote storage.');
+		await this.acquireIdentity(identity, true);
+	}
+
+	private async acquireIdentity(identity: SnapshotIdentity, createSnapshot: boolean): Promise<void> {
+		const existing = this.leases.get(identity.key);
+		if (existing) {
+			await existing;
+			return;
+		}
+
+		let pending!: Promise<() => Promise<void>>;
+		pending = this.acquireLease(identity, createSnapshot, () => {
+			if (this.leases.get(identity.key) !== pending) return;
+			this.leases.delete(identity.key);
+			void this.acquire(identity.snapshotPath).catch(error => {
+				diagLog(`Failed to reacquire a compromised remote snapshot lease: ${error instanceof Error ? error.message : String(error)}`);
+			});
+		});
+		this.leases.set(identity.key, pending);
+		try {
+			await pending;
+		} catch (error) {
+			if (this.leases.get(identity.key) === pending) this.leases.delete(identity.key);
+			throw error;
+		}
+	}
+
+	async release(snapshotPath: string, deleteIfUnused = true): Promise<void> {
+		const identity = this.identity(snapshotPath);
+		if (!identity) return;
+		const pending = this.leases.get(identity.key);
+		if (pending) {
+			this.leases.delete(identity.key);
+			try { await (await pending)(); } catch { /* stale cleanup can recover the lease */ }
+		}
+		if (deleteIfUnused) await this.deleteIfUnleased(identity);
+	}
+
+	async cleanupAbandonedSnapshots(): Promise<void> {
+		let sources: Dirent[];
+		try {
+			sources = await fs.readdir(this.remoteRootPath, { withFileTypes: true });
+		} catch (error) {
+			if (errorCode(error) === 'ENOENT') return;
+			throw error;
+		}
+		for (const source of sources) {
+			if (!source.isDirectory() || source.name === '.leases') continue;
+			const sourcePath = path.join(this.remoteRootPath, source.name);
+			let snapshots: Dirent[];
+			try {
+				snapshots = await fs.readdir(sourcePath, { withFileTypes: true });
+			} catch {
+				continue;
+			}
+			for (const snapshot of snapshots) {
+				if (!snapshot.isDirectory()) continue;
+				const identity = this.identity(path.join(sourcePath, snapshot.name));
+				if (identity) await this.deleteIfUnleased(identity);
+			}
+		}
+	}
+
+	async dispose(): Promise<void> {
+		const pending = [...this.leases.values()];
+		this.leases.clear();
+		await Promise.all(pending.map(async lease => {
+			try { await (await lease)(); } catch { /* stale cleanup can recover the lease */ }
+		}));
+	}
+
+	private identity(snapshotPath: string): SnapshotIdentity | undefined {
+		const resolvedRoot = path.resolve(this.remoteRootPath);
+		const resolvedSnapshot = path.resolve(snapshotPath);
+		const relative = path.relative(resolvedRoot, resolvedSnapshot);
+		const segments = relative.split(path.sep).filter(Boolean);
+		if (relative === '..' || relative.startsWith(`..${path.sep}`) || path.isAbsolute(relative)
+			|| segments.length !== 2 || segments[0] === '.leases') return undefined;
+		const leaseSource = path.join(resolvedRoot, '.leases', segments[0]);
+		return {
+			key: normalizedPathKey(resolvedSnapshot),
+			snapshotPath: resolvedSnapshot,
+			leaseDirectory: path.join(leaseSource, segments[1]),
+			gateTarget: path.join(leaseSource, `${segments[1]}.gate`),
+			claimGateTarget: path.join(leaseSource, `${segments[1]}.claims`),
+		};
+	}
+
+	private async withLock<T>(target: string, action: () => Promise<T>): Promise<T> {
+		await fs.mkdir(path.dirname(target), { recursive: true });
+		const release = await lockfile.lock(target, {
+			realpath: false,
+			stale: 30_000,
+			update: 5_000,
+			retries: { retries: 100, factor: 1, minTimeout: 25, maxTimeout: 25 },
+		});
+		try { return await action(); }
+		finally { await release(); }
+	}
+
+	private withGate<T>(identity: SnapshotIdentity, action: () => Promise<T>): Promise<T> {
+		return this.withLock(identity.gateTarget, action);
+	}
+
+	private withClaimGate<T>(identity: SnapshotIdentity, action: () => Promise<T>): Promise<T> {
+		return this.withLock(identity.claimGateTarget, action);
+	}
+
+	private async acquireLease(
+		identity: SnapshotIdentity,
+		createSnapshot: boolean,
+		onCompromised: () => void,
+	): Promise<() => Promise<void>> {
+		const claimTarget = path.join(identity.leaseDirectory, `${this.instanceId}.claim`);
+		const releaseClaim = await this.withClaimGate(identity, async () => {
+			await fs.mkdir(identity.leaseDirectory, { recursive: true });
+			const release = await lockfile.lock(claimTarget, {
+				realpath: false,
+				stale: REMOTE_SNAPSHOT_LEASE_STALE_MS,
+				update: REMOTE_SNAPSHOT_LEASE_UPDATE_MS,
+				retries: 0,
+			});
+			try {
+				if (createSnapshot) await fs.mkdir(identity.snapshotPath);
+				return release;
+			} catch (error) {
+				try { await release(); } catch { /* stale cleanup can recover */ }
+				throw error;
+			}
+		});
+		try {
+			return await this.withGate(identity, async () => {
+				let snapshot: Awaited<ReturnType<typeof fs.stat>>;
+				try {
+					snapshot = await fs.stat(identity.snapshotPath);
+				} catch (error) {
+					if (errorCode(error) === 'ENOENT') throw new Error('Remote snapshot no longer exists.');
+					throw error;
+				}
+				if (!snapshot.isDirectory()) throw new Error('Remote snapshot is not a directory.');
+				const leaseTarget = path.join(identity.leaseDirectory, this.instanceId);
+				const release = await lockfile.lock(leaseTarget, {
+					realpath: false,
+					stale: REMOTE_SNAPSHOT_LEASE_STALE_MS,
+					update: REMOTE_SNAPSHOT_LEASE_UPDATE_MS,
+					retries: 0,
+					onCompromised: error => {
+						diagLog(`Remote snapshot lease was compromised: ${error.message}`);
+						onCompromised();
+					},
+				});
+				return release;
+			});
+		} finally {
+			try { await releaseClaim(); } catch { /* stale claim cleanup can recover */ }
+		}
+	}
+
+	private async deleteIfUnleased(identity: SnapshotIdentity): Promise<boolean> {
+		return this.withClaimGate(identity, () => this.withGate(identity, async () => {
+			if (await this.hasLiveReader(identity.leaseDirectory)) return false;
+			await fs.rm(identity.snapshotPath, { recursive: true, force: true });
+			await fs.rm(identity.leaseDirectory, { recursive: true, force: true });
+			return true;
+		}));
+	}
+
+	private async hasLiveReader(leaseDirectory: string): Promise<boolean> {
+		let entries: Dirent[];
+		try {
+			entries = await fs.readdir(leaseDirectory, { withFileTypes: true });
+		} catch (error) {
+			if (errorCode(error) === 'ENOENT') return false;
+			return true;
+		}
+		for (const entry of entries) {
+			if (!entry.isDirectory() || !entry.name.endsWith('.lock')) continue;
+			const target = path.join(leaseDirectory, entry.name.slice(0, -'.lock'.length));
+			try {
+				if (await lockfile.check(target, { realpath: false, stale: REMOTE_SNAPSHOT_LEASE_STALE_MS })) return true;
+			} catch {
+				return true;
+			}
+		}
+		return false;
+	}
+
+}
+
+export interface RemoteSnapshotLifecycleLike {
+	ready(): Promise<void>;
+	withSnapshot(sourceDir: vscode.Uri, contents: readonly string[], action: (snapshotDir: vscode.Uri) => Promise<void>): Promise<void>;
+}
+
+export class RemoteSnapshotLifecycle implements RemoteSnapshotLifecycleLike, vscode.Disposable {
+	private readonly initialization: Promise<void>;
+	private readonly leaseStore: RemoteSnapshotLeaseStore | undefined;
+	private startupCleanupTimer: ReturnType<typeof setTimeout> | undefined;
+
+	constructor(
+		private readonly remoteDir: vscode.Uri,
+		startupCleanupDelayMs = REMOTE_SNAPSHOT_STARTUP_CLEANUP_DELAY_MS,
+	) {
+		this.leaseStore = remoteDir.scheme === 'file' ? new RemoteSnapshotLeaseStore(remoteDir.fsPath) : undefined;
+		this.initialization = this.claimRestoredTabs().catch(error => {
+			diagLog(`Failed to claim restored remote snapshots: ${error instanceof Error ? error.message : String(error)}`);
+		});
+		if (this.leaseStore) {
+			this.startupCleanupTimer = setTimeout(() => {
+				this.startupCleanupTimer = undefined;
+				void this.initialization.then(() => this.leaseStore?.cleanupAbandonedSnapshots()).catch(error => {
+					diagLog(`Failed to clean abandoned remote snapshots: ${error instanceof Error ? error.message : String(error)}`);
+				});
+			}, Math.max(0, startupCleanupDelayMs));
+			this.startupCleanupTimer.unref?.();
+		}
+	}
+
+	async ready(): Promise<void> {
+		await this.initialization;
+	}
+
+	async withSnapshot(
+		sourceDir: vscode.Uri,
+		contents: readonly string[],
+		action: (snapshotDir: vscode.Uri) => Promise<void>,
+	): Promise<void> {
+		await this.initialization;
+		const snapshotDir = vscode.Uri.joinPath(sourceDir, `${remoteContentSnapshotId(contents)}-${crypto.randomUUID()}`);
+		try {
+			if (this.leaseStore && snapshotDir.scheme === 'file') {
+				await this.leaseStore.createAndAcquire(snapshotDir.fsPath);
+			} else {
+				await vscode.workspace.fs.createDirectory(snapshotDir);
+			}
+			await action(snapshotDir);
+		} catch (error) {
+			if (!this.isSnapshotOpen(snapshotDir)) {
+				if (this.leaseStore && snapshotDir.scheme === 'file') await this.leaseStore.release(snapshotDir.fsPath);
+				else try { await vscode.workspace.fs.delete(snapshotDir, { recursive: true, useTrash: false }); } catch { /* cleanup retries later */ }
+			}
+			throw error;
+		}
+	}
+
+	async claimTabInput(input: unknown): Promise<void> {
+		await this.initialization;
+		await Promise.all(remoteSnapshotTabInputUris(input).map(uri => this.claimUri(uri)));
+	}
+
+	async releaseTabInput(input: unknown): Promise<void> {
+		await this.initialization;
+		await Promise.all(remoteSnapshotTabInputUris(input).map(uri => this.releaseUri(uri)));
+	}
+
+	async releaseClosedUri(uri: vscode.Uri): Promise<void> {
+		await this.initialization;
+		const snapshotDir = this.snapshotDirectoryForUri(uri);
+		if (!snapshotDir || !this.leaseStore || this.activeSnapshotKeys().has(normalizedPathKey(snapshotDir.fsPath))) {
+			return;
+		}
+		await this.leaseStore.release(snapshotDir.fsPath);
+		diagLog('Released closed remote snapshot.');
+	}
+
+	dispose(): void {
+		if (this.startupCleanupTimer) clearTimeout(this.startupCleanupTimer);
+		this.startupCleanupTimer = undefined;
+		void this.leaseStore?.dispose().catch(error => {
+			diagLog(`Failed to release remote snapshot leases: ${error instanceof Error ? error.message : String(error)}`);
+		});
+	}
+
+	private async claimRestoredTabs(): Promise<void> {
+		if (!this.leaseStore) return;
+		await Promise.all(this.currentTabUris().map(uri => this.claimUri(uri)));
+	}
+
+	private snapshotDirectoryForUri(uri: vscode.Uri): vscode.Uri | undefined {
+		if (this.remoteDir.scheme !== 'file' || uri.scheme !== 'file') {
+			return undefined;
+		}
+		const snapshotPath = remoteSnapshotDirectoryPath(this.remoteDir.fsPath, uri.fsPath);
+		return snapshotPath ? vscode.Uri.file(snapshotPath) : undefined;
+	}
+
+	private activeSnapshotKeys(): Set<string> {
+		const keys = new Set<string>();
+		for (const uri of this.currentTabUris()) {
+			const snapshotDir = this.snapshotDirectoryForUri(uri);
+			if (snapshotDir) keys.add(normalizedPathKey(snapshotDir.fsPath));
+		}
+		return keys;
+	}
+
+	private currentTabUris(): vscode.Uri[] {
+		const uris: vscode.Uri[] = [];
+		for (const group of vscode.window.tabGroups.all || []) {
+			for (const tab of group.tabs || []) uris.push(...remoteSnapshotTabInputUris(tab.input));
+		}
+		return uris;
+	}
+
+	private isSnapshotOpen(snapshotDir: vscode.Uri): boolean {
+		return this.currentTabUris().some(uri => {
+			const activeSnapshot = this.snapshotDirectoryForUri(uri);
+			return !!activeSnapshot
+				&& normalizedPathKey(activeSnapshot.fsPath) === normalizedPathKey(snapshotDir.fsPath);
+		});
+	}
+
+	private async claimUri(uri: vscode.Uri): Promise<void> {
+		const snapshotDir = this.snapshotDirectoryForUri(uri);
+		if (snapshotDir && this.leaseStore) await this.leaseStore.acquire(snapshotDir.fsPath);
+	}
+
+	private async releaseUri(uri: vscode.Uri): Promise<void> {
+		await this.releaseClosedUri(uri);
+	}
+}
+
+async function writeImmutableRemoteFile(uri: vscode.Uri, content: string): Promise<void> {
+	await vscode.workspace.fs.writeFile(uri, new TextEncoder().encode(content));
 }
 
 /**
@@ -107,26 +564,27 @@ function getLocalFileExtension(detectedExt: string): string {
  * Derives a safe local filename from a remote URL.
  * Falls back to a hash-based name if the URL doesn't have a clean filename.
  */
-function deriveLocalFilename(remoteUrl: string, extension: string): string {
+export function deriveLocalFilename(remoteUrl: string, extension: string): string {
+	let decoded = '';
 	try {
 		const url = new URL(remoteUrl);
 		const segments = url.pathname.split('/').filter(Boolean);
 		if (segments.length > 0) {
 			const last = segments[segments.length - 1];
 			// URL-decode the filename
-			const decoded = decodeURIComponent(last);
-			// Strip extension from the filename if present so we can add the correct one
-			const lower = decoded.toLowerCase();
-			for (const ext of SUPPORTED_EXTENSIONS) {
-				if (lower.endsWith(ext)) {
-					return decoded.slice(0, -ext.length) + extension;
-				}
-			}
-			// No recognized extension in URL; just append
-			return decoded + extension;
+			decoded = decodeURIComponent(last);
 		}
 	} catch {
-		// ignore
+		return `remote-${hashString(remoteUrl)}${extension}`;
+	}
+	if (decoded) {
+		const lower = decoded.toLowerCase();
+		for (const ext of SUPPORTED_EXTENSIONS) {
+			if (lower.endsWith(ext)) {
+				return sanitizeRemoteFilename(decoded.slice(0, -ext.length) + extension);
+			}
+		}
+		return sanitizeRemoteFilename(decoded + extension);
 	}
 	// Fallback: hash the URL to create a stable filename
 	return `remote-${hashString(remoteUrl)}${extension}`;
@@ -144,7 +602,7 @@ function hashString(s: string): string {
 /**
  * Creates (and returns) a subdirectory under `remoteDir` based on a hash of the URL.
  * This ensures files with the same name from different sources don't collide.
- * Layout: `remote-files/<hash-of-url>/<filename>`
+ * Layout: `remote-files/<hash-of-url>/<hash-of-content>/<filename>`
  */
 async function urlSubDir(remoteDir: vscode.Uri, remoteUrl: string): Promise<vscode.Uri> {
 	const hash = hashString(remoteUrl);
@@ -225,19 +683,41 @@ function normalizeGitHubUrl(url: string): string {
  * Fetches content from a GitHub URL, using VS Code's `github` auth provider
  * if the initial unauthenticated request fails with 404 (private repo).
  */
-async function fetchGitHubContent(url: string): Promise<string> {
+export async function fetchGitHubContent(url: string): Promise<string> {
 	const rawUrl = normalizeGitHubUrl(url);
 	diagLog(`GitHub: fetching ${rawUrl}`);
 
 	// Try without auth first (works for public repos and URLs with embedded tokens).
-	const res = await fetch(rawUrl);
-	if (res.ok) {
-		diagLog(`GitHub: ✓ Got content without auth (${res.status})`);
-		return await res.text();
+	const fetchGitHub = async (headers?: Record<string, string>): Promise<{ response: Response; finish: () => void }> => {
+		let lastError: unknown;
+		for (let attempt = 1; attempt <= 2; attempt++) {
+			const controller = new AbortController();
+			const timer = setTimeout(() => controller.abort(), 15_000);
+			try {
+				const response = await fetch(rawUrl, { ...(headers ? { headers } : {}), signal: controller.signal });
+				return { response, finish: () => clearTimeout(timer) };
+			} catch (error) {
+				clearTimeout(timer);
+				lastError = error;
+				if (attempt < 2) diagLog(`GitHub: request attempt ${attempt} failed — retrying…`);
+			}
+		}
+		const message = lastError instanceof Error ? lastError.message : String(lastError);
+		throw new Error(`GitHub request failed after two attempts: ${message}`);
+	};
+	const unauthenticated = await fetchGitHub();
+	const res = unauthenticated.response;
+	try {
+		if (res.ok) {
+			diagLog(`GitHub: ✓ Got content without auth (${res.status})`);
+			return await readRemoteTextBody(res);
+		}
+		await readRemoteTextBody(res, MAX_REMOTE_DIAGNOSTIC_BYTES);
+	} finally {
+		unauthenticated.finish();
 	}
 
 	diagLog(`GitHub: unauthenticated fetch returned ${res.status} — trying with GitHub auth…`);
-	try { await res.text(); } catch { /* discard */ }
 
 	// Try with GitHub auth (for private/internal repos).
 	let token: string | undefined;
@@ -257,19 +737,22 @@ async function fetchGitHubContent(url: string): Promise<string> {
 	}
 
 	diagLog(`GitHub: retrying with token…`);
-	const authRes = await fetch(rawUrl, {
-		headers: { 'Authorization': `token ${token}` }
-	});
-	if (!authRes.ok) {
-		const status = authRes.status;
-		try { await authRes.text(); } catch { /* discard */ }
-		throw new Error(
-			`GitHub returned HTTP ${status} even with authentication. ` +
-			'Check that you have access to this repository.'
-		);
+	const authenticated = await fetchGitHub({ 'Authorization': `token ${token}` });
+	const authRes = authenticated.response;
+	try {
+		if (!authRes.ok) {
+			const status = authRes.status;
+			await readRemoteTextBody(authRes, MAX_REMOTE_DIAGNOSTIC_BYTES);
+			throw new Error(
+				`GitHub returned HTTP ${status} even with authentication. ` +
+				'Check that you have access to this repository.'
+			);
+		}
+		diagLog(`GitHub: ✓ Got content with auth (${authRes.status})`);
+		return await readRemoteTextBody(authRes);
+	} finally {
+		authenticated.finish();
 	}
-	diagLog(`GitHub: ✓ Got content with auth (${authRes.status})`);
-	return await authRes.text();
 }
 
 /**
@@ -277,7 +760,7 @@ async function fetchGitHubContent(url: string): Promise<string> {
  * Supports both `filename="..."` and `filename*=UTF-8''...` forms.
  * Returns `undefined` when the header is absent or unparseable.
  */
-function parseContentDisposition(header: string | null): string | undefined {
+export function parseContentDisposition(header: string | null): string | undefined {
 	if (!header) {
 		return undefined;
 	}
@@ -494,8 +977,8 @@ async function fetchSharePointFile(url: string): Promise<{ filename: string; con
 		return extractFileResult(layer1.response, layer1.finalUrl, url);
 	}
 
-	// Discard the body from Layer 1 so resources are freed.
-	try { await layer1.response.text(); } catch { /* ignore */ }
+	// Discard the body from Layer 1 so resources are freed without buffering HTML.
+	try { await layer1.response.body?.cancel(); } catch { /* ignore */ }
 
 	// ── Layer 2: Microsoft Graph /shares/ API ──────────────────────────────
 	diagLog(`Layer 2: Trying Microsoft Graph shares API…`);
@@ -576,7 +1059,7 @@ async function extractFileResult(
 	diagLog(`  Filename resolved to: ${filename}`);
 	diagLog(`  content-disposition: ${contentDisposition ?? '(none)'}`);
 
-	const content = await response.text();
+	const content = await readRemoteTextBody(response);
 	diagLog(`  Downloaded ${content.length} characters`);
 
 	return { filename, content };
@@ -620,11 +1103,11 @@ async function tryGraphSharesDownload(sharingUrl: string): Promise<{ filename: s
 		const metaRes = await fetch(graphMetaUrl, { headers: authHeaders });
 		diagLog(`  Metadata response: ${metaRes.status} ${metaRes.statusText}`);
 		if (metaRes.ok) {
-			const meta = await metaRes.json() as { name?: string };
+			const meta = JSON.parse(await readRemoteTextBody(metaRes, MAX_REMOTE_METADATA_BYTES)) as { name?: string };
 			filename = meta.name;
 			diagLog(`  driveItem.name: ${filename ?? '(none)'}`);
 		} else {
-			const errorBody = await metaRes.text();
+			const errorBody = await readRemoteTextBody(metaRes, MAX_REMOTE_DIAGNOSTIC_BYTES);
 			diagLog(`  ✗ Metadata error: ${errorBody.substring(0, 300)}`);
 			// If metadata fails, the content endpoint will likely also fail.
 			// But let's try anyway — 403 on metadata might still allow content
@@ -649,7 +1132,7 @@ async function tryGraphSharesDownload(sharingUrl: string): Promise<{ filename: s
 		diagLog(`  content-disposition: ${contentRes.headers.get('content-disposition') ?? '(none)'}`);
 
 		if (!contentRes.ok) {
-			const errorBody = await contentRes.text();
+			const errorBody = await readRemoteTextBody(contentRes, MAX_REMOTE_DIAGNOSTIC_BYTES);
 			diagLog(`  ✗ Content error: ${errorBody.substring(0, 300)}`);
 			return undefined;
 		}
@@ -663,7 +1146,7 @@ async function tryGraphSharesDownload(sharingUrl: string): Promise<{ filename: s
 			filename = `shared-file-${hashString(sharingUrl)}`;
 		}
 
-		const content = await contentRes.text();
+		const content = await readRemoteTextBody(contentRes);
 		diagLog(`  ✓ Downloaded ${content.length} characters as "${filename}"`);
 		return { filename, content };
 	} catch (err: unknown) {
@@ -723,7 +1206,11 @@ async function tryAcquireGraphToken(): Promise<string | undefined> {
  *  • SharePoint / OneDrive sharing links (resolved via Microsoft Graph)
  *  • Sidecar files (.kql.json / .csl.json) — downloads both parts
  */
-export async function openRemoteFile(context: vscode.ExtensionContext, remoteUrl: string): Promise<void> {
+export async function openRemoteFile(
+	context: vscode.ExtensionContext,
+	remoteUrl: string,
+	snapshotLifecycle: RemoteSnapshotLifecycleLike,
+): Promise<void> {
 	const sharePoint = isSharePointUrl(remoteUrl);
 	const gitHub = isGitHubUrl(remoteUrl);
 	const detectedExt = detectExtension(remoteUrl);
@@ -746,17 +1233,18 @@ export async function openRemoteFile(context: vscode.ExtensionContext, remoteUrl
 		},
 		async (progress) => {
 			try {
+				await snapshotLifecycle.ready();
 				// Ensure remote-files directory exists
 				await vscode.workspace.fs.createDirectory(context.globalStorageUri);
 				const remoteDir = vscode.Uri.joinPath(context.globalStorageUri, 'remote-files');
 				await vscode.workspace.fs.createDirectory(remoteDir);
 
 				if (sharePoint) {
-					await openSharePointFile(context, remoteUrl, remoteDir, progress);
+					await openSharePointFile(context, remoteUrl, remoteDir, progress, snapshotLifecycle);
 				} else if (gitHub) {
-					await openGitHubRemoteFile(context, remoteUrl, detectedExt!, remoteDir, progress);
+					await openGitHubRemoteFile(context, remoteUrl, detectedExt!, remoteDir, progress, snapshotLifecycle);
 				} else {
-					await openPlainRemoteFile(context, remoteUrl, detectedExt!, remoteDir, progress);
+					await openPlainRemoteFile(context, remoteUrl, detectedExt!, remoteDir, progress, snapshotLifecycle);
 				}
 			} catch (err: unknown) {
 				// SharePointBrowserFallbackError means we already showed the user
@@ -779,13 +1267,13 @@ async function openPlainRemoteFile(
 	remoteUrl: string,
 	detectedExt: string,
 	remoteDir: vscode.Uri,
-	progress: vscode.Progress<{ message?: string }>
+	progress: vscode.Progress<{ message?: string }>,
+	snapshotLifecycle: RemoteSnapshotLifecycleLike,
 ): Promise<void> {
 	const isSidecar = detectedExt === '.kql.json' || detectedExt === '.csl.json';
 	const localExt = getLocalFileExtension(detectedExt);
 	const localFilename = deriveLocalFilename(remoteUrl, localExt);
-	const subDir = await urlSubDir(remoteDir, remoteUrl);
-	const localUri = vscode.Uri.joinPath(subDir, localFilename);
+	const sourceDir = await urlSubDir(remoteDir, remoteUrl);
 
 	if (isSidecar) {
 		const baseQueryUrl = remoteUrl.slice(0, -('.json'.length));
@@ -793,19 +1281,25 @@ async function openPlainRemoteFile(
 
 		progress.report({ message: 'Downloading query file…' });
 		const queryContent = await fetchRemoteContent(baseQueryUrl);
-		await vscode.workspace.fs.writeFile(localUri, new TextEncoder().encode(queryContent));
 
 		progress.report({ message: 'Downloading sidecar file…' });
 		const sidecarContent = await fetchRemoteContent(sidecarUrl);
-		const sidecarLocalUri = vscode.Uri.joinPath(subDir, localFilename + '.json');
-		await vscode.workspace.fs.writeFile(sidecarLocalUri, new TextEncoder().encode(sidecarContent));
+		await snapshotLifecycle.withSnapshot(sourceDir, [queryContent, sidecarContent], async snapshotDir => {
+			const localUri = remoteSnapshotChildUri(snapshotDir, localFilename);
+			await writeImmutableRemoteFile(localUri, queryContent);
+			const sidecarLocalUri = remoteSnapshotChildUri(snapshotDir, localFilename + '.json');
+			await writeImmutableRemoteFile(sidecarLocalUri, sidecarContent);
+			await openLocalFile(localUri, localExt, progress);
+		});
 	} else {
 		progress.report({ message: 'Downloading file…' });
 		const content = await fetchRemoteContent(remoteUrl);
-		await vscode.workspace.fs.writeFile(localUri, new TextEncoder().encode(content));
+		await snapshotLifecycle.withSnapshot(sourceDir, [content], async snapshotDir => {
+			const localUri = remoteSnapshotChildUri(snapshotDir, localFilename);
+			await writeImmutableRemoteFile(localUri, content);
+			await openLocalFile(localUri, localExt, progress);
+		});
 	}
-
-	await openLocalFile(localUri, localExt, progress);
 }
 
 /**
@@ -817,13 +1311,13 @@ async function openGitHubRemoteFile(
 	remoteUrl: string,
 	detectedExt: string,
 	remoteDir: vscode.Uri,
-	progress: vscode.Progress<{ message?: string }>
+	progress: vscode.Progress<{ message?: string }>,
+	snapshotLifecycle: RemoteSnapshotLifecycleLike,
 ): Promise<void> {
 	const normalizedUrl = normalizeGitHubUrl(remoteUrl);
 	const localExt = getLocalFileExtension(detectedExt);
 	const localFilename = deriveLocalFilename(normalizedUrl, localExt);
-	const subDir = await urlSubDir(remoteDir, remoteUrl);
-	const localUri = vscode.Uri.joinPath(subDir, localFilename);
+	const sourceDir = await urlSubDir(remoteDir, remoteUrl);
 
 	const isSidecar = detectedExt === '.kql.json' || detectedExt === '.csl.json';
 
@@ -834,19 +1328,25 @@ async function openGitHubRemoteFile(
 
 		progress.report({ message: 'Downloading query file from GitHub…' });
 		const queryContent = await fetchGitHubContent(baseQueryUrl);
-		await vscode.workspace.fs.writeFile(localUri, new TextEncoder().encode(queryContent));
 
 		progress.report({ message: 'Downloading sidecar file from GitHub…' });
 		const sidecarContent = await fetchGitHubContent(sidecarUrl);
-		const sidecarLocalUri = vscode.Uri.joinPath(subDir, localFilename + '.json');
-		await vscode.workspace.fs.writeFile(sidecarLocalUri, new TextEncoder().encode(sidecarContent));
+		await snapshotLifecycle.withSnapshot(sourceDir, [queryContent, sidecarContent], async snapshotDir => {
+			const localUri = remoteSnapshotChildUri(snapshotDir, localFilename);
+			await writeImmutableRemoteFile(localUri, queryContent);
+			const sidecarLocalUri = remoteSnapshotChildUri(snapshotDir, localFilename + '.json');
+			await writeImmutableRemoteFile(sidecarLocalUri, sidecarContent);
+			await openLocalFile(localUri, localExt, progress);
+		});
 	} else {
 		progress.report({ message: 'Downloading file from GitHub…' });
 		const content = await fetchGitHubContent(normalizedUrl);
-		await vscode.workspace.fs.writeFile(localUri, new TextEncoder().encode(content));
+		await snapshotLifecycle.withSnapshot(sourceDir, [content], async snapshotDir => {
+			const localUri = remoteSnapshotChildUri(snapshotDir, localFilename);
+			await writeImmutableRemoteFile(localUri, content);
+			await openLocalFile(localUri, localExt, progress);
+		});
 	}
-
-	await openLocalFile(localUri, localExt, progress);
 }
 
 /**
@@ -856,7 +1356,8 @@ async function openSharePointFile(
 	_context: vscode.ExtensionContext,
 	remoteUrl: string,
 	remoteDir: vscode.Uri,
-	progress: vscode.Progress<{ message?: string }>
+	progress: vscode.Progress<{ message?: string }>,
+	snapshotLifecycle: RemoteSnapshotLifecycleLike,
 ): Promise<void> {
 	progress.report({ message: 'Downloading from SharePoint…' });
 	const { filename, content } = await fetchSharePointFile(remoteUrl);
@@ -872,19 +1373,21 @@ async function openSharePointFile(
 
 	const localExt = getLocalFileExtension(ext);
 	// Sanitise the filename for the local filesystem (keep it recognisable)
-	const safeName = filename.replace(/[<>:"/\\|?*\x00-\x1f]/g, '_');
-	const subDir = await urlSubDir(remoteDir, remoteUrl);
-	const localUri = vscode.Uri.joinPath(subDir, safeName);
+	const safeName = sanitizeRemoteFilename(filename);
+	const sourceDir = await urlSubDir(remoteDir, remoteUrl);
+	await snapshotLifecycle.withSnapshot(sourceDir, [content], async snapshotDir => {
+		const localUri = remoteSnapshotChildUri(snapshotDir, safeName);
 
-	progress.report({ message: 'Saving file locally…' });
-	await vscode.workspace.fs.writeFile(localUri, new TextEncoder().encode(content));
+		progress.report({ message: 'Saving file locally…' });
+		await writeImmutableRemoteFile(localUri, content);
 
-	// For sidecar scenarios (.kql.json / .csl.json) — the Graph link points to the
-	// sidecar JSON, and we'd need the companion query file too. In practice SharePoint
-	// sharing links point to a single file, so sidecar isn't applicable here. But we
-	// handle the extension correctly regardless.
+		// For sidecar scenarios (.kql.json / .csl.json) — the Graph link points to the
+		// sidecar JSON, and we'd need the companion query file too. In practice SharePoint
+		// sharing links point to a single file, so sidecar isn't applicable here. But we
+		// handle the extension correctly regardless.
 
-	await openLocalFile(localUri, localExt, progress);
+		await openLocalFile(localUri, localExt, progress);
+	});
 }
 
 /**
@@ -897,6 +1400,7 @@ async function openLocalFile(
 ): Promise<void> {
 	progress.report({ message: 'Opening file…' });
 	const viewType = getEditorViewType(localExt);
+	diagLog(`Opening immutable remote snapshot with ${viewType || 'default editor'}`);
 	if (viewType) {
 		await vscode.commands.executeCommand('vscode.openWith', localUri, viewType, {
 			viewColumn: vscode.ViewColumn.One
@@ -906,6 +1410,7 @@ async function openLocalFile(
 			viewColumn: vscode.ViewColumn.One
 		});
 	}
+	diagLog('Opened immutable remote snapshot.');
 }
 
 /**
@@ -930,7 +1435,7 @@ async function fetchRemoteContent(url: string): Promise<string> {
 	if (!response.ok) {
 		throw new Error(`HTTP ${response.status} ${response.statusText} when fetching ${url}`);
 	}
-	return await response.text();
+	return await readRemoteTextBody(response);
 }
 
 // ─── URL validation helper ──────────────────────────────────────────────────
@@ -982,6 +1487,26 @@ export function registerRemoteFileOpener(
 	context: vscode.ExtensionContext,
 	beforeOpen: () => Promise<void> = async () => undefined,
 ): void {
+	const remoteDir = vscode.Uri.joinPath(context.globalStorageUri, 'remote-files');
+	const snapshotLifecycle = new RemoteSnapshotLifecycle(remoteDir);
+	context.subscriptions.push(snapshotLifecycle);
+	const runLifecycleTask = (label: string, task: () => Promise<void>, attempt = 0): void => {
+		void task().catch(error => {
+			diagLog(`${label} failed: ${error instanceof Error ? error.message : String(error)}`);
+			if (attempt >= 2) return;
+			const timer = setTimeout(() => runLifecycleTask(label, task, attempt + 1), 250 * (attempt + 1));
+			timer.unref?.();
+		});
+	};
+	context.subscriptions.push(vscode.window.tabGroups.onDidChangeTabs(event => {
+		for (const tab of [...event.opened, ...event.changed]) {
+			runLifecycleTask('Remote snapshot tab claim', () => snapshotLifecycle.claimTabInput(tab.input));
+		}
+		for (const tab of event.closed) {
+			runLifecycleTask('Remote snapshot tab release', () => snapshotLifecycle.releaseTabInput(tab.input));
+		}
+	}));
+
 	// URI Handler: vscode://angelos-petropoulos.vscode-kusto-workbench/open?file=<encoded-url>
 	context.subscriptions.push(
 		vscode.window.registerUriHandler({
@@ -1010,7 +1535,7 @@ export function registerRemoteFileOpener(
 					}
 
 					await beforeOpen();
-					await openRemoteFile(context, fileUrl);
+					await openRemoteFile(context, fileUrl, snapshotLifecycle);
 				} catch (err: unknown) {
 					const message = err instanceof Error ? err.message : String(err);
 					void vscode.window.showErrorMessage(`Failed to handle Kusto Workbench URI: ${message}`);
@@ -1034,7 +1559,7 @@ export function registerRemoteFileOpener(
 				return; // user cancelled
 			}
 
-			await openRemoteFile(context, url.trim());
+			await openRemoteFile(context, url.trim(), snapshotLifecycle);
 		})
 	);
 }

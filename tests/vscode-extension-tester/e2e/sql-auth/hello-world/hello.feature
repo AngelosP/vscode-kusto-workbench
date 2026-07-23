@@ -2,9 +2,13 @@ Feature: Say hi to the audience
 
   Background:
     Given the extension is in a clean state
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 900 by 1050
+    And I execute command "workbench.action.closeAuxiliaryBar"
     And I wait 8 seconds
 
   Scenario: Write a friendly SQL query for the viewers
+    When I execute command "kustoWorkbench.test.closeQueryEditorSession"
     When I execute command "kusto.openQueryEditor"
     And I wait 5 seconds
     When I wait for "#queries-container" in the webview for 20 seconds
@@ -18,6 +22,7 @@ Feature: Say hi to the audience
     When I wait for "kw-sql-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
     When I evaluate "window.__e2e.sql.selectDatabase('sampledb')" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
+    When I wait for "kw-sql-section[data-test-sts-ready='true']" in the webview for 120 seconds
 
     # Check that Monaco loaded (the fix)
     When I evaluate "window.__e2e.sql.assertEditorMapped()" in the webview
@@ -29,6 +34,7 @@ Feature: Say hi to the audience
     # Re-check
     When I evaluate "window.__e2e.sql.assertEditorMapped()" in the webview
     And I wait 1 second
+    When I click at 400, 15
     Then I take a screenshot "01-editor-state"
 
     # Set the greeting query
@@ -38,11 +44,13 @@ Feature: Say hi to the audience
     And I wait 1 second
     When I evaluate "window.__e2e.sql.setQueryAt('SELECT ' + String.fromCharCode(39) + 'Hi everyone! Thanks for watching!' + String.fromCharCode(39) + ' AS Message', 1, 1)" in the webview
     And I wait 2 seconds
+    When I click at 400, 15
     Then I take a screenshot "02-after-set"
 
     # Run it
     When I evaluate "window.__e2e.sql.run()" in the webview
     When I wait for "kw-sql-section[data-test-executing='false'][data-test-has-results='true']" in the webview for 30 seconds
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); const dt = el.querySelector('.sql-results-body kw-data-table'); if (!dt) throw new Error('No SQL results data table'); const cols = (dt.columns || []).map(c => c.name || c); if (!cols.includes('Message')) throw new Error('Expected Message column, got: ' + cols.join(', ')); const rows = dt.rows || []; if (rows.length !== 1) throw new Error('Expected exactly one greeting row, got ' + rows.length); const value = rows[0][cols.indexOf('Message')]; if (String(value) !== 'Hi everyone! Thanks for watching!') throw new Error('Unexpected greeting value: ' + value); return 'greeting result verified'; })()" in the webview
+    When I click at 400, 15
     Then I take a screenshot "03-after-run"
     When I execute command "workbench.action.closeAllEditors"

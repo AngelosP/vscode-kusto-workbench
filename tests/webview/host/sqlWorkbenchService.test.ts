@@ -8,6 +8,7 @@ import { SqlWorkbenchService } from '../../../src/host/sql/sqlWorkbenchService';
 import { sqlSchemaPrincipalFingerprintForPrincipal } from '../../../src/host/sqlEditorSchema';
 import { setSqlServerAccountMapEntry } from '../../../src/host/sql/sqlAuthState';
 import { SqlLeaveNoTracePolicyStore } from '../../../src/host/sql/sqlLeaveNoTracePolicyStore';
+import { withSqlStateFileLock } from '../../../src/host/sql/sqlStateTransaction';
 
 function deferred<T>() {
 	let resolve!: (value: T | PromiseLike<T>) => void;
@@ -174,6 +175,47 @@ describe('SqlWorkbenchService global privacy recovery', () => {
 
 			await expect(publication).resolves.toBe('done');
 		} finally {
+			await service.dispose();
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('does not hold outer owner locks while waiting for a busy inner snapshot lock', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-composite-preflight-'));
+		const connection = { id: 'sql-a', name: 'A', dialect: 'mssql', serverUrl: 'a.example', authType: 'sql-login', username: 'user' };
+		const values = new Map<string, unknown>([['sql.connections', [connection]]]);
+		const context = {
+			globalStorageUri: vscode.Uri.file(directory), logUri: vscode.Uri.file(path.join(directory, 'logs')),
+			globalState: { get: vi.fn((key: string) => values.get(key)), update: vi.fn(async (key: string, value: unknown) => { values.set(key, value); }) },
+			secrets: { get: vi.fn(async () => 'password'), store: vi.fn(async () => undefined), delete: vi.fn(async () => undefined) },
+		} as any;
+		const service = new SqlWorkbenchService(context, { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any);
+		const releaseAccountLock = deferred<void>();
+		const accountLockEntered = deferred<void>();
+		let accountLock: Promise<void> | undefined;
+		try {
+			await service.ready();
+			accountLock = withSqlStateFileLock(
+				path.join(directory, 'sql-server-account-map.v1.json.write'),
+				async () => { accountLockEntered.resolve(); await releaseAccountLock.promise; },
+			);
+			await accountLockEntered.promise;
+			const snapshot = service.dispatchSqlOwnerSnapshot(value => value);
+
+			await expect(service.leaveNoTracePolicy.setConnection('sql-a', true)).resolves.toBeUndefined();
+			releaseAccountLock.resolve();
+			await accountLock;
+			await expect(snapshot).resolves.toEqual(expect.objectContaining({
+				connections: [expect.objectContaining({ id: 'sql-a' })],
+			}));
+
+			const callbackError = Object.assign(new Error('callback failure'), { code: 'ELOCKED' });
+			const callback = vi.fn(async () => { throw callbackError; });
+			await expect(service.runWithSqlOwnerSnapshotLock(callback)).rejects.toBe(callbackError);
+			expect(callback).toHaveBeenCalledOnce();
+		} finally {
+			releaseAccountLock.resolve();
+			await accountLock?.catch(() => undefined);
 			await service.dispose();
 			fs.rmSync(directory, { recursive: true, force: true });
 		}

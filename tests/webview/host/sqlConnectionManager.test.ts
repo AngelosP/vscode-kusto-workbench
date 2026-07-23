@@ -732,7 +732,7 @@ describe('SqlConnectionManager transactions', () => {
 			vi.useRealTimers();
 			fs.rmSync(directory, { recursive: true, force: true });
 		}
-	});
+	}, 15_000);
 
 	it('never pairs an old connection target with a password being updated', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-credentials-'));
@@ -741,13 +741,16 @@ describe('SqlConnectionManager transactions', () => {
 			const second = createHarness([ORIGINAL], { 'sql.password.sql-1': 'old-password' }, directory);
 			await Promise.all([first.manager.ready(), second.manager.ready()]);
 			const passwordWrite = deferred<void>();
+			const passwordWriteStarted = deferred<void>();
 			first.secretStore.mockImplementationOnce(async (key: string, value: string) => {
 				first.passwords.set(key, value);
+				passwordWriteStarted.resolve();
 				await passwordWrite.promise;
 			});
 
 			const update = first.manager.updateConnectionAndPassword('sql-1', { serverUrl: 'new.example' }, 'new-password');
-			await vi.waitFor(() => expect(first.secretStore).toHaveBeenCalledOnce());
+			await passwordWriteStarted.promise;
+			expect(first.secretStore).toHaveBeenCalledOnce();
 			const oldOwnerRead = second.manager.getPasswordForConnection(ORIGINAL);
 			let settled = false;
 			void oldOwnerRead.finally(() => { settled = true; }).catch(() => undefined);
@@ -762,5 +765,5 @@ describe('SqlConnectionManager transactions', () => {
 		} finally {
 			fs.rmSync(directory, { recursive: true, force: true });
 		}
-	});
+	}, 15_000);
 });

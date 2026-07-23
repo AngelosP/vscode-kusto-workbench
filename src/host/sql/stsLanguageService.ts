@@ -457,9 +457,9 @@ export class StsLanguageService {
 		boxId: string,
 		text: string,
 		connection: SqlConnection,
-		expectedOwner?: { connectionId: string; database: string; targetSignature: string; principalFingerprint: string; revocationGeneration: number },
-	): Promise<void> {
-		if (this._disposed) return;
+		expectedOwner?: StsExpectedOwner,
+	): Promise<string> {
+		if (this._disposed) throw new Error('STS language service disposed');
 		await this._leaveNoTracePolicy.assertAllowed(connection.id);
 		await this._assertExpectedOwner(connection, expectedOwner?.database ?? connection.database ?? '', expectedOwner);
 		const principalFingerprint = await this._principalFingerprint(connection);
@@ -475,10 +475,16 @@ export class StsLanguageService {
 		this._output.info(`[sts-diag] openDocument boxId=${boxId} uri=${uri} textLen=${text.length}`);
 		this._closedUris.delete(uri);
 		this._docVersions.set(boxId, 1);
-		await this._sendGuardedNotification(connection, 'textDocument/didOpen', {
-			textDocument: { uri, languageId: 'sql', version: 1, text },
-		});
-		if (this._targetGenerationByBoxId.get(boxId) !== targetGeneration) throw new Error('STS document target changed while opening.');
+		try {
+			await this._sendGuardedNotification(connection, 'textDocument/didOpen', {
+				textDocument: { uri, languageId: 'sql', version: 1, text },
+			});
+			if (this._targetGenerationByBoxId.get(boxId) !== targetGeneration) throw new Error('STS document target changed while opening.');
+			return uri;
+		} catch (error) {
+			this._closeDocumentUri(boxId, uri, error instanceof Error ? error : new Error(String(error)));
+			throw error;
+		}
 	}
 
 	async changeDocument(boxId: string, text: string, sectionInstanceId?: string): Promise<void> {
@@ -512,6 +518,13 @@ export class StsLanguageService {
 	closeDocumentForOwner(boxId: string, expectedOwner: StsExpectedOwner): boolean {
 		const target = this._targetByBoxId.get(boxId);
 		if (!this._sameExpectedOwner(target?.expectedOwner, expectedOwner)) return false;
+		this.closeDocument(boxId);
+		return true;
+	}
+
+	closeDocumentUriForOwner(boxId: string, uri: string, expectedOwner: StsExpectedOwner): boolean {
+		if (this._documentUriByBoxId.get(boxId) !== uri
+			|| !this._sameExpectedOwner(this._expectedOwnerByDocumentUri.get(uri), expectedOwner)) return false;
 		this.closeDocument(boxId);
 		return true;
 	}

@@ -1261,13 +1261,27 @@ export function schedulePersist(reason?: any, immediate?: any) {
 
 export function flushCompatibilityPersist(requestId?: string, reason = 'flush'): void {
 	try {
-		if (!__kustoPersistenceEnabled || pState.restoreInProgress
-			|| (pState.documentKind !== 'kql' && pState.documentKind !== 'sql')) return;
+		if (!__kustoPersistenceEnabled || pState.restoreInProgress) {
+			if (requestId) {
+				postMessageToHost({
+					type: 'persistDocument', state: { sections: [] }, flushRequestId: requestId,
+					flushUnavailableReason: pState.restoreInProgress ? 'restore-in-progress' : 'persistence-disabled',
+				});
+			}
+			return;
+		}
 		if (__kustoPersistTimer) {
 			clearTimeout(__kustoPersistTimer);
 			__kustoPersistTimer = null;
 		}
 		const state = getKqlxState();
+		if (pState.documentKind !== 'kql' && pState.documentKind !== 'sql') {
+			postMessageToHost({
+				type: 'persistDocument', state,
+				...(requestId ? { flushRequestId: requestId } : {}),
+			});
+			return;
+		}
 		if (__kustoPersistenceSuppressedForTest) {
 			const snapshotId = `compat-snapshot-${Date.now()}-${++__kustoPersistSnapshotSequence}`;
 			const sig = __kustoGetPersistSignature(state);
@@ -2045,6 +2059,37 @@ function __kustoApplyPendingAdds() {
 	return true;
 }
 
+function __kustoSetMalformedDocumentLock(error?: unknown): void {
+	__kustoPersistenceEnabled = false;
+	if (__kustoPersistTimer) {
+		clearTimeout(__kustoPersistTimer);
+		__kustoPersistTimer = null;
+	}
+	const container = document.getElementById('queries-container');
+	if (container) {
+		(container as HTMLElement & { inert?: boolean }).inert = true;
+		container.setAttribute('aria-disabled', 'true');
+	}
+	let banner = document.getElementById('kusto-malformed-document-banner');
+	if (!banner) {
+		banner = document.createElement('div');
+		banner.id = 'kusto-malformed-document-banner';
+		banner.setAttribute('role', 'alert');
+		banner.style.cssText = 'position:sticky;top:0;z-index:1000;padding:10px 14px;border-bottom:1px solid var(--vscode-inputValidation-errorBorder);background:var(--vscode-inputValidation-errorBackground);color:var(--vscode-inputValidation-errorForeground);';
+		document.body.prepend(banner);
+	}
+	banner.textContent = `This file is malformed. Editing is disabled to prevent data loss. Repair it in the Text Editor, then reload.${error ? ` ${String(error)}` : ''}`;
+}
+
+function __kustoClearMalformedDocumentLock(): void {
+	document.getElementById('kusto-malformed-document-banner')?.remove();
+	const container = document.getElementById('queries-container');
+	if (container) {
+		(container as HTMLElement & { inert?: boolean }).inert = false;
+		container.removeAttribute('aria-disabled');
+	}
+}
+
 export function handleDocumentDataMessage(message: any) {
 	__kustoDocumentDataApplyCount++;
 	perfMark('webview.persistence.documentData.handle.start');
@@ -2068,6 +2113,18 @@ export function handleDocumentDataMessage(message: any) {
 			return;
 		}
 	} catch (e) { console.error('[kusto]', e); }
+	const ok = !!(message && message.ok);
+	if (!ok) {
+		__kustoCancelHtmlPowerBiCompatibilityCheck();
+		__kustoSetMalformedDocumentLock(message?.error);
+		__kustoHasAppliedDocument = true;
+		if (typeof message?.documentUri === 'string') __kustoLastAppliedDocumentUri = String(message.documentUri);
+		pState.documentDataApplyCount = __kustoDocumentDataApplyCount;
+		perfMark('webview.persistence.documentData.handle.end');
+		traceFileOpen('persistence.documentData.handle.end', { malformed: true });
+		return;
+	}
+	__kustoClearMalformedDocumentLock();
 	const incomingEditRevision = Number(message?.editRevision);
 	if (Number.isSafeInteger(incomingEditRevision) && incomingEditRevision >= 0) {
 		pState.documentEditRevision = incomingEditRevision;
@@ -2138,14 +2195,6 @@ export function handleDocumentDataMessage(message: any) {
 		} catch (e) { console.error('[kusto]', e); }
 		} catch (e) { console.error('[kusto]', e); }
 
-		const ok = !!(message && message.ok);
-		if (!ok && message && message.error) {
-			try {
-				// Non-fatal: start with an empty doc state.
-				console.warn('Failed to parse .kqlx:', message.error);
-			} catch (e) { console.error('[kusto]', e); }
-		}
-
 		perfMark('webview.persistence.restore.start');
 		traceFileOpen('persistence.restore.start', {
 			sections: Array.isArray(message?.state?.sections) ? message.state.sections.length : 0,
@@ -2184,6 +2233,7 @@ export function handleDocumentDataMessage(message: any) {
 		});
 	} finally {
 		__kustoSetDocumentLoading(false);
+		pState.documentDataApplyCount = __kustoDocumentDataApplyCount;
 		perfMark('webview.persistence.documentData.handle.end');
 		traceFileOpen('persistence.documentData.handle.end');
 	}

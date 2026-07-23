@@ -2,6 +2,9 @@ Feature: SQL connection flow — server select, database loading, refresh
 
   Background:
     Given the extension is in a clean state
+    When I move the Dev Host to 0, 0
+    And I resize the Dev Host to 900 by 1050
+    And I execute command "workbench.action.closeAuxiliaryBar"
     And I capture the output channel "Kusto Workbench"
     And I wait 2 seconds
 

@@ -9,6 +9,7 @@ import { ConnectionManagerViewerV2 } from './connectionManagerViewer';
 import { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { KqlCompatEditorProvider } from './kqlCompatEditorProvider';
 import { KqlxEditorProvider } from './kqlxEditorProvider';
+import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
 import { SqlCompatEditorProvider } from './sqlCompatEditorProvider';
 import { KqlDiagnosticSeverity } from './kqlLanguageService/protocol';
@@ -1609,9 +1610,7 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 				await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(''));
 			}
 
-			await vscode.commands.executeCommand('vscode.openWith', sessionUri, KqlxEditorProvider.viewType, {
-				viewColumn: vscode.ViewColumn.One
-			});
+			await revealOrOpenQueryEditorSession(sessionUri);
 		}))
 	);
 
@@ -1803,12 +1802,72 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 
 	if (context.extensionMode !== vscode.ExtensionMode.Production) {
 		context.subscriptions.push(
-			vscode.commands.registerCommand('kustoWorkbench.test.resetFirstLaunchSetup', () => firstLaunchCoordinator.resetForDevelopment())
+			vscode.commands.registerCommand('kustoWorkbench.test.resetFirstLaunchSetup', () => firstLaunchCoordinator.resetForDevelopment()),
+			vscode.commands.registerCommand('kustoWorkbench.test.closeQueryEditorSession', async () => {
+				const sessionUri = vscode.Uri.joinPath(context.globalStorageUri, 'session.kqlx');
+				await closeQueryEditorSessionTabs(sessionUri);
+				await vscode.workspace.fs.writeFile(sessionUri, new TextEncoder().encode(''));
+			}),
 		);
 	}
 
 	// Fire-and-forget: update previously exported skill files if the template changed.
 	void checkAndUpdateSkillFiles(context);
+}
+
+function tabInputUri(input: unknown): vscode.Uri | undefined {
+	try {
+		if (input instanceof vscode.TabInputText || input instanceof vscode.TabInputCustom) return input.uri;
+	} catch {
+		// Fall through for older VS Code versions and test doubles.
+	}
+	const uri = (input as { uri?: unknown } | undefined)?.uri;
+	return uri && typeof (uri as vscode.Uri).toString === 'function' ? uri as vscode.Uri : undefined;
+}
+
+function sameUri(left: vscode.Uri | undefined, right: vscode.Uri): boolean {
+	if (!left) return false;
+	return normalizeWorkbenchUriKey(left) === normalizeWorkbenchUriKey(right);
+}
+
+export async function revealOrOpenQueryEditorSession(sessionUri: vscode.Uri): Promise<void> {
+	const hasSessionCustomTab = (vscode.window.tabGroups.all || []).some(group =>
+		(group.tabs || []).some(tab => {
+			const input = tab.input;
+			const viewType = input instanceof vscode.TabInputCustom
+				? input.viewType
+				: (input as { viewType?: unknown } | undefined)?.viewType;
+			return viewType === KqlxEditorProvider.viewType && sameUri(tabInputUri(input), sessionUri);
+		}));
+	if (hasSessionCustomTab) {
+		if (await KqlxEditorProvider.revealOpenEditorWhenReady(sessionUri, vscode.ViewColumn.One, 30_000)) return;
+		throw new Error('The existing Kusto Workbench session is still opening.');
+	}
+	if (await KqlxEditorProvider.revealOpenEditorWhenReady(sessionUri, vscode.ViewColumn.One)) return;
+
+	await vscode.commands.executeCommand('vscode.openWith', sessionUri, KqlxEditorProvider.viewType, {
+		viewColumn: vscode.ViewColumn.One,
+		preview: false,
+		preserveFocus: false,
+	});
+}
+
+export async function closeQueryEditorSessionTabs(sessionUri: vscode.Uri): Promise<void> {
+	const existingTabs = (vscode.window.tabGroups.all || []).flatMap(group =>
+		(group.tabs || []).filter(tab => {
+			const input = tab.input;
+			const viewType = input instanceof vscode.TabInputCustom
+				? input.viewType
+				: (input as { viewType?: unknown } | undefined)?.viewType;
+			return viewType === KqlxEditorProvider.viewType && sameUri(tabInputUri(input), sessionUri);
+		}));
+	if (existingTabs.length > 0
+		&& !await vscode.window.tabGroups.close([...new Set(existingTabs)], true)) {
+		throw new Error('The existing Kusto Workbench session could not be closed.');
+	}
+	if (!await KqlxEditorProvider.waitForOpenEditorsClosed(sessionUri)) {
+		throw new Error('The existing Kusto Workbench session did not finish closing.');
+	}
 }
 
 // This method is called when your extension is deactivated

@@ -199,6 +199,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'sqlSectionOpen'; boxId: string; sectionInstanceId: string }
 	| { type: 'getSqlDatabases'; sqlConnectionId: string; boxId: string; sectionInstanceId: string; targetGeneration: number }
 	| { type: 'refreshSqlDatabases'; sqlConnectionId: string; boxId: string; sectionInstanceId: string; targetGeneration: number }
+	| { type: 'retireSqlTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number }
 	| { type: 'saveSqlLastSelection'; sqlConnectionId: string; database?: string }
 	| { type: 'promptAddSqlConnection'; boxId?: string }
 	| { type: 'addSqlConnection'; name: string; serverUrl: string; dialect: string; authType: string; database?: string; port?: number; username?: string; password?: string; boxId?: string }
@@ -269,7 +270,7 @@ export type OutgoingWebviewMessage =
 
 	// Provider messages (kqlx, kqlCompat, mdCompat editors)
 	| { type: 'requestDocument' }
-	| { type: 'persistDocument'; state: unknown; flush?: boolean; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; testOnlyNoop?: boolean }
+	| { type: 'persistDocument'; state: unknown; flush?: boolean; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }
 	| { type: 'documentReloadResult'; requestId: string; applied: boolean; editRevision: number }
 	| { type: 'requestUpgradeToKqlx'; addKind?: string; state?: unknown; editRevision?: number }
 	| { type: 'requestUpgradeToMdx'; addKind?: string; state?: unknown; editRevision?: number }

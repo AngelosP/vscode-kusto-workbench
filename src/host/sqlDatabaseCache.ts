@@ -231,7 +231,10 @@ async function readCurrentSnapshot(context: SqlDatabaseCacheContext, storageKey:
 	const snapshotPath = getSnapshotPath(context, storageKey);
 	if (snapshotPath) {
 		return withSqlStateFileLock(`${snapshotPath}.write`, async () =>
-			await readDiskSnapshotUnderLock(snapshotPath) ?? emptySnapshot(), { staleMs: CACHE_LOCK_STALE_MS });
+			await readDiskSnapshotUnderLock(snapshotPath) ?? emptySnapshot(), {
+				staleMs: CACHE_LOCK_STALE_MS,
+				retryUntilStale: true,
+			});
 	}
 	return readMemorySnapshot(context, storageKey);
 }

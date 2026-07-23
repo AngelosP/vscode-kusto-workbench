@@ -143,6 +143,11 @@ export enum ViewColumn {
 	One = 1,
 }
 
+export enum EndOfLine {
+	LF = 1,
+	CRLF = 2,
+}
+
 export const window = {
 	activeTextEditor: undefined as any,
 	visibleTextEditors: [] as any[],

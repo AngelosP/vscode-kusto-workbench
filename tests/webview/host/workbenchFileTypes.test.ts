@@ -48,6 +48,14 @@ describe('workbenchFileTypes', () => {
 		expect(key).toBe(`file:${expectedPath}`);
 	});
 
+	it('keeps case-sensitive files distinct without changing Windows identity', () => {
+		const upper = vscode.Uri.file('/work/Report.kqlx');
+		const lower = vscode.Uri.file('/work/report.kqlx');
+
+		expect(normalizeWorkbenchUriKey(upper, 'linux')).not.toBe(normalizeWorkbenchUriKey(lower, 'linux'));
+		expect(normalizeWorkbenchUriKey(upper, 'win32')).toBe(normalizeWorkbenchUriKey(lower, 'win32'));
+	});
+
 	it('preserves path casing for non-file URI keys', () => {
 		const upper = normalizeWorkbenchUriKey(vscode.Uri.parse('vscode-remote://ssh-remote+host/work/Query.kqlx'));
 		const lower = normalizeWorkbenchUriKey(vscode.Uri.parse('vscode-remote://ssh-remote+host/work/query.kqlx'));

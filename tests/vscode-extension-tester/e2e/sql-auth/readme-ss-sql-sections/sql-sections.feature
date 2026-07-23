@@ -28,6 +28,7 @@ Feature: Capture sql-sections screenshot for README
     When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (!el) return 'no section'; const dbs = el._databases || []; const t = dbs.find(d => d.toLowerCase().includes('sample')) || dbs[0]; if (!t) return 'no dbs'; if (el._database !== t) { el.setDatabase(t); el.dispatchEvent(new CustomEvent('sql-database-changed', { detail: { boxId: el.boxId || el.id, database: t }, bubbles: true, composed: true })); } return 'db=' + el._database; })()" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true']" in the webview for 10 seconds
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
+    When I wait for "kw-sql-section[data-test-sts-ready='true']" in the webview for 120 seconds
 
     # Focus the SQL editor and set a nice multi-line query
     When I scroll "kw-sql-section .query-editor" into view
@@ -39,7 +40,7 @@ Feature: Capture sql-sections screenshot for README
     And I wait 2 seconds
 
     # Execute the query
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); el.querySelector('.sql-run-btn').click(); return 'clicked run'; })()" in the webview
+    When I evaluate "window.__e2e.sql.run()" in the webview
     When I wait for "kw-sql-section[data-test-executing='false']" in the webview for 30 seconds
     And I wait 2 seconds
 

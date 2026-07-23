@@ -201,4 +201,37 @@ describe('SqlSectionSessionController', () => {
 			sectionInstanceId: controller.instanceId, targetGeneration: 4, forceRefresh: true,
 		});
 	});
+
+	it('retires the host target when the selected database is cleared', () => {
+		const { controller } = createController();
+		const effects = createLifecycleEffects();
+		controller.configureLifecycleEffects(effects);
+		controller.adoptHostGeneration(4);
+
+		controller.handleDatabaseChanged({ database: '' });
+
+		expect(controller.targetGeneration).toBe(5);
+		expect(effects.postMessage).toHaveBeenNthCalledWith(1, {
+			type: 'saveSqlLastSelection', sqlConnectionId: 'sql-a', database: '',
+		});
+		expect(effects.postMessage).toHaveBeenNthCalledWith(2, {
+			type: 'retireSqlTarget', boxId: 'sql-1', sectionInstanceId: controller.instanceId,
+			targetGeneration: 5,
+		});
+	});
+
+	it('retires the host target when the connection is cleared', () => {
+		const { controller } = createController();
+		const effects = createLifecycleEffects();
+		controller.configureLifecycleEffects(effects);
+		controller.adoptHostGeneration(6);
+
+		controller.handleConnectionChanged({ connectionId: '' });
+
+		expect(controller.targetGeneration).toBe(7);
+		expect(effects.postMessage).toHaveBeenNthCalledWith(2, {
+			type: 'retireSqlTarget', boxId: 'sql-1', sectionInstanceId: controller.instanceId,
+			targetGeneration: 7,
+		});
+	});
 });

@@ -64,15 +64,15 @@ function trimJsonSuffix(value: string): string {
 	return value.slice(0, -'.json'.length);
 }
 
-function normalizePathForKey(value: string): string {
+function normalizePathForKey(value: string, platform: NodeJS.Platform = process.platform): string {
 	const normalized = value.replace(/\\/g, '/');
-	return process.platform === 'win32' ? normalized.toLowerCase() : normalized;
+	return platform === 'win32' ? normalized.toLowerCase() : normalized;
 }
 
-export function normalizeWorkbenchUriKey(uri: vscode.Uri): string {
+export function normalizeWorkbenchUriKey(uri: vscode.Uri, platform: NodeJS.Platform = process.platform): string {
 	try {
 		if (uri.scheme === 'file') {
-			return `file:${normalizePathForKey(uri.fsPath || uri.path || uri.toString())}`;
+			return `file:${normalizePathForKey(uri.fsPath || uri.path || uri.toString(), platform)}`;
 		}
 	} catch {
 		// ignore

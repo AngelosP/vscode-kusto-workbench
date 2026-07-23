@@ -6,7 +6,7 @@ export type CompatUpgradeLease = Readonly<{
 }>;
 
 type PendingFinalPersist = {
-	resolve: () => void;
+	resolve: (value: unknown) => void;
 	reject: (error: Error) => void;
 	timer: ReturnType<typeof setTimeout>;
 };
@@ -149,21 +149,25 @@ export class CompatSidecarSession {
 		});
 	}
 
-	requestFinalPersist(
+	requestFinalPersist<T = void>(
 		postMessage: (message: unknown) => boolean | PromiseLike<boolean>,
 		reason: string,
 		timeoutMs = 2_000,
-	): Promise<void> {
+	): Promise<T> {
 		const request = this.finalPersistTail.catch(() => undefined).then(async () => {
 			const requestId = `final-persist-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-			let resolveResponse!: () => void;
+			let resolveResponse!: (value: T) => void;
 			let rejectResponse!: (error: Error) => void;
-			const response = new Promise<void>((resolve, reject) => { resolveResponse = resolve; rejectResponse = reject; });
+			const response = new Promise<T>((resolve, reject) => { resolveResponse = resolve; rejectResponse = reject; });
 			const timer = setTimeout(() => this.completeFinalPersist(
 				requestId,
 				new Error(`Timed out waiting for the final ${this.label} metadata snapshot.`),
 			), timeoutMs);
-			this.pendingFinalPersists.set(requestId, { resolve: resolveResponse, reject: rejectResponse, timer });
+			this.pendingFinalPersists.set(requestId, {
+				resolve: value => resolveResponse(value as T),
+				reject: rejectResponse,
+				timer,
+			});
 			try {
 				void Promise.resolve(postMessage({ type: 'requestFinalPersist', requestId, reason })).then(
 					delivered => {
@@ -174,19 +178,19 @@ export class CompatSidecarSession {
 			} catch (error) {
 				this.completeFinalPersist(requestId, new Error(`The final ${this.label} metadata snapshot request failed: ${this.errorMessage(error)}`));
 			}
-			await response;
+			return await response;
 		});
 		this.finalPersistTail = request.then(() => undefined, () => undefined);
-		return request;
+		return request as Promise<T>;
 	}
 
-	completeFinalPersist(requestId: string, error?: Error): boolean {
+	completeFinalPersist<T = void>(requestId: string, error?: Error, value?: T): boolean {
 		const pending = this.pendingFinalPersists.get(requestId);
 		if (!pending) return false;
 		clearTimeout(pending.timer);
 		this.pendingFinalPersists.delete(requestId);
 		if (error) pending.reject(error);
-		else pending.resolve();
+		else pending.resolve(value);
 		return true;
 	}
 

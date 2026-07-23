@@ -89,6 +89,31 @@ describe('SQL state transactions', () => {
 		expect(entered).toBe(true);
 	});
 
+	it('waits beyond the legacy retry window for an overlapping transaction to finish', async () => {
+		const lockTarget = path.join(createDirectory(), 'state.json.write');
+		let signalFirstEntered!: () => void;
+		const firstEntered = new Promise<void>(resolve => { signalFirstEntered = resolve; });
+		let releaseFirst!: () => void;
+		const firstReleased = new Promise<void>(resolve => { releaseFirst = resolve; });
+		const first = withSqlStateFileLock(lockTarget, async () => {
+			signalFirstEntered();
+			await firstReleased;
+		});
+		await firstEntered;
+
+		const second = withSqlStateFileLock(lockTarget, async () => 'acquired', {
+			staleMs: 2_000,
+			retryDelayMs: 2,
+			retryUntilStale: true,
+		});
+		const secondOutcome = second.then(value => value, error => error);
+		await new Promise<void>(resolve => setTimeout(resolve, 350));
+		releaseFirst();
+
+		await expect(secondOutcome).resolves.toBe('acquired');
+		await first;
+	});
+
 	it('writes and verifies a hash-committed redundant snapshot', async () => {
 		const directory = createDirectory();
 		const primaryPath = path.join(directory, 'state.json');
