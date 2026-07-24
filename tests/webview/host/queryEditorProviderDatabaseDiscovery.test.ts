@@ -52,6 +52,7 @@ function createSqlDiscoveryHarness(options: { accountId?: string; authType?: 'aa
 		assertSqlConnectionAllowed: vi.fn(async () => undefined),
 		dispatchSqlConnectionAllowed: vi.fn(async (_connectionId: string, dispatch: () => unknown) => await dispatch()),
 		dispatchSqlOwnerAllowed: vi.fn(async (_connection: unknown, _principal: string, _revocation: number, dispatch: () => unknown) => await dispatch()),
+		dispatchSqlOwnerProtection: vi.fn(async (_connection: unknown, _principal: string, _revocation: number, _protected: boolean, dispatch: () => unknown) => await dispatch()),
 		dispatchSqlOwnerSnapshot: vi.fn(async (dispatch: (snapshot: any) => unknown) => await dispatch({
 			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
 			connections: connection ? [connection] : [], connectionVersion: 1,
@@ -66,7 +67,7 @@ function createSqlDiscoveryHarness(options: { accountId?: string; authType?: 'aa
 		getStateVersions: vi.fn(() => ({ policy: 1, principals: 1, connections: 1 })),
 	};
 	provider.connection.getSqlFavorites = vi.fn(() => []);
-	provider.output = { error: vi.fn() };
+	provider.output = { error: vi.fn(), warn: vi.fn() };
 	provider.postMessage = vi.fn();
 	provider._sqlDatabaseRequestIdByBoxId = new Map();
 	provider._closedStsBoxIds = new Set();
@@ -129,6 +130,23 @@ describe('QueryEditorProvider database discovery routing', () => {
 });
 
 describe('QueryEditorProvider SQL database discovery ownership', () => {
+	it('discovers protected databases ephemerally without writing the durable cache', async () => {
+		const harness = createSqlDiscoveryHarness();
+		harness.provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => true);
+		harness.getDatabases.mockResolvedValue(['PrivateB', 'PrivateA']);
+
+		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
+
+		expect(harness.provider.sqlWorkbench.dispatchSqlOwnerProtection).toHaveBeenCalled();
+		expect(harness.provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'sqlDatabasesData', databases: ['PrivateA', 'PrivateB'],
+		}));
+		expect(harness.cachedDatabases).toEqual({});
+		expect(harness.globalState.update).not.toHaveBeenCalledWith(
+			'sql.connectionManager.cachedDatabases', expect.anything(),
+		);
+	});
+
 	it('echoes the current request and target generation on loading and data', async () => {
 		const harness = createSqlDiscoveryHarness();
 		harness.getDatabases.mockResolvedValue(['DbB', 'DbA']);

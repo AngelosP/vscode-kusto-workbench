@@ -7,6 +7,7 @@ export interface SqlSectionSessionTarget {
 	readonly ownerToken: string;
 	readonly stsReady: boolean;
 	setStsReady(ready: boolean, ownerToken?: string, targetGeneration?: number): boolean;
+	setExecutionOwner(ownerToken: string, targetGeneration?: number): boolean;
 	requestSts<T>(
 		method: string,
 		line: number,
@@ -39,6 +40,7 @@ interface SqlSectionElement {
 	setSchemaInfo?(info: unknown): void;
 	notifyStsConnectionError?(error: string): void;
 	setStsReady?(ready: boolean, ownerToken?: string, targetGeneration?: number): void;
+	setExecutionOwner?(ownerToken: string, targetGeneration?: number): void;
 }
 
 export interface SqlSectionMessageRouterEffects {
@@ -270,6 +272,14 @@ export function routeSqlSectionMessage(
 				const generation = typeof message.targetGeneration === 'number' ? message.targetGeneration : undefined;
 				section.setStsReady?.(state === 'ready', String(message.ownerToken || ''), generation);
 			}
+			return 'handled';
+		}
+		case 'sqlExecutionOwnerState': {
+			if (!boxId) return 'rejected';
+			const { section, session } = getMessageTarget(boxId, effects);
+			if (!section || !messageMatchesInstance(session, message)
+				|| session.targetGeneration !== Number(message.targetGeneration ?? 0)) return 'rejected';
+			section.setExecutionOwner?.(String(message.ownerToken || ''), Number(message.targetGeneration));
 			return 'handled';
 		}
 		default:

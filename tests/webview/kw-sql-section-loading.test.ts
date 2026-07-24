@@ -408,7 +408,12 @@ describe('kw-sql-section loading states', () => {
 
 		__kustoOnQueryResult('sql_test1', { columns: ['Value'], rows: [['late-secret']], metadata: {} });
 		expect(pState.queryResultJsonByBoxId.sql_test1).toBeUndefined();
-		expect(el.dataset.testHasError).toBe('true');
+		el.setExecutionOwner('protected-owner');
+		expect((document.getElementById('sql_test1_sql_run_btn') as HTMLButtonElement).disabled).toBe(false);
+		expect(el.displayResult({ columns: [{ name: 'Value', type: 'string' }], rows: [['visible-secret']], metadata: {} })).toBe(true);
+		expect((el as any)._hasResults).toBe(true);
+		expect(el.serialize()).not.toHaveProperty('resultJson');
+		expect(el.dataset.testHasError).toBe('false');
 
 		el.setLeaveNoTraceConnectionIds([]);
 		expect(el.dataset.testHasError).toBe('false');

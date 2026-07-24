@@ -37,6 +37,29 @@ function createOutput() {
 }
 
 describe('SqlLeaveNoTracePolicyStore', () => {
+	it('admits only the exact protected mode and revocation generation', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-lnt-protected-dispatch-'));
+		tempDirectories.push(directory);
+		const store = new SqlLeaveNoTracePolicyStore(createContext(directory), createOutput());
+		try {
+			await store.refresh();
+			await store.setConnection('sql-sensitive', true);
+			const generation = store.getRevocationGeneration('sql-sensitive');
+
+			await expect(store.dispatchProtectionMode(
+				'sql-sensitive', true, generation, async () => 'protected-result',
+			)).resolves.toBe('protected-result');
+
+			await store.setConnection('sql-sensitive', false);
+			await expect(store.assertProtectionMode('sql-sensitive', true, generation))
+				.rejects.toThrow('policy changed');
+			await expect(store.assertProtectionMode('sql-sensitive', false, generation))
+				.resolves.toBeUndefined();
+		} finally {
+			store.dispose();
+		}
+	});
+
 	it('rolls back a valid LNT primary left ahead of its commit pointer', async () => {
 		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sql-lnt-crash-window-'));
 		tempDirectories.push(directory);

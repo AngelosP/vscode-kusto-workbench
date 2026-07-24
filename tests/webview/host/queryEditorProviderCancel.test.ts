@@ -107,16 +107,20 @@ function createSqlProviderHarness() {
 	provider.sqlWorkbench = {
 		connectionManager,
 		client,
-		leaveNoTracePolicy: { getRevocationGeneration: vi.fn(() => 0) },
+		leaveNoTracePolicy: {
+			getRevocationGeneration: vi.fn(() => 0),
+			assertProtectionMode: vi.fn(async () => undefined),
+		},
 		ready: vi.fn(async () => undefined),
 		serverAccountMap: {
 			refresh: vi.fn(async () => undefined),
 			getAccountsByServer: vi.fn(() => provider.context.globalState.get('sql.auth.serverAccountMap') ?? {}),
 		},
-		isLeaveNoTraceConnection: vi.fn((id: string) => id === 'sql-1'),
+		isLeaveNoTraceConnection: vi.fn(() => false),
 		assertSqlConnectionAllowed: vi.fn(async () => undefined),
 		dispatchSqlConnectionAllowed: vi.fn(async (_connectionId: string, dispatch: () => unknown) => await dispatch()),
 		dispatchSqlOwnerAllowed: vi.fn(async (_connection: unknown, _principal: string, _revocation: number, dispatch: () => unknown) => await dispatch()),
+		dispatchSqlOwnerProtection: vi.fn(async (_connection: unknown, _principal: string, _revocation: number, _protected: boolean, dispatch: () => unknown) => await dispatch()),
 		dispatchSqlOwnerSnapshot: vi.fn(async (dispatch: (snapshot: any) => unknown) => await dispatch({
 			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
 			connections: connectionManager.getConnections(), connectionVersion: 1,
@@ -850,6 +854,48 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'queryError', error: 'Leave No Trace blocked', boxId: 'sql_1', ownerToken: 'owner-token' }));
 	});
 
+	it('admits a protected SQL result through the execution-only owner mode', async () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => true);
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({
+			promise: Promise.resolve({ columns: [{ name: 'Value', type: 'int' }], rows: [[{ full: '42', display: '42' }]], metadata: {} }),
+			cancel: vi.fn(),
+		}));
+
+		await provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'SELECT 42 AS Value', queryMode: 'plain', ownerToken: 'owner-token', executionId: 'protected-run',
+		});
+
+		expect(provider.sqlWorkbench.dispatchSqlOwnerProtection).toHaveBeenCalled();
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryResult', boxId: 'sql_1', ownerToken: 'owner-token', executionId: 'protected-run',
+		}));
+	});
+
+	it('keeps protected SQL error details out of the persistent output log', async () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => true);
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({
+			promise: Promise.reject(new Error('SECRET_BACKEND_DETAIL')),
+			cancel: vi.fn(),
+		}));
+
+		await provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'SELECT secret', queryMode: 'plain', ownerToken: 'owner-token', executionId: 'protected-error',
+		});
+
+		expect(JSON.stringify([
+			...provider.output.error.mock.calls,
+			...provider.output.warn.mock.calls,
+		])).not.toContain('SECRET_BACKEND_DETAIL');
+		expect(provider.output.warn).toHaveBeenCalledWith(expect.stringContaining('details were not logged'));
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryError', error: 'SECRET_BACKEND_DETAIL', executionId: 'protected-error',
+		}));
+	});
+
 	it('retires manual SQL preflight after owner validation rejects', async () => {
 		const provider = createSqlProviderHarness();
 		provider.assertSqlOwnerToken = vi.fn(async () => { throw new Error('owner rejected'); });
@@ -971,6 +1017,37 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			(call[0] as any)?.type === 'sqlLeaveNoTraceData');
 		expect(cancellationIndex).toBeGreaterThanOrEqual(0);
 		expect(policyIndex).toBeGreaterThan(cancellationIndex);
+		expect(provider.sqlOwnership.getOwnerToken('sql_1')).toBeUndefined();
+	});
+
+	it('publishes an execution-only owner after enabling Leave No Trace', async () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlPersistenceInvalidationEmitter = { fire: vi.fn() };
+		provider.copilot = { invalidateSqlConnections: vi.fn() };
+		provider._openedStsBoxIds = new Set();
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => true);
+
+		provider.applySqlLeaveNoTraceChange(['sql-1'], ['sql-1'], []);
+
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'sqlExecutionOwnerState', boxId: 'sql_1', sectionInstanceId: 'instance-1',
+		})));
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'stsConnectionState', state: 'ready', boxId: 'sql_1',
+		}));
+	});
+
+	it('revokes the protected execution owner when Leave No Trace is disabled', () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlPersistenceInvalidationEmitter = { fire: vi.fn() };
+		provider.copilot = { invalidateSqlConnections: vi.fn() };
+		provider._openedStsBoxIds = new Set();
+		provider._latestStsConnectSequenceByBoxId = new Map();
+		expect(provider.sqlOwnership.getOwnerToken('sql_1')).toBe('owner-token');
+
+		provider.applySqlLeaveNoTraceChange([], [], ['sql-1']);
+
 		expect(provider.sqlOwnership.getOwnerToken('sql_1')).toBeUndefined();
 	});
 
@@ -1276,6 +1353,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 
 	it('resolves a stale SQL hint through one exact target signature and strips protected rows', () => {
 		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => true);
 		const recreated = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
 		const targetSignature = sqlConnectionTargetSignature(recreated);
 		const state = { sections: [{

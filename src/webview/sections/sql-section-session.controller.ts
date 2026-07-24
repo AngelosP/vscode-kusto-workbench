@@ -300,6 +300,17 @@ export class SqlSectionSessionController implements ReactiveController, SqlSecti
 		return true;
 	}
 
+	setExecutionOwner(ownerToken: string, targetGeneration?: number): boolean {
+		if (targetGeneration !== undefined && targetGeneration !== this._targetGeneration) return false;
+		this._stsReady = false;
+		this._ownerToken = String(ownerToken || '');
+		this._stsConnectPending = false;
+		this._stsConnectTarget = '';
+		if (this.registeredBoxId) this.stsRequests.setOwner(this.registeredBoxId, undefined);
+		this.host.requestUpdate();
+		return !!this._ownerToken;
+	}
+
 	markStsDocumentOpened(): void { this._stsDocumentOpened = true; }
 	markStsDocumentClosed(): void { this._stsDocumentOpened = false; }
 

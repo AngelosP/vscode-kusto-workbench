@@ -1,7 +1,10 @@
 import * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import type { WorkbenchLogger } from '../workbenchLogger';
 import { ensureSts, invalidateStsCache } from './stsDownloader';
-import { StsProcessManager } from './stsProcessManager';
+import { StsProcessManager, type StsProcessLaunchOptions } from './stsProcessManager';
 
 export interface StsRuntimeLike {
 	getProcessManager(): Promise<StsProcessManager>;
@@ -16,14 +19,147 @@ export interface StsRuntimeManagerChange {
 export interface StsRuntimeDependencies {
 	ensureSts: typeof ensureSts;
 	invalidateStsCache: typeof invalidateStsCache;
-	createProcessManager: (binaryPath: string, logPath: string, output: WorkbenchLogger) => StsProcessManager;
+	createProcessManager: (binaryPath: string, logPath: string, output: WorkbenchLogger, launchOptions?: StsProcessLaunchOptions) => StsProcessManager;
 }
 
 const defaultDependencies: StsRuntimeDependencies = {
 	ensureSts,
 	invalidateStsCache,
-	createProcessManager: (binaryPath, logPath, output) => new StsProcessManager(binaryPath, logPath, output),
+	createProcessManager: (binaryPath, logPath, output, launchOptions) => new StsProcessManager(binaryPath, logPath, output, launchOptions),
 };
+
+const PROTECTED_STS_TEMP_PREFIX = 'kusto-workbench-sts-lnt-';
+const activeProtectedStsRoots = new Set<string>();
+const PROTECTED_STS_CHILD_PID_FILE = 'sts-child.pid';
+const PROTECTED_STS_MAX_LIVE_AGE_MS = 24 * 60 * 60 * 1000;
+
+function processIsAlive(pid: number): boolean {
+	if (!Number.isSafeInteger(pid) || pid <= 0) return false;
+	try {
+		process.kill(pid, 0);
+		return true;
+	} catch (error) {
+		return String((error as NodeJS.ErrnoException | undefined)?.code || '') === 'EPERM';
+	}
+}
+
+function terminateProcess(pid: number): void {
+	if (!processIsAlive(pid)) return;
+	try {
+		if (process.platform === 'win32') {
+			require('child_process').spawnSync('taskkill', ['/PID', String(pid), '/T', '/F'], {
+				stdio: 'ignore', windowsHide: true,
+			});
+		} else {
+			process.kill(pid, 'SIGKILL');
+		}
+	} catch { /* deletion retries still run */ }
+}
+
+export async function cleanupAbandonedProtectedStsSandboxes(output?: WorkbenchLogger): Promise<void> {
+	let entries: fs.Dirent[];
+	try {
+		entries = await fs.promises.readdir(os.tmpdir(), { withFileTypes: true });
+	} catch {
+		return;
+	}
+	for (const entry of entries) {
+		if (!entry.isDirectory() || !entry.name.startsWith(PROTECTED_STS_TEMP_PREFIX)) continue;
+		const root = path.join(os.tmpdir(), entry.name);
+		if (activeProtectedStsRoots.has(root)) continue;
+		const pidMatch = entry.name.slice(PROTECTED_STS_TEMP_PREFIX.length).match(/^(\d+)-/);
+		const ownerPid = Number(pidMatch?.[1] || 0);
+		let ageMs = 0;
+		try { ageMs = Date.now() - (await fs.promises.stat(root)).mtimeMs; } catch { /* delete below */ }
+		if (ownerPid !== process.pid && processIsAlive(ownerPid) && ageMs < PROTECTED_STS_MAX_LIVE_AGE_MS) continue;
+		try {
+			let childPid = 0;
+			try { childPid = Number(await fs.promises.readFile(path.join(root, PROTECTED_STS_CHILD_PID_FILE), 'utf8')); } catch { /* no child marker */ }
+			if (childPid && childPid !== process.pid) terminateProcess(childPid);
+			await fs.promises.rm(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+		} catch (error) {
+			output?.warn(`[sql-lnt] Failed to remove an abandoned isolated STS sandbox: ${error instanceof Error ? error.message : String(error)}`);
+		}
+	}
+}
+
+export async function createProtectedStsRuntime(
+	context: vscode.ExtensionContext,
+	output: WorkbenchLogger,
+	dependencies: StsRuntimeDependencies = defaultDependencies,
+): Promise<StsRuntimeLike> {
+	await cleanupAbandonedProtectedStsSandboxes(output);
+	const root = await fs.promises.mkdtemp(path.join(os.tmpdir(), `${PROTECTED_STS_TEMP_PREFIX}${process.pid}-`));
+	activeProtectedStsRoots.add(root);
+	const home = path.join(root, 'home');
+	const localAppData = path.join(root, 'local-app-data');
+	const appData = path.join(root, 'app-data');
+	const cache = path.join(root, 'cache');
+	const config = path.join(root, 'config');
+	const data = path.join(root, 'data');
+	const state = path.join(root, 'state');
+	const dotnetBundle = path.join(root, 'dotnet-bundle');
+	const nuget = path.join(root, 'nuget');
+	const logs = path.join(root, 'logs');
+	await Promise.all([home, localAppData, appData, cache, config, data, state, dotnetBundle, nuget, logs].map(directory =>
+		fs.promises.mkdir(directory, { recursive: true })));
+	const env: NodeJS.ProcessEnv = {
+		...process.env,
+		TEMP: root,
+		TMP: root,
+		TMPDIR: root,
+		HOME: home,
+		USERPROFILE: home,
+		LOCALAPPDATA: localAppData,
+		APPDATA: appData,
+		XDG_CACHE_HOME: cache,
+		XDG_CONFIG_HOME: config,
+		XDG_DATA_HOME: data,
+		XDG_STATE_HOME: state,
+		DOTNET_CLI_HOME: home,
+		DOTNET_BUNDLE_EXTRACT_BASE_DIR: dotnetBundle,
+		NUGET_PACKAGES: nuget,
+		NUGET_HTTP_CACHE_PATH: path.join(nuget, 'http-cache'),
+	};
+	const runtime = new StsRuntime(context, output, {
+		...dependencies,
+		createProcessManager: (binaryPath, _logPath, logger) => dependencies.createProcessManager(
+			binaryPath,
+			logs,
+			logger,
+			{
+				cwd: root,
+				env,
+				suppressProcessOutput: true,
+				onProcessStarted: pid => fs.promises.writeFile(
+					path.join(root, PROTECTED_STS_CHILD_PID_FILE), String(pid), 'utf8',
+				),
+			},
+		),
+	});
+	let disposed = false;
+	return {
+		getProcessManager: () => runtime.getProcessManager(),
+		dispose: async () => {
+			if (disposed) return;
+			disposed = true;
+			try {
+				await runtime.dispose();
+			} finally {
+				try {
+					await fs.promises.rm(root, {
+						recursive: true,
+						force: true,
+						maxRetries: 10,
+						retryDelay: 100,
+					});
+				} finally {
+					activeProtectedStsRoots.delete(root);
+				}
+			}
+		},
+	};
+}
 
 export class StsRuntime implements StsRuntimeLike {
 	private processManager: StsProcessManager | undefined;

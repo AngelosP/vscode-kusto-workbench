@@ -3,7 +3,7 @@ import { SqlQueryClient } from '../sqlClient';
 import { SqlConnectionManager } from '../sqlConnectionManager';
 import type { WorkbenchLogger } from '../workbenchLogger';
 import { StsQueryService } from './stsQueryService';
-import { StsRuntime } from './stsRuntime';
+import { cleanupAbandonedProtectedStsSandboxes, createProtectedStsRuntime, StsRuntime } from './stsRuntime';
 import { SqlLeaveNoTracePolicyStore } from './sqlLeaveNoTracePolicyStore';
 import { SqlServerAccountMapStore } from './sqlServerAccountMapStore';
 import { blockSqlDatabaseCacheConnection, setSqlDatabaseCacheConnectionIdentity, SQL_DATABASE_CACHE_STORAGE_KEY } from '../sqlDatabaseCache';
@@ -70,6 +70,7 @@ export class SqlWorkbenchService {
 	private disposed = false;
 
 	constructor(private readonly context: vscode.ExtensionContext, private readonly output: WorkbenchLogger) {
+		void cleanupAbandonedProtectedStsSandboxes(output);
 		this.connectionManager = new SqlConnectionManager(context);
 		this.leaveNoTracePolicy = new SqlLeaveNoTracePolicyStore(context, output);
 		this.serverAccountMap = new SqlServerAccountMapStore(context, output);
@@ -81,6 +82,9 @@ export class SqlWorkbenchService {
 			output,
 			this.leaveNoTracePolicy,
 			(connection, principal, revocation, dispatch) => this.dispatchSqlOwnerAllowed(connection, principal, revocation, dispatch),
+			() => createProtectedStsRuntime(context, output),
+			(connection, principal, revocation, expectedProtected, dispatch) =>
+				this.dispatchSqlOwnerProtection(connection, principal, revocation, expectedProtected, dispatch),
 		);
 		this.client = new SqlQueryClient(context, this.queryService);
 		this.sqlConnectionSignatures = new Map(this.connectionManager.getConnections().map(connection => [connection.id, sqlConnectionTargetSignature(connection)]));
@@ -205,6 +209,23 @@ export class SqlWorkbenchService {
 		const handle = await this.leaveNoTracePolicy.prepareDispatchAllowed(connection.id, async () =>
 			this.connectionManager.prepareDispatchCurrent(connection, async () =>
 				this.serverAccountMap.preparePrincipalDispatch(connection, expectedPrincipalFingerprint, dispatch)), expectedRevocationGeneration);
+		return unwrapSqlDispatch(handle);
+	}
+
+	async dispatchSqlOwnerProtection<T>(
+		connection: SqlConnection,
+		expectedPrincipalFingerprint: string,
+		expectedRevocationGeneration: number,
+		expectedProtected: boolean,
+		dispatch: () => T | PromiseLike<T>,
+	): Promise<T> {
+		const handle = await this.leaveNoTracePolicy.prepareDispatchProtectionMode(
+			connection.id,
+			expectedProtected,
+			expectedRevocationGeneration,
+			async () => this.connectionManager.prepareDispatchCurrent(connection, async () =>
+				this.serverAccountMap.preparePrincipalDispatch(connection, expectedPrincipalFingerprint, dispatch)),
+		);
 		return unwrapSqlDispatch(handle);
 	}
 

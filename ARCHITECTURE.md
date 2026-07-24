@@ -383,12 +383,13 @@ SQL sections provide a near-identical notebook experience for T-SQL queries agai
 
 ### SQL Tools Service (STS) — Language And Data Engine
 
-SQL sections use Microsoft's SQL Tools Service, the same engine behind the official SQL Server extension. One lazily started process communicates over JSON-RPC and serves both language sessions and the SQL data plane.
+SQL sections use Microsoft's SQL Tools Service, the same engine behind the official SQL Server extension. A lazily started shared process communicates over JSON-RPC and serves normal language sessions and the SQL data plane. Leave No Trace data operations use a separate one-operation process instead.
 
 * **`StsDownloader`** — pins release `6.0.20260409.1`, verifies each platform archive with SHA-256, installs through a locked staging directory, and validates the cached binary manifest
 * **`StsProcessManager`** — spawns STS, establishes a `vscode-jsonrpc` connection, exposes process epochs, settles failed readiness generations, rebinds subscriptions after restart, and supports per-request timeouts
 * **`StsLanguageService`** — editor-scoped LSP client with session-unique owner URIs, document lifecycle, schema-ready handling, restart replay, and disposal
 * **`StsQueryService`** — extension-scoped data-plane broker using `connection/connect`, `connection/listdatabases`, `query/executeString`, `query/complete`, paged `query/subset`, `query/cancel`, `query/dispose`, and `connection/disconnect`
+* **Protected STS runtime** — each Leave No Trace query/database-discovery operation gets an isolated OS-temp sandbox and process. `TEMP`, `TMP`, home, app-data, cache, working, and log paths point into that sandbox. Cleanup disconnects/disposes the STS owner, stops or kills the process, recursively deletes the sandbox before returning results, and removes abandoned dead-process sandboxes on the next activation.
 
 Every query execution gets a unique owner URI. The public `QueryResult`, host/webview messages, and `.kqlx`/`.sqlx` formats remain shared with Kusto and unchanged. STS results are converted before entering shared table, chart, transformation, HTML, comparison, and persistence paths.
 
@@ -428,7 +429,7 @@ SQL Copilot rules: `copilot-instructions/sql-query-rules.md`, optimization rules
 * SQL Tools Service is downloaded on first SQL use; it is not bundled in the VSIX
 * Data-plane TLS uses mandatory encryption with certificate validation; language connections preserve their existing compatibility policy
 * SQL Leave No Trace policy is versioned in extension global storage, serialized with a filesystem lock, atomically replaced, and watched by every extension host so toggles propagate across VS Code windows
-* SQL Leave No Trace connections fail closed before STS/model dispatch because STS may spool query results to disk; enabling the policy cancels data/Copilot work, closes language owners, clears shared/dependent results, and blocks cached or persisted SQL result restoration
+* SQL Leave No Trace keeps manual queries and database discovery usable through the protected one-shot STS runtime. Shared language STS, schema/cache publication, Copilot execution, durable result state, restoration, and data-bearing output logs remain blocked. Results render in memory only and are admitted after sandbox deletion.
 * A terminally exhausted STS manager is replaced by `StsRuntime`; open editors recreate language services and replay their latest document/target state against the replacement manager
 * File format: `.kqlx` supports mixed Kusto+SQL; `.sqlx` allows only SQL sections
 

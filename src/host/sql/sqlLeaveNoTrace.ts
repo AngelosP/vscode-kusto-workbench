@@ -10,12 +10,21 @@ export class SqlLeaveNoTraceBlockedError extends SqlQueryExecutionError {
 	}
 }
 
+export class SqlLeaveNoTracePolicyChangedError extends SqlQueryExecutionError {
+	constructor() {
+		super('Leave No Trace policy changed while SQL work was running. Retry the query.');
+		this.name = 'SqlLeaveNoTracePolicyChangedError';
+	}
+}
+
 export interface SqlLeaveNoTracePolicy {
 	getConnectionIds(): string[];
 	getRevocationGeneration(connectionId: string): number;
 	isProtected(connectionId: string): boolean;
 	assertAllowed(connectionId: string): Promise<void>;
+	assertProtectionMode?(connectionId: string, expectedProtected: boolean, expectedRevocationGeneration: number): Promise<void>;
 	dispatchAllowed?<T>(connectionId: string, dispatch: () => T | PromiseLike<T>, expectedRevocationGeneration?: number): Promise<T>;
+	dispatchProtectionMode?<T>(connectionId: string, expectedProtected: boolean, expectedRevocationGeneration: number, dispatch: () => T | PromiseLike<T>): Promise<T>;
 	dispatchSnapshot?<T>(dispatch: (snapshot: {
 		connectionIds: readonly string[];
 		version: number;

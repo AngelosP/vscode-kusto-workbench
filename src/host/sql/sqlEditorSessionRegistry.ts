@@ -372,6 +372,30 @@ export class SqlEditorSessionRegistry {
 		);
 	}
 
+	dispatchOwnerProtection<T>(
+		boxId: string,
+		expectedOwner: SqlResultOwner,
+		expectedProtected: boolean,
+		dispatch: () => T | PromiseLike<T>,
+	): Promise<T> {
+		const connection = this.options.sqlWorkbench.connectionManager.getConnection(expectedOwner.connectionId);
+		if (!connection || sqlConnectionTargetSignature(connection) !== expectedOwner.targetSignature) {
+			throw new Error('SQL result owner changed before protected dispatch admission.');
+		}
+		return this.options.sqlWorkbench.dispatchSqlOwnerProtection(
+			connection,
+			expectedOwner.principalFingerprint,
+			expectedOwner.revocationGeneration,
+			expectedProtected,
+			() => {
+				if (!sqlResultOwnersEqual(this.getOwner(boxId), expectedOwner)) {
+					throw new Error('SQL result owner changed before protected dispatch admission.');
+				}
+				return dispatch();
+			},
+		);
+	}
+
 	async assertOwnerAllowed(boxId: string, expectedOwner: SqlResultOwner): Promise<void> {
 		await this.options.sqlWorkbench.assertSqlConnectionAllowed(expectedOwner.connectionId);
 		const connection = this.options.sqlWorkbench.connectionManager.getConnection(expectedOwner.connectionId);
@@ -383,6 +407,27 @@ export class SqlEditorSessionRegistry {
 			throw new Error('SQL result owner changed before response admission.');
 		}
 		await this.options.sqlWorkbench.assertSqlConnectionAllowed(expectedOwner.connectionId);
+	}
+
+	async assertOwnerProtection(boxId: string, expectedOwner: SqlResultOwner, expectedProtected: boolean): Promise<void> {
+		await this.options.sqlWorkbench.leaveNoTracePolicy.assertProtectionMode(
+			expectedOwner.connectionId,
+			expectedProtected,
+			expectedOwner.revocationGeneration,
+		);
+		const connection = this.options.sqlWorkbench.connectionManager.getConnection(expectedOwner.connectionId);
+		if (!connection || sqlConnectionTargetSignature(connection) !== expectedOwner.targetSignature) {
+			throw new Error('SQL result owner changed before protected response admission.');
+		}
+		await this.options.sqlWorkbench.connectionManager.assertConnectionCurrent(connection);
+		if (!sqlResultOwnersEqual(await this.getCanonicalOwner(boxId), expectedOwner)) {
+			throw new Error('SQL result owner changed before protected response admission.');
+		}
+		await this.options.sqlWorkbench.leaveNoTracePolicy.assertProtectionMode(
+			expectedOwner.connectionId,
+			expectedProtected,
+			expectedOwner.revocationGeneration,
+		);
 	}
 
 	async issueOwnerToken(
@@ -401,6 +446,23 @@ export class SqlEditorSessionRegistry {
 		});
 	}
 
+	async issueOwnerTokenProtection(
+		boxId: string,
+		expectedOwner: SqlResultOwner,
+		expectedProtected: boolean,
+	): Promise<string> {
+		if (!sqlResultOwnersEqual(await this.getCanonicalOwner(boxId), expectedOwner)) {
+			throw new Error('SQL result owner changed before protected token issuance.');
+		}
+		return this.dispatchOwnerProtection(boxId, expectedOwner, expectedProtected, () => {
+			const existing = this.ownerTokenByBoxId.get(boxId);
+			if (existing && sqlResultOwnersEqual(existing.owner, expectedOwner)) return existing.token;
+			const issued = { token: randomUUID(), owner: expectedOwner } satisfies SqlIssuedOwnerToken;
+			this.ownerTokenByBoxId.set(boxId, issued);
+			return issued.token;
+		});
+	}
+
 	async assertOwnerToken(
 		boxId: string,
 		token: string | undefined,
@@ -410,6 +472,22 @@ export class SqlEditorSessionRegistry {
 			throw new Error('SQL section owner token changed. Reconnect and retry.');
 		}
 		await this.assertOwnerAllowed(boxId, issued.owner);
+		if (this.ownerTokenByBoxId.get(boxId) !== issued) {
+			throw new Error('SQL section owner token changed. Reconnect and retry.');
+		}
+		return issued;
+	}
+
+	async assertOwnerTokenProtection(
+		boxId: string,
+		token: string | undefined,
+		expectedProtected: boolean,
+	): Promise<SqlIssuedOwnerToken> {
+		const issued = this.ownerTokenByBoxId.get(boxId);
+		if (!issued || !token || issued.token !== token) {
+			throw new Error('SQL section owner token changed. Reconnect and retry.');
+		}
+		await this.assertOwnerProtection(boxId, issued.owner, expectedProtected);
 		if (this.ownerTokenByBoxId.get(boxId) !== issued) {
 			throw new Error('SQL section owner token changed. Reconnect and retry.');
 		}

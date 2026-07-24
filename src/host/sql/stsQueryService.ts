@@ -7,6 +7,13 @@ type SqlOwnerDispatcher = <T>(
 	revocationGeneration: number,
 	dispatch: () => T | PromiseLike<T>,
 ) => Promise<T>;
+type SqlOwnerProtectionDispatcher = <T>(
+	connection: SqlConnection,
+	principalFingerprint: string,
+	revocationGeneration: number,
+	expectedProtected: boolean,
+	dispatch: () => T | PromiseLike<T>,
+) => Promise<T>;
 import { sqlSchemaPrincipalFingerprintForPrincipal } from '../sqlEditorSchema';
 import * as crypto from 'crypto';
 import * as vscode from 'vscode';
@@ -34,6 +41,7 @@ import {
 	assertSqlConnectionMayUseSts,
 	getSqlLeaveNoTraceConnectionIds,
 	isSqlLeaveNoTraceConnection,
+	SqlLeaveNoTracePolicyChangedError,
 	type SqlLeaveNoTracePolicy,
 } from './sqlLeaveNoTrace';
 import { sanitizeStsLogText } from './stsLogSanitizer';
@@ -46,6 +54,7 @@ const CLEANUP_TIMEOUT_MS = 10_000;
 const SUBSET_PAGE_SIZE = 1_000;
 
 type ExecutionPhase = 'starting' | 'connecting' | 'executing' | 'paging' | 'cleaning' | 'done';
+export type ProtectedStsRuntimeFactory = () => Promise<StsRuntimeLike>;
 
 interface Deferred<T> {
 	promise: Promise<T>;
@@ -106,6 +115,8 @@ export class StsQueryService {
 		private readonly output: WorkbenchLogger,
 		leaveNoTracePolicy?: SqlLeaveNoTracePolicy,
 		private readonly dispatchSqlOwnerAllowed?: SqlOwnerDispatcher,
+		private readonly createProtectedRuntime?: ProtectedStsRuntimeFactory,
+		private readonly dispatchSqlOwnerProtection?: SqlOwnerProtectionDispatcher,
 	) {
 		this.leaveNoTracePolicy = leaveNoTracePolicy ?? {
 			getConnectionIds: () => getSqlLeaveNoTraceConnectionIds(context),
@@ -121,7 +132,6 @@ export class StsQueryService {
 	}
 
 	async getDatabases(connection: SqlConnection, passwordOverride?: string, allowUncommittedTarget = false, signal?: AbortSignal): Promise<string[]> {
-		await this.leaveNoTracePolicy.assertAllowed(connection.id);
 		const operation = this.createOperation(connection, connection.database || 'master', undefined, passwordOverride, allowUncommittedTarget);
 		const abort = () => operation.cancel();
 		if (signal?.aborted) abort();
@@ -190,7 +200,8 @@ export class StsQueryService {
 
 	private createOperation(connection: SqlConnection, database: string, timeoutMs: number | undefined, passwordOverride?: string, allowUncommittedTarget = false): StsExecutionOperation {
 		if (this.disposed) throw new SqlQueryExecutionError('SQL query service is disposed.');
-		if (this.leaveNoTracePolicy.isProtected(connection.id)) assertSqlConnectionMayUseSts(this.context, connection.id);
+		const protectedExecution = this.leaveNoTracePolicy.isProtected(connection.id);
+		if (protectedExecution && !this.createProtectedRuntime) assertSqlConnectionMayUseSts(this.context, connection.id);
 		const operation = new StsExecutionOperation(
 			this.runtime,
 			this.connectionManager,
@@ -203,6 +214,9 @@ export class StsQueryService {
 			passwordOverride,
 			allowUncommittedTarget,
 			this.dispatchSqlOwnerAllowed,
+			protectedExecution,
+			this.createProtectedRuntime,
+			this.dispatchSqlOwnerProtection,
 		);
 		this.activeOperations.add(operation);
 		return operation;
@@ -213,6 +227,7 @@ class StsExecutionOperation {
 	readonly ownerUri = `kw-sql://execution/${crypto.randomUUID()}.sql`;
 	get connectionId(): string { return this.connection.id; }
 	private process: StsProcessManager | undefined;
+	private operationRuntime: StsRuntimeLike | undefined;
 	private epoch = 0;
 	private phase: ExecutionPhase = 'starting';
 	private cancelled = false;
@@ -245,13 +260,21 @@ class StsExecutionOperation {
 		private readonly passwordOverride?: string,
 		private readonly allowUncommittedTarget = false,
 		private readonly dispatchSqlOwnerAllowed?: SqlOwnerDispatcher,
+		private readonly protectedExecution = false,
+		private readonly createProtectedRuntime?: ProtectedStsRuntimeFactory,
+		private readonly dispatchSqlOwnerProtection?: SqlOwnerProtectionDispatcher,
 	) {
 		this.revocationGeneration = this.leaveNoTracePolicy.getRevocationGeneration?.(this.connection.id) ?? 0;
 		this.cancelSignal.promise.catch(() => { /* consumed by execution race */ });
 		this.connectComplete.promise.catch(() => { /* may fail before connect is awaited */ });
 		this.queryComplete.promise.catch(() => { /* may fail before execution is awaited */ });
 		const policySubscription = this.leaveNoTracePolicy.onDidChange?.(change => {
-			if ((change.invalidatedConnectionIds ?? change.enabledConnectionIds).includes(this.connection.id)) this.cancel();
+			const changed = new Set([
+				...(change.invalidatedConnectionIds ?? []),
+				...change.enabledConnectionIds,
+				...change.disabledConnectionIds,
+			]);
+			if (changed.has(this.connection.id)) this.cancel();
 		});
 		if (policySubscription) this.subscriptions.push(policySubscription);
 	}
@@ -376,7 +399,10 @@ class StsExecutionOperation {
 		if (this.connected) return;
 		await this.assertAllowed();
 		this.phase = 'connecting';
-		const process = await this.runtime.getProcessManager();
+		this.operationRuntime = this.protectedExecution
+			? await this.createProtectedRuntime!()
+			: this.runtime;
+		const process = await this.operationRuntime.getProcessManager();
 		await this.assertAllowed();
 		this.process = process;
 		this.epoch = process.epoch;
@@ -469,7 +495,14 @@ class StsExecutionOperation {
 			for (const subscription of this.subscriptions.splice(0)) {
 				try { subscription.dispose(); } catch { /* ignore */ }
 			}
+			let runtimeError: unknown;
+			if (this.protectedExecution && this.operationRuntime) {
+				try { await this.operationRuntime.dispose(); }
+				catch (error) { runtimeError = error; }
+			}
+			this.operationRuntime = undefined;
 			this.cleanupComplete.resolve(undefined);
+			if (runtimeError) throw runtimeError;
 		}
 	}
 
@@ -498,7 +531,7 @@ class StsExecutionOperation {
 
 	private async assertAllowed(): Promise<void> {
 		this.throwIfCancelled();
-		await this.leaveNoTracePolicy.assertAllowed(this.connection.id);
+		await this.assertProtectionMode();
 		if ((this.leaveNoTracePolicy.getRevocationGeneration?.(this.connection.id) ?? 0) !== this.revocationGeneration) {
 			throw new SqlQueryCancelledError();
 		}
@@ -526,11 +559,49 @@ class StsExecutionOperation {
 		} else if (this.principalFingerprint !== currentFingerprint) {
 			throw new Error('SQL principal changed while the operation was running.');
 		}
-		await this.leaveNoTracePolicy.assertAllowed(this.connection.id);
+		await this.assertProtectionMode();
 		this.throwIfCancelled();
 	}
 
+	private async assertProtectionMode(): Promise<void> {
+		if (this.leaveNoTracePolicy.assertProtectionMode) {
+			await this.leaveNoTracePolicy.assertProtectionMode(
+				this.connection.id,
+				this.protectedExecution,
+				this.revocationGeneration,
+			);
+			return;
+		}
+		await this.leaveNoTracePolicy.refresh();
+		if (this.leaveNoTracePolicy.isProtected(this.connection.id) !== this.protectedExecution
+			|| (this.leaveNoTracePolicy.getRevocationGeneration?.(this.connection.id) ?? 0) !== this.revocationGeneration) {
+			throw new SqlLeaveNoTracePolicyChangedError();
+		}
+	}
+
 	private async dispatchAllowed<T>(dispatch: () => T | PromiseLike<T>): Promise<T> {
+		if (this.protectedExecution) {
+			if (!this.allowUncommittedTarget && this.dispatchSqlOwnerProtection) {
+				if (!this.principalFingerprint) throw new Error('SQL principal is unavailable before protected STS dispatch.');
+				return this.dispatchSqlOwnerProtection(
+					this.connection,
+					this.principalFingerprint,
+					this.revocationGeneration,
+					true,
+					dispatch,
+				);
+			}
+			if (this.leaveNoTracePolicy.dispatchProtectionMode) {
+				return this.leaveNoTracePolicy.dispatchProtectionMode(
+					this.connection.id,
+					true,
+					this.revocationGeneration,
+					dispatch,
+				);
+			}
+			await this.assertProtectionMode();
+			return await dispatch();
+		}
 		if (!this.allowUncommittedTarget && this.dispatchSqlOwnerAllowed) {
 			if (!this.principalFingerprint) throw new Error('SQL principal is unavailable before STS dispatch.');
 			return this.dispatchSqlOwnerAllowed(this.connection, this.principalFingerprint, this.revocationGeneration, dispatch);
@@ -538,7 +609,7 @@ class StsExecutionOperation {
 		if (this.leaveNoTracePolicy.dispatchAllowed) {
 			return this.leaveNoTracePolicy.dispatchAllowed(this.connection.id, dispatch, this.revocationGeneration);
 		}
-		await this.leaveNoTracePolicy.assertAllowed(this.connection.id);
+		await this.assertProtectionMode();
 		return await dispatch();
 	}
 }

@@ -42,7 +42,7 @@ class FakeProcessManager {
 	}
 }
 
-function createHarness(leaveNoTracePolicy?: any, dispatchSqlOwnerAllowed?: any) {
+function createHarness(leaveNoTracePolicy?: any, dispatchSqlOwnerAllowed?: any, createProtectedRuntime?: any) {
 	let accountMap: Record<string, string> = {};
 	const process = new FakeProcessManager();
 	const runtime = { getProcessManager: vi.fn().mockResolvedValue(process), dispose: vi.fn() };
@@ -60,7 +60,10 @@ function createHarness(leaveNoTracePolicy?: any, dispatchSqlOwnerAllowed?: any) 
 		secrets: { get: vi.fn(), store: vi.fn(), delete: vi.fn() },
 	} as any;
 	const output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any;
-	const service = new StsQueryService(runtime as any, connectionManager as any, context, output, leaveNoTracePolicy, dispatchSqlOwnerAllowed);
+	const service = new StsQueryService(
+		runtime as any, connectionManager as any, context, output,
+		leaveNoTracePolicy, dispatchSqlOwnerAllowed, createProtectedRuntime,
+	);
 	const connection = {
 		id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example',
 		authType: 'sql-login', username: 'user',
@@ -83,6 +86,44 @@ function completeConnection(process: FakeProcessManager, ownerUri: string): void
 
 describe('StsQueryService', () => {
 	beforeEach(() => vi.clearAllMocks());
+
+	it('runs a protected query in an owned runtime and disposes it before returning results', async () => {
+		const policy = {
+			getConnectionIds: () => ['sql-1'],
+			getRevocationGeneration: () => 4,
+			isProtected: () => true,
+			refresh: vi.fn(async () => ['sql-1']),
+			assertAllowed: vi.fn(async () => { throw new Error('shared STS must stay blocked'); }),
+		};
+		const protectedProcess = new FakeProcessManager();
+		protectedProcess.onRequest = (method, params) => method === STS_METHODS.querySubset
+			? { resultSubset: { rowCount: 1, rows: [[{ displayValue: '42', invariantCultureDisplayValue: '42' }]] } }
+			: {};
+		const protectedRuntime = {
+			getProcessManager: vi.fn(async () => protectedProcess),
+			dispose: vi.fn(async () => undefined),
+		};
+		const createProtectedRuntime = vi.fn(async () => protectedRuntime);
+		const { runtime, service, connection } = createHarness(policy, undefined, createProtectedRuntime);
+
+		const promise = service.executeQuery(connection, 'Db', 'SELECT 42 AS Value', 20_000);
+		const connect = await waitForRequest(protectedProcess, STS_METHODS.connect);
+		const ownerUri = connect[0].params.ownerUri;
+		completeConnection(protectedProcess, ownerUri);
+		await waitForRequest(protectedProcess, STS_METHODS.executeString);
+		protectedProcess.emit(STS_METHODS.queryComplete, {
+			ownerUri,
+			batchSummaries: [{ resultSetSummaries: [{
+				rowCount: 1, columnInfo: [{ columnName: 'Value', dataTypeName: 'int' }],
+			}] }],
+		});
+
+		await expect(promise).resolves.toMatchObject({ rows: [[{ full: '42' }]] });
+		expect(runtime.getProcessManager).not.toHaveBeenCalled();
+		expect(createProtectedRuntime).toHaveBeenCalledOnce();
+		expect(protectedRuntime.dispose).toHaveBeenCalledOnce();
+		expect(policy.assertAllowed).not.toHaveBeenCalled();
+	});
 
 	it('returns the first final-summary result set and pages all announced rows', async () => {
 		const { process, service, connection } = createHarness();
@@ -297,7 +338,7 @@ describe('StsQueryService', () => {
 			batchSummaries: [{ resultSetSummaries: [{ rowCount: 1, columnInfo: [{ columnName: 'Secret', dataTypeName: 'nvarchar' }] }] }],
 		});
 
-		await expect(promise).rejects.toThrow('Leave No Trace blocked');
+		await expect(promise).rejects.toThrow('Leave No Trace policy changed');
 		expect(process.requests.filter(request => request.method === STS_METHODS.querySubset)).toHaveLength(1);
 	});
 
@@ -317,7 +358,7 @@ describe('StsQueryService', () => {
 		allowed = false;
 		completeConnection(process, connect[0].params.ownerUri);
 
-		await expect(promise).rejects.toThrow('Leave No Trace blocked');
+		await expect(promise).rejects.toThrow('Leave No Trace policy changed');
 		expect(process.requests.some(request => request.method === STS_METHODS.executeString)).toBe(false);
 	});
 

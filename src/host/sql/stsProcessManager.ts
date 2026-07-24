@@ -20,6 +20,13 @@ export interface StsEpochEvent {
 	error?: Error;
 }
 
+export interface StsProcessLaunchOptions {
+	cwd?: string;
+	env?: NodeJS.ProcessEnv;
+	suppressProcessOutput?: boolean;
+	onProcessStarted?: (pid: number) => void | Promise<void>;
+}
+
 type StsNotificationHandler = (params: any, epoch: number) => void;
 
 export class StsProcessManager {
@@ -47,7 +54,7 @@ export class StsProcessManager {
 	private readonly _failedHandlers = new Set<(error: Error) => void>();
 	private readonly _epochWaiters = new Map<number, Set<(error: Error) => void>>();
 
-	constructor(binaryPath: string, logPath: string, output: WorkbenchLogger) {
+	constructor(binaryPath: string, logPath: string, output: WorkbenchLogger, private readonly launchOptions: StsProcessLaunchOptions = {}) {
 		this._binaryPath = binaryPath;
 		this._logPath = logPath;
 		this._output = output;
@@ -73,14 +80,21 @@ export class StsProcessManager {
 
 			const proc = spawn(this._binaryPath, [], {
 				stdio: ['pipe', 'pipe', 'pipe'],
+				cwd: this.launchOptions.cwd,
+				env: this.launchOptions.env,
 			});
 			startedProcess = proc;
+			if (proc.pid) await this.launchOptions.onProcessStarted?.(proc.pid);
 
 			this._process = proc;
 
 			// Collect early stderr for crash diagnostics.
 			let stderrBuf = '';
 			proc.stderr?.on('data', (data: Buffer) => {
+				if (this.launchOptions.suppressProcessOutput) {
+					stderrBuf = '[suppressed for Leave No Trace]\n';
+					return;
+				}
 				const text = sanitizeStsLogText(data.toString().trimEnd());
 				stderrBuf += text + '\n';
 				this._output.warn(`[sts-stderr] ${text}`);

@@ -36,6 +36,7 @@ function createTarget(): SqlSectionSessionTarget {
 			nextGeneration === generation && (!candidate || candidate === requestId)),
 		completeDatabaseRequest: vi.fn(() => { requestId = ''; }),
 		setStsReady: vi.fn((ready: boolean, token = '') => { ownerToken = ready ? token : ''; return true; }),
+		setExecutionOwner: vi.fn((token: string) => { ownerToken = token; return !!token; }),
 		requestSts: vi.fn(() => Promise.resolve(null)),
 		admitOwnedMessage: vi.fn(message => ownerToken === String(message.ownerToken || '')),
 		resolveStsResponse: vi.fn(() => true),
@@ -54,6 +55,7 @@ function createEffects(target: SqlSectionSessionTarget) {
 		setDatabasesLoading: vi.fn(),
 		setSchemaInfo: vi.fn(),
 		setStsReady: vi.fn(),
+		setExecutionOwner: vi.fn(),
 	};
 	const effects: SqlSectionMessageRouterEffects = {
 		getSection: vi.fn(() => section),
@@ -89,6 +91,21 @@ describe('routeSqlSectionMessage', () => {
 		target.setStsReady(true, 'owner-new', 0);
 		expect(routeSqlSectionMessage({ type: 'queryResult', boxId: 'sql-1', ownerToken: 'owner-old' }, effects)).toBe('rejected');
 		expect(routeSqlSectionMessage({ type: 'queryResult', boxId: 'sql-1', ownerToken: 'owner-new' }, effects)).toBe('not-sql');
+	});
+
+	it('routes an execution-only owner without marking STS language ready', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects } = createEffects(target);
+		target.adoptHostGeneration(3);
+
+		expect(routeSqlSectionMessage({
+			type: 'sqlExecutionOwnerState', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+			targetGeneration: 3, ownerToken: 'protected-owner',
+		}, effects)).toBe('handled');
+		const section = effects.getSection('sql-1') as any;
+		expect(section.setExecutionOwner).toHaveBeenCalledWith('protected-owner', 3);
+		expect(section.setStsReady).not.toHaveBeenCalled();
 	});
 
 	it('routes STS responses directly to the addressed section', () => {

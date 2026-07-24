@@ -38,7 +38,7 @@ import { normalizeSqlConnectionTargetSignature, sqlConnectionTargetSignature, sq
 import { SqlSectionSessionController, type SqlToolRunResult } from './sql-section-session.controller.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
-const SQL_LEAVE_NO_TRACE_ERROR = 'Leave No Trace blocks SQL execution for this connection.';
+const SQL_LEAVE_NO_TRACE_PENDING = 'Preparing isolated Leave No Trace execution. Try again shortly.';
 
 /** Serialized shape for .kqlx persistence — must match KqlxSectionV1 sql variant. */
 export interface SqlSectionData {
@@ -204,6 +204,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	/** SQL connection ID from SqlConnectionManager. */
 	private _sqlConnectionId = '';
 	private _leaveNoTraceConnectionIds = new Set<string>();
+	private _protectedExecutionOwner = false;
 	private _elapsedTimer: ReturnType<typeof setInterval> | null = null;
 	private _elapsedStart = 0;
 
@@ -503,16 +504,16 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 		if (runBtn) {
 			const protectedByLeaveNoTrace = this._leaveNoTraceConnectionIds.has(this._sqlConnectionId);
-			const waitingForOwner = !!this._sqlConnectionId && !!this._database && !protectedByLeaveNoTrace && !this._ownerToken;
+			const waitingForOwner = !!this._sqlConnectionId && !!this._database && !this._ownerToken;
 			runBtn.disabled = !this._sqlConnectionId || !this._database || !this._ownerToken || this._executing;
 			const labelText = this._getSqlRunModeLabel();
 			const labelSpan = runBtn.querySelector('.run-btn-label');
 			if (labelSpan) labelSpan.textContent = ' ' + labelText;
-			const disabledReason = protectedByLeaveNoTrace
-				? 'Leave No Trace blocks SQL execution for this connection'
-				: waitingForOwner
-					? 'Waiting for SQL Tools Service to connect'
-					: 'Select a server and database first (or select a favorite)';
+			const disabledReason = waitingForOwner
+				? protectedByLeaveNoTrace
+					? 'Preparing isolated Leave No Trace execution'
+					: 'Waiting for SQL Tools Service to connect'
+				: 'Select a server and database first (or select a favorite)';
 			runBtn.title = labelText + (runBtn.disabled ? `\n${disabledReason}` : '');
 		}
 		if (cancelBtn) cancelBtn.style.display = this._executing ? '' : 'none';
@@ -1210,6 +1211,22 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	private _connectStsIfReady(reason: string): void {
+		if (this._leaveNoTraceConnectionIds.has(this._sqlConnectionId)) {
+			if (this._ownerToken && !this._stsReady) return;
+			if (this._stsReady) this.sqlSession.setStsReady(false);
+			if (!this._sqlConnectionId || !this._database) return;
+			const target = `${this._connectionTargetSignature(this._sqlConnectionId)}\n${this._database}`;
+			if (!this.sqlSession.beginStsConnect(target)) return;
+			postMessageToHost({
+				type: 'stsConnect',
+				boxId: this.boxId,
+				sectionInstanceId: this.sqlSession.instanceId,
+				sqlConnectionId: this._sqlConnectionId,
+				database: this._database,
+				targetGeneration: this.sqlSession.targetGeneration,
+			} as any);
+			return;
+		}
 		if (!this._sqlConnectionId || !this._database) {
 			console.log(`[sts-diag] stsConnect SKIPPED (${reason}) boxId=${this.boxId} connId=${this._sqlConnectionId || '(none)'} db=${this._database || '(none)'}`);
 			return;
@@ -1541,7 +1558,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const wasProtected = this._leaveNoTraceConnectionIds.has(this._sqlConnectionId);
 		this._leaveNoTraceConnectionIds = new Set((Array.isArray(ids) ? ids : []).map(id => String(id || '').trim()).filter(Boolean));
 		if (!this._enforceLeaveNoTracePolicy() && wasProtected) {
-			if (this._lastError === SQL_LEAVE_NO_TRACE_ERROR) this._lastError = '';
+			this._protectedExecutionOwner = false;
+			this.sqlSession.setStsReady(false);
+			if (this._lastError === SQL_LEAVE_NO_TRACE_PENDING) this._lastError = '';
 			if (this._sqlConnectionId && this._database) this._connectStsIfReady('leave-no-trace-disabled');
 		}
 		this._syncTestStateAttrs();
@@ -1574,15 +1593,14 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	private _enforceLeaveNoTracePolicy(): boolean {
 		if (!this._leaveNoTraceConnectionIds.has(this._sqlConnectionId)) return false;
+		if (this._protectedExecutionOwner) return true;
 		this.sqlSession.rejectPendingToolRun(new Error('SQL execution was cancelled because Leave No Trace is enabled.'));
 		this._executing = false;
 		this._activeQueryExecutionId = '';
-		this._databases = [];
-		this._databasesLoading = false;
 		this._stopElapsedTimer();
 		this._clearResultData();
-		this._lastError = SQL_LEAVE_NO_TRACE_ERROR;
-		this.setStsReady(false);
+		this._lastError = '';
+		if (!this._protectedExecutionOwner) this.setStsReady(false);
 		try { schedulePersist('sql-leave-no-trace', true); } catch (e) { console.error('[kusto]', e); }
 		return true;
 	}
@@ -1597,6 +1615,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._activeQueryExecutionId = '';
 		this._stopElapsedTimer();
 		this._clearResultData();
+		this._protectedExecutionOwner = false;
 		this.setStsReady(false);
 		this.sqlSession.rejectPendingToolRun(new Error('SQL target changed during tool execution.'));
 		try { this.copilotWriteQueryCancel(); } catch (e) { console.error('[kusto]', e); }
@@ -1882,10 +1901,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const info = buildSchemaInfo('', false);
 		this._schemaInfoState = info;
 		this._getSchemaInfoEl()?.setInfo(info);
-		this.setStsReady(false);
+		if (!this._protectedExecutionOwner) this.setStsReady(false);
 	}
 
 	public setStsReady(ready: boolean, ownerToken = '', targetGeneration?: number): void {
+		this._protectedExecutionOwner = false;
 		if (!this.sqlSession.setStsReady(ready, ownerToken, targetGeneration)) return;
 		if (ready) {
 			const target = this._sqlConnectionId && this._database ? `${this._connectionTargetSignature(this._sqlConnectionId)}\n${this._database}` : this._stsConnectTarget;
@@ -1894,6 +1914,13 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._syncTestStateAttrs();
 		this._syncActionBar();
 		if (ready && this._ownerToken) this._startPendingToolRunIfReady();
+	}
+
+	public setExecutionOwner(ownerToken: string, targetGeneration?: number): void {
+		this._protectedExecutionOwner = this.sqlSession.setExecutionOwner(ownerToken, targetGeneration);
+		if (ownerToken && this._lastError === SQL_LEAVE_NO_TRACE_PENDING) this._lastError = '';
+		this._syncTestStateAttrs();
+		this._syncActionBar();
 	}
 
 	public notifyStsConnectionError(error: string): void {
@@ -2030,10 +2057,6 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		result: { columns?: { name: string; type?: string }[]; rows?: unknown[][]; metadata?: Record<string, unknown> },
 		options?: { label?: string; showExecutionTime?: boolean; executionId?: string },
 	): boolean {
-		if (this._leaveNoTraceConnectionIds.has(this._sqlConnectionId)) {
-			this.setLeaveNoTraceConnectionIds([...this._leaveNoTraceConnectionIds]);
-			return false;
-		}
 		this._executing = false;
 		this._stopElapsedTimer();
 		this._clearResultsStale();
@@ -2358,7 +2381,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		}
 		if (!this._ownerToken) {
 			this._lastError = this._leaveNoTraceConnectionIds.has(this._sqlConnectionId)
-				? SQL_LEAVE_NO_TRACE_ERROR
+				? SQL_LEAVE_NO_TRACE_PENDING
 				: 'SQL Tools Service is still connecting. Try again when Run becomes available.';
 			this._syncActionBar();
 			return false;

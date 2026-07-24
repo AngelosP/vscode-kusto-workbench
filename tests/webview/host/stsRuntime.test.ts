@@ -1,5 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
-import { StsRuntime } from '../../../src/host/sql/stsRuntime';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
+import { cleanupAbandonedProtectedStsSandboxes, createProtectedStsRuntime, StsRuntime } from '../../../src/host/sql/stsRuntime';
 
 function deferred<T>() {
 	let resolve!: (value: T) => void;
@@ -8,6 +11,60 @@ function deferred<T>() {
 }
 
 describe('StsRuntime', () => {
+	it('removes an abandoned protected sandbox after a prior crash', async () => {
+		const sandbox = path.join(os.tmpdir(), `kusto-workbench-sts-lnt-${process.pid}-abandoned-test`);
+		fs.mkdirSync(sandbox, { recursive: true });
+		fs.writeFileSync(path.join(sandbox, 'orphaned-result.tmp'), 'secret', 'utf8');
+
+		await cleanupAbandonedProtectedStsSandboxes();
+
+		expect(fs.existsSync(sandbox)).toBe(false);
+	});
+
+	it('deletes the isolated protected runtime sandbox after stopping its process', async () => {
+		let sandbox = '';
+		const manager = {
+			epoch: 1, isRunning: true, isFailed: false, ready: Promise.resolve(),
+			start: vi.fn(async () => undefined), stop: vi.fn(async () => undefined),
+			onDidFail: vi.fn(() => ({ dispose: vi.fn() })),
+		} as any;
+		const dependencies = {
+			ensureSts: vi.fn(async () => 'sts-binary'),
+			invalidateStsCache: vi.fn(async () => undefined),
+			createProcessManager: vi.fn((_binary: string, _logs: string, _output: unknown, launch: any) => {
+				sandbox = launch.cwd;
+				expect(launch.env.TEMP).toBe(sandbox);
+				expect(launch.env.TMP).toBe(sandbox);
+				expect(launch.env.LOCALAPPDATA).toContain(sandbox);
+				expect(launch.env.XDG_CONFIG_HOME).toContain(sandbox);
+				expect(launch.env.XDG_DATA_HOME).toContain(sandbox);
+				expect(launch.env.XDG_STATE_HOME).toContain(sandbox);
+				expect(launch.env.DOTNET_BUNDLE_EXTRACT_BASE_DIR).toContain(sandbox);
+				expect(launch.env.NUGET_PACKAGES).toContain(sandbox);
+				expect(launch.suppressProcessOutput).toBe(true);
+				expect(typeof launch.onProcessStarted).toBe('function');
+				fs.writeFileSync(path.join(sandbox, 'buffered-result.tmp'), 'secret', 'utf8');
+				return manager;
+			}),
+		};
+		const context = {
+			globalStorageUri: { fsPath: path.join(os.tmpdir(), 'kw-sts-runtime-cache') },
+			logUri: { fsPath: 'logs' },
+		} as any;
+		const runtime = await createProtectedStsRuntime(
+			context,
+			{ info: vi.fn(), warn: vi.fn(), error: vi.fn() } as any,
+			dependencies as any,
+		);
+
+		await runtime.getProcessManager();
+		expect(fs.existsSync(path.join(sandbox, 'buffered-result.tmp'))).toBe(true);
+		await runtime.dispose();
+
+		expect(manager.stop).toHaveBeenCalledOnce();
+		expect(fs.existsSync(sandbox)).toBe(false);
+	});
+
 	it('shares one cold start and publishes only an initialized manager', async () => {
 		const startup = deferred<void>();
 		const manager = {

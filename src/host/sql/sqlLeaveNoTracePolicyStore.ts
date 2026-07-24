@@ -16,6 +16,7 @@ import {
 	getSqlLeaveNoTraceConnectionIds,
 	SQL_LEAVE_NO_TRACE_STORAGE_KEY,
 	SqlLeaveNoTraceBlockedError,
+	SqlLeaveNoTracePolicyChangedError,
 	type SqlLeaveNoTracePolicy,
 } from './sqlLeaveNoTrace';
 
@@ -167,6 +168,56 @@ export class SqlLeaveNoTracePolicyStore implements SqlLeaveNoTracePolicy, vscode
 	async assertAllowed(connectionId: string): Promise<void> {
 		await this.refresh();
 		if (this.isProtected(connectionId)) throw new SqlLeaveNoTraceBlockedError();
+	}
+
+	async assertProtectionMode(connectionId: string, expectedProtected: boolean, expectedRevocationGeneration: number): Promise<void> {
+		await this.refresh();
+		if (this.isProtected(connectionId) !== expectedProtected
+			|| this.getRevocationGeneration(connectionId) !== expectedRevocationGeneration) {
+			throw new SqlLeaveNoTracePolicyChangedError();
+		}
+	}
+
+	async dispatchProtectionMode<T>(
+		connectionId: string,
+		expectedProtected: boolean,
+		expectedRevocationGeneration: number,
+		dispatch: () => T | PromiseLike<T>,
+	): Promise<T> {
+		return unwrapSqlDispatch(await this.prepareDispatchProtectionMode(
+			connectionId,
+			expectedProtected,
+			expectedRevocationGeneration,
+			async () => startSqlDispatch(dispatch),
+		));
+	}
+
+	async prepareDispatchProtectionMode<T>(
+		connectionId: string,
+		expectedProtected: boolean,
+		expectedRevocationGeneration: number,
+		prepare: () => Promise<SqlDispatchHandle<T>>,
+	): Promise<SqlDispatchHandle<T>> {
+		const id = String(connectionId || '').trim();
+		await this.readyPromise;
+		if (!this.policyPath || !this.lockTarget) {
+			if (this.isProtected(id) !== expectedProtected
+				|| this.getRevocationGeneration(id) !== expectedRevocationGeneration) {
+				throw new SqlLeaveNoTracePolicyChangedError();
+			}
+			return prepare();
+		}
+		return withSqlStateFileLock(this.lockTarget, async () => {
+			const read = await this.readSnapshot();
+			const protectedNow = read.kind !== 'valid'
+				|| read.snapshot.recoveryBlocked
+				|| read.snapshot.connectionIds.includes(id);
+			const generation = read.kind === 'valid' ? (read.snapshot.revocationGenerations[id] ?? 0) : -1;
+			if (protectedNow !== expectedProtected || generation !== expectedRevocationGeneration) {
+				throw new SqlLeaveNoTracePolicyChangedError();
+			}
+			return prepare();
+		}, { staleMs: POLICY_LOCK_STALE_MS });
 	}
 
 	async dispatchAllowed<T>(connectionId: string, dispatch: () => T | PromiseLike<T>, expectedRevocationGeneration?: number): Promise<T> {

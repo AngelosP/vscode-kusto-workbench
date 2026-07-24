@@ -192,6 +192,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		await this.sqlOwnership.assertOwnerAllowed(boxId, expectedOwner);
 	}
 
+	async assertSqlResultOwnerProtection(boxId: string, expectedOwner: SqlResultOwner, expectedProtected: boolean): Promise<void> {
+		await this.sqlOwnership.assertOwnerProtection(boxId, expectedOwner, expectedProtected);
+	}
+
 	private sqlResultOwnersEqual(left: SqlResultOwner | undefined, right: SqlResultOwner | undefined): boolean {
 		return sqlResultOwnersEqual(left, right);
 	}
@@ -2039,6 +2043,18 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 	}
 
+	private async postSqlOwnerMessageProtection(
+		boxId: string,
+		expectedOwner: SqlResultOwner,
+		expectedProtected: boolean,
+		message: Record<string, unknown>,
+		isCurrent: () => boolean = () => true,
+	): Promise<void> {
+		await this.sqlOwnership.dispatchOwnerProtection(boxId, expectedOwner, expectedProtected, () => {
+			if (isCurrent()) this.postMessage(message);
+		});
+	}
+
 	private async postSqlConnectionMessageAllowed(
 		connection: import('./sqlConnectionManager').SqlConnection,
 		message: Record<string, unknown>,
@@ -2052,6 +2068,25 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.sqlWorkbench.leaveNoTracePolicy.getRevocationGeneration(connection.id),
 			() => {
 			if (isCurrent()) this.postMessage(message);
+			},
+		);
+	}
+
+	private async postSqlConnectionMessageProtection(
+		connection: import('./sqlConnectionManager').SqlConnection,
+		expectedProtected: boolean,
+		message: Record<string, unknown>,
+		isCurrent: () => boolean = () => true,
+	): Promise<void> {
+		const principalFingerprint = await readCurrentSqlSchemaPrincipalFingerprint(this.context, connection);
+		if (!principalFingerprint) throw new Error('SQL principal is unavailable before protected dispatch admission.');
+		await this.sqlWorkbench.dispatchSqlOwnerProtection(
+			connection,
+			principalFingerprint,
+			this.sqlWorkbench.leaveNoTracePolicy.getRevocationGeneration(connection.id),
+			expectedProtected,
+			() => {
+				if (isCurrent()) this.postMessage(message);
 			},
 		);
 	}
@@ -2628,6 +2663,31 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.postMessage({ type: 'sqlDatabasesError', requestId, targetGeneration: generation, boxId, sectionInstanceId, sqlConnectionId, error: 'SQL connection not found.' });
 			return;
 		}
+		if (this.sqlWorkbench.isLeaveNoTraceConnection(connection.id)) {
+			const protectedGeneration = this.sqlWorkbench.leaveNoTracePolicy.getRevocationGeneration(connection.id);
+			const isCurrentProtectedOwner = () => this._sqlDatabaseRequestIdByBoxId.get(boxId) === requestId
+				&& this._sqlSectionInstanceIdByBoxId.get(boxId) === sectionInstanceId
+				&& this.sqlOwnership.isTargetCurrent(boxId, sqlConnectionId, undefined, generation)
+				&& this.sqlWorkbench.isLeaveNoTraceConnection(connection.id)
+				&& this.sqlWorkbench.leaveNoTracePolicy.getRevocationGeneration(connection.id) === protectedGeneration;
+			try {
+				const databases = (await this.sqlClient.getDatabases(connection)).slice()
+					.sort((left, right) => left.toLowerCase().localeCompare(right.toLowerCase()));
+				await this.postSqlConnectionMessageProtection(connection, true, {
+					type: 'sqlDatabasesData', requestId, targetGeneration: generation,
+					databases, boxId, sectionInstanceId, sqlConnectionId,
+				}, isCurrentProtectedOwner);
+			} catch (error) {
+				if (!isCurrentProtectedOwner()) return;
+				const message = error instanceof Error ? error.message : String(error);
+				this.output.warn(`[sql-lnt] Isolated database discovery failed: ${sanitizeStsLogText(message)}`);
+				this.postMessage({
+					type: 'sqlDatabasesError', requestId, targetGeneration: generation,
+					boxId, sectionInstanceId, sqlConnectionId, error: message,
+				});
+			}
+			return;
+		}
 		const targetSignature = sqlDatabaseTargetSignature(connection);
 		const startingPrincipalFingerprint = sqlSchemaPrincipalFingerprint(this.context, connection);
 		let cacheRequest;
@@ -3083,7 +3143,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 		};
 		if (this.sqlWorkbench.isLeaveNoTraceConnection(connection.id)) {
-			this._postCurrentStsConnectError(id, sectionInstanceId, connectSequence, 'SQL Tools Service cannot be used with this Leave No Trace connection because it may buffer results on disk.');
+			await this.publishProtectedSqlExecutionOwner(id, sectionInstanceId);
 			return;
 		}
 		try {
@@ -3409,8 +3469,15 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		}
 	}
 
-	private applySqlLeaveNoTraceChange(connectionIds: string[], enabledConnectionIds: string[], _disabledConnectionIds: string[]): void {
+	private applySqlLeaveNoTraceChange(connectionIds: string[], enabledConnectionIds: string[], disabledConnectionIds: string[]): void {
 		const enabled = new Set(enabledConnectionIds);
+		const changed = new Set([...enabledConnectionIds, ...disabledConnectionIds]);
+		const changedComparisonBoxIds = this.sqlOwnership.listComparisonOwners()
+			.filter(({ owner }) => changed.has(owner.connectionId))
+			.map(({ boxId }) => boxId);
+		const changedSourceBoxIds = this.sqlOwnership.listTargets()
+			.filter(target => changed.has(target.connectionId))
+			.map(target => target.boxId);
 		const comparisonBoxIds = this.sqlOwnership.listComparisonOwners()
 			.filter(({ owner }) => enabled.has(owner.connectionId))
 			.map(({ boxId }) => boxId);
@@ -3421,11 +3488,17 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			boxId,
 			this.getStsExpectedOwner(boxId, this.sqlOwnership.getIssuedOwner(boxId)?.owner ?? this.sqlOwnership.getOwner(boxId)),
 		]));
-		for (const comparisonBoxId of comparisonBoxIds) {
+		for (const comparisonBoxId of changedComparisonBoxIds) {
 			this.sqlExecutionBroker.supersede(comparisonBoxId, { notifyWebview: true });
 		}
-		for (const boxId of sourceBoxIds) {
+		for (const boxId of changedSourceBoxIds) {
 			this.sqlExecutionBroker.supersede(boxId, { notifyWebview: true });
+		}
+		for (const comparisonBoxId of changedComparisonBoxIds) {
+			this.sqlOwnership.revokeOwnerToken(comparisonBoxId);
+		}
+		for (const boxId of changedSourceBoxIds) {
+			this.sqlOwnership.revokeOwnerToken(boxId);
 		}
 		this.postMessage({ type: 'sqlLeaveNoTraceData', connectionIds });
 		void this.sendSqlConnectionsData();
@@ -3435,10 +3508,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		for (const comparisonBoxId of comparisonBoxIds) {
 			const owner = this.sqlOwnership.getComparisonOwner(comparisonBoxId);
 			if (owner) this.deleteComparisonSummary(`${owner.sourceBoxId}::${comparisonBoxId}`);
-			this.sqlOwnership.revokeOwnerToken(comparisonBoxId);
 		}
 		for (const boxId of sourceBoxIds) {
-			this.sqlOwnership.revokeOwnerToken(boxId);
 			const previousStsOwner = stsOwners.get(boxId);
 			if (previousStsOwner && this._openedStsBoxIds.delete(boxId)) {
 				this._stsLanguageService?.closeDocumentForOwner(boxId, previousStsOwner);
@@ -3448,11 +3519,26 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this._latestStsConnectSequenceByBoxId.delete(boxId);
 			const sectionInstanceId = this._sqlSectionInstanceIdByBoxId.get(boxId);
 			if (!sectionInstanceId) continue;
+			void this.publishProtectedSqlExecutionOwner(boxId, sectionInstanceId);
+		}
+	}
+
+	private async publishProtectedSqlExecutionOwner(boxId: string, sectionInstanceId: string): Promise<void> {
+		try {
+			const owner = await this.getCanonicalSqlResultOwner(boxId);
+			if (!owner
+				|| this._sqlSectionInstanceIdByBoxId.get(boxId) !== sectionInstanceId
+				|| !this.sqlWorkbench.isLeaveNoTraceConnection(owner.connectionId)) return;
+			const ownerToken = await this.sqlOwnership.issueOwnerTokenProtection(boxId, owner, true);
+			if (this._sqlSectionInstanceIdByBoxId.get(boxId) !== sectionInstanceId
+				|| !this.sqlResultOwnersEqual(this.getSqlResultOwner(boxId), owner)
+				|| !this.sqlWorkbench.isLeaveNoTraceConnection(owner.connectionId)) return;
 			this.postMessage({
-				type: 'stsConnectionState', boxId, sectionInstanceId, state: 'error',
-				error: 'SQL Tools Service is disabled for this Leave No Trace connection.',
-				targetGeneration: this.sqlOwnership.getGeneration(boxId),
-			} as any);
+				type: 'sqlExecutionOwnerState', boxId, sectionInstanceId, ownerToken,
+				targetGeneration: owner.generation,
+			});
+		} catch (error) {
+			this.output.warn(`[sql-lnt] Failed to prepare isolated SQL execution: ${error instanceof Error ? error.message : String(error)}`);
 		}
 	}
 
@@ -3771,6 +3857,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			|| this._closedStsBoxIds.has(boxId)) return;
 
 		const preflight = this.sqlExecutionBroker.reservePreflight(boxId, executionId, message.ownerToken);
+		const protectedExecution = this.sqlWorkbench.isLeaveNoTraceConnection(message.sqlConnectionId);
 		let admission: SqlExecutionAdmission | undefined;
 		let lease: SqlExecutionLease<ReturnType<SqlQueryClient['executeQueryCancelable']>> | undefined;
 		const isStillActiveRun = () => {
@@ -3790,7 +3877,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		};
 		let issuedOwner: { token: string; owner: SqlResultOwner } | undefined;
 		try {
-			issuedOwner = await this.assertSqlOwnerToken(boxId, message.ownerToken);
+			issuedOwner = protectedExecution
+				? await this.sqlOwnership.assertOwnerTokenProtection(boxId, message.ownerToken, true)
+				: await this.assertSqlOwnerToken(boxId, message.ownerToken);
 			if (!isStillActiveRun()
 				|| this._sqlSectionInstanceIdByBoxId.get(boxId) !== message.sectionInstanceId
 				|| this._closedStsBoxIds.has(boxId)) {
@@ -3841,25 +3930,26 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			const result = await lease.execution.promise;
 			if (isStillActiveRun()) {
 				await this.sendSqlConnectionsData();
-				await this.assertSqlResultOwnerAllowed(boxId, resultOwner);
+				if (protectedExecution) await this.assertSqlResultOwnerProtection(boxId, resultOwner, true);
+				else await this.assertSqlResultOwnerAllowed(boxId, resultOwner);
 				if (!isStillActiveRun()) return;
-				await this.postSqlOwnerMessageAllowed(
-					boxId,
-					resultOwner,
-					{ type: 'queryResult', result, boxId, ownerToken: issuedOwner.token, executionId },
-					isStillActiveRun,
-				);
+				const resultMessage = { type: 'queryResult', result, boxId, ownerToken: issuedOwner.token, executionId };
+				if (protectedExecution) {
+					await this.postSqlOwnerMessageProtection(boxId, resultOwner, true, resultMessage, isStillActiveRun);
+				} else {
+					await this.postSqlOwnerMessageAllowed(boxId, resultOwner, resultMessage, isStillActiveRun);
+				}
 			}
 		} catch (error) {
 			if ((error as any)?.isCancelled === true || error instanceof SqlQueryCancelledError) {
 				if (isStillActiveRun()) {
 					try {
-						await this.postSqlOwnerMessageAllowed(
-							boxId,
-							resultOwner,
-							{ type: 'queryCancelled', boxId, ownerToken: issuedOwner.token, executionId },
-							isStillActiveRun,
-						);
+						const cancelledMessage = { type: 'queryCancelled', boxId, ownerToken: issuedOwner.token, executionId };
+						if (protectedExecution) {
+							await this.postSqlOwnerMessageProtection(boxId, resultOwner, true, cancelledMessage, isStillActiveRun);
+						} else {
+							await this.postSqlOwnerMessageAllowed(boxId, resultOwner, cancelledMessage, isStillActiveRun);
+						}
 					} catch { /* owner invalidation provides the terminal UI state */ }
 				}
 				return;
@@ -3869,15 +3959,24 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				// Error is displayed inline in the SQL section — no notification popup
 				// (avoids stealing keyboard focus from the Monaco editor).
 				try {
-					await this.dispatchSqlResultOwnerAllowed(boxId, resultOwner, () => {
+					const postError = () => {
 						if (!isStillActiveRun()) return;
-						this.output.error([
-							`[${new Date().toISOString()}] SQL query execution failed`,
-							`  boxId: ${boxId}`,
-							`  error: ${sanitizeStsLogText(errorMessage)}`,
-						].join('\n'));
+						if (protectedExecution) {
+							this.output.warn('[sql-lnt] Isolated SQL query failed; details were not logged.');
+						} else {
+							this.output.error([
+								`[${new Date().toISOString()}] SQL query execution failed`,
+								`  boxId: ${boxId}`,
+								`  error: ${sanitizeStsLogText(errorMessage)}`,
+							].join('\n'));
+						}
 						this.postMessage({ type: 'queryError', error: errorMessage, boxId, ownerToken: issuedOwner.token, executionId });
-					});
+					};
+					if (protectedExecution) {
+						await this.sqlOwnership.dispatchOwnerProtection(boxId, resultOwner, true, postError);
+					} else {
+						await this.dispatchSqlResultOwnerAllowed(boxId, resultOwner, postError);
+					}
 				} catch {
 					this.output.warn('[sql] Query failed after owner invalidation; error details suppressed.');
 				}
