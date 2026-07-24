@@ -433,16 +433,22 @@ export class SqlEditorSessionRegistry {
 	async issueOwnerToken(
 		boxId: string,
 		expectedOwner: SqlResultOwner,
-	): Promise<string> {
+		isCurrent: () => boolean = () => true,
+	): Promise<{ token: string; created: boolean }> {
+		if (!isCurrent()) throw new Error('SQL owner publication changed before token issuance.');
 		if (!sqlResultOwnersEqual(await this.getCanonicalOwner(boxId), expectedOwner)) {
 			throw new Error('SQL result owner changed before token issuance.');
 		}
+		if (!isCurrent()) throw new Error('SQL owner publication changed before token issuance.');
 		return this.dispatchOwnerAllowed(boxId, expectedOwner, () => {
+			if (!isCurrent()) throw new Error('SQL owner publication changed before token issuance.');
 			const existing = this.ownerTokenByBoxId.get(boxId);
-			if (existing && sqlResultOwnersEqual(existing.owner, expectedOwner)) return existing.token;
+			if (existing && sqlResultOwnersEqual(existing.owner, expectedOwner)) {
+				return { token: existing.token, created: false };
+			}
 			const issued = { token: randomUUID(), owner: expectedOwner } satisfies SqlIssuedOwnerToken;
 			this.ownerTokenByBoxId.set(boxId, issued);
-			return issued.token;
+			return { token: issued.token, created: true };
 		});
 	}
 
@@ -450,16 +456,22 @@ export class SqlEditorSessionRegistry {
 		boxId: string,
 		expectedOwner: SqlResultOwner,
 		expectedProtected: boolean,
-	): Promise<string> {
+		isCurrent: () => boolean = () => true,
+	): Promise<{ token: string; created: boolean }> {
+		if (!isCurrent()) throw new Error('SQL protected owner publication changed before token issuance.');
 		if (!sqlResultOwnersEqual(await this.getCanonicalOwner(boxId), expectedOwner)) {
 			throw new Error('SQL result owner changed before protected token issuance.');
 		}
+		if (!isCurrent()) throw new Error('SQL protected owner publication changed before token issuance.');
 		return this.dispatchOwnerProtection(boxId, expectedOwner, expectedProtected, () => {
+			if (!isCurrent()) throw new Error('SQL protected owner publication changed before token issuance.');
 			const existing = this.ownerTokenByBoxId.get(boxId);
-			if (existing && sqlResultOwnersEqual(existing.owner, expectedOwner)) return existing.token;
+			if (existing && sqlResultOwnersEqual(existing.owner, expectedOwner)) {
+				return { token: existing.token, created: false };
+			}
 			const issued = { token: randomUUID(), owner: expectedOwner } satisfies SqlIssuedOwnerToken;
 			this.ownerTokenByBoxId.set(boxId, issued);
-			return issued.token;
+			return { token: issued.token, created: true };
 		});
 	}
 

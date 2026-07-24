@@ -341,14 +341,18 @@ function createFakeSqlSection(): FakeSqlSection {
 			return true;
 		}),
 		beginDatabaseRequest: vi.fn((requestId: string, generation: number) => {
-			if (generation !== sqlSession.targetGeneration) return false;
+			if (!requestId || generation !== sqlSession.targetGeneration) return false;
 			sqlSession.databaseRequestId = requestId;
 			return true;
 		}),
 		acceptDatabaseResponse: vi.fn((requestId: string | undefined, generation: number) =>
-			generation === sqlSession.targetGeneration
-			&& (!requestId || requestId === sqlSession.databaseRequestId)),
-		completeDatabaseRequest: vi.fn(() => { sqlSession.databaseRequestId = ''; }),
+			!!requestId && generation === sqlSession.targetGeneration
+			&& requestId === sqlSession.databaseRequestId),
+		completeDatabaseRequest: vi.fn((requestId: string) => {
+			if (!requestId || requestId !== sqlSession.databaseRequestId) return false;
+			sqlSession.databaseRequestId = '';
+			return true;
+		}),
 		admitOwnedMessage: vi.fn((message: Record<string, unknown>) => {
 			const ownerToken = String((el as any).getCopilotOwnerToken?.() || '');
 			if (!ownerToken || ownerToken !== String(message.ownerToken || '')) return false;
@@ -1179,15 +1183,15 @@ describe('message-handler dispatch', () => {
 		expect(mocks.maybeDefaultFirstKustoBoxToFavoritesMode).not.toHaveBeenCalled();
 	});
 
-	it('routes sqlDatabasesData and sqlDatabasesError to SQL database handlers', async () => {
+	it('rejects uncorrelated sqlDatabasesData and sqlDatabasesError', async () => {
 		const sqlEl = createFakeSqlSection();
 		mocks.getSqlSectionElement.mockReturnValue(sqlEl);
 		dispatchHostMessage({ type: 'sqlDatabasesData', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, databases: ['B', 'A'], sqlConnectionId: 'sql_conn_1' });
 		dispatchHostMessage({ type: 'sqlDatabasesError', boxId: 'sql_1', sectionInstanceId: sqlEl.sqlSession.instanceId, error: 'failed', sqlConnectionId: 'sql_conn_1' });
 		await Promise.resolve();
 
-		expect(mocks.updateSqlDatabaseSelect).toHaveBeenCalledWith('sql_1', ['B', 'A'], 'sql_conn_1');
-		expect(mocks.onSqlDatabasesError).toHaveBeenCalledWith('sql_1', 'failed', 'sql_conn_1');
+		expect(mocks.updateSqlDatabaseSelect).not.toHaveBeenCalled();
+		expect(mocks.onSqlDatabasesError).not.toHaveBeenCalled();
 	});
 
 	it('routes sqlConnectionAdded to SQL connection state and originating section', async () => {
@@ -1344,7 +1348,7 @@ describe('message-handler dispatch', () => {
 		});
 
 		expect(mocks.handleStsDiagnostics).toHaveBeenCalledWith('sql_1', []);
-		expect(sqlEl.invalidateOwner).toHaveBeenCalledOnce();
+		expect(sqlEl.invalidateOwner).toHaveBeenCalledWith(false);
 		expect(sqlEl.sqlSession.targetGeneration).toBe(7);
 	});
 

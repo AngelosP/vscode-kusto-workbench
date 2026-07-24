@@ -28,13 +28,17 @@ function createTarget(): SqlSectionSessionTarget {
 		}),
 		clearDatabaseRequest: vi.fn(() => { requestId = ''; }),
 		beginDatabaseRequest: vi.fn((nextRequestId: string, nextGeneration: number) => {
-			if (nextGeneration !== generation) return false;
+			if (!nextRequestId || nextGeneration !== generation) return false;
 			requestId = nextRequestId;
 			return true;
 		}),
 		acceptDatabaseResponse: vi.fn((candidate: string | undefined, nextGeneration: number) =>
-			nextGeneration === generation && (!candidate || candidate === requestId)),
-		completeDatabaseRequest: vi.fn(() => { requestId = ''; }),
+			!!candidate && nextGeneration === generation && candidate === requestId),
+		completeDatabaseRequest: vi.fn((candidate: string) => {
+			if (!candidate || candidate !== requestId) return false;
+			requestId = '';
+			return true;
+		}),
 		setStsReady: vi.fn((ready: boolean, token = '') => { ownerToken = ready ? token : ''; return true; }),
 		setExecutionOwner: vi.fn((token: string) => { ownerToken = token; return !!token; }),
 		requestSts: vi.fn(() => Promise.resolve(null)),
@@ -79,9 +83,31 @@ describe('routeSqlSectionMessage', () => {
 		const { effects } = createEffects(target);
 		target.adoptHostGeneration(4);
 		expect(routeSqlSectionMessage({ type: 'sqlDatabasesLoading', boxId: 'sql-1', sectionInstanceId: target.instanceId, requestId: 'current', targetGeneration: 4 }, effects)).toBe('handled');
+		expect(routeSqlSectionMessage({ type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId, targetGeneration: 4 }, effects)).toBe('rejected');
 		expect(routeSqlSectionMessage({ type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId, requestId: 'stale', targetGeneration: 4 }, effects)).toBe('rejected');
 		expect(routeSqlSectionMessage({ type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId, requestId: 'current', targetGeneration: 4 }, effects)).toBe('handled');
 		expect(effects.updateDatabases).toHaveBeenCalledOnce();
+	});
+
+	it('does not clear a reentrant newer database request', () => {
+		const target = createTarget();
+		registerSqlSectionSession(target);
+		const { effects } = createEffects(target);
+		target.adoptHostGeneration(4);
+		expect(routeSqlSectionMessage({
+			type: 'sqlDatabasesLoading', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+			requestId: 'first', targetGeneration: 4,
+		}, effects)).toBe('handled');
+		(effects.updateDatabases as ReturnType<typeof vi.fn>).mockImplementationOnce(() => {
+			target.beginDatabaseRequest('newer', 4);
+		});
+
+		expect(routeSqlSectionMessage({
+			type: 'sqlDatabasesData', boxId: 'sql-1', sectionInstanceId: target.instanceId,
+			requestId: 'first', targetGeneration: 4, databases: ['Db'],
+		}, effects)).toBe('handled');
+		expect(target.completeDatabaseRequest).toHaveReturnedWith(false);
+		expect(target.acceptDatabaseResponse('newer', 4)).toBe(true);
 	});
 
 	it('rejects owner-sensitive messages after owner rotation', () => {

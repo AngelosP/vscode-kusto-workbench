@@ -272,18 +272,21 @@ export class SqlSectionSessionController implements ReactiveController, SqlSecti
 	}
 
 	beginDatabaseRequest(requestId: string, generation: number): boolean {
-		if (generation !== this._targetGeneration) return false;
-		this.databaseRequestId = String(requestId || '');
+		const id = String(requestId || '');
+		if (!id || generation !== this._targetGeneration) return false;
+		this.databaseRequestId = id;
 		return true;
 	}
 
 	acceptDatabaseResponse(requestId: string | undefined, generation: number): boolean {
-		if (generation !== this._targetGeneration) return false;
-		return !requestId || this.databaseRequestId === requestId;
+		const id = String(requestId || '');
+		return !!id && generation === this._targetGeneration && this.databaseRequestId === id;
 	}
 
-	completeDatabaseRequest(): void {
+	completeDatabaseRequest(requestId: string): boolean {
+		if (!requestId || this.databaseRequestId !== requestId) return false;
 		this.databaseRequestId = '';
+		return true;
 	}
 
 	setStsReady(ready: boolean, ownerToken = '', targetGeneration?: number): boolean {

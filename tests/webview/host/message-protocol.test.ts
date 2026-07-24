@@ -91,11 +91,180 @@ function extractSqlSectionRouterCaseLabels(): string[] {
 	return [...new Set(labels)].sort();
 }
 
-function extractPostMessageTypes(relativePath: string): string[] {
-	const source = readWorkspaceFile(relativePath);
-	const labels = [...source.matchAll(/postMessage\(\s*\{[\s\S]*?type:\s*['"]([^'"]+)['"]/g)].map(match => match[1]);
-	return [...new Set(labels)].sort();
+type HostMessageSenderExtraction = Readonly<{
+	types: readonly string[];
+	dynamicSites: readonly string[];
+}>;
+
+const HOST_MESSAGE_ARGUMENT_BY_METHOD = new Map<string, number>([
+	['postMessage', 0],
+	['postMessageContained', 0],
+	['postMessageRequired', 0],
+	['postMessageRequiredContained', 0],
+	['postSqlOwnerMessageAllowed', 2],
+	['postSqlOwnerMessageProtection', 3],
+	['postSqlConnectionMessageAllowed', 1],
+	['postSqlConnectionMessageProtection', 2],
+	['postConnectMessageWithRetry', 2],
+	['postProtectedMessageWithRetry', 2],
+]);
+
+function unwrapExpression(expression: ts.Expression): ts.Expression {
+	let current = expression;
+	while (ts.isParenthesizedExpression(current)
+		|| ts.isAsExpression(current)
+		|| ts.isTypeAssertionExpression(current)
+		|| ts.isSatisfiesExpression(current)
+		|| ts.isNonNullExpression(current)) {
+		current = current.expression;
+	}
+	return current;
 }
+
+function getObjectLiteralMessageType(expression: ts.Expression): string | undefined {
+	const candidate = unwrapExpression(expression);
+	if (!ts.isObjectLiteralExpression(candidate)) return undefined;
+	for (const property of candidate.properties) {
+		if (!ts.isPropertyAssignment(property)) continue;
+		const name = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)
+			? property.name.text
+			: undefined;
+		if (name !== 'type') continue;
+		const value = unwrapExpression(property.initializer);
+		if (ts.isStringLiteral(value) || ts.isNoSubstitutionTemplateLiteral(value)) return value.text;
+	}
+	return undefined;
+}
+
+function getNestedMessageType(object: ts.ObjectLiteralExpression): string | undefined {
+	for (const property of object.properties) {
+		if (!ts.isPropertyAssignment(property)) continue;
+		const name = ts.isIdentifier(property.name) || ts.isStringLiteral(property.name)
+			? property.name.text
+			: undefined;
+		if (name !== 'message') continue;
+		return getObjectLiteralMessageType(property.initializer);
+	}
+	return undefined;
+}
+
+function resolveLocalMessageType(
+	expression: ts.Expression,
+	call: ts.CallExpression,
+	sourceFile: ts.SourceFile,
+): string | undefined {
+	const direct = getObjectLiteralMessageType(expression);
+	if (direct) return direct;
+	const candidate = unwrapExpression(expression);
+	if (!ts.isIdentifier(candidate)) return undefined;
+	let scope: ts.Node = call;
+	while (scope.parent
+		&& !ts.isFunctionLike(scope)
+		&& !ts.isSourceFile(scope)) {
+		scope = scope.parent;
+	}
+	let nearest: ts.VariableDeclaration | undefined;
+	const visit = (node: ts.Node): void => {
+		if (node !== scope && ts.isFunctionLike(node)) return;
+		if (node.getStart(sourceFile) >= call.getStart(sourceFile)) return;
+		if (ts.isVariableDeclaration(node)
+			&& ts.isIdentifier(node.name)
+			&& node.name.text === candidate.text
+			&& node.initializer
+			&& (!nearest || node.getStart(sourceFile) > nearest.getStart(sourceFile))) {
+			nearest = node;
+		}
+		node.forEachChild(visit);
+	};
+	scope.forEachChild(visit);
+	return nearest?.initializer ? getObjectLiteralMessageType(nearest.initializer) : undefined;
+}
+
+function getContainingFunctionName(node: ts.Node): string {
+	for (let current: ts.Node | undefined = node.parent; current; current = current.parent) {
+		if ((ts.isMethodDeclaration(current) || ts.isFunctionDeclaration(current)) && current.name) {
+			return current.name.getText();
+		}
+		if ((ts.isArrowFunction(current) || ts.isFunctionExpression(current))
+			&& ts.isVariableDeclaration(current.parent)
+			&& ts.isIdentifier(current.parent.name)) {
+			return current.parent.name.text;
+		}
+	}
+	return '<module>';
+}
+
+function getCallSite(node: ts.Node, sourceFile: ts.SourceFile): string {
+	const position = sourceFile.getLineAndCharacterOfPosition(node.getStart(sourceFile));
+	return `${position.line + 1}:${position.character + 1}`;
+}
+
+function extractPostMessageTypes(relativePath: string): HostMessageSenderExtraction {
+	const source = readWorkspaceFile(relativePath);
+	const sourceFile = ts.createSourceFile(relativePath, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.TS);
+	const types = new Set<string>();
+	const dynamicSites = new Set<string>();
+	const visit = (node: ts.Node): void => {
+		if (ts.isObjectLiteralExpression(node)) {
+			const nestedMessageType = getNestedMessageType(node);
+			if (nestedMessageType) types.add(nestedMessageType);
+		}
+		if (ts.isCallExpression(node)
+			&& ts.isPropertyAccessExpression(node.expression)
+			&& node.expression.expression.kind === ts.SyntaxKind.ThisKeyword) {
+			const method = node.expression.name.text;
+			const argumentIndex = HOST_MESSAGE_ARGUMENT_BY_METHOD.get(method);
+			if (argumentIndex !== undefined) {
+				const argument = node.arguments[argumentIndex];
+				const type = argument && resolveLocalMessageType(argument, node, sourceFile);
+				if (type) {
+					types.add(type);
+				} else {
+					dynamicSites.add(
+						`${relativePath}::${getContainingFunctionName(node)}::${method}::${getCallSite(node, sourceFile)}`,
+					);
+				}
+			}
+		}
+		node.forEachChild(visit);
+	};
+	sourceFile.forEachChild(visit);
+	return {
+		types: [...types].sort(),
+		dynamicSites: [...dynamicSites].sort(),
+	};
+}
+
+function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
+	const extractions = [
+		extractPostMessageTypes('src/host/queryEditorProvider.ts'),
+		extractPostMessageTypes('src/host/sql/sqlEditorLifecycleCoordinator.ts'),
+	];
+	return {
+		types: [...new Set(extractions.flatMap(extraction => extraction.types))].sort(),
+		dynamicSites: [...new Set(extractions.flatMap(extraction => extraction.dynamicSites))].sort(),
+	};
+}
+
+const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
+	'src/host/queryEditorProvider.ts::<module>::postMessage::144:27',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::294:29',
+	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::396:26',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1959:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::1978:22',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1931:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1943:21',
+	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::1991:10',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1735:13',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1739:10',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2007:8',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageRequiredContained::postMessageRequired::2017:10',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postProtectedMessageWithRetry::postMessageRequiredContained::1672:13',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postProtectedMessageWithRetry::postMessageRequiredContained::1676:10',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1749:13',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1760:27',
+	'src/host/sql/sqlEditorLifecycleCoordinator.ts::replayOwnerChange::postMessageRequiredContained::1789:14',
+] as const;
 
 function extractDataTypeComparisons(relativePath: string): string[] {
 	const source = readWorkspaceFile(relativePath);
@@ -404,6 +573,7 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'stsResponse',
 	'stsDiagnostics',
 	'stsConnectionState',
+	'sqlExecutionOwnerState',
 	'copilotChatFirstTimeResult',
 	'copilotAvailability',
 	'optimizeQueryStatus',
@@ -457,6 +627,7 @@ const SQL_SECTION_ROUTER_CASE_LABELS = [
 	'stsConnectionState',
 	'stsDiagnostics',
 	'stsResponse',
+	'sqlExecutionOwnerState',
 ] as const;
 
 /**
@@ -536,6 +707,7 @@ const HOST_TO_WEBVIEW_TYPES = [
 	'stsResponse',
 	'stsDiagnostics',
 	'stsConnectionState',
+	'sqlExecutionOwnerState',
 
 	// queryEditorSchema.ts
 	'schemaData',
@@ -564,6 +736,12 @@ const COMPONENT_HANDLED_HOST_TO_WEBVIEW_TYPES = [
 	'pbiWorkspacesResult',
 	'pbiItemExistsResult',
 	'publishToPowerBIResult',
+	'powerBiPartialPublishWarningResult',
+] as const;
+
+/** Host messages consumed by a targeted window listener outside the generic dispatcher. */
+const DIRECT_LISTENER_HOST_TO_WEBVIEW_TYPES = [
+	'editorCursorStatusSnapshot',
 ] as const;
 
 /**
@@ -713,6 +891,19 @@ describe('Message Protocol Contract', () => {
 	// ─── Host → Webview direction ──────────────────────────────────────────
 
 	describe('Host → Webview (host postMessage types ↔ message-handler cases)', () => {
+		it('every direct main-webview host sender is declared in the protocol inventory', () => {
+			const extraction = extractMainWebviewHostMessages();
+			const declared = new Set<string>([
+				...HOST_TO_WEBVIEW_TYPES,
+				...COMPONENT_HANDLED_HOST_TO_WEBVIEW_TYPES,
+				...DIRECT_LISTENER_HOST_TO_WEBVIEW_TYPES,
+			]);
+			const missing = extraction.types.filter(type => !declared.has(type));
+			expect(missing, 'Direct provider/coordinator senders missing from host protocol inventory').toEqual([]);
+			expect(extraction.dynamicSites, 'Dynamic host sender sites require an explicit reviewed allowlist')
+				.toEqual([...REVIEWED_DYNAMIC_HOST_MESSAGE_SITES]);
+		});
+
 		it('every host→webview type has a handler case (or is known-unhandled)', () => {
 			const cases = new Set<string>(MESSAGE_HANDLER_CASE_LABELS);
 			const missing: string[] = [];
@@ -725,7 +916,7 @@ describe('Message Protocol Contract', () => {
 		});
 
 		it('component-handled host messages are sent by the host and handled by the HTML section', () => {
-			const providerMessages = new Set<string>(extractPostMessageTypes('src/host/queryEditorProvider.ts'));
+			const providerMessages = new Set<string>(extractMainWebviewHostMessages().types);
 			const htmlSectionMessages = new Set<string>(extractDataTypeComparisons('src/webview/sections/kw-html-section.ts'));
 			const publishDialogMessages = new Set<string>(extractMessageTypeComparisons('src/webview/components/kw-publish-pbi-dialog.ts'));
 			const missingSenders: string[] = [];
@@ -734,7 +925,9 @@ describe('Message Protocol Contract', () => {
 			for (const t of COMPONENT_HANDLED_HOST_TO_WEBVIEW_TYPES) {
 				if (!providerMessages.has(t)) missingSenders.push(t);
 				if (!htmlSectionMessages.has(t)) missingHandlers.push(t);
-				if (t !== 'openPublishPbiDialog' && !publishDialogMessages.has(t)) missingDialogHandlers.push(t);
+				if (t !== 'openPublishPbiDialog'
+					&& t !== 'powerBiPartialPublishWarningResult'
+					&& !publishDialogMessages.has(t)) missingDialogHandlers.push(t);
 			}
 			expect(missingSenders, 'Component-handled host types missing from queryEditorProvider senders').toEqual([]);
 			expect(missingHandlers, 'Component-handled host types missing from kw-html-section handlers').toEqual([]);

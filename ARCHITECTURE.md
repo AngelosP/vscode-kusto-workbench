@@ -13,7 +13,7 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | File | Purpose |
 | ---- | ------- |
 | `extension.ts` | Entry point. Registers providers, commands, and diagnostics |
-| `queryEditorProvider.ts` | Core class (~4500 lines). Manages the webview panel, handles all webview↔extension messages, query execution, dashboard export/publish routing |
+| `queryEditorProvider.ts` | Main webview adapter. Routes host↔webview messages and retains cross-language query, Copilot, persistence, connection UX, and dashboard export/publish orchestration |
 | `queryEditorCopilot.ts` | Copilot integration (extracted from provider) |
 | `queryEditorConnection.ts` | Connection management (extracted from provider) |
 | `queryEditorSchema.ts` | Schema handling (extracted from provider) |
@@ -60,6 +60,7 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `sql/sqlDialectRegistry.ts` | Dialect metadata registry used by connection UIs |
 | `sql/mssqlSchema.ts` | MSSQL schema catalog queries and transport-neutral parsers |
 | `sql/sqlWorkbenchService.ts` | Extension-scoped owner for SQL connections, STS runtime, query broker, and client facade |
+| `sql/sqlEditorLifecycleCoordinator.ts` | Editor-scoped SQL lifecycle orchestrator: section incarnations, target transitions, STS documents/replay, request currentness, and connection/principal/privacy invalidation |
 | `sql/sqlEditorSessionRegistry.ts` | State-owning editor-scoped SQL target, principal, revocation, comparison, and owner-token authority |
 | `sql/sqlExecutionBroker.ts` | Editor-scoped SQL admission, exact execution identity, cancellation, currentness, and guarded lease cleanup shared by manual and Copilot runs |
 | `sql/sqlLeaveNoTracePolicyStore.ts` | Versioned, lock-protected, cross-extension-host SQL privacy policy with atomic updates and watcher propagation |
@@ -376,6 +377,7 @@ SQL sections provide a near-identical notebook experience for T-SQL queries agai
 
 * **`SqlConnectionManager`** — CRUD for SQL connections. IDs use `sql_` prefix. Connections in `globalState`, passwords in `SecretStorage`
 * **`SqlWorkbenchService`** — one extension-scoped SQL owner shared by editors, Connection Manager, Cached Values, Copilot, and tools
+* **`SqlEditorLifecycleCoordinator`** — one per editor/webview. Owns section incarnation and STS sequencing, composes the registry and execution broker, reacts to connection/principal/privacy/runtime events, and exposes narrow owner/currentness APIs to provider adapters
 * **`SqlEditorSessionRegistry`** — one state-owning editor-scoped authority for section/comparison targets, generations, result ownership, lineage, and owner tokens
 * **`SqlExecutionBroker`** — one editor-scoped authority for SQL preflight reservations, single-attempt transport admission, exact cancellation, currentness, and guarded release. Manual and Copilot callers retain query shaping, retries, user-facing terminals, and conversation history
 * **`SqlQueryClient`** — stable caller-facing facade over STS database discovery, schema queries, execution, and cancellation
@@ -392,6 +394,21 @@ SQL sections use Microsoft's SQL Tools Service, the same engine behind the offic
 * **Protected STS runtime** — each Leave No Trace query/database-discovery operation gets an isolated OS-temp sandbox and process. `TEMP`, `TMP`, home, app-data, cache, working, and log paths point into that sandbox. Cleanup disconnects/disposes the STS owner, stops or kills the process, recursively deletes the sandbox before returning results, and removes abandoned dead-process sandboxes on the next activation.
 
 Every query execution gets a unique owner URI. The public `QueryResult`, host/webview messages, and `.kqlx`/`.sqlx` formats remain shared with Kusto and unchanged. STS results are converted before entering shared table, chart, transformation, HTML, comparison, and persistence paths.
+
+### SQL Editor Lifecycle Boundary
+
+`QueryEditorProvider` remains the webview and cross-language adapter. It owns connection prompts, database/schema I/O and response shaping, manual query formatting and terminal UX, generic comparison promises/summaries, and lock-held persistence sanitation/publication. It delegates editor-local identity and sequencing to `SqlEditorLifecycleCoordinator`.
+
+The coordinator composes, but does not replace, the canonical authorities:
+
+* `SqlEditorSessionRegistry` owns targets, monotonic generations/tombstones, comparison lineage, canonical result owners, and owner tokens.
+* `SqlExecutionBroker` owns preflight/admission, exact execution IDs, cancellation, currentness, and guarded release over the provider's shared `QueryRunCoordinator`.
+* `SqlWorkbenchService` remains extension-scoped and owns connections, principals, Leave No Trace policy, shared STS runtime, query service, and client.
+* `StsLanguageService` owns the per-editor JSON-RPC document protocol. The coordinator owns when documents open, change, close, and replay.
+
+Target changes cancel work and exact-close the old STS owner inside the registry's pre-commit callback, while the old token and target are still current. Runtime replacement recreates language state without rotating the logical target generation. Leave No Trace invalidation cancels correlated work before revoking tokens and publishing policy, then closes shared language state and issues an execution-only token only when the final target remains protected.
+
+The coordinator receives provider effects as callbacks and never imports `QueryEditorProvider`, `CopilotService`, the extension entry point, or document providers. This prevents panel-scoped state from flowing into extension-scoped services and keeps lifecycle tests independent of VS Code webview construction.
 
 ### Compatibility Sidecars
 

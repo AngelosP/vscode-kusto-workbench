@@ -185,6 +185,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _desiredTargetSignature = '';
 	private _pendingPersistedTargetAdoption = false;
 	private _pendingHostOwnerReadoption = false;
+	private _hostOwnerReadoptionAdvancesGeneration = false;
 	private _hostOwnerReadoptionDatabase = '';
 	private _desiredServerUrlPendingMatch = false;
 	@state() private _databases: string[] = [];
@@ -707,10 +708,15 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const targetConnId = fav.connectionId;
 		const conn = this._connections.find(c => c.id === targetConnId);
 		if (conn) {
+			this._cancelHostOwnerReadoption();
+			this._pendingPersistedTargetAdoption = false;
 			this._clearTargetData();
 			this._connectionId = conn.id;
 			this._sqlConnectionId = conn.id;
 			this._desiredServerUrl = conn.serverUrl;
+			this._desiredConnectionIdHint = conn.id;
+			this._desiredTargetSignature = sqlConnectionTargetSignature(conn);
+			this._desiredServerUrlPendingMatch = false;
 			this._desiredDatabase = fav.database;
 			this._database = '';
 			this._databases = [];
@@ -839,8 +845,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const connectionId = e.detail?.id;
 		if (!connectionId) return;
 		this._pendingPersistedTargetAdoption = false;
-		this._pendingHostOwnerReadoption = false;
-		this._hostOwnerReadoptionDatabase = '';
+		this._cancelHostOwnerReadoption();
 		const prev = this._connectionId;
 		this._connectionId = connectionId;
 		this._sqlConnectionId = connectionId;
@@ -869,8 +874,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const database = e.detail?.id;
 		if (!database) return;
 		this._pendingPersistedTargetAdoption = false;
-		this._pendingHostOwnerReadoption = false;
-		this._hostOwnerReadoptionDatabase = '';
+		this._cancelHostOwnerReadoption();
 		const prev = this._database;
 		this._database = database;
 		this._desiredDatabase = '';
@@ -1484,6 +1488,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	public getDatabase(): string { return this._database; }
 	public setDatabase(db: string): void {
 		this._pendingPersistedTargetAdoption = false;
+		this._cancelHostOwnerReadoption();
 		if (this._database !== db) {
 			this._clearTargetData();
 			this._database = db;
@@ -1498,10 +1503,17 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	public getSqlConnectionId(): string { return this._sqlConnectionId; }
 	public setSqlConnectionId(id: string): void {
 		this._pendingPersistedTargetAdoption = false;
+		this._cancelHostOwnerReadoption();
 		if (this._sqlConnectionId && this._sqlConnectionId !== id) this._clearTargetData();
 		this._sqlConnectionId = id;
 		this._connectionId = id;
 		if (id) {
+			const connection = this._connections.find(candidate => candidate.id === id);
+			this._desiredConnectionIdHint = id;
+			if (connection) {
+				this._desiredServerUrl = connection.serverUrl;
+				this._desiredTargetSignature = sqlConnectionTargetSignature(connection);
+			}
 			this._desiredServerUrlPendingMatch = false;
 		}
 		if (!id) this._resetSchemaReadiness('not-loaded');
@@ -1511,6 +1523,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	public configureToolTarget(connection: SqlConnectionInfo, database?: string, expectedOwner?: unknown): void {
 		if (!connection?.id) throw new Error('The requested SQL connection is unavailable.');
 		this._pendingPersistedTargetAdoption = false;
+		this._cancelHostOwnerReadoption();
 		const previousConnectionId = this._sqlConnectionId;
 		const previousTargetSignature = previousConnectionId ? this._connectionTargetSignature(previousConnectionId, this._connections) : '';
 		const nextTargetSignature = sqlConnectionTargetSignature(connection);
@@ -1567,9 +1580,12 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._syncActionBar();
 	}
 
-	public invalidateOwner(): void {
+	public invalidateOwner(retired = false): void {
+		if (!this._pendingHostOwnerReadoption && this._database) {
+			this._hostOwnerReadoptionDatabase = this._database;
+		}
 		this._pendingHostOwnerReadoption = true;
-		this._hostOwnerReadoptionDatabase = this._database;
+		this._hostOwnerReadoptionAdvancesGeneration ||= retired;
 		this._clearTargetData();
 		this._resetSchemaReadiness('not-loaded');
 		const schemaInfo = this._getSchemaInfoEl();
@@ -1585,6 +1601,12 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._sqlConnectionId = '';
 		this._syncTestStateAttrs();
 		this._syncActionBar();
+	}
+
+	private _cancelHostOwnerReadoption(): void {
+		this._pendingHostOwnerReadoption = false;
+		this._hostOwnerReadoptionAdvancesGeneration = false;
+		this._hostOwnerReadoptionDatabase = '';
 	}
 
 	public canPersistResults(): boolean {
@@ -1766,7 +1788,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 				detail: {
 					boxId: this.boxId, connectionId: resolvedId, serverUrl: this.getServerUrl(),
 					database: this._hostOwnerReadoptionDatabase || this._desiredDatabase || this._database,
-					...(reAdoptingHostInvalidatedOwner ? { preserveTargetGeneration: true } : {}),
+					...(reAdoptingHostInvalidatedOwner && !this._hostOwnerReadoptionAdvancesGeneration
+						? { preserveTargetGeneration: true }
+						: {}),
 				},
 				bubbles: true, composed: true,
 			}));
@@ -1786,7 +1810,10 @@ export class KwSqlSection extends LitElement implements SectionElement {
 				});
 			}
 		}
-		if (resolvedId && !this._hostOwnerReadoptionDatabase) this._pendingHostOwnerReadoption = false;
+		if (resolvedId && !this._hostOwnerReadoptionDatabase) {
+			this._pendingHostOwnerReadoption = false;
+			this._hostOwnerReadoptionAdvancesGeneration = false;
+		}
 	}
 
 	/** Update available databases. Applies desired database if set. */
@@ -1875,6 +1902,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			if (!adoptingPersistedDatabase && !hostReadoptionDatabase) this._clearTargetData();
 			this._pendingPersistedTargetAdoption = false;
 			this._pendingHostOwnerReadoption = false;
+			this._hostOwnerReadoptionAdvancesGeneration = false;
 			this._connectStsIfReady('database-list');
 		}
 	}

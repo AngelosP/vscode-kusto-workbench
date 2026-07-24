@@ -130,7 +130,7 @@ describe('SqlEditorSessionRegistry', () => {
 			expect(result).toBe('changed');
 			expect(observations).toEqual([{
 				target: { boxId: 'sql_1', connectionId: 'sql-1', database: 'Db', generation: 4 },
-				token: oldToken,
+				token: oldToken.token,
 			}]);
 			expect(harness.registry.getTarget('sql_1')).toEqual({
 				boxId: 'sql_1', connectionId: 'sql-2', database: 'OtherDb', generation: 5,
@@ -263,7 +263,7 @@ describe('SqlEditorSessionRegistry', () => {
 		const harness = createHarness();
 		try {
 			const owner = harness.registry.getOwner('sql_1')!;
-			const token = await harness.registry.issueOwnerToken('sql_1', owner);
+			const token = (await harness.registry.issueOwnerToken('sql_1', owner)).token;
 			const issued = harness.registry.getIssuedOwner('sql_1')!;
 			const validation = deferred<void>();
 			harness.sqlWorkbench.connectionManager.assertConnectionCurrent.mockImplementationOnce(async () => validation.promise);
@@ -283,8 +283,10 @@ describe('SqlEditorSessionRegistry', () => {
 			const owner = harness.registry.getOwner('sql_1')!;
 			const stableToken = await harness.registry.issueOwnerToken('sql_1', owner);
 
-			await expect(harness.registry.issueOwnerToken('sql_1', owner)).resolves.toBe(stableToken);
-			expect(harness.registry.getIssuedOwner('sql_1')).toEqual({ token: stableToken, owner });
+			await expect(harness.registry.issueOwnerToken('sql_1', owner)).resolves.toEqual({
+				token: stableToken.token, created: false,
+			});
+			expect(harness.registry.getIssuedOwner('sql_1')).toEqual({ token: stableToken.token, owner });
 		} finally {
 			fs.rmSync(harness.directory, { recursive: true, force: true });
 		}

@@ -10,15 +10,21 @@ import { setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
 import { setSqlConnections } from '../../src/webview/core/state.js';
 import { getSqlCopilotInsertOwner } from '../../src/webview/sections/copilot-chat-manager.controller.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
+import {
+	clearSqlSectionSessionsForTest,
+	routeSqlSectionMessage,
+} from '../../src/webview/core/sql-section-message-router.js';
 
 let container: HTMLDivElement;
 
 beforeEach(() => {
+	clearSqlSectionSessionsForTest();
 	container = document.createElement('div');
 	document.body.appendChild(container);
 });
 
 afterEach(() => {
+	clearSqlSectionSessionsForTest();
 	delete pState.queryResultJsonByBoxId.sql_test1;
 	setSqlConnections([]);
 	render(nothing, container);
@@ -219,6 +225,130 @@ describe('kw-sql-section loading states', () => {
 		});
 		expect(el.serialize().targetSignature).toBe(sqlConnectionTargetSignature(updated));
 		expect(el.serialize().targetSignature).not.toContain('ReportUser');
+	});
+
+	it('retains the first database and retirement intent across repeated owner invalidation', () => {
+		const el = createSection();
+		const original = {
+			id: 'reporting', name: 'Reporting', serverUrl: 'old.example', dialect: 'mssql',
+			authType: 'sql-login', username: 'ReportUser', database: 'Warehouse', credentialRevision: 1,
+		};
+		el.setDesiredConnectionOwner(original.id, sqlConnectionTargetSignature(original));
+		el.setDesiredDatabase('Warehouse');
+		el.setConnections([original]);
+		el.setDatabases(['Warehouse']);
+		const connectionChanges: CustomEvent[] = [];
+		el.addEventListener('sql-connection-changed', event => connectionChanges.push(event as CustomEvent));
+
+		el.invalidateOwner(false);
+		el.invalidateOwner(true);
+		el.setConnections([original]);
+		el.setDatabases(['Warehouse']);
+
+		expect(connectionChanges.at(-1)?.detail).not.toHaveProperty('preserveTargetGeneration');
+		expect(el.getDatabase()).toBe('Warehouse');
+	});
+
+	it.each(['favorite', 'manual', 'tool'] as const)(
+		'keeps an explicit %s target after host owner invalidation',
+		selection => {
+			const el = createSection();
+			const original = {
+				id: 'original', name: 'Original', serverUrl: 'original.example', dialect: 'mssql',
+				authType: 'sql-login', username: 'OriginalUser', database: 'OldDb',
+			};
+			const selected = {
+				id: 'selected', name: 'Selected', serverUrl: 'selected.example', dialect: 'mssql',
+				authType: 'sql-login', username: 'SelectedUser', database: 'NewDb',
+			};
+			el.setDesiredConnectionOwner(original.id, sqlConnectionTargetSignature(original));
+			el.setDesiredDatabase('OldDb');
+			el.setConnections([original, selected]);
+			el.setDatabases(['OldDb']);
+			el.invalidateOwner();
+
+			if (selection === 'favorite') {
+				el.setFavorites([{ name: 'Selected favorite', connectionId: selected.id, database: 'NewDb' }]);
+				(el as any)._onFavoriteSelected(new CustomEvent('selected', { detail: { id: '0' } }));
+				el.setDatabases(['NewDb']);
+			} else if (selection === 'manual') {
+				el.setSqlConnectionId(selected.id);
+				el.setDatabase('NewDb');
+			} else {
+				el.configureToolTarget(selected, 'NewDb');
+			}
+
+			el.setConnections([original, selected]);
+
+			expect(el.getSqlConnectionId()).toBe(selected.id);
+			expect(el.getDatabase()).toBe('NewDb');
+			expect(el.serialize()).toMatchObject({
+				connectionIdHint: selected.id,
+				targetSignature: sqlConnectionTargetSignature(selected),
+			});
+		},
+	);
+
+	it.each([
+		['retired recreation', true, 8],
+		['live owner rotation', false, 7],
+	] as const)('uses the correct generation for %s re-adoption', (_label, retired, expectedGeneration) => {
+		const el = createSection();
+		const original = {
+			id: 'reporting', name: 'Reporting', serverUrl: 'old.example', dialect: 'mssql',
+			authType: 'sql-login', username: 'ReportUser', database: 'Warehouse', credentialRevision: 1,
+		};
+		el.setDesiredConnectionOwner(original.id, sqlConnectionTargetSignature(original));
+		el.setDesiredDatabase('Warehouse');
+		el.setConnections([original]);
+		el.setDatabases(['Warehouse']);
+		el.sqlSession.adoptHostGeneration(6);
+		const outbound: Record<string, unknown>[] = [];
+		el.sqlSession.configureLifecycleEffects({
+			isRestoreInProgress: () => false,
+			clearSchema: () => undefined,
+			setSchemaStatus: () => undefined,
+			setDatabases: (databases, desiredDatabase) => el.setDatabases(databases, desiredDatabase),
+			setDatabasesLoading: loading => el.setDatabasesLoading(loading),
+			setRefreshLoading: loading => el.setRefreshLoading(loading),
+			getConnectionId: () => el.getSqlConnectionId(),
+			getDatabase: () => el.getDatabase(),
+			postMessage: message => outbound.push(message),
+			persist: () => undefined,
+		});
+		el.addEventListener('sql-connection-changed', event => {
+			el.sqlSession.handleConnectionChanged((event as CustomEvent).detail || {});
+		});
+		el.addEventListener('sql-database-changed', event => {
+			el.sqlSession.handleDatabaseChanged((event as CustomEvent).detail || {});
+		});
+		const effects = {
+			getSection: () => el,
+			clearSchema: vi.fn(),
+			setSchema: vi.fn(),
+			updateDatabases: vi.fn(),
+			reportDatabasesError: vi.fn(),
+			handleStsResponse: vi.fn(),
+			handleStsDiagnostics: vi.fn(),
+			clearPolicyBox: vi.fn(),
+		};
+
+		expect(routeSqlSectionMessage({
+			type: 'sqlConnectionOwnerChanged', boxId: 'sql_test1', sectionInstanceId: el.sqlSession.instanceId,
+			connectionId: original.id, targetGeneration: 7, ...(retired ? { retired: true } : {}),
+		}, effects)).toBe('handled');
+		const recreated = retired ? original : { ...original, serverUrl: 'new.example', credentialRevision: 2 };
+		el.setConnections([recreated]);
+		el.setDatabases(['Warehouse']);
+
+		expect(el.sqlSession.targetGeneration).toBe(expectedGeneration);
+		expect(outbound).toContainEqual(expect.objectContaining({
+			type: 'getSqlDatabases', sqlConnectionId: original.id, targetGeneration: expectedGeneration,
+		}));
+		expect(outbound).toContainEqual(expect.objectContaining({
+			type: 'prefetchSqlSchema', sqlConnectionId: original.id, database: 'Warehouse',
+			targetGeneration: expectedGeneration,
+		}));
 	});
 
 	it('keeps an explicit dropdown owner selected while cold restore is still loading', () => {

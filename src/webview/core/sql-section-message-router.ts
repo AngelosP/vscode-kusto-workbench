@@ -20,7 +20,7 @@ export interface SqlSectionSessionTarget {
 	clearDatabaseRequest(): void;
 	beginDatabaseRequest(requestId: string, generation: number): boolean;
 	acceptDatabaseResponse(requestId: string | undefined, generation: number): boolean;
-	completeDatabaseRequest(): void;
+	completeDatabaseRequest(requestId: string): boolean;
 	admitOwnedMessage(message: { ownerToken?: unknown; executionId?: unknown; type?: unknown }): boolean;
 	resolveStsResponse(requestId: string, result: unknown, ownerToken?: string, targetGeneration?: number): boolean;
 	clear(): void;
@@ -33,7 +33,7 @@ interface SqlSectionElement {
 	getSqlConnectionId?(): string;
 	getConnectionId?(): string;
 	getDatabase?(): string;
-	invalidateOwner?(): void;
+	invalidateOwner?(retired?: boolean): void;
 	setSqlConnectionId?(connectionId: string): void;
 	clearResults?(): void;
 	setDatabasesLoading?(loading: boolean): void;
@@ -174,7 +174,7 @@ export function routeSqlSectionMessage(
 				|| !session.adoptHostGeneration(Number(message.targetGeneration))) return 'rejected';
 			effects.clearSchema(boxId);
 			effects.handleStsDiagnostics(boxId, []);
-			if (typeof section?.invalidateOwner === 'function') section.invalidateOwner();
+			if (typeof section?.invalidateOwner === 'function') section.invalidateOwner(message.retired === true);
 			else section?.setSqlConnectionId?.('');
 			section?.clearResults?.();
 			effects.clearPolicyBox(boxId);
@@ -197,7 +197,7 @@ export function routeSqlSectionMessage(
 				|| !session.acceptDatabaseResponse(requestId, Number(message.targetGeneration ?? 0))) return 'rejected';
 			if (type === 'sqlDatabasesData') effects.updateDatabases(boxId, message.databases, message.sqlConnectionId);
 			else effects.reportDatabasesError(boxId, message.error, message.sqlConnectionId);
-			session.completeDatabaseRequest();
+			session.completeDatabaseRequest(requestId!);
 			return 'handled';
 		}
 		case 'sqlSchemaData': {

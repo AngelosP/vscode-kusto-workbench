@@ -1,7 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import { QueryEditorProvider } from '../../../src/host/queryEditorProvider';
-import { SqlEditorSessionRegistry } from '../../../src/host/sql/sqlEditorSessionRegistry';
+import { QueryRunCoordinator } from '../../../src/host/queryRunCoordinator';
+import { SqlEditorLifecycleCoordinator } from '../../../src/host/sql/sqlEditorLifecycleCoordinator';
 
 function createProviderHarness(): QueryEditorProvider & Record<string, any> {
 	const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
@@ -69,13 +70,31 @@ function createSqlDiscoveryHarness(options: { accountId?: string; authType?: 'aa
 	provider.connection.getSqlFavorites = vi.fn(() => []);
 	provider.output = { error: vi.fn(), warn: vi.fn() };
 	provider.postMessage = vi.fn();
-	provider._sqlDatabaseRequestIdByBoxId = new Map();
-	provider._closedStsBoxIds = new Set();
-	provider._sqlSectionInstanceIdByBoxId = new Map([['sql-box', 'instance-sql-box']]);
-	provider.sqlOwnership = new SqlEditorSessionRegistry({ context: provider.context, sqlWorkbench: provider.sqlWorkbench });
-	provider.sqlOwnership.adoptTarget('sql-box', 'sql-1', undefined, 7, () => undefined);
+	provider.sqlConnectionsSnapshotTail = Promise.resolve(true);
+	const sqlLifecycle = new SqlEditorLifecycleCoordinator({
+		context: provider.context,
+		sqlWorkbench: provider.sqlWorkbench,
+		queryRuns: new QueryRunCoordinator(),
+		output: provider.output,
+		hasWebview: () => true,
+		effects: {
+			postMessage: (message: unknown) => provider.postMessage(message),
+			cancelCopilotWriteQuery: vi.fn(),
+			cancelCopilotQueryTarget: vi.fn(),
+			invalidateSqlCopilot: vi.fn(),
+			rejectPendingComparisonEnsures: vi.fn(),
+			deleteComparisonSummary: vi.fn(),
+			invalidatePersistence: vi.fn(),
+			refreshConnectionsData: vi.fn(async () => true),
+			prefetchSchema: vi.fn(async () => undefined),
+		},
+	});
+	sqlLifecycle.openSection('sql-box', 'instance-sql-box');
+	sqlLifecycle.adoptTarget('sql-box', 'instance-sql-box', 'sql-1', undefined, 7);
+	provider.sqlLifecycle = sqlLifecycle;
 	return {
 		provider,
+		sqlLifecycle,
 		getDatabases,
 		globalState,
 		cachedDatabases,
@@ -173,6 +192,20 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 
 		expect(harness.provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
 			type: 'sqlDatabasesData',
+		}));
+	});
+
+	it('correlates an early database discovery error to the current section instance', async () => {
+		const harness = createSqlDiscoveryHarness();
+		harness.provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(async () => {
+			throw new Error('Connection unavailable');
+		});
+
+		await harness.provider.sendSqlDatabases('sql-1', 'sql-box', 'instance-sql-box', true);
+
+		expect(harness.provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'sqlDatabasesError', boxId: 'sql-box', sectionInstanceId: 'instance-sql-box',
+			sqlConnectionId: 'sql-1', targetGeneration: 7, error: 'Connection unavailable',
 		}));
 	});
 
@@ -288,6 +321,23 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 		expect(message.connections[0]).not.toHaveProperty('principalFingerprint');
 	});
 
+	it('propagates the latest failed delivery across overlapping connection snapshots', async () => {
+		const harness = createSqlDiscoveryHarness();
+		const firstDelivery = deferred<boolean>();
+		harness.provider.postMessage
+			.mockImplementationOnce(() => firstDelivery.promise)
+			.mockResolvedValueOnce(false);
+
+		const first = harness.provider.sendSqlConnectionsData();
+		await vi.waitFor(() => expect(harness.provider.postMessage).toHaveBeenCalledTimes(1));
+		const second = harness.provider.sendSqlConnectionsData();
+		firstDelivery.resolve(true);
+
+		await expect(first).resolves.toBe(true);
+		await expect(second).resolves.toBe(false);
+		expect(harness.provider.postMessage).toHaveBeenCalledTimes(2);
+	});
+
 	it.each(['edited', 'deleted', 'principal-rotated', 'generation-changed'] as const)('drops metadata when its owner is %s', async change => {
 		const harness = createSqlDiscoveryHarness();
 		const pending = deferred<string[]>();
@@ -298,7 +348,9 @@ describe('QueryEditorProvider SQL database discovery ownership', () => {
 		if (change === 'edited') harness.setConnection({ ...harness.getConnection(), database: 'OtherDb' });
 		if (change === 'deleted') harness.setConnection(undefined);
 		if (change === 'principal-rotated') harness.setConnection({ ...harness.getConnection(), username: 'user-b' });
-		if (change === 'generation-changed') harness.provider.sqlOwnership.rotateTargetOwner('sql-box');
+		if (change === 'generation-changed') {
+			harness.sqlLifecycle.adoptTarget('sql-box', 'instance-sql-box', 'sql-1', undefined, 8);
+		}
 		pending.resolve(['StaleDb']);
 		await run;
 

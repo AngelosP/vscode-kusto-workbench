@@ -32,7 +32,9 @@ describe('SqlSectionSessionController', () => {
 		expect(controller.acceptDatabaseResponse('stale', 1)).toBe(false);
 		expect(controller.acceptDatabaseResponse('db-1', 0)).toBe(false);
 		expect(controller.acceptDatabaseResponse('db-1', 1)).toBe(true);
-		controller.completeDatabaseRequest();
+		expect(controller.acceptDatabaseResponse(undefined, 1)).toBe(false);
+		expect(controller.completeDatabaseRequest('stale')).toBe(false);
+		expect(controller.completeDatabaseRequest('db-1')).toBe(true);
 		expect(controller.acceptDatabaseResponse('db-1', 1)).toBe(false);
 	});
 
