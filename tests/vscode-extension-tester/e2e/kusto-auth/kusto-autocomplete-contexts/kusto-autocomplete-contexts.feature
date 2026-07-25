@@ -23,7 +23,7 @@ Feature: Kusto autocomplete schema contexts
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
     When I evaluate "window.__e2e.kusto.selectSampleDatabase()" in the webview
     When I wait for "kw-query-section[data-test-database-selected='true']" in the webview for 10 seconds
-    When I wait for "kw-query-section[data-test-preparation-state='ready']" in the webview for 60 seconds
+    When I evaluate "window.__e2e.kusto.waitForPreparationReady(0, 60000)" in the webview for 65 seconds
     When I evaluate "window.__e2e.kusto.startCompletionTargetProbe(25000)" in the webview
     When I wait for "kw-query-section[data-test-completion-targets-ready='true']" in the webview for 30 seconds
     When I evaluate "window.__e2e.kusto.assertCompletionTargetsReady()" in the webview
@@ -43,7 +43,6 @@ Feature: Kusto autocomplete schema contexts
     When I evaluate "window.__e2e.kusto.assertCompletionVisible('table-prefix')" in the webview
     When I evaluate "window.__e2e.kusto.assertCompletionStaysVisible('table-prefix', 800)" in the webview
     When I press "Down"
-    Then I take a screenshot "02-table-suggestions-visible"
     When I evaluate "window.__e2e.kusto.acceptSuggestion('table-prefix')" in the webview
     And I wait 1 second
     When I evaluate "window.__e2e.kusto.assertAcceptedCompletion('table-prefix')" in the webview

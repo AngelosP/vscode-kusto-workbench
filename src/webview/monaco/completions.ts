@@ -3,7 +3,8 @@
 // Pipe operator suggestions, dot-command completions, column inference.
 // Window bridge exports at bottom for remaining callers.
 import { __kustoGeneratedFunctionsMerged, setGeneratedFunctionsMerged } from './monaco';
-import { queryEditorBoxByModelUri, activeQueryEditorBoxId, schemaByBoxId, connections, schemaByConnDb } from '../core/state';
+import { queryEditorBoxByModelUri, activeQueryEditorBoxId, connections, schemaByConnDb } from '../core/state';
+import { getKustoEditorSchema } from '../core/schema-catalogs.js';
 import { getKustoSchemaIdentityKey, resolveKustoConnection } from '../../shared/kustoAuth.js';
 export {};
 
@@ -305,7 +306,7 @@ const __kustoCompletionProvider = {
 		if (!boxId) {
 			boxId = activeQueryEditorBoxId;
 		}
-		const schema = boxId ? schemaByBoxId[boxId] : null;
+		const schema = boxId ? getKustoEditorSchema(boxId) : null;
 		if (!schema || !schema.tables) {
 			// Kick off a background fetch if schema isn't ready yet (but still return operator suggestions).
 			if (typeof ensureSchemaForBox === 'function') {

@@ -49,7 +49,13 @@ function extractTypeDiscriminants(relativePath: string, typeName: string): strin
 }
 
 function collectDiscriminants(typeNode: ts.TypeNode, aliases: Map<string, ts.TypeNode>, seen = new Set<string>()): string[] {
+	if (ts.isParenthesizedTypeNode(typeNode)) {
+		return collectDiscriminants(typeNode.type, aliases, seen);
+	}
 	if (ts.isUnionTypeNode(typeNode)) {
+		return typeNode.types.flatMap(t => collectDiscriminants(t, aliases, seen));
+	}
+	if (ts.isIntersectionTypeNode(typeNode)) {
 		return typeNode.types.flatMap(t => collectDiscriminants(t, aliases, seen));
 	}
 	if (ts.isTypeLiteralNode(typeNode)) {
@@ -247,14 +253,14 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 }
 
 const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
-	'src/host/queryEditorProvider.ts::<module>::postMessage::144:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::294:29',
-	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::396:26',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1959:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::1978:22',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1931:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1943:21',
-	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::1991:10',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::145:27',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::296:29',
+	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::405:26',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1988:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::2007:22',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1960:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1972:21',
+	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2020:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1735:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1739:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2007:8',

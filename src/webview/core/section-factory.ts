@@ -2,9 +2,6 @@
 // Creates all section types: Query, Chart, Markdown, Transformation, Python, URL.
 // Window bridge exports at bottom for remaining legacy callers.
 
-// NOTE: circular with monaco/monaco.ts and monaco/resize.ts — all usages are lazy
-// (inside function bodies only, never at module evaluation time).
-
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
 import { schedulePersist } from './persistence';
@@ -18,18 +15,13 @@ import {
 	queryEditorResizeObservers,
 	queryEditorVisibilityObservers,
 	queryEditorVisibilityMutationObservers,
-	schemaByBoxId,
+	getKustoEditorSchema,
+	sqlSchemaByBoxId,
 	schemaDiagnosticsTrustedByBoxId,
-	schemaMetaByBoxId,
-	schemaWorkerReadyByBoxId,
-	schemaWorkerReadyWaitersByBoxId,
-	pendingSchemaWorkerUpdateByBoxId,
 	schemaFetchInFlightByBoxId,
 	lastSchemaRequestAtByBoxId,
 	schemaByConnDb,
 	schemaMetaByConnDb,
-	schemaRequestResolversByBoxId,
-	databasesRequestResolversByBoxId,
 	databaseRequestTokenByBoxId,
 	missingClusterDetectTimersByBoxId,
 	lastQueryTextByBoxId,
@@ -104,17 +96,29 @@ import {
 	sanitizeYAxisSettings,
 } from '../shared/chart-utils';
 import { __kustoForceEditorWritable, __kustoInstallWritableGuard, __kustoEnsureEditorWritableSoon } from '../monaco/writable';
-import { __kustoAttachAutoResizeToContent } from '../monaco/resize';
+import { __kustoAttachAutoResizeToContent, __kustoAutoSizeEditor } from '../monaco/resize';
 import { tryParseFiniteNumber, tryParseDate } from '../shared/transform-expr';
-import { __kustoMonacoInitRetryCountByBoxId, __kustoCrossClusterSchemas } from '../monaco/monaco';
+import { __kustoCancelMonacoInitRetry, __kustoMonacoInitRetryCountByBoxId, __kustoCrossClusterSchemas } from '../monaco/monaco';
+import {
+	__kustoGetConnectionId,
+	__kustoGetDatabase,
+	__kustoGetClusterUrl,
+	__kustoGetQuerySectionElement,
+} from './query-section-accessors';
+import { schemaRequestTokenByBoxId } from './kusto-schema-request-state';
+
+export {
+	__kustoGetConnectionId,
+	__kustoGetDatabase,
+	__kustoGetClusterUrl,
+	__kustoGetQuerySectionElement,
+} from './query-section-accessors';
 
 const _win = window;
 
 // ══════════════════════════════════════════════════════════════════════════════
 // Query section creation (from queryBoxes.ts)
 // ══════════════════════════════════════════════════════════════════════════════
-
-export const schemaRequestTokenByBoxId: Record<string, string> = {};
 
 // Diagnostics logging — no-op (was removed from original source, callers remain).
 export function __kustoLog(_boxId?: any, _event?: any, _message?: any, _data?: any, _level?: any) { return; }
@@ -184,50 +188,6 @@ function __kustoEnsureSectionHasDefaultNameIfMissing( boxId: any) {
 // Expose for persistence + extra box types.
 try {
 	window.__kustoPickNextAvailableSectionLetterName = __kustoPickNextAvailableSectionLetterName;
-} catch (e) { console.error('[kusto]', e); }
-
-// ── Global accessor helpers for query section connection/database ──────────
-// These functions abstract access to the connection/database state,
-// working with both the Lit <kw-query-section> element's public API.
-// Use these instead of document.getElementById(boxId + '_connection').
-export function __kustoGetConnectionId( boxId: any) {
-	try {
-		const el = document.getElementById(boxId) as any;
-		if (el && typeof el.getConnectionId === 'function') return el.getConnectionId();
-	} catch (e) { console.error('[kusto]', e); }
-	return '';
-}
-
-export function __kustoGetDatabase( boxId: any) {
-	try {
-		const el = document.getElementById(boxId) as any;
-		if (el && typeof el.getDatabase === 'function') return el.getDatabase();
-	} catch (e) { console.error('[kusto]', e); }
-	return '';
-}
-
-export function __kustoGetClusterUrl( boxId: any) {
-	try {
-		const el = document.getElementById(boxId) as any;
-		if (el && typeof el.getClusterUrl === 'function') return el.getClusterUrl();
-	} catch (e) { console.error('[kusto]', e); }
-	return '';
-}
-
-export function __kustoGetQuerySectionElement( boxId: any) {
-	try {
-		const el = document.getElementById(boxId) as any;
-		if (el && typeof el.getConnectionId === 'function') return el;
-	} catch (e) { console.error('[kusto]', e); }
-	return null;
-}
-
-// Expose globally for other modules (main.js, monaco.js).
-try {
-	window.__kustoGetConnectionId = __kustoGetConnectionId;
-	window.__kustoGetDatabase = __kustoGetDatabase;
-	window.__kustoGetClusterUrl = __kustoGetClusterUrl;
-	window.__kustoGetQuerySectionElement = __kustoGetQuerySectionElement;
 } catch (e) { console.error('[kusto]', e); }
 
 export function __kustoGetSectionName( boxId: any) {
@@ -305,6 +265,7 @@ export function addQueryBox( options?: any) {
 	const id = (options && options.id) ? String(options.id) : ('query_' + Date.now());
 	const initialQuery = (options && options.initialQuery) ? String(options.initialQuery) : '';
 	const isComparison = !!(options && options.isComparison);
+	const comparisonSourceBoxId = String(options?.comparisonSourceBoxId || '').trim();
 	const defaultResultsVisible = (options && typeof options.defaultResultsVisible === 'boolean') ? !!options.defaultResultsVisible : true;
 	const defaultComparisonSummaryVisible = isComparison ? true : ((options && typeof options.defaultComparisonSummaryVisible === 'boolean') ? !!options.defaultComparisonSummaryVisible : true);
 	const defaultExpanded = (options && typeof options.expanded === 'boolean') ? !!options.expanded : true;
@@ -358,13 +319,17 @@ export function addQueryBox( options?: any) {
 	// ── Wire up <kw-query-section> event listeners ──
 	const kwEl = document.getElementById(id) as any;
 	if (kwEl) {
+		if (comparisonSourceBoxId) {
+			optimizationMetadataByBoxId[id] = { sourceBoxId: comparisonSourceBoxId, isComparison: true };
+			optimizationMetadataByBoxId[comparisonSourceBoxId] = {
+				...(optimizationMetadataByBoxId[comparisonSourceBoxId] || {}),
+				comparisonBoxId: id,
+			};
+		}
 		kwEl.addEventListener('connection-changed', (e: any) => {
 			const detail = e.detail || {};
 			const boxId = detail.boxId || id;
-			// Clear schema so it doesn't mismatch.
-			try { delete schemaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-			try { delete schemaMetaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-			try { delete pendingSchemaWorkerUpdateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+			kwEl.setSchemaLifecycleTarget?.(String(detail.connectionId || ''), undefined);
 			try { if (schemaFetchInFlightByBoxId) schemaFetchInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
 			try { if (lastSchemaRequestAtByBoxId) lastSchemaRequestAtByBoxId[boxId] = 0; } catch (e) { console.error('[kusto]', e); }
 			try { delete schemaRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
@@ -406,19 +371,22 @@ export function addQueryBox( options?: any) {
 					});
 					const cid = String(detail.connectionId || '').trim();
 					const cached = cachedDatabases && cachedDatabases[cid];
-					const requestToken = 'databases_' + Date.now() + '_' + Math.random().toString(16).slice(2);
-					const requiredDatabase = String(kwEl.getDesiredDatabase?.() || detail.database || '').trim();
-					databaseRequestTokenByBoxId[boxId] = requestToken;
-					if (cached && cached.length > 0) {
+					const hasCachedDatabases = Array.isArray(cached) && cached.length > 0;
+					if (hasCachedDatabases) {
 						if (typeof kwEl.setDatabases === 'function') kwEl.setDatabases(cached);
 						if (!kwEl.getDatabase?.() && !kwEl.getDesiredDatabase?.()) setKustoPreparationIdle(boxId);
-						// Background refresh
-						postMessageToHost({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId, requestToken, requiredDatabase });
 						try { if (typeof kwEl.setRefreshLoading === 'function') kwEl.setRefreshLoading(true); } catch (e) { console.error('[kusto]', e); }
-					} else {
-						if (typeof kwEl.setDatabasesLoading === 'function') kwEl.setDatabasesLoading(true);
-						postMessageToHost({ type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId, requestToken, requiredDatabase });
+					} else if (typeof kwEl.setDatabasesLoading === 'function') {
+						kwEl.setDatabasesLoading(true);
 					}
+					const requestToken = 'databases_' + Date.now() + '_' + Math.random().toString(16).slice(2);
+					const requiredDatabase = String(kwEl.getDesiredDatabase?.() || kwEl.getDatabase?.() || detail.database || '').trim();
+					databaseRequestTokenByBoxId[boxId] = requestToken;
+					const lifecycle = kwEl.beginDatabaseLifecycleRequest?.(requestToken);
+					postMessageToHost({
+						type: 'getDatabases', connectionId: detail.connectionId, boxId: boxId, requestToken, requiredDatabase,
+						...(lifecycle ? { sectionInstanceId: lifecycle.sectionInstanceId, targetGeneration: lifecycle.targetGeneration } : {}),
+					});
 				} catch (e) { console.error('[kusto]', e); }
 			}
 			try { __kustoUpdateFavoritesUiForBox(boxId); } catch (e) { console.error('[kusto]', e); }
@@ -767,77 +735,6 @@ export function addQueryBox( options?: any) {
 /** Cap for fit-to-contents / double-click. Manual drag uses the full content-based max. */
 const FIT_CAP_PX = 400;
 
-export function __kustoAutoSizeEditor( boxId: any) {
-	const id = String(boxId || '').trim();
-	if (!id) return;
-	const editorEl = document.getElementById(id + '_query_editor') as any;
-	const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
-	if (!wrapper) return;
-	const FIT_SLACK_PX = 5;
-	const apply = () => {
-		try {
-			const ed = (typeof queryEditors === 'object' && queryEditors) ? queryEditors[id] : null;
-			if (!ed) return;
-			let contentHeight = 0;
-			try {
-				const ch = (typeof ed.getContentHeight === 'function') ? ed.getContentHeight() : 0;
-				if (ch && Number.isFinite(ch)) contentHeight = Math.max(contentHeight, ch);
-			} catch (e) { console.error('[kusto]', e); }
-			if (!contentHeight || !Number.isFinite(contentHeight) || contentHeight <= 0) return;
-
-			const addVisibleRectHeight = (el: any) => {
-				try {
-					if (!el) return 0;
-					const cs = getComputedStyle(el);
-					if (cs && cs.display === 'none') return 0;
-					const h = (el.getBoundingClientRect ? (el.getBoundingClientRect().height || 0) : 0);
-					let margin = 0;
-					try { margin += parseFloat(cs.marginTop || '0') || 0; margin += parseFloat(cs.marginBottom || '0') || 0; } catch (e) { console.error('[kusto]', e); }
-					return Math.max(0, Math.ceil(h + margin));
-				} catch { return 0; }
-			};
-
-			let chrome = 0;
-			try { chrome += addVisibleRectHeight(wrapper.querySelector ? wrapper.querySelector('.query-editor-toolbar') : null); } catch (e) { console.error('[kusto]', e); }
-			try {
-				const csw = getComputedStyle(wrapper);
-				chrome += (parseFloat(csw.paddingTop || '0') || 0) + (parseFloat(csw.paddingBottom || '0') || 0);
-				chrome += (parseFloat(csw.borderTopWidth || '0') || 0) + (parseFloat(csw.borderBottomWidth || '0') || 0);
-			} catch (e) { console.error('[kusto]', e); }
-
-			let clipExtras = 0;
-			try {
-				const clip = editorEl.closest ? editorEl.closest('.qe-editor-clip') : null;
-				if (clip && clip.children) {
-					for (const child of Array.from(clip.children)) {
-						if (!child || child === editorEl) continue;
-						clipExtras += addVisibleRectHeight(child);
-					}
-				}
-				if (clip) {
-					const csc = getComputedStyle(clip);
-					clipExtras += (parseFloat(csc.paddingTop || '0') || 0) + (parseFloat(csc.paddingBottom || '0') || 0);
-					clipExtras += (parseFloat(csc.borderTopWidth || '0') || 0) + (parseFloat(csc.borderBottomWidth || '0') || 0);
-				}
-			} catch (e) { console.error('[kusto]', e); }
-
-			const desired = Math.max(120, Math.min(FIT_CAP_PX, Math.ceil(chrome + clipExtras + contentHeight + FIT_SLACK_PX)));
-			wrapper.style.height = desired + 'px';
-			wrapper.style.minHeight = '0';
-			try { if (wrapper.dataset) { wrapper.dataset.kustoUserResized = 'true'; try { delete wrapper.dataset.kustoAutoResized; } catch (e) { console.error('[kusto]', e); } } } catch (e) { console.error('[kusto]', e); }
-			try {
-				if (!pState.manualQueryEditorHeightPxByBoxId || typeof pState.manualQueryEditorHeightPxByBoxId !== 'object') {
-					pState.manualQueryEditorHeightPxByBoxId = {};
-				}
-				pState.manualQueryEditorHeightPxByBoxId[id] = desired;
-			} catch (e) { console.error('[kusto]', e); }
-			try { if (typeof ed.layout === 'function') ed.layout(); } catch (e) { console.error('[kusto]', e); }
-		} catch (e) { console.error('[kusto]', e); }
-	};
-	const applyAndPersist = () => { apply(); try { schedulePersist(); } catch (e) { console.error('[kusto]', e); } };
-	try { applyAndPersist(); setTimeout(applyAndPersist, 50); setTimeout(applyAndPersist, 150); } catch (e) { console.error('[kusto]', e); }
-}
-
 export function __kustoAutoSizeResults( boxId: any) {
 	const id = String(boxId || '').trim();
 	if (!id) return;
@@ -903,7 +800,7 @@ export function __kustoMaximizeQueryBox( boxId: any) {
 	if (!id) return;
 
 	// 1. Auto-size the Monaco editor.
-	__kustoAutoSizeEditor(id);
+	__kustoAutoSizeEditor(id, schedulePersist);
 
 	// 2. Auto-size the tabular results — only when results are visible.
 	let resultsVisible = true;
@@ -989,7 +886,7 @@ export async function fullyQualifyTablesInEditor( boxId: any) {
 		return;
 	}
 
-	const currentSchema = schemaByBoxId ? schemaByBoxId[boxId] : null;
+	const currentSchema = getKustoEditorSchema(String(boxId || ''));
 	const currentTables = currentSchema && Array.isArray(currentSchema.tables) ? currentSchema.tables : null;
 	if (!currentTables || currentTables.length === 0) {
 		// Best-effort: request schema fetch and ask the user to retry.
@@ -1417,11 +1314,13 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 }
 
 export function removeQueryBox( boxId: any) {
+	__kustoCancelMonacoInitRetry(String(boxId || ''));
 	unregisterSqlDerivedComparisonSession(String(boxId || ''));
 	// Retire the transient execution owner before removing the DOM instance. This
 	// prevents a late terminal from being accepted by a recreated section ID.
 	try {
 		const querySection = __kustoGetQuerySectionElement(String(boxId || ''));
+		querySection?.disposeSchemaLifecycle?.();
 		const executionId = typeof querySection?.cancelActiveQueryExecution === 'function'
 			? querySection.cancelActiveQueryExecution()
 			: undefined;
@@ -1499,17 +1398,6 @@ export function removeQueryBox( boxId: any) {
 	// Remove from tracked list
 	setQueryBoxes(queryBoxes.filter((id: any) => id !== boxId));
 	disposeKustoPreparation(String(boxId || ''));
-	try { delete schemaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-	try { delete schemaMetaByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-	try { delete pendingSchemaWorkerUpdateByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-	try { delete schemaWorkerReadyByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-	try {
-		const waiters = schemaWorkerReadyWaitersByBoxId[boxId] || [];
-		delete schemaWorkerReadyWaitersByBoxId[boxId];
-		for (const waiter of waiters) {
-			try { waiter.resolve(false); } catch (e) { console.error('[kusto]', e); }
-		}
-	} catch (e) { console.error('[kusto]', e); }
 	try { if (schemaFetchInFlightByBoxId) schemaFetchInFlightByBoxId[boxId] = false; } catch (e) { console.error('[kusto]', e); }
 	try { if (lastSchemaRequestAtByBoxId) lastSchemaRequestAtByBoxId[boxId] = 0; } catch (e) { console.error('[kusto]', e); }
 	try { delete schemaRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
@@ -2973,7 +2861,7 @@ export function addSqlBox(options?: any) {
 	litEl.setAttribute('box-id', id);
 	litEl.sqlSession?.configureLifecycleEffects({
 		isRestoreInProgress: () => !!pState.restoreInProgress,
-		clearSchema: (boxId: string) => { delete schemaByBoxId[boxId]; },
+		clearSchema: (boxId: string) => { delete sqlSchemaByBoxId[boxId]; },
 		setSchemaStatus: (info: { status: 'not-loaded' | 'loading'; statusText: string }) => litEl.setSchemaInfo?.(info),
 		setDatabases: (databases: string[], desiredDatabase?: string) => litEl.setDatabases?.(databases, desiredDatabase),
 		setDatabasesLoading: (loading: boolean) => litEl.setDatabasesLoading?.(loading),
@@ -3174,6 +3062,7 @@ export function removeSqlBox(boxId: any) {
 		delete optimizationMetadataByBoxId[boxId];
 	} catch (e) { console.error('[kusto]', e); }
 	try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
+	delete sqlSchemaByBoxId[String(boxId || '')];
 	try { delete pState.queryResultJsonByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { getSqlSectionSession(String(boxId))?.clear(); } catch (e) { console.error('[kusto]', e); }
 	sqlBoxes = sqlBoxes.filter((id: any) => id !== boxId);

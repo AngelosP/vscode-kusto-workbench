@@ -59,6 +59,7 @@ vi.mock('../../src/webview/core/state.js', () => ({
 	pendingFavoriteSelectionByBoxId: testState.pendingFavoriteSelectionByBoxId,
 	optimizationMetadataByBoxId: testState.optimizationMetadataByBoxId,
 	schemaByBoxId: testState.schemaByBoxId,
+	clearKustoEditorSchema: (boxId: string) => { delete testState.schemaByBoxId[boxId]; },
 	queryBoxes: testState.queryBoxes,
 	favoritesModeByBoxId: testState.favoritesModeByBoxId,
 }));

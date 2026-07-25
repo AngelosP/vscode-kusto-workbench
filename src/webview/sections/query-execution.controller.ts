@@ -37,7 +37,7 @@ import { getRunMode, setRunMode, closeRunMenu, functionRunDialogOpenByBoxId } fr
 import { getResultsState, ensureResultsStateMap } from '../core/results-state';
 import {
 	optimizationMetadataByBoxId, queryEditors, pendingFavoriteSelectionByBoxId,
-	queryExecutionTimers, schemaByBoxId, queryBoxes, favoritesModeByBoxId,
+	queryExecutionTimers, clearKustoEditorSchema, queryBoxes, favoritesModeByBoxId,
 } from '../core/state';
 import { __kustoParseFunction, __kustoParseParamList } from '../monaco/prettify';
 import { findKustoFunctionDefinitionAtOffset, getSingleKustoCodeFenceBodyRange, hasKustoFunctionDefinition, normalizeKustoText } from '../../shared/kustoFunctionDefinitions.js';
@@ -653,7 +653,7 @@ function __kustoClearSchemaSummaryIfNoSelection(boxId: any) {
 		if (btn) btn.style.display = shouldClear ? 'none' : '';
 	} catch (e) { console.error('[kusto]', e); }
 	if (shouldClear) {
-		try { if (schemaByBoxId) delete schemaByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
+		try { clearKustoEditorSchema(id); } catch (e) { console.error('[kusto]', e); }
 		try {
 			const kwEl = __kustoGetQuerySectionElement(id);
 			if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
@@ -1246,7 +1246,10 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 	try { if (typeof _win.__kustoPrettifyKustoText === 'function') comparisonQuery = _win.__kustoPrettifyKustoText(comparisonQuery); } catch (e) { console.error('[kusto]', e); }
 	let comparisonBoxId = '';
 	try {
-		comparisonBoxId = addQueryBox({ id: 'query_cmp_' + Date.now(), initialQuery: comparisonQuery, isComparison: true, defaultResultsVisible: false });
+		comparisonBoxId = addQueryBox({
+			id: 'query_cmp_' + Date.now(), initialQuery: comparisonQuery, isComparison: true,
+			comparisonSourceBoxId: boxId, defaultResultsVisible: false,
+		});
 	} catch (err: any) {
 		console.error('Error creating comparison box:', err);
 		try { postMessageToHost({ type: 'showInfo', message: 'Failed to create comparison section' }); } catch (e) { console.error('[kusto]', e); }

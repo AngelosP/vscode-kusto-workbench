@@ -18,7 +18,6 @@ import {
 	parseKustoExplorerConnectionsXml,
 	__kustoUpdateFavoritesUiForAllBoxes, __kustoTryAutoEnterFavoritesModeForAllBoxes,
 	__kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoOnConnectionsUpdated,
-	schemaRequestTokenByBoxId,
 	addPythonBox, addUrlBox, removePythonBox, removeUrlBox, onPythonResult, onPythonError,
 	addHtmlBox, removeHtmlBox,
 	addSqlBox, removeSqlBox,
@@ -27,6 +26,7 @@ import {
 	updateSqlFavoritesUiForAllBoxes,
 	__kustoGetChartValidationStatus,
 } from './section-factory';
+import { schemaRequestTokenByBoxId } from './kusto-schema-request-state';
 import { addMarkdownBox, removeMarkdownBox, __kustoMaximizeMarkdownBox } from '../sections/kw-markdown-section';
 import { addChartBox, removeChartBox } from '../sections/kw-chart-section';
 import { addTransformationBox, removeTransformationBox } from '../sections/kw-transformation-section';
@@ -65,14 +65,17 @@ import {
 	kustoFavorites, setKustoFavorites, setLeaveNoTraceClusters,
 	queryEditors, cachedDatabases, optimizationMetadataByBoxId,
 	queryBoxes,
-	schemaByConnDb, schemaRequestResolversByBoxId, schemaByBoxId,
+	schemaByConnDb,
+	sqlSchemaByBoxId,
 	schemaDiagnosticsTrustedByBoxId,
-	schemaMetaByConnDb, schemaMetaByBoxId,
-	schemaFetchInFlightByBoxId, lastSchemaRequestAtByBoxId, databasesRequestResolversByBoxId,
+	schemaMetaByConnDb,
+	schemaFetchInFlightByBoxId, lastSchemaRequestAtByBoxId,
 	databaseRequestTokenByBoxId,
 	markSchemaWorkerApplyFailed, markSchemaWorkerApplyPending, markSchemaWorkerReady,
-	schemaWorkerReadyByBoxId,
-	pendingSchemaWorkerUpdateByBoxId,
+	clearAllKustoEditorSchemas, clearKustoEditorSchema, getKustoEditorSchema, setKustoEditorSchema,
+	clearAllKustoSchemaMetadata, clearKustoSchemaMetadata, getKustoSchemaMetadata, setKustoSchemaMetadata,
+	clearPendingSchemaWorkerUpdate, getPendingSchemaWorkerUpdate, setPendingSchemaWorkerUpdate,
+	getSchemaWorkerReadyState,
 	beginKustoPreparation,
 	failKustoPreparation,
 	getKustoPreparationState,
@@ -88,16 +91,44 @@ import {
 	setKustoPreparationIdle,
 	updateKustoPreparation,
 	type KustoPreparationToken,
+	type PendingSchemaWorkerUpdate,
 	favoritesModeByBoxId,
 	sqlConnections, sqlCachedDatabases, setSqlConnections, setSqlLeaveNoTraceConnectionIds,
 	sqlFavorites, setSqlFavorites, sqlFavoritesModeByBoxId,
 } from './state';
-import { getKustoSchemaIdentityKey, resolveStrictKustoConnection } from '../../shared/kustoAuth.js';
+import { getKustoConnectionIdentityKey, getKustoSchemaIdentityKey, resolveStrictKustoConnection } from '../../shared/kustoAuth.js';
 import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
+import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
+import { admitKustoDatabaseDelivery, admitKustoSchemaDelivery } from './kusto-schema-message-router.js';
+import {
+	isKustoSyntheticDatabaseRequest,
+	isKustoSyntheticSchemaRequest,
+	kustoSyntheticDatabaseRequests,
+	kustoSyntheticSchemaRequests,
+} from './kusto-synthetic-request-runtime.js';
 
 const ASK_KUSTO_COPILOT_DEFAULT_MAX_RESULT_ROWS = 100;
 const ASK_KUSTO_COPILOT_MIN_MAX_RESULT_ROWS = 1;
 const ASK_KUSTO_COPILOT_MAX_MAX_RESULT_ROWS = 1000;
+
+function isSyntheticConnectionOwnerCurrent(
+	metadata: { connectionId: string; accountPartition: string; connectionIdentity: string },
+	responseAccountPartition?: unknown,
+): boolean {
+	const connection = connections.find(candidate => String(candidate?.id || '').trim() === metadata.connectionId);
+	if (!connection) return false;
+	try {
+		if (getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId) !== metadata.connectionIdentity) return false;
+	} catch {
+		return false;
+	}
+	const currentPartition = String(connection.accountPartition || '').trim();
+	const responsePartition = String(responseAccountPartition || '').trim();
+	if (metadata.accountPartition && currentPartition && metadata.accountPartition !== currentPartition) return false;
+	if (metadata.accountPartition && responsePartition && metadata.accountPartition !== responsePartition) return false;
+	if (currentPartition && responsePartition && currentPartition !== responsePartition) return false;
+	return true;
+}
 
 function normalizeAskKustoCopilotMaxResultRows(value: unknown): number {
 	if (typeof value !== 'number' || !Number.isFinite(value)) {
@@ -134,8 +165,7 @@ function applySqlLeaveNoTraceConnectionIds(value: unknown): void {
 		if (typeof section?.setLeaveNoTraceConnectionIds === 'function') section.setLeaveNoTraceConnectionIds(ids);
 		const connectionId = typeof section?.getConnectionId === 'function' ? String(section.getConnectionId() || '').trim() : '';
 		if (!protectedIds.has(connectionId)) continue;
-		delete schemaByBoxId[boxId];
-		delete schemaMetaByBoxId[boxId];
+		delete sqlSchemaByBoxId[boxId];
 		if (typeof section?.clearSchemaForLeaveNoTrace === 'function') section.clearSchemaForLeaveNoTrace();
 		handleStsDiagnostics(String(boxId || ''), []);
 	}
@@ -375,12 +405,35 @@ function isOnlyQueryEditorBox(boxId: string): boolean {
 	}
 }
 
+function getSchemaDeliveryOwnership(message: any): PendingSchemaWorkerUpdate['deliveryOwnership'] {
+	const boxId = String(message?.boxId || '').trim();
+	const sectionInstanceId = String(message?.sectionInstanceId || '').trim();
+	const targetGeneration = Number(message?.targetGeneration);
+	const requestToken = String(message?.requestToken || '').trim();
+	const connectionId = String(message?.connectionId || '').trim();
+	const database = String(message?.database || '').trim();
+	if (!boxId || !sectionInstanceId || !Number.isSafeInteger(targetGeneration) || targetGeneration < 0 || !requestToken || !connectionId || !database) return undefined;
+	return {
+		request: { boxId, sectionInstanceId, targetGeneration, requestToken },
+		target: { connectionId, database },
+	};
+}
+
+function isSchemaDeliveryCurrent(boxId: string, ownership: PendingSchemaWorkerUpdate['deliveryOwnership']): boolean {
+	return !ownership || kustoEditorSchemaCoordinator.isSchemaRequestCurrent(
+		boxId,
+		ownership.request,
+		ownership.target,
+		ownership.request.requestToken,
+	);
+}
+
 function queuePendingSchemaWorkerUpdate(message: any, schemaKey: string, isForceRefresh: boolean, schemaSignature: string | undefined, reason: string, preparationToken?: KustoPreparationToken): void {
 	const boxId = String(message?.boxId || '');
 	if (!boxId || !message?.schema?.rawSchemaJson || !message.clusterUrl || !message.database) {
 		return;
 	}
-	pendingSchemaWorkerUpdateByBoxId[boxId] = {
+	setPendingSchemaWorkerUpdate(boxId, {
 		rawSchemaJson: message.schema.rawSchemaJson,
 		clusterUrl: message.clusterUrl,
 		database: message.database,
@@ -392,7 +445,8 @@ function queuePendingSchemaWorkerUpdate(message: any, schemaKey: string, isForce
 		reason,
 		preparationToken,
 		backgroundOnly: !preparationToken && !!(message.schemaMeta?.isBackgroundRefresh || message.schemaMeta?.forceRefresh),
-	};
+		deliveryOwnership: getSchemaDeliveryOwnership(message),
+	});
 }
 
 function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, isForceRefresh: boolean, schemaSignature?: string, preparationToken?: KustoPreparationToken): void {
@@ -403,6 +457,7 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 	}
 
 	const meta = message.schemaMeta || {};
+	const deliveryOwnership = getSchemaDeliveryOwnership(message);
 	traceFileOpen('schema.worker.consider', {
 		boxId,
 		schemaKey,
@@ -428,7 +483,7 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 		traceFileOpen('schema.worker.defer.inactiveBox', { boxId, activeQueryEditorBoxId, schemaKey, hasModelUri: !!currentModelUri, forceRefresh: isForceRefresh, explicitContextSwitch });
 		return;
 	}
-	const readyState = schemaWorkerReadyByBoxId[boxId];
+	const readyState = getSchemaWorkerReadyState(boxId);
 	const backgroundOnly = !preparationToken && !!(meta.isBackgroundRefresh || meta.forceRefresh);
 	if (!isForceRefresh
 		&& schemaSignature
@@ -442,7 +497,7 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 	}
 	const shouldDeferForSuggest = !!meta.isBackgroundRefresh && !isForceRefresh && isActiveBox && isSuggestVisibleForBoxId(boxId);
 	if (shouldDeferForSuggest) {
-		pendingSchemaWorkerUpdateByBoxId[boxId] = {
+		setPendingSchemaWorkerUpdate(boxId, {
 			rawSchemaJson: message.schema.rawSchemaJson,
 			clusterUrl: message.clusterUrl,
 			database: message.database,
@@ -454,7 +509,8 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			reason: meta.refreshReason || 'background-refresh',
 			preparationToken,
 			backgroundOnly,
-		};
+			deliveryOwnership,
+		});
 		traceFileOpen('schema.worker.defer.suggestVisible', { boxId, schemaKey, reason: meta.refreshReason || 'background-refresh' });
 		return;
 	}
@@ -464,6 +520,10 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 	traceFileOpen('schema.worker.apply.pending', { boxId, schemaKey, shouldSetAsContext, modelUri: currentModelUri, openTimeSoleEditor: canApplyForSoleOpenEditor });
 
 	const applySchema = async () => {
+		if (!isSchemaDeliveryCurrent(boxId, deliveryOwnership)) {
+			traceFileOpen('schema.worker.apply.skip.staleDelivery', { boxId, schemaKey });
+			return false;
+		}
 		if (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature })) {
 			traceFileOpen('schema.worker.apply.skip.stalePreparation', { boxId, schemaKey });
 			return false;
@@ -478,10 +538,16 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			return false;
 		}
 		const modelUri = getQueryEditorModelUri(boxId);
-		if (!modelUri) {
+		const modelLease = kustoEditorSchemaCoordinator.getModelLease(boxId);
+		const requiresModelLease = !!deliveryOwnership || !!kustoEditorSchemaCoordinator.getIdentity(boxId);
+		if (!modelUri || (requiresModelLease && modelLease?.modelUri !== modelUri)) {
 			traceFileOpen('schema.worker.apply.waitingForModelUri', { boxId, schemaKey });
 			return false;
 		}
+		const isApplyCurrent = () => isSchemaDeliveryCurrent(boxId, deliveryOwnership)
+			&& (!requiresModelLease || !!modelLease && kustoEditorSchemaCoordinator.isModelLeaseCurrent(modelLease))
+			&& (!preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }));
+		if (!isApplyCurrent()) return false;
 		const isActiveAtApply = boxId === activeQueryEditorBoxId;
 		const canApplyAtOpenForSoleEditor = !isActiveAtApply && !activeQueryEditorBoxId && !isForceRefresh && isOnlyQueryEditorBox(boxId);
 		const explicitContextSwitchAtApply = isSchemaWorkerApplyRequired(boxId);
@@ -499,7 +565,7 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			setAsContextAtApply,
 			modelUri,
 			isForceRefresh,
-			() => !preparationToken || isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }),
+			isApplyCurrent,
 			preparationToken,
 			undefined,
 			String(message.connectionId || ''),
@@ -523,12 +589,12 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			window.__kustoTriggerRevalidation(boxId);
 			traceFileOpen('schema.worker.revalidation.done', { boxId, schemaKey });
 		}
-		if (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri })) return false;
+		if (!isApplyCurrent()) return false;
 		markSchemaWorkerReady(boxId, schemaKey, schemaSignature, modelUri, preparationToken);
 		try {
-			const pending = pendingSchemaWorkerUpdateByBoxId[boxId];
+			const pending = getPendingSchemaWorkerUpdate(boxId);
 			if (!pending || pending.preparationToken?.generation === preparationToken?.generation && pending.preparationToken?.revision === preparationToken?.revision) {
-				delete pendingSchemaWorkerUpdateByBoxId[boxId];
+				if (pending) clearPendingSchemaWorkerUpdate(boxId, pending);
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		return true;
@@ -545,6 +611,10 @@ function applyKustoSchemaToWorkerFromMessage(message: any, schemaKey: string, is
 			}
 			if (preparationToken && !isKustoPreparationCurrent(preparationToken)) {
 				traceFileOpen('schema.worker.retry.stopped.stalePreparation', { boxId, schemaKey });
+				return;
+			}
+			if (!isSchemaDeliveryCurrent(boxId, deliveryOwnership)) {
+				traceFileOpen('schema.worker.retry.stopped.staleDelivery', { boxId, schemaKey });
 				return;
 			}
 			if (retryIndex >= retryDelays.length) {
@@ -693,10 +763,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			return sourceBoxId && __kustoGetSqlSectionElement(sourceBoxId) ? sourceBoxId : undefined;
 		},
 		clearSchema: boxId => {
-			delete schemaByBoxId[boxId];
-			delete schemaMetaByBoxId[boxId];
+			delete sqlSchemaByBoxId[boxId];
 		},
-		setSchema: (boxId, schema) => { schemaByBoxId[boxId] = schema; },
+		setSchema: (boxId, schema) => { sqlSchemaByBoxId[boxId] = schema as typeof sqlSchemaByBoxId[string]; },
 		updateDatabases: updateSqlDatabaseSelect,
 		reportDatabasesError: onSqlDatabasesError,
 		handleStsResponse,
@@ -899,7 +968,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			updateConnectionSelects();
 			if (kustoAuthIdentityInvalidated) {
 				kustoAuthIdentityInvalidated = false;
-				for (const boxId of Object.keys(queryEditors || {})) {
+				const sectionIds = new Set([
+					...kustoEditorSchemaCoordinator.getSectionIds(),
+					...Object.keys(queryEditors || {}),
+				]);
+				for (const boxId of sectionIds) {
 					requireSchemaWorkerApply(boxId);
 					requestKustoSchemaApplyForBox(boxId, false);
 				}
@@ -927,17 +1000,30 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						.filter(Boolean),
 				);
 				const affectsAllConnections = changedConnectionIds.size === 0;
-				for (const boxId of Object.keys(queryEditors || {})) {
+				const syntheticOwnerChanged = (metadata: { connectionId: string }) => affectsAllConnections || changedConnectionIds.has(metadata.connectionId);
+				kustoSyntheticSchemaRequests.cancelWhere(syntheticOwnerChanged, new Error('Kusto schema request invalidated by authentication change.'));
+				kustoSyntheticDatabaseRequests.cancelWhere(syntheticOwnerChanged, new Error('Kusto database request invalidated by authentication change.'));
+				const sectionIds = new Set([
+					...kustoEditorSchemaCoordinator.getSectionIds(),
+					...Object.keys(queryEditors || {}),
+				]);
+				for (const boxId of sectionIds) {
 					const connectionId = String(__kustoGetConnectionId(boxId) || '').trim();
 					if (!affectsAllConnections && !changedConnectionIds.has(connectionId)) continue;
-					schemaRequestTokenByBoxId[boxId] = `identity-invalidated-${Date.now()}-${Math.random().toString(16).slice(2)}`;
-					delete pendingSchemaWorkerUpdateByBoxId[boxId];
+					delete schemaRequestTokenByBoxId[boxId];
+					delete databaseRequestTokenByBoxId[boxId];
+					kustoEditorSchemaCoordinator.invalidateCurrentTarget(boxId);
+					clearKustoEditorSchema(boxId);
+					clearKustoSchemaMetadata(boxId);
+					setKustoPreparationIdle(boxId);
 					schemaFetchInFlightByBoxId[boxId] = false;
 					lastSchemaRequestAtByBoxId[boxId] = 0;
 					requireSchemaWorkerApply(boxId);
 					clearResultsState(boxId);
 					delete pState.queryResultJsonByBoxId[boxId];
 					const section = __kustoGetQuerySectionElement(boxId);
+					if (typeof section?.setDatabasesLoading === 'function') section.setDatabasesLoading(false);
+					if (typeof section?.setRefreshLoading === 'function') section.setRefreshLoading(false);
 					if (typeof section?.clearResults === 'function') section.clearResults();
 					const chat = typeof section?.getCopilotChatEl === 'function' ? section.getCopilotChatEl() : null;
 					if (typeof chat?.clearConversation === 'function') chat.clearConversation();
@@ -945,10 +1031,20 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				for (const connectionId of affectsAllConnections ? Object.keys(cachedDatabases) : changedConnectionIds) {
 					delete cachedDatabases[connectionId];
 				}
-				for (const key of Object.keys(schemaByConnDb)) delete schemaByConnDb[key];
-				for (const key of Object.keys(schemaMetaByConnDb)) delete schemaMetaByConnDb[key];
-				for (const key of Object.keys(schemaByBoxId)) delete schemaByBoxId[key];
-				for (const key of Object.keys(schemaMetaByBoxId)) delete schemaMetaByBoxId[key];
+				if (affectsAllConnections) {
+					for (const key of Object.keys(schemaByConnDb)) delete schemaByConnDb[key];
+					for (const key of Object.keys(schemaMetaByConnDb)) delete schemaMetaByConnDb[key];
+					clearAllKustoEditorSchemas();
+					clearAllKustoSchemaMetadata();
+				} else {
+					for (const key of Object.keys(schemaByConnDb)) {
+						const metadataConnectionId = String(schemaMetaByConnDb[key]?.connectionId || '').trim();
+						const encodedKeyMatch = [...changedConnectionIds].some(connectionId => key.startsWith(`v1|${encodeURIComponent(connectionId)}|`));
+						if (!changedConnectionIds.has(metadataConnectionId) && !encodedKeyMatch) continue;
+						delete schemaByConnDb[key];
+						delete schemaMetaByConnDb[key];
+					}
+				}
 				invalidateKustoSchemaIdentityState();
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1106,6 +1202,31 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			} catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'databasesData':
+			{
+				const requestId = String(message.boxId || '');
+				const synthetic = !kustoEditorSchemaCoordinator.getIdentity(requestId) && isKustoSyntheticDatabaseRequest(requestId);
+				const admission = admitKustoDatabaseDelivery(message, kustoEditorSchemaCoordinator, synthetic);
+				if (admission === 'rejected') break;
+				if (admission === 'synthetic') {
+					const metadata = kustoSyntheticDatabaseRequests.getMetadata(requestId);
+					if (metadata && (
+						String(message.connectionId || '').trim() !== metadata.connectionId
+						|| !isSyntheticConnectionOwnerCurrent(metadata, message.accountPartition)
+					)) {
+						kustoSyntheticDatabaseRequests.reject(requestId, new Error('Synthetic database response target mismatch.'));
+						break;
+					}
+					const list = (Array.isArray(message.databases) ? message.databases : [])
+						.map((database: unknown) => String(database || '').trim())
+						.filter(Boolean)
+						.sort((left: string, right: string) => left.toLowerCase().localeCompare(right.toLowerCase()));
+					const settlement = kustoSyntheticDatabaseRequests.resolve(requestId, list);
+					if (settlement.kind === 'active' && settlement.metadata) {
+						cachedDatabases[settlement.metadata.connectionId] = list;
+					}
+					break;
+				}
+			}
 			try {
 				const connectionId = String(message.connectionId || '').trim();
 				const accountPartition = String(message.accountPartition || '').trim();
@@ -1116,47 +1237,22 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				if (responseToken && expectedToken && responseToken !== expectedToken) break;
 				if (accountPartition && currentPartition && currentPartition !== accountPartition) break;
 			} catch (e) { console.error('[kusto]', e); break; }
-			// Resolve pending database list request if this was a synthetic request id.
-			try {
-				const r = databasesRequestResolversByBoxId && databasesRequestResolversByBoxId[message.boxId];
-				if (r && typeof r.resolve === 'function') {
-					let cid = '';
-					try {
-						const prefix = '__kusto_dbreq__';
-						const bid = String(message.boxId || '');
-						if (bid.startsWith(prefix)) {
-							const rest = bid.slice(prefix.length);
-							const parts = rest.split('__');
-							cid = parts && parts.length ? decodeURIComponent(parts[0]) : '';
-						}
-					} catch (e) { console.error('[kusto]', e); }
-					const list = (Array.isArray(message.databases) ? message.databases : [])
-						.map((d: any) => String(d || '').trim())
-						.filter(Boolean)
-						.sort((a: any, b: any) => a.toLowerCase().localeCompare(b.toLowerCase()));
-					try {
-						if (cid) {
-							cachedDatabases[String(cid).trim()] = list;
-						}
-					} catch (e) { console.error('[kusto]', e); }
-					try { r.resolve(list); } catch (e) { console.error('[kusto]', e); }
-					try { delete databasesRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
-					break;
-				}
-			} catch (e) { console.error('[kusto]', e); }
-
 			updateDatabaseSelect(message.boxId, message.databases, message.connectionId, message.requestToken, message.authoritative, message.fallback);
 			break;
 		case 'databasesError':
-			// Reject pending database list request if this was a synthetic request id.
-			try {
-				const r = databasesRequestResolversByBoxId && databasesRequestResolversByBoxId[message.boxId];
-				if (r && typeof r.reject === 'function') {
-					try { r.reject(new Error(message && message.error ? String(message.error) : 'Failed to load databases.')); } catch (e) { console.error('[kusto]', e); }
-					try { delete databasesRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
+			{
+				const requestId = String(message.boxId || '');
+				const synthetic = !kustoEditorSchemaCoordinator.getIdentity(requestId) && isKustoSyntheticDatabaseRequest(requestId);
+				const admission = admitKustoDatabaseDelivery(message, kustoEditorSchemaCoordinator, synthetic);
+				if (admission === 'rejected') break;
+				if (admission === 'synthetic') {
+					kustoSyntheticDatabaseRequests.reject(
+						requestId,
+						new Error(message && message.error ? String(message.error) : 'Failed to load databases.'),
+					);
 					break;
 				}
-			} catch (e) { console.error('[kusto]', e); }
+			}
 			try {
 				onDatabasesError(message.boxId, message && message.error ? String(message.error) : 'Failed to load databases.', message.connectionId, message.requestToken);
 			} catch (e) { console.error('[kusto]', e); }
@@ -1330,6 +1426,29 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				columnsCount: message.schemaMeta?.columnsCount,
 				hasRawSchemaJson: !!message.schema?.rawSchemaJson,
 			});
+			{
+				const requestId = String(message.boxId || '');
+				const synthetic = !kustoEditorSchemaCoordinator.getIdentity(requestId) && isKustoSyntheticSchemaRequest(requestId);
+				const admission = admitKustoSchemaDelivery(message, kustoEditorSchemaCoordinator, synthetic);
+				if (admission === 'rejected') break;
+				if (admission === 'synthetic') {
+					const metadata = kustoSyntheticSchemaRequests.getMetadata(requestId);
+					if (metadata && (
+						String(message.connectionId || '').trim() !== metadata.connectionId
+						|| String(message.database || '').trim() !== metadata.database
+						|| !isSyntheticConnectionOwnerCurrent(metadata, message.accountPartition)
+					)) {
+						kustoSyntheticSchemaRequests.reject(requestId, new Error('Synthetic schema response target mismatch.'));
+						break;
+					}
+					const settlement = kustoSyntheticSchemaRequests.resolve(requestId, message.schema);
+					if (settlement.kind === 'active' && settlement.metadata) {
+						schemaByConnDb[settlement.metadata.schemaKey] = message.schema;
+						schemaMetaByConnDb[settlement.metadata.schemaKey] = message.schemaMeta || {};
+					}
+					break;
+				}
+			}
 			// Drop late responses from older selections (e.g., user switched favorites quickly).
 			try {
 				const tok = message && typeof message.requestToken === 'string' ? message.requestToken : '';
@@ -1365,20 +1484,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 
-			// Resolve pending schema request if this was a synthetic request id.
-			try {
-				const r = schemaRequestResolversByBoxId && schemaRequestResolversByBoxId[message.boxId];
-				if (r && typeof r.resolve === 'function') {
-					try { r.resolve(message.schema); } catch (e) { console.error('[kusto]', e); }
-					try { delete schemaRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
-					break;
-				}
-			} catch (e) { console.error('[kusto]', e); }
-
 			// Normal per-editor schema update (autocomplete).
 			// This is the SINGLE source of truth for schema data - no duplicate caching
-			schemaByBoxId[message.boxId] = message.schema;
-			schemaMetaByBoxId[message.boxId] = message.schemaMeta || {};
+			setKustoEditorSchema(message.boxId, message.schema);
+			setKustoSchemaMetadata(message.boxId, message.schemaMeta || {});
 			schemaFetchInFlightByBoxId[message.boxId] = false;
 			const schemaMessageMeta = message.schemaMeta || {};
 			const schemaMessageKey = getKustoSchemaIdentityKey(message.connectionId, message.accountPartition, message.clusterUrl, message.database);
@@ -1388,7 +1497,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			const refreshScheduled = schemaMessageMeta.refreshState === 'scheduled';
 			let preparationToken = getKustoPreparationToken(message.boxId);
 			let preparationState = getKustoPreparationState(message.boxId);
-			const readyStateAtDelivery = schemaWorkerReadyByBoxId[message.boxId];
+			const readyStateAtDelivery = getSchemaWorkerReadyState(message.boxId);
 			const baseWorkerUsableAtDelivery = !!(schemaMessageKey && schemaMessageModelUri
 				&& readyStateAtDelivery?.status === 'ready'
 				&& readyStateAtDelivery.schemaKey === schemaMessageKey
@@ -1480,7 +1589,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try {
 				const schemaKey = schemaMessageKey;
 				const isForceRefresh = !!(message.schemaMeta && message.schemaMeta.forceRefresh);
-				const readyState = schemaWorkerReadyByBoxId[message.boxId];
+				const readyState = getSchemaWorkerReadyState(message.boxId);
 				const exactReadyFallback = !!(readyState?.status === 'ready'
 					&& readyState.schemaKey === schemaKey
 					&& readyState.schemaSignature === schemaMessageSignature
@@ -1574,6 +1683,16 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			}
 			break;
 		case 'schemaError':
+			{
+				const requestId = String(message.boxId || '');
+				const synthetic = !kustoEditorSchemaCoordinator.getIdentity(requestId) && isKustoSyntheticSchemaRequest(requestId);
+				const admission = admitKustoSchemaDelivery(message, kustoEditorSchemaCoordinator, synthetic);
+				if (admission === 'rejected') break;
+				if (admission === 'synthetic') {
+					kustoSyntheticSchemaRequests.reject(requestId, new Error(message.error || 'Schema fetch failed'));
+					break;
+				}
+			}
 			// Drop late responses from older selections (e.g., user switched favorites quickly).
 			try {
 				const tok = message && typeof message.requestToken === 'string' ? message.requestToken : '';
@@ -1582,15 +1701,6 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					if (expected !== tok) {
 						break;
 					}
-				}
-			} catch (e) { console.error('[kusto]', e); }
-			// Resolve pending schema request if this was a synthetic request id.
-			try {
-				const r = schemaRequestResolversByBoxId && schemaRequestResolversByBoxId[message.boxId];
-				if (r && typeof r.reject === 'function') {
-					try { r.reject(new Error(message.error || 'Schema fetch failed')); } catch (e) { console.error('[kusto]', e); }
-					try { delete schemaRequestResolversByBoxId[message.boxId]; } catch (e) { console.error('[kusto]', e); }
-					break;
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			// Non-fatal; keep any previously loaded schema + counts if present.
@@ -1620,7 +1730,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				break;
 			}
 			try {
-				const hasSchema = !!(schemaByBoxId && schemaByBoxId[message.boxId]);
+				const hasSchema = !!getKustoEditorSchema(message.boxId);
 				if (!hasSchema) {
 					const kwEl = __kustoGetQuerySectionElement(message.boxId);
 					if (kwEl && typeof kwEl.setSchemaInfo === 'function') {
@@ -2048,6 +2158,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					id: 'query_opt_' + Date.now(), 
 					initialQuery: prettifiedOptimizedQuery,
 					isComparison: true,
+					comparisonSourceBoxId: sourceBoxId,
 					defaultResultsVisible: false
 				});
 				markSectionAgentTouched(comparisonBoxId);
@@ -2465,8 +2576,33 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						if (section?.type !== 'query' && section?.type !== 'copilotQuery') return section;
 						const boxId = String(section.id || '').trim();
 						const connectionId = boxId ? String(__kustoGetConnectionId(boxId) || '').trim() : '';
-						const requestToken = boxId ? String(schemaRequestTokenByBoxId[boxId] || '') : '';
-						return connectionId ? { ...section, connectionId, ...(requestToken ? { schemaRequestToken: requestToken } : {}) } : section;
+						const database = boxId ? String(__kustoGetDatabase(boxId) || section.database || '').trim() : '';
+						let requestToken = boxId ? String(schemaRequestTokenByBoxId[boxId] || '') : '';
+						if (message.purpose === 'schema-refresh'
+							&& connectionId === String(message.targetConnectionId || '').trim()
+							&& boxId && database) {
+							const lease = kustoEditorSchemaCoordinator.getLease(boxId);
+							if (lease) {
+								kustoEditorSchemaCoordinator.setTarget(lease, connectionId, database);
+								requestToken = `schema_tool_${Date.now()}_${Math.random().toString(16).slice(2)}`;
+								const request = kustoEditorSchemaCoordinator.beginSchemaRequest(lease, requestToken);
+								if (request) {
+									schemaRequestTokenByBoxId[boxId] = requestToken;
+									schemaFetchInFlightByBoxId[boxId] = false;
+									lastSchemaRequestAtByBoxId[boxId] = 0;
+									setKustoPreparationIdle(boxId);
+								}
+								else requestToken = '';
+							}
+						}
+						const lifecycle = boxId ? kustoEditorSchemaCoordinator.getIdentity(boxId) : undefined;
+						return connectionId ? {
+							...section,
+							connectionId,
+							...(database ? { database } : {}),
+							...(requestToken ? { schemaRequestToken: requestToken } : {}),
+							...(lifecycle || {}),
+						} : section;
 					}) : [];
 					postMessageToHost({ type: 'toolStateResponse', requestId, sections });
 				}
@@ -2586,45 +2722,35 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				try {
 					if (!sectionId) {
 						success = false;
-					} else if (sectionId.startsWith('query_') || sectionId.startsWith('copilotQuery_')) {
-						removeQueryBox(sectionId);
-						success = true;
-					} else if (sectionId.startsWith('chart_')) {
-						removeChartBox(sectionId);
-						success = true;
-					} else if (sectionId.startsWith('transformation_')) {
-						removeTransformationBox(sectionId);
-						success = true;
-					} else if (sectionId.startsWith('markdown_')) {
-						removeMarkdownBox(sectionId);
-						success = true;
-					} else if (sectionId.startsWith('python_')) {
-						removePythonBox(sectionId);
-						success = true;
-					} else if (sectionId.startsWith('url_')) {
-						removeUrlBox(sectionId);
-						success = true;
-					} else if (sectionId.startsWith('html_')) {
-						removeHtmlBox(sectionId);
-						success = true;
-					} else if (sectionId.startsWith('sql_')) {
-						removeSqlBox(sectionId);
-						success = true;
 					} else {
 						const sectionEl = document.getElementById(sectionId) as any;
-						if (sectionEl && typeof sectionEl.remove === 'function') {
-							sectionEl.remove();
-							success = true;
+						const tagName = String(sectionEl?.tagName || '').toLowerCase();
+						let sectionType = '';
+						try { sectionType = String(sectionEl?.serialize?.()?.type || '').toLowerCase(); } catch { /* use tag/prefix fallback */ }
+						if (!sectionType) {
+							if (tagName === 'kw-query-section' || sectionId.startsWith('query_') || sectionId.startsWith('copilotQuery_')) sectionType = 'query';
+							else if (tagName === 'kw-chart-section' || sectionId.startsWith('chart_')) sectionType = 'chart';
+							else if (tagName === 'kw-transformation-section' || sectionId.startsWith('transformation_')) sectionType = 'transformation';
+							else if (tagName === 'kw-markdown-section' || sectionId.startsWith('markdown_')) sectionType = 'markdown';
+							else if (tagName === 'kw-python-section' || sectionId.startsWith('python_')) sectionType = 'python';
+							else if (tagName === 'kw-url-section' || sectionId.startsWith('url_')) sectionType = 'url';
+							else if (tagName === 'kw-html-section' || sectionId.startsWith('html_')) sectionType = 'html';
+							else if (tagName === 'kw-sql-section' || sectionId.startsWith('sql_')) sectionType = 'sql';
 						}
+						if (sectionType === 'query' || sectionType === 'copilotquery') { removeQueryBox(sectionId); success = true; }
+						else if (sectionType === 'chart') { removeChartBox(sectionId); success = true; }
+						else if (sectionType === 'transformation') { removeTransformationBox(sectionId); success = true; }
+						else if (sectionType === 'markdown') { removeMarkdownBox(sectionId); success = true; }
+						else if (sectionType === 'python') { removePythonBox(sectionId); success = true; }
+						else if (sectionType === 'url') { removeUrlBox(sectionId); success = true; }
+						else if (sectionType === 'html') { removeHtmlBox(sectionId); success = true; }
+						else if (sectionType === 'sql') { removeSqlBox(sectionId); success = true; }
 					}
 
 					if (success) {
 						agentTouchedStateBySectionId.delete(sectionId);
 						if (queryEditors && queryEditors[sectionId]) {
 							delete queryEditors[sectionId];
-						}
-						if (schemaByBoxId && schemaByBoxId[sectionId]) {
-							delete schemaByBoxId[sectionId];
 						}
 					}
 				} catch (err: any) {
@@ -3283,7 +3409,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try {
 				const requestId = String(message.requestId || '');
 				const sectionId = String(message.sectionId || '');
-				const schema = schemaByBoxId[sectionId];
+				const schema = sqlSchemaByBoxId[sectionId];
 				const sqlEl = __kustoGetSqlSectionElement(sectionId);
 				const owner = {
 					connectionId: typeof sqlEl?.getConnectionId === 'function' ? String(sqlEl.getConnectionId() || '') : '',

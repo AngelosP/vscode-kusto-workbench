@@ -37,8 +37,6 @@ Feature: Kusto Ctrl+Space autocomplete shortcut
     When I evaluate "window.__e2e.kusto.setQueryAt('print marker = 1\n| ', 2, 3)" in the webview
     When I press "Ctrl+Space"
     When I evaluate "window.__e2e.suggest.kusto.waitExistingAllVisible('manual Ctrl+Space Kusto fallback operators', 'where,project', 5000)" in the webview
-    When I execute command "workbench.action.focusActiveEditorGroup"
-    When I click at 950, 15
     Then I take a screenshot "01-ctrl-space-suggest-visible"
 
     When I execute command "workbench.action.closeAllEditors"
@@ -73,9 +71,6 @@ Feature: Kusto Ctrl+Space autocomplete shortcut
     When I evaluate "window.__e2e.suggest.kusto.assertHidden('after setting semantic scenario before Ctrl+Space')" in the webview
     When I press "Ctrl+Space"
     When I evaluate "window.__e2e.kusto.assertSemanticScenarioVisible('first-timestamp')" in the webview
-    When I execute command "workbench.action.focusActiveEditorGroup"
-    When I click at 950, 15
-    Then I take a screenshot "02-fq-function-ctrl-space-suggest-visible"
     When I evaluate "window.__e2e.kusto.assertSemanticScenarioVisible('first-timestamp')" in the webview
 
     When I execute command "workbench.action.closeAllEditors"
@@ -128,9 +123,6 @@ Feature: Kusto Ctrl+Space autocomplete shortcut
     When I evaluate "window.__e2e.suggest.kusto.assertHidden('before missing remote Ctrl+Space')" in the webview
     When I press "Ctrl+Space"
     When I evaluate "window.__e2e.suggest.kusto.waitVisible('missing remote schema fallback after bounded wait', 'where,project,tostring', 4000)" in the webview
-    When I execute command "workbench.action.focusActiveEditorGroup"
-    When I click at 950, 15
-    Then I take a screenshot "03-missing-remote-fallback-visible"
 
     When I execute command "workbench.action.closeAllEditors"
     When I execute command "kustoWorkbench.test.clearIsolatedKustoConnections"

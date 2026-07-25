@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { DatabaseSchemaIndex } from './kustoClient';
+import type { KustoEditorLifecycleIdentity } from '../shared/kustoSchemaLifecycle';
 
 export const STORAGE_KEYS = {
 	lastConnectionId: 'kusto.lastConnectionId',
@@ -223,8 +224,8 @@ export type IncomingWebviewMessage =
 	| { type: 'fileOpenTrace'; event: string; timeMs?: number; sequence?: number; detail?: unknown }
 	| EditorCursorPositionChangedMessage
 	| EditorCursorStatusSnapshotRequestMessage
-	| { type: 'getDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string }
-	| { type: 'refreshDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string }
+	| ({ type: 'getDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>)
+	| ({ type: 'refreshDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>)
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }
 	| { type: 'seeCachedValues' }
 	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
@@ -277,7 +278,7 @@ export type IncomingWebviewMessage =
 	| { type: 'removeSqlFavorite'; connectionId: string; database: string; boxId?: string }
 	| CopyAdeLinkMessage
 	| ShareToClipboardMessage
-	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string; cacheOnly?: boolean; silent?: boolean; reason?: string }
+	| ({ type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string; cacheOnly?: boolean; silent?: boolean; reason?: string } & Partial<KustoEditorLifecycleIdentity>)
 	| { type: 'requestCrossClusterSchema'; clusterName: string; database: string; boxId: string; requestToken: string; requestSource: 'background' | 'autocomplete'; traceId?: string }
 	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; sectionInstanceId: string; line: number; column: number; ownerToken?: string; targetGeneration?: number } }
 	| { type: 'stsDidOpen'; boxId: string; sectionInstanceId: string; text: string }

@@ -28,7 +28,6 @@ Feature: SQL query execution end-to-end
     When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
     When I wait for "kw-sql-section[data-test-sts-ready='true']" in the webview for 120 seconds
-    Then I take a screenshot "01-setup-ready"
 
     # Focus the SQL editor
     When I scroll "kw-sql-section .query-editor" into view
@@ -90,7 +89,6 @@ Feature: SQL query execution end-to-end
 
     # Wait for it to finish
     When I wait for "kw-sql-section[data-test-executing='false']" in the webview for 30 seconds
-    Then I take a screenshot "06-execution-complete"
 
     # ── TEST 6: Multi-row result ──────────────────────────────────────────
     When I evaluate "window.__e2e.sql.setQuery('SELECT TOP 5 TABLE_SCHEMA, TABLE_NAME FROM INFORMATION_SCHEMA.TABLES')" in the webview
@@ -101,5 +99,4 @@ Feature: SQL query execution end-to-end
     And I wait 1 second
 
     When I evaluate "window.__e2e.sql.assertMinRowCount(2)" in the webview
-    Then I take a screenshot "07-multi-row-results"
     When I execute command "workbench.action.closeAllEditors"

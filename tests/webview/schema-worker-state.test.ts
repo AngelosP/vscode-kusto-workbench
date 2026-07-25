@@ -5,6 +5,9 @@ import {
 	discardStalePendingSchemaWorkerUpdate,
 	getKustoPreparationState,
 	getKustoPreparationToken,
+	getPendingSchemaWorkerUpdate,
+	getSchemaEnhancementReadyState,
+	getSchemaWorkerReadyState,
 	isSchemaWorkerReady,
 	isKustoPreparationCurrent,
 	isSchemaEnhancementFailed,
@@ -22,26 +25,20 @@ import {
 	requireSchemaWorkerApply,
 	registerKustoSchemaApplyRequester,
 	requestKustoSchemaApplyForBox,
-	pendingSchemaWorkerUpdateByBoxId,
+	setPendingSchemaWorkerUpdate,
 	reviseKustoPreparation,
-	schemaEnhancementReadyByBoxId,
-	schemaWorkerReadyByBoxId,
 	subscribeKustoPreparation,
 	updateKustoPreparation,
 	waitForSchemaWorkerReady,
 } from '../../src/webview/core/state';
+import { kustoEditorSchemaCoordinator } from '../../src/webview/core/kusto-editor-schema-runtime.js';
 import {
 	KUSTO_SCHEMA_PREPARATION_TIMEOUT_MS,
 } from '../../src/webview/shared/kusto-schema-preparation-deadline.js';
 
 describe('schema worker readiness state', () => {
 	beforeEach(() => {
-		for (const key of Object.keys(schemaWorkerReadyByBoxId)) {
-			delete schemaWorkerReadyByBoxId[key];
-		}
-		for (const key of Object.keys(schemaEnhancementReadyByBoxId)) {
-			delete schemaEnhancementReadyByBoxId[key];
-		}
+		kustoEditorSchemaCoordinator.clear();
 	});
 
 	it('matches schema readiness by model URI when provided', () => {
@@ -295,7 +292,7 @@ describe('schema worker readiness state', () => {
 			blockers: ['worker', 'enhancement'],
 			target: { schemaSignature: 'sig-new' },
 		});
-		expect(schemaWorkerReadyByBoxId.query_superseded_failure).toBeUndefined();
+		expect(getSchemaWorkerReadyState('query_superseded_failure')).toBeUndefined();
 	});
 
 	it('does not let a late fallback refresh erase a terminal worker error', () => {
@@ -330,18 +327,18 @@ describe('schema worker readiness state', () => {
 			blockers: ['worker'],
 			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-1' },
 		})!;
-		pendingSchemaWorkerUpdateByBoxId.query_pending = {
+		setPendingSchemaWorkerUpdate('query_pending', {
 			rawSchemaJson: {},
 			clusterUrl: 'https://cluster.kusto.windows.net',
 			database: 'Db',
 			schemaKey: 'cluster|db',
 			schemaSignature: 'sig-1',
 			preparationToken: token,
-		};
+		});
 		beginKustoPreparation('query_pending', { stage: 'schema', blockers: ['schema'] });
 
 		expect(discardStalePendingSchemaWorkerUpdate('query_pending')).toBe(true);
-		expect(pendingSchemaWorkerUpdateByBoxId.query_pending).toBeUndefined();
+		expect(getPendingSchemaWorkerUpdate('query_pending')).toBeUndefined();
 	});
 
 	it('routes controller schema apply requests to Monaco without a window bridge', () => {

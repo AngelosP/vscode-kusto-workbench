@@ -1,0 +1,1 @@
+export const schemaRequestTokenByBoxId: Record<string, string> = Object.create(null);

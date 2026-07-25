@@ -463,6 +463,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.kustoClient = { dispose: vi.fn() };
 		provider.disconnectToolOrchestrator = vi.fn();
 		provider.connection = { dispose: vi.fn() };
+		provider.kustoConnectionLifecycle = { dispose: vi.fn() };
 
 		provider.registerPanelDisposal(panel);
 		disposePanel();
@@ -470,6 +471,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.copilot.invalidateSqlConnections).toHaveBeenCalledWith([], ['comparison_1']);
 		expect(provider.copilot.invalidateSqlConnections.mock.invocationCallOrder[0])
 			.toBeLessThan(provider.sqlLifecycle.dispose.mock.invocationCallOrder[0]);
+		expect(provider.kustoConnectionLifecycle.dispose).toHaveBeenCalledOnce();
 		expect(provider._comparisonOwnerByBoxId).toEqual(new Map());
 	});
 

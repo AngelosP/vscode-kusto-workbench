@@ -2,6 +2,15 @@ import {
 	completeKustoSchemaPreparationDeadline,
 	observeKustoSchemaPreparationOwnerTimeout,
 } from '../shared/kusto-schema-preparation-deadline.js';
+import {
+	clearAllKustoEditorSchemas,
+	clearKustoEditorSchema,
+	getKustoEditorSchema,
+	setKustoEditorSchema,
+	sqlSchemaByBoxId,
+} from './schema-catalogs.js';
+import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
+import type { KustoEditorSchemaRequestIdentity, KustoEditorSchemaTarget } from '../../shared/kustoSchemaLifecycle.js';
 // State module — central webview state.
 // All state variables are exported for direct ES module import within the
 // esbuild-bundled IIFE.  Window assignments are kept alongside exports so
@@ -21,16 +30,19 @@ export const queryEditorResizeObservers: Record<string, any> = {};
 export const queryEditorVisibilityObservers: Record<string, any> = {};
 export const queryEditorVisibilityMutationObservers: Record<string, any> = {};
 export const queryEditorBoxByModelUri: Record<string, any> = {};
-export const schemaByBoxId: Record<string, any> = {};
+export {
+	clearAllKustoEditorSchemas,
+	clearKustoEditorSchema,
+	getKustoEditorSchema,
+	setKustoEditorSchema,
+	sqlSchemaByBoxId,
+};
 export const schemaDiagnosticsTrustedByBoxId: Record<string, boolean> = {};
 export const schemaFetchInFlightByBoxId: Record<string, any> = {};
 export const lastSchemaRequestAtByBoxId: Record<string, any> = {};
 export const qualifyTablesInFlightByBoxId: Record<string, any> = {};
 export const schemaByConnDb: Record<string, any> = {};
 export const schemaMetaByConnDb: Record<string, any> = {};
-export const schemaMetaByBoxId: Record<string, any> = {};
-export const schemaRequestResolversByBoxId: Record<string, any> = {};
-export const databasesRequestResolversByBoxId: Record<string, any> = {};
 export const databaseRequestTokenByBoxId: Record<string, string | undefined> = {};
 export type KustoPreparationStatus = 'idle' | 'preparing' | 'ready' | 'error';
 export type KustoPreparationStage = 'idle' | 'databases' | 'schema' | 'refreshing' | 'waiting-worker' | 'enhancing' | 'ready' | 'error';
@@ -101,13 +113,37 @@ export type PendingSchemaWorkerUpdate = {
 	reason?: string;
 	preparationToken?: KustoPreparationToken;
 	backgroundOnly?: boolean;
+	deliveryOwnership?: Readonly<{
+		request: KustoEditorSchemaRequestIdentity;
+		target: KustoEditorSchemaTarget;
+	}>;
 };
-export const kustoPreparationByBoxId: Record<string, KustoPreparationState | undefined> = {};
-export const schemaWorkerReadyByBoxId: Record<string, SchemaWorkerReadyState | undefined> = {};
-export const schemaEnhancementReadyByBoxId: Record<string, SchemaEnhancementReadyState | undefined> = {};
-export const schemaWorkerApplyRequiredByBoxId: Record<string, boolean | undefined> = {};
-export const schemaWorkerReadyWaitersByBoxId: Record<string, Array<{ schemaKey?: string; modelUri?: string; resolve: (ready: boolean) => void }>> = {};
-export const pendingSchemaWorkerUpdateByBoxId: Record<string, PendingSchemaWorkerUpdate | undefined> = {};
+
+type SchemaWorkerReadyWaiter = {
+	schemaKey?: string;
+	modelUri?: string;
+	resolve: (ready: boolean) => void;
+};
+
+export type KustoSchemaMetadata = Record<string, unknown> & {
+	schemaSignature?: string;
+	fromCache?: boolean;
+	cacheState?: string;
+	refreshState?: string;
+	workerUpdateNeeded?: boolean;
+	isBackgroundRefresh?: boolean;
+	forceRefresh?: boolean;
+	isStale?: boolean;
+	isFailoverToCache?: boolean;
+	autocompleteChanged?: boolean;
+	rawCapabilityImproved?: boolean;
+	refreshReason?: string;
+	cacheAgeMs?: number;
+	tablesCount?: number;
+	columnsCount?: number;
+	functionsCount?: number;
+};
+
 export const missingClusterDetectTimersByBoxId: Record<string, any> = {};
 export const lastQueryTextByBoxId: Record<string, any> = {};
 export const missingClusterUrlsByBoxId: Record<string, any> = {};
@@ -138,6 +174,76 @@ export let activeMonacoEditor: any = null;
 export let caretDocsEnabled = true;
 export let autoTriggerAutocompleteEnabled = true;
 export let copilotInlineCompletionsEnabled = true;
+
+export function getKustoSchemaMetadata(boxId: string): KustoSchemaMetadata | undefined {
+	return kustoEditorSchemaCoordinator.getOwnedState<KustoSchemaMetadata>(boxId, 'schemaMeta');
+}
+
+export function setKustoSchemaMetadata(boxId: string, metadata: KustoSchemaMetadata): void {
+	kustoEditorSchemaCoordinator.setOwnedState(boxId, 'schemaMeta', metadata);
+}
+
+export function clearKustoSchemaMetadata(boxId: string): boolean {
+	return kustoEditorSchemaCoordinator.deleteOwnedState(boxId, 'schemaMeta');
+}
+
+export function clearAllKustoSchemaMetadata(): void {
+	kustoEditorSchemaCoordinator.clearOwnedStateSlot('schemaMeta');
+}
+
+export function getPendingSchemaWorkerUpdate(boxId: string): PendingSchemaWorkerUpdate | undefined {
+	return kustoEditorSchemaCoordinator.getOwnedState<PendingSchemaWorkerUpdate>(boxId, 'pendingWorkerUpdate');
+}
+
+export function setPendingSchemaWorkerUpdate(boxId: string, update: PendingSchemaWorkerUpdate): void {
+	kustoEditorSchemaCoordinator.setOwnedState(boxId, 'pendingWorkerUpdate', update);
+}
+
+export function clearPendingSchemaWorkerUpdate(boxId: string, expected?: PendingSchemaWorkerUpdate): boolean {
+	const current = getPendingSchemaWorkerUpdate(boxId);
+	if (!current || (expected && current !== expected)) return false;
+	return kustoEditorSchemaCoordinator.deleteOwnedState(boxId, 'pendingWorkerUpdate');
+}
+
+export function getSchemaWorkerReadyState(boxId: string): SchemaWorkerReadyState | undefined {
+	return kustoEditorSchemaCoordinator.getOwnedState<SchemaWorkerReadyState>(boxId, 'workerReady');
+}
+
+export function getSchemaWorkerReadyStateIds(): string[] {
+	return kustoEditorSchemaCoordinator.getOwnedStateIds('workerReady');
+}
+
+export function setSchemaWorkerReadyState(boxId: string, state: SchemaWorkerReadyState): void {
+	kustoEditorSchemaCoordinator.setOwnedState(boxId, 'workerReady', state);
+}
+
+export function clearSchemaWorkerReadyState(boxId: string): boolean {
+	return kustoEditorSchemaCoordinator.deleteOwnedState(boxId, 'workerReady');
+}
+
+export function getSchemaEnhancementReadyState(boxId: string): SchemaEnhancementReadyState | undefined {
+	return kustoEditorSchemaCoordinator.getOwnedState<SchemaEnhancementReadyState>(boxId, 'enhancementReady');
+}
+
+export function setSchemaEnhancementReadyState(boxId: string, state: SchemaEnhancementReadyState): void {
+	kustoEditorSchemaCoordinator.setOwnedState(boxId, 'enhancementReady', state);
+}
+
+export function clearSchemaEnhancementReadyState(boxId: string): boolean {
+	return kustoEditorSchemaCoordinator.deleteOwnedState(boxId, 'enhancementReady');
+}
+
+function getSchemaWorkerReadyWaiters(boxId: string): SchemaWorkerReadyWaiter[] | undefined {
+	return kustoEditorSchemaCoordinator.getOwnedState<SchemaWorkerReadyWaiter[]>(boxId, 'workerReadyWaiters');
+}
+
+function setSchemaWorkerReadyWaiters(boxId: string, waiters: SchemaWorkerReadyWaiter[]): void {
+	kustoEditorSchemaCoordinator.setOwnedState(boxId, 'workerReadyWaiters', waiters);
+}
+
+function clearSchemaWorkerReadyWaiters(boxId: string): boolean {
+	return kustoEditorSchemaCoordinator.deleteOwnedState(boxId, 'workerReadyWaiters');
+}
 
 type KustoSchemaApplyRequester = (boxId: string, enableMarkers: boolean) => boolean;
 let kustoSchemaApplyRequester: KustoSchemaApplyRequester | null = null;
@@ -182,7 +288,6 @@ export function requestKustoSchemaApplyForBox(boxId: string, enableMarkers: bool
 }
 
 let kustoPreparationGeneration = 0;
-const kustoPreparationListenersByBoxId = new Map<string, Set<(state: KustoPreparationState) => void>>();
 
 function uniquePreparationBlockers(values: readonly KustoPreparationBlocker[]): KustoPreparationBlocker[] {
 	return Array.from(new Set(values));
@@ -198,14 +303,9 @@ function stageForPreparationBlockers(blockers: readonly KustoPreparationBlocker[
 }
 
 function publishKustoPreparation(boxId: string, state: KustoPreparationState): void {
-	kustoPreparationByBoxId[boxId] = state;
+	kustoEditorSchemaCoordinator.publishOwnedState(boxId, 'preparation', state);
 	if (state.status !== 'preparing') {
 		completeKustoSchemaPreparationDeadline({ boxId, generation: state.generation });
-	}
-	const listeners = kustoPreparationListenersByBoxId.get(boxId);
-	if (!listeners) return;
-	for (const listener of Array.from(listeners)) {
-		try { listener(state); } catch (e) { console.error('[kusto]', e); }
 	}
 }
 
@@ -234,7 +334,7 @@ function createKustoPreparationState(args: {
 
 export function getKustoPreparationState(boxId: string): KustoPreparationState {
 	const id = String(boxId || '').trim();
-	const current = id ? kustoPreparationByBoxId[id] : undefined;
+	const current = id ? kustoEditorSchemaCoordinator.getOwnedState<KustoPreparationState>(id, 'preparation') : undefined;
 	if (current) return current;
 	return createKustoPreparationState({
 		status: 'idle',
@@ -246,13 +346,13 @@ export function getKustoPreparationState(boxId: string): KustoPreparationState {
 
 export function getKustoPreparationToken(boxId: string): KustoPreparationToken | undefined {
 	const id = String(boxId || '').trim();
-	const current = id ? kustoPreparationByBoxId[id] : undefined;
+	const current = id ? kustoEditorSchemaCoordinator.getOwnedState<KustoPreparationState>(id, 'preparation') : undefined;
 	return current ? Object.freeze({ boxId: id, generation: current.generation, revision: current.revision }) : undefined;
 }
 
 export function isKustoPreparationCurrent(token: KustoPreparationToken | undefined, expected: Partial<KustoPreparationTarget> = {}): boolean {
 	if (!token) return false;
-	const current = kustoPreparationByBoxId[token.boxId];
+	const current = kustoEditorSchemaCoordinator.getOwnedState<KustoPreparationState>(token.boxId, 'preparation');
 	if (!current || current.generation !== token.generation || current.revision !== token.revision) return false;
 	for (const [key, value] of Object.entries(expected)) {
 		if (value !== undefined && current.target[key as keyof KustoPreparationTarget] !== value) return false;
@@ -262,7 +362,7 @@ export function isKustoPreparationCurrent(token: KustoPreparationToken | undefin
 
 export function discardStalePendingSchemaWorkerUpdate(boxId: string): boolean {
 	const id = String(boxId || '').trim();
-	const pending = id ? pendingSchemaWorkerUpdateByBoxId[id] : undefined;
+	const pending = id ? getPendingSchemaWorkerUpdate(id) : undefined;
 	const token = pending?.preparationToken;
 	if (!pending || !token || isKustoPreparationCurrent(token, {
 		schemaKey: pending.schemaKey,
@@ -270,9 +370,7 @@ export function discardStalePendingSchemaWorkerUpdate(boxId: string): boolean {
 	})) {
 		return false;
 	}
-	if (pendingSchemaWorkerUpdateByBoxId[id] === pending) {
-		delete pendingSchemaWorkerUpdateByBoxId[id];
-	}
+	clearPendingSchemaWorkerUpdate(id, pending);
 	return true;
 }
 
@@ -297,7 +395,7 @@ export function beginKustoPreparation(boxId: string, options: KustoPreparationSt
 
 export function reviseKustoPreparation(token: KustoPreparationToken | undefined, update: KustoPreparationUpdate = {}): KustoPreparationToken | undefined {
 	if (!isKustoPreparationCurrent(token) || !token) return undefined;
-	const current = kustoPreparationByBoxId[token.boxId]!;
+	const current = kustoEditorSchemaCoordinator.getOwnedState<KustoPreparationState>(token.boxId, 'preparation')!;
 	const revision = current.revision + 1;
 	const nextToken = Object.freeze({ boxId: token.boxId, generation: current.generation, revision });
 	const replaceBlockers = update.replaceBlockers ?? current.blockers;
@@ -325,7 +423,7 @@ export function reviseKustoPreparation(token: KustoPreparationToken | undefined,
 
 export function updateKustoPreparation(token: KustoPreparationToken | undefined, update: KustoPreparationUpdate): boolean {
 	if (!isKustoPreparationCurrent(token) || !token) return false;
-	const current = kustoPreparationByBoxId[token.boxId]!;
+	const current = kustoEditorSchemaCoordinator.getOwnedState<KustoPreparationState>(token.boxId, 'preparation')!;
 	const replaceBlockers = update.replaceBlockers ?? current.blockers;
 	const blockers = uniquePreparationBlockers([
 		...replaceBlockers.filter(blocker => !(update.removeBlockers || []).includes(blocker)),
@@ -359,7 +457,7 @@ export function setKustoPreparationIdle(boxId: string): KustoPreparationToken | 
 
 export function failKustoPreparation(token: KustoPreparationToken | undefined, error: string, usableFallback: boolean = false): boolean {
 	if (!isKustoPreparationCurrent(token) || !token) return false;
-	const current = kustoPreparationByBoxId[token.boxId];
+	const current = kustoEditorSchemaCoordinator.getOwnedState<KustoPreparationState>(token.boxId, 'preparation');
 	if (usableFallback) {
 		if (current?.status === 'error') {
 			return !!reviseKustoPreparation(token, {
@@ -386,31 +484,22 @@ export function disposeKustoPreparation(boxId: string): void {
 	if (!id) return;
 	const generation = ++kustoPreparationGeneration;
 	publishKustoPreparation(id, createKustoPreparationState({ status: 'idle', stage: 'idle', generation, revision: 0 }));
-	delete kustoPreparationByBoxId[id];
-	delete schemaWorkerApplyRequiredByBoxId[id];
+	kustoEditorSchemaCoordinator.deleteOwnedState(id, 'preparation');
+	kustoEditorSchemaCoordinator.deleteOwnedState(id, 'workerApplyRequired');
 	pendingKustoSchemaApplyByBoxId.delete(id);
 }
 
 export function subscribeKustoPreparation(boxId: string, listener: (state: KustoPreparationState) => void): () => void {
 	const id = String(boxId || '').trim();
 	if (!id) return () => undefined;
-	let listeners = kustoPreparationListenersByBoxId.get(id);
-	if (!listeners) {
-		listeners = new Set();
-		kustoPreparationListenersByBoxId.set(id, listeners);
-	}
-	listeners.add(listener);
+	const unsubscribe = kustoEditorSchemaCoordinator.subscribeOwnedState(id, 'preparation', listener);
 	listener(getKustoPreparationState(id));
-	return () => {
-		const current = kustoPreparationListenersByBoxId.get(id);
-		current?.delete(listener);
-		if (current?.size === 0) kustoPreparationListenersByBoxId.delete(id);
-	};
+	return unsubscribe;
 }
 
 function resolveSchemaWorkerWaiters(boxId: string, ready: boolean, schemaKey?: string, modelUri?: string): void {
 	try {
-		const waiters = schemaWorkerReadyWaitersByBoxId[boxId];
+		const waiters = getSchemaWorkerReadyWaiters(boxId);
 		if (!waiters || waiters.length === 0) {
 			return;
 		}
@@ -425,9 +514,9 @@ function resolveSchemaWorkerWaiters(boxId: string, ready: boolean, schemaKey?: s
 			}
 		}
 		if (remaining.length) {
-			schemaWorkerReadyWaitersByBoxId[boxId] = remaining;
+			setSchemaWorkerReadyWaiters(boxId, remaining);
 		} else {
-			delete schemaWorkerReadyWaitersByBoxId[boxId];
+			clearSchemaWorkerReadyWaiters(boxId);
 		}
 	} catch (e) { console.error('[kusto]', e); }
 }
@@ -435,7 +524,7 @@ function resolveSchemaWorkerWaiters(boxId: string, ready: boolean, schemaKey?: s
 export function markSchemaWorkerApplyPending(boxId: string, schemaKey: string, schemaSignature?: string, modelUri?: string, preparationToken?: KustoPreparationToken): void {
 	const id = String(boxId || '').trim();
 	if (!id || (preparationToken && !isKustoPreparationCurrent(preparationToken))) return;
-	schemaWorkerReadyByBoxId[id] = { status: 'pending', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() };
+	setSchemaWorkerReadyState(id, { status: 'pending', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() });
 	if (preparationToken) {
 		updateKustoPreparation(preparationToken, {
 			stage: 'waiting-worker',
@@ -453,8 +542,8 @@ export function markSchemaWorkerApplyPending(boxId: string, schemaKey: string, s
 export function markSchemaWorkerReady(boxId: string, schemaKey: string, schemaSignature?: string, modelUri?: string, preparationToken?: KustoPreparationToken): void {
 	const id = String(boxId || '').trim();
 	if (!id || (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }))) return;
-	schemaWorkerReadyByBoxId[id] = { status: 'ready', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() };
-	delete schemaWorkerApplyRequiredByBoxId[id];
+	setSchemaWorkerReadyState(id, { status: 'ready', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() });
+	kustoEditorSchemaCoordinator.deleteOwnedState(id, 'workerApplyRequired');
 	resolveSchemaWorkerWaiters(id, true, schemaKey, modelUri);
 	if (preparationToken) {
 		// The base worker schema is the user-visible readiness boundary. Function
@@ -467,7 +556,7 @@ export function markSchemaWorkerReady(boxId: string, schemaKey: string, schemaSi
 export function markSchemaWorkerApplyFailed(boxId: string, schemaKey?: string, modelUri?: string, preparationToken?: KustoPreparationToken): void {
 	const id = String(boxId || '').trim();
 	if (!id || (preparationToken && !isKustoPreparationCurrent(preparationToken))) return;
-	schemaWorkerReadyByBoxId[id] = { status: 'error', schemaKey, modelUri, updatedAt: Date.now() };
+	setSchemaWorkerReadyState(id, { status: 'error', schemaKey, modelUri, updatedAt: Date.now() });
 	resolveSchemaWorkerWaiters(id, false, schemaKey, modelUri);
 	if (preparationToken) {
 		failKustoPreparation(preparationToken, 'Failed to prepare autocomplete.');
@@ -484,20 +573,20 @@ function schemaEnhancementMatches(state: SchemaEnhancementReadyState | undefined
 export function markSchemaEnhancementPending(boxId: string, schemaKey: string, schemaSignature: string | undefined, modelUri: string, preparationToken?: KustoPreparationToken): void {
 	const id = String(boxId || '').trim();
 	if (!id || (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }))) return;
-	schemaEnhancementReadyByBoxId[id] = { status: 'pending', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() };
+	setSchemaEnhancementReadyState(id, { status: 'pending', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() });
 }
 
 export function markSchemaEnhancementReady(boxId: string, schemaKey: string, schemaSignature: string | undefined, modelUri: string, preparationToken?: KustoPreparationToken): void {
 	const id = String(boxId || '').trim();
 	if (!id || (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }))) return;
-	schemaEnhancementReadyByBoxId[id] = { status: 'ready', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() };
+	setSchemaEnhancementReadyState(id, { status: 'ready', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() });
 	if (preparationToken) updateKustoPreparation(preparationToken, { removeBlockers: ['enhancement'] });
 }
 
 export function markSchemaEnhancementFailed(boxId: string, schemaKey: string, schemaSignature: string | undefined, modelUri: string, preparationToken?: KustoPreparationToken): void {
 	const id = String(boxId || '').trim();
 	if (!id || (preparationToken && !isKustoPreparationCurrent(preparationToken, { schemaKey, schemaSignature, modelUri }))) return;
-	schemaEnhancementReadyByBoxId[id] = { status: 'error', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() };
+	setSchemaEnhancementReadyState(id, { status: 'error', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() });
 	// Enhancement is retryable background enrichment. The exact base worker
 	// schema remains valid even when inference fails.
 	if (preparationToken) updateKustoPreparation(preparationToken, { removeBlockers: ['enhancement'] });
@@ -506,30 +595,30 @@ export function markSchemaEnhancementFailed(boxId: string, schemaKey: string, sc
 export function markSchemaEnhancementCanceled(boxId: string, schemaKey: string, schemaSignature: string | undefined, modelUri: string, preparationToken?: KustoPreparationToken): void {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	const state = schemaEnhancementReadyByBoxId[id];
+	const state = getSchemaEnhancementReadyState(id);
 	if (!schemaEnhancementMatches(state, schemaKey, schemaSignature, modelUri) || state?.status !== 'pending') return;
-	schemaEnhancementReadyByBoxId[id] = { status: 'error', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() };
+	setSchemaEnhancementReadyState(id, { status: 'error', schemaKey, schemaSignature, modelUri, updatedAt: Date.now() });
 }
 
 export function isSchemaEnhancementReady(boxId: string, schemaKey: string, schemaSignature: string | undefined, modelUri: string): boolean {
-	const state = schemaEnhancementReadyByBoxId[String(boxId || '').trim()];
+	const state = getSchemaEnhancementReadyState(String(boxId || '').trim());
 	return schemaEnhancementMatches(state, schemaKey, schemaSignature, modelUri) && state?.status === 'ready';
 }
 
 export function isSchemaEnhancementPending(boxId: string, schemaKey: string, schemaSignature: string | undefined, modelUri: string): boolean {
-	const state = schemaEnhancementReadyByBoxId[String(boxId || '').trim()];
+	const state = getSchemaEnhancementReadyState(String(boxId || '').trim());
 	return schemaEnhancementMatches(state, schemaKey, schemaSignature, modelUri) && state?.status === 'pending';
 }
 
 export function isSchemaEnhancementFailed(boxId: string, schemaKey: string, schemaSignature: string | undefined, modelUri: string): boolean {
-	const state = schemaEnhancementReadyByBoxId[String(boxId || '').trim()];
+	const state = getSchemaEnhancementReadyState(String(boxId || '').trim());
 	return schemaEnhancementMatches(state, schemaKey, schemaSignature, modelUri) && state?.status === 'error';
 }
 
 export function isSchemaWorkerReady(boxId: string, schemaKey?: string, modelUri?: string): boolean {
 	const id = String(boxId || '').trim();
 	if (!id) return false;
-	const state = schemaWorkerReadyByBoxId[id];
+	const state = getSchemaWorkerReadyState(id);
 	if (!state || state.status !== 'ready') return false;
 	if (schemaKey && state.schemaKey !== schemaKey) return false;
 	if (modelUri && state.modelUri !== modelUri) return false;
@@ -538,11 +627,11 @@ export function isSchemaWorkerReady(boxId: string, schemaKey?: string, modelUri?
 
 export function requireSchemaWorkerApply(boxId: string): void {
 	const id = String(boxId || '').trim();
-	if (id) schemaWorkerApplyRequiredByBoxId[id] = true;
+	if (id) kustoEditorSchemaCoordinator.setOwnedState(id, 'workerApplyRequired', true);
 }
 
 export function isSchemaWorkerApplyRequired(boxId: string): boolean {
-	return schemaWorkerApplyRequiredByBoxId[String(boxId || '').trim()] === true;
+	return kustoEditorSchemaCoordinator.getOwnedState<boolean>(String(boxId || '').trim(), 'workerApplyRequired') === true;
 }
 
 export function waitForSchemaWorkerReady(boxId: string, schemaKey?: string, timeoutMs: number = 900, modelUri?: string): Promise<boolean> {
@@ -563,14 +652,14 @@ export function waitForSchemaWorkerReady(boxId: string, schemaKey?: string, time
 			resolve(ready);
 		};
 		try {
-			(schemaWorkerReadyWaitersByBoxId[id] = schemaWorkerReadyWaitersByBoxId[id] || []).push({ schemaKey, modelUri, resolve: finish });
+			const waiters = getSchemaWorkerReadyWaiters(id) || [];
+			waiters.push({ schemaKey, modelUri, resolve: finish });
+			setSchemaWorkerReadyWaiters(id, waiters);
 			timeoutId = window.setTimeout(() => {
 				try {
-					const waiters = schemaWorkerReadyWaitersByBoxId[id] || [];
-					schemaWorkerReadyWaitersByBoxId[id] = waiters.filter(waiter => waiter.resolve !== finish);
-					if (schemaWorkerReadyWaitersByBoxId[id].length === 0) {
-						delete schemaWorkerReadyWaitersByBoxId[id];
-					}
+					const remaining = (getSchemaWorkerReadyWaiters(id) || []).filter(waiter => waiter.resolve !== finish);
+					if (remaining.length) setSchemaWorkerReadyWaiters(id, remaining);
+					else clearSchemaWorkerReadyWaiters(id);
 				} catch (e) { console.error('[kusto]', e); }
 				finish(isSchemaWorkerReady(id, schemaKey, modelUri));
 			}, Math.max(0, timeoutMs));
@@ -583,21 +672,24 @@ export function waitForSchemaWorkerReady(boxId: string, schemaKey?: string, time
 export function invalidateSchemaWorkerReadinessForBox(boxId: string, resetPreparation: boolean = true, resetEnhancement: boolean = true): void {
 	const id = String(boxId || '').trim();
 	if (!id) return;
-	delete schemaWorkerReadyByBoxId[id];
-	if (resetEnhancement) delete schemaEnhancementReadyByBoxId[id];
-	const waiters = schemaWorkerReadyWaitersByBoxId[id] || [];
-	delete schemaWorkerReadyWaitersByBoxId[id];
+	clearSchemaWorkerReadyState(id);
+	if (resetEnhancement) clearSchemaEnhancementReadyState(id);
+	const waiters = getSchemaWorkerReadyWaiters(id) || [];
+	clearSchemaWorkerReadyWaiters(id);
 	for (const waiter of waiters) {
 		try { waiter.resolve(false); } catch (e) { console.error('[kusto]', e); }
 	}
-	if (resetPreparation && kustoPreparationByBoxId[id]?.status !== 'idle') {
+	if (resetPreparation && getKustoPreparationState(id).status !== 'idle') {
 		setKustoPreparationIdle(id);
 	}
 }
 
 export function invalidateSchemaWorkerReadiness(exceptBoxId?: string): void {
 	const except = String(exceptBoxId || '').trim();
-	const ids = new Set([...Object.keys(schemaWorkerReadyByBoxId), ...Object.keys(schemaWorkerReadyWaitersByBoxId)]);
+	const ids = new Set([
+		...getSchemaWorkerReadyStateIds(),
+		...kustoEditorSchemaCoordinator.getOwnedStateIds('workerReadyWaiters'),
+	]);
 	for (const id of ids) {
 		if (!except || id !== except) invalidateSchemaWorkerReadinessForBox(id);
 	}
@@ -623,14 +715,11 @@ _win.queryEditorVisibilityObservers = queryEditorVisibilityObservers;
 _win.queryEditorVisibilityMutationObservers = queryEditorVisibilityMutationObservers;
 _win.queryEditorBoxByModelUri = queryEditorBoxByModelUri;
 _win.activeQueryEditorBoxId = activeQueryEditorBoxId;
-_win.schemaByBoxId = schemaByBoxId;
 _win.schemaFetchInFlightByBoxId = schemaFetchInFlightByBoxId;
 _win.lastSchemaRequestAtByBoxId = lastSchemaRequestAtByBoxId;
 _win.monacoReadyPromise = monacoReadyPromise;
 _win.qualifyTablesInFlightByBoxId = qualifyTablesInFlightByBoxId;
 _win.schemaByConnDb = schemaByConnDb;
-_win.schemaRequestResolversByBoxId = schemaRequestResolversByBoxId;
-_win.databasesRequestResolversByBoxId = databasesRequestResolversByBoxId;
 _win.missingClusterDetectTimersByBoxId = missingClusterDetectTimersByBoxId;
 _win.lastQueryTextByBoxId = lastQueryTextByBoxId;
 _win.missingClusterUrlsByBoxId = missingClusterUrlsByBoxId;

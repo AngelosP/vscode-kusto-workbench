@@ -122,6 +122,7 @@ When a Lit component grows beyond ~1,500 lines or has distinct behavioral concer
 
 - **Naming**: `{concern}.controller.ts`, next to the host component (in `sections/` or `components/`).
 - A controller **owns state**, has lifecycle hooks (`hostConnected`, `hostDisconnected`, `hostUpdate`, `hostUpdated`), and is **independently testable**.
+- A controller constructor must call `host.addController(this)` so Lit invokes those lifecycle hooks.
 - The host instantiates controllers and reads their state in `render()`.
 - Controllers do **NOT** contain render templates — rendering stays in the host.
 
@@ -139,6 +140,22 @@ When a Lit component grows beyond ~1,500 lines or has distinct behavioral concer
 | `TableVirtualScrollController` | `kw-data-table` | `components/table-virtual-scroll.controller.ts` |
 | `TableRowJumpController` | `kw-data-table` | `components/table-row-jump.controller.ts` |
 | `SqlCopilotChatManagerController` | `kw-sql-section` | `sections/sql-copilot-chat-manager.controller.ts` |
+
+## Kusto Schema Lifecycle Development
+
+Kusto schema state is editor-lifecycle state, not general global state. Preserve these boundaries:
+
+* **Coordinator authority**: `KustoEditorSchemaCoordinator` owns section/model leases and target-scoped schema, metadata, preparation, pending worker updates, readiness, enhancement, apply requirements, and waiters. Use typed accessors in `schema-catalogs.ts` and `state.ts`; do not add per-box lifecycle maps or a mutable window schema catalog.
+* **Exact request identity**: Every real editor database/schema request must carry `{ sectionInstanceId, targetGeneration, requestToken }`. Host responses must echo it, and `message-handler.ts` must route through `kusto-schema-message-router.ts` before changing editor state.
+* **Disconnect is not disposal**: Lit disconnect/reconnect occurs during reorder. Close a section lease only on explicit section removal. Model attach/detach must use the matching model lease.
+* **Registered-section enumeration**: Connection/auth invalidation and schema reapply scheduling must enumerate coordinator sections, not only mounted `queryEditors`; restored sections can exist before Monaco initialization.
+* **Language separation**: Kusto state uses coordinator-backed accessors. SQL state uses `sqlSchemaByBoxId`. Never share a per-box schema map between languages.
+* **Synthetic requests**: Tool and helper requests use `SyntheticRequestBroker`, including bounded timeouts and tombstones. A late synthetic response must be consumed, never fall through to editor delivery.
+* **Worker transactions**: Every Monaco-Kusto worker mutation must run through `KustoWorkerMutationPort` and commit on its exact transaction after the physical call succeeds. Do not create a second promise queue, ambient commit API, or independent worker revision/epoch counter.
+* **Detached recovery**: A leased timeout is logical; it cannot cancel the worker call. Reject commits from the detached transaction, keep later mutations blocked until physical settlement, and run exact-primary recovery in the same serialized slot before releasing the queue.
+* **Dependency direction**: `section-factory.ts` composes Monaco and section controllers. `monaco/` and `QueryConnectionController` must not import back from the factory; use `query-section-accessors.ts`, `monaco/resize.ts`, or the owning controller API.
+
+Focused lifecycle coverage lives in `kusto-editor-schema-coordinator.test.ts`, `kusto-schema-message-router.test.ts`, `kusto-worker-mutation-port.test.ts`, `synthetic-request-broker.test.ts`, and `kusto-schema-ownership.test.ts`. Keep the ownership guard green whenever schema state or worker mutation code changes.
 
 ## SQL Section Development
 
@@ -322,18 +339,12 @@ ECharts and Toast UI are loaded lazily via `<script>` tag injection (`src/webvie
 
 ## Section Serialization — Persistence Contract
 
-All sections are serialized via a unified loop in `persistence.ts` (`getKqlxState()`):
-
-```typescript
-const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_', 'html_', 'sql_'];
-```
-
-The loop iterates DOM children of `#queries-container`, matches their `id` against these prefixes, and calls `el.serialize()`.
+All sections are serialized via a unified loop in `persistence.ts` (`getKqlxState()`). The loop iterates direct DOM children of `#queries-container` and calls `el.serialize()` on section elements. IDs are opaque persisted identities and are not required to use a type prefix.
 
 ### Rules
 
-- **Every new section type must have its prefix added to `sectionPrefixes`.** If omitted, the section will not be saved — data loss.
 - **Every Lit section component must implement `serialize()`** returning a JSON-serializable object with a `type` field matching the `KqlxSectionV1` union.
+- **Do not infer section ownership from ID prefixes.** Persistence, tool removal, and lifecycle cleanup must use the section element/type so arbitrary restored IDs receive the same behavior.
 - **`schedulePersist()` computes a JSON signature to avoid unnecessary disk writes.** Do not bypass this with direct `postMessage` persistence calls.
 - **Leave No Trace**: Sections connected to a leave-no-trace cluster have their `resultJson` stripped before persistence. If you add new data fields to section serialization, verify they respect this check (see [ARCHITECTURE.md](ARCHITECTURE.md) for details).
 
@@ -419,9 +430,9 @@ The query section header toolbar uses **CSS Container Queries** for responsive l
 
 1. **Define the section type** in [`kqlxFormat.ts`](src/host/kqlxFormat.ts) — add a new variant to the `KqlxSectionV1` union type.
 2. **Create a Lit component** in `src/webview/sections/` (e.g., `kw-my-section.ts` + `kw-my-section.styles.ts`). Register with `@customElement('kw-my-section')`. Implement `serialize()`.
-3. **Add the prefix to `sectionPrefixes`** in [`persistence.ts`](src/webview/core/persistence.ts) — REQUIRED or the section won't be saved.
-4. **Add a creation function** in [`section-factory.ts`](src/webview/core/section-factory.ts) that creates the DOM element and wires event listeners.
-5. **Add restoration logic** in [`persistence.ts`](src/webview/core/persistence.ts) — handle the new `type` in the restore loop.
+3. **Add a creation function** in [`section-factory.ts`](src/webview/core/section-factory.ts) that creates the DOM element and wires event listeners.
+4. **Add restoration logic** in [`persistence.ts`](src/webview/core/persistence.ts) — handle the new `type` in the restore loop.
+5. **Add owner-routed tool removal** in [`message-handler.ts`](src/webview/core/message-handler.ts) using the element tag or serialized `type`, never only an ID prefix.
 6. **Add a message handler** in [`main.ts`](src/webview/core/main.ts) if the section needs messages from the extension host.
 7. **Import the component** in [`index.ts`](src/webview/index.ts) (in the components/sections block — order doesn't matter).
 8. **Verify Leave No Trace** — if the section can display query results or derived data, implement the stripping logic.
@@ -477,7 +488,7 @@ Use this checklist when reviewing any PR or change:
 - [ ] No JavaScript-based responsive layout (CSS Container Queries only).
 - [ ] No scroll-anchored popups/dropdowns.
 - [ ] Webview import order in `index.ts` preserved (`state` first, `main` last, diagnostics/completions before monaco).
-- [ ] New section types follow the [full checklist](#new-section-types--checklist) including `sectionPrefixes`.
+- [ ] New section types follow the [full checklist](#new-section-types--checklist), including arbitrary-ID serialization and owner-routed removal.
 - [ ] HTML dashboard changes follow the [dashboard checklist](#html-dashboards-and-power-bi-checklist), including provenance and `data-kw-bind` compatibility.
 - [ ] Lazy-loaded vendors remain lazy (no direct imports).
 - [ ] Toast UI AMD hack preserved if touching vendor loading.

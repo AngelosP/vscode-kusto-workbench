@@ -11,17 +11,16 @@ import {
 	favoritesModeByBoxId,
 	pendingFavoriteSelectionByBoxId,
 	queryEditors,
-	schemaByBoxId,
+	getKustoEditorSchema,
+	setKustoEditorSchema,
 	schemaDiagnosticsTrustedByBoxId,
 	schemaFetchInFlightByBoxId,
 	lastSchemaRequestAtByBoxId,
 	schemaByConnDb,
-	schemaMetaByBoxId,
+	getKustoSchemaMetadata,
+	setKustoSchemaMetadata,
 	schemaMetaByConnDb,
 	databaseRequestTokenByBoxId,
-	pendingSchemaWorkerUpdateByBoxId,
-	schemaRequestResolversByBoxId,
-	databasesRequestResolversByBoxId,
 	missingClusterDetectTimersByBoxId,
 	lastQueryTextByBoxId,
 	missingClusterUrlsByBoxId,
@@ -58,14 +57,20 @@ import {
 	findConnectionIdForClusterUrl as _findConnIdPure,
 } from '../shared/clusterUtils';
 import { escapeHtml } from '../core/utils';
-import { getKustoSchemaIdentityKey } from '../../shared/kustoAuth.js';
+import { getKustoConnectionIdentityKey, getKustoSchemaIdentityKey } from '../../shared/kustoAuth.js';
+import type { KustoEditorLifecycleIdentity } from '../../shared/kustoSchemaLifecycle.js';
 import {
 	__kustoGetQuerySectionElement,
 	__kustoGetConnectionId,
 	__kustoGetDatabase,
 	__kustoGetClusterUrl,
-	schemaRequestTokenByBoxId,
-} from '../core/section-factory';
+} from '../core/query-section-accessors';
+import { schemaRequestTokenByBoxId } from '../core/kusto-schema-request-state';
+import {
+	kustoSyntheticDatabaseRequests,
+	kustoSyntheticSchemaRequests,
+} from '../core/kusto-synthetic-request-runtime.js';
+import { kustoEditorSchemaCoordinator } from '../core/kusto-editor-schema-runtime.js';
 
 const _win = window;
 
@@ -89,6 +94,10 @@ export interface QuerySectionHost extends ReactiveControllerHost, HTMLElement {
 	clearDesiredDatabase?(): void;
 	setConnectionId(connectionId: string): void;
 	setConnections(conns: any[], opts?: any): void;
+	setSchemaLifecycleTarget(connectionId: string, database?: string): KustoEditorLifecycleIdentity | undefined;
+	invalidateSchemaLifecycleTarget(): KustoEditorLifecycleIdentity | undefined;
+	beginDatabaseLifecycleRequest(requestToken: string): (KustoEditorLifecycleIdentity & { requestToken: string }) | undefined;
+	beginSchemaLifecycleRequest(requestToken: string): (KustoEditorLifecycleIdentity & { requestToken: string }) | undefined;
 }
 
 // ── Module-level state ────────────────────────────────────────────────────────
@@ -102,6 +111,20 @@ function schemaIdentityKeyForConnection(connectionId: unknown, database: unknown
 	const id = String(connectionId || '').trim();
 	const connection = (connections || []).find((candidate: any) => String(candidate?.id || '') === id);
 	return getKustoSchemaIdentityKey(id, connection?.accountPartition, connection?.clusterUrl, database);
+}
+
+function syntheticConnectionOwner(connectionId: string): { accountPartition: string; connectionIdentity: string } | undefined {
+	const connection = (connections || []).find((candidate: any) => String(candidate?.id || '') === connectionId);
+	if (!connection) return undefined;
+	try {
+		const connectionIdentity = getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId);
+		return connectionIdentity ? {
+			accountPartition: String(connection.accountPartition || '').trim(),
+			connectionIdentity,
+		} : undefined;
+	} catch {
+		return undefined;
+	}
 }
 
 // ── ReactiveController ────────────────────────────────────────────────────────
@@ -143,7 +166,7 @@ export class QueryConnectionController implements ReactiveController {
 		if (!forceRefresh && targetMatches && current.status === 'ready') {
 			return getKustoPreparationToken(boxId);
 		}
-		const hasRawFallback = !!schemaByBoxId[boxId]?.rawSchemaJson;
+		const hasRawFallback = !!getKustoEditorSchema(boxId)?.rawSchemaJson;
 		if (forceRefresh && targetMatches && current.status === 'ready' && hasRawFallback) {
 			return getKustoPreparationToken(boxId);
 		}
@@ -436,6 +459,7 @@ export class QueryConnectionController implements ReactiveController {
 		if (!connectionId) return;
 		const requestToken = 'databases_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 		databaseRequestTokenByBoxId[this.host.boxId] = requestToken;
+		const lifecycle = this.host.beginDatabaseLifecycleRequest(requestToken);
 		if (!this.host.getDatabase()) {
 			this.beginDatabasePreparation(connectionId);
 		}
@@ -447,6 +471,10 @@ export class QueryConnectionController implements ReactiveController {
 			boxId: this.host.boxId,
 			requestToken,
 			requiredDatabase: String(this.host.getDesiredDatabase?.() || ''),
+			...(lifecycle ? {
+				sectionInstanceId: lifecycle.sectionInstanceId,
+				targetGeneration: lifecycle.targetGeneration,
+			} : {}),
 		});
 	}
 
@@ -609,6 +637,7 @@ export class QueryConnectionController implements ReactiveController {
 			setKustoPreparationIdle(boxId);
 			return;
 		}
+		this.host.setSchemaLifecycleTarget(connectionId, database);
 		let preparationToken = this.ensureSchemaPreparation(connectionId, database, !!forceRefresh);
 		const preparationState = getKustoPreparationState(boxId);
 		if (!forceRefresh && preparationState.status === 'ready'
@@ -616,8 +645,8 @@ export class QueryConnectionController implements ReactiveController {
 			&& preparationState.target.database === database) {
 			return;
 		}
-		if (!forceRefresh && schemaByBoxId[boxId]?.rawSchemaJson) {
-			const meta = schemaMetaByBoxId[boxId] || {};
+		if (!forceRefresh && getKustoEditorSchema(boxId)?.rawSchemaJson) {
+			const meta = getKustoSchemaMetadata(boxId) || {};
 			const needsRefresh = !!meta.isStale || meta.cacheState === 'stale' || meta.cacheState === 'outdated';
 			if (!needsRefresh) {
 				if (preparationToken) {
@@ -640,10 +669,10 @@ export class QueryConnectionController implements ReactiveController {
 		try {
 			const connDbKey = schemaIdentityKeyForConnection(connectionId, database);
 			if (!forceRefresh && schemaByConnDb && schemaByConnDb[connDbKey]?.rawSchemaJson) {
-				schemaByBoxId[boxId] = schemaByConnDb[connDbKey];
-				schemaMetaByBoxId[boxId] = schemaMetaByConnDb[connDbKey] || {};
-				const schema = schemaByBoxId[boxId];
-				const meta = schemaMetaByBoxId[boxId] || {};
+				setKustoEditorSchema(boxId, schemaByConnDb[connDbKey]);
+				setKustoSchemaMetadata(boxId, schemaMetaByConnDb[connDbKey] || {});
+				const schema = getKustoEditorSchema(boxId);
+				const meta = getKustoSchemaMetadata(boxId) || {};
 				const tablesCount = meta.tablesCount ?? (schema?.tables?.length ?? 0);
 				const columnsCount = meta.columnsCount ?? 0;
 				const functionsCount = meta.functionsCount ?? (schema?.functions?.length ?? 0);
@@ -664,13 +693,15 @@ export class QueryConnectionController implements ReactiveController {
 
 		schemaFetchInFlightByBoxId[boxId] = true;
 		try {
-			this.host.setSchemaInfo({ status: 'loading', statusText: schemaByBoxId[boxId] ? 'Refreshing\u2026' : 'Loading\u2026' });
+			this.host.setSchemaInfo({ status: 'loading', statusText: getKustoEditorSchema(boxId) ? 'Refreshing\u2026' : 'Loading\u2026' });
 		} catch (e) { console.error('[kusto]', e); }
 
 		let requestToken = '';
+		let lifecycle: KustoEditorLifecycleIdentity | undefined;
 		try {
 			requestToken = 'schema_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 			schemaRequestTokenByBoxId[boxId] = requestToken;
+			lifecycle = this.host.beginSchemaLifecycleRequest(requestToken);
 			if (preparationToken) {
 				updateKustoPreparation(preparationToken, { target: { requestToken } });
 			}
@@ -681,18 +712,22 @@ export class QueryConnectionController implements ReactiveController {
 			database,
 			boxId,
 			forceRefresh: !!forceRefresh,
-			requestToken
+			requestToken,
+			...(lifecycle ? {
+				sectionInstanceId: lifecycle.sectionInstanceId,
+				targetGeneration: lifecycle.targetGeneration,
+			} : {}),
 		});
 	}
 
 	onDatabaseChanged(source: string = ''): void {
 		const boxId = this.host.boxId;
 		const diagnosticsTrusted = schemaDiagnosticsTrustedByBoxId[boxId] !== false;
+		const connectionId = this.host.getConnectionId();
+		const database = this.host.getDatabase();
+		this.host.setSchemaLifecycleTarget(connectionId, database);
 		if (source === 'user') requireSchemaWorkerApply(boxId);
 		invalidateLinkedComparisonSchemaForSource(boxId);
-		delete schemaByBoxId[boxId];
-		delete schemaMetaByBoxId[boxId];
-		delete pendingSchemaWorkerUpdateByBoxId[boxId];
 		try {
 			if (schemaFetchInFlightByBoxId) schemaFetchInFlightByBoxId[boxId] = false;
 			if (lastSchemaRequestAtByBoxId) lastSchemaRequestAtByBoxId[boxId] = 0;
@@ -701,8 +736,6 @@ export class QueryConnectionController implements ReactiveController {
 		try {
 			this.host.setSchemaInfo(buildSchemaInfo('', false));
 		} catch (e) { console.error('[kusto]', e); }
-		const connectionId = this.host.getConnectionId();
-		const database = this.host.getDatabase();
 		if (pState.restoreInProgress || !diagnosticsTrusted || !connectionId || !database) {
 			setKustoPreparationIdle(boxId);
 		} else {
@@ -761,7 +794,7 @@ export class QueryConnectionController implements ReactiveController {
 		const database = this.host.getDatabase();
 		if (connectionId && database) {
 			const currentPreparation = getKustoPreparationState(boxId);
-			const hasUsableFallback = currentPreparation.status === 'ready' && !!schemaByBoxId[boxId]?.rawSchemaJson;
+			const hasUsableFallback = currentPreparation.status === 'ready' && !!getKustoEditorSchema(boxId)?.rawSchemaJson;
 			if (!hasUsableFallback) {
 				beginKustoPreparation(boxId, {
 					stage: 'refreshing',
@@ -782,9 +815,7 @@ export function invalidateLinkedComparisonSchemaForSource(sourceBoxId: string): 
 	try {
 		const comparisonBoxId = String(optimizationMetadataByBoxId[sourceBoxId]?.comparisonBoxId || '').trim();
 		if (!comparisonBoxId) return;
-		delete schemaByBoxId[comparisonBoxId];
-		delete schemaMetaByBoxId[comparisonBoxId];
-		delete pendingSchemaWorkerUpdateByBoxId[comparisonBoxId];
+		kustoEditorSchemaCoordinator.invalidateCurrentTarget(comparisonBoxId);
 		schemaFetchInFlightByBoxId[comparisonBoxId] = false;
 		lastSchemaRequestAtByBoxId[comparisonBoxId] = 0;
 		delete schemaRequestTokenByBoxId[comparisonBoxId];
@@ -1058,14 +1089,17 @@ export async function __kustoRequestSchema(connectionId: string, database: strin
 		const db = String(database || '').trim();
 		if (!cid || !db) return null;
 		const key = schemaIdentityKeyForConnection(cid, db);
+		const owner = syntheticConnectionOwner(cid);
+		if (!owner?.accountPartition || !key) return null;
 		try {
 			if (!forceRefresh && schemaByConnDb && schemaByConnDb[key]) return schemaByConnDb[key];
 		} catch (e) { console.error('[kusto]', e); }
 		const reqBoxId = '__schema_req__' + Date.now() + '_' + Math.random().toString(16).slice(2);
-		const p = new Promise((resolve, reject) => {
-			try {
-				schemaRequestResolversByBoxId[reqBoxId] = { resolve, reject, key };
-			} catch (e) { reject(e); }
+		const request = kustoSyntheticSchemaRequests.begin(reqBoxId, {
+			connectionId: cid,
+			database: db,
+			schemaKey: key,
+			...owner,
 		});
 		try {
 			postMessageToHost({
@@ -1076,10 +1110,9 @@ export async function __kustoRequestSchema(connectionId: string, database: strin
 				forceRefresh: !!forceRefresh
 			});
 		} catch (e) {
-			try { delete schemaRequestResolversByBoxId[reqBoxId]; } catch (e) { console.error('[kusto]', e); }
-			throw e;
+			kustoSyntheticSchemaRequests.cancel(reqBoxId, e);
 		}
-		return await p;
+		return await request;
 	} catch { return null; }
 }
 
@@ -1091,24 +1124,23 @@ export async function __kustoRequestDatabases(connectionId: string): Promise<any
 		if (Array.isArray(cachedByConnectionId) && cachedByConnectionId.length) return cachedByConnectionId;
 	} catch (e) { console.error('[kusto]', e); }
 	const requestId = '__kusto_dbreq__' + encodeURIComponent(cid) + '__' + Date.now() + '_' + Math.random().toString(16).slice(2);
-	return await new Promise((resolve, reject) => {
-		try {
-			databasesRequestResolversByBoxId[requestId] = { resolve, reject };
-		} catch {
-			resolve([]);
-			return;
-		}
-		try {
-			postMessageToHost({
-				type: 'getDatabases',
-				connectionId: cid,
-				boxId: requestId
-			});
-		} catch (e) {
-			try { delete databasesRequestResolversByBoxId[requestId]; } catch (e) { console.error('[kusto]', e); }
-			reject(e);
-		}
-	});
+	const owner = syntheticConnectionOwner(cid);
+	if (!owner) return [];
+	const request = kustoSyntheticDatabaseRequests.begin(requestId, { connectionId: cid, ...owner });
+	try {
+		postMessageToHost({
+			type: 'getDatabases',
+			connectionId: cid,
+			boxId: requestId
+		});
+	} catch (e) {
+		kustoSyntheticDatabaseRequests.cancel(requestId, e);
+	}
+	try {
+		return await request;
+	} catch {
+		return [];
+	}
 }
 
 // ── Window bridges (module-scope, assigned at load time) ──────────────────────

@@ -338,8 +338,8 @@ describe('persistence round-trip', () => {
 		document.body.appendChild(container);
 
 		const queryEl = document.createElement('div') as unknown as HTMLElement & { serialize: () => unknown };
-		queryEl.id = 'query_1';
-		queryEl.serialize = () => ({ type: 'query', id: 'query_1', query: 'StormEvents | take 5' });
+		queryEl.id = 'custom-query';
+		queryEl.serialize = () => ({ type: 'query', id: 'custom-query', query: 'StormEvents | take 5' });
 
 		const markdownEl = document.createElement('div') as unknown as HTMLElement & { serialize: () => unknown };
 		markdownEl.id = 'markdown_1';

@@ -40,6 +40,7 @@ function createService(connection: KustoConnection) {
 		accountPartition: 'test-partition',
 	}));
 	const getDatabases = vi.fn(async () => ['TelemetryDb']);
+	let currentConnection = connection;
 	const service = new SchemaService({
 		context: {
 			globalStorageUri: vscode.Uri.file(path.join(os.tmpdir(), `kusto-workbench-query-editor-schema-test-${Date.now()}-${Math.random().toString(16).slice(2)}`)),
@@ -49,13 +50,16 @@ function createService(connection: KustoConnection) {
 			},
 		} as any,
 		kustoClient: { getDatabases, getDatabaseSchema, getAccountPartition: vi.fn(() => 'test-partition'), isAuthenticationError: isAuthError } as any,
-		connectionManager: { getConnections: vi.fn(() => [connection]) } as any,
+		connectionManager: { getConnections: vi.fn(() => currentConnection ? [currentConnection] : []) } as any,
 		output: { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() } as any,
 		postMessage: (message: unknown) => { messages.push(message); },
 		formatQueryExecutionErrorForUser: (error: unknown) => String(error),
-		findConnection: vi.fn(() => connection),
+		findConnection: vi.fn(() => currentConnection),
 	});
-	return { service, messages, getDatabases, getDatabaseSchema };
+	return {
+		service, messages, getDatabases, getDatabaseSchema,
+		setConnection: (next: KustoConnection) => { currentConnection = next; },
+	};
 }
 
 describe('SchemaService cross-cluster schema requests', () => {
@@ -236,12 +240,16 @@ describe('SchemaService primary schema preparation', () => {
 		});
 		getDatabaseSchema.mockRejectedValueOnce(new Error('offline'));
 
-		await service.prefetchSchema('primary', 'TelemetryDb', 'query_1', false, 'schema_1');
+		await service.prefetchSchema('primary', 'TelemetryDb', 'query_1', false, 'schema_1', {}, {
+			sectionInstanceId: 'instance-1', targetGeneration: 4,
+		});
 
 		expect(messages).toContainEqual(expect.objectContaining({
 			type: 'schemaData',
 			boxId: 'query_1',
 			requestToken: 'schema_1',
+			sectionInstanceId: 'instance-1',
+			targetGeneration: 4,
 			schemaMeta: expect.objectContaining({ refreshState: 'scheduled', isStale: true, isBackgroundRefresh: true }),
 		}));
 		await vi.waitFor(() => {
@@ -249,12 +257,36 @@ describe('SchemaService primary schema preparation', () => {
 				type: 'schemaError',
 				boxId: 'query_1',
 				requestToken: 'schema_1',
+				sectionInstanceId: 'instance-1',
+				targetGeneration: 4,
 				silent: true,
 				isBackgroundRefresh: true,
 				refreshState: 'failed',
 				hasUsableFallback: true,
 			}));
 		});
+	});
+
+	it('does not suppress background refresh for a lifecycle-owned reserved-prefix section', async () => {
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue({
+			schema: {
+				tables: ['Events'], columnTypesByTable: { Events: { TIMESTAMP: 'datetime' } },
+				rawSchemaJson: makeRawSchema('TelemetryDb'),
+			},
+			timestamp: Date.now() - SCHEMA_CACHE_TTL_MS - 1000,
+			version: SCHEMA_CACHE_VERSION,
+		});
+		getDatabaseSchema.mockRejectedValueOnce(new Error('offline'));
+
+		await service.prefetchSchema('primary', 'TelemetryDb', '__schema_req__manual', false, 'schema-real', {}, {
+			sectionInstanceId: 'instance-real', targetGeneration: 2,
+		});
+
+		await vi.waitFor(() => expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaError', boxId: '__schema_req__manual', requestToken: 'schema-real',
+			sectionInstanceId: 'instance-real', targetGeneration: 2, isBackgroundRefresh: true,
+		})));
 	});
 
 	it('delivers a fetched schema even when persisting the cache fails', async () => {
@@ -273,6 +305,44 @@ describe('SchemaService primary schema preparation', () => {
 		expect(messages).not.toContainEqual(expect.objectContaining({ type: 'schemaError', boxId: 'query_2' }));
 	});
 
+	it('does not publish schema after the connection target changes during fetch', async () => {
+		const harness = createService(connection);
+		let resolve!: (value: any) => void;
+		harness.getDatabaseSchema.mockImplementationOnce(() => new Promise(resolvePromise => { resolve = resolvePromise; }));
+		vi.spyOn(harness.service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue(undefined);
+
+		const request = harness.service.prefetchSchema('primary', 'TelemetryDb', 'query_1', false, 'schema-1');
+		await vi.waitFor(() => expect(harness.getDatabaseSchema).toHaveBeenCalledOnce());
+		harness.setConnection({ ...connection, clusterUrl: 'https://other.kusto.windows.net' });
+		resolve({
+			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: makeRawSchema('TelemetryDb') },
+			fromCache: false,
+			accountPartition: 'test-partition',
+		});
+		await request;
+
+		expect(harness.messages).not.toContainEqual(expect.objectContaining({ type: 'schemaData' }));
+		expect(harness.messages).not.toContainEqual(expect.objectContaining({ type: 'schemaError' }));
+	});
+
+	it('stops tool schema refresh when the connection target changes during discovery', async () => {
+		const harness = createService(connection);
+		let resolve!: (databases: string[]) => void;
+		harness.getDatabases.mockImplementationOnce(() => new Promise(resolvePromise => { resolve = resolvePromise; }));
+
+		const request = harness.service.refreshSchemaForTools(connection.clusterUrl, connection.id);
+		await vi.waitFor(() => expect(harness.getDatabases).toHaveBeenCalledOnce());
+		harness.setConnection({ ...connection, clusterUrl: 'https://other.kusto.windows.net' });
+		resolve(['TelemetryDb']);
+
+		await expect(request).resolves.toEqual({
+			schemas: [],
+			error: 'The connection changed while schema refresh was running.',
+		});
+		expect(harness.getDatabaseSchema).not.toHaveBeenCalled();
+		expect(harness.messages).not.toContainEqual(expect.objectContaining({ type: 'schemaData' }));
+	});
+
 	it('terminates a tokened schema request when the connection no longer exists', async () => {
 		const { service, messages } = createService(connection);
 		(service as any).host.findConnection = vi.fn(() => undefined);
@@ -287,11 +357,27 @@ describe('SchemaService primary schema preparation', () => {
 		}));
 	});
 
+	it('terminates schema prefetch for a malformed historical authority', async () => {
+		const malformed = { ...connection, authorityId: 'not a tenant' };
+		const { service, messages, getDatabaseSchema } = createService(malformed);
+
+		await service.prefetchSchema(malformed.id, 'TelemetryDb', 'query_1', false, 'schema-1');
+
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaError', boxId: 'query_1', requestToken: 'schema-1',
+			error: expect.stringContaining('invalid Tenant / Authority ID'),
+		}));
+		expect(getDatabaseSchema).not.toHaveBeenCalled();
+	});
+
 	it('pushes a tool-refreshed schema into matching active editor boxes', async () => {
 		const { service, messages, getDatabases } = createService(connection);
 
 		const result = await service.refreshSchemaForTools(connection.clusterUrl, connection.id, [
-			{ boxId: 'query_live', database: 'TelemetryDb' },
+			{
+				boxId: 'query_live', database: 'TelemetryDb',
+				sectionInstanceId: 'instance-live', targetGeneration: 8,
+			},
 		]);
 
 		expect(getDatabases).toHaveBeenCalledWith(connection, true, expect.objectContaining({ source: 'query-editor-tool-schema-refresh' }));
@@ -302,7 +388,39 @@ describe('SchemaService primary schema preparation', () => {
 			connectionId: 'primary',
 			database: 'TelemetryDb',
 			accountPartition: 'test-partition',
+			sectionInstanceId: 'instance-live',
+			targetGeneration: 8,
 			schemaMeta: expect.objectContaining({ refreshState: 'completed', workerUpdateNeeded: true }),
+		}));
+	});
+
+	it('posts a stamped terminal when a tool target database is absent', async () => {
+		const { service, messages, getDatabases } = createService(connection);
+		getDatabases.mockResolvedValueOnce(['OtherDb']);
+
+		await service.refreshSchemaForTools(connection.clusterUrl, connection.id, [{
+			boxId: 'query_live', database: 'MissingDb', requestToken: 'schema-tool-1',
+			sectionInstanceId: 'instance-live', targetGeneration: 8,
+		}]);
+
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaError', boxId: 'query_live', database: 'MissingDb', requestToken: 'schema-tool-1',
+			sectionInstanceId: 'instance-live', targetGeneration: 8, silent: true, refreshState: 'failed',
+		}));
+	});
+
+	it('posts a stamped terminal when a tool target schema fetch fails', async () => {
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		getDatabaseSchema.mockRejectedValueOnce(new Error('fetch failed'));
+
+		await service.refreshSchemaForTools(connection.clusterUrl, connection.id, [{
+			boxId: 'query_live', database: 'TelemetryDb', requestToken: 'schema-tool-2',
+			sectionInstanceId: 'instance-live', targetGeneration: 9,
+		}]);
+
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaError', boxId: 'query_live', database: 'TelemetryDb', requestToken: 'schema-tool-2',
+			sectionInstanceId: 'instance-live', targetGeneration: 9, silent: true, refreshState: 'failed',
 		}));
 	});
 });

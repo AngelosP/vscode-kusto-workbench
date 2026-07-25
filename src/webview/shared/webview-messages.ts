@@ -5,6 +5,7 @@
  * (in queryEditorTypes.ts). It also includes provider-specific messages that the
  * kqlx/kqlCompat/mdCompat editors handle.
  */
+import type { KustoEditorLifecycleIdentity } from '../../shared/kustoSchemaLifecycle.js';
 
 // ── Query execution & results ──────────────────────────────────────────────
 
@@ -150,8 +151,8 @@ export type OutgoingWebviewMessage =
 	| { type: 'getConnections' }
 	| OutgoingEditorCursorPositionChangedMessage
 	| OutgoingEditorCursorStatusSnapshotRequestMessage
-	| { type: 'getDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string }
-	| { type: 'refreshDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string }
+	| ({ type: 'getDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>)
+	| ({ type: 'refreshDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>)
 	| { type: 'saveLastSelection'; connectionId: string; database?: string }
 	| { type: 'promptAddConnection'; boxId?: string }
 	| { type: 'addConnection'; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string; boxId?: string }
@@ -225,7 +226,7 @@ export type OutgoingWebviewMessage =
 	| { type: 'comparisonSummary'; sourceBoxId: string; comparisonBoxId: string; dataMatches: boolean; headersMatch?: boolean; rowOrderMatches?: boolean; columnOrderMatches?: boolean }
 
 	// Schema
-	| { type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string; cacheOnly?: boolean; silent?: boolean; reason?: string }
+	| ({ type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string; cacheOnly?: boolean; silent?: boolean; reason?: string } & Partial<KustoEditorLifecycleIdentity>)
 	| { type: 'requestCrossClusterSchema'; clusterName: string; database: string; boxId: string; requestToken: string; requestSource: 'background' | 'autocomplete'; traceId?: string }
 	| { type: 'stsRequest'; requestId: string; method: string; params: { boxId: string; sectionInstanceId: string; line: number; column: number; ownerToken?: string; targetGeneration?: number } }
 	| { type: 'stsDidOpen'; boxId: string; sectionInstanceId: string; text: string }

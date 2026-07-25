@@ -73,15 +73,16 @@ import { safeRun } from '../shared/safe-run';
 
 		const resyncArraysFromDom = () => {
 			try {
-				const ids = Array.from(container.children || [])
-					.map((el: any) => (el && el.id ? String(el.id) : ''))
-					.filter(Boolean);
-				try { setQueryBoxes(ids.filter((id: any) => id.startsWith('query_'))); } catch (e) { console.error('[kusto]', e); }
-				try { const mdIds = ids.filter((id: any) => id.startsWith('markdown_')); markdownBoxes.length = 0; markdownBoxes.push(...mdIds); } catch (e) { console.error('[kusto]', e); }
-				try { const pyIds = ids.filter((id: any) => id.startsWith('python_')); pythonBoxes.length = 0; pythonBoxes.push(...pyIds); } catch (e) { console.error('[kusto]', e); }
-				try { const urlIds = ids.filter((id: any) => id.startsWith('url_')); urlBoxes.length = 0; urlBoxes.push(...urlIds); } catch (e) { console.error('[kusto]', e); }
-				try { const htmlIds = ids.filter((id: any) => id.startsWith('html_')); htmlBoxes.length = 0; htmlBoxes.push(...htmlIds); } catch (e) { console.error('[kusto]', e); }
-				try { const sqlIds = ids.filter((id: any) => id.startsWith('sql_')); sqlBoxes.length = 0; sqlBoxes.push(...sqlIds); } catch (e) { console.error('[kusto]', e); }
+				const sections = Array.from(container.children || [])
+					.map((el: any) => ({ id: el?.id ? String(el.id) : '', tag: String(el?.tagName || '').toLowerCase() }))
+					.filter(section => !!section.id);
+				const idsFor = (tag: string) => sections.filter(section => section.tag === tag).map(section => section.id);
+				try { setQueryBoxes(idsFor('kw-query-section')); } catch (e) { console.error('[kusto]', e); }
+				try { const mdIds = idsFor('kw-markdown-section'); markdownBoxes.length = 0; markdownBoxes.push(...mdIds); } catch (e) { console.error('[kusto]', e); }
+				try { const pyIds = idsFor('kw-python-section'); pythonBoxes.length = 0; pythonBoxes.push(...pyIds); } catch (e) { console.error('[kusto]', e); }
+				try { const urlIds = idsFor('kw-url-section'); urlBoxes.length = 0; urlBoxes.push(...urlIds); } catch (e) { console.error('[kusto]', e); }
+				try { const htmlIds = idsFor('kw-html-section'); htmlBoxes.length = 0; htmlBoxes.push(...htmlIds); } catch (e) { console.error('[kusto]', e); }
+				try { const sqlIds = idsFor('kw-sql-section'); sqlBoxes.length = 0; sqlBoxes.push(...sqlIds); } catch (e) { console.error('[kusto]', e); }
 			} catch (e) { console.error('[kusto]', e); }
 		};
 

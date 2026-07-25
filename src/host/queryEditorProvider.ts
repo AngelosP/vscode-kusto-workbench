@@ -23,6 +23,7 @@ import { SqlEditorLifecycleCoordinator } from './sql/sqlEditorLifecycleCoordinat
 import { sanitizeStsLogText } from './sql/stsLogSanitizer';
 import { normalizeSqlServerUrl } from './sql/sqlAuthState';
 import { clearSqlTokenOverride, setSqlServerAccountMapEntry, setSqlTokenOverride } from './sql/sqlAuthState';
+import { KustoConnectionLifecycle } from './kustoConnectionLifecycle';
 import {
 	beginSqlDatabaseCacheRequest,
 	getOwnedSqlDatabaseCacheEntry,
@@ -232,6 +233,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private readonly copilot: CopilotService;
 	private configSubscription?: vscode.Disposable;
 	private authPreferenceSubscription?: vscode.Disposable;
+	private readonly kustoConnectionLifecycle: KustoConnectionLifecycle;
 	private embeddedTutorialHost?: EmbeddedTutorialWebviewHost;
 	private embeddedTutorialRegistration?: vscode.Disposable;
 	fileOpenTrace?: FileOpenTrace;
@@ -313,6 +315,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			},
 		});
 		this.copilot = new CopilotService(this);
+		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
+			invalidateConnections: connectionIds => this.copilot.invalidateKustoConnections([...connectionIds]),
+			publishIdentityChange: connectionIds => this.postMessage({
+				type: 'kustoAuthIdentityChanged', connectionIds: [...connectionIds], reason: 'connection-mutated',
+			}),
+			refreshConnections: () => this.sendConnectionsData(),
+		});
 		this.sqlLifecycle.startSession();
 	}
 
@@ -399,10 +408,14 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return sections as Array<{ id?: string; type: string; [key: string]: unknown }> | undefined;
 			},
 			async (clusterUrl: string, connectionId: string) => {
-				const sections = await this.requestSectionsFromWebview() ?? [];
+				const sections = await this.requestSectionsFromWebview('schema-refresh', connectionId) ?? [];
 				const connections = this.connectionManager.getConnections();
 				const targets = sections.flatMap(section => {
-					const candidate = section as { id?: unknown; type?: unknown; connectionId?: unknown; schemaRequestToken?: unknown; clusterUrl?: unknown; authorityId?: unknown; connectionIdHint?: unknown; database?: unknown };
+					const candidate = section as {
+						id?: unknown; type?: unknown; connectionId?: unknown; schemaRequestToken?: unknown;
+						sectionInstanceId?: unknown; targetGeneration?: unknown;
+						clusterUrl?: unknown; authorityId?: unknown; connectionIdHint?: unknown; database?: unknown;
+					};
 					if (candidate.type !== 'query' && candidate.type !== 'copilotQuery') return [];
 					const boxId = String(candidate.id || '').trim();
 					const database = String(candidate.database || '').trim();
@@ -411,7 +424,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 						? resolveStrictKustoConnection(connections, { clusterUrl: candidate.clusterUrl, connectionId: runtimeConnectionId })
 						: resolveKustoConnection(connections, candidate);
 					return boxId && database && resolution.kind === 'matched' && resolution.connection.id === connectionId
-						? [{ boxId, database, requestToken: String(candidate.schemaRequestToken || '').trim() || undefined }]
+						? [{
+							boxId, database, requestToken: String(candidate.schemaRequestToken || '').trim() || undefined,
+							...(typeof candidate.sectionInstanceId === 'string' && Number.isSafeInteger(candidate.targetGeneration)
+								? { sectionInstanceId: candidate.sectionInstanceId, targetGeneration: Number(candidate.targetGeneration) }
+								: {}),
+						}]
 						: [];
 				});
 				return this.schema.refreshSchemaForTools(clusterUrl, connectionId, targets);
@@ -471,7 +489,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private connectionsDataRevision = 0;
 	private connectionsDataTail: Promise<void> = Promise.resolve();
 
-	async requestSectionsFromWebview(): Promise<unknown[] | undefined> {
+	async requestSectionsFromWebview(purpose?: 'schema-refresh', targetConnectionId?: string): Promise<unknown[] | undefined> {
 		if (!this.panel) return undefined;
 		
 		const requestId = `state_${Date.now()}_${Math.random().toString(36).slice(2)}`;
@@ -489,7 +507,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				resolve(sections);
 			});
 			
-			this.postMessage({ type: 'requestToolState', requestId });
+			this.postMessage({
+				type: 'requestToolState', requestId,
+				...(purpose ? { purpose } : {}),
+				...(targetConnectionId ? { targetConnectionId } : {}),
+			});
 		});
 	}
 
@@ -717,6 +739,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					mode: 'passive',
 					requestToken: message.requestToken,
 					requiredDatabase: message.requiredDatabase,
+					sectionInstanceId: message.sectionInstanceId,
+					targetGeneration: message.targetGeneration,
 				});
 				return;
 			case 'refreshDatabases':
@@ -724,6 +748,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					mode: 'interactive-refresh',
 					requestToken: message.requestToken,
 					requiredDatabase: message.requiredDatabase,
+					sectionInstanceId: message.sectionInstanceId,
+					targetGeneration: message.targetGeneration,
 				});
 				return;
 			case 'saveLastSelection':
@@ -971,7 +997,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					cacheOnly: !!message.cacheOnly,
 					silent: !!message.silent,
 					reason: message.reason,
-				});
+				}, message.sectionInstanceId !== undefined && message.targetGeneration !== undefined ? {
+					sectionInstanceId: message.sectionInstanceId,
+					targetGeneration: message.targetGeneration,
+				} : undefined);
 				return;
 			case 'requestCrossClusterSchema':
 				await this.schema.handleCrossClusterSchemaRequest(message.clusterName, message.database, message.boxId, message.requestToken, message.requestSource, message.traceId);
@@ -2368,6 +2397,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.configSubscription = undefined;
 			this.authPreferenceSubscription?.dispose();
 			this.authPreferenceSubscription = undefined;
+			this.kustoConnectionLifecycle.dispose();
 			this.panel = undefined;
 		});
 	}

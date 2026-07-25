@@ -3,7 +3,8 @@
 // Also contains text-processing utility functions used by completions and other modules.
 // Window bridge exports at bottom for remaining callers.
 
-import { queryEditorBoxByModelUri, activeQueryEditorBoxId, schemaByBoxId } from '../core/state';
+import { queryEditorBoxByModelUri, activeQueryEditorBoxId } from '../core/state';
+import { getKustoEditorSchema } from '../core/schema-catalogs.js';
 
 const _win = window;
 
@@ -868,7 +869,7 @@ const __kustoGetSchemaForModel = (model: any) => {
 	if (!boxId) {
 		boxId = activeQueryEditorBoxId;
 	}
-	return { boxId, schema: boxId ? (schemaByBoxId[boxId] || null) : null };
+	return { boxId, schema: boxId ? (getKustoEditorSchema(boxId) || null) : null };
 };
 
 export const __kustoComputeDiagnostics = (text: any, schema: any, deps?: { getColumnsByTable?: (schema: any) => any; MarkerSeverity?: any; diagLog?: (...args: any[]) => void }) => {

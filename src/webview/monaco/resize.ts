@@ -1,8 +1,79 @@
 // Monaco auto-resize — extracted from monaco.ts (Phase 6 decomposition).
 // Resizes Monaco editor wrappers so full content is visible (no inner scrollbars).
 
-import { __kustoGetQuerySectionElement } from '../core/section-factory';
+import { pState } from '../shared/persistence-state';
+import { queryEditors } from '../core/state';
 const _win = window;
+
+export function __kustoAutoSizeEditor(boxId: unknown, persist: () => void = () => {}): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const editorEl = document.getElementById(id + '_query_editor') as any;
+	const wrapper = editorEl && editorEl.closest ? editorEl.closest('.query-editor-wrapper') : null;
+	if (!wrapper) return;
+	const apply = () => {
+		try {
+			const editor = queryEditors[id];
+			if (!editor) return;
+			const contentHeight = Number(editor.getContentHeight?.() || 0);
+			if (!Number.isFinite(contentHeight) || contentHeight <= 0) return;
+			const visibleHeight = (element: any): number => {
+				try {
+					if (!element) return 0;
+					const style = getComputedStyle(element);
+					if (style.display === 'none') return 0;
+					const height = Number(element.getBoundingClientRect?.().height || 0);
+					const margin = (parseFloat(style.marginTop || '0') || 0) + (parseFloat(style.marginBottom || '0') || 0);
+					return Math.max(0, Math.ceil(height + margin));
+				} catch {
+					return 0;
+				}
+			};
+			let chrome = visibleHeight(wrapper.querySelector?.('.query-editor-toolbar'));
+			try {
+				const style = getComputedStyle(wrapper);
+				chrome += (parseFloat(style.paddingTop || '0') || 0) + (parseFloat(style.paddingBottom || '0') || 0);
+				chrome += (parseFloat(style.borderTopWidth || '0') || 0) + (parseFloat(style.borderBottomWidth || '0') || 0);
+			} catch (e) { console.error('[kusto]', e); }
+			let clipExtras = 0;
+			try {
+				const clip = editorEl.closest ? editorEl.closest('.qe-editor-clip') : null;
+				for (const child of Array.from(clip?.children || []) as any[]) {
+					if (child !== editorEl) clipExtras += visibleHeight(child);
+				}
+				if (clip) {
+					const style = getComputedStyle(clip);
+					clipExtras += (parseFloat(style.paddingTop || '0') || 0) + (parseFloat(style.paddingBottom || '0') || 0);
+					clipExtras += (parseFloat(style.borderTopWidth || '0') || 0) + (parseFloat(style.borderBottomWidth || '0') || 0);
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			const desired = Math.max(120, Math.min(400, Math.ceil(chrome + clipExtras + contentHeight + 5)));
+			wrapper.style.height = desired + 'px';
+			wrapper.style.minHeight = '0';
+			try {
+				if (wrapper.dataset) {
+					wrapper.dataset.kustoUserResized = 'true';
+					delete wrapper.dataset.kustoAutoResized;
+				}
+			} catch (e) { console.error('[kusto]', e); }
+			try {
+				pState.manualQueryEditorHeightPxByBoxId ||= {};
+				pState.manualQueryEditorHeightPxByBoxId[id] = desired;
+			} catch (e) { console.error('[kusto]', e); }
+			try { editor.layout?.(); } catch (e) { console.error('[kusto]', e); }
+		} catch (e) { console.error('[kusto]', e); }
+	};
+	const applyAndPersist = () => {
+		apply();
+		try { persist(); } catch (e) { console.error('[kusto]', e); }
+	};
+	try {
+		applyAndPersist();
+		setTimeout(applyAndPersist, 50);
+		setTimeout(applyAndPersist, 150);
+	} catch (e) { console.error('[kusto]', e); }
+}
+
 // Auto-resize Monaco editor wrappers so the full content is visible (no inner scrollbars).
 // This only applies while the wrapper has NOT been manually resized by the user.
 // User resize is tracked via wrapper.dataset.kustoUserResized === 'true'.

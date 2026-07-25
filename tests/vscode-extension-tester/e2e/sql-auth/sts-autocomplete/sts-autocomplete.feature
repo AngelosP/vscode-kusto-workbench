@@ -28,7 +28,7 @@ Feature: SQL autocomplete shows schema items
       When I evaluate "window.__e2e.sql.selectDatabase('sampledb')" in the webview
     When I wait for "kw-sql-section[data-test-database-selected='true'][data-test-database='sampledb']" in the webview for 10 seconds
 
-    # Wait for schema to load (prefetchSqlSchema → sqlSchemaData → schemaByBoxId)
+    # Wait for schema to load (prefetchSqlSchema → sqlSchemaData → SQL catalog)
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
     Then I take a screenshot "01-schema-ready"
 
@@ -40,7 +40,7 @@ Feature: SQL autocomplete shows schema items
     When I evaluate "window.__e2e.sql.assertEditorMapped()" in the webview
 
     # ── TEST 1: FROM context → tables and views ────────────────────────────
-    # Completions are LOCAL (read from schemaByBoxId). No remote calls, no waiting.
+    # Completions are local (read from the SQL catalog). No remote calls, no waiting.
     When I evaluate "window.__e2e.suggest.sql.setTextAt('SELECT * FROM ', 1, 15)" in the webview
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
@@ -65,7 +65,6 @@ Feature: SQL autocomplete shows schema items
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 3 seconds
-    Then I take a screenshot "04-column-alias"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('Product alias columns', 'ProductID,Name,Color,ListPrice')" in the webview
     When I press "Escape"
     And I wait 1 second
@@ -75,7 +74,6 @@ Feature: SQL autocomplete shows schema items
     And I wait 1 second
     When I evaluate "window.__e2e.suggest.sql.trigger()" in the webview
     And I wait 3 seconds
-    Then I take a screenshot "05-dbo-tables"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('dbo schema tables', '')" in the webview
     When I press "Escape"
     And I wait 1 second
@@ -114,7 +112,5 @@ Feature: SQL autocomplete shows schema items
     And I wait 3 seconds
     Then I take a screenshot "09-restored-saleslt"
     When I evaluate "window.__e2e.suggest.sql.assertVisible('restored sampledb SalesLT tables', 'Product,Customer,Address,SalesOrder')" in the webview
-
-    Then I take a screenshot "10-final"
     When I execute command "workbench.action.closeAllEditors"
 

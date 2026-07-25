@@ -34,14 +34,14 @@ Feature: Comprehensive T-SQL autocomplete exploration
     When I evaluate "window.__e2e.sql.connectSts()" in the webview
     When I wait for "kw-sql-section[data-test-sts-ready='true']" in the webview for 120 seconds
 
-    # Wait for schema to load (prefetchSqlSchema → sqlSchemaData → schemaByBoxId)
+    # Wait for schema to load (prefetchSqlSchema → sqlSchemaData → SQL catalog)
     When I wait for "kw-sql-section[data-test-schema-ready='true']" in the webview for 60 seconds
     When I move the Dev Host to 0, 0
     When I click at 400, 15
     Then I take a screenshot "00-setup-ready"
 
     # Dump schema state for diagnostics
-    When I evaluate "(() => { const el = document.querySelector('kw-sql-section'); if (!el) throw new Error('SQL section not found'); const boxId = el.boxId; const schema = window.schemaByBoxId?.[boxId]; if (!schema) throw new Error('No SQL schema for boxId=' + boxId + ', keys=' + Object.keys(window.schemaByBoxId || {}).join(',')); const tableCount = (schema.tables || []).length; const columnTableCount = Object.keys(schema.columnsByTable || {}).length; if (tableCount === 0 && columnTableCount === 0) throw new Error('SQL schema loaded but has no tables/columns'); return 'tables=' + tableCount + ' views=' + (schema.views||[]).length + ' colTables=' + columnTableCount; })()" in the webview
+    When I evaluate "window.__e2e.sql.schemaSummary()" in the webview
 
     # Focus the SQL editor
     When I scroll "kw-sql-section .query-editor" into view

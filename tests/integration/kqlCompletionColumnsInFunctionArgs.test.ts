@@ -93,6 +93,7 @@ suite('KQL completions - columns inside function args', () => {
 					}
 				}
 			},
+			getKustoEditorSchema: (boxId: string) => sandbox.schemaByBoxId[boxId],
 			ensureSchemaForBox: () => undefined,
 			connections: [],
 

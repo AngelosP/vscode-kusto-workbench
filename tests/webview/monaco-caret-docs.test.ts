@@ -26,6 +26,7 @@ import {
 	__kustoControlCommands,
 } from '../../src/webview/monaco/caret-docs';
 import { __kustoGetStatementStartAtOffset } from '../../src/webview/monaco/diagnostics.js';
+import { clearKustoEditorSchema, setKustoEditorSchema } from '../../src/webview/core/schema-catalogs.js';
 
 // ── Minimal model + monaco mocks ──────────────────────────────────────────────
 
@@ -574,21 +575,21 @@ describe('getHoverInfoAt', () => {
 
 	it('does not show schema function docs across semicolon boundary', () => {
 		const boxId = '__test_semicolon_box__';
-		(window as any).schemaByBoxId = { [boxId]: { functions: [{
+		setKustoEditorSchema(boxId, { tables: [], columnTypesByTable: {}, functions: [{
 			name: 'getAzdEvents',
 			parameters: [
 				{ name: 'startDate', type: 'datetime' },
 				{ name: 'endDate', type: 'datetime' },
 			],
 			docString: 'Get events.',
-		}] } };
+		}] });
 		try {
 			const model = makeModel('getAzdEvents(startDate, endDate)\n;\nlet variable = something');
 			// Cursor on 'variable' in line 3
 			const result = getHoverInfoAt(model, { lineNumber: 3, column: 6 }, boxId);
 			expect(result).toBeNull();
 		} finally {
-			delete (window as any).schemaByBoxId;
+			clearKustoEditorSchema(boxId);
 		}
 	});
 
@@ -1057,11 +1058,11 @@ describe('getSchemaFunctionDoc', () => {
 	const boxId = '__test_schema_box__';
 
 	function setSchemaFunctions(fns: any[]) {
-		(window as any).schemaByBoxId = { [boxId]: { functions: fns } };
+		setKustoEditorSchema(boxId, { tables: [], columnTypesByTable: {}, functions: fns });
 	}
 
 	afterEach(() => {
-		delete (window as any).schemaByBoxId;
+		clearKustoEditorSchema(boxId);
 	});
 
 	it('returns null when boxId is falsy', () => {
@@ -1088,7 +1089,7 @@ describe('getSchemaFunctionDoc', () => {
 	});
 
 	it('returns null when functions is undefined', () => {
-		(window as any).schemaByBoxId = { [boxId]: {} };
+		setKustoEditorSchema(boxId, { tables: [], columnTypesByTable: {} });
 		expect(getSchemaFunctionDoc(boxId, 'foo')).toBeNull();
 	});
 
@@ -1282,11 +1283,11 @@ describe('getSchemaTableDoc', () => {
 	const boxId = '__test_table_doc_box__';
 
 	function setSchema(schema: any) {
-		(window as any).schemaByBoxId = { [boxId]: schema };
+		setKustoEditorSchema(boxId, schema);
 	}
 
 	afterEach(() => {
-		delete (window as any).schemaByBoxId;
+		clearKustoEditorSchema(boxId);
 	});
 
 	it('returns null when boxId is falsy', () => {
@@ -1438,7 +1439,7 @@ describe('getSchemaTableDoc', () => {
 	});
 
 	it('does not fall back to another cached principal schema', () => {
-		(window as any).schemaByBoxId = { [boxId]: { tables: ['LocalT'], columnTypesByTable: { LocalT: {} } } };
+		setKustoEditorSchema(boxId, { tables: ['LocalT'], columnTypesByTable: { LocalT: {} } });
 		(window as any).schemaByConnDb = {
 			'conn|otherDb': {
 				tables: ['RemoteTable'],
@@ -1451,11 +1452,11 @@ describe('getSchemaTableDoc', () => {
 	});
 
 	it('prefers primary schema over cross-database for same table name', () => {
-		(window as any).schemaByBoxId = { [boxId]: {
+		setKustoEditorSchema(boxId, {
 			tables: ['T'],
 			columnTypesByTable: { T: { A: 'string' } },
 			tableDocStrings: { T: 'Primary.' },
-		} };
+		});
 		(window as any).schemaByConnDb = {
 			'conn|otherDb': {
 				tables: ['T'],
@@ -1476,11 +1477,11 @@ describe('getHoverInfoAt — schema tables', () => {
 	const boxId = '__test_hover_table_box__';
 
 	function setSchema(schema: any) {
-		(window as any).schemaByBoxId = { [boxId]: schema };
+		setKustoEditorSchema(boxId, schema);
 	}
 
 	afterEach(() => {
-		delete (window as any).schemaByBoxId;
+		clearKustoEditorSchema(boxId);
 	});
 
 	it('shows table hover with docstring', () => {
@@ -1577,11 +1578,11 @@ describe('getHoverInfoAt — schema functions', () => {
 	const boxId = '__test_hover_schema_box__';
 
 	function setSchemaFunctions(fns: any[]) {
-		(window as any).schemaByBoxId = { [boxId]: { functions: fns } };
+		setKustoEditorSchema(boxId, { tables: [], columnTypesByTable: {}, functions: fns });
 	}
 
 	afterEach(() => {
-		delete (window as any).schemaByBoxId;
+		clearKustoEditorSchema(boxId);
 	});
 
 	it('shows schema function hover when cursor is on function name', () => {

@@ -37,6 +37,9 @@ import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 
 import { canonicalKustoClusterKey as _canonicalKustoClusterKey, formatClusterDisplayName as _formatClusterDisplayName, formatClusterShortName as _formatClusterShortName } from '../shared/clusterUtils.js';
 import { resolveKustoConnection } from '../../shared/kustoAuth.js';
+import type { KustoEditorLifecycleIdentity } from '../../shared/kustoSchemaLifecycle.js';
+import type { KustoEditorSectionLease } from '../core/kusto-editor-schema-coordinator.js';
+import { kustoEditorSchemaCoordinator } from '../core/kusto-editor-schema-runtime.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -177,6 +180,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	// disconnect/reconnect (e.g. section reorder).
 	private _lightDomCreated = false;
 	private _unsubscribePreparation: (() => void) | null = null;
+	private readonly _schemaSectionInstanceId = globalThis.crypto?.randomUUID?.()
+		?? `kusto-instance-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+	private _schemaSectionLease?: KustoEditorSectionLease;
 
 	// ── Connection row reactive state ─────────────────────────────────────────
 
@@ -228,6 +234,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	override connectedCallback(): void {
 		super.connectedCallback();
+		this._schemaSectionLease ??= kustoEditorSchemaCoordinator.openSection(
+			this.boxId,
+			this._schemaSectionInstanceId,
+		);
 		if (!this._unsubscribePreparation && this.boxId) {
 			this._unsubscribePreparation = subscribeKustoPreparation(this.boxId, state => this._reflectPreparationState(state));
 		}
@@ -240,6 +250,40 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			// virtual scroll after reattach so body scroll metrics are current.
 			this._refreshResultsTableLayoutSoon();
 		}
+	}
+
+	public setSchemaLifecycleTarget(connectionId: string, database?: string): KustoEditorLifecycleIdentity | undefined {
+		return this._schemaSectionLease
+			? kustoEditorSchemaCoordinator.setTarget(this._schemaSectionLease, connectionId, database)
+			: undefined;
+	}
+
+	public beginDatabaseLifecycleRequest(requestToken: string) {
+		return this._schemaSectionLease
+			? kustoEditorSchemaCoordinator.beginDatabaseRequest(this._schemaSectionLease, requestToken)
+			: undefined;
+	}
+
+	public beginSchemaLifecycleRequest(requestToken: string) {
+		return this._schemaSectionLease
+			? kustoEditorSchemaCoordinator.beginSchemaRequest(this._schemaSectionLease, requestToken)
+			: undefined;
+	}
+
+	public invalidateSchemaLifecycleTarget(): KustoEditorLifecycleIdentity | undefined {
+		return this._schemaSectionLease
+			? kustoEditorSchemaCoordinator.invalidateTarget(this._schemaSectionLease)
+			: undefined;
+	}
+
+	public getSchemaLifecycleIdentity(): KustoEditorLifecycleIdentity | undefined {
+		return kustoEditorSchemaCoordinator.getIdentity(this.boxId);
+	}
+
+	public disposeSchemaLifecycle(): void {
+		if (!this._schemaSectionLease) return;
+		kustoEditorSchemaCoordinator.closeSection(this._schemaSectionLease);
+		this._schemaSectionLease = undefined;
 	}
 
 	override disconnectedCallback(): void {
@@ -997,7 +1041,8 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		this._connectionId = resolvedId;
 		const nextConnection = connections.find(connection => connection.id === resolvedId);
 		const identityChanged = !!previousConnection && !!nextConnection && previousConnection.id === nextConnection.id
-			&& (String(previousConnection.authorityId || '') !== String(nextConnection.authorityId || '')
+			&& (_canonicalKustoClusterKey(previousConnection.clusterUrl) !== _canonicalKustoClusterKey(nextConnection.clusterUrl)
+				|| String(previousConnection.authorityId || '') !== String(nextConnection.authorityId || '')
 				|| String(previousConnection.accountPartition || '') !== String(nextConnection.accountPartition || ''));
 		if (identityChanged) {
 			this._desiredDatabase = this._desiredDatabase || this._database;

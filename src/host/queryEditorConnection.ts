@@ -24,12 +24,13 @@ import {
 	getDatabaseListErrorDetails,
 	traceDatabaseList,
 } from './databaseListTrace';
+import type { KustoEditorLifecycleIdentity } from '../shared/kustoSchemaLifecycle';
 
 export let testIsolateKustoConnections = false;
 
 type DatabaseDiscoveryRequest =
-	| { mode: 'passive'; requestToken?: string; requiredDatabase?: string }
-	| { mode: 'interactive-refresh'; requestToken?: string; requiredDatabase?: string };
+	| ({ mode: 'passive'; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>)
+	| ({ mode: 'interactive-refresh'; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>);
 
 type ZeroResultRecoveryOutcome =
 	| { kind: 'dismissed' }
@@ -632,12 +633,16 @@ export class ConnectionService {
 		const forceRefresh = request.mode === 'interactive-refresh';
 		const allowInteractive = request.mode === 'interactive-refresh';
 		const { requestToken, requiredDatabase } = request;
+		const lifecycle = request.sectionInstanceId !== undefined && request.targetGeneration !== undefined
+			? { sectionInstanceId: request.sectionInstanceId, targetGeneration: request.targetGeneration }
+			: {};
 		const connection = this.findConnection(connectionId);
 		if (!connection) {
 			this.traceDatabaseList(traceId, 'connection-missing', {
 				connectionId,
 				boxId,
 				requestToken,
+				...lifecycle,
 				forceRefresh,
 				allowInteractive,
 			});
@@ -646,11 +651,31 @@ export class ConnectionService {
 				boxId,
 				connectionId,
 				requestToken,
+				...lifecycle,
 				error: 'The selected Kusto connection is no longer available.',
 			});
 			return;
 		}
 		const clusterKey = getClusterCacheKey(connection.clusterUrl);
+		let capturedIdentity = '';
+		try {
+			capturedIdentity = getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId);
+		} catch {
+			this.host.postMessage({
+				type: 'databasesError', boxId, connectionId, requestToken, ...lifecycle,
+				error: 'The saved Kusto connection has an invalid Tenant / Authority ID.',
+			});
+			return;
+		}
+		const isConnectionCurrent = () => {
+			const current = this.findConnection(connection.id);
+			if (!current) return false;
+			try {
+				return getKustoConnectionIdentityKey(current.clusterUrl, current.authorityId) === capturedIdentity;
+			} catch {
+				return false;
+			}
+		};
 		const settlementKey = () => `${connection.id}|${this.getResolvedAccountPartition(connection) || 'unresolved'}`;
 		const normalizeDatabases = (databasesRaw: unknown): string[] => (Array.isArray(databasesRaw) ? databasesRaw : [])
 			.map((database) => String(database || '').trim())
@@ -664,6 +689,7 @@ export class ConnectionService {
 		const requireLiveDiscovery = !!requiredDatabaseName && !cachedHasRequiredDatabase;
 		const effectiveForceRefresh = forceRefresh || requireLiveDiscovery;
 		const postDatabases = (databases: string[], provenance: 'cache' | 'live' | 'fallback', accountPartition?: string) => {
+			if (!isConnectionCurrent()) return;
 			this.traceDatabaseList(traceId, 'webview.post', {
 				connectionId,
 				provenance,
@@ -678,6 +704,7 @@ export class ConnectionService {
 				connectionId,
 				accountPartition,
 				requestToken,
+				...lifecycle,
 				authoritative: provenance === 'live',
 				fallback: provenance === 'fallback',
 			});
@@ -737,6 +764,7 @@ export class ConnectionService {
 			}
 		};
 		const recoverFromZeroResult = async (): Promise<ZeroResultRecoveryOutcome> => {
+			if (!isConnectionCurrent()) return { kind: 'dismissed' };
 			const recoveryKey = settlementKey();
 			const existing = ConnectionService.zeroResultRecoveryByCluster.get(recoveryKey);
 			if (existing) {
@@ -745,6 +773,7 @@ export class ConnectionService {
 			}
 
 			const recovery = (async (): Promise<ZeroResultRecoveryOutcome> => {
+				if (!isConnectionCurrent()) return { kind: 'dismissed' };
 				this.traceDatabaseList(traceId, 'account-choice.prompt', { reason: 'zero-result' });
 				const preference = this.authPreferences.getPreference(connection.id);
 				const choice = await vscode.window.showWarningMessage(
@@ -753,6 +782,7 @@ export class ConnectionService {
 						: 'No databases are visible with the available accounts. Check the connection Authority / Tenant ID or choose an explicit account.',
 					'Edit Connections',
 				);
+				if (!isConnectionCurrent()) return { kind: 'dismissed' };
 				this.traceDatabaseList(traceId, 'account-choice.result', {
 					reason: 'zero-result',
 					choice: choice ?? 'dismissed',
@@ -816,6 +846,7 @@ export class ConnectionService {
 			await settleDatabases(discovery);
 			return;
 		} catch (error) {
+			if (!isConnectionCurrent()) return;
 			const isAuthErr = this.host.kustoClient.isAuthenticationError(error);
 			const isCancelled = isDatabaseDiscoveryCancellation(error);
 			const action = forceRefresh ? 'refresh' : 'load';
@@ -830,12 +861,14 @@ export class ConnectionService {
 				if (await postCurrentCachedFallback('cancelled')) {
 					return;
 				}
+				if (!isConnectionCurrent()) return;
 				this.traceDatabaseList(traceId, 'cancelled', { action });
 				this.host.postMessage({
 					type: 'databasesError',
 					boxId,
 					connectionId,
 					requestToken,
+					...lifecycle,
 					error: `Database ${action} cancelled.`,
 				});
 				return;
@@ -844,6 +877,7 @@ export class ConnectionService {
 			if (isAuthErr && !allowInteractive && await postCurrentCachedFallback('authentication-error')) {
 				return;
 			}
+			if (!isConnectionCurrent()) return;
 
 			const userMessage = this.host.formatQueryExecutionErrorForUser(error, connection);
 
@@ -857,6 +891,7 @@ export class ConnectionService {
 			}
 
 			if (await postCurrentCachedFallback('unrecovered-error')) {
+				if (!isConnectionCurrent()) return;
 				if (shouldShowNotification) {
 					void vscode.window.showWarningMessage(
 						`Failed to ${action} database list. Using cached list.`,
@@ -869,6 +904,7 @@ export class ConnectionService {
 				}
 				return;
 			}
+			if (!isConnectionCurrent()) return;
 
 			if (shouldShowNotification) {
 				void vscode.window.showErrorMessage(`Failed to ${action} database list.`, 'More Info').then(selection => {
@@ -886,6 +922,7 @@ export class ConnectionService {
 				boxId,
 				connectionId,
 				requestToken,
+				...lifecycle,
 				error: `Failed to ${action} database list.\n${userMessage}`
 			});
 		}

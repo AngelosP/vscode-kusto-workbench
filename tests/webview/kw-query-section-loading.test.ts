@@ -9,22 +9,27 @@ import {
 	databaseRequestTokenByBoxId,
 	disposeKustoPreparation,
 	getKustoPreparationState,
+	getPendingSchemaWorkerUpdate,
+	getSchemaEnhancementReadyState,
+	getSchemaWorkerReadyState,
 	isSchemaWorkerApplyRequired,
 	lastSchemaRequestAtByBoxId,
 	optimizationMetadataByBoxId,
-	pendingSchemaWorkerUpdateByBoxId,
-	schemaEnhancementReadyByBoxId,
-	schemaByBoxId,
+	setPendingSchemaWorkerUpdate,
+	setSchemaEnhancementReadyState,
+	setSchemaWorkerReadyState,
 	schemaFetchInFlightByBoxId,
-	schemaMetaByBoxId,
+	getKustoSchemaMetadata,
+	setKustoSchemaMetadata,
 	markSchemaEnhancementPending,
 	markSchemaWorkerApplyFailed,
 	markSchemaWorkerReady,
-	schemaWorkerReadyByBoxId,
 	updateKustoPreparation,
 } from '../../src/webview/core/state.js';
+import { getKustoEditorSchema, setKustoEditorSchema } from '../../src/webview/core/schema-catalogs.js';
+import { kustoEditorSchemaCoordinator } from '../../src/webview/core/kusto-editor-schema-runtime.js';
 import { invalidateLinkedComparisonSchemaForSource } from '../../src/webview/sections/query-connection.controller.js';
-import { schemaRequestTokenByBoxId } from '../../src/webview/core/section-factory.js';
+import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { pState } from '../../src/webview/shared/persistence-state.js';
 import { getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
 
@@ -43,17 +48,13 @@ afterEach(() => {
 	disposeKustoPreparation('test1');
 	delete databaseRequestTokenByBoxId.test1;
 	delete optimizationMetadataByBoxId.test1;
-	delete schemaByBoxId.comparison_1;
-	delete schemaMetaByBoxId.comparison_1;
-	delete pendingSchemaWorkerUpdateByBoxId.comparison_1;
 	delete schemaFetchInFlightByBoxId.comparison_1;
 	delete lastSchemaRequestAtByBoxId.comparison_1;
 	delete schemaRequestTokenByBoxId.comparison_1;
 	delete databaseRequestTokenByBoxId.comparison_1;
-	delete schemaWorkerReadyByBoxId.comparison_1;
-	delete schemaEnhancementReadyByBoxId.comparison_1;
 	delete pState.queryResultJsonByBoxId.test1;
 	disposeKustoPreparation('comparison_1');
+	kustoEditorSchemaCoordinator.clear();
 });
 
 function createSection(boxId = 'test1'): KwQuerySection {
@@ -140,7 +141,7 @@ describe('kw-query-section loading states', () => {
 		markSchemaEnhancementPending('test1', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
 		markSchemaWorkerReady('test1', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
 
-		expect(schemaEnhancementReadyByBoxId.test1?.status).toBe('pending');
+		expect(getSchemaEnhancementReadyState('test1')?.status).toBe('pending');
 		expect(el.dataset.testPreparationState).toBe('ready');
 		expect(el.dataset.testPreparationBlockers).toBe('');
 		expect(el.getAttribute('aria-busy')).toBe('false');
@@ -382,30 +383,30 @@ describe('kw-query-section loading states', () => {
 
 	it('clears linked comparison schema state when the source target changes', () => {
 		optimizationMetadataByBoxId.test1 = { comparisonBoxId: 'comparison_1' };
-		schemaByBoxId.comparison_1 = { rawSchemaJson: { Databases: { OldDb: {} } } };
-		schemaMetaByBoxId.comparison_1 = { schemaSignature: 'old' };
-		pendingSchemaWorkerUpdateByBoxId.comparison_1 = {
+		setKustoEditorSchema('comparison_1', { tables: [], columnTypesByTable: {}, rawSchemaJson: { Databases: { OldDb: {} } } });
+		setKustoSchemaMetadata('comparison_1', { schemaSignature: 'old' });
+		setPendingSchemaWorkerUpdate('comparison_1', {
 			rawSchemaJson: {}, clusterUrl: 'https://old.kusto.windows.net', database: 'OldDb', schemaKey: 'old|olddb',
-		};
+		});
 		schemaFetchInFlightByBoxId.comparison_1 = true;
 		lastSchemaRequestAtByBoxId.comparison_1 = 123;
 		schemaRequestTokenByBoxId.comparison_1 = 'schema_old';
 		databaseRequestTokenByBoxId.comparison_1 = 'databases_old';
-		schemaWorkerReadyByBoxId.comparison_1 = { status: 'ready', schemaKey: 'old|olddb', updatedAt: Date.now() };
-		schemaEnhancementReadyByBoxId.comparison_1 = { status: 'ready', schemaKey: 'old|olddb', modelUri: 'model-old', updatedAt: Date.now() };
+		setSchemaWorkerReadyState('comparison_1', { status: 'ready', schemaKey: 'old|olddb', updatedAt: Date.now() });
+		setSchemaEnhancementReadyState('comparison_1', { status: 'ready', schemaKey: 'old|olddb', modelUri: 'model-old', updatedAt: Date.now() });
 		beginKustoPreparation('comparison_1', { stage: 'ready', blockers: [], target: { schemaKey: 'old|olddb' } });
 
 		invalidateLinkedComparisonSchemaForSource('test1');
 
-		expect(schemaByBoxId.comparison_1).toBeUndefined();
-		expect(schemaMetaByBoxId.comparison_1).toBeUndefined();
-		expect(pendingSchemaWorkerUpdateByBoxId.comparison_1).toBeUndefined();
+		expect(getKustoEditorSchema('comparison_1')).toBeUndefined();
+		expect(getKustoSchemaMetadata('comparison_1')).toBeUndefined();
+		expect(getPendingSchemaWorkerUpdate('comparison_1')).toBeUndefined();
 		expect(schemaFetchInFlightByBoxId.comparison_1).toBe(false);
 		expect(lastSchemaRequestAtByBoxId.comparison_1).toBe(0);
 		expect(schemaRequestTokenByBoxId.comparison_1).toBeUndefined();
 		expect(databaseRequestTokenByBoxId.comparison_1).toBeUndefined();
-		expect(schemaWorkerReadyByBoxId.comparison_1).toBeUndefined();
-		expect(schemaEnhancementReadyByBoxId.comparison_1).toBeUndefined();
+		expect(getSchemaWorkerReadyState('comparison_1')).toBeUndefined();
+		expect(getSchemaEnhancementReadyState('comparison_1')).toBeUndefined();
 		expect(getKustoPreparationState('comparison_1').status).toBe('idle');
 		expect(isSchemaWorkerApplyRequired('comparison_1')).toBe(true);
 	});
@@ -473,6 +474,25 @@ describe('kw-query-section loading states', () => {
 		el.setDatabases(['AccountADb', 'OtherDb']);
 		expect(el.getDatabase()).toBe('AccountADb');
 		expect(el.getDesiredDatabase()).toBe('');
+	});
+
+	it('clears the selected database when the same connection ID is repointed to another cluster', async () => {
+		const el = createSection();
+		const connectionEvents: CustomEvent[] = [];
+		el.addEventListener('connection-changed', event => connectionEvents.push(event as CustomEvent));
+		el.setConnections([{ id: 'c1', clusterUrl: 'https://old.kusto.windows.net', accountPartition: 'partition-a' }]);
+		el.setDatabases(['Samples'], 'Samples');
+		connectionEvents.length = 0;
+
+		el.setConnections([{ id: 'c1', clusterUrl: 'https://new.kusto.windows.net', accountPartition: 'partition-a' }]);
+		await el.updateComplete;
+
+		expect(el.getConnectionId()).toBe('c1');
+		expect((el as any)._database).toBe('');
+		expect(el.getDesiredDatabase()).toBe('Samples');
+		expect(el.getClusterUrl()).toBe('https://new.kusto.windows.net');
+		expect(connectionEvents).toHaveLength(1);
+		expect(connectionEvents[0].detail).toMatchObject({ connectionId: 'c1', database: 'Samples' });
 	});
 
 	it('preserves restored cluster intent until the saved cluster is auto-added', async () => {

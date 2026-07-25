@@ -1,5 +1,10 @@
 import { beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KwSectionShell } from '../../src/webview/components/kw-section-shell.js';
+import { kustoEditorSchemaCoordinator } from '../../src/webview/core/kusto-editor-schema-runtime.js';
+import {
+	kustoSyntheticDatabaseRequests,
+	kustoSyntheticSchemaRequests,
+} from '../../src/webview/core/kusto-synthetic-request-runtime.js';
 
 const handlerState = vi.hoisted(() => ({
 	activeQueryEditorBoxId: '',
@@ -10,6 +15,7 @@ const handlerState = vi.hoisted(() => ({
 	sqlFavorites: [] as Array<Record<string, unknown>>,
 	sqlFavoritesModeByBoxId: {} as Record<string, boolean>,
 	schemaByBoxId: {} as Record<string, unknown>,
+	sqlSchemaByBoxId: {} as Record<string, unknown>,
 	schemaMetaByBoxId: {} as Record<string, unknown>,
 	schemaDiagnosticsTrustedByBoxId: {} as Record<string, boolean>,
 	schemaByConnDb: {} as Record<string, unknown>,
@@ -19,6 +25,7 @@ const handlerState = vi.hoisted(() => ({
 	schemaRequestTokenByBoxId: {} as Record<string, string>,
 	queryEditors: {} as Record<string, any>,
 	queryBoxes: [] as string[],
+	sqlBoxes: [] as string[],
 	optimizationMetadataByBoxId: {} as Record<string, any>,
 	pState: {
 		isSessionFile: false,
@@ -140,7 +147,6 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	__kustoTryAutoEnterFavoritesModeForAllBoxes: mocks.tryAutoEnterKustoFavoritesModeForAllBoxes,
 	__kustoMaybeDefaultFirstBoxToFavoritesMode: mocks.maybeDefaultFirstKustoBoxToFavoritesMode,
 	__kustoOnConnectionsUpdated: vi.fn(),
-	schemaRequestTokenByBoxId: handlerState.schemaRequestTokenByBoxId,
 	addPythonBox: vi.fn(() => 'python_1'),
 	addUrlBox: vi.fn(() => 'url_1'),
 	removePythonBox: vi.fn(),
@@ -153,11 +159,15 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	updateSqlDatabaseSelect: mocks.updateSqlDatabaseSelect,
 	onSqlDatabasesError: mocks.onSqlDatabasesError,
 	__kustoGetSqlSectionElement: mocks.getSqlSectionElement,
-	sqlBoxes: [],
+	sqlBoxes: handlerState.sqlBoxes,
 	updateSqlFavoritesUiForAllBoxes: mocks.updateSqlFavoritesUiForAllBoxes,
 	onPythonResult: mocks.onPythonResult,
 	onPythonError: mocks.onPythonError,
 	__kustoGetChartValidationStatus: vi.fn(() => null),
+}));
+
+vi.mock('../../src/webview/core/kusto-schema-request-state.js', () => ({
+	schemaRequestTokenByBoxId: handlerState.schemaRequestTokenByBoxId,
 }));
 
 vi.mock('../../src/webview/sections/kw-markdown-section.js', () => ({
@@ -233,6 +243,7 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 	__kustoReleaseStaleCrossClusterResponse: mocks.releaseStaleCrossClusterResponse,
 	__kustoRetryPrimarySchemaEnhancement: mocks.retryPrimarySchemaEnhancement,
 	__kustoTraceCrossCluster: vi.fn(),
+	invalidateKustoSchemaIdentityState: vi.fn(),
 }));
 
 vi.mock('../../src/webview/monaco/suggest.js', () => ({
@@ -283,18 +294,38 @@ vi.mock('../../src/webview/core/state.js', async () => {
 	optimizationMetadataByBoxId: handlerState.optimizationMetadataByBoxId,
 	schemaByConnDb: handlerState.schemaByConnDb,
 	schemaMetaByConnDb: handlerState.schemaMetaByConnDb,
-	schemaRequestResolversByBoxId: {},
 	schemaByBoxId: handlerState.schemaByBoxId,
+	getKustoEditorSchema: (boxId: string) => handlerState.schemaByBoxId[boxId],
+	setKustoEditorSchema: (boxId: string, schema: unknown) => { handlerState.schemaByBoxId[boxId] = schema; },
+	clearKustoEditorSchema: (boxId: string) => delete handlerState.schemaByBoxId[boxId],
+	clearAllKustoEditorSchemas: () => {
+		for (const boxId of Object.keys(handlerState.schemaByBoxId)) delete handlerState.schemaByBoxId[boxId];
+	},
+	sqlSchemaByBoxId: handlerState.sqlSchemaByBoxId,
 	schemaMetaByBoxId: handlerState.schemaMetaByBoxId,
+	getKustoSchemaMetadata: (boxId: string) => handlerState.schemaMetaByBoxId[boxId],
+	setKustoSchemaMetadata: (boxId: string, metadata: unknown) => { handlerState.schemaMetaByBoxId[boxId] = metadata; },
+	clearKustoSchemaMetadata: (boxId: string) => delete handlerState.schemaMetaByBoxId[boxId],
+	clearAllKustoSchemaMetadata: () => {
+		for (const boxId of Object.keys(handlerState.schemaMetaByBoxId)) delete handlerState.schemaMetaByBoxId[boxId];
+	},
 	schemaDiagnosticsTrustedByBoxId: handlerState.schemaDiagnosticsTrustedByBoxId,
 	schemaFetchInFlightByBoxId: {},
 	markSchemaWorkerApplyFailed: vi.fn(actual.markSchemaWorkerApplyFailed),
 	markSchemaWorkerApplyPending: vi.fn(),
 	markSchemaWorkerReady: vi.fn(),
 	schemaWorkerReadyByBoxId: handlerState.schemaWorkerReadyByBoxId,
+	getSchemaWorkerReadyState: (boxId: string) => handlerState.schemaWorkerReadyByBoxId[boxId],
 	schemaWorkerReadyWaitersByBoxId: {},
 	pendingSchemaWorkerUpdateByBoxId: handlerState.pendingSchemaWorkerUpdateByBoxId,
-	databasesRequestResolversByBoxId: {},
+	getPendingSchemaWorkerUpdate: (boxId: string) => handlerState.pendingSchemaWorkerUpdateByBoxId[boxId],
+	setPendingSchemaWorkerUpdate: (boxId: string, update: unknown) => { handlerState.pendingSchemaWorkerUpdateByBoxId[boxId] = update; },
+	clearPendingSchemaWorkerUpdate: (boxId: string, expected?: unknown) => {
+		const current = handlerState.pendingSchemaWorkerUpdateByBoxId[boxId];
+		if (current === undefined || (expected !== undefined && current !== expected)) return false;
+		delete handlerState.pendingSchemaWorkerUpdateByBoxId[boxId];
+		return true;
+	},
 };
 });
 
@@ -466,9 +497,10 @@ describe('message-handler dispatch', () => {
 	});
 
 	beforeEach(async () => {
+		kustoEditorSchemaCoordinator.clear();
+		kustoSyntheticSchemaRequests.clearForTests();
+		kustoSyntheticDatabaseRequests.clearForTests();
 		const state = await import('../../src/webview/core/state.js');
-		for (const key of Object.keys(state.schemaEnhancementReadyByBoxId)) delete state.schemaEnhancementReadyByBoxId[key];
-		for (const key of Object.keys(state.kustoPreparationByBoxId)) delete state.kustoPreparationByBoxId[key];
 		document.body.innerHTML = '';
 		handlerState.activeQueryEditorBoxId = '';
 		handlerState.connections.splice(0, handlerState.connections.length);
@@ -478,6 +510,7 @@ describe('message-handler dispatch', () => {
 		for (const key of Object.keys(handlerState.sqlCachedDatabases)) delete handlerState.sqlCachedDatabases[key];
 		for (const key of Object.keys(handlerState.sqlFavoritesModeByBoxId)) delete handlerState.sqlFavoritesModeByBoxId[key];
 		for (const key of Object.keys(handlerState.schemaByBoxId)) delete handlerState.schemaByBoxId[key];
+		for (const key of Object.keys(handlerState.sqlSchemaByBoxId)) delete handlerState.sqlSchemaByBoxId[key];
 		for (const key of Object.keys(handlerState.schemaMetaByBoxId)) delete handlerState.schemaMetaByBoxId[key];
 		for (const key of Object.keys(handlerState.schemaDiagnosticsTrustedByBoxId)) delete handlerState.schemaDiagnosticsTrustedByBoxId[key];
 		for (const key of Object.keys(handlerState.schemaByConnDb)) delete handlerState.schemaByConnDb[key];
@@ -487,6 +520,7 @@ describe('message-handler dispatch', () => {
 		for (const key of Object.keys(handlerState.schemaRequestTokenByBoxId)) delete handlerState.schemaRequestTokenByBoxId[key];
 		for (const key of Object.keys(handlerState.queryEditors)) delete handlerState.queryEditors[key];
 		handlerState.queryBoxes.splice(0, handlerState.queryBoxes.length);
+		handlerState.sqlBoxes.splice(0, handlerState.sqlBoxes.length);
 		for (const key of Object.keys(handlerState.optimizationMetadataByBoxId)) delete handlerState.optimizationMetadataByBoxId[key];
 		delete (window as any).__kustoSqlLastConnectionId;
 		delete (window as any).__kustoSqlLastDatabase;
@@ -548,6 +582,86 @@ describe('message-handler dispatch', () => {
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
 			type: 'documentReloadResult', requestId: 'reload-2', applied: true, editRevision: 7,
 		});
+	});
+
+	it('exports exact Kusto lifecycle ownership in tool state', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.getKqlxState).mockReturnValueOnce({
+			sections: [{ id: 'query_1', type: 'query', database: 'Samples' }],
+		} as any);
+		mocks.getConnectionId.mockReturnValue('c1');
+		const lease = kustoEditorSchemaCoordinator.openSection('query_1', 'instance-1')!;
+		const identity = kustoEditorSchemaCoordinator.setTarget(lease, 'c1', 'Samples')!;
+		kustoEditorSchemaCoordinator.beginSchemaRequest(lease, 'schema-current');
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema-current';
+
+		dispatchHostMessage({ type: 'requestToolState', requestId: 'tool-state-1' });
+		await Promise.resolve();
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolStateResponse', requestId: 'tool-state-1',
+			sections: [expect.objectContaining({
+				id: 'query_1', connectionId: 'c1', schemaRequestToken: 'schema-current',
+				sectionInstanceId: 'instance-1', targetGeneration: identity.targetGeneration,
+			})],
+		});
+	});
+
+	it('mints exact Kusto schema ownership for a tokenless tool refresh', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.getKqlxState).mockReturnValueOnce({
+			sections: [{ id: 'query_1', type: 'query', database: 'Samples' }],
+		} as any);
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getDatabase.mockReturnValue('Samples');
+		const lease = kustoEditorSchemaCoordinator.openSection('query_1', 'instance-1')!;
+		kustoEditorSchemaCoordinator.setTarget(lease, 'c1', 'Samples');
+		const state = await import('../../src/webview/core/state.js');
+		state.schemaFetchInFlightByBoxId.query_1 = true;
+		state.lastSchemaRequestAtByBoxId.query_1 = Date.now();
+		state.beginKustoPreparation('query_1', { stage: 'schema', blockers: ['schema'], target: { connectionId: 'c1', database: 'Samples' } });
+
+		dispatchHostMessage({ type: 'requestToolState', requestId: 'tool-state-refresh', purpose: 'schema-refresh', targetConnectionId: 'c1' });
+		await Promise.resolve();
+
+		const token = kustoEditorSchemaCoordinator.getSchemaRequestToken('query_1');
+		expect(token).toMatch(/^schema_tool_/);
+		expect(handlerState.schemaRequestTokenByBoxId.query_1).toBe(token);
+		expect(state.schemaFetchInFlightByBoxId.query_1).toBe(false);
+		expect(state.lastSchemaRequestAtByBoxId.query_1).toBe(0);
+		expect(state.getKustoPreparationState('query_1').status).toBe('idle');
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolStateResponse', requestId: 'tool-state-refresh',
+			sections: [expect.objectContaining({
+				id: 'query_1', connectionId: 'c1', database: 'Samples', schemaRequestToken: token,
+				sectionInstanceId: 'instance-1', targetGeneration: expect.any(Number),
+			})],
+		});
+	});
+
+	it('does not replace unrelated schema ownership during a targeted tool refresh', async () => {
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.getKqlxState).mockReturnValueOnce({
+			sections: [
+				{ id: 'query_1', type: 'query', database: 'DbA' },
+				{ id: 'query_2', type: 'query', database: 'DbB' },
+			],
+		} as any);
+		mocks.getConnectionId.mockImplementation(boxId => boxId === 'query_1' ? 'c1' : 'c2');
+		mocks.getDatabase.mockImplementation(boxId => boxId === 'query_1' ? 'DbA' : 'DbB');
+		const first = kustoEditorSchemaCoordinator.openSection('query_1', 'instance-1')!;
+		kustoEditorSchemaCoordinator.setTarget(first, 'c1', 'DbA');
+		const second = kustoEditorSchemaCoordinator.openSection('query_2', 'instance-2')!;
+		kustoEditorSchemaCoordinator.setTarget(second, 'c2', 'DbB');
+		kustoEditorSchemaCoordinator.beginSchemaRequest(second, 'schema-in-flight-b');
+		handlerState.schemaRequestTokenByBoxId.query_2 = 'schema-in-flight-b';
+
+		dispatchHostMessage({ type: 'requestToolState', requestId: 'tool-state-targeted', purpose: 'schema-refresh', targetConnectionId: 'c1' });
+		await Promise.resolve();
+
+		expect(kustoEditorSchemaCoordinator.getSchemaRequestToken('query_1')).toMatch(/^schema_tool_/);
+		expect(kustoEditorSchemaCoordinator.getSchemaRequestToken('query_2')).toBe('schema-in-flight-b');
+		expect(handlerState.schemaRequestTokenByBoxId.query_2).toBe('schema-in-flight-b');
 	});
 
 	it('routes connectionsData to connection and toolbar updates', async () => {
@@ -620,6 +734,108 @@ describe('message-handler dispatch', () => {
 		await Promise.resolve();
 		expect(mocks.updateDatabaseSelect).toHaveBeenCalledWith('query_1', ['db2', 'db1'], 'c1', undefined, undefined, undefined);
 		expect(mocks.onDatabasesError).toHaveBeenCalledWith('query_1', 'boom', 'c1', undefined);
+	});
+
+	it('caches active synthetic schema success and consumes tombstoned late delivery', async () => {
+		const { getKustoConnectionIdentityKey } = await import('../../src/shared/kustoAuth.js');
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const connectionIdentity = getKustoConnectionIdentityKey(clusterUrl, 'common');
+		handlerState.connections.push({ id: 'c1', clusterUrl, authorityId: 'common', accountPartition: 'partition-1' });
+		const schema = { tables: ['Events'], columnTypesByTable: {} };
+		const activeRequest = kustoSyntheticSchemaRequests.begin('__schema_req__active', {
+			connectionId: 'c1',
+			database: 'Samples',
+			schemaKey: 'c1|Samples',
+			accountPartition: 'partition-1',
+			connectionIdentity,
+		});
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: '__schema_req__active',
+			connectionId: 'c1',
+			accountPartition: 'partition-1',
+			database: 'Samples',
+			schema,
+			schemaMeta: { schemaSignature: 'sig-active' },
+		});
+
+		await expect(activeRequest).resolves.toBe(schema);
+		expect(handlerState.schemaByConnDb['c1|Samples']).toBe(schema);
+		expect(handlerState.schemaByBoxId['__schema_req__active']).toBeUndefined();
+
+		const lateRequest = kustoSyntheticSchemaRequests.begin('__schema_req__late', {
+			connectionId: 'c1',
+			database: 'LateDb',
+			schemaKey: 'c1|LateDb',
+			accountPartition: 'partition-1',
+			connectionIdentity,
+		});
+		const lateRejection = expect(lateRequest).rejects.toThrow('canceled for test');
+		kustoSyntheticSchemaRequests.cancel('__schema_req__late', new Error('canceled for test'));
+		await lateRejection;
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: '__schema_req__late',
+			connectionId: 'c1',
+			database: 'LateDb',
+			schema: { tables: ['LateEvents'], columnTypesByTable: {} },
+		});
+
+		expect(handlerState.schemaByConnDb['c1|LateDb']).toBeUndefined();
+		expect(handlerState.schemaByBoxId['__schema_req__late']).toBeUndefined();
+	});
+
+	it('rejects synthetic schema delivery from a different account partition', async () => {
+		const { getKustoConnectionIdentityKey } = await import('../../src/shared/kustoAuth.js');
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		handlerState.connections.push({ id: 'c1', clusterUrl, authorityId: 'common', accountPartition: 'partition-new' });
+		const request = kustoSyntheticSchemaRequests.begin('__schema_req__old-principal', {
+			connectionId: 'c1', database: 'Samples', schemaKey: 'old-key', accountPartition: 'partition-old',
+			connectionIdentity: getKustoConnectionIdentityKey(clusterUrl, 'common'),
+		});
+		const rejection = expect(request).rejects.toThrow('target mismatch');
+
+		dispatchHostMessage({
+			type: 'schemaData', boxId: '__schema_req__old-principal', connectionId: 'c1', database: 'Samples',
+			accountPartition: 'partition-old', schema: { tables: ['Old'], columnTypesByTable: {} },
+		});
+
+		await rejection;
+		expect(handlerState.schemaByConnDb['old-key']).toBeUndefined();
+	});
+
+	it('consumes reserved synthetic IDs after broker retention has ended', () => {
+		dispatchHostMessage({
+			type: 'schemaData', boxId: '__schema_req__expired', connectionId: 'c1', database: 'LateDb',
+			schema: { tables: ['LateEvents'], columnTypesByTable: {} },
+		});
+		dispatchHostMessage({
+			type: 'databasesData', boxId: '__kusto_dbreq__expired', connectionId: 'c1', databases: ['LateDb'],
+		});
+
+		expect(handlerState.schemaByBoxId['__schema_req__expired']).toBeUndefined();
+		expect(handlerState.schemaByConnDb['c1|LateDb']).toBeUndefined();
+		expect(mocks.updateDatabaseSelect).not.toHaveBeenCalledWith(
+			'__kusto_dbreq__expired', expect.anything(), expect.anything(), expect.anything(), expect.anything(), expect.anything(),
+		);
+	});
+
+	it('admits a lifecycle-stamped real section whose ID uses a reserved prefix', () => {
+		const boxId = '__schema_req__manual';
+		const lease = kustoEditorSchemaCoordinator.openSection(boxId, 'instance-real')!;
+		const identity = kustoEditorSchemaCoordinator.setTarget(lease, 'c1', 'Samples')!;
+		kustoEditorSchemaCoordinator.beginSchemaRequest(lease, 'schema-real');
+		handlerState.schemaRequestTokenByBoxId[boxId] = 'schema-real';
+		handlerState.connections.push({ id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net', accountPartition: 'partition-1' });
+
+		dispatchHostMessage({
+			type: 'schemaData', boxId, connectionId: 'c1', accountPartition: 'partition-1',
+			database: 'Samples', clusterUrl: 'https://cluster.kusto.windows.net', requestToken: 'schema-real', ...identity,
+			schema: { tables: ['Events'], columnTypesByTable: {} },
+			schemaMeta: { schemaSignature: 'real', workerUpdateNeeded: false },
+		});
+
+		expect(handlerState.schemaByBoxId[boxId]).toEqual({ tables: ['Events'], columnTypesByTable: {} });
 	});
 
 	it('drops database responses from an old account partition', async () => {
@@ -1241,7 +1457,7 @@ describe('message-handler dispatch', () => {
 		});
 		await Promise.resolve();
 
-		expect(handlerState.schemaByBoxId.sql_1).toBe(schema);
+		expect(handlerState.sqlSchemaByBoxId.sql_1).toBe(schema);
 		expect(sqlEl.setSchemaInfo).toHaveBeenNthCalledWith(1, {
 			text: '2 tables, 2 cols (cached)',
 			isError: false,
@@ -1252,6 +1468,90 @@ describe('message-handler dispatch', () => {
 			isError: true,
 			meta: undefined,
 		});
+	});
+
+	it('preserves SQL schema when Kusto authentication identity changes', () => {
+		handlerState.schemaByBoxId.query_1 = { tables: ['KustoEvents'] };
+		handlerState.sqlSchemaByBoxId.sql_1 = { tables: ['SqlEvents'] };
+
+		dispatchHostMessage({ type: 'kustoAuthIdentityChanged', connectionIds: [], reason: 'sessions-changed' });
+
+		expect(handlerState.schemaByBoxId.query_1).toBeUndefined();
+		expect(handlerState.sqlSchemaByBoxId.sql_1).toEqual({ tables: ['SqlEvents'] });
+	});
+
+	it('cancels affected synthetic requests when Kusto identity changes', async () => {
+		const request = kustoSyntheticDatabaseRequests.begin('__kusto_dbreq__active', {
+			connectionId: 'c1', accountPartition: 'partition-1', connectionIdentity: 'cluster|common',
+		});
+		const rejection = expect(request).rejects.toThrow('invalidated by authentication change');
+
+		dispatchHostMessage({ type: 'kustoAuthIdentityChanged', connectionIds: ['c1'], reason: 'sessions-changed' });
+
+		await rejection;
+		expect(kustoSyntheticDatabaseRequests.hasActive('__kusto_dbreq__active')).toBe(false);
+	});
+
+	it('preserves unrelated Kusto catalogs during targeted identity invalidation', () => {
+		mocks.getConnectionId.mockImplementation(boxId => boxId === 'query_a' ? 'c1' : 'c2');
+		const first = kustoEditorSchemaCoordinator.openSection('query_a', 'instance-a')!;
+		kustoEditorSchemaCoordinator.setTarget(first, 'c1', 'DbA');
+		kustoEditorSchemaCoordinator.setOwnedState('query_a', 'schema', { tables: ['A'] });
+		const second = kustoEditorSchemaCoordinator.openSection('query_b', 'instance-b')!;
+		kustoEditorSchemaCoordinator.setTarget(second, 'c2', 'DbB');
+		kustoEditorSchemaCoordinator.setOwnedState('query_b', 'schema', { tables: ['B'] });
+		handlerState.schemaByConnDb['v1|c1|partition|cluster|dba'] = { tables: ['A'] };
+		handlerState.schemaMetaByConnDb['v1|c1|partition|cluster|dba'] = { connectionId: 'c1' };
+		handlerState.schemaByConnDb['v1|c2|partition|cluster|dbb'] = { tables: ['B'] };
+		handlerState.schemaMetaByConnDb['v1|c2|partition|cluster|dbb'] = { connectionId: 'c2' };
+
+		dispatchHostMessage({ type: 'kustoAuthIdentityChanged', connectionIds: ['c1'], reason: 'sessions-changed' });
+
+		expect(kustoEditorSchemaCoordinator.getOwnedState('query_a', 'schema')).toBeUndefined();
+		expect(kustoEditorSchemaCoordinator.getOwnedState('query_b', 'schema')).toEqual({ tables: ['B'] });
+		expect(handlerState.schemaByConnDb['v1|c1|partition|cluster|dba']).toBeUndefined();
+		expect(handlerState.schemaByConnDb['v1|c2|partition|cluster|dbb']).toEqual({ tables: ['B'] });
+	});
+
+	it('invalidates a registered Kusto section before its Monaco editor exists', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const section = {
+			setDatabasesLoading: vi.fn(), setRefreshLoading: vi.fn(), clearResults: vi.fn(), getCopilotChatEl: vi.fn(),
+		};
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		mocks.getConnectionId.mockReturnValue('c1');
+		const lease = kustoEditorSchemaCoordinator.openSection('query_restored', 'instance-restored')!;
+		const before = kustoEditorSchemaCoordinator.setTarget(lease, 'c1', 'Samples')!;
+		kustoEditorSchemaCoordinator.beginSchemaRequest(lease, 'schema-restored');
+		handlerState.schemaRequestTokenByBoxId.query_restored = 'schema-restored';
+		state.databaseRequestTokenByBoxId.query_restored = 'databases-restored';
+		state.beginKustoPreparation('query_restored', { stage: 'ready', blockers: [], target: { connectionId: 'c1', database: 'Samples' } });
+
+		dispatchHostMessage({ type: 'kustoAuthIdentityChanged', connectionIds: ['c1'], reason: 'sessions-changed' });
+
+		const after = kustoEditorSchemaCoordinator.getIdentity('query_restored')!;
+		expect(after.targetGeneration).toBeGreaterThan(before.targetGeneration);
+		expect(kustoEditorSchemaCoordinator.getSchemaRequestToken('query_restored')).toBeUndefined();
+		expect(handlerState.schemaRequestTokenByBoxId.query_restored).toBeUndefined();
+		expect(state.databaseRequestTokenByBoxId.query_restored).toBeUndefined();
+		expect(state.getKustoPreparationState('query_restored').status).toBe('idle');
+		expect(section.setDatabasesLoading).toHaveBeenCalledWith(false);
+		expect(section.setRefreshLoading).toHaveBeenCalledWith(false);
+	});
+
+	it('clears only SQL schema when Leave No Trace protects its connection', () => {
+		handlerState.schemaByBoxId.query_1 = { tables: ['KustoEvents'] };
+		handlerState.sqlSchemaByBoxId.sql_1 = { tables: ['SqlEvents'] };
+		const sqlEl = createFakeSqlSection() as FakeSqlSection & { getConnectionId: () => string; clearSchemaForLeaveNoTrace: ReturnType<typeof vi.fn> };
+		sqlEl.getConnectionId = () => 'sql-sensitive';
+		sqlEl.clearSchemaForLeaveNoTrace = vi.fn(() => { delete handlerState.sqlSchemaByBoxId.sql_1; });
+		mocks.getSqlSectionElement.mockImplementation(boxId => boxId === 'sql_1' ? sqlEl : null);
+		handlerState.sqlBoxes.push('sql_1');
+
+		dispatchHostMessage({ type: 'sqlLeaveNoTraceData', connectionIds: ['sql-sensitive'] });
+
+		expect(handlerState.sqlSchemaByBoxId.sql_1).toBeUndefined();
+		expect(handlerState.schemaByBoxId.query_1).toEqual({ tables: ['KustoEvents'] });
 	});
 
 	it('admits only the current SQL database request and generation', async () => {
@@ -1572,6 +1872,54 @@ describe('message-handler dispatch', () => {
 		await vi.waitFor(() => expect(setSchema).toHaveBeenCalled());
 		expect(state.getKustoPreparationState('query_1')).toMatchObject({ status: 'ready', blockers: [] });
 		expect(state.markSchemaWorkerApplyPending).not.toHaveBeenCalled();
+	});
+
+	it('rejects background worker completion after same-ID section recreation', async () => {
+		const state = await import('../../src/webview/core/state.js');
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const database = 'Samples';
+		handlerState.activeQueryEditorBoxId = 'query_1';
+		handlerState.queryBoxes.push('query_1');
+		handlerState.connections.push({ id: 'c1', clusterUrl, accountPartition: 'partition-1' });
+		mocks.getConnectionId.mockReturnValue('c1');
+		mocks.getClusterUrl.mockReturnValue(clusterUrl);
+		mocks.getDatabase.mockReturnValue(database);
+		const oldLease = kustoEditorSchemaCoordinator.openSection('query_1', 'instance-old')!;
+		const identity = kustoEditorSchemaCoordinator.setTarget(oldLease, 'c1', database)!;
+		kustoEditorSchemaCoordinator.beginSchemaRequest(oldLease, 'schema-old');
+		kustoEditorSchemaCoordinator.attachModel(oldLease, 'inmemory://model/old');
+		handlerState.schemaRequestTokenByBoxId.query_1 = 'schema-old';
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/old' } })) };
+		let release!: () => void;
+		let started!: () => void;
+		const gate = new Promise<void>(resolve => { release = resolve; });
+		const workerStarted = new Promise<void>(resolve => { started = resolve; });
+		(window as any).__kustoSetMonacoKustoSchema = vi.fn(async (...args: any[]) => {
+			started();
+			await gate;
+			return args[6]();
+		});
+		vi.mocked(state.markSchemaWorkerReady).mockClear();
+
+		dispatchHostMessage({
+			type: 'schemaData', boxId: 'query_1', connectionId: 'c1', accountPartition: 'partition-1',
+			database, clusterUrl, requestToken: 'schema-old', ...identity,
+			schema: { tables: ['Events'], columnTypesByTable: {}, rawSchemaJson: { Databases: { Samples: {} } } },
+			schemaMeta: { schemaSignature: 'sig-old', workerUpdateNeeded: true, isBackgroundRefresh: true, refreshState: 'completed', autocompleteChanged: true },
+		});
+		await workerStarted;
+
+		kustoEditorSchemaCoordinator.closeSection(oldLease);
+		const newLease = kustoEditorSchemaCoordinator.openSection('query_1', 'instance-new')!;
+		kustoEditorSchemaCoordinator.setTarget(newLease, 'c1', database);
+		kustoEditorSchemaCoordinator.attachModel(newLease, 'inmemory://model/new');
+		handlerState.queryEditors.query_1 = { getModel: vi.fn(() => ({ uri: { toString: () => 'inmemory://model/new' } })) };
+		release();
+		await vi.waitFor(() => expect((window as any).__kustoSetMonacoKustoSchema).toHaveBeenCalledOnce());
+		await Promise.resolve();
+
+		expect(state.markSchemaWorkerReady).not.toHaveBeenCalled();
+		expect(kustoEditorSchemaCoordinator.getOwnedState('query_1', 'workerReady')).toBeUndefined();
 	});
 
 	it('does not promote an invalidated section from a late unchanged refresh', async () => {
@@ -2074,7 +2422,7 @@ describe('message-handler dispatch', () => {
 			schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: true },
 		});
 
-		expect(state.pendingSchemaWorkerUpdateByBoxId.query_1).toEqual(expect.objectContaining({
+		expect(state.getPendingSchemaWorkerUpdate('query_1')).toEqual(expect.objectContaining({
 			schemaKey,
 			schemaSignature: 'sig-1',
 			reason: 'waiting-for-model',
@@ -2107,7 +2455,7 @@ describe('message-handler dispatch', () => {
 			schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: false },
 		});
 
-		expect(state.pendingSchemaWorkerUpdateByBoxId.query_1).toEqual(expect.objectContaining({
+		expect(state.getPendingSchemaWorkerUpdate('query_1')).toEqual(expect.objectContaining({
 			schemaKey,
 			schemaSignature: 'sig-1',
 			reason: 'waiting-for-model',
@@ -2184,7 +2532,7 @@ describe('message-handler dispatch', () => {
 			schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: true },
 		});
 
-		expect(state.pendingSchemaWorkerUpdateByBoxId.query_1).toEqual(expect.objectContaining({
+		expect(state.getPendingSchemaWorkerUpdate('query_1')).toEqual(expect.objectContaining({
 			schemaKey,
 			schemaSignature: 'sig-1',
 			reason: 'inactive-box',
@@ -2219,7 +2567,7 @@ describe('message-handler dispatch', () => {
 			schemaMeta: { schemaSignature: 'sig-1', workerUpdateNeeded: true, forceRefresh: true },
 		});
 
-		expect(state.pendingSchemaWorkerUpdateByBoxId.query_1).toEqual(expect.objectContaining({
+		expect(state.getPendingSchemaWorkerUpdate('query_1')).toEqual(expect.objectContaining({
 			schemaKey,
 			schemaSignature: 'sig-1',
 			forceRefresh: true,
@@ -2256,7 +2604,7 @@ describe('message-handler dispatch', () => {
 		});
 		await Promise.resolve();
 
-		expect(state.pendingSchemaWorkerUpdateByBoxId.query_1).toBeUndefined();
+		expect(state.getPendingSchemaWorkerUpdate('query_1')).toBeUndefined();
 		expect((window as any).__kustoSetMonacoKustoSchema).toHaveBeenCalledWith(
 			{ Databases: { Samples: {} } },
 			clusterUrl,
@@ -2386,6 +2734,22 @@ describe('changedSections agent provenance', () => {
 		expect(shell.hasChanges).toBe('new');
 		expect(shell.showDiffBtn).toBe(false);
 		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('removes an arbitrary query section ID through the owning cleanup path', async () => {
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		const section = document.createElement('div') as HTMLDivElement & { serialize: () => unknown };
+		section.id = 'custom-query';
+		section.serialize = () => ({ id: 'custom-query', type: 'query', query: 'print 1' });
+		document.body.appendChild(section);
+
+		dispatchHostMessage({ type: 'toolRemoveSection', requestId: 'remove-custom', sectionId: 'custom-query' });
+		await Promise.resolve();
+
+		expect(sectionFactory.removeQueryBox).toHaveBeenCalledWith('custom-query');
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'remove-custom', result: { success: true },
+		}));
 	});
 
 	it('does not inherit agent provenance from a no-op Copilot query update', async () => {
@@ -2519,6 +2883,7 @@ describe('changedSections agent provenance', () => {
 	});
 
 	it('marks newly created optimized comparison sections as agent-touched when new', async () => {
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
 		const { shell } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'New optimized query' });
 		handlerState.queryEditors.query_src = { getValue: vi.fn(() => 'Source query') };
 
@@ -2529,6 +2894,10 @@ describe('changedSections agent provenance', () => {
 			queryName: 'Source',
 		});
 		await Promise.resolve();
+		expect(sectionFactory.addQueryBox).toHaveBeenCalledWith(expect.objectContaining({
+			isComparison: true,
+			comparisonSourceBoxId: 'query_src',
+		}));
 		expect(shell.agentTouched).toBe(false);
 
 		dispatchHostMessage({

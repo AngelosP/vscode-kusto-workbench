@@ -100,7 +100,7 @@ Feature: Kusto connection flow — cluster select, database loading, schema
     When I click "button[data-add-kind='query']" in the webview
     When I wait for "kw-query-section[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds
     When I evaluate "window.__e2e.kusto.selectSampleDatabase()" in the webview
-    When I wait for "kw-query-section[data-test-preparation-state='ready']" in the webview for 60 seconds
+    When I evaluate "window.__e2e.kusto.waitForPreparationReady(0, 60000)" in the webview for 65 seconds
     When I click "button[data-add-kind='query']" in the webview
     When I wait for "kw-query-section:nth-of-type(2)" in the webview for 20 seconds
     When I wait for "kw-query-section:nth-of-type(2)[data-test-databases-loading='false'][data-test-has-databases='true']" in the webview for 30 seconds

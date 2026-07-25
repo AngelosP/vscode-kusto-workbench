@@ -18,9 +18,10 @@ import {
 	CachedSchemaEntry
 } from './queryEditorTypes';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
-import { resolveKustoConnection, resolveStrictKustoConnection } from '../shared/kustoAuth';
+import { getKustoConnectionIdentityKey, resolveKustoConnection, resolveStrictKustoConnection } from '../shared/kustoAuth';
 import { databaseListTraceRef, getDatabaseListErrorDetails } from './databaseListTrace';
 import type { WorkbenchLogger } from './workbenchLogger';
+import type { KustoEditorLifecycleIdentity } from '../shared/kustoSchemaLifecycle';
 
 
 // ── SchemaServiceHost interface ──
@@ -43,6 +44,7 @@ type SchemaPrefetchOptions = {
 
 type BackgroundSchemaRefreshListener = {
 	connection: KustoConnection;
+	connectionIdentity: string;
 	connectionId: string;
 	database: string;
 	accountPartition: string;
@@ -53,6 +55,7 @@ type BackgroundSchemaRefreshListener = {
 	forceRefresh: boolean;
 	silent?: boolean;
 	reason?: string;
+	lifecycle?: KustoEditorLifecycleIdentity;
 };
 
 type SupplementalFailureKind = 'missing-connection' | 'ambiguous-connection' | 'auth-required' | 'not-found' | 'fetch-failed' | 'invalid-schema';
@@ -75,6 +78,16 @@ export class SchemaService {
 		void this.migrateCachedSchemasToDiskOnce();
 	}
 
+	private isConnectionIdentityCurrent(connectionId: string, capturedIdentity: string): boolean {
+		const current = this.host.findConnection(connectionId);
+		if (!current) return false;
+		try {
+			return getKustoConnectionIdentityKey(current.clusterUrl, current.authorityId) === capturedIdentity;
+		} catch {
+			return false;
+		}
+	}
+
 	private postSchemaData(args: {
 		boxId: string;
 		connectionId: string;
@@ -84,6 +97,7 @@ export class SchemaService {
 		requestToken?: string;
 		schema: DatabaseSchemaIndex;
 		meta?: Record<string, unknown>;
+		lifecycle?: KustoEditorLifecycleIdentity;
 	}): void {
 		const summary = getSchemaSummary(args.schema);
 		this.host.postMessage({
@@ -94,6 +108,7 @@ export class SchemaService {
 			clusterUrl: args.clusterUrl,
 			accountPartition: args.accountPartition,
 			requestToken: args.requestToken,
+			...(args.lifecycle || {}),
 			schema: args.schema,
 			schemaMeta: {
 				...summary,
@@ -103,13 +118,14 @@ export class SchemaService {
 		});
 	}
 
-	private postSilentSchemaMiss(connectionId: string, database: string, boxId: string, requestToken: string | undefined, options: SchemaPrefetchOptions): void {
+	private postSilentSchemaMiss(connectionId: string, database: string, boxId: string, requestToken: string | undefined, options: SchemaPrefetchOptions, lifecycle?: KustoEditorLifecycleIdentity): void {
 		this.host.postMessage({
 			type: 'schemaError',
 			boxId,
 			connectionId,
 			database,
 			requestToken,
+			...(lifecycle || {}),
 			cacheOnly: !!options.cacheOnly,
 			silent: !!options.silent,
 			error: 'No cached schema is available.'
@@ -130,6 +146,7 @@ export class SchemaService {
 					allowInteractive: false,
 					source: 'background-refresh',
 				});
+				if (!this.isConnectionIdentityCurrent(listener.connectionId, listener.connectionIdentity)) return;
 				const accountPartition = result.accountPartition;
 				if (!accountPartition || accountPartition !== listener.accountPartition) return;
 				const schema = result.schema;
@@ -154,7 +171,8 @@ export class SchemaService {
 				const freshHasRawSchemaJson = !!schema.rawSchemaJson;
 				const snapshot = listeners.slice();
 				for (const item of snapshot) {
-					if (item.boxId.startsWith('__schema_req__')) {
+					if (!this.isConnectionIdentityCurrent(item.connectionId, item.connectionIdentity)) continue;
+					if (!item.lifecycle && item.boxId.startsWith('__schema_req__')) {
 						continue;
 					}
 					const autocompleteChanged = !!item.cachedSignature && item.cachedSignature !== freshSignature;
@@ -167,6 +185,7 @@ export class SchemaService {
 						clusterUrl: item.connection.clusterUrl,
 						accountPartition: item.accountPartition,
 						requestToken: item.requestToken,
+						lifecycle: item.lifecycle,
 						schema,
 						meta: {
 							fromCache: result.fromCache,
@@ -190,13 +209,15 @@ export class SchemaService {
 				this.host.output.warn(`[schema] background refresh failed db=${listener.database}: ${rawMessage}`);
 				const snapshot = listeners.slice();
 				for (const item of snapshot) {
-					if (!item.boxId.startsWith('__schema_req__')) {
+					if (!this.isConnectionIdentityCurrent(item.connectionId, item.connectionIdentity)) continue;
+					if (item.lifecycle || !item.boxId.startsWith('__schema_req__')) {
 						this.host.postMessage({
 							type: 'schemaError',
 							boxId: item.boxId,
 							connectionId: item.connectionId,
 							database: item.database,
 							requestToken: item.requestToken,
+							...(item.lifecycle || {}),
 							silent: true,
 							isBackgroundRefresh: true,
 							refreshState: 'failed',
@@ -265,7 +286,8 @@ export class SchemaService {
 		boxId: string,
 		forceRefresh: boolean,
 		requestToken?: string,
-		options: SchemaPrefetchOptions = {}
+		options: SchemaPrefetchOptions = {},
+		lifecycle?: KustoEditorLifecycleIdentity,
 	): Promise<void> {
 		const connection = this.host.findConnection(connectionId);
 		if (!connection || !database) {
@@ -275,12 +297,25 @@ export class SchemaService {
 				connectionId,
 				database,
 				requestToken,
+				...(lifecycle || {}),
 				cacheOnly: !!options.cacheOnly,
 				silent: !!options.silent,
 				error: connection ? 'No database is selected.' : 'The selected Kusto connection is no longer available.',
 			});
 			return;
 		}
+		let connectionIdentity = '';
+		try {
+			connectionIdentity = getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId);
+		} catch {
+			this.host.postMessage({
+				type: 'schemaError', boxId, connectionId, database, requestToken, ...(lifecycle || {}),
+				cacheOnly: !!options.cacheOnly, silent: !!options.silent,
+				error: 'The saved Kusto connection has an invalid Tenant / Authority ID.',
+			});
+			return;
+		}
+		const isConnectionCurrent = () => this.isConnectionIdentityCurrent(connection.id, connectionIdentity);
 
 		const initialAccountPartition = this.host.kustoClient.getAccountPartition(connection);
 		const cacheKey = initialAccountPartition
@@ -297,12 +332,14 @@ export class SchemaService {
 
 			// Read persisted cache once so we can (a) use it when fresh, and (b) fall back to it on errors.
 			const cached = await this.getCachedSchemaFromDiskByCluster(connection, database, initialAccountPartition);
+			if (!isConnectionCurrent()) return;
 			const cachedState = classifyCachedSchema(cached);
 			const cachedAgeMs = cachedState.cacheAgeMs;
 			const cachedSignature = cached?.schema ? getAutocompleteSchemaSignature(cached.schema) : undefined;
 			const cachedHasRawSchemaJson = !!cached?.schema?.rawSchemaJson;
 
 			if (options.cacheOnly) {
+				if (!isConnectionCurrent()) return;
 				if (cached?.schema) {
 					this.host.output.info(`[schema] loaded (cache-only) db=${database}`);
 					this.postSchemaData({
@@ -312,6 +349,7 @@ export class SchemaService {
 						clusterUrl: connection.clusterUrl,
 						accountPartition: initialAccountPartition!,
 						requestToken,
+						lifecycle,
 						schema: cached.schema,
 						meta: {
 							fromCache: true,
@@ -328,12 +366,13 @@ export class SchemaService {
 					return;
 				}
 				this.host.output.info(`[schema] cache-only miss db=${database}`);
-				this.postSilentSchemaMiss(connectionId, database, boxId, requestToken, options);
+				this.postSilentSchemaMiss(connectionId, database, boxId, requestToken, options, lifecycle);
 				return;
 			}
 
 			// Default path: use persisted cache when it's still fresh.
 			if (!forceRefresh && cached && cachedState.isFresh && cachedState.isLatestVersion) {
+				if (!isConnectionCurrent()) return;
 				const schema = cached.schema;
 				const summary = getSchemaSummary(schema);
 
@@ -347,6 +386,7 @@ export class SchemaService {
 					clusterUrl: connection.clusterUrl,
 					accountPartition: initialAccountPartition!,
 					requestToken,
+					lifecycle,
 					schema,
 					meta: {
 						fromCache: true,
@@ -364,6 +404,7 @@ export class SchemaService {
 			// If we have cached data (even if stale or outdated version) and this is NOT a force refresh,
 			// return the cached data immediately and refresh in the background.
 			if (!forceRefresh && cached) {
+				if (!isConnectionCurrent()) return;
 				const schema = cached.schema;
 				const summary = getSchemaSummary(schema);
 
@@ -377,6 +418,7 @@ export class SchemaService {
 					clusterUrl: connection.clusterUrl,
 					accountPartition: initialAccountPartition!,
 					requestToken,
+					lifecycle,
 					schema,
 					meta: {
 						fromCache: true,
@@ -392,11 +434,13 @@ export class SchemaService {
 				});
 				this.scheduleBackgroundSchemaRefresh(cacheKey, {
 					connection,
+					connectionIdentity,
 					connectionId,
 					database,
 					accountPartition: initialAccountPartition!,
 					boxId,
 					requestToken,
+					lifecycle,
 					cachedSignature,
 					cachedHasRawSchemaJson,
 					forceRefresh: false,
@@ -406,6 +450,7 @@ export class SchemaService {
 			}
 
 			const result = await this.host.kustoClient.getDatabaseSchema(connection, database, forceRefresh);
+			if (!isConnectionCurrent()) return;
 			const schema = result.schema;
 			const resolvedAccountPartition = result.accountPartition;
 			if (!resolvedAccountPartition) {
@@ -436,6 +481,7 @@ export class SchemaService {
 			} catch (cacheError) {
 				this.host.output.warn(`[schema] failed to persist schema db=${database}: ${cacheError instanceof Error ? cacheError.message : String(cacheError)}`);
 			}
+			if (!isConnectionCurrent()) return;
 			if (summary.tablesCount === 0 || summary.columnsCount === 0) {
 				const d = result.debug;
 				if (d) {
@@ -455,6 +501,7 @@ export class SchemaService {
 				clusterUrl: connection.clusterUrl,
 				accountPartition: resolvedAccountPartition,
 				requestToken,
+				lifecycle,
 				schema,
 				meta: {
 					fromCache: result.fromCache,
@@ -469,6 +516,7 @@ export class SchemaService {
 				}
 			});
 		} catch (error) {
+			if (!isConnectionCurrent()) return;
 			const rawMessage = error instanceof Error ? error.message : String(error);
 			this.host.output.error(`[schema] error db=${database}: ${rawMessage}`);
 
@@ -476,6 +524,7 @@ export class SchemaService {
 			try {
 				const failoverPartition = this.host.kustoClient.getAccountPartition(connection);
 				const cached = await this.getCachedSchemaFromDiskByCluster(connection, database, failoverPartition);
+				if (!isConnectionCurrent()) return;
 				if (cached && cached.schema) {
 					const schema = cached.schema;
 					const summary = getSchemaSummary(schema);
@@ -491,6 +540,7 @@ export class SchemaService {
 						clusterUrl: connection.clusterUrl,
 						accountPartition: failoverPartition!,
 						requestToken,
+						lifecycle,
 						schema,
 						meta: {
 							fromCache: true,
@@ -519,6 +569,7 @@ export class SchemaService {
 			} catch {
 				// ignore and fall through to posting schemaError
 			}
+			if (!isConnectionCurrent()) return;
 
 			const action = forceRefresh ? 'refresh' : 'load';
 			void vscode.window.showErrorMessage(`Failed to ${action} schema for ${database}.`, 'More Info').then(selection => {
@@ -532,6 +583,7 @@ export class SchemaService {
 				connectionId,
 				database,
 				requestToken,
+				...(lifecycle || {}),
 				error: `Failed to ${action} schema.\n${userMessage}`
 			});
 		}
@@ -572,6 +624,17 @@ export class SchemaService {
 			return;
 		}
 		const connection = resolution.connection;
+		let connectionIdentity = '';
+		try {
+			connectionIdentity = getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId);
+		} catch {
+			this.host.postMessage({
+				type: 'crossClusterSchemaError', clusterName, database, boxId, requestToken, requestSource,
+				failureKind: 'auth-required', error: 'The saved Kusto connection has an invalid Tenant / Authority ID.',
+			});
+			return;
+		}
+		const isConnectionCurrent = () => this.isConnectionIdentityCurrent(connection.id, connectionIdentity);
 
 		try {
 			const initialAccountPartition = this.host.kustoClient.getAccountPartition(connection);
@@ -580,6 +643,7 @@ export class SchemaService {
 				: '';
 
 			const cached = await this.getCachedSchemaFromDiskByCluster(connection, database, initialAccountPartition);
+			if (!isConnectionCurrent()) return;
 			const cachedAgeMs = cached ? Date.now() - cached.timestamp : undefined;
 			const cachedIsLatestVersion = cached?.version === SCHEMA_CACHE_VERSION;
 			const cachedIsFresh = !!(cached && cachedIsLatestVersion && typeof cachedAgeMs === 'number' && cachedAgeMs < SCHEMA_CACHE_TTL_MS);
@@ -626,6 +690,7 @@ export class SchemaService {
 							traceId,
 							source: 'supplemental-background-refresh',
 						});
+						if (!isConnectionCurrent()) return;
 						const freshSchema = result.schema;
 						const resolvedAccountPartition = result.accountPartition;
 						if (!resolvedAccountPartition || resolvedAccountPartition !== initialAccountPartition) return;
@@ -662,6 +727,7 @@ export class SchemaService {
 							this.host.output.warn(`[schema] failed to persist supplemental background schema clusterRef=${databaseListTraceRef(clusterName)} databaseRef=${databaseListTraceRef(database)} errorType=${cacheError instanceof Error ? cacheError.name : 'Error'}`);
 						}
 					} catch (refreshError) {
+						if (!isConnectionCurrent()) return;
 						trace('refresh.failed', { failureKind: supplementalFailureKind(refreshError, candidate => this.host.kustoClient.isAuthenticationError?.(candidate) === true) });
 					}
 				})();
@@ -674,6 +740,7 @@ export class SchemaService {
 				traceId,
 				source: `supplemental-${requestSource}`,
 			});
+			if (!isConnectionCurrent()) return;
 			const schema = result.schema;
 			const resolvedAccountPartition = result.accountPartition;
 			if (!resolvedAccountPartition) throw new Error('Supplemental schema authentication identity could not be resolved.');
@@ -725,6 +792,7 @@ export class SchemaService {
 				});
 			}
 		} catch (error) {
+			if (!isConnectionCurrent()) return;
 			const failureKind = supplementalFailureKind(error, candidate => this.host.kustoClient.isAuthenticationError?.(candidate) === true);
 			trace('request.failed', { failureKind });
 			const userMessage = this.host.formatQueryExecutionErrorForUser(error, connection, database);
@@ -746,7 +814,7 @@ export class SchemaService {
 	async refreshSchemaForTools(
 		clusterUrl: string,
 		connectionId?: string,
-		targets: readonly { boxId: string; database: string; requestToken?: string }[] = [],
+		targets: readonly ({ boxId: string; database: string; requestToken?: string } & Partial<KustoEditorLifecycleIdentity>)[] = [],
 	): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
 		const connections = this.host.connectionManager.getConnections();
 		const resolution = connectionId
@@ -758,14 +826,38 @@ export class SchemaService {
 		return this.refreshSchemaForConnection(resolution.connection, targets);
 	}
 
-	private async refreshSchemaForConnection(connection: KustoConnection, targets: readonly { boxId: string; database: string; requestToken?: string }[] = []): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
+	private async refreshSchemaForConnection(connection: KustoConnection, targets: readonly ({ boxId: string; database: string; requestToken?: string } & Partial<KustoEditorLifecycleIdentity>)[] = []): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
 		const schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> = [];
+		let connectionIdentity = '';
+		try {
+			connectionIdentity = getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId);
+		} catch {
+			return { schemas, error: 'The saved Kusto connection has an invalid Tenant / Authority ID.' };
+		}
+		const isConnectionCurrent = () => this.isConnectionIdentityCurrent(connection.id, connectionIdentity);
+		const pendingTargets = new Set(targets);
+		const postTargetError = (target: (typeof targets)[number], error: string): void => {
+			if (!pendingTargets.delete(target)) return;
+			this.host.postMessage({
+				type: 'schemaError', boxId: target.boxId, connectionId: connection.id,
+				database: target.database, requestToken: target.requestToken,
+				...(target.sectionInstanceId !== undefined && target.targetGeneration !== undefined
+					? { sectionInstanceId: target.sectionInstanceId, targetGeneration: target.targetGeneration }
+					: {}),
+				silent: true, isBackgroundRefresh: true, refreshState: 'failed', error,
+			});
+		};
+		const postAllTargetErrors = (error: string): void => {
+			for (const target of Array.from(pendingTargets)) postTargetError(target, error);
+		};
 		try {
 			const databases = await this.host.kustoClient.getDatabases(connection, true, {
 				traceId: randomUUID(),
 				source: 'query-editor-tool-schema-refresh',
 			});
+			if (!isConnectionCurrent()) return { schemas: [], error: 'The connection changed while schema refresh was running.' };
 			if (databases.length === 0) {
+				postAllTargetErrors('No databases found during schema refresh.');
 				return { schemas: [], error: 'No databases found on this cluster, or insufficient permissions.' };
 			}
 
@@ -773,6 +865,7 @@ export class SchemaService {
 			for (const db of databases) {
 				try {
 					const result = await this.host.kustoClient.getDatabaseSchema(connection, db, true);
+					if (!isConnectionCurrent()) return { schemas: [], error: 'The connection changed while schema refresh was running.' };
 					const schema = result.schema;
 					const accountPartition = result.accountPartition;
 					if (!accountPartition) throw new Error('Schema authentication identity could not be resolved.');
@@ -788,6 +881,7 @@ export class SchemaService {
 						connectionId: connection.id,
 						accountPartition,
 					}, result.cacheGeneration);
+					if (!isConnectionCurrent()) return { schemas: [], error: 'The connection changed while schema refresh was running.' };
 
 					for (const target of targets) {
 						if (target.database.toLowerCase() !== db.toLowerCase()) continue;
@@ -798,6 +892,9 @@ export class SchemaService {
 							clusterUrl: connection.clusterUrl,
 							accountPartition,
 							requestToken: target.requestToken,
+							lifecycle: target.sectionInstanceId !== undefined && target.targetGeneration !== undefined
+								? { sectionInstanceId: target.sectionInstanceId, targetGeneration: target.targetGeneration }
+								: undefined,
 							schema,
 							meta: {
 								fromCache: result.fromCache,
@@ -810,6 +907,7 @@ export class SchemaService {
 								workerUpdateNeeded: true,
 							},
 						});
+						pendingTargets.delete(target);
 					}
 
 					const tables = schema.tables || [];
@@ -821,9 +919,15 @@ export class SchemaService {
 						functions
 					});
 				} catch (dbErr) {
-					errors.push(`${db}: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`);
+					if (!isConnectionCurrent()) return { schemas: [], error: 'The connection changed while schema refresh was running.' };
+					const dbError = dbErr instanceof Error ? dbErr.message : String(dbErr);
+					for (const target of targets) {
+						if (target.database.toLowerCase() === db.toLowerCase()) postTargetError(target, `Failed to refresh schema for ${db}.`);
+					}
+					errors.push(`${db}: ${dbError}`);
 				}
 			}
+			postAllTargetErrors('The selected database was not found during schema refresh.');
 
 			if (errors.length > 0 && schemas.length === 0) {
 				return { schemas, error: `Failed to refresh schema for all databases: ${errors.join('; ')}` };
@@ -833,6 +937,8 @@ export class SchemaService {
 			}
 			return { schemas };
 		} catch (err) {
+			if (!isConnectionCurrent()) return { schemas: [], error: 'The connection changed while schema refresh was running.' };
+			postAllTargetErrors('Schema refresh failed before the requested database could be loaded.');
 			return { schemas, error: `Failed to refresh schema: ${err instanceof Error ? err.message : String(err)}` };
 		}
 	}

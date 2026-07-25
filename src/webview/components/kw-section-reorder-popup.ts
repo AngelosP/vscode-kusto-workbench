@@ -610,13 +610,15 @@ export class KwSectionReorderPopup extends LitElement {
 		try {
 			const container = document.getElementById('queries-container');
 			if (container) {
-				const ids = Array.from(container.children)
-					.map((el: any) => el?.id ? String(el.id) : '')
-					.filter(Boolean);
-				try { if (typeof _win.setQueryBoxes === 'function') _win.setQueryBoxes(ids.filter((id: any) => id.startsWith('query_'))); else if (typeof _win.queryBoxes !== 'undefined') _win.queryBoxes = ids.filter((id: any) => id.startsWith('query_')); } catch (e) { console.error('[kusto]', e); }
-				try { if (typeof _win.markdownBoxes !== 'undefined') _win.markdownBoxes = ids.filter((id: any) => id.startsWith('markdown_')); } catch (e) { console.error('[kusto]', e); }
-				try { if (typeof _win.pythonBoxes !== 'undefined') _win.pythonBoxes = ids.filter((id: any) => id.startsWith('python_')); } catch (e) { console.error('[kusto]', e); }
-				try { if (typeof _win.urlBoxes !== 'undefined') _win.urlBoxes = ids.filter((id: any) => id.startsWith('url_')); } catch (e) { console.error('[kusto]', e); }
+				const sections = Array.from(container.children)
+					.map((el: any) => ({ id: el?.id ? String(el.id) : '', tag: String(el?.tagName || '').toLowerCase() }))
+					.filter(section => !!section.id);
+				const idsFor = (tag: string) => sections.filter(section => section.tag === tag).map(section => section.id);
+				const queryIds = idsFor('kw-query-section');
+				try { if (typeof _win.setQueryBoxes === 'function') _win.setQueryBoxes(queryIds); else if (typeof _win.queryBoxes !== 'undefined') _win.queryBoxes = queryIds; } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof _win.markdownBoxes !== 'undefined') _win.markdownBoxes = idsFor('kw-markdown-section'); } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof _win.pythonBoxes !== 'undefined') _win.pythonBoxes = idsFor('kw-python-section'); } catch (e) { console.error('[kusto]', e); }
+				try { if (typeof _win.urlBoxes !== 'undefined') _win.urlBoxes = idsFor('kw-url-section'); } catch (e) { console.error('[kusto]', e); }
 			}
 		} catch (e) { console.error('[kusto]', e); }
 

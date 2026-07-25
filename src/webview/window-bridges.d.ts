@@ -90,14 +90,11 @@ declare global {
 		queryEditorVisibilityMutationObservers: Record<string, any>;
 		queryEditorBoxByModelUri: Record<string, string>;
 		activeQueryEditorBoxId: string | null;
-		schemaByBoxId: Record<string, KustoSchemaInfo>;
 		schemaFetchInFlightByBoxId: Record<string, boolean>;
 		lastSchemaRequestAtByBoxId: Record<string, number>;
 		monacoReadyPromise: Promise<void> | null;
 		qualifyTablesInFlightByBoxId: Record<string, any>;
 		schemaByConnDb: Record<string, KustoSchemaInfo>;
-		schemaRequestResolversByBoxId: Record<string, any>;
-		databasesRequestResolversByBoxId: Record<string, any>;
 		missingClusterDetectTimersByBoxId: Record<string, any>;
 		lastQueryTextByBoxId: Record<string, string>;
 		missingClusterUrlsByBoxId: Record<string, string[]>;

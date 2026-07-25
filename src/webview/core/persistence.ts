@@ -13,12 +13,12 @@ import {
 	__kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase,
 	__kustoSetAutoEnterFavoritesForBox, __kustoTryAutoEnterFavoritesModeForAllBoxes,
 	__kustoClampResultsWrapperHeight,
-	schemaRequestTokenByBoxId,
 	addPythonBox, addUrlBox, removePythonBox, removeUrlBox, pythonBoxes, urlBoxes,
 	addHtmlBox, removeHtmlBox, htmlBoxes,
 	addSqlBox, removeSqlBox, sqlBoxes,
 	__kustoGetSqlSectionElement,
 } from './section-factory';
+import { schemaRequestTokenByBoxId } from './kusto-schema-request-state';
 import {
 	connections, queryBoxes, queryEditors, favoritesModeByBoxId, leaveNoTraceClusters,
 	activeQueryEditorBoxId,
@@ -42,6 +42,7 @@ import { __kustoUpdateQueryResultsToggleButton, __kustoApplyResultsVisibility } 
 import { perfMark } from './perf.js';
 import { traceFileOpen } from './file-open-trace.js';
 import { shouldStartKustoSchemaPrewarm } from '../shared/schema-utils.js';
+import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 
 
 const _win = window;
@@ -183,6 +184,11 @@ export function __kustoScheduleLocalSchemaPrewarm(reason: string = 'file-open'):
 				__kustoSchemaPrewarmSentKeys.add(key);
 				const requestToken = 'schema_prewarm_' + Date.now() + '_' + Math.random().toString(16).slice(2);
 				try { schemaRequestTokenByBoxId[boxId] = requestToken; } catch (e) { console.error('[kusto]', e); }
+				const lease = kustoEditorSchemaCoordinator.getLease(boxId);
+				if (!lease) return;
+				kustoEditorSchemaCoordinator.setTarget(lease, connectionId, database);
+				const lifecycle = kustoEditorSchemaCoordinator.beginSchemaRequest(lease, requestToken);
+				if (!lifecycle) return;
 				beginKustoPreparation(boxId, {
 					stage: 'schema',
 					blockers: ['schema', 'worker'],
@@ -198,6 +204,8 @@ export function __kustoScheduleLocalSchemaPrewarm(reason: string = 'file-open'):
 					cacheOnly: true,
 					silent: true,
 					reason,
+					sectionInstanceId: lifecycle.sectionInstanceId,
+					targetGeneration: lifecycle.targetGeneration,
 				});
 			} catch (e) { console.error('[kusto]', e); }
 		}, 80);
@@ -1081,19 +1089,14 @@ export function getKqlxState() {
 	const sections: any[] = [];
 	const container = document.getElementById('queries-container');
 	const children = container ? Array.from(container.children || []) : [];
-	const sectionPrefixes = ['query_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_', 'html_', 'sql_'];
 	for (const child of children) {
 		const id = child && child.id ? String(child.id) : '';
 		if (!id) continue;
 
 		// All section types are Lit components that implement serialize().
-		const isSection = sectionPrefixes.some(prefix => id.startsWith(prefix));
-		if (isSection) {
-			const el = document.getElementById(id);
-			if (el && typeof (el as any).serialize === 'function') {
-				try { sections.push((el as any).serialize()); } catch (e) { console.error('[kusto]', e); }
-			}
-			continue;
+		const el = document.getElementById(id);
+		if (el && typeof (el as any).serialize === 'function') {
+			try { sections.push((el as any).serialize()); } catch (e) { console.error('[kusto]', e); }
 		}
 	}
 
@@ -1562,7 +1565,7 @@ function applyKqlxState(state: any) {
 				}
 				const boxId = addQueryBox({
 					id: (section.id ? String(section.id) : undefined),
-					...(comparisonSourceBoxId ? { isComparison: true } : {}),
+					...(comparisonSourceBoxId ? { isComparison: true, comparisonSourceBoxId } : {}),
 					expanded: (typeof section.expanded === 'boolean') ? !!section.expanded : true,
 					clusterUrl: String(section.clusterUrl || ''),
 					authorityId: String(section.authorityId || ''),

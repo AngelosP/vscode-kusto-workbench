@@ -1,3 +1,4 @@
+import { getKustoEditorSchema } from '../core/schema-catalogs.js';
 // Caret documentation & hover providers — extracted from monaco.ts
 // KQL keyword/function docs, control command docs, hover resolution.
 // Call initCaretDocsDeps(monaco) from the require callback to provide the AMD reference.
@@ -436,7 +437,7 @@ const __kustoEnsureGeneratedFunctionsMerged = () => {
 const getSchemaFunctionDoc = (boxId: any, fnName: any) => {
 	try {
 		if (!boxId || !fnName) return null;
-		const schema = (_win as any).schemaByBoxId?.[boxId];
+		const schema = getKustoEditorSchema(String(boxId || ''));
 		const functions = schema?.functions;
 		if (!Array.isArray(functions) || functions.length === 0) return null;
 		const needle = String(fnName).toLowerCase();
@@ -501,7 +502,7 @@ const getSchemaTableDoc = (boxId: any, name: any) => {
 
 		// Documentation must stay within the active box's resolved principal schema.
 		const schemas: any[] = [];
-		const primary = (_win as any).schemaByBoxId?.[boxId];
+		const primary = getKustoEditorSchema(String(boxId || ''));
 		if (primary) schemas.push(primary);
 
 		for (const schema of schemas) {

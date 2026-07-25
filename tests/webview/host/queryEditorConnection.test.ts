@@ -818,7 +818,10 @@ describe('ConnectionService — database request identity', () => {
 		});
 		const svc = new ConnectionService(host as any);
 
-		await svc.sendDatabases('c1', 'query_1', { mode: 'passive', requestToken: 'databases_1' });
+		await svc.sendDatabases('c1', 'query_1', {
+			mode: 'passive', requestToken: 'databases_1',
+			sectionInstanceId: 'instance-1', targetGeneration: 3,
+		});
 
 		expect(postMessage).toHaveBeenCalledWith({
 			type: 'databasesData',
@@ -827,6 +830,8 @@ describe('ConnectionService — database request identity', () => {
 			connectionId: 'c1',
 			accountPartition: 'test-partition',
 			requestToken: 'databases_1',
+			sectionInstanceId: 'instance-1',
+			targetGeneration: 3,
 			authoritative: true,
 			fallback: false,
 		});
@@ -939,6 +944,40 @@ describe('ConnectionService — database request identity', () => {
 		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'c2', requestToken: 'request-2', databases: ['DbTwo'] }));
 	});
 
+	it('does not publish a database response after the connection target changes', async () => {
+		const connections = [{ id: 'c1', name: 'One', clusterUrl: 'https://one.kusto.windows.net' }];
+		let resolve!: (databases: string[]) => void;
+		const getDatabases = vi.fn(() => new Promise<string[]>(resolvePromise => { resolve = resolvePromise; }));
+		const postMessage = vi.fn();
+		const host = makeMockHost({ connections, getDatabases, postMessage });
+		const svc = new ConnectionService(host as any);
+
+		const request = svc.sendDatabases('c1', 'query_1', { mode: 'passive', requestToken: 'request-1' });
+		await vi.waitFor(() => expect(getDatabases).toHaveBeenCalledOnce());
+		connections[0] = { ...connections[0], clusterUrl: 'https://two.kusto.windows.net' };
+		resolve(['DbOne']);
+		await request;
+
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'databasesData' }));
+	});
+
+	it('does not publish a database error after the connection target changes', async () => {
+		const connections = [{ id: 'c1', name: 'One', clusterUrl: 'https://one.kusto.windows.net' }];
+		let reject!: (error: Error) => void;
+		const getDatabases = vi.fn(() => new Promise<string[]>((_resolve, rejectPromise) => { reject = rejectPromise; }));
+		const postMessage = vi.fn();
+		const host = makeMockHost({ connections, getDatabases, postMessage });
+		const svc = new ConnectionService(host as any);
+
+		const request = svc.sendDatabases('c1', 'query_1', { mode: 'passive', requestToken: 'request-1' });
+		await vi.waitFor(() => expect(getDatabases).toHaveBeenCalledOnce());
+		connections[0] = { ...connections[0], clusterUrl: 'https://two.kusto.windows.net' };
+		reject(new Error('old endpoint failed'));
+		await request;
+
+		expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'databasesError' }));
+	});
+
 	it('terminates a tokened request when the connection no longer exists', async () => {
 		const postMessage = vi.fn();
 		const host = makeMockHost({ connections: [], postMessage });
@@ -952,6 +991,22 @@ describe('ConnectionService — database request identity', () => {
 			connectionId: 'missing',
 			requestToken: 'databases_missing',
 		}));
+	});
+
+	it('terminates database discovery for a malformed historical authority', async () => {
+		const postMessage = vi.fn();
+		const getDatabases = vi.fn(async () => ['ShouldNotLoad']);
+		const malformed = { id: 'c1', name: 'Legacy', clusterUrl: 'https://cluster.kusto.windows.net', authorityId: 'not a tenant' };
+		const host = makeMockHost({ connections: [malformed], postMessage, getDatabases });
+		const svc = new ConnectionService(host as any);
+
+		await svc.sendDatabases('c1', 'query_1', { mode: 'passive', requestToken: 'request-1' });
+
+		expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'databasesError', boxId: 'query_1', requestToken: 'request-1',
+			error: expect.stringContaining('invalid Tenant / Authority ID'),
+		}));
+		expect(getDatabases).not.toHaveBeenCalled();
 	});
 });
 

@@ -9,6 +9,7 @@
 
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { getSqlSectionSession } from '../core/sql-section-message-router.js';
+import { sqlSchemaByBoxId } from '../core/schema-catalogs.js';
 
 const _win = window as any;
 
@@ -127,7 +128,7 @@ export function registerStsProviders(): void {
 				endLineNumber: position.lineNumber, endColumn: position.column,
 			});
 
-			const schema = _win.schemaByBoxId?.[boxId] as {
+			const schema = sqlSchemaByBoxId[boxId] as {
 				tables?: string[];
 				views?: string[];
 				columnsByTable?: Record<string, Record<string, string>>;

@@ -33,6 +33,7 @@ window.__e2e.kusto.compactAutocompleteTrace(traceId)
 window.__e2e.kusto.clearAutocompleteTrace()
 window.__e2e.kusto.lastAutocompleteTraceId()
 window.__e2e.kusto.suggestDiagnostics('context label')
+window.__e2e.kusto.schemaLifecycleSnapshot()
 ```
 
 `compactAutocompleteTrace()` is the default artifact to paste into failure output. Use the full trace only when the compact trace omits a needed detail.
@@ -56,8 +57,11 @@ await window.__e2e.kusto.triggerSuggest()
 
 ```js
 window.__e2e.kusto.suggestDiagnostics('real-file autocomplete repro')
+window.__e2e.kusto.schemaLifecycleSnapshot()
 window.__e2e.kusto.compactAutocompleteTrace()
 ```
+
+`schemaLifecycleSnapshot()` is the sanitized coordinator view. It reports section/target generations, request presence, model attachment, catalog counts, preparation blockers, worker readiness, and pending-update status without exposing raw schemas, schema keys, model URIs, query text, or credentials.
 
 5. If a strict column check is appropriate, assert exact existing column labels rather than loose substring matches:
 
@@ -82,7 +86,7 @@ Use the trace as a transaction timeline from Ctrl+Space to visible suggestions:
 | `schema-prepare-no-context` | No per-model schema context was available. | Trace host schema delivery and editor-to-box mapping. |
 | `schema-prepare-refs` | Fully qualified references were detected from the current statement/model. | Confirm current-cluster aliases are included when the reference targets the selected cluster/database. |
 | `schema-prepare-keys` | Schema cache keys available to the webview at trigger time. | Look for missing primary, alias, or remote schema keys. |
-| `schema-prepare-primary-wait` | The trigger waited for the Monaco worker primary schema. | If it times out, inspect `schemaWorkerReadyByBoxId` and schema set calls. |
+| `schema-prepare-primary-wait` | The trigger waited for the Monaco worker primary schema. | If it times out, inspect the section's `preparation`, `worker`, and `pending` fields in `schemaLifecycleSnapshot()`, then inspect schema transaction events. |
 | `schema-prepare-cross-cluster-wait` | The trigger waited for remote/cross-cluster schemas. | Check cross-cluster trace and host fetch/cache messages. |
 | `worker-schema-decision` | The worker schema path chose first-load, replace, add, or fallback. | Validate that primary/current schema is also registered under cluster aliases. |
 | `worker-add-aliases-start` / `worker-add-aliases-finish` | Additional database aliases were registered in the worker. | Confirm aliases include the fully qualified `cluster(...).database(...)` name and preserve functions/tables. |
@@ -92,6 +96,7 @@ Use the trace as a transaction timeline from Ctrl+Space to visible suggestions:
 ## Common Bug Shapes
 
 - Missing columns with valid schema: primary schema may be loaded in app state but not registered into the Monaco Kusto worker for the active model.
+- Schema arrived but was ignored: compare the current section instance/target generation with the request identity; stale same-ID sections and old targets are intentionally rejected.
 - Unknown-cluster squiggle for selected connection: current cluster/database needs to be registered as an alias in the worker, including fully qualified `cluster(...).database(...)` forms.
 - Functions visible but columns missing after invoking a function: function metadata may be missing `OutputColumns` or a synthesized body in alias schemas.
 - Tests pass but real file fails: fixture schema is too small or loose suggestion matching accepts function signatures such as `timestamp()` instead of the `TIMESTAMP` column.

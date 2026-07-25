@@ -17,6 +17,7 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `queryEditorCopilot.ts` | Copilot integration (extracted from provider) |
 | `queryEditorConnection.ts` | Connection management (extracted from provider) |
 | `queryEditorSchema.ts` | Schema handling (extracted from provider) |
+| `kustoConnectionLifecycle.ts` | Serializes Kusto connection mutations, invalidates changed physical identities, and publishes refreshed connection snapshots |
 | `queryRunCoordinator.ts` | Transport-neutral active-query sequence, identity, cancellation, and guarded cleanup |
 | `queryEditorTypes.ts` | Shared types, including `IncomingWebviewMessage` |
 | `powerBiExport.ts` | HTML dashboard export: generates `.pbip`/PBIR/TMDL Power BI projects backed by Kusto data sources |
@@ -115,7 +116,14 @@ The webview runtime is split into `core/` and `monaco/`:
 | `core/main.ts` | Event handlers and webview-level message orchestration |
 | `core/message-handler.ts` | Host `postMessage` dispatcher and routing |
 | `core/editing-preferences.ts` | Persistence-free application of revisioned editing preferences to Kusto and SQL controls |
-| `core/state.ts` | Global state: connections, editors, schemas, caches |
+| `core/state.ts` | General webview state and typed Kusto preparation/readiness accessors |
+| `core/kusto-editor-schema-coordinator.ts` | Per-editor Kusto section, target, request, model, catalog, preparation, and worker-readiness authority |
+| `core/kusto-editor-schema-runtime.ts` | Webview-scoped coordinator instance |
+| `core/schema-catalogs.ts` | Typed, language-separated Kusto and SQL schema access |
+| `core/kusto-schema-message-router.ts` | Exact lifecycle admission for database and schema deliveries |
+| `core/synthetic-request-broker.ts` | Bounded request, timeout, and late-delivery tombstone broker for non-editor schema/database requests |
+| `core/kusto-schema-request-state.ts` | Narrow legacy request-token compatibility mirror; stamped request currentness remains coordinator-owned |
+| `core/query-section-accessors.ts` | Leaf DOM accessors shared by Monaco and query controllers without a section-factory cycle |
 | `core/persistence.ts` | State serialization/restore for `.kqlx` files |
 | `core/results-state.ts` | Results display state management |
 | `core/keyboard-shortcuts.ts` | Keyboard handlers and clipboard integration |
@@ -127,6 +135,7 @@ The webview runtime is split into `core/` and `monaco/`:
 | `monaco/completions.ts` | Completion providers (columns, functions, tables) |
 | `monaco/diagnostics.ts` | Real-time KQL diagnostics overlay |
 | `core/section-factory.ts` | Section creation for all types (query, chart, python, URL, etc.), data-source utilities |
+| `shared/kusto-worker-mutation-port.ts` | Sole transaction serializer for shared Monaco-Kusto worker mutation |
 
 ### First-Launch Setup
 
@@ -334,9 +343,17 @@ Power BI service publishing is implemented in `powerBiPublish.ts` using Fabric R
 * **On-disk:** SHA1-hashed JSON files in `globalStorageUri/schemaCache/`
 * **Version:** `SCHEMA_CACHE_VERSION` constant triggers cache invalidation on format changes
 
-### Kusto Section Preparation Readiness
+### Kusto Schema Lifecycle and Preparation Readiness
 
-Kusto query sections expose a per-section preparation state in `src/webview/core/state.ts`. A section is not ready merely because `schemaData` reached the webview. Readiness requires the current primary database schema to match the current operation generation, delivery revision, schema key/signature, and Monaco model, with these blockers settled:
+Every active `<kw-query-section>` claims an immutable section lease identified by `{ boxId, sectionInstanceId }`. Selecting a different connection/database or explicitly invalidating authentication advances `targetGeneration`. Database and schema requests carry `{ sectionInstanceId, targetGeneration, requestToken }`; the host echoes that identity, and `kusto-schema-message-router.ts` admits a delivery only when the section incarnation, target, and request stream are still exact. Recreating the same persisted `boxId` therefore cannot revive an old response.
+
+`KustoEditorSchemaCoordinator` is the canonical per-editor owner for section/model leases and all target-scoped Kusto state: schema, metadata, preparation, pending worker updates, base worker readiness, enhancement readiness, apply requirements, and waiters. A DOM disconnect caused by section reorder is not disposal. Only explicit section removal closes the lease, settles waiters, clears owned state, and leaves a tombstone against late writes. Auth invalidation and reapply scheduling enumerate coordinator-registered sections, so restored sections are covered before their Monaco models exist.
+
+Kusto and SQL catalogs are intentionally separate. Kusto consumers use `schema-catalogs.ts` accessors backed by the coordinator; SQL consumers use `sqlSchemaByBoxId`. There is no mutable `window.schemaByBoxId` authority. `section-factory.ts` composes query sections, Monaco, and controllers, but Monaco and `QueryConnectionController` stay below it through leaf accessors and direct module APIs.
+
+The extension host treats the physical Kusto connection identity (cluster plus authority) as part of response ownership. Database and schema services capture that identity before asynchronous work and suppress publication if the same connection ID is removed or repointed. `KustoConnectionLifecycle` serializes connection-manager events, invalidates affected Copilot/schema identities, publishes `kustoAuthIdentityChanged`, and only then sends the refreshed connection snapshot.
+
+Kusto query sections expose coordinator-owned preparation state through typed accessors in `src/webview/core/state.ts`. A section is not ready merely because `schemaData` reached the webview. Readiness requires the current primary database schema to match the current operation generation, delivery revision, schema key/signature, and Monaco model, with these blockers settled:
 
 1. Required database discovery and schema delivery are complete.
 2. A usable cached fallback is available, or a required foreground schema load has completed. Silent cache-expiry refreshes never hold section readiness.
@@ -349,6 +366,8 @@ The state is reflected by `kw-query-section` through `data-preparation-state`, `
 
 Operation generations and delivery revisions prevent late database/schema/worker responses from completing newer work. Removal leaves a monotonic tombstone so recreating a persisted section ID cannot be revived by an old async operation. Worker-wide schema replacement invalidates other model readiness; those sections remain dormant until focus prepares them again.
 
+All shared Monaco-Kusto worker writes pass through `KustoWorkerMutationPort`. A queued operation receives the exact transaction that owns its physical worker calls and records a commit only after each mutation succeeds. Primary intent generation, committed worker revision, and destructive replacement epoch are distinct counters. Supplemental/enhancement leases may time out logically while an uncancelable worker call remains in flight; the detached transaction cannot commit afterward, and the queue remains occupied through physical settlement and inline primary-schema recovery before any later mutation can begin.
+
 Each active primary worker-preparation episode has one 30-second absolute budget, shared by retries and fallback paths. Ready, error, and idle states retire the episode so a later worker preparation receives a fresh budget, while stale older generations cannot reset a newer active deadline. Expiry moves the owning section to a terminal error state so `aria-busy` and the toolbar indicator stop, but it does not cancel or release the underlying Monaco worker operation; that operation remains serialized until it settles because Monaco-Kusto exposes no worker-mutation cancellation API.
 
 ### Supplemental Fully Qualified Schemas
@@ -359,7 +378,7 @@ The webview discovers references when a model is registered or changed, and agai
 
 While an owned attempt is active or loaded, the Monaco marker boundary suppresses only explicit `KS207` and `KS208` diagnostics contained by that fully qualified cluster/database call. Other diagnostics, broad statement-level markers, database-only references, message-only warnings, and terminal failures remain visible. After load or failure, `monaco.ts` calls the Kusto worker's `doValidation()` only when exact primary preparation is ready, then republishes markers guarded by model/version, primary preparation identity, worker-schema revision, and broker revisions. Monaco-Kusto stores one shared schema per worker, so each broker revision mutates the worker once; exact-primary-ready model owners adopt that shared revision and retain independent loaded/revalidation state. Every worker-wide replacement invalidates supplemental applications and synchronously restores other ready primary schemas from the authoritative primary cache before readiness is republished. Supplemental schemas never enter the primary `SchemaTracker` cache.
 
-Supplemental worker mutation has a 12-second lease so the app state and schema-operation promise chain can move to terminal recovery. When a slow FIFO worker call eventually settles, recovery forces the exact primary schema through `setSchemaFromShowSchema`, removing any partial supplemental mutation before normal work resumes. Monaco-Kusto 14.1.0 exposes no public worker-cancellation or restart API, so a permanently nonresponsive worker cannot be recovered in-process; it requires webview/window recreation.
+Supplemental worker mutation has a 12-second lease so app state can move to a terminal outcome without granting a late operation commit authority. The transaction port still holds the shared-worker queue until the detached call settles, then runs recovery in that same serialized slot. Recovery forces an active authoritative primary schema through `setSchemaFromShowSchema`, removing any partial supplemental mutation before readiness is trusted or later writes run. Monaco-Kusto 14.1.0 exposes no public worker-cancellation or restart API, so a permanently nonresponsive worker cannot be recovered in-process; it requires webview/window recreation.
 
 Supplemental traces are bounded and sanitized: model, schema, request, box, cluster, and database identities are hashed; query text, raw schemas, aliases, credentials, and backend messages are not recorded. Host responses carry distinct request policy (`requestSource`), delivery provenance (`deliverySource`), and structured failure kinds so diagnostics and retries do not infer policy from cache provenance or user-facing error text.
 
