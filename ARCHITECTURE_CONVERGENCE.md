@@ -71,7 +71,7 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 
 | Rank | ID | Gap | H/A/R/L/F/E | Score | State |
 | ---: | --- | --- | --- | ---: | --- |
-| 1 | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Active; EXA-1 complete, EXA-2 is next |
+| 1 | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Active; EXA-1 and the initial EXA-2 artifact/chart slice are complete |
 | 2 | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Open; prerequisite to `DOC` |
 | 3 | `DOC` | Document actor and section-definition registry | 4/5/5/5/3/5 | 50 | Open; depends on `COD` |
 | 4 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/5/3/5 | 48 | Open |
@@ -160,20 +160,24 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 - Metadata viewers and direct agent tools carry exact physical/auth/policy/cache owners. Sensitive deliveries use stage/commit/revoke plus application acknowledgement, and persisted search rows are restored from per-row proofs rather than whole-profile invalidation.
 - Mixed Kusto/SQL snapshots and persistence sanitation use one-attempt SQL owner locks and retry the complete Kusto-then-SQL acquisition without holding Kusto privacy admission during SQL contention.
 - The webview retains cancelling and retired identities until exact terminal admission and rejects unstamped Kusto section terminals.
+- `ResultArtifactStore` now snapshots every accepted result into a deep-immutable per-source revision while `results-state.ts` preserves the mutable latest-result facade for compatibility. Current pointers, explicit consumer bindings, source-wide revocation, and reference-based pruning have one owner.
+- Admitted Kusto successes publish exact reservation, dispatch, target, principal, policy, and optional comparison lineage. Bounded `resultJson` persistence can carry a row-free artifact descriptor; owner/policy admission precedes descriptor installation, restored identity remains stable, and later revisions remain monotonic.
+- Charts are the first bound consumer. They render their bound immutable revision, explicitly rebind during the existing dependent-refresh cascade or source selection, and release bindings on source clear or chart removal.
+- Persistence deletion and host privacy sanitation remove rows and descriptors atomically. A descriptor is never row authority, cannot restore without admitted `resultJson`, and is rejected when its source or policy claims disagree with the current owner.
 - Static terminal-construction/cancellation guards, protocol inventory, focused state-machine tests, full sequential tests, and authenticated normal/rerun/retarget/cancellation E2E are green.
 
 **Remaining divergence:**
 
-- Accepted data is still mutable latest state keyed by `boxId` in [`results-state.ts`](src/webview/core/results-state.ts).
-- Charts, transformations, comparisons, persistence, HTML dashboards, export, and Copilot can identify a source section but not an immutable producer revision with policy-bearing lineage.
-- Runtime result bindings and persisted result JSON do not yet share one immutable artifact contract, so downstream consumers can still observe latest-state replacement rather than an explicit revision.
+- Mutable latest-result state remains as a compatibility facade for tables and unmigrated consumers.
+- Transformations, comparisons, HTML dashboards, export, and Copilot can identify a source section but not yet bind or publish an immutable producer revision with policy-bearing lineage.
+- SQL results receive generic immutable runtime snapshots but do not yet publish or persist the same exact producer/principal/policy provenance as Kusto.
 - Kusto and SQL retain transport-specific execution coordinators over the shared low-level run registry; a transport-neutral artifact publication contract has not yet proven which semantics should be shared above transport.
 
 **Failure modes:**
 
-- Downstream state can be replaced without retaining the exact producer revision that a chart, transformation, dashboard, export, or Copilot response consumed.
-- Derived data can lose privacy/export permissions as it moves through section-keyed maps.
-- Restoration and persistence can preserve rows without a first-class immutable producer, target, principal, policy, and lineage record.
+- Unmigrated downstream state can be replaced without retaining the exact producer revision that a transformation, dashboard, export, or Copilot response consumed.
+- Derived data outside the chart binding path can lose privacy/export permissions as it moves through section-keyed maps.
+- SQL restoration and persistence can preserve rows without the same first-class immutable producer, target, principal, policy, and lineage record as Kusto.
 - Prematurely merging Kusto and SQL execution abstractions could erase transport-specific cancellation and privacy semantics before the artifact contract is proven.
 
 **Migration theme:** establish exact execution reservation/dispatch identity and one terminal owner first, then introduce immutable persisted artifact records and runtime bindings behind the existing result APIs, then move consumers one at a time.
@@ -323,11 +327,11 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 **Iteration feasibility:** realized at 3/5. The migration required every section-publishing producer plus target/account/policy/disposal fencing, but the old Kusto terminal authority and box-only cancellation path are now removed.
 
-## Next Candidate
+## Active Iteration
 
 ### Iteration `EXA-2`: Immutable Result Artifacts And Lineage
 
-**Status:** next candidate; not implemented in this task.
+**Status:** initial vertical slice implemented; broader consumer and derived-producer migration remains active.
 
 **Why next:** EXA-1 makes the producer execution exact, but admitted rows still collapse into mutable section-keyed state. This leaves the highest-risk remaining break between exact production and downstream consumption.
 
@@ -336,6 +340,12 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 **Cheapest discriminating check:** execute a source section, bind one low-risk derived consumer to the resulting revision, rerun the source, and prove the consumer retains its original revision until an explicit rebind while current result rendering still shows the new revision.
 
 **Initial boundary:** introduce immutable runtime and persisted artifact records behind existing result APIs, then migrate one low-risk derived consumer. Preserve current file compatibility and rendering. Do not broaden into deferred `ACT` capability work.
+
+**Initial evidence:** every accepted result now creates an immutable revision; exact Kusto successes add producer/policy metadata; bounded Kusto persistence restores stable descriptor identity only after owner admission; and charts render a bound revision. The discriminating tests prove source revision A remains readable after current advances to B, explicit rebind selects B, and source clear synchronously revokes both current and bound artifacts. Pessimistic review returned `VERDICT: ACCEPTABLE FOR INITIAL EXA-2 SLICE`.
+
+**Initial qualification:** the 12-file focused ring passed 527 tests; full sequential Vitest passed 196 files and 5,116 tests; production extension/browser builds, integration compilation, and bundle gates passed; the extension-host suite passed all 113 tests with five-second Mocha headroom for its existing three-second bounded-close case; and native `default/chart-regressions` passed both scenarios on VS Code 1.130.0, including the A-to-B artifact contract.
+
+**Next boundary:** migrate transformations as the first derived producer. A transformation must bind an immutable source revision, publish its own immutable artifact with source-artifact lineage and inherited policy, retain that lineage across persistence/privacy decisions, and rebind only through the established dependent-refresh path. Keep comparisons, dashboards, export, Copilot, SQL exact provenance, coordinator convergence, and `ACT` outside that slice.
 
 ## Convergence Loop
 

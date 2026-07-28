@@ -9,7 +9,7 @@ import { parseKqlxText, type KqlxSectionV1, type DevNoteEntry } from './kqlxForm
  * so that height / width changes are detected and persisted to disk.
  */
 export const COMPARISON_NOISE_KEYS = new Set([
-	'resultJson',
+	'resultJson', 'resultArtifact',
 	'copilotChatVisible', 'favoritesMode',
 ]);
 
@@ -25,7 +25,7 @@ const CHART_NESTED_SETTING_KEYS: Record<string, Set<string>> = {
  * dedicated diff tab.  Heights are intentionally kept so layout changes are
  * visible in the settings diff. */
 export const DIFF_NOISE_KEYS = new Set([
-	'resultJson',
+	'resultJson', 'resultArtifact',
 	'query', 'text', 'code',
 	'copilotChatVisible', 'resultsVisible', 'favoritesMode',
 ]);

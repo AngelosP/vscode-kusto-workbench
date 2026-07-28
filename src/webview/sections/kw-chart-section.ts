@@ -15,6 +15,7 @@ import {
 	maximizeChartBox,
 	disposeChartEcharts,
 	purgeChartEcharts,
+	releaseChartResultArtifactBinding,
 	renderChart,
 	getChartState,
 	getChartMinResizeHeight,
@@ -2454,6 +2455,7 @@ export function removeChartBox(boxId: unknown): void {
 	const id = String(boxId || '');
 	if (!id) return;
 	try { disposeChartEcharts(id); } catch (e) { console.error('[kusto]', e); }
+	try { releaseChartResultArtifactBinding(id); } catch (e) { console.error('[kusto]', e); }
 	try { delete window.chartStateByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 	try { __kustoCleanupSectionModeResizeObserver(id); } catch (e) { console.error('[kusto]', e); }
 	const idx = chartBoxes.indexOf(id);

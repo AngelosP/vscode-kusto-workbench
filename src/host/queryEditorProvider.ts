@@ -3121,6 +3121,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				changed = true;
 				const clone = { ...(section as Record<string, unknown>) };
 				delete clone.resultJson;
+				delete clone.resultArtifact;
 				return clone;
 			}
 			const derivedOwner = boxId ? this.sqlLifecycle.getComparisonOwner(boxId) : undefined;
@@ -3158,6 +3159,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			changed = true;
 			const clone = { ...(section as Record<string, unknown>) };
 			delete clone.resultJson;
+			delete clone.resultArtifact;
 			return clone;
 		});
 		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);
@@ -3225,6 +3227,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			changed = true;
 			const clone = { ...record };
 			delete clone.resultJson;
+			delete clone.resultArtifact;
 			delete clone.kustoAccountPartition;
 			delete clone.kustoLeaveNoTraceRevision;
 			return clone;
@@ -3247,13 +3250,18 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const sanitized = sections.map(section => {
 			if (!section || typeof section !== 'object') return section;
 			const record = section as Record<string, unknown>;
-			if (String(record.type || '') !== 'sql'
-				|| (!('principalFingerprint' in record) && !('revocationGeneration' in record))
-				|| ('resultJson' in record && !!String(record.resultJson || ''))) return section;
+			const orphanedArtifact = 'resultArtifact' in record && !String(record.resultJson || '');
+			const orphanedSqlPrincipal = String(record.type || '') === 'sql'
+				&& ('principalFingerprint' in record || 'revocationGeneration' in record)
+				&& !String(record.resultJson || '');
+			if (!orphanedArtifact && !orphanedSqlPrincipal) return section;
 			changed = true;
 			const clone = { ...record };
-			delete clone.principalFingerprint;
-			delete clone.revocationGeneration;
+			if (orphanedArtifact) delete clone.resultArtifact;
+			if (orphanedSqlPrincipal) {
+				delete clone.principalFingerprint;
+				delete clone.revocationGeneration;
+			}
 			return clone;
 		});
 		return changed ? { ...state, sections: sanitized } : state;
@@ -3276,6 +3284,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			changed = true;
 			const clone = { ...record };
 			delete clone.resultJson;
+			delete clone.resultArtifact;
 			return clone;
 		});
 		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);
@@ -3323,6 +3332,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			changed = true;
 			const clone = { ...record };
 			delete clone.resultJson;
+			delete clone.resultArtifact;
 			return clone;
 		});
 		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);

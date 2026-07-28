@@ -17,7 +17,8 @@ import '../components/kw-section-shell.js';
 import { CopilotChatManagerController } from './copilot-chat-manager.controller.js';
 import { kustoWebviewFlavor } from './copilot-chat-flavor.js';
 import { canPersistKustoResult, schedulePersist } from '../core/persistence.js';
-import { clearResultsState } from '../core/results-state.js';
+import { clearResultsState, getCurrentResultArtifact } from '../core/results-state.js';
+import { toPersistedResultArtifact, type PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
 import {
 	removeQueryBox,
 	__kustoMaximizeQueryBox,
@@ -61,6 +62,7 @@ export interface QuerySectionData {
 	expanded: boolean;
 	resultsVisible: boolean;
 	resultJson?: string;
+	resultArtifact?: PersistedResultArtifactV1;
 	runMode: string;
 	cacheEnabled: boolean;
 	cacheValue: number;
@@ -1129,6 +1131,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			this._databases = [];
 			clearResultsState(this.boxId);
 			delete pState.queryResultJsonByBoxId[this.boxId];
+			delete pState.resultArtifactByBoxId[this.boxId];
 			this.clearResults();
 		}
 		const physicalOwnerChanged = !!resolvedId && !identityChanged
@@ -1664,6 +1667,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		this.executionCtrl.retireKustoOptimizeRequest();
 		clearResultsState(this.boxId);
 		delete pState.queryResultJsonByBoxId[this.boxId];
+		delete pState.resultArtifactByBoxId[this.boxId];
 		this.clearResults();
 		this.querySelector('.comparison-summary-banner')?.remove();
 		const sourceBoxId = String(optimizationMetadataByBoxId[this.boxId]?.sourceBoxId || '').trim();
@@ -1714,6 +1718,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 		let resultJson = '';
 		try { resultJson = String(pState.queryResultJsonByBoxId?.[b] || ''); } catch (e) { console.error('[kusto]', e); }
+		const resultArtifact = toPersistedResultArtifact(getCurrentResultArtifact(b)) || pState.resultArtifactByBoxId?.[b];
 		const kustoResultOwner = pState.kustoResultOwnerByBoxId?.[b];
 		const comparisonSourceBoxId = String(optimizationMetadataByBoxId[b]?.sourceBoxId || '').trim();
 		const comparisonSource = comparisonSourceBoxId ? document.getElementById(comparisonSourceBoxId) as any : undefined;
@@ -1747,6 +1752,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			...(comparisonSourceBoxId ? { comparisonSourceBoxId } : {}),
 			...(shouldPersist ? {
 				resultJson,
+				...(resultArtifact ? { resultArtifact } : {}),
 				...(!sqlOwnedComparison && kustoResultOwner ? {
 					kustoAccountPartition: kustoResultOwner.accountPartition,
 					kustoLeaveNoTraceRevision: kustoResultOwner.leaveNoTraceRevision,

@@ -17,7 +17,13 @@ import { extractCrossClusterRefs } from '../shared/cross-cluster-schema.js';
 import { computeMissingClusterUrls } from '../shared/clusterUtils.js';
 import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
 import { getKustoSchemaIdentityKey } from '../../shared/kustoAuth.js';
-import { displayResultForBox, getResultsState } from './results-state.js';
+import {
+	clearResultsState,
+	displayResultForBox,
+	getBoundResultArtifact,
+	getCurrentResultArtifact,
+	getResultsState,
+} from './results-state.js';
 import { adoptCurrentStateAsCleanForTest, isPersistenceSuppressedForTest, suppressPersistenceForTest } from './persistence.js';
 
 type MonacoLike = {
@@ -5477,6 +5483,66 @@ async function e2eChartAssertTitleSyncAndHeatmapNumericCategories(): Promise<str
 	return summary;
 }
 
+async function e2eChartAssertArtifactPinAndDependentRebind(): Promise<string> {
+	const firstCell = (artifact: { rows: readonly unknown[] } | null): unknown => {
+		const firstRow = artifact?.rows[0];
+		return Array.isArray(firstRow) ? firstRow[0] : undefined;
+	};
+	const sourceId = e2eLayoutAddSection('addUrlBox', {
+		id: 'url_e2e_artifact_source',
+		name: 'Artifact revision source',
+		url: 'https://example.invalid/artifact-source.csv',
+		expanded: false,
+	});
+	await e2eLayoutWaitFor(() => !!document.getElementById(sourceId), 'artifact source section');
+	const columns = [
+		{ name: 'Label', type: 'string' },
+		{ name: 'Value', type: 'long' },
+	];
+	displayResultForBox({ columns, rows: [['revision-a', 1]], metadata: {} }, sourceId, { label: 'Results' });
+	const artifactA = getCurrentResultArtifact(sourceId);
+	if (!artifactA || firstCell(artifactA) !== 'revision-a') {
+		throw new Error(`Source revision A was not published: ${JSON.stringify(artifactA)}`);
+	}
+
+	const chartId = e2eLayoutAddSection('addChartBox', {
+		id: 'chart_e2e_artifact_consumer',
+		name: 'Artifact Revision Consumer',
+		mode: 'preview',
+		expanded: true,
+		dataSourceId: sourceId,
+		chartType: 'bar',
+		xColumn: 'Label',
+		yColumns: ['Value'],
+		editorHeightPx: 260,
+	});
+	await e2eLayoutWaitFor(() => !!document.getElementById(chartId), 'artifact consumer chart');
+	const chartSection = document.getElementById(chartId) as any;
+	chartSection.refresh?.();
+	await e2eLayoutWaitFor(() => (
+		getBoundResultArtifact(chartId, sourceId)?.artifactId === artifactA.artifactId
+	), 'chart binding to revision A', 10000);
+
+	displayResultForBox({ columns, rows: [['revision-b', 2]], metadata: {} }, sourceId, { label: 'Results' });
+	const artifactB = getCurrentResultArtifact(sourceId);
+	const pinnedArtifact = getBoundResultArtifact(chartId, sourceId);
+	if (!artifactB || artifactB.artifactId === artifactA.artifactId || firstCell(artifactB) !== 'revision-b') {
+		throw new Error(`Source revision B was not published: ${JSON.stringify(artifactB)}`);
+	}
+	if (pinnedArtifact?.artifactId !== artifactA.artifactId || firstCell(pinnedArtifact) !== 'revision-a') {
+		throw new Error(`Chart binding moved before the dependent refresh: ${JSON.stringify(pinnedArtifact)}`);
+	}
+
+	await e2eLayoutWaitFor(() => (
+		getBoundResultArtifact(chartId, sourceId)?.artifactId === artifactB.artifactId
+	), 'chart dependent rebind to revision B', 10000);
+	clearResultsState(sourceId);
+	if (getCurrentResultArtifact(sourceId) || getBoundResultArtifact(chartId, sourceId)) {
+		throw new Error('Clearing the source did not synchronously revoke current and bound artifacts');
+	}
+	return `chart pinned ${artifactA.artifactId}, rebound ${artifactB.artifactId}, then revoked`;
+}
+
 function e2eLayoutDispatchUrlContent(boxId: string): void {
 	window.dispatchEvent(new MessageEvent('message', {
 		data: {
@@ -6202,6 +6268,7 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 	},
 	chart: {
 		assertTitleSyncAndHeatmapNumericCategories: e2eChartAssertTitleSyncAndHeatmapNumericCategories,
+		assertArtifactPinAndDependentRebind: e2eChartAssertArtifactPinAndDependentRebind,
 	},
 	cursorStatus: {
 		beginCapture: e2eBeginHostMessageCapture,

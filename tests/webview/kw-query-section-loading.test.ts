@@ -33,9 +33,10 @@ import {
 import { getKustoEditorSchema, setKustoEditorSchema } from '../../src/webview/core/schema-catalogs.js';
 import { kustoEditorSchemaCoordinator } from '../../src/webview/core/kusto-editor-schema-runtime.js';
 import { invalidateLinkedComparisonSchemaForSource } from '../../src/webview/sections/query-connection.controller.js';
+import { applyKustoLeaveNoTracePolicy, markKustoLeaveNoTracePolicyPending } from '../../src/webview/core/persistence.js';
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { pState } from '../../src/webview/shared/persistence-state.js';
-import { getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
+import { clearResultsState, getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
 import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
 import { prepareKustoOptimizeQuery } from '../../src/webview/sections/query-execution.controller.js';
 import { ADMITTED_KUSTO_COPILOT_EVENT } from '../../src/webview/core/kusto-copilot-output-runtime.js';
@@ -65,6 +66,9 @@ afterEach(() => {
 	delete schemaRequestTokenByBoxId.comparison_1;
 	delete databaseRequestTokenByBoxId.comparison_1;
 	delete pState.queryResultJsonByBoxId.test1;
+	delete pState.resultArtifactByBoxId.test1;
+	delete pState.kustoResultOwnerByBoxId.test1;
+	clearResultsState('test1');
 	delete queryEditors.test1;
 	disposeKustoPreparation('comparison_1');
 	kustoEditorSchemaCoordinator.clear();
@@ -642,6 +646,45 @@ describe('kw-query-section loading states', () => {
 		expect(connectionEvents).toHaveLength(0);
 	});
 
+	it('serializes persisted rows with their immutable artifact descriptor', async () => {
+		applyKustoLeaveNoTracePolicy([], false);
+		const clusterUrl = 'https://cluster.kusto.windows.net';
+		const el = createSection();
+		el.id = 'test1';
+		el.setDesiredClusterUrl(clusterUrl);
+		el.setDesiredDatabase('Db');
+		el.setConnections([{ id: 'c1', clusterUrl, accountPartition: 'partition-a' }]);
+		el.setDatabases(['Db'], 'Db');
+		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		pState.kustoResultOwnerByBoxId.test1 = { accountPartition: 'partition-a', leaveNoTraceRevision: 0 };
+		setResultsState('test1', {
+			boxId: 'test1', columns: [{ name: 'Value' }], rows: [[1]], metadata: {},
+		}, {
+			producer: {
+				engine: 'kusto', boxId: 'test1', executionId: 'execution-1',
+				sectionInstanceId: 'instance-1', targetGeneration: 2, reservationSequence: 3,
+				connectionId: 'c1', database: 'Db', producer: 'manual',
+			},
+			policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 0 },
+		});
+
+		try {
+			const serialized = el.serialize();
+
+			expect(serialized.resultJson).toContain('"rows"');
+			expect(serialized.resultArtifact).toMatchObject({
+				version: 1,
+				sourceBoxId: 'test1',
+				revision: expect.any(Number),
+				producer: expect.objectContaining({ executionId: 'execution-1', reservationSequence: 3 }),
+				policy: expect.objectContaining({ accountPartition: 'partition-a', leaveNoTraceRevision: 0 }),
+			});
+			expect(serialized.resultArtifact!.revision).toBeGreaterThan(0);
+		} finally {
+			markKustoLeaveNoTracePolicyPending();
+		}
+	});
+
 	it('republishes a restored target when its physical connection stamp arrives', async () => {
 		const el = createSection();
 		el.setConnections([{
@@ -687,6 +730,9 @@ describe('kw-query-section loading states', () => {
 		el.displayResult({ columns: ['value'], rows: [['old-target']], metadata: {} });
 		setResultsState('test1', { boxId: 'test1', columns: ['value'], rows: [['old-target']] });
 		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['value'], rows: [['old-target']] });
+		pState.resultArtifactByBoxId.test1 = {
+			version: 1, artifactId: 'result:test1:1', sourceBoxId: 'test1', revision: 1, createdAt: 1,
+		};
 		optimizationMetadataByBoxId.test1 = { sourceBoxId: 'query_source', isComparison: true };
 		const banner = document.createElement('div');
 		banner.className = 'comparison-summary-banner';
@@ -704,6 +750,7 @@ describe('kw-query-section loading states', () => {
 
 		expect(getResultsState('test1')).toBeNull();
 		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
+		expect(pState.resultArtifactByBoxId.test1).toBeUndefined();
 		expect(el.querySelector('.comparison-summary-banner')).toBeNull();
 		expect(postMessageToHost).toHaveBeenCalledWith({
 			type: 'clearComparisonSummary', sourceBoxId: 'query_source', comparisonBoxId: 'test1',

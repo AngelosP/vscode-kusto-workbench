@@ -32,8 +32,13 @@ import {
 	getRawCellValue,
 	getResultsState,
 	getResultsStateRevision,
+	getCurrentResultArtifact,
+	getResultArtifact,
+	bindResultArtifactConsumer,
+	getBoundResultArtifact,
+	rebindResultArtifactConsumer,
+	clearResultsState,
 	setResultsState,
-	ensureResultsStateMap,
 	resetCurrentResult,
 	currentResult,
 	ensureResultsShownForTool,
@@ -104,6 +109,61 @@ describe('results-state displayResultForBox', () => {
 		expect(currentResult).toBeNull();
 	});
 
+	it('snapshots result data and exact publication metadata immutably', () => {
+		const section = document.createElement('div') as HTMLDivElement & {
+			displayResult: ReturnType<typeof vi.fn>;
+		};
+		section.id = 'query_provenance';
+		section.displayResult = vi.fn();
+		document.body.appendChild(section);
+		const result = {
+			columns: [{ name: 'Value', type: 'long' }],
+			rows: [[1]],
+			metadata: { executionTime: '00:00:00.001' },
+		};
+		const dispatch = {
+			dispatchAttempt: 1,
+			connectionRevision: 4,
+			leaveNoTraceRevision: 7,
+			connectionIdentityKey: 'cluster|authority',
+			clusterEndpoint: 'https://cluster.kusto.windows.net',
+			accountPartition: 'partition-a',
+			authSessionGeneration: 3,
+			clientActivityId: 'activity-1',
+		};
+
+		displayResultForBox(result, section.id, {
+			label: 'Results',
+			artifactPublication: {
+				producer: {
+					engine: 'kusto', boxId: section.id, executionId: 'execution-1',
+					sectionInstanceId: 'instance-1', targetGeneration: 2, reservationSequence: 5,
+					connectionId: 'connection-1', database: 'Samples', producer: 'manual', dispatch,
+				},
+				policy: {
+					accountPartition: dispatch.accountPartition,
+					authSessionGeneration: dispatch.authSessionGeneration,
+					leaveNoTraceRevision: dispatch.leaveNoTraceRevision,
+				},
+			},
+		});
+
+		const artifact = getCurrentResultArtifact(section.id)!;
+		result.rows[0][0] = 99;
+		dispatch.accountPartition = 'partition-mutated';
+		expect(artifact.rows).toEqual([[1]]);
+		expect(artifact.producer).toEqual(expect.objectContaining({
+			executionId: 'execution-1', reservationSequence: 5,
+			dispatch: expect.objectContaining({ accountPartition: 'partition-a' }),
+		}));
+		expect(artifact.policy).toEqual(expect.objectContaining({
+			accountPartition: 'partition-a', authSessionGeneration: 3, leaveNoTraceRevision: 7,
+		}));
+		expect(Object.isFrozen(artifact)).toBe(true);
+		expect(Object.isFrozen(artifact.rows)).toBe(true);
+		expect(Object.isFrozen(artifact.rows[0])).toBe(true);
+	});
+
 	it('does not recreate shared result state when the owning section no longer exists', () => {
 		setResultsState('removed_sql_comparison', { columns: [], rows: [['old']] });
 
@@ -124,6 +184,47 @@ describe('results-state displayResultForBox', () => {
 		const firstRevision = getResultsStateRevision(id);
 		setResultsState(id, { columns: [], rows: [['next']] });
 		expect(getResultsStateRevision(id)).toBe(firstRevision + 1);
+	});
+
+	it('keeps a derived consumer on its immutable revision until explicit rebind', () => {
+		const sourceBoxId = 'query_artifact_source';
+		const consumerId = 'chart_artifact_consumer';
+		setResultsState(sourceBoxId, {
+			columns: [{ name: 'Value', type: 'long' }],
+			rows: [[1]],
+			metadata: { executionId: 'execution-a' },
+		});
+		const artifactA = getCurrentResultArtifact(sourceBoxId)!;
+		expect(bindResultArtifactConsumer(consumerId, sourceBoxId)).toBe(artifactA.artifactId);
+
+		setResultsState(sourceBoxId, {
+			columns: [{ name: 'Value', type: 'long' }],
+			rows: [[2]],
+			metadata: { executionId: 'execution-b' },
+		});
+		const artifactB = getCurrentResultArtifact(sourceBoxId)!;
+
+		expect(artifactB.artifactId).not.toBe(artifactA.artifactId);
+		expect(getBoundResultArtifact(consumerId, sourceBoxId)).toBe(artifactA);
+		expect(getResultArtifact(artifactA.artifactId)?.rows).toEqual([[1]]);
+		expect(getResultArtifact(artifactB.artifactId)?.rows).toEqual([[2]]);
+
+		expect(rebindResultArtifactConsumer(consumerId, sourceBoxId)).toBe(artifactB.artifactId);
+		expect(getBoundResultArtifact(consumerId, sourceBoxId)).toBe(artifactB);
+	});
+
+	it('synchronously revokes bound revisions when the source is cleared', () => {
+		const sourceBoxId = 'query_artifact_revoked';
+		const consumerId = 'chart_artifact_revoked';
+		setResultsState(sourceBoxId, { columns: [], rows: [['secret']] });
+		const artifact = getCurrentResultArtifact(sourceBoxId)!;
+		bindResultArtifactConsumer(consumerId, sourceBoxId);
+
+		clearResultsState(sourceBoxId);
+
+		expect(getCurrentResultArtifact(sourceBoxId)).toBeNull();
+		expect(getBoundResultArtifact(consumerId, sourceBoxId)).toBeNull();
+		expect(getResultArtifact(artifact.artifactId)).toBeNull();
 	});
 });
 
@@ -244,16 +345,6 @@ describe('setResultsState', () => {
 	it('does not store when boxId is null', () => {
 		setResultsState(null, { data: 1 });
 		expect(getResultsState(null)).toBeNull();
-	});
-});
-
-// ── ensureResultsStateMap ─────────────────────────────────────────────────────
-
-describe('ensureResultsStateMap', () => {
-	it('returns the internal map object', () => {
-		const map = ensureResultsStateMap();
-		expect(map).toBeDefined();
-		expect(typeof map).toBe('object');
 	});
 });
 

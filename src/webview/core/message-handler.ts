@@ -9,7 +9,15 @@ import { perfMark } from './perf.js';
 import { traceFileOpen } from './file-open-trace.js';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { safeRun } from '../shared/safe-run';
-import { clearResultsState, getResultsState, displayResultForBox, displayResult, displayCancelled } from './results-state';
+import {
+	clearResultsState,
+	getCurrentResultArtifact,
+	getResultsState,
+	displayResultForBox,
+	displayResult,
+	displayCancelled,
+	type ResultArtifactPublication,
+} from './results-state';
 import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './error-renderer';
 import {
 	addQueryBox, removeQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName,
@@ -160,6 +168,7 @@ function clearSqlPolicyBox(boxId: string): void {
 	if (!id) return;
 	clearResultsState(id);
 	delete pState.queryResultJsonByBoxId[id];
+	delete pState.resultArtifactByBoxId[id];
 	const section = __kustoGetSqlSectionElement(id) || __kustoGetQuerySectionElement(id);
 	if (typeof section?.clearResults === 'function') section.clearResults();
 }
@@ -807,6 +816,38 @@ function completeKustoTerminal(message: any): void {
 	if (typeof section?.completeQueryExecution === 'function') section.completeQueryExecution(executionId);
 }
 
+function getKustoResultArtifactPublication(message: unknown): ResultArtifactPublication | undefined {
+	if (!message || typeof message !== 'object' || (message as Record<string, unknown>).type !== 'queryResult') return undefined;
+	if (!hasKustoExecutionTerminalStamp(message, true) || !message.dispatch) return undefined;
+	const dispatch = message.dispatch;
+	const sourceBoxId = String(optimizationMetadataByBoxId[message.boxId]?.sourceBoxId || '').trim();
+	const sourceArtifact = sourceBoxId ? getCurrentResultArtifact(sourceBoxId) : null;
+	return {
+		producer: {
+			engine: message.engine,
+			boxId: message.boxId,
+			executionId: message.executionId,
+			sectionInstanceId: message.sectionInstanceId,
+			targetGeneration: message.targetGeneration,
+			reservationSequence: message.reservationSequence,
+			connectionId: message.connectionId,
+			database: message.database,
+			producer: message.producer,
+			dispatch,
+		},
+		policy: {
+			accountPartition: dispatch.accountPartition,
+			authSessionGeneration: dispatch.authSessionGeneration,
+			leaveNoTraceRevision: dispatch.leaveNoTraceRevision,
+			connectionRevision: dispatch.connectionRevision,
+			connectionIdentityKey: dispatch.connectionIdentityKey,
+		},
+		...(sourceArtifact ? {
+			lineage: [{ sourceArtifactId: sourceArtifact.artifactId, role: 'comparison-source' }],
+		} : {}),
+	};
+}
+
 function emitAdmittedKustoTerminal(message: any): void {
 	window.dispatchEvent(new CustomEvent(ADMITTED_KUSTO_TERMINAL_EVENT, { detail: message }));
 }
@@ -1250,6 +1291,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					requireSchemaWorkerApply(boxId);
 					clearResultsState(boxId);
 					delete pState.queryResultJsonByBoxId[boxId];
+					delete pState.resultArtifactByBoxId[boxId];
 					if (typeof section?.setDatabasesLoading === 'function') section.setDatabasesLoading(false);
 					if (typeof section?.setRefreshLoading === 'function') section.setRefreshLoading(false);
 					if (typeof section?.clearResults === 'function') section.clearResults();
@@ -1541,6 +1583,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 			}
 			let resultAccepted = !message.boxId;
+			const artifactPublication = getKustoResultArtifactPublication(message);
 			try {
 				if (message.boxId) {
 					pState.lastExecutedBox = message.boxId;
@@ -1556,6 +1599,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					resultAccepted = displayResultForBox(message.result, message.boxId, {
 						label: 'Results', showExecutionTime: true,
 						...(message.executionId ? { executionId: String(message.executionId) } : {}),
+						...(artifactPublication ? { artifactPublication } : {}),
 					}) !== false;
 				} else {
 					displayResult(message.result);

@@ -34,7 +34,7 @@ import {
 	__kustoLog,
 } from '../core/section-factory';
 import { getRunMode, setRunMode, closeRunMenu, functionRunDialogOpenByBoxId } from './kw-query-toolbar';
-import { getResultsState, ensureResultsStateMap } from '../core/results-state';
+import { clearResultsState, getResultsState } from '../core/results-state';
 import {
 	optimizationMetadataByBoxId, queryEditors, pendingFavoriteSelectionByBoxId,
 	queryExecutionTimers, clearKustoEditorSchema, queryBoxes, favoritesModeByBoxId,
@@ -1563,7 +1563,7 @@ export function executeQuery(boxId: any, mode?: any, producer: KustoExecutionPro
 		if (isComparisonBox && sourceBoxIdForComparison) {
 			const sourceLastRunUsedCaching = !!(lastRunCacheEnabledByBoxId[sourceBoxIdForComparison]);
 			if (sourceLastRunUsedCaching) {
-				try { const resultsMap = ensureResultsStateMap(); delete resultsMap[sourceBoxIdForComparison]; } catch (e) { console.error('[kusto]', e); }
+				try { clearResultsState(sourceBoxIdForComparison); } catch (e) { console.error('[kusto]', e); }
 				try { __kustoLog(boxId, 'run.compare.rerunSourceNoCache', 'Rerunning source query with caching disabled', { sourceBoxId: sourceBoxIdForComparison }); } catch (e) { console.error('[kusto]', e); }
 				try { executeQuery(sourceBoxIdForComparison, effectiveMode); } catch (e) { console.error('[kusto]', e); }
 			}
@@ -1585,6 +1585,7 @@ export function executeQuery(boxId: any, mode?: any, producer: KustoExecutionPro
 	if (!database) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); } return undefined; }
 	__kustoLog(boxId, 'run.start', 'Executing query', { connectionId, database, queryMode: effectiveMode });
 	try { delete pState.queryResultJsonByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+	try { delete pState.resultArtifactByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	const executionId = createKustoExecutionId();
 	const section = __kustoGetQuerySectionElement(String(boxId || ''));
 	const lifecycle = section?.getSchemaLifecycleIdentity?.();
@@ -1613,6 +1614,7 @@ export function executeQueryDirect(boxId: string, query: string): string | undef
 	if (!database) { try { postMessageToHost({ type: 'showInfo', message: 'Please select a database' }); } catch (e) { console.error('[kusto]', e); } return undefined; }
 	__kustoLog(id, 'run.start', 'Executing inline function query', { connectionId, database, queryMode: 'plain' });
 	try { delete pState.queryResultJsonByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
+	try { delete pState.resultArtifactByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 	const executionId = createKustoExecutionId();
 	const section = __kustoGetQuerySectionElement(id);
 	const lifecycle = section?.getSchemaLifecycleIdentity?.();

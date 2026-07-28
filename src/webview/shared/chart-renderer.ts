@@ -4,7 +4,13 @@
 import { schedulePersist } from '../core/persistence';
 import { isDarkTheme } from '../monaco/theme';
 import { escapeHtml } from '../core/utils';
-import { getResultsState, getResultsStateRevision } from '../core/results-state';
+import {
+	bindResultArtifactConsumer,
+	getBoundResultArtifact,
+	getResultsState,
+	getResultsStateRevision,
+	unbindResultArtifactConsumer,
+} from '../core/results-state';
 import { ensureEchartsLoaded } from './lazy-vendor.js';
 import {
 	handleTooltipFormatter,
@@ -1062,6 +1068,10 @@ export function purgeChartEcharts(boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
+export function releaseChartResultArtifactBinding(boxId: unknown): void {
+	unbindResultArtifactConsumer(String(boxId || ''));
+}
+
 // ── Render ─────────────────────────────────────────────────────────────────────
 
 // Per-box mouse-hover tracking.  When the mouse is over a chart canvas we must
@@ -1143,9 +1153,22 @@ export function renderChart(boxId: any) {
 
 	// Find dataset.
 	let dsState = null;
+	let dsRevision = 0;
 	try {
 		if (typeof st.dataSourceId === 'string' && st.dataSourceId) {
-			dsState = getResultsState(st.dataSourceId);
+			const previousArtifact = getBoundResultArtifact(id);
+			let artifact = getBoundResultArtifact(id, st.dataSourceId);
+			if (!artifact) {
+				const boundArtifactId = bindResultArtifactConsumer(id, st.dataSourceId);
+				if (!boundArtifactId && previousArtifact?.sourceBoxId !== st.dataSourceId) {
+					unbindResultArtifactConsumer(id);
+				}
+				artifact = getBoundResultArtifact(id, st.dataSourceId);
+			}
+			dsState = artifact || getResultsState(st.dataSourceId);
+			dsRevision = artifact?.revision || getResultsStateRevision(st.dataSourceId);
+		} else {
+			unbindResultArtifactConsumer(id);
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	const cols = dsState && Array.isArray(dsState.columns) ? dsState.columns : [];
@@ -1247,7 +1270,7 @@ export function renderChart(boxId: any) {
 	};
 
 	const chartType = (typeof st.chartType === 'string') ? String(st.chartType) : '';
-	const zoomPanSignature = getZoomPanSignature(st, chartType, colNames, rawRows, getResultsStateRevision(st.dataSourceId));
+	const zoomPanSignature = getZoomPanSignature(st, chartType, colNames, rawRows, dsRevision);
 	if (!st.dataSourceId) {
 		showErrorAndReturn('Select a data source (a query, CSV URL, or transformation section with results).');
 		return;

@@ -408,11 +408,25 @@ Persisted Kusto result restoration waits for the first canonical policy snapshot
 
 Reorder disconnect/reconnect is not disposal and does not release the execution or Copilot owner.
 
-Result rendering and persistence still use mutable latest-result state keyed by section ID. Immutable artifact revisions, producer lineage, and policy-bearing downstream bindings are deliberately deferred to EXA-2.
+Admitted Kusto successes also publish their exact producer dispatch and privacy owner into the immutable result-artifact layer described below. Transport-specific execution coordination remains separate from artifact publication; SQL does not yet publish the same exact artifact provenance.
 
 Focused coverage lives in `kustoLeaveNoTracePolicyStore.test.ts`, `connectionManager.test.ts`, `connectionManagerViewerSearch.test.ts`, `cachedValuesViewer.test.ts`, `kustoAuthPreferenceService.test.ts`, `kustoExecutionCoordinator.test.ts`, `kustoClient.test.ts`, `queryEditorProviderCancel.test.ts`, `query-execution-run-function.test.ts`, `query-section-accessors.test.ts`, `kw-query-section-loading.test.ts`, `message-handler.test.ts`, `message-protocol.test.ts`, `persistence-roundtrip.test.ts`, `queryEditorCopilotFunctionExecution.test.ts`, `toolOrchestratorConnect.test.ts`, `kw-cached-values.test.ts`, `kw-connection-manager.test.ts`, and `kusto-schema-ownership.test.ts`. Authenticated native coverage lives in `kusto-execution-contract` and `query-cancel`.
 
 Final EXA-1 qualification on VS Code 1.130.0 passed production and integration compilation, the 27-suite focused ring (1,270 tests), full sequential Vitest (195 files, 5,098 tests), the full extension-host integration suite (113 tests), production extension and browser builds, and both bundle-size gates. Authenticated `kusto-execution-contract` passed all three normal/rerun/retarget scenarios on its unchanged rerun; the preceding first-scenario timeout remains recorded as a flake suspect. Authenticated `query-cancel` passed both physical-cancellation/race-recovery scenarios. Every final JSON artifact and all nine passing-run screenshots were reviewed.
+
+### Immutable Result Artifacts
+
+`src/shared/resultArtifact.ts` owns the runtime `ResultArtifactStore` and the compact `PersistedResultArtifactV1` descriptor. Each publication deep-clones and freezes columns, rows, metadata, producer, policy, and lineage; advances a monotonic per-source revision; and replaces only the source's mutable current pointer. Explicit consumer bindings retain an older revision across later source publications. Rebinding moves that consumer to the selected current revision and prunes unreferenced history. Clearing a source synchronously revokes all of its consumer bindings and current artifact, while an ordinary rerun preserves pinned consumers.
+
+`core/results-state.ts` is the compatibility facade. Existing tables and unmigrated consumers can still read the mutable latest result keyed by section ID, but every accepted `setResultsState` first publishes an immutable artifact revision. This keeps current rendering and public APIs stable while consumers migrate one at a time.
+
+Charts are the first bound consumer. `shared/chart-renderer.ts` resolves the chart's bound artifact before consulting mutable latest state. A normal source rerun therefore cannot silently change a pinned render; the existing dependent-refresh cascade explicitly rebinds the chart before refreshing it, preserving automatic live-chart behavior. Source selection rebinds through rendering, clearing the selection releases the binding, and chart removal releases it permanently.
+
+Kusto success publication carries reservation, execution, lifecycle target, physical dispatch, connection, principal session, Leave No Trace policy, and optional comparison-source lineage from the admitted terminal. Bounded persistence continues to store rows once in `resultJson` and may pair them with a row-free `resultArtifact` descriptor. Restore waits for the existing Kusto/SQL owner and policy admission, validates descriptor source and policy claims, renders accepted rows, and only then installs the restored artifact identity. The next live publication advances beyond the highest runtime revision. A descriptor never admits rows by itself; every row purge and host privacy sanitizer removes the descriptor atomically, and diffs treat it as result noise.
+
+Transformations, comparisons, HTML dashboards, export, Copilot context, and SQL exact provenance still consume the mutable compatibility surface. Their migration, derived artifact publication, and policy-bearing lineage remain later EXA-2 work; this slice does not merge the Kusto and SQL execution coordinators or introduce deferred document capability admission.
+
+Focused coverage lives in `result-artifact.test.ts`, `results-state.test.ts`, `chart-renderer-zoom-pan.test.ts`, `chart-datasets.test.ts`, `message-handler.test.ts`, `kw-query-section-loading.test.ts`, `persistence-roundtrip.test.ts`, `queryEditorProviderCancel.test.ts`, `kqlxFormat.test.ts`, and `diffViewerUtils.test.ts`. The native `default/chart-regressions` contract proves pin, rerun, dependent rebind, and source revocation through the real VS Code webview.
 
 ### Supplemental Fully Qualified Schemas
 

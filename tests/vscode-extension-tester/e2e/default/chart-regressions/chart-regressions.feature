@@ -16,3 +16,11 @@ Feature: Chart regressions - live webview state and renderer options
     When I evaluate "window.__e2e.chart.assertTitleSyncAndHeatmapNumericCategories()" in the webview
     And I wait 1 second
     When I evaluate "(() => { const chart = document.getElementById('chart_e2e_heatmap_regression'); const canvas = document.getElementById('chart_e2e_heatmap_regression_chart_canvas_preview'); const state = window.chartStateByBoxId?.chart_e2e_heatmap_regression; const error = canvas?.querySelector('.error-message')?.textContent || ''; if (!chart?.isConnected || !canvas || error || !state?.__echarts?.instance) throw new Error('Unstable chart fixture: ' + JSON.stringify({ connected: !!chart?.isConnected, canvas: !!canvas, error, dataSourceId: state?.dataSourceId, canvasId: state?.__echarts?.canvasId })); return 'chart remained connected and rendered'; })()" in the webview
+
+  Scenario: Chart consumer pins, rebinds, and revokes immutable result revisions
+    When I execute command "kusto.openQueryEditor"
+    And I wait 3 seconds
+    When I evaluate "window.__e2e.workbench.clearSections()" in the webview
+    And I wait 2 seconds
+
+    When I evaluate "window.__e2e.chart.assertArtifactPinAndDependentRebind()" in the webview for 20 seconds

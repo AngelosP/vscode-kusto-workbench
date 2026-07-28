@@ -4,19 +4,27 @@
 import { pState } from '../shared/persistence-state';
 import { __kustoSetResultsVisible, setQueryExecuting } from '../sections/query-execution.controller';
 import { __kustoNotifyResultsUpdated } from './section-factory';
+import {
+	ResultArtifactStore,
+	type ResultArtifactPublication,
+} from '../../shared/resultArtifact.js';
+export type {
+	ResultArtifact,
+	ResultArtifactLineage,
+	ResultArtifactPolicy,
+	ResultArtifactProducer,
+	ResultArtifactPublication,
+} from '../../shared/resultArtifact.js';
 
 // ── Results state map ────────────────────────────────────────────────────────
 
 const _resultsByBoxId: Record<string, any> = {};
 const _resultsRevisionByBoxId: Record<string, number> = {};
+const _resultArtifacts = new ResultArtifactStore();
 export let currentResult: any = null;
 
 export function resetCurrentResult() {
 	currentResult = null;
-}
-
-export function ensureResultsStateMap() {
-	return _resultsByBoxId;
 }
 
 export function getResultsState(boxId: any) {
@@ -33,10 +41,44 @@ export function getResultsStateRevision(boxId: any) {
 	return _resultsRevisionByBoxId[boxId] || 0;
 }
 
-export function setResultsState(boxId: any, state: any) {
+export function getResultArtifact(artifactId: unknown) {
+	return _resultArtifacts.get(String(artifactId || '')) || null;
+}
+
+export function getCurrentResultArtifact(boxId: unknown) {
+	return _resultArtifacts.getCurrent(String(boxId || '')) || null;
+}
+
+export function bindResultArtifactConsumer(consumerId: unknown, sourceBoxId: unknown, artifactId?: unknown) {
+	return _resultArtifacts.bind(
+		String(consumerId || ''),
+		String(sourceBoxId || ''),
+		artifactId === undefined ? undefined : String(artifactId || ''),
+	);
+}
+
+export function rebindResultArtifactConsumer(consumerId: unknown, sourceBoxId: unknown) {
+	const artifactId = bindResultArtifactConsumer(consumerId, sourceBoxId);
+	if (!artifactId) unbindResultArtifactConsumer(consumerId);
+	return artifactId;
+}
+
+export function getBoundResultArtifact(consumerId: unknown, sourceBoxId?: unknown) {
+	return _resultArtifacts.getBound(
+		String(consumerId || ''),
+		sourceBoxId === undefined ? undefined : String(sourceBoxId || ''),
+	) || null;
+}
+
+export function unbindResultArtifactConsumer(consumerId: unknown) {
+	_resultArtifacts.unbind(String(consumerId || ''));
+}
+
+export function setResultsState(boxId: any, state: any, publication: ResultArtifactPublication = {}) {
 	if (!boxId) {
 		return;
 	}
+	_resultArtifacts.publish(String(boxId), state || {}, publication);
 	_resultsByBoxId[boxId] = state;
 	_resultsRevisionByBoxId[boxId] = (_resultsRevisionByBoxId[boxId] || 0) + 1;
 	// Backward-compat: keep the last rendered result as the "current" one.
@@ -47,6 +89,8 @@ export function setResultsState(boxId: any, state: any) {
 
 export function clearResultsState(boxId: any) {
 	if (!boxId) return;
+	_resultArtifacts.unbindSource(String(boxId));
+	_resultArtifacts.clearCurrent(String(boxId));
 	delete _resultsByBoxId[boxId];
 	_resultsRevisionByBoxId[boxId] = (_resultsRevisionByBoxId[boxId] || 0) + 1;
 	if (currentResult?.boxId === boxId) currentResult = null;
@@ -121,7 +165,7 @@ export function displayResultForBox(result: any, boxId: any, options: any): bool
 		selectedRows: new Set(), searchMatches: [], currentSearchIndex: -1,
 		sortSpec: [], columnFilters: {}, filteredRowIndices: null,
 		displayRowIndices, rowIndexToDisplayIndex
-	});
+	}, options?.artifactPublication || {});
 	return true;
 }
 

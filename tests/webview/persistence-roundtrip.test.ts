@@ -161,6 +161,7 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 		manualQueryEditorHeightPxByBoxId: {} as Record<string, number>,
 		resultsVisibleByBoxId: {} as Record<string, boolean>,
 		queryResultJsonByBoxId: {} as Record<string, string>,
+		resultArtifactByBoxId: {} as Record<string, any>,
 		kustoResultOwnerByBoxId: {} as Record<string, { accountPartition: string; leaveNoTraceRevision: number }>,
 		lastExecutedBox: '',
 		copilotChatFirstTimeDismissed: false,
@@ -175,6 +176,7 @@ vi.mock('../../src/webview/core/results-state.js', () => ({
 	clearResultsState: vi.fn(),
 	getResultsState: vi.fn(() => null),
 	getResultsStateRevision: vi.fn(() => 0),
+	getCurrentResultArtifact: vi.fn(() => null),
 }));
 
 vi.mock('../../src/webview/core/section-factory.js', () => ({
@@ -341,6 +343,7 @@ describe('persistence round-trip', () => {
 		for (const k of Object.keys(pState.pendingWrapperHeightPxByBoxId)) delete pState.pendingWrapperHeightPxByBoxId[k];
 		for (const k of Object.keys(pState.resultsVisibleByBoxId)) delete pState.resultsVisibleByBoxId[k];
 		for (const k of Object.keys(pState.queryResultJsonByBoxId)) delete pState.queryResultJsonByBoxId[k];
+		for (const k of Object.keys(pState.resultArtifactByBoxId)) delete pState.resultArtifactByBoxId[k];
 		for (const k of Object.keys(pState.kustoResultOwnerByBoxId)) delete pState.kustoResultOwnerByBoxId[k];
 		for (const k of Object.keys(schemaRequestTokenByBoxId)) delete schemaRequestTokenByBoxId[k];
 		for (const k of Object.keys(testState.schemaDiagnosticsTrustedByBoxId)) delete testState.schemaDiagnosticsTrustedByBoxId[k];
@@ -1779,11 +1782,17 @@ describe('persistence round-trip', () => {
 			testState.kustoConnections.push(ownedKustoConnection({ id: 'public-default', clusterUrl: 'https://public.kusto.windows.net' }));
 			markKustoLeaveNoTracePolicyPending();
 			const resultJson = JSON.stringify({ columns: ['Value'], rows: [['ready']], metadata: {} });
+			const resultArtifact = {
+				version: 1, artifactId: 'result:query_public_restore:9', sourceBoxId: 'query_public_restore',
+				revision: 9, createdAt: 1234,
+				producer: { engine: 'kusto', boxId: 'query_public_restore', executionId: 'execution-restored' },
+				policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 0 },
+			};
 			handleDocumentDataMessage({
 				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/public-restore.kqlx',
 				state: { sections: [{
 					type: 'query', id: 'query_public_restore', query: 'print value=1',
-					clusterUrl: 'https://public.kusto.windows.net', database: 'Db', resultJson, ...kustoResultOwner,
+					clusterUrl: 'https://public.kusto.windows.net', database: 'Db', resultJson, resultArtifact, ...kustoResultOwner,
 				}] },
 			});
 
@@ -1793,10 +1802,19 @@ describe('persistence round-trip', () => {
 			applyKustoLeaveNoTracePolicy([], false);
 			flushDeferredRestoreTimers();
 			expect(pState.queryResultJsonByBoxId.query_public_restore).toBe(resultJson);
+			expect(pState.resultArtifactByBoxId.query_public_restore).toEqual(resultArtifact);
 			expect(displayResultForBox).toHaveBeenCalledWith(
 				{ ...JSON.parse(resultJson), metadata: { executionTime: '' } },
 				'query_public_restore',
-				{ label: 'Results', showExecutionTime: true },
+				expect.objectContaining({
+					label: 'Results', showExecutionTime: true,
+					artifactPublication: expect.objectContaining({
+						persistedIdentity: expect.objectContaining({
+							artifactId: resultArtifact.artifactId, revision: 9, sourceBoxId: 'query_public_restore',
+						}),
+						producer: expect.objectContaining({ executionId: 'execution-restored' }),
+					}),
+				}),
 			);
 		} finally {
 			vi.useRealTimers();

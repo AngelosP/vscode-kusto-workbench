@@ -42,6 +42,7 @@ const handlerState = vi.hoisted(() => ({
 		lastExecutedBox: '',
 		documentEditRevision: 0,
 		resultsVisibleByBoxId: {},
+		resultArtifactByBoxId: {},
 	} as Record<string, unknown>,
 }));
 
@@ -115,6 +116,7 @@ vi.mock('../../src/webview/shared/safe-run.js', () => ({
 }));
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
+	getCurrentResultArtifact: vi.fn(() => null),
 	getResultsState: vi.fn(() => null),
 	getResultsStateRevision: vi.fn(() => 0),
 	clearResultsState: mocks.clearResultsState,
@@ -1383,9 +1385,15 @@ describe('message-handler dispatch', () => {
 			result: currentResult,
 		});
 
-		expect(resultsState.displayResultForBox).toHaveBeenCalledWith(currentResult, 'query_1', {
+		expect(resultsState.displayResultForBox).toHaveBeenCalledWith(currentResult, 'query_1', expect.objectContaining({
 			label: 'Results', showExecutionTime: true, executionId: 'execution-new',
-		});
+			artifactPublication: expect.objectContaining({
+				producer: expect.objectContaining({
+					executionId: 'execution-new', reservationSequence: 2, dispatch: kustoDispatch('current'),
+				}),
+				policy: expect.objectContaining({ accountPartition: 'partition-1', leaveNoTraceRevision: 0 }),
+			}),
+		}));
 		expect(persistence.__kustoOnQueryResult).toHaveBeenCalledWith('query_1', currentResult, kustoDispatch('current'));
 		expect(section.completeQueryExecution).toHaveBeenCalledWith('execution-new');
 		expect(activeExecutionId).toBe('');
@@ -1830,9 +1838,18 @@ describe('message-handler dispatch', () => {
 		expect(provider.postMessage).toHaveBeenCalledWith({
 			type: 'kustoPublicationCommit', publicationId: stagedPublication.publicationId,
 		});
-		expect(resultsState.displayResultForBox).toHaveBeenCalledWith(result, boxId, {
+		expect(resultsState.displayResultForBox).toHaveBeenCalledWith(result, boxId, expect.objectContaining({
 			label: 'Results', showExecutionTime: true, executionId,
-		});
+			artifactPublication: expect.objectContaining({
+				producer: expect.objectContaining({
+					engine: 'kusto', boxId, executionId, ...lifecycle,
+					dispatch: expect.objectContaining({ clientActivityId: 'KW.execute_query;cross-layer' }),
+				}),
+				policy: expect.objectContaining({
+					accountPartition: 'partition-cross-layer', leaveNoTraceRevision: 0,
+				}),
+			}),
+		}));
 		expect(controller.getActiveExecution()).toBeUndefined();
 		controller.setQueryExecuting(false);
 	});

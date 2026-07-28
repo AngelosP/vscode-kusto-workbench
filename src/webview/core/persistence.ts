@@ -7,7 +7,12 @@ import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
 import { resolveKustoConnection } from '../../shared/kustoAuth.js';
 import { postMessageToHost } from '../shared/webview-messages';
 import { pState } from '../shared/persistence-state';
-import { clearResultsState, displayResultForBox, getResultsState, getResultsStateRevision } from './results-state';
+import { clearResultsState, displayResultForBox, getCurrentResultArtifact, getResultsState, getResultsStateRevision } from './results-state';
+import {
+	publicationFromPersistedResultArtifact,
+	toPersistedResultArtifact,
+	type PersistedResultArtifactV1,
+} from '../../shared/resultArtifact.js';
 import {
 	addQueryBox, removeQueryBox, updateConnectionSelects, toggleCacheControls,
 	__kustoGetQuerySectionElement, __kustoSetSectionName, __kustoGetConnectionId, __kustoGetDatabase,
@@ -79,6 +84,7 @@ type DeferredRestoredResultJob = {
 	documentUri: string;
 	boxId: string;
 	resultJson: string;
+	resultArtifact?: unknown;
 	kind: 'query' | 'sql';
 	resultsHeightPx?: number;
 	initialResultsRevision: number;
@@ -100,6 +106,7 @@ type PendingSqlOwnedRestore = {
 	documentUri: string;
 	boxId: string;
 	resultJson: string;
+	resultArtifact?: unknown;
 	kind: 'query' | 'sql';
 	resultsHeightPx?: number;
 	persistedOwner: { connectionIdHint?: unknown; targetSignature?: unknown; principalFingerprint?: unknown; revocationGeneration?: unknown; sourceBoxId?: unknown };
@@ -362,6 +369,7 @@ export function resolvePendingSqlResultRestores(): void {
 			kind: job.kind,
 			boxId: job.boxId,
 			resultJson: job.resultJson,
+			resultArtifact: job.resultArtifact,
 			resultsHeightPx: job.resultsHeightPx,
 			sqlOwnerConnectionId: String(job.persistedOwner.connectionIdHint || '').trim(),
 		});
@@ -637,7 +645,25 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 			__kustoSetStoredQueryResultJson(job.boxId, job.resultJson);
 		}
 		pState.lastExecutedBox = job.boxId;
-		displayResultForBox(parsed, job.boxId, { label: 'Results', showExecutionTime: true });
+		const artifactPublication = publicationFromPersistedResultArtifact(
+			job.resultArtifact,
+			job.boxId,
+			__kustoIsKustoOwnedRestore(job) ? {
+				accountPartition: job.kustoAccountPartition,
+				leaveNoTraceRevision: job.kustoLeaveNoTraceRevision,
+			} : undefined,
+		);
+		const resultAccepted = displayResultForBox(parsed, job.boxId, {
+			label: 'Results',
+			showExecutionTime: true,
+			...(artifactPublication ? { artifactPublication } : {}),
+		});
+		if (resultAccepted === false) {
+			__kustoDeleteStoredQueryResultJson(job.boxId);
+			return;
+		}
+		const restoredArtifact = toPersistedResultArtifact(getCurrentResultArtifact(job.boxId));
+		__kustoSetStoredResultArtifact(job.boxId, restoredArtifact || job.resultArtifact);
 		if (job.kind === 'query') {
 			try {
 				__kustoSetQueryResultsOutputHeightPx(job.boxId, job.resultsHeightPx);
@@ -921,6 +947,23 @@ function __kustoSetStoredQueryResultJson(boxId: any, json: string) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
+function __kustoSetStoredResultArtifact(boxId: unknown, value: unknown): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	const publication = publicationFromPersistedResultArtifact(value, id);
+	if (!publication?.persistedIdentity) {
+		delete pState.resultArtifactByBoxId[id];
+		return;
+	}
+	pState.resultArtifactByBoxId[id] = {
+		version: 1,
+		...publication.persistedIdentity,
+		...(publication.producer ? { producer: publication.producer } : {}),
+		...(publication.policy ? { policy: publication.policy } : {}),
+		...(publication.lineage?.length ? { lineage: publication.lineage } : {}),
+	} satisfies PersistedResultArtifactV1;
+}
+
 function __kustoSetKustoResultOwner(boxId: any, owner: unknown): boolean {
 	const id = String(boxId || '').trim();
 	const candidate = owner as { accountPartition?: unknown; leaveNoTraceRevision?: unknown } | undefined;
@@ -936,6 +979,7 @@ function __kustoDeleteStoredQueryResultJson(boxId: any) {
 		const id = String(boxId || '');
 		if (!id) return;
 		delete pState.queryResultJsonByBoxId[id];
+		delete pState.resultArtifactByBoxId[id];
 		delete pState.kustoResultOwnerByBoxId[id];
 		delete __kustoStoredResultSignatureByBoxId[id];
 	} catch (e) { console.error('[kusto]', e); }
@@ -1041,6 +1085,9 @@ export function __kustoTryStoreQueryResult(boxId: any, result: any, kustoOwner?:
 				return;
 			}
 			__kustoSetStoredQueryResultJson(boxId, json);
+			const descriptor = toPersistedResultArtifact(getCurrentResultArtifact(id));
+			if (descriptor) pState.resultArtifactByBoxId[id] = descriptor;
+			else delete pState.resultArtifactByBoxId[id];
 		} else {
 			__kustoDeleteStoredQueryResultJson(boxId);
 		}
@@ -1290,6 +1337,7 @@ export function getKqlxState() {
 			let connectionIdHint = '';
 			let database = '';
 			let resultJson = '';
+			let resultArtifact: PersistedResultArtifactV1 | undefined;
 			let kustoResultOwner: { accountPartition: string; leaveNoTraceRevision: number } | undefined;
 			let favoritesMode;
 			try {
@@ -1311,6 +1359,8 @@ export function getKqlxState() {
 					try {
 						if (pState.queryResultJsonByBoxId[firstQueryBoxId]) {
 							resultJson = String(pState.queryResultJsonByBoxId[firstQueryBoxId]);
+							resultArtifact = toPersistedResultArtifact(getCurrentResultArtifact(firstQueryBoxId))
+								|| pState.resultArtifactByBoxId[firstQueryBoxId];
 							kustoResultOwner = pState.kustoResultOwnerByBoxId[firstQueryBoxId];
 						}
 					} catch (e) { console.error('[kusto]', e); }
@@ -1336,6 +1386,7 @@ export function getKqlxState() {
 						// Leave no trace: don't persist results from sensitive clusters
 						...(resultJson && kustoResultOwner && !__kustoIsLeaveNoTraceCluster(clusterUrl) ? {
 							resultJson,
+							...(resultArtifact ? { resultArtifact } : {}),
 							kustoAccountPartition: kustoResultOwner.accountPartition,
 							kustoLeaveNoTraceRevision: kustoResultOwner.leaveNoTraceRevision,
 						} : {}),
@@ -1676,6 +1727,7 @@ function applyKqlxState(state: any) {
 		// Reset persisted results when loading a new document.
 		try {
 			pState.queryResultJsonByBoxId = {};
+			pState.resultArtifactByBoxId = {};
 			pState.kustoResultOwnerByBoxId = {};
 			__kustoResetStoredResultSignatures();
 		} catch (e) { console.error('[kusto]', e); }
@@ -1938,6 +1990,7 @@ function applyKqlxState(state: any) {
 					if (sqlComparisonSource && !sourceOwnerResolved && sqlConnections.length === 0 && section.resultJson) {
 						__kustoQueuePendingSqlOwnedRestore({
 							kind: 'query', boxId, resultJson: String(section.resultJson), resultsHeightPx: section.resultsHeightPx,
+							resultArtifact: section.resultArtifact,
 							persistedOwner: {
 								connectionIdHint: comparisonSource.connectionIdHint,
 								targetSignature: comparisonSource.targetSignature,
@@ -1951,6 +2004,7 @@ function applyKqlxState(state: any) {
 						if (sqlComparisonSource) __kustoSetStoredQueryResultJson(boxId, rj);
 						__kustoQueueRestoredResult({
 							kind: 'query', boxId, resultJson: rj, resultsHeightPx: section.resultsHeightPx,
+							resultArtifact: section.resultArtifact,
 							...(sqlComparisonSource ? { sqlOwnerConnectionId: String(comparisonSource.connectionIdHint || '').trim() } : {}),
 							...(!sqlComparisonSource ? {
 								kustoClusterUrl: String((kustoComparisonSource || section).clusterUrl || ''),

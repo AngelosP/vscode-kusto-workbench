@@ -20,6 +20,7 @@ const testState = vi.hoisted(() => ({
 		lastExecutedBox: '',
 		resultsVisibleByBoxId: {},
 		queryResultJsonByBoxId: {} as Record<string, string>,
+		resultArtifactByBoxId: {},
 	},
 }));
 
@@ -51,8 +52,8 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 }));
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
+	clearResultsState: vi.fn(),
 	getResultsState: vi.fn(() => null),
-	ensureResultsStateMap: vi.fn(() => ({})),
 }));
 
 vi.mock('../../src/webview/core/utils.js', () => ({

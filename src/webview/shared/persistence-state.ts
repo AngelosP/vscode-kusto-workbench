@@ -9,6 +9,7 @@
  *   pState.resultsVisibleByBoxId[boxId] = true;
  *   if (pState.restoreInProgress) { ... }
  */
+import type { PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
 
 export const pState = {
 	/** Monotonic local UI edit revision used to reject stale host reloads. */
@@ -39,6 +40,9 @@ export const pState = {
 
 	/** Per-box persisted query result JSON (in-memory, included in getKqlxState). */
 	queryResultJsonByBoxId: {} as Record<string, string>,
+
+	/** Immutable artifact descriptor paired with each persisted result payload. */
+	resultArtifactByBoxId: {} as Record<string, PersistedResultArtifactV1>,
 
 	/** Exact Kusto account/policy owner for each persisted query result. */
 	kustoResultOwnerByBoxId: {} as Record<string, { accountPartition: string; leaveNoTraceRevision: number }>,

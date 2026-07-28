@@ -1,6 +1,12 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { __kustoGetChartDatasetsInDomOrder } from '../../src/webview/core/section-factory';
-import { clearResultsState, setResultsState } from '../../src/webview/core/results-state';
+import {
+	bindResultArtifactConsumer,
+	clearResultsState,
+	getBoundResultArtifact,
+	getCurrentResultArtifact,
+	setResultsState,
+} from '../../src/webview/core/results-state';
 
 // ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -186,10 +192,35 @@ describe('dependent chart cascade', () => {
 		const legacyRender = vi.fn();
 		(window as any).__kustoRenderChart = legacyRender;
 		setFakeResults('sql_source');
+		bindResultArtifactConsumer('chart_1', 'sql_source');
 
 		clearResultsState('sql_source');
 		await vi.waitFor(() => expect(chart.refresh).toHaveBeenCalled());
 
 		expect(legacyRender).not.toHaveBeenCalled();
+		expect(getBoundResultArtifact('chart_1', 'sql_source')).toBeNull();
+	});
+
+	it('rebinds a chart only when the dependent refresh consumes a new source revision', async () => {
+		const container = setupDom([{ id: 'query_source', name: 'Query' }]);
+		const chart = document.createElement('div') as HTMLDivElement & { refresh: ReturnType<typeof vi.fn> };
+		chart.id = 'chart_revision';
+		chart.refresh = vi.fn();
+		container.appendChild(chart);
+		const chartState = (window as any).chartStateByBoxId || ((window as any).chartStateByBoxId = {});
+		chartState.chart_revision = { dataSourceId: 'query_source' };
+
+		setResultsState('query_source', { columns: [{ name: 'Value' }], rows: [[1]], metadata: {} });
+		await vi.waitFor(() => expect(chart.refresh).toHaveBeenCalled());
+		chart.refresh.mockClear();
+		const artifactA = getCurrentResultArtifact('query_source')!;
+		expect(bindResultArtifactConsumer('chart_revision', 'query_source')).toBe(artifactA.artifactId);
+
+		setResultsState('query_source', { columns: [{ name: 'Value' }], rows: [[2]], metadata: {} });
+		const artifactB = getCurrentResultArtifact('query_source')!;
+		expect(getBoundResultArtifact('chart_revision', 'query_source')).toBe(artifactA);
+
+		await vi.waitFor(() => expect(chart.refresh).toHaveBeenCalled());
+		expect(getBoundResultArtifact('chart_revision', 'query_source')).toBe(artifactB);
 	});
 });

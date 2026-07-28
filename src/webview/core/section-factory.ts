@@ -54,7 +54,7 @@ import {
 	unregisterSqlDerivedComparisonSession,
 	unregisterSqlDerivedComparisonsForSource,
 } from './sql-section-message-router.js';
-import { clearResultsState } from './results-state';
+import { clearResultsState, rebindResultArtifactConsumer } from './results-state';
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from '../sections/query-execution.controller';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
@@ -1368,6 +1368,7 @@ export function removeQueryBox( boxId: any) {
 	try {
 		if (pState.queryResultJsonByBoxId) {
 			delete pState.queryResultJsonByBoxId[boxId];
+			delete pState.resultArtifactByBoxId[boxId];
 		}
 	} catch (e) { console.error('[kusto]', e); }
 
@@ -1671,6 +1672,7 @@ function __kustoRefreshDependentExtraBoxes( rootSourceId: any) {
 						if (!st || typeof st !== 'object') continue;
 						const ds = (typeof (st as any).dataSourceId === 'string') ? String((st as any).dataSourceId) : '';
 						if (ds !== sourceId) continue;
+						try { rebindResultArtifactConsumer(boxId, sourceId); } catch (e) { console.error('[kusto]', e); }
 						try { __kustoUpdateChartBuilderUI(boxId); } catch (e) { console.error('[kusto]', e); }
 						try {
 							const chartEl = document.getElementById(boxId) as any;
@@ -3070,6 +3072,7 @@ export function removeSqlBox(boxId: any) {
 	try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
 	delete sqlSchemaByBoxId[String(boxId || '')];
 	try { delete pState.queryResultJsonByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
+	try { delete pState.resultArtifactByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { getSqlSectionSession(String(boxId))?.clear(); } catch (e) { console.error('[kusto]', e); }
 	sqlBoxes = sqlBoxes.filter((id: any) => id !== boxId);
 	const box = document.getElementById(boxId) as any;

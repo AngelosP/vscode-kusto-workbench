@@ -1174,10 +1174,14 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.sqlWorkbench.connectionManager.getConnections = vi.fn(() => [connection, { ...connection, id: 'sql-2' }]);
 		provider.sqlWorkbench.connectionManager.getConnection = vi.fn((id: string) => id === 'sql-1' ? connection : id === 'sql-2' ? { ...connection, id: 'sql-2' } : undefined);
 		const targetSignature = sqlConnectionTargetSignature(connection);
-		const state = { sections: [{ id: 'sql_restored', type: 'sql', connectionIdHint: 'sql_deleted', targetSignature, resultJson: '{"secret":true}' }] };
+		const state = { sections: [{
+			id: 'sql_restored', type: 'sql', connectionIdHint: 'sql_deleted', targetSignature,
+			resultJson: '{"secret":true}', resultArtifact: { version: 1, artifactId: 'sql-secret' },
+		}] };
 
 		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
 		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized.sections[0]).not.toHaveProperty('resultArtifact');
 	});
 
 	it('strips persisted comparison results by durable SQL source lineage', () => {
@@ -1253,11 +1257,12 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		]);
 		const state = { sections: [
 			{ id: 'query_source', type: 'query', clusterUrl: 'https://source.kusto.windows.net', connectionIdHint: 'source', database: 'Db', query: 'T' },
-			{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'query_source', clusterUrl: 'https://other.kusto.windows.net', connectionIdHint: 'other', database: 'OtherDb', query: 'T | count', resultJson: '{"secret":true}' },
+			{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'query_source', clusterUrl: 'https://other.kusto.windows.net', connectionIdHint: 'other', database: 'OtherDb', query: 'T | count', resultJson: '{"secret":true}', resultArtifact: { version: 1, artifactId: 'kusto-secret' } },
 		] };
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
 		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+		expect(sanitized.sections[1]).not.toHaveProperty('resultArtifact');
 	});
 
 	it('does not read SQL policy storage for pure Kusto, Markdown, and Chart state', async () => {

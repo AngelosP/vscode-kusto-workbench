@@ -1,4 +1,5 @@
 import type { PowerBiUpgradeNoticeState } from '../shared/htmlDashboardUpgrade';
+import type { PersistedResultArtifactV1 } from '../shared/resultArtifact';
 
 export type KqlxVersion = 1;
 
@@ -40,6 +41,7 @@ export type KqlxSectionV1 =
 			// Stored as JSON text to keep comparisons stable and cap size.
 			// Only present when <= 200KB.
 			resultJson?: string;
+			resultArtifact?: PersistedResultArtifactV1;
 			kustoAccountPartition?: string;
 			kustoLeaveNoTraceRevision?: number;
 			runMode?: string;
@@ -67,6 +69,7 @@ export type KqlxSectionV1 =
 			query?: string;
 			comparisonSourceBoxId?: string;
 			resultJson?: string;
+			resultArtifact?: PersistedResultArtifactV1;
 			kustoAccountPartition?: string;
 			kustoLeaveNoTraceRevision?: number;
 			runMode?: string;

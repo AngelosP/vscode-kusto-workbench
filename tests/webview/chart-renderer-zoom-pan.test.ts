@@ -3,6 +3,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const resultsState = vi.hoisted(() => ({
 	byId: {} as Record<string, any>,
 	revisionById: {} as Record<string, number>,
+	artifactById: {} as Record<string, any>,
+	boundArtifactIdByConsumer: {} as Record<string, string>,
+	currentArtifactIdBySource: {} as Record<string, string>,
 }));
 
 const tooltipMocks = vi.hoisted(() => ({
@@ -13,8 +16,19 @@ const tooltipMocks = vi.hoisted(() => ({
 }));
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
+	bindResultArtifactConsumer: (consumerId: string, sourceBoxId: string) => {
+		const artifactId = resultsState.currentArtifactIdBySource[sourceBoxId];
+		if (!artifactId) return undefined;
+		resultsState.boundArtifactIdByConsumer[consumerId] = artifactId;
+		return artifactId;
+	},
+	getBoundResultArtifact: (consumerId: string, sourceBoxId?: string) => {
+		const artifact = resultsState.artifactById[resultsState.boundArtifactIdByConsumer[consumerId]];
+		return artifact && (!sourceBoxId || artifact.sourceBoxId === sourceBoxId) ? artifact : null;
+	},
 	getResultsState: (id: string) => resultsState.byId[id] ?? null,
 	getResultsStateRevision: (id: string) => resultsState.revisionById[id] ?? 0,
+	unbindResultArtifactConsumer: (consumerId: string) => { delete resultsState.boundArtifactIdByConsumer[consumerId]; },
 }));
 
 vi.mock('../../src/webview/core/persistence.js', () => ({
@@ -41,6 +55,9 @@ describe('chart-renderer zoom/pan controls', () => {
 		delete (window as any).__kustoZoomPanHintShown;
 		resultsState.byId = {};
 		resultsState.revisionById = {};
+		resultsState.artifactById = {};
+		resultsState.boundArtifactIdByConsumer = {};
+		resultsState.currentArtifactIdBySource = {};
 
 		const state = (window as any).chartStateByBoxId || {};
 		for (const key of Object.keys(state)) delete state[key];
@@ -138,8 +155,9 @@ describe('chart-renderer zoom/pan controls', () => {
 		chartType: string,
 		stateOverrides: Record<string, unknown> = {},
 		resultsOverrides: { columns?: unknown[]; rows?: unknown[][] } = {},
+		idOverride?: string,
 	): { id: string; option: any; state: any } {
-		const id = `chart_${chartType}_${Math.random().toString(36).slice(2)}`;
+		const id = idOverride || `chart_${chartType}_${Math.random().toString(36).slice(2)}`;
 		const host = document.createElement('div');
 		host.id = id;
 		document.body.appendChild(host);
@@ -214,6 +232,29 @@ describe('chart-renderer zoom/pan controls', () => {
 		expect(valuesFor(scenario.option.series[0])).toEqual([10, 20, 30]);
 		expect(scenario.option.series[0].data.map((point: any) => point.name)).toEqual(['A', 'B', 'C']);
 		expect(scenario.option.series[0].data.map((point: any) => point.__kustoTooltip?.Target)).toEqual(['detail-a', 'detail-b', 'detail-c']);
+	});
+
+	it('renders the immutable artifact revision bound to the chart', () => {
+		const chartId = 'chart_bound_artifact';
+		resultsState.artifactById.artifact_a = {
+			artifactId: 'artifact_a', sourceBoxId: 'q1', revision: 1,
+			columns: ['Category', 'Value'], rows: [['artifact-a', 1]], metadata: {},
+		};
+		resultsState.artifactById.artifact_b = {
+			artifactId: 'artifact_b', sourceBoxId: 'q1', revision: 2,
+			columns: ['Category', 'Value'], rows: [['artifact-b', 2]], metadata: {},
+		};
+		resultsState.boundArtifactIdByConsumer[chartId] = 'artifact_a';
+		resultsState.currentArtifactIdBySource.q1 = 'artifact_b';
+
+		const { option } = renderScenario('bar', {
+			xColumn: 'Category', yColumn: 'Value', yColumns: ['Value'],
+		}, {
+			columns: ['Category', 'Value'], rows: [['mutable-latest', 99]],
+		}, chartId);
+
+		expect(option.xAxis.data).toEqual(['artifact-a']);
+		expect(valuesFor(option.series[0])).toEqual([1]);
 	});
 
 	it('keeps descending category X-axis sort paired with values', () => {
