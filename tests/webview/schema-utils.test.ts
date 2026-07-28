@@ -112,6 +112,14 @@ describe('shouldStartKustoSchemaPrewarm', () => {
 		expect(shouldStartKustoSchemaPrewarm({ schemaFetchInFlight: false, preparationStatus: 'idle' })).toBe(true);
 		expect(shouldStartKustoSchemaPrewarm({ schemaFetchInFlight: false, authoritativeRequestToken: 'schema_prewarm_old', preparationStatus: 'idle' })).toBe(true);
 	});
+
+	it('does not restart prewarm while schema hydration waits for editor focus', () => {
+		expect(shouldStartKustoSchemaPrewarm({
+			schemaFetchInFlight: false,
+			authoritativeRequestToken: 'schema_prewarm_current',
+			preparationStatus: 'deferred',
+		})).toBe(false);
+	});
 });
 
 describe('shouldForceKustoFocusedSchemaApply', () => {

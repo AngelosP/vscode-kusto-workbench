@@ -14,6 +14,7 @@ export interface SearchResult {
 	name: string;
 	parentName?: string;
 	matchContext?: string;
+	kustoSearchOwnerToken?: string;
 }
 
 export interface SearchState {
@@ -23,6 +24,8 @@ export interface SearchState {
 	contentToggles: Record<string, boolean>;
 	lastResults: SearchResult[];
 	lastSearchTimestamp: number;
+	kustoPrincipalFingerprint?: string;
+	kustoPolicyVersion?: number;
 }
 
 export interface SearchControllerHost extends ReactiveControllerHost {
@@ -155,6 +158,9 @@ export class ConnectionManagerSearchController implements ReactiveController {
 	private _searchDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private _saveDebounceTimer: ReturnType<typeof setTimeout> | null = null;
 	private _kind: ConnectionKind = 'kusto';
+	private _kustoSearchOwnerToken = '';
+	private _kustoPrincipalFingerprint = '';
+	private _kustoPolicyVersion: number | undefined;
 
 	constructor(private readonly host: SearchControllerHost) {
 		host.addController(this);
@@ -221,6 +227,9 @@ export class ConnectionManagerSearchController implements ReactiveController {
 		this.categories = (state.categories && typeof state.categories === 'object') ? { ...defaultCategories(kind), ...state.categories } : defaultCategories(kind);
 		this.contentToggles = (state.contentToggles && typeof state.contentToggles === 'object') ? { ...defaultContentToggles(kind), ...state.contentToggles } : defaultContentToggles(kind);
 		this.results = shouldKeepLiveResults ? previousResults : restoredResults;
+		this._kustoSearchOwnerToken = '';
+		this._kustoPrincipalFingerprint = typeof state.kustoPrincipalFingerprint === 'string' ? state.kustoPrincipalFingerprint : '';
+		this._kustoPolicyVersion = Number.isSafeInteger(state.kustoPolicyVersion) ? state.kustoPolicyVersion : undefined;
 		this.host.requestUpdate();
 	}
 
@@ -341,11 +350,18 @@ export class ConnectionManagerSearchController implements ReactiveController {
 
 	// ── Message handling (called by host component's _onMessage) ──────────
 
-	handleSearchResults(requestId: string, results: SearchResult[], completed: boolean): void {
-		if (requestId !== this._activeRequestId) return;
+	handleSearchResults(requestId: string, results: SearchResult[], completed: boolean, kustoSearchOwnerToken?: string): boolean {
+		if (requestId !== this._activeRequestId) return false;
+		if (this._kind === 'kusto') {
+			const token = String(kustoSearchOwnerToken || '').trim();
+			if (!token || (this._kustoSearchOwnerToken && this._kustoSearchOwnerToken !== token)) return false;
+			this._kustoSearchOwnerToken = token;
+		}
 		// Deduplicate: build a set of existing result keys, only add genuinely new ones
 		const existingKeys = new Set(this.results.map(r => `${r.category}|${r.connectionId}|${r.database ?? ''}|${r.name}|${r.parentName ?? ''}`));
-		const newResults = results.filter(r => !existingKeys.has(`${r.category}|${r.connectionId}|${r.database ?? ''}|${r.name}|${r.parentName ?? ''}`));
+		const newResults = results
+			.filter(r => !existingKeys.has(`${r.category}|${r.connectionId}|${r.database ?? ''}|${r.name}|${r.parentName ?? ''}`))
+			.map(result => this._kind === 'kusto' ? { ...result, kustoSearchOwnerToken: this._kustoSearchOwnerToken } : result);
 		if (newResults.length) this.results = [...this.results, ...newResults];
 		if (completed) {
 			this.loading = false;
@@ -355,6 +371,7 @@ export class ConnectionManagerSearchController implements ReactiveController {
 			this._saveStateNow();
 		}
 		this.host.requestUpdate();
+		return true;
 	}
 
 	handleSearchProgress(requestId: string, message: string, current?: number, total?: number): void {
@@ -407,6 +424,12 @@ export class ConnectionManagerSearchController implements ReactiveController {
 				contentToggles: this.contentToggles,
 				lastResults: this.results,
 				lastSearchTimestamp: Date.now(),
+				...(this._kind === 'kusto' && this._kustoPrincipalFingerprint
+					? { kustoPrincipalFingerprint: this._kustoPrincipalFingerprint }
+					: {}),
+				...(this._kind === 'kusto' && this._kustoPolicyVersion !== undefined
+					? { kustoPolicyVersion: this._kustoPolicyVersion }
+					: {}),
 			} satisfies SearchState,
 		});
 	}
@@ -415,6 +438,7 @@ export class ConnectionManagerSearchController implements ReactiveController {
 		this._cancelActiveSearch();
 		const requestId = `search_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 		this._activeRequestId = requestId;
+		this._kustoSearchOwnerToken = '';
 		this.results = [];
 		this.loading = true;
 		this.progressMessage = '';
@@ -437,6 +461,7 @@ export class ConnectionManagerSearchController implements ReactiveController {
 		this._cancelActiveSearch();
 		const requestId = `search_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 		this._activeRequestId = requestId;
+		this._kustoSearchOwnerToken = '';
 		this.loading = true;
 		this.progressMessage = '';
 		this.progressCurrent = 0;

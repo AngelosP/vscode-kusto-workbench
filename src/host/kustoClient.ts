@@ -9,7 +9,7 @@ import {
 	finalizeSchema as finalizeSchemeFn,
 	parseDatabaseSchemaResultWithRaw as parseDatabaseSchemaResultWithRawFn
 } from './kustoClientUtils';
-import { exportKustoClusterEndpoint } from '../shared/kustoClusterUrls';
+import { exportKustoClusterEndpoint, kustoClusterKey } from '../shared/kustoClusterUrls';
 import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
 import {
 	getKustoAuthScopes,
@@ -17,7 +17,9 @@ import {
 	KUSTO_AUTH_PROVIDER_ID,
 	normalizeKustoAuthorityId,
 } from '../shared/kustoAuth';
+import type { KustoDispatchIdentity } from '../shared/kustoExecution.js';
 import { KustoAuthPreferenceService, type KustoAccountPreference } from './kustoAuthPreferenceService';
+import type { KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore';
 import { KustoConnectionCache, type KustoConnectionCacheGeneration } from './kustoConnectionCache';
 import { captureSchemaCacheGeneration, deleteCachedSchemasForAccountPartitions, deleteCachedSchemasForConnections, type SchemaCacheGeneration } from './schemaCache';
 import {
@@ -32,13 +34,25 @@ type DatabaseDiscoveryOptions = {
 	traceId?: string;
 	source?: string;
 	persistIdentity?: boolean;
+	persistCache?: boolean;
+	dispatchAuthenticated?: KustoAuthenticatedDispatchGate;
 };
 
 export type SchemaDiscoveryOptions = {
 	allowInteractive?: boolean;
 	traceId?: string;
 	source?: string;
+	persistCache?: boolean;
+	dispatchAuthenticated?: KustoAuthenticatedDispatchGate;
 };
+
+export type KustoAuthenticatedDispatchGate = <T>(
+	connection: KustoConnection,
+	accountPartition: string,
+	authSessionGeneration: number,
+	policy: KustoLeaveNoTracePolicySnapshot,
+	dispatch: () => T | PromiseLike<T>,
+) => T | PromiseLike<T>;
 
 /**
  * Server-side resource usage statistics extracted from the Kusto response.
@@ -93,6 +107,8 @@ export interface QueryResult {
 export interface QueryResultWithIdentity {
 	result: QueryResult;
 	accountPartition?: string;
+	leaveNoTraceRevision: number;
+	dispatchIdentity: KustoDispatchIdentity;
 }
 
 export interface CancelableQueryExecution {
@@ -101,6 +117,11 @@ export interface CancelableQueryExecution {
 	clientActivityId: string;
 	getAccountPartition: () => string | undefined;
 }
+
+export type CancelableQueryExecutionOptions = Readonly<{
+	onDispatch?: (identity: KustoDispatchIdentity) => void;
+	dispatchAuthenticated?: KustoAuthenticatedDispatchGate;
+}>;
 
 export interface DatabaseSchemaIndex {
 	tables: string[];
@@ -202,6 +223,7 @@ export type KustoAuthContext = Readonly<{
 	account: vscode.AuthenticationSessionAccountInformation;
 	accountId: string;
 	accountPartition: string;
+	authSessionGeneration: number;
 	preferenceMode: KustoAccountPreference['mode'];
 }>;
 
@@ -244,6 +266,7 @@ export class KustoQueryClient {
 	private static readonly AUTH_CANCEL_SUPPRESS_MS = 2500;
 
 	private readonly context?: vscode.ExtensionContext;
+	private readonly connectionManager?: ConnectionManager;
 	private readonly output: WorkbenchLogger;
 	private readonly authLocksByIdentity = new Map<string, Promise<void>>();
 	private readonly authCancelledAtByIdentity = new Map<string, number>();
@@ -260,6 +283,7 @@ export class KustoQueryClient {
 
 	constructor(context?: vscode.ExtensionContext, output?: WorkbenchLogger, connectionManager?: ConnectionManager) {
 		this.context = context;
+		this.connectionManager = connectionManager;
 		this.output = output ?? getWorkbenchLogger();
 		if (context) {
 			this.authPreferences = KustoAuthPreferenceService.getInstance(context);
@@ -682,6 +706,7 @@ export class KustoQueryClient {
 		const accountId = String(session.account.id || '').trim();
 		const accountPartition = this.authPreferences?.getAccountPartition(authorityId, accountId)
 			?? `ephemeral:${accountId}`;
+		this.authPreferences?.observeProviderSession(session, getKustoAuthScopes(authorityId));
 		return Object.freeze({
 			connectionId: connection.id,
 			connectionIdentityKey: this.connectionIdentityKey(connection),
@@ -691,6 +716,7 @@ export class KustoQueryClient {
 			account: Object.freeze({ id: accountId, label: session.account.label }),
 			accountId,
 			accountPartition,
+			authSessionGeneration: this.authPreferences?.getProviderSessionGeneration(accountId) ?? 0,
 			preferenceMode: preference.mode,
 		});
 	}
@@ -1328,6 +1354,14 @@ export class KustoQueryClient {
 		return accountId ? this.authPreferences?.getAccountPartition(connection.authorityId, accountId) : undefined;
 	}
 
+	public getConnectionSessionGeneration(connection: KustoConnection): number {
+		return this.authPreferences?.getConnectionSessionGeneration(connection.id) ?? 0;
+	}
+
+	public async waitForProviderAccountRefresh(): Promise<void> {
+		await this.authPreferences?.waitForProviderAccountRefresh();
+	}
+
 	async getDatabasesWithIdentity(connection: KustoConnection, forceRefresh: boolean = false, opts?: DatabaseDiscoveryOptions): Promise<KustoDatabaseDiscoveryResult> {
 		const traceId = String(opts?.traceId || createDatabaseListTraceId());
 		const startedAt = Date.now();
@@ -1383,7 +1417,14 @@ export class KustoQueryClient {
 			const generationsByPartition = new Map<string, KustoConnectionCacheGeneration>();
 			const result = await this.executeWithAuthRetry<any>(
 				connection,
-				(client) => client.execute('', '.show databases', props),
+				(client, auth) => {
+					if (!opts?.dispatchAuthenticated || !this.connectionManager) return client.execute('', '.show databases', props);
+					if (!auth) throw new Error('Kusto dispatch identity is unavailable.');
+					return this.connectionManager.runWithLeaveNoTraceSnapshotLock(policy => Promise.resolve(opts.dispatchAuthenticated!(
+						connection, auth.accountPartition, auth.authSessionGeneration, policy,
+						() => client.execute('', '.show databases', props),
+					)));
+				},
 				{
 					allowInteractive: opts?.allowInteractive,
 					traceId,
@@ -1442,7 +1483,7 @@ export class KustoQueryClient {
 				? generationsByPartition.get(resolvedPartition) ?? cacheGeneration
 				: operationCacheGeneration;
 			let cacheUpdated = false;
-			if (opts?.persistIdentity !== false && databases.length > 0 && resolvedPartition) {
+			if (opts?.persistIdentity !== false && opts?.persistCache !== false && databases.length > 0 && resolvedPartition) {
 				cacheUpdated = await this.connectionCache?.setDatabases(connection.id, resolvedPartition, databases, resolvedCacheGeneration) ?? true;
 			}
 			const currentGeneration = resolvedPartition
@@ -1497,18 +1538,54 @@ export class KustoQueryClient {
 	async executeQueryWithIdentity(
 		connection: KustoConnection,
 		database: string,
-		query: string
+		query: string,
+		dispatchAuthenticated?: KustoAuthenticatedDispatchGate,
 	): Promise<QueryResultWithIdentity> {
 		const startTime = Date.now();
 		
 		let requestClientActivityId: string | undefined;
 		let operationAuth: KustoAuthContext | undefined;
+		let leaveNoTraceRevision = 0;
+		let dispatchIdentity: KustoDispatchIdentity | undefined;
+		let dispatchAttempt = 0;
 		try {
 			const queryTimeoutMin = vscode.workspace.getConfiguration('kustoWorkbench').get<number>('queryTimeout', 20);
 			const clientTimeoutMs = queryTimeoutMin > 0 ? queryTimeoutMin * 60 * 1000 : undefined;
 			const props = await this.createRequestProperties('execute_query', clientTimeoutMs);
 			requestClientActivityId = props.clientRequestId;
-			const result = await this.executeWithAuthRetry<any>(connection, (client) => client.execute(database, query, props), {
+			const result = await this.executeWithAuthRetry<any>(connection, async (client, auth) => {
+				if (!auth) throw new QueryExecutionError('Kusto dispatch identity is unavailable.', requestClientActivityId);
+				const attempt = ++dispatchAttempt;
+				const start = (revision: number) => {
+					leaveNoTraceRevision = revision;
+					dispatchIdentity = Object.freeze({
+						dispatchAttempt: attempt,
+						connectionRevision: this.connectionManager?.getConnectionIncarnation(connection.id) ?? 0,
+						leaveNoTraceRevision: revision,
+						connectionIdentityKey: auth.connectionIdentityKey,
+						clusterEndpoint: auth.clusterEndpoint,
+						...(auth.authorityId ? { authorityId: auth.authorityId } : {}),
+						accountPartition: auth.accountPartition,
+						authSessionGeneration: auth.authSessionGeneration,
+						clientActivityId: String(props.clientRequestId || requestClientActivityId || ''),
+					});
+					return client.execute(database, query, props);
+				};
+				if (dispatchAuthenticated && this.connectionManager) {
+					return this.connectionManager.runWithLeaveNoTraceSnapshotLock(policy => Promise.resolve(
+						dispatchAuthenticated(
+							connection,
+							auth.accountPartition,
+							auth.authSessionGeneration,
+							policy,
+							() => start(policy.revocationGenerations[kustoClusterKey(connection.clusterUrl)] ?? 0),
+						),
+					));
+				}
+				if (!this.connectionManager) return start(0);
+				const dispatch = await this.connectionManager.prepareLeaveNoTraceDispatch(connection.clusterUrl, start);
+				return dispatch.value;
+			}, {
 				onClient: (_client, auth) => { operationAuth = auth; },
 			});
 			const executionTime = ((Date.now() - startTime) / 1000).toFixed(3) + 's';
@@ -1543,6 +1620,7 @@ export class KustoQueryClient {
 				rows.push(rowArray.map((cell: any) => formatCellValue(cell)));
 			}
 			
+			if (!dispatchIdentity) throw new QueryExecutionError('Kusto dispatch identity is unavailable.', requestClientActivityId);
 			return {
 				result: {
 					columns,
@@ -1556,6 +1634,8 @@ export class KustoQueryClient {
 					}
 				},
 				accountPartition: operationAuth?.accountPartition,
+				leaveNoTraceRevision,
+				dispatchIdentity,
 			};
 		} catch (error) {
 			getWorkbenchLogger().error('Error executing query:', error instanceof Error ? error : String(error));
@@ -1578,7 +1658,8 @@ export class KustoQueryClient {
 		connection: KustoConnection,
 		database: string,
 		query: string,
-		clientKey?: string
+		clientKey?: string,
+		options?: CancelableQueryExecutionOptions,
 	): CancelableQueryExecution {
 		const key = String(clientKey || connection.id || '').trim() || 'default';
 		const clientActivityId = `KW.execute_query;${randomUUID()}`;
@@ -1586,8 +1667,9 @@ export class KustoQueryClient {
 		let capturedAuth: KustoAuthContext | undefined;
 		let cancelled = false;
 		let settled = false;
-		let submitted = false;
-		let serverCancelStarted = false;
+		let dispatchAttempt = 0;
+		const submittedAttempts: Array<Readonly<{ auth: KustoAuthContext; clientActivityId: string }>> = [];
+		const serverCancelStarted = new Set<string>();
 
 		// Use a deferred rejection so that cancel() immediately resolves the
 		// outer promise instead of waiting for the HTTP round-trip to complete.
@@ -1602,16 +1684,19 @@ export class KustoQueryClient {
 		cancelPromise.catch(() => { /* intentionally ignored */ });
 
 		const startServerCancel = () => {
-			if (serverCancelStarted || !submitted) {
-				return;
+			for (const attempt of submittedAttempts) {
+				if (serverCancelStarted.has(attempt.clientActivityId)) continue;
+				serverCancelStarted.add(attempt.clientActivityId);
+				void this.cancelQueryByClientActivityId(
+					connection,
+					database,
+					attempt.clientActivityId,
+					'Canceled from Kusto Workbench',
+					attempt.auth,
+				).catch(() => {
+					// Server-side cancellation is best-effort. Local cancellation already won.
+				});
 			}
-			serverCancelStarted = true;
-			const cancellation = capturedAuth
-				? this.cancelQueryByClientActivityId(connection, database, clientActivityId, 'Canceled from Kusto Workbench', capturedAuth)
-				: this.cancelQueryByClientActivityId(connection, database, clientActivityId);
-			void cancellation.catch(() => {
-				// Server-side cancellation is best-effort. Local cancellation already won.
-			});
 		};
 
 		const cancel = () => {
@@ -1661,21 +1746,55 @@ export class KustoQueryClient {
 				if (cancelled) {
 					throw new QueryCancelledError();
 				}
-				const queryTimeoutMin = vscode.workspace.getConfiguration('kustoWorkbench').get<number>('queryTimeout', 20);
-				const clientTimeoutMs = queryTimeoutMin > 0 ? queryTimeoutMin * 60 * 1000 : undefined;
-				const props = await this.createRequestProperties('execute_query', clientTimeoutMs, clientActivityId);
-				if (cancelled) {
-					throw new QueryCancelledError();
-				}
-				requestClientActivityId = props.clientRequestId || clientActivityId;
 				const result = await this.executeWithAuthRetry<any>(
 					connection,
-					(c) => {
+					async (c, auth) => {
 						if (cancelled) {
 							throw new QueryCancelledError();
 						}
-						submitted = true;
-						return c.execute(database, query, props);
+						if (!auth) throw new QueryCancelledError('Kusto dispatch identity is unavailable.');
+						const attempt = ++dispatchAttempt;
+						const attemptClientActivityId = attempt === 1
+							? clientActivityId
+							: `KW.execute_query;${randomUUID()}`;
+						const queryTimeoutMin = vscode.workspace.getConfiguration('kustoWorkbench').get<number>('queryTimeout', 20);
+						const clientTimeoutMs = queryTimeoutMin > 0 ? queryTimeoutMin * 60 * 1000 : undefined;
+						const props = await this.createRequestProperties('execute_query', clientTimeoutMs, attemptClientActivityId);
+						if (cancelled) throw new QueryCancelledError();
+						const submittedClientActivityId = String(props.clientRequestId || attemptClientActivityId);
+						requestClientActivityId = submittedClientActivityId;
+						const start = (leaveNoTraceRevision: number) => {
+							if (cancelled) throw new QueryCancelledError();
+							const dispatchIdentity = Object.freeze({
+								dispatchAttempt: attempt,
+								connectionRevision: this.connectionManager?.getConnectionIncarnation(connection.id) ?? 0,
+								leaveNoTraceRevision,
+								connectionIdentityKey: auth.connectionIdentityKey,
+								clusterEndpoint: auth.clusterEndpoint,
+								...(auth.authorityId ? { authorityId: auth.authorityId } : {}),
+								accountPartition: auth.accountPartition,
+								authSessionGeneration: auth.authSessionGeneration,
+								clientActivityId: submittedClientActivityId,
+							});
+							options?.onDispatch?.(dispatchIdentity);
+							submittedAttempts.push(Object.freeze({ auth, clientActivityId: submittedClientActivityId }));
+							return c.execute(database, query, props);
+						};
+						if (!this.connectionManager) return start(0);
+						if (options?.dispatchAuthenticated && this.connectionManager) {
+							return this.connectionManager.runWithLeaveNoTraceSnapshotLock(policy => Promise.resolve(
+								options.dispatchAuthenticated!(
+									connection,
+									auth.accountPartition,
+									auth.authSessionGeneration,
+									policy,
+									() => start(policy.revocationGenerations[kustoClusterKey(connection.clusterUrl)] ?? 0),
+								),
+							));
+						}
+						if (!this.connectionManager) return start(0);
+						const dispatch = await this.connectionManager.prepareLeaveNoTraceDispatch(connection.clusterUrl, start);
+						return dispatch.value;
 					},
 					{
 						allowInteractive: true,
@@ -1804,7 +1923,14 @@ export class KustoQueryClient {
 				const generationsByPartition = new Map<string, SchemaCacheGeneration>();
 				const result = await this.executeWithAuthRetry<any>(
 					connection,
-					(client) => client.execute(database, command, props),
+					(client, auth) => {
+						if (!opts?.dispatchAuthenticated || !this.connectionManager) return client.execute(database, command, props);
+						if (!auth) throw new Error('Kusto dispatch identity is unavailable.');
+						return this.connectionManager.runWithLeaveNoTraceSnapshotLock(policy => Promise.resolve(opts.dispatchAuthenticated!(
+							connection, auth.accountPartition, auth.authSessionGeneration, policy,
+							() => client.execute(database, command, props),
+						)));
+					},
 					{
 						allowInteractive: opts?.allowInteractive,
 						traceId,
@@ -1844,7 +1970,7 @@ export class KustoQueryClient {
 						|| currentGeneration.partition !== operationCacheGeneration.partition)) {
 					throw new QueryCancelledError('Cached values changed while schema discovery was running');
 				}
-				if (resolvedPartition) {
+				if (resolvedPartition && opts?.persistCache !== false) {
 					this.schemaCache.set(this.schemaCacheKey(connection, resolvedPartition, database), { schema, timestamp: Date.now() });
 				}
 				return { schema, fromCache: false, accountPartition: resolvedPartition, cacheGeneration: operationCacheGeneration, debug };

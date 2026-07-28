@@ -44,8 +44,8 @@ export const qualifyTablesInFlightByBoxId: Record<string, any> = {};
 export const schemaByConnDb: Record<string, any> = {};
 export const schemaMetaByConnDb: Record<string, any> = {};
 export const databaseRequestTokenByBoxId: Record<string, string | undefined> = {};
-export type KustoPreparationStatus = 'idle' | 'preparing' | 'ready' | 'error';
-export type KustoPreparationStage = 'idle' | 'databases' | 'schema' | 'refreshing' | 'waiting-worker' | 'enhancing' | 'ready' | 'error';
+export type KustoPreparationStatus = 'idle' | 'preparing' | 'deferred' | 'ready' | 'error';
+export type KustoPreparationStage = 'idle' | 'databases' | 'schema' | 'refreshing' | 'waiting-worker' | 'waiting-focus' | 'enhancing' | 'ready' | 'error';
 export type KustoPreparationBlocker = 'databases' | 'schema' | 'refresh' | 'worker' | 'enhancement';
 export type KustoPreparationToken = Readonly<{
 	boxId: string;
@@ -403,10 +403,11 @@ export function reviseKustoPreparation(token: KustoPreparationToken | undefined,
 		...replaceBlockers.filter(blocker => !(update.removeBlockers || []).includes(blocker)),
 		...(update.addBlockers || []),
 	]);
-	const status = update.status ?? (blockers.length ? 'preparing' : 'ready');
+	const status = update.status ?? (blockers.length ? 'preparing' : current.status === 'deferred' ? 'deferred' : 'ready');
 	const stage = status === 'error' ? 'error'
 		: status === 'idle' ? 'idle'
 			: status === 'ready' ? 'ready'
+				: status === 'deferred' ? (update.stage || current.stage || 'waiting-focus')
 				: (update.stage || stageForPreparationBlockers(blockers));
 	publishKustoPreparation(token.boxId, createKustoPreparationState({
 		status,
@@ -429,10 +430,11 @@ export function updateKustoPreparation(token: KustoPreparationToken | undefined,
 		...replaceBlockers.filter(blocker => !(update.removeBlockers || []).includes(blocker)),
 		...(update.addBlockers || []),
 	]);
-	const status = update.status ?? (blockers.length ? 'preparing' : 'ready');
+	const status = update.status ?? (blockers.length ? 'preparing' : current.status === 'deferred' ? 'deferred' : 'ready');
 	const stage = status === 'error' ? 'error'
 		: status === 'idle' ? 'idle'
 			: status === 'ready' ? 'ready'
+				: status === 'deferred' ? (update.stage || current.stage || 'waiting-focus')
 				: (update.stage || stageForPreparationBlockers(blockers));
 	publishKustoPreparation(token.boxId, createKustoPreparationState({
 		status,
@@ -528,6 +530,7 @@ export function markSchemaWorkerApplyPending(boxId: string, schemaKey: string, s
 	if (preparationToken) {
 		updateKustoPreparation(preparationToken, {
 			stage: 'waiting-worker',
+			status: 'preparing',
 			addBlockers: ['worker'],
 			target: { schemaKey, schemaSignature, modelUri },
 		});
@@ -549,7 +552,11 @@ export function markSchemaWorkerReady(boxId: string, schemaKey: string, schemaSi
 		// The base worker schema is the user-visible readiness boundary. Function
 		// output inference continues in the background and must not hold the toolbar
 		// progress indicator after Monaco can already serve semantic completions.
-		updateKustoPreparation(preparationToken, { removeBlockers: ['schema', 'worker', 'enhancement'] });
+		updateKustoPreparation(preparationToken, {
+			status: 'ready',
+			stage: 'ready',
+			removeBlockers: ['schema', 'worker', 'enhancement'],
+		});
 	}
 }
 

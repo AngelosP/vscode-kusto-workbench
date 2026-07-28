@@ -5,6 +5,7 @@ import { getKustoConnectionIdentityKey } from '../shared/kustoAuth';
 
 export interface KustoConnectionLifecycleEffects {
 	invalidateConnections(connectionIds: readonly string[]): void;
+	invalidatePhysicalTargets?(connectionIds: readonly string[]): void;
 	publishIdentityChange(connectionIds: readonly string[]): unknown | PromiseLike<unknown>;
 	refreshConnections(): unknown | PromiseLike<unknown>;
 }
@@ -37,6 +38,7 @@ export function getIdentityInvalidatedConnectionIds(change: KustoConnectionChang
 
 export class KustoConnectionLifecycle implements vscode.Disposable {
 	private readonly subscription: vscode.Disposable;
+	private readonly leaveNoTraceSubscription?: vscode.Disposable;
 	private tail: Promise<void> = Promise.resolve();
 	private disposed = false;
 
@@ -45,28 +47,47 @@ export class KustoConnectionLifecycle implements vscode.Disposable {
 		private readonly effects: KustoConnectionLifecycleEffects,
 	) {
 		this.subscription = connectionManager.onDidChangeConnections(change => {
-			const run = () => this.handleChange(change);
-			const next = this.tail.then(run, run);
-			this.tail = next.catch(() => undefined);
+			const invalidated = [...new Set(getIdentityInvalidatedConnectionIds(change).filter(Boolean))];
+			if (invalidated.length > 0) {
+				this.effects.invalidatePhysicalTargets?.(invalidated);
+				this.effects.invalidateConnections(invalidated);
+			}
+			this.enqueue(() => this.handleChange(invalidated));
 		});
+		if (typeof connectionManager.onDidChangeLeaveNoTrace === 'function') {
+			this.leaveNoTraceSubscription = connectionManager.onDidChangeLeaveNoTrace(change => {
+				const invalidated = [...new Set(change.connectionIds.filter(Boolean))];
+				if (invalidated.length > 0) this.effects.invalidateConnections(invalidated);
+				this.enqueue(() => this.handleLeaveNoTraceChange());
+			});
+		}
 	}
 
 	dispose(): void {
 		if (this.disposed) return;
 		this.disposed = true;
 		this.subscription.dispose();
+		this.leaveNoTraceSubscription?.dispose();
 	}
 
-	private async handleChange(change: KustoConnectionChange): Promise<void> {
+	private enqueue(run: () => Promise<void>): void {
+		const next = this.tail.then(run, run);
+		this.tail = next.catch(() => undefined);
+	}
+
+	private async handleChange(invalidated: readonly string[]): Promise<void> {
 		if (this.disposed) return;
 		try {
-			const invalidated = [...new Set(getIdentityInvalidatedConnectionIds(change).filter(Boolean))];
 			if (invalidated.length > 0) {
-				this.effects.invalidateConnections(invalidated);
 				await this.effects.publishIdentityChange(invalidated);
 			}
 		} finally {
 			if (!this.disposed) await this.effects.refreshConnections();
 		}
+	}
+
+	private async handleLeaveNoTraceChange(): Promise<void> {
+		if (this.disposed) return;
+		if (!this.disposed) await this.effects.refreshConnections();
 	}
 }

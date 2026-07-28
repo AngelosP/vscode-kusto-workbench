@@ -6,7 +6,7 @@ import { ConnectionManager, KustoConnection } from './connectionManager';
 import { ConnectionService } from './queryEditorConnection';
 import { KustoQueryClient, DatabaseSchemaIndex } from './kustoClient';
 import { createEmptyKqlxOrMdxFile } from './kqlxFormat';
-import { deleteCachedSchemasForConnections, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry, searchCachedSchemas, readAllCachedSchemasFromDisk, type SchemaSearchMatch, schemaCacheKey, schemaPrincipalIdentity } from './schemaCache';
+import { captureSchemaCacheGeneration, deleteCachedSchemasForConnections, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, CachedSchemaEntry, searchCachedSchemas, readAllCachedSchemasFromDisk, type SchemaSearchMatch, schemaCacheKey, schemaPrincipalIdentity, type SchemaCacheGeneration } from './schemaCache';
 import { readCurrentSqlSchemaPrincipalFingerprint, searchCachedSqlSchemas, readAllCachedSqlSchemasFromDisk, sqlSchemaPrincipalFingerprint, sqlSchemaPrincipalFingerprintForPrincipal, sqlSchemaTargetSignature, type SqlSchemaCacheOwner, type SqlSchemaSearchMatch } from './sqlEditorSchema';
 import type { SqlConnectionManager, SqlConnection } from './sqlConnectionManager';
 import type { SqlQueryClient } from './sqlClient';
@@ -14,8 +14,8 @@ import { listDialects } from './sql/sqlDialectRegistry';
 import { selectBestKustoClusterUrl } from '../shared/kustoClusterUrls';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { resolveKustoConnection } from '../shared/kustoAuth';
-import { KustoAuthPreferenceService, type KustoAccountPreference } from './kustoAuthPreferenceService';
-import { KustoConnectionCache } from './kustoConnectionCache';
+import { KustoAuthPreferenceService, type KustoAccountPreference, type KustoAuthPreferenceChange } from './kustoAuthPreferenceService';
+import { KustoConnectionCache, type KustoConnectionCacheGeneration } from './kustoConnectionCache';
 import { normalizeSqlServerUrl } from './sql/sqlAuthState';
 import { normalizeKustoAuthorityId } from '../shared/kustoAuth';
 import { getKustoConnectionIdentityKey } from '../shared/kustoAuth';
@@ -86,8 +86,31 @@ const STORAGE_KEYS = {
 
 export type ConnectionKind = 'kusto' | 'sql';
 
+type KustoSearchOwner = {
+	connection: KustoConnection;
+	connectionIdentityKey: string;
+	connectionIncarnation: number;
+	leaveNoTraceRevision: number;
+	authSessionGeneration: number;
+	databaseCacheGeneration: KustoConnectionCacheGeneration;
+	schemaCacheGeneration: SchemaCacheGeneration;
+	accountPartition?: string;
+};
+
+type PersistedKustoSearchOwner = Omit<KustoSearchOwner, 'connection'>;
+
+function cacheGenerationMatches(
+	current: KustoConnectionCacheGeneration | SchemaCacheGeneration,
+	expected: KustoConnectionCacheGeneration | SchemaCacheGeneration,
+): boolean {
+	return current.global === expected.global
+		&& current.connection === expected.connection
+		&& current.partition === expected.partition;
+}
+
 type IncomingMessage =
 	| { type: 'requestSnapshot' }
+	| { type: 'kustoPublicationAck'; publicationId: string; phase: 'staged' | 'applied'; accepted: boolean }
 	| { type: 'connection.add'; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string }
 	| { type: 'connection.edit'; id: string; name: string; clusterUrl: string; database?: string; authorityId?: string; accountId?: string }
 	| { type: 'connection.delete'; id: string }
@@ -153,6 +176,14 @@ export interface ConnectionManagerSqlDeps {
 		accountsByServer: Readonly<Record<string, string>>;
 		principalVersion: number;
 	}) => T | PromiseLike<T>) => Promise<T>;
+	tryDispatchSqlOwnerSnapshot?: <T>(dispatch: (snapshot: {
+		policy: { connectionIds: readonly string[]; version: number; globallyBlocked: boolean; revocationGenerations: Readonly<Record<string, number>> };
+		connections: readonly SqlConnection[];
+		connectionVersion: number;
+		accountsByServer: Readonly<Record<string, string>>;
+		principalVersion: number;
+	}) => T | PromiseLike<T>) => Promise<{ acquired: true; value: T } | { acquired: false }>;
+	retrySqlOwnerSnapshotAcquisition?: <T>(attempt: () => Promise<{ acquired: true; value: T } | { acquired: false }>) => Promise<T>;
 	refreshSqlLeaveNoTracePolicy?: () => Promise<string[]>;
 	getSqlLeaveNoTraceConnectionIds?: () => string[];
 	getSqlRevocationGeneration?: (connectionId: string) => number;
@@ -200,8 +231,11 @@ export class ConnectionManagerViewerV2 {
 	private configSubscription: vscode.Disposable | undefined;
 	private _activeSearchRequestId: string | null = null;
 	private _searchAbortController: AbortController | null = null;
+	private activeKustoSearchOwners = new Map<string, KustoSearchOwner>();
+	private readonly kustoSearchOwnersByToken = new Map<string, ReadonlyMap<string, KustoSearchOwner>>();
 	private readonly _sqlViewerAbortController = new AbortController();
 	private readonly _sqlTestConnectionRequestIdByConnectionId = new Map<string, string>();
+	private readonly pendingKustoPublicationAcks = new Map<string, { resolve: (accepted: boolean) => void; timer?: ReturnType<typeof setTimeout> }>();
 	private snapshotRevision = 0;
 
 	private traceDatabaseList(traceId: string, event: string, details: Record<string, unknown> = {}): void {
@@ -238,7 +272,12 @@ export class ConnectionManagerViewerV2 {
 			}
 			return undefined;
 		}));
-		this.disposables.push(this.authPreferences.onDidChange(() => this.sendSnapshotToWebview()));
+		this.disposables.push(this.authPreferences.onDidChange(change => this.handleKustoAuthPreferenceChange(change)));
+		this.disposables.push(this.connectionManager.onDidChangeLeaveNoTrace(change => {
+			if (change.connectionIds.some(id => this.activeKustoSearchOwners.has(id))) this._searchAbortController?.abort();
+			try { this.panel.webview.postMessage({ type: 'kustoPolicyChanged', connectionIds: change.connectionIds }); } catch { /* panel disposed */ }
+			void this.sendSnapshotToWebview();
+		}));
 		const sqlPolicySubscription = this.sqlDeps?.onDidChangeSqlLeaveNoTrace?.(change => {
 			this._searchAbortController?.abort();
 			if (change.invalidatedConnectionIds.length > 0) {
@@ -278,6 +317,55 @@ export class ConnectionManagerViewerV2 {
 		}
 		this._searchAbortController?.abort();
 		this._sqlViewerAbortController.abort();
+		for (const [publicationId, pending] of [...this.pendingKustoPublicationAcks]) {
+			this.pendingKustoPublicationAcks.delete(publicationId);
+			if (pending.timer) clearTimeout(pending.timer);
+			pending.resolve(false);
+		}
+	}
+
+	private handleKustoAuthPreferenceChange(change: KustoAuthPreferenceChange): void {
+		const firstEstablishment = change.reason === 'success' && change.firstEstablishment === true;
+		if (!firstEstablishment && change.connectionIds.some(id => this.activeKustoSearchOwners.has(id))) {
+			this._searchAbortController?.abort();
+		}
+		void this.sendSnapshotToWebview();
+	}
+
+	private async postKustoPublication(message: Record<string, unknown>): Promise<boolean> {
+		const publicationId = `kusto-viewer-publication-${randomUUID()}`;
+		const publicationDeadline = Date.now() + 5_000;
+		const waitForAck = (phase: 'staged' | 'applied', timeoutMs?: number): Promise<boolean> => new Promise(resolve => {
+			const key = `${publicationId}:${phase}`;
+			const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+				this.pendingKustoPublicationAcks.delete(key);
+				resolve(false);
+			}, timeoutMs);
+			this.pendingKustoPublicationAcks.set(key, { resolve, ...(timer ? { timer } : {}) });
+		});
+		const fail = (phase: 'staged' | 'applied') => {
+			const key = `${publicationId}:${phase}`;
+			const pending = this.pendingKustoPublicationAcks.get(key);
+			if (!pending) return;
+			this.pendingKustoPublicationAcks.delete(key);
+			if (pending.timer) clearTimeout(pending.timer);
+			pending.resolve(false);
+		};
+		const staged = waitForAck('staged', 5_000);
+		if (!await this.panel.webview.postMessage({ type: 'kustoPublicationStage', publicationId, publicationDeadline, payload: message })) fail('staged');
+		if (!await staged) return false;
+		const applied = waitForAck('applied');
+		const appliedPending = this.pendingKustoPublicationAcks.get(`${publicationId}:applied`);
+		if (appliedPending) {
+			const key = `${publicationId}:applied`;
+			appliedPending.timer = setTimeout(async () => {
+				if (this.pendingKustoPublicationAcks.get(key) !== appliedPending) return;
+				appliedPending.timer = setTimeout(() => fail('applied'), 1_000);
+				if (!await this.panel.webview.postMessage({ type: 'kustoPublicationRevoke', publicationId })) fail('applied');
+			}, Math.max(1, publicationDeadline - Date.now()));
+		}
+		if (!await this.panel.webview.postMessage({ type: 'kustoPublicationCommit', publicationId })) fail('applied');
+		return applied;
 	}
 
 	// ─── Data helpers (identical to original) ───────────────────────────────
@@ -465,6 +553,18 @@ export class ConnectionManagerViewerV2 {
 		return this.sqlDeps.dispatchSqlOwnerSnapshot(dispatch as any) as Promise<T>;
 	}
 
+	private async tryDispatchSqlOwnerSnapshot<T>(dispatch: (snapshot: any) => T | PromiseLike<T>): Promise<{ acquired: true; value: T } | { acquired: false }> {
+		if (this.sqlDeps?.tryDispatchSqlOwnerSnapshot) return this.sqlDeps.tryDispatchSqlOwnerSnapshot(dispatch);
+		return { acquired: true, value: await this.dispatchSqlOwnerSnapshot(dispatch as any) };
+	}
+
+	private async retrySqlOwnerSnapshotAcquisition<T>(attempt: () => Promise<{ acquired: true; value: T } | { acquired: false }>): Promise<T> {
+		if (this.sqlDeps?.retrySqlOwnerSnapshotAcquisition) return this.sqlDeps.retrySqlOwnerSnapshotAcquisition(attempt);
+		const result = await attempt();
+		if (!result.acquired) throw new Error('Canonical SQL owner snapshot is contended.');
+		return result.value;
+	}
+
 	private assertCurrentSqlTarget(connectionId: string, startingConnection: SqlConnection, requestId?: string): SqlConnection {
 		const current = this.sqlDeps?.getSqlConnectionManager().getConnection(connectionId);
 		if (!current
@@ -526,7 +626,148 @@ export class ConnectionManagerViewerV2 {
 	}
 
 	private getKustoSearchPrincipalFingerprint(): string {
-		return [...this.getActiveSchemaPrincipalIdentities()].sort().join(';');
+		return this.connectionManager.getConnections().flatMap(connection => {
+			try {
+				return [JSON.stringify([
+					connection.id,
+					this.connectionManager.getConnectionIncarnation(connection.id),
+					getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId),
+					this.kustoClient.getAccountPartition(connection) || '',
+					this.authPreferences.getConnectionSessionGeneration(connection.id),
+				])];
+			} catch { return []; }
+		}).sort().join(';');
+	}
+
+	private rememberKustoSearchOwners(owners: ReadonlyMap<string, KustoSearchOwner>): string {
+		const token = randomUUID();
+		this.kustoSearchOwnersByToken.set(token, owners);
+		while (this.kustoSearchOwnersByToken.size > 32) {
+			const oldest = this.kustoSearchOwnersByToken.keys().next().value;
+			if (!oldest) break;
+			this.kustoSearchOwnersByToken.delete(oldest);
+		}
+		return token;
+	}
+
+	private persistedKustoSearchOwner(owner: KustoSearchOwner): PersistedKustoSearchOwner {
+		const { connection: _connection, ...proof } = owner;
+		return structuredClone(proof);
+	}
+
+	private persistedKustoSearchOwnerCurrent(
+		connectionId: string,
+		proof: PersistedKustoSearchOwner | undefined,
+		policy: { clusterKeys: readonly string[]; globallyBlocked: boolean; revocationGenerations?: Readonly<Record<string, number>> },
+	): boolean {
+		if (!proof) return false;
+		const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+		if (!connection) return false;
+		try {
+			const partition = this.kustoClient.getAccountPartition(connection) || '';
+			return !policy.globallyBlocked
+				&& !new Set(policy.clusterKeys).has(kustoClusterKey(connection.clusterUrl))
+				&& this.connectionManager.getConnectionIncarnation(connection.id) === proof.connectionIncarnation
+				&& getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId) === proof.connectionIdentityKey
+				&& this.authPreferences.getConnectionSessionGeneration(connection.id) === proof.authSessionGeneration
+				&& (!proof.accountPartition || partition === proof.accountPartition)
+				&& (policy.revocationGenerations?.[kustoClusterKey(connection.clusterUrl)] ?? 0) === proof.leaveNoTraceRevision
+				&& cacheGenerationMatches(this.connectionCache.captureGeneration(connection.id, partition), proof.databaseCacheGeneration)
+				&& cacheGenerationMatches(captureSchemaCacheGeneration(this.context.globalStorageUri, connection.id, partition), proof.schemaCacheGeneration);
+		} catch { return false; }
+	}
+
+	private isKustoSearchOwnerCurrent(
+		owner: KustoSearchOwner,
+		policy: {
+			clusterKeys: readonly string[];
+			globallyBlocked: boolean;
+			version: number;
+			revocationGenerations?: Readonly<Record<string, number>>;
+		},
+	): boolean {
+		const current = this.connectionManager.getConnections().find(connection => connection.id === owner.connection.id);
+		const clusterKey = kustoClusterKey(current?.clusterUrl);
+		if (!current || (policy.revocationGenerations?.[clusterKey] ?? 0) !== owner.leaveNoTraceRevision
+			|| policy.globallyBlocked || new Set(policy.clusterKeys).has(kustoClusterKey(current.clusterUrl))) return false;
+		try {
+			const partition = this.kustoClient.getAccountPartition(current) || '';
+			return this.connectionManager.getConnectionIncarnation(current.id) === owner.connectionIncarnation
+				&& getKustoConnectionIdentityKey(current.clusterUrl, current.authorityId) === owner.connectionIdentityKey
+				&& this.authPreferences.getConnectionSessionGeneration(current.id) === owner.authSessionGeneration
+				&& (!owner.accountPartition || partition === owner.accountPartition)
+				&& cacheGenerationMatches(this.connectionCache.captureGeneration(current.id, partition), owner.databaseCacheGeneration)
+				&& cacheGenerationMatches(captureSchemaCacheGeneration(this.context.globalStorageUri, current.id, partition), owner.schemaCacheGeneration);
+		} catch { return false; }
+	}
+
+	private async captureKustoSearchOwners(): Promise<Map<string, KustoSearchOwner>> {
+		return this.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+			const protectedClusters = new Set(policy.clusterKeys);
+			const owners = new Map<string, KustoSearchOwner>();
+			for (const connection of this.connectionManager.getConnections()) {
+				if (policy.globallyBlocked || protectedClusters.has(kustoClusterKey(connection.clusterUrl))) continue;
+				try {
+					const accountPartition = this.kustoClient.getAccountPartition(connection);
+					owners.set(connection.id, {
+						connection: { ...connection },
+						connectionIdentityKey: getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId),
+						connectionIncarnation: this.connectionManager.getConnectionIncarnation(connection.id),
+						leaveNoTraceRevision: policy.revocationGenerations[kustoClusterKey(connection.clusterUrl)] ?? 0,
+						authSessionGeneration: this.authPreferences.getConnectionSessionGeneration(connection.id),
+						databaseCacheGeneration: this.connectionCache.captureGeneration(connection.id, accountPartition || ''),
+						schemaCacheGeneration: captureSchemaCacheGeneration(this.context.globalStorageUri, connection.id, accountPartition || ''),
+						...(accountPartition ? { accountPartition } : {}),
+					});
+				} catch { /* malformed saved identities are not searchable */ }
+			}
+			return owners;
+		});
+	}
+
+	private async captureKustoMetadataOwner(connectionId: string): Promise<KustoSearchOwner | undefined> {
+		return (await this.captureKustoSearchOwners()).get(connectionId);
+	}
+
+	private async admitKustoMetadataOwner<T>(
+		owner: KustoSearchOwner,
+		expectedAccountPartition: string | undefined,
+		apply: (connection: KustoConnection, accountPartition: string) => Promise<T>,
+	): Promise<T | undefined> {
+		await this.authPreferences.waitForProviderAccountRefresh();
+		return this.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+			if (!this.isKustoSearchOwnerCurrent(owner, policy)) return undefined;
+			const current = this.connectionManager.getConnections().find(connection => connection.id === owner.connection.id);
+			if (!current) return undefined;
+			const partition = String(expectedAccountPartition || owner.accountPartition || '').trim();
+			if (!partition || this.kustoClient.getAccountPartition(current) !== partition) return undefined;
+			return apply(current, partition);
+		});
+	}
+
+	private async admitKustoSearchOwner<T>(
+		requestId: string,
+		owner: KustoSearchOwner,
+		signal: AbortSignal,
+		expectedAccountPartition: string | undefined,
+		apply: (connection: KustoConnection, accountPartition: string | undefined) => Promise<T>,
+	): Promise<T | undefined> {
+		await this.authPreferences.waitForProviderAccountRefresh();
+		return this.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+			if (signal.aborted || this._activeSearchRequestId !== requestId) return undefined;
+			const protectedClusters = new Set(policy.clusterKeys);
+			const current = this.connectionManager.getConnections().find(connection => connection.id === owner.connection.id);
+			if (!current || policy.globallyBlocked || protectedClusters.has(kustoClusterKey(current.clusterUrl))
+				|| this.connectionManager.getConnectionIncarnation(current.id) !== owner.connectionIncarnation
+				|| this.authPreferences.getConnectionSessionGeneration(current.id) !== owner.authSessionGeneration
+				|| (policy.revocationGenerations[kustoClusterKey(current.clusterUrl)] ?? 0) !== owner.leaveNoTraceRevision
+				|| getKustoConnectionIdentityKey(current.clusterUrl, current.authorityId) !== owner.connectionIdentityKey) return undefined;
+			const currentPartition = this.kustoClient.getAccountPartition(current);
+			const expectedPartition = expectedAccountPartition || owner.accountPartition;
+			if (expectedPartition && currentPartition !== expectedPartition) return undefined;
+			if (!owner.accountPartition && currentPartition) owner.accountPartition = currentPartition;
+			return apply(current, currentPartition);
+		});
 	}
 
 	private getSearchState(): unknown {
@@ -540,28 +781,54 @@ export class ConnectionManagerViewerV2 {
 			? { ...state, lastResults: withoutSqlResults, lastSearchTimestamp: 0 }
 			: state;
 		if (this.getActiveKind() === 'sql') return { ...state, lastResults: [], lastSearchTimestamp: 0 };
-		return sanitizedState.kustoPrincipalFingerprint === this.getKustoSearchPrincipalFingerprint()
-			? sanitizedState
-			: { ...sanitizedState, lastResults: [], lastSearchTimestamp: 0 };
+		if (sanitizedState.kustoPrincipalFingerprint === this.getKustoSearchPrincipalFingerprint()) return sanitizedState;
+		const exactResults = withoutSqlResults.filter(result => {
+			const proof = (result as Record<string, unknown> | null)?.kustoSearchOwner;
+			return !!proof && typeof proof === 'object' && !Array.isArray(proof);
+		});
+		return { ...sanitizedState, lastResults: exactResults, lastSearchTimestamp: exactResults.length > 0 ? sanitizedState.lastSearchTimestamp : 0 };
 	}
 
 	private async setSearchState(state: unknown, sourceKind: ConnectionKind = this.getActiveKind()): Promise<void> {
 		if (state && typeof state === 'object' && !Array.isArray(state)) {
 			const record = state as Record<string, unknown>;
 			const results = Array.isArray(record.lastResults) ? record.lastResults : [];
-			if (sourceKind === 'sql' || results.some(result => String((result as any)?.kind || '') === 'sql')) {
+			if (sourceKind === 'sql') {
 				await this.context.globalState.update(STORAGE_KEYS.searchState, {
 					...record,
-					lastResults: sourceKind === 'sql' ? [] : results.filter(result => String((result as any)?.kind || '') !== 'sql'),
+					lastResults: [],
 					lastSearchTimestamp: 0,
 				});
 				return;
 			}
 		}
-		if (this.getActiveKind() === 'kusto' && state && typeof state === 'object' && !Array.isArray(state)) {
-			await this.context.globalState.update(STORAGE_KEYS.searchState, {
-				...(state as Record<string, unknown>),
-				kustoPrincipalFingerprint: this.getKustoSearchPrincipalFingerprint(),
+		if (sourceKind === 'kusto' && state && typeof state === 'object' && !Array.isArray(state)) {
+			await this.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+				const record = state as Record<string, unknown>;
+				const results = Array.isArray(record.lastResults)
+					? record.lastResults.filter(result => String((result as any)?.kind || '') !== 'sql')
+					: [];
+				const currentFingerprint = this.getKustoSearchPrincipalFingerprint();
+				const admitted = results.flatMap(result => {
+					const candidate = result as Record<string, unknown>;
+					const persistedProof = candidate.kustoSearchOwner as PersistedKustoSearchOwner | undefined;
+					const ownerToken = String(candidate.kustoSearchOwnerToken || '').trim();
+					if (ownerToken) {
+						const owner = this.kustoSearchOwnersByToken.get(ownerToken)?.get(String(candidate.connectionId || ''));
+						if (!owner || !this.isKustoSearchOwnerCurrent(owner, policy)) return [];
+					} else if (!this.persistedKustoSearchOwnerCurrent(String(candidate.connectionId || ''), persistedProof, policy)) {
+						return [];
+					}
+					const { kustoSearchOwnerToken: _ownerToken, ...persistedResult } = candidate;
+					return [persistedResult];
+				});
+				await this.context.globalState.update(STORAGE_KEYS.searchState, {
+					...record,
+					lastResults: admitted,
+					kustoSearchOwnerToken: undefined,
+					kustoPrincipalFingerprint: currentFingerprint,
+					kustoPolicyVersion: policy.version,
+				});
 			});
 			return;
 		}
@@ -582,7 +849,16 @@ export class ConnectionManagerViewerV2 {
 		};
 	}
 
-	private async buildSnapshot(revision: number = this.snapshotRevision, forceSqlUnavailable = false) {
+	private async buildSnapshot(
+		revision: number = this.snapshotRevision,
+		forceSqlUnavailable = false,
+		kustoPolicy?: {
+			clusterKeys: readonly string[];
+			globallyBlocked: boolean;
+			version: number;
+			revocationGenerations?: Readonly<Record<string, number>>;
+		},
+	) {
 		let sqlAvailable = !forceSqlUnavailable;
 		if (sqlAvailable) {
 			try { await this.sqlDeps?.refreshSqlLeaveNoTracePolicy?.(); } catch { sqlAvailable = false; }
@@ -613,18 +889,53 @@ export class ConnectionManagerViewerV2 {
 				accountPreference: this.authPreferences.getPreference(connection.id),
 				selectedAccountId: this.authPreferences.getPreferredAccountId(connection.id),
 				accountPartition,
+				authSessionGeneration: this.authPreferences.getConnectionSessionGeneration(connection.id),
 			};
 		});
+		const protectedKustoClusters = new Set(kustoPolicy?.clusterKeys || []);
+		const protectedKustoConnectionIds = new Set(connections
+			.filter(connection => kustoPolicy?.globallyBlocked || protectedKustoClusters.has(kustoClusterKey(connection.clusterUrl)))
+			.map(connection => connection.id));
+		const rawSearchState = sqlAvailable ? this.getSearchState() : {
+			query: '', scope: 'cached', categories: {}, contentToggles: {}, lastResults: [], lastSearchTimestamp: 0,
+		};
+		const kustoSearchPolicyCurrent = !kustoPolicy || Number((rawSearchState as any)?.kustoPolicyVersion) === kustoPolicy.version;
+		const searchState = rawSearchState && typeof rawSearchState === 'object'
+			? {
+				...rawSearchState,
+				lastResults: Array.isArray((rawSearchState as any).lastResults)
+					? (rawSearchState as any).lastResults.filter((result: any) => {
+						const connectionId = String(result?.connectionId || '');
+						if (protectedKustoConnectionIds.has(connectionId)) return false;
+						const proof = result?.kustoSearchOwner as PersistedKustoSearchOwner | undefined;
+						if (proof && kustoPolicy) return this.persistedKustoSearchOwnerCurrent(connectionId, proof, kustoPolicy);
+						return proof ? true : kustoSearchPolicyCurrent;
+					})
+					: [],
+				...(kustoPolicy ? { kustoPolicyVersion: kustoPolicy.version } : {}),
+			}
+			: rawSearchState;
+		if (rawSearchState && typeof rawSearchState === 'object'
+			&& Array.isArray((rawSearchState as any).lastResults)
+			&& Array.isArray((searchState as any)?.lastResults)
+			&& (searchState as any).lastResults.length !== (rawSearchState as any).lastResults.length) {
+			await this.context.globalState.update(STORAGE_KEYS.searchState, searchState);
+		}
 		return {
 			revision,
 			timestamp: Date.now(),
 			activeKind: this.getActiveKind(),
 			connections,
 			accounts,
-			favorites: this.getFavorites(),
-			cachedDatabases: this.getCachedDatabases(),
-			expandedClusters: this.getExpandedClusters(),
-			leaveNoTraceClusters: this.connectionManager.getLeaveNoTraceClusters(),
+			favorites: this.getFavorites().filter(favorite => !protectedKustoConnectionIds.has(favorite.connectionId)),
+			cachedDatabases: Object.fromEntries(Object.entries(this.getCachedDatabases())
+				.filter(([connectionId]) => !protectedKustoConnectionIds.has(connectionId))),
+			expandedClusters: this.getExpandedClusters().filter(connectionId => !protectedKustoConnectionIds.has(connectionId)),
+			leaveNoTraceClusters: kustoPolicy
+				? kustoPolicy.globallyBlocked
+					? [...new Set(connections.map(connection => this.connectionManager.normalizeClusterUrl(connection.clusterUrl)).filter(Boolean))]
+					: [...kustoPolicy.clusterKeys]
+				: this.connectionManager.getLeaveNoTraceClusters(),
 			// SQL
 			sqlAvailable,
 			sqlConnections,
@@ -636,9 +947,7 @@ export class ConnectionManagerViewerV2 {
 			sqlCacheOwners,
 			sqlDialects: listDialects().map(d => ({ id: d.id, displayName: d.displayName, defaultPort: d.defaultPort, authTypes: d.authTypes.map(a => ({ id: a.id, displayName: a.label })) })),
 			// Search
-			searchState: sqlAvailable ? this.getSearchState() : {
-				query: '', scope: 'cached', categories: {}, contentToggles: {}, lastResults: [], lastSearchTimestamp: 0,
-			},
+			searchState,
 		};
 	}
 
@@ -647,7 +956,7 @@ export class ConnectionManagerViewerV2 {
 			const revision = ++this.snapshotRevision;
 			let snapshot;
 			while (true) {
-				snapshot = await this.buildSnapshot(revision);
+				snapshot = await this.buildSnapshot(revision, false);
 				let sqlRefreshSucceeded = true;
 				try { await this.sqlDeps?.refreshSqlLeaveNoTracePolicy?.(); } catch { sqlRefreshSucceeded = false; }
 				if (revision !== this.snapshotRevision) return;
@@ -660,10 +969,15 @@ export class ConnectionManagerViewerV2 {
 				if (JSON.stringify(currentVersions) === JSON.stringify(snapshot.sqlStateVersions)) break;
 			}
 			if (snapshot.sqlAvailable === false) {
-				await this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+				await this.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoPolicy => {
+					const admitted = await this.buildSnapshot(revision, true, kustoPolicy);
+					await this.postKustoPublication({ type: 'snapshot', snapshot: admitted });
+				});
 				return;
 			}
-			await this.dispatchSqlOwnerSnapshot((canonical: any) => {
+			await this.retrySqlOwnerSnapshotAcquisition(() => this.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoPolicy => {
+				const kustoSnapshot = await this.buildSnapshot(revision, false, kustoPolicy);
+				return this.tryDispatchSqlOwnerSnapshot((canonical: any) => {
 				if (revision !== this.snapshotRevision) return;
 				const protectedIds = canonical.policy.globallyBlocked
 					? new Set(canonical.connections.map((connection: SqlConnection) => connection.id))
@@ -677,21 +991,21 @@ export class ConnectionManagerViewerV2 {
 					const fingerprint = sqlSchemaPrincipalFingerprintForPrincipal(connection, principal);
 					if (fingerprint) principalById.set(connection.id, fingerprint);
 				}
-				const searchState = snapshot.searchState && typeof snapshot.searchState === 'object'
+				const searchState = kustoSnapshot.searchState && typeof kustoSnapshot.searchState === 'object'
 					? {
-						...snapshot.searchState,
-						lastResults: Array.isArray((snapshot.searchState as any).lastResults)
-							? (snapshot.searchState as any).lastResults.filter((result: any) => !protectedIds.has(String(result?.connectionId || '')))
+						...kustoSnapshot.searchState,
+						lastResults: Array.isArray((kustoSnapshot.searchState as any).lastResults)
+							? (kustoSnapshot.searchState as any).lastResults.filter((result: any) => !protectedIds.has(String(result?.connectionId || '')))
 							: [],
 					}
-					: snapshot.searchState;
-				const { sqlCacheOwners, ...publicSnapshot } = snapshot;
+					: kustoSnapshot.searchState;
+				const { sqlCacheOwners, ...publicSnapshot } = kustoSnapshot;
 				const admittedSnapshot = {
 					...publicSnapshot,
-					sqlAvailable: snapshot.sqlAvailable && !canonical.policy.globallyBlocked,
+					sqlAvailable: kustoSnapshot.sqlAvailable && !canonical.policy.globallyBlocked,
 					// Keep metadata-only rows so protected connections can still be unmarked, edited, or deleted.
 					sqlConnections: (canonical.connections as SqlConnection[]).map(connection => ({ ...connection })),
-					sqlCachedDatabases: Object.fromEntries(Object.entries(snapshot.sqlCachedDatabases)
+					sqlCachedDatabases: Object.fromEntries(Object.entries(kustoSnapshot.sqlCachedDatabases)
 						.filter(([connectionId]) => {
 							if (protectedIds.has(connectionId)) return false;
 							const captured = sqlCacheOwners[connectionId];
@@ -700,7 +1014,7 @@ export class ConnectionManagerViewerV2 {
 								&& captured.targetSignature === sqlDatabaseTargetSignature(current)
 								&& captured.principalFingerprint === principalById.get(connectionId);
 						})),
-					sqlFavorites: snapshot.sqlFavorites.filter((favorite: SqlFavorite) => !protectedIds.has(favorite.connectionId)),
+					sqlFavorites: kustoSnapshot.sqlFavorites.filter((favorite: SqlFavorite) => !protectedIds.has(favorite.connectionId)),
 					sqlLeaveNoTrace: [...protectedIds],
 					sqlStateVersions: {
 						policy: canonical.policy.version,
@@ -709,8 +1023,9 @@ export class ConnectionManagerViewerV2 {
 					},
 					searchState,
 				};
-				return this.panel.webview.postMessage({ type: 'snapshot', snapshot: admittedSnapshot });
+				return this.postKustoPublication({ type: 'snapshot', snapshot: admittedSnapshot });
 			});
+			}));
 		} catch (error) {
 			// Ignore transient panel lifecycle races (dispose/reveal ordering), but keep diagnostics.
 			getWorkbenchLogger().warn('[kusto] connection manager snapshot refresh failed', error);
@@ -824,6 +1139,16 @@ export class ConnectionManagerViewerV2 {
 	// ─── Message handling (identical to original) ───────────────────────────
 
 	private async onMessage(msg: IncomingMessage): Promise<void> {
+		if (msg.type === 'kustoPublicationAck') {
+			const key = `${msg.publicationId}:${msg.phase}`;
+			const pending = this.pendingKustoPublicationAcks.get(key);
+			if (pending) {
+				this.pendingKustoPublicationAcks.delete(key);
+				if (pending.timer) clearTimeout(pending.timer);
+				pending.resolve(msg.accepted === true);
+			}
+			return;
+		}
 		switch (msg.type) {
 			case 'requestSnapshot': {
 				await this.sendSnapshotToWebview();
@@ -1033,11 +1358,11 @@ export class ConnectionManagerViewerV2 {
 					this.traceDatabaseList(traceId, 'expand.invalid-request', { reason: 'missing-connection-id' });
 					return;
 				}
-				const expanded = this.getExpandedClusters();
-				if (!expanded.includes(connectionId)) { expanded.push(connectionId); await this.setExpandedClusters(expanded); }
-				const connections = this.connectionManager.getConnections();
-				const conn = connections.find((c) => c.id === connectionId);
-				if (conn) {
+				const owner = await this.captureKustoMetadataOwner(connectionId);
+				if (owner) {
+					const expanded = this.getExpandedClusters();
+					if (!expanded.includes(connectionId)) { expanded.push(connectionId); await this.setExpandedClusters(expanded); }
+					const conn = owner.connection;
 					const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
 					const cached = this.getCachedDatabases();
 					const cachedCount = cached[connectionId]?.length ?? 0;
@@ -1045,13 +1370,24 @@ export class ConnectionManagerViewerV2 {
 					if (!cached[connectionId] || cached[connectionId].length === 0) {
 						this.panel.webview.postMessage({ type: 'loadingDatabases', connectionId });
 						try {
-							const databases = await this.kustoClient.getDatabases(conn, false, {
+							const discovery = await this.kustoClient.getDatabasesWithIdentity(conn, false, {
 								allowInteractive: false,
 								traceId,
 								source: 'connection-manager-expand',
+								persistCache: false,
 							});
+							const partition = String(discovery.accountPartition || '').trim();
+							const databases = discovery.databases;
+							const admitted = await this.admitKustoMetadataOwner(owner, partition, async current => {
+								const wrote = await this.connectionCache.setDatabases(
+									current.id, partition, databases,
+									discovery.cacheGeneration ?? owner.databaseCacheGeneration,
+								);
+								if (!wrote) return false;
+								return this.postKustoPublication({ type: 'databasesLoaded', connectionId, databases });
+							});
+							if (admitted !== true) return;
 							this.traceDatabaseList(traceId, 'expand.live-success', { connectionId, databaseCount: databases.length, persistedCacheUpdated: true });
-							this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases });
 						} catch (error) {
 							this.traceDatabaseList(traceId, 'expand.failed', {
 								connectionId,
@@ -1082,9 +1418,8 @@ export class ConnectionManagerViewerV2 {
 					this.traceDatabaseList(traceId, 'refresh.invalid-request', { reason: 'missing-connection-id' });
 					return;
 				}
-				const connections = this.connectionManager.getConnections();
-				const conn = connections.find((c) => c.id === connectionId);
-				if (!conn) {
+				const owner = await this.captureKustoMetadataOwner(connectionId);
+				if (!owner) {
 					this.traceDatabaseList(traceId, 'refresh.connection-missing', { connectionId });
 					return;
 				}
@@ -1092,20 +1427,33 @@ export class ConnectionManagerViewerV2 {
 				this.traceDatabaseList(traceId, 'refresh.start', { connectionId });
 				this.panel.webview.postMessage({ type: 'loadingDatabases', connectionId });
 				try {
-					const databases = await this.kustoClient.getDatabases(conn, true, { traceId, source: 'connection-manager-refresh' });
+					const discovery = await this.kustoClient.getDatabasesWithIdentity(owner.connection, true, {
+						traceId, source: 'connection-manager-refresh', persistCache: false,
+					});
+					const partition = String(discovery.accountPartition || '').trim();
+					const databases = discovery.databases;
+					const admitted = await this.admitKustoMetadataOwner(owner, partition, async current => {
+						if (databases.length === 0) return this.postKustoPublication({
+							type: 'databasesLoaded', connectionId, databases: cachedBefore.length > 0 ? cachedBefore : [], warning: true,
+						});
+						const wrote = await this.connectionCache.setDatabases(
+							current.id, partition, databases,
+							discovery.cacheGeneration ?? owner.databaseCacheGeneration,
+						);
+						if (!wrote) return false;
+						return this.postKustoPublication({ type: 'databasesLoaded', connectionId, databases });
+					});
+					if (admitted !== true) return;
 					if (databases.length === 0) {
 						if (cachedBefore.length > 0) {
-							this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases: cachedBefore, warning: true });
 							void vscode.window.showWarningMessage("Couldn't refresh the database list (received 0 databases). Keeping the previous cached list.");
 						} else {
-							this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases: [], warning: true });
 							void vscode.window.showWarningMessage('The selected identity can connect but no databases are visible. Check the Authority / Tenant ID and account.');
 						}
 						return;
 					}
-					const clusterKey = this.getClusterCacheKey(conn.clusterUrl);
+					const clusterKey = this.getClusterCacheKey(owner.connection.clusterUrl);
 					this.traceDatabaseList(traceId, 'refresh.success', { connectionId, databaseCount: databases.length, persistedCacheUpdated: true });
-					this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases });
 				} catch (error) {
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
 					this.traceDatabaseList(traceId, 'refresh.failed', {
@@ -1122,20 +1470,29 @@ export class ConnectionManagerViewerV2 {
 				const connectionId = String(msg.connectionId || '').trim();
 				const database = String(msg.database || '').trim();
 				if (!connectionId || !database) return;
-				const connections = this.connectionManager.getConnections();
-				const conn = connections.find((c) => c.id === connectionId);
-				if (!conn) return;
-				let startingAccountPartition: string | undefined;
-				try { startingAccountPartition = this.kustoClient.getAccountPartition(conn); } catch { startingAccountPartition = undefined; }
+				const owner = await this.captureKustoMetadataOwner(connectionId);
+				if (!owner) return;
+				const startingAccountPartition = owner.accountPartition;
 				this.panel.webview.postMessage({ type: 'loadingSchema', connectionId, database, requestId, accountPartition: startingAccountPartition });
 				try {
-					const result = await this.kustoClient.getDatabaseSchema(conn, database, false);
-					await this.sendSnapshotToWebview();
-					if (!result.accountPartition || this.kustoClient.getAccountPartition(conn) !== result.accountPartition) {
-						this.panel.webview.postMessage({ type: 'schemaLoadError', connectionId, database, requestId, error: 'Authentication changed while schema was loading.' });
-						return;
-					}
-					this.panel.webview.postMessage({ type: 'schemaLoaded', connectionId, database, requestId, accountPartition: result.accountPartition, schema: result.schema, fromCache: result.fromCache, cacheAgeMs: result.cacheAgeMs });
+					const result = await this.kustoClient.getDatabaseSchema(owner.connection, database, false, { persistCache: false, source: 'connection-manager-load' });
+					const accountPartition = String(result.accountPartition || '').trim();
+					const admitted = await this.admitKustoMetadataOwner(owner, accountPartition, async current => {
+						if (!result.fromCache) {
+							const cacheKey = schemaCacheKey(current.clusterUrl, database, current.id, accountPartition);
+							await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
+								schema: result.schema, timestamp: Date.now(), version: SCHEMA_CACHE_VERSION,
+								clusterUrl: current.clusterUrl, database, connectionId: current.id, accountPartition,
+							}, result.cacheGeneration ?? owner.schemaCacheGeneration);
+							const currentGeneration = captureSchemaCacheGeneration(this.context.globalStorageUri, current.id, accountPartition);
+							const expectedGeneration = result.cacheGeneration ?? owner.schemaCacheGeneration;
+							if (currentGeneration.global !== expectedGeneration.global
+								|| currentGeneration.connection !== expectedGeneration.connection
+								|| currentGeneration.partition !== expectedGeneration.partition) return false;
+						}
+						return this.postKustoPublication({ type: 'schemaLoaded', connectionId, database, requestId, accountPartition, schema: result.schema, fromCache: result.fromCache, cacheAgeMs: result.cacheAgeMs });
+					});
+					if (admitted !== true) this.panel.webview.postMessage({ type: 'schemaLoadError', connectionId, database, requestId, error: 'Kusto schema owner changed while loading.' });
 				} catch (error) { this.panel.webview.postMessage({ type: 'schemaLoadError', connectionId, database, requestId, error: error instanceof Error ? error.message : String(error) }); }
 				return;
 			}
@@ -1146,17 +1503,16 @@ export class ConnectionManagerViewerV2 {
 				const database = String(msg.database || '').trim();
 				const source = String(msg.source || '').trim();
 				if (!connectionId || !clusterUrl || !database) return;
-				const conn = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
-				if (!conn || kustoClusterKey(conn.clusterUrl) !== kustoClusterKey(clusterUrl)) return;
-				let startingAccountPartition: string | undefined;
-				try { startingAccountPartition = this.kustoClient.getAccountPartition(conn); } catch { startingAccountPartition = undefined; }
+				const owner = await this.captureKustoMetadataOwner(connectionId);
+				if (!owner || kustoClusterKey(owner.connection.clusterUrl) !== kustoClusterKey(clusterUrl)) return;
+				const startingAccountPartition = owner.accountPartition;
 				this.panel.webview.postMessage({ type: 'schemaRefreshStarted', connectionId, clusterUrl, database, requestId, accountPartition: startingAccountPartition });
 				try {
-					const result = await this.kustoClient.getDatabaseSchema(conn, database, true);
+					const result = await this.kustoClient.getDatabaseSchema(owner.connection, database, true, { persistCache: false, source: 'connection-manager-refresh' });
 					const accountPartition = result.accountPartition;
 					if (!accountPartition) throw new Error('Schema authentication identity could not be resolved.');
-					const normalizedCluster = conn.clusterUrl.replace(/\/+$/, '');
-					const cacheKey = schemaCacheKey(normalizedCluster, database, conn.id, accountPartition);
+					const normalizedCluster = owner.connection.clusterUrl.replace(/\/+$/, '');
+					const cacheKey = schemaCacheKey(normalizedCluster, database, owner.connection.id, accountPartition);
 					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
 					const diskEntry: CachedSchemaEntry = {
 						schema: result.schema,
@@ -1164,17 +1520,22 @@ export class ConnectionManagerViewerV2 {
 						version: SCHEMA_CACHE_VERSION,
 						clusterUrl: normalizedCluster,
 						database,
-						connectionId: conn.id,
+						connectionId: owner.connection.id,
 						accountPartition,
 					};
-					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, diskEntry, result.cacheGeneration);
+					const admitted = await this.admitKustoMetadataOwner(owner, accountPartition, async current => {
+						await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, diskEntry, result.cacheGeneration ?? owner.schemaCacheGeneration);
+						const currentGeneration = captureSchemaCacheGeneration(this.context.globalStorageUri, current.id, accountPartition);
+						const expectedGeneration = result.cacheGeneration ?? owner.schemaCacheGeneration;
+						if (currentGeneration.global !== expectedGeneration.global
+							|| currentGeneration.connection !== expectedGeneration.connection
+							|| currentGeneration.partition !== expectedGeneration.partition) return false;
+						const loaded = await this.postKustoPublication({ type: 'schemaLoaded', connectionId: current.id, database, requestId, accountPartition, schema: result.schema, fromCache: false, cacheAgeMs: 0 });
+						if (!loaded) return false;
+						return this.postKustoPublication({ type: 'schemaRefreshCompleted', connectionId, clusterUrl, database, requestId, success: true });
+					});
+					if (admitted !== true) throw new Error('Kusto schema owner changed during refresh.');
 					await this.sendSnapshotToWebview();
-					if (this.kustoClient.getAccountPartition(conn) !== accountPartition) {
-						this.panel.webview.postMessage({ type: 'schemaRefreshCompleted', connectionId, clusterUrl, database, requestId, success: false, error: 'Authentication changed while schema was loading.' });
-						return;
-					}
-					this.panel.webview.postMessage({ type: 'schemaLoaded', connectionId: conn.id, database, requestId, accountPartition, schema: result.schema, fromCache: false, cacheAgeMs: 0 });
-					this.panel.webview.postMessage({ type: 'schemaRefreshCompleted', connectionId, clusterUrl, database, requestId, success: true });
 					void vscode.window.showInformationMessage(`Schema refreshed: ${database}${source ? ` (via ${source})` : ''}`);
 				} catch (error) {
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
@@ -1187,13 +1548,24 @@ export class ConnectionManagerViewerV2 {
 				const traceId = createDatabaseListTraceId();
 				const connectionId = String(msg.connectionId || '').trim();
 				if (!connectionId) return;
-				const connections = this.connectionManager.getConnections();
-				const conn = connections.find((c) => c.id === connectionId);
-				if (!conn) return;
+				const owner = await this.captureKustoMetadataOwner(connectionId);
+				if (!owner) return;
 				this.panel.webview.postMessage({ type: 'loadingDatabases', connectionId });
 				try {
-					const databases = await this.kustoClient.getDatabases(conn, true, { traceId, source: 'connection-manager-cluster-schema-refresh' });
-					this.panel.webview.postMessage({ type: 'databasesLoaded', connectionId, databases });
+					const discovery = await this.kustoClient.getDatabasesWithIdentity(owner.connection, true, {
+						traceId, source: 'connection-manager-cluster-schema-refresh', persistCache: false,
+					});
+					const partition = String(discovery.accountPartition || '').trim();
+					await this.admitKustoMetadataOwner(owner, partition, async current => {
+						if (discovery.databases.length > 0) {
+							const wrote = await this.connectionCache.setDatabases(
+								current.id, partition, discovery.databases,
+								discovery.cacheGeneration ?? owner.databaseCacheGeneration,
+							);
+							if (!wrote) return false;
+						}
+						return this.postKustoPublication({ type: 'databasesLoaded', connectionId, databases: discovery.databases });
+					});
 				} catch (error) {
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
 					this.panel.webview.postMessage({ type: 'databasesLoadError', connectionId, error: isAuthError ? 'Authentication required. Please test the connection to sign in.' : error instanceof Error ? error.message : String(error) });
@@ -1271,23 +1643,64 @@ export class ConnectionManagerViewerV2 {
 				const database = String(msg.database || '').trim();
 				const tableName = String(msg.tableName || '').trim();
 				if (!connectionId || !database || !tableName) return;
-				const connections = this.connectionManager.getConnections();
-				const conn = connections.find((c) => c.id === connectionId);
-				if (!conn) { this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, requestId, success: false, error: 'Connection not found.' }); return; }
-				let startingAccountPartition: string | undefined;
-				try { startingAccountPartition = this.kustoClient.getAccountPartition(conn); } catch { startingAccountPartition = undefined; }
+				const owner = await this.captureKustoMetadataOwner(connectionId);
+				if (!owner) {
+					this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, requestId, success: false, error: 'Connection is unavailable or protected by Leave No Trace.' });
+					return;
+				}
+				const conn = owner.connection;
+				const startingAccountPartition = owner.accountPartition;
 				this.panel.webview.postMessage({ type: 'tablePreviewLoading', connectionId, database, tableName, requestId, accountPartition: startingAccountPartition });
 				try {
 					const safeTableName = `['${tableName.replace(/'/g, "''")}']`;
 					const query = `${safeTableName} | take 100`;
-					const execution = await this.kustoClient.executeQueryWithIdentity(conn, database, query);
-					const { result, accountPartition } = execution;
+					const execution = await this.kustoClient.executeQueryWithIdentity(
+						conn,
+						database,
+						query,
+						async (_connection, accountPartition, authSessionGeneration, policy, dispatch) => {
+							if (!this.isKustoSearchOwnerCurrent(owner, policy)
+								|| authSessionGeneration !== owner.authSessionGeneration
+								|| (owner.accountPartition && owner.accountPartition !== accountPartition)) {
+								throw new Error('Kusto preview owner changed before dispatch.');
+							}
+							const current = this.connectionManager.getConnections().find(candidate => candidate.id === owner.connection.id);
+							if (!current || this.kustoClient.getAccountPartition(current) !== accountPartition) {
+								throw new Error('Kusto preview authentication changed before dispatch.');
+							}
+							return dispatch();
+						},
+					);
+					const { result, accountPartition, dispatchIdentity } = execution;
+					await this.kustoClient.waitForProviderAccountRefresh();
 					await this.sendSnapshotToWebview();
 					if (!accountPartition || this.kustoClient.getAccountPartition(conn) !== accountPartition) {
 						this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, requestId, success: false, error: 'Authentication changed while preview was loading.' });
 						return;
 					}
-					this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, requestId, accountPartition, success: true, columns: result.columns, rows: result.rows, rowCount: result.rows.length, executionTime: result.metadata?.executionTime });
+					if (!dispatchIdentity) throw new Error('Kusto preview dispatch identity is unavailable.');
+					const admitted = await this.connectionManager.runWithLeaveNoTraceSnapshotLock(
+						async policy => {
+							if (!this.isKustoSearchOwnerCurrent(owner, policy)) return false;
+							const currentConnection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+							if (!currentConnection
+								|| this.connectionManager.getConnectionIncarnation(connectionId) !== dispatchIdentity.connectionRevision
+								|| getKustoConnectionIdentityKey(currentConnection.clusterUrl, currentConnection.authorityId) !== dispatchIdentity.connectionIdentityKey
+								|| this.kustoClient.getConnectionSessionGeneration(currentConnection) !== dispatchIdentity.authSessionGeneration
+								|| this.kustoClient.getAccountPartition(currentConnection) !== accountPartition) return false;
+							return this.postKustoPublication({ type: 'tablePreviewResult', connectionId, database, tableName, requestId, accountPartition, success: true, columns: result.columns, rows: result.rows, rowCount: result.rows.length, executionTime: result.metadata?.executionTime });
+						},
+					);
+					if (admitted !== true) {
+						const currentConnection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+						const targetChanged = !currentConnection
+							|| this.connectionManager.getConnectionIncarnation(connectionId) !== dispatchIdentity.connectionRevision
+							|| getKustoConnectionIdentityKey(currentConnection.clusterUrl, currentConnection.authorityId) !== dispatchIdentity.connectionIdentityKey;
+						const authChanged = !!currentConnection && this.kustoClient.getAccountPartition(currentConnection) !== accountPartition;
+						const sessionChanged = !!currentConnection
+							&& this.kustoClient.getConnectionSessionGeneration(currentConnection) !== dispatchIdentity.authSessionGeneration;
+						this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, requestId, success: false, error: targetChanged ? 'Connection target changed while preview was loading.' : authChanged || sessionChanged ? 'Authentication changed while preview was loading.' : 'Leave no trace policy changed while preview was loading.' });
+					}
 				} catch (error) {
 					const isAuthError = this.kustoClient.isAuthenticationError(error);
 					this.panel.webview.postMessage({ type: 'tablePreviewResult', connectionId, database, tableName, requestId, success: false, error: isAuthError ? 'Authentication required. Please test the connection to sign in.' : error instanceof Error ? error.message : String(error) });
@@ -1817,6 +2230,9 @@ export class ConnectionManagerViewerV2 {
 			matchContext?: string;
 			_sqlOwner?: { targetSignature: string; principalFingerprint: string; revocationGeneration: number };
 		};
+		const kustoOwners = kind === 'kusto' ? await this.captureKustoSearchOwners() : new Map<string, KustoSearchOwner>();
+		this.activeKustoSearchOwners = kustoOwners;
+		const kustoSearchOwnerToken = kind === 'kusto' ? this.rememberKustoSearchOwners(kustoOwners) : undefined;
 
 		const sendResults = async (results: SearchResult[], completed: boolean) => {
 			if (signal.aborted) return;
@@ -1844,8 +2260,21 @@ export class ConnectionManagerViewerV2 {
 				} catch { /* canonical SQL policy denial suppresses search data */ }
 				return;
 			}
-			if (signal.aborted || this._activeSearchRequestId !== requestId) return;
-			try { await this.panel.webview.postMessage({ type: 'searchResults', requestId, results, completed }); } catch { /* panel disposed */ }
+			try {
+				await this.authPreferences.waitForProviderAccountRefresh();
+				await this.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+					if (signal.aborted || this._activeSearchRequestId !== requestId) return;
+					const admitted = results.flatMap(result => {
+						const owner = kustoOwners.get(result.connectionId);
+						return owner && this.isKustoSearchOwnerCurrent(owner, policy)
+							? [{ ...result, kustoSearchOwner: this.persistedKustoSearchOwner(owner) }]
+							: [];
+					});
+					await this.postKustoPublication({
+						type: 'searchResults', requestId, results: admitted, completed, kustoSearchOwnerToken,
+					});
+				});
+			} catch { /* canonical Kusto policy denial suppresses search data */ }
 		};
 		const sendProgress = (message: string, current?: number, total?: number) => {
 			if (signal.aborted) return;
@@ -1860,7 +2289,7 @@ export class ConnectionManagerViewerV2 {
 			const nameResults: SearchResult[] = [];
 
 			if (kind === 'kusto') {
-				const connections = this.connectionManager.getConnections();
+				const connections = [...kustoOwners.values()].map(owner => owner.connection);
 				const cachedDbs = this.getCachedDatabases();
 				for (const conn of connections) {
 					if (categories['clusters'] && (re.test(conn.name) || re.test(conn.clusterUrl))) {
@@ -1910,10 +2339,10 @@ export class ConnectionManagerViewerV2 {
 			// ── Phase 2: Schema search (scope-dependent) ──
 
 			if (scope === 'refresh-cached' || scope === 'everything') {
-				await this._refreshSchemasForSearch(kind, scope, query, categories, contentToggles, requestId, signal, sendResults, sendProgress);
+				await this._refreshSchemasForSearch(kind, scope, query, categories, contentToggles, requestId, signal, sendResults, sendProgress, kustoOwners);
 			} else {
 				// Tier 1: search disk-cached schemas
-				await this._searchCachedSchemasForSearch(kind, query, categories, contentToggles, requestId, signal, sendResults);
+				await this._searchCachedSchemasForSearch(kind, query, categories, contentToggles, requestId, signal, sendResults, kustoOwners);
 			}
 
 			if (!signal.aborted) await sendResults([], true);
@@ -1926,6 +2355,7 @@ export class ConnectionManagerViewerV2 {
 			if (this._activeSearchRequestId === requestId) {
 				this._activeSearchRequestId = null;
 				this._searchAbortController = null;
+				this.activeKustoSearchOwners = new Map();
 			}
 		}
 	}
@@ -1939,6 +2369,7 @@ export class ConnectionManagerViewerV2 {
 		requestId: string,
 		signal: AbortSignal,
 		sendResults: (results: any[], completed: boolean) => Promise<void>,
+		kustoOwners: ReadonlyMap<string, KustoSearchOwner> = new Map(),
 	): Promise<void> {
 		const wantsSchemaSearch = kind === 'kusto'
 			? (categories['tables'] || categories['functions'])
@@ -1946,9 +2377,14 @@ export class ConnectionManagerViewerV2 {
 		if (!wantsSchemaSearch) return;
 
 		if (kind === 'kusto') {
-			const matches = await searchCachedSchemas(this.context.globalStorageUri, query, 500, this.getActiveSchemaPrincipalIdentities());
+			const allowedIdentities = new Set([...kustoOwners.values()].flatMap(owner => {
+				const identity = schemaPrincipalIdentity(owner.connection.id, owner.accountPartition);
+				return identity ? [identity] : [];
+			}));
+			const matches = await searchCachedSchemas(this.context.globalStorageUri, query, 500, allowedIdentities);
 			if (signal.aborted) return;
-			const results = this._mapKustoSchemaMatches(matches, categories, contentToggles);
+			const results = this._mapKustoSchemaMatches(matches, categories, contentToggles)
+				.filter(result => kustoOwners.has(String(result.connectionId || '')));
 			if (results.length > 0) await sendResults(results, false);
 		} else {
 			await this.sqlDeps?.refreshSqlLeaveNoTracePolicy?.();
@@ -2016,12 +2452,13 @@ export class ConnectionManagerViewerV2 {
 		signal: AbortSignal,
 		sendResults: (results: any[], completed: boolean) => Promise<void>,
 		sendProgress: (message: string, current?: number, total?: number) => void,
+		kustoOwners: ReadonlyMap<string, KustoSearchOwner> = new Map(),
 	): Promise<void> {
 		let re: RegExp;
 		try { re = new RegExp(query, 'i'); } catch { return; }
 
 		if (kind === 'kusto') {
-			const connections = this.connectionManager.getConnections();
+			const connections = [...kustoOwners.values()].map(owner => owner.connection);
 
 			if (scope === 'everything') {
 				const searchTraceId = createDatabaseListTraceId();
@@ -2053,8 +2490,12 @@ export class ConnectionManagerViewerV2 {
 						const dbs = await this.kustoClient.getDatabases(conn, true, {
 							traceId: childTraceId,
 							source: 'connection-manager-search-everything',
+							persistCache: false,
 						});
-						for (const db of dbs) dbPairs.push({ conn, db });
+						const owner = kustoOwners.get(conn.id);
+						if (!owner) continue;
+						const admittedDbs = await this.admitKustoSearchOwner(requestId, owner, signal, this.kustoClient.getAccountPartition(conn), async () => dbs);
+						for (const db of admittedDbs || []) dbPairs.push({ conn, db });
 						this.traceDatabaseList(searchTraceId, 'search-everything.connection-complete', {
 							requestId,
 							connectionId: conn.id,
@@ -2083,22 +2524,23 @@ export class ConnectionManagerViewerV2 {
 				for (let i = 0; i < dbPairs.length; i++) {
 					if (signal.aborted) return;
 					const { conn, db } = dbPairs[i];
-					sendProgress(`Loading schema: ${db}`, i + 1, totalSchemas);
+					sendProgress('Loading schema…', i + 1, totalSchemas);
 					try {
-						const result = await this.kustoClient.getDatabaseSchema(conn, db, true);
+						const result = await this.kustoClient.getDatabaseSchema(conn, db, true, { persistCache: false, source: 'connection-manager-search-everything' });
 						const accountPartition = result.accountPartition;
 						if (!accountPartition) continue;
+						const owner = kustoOwners.get(conn.id);
+						if (!owner) continue;
 						const normalizedCluster = conn.clusterUrl.replace(/\/+$/, '');
 						const cacheKey = schemaCacheKey(normalizedCluster, db, conn.id, accountPartition);
-						await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
-							schema: result.schema,
-							timestamp: Date.now(),
-							version: SCHEMA_CACHE_VERSION,
-							clusterUrl: normalizedCluster,
-							database: db,
-							connectionId: conn.id,
-							accountPartition,
-						}, result.cacheGeneration);
+						const admitted = await this.admitKustoSearchOwner(requestId, owner, signal, accountPartition, async current => {
+							return writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
+								schema: result.schema, timestamp: Date.now(), version: SCHEMA_CACHE_VERSION,
+								clusterUrl: current.clusterUrl.replace(/\/+$/, ''), database: db,
+								connectionId: current.id, accountPartition,
+							}, result.cacheGeneration ?? owner.schemaCacheGeneration);
+						});
+						if (!admitted) continue;
 						// Search the freshly loaded schema
 						const schemaResults = this._searchSingleKustoSchema(result.schema, normalizedCluster, db, conn, re, categories, contentToggles);
 						if (schemaResults.length > 0) await sendResults(schemaResults, false);
@@ -2106,34 +2548,39 @@ export class ConnectionManagerViewerV2 {
 				}
 			} else {
 				// Tier 2: refresh only already-cached schemas
+				const allowedIdentities = new Set([...kustoOwners.values()].flatMap(owner => {
+					const identity = schemaPrincipalIdentity(owner.connection.id, owner.accountPartition);
+					return identity ? [identity] : [];
+				}));
 				const cachedEntries = await readAllCachedSchemasFromDisk(
 					this.context.globalStorageUri,
 					undefined,
 					undefined,
-					this.getActiveSchemaPrincipalIdentities(),
+					allowedIdentities,
 				);
 				const total = cachedEntries.length;
 				for (let i = 0; i < cachedEntries.length; i++) {
 					if (signal.aborted) return;
 					const entry = cachedEntries[i];
-					sendProgress(`Refreshing ${entry.database}…`, i + 1, total);
+					sendProgress('Refreshing schema…', i + 1, total);
 					const conn = connections.find(c => c.id === entry.connectionId);
 					if (!conn) continue;
 					try {
-						const result = await this.kustoClient.getDatabaseSchema(conn, entry.database, true);
+						const result = await this.kustoClient.getDatabaseSchema(conn, entry.database, true, { persistCache: false, source: 'connection-manager-search-refresh' });
 						const accountPartition = result.accountPartition;
 						if (!accountPartition) continue;
+						const owner = kustoOwners.get(conn.id);
+						if (!owner) continue;
 						const normalizedCluster = conn.clusterUrl.replace(/\/+$/, '');
 						const cacheKey = schemaCacheKey(normalizedCluster, entry.database, conn.id, accountPartition);
-						await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
-							schema: result.schema,
-							timestamp: Date.now(),
-							version: SCHEMA_CACHE_VERSION,
-							clusterUrl: normalizedCluster,
-							database: entry.database,
-							connectionId: conn.id,
-							accountPartition,
-						}, result.cacheGeneration);
+						const admitted = await this.admitKustoSearchOwner(requestId, owner, signal, accountPartition, async current => {
+							return writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
+								schema: result.schema, timestamp: Date.now(), version: SCHEMA_CACHE_VERSION,
+								clusterUrl: current.clusterUrl.replace(/\/+$/, ''), database: entry.database,
+								connectionId: current.id, accountPartition,
+							}, result.cacheGeneration ?? owner.schemaCacheGeneration);
+						});
+						if (!admitted) continue;
 						const schemaResults = this._searchSingleKustoSchema(result.schema, normalizedCluster, entry.database, conn, re, categories, contentToggles);
 						if (schemaResults.length > 0) await sendResults(schemaResults, false);
 					} catch { /* skip schema errors */ }

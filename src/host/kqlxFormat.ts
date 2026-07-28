@@ -40,6 +40,8 @@ export type KqlxSectionV1 =
 			// Stored as JSON text to keep comparisons stable and cap size.
 			// Only present when <= 200KB.
 			resultJson?: string;
+			kustoAccountPartition?: string;
+			kustoLeaveNoTraceRevision?: number;
 			runMode?: string;
 			cacheEnabled?: boolean;
 			cacheValue?: number;
@@ -65,6 +67,8 @@ export type KqlxSectionV1 =
 			query?: string;
 			comparisonSourceBoxId?: string;
 			resultJson?: string;
+			kustoAccountPartition?: string;
+			kustoLeaveNoTraceRevision?: number;
 			runMode?: string;
 			cacheEnabled?: boolean;
 			cacheValue?: number;

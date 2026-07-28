@@ -2,6 +2,8 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import * as vscode from 'vscode';
 import { KustoWorkbenchToolOrchestrator } from '../../../src/host/kustoWorkbenchTools';
 import { classifyWorkbenchUri } from '../../../src/host/workbenchFileTypes';
+import { kustoClusterKey } from '../../../src/shared/kustoClusterUrls';
+import { SCHEMA_CACHE_VERSION } from '../../../src/host/schemaCache';
 
 /**
  * Regression tests for the orchestrator connect/disconnect token mechanism.
@@ -560,8 +562,198 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(getDatabases).not.toHaveBeenCalled();
 	});
 
-	it('routes authority-specific schema refresh through the active live editor with the exact connectionId', async () => {
-		const getDatabases = vi.fn();
+	it('rejects protected schema refresh before direct metadata dispatch', async () => {
+		const connection = { id: 'sensitive', name: 'Sensitive', clusterUrl: 'https://sensitive.kusto.windows.net' };
+		const getDatabases = vi.fn(async () => ['SecretDb']);
+		const connectionManager = {
+			getConnections: () => [connection],
+			getConnectionIncarnation: () => 1,
+			runWithLeaveNoTraceSnapshotLock: (run: (snapshot: unknown) => Promise<unknown>) => run({
+				clusterKeys: [kustoClusterKey(connection.clusterUrl)],
+				globallyBlocked: false,
+				revision: 1,
+				revocationGenerations: { [kustoClusterKey(connection.clusterUrl)]: 1 },
+			}),
+		} as any;
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext,
+			connectionManager,
+			fakeGetSqlConnMgr,
+			{
+				getDatabases,
+				getAccountPartition: () => 'tenant|account',
+				getConnectionSessionGeneration: () => 0,
+				waitForProviderAccountRefresh: vi.fn(async () => undefined),
+			} as any,
+		);
+
+		const result = await orchestrator.refreshSchema({
+			clusterUrl: connection.clusterUrl,
+			connectionId: connection.id,
+		});
+
+		expect(result).toEqual({ schemas: [], error: expect.stringContaining('Leave No Trace') });
+		expect(getDatabases).not.toHaveBeenCalled();
+	});
+
+	it('rejects agent schema dispatch when Leave No Trace wins during authentication', async () => {
+		const connection = { id: 'race', name: 'Race', clusterUrl: 'https://race.kusto.windows.net' };
+		let protectedNow = false;
+		const sdkDispatch = vi.fn(async () => ({ databases: ['SecretDb'] }));
+		const connectionManager = {
+			getConnections: () => [connection],
+			getConnectionIncarnation: () => 1,
+			runWithLeaveNoTraceSnapshotLock: (run: (snapshot: unknown) => Promise<unknown>) => run({
+				clusterKeys: protectedNow ? [kustoClusterKey(connection.clusterUrl)] : [],
+				globallyBlocked: false,
+				version: protectedNow ? 2 : 1,
+				revocationGenerations: { [kustoClusterKey(connection.clusterUrl)]: protectedNow ? 1 : 0 },
+			}),
+		} as any;
+		const getDatabasesWithIdentity = vi.fn(async (_connection: unknown, _refresh: boolean, options: any) => {
+			protectedNow = true;
+			await options.dispatchAuthenticated(
+				connection, 'tenant|account', 0,
+				{
+					clusterKeys: [kustoClusterKey(connection.clusterUrl)], globallyBlocked: false, version: 2,
+					revocationGenerations: { [kustoClusterKey(connection.clusterUrl)]: 1 },
+				},
+				sdkDispatch,
+			);
+			return { databases: ['SecretDb'], accountPartition: 'tenant|account', cacheGeneration: { global: 0, connection: 0, partition: 0 }, fromCache: false };
+		});
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext,
+			connectionManager,
+			fakeGetSqlConnMgr,
+			{
+				getDatabasesWithIdentity,
+				getAccountPartition: () => 'tenant|account',
+				getConnectionSessionGeneration: () => 0,
+				waitForProviderAccountRefresh: vi.fn(async () => undefined),
+			} as any,
+		);
+
+		const result = await orchestrator.refreshSchema({ clusterUrl: connection.clusterUrl, connectionId: connection.id });
+
+		expect(result).toEqual({ schemas: [], error: expect.stringContaining('owner changed') });
+		expect(sdkDispatch).not.toHaveBeenCalled();
+	});
+
+	it('rejects protected getSchema before reading the schema cache', async () => {
+		const connection = { id: 'sensitive', name: 'Sensitive', clusterUrl: 'https://sensitive.kusto.windows.net' };
+		const readFile = vi.spyOn(vscode.workspace.fs, 'readFile');
+		const connectionManager = {
+			getConnections: () => [connection],
+			getConnectionIncarnation: () => 1,
+			runWithLeaveNoTraceSnapshotLock: (run: (snapshot: unknown) => Promise<unknown>) => run({
+				clusterKeys: [kustoClusterKey(connection.clusterUrl)], globallyBlocked: false, version: 1,
+				revocationGenerations: { [kustoClusterKey(connection.clusterUrl)]: 1 },
+			}),
+		} as any;
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext,
+			connectionManager,
+			fakeGetSqlConnMgr,
+			{
+				getAccountPartition: () => 'tenant|account',
+				getConnectionSessionGeneration: () => 0,
+				waitForProviderAccountRefresh: vi.fn(async () => undefined),
+			} as any,
+		);
+
+		const result = await orchestrator.getSchema({
+			clusterUrl: connection.clusterUrl,
+			connectionId: connection.id,
+			database: 'SecretDb',
+		});
+
+		expect(result).toEqual({ error: expect.stringContaining('Leave No Trace') });
+		expect(readFile).not.toHaveBeenCalled();
+	});
+
+	it('does not enumerate cached schemas for protected connections', async () => {
+		const connection = { id: 'sensitive', name: 'Sensitive', clusterUrl: 'https://sensitive.kusto.windows.net' };
+		const readDirectory = vi.fn(async () => []);
+		(vscode.workspace.fs as any).readDirectory = readDirectory;
+		const connectionManager = {
+			getConnections: () => [connection],
+			getConnectionIncarnation: () => 1,
+			runWithLeaveNoTraceSnapshotLock: (run: (snapshot: unknown) => Promise<unknown>) => run({
+				clusterKeys: [kustoClusterKey(connection.clusterUrl)], globallyBlocked: false, version: 1,
+				revocationGenerations: { [kustoClusterKey(connection.clusterUrl)]: 1 },
+			}),
+		} as any;
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext,
+			connectionManager,
+			fakeGetSqlConnMgr,
+			{
+				getAccountPartition: () => 'tenant|account',
+				getConnectionSessionGeneration: () => 0,
+				waitForProviderAccountRefresh: vi.fn(async () => undefined),
+			} as any,
+		);
+
+		const result = await orchestrator.searchCachedSchemas({ pattern: 'secret' });
+
+		expect(result).toEqual({ matches: [], count: 0, pattern: 'secret' });
+		expect(readDirectory).not.toHaveBeenCalled();
+	});
+
+	it('rejects a cached schema when Leave No Trace wins during disk read', async () => {
+		const connection = { id: 'race', name: 'Race', clusterUrl: 'https://race.kusto.windows.net' };
+		const accountPartition = 'tenant|account';
+		const pendingRead = deferred<Uint8Array>();
+		vi.spyOn(vscode.workspace.fs, 'readFile').mockReturnValue(pendingRead.promise);
+		let protectedNow = false;
+		const connectionManager = {
+			getConnections: () => [connection],
+			getConnectionIncarnation: () => 1,
+			runWithLeaveNoTraceSnapshotLock: (run: (snapshot: unknown) => Promise<unknown>) => run({
+				clusterKeys: protectedNow ? [kustoClusterKey(connection.clusterUrl)] : [],
+				globallyBlocked: false,
+				version: protectedNow ? 2 : 1,
+				revocationGenerations: { [kustoClusterKey(connection.clusterUrl)]: protectedNow ? 1 : 0 },
+			}),
+		} as any;
+		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
+			fakeContext,
+			connectionManager,
+			fakeGetSqlConnMgr,
+			{
+				getAccountPartition: () => accountPartition,
+				getConnectionSessionGeneration: () => 0,
+				waitForProviderAccountRefresh: vi.fn(async () => undefined),
+			} as any,
+		);
+
+		const read = orchestrator.getSchema({
+			clusterUrl: connection.clusterUrl,
+			connectionId: connection.id,
+			database: 'SecretDb',
+		});
+		await vi.waitFor(() => expect(vscode.workspace.fs.readFile).toHaveBeenCalledOnce());
+		protectedNow = true;
+		pendingRead.resolve(Buffer.from(JSON.stringify({
+			version: SCHEMA_CACHE_VERSION,
+			schema: { tables: ['SecretTable'], columnTypesByTable: {}, functions: [] },
+			timestamp: Date.now(), clusterUrl: connection.clusterUrl, database: 'SecretDb',
+			connectionId: connection.id, accountPartition,
+		}), 'utf8'));
+
+		await expect(read).resolves.toEqual({ error: expect.stringContaining('owner changed') });
+	});
+
+	it('routes authority-specific schema refresh through the canonical direct path with the exact connectionId', async () => {
+		const generation = { global: 0, connection: 0, partition: 0 };
+		const getDatabasesWithIdentity = vi.fn(async (connection: { id: string }) => ({
+			databases: ['GuestDb'], accountPartition: `partition-${connection.id}`, cacheGeneration: generation, fromCache: false,
+		}));
+		const getDatabaseSchema = vi.fn(async (connection: { id: string }) => ({
+			schema: { tables: ['GuestTable'], functions: [] }, fromCache: false,
+			accountPartition: `partition-${connection.id}`, cacheGeneration: generation,
+		}));
 		const activeRefresher = vi.fn(async () => ({
 			schemas: [{ clusterUrl: 'shared', database: 'GuestDb', tables: ['GuestTable'], functions: [] }],
 		}));
@@ -571,12 +763,22 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 				{ id: 'home', name: 'Home tenant', clusterUrl: 'https://shared.kusto.windows.net', authorityId: 'home.onmicrosoft.com' },
 				{ id: 'guest', name: 'Guest tenant', clusterUrl: 'shared', authorityId: 'resource.onmicrosoft.com' },
 			],
+			getConnectionIncarnation: () => 1,
+			runWithLeaveNoTraceSnapshotLock: (run: (snapshot: unknown) => Promise<unknown>) => run({
+				clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {},
+			}),
 		} as any;
 		const orchestrator = KustoWorkbenchToolOrchestrator.getInstance(
 			fakeContext,
 			connectionManager,
 			fakeGetSqlConnMgr,
-			{ getDatabases } as any,
+			{
+				getDatabasesWithIdentity,
+				getDatabaseSchema,
+				getAccountPartition: (connection: { id: string }) => `partition-${connection.id}`,
+				getConnectionSessionGeneration: () => 0,
+				waitForProviderAccountRefresh: vi.fn(async () => undefined),
+			} as any,
 		);
 		const activeUri = vscode.Uri.file('/work/active.kqlx');
 		const laterUri = vscode.Uri.file('/work/later.kqlx');
@@ -589,9 +791,19 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 			connectionId: 'guest',
 		});
 
-		expect(activeRefresher).toHaveBeenCalledWith('shared', 'guest');
+		expect(activeRefresher).not.toHaveBeenCalled();
 		expect(laterRefresher).not.toHaveBeenCalled();
-		expect(getDatabases).not.toHaveBeenCalled();
+		expect(getDatabasesWithIdentity).toHaveBeenCalledWith(
+			expect.objectContaining({ id: 'guest', authorityId: 'resource.onmicrosoft.com' }),
+			true,
+			expect.objectContaining({ persistCache: false }),
+		);
+		expect(getDatabaseSchema).toHaveBeenCalledWith(
+			expect.objectContaining({ id: 'guest', authorityId: 'resource.onmicrosoft.com' }),
+			'GuestDb',
+			true,
+			expect.objectContaining({ persistCache: false }),
+		);
 		expect(result.schemas[0]).toMatchObject({ database: 'GuestDb', tables: ['GuestTable'] });
 	});
 
@@ -638,6 +850,47 @@ describe('KustoWorkbenchToolOrchestrator connect/disconnect', () => {
 		expect(postedMessage.input.sectionId).toBe('active_query');
 		orch.handleWebviewResponse(postedMessage.requestId, { success: true });
 		await expect(configurePromise).resolves.toEqual({ success: true });
+	});
+
+	it('cancels the exact acknowledged Kusto execution on the captured editor', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const uri = vscode.Uri.file('/work/active-query.kqlx');
+		const poster = vi.fn();
+		orch.connect(poster, vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), uri.toString());
+		setActiveCustomTab(uri, 'kusto.kqlxEditor');
+		const cancellation = cancellationToken();
+
+		const configurePromise = orch.configureQuerySection({ sectionId: 'query_1', query: 'range x from 1 to 10 step 1', execute: true }, cancellation.token);
+		const configureMessage = poster.mock.calls[0][0] as any;
+		const owner = {
+			engine: 'kusto', boxId: 'query_1', executionId: 'execution-1', sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'tool',
+		};
+		orch.handleKustoExecutionStarted(configureMessage.requestId, owner as any);
+		cancellation.cancel();
+
+		await expect(configurePromise).rejects.toBeInstanceOf(vscode.CancellationError);
+		expect(poster).toHaveBeenCalledWith({
+			type: 'toolCancelKustoExecution', requestId: configureMessage.requestId, owner,
+		});
+	});
+
+	it('sends a request-scoped cancellation when cancellation wins before Kusto execution acknowledgement', async () => {
+		const orch = KustoWorkbenchToolOrchestrator.getInstance(fakeContext, fakeConnectionManager, fakeGetSqlConnMgr, fakeKustoClient);
+		const uri = vscode.Uri.file('/work/active-query.kqlx');
+		const poster = vi.fn();
+		orch.connect(poster, vi.fn(async () => [{ id: 'query_1', type: 'query' }]), vi.fn(), uri.toString());
+		setActiveCustomTab(uri, 'kusto.kqlxEditor');
+		const cancellation = cancellationToken();
+
+		const configurePromise = orch.configureQuerySection({ sectionId: 'query_1', query: 'range x from 1 to 10 step 1', execute: true }, cancellation.token);
+		const configureMessage = poster.mock.calls[0][0] as any;
+		cancellation.cancel();
+
+		await expect(configurePromise).rejects.toBeInstanceOf(vscode.CancellationError);
+		expect(poster).toHaveBeenCalledWith({
+			type: 'toolCancelKustoExecution', requestId: configureMessage.requestId,
+		});
 	});
 
 	it('listSections reports an active supported text file as read-only instead of using a hidden live notebook', async () => {

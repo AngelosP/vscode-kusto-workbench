@@ -6,6 +6,9 @@
  * kqlx/kqlCompat/mdCompat editors handle.
  */
 import type { KustoEditorLifecycleIdentity } from '../../shared/kustoSchemaLifecycle.js';
+import type { KustoSectionExecutionTarget } from '../../shared/kustoExecution.js';
+import type { KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
+import type { KustoCopilotRequestIdentity, KustoOptimizeRequestIdentity } from '../../shared/kustoExecution.js';
 
 // ── Query execution & results ──────────────────────────────────────────────
 
@@ -15,6 +18,9 @@ export type OutgoingExecuteQueryMessage = {
 	connectionId: string;
 	boxId: string;
 	executionId: string;
+	sectionInstanceId: string;
+	targetGeneration: number;
+	producer?: 'manual' | 'copilot' | 'comparison' | 'tool';
 	database?: string;
 	queryMode?: string;
 	cacheEnabled?: boolean;
@@ -47,10 +53,9 @@ export type OutgoingShareToClipboardMessage = {
 
 // ── Copilot ────────────────────────────────────────────────────────────────
 
-export type OutgoingStartCopilotWriteQueryMessage = {
+type OutgoingStartCopilotWriteQueryMessageBase = {
 	type: 'startCopilotWriteQuery';
 	boxId: string;
-	flavor: 'kusto' | 'sql';
 	connectionId: string;
 	serverUrl: string;
 	database: string;
@@ -60,10 +65,13 @@ export type OutgoingStartCopilotWriteQueryMessage = {
 	enabledTools?: string[];
 	queryMode?: string;
 	requireToolUse?: boolean;
-	sqlOwnerToken?: string;
 };
 
-export type OutgoingOptimizeQueryMessage = {
+export type OutgoingStartCopilotWriteQueryMessage =
+	| (OutgoingStartCopilotWriteQueryMessageBase & KustoCopilotRequestIdentity & { flavor: 'kusto' })
+	| (OutgoingStartCopilotWriteQueryMessageBase & { flavor: 'sql'; sqlOwnerToken?: string });
+
+export type OutgoingOptimizeQueryMessage = KustoOptimizeRequestIdentity & {
 	type: 'optimizeQuery';
 	query: string;
 	connectionId: string;
@@ -147,8 +155,13 @@ export type OutgoingPowerBiUnsupportedVisualHelpMessage = {
 
 export type OutgoingWebviewMessage =
 	| { type: 'fileOpenTrace'; event: string; timeMs?: number; sequence?: number; detail?: unknown }
+	| { type: 'kustoPublicationAck'; publicationId: string; phase: 'staged' | 'applied'; accepted: boolean }
 	// Connection & database
-	| { type: 'getConnections' }
+	| { type: 'getConnections'; policyRequestId?: string }
+	| { type: 'kustoSectionOpen'; boxId: string; sectionInstanceId: string }
+	| { type: 'kustoSectionTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number; connectionId?: string; database?: string; connectionRevision?: number; connectionIdentityKey?: string }
+	| { type: 'kustoSectionClose'; boxId: string; sectionInstanceId: string }
+	| { type: 'kustoExecutionStartedAck'; boxId: string; executionId: string; sectionInstanceId: string; targetGeneration: number; accepted: boolean }
 	| OutgoingEditorCursorPositionChangedMessage
 	| OutgoingEditorCursorStatusSnapshotRequestMessage
 	| ({ type: 'getDatabases'; connectionId: string; boxId: string; requestToken?: string; requiredDatabase?: string } & Partial<KustoEditorLifecycleIdentity>)
@@ -191,7 +204,7 @@ export type OutgoingWebviewMessage =
 
 	// Query execution
 	| OutgoingExecuteQueryMessage
-	| { type: 'cancelQuery'; boxId: string; executionId: string }
+	| { type: 'cancelQuery'; boxId: string; executionId: string; sectionInstanceId: string; targetGeneration: number }
 	| OutgoingCopyAdeLinkMessage
 	| OutgoingShareToClipboardMessage
 
@@ -222,8 +235,9 @@ export type OutgoingWebviewMessage =
 	// SQL copilot — unified into Copilot section below
 
 	// Comparisons
-	| { type: 'comparisonBoxEnsured'; requestId: string; sourceBoxId: string; comparisonBoxId: string }
+	| ({ type: 'comparisonBoxEnsured'; requestId: string; sourceBoxId: string; comparisonBoxId: string; kustoTarget?: KustoSectionExecutionTarget } & Partial<KustoCopilotRequestIdentity>)
 	| { type: 'comparisonSummary'; sourceBoxId: string; comparisonBoxId: string; dataMatches: boolean; headersMatch?: boolean; rowOrderMatches?: boolean; columnOrderMatches?: boolean }
+	| { type: 'clearComparisonSummary'; sourceBoxId: string; comparisonBoxId: string }
 
 	// Schema
 	| ({ type: 'prefetchSchema'; connectionId: string; database: string; boxId: string; forceRefresh?: boolean; requestToken?: string; cacheOnly?: boolean; silent?: boolean; reason?: string } & Partial<KustoEditorLifecycleIdentity>)
@@ -244,14 +258,16 @@ export type OutgoingWebviewMessage =
 	| { type: 'checkCopilotAvailability'; boxId: string }
 	| { type: 'prepareCopilotWriteQuery'; boxId: string; flavor?: 'kusto' | 'sql' }
 	| OutgoingStartCopilotWriteQueryMessage
-	| { type: 'cancelCopilotWriteQuery'; boxId: string }
-	| { type: 'clearCopilotConversation'; boxId: string }
+	| ({ type: 'cancelCopilotWriteQuery'; boxId: string; flavor: 'kusto' } & KustoCopilotRequestIdentity)
+	| { type: 'cancelCopilotWriteQuery'; boxId: string; flavor?: 'sql' }
+	| ({ type: 'clearCopilotConversation'; flavor: 'kusto' } & KustoCopilotRequestIdentity)
+	| { type: 'clearCopilotConversation'; boxId: string; flavor?: 'sql' }
 	| { type: 'removeFromCopilotHistory'; boxId: string; entryId: string }
 	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string; flavor?: 'kusto' | 'sql'; ownerToken?: string }
 
 	// Optimize
-	| { type: 'prepareOptimizeQuery'; query: string; boxId: string }
-	| { type: 'cancelOptimizeQuery'; boxId: string }
+	| ({ type: 'prepareOptimizeQuery'; query: string } & KustoOptimizeRequestIdentity)
+	| ({ type: 'cancelOptimizeQuery' } & KustoOptimizeRequestIdentity)
 	| OutgoingOptimizeQueryMessage
 
 	// Python / URL
@@ -260,6 +276,7 @@ export type OutgoingWebviewMessage =
 
 	// Tool responses (agent tools)
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
+	| { type: 'toolExecutionStarted'; requestId: string; owner: KustoExecutionRequestIdentity }
 	| { type: 'toolStateResponse'; requestId: string; sections: unknown[] }
 	| { type: 'openToolResultInEditor'; boxId: string; tool: string; label: string; content: string }
 	| { type: 'openMarkdownPreview'; filePath: string }

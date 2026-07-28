@@ -21,7 +21,8 @@ export function shouldStartKustoSchemaPrewarm(args: {
 	return args.diagnosticsTrusted !== false
 		&& !args.schemaFetchInFlight
 		&& (!token || token.startsWith('schema_prewarm_'))
-		&& args.preparationStatus !== 'preparing';
+		&& args.preparationStatus !== 'preparing'
+		&& args.preparationStatus !== 'deferred';
 }
 
 export function shouldForceKustoFocusedSchemaApply(args: {

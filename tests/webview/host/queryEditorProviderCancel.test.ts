@@ -1,9 +1,14 @@
 import type * as vscode from 'vscode';
+import * as fs from 'fs';
+import * as os from 'os';
+import * as path from 'path';
 import { describe, it, expect, vi } from 'vitest';
 import { QueryEditorProvider } from '../../../src/host/queryEditorProvider';
-import type { KustoConnection } from '../../../src/host/connectionManager';
+import { ConnectionManager, type KustoConnection } from '../../../src/host/connectionManager';
 import type { ExecuteQueryMessage } from '../../../src/host/queryEditorTypes';
 import { appendQueryMode, isControlCommand, normalizeControlCommandForExecution } from '../../../src/host/queryEditorUtils';
+import { kustoClusterKey } from '../../../src/shared/kustoClusterUrls';
+import { getKustoConnectionIdentityKey } from '../../../src/shared/kustoAuth';
 import { sqlConnectionTargetSignature } from '../../../src/shared/sqlConnectionIdentity';
 import { sqlSchemaPrincipalFingerprintForPrincipal } from '../../../src/host/sqlEditorSchema';
 import { QueryRunCoordinator } from '../../../src/host/queryRunCoordinator';
@@ -16,7 +21,8 @@ import {
 	type SqlResultOwner,
 } from '../../../src/host/sql/sqlEditorSessionRegistry';
 import { SqlExecutionBroker } from '../../../src/host/sql/sqlExecutionBroker';
-import type { SqlWorkbenchService } from '../../../src/host/sql/sqlWorkbenchService';
+import { SqlWorkbenchService } from '../../../src/host/sql/sqlWorkbenchService';
+import { withSqlStateFileLock } from '../../../src/host/sql/sqlStateTransaction';
 
 const TEST_CONNECTION: KustoConnection = {
 	id: 'conn-1',
@@ -52,13 +58,39 @@ function queryResult(label: string) {
 	};
 }
 
-function executeMessage(boxId: string, query: string = 'print x=1'): ExecuteQueryMessage {
+function kustoDispatchIdentity(leaveNoTraceRevision: number) {
+	return {
+		dispatchAttempt: 1,
+		connectionRevision: 0,
+		leaveNoTraceRevision,
+		connectionIdentityKey: getKustoConnectionIdentityKey(TEST_CONNECTION.clusterUrl, TEST_CONNECTION.authorityId),
+		clusterEndpoint: TEST_CONNECTION.clusterUrl,
+		accountPartition: 'partition-current',
+		authSessionGeneration: 0,
+		clientActivityId: 'KW.execute_query;dispatch',
+	};
+}
+
+function dispatchingKustoExecution(execution: Record<string, unknown>, leaveNoTraceRevision = 0) {
+	return (_connection: unknown, _database: string, _query: string, _key: string, options: any) => {
+		options.onDispatch(kustoDispatchIdentity(leaveNoTraceRevision));
+		return execution;
+	};
+}
+
+let executeMessageSequence = 0;
+
+function executeMessage(boxId: string, query: string = 'print x=1', executionId = `kusto-test-${++executeMessageSequence}`): ExecuteQueryMessage {
 	return {
 		type: 'executeQuery',
 		query,
 		connectionId: TEST_CONNECTION.id,
 		database: 'Samples',
 		boxId,
+		executionId,
+		sectionInstanceId: `instance-${boxId}`,
+		targetGeneration: 1,
+		producer: 'manual',
 		queryMode: 'plain',
 		cacheEnabled: false,
 		cacheValue: 1,
@@ -68,15 +100,30 @@ function executeMessage(boxId: string, query: string = 'print x=1'): ExecuteQuer
 
 function createProviderHarness() {
 	const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
-	provider.postMessage = vi.fn();
+	provider.pendingKustoExecutionStartAcks = new Map();
+	provider.pendingKustoPublicationAcks = new Map();
+	provider.postMessage = vi.fn(() => true);
+	provider.postKustoPublication = vi.fn(async (message: unknown) => await Promise.resolve(provider.postMessage(message)) !== false);
 	provider.refreshConnectionsData = vi.fn(async () => undefined);
 	provider.connection = {
 		saveLastSelection: vi.fn(async () => undefined),
 		findConnection: vi.fn(() => TEST_CONNECTION),
 	};
+	provider.connectionManager = {
+		policyRevision: 0,
+		getConnections: vi.fn(() => [TEST_CONNECTION]),
+		getConnectionIncarnation: vi.fn(() => 0),
+		admitLeaveNoTraceRevision: vi.fn(async (_clusterUrl: string, expectedRevision: number, admit: () => unknown) =>
+			expectedRevision === provider.connectionManager.policyRevision
+				? { admitted: true, value: await Promise.resolve(admit()) }
+				: { admitted: false }),
+	};
+	provider.getCurrentKustoConnectionForDispatch = vi.fn(() => TEST_CONNECTION);
 	provider.kustoClient = {
 		executeQueryCancelable: vi.fn(),
 		getAccountPartition: vi.fn(() => 'partition-current'),
+		getConnectionSessionGeneration: vi.fn(() => 0),
+		waitForProviderAccountRefresh: vi.fn(async () => undefined),
 	};
 	provider.appendQueryMode = vi.fn((query: string) => query);
 	provider.isControlCommand = vi.fn(() => false);
@@ -85,6 +132,12 @@ function createProviderHarness() {
 	provider.logQueryExecutionError = vi.fn();
 	provider.formatQueryExecutionErrorForUser = vi.fn((error: unknown) => error instanceof Error ? error.message : String(error));
 	provider.output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() };
+	provider.kustoExecutionCoordinator.openSection('query_1', 'instance-query_1');
+	provider.kustoExecutionCoordinator.adoptTarget({
+		boxId: 'query_1', sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		connectionId: TEST_CONNECTION.id, database: 'Samples', connectionRevision: 0,
+		connectionIdentityKey: getKustoConnectionIdentityKey(TEST_CONNECTION.clusterUrl, TEST_CONNECTION.authorityId),
+	});
 	return provider;
 }
 
@@ -329,6 +382,13 @@ function createSqlProviderHarness() {
 			get: vi.fn((key: string) => key === 'sql.auth.serverAccountMap' ? { 'server.example': 'account-a' } : undefined),
 		},
 	};
+	provider.connectionManager = {
+		getConnections: vi.fn(() => [TEST_CONNECTION]),
+		runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+			clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {},
+		})),
+	};
+	provider.kustoClient = { getAccountPartition: vi.fn(() => 'partition-current') };
 	const connectionManager = {
 		getConnection: vi.fn(() => ({ id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' })),
 		getConnections: vi.fn(() => [{ id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' }]),
@@ -362,6 +422,21 @@ function createSqlProviderHarness() {
 			connections: connectionManager.getConnections(), connectionVersion: 1,
 			accountsByServer: { 'server.example': 'account-a' }, principalVersion: 1,
 		})),
+		tryDispatchSqlOwnerSnapshot: vi.fn(async (dispatch: (snapshot: any) => unknown) => ({ acquired: true, value: await dispatch({
+			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
+			connections: connectionManager.getConnections(), connectionVersion: 1,
+			accountsByServer: { 'server.example': 'account-a' }, principalVersion: 1,
+		}) })),
+		tryRunWithSqlOwnerSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => ({ acquired: true, value: await run({
+			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
+			connections: connectionManager.getConnections(), connectionVersion: 1,
+			accountsByServer: { 'server.example': 'account-a' }, principalVersion: 1,
+		}) })),
+		retrySqlOwnerSnapshotAcquisition: vi.fn(async (attempt: () => Promise<any>) => {
+			const result = await attempt();
+			if (!result.acquired) throw new Error('Unexpected SQL snapshot contention in test harness.');
+			return result.value;
+		}),
 	};
 	provider.sendSqlConnectionsData = vi.fn(async () => undefined);
 	const sqlLifecycle = new TestSqlLifecycle(
@@ -384,6 +459,89 @@ function createSqlProviderHarness() {
 }
 
 describe('QueryEditorProvider cancellation orchestration', () => {
+	it('waits for webview application acknowledgement after transport accepts a Kusto publication', async () => {
+		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+		provider._panelDisposed = false;
+		provider.pendingKustoPublicationAcks = new Map();
+		provider.panel = { webview: { postMessage: vi.fn(async () => true) } };
+		provider.output = { warn: vi.fn() };
+
+		let settled = false;
+		const publishing = provider.postKustoPublication({ type: 'queryCancelled', executionId: 'ack-test' })
+			.then(value => { settled = true; return value; });
+		await vi.waitFor(() => expect(provider.panel.webview.postMessage).toHaveBeenCalledOnce());
+		expect(settled).toBe(false);
+		const stage = provider.panel.webview.postMessage.mock.calls[0][0];
+		await provider.handleWebviewMessage({ type: 'kustoPublicationAck', publicationId: stage.publicationId, phase: 'staged', accepted: true });
+		await vi.waitFor(() => expect(provider.panel.webview.postMessage).toHaveBeenCalledTimes(2));
+		await provider.handleWebviewMessage({ type: 'kustoPublicationAck', publicationId: stage.publicationId, phase: 'applied', accepted: true });
+
+		await expect(publishing).resolves.toBe(true);
+	});
+
+	it('fails a Kusto publication closed when applied and revoke acknowledgements are lost', async () => {
+		vi.useFakeTimers();
+		try {
+			const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+			provider._panelDisposed = false;
+			provider.pendingKustoPublicationAcks = new Map();
+			provider.panel = { webview: { postMessage: vi.fn(async () => true) } };
+			provider.output = { warn: vi.fn() };
+
+			const publishing = provider.postKustoPublication({ type: 'queryResult', result: { rows: [['secret']] } });
+			await vi.waitFor(() => expect(provider.panel.webview.postMessage).toHaveBeenCalledOnce());
+			const stage = provider.panel.webview.postMessage.mock.calls[0][0];
+			await provider.handleWebviewMessage({
+				type: 'kustoPublicationAck', publicationId: stage.publicationId, phase: 'staged', accepted: true,
+			});
+			await vi.waitFor(() => expect(provider.panel.webview.postMessage).toHaveBeenCalledTimes(2));
+
+			await vi.advanceTimersByTimeAsync(6_000);
+
+			await expect(publishing).resolves.toBe(false);
+			expect(provider.panel.webview.postMessage).toHaveBeenCalledWith({
+				type: 'kustoPublicationRevoke', publicationId: stage.publicationId,
+			});
+			expect(provider.pendingKustoPublicationAcks.size).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('treats revoke status as success when commit applied but its acknowledgement was lost', async () => {
+		vi.useFakeTimers();
+		try {
+			const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+			provider._panelDisposed = false;
+			provider.pendingKustoPublicationAcks = new Map();
+			provider.output = { warn: vi.fn() };
+			provider.panel = { webview: { postMessage: vi.fn(async (message: any) => {
+				if (message.type === 'kustoPublicationStage') {
+					queueMicrotask(() => void provider.handleWebviewMessage({
+						type: 'kustoPublicationAck', publicationId: message.publicationId,
+						phase: 'staged', accepted: true,
+					}));
+				}
+				if (message.type === 'kustoPublicationRevoke') {
+					queueMicrotask(() => void provider.handleWebviewMessage({
+						type: 'kustoPublicationAck', publicationId: message.publicationId,
+						phase: 'applied', accepted: true,
+					}));
+				}
+				return true;
+			}) } };
+
+			const publishing = provider.postKustoPublication({ type: 'queryResult', result: { rows: [['applied']] } });
+			await vi.waitFor(() => expect(provider.panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoPublicationCommit' })));
+			await vi.advanceTimersByTimeAsync(5_000);
+
+			await expect(publishing).resolves.toBe(true);
+			expect(provider.panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoPublicationRevoke' }));
+			expect(provider.pendingKustoPublicationAcks.size).toBe(0);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
 	it('rejects an owner token removed while canonical validation is pending', async () => {
 		const provider = createSqlProviderHarness();
 		const validation = deferred<void>();
@@ -447,6 +605,10 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 	it('invalidates all SQL Copilot owners before panel disposal clears editor state', () => {
 		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
 		let disposePanel!: () => void;
+		const resolveKustoStart = vi.fn();
+		const rejectComparison = vi.fn();
+		const kustoStartTimer = setTimeout(() => undefined, 30_000);
+		const comparisonTimer = setTimeout(() => undefined, 30_000);
 		const panel = { onDidDispose: vi.fn((handler: () => void) => { disposePanel = handler; }) } as any;
 		provider.panel = panel;
 		provider._panelDisposed = false;
@@ -456,23 +618,40 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			dispose: vi.fn(),
 		};
 		provider._comparisonOwnerByBoxId = new Map([['kusto_comparison', { sourceBoxId: 'kusto_1' }]]);
-		provider.copilot = { invalidateSqlConnections: vi.fn() };
+		provider.copilot = { disposeKustoOwners: vi.fn(), invalidateSqlConnections: vi.fn() };
 		provider.sqlPersistenceInvalidationEmitter = { dispose: vi.fn() };
+		provider.kustoPersistenceInvalidationEmitter = { dispose: vi.fn() };
+		provider.pendingKustoPublicationAcks = new Map();
 		provider.clearCursorStatusForProvider = vi.fn();
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
 		provider.disconnectToolOrchestrator = vi.fn();
 		provider.connection = { dispose: vi.fn() };
 		provider.kustoConnectionLifecycle = { dispose: vi.fn() };
+		provider.pendingKustoExecutionStartAcks = new Map([[
+			'query_1\u0000instance-query_1\u00001\u0000execution-1',
+			{ resolve: resolveKustoStart, timer: kustoStartTimer },
+		]]);
+		provider.pendingComparisonEnsureByRequestId = new Map([[
+			'comparison-pending',
+			{ resolve: vi.fn(), reject: rejectComparison, timer: comparisonTimer, sourceBoxId: 'query_1' },
+		]]);
 
 		provider.registerPanelDisposal(panel);
 		disposePanel();
+		clearTimeout(kustoStartTimer);
+		clearTimeout(comparisonTimer);
 
 		expect(provider.copilot.invalidateSqlConnections).toHaveBeenCalledWith([], ['comparison_1']);
+		expect(provider.copilot.disposeKustoOwners).toHaveBeenCalledOnce();
 		expect(provider.copilot.invalidateSqlConnections.mock.invocationCallOrder[0])
 			.toBeLessThan(provider.sqlLifecycle.dispose.mock.invocationCallOrder[0]);
 		expect(provider.kustoConnectionLifecycle.dispose).toHaveBeenCalledOnce();
 		expect(provider._comparisonOwnerByBoxId).toEqual(new Map());
+		expect(resolveKustoStart).toHaveBeenCalledWith(false);
+		expect(provider.pendingKustoExecutionStartAcks.size).toBe(0);
+		expect(rejectComparison).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' }));
+		expect(provider.pendingComparisonEnsureByRequestId.size).toBe(0);
 	});
 
 	it('ignores policy messages after the panel webview getter is disposed', () => {
@@ -815,6 +994,57 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		}));
 	});
 
+	it('does not publish section rows after a same-ID target changes A to B and back to A', async () => {
+		const provider = createProviderHarness();
+		provider.getCurrentKustoConnectionForDispatch = QueryEditorProvider.prototype.getCurrentKustoConnectionForDispatch;
+		let incarnation = 1;
+		provider.connectionManager.getConnectionIncarnation.mockImplementation(() => incarnation);
+		const result = deferred<ReturnType<typeof queryResult>>();
+		provider.kustoClient.executeQueryCancelable.mockImplementationOnce((
+			_connection: unknown, _database: string, _query: string, _key: string, options: any,
+		) => {
+			options.onDispatch({ ...kustoDispatchIdentity(0), connectionRevision: 1 });
+			return {
+				promise: result.promise, cancel: vi.fn(), clientActivityId: 'KW.execute_query;aba',
+				getAccountPartition: () => 'partition-current',
+			};
+		});
+
+		const task = provider.executeQueryFromWebview(executeMessage('query_1'));
+		await flushPromises();
+		incarnation = 3;
+		result.resolve(queryResult('stale-aba'));
+		await task;
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
+	});
+
+	it('does not dispatch a stale request after its same-ID physical connection was replaced', async () => {
+		const provider = createProviderHarness();
+		const original = { ...TEST_CONNECTION };
+		const replacement = { ...TEST_CONNECTION, clusterUrl: 'https://replacement.kusto.windows.net', authorityId: 'organizations' };
+		let current: KustoConnection = original;
+		let incarnation = 1;
+		provider.connectionManager.getConnections.mockImplementation(() => [current]);
+		provider.connectionManager.getConnectionIncarnation.mockImplementation(() => incarnation);
+		provider._kustoExecutionCoordinator = undefined;
+		provider.kustoExecutionCoordinator.openSection('query_1', 'instance-query_1');
+		provider.kustoExecutionCoordinator.adoptTarget({
+			boxId: 'query_1', sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+			connectionId: original.id, database: 'Samples', connectionRevision: 1,
+			connectionIdentityKey: getKustoConnectionIdentityKey(original.clusterUrl, original.authorityId),
+		});
+		current = replacement;
+		incarnation = 2;
+
+		await provider.executeQueryFromWebview(executeMessage('query_1', 'print stale=1', 'stale-before-reservation'));
+
+		expect(provider.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryCancelled', executionId: 'stale-before-reservation', reason: 'retired',
+		}));
+	});
+
 	it('rejects delayed SQL rows after the section switches target', async () => {
 		const provider = createSqlProviderHarness();
 		const pending = deferred<any>();
@@ -1015,6 +1245,21 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.sqlLifecycle.getComparisonOwner('query_cmp')).toBeUndefined();
 	});
 
+	it('strips persisted Kusto comparison rows when the comparison target differs from its source', async () => {
+		const provider = createSqlProviderHarness();
+		provider.connectionManager.getConnections = vi.fn(() => [
+			{ id: 'source', name: 'Source', clusterUrl: 'https://source.kusto.windows.net' },
+			{ id: 'other', name: 'Other', clusterUrl: 'https://other.kusto.windows.net' },
+		]);
+		const state = { sections: [
+			{ id: 'query_source', type: 'query', clusterUrl: 'https://source.kusto.windows.net', connectionIdHint: 'source', database: 'Db', query: 'T' },
+			{ id: 'query_cmp', type: 'query', comparisonSourceBoxId: 'query_source', clusterUrl: 'https://other.kusto.windows.net', connectionIdHint: 'other', database: 'OtherDb', query: 'T | count', resultJson: '{"secret":true}' },
+		] };
+
+		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
+		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+	});
+
 	it('does not read SQL policy storage for pure Kusto, Markdown, and Chart state', async () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlWorkbench.refreshLeaveNoTracePolicy = vi.fn(async () => { throw new Error('SQL policy unavailable'); });
@@ -1035,14 +1280,14 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const connection = provider.sqlWorkbench.connectionManager.getConnection('sql-1');
 		const principal = sqlSchemaPrincipalFingerprintForPrincipal(connection, 'account-a')!;
 		let lockHeld = false;
-		provider.sqlWorkbench.runWithSqlOwnerSnapshotLock = vi.fn(async (run: (snapshot: any) => unknown) => {
+		provider.sqlWorkbench.tryRunWithSqlOwnerSnapshotLock = vi.fn(async (run: (snapshot: any) => unknown) => {
 			lockHeld = true;
 			try {
-				return await run({
+				return { acquired: true, value: await run({
 					policy: { connectionIds: ['sql-1'], version: 2, globallyBlocked: false, revocationGenerations: { 'sql-1': 1 } },
 					connections: [connection], connectionVersion: 1,
 					accountsByServer: { 'server.example': 'account-a' }, principalVersion: 1,
-				});
+				}) };
 			} finally {
 				lockHeld = false;
 			}
@@ -1062,12 +1307,151 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			expect(lockHeld).toBe(true);
 			return 'published';
 		});
-		await vi.waitFor(() => expect(provider.sqlWorkbench.runWithSqlOwnerSnapshotLock).toHaveBeenCalledOnce());
+		await vi.waitFor(() => expect(provider.sqlWorkbench.tryRunWithSqlOwnerSnapshotLock).toHaveBeenCalledOnce());
 		expect(lockHeld).toBe(true);
 		releasePublish();
 
 		await expect(publishing).resolves.toBe('published');
 		expect(lockHeld).toBe(false);
+	});
+
+	it('holds canonical Kusto policy admission through publication and strips newly protected rows', async () => {
+		const provider = createSqlProviderHarness();
+		let lockHeld = false;
+		provider.connectionManager.runWithLeaveNoTraceSnapshotLock = vi.fn(async (run: (snapshot: any) => unknown) => {
+			lockHeld = true;
+			try {
+				return await run({
+					clusterKeys: [kustoClusterKey(TEST_CONNECTION.clusterUrl)], globallyBlocked: false, version: 2,
+				});
+			} finally {
+				lockHeld = false;
+			}
+		});
+		let releasePublish!: () => void;
+		const publishGate = new Promise<void>(resolve => { releasePublish = resolve; });
+		const state = { sections: [{
+			id: 'query_1', type: 'query', clusterUrl: TEST_CONNECTION.clusterUrl,
+			connectionIdHint: TEST_CONNECTION.id, database: 'Samples', resultJson: '{"secret":true}',
+		}] };
+
+		const publishing = provider.publishSqlLeaveNoTraceStateFresh(state, async sanitized => {
+			expect(lockHeld).toBe(true);
+			expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+			await publishGate;
+			expect(lockHeld).toBe(true);
+			return 'published';
+		});
+		await vi.waitFor(() => expect(provider.connectionManager.runWithLeaveNoTraceSnapshotLock).toHaveBeenCalledOnce());
+		expect(lockHeld).toBe(true);
+		releasePublish();
+
+		await expect(publishing).resolves.toBe('published');
+		expect(lockHeld).toBe(false);
+	});
+
+	it('releases the Kusto policy lock while a canonical SQL snapshot lock is contended', async () => {
+		const directory = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-cross-store-lock-contention-'));
+		const values = new Map<string, unknown>([
+			['kusto.connections', [TEST_CONNECTION]],
+			['sql.connections', [{ id: 'sql-1', name: 'SQL', dialect: 'mssql', serverUrl: 'server.example', authType: 'aad' }]],
+			['sql.auth.serverAccountMap', { 'server.example': 'account-a' }],
+		]);
+		const context = {
+			globalStorageUri: { fsPath: directory }, logUri: { fsPath: path.join(directory, 'logs') }, subscriptions: [],
+			globalState: {
+				get: vi.fn((key: string) => values.get(key)),
+				update: vi.fn(async (key: string, value: unknown) => { values.set(key, value); }),
+			},
+			secrets: { get: vi.fn(async () => undefined), store: vi.fn(async () => undefined), delete: vi.fn(async () => undefined) },
+		} as any;
+		const output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn(), log: vi.fn(), show: vi.fn() } as any;
+		const connectionManager = new ConnectionManager(context);
+		const sqlWorkbench = new SqlWorkbenchService(context, output);
+		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+		provider.connectionManager = connectionManager;
+		provider.sqlWorkbench = sqlWorkbench;
+		provider.kustoClient = { getAccountPartition: vi.fn(() => 'partition-current') };
+		provider.sqlLifecycle = {
+			reconcileComparisonOwners: vi.fn(),
+			getComparisonOwner: vi.fn(() => undefined),
+			getConnectionId: vi.fn((boxId: string) => boxId === 'sql_1' ? 'sql-1' : undefined),
+		};
+		provider.context = context;
+		const releaseSqlLock = deferred<void>();
+		const sqlLockEntered = deferred<void>();
+		let sqlLock: Promise<void> | undefined;
+		try {
+			await Promise.all([connectionManager.refreshLeaveNoTracePolicy(), sqlWorkbench.ready()]);
+			sqlLock = withSqlStateFileLock(
+				path.join(directory, 'sql-server-account-map.v1.json.write'),
+				async () => { sqlLockEntered.resolve(); await releaseSqlLock.promise; },
+			);
+			await sqlLockEntered.promise;
+			const sqlConnection = sqlWorkbench.connectionManager.getConnection('sql-1')!;
+			const principal = sqlSchemaPrincipalFingerprintForPrincipal(sqlConnection, 'account-a')!;
+			const state = { sections: [{
+				id: 'sql_1', type: 'sql', connectionIdHint: 'sql-1', serverUrl: 'server.example',
+				targetSignature: sqlConnectionTargetSignature(sqlConnection), principalFingerprint: principal,
+				resultJson: '{"secret":true}',
+			}] };
+
+			const sanitation = provider.sanitizeSqlLeaveNoTraceStateFresh(state);
+			await vi.waitFor(() => expect(sqlWorkbench.serverAccountMap.getVersion()).toBeGreaterThanOrEqual(0));
+			await expect(connectionManager.addLeaveNoTrace(TEST_CONNECTION.clusterUrl)).resolves.toBeUndefined();
+			await expect(Promise.race([
+				sanitation.then(() => 'settled', () => 'rejected'),
+				Promise.resolve('pending'),
+			])).resolves.toBe('pending');
+
+			releaseSqlLock.resolve();
+			await sqlLock;
+			await expect(sanitation).resolves.toEqual(expect.objectContaining({ sections: expect.any(Array) }));
+		} finally {
+			releaseSqlLock.resolve();
+			await sqlLock?.catch(() => undefined);
+			await sqlWorkbench.dispose();
+			connectionManager.dispose();
+			fs.rmSync(directory, { recursive: true, force: true });
+		}
+	});
+
+	it('fails closed for ownerless and ambiguous Kusto rows while preserving a unique public owner', async () => {
+		const provider = createSqlProviderHarness();
+		provider.connectionManager.getConnections = vi.fn(() => [
+			TEST_CONNECTION,
+			{ id: 'shared-a', name: 'Shared A', clusterUrl: 'https://shared.kusto.windows.net', authorityId: 'common' },
+			{ id: 'shared-b', name: 'Shared B', clusterUrl: 'https://shared.kusto.windows.net', authorityId: 'organizations' },
+		]);
+		const state = { sections: [
+			{ id: 'query_public', type: 'query', clusterUrl: TEST_CONNECTION.clusterUrl, connectionIdHint: TEST_CONNECTION.id, database: 'Samples', resultJson: '{"public":true}', kustoAccountPartition: 'partition-current', kustoLeaveNoTraceRevision: 0 },
+			{ id: 'query_ownerless', type: 'query', query: 'print 1', resultJson: '{"ownerless":true}' },
+			{ id: 'query_ambiguous', type: 'query', clusterUrl: 'https://shared.kusto.windows.net', database: 'Db', resultJson: '{"ambiguous":true}' },
+		] };
+
+		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
+
+		expect(sanitized.sections[0]).toHaveProperty('resultJson', '{"public":true}');
+		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+		expect(sanitized.sections[2]).not.toHaveProperty('resultJson');
+	});
+
+	it('treats sql_-prefixed Kusto connection and section IDs as Kusto ownership', async () => {
+		const provider = createSqlProviderHarness();
+		const connection = { id: 'sql_kusto_connection', name: 'Kusto', clusterUrl: 'https://opaque-id.kusto.windows.net' };
+		provider.connectionManager.getConnections = vi.fn(() => [connection]);
+		provider.connectionManager.runWithLeaveNoTraceSnapshotLock = vi.fn(async (run: (snapshot: any) => unknown) => await run({
+			clusterKeys: [kustoClusterKey(connection.clusterUrl)], globallyBlocked: false, version: 2,
+		}));
+		const state = { sections: [
+			{ id: 'sql_kusto_source', type: 'query', clusterUrl: connection.clusterUrl, connectionIdHint: connection.id, database: 'Db', resultJson: '{"source":true}' },
+			{ id: 'sql_kusto_comparison', type: 'query', comparisonSourceBoxId: 'sql_kusto_source', clusterUrl: connection.clusterUrl, connectionIdHint: connection.id, database: 'Db', resultJson: '{"comparison":true}' },
+		] };
+
+		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
+		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized.sections[1]).not.toHaveProperty('resultJson');
+		expect(provider.sqlWorkbench.dispatchSqlOwnerSnapshot).not.toHaveBeenCalled();
 	});
 
 	it('strips orphaned comparison rows before SQL policy I/O during fresh save', async () => {
@@ -1083,7 +1467,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.sqlWorkbench.refreshLeaveNoTracePolicy).not.toHaveBeenCalled();
 	});
 
-	it('strips legacy SQL comparison rows when policy refresh fails during fresh save', async () => {
+	it('strips unresolved opaque query rows without inferring SQL ownership from their connection ID', async () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlWorkbench.refreshLeaveNoTracePolicy = vi.fn(async () => { throw new Error('SQL policy unavailable'); });
 		const state = { sections: [{
@@ -1093,7 +1477,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 
 		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
 		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
-		expect(provider.sqlWorkbench.dispatchSqlOwnerSnapshot).toHaveBeenCalledOnce();
+		expect(provider.sqlWorkbench.dispatchSqlOwnerSnapshot).not.toHaveBeenCalled();
 	});
 
 	it('strips persisted AAD source and comparison rows after the canonical principal rotates', async () => {
@@ -1102,11 +1486,11 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const principalA = sqlSchemaPrincipalFingerprintForPrincipal(connection, 'account-a')!;
 		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => false);
 		provider.sqlWorkbench.refreshLeaveNoTracePolicy = vi.fn(async () => []);
-		provider.sqlWorkbench.dispatchSqlOwnerSnapshot = vi.fn(async (dispatch: (snapshot: any) => unknown) => await dispatch({
+		provider.sqlWorkbench.tryDispatchSqlOwnerSnapshot = vi.fn(async (dispatch: (snapshot: any) => unknown) => ({ acquired: true, value: await dispatch({
 			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
 			connections: [connection], connectionVersion: 1,
 			accountsByServer: { 'server.example': 'account-b' }, principalVersion: 2,
-		}));
+		}) }));
 		const state = {
 			sections: [
 				{
@@ -1134,11 +1518,11 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const principal = sqlSchemaPrincipalFingerprintForPrincipal(connection, 'account-a')!;
 		provider.sqlWorkbench.isLeaveNoTraceConnection = vi.fn(() => false);
 		provider.sqlWorkbench.refreshLeaveNoTracePolicy = vi.fn(async () => []);
-		provider.sqlWorkbench.dispatchSqlOwnerSnapshot = vi.fn(async (dispatch: (snapshot: any) => unknown) => await dispatch({
+		provider.sqlWorkbench.tryDispatchSqlOwnerSnapshot = vi.fn(async (dispatch: (snapshot: any) => unknown) => ({ acquired: true, value: await dispatch({
 			policy: { connectionIds: [], version: 1, globallyBlocked: false, revocationGenerations: {} },
 			connections: [{ ...connection, port: 1444 }], connectionVersion: 2,
 			accountsByServer: { 'server.example': 'account-a' }, principalVersion: 1,
-		}));
+		}) }));
 		const state = { sections: [{
 			id: 'sql_1', type: 'sql', connectionIdHint: 'sql-1', serverUrl: 'server.example',
 			targetSignature: sqlConnectionTargetSignature(connection), principalFingerprint: principal,
@@ -1151,7 +1535,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(sanitized.sections[0]).not.toHaveProperty('principalFingerprint');
 	});
 
-	it('strips pre-lineage SQL comparison rows while preserving Kusto, Markdown, and Chart state', () => {
+	it('does not infer SQL ownership from opaque query connection IDs', () => {
 		const provider = createSqlProviderHarness();
 		const state = {
 			sections: [
@@ -1163,7 +1547,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		};
 
 		const sanitized = provider.sanitizeSqlLeaveNoTraceState(state);
-		expect(sanitized.sections[0]).not.toHaveProperty('resultJson');
+		expect(sanitized.sections[0]).toHaveProperty('resultJson', '{"secret":true}');
 		expect(sanitized.sections[1]).toHaveProperty('resultJson', '{"count":1}');
 		expect(sanitized.sections[2]).toMatchObject({ text: 'Keep me' });
 		expect(sanitized.sections[3]).toMatchObject({ chartType: 'bar' });
@@ -1190,12 +1574,10 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 
 	it('ignores comparison removal events that are not tracked as SQL comparisons', async () => {
 		const provider = createSqlProviderHarness();
-		provider.cancelRunningQuery = vi.fn();
 		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
 
 		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'kusto_comparison', sourceBoxId: 'kusto_1' } as any);
 
-		expect(provider.cancelRunningQuery).not.toHaveBeenCalled();
 		expect(provider.copilot.cancelCopilotWriteQuery).not.toHaveBeenCalled();
 	});
 
@@ -1205,14 +1587,19 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			sourceBoxId: 'kusto_1', copilotSequence: 9, comparisonRequestId: 'request-kusto',
 		});
 		provider.latestComparisonSummaryByKey = new Map();
-		provider.cancelRunningQuery = vi.fn();
+		provider._kustoExecutionCoordinator = { getActive: vi.fn(() => ({
+			boxId: 'kusto_comparison', executionId: 'comparison-run', sectionInstanceId: 'comparison-instance',
+			targetGeneration: 1, reservationSequence: 1,
+		})), cancelExpected: vi.fn(() => true) };
 		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
 
 		await provider.handleWebviewMessage({
 			type: 'sqlComparisonRemoved', boxId: 'kusto_comparison', sourceBoxId: 'kusto_1',
 		} as any);
 
-		expect(provider.cancelRunningQuery).toHaveBeenCalledWith('kusto_comparison', { notifyWebview: true });
+		expect(provider._kustoExecutionCoordinator.cancelExpected).toHaveBeenCalledWith(expect.objectContaining({
+			boxId: 'kusto_comparison', executionId: 'comparison-run',
+		}));
 		expect(provider.copilot.cancelCopilotQueryTarget).toHaveBeenCalledWith('kusto_1', 'kusto_comparison', 9);
 		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith('kusto_1', 9);
 		expect(provider._comparisonOwnerByBoxId.has('kusto_comparison')).toBe(false);
@@ -1239,7 +1626,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlLifecycle.setComparisonOwner('comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-1', copilotSequence: 7 });
 		provider.latestComparisonSummaryByKey = new Map();
-		provider.cancelRunningQuery = vi.fn();
 		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
 
 		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'comparison_1' } as any);
@@ -1253,7 +1639,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlLifecycle.setComparisonOwner('comparison_1', { sourceBoxId: 'sql_1', connectionId: 'sql-1' });
 		provider.latestComparisonSummaryByKey = new Map();
-		provider.cancelRunningQuery = vi.fn();
 		provider.copilot = { cancelCopilotWriteQuery: vi.fn() };
 
 		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'comparison_1', sourceBoxId: 'sql_1' } as any);
@@ -1290,7 +1675,6 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			copilotSequence: 7,
 		}]]);
 		provider.latestComparisonSummaryByKey = new Map();
-		provider.cancelRunningQuery = vi.fn();
 		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
 		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(() => policy.promise);
 
@@ -1315,6 +1699,311 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.sqlLifecycle.getComparisonOwner('comparison_1')).toBeUndefined();
 	});
 
+	it('publishes a successful Kusto terminal with the initiating execution identity', async () => {
+		const provider = createProviderHarness();
+		const result = queryResult('success');
+		const message = executeMessage('query_1', 'print label="success"', 'execution-success');
+		provider.kustoClient.executeQueryCancelable.mockImplementationOnce(dispatchingKustoExecution({
+			promise: Promise.resolve(result),
+			cancel: vi.fn(),
+			clientActivityId: 'KW.execute_query;success',
+			getAccountPartition: () => 'partition-current',
+		}));
+
+		await provider.executeQueryFromWebview(message);
+
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryResult', result, boxId: 'query_1', executionId: 'execution-success',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		}));
+	});
+
+	it('does not revoke unrelated owners when a forgotten account maps to no connections', () => {
+		const provider = createProviderHarness();
+		provider.copilot = { invalidateKustoConnections: vi.fn() };
+		provider.sendConnectionsData = vi.fn(async () => undefined);
+		const reservation = provider.kustoExecutionCoordinator.reserve({
+			boxId: 'query_1', executionId: 'execution-unrelated', sectionInstanceId: 'instance-query_1',
+			targetGeneration: 1, connectionId: TEST_CONNECTION.id, database: 'Samples', producer: 'manual',
+		});
+		expect(reservation).toBeTruthy();
+
+		provider.handleKustoAuthPreferenceChange({
+			connectionIds: [], reason: 'account-forgotten', accountId: 'unmapped-account',
+		});
+
+		expect(provider.kustoExecutionCoordinator.getActive('query_1')).toBe(reservation);
+		expect(provider.copilot.invalidateKustoConnections).not.toHaveBeenCalled();
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoAuthIdentityChanged' }));
+		expect(provider.sendConnectionsData).toHaveBeenCalledOnce();
+	});
+
+	it('requires the exact Kusto execution-start acknowledgement before Copilot dispatch', async () => {
+		const provider = createProviderHarness();
+		const result = queryResult('copilot');
+		provider.postMessage.mockImplementation((message: any) => {
+			if (message?.type === 'kustoExecutionStarted') {
+				queueMicrotask(() => void provider.handleWebviewMessage({
+					type: 'kustoExecutionStartedAck', boxId: message.boxId, executionId: message.executionId,
+					sectionInstanceId: message.sectionInstanceId, targetGeneration: message.targetGeneration,
+					accepted: true,
+				}));
+			}
+			return true;
+		});
+		provider.kustoClient.executeQueryCancelable.mockImplementationOnce(dispatchingKustoExecution({
+			promise: Promise.resolve(result), cancel: vi.fn(), clientActivityId: 'KW.execute_query;copilot',
+			getAccountPartition: () => 'partition-current',
+		}));
+		const target = provider.getKustoSectionExecutionTarget('query_1');
+
+		const outcome = await provider.executeKustoSectionQuery({
+			target, executionId: 'copilot-execution', producer: 'copilot', query: 'print x=1',
+		});
+
+		expect(outcome).toEqual({ status: 'success', executionId: 'copilot-execution', result });
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'kustoExecutionStarted', executionId: 'copilot-execution', producer: 'copilot',
+		}));
+		expect(provider.postMessage.mock.invocationCallOrder[0])
+			.toBeLessThan(provider.kustoClient.executeQueryCancelable.mock.invocationCallOrder[0]);
+	});
+
+	it('does not dispatch Copilot execution when retarget rejects its exact start', async () => {
+		const provider = createProviderHarness();
+		provider.postMessage.mockImplementation((message: any) => {
+			if (message?.type === 'kustoExecutionStarted') {
+				queueMicrotask(() => {
+					void provider.handleWebviewMessage({
+						type: 'kustoSectionTarget', boxId: 'query_1', sectionInstanceId: 'instance-query_1',
+						targetGeneration: 2, connectionId: TEST_CONNECTION.id, database: 'Other',
+						connectionRevision: 0,
+						connectionIdentityKey: getKustoConnectionIdentityKey(TEST_CONNECTION.clusterUrl, TEST_CONNECTION.authorityId),
+					});
+					void provider.handleWebviewMessage({
+						type: 'kustoExecutionStartedAck', boxId: message.boxId, executionId: message.executionId,
+						sectionInstanceId: message.sectionInstanceId, targetGeneration: message.targetGeneration,
+						accepted: false,
+					});
+				});
+			}
+			return true;
+		});
+		const target = provider.getKustoSectionExecutionTarget('query_1');
+
+		const outcome = await provider.executeKustoSectionQuery({
+			target, executionId: 'retargeted-execution', producer: 'copilot', query: 'print x=1',
+		});
+
+		expect(outcome).toEqual({ status: 'superseded', executionId: 'retargeted-execution' });
+		expect(provider.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryCancelled', executionId: 'retargeted-execution', reason: 'retired',
+		}));
+	});
+
+	it('settles a stale manual preclaim with an exact retired terminal before dispatch', async () => {
+		const provider = createProviderHarness();
+		const staleTarget = {
+			engine: 'kusto' as const, boxId: 'query_1', sectionInstanceId: 'instance-query_1',
+			targetGeneration: 0, connectionId: TEST_CONNECTION.id, database: 'Samples',
+		};
+
+		const outcome = await provider.executeKustoSectionQuery({
+			target: staleTarget, executionId: 'manual-stale-preclaim', producer: 'manual', query: 'print x=1',
+		});
+
+		expect(outcome).toEqual({ status: 'superseded', executionId: 'manual-stale-preclaim' });
+		expect(provider.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryCancelled', executionId: 'manual-stale-preclaim', sectionInstanceId: 'instance-query_1',
+			targetGeneration: 0, reason: 'retired', reservationSequence: expect.any(Number),
+		}));
+	});
+
+	it('does not cancel a live owner when the same manual envelope is replayed', async () => {
+		const provider = createProviderHarness();
+		const target = provider.getKustoSectionExecutionTarget('query_1');
+		const request = {
+			...target, executionId: 'manual-duplicate', producer: 'manual' as const,
+		};
+		const reservation = provider.kustoExecutionCoordinator.reserve(request);
+
+		const outcome = await provider.executeKustoSectionQuery({
+			target, executionId: 'manual-duplicate', producer: 'manual', query: 'print x=1',
+		});
+
+		expect(outcome).toEqual({ status: 'superseded', executionId: 'manual-duplicate' });
+		expect(provider.kustoExecutionCoordinator.getActive('query_1')).toBe(reservation);
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryCancelled', executionId: 'manual-duplicate',
+		}));
+		expect(provider.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
+	});
+
+	it('times out an unacknowledged exact Copilot start before physical dispatch', async () => {
+		vi.useFakeTimers();
+		try {
+			const provider = createProviderHarness();
+			provider.postMessage.mockReturnValue(true);
+			const target = provider.getKustoSectionExecutionTarget('query_1');
+			const task = provider.executeKustoSectionQuery({
+				target, executionId: 'timed-out-execution', producer: 'copilot', query: 'print x=1',
+			});
+
+			await vi.advanceTimersByTimeAsync(5000);
+			await expect(task).resolves.toEqual({ status: 'superseded', executionId: 'timed-out-execution' });
+			expect(provider.kustoClient.executeQueryCancelable).not.toHaveBeenCalled();
+			expect(provider.kustoExecutionCoordinator.getActive('query_1')).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not publish a successful Kusto result without authenticated dispatch identity', async () => {
+		const provider = createProviderHarness();
+		provider.kustoClient.executeQueryCancelable.mockReturnValueOnce({
+			promise: Promise.resolve(queryResult('missing-dispatch')),
+			cancel: vi.fn(),
+			clientActivityId: 'KW.execute_query;missing-dispatch',
+			getAccountPartition: () => 'partition-current',
+		});
+
+		await provider.executeQueryFromWebview(executeMessage('query_1'));
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryCancelled', reason: 'cancelled',
+		}));
+	});
+
+	it.each([
+		['endpoint', { ...TEST_CONNECTION, clusterUrl: 'https://replacement.kusto.windows.net' }],
+		['authority', { ...TEST_CONNECTION, authorityId: 'organizations' }],
+	] as const)('does not publish section rows after a same-ID %s replacement', async (_identityPart, replacement) => {
+		const provider = createProviderHarness();
+		let currentConnection: KustoConnection = TEST_CONNECTION;
+		provider.connectionManager.getConnections.mockImplementation(() => [currentConnection]);
+		provider.getCurrentKustoConnectionForDispatch = QueryEditorProvider.prototype.getCurrentKustoConnectionForDispatch;
+		const result = deferred<ReturnType<typeof queryResult>>();
+		provider.kustoClient.executeQueryCancelable.mockImplementationOnce(dispatchingKustoExecution({
+			promise: result.promise,
+			cancel: vi.fn(),
+			clientActivityId: 'KW.execute_query;physical-replacement',
+			getAccountPartition: () => 'partition-current',
+		}));
+
+		const task = provider.executeQueryFromWebview(executeMessage('query_1'));
+		await flushPromises();
+		currentConnection = replacement;
+		result.resolve(queryResult('stale-physical-target'));
+		await task;
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryCancelled', reason: 'cancelled',
+		}));
+	});
+
+	it('does not publish after the Leave No Trace revision advances during snapshot refresh', async () => {
+		const provider = createProviderHarness();
+		const snapshot = deferred<void>();
+		let policyRevision = 1;
+		provider.connectionManager.policyRevision = policyRevision;
+		provider.refreshConnectionsData.mockImplementationOnce(async () => snapshot.promise);
+		provider.kustoClient.executeQueryCancelable.mockImplementationOnce((
+			_connection: unknown, _database: string, _query: string, _key: string, options: any,
+		) => {
+			options.onDispatch(kustoDispatchIdentity(policyRevision));
+			return {
+				promise: Promise.resolve(queryResult('old-policy')),
+				cancel: vi.fn(),
+				clientActivityId: 'KW.execute_query;old-policy',
+				getAccountPartition: () => 'partition-current',
+			};
+		});
+
+		const task = provider.executeQueryFromWebview(executeMessage('query_1'));
+		await flushPromises();
+		policyRevision = 2;
+		provider.connectionManager.policyRevision = policyRevision;
+		snapshot.resolve();
+		await task;
+
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryCancelled', reason: 'cancelled',
+		}));
+	});
+
+	it('publishes a failed Kusto terminal with the initiating execution identity', async () => {
+		const provider = createProviderHarness();
+		const message = executeMessage('query_1', 'print missing_symbol', 'execution-error');
+		provider.kustoClient.executeQueryCancelable.mockReturnValueOnce({
+			promise: Promise.reject(new Error('semantic failure')),
+			cancel: vi.fn(),
+			clientActivityId: 'KW.execute_query;error',
+		});
+
+		await provider.executeQueryFromWebview(message);
+
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryError', boxId: 'query_1', executionId: 'execution-error',
+		}));
+	});
+
+	it('publishes cancellation with the exact execution identity requested by the webview', async () => {
+		const provider = createProviderHarness();
+		const pending = deferred<any>();
+		const cancel = vi.fn();
+		const message = executeMessage('query_1', 'print label="cancel"', 'execution-cancel');
+		provider.kustoClient.executeQueryCancelable.mockReturnValueOnce({
+			promise: pending.promise,
+			cancel,
+			clientActivityId: 'KW.execute_query;cancel',
+		});
+
+		const task = provider.executeQueryFromWebview(message);
+		await flushPromises();
+		await provider.handleWebviewMessage({
+			type: 'cancelQuery', boxId: 'query_1', executionId: 'execution-cancel',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		});
+
+		expect(cancel).toHaveBeenCalledOnce();
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryCancelled', boxId: 'query_1', executionId: 'execution-cancel',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		}));
+
+		pending.resolve(queryResult('late'));
+		await task;
+	});
+
+	it('does not let a stale cancellation retire the newer execution in the same section', async () => {
+		const provider = createProviderHarness();
+		const currentCancel = vi.fn();
+		provider._queryRunCoordinator = new QueryRunCoordinator();
+		provider._queryRunCoordinator.register('query_1', {
+			cancel: currentCancel,
+			runSeq: 2,
+			executionId: 'execution-new',
+		});
+
+		await provider.handleWebviewMessage({
+			type: 'cancelQuery', boxId: 'query_1', executionId: 'execution-old',
+			sectionInstanceId: 'instance-query_1', targetGeneration: 1,
+		});
+
+		expect(currentCancel).not.toHaveBeenCalled();
+		expect(provider._queryRunCoordinator.get('query_1')).toMatchObject({
+			executionId: 'execution-new',
+		});
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryCancelled', executionId: 'execution-new',
+		}));
+	});
+
 	it('explicit user cancel posts queryCancelled immediately and suppresses a late result', async () => {
 		const provider = createProviderHarness();
 		const pending = deferred<any>();
@@ -1325,14 +2014,20 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			clientActivityId: 'KW.execute_query;manual-cancel',
 		});
 
-		const task = provider.executeQueryFromWebview(executeMessage('query_1'));
+		const message = executeMessage('query_1');
+		const task = provider.executeQueryFromWebview(message);
 		await flushPromises();
 
-		provider.cancelRunningQuery('query_1', { notifyWebview: true });
+		await provider.handleWebviewMessage({
+			type: 'cancelQuery', boxId: 'query_1', executionId: message.executionId,
+			sectionInstanceId: message.sectionInstanceId, targetGeneration: message.targetGeneration,
+		});
 
 		expect(cancel).toHaveBeenCalledTimes(1);
-		expect(provider.isRunningQueryCurrent('query_1', cancel, 1)).toBe(false);
-		expect(provider.postMessage).toHaveBeenCalledWith({ type: 'queryCancelled', boxId: 'query_1' });
+		expect(provider.kustoExecutionCoordinator.getActive('query_1')).toBeUndefined();
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryCancelled', boxId: 'query_1', executionId: expect.any(String),
+		}));
 
 		pending.resolve(queryResult('late'));
 		await task;
@@ -1347,8 +2042,8 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const secondCancel = vi.fn();
 		const secondResult = queryResult('second');
 		provider.kustoClient.executeQueryCancelable
-			.mockReturnValueOnce({ promise: first.promise, cancel: firstCancel, clientActivityId: 'KW.execute_query;first', getAccountPartition: () => 'partition-current' })
-			.mockReturnValueOnce({ promise: Promise.resolve(secondResult), cancel: secondCancel, clientActivityId: 'KW.execute_query;second', getAccountPartition: () => 'partition-current' });
+			.mockImplementationOnce(dispatchingKustoExecution({ promise: first.promise, cancel: firstCancel, clientActivityId: 'KW.execute_query;first', getAccountPartition: () => 'partition-current' }))
+			.mockImplementationOnce(dispatchingKustoExecution({ promise: Promise.resolve(secondResult), cancel: secondCancel, clientActivityId: 'KW.execute_query;second', getAccountPartition: () => 'partition-current' }));
 
 		const firstTask = provider.executeQueryFromWebview(executeMessage('query_1', 'print label="first"'));
 		await flushPromises();
@@ -1357,7 +2052,9 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 
 		expect(firstCancel).toHaveBeenCalledTimes(1);
 		expect(provider.postMessage).not.toHaveBeenCalledWith({ type: 'queryCancelled', boxId: 'query_1' });
-		expect(provider.postMessage).toHaveBeenCalledWith({ type: 'queryResult', result: secondResult, boxId: 'query_1' });
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryResult', result: secondResult, boxId: 'query_1', executionId: expect.any(String),
+		}));
 
 		first.resolve(queryResult('first'));
 		await firstTask;
@@ -1376,8 +2073,8 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const secondResult = queryResult('second');
 		provider.refreshConnectionsData.mockImplementationOnce(async () => snapshot.promise);
 		provider.kustoClient.executeQueryCancelable
-			.mockReturnValueOnce({ promise: Promise.resolve(firstResult), cancel: vi.fn(), clientActivityId: 'KW.execute_query;first', getAccountPartition: () => 'partition-current' })
-			.mockReturnValueOnce({ promise: Promise.resolve(secondResult), cancel: vi.fn(), clientActivityId: 'KW.execute_query;second', getAccountPartition: () => 'partition-current' });
+			.mockImplementationOnce(dispatchingKustoExecution({ promise: Promise.resolve(firstResult), cancel: vi.fn(), clientActivityId: 'KW.execute_query;first', getAccountPartition: () => 'partition-current' }))
+			.mockImplementationOnce(dispatchingKustoExecution({ promise: Promise.resolve(secondResult), cancel: vi.fn(), clientActivityId: 'KW.execute_query;second', getAccountPartition: () => 'partition-current' }));
 
 		const firstTask = provider.executeQueryFromWebview(executeMessage('query_1', 'print label="first"'));
 		await flushPromises();
@@ -1388,7 +2085,9 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		const queryResults = provider.postMessage.mock.calls
 			.map((call: unknown[]) => call[0] as any)
 			.filter((message: any) => message?.type === 'queryResult');
-		expect(queryResults).toEqual([{ type: 'queryResult', result: secondResult, boxId: 'query_1' }]);
+		expect(queryResults).toEqual([expect.objectContaining({
+			type: 'queryResult', result: secondResult, boxId: 'query_1', executionId: expect.any(String),
+		})]);
 	});
 
 	it('does not publish account A rows after the snapshot adopts account B', async () => {
@@ -1413,43 +2112,15 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'queryResult' }));
 	});
 
-	it('explicit cancel with no running query still unsticks the webview', async () => {
+	it('ignores an exact cancel when no matching execution is registered', async () => {
 		const provider = createProviderHarness();
 
-		await provider.handleWebviewMessage({ type: 'cancelQuery', boxId: 'query_missing' } as any);
+		await provider.handleWebviewMessage({
+			type: 'cancelQuery', boxId: 'query_missing', executionId: 'missing',
+			sectionInstanceId: 'instance-query_missing', targetGeneration: 1,
+		} as any);
 
-		expect(provider.postMessage).toHaveBeenCalledWith({ type: 'queryCancelled', boxId: 'query_missing' });
-	});
-
-	it('cancels only the requested box when multiple boxes are running', () => {
-		const provider = createProviderHarness();
-		const cancelA = vi.fn();
-		const cancelB = vi.fn();
-
-		provider.registerRunningQuery('query_a', cancelA, 1, 'KW.execute_query;a');
-		provider.registerRunningQuery('query_b', cancelB, 2, 'KW.execute_query;b');
-		provider.cancelRunningQuery('query_a', { notifyWebview: true });
-
-		expect(cancelA).toHaveBeenCalledTimes(1);
-		expect(cancelB).not.toHaveBeenCalled();
-		expect(provider.postMessage).toHaveBeenCalledWith({ type: 'queryCancelled', boxId: 'query_a' });
-
-		provider.cancelRunningQuery('query_b');
-		expect(cancelB).toHaveBeenCalledTimes(1);
-	});
-
-	it('unregisters only the matching running query handle', () => {
-		const provider = createProviderHarness();
-		const oldCancel = vi.fn();
-		const newCancel = vi.fn();
-
-		provider.registerRunningQuery('query_1', oldCancel, 1, 'KW.execute_query;old');
-		provider.registerRunningQuery('query_1', newCancel, 2, 'KW.execute_query;new');
-		provider.unregisterRunningQuery('query_1', oldCancel, 1);
-
-		expect(provider.isRunningQueryCurrent('query_1', newCancel, 2)).toBe(true);
-		provider.unregisterRunningQuery('query_1', newCancel, 2);
-		expect(provider.isRunningQueryCurrent('query_1', newCancel, 2)).toBe(false);
+		expect(provider.postMessage).not.toHaveBeenCalled();
 	});
 
 	it('strips leading comments only from the control-command payload sent to Kusto', async () => {
@@ -1474,7 +2145,8 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			TEST_CONNECTION,
 			'Samples',
 			'.create-or-update function F() { print x=1 }\n// trailing note',
-			'query_1::conn-1'
+			'query_1::conn-1',
+			expect.objectContaining({ onDispatch: expect.any(Function) }),
 		);
 		expect(message.query).toBe(originalQuery);
 	});
@@ -1502,7 +2174,8 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			TEST_CONNECTION,
 			'Samples',
 			'.create-or-update function F() { print x=1 }',
-			'query_1::conn-1'
+			'query_1::conn-1',
+			expect.objectContaining({ onDispatch: expect.any(Function) }),
 		);
 		expect(message.query).toBe(originalQuery);
 	});

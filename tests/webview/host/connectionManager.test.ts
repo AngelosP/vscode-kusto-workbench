@@ -154,6 +154,50 @@ describe('ConnectionManager authority identity', () => {
 		}]);
 		expect(test.manager.getConnections()[0].authorityId).toBe('not a tenant');
 	});
+
+	it('advances physical incarnation only for endpoint, authority, and removal changes', async () => {
+		const test = connectionManagerHarness([{
+			id: 'physical', name: 'Original', clusterUrl: 'https://one.kusto.windows.net', database: 'Db', authorityId: 'common',
+		}]);
+		expect(test.manager.getConnectionIncarnation('physical')).toBe(1);
+
+		await test.manager.updateConnection('physical', { name: 'Renamed', database: 'Other' });
+		expect(test.manager.getConnectionIncarnation('physical')).toBe(1);
+
+		await test.manager.updateConnection('physical', { clusterUrl: 'https://two.kusto.windows.net' });
+		expect(test.manager.getConnectionIncarnation('physical')).toBe(2);
+
+		await test.manager.updateConnection('physical', { authorityId: 'organizations' });
+		expect(test.manager.getConnectionIncarnation('physical')).toBe(3);
+
+		await test.manager.removeConnection('physical');
+		expect(test.manager.getConnectionIncarnation('physical')).toBe(4);
+	});
+});
+
+describe('ConnectionManager Leave No Trace revisions', () => {
+	it('emits one targeted revision for each effective policy change', async () => {
+		const test = connectionManagerHarness([{
+			id: 'c1', name: 'Regional', clusterUrl: 'https://cluster.westus.kusto.windows.net',
+		}]);
+		const changes: unknown[] = [];
+		test.manager.onDidChangeLeaveNoTrace((change: unknown) => changes.push(change));
+
+		await test.manager.addLeaveNoTrace('cluster.westus');
+		await test.manager.addLeaveNoTrace('https://cluster.westus.kusto.windows.net/');
+
+		expect(test.manager.getLeaveNoTraceRevision('cluster.westus')).toBe(1);
+		expect(changes).toEqual([{
+			clusterUrl: 'cluster.westus', enabled: true, revision: 1, connectionIds: ['c1'],
+		}]);
+
+		await test.manager.removeLeaveNoTrace('https://cluster.westus.kusto.windows.net');
+
+		expect(test.manager.getLeaveNoTraceRevision('cluster.westus')).toBe(2);
+		expect(changes[1]).toEqual({
+			clusterUrl: 'cluster.westus', enabled: false, revision: 2, connectionIds: ['c1'],
+		});
+	});
 });
 
 // ── pruneExpiredFileConnectionsSync ──────────────────────────────────────────

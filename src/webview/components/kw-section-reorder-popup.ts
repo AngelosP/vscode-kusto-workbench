@@ -393,6 +393,15 @@ export class KwSectionReorderPopup extends LitElement {
 	}
 
 	private _inferType(id: string, el: HTMLElement): SectionSummary['type'] | null {
+		const tag = el.tagName.toLowerCase();
+		if (tag === 'kw-query-section') return 'query';
+		if (tag === 'kw-markdown-section') return 'markdown';
+		if (tag === 'kw-chart-section') return 'chart';
+		if (tag === 'kw-python-section') return 'python';
+		if (tag === 'kw-url-section') return 'url';
+		if (tag === 'kw-transformation-section') return 'transformation';
+		if (tag === 'kw-html-section') return 'html';
+		if (tag === 'kw-sql-section') return 'sql';
 		if (id.startsWith('query_')) return 'query';
 		if (id.startsWith('markdown_')) return 'markdown';
 		if (id.startsWith('chart_')) return 'chart';
@@ -401,13 +410,6 @@ export class KwSectionReorderPopup extends LitElement {
 		if (id.startsWith('transformation_')) return 'transformation';
 		if (id.startsWith('html_')) return 'html';
 		if (id.startsWith('sql_')) return 'sql';
-		// Fallback: tag name
-		const tag = el.tagName.toLowerCase();
-		if (tag === 'kw-query-section') return 'query';
-		if (tag === 'kw-markdown-section') return 'markdown';
-		if (tag === 'kw-chart-section') return 'chart';
-		if (tag === 'kw-python-section') return 'python';
-		if (tag === 'kw-url-section') return 'url';
 		if (tag === 'kw-transformation-section') return 'transformation';
 		if (tag === 'kw-html-section') return 'html';
 		if (tag === 'kw-sql-section') return 'sql';

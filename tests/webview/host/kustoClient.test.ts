@@ -43,6 +43,16 @@ function createKustoResult(clientActivityId: string = 'KW.execute_query;server')
 
 function createCancelableClientHarness() {
 	const kustoClient = new KustoQueryClient();
+	const auth = {
+		connectionId: TEST_CONNECTION.id,
+		connectionIdentityKey: 'https://example.kusto.windows.net|',
+		clusterEndpoint: 'https://example.kusto.windows.net',
+		scopes: ['https://kusto.kusto.windows.net/.default'],
+		account: { id: 'account-1', label: 'Account 1' },
+		accountId: 'account-1',
+		accountPartition: 'partition-account-1',
+		preferenceMode: 'automatic',
+	} as const;
 	const fakeSdkClient = {
 		execute: vi.fn(async () => createKustoResult()),
 		close: vi.fn(),
@@ -53,13 +63,13 @@ function createCancelableClientHarness() {
 		setClientTimeout: vi.fn(),
 	}));
 	const getOrCreateCancelableClient = vi.fn(async () => fakeSdkClient);
-	const executeWithAuthRetry = vi.fn(async (_connection: KustoConnection, operation: (client: any) => Promise<unknown>) => operation(fakeSdkClient));
+	const executeWithAuthRetry = vi.fn(async (_connection: KustoConnection, operation: (client: any, operationAuth: typeof auth) => Promise<unknown>) => operation(fakeSdkClient, auth));
 	const cancelQueryByClientActivityId = vi.fn(async () => undefined);
 	(kustoClient as any).createRequestProperties = createRequestProperties;
 	(kustoClient as any).getOrCreateCancelableClient = getOrCreateCancelableClient;
 	(kustoClient as any).executeWithAuthRetry = executeWithAuthRetry;
 	(kustoClient as any).cancelQueryByClientActivityId = cancelQueryByClientActivityId;
-	return { kustoClient, fakeSdkClient, createRequestProperties, getOrCreateCancelableClient, executeWithAuthRetry, cancelQueryByClientActivityId };
+	return { kustoClient, fakeSdkClient, auth, createRequestProperties, getOrCreateCancelableClient, executeWithAuthRetry, cancelQueryByClientActivityId };
 }
 
 // ── parseKustoTimespan ────────────────────────────────────────────────────────
@@ -343,6 +353,30 @@ describe('getDatabaseSchema discovery policy', () => {
 // ── executeQueryCancelable ───────────────────────────────────────────────────
 
 describe('executeQueryCancelable', () => {
+	it('captures the current Leave No Trace revision in the physical dispatch identity', async () => {
+		const { kustoClient } = createCancelableClientHarness();
+		(kustoClient as any).connectionManager = {
+			getConnectionIncarnation: () => 3,
+			prepareLeaveNoTraceDispatch: async (_clusterUrl: string, start: (revision: number) => unknown) => ({
+				value: start(7), revocationGeneration: 7,
+			}),
+		};
+		const onDispatch = vi.fn();
+
+		const handle = kustoClient.executeQueryCancelable(
+			TEST_CONNECTION, 'Samples', 'print x=42', 'box::conn', { onDispatch },
+		);
+		await handle.promise;
+
+		expect(onDispatch).toHaveBeenCalledWith(expect.objectContaining({
+			dispatchAttempt: 1,
+			connectionRevision: 3,
+			leaveNoTraceRevision: 7,
+			accountPartition: 'partition-account-1',
+			clientActivityId: handle.clientActivityId,
+		}));
+	});
+
 	it('returns a precomputed client activity id and uses it for the Kusto request', async () => {
 		const { kustoClient, createRequestProperties } = createCancelableClientHarness();
 
@@ -387,7 +421,7 @@ describe('executeQueryCancelable', () => {
 		await rejection;
 		await flushPromises();
 
-		expect(executeWithAuthRetry).not.toHaveBeenCalled();
+		expect(executeWithAuthRetry).toHaveBeenCalledOnce();
 		expect(fakeSdkClient.execute).not.toHaveBeenCalled();
 		expect(cancelQueryByClientActivityId).not.toHaveBeenCalled();
 	});
@@ -431,7 +465,13 @@ describe('executeQueryCancelable', () => {
 
 		expect(fakeSdkClient.close).toHaveBeenCalledTimes(1);
 		expect(cancelQueryByClientActivityId).toHaveBeenCalledTimes(1);
-		expect(cancelQueryByClientActivityId).toHaveBeenCalledWith(TEST_CONNECTION, 'Samples', handle.clientActivityId);
+		expect(cancelQueryByClientActivityId).toHaveBeenCalledWith(
+			TEST_CONNECTION,
+			'Samples',
+			handle.clientActivityId,
+			'Canceled from Kusto Workbench',
+			expect.objectContaining({ accountPartition: 'partition-account-1' }),
+		);
 	});
 
 	it('keeps local cancellation successful when server cancellation fails', async () => {

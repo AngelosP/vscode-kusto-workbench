@@ -244,6 +244,7 @@ function extractPostMessageTypes(relativePath: string): HostMessageSenderExtract
 function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 	const extractions = [
 		extractPostMessageTypes('src/host/queryEditorProvider.ts'),
+		extractPostMessageTypes('src/host/kustoExecutionCoordinator.ts'),
 		extractPostMessageTypes('src/host/sql/sqlEditorLifecycleCoordinator.ts'),
 	];
 	return {
@@ -253,14 +254,14 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 }
 
 const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
-	'src/host/queryEditorProvider.ts::<module>::postMessage::145:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::296:29',
-	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::405:26',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::1988:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::2007:22',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::1960:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::1972:21',
-	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2020:10',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::304:27',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::449:29',
+	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::583:26',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::2247:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::2266:22',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::2219:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::2231:21',
+	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2279:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1735:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1739:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2007:8',
@@ -297,6 +298,11 @@ function extractMessageTypeComparisons(relativePath: string): string[] {
 const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'fileOpenTrace',
 	'getConnections',
+	'kustoPublicationAck',
+	'kustoSectionOpen',
+	'kustoSectionTarget',
+	'kustoSectionClose',
+	'kustoExecutionStartedAck',
 	'editorCursorPositionChanged',
 	'getEditorCursorStatusSnapshot',
 	'getDatabases',
@@ -365,8 +371,10 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'openMarkdownPreview',
 	'comparisonBoxEnsured',
 	'comparisonSummary',
+	'clearComparisonSummary',
 	'sqlComparisonRemoved',
 	'toolResponse',
+	'toolExecutionStarted',
 	'toolStateResponse',
 	'openCopilotAgent',
 	'copilotChatFirstTimeCheck',
@@ -386,6 +394,11 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'fileOpenTrace',
 	// Connection & database
 	'getConnections',
+	'kustoPublicationAck',
+	'kustoSectionOpen',
+	'kustoSectionTarget',
+	'kustoSectionClose',
+	'kustoExecutionStartedAck',
 	'editorCursorPositionChanged',
 	'getEditorCursorStatusSnapshot',
 	'getDatabases',
@@ -447,6 +460,7 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	// Comparisons
 	'comparisonBoxEnsured',
 	'comparisonSummary',
+	'clearComparisonSummary',
 	'sqlComparisonRemoved',
 
 	// Schema
@@ -480,6 +494,7 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 
 	// Tool responses (agent tools)
 	'toolResponse',
+	'toolExecutionStarted',
 	'toolStateResponse',
 	'openToolResultInEditor',
 	'openMarkdownPreview',
@@ -537,6 +552,7 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'connectionsData',
 	'kustoAuthIdentityChanged',
 	'kustoCopilotIdentityChanged',
+	'kustoExecutionStarted',
 	'editingPreferencesData',
 	'updateDevNotes',
 	'favoritesData',
@@ -607,7 +623,8 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'toolCollapseSection',
 	'toolReorderSections',
 	'toolConfigureQuerySection',
-	'toolExecuteQuery',
+	'toolCancelKustoExecution',
+	'toolCancelKustoCopilot',
 	'toolUpdateMarkdownSection',
 	'toolConfigureChart',
 	'toolConfigureTransformation',
@@ -659,6 +676,10 @@ const HOST_TO_WEBVIEW_TYPES = [
 	'ensureComparisonBox',
 	'kustoAuthIdentityChanged',
 	'kustoCopilotIdentityChanged',
+	'kustoExecutionStarted',
+	'kustoPublicationStage',
+	'kustoPublicationCommit',
+	'kustoPublicationRevoke',
 
 	// queryEditorCopilot.ts
 	'copilotWriteQueryStatus',
@@ -748,6 +769,9 @@ const COMPONENT_HANDLED_HOST_TO_WEBVIEW_TYPES = [
 /** Host messages consumed by a targeted window listener outside the generic dispatcher. */
 const DIRECT_LISTENER_HOST_TO_WEBVIEW_TYPES = [
 	'editorCursorStatusSnapshot',
+	'kustoPublicationStage',
+	'kustoPublicationCommit',
+	'kustoPublicationRevoke',
 ] as const;
 
 /**
@@ -763,7 +787,8 @@ const TOOL_FRAMEWORK_HANDLER_TYPES = new Set([
 	'toolCollapseSection',
 	'toolReorderSections',
 	'toolConfigureQuerySection',
-	'toolExecuteQuery',
+	'toolCancelKustoExecution',
+	'toolCancelKustoCopilot',
 	'toolUpdateMarkdownSection',
 	'toolConfigureChart',
 	'toolConfigureTransformation',
@@ -792,6 +817,15 @@ const KNOWN_UNHANDLED_HOST_MESSAGES = new Set([
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Message Protocol Contract', () => {
+	it('registers query sections before the main dispatcher drains buffered document data', () => {
+		const source = readWorkspaceFile('src/webview/index.ts');
+		expect(source.indexOf("import './sections/kw-query-section.js';")).toBeGreaterThanOrEqual(0);
+		expect(source.indexOf("import './sections/kw-query-section.js';"))
+			.toBeLessThan(source.indexOf("import './core/main.js';"));
+		const main = readWorkspaceFile('src/webview/core/main.ts');
+		expect(main.indexOf('kustoEditorSchemaCoordinator.subscribeLifecycle'))
+			.toBeLessThan(main.indexOf('drainBufferedHostMessages();'));
+	});
 
 	// ─── Compile-time guards ───────────────────────────────────────────────
 	// These calls exist solely for the TypeScript compiler to verify that
@@ -911,7 +945,7 @@ describe('Message Protocol Contract', () => {
 		});
 
 		it('every host→webview type has a handler case (or is known-unhandled)', () => {
-			const cases = new Set<string>(MESSAGE_HANDLER_CASE_LABELS);
+			const cases = new Set<string>([...MESSAGE_HANDLER_CASE_LABELS, ...DIRECT_LISTENER_HOST_TO_WEBVIEW_TYPES]);
 			const missing: string[] = [];
 			for (const t of HOST_TO_WEBVIEW_TYPES) {
 				if (!cases.has(t) && !KNOWN_UNHANDLED_HOST_MESSAGES.has(t)) {

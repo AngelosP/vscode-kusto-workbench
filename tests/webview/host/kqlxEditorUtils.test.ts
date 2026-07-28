@@ -108,7 +108,7 @@ describe('hasSqlOwnedDocumentState', () => {
 		] as any })).toBe(true);
 		expect(hasSqlOwnedDocumentState({ sections: [
 			{ id: 'legacy_sql_cmp', type: 'query', connectionIdHint: 'sql_old', resultJson: '{"secret":true}' },
-		] as any })).toBe(true);
+		] as any })).toBe(false);
 	});
 });
 

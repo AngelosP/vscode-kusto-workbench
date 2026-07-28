@@ -123,6 +123,25 @@ describe('kw-cached-values scrollbars', () => {
 		expect(hide).toHaveBeenCalledOnce();
 	});
 
+	it('closes affected Kusto schema and object state immediately when policy ownership changes', async () => {
+		const el = createElement() as KwCachedValues & Record<string, any>;
+		await el.updateComplete;
+		const hide = vi.fn();
+		Object.defineProperty(el, '_objectViewer', { configurable: true, value: { hide } });
+		el._schemaRequestOwner = { requestId: 'schema-kusto', connectionId: 'c1', accountPartition: 'partition-a' };
+		el._schemaRequestInFlight = true;
+		el._kustoSchemaRefreshDb = 'Db';
+		el._objectViewerOwner = { connectionId: 'c1', accountPartition: 'partition-a' };
+
+		window.dispatchEvent(new MessageEvent('message', { data: { type: 'kustoOwnerChanged', connectionIds: ['c1'] } }));
+
+		expect(el._schemaRequestOwner).toBeUndefined();
+		expect(el._schemaRequestInFlight).toBe(false);
+		expect(el._kustoSchemaRefreshDb).toBe('');
+		expect(el._objectViewerOwner).toBeUndefined();
+		expect(hide).toHaveBeenCalledOnce();
+	});
+
 	it('closes affected SQL object state when the saved target changes', async () => {
 		const el = createElement() as KwCachedValues & Record<string, any>;
 		await el.updateComplete;
@@ -236,5 +255,27 @@ describe('kw-cached-values scrollbars', () => {
 		expect((el as any)._schemaRequestInFlight).toBe(false);
 		expect((el as any)._objectViewerOwner).toBeUndefined();
 		expect((el as any)._objectViewer?.open).not.toBe(true);
+	});
+
+	it('settles a current row-free Kusto schema failure', async () => {
+		const el = createElement() as KwCachedValues & Record<string, any>;
+		await el.updateComplete;
+		const show = vi.fn();
+		Object.defineProperty(el, '_objectViewer', { configurable: true, value: { show } });
+		window.dispatchEvent(new MessageEvent('message', { data: { type: 'snapshot', snapshot: snapshot('partition-a', 10) } }));
+		await el.updateComplete;
+
+		(el as any)._viewSchema('c1', 'db1');
+		const request = postedMessages.find((message: any) => message?.type === 'schema.get') as any;
+		const errorJson = JSON.stringify({ database: 'db1', error: 'No cached schema was found.' });
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'schemaResult', requestId: request.requestId, connectionId: 'c1', accountPartition: 'partition-a',
+			database: 'db1', ok: false, json: errorJson,
+		} }));
+		await el.updateComplete;
+
+		expect(el._schemaRequestInFlight).toBe(false);
+		expect(el._schemaRequestOwner).toBeUndefined();
+		expect(show).toHaveBeenCalledWith('Cached schema for db1', errorJson);
 	});
 });

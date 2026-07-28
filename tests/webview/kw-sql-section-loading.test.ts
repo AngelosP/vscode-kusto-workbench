@@ -7,8 +7,8 @@ import { pState } from '../../src/webview/shared/persistence-state.js';
 import { getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
 import { __kustoOnQueryResult } from '../../src/webview/core/persistence.js';
 import { setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
-import { setSqlConnections } from '../../src/webview/core/state.js';
-import { getSqlCopilotInsertOwner } from '../../src/webview/sections/copilot-chat-manager.controller.js';
+import { setConnections, setSqlConnections } from '../../src/webview/core/state.js';
+import { getKustoCopilotInsertOwner, getSqlCopilotInsertOwner } from '../../src/webview/sections/copilot-chat-manager.controller.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
 import {
 	clearSqlSectionSessionsForTest,
@@ -27,6 +27,7 @@ afterEach(() => {
 	clearSqlSectionSessionsForTest();
 	delete pState.queryResultJsonByBoxId.sql_test1;
 	setSqlConnections([]);
+	setConnections([]);
 	render(nothing, container);
 	container.remove();
 });
@@ -50,6 +51,17 @@ describe('kw-sql-section loading states', () => {
 		expect(getSqlCopilotInsertOwner('sql-reporting')).toEqual({
 			connectionIdHint: 'sql-reporting',
 			targetSignature: sqlConnectionTargetSignature(reporting),
+		});
+	});
+
+	it('copies the exact authority-aware Kusto connection owner when Copilot inserts a section', () => {
+		setConnections([
+			{ id: 'home', name: 'Home', clusterUrl: 'https://shared.kusto.windows.net', authorityId: 'common' },
+			{ id: 'guest', name: 'Guest', clusterUrl: 'https://shared.kusto.windows.net', authorityId: 'organizations' },
+		]);
+
+		expect(getKustoCopilotInsertOwner('guest')).toEqual({
+			connectionIdHint: 'guest', authorityId: 'organizations',
 		});
 	});
 

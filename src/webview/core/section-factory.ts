@@ -336,9 +336,6 @@ export function addQueryBox( options?: any) {
 			try { delete databaseRequestTokenByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 			requireSchemaWorkerApply(String(boxId));
 			invalidateLinkedComparisonSchemaForSource(String(boxId));
-			try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
-			try { delete pState.queryResultJsonByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-			try { if (typeof kwEl.clearResults === 'function') kwEl.clearResults(); } catch (e) { console.error('[kusto]', e); }
 			// Persist selection.
 			try {
 				if (!pState.restoreInProgress) {
@@ -521,6 +518,12 @@ export function addQueryBox( options?: any) {
 		if (kwEl && options) {
 			if (options.clusterUrl && typeof kwEl.setDesiredClusterUrl === 'function') {
 				kwEl.setDesiredClusterUrl(String(options.clusterUrl));
+			}
+			if (typeof kwEl.setDesiredConnectionIdentity === 'function') {
+				kwEl.setDesiredConnectionIdentity(
+					String(options.authorityId || ''),
+					String(options.connectionIdHint || ''),
+				);
 			}
 			if (options.database && typeof kwEl.setDesiredDatabase === 'function') {
 				kwEl.setDesiredDatabase(String(options.database));
@@ -1320,11 +1323,14 @@ export function removeQueryBox( boxId: any) {
 	// prevents a late terminal from being accepted by a recreated section ID.
 	try {
 		const querySection = __kustoGetQuerySectionElement(String(boxId || ''));
+		const retiredExecution = querySection?.retireActiveQueryExecution?.();
+		querySection?.retireKustoOptimizeRequest?.();
 		querySection?.disposeSchemaLifecycle?.();
-		const executionId = typeof querySection?.cancelActiveQueryExecution === 'function'
-			? querySection.cancelActiveQueryExecution()
-			: undefined;
-		if (executionId) postMessageToHost({ type: 'cancelQuery', boxId: String(boxId), executionId });
+		if (retiredExecution) postMessageToHost({
+			type: 'cancelQuery', boxId: String(boxId), executionId: retiredExecution.executionId,
+			sectionInstanceId: retiredExecution.sectionInstanceId,
+			targetGeneration: retiredExecution.targetGeneration,
+		});
 	} catch (e) { console.error('[kusto]', e); }
 
 	// Dispose Copilot chat state for this query box (if present).

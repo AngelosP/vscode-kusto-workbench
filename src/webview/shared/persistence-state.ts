@@ -40,6 +40,9 @@ export const pState = {
 	/** Per-box persisted query result JSON (in-memory, included in getKqlxState). */
 	queryResultJsonByBoxId: {} as Record<string, string>,
 
+	/** Exact Kusto account/policy owner for each persisted query result. */
+	kustoResultOwnerByBoxId: {} as Record<string, { accountPartition: string; leaveNoTraceRevision: number }>,
+
 	/** Pending editor wrapper height to apply when Monaco initializes. */
 	pendingWrapperHeightPxByBoxId: {} as Record<string, number>,
 

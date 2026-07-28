@@ -1,5 +1,11 @@
 # Architecture
 
+## Architecture Program
+
+- [GOLDEN_OUTCOME.md](GOLDEN_OUTCOME.md) defines the from-scratch target architecture for the complete implemented product. It is the stable north star, not a description of the current tree.
+- [ARCHITECTURE_CONVERGENCE.md](ARCHITECTURE_CONVERGENCE.md) compares the current implementation with that target, ranks remaining ownership gaps, and selects one evidence-driven migration iteration at a time.
+- This document describes the implementation that exists today and is updated as convergence work lands.
+
 ## Overview
 
 Kusto Workbench is a VS Code extension that provides a notebook-like experience for Kusto Query Language (KQL) and T-SQL. The extension consists of three major subsystems:
@@ -17,13 +23,15 @@ Kusto Workbench is a VS Code extension that provides a notebook-like experience 
 | `queryEditorCopilot.ts` | Copilot integration (extracted from provider) |
 | `queryEditorConnection.ts` | Connection management (extracted from provider) |
 | `queryEditorSchema.ts` | Schema handling (extracted from provider) |
-| `kustoConnectionLifecycle.ts` | Serializes Kusto connection mutations, invalidates changed physical identities, and publishes refreshed connection snapshots |
+| `kustoConnectionLifecycle.ts` | Serializes Kusto connection and Leave No Trace mutations, revokes affected execution identities, and publishes refreshed connection snapshots |
+| `kustoExecutionCoordinator.ts` | Per-editor Kusto reservation, replacement, exact cancellation, dispatch capture, and exactly-once terminal authority |
 | `queryRunCoordinator.ts` | Transport-neutral active-query sequence, identity, cancellation, and guarded cleanup |
 | `queryEditorTypes.ts` | Shared types, including `IncomingWebviewMessage` |
 | `powerBiExport.ts` | HTML dashboard export: generates `.pbip`/PBIR/TMDL Power BI projects backed by Kusto data sources |
 | `powerBiPublish.ts` | Fabric/Power BI service publishing: creates or updates SemanticModel and Report items from generated PBIR/TMDL artifacts |
-| `kustoClient.ts` | Azure Kusto client wrapper. Authentication, query execution, schema fetching, caching |
-| `connectionManager.ts` | Persists Kusto cluster connections in VS Code global state |
+| `kustoClient.ts` | Azure Kusto client wrapper. Authentication, cancelable query attempts with immutable dispatch identity, schema fetching, caching |
+| `connectionManager.ts` | Persists Kusto cluster connections and revisioned Leave No Trace state in VS Code global state |
+| `kustoLeaveNoTracePolicyStore.ts` | Shared file-locked Kusto privacy policy with atomic snapshots, per-cluster revocation generations, recovery, and cross-window watching |
 | `connectionManagerViewer.ts` | Connection manager webview panel |
 | `kqlxEditorProvider.ts` | Custom editor for `.kqlx` and `.mdx` notebook files |
 | `kqlCompatEditorProvider.ts` | Custom editor for `.kql`/`.csl` files (compatibility mode) |
@@ -232,7 +240,7 @@ Webview modules communicate via window globals declared in `window-bridges.d.ts`
 
 ### `.kqlx` / `.sqlx` / `.mdx` (Notebooks)
 
-JSON format with a `sections` array. Each section has a `type` discriminator and type-specific fields. Type definitions live in `kqlxFormat.ts`. `.kqlx` files can contain any mix of section types (query, sql, chart, markdown, etc.). `.sqlx` files use the same JSON schema but only allow SQL sections. `.mdx` files are markdown-oriented notebooks.
+JSON format with a `sections` array. Each section has a `type` discriminator and type-specific fields. Type definitions live in `kqlxFormat.ts`. `.kqlx` files can contain any mix of section types (query, sql, chart, markdown, etc.). `.sqlx` files use the same JSON schema and allow SQL plus chart, transformation, Python, URL, HTML, and markdown sections, but not Kusto query sections. `.mdx` files are markdown-oriented notebooks.
 
 ### Section Types
 
@@ -351,9 +359,9 @@ Every active `<kw-query-section>` claims an immutable section lease identified b
 
 Kusto and SQL catalogs are intentionally separate. Kusto consumers use `schema-catalogs.ts` accessors backed by the coordinator; SQL consumers use `sqlSchemaByBoxId`. There is no mutable `window.schemaByBoxId` authority. `section-factory.ts` composes query sections, Monaco, and controllers, but Monaco and `QueryConnectionController` stay below it through leaf accessors and direct module APIs.
 
-The extension host treats the physical Kusto connection identity (cluster plus authority) as part of response ownership. Database and schema services capture that identity before asynchronous work and suppress publication if the same connection ID is removed or repointed. `KustoConnectionLifecycle` serializes connection-manager events, invalidates affected Copilot/schema identities, publishes `kustoAuthIdentityChanged`, and only then sends the refreshed connection snapshot.
+The extension host treats the physical Kusto connection identity (cluster plus authority) as part of response ownership. Host connection projections carry `connectionRevision` and `connectionIdentityKey`; section lifecycle targets retain those stamps so a request queued against saved connection A cannot silently run against replacement B that reused the same ID. Restored sections can establish their logical target before that projection arrives, so `setConnections()` republishes the same connection/database with its host stamp without clearing target-bound rows. Schema prewarm goes through the section target API and is keyed by target generation. Within that exact generation, schema responses match the logical connection/database target because the physical stamps are host-owned lifecycle state rather than duplicated response fields. Database and schema services capture the same physical identity before asynchronous work and suppress publication if the connection is removed or repointed. `KustoConnectionLifecycle` synchronously invalidates physical targets before its queued projection refresh, then serializes Copilot/schema invalidation, publishes `kustoAuthIdentityChanged`, and sends the refreshed connection snapshot.
 
-Kusto query sections expose coordinator-owned preparation state through typed accessors in `src/webview/core/state.ts`. A section is not ready merely because `schemaData` reached the webview. Readiness requires the current primary database schema to match the current operation generation, delivery revision, schema key/signature, and Monaco model, with these blockers settled:
+Kusto query sections expose coordinator-owned preparation state through typed accessors in `src/webview/core/state.ts`. A section is not worker-ready merely because `schemaData` reached the webview. Readiness requires the current primary database schema to match the current operation generation, delivery revision, schema key/signature, and Monaco model, with these blockers settled:
 
 1. Required database discovery and schema delivery are complete.
 2. A usable cached fallback is available, or a required foreground schema load has completed. Silent cache-expiry refreshes never hold section readiness.
@@ -362,13 +370,49 @@ Kusto query sections expose coordinator-owned preparation state through typed ac
 
 Because Monaco-Kusto uses a shared worker schema, another section targeting the same cluster/database can adopt an already-loaded schema for its exact model and become ready without waiting for a duplicate host fetch. Stale-cache validation and changed-schema refreshes continue silently and never replace the usable ready fact with a foreground preparation blocker.
 
-The state is reflected by `kw-query-section` through `data-preparation-state`, `data-preparation-stage`, and `aria-busy`. While the state is `preparing`, `queryEditor.css` renders an indeterminate blue segment over the bottom border of the Kusto editor toolbar. Ready, idle, and terminal-error states use the normal solid toolbar border. Reduced-motion mode uses a static accent, and forced-colors mode uses `Highlight`.
+Multi-section restore intentionally avoids pushing every unfocused model into the shared Monaco worker, because those writes can race the first real focus and install the wrong primary database context. Once raw schema is fetched and exact delivery ownership is retained, an inactive section therefore becomes `deferred / waiting-focus`: it keeps the pending worker update and preparation token, but has no active blocker or worker operation. Focusing that editor promotes the same token back to `preparing / waiting-worker`, applies the pending schema for the exact model, and reaches true `ready` only after worker readiness is committed.
+
+The state is reflected by `kw-query-section` through `data-preparation-state`, `data-preparation-stage`, and `aria-busy`. While the state is `preparing`, `queryEditor.css` renders an indeterminate blue segment over the bottom border of the Kusto editor toolbar. Deferred, ready, idle, and terminal-error states use the normal solid toolbar border. Reduced-motion mode uses a static accent, and forced-colors mode uses `Highlight`.
 
 Operation generations and delivery revisions prevent late database/schema/worker responses from completing newer work. Removal leaves a monotonic tombstone so recreating a persisted section ID cannot be revived by an old async operation. Worker-wide schema replacement invalidates other model readiness; those sections remain dormant until focus prepares them again.
 
 All shared Monaco-Kusto worker writes pass through `KustoWorkerMutationPort`. A queued operation receives the exact transaction that owns its physical worker calls and records a commit only after each mutation succeeds. Primary intent generation, committed worker revision, and destructive replacement epoch are distinct counters. Supplemental/enhancement leases may time out logically while an uncancelable worker call remains in flight; the detached transaction cannot commit afterward, and the queue remains occupied through physical settlement and inline primary-schema recovery before any later mutation can begin.
 
-Each active primary worker-preparation episode has one 30-second absolute budget, shared by retries and fallback paths. Ready, error, and idle states retire the episode so a later worker preparation receives a fresh budget, while stale older generations cannot reset a newer active deadline. Expiry moves the owning section to a terminal error state so `aria-busy` and the toolbar indicator stop, but it does not cancel or release the underlying Monaco worker operation; that operation remains serialized until it settles because Monaco-Kusto exposes no worker-mutation cancellation API.
+Each active primary worker-preparation episode has one 30-second absolute budget, shared by retries and fallback paths. Deferred, ready, error, and idle states retire the episode so focus-time or later worker preparation receives a fresh budget, while stale older generations cannot reset a newer active deadline. Expiry moves the owning section to a terminal error state so `aria-busy` and the toolbar indicator stop, but it does not cancel or release the underlying Monaco worker operation; that operation remains serialized until it settles because Monaco-Kusto exposes no worker-mutation cancellation API.
+
+### Exact Kusto Execution Ownership
+
+Every section-publishing Kusto run carries one `KustoExecutionRequestIdentity`: `{ engine, boxId, sectionInstanceId, targetGeneration, executionId, connectionId, database, producer }`. `src/shared/kustoExecution.ts` defines that contract. The webview publishes exact section open/target/close lifecycle messages, and `KustoExecutionCoordinator` mirrors the current target for each section incarnation.
+
+The host reserves synchronously before selection persistence, authentication, or any other await. A reservation receives a monotonic `reservationSequence`; replacement atomically installs the new reservation, cancels the previous transport, and publishes the previous reservation's correlated `superseded` terminal. Reservation, pre-start admission, and dispatch capture compare the host-issued physical connection owner, so same-ID replacement cannot redirect stale work. Immediately before each actual SDK submission, `KustoQueryClient` captures immutable dispatch identity: attempt number, connection revision and identity, endpoint/authority, authenticated account partition and session generation, Leave No Trace revision, and client activity ID. Success is admitted only when that dispatch exists and its physical target, account session, and policy revisions remain current.
+
+`KustoExecutionCoordinator` is the only Kusto logical terminal publisher. Success, error, explicit cancellation, target retirement, policy retirement, and supersession carry the complete reservation plus dispatch identity when physical submission occurred. Physical SDK and server cancellation remain best-effort, but logical settlement is immediate and idempotent. Manual runs, Run Function, Copilot final runs, performance comparisons, and agent-tool runs use this coordinator whenever they publish into a query section. Copilot/comparison starts use `kustoExecutionStarted` / `kustoExecutionStartedAck` before physical dispatch; tool invocations separately acknowledge the exact owner so cancellation works before or after that acknowledgement. Model-context-only Copilot queries remain separate because they never publish a generic section terminal.
+
+Kusto Copilot requests have a second exact identity for their whole generation/write lifecycle: `{ boxId, sectionInstanceId, targetGeneration, copilotRequestId }`. Standalone Optimize uses the parallel `{ boxId, sectionInstanceId, targetGeneration, optimizeRequestId }` identity. The webview creates and owns these requests, the host echoes them on every status/options/output/terminal message, and the section admits output only for the active request and current lifecycle. Retarget, removal, replacement, or panel disposal cancels exact model, direct-query, final-run, comparison, and Optimize owners. Delegated tools capture the exact Copilot request owner after send and use a request-scoped pre-start cancellation tombstone, so delayed cancellation cannot affect a newer request in the same section. Queued output cannot mutate or settle a recreated same-ID section.
+
+Successful terminals require a runtime-validated reservation and physical dispatch envelope; the coordinator retires a dispatchless success attempt instead of publishing rows. Request admission compares connection, database, and producer in addition to section/execution identity. Linked comparison sections retire and exactly cancel any old-target owner before synchronously adopting the source connection, database, and lifecycle target whenever the source retargets or the comparison is reused. That retirement clears rendered rows, shared result state, persisted `resultJson`, comparison summaries, and exact target-bound Copilot conversation history before mutation. Manual and Copilot comparison dispatch fail closed if the source and comparison data targets differ.
+
+The webview must successfully claim the exact owner before sending `executeQuery`. `QueryExecutionController` retains ownership while cancellation is pending and retains every superseded identity until its exact terminal is admitted once. SQL routing runs first; afterward, a terminal targeting a registered Kusto section is rejected unless it carries a complete Kusto execution identity. A removed tool section may consume its matching retired terminal through the internal terminal event so the tool request settles without rendering into a missing or recreated section.
+
+Connection, authority/account, database target, section removal, panel disposal, and Kusto Leave No Trace changes revoke affected reservations before publication. First-time automatic account establishment (`none -> A`) is not a revocation: an added Microsoft session establishes the baseline, and account-partition metadata refresh invalidates schema ownership without retargeting or clearing the exact run that established it. A true automatic rotation (`A -> B`), removed or recreated session, explicit selection change, or forgotten account revokes only mapped connections and clears their retained data and Copilot state.
+
+`KustoLeaveNoTracePolicyStore` is the canonical cross-window privacy authority. It stores atomically committed snapshots under extension global storage, serializes changes with a filesystem lock, watches other extension hosts, and advances a per-cluster revocation generation. Physical dispatch starts and all data-bearing publication read that generation under the same shared lock; asynchronous publication callbacks are awaited before the lock is released. Model-context Copilot posts rows and appends history inside that callback, and Connection Manager table preview captures the dispatch generation and admits its rows under the same lock. A remote toggle therefore invalidates only affected clusters even before watcher delivery and cannot interleave between admission and publication.
+
+Database/schema discovery, table preview, Connection Manager search, Cached Values, and direct agent schema tools use exact metadata owners rather than connection IDs alone. Those owners include physical connection identity/incarnation, account partition, authentication-session generation, per-cluster Leave No Trace generation, and the relevant database/schema cache generations. `KustoQueryClient` invokes authenticated metadata gates inside the canonical Kusto policy lock immediately before the SDK call, closing the authentication-to-submission race. Persisted Connection Manager search rows carry their own `kustoSearchOwner` proof and are revalidated individually; whole-profile fingerprints and whole-policy versions remain only a fail-closed fallback for legacy rows.
+
+Sensitive host-to-webview deliveries use application-level publication leases: stage, commit, and revoke/status reconciliation. The webview acknowledges staging only after it owns the exact payload and acknowledges application only after the mutation occurs. A bounded completed-publication ledger lets a lost applied acknowledgement converge on the already-rendered result instead of producing a contradictory cancellation or second terminal. Transport-level `postMessage()` success is never treated as proof that rows were applied.
+
+Snapshots that combine Kusto and SQL ownership use canonical lock order Kusto then SQL. `SqlWorkbenchService` exposes one-attempt owner-snapshot acquisition; callers release Kusto admission while SQL is contended and retry the complete ordered acquisition. This prevents Connection Manager, Cached Values, Query Editor sanitation, or publication from holding the Kusto privacy lock during SQL lock backoff.
+
+Persisted Kusto result restoration waits for the first canonical policy snapshot. Protected or globally blocked jobs are discarded before rendering; later policy changes purge matching queued jobs, shared/rendered rows, and stored `resultJson`. If committed state and backup are unrecoverable after migration, recovery remains globally fail closed through ordinary edits and dominates any older process's higher unblocked version: result admission is rejected, the first connection snapshot waits for policy initialization, and every current Kusto connection is advertised non-persistable. `ConnectionManager` mirrors healthy shared state into legacy global state for compatibility and maps changed cluster keys to local connection IDs for lifecycle cancellation.
+
+Reorder disconnect/reconnect is not disposal and does not release the execution or Copilot owner.
+
+Result rendering and persistence still use mutable latest-result state keyed by section ID. Immutable artifact revisions, producer lineage, and policy-bearing downstream bindings are deliberately deferred to EXA-2.
+
+Focused coverage lives in `kustoLeaveNoTracePolicyStore.test.ts`, `connectionManager.test.ts`, `connectionManagerViewerSearch.test.ts`, `cachedValuesViewer.test.ts`, `kustoAuthPreferenceService.test.ts`, `kustoExecutionCoordinator.test.ts`, `kustoClient.test.ts`, `queryEditorProviderCancel.test.ts`, `query-execution-run-function.test.ts`, `query-section-accessors.test.ts`, `kw-query-section-loading.test.ts`, `message-handler.test.ts`, `message-protocol.test.ts`, `persistence-roundtrip.test.ts`, `queryEditorCopilotFunctionExecution.test.ts`, `toolOrchestratorConnect.test.ts`, `kw-cached-values.test.ts`, `kw-connection-manager.test.ts`, and `kusto-schema-ownership.test.ts`. Authenticated native coverage lives in `kusto-execution-contract` and `query-cancel`.
+
+Final EXA-1 qualification on VS Code 1.130.0 passed production and integration compilation, the 27-suite focused ring (1,270 tests), full sequential Vitest (195 files, 5,098 tests), the full extension-host integration suite (113 tests), production extension and browser builds, and both bundle-size gates. Authenticated `kusto-execution-contract` passed all three normal/rerun/retarget scenarios on its unchanged rerun; the preceding first-scenario timeout remains recorded as a flake suspect. Authenticated `query-cancel` passed both physical-cancellation/race-recovery scenarios. Every final JSON artifact and all nine passing-run screenshots were reviewed.
 
 ### Supplemental Fully Qualified Schemas
 
@@ -467,7 +511,7 @@ SQL Copilot rules: `copilot-instructions/sql-query-rules.md`, optimization rules
 * SQL Leave No Trace policy is versioned in extension global storage, serialized with a filesystem lock, atomically replaced, and watched by every extension host so toggles propagate across VS Code windows
 * SQL Leave No Trace keeps manual queries and database discovery usable through the protected one-shot STS runtime. Shared language STS, schema/cache publication, Copilot execution, durable result state, restoration, and data-bearing output logs remain blocked. Results render in memory only and are admitted after sandbox deletion.
 * A terminally exhausted STS manager is replaced by `StsRuntime`; open editors recreate language services and replay their latest document/target state against the replacement manager
-* File format: `.kqlx` supports mixed Kusto+SQL; `.sqlx` allows only SQL sections
+* File format: `.kqlx` supports mixed Kusto+SQL; `.sqlx` supports SQL plus derived and presentation sections, but not Kusto query sections
 
 ## Diagnostic Codes
 
@@ -531,7 +575,8 @@ The `.is-minimal` and `.is-ultra-compact` classes are still supported in CSS for
 
 ### Implementation
 
-* **Storage**: Leave no trace cluster URLs are stored in VS Code global state under key `kusto.leaveNoTraceClusters`
+* **Storage**: The canonical policy is an atomically committed, file-locked snapshot under extension global storage; `kusto.leaveNoTraceClusters` is maintained as a legacy compatibility mirror
+* **Execution fencing**: Effective policy changes advance a per-cluster revocation generation, propagate across extension hosts, revoke active runs for matching connections before refreshed snapshots, and guard both dispatch and result admission under the shared lock
 * **Connection Manager UI**: Clusters section shows a "Mark as Leave no trace" action on hover. A dedicated "Leave No Trace" accordion section displays marked clusters.
 * **Persistence Logic**: Before saving, check if a query section's `clusterUrl` matches a leave-no-trace cluster. If matched, strip `resultJson` from that section. Also strip data from chart/transformation sections that reference such query sections.
 

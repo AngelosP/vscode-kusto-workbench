@@ -26,6 +26,11 @@ export type KustoEditorOwnedStateSlot =
 
 export type KustoEditorOwnedStateSnapshot = Readonly<Partial<Record<KustoEditorOwnedStateSlot, unknown>>>;
 
+export type KustoEditorLifecycleEvent =
+	| Readonly<{ type: 'opened'; owner: KustoEditorSectionLease }>
+	| Readonly<{ type: 'target'; owner: KustoEditorSectionLease & KustoEditorLifecycleIdentity; target?: KustoEditorSchemaTarget }>
+	| Readonly<{ type: 'closed'; owner: KustoEditorSectionLease }>;
+
 export type KustoEditorSchemaDebugEntry = Readonly<{
 	boxId: string;
 	sectionInstanceId?: string;
@@ -81,6 +86,15 @@ function targetsEqual(
 	left: KustoEditorSchemaTarget | undefined,
 	right: KustoEditorSchemaTarget | undefined,
 ): boolean {
+	return logicalTargetsEqual(left, right)
+		&& left?.connectionRevision === right?.connectionRevision
+		&& normalizeId(left?.connectionIdentityKey) === normalizeId(right?.connectionIdentityKey);
+}
+
+function logicalTargetsEqual(
+	left: KustoEditorSchemaTarget | undefined,
+	right: KustoEditorSchemaTarget | undefined,
+): boolean {
 	return left?.connectionId === right?.connectionId
 		&& normalizeId(left?.database).toLowerCase() === normalizeId(right?.database).toLowerCase();
 }
@@ -88,6 +102,12 @@ function targetsEqual(
 export class KustoEditorSchemaCoordinator {
 	private readonly editors = new Map<string, KustoEditorRecord>();
 	private readonly tombstonedBoxIds = new Set<string>();
+	private readonly lifecycleListeners = new Set<(event: KustoEditorLifecycleEvent) => void>();
+
+	subscribeLifecycle(listener: (event: KustoEditorLifecycleEvent) => void): () => void {
+		this.lifecycleListeners.add(listener);
+		return () => this.lifecycleListeners.delete(listener);
+	}
 
 	openSection(boxId: string, sectionInstanceId: string): KustoEditorSectionLease | undefined {
 		const id = normalizeId(boxId);
@@ -108,7 +128,9 @@ export class KustoEditorSchemaCoordinator {
 				listeners: new Map(),
 			});
 		}
-		return Object.freeze({ boxId: id, sectionInstanceId: instanceId });
+		const lease = Object.freeze({ boxId: id, sectionInstanceId: instanceId });
+		this.publishLifecycle({ type: 'opened', owner: lease });
+		return lease;
 	}
 
 	closeSection(lease: KustoEditorSectionLease): boolean {
@@ -117,6 +139,10 @@ export class KustoEditorSchemaCoordinator {
 		this.retireRecord(current);
 		this.editors.delete(current.boxId);
 		this.tombstonedBoxIds.add(current.boxId);
+		this.publishLifecycle({ type: 'closed', owner: Object.freeze({
+			boxId: current.boxId,
+			sectionInstanceId: current.sectionInstanceId,
+		}) });
 		return true;
 	}
 
@@ -124,6 +150,7 @@ export class KustoEditorSchemaCoordinator {
 		lease: KustoEditorSectionLease,
 		connectionId: string,
 		database?: string,
+		physicalOwner?: { connectionRevision?: number; connectionIdentityKey?: string },
 	): KustoEditorLifecycleIdentity | undefined {
 		const current = this.getRecord(lease);
 		if (!current) return undefined;
@@ -133,6 +160,12 @@ export class KustoEditorSchemaCoordinator {
 			? Object.freeze({
 				connectionId: normalizedConnectionId,
 				...(normalizedDatabase ? { database: normalizedDatabase } : {}),
+				...(Number.isSafeInteger(physicalOwner?.connectionRevision) && Number(physicalOwner?.connectionRevision) >= 0
+					? { connectionRevision: Number(physicalOwner?.connectionRevision) }
+					: {}),
+				...(normalizeId(physicalOwner?.connectionIdentityKey)
+					? { connectionIdentityKey: normalizeId(physicalOwner?.connectionIdentityKey) }
+					: {}),
 			})
 			: undefined;
 		if (!targetsEqual(current.target, target)) {
@@ -142,7 +175,13 @@ export class KustoEditorSchemaCoordinator {
 			current.databaseRequestToken = undefined;
 			current.schemaRequestToken = undefined;
 		}
-		return this.getIdentity(current.boxId);
+		const identity = this.getIdentity(current.boxId);
+		if (identity) this.publishLifecycle({
+			type: 'target',
+			owner: Object.freeze({ boxId: current.boxId, ...identity }),
+			...(current.target ? { target: Object.freeze({ ...current.target }) } : {}),
+		});
+		return identity;
 	}
 
 	invalidateTarget(lease: KustoEditorSectionLease): KustoEditorLifecycleIdentity | undefined {
@@ -162,7 +201,19 @@ export class KustoEditorSchemaCoordinator {
 		current.targetGeneration += 1;
 		current.databaseRequestToken = undefined;
 		current.schemaRequestToken = undefined;
-		return this.getIdentity(current.boxId);
+		const identity = this.getIdentity(current.boxId);
+		if (identity && current.sectionInstanceId) this.publishLifecycle({
+			type: 'target',
+			owner: Object.freeze({ boxId: current.boxId, ...identity }),
+			...(current.target ? { target: Object.freeze({ ...current.target }) } : {}),
+		});
+		return identity;
+	}
+
+	private publishLifecycle(event: KustoEditorLifecycleEvent): void {
+		for (const listener of [...this.lifecycleListeners]) {
+			try { listener(event); } catch { /* lifecycle observers cannot break ownership */ }
+		}
 	}
 
 	beginSchemaRequest(
@@ -453,7 +504,7 @@ export class KustoEditorSchemaCoordinator {
 		return !!current
 			&& current.sectionInstanceId === normalizeId(identity.sectionInstanceId)
 			&& current.targetGeneration === identity.targetGeneration
-			&& targetsEqual(current.target, {
+			&& logicalTargetsEqual(current.target, {
 				connectionId: normalizeId(target.connectionId),
 				...(normalizeId(target.database) ? { database: normalizeId(target.database) } : {}),
 			})

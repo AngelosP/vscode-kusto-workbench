@@ -21,7 +21,6 @@ import './core/section-factory.js';
 import './monaco/diagnostics.js'; // Before monaco — sets utility window bridges
 import './monaco/completions.js'; // Before monaco — sets completion provider bridges
 import './monaco/monaco.js';
-import './core/main.js'; // Must be last — message dispatcher
 import './core/section-insert-zone.js'; // Hover-to-insert between sections
 import './components/kw-search-bar.js';
 import './components/kw-object-viewer.js';
@@ -53,3 +52,4 @@ import './sections/kw-html-section.js';
 import './sections/kw-sql-section.js';
 import './sections/kw-query-section.js';
 import './sections/kw-query-toolbar.js';
+import './core/main.js'; // Must be last — installs and drains the message dispatcher

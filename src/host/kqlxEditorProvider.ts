@@ -22,9 +22,8 @@ const normalizeClusterUrlKey = (url: string): string => {
 	return kustoClusterKey(url);
 };
 
-const SQL_SAVE_CANONICAL_WAIT_MS = 500;
 const NON_PERSISTENCE_CLOSE_WAIT_MS = 2_000;
-const PERSISTENCE_CLOSE_WAIT_MS = 20_000;
+const PERSISTENCE_CLOSE_WAIT_MS = 50_000;
 
 async function settlesWithin(promise: Promise<unknown>, timeoutMs: number): Promise<boolean> {
 	let timer: ReturnType<typeof setTimeout> | undefined;
@@ -43,8 +42,6 @@ export function hasSqlOwnedDocumentState(state: Pick<KqlxStateV1, 'sections'>): 
 	const sectionTypesById = new Map(sections.map(section => [String(section.id || '').trim(), String(section.type || '')]));
 	return sections.some(section => {
 		if (String(section.type || '') === 'sql') return true;
-		if (String(section.type || '') === 'query'
-			&& String((section as { connectionIdHint?: string }).connectionIdHint || '').trim().startsWith('sql_')) return true;
 		const sourceBoxId = String((section as { comparisonSourceBoxId?: string }).comparisonSourceBoxId || '').trim();
 		return !!sourceBoxId && sectionTypesById.get(sourceBoxId) === 'sql';
 	});
@@ -1261,9 +1258,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				allowedKinds: ['kqlx', 'mdx', 'sqlx'],
 				defaultKind: documentKind,
 			});
-			if (currentFile.ok && !hasSqlOwnedDocumentState(currentFile.file.state)) {
-				return;
-			}
+			if (!currentFile.ok) return;
 			const repairedText = await sanitizeSerializedNotebookTextFresh(startingText);
 			if (closeFinalizationAbandoned) return;
 			if (repairedText === startingText) return;
@@ -1406,9 +1401,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 
 			let sanitizedState = sanitizeStateForKind(documentKind, parsed.file.state);
-			if (hasSqlOwnedDocumentState(sanitizedState)) {
-				sanitizedState = sanitizeStateForKind(documentKind, await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(sanitizedState));
-			}
+			sanitizedState = sanitizeStateForKind(documentKind, await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(sanitizedState));
 			if (outerDisposed) return;
 			perfMark('host.kqlx.sanitize.done', { sections: Array.isArray(sanitizedState.sections) ? sanitizedState.sections.length : 0 });
 			fileOpenTrace.mark('postDocument.sanitize.done', { sections: Array.isArray(sanitizedState.sections) ? sanitizedState.sections.length : 0 });
@@ -1416,9 +1409,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (outerDisposed) return;
 			perfMark('host.kqlx.injectLinkedQuery.done', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
 			fileOpenTrace.mark('postDocument.injectLinkedQuery.done', { sections: Array.isArray(hydratedState.sections) ? hydratedState.sections.length : 0 });
-			const outboundState = hasSqlOwnedDocumentState(hydratedState)
-				? await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(hydratedState)
-				: queryEditor.sanitizeSqlLeaveNoTraceState(hydratedState);
+			const outboundState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(hydratedState);
 			if (outerDisposed) return;
 
 			postWebviewMessage({
@@ -1457,92 +1448,85 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 		const subscriptions: vscode.Disposable[] = [webviewMessageSubscription, outerDisposalSubscription];
 		const finalPersistSession = new CompatSidecarSession(false, 'Kusto Workbench document');
-		type PendingSqlSavePublication = {
-			release: () => void;
-			settled: Promise<void>;
-			timer: ReturnType<typeof setTimeout>;
+		let nativeSaveGeneration = 0;
+		let pendingNativeResultRestore: { rowFreeText: string; candidateText: string; generation: number } | undefined;
+		let canonicalResultRestoreSaveInProgress = false;
+		let canonicalResultRestoreTail: Promise<void> = Promise.resolve();
+		const nativeSavePreparations = new Set<Promise<void>>();
+		let nativeSaveStateVersion = 0;
+		const nativeSaveStateWaiters = new Set<() => void>();
+		const notifyNativeSaveStateChanged = () => {
+			nativeSaveStateVersion++;
+			for (const resolve of [...nativeSaveStateWaiters]) resolve();
+			nativeSaveStateWaiters.clear();
 		};
-		let pendingSqlSavePublication: PendingSqlSavePublication | undefined;
-		const releasePendingSqlSavePublication = (): void => {
-			const pending = pendingSqlSavePublication;
-			if (!pending) return;
-			pendingSqlSavePublication = undefined;
-			clearTimeout(pending.timer);
-			pending.release();
-			void pending.settled;
+		const waitForNativeSaveStateChange = (version: number): Promise<void> => {
+			if (nativeSaveStateVersion !== version || closeFinalizationAbandoned) return Promise.resolve();
+			return new Promise(resolve => nativeSaveStateWaiters.add(resolve));
 		};
 		const prepareAtomicSqlSaveText = async (currentText: string): Promise<string> => {
-			const parsed = parseKqlxText(currentText, {
-				allowedKinds: ['kqlx', 'mdx', 'sqlx'],
-				defaultKind: documentKind,
-			});
-			if (!parsed.ok || !hasSqlOwnedDocumentState(parsed.file.state)) {
-				return sanitizeSerializedNotebookTextFresh(currentText);
-			}
-			const failClosedText = await sanitizeSerializedNotebookTextFailClosed(currentText);
-			releasePendingSqlSavePublication();
-			let releasePublication!: () => void;
-			const publicationHold = new Promise<void>(resolve => { releasePublication = resolve; });
-			let decideCanonical!: (useCanonical: boolean) => void;
-			const canonicalDecision = new Promise<boolean>(resolve => { decideCanonical = resolve; });
-			let resolveStarted!: (text: string) => void;
-			let rejectStarted!: (error: unknown) => void;
-			let callbackStarted = false;
-			const started = new Promise<string>((resolve, reject) => {
-				resolveStarted = resolve;
-				rejectStarted = reject;
-			});
-			const publication = publishSerializedNotebookTextFresh(currentText, async sanitizedText => {
-				callbackStarted = true;
-				resolveStarted(sanitizedText);
-				if (!await canonicalDecision) return sanitizedText;
-				await publicationHold;
-				return sanitizedText;
-			});
-			const settled = publication.then(
-				() => undefined,
-				error => {
-					if (!callbackStarted) rejectStarted(error);
-					else getWorkbenchLogger().warn(`[sql-persistence] Save publication failed: ${error instanceof Error ? error.message : String(error)}`);
-				},
-			);
-			let timeout: ReturnType<typeof setTimeout> | undefined;
-			const outcome = await Promise.race([
-				started.then(
-					text => ({ kind: 'canonical' as const, text }),
-					error => ({ kind: 'failed' as const, error }),
-				),
-				new Promise<{ kind: 'timeout' }>(resolve => {
-					timeout = setTimeout(() => resolve({ kind: 'timeout' }), SQL_SAVE_CANONICAL_WAIT_MS);
-				}),
-			]);
-			if (timeout) clearTimeout(timeout);
-			if (outcome.kind !== 'canonical') {
-				decideCanonical(false);
-				if (outcome.kind === 'failed') {
-					getWorkbenchLogger().warn(`[sql-persistence] Canonical save sanitation failed; using fail-closed text: ${outcome.error instanceof Error ? outcome.error.message : String(outcome.error)}`);
-				} else {
-					getWorkbenchLogger().warn('[sql-persistence] Canonical save sanitation exceeded the save budget; using fail-closed text.');
+			return sanitizeSerializedNotebookTextFailClosed(currentText);
+		};
+		const restoreCanonicalNativeResults = async (pending: { rowFreeText: string; candidateText: string; generation: number }): Promise<void> => {
+			if (closeFinalizationAbandoned || pending.generation !== nativeSaveGeneration || document.isDirty || document.getText() !== pending.rowFreeText) return;
+			const rowFreeVersion = document.version;
+			try {
+			await publishSerializedNotebookTextFresh(pending.candidateText, async admittedText => {
+				if (closeFinalizationAbandoned || pending.generation !== nativeSaveGeneration || document.version !== rowFreeVersion
+					|| document.isDirty || document.getText() !== pending.rowFreeText || admittedText === pending.rowFreeText) return false;
+				canonicalResultRestoreSaveInProgress = true;
+				try {
+					const currentText = document.getText();
+					const edit = new vscode.WorkspaceEdit();
+					edit.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(currentText.length)), admittedText);
+					lastWebviewPersistAt = Date.now();
+					if (!await vscode.workspace.applyEdit(edit)) return false;
+					const admittedVersion = document.version;
+					if (pending.generation !== nativeSaveGeneration || document.getText() !== admittedText) return false;
+					if (await document.save()) return true;
+					if (pending.generation !== nativeSaveGeneration || document.version !== admittedVersion || document.getText() !== admittedText) return false;
+					const rollbackText = document.getText();
+					const rollback = new vscode.WorkspaceEdit();
+					rollback.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(rollbackText.length)), pending.rowFreeText);
+					lastWebviewPersistAt = Date.now();
+					await vscode.workspace.applyEdit(rollback);
+					return false;
+				} catch {
+					const rollbackText = document.getText();
+					if (pending.generation === nativeSaveGeneration && document.version === rowFreeVersion + 1
+						&& rollbackText !== pending.rowFreeText) {
+						const rollback = new vscode.WorkspaceEdit();
+						rollback.replace(document.uri, new vscode.Range(document.positionAt(0), document.positionAt(rollbackText.length)), pending.rowFreeText);
+						lastWebviewPersistAt = Date.now();
+						await vscode.workspace.applyEdit(rollback);
+					}
+					return false;
+				} finally {
+					canonicalResultRestoreSaveInProgress = false;
 				}
-				return failClosedText;
+			});
+			} catch {
+				// The native save already committed the row-free snapshot.
 			}
-			decideCanonical(true);
-			const sanitizedText = outcome.text;
-			const timer = setTimeout(() => {
-				if (pendingSqlSavePublication?.release !== releasePublication) return;
-				getWorkbenchLogger().warn('[sql-persistence] Timed out waiting for the SQL-safe document save to complete.');
-				releasePendingSqlSavePublication();
-			}, 30_000);
-			pendingSqlSavePublication = { release: releasePublication, settled, timer };
-			return sanitizedText;
 		};
 		subscriptions.push(queryEditor.onDidInvalidateSqlPersistence(() => {
+			void repairPersistedSqlState().catch(() => undefined);
+		}));
+		subscriptions.push(queryEditor.onDidInvalidateKustoPersistence(() => {
 			void repairPersistedSqlState().catch(() => undefined);
 		}));
 		if (!isSessionFile) {
 			subscriptions.push(vscode.workspace.onWillSaveTextDocument(event => {
 				if (event.document.uri.toString() !== document.uri.toString()) return;
-				event.waitUntil((async () => {
+				if (canonicalResultRestoreSaveInProgress) {
+					event.waitUntil(Promise.resolve([]));
+					return;
+				}
+				if (outerDisposed) {
+					event.waitUntil(Promise.resolve([]));
+					return;
+				}
+				const preparation = (async () => {
 					const currentText = document.getText();
 					let sanitizedText: string;
 					try {
@@ -1555,9 +1539,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								await applyLinkedQueryTextToDocument(String(first.query || ''));
 							}
 						}
-						sanitizedText = await prepareAtomicSqlSaveText(serializeDocumentState(saveState));
+						const candidateText = serializeDocumentState(saveState);
+						sanitizedText = await prepareAtomicSqlSaveText(candidateText);
+						pendingNativeResultRestore = { rowFreeText: sanitizedText, candidateText, generation: ++nativeSaveGeneration };
+						notifyNativeSaveStateChanged();
 					} catch (error) {
-						releasePendingSqlSavePublication();
+						nativeSaveGeneration++;
+						pendingNativeResultRestore = undefined;
+						notifyNativeSaveStateChanged();
 						getWorkbenchLogger().warn(`[sql-persistence] Final snapshot unavailable; saving fail-closed state: ${error instanceof Error ? error.message : String(error)}`);
 						sanitizedText = await sanitizeSerializedNotebookTextFailClosed(document.getText());
 					}
@@ -1567,7 +1556,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						new vscode.Range(document.positionAt(0), document.positionAt(freshText.length)),
 						sanitizedText,
 					)];
-				})());
+				})();
+				const trackedPreparation = preparation.then(() => undefined, () => undefined);
+				nativeSavePreparations.add(trackedPreparation);
+				void trackedPreparation.then(() => {
+					nativeSavePreparations.delete(trackedPreparation);
+					notifyNativeSaveStateChanged();
+				});
+				event.waitUntil(preparation);
 			}));
 		}
 		subscriptions.push(
@@ -1579,7 +1575,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 						return;
 					}
-					releasePendingSqlSavePublication();
 					lastSavedText = saved.getText();
 					lastSavedEol = saved.eol;
 					// Rebuild section change cache and notify webview that everything is clean.
@@ -1593,8 +1588,18 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					} catch {
 						// ignore
 					}
-					void repairPersistedSqlState().catch(() => undefined);
+					if (canonicalResultRestoreSaveInProgress) return;
+					const pending = pendingNativeResultRestore;
+					pendingNativeResultRestore = undefined;
+					if (pending && saved.getText() === pending.rowFreeText) {
+						canonicalResultRestoreTail = canonicalResultRestoreTail
+							.then(() => restoreCanonicalNativeResults(pending), () => restoreCanonicalNativeResults(pending));
+					} else {
+						void repairPersistedSqlState().catch(() => undefined);
+					}
+					notifyNativeSaveStateChanged();
 				} catch {
+					notifyNativeSaveStateChanged();
 					// ignore
 				}
 			})
@@ -1640,13 +1645,30 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			void (async () => {
 				try {
 					finalPersistSession.settleClose();
-					releasePendingSqlSavePublication();
 					if (saveTimer) {
 						clearTimeout(saveTimer);
 						saveTimer = undefined;
 					}
 					const persistenceDrain = (async () => {
 						await Promise.allSettled([...admittedPersistenceHandlers]);
+						while (!closeFinalizationAbandoned) {
+							if (nativeSavePreparations.size > 0) {
+								await Promise.allSettled([...nativeSavePreparations]);
+								continue;
+							}
+							const observedGeneration = nativeSaveGeneration;
+							const observedTail = canonicalResultRestoreTail;
+							await observedTail;
+							if (closeFinalizationAbandoned) return;
+							if (nativeSavePreparations.size === 0
+								&& !pendingNativeResultRestore
+								&& nativeSaveGeneration === observedGeneration
+								&& canonicalResultRestoreTail === observedTail) break;
+							const observedStateVersion = nativeSaveStateVersion;
+							if (nativeSavePreparations.size === 0 && pendingNativeResultRestore) {
+								await waitForNativeSaveStateChange(observedStateVersion);
+							}
+						}
 						if (closeFinalizationAbandoned) return;
 						await repairPersistedSqlState(true);
 						if (closeFinalizationAbandoned) return;
@@ -1656,6 +1678,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					})();
 					if (!await settlesWithin(persistenceDrain, PERSISTENCE_CLOSE_WAIT_MS)) {
 						closeFinalizationAbandoned = true;
+						notifyNativeSaveStateChanged();
 						getWorkbenchLogger().warn('[kusto] Timed out draining Kusto Workbench persistence during close.');
 					}
 					if (!await settlesWithin(Promise.allSettled([...admittedWebviewHandlers]), NON_PERSISTENCE_CLOSE_WAIT_MS)) {

@@ -179,17 +179,18 @@ export const writeCachedSchemaToDisk = async (
 	cacheKey: string,
 	entry: CachedSchemaEntry,
 	expectedGeneration: SchemaCacheGeneration = captureSchemaCacheGeneration(globalStorageUri, entry.connectionId, entry.accountPartition),
-): Promise<void> => {
+): Promise<boolean> => {
 	if (!cacheKey || !classifyCachedSchema(entry).isUsable || !entry.clusterUrl || !entry.database) {
 		throw new Error('Kusto schema cache entries require version 5 connection and account identity metadata.');
 	}
-	await enqueueSchemaCacheMutation(globalStorageUri, async () => {
-		if (!isSchemaCacheGenerationCurrent(globalStorageUri, entry.connectionId || '', entry.accountPartition || '', expectedGeneration)) return;
+	return enqueueSchemaCacheMutation(globalStorageUri, async () => {
+		if (!isSchemaCacheGenerationCurrent(globalStorageUri, entry.connectionId || '', entry.accountPartition || '', expectedGeneration)) return false;
 		const dir = getSchemaCacheDirUri(globalStorageUri);
 		await vscode.workspace.fs.createDirectory(dir);
-		if (!isSchemaCacheGenerationCurrent(globalStorageUri, entry.connectionId || '', entry.accountPartition || '', expectedGeneration)) return;
+		if (!isSchemaCacheGenerationCurrent(globalStorageUri, entry.connectionId || '', entry.accountPartition || '', expectedGeneration)) return false;
 		const fileUri = getSchemaCacheFileUri(globalStorageUri, cacheKey);
 		await vscode.workspace.fs.writeFile(fileUri, Buffer.from(JSON.stringify(entry), 'utf8'));
+		return isSchemaCacheGenerationCurrent(globalStorageUri, entry.connectionId || '', entry.accountPartition || '', expectedGeneration);
 	});
 };
 

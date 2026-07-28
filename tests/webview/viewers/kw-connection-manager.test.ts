@@ -183,6 +183,26 @@ describe('kw-connection-manager', () => {
 		expect(postedMessages).toContainEqual({ type: 'sql.leaveNoTrace.remove', connectionId: 'sql1' });
 	});
 
+	it('keeps a protected Kusto row manageable but disables exploration and refresh', async () => {
+		const el = createElement();
+		const connection = kustoConnection('c1', 'Protected', 'https://protected.kusto.windows.net');
+		sendSnapshot(el, snapshot({
+			connections: [connection], cachedDatabases: {}, favorites: [], expandedClusters: [],
+			leaveNoTraceClusters: [connection.clusterUrl],
+		}));
+		await el.updateComplete;
+		postedMessages = [];
+
+		const row = el.shadowRoot!.querySelector('[data-testid="cm-kusto-connection-row"]') as HTMLElement;
+		row.click();
+		await el.updateComplete;
+
+		expect((el as any)._explorerPath).toBeNull();
+		expect(el.shadowRoot!.textContent).toContain('Leave No Trace');
+		expect(Array.from(el.shadowRoot!.querySelectorAll('button')).some(button => button.getAttribute('title') === 'Refresh')).toBe(false);
+		expect(postedMessages).not.toContainEqual(expect.objectContaining({ type: 'cluster.expand' }));
+	});
+
 	it('settles an in-flight SQL test when its owner is invalidated', async () => {
 		const el = createElement();
 		(el as any)._editingConnectionId = 'sql1';
@@ -848,6 +868,41 @@ describe('kw-connection-manager', () => {
 	// ── Search state ───────────────────────────────────────────────────────────
 
 	describe('search state', () => {
+		it('acknowledges staged search results only after the live request applies', async () => {
+			vi.useFakeTimers();
+			try {
+				const el = createElement();
+				sendSnapshot(el, snapshot());
+				await el.updateComplete;
+				clickButtonByTestId(el, 'cm-filter-search');
+				await el.updateComplete;
+				const input = el.shadowRoot!.querySelector('[data-testid="cm-search-input"]') as HTMLInputElement;
+				input.value = 'orders';
+				input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+				await vi.advanceTimersByTimeAsync(300);
+				const requestId = String((postedMessages.find(message => (message as any)?.type === 'search') as any)?.requestId || '');
+
+				for (const [publicationId, resultRequestId, expected] of [
+					['live-publication', requestId, true],
+					['stale-publication', 'stale-request', false],
+				] as const) {
+					window.dispatchEvent(new MessageEvent('message', { data: {
+						type: 'kustoPublicationStage', publicationId, publicationDeadline: Date.now() + 1_000,
+						payload: {
+							type: 'searchResults', requestId: resultRequestId, results: [searchResult()], completed: false,
+							kustoSearchOwnerToken: 'owner-token',
+						},
+					} }));
+					window.dispatchEvent(new MessageEvent('message', { data: { type: 'kustoPublicationCommit', publicationId } }));
+					expect(postedMessages).toContainEqual({ type: 'kustoPublicationAck', publicationId, phase: 'applied', accepted: expected });
+				}
+				await el.updateComplete;
+				expect(listItemNames(el)).toContain('Orders');
+			} finally {
+				vi.useRealTimers();
+			}
+		});
+
 		it('Kusto: preserves completed search results when returning to the tab with a stale snapshot', async () => {
 			vi.useFakeTimers();
 			try {
@@ -877,7 +932,10 @@ describe('kw-connection-manager', () => {
 
 				const completedResult = searchResult();
 				window.dispatchEvent(new MessageEvent('message', {
-					data: { type: 'searchResults', requestId: searchMessage!.requestId, results: [completedResult], completed: true },
+					data: {
+						type: 'searchResults', requestId: searchMessage!.requestId, results: [completedResult], completed: true,
+						kustoSearchOwnerToken: 'owner-token',
+					},
 				}));
 				await el.updateComplete;
 				expect(listItemNames(el)).toContain('Orders');
@@ -1130,6 +1188,42 @@ describe('kw-connection-manager', () => {
 	// ── Preview refresh ───────────────────────────────────────────────────────
 
 	describe('preview refresh', () => {
+		it('evicts protected Kusto schemas and previews without resurrecting them after unmarking', async () => {
+			const el = createElement();
+			const connection = { ...kustoConnection(), accountPartition: 'partition-a' };
+			sendSnapshot(el, snapshot({ connections: [connection], leaveNoTraceClusters: [], searchState: {
+				query: 'Secret', scope: 'cached', categories: {}, contentToggles: {},
+				lastResults: [{ category: 'table', kind: 'kusto', connectionId: 'c1', connectionName: 'Cluster', database: 'db1', name: 'Secret' }],
+				lastSearchTimestamp: Date.now(),
+			} }));
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'loadingSchema', connectionId: 'c1', database: 'db1', requestId: 'schema-protected', accountPartition: 'partition-a',
+			} }));
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'schemaLoaded', connectionId: 'c1', database: 'db1', requestId: 'schema-protected', accountPartition: 'partition-a',
+				schema: { tables: ['Secret'], columnTypesByTable: { Secret: {} } },
+			} }));
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'tablePreviewLoading', connectionId: 'c1', database: 'db1', tableName: 'Secret', requestId: 'preview-protected', accountPartition: 'partition-a',
+			} }));
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'tablePreviewResult', connectionId: 'c1', database: 'db1', tableName: 'Secret', requestId: 'preview-protected', accountPartition: 'partition-a',
+				success: true, columns: [{ name: 'value' }], rows: [['SECRET']], rowCount: 1,
+			} }));
+			expect((el as any)._databaseSchemas['c1|db1']).toBeDefined();
+			expect((el as any)._tablePreviewData['c1|db1|table|Secret']).toBeDefined();
+
+			sendSnapshot(el, snapshot({ connections: [connection], leaveNoTraceClusters: [connection.clusterUrl] }));
+			expect((el as any)._databaseSchemas['c1|db1']).toBeUndefined();
+			expect((el as any)._tablePreviewData['c1|db1|table|Secret']).toBeUndefined();
+			expect((el as any)._search.results).toEqual([]);
+
+			sendSnapshot(el, snapshot({ connections: [connection], leaveNoTraceClusters: [] }));
+			expect((el as any)._databaseSchemas['c1|db1']).toBeUndefined();
+			expect((el as any)._tablePreviewData['c1|db1|table|Secret']).toBeUndefined();
+			expect((el as any)._search.results).toEqual([]);
+		});
+
 		it('evicts Kusto schema and preview state when the connection identity changes', async () => {
 			const el = createElement();
 			const identityA = kustoConnection();
@@ -1171,6 +1265,28 @@ describe('kw-connection-manager', () => {
 
 			expect((el as any)._databaseSchemas['c1|db1']).toBeUndefined();
 			expect((el as any)._tablePreviewData['c1|db1|table|LateSecretA']).toBeUndefined();
+		});
+
+		it('evicts retained Kusto metadata after same-account session recreation', async () => {
+			const el = createElement();
+			const connection = { ...kustoConnection(), selectedAccountId: 'account-a', accountPartition: 'partition-a' };
+			sendSnapshot(el, snapshot({ connections: [{ ...connection, authSessionGeneration: 0 }] }));
+			sendSchemaLoaded(el, 'c1', 'db1', { tables: ['OldSessionTable'], columnTypesByTable: { OldSessionTable: {} } });
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'tablePreviewResult', connectionId: 'c1', database: 'db1', tableName: 'OldSessionTable',
+				success: true, columns: [{ name: 'value' }], rows: [['OLD_SESSION_ROW']], rowCount: 1,
+			} }));
+			(el as any)._search.results = [{
+				category: 'table', kind: 'kusto', connectionId: 'c1', connectionName: 'Cluster',
+				database: 'db1', name: 'OldSessionTable',
+			}];
+
+			sendSnapshot(el, snapshot({ connections: [{ ...connection, authSessionGeneration: 1 }] }));
+			await el.updateComplete;
+
+			expect((el as any)._databaseSchemas['c1|db1']).toBeUndefined();
+			expect((el as any)._tablePreviewData['c1|db1|table|OldSessionTable']).toBeUndefined();
+			expect((el as any)._search.results).toEqual([]);
 		});
 
 		it('ignores stale schema and preview terminal messages after a newer request starts', async () => {

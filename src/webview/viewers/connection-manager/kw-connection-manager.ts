@@ -28,6 +28,7 @@ interface KustoConnection {
 	database?: string;
 	authorityId?: string;
 	accountPartition?: string;
+	authSessionGeneration?: number;
 	accountPreference: { mode: 'automatic'; lastSuccessfulAccountId?: string; legacyAccountId?: string } | { mode: 'explicit'; accountId: string };
 	selectedAccountId?: string;
 }
@@ -203,7 +204,7 @@ function sortKustoConnections(connections: readonly KustoConnection[] | undefine
 }
 
 function kustoConnectionIdentity(connection: KustoConnection): string {
-	return [connection.clusterUrl, connection.authorityId || '', connection.selectedAccountId || '', connection.accountPartition || '', connection.accountPreference?.mode || 'automatic'].join('|');
+	return [connection.clusterUrl, connection.authorityId || '', connection.selectedAccountId || '', connection.accountPartition || '', connection.authSessionGeneration ?? 0, connection.accountPreference?.mode || 'automatic'].join('|');
 }
 
 function getSqlConnectionLabel(connection: SqlConnectionInfo): string {
@@ -273,6 +274,8 @@ export class KwConnectionManager extends LitElement {
 	private _sqlDatabaseRequestIds = new Map<string, string>();
 	private _sqlSchemaRequestIds = new Map<string, string>();
 	private _sqlPreviewRequestIds = new Map<string, string>();
+	private _stagedKustoPublications = new Map<string, { payload: any; deadline: number; timer: ReturnType<typeof setTimeout> }>();
+	private _completedKustoPublications = new Map<string, { accepted: boolean; timer: ReturnType<typeof setTimeout> }>();
 	private _sqlTestConnectionRequestId: string | null = null;
 	private _latestSnapshotRevision = 0;
 
@@ -547,18 +550,95 @@ export class KwConnectionManager extends LitElement {
 		this._search.invalidateSqlResults();
 	}
 
+	private _evictProtectedKustoState(next: Snapshot): void {
+		const protectedClusters = new Set((next.leaveNoTraceClusters || []).map(cluster => kustoClusterKey(cluster)));
+		const protectedIds = new Set((next.connections || [])
+			.filter(connection => protectedClusters.has(kustoClusterKey(connection.clusterUrl)))
+			.map(connection => connection.id));
+		if (protectedIds.size === 0) return;
+		const isProtectedKey = (key: string) => protectedIds.has(String(key || '').split('|')[0]);
+		this._databaseSchemas = Object.fromEntries(Object.entries(this._databaseSchemas).filter(([key]) => !isProtectedKey(key)));
+		this._tablePreviewData = Object.fromEntries(Object.entries(this._tablePreviewData).filter(([key]) => !isProtectedKey(key)));
+		this._schemaLoadErrors = Object.fromEntries(Object.entries(this._schemaLoadErrors).filter(([key]) => !isProtectedKey(key)));
+		this._databaseLoadErrors = Object.fromEntries(Object.entries(this._databaseLoadErrors).filter(([key]) => !protectedIds.has(key)));
+		this._loadingDatabases = new Set([...this._loadingDatabases].filter(id => !protectedIds.has(id)));
+		this._loadingSchemaKeys = new Set([...this._loadingSchemaKeys].filter(key => !isProtectedKey(key)));
+		this._refreshingSchemaKeys = new Set([...this._refreshingSchemaKeys].filter(key => !isProtectedKey(key)));
+		for (const key of [...this._schemaRequestIds.keys()]) if (isProtectedKey(key)) this._schemaRequestIds.delete(key);
+		for (const key of [...this._schemaRefreshRequestIds.keys()]) if (isProtectedKey(key)) this._schemaRefreshRequestIds.delete(key);
+		for (const key of [...this._previewRequestIds.keys()]) if (isProtectedKey(key)) this._previewRequestIds.delete(key);
+		this._expandedTables = new Set([...this._expandedTables].filter(key => !isProtectedKey(key)));
+		this._expandedFunctions = new Set([...this._expandedFunctions].filter(key => !isProtectedKey(key)));
+		this._expandedFolders = new Set([...this._expandedFolders].filter(key => !isProtectedKey(key)));
+		if (this._explorerPath && protectedIds.has(this._explorerPath.connectionId)) this._setKustoExplorerPath(null);
+		this._search.invalidateKustoResults();
+	}
+
 	// ── Message handling ──────────────────────────────────────────────────────
 
 	private _onMessage = (event: MessageEvent) => {
-		const msg = event.data;
+		let msg = event.data;
 		if (!msg) return;
+		const acknowledge = (accepted: boolean, phase: 'staged' | 'applied' = 'applied') => {
+			if (!msg.publicationId) return;
+			if (phase === 'applied') {
+				const previous = this._completedKustoPublications.get(msg.publicationId);
+				if (previous) clearTimeout(previous.timer);
+				const timer = setTimeout(() => this._completedKustoPublications.delete(msg.publicationId), 10_000);
+				this._completedKustoPublications.set(msg.publicationId, { accepted, timer });
+			}
+			this._vscode.postMessage({ type: 'kustoPublicationAck', publicationId: msg.publicationId, phase, accepted });
+		};
+		if (msg.type === 'kustoPublicationStage') {
+			const publicationId = String(msg.publicationId || '');
+			const deadline = Number(msg.publicationDeadline);
+			if (!publicationId || !Number.isFinite(deadline) || deadline < Date.now()) {
+				acknowledge(false, 'staged');
+				return;
+			}
+			const previous = this._stagedKustoPublications.get(publicationId);
+			if (previous) clearTimeout(previous.timer);
+			const timer = setTimeout(() => {
+				if (!this._stagedKustoPublications.delete(publicationId)) return;
+				this._vscode.postMessage({ type: 'kustoPublicationAck', publicationId, phase: 'applied', accepted: false });
+			}, Math.max(0, deadline - Date.now()));
+			this._stagedKustoPublications.set(publicationId, { payload: msg.payload, deadline, timer });
+			acknowledge(true, 'staged');
+			return;
+		}
+		if (msg.type === 'kustoPublicationCommit') {
+			const publicationId = String(msg.publicationId || '');
+			const staged = this._stagedKustoPublications.get(publicationId);
+			this._stagedKustoPublications.delete(publicationId);
+			if (staged) clearTimeout(staged.timer);
+			if (!staged || staged.deadline < Date.now()) {
+				acknowledge(false, 'applied');
+				return;
+			}
+			msg = { ...(staged.payload || {}), publicationId };
+		}
+		if (msg.type === 'kustoPublicationRevoke') {
+			const publicationId = String(msg.publicationId || '');
+			const staged = this._stagedKustoPublications.get(publicationId);
+			if (staged) {
+				clearTimeout(staged.timer);
+				this._stagedKustoPublications.delete(publicationId);
+			}
+			acknowledge(this._completedKustoPublications.get(publicationId)?.accepted === true, 'applied');
+			return;
+		}
+		if (msg.publicationId && Number(msg.publicationDeadline) < Date.now()) {
+			acknowledge(false, 'applied');
+			return;
+		}
 
 		switch (msg.type) {
 			case 'snapshot': {
 				const revision = Number(msg.snapshot?.revision) || 0;
-				if (revision && revision < this._latestSnapshotRevision) break;
+				if (revision && revision < this._latestSnapshotRevision) { acknowledge(false); break; }
 				if (revision) this._latestSnapshotRevision = revision;
 				const kustoIdentityChanged = this._evictChangedKustoIdentityState(this._snapshot, msg.snapshot);
+				this._evictProtectedKustoState(msg.snapshot);
 				this._evictProtectedSqlState(msg.snapshot);
 				this._snapshot = msg.snapshot;
 				// Auto-detect active kind
@@ -580,17 +660,43 @@ export class KwConnectionManager extends LitElement {
 						this._scheduleExplorerScrollReset();
 					}
 					// Restore search state
+					const protectedClusters = new Set((this._snapshot.leaveNoTraceClusters || []).map(cluster => kustoClusterKey(cluster)));
+					const protectedConnectionIds = new Set((this._snapshot.connections || [])
+						.filter(connection => protectedClusters.has(kustoClusterKey(connection.clusterUrl)))
+						.map(connection => connection.id));
+					const filteredSearchState = this._snapshot.searchState && typeof this._snapshot.searchState === 'object'
+						? {
+							...(this._snapshot.searchState as any),
+							lastResults: Array.isArray((this._snapshot.searchState as any).lastResults)
+								? (this._snapshot.searchState as any).lastResults.filter((result: any) => !protectedConnectionIds.has(String(result?.connectionId || '')))
+								: [],
+						}
+						: this._snapshot.searchState;
 					const searchState = this._snapshot.sqlAvailable === false
 						? { query: '', scope: 'cached', categories: {}, contentToggles: {}, lastResults: [], lastSearchTimestamp: 0 }
 						: kustoIdentityChanged && this._activeKind === 'kusto'
-						? { ...(this._snapshot.searchState as any), lastResults: [] }
-						: this._snapshot.searchState;
+						? { ...(filteredSearchState as any), lastResults: [] }
+						: filteredSearchState;
 					this._search.restoreState(searchState as any, this._activeKind);
 				}
 				if (!this._selectedConnectionId && this._snapshot?.connections?.length) {
 					const sortedConnections = sortKustoConnections(this._snapshot.connections);
 					this._selectedConnectionId = sortedConnections[0].id;
 					this._vscode.postMessage({ type: 'cluster.expand', connectionId: this._selectedConnectionId });
+				}
+				acknowledge(true);
+				break;
+			}
+			case 'kustoPolicyChanged': {
+				const changedIds = new Set<string>((Array.isArray(msg.connectionIds) ? msg.connectionIds : []).map((id: unknown) => String(id)));
+				if (changedIds.size > 0 && this._snapshot) {
+					this._evictProtectedKustoState({
+						...this._snapshot,
+						leaveNoTraceClusters: this._snapshot.connections
+							.filter(connection => changedIds.has(connection.id))
+							.map(connection => connection.clusterUrl),
+					});
+					this.requestUpdate();
 				}
 				break;
 			}
@@ -634,6 +740,7 @@ export class KwConnectionManager extends LitElement {
 				this._loadingDatabases = new Set([...this._loadingDatabases].filter(id => id !== msg.connectionId));
 				this._databaseLoadErrors = { ...this._databaseLoadErrors, [msg.connectionId]: '' };
 				this._vscode.postMessage({ type: 'requestSnapshot' });
+				acknowledge(true);
 				break;
 			case 'databasesLoadError':
 				this._loadingDatabases = new Set([...this._loadingDatabases].filter(id => id !== msg.connectionId));
@@ -651,13 +758,14 @@ export class KwConnectionManager extends LitElement {
 				const refreshKey = this._getKustoRefreshSchemaKey(msg.connectionId, msg.database);
 				const ordinaryOwner = this._schemaRequestIds.get(dbKey);
 				const refreshOwner = this._schemaRefreshRequestIds.get(refreshKey);
-				if (msg.requestId && ordinaryOwner?.requestId !== msg.requestId && refreshOwner?.requestId !== msg.requestId) break;
+				if (msg.requestId && ordinaryOwner?.requestId !== msg.requestId && refreshOwner?.requestId !== msg.requestId) { acknowledge(false); break; }
 				const connection = this._snapshot?.connections.find(candidate => candidate.id === msg.connectionId);
-				if (msg.accountPartition && connection?.accountPartition && connection.accountPartition !== msg.accountPartition) break;
+				if (msg.accountPartition && connection?.accountPartition && connection.accountPartition !== msg.accountPartition) { acknowledge(false); break; }
 				if (ordinaryOwner?.requestId === msg.requestId) this._schemaRequestIds.delete(dbKey);
 				this._loadingSchemaKeys = new Set([...this._loadingSchemaKeys].filter(key => key !== this._getKustoSchemaKey(msg.connectionId, msg.database)));
 				this._databaseSchemas = { ...this._databaseSchemas, [dbKey]: msg.schema };
 				this._schemaLoadErrors = { ...this._schemaLoadErrors, [dbKey]: '' };
+				acknowledge(true);
 				break;
 			}
 			case 'schemaLoadError': {
@@ -676,9 +784,10 @@ export class KwConnectionManager extends LitElement {
 			}
 			case 'schemaRefreshCompleted': {
 				const refreshKey = this._getKustoRefreshSchemaKey(msg.connectionId, msg.database);
-				if (msg.requestId && this._schemaRefreshRequestIds.get(refreshKey)?.requestId !== msg.requestId) break;
+				if (msg.requestId && this._schemaRefreshRequestIds.get(refreshKey)?.requestId !== msg.requestId) { acknowledge(false); break; }
 				this._schemaRefreshRequestIds.delete(refreshKey);
 				this._refreshingSchemaKeys = new Set([...this._refreshingSchemaKeys].filter(key => key !== refreshKey));
+				acknowledge(true);
 				break;
 			}
 			case 'tablePreviewLoading': {
@@ -689,15 +798,16 @@ export class KwConnectionManager extends LitElement {
 			}
 			case 'tablePreviewResult': {
 				const prevKey = msg.connectionId + '|' + msg.database + '|table|' + msg.tableName;
-				if (msg.requestId && this._previewRequestIds.get(prevKey)?.requestId !== msg.requestId) break;
+				if (msg.requestId && this._previewRequestIds.get(prevKey)?.requestId !== msg.requestId) { acknowledge(false); break; }
 				const connection = this._snapshot?.connections.find(candidate => candidate.id === msg.connectionId);
-				if (msg.accountPartition && connection?.accountPartition && connection.accountPartition !== msg.accountPartition) break;
+				if (msg.accountPartition && connection?.accountPartition && connection.accountPartition !== msg.accountPartition) { acknowledge(false); break; }
 				this._previewRequestIds.delete(prevKey);
 				if (msg.success) {
 					this._tablePreviewData = { ...this._tablePreviewData, [prevKey]: { loading: false, columns: msg.columns, rows: msg.rows, rowCount: msg.rowCount, executionTime: msg.executionTime } };
 				} else {
 					this._tablePreviewData = { ...this._tablePreviewData, [prevKey]: { loading: false, error: msg.error || 'Failed to load preview.' } };
 				}
+				acknowledge(true);
 				break;
 			}
 			// SQL messages
@@ -792,13 +902,21 @@ export class KwConnectionManager extends LitElement {
 				break;
 			}
 			// Search messages
-			case 'searchResults':
-				if (this._activeKind === 'sql' && Array.isArray(msg.results)) {
-					const protectedIds = new Set(this._snapshot?.sqlLeaveNoTrace ?? []);
-					msg.results = msg.results.filter((result: any) => !protectedIds.has(String(result?.connectionId || '')));
+			case 'searchResults': {
+				try {
+					if (this._activeKind === 'sql' && Array.isArray(msg.results)) {
+						const protectedIds = new Set(this._snapshot?.sqlLeaveNoTrace ?? []);
+						msg.results = msg.results.filter((result: any) => !protectedIds.has(String(result?.connectionId || '')));
+					}
+					acknowledge(this._search.handleSearchResults(
+						msg.requestId, msg.results, msg.completed, msg.kustoSearchOwnerToken,
+					));
+				} catch (error) {
+					console.error('[kusto] Failed to apply search results', error);
+					acknowledge(false);
 				}
-				this._search.handleSearchResults(msg.requestId, msg.results, msg.completed);
 				break;
+			}
 			case 'searchProgress':
 				this._search.handleSearchProgress(msg.requestId, msg.message, msg.current, msg.total);
 				break;
@@ -975,7 +1093,7 @@ export class KwConnectionManager extends LitElement {
 			const fullUrl = /^https?:\/\//i.test(conn.clusterUrl) ? conn.clusterUrl : 'https://' + conn.clusterUrl;
 
 			return html`
-				<div class="explorer-list-item root-connection-row" data-testid="cm-kusto-connection-row" data-connection-id=${conn.id} @click=${() => this._drillIntoCluster(conn.id)}>
+				<div class="explorer-list-item root-connection-row ${isLnt ? 'is-protected' : ''}" data-testid="cm-kusto-connection-row" data-connection-id=${conn.id} @click=${() => { if (!isLnt) this._drillIntoCluster(conn.id); }}>
 					<span class="explorer-list-item-icon cluster">${ICONS.kustoCluster}</span>
 					<span class="explorer-list-item-name">${conn.name || shortClusterName(conn.clusterUrl)}</span>
 					${hasFav ? html`<span class="conn-badge fav-badge" title="Has favorites">${ICONS.starFilled}</span>` : nothing}
@@ -984,12 +1102,12 @@ export class KwConnectionManager extends LitElement {
 					<span class="explorer-list-item-url">${fullUrl}</span>
 					${conn.authorityId ? html`<span class="item-sep">·</span><span class="explorer-list-item-meta">Tenant: ${conn.authorityId}</span>` : nothing}
 					<span class="item-sep">·</span>
-					<span class="explorer-list-item-meta">${dbCount > 0 ? `${dbCount} database${dbCount !== 1 ? 's' : ''}` : 'click to explore'}</span>
+					<span class="explorer-list-item-meta">${isLnt ? 'Leave No Trace' : dbCount > 0 ? `${dbCount} database${dbCount !== 1 ? 's' : ''}` : 'click to explore'}</span>
 					<div class="explorer-list-item-actions">
 						<button class="btn-icon ${isLnt ? 'is-lnt' : ''}" title="${isLnt ? 'Remove from Leave No Trace' : 'Add to Leave No Trace'}"
 							@click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: isLnt ? 'leaveNoTrace.remove' : 'leaveNoTrace.add', clusterUrl: conn.clusterUrl }); }}>${ICONS.shield}</button>
 						<button class="btn-icon" title="Edit" @click=${(e: Event) => { e.stopPropagation(); this._openModal('edit', conn.id); }}>${ICONS.edit}</button>
-						<button class="btn-icon" title="Refresh" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id }); }}>${ICONS.refresh}</button>
+						${!isLnt ? html`<button class="btn-icon" title="Refresh" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'cluster.refreshDatabases', connectionId: conn.id }); }}>${ICONS.refresh}</button>` : nothing}
 						<button class="btn-icon" title="Delete" @click=${(e: Event) => { e.stopPropagation(); this._vscode.postMessage({ type: 'connection.delete', id: conn.id }); }}>${ICONS.delete}</button>
 					</div>
 				</div>`;

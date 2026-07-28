@@ -7,7 +7,7 @@ import * as zlib from 'zlib';
 import * as crypto from 'crypto';
 
 import { ConnectionManager, KustoConnection } from './connectionManager';
-import { KustoQueryClient, QueryExecutionError } from './kustoClient';
+import { KustoQueryClient, QueryExecutionError, type CancelableQueryExecution } from './kustoClient';
 import { SqlQueryClient, SqlQueryCancelledError } from './sqlClient';
 import { readCurrentSqlSchemaPrincipalFingerprint, SqlSchemaService, sqlSchemaPrincipalFingerprint, sqlSchemaPrincipalFingerprintForPrincipal } from './sqlEditorSchema';
 import { SqlWorkbenchService, type SqlOwnerSnapshot } from './sql/sqlWorkbenchService';
@@ -67,8 +67,9 @@ import {
 import { exportHtmlToPowerBI, findUnsupportedPowerBiBindings, normalizePowerBiDataMode, type PowerBiDataMode } from './powerBiExport';
 import { listFabricWorkspaces, publishToPowerBIService, checkFabricItemExists } from './powerBiPublish';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
-import { KustoAuthPreferenceService } from './kustoAuthPreferenceService';
-import { resolveKustoConnection, resolveStrictKustoConnection } from '../shared/kustoAuth';
+import { KustoAuthPreferenceService, type KustoAuthPreferenceChange } from './kustoAuthPreferenceService';
+import type { KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore';
+import { getKustoConnectionIdentityKey, resolveKustoConnection, resolveStrictKustoConnection } from '../shared/kustoAuth';
 import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
 import { notifySavedFile, withCsvExtension } from './savedFileNotification';
 import { perfMark } from './perfTrace';
@@ -76,14 +77,17 @@ import { getWorkbenchLogger, type WorkbenchLogger } from './workbenchLogger';
 import type { FileOpenTrace } from './fileOpenTrace';
 import { getEditingPreferencesData, setEditingPreference } from './editingPreferences';
 import { QueryRunCoordinator } from './queryRunCoordinator';
+import { KustoExecutionCoordinator, type KustoExecutionLease } from './kustoExecutionCoordinator';
+import { hasKustoCopilotRequestIdentity, kustoCopilotRequestIdentityEquals, type KustoCopilotRequestIdentity, type KustoDispatchIdentity, type KustoExecutionProducer, type KustoExecutionRequestIdentity, type KustoExecutionStarted, type KustoSectionExecutionOutcome, type KustoSectionExecutionTarget, type PreparedComparisonSection } from '../shared/kustoExecution';
 
 type PendingComparisonEnsure = {
-	resolve: (comparisonBoxId: string) => void;
+	resolve: (comparison: PreparedComparisonSection) => void;
 	reject: (error: Error) => void;
 	timer: ReturnType<typeof setTimeout>;
 	sourceBoxId: string;
 	sqlConnectionId?: string;
 	copilotSequence?: number;
+	kustoRequest?: KustoCopilotRequestIdentity;
 	comparisonBoxId?: string;
 	cancellationDisposable?: vscode.Disposable;
 };
@@ -103,9 +107,162 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	readonly connection: ConnectionService;
 	readonly schema: SchemaService;
 	private _queryRunCoordinator?: QueryRunCoordinator;
+	private _kustoExecutionCoordinator?: KustoExecutionCoordinator;
+	private readonly pendingKustoExecutionStartAcks = new Map<string, {
+		resolve: (accepted: boolean) => void;
+		timer: ReturnType<typeof setTimeout>;
+	}>();
+	private readonly pendingKustoPublicationAcks = new Map<string, {
+		resolve: (accepted: boolean) => void;
+		timer?: ReturnType<typeof setTimeout>;
+	}>();
 
 	private get queryRuns(): QueryRunCoordinator {
 		return this._queryRunCoordinator ??= new QueryRunCoordinator();
+	}
+
+	private get kustoExecutionCoordinator(): KustoExecutionCoordinator {
+		return this._kustoExecutionCoordinator ??= new KustoExecutionCoordinator({
+			queryRuns: this.queryRuns,
+			postMessage: message => this.postKustoPublication(message),
+			getCurrentConnectionOwner: connectionId => {
+				const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+				if (!connection) return undefined;
+				try {
+					return Object.freeze({
+						connectionRevision: this.connectionManager.getConnectionIncarnation(connection.id),
+						connectionIdentityKey: getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId),
+					});
+				} catch { return undefined; }
+			},
+		});
+	}
+
+	async postKustoPublication(message: unknown): Promise<boolean> {
+		if (this._panelDisposed) return false;
+		const publicationId = `kusto-publication-${crypto.randomUUID()}`;
+		const publicationDeadline = Date.now() + 5_000;
+		const waitForAck = (phase: 'staged' | 'applied', timeoutMs?: number): Promise<boolean> => new Promise(resolve => {
+			const key = `${publicationId}:${phase}`;
+			const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+				this.pendingKustoPublicationAcks.delete(key);
+				resolve(false);
+			}, timeoutMs);
+			this.pendingKustoPublicationAcks.set(key, { resolve, ...(timer ? { timer } : {}) });
+		});
+		const settleTransportFailure = (phase: 'staged' | 'applied') => {
+			const key = `${publicationId}:${phase}`;
+			const pending = this.pendingKustoPublicationAcks.get(key);
+			if (!pending) return;
+			this.pendingKustoPublicationAcks.delete(key);
+			if (pending.timer) clearTimeout(pending.timer);
+			pending.resolve(false);
+		};
+		const staged = waitForAck('staged', 5_000);
+		if (!await this.postMessage({
+			type: 'kustoPublicationStage', publicationId, publicationDeadline,
+			payload: message,
+		})) settleTransportFailure('staged');
+		if (!await staged) return false;
+		const applied = waitForAck('applied');
+		const appliedKey = `${publicationId}:applied`;
+		const appliedPending = this.pendingKustoPublicationAcks.get(appliedKey);
+		if (appliedPending) {
+			appliedPending.timer = setTimeout(async () => {
+				if (this.pendingKustoPublicationAcks.get(appliedKey) !== appliedPending) return;
+				appliedPending.timer = setTimeout(() => settleTransportFailure('applied'), 1_000);
+				if (!await this.postMessage({ type: 'kustoPublicationRevoke', publicationId })) settleTransportFailure('applied');
+			}, Math.max(1, publicationDeadline - Date.now()));
+		}
+		if (!await this.postMessage({ type: 'kustoPublicationCommit', publicationId })) settleTransportFailure('applied');
+		return applied;
+	}
+
+	private kustoExecutionAckKey(identity: Pick<KustoExecutionRequestIdentity, 'boxId' | 'executionId' | 'sectionInstanceId' | 'targetGeneration'>): string {
+		return `${identity.boxId}\u0000${identity.sectionInstanceId}\u0000${identity.targetGeneration}\u0000${identity.executionId}`;
+	}
+
+	private async claimKustoExecutionInWebview(
+		reservation: import('../shared/kustoExecution').KustoExecutionReservation,
+		expectedPredecessorExecutionId?: string,
+	): Promise<boolean> {
+		const key = this.kustoExecutionAckKey(reservation);
+		const prior = this.pendingKustoExecutionStartAcks.get(key);
+		if (prior) {
+			clearTimeout(prior.timer);
+			prior.resolve(false);
+		}
+		const result = new Promise<boolean>(resolve => {
+			const timer = setTimeout(() => {
+				this.pendingKustoExecutionStartAcks.delete(key);
+				resolve(false);
+			}, 5000);
+			this.pendingKustoExecutionStartAcks.set(key, { resolve, timer });
+		});
+		const message: KustoExecutionStarted = {
+			type: 'kustoExecutionStarted', ...reservation,
+			...(expectedPredecessorExecutionId ? { expectedPredecessorExecutionId } : {}),
+		};
+		const delivered = await this.postMessage(message);
+		if (delivered !== true) {
+			const pending = this.pendingKustoExecutionStartAcks.get(key);
+			if (pending) {
+				this.pendingKustoExecutionStartAcks.delete(key);
+				clearTimeout(pending.timer);
+				pending.resolve(false);
+			}
+		}
+		return result;
+	}
+
+	private rejectPendingKustoExecutionStartAcks(): void {
+		const pendingAcks = [...this.pendingKustoExecutionStartAcks.values()];
+		this.pendingKustoExecutionStartAcks.clear();
+		for (const pending of pendingAcks) {
+			clearTimeout(pending.timer);
+			pending.resolve(false);
+		}
+	}
+
+	getKustoSectionExecutionTarget(boxId: string): KustoSectionExecutionTarget | undefined {
+		const owner = this.kustoExecutionCoordinator.getTarget(boxId);
+		if (!owner?.connectionId || !owner.database) return undefined;
+		return Object.freeze({
+			engine: 'kusto',
+			boxId: owner.boxId,
+			sectionInstanceId: owner.sectionInstanceId,
+			targetGeneration: owner.targetGeneration,
+			connectionId: owner.connectionId,
+			database: owner.database,
+		});
+	}
+
+	cancelKustoSectionExecution(target: KustoSectionExecutionTarget, executionId: string): boolean {
+		return this.kustoExecutionCoordinator.cancelExpected({
+			boxId: target.boxId,
+			executionId,
+			sectionInstanceId: target.sectionInstanceId,
+			targetGeneration: target.targetGeneration,
+		});
+	}
+
+	getKustoSectionExecutionAccountPartition(target: KustoSectionExecutionTarget, executionId: string): string | undefined {
+		return this.kustoExecutionCoordinator.getDispatchAccountPartition({
+			boxId: target.boxId,
+			executionId,
+			sectionInstanceId: target.sectionInstanceId,
+			targetGeneration: target.targetGeneration,
+		});
+	}
+
+	getCurrentKustoConnectionForDispatch(connectionId: string, dispatch: KustoDispatchIdentity): KustoConnection | undefined {
+		const current = this.connectionManager.getConnections().find(connection => connection.id === connectionId);
+		return current
+			&& this.connectionManager.getConnectionIncarnation(connectionId) === dispatch.connectionRevision
+			&& getKustoConnectionIdentityKey(current.clusterUrl, current.authorityId) === dispatch.connectionIdentityKey
+			&& this.kustoClient.getConnectionSessionGeneration(current) === dispatch.authSessionGeneration
+			? current
+			: undefined;
 	}
 
 	// SQL schema responses and persistence remain provider adapters. Editor lifecycle
@@ -121,6 +278,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private sqlConnectionsSnapshotTail: Promise<boolean> = Promise.resolve(true);
 	private readonly sqlPersistenceInvalidationEmitter = new vscode.EventEmitter<void>();
 	readonly onDidInvalidateSqlPersistence = this.sqlPersistenceInvalidationEmitter.event;
+	private readonly kustoPersistenceInvalidationEmitter = new vscode.EventEmitter<void>();
+	readonly onDidInvalidateKustoPersistence = this.kustoPersistenceInvalidationEmitter.event;
 
 	get sqlExecutionBroker() {
 		return this.sqlLifecycle.executionBroker;
@@ -193,7 +352,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private settlePendingComparisonEnsure(
 		requestId: string,
 		pending: PendingComparisonEnsure,
-		outcome: { comparisonBoxId: string } | { error: Error },
+		outcome: { comparison: PreparedComparisonSection } | { error: Error },
 	): void {
 		if (this.pendingComparisonEnsureByRequestId.get(requestId) !== pending) return;
 		this.pendingComparisonEnsureByRequestId.delete(requestId);
@@ -212,7 +371,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			pending.reject(outcome.error);
 			return;
 		}
-		pending.resolve(outcome.comparisonBoxId);
+		pending.resolve(outcome.comparison);
 	}
 	private readonly latestComparisonSummaryByKey = new Map<
 		string,
@@ -275,13 +434,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	) {
 		this.kustoClient = new KustoQueryClient(this.context, undefined, this.connectionManager);
 		this.authPreferenceSubscription = KustoAuthPreferenceService.getInstance(this.context).onDidChange(change => {
-			this.copilot.invalidateKustoConnections(change.connectionIds, {
-				preserveEstablishingAccountPartition: change.reason === 'success' ? change.accountPartition : undefined,
-			});
-			if (change.reason !== 'success') {
-				this.postMessage({ type: 'kustoAuthIdentityChanged', connectionIds: change.connectionIds, reason: change.reason });
-			}
-			void this.sendConnectionsData();
+			this.handleKustoAuthPreferenceChange(change);
 		});
 		this.kqlLanguageHost = new KqlLanguageServiceHost(this.connectionManager, this.context);
 		this.connection = new ConnectionService(this);
@@ -316,13 +469,38 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		});
 		this.copilot = new CopilotService(this);
 		this.kustoConnectionLifecycle = new KustoConnectionLifecycle(this.connectionManager, {
-			invalidateConnections: connectionIds => this.copilot.invalidateKustoConnections([...connectionIds]),
+			invalidateConnections: connectionIds => {
+				this.kustoExecutionCoordinator.revokeConnections(connectionIds);
+				this.copilot.invalidateKustoConnections([...connectionIds]);
+				this.kustoPersistenceInvalidationEmitter.fire();
+			},
+			invalidatePhysicalTargets: connectionIds => this.kustoExecutionCoordinator.invalidatePhysicalConnections(connectionIds),
 			publishIdentityChange: connectionIds => this.postMessage({
 				type: 'kustoAuthIdentityChanged', connectionIds: [...connectionIds], reason: 'connection-mutated',
 			}),
 			refreshConnections: () => this.sendConnectionsData(),
 		});
 		this.sqlLifecycle.startSession();
+	}
+
+	private handleKustoAuthPreferenceChange(change: KustoAuthPreferenceChange): void {
+		const establishingAccountPartition = change.reason === 'success' && change.firstEstablishment === true
+			? change.accountPartition
+			: undefined;
+		if (change.connectionIds.length > 0) {
+			this.kustoExecutionCoordinator.revokeConnections(
+				change.connectionIds,
+				establishingAccountPartition,
+			);
+			this.copilot.invalidateKustoConnections(change.connectionIds, {
+				preserveEstablishingAccountPartition: establishingAccountPartition,
+			});
+			this.kustoPersistenceInvalidationEmitter.fire();
+			if (change.reason !== 'success' || change.firstEstablishment !== true) {
+				this.postMessage({ type: 'kustoAuthIdentityChanged', connectionIds: change.connectionIds, reason: change.reason });
+			}
+		}
+		void this.sendConnectionsData();
 	}
 
 	async initializeWebviewPanel(
@@ -583,6 +761,44 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			return;
 		}
 		switch (message.type) {
+			case 'kustoSectionOpen':
+				this.kustoExecutionCoordinator.openSection(message.boxId, message.sectionInstanceId);
+				return;
+			case 'kustoSectionTarget':
+				this.kustoExecutionCoordinator.adoptTarget({
+					boxId: message.boxId,
+					sectionInstanceId: message.sectionInstanceId,
+					targetGeneration: message.targetGeneration,
+					connectionId: message.connectionId,
+					database: message.database,
+					connectionRevision: message.connectionRevision,
+					connectionIdentityKey: message.connectionIdentityKey,
+				});
+				return;
+			case 'kustoSectionClose':
+				this.copilot.cancelKustoCopilotSection(message.boxId, message.sectionInstanceId);
+				this.kustoExecutionCoordinator.closeSection(message.boxId, message.sectionInstanceId);
+				return;
+			case 'kustoExecutionStartedAck': {
+				const key = this.kustoExecutionAckKey(message);
+				const pending = this.pendingKustoExecutionStartAcks.get(key);
+				if (pending) {
+					this.pendingKustoExecutionStartAcks.delete(key);
+					clearTimeout(pending.timer);
+					pending.resolve(message.accepted === true);
+				}
+				return;
+			}
+			case 'kustoPublicationAck': {
+				const key = `${message.publicationId}:${message.phase}`;
+				const pending = this.pendingKustoPublicationAcks.get(key);
+				if (pending) {
+					this.pendingKustoPublicationAcks.delete(key);
+					if (pending.timer) clearTimeout(pending.timer);
+					pending.resolve(message.accepted === true);
+				}
+				return;
+			}
 			case 'editorCursorPositionChanged':
 				this.handleEditorCursorPositionChanged(message);
 				return;
@@ -595,6 +811,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					const comparisonBoxId = String(message.comparisonBoxId || '');
 					const pending = requestId ? this.pendingComparisonEnsureByRequestId.get(requestId) : undefined;
 					if (pending) {
+						if (pending.kustoRequest && (!hasKustoCopilotRequestIdentity(message)
+							|| !kustoCopilotRequestIdentityEquals(pending.kustoRequest, message))) return;
 						pending.comparisonBoxId = comparisonBoxId;
 						if (comparisonBoxId && !pending.sqlConnectionId) {
 							this._comparisonOwnerByBoxId.set(comparisonBoxId, {
@@ -637,7 +855,18 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 								return;
 							}
 						}
-						this.settlePendingComparisonEnsure(requestId, pending, { comparisonBoxId });
+						if (!pending.sqlConnectionId) {
+							const target = message.kustoTarget;
+							if (!target || target.boxId !== comparisonBoxId
+								|| !this.kustoExecutionCoordinator.openSection(target.boxId, target.sectionInstanceId)
+								|| !this.kustoExecutionCoordinator.adoptTarget(target)) {
+								this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Comparison target was not ready.') });
+								return;
+							}
+						}
+						this.settlePendingComparisonEnsure(requestId, pending, {
+							comparison: { boxId: comparisonBoxId, ...(message.kustoTarget ? { kustoTarget: message.kustoTarget } : {}) },
+						});
 					}
 				} catch {
 					// ignore
@@ -683,7 +912,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.resolveResourceUri(message);
 				return;
 			case 'getConnections':
-				await this.sendConnectionsData();
+				await this.sendConnectionsData(message.policyRequestId);
 				return;
 			case 'seeCachedValues':
 				await vscode.commands.executeCommand('kusto.seeCachedValues');
@@ -824,6 +1053,15 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.copilot.startCopilotWriteQuery(message, this.sqlConnectionManager, this.sqlSchemaService, this.sqlClient);
 				return;
 			case 'cancelCopilotWriteQuery':
+				if (message.flavor === 'kusto') {
+					this.copilot.cancelCopilotWriteQuery(message.boxId, undefined, {
+						boxId: message.boxId,
+						copilotRequestId: message.copilotRequestId,
+						sectionInstanceId: message.sectionInstanceId,
+						targetGeneration: message.targetGeneration,
+					});
+					return;
+				}
 				{
 					const canceledPreflight = this.sqlExecutionBroker.cancelExpected(
 						message.boxId, SQL_COPILOT_PREFLIGHT_EXECUTION_ID, false,
@@ -836,7 +1074,14 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				this.copilot.cancelCopilotWriteQuery(message.boxId);
 				return;
 			case 'clearCopilotConversation':
-				this.copilot.clearCopilotConversation(message.boxId);
+				if (message.flavor === 'kusto') {
+					if (hasKustoCopilotRequestIdentity(message)) this.copilot.clearKustoCopilotConversation(message);
+				} else {
+					this.copilot.clearCopilotConversation(message.boxId);
+				}
+				return;
+			case 'clearComparisonSummary':
+				this.deleteComparisonSummary(`${String(message.sourceBoxId || '')}::${String(message.comparisonBoxId || '')}`);
 				return;
 			case 'openCopilotAgent':
 				await openKustoWorkbenchAgentChat();
@@ -857,7 +1102,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.copilot.prepareOptimizeQuery(message);
 				return;
 			case 'cancelOptimizeQuery':
-				this.copilot.cancelOptimizeQuery(message.boxId);
+				this.copilot.cancelOptimizeQuery(message);
 				return;
 			case 'optimizeQuery':
 				await this.copilot.optimizeQueryWithCopilot(message);
@@ -960,7 +1205,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 						this.settlePendingComparisonEnsure(owner.comparisonRequestId, pending, { error: new Error('Canceled') });
 					}
 				}
-				if (!sqlOwner) this.cancelRunningQuery(comparisonBoxId, { notifyWebview: true });
+				if (!sqlOwner) {
+					const active = this.kustoExecutionCoordinator.getActive(comparisonBoxId);
+					if (active) this.kustoExecutionCoordinator.cancelExpected(active);
+				}
 				if (owner.copilotSequence !== undefined) {
 					this.copilot.cancelCopilotQueryTarget(owner.sourceBoxId, comparisonBoxId, owner.copilotSequence);
 				}
@@ -984,7 +1232,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				await this.shareToClipboardFromWebview(message);
 				return;
 			case 'cancelQuery':
-				this.cancelRunningQuery(message.boxId, { notifyWebview: true });
+				this.kustoExecutionCoordinator.cancelExpected({
+					boxId: message.boxId,
+					executionId: message.executionId,
+					sectionInstanceId: message.sectionInstanceId,
+					targetGeneration: message.targetGeneration,
+				});
 				return;
 			case 'executePython':
 				await this.executePythonFromWebview(message);
@@ -1020,6 +1273,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'kqlLanguageRequest':
 				await this.handleKqlLanguageRequest(message);
+				return;
+			case 'toolExecutionStarted':
+				if (toolOrchestrator) toolOrchestrator.handleKustoExecutionStarted(message.requestId, message.owner);
 				return;
 			case 'toolResponse':
 				// Handle response from webview for tool orchestrator commands
@@ -1570,14 +1826,15 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		comparisonQuery: string,
 		token: vscode.CancellationToken,
 		copilotSequence?: number,
-	): Promise<string> {
+		kustoRequest?: KustoCopilotRequestIdentity,
+	): Promise<PreparedComparisonSection> {
 		if (!this.panel) {
 			throw new Error('Webview panel is not available');
 		}
 		const requestId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
 		const sqlConnectionId = this.sqlLifecycle.getConnectionId(sourceBoxId);
 		if (sqlConnectionId) await this.sqlWorkbench.assertSqlConnectionAllowed(sqlConnectionId);
-		return await new Promise<string>((resolve, reject) => {
+		return await new Promise<PreparedComparisonSection>((resolve, reject) => {
 			if (token.isCancellationRequested) {
 				reject(new Error('Canceled'));
 				return;
@@ -1595,6 +1852,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				sourceBoxId,
 				...(sqlConnectionId ? { sqlConnectionId } : {}),
 				...(copilotSequence !== undefined ? { copilotSequence } : {}),
+				...(kustoRequest ? { kustoRequest } : {}),
 			};
 			this.pendingComparisonEnsureByRequestId.set(requestId, pending);
 
@@ -1603,7 +1861,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					type: 'ensureComparisonBox',
 					requestId,
 					boxId: sourceBoxId,
-					query: comparisonQuery
+					query: comparisonQuery,
+					...(kustoRequest || {}),
 				});
 			} catch (e) {
 				try {
@@ -2027,7 +2286,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		return this.connection.inferClusterDatabaseForKqlQuery(queryText);
 	}
 
-	private async sendConnectionsData(): Promise<void> {
+	private async sendConnectionsData(policyRequestId?: string): Promise<void> {
 		const revision = ++this.connectionsDataRevision;
 		const send = async () => {
 			const { type: _type, revision: editingPreferencesRevision, ...editingPreferences } = getEditingPreferencesData(this.context);
@@ -2035,53 +2294,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				...editingPreferences,
 				editingPreferencesRevision,
 				connectionsRevision: revision,
-				copilotChatFirstTimeDismissed: !!this.context.globalState.get<boolean>(STORAGE_KEYS.copilotChatFirstTimeDismissed)
+				copilotChatFirstTimeDismissed: !!this.context.globalState.get<boolean>(STORAGE_KEYS.copilotChatFirstTimeDismissed),
+				...(policyRequestId ? { policyRequestId } : {}),
 			});
 		};
 		this.connectionsDataTail = this.connectionsDataTail.then(send, send);
 		await this.connectionsDataTail;
-	}
-
-	cancelRunningQuery(boxId: string, options?: { notifyWebview?: boolean }): void {
-		const id = String(boxId || '').trim();
-		if (!id) {
-			return;
-		}
-		const running = this.queryRuns.get(id);
-		if (!running) {
-			if (options?.notifyWebview) {
-				this.postMessage({ type: 'queryCancelled', boxId: id });
-			}
-			return;
-		}
-		this.queryRuns.cancel(id);
-		if (options?.notifyWebview) {
-			this.postMessage({
-				type: 'queryCancelled', boxId: id,
-				...(running.executionId ? { executionId: running.executionId } : {}),
-			});
-		}
-	}
-
-	registerRunningQuery(boxId: string, cancel: () => void, runSeq: number, clientActivityId?: string): void {
-		this.queryRuns.register(boxId, { cancel, runSeq, clientActivityId });
-	}
-
-	unregisterRunningQuery(boxId: string, cancel: () => void, runSeq: number): void {
-		const id = String(boxId || '').trim();
-		if (!id) {
-			return;
-		}
-		this.queryRuns.unregister(id, cancel, runSeq);
-	}
-
-	nextQueryRunSeq(): number {
-		return this.queryRuns.nextSequence();
-	}
-
-	isRunningQueryCurrent(boxId: string, cancel: () => void, runSeq: number): boolean {
-		const id = String(boxId || '').trim();
-		return !!id && this.queryRuns.isCurrent(id, cancel, runSeq);
 	}
 
 	deleteComparisonSummary(key: string): void {
@@ -2377,15 +2595,27 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		panel.onDidDispose(() => {
 			if (this.panel !== panel) return;
 			this._panelDisposed = true;
+			this.rejectPendingKustoExecutionStartAcks();
+			for (const [publicationId, pending] of [...this.pendingKustoPublicationAcks]) {
+				this.pendingKustoPublicationAcks.delete(publicationId);
+				if (pending.timer) clearTimeout(pending.timer);
+				pending.resolve(false);
+			}
+			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
+				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
+			}
+			this.copilot.disposeKustoOwners();
 			this.copilot.invalidateSqlConnections(
 				[], [...this.sqlLifecycle.listComparisonBoxIds()],
 			);
 			this.sqlLifecycle.disposeSubscriptions();
 			this.sqlPersistenceInvalidationEmitter.dispose();
+			this.kustoPersistenceInvalidationEmitter.dispose();
 			this.fileOpenTrace?.mark('queryEditorProvider.dispose.start');
 			this.sqlLifecycle.dispose();
 			this._comparisonOwnerByBoxId.clear();
 			this.clearCursorStatusForProvider();
+			this.kustoExecutionCoordinator.dispose();
 			this.cancelAllRunningQueries();
 			this.kustoClient.dispose();
 			this.disconnectToolOrchestrator();
@@ -2433,74 +2663,171 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private async executeQueryFromWebview(
 		message: Extract<IncomingWebviewMessage, { type: 'executeQuery' }>
 	): Promise<void> {
-		await this.connection.saveLastSelection(message.connectionId, message.database);
-
 		const boxId = String(message.boxId || '').trim();
-		if (boxId) {
-			// If the user runs again in the same box, cancel the previous run.
-			this.cancelRunningQuery(boxId);
+		const database = String(message.database || '').trim();
+		const target: KustoSectionExecutionTarget = {
+			engine: 'kusto',
+			boxId,
+			sectionInstanceId: String(message.sectionInstanceId || '').trim(),
+			targetGeneration: Number(message.targetGeneration),
+			connectionId: String(message.connectionId || '').trim(),
+			database,
+		};
+		await this.executeKustoSectionQuery({
+			target,
+			executionId: String(message.executionId || '').trim(),
+			producer: message.producer ?? 'manual',
+			query: message.query,
+			queryMode: message.queryMode,
+			cacheEnabled: message.cacheEnabled,
+			cacheValue: message.cacheValue,
+			cacheUnit: message.cacheUnit,
+			persistSelection: true,
+			notifyUserOnError: true,
+		});
+	}
+
+	async executeKustoSectionQuery(options: {
+		target: KustoSectionExecutionTarget;
+		executionId: string;
+		producer: KustoExecutionProducer;
+		copilotRequestId?: string;
+		query: string;
+		queryMode?: string;
+		cacheEnabled?: boolean;
+		cacheValue?: number;
+		cacheUnit?: CacheUnit | string;
+		persistSelection?: boolean;
+		ensureResultsVisible?: boolean;
+		notifyUserOnError?: boolean;
+	}): Promise<KustoSectionExecutionOutcome<import('./kustoClient').QueryResult>> {
+		const { target } = options;
+		const boxId = String(target.boxId || '').trim();
+		const database = String(target.database || '').trim();
+		const request: KustoExecutionRequestIdentity = {
+			...target,
+			executionId: String(options.executionId || '').trim(),
+			producer: options.producer,
+			...(options.copilotRequestId ? { copilotRequestId: options.copilotRequestId } : {}),
+		};
+		const expectedPredecessorExecutionId = this.kustoExecutionCoordinator.getActive(boxId)?.executionId;
+		let reservation;
+		try {
+			reservation = this.kustoExecutionCoordinator.reserve(request);
+		} catch {
+			if ((options.producer === 'manual' || options.producer === 'tool')
+				&& !this.kustoExecutionCoordinator.hasExactActiveRequest(request)) {
+				await this.kustoExecutionCoordinator.rejectPreclaimedRequest(request);
+			}
+			return { status: 'superseded', executionId: request.executionId };
+		}
+		if ((options.producer === 'copilot' || options.producer === 'comparison')
+			&& !await this.claimKustoExecutionInWebview(reservation, expectedPredecessorExecutionId)) {
+			this.kustoExecutionCoordinator.cancelExpected(reservation);
+			return { status: 'superseded', executionId: request.executionId };
+		}
+		if (options.persistSelection) {
+			try {
+				await this.connection.saveLastSelection(target.connectionId, database);
+			} catch (error) {
+				const userMessage = this.getErrorMessage(error);
+				this.kustoExecutionCoordinator.fail(reservation, userMessage);
+				return { status: 'failed', executionId: request.executionId, error: userMessage };
+			}
 		}
 
-		const connection = this.connection.findConnection(message.connectionId);
+		const connection = this.connection.findConnection(target.connectionId);
 		if (!connection) {
-			vscode.window.showErrorMessage('Connection not found');
-			return;
+			this.kustoExecutionCoordinator.fail(reservation, 'Connection not found.');
+			if (options.notifyUserOnError) vscode.window.showErrorMessage('Connection not found');
+			return { status: 'failed', executionId: request.executionId, error: 'Connection not found.' };
 		}
 
-		if (!message.database) {
-			vscode.window.showErrorMessage('Please select a database');
-			return;
+		if (!database) {
+			this.kustoExecutionCoordinator.fail(reservation, 'Please select a database.');
+			if (options.notifyUserOnError) vscode.window.showErrorMessage('Please select a database');
+			return { status: 'failed', executionId: request.executionId, error: 'Please select a database.' };
 		}
 
-		const queryWithMode = this.appendQueryMode(message.query, message.queryMode);
+		const queryWithMode = this.appendQueryMode(options.query, options.queryMode);
 		// Control commands (starting with '.') should not have cache directives prepended
-		const isControl = this.isControlCommand(message.query);
-		const cacheDirective = isControl ? '' : this.buildCacheDirective(message.cacheEnabled, message.cacheValue, message.cacheUnit);
+		const isControl = this.isControlCommand(options.query);
+		const cacheDirective = isControl ? '' : this.buildCacheDirective(options.cacheEnabled, options.cacheValue, options.cacheUnit);
 		const finalQuery = cacheDirective ? `${cacheDirective}\n${queryWithMode}` : queryWithMode;
 		const executionQuery = this.normalizeControlCommandForExecution(finalQuery);
 
 		const cancelClientKey = boxId ? `${boxId}::${connection.id}` : connection.id;
-		const execution = this.kustoClient.executeQueryCancelable(connection, message.database, executionQuery, cancelClientKey);
-		const { promise, cancel, clientActivityId } = execution;
-		const runSeq = this.nextQueryRunSeq();
-		const isStillActiveRun = () => {
-			if (!boxId) {
-				return true;
-			}
-			return this.isRunningQueryCurrent(boxId, cancel, runSeq);
-		};
-		if (boxId) {
-			this.registerRunningQuery(boxId, cancel, runSeq, clientActivityId);
-		}
+		let lease: KustoExecutionLease<CancelableQueryExecution> | undefined;
+		let pendingDispatch: KustoDispatchIdentity | undefined;
 		try {
-			const result = await promise;
-			if (isStillActiveRun()) {
-				const producingAccountPartition = execution.getAccountPartition();
-				await this.refreshConnectionsData();
-				if (isStillActiveRun()
-					&& producingAccountPartition
-					&& this.kustoClient.getAccountPartition(connection) === producingAccountPartition) {
-					this.postMessage({ type: 'queryResult', result, boxId });
+			lease = this.kustoExecutionCoordinator.start(reservation, () => this.kustoClient.executeQueryCancelable(
+				connection,
+				database,
+				executionQuery,
+				cancelClientKey,
+				{
+					onDispatch: identity => {
+						if (!lease) {
+							pendingDispatch = identity;
+							return;
+						}
+						if (!lease.captureDispatch(identity)) throw new Error('Kusto execution was superseded before dispatch.');
+					},
+				},
+			));
+			if (pendingDispatch && !lease.captureDispatch(pendingDispatch)) {
+				throw new Error('Kusto execution was superseded before dispatch.');
+			}
+			const result = await lease.execution.promise;
+			if (!lease.isCurrent()) return { status: 'superseded', executionId: request.executionId };
+			await this.kustoClient.waitForProviderAccountRefresh();
+			if (!lease.isCurrent()) return { status: 'superseded', executionId: request.executionId };
+			await this.refreshConnectionsData();
+			const dispatch = lease.getDispatch();
+			const producingAccountPartition = dispatch?.accountPartition;
+			const currentConnection = dispatch
+				? this.getCurrentKustoConnectionForDispatch(connection.id, dispatch)
+				: undefined;
+			if (lease.isCurrent()
+				&& dispatch
+				&& currentConnection
+				&& producingAccountPartition
+				&& this.kustoClient.getConnectionSessionGeneration(connection) === dispatch.authSessionGeneration
+				&& this.kustoClient.getAccountPartition(currentConnection) === producingAccountPartition) {
+				const admission = await this.connectionManager.admitLeaveNoTraceRevision(
+					dispatch.clusterEndpoint,
+					dispatch.leaveNoTraceRevision,
+					() => {
+						const admittedConnection = this.getCurrentKustoConnectionForDispatch(connection.id, dispatch);
+						return lease?.isCurrent() === true
+							&& !!admittedConnection
+							&& this.kustoClient.getConnectionSessionGeneration(connection) === dispatch.authSessionGeneration
+							&& this.kustoClient.getAccountPartition(admittedConnection) === producingAccountPartition
+							&& this.kustoExecutionCoordinator.succeed(reservation, result, options.ensureResultsVisible === true);
+					},
+				);
+				if (admission.admitted && admission.value === true) {
+					return { status: 'success', executionId: request.executionId, result };
 				}
 			}
+			this.kustoExecutionCoordinator.cancelExpected(reservation);
+			return { status: 'superseded', executionId: request.executionId };
 		} catch (error) {
 			if ((error as any)?.name === 'QueryCancelledError' || (error as any)?.isCancelled === true) {
-				if (isStillActiveRun()) {
-					this.postMessage({ type: 'queryCancelled', boxId });
-				}
-				return;
+				this.kustoExecutionCoordinator.cancelExpected(reservation);
+				return { status: 'cancelled', executionId: request.executionId };
 			}
-			if (isStillActiveRun()) {
-				this.logQueryExecutionError(error, connection, message.database, boxId, executionQuery);
-				const userMessage = this.formatQueryExecutionErrorForUser(error, connection, message.database);
+			if (this.kustoExecutionCoordinator.getActive(boxId)?.reservationSequence === reservation.reservationSequence) {
+				this.logQueryExecutionError(error, connection, database, boxId, executionQuery);
+				const userMessage = this.formatQueryExecutionErrorForUser(error, connection, database);
 				const clientActivityId = error instanceof QueryExecutionError ? error.clientActivityId : undefined;
-				vscode.window.showErrorMessage(userMessage);
-				this.postMessage({ type: 'queryError', error: userMessage, boxId, clientActivityId });
+				if (options.notifyUserOnError) vscode.window.showErrorMessage(userMessage);
+				this.kustoExecutionCoordinator.fail(reservation, userMessage, clientActivityId);
+				return { status: 'failed', executionId: request.executionId, error: userMessage };
 			}
+			return { status: 'superseded', executionId: request.executionId };
 		} finally {
-			if (boxId) {
-				this.unregisterRunningQuery(boxId, cancel, runSeq);
-			}
+			lease?.release();
 		}
 	}
 
@@ -2798,10 +3125,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			}
 			const derivedOwner = boxId ? this.sqlLifecycle.getComparisonOwner(boxId) : undefined;
 			const persistedSqlSource = String((persistedSource as any)?.type || '') === 'sql' ? persistedSource : undefined;
-			const directConnectionHint = String((section as any).connectionIdHint || '').trim();
-			const legacySqlComparison = sectionType === 'query' && !persistedSourceBoxId
-				&& directConnectionHint.startsWith('sql_');
-			if (sectionType !== 'sql' && !derivedOwner && !persistedSqlSource && !legacySqlComparison) return section;
+			if (sectionType !== 'sql' && !derivedOwner && !persistedSqlSource) return section;
 			const connectionId = derivedOwner?.connectionId ?? (boxId ? this.sqlLifecycle.getConnectionId(boxId) : undefined);
 			const sourceConnectionId = persistedSourceBoxId ? this.sqlLifecycle.getConnectionId(persistedSourceBoxId) : undefined;
 			const persistedConnectionId = String(
@@ -2822,19 +3146,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			const effectiveConnectionId = requiresPersistedOwner || hasPersistedOwner
 				? restoredConnectionId
 				: connectionId ?? sourceConnectionId;
-			if (legacySqlComparison && 'resultJson' in section) {
-				changed = true;
-				const clone = { ...(section as Record<string, unknown>) };
-				delete clone.resultJson;
-				return clone;
-			}
 			const serverUrl = String((persistedSqlSource as any)?.serverUrl || (section as any).serverUrl || '').trim().toLowerCase();
 			const protectedByRuntimeOwner = !!effectiveConnectionId && this.sqlWorkbench.isLeaveNoTraceConnection(effectiveConnectionId);
 			const protectedByRestoredServer = !effectiveConnectionId && !!serverUrl && this.sqlConnectionManager.getConnections().some(connection =>
 				this.sqlWorkbench.isLeaveNoTraceConnection(connection.id)
 				&& String(connection.serverUrl || '').trim().toLowerCase() === serverUrl
 			);
-			const sqlOwnedSection = sectionType === 'sql' || !!derivedOwner || !!persistedSqlSource || legacySqlComparison;
+			const sqlOwnedSection = sectionType === 'sql' || !!derivedOwner || !!persistedSqlSource;
 			const unresolvedPersistedOwner = sqlOwnedSection && !effectiveConnectionId;
 			if ((!protectedByRuntimeOwner && !protectedByRestoredServer && !unresolvedPersistedOwner) || !('resultJson' in section)) return section;
 			changed = true;
@@ -2843,6 +3161,84 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			return clone;
 		});
 		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);
+	}
+
+	private sanitizeKustoLeaveNoTraceStateFromSnapshot<T extends { sections?: unknown[] }>(
+		state: T,
+		snapshot: KustoLeaveNoTracePolicySnapshot,
+	): T {
+		const sections = Array.isArray(state?.sections) ? state.sections : [];
+		const sectionsById = new Map(sections
+			.filter((section): section is Record<string, unknown> => !!section && typeof section === 'object')
+			.map(section => [String(section.id || '').trim(), section] as const));
+		const protectedClusters = new Set(snapshot.clusterKeys);
+		const connections = this.connectionManager.getConnections();
+		let changed = false;
+		const sanitized = sections.map(section => {
+			if (!section || typeof section !== 'object' || !('resultJson' in section)) return section;
+			const record = section as Record<string, unknown>;
+			if (String(record.type || '') !== 'query' && String(record.type || '') !== 'copilotQuery') return section;
+			const sourceBoxId = String(record.comparisonSourceBoxId || '').trim();
+			const source = sourceBoxId ? sectionsById.get(sourceBoxId) : undefined;
+			if (sourceBoxId && String(source?.type || '') === 'sql') return section;
+			const sourceOwnsComparison = !!sourceBoxId && !!source;
+			const clusterUrl = String(sourceOwnsComparison ? source.clusterUrl : record.clusterUrl || '').trim();
+			const database = String(sourceOwnsComparison ? source.database : record.database || '').trim();
+			const authorityId = sourceOwnsComparison ? source.authorityId : record.authorityId;
+			const connectionIdHint = sourceOwnsComparison ? source.connectionIdHint : record.connectionIdHint;
+			const hasExplicitComparisonOwner = !!String(record.clusterUrl || record.authorityId || record.connectionIdHint || record.database || '').trim();
+			const comparisonOwnerMatches = !sourceOwnsComparison || !hasExplicitComparisonOwner || (
+				kustoClusterKey(record.clusterUrl) === kustoClusterKey(source.clusterUrl)
+				&& String(record.authorityId || '').trim().toLowerCase() === String(source.authorityId || '').trim().toLowerCase()
+				&& String(record.connectionIdHint || '').trim() === String(source.connectionIdHint || '').trim()
+				&& String(record.database || '').trim().toLowerCase() === String(source.database || '').trim().toLowerCase()
+			);
+			let ownerMatches = false;
+			let currentAccountPartition = '';
+			let currentLeaveNoTraceRevision = -1;
+			try {
+				const resolution = resolveKustoConnection(connections, {
+					clusterUrl,
+					authorityId,
+					connectionIdHint,
+				});
+				ownerMatches = !!database
+					&& resolution.kind === 'matched'
+					&& (!String(connectionIdHint || '').trim()
+						|| resolution.connection.id === String(connectionIdHint || '').trim());
+				if (resolution.kind === 'matched') {
+					currentAccountPartition = String(this.kustoClient.getAccountPartition(resolution.connection) || '').trim();
+					currentLeaveNoTraceRevision = snapshot.revocationGenerations?.[kustoClusterKey(clusterUrl)] ?? 0;
+				}
+			} catch {
+				ownerMatches = false;
+			}
+			const protectedResult = snapshot.globallyBlocked || protectedClusters.has(kustoClusterKey(clusterUrl));
+			const persistedAccountPartition = String(record.kustoAccountPartition || '').trim();
+			const persistedLeaveNoTraceRevision = Number(record.kustoLeaveNoTraceRevision);
+			const resultOwnerMatches = !!persistedAccountPartition
+				&& persistedAccountPartition === currentAccountPartition
+				&& Number.isSafeInteger(persistedLeaveNoTraceRevision)
+				&& persistedLeaveNoTraceRevision >= 0
+				&& persistedLeaveNoTraceRevision === currentLeaveNoTraceRevision;
+			if (comparisonOwnerMatches && ownerMatches && resultOwnerMatches && !protectedResult) return section;
+			changed = true;
+			const clone = { ...record };
+			delete clone.resultJson;
+			delete clone.kustoAccountPartition;
+			delete clone.kustoLeaveNoTraceRevision;
+			return clone;
+		});
+		return changed ? { ...state, sections: sanitized } : state;
+	}
+
+	private stripAllKustoOwnedResults<T extends { sections?: unknown[] }>(state: T): T {
+		return this.sanitizeKustoLeaveNoTraceStateFromSnapshot(state, {
+			clusterKeys: [],
+			globallyBlocked: true,
+			version: 0,
+			revocationGenerations: {},
+		});
 	}
 
 	private stripOrphanedSqlPrincipalFingerprints<T extends { sections?: unknown[] }>(state: T): T {
@@ -2875,7 +3271,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			const type = String(record.type || '');
 			const sourceBoxId = String(record.comparisonSourceBoxId || '').trim();
 			const sqlOwned = type === 'sql'
-				|| (type === 'query' && String(record.connectionIdHint || '').trim().startsWith('sql_'))
 				|| (!!sourceBoxId && (sectionTypesById.get(sourceBoxId) === 'sql' || !sectionTypesById.has(sourceBoxId)));
 			if (!sqlOwned) return section;
 			changed = true;
@@ -2933,10 +3328,6 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);
 	}
 
-	private async sanitizeSqlPrincipalOwnedResultsFresh<T extends { sections?: unknown[] }>(state: T): Promise<T> {
-		return this.sqlWorkbench.dispatchSqlOwnerSnapshot(snapshot => this.sanitizeSqlPrincipalOwnedResultsFromSnapshot(state, snapshot));
-	}
-
 	private hasSqlOwnedState(state: { sections?: unknown[] }): boolean {
 		const sections = Array.isArray(state?.sections) ? state.sections : [];
 		const sectionTypesById = new Map(sections
@@ -2945,25 +3336,29 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		return sections.some(section => {
 			if (!section || typeof section !== 'object') return false;
 			if (String((section as Record<string, unknown>).type || '') === 'sql') return true;
-			if (String((section as Record<string, unknown>).type || '') === 'query'
-				&& String((section as Record<string, unknown>).connectionIdHint || '').trim().startsWith('sql_')) return true;
 			const sourceBoxId = String((section as Record<string, unknown>).comparisonSourceBoxId || '').trim();
 			return !!sourceBoxId && sectionTypesById.get(sourceBoxId) === 'sql';
 		});
 	}
 
 	public async sanitizeSqlLeaveNoTraceStateFresh<T extends { sections?: unknown[] }>(state: T): Promise<T> {
-		const locallySanitized = this.sanitizeSqlLeaveNoTraceState(state);
-		if (!this.hasSqlOwnedState(locallySanitized)) return locallySanitized;
 		try {
-			return await this.sanitizeSqlPrincipalOwnedResultsFresh(locallySanitized);
+			return await this.sqlWorkbench.retrySqlOwnerSnapshotAcquisition(async () => {
+				return this.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoSnapshot => {
+					const kustoSanitized = this.sanitizeKustoLeaveNoTraceStateFromSnapshot(state, kustoSnapshot);
+					const locallySanitized = this.sanitizeSqlLeaveNoTraceState(kustoSanitized);
+					if (!this.hasSqlOwnedState(locallySanitized)) return { acquired: true as const, value: locallySanitized };
+					return this.sqlWorkbench.tryDispatchSqlOwnerSnapshot(snapshot =>
+						this.sanitizeSqlPrincipalOwnedResultsFromSnapshot(locallySanitized, snapshot));
+				});
+			});
 		} catch {
-			return this.stripAllSqlOwnedResults(locallySanitized);
+			return this.stripAllSqlOwnedResults(this.stripAllKustoOwnedResults(this.sanitizeSqlLeaveNoTraceState(state)));
 		}
 	}
 
 	public sanitizeSqlLeaveNoTraceStateFailClosed<T extends { sections?: unknown[] }>(state: T): T {
-		const locallySanitized = this.sanitizeSqlLeaveNoTraceState(state);
+		const locallySanitized = this.stripAllKustoOwnedResults(this.sanitizeSqlLeaveNoTraceState(state));
 		return this.hasSqlOwnedState(locallySanitized)
 			? this.stripAllSqlOwnedResults(locallySanitized)
 			: locallySanitized;
@@ -2973,10 +3368,15 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		state: T,
 		publish: (sanitizedState: T) => Promise<R>,
 	): Promise<R> {
-		const locallySanitized = this.sanitizeSqlLeaveNoTraceState(state);
-		if (!this.hasSqlOwnedState(locallySanitized)) return publish(locallySanitized);
-		return this.sqlWorkbench.runWithSqlOwnerSnapshotLock(async snapshot => {
-			return publish(this.sanitizeSqlPrincipalOwnedResultsFromSnapshot(locallySanitized, snapshot));
+		return this.sqlWorkbench.retrySqlOwnerSnapshotAcquisition(async () => {
+			return this.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoSnapshot => {
+				const kustoSanitized = this.sanitizeKustoLeaveNoTraceStateFromSnapshot(state, kustoSnapshot);
+				const locallySanitized = this.sanitizeSqlLeaveNoTraceState(kustoSanitized);
+				if (!this.hasSqlOwnedState(locallySanitized)) return { acquired: true as const, value: await publish(locallySanitized) };
+				return this.sqlWorkbench.tryRunWithSqlOwnerSnapshotLock(async sqlSnapshot => {
+					return publish(this.sanitizeSqlPrincipalOwnedResultsFromSnapshot(locallySanitized, sqlSnapshot));
+				});
+			});
 		});
 	}
 

@@ -52,6 +52,10 @@ export type SqlOwnerSnapshot = {
 	principalVersion: number;
 };
 
+export type SqlOwnerSnapshotLockAttempt<T> =
+	| Readonly<{ acquired: true; value: T }>
+	| Readonly<{ acquired: false }>;
+
 export class SqlWorkbenchService {
 	readonly connectionManager: SqlConnectionManager;
 	readonly runtime: StsRuntime;
@@ -260,10 +264,19 @@ export class SqlWorkbenchService {
 	}
 
 	async dispatchSqlOwnerSnapshot<T>(dispatch: (snapshot: SqlOwnerSnapshot) => T | PromiseLike<T>): Promise<T> {
+		return this.retrySqlOwnerSnapshotAcquisition(() => this.tryDispatchSqlOwnerSnapshot(dispatch));
+	}
+
+	async runWithSqlOwnerSnapshotLock<T>(run: (snapshot: SqlOwnerSnapshot) => Promise<T>): Promise<T> {
+		return this.retrySqlOwnerSnapshotAcquisition(() => this.tryRunWithSqlOwnerSnapshotLock(run));
+	}
+
+	async tryDispatchSqlOwnerSnapshot<T>(dispatch: (snapshot: SqlOwnerSnapshot) => T | PromiseLike<T>): Promise<SqlOwnerSnapshotLockAttempt<T>> {
 		await this.readyPromise;
 		const lockOptions = { retries: 0 } as const;
-		const handle = await this.retrySqlOwnerSnapshotLocks(() =>
-			this.leaveNoTracePolicy.prepareSnapshotDispatch(async policy =>
+		let handle;
+		try {
+			handle = await this.leaveNoTracePolicy.prepareSnapshotDispatch(async policy =>
 				this.connectionManager.prepareSnapshotDispatch(async connections =>
 					this.serverAccountMap.prepareSnapshotDispatch(principals =>
 						startSqlDispatch(() => dispatch({
@@ -272,15 +285,19 @@ export class SqlWorkbenchService {
 							connectionVersion: connections.version,
 							accountsByServer: principals.accountsByServer,
 							principalVersion: principals.version,
-						})), lockOptions), lockOptions), lockOptions));
-		return unwrapSqlDispatch(handle);
+						})), lockOptions), lockOptions), lockOptions);
+		} catch (error) {
+			if (isSqlStateLockContentionError(error)) return { acquired: false };
+			throw error;
+		}
+		return { acquired: true, value: await unwrapSqlDispatch(handle) };
 	}
 
-	async runWithSqlOwnerSnapshotLock<T>(run: (snapshot: SqlOwnerSnapshot) => Promise<T>): Promise<T> {
+	async tryRunWithSqlOwnerSnapshotLock<T>(run: (snapshot: SqlOwnerSnapshot) => Promise<T>): Promise<SqlOwnerSnapshotLockAttempt<T>> {
 		await this.readyPromise;
 		const lockOptions = { retries: 0 } as const;
-		return this.retrySqlOwnerSnapshotLocks(() =>
-			this.leaveNoTracePolicy.runWithSnapshotLock(async policy =>
+		try {
+			const value = await this.leaveNoTracePolicy.runWithSnapshotLock(async policy =>
 				this.connectionManager.runWithSnapshotLock(async connections =>
 					this.serverAccountMap.runWithSnapshotLock(async principals => {
 						try {
@@ -294,18 +311,23 @@ export class SqlWorkbenchService {
 						} catch (error) {
 							throw new SqlOwnerSnapshotCallbackError(error);
 						}
-					}, lockOptions), lockOptions), lockOptions));
+					}, lockOptions), lockOptions), lockOptions);
+			return { acquired: true, value };
+		} catch (error) {
+			if (error instanceof SqlOwnerSnapshotCallbackError) throw error.callbackError;
+			if (isSqlStateLockContentionError(error)) return { acquired: false };
+			throw error;
+		}
 	}
 
-	private async retrySqlOwnerSnapshotLocks<T>(attempt: () => Promise<T>): Promise<T> {
+	async retrySqlOwnerSnapshotAcquisition<T>(attempt: () => Promise<SqlOwnerSnapshotLockAttempt<T>>): Promise<T> {
 		for (let retry = 0; ; retry += 1) {
-			try {
-				return await attempt();
-			} catch (error) {
-				if (error instanceof SqlOwnerSnapshotCallbackError) throw error.callbackError;
-				if (!isSqlStateLockContentionError(error) || retry >= SQL_OWNER_SNAPSHOT_LOCK_RETRIES) throw error;
-				await new Promise<void>(resolve => setTimeout(resolve, SQL_OWNER_SNAPSHOT_LOCK_RETRY_DELAY_MS));
+			const result = await attempt();
+			if (result.acquired) return result.value;
+			if (retry >= SQL_OWNER_SNAPSHOT_LOCK_RETRIES) {
+				throw Object.assign(new Error('Timed out waiting for canonical SQL owner snapshot locks.'), { code: 'ELOCKED' });
 			}
+			await new Promise<void>(resolve => setTimeout(resolve, SQL_OWNER_SNAPSHOT_LOCK_RETRY_DELAY_MS));
 		}
 	}
 

@@ -1,6 +1,8 @@
 import * as vscode from 'vscode';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
-import { normalizeKustoAuthorityId } from '../shared/kustoAuth';
+import { getKustoConnectionIdentityKey, normalizeKustoAuthorityId } from '../shared/kustoAuth';
+import { KustoLeaveNoTracePolicyStore, type KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore.js';
+import { getWorkbenchLogger } from './workbenchLogger.js';
 
 export interface KustoConnection {
 	id: string;
@@ -25,6 +27,13 @@ export type KustoConnectionChange =
 	| { type: 'updated'; connection: KustoConnection; previous: KustoConnection }
 	| { type: 'removed'; connection: KustoConnection }
 	| { type: 'cleared'; connections: KustoConnection[] };
+
+export type KustoLeaveNoTraceChange = Readonly<{
+	clusterUrl: string;
+	enabled: boolean;
+	revision: number;
+	connectionIds: readonly string[];
+}>;
 
 /**
  * Internal storage format for file connection cache entries.
@@ -62,16 +71,39 @@ export function normalizeFilePath(filePath: string, isWindows: boolean = process
 	return p;
 }
 
-export class ConnectionManager {
+export class ConnectionManager implements vscode.Disposable {
 	private connections: KustoConnection[] = [];
+	private readonly connectionIncarnations = new Map<string, number>();
 	private readonly storageKey = 'kusto.connections';
-	private readonly leaveNoTraceKey = 'kusto.leaveNoTraceClusters';
 	private readonly fileConnectionCacheKey = 'kusto.fileConnectionCache';
 	private readonly changeEmitter = new vscode.EventEmitter<KustoConnectionChange>();
 	readonly onDidChangeConnections = this.changeEmitter.event;
+	private readonly leaveNoTraceChangeEmitter = new vscode.EventEmitter<KustoLeaveNoTraceChange>();
+	readonly onDidChangeLeaveNoTrace = this.leaveNoTraceChangeEmitter.event;
+	private readonly leaveNoTracePolicy: KustoLeaveNoTracePolicyStore;
+	private readonly leaveNoTraceSubscription: vscode.Disposable;
+	private disposed = false;
 
 	constructor(private context: vscode.ExtensionContext) {
 		this.loadConnections();
+		this.leaveNoTracePolicy = new KustoLeaveNoTracePolicyStore(context, getWorkbenchLogger());
+		this.leaveNoTraceSubscription = this.leaveNoTracePolicy.onDidChange(change => {
+			const invalidated = change.globallyBlocked
+				? [...new Set(this.connections.map(connection => this.normalizeClusterUrl(connection.clusterUrl)).filter(Boolean))]
+				: [...change.invalidatedClusterKeys];
+			for (const clusterUrl of invalidated) {
+				const connectionIds = this.connections
+					.filter(connection => this.normalizeClusterUrl(connection.clusterUrl) === clusterUrl)
+					.map(connection => connection.id);
+				this.leaveNoTraceChangeEmitter.fire(Object.freeze({
+					clusterUrl,
+					enabled: change.globallyBlocked || change.clusterKeys.includes(clusterUrl),
+					revision: this.leaveNoTracePolicy.getRevocationGeneration(clusterUrl),
+					connectionIds,
+				}));
+			}
+		});
+		if (Array.isArray(context.subscriptions)) context.subscriptions.push(this);
 	}
 
 	private loadConnections() {
@@ -89,7 +121,20 @@ export class ConnectionManager {
 				return [{ id, name, clusterUrl, database: String(connection.database || '').trim() || undefined, ...(authorityId ? { authorityId } : {}) }];
 			});
 		}
+		for (const connection of this.connections) this.connectionIncarnations.set(connection.id, 1);
 		void vscode.commands.executeCommand('setContext', 'kusto.hasConnections', this.connections.length > 0);
+	}
+
+	private bumpConnectionIncarnation(connectionId: string): number {
+		const id = String(connectionId || '').trim();
+		if (!id) return 0;
+		const next = (this.connectionIncarnations.get(id) ?? 0) + 1;
+		this.connectionIncarnations.set(id, next);
+		return next;
+	}
+
+	getConnectionIncarnation(connectionId: string): number {
+		return this.connectionIncarnations.get(String(connectionId || '').trim()) ?? 0;
 	}
 
 	private async saveConnections() {
@@ -106,41 +151,63 @@ export class ConnectionManager {
 	 * URLs are normalized (lowercase, no trailing slashes).
 	 */
 	getLeaveNoTraceClusters(): string[] {
-		const stored = this.context.globalState.get<string[]>(this.leaveNoTraceKey);
-		return Array.isArray(stored) ? stored : [];
+		return this.leaveNoTracePolicy.isGloballyBlocked()
+			? [...new Set(this.connections.map(connection => this.normalizeClusterUrl(connection.clusterUrl)).filter(Boolean))]
+			: this.leaveNoTracePolicy.getClusterKeys();
+	}
+
+	isLeaveNoTraceRecoveryBlocked(): boolean {
+		return this.leaveNoTracePolicy.isGloballyBlocked();
+	}
+
+	getLeaveNoTraceRevision(clusterUrl: string): number {
+		return this.leaveNoTracePolicy.getRevocationGeneration(clusterUrl);
 	}
 
 	/**
 	 * Check if a cluster URL is marked as "Leave no trace".
 	 */
 	isLeaveNoTrace(clusterUrl: string): boolean {
-		const normalized = this.normalizeClusterUrl(clusterUrl);
-		if (!normalized) return false;
-		return this.getLeaveNoTraceClusters().some(entry => this.normalizeClusterUrl(entry) === normalized);
+		return this.leaveNoTracePolicy.isProtected(clusterUrl);
 	}
 
 	/**
 	 * Mark a cluster as "Leave no trace".
 	 */
 	async addLeaveNoTrace(clusterUrl: string): Promise<void> {
-		const normalized = this.normalizeClusterUrl(clusterUrl);
-		if (!normalized) return;
-		const current = this.getLeaveNoTraceClusters();
-		if (!current.some(entry => this.normalizeClusterUrl(entry) === normalized)) {
-			current.push(normalized);
-			await this.context.globalState.update(this.leaveNoTraceKey, current);
-		}
+		await this.leaveNoTracePolicy.setCluster(clusterUrl, true);
 	}
 
 	/**
 	 * Remove a cluster from "Leave no trace".
 	 */
 	async removeLeaveNoTrace(clusterUrl: string): Promise<void> {
-		const normalized = this.normalizeClusterUrl(clusterUrl);
-		if (!normalized) return;
-		const current = this.getLeaveNoTraceClusters();
-		const filtered = current.filter(u => this.normalizeClusterUrl(u) !== normalized);
-		await this.context.globalState.update(this.leaveNoTraceKey, filtered);
+		await this.leaveNoTracePolicy.setCluster(clusterUrl, false);
+	}
+
+	prepareLeaveNoTraceDispatch<T>(clusterUrl: string, start: (revocationGeneration: number) => T): Promise<{ value: T; revocationGeneration: number }> {
+		return this.leaveNoTracePolicy.prepareDispatch(clusterUrl, start);
+	}
+
+	admitLeaveNoTraceRevision<T>(clusterUrl: string, expectedGeneration: number, admit: () => T | PromiseLike<T>): Promise<{ admitted: boolean; value?: Awaited<T> }> {
+		return this.leaveNoTracePolicy.admitRevision(clusterUrl, expectedGeneration, admit);
+	}
+
+	runWithLeaveNoTraceSnapshotLock<T>(run: (snapshot: KustoLeaveNoTracePolicySnapshot) => Promise<T>): Promise<T> {
+		return this.leaveNoTracePolicy.runWithSnapshotLock(run);
+	}
+
+	async refreshLeaveNoTracePolicy(): Promise<void> {
+		await this.leaveNoTracePolicy.refresh();
+	}
+
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.leaveNoTraceSubscription.dispose();
+		this.leaveNoTracePolicy.dispose();
+		this.leaveNoTraceChangeEmitter.dispose();
+		this.changeEmitter.dispose();
 	}
 
 	// ─────────────────────────────────────────────────────────────────────────
@@ -257,6 +324,7 @@ export class ConnectionManager {
 			...(authorityId ? { authorityId } : { authorityId: undefined }),
 			id: `conn_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`
 		};
+		this.bumpConnectionIncarnation(newConnection.id);
 		this.connections.push(newConnection);
 		await this.saveConnections();
 		this.changeEmitter.fire({ type: 'added', connection: { ...newConnection } });
@@ -265,6 +333,7 @@ export class ConnectionManager {
 
 	async removeConnection(id: string): Promise<void> {
 		const removed = this.connections.find(c => c.id === id);
+		if (removed) this.bumpConnectionIncarnation(id);
 		this.connections = this.connections.filter(c => c.id !== id);
 		await this.saveConnections();
 		if (removed) this.changeEmitter.fire({ type: 'removed', connection: { ...removed } });
@@ -273,6 +342,7 @@ export class ConnectionManager {
 	async clearConnections(): Promise<number> {
 		const previous = this.connections.map(connection => ({ ...connection }));
 		const removed = previous.length;
+		for (const connection of previous) this.bumpConnectionIncarnation(connection.id);
 		this.connections = [];
 		await this.saveConnections();
 		if (previous.length) this.changeEmitter.fire({ type: 'cleared', connections: previous });
@@ -287,6 +357,10 @@ export class ConnectionManager {
 				? normalizeKustoAuthorityId(updates.authorityId)
 				: previous.authorityId;
 			this.connections[index] = { ...previous, ...updates, ...(authorityId ? { authorityId } : { authorityId: undefined }) };
+			if (getKustoConnectionIdentityKey(previous.clusterUrl, previous.authorityId)
+				!== getKustoConnectionIdentityKey(this.connections[index].clusterUrl, this.connections[index].authorityId)) {
+				this.bumpConnectionIncarnation(id);
+			}
 			await this.saveConnections();
 			this.changeEmitter.fire({ type: 'updated', connection: { ...this.connections[index] }, previous });
 		}

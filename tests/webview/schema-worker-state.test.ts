@@ -321,6 +321,49 @@ describe('schema worker readiness state', () => {
 		expect(isSchemaWorkerApplyRequired('query_reapply')).toBe(false);
 	});
 
+	it('promotes deferred focus hydration through waiting-worker to ready', () => {
+		const token = beginKustoPreparation('query_deferred', {
+			stage: 'waiting-focus',
+			blockers: [],
+			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-1', modelUri: 'inmemory://model/1' },
+			usableFallback: true,
+		})!;
+		updateKustoPreparation(token, { status: 'deferred', stage: 'waiting-focus' });
+
+		markSchemaWorkerApplyPending('query_deferred', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
+		expect(getKustoPreparationState('query_deferred')).toMatchObject({
+			status: 'preparing',
+			stage: 'waiting-worker',
+			blockers: ['worker'],
+		});
+
+		markSchemaWorkerReady('query_deferred', 'cluster|db', 'sig-1', 'inmemory://model/1', token);
+		expect(getKustoPreparationState('query_deferred')).toMatchObject({
+			status: 'ready',
+			stage: 'ready',
+			blockers: [],
+		});
+	});
+
+	it('keeps deferred hydration non-ready through fallback metadata updates', () => {
+		const token = beginKustoPreparation('query_deferred_fallback', {
+			stage: 'waiting-focus',
+			blockers: [],
+			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-1', modelUri: 'inmemory://model/1' },
+			usableFallback: true,
+		})!;
+		updateKustoPreparation(token, { status: 'deferred', stage: 'waiting-focus' });
+
+		expect(failKustoPreparation(token, 'Background refresh failed.', true)).toBe(true);
+		expect(getKustoPreparationState('query_deferred_fallback')).toMatchObject({
+			status: 'deferred',
+			stage: 'waiting-focus',
+			blockers: [],
+			usableFallback: true,
+		});
+		expect(isSchemaWorkerReady('query_deferred_fallback', 'cluster|db', 'inmemory://model/1')).toBe(false);
+	});
+
 	it('deletes a deferred schema record when its preparation token is stale', () => {
 		const token = beginKustoPreparation('query_pending', {
 			stage: 'waiting-worker',

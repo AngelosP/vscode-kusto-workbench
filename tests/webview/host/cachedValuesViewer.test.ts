@@ -17,7 +17,21 @@ afterEach(() => {
 });
 
 function createViewerHarness(): CachedValuesViewerV2 & Record<string, any> {
-	return Object.create(CachedValuesViewerV2.prototype) as CachedValuesViewerV2 & Record<string, any>;
+	const viewer = Object.create(CachedValuesViewerV2.prototype) as CachedValuesViewerV2 & Record<string, any>;
+	viewer.pendingKustoPublicationAcks = new Map();
+	viewer.kustoGlobalOperationGeneration = 0;
+	viewer.kustoOperationGenerations = new Map();
+	return viewer;
+}
+
+function installKustoSnapshotAdmission(viewer: CachedValuesViewerV2 & Record<string, any>, postMessage: ReturnType<typeof vi.fn>) {
+	viewer.connectionManager = {
+		...(viewer.connectionManager || {}),
+		runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+			clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {},
+		})),
+	};
+	viewer.postKustoPublication = vi.fn(async (message: unknown) => await Promise.resolve(postMessage(message)) !== false);
 }
 
 function deferred<T>() {
@@ -348,6 +362,362 @@ describe('schema cache clear durability', () => {
 });
 
 describe('CachedValuesViewerV2 Kusto mutation completion', () => {
+	it('omits protected Kusto connections, databases, and schema keys from snapshots', async () => {
+		const viewer = createViewerHarness();
+		const postKustoPublication = vi.fn(async () => true);
+		viewer.snapshotRevision = 0;
+		viewer.postKustoPublication = postKustoPublication;
+		viewer.panel = { webview: { postMessage: vi.fn(async () => true) } };
+		viewer.sqlDeps = { refreshSqlLeaveNoTracePolicy: vi.fn(async () => { throw new Error('SQL unavailable'); }) };
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => [{ id: 'secret', name: 'Secret', clusterUrl: 'https://secret.kusto.windows.net' }]),
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+				clusterKeys: ['secret'], globallyBlocked: false, version: 2, revocationGenerations: { secret: 1 },
+			})),
+		};
+		viewer.buildSnapshot = vi.fn(async (revision: number) => ({
+			revision, timestamp: Date.now(), activeKind: 'kusto', auth: { sessions: [], knownAccounts: [] },
+			connections: [{ id: 'secret', name: 'Secret', clusterUrl: 'https://secret.kusto.windows.net', accountPreference: { mode: 'automatic' }, accountPartition: 'partition-a', hasTokenOverride: false }],
+			cachedDatabases: { secret: ['SecretDb'] }, sqlAuth: { sessions: [] }, sqlConnections: [],
+			sqlCachedDatabases: {}, sqlLeaveNoTrace: [], sqlAvailable: false, sqlServerAccountMap: {},
+			cachedSchemaKeys: ['kusto:secret|SecretDb'],
+		}));
+
+		await viewer.sendSnapshotToWebview();
+
+		expect(postKustoPublication).toHaveBeenCalledWith({
+			type: 'snapshot', snapshot: expect.objectContaining({
+				connections: [], cachedDatabases: {}, cachedSchemaKeys: [],
+			}),
+		});
+	});
+
+	it('releases Kusto snapshot admission between contended SQL owner attempts', async () => {
+		const viewer = createViewerHarness();
+		const retry = deferred<void>();
+		const continueRetry = deferred<void>();
+		let kustoHeld = false;
+		let attempts = 0;
+		viewer.snapshotRevision = 0;
+		viewer.panel = { webview: { postMessage: vi.fn(async () => true) } };
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => []),
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => {
+				expect(kustoHeld).toBe(false);
+				kustoHeld = true;
+				try { return await run({ clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {} }); }
+				finally { kustoHeld = false; }
+			}),
+		};
+		viewer.buildSnapshot = vi.fn(async (revision: number) => ({
+			revision, timestamp: Date.now(), activeKind: 'kusto', auth: { sessions: [], knownAccounts: [] },
+			connections: [], cachedDatabases: {}, sqlAuth: { sessions: [] }, sqlConnections: [],
+			sqlCachedDatabases: {}, sqlLeaveNoTrace: [], sqlAvailable: true, sqlServerAccountMap: {},
+			sqlStateVersions: { policy: 1, connections: 1, principals: 1 }, cachedSchemaKeys: [],
+			sqlCacheOwners: {}, sqlSchemaKeyOwners: {},
+		}));
+		viewer.sqlDeps = {
+			refreshSqlLeaveNoTracePolicy: vi.fn(async () => undefined),
+			getSqlStateVersions: () => ({ policy: 1, connections: 1, principals: 1 }),
+			tryDispatchSqlOwnerSnapshot: vi.fn(async (dispatch: (snapshot: any) => unknown) => {
+				attempts++;
+				if (attempts === 1) return { acquired: false };
+				return { acquired: true, value: await dispatch({
+					policy: { connectionIds: [], version: 1, globallyBlocked: false },
+					connections: [], connectionVersion: 1, accountsByServer: {}, principalVersion: 1,
+				}) };
+			}),
+			retrySqlOwnerSnapshotAcquisition: async (attempt: () => Promise<any>) => {
+				const first = await attempt();
+				if (first.acquired) return first.value;
+				expect(kustoHeld).toBe(false);
+				retry.resolve();
+				await continueRetry.promise;
+				const second = await attempt();
+				return second.value;
+			},
+		};
+		viewer.postKustoPublication = vi.fn(async () => true);
+
+		const snapshot = viewer.sendSnapshotToWebview();
+		await retry.promise;
+		expect(kustoHeld).toBe(false);
+		continueRetry.resolve();
+		await snapshot;
+		expect(attempts).toBe(2);
+	});
+
+	it('does not read a protected Kusto schema cache entry', async () => {
+		const viewer = createViewerHarness();
+		const readFile = vi.spyOn(vscode.workspace.fs, 'readFile');
+		viewer.context = { globalStorageUri: vscode.Uri.file('/protected-cache') };
+		viewer.panel = { webview: { postMessage: vi.fn(async () => true) } };
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => [{ id: 'secret', name: 'Secret', clusterUrl: 'https://secret.kusto.windows.net' }]),
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+				clusterKeys: ['secret'], globallyBlocked: false, version: 2, revocationGenerations: { secret: 1 },
+			})),
+		};
+		viewer.kustoClient = { getAccountPartition: vi.fn(() => 'partition-a') };
+
+		await viewer.onMessage({ type: 'schema.get', requestId: 'protected-read', connectionId: 'secret', database: 'SecretDb' });
+
+		expect(readFile).not.toHaveBeenCalled();
+		expect(viewer.panel.webview.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ ok: true }));
+	});
+
+	it('settles a current missing cached schema request with a row-free failure', async () => {
+		const viewer = createViewerHarness();
+		const connection = { id: 'c1', name: 'Cluster', clusterUrl: 'https://cluster.kusto.windows.net' };
+		const postKustoPublication = vi.fn(async () => true);
+		viewer.context = { globalStorageUri: vscode.Uri.file('/missing-cached-schema') };
+		viewer.postKustoPublication = postKustoPublication;
+		viewer.connectionCache = { captureGeneration: vi.fn(() => ({ global: 0, connection: 0, partition: 0 })) };
+		viewer.authPreferences = { waitForProviderAccountRefresh: vi.fn(async () => undefined) };
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => [connection]), getConnectionIncarnation: vi.fn(() => 1),
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+				clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {},
+			})),
+		};
+		viewer.kustoClient = {
+			getAccountPartition: vi.fn(() => 'partition-a'), getConnectionSessionGeneration: vi.fn(() => 0),
+		};
+
+		await viewer.onMessage({ type: 'schema.get', requestId: 'missing-schema', connectionId: 'c1', database: 'Db' });
+
+		expect(postKustoPublication).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'schemaResult', requestId: 'missing-schema', connectionId: 'c1', accountPartition: 'partition-a',
+			database: 'Db', ok: false, json: expect.stringContaining('No cached schema'),
+		}));
+	});
+
+	it('does not cache or publish Kusto schema after a policy enable-disable interval', async () => {
+		const viewer = createViewerHarness();
+		const connection = { id: 'c1', name: 'Cluster', clusterUrl: 'https://cluster.kusto.windows.net' };
+		let leaveNoTraceRevision = 0;
+		const pendingSchema = deferred<any>();
+		const writeFile = vi.spyOn(vscode.workspace.fs, 'writeFile');
+		viewer.context = { globalStorageUri: vscode.Uri.file('/cached-values-policy-interval') };
+		viewer.panel = { webview: { postMessage: vi.fn(async () => true) } };
+		viewer.postKustoPublication = vi.fn(async () => true);
+		viewer.connectionCache = { captureGeneration: vi.fn(() => ({ global: 0, connection: 0, partition: 0 })) };
+		viewer.authPreferences = { getConnectionSessionGeneration: vi.fn(() => 0) };
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => [connection]), getConnectionIncarnation: vi.fn(() => 1),
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+				clusterKeys: [], globallyBlocked: false, version: leaveNoTraceRevision + 1,
+				revocationGenerations: { cluster: leaveNoTraceRevision },
+			})),
+		};
+		viewer.kustoClient = {
+			getAccountPartition: vi.fn(() => 'partition-a'), getConnectionSessionGeneration: vi.fn(() => 0),
+			getDatabaseSchema: vi.fn(() => pendingSchema.promise), isAuthenticationError: vi.fn(() => false),
+		};
+
+		const refresh = viewer.onMessage({ type: 'schema.refresh', requestId: 'policy-interval', connectionId: 'c1', database: 'Db' });
+		await vi.waitFor(() => expect(viewer.kustoClient.getDatabaseSchema).toHaveBeenCalledOnce());
+		leaveNoTraceRevision = 2;
+		pendingSchema.resolve({ schema: { tables: ['SecretTable'], columnTypesByTable: {}, functions: [] }, accountPartition: 'partition-a' });
+		await refresh;
+
+		expect(writeFile).not.toHaveBeenCalled();
+		expect(viewer.postKustoPublication).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'schemaResult' }));
+		expect(viewer.panel.webview.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'schemaResult', requestId: 'policy-interval', ok: false,
+		}));
+	});
+
+	it('does not resurrect Kusto schema when Clear All wins during refresh', async () => {
+		const viewer = createViewerHarness();
+		const connection = { id: 'c1', name: 'Cluster', clusterUrl: 'https://cluster.kusto.windows.net' };
+		const pendingSchema = deferred<any>();
+		const storageUri = vscode.Uri.file('/cached-values-clear-race');
+		viewer.context = {
+			globalStorageUri: storageUri,
+			globalState: { get: vi.fn(), update: vi.fn(async () => undefined) },
+		};
+		viewer.panel = { webview: { postMessage: vi.fn(async () => true) } };
+		viewer.postKustoPublication = vi.fn(async () => true);
+		viewer.connectionCache = {
+			captureGeneration: vi.fn(() => ({ global: 0, connection: 0, partition: 0 })),
+			clearAll: vi.fn(async () => undefined),
+		};
+		viewer.authPreferences = {
+			getConnectionSessionGeneration: vi.fn(() => 0),
+			waitForProviderAccountRefresh: vi.fn(async () => undefined),
+		};
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => [connection]), getConnectionIncarnation: vi.fn(() => 1),
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+				clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {},
+			})),
+		};
+		viewer.kustoClient = {
+			getAccountPartition: vi.fn(() => 'partition-a'), getConnectionSessionGeneration: vi.fn(() => 0),
+			getDatabaseSchema: vi.fn(() => pendingSchema.promise), isAuthenticationError: vi.fn(() => false),
+		};
+		const initialGeneration = captureSchemaCacheGeneration(storageUri, connection.id, 'partition-a');
+
+		const refresh = viewer.onMessage({ type: 'schema.refresh', requestId: 'clear-race', connectionId: 'c1', database: 'Db' });
+		await vi.waitFor(() => expect(viewer.kustoClient.getDatabaseSchema).toHaveBeenCalledOnce());
+		await viewer.onMessage({ type: 'schema.clearAll' });
+		pendingSchema.resolve({
+			schema: { tables: ['SecretTable'], columnTypesByTable: {}, functions: [] },
+			accountPartition: 'partition-a', cacheGeneration: initialGeneration,
+		});
+		await refresh;
+
+		expect(viewer.postKustoPublication).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'schemaResult' }));
+		const cacheDirectory = path.join(storageUri.fsPath, 'schemaCache');
+		expect(fs.existsSync(cacheDirectory) ? fs.readdirSync(cacheDirectory) : []).toEqual([]);
+	});
+
+	it('does not publish a cached Kusto schema when Clear All wins during disk read', async () => {
+		const viewer = createViewerHarness();
+		const connection = { id: 'c1', name: 'Cluster', clusterUrl: 'https://cluster.kusto.windows.net' };
+		const storageUri = vscode.Uri.file('/cached-values-read-clear-race');
+		const pendingRead = deferred<Uint8Array>();
+		vi.spyOn(vscode.workspace.fs, 'readFile').mockReturnValue(pendingRead.promise);
+		viewer.context = { globalStorageUri: storageUri, globalState: { get: vi.fn(), update: vi.fn(async () => undefined) } };
+		viewer.panel = { webview: { postMessage: vi.fn(async () => true) } };
+		viewer.postKustoPublication = vi.fn(async () => true);
+		viewer.connectionCache = { clearAll: vi.fn(async () => undefined), captureGeneration: vi.fn(() => ({ global: 0, connection: 0, partition: 0 })) };
+		viewer.authPreferences = {
+			getConnectionSessionGeneration: vi.fn(() => 0), waitForProviderAccountRefresh: vi.fn(async () => undefined),
+		};
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => [connection]), getConnectionIncarnation: vi.fn(() => 1),
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+				clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {},
+			})),
+		};
+		viewer.kustoClient = {
+			getAccountPartition: vi.fn(() => 'partition-a'), getConnectionSessionGeneration: vi.fn(() => 0),
+		};
+
+		const read = viewer.onMessage({ type: 'schema.get', requestId: 'read-clear-race', connectionId: 'c1', database: 'Db' });
+		await vi.waitFor(() => expect(vscode.workspace.fs.readFile).toHaveBeenCalledOnce());
+		await viewer.onMessage({ type: 'schema.clearAll' });
+		pendingRead.resolve(Buffer.from(JSON.stringify({
+			version: SCHEMA_CACHE_VERSION,
+			schema: { tables: ['SecretTable'], columnTypesByTable: {}, functions: [] },
+			timestamp: Date.now(), clusterUrl: connection.clusterUrl, database: 'Db',
+			connectionId: connection.id, accountPartition: 'partition-a',
+		}), 'utf8'));
+		await read;
+
+		expect(viewer.postKustoPublication).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'schemaResult' }));
+	});
+
+	it('keeps a database refresh alive across first account establishment', async () => {
+		const viewer = createViewerHarness();
+		const connection = { id: 'c1', name: 'Cluster', clusterUrl: 'https://cluster.kusto.windows.net' };
+		const generation = { global: 0, connection: 0, partition: 0 };
+		const pendingDiscovery = deferred<any>();
+		let accountPartition: string | undefined;
+		viewer.context = { globalStorageUri: vscode.Uri.file('/cached-values-first-sign-in-databases') };
+		viewer.panel = { webview: { postMessage: vi.fn(async () => true) } };
+		viewer.sendSnapshotToWebview = vi.fn(async () => undefined);
+		viewer.readCachedDatabases = vi.fn(() => ({}));
+		viewer.connectionCache = {
+			captureGeneration: vi.fn(() => generation),
+			setDatabases: vi.fn(async () => true),
+		};
+		viewer.authPreferences = { waitForProviderAccountRefresh: vi.fn(async () => undefined) };
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => [connection]), getConnectionIncarnation: vi.fn(() => 1),
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+				clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {},
+			})),
+		};
+		viewer.kustoClient = {
+			getAccountPartition: vi.fn(() => accountPartition), getConnectionSessionGeneration: vi.fn(() => 0),
+			getDatabasesWithIdentity: vi.fn(() => pendingDiscovery.promise), isAuthenticationError: vi.fn(() => false),
+		};
+
+		const refresh = viewer.onMessage({ type: 'databases.refresh', connectionId: connection.id });
+		await vi.waitFor(() => expect(viewer.kustoClient.getDatabasesWithIdentity).toHaveBeenCalledOnce());
+		accountPartition = 'partition-a';
+		viewer.handleKustoAuthPreferenceChange({
+			connectionIds: [connection.id], reason: 'success', accountPartition, firstEstablishment: true,
+		});
+		pendingDiscovery.resolve({ databases: ['DbA'], accountPartition, cacheGeneration: generation, fromCache: false });
+		await refresh;
+
+		expect(viewer.kustoOperationGenerations.get(connection.id)).toBeUndefined();
+		expect(viewer.connectionCache.setDatabases).toHaveBeenCalledWith(connection.id, accountPartition, ['DbA'], generation);
+		expect(viewer.sendSnapshotToWebview).toHaveBeenCalled();
+	});
+
+	it('keeps a schema refresh alive across first account establishment', async () => {
+		const viewer = createViewerHarness();
+		const connection = { id: 'c1', name: 'Cluster', clusterUrl: 'https://cluster.kusto.windows.net' };
+		const storageUri = vscode.Uri.file('/cached-values-first-sign-in-schema');
+		const generation = captureSchemaCacheGeneration(storageUri, connection.id, 'partition-a');
+		const pendingSchema = deferred<any>();
+		let accountPartition: string | undefined;
+		viewer.context = { globalStorageUri: storageUri };
+		viewer.panel = { webview: { postMessage: vi.fn(async () => true) } };
+		viewer.postKustoPublication = vi.fn(async () => true);
+		viewer.sendSnapshotToWebview = vi.fn(async () => undefined);
+		viewer.connectionCache = { captureGeneration: vi.fn(() => ({ global: 0, connection: 0, partition: 0 })) };
+		viewer.authPreferences = { waitForProviderAccountRefresh: vi.fn(async () => undefined) };
+		viewer.connectionManager = {
+			getConnections: vi.fn(() => [connection]), getConnectionIncarnation: vi.fn(() => 1),
+			runWithLeaveNoTraceSnapshotLock: vi.fn(async (run: (snapshot: any) => unknown) => await run({
+				clusterKeys: [], globallyBlocked: false, version: 1, revocationGenerations: {},
+			})),
+		};
+		viewer.kustoClient = {
+			getAccountPartition: vi.fn(() => accountPartition), getConnectionSessionGeneration: vi.fn(() => 0),
+			getDatabaseSchema: vi.fn(() => pendingSchema.promise), isAuthenticationError: vi.fn(() => false),
+		};
+
+		const refresh = viewer.onMessage({ type: 'schema.refresh', requestId: 'first-sign-in', connectionId: connection.id, database: 'DbA' });
+		await vi.waitFor(() => expect(viewer.kustoClient.getDatabaseSchema).toHaveBeenCalledOnce());
+		accountPartition = 'partition-a';
+		viewer.handleKustoAuthPreferenceChange({
+			connectionIds: [connection.id], reason: 'success', accountPartition, firstEstablishment: true,
+		});
+		pendingSchema.resolve({
+			schema: { tables: ['TableA'], columnTypesByTable: {}, functions: [] },
+			accountPartition, cacheGeneration: generation, fromCache: false,
+		});
+		await refresh;
+
+		expect(viewer.kustoOperationGenerations.get(connection.id)).toBeUndefined();
+		expect(viewer.postKustoPublication).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'schemaResult', requestId: 'first-sign-in', accountPartition, ok: true,
+		}));
+		expect(viewer.sendSnapshotToWebview).toHaveBeenCalled();
+	});
+
+	it('invalidates Cached Values owners after a later account success', () => {
+		const viewer = createViewerHarness();
+		viewer.sendSnapshotToWebview = vi.fn(async () => undefined);
+
+		viewer.handleKustoAuthPreferenceChange({
+			connectionIds: ['c1'], reason: 'success', accountPartition: 'partition-a', firstEstablishment: false,
+		});
+
+		expect(viewer.kustoOperationGenerations.get('c1')).toBe(1);
+		expect(viewer.sendSnapshotToWebview).toHaveBeenCalledOnce();
+	});
+
+	it('does not globally invalidate Cached Values for an unmapped forgotten account', () => {
+		const viewer = createViewerHarness();
+		viewer.sendSnapshotToWebview = vi.fn(async () => undefined);
+
+		viewer.handleKustoAuthPreferenceChange({
+			connectionIds: [], reason: 'account-forgotten', accountId: 'historical-account',
+		});
+
+		expect(viewer.kustoGlobalOperationGeneration).toBe(0);
+		expect(viewer.kustoOperationGenerations.size).toBe(0);
+		expect(viewer.sendSnapshotToWebview).toHaveBeenCalledOnce();
+	});
+
 	it('posts the refreshed snapshot only after an account preference mutation settles', async () => {
 		let settleMutation!: () => void;
 		const mutationGate = new Promise<void>(resolve => { settleMutation = resolve; });
@@ -411,6 +781,7 @@ describe('CachedValuesViewerV2 SQL database ownership', () => {
 		viewer.connectionManager = {
 			getConnections: vi.fn(() => [{ id: 'c1', name: 'Kusto', clusterUrl: 'https://cluster.kusto.windows.net' }]),
 		};
+		installKustoSnapshotAdmission(viewer, postMessage);
 		viewer.kustoClient = { getAccountPartition: vi.fn(() => 'partition-a') };
 		viewer.readCachedDatabases = vi.fn(() => ({ c1: ['Db'] }));
 
@@ -455,6 +826,8 @@ describe('CachedValuesViewerV2 SQL database ownership', () => {
 			sqlCacheOwners: { 'sql-1': { targetSignature, principalFingerprint } },
 			sqlSchemaKeyOwners: { 'sql:sql-1|DbA': { targetSignature: `${targetSignature}-stale`, principalFingerprint } },
 		}));
+		viewer.connectionManager = { getConnections: vi.fn(() => []) };
+		installKustoSnapshotAdmission(viewer, postMessage);
 
 		await viewer.sendSnapshotToWebview();
 

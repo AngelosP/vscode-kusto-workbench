@@ -4,6 +4,11 @@ const testState = vi.hoisted(() => ({
 	postMessageToHost: vi.fn(),
 	getConnectionId: vi.fn(() => 'conn-1'),
 	getDatabase: vi.fn(() => 'Samples'),
+	sectionLifecycle: { sectionInstanceId: 'instance-query_1', targetGeneration: 7 },
+	claimedExecutions: [] as Array<Record<string, unknown>>,
+	getSchemaLifecycleIdentity: vi.fn(() => ({ sectionInstanceId: 'instance-query_1', targetGeneration: 7 })),
+	beginQueryExecution: vi.fn(),
+	getQuerySectionElement: vi.fn(),
 	queryEditors: {} as Record<string, any>,
 	queryExecutionTimers: {} as Record<string, any>,
 	pendingFavoriteSelectionByBoxId: {} as Record<string, any>,
@@ -14,6 +19,7 @@ const testState = vi.hoisted(() => ({
 	pState: {
 		lastExecutedBox: '',
 		resultsVisibleByBoxId: {},
+		queryResultJsonByBoxId: {} as Record<string, string>,
 	},
 }));
 
@@ -67,7 +73,7 @@ vi.mock('../../src/webview/core/state.js', () => ({
 vi.mock('../../src/webview/core/section-factory.js', () => ({
 	__kustoGetConnectionId: testState.getConnectionId,
 	__kustoGetDatabase: testState.getDatabase,
-	__kustoGetQuerySectionElement: vi.fn(() => null),
+	__kustoGetQuerySectionElement: testState.getQuerySectionElement,
 	__kustoSetSectionName: vi.fn(),
 	__kustoGetSectionName: vi.fn(() => ''),
 	__kustoPickNextAvailableSectionLetterName: vi.fn(() => 'A'),
@@ -95,7 +101,7 @@ vi.mock('../../src/webview/components/kw-function-params-dialog', () => ({
 	KwFunctionParamsDialog: dialogState.TestFunctionParamsDialog,
 }));
 
-import { executeRunFunction } from '../../src/webview/sections/query-execution.controller.js';
+import { executeQuery, executeRunFunction } from '../../src/webview/sections/query-execution.controller.js';
 
 beforeAll(() => {
 	if (!customElements.get('kw-function-params-dialog')) {
@@ -163,6 +169,24 @@ function getInfoMessages(): Array<Record<string, unknown>> {
 		.filter((message: any) => message?.type === 'showInfo');
 }
 
+function appendExecutionControls(boxId: string): void {
+	const cacheEnabled = document.createElement('input');
+	cacheEnabled.id = `${boxId}_cache_enabled`;
+	cacheEnabled.type = 'checkbox';
+	document.body.appendChild(cacheEnabled);
+	const cacheValue = document.createElement('input');
+	cacheValue.id = `${boxId}_cache_value`;
+	cacheValue.value = '1';
+	document.body.appendChild(cacheValue);
+	const cacheUnit = document.createElement('select');
+	cacheUnit.id = `${boxId}_cache_unit`;
+	const hours = document.createElement('option');
+	hours.value = 'h';
+	hours.textContent = 'Hours';
+	cacheUnit.appendChild(hours);
+	document.body.appendChild(cacheUnit);
+}
+
 describe('executeRunFunction', () => {
 	beforeEach(() => {
 		document.body.innerHTML = '';
@@ -170,7 +194,29 @@ describe('executeRunFunction', () => {
 		for (const key of Object.keys(testState.queryExecutionTimers)) delete testState.queryExecutionTimers[key];
 		for (const key of Object.keys(testState.pendingFavoriteSelectionByBoxId)) delete testState.pendingFavoriteSelectionByBoxId[key];
 		for (const key of Object.keys(testState.optimizationMetadataByBoxId)) delete testState.optimizationMetadataByBoxId[key];
+		for (const key of Object.keys(testState.pState.queryResultJsonByBoxId)) delete testState.pState.queryResultJsonByBoxId[key];
+		testState.claimedExecutions.length = 0;
 		testState.postMessageToHost.mockClear();
+		testState.getSchemaLifecycleIdentity.mockClear();
+		testState.beginQueryExecution.mockReset();
+		testState.beginQueryExecution.mockImplementation((executionId: string, producer = 'manual') => {
+			testState.claimedExecutions.push({
+				engine: 'kusto',
+				boxId: 'query_1',
+				executionId,
+				sectionInstanceId: testState.sectionLifecycle.sectionInstanceId,
+				targetGeneration: testState.sectionLifecycle.targetGeneration,
+				connectionId: testState.getConnectionId(),
+				database: testState.getDatabase(),
+				producer,
+			});
+			return true;
+		});
+		testState.getQuerySectionElement.mockReset();
+		testState.getQuerySectionElement.mockImplementation((boxId: string) => String(boxId) === 'query_1' ? {
+			getSchemaLifecycleIdentity: testState.getSchemaLifecycleIdentity,
+			beginQueryExecution: testState.beginQueryExecution,
+		} : null);
 		testState.getConnectionId.mockReturnValue('conn-1');
 		testState.getDatabase.mockReturnValue('Samples');
 		testState.pState.lastExecutedBox = '';
@@ -191,12 +237,47 @@ describe('executeRunFunction', () => {
 			connectionId: 'conn-1',
 			database: 'Samples',
 			boxId: 'query_1',
+			sectionInstanceId: 'instance-query_1',
+			targetGeneration: 7,
+			producer: 'manual',
 			queryMode: 'plain',
 			cacheEnabled: false,
 			cacheValue: 1,
 			cacheUnit: 'h',
 		});
+		expect(messages[0].executionId).toEqual(expect.stringMatching(/^kusto-run-/));
+		expect(testState.claimedExecutions).toEqual([expect.objectContaining({
+			boxId: 'query_1',
+			executionId: messages[0].executionId,
+			sectionInstanceId: 'instance-query_1',
+			targetGeneration: 7,
+			connectionId: 'conn-1',
+			database: 'Samples',
+			producer: 'manual',
+		})]);
 		expect(messages[0].query).toBe('let CommentedFunction = () { print x=1 };\nCommentedFunction()');
+	});
+
+	it('does not publish a Run Function query when the exact section owner rejects the claim', async () => {
+		testState.queryEditors.query_1 = makeEditor('.create function RejectedFunction() { print x=1 }');
+		testState.beginQueryExecution.mockReturnValue(false);
+
+		await executeRunFunction('query_1');
+
+		expect(testState.beginQueryExecution).toHaveBeenCalledOnce();
+		expect(getExecuteMessages()).toHaveLength(0);
+	});
+
+	it('does not publish a normal query when the exact section owner rejects the claim', () => {
+		testState.queryEditors.query_1 = makeEditor('print x=1');
+		testState.beginQueryExecution.mockReturnValue(false);
+		appendExecutionControls('query_1');
+
+		const executionId = executeQuery('query_1', 'plain');
+
+		expect(executionId).toBeUndefined();
+		expect(testState.beginQueryExecution).toHaveBeenCalledOnce();
+		expect(getExecuteMessages()).toHaveLength(0);
 	});
 
 	it('runs a function definition after leading blank lines without shifting cursor offsets', async () => {

@@ -1,17 +1,19 @@
 import * as vscode from 'vscode';
 import { randomUUID } from 'crypto';
-import { ConnectionManager, KustoConnection } from './connectionManager';
+import { ConnectionManager, KustoConnection, type KustoConnectionChange } from './connectionManager';
 import { KustoQueryClient } from './kustoClient';
-import { clearCachedSchemas, deleteCachedSchemasForAccountPartitions, getSchemaCacheFileUri, readCachedSchemaFromDiskByCluster, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey } from './schemaCache';
-import { KustoAuthPreferenceService, type KustoAccountPreference, type KustoKnownAccount } from './kustoAuthPreferenceService';
-import { KustoConnectionCache } from './kustoConnectionCache';
+import { captureSchemaCacheGeneration, clearCachedSchemas, deleteCachedSchemasForAccountPartitions, getSchemaCacheFileUri, readCachedSchemaFromDiskByCluster, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey } from './schemaCache';
+import { KustoAuthPreferenceService, type KustoAccountPreference, type KustoAuthPreferenceChange, type KustoKnownAccount } from './kustoAuthPreferenceService';
+import { KustoConnectionCache, type KustoConnectionCacheGeneration } from './kustoConnectionCache';
 import { countColumns } from './schemaIndexUtils';
 import type { SqlConnectionManager, SqlConnection } from './sqlConnectionManager';
 import type { SqlQueryClient } from './sqlClient';
 import { getSqlSchemaCacheDirUri, getSqlSchemaCacheFileUri, readCachedSqlSchemaFromDisk, readCurrentSqlSchemaPrincipalFingerprint, sqlSchemaCacheKey, sqlSchemaPrincipalFingerprint, sqlSchemaPrincipalFingerprintForPrincipal, sqlSchemaTargetSignature, SQL_SCHEMA_CACHE_VERSION, type SqlSchemaCacheOwner } from './sqlEditorSchema';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
 import { getWorkbenchLogger } from './workbenchLogger';
-import { getKustoAuthScopes, normalizeKustoAuthorityId } from '../shared/kustoAuth';
+import { getKustoAuthScopes, getKustoConnectionIdentityKey, normalizeKustoAuthorityId } from '../shared/kustoAuth';
+import type { KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore';
+import type { SchemaCacheGeneration } from './schemaCache';
 import {
 	beginSqlDatabaseCacheRequest,
 	clearSqlDatabaseCacheStore,
@@ -99,6 +101,18 @@ type SnapshotKustoConnection = KustoConnection & {
 	hasTokenOverride: boolean;
 };
 
+type KustoCachedValuesOwner = Readonly<{
+	connection: KustoConnection;
+	connectionIdentityKey: string;
+	connectionIncarnation: number;
+	accountPartition?: string;
+	authSessionGeneration: number;
+	leaveNoTraceRevision: number;
+	operationGeneration: number;
+	databaseCacheGeneration: KustoConnectionCacheGeneration;
+	schemaCacheGeneration: SchemaCacheGeneration;
+}>;
+
 type Snapshot = {
 	revision: number;
 	timestamp: number;
@@ -132,6 +146,7 @@ type Snapshot = {
 
 type IncomingMessage =
 	| { type: 'requestSnapshot' }
+	| { type: 'kustoPublicationAck'; publicationId: string; phase: 'staged' | 'applied'; accepted: boolean }
 	| { type: 'copyToClipboard'; text: string }
 	| { type: 'setActiveKind'; kind: 'kusto' | 'sql' }
 	| { type: 'auth.copyToken'; connectionId: string; accountId: string }
@@ -171,6 +186,14 @@ export interface CachedValuesSqlDeps {
 		accountsByServer: Readonly<Record<string, string>>;
 		principalVersion: number;
 	}) => T | PromiseLike<T>) => Promise<T>;
+	tryDispatchSqlOwnerSnapshot?: <T>(dispatch: (snapshot: {
+		policy: { connectionIds: readonly string[]; version: number; globallyBlocked: boolean; revocationGenerations: Readonly<Record<string, number>> };
+		connections: readonly SqlConnection[];
+		connectionVersion: number;
+		accountsByServer: Readonly<Record<string, string>>;
+		principalVersion: number;
+	}) => T | PromiseLike<T>) => Promise<{ acquired: true; value: T } | { acquired: false }>;
+	retrySqlOwnerSnapshotAcquisition?: <T>(attempt: () => Promise<{ acquired: true; value: T } | { acquired: false }>) => Promise<T>;
 	refreshSqlLeaveNoTracePolicy?: () => Promise<string[]>;
 	getSqlLeaveNoTraceConnectionIds?: () => string[];
 	getSqlRevocationGeneration?: (connectionId: string) => number;
@@ -201,6 +224,9 @@ export class CachedValuesViewerV2 {
 	private sqlDeps: CachedValuesSqlDeps | undefined;
 	private snapshotRevision = 0;
 	private readonly sqlPanelAbortController = new AbortController();
+	private kustoGlobalOperationGeneration = 0;
+	private readonly kustoOperationGenerations = new Map<string, number>();
+	private readonly pendingKustoPublicationAcks = new Map<string, { resolve: (accepted: boolean) => void; timer?: ReturnType<typeof setTimeout> }>();
 
 	private constructor(
 		private readonly context: vscode.ExtensionContext,
@@ -231,8 +257,17 @@ export class CachedValuesViewerV2 {
 				void this.sendSnapshotToWebview();
 			}
 		}, null, this.disposables);
-		this.disposables.push(this.authPreferences.onDidChange(() => { void this.sendSnapshotToWebview(); }));
-		this.disposables.push(this.connectionManager.onDidChangeConnections(() => { void this.sendSnapshotToWebview(); }));
+		this.disposables.push(this.authPreferences.onDidChange(change => {
+			this.handleKustoAuthPreferenceChange(change);
+		}));
+		this.disposables.push(this.connectionManager.onDidChangeConnections(change => {
+			this.invalidateKustoOwners(this.getChangedKustoConnectionIds(change));
+			void this.sendSnapshotToWebview();
+		}));
+		this.disposables.push(this.connectionManager.onDidChangeLeaveNoTrace(change => {
+			this.invalidateKustoOwners(change.connectionIds);
+			void this.sendSnapshotToWebview();
+		}));
 		const sqlPolicySubscription = this.sqlDeps?.onDidChangeSqlLeaveNoTrace?.(change => {
 			if (change.invalidatedConnectionIds.length > 0) {
 				try { this.panel.webview.postMessage({ type: 'sqlOwnerChanged', connectionIds: change.invalidatedConnectionIds }); } catch { /* panel disposed */ }
@@ -258,9 +293,130 @@ export class CachedValuesViewerV2 {
 		CachedValuesViewerV2.current = undefined;
 		this.sqlPanelAbortController?.abort();
 		this.kustoClient.dispose();
+		for (const [key, pending] of [...this.pendingKustoPublicationAcks]) {
+			this.pendingKustoPublicationAcks.delete(key);
+			if (pending.timer) clearTimeout(pending.timer);
+			pending.resolve(false);
+		}
 		for (const d of this.disposables) {
 			try { d.dispose(); } catch { /* ignore */ }
 		}
+	}
+
+	private getChangedKustoConnectionIds(change: KustoConnectionChange): string[] {
+		if (change.type === 'cleared') return change.connections.map(connection => connection.id);
+		return [change.connection.id];
+	}
+
+	private handleKustoAuthPreferenceChange(change: KustoAuthPreferenceChange): void {
+		if (change.connectionIds.length > 0 && (change.reason !== 'success' || change.firstEstablishment !== true)) {
+			this.invalidateKustoOwners(change.connectionIds);
+		}
+		void this.sendSnapshotToWebview();
+	}
+
+	private invalidateKustoOwners(connectionIds: readonly string[]): void {
+		const ids = [...new Set(connectionIds.map(id => String(id || '').trim()).filter(Boolean))];
+		if (ids.length === 0) this.kustoGlobalOperationGeneration++;
+		for (const id of ids) {
+			this.kustoOperationGenerations.set(id, (this.kustoOperationGenerations.get(id) ?? 0) + 1);
+		}
+		try { void this.panel.webview.postMessage({ type: 'kustoOwnerChanged', connectionIds: ids }); } catch { /* panel disposed */ }
+	}
+
+	private currentKustoOperationGeneration(connectionId: string): number {
+		return this.kustoGlobalOperationGeneration * 1_000_000_000
+			+ (this.kustoOperationGenerations.get(connectionId) ?? 0);
+	}
+
+	private async postKustoPublication(message: Record<string, unknown>): Promise<boolean> {
+		const publicationId = `kusto-cached-values-publication-${randomUUID()}`;
+		const publicationDeadline = Date.now() + 5_000;
+		const waitForAck = (phase: 'staged' | 'applied', timeoutMs?: number): Promise<boolean> => new Promise(resolve => {
+			const key = `${publicationId}:${phase}`;
+			const timer = timeoutMs === undefined ? undefined : setTimeout(() => {
+				this.pendingKustoPublicationAcks.delete(key);
+				resolve(false);
+			}, timeoutMs);
+			this.pendingKustoPublicationAcks.set(key, { resolve, ...(timer ? { timer } : {}) });
+		});
+		const fail = (phase: 'staged' | 'applied') => {
+			const key = `${publicationId}:${phase}`;
+			const pending = this.pendingKustoPublicationAcks.get(key);
+			if (!pending) return;
+			this.pendingKustoPublicationAcks.delete(key);
+			if (pending.timer) clearTimeout(pending.timer);
+			pending.resolve(false);
+		};
+		const staged = waitForAck('staged', 5_000);
+		if (!await this.panel.webview.postMessage({
+			type: 'kustoPublicationStage', publicationId, publicationDeadline, payload: message,
+		})) fail('staged');
+		if (!await staged) return false;
+		const applied = waitForAck('applied');
+		const pending = this.pendingKustoPublicationAcks.get(`${publicationId}:applied`);
+		if (pending) {
+			const key = `${publicationId}:applied`;
+			pending.timer = setTimeout(async () => {
+				if (this.pendingKustoPublicationAcks.get(key) !== pending) return;
+				pending.timer = setTimeout(() => fail('applied'), 1_000);
+				if (!await this.panel.webview.postMessage({ type: 'kustoPublicationRevoke', publicationId })) fail('applied');
+			}, Math.max(1, publicationDeadline - Date.now()));
+		}
+		if (!await this.panel.webview.postMessage({ type: 'kustoPublicationCommit', publicationId })) fail('applied');
+		return applied;
+	}
+
+	private async captureKustoOwner(connectionId: string): Promise<KustoCachedValuesOwner | undefined> {
+		return this.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+			const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
+			if (!connection || policy.globallyBlocked || new Set(policy.clusterKeys).has(kustoClusterKey(connection.clusterUrl))) return undefined;
+			const accountPartition = String(this.kustoClient.getAccountPartition(connection) || '').trim() || undefined;
+			return Object.freeze({
+				connection: Object.freeze({ ...connection }),
+				connectionIdentityKey: getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId),
+				connectionIncarnation: this.connectionManager.getConnectionIncarnation(connection.id),
+				...(accountPartition ? { accountPartition } : {}),
+				authSessionGeneration: this.kustoClient.getConnectionSessionGeneration(connection),
+				leaveNoTraceRevision: policy.revocationGenerations[ kustoClusterKey(connection.clusterUrl) ] ?? 0,
+				operationGeneration: this.currentKustoOperationGeneration(connection.id),
+				databaseCacheGeneration: this.connectionCache.captureGeneration(connection.id, accountPartition || ''),
+				schemaCacheGeneration: captureSchemaCacheGeneration(this.context.globalStorageUri, connection.id, accountPartition || ''),
+			});
+		});
+	}
+
+	private async admitKustoOwner<T>(
+		owner: KustoCachedValuesOwner,
+		expectedAccountPartition: string | undefined,
+		apply: (connection: KustoConnection) => T | PromiseLike<T>,
+	): Promise<T | undefined> {
+		await this.authPreferences.waitForProviderAccountRefresh();
+		return this.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+			const connection = this.connectionManager.getConnections().find(candidate => candidate.id === owner.connection.id);
+			const clusterKey = kustoClusterKey(connection?.clusterUrl);
+			if (!connection || policy.globallyBlocked || new Set(policy.clusterKeys).has(clusterKey)
+				|| (policy.revocationGenerations[clusterKey] ?? 0) !== owner.leaveNoTraceRevision
+				|| this.currentKustoOperationGeneration(connection.id) !== owner.operationGeneration
+				|| this.connectionManager.getConnectionIncarnation(connection.id) !== owner.connectionIncarnation
+				|| getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId) !== owner.connectionIdentityKey
+				|| this.kustoClient.getConnectionSessionGeneration(connection) !== owner.authSessionGeneration) return undefined;
+			const currentPartition = this.kustoClient.getAccountPartition(connection);
+			const expectedPartition = expectedAccountPartition || owner.accountPartition;
+			if (!expectedPartition || currentPartition !== expectedPartition
+				|| (owner.accountPartition && currentPartition !== owner.accountPartition)) return undefined;
+			return await apply(connection);
+		});
+	}
+
+	private isKustoOwnerLocallyCurrent(owner: KustoCachedValuesOwner, expectedAccountPartition: string): boolean {
+		const connection = this.connectionManager.getConnections().find(candidate => candidate.id === owner.connection.id);
+		return !!connection
+			&& this.currentKustoOperationGeneration(connection.id) === owner.operationGeneration
+			&& this.connectionManager.getConnectionIncarnation(connection.id) === owner.connectionIncarnation
+			&& getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId) === owner.connectionIdentityKey
+			&& this.kustoClient.getConnectionSessionGeneration(connection) === owner.authSessionGeneration
+			&& this.kustoClient.getAccountPartition(connection) === expectedAccountPartition;
 	}
 
 	// ─── Data layer ────────────────────────────────────────────────────────
@@ -357,6 +513,18 @@ export class CachedValuesViewerV2 {
 	): Promise<T> {
 		if (!this.sqlDeps?.dispatchSqlOwnerSnapshot) throw new Error('Canonical SQL owner snapshot is unavailable.');
 		return this.sqlDeps.dispatchSqlOwnerSnapshot(dispatch as any) as Promise<T>;
+	}
+
+	private async tryDispatchSqlOwnerSnapshot<T>(dispatch: (snapshot: any) => T | PromiseLike<T>): Promise<{ acquired: true; value: T } | { acquired: false }> {
+		if (this.sqlDeps?.tryDispatchSqlOwnerSnapshot) return this.sqlDeps.tryDispatchSqlOwnerSnapshot(dispatch);
+		return { acquired: true, value: await this.dispatchSqlOwnerSnapshot(dispatch as any) };
+	}
+
+	private async retrySqlOwnerSnapshotAcquisition<T>(attempt: () => Promise<{ acquired: true; value: T } | { acquired: false }>): Promise<T> {
+		if (this.sqlDeps?.retrySqlOwnerSnapshotAcquisition) return this.sqlDeps.retrySqlOwnerSnapshotAcquisition(attempt);
+		const result = await attempt();
+		if (!result.acquired) throw new Error('Canonical SQL owner snapshot is contended.');
+		return result.value;
 	}
 
 	private async buildSnapshot(revision: number, forceSqlUnavailable = false): Promise<Snapshot> {
@@ -514,10 +682,28 @@ export class CachedValuesViewerV2 {
 				if (JSON.stringify(currentVersions) === JSON.stringify(snapshot.sqlStateVersions)) break;
 			}
 			if (snapshot.sqlAvailable === false) {
-				await this.panel.webview.postMessage({ type: 'snapshot', snapshot });
+				await this.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoPolicy => {
+					const protectedClusters = new Set(kustoPolicy.clusterKeys);
+					const protectedIds = new Set(snapshot.connections
+						.filter(connection => kustoPolicy.globallyBlocked || protectedClusters.has(kustoClusterKey(connection.clusterUrl)))
+						.map(connection => connection.id));
+					await this.postKustoPublication({
+						type: 'snapshot', snapshot: {
+							...snapshot,
+							connections: snapshot.connections.filter(connection => !protectedIds.has(connection.id)),
+							cachedDatabases: Object.fromEntries(Object.entries(snapshot.cachedDatabases)
+								.filter(([connectionId]) => !protectedIds.has(connectionId))),
+							cachedSchemaKeys: snapshot.cachedSchemaKeys.filter(key => {
+								if (!key.startsWith('kusto:')) return true;
+								return !protectedIds.has(key.slice(6).split('|', 1)[0]);
+							}),
+						},
+					});
+				});
 				return;
 			}
-			await this.dispatchSqlOwnerSnapshot((canonical: any) => {
+			await this.retrySqlOwnerSnapshotAcquisition(() => this.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoPolicy => {
+				return this.tryDispatchSqlOwnerSnapshot((canonical: any) => {
 				if (revision !== this.snapshotRevision) return;
 				const protectedIds = canonical.policy.globallyBlocked
 					? new Set<string>((canonical.connections as SqlConnection[]).map(connection => connection.id))
@@ -542,8 +728,15 @@ export class CachedValuesViewerV2 {
 						&& captured.principalFingerprint === canonicalPrincipalById.get(connectionId);
 				};
 				const { sqlCacheOwners: _sqlCacheOwners, sqlSchemaKeyOwners, ...publicSnapshot } = snapshot;
+				const protectedKustoClusters = new Set(kustoPolicy.clusterKeys);
+				const protectedKustoIds = new Set(snapshot.connections
+					.filter(connection => kustoPolicy.globallyBlocked || protectedKustoClusters.has(kustoClusterKey(connection.clusterUrl)))
+					.map(connection => connection.id));
 				const admittedSnapshot: Snapshot = {
 					...publicSnapshot,
+					connections: publicSnapshot.connections.filter(connection => !protectedKustoIds.has(connection.id)),
+					cachedDatabases: Object.fromEntries(Object.entries(publicSnapshot.cachedDatabases)
+						.filter(([connectionId]) => !protectedKustoIds.has(connectionId))),
 					sqlAvailable: snapshot.sqlAvailable && !canonical.policy.globallyBlocked,
 					sqlConnections: (canonical.connections as SqlConnection[])
 						.filter(connection => !protectedIds.has(connection.id))
@@ -559,6 +752,9 @@ export class CachedValuesViewerV2 {
 					sqlServerAccountMap: Object.fromEntries(Object.entries(canonical.accountsByServer as Record<string, string>)
 						.filter(([serverUrl]) => !protectedServers.has(normalizeSqlServerUrl(serverUrl)))),
 					cachedSchemaKeys: snapshot.cachedSchemaKeys.filter(key => {
+						if (key.startsWith('kusto:')) {
+							return !protectedKustoIds.has(key.slice(6).split('|', 1)[0]);
+						}
 						if (!key.startsWith('sql:')) return true;
 						const connectionId = key.slice(4).split('|', 1)[0];
 						const capturedOwner = sqlSchemaKeyOwners?.[key];
@@ -568,8 +764,9 @@ export class CachedValuesViewerV2 {
 							&& capturedOwner.principalFingerprint === canonicalPrincipalById.get(connectionId);
 					}),
 				};
-				return this.panel.webview.postMessage({ type: 'snapshot', snapshot: admittedSnapshot });
+				return this.postKustoPublication({ type: 'snapshot', snapshot: admittedSnapshot });
 			});
+			}));
 		} catch (error) {
 			// Ignore transient panel lifecycle races (dispose/reveal ordering), but keep diagnostics.
 			getWorkbenchLogger().warn('[kusto] cached values snapshot refresh failed', error);
@@ -613,6 +810,16 @@ export class CachedValuesViewerV2 {
 	// ─── Message handling ──────────────────────────────────────────────────
 
 	private async onMessage(msg: IncomingMessage): Promise<void> {
+		if (msg.type === 'kustoPublicationAck') {
+			const key = `${msg.publicationId}:${msg.phase}`;
+			const pending = this.pendingKustoPublicationAcks.get(key);
+			if (pending) {
+				this.pendingKustoPublicationAcks.delete(key);
+				if (pending.timer) clearTimeout(pending.timer);
+				pending.resolve(msg.accepted === true);
+			}
+			return;
+		}
 		switch (msg.type) {
 			case 'requestSnapshot': {
 				await this.sendSnapshotToWebview();
@@ -715,21 +922,31 @@ export class CachedValuesViewerV2 {
 			case 'databases.delete': {
 				const connectionId = String(msg.connectionId || '').trim();
 				if (!connectionId) return;
+				this.invalidateKustoOwners([connectionId]);
 				await this.connectionCache.clearConnection(connectionId);
 				await this.completeKustoMutation();
 				return;
 			}
 			case 'databases.refresh': {
 				const connectionId = String(msg.connectionId || '').trim();
-				const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
-				if (!connection) return;
+				const owner = await this.captureKustoOwner(connectionId);
+				if (!owner) return;
 				const cachedBefore = this.readCachedDatabases()[connectionId] ?? [];
 				try {
-					const databasesRaw = await this.kustoClient.getDatabases(connection, true, {
+					const discovery = await this.kustoClient.getDatabasesWithIdentity(owner.connection, true, {
 						traceId: randomUUID(),
 						source: 'cached-values-refresh',
+						persistCache: false,
 					});
-					const databases = (Array.isArray(databasesRaw) ? databasesRaw : []).map((d) => String(d || '').trim()).filter(Boolean).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+					const accountPartition = String(discovery.accountPartition || '').trim();
+					const databases = (Array.isArray(discovery.databases) ? discovery.databases : []).map((d) => String(d || '').trim()).filter(Boolean).sort((a, b) => a.toLowerCase().localeCompare(b.toLowerCase()));
+					const admitted = await this.admitKustoOwner(owner, accountPartition, async current => {
+						return this.connectionCache.setDatabases(
+							current.id, accountPartition, databases,
+							discovery.cacheGeneration ?? this.connectionCache.captureGeneration(current.id, accountPartition),
+						);
+					});
+					if (admitted !== true) return;
 					if (databases.length > 0) return;
 					if (cachedBefore.length === 0) void vscode.window.showWarningMessage('The selected identity can connect but no databases are visible. Check the Authority / Tenant ID and account.');
 					else void vscode.window.showWarningMessage("Couldn't refresh the database list (received 0 databases). Keeping the previous cached list.");
@@ -743,6 +960,7 @@ export class CachedValuesViewerV2 {
 				}
 			}
 			case 'schema.clearAll': {
+				this.invalidateKustoOwners([]);
 				try { await this.connectionCache.clearAll(); } catch { /* ignore */ }
 				try { await this.context.globalState.update('kusto.cacheClearEpoch', Date.now()); } catch { /* ignore */ }
 				await clearCachedSchemas(this.context.globalStorageUri);
@@ -754,30 +972,45 @@ export class CachedValuesViewerV2 {
 				const requestId = String(msg.requestId || '').trim();
 				const connectionId = String(msg.connectionId || '').trim();
 				const database = String(msg.database || '').trim();
-				const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
-				if (!requestId || !connection || !database) return;
-				const accountPartition = this.kustoClient.getAccountPartition(connection);
+				const owner = await this.captureKustoOwner(connectionId);
+				if (!requestId || !owner || !database || !owner.accountPartition) return;
+				const accountPartition = owner.accountPartition;
 				let jsonText = '';
 				let ok = false;
 				try {
-					const cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, connection.clusterUrl, database, connection.id, accountPartition);
+					const cached = await readCachedSchemaFromDiskByCluster(
+						this.context.globalStorageUri, owner.connection.clusterUrl, database, owner.connection.id, accountPartition,
+					);
+					if (!this.isKustoOwnerLocallyCurrent(owner, accountPartition)) return;
 					if (!cached?.schema) {
-						jsonText = JSON.stringify({ cluster: connection.clusterUrl, database, error: 'No cached schema was found for this database and account. Try loading schema for autocomplete (or refresh schema), then try again.' }, null, 2);
-						ok = false;
-					} else {
-						const schema = cached.schema;
-						const tablesCount = schema.tables?.length ?? 0;
-						const columnsCount = countColumns(schema);
-						const functionsCount = schema.functions?.length ?? 0;
-						const cacheAgeMs = Math.max(0, Date.now() - cached.timestamp);
-						jsonText = JSON.stringify({ cluster: connection.clusterUrl, database, schema, meta: { cacheAgeMs, tablesCount, columnsCount, functionsCount, timestamp: cached.timestamp } }, null, 2);
-						ok = true;
+						jsonText = JSON.stringify({
+							cluster: owner.connection.clusterUrl,
+							database,
+							error: 'No cached schema was found for this database and account. Refresh the schema and try again.',
+						}, null, 2);
+						await this.admitKustoOwner(owner, accountPartition, () => {
+							if (!this.isKustoOwnerLocallyCurrent(owner, accountPartition)) return false;
+							return this.postKustoPublication({
+								type: 'schemaResult', requestId, connectionId, accountPartition, database, ok: false, json: jsonText,
+							});
+						});
+						return;
 					}
+					const schema = cached.schema;
+					const tablesCount = schema.tables?.length ?? 0;
+					const columnsCount = countColumns(schema);
+					const functionsCount = schema.functions?.length ?? 0;
+					const cacheAgeMs = Math.max(0, Date.now() - cached.timestamp);
+					jsonText = JSON.stringify({ cluster: owner.connection.clusterUrl, database, schema, meta: { cacheAgeMs, tablesCount, columnsCount, functionsCount, timestamp: cached.timestamp } }, null, 2);
+					const admitted = await this.admitKustoOwner(owner, accountPartition, () => {
+						if (!this.isKustoOwnerLocallyCurrent(owner, accountPartition)) return false;
+						return this.postKustoPublication({ type: 'schemaResult', requestId, connectionId, accountPartition, database, ok: true, json: jsonText });
+					});
+					if (admitted === true) return;
+					jsonText = JSON.stringify({ cluster: owner.connection.clusterUrl, database, error: 'No admissible cached schema was found for this database and account.' }, null, 2);
 				} catch {
-					jsonText = JSON.stringify({ cluster: connection.clusterUrl, database, error: 'Failed to read cached schema from disk.' }, null, 2);
-					ok = false;
+					jsonText = JSON.stringify({ cluster: owner.connection.clusterUrl, database, error: 'Failed to read cached schema from disk.' }, null, 2);
 				}
-				if (this.kustoClient.getAccountPartition(connection) !== accountPartition) return;
 				try { this.panel.webview.postMessage({ type: 'schemaResult', requestId, connectionId, accountPartition, database, ok, json: jsonText }); } catch { /* ignore */ }
 				return;
 			}
@@ -785,24 +1018,33 @@ export class CachedValuesViewerV2 {
 				const requestId = String(msg.requestId || '').trim();
 				const connectionId = String(msg.connectionId || '').trim();
 				const database = String(msg.database || '').trim();
-				const connection = this.connectionManager.getConnections().find(candidate => candidate.id === connectionId);
-				if (!requestId || !connection || !database) return;
-				const startingAccountPartition = this.kustoClient.getAccountPartition(connection);
+				const owner = await this.captureKustoOwner(connectionId);
+				if (!requestId || !owner || !database) return;
 				try {
-					const result = await this.kustoClient.getDatabaseSchema(connection, database, true);
+					const result = await this.kustoClient.getDatabaseSchema(owner.connection, database, true, {
+						persistCache: false, source: 'cached-values-refresh',
+					});
 					const schema = result.schema;
 					const accountPartition = result.accountPartition;
 					if (!accountPartition) throw new Error('Schema authentication identity could not be resolved.');
-					const cacheKey = schemaCacheKey(connection.clusterUrl, database, connection.id, accountPartition);
-					const entry = { schema, timestamp: Date.now(), version: SCHEMA_CACHE_VERSION, clusterUrl: connection.clusterUrl, database, connectionId: connection.id, accountPartition };
-					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, entry, result.cacheGeneration);
-					const tablesCount = schema.tables?.length ?? 0;
-					const columnsCount = countColumns(schema);
-					const functionsCount = schema.functions?.length ?? 0;
-					const jsonText = JSON.stringify({ cluster: connection.clusterUrl, database, schema, meta: { cacheAgeMs: 0, tablesCount, columnsCount, functionsCount, timestamp: entry.timestamp } }, null, 2);
+					const admitted = await this.admitKustoOwner(owner, accountPartition, async current => {
+						const cacheKey = schemaCacheKey(current.clusterUrl, database, current.id, accountPartition);
+						const entry = { schema, timestamp: Date.now(), version: SCHEMA_CACHE_VERSION, clusterUrl: current.clusterUrl, database, connectionId: current.id, accountPartition };
+						await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, entry, result.cacheGeneration ?? owner.schemaCacheGeneration);
+						const currentSchemaGeneration = captureSchemaCacheGeneration(this.context.globalStorageUri, current.id, accountPartition);
+						const expectedSchemaGeneration = result.cacheGeneration ?? owner.schemaCacheGeneration;
+						if (currentSchemaGeneration.global !== expectedSchemaGeneration.global
+							|| currentSchemaGeneration.connection !== expectedSchemaGeneration.connection
+							|| currentSchemaGeneration.partition !== expectedSchemaGeneration.partition) return false;
+						if (!this.isKustoOwnerLocallyCurrent(owner, accountPartition)) return false;
+						const tablesCount = schema.tables?.length ?? 0;
+						const columnsCount = countColumns(schema);
+						const functionsCount = schema.functions?.length ?? 0;
+						const jsonText = JSON.stringify({ cluster: current.clusterUrl, database, schema, meta: { cacheAgeMs: 0, tablesCount, columnsCount, functionsCount, timestamp: entry.timestamp } }, null, 2);
+						return this.postKustoPublication({ type: 'schemaResult', requestId, connectionId, accountPartition, database, ok: true, json: jsonText });
+					});
+					if (admitted !== true) throw new Error('Kusto schema owner changed during refresh.');
 					await this.sendSnapshotToWebview();
-					if (this.kustoClient.getAccountPartition(connection) !== accountPartition) return;
-					try { this.panel.webview.postMessage({ type: 'schemaResult', requestId, connectionId, accountPartition, database, ok: true, json: jsonText }); } catch { /* ignore */ }
 					void vscode.window.setStatusBarMessage(`Refreshed schema for ${database}`, 2000);
 				} catch (error) {
 					const isAuth = this.kustoClient.isAuthenticationError(error);
@@ -810,9 +1052,7 @@ export class CachedValuesViewerV2 {
 						? 'Failed to refresh schema due to an authentication error. Try running a query first.'
 						: 'Failed to refresh schema. Check your connection and try again.';
 					void vscode.window.showErrorMessage(msgText);
-					if (this.kustoClient.getAccountPartition(connection) === startingAccountPartition) {
-						try { this.panel.webview.postMessage({ type: 'schemaResult', requestId, connectionId, accountPartition: startingAccountPartition, database, ok: false, json: '' }); } catch { /* ignore */ }
-					}
+					try { this.panel.webview.postMessage({ type: 'schemaResult', requestId, connectionId, accountPartition: owner.accountPartition || '', database, ok: false, json: '' }); } catch { /* ignore */ }
 				}
 				return;
 			}

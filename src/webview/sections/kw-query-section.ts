@@ -16,7 +16,7 @@ import '../components/kw-dropdown.js';
 import '../components/kw-section-shell.js';
 import { CopilotChatManagerController } from './copilot-chat-manager.controller.js';
 import { kustoWebviewFlavor } from './copilot-chat-flavor.js';
-import { schedulePersist } from '../core/persistence.js';
+import { canPersistKustoResult, schedulePersist } from '../core/persistence.js';
 import { clearResultsState } from '../core/results-state.js';
 import {
 	removeQueryBox,
@@ -30,7 +30,7 @@ import type { KustoConnectionFormSubmitDetail } from '../components/kw-kusto-con
 import '../components/kw-kusto-connection-form.js';
 import { __kustoOpenShareModal, getRunModeForPersistence } from './kw-query-toolbar.js';
 import { optimizationMetadataByBoxId, subscribeKustoPreparation, type KustoPreparationState } from '../core/state.js';
-import { optimizeQueryWithCopilot, acceptOptimizations } from './query-execution.controller.js';
+import { optimizeQueryWithCopilot, acceptOptimizations, prepareKustoOptimizeQuery } from './query-execution.controller.js';
 import { QueryConnectionController } from './query-connection.controller.js';
 import { QueryExecutionController } from './query-execution.controller.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
@@ -52,6 +52,8 @@ export interface QuerySectionData {
 	clusterUrl: string;
 	authorityId?: string;
 	accountPartition?: string;
+	connectionRevision?: number;
+	connectionIdentityKey?: string;
 	connectionIdHint?: string;
 	database: string;
 	query: string;
@@ -76,6 +78,8 @@ export interface KustoConnection {
 	clusterUrl: string;
 	authorityId?: string;
 	accountPartition?: string;
+	connectionRevision?: number;
+	connectionIdentityKey?: string;
 }
 
 /** Favorite entry (cluster+database pair). */
@@ -216,13 +220,70 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	public connectionCtrl = new QueryConnectionController(this as any);
 	public executionCtrl = new QueryExecutionController(this as any);
 
-	public beginQueryExecution(executionId: string): boolean { return this.executionCtrl.beginQueryExecution(executionId); }
+	public beginQueryExecution(
+		executionId: string,
+		producer?: import('../../shared/kustoExecution.js').KustoExecutionProducer,
+		copilotRequestId?: string,
+		expectedPredecessorExecutionId?: string,
+	): boolean {
+		return this.executionCtrl.beginQueryExecution(
+			executionId, producer, copilotRequestId, expectedPredecessorExecutionId,
+		);
+	}
 	public getActiveExecutionId(): string { return this.executionCtrl.getActiveExecutionId(); }
+	public getActiveExecution(): import('../../shared/kustoExecution.js').KustoExecutionRequestIdentity | undefined {
+		return this.executionCtrl.getActiveExecution();
+	}
+	public admitQueryTerminal(identity: import('../../shared/kustoExecution.js').KustoExecutionRequestIdentity): 'active' | 'retired' | 'rejected' {
+		return this.executionCtrl.admitQueryTerminal(identity);
+	}
 	public acceptsQueryTerminal(executionId: string): boolean { return this.executionCtrl.acceptsQueryTerminal(executionId); }
 	public completeQueryExecution(executionId: string): boolean { return this.executionCtrl.completeQueryExecution(executionId); }
 	public cancelActiveQueryExecution(): string | undefined { return this.executionCtrl.cancelActiveQueryExecution(); }
+	public requestCancelActiveQueryExecution(): import('../../shared/kustoExecution.js').KustoExecutionRequestIdentity | undefined {
+		return this.executionCtrl.requestCancelActiveQueryExecution();
+	}
+	public retireActiveQueryExecution(): import('../../shared/kustoExecution.js').KustoExecutionRequestIdentity | undefined {
+		return this.executionCtrl.retireActiveQueryExecution();
+	}
+	public beginKustoOptimizeRequest(): import('../../shared/kustoExecution.js').KustoOptimizeRequestIdentity | undefined {
+		return this.executionCtrl.beginKustoOptimizeRequest();
+	}
+	public getActiveKustoOptimizeRequest(): import('../../shared/kustoExecution.js').KustoOptimizeRequestIdentity | undefined {
+		return this.executionCtrl.getActiveKustoOptimizeRequest();
+	}
+	public admitKustoOptimizeMessage(identity: unknown): boolean {
+		return this.executionCtrl.admitKustoOptimizeMessage(identity);
+	}
+	public completeKustoOptimizeRequest(identity: unknown): boolean {
+		return this.executionCtrl.completeKustoOptimizeRequest(identity);
+	}
+	public retireKustoOptimizeRequest(): import('../../shared/kustoExecution.js').KustoOptimizeRequestIdentity | undefined {
+		return this.executionCtrl.retireKustoOptimizeRequest();
+	}
 	public setExternalQueryExecuting(executing: boolean, executionId: string): boolean {
 		return this.executionCtrl.setExternalQueryExecuting(executing, executionId);
+	}
+	public admitKustoCopilotMessage(identity: unknown, messageType?: string): boolean {
+		return this.copilotChatCtrl.admitKustoCopilotMessage(identity, messageType);
+	}
+	public getActiveKustoCopilotRequest(): import('../../shared/kustoExecution.js').KustoCopilotRequestIdentity | undefined {
+		return this.copilotChatCtrl.getActiveKustoCopilotRequest();
+	}
+	public admitKustoCopilotConversationOwner(identity: unknown): boolean {
+		return this.copilotChatCtrl.admitKustoCopilotConversationOwner(identity);
+	}
+	public clearKustoCopilotConversationOwner(identity: unknown): boolean {
+		return this.copilotChatCtrl.clearKustoCopilotConversationOwner(identity);
+	}
+	public retireKustoCopilotConversationOwner(identity: unknown): boolean {
+		return this.copilotChatCtrl.retireKustoCopilotConversationOwner(identity);
+	}
+	public completeKustoCopilotRequest(identity: unknown): boolean {
+		return this.copilotChatCtrl.completeKustoCopilotRequest(identity);
+	}
+	public cancelKustoCopilotRequest(identity: unknown): boolean {
+		return this.copilotChatCtrl.cancelKustoCopilotRequest(identity);
 	}
 	public copilotChatCtrl = new CopilotChatManagerController(this as any, kustoWebviewFlavor);
 
@@ -253,9 +314,16 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 
 	public setSchemaLifecycleTarget(connectionId: string, database?: string): KustoEditorLifecycleIdentity | undefined {
-		return this._schemaSectionLease
-			? kustoEditorSchemaCoordinator.setTarget(this._schemaSectionLease, connectionId, database)
+		const currentTarget = kustoEditorSchemaCoordinator.getTarget(this.boxId);
+		const targetChanged = !!currentTarget
+			&& (String(currentTarget.connectionId || '') !== String(connectionId || '')
+				|| String(currentTarget.database || '').toLowerCase() !== String(database || '').toLowerCase());
+		if (targetChanged) this.clearTargetBoundState();
+		const selectedConnection = this._connections.find(connection => connection.id === String(connectionId || ''));
+		const next = this._schemaSectionLease
+			? kustoEditorSchemaCoordinator.setTarget(this._schemaSectionLease, connectionId, database, selectedConnection)
 			: undefined;
+		return next;
 	}
 
 	public beginDatabaseLifecycleRequest(requestToken: string) {
@@ -271,6 +339,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 
 	public invalidateSchemaLifecycleTarget(): KustoEditorLifecycleIdentity | undefined {
+		if (kustoEditorSchemaCoordinator.getTarget(this.boxId)) this.clearTargetBoundState();
 		return this._schemaSectionLease
 			? kustoEditorSchemaCoordinator.invalidateTarget(this._schemaSectionLease)
 			: undefined;
@@ -392,13 +461,22 @@ export class KwQuerySection extends LitElement implements SectionElement {
 							aria-label="Accept Optimizations">Accept Optimizations</button>
 					` : html`
 						<span class="optimize-inline" id="${id}_optimize_inline">
-							<button class="optimize-query-btn" id="${id}_optimize_btn"
+							<button class="optimize-query-btn" id="${id}_compare_btn"
 								@click=${() => optimizeQueryWithCopilot(id, null, { skipExecute: true })}
 								title="Compare two queries (A vs B) to check if they return the same data and which one is faster to return results" aria-label="Compare two queries (A vs B)">
 								${diffIconLightSvg}
 							</button>
+							<button class="optimize-query-btn optimize-copilot-btn" id="${id}_optimize_btn"
+								@click=${() => prepareKustoOptimizeQuery(id)} disabled
+								title="Optimize query with GitHub Copilot" aria-label="Optimize query with GitHub Copilot">Optimize</button>
 						</span>
 					`}
+					<span class="query-exec-status" id="${id}_optimize_status" style="display: none;"></span>
+					<button class="refresh-btn cancel-btn" id="${id}_optimize_cancel"
+						@click=${() => callGlobal('__kustoCancelOptimizeQuery', id)}
+						style="display: none;" title="Cancel query optimization" aria-label="Cancel query optimization">
+						${cancelIconSvg}
+					</button>
 					<span class="query-exec-status" id="${id}_exec_status" style="display: none;">
 						<span class="query-spinner" aria-hidden="true"></span>
 						<span id="${id}_exec_elapsed">0:00</span>
@@ -437,6 +515,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 					</div>
 				</div>
 			</div>
+			<div class="optimize-config" id="${id}_optimize_config" style="display: none;"></div>
 			<div class="results-wrapper" id="${id}_results_wrapper" style="display: none;" data-kusto-no-editor-focus="true">
 				<div class="results" id="${id}_results"></div>
 			</div>
@@ -984,6 +1063,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		opts?: { lastConnectionId?: string }
 	): void {
 		const previousConnection = this._connections.find(connection => connection.id === this._connectionId);
+		const previousTarget = kustoEditorSchemaCoordinator.getTarget(this.boxId);
 		this._connections = connections;
 		const lastConnId = opts?.lastConnectionId || '';
 
@@ -1042,8 +1122,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const nextConnection = connections.find(connection => connection.id === resolvedId);
 		const identityChanged = !!previousConnection && !!nextConnection && previousConnection.id === nextConnection.id
 			&& (_canonicalKustoClusterKey(previousConnection.clusterUrl) !== _canonicalKustoClusterKey(nextConnection.clusterUrl)
-				|| String(previousConnection.authorityId || '') !== String(nextConnection.authorityId || '')
-				|| String(previousConnection.accountPartition || '') !== String(nextConnection.accountPartition || ''));
+				|| String(previousConnection.authorityId || '') !== String(nextConnection.authorityId || ''));
 		if (identityChanged) {
 			this._desiredDatabase = this._desiredDatabase || this._database;
 			this._database = '';
@@ -1051,6 +1130,12 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			clearResultsState(this.boxId);
 			delete pState.queryResultJsonByBoxId[this.boxId];
 			this.clearResults();
+		}
+		const physicalOwnerChanged = !!resolvedId && !identityChanged
+			&& (previousTarget?.connectionRevision !== nextConnection?.connectionRevision
+				|| String(previousTarget?.connectionIdentityKey || '') !== String(nextConnection?.connectionIdentityKey || ''));
+		if (physicalOwnerChanged) {
+			this.setSchemaLifecycleTarget(resolvedId, this._database || this._desiredDatabase || undefined);
 		}
 
 		// Update desired cluster URL from resolved connection. If a file/restore desired
@@ -1565,6 +1650,30 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		if (resizer) resizer.style.display = 'none';
 	}
 
+	public clearTargetBoundState(): void {
+		const retiredExecution = this.executionCtrl.retireActiveQueryExecution();
+		if (retiredExecution) {
+			try {
+				postMessageToHost({
+					type: 'cancelQuery', boxId: this.boxId, executionId: retiredExecution.executionId,
+					sectionInstanceId: retiredExecution.sectionInstanceId,
+					targetGeneration: retiredExecution.targetGeneration,
+				});
+			} catch (e) { console.error('[kusto]', e); }
+		}
+		this.executionCtrl.retireKustoOptimizeRequest();
+		clearResultsState(this.boxId);
+		delete pState.queryResultJsonByBoxId[this.boxId];
+		this.clearResults();
+		this.querySelector('.comparison-summary-banner')?.remove();
+		const sourceBoxId = String(optimizationMetadataByBoxId[this.boxId]?.sourceBoxId || '').trim();
+		if (sourceBoxId) {
+			try { postMessageToHost({ type: 'clearComparisonSummary', sourceBoxId, comparisonBoxId: this.boxId }); } catch (e) { console.error('[kusto]', e); }
+		}
+		this.copilotChatCtrl.retireKustoCopilotTarget();
+		try { window.schedulePersist?.('kusto-target-retired'); } catch (e) { console.error('[kusto]', e); }
+	}
+
 	// ── Persistence ───────────────────────────────────────────────────────────
 
 	/**
@@ -1605,6 +1714,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 		let resultJson = '';
 		try { resultJson = String(pState.queryResultJsonByBoxId?.[b] || ''); } catch (e) { console.error('[kusto]', e); }
+		const kustoResultOwner = pState.kustoResultOwnerByBoxId?.[b];
+		const comparisonSourceBoxId = String(optimizationMetadataByBoxId[b]?.sourceBoxId || '').trim();
+		const comparisonSource = comparisonSourceBoxId ? document.getElementById(comparisonSourceBoxId) as any : undefined;
+		const sqlOwnedComparison = typeof comparisonSource?.canPersistResults === 'function';
 
 		const runMode = getRunModeForPersistence(b);
 
@@ -1618,8 +1731,9 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		let copilotChatWidthPx: number | undefined;
 		try { const w = this.copilotChatCtrl.getCopilotChatWidthPx(); if (typeof w === 'number' && Number.isFinite(w)) copilotChatWidthPx = w; } catch (e) { console.error('[kusto]', e); }
 
-		const shouldPersist = !!(resultJson && !this._isLeaveNoTrace(clusterUrl));
-		const comparisonSourceBoxId = String(optimizationMetadataByBoxId[b]?.sourceBoxId || '').trim();
+		const shouldPersist = !!(resultJson && (sqlOwnedComparison
+			? comparisonSource.canPersistResults()
+			: canPersistKustoResult(clusterUrl) && !this._isLeaveNoTrace(clusterUrl)));
 		const editorHeightPx = this._getEditorHeightPx();
 		const resultsHeightPx = this._getResultsHeightPx();
 
@@ -1631,7 +1745,13 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			...(connectionIdHint ? { connectionIdHint } : {}),
 			database: databaseForPersistence, query, expanded, resultsVisible,
 			...(comparisonSourceBoxId ? { comparisonSourceBoxId } : {}),
-			...(shouldPersist ? { resultJson } : {}),
+			...(shouldPersist ? {
+				resultJson,
+				...(!sqlOwnedComparison && kustoResultOwner ? {
+					kustoAccountPartition: kustoResultOwner.accountPartition,
+					kustoLeaveNoTraceRevision: kustoResultOwner.leaveNoTraceRevision,
+				} : {}),
+			} : {}),
 			runMode: String(runMode), cacheEnabled, cacheValue, cacheUnit,
 			...(editorHeightPx !== undefined ? { editorHeightPx } : {}),
 			...(resultsHeightPx !== undefined ? { resultsHeightPx } : {}),

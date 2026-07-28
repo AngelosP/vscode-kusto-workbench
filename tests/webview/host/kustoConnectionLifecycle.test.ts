@@ -52,7 +52,30 @@ describe('KustoConnectionLifecycle', () => {
 		});
 
 		events.fire({ type: 'removed', connection: original });
+		expect(order).toEqual(['invalidate:c1']);
 		await vi.waitFor(() => expect(order).toEqual(['invalidate:c1', 'publish:c1', 'refresh']));
+		lifecycle.dispose();
+	});
+
+	it('revokes affected executions before publishing a Leave No Trace snapshot', async () => {
+		const connectionEvents = new FakeEvent<KustoConnectionChange>();
+		const policyEvents = new FakeEvent<any>();
+		const order: string[] = [];
+		const lifecycle = new KustoConnectionLifecycle({
+			onDidChangeConnections: connectionEvents.event,
+			onDidChangeLeaveNoTrace: policyEvents.event,
+		} as any, {
+			invalidateConnections: ids => order.push(`invalidate:${ids.join(',')}`),
+			publishIdentityChange: async ids => { order.push(`publish:${ids.join(',')}`); },
+			refreshConnections: async () => { order.push('refresh'); },
+		});
+
+		policyEvents.fire({
+			clusterUrl: 'cluster', enabled: true, revision: 1, connectionIds: ['c1'],
+		});
+
+		expect(order).toEqual(['invalidate:c1']);
+		await vi.waitFor(() => expect(order).toEqual(['invalidate:c1', 'refresh']));
 		lifecycle.dispose();
 	});
 

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { html, render, nothing } from 'lit';
 import '../../src/webview/components/kw-dropdown.js';
 import '../../src/webview/sections/kw-query-section.js';
@@ -15,6 +15,10 @@ import {
 	isSchemaWorkerApplyRequired,
 	lastSchemaRequestAtByBoxId,
 	optimizationMetadataByBoxId,
+	queryEditors,
+	schemaByConnDb,
+	schemaMetaByConnDb,
+	setConnections as setStateConnections,
 	setPendingSchemaWorkerUpdate,
 	setSchemaEnhancementReadyState,
 	setSchemaWorkerReadyState,
@@ -32,6 +36,14 @@ import { invalidateLinkedComparisonSchemaForSource } from '../../src/webview/sec
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { pState } from '../../src/webview/shared/persistence-state.js';
 import { getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
+import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
+import { prepareKustoOptimizeQuery } from '../../src/webview/sections/query-execution.controller.js';
+import { ADMITTED_KUSTO_COPILOT_EVENT } from '../../src/webview/core/kusto-copilot-output-runtime.js';
+import { getKustoSchemaIdentityKey } from '../../src/shared/kustoAuth.js';
+
+vi.mock('../../src/webview/shared/webview-messages.js', () => ({
+	postMessageToHost: vi.fn(),
+}));
 
 // ── Test helpers ──────────────────────────────────────────────────────────────
 
@@ -53,8 +65,10 @@ afterEach(() => {
 	delete schemaRequestTokenByBoxId.comparison_1;
 	delete databaseRequestTokenByBoxId.comparison_1;
 	delete pState.queryResultJsonByBoxId.test1;
+	delete queryEditors.test1;
 	disposeKustoPreparation('comparison_1');
 	kustoEditorSchemaCoordinator.clear();
+	vi.mocked(postMessageToHost).mockClear();
 });
 
 function createSection(boxId = 'test1'): KwQuerySection {
@@ -79,6 +93,10 @@ function hasSpinner(el: KwQuerySection): boolean {
 describe('kw-query-section loading states', () => {
 	it('admits terminals only for the exact active Kusto execution', () => {
 		const el = createSection();
+		el.setConnectionId('connection-1');
+		el.setDesiredDatabase('Samples');
+		el.setDatabases(['Samples'], 'Samples');
+		el.setSchemaLifecycleTarget('connection-1', 'Samples');
 
 		expect(el.beginQueryExecution('execution-old')).toBe(true);
 		expect(el.beginQueryExecution('execution-new')).toBe(true);
@@ -90,14 +108,52 @@ describe('kw-query-section loading states', () => {
 		expect(el.getActiveExecutionId()).toBe('');
 	});
 
-	it('locally retires the exact active execution before sending Cancel', () => {
+	it('rejects a terminal whose target or producer differs from the active owner', () => {
 		const el = createSection();
+		el.setConnectionId('connection-1');
+		el.setDesiredDatabase('Samples');
+		el.setDatabases(['Samples'], 'Samples');
+		el.setSchemaLifecycleTarget('connection-1', 'Samples');
+		el.beginQueryExecution('execution-exact', 'manual');
+		const active = el.getActiveExecution()!;
+
+		expect(el.admitQueryTerminal({ ...active, database: 'Other' })).toBe('rejected');
+		expect(el.admitQueryTerminal({ ...active, producer: 'tool' })).toBe('rejected');
+		expect(el.admitQueryTerminal(active)).toBe('active');
+	});
+
+	it('keeps the exact active execution owned while cancellation is pending', () => {
+		const el = createSection();
+		el.setConnectionId('connection-1');
+		el.setDesiredDatabase('Samples');
+		el.setDatabases(['Samples'], 'Samples');
+		el.setSchemaLifecycleTarget('connection-1', 'Samples');
 		el.beginQueryExecution('execution-cancel');
 
 		expect(el.cancelActiveQueryExecution()).toBe('execution-cancel');
-		expect(el.getActiveExecutionId()).toBe('');
-		expect(el.acceptsQueryTerminal('execution-cancel')).toBe(false);
+		expect(el.getActiveExecutionId()).toBe('execution-cancel');
+		expect(el.acceptsQueryTerminal('execution-cancel')).toBe(true);
 		expect(el.cancelActiveQueryExecution()).toBeUndefined();
+		expect(el.completeQueryExecution('execution-cancel')).toBe(true);
+		expect(el.getActiveExecutionId()).toBe('');
+	});
+
+	it('admits each delayed retired terminal exactly once after many rapid replacements', () => {
+		const el = createSection();
+		el.setConnectionId('connection-1');
+		el.setDesiredDatabase('Samples');
+		el.setDatabases(['Samples'], 'Samples');
+		el.setSchemaLifecycleTarget('connection-1', 'Samples');
+		const owners: NonNullable<ReturnType<typeof el.getActiveExecution>>[] = [];
+
+		for (let index = 0; index < 20; index++) {
+			expect(el.beginQueryExecution(`execution-${index}`)).toBe(true);
+			owners.push(el.getActiveExecution()!);
+		}
+
+		expect(el.admitQueryTerminal(owners[0])).toBe('retired');
+		expect(el.admitQueryTerminal(owners[0])).toBe('rejected');
+		expect(el.admitQueryTerminal(owners[19])).toBe('active');
 	});
 
 	it('reflects preparation state without replacing the toolbar or editor nodes', async () => {
@@ -145,6 +201,69 @@ describe('kw-query-section loading states', () => {
 		expect(el.dataset.testPreparationState).toBe('ready');
 		expect(el.dataset.testPreparationBlockers).toBe('');
 		expect(el.getAttribute('aria-busy')).toBe('false');
+	});
+
+	it('does not show progress while worker hydration waits for editor focus', async () => {
+		const el = createSection();
+		await el.updateComplete;
+		const token = beginKustoPreparation('test1', {
+			stage: 'waiting-worker',
+			blockers: ['worker'],
+			target: { schemaKey: 'cluster|db', schemaSignature: 'sig-1', modelUri: 'inmemory://model/1' },
+			usableFallback: true,
+		})!;
+
+		updateKustoPreparation(token, {
+			status: 'deferred',
+			stage: 'waiting-focus',
+			replaceBlockers: [],
+		});
+
+		expect(el.dataset.testPreparationState).toBe('deferred');
+		expect(el.dataset.testPreparationStage).toBe('waiting-focus');
+		expect(el.dataset.testPreparationBlockers).toBe('');
+		expect(el.getAttribute('aria-busy')).toBe('false');
+	});
+
+	it('settles shared cached schema adoption while worker hydration waits for focus', async () => {
+		const connection = {
+			id: 'c1',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			accountPartition: 'partition-a',
+		};
+		const schemaKey = getKustoSchemaIdentityKey('c1', 'partition-a', connection.clusterUrl, 'Db');
+		setStateConnections([connection]);
+		schemaByConnDb[schemaKey] = {
+			tables: ['Events'],
+			columnTypesByTable: {},
+			rawSchemaJson: { Databases: { Db: {} } },
+		};
+		schemaMetaByConnDb[schemaKey] = { schemaSignature: 'sig-cache' };
+		const el = createSection();
+		el.id = 'test1';
+		el.setConnections([connection]);
+		el.setConnectionId('c1');
+		el.setDatabases(['Db'], 'Db');
+		await el.updateComplete;
+
+		try {
+			el.connectionCtrl.ensureSchema(false);
+
+			expect(getKustoEditorSchema('test1')?.rawSchemaJson).toEqual({ Databases: { Db: {} } });
+			expect(getKustoPreparationState('test1')).toMatchObject({
+				status: 'deferred',
+				stage: 'waiting-focus',
+				blockers: [],
+				usableFallback: true,
+				target: { connectionId: 'c1', database: 'Db', schemaSignature: 'sig-cache' },
+			});
+			expect(el.getAttribute('aria-busy')).toBe('false');
+			expect(postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'prefetchSchema' }));
+		} finally {
+			delete schemaByConnDb[schemaKey];
+			delete schemaMetaByConnDb[schemaKey];
+			setStateConnections([]);
+		}
 	});
 
 	it('stops the progress state when worker preparation fails terminally', async () => {
@@ -382,6 +501,20 @@ describe('kw-query-section loading states', () => {
 	});
 
 	it('clears linked comparison schema state when the source target changes', () => {
+		const source = createSection();
+		source.id = 'test1';
+		source.setConnectionId('connection-new');
+		source.setDatabase('NewDb');
+		source.setSchemaLifecycleTarget('connection-new', 'NewDb');
+		const comparison = document.createElement('kw-query-section') as KwQuerySection;
+		comparison.setAttribute('box-id', 'comparison_1');
+		comparison.id = 'comparison_1';
+		container.appendChild(comparison);
+		comparison.setConnectionId('connection-old');
+		comparison.setDatabase('OldDb');
+		comparison.setSchemaLifecycleTarget('connection-old', 'OldDb');
+		comparison.beginQueryExecution('comparison-old-execution', 'comparison');
+		const oldOwner = comparison.getActiveExecution()!;
 		optimizationMetadataByBoxId.test1 = { comparisonBoxId: 'comparison_1' };
 		setKustoEditorSchema('comparison_1', { tables: [], columnTypesByTable: {}, rawSchemaJson: { Databases: { OldDb: {} } } });
 		setKustoSchemaMetadata('comparison_1', { schemaSignature: 'old' });
@@ -398,6 +531,16 @@ describe('kw-query-section loading states', () => {
 
 		invalidateLinkedComparisonSchemaForSource('test1');
 
+		expect(comparison.getConnectionId()).toBe('connection-new');
+		expect(comparison.getDatabase()).toBe('NewDb');
+		expect(comparison.getSchemaLifecycleIdentity()).toMatchObject({ targetGeneration: 2 });
+		expect(comparison.getActiveExecution()).toBeUndefined();
+		expect(comparison.admitQueryTerminal(oldOwner)).toBe('retired');
+		expect(postMessageToHost).toHaveBeenCalledWith({
+			type: 'cancelQuery', boxId: 'comparison_1', executionId: oldOwner.executionId,
+			sectionInstanceId: oldOwner.sectionInstanceId,
+			targetGeneration: oldOwner.targetGeneration,
+		});
 		expect(getKustoEditorSchema('comparison_1')).toBeUndefined();
 		expect(getKustoSchemaMetadata('comparison_1')).toBeUndefined();
 		expect(getPendingSchemaWorkerUpdate('comparison_1')).toBeUndefined();
@@ -409,6 +552,32 @@ describe('kw-query-section loading states', () => {
 		expect(getSchemaEnhancementReadyState('comparison_1')).toBeUndefined();
 		expect(getKustoPreparationState('comparison_1').status).toBe('idle');
 		expect(isSchemaWorkerApplyRequired('comparison_1')).toBe(true);
+	});
+
+	it('preserves same-target comparison Copilot and Optimize owners during schema-only invalidation', () => {
+		const source = createSection();
+		source.setConnectionId('connection-1');
+		source.setDatabase('Db');
+		source.setSchemaLifecycleTarget('connection-1', 'Db');
+		const comparison = document.createElement('kw-query-section') as KwQuerySection;
+		comparison.setAttribute('box-id', 'comparison_1');
+		comparison.id = 'comparison_1';
+		container.appendChild(comparison);
+		comparison.setConnectionId('connection-1');
+		comparison.setDatabase('Db');
+		comparison.setSchemaLifecycleTarget('connection-1', 'Db');
+		const lifecycle = comparison.getSchemaLifecycleIdentity()!;
+		const copilotOwner = { boxId: 'comparison_1', copilotRequestId: 'copilot-same-target', ...lifecycle };
+		(comparison.copilotChatCtrl as any).activeKustoRequest = copilotOwner;
+		(comparison.copilotChatCtrl as any).kustoConversationOwner = copilotOwner;
+		const optimizeOwner = comparison.beginKustoOptimizeRequest()!;
+		optimizationMetadataByBoxId.test1 = { comparisonBoxId: 'comparison_1' };
+
+		invalidateLinkedComparisonSchemaForSource('test1');
+
+		expect(comparison.getSchemaLifecycleIdentity()).toEqual(lifecycle);
+		expect(comparison.admitKustoCopilotMessage(copilotOwner, 'copilotWriteQueryStatus')).toBe(true);
+		expect(comparison.admitKustoOptimizeMessage(optimizeOwner)).toBe(true);
 	});
 
 	it('selects the first configured connection when no desired current or last selection exists', async () => {
@@ -445,7 +614,7 @@ describe('kw-query-section loading states', () => {
 		expect(el.getClusterUrl()).toBe('https://second.kusto.windows.net');
 	});
 
-	it('clears the selected database and reloads when the same connection ID changes account partition', async () => {
+	it('preserves the active owner and rows when an account-establishing snapshot updates account metadata', async () => {
 		const el = createSection();
 		const connectionEvents: CustomEvent[] = [];
 		el.addEventListener('connection-changed', event => connectionEvents.push(event as CustomEvent));
@@ -455,6 +624,9 @@ describe('kw-query-section loading states', () => {
 		el.displayResult({ columns: ['value'], rows: [['account-a']], metadata: {} });
 		setResultsState('test1', { boxId: 'test1', columns: ['value'], rows: [['account-a']] });
 		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['value'], rows: [['account-a']] });
+		el.setSchemaLifecycleTarget('c1', 'AccountADb');
+		el.beginQueryExecution('account-establishing', 'manual');
+		const active = el.getActiveExecution();
 		connectionEvents.length = 0;
 		expect(el.getDatabase()).toBe('AccountADb');
 
@@ -462,18 +634,206 @@ describe('kw-query-section loading states', () => {
 		await el.updateComplete;
 
 		expect(el.getConnectionId()).toBe('c1');
-		expect((el as any)._database).toBe('');
 		expect(el.getDatabase()).toBe('AccountADb');
-		expect(el.getDesiredDatabase()).toBe('AccountADb');
-		expect((el as any)._testHasResults).toBe(false);
+		expect(el.getActiveExecution()).toEqual(active);
+		expect((el as any)._testHasResults).toBe(true);
+		expect(getResultsState('test1')).toMatchObject({ rows: [['account-a']] });
+		expect(pState.queryResultJsonByBoxId.test1).toBeDefined();
+		expect(connectionEvents).toHaveLength(0);
+	});
+
+	it('republishes a restored target when its physical connection stamp arrives', async () => {
+		const el = createSection();
+		el.setConnections([{
+			id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net',
+		}]);
+		el.setDatabases(['Db'], 'Db');
+		el.setSchemaLifecycleTarget('c1', 'Db');
+		el.displayResult({ columns: ['value'], rows: [['keep']], metadata: {} });
+		setResultsState('test1', { boxId: 'test1', columns: ['value'], rows: [['keep']] });
+		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['value'], rows: [['keep']] });
+		const before = kustoEditorSchemaCoordinator.getTarget('test1');
+		const beforeIdentity = el.getSchemaLifecycleIdentity()!;
+		const lifecycleEvents: any[] = [];
+		const unsubscribe = kustoEditorSchemaCoordinator.subscribeLifecycle(event => lifecycleEvents.push(event));
+
+		try {
+			el.setConnections([{
+				id: 'c1', clusterUrl: 'https://cluster.kusto.windows.net',
+				connectionRevision: 4, connectionIdentityKey: 'cluster|',
+			}]);
+		} finally {
+			unsubscribe();
+		}
+
+		const after = kustoEditorSchemaCoordinator.getTarget('test1');
+		expect(after).toMatchObject({
+			connectionId: 'c1', database: 'Db', connectionRevision: 4, connectionIdentityKey: 'cluster|',
+		});
+		expect(before).toMatchObject({ connectionId: 'c1', database: 'Db' });
+		expect(el.getSchemaLifecycleIdentity()!.targetGeneration).toBeGreaterThan(beforeIdentity.targetGeneration);
+		expect(getResultsState('test1')).toMatchObject({ rows: [['keep']] });
+		expect(pState.queryResultJsonByBoxId.test1).toBeDefined();
+		expect(lifecycleEvents).toContainEqual(expect.objectContaining({
+			type: 'target', owner: expect.objectContaining({ boxId: 'test1' }),
+			target: expect.objectContaining({
+				connectionId: 'c1', database: 'Db', connectionRevision: 4, connectionIdentityKey: 'cluster|',
+			}),
+		}));
+	});
+
+	it('clears rows, persisted output, comparison summary, and Copilot state when its target retires', () => {
+		const el = createSection();
+		el.displayResult({ columns: ['value'], rows: [['old-target']], metadata: {} });
+		setResultsState('test1', { boxId: 'test1', columns: ['value'], rows: [['old-target']] });
+		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['value'], rows: [['old-target']] });
+		optimizationMetadataByBoxId.test1 = { sourceBoxId: 'query_source', isComparison: true };
+		const banner = document.createElement('div');
+		banner.className = 'comparison-summary-banner';
+		el.appendChild(banner);
+		const copilotOwner = {
+			boxId: 'test1', copilotRequestId: 'completed-request', sectionInstanceId: 'instance-test1', targetGeneration: 2,
+		};
+		(el.copilotChatCtrl as any).kustoConversationOwner = copilotOwner;
+		const retiredOutputs: any[] = [];
+		const onRetired = (event: Event) => retiredOutputs.push((event as CustomEvent).detail);
+		window.addEventListener(ADMITTED_KUSTO_COPILOT_EVENT, onRetired);
+
+		try { el.clearTargetBoundState(); }
+		finally { window.removeEventListener(ADMITTED_KUSTO_COPILOT_EVENT, onRetired); }
+
 		expect(getResultsState('test1')).toBeNull();
 		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
-		expect(connectionEvents).toHaveLength(1);
-		expect(connectionEvents[0].detail).toMatchObject({ connectionId: 'c1', database: 'AccountADb' });
+		expect(el.querySelector('.comparison-summary-banner')).toBeNull();
+		expect(postMessageToHost).toHaveBeenCalledWith({
+			type: 'clearComparisonSummary', sourceBoxId: 'query_source', comparisonBoxId: 'test1',
+		});
+		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelCopilotWriteQuery', boxId: 'test1', flavor: 'kusto', ...copilotOwner });
+		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'clearCopilotConversation', flavor: 'kusto', ...copilotOwner });
+		expect(retiredOutputs).toContainEqual({
+			type: 'copilotWriteQueryDone', ...copilotOwner, ok: false, message: 'Canceled.', retired: true,
+		});
+	});
 
-		el.setDatabases(['AccountADb', 'OtherDb']);
-		expect(el.getDatabase()).toBe('AccountADb');
-		expect(el.getDesiredDatabase()).toBe('');
+	it('clears ordinary target-bound state before advancing to another database', () => {
+		const el = createSection();
+		el.setConnectionId('connection-1');
+		el.setDatabase('DbA');
+		el.setSchemaLifecycleTarget('connection-1', 'DbA');
+		el.displayResult({ columns: ['marker'], rows: [['DB_A']], metadata: {} });
+		setResultsState('test1', { boxId: 'test1', columns: ['marker'], rows: [['DB_A']] });
+		pState.queryResultJsonByBoxId.test1 = JSON.stringify({ columns: ['marker'], rows: [['DB_A']] });
+		el.beginQueryExecution('execution-db-a');
+		const oldExecution = el.getActiveExecution()!;
+
+		const next = el.setSchemaLifecycleTarget('connection-1', 'DbB');
+
+		expect(next?.targetGeneration).toBeGreaterThan(oldExecution.targetGeneration);
+		expect(el.getActiveExecution()).toBeUndefined();
+		expect(getResultsState('test1')).toBeNull();
+		expect(pState.queryResultJsonByBoxId.test1).toBeUndefined();
+		expect(postMessageToHost).toHaveBeenCalledWith({
+			type: 'cancelQuery', boxId: 'test1', executionId: oldExecution.executionId,
+			sectionInstanceId: oldExecution.sectionInstanceId,
+			targetGeneration: oldExecution.targetGeneration,
+		});
+	});
+
+	it('keeps a canceled Copilot owner admissible until its exact done terminal', () => {
+		const el = createSection();
+		const owner = {
+			boxId: 'test1', copilotRequestId: 'cancel-request',
+			sectionInstanceId: el.getSchemaLifecycleIdentity()!.sectionInstanceId,
+			targetGeneration: el.getSchemaLifecycleIdentity()!.targetGeneration,
+		};
+		(el.copilotChatCtrl as any).activeKustoRequest = owner;
+		(el.copilotChatCtrl as any).kustoConversationOwner = owner;
+
+		expect(el.cancelKustoCopilotRequest(owner)).toBe(true);
+		expect(el.getActiveKustoCopilotRequest()).toEqual(owner);
+		expect(el.admitKustoCopilotMessage(owner, 'copilotExecutedQuery')).toBe(false);
+		expect(el.admitKustoCopilotMessage(owner, 'copilotWriteQueryDone')).toBe(true);
+		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelCopilotWriteQuery', flavor: 'kusto', ...owner });
+
+		expect(el.completeKustoCopilotRequest(owner)).toBe(true);
+		expect(el.getActiveKustoCopilotRequest()).toBeUndefined();
+	});
+
+	it('emits an internal canceled terminal before host-driven Copilot owner retirement', () => {
+		const el = createSection();
+		const lifecycle = el.getSchemaLifecycleIdentity()!;
+		const owner = { boxId: 'test1', copilotRequestId: 'host-invalidated', ...lifecycle };
+		(el.copilotChatCtrl as any).activeKustoRequest = owner;
+		(el.copilotChatCtrl as any).kustoConversationOwner = owner;
+		const outputs: any[] = [];
+		const listener = (event: Event) => outputs.push((event as CustomEvent).detail);
+		window.addEventListener(ADMITTED_KUSTO_COPILOT_EVENT, listener);
+
+		try { expect(el.retireKustoCopilotConversationOwner(owner)).toBe(true); }
+		finally { window.removeEventListener(ADMITTED_KUSTO_COPILOT_EVENT, listener); }
+
+		expect(outputs).toEqual([{
+			type: 'copilotWriteQueryDone', ...owner, ok: false, message: 'Canceled.', retired: true,
+		}]);
+		expect(el.getActiveKustoCopilotRequest()).toBeUndefined();
+	});
+
+	it('admits and retires only the exact standalone Optimize request', () => {
+		const el = createSection();
+		const owner = el.beginKustoOptimizeRequest();
+		expect(owner).toEqual(expect.objectContaining({
+			boxId: 'test1', optimizeRequestId: expect.stringMatching(/^kusto-optimize-/),
+			sectionInstanceId: expect.any(String), targetGeneration: expect.any(Number),
+		}));
+		expect(el.admitKustoOptimizeMessage({ ...owner, optimizeRequestId: 'stale' })).toBe(false);
+		expect(el.admitKustoOptimizeMessage(owner)).toBe(true);
+
+		expect(el.retireKustoOptimizeRequest()).toEqual(owner);
+		expect(el.getActiveKustoOptimizeRequest()).toBeUndefined();
+		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'cancelOptimizeQuery', ...owner });
+	});
+
+	it('uses one exact standalone Optimize owner from options preparation through execution', async () => {
+		const el = createSection();
+		el.id = 'test1';
+		el.setConnections([{ id: 'connection-1', clusterUrl: 'https://cluster.kusto.windows.net' }]);
+		el.setDatabases(['Samples'], 'Samples');
+		el.setSchemaLifecycleTarget('connection-1', 'Samples');
+		await el.updateComplete;
+		queryEditors.test1 = { getValue: () => 'print value=1' } as any;
+		expect(el.getConnectionId()).toBe('connection-1');
+		expect(el.getDatabase()).toBe('Samples');
+		expect(document.getElementById('test1')).toBe(el);
+
+		expect(prepareKustoOptimizeQuery('test1')).toBe(true);
+		const owner = el.getActiveKustoOptimizeRequest()!;
+		expect(postMessageToHost).toHaveBeenCalledWith({
+			type: 'prepareOptimizeQuery', query: 'print value=1', ...owner,
+		});
+		expect((document.getElementById('test1_optimize_config') as HTMLElement).style.display).toBe('block');
+
+		el.executionCtrl.applyOptimizeQueryOptions([{ id: 'model-1', label: 'Model 1' }], 'model-1', 'Optimize this query');
+		vi.mocked(postMessageToHost).mockClear();
+		window.__kustoRunOptimizeQueryWithOverrides('test1');
+
+		expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'optimizeQuery', query: 'print value=1', connectionId: 'connection-1', database: 'Samples',
+			modelId: 'model-1', promptText: 'Optimize this query', ...owner,
+		}));
+		expect(el.getActiveKustoOptimizeRequest()).toEqual(owner);
+	});
+
+	it('keeps standalone Optimize disabled after cleanup when Copilot is unavailable', () => {
+		const el = createSection();
+		el.id = 'test1';
+		const button = document.getElementById('test1_optimize_btn') as HTMLButtonElement;
+		button.dataset.kustoCopilotAvailable = '0';
+		button.disabled = true;
+
+		el.executionCtrl.hideOptimizePrompt();
+
+		expect(button.disabled).toBe(true);
+		expect(button.getAttribute('aria-disabled')).toBe('true');
 	});
 
 	it('clears the selected database when the same connection ID is repointed to another cluster', async () => {

@@ -250,6 +250,8 @@ export class KwCachedValues extends LitElement {
 	/** Set of account IDs whose override input is expanded. */
 	@state() private _expandedOverrides = new Set<string>();
 	private _latestSnapshotRevision = 0;
+	private _stagedKustoPublications = new Map<string, { payload: any; deadline: number; timer: ReturnType<typeof setTimeout> }>();
+	private _completedKustoPublications = new Map<string, { accepted: boolean; timer: ReturnType<typeof setTimeout> }>();
 	private _schemaRequestOwner: { requestId: string; connectionId: string; accountPartition: string } | undefined;
 	private _objectViewerOwner: { connectionId: string; accountPartition: string } | undefined;
 	private _sqlSchemaRequestOwner: { requestId: string; connectionId: string } | undefined;
@@ -285,8 +287,67 @@ export class KwCachedValues extends LitElement {
 
 	// ── Message handling ──────────────────────────────────────────────────────
 
-	private _onMessage = async (event: MessageEvent) => {
-		const msg = event.data;
+	private _onMessage = (event: MessageEvent) => {
+		let msg = event.data;
+		const acknowledge = (accepted: boolean, phase: 'staged' | 'applied' = 'applied') => {
+			if (!msg?.publicationId) return;
+			if (phase === 'applied') {
+				const previous = this._completedKustoPublications.get(msg.publicationId);
+				if (previous) clearTimeout(previous.timer);
+				const timer = setTimeout(() => this._completedKustoPublications.delete(msg.publicationId), 10_000);
+				this._completedKustoPublications.set(msg.publicationId, { accepted, timer });
+			}
+			this._vscode.postMessage({ type: 'kustoPublicationAck', publicationId: msg.publicationId, phase, accepted });
+		};
+		if (msg?.type === 'kustoPublicationStage') {
+			const publicationId = String(msg.publicationId || '');
+			const deadline = Number(msg.publicationDeadline);
+			if (!publicationId || !Number.isFinite(deadline) || deadline < Date.now()) {
+				acknowledge(false, 'staged');
+				return;
+			}
+			const previous = this._stagedKustoPublications.get(publicationId);
+			if (previous) clearTimeout(previous.timer);
+			const timer = setTimeout(() => {
+				if (!this._stagedKustoPublications.delete(publicationId)) return;
+				this._vscode.postMessage({ type: 'kustoPublicationAck', publicationId, phase: 'applied', accepted: false });
+			}, Math.max(0, deadline - Date.now()));
+			this._stagedKustoPublications.set(publicationId, { payload: msg.payload, deadline, timer });
+			acknowledge(true, 'staged');
+			return;
+		}
+		if (msg?.type === 'kustoPublicationCommit') {
+			const publicationId = String(msg.publicationId || '');
+			const staged = this._stagedKustoPublications.get(publicationId);
+			this._stagedKustoPublications.delete(publicationId);
+			if (staged) clearTimeout(staged.timer);
+			if (!staged || staged.deadline < Date.now()) {
+				acknowledge(false, 'applied');
+				return;
+			}
+			msg = { ...(staged.payload || {}), publicationId };
+		}
+		if (msg?.type === 'kustoPublicationRevoke') {
+			const publicationId = String(msg.publicationId || '');
+			const staged = this._stagedKustoPublications.get(publicationId);
+			if (staged) clearTimeout(staged.timer);
+			this._stagedKustoPublications.delete(publicationId);
+			acknowledge(this._completedKustoPublications.get(publicationId)?.accepted === true, 'applied');
+			return;
+		}
+		if (msg?.type === 'kustoOwnerChanged') {
+			const changedIds = new Set((Array.isArray(msg.connectionIds) ? msg.connectionIds : []).map(String));
+			if (this._schemaRequestOwner && (changedIds.size === 0 || changedIds.has(this._schemaRequestOwner.connectionId))) {
+				this._schemaRequestOwner = undefined;
+				this._schemaRequestInFlight = false;
+				this._kustoSchemaRefreshDb = '';
+			}
+			if (this._objectViewerOwner && (changedIds.size === 0 || changedIds.has(this._objectViewerOwner.connectionId))) {
+				this._objectViewerOwner = undefined;
+				this._objectViewer?.hide();
+			}
+			return;
+		}
 		if (msg?.type === 'sqlPrincipalChanged' || msg?.type === 'sqlOwnerChanged') {
 			const changedIds = new Set((Array.isArray(msg.connectionIds) ? msg.connectionIds : []).map(String));
 			if (this._sqlSchemaRequestOwner && changedIds.has(this._sqlSchemaRequestOwner.connectionId)) {
@@ -302,7 +363,7 @@ export class KwCachedValues extends LitElement {
 		}
 		if (msg?.type === 'snapshot') {
 			const revision = Number(msg.snapshot?.revision) || 0;
-			if (revision && revision < this._latestSnapshotRevision) return;
+			if (revision && revision < this._latestSnapshotRevision) { acknowledge(false); return; }
 			if (revision) this._latestSnapshotRevision = revision;
 			this._requestPending = false;
 			const snap = msg.snapshot as Snapshot;
@@ -343,6 +404,7 @@ export class KwCachedValues extends LitElement {
 				else if (hasSql && !hasKusto) this._activeKind = 'sql';
 				else this._activeKind = 'kusto';
 			}
+			acknowledge(true);
 		}
 		if (msg?.type === 'schemaResult') {
 			const requestId = String(msg.requestId || '');
@@ -367,8 +429,6 @@ export class KwCachedValues extends LitElement {
 			const db = String(msg.database || '');
 			const title = 'Cached schema for ' + (db || '(unknown db)');
 			const jsonText = String(msg.json || '');
-			// Wait for the component to be available in the shadow DOM
-			await this.updateComplete;
 			if (isSqlResult) {
 				const owner = this._sqlSchemaRequestOwner;
 				const allowed = this._snapshot?.sqlConnections.some(connection => connection.id === connectionId)
@@ -383,10 +443,10 @@ export class KwCachedValues extends LitElement {
 				this._schemaRequestOwner = undefined;
 				this._objectViewerOwner = { connectionId, accountPartition };
 			}
-			if (this._objectViewer) {
-				this._objectViewer.copyCallback = (msg: unknown) => this._vscode.postMessage(msg);
-				this._objectViewer.show(title, jsonText);
-			}
+			if (!this._objectViewer) { acknowledge(false); return; }
+			this._objectViewer.copyCallback = (msg: unknown) => this._vscode.postMessage(msg);
+			this._objectViewer.show(title, jsonText);
+			acknowledge(true);
 		}
 		if (msg?.type === 'kustoMutationComplete') this._requestPending = false;
 	};

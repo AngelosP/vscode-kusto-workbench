@@ -42,6 +42,8 @@ import {
 import { __kustoParseFunction, __kustoParseParamList } from '../monaco/prettify';
 import { findKustoFunctionDefinitionAtOffset, getSingleKustoCodeFenceBodyRange, hasKustoFunctionDefinition, normalizeKustoText } from '../../shared/kustoFunctionDefinitions.js';
 import type { FunctionParam } from '../components/kw-function-params-dialog';
+import { hasKustoOptimizeRequestIdentity, kustoExecutionRequestIdentityEquals, kustoOptimizeRequestIdentityEquals, type KustoExecutionProducer, type KustoExecutionRequestIdentity, type KustoOptimizeRequestIdentity } from '../../shared/kustoExecution.js';
+import { synchronizeKustoSectionTarget } from '../core/query-section-accessors.js';
 import '../components/kw-function-params-dialog';
 
 export const lastRunCacheEnabledByBoxId: Record<string, boolean> = {};
@@ -54,6 +56,7 @@ export interface ExecutionSectionHost extends ReactiveControllerHost, HTMLElemen
 	boxId: string;
 	getConnectionId(): string;
 	getDatabase(): string;
+	getSchemaLifecycleIdentity(): { sectionInstanceId: string; targetGeneration: number } | undefined;
 }
 
 // ── ReactiveController ────────────────────────────────────────────────────────
@@ -64,7 +67,10 @@ export interface ExecutionSectionHost extends ReactiveControllerHost, HTMLElemen
  */
 export class QueryExecutionController implements ReactiveController {
 	host: ExecutionSectionHost;
-	private activeExecutionId = '';
+	private activeExecution: KustoExecutionRequestIdentity | undefined;
+	private readonly retiredExecutions: KustoExecutionRequestIdentity[] = [];
+	private activeOptimizeRequest: KustoOptimizeRequestIdentity | undefined;
+	private cancelling = false;
 
 	constructor(host: ExecutionSectionHost) {
 		this.host = host;
@@ -76,13 +82,48 @@ export class QueryExecutionController implements ReactiveController {
 	}
 
 	hostDisconnected(): void {
-		this.activeExecutionId = '';
-		// Clean up execution timer for this box.
-		const id = this.host.boxId;
-		if (id && queryExecutionTimers[id]) {
-			clearInterval(queryExecutionTimers[id]);
-			delete queryExecutionTimers[id];
-		}
+		// Reorder disconnect/reconnect is not disposal. The exact execution owner
+		// and elapsed timer remain valid until an explicit terminal or removal.
+	}
+
+	beginKustoOptimizeRequest(): KustoOptimizeRequestIdentity | undefined {
+		const lifecycle = this.host.getSchemaLifecycleIdentity();
+		if (!lifecycle) return undefined;
+		this.retireKustoOptimizeRequest();
+		this.activeOptimizeRequest = Object.freeze({
+			boxId: this.host.boxId,
+			...lifecycle,
+			optimizeRequestId: `kusto-optimize-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`,
+		});
+		return this.activeOptimizeRequest;
+	}
+
+	getActiveKustoOptimizeRequest(): KustoOptimizeRequestIdentity | undefined {
+		return this.activeOptimizeRequest;
+	}
+
+	admitKustoOptimizeMessage(identity: unknown): boolean {
+		if (!this.activeOptimizeRequest || !hasKustoOptimizeRequestIdentity(identity)
+			|| !kustoOptimizeRequestIdentityEquals(this.activeOptimizeRequest, identity)) return false;
+		const lifecycle = this.host.getSchemaLifecycleIdentity();
+		return !!lifecycle
+			&& lifecycle.sectionInstanceId === this.activeOptimizeRequest.sectionInstanceId
+			&& lifecycle.targetGeneration === this.activeOptimizeRequest.targetGeneration;
+	}
+
+	completeKustoOptimizeRequest(identity: unknown): boolean {
+		if (!this.admitKustoOptimizeMessage(identity)) return false;
+		this.activeOptimizeRequest = undefined;
+		return true;
+	}
+
+	retireKustoOptimizeRequest(): KustoOptimizeRequestIdentity | undefined {
+		const owner = this.activeOptimizeRequest;
+		if (!owner) return undefined;
+		this.activeOptimizeRequest = undefined;
+		try { postMessageToHost({ type: 'cancelOptimizeQuery', ...owner }); } catch (e) { console.error('[kusto]', e); }
+		try { this.hideOptimizePrompt(); } catch (e) { console.error('[kusto]', e); }
+		return owner;
 	}
 
 	// ── Results visibility ────────────────────────────────────────────────────
@@ -215,10 +256,32 @@ export class QueryExecutionController implements ReactiveController {
 
 	// ── Execution state ───────────────────────────────────────────────────────
 
-	beginQueryExecution(executionId: string): boolean {
+	beginQueryExecution(
+		executionId: string,
+		producer: KustoExecutionProducer = 'manual',
+		copilotRequestId?: string,
+		expectedPredecessorExecutionId?: string,
+	): boolean {
 		const id = String(executionId || '').trim();
-		if (!id) return false;
-		this.activeExecutionId = id;
+		const lifecycle = this.host.getSchemaLifecycleIdentity();
+		const connectionId = String(this.host.getConnectionId() || '').trim();
+		const database = String(this.host.getDatabase() || '').trim();
+		if (!id || !lifecycle || !connectionId || !database) return false;
+		if (expectedPredecessorExecutionId !== undefined && this.activeExecution
+			&& this.activeExecution.executionId !== expectedPredecessorExecutionId) return false;
+		if (this.activeExecution) this.rememberRetired(this.activeExecution);
+		this.activeExecution = Object.freeze({
+			engine: 'kusto',
+			boxId: this.host.boxId,
+			executionId: id,
+			sectionInstanceId: lifecycle.sectionInstanceId,
+			targetGeneration: lifecycle.targetGeneration,
+			connectionId,
+			database,
+			producer,
+			...(copilotRequestId ? { copilotRequestId } : {}),
+		});
+		this.cancelling = false;
 		this.setQueryExecuting(true);
 		return true;
 	}
@@ -227,38 +290,70 @@ export class QueryExecutionController implements ReactiveController {
 		const id = String(executionId || '').trim();
 		if (!id) return false;
 		if (executing) {
-			if (this.activeExecutionId && this.activeExecutionId !== id) return false;
-			this.activeExecutionId = id;
-			this.setQueryExecuting(true);
-			return true;
+			if (this.activeExecution && this.activeExecution.executionId !== id) return false;
+			return this.activeExecution ? true : this.beginQueryExecution(id, 'copilot');
 		}
-		if (this.activeExecutionId !== id) return false;
-		this.activeExecutionId = '';
+		if (this.activeExecution?.executionId !== id) return false;
+		this.activeExecution = undefined;
+		this.cancelling = false;
 		this.setQueryExecuting(false);
 		return true;
 	}
 
 	getActiveExecutionId(): string {
-		return this.activeExecutionId;
+		return this.activeExecution?.executionId ?? '';
+	}
+
+	getActiveExecution(): KustoExecutionRequestIdentity | undefined {
+		return this.activeExecution;
+	}
+
+	admitQueryTerminal(identity: KustoExecutionRequestIdentity): 'active' | 'retired' | 'rejected' {
+		if (this.activeExecution && this.executionMatches(this.activeExecution, identity)) return 'active';
+		const retiredIndex = this.retiredExecutions.findIndex(owner => this.executionMatches(owner, identity));
+		if (retiredIndex < 0) return 'rejected';
+		this.retiredExecutions.splice(retiredIndex, 1);
+		return 'retired';
 	}
 
 	acceptsQueryTerminal(executionId: string): boolean {
-		const id = String(executionId || '').trim();
-		return !!id && this.activeExecutionId === id;
+		return !!this.activeExecution && this.activeExecution.executionId === String(executionId || '').trim();
 	}
 
 	completeQueryExecution(executionId: string): boolean {
 		if (!this.acceptsQueryTerminal(executionId)) return false;
-		this.activeExecutionId = '';
+		this.activeExecution = undefined;
+		this.cancelling = false;
 		return true;
 	}
 
+	requestCancelActiveQueryExecution(): KustoExecutionRequestIdentity | undefined {
+		if (!this.activeExecution || this.cancelling) return undefined;
+		this.cancelling = true;
+		return this.activeExecution;
+	}
+
 	cancelActiveQueryExecution(): string | undefined {
-		const executionId = this.activeExecutionId;
-		if (!executionId) return undefined;
-		this.activeExecutionId = '';
+		return this.requestCancelActiveQueryExecution()?.executionId;
+	}
+
+	retireActiveQueryExecution(): KustoExecutionRequestIdentity | undefined {
+		const active = this.activeExecution;
+		if (!active) return undefined;
+		this.rememberRetired(active);
+		this.activeExecution = undefined;
+		this.cancelling = false;
 		this.setQueryExecuting(false);
-		return executionId;
+		return active;
+	}
+
+	private rememberRetired(owner: KustoExecutionRequestIdentity): void {
+		if (this.retiredExecutions.some(candidate => this.executionMatches(candidate, owner))) return;
+		this.retiredExecutions.push(owner);
+	}
+
+	private executionMatches(left: KustoExecutionRequestIdentity, right: KustoExecutionRequestIdentity): boolean {
+		return kustoExecutionRequestIdentityEquals(left, right);
 	}
 
 	setQueryExecuting(executing: any): void {
@@ -362,7 +457,6 @@ export class QueryExecutionController implements ReactiveController {
 		try {
 			const optimizeBtn = document.getElementById(boxId + '_optimize_btn') as any;
 			if (optimizeBtn) {
-				optimizeBtn.disabled = false;
 				if (optimizeBtn.dataset && optimizeBtn.dataset.originalContent) {
 					optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent;
 					delete optimizeBtn.dataset.originalContent;
@@ -370,6 +464,7 @@ export class QueryExecutionController implements ReactiveController {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 		try { this.setOptimizeInProgress(false, ''); } catch (e) { console.error('[kusto]', e); }
+		try { restoreKustoOptimizeButtonAvailability(boxId); } catch (e) { console.error('[kusto]', e); }
 		try {
 			if (typeof _win.__kustoUpdateRunEnabledForBox === 'function') _win.__kustoUpdateRunEnabledForBox(boxId);
 		} catch (e) { console.error('[kusto]', e); }
@@ -451,7 +546,7 @@ export class QueryExecutionController implements ReactiveController {
 			'</div>' +
 			'<div class="optimize-config-actions">' +
 			'<button type="button" class="optimize-config-run-btn" onclick="__kustoRunOptimizeQueryWithOverrides(\'' + boxId + '\')">Optimize</button>' +
-			'<button type="button" class="optimize-config-cancel-btn" onclick="__kustoHideOptimizePromptForBox(\'' + boxId + '\')">Cancel</button>' +
+			'<button type="button" class="optimize-config-cancel-btn" onclick="__kustoCancelOptimizeQuery(\'' + boxId + '\')">Cancel</button>' +
 			'</div>' +
 			'</div>';
 		const selectEl = document.getElementById(boxId + '_optimize_model') as any;
@@ -525,6 +620,14 @@ export class QueryExecutionController implements ReactiveController {
 		}
 		if (runToggle) runToggle.disabled = false;
 	}
+}
+
+export function restoreKustoOptimizeButtonAvailability(boxIdValue: unknown): void {
+	const boxId = String(boxIdValue || '').trim();
+	const button = document.getElementById(boxId + '_optimize_btn') as HTMLButtonElement | null;
+	if (!button || button.dataset.kustoOptimizeInProgress === '1') return;
+	button.disabled = button.dataset.kustoCopilotAvailable !== '1';
+	button.setAttribute('aria-disabled', String(button.disabled));
 }
 
 // ── Module-level helpers ──────────────────────────────────────────────────────
@@ -1053,9 +1156,35 @@ function __kustoShowOptimizePromptLoading(boxId: any) {
 		'<div class="optimize-config-inner">' +
 		'<div class="optimize-config-loading">Loading optimization options…</div>' +
 		'<div class="optimize-config-actions">' +
-		'<button type="button" class="optimize-config-cancel-btn" onclick="__kustoHideOptimizePromptForBox(\'' + boxId + '\')">Cancel</button>' +
+		'<button type="button" class="optimize-config-cancel-btn" onclick="__kustoCancelOptimizeQuery(\'' + boxId + '\')">Cancel</button>' +
 		'</div>' +
 		'</div>';
+}
+
+export function prepareKustoOptimizeQuery(boxIdValue: unknown): boolean {
+	const boxId = String(boxIdValue || '').trim();
+	const editor = queryEditors[boxId];
+	const query = String(editor?.getValue?.() || '').trim();
+	const connectionId = String(__kustoGetConnectionId(boxId) || '').trim();
+	const database = String(__kustoGetDatabase(boxId) || '').trim();
+	const section = __kustoGetQuerySectionElement(boxId);
+	if (!boxId || !query || !connectionId || !database || !section) {
+		try { postMessageToHost({ type: 'showInfo', message: !query ? 'No query to optimize' : 'Select a cluster and database before optimizing.' }); } catch (e) { console.error('[kusto]', e); }
+		return false;
+	}
+	const owner = section.beginKustoOptimizeRequest?.();
+	if (!owner) return false;
+	const pending = __kustoEnsureOptimizePrepByBoxId();
+	pending[boxId] = {
+		query,
+		connectionId,
+		database,
+		queryName: __kustoGetSectionName(boxId),
+		owner,
+	};
+	__kustoShowOptimizePromptLoading(boxId);
+	postMessageToHost({ type: 'prepareOptimizeQuery', query, ...owner });
+	return true;
 }
 
 function __kustoRunOptimizeQueryWithOverrides(boxId: any) {
@@ -1077,6 +1206,13 @@ function __kustoRunOptimizeQueryWithOverrides(boxId: any) {
 	} catch (e) { console.error('[kusto]', e); }
 	const modelId = (document.getElementById(boxId + '_optimize_model') as any || {}).value || '';
 	const promptText = (document.getElementById(boxId + '_optimize_prompt') as any || {}).value || '';
+	const section = __kustoGetQuerySectionElement(boxId);
+	const owner = req.owner;
+	if (!owner || section?.admitKustoOptimizeMessage?.(owner) !== true) {
+		try { postMessageToHost({ type: 'showInfo', message: 'The query target changed. Try optimization again.' }); } catch (e) { console.error('[kusto]', e); }
+		__kustoHideOptimizePromptForBox(boxId);
+		return;
+	}
 	try { __kustoSetLastOptimizeModelId(modelId); } catch (e) { console.error('[kusto]', e); }
 	try {
 		const host = document.getElementById(boxId + '_optimize_config') as any;
@@ -1098,14 +1234,14 @@ function __kustoRunOptimizeQueryWithOverrides(boxId: any) {
 			boxId,
 			queryName: String(req.queryName || ''),
 			modelId: String(modelId || ''),
-			promptText: String(promptText || '')
+			promptText: String(promptText || ''),
+			...owner,
 		});
 		delete pending[boxId];
 	} catch (err: any) {
 		console.error('Error sending optimization request:', err);
 		try { postMessageToHost({ type: 'showInfo', message: 'Failed to start query optimization' }); } catch (e) { console.error('[kusto]', e); }
 		if (optimizeBtn) {
-			optimizeBtn.disabled = false;
 			if (optimizeBtn.dataset.originalContent) { optimizeBtn.innerHTML = optimizeBtn.dataset.originalContent; delete optimizeBtn.dataset.originalContent; }
 		}
 		__kustoHideOptimizePromptForBox(boxId);
@@ -1118,7 +1254,7 @@ function __kustoCancelOptimizeQuery(boxId: any) {
 		const cancelBtn = document.getElementById(boxId + '_optimize_cancel') as any;
 		if (cancelBtn) cancelBtn.disabled = true;
 	} catch (e) { console.error('[kusto]', e); }
-	try { postMessageToHost({ type: 'cancelOptimizeQuery', boxId: String(boxId || '') }); } catch (e) { console.error('[kusto]', e); }
+	try { __kustoGetQuerySectionElement(boxId)?.retireKustoOptimizeRequest?.(); } catch (e) { console.error('[kusto]', e); }
 }
 
 // ── optimizeQueryWithCopilot — cross-box, creates/reuses comparison sections ──
@@ -1184,6 +1320,12 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 			const comparisonBoxEl = document.getElementById(existingComparisonBoxId) as any;
 			const comparisonEditor = queryEditors && queryEditors[existingComparisonBoxId];
 			if (comparisonBoxEl && comparisonEditor && typeof comparisonEditor.setValue === 'function') {
+				const sourceElement = document.getElementById(String(boxId || ''));
+				const sqlDerivedComparison = String(sourceElement?.tagName || '').toLowerCase() === 'kw-sql-section';
+				if (!sqlDerivedComparison && !synchronizeKustoSectionTarget(boxId, existingComparisonBoxId)) {
+					try { postMessageToHost({ type: 'showInfo', message: 'Comparison target is still updating. Try again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
+					return '';
+				}
 				const beforeSignature = _win.__kustoGetSectionSerializedSignature?.(existingComparisonBoxId);
 				let nextComparisonQuery = overrideText.trim() ? overrideText : query;
 				try { if (typeof _win.__kustoPrettifyKustoText === 'function') nextComparisonQuery = _win.__kustoPrettifyKustoText(nextComparisonQuery); } catch (e) { console.error('[kusto]', e); }
@@ -1274,7 +1416,8 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 			if (typeof compKwEl.setConnectionId === 'function') compKwEl.setConnectionId(connectionId);
 			if (typeof compKwEl.setDesiredDatabase === 'function') compKwEl.setDesiredDatabase(database);
 			compKwEl.dispatchEvent(new CustomEvent('connection-changed', { detail: { boxId: comparisonBoxId, connectionId }, bubbles: true, composed: true }));
-			setTimeout(() => { try { if (typeof compKwEl.setDatabase === 'function') compKwEl.setDatabase(database); } catch (e) { console.error('[kusto]', e); } }, 100);
+			if (typeof compKwEl.setDatabase === 'function') compKwEl.setDatabase(database);
+			if (typeof compKwEl.setSchemaLifecycleTarget === 'function') compKwEl.setSchemaLifecycleTarget(connectionId, database);
 			// Carry over favorites mode from source section.
 			const srcKwEl = __kustoGetQuerySectionElement(boxId);
 			if (srcKwEl && typeof srcKwEl.isFavoritesMode === 'function' && srcKwEl.isFavoritesMode()) {
@@ -1309,7 +1452,7 @@ function createKustoExecutionId(): string {
 	return `kusto-run-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
 }
 
-export function executeQuery(boxId: any, mode?: any): string | undefined {
+export function executeQuery(boxId: any, mode?: any, producer: KustoExecutionProducer = 'manual'): string | undefined {
 	const effectiveMode = mode || getRunMode(boxId);
 	// Run Function mode — divert to the dedicated async handler.
 	if (effectiveMode === 'runFunction') {
@@ -1399,10 +1542,18 @@ export function executeQuery(boxId: any, mode?: any): string | undefined {
 				const sourceBoxId = meta.sourceBoxId;
 				isComparisonBox = true;
 				sourceBoxIdForComparison = String(sourceBoxId || '');
+				if (!synchronizeKustoSectionTarget(sourceBoxId, boxId)) {
+					try { postMessageToHost({ type: 'showInfo', message: 'Comparison target is still updating. Try again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
+					return undefined;
+				}
+				connectionId = __kustoGetConnectionId(boxId);
+				database = __kustoGetDatabase(boxId);
 				const srcConnId = __kustoGetConnectionId(sourceBoxId);
 				const srcDb = __kustoGetDatabase(sourceBoxId);
-				if (srcConnId) connectionId = srcConnId;
-				if (srcDb) database = srcDb;
+				if (connectionId !== srcConnId || database.toLowerCase() !== srcDb.toLowerCase()) {
+					try { postMessageToHost({ type: 'showInfo', message: 'Comparison target is still updating. Try again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
+					return undefined;
+				}
 			}
 			const hasLinkedOptimization = !!(meta && meta.isComparison) || !!(optimizationMetadataByBoxId[boxId] && optimizationMetadataByBoxId[boxId].comparisonBoxId);
 			if (hasLinkedOptimization) cacheEnabled = false;
@@ -1436,12 +1587,18 @@ export function executeQuery(boxId: any, mode?: any): string | undefined {
 	try { delete pState.queryResultJsonByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	const executionId = createKustoExecutionId();
 	const section = __kustoGetQuerySectionElement(String(boxId || ''));
-	if (typeof section?.beginQueryExecution === 'function') section.beginQueryExecution(executionId);
-	else setQueryExecuting(boxId, true);
+	const lifecycle = section?.getSchemaLifecycleIdentity?.();
+	if (!lifecycle) return undefined;
+	if (typeof section?.beginQueryExecution !== 'function'
+		|| section.beginQueryExecution(executionId, producer) !== true) return undefined;
 	closeRunMenu(boxId);
 	try { lastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled; } catch (e) { console.error('[kusto]', e); }
 	pState.lastExecutedBox = boxId;
-	postMessageToHost({ type: 'executeQuery', query, queryMode: effectiveMode, connectionId, database, boxId, executionId, cacheEnabled, cacheValue, cacheUnit });
+	postMessageToHost({
+		type: 'executeQuery', query, queryMode: effectiveMode, connectionId, database, boxId, executionId,
+		sectionInstanceId: lifecycle.sectionInstanceId, targetGeneration: lifecycle.targetGeneration,
+		producer, cacheEnabled, cacheValue, cacheUnit,
+	});
 	return executionId;
 }
 
@@ -1458,11 +1615,17 @@ export function executeQueryDirect(boxId: string, query: string): string | undef
 	try { delete pState.queryResultJsonByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
 	const executionId = createKustoExecutionId();
 	const section = __kustoGetQuerySectionElement(id);
-	if (typeof section?.beginQueryExecution === 'function') section.beginQueryExecution(executionId);
-	else setQueryExecuting(id, true);
+	const lifecycle = section?.getSchemaLifecycleIdentity?.();
+	if (!lifecycle) return undefined;
+	if (typeof section?.beginQueryExecution !== 'function'
+		|| section.beginQueryExecution(executionId) !== true) return undefined;
 	closeRunMenu(id);
 	pState.lastExecutedBox = id;
-	postMessageToHost({ type: 'executeQuery', query, queryMode: 'plain', connectionId, database, boxId: id, executionId, cacheEnabled: false, cacheValue: 1, cacheUnit: 'h' });
+	postMessageToHost({
+		type: 'executeQuery', query, queryMode: 'plain', connectionId, database, boxId: id, executionId,
+		sectionInstanceId: lifecycle.sectionInstanceId, targetGeneration: lifecycle.targetGeneration,
+		producer: 'manual', cacheEnabled: false, cacheValue: 1, cacheUnit: 'h',
+	});
 	return executionId;
 }
 
@@ -1608,16 +1771,21 @@ export async function executeRunFunction(boxId: string): Promise<void> {
 
 _win.cancelQuery = function cancelQuery(boxId: any) {
 	const section = __kustoGetQuerySectionElement(String(boxId || ''));
-	const executionId = typeof section?.cancelActiveQueryExecution === 'function'
-		? section.cancelActiveQueryExecution()
+	const owner = typeof section?.requestCancelActiveQueryExecution === 'function'
+		? section.requestCancelActiveQueryExecution()
 		: undefined;
-	if (!executionId) return;
+	if (!owner) return;
 	try {
 		const cancelBtn = document.getElementById(boxId + '_cancel_btn') as any;
 		if (cancelBtn) cancelBtn.disabled = true;
 	} catch (e) { console.error('[kusto]', e); }
-	try { section.displayCancelled?.(); } catch (e) { console.error('[kusto]', e); }
-	try { postMessageToHost({ type: 'cancelQuery', boxId, executionId }); } catch (e) { console.error('[kusto]', e); }
+	try {
+		postMessageToHost({
+			type: 'cancelQuery', boxId, executionId: owner.executionId,
+			sectionInstanceId: owner.sectionInstanceId,
+			targetGeneration: owner.targetGeneration,
+		});
+	} catch (e) { console.error('[kusto]', e); }
 };
 
 _win.executeQuery = executeQuery;

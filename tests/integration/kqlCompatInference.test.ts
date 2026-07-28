@@ -8,6 +8,11 @@ import { QueryEditorProvider } from '../../src/host/queryEditorProvider';
 type DisposableLike = { dispose(): void };
 
 function sqlWorkbenchStub() {
+	const ownerSnapshot = {
+		policy: { connectionIds: [], version: 0, globallyBlocked: false, revocationGenerations: {} },
+		connections: [], connectionVersion: 0,
+		accountsByServer: {}, principalVersion: 0,
+	};
 	return {
 		connectionManager: {
 			getConnections: () => [], getConnection: () => undefined,
@@ -20,6 +25,19 @@ function sqlWorkbenchStub() {
 		isLeaveNoTraceConnection: () => false,
 		refreshLeaveNoTracePolicy: async () => [],
 		assertSqlConnectionAllowed: async () => undefined,
+		dispatchSqlOwnerSnapshot: async (dispatch: (snapshot: any) => unknown) => await dispatch(ownerSnapshot),
+		runWithSqlOwnerSnapshotLock: async (run: (snapshot: any) => unknown) => await run(ownerSnapshot),
+		tryDispatchSqlOwnerSnapshot: async (dispatch: (snapshot: any) => unknown) => ({
+			acquired: true, value: await dispatch(ownerSnapshot),
+		}),
+		tryRunWithSqlOwnerSnapshotLock: async (run: (snapshot: any) => unknown) => ({
+			acquired: true, value: await run(ownerSnapshot),
+		}),
+		retrySqlOwnerSnapshotAcquisition: async (attempt: () => Promise<any>) => {
+			const result = await attempt();
+			if (!result.acquired) throw new Error('Expected the integration SQL owner snapshot lock to be available.');
+			return result.value;
+		},
 		ready: async () => undefined,
 	} as any;
 }

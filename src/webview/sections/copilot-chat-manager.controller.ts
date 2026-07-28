@@ -6,8 +6,7 @@ import type { ReactiveController, ReactiveControllerHost } from 'lit';
 import type { KwCopilotChat } from '../components/kw-copilot-chat.js';
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
-import { schedulePersist, __kustoOnQueryResult } from '../core/persistence';
-import { displayResultForBox } from '../core/results-state.js';
+import { schedulePersist } from '../core/persistence';
 import { syncSelectBackedDropdown, renderMenuDropdownHtml } from '../core/dropdown.js';
 import {
 	addQueryBox,
@@ -17,8 +16,14 @@ import {
 import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId } from './query-execution.controller.js';
 import { __kustoPrettifyKustoTextWithSemicolonStatements } from '../monaco/prettify.js';
 import type { WebviewCopilotFlavor } from './copilot-chat-flavor.js';
-import { sqlConnections } from '../core/state.js';
+import { connections, sqlConnections } from '../core/state.js';
 import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
+import {
+	hasKustoCopilotRequestIdentity,
+	kustoCopilotRequestIdentityEquals,
+	type KustoCopilotRequestIdentity,
+} from '../../shared/kustoExecution.js';
+import { emitAdmittedKustoCopilotOutput } from '../core/kusto-copilot-output-runtime.js';
 
 // ── Host interface (avoids circular import with kw-query-section.ts) ──────────
 
@@ -31,6 +36,7 @@ export interface CopilotChatManagerHost extends ReactiveControllerHost, HTMLElem
 	getCopilotServerUrl(): string;
 	getCopilotOwnerToken?(): string;
 	getDatabase(): string;
+	getSchemaLifecycleIdentity?(): { sectionInstanceId: string; targetGeneration: number } | undefined;
 	/** Set query text in the section's editor. */
 	setCopilotQueryText(text: string): void;
 	/** Get the current query text from the section's editor. */
@@ -51,6 +57,14 @@ export function getSqlCopilotInsertOwner(connectionId: string): { connectionIdHi
 	const connection = sqlConnections.find(candidate => String(candidate?.id || '') === id);
 	return connection
 		? { connectionIdHint: id, targetSignature: sqlConnectionTargetSignature(connection) }
+		: {};
+}
+
+export function getKustoCopilotInsertOwner(connectionId: string): { connectionIdHint?: string; authorityId?: string } {
+	const id = String(connectionId || '').trim();
+	const connection = connections.find(candidate => String(candidate?.id || '') === id);
+	return connection
+		? { connectionIdHint: id, ...(String(connection.authorityId || '').trim() ? { authorityId: String(connection.authorityId).trim() } : {}) }
 		: {};
 }
 const MIN_EDITOR_WIDTH_PX = 240;
@@ -142,6 +156,9 @@ export class CopilotChatManagerController implements ReactiveController {
 	private _copilotChatVisible = false;
 	private _copilotChatWidthPx: number | undefined;
 	private _copilotSplitObserver: ResizeObserver | null = null;
+	private activeKustoRequest: KustoCopilotRequestIdentity | undefined;
+	private kustoConversationOwner: KustoCopilotRequestIdentity | undefined;
+	private cancellingKustoRequest: KustoCopilotRequestIdentity | undefined;
 
 	constructor(host: CopilotChatManagerHost, flavor: WebviewCopilotFlavor) {
 		this.host = host;
@@ -254,7 +271,10 @@ export class CopilotChatManagerController implements ReactiveController {
 	disposeCopilotChat(): void {
 		const id = this.host.boxId;
 		if (!id) return;
-		try { postMessageToHost({ type: 'cancelCopilotWriteQuery', boxId: id }); } catch (e) { console.error('[kusto]', e); }
+		this.retireKustoCopilotRequest();
+		if (this.flavor.id === 'sql') {
+			try { postMessageToHost({ type: 'cancelCopilotWriteQuery', boxId: id, flavor: 'sql' }); } catch (e) { console.error('[kusto]', e); }
+		}
 		if (this._copilotSplitObserver) {
 			this._copilotSplitObserver.disconnect();
 			this._copilotSplitObserver = null;
@@ -369,9 +389,13 @@ export class CopilotChatManagerController implements ReactiveController {
 			try { __kustoSetLastOptimizeModelId(modelId); } catch (e) { console.error('[kusto]', e); }
 			chatEl.setRunning(true);
 			try {
-				postMessageToHost({
+				const lifecycle = this.flavor.id === 'kusto' ? this.host.getSchemaLifecycleIdentity?.() : undefined;
+				if (this.flavor.id === 'kusto' && !lifecycle) {
+					chatEl.setRunning(false, 'The query section target changed. Try again.');
+					return;
+				}
+				const baseMessage = {
 					type: 'startCopilotWriteQuery', boxId: String(boxId),
-					flavor: this.flavor.id,
 					connectionId: String(connectionId || ''),
 					serverUrl: String(this.host.getCopilotServerUrl() || ''),
 					database: String(database || ''),
@@ -380,21 +404,37 @@ export class CopilotChatManagerController implements ReactiveController {
 					modelId: String(modelId || ''),
 					enabledTools,
 					queryMode: this.flavor.includesQueryContext ? 'plain' : undefined,
-					requireToolUse: requireToolUse || undefined
-					,...(this.flavor.id === 'sql' && this.host.getCopilotOwnerToken?.()
-						? { sqlOwnerToken: this.host.getCopilotOwnerToken!() }
-						: {})
-				});
+					requireToolUse: requireToolUse || undefined,
+				} as const;
+				if (this.flavor.id === 'kusto' && lifecycle) {
+					if (this.activeKustoRequest) this.retireKustoCopilotRequest();
+					const copilotRequestId = `kusto-copilot-request-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
+					this.activeKustoRequest = Object.freeze({ boxId: String(boxId), ...lifecycle, copilotRequestId });
+					this.kustoConversationOwner = this.activeKustoRequest;
+					postMessageToHost({ ...baseMessage, flavor: 'kusto', ...this.activeKustoRequest });
+				} else {
+					const sqlOwnerToken = this.host.getCopilotOwnerToken?.();
+					postMessageToHost({
+						...baseMessage,
+						flavor: 'sql',
+						...(sqlOwnerToken ? { sqlOwnerToken } : {}),
+					});
+				}
 			} catch { chatEl.setRunning(false, 'Failed to start Copilot request.'); }
 		}) as EventListener);
 
 		chatEl.addEventListener('copilot-cancel', () => {
-			try { postMessageToHost({ type: 'cancelCopilotWriteQuery', boxId }); } catch (e) { console.error('[kusto]', e); }
+			if (this.flavor.id === 'kusto') this.requestKustoCopilotCancellation();
+			else try { postMessageToHost({ type: 'cancelCopilotWriteQuery', boxId, flavor: 'sql' }); } catch (e) { console.error('[kusto]', e); }
 		});
 
 		chatEl.addEventListener('copilot-clear', () => {
 			chatEl.clearConversation();
-			try { postMessageToHost({ type: 'clearCopilotConversation', boxId }); } catch (e) { console.error('[kusto]', e); }
+			try {
+				const owner = this.kustoConversationOwner;
+				if (owner) postMessageToHost({ type: 'clearCopilotConversation', flavor: 'kusto', ...owner });
+				else if (this.flavor.id === 'sql') postMessageToHost({ type: 'clearCopilotConversation', boxId, flavor: 'sql' });
+			} catch (e) { console.error('[kusto]', e); }
 			try { postMessageToHost({ type: 'prepareCopilotWriteQuery', boxId: String(boxId), flavor: this.flavor.id }); } catch (e) { console.error('[kusto]', e); }
 		});
 
@@ -421,6 +461,7 @@ export class CopilotChatManagerController implements ReactiveController {
 					const sourceDatabase = this.host.getDatabase();
 					const sourceConnectionId = this.host.getCopilotConnectionId();
 					const sourceOwner = getSqlCopilotInsertOwner(sourceConnectionId);
+					const sourceKustoOwner = getKustoCopilotInsertOwner(sourceConnectionId);
 
 					const scrollContainer = document.documentElement;
 					const savedScroll = scrollContainer.scrollTop;
@@ -447,9 +488,9 @@ export class CopilotChatManagerController implements ReactiveController {
 						})
 						: addQueryBox({
 							initialQuery: queryText,
-							defaultResultsVisible: true,
 							afterBoxId: boxId,
 							clusterUrl: sourceServerUrl || undefined,
+							...sourceKustoOwner,
 							database: sourceDatabase || undefined,
 						});
 					scrollContainer.scrollTop = savedScroll;
@@ -458,10 +499,6 @@ export class CopilotChatManagerController implements ReactiveController {
 						window.__kustoMarkSectionAgentTouched?.(newBoxId);
 						setTimeout(() => {
 							if (!isSql) setQueryText(newBoxId, e.detail.query);
-							if (!isSql && e.detail.result) {
-								displayResultForBox(e.detail.result, newBoxId, { label: 'Results', showExecutionTime: true });
-								__kustoOnQueryResult(newBoxId, e.detail.result);
-							}
 							const newBox = document.getElementById(newBoxId);
 							if (newBox) newBox.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
 						}, 100);
@@ -543,6 +580,98 @@ export class CopilotChatManagerController implements ReactiveController {
 		if (chatEl) chatEl.setRunning(false, message);
 	}
 
+	admitKustoCopilotMessage(identity: unknown, messageType?: string): boolean {
+		if (this.flavor.id !== 'kusto' || !this.activeKustoRequest
+			|| !hasKustoCopilotRequestIdentity(identity)
+			|| !kustoCopilotRequestIdentityEquals(this.activeKustoRequest, identity)) return false;
+		if (messageType === 'copilotExecutedQuery' && this.cancellingKustoRequest
+			&& kustoCopilotRequestIdentityEquals(this.cancellingKustoRequest, this.activeKustoRequest)) return false;
+		const lifecycle = this.host.getSchemaLifecycleIdentity?.();
+		return !!lifecycle
+			&& lifecycle.sectionInstanceId === this.activeKustoRequest.sectionInstanceId
+			&& lifecycle.targetGeneration === this.activeKustoRequest.targetGeneration;
+	}
+
+	getActiveKustoCopilotRequest(): KustoCopilotRequestIdentity | undefined {
+		return this.activeKustoRequest;
+	}
+
+	admitKustoCopilotConversationOwner(identity: unknown): boolean {
+		if (this.flavor.id !== 'kusto' || !this.kustoConversationOwner
+			|| !hasKustoCopilotRequestIdentity(identity)
+			|| !kustoCopilotRequestIdentityEquals(this.kustoConversationOwner, identity)) return false;
+		const lifecycle = this.host.getSchemaLifecycleIdentity?.();
+		return !!lifecycle
+			&& lifecycle.sectionInstanceId === this.kustoConversationOwner.sectionInstanceId
+			&& lifecycle.targetGeneration === this.kustoConversationOwner.targetGeneration;
+	}
+
+	clearKustoCopilotConversationOwner(identity: unknown): boolean {
+		if (!this.admitKustoCopilotConversationOwner(identity)) return false;
+		this.activeKustoRequest = undefined;
+		this.kustoConversationOwner = undefined;
+		return true;
+	}
+
+	retireKustoCopilotConversationOwner(identity: unknown): boolean {
+		if (!this.admitKustoCopilotConversationOwner(identity)) return false;
+		const owner = this.kustoConversationOwner!;
+		emitAdmittedKustoCopilotOutput({
+			type: 'copilotWriteQueryDone', ...owner, ok: false, message: 'Canceled.', retired: true,
+		});
+		this.activeKustoRequest = undefined;
+		this.kustoConversationOwner = undefined;
+		this.cancellingKustoRequest = undefined;
+		this.getCopilotChatEl()?.clearConversation();
+		return true;
+	}
+
+	completeKustoCopilotRequest(identity: unknown): boolean {
+		if (!this.admitKustoCopilotMessage(identity)) return false;
+		this.activeKustoRequest = undefined;
+		this.cancellingKustoRequest = undefined;
+		return true;
+	}
+
+	retireKustoCopilotRequest(): KustoCopilotRequestIdentity | undefined {
+		const owner = this.activeKustoRequest ?? this.kustoConversationOwner;
+		if (!owner) return undefined;
+		emitAdmittedKustoCopilotOutput({
+			type: 'copilotWriteQueryDone', ...owner, ok: false, message: 'Canceled.', retired: true,
+		});
+		this.activeKustoRequest = undefined;
+		this.kustoConversationOwner = undefined;
+		this.cancellingKustoRequest = undefined;
+		try {
+			postMessageToHost({ type: 'cancelCopilotWriteQuery', flavor: 'kusto', ...owner });
+		} catch (e) { console.error('[kusto]', e); }
+		return owner;
+	}
+
+	requestKustoCopilotCancellation(expected?: unknown): boolean {
+		const owner = this.activeKustoRequest;
+		if (!owner) return false;
+		if (expected !== undefined && (!hasKustoCopilotRequestIdentity(expected)
+			|| !kustoCopilotRequestIdentityEquals(owner, expected))) return false;
+		if (this.cancellingKustoRequest
+			&& kustoCopilotRequestIdentityEquals(this.cancellingKustoRequest, owner)) return true;
+		this.cancellingKustoRequest = owner;
+		try { postMessageToHost({ type: 'cancelCopilotWriteQuery', flavor: 'kusto', ...owner }); }
+		catch (e) { console.error('[kusto]', e); return false; }
+		return true;
+	}
+
+	cancelKustoCopilotRequest(expected: unknown): boolean {
+		return this.requestKustoCopilotCancellation(expected);
+	}
+
+	retireKustoCopilotTarget(): void {
+		const owner = this.retireKustoCopilotRequest();
+		this.getCopilotChatEl()?.clearConversation();
+		if (!owner) return;
+		try { postMessageToHost({ type: 'clearCopilotConversation', flavor: 'kusto', ...owner }); } catch (e) { console.error('[kusto]', e); }
+	}
+
 	copilotWriteQueryToolResult(toolName: string, label: string, jsonText: string, entryId: string): void {
 		const chatEl = this.getCopilotChatEl();
 		if (chatEl) chatEl.appendToolResponse(toolName, label, jsonText, entryId);
@@ -582,7 +711,11 @@ export class CopilotChatManagerController implements ReactiveController {
 		const chatEl = this.getCopilotChatEl();
 		if (chatEl) {
 			chatEl.clearConversation();
-			try { postMessageToHost({ type: 'clearCopilotConversation', boxId: this.host.boxId }); } catch (e) { console.error('[kusto]', e); }
+			try {
+				const owner = this.kustoConversationOwner;
+				if (owner) postMessageToHost({ type: 'clearCopilotConversation', flavor: 'kusto', ...owner });
+				else if (this.flavor.id === 'sql') postMessageToHost({ type: 'clearCopilotConversation', boxId: this.host.boxId, flavor: 'sql' });
+			} catch (e) { console.error('[kusto]', e); }
 			try { postMessageToHost({ type: 'prepareCopilotWriteQuery', boxId: String(this.host.boxId || '') }); } catch (e) { console.error('[kusto]', e); }
 		}
 	}
@@ -597,6 +730,7 @@ export class CopilotChatManagerController implements ReactiveController {
 	copilotWriteQueryCancel(): void {
 		const chatEl = this.getCopilotChatEl();
 		if (chatEl && !chatEl.isRunning()) return;
-		try { postMessageToHost({ type: 'cancelCopilotWriteQuery', boxId: this.host.boxId }); } catch (e) { console.error('[kusto]', e); }
+		if (this.flavor.id === 'kusto') this.requestKustoCopilotCancellation();
+		else try { postMessageToHost({ type: 'cancelCopilotWriteQuery', boxId: this.host.boxId, flavor: 'sql' }); } catch (e) { console.error('[kusto]', e); }
 	}
 }

@@ -9,16 +9,38 @@ import { queryEditors } from './state';
 import { registerPageScrollDismissable } from './page-scroll-dismiss.js';
 import { perfMark } from './perf.js';
 import { traceFileOpen } from './file-open-trace.js';
+import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
+import { drainBufferedHostMessages } from './message-handler.js';
 
 // Side-effect imports — register event handlers on import.
 // Active-section-tracker must be imported before message-handler so its
 // focusin listener is installed before any sections are created/focused.
 import './active-section-tracker';
 import './keyboard-shortcuts';
-import './message-handler';
 import './drag-reorder';
 
 export {};
+
+kustoEditorSchemaCoordinator.subscribeLifecycle(event => {
+	if (event.type === 'opened') {
+		postMessageToHost({ type: 'kustoSectionOpen', ...event.owner });
+		return;
+	}
+	if (event.type === 'closed') {
+		postMessageToHost({ type: 'kustoSectionClose', ...event.owner });
+		return;
+	}
+	postMessageToHost({
+		type: 'kustoSectionTarget',
+		...event.owner,
+		connectionId: event.target?.connectionId,
+		database: event.target?.database,
+		connectionRevision: event.target?.connectionRevision,
+		connectionIdentityKey: event.target?.connectionIdentityKey,
+	});
+});
+
+void drainBufferedHostMessages();
 
 // Request connections on load (only in the query editor webview, not side-panel webviews
 // like cached-values or connection-manager that also load the bundle).

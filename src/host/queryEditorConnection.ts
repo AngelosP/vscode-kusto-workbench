@@ -142,6 +142,7 @@ export interface ConnectionServiceHost {
 	readonly kustoClient: KustoQueryClient;
 	readonly output: WorkbenchLogger;
 	postMessage(message: unknown): Thenable<boolean> | PromiseLike<boolean> | void;
+	postKustoPublication?(message: unknown): Promise<boolean>;
 	formatQueryExecutionErrorForUser(error: unknown, connection: KustoConnection, database?: string): string;
 	normalizeClusterUrlKey(url: string): string;
 	getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined>;
@@ -940,6 +941,7 @@ export class ConnectionService {
 		editingPreferencesRevision: number;
 		copilotChatFirstTimeDismissed: boolean;
 		connectionsRevision: number;
+		policyRequestId?: string;
 	}): Promise<void> {
 		if (testIsolateKustoConnections) {
 			this.host.postMessage({
@@ -951,31 +953,52 @@ export class ConnectionService {
 				favorites: [],
 				...settings,
 				leaveNoTraceClusters: [],
+				leaveNoTraceGloballyBlocked: false,
+				leaveNoTraceRevisions: {},
 				devNotesEnabled: true
 			});
 			return;
 		}
-		const connections = this.host.connectionManager.getConnections().map(connection => {
-			let accountPartition: string | undefined;
-			try { accountPartition = this.getResolvedAccountPartition(connection); } catch { accountPartition = undefined; }
-			return { ...connection, accountPartition };
-		});
-		const cachedDatabases = this.getCachedDatabases();
-		const accounts = await this.authPreferences.getAccounts();
-		const favorites = this.getFavorites();
-		const leaveNoTraceClusters = this.host.connectionManager.getLeaveNoTraceClusters();
-		this.host.postMessage({
-			type: 'connectionsData',
-			connections,
-			accounts,
-			lastConnectionId: this.lastConnectionId,
-			lastDatabase: this.lastDatabase,
-			cachedDatabases,
-			favorites,
-			...settings,
-			leaveNoTraceClusters,
-			devNotesEnabled: true
-		});
+		const attempts = settings.policyRequestId ? 2 : 1;
+		for (let attempt = 0; attempt < attempts; attempt++) {
+			const accounts = await this.authPreferences.getAccounts();
+			const applied = await this.host.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+				const connections = this.host.connectionManager.getConnections().map(connection => {
+					let accountPartition: string | undefined;
+					try { accountPartition = this.getResolvedAccountPartition(connection); } catch { accountPartition = undefined; }
+					let connectionIdentityKey: string | undefined;
+					try { connectionIdentityKey = getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId); } catch { connectionIdentityKey = undefined; }
+					return {
+						...connection,
+						accountPartition,
+						connectionRevision: this.host.connectionManager.getConnectionIncarnation(connection.id),
+						...(connectionIdentityKey ? { connectionIdentityKey } : {}),
+					};
+				});
+				const leaveNoTraceClusters = policy.globallyBlocked
+					? [...new Set(connections.map(connection => this.host.connectionManager.normalizeClusterUrl(connection.clusterUrl)).filter(Boolean))]
+					: [...policy.clusterKeys];
+				const payload = {
+					type: 'connectionsData',
+					connections,
+					accounts,
+					lastConnectionId: this.lastConnectionId,
+					lastDatabase: this.lastDatabase,
+					cachedDatabases: this.getCachedDatabases(),
+					favorites: this.getFavorites(),
+					...settings,
+					leaveNoTraceClusters,
+					leaveNoTraceGloballyBlocked: policy.globallyBlocked,
+					leaveNoTraceRevisions: policy.revocationGenerations,
+					devNotesEnabled: true
+				};
+				if (this.host.postKustoPublication) return this.host.postKustoPublication(payload);
+				await Promise.resolve(this.host.postMessage(payload));
+				return true;
+			});
+			if (applied) return;
+		}
+		throw new Error('Kusto policy snapshot was not applied by the webview.');
 	}
 
 	// ── Connection CRUD ──

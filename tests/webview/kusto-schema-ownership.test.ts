@@ -5,6 +5,7 @@ import { describe, expect, it } from 'vitest';
 
 const repoRoot = path.resolve(__dirname, '../..');
 const webviewRoot = path.join(repoRoot, 'src/webview');
+const hostRoot = path.join(repoRoot, 'src/host');
 const ignoredDirectories = new Set(['generated', 'vendor']);
 
 function textFiles(directory: string, extensions: ReadonlySet<string>): string[] {
@@ -106,5 +107,51 @@ describe('Kusto schema ownership boundaries', () => {
 			expect(text).not.toMatch(/setQueryBoxes\([^;\n]*startsWith\(['"]query_['"]\)/);
 			expect(text).not.toMatch(/queryBoxes\s*=\s*ids\.filter/);
 		}
+	});
+
+	it('keeps Kusto section terminal construction on the execution coordinator', () => {
+		const violations: string[] = [];
+		const sqlTerminalOwners = new Set([
+			'src/host/queryEditorProvider.ts',
+			'src/host/queryEditorCopilot.ts',
+			'src/host/sql/sqlExecutionBroker.ts',
+		]);
+		for (const file of sourceFiles(hostRoot)) {
+			const relativePath = relative(file);
+			if (relativePath === 'src/host/kustoExecutionCoordinator.ts') continue;
+			const text = fs.readFileSync(file, 'utf8');
+			for (const match of text.matchAll(/type:\s*['"](queryResult|queryError|queryCancelled)['"]/g)) {
+				const site = match[0];
+				const start = Math.max(0, (match.index ?? 0) - 240);
+				const end = Math.min(text.length, (match.index ?? 0) + 320);
+				const context = text.slice(start, end);
+				const sqlOwned = sqlTerminalOwners.has(relativePath)
+					&& (/ownerToken|admitted\.executionId|issuedOwner|postSqlMessage/.test(context)
+						|| relativePath === 'src/host/sql/sqlExecutionBroker.ts');
+				if (!sqlOwned) violations.push(`${relativePath}: ${site}`);
+			}
+		}
+		expect(violations).toEqual([]);
+	});
+
+	it('does not reintroduce box-only Kusto run APIs or unstamped cancel messages', () => {
+		const forbiddenApi = /\b(cancelRunningQuery|registerRunningQuery|unregisterRunningQuery|nextQueryRunSeq|isRunningQueryCurrent)\b/;
+		const apiViolations = [
+			path.join(hostRoot, 'queryEditorProvider.ts'),
+			path.join(hostRoot, 'queryEditorCopilot.ts'),
+		].filter(file => forbiddenApi.test(fs.readFileSync(file, 'utf8'))).map(relative);
+		expect(apiViolations).toEqual([]);
+
+		const cancelViolations: string[] = [];
+		for (const file of sourceFiles(webviewRoot)) {
+			const text = fs.readFileSync(file, 'utf8');
+			for (const match of text.matchAll(/postMessageToHost\(\{[\s\S]{0,300}?type:\s*['"]cancelQuery['"][\s\S]{0,300}?\}\)/g)) {
+				const site = match[0];
+				if (!/sectionInstanceId/.test(site) || !/targetGeneration/.test(site)) {
+					cancelViolations.push(relative(file));
+				}
+			}
+		}
+		expect(cancelViolations).toEqual([]);
 	});
 });

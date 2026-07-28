@@ -4,7 +4,8 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { createEmptyKqlxOrMdxFile, DevNoteEntry, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
-import { readAllCachedSchemasFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey, schemaPrincipalIdentity } from './schemaCache';
+import { captureSchemaCacheGeneration, readAllCachedSchemasFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey, schemaPrincipalIdentity, type SchemaCacheGeneration } from './schemaCache';
+import { KustoConnectionCache, type KustoConnectionCacheGeneration } from './kustoConnectionCache';
 import type { SqlConnection, SqlConnectionManager } from './sqlConnectionManager';
 import type { KustoQueryClient } from './kustoClient';
 import { countColumns, formatSchemaAsCompactText, formatSchemaWithTokenBudget } from './schemaIndexUtils';
@@ -12,10 +13,12 @@ import { getPowerBiHtmlValidationIssues, type PowerBiDataSource } from './powerB
 import { getLegacyDashboardWarnings } from '../shared/htmlDashboardUpgrade';
 import { classifyWorkbenchUri, classifyWorkbenchUriString, type WorkbenchFileInfo, type WorkbenchFileKind } from './workbenchFileTypes';
 import { kustoClusterKey } from '../shared/kustoClusterUrls';
-import { resolveStrictKustoConnection } from '../shared/kustoAuth';
+import { getKustoConnectionIdentityKey, resolveStrictKustoConnection } from '../shared/kustoAuth';
 import { filterKustoFavoritesForActivePrincipals, migrateKustoFavorites } from './connectionManagerFavorites';
 import { sqlConnectionTargetSignature } from '../shared/sqlConnectionIdentity';
 import { readCurrentSqlSchemaPrincipalFingerprint } from './sqlEditorSchema';
+import type { KustoExecutionRequestIdentity } from '../shared/kustoExecution.js';
+import type { KustoLeaveNoTracePolicySnapshot } from './kustoLeaveNoTracePolicyStore';
 
 export type TargetFields = {
 	openFileId?: string;
@@ -521,6 +524,45 @@ interface LiveWorkbenchConnection {
 	sequence: number;
 }
 
+type KustoToolMetadataOwner = Readonly<{
+	connection: KustoConnection;
+	connectionIdentityKey: string;
+	connectionIncarnation: number;
+	accountPartition?: string;
+	authSessionGeneration: number;
+	leaveNoTraceRevision: number;
+	databaseCacheGeneration: KustoConnectionCacheGeneration;
+	schemaCacheGeneration: SchemaCacheGeneration;
+}>;
+
+type KustoToolSchemaResult = Readonly<{
+	database: string;
+	schema: DatabaseSchemaIndex;
+	accountPartition: string;
+	cacheGeneration: SchemaCacheGeneration;
+	timestamp: number;
+}>;
+
+type KustoMetadataCacheRead<T> =
+	| Readonly<{ kind: 'found'; value: T }>
+	| Readonly<{ kind: 'missing' | 'rejected' }>;
+
+class KustoMetadataOwnerChangedError extends Error {
+	constructor() {
+		super('Kusto metadata owner changed before the operation could be admitted.');
+		this.name = 'KustoMetadataOwnerChangedError';
+	}
+}
+
+function cacheGenerationMatches(
+	current: KustoConnectionCacheGeneration | SchemaCacheGeneration,
+	expected: KustoConnectionCacheGeneration | SchemaCacheGeneration,
+): boolean {
+	return current.global === expected.global
+		&& current.connection === expected.connection
+		&& current.partition === expected.partition;
+}
+
 export class KustoWorkbenchToolOrchestrator {
 	private static instance: KustoWorkbenchToolOrchestrator | undefined;
 	
@@ -533,8 +575,16 @@ export class KustoWorkbenchToolOrchestrator {
 	private readonly liveConnections = new Map<number, LiveWorkbenchConnection>();
 	private readonly renamedWorkbenchFiles = new Map<string, WorkbenchFileInfo>();
 	// Pending responses from webview
-	private pendingResponses = new Map<string, { resolve: (value: unknown) => void; reject: (err: Error) => void; timer?: ReturnType<typeof setTimeout>; cancellationSubscription?: vscode.Disposable; connectionToken: number }>();
+	private pendingResponses = new Map<string, {
+		resolve: (value: unknown) => void;
+		reject: (err: Error) => void;
+		timer?: ReturnType<typeof setTimeout>;
+		cancellationSubscription?: vscode.Disposable;
+		connectionToken: number;
+		kustoExecution?: KustoExecutionRequestIdentity;
+	}>();
 	private responseSeq = 0;
+	private readonly kustoConnectionCache: KustoConnectionCache;
 	// Monotonically increasing token to track which editor instance is currently connected.
 	// disconnectIfOwner() only clears the callbacks when the caller's token matches,
 	// preventing a stale editor from disconnecting a newer active one.
@@ -554,7 +604,9 @@ export class KustoWorkbenchToolOrchestrator {
 			revocationGeneration: number,
 			dispatch: () => T | PromiseLike<T>,
 		) => Promise<T>,
-	) {}
+	) {
+		this.kustoConnectionCache = new KustoConnectionCache(this.context);
+	}
 
 	static getInstance(
 		context: vscode.ExtensionContext,
@@ -1067,6 +1119,12 @@ export class KustoWorkbenchToolOrchestrator {
 		}
 	}
 
+	handleKustoExecutionStarted(requestId: string, owner: KustoExecutionRequestIdentity): void {
+		const pending = this.pendingResponses.get(requestId);
+		if (!pending) return;
+		pending.kustoExecution = owner;
+	}
+
 	private async sendToWebview<T>(
 		type: string,
 		payload: Record<string, unknown>,
@@ -1096,28 +1154,40 @@ export class KustoWorkbenchToolOrchestrator {
 		const requestId = `tool_${++this.responseSeq}_${Date.now()}`;
 		
 		return new Promise<T>((resolve, reject) => {
-			const timer = timeoutMs === null
-				? undefined
-				: setTimeout(() => {
+			let pending!: {
+				resolve: (value: unknown) => void; reject: (err: Error) => void;
+				timer?: ReturnType<typeof setTimeout>; cancellationSubscription?: vscode.Disposable;
+				connectionToken: number; kustoExecution?: KustoExecutionRequestIdentity;
+			};
+			const cancelKustoExecution = () => {
+				target.connection!.poster({
+					type: 'toolCancelKustoExecution',
+					requestId,
+					...(pending.kustoExecution ? { owner: pending.kustoExecution } : {}),
+				});
+			};
+			const timer = timeoutMs === null ? undefined : setTimeout(() => {
 					const pending = this.pendingResponses.get(requestId);
 					if (!pending) return;
 					this.pendingResponses.delete(requestId);
 					pending.cancellationSubscription?.dispose();
+					try { cancelKustoExecution(); } catch { /* preserve timeout */ }
 					try { onTimeout?.(target.connection!, requestId); } catch { /* preserve timeout */ }
 					reject(new Error('Request timed out'));
 				}, timeoutMs);
-			const pending = {
+			pending = {
 				resolve: resolve as (value: unknown) => void, 
 				reject, 
 				timer,
 				connectionToken: target.connection!.token,
-			} as { resolve: (value: unknown) => void; reject: (err: Error) => void; timer?: ReturnType<typeof setTimeout>; cancellationSubscription?: vscode.Disposable; connectionToken: number };
+			};
 			this.pendingResponses.set(requestId, pending);
 			const cancelPending = () => {
 				if (this.pendingResponses.get(requestId) !== pending) return;
 				this.pendingResponses.delete(requestId);
 				if (timer) clearTimeout(timer);
 				pending.cancellationSubscription?.dispose();
+				try { cancelKustoExecution(); } catch { /* preserve cancellation */ }
 				try { onTimeout?.(target.connection!, requestId); } catch { /* preserve cancellation */ }
 				reject(new vscode.CancellationError());
 			};
@@ -1189,15 +1259,215 @@ export class KustoWorkbenchToolOrchestrator {
 		return { input: { ...input, clusterUrl: resolved.connection.clusterUrl, connectionId: resolved.connection.id } };
 	}
 
-	private activeSchemaPrincipalIdentities(): Set<string> {
-		const identities = new Set<string>();
-		for (const connection of this.connectionManager.getConnections()) {
-			let partition: string | undefined;
-			try { partition = this.kustoClient.getAccountPartition(connection); } catch { partition = undefined; }
-			const identity = schemaPrincipalIdentity(connection.id, partition);
-			if (identity) identities.add(identity);
+	private createKustoMetadataOwner(
+		connection: KustoConnection,
+		policy: KustoLeaveNoTracePolicySnapshot,
+	): KustoToolMetadataOwner {
+		const accountPartition = String(this.kustoClient.getAccountPartition(connection) || '').trim() || undefined;
+		return Object.freeze({
+			connection: Object.freeze({ ...connection }),
+			connectionIdentityKey: getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId),
+			connectionIncarnation: this.connectionManager.getConnectionIncarnation(connection.id),
+			...(accountPartition ? { accountPartition } : {}),
+			authSessionGeneration: this.kustoClient.getConnectionSessionGeneration(connection),
+			leaveNoTraceRevision: policy.revocationGenerations[kustoClusterKey(connection.clusterUrl)] ?? 0,
+			databaseCacheGeneration: this.kustoConnectionCache.captureGeneration(connection.id, accountPartition || ''),
+			schemaCacheGeneration: captureSchemaCacheGeneration(this.context.globalStorageUri, connection.id, accountPartition || ''),
+		});
+	}
+
+	private async captureKustoMetadataOwner(connection: KustoConnection): Promise<{ owner?: KustoToolMetadataOwner; error?: string }> {
+		try {
+			const expectedIdentity = getKustoConnectionIdentityKey(connection.clusterUrl, connection.authorityId);
+			return await this.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+				const current = this.connectionManager.getConnections().find(candidate => candidate.id === connection.id);
+				if (!current || getKustoConnectionIdentityKey(current.clusterUrl, current.authorityId) !== expectedIdentity) {
+					return { error: 'The saved Kusto connection changed before metadata access started.' };
+				}
+				if (policy.globallyBlocked) {
+					return { error: 'Kusto metadata is unavailable while Leave No Trace policy recovery is blocked.' };
+				}
+				if (new Set(policy.clusterKeys).has(kustoClusterKey(current.clusterUrl))) {
+					return { error: 'Kusto metadata is unavailable because this cluster is protected by Leave No Trace.' };
+				}
+				return { owner: this.createKustoMetadataOwner(current, policy) };
+			});
+		} catch (error) {
+			return { error: `Kusto metadata ownership could not be established: ${error instanceof Error ? error.message : String(error)}` };
 		}
-		return identities;
+	}
+
+	private currentKustoMetadataConnection(
+		owner: KustoToolMetadataOwner,
+		policy: KustoLeaveNoTracePolicySnapshot,
+		expectedAccountPartition?: string,
+		databaseCacheGeneration?: KustoConnectionCacheGeneration,
+		schemaCacheGenerations: readonly SchemaCacheGeneration[] = [],
+	): KustoConnection | undefined {
+		const current = this.connectionManager.getConnections().find(candidate => candidate.id === owner.connection.id);
+		if (!current || policy.globallyBlocked || new Set(policy.clusterKeys).has(kustoClusterKey(current.clusterUrl))) return undefined;
+		try {
+			if (this.connectionManager.getConnectionIncarnation(current.id) !== owner.connectionIncarnation
+				|| getKustoConnectionIdentityKey(current.clusterUrl, current.authorityId) !== owner.connectionIdentityKey
+				|| this.kustoClient.getConnectionSessionGeneration(current) !== owner.authSessionGeneration
+				|| (policy.revocationGenerations[kustoClusterKey(current.clusterUrl)] ?? 0) !== owner.leaveNoTraceRevision) return undefined;
+			const currentPartition = String(this.kustoClient.getAccountPartition(current) || '').trim() || undefined;
+			if (owner.accountPartition && currentPartition !== owner.accountPartition) return undefined;
+			if (expectedAccountPartition && currentPartition !== expectedAccountPartition) return undefined;
+			if (databaseCacheGeneration && !cacheGenerationMatches(
+				this.kustoConnectionCache.captureGeneration(current.id, expectedAccountPartition || owner.accountPartition || ''),
+				databaseCacheGeneration,
+			)) return undefined;
+			if (schemaCacheGenerations.some(expected => !cacheGenerationMatches(
+				captureSchemaCacheGeneration(this.context.globalStorageUri, current.id, expectedAccountPartition || owner.accountPartition || ''),
+				expected,
+			))) return undefined;
+			return current;
+		} catch {
+			return undefined;
+		}
+	}
+
+	private async startKustoMetadataDispatch<T>(
+		owner: KustoToolMetadataOwner,
+		expectedAccountPartition: string | undefined,
+		dispatch: (connection: KustoConnection) => Promise<T>,
+	): Promise<T> {
+		await this.kustoClient.waitForProviderAccountRefresh();
+		const started = await this.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+			const checkCapturedCacheGenerations = !!owner.accountPartition
+				&& (!expectedAccountPartition || expectedAccountPartition === owner.accountPartition);
+			const current = this.currentKustoMetadataConnection(
+				owner,
+				policy,
+				expectedAccountPartition,
+				checkCapturedCacheGenerations ? owner.databaseCacheGeneration : undefined,
+				checkCapturedCacheGenerations ? [owner.schemaCacheGeneration] : [],
+			);
+			if (!current) return undefined;
+			let promise: Promise<T>;
+			try { promise = dispatch(Object.freeze({ ...current })); }
+			catch (error) { promise = Promise.reject(error); }
+			return { promise };
+		});
+		if (!started) throw new KustoMetadataOwnerChangedError();
+		return started.promise;
+	}
+
+	private kustoMetadataDispatchGate(
+		owner: KustoToolMetadataOwner,
+		expectedAccountPartition?: string,
+	) {
+		return async <T>(
+			_connection: KustoConnection,
+			accountPartition: string,
+			authSessionGeneration: number,
+			policy: KustoLeaveNoTracePolicySnapshot,
+			dispatch: () => T | PromiseLike<T>,
+		): Promise<T> => {
+			if (authSessionGeneration !== owner.authSessionGeneration
+				|| (expectedAccountPartition && accountPartition !== expectedAccountPartition)
+				|| (owner.accountPartition && accountPartition !== owner.accountPartition)
+				|| !this.currentKustoMetadataConnection(owner, policy, accountPartition)) {
+				throw new KustoMetadataOwnerChangedError();
+			}
+			return await dispatch();
+		};
+	}
+
+	private async readCachedSchemaForOwner(
+		owner: KustoToolMetadataOwner,
+		database: string,
+	): Promise<KustoMetadataCacheRead<GetSchemaResult>> {
+		const accountPartition = owner.accountPartition;
+		if (!accountPartition) return { kind: 'missing' };
+		const cached = await readCachedSchemaFromDiskByCluster(
+			this.context.globalStorageUri,
+			owner.connection.clusterUrl,
+			database,
+			owner.connection.id,
+			accountPartition,
+		);
+		if (!cached?.schema) return { kind: 'missing' };
+		const admitted = await this.admitKustoMetadataOwner(
+			owner,
+			accountPartition,
+			{ schemas: [owner.schemaCacheGeneration] },
+			current => ({
+				clusterUrl: current.clusterUrl,
+				database,
+				schema: cached.schema,
+				cacheAgeMs: Math.max(0, Date.now() - cached.timestamp),
+			}),
+		);
+		return admitted.admitted && admitted.value
+			? { kind: 'found', value: admitted.value }
+			: { kind: 'rejected' };
+	}
+
+	private async readCachedSchemaSummariesForOwner(
+		owner: KustoToolMetadataOwner,
+	): Promise<KustoMetadataCacheRead<NonNullable<GetSchemaResult['databases']>>> {
+		const accountPartition = owner.accountPartition;
+		if (!accountPartition) return { kind: 'missing' };
+		const principalIdentity = schemaPrincipalIdentity(owner.connection.id, accountPartition);
+		const schemas = await readAllCachedSchemasFromDisk(
+			this.context.globalStorageUri,
+			owner.connection.clusterUrl,
+			undefined,
+			new Set(principalIdentity ? [principalIdentity] : []),
+		);
+		if (schemas.length === 0) return { kind: 'missing' };
+		const admitted = await this.admitKustoMetadataOwner(
+			owner,
+			accountPartition,
+			{ schemas: [owner.schemaCacheGeneration] },
+			() => schemas,
+		);
+		return admitted.admitted && admitted.value
+			? { kind: 'found', value: admitted.value }
+			: { kind: 'rejected' };
+	}
+
+	private async captureActiveKustoMetadataOwners(): Promise<Map<string, KustoToolMetadataOwner>> {
+		return this.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+			const owners = new Map<string, KustoToolMetadataOwner>();
+			if (policy.globallyBlocked) return owners;
+			const protectedClusters = new Set(policy.clusterKeys);
+			for (const connection of this.connectionManager.getConnections()) {
+				if (protectedClusters.has(kustoClusterKey(connection.clusterUrl))) continue;
+				try {
+					const owner = this.createKustoMetadataOwner(connection, policy);
+					if (owner.accountPartition) owners.set(connection.id, owner);
+				} catch {
+					// Invalid or incomplete connection identities are not eligible cache owners.
+				}
+			}
+			return owners;
+		});
+	}
+
+	private async admitKustoMetadataOwner<T>(
+		owner: KustoToolMetadataOwner,
+		expectedAccountPartition: string,
+		cacheGenerations: {
+			database?: KustoConnectionCacheGeneration;
+			schemas?: readonly SchemaCacheGeneration[];
+		},
+		apply: (connection: KustoConnection) => T | PromiseLike<T>,
+	): Promise<{ admitted: boolean; value?: T }> {
+		await this.kustoClient.waitForProviderAccountRefresh();
+		return this.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+			const current = this.currentKustoMetadataConnection(
+				owner,
+				policy,
+				expectedAccountPartition,
+				cacheGenerations.database,
+				cacheGenerations.schemas,
+			);
+			if (!current) return { admitted: false };
+			return { admitted: true, value: await apply(current) };
+		});
 	}
 
 	async listFavorites(): Promise<{ favorites: KustoFavorite[] }> {
@@ -1219,10 +1489,6 @@ export class KustoWorkbenchToolOrchestrator {
 		}
 		const resolved = this.resolveSavedKustoConnection(clusterUrl, input.connectionId);
 		if (!resolved.connection) return { schemas: [], error: resolved.error };
-		const target = this.resolveToolTarget(input);
-		if (target.connection) {
-			return target.connection.schemaRefresher(resolved.connection.clusterUrl, resolved.connection.id);
-		}
 		return this.refreshSchemaDirectly(resolved.connection.clusterUrl, resolved.connection.id);
 	}
 
@@ -1233,55 +1499,83 @@ export class KustoWorkbenchToolOrchestrator {
 	private async refreshSchemaDirectly(clusterUrl: string, connectionId?: string): Promise<{ schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }>; error?: string }> {
 		const resolved = this.resolveSavedKustoConnection(clusterUrl, connectionId);
 		if (!resolved.connection) return { schemas: [], error: resolved.error };
-		const connection = resolved.connection;
+		const captured = await this.captureKustoMetadataOwner(resolved.connection);
+		if (!captured.owner) return { schemas: [], error: captured.error || 'Kusto metadata ownership could not be established.' };
+		const owner = captured.owner;
+		const connection = owner.connection;
 
-		const schemas: Array<{ clusterUrl: string; database: string; tables: string[]; functions: string[] }> = [];
 		try {
-			const databases = await this.kustoClient.getDatabases(connection, true, {
-				traceId: randomUUID(),
-				source: 'language-model-tool-schema-refresh',
-			});
-			if (databases.length === 0) {
-				return { schemas: [], error: 'No databases found on this cluster, or insufficient permissions.' };
-			}
+			const discovery = await this.kustoClient.getDatabasesWithIdentity(owner.connection, true, {
+					traceId: randomUUID(), source: 'language-model-tool-schema-refresh', persistCache: false,
+					dispatchAuthenticated: this.kustoMetadataDispatchGate(owner, owner.accountPartition),
+				});
+			const accountPartition = String(discovery.accountPartition || '').trim();
+			if (!accountPartition || !discovery.cacheGeneration) throw new KustoMetadataOwnerChangedError();
 
 			const errors: string[] = [];
-			for (const db of databases) {
+			const refreshed: KustoToolSchemaResult[] = [];
+			for (const db of discovery.databases) {
 				try {
-					const result = await this.kustoClient.getDatabaseSchema(connection, db, true);
+					const result = await this.kustoClient.getDatabaseSchema(owner.connection, db, true, {
+							traceId: randomUUID(), source: 'language-model-tool-schema-refresh', persistCache: false,
+							dispatchAuthenticated: this.kustoMetadataDispatchGate(owner, accountPartition),
+						});
 					const schema = result.schema;
-					const accountPartition = result.accountPartition;
-					if (!accountPartition) throw new Error('Schema authentication identity could not be resolved.');
-
-					const cacheKey = schemaCacheKey(connection.clusterUrl, db, connection.id, accountPartition);
-					const timestamp = result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now();
-					await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
-						schema,
-						timestamp,
-						version: SCHEMA_CACHE_VERSION,
-						clusterUrl: connection.clusterUrl,
+					if (result.accountPartition !== accountPartition || !result.cacheGeneration) throw new KustoMetadataOwnerChangedError();
+					refreshed.push(Object.freeze({
 						database: db,
-						connectionId: connection.id,
+						schema,
 						accountPartition,
-					}, result.cacheGeneration);
-
-					const tables = schema.tables || [];
-					const functions = (schema.functions || []).map(f => typeof f === 'string' ? f : f.name || '').filter(Boolean);
-					schemas.push({ clusterUrl: connection.clusterUrl, database: db, tables, functions });
+						cacheGeneration: result.cacheGeneration,
+						timestamp: result.fromCache ? Date.now() - (result.cacheAgeMs ?? 0) : Date.now(),
+					}));
 				} catch (dbErr) {
+					if (dbErr instanceof KustoMetadataOwnerChangedError) throw dbErr;
 					errors.push(`${db}: ${dbErr instanceof Error ? dbErr.message : String(dbErr)}`);
 				}
 			}
 
-			if (errors.length > 0 && schemas.length === 0) {
-				return { schemas, error: `Failed to refresh schema for all databases: ${errors.join('; ')}` };
-			}
-			if (errors.length > 0) {
-				return { schemas, error: `Some databases failed: ${errors.join('; ')}` };
-			}
-			return { schemas };
+			const admitted = await this.admitKustoMetadataOwner(
+				owner,
+				accountPartition,
+				{ database: discovery.cacheGeneration, schemas: refreshed.map(entry => entry.cacheGeneration) },
+				async current => {
+					if (discovery.databases.length > 0 && !await this.kustoConnectionCache.setDatabases(
+						current.id, accountPartition, discovery.databases, discovery.cacheGeneration,
+					)) throw new KustoMetadataOwnerChangedError();
+					for (const entry of refreshed) {
+						const cacheKey = schemaCacheKey(current.clusterUrl, entry.database, current.id, accountPartition);
+						await writeCachedSchemaToDisk(this.context.globalStorageUri, cacheKey, {
+							schema: entry.schema,
+							timestamp: entry.timestamp,
+							version: SCHEMA_CACHE_VERSION,
+							clusterUrl: current.clusterUrl,
+							database: entry.database,
+							connectionId: current.id,
+							accountPartition,
+						}, entry.cacheGeneration);
+						if (!cacheGenerationMatches(
+							captureSchemaCacheGeneration(this.context.globalStorageUri, current.id, accountPartition),
+							entry.cacheGeneration,
+						)) throw new KustoMetadataOwnerChangedError();
+					}
+					const schemas = refreshed.map(entry => ({
+						clusterUrl: current.clusterUrl,
+						database: entry.database,
+						tables: entry.schema.tables || [],
+						functions: (entry.schema.functions || []).map(fn => typeof fn === 'string' ? fn : fn.name || '').filter(Boolean),
+					}));
+					if (discovery.databases.length === 0) return { schemas: [], error: 'No databases found on this cluster, or insufficient permissions.' };
+					if (errors.length > 0 && schemas.length === 0) return { schemas, error: `Failed to refresh schema for all databases: ${errors.join('; ')}` };
+					if (errors.length > 0) return { schemas, error: `Some databases failed: ${errors.join('; ')}` };
+					return { schemas };
+				},
+			);
+			if (!admitted.admitted || !admitted.value) throw new KustoMetadataOwnerChangedError();
+			return admitted.value;
 		} catch (err) {
-			return { schemas, error: `Failed to refresh schema: ${err instanceof Error ? err.message : String(err)}` };
+			if (err instanceof KustoMetadataOwnerChangedError) return { schemas: [], error: err.message };
+			return { schemas: [], error: `Failed to refresh schema: ${err instanceof Error ? err.message : String(err)}` };
 		}
 	}
 
@@ -1305,63 +1599,54 @@ export class KustoWorkbenchToolOrchestrator {
 		const db = (input.database || '').trim();
 		const resolved = this.resolveSavedKustoConnection(clusterUrl, input.connectionId);
 		if (!resolved.connection) return { error: resolved.error };
-		const connection = resolved.connection;
+		let captured = await this.captureKustoMetadataOwner(resolved.connection);
+		if (!captured.owner) return { error: captured.error || 'Kusto metadata ownership could not be established.' };
+		let owner = captured.owner;
 
 		// ── Single database requested ─────────────────────────────────
 		if (db) {
-			let accountPartition = this.kustoClient.getAccountPartition(connection);
-			let cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, connection.clusterUrl, db, connection.id, accountPartition);
-
-				if (!cached?.schema) {
-				// Not in cache – try to fetch live
-				const refreshResult = await this.refreshSchemaDirectly(clusterUrl, connection.id);
+			let cached = await this.readCachedSchemaForOwner(owner, db);
+			if (cached.kind === 'rejected') return { error: 'Kusto metadata owner changed while the schema cache was being read.' };
+			if (cached.kind === 'missing') {
+				const refreshResult = await this.refreshSchemaDirectly(clusterUrl, owner.connection.id);
 				if (refreshResult.error && refreshResult.schemas.length === 0) {
 					return { error: refreshResult.error };
 				}
-				// Re-read from disk since the refresher persists to cache
-				accountPartition = this.kustoClient.getAccountPartition(connection);
-				cached = await readCachedSchemaFromDiskByCluster(this.context.globalStorageUri, connection.clusterUrl, db, connection.id, accountPartition);
+				const current = this.resolveSavedKustoConnection(clusterUrl, owner.connection.id);
+				if (!current.connection) return { error: current.error };
+				captured = await this.captureKustoMetadataOwner(current.connection);
+				if (!captured.owner) return { error: captured.error || 'Kusto metadata ownership changed after schema refresh.' };
+				owner = captured.owner;
+				cached = await this.readCachedSchemaForOwner(owner, db);
 			}
 
-			if (!cached?.schema) {
+			if (cached.kind !== 'found') {
 				return {
 					error: `No schema found for database "${db}" on cluster "${clusterUrl}". ` +
 						'Make sure the database name is correct and that you have permissions to access it. ' +
 						'You can use #refreshKustoSchema to force-fetch the latest schema from the cluster.'
 				};
 			}
-
-			return {
-				clusterUrl: connection.clusterUrl,
-				database: db,
-				schema: cached.schema,
-				cacheAgeMs: Math.max(0, Date.now() - cached.timestamp),
-			};
+			return cached.value;
 		}
 
 		// ── No specific database – return summaries for the cluster ──
-		const identity = schemaPrincipalIdentity(connection.id, this.kustoClient.getAccountPartition(connection));
-		const allowed = new Set<string>(identity ? [identity] : []);
-		const schemas = await readAllCachedSchemasFromDisk(this.context.globalStorageUri, connection.clusterUrl, undefined, allowed);
-
-		if (schemas.length === 0) {
-			// Nothing cached – try a live fetch
-			const refreshResult = await this.refreshSchemaDirectly(clusterUrl, connection.id);
+		let schemas = await this.readCachedSchemaSummariesForOwner(owner);
+		if (schemas.kind === 'rejected') return { error: 'Kusto metadata owner changed while schema summaries were being read.' };
+		if (schemas.kind === 'missing') {
+			const refreshResult = await this.refreshSchemaDirectly(clusterUrl, owner.connection.id);
 			if (refreshResult.error && refreshResult.schemas.length === 0) {
 				return { error: refreshResult.error };
 			}
-			// Re-read from disk
-			const refreshedIdentity = schemaPrincipalIdentity(connection.id, this.kustoClient.getAccountPartition(connection));
-			const refreshed = await readAllCachedSchemasFromDisk(
-				this.context.globalStorageUri,
-				connection.clusterUrl,
-				undefined,
-				new Set<string>(refreshedIdentity ? [refreshedIdentity] : []),
-			);
-			return { databases: refreshed };
+			const current = this.resolveSavedKustoConnection(clusterUrl, owner.connection.id);
+			if (!current.connection) return { error: current.error };
+			captured = await this.captureKustoMetadataOwner(current.connection);
+			if (!captured.owner) return { error: captured.error || 'Kusto metadata ownership changed after schema refresh.' };
+			owner = captured.owner;
+			schemas = await this.readCachedSchemaSummariesForOwner(owner);
 		}
-
-		return { databases: schemas };
+		if (schemas.kind !== 'found') return { error: 'Kusto metadata owner changed before schema summaries could be admitted.' };
+		return { databases: schemas.value };
 	}
 
 	async searchCachedSchemas(input: SearchCachedSchemasInput): Promise<{ matches: unknown[]; count: number; pattern: string; error?: string }> {
@@ -1369,8 +1654,31 @@ export class KustoWorkbenchToolOrchestrator {
 		if (!pattern) {
 			return { matches: [], count: 0, pattern: '', error: 'pattern is required and must be a non-empty string.' };
 		}
-		const matches = await searchCachedSchemas(this.context.globalStorageUri, pattern, 200, this.activeSchemaPrincipalIdentities());
-		const publicMatches = matches.map(({ connectionId, ...match }) => ({ connectionId, ...match }));
+		const owners = await this.captureActiveKustoMetadataOwners();
+		const principalIdentities = new Set([...owners.values()].flatMap(owner => {
+			const identity = schemaPrincipalIdentity(owner.connection.id, owner.accountPartition);
+			return identity ? [identity] : [];
+		}));
+		if (principalIdentities.size === 0) return { matches: [], count: 0, pattern };
+		const matches = await searchCachedSchemas(this.context.globalStorageUri, pattern, 200, principalIdentities);
+		await this.kustoClient.waitForProviderAccountRefresh();
+		const admittedConnectionIds = await this.connectionManager.runWithLeaveNoTraceSnapshotLock(async policy => {
+			const admitted = new Set<string>();
+			for (const connectionId of new Set(matches.map(match => match.connectionId))) {
+				const owner = owners.get(connectionId);
+				if (owner?.accountPartition && this.currentKustoMetadataConnection(
+					owner,
+					policy,
+					owner.accountPartition,
+					undefined,
+					[owner.schemaCacheGeneration],
+				)) admitted.add(connectionId);
+			}
+			return admitted;
+		});
+		const publicMatches = matches
+			.filter(match => admittedConnectionIds.has(match.connectionId))
+			.map(({ connectionId, ...match }) => ({ connectionId, ...match }));
 		return { matches: publicMatches, count: publicMatches.length, pattern };
 	}
 
@@ -1938,7 +2246,7 @@ export class KustoWorkbenchToolOrchestrator {
 		return this.sendToWebview('toolReorderSections', { sectionIds: rest.sectionIds }, 30000, target);
 	}
 
-	async configureQuerySection(input: ConfigureQuerySectionInput): Promise<{ success: boolean; resultPreview?: string }> {
+	async configureQuerySection(input: ConfigureQuerySectionInput, cancellationToken?: vscode.CancellationToken): Promise<{ success: boolean; resultPreview?: string }> {
 		const { target, rest } = this.splitTargetFields(input);
 		input = rest as ConfigureQuerySectionInput;
 		// Unescape literal \n sequences that LLMs frequently produce in query text
@@ -1948,7 +2256,11 @@ export class KustoWorkbenchToolOrchestrator {
 		const preflight = this.preflightKustoToolTarget(input);
 		if (!preflight.input) return { success: false, resultPreview: '', error: preflight.error } as { success: boolean; resultPreview?: string };
 		input = preflight.input;
-		return this.sendToWebview('toolConfigureQuerySection', { input }, 30000, target);
+		const queryTimeoutMinutes = vscode.workspace.getConfiguration('kustoWorkbench').get<number>('queryTimeout', 20);
+		const timeoutMs = input.execute
+			? (queryTimeoutMinutes > 0 ? queryTimeoutMinutes * 60_000 + 30_000 : null)
+			: 30000;
+		return this.sendToWebview('toolConfigureQuerySection', { input }, timeoutMs, target, undefined, undefined, cancellationToken);
 	}
 
 	async updateMarkdownSection(input: UpdateMarkdownSectionInput): Promise<{ success: boolean }> {
@@ -2075,7 +2387,7 @@ export class KustoWorkbenchToolOrchestrator {
 		};
 	}
 
-	async delegateToKustoWorkbenchCopilot(input: DelegateToKustoWorkbenchCopilotInput): Promise<{
+	async delegateToKustoWorkbenchCopilot(input: DelegateToKustoWorkbenchCopilotInput, cancellationToken?: vscode.CancellationToken): Promise<{
 		success: boolean;
 		answer: string;
 		query?: string;
@@ -2096,7 +2408,15 @@ export class KustoWorkbenchToolOrchestrator {
 			...preflight.input,
 			maxResultRows: normalizeAskKustoCopilotMaxResultRows(input.maxResultRows)
 		};
-		return this.sendToWebview('toolDelegateToKustoWorkbenchCopilot', { input: normalizedInput }, 180000, target); // 3 minute timeout for Copilot + query execution
+		return this.sendToWebview(
+			'toolDelegateToKustoWorkbenchCopilot',
+			{ input: normalizedInput },
+			180000,
+			target,
+			(connection, requestId) => connection.poster({ type: 'toolCancelKustoCopilot', requestId }),
+			undefined,
+			cancellationToken,
+		);
 	}
 
 	private getEditorIdForWorkbenchFile(info: WorkbenchFileInfo): string | undefined {
@@ -2631,10 +2951,10 @@ export class ConfigureQuerySectionTool implements vscode.LanguageModelTool<Confi
 
 	async invoke(
 		options: vscode.LanguageModelToolInvocationOptions<ConfigureQuerySectionInput>,
-		_token: vscode.CancellationToken
+		token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.configureQuerySection(getToolInput(options));
+			const result = await this.orchestrator.configureQuerySection(getToolInput(options), token);
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);
@@ -2711,10 +3031,10 @@ export class DelegateToKustoWorkbenchCopilotTool implements vscode.LanguageModel
 
 	async invoke(
 		options: vscode.LanguageModelToolInvocationOptions<DelegateToKustoWorkbenchCopilotInput>,
-		_token: vscode.CancellationToken
+		token: vscode.CancellationToken
 	): Promise<vscode.LanguageModelToolResult> {
 		try {
-			const result = await this.orchestrator.delegateToKustoWorkbenchCopilot(getToolInput(options));
+			const result = await this.orchestrator.delegateToKustoWorkbenchCopilot(getToolInput(options), token);
 			return new vscode.LanguageModelToolResult([
 				new vscode.LanguageModelTextPart(JSON.stringify(result, null, 2))
 			]);

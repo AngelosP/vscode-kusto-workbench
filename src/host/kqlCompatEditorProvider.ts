@@ -503,9 +503,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					]
 				};
 			}
-			state = hasSqlOwnedDocumentState(state)
-				? await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state)
-				: queryEditor.sanitizeSqlLeaveNoTraceState(state);
+			state = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state);
 			const reload = options?.expectedEditRevision !== undefined
 				? sidecarSession.createReloadRequest()
 				: undefined;
@@ -560,7 +558,7 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				}
 			}));
 		}
-		subscriptions.push(queryEditor.onDidInvalidateSqlPersistence(() => {
+		const repairInvalidatedPersistence = () => {
 			if (sidecarSession.isClosing || !sidecarUri || !lastKnownSidecarState) return;
 			const repairUri = sidecarUri;
 			const draftState = lastKnownSidecarState;
@@ -596,7 +594,9 @@ export class KqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					lastWrittenSidecarText = repaired.text;
 				}
 			}).catch(() => undefined);
-		}));
+		};
+		subscriptions.push(queryEditor.onDidInvalidateSqlPersistence(repairInvalidatedPersistence));
+		subscriptions.push(queryEditor.onDidInvalidateKustoPersistence(repairInvalidatedPersistence));
 		let webviewInitialized = false;
 		let lastWebviewPersistAt = 0;
 

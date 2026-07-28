@@ -57,6 +57,26 @@ describe('Kusto schema message admission', () => {
 		}, coordinator)).toBe('editor');
 	});
 
+	it('admits a logical schema response for the exact physically stamped target generation', () => {
+		const coordinator = new KustoEditorSchemaCoordinator();
+		const lease = coordinator.openSection('query_1', 'instance-1')!;
+		const staleIdentity = coordinator.setTarget(lease, 'c1', 'DbA')!;
+		const identity = coordinator.setTarget(lease, 'c1', 'DbA', {
+			connectionRevision: 4,
+			connectionIdentityKey: 'cluster|',
+		})!;
+		coordinator.beginSchemaRequest(lease, 'schema-stamped');
+
+		expect(admitKustoSchemaDelivery({
+			type: 'schemaData', boxId: 'query_1', connectionId: 'c1', database: 'DbA',
+			requestToken: 'schema-stamped', ...identity,
+		}, coordinator)).toBe('editor');
+		expect(admitKustoSchemaDelivery({
+			type: 'schemaData', boxId: 'query_1', connectionId: 'c1', database: 'DbA',
+			requestToken: 'schema-stamped', ...staleIdentity,
+		}, coordinator)).toBe('rejected');
+	});
+
 	it('routes synthetic requests before editor admission', () => {
 		const coordinator = new KustoEditorSchemaCoordinator();
 		expect(admitKustoSchemaDelivery({

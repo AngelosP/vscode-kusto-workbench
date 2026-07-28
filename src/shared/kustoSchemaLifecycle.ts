@@ -6,6 +6,8 @@ export type KustoEditorLifecycleIdentity = Readonly<{
 export type KustoEditorSchemaTarget = Readonly<{
 	connectionId: string;
 	database?: string;
+	connectionRevision?: number;
+	connectionIdentityKey?: string;
 }>;
 
 export type KustoEditorSchemaRequestIdentity = KustoEditorLifecycleIdentity & Readonly<{

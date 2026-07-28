@@ -64,6 +64,7 @@ import {
 	__kustoGetConnectionId,
 	__kustoGetDatabase,
 	__kustoGetClusterUrl,
+	synchronizeKustoSectionTarget,
 } from '../core/query-section-accessors';
 import { schemaRequestTokenByBoxId } from '../core/kusto-schema-request-state';
 import {
@@ -164,6 +165,9 @@ export class QueryConnectionController implements ReactiveController {
 			return getKustoPreparationToken(boxId);
 		}
 		if (!forceRefresh && targetMatches && current.status === 'ready') {
+			return getKustoPreparationToken(boxId);
+		}
+		if (!forceRefresh && targetMatches && current.status === 'deferred') {
 			return getKustoPreparationToken(boxId);
 		}
 		const hasRawFallback = !!getKustoEditorSchema(boxId)?.rawSchemaJson;
@@ -651,8 +655,9 @@ export class QueryConnectionController implements ReactiveController {
 			if (!needsRefresh) {
 				if (preparationToken) {
 					updateKustoPreparation(preparationToken, {
-						removeBlockers: ['schema'],
-						addBlockers: ['worker'],
+						status: 'deferred',
+						stage: 'waiting-focus',
+						replaceBlockers: [],
 						usableFallback: true,
 						target: { schemaSignature: meta.schemaSignature },
 					});
@@ -681,8 +686,9 @@ export class QueryConnectionController implements ReactiveController {
 				const needsRefresh = !!meta.isStale || meta.cacheState === 'stale' || meta.cacheState === 'outdated';
 				if (preparationToken) {
 					updateKustoPreparation(preparationToken, {
-						removeBlockers: ['schema'],
-						addBlockers: ['worker'],
+						status: needsRefresh ? 'preparing' : 'deferred',
+						stage: needsRefresh ? 'refreshing' : 'waiting-focus',
+						replaceBlockers: needsRefresh ? ['worker'] : [],
 						usableFallback: true,
 						target: { schemaSignature: meta.schemaSignature },
 					});
@@ -815,7 +821,7 @@ export function invalidateLinkedComparisonSchemaForSource(sourceBoxId: string): 
 	try {
 		const comparisonBoxId = String(optimizationMetadataByBoxId[sourceBoxId]?.comparisonBoxId || '').trim();
 		if (!comparisonBoxId) return;
-		kustoEditorSchemaCoordinator.invalidateCurrentTarget(comparisonBoxId);
+		synchronizeKustoSectionTarget(sourceBoxId, comparisonBoxId);
 		schemaFetchInFlightByBoxId[comparisonBoxId] = false;
 		lastSchemaRequestAtByBoxId[comparisonBoxId] = 0;
 		delete schemaRequestTokenByBoxId[comparisonBoxId];

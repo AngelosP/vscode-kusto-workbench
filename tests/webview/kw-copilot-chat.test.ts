@@ -492,7 +492,7 @@ describe('kw-copilot-chat — insert query', () => {
 		expect(handler).toHaveBeenCalledTimes(1);
 		const detail = (handler.mock.calls[0][0] as CustomEvent).detail;
 		expect(detail.query).toBe('StormEvents | take 5');
-		expect(detail.result).toEqual({ columns: [], rows: [] });
+		expect(detail).not.toHaveProperty('result');
 	});
 });
 
