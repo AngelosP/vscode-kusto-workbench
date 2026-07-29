@@ -165,19 +165,20 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 - Charts are the first bound consumer. They render their bound immutable revision, explicitly rebind during the existing dependent-refresh cascade or source selection, and release bindings on source clear or chart removal.
 - Transformations bind primary and join-right revisions independently, compute from those immutable inputs, and publish derived artifacts with direct lineage roles plus flattened leaf-source policies. Formula edits stay pinned; source changes and dependent refresh explicitly rebind.
 - Artifact retention now follows lineage references. Source clear revokes affected revisions and downstream bindings transitively while preserving a retargeted current derived revision whose lineage is independent of the cleared source.
+- Kusto comparison source and output executions carry one exact run identity. Manual and standalone Optimize sequence on admitted source success; Copilot retries retain the same source execution. Output and summaries use the pinned source artifact and fail closed on target or policy mismatch.
 - Persistence deletion and host privacy sanitation remove rows and descriptors atomically. A descriptor is never row authority, cannot restore without admitted `resultJson`, and is rejected when its source or policy claims disagree with the current owner.
 - Static terminal-construction/cancellation guards, protocol inventory, focused state-machine tests, full sequential tests, and authenticated normal/rerun/retarget/cancellation E2E are green.
 
 **Remaining divergence:**
 
 - Mutable latest-result state remains as a compatibility facade for tables and unmigrated consumers.
-- Comparisons, HTML dashboards, export, and Copilot can identify a source section but do not yet consume an exact immutable revision through a policy-bearing binding.
+- HTML dashboards, export, and Copilot can identify a source section but do not yet consume an exact immutable revision through a policy-bearing binding. SQL comparisons do not yet publish equivalent exact artifact lineage.
 - SQL results receive generic immutable runtime snapshots but do not yet publish or persist the same exact producer/principal/policy provenance as Kusto.
 - Kusto and SQL retain transport-specific execution coordinators over the shared low-level run registry; a transport-neutral artifact publication contract has not yet proven which semantics should be shared above transport.
 
 **Failure modes:**
 
-- Unmigrated downstream state can be replaced without retaining the exact producer revision that a comparison, dashboard, export, or Copilot response consumed.
+- Unmigrated downstream state can be replaced without retaining the exact producer revision that a dashboard, export, or Copilot response consumed.
 - Derived data outside chart and transformation paths can lose privacy/export permissions as it moves through section-keyed maps.
 - SQL restoration and persistence can preserve rows without the same first-class immutable producer, target, principal, policy, and lineage record as Kusto.
 - Prematurely merging Kusto and SQL execution abstractions could erase transport-specific cancellation and privacy semantics before the artifact contract is proven.
@@ -333,7 +334,7 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 ### Iteration `EXA-2`: Immutable Result Artifacts And Lineage
 
-**Status:** initial artifact/chart slice and transformation-derived-producer slice implemented; broader consumer migration remains active.
+**Status:** artifact/chart, transformation-derived-producer, and exact Kusto comparison slices implemented; broader consumer migration remains active.
 
 **Why next:** EXA-1 makes the producer execution exact, but admitted rows still collapse into mutable section-keyed state. This leaves the highest-risk remaining break between exact production and downstream consumption.
 
@@ -351,7 +352,11 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 **Transformation qualification:** the 14-file focused ring passed 570 tests; full sequential Vitest passed 196 files and 5,123 tests; host/webview type checks, production extension/browser builds, integration compilation, lint with zero errors, and both bundle gates passed; the extension-host suite passed all 113 tests with the established five-second Mocha headroom; and native `default/transformation-artifacts` passed on its first run on VS Code 1.130.0.
 
-**Next boundary:** bind comparison preparation/execution to the exact source artifact revision it compares, carry that identity through the request/terminal, and publish comparison output and summaries from that bound revision rather than `getCurrentResultArtifact(sourceBoxId)` at terminal time. Preserve exact execution ownership and target-equality checks. Keep dashboards, export, Copilot context, SQL exact provenance, coordinator convergence, and `ACT` outside that slice.
+**Comparison evidence:** source and comparison requests/reservations/terminals now carry one exact `KustoComparisonRunIdentity`; manual Compare and standalone Optimize no longer race on a timer; direct Run with a previously cached source delegates to the same source-first pair; Copilot retries reuse the admitted source execution; output publication requires the bound source artifact plus matching physical target and all five policy stamps; summaries follow output lineage; and every failure/removal/retarget path releases temporary pins. Pessimistic review returned `VERDICT: ACCEPTABLE FOR EXACT COMPARISON ARTIFACT SLICE`.
+
+**Comparison qualification:** the 16-file focused EXA ring passed 707 tests; full sequential Vitest passed 196 files and 5,135 tests; host/webview type checks, production extension/browser builds, integration compilation, lint with zero errors, and both bundle gates passed; the extension-host suite passed all 113 tests with established Mocha headroom; and native `default/comparison-artifacts` passed both runs on VS Code 1.130.0.
+
+**Next boundary:** migrate HTML dashboard data bridges from mutable `getResultsState` reads to explicit artifact-revision bindings. Active preview code must receive only admitted artifacts whose policy permits exposure, retain source lineage across refresh, and revoke bridge data synchronously when source policy or lineage is invalidated. Keep standalone export/publication, Copilot context, SQL exact provenance, coordinator convergence, and `ACT` outside that slice.
 
 ## Convergence Loop
 

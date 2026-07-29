@@ -74,6 +74,10 @@ export type DerivedResultArtifactInput = Readonly<{
 	role?: string;
 }>;
 
+export function comparisonSourceArtifactConsumerId(comparisonBoxId: unknown): string {
+	return `comparison:${String(comparisonBoxId || '').trim()}:source`;
+}
+
 function cloneValue(value: unknown, seen = new WeakMap<object, unknown>()): unknown {
 	if (value === null || typeof value !== 'object') return value;
 	if (value instanceof Date) return new Date(value.getTime());
@@ -289,6 +293,15 @@ export class ResultArtifactStore {
 	getCurrent(sourceBoxId: string): ResultArtifact | undefined {
 		const artifactId = this.currentArtifactIdBySource.get(String(sourceBoxId || '').trim());
 		return artifactId ? this.artifacts.get(artifactId) : undefined;
+	}
+
+	getByProducerExecution(sourceBoxId: string, executionId: string): ResultArtifact | undefined {
+		const source = String(sourceBoxId || '').trim();
+		const execution = String(executionId || '').trim();
+		if (!source || !execution) return undefined;
+		return [...this.artifacts.values()].find(artifact => (
+			artifact.sourceBoxId === source && artifact.producer?.executionId === execution
+		));
 	}
 
 	bind(consumerId: string, sourceBoxId: string, artifactId?: string): string | undefined {

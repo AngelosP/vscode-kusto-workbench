@@ -1,7 +1,7 @@
 import * as vscode from 'vscode';
 import { DatabaseSchemaIndex } from './kustoClient';
 import type { KustoEditorLifecycleIdentity } from '../shared/kustoSchemaLifecycle';
-import type { KustoSectionExecutionTarget } from '../shared/kustoExecution';
+import type { KustoComparisonRunIdentity, KustoSectionExecutionTarget } from '../shared/kustoExecution';
 import type { KustoExecutionRequestIdentity } from '../shared/kustoExecution';
 import type { KustoCopilotRequestIdentity, KustoOptimizeRequestIdentity } from '../shared/kustoExecution';
 
@@ -91,6 +91,7 @@ export type ExecuteQueryMessage = {
 	sectionInstanceId: string;
 	targetGeneration: number;
 	producer?: 'manual' | 'copilot' | 'comparison' | 'tool';
+	comparisonRun?: KustoComparisonRunIdentity;
 	database?: string;
 	queryMode?: string;
 	cacheEnabled?: boolean;

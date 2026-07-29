@@ -104,6 +104,20 @@ describe('ResultArtifactStore', () => {
 		expect(store.get(second.artifactId)).toBe(second);
 	});
 
+	it('finds a pinned source revision by producer execution after current advances', () => {
+		const store = new ResultArtifactStore();
+		const sourceA = store.publish('query_source', { columns: [], rows: [['a']], metadata: {} }, {
+			producer: { engine: 'kusto', boxId: 'query_source', executionId: 'source-a' },
+		})!;
+		store.bind('comparison:query_cmp:source', 'query_source', sourceA.artifactId);
+		store.publish('query_source', { columns: [], rows: [['b']], metadata: {} }, {
+			producer: { engine: 'kusto', boxId: 'query_source', executionId: 'source-b' },
+		});
+
+		expect(store.getByProducerExecution('query_source', 'source-a')).toBe(sourceA);
+		expect(store.getByProducerExecution('query_source', 'missing')).toBeUndefined();
+	});
+
 	it('publishes truthful lineage and source policies for differently owned inputs', () => {
 		const store = new ResultArtifactStore();
 		const left = store.publish('query_left', { columns: [], rows: [[1]], metadata: {} }, {

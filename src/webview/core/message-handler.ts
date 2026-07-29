@@ -10,12 +10,15 @@ import { traceFileOpen } from './file-open-trace.js';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { safeRun } from '../shared/safe-run';
 import {
+	bindResultArtifactConsumer,
 	clearResultsState,
-	getCurrentResultArtifact,
+	getBoundResultArtifact,
+	getResultArtifactByProducerExecution,
 	getResultsState,
 	displayResultForBox,
 	displayResult,
 	displayCancelled,
+	unbindResultArtifactConsumer,
 	type ResultArtifactPublication,
 } from './results-state';
 import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './error-renderer';
@@ -42,7 +45,7 @@ import { addTransformationBox, removeTransformationBox } from '../sections/kw-tr
 import { setRunMode } from '../sections/kw-query-toolbar';
 import { applyEditingPreferencesData } from './editing-preferences.js';
 import {
-	executeQuery, setQueryExecuting, __kustoSetResultsVisible,
+	executeKustoComparisonPair, executeQuery, setQueryExecuting, __kustoSetResultsVisible,
 	__kustoSetLinkedOptimizationMode, displayComparisonSummary,
 	optimizeQueryWithCopilot, __kustoSetOptimizeInProgress,
 	__kustoHideOptimizePromptForBox, __kustoApplyOptimizeQueryOptions,
@@ -109,6 +112,7 @@ import {
 } from './state';
 import { getKustoConnectionIdentityKey, getKustoSchemaIdentityKey, resolveStrictKustoConnection } from '../../shared/kustoAuth.js';
 import { hasKustoCopilotRequestIdentity, hasKustoExecutionRequestIdentity, hasKustoExecutionTerminalStamp, hasKustoOptimizeRequestIdentity, kustoCopilotRequestIdentityEquals, kustoExecutionIdentityEquals, kustoExecutionRequestIdentityEquals, type KustoCopilotRequestIdentity, type KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
+import { comparisonSourceArtifactConsumerId, type ResultArtifactSourcePolicy } from '../../shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import { ADMITTED_KUSTO_COPILOT_EVENT, emitAdmittedKustoCopilotOutput } from './kusto-copilot-output-runtime.js';
@@ -816,12 +820,84 @@ function completeKustoTerminal(message: any): void {
 	if (typeof section?.completeQueryExecution === 'function') section.completeQueryExecution(executionId);
 }
 
+function bindComparisonSourceArtifact(comparisonRun: any): boolean {
+	const sourceBoxId = String(comparisonRun?.sourceBoxId || '').trim();
+	const sourceExecutionId = String(comparisonRun?.sourceExecutionId || '').trim();
+	const comparisonBoxId = String(comparisonRun?.comparisonBoxId || '').trim();
+	if (!sourceBoxId || !sourceExecutionId || !comparisonBoxId) return false;
+	const artifact = getResultArtifactByProducerExecution(sourceBoxId, sourceExecutionId);
+	if (!artifact) return false;
+	return bindResultArtifactConsumer(
+		comparisonSourceArtifactConsumerId(comparisonBoxId), sourceBoxId, artifact.artifactId,
+	) === artifact.artifactId;
+}
+
+function releaseComparisonSourceArtifact(message: any): void {
+	const comparisonBoxId = String(message?.comparisonRun?.comparisonBoxId || '').trim();
+	if (comparisonBoxId && String(message?.boxId || '') === comparisonBoxId) {
+		unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(comparisonBoxId));
+	}
+}
+
+function comparisonSourcePolicyMatchesDispatch(sourceArtifact: any, dispatch: any): boolean {
+	const policy = sourceArtifact?.policy;
+	if (!policy || !dispatch) return false;
+	for (const key of [
+		'accountPartition',
+		'authSessionGeneration',
+		'leaveNoTraceRevision',
+		'connectionRevision',
+		'connectionIdentityKey',
+	] as const) {
+		if (policy[key] !== undefined && policy[key] !== dispatch[key]) return false;
+	}
+	return !!String(policy.accountPartition || '').trim()
+		&& Number.isSafeInteger(policy.authSessionGeneration)
+		&& Number(policy.authSessionGeneration) >= 0
+		&& Number.isSafeInteger(policy.leaveNoTraceRevision)
+		&& Number(policy.leaveNoTraceRevision) >= 0
+		&& Number.isSafeInteger(policy.connectionRevision)
+		&& Number(policy.connectionRevision) >= 0
+		&& !!String(policy.connectionIdentityKey || '').trim();
+}
+
+function comparisonSourcePolicies(sourceArtifact: any): readonly ResultArtifactSourcePolicy[] | undefined {
+	if (!sourceArtifact?.policy) return undefined;
+	if (Array.isArray(sourceArtifact.policy.sourcePolicies) && sourceArtifact.policy.sourcePolicies.length) {
+		return sourceArtifact.policy.sourcePolicies as readonly ResultArtifactSourcePolicy[];
+	}
+	const policy: Record<string, unknown> = { sourceArtifactId: sourceArtifact.artifactId };
+	for (const key of [
+		'accountPartition',
+		'authSessionGeneration',
+		'leaveNoTraceRevision',
+		'connectionRevision',
+		'connectionIdentityKey',
+	] as const) {
+		if (sourceArtifact.policy[key] !== undefined) policy[key] = sourceArtifact.policy[key];
+	}
+	return [policy as ResultArtifactSourcePolicy];
+}
+
 function getKustoResultArtifactPublication(message: unknown): ResultArtifactPublication | undefined {
 	if (!message || typeof message !== 'object' || (message as Record<string, unknown>).type !== 'queryResult') return undefined;
 	if (!hasKustoExecutionTerminalStamp(message, true) || !message.dispatch) return undefined;
 	const dispatch = message.dispatch;
-	const sourceBoxId = String(optimizationMetadataByBoxId[message.boxId]?.sourceBoxId || '').trim();
-	const sourceArtifact = sourceBoxId ? getCurrentResultArtifact(sourceBoxId) : null;
+	const comparisonRun = message.comparisonRun;
+	const comparisonBoxId = String(comparisonRun?.comparisonBoxId || '').trim();
+	const sourceBoxId = String(comparisonRun?.sourceBoxId || '').trim();
+	const sourceExecutionId = String(comparisonRun?.sourceExecutionId || '').trim();
+	const sourceArtifact = comparisonBoxId && message.boxId === comparisonBoxId && sourceBoxId && sourceExecutionId
+		? getBoundResultArtifact(comparisonSourceArtifactConsumerId(comparisonBoxId), sourceBoxId)
+		: null;
+	if (comparisonBoxId && message.boxId === comparisonBoxId
+		&& (!sourceArtifact || sourceArtifact.producer?.executionId !== sourceExecutionId)) return undefined;
+	if (sourceArtifact && (sourceArtifact.producer?.engine !== 'kusto'
+		|| sourceArtifact.producer?.boxId !== sourceBoxId
+		|| sourceArtifact.producer?.connectionId !== message.connectionId
+		|| String(sourceArtifact.producer?.database || '').toLowerCase() !== String(message.database || '').toLowerCase())) return undefined;
+	if (sourceArtifact && !comparisonSourcePolicyMatchesDispatch(sourceArtifact, dispatch)) return undefined;
+	const sourcePolicies = comparisonSourcePolicies(sourceArtifact);
 	return {
 		producer: {
 			engine: message.engine,
@@ -841,6 +917,7 @@ function getKustoResultArtifactPublication(message: unknown): ResultArtifactPubl
 			leaveNoTraceRevision: dispatch.leaveNoTraceRevision,
 			connectionRevision: dispatch.connectionRevision,
 			connectionIdentityKey: dispatch.connectionIdentityKey,
+			...(sourcePolicies?.length ? { sourcePolicies } : {}),
 		},
 		...(sourceArtifact ? {
 			lineage: [{ sourceArtifactId: sourceArtifact.artifactId, role: 'comparison-source' }],
@@ -1327,11 +1404,19 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				&& lifecycle?.targetGeneration === Number(message.targetGeneration)
 				&& String(section.getConnectionId?.() || '') === String(message.connectionId || '')
 				&& String(section.getDatabase?.() || '').toLowerCase() === String(message.database || '').toLowerCase();
-			const accepted = targetMatches
+			const comparisonBindingAccepted = !message.comparisonRun
+				|| String(message.boxId || '') !== String(message.comparisonRun.comparisonBoxId || '')
+				|| bindComparisonSourceArtifact(message.comparisonRun);
+			const accepted = targetMatches && comparisonBindingAccepted
 				&& section.beginQueryExecution?.(
 					String(message.executionId || ''), message.producer, String(message.copilotRequestId || '') || undefined,
 					String(message.expectedPredecessorExecutionId || ''),
+					message.comparisonRun,
 				) === true;
+			if (!accepted && message.comparisonRun
+				&& String(message.boxId || '') === String(message.comparisonRun.comparisonBoxId || '')) {
+				releaseComparisonSourceArtifact(message);
+			}
 			postMessageToHost({
 				type: 'kustoExecutionStartedAck',
 				boxId,
@@ -1584,6 +1669,20 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			}
 			let resultAccepted = !message.boxId;
 			const artifactPublication = getKustoResultArtifactPublication(message);
+			const comparisonBoxId = String(message.comparisonRun?.comparisonBoxId || '').trim();
+			const comparisonMetadata = optimizationMetadataByBoxId[String(message.boxId || '')];
+			const comparisonSourceBoxId = comparisonMetadata?.isComparison
+				? String(comparisonMetadata.sourceBoxId || '').trim()
+				: '';
+			const exactComparisonArtifactRequired = (comparisonBoxId && String(message.boxId || '') === comparisonBoxId)
+				|| (!!comparisonSourceBoxId && !__kustoGetSqlSectionElement(comparisonSourceBoxId) && message.engine === 'kusto');
+			if (exactComparisonArtifactRequired && !artifactPublication?.lineage?.length) {
+				try { setQueryExecuting(message.boxId, false); } catch (e) { console.error('[kusto]', e); }
+				releaseComparisonSourceArtifact(message);
+				completeKustoTerminal(message);
+				acknowledgeKustoPublication(message, false);
+				break;
+			}
 			try {
 				if (message.boxId) {
 					pState.lastExecutedBox = message.boxId;
@@ -1608,9 +1707,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				console.error('Failed to render query results:', e);
 			}
 			if (!resultAccepted) {
+				releaseComparisonSourceArtifact(message);
 				completeKustoTerminal(message);
 				acknowledgeKustoPublication(message, false);
 				break;
+			}
+			if (message.comparisonRun
+				&& String(message.boxId || '') === String(message.comparisonRun.sourceBoxId || '')
+				&& String(message.executionId || '') === String(message.comparisonRun.sourceExecutionId || '')) {
+				bindComparisonSourceArtifact(message.comparisonRun);
 			}
 			try {
 				if (message.boxId) {
@@ -1618,6 +1723,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					if (message.ensureResultsVisible === true) __kustoSetResultsVisible(message.boxId, true);
 				}
 			} catch (e) { console.error('[kusto]', e); }
+			releaseComparisonSourceArtifact(message);
 			// Check if this is a comparison box result
 			try {
 				if (message.boxId && optimizationMetadataByBoxId[message.boxId]) {
@@ -1672,6 +1778,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			} catch (e: any) {
 				console.error('Failed to render query error:', e);
 			}
+			releaseComparisonSourceArtifact(message);
 			emitAdmittedKustoTerminal(message);
 			completeKustoTerminal(message);
 			acknowledgeKustoPublication(message, true);
@@ -1693,6 +1800,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			displayCancelled();
+			releaseComparisonSourceArtifact(message);
 			emitAdmittedKustoTerminal(message);
 			completeKustoTerminal(message);
 			acknowledgeKustoPublication(message, true);
@@ -2440,12 +2548,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								__kustoSetResultsVisible(comparisonBoxId, false);
 							}
 						} catch (e) { console.error('[kusto]', e); }
-						try {
-							executeQuery(sourceBoxId);
-							setTimeout(() => {
-								try { executeQuery(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
-							}, 100);
-						} catch (e) { console.error('[kusto]', e); }
+						try { await executeKustoComparisonPair(sourceBoxId, comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
 					finishReadyApplication();
 					break;
 				}
@@ -2525,11 +2628,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					__kustoSetSectionName(comparisonBoxId, desiredOptimizedName);
 				}
 				
-				// Execute both queries for comparison
-				executeQuery(sourceBoxId);
-				setTimeout(() => {
-					executeQuery(comparisonBoxId);
-				}, 100);
+				// Execute both queries against one exact source artifact revision.
+				await executeKustoComparisonPair(sourceBoxId, comparisonBoxId);
 				
 				finishReadyApplication();
 			} catch (err: any) {

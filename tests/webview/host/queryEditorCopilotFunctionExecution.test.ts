@@ -1320,6 +1320,14 @@ describe('Kusto Copilot function execution', () => {
 
 		expect(host.getKustoSectionExecutionAccountPartition).toHaveBeenCalled();
 		expect(host.executeKustoSectionQuery).toHaveBeenCalledTimes(2);
+		const sourceExecution = vi.mocked(host.executeKustoSectionQuery).mock.calls[0][0] as any;
+		const comparisonExecution = vi.mocked(host.executeKustoSectionQuery).mock.calls[1][0] as any;
+		expect(sourceExecution.comparisonRun).toEqual({
+			sourceBoxId: sourceExecution.target.boxId,
+			sourceExecutionId: sourceExecution.executionId,
+			comparisonBoxId: 'comparison',
+		});
+		expect(comparisonExecution.comparisonRun).toEqual(sourceExecution.comparisonRun);
 		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toContainEqual(expect.objectContaining({ ok: true }));
 		expect(hostMessagesOfType(host, 'copilotWriteQueryDone'))
 			.not.toContainEqual(expect.objectContaining({ message: 'Canceled.' }));

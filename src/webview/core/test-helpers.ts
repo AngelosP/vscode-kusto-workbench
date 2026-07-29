@@ -22,8 +22,10 @@ import {
 	displayResultForBox,
 	getBoundResultArtifact,
 	getCurrentResultArtifact,
+	getResultArtifact,
 	getResultsState,
 } from './results-state.js';
+import { displayComparisonSummary } from '../sections/query-execution.controller.js';
 import { adoptCurrentStateAsCleanForTest, isPersistenceSuppressedForTest, suppressPersistenceForTest } from './persistence.js';
 
 type MonacoLike = {
@@ -5605,6 +5607,83 @@ async function e2eTransformationAssertArtifactPinRebindAndRevoke(): Promise<stri
 	return `transformation pinned ${sourceA.artifactId}, rebound ${sourceB.artifactId}, then revoked`;
 }
 
+async function e2eComparisonAssertExactArtifactLineage(): Promise<string> {
+	const sourceId = e2eLayoutAddSection('addQueryBox', {
+		id: 'query_e2e_comparison_source', initialQuery: 'print Value="source"',
+		name: 'Comparison Source', defaultResultsVisible: true,
+	});
+	const comparisonId = e2eLayoutAddSection('addQueryBox', {
+		id: 'query_e2e_comparison_output', initialQuery: 'print Value="source"',
+		name: 'Comparison Output', isComparison: true, comparisonSourceBoxId: sourceId,
+		defaultResultsVisible: true,
+	});
+	await e2eLayoutWaitFor(() => !!document.getElementById(sourceId), 'comparison source section');
+	await e2eLayoutWaitFor(() => !!document.getElementById(comparisonId), 'comparison output section');
+	const columns = [{ name: 'Value', type: 'string' }];
+	const sourcePolicy = {
+		accountPartition: 'e2e-partition', authSessionGeneration: 1, leaveNoTraceRevision: 0,
+		connectionRevision: 1, connectionIdentityKey: 'e2e-cluster|authority',
+	};
+	const sourceResult = { columns, rows: [['revision-a']], metadata: { executionTime: '0.010s' } };
+	if (!displayResultForBox(sourceResult, sourceId, {
+		label: 'Results', showExecutionTime: true,
+		artifactPublication: {
+			producer: {
+				engine: 'kusto', boxId: sourceId, executionId: 'e2e-source-a',
+				connectionId: 'e2e-connection', database: 'Samples', producer: 'comparison',
+			},
+			policy: sourcePolicy,
+		},
+	})) throw new Error('Source revision A was rejected');
+	const sourceA = getCurrentResultArtifact(sourceId);
+	if (!sourceA) throw new Error('Source revision A artifact is unavailable');
+	const comparisonResult = { columns, rows: [['revision-a']], metadata: { executionTime: '0.008s' } };
+	if (!displayResultForBox(comparisonResult, comparisonId, {
+		label: 'Results', showExecutionTime: true,
+		artifactPublication: {
+			producer: {
+				engine: 'kusto', boxId: comparisonId, executionId: 'e2e-comparison',
+				connectionId: 'e2e-connection', database: 'Samples', producer: 'comparison',
+			},
+			policy: {
+				...sourcePolicy,
+				sourcePolicies: [{ sourceArtifactId: sourceA.artifactId, ...sourcePolicy }],
+			},
+			lineage: [{ sourceArtifactId: sourceA.artifactId, role: 'comparison-source' }],
+		},
+	})) throw new Error('Comparison artifact was rejected');
+
+	if (!displayResultForBox(
+		{ columns, rows: [['revision-c']], metadata: { executionTime: '0.006s' } },
+		sourceId,
+		{
+			label: 'Results', showExecutionTime: true,
+			artifactPublication: {
+				producer: {
+					engine: 'kusto', boxId: sourceId, executionId: 'e2e-source-c',
+					connectionId: 'e2e-connection', database: 'Samples', producer: 'manual',
+				},
+				policy: sourcePolicy,
+			},
+		},
+	)) throw new Error('Source revision C was rejected');
+
+	displayComparisonSummary(sourceId, comparisonId);
+	const comparisonArtifact = getCurrentResultArtifact(comparisonId);
+	const sourceCurrent = getCurrentResultArtifact(sourceId);
+	const exactSource = getResultArtifact(sourceA.artifactId);
+	const summaryText = String(document.getElementById(comparisonId)?.querySelector('.comparison-summary-banner')?.textContent || '');
+	if (sourceCurrent?.producer?.executionId !== 'e2e-source-c') throw new Error('Source current did not advance to C');
+	if (comparisonArtifact?.lineage[0]?.sourceArtifactId !== sourceA.artifactId) {
+		throw new Error('Comparison lineage did not retain source A');
+	}
+	if (exactSource?.producer?.executionId !== 'e2e-source-a') throw new Error('Exact source A was pruned');
+	if (!summaryText.includes('Data matches') || summaryText.includes('Data differs')) {
+		throw new Error(`Comparison summary did not use exact source A: ${summaryText}`);
+	}
+	return `comparison retained ${sourceA.artifactId} while source advanced to ${sourceCurrent.artifactId}`;
+}
+
 function e2eLayoutDispatchUrlContent(boxId: string): void {
 	window.dispatchEvent(new MessageEvent('message', {
 		data: {
@@ -6334,6 +6413,9 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 	},
 	transformation: {
 		assertArtifactPinRebindAndRevoke: e2eTransformationAssertArtifactPinRebindAndRevoke,
+	},
+	comparison: {
+		assertExactArtifactLineage: e2eComparisonAssertExactArtifactLineage,
 	},
 	cursorStatus: {
 		beginCapture: e2eBeginHostMessageCapture,

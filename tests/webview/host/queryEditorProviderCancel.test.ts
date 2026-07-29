@@ -1774,6 +1774,30 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			.toBeLessThan(provider.kustoClient.executeQueryCancelable.mock.invocationCallOrder[0]);
 	});
 
+	it('does not request a second start claim for a webview-preclaimed comparison run', async () => {
+		const provider = createProviderHarness();
+		const result = queryResult('comparison');
+		provider.kustoClient.executeQueryCancelable.mockImplementationOnce(dispatchingKustoExecution({
+			promise: Promise.resolve(result), cancel: vi.fn(), clientActivityId: 'KW.execute_query;comparison',
+			getAccountPartition: () => 'partition-current',
+		}));
+		const target = provider.getKustoSectionExecutionTarget('query_1');
+		const comparisonRun = {
+			sourceBoxId: 'query_source', sourceExecutionId: 'source-execution', comparisonBoxId: 'query_1',
+		};
+
+		const outcome = await provider.executeKustoSectionQuery({
+			target, executionId: 'comparison-execution', producer: 'comparison', comparisonRun,
+			query: 'print optimized=1', preclaimedByWebview: true,
+		});
+
+		expect(outcome).toEqual({ status: 'success', executionId: 'comparison-execution', result });
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'kustoExecutionStarted' }));
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryResult', executionId: 'comparison-execution', comparisonRun,
+		}));
+	});
+
 	it('does not dispatch Copilot execution when retarget rejects its exact start', async () => {
 		const provider = createProviderHarness();
 		provider.postMessage.mockImplementation((message: any) => {

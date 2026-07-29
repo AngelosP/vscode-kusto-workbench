@@ -78,7 +78,7 @@ import type { FileOpenTrace } from './fileOpenTrace';
 import { getEditingPreferencesData, setEditingPreference } from './editingPreferences';
 import { QueryRunCoordinator } from './queryRunCoordinator';
 import { KustoExecutionCoordinator, type KustoExecutionLease } from './kustoExecutionCoordinator';
-import { hasKustoCopilotRequestIdentity, kustoCopilotRequestIdentityEquals, type KustoCopilotRequestIdentity, type KustoDispatchIdentity, type KustoExecutionProducer, type KustoExecutionRequestIdentity, type KustoExecutionStarted, type KustoSectionExecutionOutcome, type KustoSectionExecutionTarget, type PreparedComparisonSection } from '../shared/kustoExecution';
+import { hasKustoCopilotRequestIdentity, kustoCopilotRequestIdentityEquals, type KustoComparisonRunIdentity, type KustoCopilotRequestIdentity, type KustoDispatchIdentity, type KustoExecutionProducer, type KustoExecutionRequestIdentity, type KustoExecutionStarted, type KustoSectionExecutionOutcome, type KustoSectionExecutionTarget, type PreparedComparisonSection } from '../shared/kustoExecution';
 
 type PendingComparisonEnsure = {
 	resolve: (comparison: PreparedComparisonSection) => void;
@@ -2677,6 +2677,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			target,
 			executionId: String(message.executionId || '').trim(),
 			producer: message.producer ?? 'manual',
+			comparisonRun: message.comparisonRun,
 			query: message.query,
 			queryMode: message.queryMode,
 			cacheEnabled: message.cacheEnabled,
@@ -2684,6 +2685,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			cacheUnit: message.cacheUnit,
 			persistSelection: true,
 			notifyUserOnError: true,
+			preclaimedByWebview: true,
 		});
 	}
 
@@ -2691,6 +2693,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		target: KustoSectionExecutionTarget;
 		executionId: string;
 		producer: KustoExecutionProducer;
+		comparisonRun?: KustoComparisonRunIdentity;
 		copilotRequestId?: string;
 		query: string;
 		queryMode?: string;
@@ -2700,6 +2703,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		persistSelection?: boolean;
 		ensureResultsVisible?: boolean;
 		notifyUserOnError?: boolean;
+		preclaimedByWebview?: boolean;
 	}): Promise<KustoSectionExecutionOutcome<import('./kustoClient').QueryResult>> {
 		const { target } = options;
 		const boxId = String(target.boxId || '').trim();
@@ -2708,6 +2712,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			...target,
 			executionId: String(options.executionId || '').trim(),
 			producer: options.producer,
+			...(options.comparisonRun ? { comparisonRun: options.comparisonRun } : {}),
 			...(options.copilotRequestId ? { copilotRequestId: options.copilotRequestId } : {}),
 		};
 		const expectedPredecessorExecutionId = this.kustoExecutionCoordinator.getActive(boxId)?.executionId;
@@ -2715,13 +2720,13 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		try {
 			reservation = this.kustoExecutionCoordinator.reserve(request);
 		} catch {
-			if ((options.producer === 'manual' || options.producer === 'tool')
+			if ((options.preclaimedByWebview || options.producer === 'manual' || options.producer === 'tool')
 				&& !this.kustoExecutionCoordinator.hasExactActiveRequest(request)) {
 				await this.kustoExecutionCoordinator.rejectPreclaimedRequest(request);
 			}
 			return { status: 'superseded', executionId: request.executionId };
 		}
-		if ((options.producer === 'copilot' || options.producer === 'comparison')
+		if (!options.preclaimedByWebview && (options.producer === 'copilot' || options.producer === 'comparison')
 			&& !await this.claimKustoExecutionInWebview(reservation, expectedPredecessorExecutionId)) {
 			this.kustoExecutionCoordinator.cancelExpected(reservation);
 			return { status: 'superseded', executionId: request.executionId };

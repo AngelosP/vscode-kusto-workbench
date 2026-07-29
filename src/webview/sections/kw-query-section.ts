@@ -17,7 +17,8 @@ import '../components/kw-section-shell.js';
 import { CopilotChatManagerController } from './copilot-chat-manager.controller.js';
 import { kustoWebviewFlavor } from './copilot-chat-flavor.js';
 import { canPersistKustoResult, schedulePersist } from '../core/persistence.js';
-import { clearResultsState, getCurrentResultArtifact } from '../core/results-state.js';
+import { clearResultsState, getCurrentResultArtifact, unbindResultArtifactConsumer } from '../core/results-state.js';
+import { comparisonSourceArtifactConsumerId } from '../../shared/resultArtifact.js';
 import { toPersistedResultArtifact, type PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
 import {
 	removeQueryBox,
@@ -227,9 +228,10 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		producer?: import('../../shared/kustoExecution.js').KustoExecutionProducer,
 		copilotRequestId?: string,
 		expectedPredecessorExecutionId?: string,
+		comparisonRun?: import('../../shared/kustoExecution.js').KustoComparisonRunIdentity,
 	): boolean {
 		return this.executionCtrl.beginQueryExecution(
-			executionId, producer, copilotRequestId, expectedPredecessorExecutionId,
+			executionId, producer, copilotRequestId, expectedPredecessorExecutionId, comparisonRun,
 		);
 	}
 	public getActiveExecutionId(): string { return this.executionCtrl.getActiveExecutionId(); }
@@ -1654,6 +1656,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 
 	public clearTargetBoundState(): void {
+		unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(this.boxId));
 		const retiredExecution = this.executionCtrl.retireActiveQueryExecution();
 		if (retiredExecution) {
 			try {

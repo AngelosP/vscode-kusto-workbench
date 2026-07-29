@@ -54,7 +54,8 @@ import {
 	unregisterSqlDerivedComparisonSession,
 	unregisterSqlDerivedComparisonsForSource,
 } from './sql-section-message-router.js';
-import { clearResultsState, rebindResultArtifactConsumer } from './results-state';
+import { clearResultsState, rebindResultArtifactConsumer, unbindResultArtifactConsumer } from './results-state';
+import { comparisonSourceArtifactConsumerId } from '../../shared/resultArtifact.js';
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from '../sections/query-execution.controller';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
@@ -1363,6 +1364,7 @@ export function removeQueryBox( boxId: any) {
 
 	// Stop any running timer/spinner for this box
 	setQueryExecuting(boxId, false);
+	try { unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(boxId)); } catch (e) { console.error('[kusto]', e); }
 	try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
 	delete runModesByBoxId[boxId];
 	try {

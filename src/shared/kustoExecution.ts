@@ -9,10 +9,17 @@ export type KustoSectionExecutionTarget = KustoEditorLifecycleIdentity & Readonl
 	database: string;
 }>;
 
+export type KustoComparisonRunIdentity = Readonly<{
+	sourceBoxId: string;
+	sourceExecutionId: string;
+	comparisonBoxId: string;
+}>;
+
 export type KustoExecutionRequestIdentity = KustoSectionExecutionTarget & Readonly<{
 	executionId: string;
 	producer: KustoExecutionProducer;
 	copilotRequestId?: string;
+	comparisonRun?: KustoComparisonRunIdentity;
 }>;
 
 export type KustoExecutionReservation = KustoExecutionRequestIdentity & Readonly<{
@@ -77,6 +84,15 @@ export type KustoSectionLifecycleOwner = KustoEditorLifecycleIdentity & Readonly
 export function hasKustoExecutionRequestIdentity(value: unknown): value is KustoExecutionRequestIdentity {
 	if (!value || typeof value !== 'object') return false;
 	const candidate = value as Record<string, unknown>;
+	const comparisonRun = candidate.comparisonRun as Record<string, unknown> | undefined;
+	const hasValidComparisonRun = comparisonRun === undefined || (
+		candidate.producer === 'comparison'
+		&& typeof comparisonRun.sourceBoxId === 'string' && comparisonRun.sourceBoxId.length > 0
+		&& typeof comparisonRun.sourceExecutionId === 'string' && comparisonRun.sourceExecutionId.length > 0
+		&& typeof comparisonRun.comparisonBoxId === 'string' && comparisonRun.comparisonBoxId.length > 0
+		&& ((candidate.boxId === comparisonRun.sourceBoxId && candidate.executionId === comparisonRun.sourceExecutionId)
+			|| candidate.boxId === comparisonRun.comparisonBoxId)
+	);
 	return candidate.engine === 'kusto'
 		&& typeof candidate.boxId === 'string' && candidate.boxId.length > 0
 		&& typeof candidate.executionId === 'string' && candidate.executionId.length > 0
@@ -87,6 +103,7 @@ export function hasKustoExecutionRequestIdentity(value: unknown): value is Kusto
 		&& Number(candidate.targetGeneration) >= 0
 		&& (candidate.copilotRequestId === undefined
 			|| (typeof candidate.copilotRequestId === 'string' && candidate.copilotRequestId.length > 0))
+		&& hasValidComparisonRun
 		&& (candidate.producer === 'manual' || candidate.producer === 'copilot'
 			|| candidate.producer === 'comparison' || candidate.producer === 'tool');
 }
@@ -138,7 +155,10 @@ export function kustoExecutionRequestIdentityEquals(
 		&& left.connectionId === right.connectionId
 		&& left.database.toLowerCase() === right.database.toLowerCase()
 		&& left.producer === right.producer
-		&& (left.copilotRequestId ?? '') === (right.copilotRequestId ?? '');
+		&& (left.copilotRequestId ?? '') === (right.copilotRequestId ?? '')
+		&& (left.comparisonRun?.sourceBoxId ?? '') === (right.comparisonRun?.sourceBoxId ?? '')
+		&& (left.comparisonRun?.sourceExecutionId ?? '') === (right.comparisonRun?.sourceExecutionId ?? '')
+		&& (left.comparisonRun?.comparisonBoxId ?? '') === (right.comparisonRun?.comparisonBoxId ?? '');
 }
 
 export function hasKustoCopilotRequestIdentity(value: unknown): value is KustoCopilotRequestIdentity {

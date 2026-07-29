@@ -2,7 +2,10 @@ import { describe, expect, it, vi } from 'vitest';
 
 import { KustoExecutionCoordinator } from '../../../src/host/kustoExecutionCoordinator';
 import { QueryRunCoordinator } from '../../../src/host/queryRunCoordinator';
-import type { KustoExecutionRequestIdentity } from '../../../src/shared/kustoExecution';
+import {
+	kustoExecutionRequestIdentityEquals,
+	type KustoExecutionRequestIdentity,
+} from '../../../src/shared/kustoExecution';
 
 function request(executionId: string, targetGeneration = 1): KustoExecutionRequestIdentity {
 	return {
@@ -37,6 +40,38 @@ function result(label: string) {
 }
 
 describe('KustoExecutionCoordinator', () => {
+	it('treats the exact comparison source execution as part of request identity and terminal publication', async () => {
+		const base = { ...request('comparison-1'), producer: 'comparison' as const };
+		const first = {
+			...base,
+			comparisonRun: {
+				sourceBoxId: 'query_source', sourceExecutionId: 'source-a', comparisonBoxId: 'query_1',
+			},
+		} as KustoExecutionRequestIdentity;
+		const second = {
+			...base,
+			comparisonRun: {
+				sourceBoxId: 'query_source', sourceExecutionId: 'source-b', comparisonBoxId: 'query_1',
+			},
+		} as KustoExecutionRequestIdentity;
+
+		expect(kustoExecutionRequestIdentityEquals(first, second)).toBe(false);
+
+		const harness = createHarness();
+		const reservation = harness.coordinator.reserve(first);
+		const lease = harness.coordinator.start(reservation, () => ({ cancel: vi.fn(), promise: Promise.resolve(result('ok')) }));
+		lease.captureDispatch({
+			dispatchAttempt: 1, connectionRevision: 1, leaveNoTraceRevision: 2,
+			connectionIdentityKey: 'cluster|authority', clusterEndpoint: 'https://cluster.kusto.windows.net',
+			accountPartition: 'partition-a', authSessionGeneration: 1, clientActivityId: 'comparison-run',
+		});
+		await harness.coordinator.succeed(reservation, result('ok'));
+
+		expect(harness.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryResult', comparisonRun: first.comparisonRun,
+		}));
+	});
+
 	it('reserves before awaits and atomically supersedes the previous transport', async () => {
 		const harness = createHarness();
 		const old = harness.coordinator.reserve(request('old'));
@@ -76,6 +111,7 @@ describe('KustoExecutionCoordinator', () => {
 			clusterEndpoint: 'https://cluster.kusto.windows.net',
 			authorityId: 'organizations',
 			accountPartition: 'partition-a',
+			authSessionGeneration: 0,
 			clientActivityId: 'KW.execute_query;attempt-1',
 		});
 

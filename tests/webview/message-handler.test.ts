@@ -92,11 +92,16 @@ const mocks = {
 	setCopilotInlineCompletionsEnabled: vi.fn(),
 	setRunMode: vi.fn(),
 	executeQuery: vi.fn(),
+	executeKustoComparisonPair: vi.fn(async () => true),
 	updateCaretDocsToggleButtons: vi.fn(),
 	updateAutoTriggerAutocompleteToggleButtons: vi.fn(),
 	updateCopilotInlineCompletionsToggleButtons: vi.fn(),
 	applyEditingPreferencesData: vi.fn(),
 	applyKustoLeaveNoTracePolicy: vi.fn(),
+	getResultArtifactByProducerExecution: vi.fn(),
+	bindResultArtifactConsumer: vi.fn(),
+	getBoundResultArtifact: vi.fn(),
+	unbindResultArtifactConsumer: vi.fn(),
 };
 
 vi.mock('../../src/webview/shared/persistence-state.js', () => ({
@@ -117,6 +122,10 @@ vi.mock('../../src/webview/shared/safe-run.js', () => ({
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
 	getCurrentResultArtifact: vi.fn(() => null),
+	getResultArtifactByProducerExecution: mocks.getResultArtifactByProducerExecution,
+	bindResultArtifactConsumer: mocks.bindResultArtifactConsumer,
+	getBoundResultArtifact: mocks.getBoundResultArtifact,
+	unbindResultArtifactConsumer: mocks.unbindResultArtifactConsumer,
 	getResultsState: vi.fn(() => null),
 	getResultsStateRevision: vi.fn(() => 0),
 	clearResultsState: mocks.clearResultsState,
@@ -209,6 +218,7 @@ vi.mock('../../src/webview/sections/query-execution.controller.js', async () => 
 	return {
 		...actual,
 		executeQuery: mocks.executeQuery,
+		executeKustoComparisonPair: mocks.executeKustoComparisonPair,
 		setQueryExecuting: mocks.setQueryExecuting,
 		__kustoSetResultsVisible: mocks.setResultsVisible,
 		__kustoSetLinkedOptimizationMode: vi.fn(),
@@ -1397,6 +1407,119 @@ describe('message-handler dispatch', () => {
 		expect(persistence.__kustoOnQueryResult).toHaveBeenCalledWith('query_1', currentResult, kustoDispatch('current'));
 		expect(section.completeQueryExecution).toHaveBeenCalledWith('execution-new');
 		expect(activeExecutionId).toBe('');
+	});
+
+	it('pins the exact source execution and publishes comparison lineage from it after source current advances', async () => {
+		const resultsState = await import('../../src/webview/core/results-state.js');
+		const comparisonRun = {
+			sourceBoxId: 'query_source', sourceExecutionId: 'source-execution-a', comparisonBoxId: 'query_comparison',
+		};
+		const sourceArtifactA = {
+			artifactId: 'result:query_source:1', sourceBoxId: 'query_source', revision: 1, createdAt: 1,
+			restored: false, columns: ['Value'], rows: [['a']], metadata: {},
+			producer: {
+				engine: 'kusto', boxId: 'query_source', executionId: 'source-execution-a',
+				connectionId: 'connection-1', database: 'Samples',
+			},
+			policy: {
+				accountPartition: 'partition-1', authSessionGeneration: 0, leaveNoTraceRevision: 0,
+				connectionRevision: 0, connectionIdentityKey: 'cluster|authority',
+			}, lineage: [],
+		};
+		const sourceArtifactB = {
+			...sourceArtifactA,
+			artifactId: 'result:query_source:2', revision: 2, rows: [['b']],
+			producer: {
+				engine: 'kusto', boxId: 'query_source', executionId: 'source-execution-b',
+				connectionId: 'connection-1', database: 'Samples',
+			},
+		};
+		const section = {
+			getSchemaLifecycleIdentity: vi.fn(() => ({ sectionInstanceId: 'instance-1', targetGeneration: 1 })),
+			getConnectionId: vi.fn(() => 'connection-1'),
+			getDatabase: vi.fn(() => 'Samples'),
+			beginQueryExecution: vi.fn(() => true),
+			admitQueryTerminal: vi.fn(() => 'active'),
+			completeQueryExecution: vi.fn(() => true),
+		};
+		mocks.getQuerySectionElement.mockReturnValue(section);
+		handlerState.optimizationMetadataByBoxId.query_source = { comparisonBoxId: 'query_comparison' };
+		handlerState.optimizationMetadataByBoxId.query_comparison = { sourceBoxId: 'query_source', isComparison: true };
+		mocks.getResultArtifactByProducerExecution.mockReturnValue(sourceArtifactA);
+		mocks.getBoundResultArtifact.mockReturnValue(sourceArtifactA);
+		mocks.bindResultArtifactConsumer.mockReturnValue(sourceArtifactA.artifactId);
+		vi.mocked(resultsState.getCurrentResultArtifact).mockReturnValue(sourceArtifactB as any);
+
+		dispatchHostMessage({
+			type: 'queryResult', engine: 'kusto', boxId: 'query_source', executionId: 'source-execution-a',
+			sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'comparison', reservationSequence: 1,
+			comparisonRun, dispatch: kustoDispatch('source-a'),
+			result: { columns: ['Value'], rows: [['a']], metadata: {} },
+		});
+
+		expect(mocks.bindResultArtifactConsumer).toHaveBeenCalledWith(
+			'comparison:query_comparison:source', 'query_source', sourceArtifactA.artifactId,
+		);
+
+		dispatchHostMessage({
+			type: 'kustoExecutionStarted', engine: 'kusto', boxId: 'query_comparison', executionId: 'comparison-execution',
+			sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'comparison', reservationSequence: 2,
+			comparisonRun,
+		});
+		dispatchHostMessage({
+			type: 'queryResult', engine: 'kusto', boxId: 'query_comparison', executionId: 'comparison-execution',
+			sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'comparison', reservationSequence: 2,
+			comparisonRun, dispatch: kustoDispatch('comparison'),
+			result: { columns: ['Value'], rows: [['optimized']], metadata: {} },
+		});
+
+		expect(resultsState.displayResultForBox).toHaveBeenLastCalledWith(
+			expect.anything(), 'query_comparison', expect.objectContaining({
+				artifactPublication: expect.objectContaining({
+					lineage: [{ sourceArtifactId: sourceArtifactA.artifactId, role: 'comparison-source' }],
+				}),
+			}),
+		);
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('comparison:query_comparison:source');
+	});
+
+	it('rejects comparison output when its exact source policy differs from dispatch', async () => {
+		const resultsState = await import('../../src/webview/core/results-state.js');
+		const comparisonRun = {
+			sourceBoxId: 'query_source', sourceExecutionId: 'source-execution', comparisonBoxId: 'query_comparison',
+		};
+		const sourceArtifact = {
+			artifactId: 'result:query_source:1', sourceBoxId: 'query_source', revision: 1, createdAt: 1,
+			restored: false, columns: ['Value'], rows: [['a']], metadata: {},
+			producer: {
+				engine: 'kusto', boxId: 'query_source', executionId: 'source-execution',
+				connectionId: 'connection-1', database: 'Samples',
+			},
+			policy: {
+				accountPartition: 'different-partition', authSessionGeneration: 0, leaveNoTraceRevision: 0,
+				connectionRevision: 0, connectionIdentityKey: 'cluster|authority',
+			}, lineage: [],
+		};
+		mocks.getQuerySectionElement.mockReturnValue({
+			admitQueryTerminal: vi.fn(() => 'active'), completeQueryExecution: vi.fn(() => true),
+		});
+		mocks.getBoundResultArtifact.mockReturnValue(sourceArtifact);
+		vi.mocked(resultsState.displayResultForBox).mockClear();
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'queryResult', engine: 'kusto', boxId: 'query_comparison', executionId: 'comparison-execution',
+			sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'comparison', reservationSequence: 2,
+			comparisonRun, dispatch: kustoDispatch('comparison-policy-mismatch'),
+			result: { columns: ['Value'], rows: [['optimized']], metadata: {} },
+		});
+
+		expect(resultsState.displayResultForBox).not.toHaveBeenCalled();
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('comparison:query_comparison:source');
 	});
 
 	it('rejects a delayed Copilot start that crosses a newer manual preclaim', async () => {
@@ -3585,8 +3708,8 @@ describe('changedSections agent provenance', () => {
 		}));
 		expect((comparisonSection as any).getConnectionId()).toBe('conn-1');
 		expect((comparisonSection as any).getDatabase()).toBe('Db');
-		expect(mocks.executeQuery).toHaveBeenCalledWith('query_src');
-		expect(mocks.executeQuery).toHaveBeenCalledWith('query_1');
+		expect(mocks.executeKustoComparisonPair).toHaveBeenCalledWith('query_src', 'query_1');
+		expect(mocks.executeQuery).not.toHaveBeenCalled();
 		expect(shell.agentTouched).toBe(false);
 
 		dispatchHostMessage({

@@ -28,25 +28,31 @@ import { pState } from '../shared/persistence-state';
 import { schedulePersist } from '../core/persistence';
 import {
 	__kustoGetConnectionId, __kustoGetDatabase, __kustoGetQuerySectionElement,
+	__kustoGetSqlSectionElement,
 	__kustoSetSectionName, __kustoGetSectionName, __kustoPickNextAvailableSectionLetterName,
 	addQueryBox, toggleCacheControls, removeQueryBox,
 	__kustoGetCurrentClusterUrlForBox, __kustoGetCurrentDatabaseForBox, __kustoFindFavorite,
 	__kustoLog,
 } from '../core/section-factory';
 import { getRunMode, setRunMode, closeRunMenu, functionRunDialogOpenByBoxId } from './kw-query-toolbar';
-import { clearResultsState, getResultsState } from '../core/results-state';
+import { bindResultArtifactConsumer, clearResultsState, getCurrentResultArtifact, getResultArtifact, getResultArtifactByProducerExecution, getResultsState, unbindResultArtifactConsumer } from '../core/results-state';
 import {
 	optimizationMetadataByBoxId, queryEditors, pendingFavoriteSelectionByBoxId,
 	queryExecutionTimers, clearKustoEditorSchema, queryBoxes, favoritesModeByBoxId,
 } from '../core/state';
 import { __kustoParseFunction, __kustoParseParamList } from '../monaco/prettify';
 import { findKustoFunctionDefinitionAtOffset, getSingleKustoCodeFenceBodyRange, hasKustoFunctionDefinition, normalizeKustoText } from '../../shared/kustoFunctionDefinitions.js';
+import { comparisonSourceArtifactConsumerId } from '../../shared/resultArtifact.js';
 import type { FunctionParam } from '../components/kw-function-params-dialog';
-import { hasKustoOptimizeRequestIdentity, kustoExecutionRequestIdentityEquals, kustoOptimizeRequestIdentityEquals, type KustoExecutionProducer, type KustoExecutionRequestIdentity, type KustoOptimizeRequestIdentity } from '../../shared/kustoExecution.js';
+import { hasKustoOptimizeRequestIdentity, kustoExecutionRequestIdentityEquals, kustoOptimizeRequestIdentityEquals, type KustoComparisonRunIdentity, type KustoExecutionProducer, type KustoExecutionRequestIdentity, type KustoOptimizeRequestIdentity } from '../../shared/kustoExecution.js';
 import { synchronizeKustoSectionTarget } from '../core/query-section-accessors.js';
 import '../components/kw-function-params-dialog';
 
 export const lastRunCacheEnabledByBoxId: Record<string, boolean> = {};
+
+type ComparisonExecutionOptions =
+	| Readonly<{ role: 'source'; comparisonBoxId: string }>
+	| Readonly<{ role: 'comparison'; comparisonRun: KustoComparisonRunIdentity }>;
 
 const _win = window;
 
@@ -261,6 +267,7 @@ export class QueryExecutionController implements ReactiveController {
 		producer: KustoExecutionProducer = 'manual',
 		copilotRequestId?: string,
 		expectedPredecessorExecutionId?: string,
+		comparisonRun?: KustoComparisonRunIdentity,
 	): boolean {
 		const id = String(executionId || '').trim();
 		const lifecycle = this.host.getSchemaLifecycleIdentity();
@@ -280,6 +287,7 @@ export class QueryExecutionController implements ReactiveController {
 			database,
 			producer,
 			...(copilotRequestId ? { copilotRequestId } : {}),
+			...(comparisonRun ? { comparisonRun } : {}),
 		});
 		this.cancelling = false;
 		this.setQueryExecuting(true);
@@ -945,8 +953,15 @@ export function acceptOptimizations(comparisonBoxId: any) {
 }
 
 export function displayComparisonSummary(sourceBoxId: any, comparisonBoxId: any) {
-	const sourceState = getResultsState(sourceBoxId);
-	const comparisonState = getResultsState(comparisonBoxId);
+	const comparisonArtifact = getCurrentResultArtifact(comparisonBoxId);
+	const comparisonSourceArtifactId = comparisonArtifact?.lineage.find(input => (
+		input.role === 'comparison-source'
+	))?.sourceArtifactId;
+	const exactSourceArtifact = comparisonSourceArtifactId
+		? getResultArtifact(comparisonSourceArtifactId)
+		: null;
+	const sourceState = exactSourceArtifact || getResultsState(sourceBoxId);
+	const comparisonState = comparisonArtifact || getResultsState(comparisonBoxId);
 	if (!sourceState || !comparisonState) return;
 
 	const getBoxLabel = (boxId: any) => {
@@ -1369,13 +1384,13 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 				}
 				if (shouldExecute) {
 					try {
-						executeQuery(boxId);
-						setTimeout(() => { try { executeQuery(existingComparisonBoxId); } catch (e) { console.error('[kusto]', e); } }, 100);
+						await executeKustoComparisonPair(String(boxId), String(existingComparisonBoxId));
 					} catch (e) { console.error('[kusto]', e); }
 				}
 				return existingComparisonBoxId;
 			}
 			try {
+				unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(existingComparisonBoxId));
 				if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
 					delete optimizationMetadataByBoxId[boxId];
 					delete optimizationMetadataByBoxId[existingComparisonBoxId];
@@ -1439,8 +1454,7 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 	}
 	if (shouldExecute) {
 		try {
-			executeQuery(boxId);
-			setTimeout(() => { try { executeQuery(comparisonBoxId); } catch (e) { console.error('[kusto]', e); } }, 100);
+			await executeKustoComparisonPair(String(boxId), String(comparisonBoxId));
 		} catch (e) { console.error('[kusto]', e); }
 	}
 	return comparisonBoxId;
@@ -1452,7 +1466,44 @@ function createKustoExecutionId(): string {
 	return `kusto-run-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
 }
 
-export function executeQuery(boxId: any, mode?: any, producer: KustoExecutionProducer = 'manual'): string | undefined {
+const ADMITTED_KUSTO_TERMINAL_EVENT = 'kusto-workbench-query-terminal';
+
+export async function executeKustoComparisonPair(sourceBoxId: string, comparisonBoxId: string): Promise<boolean> {
+	let sourceExecutionId = '';
+	const sourceSucceeded = new Promise<boolean>(resolve => {
+		const terminalHandler = (event: Event) => {
+			const terminal = (event as CustomEvent).detail;
+			if (!sourceExecutionId || terminal?.boxId !== sourceBoxId || terminal?.executionId !== sourceExecutionId) return;
+			window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
+			resolve(terminal.type === 'queryResult');
+		};
+		window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
+		sourceExecutionId = executeQuery(sourceBoxId, undefined, 'comparison', {
+			role: 'source', comparisonBoxId,
+		}) || '';
+		if (!sourceExecutionId) {
+			window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
+			resolve(false);
+		}
+	});
+	if (!await sourceSucceeded) return false;
+	const comparisonExecutionId = executeQuery(comparisonBoxId, undefined, 'comparison', {
+		role: 'comparison',
+		comparisonRun: { sourceBoxId, sourceExecutionId, comparisonBoxId },
+	});
+	if (!comparisonExecutionId) {
+		unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(comparisonBoxId));
+		return false;
+	}
+	return true;
+}
+
+export function executeQuery(
+	boxId: any,
+	mode?: any,
+	producer: KustoExecutionProducer = 'manual',
+	comparisonOptions?: ComparisonExecutionOptions,
+): string | undefined {
 	const effectiveMode = mode || getRunMode(boxId);
 	// Run Function mode — divert to the dedicated async handler.
 	if (effectiveMode === 'runFunction') {
@@ -1535,6 +1586,7 @@ export function executeQuery(boxId: any, mode?: any, producer: KustoExecutionPro
 	const cacheUnit = (document.getElementById(boxId + '_cache_unit') as any).value;
 	let sourceBoxIdForComparison = '';
 	let isComparisonBox = false;
+	let isKustoComparisonBox = false;
 	try {
 		if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {
 			const meta = optimizationMetadataByBoxId[boxId];
@@ -1542,6 +1594,7 @@ export function executeQuery(boxId: any, mode?: any, producer: KustoExecutionPro
 				const sourceBoxId = meta.sourceBoxId;
 				isComparisonBox = true;
 				sourceBoxIdForComparison = String(sourceBoxId || '');
+				isKustoComparisonBox = !__kustoGetSqlSectionElement(sourceBoxIdForComparison);
 				if (!synchronizeKustoSectionTarget(sourceBoxId, boxId)) {
 					try { postMessageToHost({ type: 'showInfo', message: 'Comparison target is still updating. Try again in a moment.' }); } catch (e) { console.error('[kusto]', e); }
 					return undefined;
@@ -1560,12 +1613,13 @@ export function executeQuery(boxId: any, mode?: any, producer: KustoExecutionPro
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
-		if (isComparisonBox && sourceBoxIdForComparison) {
+		if (isKustoComparisonBox && sourceBoxIdForComparison) {
 			const sourceLastRunUsedCaching = !!(lastRunCacheEnabledByBoxId[sourceBoxIdForComparison]);
-			if (sourceLastRunUsedCaching) {
+			if (sourceLastRunUsedCaching && !comparisonOptions) {
 				try { clearResultsState(sourceBoxIdForComparison); } catch (e) { console.error('[kusto]', e); }
 				try { __kustoLog(boxId, 'run.compare.rerunSourceNoCache', 'Rerunning source query with caching disabled', { sourceBoxId: sourceBoxIdForComparison }); } catch (e) { console.error('[kusto]', e); }
-				try { executeQuery(sourceBoxIdForComparison, effectiveMode); } catch (e) { console.error('[kusto]', e); }
+				void executeKustoComparisonPair(sourceBoxIdForComparison, String(boxId)).catch(e => console.error('[kusto]', e));
+				return undefined;
 			}
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -1587,18 +1641,61 @@ export function executeQuery(boxId: any, mode?: any, producer: KustoExecutionPro
 	try { delete pState.queryResultJsonByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	try { delete pState.resultArtifactByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 	const executionId = createKustoExecutionId();
+	let effectiveProducer = producer;
+	let comparisonRun: KustoComparisonRunIdentity | undefined;
+	if (comparisonOptions?.role === 'source') {
+		effectiveProducer = 'comparison';
+		comparisonRun = {
+			sourceBoxId: String(boxId),
+			sourceExecutionId: executionId,
+			comparisonBoxId: String(comparisonOptions.comparisonBoxId || ''),
+		};
+	} else if (comparisonOptions?.role === 'comparison') {
+		effectiveProducer = 'comparison';
+		comparisonRun = comparisonOptions.comparisonRun;
+	} else if (isKustoComparisonBox && sourceBoxIdForComparison) {
+		const sourceArtifact = getCurrentResultArtifact(sourceBoxIdForComparison);
+		const sourceExecutionId = String(sourceArtifact?.producer?.executionId || '').trim();
+		if (!sourceExecutionId) {
+			try { postMessageToHost({ type: 'showInfo', message: 'Run the source query before running its comparison.' }); } catch (e) { console.error('[kusto]', e); }
+			return undefined;
+		}
+		effectiveProducer = 'comparison';
+		comparisonRun = {
+			sourceBoxId: sourceBoxIdForComparison,
+			sourceExecutionId,
+			comparisonBoxId: String(boxId),
+		};
+	}
 	const section = __kustoGetQuerySectionElement(String(boxId || ''));
 	const lifecycle = section?.getSchemaLifecycleIdentity?.();
-	if (!lifecycle) return undefined;
+	const comparisonConsumerId = comparisonRun && String(boxId) === comparisonRun.comparisonBoxId
+		? comparisonSourceArtifactConsumerId(comparisonRun.comparisonBoxId)
+		: '';
+	if (comparisonConsumerId) {
+		const sourceArtifact = getResultArtifactByProducerExecution(
+			comparisonRun!.sourceBoxId, comparisonRun!.sourceExecutionId,
+		);
+		if (!sourceArtifact || bindResultArtifactConsumer(
+			comparisonConsumerId, comparisonRun!.sourceBoxId, sourceArtifact.artifactId,
+		) !== sourceArtifact.artifactId) return undefined;
+	}
+	if (!lifecycle) {
+		if (comparisonConsumerId) unbindResultArtifactConsumer(comparisonConsumerId);
+		return undefined;
+	}
 	if (typeof section?.beginQueryExecution !== 'function'
-		|| section.beginQueryExecution(executionId, producer) !== true) return undefined;
+		|| section.beginQueryExecution(executionId, effectiveProducer, undefined, undefined, comparisonRun) !== true) {
+		if (comparisonConsumerId) unbindResultArtifactConsumer(comparisonConsumerId);
+		return undefined;
+	}
 	closeRunMenu(boxId);
 	try { lastRunCacheEnabledByBoxId[boxId] = !!cacheEnabled; } catch (e) { console.error('[kusto]', e); }
 	pState.lastExecutedBox = boxId;
 	postMessageToHost({
 		type: 'executeQuery', query, queryMode: effectiveMode, connectionId, database, boxId, executionId,
 		sectionInstanceId: lifecycle.sectionInstanceId, targetGeneration: lifecycle.targetGeneration,
-		producer, cacheEnabled, cacheValue, cacheUnit,
+		producer: effectiveProducer, ...(comparisonRun ? { comparisonRun } : {}), cacheEnabled, cacheValue, cacheUnit,
 	});
 	return executionId;
 }

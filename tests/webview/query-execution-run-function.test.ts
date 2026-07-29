@@ -4,11 +4,19 @@ const testState = vi.hoisted(() => ({
 	postMessageToHost: vi.fn(),
 	getConnectionId: vi.fn(() => 'conn-1'),
 	getDatabase: vi.fn(() => 'Samples'),
+	getRunMode: vi.fn(() => 'runFunction'),
 	sectionLifecycle: { sectionInstanceId: 'instance-query_1', targetGeneration: 7 },
 	claimedExecutions: [] as Array<Record<string, unknown>>,
 	getSchemaLifecycleIdentity: vi.fn(() => ({ sectionInstanceId: 'instance-query_1', targetGeneration: 7 })),
 	beginQueryExecution: vi.fn(),
 	getQuerySectionElement: vi.fn(),
+	getSqlSectionElement: vi.fn(),
+	getResultsState: vi.fn(() => null),
+	getCurrentResultArtifact: vi.fn(() => null),
+	getResultArtifact: vi.fn(() => null),
+	getResultArtifactByProducerExecution: vi.fn(() => null),
+	bindResultArtifactConsumer: vi.fn(),
+	unbindResultArtifactConsumer: vi.fn(),
 	queryEditors: {} as Record<string, any>,
 	queryExecutionTimers: {} as Record<string, any>,
 	pendingFavoriteSelectionByBoxId: {} as Record<string, any>,
@@ -53,11 +61,20 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
 	clearResultsState: vi.fn(),
-	getResultsState: vi.fn(() => null),
+	getResultsState: testState.getResultsState,
+	getCurrentResultArtifact: testState.getCurrentResultArtifact,
+	getResultArtifact: testState.getResultArtifact,
+	getResultArtifactByProducerExecution: testState.getResultArtifactByProducerExecution,
+	bindResultArtifactConsumer: testState.bindResultArtifactConsumer,
+	unbindResultArtifactConsumer: testState.unbindResultArtifactConsumer,
 }));
 
 vi.mock('../../src/webview/core/utils.js', () => ({
 	escapeHtml: vi.fn((value: unknown) => String(value ?? '')),
+}));
+
+vi.mock('../../src/webview/core/query-section-accessors.js', () => ({
+	synchronizeKustoSectionTarget: vi.fn(() => true),
 }));
 
 vi.mock('../../src/webview/core/state.js', () => ({
@@ -75,6 +92,7 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	__kustoGetConnectionId: testState.getConnectionId,
 	__kustoGetDatabase: testState.getDatabase,
 	__kustoGetQuerySectionElement: testState.getQuerySectionElement,
+	__kustoGetSqlSectionElement: testState.getSqlSectionElement,
 	__kustoSetSectionName: vi.fn(),
 	__kustoGetSectionName: vi.fn(() => ''),
 	__kustoPickNextAvailableSectionLetterName: vi.fn(() => 'A'),
@@ -88,7 +106,7 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 }));
 
 vi.mock('../../src/webview/sections/kw-query-toolbar.js', () => ({
-	getRunMode: vi.fn(() => 'runFunction'),
+	getRunMode: testState.getRunMode,
 	setRunMode: vi.fn(),
 	closeRunMenu: vi.fn(),
 	functionRunDialogOpenByBoxId: {},
@@ -102,7 +120,7 @@ vi.mock('../../src/webview/components/kw-function-params-dialog', () => ({
 	KwFunctionParamsDialog: dialogState.TestFunctionParamsDialog,
 }));
 
-import { executeQuery, executeRunFunction } from '../../src/webview/sections/query-execution.controller.js';
+import { displayComparisonSummary, executeKustoComparisonPair, executeQuery, executeRunFunction, lastRunCacheEnabledByBoxId, QueryExecutionController } from '../../src/webview/sections/query-execution.controller.js';
 
 beforeAll(() => {
 	if (!customElements.get('kw-function-params-dialog')) {
@@ -196,6 +214,7 @@ describe('executeRunFunction', () => {
 		for (const key of Object.keys(testState.pendingFavoriteSelectionByBoxId)) delete testState.pendingFavoriteSelectionByBoxId[key];
 		for (const key of Object.keys(testState.optimizationMetadataByBoxId)) delete testState.optimizationMetadataByBoxId[key];
 		for (const key of Object.keys(testState.pState.queryResultJsonByBoxId)) delete testState.pState.queryResultJsonByBoxId[key];
+		for (const key of Object.keys(lastRunCacheEnabledByBoxId)) delete lastRunCacheEnabledByBoxId[key];
 		testState.claimedExecutions.length = 0;
 		testState.postMessageToHost.mockClear();
 		testState.getSchemaLifecycleIdentity.mockClear();
@@ -220,6 +239,19 @@ describe('executeRunFunction', () => {
 		} : null);
 		testState.getConnectionId.mockReturnValue('conn-1');
 		testState.getDatabase.mockReturnValue('Samples');
+		testState.getSqlSectionElement.mockReset();
+		testState.getSqlSectionElement.mockReturnValue(null);
+		testState.getRunMode.mockReturnValue('runFunction');
+		testState.getResultsState.mockReset();
+		testState.getResultsState.mockReturnValue(null);
+		testState.getCurrentResultArtifact.mockReset();
+		testState.getCurrentResultArtifact.mockReturnValue(null);
+		testState.getResultArtifact.mockReset();
+		testState.getResultArtifact.mockReturnValue(null);
+		testState.getResultArtifactByProducerExecution.mockReset();
+		testState.getResultArtifactByProducerExecution.mockReturnValue(null);
+		testState.bindResultArtifactConsumer.mockReset();
+		testState.unbindResultArtifactConsumer.mockReset();
 		testState.pState.lastExecutedBox = '';
 		delete (window as any).__kustoGetStatementBlocksFromModel;
 		delete (window as any).__kustoExtractStatementTextAtCursor;
@@ -279,6 +311,178 @@ describe('executeRunFunction', () => {
 		expect(executionId).toBeUndefined();
 		expect(testState.beginQueryExecution).toHaveBeenCalledOnce();
 		expect(getExecuteMessages()).toHaveLength(0);
+	});
+
+	it('stamps a manual comparison source run with its generated execution identity', () => {
+		testState.queryEditors.query_1 = makeEditor('print source=1');
+		appendExecutionControls('query_1');
+
+		const executionId = (executeQuery as any)('query_1', 'plain', 'comparison', {
+			role: 'source', comparisonBoxId: 'query_cmp_1',
+		});
+
+		expect(getExecuteMessages()).toContainEqual(expect.objectContaining({
+			boxId: 'query_1', executionId, producer: 'comparison',
+			comparisonRun: {
+				sourceBoxId: 'query_1', sourceExecutionId: executionId, comparisonBoxId: 'query_cmp_1',
+			},
+		}));
+	});
+
+	it('retains comparisonRun in the exact active owner used for terminal admission', () => {
+		const host = {
+			boxId: 'query_cmp_1', addController: vi.fn(), requestUpdate: vi.fn(),
+			getConnectionId: () => 'conn-1', getDatabase: () => 'Samples',
+			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: 'instance-cmp', targetGeneration: 2 }),
+		} as any;
+		const controller = new QueryExecutionController(host);
+		const comparisonRun = {
+			sourceBoxId: 'query_1', sourceExecutionId: 'source-execution', comparisonBoxId: 'query_cmp_1',
+		};
+
+		expect(controller.beginQueryExecution(
+			'comparison-execution', 'comparison', undefined, undefined, comparisonRun,
+		)).toBe(true);
+		expect(controller.getActiveExecution()).toEqual(expect.objectContaining({ comparisonRun }));
+		expect(controller.admitQueryTerminal(controller.getActiveExecution()!)).toBe('active');
+	});
+
+	it('does not require Kusto comparisonRun for a SQL-owned comparison section', () => {
+		testState.queryEditors.query_cmp_1 = makeEditor('SELECT 2');
+		appendExecutionControls('query_cmp_1');
+		testState.optimizationMetadataByBoxId.query_cmp_1 = { sourceBoxId: 'sql_source', isComparison: true };
+		testState.getSqlSectionElement.mockImplementation((boxId: string) => boxId === 'sql_source' ? {} : null);
+		testState.getQuerySectionElement.mockImplementation((boxId: string) => boxId === 'query_cmp_1' ? {
+			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: 'instance-cmp', targetGeneration: 7 }),
+			beginQueryExecution: () => true,
+		} : null);
+
+		const executionId = executeQuery('query_cmp_1', 'plain');
+
+		expect(executionId).toMatch(/^kusto-run-/);
+		expect(getExecuteMessages()).toContainEqual(expect.objectContaining({
+			boxId: 'query_cmp_1', producer: 'manual',
+		}));
+		expect(getExecuteMessages()[0]).not.toHaveProperty('comparisonRun');
+	});
+
+	it('starts the comparison only after the exact source terminal is admitted', async () => {
+		testState.getRunMode.mockReturnValue('plain');
+		testState.queryEditors.query_1 = makeEditor('print source=1');
+		testState.queryEditors.query_cmp_1 = makeEditor('print optimized=1');
+		appendExecutionControls('query_1');
+		appendExecutionControls('query_cmp_1');
+		testState.optimizationMetadataByBoxId.query_1 = { comparisonBoxId: 'query_cmp_1' };
+		testState.optimizationMetadataByBoxId.query_cmp_1 = { sourceBoxId: 'query_1', isComparison: true };
+		testState.getQuerySectionElement.mockImplementation((boxId: string) => ({
+			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: `instance-${boxId}`, targetGeneration: 7 }),
+			beginQueryExecution: () => true,
+		}));
+
+		const pair = executeKustoComparisonPair('query_1', 'query_cmp_1');
+		const sourceMessage = getExecuteMessages()[0] as any;
+		expect(getExecuteMessages()).toHaveLength(1);
+		expect(sourceMessage.comparisonRun.sourceExecutionId).toBe(sourceMessage.executionId);
+		const sourceArtifact = {
+			artifactId: 'result:query_1:1', sourceBoxId: 'query_1',
+			producer: { executionId: sourceMessage.executionId },
+		};
+		testState.getResultArtifactByProducerExecution.mockReturnValue(sourceArtifact);
+		testState.bindResultArtifactConsumer.mockReturnValue(sourceArtifact.artifactId);
+
+		window.dispatchEvent(new CustomEvent('kusto-workbench-query-terminal', { detail: {
+			type: 'queryResult', boxId: 'query_1', executionId: sourceMessage.executionId,
+		} }));
+		await expect(pair).resolves.toBe(true);
+
+		const messages = getExecuteMessages() as any[];
+		expect(messages).toHaveLength(2);
+		expect(messages[1]).toEqual(expect.objectContaining({
+			boxId: 'query_cmp_1', producer: 'comparison', comparisonRun: sourceMessage.comparisonRun,
+		}));
+	});
+
+	it('releases the exact source pin when comparison dispatch cannot start', async () => {
+		testState.getRunMode.mockReturnValue('plain');
+		testState.queryEditors.query_1 = makeEditor('print source=1');
+		testState.queryEditors.query_cmp_1 = makeEditor('');
+		appendExecutionControls('query_1');
+		appendExecutionControls('query_cmp_1');
+		testState.getQuerySectionElement.mockImplementation((boxId: string) => ({
+			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: `instance-${boxId}`, targetGeneration: 7 }),
+			beginQueryExecution: () => true,
+		}));
+
+		const pair = executeKustoComparisonPair('query_1', 'query_cmp_1');
+		const sourceMessage = getExecuteMessages()[0] as any;
+		const sourceArtifact = {
+			artifactId: 'result:query_1:1', sourceBoxId: 'query_1',
+			producer: { executionId: sourceMessage.executionId },
+		};
+		testState.getResultArtifactByProducerExecution.mockReturnValue(sourceArtifact);
+		testState.bindResultArtifactConsumer.mockReturnValue(sourceArtifact.artifactId);
+		window.dispatchEvent(new CustomEvent('kusto-workbench-query-terminal', { detail: {
+			type: 'queryResult', boxId: 'query_1', executionId: sourceMessage.executionId,
+		} }));
+
+		await expect(pair).resolves.toBe(false);
+		expect(testState.unbindResultArtifactConsumer).toHaveBeenCalledWith('comparison:query_cmp_1:source');
+	});
+
+	it('routes direct comparison Run through source-first pairing when source used cache', async () => {
+		testState.getRunMode.mockReturnValue('plain');
+		testState.queryEditors.query_1 = makeEditor('print source=1');
+		testState.queryEditors.query_cmp_1 = makeEditor('print optimized=1');
+		appendExecutionControls('query_1');
+		appendExecutionControls('query_cmp_1');
+		testState.optimizationMetadataByBoxId.query_1 = { comparisonBoxId: 'query_cmp_1' };
+		testState.optimizationMetadataByBoxId.query_cmp_1 = { sourceBoxId: 'query_1', isComparison: true };
+		lastRunCacheEnabledByBoxId.query_1 = true;
+		testState.getQuerySectionElement.mockImplementation((boxId: string) => ({
+			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: `instance-${boxId}`, targetGeneration: 7 }),
+			beginQueryExecution: () => true,
+		}));
+
+		expect(executeQuery('query_cmp_1', 'plain')).toBeUndefined();
+		const sourceMessage = getExecuteMessages()[0] as any;
+		expect(getExecuteMessages()).toHaveLength(1);
+		expect(sourceMessage.boxId).toBe('query_1');
+		expect(sourceMessage.comparisonRun.comparisonBoxId).toBe('query_cmp_1');
+	});
+
+	it('builds comparison summary from exact source lineage instead of newer mutable source state', () => {
+		const sourceArtifactA = {
+			artifactId: 'result:query_1:1', sourceBoxId: 'query_1', revision: 1,
+			columns: ['Value'], rows: [['a']], metadata: {}, lineage: [],
+		};
+		const comparisonArtifact = {
+			artifactId: 'result:query_cmp_1:1', sourceBoxId: 'query_cmp_1', revision: 1,
+			columns: ['Value'], rows: [['a']], metadata: {},
+			lineage: [{ sourceArtifactId: sourceArtifactA.artifactId, role: 'comparison-source' }],
+		};
+		testState.getCurrentResultArtifact.mockImplementation((boxId: string) => (
+			boxId === 'query_cmp_1' ? comparisonArtifact : null
+		));
+		testState.getResultArtifact.mockImplementation((artifactId: string) => (
+			artifactId === sourceArtifactA.artifactId ? sourceArtifactA : null
+		));
+		testState.getResultsState.mockImplementation((boxId: string) => (
+			boxId === 'query_1'
+				? { columns: ['Value'], rows: [['b']], metadata: {} }
+				: { columns: ['Value'], rows: [['a']], metadata: {} }
+		));
+		const comparison = document.createElement('div');
+		comparison.id = 'query_cmp_1';
+		const wrapper = document.createElement('div');
+		wrapper.className = 'query-editor-wrapper';
+		comparison.appendChild(wrapper);
+		document.body.appendChild(comparison);
+
+		displayComparisonSummary('query_1', 'query_cmp_1');
+
+		expect(testState.getResultArtifact).toHaveBeenCalledWith(sourceArtifactA.artifactId);
+		expect(testState.getResultsState).not.toHaveBeenCalledWith('query_1');
+		expect(comparison.querySelector('.comparison-summary-banner')).not.toBeNull();
 	});
 
 	it('runs a function definition after leading blank lines without shifting cursor offsets', async () => {

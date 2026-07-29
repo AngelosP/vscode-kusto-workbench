@@ -34,7 +34,7 @@ import { getCopilotFlavorById, type CopilotChatFlavor } from './copilotChatFlavo
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { convertKustoFunctionDefinitionsToInline } from '../shared/kustoFunctionDefinitions';
 import type { WorkbenchLogger } from './workbenchLogger';
-import type { KustoCopilotRequestIdentity, KustoDispatchIdentity, KustoExecutionProducer, KustoOptimizeRequestIdentity, KustoSectionExecutionOutcome, KustoSectionExecutionTarget, PreparedComparisonSection } from '../shared/kustoExecution.js';
+import type { KustoComparisonRunIdentity, KustoCopilotRequestIdentity, KustoDispatchIdentity, KustoExecutionProducer, KustoOptimizeRequestIdentity, KustoSectionExecutionOutcome, KustoSectionExecutionTarget, PreparedComparisonSection } from '../shared/kustoExecution.js';
 import { hasKustoOptimizeRequestIdentity, kustoCopilotRequestIdentityEquals, kustoOptimizeRequestIdentityEquals } from '../shared/kustoExecution.js';
 
 export const SQL_COPILOT_OWNER_CHANGED_MESSAGE = 'SQL section owner changed. Retry the request.';
@@ -63,6 +63,7 @@ export interface CopilotServiceHost {
 		target: KustoSectionExecutionTarget;
 		executionId: string;
 		producer: KustoExecutionProducer;
+		comparisonRun?: KustoComparisonRunIdentity;
 		copilotRequestId?: string;
 		query: string;
 		queryMode?: string;
@@ -2195,8 +2196,13 @@ Completion:`;
 							throw new Error('Kusto comparison target changed.');
 						}
 
-						const executeQueryAndPost = async (target: KustoSectionExecutionTarget, queryText: string) => {
+						const executeQueryAndPost = async (
+							target: KustoSectionExecutionTarget,
+							queryText: string,
+							comparisonRunForExecution?: (executionId: string) => KustoComparisonRunIdentity,
+						) => {
 							const executionId = `kusto-comparison-${randomUUID()}`;
+							const comparisonRun = comparisonRunForExecution?.(executionId);
 							const cancel = () => this.host.cancelKustoSectionExecution(target, executionId);
 							const untrack = this.trackCopilotQueryCancel(
 								boxId, cts, seq, cancel,
@@ -2208,6 +2214,7 @@ Completion:`;
 									target,
 									executionId,
 									producer: 'comparison',
+									...(comparisonRun ? { comparisonRun } : {}),
 									copilotRequestId: kustoRequest.copilotRequestId,
 									query: queryText,
 									queryMode: copilotQueryMode,
@@ -2235,11 +2242,20 @@ Completion:`;
 						}
 
 						try {
+							let sourceExecutionIdForComparison = '';
 							postStatus('Running original query…');
 							try {
 								const sourceTarget = this.host.getKustoSectionExecutionTarget(boxId);
 								if (!sourceTarget) throw new Error('Kusto source target changed.');
-								await executeQueryAndPost(sourceTarget, originalQueryForCompare);
+								sourceExecutionIdForComparison = await executeQueryAndPost(
+									sourceTarget,
+									originalQueryForCompare,
+									executionId => ({
+										sourceBoxId: boxId,
+										sourceExecutionId: executionId,
+										comparisonBoxId,
+									}),
+								);
 							} catch (error) {
 								const originalError = error instanceof CopilotExecutionQueryError ? error.originalError : error;
 								const errMsg = this.host.getErrorMessage(originalError);
@@ -2288,7 +2304,12 @@ Completion:`;
 								}
 
 								try {
-									await executeQueryAndPost(preparedComparison.kustoTarget, candidate);
+									if (!sourceExecutionIdForComparison) throw new Error('Kusto comparison source artifact identity is unavailable.');
+									await executeQueryAndPost(
+										preparedComparison.kustoTarget,
+										candidate,
+										() => ({ sourceBoxId: boxId, sourceExecutionId: sourceExecutionIdForComparison, comparisonBoxId }),
+									);
 									executed = true;
 									break;
 								} catch (error) {

@@ -49,6 +49,10 @@ export function getCurrentResultArtifact(boxId: unknown) {
 	return _resultArtifacts.getCurrent(String(boxId || '')) || null;
 }
 
+export function getResultArtifactByProducerExecution(boxId: unknown, executionId: unknown) {
+	return _resultArtifacts.getByProducerExecution(String(boxId || ''), String(executionId || '')) || null;
+}
+
 export function bindResultArtifactConsumer(consumerId: unknown, sourceBoxId: unknown, artifactId?: unknown) {
 	return _resultArtifacts.bind(
 		String(consumerId || ''),
