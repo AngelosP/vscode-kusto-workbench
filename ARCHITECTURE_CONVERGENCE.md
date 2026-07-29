@@ -95,15 +95,15 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 **Current divergence:**
 
 - Remote GitHub, Azure DevOps, SharePoint, OneDrive, and URL content is downloaded into extension global storage and opened as an ordinary local document. The editor receives no durable source-origin/trust descriptor.
-- HTML preview uses `sandbox="allow-scripts"`, injects authored code through `srcdoc`, and immediately embeds up to 10,000 rows from the selected fact section into the authored JavaScript data bridge.
+- HTML preview uses `sandbox="allow-scripts"` and injects authored code through `srcdoc`. Its data bridge now requires an immutable artifact with an explicit compatibility exposure decision, but that decision is not yet grounded in document origin/trust capabilities.
 - Neither the outer workbench template nor the preview `srcdoc` establishes a content-security policy. Sandboxing removes same-origin authority but does not by itself prohibit outbound network requests.
 - Bootstrap and runtime dispatch accept arbitrary object-shaped `window.message` events without a host-session/source boundary. Authored iframe code can post to its parent and attempt to impersonate host document, policy, result, persistence, or tool messages.
 - Expanded URL sections automatically request arbitrary HTTP/HTTPS content during restore. Host fetch is not admitted by document origin or trust and can target loopback/private endpoints.
 - Markdown preview preserves direct HTTP/HTTPS image sources, so rendering alone can make a request without host policy admission.
 - Fetched URL HTML injects a `<base>` and renders sanitized markup in a sandboxed iframe without a policy CSP. Nested images, stylesheets, fonts, frames, media, CSS URLs/imports, forms, and navigation can therefore resolve independently of the top-level host fetch decision.
 - The read-only browser viewer is not an active-content trust boundary; read-only content can still execute and observe embedded data.
-- Kusto/SQL privacy rules govern persistence and some exports but there is no independent `exposeToActiveContent` admission decision.
-- Current result state has no immutable producer target, principal, privacy-decision revision, or derived lineage. Consulting a section's current target when exposing an older result would create a second, race-prone privacy authority.
+- Kusto/SQL admission now publishes an artifact-level `exposeToActiveContent` compatibility decision, and dashboards require it. There is still no independent origin/trust policy authority for that decision or for script/network capabilities.
+- Migrated Kusto, chart, transformation, comparison, and HTML-preview paths retain immutable producer/policy/lineage identity. Unmigrated result consumers and SQL physical provenance remain outside the complete golden artifact contract.
 - Standalone HTML export intentionally writes authored HTML/JavaScript verbatim, while Power BI/Fabric supports only the portable provenance subset. These outputs currently share one loosely defined export path.
 - Authenticated top-level webview messages can directly invoke Python, Kusto, SQL/STS, schema/language, Copilot, and tool paths without an independent document-capability decision. Automatic restoration can also initiate SQL/Kusto preparation and authentication/network effects.
 - A persisted `linkedQueryPath` can reference absolute, `file:`, UNC, or traversal-bearing paths. The provider can automatically read/open the target and later write edits, with no remote-origin containment or explicit adoption boundary.
@@ -116,7 +116,7 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 - Restoring an untrusted remote document can trigger extension-host URL requests without any script grant.
 - Passive Markdown or fetched-HTML rendering can trigger nested browser requests even when explicit host and script fetches are denied.
 - Trust cannot be revoked coherently because origin and trust revision are absent from document and result state.
-- A late or derived protected result can be misclassified if active-content admission consults only the section's current target.
+- Unmigrated consumers or a future exposure decision not grounded in origin/trust can still misclassify data despite the artifact-level compatibility gate.
 - Browser read-only mode can be mistaken for script/data isolation.
 - Portable Power BI behavior and raw active standalone export can be conflated, hiding non-portable or executable behavior.
 - Untrusted documents can launch local Python, authenticated data-plane/language/model operations, or automatic preparation even when HTML remains static.
@@ -166,19 +166,20 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 - Transformations bind primary and join-right revisions independently, compute from those immutable inputs, and publish derived artifacts with direct lineage roles plus flattened leaf-source policies. Formula edits stay pinned; source changes and dependent refresh explicitly rebind.
 - Artifact retention now follows lineage references. Source clear revokes affected revisions and downstream bindings transitively while preserving a retargeted current derived revision whose lineage is independent of the cleared source.
 - Kusto comparison source and output executions carry one exact run identity. Manual and standalone Optimize sequence on admitted source success; Copilot retries retain the same source execution. Output and summaries use the pinned source artifact and fail closed on target or policy mismatch.
+- HTML dashboard previews bind an immutable provenance fact artifact and require an explicit active-content exposure decision. Refresh rebinds intentionally; revoke/source change hides and blanks iframe data synchronously; restore revalidates exposure after owner admission.
 - Persistence deletion and host privacy sanitation remove rows and descriptors atomically. A descriptor is never row authority, cannot restore without admitted `resultJson`, and is rejected when its source or policy claims disagree with the current owner.
 - Static terminal-construction/cancellation guards, protocol inventory, focused state-machine tests, full sequential tests, and authenticated normal/rerun/retarget/cancellation E2E are green.
 
 **Remaining divergence:**
 
 - Mutable latest-result state remains as a compatibility facade for tables and unmigrated consumers.
-- HTML dashboards, export, and Copilot can identify a source section but do not yet consume an exact immutable revision through a policy-bearing binding. SQL comparisons do not yet publish equivalent exact artifact lineage.
+- Export row workflows and Copilot/tool result context do not yet consume an exact immutable revision through independent policy-bearing bindings. SQL comparisons do not yet publish equivalent exact artifact lineage.
 - SQL results receive generic immutable runtime snapshots but do not yet publish or persist the same exact producer/principal/policy provenance as Kusto.
 - Kusto and SQL retain transport-specific execution coordinators over the shared low-level run registry; a transport-neutral artifact publication contract has not yet proven which semantics should be shared above transport.
 
 **Failure modes:**
 
-- Unmigrated downstream state can be replaced without retaining the exact producer revision that a dashboard, export, or Copilot response consumed.
+- Unmigrated downstream state can be replaced without retaining the exact producer revision that an export or Copilot/tool response consumed.
 - Derived data outside chart and transformation paths can lose privacy/export permissions as it moves through section-keyed maps.
 - SQL restoration and persistence can preserve rows without the same first-class immutable producer, target, principal, policy, and lineage record as Kusto.
 - Prematurely merging Kusto and SQL execution abstractions could erase transport-specific cancellation and privacy semantics before the artifact contract is proven.
@@ -334,7 +335,7 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 ### Iteration `EXA-2`: Immutable Result Artifacts And Lineage
 
-**Status:** artifact/chart, transformation-derived-producer, and exact Kusto comparison slices implemented; broader consumer migration remains active.
+**Status:** artifact/chart, transformation-derived-producer, exact Kusto comparison, and HTML dashboard bridge slices implemented; broader consumer migration remains active.
 
 **Why next:** EXA-1 makes the producer execution exact, but admitted rows still collapse into mutable section-keyed state. This leaves the highest-risk remaining break between exact production and downstream consumption.
 
@@ -356,7 +357,11 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 **Comparison qualification:** the 16-file focused EXA ring passed 707 tests; full sequential Vitest passed 196 files and 5,135 tests; host/webview type checks, production extension/browser builds, integration compilation, lint with zero errors, and both bundle gates passed; the extension-host suite passed all 113 tests with established Mocha headroom; and native `default/comparison-artifacts` passed both runs on VS Code 1.130.0.
 
-**Next boundary:** migrate HTML dashboard data bridges from mutable `getResultsState` reads to explicit artifact-revision bindings. Active preview code must receive only admitted artifacts whose policy permits exposure, retain source lineage across refresh, and revoke bridge data synchronously when source policy or lineage is invalidated. Keep standalone export/publication, Copilot context, SQL exact provenance, coordinator convergence, and `ACT` outside that slice.
+**Dashboard bridge evidence:** provenance fact sources now bind immutable artifact revisions; same-source HTML edits remain pinned and dependent refresh explicitly rebinds; missing/mixed exposure decisions deny iframe data; source change, revoke, removal, and reorder reconnect cannot retain stale bridge rows; Kusto/SQL admission and derived leaf policies make exposure explicit; and persisted metadata cannot self-authorize without matching the locally recomputed decision.
+
+**Dashboard bridge qualification:** the 18-file focused EXA/dashboard ring passed 844 tests; full sequential Vitest passed 196 files and 5,144 tests; host/webview type checks, production extension/browser builds, integration compilation, lint with zero errors, and both bundle gates passed; the extension-host suite passed all 113 tests with established Mocha headroom; and native `default/html-artifact-bridge` passed on its first run on VS Code 1.130.0.
+
+**Next boundary:** migrate Copilot/tool result responses from mutable `getResultsState(sectionId)` reads to exact artifact bindings and an independent `sendToModel` policy decision. Capture the execution's artifact revision before response construction, bound returned rows to that revision, fail closed on missing/revoked permission, and release the binding on response/cancellation. Keep standalone export/publication, SQL exact provenance, coordinator convergence, and `ACT` outside that slice.
 
 ## Convergence Loop
 

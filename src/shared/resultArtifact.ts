@@ -17,6 +17,7 @@ export type ResultArtifactPolicyStamp = Readonly<{
 	leaveNoTraceRevision?: number;
 	connectionRevision?: number;
 	connectionIdentityKey?: string;
+	exposeToActiveContent?: boolean;
 }>;
 
 export type ResultArtifactSourcePolicy = Readonly<ResultArtifactPolicyStamp & {
@@ -74,6 +75,12 @@ export type DerivedResultArtifactInput = Readonly<{
 	role?: string;
 }>;
 
+export const RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT = 'kusto-workbench-result-artifact-consumers-revoked';
+
+export function htmlDashboardFactArtifactConsumerId(htmlBoxId: unknown): string {
+	return `html:${String(htmlBoxId || '').trim()}:fact`;
+}
+
 export function comparisonSourceArtifactConsumerId(comparisonBoxId: unknown): string {
 	return `comparison:${String(comparisonBoxId || '').trim()}:source`;
 }
@@ -122,6 +129,7 @@ function policyStamp(policy: ResultArtifactPolicy | ResultArtifactSourcePolicy |
 		'leaveNoTraceRevision',
 		'connectionRevision',
 		'connectionIdentityKey',
+		'exposeToActiveContent',
 	] as const) {
 		if (policy[key] !== undefined) stamp[key] = policy[key];
 	}
@@ -162,8 +170,14 @@ export function createDerivedResultArtifactPublication(
 	const commonStamp = firstStamp && sourcePolicies.every(sourcePolicy => (
 		JSON.stringify(policyStamp(sourcePolicy) || {}) === JSON.stringify(firstStamp)
 	)) ? firstStamp : undefined;
+	const allSourcesAllowActiveContent = sourcePolicies.length > 0
+		&& sourcePolicies.every(sourcePolicy => sourcePolicy.exposeToActiveContent === true);
 	const policy = sourcePolicies.length
-		? deepFreeze({ ...commonStamp, sourcePolicies: deepFreeze(sourcePolicies) })
+		? deepFreeze({
+			...commonStamp,
+			...(allSourcesAllowActiveContent ? { exposeToActiveContent: true } : {}),
+			sourcePolicies: deepFreeze(sourcePolicies),
+		})
 		: undefined;
 	return deepFreeze({
 		producer: snapshotRecord(producer)!,
@@ -193,7 +207,11 @@ export function toPersistedResultArtifact(artifact: ResultArtifact | null | unde
 export function publicationFromPersistedResultArtifact(
 	value: unknown,
 	expectedSourceBoxId: string,
-	expectedPolicy?: Readonly<{ accountPartition?: unknown; leaveNoTraceRevision?: unknown }>,
+	expectedPolicy?: Readonly<{
+		accountPartition?: unknown;
+		leaveNoTraceRevision?: unknown;
+		exposeToActiveContent?: unknown;
+	}>,
 ): ResultArtifactPublication | undefined {
 	if (!isRecord(value) || value.version !== 1) return undefined;
 	const artifactId = String(value.artifactId || '').trim();
@@ -213,6 +231,7 @@ export function publicationFromPersistedResultArtifact(
 		const leaveNoTraceRevision = policy.leaveNoTraceRevision === undefined ? undefined : Number(policy.leaveNoTraceRevision);
 		if (policy.accountPartition !== undefined && !partition) return undefined;
 		if (leaveNoTraceRevision !== undefined && (!Number.isSafeInteger(leaveNoTraceRevision) || leaveNoTraceRevision < 0)) return undefined;
+		if (policy.exposeToActiveContent !== undefined && typeof policy.exposeToActiveContent !== 'boolean') return undefined;
 		const expectedPartition = expectedPolicy?.accountPartition === undefined
 			? ''
 			: String(expectedPolicy.accountPartition || '').trim();
@@ -221,6 +240,8 @@ export function publicationFromPersistedResultArtifact(
 			: Number(expectedPolicy.leaveNoTraceRevision);
 		if (expectedPartition && partition !== expectedPartition) return undefined;
 		if (expectedRevision !== undefined && leaveNoTraceRevision !== expectedRevision) return undefined;
+		if (expectedPolicy?.exposeToActiveContent !== undefined
+			&& policy.exposeToActiveContent !== expectedPolicy.exposeToActiveContent) return undefined;
 	}
 	const lineage = Array.isArray(value.lineage)
 		? value.lineage.filter(isRecord).map(item => ({
@@ -353,9 +374,12 @@ export class ResultArtifactStore {
 		this.pruneIfUnreferenced(artifactId);
 	}
 
-	revokeSource(sourceBoxId: string): readonly string[] {
+	revokeSource(sourceBoxId: string): Readonly<{
+		affectedSourceIds: readonly string[];
+		revokedConsumerIds: readonly string[];
+	}> {
 		const source = String(sourceBoxId || '').trim();
-		if (!source) return [];
+		if (!source) return { affectedSourceIds: [], revokedConsumerIds: [] };
 		const revokedArtifactIds = new Set(
 			[...this.artifacts.values()]
 				.filter(artifact => artifact.sourceBoxId === source)
@@ -380,8 +404,11 @@ export class ResultArtifactStore {
 			if (!revokedArtifactIds.has(currentArtifactId)) continue;
 			this.currentArtifactIdBySource.delete(candidateSourceId);
 		}
+		const revokedConsumerIds: string[] = [];
 		for (const [consumerId, artifactId] of this.artifactIdByConsumer) {
-			if (revokedArtifactIds.has(artifactId)) this.artifactIdByConsumer.delete(consumerId);
+			if (!revokedArtifactIds.has(artifactId)) continue;
+			this.artifactIdByConsumer.delete(consumerId);
+			revokedConsumerIds.push(consumerId);
 		}
 		const lineageCandidates = new Set<string>();
 		for (const artifactId of revokedArtifactIds) {
@@ -393,7 +420,10 @@ export class ResultArtifactStore {
 		for (const artifactId of lineageCandidates) {
 			if (!revokedArtifactIds.has(artifactId)) this.pruneIfUnreferenced(artifactId);
 		}
-		return [...affectedSourceIds];
+		return {
+			affectedSourceIds: [...affectedSourceIds],
+			revokedConsumerIds,
+		};
 	}
 
 	clear(): void {

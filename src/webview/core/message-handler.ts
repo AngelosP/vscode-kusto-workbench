@@ -873,6 +873,7 @@ function comparisonSourcePolicies(sourceArtifact: any): readonly ResultArtifactS
 		'leaveNoTraceRevision',
 		'connectionRevision',
 		'connectionIdentityKey',
+		'exposeToActiveContent',
 	] as const) {
 		if (sourceArtifact.policy[key] !== undefined) policy[key] = sourceArtifact.policy[key];
 	}
@@ -917,11 +918,34 @@ function getKustoResultArtifactPublication(message: unknown): ResultArtifactPubl
 			leaveNoTraceRevision: dispatch.leaveNoTraceRevision,
 			connectionRevision: dispatch.connectionRevision,
 			connectionIdentityKey: dispatch.connectionIdentityKey,
+			exposeToActiveContent: sourceArtifact
+				? sourceArtifact.policy?.exposeToActiveContent === true
+				: true,
 			...(sourcePolicies?.length ? { sourcePolicies } : {}),
 		},
 		...(sourceArtifact ? {
 			lineage: [{ sourceArtifactId: sourceArtifact.artifactId, role: 'comparison-source' }],
 		} : {}),
+	};
+}
+
+function getSqlResultArtifactPublication(message: any): ResultArtifactPublication | undefined {
+	if (!message || message.type !== 'queryResult' || hasKustoExecutionTerminalStamp(message, true)) return undefined;
+	const boxId = String(message.boxId || '').trim();
+	if (!boxId) return undefined;
+	const metadata = optimizationMetadataByBoxId[boxId];
+	const sourceBoxId = metadata?.isComparison ? String(metadata.sourceBoxId || '').trim() : '';
+	const sqlOwned = !!__kustoGetSqlSectionElement(boxId)
+		|| (!!sourceBoxId && !!__kustoGetSqlSectionElement(sourceBoxId));
+	if (!sqlOwned) return undefined;
+	return {
+		producer: {
+			engine: 'sql',
+			boxId,
+			...(message.executionId ? { executionId: String(message.executionId) } : {}),
+			producer: metadata?.isComparison ? 'comparison' : 'manual',
+		},
+		policy: { exposeToActiveContent: true },
 	};
 }
 
@@ -1668,7 +1692,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 			}
 			let resultAccepted = !message.boxId;
-			const artifactPublication = getKustoResultArtifactPublication(message);
+			const artifactPublication = getKustoResultArtifactPublication(message)
+				|| getSqlResultArtifactPublication(message);
 			const comparisonBoxId = String(message.comparisonRun?.comparisonBoxId || '').trim();
 			const comparisonMetadata = optimizationMetadataByBoxId[String(message.boxId || '')];
 			const comparisonSourceBoxId = comparisonMetadata?.isComparison

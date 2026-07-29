@@ -40,7 +40,9 @@ function htmlWithBindings(bindings: Record<string, object>): string {
 
 function installBridge(bindings: Record<string, object>, bodyHtml: string, rows: unknown[][]): KustoWorkbenchRuntime {
 	document.body.innerHTML = bodyHtml;
-	setResultsState('query_fact', { columns: factColumns, rows });
+	setResultsState('query_fact', { columns: factColumns, rows }, {
+		policy: { exposeToActiveContent: true },
+	});
 
 	const section = new KwHtmlSection();
 	section.boxId = 'html_chart_test';

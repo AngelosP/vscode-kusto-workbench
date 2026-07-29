@@ -21,7 +21,17 @@ import {
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { requestOverlayScrollbarUpdate } from '../core/overlay-scrollbars.js';
 import { schedulePersist } from '../core/persistence.js';
-import { getResultsState, getRawCellValue } from '../core/results-state.js';
+import {
+	getBoundResultArtifact,
+	getRawCellValue,
+	getResultsState,
+	rebindResultArtifactConsumer,
+	unbindResultArtifactConsumer,
+} from '../core/results-state.js';
+import {
+	htmlDashboardFactArtifactConsumerId,
+	RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT,
+} from '../../shared/resultArtifact.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize.js';
 import { DASHBOARD_CHART_DEFAULTS } from '../../shared/dashboardCharts.js';
@@ -209,12 +219,27 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _themeObserver: MutationObserver | null = null;
 	/** Last observed theme fingerprint — prevents non-theme mutations from triggering rebuilds. */
 	private _themeFingerprint: string | null = null;
+	/** Provenance fact source currently owned by the immutable artifact binding. */
+	private _boundFactSourceId = '';
+	private readonly _onArtifactConsumersRevoked = (event: Event) => {
+		const consumerIds = (event as CustomEvent<{ consumerIds?: unknown }>).detail?.consumerIds;
+		if (!Array.isArray(consumerIds)
+			|| !consumerIds.includes(htmlDashboardFactArtifactConsumerId(this.boxId))) return;
+		this._revokePreviewDataBridge();
+	};
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
 	override connectedCallback(): void {
 		super.connectedCallback();
 		window.addEventListener('message', this._onMessage);
+		window.addEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, this._onArtifactConsumersRevoked);
+		if (this._boundFactSourceId && !getBoundResultArtifact(
+			htmlDashboardFactArtifactConsumerId(this.boxId), this._boundFactSourceId,
+		)) {
+			this._revokePreviewDataBridge();
+			this._boundFactSourceId = '';
+		}
 		this._setupThemeObserver();
 		// Re-create editor after a DOM move (reorder).
 		if (this._savedCode !== null) {
@@ -225,6 +250,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		window.removeEventListener('message', this._onMessage);
+		window.removeEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, this._onArtifactConsumersRevoked);
 		this._themeObserver?.disconnect();
 		this._themeObserver = null;
 		if (this._powerBiCompatibilityRefreshTimer) {
@@ -477,6 +503,30 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 	private _refreshProvenance(): void {
 		const code = this._getCodeText();
 		this._provenance = parseKwProvenance(code);
+		this._syncFactArtifactBinding();
+	}
+
+	private _syncFactArtifactBinding(force = false): void {
+		if (!this.boxId) return;
+		const sourceId = String(this._provenance?.model?.fact?.sectionId || '').trim();
+		if (!sourceId) {
+			if (this._boundFactSourceId) this._revokePreviewDataBridge();
+			unbindResultArtifactConsumer(htmlDashboardFactArtifactConsumerId(this.boxId));
+			this._boundFactSourceId = '';
+			return;
+		}
+		if (!force && this._boundFactSourceId === sourceId) return;
+		if (this._boundFactSourceId && this._boundFactSourceId !== sourceId) this._revokePreviewDataBridge();
+		this._boundFactSourceId = sourceId;
+		rebindResultArtifactConsumer(htmlDashboardFactArtifactConsumerId(this.boxId), sourceId);
+	}
+
+	private _revokePreviewDataBridge(): void {
+		const iframe = this.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+		if (!iframe) return;
+		iframe.style.visibility = 'hidden';
+		iframe.srcdoc = '';
+		this._invalidatePreviewContentHeight();
 	}
 
 	/** Get the section IDs referenced by the provenance model (just the fact table). */
@@ -1003,6 +1053,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		this.updateComplete.then(() => {
 			const iframe = this.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
 			if (!iframe) return;
+			if (iframe.style) iframe.style.visibility = '';
 			const code = this._getCodeText();
 			if (code.trim()) {
 				this._invalidatePreviewContentHeight();
@@ -1018,15 +1069,17 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 		const factSectionId = this._provenance?.model?.fact?.sectionId;
 		if (!factSectionId) return '';
 
-		const rs = getResultsState(factSectionId);
-		if (!rs || !rs.columns) return '';
+		const artifact = getBoundResultArtifact(
+			htmlDashboardFactArtifactConsumerId(this.boxId), factSectionId,
+		);
+		if (!artifact || artifact.policy?.exposeToActiveContent !== true || !artifact.columns) return '';
 
 		const MAX_ROWS = 10_000;
-		const columns = (rs.columns || []).map((c: any) => ({
+		const columns = (artifact.columns || []).map((c: any) => ({
 			name: typeof c === 'string' ? c : (c?.name || 'column'),
 			type: typeof c === 'object' ? (c?.type || 'string') : 'string',
 		}));
-		const allRows = Array.isArray(rs.rows) ? rs.rows : [];
+		const allRows = Array.isArray(artifact.rows) ? artifact.rows : [];
 		const capped = allRows.length > MAX_ROWS;
 		const rawRows = capped ? allRows.slice(0, MAX_ROWS) : allRows;
 
@@ -2266,6 +2319,7 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 	/** Called by the cascade system when a referenced data source's results change. */
 	public refreshDataBridge(): void {
+		this._syncFactArtifactBinding(true);
 		if (this._mode === 'preview') this._updatePreview();
 	}
 

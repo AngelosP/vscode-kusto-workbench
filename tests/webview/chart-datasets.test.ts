@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { __kustoGetChartDatasetsInDomOrder } from '../../src/webview/core/section-factory';
+import { __kustoGetChartDatasetsInDomOrder, removeHtmlBox } from '../../src/webview/core/section-factory';
+import { htmlDashboardFactArtifactConsumerId } from '../../src/shared/resultArtifact.js';
 import {
 	bindResultArtifactConsumer,
 	clearResultsState,
@@ -171,6 +172,20 @@ describe('__kustoGetChartDatasetsInDomOrder', () => {
 		// query_1 is section #1, markdown is #2, query_2 is section #3
 		expect(datasets[0].label).toBe('First [section #1]');
 		expect(datasets[1].label).toBe('Second [section #3]');
+	});
+});
+
+describe('HTML artifact binding lifecycle', () => {
+	it('releases the fact binding when removal runs after DOM detachment', () => {
+		setResultsState('query_html_remove_source', { columns: ['Value'], rows: [[1]] }, {
+			policy: { exposeToActiveContent: true },
+		});
+		const consumerId = htmlDashboardFactArtifactConsumerId('html_removed');
+		bindResultArtifactConsumer(consumerId, 'query_html_remove_source');
+
+		removeHtmlBox('html_removed');
+
+		expect(getBoundResultArtifact(consumerId, 'query_html_remove_source')).toBeNull();
 	});
 });
 

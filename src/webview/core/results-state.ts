@@ -5,6 +5,7 @@ import { pState } from '../shared/persistence-state';
 import { __kustoSetResultsVisible, setQueryExecuting } from '../sections/query-execution.controller';
 import { __kustoNotifyResultsUpdated } from './section-factory';
 import {
+	RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT,
 	ResultArtifactStore,
 	type ResultArtifactPublication,
 } from '../../shared/resultArtifact.js';
@@ -93,7 +94,13 @@ export function setResultsState(boxId: any, state: any, publication: ResultArtif
 
 export function clearResultsState(boxId: any) {
 	if (!boxId) return;
-	const affectedBoxIds = _resultArtifacts.revokeSource(String(boxId));
+	const revocation = _resultArtifacts.revokeSource(String(boxId));
+	if (revocation.revokedConsumerIds.length) {
+		window.dispatchEvent(new CustomEvent(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, {
+			detail: { sourceBoxId: String(boxId), consumerIds: revocation.revokedConsumerIds },
+		}));
+	}
+	const affectedBoxIds = revocation.affectedSourceIds;
 	for (const affectedBoxId of affectedBoxIds) {
 		if (!_resultArtifacts.getCurrent(affectedBoxId)) {
 			delete _resultsByBoxId[affectedBoxId];

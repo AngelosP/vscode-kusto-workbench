@@ -43,6 +43,10 @@ import {
 	currentResult,
 	ensureResultsShownForTool,
 } from '../../src/webview/core/results-state.js';
+import {
+	htmlDashboardFactArtifactConsumerId,
+	RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT,
+} from '../../src/shared/resultArtifact.js';
 
 describe('results-state displayResultForBox', () => {
 	beforeEach(() => {
@@ -225,6 +229,48 @@ describe('results-state displayResultForBox', () => {
 		expect(getCurrentResultArtifact(sourceBoxId)).toBeNull();
 		expect(getBoundResultArtifact(consumerId, sourceBoxId)).toBeNull();
 		expect(getResultArtifact(artifact.artifactId)).toBeNull();
+	});
+
+	it('synchronously reports revoked HTML bridge consumers before deferred refresh', () => {
+		const sourceBoxId = 'query_html_revoked';
+		const htmlBoxId = 'html_revoked';
+		const consumerId = htmlDashboardFactArtifactConsumerId(htmlBoxId);
+		setResultsState(sourceBoxId, { columns: [], rows: [['secret']] });
+		bindResultArtifactConsumer(consumerId, sourceBoxId);
+		const events: unknown[] = [];
+		const listener = (event: Event) => events.push((event as CustomEvent).detail);
+		window.addEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, listener);
+
+		try {
+			clearResultsState(sourceBoxId);
+		} finally {
+			window.removeEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, listener);
+		}
+
+		expect(events).toEqual([{ sourceBoxId, consumerIds: [consumerId] }]);
+	});
+
+	it('reports every HTML bridge consumer revoked from the same source', () => {
+		const sourceBoxId = 'query_html_multi_revoke';
+		const consumerIds = [
+			htmlDashboardFactArtifactConsumerId('html_first'),
+			htmlDashboardFactArtifactConsumerId('html_second'),
+		];
+		setResultsState(sourceBoxId, { columns: [], rows: [['secret']] });
+		for (const consumerId of consumerIds) bindResultArtifactConsumer(consumerId, sourceBoxId);
+		const events: any[] = [];
+		const listener = (event: Event) => events.push((event as CustomEvent).detail);
+		window.addEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, listener);
+
+		try {
+			clearResultsState(sourceBoxId);
+		} finally {
+			window.removeEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, listener);
+		}
+
+		expect(events).toHaveLength(1);
+		expect(events[0].sourceBoxId).toBe(sourceBoxId);
+		expect(new Set(events[0].consumerIds)).toEqual(new Set(consumerIds));
 	});
 
 	it('synchronously revokes transitive derived artifacts and their consumers', () => {

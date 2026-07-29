@@ -1786,7 +1786,7 @@ describe('persistence round-trip', () => {
 				version: 1, artifactId: 'result:query_public_restore:9', sourceBoxId: 'query_public_restore',
 				revision: 9, createdAt: 1234,
 				producer: { engine: 'kusto', boxId: 'query_public_restore', executionId: 'execution-restored' },
-				policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 0 },
+				policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 0, exposeToActiveContent: true },
 			};
 			handleDocumentDataMessage({
 				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/public-restore.kqlx',

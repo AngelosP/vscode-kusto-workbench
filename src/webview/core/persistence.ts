@@ -648,10 +648,13 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 		const artifactPublication = publicationFromPersistedResultArtifact(
 			job.resultArtifact,
 			job.boxId,
-			__kustoIsKustoOwnedRestore(job) ? {
+			{
+				exposeToActiveContent: true,
+				...(__kustoIsKustoOwnedRestore(job) ? {
 				accountPartition: job.kustoAccountPartition,
 				leaveNoTraceRevision: job.kustoLeaveNoTraceRevision,
-			} : undefined,
+				} : {}),
+			},
 		);
 		const resultAccepted = displayResultForBox(parsed, job.boxId, {
 			label: 'Results',

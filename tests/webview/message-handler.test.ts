@@ -1259,6 +1259,10 @@ describe('message-handler dispatch', () => {
 
 		expect(resultsState.displayResultForBox).toHaveBeenCalledWith(result, 'query_comparison', {
 			label: 'Results', showExecutionTime: true, executionId: 'sql-comparison-1',
+			artifactPublication: expect.objectContaining({
+				producer: expect.objectContaining({ engine: 'sql', boxId: 'query_comparison' }),
+				policy: { exposeToActiveContent: true },
+			}),
 		});
 	});
 
@@ -1401,7 +1405,9 @@ describe('message-handler dispatch', () => {
 				producer: expect.objectContaining({
 					executionId: 'execution-new', reservationSequence: 2, dispatch: kustoDispatch('current'),
 				}),
-				policy: expect.objectContaining({ accountPartition: 'partition-1', leaveNoTraceRevision: 0 }),
+				policy: expect.objectContaining({
+					accountPartition: 'partition-1', leaveNoTraceRevision: 0, exposeToActiveContent: true,
+				}),
 			}),
 		}));
 		expect(persistence.__kustoOnQueryResult).toHaveBeenCalledWith('query_1', currentResult, kustoDispatch('current'));

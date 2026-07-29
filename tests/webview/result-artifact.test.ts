@@ -65,6 +65,13 @@ describe('ResultArtifactStore', () => {
 		}, 'query_1', {
 			accountPartition: 'partition-a', leaveNoTraceRevision: 4,
 		})).toBeUndefined();
+		expect(publicationFromPersistedResultArtifact({
+			...base,
+			producer: { boxId: 'query_1', executionId: 'execution-1' },
+			policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 4 },
+		}, 'query_1', {
+			accountPartition: 'partition-a', leaveNoTraceRevision: 4, exposeToActiveContent: true,
+		})).toBeUndefined();
 	});
 
 	it('restores the saved identity after the same runtime previously advanced farther', () => {
@@ -181,5 +188,36 @@ describe('ResultArtifactStore', () => {
 				leaveNoTraceRevision: 4,
 			}],
 		});
+	});
+
+	it('allows derived active-content exposure only when every leaf source allows it', () => {
+		const store = new ResultArtifactStore();
+		const allowed = store.publish('query_allowed', { columns: [], rows: [[1]], metadata: {} }, {
+			policy: { accountPartition: 'partition-a', exposeToActiveContent: true },
+		})!;
+		const differentlyOwnedAllowed = store.publish('query_allowed_other', { columns: [], rows: [[3]], metadata: {} }, {
+			policy: { accountPartition: 'partition-b', exposeToActiveContent: true },
+		})!;
+		const denied = store.publish('query_denied', { columns: [], rows: [[2]], metadata: {} }, {
+			policy: { exposeToActiveContent: false },
+		})!;
+
+		const allowedPublication = createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_allowed' },
+			[{ artifact: allowed, role: 'primary' }],
+		);
+		const mixedPublication = createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_mixed' },
+			[{ artifact: allowed, role: 'primary' }, { artifact: denied, role: 'join-right' }],
+		);
+		const differentlyOwnedAllowedPublication = createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_allowed_join' },
+			[{ artifact: allowed, role: 'primary' }, { artifact: differentlyOwnedAllowed, role: 'join-right' }],
+		);
+
+		expect(allowedPublication.policy?.exposeToActiveContent).toBe(true);
+		expect(differentlyOwnedAllowedPublication.policy?.accountPartition).toBeUndefined();
+		expect(differentlyOwnedAllowedPublication.policy?.exposeToActiveContent).toBe(true);
+		expect(mixedPublication.policy?.exposeToActiveContent).toBeUndefined();
 	});
 });

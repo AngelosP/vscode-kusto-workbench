@@ -1,8 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { KwHtmlSection } from '../../src/webview/sections/kw-html-section';
-import { setResultsState } from '../../src/webview/core/results-state';
+import { clearResultsState, getCurrentResultArtifact, setResultsState } from '../../src/webview/core/results-state';
 
-type BridgeSection = KwHtmlSection & { _buildDataBridgeScript(): string };
+type BridgeSection = KwHtmlSection & { _buildDataBridgeScript(): string; refreshDataBridge(): void };
 type HeightSection = KwHtmlSection & {
 	_mode: 'code' | 'preview';
 	_userResizedPreview: boolean;
@@ -38,6 +38,14 @@ function makeProvenanceHtml(dimensions: object[]): string {
 			fact: { sectionId: 'query_slicer_fact', sectionName: 'Fact Events' },
 			dimensions,
 		},
+		bindings: {},
+	})}</script><main>Dashboard content</main>`;
+}
+
+function makeFactHtml(sectionId: string): string {
+	return `<script type="application/kw-provenance">${JSON.stringify({
+		version: 1,
+		model: { fact: { sectionId, sectionName: 'Fact Events' } },
 		bindings: {},
 	})}</script><main>Dashboard content</main>`;
 }
@@ -153,6 +161,8 @@ describe('generated slicer layout', () => {
 		setResultsState('query_slicer_fact', {
 			columns: [{ name: 'Client', type: 'string' }],
 			rows: [['VS Code'], ['Visual Studio']],
+		}, {
+			policy: { exposeToActiveContent: true },
 		});
 
 		const section = new KwHtmlSection();
@@ -172,6 +182,110 @@ describe('generated slicer layout', () => {
 		expect(slicerTag).toBeTruthy();
 		expect(slicerTag).toContain('box-sizing:border-box');
 		expect(slicerTag).toContain('margin-bottom:20px');
+	});
+});
+
+describe('HTML dashboard artifact bridge ownership', () => {
+	it('pins source A until explicit refresh rebinds to B', () => {
+		const sourceId = 'query_html_artifact_source';
+		setResultsState(sourceId, { columns: ['Value'], rows: [['revision-a']] }, {
+			policy: { exposeToActiveContent: true } as any,
+		});
+		const sourceA = getCurrentResultArtifact(sourceId)!;
+		const section = new KwHtmlSection() as BridgeSection;
+		section.boxId = 'html_artifact_consumer';
+		section.setCode(makeFactHtml(sourceId));
+
+		expect(section._buildDataBridgeScript()).toContain('revision-a');
+
+		setResultsState(sourceId, { columns: ['Value'], rows: [['revision-b']] }, {
+			policy: { exposeToActiveContent: true } as any,
+		});
+		const sourceB = getCurrentResultArtifact(sourceId)!;
+		expect(sourceB.artifactId).not.toBe(sourceA.artifactId);
+		expect(section._buildDataBridgeScript()).toContain('revision-a');
+		expect(section._buildDataBridgeScript()).not.toContain('revision-b');
+
+		section.refreshDataBridge();
+
+		expect(section._buildDataBridgeScript()).toContain('revision-b');
+	});
+
+	it('fails closed when the bound artifact lacks active-content exposure permission', () => {
+		const sourceId = 'query_html_artifact_denied';
+		setResultsState(sourceId, { columns: ['Secret'], rows: [['classified']] });
+		const section = new KwHtmlSection() as BridgeSection;
+		section.boxId = 'html_artifact_denied';
+		section.setCode(makeFactHtml(sourceId));
+
+		expect(section._buildDataBridgeScript()).toBe('');
+	});
+
+	it('synchronously blanks and hides an active preview when its bound artifact is revoked', async () => {
+		const sourceId = 'query_html_artifact_live_revoke';
+		setResultsState(sourceId, { columns: ['Secret'], rows: [['visible-before-revoke']] }, {
+			policy: { exposeToActiveContent: true },
+		});
+		const section = new KwHtmlSection();
+		section.boxId = 'html_artifact_live_revoke';
+		section.setCode(makeFactHtml(sourceId));
+		section.setMode('preview');
+		document.body.appendChild(section);
+		await section.updateComplete;
+		const iframe = section.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+		await vi.waitFor(() => expect(iframe?.srcdoc).toContain('visible-before-revoke'));
+
+		clearResultsState(sourceId);
+
+		expect(iframe?.style.visibility).toBe('hidden');
+		expect(iframe?.srcdoc).toBe('');
+		section.remove();
+	});
+
+	it('fails closed when the source is revoked while the section is disconnected for reorder', async () => {
+		const sourceId = 'query_html_artifact_reorder_revoke';
+		setResultsState(sourceId, { columns: ['Secret'], rows: [['stale-during-reorder']] }, {
+			policy: { exposeToActiveContent: true },
+		});
+		const section = new KwHtmlSection();
+		section.boxId = 'html_artifact_reorder_revoke';
+		section.setCode(makeFactHtml(sourceId));
+		section.setMode('preview');
+		document.body.appendChild(section);
+		await section.updateComplete;
+		const iframe = section.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+		await vi.waitFor(() => expect(iframe?.srcdoc).toContain('stale-during-reorder'));
+
+		section.remove();
+		clearResultsState(sourceId);
+		document.body.appendChild(section);
+		await section.updateComplete;
+
+		expect(section._buildDataBridgeScript()).toBe('');
+		section.remove();
+	});
+
+	it('synchronously blanks old data when provenance switches fact sources', async () => {
+		for (const [sourceId, value] of [['query_html_source_a', 'source-a'], ['query_html_source_b', 'source-b']] as const) {
+			setResultsState(sourceId, { columns: ['Value'], rows: [[value]] }, {
+				policy: { exposeToActiveContent: true },
+			});
+		}
+		const section = new KwHtmlSection();
+		section.boxId = 'html_artifact_source_switch';
+		section.setCode(makeFactHtml('query_html_source_a'));
+		section.setMode('preview');
+		document.body.appendChild(section);
+		await section.updateComplete;
+		const iframe = section.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+		await vi.waitFor(() => expect(iframe?.srcdoc).toContain('source-a'));
+
+		section.setCode(makeFactHtml('query_html_source_b'));
+
+		expect(iframe?.style.visibility).toBe('hidden');
+		expect(iframe?.srcdoc).toBe('');
+		await vi.waitFor(() => expect(iframe?.srcdoc).toContain('source-b'));
+		section.remove();
 	});
 });
 

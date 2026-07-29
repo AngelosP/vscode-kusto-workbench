@@ -55,7 +55,7 @@ import {
 	unregisterSqlDerivedComparisonsForSource,
 } from './sql-section-message-router.js';
 import { clearResultsState, rebindResultArtifactConsumer, unbindResultArtifactConsumer } from './results-state';
-import { comparisonSourceArtifactConsumerId } from '../../shared/resultArtifact.js';
+import { comparisonSourceArtifactConsumerId, htmlDashboardFactArtifactConsumerId } from '../../shared/resultArtifact.js';
 import { __kustoUpdateQueryResultsToggleButton, __kustoUpdateComparisonSummaryToggleButton, __kustoApplyResultsVisibility, __kustoApplyComparisonSummaryVisibility, setQueryExecuting, __kustoSetLinkedOptimizationMode } from '../sections/query-execution.controller';
 import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/comparisonUtils';
 import { buildSchemaInfo } from '../shared/schema-utils';
@@ -2755,6 +2755,7 @@ export function addHtmlBox(options?: any) {
 }
 
 export function removeHtmlBox(boxId: any) {
+	try { unbindResultArtifactConsumer(htmlDashboardFactArtifactConsumerId(boxId)); } catch (e) { console.error('[kusto]', e); }
 	htmlBoxes = htmlBoxes.filter((id: any) => id !== boxId);
 	const box = document.getElementById(boxId) as any;
 	if (box && box.parentNode) {

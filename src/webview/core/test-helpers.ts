@@ -5684,6 +5684,57 @@ async function e2eComparisonAssertExactArtifactLineage(): Promise<string> {
 	return `comparison retained ${sourceA.artifactId} while source advanced to ${sourceCurrent.artifactId}`;
 }
 
+async function e2eHtmlAssertArtifactBridgeOwnership(): Promise<string> {
+	const sourceId = e2eLayoutAddSection('addQueryBox', {
+		id: 'query_e2e_html_artifact_source', initialQuery: 'print Value="source"',
+		name: 'HTML Artifact Source', defaultResultsVisible: true,
+	});
+	const htmlId = e2eLayoutAddSection('addHtmlBox', {
+		id: 'html_e2e_artifact_bridge', name: 'Artifact Dashboard', mode: 'preview', expanded: true,
+		code: `<script type="application/kw-provenance">${JSON.stringify({
+			version: 1,
+			model: { fact: { sectionId: sourceId, sectionName: 'Fact Events' } },
+			bindings: {},
+		})}</script><main id="artifact-dashboard">Artifact dashboard</main>`,
+	});
+	await e2eLayoutWaitFor(() => !!document.getElementById(sourceId), 'HTML artifact source');
+	await e2eLayoutWaitFor(() => !!document.getElementById(htmlId), 'HTML artifact dashboard');
+	const columns = [{ name: 'Value', type: 'string' }];
+	const publish = (executionId: string, value: string) => displayResultForBox(
+		{ columns, rows: [[value]], metadata: {} },
+		sourceId,
+		{
+			label: 'Results',
+			artifactPublication: {
+				producer: { engine: 'kusto', boxId: sourceId, executionId },
+				policy: { exposeToActiveContent: true },
+			},
+		},
+	);
+	if (!publish('html-source-a', 'revision-a')) throw new Error('HTML source A was rejected');
+	const sourceA = getCurrentResultArtifact(sourceId);
+	const htmlSection = document.getElementById(htmlId) as any;
+	htmlSection.refreshDataBridge?.();
+	await htmlSection.updateComplete;
+	const iframe = htmlSection.shadowRoot?.getElementById('preview-iframe') as HTMLIFrameElement | null;
+	await e2eLayoutWaitFor(() => String(iframe?.srcdoc || '').includes('revision-a'), 'HTML bridge revision A', 10000);
+
+	if (!publish('html-source-b', 'revision-b')) throw new Error('HTML source B was rejected');
+	const sourceB = getCurrentResultArtifact(sourceId);
+	if (!sourceA || !sourceB || sourceA.artifactId === sourceB.artifactId) throw new Error('HTML source did not advance');
+	if (!String(iframe?.srcdoc || '').includes('revision-a') || String(iframe?.srcdoc || '').includes('revision-b')) {
+		throw new Error('HTML bridge moved before explicit refresh');
+	}
+	htmlSection.refreshDataBridge?.();
+	await e2eLayoutWaitFor(() => String(iframe?.srcdoc || '').includes('revision-b'), 'HTML bridge revision B', 10000);
+
+	clearResultsState(sourceId);
+	if (iframe?.style.visibility !== 'hidden' || iframe?.srcdoc !== '') {
+		throw new Error('HTML bridge did not synchronously hide and blank revoked data');
+	}
+	return `HTML bridge pinned ${sourceA.artifactId}, rebound ${sourceB.artifactId}, then revoked`;
+}
+
 function e2eLayoutDispatchUrlContent(boxId: string): void {
 	window.dispatchEvent(new MessageEvent('message', {
 		data: {
@@ -6366,13 +6417,17 @@ async function e2eSeedQueryResult(boxId: string, result: unknown): Promise<strin
 	if (!id || !section) throw new Error(`Result owner not found: ${id || '(empty)'}`);
 	if (section.updateComplete && typeof section.updateComplete.then === 'function') await section.updateComplete;
 	await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
-	let accepted = displayResultForBox(result, id, { label: 'Results', showExecutionTime: true });
+	const options = {
+		label: 'Results', showExecutionTime: true,
+		artifactPublication: { policy: { exposeToActiveContent: true } },
+	};
+	let accepted = displayResultForBox(result, id, options);
 	if (!accepted) throw new Error(`Result owner rejected local E2E data: ${id}`);
 	if (section.updateComplete && typeof section.updateComplete.then === 'function') await section.updateComplete;
 	const hasTabularData = Array.isArray((result as any)?.columns) || Array.isArray((result as any)?.rows);
 	let table = section.querySelector?.('kw-data-table') || section.shadowRoot?.querySelector?.('kw-data-table');
 	if (hasTabularData && !table) {
-		accepted = displayResultForBox(result, id, { label: 'Results', showExecutionTime: true });
+		accepted = displayResultForBox(result, id, options);
 		if (!accepted) throw new Error(`Result owner rejected replayed local E2E data: ${id}`);
 		if (section.updateComplete && typeof section.updateComplete.then === 'function') await section.updateComplete;
 		table = section.querySelector?.('kw-data-table') || section.shadowRoot?.querySelector?.('kw-data-table');
@@ -6416,6 +6471,9 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 	},
 	comparison: {
 		assertExactArtifactLineage: e2eComparisonAssertExactArtifactLineage,
+	},
+	html: {
+		assertArtifactBridgeOwnership: e2eHtmlAssertArtifactBridgeOwnership,
 	},
 	cursorStatus: {
 		beginCapture: e2eBeginHostMessageCapture,
