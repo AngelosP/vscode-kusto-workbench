@@ -18,6 +18,9 @@ const testState = vi.hoisted(() => {
 		setLeaveNoTraceConnectionIds: ReturnType<typeof vi.fn>;
 		canPersistResults: () => boolean;
 		getConnectionId: () => string;
+		getSqlConnectionId: () => string;
+		getDatabase: () => string;
+		getQuery: () => string;
 	}> = {};
 	const sqlLeaveNoTraceConnectionIds: string[] = [];
 	const sqlConnections: Array<{ id: string; serverUrl: string }> = [];
@@ -72,7 +75,7 @@ const testState = vi.hoisted(() => {
 		return id;
 	});
 
-	const addSqlBox = vi.fn((options: { id?: string } = {}) => {
+	const addSqlBox = vi.fn((options: { id?: string; database?: string } = {}) => {
 		const id = options.id || `sql_restored_${sqlBoxes.length + 1}`;
 		sqlBoxes.push(id);
 		let protectedConnectionIds = new Set<string>();
@@ -82,11 +85,17 @@ const testState = vi.hoisted(() => {
 			setLeaveNoTraceConnectionIds: ReturnType<typeof vi.fn>;
 			canPersistResults: () => boolean;
 			getConnectionId: () => string;
+			getSqlConnectionId: () => string;
+			getDatabase: () => string;
+			getQuery: () => string;
 		};
 		el.id = id;
 		el.setFavoritesMode = vi.fn();
 		el.setLeaveNoTraceConnectionIds = vi.fn((ids: string[]) => { protectedConnectionIds = new Set(ids); });
 		el.getConnectionId = () => selectedConnectionId;
+		el.getSqlConnectionId = () => selectedConnectionId;
+		el.getDatabase = () => String(options.database || '');
+		el.getQuery = () => String((window as any).__testPendingSqlQueryByBoxId?.[id] || '');
 		el.canPersistResults = () => {
 			const currentConnectionId = el.getConnectionId();
 			return !currentConnectionId || !protectedConnectionIds.has(currentConnectionId);
@@ -280,6 +289,7 @@ vi.mock('../../src/webview/sections/kw-markdown-section.js', () => ({
 
 
 vi.mock('../../src/webview/sections/kw-query-toolbar.js', () => ({
+	__kustoCloseShareModal: vi.fn(),
 	setRunMode: vi.fn(),
 	updateCaretDocsToggleButtons: vi.fn(),
 	updateAutoTriggerAutocompleteToggleButtons: vi.fn(),
@@ -300,7 +310,7 @@ import { displayResult, displayResultForBox } from '../../src/webview/core/resul
 import { optimizationMetadataByBoxId, sqlFavoritesModeByBoxId } from '../../src/webview/core/state.js';
 import { updateConnectionSelects, __kustoGetConnectionId, __kustoGetDatabase, __kustoGetQuerySectionElement, __kustoSetAutoEnterFavoritesForBox } from '../../src/webview/core/section-factory.js';
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
-import { setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
+import { __kustoCloseShareModal, setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
 import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, discardPendingSqlResultRestores, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, markKustoLeaveNoTracePolicyPending, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, schedulePersist, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
 import { createDerivedResultArtifactPublication, publicationFromPersistedResultArtifact } from '../../src/shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
@@ -364,6 +374,7 @@ describe('persistence round-trip', () => {
 		pState.lastExecutedBox = '';
 		pState.htmlPowerBiCompatibilityCheckEnabled = true;
 		(window as any).__testPendingQueryTextByBoxId = pState.pendingQueryTextByBoxId;
+		(window as any).__testPendingSqlQueryByBoxId = pState.pendingSqlQueryByBoxId;
 		(window as any).__testQueryResultJsonByBoxId = pState.queryResultJsonByBoxId;
 	});
 
@@ -498,12 +509,14 @@ describe('persistence round-trip', () => {
 		container.appendChild(query);
 		document.body.appendChild(container);
 		vi.mocked(postMessageToHost).mockClear();
+		vi.mocked(__kustoCloseShareModal).mockClear();
 
 		handleDocumentDataMessage({
 			type: 'documentData', ok: false, forceReload: true,
 			documentKind: 'kqlx', documentUri: 'file:///tmp/report.kqlx',
 			error: 'Invalid JSON',
 		});
+		expect(__kustoCloseShareModal).toHaveBeenCalledOnce();
 
 		expect(document.getElementById('query_good')).toBe(query);
 		expect((container as HTMLElement & { inert?: boolean }).inert).toBe(true);
@@ -519,6 +532,26 @@ describe('persistence round-trip', () => {
 
 		expect(document.getElementById('kusto-malformed-document-banner')).toBeNull();
 		expect((container as HTMLElement & { inert?: boolean }).inert).toBe(false);
+	});
+
+	it('closes share state only when documentData is applied', () => {
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentUri: 'file:///tmp/share-transition.kqlx', state: { sections: [] },
+		});
+		vi.mocked(__kustoCloseShareModal).mockClear();
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true,
+			documentUri: 'file:///tmp/share-transition.kqlx', state: { sections: [] },
+		});
+		expect(__kustoCloseShareModal).not.toHaveBeenCalled();
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentUri: 'file:///tmp/share-transition.kqlx', state: { sections: [] },
+		});
+		expect(__kustoCloseShareModal).toHaveBeenCalledOnce();
 	});
 
 	it('round-trips legacy document preferences unchanged instead of current application values', () => {
@@ -669,11 +702,20 @@ describe('persistence round-trip', () => {
 		};
 		testState.sqlConnections.push(sqlConnection);
 		const targetSignature = sqlConnectionTargetSignature(sqlConnection);
+		const exactSqlQuery = '  select top 10 * from dbo.Events\n\n';
 		const resultJson = JSON.stringify({
 			columns: [{ name: 'Value', type: 'int' }],
 			rows: [[1]],
 			metadata: { executionTime: '00:00:00.010' },
 		});
+		const resultArtifact = {
+			version: 1, artifactId: 'result:sql_saved_1:4', sourceBoxId: 'sql_saved_1', revision: 4, createdAt: 123,
+			producer: {
+				engine: 'sql', boxId: 'sql_saved_1', executionId: 'sql-execution',
+				query: exactSqlQuery, connectionId: 'sql-warehouse', database: 'Warehouse',
+			},
+			policy: { exposeToActiveContent: true, shareToClipboard: true },
+		};
 		vi.mocked(displayResultForBox).mockImplementationOnce((_result, boxId) => {
 			const wrapper = document.getElementById(`${boxId}_sql_results_wrapper`);
 			expect(wrapper?.style.height).toBe('420px');
@@ -692,7 +734,7 @@ describe('persistence round-trip', () => {
 							type: 'sql',
 							id: 'sql_saved_1',
 							name: 'Warehouse Query',
-							query: 'select top 10 * from dbo.Events',
+							query: exactSqlQuery,
 							serverUrl: 'tcp:sql.example.test,1433',
 							connectionIdHint: 'sql-warehouse',
 							targetSignature,
@@ -701,6 +743,7 @@ describe('persistence round-trip', () => {
 							resultsVisible: false,
 							favoritesMode: true,
 							resultJson,
+							resultArtifact,
 							runMode: 'all',
 							editorHeightPx: 310,
 							resultsHeightPx: 420,
@@ -711,7 +754,7 @@ describe('persistence round-trip', () => {
 				},
 			});
 
-			expect(pState.pendingSqlQueryByBoxId.sql_saved_1).toBe('select top 10 * from dbo.Events');
+			expect(pState.pendingSqlQueryByBoxId.sql_saved_1).toBe(exactSqlQuery);
 			expect(testState.addSqlBox).toHaveBeenCalledWith({
 				id: 'sql_saved_1',
 				name: 'Warehouse Query',
@@ -735,9 +778,96 @@ describe('persistence round-trip', () => {
 			flushDeferredRestoreTimers();
 
 			expect(pState.lastExecutedBox).toBe('sql_saved_1');
-			expect(displayResultForBox).toHaveBeenCalledWith(JSON.parse(resultJson), 'sql_saved_1', { label: 'Results', showExecutionTime: true });
+			expect(displayResultForBox).toHaveBeenCalledWith(JSON.parse(resultJson), 'sql_saved_1', {
+				label: 'Results', showExecutionTime: true,
+				artifactPublication: expect.objectContaining({
+					producer: expect.objectContaining({ query: exactSqlQuery }),
+					policy: expect.objectContaining({ shareToClipboard: true }),
+				}),
+			});
+			expect(pState.resultArtifactByBoxId.sql_saved_1).toEqual(resultArtifact);
 			expect(document.getElementById('sql_saved_1_sql_results_wrapper')?.style.height).toBe('420px');
 			expect(document.getElementById('sql_saved_1_sql_results_wrapper')?.dataset.kustoUserResized).toBe('true');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('renders SQL rows but rejects forged clipboard producer provenance on restore', () => {
+		vi.useFakeTimers();
+		try {
+			const sqlConnection = {
+				id: 'sql-forged', name: 'Forged', dialect: 'mssql', serverUrl: 'forged.example',
+				database: 'Db', authType: 'sql-login', username: 'User',
+			};
+			testState.sqlConnections.push(sqlConnection);
+			const resultJson = JSON.stringify({ columns: ['Value'], rows: [['persisted']], metadata: {} });
+			const resultArtifact = {
+				version: 1, artifactId: 'result:sql_forged:2', sourceBoxId: 'sql_forged', revision: 2, createdAt: 123,
+				producer: {
+					engine: 'sql', boxId: 'sql_forged', executionId: 'sql-execution',
+					query: 'SELECT forged=1', connectionId: 'sql-forged', database: 'Db',
+				},
+				policy: { exposeToActiveContent: true, shareToClipboard: true },
+			};
+
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/sql-forged.sqlx',
+				state: { sections: [{
+					type: 'sql', id: 'sql_forged', query: 'SELECT 1 AS Value', serverUrl: 'forged.example',
+					connectionIdHint: 'sql-forged', targetSignature: sqlConnectionTargetSignature(sqlConnection),
+					database: 'Db', resultJson, resultArtifact,
+				}] },
+			});
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['persisted']] }),
+				'sql_forged',
+				{ label: 'Results', showExecutionTime: true },
+			);
+			expect(pState.resultArtifactByBoxId.sql_forged).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it.each([
+		['query edit', (id: string) => { pState.pendingSqlQueryByBoxId[id] = 'SELECT changed=1'; }],
+		['database change', (id: string) => { testState.sqlElements[id].getDatabase = () => 'OtherDb'; }],
+	] as const)('discards SQL restore after a live %s before idle admission', (_label, mutate) => {
+		vi.useFakeTimers();
+		try {
+			const sqlConnection = {
+				id: 'sql-race', name: 'Race', dialect: 'mssql', serverUrl: 'race.example',
+				database: 'Db', authType: 'sql-login', username: 'User',
+			};
+			testState.sqlConnections.push(sqlConnection);
+			const resultJson = JSON.stringify({ columns: ['Value'], rows: [['old']], metadata: {} });
+			const resultArtifact = {
+				version: 1, artifactId: 'result:sql_race:2', sourceBoxId: 'sql_race', revision: 2, createdAt: 123,
+				producer: {
+					engine: 'sql', boxId: 'sql_race', executionId: 'sql-execution',
+					query: 'SELECT 1 AS Value', connectionId: 'sql-race', database: 'Db',
+				},
+				policy: { exposeToActiveContent: true, shareToClipboard: true },
+			};
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri: `file:///tmp/sql-race-${_label}.sqlx`,
+				state: { sections: [{
+					type: 'sql', id: 'sql_race', query: 'SELECT 1 AS Value', serverUrl: 'race.example',
+					connectionIdHint: 'sql-race', targetSignature: sqlConnectionTargetSignature(sqlConnection),
+					database: 'Db', resultJson, resultArtifact,
+				}] },
+			});
+			mutate('sql_race');
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).not.toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['old']] }), 'sql_race', expect.anything(),
+			);
+			expect(pState.queryResultJsonByBoxId.sql_race).toBeUndefined();
+			expect(pState.resultArtifactByBoxId.sql_race).toBeUndefined();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -985,6 +1115,58 @@ describe('persistence round-trip', () => {
 		expect(pState.queryResultJsonByBoxId.query_cmp).toBeUndefined();
 	});
 
+	it('restores a warm SQL comparison placed before its source using exact artifacts', () => {
+		vi.useFakeTimers();
+		try {
+			const connection = {
+				id: 'sql-warm-order', name: 'Warm', dialect: 'mssql', serverUrl: 'warm-order.example',
+				database: 'Db', authType: 'sql-login', username: 'User',
+			};
+			testState.sqlConnections.push(connection);
+			const targetSignature = sqlConnectionTargetSignature(connection);
+			const sourceResult = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+			const comparisonResult = JSON.stringify({ columns: ['Value'], rows: [[2]], metadata: {} });
+			const descriptor = (boxId: string, query: string, revision: number) => ({
+				version: 1, artifactId: `result:${boxId}:${revision}`, sourceBoxId: boxId, revision, createdAt: 123 + revision,
+				producer: {
+					engine: 'sql', boxId, executionId: `${boxId}-execution`, query,
+					connectionId: connection.id, database: 'Db',
+				},
+				policy: { exposeToActiveContent: true, shareToClipboard: true },
+			});
+
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/sql-warm-order.sqlx',
+				state: { sections: [
+					{
+						type: 'query', id: 'query_warm_cmp', comparisonSourceBoxId: 'sql_warm_source',
+						query: 'SELECT 2 AS Value', resultJson: comparisonResult,
+						resultArtifact: descriptor('query_warm_cmp', 'SELECT 2 AS Value', 2),
+					},
+					{
+						type: 'sql', id: 'sql_warm_source', query: 'SELECT 1 AS Value', serverUrl: connection.serverUrl,
+						connectionIdHint: connection.id, targetSignature, database: 'Db',
+						resultJson: sourceResult, resultArtifact: descriptor('sql_warm_source', 'SELECT 1 AS Value', 1),
+					},
+				] },
+			});
+			flushDeferredRestoreTimers();
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [[1]] }), 'sql_warm_source',
+				expect.objectContaining({ artifactPublication: expect.anything() }),
+			);
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [[2]] }), 'query_warm_cmp',
+				expect.objectContaining({ artifactPublication: expect.anything() }),
+			);
+			expect(pState.resultArtifactByBoxId.query_warm_cmp).toEqual(descriptor('query_warm_cmp', 'SELECT 2 AS Value', 2));
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('restores a Kusto optimization comparison and its persisted result', () => {
 		vi.useFakeTimers();
 		try {
@@ -993,12 +1175,15 @@ describe('persistence round-trip', () => {
 			const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [[2]] });
 			const sourcePolicy = {
 				accountPartition: 'partition-a', leaveNoTraceRevision: 0,
-				exposeToActiveContent: true, sendToModel: true,
+				exposeToActiveContent: true, sendToModel: true, shareToClipboard: true,
 			};
 			const sourceArtifact = {
 				artifactId: 'result:query_source:3', sourceBoxId: 'query_source', revision: 3, createdAt: 100,
 				restored: true, columns: [{ name: 'Value' }], rows: [[1]], metadata: {},
-				producer: { engine: 'kusto', boxId: 'query_source', executionId: 'source-execution' },
+				producer: {
+					engine: 'kusto', boxId: 'query_source', executionId: 'source-execution',
+					query: 'T | count', connectionId: 'cluster-default', database: 'Db',
+				},
 				policy: sourcePolicy, lineage: [],
 			};
 			let sourceRendered = false;
@@ -1018,7 +1203,10 @@ describe('persistence round-trip', () => {
 			);
 			const comparisonDescriptor = {
 				version: 1, artifactId: 'result:query_cmp:4', sourceBoxId: 'query_cmp', revision: 4, createdAt: 200,
-				producer: { engine: 'kusto', boxId: 'query_cmp', executionId: 'comparison-execution' },
+				producer: {
+					engine: 'kusto', boxId: 'query_cmp', executionId: 'comparison-execution',
+					query: 'T | summarize count()', connectionId: 'cluster-default', database: 'Db',
+				},
 				policy: comparisonPublication.policy,
 				lineage: comparisonPublication.lineage,
 			};
@@ -1035,7 +1223,7 @@ describe('persistence round-trip', () => {
 			});
 			expect(publicationFromPersistedResultArtifact(comparisonDescriptor, 'query_cmp', {
 				accountPartition: 'partition-a', leaveNoTraceRevision: 0,
-				exposeToActiveContent: true, sendToModel: true,
+				exposeToActiveContent: true, sendToModel: true, shareToClipboard: true,
 				derivedLineage: comparisonPublication.lineage,
 				derivedSourcePolicies: comparisonPublication.policy?.sourcePolicies,
 			})).toBeDefined();
@@ -1117,6 +1305,7 @@ describe('persistence round-trip', () => {
 			const publication = vi.mocked(displayResultForBox).mock.calls
 				.find(([, boxId]) => boxId === 'query_legacy_exposure')?.[2]?.artifactPublication;
 			expect(publication?.policy?.sendToModel).toBeUndefined();
+			expect(publication?.policy?.shareToClipboard).toBeUndefined();
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1940,10 +2129,13 @@ describe('persistence round-trip', () => {
 			const resultArtifact = {
 				version: 1, artifactId: 'result:query_public_restore:9', sourceBoxId: 'query_public_restore',
 				revision: 9, createdAt: 1234,
-				producer: { engine: 'kusto', boxId: 'query_public_restore', executionId: 'execution-restored' },
+				producer: {
+					engine: 'kusto', boxId: 'query_public_restore', executionId: 'execution-restored',
+					query: 'print value=1', connectionId: 'public-default', database: 'Db',
+				},
 				policy: {
 					accountPartition: 'partition-a', leaveNoTraceRevision: 0,
-					exposeToActiveContent: true, sendToModel: true,
+					exposeToActiveContent: true, sendToModel: true, shareToClipboard: true,
 				},
 			};
 			handleDocumentDataMessage({
@@ -1991,7 +2183,7 @@ describe('persistence round-trip', () => {
 				producer: { engine: 'kusto', boxId: 'query_source', executionId: 'source-execution' },
 				policy: {
 					accountPartition: 'partition-a', leaveNoTraceRevision: 0,
-					exposeToActiveContent: true, sendToModel: true,
+					exposeToActiveContent: true, sendToModel: true, shareToClipboard: true,
 				},
 				lineage: [],
 			};
@@ -2005,10 +2197,10 @@ describe('persistence round-trip', () => {
 				producer: { engine: 'kusto', boxId: 'query_comparison', executionId: 'comparison-execution' },
 				policy: {
 					accountPartition: 'partition-a', leaveNoTraceRevision: 0,
-					exposeToActiveContent: true, sendToModel: true,
+					exposeToActiveContent: true, sendToModel: true, shareToClipboard: true,
 					sourcePolicies: [{
 						sourceArtifactId: 'result:unrelated:1', accountPartition: 'partition-a',
-						exposeToActiveContent: true, sendToModel: true,
+						exposeToActiveContent: true, sendToModel: true, shareToClipboard: true,
 					}],
 				},
 				lineage: [{ sourceArtifactId: 'result:unrelated:1', role: 'comparison-source' }],

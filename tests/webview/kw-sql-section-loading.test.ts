@@ -4,7 +4,14 @@ import '../../src/webview/components/kw-dropdown.js';
 import '../../src/webview/sections/kw-sql-section.js';
 import type { KwSqlSection } from '../../src/webview/sections/kw-sql-section.js';
 import { pState } from '../../src/webview/shared/persistence-state.js';
-import { getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
+import {
+	bindResultArtifactConsumer,
+	getBoundResultArtifact,
+	getCurrentResultArtifact,
+	getResultsState,
+	setResultsState,
+	unbindResultArtifactConsumer,
+} from '../../src/webview/core/results-state.js';
 import { __kustoOnQueryResult } from '../../src/webview/core/persistence.js';
 import { setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
 import { setConnections, setSqlConnections } from '../../src/webview/core/state.js';
@@ -115,6 +122,67 @@ describe('kw-sql-section loading states', () => {
 		expect(connectionChanged).not.toHaveBeenCalled();
 		expect(databaseChanged).not.toHaveBeenCalled();
 		expect(el.getCopilotOwnerToken()).toBe('owner-token');
+	});
+
+	it('preserves a bound result artifact across a real SQL rerun and error', async () => {
+		const el = createSection();
+		const connection = {
+			id: 'sql-rerun', name: 'Rerun SQL', dialect: 'mssql', serverUrl: 'rerun.example',
+			database: 'Db', authType: 'sql-login', username: 'User',
+		};
+		el.configureToolTarget(connection, 'Db', {
+			connectionId: connection.id, database: 'Db', targetSignature: sqlConnectionTargetSignature(connection),
+			principalFingerprint: 'principal-rerun', revocationGeneration: 0,
+		});
+		el.setStsReady(true, 'owner-token');
+		el.setQuery('SELECT 2 AS Value');
+		await el.updateComplete;
+		setResultsState(el.boxId, { columns: ['Value'], rows: [[1]], metadata: {} }, {
+			producer: {
+				engine: 'sql', boxId: el.boxId, executionId: 'execution-a', query: 'SELECT 1 AS Value',
+				connectionId: connection.id, database: 'Db',
+			},
+			policy: { shareToClipboard: true },
+		});
+		const artifactA = getCurrentResultArtifact(el.boxId)!;
+		pState.queryResultJsonByBoxId[el.boxId] = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+		expect(el.serialize().resultArtifact).toMatchObject({
+			artifactId: artifactA.artifactId,
+			producer: expect.objectContaining({
+				query: 'SELECT 1 AS Value', connectionId: connection.id, database: 'Db',
+			}),
+			policy: expect.objectContaining({ shareToClipboard: true }),
+		});
+		bindResultArtifactConsumer('share:clipboard:result', el.boxId, artifactA.artifactId);
+
+		expect((el as any)._runQuery()).toBe(true);
+		expect(getCurrentResultArtifact(el.boxId)).toBeNull();
+		expect(getBoundResultArtifact('share:clipboard:result', el.boxId)).toBe(artifactA);
+		el.displayError('rerun failed', undefined, (el as any)._activeQueryExecutionId);
+		expect(getBoundResultArtifact('share:clipboard:result', el.boxId)).toBe(artifactA);
+
+		unbindResultArtifactConsumer('share:clipboard:result');
+	});
+
+	it('preserves a bound result artifact across an external Copilot rerun and cancellation', () => {
+		const el = createSection();
+		setResultsState(el.boxId, { columns: ['Value'], rows: [[1]], metadata: {} }, {
+			producer: {
+				engine: 'sql', boxId: el.boxId, executionId: 'execution-a', query: 'SELECT 1',
+				connectionId: 'sql-a', database: 'Db',
+			},
+			policy: { shareToClipboard: true },
+		});
+		const artifactA = getCurrentResultArtifact(el.boxId)!;
+		bindResultArtifactConsumer('share:clipboard:result', el.boxId, artifactA.artifactId);
+
+		expect(el.setExternalQueryExecuting(true, 'copilot-b')).toBe(true);
+		expect(getCurrentResultArtifact(el.boxId)).toBeNull();
+		expect(getBoundResultArtifact('share:clipboard:result', el.boxId)).toBe(artifactA);
+		expect(el.setExternalQueryExecuting(false, 'copilot-b')).toBe(true);
+		expect(getBoundResultArtifact('share:clipboard:result', el.boxId)).toBe(artifactA);
+
+		unbindResultArtifactConsumer('share:clipboard:result');
 	});
 
 	it('preserves restored server intent until a matching SQL connection is available', async () => {
@@ -750,7 +818,8 @@ describe('kw-sql-section loading states', () => {
 			{ id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' },
 		], { lastConnectionId: 'sql-a' });
 		el.setDatabase('Db');
-		el.setQuery('SELECT 1 AS Value');
+		const exactQuery = '  SELECT 1 AS Value\n\n';
+		el.setQuery(exactQuery);
 		el.setStsReady(true, 'owner-token');
 		const postMessage = vi.fn();
 		const previousVsCode = window.vscode;
@@ -761,6 +830,7 @@ describe('kw-sql-section loading states', () => {
 			expect(payload).toMatchObject({
 				type: 'executeSqlQuery', boxId: 'sql_test1', sqlConnectionId: 'sql-a', database: 'Db', ownerToken: 'owner-token',
 			});
+			expect(payload.query).toBe(exactQuery);
 			expect(payload.executionId).toMatch(/^sql-run-/);
 			expect(payload.toolExecution).toBeUndefined();
 			expect(payload.expectedOwner).toBeUndefined();

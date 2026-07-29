@@ -78,6 +78,7 @@ const mocks = {
 	handleStsDiagnostics: vi.fn(),
 	displayCancelled: vi.fn(),
 	clearResultsState: vi.fn(),
+	retireResultsStateForRerun: vi.fn(),
 	setQueryExecuting: vi.fn(),
 	setResultsVisible: vi.fn(),
 	setConnections: vi.fn(),
@@ -102,6 +103,7 @@ const mocks = {
 	bindResultArtifactConsumer: vi.fn(),
 	getBoundResultArtifact: vi.fn(),
 	unbindResultArtifactConsumer: vi.fn(),
+	clearStoredQueryResult: vi.fn(),
 };
 
 vi.mock('../../src/webview/shared/persistence-state.js', () => ({
@@ -129,6 +131,7 @@ vi.mock('../../src/webview/core/results-state.js', () => ({
 	getResultsState: vi.fn(() => null),
 	getResultsStateRevision: vi.fn(() => 0),
 	clearResultsState: mocks.clearResultsState,
+	retireResultsStateForRerun: mocks.retireResultsStateForRerun,
 	displayResultForBox: vi.fn(),
 	displayResult: vi.fn(),
 	displayCancelled: mocks.displayCancelled,
@@ -232,6 +235,7 @@ vi.mock('../../src/webview/sections/query-execution.controller.js', async () => 
 
 vi.mock('../../src/webview/core/persistence.js', () => ({
 	schedulePersist: vi.fn(),
+	__kustoClearStoredQueryResult: mocks.clearStoredQueryResult,
 	handleDocumentDataMessage: mocks.handleDocumentDataMessage,
 	getKqlxState: vi.fn(() => ({ sections: [] })),
 	flushCompatibilityPersist: mocks.flushCompatibilityPersist,
@@ -1253,17 +1257,23 @@ describe('message-handler dispatch', () => {
 		const result = { columns: ['Value'], rows: [[1]], metadata: {} };
 		dispatchHostMessage({
 			type: 'queryResult', boxId: 'query_comparison', ownerToken: 'owner-current',
-			executionId: 'sql-comparison-1', result,
+			executionId: 'sql-comparison-1', query: 'select 1 as Value',
+			connectionId: 'sql-connection', database: 'SqlDb', result,
 		});
 		await Promise.resolve();
 
 		expect(resultsState.displayResultForBox).toHaveBeenCalledWith(result, 'query_comparison', {
-			label: 'Results', showExecutionTime: true, executionId: 'sql-comparison-1',
+			label: 'Results', showExecutionTime: true,
 			artifactPublication: expect.objectContaining({
-				producer: expect.objectContaining({ engine: 'sql', boxId: 'query_comparison' }),
-				policy: { exposeToActiveContent: true, sendToModel: true },
+				producer: expect.objectContaining({
+					engine: 'sql', boxId: 'query_comparison', query: 'select 1 as Value',
+					connectionId: 'sql-connection', database: 'SqlDb',
+				}),
+				policy: { exposeToActiveContent: true, sendToModel: true, shareToClipboard: true },
 			}),
 		});
+		expect(mocks.setQueryExecuting).toHaveBeenCalledWith('query_comparison', true);
+		expect(mocks.setQueryExecuting).toHaveBeenCalledWith('query_comparison', false);
 	});
 
 	it('routes one queryResult through rendering and the persistence owner once', async () => {
@@ -1395,7 +1405,7 @@ describe('message-handler dispatch', () => {
 			type: 'queryResult', engine: 'kusto', boxId: 'query_1', executionId: 'execution-new',
 			sectionInstanceId: 'instance-1', targetGeneration: 1,
 			connectionId: 'connection-1', database: 'Samples', producer: 'manual', reservationSequence: 2,
-			dispatch: kustoDispatch('current'),
+			dispatch: kustoDispatch('current'), query: 'StormEvents | take 10',
 			result: currentResult,
 		});
 
@@ -1404,10 +1414,11 @@ describe('message-handler dispatch', () => {
 			artifactPublication: expect.objectContaining({
 				producer: expect.objectContaining({
 					executionId: 'execution-new', reservationSequence: 2, dispatch: kustoDispatch('current'),
+					query: 'StormEvents | take 10', connectionId: 'connection-1', database: 'Samples',
 				}),
 				policy: expect.objectContaining({
 					accountPartition: 'partition-1', leaveNoTraceRevision: 0,
-					exposeToActiveContent: true, sendToModel: true,
+					exposeToActiveContent: true, sendToModel: true, shareToClipboard: true,
 				}),
 			}),
 		}));
@@ -4140,6 +4151,8 @@ describe('changedSections agent provenance', () => {
 		const { section: sourceSection } = createSectionWithShell('sql_source', { id: 'sql_source', type: 'sql', query: 'SELECT 1' });
 		const { section: comparisonSection } = createSectionWithShell('query_cmp', { id: 'query_cmp', type: 'query', query: 'SELECT 2' });
 		const setValue = vi.fn();
+		const clearComparisonResults = vi.fn();
+		(comparisonSection as any).clearResults = clearComparisonResults;
 		handlerState.queryEditors.sql_source = {
 			getModel: vi.fn(() => ({ getValue: vi.fn(() => 'SELECT 1') })),
 			getValue: vi.fn(() => 'SELECT 1'),
@@ -4156,6 +4169,9 @@ describe('changedSections agent provenance', () => {
 
 		expect(comparisonId).toBe('query_cmp');
 		expect(setValue).toHaveBeenCalledWith('SELECT 3');
+		expect(mocks.clearStoredQueryResult).toHaveBeenCalledWith('query_cmp');
+		expect(mocks.retireResultsStateForRerun).toHaveBeenCalledWith('query_cmp');
+		expect(clearComparisonResults).toHaveBeenCalledOnce();
 		expect(mocks.postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({
 			type: 'showInfo', message: expect.stringContaining('still updating'),
 		}));

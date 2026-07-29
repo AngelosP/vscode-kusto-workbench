@@ -129,6 +129,7 @@ export type CopyAdeLinkMessage = {
 
 export type ShareToClipboardMessage = {
 	type: 'shareToClipboard';
+	engine: 'kusto' | 'sql';
 	boxId: string;
 	includeTitle: boolean;
 	includeQuery: boolean;

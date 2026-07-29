@@ -21,11 +21,16 @@ import {
 import { getRunModeLabelText } from '../shared/comparisonUtils.js';
 import { __kustoHasFunctionDefinition } from '../monaco/prettify.js';
 import { postMessageToHost } from '../shared/webview-messages.js';
-import { getResultsState } from '../core/results-state.js';
+import {
+	bindResultArtifactConsumer,
+	getBoundResultArtifact,
+	unbindResultArtifactConsumer,
+} from '../core/results-state.js';
 import {
 	__kustoGetConnectionId,
 	__kustoGetDatabase,
 	__kustoGetSectionName,
+	__kustoGetSqlSectionElement,
 	closeAllFavoritesDropdowns,
 	fullyQualifyTablesInEditor,
 	sqlBoxes,
@@ -35,6 +40,11 @@ import { closeAllMenus } from '../core/dropdown.js';
 import { schedulePersist } from '../core/persistence.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { canonicalizePowerBiKustoClusterUrl } from '../../shared/kustoClusterUrls.js';
+import { clearActiveShareModal, closeShareModalForOwner, registerActiveShareModal } from '../shared/share-modal-runtime.js';
+import {
+	RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT,
+	shareClipboardArtifactConsumerId,
+} from '../../shared/resultArtifact.js';
 import {
 	activeQueryEditorBoxId,
 	qualifyTablesInFlightByBoxId,
@@ -63,6 +73,50 @@ export {
 	updateCaretDocsToggleButtons,
 	updateCopilotInlineCompletionsToggleButtons,
 } from '../core/editing-preferences.js';
+
+type ShareModalSnapshot = Readonly<{
+	engine: 'kusto' | 'sql';
+	boxId: string;
+	sectionName: string;
+	queryText: string;
+	connectionId: string;
+	database: string;
+}>;
+
+let shareModalSnapshot: ShareModalSnapshot | undefined;
+
+function setShareResultsAvailability(hasResults: boolean, totalRows = 0): void {
+	const resultsCheck = document.getElementById('shareModal_chk_results') as HTMLInputElement | null;
+	if (resultsCheck) {
+		resultsCheck.checked = hasResults;
+		resultsCheck.disabled = !hasResults;
+	}
+	const resultsLabel = document.getElementById('shareModal_label_results');
+	if (resultsLabel) resultsLabel.classList.toggle('share-modal-option-disabled', !hasResults);
+	const rowLimitInput = document.getElementById('shareModal_rowLimit') as HTMLInputElement | null;
+	if (rowLimitInput) {
+		rowLimitInput.max = String(totalRows || 200);
+		rowLimitInput.value = String(Math.min(totalRows || 10, 10));
+		rowLimitInput.disabled = !hasResults;
+	}
+	const rowLimitGroup = document.getElementById('shareModal_rowLimitGroup') as HTMLElement | null;
+	if (rowLimitGroup) rowLimitGroup.style.display = hasResults ? '' : 'none';
+	const resultsSubtitle = document.getElementById('shareModal_results_subtitle');
+	if (resultsSubtitle) resultsSubtitle.textContent = 'Formatted as a table';
+	const rowLimitTotal = document.getElementById('shareModal_rowLimitTotal');
+	if (rowLimitTotal) rowLimitTotal.textContent = 'of ' + totalRows.toLocaleString() + ' rows';
+}
+
+function releaseShareArtifactBinding(): void {
+	try { unbindResultArtifactConsumer(shareClipboardArtifactConsumerId()); } catch (e) { console.error('[kusto]', e); }
+}
+
+window.addEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, (event: Event) => {
+	const consumerIds = (event as CustomEvent<{ consumerIds?: unknown }>).detail?.consumerIds;
+	if (Array.isArray(consumerIds) && consumerIds.includes(shareClipboardArtifactConsumerId())) {
+		setShareResultsAvailability(false);
+	}
+});
 
 // Toolbar runtime logic previously in modules/queryBoxes-toolbar.ts
 
@@ -246,92 +300,127 @@ function copyQueryAsAdeLink(boxId: any): void {
 }
 
 export function __kustoOpenShareModal(boxId: any): void {
-	if (!boxId) return;
+	const id = String(boxId || '').trim();
+	if (!id) return;
 	const modal = document.getElementById('shareModal') as any;
 	if (!modal) return;
 
-	modal.dataset.boxId = boxId;
-	const sectionName = __kustoGetSectionName(boxId);
-	const titleEl = document.getElementById('shareModal_title') as any;
-	if (titleEl) titleEl.textContent = sectionName || 'Kusto Query';
-
-	const state = getResultsState(boxId);
-	const hasResults = !!(state && Array.isArray(state.columns) && state.columns.length > 0 && Array.isArray(state.rows) && state.rows.length > 0);
-	const totalRows = hasResults ? state.rows.length : 0;
-	const resultsCheck = document.getElementById('shareModal_chk_results') as any;
-	if (resultsCheck) {
-		resultsCheck.checked = hasResults;
-		resultsCheck.disabled = !hasResults;
-	}
-	const resultsLabel = document.getElementById('shareModal_label_results') as any;
-	if (resultsLabel) resultsLabel.classList.toggle('share-modal-option-disabled', !hasResults);
-
-	const rowLimitInput = document.getElementById('shareModal_rowLimit') as any;
-	if (rowLimitInput) {
-		rowLimitInput.max = String(totalRows || 200);
-		rowLimitInput.value = String(Math.min(totalRows || 10, 10));
-		rowLimitInput.disabled = !hasResults;
-	}
-	const rowLimitGroup = document.getElementById('shareModal_rowLimitGroup') as any;
-	if (rowLimitGroup) rowLimitGroup.style.display = hasResults ? '' : 'none';
-	const resultsSubtitle = document.getElementById('shareModal_results_subtitle') as any;
-	if (resultsSubtitle) resultsSubtitle.textContent = 'Formatted as a table';
-	const rowLimitTotal = document.getElementById('shareModal_rowLimitTotal') as any;
-	if (rowLimitTotal) rowLimitTotal.textContent = 'of ' + totalRows.toLocaleString() + ' rows';
-
+	releaseShareArtifactBinding();
+	modal.dataset.boxId = id;
+	const sqlSection = sqlBoxes.includes(id) ? __kustoGetSqlSectionElement(id) : null;
+	const comparisonMetadata = optimizationMetadataByBoxId[id];
+	const comparisonSourceId = comparisonMetadata?.isComparison
+		? String(comparisonMetadata.sourceBoxId || '').trim()
+		: '';
+	const sqlComparisonSource = comparisonSourceId ? __kustoGetSqlSectionElement(comparisonSourceId) : null;
+	let engine: 'kusto' | 'sql' = sqlSection || sqlComparisonSource ? 'sql' : 'kusto';
+	let sectionName = '';
+	let queryText = '';
 	let connectionId = '';
 	let database = '';
-	try {
-		connectionId = __kustoGetConnectionId(boxId);
-		database = __kustoGetDatabase(boxId);
-	} catch (e) { console.error('[kusto]', e); }
-	try {
-		const meta = optimizationMetadataByBoxId[boxId];
-		if (meta && meta.isComparison && meta.sourceBoxId) {
-			const src = String(meta.sourceBoxId || '');
-			const srcConnId = __kustoGetConnectionId(src);
-			const srcDb = __kustoGetDatabase(src);
-			if (srcConnId) connectionId = srcConnId;
-			if (srcDb) database = srcDb;
-		}
-	} catch (e) { console.error('[kusto]', e); }
+	if (sqlSection) {
+		try { sectionName = String(sqlSection.getName?.() || ''); } catch (e) { console.error('[kusto]', e); }
+		try { queryText = String(sqlSection.getQuery?.() || ''); } catch (e) { console.error('[kusto]', e); }
+		try { connectionId = String(sqlSection.getConnectionId?.() || ''); } catch (e) { console.error('[kusto]', e); }
+		try { database = String(sqlSection.getDatabase?.() || ''); } catch (e) { console.error('[kusto]', e); }
+	} else {
+		try { sectionName = String(__kustoGetSectionName(id) || ''); } catch (e) { console.error('[kusto]', e); }
+		try { queryText = String(queryEditors[id]?.getValue?.() || ''); } catch (e) { console.error('[kusto]', e); }
+		try {
+			connectionId = String(__kustoGetConnectionId(id) || '');
+			database = String(__kustoGetDatabase(id) || '');
+		} catch (e) { console.error('[kusto]', e); }
+		try {
+			if (comparisonSourceId) {
+				if (sqlComparisonSource) {
+					connectionId = String(sqlComparisonSource.getConnectionId?.() || connectionId);
+					database = String(sqlComparisonSource.getDatabase?.() || database);
+				} else {
+					connectionId = String(__kustoGetConnectionId(comparisonSourceId) || connectionId);
+					database = String(__kustoGetDatabase(comparisonSourceId) || database);
+				}
+			}
+		} catch (e) { console.error('[kusto]', e); }
+	}
+	shareModalSnapshot = { engine, boxId: id, sectionName, queryText, connectionId, database };
+	registerActiveShareModal(id, __kustoCloseShareModal);
 
-	const hasLink = !!(String(connectionId || '').trim() && String(database || '').trim());
+	const consumerId = shareClipboardArtifactConsumerId();
+	const artifactId = bindResultArtifactConsumer(consumerId, id);
+	const artifact = artifactId ? getBoundResultArtifact(consumerId, id) : null;
+	if (artifact?.producer?.engine === 'sql') engine = 'sql';
+	const artifactQuery = typeof artifact?.producer?.query === 'string' ? artifact.producer.query : '';
+	const artifactConnectionId = String(artifact?.producer?.connectionId || '').trim();
+	const artifactDatabase = String(artifact?.producer?.database || '').trim();
+	const hasResults = !!(artifact && artifact.policy?.shareToClipboard === true
+		&& artifactQuery.trim() && artifactConnectionId && artifactDatabase
+		&& artifact.columns.length > 0 && artifact.rows.length > 0);
+	if (hasResults) {
+		queryText = artifactQuery;
+		connectionId = artifactConnectionId;
+		database = artifactDatabase;
+		shareModalSnapshot = { engine, boxId: id, sectionName, queryText, connectionId, database };
+	}
+	shareModalSnapshot = { engine, boxId: id, sectionName, queryText, connectionId, database };
+	if (!hasResults) releaseShareArtifactBinding();
+	setShareResultsAvailability(hasResults, hasResults ? artifact!.rows.length : 0);
+	const titleEl = document.getElementById('shareModal_title') as HTMLElement | null;
+	if (titleEl) titleEl.textContent = sectionName || (engine === 'sql' ? 'SQL Query' : 'Kusto Query');
+
+	const hasLink = engine === 'kusto' && !!(String(connectionId || '').trim() && String(database || '').trim());
 	const linkCheck = document.getElementById('shareModal_chk_title') as any;
 	if (linkCheck) {
-		linkCheck.checked = hasLink;
-		linkCheck.disabled = !hasLink;
+		linkCheck.checked = engine === 'sql' || hasLink;
+		linkCheck.disabled = engine !== 'sql' && !hasLink;
 	}
 	const linkLabel = document.getElementById('shareModal_label_title') as any;
-	if (linkLabel) linkLabel.classList.toggle('share-modal-option-disabled', !hasLink);
+	if (linkLabel) linkLabel.classList.toggle('share-modal-option-disabled', engine !== 'sql' && !hasLink);
 
 	const linkSubtitle = document.getElementById('shareModal_link_subtitle') as any;
 	if (linkSubtitle) {
-		linkSubtitle.textContent = hasLink ? 'Includes a Direct link to query (Azure Data Explorer)' : 'Select a cluster and database to include a link';
+		linkSubtitle.textContent = engine === 'sql'
+			? 'Includes the section title'
+			: (hasLink ? 'Includes a Direct link to query (Azure Data Explorer)' : 'Select a cluster and database to include a link');
 	}
 
 	const queryCheck = document.getElementById('shareModal_chk_query') as any;
 	if (queryCheck) {
-		const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
-		const hasQuery = !!(editor && String(editor.getValue() || '').trim());
+		const hasQuery = !!queryText.trim();
 		queryCheck.checked = hasQuery;
 		queryCheck.disabled = !hasQuery;
 	}
 
+	modal.style.removeProperty('display');
 	modal.classList.add('visible');
 }
 
 export function __kustoCloseShareModal(event?: any): void {
 	if (event && event.target && event.target.id !== 'shareModal') return;
 	const modal = document.getElementById('shareModal') as any;
-	if (modal) modal.classList.remove('visible');
+	releaseShareArtifactBinding();
+	clearActiveShareModal(shareModalSnapshot?.boxId);
+	shareModalSnapshot = undefined;
+	if (modal) {
+		modal.classList.remove('visible');
+		modal.style.removeProperty('display');
+		delete modal.dataset.boxId;
+	}
+}
+
+export function __kustoCloseShareModalForOwner(boxId: unknown): void {
+	closeShareModalForOwner(boxId);
 }
 
 export function __kustoShareCopyToClipboard(): void {
 	const modal = document.getElementById('shareModal') as any;
 	if (!modal) return;
-	const boxId = modal.dataset.boxId;
+	const boxId = String(modal.dataset.boxId || '').trim();
 	if (!boxId) return;
+	const snapshot = shareModalSnapshot;
+	if (!snapshot || snapshot.boxId !== boxId) {
+		try { postMessageToHost({ type: 'showInfo', message: 'Reopen the Share dialog before copying.' }); } catch (e) { console.error('[kusto]', e); }
+		return;
+	}
 
 	const includeTitle = !!(document.getElementById('shareModal_chk_title') as any || {}).checked;
 	const includeQuery = !!(document.getElementById('shareModal_chk_query') as any || {}).checked;
@@ -341,38 +430,21 @@ export function __kustoShareCopyToClipboard(): void {
 		return;
 	}
 
-	let queryText = '';
-	try {
-		const editor = queryEditors[boxId] ? queryEditors[boxId] : null;
-		queryText = editor ? (editor.getValue() || '') : '';
-	} catch (e) { console.error('[kusto]', e); }
-
-	let connectionId = '';
-	let database = '';
-	try {
-		connectionId = __kustoGetConnectionId(boxId);
-		database = __kustoGetDatabase(boxId);
-	} catch (e) { console.error('[kusto]', e); }
-	try {
-		const meta = optimizationMetadataByBoxId[boxId];
-		if (meta && meta.isComparison && meta.sourceBoxId) {
-			const src = String(meta.sourceBoxId || '');
-			const srcConnId = __kustoGetConnectionId(src);
-			const srcDb = __kustoGetDatabase(src);
-			if (srcConnId) connectionId = srcConnId;
-			if (srcDb) database = srcDb;
-		}
-	} catch (e) { console.error('[kusto]', e); }
-
 	let columns: any[] = [];
 	let rowsData: any[] = [];
 	let totalRows = 0;
 	if (includeResults) {
+		const artifact = getBoundResultArtifact(shareClipboardArtifactConsumerId(), boxId);
+		if (!artifact || artifact.policy?.shareToClipboard !== true) {
+			setShareResultsAvailability(false);
+			try { postMessageToHost({ type: 'showInfo', message: 'Results are no longer available to share.' }); } catch (e) { console.error('[kusto]', e); }
+			return;
+		}
 		try {
-			const state = getResultsState(boxId);
-			if (state && Array.isArray(state.columns) && Array.isArray(state.rows)) {
-				columns = state.columns.map((c: any) => (c && typeof c === 'object' && c.name) ? String(c.name) : String(c ?? ''));
-				totalRows = state.rows.length;
+			columns = artifact.columns.map((column: any) => (
+				column && typeof column === 'object' && column.name ? String(column.name) : String(column ?? '')
+			));
+			totalRows = artifact.rows.length;
 				let rowLimit = 10;
 				try {
 					const rlInput = document.getElementById('shareModal_rowLimit') as any;
@@ -383,7 +455,7 @@ export function __kustoShareCopyToClipboard(): void {
 				} catch (e) { console.error('[kusto]', e); }
 				const maxRows = Math.min(totalRows, rowLimit);
 				for (let i = 0; i < maxRows; i++) {
-					const row = state.rows[i];
+					const row = artifact.rows[i];
 					if (!Array.isArray(row)) continue;
 					const vals: any[] = [];
 					for (let j = 0; j < row.length; j++) {
@@ -395,24 +467,21 @@ export function __kustoShareCopyToClipboard(): void {
 					}
 					rowsData.push(vals);
 				}
-			}
 		} catch (e) { console.error('[kusto]', e); }
 	}
-
-	let sectionName = '';
-	try { sectionName = __kustoGetSectionName(boxId); } catch (e) { console.error('[kusto]', e); }
 
 	try {
 		postMessageToHost({
 			type: 'shareToClipboard',
+			engine: snapshot.engine,
 			boxId,
 			includeTitle,
 			includeQuery,
 			includeResults,
-			sectionName,
-			queryText,
-			connectionId,
-			database,
+			sectionName: snapshot.sectionName,
+			queryText: snapshot.queryText,
+			connectionId: snapshot.connectionId,
+			database: snapshot.database,
 			columns,
 			rowsData,
 			totalRows

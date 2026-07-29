@@ -25,7 +25,9 @@ import {
 	getResultArtifact,
 	getResultsState,
 } from './results-state.js';
+import { shareClipboardArtifactConsumerId } from '../../shared/resultArtifact.js';
 import { displayComparisonSummary } from '../sections/query-execution.controller.js';
+import { __kustoCloseShareModal, __kustoOpenShareModal, __kustoShareCopyToClipboard } from '../sections/kw-query-toolbar.js';
 import { adoptCurrentStateAsCleanForTest, isPersistenceSuppressedForTest, suppressPersistenceForTest } from './persistence.js';
 
 type MonacoLike = {
@@ -5735,6 +5737,82 @@ async function e2eHtmlAssertArtifactBridgeOwnership(): Promise<string> {
 	return `HTML bridge pinned ${sourceA.artifactId}, rebound ${sourceB.artifactId}, then revoked`;
 }
 
+async function e2eShareAssertArtifactClipboard(): Promise<string> {
+	const sourceId = e2eLayoutAddSection('addQueryBox', {
+		id: 'query_e2e_share_artifact', initialQuery: 'print Value="editor-initial"',
+		name: 'Share Artifact', defaultResultsVisible: true,
+	});
+	await e2eLayoutWaitFor(() => !!document.getElementById(sourceId), 'share artifact source');
+	const editor = _win.queryEditors?.[sourceId];
+	if (!editor?.setValue) throw new Error('Share artifact editor is unavailable');
+	const columns = [{ name: 'Value', type: 'string' }];
+	const publish = async (executionId: string, query: string, rows: string[][], allowed: boolean) => {
+		await e2eSeedQueryResult(sourceId, { columns, rows, metadata: {} }, {
+			producer: {
+				engine: 'kusto', boxId: sourceId, executionId, query,
+				connectionId: 'e2e-share-connection', database: 'ShareDb', producer: 'manual',
+			},
+			policy: { shareToClipboard: allowed },
+		});
+		return getCurrentResultArtifact(sourceId);
+	};
+
+	e2eBeginHostMessageCapture();
+	try {
+		const artifactA = await publish('share-a', 'print Value="artifact-a"', [['artifact-a'], ['artifact-a-2']], true);
+		if (!artifactA) throw new Error('Share artifact A was not published');
+		editor.setValue('print Value="edited-before-open"');
+		__kustoOpenShareModal(sourceId);
+		if (getBoundResultArtifact(shareClipboardArtifactConsumerId(), sourceId)?.artifactId !== artifactA.artifactId) {
+			throw new Error('Share modal did not bind artifact A');
+		}
+		const artifactB = await publish('share-b', 'print Value="artifact-b"', [['artifact-b']], true);
+		if (!artifactB || artifactB.artifactId === artifactA.artifactId) throw new Error('Share artifact B did not advance');
+		const rowLimit = document.getElementById('shareModal_rowLimit') as HTMLInputElement | null;
+		if (rowLimit) rowLimit.value = '1';
+		__kustoShareCopyToClipboard();
+		const firstShare = e2eCapturedHostMessages().find(message => message?.type === 'shareToClipboard');
+		if (firstShare?.queryText !== 'print Value="artifact-a"'
+			|| firstShare?.connectionId !== 'e2e-share-connection'
+			|| firstShare?.database !== 'ShareDb'
+			|| JSON.stringify(firstShare?.rowsData) !== JSON.stringify([['artifact-a']])
+			|| firstShare?.totalRows !== 2) {
+			throw new Error(`First share did not retain artifact A: ${JSON.stringify(firstShare)}`);
+		}
+		if (getResultArtifact(artifactA.artifactId)) throw new Error('Artifact A was not pruned after share close');
+
+		(_win.__e2e as any).hostMessageCapture.messages = [];
+		__kustoOpenShareModal(sourceId);
+		__kustoShareCopyToClipboard();
+		const secondShare = e2eCapturedHostMessages().find(message => message?.type === 'shareToClipboard');
+		if (secondShare?.queryText !== 'print Value="artifact-b"'
+			|| JSON.stringify(secondShare?.rowsData) !== JSON.stringify([['artifact-b']])) {
+			throw new Error(`Reopened share did not bind artifact B: ${JSON.stringify(secondShare)}`);
+		}
+
+		await publish('share-denied', 'print Value="denied"', [['must-not-copy']], false);
+		__kustoOpenShareModal(sourceId);
+		const resultsCheck = document.getElementById('shareModal_chk_results') as HTMLInputElement | null;
+		if (resultsCheck?.checked || !resultsCheck?.disabled
+			|| getBoundResultArtifact(shareClipboardArtifactConsumerId(), sourceId)) {
+			throw new Error('Denied clipboard artifact remained selectable or bound');
+		}
+		__kustoCloseShareModal();
+
+		await publish('share-revoked', 'print Value="revoked"', [['revoked']], true);
+		__kustoOpenShareModal(sourceId);
+		clearResultsState(sourceId);
+		if (resultsCheck?.checked || !resultsCheck?.disabled
+			|| getBoundResultArtifact(shareClipboardArtifactConsumerId(), sourceId)) {
+			throw new Error('Revoked clipboard artifact remained selectable or bound');
+		}
+		return `clipboard pinned ${artifactA.artifactId}, reopened ${artifactB.artifactId}, denied and revoked safely`;
+	} finally {
+		__kustoCloseShareModal();
+		e2eRestoreHostMessageCapture();
+	}
+}
+
 function e2eLayoutDispatchUrlContent(boxId: string): void {
 	window.dispatchEvent(new MessageEvent('message', {
 		data: {
@@ -6474,6 +6552,9 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 	},
 	html: {
 		assertArtifactBridgeOwnership: e2eHtmlAssertArtifactBridgeOwnership,
+	},
+	share: {
+		assertArtifactClipboard: e2eShareAssertArtifactClipboard,
 	},
 	cursorStatus: {
 		beginCapture: e2eBeginHostMessageCapture,

@@ -92,6 +92,16 @@ export function setResultsState(boxId: any, state: any, publication: ResultArtif
 	try { __kustoNotifyResultsUpdated(boxId); } catch (e) { console.error('[kusto]', e); }
 }
 
+export function retireResultsStateForRerun(boxId: unknown): void {
+	const id = String(boxId || '').trim();
+	if (!id) return;
+	_resultArtifacts.clearCurrent(id);
+	delete _resultsByBoxId[id];
+	_resultsRevisionByBoxId[id] = (_resultsRevisionByBoxId[id] || 0) + 1;
+	if (currentResult?.boxId === id) currentResult = null;
+	try { __kustoNotifyResultsUpdated(id); } catch (e) { console.error('[kusto]', e); }
+}
+
 export function clearResultsState(boxId: any) {
 	if (!boxId) return;
 	const revocation = _resultArtifacts.revokeSource(String(boxId));

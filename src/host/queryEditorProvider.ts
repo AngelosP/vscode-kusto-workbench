@@ -1363,7 +1363,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	): Promise<void> {
 		try {
 			const {
-				includeTitle, includeQuery, includeResults,
+				engine, includeTitle, includeQuery, includeResults,
 				sectionName, queryText, connectionId, database,
 				columns, rowsData, totalRows
 			} = message;
@@ -1382,7 +1382,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				const trimmedQuery = String(queryText || '').trim();
 				const trimmedConnectionId = String(connectionId || '').trim();
 				const trimmedDatabase = String(database || '').trim();
-				if (trimmedQuery && trimmedConnectionId && trimmedDatabase) {
+				if (engine !== 'sql' && trimmedQuery && trimmedConnectionId && trimmedDatabase) {
 					const connection = this.connection.findConnection(trimmedConnectionId);
 					if (connection) {
 						const adxClusterPath = exportAzureDataExplorerClusterPath(String(connection.clusterUrl || '').trim());
@@ -1404,7 +1404,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 			// 1. Title
 			if (includeTitle) {
-				const title = sectionName || 'Kusto Query';
+				const title = sectionName || (engine === 'sql' ? 'SQL Query' : 'Kusto Query');
 				if (adeUrl) {
 					htmlParts.push(`<b>${escHtml(title)}</b><br><a href="${escHtml(adeUrl)}">Direct link to query</a>`);
 					textParts.push(`${title}\nDirect link to query: ${adeUrl}`);
@@ -1420,7 +1420,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				if (q) {
 					htmlParts.push(
 						`<b style="font-size:13px">Query</b>` +
-						`<pre style="background:#1e1e1e;color:#d4d4d4;padding:12px 16px;border-radius:6px;font-family:'Cascadia Code','Consolas','Courier New',monospace;font-size:13px;overflow-x:auto;white-space:pre;border:1px solid #333;margin-top:4px"><code class="kql">${escHtml(q)}</code></pre>`
+						`<pre style="background:#1e1e1e;color:#d4d4d4;padding:12px 16px;border-radius:6px;font-family:'Cascadia Code','Consolas','Courier New',monospace;font-size:13px;overflow-x:auto;white-space:pre;border:1px solid #333;margin-top:4px"><code class="${engine === 'sql' ? 'sql' : 'kql'}">${escHtml(q)}</code></pre>`
 					);
 					textParts.push('Query\n' + q);
 				}
@@ -2712,6 +2712,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			...target,
 			executionId: String(options.executionId || '').trim(),
 			producer: options.producer,
+			query: options.query,
 			...(options.comparisonRun ? { comparisonRun: options.comparisonRun } : {}),
 			...(options.copilotRequestId ? { copilotRequestId: options.copilotRequestId } : {}),
 		};
@@ -3577,7 +3578,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				if (protectedExecution) await this.assertSqlResultOwnerProtection(boxId, resultOwner, true);
 				else await this.assertSqlResultOwnerAllowed(boxId, resultOwner);
 				if (!isStillActiveRun()) return;
-				const resultMessage = { type: 'queryResult', result, boxId, ownerToken: issuedOwner.token, executionId };
+				const resultMessage = {
+					type: 'queryResult', result, boxId, ownerToken: issuedOwner.token, executionId,
+					query: message.query, connectionId: resultOwner.connectionId, database: resultOwner.database,
+				};
 				if (protectedExecution) {
 					await this.postSqlOwnerMessageProtection(boxId, resultOwner, true, resultMessage, isStillActiveRun);
 				} else {

@@ -37,6 +37,8 @@ import {
 	bindResultArtifactConsumer,
 	getBoundResultArtifact,
 	rebindResultArtifactConsumer,
+	retireResultsStateForRerun,
+	unbindResultArtifactConsumer,
 	clearResultsState,
 	setResultsState,
 	resetCurrentResult,
@@ -188,6 +190,23 @@ describe('results-state displayResultForBox', () => {
 		const firstRevision = getResultsStateRevision(id);
 		setResultsState(id, { columns: [], rows: [['next']] });
 		expect(getResultsStateRevision(id)).toBe(firstRevision + 1);
+	});
+
+	it('retires mutable/current state for rerun while preserving only bound artifacts', () => {
+		const id = 'sql_rerun_artifact';
+		setResultsState(id, { columns: ['Value'], rows: [['a']], metadata: {} }, {
+			producer: { engine: 'sql', boxId: id, executionId: 'execution-a' },
+		});
+		const artifactA = getCurrentResultArtifact(id)!;
+		bindResultArtifactConsumer('share:clipboard:result', id, artifactA.artifactId);
+
+		retireResultsStateForRerun(id);
+
+		expect(getResultsState(id)).toBeNull();
+		expect(getCurrentResultArtifact(id)).toBeNull();
+		expect(getBoundResultArtifact('share:clipboard:result', id)).toBe(artifactA);
+		unbindResultArtifactConsumer('share:clipboard:result');
+		expect(getBoundResultArtifact('share:clipboard:result', id)).toBeNull();
 	});
 
 	it('keeps a derived consumer on its immutable revision until explicit rebind', () => {

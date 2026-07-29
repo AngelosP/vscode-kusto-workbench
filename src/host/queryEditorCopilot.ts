@@ -3206,14 +3206,27 @@ Completion:`;
 		const startCopilotSqlExecution = async <T extends { cancel: () => void }>(
 			targetBoxId: string,
 			start: () => T,
+			publishedQuery?: string,
 		) => {
 			const executionId = `sql-copilot-${randomUUID()}`;
 			const preflight = this.host.sqlExecutionBroker.reservePreflight(targetBoxId, executionId);
 			let lease;
+			let publishedStart = false;
 			try {
 				await assertActiveOwner(targetBoxId);
 				const admission = this.host.sqlExecutionBroker.promotePreflight(preflight);
 				if (!admission) throw new Error('SQL Copilot write-query canceled');
+				if (publishedQuery !== undefined) {
+					await dispatchActiveOwner(targetBoxId, () => this.postRequiredMessage({
+						type: 'copilotWriteQueryExecuting', boxId: targetBoxId, executing: true,
+						executionId, ownerToken, query: publishedQuery,
+					}));
+					publishedStart = true;
+					await assertActiveOwner(targetBoxId);
+					if (!this.host.sqlExecutionBroker.isPendingCurrent(admission)) {
+						throw new Error('SQL Copilot write-query canceled');
+					}
+				}
 				lease = this.host.sqlExecutionBroker.start(admission, () => {
 					const started = start();
 					const originalCancel = started.cancel;
@@ -3222,6 +3235,15 @@ Completion:`;
 				});
 			} catch (error) {
 				this.host.sqlExecutionBroker.clearPreflight(preflight);
+				this.host.sqlExecutionBroker.cancelExpected(targetBoxId, executionId, false);
+				if (publishedStart) {
+					try {
+						await Promise.resolve(this.host.postMessage({
+							type: 'copilotWriteQueryExecuting', boxId: targetBoxId, executing: false,
+							executionId, ownerToken,
+						}));
+					} catch { /* best effort */ }
+				}
 				throw error;
 			}
 			const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, lease.cancel, undefined, targetBoxId);
@@ -3622,6 +3644,7 @@ Completion:`;
 								const admitted = await startCopilotSqlExecution(
 									targetBoxId,
 									() => sqlClient.executeQueryCancelable(connection, database, queryText),
+									queryText,
 								);
 								let retained = false;
 								try {
@@ -3636,7 +3659,8 @@ Completion:`;
 										if (!admitted.isCurrent() || !isActive() || cts.token.isCancellationRequested) throw new Error('SQL Copilot write-query canceled');
 										await this.postRequiredMessage({
 											type: 'queryResult', result, boxId: targetBoxId,
-											executionId: admitted.executionId, ownerToken,
+											executionId: admitted.executionId, ownerToken, query: queryText,
+											connectionId: requestOwner.connectionId, database: requestOwner.database,
 										});
 										if (!admitted.isCurrent() || !isActive() || cts.token.isCancellationRequested) throw new Error('SQL Copilot write-query canceled');
 									});
@@ -3715,6 +3739,7 @@ Completion:`;
 							const admitted = await startCopilotSqlExecution(
 								boxId,
 								() => sqlClient.executeQueryCancelable(connection, database, query),
+								query,
 							);
 							let executionSettled = false;
 							const settleExecution = () => {
@@ -3727,10 +3752,6 @@ Completion:`;
 							const runningRequest = this.runningCopilotWriteQueryByBoxId.get(boxId);
 							const sqlFinalRun = { isCurrent: admitted.isCurrent, settleExecution };
 							if (runningRequest?.cts === cts && runningRequest.seq === seq) runningRequest.sqlFinalRun = sqlFinalRun;
-							void dispatchActiveOwner(boxId, () => {
-								if (!admitted.isCurrent()) return;
-								try { postSqlMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: true, executionId: admitted.executionId }); } catch { /* ignore */ }
-							}).catch(() => undefined);
 							const { promise } = admitted.execution;
 							try {
 								const result = await promise;
@@ -3743,7 +3764,10 @@ Completion:`;
 										this.appendToolCallHistoryResult(history, boxId, tc.callId, toolName, { query }, 'Query ran successfully.');
 										this.copilotConversationHistoryByBoxId.set(boxId, history);
 										if (requestIncludesGeneralRules) this.copilotGeneralRulesSentPerBox.add(boxId);
-										postSqlMessage({ type: 'queryResult', result, boxId, executionId: admitted.executionId });
+										postSqlMessage({
+											type: 'queryResult', result, boxId, executionId: admitted.executionId,
+											query, connectionId: requestOwner.connectionId, database: requestOwner.database,
+										});
 										postSqlMessage({ type: 'ensureResultsVisible', boxId });
 										settleExecution();
 										postSqlMessage({

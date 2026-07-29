@@ -23,7 +23,7 @@ import { schedulePersist, __kustoClearStoredQueryResult } from '../core/persiste
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
 import { registerStsProviders, registerStsEditorModel, unregisterStsEditorModel } from '../monaco/sql-sts-providers.js';
 import { autoTriggerAutocompleteEnabled, setActiveMonacoEditor, queryEditorBoxByModelUri, queryEditors } from '../core/state.js';
-import { getRunMode, setRunMode } from './kw-query-toolbar.js';
+import { __kustoOpenShareModal, getRunMode, setRunMode } from './kw-query-toolbar.js';
 import { getRunModeLabelText } from '../shared/comparisonUtils.js';
 import { getCurrentMonacoThemeName } from '../monaco/theme.js';
 import { prettifySql } from '../monaco/sql-prettify.js';
@@ -33,8 +33,9 @@ import type { SqlConnectionFormSubmitDetail } from '../components/kw-sql-connect
 import '../components/kw-sql-connection-form.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
-import { clearResultsState } from '../core/results-state.js';
+import { clearResultsState, getCurrentResultArtifact, retireResultsStateForRerun } from '../core/results-state.js';
 import { normalizeSqlConnectionTargetSignature, sqlConnectionTargetSignature, sqlConnectionTargetSignatureMatches } from '../../shared/sqlConnectionIdentity.js';
+import { toPersistedResultArtifact, type PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
 import { SqlSectionSessionController, type SqlToolRunResult } from './sql-section-session.controller.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -56,6 +57,7 @@ export interface SqlSectionData {
 	resultsVisible?: boolean;
 	favoritesMode?: boolean;
 	resultJson?: string;
+	resultArtifact?: PersistedResultArtifactV1;
 	runMode?: string;
 	editorHeightPx?: number;
 	resultsHeightPx?: number;
@@ -412,13 +414,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	// ── Share ─────────────────────────────────────────────────────────────────
 
 	private _onShareClick(): void {
-		try {
-			const modal = document.getElementById('shareModal') as any;
-			if (modal) {
-				modal.dataset.boxId = this.boxId;
-				modal.style.display = 'flex';
-			}
-		} catch (e) { console.error('[kusto]', e); }
+		try { __kustoOpenShareModal(this.boxId); } catch (e) { console.error('[kusto]', e); }
 	}
 
 	// ── Missing connections banner ────────────────────────────────────────────
@@ -1397,6 +1393,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			const rj = pState.queryResultJsonByBoxId?.[this.boxId];
 			if (rj && this.canPersistResults()) {
 				data.resultJson = String(rj);
+				const resultArtifact = toPersistedResultArtifact(getCurrentResultArtifact(this.boxId))
+					|| pState.resultArtifactByBoxId?.[this.boxId];
+				if (resultArtifact) data.resultArtifact = resultArtifact;
 				if (connection?.principalFingerprint) data.principalFingerprint = connection.principalFingerprint;
 				data.revocationGeneration = connection?.revocationGeneration ?? 0;
 			}
@@ -2235,7 +2234,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	public displayError(errorOrModel: unknown, _clientActivityId?: string, executionId?: string): void {
 		this._executing = false;
 		this._stopElapsedTimer();
-		this._clearResultData();
+		this._retireResultDataForRerun();
 
 		// Extract a display string from the error. The error-renderer may pass a
 		// pre-built ErrorUxModel ({ kind, message?, text?, pretty? }) or a raw string.
@@ -2289,6 +2288,12 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	private _clearResultData(): void {
 		try { __kustoClearStoredQueryResult(this.boxId); } catch (e) { console.error('[kusto]', e); }
 		try { clearResultsState(this.boxId); } catch (e) { console.error('[kusto]', e); }
+		this.clearResults();
+	}
+
+	private _retireResultDataForRerun(): void {
+		try { __kustoClearStoredQueryResult(this.boxId); } catch (e) { console.error('[kusto]', e); }
+		try { retireResultsStateForRerun(this.boxId); } catch (e) { console.error('[kusto]', e); }
 		this.clearResults();
 	}
 
@@ -2371,6 +2376,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (executing) {
 			if (!id) return false;
 			if (!this.sqlSession.beginExecution(id)) return false;
+			this._retireResultDataForRerun();
 			this._executing = true;
 			this._startElapsedTimer();
 			this._syncActionBar();
@@ -2414,8 +2420,8 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			this._syncActionBar();
 			return false;
 		}
-		const query = this.sqlSession.pendingToolQuery || this._getQueryText().trim();
-		if (!query) {
+		const query = this.sqlSession.pendingToolQuery || this._getQueryText();
+		if (!query.trim()) {
 			return false;
 		}
 		this._executing = true;
@@ -2424,7 +2430,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		this._activeQueryExecutionId = executionId;
 		this._lastError = '';
 		this._startElapsedTimer();
-		this._clearResultData();
+		this._retireResultDataForRerun();
 		postMessageToHost({
 			type: 'executeSqlQuery',
 			query,

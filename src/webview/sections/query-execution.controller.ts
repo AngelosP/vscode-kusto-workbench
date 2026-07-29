@@ -25,7 +25,7 @@ import {
 } from '../shared/comparisonUtils';
 import { escapeHtml } from '../core/utils';
 import { pState } from '../shared/persistence-state';
-import { schedulePersist } from '../core/persistence';
+import { __kustoClearStoredQueryResult, schedulePersist } from '../core/persistence';
 import {
 	__kustoGetConnectionId, __kustoGetDatabase, __kustoGetQuerySectionElement,
 	__kustoGetSqlSectionElement,
@@ -35,7 +35,7 @@ import {
 	__kustoLog,
 } from '../core/section-factory';
 import { getRunMode, setRunMode, closeRunMenu, functionRunDialogOpenByBoxId } from './kw-query-toolbar';
-import { bindResultArtifactConsumer, clearResultsState, getCurrentResultArtifact, getResultArtifact, getResultArtifactByProducerExecution, getResultsState, unbindResultArtifactConsumer } from '../core/results-state';
+import { bindResultArtifactConsumer, clearResultsState, getCurrentResultArtifact, getResultArtifact, getResultArtifactByProducerExecution, getResultsState, retireResultsStateForRerun, unbindResultArtifactConsumer } from '../core/results-state';
 import {
 	optimizationMetadataByBoxId, queryEditors, pendingFavoriteSelectionByBoxId,
 	queryExecutionTimers, clearKustoEditorSchema, queryBoxes, favoritesModeByBoxId,
@@ -1344,6 +1344,12 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 				const beforeSignature = _win.__kustoGetSectionSerializedSignature?.(existingComparisonBoxId);
 				let nextComparisonQuery = overrideText.trim() ? overrideText : query;
 				try { if (typeof _win.__kustoPrettifyKustoText === 'function') nextComparisonQuery = _win.__kustoPrettifyKustoText(nextComparisonQuery); } catch (e) { console.error('[kusto]', e); }
+				const previousComparisonQuery = String(comparisonEditor.getValue?.() || '');
+				if (previousComparisonQuery !== nextComparisonQuery) {
+					try { __kustoClearStoredQueryResult(existingComparisonBoxId); } catch (e) { console.error('[kusto]', e); }
+					try { retireResultsStateForRerun(existingComparisonBoxId); } catch (e) { console.error('[kusto]', e); }
+					try { comparisonBoxEl.clearResults?.(); } catch (e) { console.error('[kusto]', e); }
+				}
 				try { comparisonEditor.setValue(nextComparisonQuery); } catch (e) { console.error('[kusto]', e); }
 				try {
 					if (typeof optimizationMetadataByBoxId === 'object' && optimizationMetadataByBoxId) {

@@ -357,8 +357,8 @@ export class SqlSectionSessionController implements ReactiveController, SqlSecti
 
 	capturePendingToolQuery(executionId: string, query: string): boolean {
 		if (!this.pendingToolRun || this.pendingToolRun.executionId !== executionId) return false;
-		const text = String(query || '').trim();
-		if (!text) return false;
+		const text = String(query || '');
+		if (!text.trim()) return false;
 		this.pendingToolRun.query = text;
 		return true;
 	}

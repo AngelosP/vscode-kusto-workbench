@@ -7,6 +7,7 @@ export type ResultArtifactProducer = Readonly<{
 	reservationSequence?: number;
 	connectionId?: string;
 	database?: string;
+	query?: string;
 	producer?: string;
 	dispatch?: Readonly<Record<string, unknown>>;
 }>;
@@ -19,6 +20,7 @@ export type ResultArtifactPolicyStamp = Readonly<{
 	connectionIdentityKey?: string;
 	exposeToActiveContent?: boolean;
 	sendToModel?: boolean;
+	shareToClipboard?: boolean;
 }>;
 
 export type ResultArtifactSourcePolicy = Readonly<ResultArtifactPolicyStamp & {
@@ -86,6 +88,10 @@ export function modelResultArtifactConsumerId(requestId: unknown): string {
 	return `model:${String(requestId || '').trim()}:result`;
 }
 
+export function shareClipboardArtifactConsumerId(): string {
+	return 'share:clipboard:result';
+}
+
 export function comparisonSourceArtifactConsumerId(comparisonBoxId: unknown): string {
 	return `comparison:${String(comparisonBoxId || '').trim()}:source`;
 }
@@ -136,6 +142,7 @@ function policyStamp(policy: ResultArtifactPolicy | ResultArtifactSourcePolicy |
 		'connectionIdentityKey',
 		'exposeToActiveContent',
 		'sendToModel',
+		'shareToClipboard',
 	] as const) {
 		if (policy[key] !== undefined) stamp[key] = policy[key];
 	}
@@ -180,11 +187,14 @@ export function createDerivedResultArtifactPublication(
 		&& sourcePolicies.every(sourcePolicy => sourcePolicy.exposeToActiveContent === true);
 	const allSourcesAllowModelUse = sourcePolicies.length > 0
 		&& sourcePolicies.every(sourcePolicy => sourcePolicy.sendToModel === true);
+	const allSourcesAllowClipboardShare = sourcePolicies.length > 0
+		&& sourcePolicies.every(sourcePolicy => sourcePolicy.shareToClipboard === true);
 	const policy = sourcePolicies.length
 		? deepFreeze({
 			...commonStamp,
 			...(allSourcesAllowActiveContent ? { exposeToActiveContent: true } : {}),
 			...(allSourcesAllowModelUse ? { sendToModel: true } : {}),
+			...(allSourcesAllowClipboardShare ? { shareToClipboard: true } : {}),
 			sourcePolicies: deepFreeze(sourcePolicies),
 		})
 		: undefined;
@@ -214,7 +224,7 @@ function parsePersistedPolicyStamp(value: Record<string, unknown>): ResultArtifa
 		if (!Number.isSafeInteger(number) || number < 0) return null;
 		stamp[key] = number;
 	}
-	for (const key of ['exposeToActiveContent', 'sendToModel'] as const) {
+	for (const key of ['exposeToActiveContent', 'sendToModel', 'shareToClipboard'] as const) {
 		if (value[key] === undefined) continue;
 		if (typeof value[key] !== 'boolean') return null;
 		stamp[key] = value[key];
@@ -264,6 +274,13 @@ export function publicationFromPersistedResultArtifact(
 		leaveNoTraceRevision?: unknown;
 		exposeToActiveContent?: unknown;
 		sendToModel?: unknown;
+		shareToClipboard?: unknown;
+		expectedProducer?: Readonly<{
+			engine?: unknown;
+			query?: unknown;
+			connectionId?: unknown;
+			database?: unknown;
+		}>;
 		derivedLineage?: readonly ResultArtifactLineage[];
 		derivedSourcePolicies?: readonly ResultArtifactSourcePolicy[];
 	}>,
@@ -279,6 +296,19 @@ export function publicationFromPersistedResultArtifact(
 		|| !Number.isFinite(createdAt) || createdAt < 0) return undefined;
 	const producer = isRecord(value.producer) ? value.producer as ResultArtifactProducer : undefined;
 	if (producer && String(producer.boxId || '').trim() !== expectedSource) return undefined;
+	if (expectedPolicy?.expectedProducer) {
+		if (!producer) return undefined;
+		const expectedProducer = expectedPolicy.expectedProducer;
+		if (expectedProducer.engine !== undefined
+			&& String(producer.engine || '').trim() !== String(expectedProducer.engine || '').trim()) return undefined;
+		if (expectedProducer.query !== undefined
+			&& String(producer.query ?? '') !== String(expectedProducer.query ?? '')) return undefined;
+		if (expectedProducer.connectionId !== undefined
+			&& String(producer.connectionId || '').trim() !== String(expectedProducer.connectionId || '').trim()) return undefined;
+		if (expectedProducer.database !== undefined
+			&& String(producer.database || '').trim().toLowerCase()
+				!== String(expectedProducer.database || '').trim().toLowerCase()) return undefined;
+	}
 	let lineage: ResultArtifactLineage[] | undefined;
 	if (value.lineage !== undefined) {
 		if (!Array.isArray(value.lineage) || value.lineage.length > 1024) return undefined;
@@ -324,20 +354,28 @@ export function publicationFromPersistedResultArtifact(
 			&& policy.exposeToActiveContent !== expectedPolicy.exposeToActiveContent) return undefined;
 		if (expectedPolicy?.sendToModel !== undefined
 			&& policy.sendToModel !== expectedPolicy.sendToModel) return undefined;
+		if (expectedPolicy?.shareToClipboard !== undefined
+			&& policy.shareToClipboard !== expectedPolicy.shareToClipboard) return undefined;
 		if (policy.exposeToActiveContent === true && expectedPolicy?.exposeToActiveContent !== true) return undefined;
 		if (policy.sendToModel === true && expectedPolicy?.sendToModel !== true) return undefined;
+		if (policy.shareToClipboard === true && expectedPolicy?.shareToClipboard !== true) return undefined;
 		if (policy.sourcePolicies?.length) {
 			if (!lineage?.length) return undefined;
 			if (policy.exposeToActiveContent === true
 				&& !policy.sourcePolicies.every(source => source.exposeToActiveContent === true)) return undefined;
 			if (policy.sendToModel === true
 				&& !policy.sourcePolicies.every(source => source.sendToModel === true)) return undefined;
+			if (policy.shareToClipboard === true
+				&& !policy.sourcePolicies.every(source => source.shareToClipboard === true)) return undefined;
 			if (policy.sourcePolicies.some(source => source.exposeToActiveContent === true)
 				&& expectedPolicy?.exposeToActiveContent !== true) return undefined;
 			if (policy.sourcePolicies.some(source => source.sendToModel === true)
 				&& expectedPolicy?.sendToModel !== true) return undefined;
+			if (policy.sourcePolicies.some(source => source.shareToClipboard === true)
+				&& expectedPolicy?.shareToClipboard !== true) return undefined;
 		} else if (lineage?.length
-			&& (policy.exposeToActiveContent === true || policy.sendToModel === true)) {
+			&& (policy.exposeToActiveContent === true || policy.sendToModel === true
+				|| policy.shareToClipboard === true)) {
 			return undefined;
 		}
 	}

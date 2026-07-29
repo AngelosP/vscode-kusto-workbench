@@ -83,6 +83,17 @@ describe('ResultArtifactStore', () => {
 			accountPartition: 'partition-a', leaveNoTraceRevision: 4,
 			exposeToActiveContent: true, sendToModel: true,
 		})).toBeUndefined();
+		expect(publicationFromPersistedResultArtifact({
+			...base,
+			producer: { boxId: 'query_1', executionId: 'execution-1' },
+			policy: {
+				accountPartition: 'partition-a', leaveNoTraceRevision: 4,
+				exposeToActiveContent: true, sendToModel: true,
+			},
+		}, 'query_1', {
+			accountPartition: 'partition-a', leaveNoTraceRevision: 4,
+			exposeToActiveContent: true, sendToModel: true, shareToClipboard: true,
+		})).toBeUndefined();
 	});
 
 	it('restores the saved identity after the same runtime previously advanced farther', () => {
@@ -258,6 +269,34 @@ describe('ResultArtifactStore', () => {
 		expect(mixed.policy?.sendToModel).toBeUndefined();
 	});
 
+	it('allows clipboard sharing only when every leaf source allows it', () => {
+		const store = new ResultArtifactStore();
+		const allowed = store.publish('query_share_allowed', { columns: [], rows: [[1]], metadata: {} }, {
+			policy: { shareToClipboard: true },
+		})!;
+		const denied = store.publish('query_share_denied', { columns: [], rows: [[2]], metadata: {} }, {
+			policy: { shareToClipboard: false },
+		})!;
+		const missing = store.publish('query_share_missing', { columns: [], rows: [[3]], metadata: {} })!;
+
+		const permitted = createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_share_allowed' },
+			[{ artifact: allowed }],
+		);
+		const deniedMixed = createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_share_denied' },
+			[{ artifact: allowed }, { artifact: denied }],
+		);
+		const missingMixed = createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_share_missing' },
+			[{ artifact: allowed }, { artifact: missing }],
+		);
+
+		expect(permitted.policy?.shareToClipboard).toBe(true);
+		expect(deniedMixed.policy?.shareToClipboard).toBeUndefined();
+		expect(missingMixed.policy?.shareToClipboard).toBeUndefined();
+	});
+
 	it('denies derived model use when any direct or nested leaf omits permission', () => {
 		const store = new ResultArtifactStore();
 		const allowed = store.publish('query_model_allowed', { columns: [], rows: [[1]], metadata: {} }, {
@@ -360,5 +399,32 @@ describe('ResultArtifactStore', () => {
 		expect(publicationFromPersistedResultArtifact({
 			...descriptor, lineage: undefined, policy: { sendToModel: true },
 		}, 'query_comparison', expectedAdmission)).toBeUndefined();
+	});
+
+	it('accepts clipboard capability only when persisted producer provenance matches local admission', () => {
+		const descriptor = {
+			version: 1, artifactId: 'result:sql_1:3', sourceBoxId: 'sql_1', revision: 3, createdAt: 123,
+			producer: {
+				engine: 'sql', boxId: 'sql_1', executionId: 'sql-execution',
+				query: 'select 1 as Value', connectionId: 'sql-connection', database: 'SqlDb',
+			},
+			policy: { shareToClipboard: true },
+		};
+		const expectedAdmission = {
+			shareToClipboard: true,
+			expectedProducer: {
+				engine: 'sql', query: 'select 1 as Value', connectionId: 'sql-connection', database: 'SqlDb',
+			},
+		};
+
+		expect(publicationFromPersistedResultArtifact(descriptor, 'sql_1', expectedAdmission)).toBeDefined();
+		expect(publicationFromPersistedResultArtifact({
+			...descriptor,
+			producer: { ...descriptor.producer, query: 'select forged=1' },
+		}, 'sql_1', expectedAdmission)).toBeUndefined();
+		expect(publicationFromPersistedResultArtifact({
+			...descriptor,
+			producer: { ...descriptor.producer, connectionId: 'other-connection' },
+		}, 'sql_1', expectedAdmission)).toBeUndefined();
 	});
 });

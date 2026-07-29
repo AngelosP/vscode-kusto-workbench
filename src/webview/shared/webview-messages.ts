@@ -38,6 +38,7 @@ export type OutgoingCopyAdeLinkMessage = {
 
 export type OutgoingShareToClipboardMessage = {
 	type: 'shareToClipboard';
+	engine: 'kusto' | 'sql';
 	boxId: string;
 	includeTitle: boolean;
 	includeQuery: boolean;

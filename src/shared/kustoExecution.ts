@@ -18,6 +18,7 @@ export type KustoComparisonRunIdentity = Readonly<{
 export type KustoExecutionRequestIdentity = KustoSectionExecutionTarget & Readonly<{
 	executionId: string;
 	producer: KustoExecutionProducer;
+	query?: string;
 	copilotRequestId?: string;
 	comparisonRun?: KustoComparisonRunIdentity;
 }>;
@@ -104,6 +105,7 @@ export function hasKustoExecutionRequestIdentity(value: unknown): value is Kusto
 		&& Number(candidate.targetGeneration) >= 0
 		&& (candidate.copilotRequestId === undefined
 			|| (typeof candidate.copilotRequestId === 'string' && candidate.copilotRequestId.length > 0))
+		&& (candidate.query === undefined || typeof candidate.query === 'string')
 		&& hasValidComparisonRun
 		&& (candidate.producer === 'manual' || candidate.producer === 'copilot'
 			|| candidate.producer === 'comparison' || candidate.producer === 'tool');

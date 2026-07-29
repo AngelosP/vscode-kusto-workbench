@@ -61,6 +61,7 @@ import { indexToAlphaName as __kustoIndexToAlphaName } from '../shared/compariso
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
 import { registerPageScrollDismissable } from './page-scroll-dismiss.js';
+import { closeShareModalForOwner } from '../shared/share-modal-runtime.js';
 
 import { currentResult, resetCurrentResult, getResultsState, getRawCellValue as _getRawCellValueFromState } from './results-state';
 import {
@@ -1318,6 +1319,7 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 }
 
 export function removeQueryBox( boxId: any) {
+	try { closeShareModalForOwner(boxId); } catch (e) { console.error('[kusto]', e); }
 	__kustoCancelMonacoInitRetry(String(boxId || ''));
 	unregisterSqlDerivedComparisonSession(String(boxId || ''));
 	// Retire the transient execution owner before removing the DOM instance. This
@@ -3066,6 +3068,7 @@ export function addSqlBox(options?: any) {
 }
 
 export function removeSqlBox(boxId: any) {
+	try { closeShareModalForOwner(boxId); } catch (e) { console.error('[kusto]', e); }
 	unregisterSqlDerivedComparisonsForSource(String(boxId || ''));
 	try {
 		for (const [candidateId, metadata] of Object.entries(optimizationMetadataByBoxId || {})) {

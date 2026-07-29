@@ -18,6 +18,7 @@ import {
 	displayResultForBox,
 	displayResult,
 	displayCancelled,
+	retireResultsStateForRerun,
 	unbindResultArtifactConsumer,
 	type ResultArtifactPublication,
 } from './results-state';
@@ -876,6 +877,7 @@ function comparisonSourcePolicies(sourceArtifact: any): readonly ResultArtifactS
 		'connectionIdentityKey',
 		'exposeToActiveContent',
 		'sendToModel',
+		'shareToClipboard',
 	] as const) {
 		if (sourceArtifact.policy[key] !== undefined) policy[key] = sourceArtifact.policy[key];
 	}
@@ -911,6 +913,7 @@ function getKustoResultArtifactPublication(message: unknown): ResultArtifactPubl
 			reservationSequence: message.reservationSequence,
 			connectionId: message.connectionId,
 			database: message.database,
+			...(typeof message.query === 'string' ? { query: message.query } : {}),
 			producer: message.producer,
 			dispatch,
 		},
@@ -925,6 +928,9 @@ function getKustoResultArtifactPublication(message: unknown): ResultArtifactPubl
 				: true,
 			sendToModel: sourceArtifact
 				? sourceArtifact.policy?.sendToModel === true
+				: true,
+			shareToClipboard: sourceArtifact
+				? sourceArtifact.policy?.shareToClipboard === true
 				: true,
 			...(sourcePolicies?.length ? { sourcePolicies } : {}),
 		},
@@ -948,9 +954,12 @@ function getSqlResultArtifactPublication(message: any): ResultArtifactPublicatio
 			engine: 'sql',
 			boxId,
 			...(message.executionId ? { executionId: String(message.executionId) } : {}),
+			...(message.connectionId ? { connectionId: String(message.connectionId) } : {}),
+			...(message.database ? { database: String(message.database) } : {}),
+			...(typeof message.query === 'string' ? { query: message.query } : {}),
 			producer: metadata?.isComparison ? 'comparison' : 'manual',
 		},
-		policy: { exposeToActiveContent: true, sendToModel: true },
+		policy: { exposeToActiveContent: true, sendToModel: true, shareToClipboard: true },
 	};
 }
 
@@ -1045,7 +1054,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			delete sqlSchemaByBoxId[boxId];
 		},
 		setSchema: (boxId, schema) => { sqlSchemaByBoxId[boxId] = schema as typeof sqlSchemaByBoxId[string]; },
-		updateDatabases: updateSqlDatabaseSelect,
+		updateDatabases: (boxId: string, databases: string[], connectionId?: string) => {
+			updateSqlDatabaseSelect(boxId, databases, connectionId);
+			resolvePendingSqlResultRestores();
+		},
 		reportDatabasesError: onSqlDatabasesError,
 		handleStsResponse,
 		handleStsDiagnostics,
@@ -1704,6 +1716,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			const comparisonSourceBoxId = comparisonMetadata?.isComparison
 				? String(comparisonMetadata.sourceBoxId || '').trim()
 				: '';
+			const sqlDerivedComparison = !!comparisonSourceBoxId
+				&& !!__kustoGetSqlSectionElement(comparisonSourceBoxId)
+				&& message.engine !== 'kusto';
 			const exactComparisonArtifactRequired = (comparisonBoxId && String(message.boxId || '') === comparisonBoxId)
 				|| (!!comparisonSourceBoxId && !__kustoGetSqlSectionElement(comparisonSourceBoxId) && message.engine === 'kusto');
 			if (exactComparisonArtifactRequired && !artifactPublication?.lineage?.length) {
@@ -1727,7 +1742,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					} catch (e) { console.error('[kusto]', e); }
 					resultAccepted = displayResultForBox(message.result, message.boxId, {
 						label: 'Results', showExecutionTime: true,
-						...(message.executionId ? { executionId: String(message.executionId) } : {}),
+						...(message.executionId && !sqlDerivedComparison ? { executionId: String(message.executionId) } : {}),
 						...(artifactPublication ? { artifactPublication } : {}),
 					}) !== false;
 				} else {
@@ -1801,7 +1816,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				} catch (e) { console.error('[kusto]', e); }
 				if (boxId) {
 					const clientActivityId = (message && typeof message.clientActivityId === 'string') ? message.clientActivityId : undefined;
-					__kustoRenderErrorUx(boxId, err, clientActivityId, message.executionId ? String(message.executionId) : undefined);
+					const metadata = optimizationMetadataByBoxId[boxId];
+					const sqlDerivedComparison = !!metadata?.isComparison
+						&& !!__kustoGetSqlSectionElement(String(metadata.sourceBoxId || '').trim())
+						&& message.engine !== 'kusto';
+					__kustoRenderErrorUx(
+						boxId, err, clientActivityId,
+						message.executionId && !sqlDerivedComparison ? String(message.executionId) : undefined,
+					);
 				} else {
 					console.error('Query error (no error renderer available):', err);
 				}
@@ -2774,9 +2796,17 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const executing = !!message.executing;
 				if (boxId) {
 					const executionId = String(message.executionId || '');
+					const metadata = optimizationMetadataByBoxId[boxId];
+					const sqlDerivedComparison = !!metadata?.isComparison
+						&& !!__kustoGetSqlSectionElement(String(metadata.sourceBoxId || '').trim());
 					const sqlEl = __kustoGetSqlSectionElement(boxId);
 					if (sqlEl && typeof sqlEl.setExternalQueryExecuting === 'function'
 						&& !sqlEl.setExternalQueryExecuting(executing, executionId)) break;
+					if (sqlDerivedComparison) {
+						if (executing) retireResultsStateForRerun(boxId);
+						setQueryExecuting(boxId, executing);
+						break;
+					}
 					const queryEl = __kustoGetQuerySectionElement(boxId);
 					if (queryEl && typeof queryEl.setExternalQueryExecuting === 'function'
 						&& !queryEl.setExternalQueryExecuting(executing, executionId)) break;

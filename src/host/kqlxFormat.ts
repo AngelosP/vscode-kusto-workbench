@@ -244,6 +244,7 @@ export type KqlxSectionV1 =
 			resultsVisible?: boolean;
 			favoritesMode?: boolean;
 			resultJson?: string;
+			resultArtifact?: PersistedResultArtifactV1;
 			runMode?: string;
 			editorHeightPx?: number;
 			resultsHeightPx?: number;
