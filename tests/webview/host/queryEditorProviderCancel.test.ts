@@ -1769,6 +1769,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(outcome).toEqual({ status: 'success', executionId: 'copilot-execution', result });
 		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'kustoExecutionStarted', executionId: 'copilot-execution', producer: 'copilot',
+			query: 'print x=1',
 		}));
 		expect(provider.postMessage.mock.invocationCallOrder[0])
 			.toBeLessThan(provider.kustoClient.executeQueryCancelable.mock.invocationCallOrder[0]);

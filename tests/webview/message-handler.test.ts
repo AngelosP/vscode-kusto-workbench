@@ -1261,7 +1261,7 @@ describe('message-handler dispatch', () => {
 			label: 'Results', showExecutionTime: true, executionId: 'sql-comparison-1',
 			artifactPublication: expect.objectContaining({
 				producer: expect.objectContaining({ engine: 'sql', boxId: 'query_comparison' }),
-				policy: { exposeToActiveContent: true },
+				policy: { exposeToActiveContent: true, sendToModel: true },
 			}),
 		});
 	});
@@ -1406,7 +1406,8 @@ describe('message-handler dispatch', () => {
 					executionId: 'execution-new', reservationSequence: 2, dispatch: kustoDispatch('current'),
 				}),
 				policy: expect.objectContaining({
-					accountPartition: 'partition-1', leaveNoTraceRevision: 0, exposeToActiveContent: true,
+					accountPartition: 'partition-1', leaveNoTraceRevision: 0,
+					exposeToActiveContent: true, sendToModel: true,
 				}),
 			}),
 		}));
@@ -1591,6 +1592,15 @@ describe('message-handler dispatch', () => {
 		mocks.getConnectionId.mockReturnValue('connection-1');
 		mocks.getDatabase.mockReturnValue('Samples');
 		mocks.executeQuery.mockReturnValue('execution-current');
+		const resultArtifact = {
+			artifactId: 'result:query_1:tool-current', sourceBoxId: 'query_1', revision: 1, createdAt: 1,
+			restored: false, columns: ['Value'], rows: [['current']], metadata: {},
+			producer: { engine: 'kusto', boxId: 'query_1', executionId: 'execution-current' },
+			policy: { sendToModel: true }, lineage: [],
+		};
+		mocks.getResultArtifactByProducerExecution.mockReturnValue(resultArtifact);
+		mocks.bindResultArtifactConsumer.mockReturnValue(resultArtifact.artifactId);
+		mocks.getBoundResultArtifact.mockReturnValue(resultArtifact);
 		mocks.postMessageToHost.mockClear();
 
 		dispatchHostMessage({
@@ -1624,6 +1634,187 @@ describe('message-handler dispatch', () => {
 			type: 'toolResponse', requestId: 'tool-query-1',
 			result: expect.objectContaining({ success: true, rowCount: 1 }),
 		}));
+		expect(mocks.bindResultArtifactConsumer).toHaveBeenCalledWith(
+			'model:tool-query-1:result', 'query_1', resultArtifact.artifactId,
+		);
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:tool-query-1:result');
+	});
+
+	it('toolConfigureQuerySection denies model preview when the exact artifact disallows model use', async () => {
+		const owner = {
+			engine: 'kusto' as const,
+			boxId: 'query_1', executionId: 'execution-denied',
+			sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'tool' as const,
+		};
+		mocks.getQuerySectionElement.mockReturnValue({
+			admitQueryTerminal: vi.fn(() => 'active'), getActiveExecution: vi.fn(() => owner),
+			completeQueryExecution: vi.fn(() => true),
+		});
+		mocks.getConnectionId.mockReturnValue('connection-1');
+		mocks.getDatabase.mockReturnValue('Samples');
+		mocks.executeQuery.mockReturnValue('execution-denied');
+		const artifact = {
+			artifactId: 'result:query_1:denied', sourceBoxId: 'query_1', revision: 1, createdAt: 1,
+			restored: false, columns: ['Secret'], rows: [['classified']], metadata: {},
+			producer: { engine: 'kusto', boxId: 'query_1', executionId: 'execution-denied' },
+			policy: { sendToModel: false }, lineage: [],
+		};
+		mocks.getResultArtifactByProducerExecution.mockReturnValue(artifact);
+		mocks.bindResultArtifactConsumer.mockReturnValue(artifact.artifactId);
+		mocks.getBoundResultArtifact.mockReturnValue(artifact);
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-query-denied',
+			input: { sectionId: 'query_1', execute: true },
+		});
+		dispatchHostMessage({
+			type: 'queryResult', engine: 'kusto', boxId: 'query_1', executionId: 'execution-denied',
+			sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'tool', reservationSequence: 1,
+			dispatch: kustoDispatch('tool-denied'), result: { columns: ['Secret'], rows: [['classified']], metadata: {} },
+		});
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-query-denied',
+			result: { success: false, error: 'Query results are not permitted for model use.' },
+		});
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:tool-query-denied:result');
+	});
+
+	it('toolConfigureQuerySection settles when executeQuery throws after response deferral starts', async () => {
+		mocks.getConnectionId.mockReturnValue('connection-1');
+		mocks.getDatabase.mockReturnValue('Samples');
+		mocks.executeQuery.mockImplementationOnce(() => { throw new Error('synthetic execution failure'); });
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-query-throws',
+			input: { sectionId: 'query_1', execute: true },
+		});
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-query-throws',
+			result: { success: false, error: 'synthetic execution failure' },
+		});
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:tool-query-throws:result');
+	});
+
+	it('toolConfigureQuerySection settles and cleans up when cancellation has no terminal', async () => {
+		const owner = {
+			engine: 'kusto' as const,
+			boxId: 'query_1', executionId: 'execution-cancelled',
+			sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'tool' as const,
+		};
+		mocks.getQuerySectionElement.mockReturnValue({ getActiveExecution: vi.fn(() => owner) });
+		mocks.getConnectionId.mockReturnValue('connection-1');
+		mocks.getDatabase.mockReturnValue('Samples');
+		mocks.executeQuery.mockReturnValue('execution-cancelled');
+		const cancelQuery = vi.fn();
+		(window as any).cancelQuery = cancelQuery;
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-query-cancelled',
+			input: { sectionId: 'query_1', execute: true },
+		});
+		dispatchHostMessage({ type: 'toolCancelKustoExecution', requestId: 'tool-query-cancelled', owner });
+		delete (window as any).cancelQuery;
+
+		expect(cancelQuery).toHaveBeenCalledWith('query_1');
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-query-cancelled',
+			result: { success: false, error: 'Query was cancelled' },
+		});
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:tool-query-cancelled:result');
+	});
+
+	it('toolConfigureQuerySection consumes pre-start cancellation and ignores a late terminal', async () => {
+		const owner = {
+			engine: 'kusto' as const,
+			boxId: 'query_1', executionId: 'execution-pre-cancelled',
+			sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'tool' as const,
+		};
+		mocks.getQuerySectionElement.mockReturnValue({
+			getActiveExecution: vi.fn(() => owner), admitQueryTerminal: vi.fn(() => 'active'),
+			completeQueryExecution: vi.fn(() => true),
+		});
+		mocks.getConnectionId.mockReturnValue('connection-1');
+		mocks.getDatabase.mockReturnValue('Samples');
+		mocks.executeQuery.mockReturnValue('execution-pre-cancelled');
+		const cancelQuery = vi.fn();
+		(window as any).cancelQuery = cancelQuery;
+
+		dispatchHostMessage({ type: 'toolCancelKustoExecution', requestId: 'tool-query-pre-cancelled' });
+		mocks.postMessageToHost.mockClear();
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-query-pre-cancelled',
+			input: { sectionId: 'query_1', execute: true },
+		});
+		const immediateResponses = mocks.postMessageToHost.mock.calls
+			.map(([message]) => message as any)
+			.filter(message => message.type === 'toolResponse' && message.requestId === 'tool-query-pre-cancelled');
+		expect(immediateResponses).toEqual([{
+			type: 'toolResponse', requestId: 'tool-query-pre-cancelled',
+			result: { success: false, error: 'Query was cancelled' },
+		}]);
+		dispatchHostMessage({
+			type: 'queryCancelled', engine: 'kusto', boxId: 'query_1', executionId: 'execution-pre-cancelled',
+			sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'tool', reservationSequence: 1,
+			reason: 'cancelled',
+		});
+		delete (window as any).cancelQuery;
+
+		expect(cancelQuery).toHaveBeenCalledWith('query_1');
+		const responses = mocks.postMessageToHost.mock.calls
+			.map(([message]) => message as any)
+			.filter(message => message.type === 'toolResponse' && message.requestId === 'tool-query-pre-cancelled');
+		expect(responses).toEqual([{
+			type: 'toolResponse', requestId: 'tool-query-pre-cancelled',
+			result: { success: false, error: 'Query was cancelled' },
+		}]);
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:tool-query-pre-cancelled:result');
+	});
+
+	it('toolConfigureQuerySection settles when its terminal artifact lookup throws', async () => {
+		const owner = {
+			engine: 'kusto' as const,
+			boxId: 'query_1', executionId: 'execution-lookup-throws',
+			sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'tool' as const,
+		};
+		mocks.getQuerySectionElement.mockReturnValue({
+			admitQueryTerminal: vi.fn(() => 'active'), getActiveExecution: vi.fn(() => owner),
+			completeQueryExecution: vi.fn(() => true),
+		});
+		mocks.getConnectionId.mockReturnValue('connection-1');
+		mocks.getDatabase.mockReturnValue('Samples');
+		mocks.executeQuery.mockReturnValue('execution-lookup-throws');
+		mocks.getResultArtifactByProducerExecution.mockImplementationOnce(() => {
+			throw new Error('synthetic artifact lookup failure');
+		});
+		mocks.postMessageToHost.mockClear();
+
+		dispatchHostMessage({
+			type: 'toolConfigureQuerySection', requestId: 'tool-query-lookup-throws',
+			input: { sectionId: 'query_1', execute: true },
+		});
+		dispatchHostMessage({
+			type: 'queryResult', engine: 'kusto', boxId: 'query_1', executionId: 'execution-lookup-throws',
+			sectionInstanceId: 'instance-1', targetGeneration: 1,
+			connectionId: 'connection-1', database: 'Samples', producer: 'tool', reservationSequence: 1,
+			dispatch: kustoDispatch('tool-lookup-throws'), result: { columns: ['Value'], rows: [[1]], metadata: {} },
+		});
+
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'tool-query-lookup-throws',
+			result: { success: false, error: 'synthetic artifact lookup failure' },
+		});
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:tool-query-lookup-throws:result');
 	});
 
 	it('explicitly rejects cluster-only Kusto retarget and execute before any mutation or run claim', async () => {
@@ -4168,9 +4359,26 @@ describe('changedSections agent provenance', () => {
 			type: 'toolResponse', requestId: 'r-kusto-invalidated',
 			result: { success: false, error: 'Canceled.', query: undefined },
 		});
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:r-kusto-invalidated:result');
 	});
 
-	async function runDelegatedKustoCopilotResponseTest(options: { maxResultRows?: unknown; rowCount: number; resultBeforeDone?: boolean; oldTerminalBeforeStart?: boolean }) {
+	async function runDelegatedKustoCopilotResponseTest(options: {
+		maxResultRows?: unknown;
+		rowCount: number;
+		resultBeforeDone?: boolean;
+		oldTerminalBeforeStart?: boolean;
+		cancelBeforeDone?: boolean;
+		advanceCurrentBeforeDone?: boolean;
+		revokeBeforeDone?: boolean;
+		allowSendToModel?: boolean;
+		advanceQueryBeforeDone?: boolean;
+		advanceQueryBeforeStart?: boolean;
+		artifactLookupThrows?: boolean;
+	}) {
+		if (!getResultsStateMock) {
+			const resultsState = await import('../../src/webview/core/results-state.js');
+			getResultsStateMock = resultsState.getResultsState as unknown as ReturnType<typeof vi.fn>;
+		}
 		const { section } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'range Index from 1 to 10 step 1' });
 		(section as any).setCopilotChatVisible = vi.fn();
 		const lifecycle = { sectionInstanceId: 'instance-query_1', targetGeneration: 4 };
@@ -4208,11 +4416,28 @@ describe('changedSections agent provenance', () => {
 		mocks.getQuerySectionElement.mockReturnValue(section);
 		mocks.getConnectionId.mockReturnValue('conn-1');
 		mocks.getDatabase.mockReturnValue('db-1');
-		handlerState.queryEditors.query_1 = { getValue: vi.fn(() => 'range Index from 1 to 10 step 1') };
+		const executedQuery = 'range Index from 1 to 10 step 1';
+		const getEditorQuery = vi.fn(() => executedQuery);
+		handlerState.queryEditors.query_1 = { getValue: getEditorQuery };
 
 		const rows = Array.from({ length: options.rowCount }, (_unused, index) => [index + 1]);
 		const columns = ['Index'];
 		getResultsStateMock.mockReturnValue({ columns, rows } as any);
+		const resultArtifact = {
+			artifactId: 'result:query_1:delegated', sourceBoxId: 'query_1', revision: 1, createdAt: 1,
+			restored: false, columns, rows, metadata: {},
+			producer: { engine: 'kusto', boxId: 'query_1', executionId: 'delegated-kusto-execution' },
+			policy: { sendToModel: options.allowSendToModel !== false }, lineage: [],
+		};
+		if (options.artifactLookupThrows) {
+			mocks.getResultArtifactByProducerExecution.mockImplementationOnce(() => {
+				throw new Error('synthetic delegated artifact lookup failure');
+			});
+		} else {
+			mocks.getResultArtifactByProducerExecution.mockReturnValue(resultArtifact);
+		}
+		mocks.bindResultArtifactConsumer.mockReturnValue(resultArtifact.artifactId);
+		mocks.getBoundResultArtifact.mockReturnValue(resultArtifact);
 
 		const chatPane = document.createElement('div');
 		chatPane.id = 'query_1_copilot_chat_pane';
@@ -4239,8 +4464,9 @@ describe('changedSections agent provenance', () => {
 			const owner = {
 				type: 'kustoExecutionStarted', engine: 'kusto', boxId: 'query_1', executionId,
 				...lifecycle, connectionId: 'conn-1', database: 'db-1', producer: 'copilot',
-				copilotRequestId: copilotOwner.copilotRequestId, reservationSequence: 1,
+				copilotRequestId: copilotOwner.copilotRequestId, reservationSequence: 1, query: executedQuery,
 			};
+			if (options.advanceQueryBeforeStart) getEditorQuery.mockReturnValue('print newer_query=2');
 			dispatchHostMessage({
 				...owner,
 			});
@@ -4248,8 +4474,18 @@ describe('changedSections agent provenance', () => {
 				...owner, type: 'queryResult', dispatch: kustoDispatch('delegated-copilot'), result: { rows, columns, metadata: {} },
 			};
 			const doneMessage = { type: 'copilotWriteQueryDone', boxId: 'query_1', ok: true, ...copilotOwner };
+			if (options.cancelBeforeDone) {
+				dispatchHostMessage({ ...owner, type: 'queryCancelled', reason: 'cancelled' });
+				dispatchHostMessage(doneMessage);
+				return;
+			}
 			if (options.resultBeforeDone) {
 				dispatchHostMessage(queryResultMessage);
+				if (options.advanceCurrentBeforeDone) {
+					getResultsStateMock.mockReturnValue({ columns, rows: [['newer-current-b']] } as any);
+				}
+				if (options.advanceQueryBeforeDone) getEditorQuery.mockReturnValue('print newer_query=2');
+				if (options.revokeBeforeDone) mocks.getBoundResultArtifact.mockReturnValue(null);
 				dispatchHostMessage(doneMessage);
 			} else {
 				dispatchHostMessage(doneMessage);
@@ -4328,6 +4564,82 @@ describe('changedSections agent provenance', () => {
 		expect(result.maxResultRows).toBe(120);
 		expect(result.returnedRowCount).toBe(120);
 		expect(result.truncated).toBe('Results truncated to 120 rows');
+	});
+
+	it('returns exact artifact A when mutable current advances to B before Copilot completion', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, resultBeforeDone: true, advanceCurrentBeforeDone: true,
+		});
+
+		expect(result).toMatchObject({ success: true, rowCount: 3, results: [[1], [2], [3]] });
+		expect(mocks.bindResultArtifactConsumer).toHaveBeenCalledWith(
+			'model:r-kusto-copilot-results:result', 'query_1', 'result:query_1:delegated',
+		);
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:r-kusto-copilot-results:result');
+	});
+
+	it('returns the query captured for artifact A when the editor advances before completion', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, resultBeforeDone: true, advanceQueryBeforeDone: true,
+		});
+
+		expect(result).toMatchObject({
+			success: true,
+			query: 'range Index from 1 to 10 step 1',
+			results: [[1], [2], [3]],
+		});
+	});
+
+	it('returns the host-captured query when the editor advances before execution start', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, resultBeforeDone: true, advanceQueryBeforeStart: true,
+		});
+
+		expect(result).toMatchObject({
+			success: true,
+			query: 'range Index from 1 to 10 step 1',
+			results: [[1], [2], [3]],
+		});
+	});
+
+	it('settles delegated Kusto Copilot when terminal artifact lookup throws', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({ rowCount: 3, artifactLookupThrows: true });
+
+		expect(result).toMatchObject({
+			success: false,
+			error: 'synthetic delegated artifact lookup failure',
+		});
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:r-kusto-copilot-results:result');
+	});
+
+	it('fails closed when the exact result artifact denies sendToModel', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({ rowCount: 3, allowSendToModel: false });
+
+		expect(result).toMatchObject({
+			success: false,
+			error: 'Query results are not permitted for model use.',
+		});
+		expect(result).not.toHaveProperty('results');
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:r-kusto-copilot-results:result');
+	});
+
+	it('fails closed when the exact result artifact is revoked before Copilot completion', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({
+			rowCount: 3, resultBeforeDone: true, revokeBeforeDone: true,
+		});
+
+		expect(result).toMatchObject({
+			success: false,
+			error: 'Query results are not permitted for model use.',
+		});
+		expect(result).not.toHaveProperty('results');
+	});
+
+	it('settles and releases the model binding when query cancellation arrives before Copilot completion', async () => {
+		const result = await runDelegatedKustoCopilotResponseTest({ rowCount: 3, cancelBeforeDone: true });
+
+		expect(result).toMatchObject({ success: false, error: 'Query execution was cancelled.' });
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('model:r-kusto-copilot-results:result');
 	});
 
 	it('marks delegated SQL Copilot run-mode changes as agent-touched when dirty', async () => {

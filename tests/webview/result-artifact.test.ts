@@ -72,6 +72,17 @@ describe('ResultArtifactStore', () => {
 		}, 'query_1', {
 			accountPartition: 'partition-a', leaveNoTraceRevision: 4, exposeToActiveContent: true,
 		})).toBeUndefined();
+		expect(publicationFromPersistedResultArtifact({
+			...base,
+			producer: { boxId: 'query_1', executionId: 'execution-1' },
+			policy: {
+				accountPartition: 'partition-a', leaveNoTraceRevision: 4,
+				exposeToActiveContent: true,
+			},
+		}, 'query_1', {
+			accountPartition: 'partition-a', leaveNoTraceRevision: 4,
+			exposeToActiveContent: true, sendToModel: true,
+		})).toBeUndefined();
 	});
 
 	it('restores the saved identity after the same runtime previously advanced farther', () => {
@@ -219,5 +230,135 @@ describe('ResultArtifactStore', () => {
 		expect(differentlyOwnedAllowedPublication.policy?.accountPartition).toBeUndefined();
 		expect(differentlyOwnedAllowedPublication.policy?.exposeToActiveContent).toBe(true);
 		expect(mixedPublication.policy?.exposeToActiveContent).toBeUndefined();
+	});
+
+	it('allows derived model use only when every leaf source allows it', () => {
+		const store = new ResultArtifactStore();
+		const allowedA = store.publish('query_model_a', { columns: [], rows: [[1]], metadata: {} }, {
+			policy: { accountPartition: 'partition-a', sendToModel: true },
+		})!;
+		const allowedB = store.publish('query_model_b', { columns: [], rows: [[2]], metadata: {} }, {
+			policy: { accountPartition: 'partition-b', sendToModel: true },
+		})!;
+		const denied = store.publish('query_model_denied', { columns: [], rows: [[3]], metadata: {} }, {
+			policy: { sendToModel: false },
+		})!;
+
+		const allowed = createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_model_allowed' },
+			[{ artifact: allowedA }, { artifact: allowedB }],
+		);
+		const mixed = createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_model_mixed' },
+			[{ artifact: allowedA }, { artifact: denied }],
+		);
+
+		expect(allowed.policy?.accountPartition).toBeUndefined();
+		expect(allowed.policy?.sendToModel).toBe(true);
+		expect(mixed.policy?.sendToModel).toBeUndefined();
+	});
+
+	it('denies derived model use when any direct or nested leaf omits permission', () => {
+		const store = new ResultArtifactStore();
+		const allowed = store.publish('query_model_allowed', { columns: [], rows: [[1]], metadata: {} }, {
+			policy: { sendToModel: true },
+		})!;
+		const missing = store.publish('query_model_missing', { columns: [], rows: [[2]], metadata: {} })!;
+		const mixed = store.publish(
+			'transformation_model_mixed',
+			{ columns: [], rows: [[3]], metadata: {} },
+			createDerivedResultArtifactPublication(
+				{ engine: 'transformation', boxId: 'transformation_model_mixed' },
+				[{ artifact: allowed }, { artifact: missing }],
+			),
+		)!;
+		const nested = createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_model_nested' },
+			[{ artifact: mixed }],
+		);
+
+		expect(mixed.policy?.sourcePolicies).toEqual([
+			{ sourceArtifactId: allowed.artifactId, sendToModel: true },
+			{ sourceArtifactId: missing.artifactId },
+		]);
+		expect(mixed.policy?.sendToModel).toBeUndefined();
+		expect(nested.policy?.sourcePolicies).toEqual(mixed.policy?.sourcePolicies);
+		expect(nested.policy?.sendToModel).toBeUndefined();
+	});
+
+	it('requires local admission and consistent leaf ancestry for persisted capabilities', () => {
+		const base = {
+			version: 1, artifactId: 'result:query_derived:7', sourceBoxId: 'query_derived',
+			revision: 7, createdAt: 123,
+		};
+		const direct = {
+			...base,
+			policy: { sendToModel: true },
+		};
+		const missingAncestry = {
+			...base,
+			lineage: [{ sourceArtifactId: 'result:query_source:2' }],
+			policy: { sendToModel: true },
+		};
+		const deniedAncestry = {
+			...base,
+			lineage: [{ sourceArtifactId: 'result:query_source:2' }],
+			policy: {
+				sendToModel: true,
+				sourcePolicies: [{ sourceArtifactId: 'result:query_source:2', sendToModel: false }],
+			},
+		};
+
+		expect(publicationFromPersistedResultArtifact(direct, 'query_derived')).toBeUndefined();
+		expect(publicationFromPersistedResultArtifact(
+			direct, 'query_derived', { sendToModel: true },
+		)).toBeDefined();
+		expect(publicationFromPersistedResultArtifact(
+			missingAncestry, 'query_derived', { sendToModel: true },
+		)).toBeUndefined();
+		expect(publicationFromPersistedResultArtifact(
+			deniedAncestry, 'query_derived', { sendToModel: true },
+		)).toBeUndefined();
+	});
+
+	it('accepts persisted derived ancestry only when it matches locally reconstructed sources', () => {
+		const store = new ResultArtifactStore();
+		const source = store.publish('query_source', { columns: [], rows: [[1]], metadata: {} }, {
+			policy: { accountPartition: 'partition-a', exposeToActiveContent: true, sendToModel: true },
+		})!;
+		const trusted = createDerivedResultArtifactPublication(
+			{ engine: 'kusto', boxId: 'query_comparison', producer: 'comparison' },
+			[{ artifact: source, role: 'comparison-source' }],
+		);
+		const descriptor = {
+			version: 1, artifactId: 'result:query_comparison:4', sourceBoxId: 'query_comparison',
+			revision: 4, createdAt: 123,
+			policy: trusted.policy,
+			lineage: trusted.lineage,
+		};
+		const expectedAdmission = {
+			exposeToActiveContent: true,
+			sendToModel: true,
+			derivedLineage: trusted.lineage,
+			derivedSourcePolicies: trusted.policy?.sourcePolicies,
+		};
+
+		expect(publicationFromPersistedResultArtifact(
+			descriptor, 'query_comparison', expectedAdmission,
+		)).toMatchObject({ lineage: trusted.lineage, policy: trusted.policy });
+		expect(publicationFromPersistedResultArtifact({
+			...descriptor,
+			lineage: [{ sourceArtifactId: 'result:unrelated:1', role: 'comparison-source' }],
+		}, 'query_comparison', expectedAdmission)).toBeUndefined();
+		expect(publicationFromPersistedResultArtifact({
+			...descriptor,
+			policy: {
+				...descriptor.policy,
+				sourcePolicies: [{ sourceArtifactId: 'result:unrelated:1', sendToModel: true }],
+			},
+		}, 'query_comparison', expectedAdmission)).toBeUndefined();
+		expect(publicationFromPersistedResultArtifact({
+			...descriptor, lineage: undefined, policy: { sendToModel: true },
+		}, 'query_comparison', expectedAdmission)).toBeUndefined();
 	});
 });

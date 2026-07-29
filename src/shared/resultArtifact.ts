@@ -18,6 +18,7 @@ export type ResultArtifactPolicyStamp = Readonly<{
 	connectionRevision?: number;
 	connectionIdentityKey?: string;
 	exposeToActiveContent?: boolean;
+	sendToModel?: boolean;
 }>;
 
 export type ResultArtifactSourcePolicy = Readonly<ResultArtifactPolicyStamp & {
@@ -81,6 +82,10 @@ export function htmlDashboardFactArtifactConsumerId(htmlBoxId: unknown): string 
 	return `html:${String(htmlBoxId || '').trim()}:fact`;
 }
 
+export function modelResultArtifactConsumerId(requestId: unknown): string {
+	return `model:${String(requestId || '').trim()}:result`;
+}
+
 export function comparisonSourceArtifactConsumerId(comparisonBoxId: unknown): string {
 	return `comparison:${String(comparisonBoxId || '').trim()}:source`;
 }
@@ -130,6 +135,7 @@ function policyStamp(policy: ResultArtifactPolicy | ResultArtifactSourcePolicy |
 		'connectionRevision',
 		'connectionIdentityKey',
 		'exposeToActiveContent',
+		'sendToModel',
 	] as const) {
 		if (policy[key] !== undefined) stamp[key] = policy[key];
 	}
@@ -145,7 +151,7 @@ function sourcePoliciesForArtifact(artifact: ResultArtifact): ResultArtifactSour
 		}));
 	}
 	const stamp = policyStamp(artifact.policy);
-	return stamp ? [{ sourceArtifactId: artifact.artifactId, ...stamp }] : [];
+	return [{ sourceArtifactId: artifact.artifactId, ...stamp }];
 }
 
 export function createDerivedResultArtifactPublication(
@@ -172,10 +178,13 @@ export function createDerivedResultArtifactPublication(
 	)) ? firstStamp : undefined;
 	const allSourcesAllowActiveContent = sourcePolicies.length > 0
 		&& sourcePolicies.every(sourcePolicy => sourcePolicy.exposeToActiveContent === true);
+	const allSourcesAllowModelUse = sourcePolicies.length > 0
+		&& sourcePolicies.every(sourcePolicy => sourcePolicy.sendToModel === true);
 	const policy = sourcePolicies.length
 		? deepFreeze({
 			...commonStamp,
 			...(allSourcesAllowActiveContent ? { exposeToActiveContent: true } : {}),
+			...(allSourcesAllowModelUse ? { sendToModel: true } : {}),
 			sourcePolicies: deepFreeze(sourcePolicies),
 		})
 		: undefined;
@@ -188,6 +197,49 @@ export function createDerivedResultArtifactPublication(
 
 function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function parsePersistedPolicyStamp(value: Record<string, unknown>): ResultArtifactPolicyStamp | null {
+	const stamp: Record<string, unknown> = {};
+	for (const key of ['accountPartition', 'connectionIdentityKey'] as const) {
+		if (value[key] === undefined) continue;
+		if (typeof value[key] !== 'string') return null;
+		const text = value[key].trim();
+		if (!text || text.length > 2048) return null;
+		stamp[key] = text;
+	}
+	for (const key of ['authSessionGeneration', 'leaveNoTraceRevision', 'connectionRevision'] as const) {
+		if (value[key] === undefined) continue;
+		const number = Number(value[key]);
+		if (!Number.isSafeInteger(number) || number < 0) return null;
+		stamp[key] = number;
+	}
+	for (const key of ['exposeToActiveContent', 'sendToModel'] as const) {
+		if (value[key] === undefined) continue;
+		if (typeof value[key] !== 'boolean') return null;
+		stamp[key] = value[key];
+	}
+	return stamp as ResultArtifactPolicyStamp;
+}
+
+function parsePersistedPolicy(value: Record<string, unknown>): ResultArtifactPolicy | null {
+	const stamp = parsePersistedPolicyStamp(value);
+	if (!stamp) return null;
+	if (value.sourcePolicies === undefined) return stamp;
+	if (!Array.isArray(value.sourcePolicies) || value.sourcePolicies.length === 0
+		|| value.sourcePolicies.length > 1024) return null;
+	const sourcePolicies: ResultArtifactSourcePolicy[] = [];
+	const sourceArtifactIds = new Set<string>();
+	for (const item of value.sourcePolicies) {
+		if (!isRecord(item)) return null;
+		const sourceArtifactId = String(item.sourceArtifactId || '').trim();
+		const sourceStamp = parsePersistedPolicyStamp(item);
+		if (!sourceArtifactId || sourceArtifactId.length > 512 || !sourceStamp
+			|| sourceArtifactIds.has(sourceArtifactId)) return null;
+		sourceArtifactIds.add(sourceArtifactId);
+		sourcePolicies.push({ sourceArtifactId, ...sourceStamp });
+	}
+	return { ...stamp, sourcePolicies };
 }
 
 export function toPersistedResultArtifact(artifact: ResultArtifact | null | undefined): PersistedResultArtifactV1 | undefined {
@@ -211,6 +263,9 @@ export function publicationFromPersistedResultArtifact(
 		accountPartition?: unknown;
 		leaveNoTraceRevision?: unknown;
 		exposeToActiveContent?: unknown;
+		sendToModel?: unknown;
+		derivedLineage?: readonly ResultArtifactLineage[];
+		derivedSourcePolicies?: readonly ResultArtifactSourcePolicy[];
 	}>,
 ): ResultArtifactPublication | undefined {
 	if (!isRecord(value) || value.version !== 1) return undefined;
@@ -224,14 +279,39 @@ export function publicationFromPersistedResultArtifact(
 		|| !Number.isFinite(createdAt) || createdAt < 0) return undefined;
 	const producer = isRecord(value.producer) ? value.producer as ResultArtifactProducer : undefined;
 	if (producer && String(producer.boxId || '').trim() !== expectedSource) return undefined;
-	const policy = isRecord(value.policy) ? value.policy as ResultArtifactPolicy : undefined;
+	let lineage: ResultArtifactLineage[] | undefined;
+	if (value.lineage !== undefined) {
+		if (!Array.isArray(value.lineage) || value.lineage.length > 1024) return undefined;
+		lineage = [];
+		for (const item of value.lineage) {
+			if (!isRecord(item)) return undefined;
+			const sourceArtifactId = String(item.sourceArtifactId || '').trim();
+			const role = String(item.role || '').trim();
+			if (!sourceArtifactId || sourceArtifactId.length > 512 || role.length > 512) return undefined;
+			lineage.push({ sourceArtifactId, ...(role ? { role } : {}) });
+		}
+		if (lineage.length === 0) lineage = undefined;
+	}
+	const policy = isRecord(value.policy) ? parsePersistedPolicy(value.policy) : undefined;
+	if (isRecord(value.policy) && !policy) return undefined;
 	if (expectedPolicy && !policy) return undefined;
+	const hasPersistedDerivation = !!lineage?.length || !!policy?.sourcePolicies?.length;
+	if (hasPersistedDerivation && expectedPolicy?.derivedLineage === undefined) return undefined;
+	if (expectedPolicy?.derivedLineage !== undefined) {
+		const expectedLineage = snapshotLineage(expectedPolicy.derivedLineage);
+		const expectedSourcePolicies = expectedPolicy.derivedSourcePolicies?.map(sourcePolicy => ({
+			sourceArtifactId: String(sourcePolicy.sourceArtifactId || '').trim(),
+			...policyStamp(sourcePolicy),
+		})) || [];
+		if (expectedLineage.length === 0 || expectedSourcePolicies.length === 0
+			|| JSON.stringify(lineage || []) !== JSON.stringify(expectedLineage)
+			|| JSON.stringify(policy?.sourcePolicies || []) !== JSON.stringify(expectedSourcePolicies)) {
+			return undefined;
+		}
+	}
 	if (policy) {
-		const partition = policy.accountPartition === undefined ? '' : String(policy.accountPartition || '').trim();
-		const leaveNoTraceRevision = policy.leaveNoTraceRevision === undefined ? undefined : Number(policy.leaveNoTraceRevision);
-		if (policy.accountPartition !== undefined && !partition) return undefined;
-		if (leaveNoTraceRevision !== undefined && (!Number.isSafeInteger(leaveNoTraceRevision) || leaveNoTraceRevision < 0)) return undefined;
-		if (policy.exposeToActiveContent !== undefined && typeof policy.exposeToActiveContent !== 'boolean') return undefined;
+		const partition = policy.accountPartition || '';
+		const leaveNoTraceRevision = policy.leaveNoTraceRevision;
 		const expectedPartition = expectedPolicy?.accountPartition === undefined
 			? ''
 			: String(expectedPolicy.accountPartition || '').trim();
@@ -242,13 +322,25 @@ export function publicationFromPersistedResultArtifact(
 		if (expectedRevision !== undefined && leaveNoTraceRevision !== expectedRevision) return undefined;
 		if (expectedPolicy?.exposeToActiveContent !== undefined
 			&& policy.exposeToActiveContent !== expectedPolicy.exposeToActiveContent) return undefined;
+		if (expectedPolicy?.sendToModel !== undefined
+			&& policy.sendToModel !== expectedPolicy.sendToModel) return undefined;
+		if (policy.exposeToActiveContent === true && expectedPolicy?.exposeToActiveContent !== true) return undefined;
+		if (policy.sendToModel === true && expectedPolicy?.sendToModel !== true) return undefined;
+		if (policy.sourcePolicies?.length) {
+			if (!lineage?.length) return undefined;
+			if (policy.exposeToActiveContent === true
+				&& !policy.sourcePolicies.every(source => source.exposeToActiveContent === true)) return undefined;
+			if (policy.sendToModel === true
+				&& !policy.sourcePolicies.every(source => source.sendToModel === true)) return undefined;
+			if (policy.sourcePolicies.some(source => source.exposeToActiveContent === true)
+				&& expectedPolicy?.exposeToActiveContent !== true) return undefined;
+			if (policy.sourcePolicies.some(source => source.sendToModel === true)
+				&& expectedPolicy?.sendToModel !== true) return undefined;
+		} else if (lineage?.length
+			&& (policy.exposeToActiveContent === true || policy.sendToModel === true)) {
+			return undefined;
+		}
 	}
-	const lineage = Array.isArray(value.lineage)
-		? value.lineage.filter(isRecord).map(item => ({
-			sourceArtifactId: String(item.sourceArtifactId || '').trim().slice(0, 512),
-			...(String(item.role || '').trim() ? { role: String(item.role || '').trim() } : {}),
-		})).filter(item => !!item.sourceArtifactId)
-		: undefined;
 	return {
 		...(producer ? { producer } : {}),
 		...(policy ? { policy } : {}),

@@ -6411,7 +6411,7 @@ async function e2eAssertKustoClickCaretFidelityAfterRestoredHtmlPreviewScroll():
 	return `Restored HTML preview click kept Kusto caret at ${position.lineNumber}:${position.column}; pageScrollTop=${e2ePageScrollTop(scrollElement)}/${maxScrollTop}; ${scrollContract}; target=${e2eDescribeElement(target)}`;
 }
 
-async function e2eSeedQueryResult(boxId: string, result: unknown): Promise<string> {
+async function e2eSeedQueryResult(boxId: string, result: unknown, artifactPublication?: unknown): Promise<string> {
 	const id = String(boxId || '').trim();
 	const section = document.getElementById(id) as any;
 	if (!id || !section) throw new Error(`Result owner not found: ${id || '(empty)'}`);
@@ -6419,7 +6419,7 @@ async function e2eSeedQueryResult(boxId: string, result: unknown): Promise<strin
 	await new Promise<void>(resolve => requestAnimationFrame(() => resolve()));
 	const options = {
 		label: 'Results', showExecutionTime: true,
-		artifactPublication: { policy: { exposeToActiveContent: true } },
+		artifactPublication: artifactPublication || { policy: { exposeToActiveContent: true } },
 	};
 	let accepted = displayResultForBox(result, id, options);
 	if (!accepted) throw new Error(`Result owner rejected local E2E data: ${id}`);

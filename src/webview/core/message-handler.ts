@@ -112,7 +112,7 @@ import {
 } from './state';
 import { getKustoConnectionIdentityKey, getKustoSchemaIdentityKey, resolveStrictKustoConnection } from '../../shared/kustoAuth.js';
 import { hasKustoCopilotRequestIdentity, hasKustoExecutionRequestIdentity, hasKustoExecutionTerminalStamp, hasKustoOptimizeRequestIdentity, kustoCopilotRequestIdentityEquals, kustoExecutionIdentityEquals, kustoExecutionRequestIdentityEquals, type KustoCopilotRequestIdentity, type KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
-import { comparisonSourceArtifactConsumerId, type ResultArtifactSourcePolicy } from '../../shared/resultArtifact.js';
+import { comparisonSourceArtifactConsumerId, modelResultArtifactConsumerId, type ResultArtifactSourcePolicy } from '../../shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import { ADMITTED_KUSTO_COPILOT_EVENT, emitAdmittedKustoCopilotOutput } from './kusto-copilot-output-runtime.js';
@@ -129,6 +129,7 @@ const ASK_KUSTO_COPILOT_DEFAULT_MAX_RESULT_ROWS = 100;
 const ASK_KUSTO_COPILOT_MIN_MAX_RESULT_ROWS = 1;
 const ASK_KUSTO_COPILOT_MAX_MAX_RESULT_ROWS = 1000;
 const kustoToolExecutionOwnerByRequestId = new Map<string, import('../../shared/kustoExecution.js').KustoExecutionRequestIdentity>();
+const kustoToolExecutionSettlementByRequestId = new Map<string, () => void>();
 const cancelledKustoToolRequestIds = new Set<string>();
 const kustoCopilotToolOwnerByRequestId = new Map<string, KustoCopilotRequestIdentity>();
 
@@ -874,6 +875,7 @@ function comparisonSourcePolicies(sourceArtifact: any): readonly ResultArtifactS
 		'connectionRevision',
 		'connectionIdentityKey',
 		'exposeToActiveContent',
+		'sendToModel',
 	] as const) {
 		if (sourceArtifact.policy[key] !== undefined) policy[key] = sourceArtifact.policy[key];
 	}
@@ -921,6 +923,9 @@ function getKustoResultArtifactPublication(message: unknown): ResultArtifactPubl
 			exposeToActiveContent: sourceArtifact
 				? sourceArtifact.policy?.exposeToActiveContent === true
 				: true,
+			sendToModel: sourceArtifact
+				? sourceArtifact.policy?.sendToModel === true
+				: true,
 			...(sourcePolicies?.length ? { sourcePolicies } : {}),
 		},
 		...(sourceArtifact ? {
@@ -945,7 +950,7 @@ function getSqlResultArtifactPublication(message: any): ResultArtifactPublicatio
 			...(message.executionId ? { executionId: String(message.executionId) } : {}),
 			producer: metadata?.isComparison ? 'comparison' : 'manual',
 		},
-		policy: { exposeToActiveContent: true },
+		policy: { exposeToActiveContent: true, sendToModel: true },
 	};
 }
 
@@ -3309,14 +3314,17 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					success = true;
 				}
 				if (input.execute) {
-					deferResponse = true;
 					setRunMode(sectionId, 'plain');
+					deferResponse = true;
 					let responded = false;
 					let executionId = '';
+					const modelConsumerId = modelResultArtifactConsumerId(requestId);
 					const cleanup = () => {
-						window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener);
-						kustoToolExecutionOwnerByRequestId.delete(requestId);
-						cancelledKustoToolRequestIds.delete(requestId);
+						try { window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener); } catch { /* best effort */ }
+						try { kustoToolExecutionOwnerByRequestId.delete(requestId); } catch { /* best effort */ }
+						try { kustoToolExecutionSettlementByRequestId.delete(requestId); } catch { /* best effort */ }
+						try { cancelledKustoToolRequestIds.delete(requestId); } catch { /* best effort */ }
+						try { unbindResultArtifactConsumer(modelConsumerId); } catch { /* best effort */ }
 					};
 					const respond = (result: unknown) => {
 						if (responded) return;
@@ -3325,53 +3333,91 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						postMessageToHost({ type: 'toolResponse', requestId, result });
 					};
 					const resultHandler = (event: Event) => {
-						const terminal = (event as CustomEvent).detail;
-						if (!executionId || terminal?.executionId !== executionId || terminal?.boxId !== sectionId) return;
-						if (terminal.type === 'queryResult') {
-							const rows = terminal.result?.rows || [];
-							const columns = terminal.result?.columns || [];
-							respond({
-								success: true, rowCount: rows.length, columns,
-								resultPreview: JSON.stringify({ columns, rows: rows.slice(0, 5), totalRows: rows.length }, null, 2),
-							});
-						} else if (terminal.type === 'queryError') respond({ success: false, error: terminal.error || 'Query execution failed' });
-						else if (terminal.type === 'queryCancelled') respond({ success: false, error: 'Query was cancelled' });
+						try {
+							const terminal = (event as CustomEvent).detail;
+							if (!executionId || terminal?.executionId !== executionId || terminal?.boxId !== sectionId) return;
+							if (terminal.type === 'queryResult') {
+								const artifact = getResultArtifactByProducerExecution(sectionId, executionId);
+								const bound = artifact && bindResultArtifactConsumer(
+									modelConsumerId, sectionId, artifact.artifactId,
+								) === artifact.artifactId;
+								const exactArtifact = bound ? getBoundResultArtifact(modelConsumerId, sectionId) : null;
+								if (!exactArtifact || exactArtifact.producer?.executionId !== executionId
+									|| exactArtifact.policy?.sendToModel !== true) {
+									respond({ success: false, error: 'Query results are not permitted for model use.' });
+									return;
+								}
+								const rows = [...exactArtifact.rows];
+								const columns = [...exactArtifact.columns];
+								respond({
+									success: true, rowCount: rows.length, columns,
+									resultPreview: JSON.stringify({ columns, rows: rows.slice(0, 5), totalRows: rows.length }, null, 2),
+								});
+							} else if (terminal.type === 'queryError') respond({ success: false, error: terminal.error || 'Query execution failed' });
+							else if (terminal.type === 'queryCancelled') respond({ success: false, error: 'Query was cancelled' });
+						} catch (error) {
+							respond({ success: false, error: error instanceof Error ? error.message : String(error) });
+							}
 					};
+					kustoToolExecutionSettlementByRequestId.set(requestId, () => {
+						respond({ success: false, error: 'Query was cancelled' });
+					});
 					window.addEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, resultHandler as EventListener);
-					executionId = executeQuery(sectionId, undefined, 'tool') || '';
-					const owner = __kustoGetQuerySectionElement(sectionId)?.getActiveExecution?.();
-					if (!executionId || !owner) respond({ success: false, error: 'Query execution did not start.' });
-					else {
-						kustoToolExecutionOwnerByRequestId.set(requestId, owner);
-						postMessageToHost({ type: 'toolExecutionStarted', requestId, owner });
-						if (cancelledKustoToolRequestIds.delete(requestId)) (window as any).cancelQuery?.(owner.boxId);
+					try {
+						executionId = executeQuery(sectionId, undefined, 'tool') || '';
+						const owner = __kustoGetQuerySectionElement(sectionId)?.getActiveExecution?.();
+						if (!executionId || !owner) respond({ success: false, error: 'Query execution did not start.' });
+						else {
+							kustoToolExecutionOwnerByRequestId.set(requestId, owner);
+							postMessageToHost({ type: 'toolExecutionStarted', requestId, owner });
+							if (cancelledKustoToolRequestIds.delete(requestId)) {
+								try { (window as any).cancelQuery?.(owner.boxId); }
+								finally { kustoToolExecutionSettlementByRequestId.get(requestId)?.(); }
+							}
+						}
+						success = true;
+					} catch (error) {
+						failureError = error instanceof Error ? error.message : String(error);
+						respond({ success: false, error: failureError });
 					}
-					success = true;
 				}
 			} catch (error) {
 				console.error('[Kusto Tools] Error configuring query section:', error);
 				success = false;
 				failureError = error instanceof Error ? error.message : String(error);
 			}
-			if (success) markSectionAgentTouched(sectionId, beforeSignature);
+			if (success) {
+				markSectionAgentTouched(sectionId, beforeSignature);
+			}
 			try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
-			if (!deferResponse) postMessageToHost({
-				type: 'toolResponse', requestId, result: { success, resultPreview: '' },
-				error: success ? undefined : (failureError || 'Failed to configure query section'),
-			});
+			if (!deferResponse) {
+				postMessageToHost({
+					type: 'toolResponse', requestId, result: { success, resultPreview: '' },
+					error: success ? undefined : (failureError || 'Failed to configure query section'),
+				});
+			}
 			break;
 		}
 
 		case 'toolCancelKustoExecution': {
 			const requestId = String(message.requestId || '');
 			const owner = message.owner || kustoToolExecutionOwnerByRequestId.get(requestId);
-			if (!owner) { if (requestId) cancelledKustoToolRequestIds.add(requestId); break; }
-			const section = __kustoGetQuerySectionElement(owner.boxId);
-			const active = section?.getActiveExecution?.();
-			if (active?.executionId === owner.executionId
-				&& active.sectionInstanceId === owner.sectionInstanceId
-				&& active.targetGeneration === owner.targetGeneration) {
-				(window as any).cancelQuery?.(owner.boxId);
+			const settleCancellation = kustoToolExecutionSettlementByRequestId.get(requestId);
+			if (!owner) {
+				if (settleCancellation) settleCancellation();
+				else if (requestId) cancelledKustoToolRequestIds.add(requestId);
+				break;
+			}
+			try {
+				const section = __kustoGetQuerySectionElement(owner.boxId);
+				const active = section?.getActiveExecution?.();
+				if (active?.executionId === owner.executionId
+					&& active.sectionInstanceId === owner.sectionInstanceId
+					&& active.targetGeneration === owner.targetGeneration) {
+					(window as any).cancelQuery?.(owner.boxId);
+				}
+			} finally {
+				settleCancellation?.();
 			}
 			break;
 		}
@@ -3773,6 +3819,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			// 3. Click send button
 			// 4. Wait for results to be displayed before returning
 			(async () => {
+				let cleanupDelegation: (() => void) | undefined;
 				try {
 					const requestId = String(message.requestId || '');
 					if (requestId && cancelledKustoToolRequestIds.delete(requestId)) {
@@ -3881,77 +3928,79 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				let generatedQuery = '';
 				let queryGenerated = false;
 				let expectedExecutionId = '';
+				let executedQuery = '';
 				let expectedCopilotRequest: KustoCopilotRequestIdentity | undefined;
 				let pendingQueryTerminal: any = null;
 				let timeoutId: ReturnType<typeof setTimeout> | undefined;
+				const modelConsumerId = modelResultArtifactConsumerId(requestId);
 				const cleanup = () => {
-					window.removeEventListener(ADMITTED_KUSTO_COPILOT_EVENT, resultHandler as EventListener);
-					window.removeEventListener(ADMITTED_KUSTO_EXECUTION_STARTED_EVENT, startedHandler as EventListener);
-					window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener);
-					if (timeoutId !== undefined) clearTimeout(timeoutId);
-					kustoCopilotToolOwnerByRequestId.delete(requestId);
-					cancelledKustoToolRequestIds.delete(requestId);
+					try { window.removeEventListener(ADMITTED_KUSTO_COPILOT_EVENT, resultHandler as EventListener); } catch { /* best effort */ }
+					try { window.removeEventListener(ADMITTED_KUSTO_EXECUTION_STARTED_EVENT, startedHandler as EventListener); } catch { /* best effort */ }
+					try { window.removeEventListener(ADMITTED_KUSTO_TERMINAL_EVENT, terminalHandler as EventListener); } catch { /* best effort */ }
+					try { if (timeoutId !== undefined) clearTimeout(timeoutId); } catch { /* best effort */ }
+					try { kustoCopilotToolOwnerByRequestId.delete(requestId); } catch { /* best effort */ }
+					try { cancelledKustoToolRequestIds.delete(requestId); } catch { /* best effort */ }
+					try { unbindResultArtifactConsumer(modelConsumerId); } catch { /* best effort */ }
 				};
+				cleanupDelegation = cleanup;
 
 				const startedHandler = (event: Event) => {
-					const msg = (event as CustomEvent).detail;
-					if (!msg || !expectedCopilotRequest || msg.producer !== 'copilot'
-						|| !hasKustoCopilotRequestIdentity(msg)
-						|| !kustoCopilotRequestIdentityEquals(expectedCopilotRequest, msg)) return;
-					const started = msg as KustoCopilotRequestIdentity & Record<string, any>;
-					expectedExecutionId = String(started.executionId || '');
+					try {
+						const msg = (event as CustomEvent).detail;
+						if (!msg || !expectedCopilotRequest || msg.producer !== 'copilot'
+							|| !hasKustoCopilotRequestIdentity(msg)
+							|| !kustoCopilotRequestIdentityEquals(expectedCopilotRequest, msg)) return;
+						const started = msg as KustoCopilotRequestIdentity & Record<string, any>;
+						expectedExecutionId = String(started.executionId || '');
+						executedQuery = typeof started.query === 'string' ? started.query : '';
+						if (!executedQuery.trim()) {
+							sendModelResultFailure('Query provenance is unavailable for model use.');
+							return;
+						}
+						generatedQuery = executedQuery;
+					} catch (error) {
+						sendModelResultFailure(error instanceof Error ? error.message : String(error));
+					}
 				};
 				
-				// Helper to send successful response
-				const sendSuccessResponse = (msg: any) => {
+				const sendModelResultFailure = (error: string) => {
 					if (responded) return;
 					responded = true;
 					cleanup();
-					
-					// Get current query from editor
-					try {
-						const editor = queryEditors && queryEditors[sectionId];
-						if (editor && typeof editor.getValue === 'function') {
-							generatedQuery = editor.getValue() || generatedQuery;
-						}
-					} catch (e) { console.error('[kusto]', e); }
+					postMessageToHost({
+						type: 'toolResponse', requestId,
+						result: { success: false, query: generatedQuery || undefined, error },
+					});
+				};
+
+				// Helper to send a response from the exact bound artifact revision.
+				const sendSuccessResponse = () => {
+					if (responded) return;
+					const artifact = getBoundResultArtifact(modelConsumerId, sectionId);
+					if (!artifact || artifact.producer?.executionId !== expectedExecutionId
+						|| artifact.policy?.sendToModel !== true) {
+						sendModelResultFailure('Query results are not permitted for model use.');
+						return;
+					}
 					
 					// Don't call __kustoCopilotWriteQueryDone here — the regular
 					// 'copilotWriteQueryDone' handler already does it.
 					
-					// Get the results
-					let rows: any[] = [];
-					let columns: any[] = [];
-					let rowCount = 0;
-					
-					// Try to get from the result state (most reliable after display)
-					try {
-						const resultState = getResultsState(sectionId);
-						if (resultState) {
-							columns = Array.isArray(resultState.columns) ? resultState.columns : [];
-							rows = Array.isArray(resultState.rows) ? resultState.rows : [];
-							rowCount = rows.length;
-						}
-					} catch (e) { console.error('[kusto]', e); }
-					
-					// Fallback to message data
-					if (columns.length === 0 && msg && msg.result && msg.result.primaryResults && msg.result.primaryResults.length > 0) {
-						const primary = msg.result.primaryResults[0];
-						columns = primary.columns ? primary.columns.map((c: any) => c.name || c) : [];
-						rows = primary.rows || [];
-						rowCount = rows.length;
-					}
+					const columns = [...artifact.columns];
+					const rows = [...artifact.rows];
+					const rowCount = rows.length;
 					
 					// Limit rows for response size
 					const truncated = rows.length > maxResultRows;
 					const responseRows = truncated ? rows.slice(0, maxResultRows) : rows;
-					
+					responded = true;
+					cleanup();
 					postMessageToHost({ 
 						type: 'toolResponse', 
 						requestId, 
 						result: { 
 							success: true,
-							query: generatedQuery,
+							query: executedQuery || generatedQuery,
 							rowCount,
 							columns,
 							results: responseRows,
@@ -3975,7 +4024,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							queryGenerated = true;
 							try {
 								const editor = queryEditors && queryEditors[sectionId];
-								generatedQuery = editor && typeof editor.getValue === 'function' ? editor.getValue() : '';
+								generatedQuery = executedQuery
+									|| (editor && typeof editor.getValue === 'function' ? editor.getValue() : '');
 							} catch (e) { console.error('[kusto]', e); }
 							
 							if (!output.ok) {
@@ -3999,7 +4049,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							}
 							
 							if (pendingQueryTerminal?.type === 'queryResult') {
-								sendSuccessResponse(pendingQueryTerminal);
+								sendSuccessResponse();
+								return;
+							}
+							if (pendingQueryTerminal?.type === 'modelResultDenied') {
+								sendModelResultFailure(pendingQueryTerminal.error);
 								return;
 							}
 							if (pendingQueryTerminal?.type === 'queryError') {
@@ -4017,35 +4071,54 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						}
 					} catch (err: any) {
 						console.error('[Kusto Tools] Error in result handler:', err);
+						sendModelResultFailure(err instanceof Error ? err.message : String(err));
 					}
 				};
 
 				const terminalHandler = (event: Event) => {
-					const msg = (event as CustomEvent).detail;
-					if (!msg || responded || !expectedCopilotRequest || msg.producer !== 'copilot'
-						|| !hasKustoCopilotRequestIdentity(msg)
-						|| !kustoCopilotRequestIdentityEquals(expectedCopilotRequest, msg)) return;
-					const terminal = msg as KustoCopilotRequestIdentity & Record<string, any>;
-					if (!expectedExecutionId || String(terminal.executionId || '') !== expectedExecutionId) return;
-					if (terminal.type === 'queryResult') {
-						if (queryGenerated) sendSuccessResponse(terminal);
-						else pendingQueryTerminal = terminal;
-						return;
-					}
-					if (terminal.type === 'queryError') {
-						if (!queryGenerated) {
-							pendingQueryTerminal = terminal;
+					try {
+						const msg = (event as CustomEvent).detail;
+						if (!msg || responded || !expectedCopilotRequest || msg.producer !== 'copilot'
+							|| !hasKustoCopilotRequestIdentity(msg)
+							|| !kustoCopilotRequestIdentityEquals(expectedCopilotRequest, msg)) return;
+						const terminal = msg as KustoCopilotRequestIdentity & Record<string, any>;
+						if (!expectedExecutionId || String(terminal.executionId || '') !== expectedExecutionId) return;
+						if (terminal.type === 'queryResult') {
+							const artifact = getResultArtifactByProducerExecution(sectionId, expectedExecutionId);
+							const bound = artifact && bindResultArtifactConsumer(
+								modelConsumerId, sectionId, artifact.artifactId,
+							) === artifact.artifactId;
+							if (!bound || artifact.policy?.sendToModel !== true) {
+								const denied = { type: 'modelResultDenied', error: 'Query results are not permitted for model use.' };
+								if (queryGenerated) sendModelResultFailure(denied.error);
+								else pendingQueryTerminal = denied;
+								return;
+							}
+							if (queryGenerated) sendSuccessResponse();
+							else pendingQueryTerminal = terminal;
 							return;
 						}
-						responded = true;
-						cleanup();
-						postMessageToHost({
-							type: 'toolResponse', requestId,
-							result: {
-								success: false, query: generatedQuery || undefined,
-								error: terminal.error || 'Query execution failed',
-							},
-						});
+						if (terminal.type === 'queryError') {
+							if (!queryGenerated) {
+								pendingQueryTerminal = terminal;
+								return;
+							}
+							responded = true;
+							cleanup();
+							postMessageToHost({
+								type: 'toolResponse', requestId,
+								result: {
+									success: false, query: generatedQuery || undefined,
+									error: terminal.error || 'Query execution failed',
+								},
+							});
+							return;
+						}
+						if (terminal.type === 'queryCancelled') {
+							sendModelResultFailure('Query execution was cancelled.');
+						}
+					} catch (error) {
+						sendModelResultFailure(error instanceof Error ? error.message : String(error));
 					}
 				};
 				
@@ -4108,6 +4181,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 				
 				} catch (err: any) {
+					try { cleanupDelegation?.(); } catch { /* best effort */ }
 					console.error('[Kusto Tools] Error delegating to Copilot:', err);
 					postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false, error: err.message || String(err) } });
 				}

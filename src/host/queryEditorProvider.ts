@@ -183,7 +183,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	private async claimKustoExecutionInWebview(
-		reservation: import('../shared/kustoExecution').KustoExecutionReservation,
+		reservation: import('../shared/kustoExecution').KustoExecutionReservation, query: string,
 		expectedPredecessorExecutionId?: string,
 	): Promise<boolean> {
 		const key = this.kustoExecutionAckKey(reservation);
@@ -200,7 +200,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.pendingKustoExecutionStartAcks.set(key, { resolve, timer });
 		});
 		const message: KustoExecutionStarted = {
-			type: 'kustoExecutionStarted', ...reservation,
+			type: 'kustoExecutionStarted', ...reservation, query,
 			...(expectedPredecessorExecutionId ? { expectedPredecessorExecutionId } : {}),
 		};
 		const delivered = await this.postMessage(message);
@@ -2727,7 +2727,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			return { status: 'superseded', executionId: request.executionId };
 		}
 		if (!options.preclaimedByWebview && (options.producer === 'copilot' || options.producer === 'comparison')
-			&& !await this.claimKustoExecutionInWebview(reservation, expectedPredecessorExecutionId)) {
+			&& !await this.claimKustoExecutionInWebview(reservation, options.query, expectedPredecessorExecutionId)) {
 			this.kustoExecutionCoordinator.cancelExpected(reservation);
 			return { status: 'superseded', executionId: request.executionId };
 		}

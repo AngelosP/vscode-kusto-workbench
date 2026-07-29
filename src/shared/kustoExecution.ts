@@ -48,6 +48,7 @@ export type KustoExecutionSuccessStamp = KustoExecutionReservation & Readonly<{
 
 export type KustoExecutionStarted = KustoExecutionReservation & Readonly<{
 	type: 'kustoExecutionStarted';
+	query: string;
 	expectedPredecessorExecutionId?: string;
 }>;
 
