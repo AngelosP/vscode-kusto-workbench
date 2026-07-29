@@ -11,7 +11,13 @@ const mockGetChartDatasetsInDomOrder = vi.fn(() => []);
 const mockRefreshAllDataSourceDropdowns = vi.fn();
 const mockRenderChart = vi.fn();
 const mockSetResultsState = vi.fn();
+const mockGetBoundResultArtifact = vi.fn();
+const mockRebindResultArtifactConsumer = vi.fn();
+const mockUnbindResultArtifactConsumer = vi.fn();
+const mockClearResultsState = vi.fn();
 const mockNormalizeResultsColumnName = vi.fn((c: string) => c);
+const currentArtifacts = new Map<string, any>();
+const boundArtifacts = new Map<string, any>();
 const mockGetRawCellValue = vi.fn((v: unknown) => {
 	if (v === null || v === undefined) return null;
 	if (typeof v === 'object' && v !== null && 'value' in (v as Record<string, unknown>)) return (v as Record<string, unknown>).value;
@@ -25,6 +31,10 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 vi.mock('../../src/webview/core/results-state.js', () => ({
 	setResultsState: mockSetResultsState,
 	getResultsStateRevision: vi.fn(() => 0),
+	getBoundResultArtifact: mockGetBoundResultArtifact,
+	rebindResultArtifactConsumer: mockRebindResultArtifactConsumer,
+	unbindResultArtifactConsumer: mockUnbindResultArtifactConsumer,
+	clearResultsState: mockClearResultsState,
 }));
 
 vi.mock('../../src/webview/core/section-factory.js', () => ({
@@ -62,10 +72,37 @@ beforeEach(() => {
 	mockGetChartDatasetsInDomOrder.mockReturnValue([]);
 	mockSchedulePersist.mockClear();
 	mockSetResultsState.mockClear();
+	currentArtifacts.clear();
+	boundArtifacts.clear();
+	mockGetBoundResultArtifact.mockReset();
+	mockGetBoundResultArtifact.mockImplementation((consumerId: string, sourceBoxId?: string) => {
+		const artifact = boundArtifacts.get(consumerId);
+		return !sourceBoxId || artifact?.sourceBoxId === sourceBoxId ? artifact || null : null;
+	});
+	mockRebindResultArtifactConsumer.mockReset();
+	mockRebindResultArtifactConsumer.mockImplementation((consumerId: string, sourceBoxId: string) => {
+		let artifact = currentArtifacts.get(sourceBoxId);
+		if (!artifact) {
+			const dataset = mockGetChartDatasetsInDomOrder().find(candidate => candidate.id === sourceBoxId);
+			if (dataset) {
+				artifact = {
+					...fakeArtifact(sourceBoxId, 1, dataset.rows),
+					columns: dataset.columns,
+				};
+				currentArtifacts.set(sourceBoxId, artifact);
+			}
+		}
+		if (artifact) boundArtifacts.set(consumerId, artifact);
+		else boundArtifacts.delete(consumerId);
+		return artifact?.artifactId;
+	});
+	mockUnbindResultArtifactConsumer.mockReset();
+	mockUnbindResultArtifactConsumer.mockImplementation((consumerId: string) => boundArtifacts.delete(consumerId));
+	mockClearResultsState.mockClear();
 });
 
 // Dynamic import after mocks are set up
-const { KwTransformationSection } =
+const { KwTransformationSection, removeTransformationBox } =
 	await import('../../src/webview/sections/kw-transformation-section.js');
 
 // ─── Helper ───────────────────────────────────────────────────────────────────
@@ -113,9 +150,78 @@ function getResults(el: InstanceType<typeof KwTransformationSection>): {
 	return { columns: [], rows: [], error: 'no results' };
 }
 
+function fakeArtifact(sourceBoxId: string, revision: number, rows: unknown[][], policy?: Record<string, unknown>) {
+	return {
+		artifactId: `result:${sourceBoxId}:${revision}`,
+		sourceBoxId,
+		revision,
+		createdAt: revision,
+		restored: false,
+		columns: ['Value'],
+		rows,
+		metadata: {},
+		...(policy ? { policy } : {}),
+		lineage: [],
+	};
+}
+
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('transformation-join', () => {
+	it('releases both input bindings and clears derived output on removal', () => {
+		removeTransformationBox('transformation_removed');
+
+		expect(mockUnbindResultArtifactConsumer).toHaveBeenCalledWith('transformation_removed:input:primary');
+		expect(mockUnbindResultArtifactConsumer).toHaveBeenCalledWith('transformation_removed:input:join-right');
+		expect(mockClearResultsState).toHaveBeenCalledWith('transformation_removed');
+	});
+
+	it('pins an input revision until dependent refresh explicitly rebinds it', () => {
+		const sourceA = fakeArtifact('query_source', 1, [['revision-a']], {
+			accountPartition: 'partition-a', leaveNoTraceRevision: 3,
+		});
+		currentArtifacts.set('query_source', sourceA);
+		mockGetChartDatasetsInDomOrder.mockReturnValue([{
+			id: 'query_source', label: 'Source', columns: ['Value'], rows: [['revision-a']],
+		}]);
+		const el = createSection({ transformationType: 'derive' });
+
+		el.configure({ dataSourceId: 'query_source', transformationType: 'derive', deriveColumns: [] });
+
+		expect(mockRebindResultArtifactConsumer).toHaveBeenCalledWith(
+			'transformation_test:input:primary', 'query_source',
+		);
+		expect(mockSetResultsState).toHaveBeenLastCalledWith(
+			'transformation_test',
+			expect.objectContaining({ rows: [['revision-a']] }),
+			expect.objectContaining({
+				lineage: [{ sourceArtifactId: sourceA.artifactId, role: 'primary' }],
+				policy: expect.objectContaining({ accountPartition: 'partition-a', leaveNoTraceRevision: 3 }),
+			}),
+		);
+
+		const sourceB = fakeArtifact('query_source', 2, [['revision-b'], ['revision-b-2']], {
+			accountPartition: 'partition-a', leaveNoTraceRevision: 3,
+		});
+		currentArtifacts.set('query_source', sourceB);
+		mockGetChartDatasetsInDomOrder.mockReturnValue([{
+			id: 'query_source', label: 'Source', columns: ['Value'], rows: [['revision-b'], ['revision-b-2']],
+		}]);
+		mockRebindResultArtifactConsumer.mockClear();
+		el.configure({ transformationType: 'derive', deriveColumns: [] });
+		expect((mockSetResultsState.mock.calls.at(-1)?.[1] as any).rows).toEqual([['revision-a']]);
+		expect(mockRebindResultArtifactConsumer).not.toHaveBeenCalled();
+
+		el.refresh();
+
+		expect((mockSetResultsState.mock.calls.at(-1)?.[1] as any).rows).toEqual([
+			['revision-b'], ['revision-b-2'],
+		]);
+		expect(mockSetResultsState.mock.calls.at(-1)?.[2]).toEqual(expect.objectContaining({
+			lineage: [{ sourceArtifactId: sourceB.artifactId, role: 'primary' }],
+		}));
+	});
+
 	const leftDs = {
 		id: 'query_1',
 		label: 'Query 1',
@@ -137,11 +243,11 @@ describe('transformation-join', () => {
 			expect((mockSetResultsState.mock.calls.at(-1)?.[1] as any).rows).toEqual([['secret']]);
 
 			mockGetChartDatasetsInDomOrder.mockReturnValue([]);
+			currentArtifacts.delete('sql-source');
+			boundArtifacts.clear();
 			el.refresh();
 
-			expect(mockSetResultsState).toHaveBeenLastCalledWith('transformation_test', expect.objectContaining({
-				columns: [], rows: [],
-			}));
+			expect(mockClearResultsState).toHaveBeenLastCalledWith('transformation_test');
 		});
 
 	const rightDs = {

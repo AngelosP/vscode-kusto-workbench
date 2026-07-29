@@ -163,20 +163,22 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 - `ResultArtifactStore` now snapshots every accepted result into a deep-immutable per-source revision while `results-state.ts` preserves the mutable latest-result facade for compatibility. Current pointers, explicit consumer bindings, source-wide revocation, and reference-based pruning have one owner.
 - Admitted Kusto successes publish exact reservation, dispatch, target, principal, policy, and optional comparison lineage. Bounded `resultJson` persistence can carry a row-free artifact descriptor; owner/policy admission precedes descriptor installation, restored identity remains stable, and later revisions remain monotonic.
 - Charts are the first bound consumer. They render their bound immutable revision, explicitly rebind during the existing dependent-refresh cascade or source selection, and release bindings on source clear or chart removal.
+- Transformations bind primary and join-right revisions independently, compute from those immutable inputs, and publish derived artifacts with direct lineage roles plus flattened leaf-source policies. Formula edits stay pinned; source changes and dependent refresh explicitly rebind.
+- Artifact retention now follows lineage references. Source clear revokes affected revisions and downstream bindings transitively while preserving a retargeted current derived revision whose lineage is independent of the cleared source.
 - Persistence deletion and host privacy sanitation remove rows and descriptors atomically. A descriptor is never row authority, cannot restore without admitted `resultJson`, and is rejected when its source or policy claims disagree with the current owner.
 - Static terminal-construction/cancellation guards, protocol inventory, focused state-machine tests, full sequential tests, and authenticated normal/rerun/retarget/cancellation E2E are green.
 
 **Remaining divergence:**
 
 - Mutable latest-result state remains as a compatibility facade for tables and unmigrated consumers.
-- Transformations, comparisons, HTML dashboards, export, and Copilot can identify a source section but not yet bind or publish an immutable producer revision with policy-bearing lineage.
+- Comparisons, HTML dashboards, export, and Copilot can identify a source section but do not yet consume an exact immutable revision through a policy-bearing binding.
 - SQL results receive generic immutable runtime snapshots but do not yet publish or persist the same exact producer/principal/policy provenance as Kusto.
 - Kusto and SQL retain transport-specific execution coordinators over the shared low-level run registry; a transport-neutral artifact publication contract has not yet proven which semantics should be shared above transport.
 
 **Failure modes:**
 
-- Unmigrated downstream state can be replaced without retaining the exact producer revision that a transformation, dashboard, export, or Copilot response consumed.
-- Derived data outside the chart binding path can lose privacy/export permissions as it moves through section-keyed maps.
+- Unmigrated downstream state can be replaced without retaining the exact producer revision that a comparison, dashboard, export, or Copilot response consumed.
+- Derived data outside chart and transformation paths can lose privacy/export permissions as it moves through section-keyed maps.
 - SQL restoration and persistence can preserve rows without the same first-class immutable producer, target, principal, policy, and lineage record as Kusto.
 - Prematurely merging Kusto and SQL execution abstractions could erase transport-specific cancellation and privacy semantics before the artifact contract is proven.
 
@@ -331,7 +333,7 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 ### Iteration `EXA-2`: Immutable Result Artifacts And Lineage
 
-**Status:** initial vertical slice implemented; broader consumer and derived-producer migration remains active.
+**Status:** initial artifact/chart slice and transformation-derived-producer slice implemented; broader consumer migration remains active.
 
 **Why next:** EXA-1 makes the producer execution exact, but admitted rows still collapse into mutable section-keyed state. This leaves the highest-risk remaining break between exact production and downstream consumption.
 
@@ -345,7 +347,11 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 **Initial qualification:** the 12-file focused ring passed 527 tests; full sequential Vitest passed 196 files and 5,116 tests; production extension/browser builds, integration compilation, and bundle gates passed; the extension-host suite passed all 113 tests with five-second Mocha headroom for its existing three-second bounded-close case; and native `default/chart-regressions` passed both scenarios on VS Code 1.130.0, including the A-to-B artifact contract.
 
-**Next boundary:** migrate transformations as the first derived producer. A transformation must bind an immutable source revision, publish its own immutable artifact with source-artifact lineage and inherited policy, retain that lineage across persistence/privacy decisions, and rebind only through the established dependent-refresh path. Keep comparisons, dashboards, export, Copilot, SQL exact provenance, coordinator convergence, and `ACT` outside that slice.
+**Transformation evidence:** primary and join-right inputs now have independent bindings; outputs retain direct revisions and flattened leaf-source policies; unchanged-source tool edits remain pinned; dependent refresh explicitly rebinds; join-right changes trigger recomputation; removal releases inputs and output; and source revocation follows lineage transitively without clearing a retargeted independent current revision. Pessimistic review returned `VERDICT: ACCEPTABLE FOR TRANSFORMATION ARTIFACT SLICE`.
+
+**Transformation qualification:** the 14-file focused ring passed 570 tests; full sequential Vitest passed 196 files and 5,123 tests; host/webview type checks, production extension/browser builds, integration compilation, lint with zero errors, and both bundle gates passed; the extension-host suite passed all 113 tests with the established five-second Mocha headroom; and native `default/transformation-artifacts` passed on its first run on VS Code 1.130.0.
+
+**Next boundary:** bind comparison preparation/execution to the exact source artifact revision it compares, carry that identity through the request/terminal, and publish comparison output and summaries from that bound revision rather than `getCurrentResultArtifact(sourceBoxId)` at terminal time. Preserve exact execution ownership and target-equality checks. Keep dashboards, export, Copilot context, SQL exact provenance, coordinator convergence, and `ACT` outside that slice.
 
 ## Convergence Loop
 

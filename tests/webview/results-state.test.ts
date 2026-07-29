@@ -226,6 +226,58 @@ describe('results-state displayResultForBox', () => {
 		expect(getBoundResultArtifact(consumerId, sourceBoxId)).toBeNull();
 		expect(getResultArtifact(artifact.artifactId)).toBeNull();
 	});
+
+	it('synchronously revokes transitive derived artifacts and their consumers', () => {
+		const sourceBoxId = 'query_lineage_source';
+		const derivedBoxId = 'transformation_lineage_output';
+		const chartId = 'chart_lineage_consumer';
+		setResultsState(sourceBoxId, { columns: ['Value'], rows: [[1]] });
+		const sourceArtifact = getCurrentResultArtifact(sourceBoxId)!;
+		setResultsState(derivedBoxId, { columns: ['Value'], rows: [[1]] }, {
+			producer: { engine: 'transformation', boxId: derivedBoxId, producer: 'derive' },
+			lineage: [{ sourceArtifactId: sourceArtifact.artifactId, role: 'primary' }],
+		});
+		const derivedArtifact = getCurrentResultArtifact(derivedBoxId)!;
+		bindResultArtifactConsumer(chartId, derivedBoxId);
+		setResultsState(sourceBoxId, { columns: ['Value'], rows: [[2]] });
+		expect(getResultArtifact(sourceArtifact.artifactId)).toBe(sourceArtifact);
+
+		clearResultsState(sourceBoxId);
+
+		expect(getResultsState(derivedBoxId)).toBeNull();
+		expect(getCurrentResultArtifact(derivedBoxId)).toBeNull();
+		expect(getBoundResultArtifact(chartId, derivedBoxId)).toBeNull();
+		expect(getResultArtifact(derivedArtifact.artifactId)).toBeNull();
+		expect(mocks.notifyResultsUpdated).toHaveBeenCalledWith(derivedBoxId);
+	});
+
+	it('preserves a retargeted current derived revision when only its old lineage is revoked', () => {
+		const sourceAId = 'query_retarget_source_a';
+		const sourceBId = 'query_retarget_source_b';
+		const derivedBoxId = 'transformation_retargeted';
+		const oldConsumerId = 'chart_pinned_old_derived';
+		setResultsState(sourceAId, { columns: ['Value'], rows: [['a']] });
+		const sourceA = getCurrentResultArtifact(sourceAId)!;
+		setResultsState(derivedBoxId, { columns: ['Value'], rows: [['from-a']] }, {
+			lineage: [{ sourceArtifactId: sourceA.artifactId, role: 'primary' }],
+		});
+		const derivedA = getCurrentResultArtifact(derivedBoxId)!;
+		bindResultArtifactConsumer(oldConsumerId, derivedBoxId);
+		setResultsState(sourceBId, { columns: ['Value'], rows: [['b']] });
+		const sourceB = getCurrentResultArtifact(sourceBId)!;
+		setResultsState(derivedBoxId, { columns: ['Value'], rows: [['from-b']] }, {
+			lineage: [{ sourceArtifactId: sourceB.artifactId, role: 'primary' }],
+		});
+		const derivedB = getCurrentResultArtifact(derivedBoxId)!;
+
+		clearResultsState(sourceAId);
+
+		expect(getResultArtifact(derivedA.artifactId)).toBeNull();
+		expect(getBoundResultArtifact(oldConsumerId, derivedBoxId)).toBeNull();
+		expect(getCurrentResultArtifact(derivedBoxId)).toBe(derivedB);
+		expect(getResultsState(derivedBoxId)?.rows).toEqual([['from-b']]);
+		expect(mocks.notifyResultsUpdated).toHaveBeenCalledWith(derivedBoxId);
+	});
 });
 
 // ── getRawCellValue ───────────────────────────────────────────────────────────

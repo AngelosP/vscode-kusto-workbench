@@ -89,12 +89,15 @@ export function setResultsState(boxId: any, state: any, publication: ResultArtif
 
 export function clearResultsState(boxId: any) {
 	if (!boxId) return;
-	_resultArtifacts.unbindSource(String(boxId));
-	_resultArtifacts.clearCurrent(String(boxId));
-	delete _resultsByBoxId[boxId];
-	_resultsRevisionByBoxId[boxId] = (_resultsRevisionByBoxId[boxId] || 0) + 1;
-	if (currentResult?.boxId === boxId) currentResult = null;
-	try { __kustoNotifyResultsUpdated(boxId); } catch (e) { console.error('[kusto]', e); }
+	const affectedBoxIds = _resultArtifacts.revokeSource(String(boxId));
+	for (const affectedBoxId of affectedBoxIds) {
+		if (!_resultArtifacts.getCurrent(affectedBoxId)) {
+			delete _resultsByBoxId[affectedBoxId];
+			_resultsRevisionByBoxId[affectedBoxId] = (_resultsRevisionByBoxId[affectedBoxId] || 0) + 1;
+			if (currentResult?.boxId === affectedBoxId) currentResult = null;
+		}
+		try { __kustoNotifyResultsUpdated(affectedBoxId); } catch (e) { console.error('[kusto]', e); }
+	}
 }
 
 // ── Raw cell value extraction ────────────────────────────────────────────────

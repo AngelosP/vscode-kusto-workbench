@@ -11,12 +11,20 @@ export type ResultArtifactProducer = Readonly<{
 	dispatch?: Readonly<Record<string, unknown>>;
 }>;
 
-export type ResultArtifactPolicy = Readonly<{
+export type ResultArtifactPolicyStamp = Readonly<{
 	accountPartition?: string;
 	authSessionGeneration?: number;
 	leaveNoTraceRevision?: number;
 	connectionRevision?: number;
 	connectionIdentityKey?: string;
+}>;
+
+export type ResultArtifactSourcePolicy = Readonly<ResultArtifactPolicyStamp & {
+	sourceArtifactId: string;
+}>;
+
+export type ResultArtifactPolicy = Readonly<ResultArtifactPolicyStamp & {
+	sourcePolicies?: readonly ResultArtifactSourcePolicy[];
 }>;
 
 export type ResultArtifactLineage = Readonly<{
@@ -61,6 +69,11 @@ export type ResultArtifact = Readonly<{
 	lineage: readonly ResultArtifactLineage[];
 }>;
 
+export type DerivedResultArtifactInput = Readonly<{
+	artifact: ResultArtifact;
+	role?: string;
+}>;
+
 function cloneValue(value: unknown, seen = new WeakMap<object, unknown>()): unknown {
 	if (value === null || typeof value !== 'object') return value;
 	if (value instanceof Date) return new Date(value.getTime());
@@ -94,6 +107,65 @@ function snapshotLineage(lineage: readonly ResultArtifactLineage[] | undefined):
 		sourceArtifactId: String(item.sourceArtifactId || ''),
 		...(item.role ? { role: String(item.role) } : {}),
 	})).filter(item => !!item.sourceArtifactId));
+}
+
+function policyStamp(policy: ResultArtifactPolicy | ResultArtifactSourcePolicy | undefined): ResultArtifactPolicyStamp | undefined {
+	if (!policy) return undefined;
+	const stamp: Record<string, unknown> = {};
+	for (const key of [
+		'accountPartition',
+		'authSessionGeneration',
+		'leaveNoTraceRevision',
+		'connectionRevision',
+		'connectionIdentityKey',
+	] as const) {
+		if (policy[key] !== undefined) stamp[key] = policy[key];
+	}
+	return Object.keys(stamp).length ? stamp as ResultArtifactPolicyStamp : undefined;
+}
+
+function sourcePoliciesForArtifact(artifact: ResultArtifact): ResultArtifactSourcePolicy[] {
+	const inherited = artifact.policy?.sourcePolicies;
+	if (inherited?.length) {
+		return inherited.map(sourcePolicy => ({
+			sourceArtifactId: sourcePolicy.sourceArtifactId,
+			...policyStamp(sourcePolicy),
+		}));
+	}
+	const stamp = policyStamp(artifact.policy);
+	return stamp ? [{ sourceArtifactId: artifact.artifactId, ...stamp }] : [];
+}
+
+export function createDerivedResultArtifactPublication(
+	producer: ResultArtifactProducer,
+	inputs: readonly DerivedResultArtifactInput[],
+): ResultArtifactPublication {
+	const validInputs = inputs.filter(input => !!String(input.artifact?.artifactId || '').trim());
+	const lineage = snapshotLineage(validInputs.map(input => ({
+		sourceArtifactId: input.artifact.artifactId,
+		...(input.role ? { role: input.role } : {}),
+	})));
+	const sourcePoliciesByKey = new Map<string, ResultArtifactSourcePolicy>();
+	for (const input of validInputs) {
+		for (const sourcePolicy of sourcePoliciesForArtifact(input.artifact)) {
+			const stamp = policyStamp(sourcePolicy);
+			const key = `${sourcePolicy.sourceArtifactId}\u0000${JSON.stringify(stamp || {})}`;
+			sourcePoliciesByKey.set(key, { sourceArtifactId: sourcePolicy.sourceArtifactId, ...stamp });
+		}
+	}
+	const sourcePolicies = [...sourcePoliciesByKey.values()];
+	const firstStamp = sourcePolicies.length ? policyStamp(sourcePolicies[0]) : undefined;
+	const commonStamp = firstStamp && sourcePolicies.every(sourcePolicy => (
+		JSON.stringify(policyStamp(sourcePolicy) || {}) === JSON.stringify(firstStamp)
+	)) ? firstStamp : undefined;
+	const policy = sourcePolicies.length
+		? deepFreeze({ ...commonStamp, sourcePolicies: deepFreeze(sourcePolicies) })
+		: undefined;
+	return deepFreeze({
+		producer: snapshotRecord(producer)!,
+		lineage,
+		...(policy ? { policy } : {}),
+	});
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -268,6 +340,49 @@ export class ResultArtifactStore {
 		this.pruneIfUnreferenced(artifactId);
 	}
 
+	revokeSource(sourceBoxId: string): readonly string[] {
+		const source = String(sourceBoxId || '').trim();
+		if (!source) return [];
+		const revokedArtifactIds = new Set(
+			[...this.artifacts.values()]
+				.filter(artifact => artifact.sourceBoxId === source)
+				.map(artifact => artifact.artifactId),
+		);
+		let changed = true;
+		while (changed) {
+			changed = false;
+			for (const artifact of this.artifacts.values()) {
+				if (revokedArtifactIds.has(artifact.artifactId)) continue;
+				if (!artifact.lineage.some(input => revokedArtifactIds.has(input.sourceArtifactId))) continue;
+				revokedArtifactIds.add(artifact.artifactId);
+				changed = true;
+			}
+		}
+		const affectedSourceIds = new Set<string>([source]);
+		for (const artifactId of revokedArtifactIds) {
+			const artifact = this.artifacts.get(artifactId);
+			if (artifact) affectedSourceIds.add(artifact.sourceBoxId);
+		}
+		for (const [candidateSourceId, currentArtifactId] of this.currentArtifactIdBySource) {
+			if (!revokedArtifactIds.has(currentArtifactId)) continue;
+			this.currentArtifactIdBySource.delete(candidateSourceId);
+		}
+		for (const [consumerId, artifactId] of this.artifactIdByConsumer) {
+			if (revokedArtifactIds.has(artifactId)) this.artifactIdByConsumer.delete(consumerId);
+		}
+		const lineageCandidates = new Set<string>();
+		for (const artifactId of revokedArtifactIds) {
+			const artifact = this.artifacts.get(artifactId);
+			if (!artifact) continue;
+			for (const input of artifact.lineage) lineageCandidates.add(input.sourceArtifactId);
+			this.artifacts.delete(artifactId);
+		}
+		for (const artifactId of lineageCandidates) {
+			if (!revokedArtifactIds.has(artifactId)) this.pruneIfUnreferenced(artifactId);
+		}
+		return [...affectedSourceIds];
+	}
+
 	clear(): void {
 		this.artifacts.clear();
 		this.currentArtifactIdBySource.clear();
@@ -275,9 +390,17 @@ export class ResultArtifactStore {
 		this.artifactIdByConsumer.clear();
 	}
 
-	private pruneIfUnreferenced(artifactId: string): void {
+	private pruneIfUnreferenced(artifactId: string, visited = new Set<string>()): void {
+		if (visited.has(artifactId)) return;
+		visited.add(artifactId);
 		if ([...this.currentArtifactIdBySource.values()].includes(artifactId)) return;
 		if ([...this.artifactIdByConsumer.values()].includes(artifactId)) return;
+		if ([...this.artifacts.values()].some(artifact => (
+			artifact.artifactId !== artifactId
+			&& artifact.lineage.some(input => input.sourceArtifactId === artifactId)
+		))) return;
+		const artifact = this.artifacts.get(artifactId);
 		this.artifacts.delete(artifactId);
+		for (const input of artifact?.lineage || []) this.pruneIfUnreferenced(input.sourceArtifactId, visited);
 	}
 }

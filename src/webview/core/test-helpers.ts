@@ -5543,6 +5543,68 @@ async function e2eChartAssertArtifactPinAndDependentRebind(): Promise<string> {
 	return `chart pinned ${artifactA.artifactId}, rebound ${artifactB.artifactId}, then revoked`;
 }
 
+async function e2eTransformationAssertArtifactPinRebindAndRevoke(): Promise<string> {
+	const firstCell = (artifact: { rows: readonly unknown[] } | null): unknown => {
+		const firstRow = artifact?.rows[0];
+		return Array.isArray(firstRow) ? firstRow[0] : undefined;
+	};
+	const sourceId = e2eLayoutAddSection('addUrlBox', {
+		id: 'url_e2e_transformation_artifact_source',
+		name: 'Transformation artifact source',
+		url: 'https://example.invalid/transformation-artifact.csv',
+		expanded: false,
+	});
+	await e2eLayoutWaitFor(() => !!document.getElementById(sourceId), 'transformation artifact source');
+	const columns = [{ name: 'Value', type: 'string' }];
+	displayResultForBox({ columns, rows: [['revision-a']], metadata: {} }, sourceId, { label: 'Results' });
+	const sourceA = getCurrentResultArtifact(sourceId);
+	if (!sourceA || firstCell(sourceA) !== 'revision-a') throw new Error('Source revision A was not published');
+
+	const transformationId = e2eLayoutAddSection('addTransformationBox', {
+		id: 'transformation_e2e_artifact',
+		name: 'Artifact Transformation',
+		dataSourceId: sourceId,
+		transformationType: 'derive',
+		deriveColumns: [],
+		expanded: true,
+	});
+	await e2eLayoutWaitFor(() => !!document.getElementById(transformationId), 'artifact transformation');
+	const transformation = document.getElementById(transformationId) as any;
+	transformation.refresh?.();
+	await e2eLayoutWaitFor(() => {
+		const output = getCurrentResultArtifact(transformationId);
+		return firstCell(output) === 'revision-a'
+			&& output?.lineage[0]?.sourceArtifactId === sourceA.artifactId;
+	}, 'transformation output from revision A', 10000);
+
+	displayResultForBox({ columns, rows: [['revision-b']], metadata: {} }, sourceId, { label: 'Results' });
+	const sourceB = getCurrentResultArtifact(sourceId);
+	if (!sourceB || sourceB.artifactId === sourceA.artifactId || firstCell(sourceB) !== 'revision-b') {
+		throw new Error('Source revision B was not published');
+	}
+	if (transformation.configure?.({ transformationType: 'derive', deriveColumns: [] }) !== true) {
+		throw new Error('Transformation configuration failed');
+	}
+	const pinnedOutput = getCurrentResultArtifact(transformationId);
+	if (firstCell(pinnedOutput) !== 'revision-a'
+		|| pinnedOutput?.lineage[0]?.sourceArtifactId !== sourceA.artifactId) {
+		throw new Error(`Unchanged-source configuration moved the input binding: ${JSON.stringify(pinnedOutput)}`);
+	}
+
+	await e2eLayoutWaitFor(() => {
+		const output = getCurrentResultArtifact(transformationId);
+		return firstCell(output) === 'revision-b'
+			&& output?.lineage[0]?.sourceArtifactId === sourceB.artifactId;
+	}, 'dependent transformation rebind to revision B', 10000);
+	clearResultsState(sourceId);
+	if (getCurrentResultArtifact(sourceId)
+		|| getCurrentResultArtifact(transformationId)
+		|| getResultsState(transformationId)) {
+		throw new Error('Source clear did not synchronously revoke the transformation output');
+	}
+	return `transformation pinned ${sourceA.artifactId}, rebound ${sourceB.artifactId}, then revoked`;
+}
+
 function e2eLayoutDispatchUrlContent(boxId: string): void {
 	window.dispatchEvent(new MessageEvent('message', {
 		data: {
@@ -6269,6 +6331,9 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 	chart: {
 		assertTitleSyncAndHeatmapNumericCategories: e2eChartAssertTitleSyncAndHeatmapNumericCategories,
 		assertArtifactPinAndDependentRebind: e2eChartAssertArtifactPinAndDependentRebind,
+	},
+	transformation: {
+		assertArtifactPinRebindAndRevoke: e2eTransformationAssertArtifactPinRebindAndRevoke,
 	},
 	cursorStatus: {
 		beginCapture: e2eBeginHostMessageCapture,

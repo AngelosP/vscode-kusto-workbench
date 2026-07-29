@@ -1655,7 +1655,11 @@ function __kustoRefreshDependentExtraBoxes( rootSourceId: any) {
 					for (const [boxId, st] of Object.entries(transformationStateByBoxId)) {
 						if (!st || typeof st !== 'object') continue;
 						const ds = (typeof (st as any).dataSourceId === 'string') ? String((st as any).dataSourceId) : '';
-						if (ds !== sourceId) continue;
+						const joinRightDs = (st as any).transformationType === 'join'
+							&& typeof (st as any).joinRightDataSourceId === 'string'
+							? String((st as any).joinRightDataSourceId)
+							: '';
+						if (ds !== sourceId && joinRightDs !== sourceId) continue;
 						if (visitedTransformations.has(boxId)) continue;
 						visitedTransformations.add(boxId);
 						try { __kustoUpdateTransformationBuilderUI(boxId); } catch (e) { console.error('[kusto]', e); }

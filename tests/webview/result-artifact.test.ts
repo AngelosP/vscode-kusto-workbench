@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+	createDerivedResultArtifactPublication,
 	publicationFromPersistedResultArtifact,
 	ResultArtifactStore,
 	toPersistedResultArtifact,
@@ -101,5 +102,70 @@ describe('ResultArtifactStore', () => {
 		store.bind('chart_1', 'query_1');
 		expect(store.get(first.artifactId)).toBeUndefined();
 		expect(store.get(second.artifactId)).toBe(second);
+	});
+
+	it('publishes truthful lineage and source policies for differently owned inputs', () => {
+		const store = new ResultArtifactStore();
+		const left = store.publish('query_left', { columns: [], rows: [[1]], metadata: {} }, {
+			policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 4 },
+		})!;
+		const right = store.publish('query_right', { columns: [], rows: [[2]], metadata: {} }, {
+			policy: { accountPartition: 'partition-b', leaveNoTraceRevision: 7 },
+		})!;
+
+		const publication = createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_1', producer: 'join' },
+			[
+				{ artifact: left, role: 'primary' },
+				{ artifact: right, role: 'join-right' },
+			],
+		);
+
+		expect(publication).toEqual({
+			producer: { engine: 'transformation', boxId: 'transformation_1', producer: 'join' },
+			lineage: [
+				{ sourceArtifactId: left.artifactId, role: 'primary' },
+				{ sourceArtifactId: right.artifactId, role: 'join-right' },
+			],
+			policy: {
+				sourcePolicies: [
+					{ sourceArtifactId: left.artifactId, accountPartition: 'partition-a', leaveNoTraceRevision: 4 },
+					{ sourceArtifactId: right.artifactId, accountPartition: 'partition-b', leaveNoTraceRevision: 7 },
+				],
+			},
+		});
+	});
+
+	it('keeps direct derived lineage while flattening policy ancestry to leaf artifacts', () => {
+		const store = new ResultArtifactStore();
+		const source = store.publish('query_source', { columns: [], rows: [[1]], metadata: {} }, {
+			policy: { accountPartition: 'partition-a', leaveNoTraceRevision: 4 },
+		})!;
+		const firstDerived = store.publish(
+			'transformation_1',
+			{ columns: [], rows: [[1]], metadata: {} },
+			createDerivedResultArtifactPublication(
+				{ engine: 'transformation', boxId: 'transformation_1', producer: 'derive' },
+				[{ artifact: source, role: 'primary' }],
+			),
+		)!;
+
+		const publication = createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_2', producer: 'summarize' },
+			[{ artifact: firstDerived, role: 'primary' }],
+		);
+
+		expect(publication.lineage).toEqual([
+			{ sourceArtifactId: firstDerived.artifactId, role: 'primary' },
+		]);
+		expect(publication.policy).toEqual({
+			accountPartition: 'partition-a',
+			leaveNoTraceRevision: 4,
+			sourcePolicies: [{
+				sourceArtifactId: source.artifactId,
+				accountPartition: 'partition-a',
+				leaveNoTraceRevision: 4,
+			}],
+		});
 	});
 });

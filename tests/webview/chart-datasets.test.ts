@@ -179,6 +179,31 @@ describe('dependent chart cascade', () => {
 		teardownDom();
 		const chartState = (window as any).chartStateByBoxId || {};
 		for (const key of Object.keys(chartState)) delete chartState[key];
+		const transformationState = (window as any).transformationStateByBoxId || {};
+		for (const key of Object.keys(transformationState)) delete transformationState[key];
+	});
+
+	it('refreshes a join transformation when its right input changes', async () => {
+		const container = setupDom([{ id: 'query_right', name: 'Right' }]);
+		const transformation = document.createElement('div') as HTMLDivElement & {
+			refresh: ReturnType<typeof vi.fn>;
+			refreshDataSources: ReturnType<typeof vi.fn>;
+		};
+		transformation.id = 'transformation_join';
+		transformation.refresh = vi.fn();
+		transformation.refreshDataSources = vi.fn();
+		container.appendChild(transformation);
+		const state = (window as any).transformationStateByBoxId
+			|| ((window as any).transformationStateByBoxId = {});
+		state.transformation_join = {
+			dataSourceId: 'query_left',
+			transformationType: 'join',
+			joinRightDataSourceId: 'query_right',
+		};
+
+		setFakeResults('query_right');
+
+		await vi.waitFor(() => expect(transformation.refresh).toHaveBeenCalled());
 	});
 
 	it('uses chart.refresh when source results are cleared', async () => {

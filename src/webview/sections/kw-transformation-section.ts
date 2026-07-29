@@ -9,7 +9,15 @@ import { customElement, property, state } from 'lit/decorators.js';
 import type { DataTableColumn, DataTableOptions } from '../components/kw-data-table.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
-import { setResultsState } from '../core/results-state.js';
+import {
+	clearResultsState,
+	getBoundResultArtifact,
+	rebindResultArtifactConsumer,
+	setResultsState,
+	unbindResultArtifactConsumer,
+	type ResultArtifact,
+} from '../core/results-state.js';
+import { createDerivedResultArtifactPublication } from '../../shared/resultArtifact.js';
 import { schedulePersist } from '../core/persistence.js';
 import { __kustoGetChartDatasetsInDomOrder, __kustoCleanupSectionModeResizeObserver, __kustoRefreshAllDataSourceDropdowns } from '../core/section-factory.js';
 import { renderChart as __kustoRenderChart } from '../shared/chart-renderer.js';
@@ -119,6 +127,10 @@ const JOIN_KIND_LABELS: Record<JoinKind, string> = {
 	rightsemi: 'rightsemi',
 };
 const JOIN_ROW_WARNING_THRESHOLD = 100_000;
+
+function transformationInputConsumerId(boxId: string, role: 'primary' | 'join-right'): string {
+	return `${boxId}:input:${role}`;
+}
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -360,7 +372,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	override firstUpdated(_changedProperties: PropertyValues): void {
 		super.firstUpdated(_changedProperties);
 
-		this._refreshDatasets();
+		this._rebindInputArtifacts();
+		this._forceRefreshDatasets();
 		this._updateHostClasses();
 		this._writeToGlobalState();
 		// Always compute + sync on initial render even when collapsed, so this
@@ -390,6 +403,18 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 			'_pivotAggregation',
 			'_joinRightDataSourceId', '_joinKind', '_joinKeys', '_joinOmitDuplicateColumns',
 		];
+		const primaryInputChanged = changed.has('_dataSourceId');
+		const rightInputChanged = changed.has('_joinRightDataSourceId') || changed.has('_transformationType');
+		if (primaryInputChanged) this._rebindInput('primary', this._dataSourceId);
+		if (rightInputChanged) {
+			this._rebindInput(
+				'join-right',
+				this._transformationType === 'join' ? this._joinRightDataSourceId : '',
+			);
+		}
+		if (primaryInputChanged || rightInputChanged) {
+			this._forceRefreshDatasets();
+		}
 		if (triggers.some(k => changed.has(k))) {
 			this._writeToGlobalState();
 			this._computeTransformation();
@@ -1726,11 +1751,60 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	// ── Data helpers ──────────────────────────────────────────────────────────
 
+	private _inputConsumerId(role: 'primary' | 'join-right'): string {
+		return transformationInputConsumerId(this.boxId, role);
+	}
+
+	private _rebindInput(role: 'primary' | 'join-right', sourceBoxId: string): void {
+		const consumerId = this._inputConsumerId(role);
+		if (sourceBoxId) rebindResultArtifactConsumer(consumerId, sourceBoxId);
+		else unbindResultArtifactConsumer(consumerId);
+	}
+
+	private _rebindInputArtifacts(): void {
+		this._rebindInput('primary', this._dataSourceId);
+		this._rebindInput(
+			'join-right',
+			this._transformationType === 'join' ? this._joinRightDataSourceId : '',
+		);
+	}
+
+	private _boundInputArtifact(role: 'primary' | 'join-right', sourceBoxId: string): ResultArtifact | null {
+		if (!sourceBoxId) return null;
+		return getBoundResultArtifact(this._inputConsumerId(role), sourceBoxId);
+	}
+
+	private _datasetFromArtifact(sourceBoxId: string, role: 'primary' | 'join-right', fallback?: DatasetEntry): DatasetEntry | null {
+		const artifact = this._boundInputArtifact(role, sourceBoxId);
+		if (!artifact) return null;
+		return {
+			id: sourceBoxId,
+			label: fallback?.label || sourceBoxId,
+			columns: artifact.columns.map(column => normalizeResultsColumnName(column)).filter(Boolean),
+			rows: artifact.rows as unknown[][],
+		};
+	}
+
+	private _withBoundInputDatasets(all: DatasetEntry[]): DatasetEntry[] {
+		const next = all.filter(dataset => dataset.id !== (this.boxId || this.id));
+		const replaceInput = (role: 'primary' | 'join-right', sourceBoxId: string) => {
+			if (!sourceBoxId) return;
+			const index = next.findIndex(dataset => dataset.id === sourceBoxId);
+			const fallback = index >= 0 ? next[index] : this._datasets.find(dataset => dataset.id === sourceBoxId);
+			const bound = this._datasetFromArtifact(sourceBoxId, role, fallback);
+			if (bound && index >= 0) next[index] = bound;
+			else if (bound) next.push(bound);
+			else if (index >= 0) next.splice(index, 1);
+		};
+		replaceInput('primary', this._dataSourceId);
+		if (this._transformationType === 'join') replaceInput('join-right', this._joinRightDataSourceId);
+		return next;
+	}
+
 	private _refreshDatasets(): void {
 		try {
-			// Filter out this transformation's own ID to prevent circular dependency.
 			const all = __kustoGetChartDatasetsInDomOrder() || [];
-			const next = all.filter((d: DatasetEntry) => d.id !== this.id);
+			const next = this._withBoundInputDatasets(all);
 			if (this._datasetsEqual(this._datasets, next)) return;
 			this._datasets = next;
 		} catch (e) { console.error('[kusto]', e); }
@@ -1744,7 +1818,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	private _forceRefreshDatasets(): void {
 		try {
 			const all = __kustoGetChartDatasetsInDomOrder() || [];
-			this._datasets = all.filter((d: DatasetEntry) => d.id !== this.id);
+			this._datasets = this._withBoundInputDatasets(all);
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1796,11 +1870,23 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	private _syncResultsToGlobal(): void {
 		try {
-			const w = window;
+			const primaryArtifact = this._boundInputArtifact('primary', this._dataSourceId);
+			const rightArtifact = this._transformationType === 'join'
+				? this._boundInputArtifact('join-right', this._joinRightDataSourceId)
+				: null;
+			if (!primaryArtifact || (this._transformationType === 'join' && this._joinRightDataSourceId && !rightArtifact)) {
+				clearResultsState(this.boxId);
+				return;
+			}
 			const cols = this._resultColumns.map(c => c.name);
 			const rows = this._resultRows;
-			// Register results directly in the global state map so other sections
-			// (charts, other transformations) can use this transformation as a data source.
+			const publication = createDerivedResultArtifactPublication(
+				{ engine: 'transformation', boxId: this.boxId, producer: this._transformationType },
+				[
+					{ artifact: primaryArtifact, role: 'primary' },
+					...(rightArtifact ? [{ artifact: rightArtifact, role: 'join-right' }] : []),
+				],
+			);
 			setResultsState(this.boxId, {
 					boxId: this.boxId,
 					columns: cols,
@@ -1810,7 +1896,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 					selectedRows: new Set(), searchMatches: [], currentSearchIndex: -1,
 					sortSpec: [], columnFilters: {}, filteredRowIndices: null,
 					displayRowIndices: null, rowIndexToDisplayIndex: null
-				});
+				}, publication);
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -2467,6 +2553,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	/** Public refresh — called by cross-section dependency refresh loops. */
 	public refresh(): void {
+		this._rebindInputArtifacts();
 		this._forceRefreshDatasets();
 		if (this._expanded) {
 			this._computeTransformation();
@@ -2484,6 +2571,9 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	/** Configure from agent tool. */
 	public configure(config: Record<string, unknown>): boolean {
 		try {
+			const previousDataSourceId = this._dataSourceId;
+			const previousJoinRightDataSourceId = this._joinRightDataSourceId;
+			const previousTransformationType = this._transformationType;
 			if (typeof config.dataSourceId === 'string') this._dataSourceId = config.dataSourceId;
 			if (typeof config.transformationType === 'string') this._transformationType = config.transformationType as TransformationType;
 			if (Array.isArray(config.deriveColumns)) {
@@ -2520,6 +2610,19 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 			if (typeof config.joinOmitDuplicateColumns === 'boolean') this._joinOmitDuplicateColumns = config.joinOmitDuplicateColumns;
 
 			this._writeToGlobalState();
+			const primaryInputChanged = previousDataSourceId !== this._dataSourceId;
+			const rightInputChanged = previousJoinRightDataSourceId !== this._joinRightDataSourceId
+				|| previousTransformationType !== this._transformationType;
+			if (primaryInputChanged) this._rebindInput('primary', this._dataSourceId);
+			if (rightInputChanged) {
+				this._rebindInput(
+					'join-right',
+					this._transformationType === 'join' ? this._joinRightDataSourceId : '',
+				);
+			}
+			if (primaryInputChanged || rightInputChanged) {
+				this._forceRefreshDatasets();
+			}
 			this._computeTransformation();
 			this._schedulePersist();
 			return true;
@@ -2537,12 +2640,15 @@ export function removeTransformationBox(boxId: unknown): void {
 	const id = String(boxId || '');
 	if (!id) return;
 	try { __kustoCleanupSectionModeResizeObserver(id); } catch (e) { console.error('[kusto]', e); }
+	try { unbindResultArtifactConsumer(transformationInputConsumerId(id, 'primary')); } catch (e) { console.error('[kusto]', e); }
+	try { unbindResultArtifactConsumer(transformationInputConsumerId(id, 'join-right')); } catch (e) { console.error('[kusto]', e); }
 	try {
 		const el = document.getElementById(id) as any;
 		if (el && el.parentElement) {
 			el.parentElement.removeChild(el);
 		}
 	} catch (e) { console.error('[kusto]', e); }
+	try { clearResultsState(id); } catch (e) { console.error('[kusto]', e); }
 	const idx = transformationBoxes.indexOf(id);
 	if (idx >= 0) transformationBoxes.splice(idx, 1);
 	try {
