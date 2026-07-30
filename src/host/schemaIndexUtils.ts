@@ -39,6 +39,262 @@ const _derivedColumnsCache = new WeakMap<object, Record<string, string[]>>();
 
 const sortStrings = (values: string[]): string[] => values.sort((a, b) => a.localeCompare(b));
 
+const CLR_TO_CSL_TYPE: Record<string, string> = {
+	'system.string': 'string',
+	'system.byte': 'uint8',
+	'system.int16': 'int16',
+	'system.uint16': 'uint16',
+	'system.int64': 'long',
+	'system.int32': 'int',
+	'system.uint32': 'uint',
+	'system.uint64': 'ulong',
+	'system.datetime': 'datetime',
+	'system.timespan': 'timespan',
+	'system.double': 'real',
+	'system.single': 'float',
+	'system.sbyte': 'bool',
+	'system.boolean': 'bool',
+	'newtonsoft.json.linq.jarray': 'dynamic',
+	'newtonsoft.json.linq.jobject': 'dynamic',
+	'newtonsoft.json.linq.jtoken': 'dynamic',
+	'system.object': 'dynamic',
+	'system.guid': 'guid',
+	'system.decimal': 'decimal',
+	'system.data.sqltypes.sqldecimal': 'decimal',
+};
+
+type JsonObject = Record<string, unknown>;
+
+function isJsonObject(value: unknown): value is JsonObject {
+	return !!value && typeof value === 'object' && !Array.isArray(value);
+}
+
+function isAcyclicJsonValue(value: unknown, ancestors: WeakSet<object> = new WeakSet()): boolean {
+	if (value === null || typeof value === 'string' || typeof value === 'boolean' || typeof value === 'number') return true;
+	if (!value || typeof value !== 'object') return false;
+	if (ancestors.has(value)) return false;
+	ancestors.add(value);
+	try {
+		return (Array.isArray(value) ? value : Object.values(value)).every(item => isAcyclicJsonValue(item, ancestors));
+	} finally {
+		ancestors.delete(value);
+	}
+}
+
+function nonEmptyString(value: unknown): string | undefined {
+	if (typeof value !== 'string') return undefined;
+	const text = value.trim();
+	return text || undefined;
+}
+
+function toCslType(value: unknown): string {
+	const type = nonEmptyString(value) || 'dynamic';
+	return CLR_TO_CSL_TYPE[type.toLowerCase()] || type;
+}
+
+function toShowSchemaColumn(name: string, type: unknown, docString?: unknown): JsonObject {
+	const rawType = nonEmptyString(type) || 'dynamic';
+	return {
+		Name: name,
+		Type: rawType,
+		CslType: toCslType(rawType),
+		...(nonEmptyString(docString) ? { DocString: nonEmptyString(docString) } : {}),
+	};
+}
+
+function parseCompactTabularColumns(value: unknown): JsonObject[] | undefined {
+	const type = nonEmptyString(value);
+	if (!type || !type.startsWith('(') || !type.endsWith(')')) return undefined;
+	const inner = type.slice(1, -1).trim();
+	if (!inner || inner === '*') return [];
+	const columns: JsonObject[] = [];
+	for (const definition of inner.split(',')) {
+		const part = definition.trim();
+		if (!part) return undefined;
+		const separator = part.indexOf(':');
+		const name = (separator >= 0 ? part.slice(0, separator) : part).trim();
+		const columnType = (separator >= 0 ? part.slice(separator + 1) : 'dynamic').trim();
+		if (!name || !columnType) return undefined;
+		columns.push(toShowSchemaColumn(name, columnType));
+	}
+	return columns;
+}
+
+function toShowSchemaParameter(value: unknown): JsonObject | undefined {
+	if (!isJsonObject(value)) return undefined;
+	const name = nonEmptyString(value.name);
+	if (!name) return undefined;
+	const tabularColumns = parseCompactTabularColumns(value.type);
+	if (tabularColumns) {
+		return { Name: name, Columns: tabularColumns };
+	}
+	const rawType = nonEmptyString(value.type);
+	if (rawType?.startsWith('(')) return undefined;
+	if (!rawType) return { Name: name, Columns: [] };
+	const cslType = toCslType(rawType);
+	return {
+		Name: name,
+		Type: rawType,
+		CslType: cslType,
+		...(value.defaultValue !== undefined && typeof value.defaultValue !== 'object'
+			? { CslDefaultValue: String(value.defaultValue) }
+			: {}),
+	};
+}
+
+function isValidShowSchemaColumn(value: unknown): boolean {
+	return isJsonObject(value)
+		&& !!nonEmptyString(value.Name)
+		&& !!nonEmptyString(value.Type)
+		&& !!nonEmptyString(value.CslType);
+}
+
+function isValidShowSchemaTableContainer(value: unknown): boolean {
+	if (!isJsonObject(value)) return false;
+	return Object.values(value).every(table => isJsonObject(table)
+		&& !!nonEmptyString(table.Name)
+		&& Array.isArray(table.OrderedColumns)
+		&& table.OrderedColumns.every(isValidShowSchemaColumn));
+}
+
+function isValidShowSchemaParameter(value: unknown): boolean {
+	if (!isJsonObject(value) || !nonEmptyString(value.Name)) return false;
+	if (value.Columns !== undefined) {
+		return Array.isArray(value.Columns) && value.Columns.every(isValidShowSchemaColumn);
+	}
+	return !!nonEmptyString(value.Type) && !!nonEmptyString(value.CslType);
+}
+
+function isValidShowSchemaFunctionContainer(value: unknown): boolean {
+	if (!isJsonObject(value)) return false;
+	return Object.values(value).every(fn => isJsonObject(fn)
+		&& !!nonEmptyString(fn.Name)
+		&& typeof fn.Body === 'string'
+		&& Array.isArray(fn.InputParameters)
+		&& fn.InputParameters.every(isValidShowSchemaParameter));
+}
+
+function isValidShowSchemaDatabase(value: unknown): value is JsonObject {
+	if (!isJsonObject(value)
+		|| !nonEmptyString(value.Name)
+		|| !Number.isFinite(value.MajorVersion)
+		|| !Number.isFinite(value.MinorVersion)
+		|| !isValidShowSchemaTableContainer(value.Tables)
+		|| !isValidShowSchemaFunctionContainer(value.Functions)
+		|| !isJsonObject(value.Graphs)) {
+		return false;
+	}
+	if (value.ExternalTables !== undefined && !isValidShowSchemaTableContainer(value.ExternalTables)) return false;
+	if (value.MaterializedViews !== undefined && !isValidShowSchemaTableContainer(value.MaterializedViews)) return false;
+	if (value.EntityGroups !== undefined && (!isJsonObject(value.EntityGroups)
+		|| !Object.values(value.EntityGroups).every(Array.isArray))) return false;
+	return Object.values(value.Graphs).every(graph => isJsonObject(graph)
+		&& !!nonEmptyString(graph.Name)
+		&& Array.isArray(graph.Nodes)
+		&& Array.isArray(graph.Edges)
+		&& Array.isArray(graph.Snapshots));
+}
+
+function parseUsableRawSchemaJson(value: unknown, database: string): JsonObject | undefined {
+	let parsed = value;
+	if (typeof value === 'string') {
+		try {
+			parsed = JSON.parse(value);
+		} catch {
+			return undefined;
+		}
+	}
+	if (!isJsonObject(parsed) || !isAcyclicJsonValue(parsed) || !isJsonObject(parsed.Databases)) return undefined;
+	const databases = Object.entries(parsed.Databases);
+	if (databases.length === 0 || !databases.every(([, candidate]) => isValidShowSchemaDatabase(candidate))) return undefined;
+	const requestedName = database.trim().toLowerCase();
+	const target = databases.find(([key, candidate]) => key.toLowerCase() === requestedName
+		&& nonEmptyString((candidate as JsonObject).Name)?.toLowerCase() === requestedName)?.[1] as JsonObject | undefined;
+	if (!target) return undefined;
+	return parsed;
+}
+
+/** Build the Monaco-Kusto show-schema shape from the persisted compact index. */
+export function synthesizeRawSchemaJson(schema: DatabaseSchemaIndex, database: string): unknown | undefined {
+	try {
+		const databaseName = nonEmptyString(database);
+		if (!databaseName || !isJsonObject(schema)) return undefined;
+		const compactTables = Array.isArray(schema.tables)
+			? schema.tables.map(nonEmptyString).filter((name): name is string => !!name)
+			: [];
+		const columnTypesByTable = isJsonObject(schema.columnTypesByTable) ? schema.columnTypesByTable : {};
+		const tableNames = Array.from(new Set([
+			...compactTables,
+			...Object.keys(columnTypesByTable).map(nonEmptyString).filter((name): name is string => !!name),
+		]));
+		const tableDocStrings = isJsonObject(schema.tableDocStrings) ? schema.tableDocStrings : {};
+		const columnDocStrings = isJsonObject(schema.columnDocStrings) ? schema.columnDocStrings : {};
+		const tables: Record<string, unknown> = Object.fromEntries(tableNames.map(tableName => {
+			const columnTypes = isJsonObject(columnTypesByTable[tableName]) ? columnTypesByTable[tableName] : {};
+			const columns = Object.entries(columnTypes).flatMap(([columnName, type]) => {
+				const name = nonEmptyString(columnName);
+				if (!name || (typeof type !== 'string' && typeof type !== 'number')) return [];
+				return [toShowSchemaColumn(name, type, columnDocStrings[`${tableName}.${name}`])];
+			});
+			return [tableName, {
+				Name: tableName,
+				EntityType: 'Table',
+				OrderedColumns: columns,
+				...(nonEmptyString(tableDocStrings[tableName]) ? { DocString: nonEmptyString(tableDocStrings[tableName]) } : {}),
+			}];
+		}));
+		const functions: Record<string, unknown> = {};
+		for (const fn of Array.isArray(schema.functions) ? schema.functions : []) {
+			if (!isJsonObject(fn)) continue;
+			const name = nonEmptyString(fn.name);
+			if (!name) continue;
+			const inputParameters = (Array.isArray(fn.parameters) ? fn.parameters : [])
+				.map(toShowSchemaParameter)
+				.filter((parameter): parameter is JsonObject => !!parameter);
+			functions[name] = {
+				Name: name,
+				InputParameters: inputParameters,
+				Body: typeof fn.body === 'string' ? fn.body : '',
+				Folder: typeof fn.folder === 'string' ? fn.folder : '',
+				DocString: typeof fn.docString === 'string' ? fn.docString : '',
+				FunctionKind: 'StoredFunction',
+				OutputColumns: [],
+			};
+		}
+		if (Object.keys(tables).length === 0 && Object.keys(functions).length === 0) return undefined;
+		return {
+			Plugins: [],
+			Databases: {
+				[databaseName]: {
+					Name: databaseName,
+					Tables: tables,
+					ExternalTables: {},
+					MaterializedViews: {},
+					EntityGroups: {},
+					MajorVersion: 0,
+					MinorVersion: 0,
+					Functions: functions,
+					Graphs: {},
+					DatabaseAccessMode: 'ReadWrite',
+				},
+			},
+		};
+	} catch {
+		return undefined;
+	}
+}
+
+export function ensureRawSchemaJson(schema: DatabaseSchemaIndex, database: string): DatabaseSchemaIndex {
+	if (parseUsableRawSchemaJson(schema.rawSchemaJson, database)) return schema;
+	const rawSchemaJson = synthesizeRawSchemaJson(schema, database);
+	if (rawSchemaJson) return { ...schema, rawSchemaJson };
+	if (schema.rawSchemaJson !== undefined) {
+		const { rawSchemaJson: _invalidRawSchemaJson, ...compactSchema } = schema;
+		return compactSchema;
+	}
+	return schema;
+}
+
 /**
  * Returns a `columnsByTable`-shaped view derived from `columnTypesByTable`.
  *
@@ -83,24 +339,34 @@ export const countColumns = (schema: DatabaseSchemaIndex | undefined | null): nu
 };
 
 export const getSchemaSummary = (schema: DatabaseSchemaIndex | undefined | null): { tablesCount: number; columnsCount: number; functionsCount: number; hasRawSchemaJson: boolean } => ({
-	tablesCount: schema?.tables?.length ?? 0,
+	tablesCount: Array.isArray(schema?.tables) ? schema.tables.length : 0,
 	columnsCount: countColumns(schema),
-	functionsCount: schema?.functions?.length ?? 0,
+	functionsCount: Array.isArray(schema?.functions) ? schema.functions.length : 0,
 	hasRawSchemaJson: !!schema?.rawSchemaJson,
 });
 
-function stableForSignature(value: unknown): unknown {
-	if (Array.isArray(value)) {
-		return value.map(stableForSignature);
+function stableForSignature(value: unknown, ancestors: WeakSet<object> = new WeakSet()): unknown {
+	if (typeof value === 'bigint' || typeof value === 'symbol' || typeof value === 'function') {
+		return String(value);
 	}
+	if (value === undefined) return null;
 	if (!value || typeof value !== 'object') {
 		return value;
 	}
-	const out: Record<string, unknown> = {};
-	for (const key of Object.keys(value as Record<string, unknown>).sort((a, b) => a.localeCompare(b))) {
-		out[key] = stableForSignature((value as Record<string, unknown>)[key]);
+	if (ancestors.has(value)) return '[Circular]';
+	ancestors.add(value);
+	try {
+		if (Array.isArray(value)) {
+			return value.map(item => stableForSignature(item, ancestors));
+		}
+		const out: Record<string, unknown> = {};
+		for (const key of Object.keys(value as Record<string, unknown>).sort((a, b) => a.localeCompare(b))) {
+			out[key] = stableForSignature((value as Record<string, unknown>)[key], ancestors);
+		}
+		return out;
+	} finally {
+		ancestors.delete(value);
 	}
-	return out;
 }
 
 export const getAutocompleteSchemaSignature = (schema: DatabaseSchemaIndex | undefined | null): string => {
@@ -118,11 +384,11 @@ export const getAutocompleteSchemaSignature = (schema: DatabaseSchemaIndex | und
 			columnTypesByTable[table][column] = String(columns[column] || '');
 		}
 	}
-	const functions = (schema.functions || [])
+	const functions = (Array.isArray(schema.functions) ? schema.functions : [])
 		.map(fn => ({
 			name: String(fn?.name || ''),
 			parametersText: String(fn?.parametersText || ''),
-			parameters: (fn?.parameters || []).map(param => ({
+			parameters: (Array.isArray(fn?.parameters) ? fn.parameters : []).map(param => ({
 				name: String(param?.name || ''),
 				type: String(param?.type || ''),
 				defaultValue: String(param?.defaultValue || ''),

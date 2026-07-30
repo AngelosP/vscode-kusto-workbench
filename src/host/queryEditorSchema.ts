@@ -12,12 +12,12 @@ import {
 	type SchemaCacheGeneration,
 	writeCachedSchemaToDisk,
 } from './schemaCache';
-import { getAutocompleteSchemaSignature, getSchemaSummary } from './schemaIndexUtils';
+import { ensureRawSchemaJson, getAutocompleteSchemaSignature, getSchemaSummary } from './schemaIndexUtils';
 import {
 	STORAGE_KEYS,
 	CachedSchemaEntry
 } from './queryEditorTypes';
-import { kustoClusterKey } from '../shared/kustoClusterUrls';
+import { kustoClusterKey, kustoDatabaseKey } from '../shared/kustoClusterUrls';
 import { getKustoConnectionIdentityKey, resolveKustoConnection, resolveStrictKustoConnection } from '../shared/kustoAuth';
 import { databaseListTraceRef, getDatabaseListErrorDetails } from './databaseListTrace';
 import type { WorkbenchLogger } from './workbenchLogger';
@@ -68,6 +68,14 @@ function supplementalFailureKind(error: unknown, isAuthenticationError?: (error:
 	return 'fetch-failed';
 }
 
+function requireWorkerReadySchema(schema: DatabaseSchemaIndex, database: string): DatabaseSchemaIndex {
+	const normalized = ensureRawSchemaJson(schema, database);
+	if (!normalized.rawSchemaJson) {
+		throw new Error(`Schema response for ${database} is not usable for autocomplete.`);
+	}
+	return normalized;
+}
+
 
 // ── SchemaService class ──
 
@@ -99,7 +107,8 @@ export class SchemaService {
 		meta?: Record<string, unknown>;
 		lifecycle?: KustoEditorLifecycleIdentity;
 	}): void {
-		const summary = getSchemaSummary(args.schema);
+		const schema = requireWorkerReadySchema(args.schema, args.database);
+		const summary = getSchemaSummary(schema);
 		this.host.postMessage({
 			type: 'schemaData',
 			boxId: args.boxId,
@@ -109,10 +118,10 @@ export class SchemaService {
 			accountPartition: args.accountPartition,
 			requestToken: args.requestToken,
 			...(args.lifecycle || {}),
-			schema: args.schema,
+			schema,
 			schemaMeta: {
 				...summary,
-				schemaSignature: getAutocompleteSchemaSignature(args.schema),
+				schemaSignature: getAutocompleteSchemaSignature(schema),
 				...args.meta,
 			}
 		});
@@ -149,7 +158,7 @@ export class SchemaService {
 				if (!this.isConnectionIdentityCurrent(listener.connectionId, listener.connectionIdentity)) return;
 				const accountPartition = result.accountPartition;
 				if (!accountPartition || accountPartition !== listener.accountPartition) return;
-				const schema = result.schema;
+				const schema = requireWorkerReadySchema(result.schema, listener.database);
 				const timestamp = result.fromCache
 					? Date.now() - (result.cacheAgeMs ?? 0)
 					: Date.now();
@@ -257,11 +266,22 @@ export class SchemaService {
 
 	private async getCachedSchemaFromDiskByCluster(connection: KustoConnection, database: string, accountPartition: string | undefined): Promise<CachedSchemaEntry | undefined> {
 		if (!accountPartition) return undefined;
-		return this.getCachedSchemaFromDisk(schemaCacheKey(connection.clusterUrl, database, connection.id, accountPartition));
+		const cached = await this.getCachedSchemaFromDisk(schemaCacheKey(connection.clusterUrl, database, connection.id, accountPartition));
+		if (!cached
+			|| cached.connectionId !== connection.id
+			|| cached.accountPartition !== accountPartition
+			|| kustoDatabaseKey(cached.clusterUrl, cached.database) !== kustoDatabaseKey(connection.clusterUrl, database)) {
+			return undefined;
+		}
+		const schema = ensureRawSchemaJson(cached.schema, database);
+		return schema.rawSchemaJson ? { ...cached, schema } : undefined;
 	}
 
 	async saveCachedSchemaToDisk(cacheKey: string, entry: CachedSchemaEntry, expectedGeneration?: SchemaCacheGeneration): Promise<void> {
-		await writeCachedSchemaToDisk(this.host.context.globalStorageUri, cacheKey, entry, expectedGeneration);
+		await writeCachedSchemaToDisk(this.host.context.globalStorageUri, cacheKey, {
+			...entry,
+			schema: requireWorkerReadySchema(entry.schema, entry.database || ''),
+		}, expectedGeneration);
 	}
 
 	private async migrateCachedSchemasToDiskOnce(): Promise<void> {
@@ -451,7 +471,7 @@ export class SchemaService {
 
 			const result = await this.host.kustoClient.getDatabaseSchema(connection, database, forceRefresh);
 			if (!isConnectionCurrent()) return;
-			const schema = result.schema;
+			const schema = requireWorkerReadySchema(result.schema, database);
 			const resolvedAccountPartition = result.accountPartition;
 			if (!resolvedAccountPartition) {
 				throw new Error('The schema response did not include a resolved Microsoft account identity.');
@@ -691,7 +711,7 @@ export class SchemaService {
 							source: 'supplemental-background-refresh',
 						});
 						if (!isConnectionCurrent()) return;
-						const freshSchema = result.schema;
+						const freshSchema = requireWorkerReadySchema(result.schema, database);
 						const resolvedAccountPartition = result.accountPartition;
 						if (!resolvedAccountPartition || resolvedAccountPartition !== initialAccountPartition) return;
 						const timestamp = result.fromCache
@@ -741,7 +761,7 @@ export class SchemaService {
 				source: `supplemental-${requestSource}`,
 			});
 			if (!isConnectionCurrent()) return;
-			const schema = result.schema;
+			const schema = requireWorkerReadySchema(result.schema, database);
 			const resolvedAccountPartition = result.accountPartition;
 			if (!resolvedAccountPartition) throw new Error('Supplemental schema authentication identity could not be resolved.');
 			const resolvedCacheKey = schemaCacheKey(connection.clusterUrl, database, connection.id, resolvedAccountPartition);
@@ -866,7 +886,7 @@ export class SchemaService {
 				try {
 					const result = await this.host.kustoClient.getDatabaseSchema(connection, db, true);
 					if (!isConnectionCurrent()) return { schemas: [], error: 'The connection changed while schema refresh was running.' };
-					const schema = result.schema;
+					const schema = requireWorkerReadySchema(result.schema, db);
 					const accountPartition = result.accountPartition;
 					if (!accountPartition) throw new Error('Schema authentication identity could not be resolved.');
 

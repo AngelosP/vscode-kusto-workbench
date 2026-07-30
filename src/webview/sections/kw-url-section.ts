@@ -13,6 +13,7 @@ import { schedulePersist } from '../core/persistence.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { __kustoRefreshAllDataSourceDropdowns } from '../core/section-factory.js';
 import { ensureDomPurifyLoaded } from '../shared/lazy-vendor.js';
+import { clearResultsState, setResultsState } from '../core/results-state.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -53,6 +54,13 @@ interface UrlFetchState {
 	__hasFetchedOnce?: boolean;
 	__autoSizeImagePending?: boolean;
 	__autoSizedImageOnce?: boolean;
+}
+
+let urlFetchRequestSequence = 0;
+
+function nextUrlFetchRequestId(): string {
+	urlFetchRequestSequence++;
+	return `url-fetch-${urlFetchRequestSequence}`;
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -99,6 +107,8 @@ export class KwUrlSection extends LitElement implements SectionElement {
 	private _removeImageMenuScrollDismiss: (() => void) | null = null;
 	private _domPurifyLoadFailed = false;
 	private _domPurifyLoadRequested = false;
+	private _publishedCsvArtifactId = '';
+	private _activeFetchRequest: { requestId: string; url: string } | null = null;
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
@@ -110,9 +120,17 @@ export class KwUrlSection extends LitElement implements SectionElement {
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		window.removeEventListener('message', this._onMessage);
+		if (this._fetchDebounceTimer) {
+			clearTimeout(this._fetchDebounceTimer);
+			this._fetchDebounceTimer = null;
+		}
 		this._closeImageMenu();
 		this._csvResizeObs?.disconnect();
 		this._csvResizeObs = null;
+		queueMicrotask(() => {
+			const replacement = document.getElementById(this.boxId);
+			if (!this.isConnected && (!replacement || replacement === this)) this.clearPublishedCsvResult();
+		});
 	}
 
 	override firstUpdated(_changedProperties: PropertyValues): void {
@@ -398,6 +416,22 @@ export class KwUrlSection extends LitElement implements SectionElement {
 			this._csvTableHeight = Math.max(60, Math.floor(wH - 1));
 		}
 		this._csvActive = true;
+		const artifact = setResultsState(this.boxId, {
+			boxId: this.boxId,
+			columns: this._csvColumns,
+			rows: this._csvRows,
+			metadata: { url: st.url, contentType: st.contentType, status: st.status },
+		}, {
+			producer: { engine: 'url', boxId: this.boxId, producer: 'url-csv', query: st.url },
+			policy: { exposeToActiveContent: true, exportToCsv: true },
+		});
+		this._publishedCsvArtifactId = artifact?.artifactId || '';
+		if (!artifact) {
+			this._csvColumns = [];
+			this._csvRows = [];
+			this._csvActive = false;
+			return;
+		}
 		// Watch wrapper resizes to keep the table height in sync.
 		this._startCsvResizeObserver();
 	}
@@ -673,25 +707,14 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		const input = e.target as HTMLInputElement;
 		const url = input.value.trim();
 		this._url = input.value; // Keep raw value for display
-		const st = this._fetchState;
-		st.url = url;
-		st.loaded = false;
-		st.content = '';
-		st.error = '';
-		st.kind = '';
-		st.contentType = '';
-		st.status = null;
-		st.dataUri = '';
-		st.body = '';
-		st.truncated = false;
-		st.__hasFetchedOnce = false;
-		st.__autoSizeImagePending = false;
-		st.__autoSizedImageOnce = false;
-		this._fetchState = { ...st };
+		const expanded = this._fetchState.expanded;
+		this.clearPublishedCsvResult();
+		this._activeFetchRequest = null;
+		this._fetchState = { ...KwUrlSection._newFetchState(), expanded, url };
 		this._renderUrlContent();
 		// Debounce fetch to avoid firing on every keystroke.
 		if (this._fetchDebounceTimer) clearTimeout(this._fetchDebounceTimer);
-		if (st.expanded && url) {
+		if (expanded && url) {
 			this._fetchDebounceTimer = setTimeout(() => {
 				this._fetchDebounceTimer = null;
 				this._requestFetch();
@@ -755,12 +778,15 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		if (st.loading || st.loaded) return;
 		const url = st.url.trim();
 		if (!url) return;
+		this.clearPublishedCsvResult();
+		const requestId = nextUrlFetchRequestId();
+		this._activeFetchRequest = { requestId, url };
 		this._fetchState = { ...st, loading: true, error: '' };
 		this._renderUrlContent();
 		try {
 			const vscode = window.vscode;
 			if (vscode && typeof vscode.postMessage === 'function') {
-				vscode.postMessage({ type: 'fetchUrl', boxId: this.boxId, url });
+				vscode.postMessage({ type: 'fetchUrl', boxId: this.boxId, url, requestId });
 			}
 		} catch {
 			this._fetchState = { ...st, loading: false, error: 'Failed to request URL.' };
@@ -774,7 +800,15 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		const msg = e.data;
 		if (!msg || typeof msg !== 'object') return;
 
+		const matchesActiveRequest = () => {
+			const active = this._activeFetchRequest;
+			return !!active && String(msg.requestId || '') === active.requestId
+				&& String(msg.requestedUrl || '').trim() === active.url;
+		};
 		if (msg.type === 'urlContent' && msg.boxId === this.boxId) {
+			if (!matchesActiveRequest()) return;
+			this._activeFetchRequest = null;
+			this.clearPublishedCsvResult();
 			const st = { ...this._fetchState };
 			st.loading = false;
 			st.loaded = true;
@@ -801,6 +835,9 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		}
 
 		if (msg.type === 'urlError' && msg.boxId === this.boxId) {
+			if (!matchesActiveRequest()) return;
+			this._activeFetchRequest = null;
+			this.clearPublishedCsvResult();
 			const st = { ...this._fetchState };
 			st.loading = false;
 			st.loaded = false;
@@ -1042,8 +1079,14 @@ export class KwUrlSection extends LitElement implements SectionElement {
 
 	/** Set URL programmatically (e.g. from restore). */
 	public setUrl(url: string): void {
+		if (url !== this._fetchState.url) {
+			const expanded = this._fetchState.expanded;
+			this.clearPublishedCsvResult();
+			this._activeFetchRequest = null;
+			this._fetchState = { ...KwUrlSection._newFetchState(), expanded, url };
+		}
 		this._url = url;
-		this._fetchState = { ...this._fetchState, url };
+		if (url === this._fetchState.url) this._fetchState = { ...this._fetchState, url };
 	}
 
 	/** Set expanded state. */
@@ -1081,6 +1124,14 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		if (this._fetchState.expanded && this._fetchState.url) {
 			this._requestFetch();
 		}
+	}
+
+	public clearPublishedCsvResult(): void {
+		this._csvColumns = [];
+		this._csvRows = [];
+		this._csvActive = false;
+		this._publishedCsvArtifactId = '';
+		clearResultsState(this.boxId);
 	}
 
 	// ── Helpers ───────────────────────────────────────────────────────────────

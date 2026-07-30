@@ -1,27 +1,44 @@
-import { describe, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import * as vscode from 'vscode';
 import * as os from 'os';
 import * as path from 'path';
 import { SchemaService } from '../../../src/host/queryEditorSchema';
 import type { KustoConnection } from '../../../src/host/connectionManager';
 import { isAuthError } from '../../../src/host/kustoClientUtils';
-import { SCHEMA_CACHE_TTL_MS, SCHEMA_CACHE_VERSION } from '../../../src/host/schemaCache';
+import { SCHEMA_CACHE_TTL_MS, SCHEMA_CACHE_VERSION, schemaCacheKey, writeCachedSchemaToDisk } from '../../../src/host/schemaCache';
+
+const schemaTestStorageUris: vscode.Uri[] = [];
+
+afterEach(async () => {
+	const storageUris = schemaTestStorageUris.splice(0);
+	await Promise.all(storageUris.map(async uri => {
+		try { await vscode.workspace.fs.delete(uri, { recursive: true, useTrash: false }); } catch { /* already absent */ }
+	}));
+});
 
 function makeRawSchema(database: string) {
 	return {
 		Plugins: [],
 		Databases: {
 			[database]: {
+				Name: database,
 				Tables: {
 					Events: {
+						Name: 'Events',
 						EntityType: 'Table',
-						OrderedColumns: {
-							TIMESTAMP: { Name: 'TIMESTAMP', CslType: 'datetime' },
-							EventName: { Name: 'EventName', CslType: 'string' },
-						},
+						OrderedColumns: [
+							{ Name: 'TIMESTAMP', Type: 'System.DateTime', CslType: 'datetime' },
+							{ Name: 'EventName', Type: 'System.String', CslType: 'string' },
+						],
 					},
 				},
+				ExternalTables: {},
+				MaterializedViews: {},
+				EntityGroups: {},
+				MajorVersion: 1,
+				MinorVersion: 0,
 				Functions: {},
+				Graphs: {},
 			},
 		},
 	};
@@ -30,6 +47,8 @@ function makeRawSchema(database: string) {
 function createService(connection: KustoConnection) {
 	const messages: any[] = [];
 	const rawSchemaJson = makeRawSchema('TelemetryDb');
+	const globalStorageUri = vscode.Uri.file(path.join(os.tmpdir(), `kusto-workbench-query-editor-schema-test-${Date.now()}-${Math.random().toString(16).slice(2)}`));
+	schemaTestStorageUris.push(globalStorageUri);
 	const getDatabaseSchema = vi.fn(async () => ({
 		schema: {
 			tables: ['Events'],
@@ -43,7 +62,7 @@ function createService(connection: KustoConnection) {
 	let currentConnection = connection;
 	const service = new SchemaService({
 		context: {
-			globalStorageUri: vscode.Uri.file(path.join(os.tmpdir(), `kusto-workbench-query-editor-schema-test-${Date.now()}-${Math.random().toString(16).slice(2)}`)),
+			globalStorageUri,
 			globalState: {
 				get: vi.fn(() => true),
 				update: vi.fn(async () => undefined),
@@ -57,7 +76,7 @@ function createService(connection: KustoConnection) {
 		findConnection: vi.fn(() => currentConnection),
 	});
 	return {
-		service, messages, getDatabases, getDatabaseSchema,
+		service, messages, getDatabases, getDatabaseSchema, globalStorageUri,
 		setConnection: (next: KustoConnection) => { currentConnection = next; },
 	};
 }
@@ -265,6 +284,135 @@ describe('SchemaService primary schema preparation', () => {
 				hasUsableFallback: true,
 			}));
 		});
+	});
+
+	it('upgrades a compact disk cache when a forced refresh fails', async () => {
+		const { service, messages, getDatabaseSchema, globalStorageUri } = createService(connection);
+		await writeCachedSchemaToDisk(
+			globalStorageUri,
+			schemaCacheKey(connection.clusterUrl, 'TelemetryDb', connection.id, 'test-partition'),
+			{
+				schema: {
+					tables: ['Events'],
+					columnTypesByTable: { Events: { TIMESTAMP: 'System.DateTime', EventName: 'System.String' } },
+				},
+				timestamp: Date.now() - SCHEMA_CACHE_TTL_MS - 1000,
+				version: SCHEMA_CACHE_VERSION,
+				clusterUrl: connection.clusterUrl,
+				database: 'TelemetryDb',
+				connectionId: connection.id,
+				accountPartition: 'test-partition',
+			},
+		);
+		getDatabaseSchema.mockRejectedValueOnce(new Error('offline'));
+
+		await service.prefetchSchema('primary', 'TelemetryDb', 'query_cached', true, 'schema_cached');
+
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaData',
+			boxId: 'query_cached',
+			requestToken: 'schema_cached',
+			schema: expect.objectContaining({
+				rawSchemaJson: expect.objectContaining({
+					Databases: expect.objectContaining({
+						TelemetryDb: expect.objectContaining({
+							Tables: expect.objectContaining({ Events: expect.any(Object) }),
+						}),
+					}),
+				}),
+			}),
+			schemaMeta: expect.objectContaining({
+				fromCache: true,
+				isFailoverToCache: true,
+				hasRawSchemaJson: true,
+				refreshState: 'failed',
+			}),
+		}));
+		expect(messages).not.toContainEqual(expect.objectContaining({
+			type: 'schemaError', boxId: 'query_cached',
+		}));
+	});
+
+	it('ignores a malformed fresh cache and continues to the live schema fetch', async () => {
+		const { service, messages, getDatabaseSchema, globalStorageUri } = createService(connection);
+		await writeCachedSchemaToDisk(
+			globalStorageUri,
+			schemaCacheKey(connection.clusterUrl, 'TelemetryDb', connection.id, 'test-partition'),
+			{
+				schema: { tables: [], columnTypesByTable: {}, functions: [{} as any], rawSchemaJson: {} },
+				timestamp: Date.now(),
+				version: SCHEMA_CACHE_VERSION,
+				clusterUrl: connection.clusterUrl,
+				database: 'TelemetryDb',
+				connectionId: connection.id,
+				accountPartition: 'test-partition',
+			},
+		);
+
+		await service.prefetchSchema('primary', 'TelemetryDb', 'query_malformed', false, 'schema_malformed');
+
+		expect(getDatabaseSchema).toHaveBeenCalledOnce();
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaData', boxId: 'query_malformed',
+			schemaMeta: expect.objectContaining({ deliveryKind: 'fresh' }),
+		}));
+	});
+
+	it('retains a stale worker-ready cache when background refresh returns unusable schema', async () => {
+		const { service, messages, getDatabaseSchema } = createService(connection);
+		vi.spyOn(service as any, 'getCachedSchemaFromDiskByCluster').mockResolvedValue({
+			schema: {
+				tables: ['Events'], columnTypesByTable: { Events: { CachedOnly: 'string' } },
+				rawSchemaJson: makeRawSchema('TelemetryDb'),
+			},
+			timestamp: Date.now() - SCHEMA_CACHE_TTL_MS - 1000,
+			version: SCHEMA_CACHE_VERSION,
+		});
+		getDatabaseSchema.mockResolvedValueOnce({
+			schema: { tables: [], columnTypesByTable: {}, rawSchemaJson: {} },
+			fromCache: false,
+			accountPartition: 'test-partition',
+		});
+
+		await service.prefetchSchema('primary', 'TelemetryDb', 'query_invalid_refresh', false, 'schema_invalid_refresh');
+
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaData', boxId: 'query_invalid_refresh',
+			schemaMeta: expect.objectContaining({ refreshState: 'scheduled', isStale: true }),
+		}));
+		await vi.waitFor(() => expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaError', boxId: 'query_invalid_refresh', silent: true,
+			isBackgroundRefresh: true, refreshState: 'failed', hasUsableFallback: true,
+		})));
+		expect(messages).not.toContainEqual(expect.objectContaining({
+			type: 'schemaData', boxId: 'query_invalid_refresh',
+			schemaMeta: expect.objectContaining({ refreshState: 'completed' }),
+		}));
+	});
+
+	it('ignores a cache file whose stored identity does not match its target key', async () => {
+		const { service, messages, getDatabaseSchema, globalStorageUri } = createService(connection);
+		await writeCachedSchemaToDisk(
+			globalStorageUri,
+			schemaCacheKey(connection.clusterUrl, 'TelemetryDb', connection.id, 'test-partition'),
+			{
+				schema: { tables: ['WrongIdentity'], columnTypesByTable: { WrongIdentity: { Id: 'long' } } },
+				timestamp: Date.now(),
+				version: SCHEMA_CACHE_VERSION,
+				clusterUrl: connection.clusterUrl,
+				database: 'TelemetryDb',
+				connectionId: 'another-connection',
+				accountPartition: 'test-partition',
+			},
+		);
+
+		await service.prefetchSchema('primary', 'TelemetryDb', 'query_identity', false, 'schema_identity');
+
+		expect(getDatabaseSchema).toHaveBeenCalledOnce();
+		expect(messages).toContainEqual(expect.objectContaining({
+			type: 'schemaData', boxId: 'query_identity',
+			schema: expect.objectContaining({ tables: ['Events'] }),
+		}));
 	});
 
 	it('does not suppress background refresh for a lifecycle-owned reserved-prefix section', async () => {

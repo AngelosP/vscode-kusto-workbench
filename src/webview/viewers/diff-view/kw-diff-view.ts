@@ -4,7 +4,16 @@ import { scrollbarSheet } from '../../shared/scrollbar-styles.js';
 import { customElement, state } from 'lit/decorators.js';
 import type { DataTableColumn, CellValue } from '../../components/kw-data-table.js';
 import '../../components/kw-data-table.js';
-import { getResultsState } from '../../core/results-state.js';
+import {
+	bindResultArtifactConsumer,
+	getBoundResultArtifact,
+	getCurrentResultArtifact,
+	unbindResultArtifactConsumer,
+} from '../../core/results-state.js';
+import {
+	diffArtifactConsumerId,
+	RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT,
+} from '../../../shared/resultArtifact.js';
 
 // ── Pure diff-model helpers (ported from legacy diffView.ts) ──
 
@@ -297,20 +306,42 @@ export class KwDiffView extends LitElement {
 	@state() private _model: DiffModel | null = null;
 	@state() private _joinColumnKey = '';
 
+	override connectedCallback(): void {
+		super.connectedCallback();
+		window.addEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, this._onArtifactConsumersRevoked);
+	}
+
+	override disconnectedCallback(): void {
+		window.removeEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, this._onArtifactConsumersRevoked);
+		this.close();
+		super.disconnectedCallback();
+	}
+
 	// ── Public API (called from window bridges) ──
 
-	open(args: { aBoxId: string; bBoxId: string; aLabel?: string; bLabel?: string }): void {
+	open(args: {
+		aBoxId: string; bBoxId: string; aLabel?: string; bLabel?: string;
+		aArtifactId?: string; bArtifactId?: string;
+	}): void {
+		this.close();
 		const aBoxId = String(args?.aBoxId || '');
 		const bBoxId = String(args?.bBoxId || '');
 		if (!aBoxId || !bBoxId) return;
 
+		const aArtifactId = String(args?.aArtifactId || getCurrentResultArtifact(aBoxId)?.artifactId || '').trim();
+		const bArtifactId = String(args?.bArtifactId || getCurrentResultArtifact(bBoxId)?.artifactId || '').trim();
 		let aState: any = null, bState: any = null;
 		try {
-			aState = getResultsState(aBoxId);
-			bState = getResultsState(bBoxId);
+			const aBound = aArtifactId
+				&& bindResultArtifactConsumer(diffArtifactConsumerId('a'), aBoxId, aArtifactId) === aArtifactId;
+			const bBound = bArtifactId
+				&& bindResultArtifactConsumer(diffArtifactConsumerId('b'), bBoxId, bArtifactId) === bArtifactId;
+			aState = aBound ? getBoundResultArtifact(diffArtifactConsumerId('a'), aBoxId) : null;
+			bState = bBound ? getBoundResultArtifact(diffArtifactConsumerId('b'), bBoxId) : null;
 		} catch (e) { console.error('[kusto]', e); }
 
 		if (!aState || !bState) {
+			this._releaseArtifactBindings();
 			try {
 				if (_win.vscode && typeof _win.vscode?.postMessage === 'function') {
 					_win.vscode?.postMessage({ type: 'showInfo', message: 'No results available to diff yet. Run both queries first.' });
@@ -329,8 +360,34 @@ export class KwDiffView extends LitElement {
 	}
 
 	close(): void {
+		for (const table of this.shadowRoot?.querySelectorAll<any>('kw-data-table') || []) {
+			table.revokeResultArtifactGeneration?.();
+			table.purgeDataImmediately?.();
+			table.style.visibility = 'hidden';
+		}
 		this._visible = false;
+		this._model = null;
+		this._joinColumnKey = '';
+		this._releaseArtifactBindings();
 	}
+
+	private _releaseArtifactBindings(): void {
+		unbindResultArtifactConsumer(diffArtifactConsumerId('a'));
+		unbindResultArtifactConsumer(diffArtifactConsumerId('b'));
+	}
+
+	private _areArtifactBindingsLive(): boolean {
+		return !!getBoundResultArtifact(diffArtifactConsumerId('a'))
+			&& !!getBoundResultArtifact(diffArtifactConsumerId('b'));
+	}
+
+	private _onArtifactConsumersRevoked = (event: Event): void => {
+		const consumerIds = Array.isArray((event as CustomEvent).detail?.consumerIds)
+			? (event as CustomEvent).detail.consumerIds
+			: [];
+		if (consumerIds.includes(diffArtifactConsumerId('a'))
+			|| consumerIds.includes(diffArtifactConsumerId('b'))) this.close();
+	};
 
 	get isVisible(): boolean {
 		return this._visible;
@@ -415,6 +472,10 @@ export class KwDiffView extends LitElement {
 					.columns=${commonCols}
 					.rows=${commonRows}
 					.options=${{ label: 'Rows common to both', compact: true, hideTopBorder: true }}
+					.resultArtifactGoverned=${true}
+					.resultArtifactId=${this._areArtifactBindingsLive() ? 'diff-bound' : ''}
+					.resultArtifactTableToken=${this._areArtifactBindingsLive() ? 'diff-live' : ''}
+					.resultArtifactLiveCheck=${() => this._areArtifactBindingsLive()}
 				></kw-data-table>
 			</div>
 
@@ -423,6 +484,10 @@ export class KwDiffView extends LitElement {
 					.columns=${onlyACols}
 					.rows=${onlyARows}
 					.options=${{ label: 'Rows only in ' + m.aLabel, compact: true, hideTopBorder: true }}
+					.resultArtifactGoverned=${true}
+					.resultArtifactId=${this._areArtifactBindingsLive() ? 'diff-bound' : ''}
+					.resultArtifactTableToken=${this._areArtifactBindingsLive() ? 'diff-live' : ''}
+					.resultArtifactLiveCheck=${() => this._areArtifactBindingsLive()}
 				></kw-data-table>
 			</div>
 
@@ -431,6 +496,10 @@ export class KwDiffView extends LitElement {
 					.columns=${onlyBCols}
 					.rows=${onlyBRows}
 					.options=${{ label: 'Rows only in ' + m.bLabel, compact: true, hideTopBorder: true }}
+					.resultArtifactGoverned=${true}
+					.resultArtifactId=${this._areArtifactBindingsLive() ? 'diff-bound' : ''}
+					.resultArtifactTableToken=${this._areArtifactBindingsLive() ? 'diff-live' : ''}
+					.resultArtifactLiveCheck=${() => this._areArtifactBindingsLive()}
 				></kw-data-table>
 			</div>
 
@@ -445,6 +514,10 @@ export class KwDiffView extends LitElement {
 					.columns=${joinCols}
 					.rows=${joinRows}
 					.options=${{ label: 'Inner join: only in ' + m.aLabel + ' ⨝ only in ' + m.bLabel, compact: true, hideTopBorder: true }}
+					.resultArtifactGoverned=${true}
+					.resultArtifactId=${this._areArtifactBindingsLive() ? 'diff-bound' : ''}
+					.resultArtifactTableToken=${this._areArtifactBindingsLive() ? 'diff-live' : ''}
+					.resultArtifactLiveCheck=${() => this._areArtifactBindingsLive()}
 				></kw-data-table>
 			</div>
 		`;

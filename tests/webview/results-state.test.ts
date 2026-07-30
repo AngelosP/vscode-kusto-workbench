@@ -101,6 +101,24 @@ describe('results-state displayResultForBox', () => {
 		expect(getResultsStateRevision('query_1')).toBeGreaterThan(0);
 	});
 
+	it('normalizes ragged rows before section presentation and shared state', () => {
+		const section = document.createElement('div') as HTMLDivElement & {
+			displayResult: ReturnType<typeof vi.fn>;
+		};
+		section.id = 'query_ragged';
+		section.displayResult = vi.fn();
+		document.body.appendChild(section);
+
+		displayResultForBox({
+			columns: ['A', 'B'], rows: [[1, 2, 'hidden'], [3]], metadata: {},
+		}, section.id, { label: 'Results' });
+
+		expect(section.displayResult).toHaveBeenCalledWith(expect.objectContaining({
+			rows: [[1, 2], [3, undefined]],
+		}), { label: 'Results' });
+		expect(getResultsState(section.id)?.rows).toEqual([[1, 2], [3, undefined]]);
+	});
+
 	it('does not admit a late result when the owning section rejects it', () => {
 		const section = document.createElement('div') as HTMLDivElement & {
 			displayResult: ReturnType<typeof vi.fn>;
@@ -118,6 +136,63 @@ describe('results-state displayResultForBox', () => {
 		expect(accepted).toBe(false);
 		expect(getResultsState('sql_protected')).toBeNull();
 		expect(currentResult).toBeNull();
+	});
+
+	it('fails closed when immutable artifact publication is exhausted', () => {
+		const section = document.createElement('div') as HTMLDivElement & {
+			displayResult: ReturnType<typeof vi.fn>;
+			clearResults: ReturnType<typeof vi.fn>;
+		};
+		section.id = 'query_exhausted';
+		section.displayResult = vi.fn();
+		section.clearResults = vi.fn();
+		document.body.appendChild(section);
+		// Seed an exhausted revision through the public store restore path.
+		setResultsState(section.id, { columns: ['Value'], rows: [['old']], metadata: {} }, {
+			persistedIdentity: {
+				artifactId: `result:${section.id}:${Number.MAX_SAFE_INTEGER - 1}`,
+				sourceBoxId: section.id, revision: Number.MAX_SAFE_INTEGER - 1, createdAt: 1,
+			},
+		});
+		setResultsState(section.id, { columns: ['Value'], rows: [['ceiling']], metadata: {} });
+		mocks.notifyResultsUpdated.mockClear();
+
+		const accepted = displayResultForBox(
+			{ columns: ['Value'], rows: [['must-not-render']], metadata: {} },
+			section.id, { label: 'Results' },
+		);
+
+		expect(accepted).toBe(false);
+		expect(section.clearResults).toHaveBeenCalled();
+		expect(getResultsState(section.id)).toBeNull();
+		expect(getCurrentResultArtifact(section.id)).toBeNull();
+		expect(mocks.notifyResultsUpdated).toHaveBeenCalledTimes(1);
+		expect(mocks.notifyResultsUpdated).toHaveBeenCalledWith(section.id);
+	});
+
+	it('clears rendered rows when artifact snapshotting throws', () => {
+		const section = document.createElement('div') as HTMLDivElement & {
+			displayResult: ReturnType<typeof vi.fn>;
+			clearResults: ReturnType<typeof vi.fn>;
+		};
+		section.id = 'query_snapshot_failure';
+		section.displayResult = vi.fn();
+		section.clearResults = vi.fn();
+		document.body.appendChild(section);
+		const hostileCell = new Proxy({}, {
+			ownKeys: () => { throw new Error('snapshot failed'); },
+		});
+
+		const accepted = displayResultForBox(
+			{ columns: ['Value'], rows: [[hostileCell]], metadata: {} },
+			section.id, { label: 'Results' },
+		);
+
+		expect(accepted).toBe(false);
+		expect(section.displayResult).toHaveBeenCalled();
+		expect(section.clearResults).toHaveBeenCalled();
+		expect(getResultsState(section.id)).toBeNull();
+		expect(getCurrentResultArtifact(section.id)).toBeNull();
 	});
 
 	it('snapshots result data and exact publication metadata immutably', () => {

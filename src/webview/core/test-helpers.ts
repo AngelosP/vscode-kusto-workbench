@@ -11,7 +11,7 @@ import { pState } from '../shared/persistence-state.js';
 import { perfSnapshot } from './perf.js';
 import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
 import { __kustoFindSuggestWidgetForEditor } from '../monaco/suggest.js';
-import { __kustoCrossClusterSchemas, __kustoGetSupplementalSchemaSnapshot, __kustoInjectSupplementalSchemaForTest, __kustoSchemaTracker, __kustoTraceCrossCluster } from '../monaco/monaco.js';
+import { __kustoCrossClusterSchemas, __kustoGetSupplementalSchemaSnapshot, __kustoInjectSupplementalSchemaForTest, __kustoSchemaTracker, __kustoSetCustomColumnCompletionProviderEnabledForTest, __kustoTraceCrossCluster } from '../monaco/monaco.js';
 import { kustoSupplementalTraceId } from '../shared/kusto-supplemental-schema-coordinator.js';
 import { extractCrossClusterRefs } from '../shared/cross-cluster-schema.js';
 import { computeMissingClusterUrls } from '../shared/clusterUtils.js';
@@ -3658,15 +3658,15 @@ function e2eBuildShowSchema(
 ): any {
 	const dbTables: Record<string, any> = {};
 	for (const [tableName, columns] of Object.entries(tables)) {
-		const orderedColumns: Record<string, any> = {};
+		const orderedColumns: any[] = [];
 		let ordinal = 0;
 		for (const [columnName, type] of Object.entries(columns)) {
-			orderedColumns[columnName] = {
+			orderedColumns.push({
 				Name: columnName,
 				Type: type,
 				CslType: type,
 				Ordinal: ordinal++,
-			};
+			});
 		}
 		dbTables[tableName] = {
 			Name: tableName,
@@ -3704,8 +3704,14 @@ function e2eBuildShowSchema(
 			[database]: {
 				Name: database,
 				Tables: dbTables,
+				ExternalTables: {},
 				Functions: dbFunctions,
 				MaterializedViews: {},
+				EntityGroups: {},
+				MajorVersion: 0,
+				MinorVersion: 0,
+				Graphs: {},
+				DatabaseAccessMode: 'ReadWrite',
 			},
 		},
 	};
@@ -3982,6 +3988,66 @@ async function e2eApplyKustoCurrentClusterWorkflowFixture(): Promise<string> {
 	section.clearResults?.();
 	_win.__e2eKustoCurrentWorkflowFixture = { boxId, modelUri, clusterUrl, database, rawSchema };
 	return `current workflow fixture applied: boxId=${boxId} model=${modelUri}`;
+}
+
+async function e2eApplyKustoSchemaReplacementFixture(version: string): Promise<string> {
+	const normalizedVersion = String(version || '').trim().toUpperCase();
+	if (normalizedVersion !== 'A' && normalizedVersion !== 'B') {
+		throw new Error(`Unknown schema replacement fixture version: ${version}`);
+	}
+	const section = e2eSection('kusto') as any;
+	const boxId = String(section.boxId || section.id || '').trim();
+	const editor = e2eEditor('kusto');
+	const modelUri = editor.getModel?.()?.uri?.toString?.() || '';
+	if (!boxId || !modelUri) throw new Error('Cannot apply schema replacement fixture without an active Kusto editor.');
+
+	const clusterUrl = 'https://schema-replacement.e2e.kusto.windows.net';
+	const database = 'ReplacementDb';
+	const connection = {
+		id: 'e2e-schema-replacement-conn',
+		name: 'E2E Schema Replacement',
+		clusterUrl,
+		accountPartition: 'e2e-schema-replacement-partition',
+	};
+	const eventColumns: Record<string, string> = normalizedVersion === 'A'
+		? { StableColumn: 'string', VersionOnlyOld: 'string' }
+		: { StableColumn: 'string', VersionOnlyNew: 'string' };
+	const tables: Record<string, Record<string, string>> = { Events: eventColumns };
+	const rawSchema = e2eBuildShowSchema(database, tables);
+	const schema = e2eCompactSchemaFromTables(tables, rawSchema);
+	const prevRestoreInProgress = !!pState.restoreInProgress;
+	try {
+		pState.restoreInProgress = true;
+		if (Array.isArray(_win.connections)) {
+			const others = _win.connections.filter((candidate: any) => candidate?.id !== connection.id);
+			_win.connections.length = 0;
+			_win.connections.push(...others, connection);
+		}
+		section.setConnections?.(_win.connections, { lastConnectionId: connection.id });
+		section.setDesiredClusterUrl?.(clusterUrl);
+		section.setConnectionId?.(connection.id);
+		section.setDatabases?.([database], database);
+		section.setDatabase?.(database);
+		section.setSchemaInfo?.({ status: 'loaded', statusText: `E2E replacement schema ${normalizedVersion} loaded` });
+	} finally {
+		pState.restoreInProgress = prevRestoreInProgress;
+	}
+
+	await e2eAdmitKustoSchemaFixture({
+		section,
+		boxId,
+		modelUri,
+		connectionId: connection.id,
+		accountPartition: connection.accountPartition,
+		clusterUrl,
+		database,
+		schema,
+		schemaSignature: `e2e-schema-replacement-${normalizedVersion.toLowerCase()}`,
+	});
+	schemaDiagnosticsTrustedByBoxId[boxId] = false;
+	section.setSchemaInfo?.({ status: 'loaded', statusText: `E2E replacement schema ${normalizedVersion} loaded` });
+	section.clearResults?.();
+	return `schema replacement fixture ${normalizedVersion} applied: boxId=${boxId} model=${modelUri}`;
 }
 
 function e2eSetKustoQueryWithCaretMarker(queryWithMarker: string, marker: string = '⟦caret⟧'): string {
@@ -5404,8 +5470,13 @@ async function e2eChartAssertTitleSyncAndHeatmapNumericCategories(): Promise<str
 		source.columns.map((column: any) => column.name).join(','),
 		...source.rows.map((row: unknown[]) => row.join(',')),
 	].join('\n');
+	const sourceSection = document.getElementById(sourceId) as any;
+	sourceSection._activeFetchRequest = {
+		requestId: 'e2e-chart-regression-url', url: 'https://example.invalid/chart-regression.csv',
+	};
 	window.dispatchEvent(new MessageEvent('message', { data: {
-		type: 'urlContent', boxId: sourceId,
+		type: 'urlContent', boxId: sourceId, requestId: 'e2e-chart-regression-url',
+		requestedUrl: 'https://example.invalid/chart-regression.csv',
 		url: 'https://example.invalid/chart-regression.csv',
 		kind: 'csv', contentType: 'text/csv', status: 200, body: csvBody,
 	} }));
@@ -5444,8 +5515,12 @@ async function e2eChartAssertTitleSyncAndHeatmapNumericCategories(): Promise<str
 	}
 	await e2eLayoutWaitFor(() => !!chartSection.shadowRoot, 'chart shadow root', 10000);
 	for (let attempt = 0; attempt < 5; attempt++) {
+		sourceSection._activeFetchRequest = {
+			requestId: `e2e-chart-regression-url-${attempt}`, url: 'https://example.invalid/chart-regression.csv',
+		};
 		window.dispatchEvent(new MessageEvent('message', { data: {
-			type: 'urlContent', boxId: sourceId,
+			type: 'urlContent', boxId: sourceId, requestId: `e2e-chart-regression-url-${attempt}`,
+			requestedUrl: 'https://example.invalid/chart-regression.csv',
 			url: 'https://example.invalid/chart-regression.csv',
 			kind: 'csv', contentType: 'text/csv', status: 200, body: csvBody,
 		} }));
@@ -5814,11 +5889,17 @@ async function e2eShareAssertArtifactClipboard(): Promise<string> {
 }
 
 function e2eLayoutDispatchUrlContent(boxId: string): void {
+	const section = document.getElementById(boxId) as any;
+	const requestedUrl = 'https://example.invalid/e2e-layout.txt';
+	const requestId = `e2e-layout-url-${boxId}`;
+	if (section) section._activeFetchRequest = { requestId, url: requestedUrl };
 	window.dispatchEvent(new MessageEvent('message', {
 		data: {
 			type: 'urlContent',
 			boxId,
-			url: 'https://example.invalid/e2e-layout.txt',
+			requestId,
+			requestedUrl,
+			url: requestedUrl,
 			contentType: 'text/plain',
 			status: 200,
 			kind: 'text',
@@ -6732,6 +6813,12 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		assertAcceptedCompletion: (scenario: KustoCompletionScenario) => e2eAssertAcceptedKustoCompletion(scenario),
 		applySemanticCompletionFixture: () => e2eApplyKustoSemanticFixture(),
 		applyCurrentClusterWorkflowFixture: () => e2eApplyKustoCurrentClusterWorkflowFixture(),
+		applySchemaReplacementFixture: (version: string) => e2eApplyKustoSchemaReplacementFixture(version),
+		setCustomColumnProviderEnabled: (enabled: boolean) => {
+			const modelUri = e2eEditor('kusto').getModel?.()?.uri?.toString?.() || '';
+			if (!modelUri) throw new Error('Kusto model URI unavailable for custom provider override.');
+			return __kustoSetCustomColumnCompletionProviderEnabledForTest(modelUri, enabled);
+		},
 		setQueryWithCaretMarker: (queryWithMarker: string, marker?: string) => e2eSetKustoQueryWithCaretMarker(queryWithMarker, marker),
 		setQueryWithCaretMarkerStrict: (queryWithMarker: string, marker?: string) => e2eSetKustoQueryWithCaretMarkerStrict(queryWithMarker, marker),
 		setSemanticScenario: (scenario: KustoSemanticCompletionScenario) => {

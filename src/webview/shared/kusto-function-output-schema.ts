@@ -304,6 +304,21 @@ export function prepareKustoSchemaForWorkerFull(schemaObj: any): any {
 	return ensureInferredKustoFunctionBodiesForSchema(prepareKustoSchemaForWorkerFast(schemaObj));
 }
 
+export function stampKustoSchemaMajorVersion(schemaObj: any, revision: number): any {
+	if (!schemaObj || typeof schemaObj !== 'object' || Array.isArray(schemaObj)
+		|| !schemaObj.Databases || typeof schemaObj.Databases !== 'object' || Array.isArray(schemaObj.Databases)
+		|| !Number.isSafeInteger(revision) || revision <= 0) {
+		return schemaObj;
+	}
+	const databases = Object.fromEntries(Object.entries(schemaObj.Databases).map(([name, database]) => [
+		name,
+		database && typeof database === 'object' && !Array.isArray(database)
+			? { ...database, MajorVersion: revision }
+			: database,
+	]));
+	return { ...schemaObj, Databases: databases };
+}
+
 export type KustoSchemaEnhancementResult = {
 	processedCount: number;
 	enhancedCount: number;

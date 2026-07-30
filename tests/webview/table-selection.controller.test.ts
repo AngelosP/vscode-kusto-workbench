@@ -398,6 +398,17 @@ describe('TableSelectionController', () => {
 			// buildClipboardText with no selection falls through to copy-all
 			expect(writeSpy).toHaveBeenCalled();
 		});
+
+		it('clears selection and refuses copy when governed rows are revoked', () => {
+			(host as any).canCopyRows = () => false;
+			ctrl.setSelectedCell({ row: 0, col: 0 });
+
+			ctrl.copy();
+
+			expect(writeSpy).not.toHaveBeenCalled();
+			expect(ctrl.selectedCell).toBeNull();
+			expect(ctrl.selectionRange).toBeNull();
+		});
 	});
 
 	// ── cross-table coordination ──────────────────────────────────────────

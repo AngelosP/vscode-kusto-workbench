@@ -183,6 +183,15 @@ describe('chart-renderer zoom/pan controls', () => {
 				['2024-01-02T00:00:00Z', 20, 'B', 'C'],
 			],
 		};
+		const sourceArtifactId = `result:q1:${(resultsState.revisionById.q1 || 0) + 1}`;
+		resultsState.revisionById.q1 = (resultsState.revisionById.q1 || 0) + 1;
+		resultsState.artifactById[sourceArtifactId] = {
+			artifactId: sourceArtifactId, sourceBoxId: 'q1', revision: resultsState.revisionById.q1,
+			createdAt: resultsState.revisionById.q1, restored: false,
+			columns: resultsState.byId.q1.columns, rows: resultsState.byId.q1.rows,
+			metadata: {}, lineage: [],
+		};
+		resultsState.currentArtifactIdBySource.q1 = sourceArtifactId;
 
 		const state = {
 			mode: 'edit',
@@ -806,6 +815,38 @@ describe('chart-renderer zoom/pan controls', () => {
 		expect(JSON.stringify(scenario.state)).not.toContain('HOVERED_PROTECTED_SENTINEL');
 	});
 
+	it('synchronously disables zoom controls, overlay, and hint during purge', () => {
+		const scenario = renderScenario('line', { legendColumn: 'Category' });
+		const controls = getControls(scenario.id);
+		const overlay = document.getElementById(`${scenario.id}_chart_zoom_drag_overlay`) as HTMLElement;
+		const hint = getHint(scenario.id) as HTMLElement & { __kustoZoomHintTimer?: number };
+		const zoomHandler = controls.zoom.onclick;
+		overlay.hidden = false;
+		overlay.style.pointerEvents = 'auto';
+		hint.hidden = false;
+		hint.classList.add('is-visible');
+		hint.__kustoZoomHintTimer = window.setTimeout(() => undefined, 1_000);
+
+		purgeChartEcharts(scenario.id);
+
+		expect(controls.controls.hidden).toBe(true);
+		expect(controls.zoom.disabled).toBe(true);
+		expect(controls.zoom.onclick).toBeNull();
+		expect(controls.undo.hidden).toBe(true);
+		expect(controls.undo.disabled).toBe(true);
+		expect(controls.undo.onclick).toBeNull();
+		expect(overlay.hidden).toBe(true);
+		expect(overlay.style.pointerEvents).toBe('none');
+		expect(hint.hidden).toBe(true);
+		expect(hint.classList.contains('is-visible')).toBe(false);
+		expect(hint.__kustoZoomHintTimer).toBe(0);
+		expect(zoomHandler).not.toBeNull();
+
+		renderChart(scenario.id);
+		expect(overlay.style.pointerEvents).toBe('');
+		expect(overlay.querySelector('.kusto-chart-zoom-drag-rect')).not.toBeNull();
+	});
+
 	it('does not reapply captured zoom state after the data source changes', () => {
 		const scenario = renderScenario('line', { legendColumn: 'Category' });
 		const dataZoomHandler = instance.on.mock.calls.find((call) => call[0] === 'datazoom')?.[1];
@@ -892,7 +933,15 @@ describe('chart-renderer zoom/pan controls', () => {
 		dataZoomHandler();
 		expect(scenario.state.__zoomPanViewport).toBeTruthy();
 
-		resultsState.revisionById.q1 = 1;
+		resultsState.revisionById.q1 += 1;
+		const replacementArtifactId = `result:q1:${resultsState.revisionById.q1}`;
+		resultsState.artifactById[replacementArtifactId] = {
+			...resultsState.artifactById[resultsState.currentArtifactIdBySource.q1],
+			artifactId: replacementArtifactId,
+			revision: resultsState.revisionById.q1,
+		};
+		resultsState.currentArtifactIdBySource.q1 = replacementArtifactId;
+		delete resultsState.boundArtifactIdByConsumer[scenario.id];
 		instance.dispatchAction.mockClear();
 		setOption.mockClear();
 

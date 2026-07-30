@@ -100,6 +100,7 @@ const mocks = {
 	applyEditingPreferencesData: vi.fn(),
 	applyKustoLeaveNoTracePolicy: vi.fn(),
 	getResultArtifactByProducerExecution: vi.fn(),
+	getCurrentResultArtifact: vi.fn(() => null),
 	bindResultArtifactConsumer: vi.fn(),
 	getBoundResultArtifact: vi.fn(),
 	unbindResultArtifactConsumer: vi.fn(),
@@ -123,7 +124,7 @@ vi.mock('../../src/webview/shared/safe-run.js', () => ({
 }));
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
-	getCurrentResultArtifact: vi.fn(() => null),
+	getCurrentResultArtifact: mocks.getCurrentResultArtifact,
 	getResultArtifactByProducerExecution: mocks.getResultArtifactByProducerExecution,
 	bindResultArtifactConsumer: mocks.bindResultArtifactConsumer,
 	getBoundResultArtifact: mocks.getBoundResultArtifact,
@@ -1249,11 +1250,35 @@ describe('message-handler dispatch', () => {
 		mocks.getSqlSectionElement.mockImplementation((boxId: string) => boxId === 'sql_source' ? source : null);
 		handlerState.optimizationMetadataByBoxId.query_comparison = { sourceBoxId: 'sql_source', isComparison: true };
 		vi.mocked(resultsState.displayResultForBox).mockClear();
+		const sourceArtifact = {
+			artifactId: 'result:sql_source:1', sourceBoxId: 'sql_source', revision: 1, createdAt: 1,
+			restored: false, columns: ['Value'], rows: [[0]], metadata: {},
+			producer: {
+				engine: 'sql', boxId: 'sql_source', executionId: 'sql-source-a',
+				connectionId: 'sql-connection', database: 'SqlDb',
+			},
+			policy: {
+				exposeToActiveContent: true, sendToModel: true,
+				shareToClipboard: true, exportToCsv: true,
+			},
+			lineage: [],
+		};
+		mocks.getCurrentResultArtifact.mockReturnValue(sourceArtifact);
+		mocks.getResultArtifactByProducerExecution.mockReturnValue(sourceArtifact);
+		mocks.bindResultArtifactConsumer.mockReturnValue(sourceArtifact.artifactId);
+		mocks.getBoundResultArtifact.mockReturnValue(sourceArtifact);
 
 		dispatchHostMessage({
 			type: 'copilotWriteQueryExecuting', boxId: 'query_comparison', ownerToken: 'owner-current',
 			executionId: 'sql-comparison-1', executing: true,
+			sourceBoxId: 'sql_source', sourceExecutionId: 'sql-source-a',
 		});
+		const sourceArtifactB = {
+			...sourceArtifact,
+			artifactId: 'result:sql_source:2', revision: 2, rows: [[99]],
+			producer: { ...sourceArtifact.producer, executionId: 'sql-source-b' },
+		};
+		mocks.getCurrentResultArtifact.mockReturnValue(sourceArtifactB);
 		const result = { columns: ['Value'], rows: [[1]], metadata: {} };
 		dispatchHostMessage({
 			type: 'queryResult', boxId: 'query_comparison', ownerToken: 'owner-current',
@@ -1269,14 +1294,32 @@ describe('message-handler dispatch', () => {
 					engine: 'sql', boxId: 'query_comparison', query: 'select 1 as Value',
 					connectionId: 'sql-connection', database: 'SqlDb',
 				}),
-				policy: {
+				lineage: [{ sourceArtifactId: sourceArtifact.artifactId, role: 'comparison-source' }],
+				policy: expect.objectContaining({
 					exposeToActiveContent: true, sendToModel: true,
 					shareToClipboard: true, exportToCsv: true,
-				},
+				}),
 			}),
 		});
+		expect(mocks.bindResultArtifactConsumer).toHaveBeenCalledWith(
+			'comparison:query_comparison:source', 'sql_source', sourceArtifact.artifactId,
+		);
+		expect(mocks.getResultArtifactByProducerExecution).toHaveBeenCalledWith('sql_source', 'sql-source-a');
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('comparison:query_comparison:source');
 		expect(mocks.setQueryExecuting).toHaveBeenCalledWith('query_comparison', true);
 		expect(mocks.setQueryExecuting).toHaveBeenCalledWith('query_comparison', false);
+
+		mocks.unbindResultArtifactConsumer.mockClear();
+		dispatchHostMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'query_comparison', ownerToken: 'owner-current',
+			executionId: 'sql-comparison-2', executing: true,
+			sourceBoxId: 'sql_source', sourceExecutionId: 'sql-source-a',
+		});
+		dispatchHostMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'query_comparison', ownerToken: 'owner-current',
+			executionId: 'sql-comparison-2', executing: false,
+		});
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('comparison:query_comparison:source');
 	});
 
 	it('routes one queryResult through rendering and the persistence owner once', async () => {
@@ -3054,6 +3097,43 @@ describe('message-handler dispatch', () => {
 		expect(state.getKustoPreparationState('query_1')).toMatchObject({ status: 'error', stage: 'error' });
 		expect(state.lastSchemaRequestAtByBoxId.query_1).toBe(0);
 		expect(queryEl.setSchemaInfo).toHaveBeenCalledWith(expect.objectContaining({ isError: true }));
+	});
+
+	it('shows a worker-ready schema failover as cached instead of error', () => {
+		const queryEl = { setSchemaInfo: vi.fn() };
+		mocks.getQuerySectionElement.mockReturnValue(queryEl);
+
+		dispatchHostMessage({
+			type: 'schemaData',
+			boxId: 'query_1',
+			connectionId: 'c1',
+			database: 'Samples',
+			clusterUrl: 'https://cluster.kusto.windows.net',
+			schema: {
+				tables: ['Events'],
+				columnTypesByTable: { Events: { EventName: 'string' } },
+				rawSchemaJson: { Plugins: [], Databases: { Samples: { Tables: {} } } },
+			},
+			schemaMeta: {
+				fromCache: true,
+				isFailoverToCache: true,
+				refreshState: 'failed',
+				tablesCount: 1,
+				columnsCount: 1,
+				functionsCount: 0,
+				workerUpdateNeeded: true,
+			},
+		});
+
+		expect(queryEl.setSchemaInfo).toHaveBeenCalledWith({
+			text: '1 tables, 1 cols (cached)',
+			isError: false,
+			meta: expect.objectContaining({
+				fromCache: true,
+				hasRawSchemaJson: true,
+				isFailoverToCache: true,
+			}),
+		});
 	});
 
 	it('ends preparation when worker schema apply stalls for a fully qualified function body', async () => {

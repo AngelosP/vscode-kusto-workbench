@@ -12,6 +12,7 @@ function createMockHost(rows: CellValue[][] = []): SearchHost {
 		requestUpdate: vi.fn(),
 		updateComplete: Promise.resolve(true),
 		getTableRows: () => rows.map(r => ({ original: r })),
+		getColumnCount: () => rows.length ? rows[0].length : 0,
 		scrollToRow: vi.fn(),
 		setSelectedCell: vi.fn(),
 		clearSelectionRange: vi.fn(),
@@ -97,6 +98,18 @@ describe('TableSearchController', () => {
 			expect(ctrl.matches).toEqual([]); // not yet
 			vi.advanceTimersByTime(200);
 			expect(ctrl.matches).toEqual([{ row: 0, col: 0 }]);
+		});
+
+		it('does not search cells beyond the declared column count', () => {
+			const host = createMockHost([['visible', 'hidden-token']]);
+			(host.getColumnCount as () => number) = () => 1;
+			const ctrl = new TableSearchController(host);
+
+			ctrl.setQuery('hidden-token');
+			vi.advanceTimersByTime(200);
+
+			expect(ctrl.matches).toEqual([]);
+			expect(host.setSelectedCell).not.toHaveBeenCalled();
 		});
 
 		it('finds multiple matches', () => {

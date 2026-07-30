@@ -99,6 +99,7 @@ import {
 	prepareKustoSchemaForWorkerFull,
 	resolveKustoRawSchemaEntityColumns,
 	resolveKustoRawSchemaEntityColumnsDeep,
+	stampKustoSchemaMajorVersion,
 	syntheticKustoFunctionBodyForColumnNames,
 } from '../shared/kusto-function-output-schema';
 import { filterResolvableCrossClusterMarkers } from '../shared/kusto-diagnostic-marker-filter';
@@ -583,6 +584,7 @@ let __kustoSetDatabaseInContext: ((...args: any[]) => Promise<boolean>) | null =
 let __kustoSchemaEnhancementToken = 0;
 const __kustoSchemaEnhancementTokenByModelSchemaKey: Record<string, number> = {};
 const __kustoSchemaEnhancementPendingByModelSchemaKey = new Set<string>();
+const __kustoCustomColumnCompletionProviderDisabledModels = new Set<string>();
 export let __kustoUpdateSchemaForFocusedBox: ((...args: any[]) => Promise<void>) | null = null;
 let __kustoEnableMarkersForBox: ((boxId: any) => void) | null = null;
 let __kustoTriggerRevalidation: ((boxId: any) => void) | null = null;
@@ -669,6 +671,41 @@ async function __kustoRecoverPrimarySchemaAfterDetachedMutation(
 	preferredBoxId: string,
 	reason: string,
 ): Promise<boolean> {
+	const clearWorker = async (): Promise<boolean> => {
+		if (!transaction.isActive() || !monaco?.languages?.kusto?.getKustoWorker) return false;
+		const workerAccessor = await monaco.languages.kusto.getKustoWorker();
+		if (!transaction.isActive()) return false;
+		let cleared = false;
+		for (const model of monaco.editor.getModels?.() || []) {
+			if (!transaction.isActive()) return false;
+			const worker = await workerAccessor(model.uri);
+			if (!transaction.isActive()) return false;
+			if (worker?.setSchema) {
+				await worker.setSchema({ cluster: { connectionString: '', databases: [] } });
+				if (!transaction.commit({ destructive: true })) return false;
+				cleared = true;
+			}
+		}
+		return cleared;
+	};
+	const deferRecovery = (physicallyCleared: boolean): void => {
+		__kustoSchemaTracker.globalInitialized = false;
+		__kustoSchemaTracker.loadedSchemas = {};
+		for (const modelUri of Object.keys(__kustoSchemaTracker.loadedSchemasByModel)) {
+			__kustoSchemaTracker.loadedSchemasByModel[modelUri] = {};
+		}
+		__kustoSchemaTracker.databaseInContext = null;
+		for (const boxId of kustoEditorSchemaCoordinator.getSectionIds()) {
+			invalidateSchemaWorkerReadinessForBox(boxId, false, false);
+			requireSchemaWorkerApply(boxId);
+		}
+		traceFileOpen('monaco.schema.detached.recoveryDeferred', { reason, physicallyCleared });
+	};
+	if (document.hidden) {
+		const physicallyCleared = await clearWorker();
+		deferRecovery(physicallyCleared);
+		return false;
+	}
 	const candidates = Array.from(new Set([
 		String(activeQueryEditorBoxId || ''),
 		String(preferredBoxId || ''),
@@ -709,22 +746,13 @@ async function __kustoRecoverPrimarySchemaAfterDetachedMutation(
 			target.connectionId,
 			accountPartition,
 		);
-		if (!recovered || !isCurrent()) continue;
+		if (!recovered || !transaction.isActive() || !isCurrent()) continue;
 		markSchemaWorkerReady(boxId, schemaKey, schemaSignature, modelUri);
 		traceFileOpen('monaco.schema.detached.recovered', { boxId, reason, modelUri });
 		return true;
 	}
-	__kustoSchemaTracker.globalInitialized = false;
-	__kustoSchemaTracker.loadedSchemas = {};
-	for (const modelUri of Object.keys(__kustoSchemaTracker.loadedSchemasByModel)) {
-		__kustoSchemaTracker.loadedSchemasByModel[modelUri] = {};
-	}
-	__kustoSchemaTracker.databaseInContext = null;
-	for (const boxId of kustoEditorSchemaCoordinator.getSectionIds()) {
-		invalidateSchemaWorkerReadinessForBox(boxId, false, false);
-		requireSchemaWorkerApply(boxId);
-	}
-	traceFileOpen('monaco.schema.detached.recoveryDeferred', { reason, candidateCount: candidates.length });
+	const physicallyCleared = await clearWorker();
+	deferRecovery(physicallyCleared);
 	return false;
 }
 
@@ -773,6 +801,7 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 	const isCurrent = () => {
 		try {
 			return ownsToken()
+				&& (!args.contextIntent || __kustoSchemaContextIntents.isCurrent(args.contextIntent))
 				&& (args.isCurrent ? args.isCurrent() : !!__kustoSchemaTracker.loadedSchemasByModel[args.modelKey]?.[args.schemaKey]);
 		} catch {
 			return false;
@@ -825,18 +854,20 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 			return;
 		}
 		const queuedMutation = __kustoWorkerMutations.enqueueLeased({
-			request: { kind: 'enhancement', advancesPrimaryIntent: true },
+			request: { kind: 'enhancement' },
 			timeoutMs: KUSTO_SCHEMA_ENHANCEMENT_TIMEOUT_MS,
 			run: async transaction => {
-			if (!isCurrent() || !isDesiredContextCurrent()) {
+			const canMutate = () => transaction.isActive() && isCurrent() && isDesiredContextCurrent();
+			if (!canMutate()) {
 				cancelOwned();
 				traceFileOpen('monaco.schema.enhance.canceledBeforeMutation', { schemaKey: args.schemaKey, modelKey: args.modelKey });
 				return false;
 			}
 			try {
 				traceFileOpen('monaco.schema.enhance.normalize.start', { schemaKey: args.schemaKey, modelKey: args.modelKey });
-				const engineSchema = await args.worker.normalizeSchema(prepareKustoSchemaForWorkerFast(args.schemaObj), args.clusterUrl, args.databaseInContext);
-				if (!isCurrent() || !isDesiredContextCurrent()) {
+				const schemaForWorker = stampKustoSchemaMajorVersion(prepareKustoSchemaForWorkerFast(args.schemaObj), transaction.id);
+				const engineSchema = await args.worker.normalizeSchema(schemaForWorker, args.clusterUrl, args.databaseInContext);
+				if (!canMutate()) {
 					cancelOwned();
 					return false;
 				}
@@ -845,12 +876,12 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 					databaseSchema = engineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === args.databaseInContext.toLowerCase());
 				}
 				traceFileOpen('monaco.schema.enhance.normalize.done', { schemaKey: args.schemaKey, modelKey: args.modelKey, hasDatabaseSchema: !!databaseSchema });
-				if (!databaseSchema || !isCurrent() || !isDesiredContextCurrent()) {
+				if (!databaseSchema || !canMutate()) {
 					return false;
 				}
 				traceFileOpen('monaco.schema.enhance.addDatabase.start', { schemaKey: args.schemaKey, modelKey: args.modelKey });
 				await args.worker.addDatabaseToSchema(args.modelKey, args.clusterUrl, databaseSchema);
-				if (!isCurrent() || !isDesiredContextCurrent()) {
+				if (!canMutate()) {
 					cancelOwned();
 					return false;
 				}
@@ -859,7 +890,7 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 					return false;
 				}
 				traceFileOpen('monaco.schema.enhance.addDatabase.done', { schemaKey: args.schemaKey, modelKey: args.modelKey });
-				if (!isCurrent() || !isDesiredContextCurrent()) {
+				if (!canMutate()) {
 					cancelOwned();
 					return false;
 				}
@@ -871,8 +902,8 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 					accountPartition: args.accountPartition,
 				};
 				try {
-					await __kustoAddDatabaseAliasesToWorker(args.worker, args.modelKey, args.schemaObj, args.clusterName || args.clusterUrl, args.clusterUrl, args.databaseInContext, transaction, isCurrent);
-					if (!isCurrent()) {
+					await __kustoAddDatabaseAliasesToWorker(args.worker, args.modelKey, args.schemaObj, args.clusterName || args.clusterUrl, args.clusterUrl, args.databaseInContext, transaction, canMutate);
+					if (!canMutate()) {
 						cancelOwned();
 						return false;
 					}
@@ -881,7 +912,7 @@ function __kustoScheduleEnhancedSchemaApply(args: {
 				}
 				try {
 					const enhancedBoxId = queryEditorBoxByModelUri?.[args.modelKey] || '';
-					if (enhancedBoxId && typeof __kustoTriggerRevalidation === 'function' && isCurrent() && isDesiredContextCurrent()) {
+					if (enhancedBoxId && typeof __kustoTriggerRevalidation === 'function' && canMutate()) {
 						__kustoTriggerRevalidation(enhancedBoxId);
 						traceFileOpen('monaco.schema.enhance.revalidationTriggered', { schemaKey: args.schemaKey, modelKey: args.modelKey, boxId: enhancedBoxId });
 					}
@@ -1182,6 +1213,14 @@ function __kustoColumnCompletionsForModel(model: any, position: any): string[] {
 	return [];
 }
 
+export function __kustoSetCustomColumnCompletionProviderEnabledForTest(modelUri: string, enabled: boolean): boolean {
+	const key = String(modelUri || '');
+	if (document.body.dataset.kustoE2eEnabled !== 'true' || !key) return true;
+	if (enabled) __kustoCustomColumnCompletionProviderDisabledModels.delete(key);
+	else __kustoCustomColumnCompletionProviderDisabledModels.add(key);
+	return !__kustoCustomColumnCompletionProviderDisabledModels.has(key);
+}
+
 function __kustoSupplementalCompletionDecisionForModel(model: any, position: any): {
 	allow: boolean;
 	reason: string;
@@ -1349,12 +1388,14 @@ export function invalidateKustoSchemaIdentityState(): void {
 	}
 	__kustoCrossClusterSchemas = {};
 	void __kustoWorkerMutations.enqueue({ kind: 'identity-clear', advancesPrimaryIntent: true }, async transaction => {
+		if (!transaction.isActive()) return;
 		if (!monaco?.languages?.kusto?.getKustoWorker) return;
 		const workerAccessor = await monaco.languages.kusto.getKustoWorker();
 		for (const model of monaco.editor.getModels?.() || []) {
 			try {
+				if (!transaction.isActive()) return;
 				const worker = await workerAccessor(model.uri);
-				if (worker?.setSchema) {
+				if (transaction.isActive() && worker?.setSchema) {
 					await worker.setSchema({ cluster: { connectionString: '', databases: [] } });
 					transaction.commit({ destructive: true });
 				}
@@ -1801,6 +1842,7 @@ async function __kustoRestoreOtherPrimaryApplicationsAfterWorkerReplace(
 				}
 				continue;
 			}
+			if (!transaction.isActive()) return;
 			if (preparationToken && !isKustoPreparationCurrent(preparationToken, {
 				schemaKey: readyState.schemaKey,
 				schemaSignature: readyState.schemaSignature,
@@ -1969,14 +2011,15 @@ async function __kustoAddDatabaseAliasesToWorker(
 	isCurrent: () => boolean = () => true,
 ): Promise<number> {
 	try {
-		if (!worker || typeof worker.addDatabaseToSchema !== 'function' || !modelUri || !schemaObj || !database || !isCurrent()) {
+		const canMutate = () => transaction.isActive() && isCurrent();
+		if (!worker || typeof worker.addDatabaseToSchema !== 'function' || !modelUri || !schemaObj || !database || !canMutate()) {
 			return 0;
 		}
 		recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelUri), 'worker-add-aliases-start', {
 			modelUri,
 			schemaKey: __kustoGetCrossClusterSchemaKey(clusterName, database),
 		});
-		schemaObj = __kustoPrepareSchemaForKustoWorker(schemaObj);
+		schemaObj = stampKustoSchemaMajorVersion(__kustoPrepareSchemaForKustoWorker(schemaObj), transaction.id);
 		const toInputParameter = ([paramName, param]: [string, any]) => ({
 			name: param?.Name || param?.name || paramName,
 			type: param?.CslType || param?.cslType || param?.Type || param?.type || 'string',
@@ -1999,9 +2042,9 @@ async function __kustoAddDatabaseAliasesToWorker(
 		let databaseSchema: any = null;
 		if (typeof worker.normalizeSchema === 'function') {
 			try {
-				if (!isCurrent()) return 0;
+				if (!canMutate()) return 0;
 				const engineSchema = await worker.normalizeSchema(schemaObj, clusterUrl, database);
-				if (!isCurrent()) return 0;
+				if (!canMutate()) return 0;
 				databaseSchema = engineSchema?.database;
 				if (!databaseSchema && engineSchema?.cluster?.databases) {
 					databaseSchema = engineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === String(database).toLowerCase());
@@ -2083,10 +2126,10 @@ async function __kustoAddDatabaseAliasesToWorker(
 		}
 		let count = 0;
 		for (const alias of __kustoGetCrossClusterClusterAliases(clusterName, clusterUrl)) {
-			if (!isCurrent()) return 0;
+			if (!canMutate()) return 0;
 			await worker.addDatabaseToSchema(modelUri, alias, databaseSchema);
 			if (!transaction.commit()) return 0;
-			if (!isCurrent()) return 0;
+			if (!canMutate()) return 0;
 			count++;
 		}
 		recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelUri), 'worker-add-aliases-finish', {
@@ -3359,7 +3402,7 @@ __kustoDisableMarkersForModel = function(modelUri: any) {
 					
 					// Internal implementation - called through the queue
 __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, clusterUrl: any, database: any, transaction: KustoWorkerMutationTransaction, setAsContext = false, modelUri: any = null, forceRefresh = false, guard?: () => boolean, preparationToken?: KustoPreparationToken, contextIntent?: KustoSchemaContextIntent, connectionId = '', accountPartition = '') {
-						const isOperationCurrent = () => !guard || guard();
+						const isOperationCurrent = () => transaction.isActive() && (!guard || guard());
 						const isContextIntentCurrent = () => !contextIntent || __kustoSchemaContextIntents.isCurrent(contextIntent);
 						if (!isOperationCurrent()) return false;
 						// Resolve which Monaco model this operation applies to
@@ -3381,6 +3424,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 										try { delete __kustoMonacoDatabaseInContextByModel[uriKey]; } catch (e) { console.error('[kusto]', e); }
 										try { delete __kustoMonacoInitializedByModel[uriKey]; } catch (e) { console.error('[kusto]', e); }
 										try { delete __kustoModelClusterMap[uriKey]; } catch (e) { console.error('[kusto]', e); }
+										try { __kustoCustomColumnCompletionProviderDisabledModels.delete(uriKey); } catch (e) { console.error('[kusto]', e); }
 										try { __kustoClearAutocompleteTraceForModel(uriKey); } catch (e) { console.error('[kusto]', e); }
 										try { __kustoDisposeSupplementalModel(uriKey); } catch (e) { console.error('[kusto]', e); }
 									} catch (e) { console.error('[kusto]', e); }
@@ -3458,7 +3502,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 							if (schemaObj && schemaObj.Databases && !schemaObj.Plugins) {
 								schemaObj = { Plugins: [], ...schemaObj };
 							}
-							schemaObj = __kustoPrepareSchemaForKustoWorker(schemaObj);
+							schemaObj = stampKustoSchemaMajorVersion(__kustoPrepareSchemaForKustoWorker(schemaObj), transaction.id);
 							traceFileOpen('monaco.schema.prepare.done', { schemaKey, databaseCount: schemaObj?.Databases ? Object.keys(schemaObj.Databases).length : undefined });
 							
 							// Get the kusto worker
@@ -3502,6 +3546,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.done', { schemaKey, action: operation.action });
 												recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-first-load', { modelKey, clusterUrl, database: databaseInContext });
 												await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext, transaction, isOperationCurrent);
+												if (!isOperationCurrent()) return false;
 												__kustoSchemaTracker.recordFirstLoad(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
 												__kustoMonacoInitializedByModel[modelKey] = true;
 												__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext, connectionId, accountPartition, schemaKey };
@@ -3525,6 +3570,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 												traceFileOpen('monaco.schema.worker.setSchemaFromShowSchema.done', { schemaKey, action: operation.action });
 												recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-replace', { modelKey, clusterUrl, database: databaseInContext });
 												await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext, transaction, isOperationCurrent);
+												if (!isOperationCurrent()) return false;
 												const otherKeys = __kustoSchemaTracker.recordReplace(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
 												__kustoMonacoInitializedByModel[modelKey] = true;
 												__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext, connectionId, accountPartition, schemaKey };
@@ -3545,14 +3591,18 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 													const cached = __kustoSchemaTracker.schemaCache[otherKey];
 													if (cached?.rawSchemaJson) {
 														try {
-															const engineSchema = await worker.normalizeSchema(__kustoPrepareSchemaForKustoWorker(cached.rawSchemaJson), cached.clusterUrl, cached.database);
+															if (!isOperationCurrent()) return false;
+															const cachedSchemaForWorker = stampKustoSchemaMajorVersion(__kustoPrepareSchemaForKustoWorker(cached.rawSchemaJson), transaction.id);
+															const engineSchema = await worker.normalizeSchema(cachedSchemaForWorker, cached.clusterUrl, cached.database);
+															if (!isOperationCurrent()) return false;
 															let databaseSchema = engineSchema?.database;
 															if (!databaseSchema && engineSchema?.cluster?.databases) {
 																databaseSchema = engineSchema.cluster.databases.find((db: any) => db.name.toLowerCase() === cached.database.toLowerCase());
 															}
 															if (databaseSchema) {
+																if (!isOperationCurrent()) return false;
 																await worker.addDatabaseToSchema(modelKey, cached.clusterUrl, databaseSchema);
-																		if (!transaction.commit()) return false;
+																if (!transaction.commit()) return false;
 															}
 														} catch (readdError) { console.error('[kusto]', readdError); }
 													}
@@ -3583,6 +3633,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 									} else if (operation.action === 'add') {
 										let alreadyLoadedGlobally = !forceRefresh && __kustoSchemaTracker.isLoadedGlobally(schemaKey);
 										if (alreadyLoadedGlobally) {
+											if (!isOperationCurrent()) return false;
 											__kustoSchemaTracker.recordAdoptGlobal(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
 											applied = true;
 											if (setAsContext) {
@@ -3615,10 +3666,11 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 													traceFileOpen('monaco.schema.worker.addDatabaseToSchema.done', { schemaKey });
 													recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-add', { modelKey, clusterUrl, database: databaseInContext });
 													await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext, transaction, isOperationCurrent);
+													if (!isOperationCurrent()) return false;
 													__kustoSchemaTracker.recordAdd(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj, false);
 													applied = true;
 													// For setAsContext, also try getSchema/setSchema for reliable context switch
-													if (setAsContext && isContextIntentCurrent()) {
+													if (setAsContext && isContextIntentCurrent() && isOperationCurrent()) {
 														try {
 															if (typeof worker.getSchema === 'function' && typeof worker.setSchema === 'function') {
 																const currentSchema = await worker.getSchema();
@@ -3631,9 +3683,9 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 																if (isContextIntentCurrent()) {
 																	await worker.setSchema({ ...currentSchema, cluster: { ...(currentSchema?.cluster || {}), databases: nextDatabases }, database: databaseSchema });
 																	if (!transaction.commit({ destructive: true })) return false;
-																		__kustoInvalidateSupplementalApplicationsAfterWorkerReplace('primary-add-context');
+																	__kustoInvalidateSupplementalApplicationsAfterWorkerReplace('primary-add-context');
 																	await __kustoRestoreOtherPrimaryApplicationsAfterWorkerReplace(worker, modelKey, 'primary-add-context', transaction);
-																	if (isContextIntentCurrent()) {
+																	if (isContextIntentCurrent() && isOperationCurrent()) {
 																		__kustoSchemaTracker.recordAdd(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj, true);
 																		__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext, connectionId, accountPartition, schemaKey };
 																	}
@@ -3657,9 +3709,10 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 													if (!isOperationCurrent()) return false;
 													recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(modelKey), 'worker-schema-fallback-first-load', { modelKey, clusterUrl, database: databaseInContext });
 													await __kustoAddDatabaseAliasesToWorker(worker, modelKey, schemaObj, clusterUrl, clusterUrl, databaseInContext, transaction, isOperationCurrent);
-															__kustoSchemaTracker.recordFirstLoad(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
+													if (!isOperationCurrent()) return false;
+													__kustoSchemaTracker.recordFirstLoad(modelKey, schemaKey, clusterUrl, databaseInContext, connectionId, accountPartition, schemaObj);
 													__kustoMonacoInitializedByModel[modelKey] = true;
-															__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext, connectionId, accountPartition, schemaKey };
+													__kustoMonacoDatabaseInContextByModel[modelKey] = { clusterUrl, database: databaseInContext, connectionId, accountPartition, schemaKey };
 													applied = true;
 												} catch (e) {
 													console.error('[monaco-kusto] Fallback setSchemaFromShowSchema failed:', e);
@@ -3698,7 +3751,7 @@ __kustoSetMonacoKustoSchemaInternal = async function (rawSchemaJson: any, cluste
 __kustoSetDatabaseInContext = async function (clusterUrl: any, database: any, transaction: KustoWorkerMutationTransaction, modelUri = null, guard?: () => boolean, connectionId = '', accountPartition = '') {
 						// Normalize cluster URLs for comparison
 						const normalizeClusterUrl = (url: any) => kustoClusterKey(url);
-						const isCurrent = () => !guard || guard();
+						const isCurrent = () => transaction.isActive() && (!guard || guard());
 						if (!isCurrent()) return false;
 						
 						const models = monaco?.editor?.getModels ? monaco.editor.getModels() : [];
@@ -4279,6 +4332,7 @@ __kustoApplyCrossClusterSchemaInternal = async function (
 							} else {
 								schemaObj = rawSchemaJson;
 							}
+							schemaObj = stampKustoSchemaMajorVersion(schemaObj, transaction.id);
 
 							const exactDatabaseKey = schemaObj?.Databases
 								? Object.keys(schemaObj.Databases).find(candidate => candidate.toLowerCase() === String(database).toLowerCase())
@@ -4357,6 +4411,7 @@ __kustoApplyCrossClusterSchemaInternal = async function (
 									// is already set and skips the context switch.
 												
 									if (appliedCount > 0 && requestedUri && appliedToRequestedModel) {
+										if (!transaction.isActive() || !isCurrent()) return;
 										const loadedState = requestedReferenceGeneration
 											? __kustoSupplementalCoordinator.markLoaded({ modelUri: requestedUri, schemaKey: key, referenceGeneration: requestedReferenceGeneration })
 											: undefined;
@@ -4622,6 +4677,8 @@ __kustoCheckCrossClusterRefs = function (queryText: any, boxId: any) {
 					monaco.languages.registerCompletionItemProvider('kusto', {
 						provideCompletionItems: (model: any, position: any) => {
 							try {
+								const providerModelUri = String(model?.uri?.toString?.() || '');
+								if (__kustoCustomColumnCompletionProviderDisabledModels.has(providerModelUri)) return { suggestions: [] };
 								const decision = __kustoSupplementalCompletionDecisionForModel(model, position);
 								recordAutocompleteTrace(__kustoGetAutocompleteTraceIdForModel(decision.modelUri), 'supplemental-provider-decision', {
 									allow: decision.allow,
@@ -4741,7 +4798,7 @@ try {
 				// race after a newer visible-tab schema apply.
 					void __kustoWorkerMutations.enqueue({ kind: 'visibility-clear', advancesPrimaryIntent: true }, async transaction => {
 					try {
-						if (!document.hidden || clearGeneration !== __kustoSchemaClearGeneration) {
+						if (!transaction.isActive() || !document.hidden || clearGeneration !== __kustoSchemaClearGeneration) {
 							return;
 						}
 						if (typeof monaco !== 'undefined' && monaco && monaco.languages && monaco.languages.kusto && 
@@ -4751,11 +4808,11 @@ try {
 							if (models && models.length > 0 && workerAccessor) {
 								for (const model of models) {
 									try {
-										if (!document.hidden || clearGeneration !== __kustoSchemaClearGeneration) {
+										if (!transaction.isActive() || !document.hidden || clearGeneration !== __kustoSchemaClearGeneration) {
 											return;
 										}
 										const worker = await workerAccessor(model.uri);
-										if (worker && typeof worker.setSchema === 'function') {
+										if (transaction.isActive() && worker && typeof worker.setSchema === 'function') {
 											await worker.setSchema({ cluster: { connectionString: '', databases: [] } });
 											transaction.commit({ destructive: true });
 										}

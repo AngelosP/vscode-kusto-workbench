@@ -9,6 +9,7 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 
 vi.mock('../../src/webview/core/section-factory.js', () => ({
 	__kustoRefreshAllDataSourceDropdowns: vi.fn(),
+	__kustoNotifyResultsUpdated: vi.fn(),
 }));
 
 vi.mock('../../src/webview/core/utils.js', () => ({
@@ -19,8 +20,10 @@ vi.mock('../../src/webview/core/utils.js', () => ({
 }));
 
 import '../../src/webview/sections/kw-url-section.js';
+import '../../src/webview/components/kw-data-table.js';
 import { KwUrlSection } from '../../src/webview/sections/kw-url-section.js';
 import type { UrlSectionData } from '../../src/webview/sections/kw-url-section.js';
+import { getCurrentResultArtifact } from '../../src/webview/core/results-state.js';
 
 // ── Static pure functions ─────────────────────────────────────────────────────
 
@@ -204,6 +207,196 @@ describe('kw-url-section — rendering', () => {
 			});
 		} finally {
 			window.vscode = previousVsCode;
+		}
+	});
+
+	it('publishes CSV for artifact consumers and revokes it on URL error', async () => {
+		const el = createUrlSection('custom-url');
+		el.setName('Imported CSV');
+		el.setUrl('https://example.com/data.csv');
+		await el.updateComplete;
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		(el as any)._requestFetch();
+		const request = postMessage.mock.calls.at(-1)?.[0] as any;
+
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'urlContent', boxId: 'custom-url', requestId: request.requestId,
+			requestedUrl: request.url, url: 'https://example.com/data.csv',
+			kind: 'csv', contentType: 'text/csv', status: 200, body: 'Name,Score\nalpha,1\nbeta,2',
+		} }));
+		await el.updateComplete;
+		await el.updateComplete;
+		const artifact = getCurrentResultArtifact('custom-url');
+		const table = el.shadowRoot?.querySelector('kw-data-table') as any;
+
+		expect(artifact).toMatchObject({
+			sourceBoxId: 'custom-url', columns: [{ name: 'Name' }, { name: 'Score' }],
+			rows: [['alpha', '1'], ['beta', '2']],
+			producer: expect.objectContaining({ engine: 'url', boxId: 'custom-url' }),
+		});
+		expect(table.resultArtifactGoverned).toBe(false);
+		expect(table.canCopyRows()).toBe(true);
+		expect(table.options.showSave).toBe(true);
+
+		try {
+			el.setUrl('https://example.com/failing.csv');
+			(el as any)._requestFetch();
+			const failedRequest = postMessage.mock.calls.at(-1)?.[0] as any;
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlError', boxId: 'custom-url', requestId: failedRequest.requestId,
+				requestedUrl: failedRequest.url, error: 'Fetch failed',
+			} }));
+			await el.updateComplete;
+			expect(getCurrentResultArtifact('custom-url')).toBeNull();
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('does not republish URL A rows while URL B is pending', async () => {
+		const el = createUrlSection('url-replacement');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			el.setUrl('https://example.com/a.csv');
+			(el as any)._requestFetch();
+			const requestA = postMessage.mock.calls.at(-1)?.[0] as any;
+			expect(requestA).toMatchObject({ type: 'fetchUrl', url: 'https://example.com/a.csv' });
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: requestA.requestId,
+				requestedUrl: requestA.url, url: requestA.url,
+				kind: 'csv', contentType: 'text/csv', status: 200, body: 'Value\nA',
+			} }));
+			await el.updateComplete;
+			expect(getCurrentResultArtifact(el.boxId)?.rows).toEqual([['A']]);
+
+			el.setUrl('https://example.com/b.csv');
+			(el as any)._requestFetch();
+			const requestB = postMessage.mock.calls.at(-1)?.[0] as any;
+			expect(requestB).toMatchObject({ type: 'fetchUrl', url: 'https://example.com/b.csv' });
+			expect(requestB.requestId).not.toBe(requestA.requestId);
+			expect(getCurrentResultArtifact(el.boxId)).toBeNull();
+			expect(el.getFetchState()).toMatchObject({
+				url: requestB.url, loaded: false, loading: true, kind: '', body: '',
+			});
+
+			for (const lateA of [
+				{ type: 'urlContent', body: 'Value\nLATE_A', kind: 'csv', url: requestA.url },
+				{ type: 'urlError', error: 'Late A failure' },
+			]) {
+				window.dispatchEvent(new MessageEvent('message', { data: {
+					...lateA, boxId: el.boxId, requestId: requestA.requestId,
+					requestedUrl: requestA.url, contentType: 'text/csv', status: 200,
+				} }));
+			}
+			await el.updateComplete;
+			expect(getCurrentResultArtifact(el.boxId)).toBeNull();
+			expect(el.getFetchState()).toMatchObject({ url: requestB.url, loading: true, error: '' });
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: requestB.requestId,
+				requestedUrl: requestB.url, url: requestB.url,
+				kind: 'csv', contentType: 'text/csv', status: 200, body: 'Value\nB',
+			} }));
+			await el.updateComplete;
+			expect(getCurrentResultArtifact(el.boxId)?.rows).toEqual([['B']]);
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('rejects late responses after same-box same-URL component recreation', async () => {
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			const oldSection = createUrlSection('url-recreated');
+			oldSection.id = 'url-recreated';
+			oldSection.setUrl('https://example.com/data.csv');
+			(oldSection as any)._requestFetch();
+			const requestA = postMessage.mock.calls.at(-1)?.[0] as any;
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: oldSection.boxId, requestId: requestA.requestId,
+				requestedUrl: requestA.url, url: requestA.url,
+				kind: 'csv', contentType: 'text/csv', status: 200, body: 'Value\nOLD',
+			} }));
+			await oldSection.updateComplete;
+			expect(getCurrentResultArtifact(oldSection.boxId)?.rows).toEqual([['OLD']]);
+
+			render(nothing, container);
+			const newSection = createUrlSection('url-recreated');
+			newSection.id = 'url-recreated';
+			newSection.setUrl('https://example.com/data.csv');
+			expect(getCurrentResultArtifact(newSection.boxId)).toBeNull();
+			(newSection as any)._requestFetch();
+			const requestB = postMessage.mock.calls.at(-1)?.[0] as any;
+			expect(requestB.requestId).not.toBe(requestA.requestId);
+
+			for (const lateA of [
+				{ type: 'urlContent', kind: 'csv', body: 'Value\nLATE_A', url: requestA.url },
+				{ type: 'urlError', error: 'Late A failure' },
+			]) {
+				window.dispatchEvent(new MessageEvent('message', { data: {
+					...lateA, boxId: newSection.boxId, requestId: requestA.requestId,
+					requestedUrl: requestA.url, contentType: 'text/csv', status: 200,
+				} }));
+			}
+			await newSection.updateComplete;
+			expect(getCurrentResultArtifact(newSection.boxId)).toBeNull();
+			expect(newSection.getFetchState()).toMatchObject({ loading: true, loaded: false, error: '' });
+
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: newSection.boxId, requestId: requestB.requestId,
+				requestedUrl: requestB.url, url: requestB.url,
+				kind: 'csv', contentType: 'text/csv', status: 200, body: 'Value\nB',
+			} }));
+			await newSection.updateComplete;
+			expect(getCurrentResultArtifact(newSection.boxId)?.rows).toEqual([['B']]);
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('cancels a detached instance debounce before replacement data publishes', async () => {
+		vi.useFakeTimers();
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			const oldSection = createUrlSection('url-debounce-replaced');
+			oldSection.id = 'url-debounce-replaced';
+			await oldSection.updateComplete;
+			const input = oldSection.shadowRoot?.querySelector<HTMLInputElement>('.url-input');
+			expect(input).toBeTruthy();
+			input!.value = 'https://example.com/a.csv';
+			input!.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+
+			render(nothing, container);
+			const replacement = createUrlSection('url-debounce-replaced');
+			replacement.id = 'url-debounce-replaced';
+			replacement.setUrl('https://example.com/b.csv');
+			(replacement as any)._requestFetch();
+			const requestB = postMessage.mock.calls.at(-1)?.[0] as any;
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: replacement.boxId, requestId: requestB.requestId,
+				requestedUrl: requestB.url, url: requestB.url,
+				kind: 'csv', contentType: 'text/csv', status: 200, body: 'Value\nB',
+			} }));
+			await replacement.updateComplete;
+			expect(getCurrentResultArtifact(replacement.boxId)?.rows).toEqual([['B']]);
+
+			vi.advanceTimersByTime(250);
+			await replacement.updateComplete;
+
+			expect(postMessage.mock.calls.map(call => call[0]).filter(message => message.url === 'https://example.com/a.csv'))
+				.toEqual([]);
+			expect(getCurrentResultArtifact(replacement.boxId)?.rows).toEqual([['B']]);
+		} finally {
+			window.vscode = previousVsCode;
+			vi.useRealTimers();
 		}
 	});
 });

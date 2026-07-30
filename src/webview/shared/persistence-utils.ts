@@ -2,6 +2,7 @@
 // No DOM access, no window globals. Extracted from persistence.ts.
 
 import { kustoClusterKey } from '../../shared/kustoClusterUrls.js';
+import { projectRowsToDeclaredColumns } from '../../shared/resultArtifact.js';
 
 /**
  * Normalize a cluster URL for consistent comparison.
@@ -43,6 +44,21 @@ export function byteLengthUtf8(text: unknown): number {
 		return String(text).length * 2;
 	} catch {
 		return Number.MAX_SAFE_INTEGER;
+	}
+}
+
+export function normalizePersistedResultJson(json: unknown): string {
+	const text = String(json || '');
+	if (!text) return text;
+	try {
+		const parsed = JSON.parse(text);
+		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) return text;
+		const columns = Array.isArray(parsed.columns) ? parsed.columns : [];
+		const sourceRows = Array.isArray(parsed.rows) ? parsed.rows : [];
+		const rows = projectRowsToDeclaredColumns(columns, sourceRows);
+		return rows === sourceRows ? text : JSON.stringify({ ...parsed, columns, rows });
+	} catch {
+		return text;
 	}
 }
 

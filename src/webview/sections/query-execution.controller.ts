@@ -35,7 +35,7 @@ import {
 	__kustoLog,
 } from '../core/section-factory';
 import { getRunMode, setRunMode, closeRunMenu, functionRunDialogOpenByBoxId } from './kw-query-toolbar';
-import { bindResultArtifactConsumer, clearResultsState, getCurrentResultArtifact, getResultArtifact, getResultArtifactByProducerExecution, getResultsState, retireResultsStateForRerun, unbindResultArtifactConsumer } from '../core/results-state';
+import { bindResultArtifactConsumer, clearResultsState, getCurrentResultArtifact, getResultArtifact, getResultArtifactByProducerExecution, retireResultsStateForRerun, unbindResultArtifactConsumer } from '../core/results-state';
 import {
 	optimizationMetadataByBoxId, queryEditors, pendingFavoriteSelectionByBoxId,
 	queryExecutionTimers, clearKustoEditorSchema, queryBoxes, favoritesModeByBoxId,
@@ -960,8 +960,8 @@ export function displayComparisonSummary(sourceBoxId: any, comparisonBoxId: any)
 	const exactSourceArtifact = comparisonSourceArtifactId
 		? getResultArtifact(comparisonSourceArtifactId)
 		: null;
-	const sourceState = exactSourceArtifact || getResultsState(sourceBoxId);
-	const comparisonState = comparisonArtifact || getResultsState(comparisonBoxId);
+	const sourceState = exactSourceArtifact;
+	const comparisonState = comparisonArtifact;
 	if (!sourceState || !comparisonState) return;
 
 	const getBoxLabel = (boxId: any) => {
@@ -974,8 +974,10 @@ export function displayComparisonSummary(sourceBoxId: any, comparisonBoxId: any)
 	const comparisonRows = comparisonState.rows ? comparisonState.rows.length : 0;
 	const sourceCols = sourceState.columns ? sourceState.columns.length : 0;
 	const comparisonCols = comparisonState.columns ? comparisonState.columns.length : 0;
-	const sourceExecTime = sourceState.metadata && sourceState.metadata.executionTime || '';
-	const comparisonExecTime = comparisonState.metadata && comparisonState.metadata.executionTime || '';
+	const sourceExecTime = String(sourceState.metadata?.executionTime || '');
+	const comparisonExecTime = String(comparisonState.metadata?.executionTime || '');
+	const sourceExecTimeHtml = escapeHtml(sourceExecTime);
+	const comparisonExecTimeHtml = escapeHtml(comparisonExecTime);
 	const parseExecTime = (timeStr: any) => {
 		if (!timeStr) return null;
 		const match = timeStr.match(/([\d.]+)\s*(ms|s)/);
@@ -990,15 +992,19 @@ export function displayComparisonSummary(sourceBoxId: any, comparisonBoxId: any)
 	if (sourceMs !== null && comparisonMs !== null && sourceMs > 0) {
 		const diff = sourceMs - comparisonMs;
 		const percentChange = ((diff / sourceMs) * 100).toFixed(1);
-		if (diff > 0) perfMessage = `<span style="color: #89d185;">\u2713 ${percentChange}% faster (${sourceExecTime} \u2192 ${comparisonExecTime})</span>`;
-		else if (diff < 0) perfMessage = `<span style="color: #f48771;">\u26a0 ${Math.abs(Number(percentChange))}% slower (${sourceExecTime} \u2192 ${comparisonExecTime})</span>`;
-		else perfMessage = `<span style="color: #cccccc;">\u2248 Same performance (${sourceExecTime})</span>`;
+		if (diff > 0) perfMessage = `<span style="color: #89d185;">\u2713 ${percentChange}% faster (${sourceExecTimeHtml} \u2192 ${comparisonExecTimeHtml})</span>`;
+		else if (diff < 0) perfMessage = `<span style="color: #f48771;">\u26a0 ${Math.abs(Number(percentChange))}% slower (${sourceExecTimeHtml} \u2192 ${comparisonExecTimeHtml})</span>`;
+		else perfMessage = `<span style="color: #cccccc;">\u2248 Same performance (${sourceExecTimeHtml})</span>`;
 	} else if (sourceExecTime && comparisonExecTime) {
-		perfMessage = `<span style="color: #cccccc;">${sourceExecTime} \u2192 ${comparisonExecTime}</span>`;
+		perfMessage = `<span style="color: #cccccc;">${sourceExecTimeHtml} \u2192 ${comparisonExecTimeHtml}</span>`;
 	}
 
-	const sourceStats = (sourceState.metadata && sourceState.metadata.serverStats) || null;
-	const comparisonStats = (comparisonState.metadata && comparisonState.metadata.serverStats) || null;
+	const sourceStats = sourceState.metadata?.serverStats && typeof sourceState.metadata.serverStats === 'object'
+		? sourceState.metadata.serverStats as Record<string, any>
+		: null;
+	const comparisonStats = comparisonState.metadata?.serverStats && typeof comparisonState.metadata.serverStats === 'object'
+		? comparisonState.metadata.serverStats as Record<string, any>
+		: null;
 	const formatDelta = (sourceVal: any, comparisonVal: any, opts: any) => {
 		const emoji = opts.emoji || '';
 		const label = opts.label || '';
@@ -1064,7 +1070,7 @@ export function displayComparisonSummary(sourceBoxId: any, comparisonBoxId: any)
 	try {
 		const dv = (_win && _win.__kustoDiffView) ? _win.__kustoDiffView : null;
 		if (dv && typeof dv.buildModelFromResultsStates === 'function') {
-			const model = dv.buildModelFromResultsStates(sourceState, comparisonState, { aLabel: sourceLabel, bLabel: comparisonLabel });
+			const model = dv.buildModelFromResultsStates(sourceState as any, comparisonState as any, { aLabel: sourceLabel, bLabel: comparisonLabel });
 			const p = (model && model.partitions && typeof model.partitions === 'object') ? model.partitions : null;
 			commonCount = Array.isArray(p && p.common) ? p.common.length : 0;
 			onlyACount = Array.isArray(p && p.onlyA) ? p.onlyA.length : 0;
@@ -1083,6 +1089,7 @@ export function displayComparisonSummary(sourceBoxId: any, comparisonBoxId: any)
 	const yesNo = (v: any) => (v ? 'yes' : 'no');
 	const warningTitle = 'Order of rows matches: ' + yesNo(rowOrderMatches) + '\nOrder of columns matches: ' + yesNo(columnOrderMatches) + '\nNames of column headers match: ' + yesNo(columnHeaderNamesMatch);
 	let dataMessage = '';
+	let diffOpenArgs: { aBoxId: string; bBoxId: string; aArtifactId: string; bArtifactId: string } | null = null;
 	if (dataMatches) {
 		dataMessage = '<span class="comparison-data-match">\u2713 Data matches</span>' +
 			(warningNeeded ? '<span class="comparison-warning-icon" title="' + warningTitle.replace(/"/g, '&quot;') + '">\u26a0</span>' : '');
@@ -1111,17 +1118,20 @@ export function displayComparisonSummary(sourceBoxId: any, comparisonBoxId: any)
 			diffLabel = ' (' + colParts.join('/') + ' columns, ' + String(onlyACount + onlyBCount) + ' unmatched ' + pluralRows(onlyACount + onlyBCount) + ')';
 			diffTitle = 'View diff\nColumn differences and row differences detected.';
 		}
-		const aBoxIdLit = JSON.stringify(String(sourceBoxId || ''));
-		const bBoxIdLit = JSON.stringify(String(comparisonBoxId || ''));
+		diffOpenArgs = {
+			aBoxId: String(sourceBoxId || ''),
+			bBoxId: String(comparisonBoxId || ''),
+			aArtifactId: String(exactSourceArtifact.artifactId || ''),
+			bArtifactId: String(comparisonArtifact.artifactId || ''),
+		};
 		dataMessage =
 			'<span class="comparison-data-diff-icon" aria-hidden="true">\u26a0</span> ' +
 			'<a href="#" class="comparison-data-diff comparison-diff-link" ' +
-			"onclick='try{openDiffViewModal({ aBoxId: " + aBoxIdLit + ", bBoxId: " + bBoxIdLit + " })}catch{}; return false;' " +
-			'title="' + diffTitle.replace(/"/g, '&quot;') + '">Data differs' + diffLabel + '</a>';
+			'title="' + escapeHtml(diffTitle) + '">Data differs' + diffLabel + '</a>';
 	}
-	const comparisonBox = document.getElementById(comparisonBoxId) as any;
+	const comparisonBox = document.getElementById(comparisonBoxId) as HTMLElement | null;
 	if (!comparisonBox) return;
-	let banner = comparisonBox.querySelector('.comparison-summary-banner');
+	let banner = comparisonBox.querySelector<HTMLElement>('.comparison-summary-banner');
 	if (!banner) {
 		banner = document.createElement('div');
 		banner.className = 'comparison-summary-banner';
@@ -1141,6 +1151,14 @@ export function displayComparisonSummary(sourceBoxId: any, comparisonBoxId: any)
 			</div>
 		</div>
 	`;
+	const diffLink = banner.querySelector<HTMLAnchorElement>('.comparison-diff-link');
+	if (diffLink && diffOpenArgs) {
+		const exactArgs = diffOpenArgs;
+		diffLink.addEventListener('click', (event: MouseEvent) => {
+			event.preventDefault();
+			try { _win.openDiffViewModal?.(exactArgs); } catch (e) { console.error('[kusto]', e); }
+		});
+	}
 	try {
 		const acceptTooltip = dataMatches
 			? (warningNeeded ? 'Data matches, but row/column ordering or header details differ. Accept optimizations with caution.' : 'Results match. Accept optimizations.')

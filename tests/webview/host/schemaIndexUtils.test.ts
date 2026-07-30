@@ -8,6 +8,7 @@ import {
 	abbreviateType,
 	addPruneNotice,
 	formatSchemaAsCompactText,
+	ensureRawSchemaJson,
 	getAutocompleteSchemaSignature,
 	getSchemaSummary,
 	TYPE_ABBREVIATIONS,
@@ -20,6 +21,163 @@ function makeSchema(overrides?: Partial<DatabaseSchemaIndex>): DatabaseSchemaInd
 		...overrides
 	};
 }
+
+describe('ensureRawSchemaJson', () => {
+	it('synthesizes a Monaco-Kusto schema from compact cached metadata', () => {
+		const schema = makeSchema({
+			tables: ['Events'],
+			columnTypesByTable: { Events: { EventName: 'System.String', Count: 'System.Int64' } },
+			functions: [{
+				name: 'RecentEvents',
+				parameters: [{ name: 'window', type: 'System.TimeSpan', defaultValue: '1h' }],
+				body: 'Events | where Timestamp > ago(window)',
+			}],
+		});
+
+		const upgraded = ensureRawSchemaJson(schema, 'TelemetryDb');
+
+		expect(upgraded).not.toBe(schema);
+		expect(upgraded.rawSchemaJson).toEqual(expect.objectContaining({
+			Plugins: [],
+			Databases: expect.objectContaining({
+				TelemetryDb: expect.objectContaining({
+					Name: 'TelemetryDb',
+					Tables: expect.objectContaining({
+						Events: expect.objectContaining({
+							OrderedColumns: [
+								expect.objectContaining({ Name: 'EventName', CslType: 'string' }),
+								expect.objectContaining({ Name: 'Count', CslType: 'long' }),
+							],
+						}),
+					}),
+					Functions: expect.objectContaining({
+						RecentEvents: expect.objectContaining({
+							InputParameters: [expect.objectContaining({
+								Name: 'window', CslType: 'timespan', CslDefaultValue: '1h',
+							})],
+						}),
+					}),
+				}),
+			}),
+		}));
+	});
+
+	it('preserves an existing raw schema payload', () => {
+		const rawSchemaJson = {
+			Plugins: [],
+			Databases: {
+				TelemetryDb: {
+					Name: 'TelemetryDb', Tables: { Events: { Name: 'Events', OrderedColumns: [] } },
+					Functions: {}, Graphs: {}, EntityGroups: {}, MajorVersion: 3, MinorVersion: 0,
+				},
+			},
+		};
+		const schema = makeSchema({ rawSchemaJson });
+
+		expect(ensureRawSchemaJson(schema, 'TelemetryDb')).toBe(schema);
+		expect(schema.rawSchemaJson).toBe(rawSchemaJson);
+	});
+
+	it('reconstructs compact tabular function parameters as columns', () => {
+		const schema = makeSchema({
+			functions: [{
+				name: 'Summarize',
+				parameters: [
+					{ name: 'source', type: '(Id:System.Int64, Label:string)' },
+					{ name: 'generic', type: '(*)' },
+					{ name: 'historicalGeneric' },
+				],
+			}],
+		});
+
+		const upgraded = ensureRawSchemaJson(schema, 'TelemetryDb');
+		const raw = upgraded.rawSchemaJson as any;
+
+		expect(raw.Databases.TelemetryDb.Functions.Summarize.InputParameters).toEqual([
+			{
+				Name: 'source',
+				Columns: [
+					{ Name: 'Id', Type: 'System.Int64', CslType: 'long' },
+					{ Name: 'Label', Type: 'string', CslType: 'string' },
+				],
+			},
+			{ Name: 'generic', Columns: [] },
+			{ Name: 'historicalGeneric', Columns: [] },
+		]);
+	});
+
+	it('keeps signature generation total for malformed compact functions', () => {
+		const schema = makeSchema({
+			tables: ['Events'],
+			columnTypesByTable: { Events: { Id: 'long' } },
+			functions: [{ name: 'Malformed', parameters: {} as any }, {} as any],
+		});
+
+		expect(() => getAutocompleteSchemaSignature(schema)).not.toThrow();
+		expect(getAutocompleteSchemaSignature(schema)).toMatch(/^sha256:/);
+	});
+
+	it('rejects cyclic raw payloads and keeps signature generation total', () => {
+		const cyclicRaw: any = { Plugins: [], Databases: {} };
+		cyclicRaw.Databases.TelemetryDb = {
+			Name: 'TelemetryDb', Tables: {}, Functions: {}, Graphs: {},
+			MajorVersion: 1, MinorVersion: 0, Cycle: cyclicRaw,
+		};
+		const schema = makeSchema({
+			tables: ['Events'], columnTypesByTable: { Events: { Id: 'long' } }, rawSchemaJson: cyclicRaw,
+		});
+
+		const upgraded = ensureRawSchemaJson(schema, 'TelemetryDb');
+
+		expect(upgraded.rawSchemaJson).not.toBe(cyclicRaw);
+		expect(() => getAutocompleteSchemaSignature(schema)).not.toThrow();
+	});
+
+	it('accepts a structurally valid empty raw database but rejects mismatched internal identity', () => {
+		const emptyDatabase = {
+			Name: 'TelemetryDb', Tables: {}, ExternalTables: {}, MaterializedViews: {},
+			Functions: {}, EntityGroups: {}, Graphs: {}, MajorVersion: 1, MinorVersion: 0,
+		};
+		const valid = makeSchema({ rawSchemaJson: { Plugins: [], Databases: { TelemetryDb: emptyDatabase } } });
+		const mismatched = makeSchema({ rawSchemaJson: {
+			Plugins: [], Databases: { TelemetryDb: { ...emptyDatabase, Name: 'OtherDb' } },
+		} });
+
+		expect(ensureRawSchemaJson(valid, 'TelemetryDb')).toBe(valid);
+		expect(ensureRawSchemaJson(mismatched, 'TelemetryDb').rawSchemaJson).toBeUndefined();
+	});
+
+	it('replaces malformed raw data from valid compact metadata without throwing', () => {
+		const schema = makeSchema({
+			tables: ['Events'],
+			columnTypesByTable: { Events: { Id: 'long' } },
+			functions: [{} as any],
+			rawSchemaJson: '{not-json',
+		});
+
+		const upgraded = ensureRawSchemaJson(schema, 'TelemetryDb');
+
+		expect(upgraded.rawSchemaJson).toEqual(expect.objectContaining({
+			Databases: expect.objectContaining({ TelemetryDb: expect.any(Object) }),
+		}));
+	});
+
+	it('rejects malformed raw data when no compact entities are usable', () => {
+		const schema = makeSchema({ functions: [{} as any], rawSchemaJson: {} });
+
+		const upgraded = ensureRawSchemaJson(schema, 'TelemetryDb');
+
+		expect(upgraded).not.toBe(schema);
+		expect(upgraded.rawSchemaJson).toBeUndefined();
+	});
+
+	it('does not promote an empty compact cache to worker-ready', () => {
+		const schema = makeSchema();
+
+		expect(ensureRawSchemaJson(schema, 'TelemetryDb')).toBe(schema);
+		expect(schema.rawSchemaJson).toBeUndefined();
+	});
+});
 
 describe('getColumnsByTable', () => {
 	it('schema with 2 tables → correct column mapping', () => {

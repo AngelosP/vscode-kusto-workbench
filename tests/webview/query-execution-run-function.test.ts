@@ -70,7 +70,12 @@ vi.mock('../../src/webview/core/results-state.js', () => ({
 }));
 
 vi.mock('../../src/webview/core/utils.js', () => ({
-	escapeHtml: vi.fn((value: unknown) => String(value ?? '')),
+	escapeHtml: vi.fn((value: unknown) => String(value ?? '')
+		.replace(/&/g, '&amp;')
+		.replace(/</g, '&lt;')
+		.replace(/>/g, '&gt;')
+		.replace(/"/g, '&quot;')
+		.replace(/'/g, '&#39;')),
 }));
 
 vi.mock('../../src/webview/core/query-section-accessors.js', () => ({
@@ -450,14 +455,15 @@ describe('executeRunFunction', () => {
 		expect(sourceMessage.comparisonRun.comparisonBoxId).toBe('query_cmp_1');
 	});
 
-	it('builds comparison summary from exact source lineage instead of newer mutable source state', () => {
+	it('builds a safe comparison link from exact source lineage instead of newer mutable source state', () => {
 		const sourceArtifactA = {
-			artifactId: 'result:query_1:1', sourceBoxId: 'query_1', revision: 1,
-			columns: ['Value'], rows: [['a']], metadata: {}, lineage: [],
+			artifactId: "result:query_1:1' data-injected='true", sourceBoxId: 'query_1', revision: 1,
+			columns: ['Value'], rows: [['a']],
+			metadata: { executionTime: '1ms<img data-time-injected="true" onerror="alert(1)">' }, lineage: [],
 		};
 		const comparisonArtifact = {
 			artifactId: 'result:query_cmp_1:1', sourceBoxId: 'query_cmp_1', revision: 1,
-			columns: ['Value'], rows: [['a']], metadata: {},
+			columns: ['Value'], rows: [['a']], metadata: { executionTime: '2ms' },
 			lineage: [{ sourceArtifactId: sourceArtifactA.artifactId, role: 'comparison-source' }],
 		};
 		testState.getCurrentResultArtifact.mockImplementation((boxId: string) => (
@@ -477,12 +483,27 @@ describe('executeRunFunction', () => {
 		wrapper.className = 'query-editor-wrapper';
 		comparison.appendChild(wrapper);
 		document.body.appendChild(comparison);
+		const openDiffViewModal = vi.fn();
+		(window as any).openDiffViewModal = openDiffViewModal;
 
 		displayComparisonSummary('query_1', 'query_cmp_1');
 
 		expect(testState.getResultArtifact).toHaveBeenCalledWith(sourceArtifactA.artifactId);
 		expect(testState.getResultsState).not.toHaveBeenCalledWith('query_1');
-		expect(comparison.querySelector('.comparison-summary-banner')).not.toBeNull();
+		const banner = comparison.querySelector('.comparison-summary-banner');
+		expect(banner).not.toBeNull();
+		expect(banner?.querySelector('[data-injected]')).toBeNull();
+		expect(banner?.querySelector('[data-time-injected]')).toBeNull();
+		expect(banner?.innerHTML).not.toContain(sourceArtifactA.artifactId);
+		const diffLink = banner?.querySelector<HTMLAnchorElement>('.comparison-diff-link');
+		diffLink?.click();
+		diffLink?.click();
+		expect(openDiffViewModal).toHaveBeenCalledTimes(2);
+		expect(openDiffViewModal).toHaveBeenLastCalledWith({
+			aBoxId: 'query_1', bBoxId: 'query_cmp_1',
+			aArtifactId: sourceArtifactA.artifactId,
+			bArtifactId: comparisonArtifact.artifactId,
+		});
 	});
 
 	it('runs a function definition after leading blank lines without shifting cursor offsets', async () => {

@@ -14,8 +14,9 @@ import {
 	bindResultArtifactConsumer,
 	clearResultsState,
 	getBoundResultArtifact,
+	getCurrentResultArtifact,
+	getResultArtifact,
 	getResultArtifactByProducerExecution,
-	getResultsState,
 	displayResultForBox,
 	displayResult,
 	displayCancelled,
@@ -114,7 +115,7 @@ import {
 } from './state';
 import { getKustoConnectionIdentityKey, getKustoSchemaIdentityKey, resolveStrictKustoConnection } from '../../shared/kustoAuth.js';
 import { hasKustoCopilotRequestIdentity, hasKustoExecutionRequestIdentity, hasKustoExecutionTerminalStamp, hasKustoOptimizeRequestIdentity, kustoCopilotRequestIdentityEquals, kustoExecutionIdentityEquals, kustoExecutionRequestIdentityEquals, type KustoCopilotRequestIdentity, type KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
-import { comparisonSourceArtifactConsumerId, modelResultArtifactConsumerId, type ResultArtifactSourcePolicy } from '../../shared/resultArtifact.js';
+import { comparisonSourceArtifactConsumerId, createDerivedResultArtifactPublication, modelResultArtifactConsumerId, type ResultArtifactSourcePolicy } from '../../shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../shared/sqlConnectionIdentity.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import { ADMITTED_KUSTO_COPILOT_EVENT, emitAdmittedKustoCopilotOutput } from './kusto-copilot-output-runtime.js';
@@ -835,8 +836,33 @@ function bindComparisonSourceArtifact(comparisonRun: any): boolean {
 	) === artifact.artifactId;
 }
 
+function bindSqlComparisonSourceArtifact(comparisonBoxId: string, message: any): boolean {
+	const consumerId = comparisonSourceArtifactConsumerId(comparisonBoxId);
+	unbindResultArtifactConsumer(consumerId);
+	const metadata = optimizationMetadataByBoxId[comparisonBoxId];
+	const sourceBoxId = metadata?.isComparison ? String(metadata.sourceBoxId || '').trim() : '';
+	const messageSourceBoxId = String(message?.sourceBoxId || '').trim();
+	const sourceExecutionId = String(message?.sourceExecutionId || '').trim();
+	if (!sourceBoxId || sourceBoxId !== messageSourceBoxId || !sourceExecutionId
+		|| !__kustoGetSqlSectionElement(sourceBoxId)) return false;
+	const sourceArtifact = getResultArtifactByProducerExecution(sourceBoxId, sourceExecutionId);
+	if (!sourceArtifact || sourceArtifact.sourceBoxId !== sourceBoxId
+		|| sourceArtifact.producer?.engine !== 'sql'
+		|| sourceArtifact.producer.boxId !== sourceBoxId
+		|| sourceArtifact.producer.executionId !== sourceExecutionId) return false;
+	return bindResultArtifactConsumer(
+		consumerId, sourceBoxId, sourceArtifact.artifactId,
+	) === sourceArtifact.artifactId;
+}
+
 function releaseComparisonSourceArtifact(message: any): void {
-	const comparisonBoxId = String(message?.comparisonRun?.comparisonBoxId || '').trim();
+	const boxId = String(message?.boxId || '').trim();
+	const metadata = optimizationMetadataByBoxId[boxId];
+	const sqlComparisonBoxId = metadata?.isComparison
+		&& __kustoGetSqlSectionElement(String(metadata.sourceBoxId || '').trim())
+		? boxId
+		: '';
+	const comparisonBoxId = String(message?.comparisonRun?.comparisonBoxId || sqlComparisonBoxId).trim();
 	if (comparisonBoxId && String(message?.boxId || '') === comparisonBoxId) {
 		unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(comparisonBoxId));
 	}
@@ -954,16 +980,30 @@ function getSqlResultArtifactPublication(message: any): ResultArtifactPublicatio
 	const sqlOwned = !!__kustoGetSqlSectionElement(boxId)
 		|| (!!sourceBoxId && !!__kustoGetSqlSectionElement(sourceBoxId));
 	if (!sqlOwned) return undefined;
+	const producer = {
+		engine: 'sql',
+		boxId,
+		...(message.executionId ? { executionId: String(message.executionId) } : {}),
+		...(message.connectionId ? { connectionId: String(message.connectionId) } : {}),
+		...(message.database ? { database: String(message.database) } : {}),
+		...(typeof message.query === 'string' ? { query: message.query } : {}),
+		producer: metadata?.isComparison ? 'comparison' : 'manual',
+	};
+	if (sourceBoxId) {
+		const sourceArtifact = getBoundResultArtifact(
+			comparisonSourceArtifactConsumerId(boxId), sourceBoxId,
+		);
+		if (!sourceArtifact || sourceArtifact.producer?.engine !== 'sql'
+			|| sourceArtifact.producer.boxId !== sourceBoxId
+			|| sourceArtifact.producer.connectionId !== message.connectionId
+			|| String(sourceArtifact.producer.database || '').toLowerCase()
+				!== String(message.database || '').toLowerCase()) return undefined;
+		return createDerivedResultArtifactPublication(producer, [
+			{ artifact: sourceArtifact, role: 'comparison-source' },
+		]);
+	}
 	return {
-		producer: {
-			engine: 'sql',
-			boxId,
-			...(message.executionId ? { executionId: String(message.executionId) } : {}),
-			...(message.connectionId ? { connectionId: String(message.connectionId) } : {}),
-			...(message.database ? { database: String(message.database) } : {}),
-			...(typeof message.query === 'string' ? { query: message.query } : {}),
-			producer: metadata?.isComparison ? 'comparison' : 'manual',
-		},
+		producer,
 		policy: {
 			exposeToActiveContent: true, sendToModel: true,
 			shareToClipboard: true, exportToCsv: true,
@@ -1734,7 +1774,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				&& !!__kustoGetSqlSectionElement(comparisonSourceBoxId)
 				&& message.engine !== 'kusto';
 			const exactComparisonArtifactRequired = (comparisonBoxId && String(message.boxId || '') === comparisonBoxId)
-				|| (!!comparisonSourceBoxId && !__kustoGetSqlSectionElement(comparisonSourceBoxId) && message.engine === 'kusto');
+				|| !!comparisonSourceBoxId;
 			if (exactComparisonArtifactRequired && !artifactPublication?.lineage?.length) {
 				try { setQueryExecuting(message.boxId, false); } catch (e) { console.error('[kusto]', e); }
 				releaseComparisonSourceArtifact(message);
@@ -1788,10 +1828,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				if (message.boxId && optimizationMetadataByBoxId[message.boxId]) {
 					const metadata = optimizationMetadataByBoxId[message.boxId];
 					if (metadata.isComparison && metadata.sourceBoxId) {
-						// Check if source box has results too
-						const sourceState = getResultsState(metadata.sourceBoxId);
-						const comparisonState = getResultsState(message.boxId);
-						if (sourceState && comparisonState) {
+						const comparisonArtifact = getCurrentResultArtifact(message.boxId);
+						const sourceArtifactId = comparisonArtifact?.lineage.find(input => (
+							input.role === 'comparison-source'
+						))?.sourceArtifactId;
+						if (sourceArtifactId && getResultArtifact(sourceArtifactId)) {
 							displayComparisonSummary(metadata.sourceBoxId, message.boxId);
 						}
 					}
@@ -1803,9 +1844,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try {
 				if (message.boxId && optimizationMetadataByBoxId[message.boxId] && optimizationMetadataByBoxId[message.boxId].comparisonBoxId) {
 					const comparisonBoxId = optimizationMetadataByBoxId[message.boxId].comparisonBoxId;
-					const sourceState = getResultsState(message.boxId);
-					const comparisonState = getResultsState(comparisonBoxId);
-					if (sourceState && comparisonState) {
+					const comparisonArtifact = getCurrentResultArtifact(comparisonBoxId);
+					const sourceArtifactId = comparisonArtifact?.lineage.find(input => (
+						input.role === 'comparison-source'
+					))?.sourceArtifactId;
+					if (sourceArtifactId && getResultArtifact(sourceArtifactId)) {
 						displayComparisonSummary(message.boxId, comparisonBoxId);
 					}
 				}
@@ -2817,7 +2860,12 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					if (sqlEl && typeof sqlEl.setExternalQueryExecuting === 'function'
 						&& !sqlEl.setExternalQueryExecuting(executing, executionId)) break;
 					if (sqlDerivedComparison) {
-						if (executing) retireResultsStateForRerun(boxId);
+						if (executing) {
+							retireResultsStateForRerun(boxId);
+							bindSqlComparisonSourceArtifact(boxId, message);
+						} else {
+							releaseComparisonSourceArtifact(message);
+						}
 						setQueryExecuting(boxId, executing);
 						break;
 					}

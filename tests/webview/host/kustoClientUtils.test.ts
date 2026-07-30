@@ -277,6 +277,15 @@ describe('extractSchemaFromJson', () => {
 		expect(Object.keys(columnTypesByTable)).toHaveLength(0);
 	});
 
+	it('terminates on cyclic fallback objects', () => {
+		const cyclic: any = { Nested: {} };
+		cyclic.Nested.Parent = cyclic;
+		const columnTypesByTable: Record<string, Record<string, string>> = {};
+
+		expect(() => extractSchemaFromJson(cyclic, columnTypesByTable)).not.toThrow();
+		expect(columnTypesByTable).toEqual({});
+	});
+
 	it('handles Tables as dictionary (object map)', () => {
 		const columnTypesByTable: Record<string, Record<string, string>> = {};
 		extractSchemaFromJson({
@@ -434,6 +443,36 @@ describe('parseDatabaseSchemaResultWithRaw', () => {
 		};
 		const result = parseDatabaseSchemaResultWithRaw(mockResult, '.show database schema as json');
 		expect(result.rawSchemaJson).toBeDefined();
+	});
+
+	it('preserves generic tabular function parameters in compact metadata', () => {
+		const schemaObj = {
+			Databases: {
+				Db: {
+					Tables: {},
+					Functions: {
+						ApplyToSource: {
+							Name: 'ApplyToSource',
+							InputParameters: [{ Name: 'source', Columns: [] }],
+							Body: 'source',
+						},
+					},
+				},
+			},
+		};
+		const mockResult = {
+			primaryResults: [{
+				rows: function* () { yield { Schema: schemaObj }; },
+				columns: [],
+			}],
+		};
+
+		const result = parseDatabaseSchemaResultWithRaw(mockResult, '.show database schema as json');
+
+		expect(result.schema.functions).toEqual([expect.objectContaining({
+			name: 'ApplyToSource',
+			parameters: [{ name: 'source', type: '(*)' }],
+		})]);
 	});
 
 	it('falls back to tabular parsing', () => {

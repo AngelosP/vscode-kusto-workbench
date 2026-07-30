@@ -24,7 +24,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 ## Baseline
 
-Assessment date: 2026-07-25
+Assessment date: 2026-07-30
 
 The comparison was made against the current working tree after the SQL lifecycle and Kusto schema lifecycle hardening. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
@@ -71,15 +71,15 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 
 | Rank | ID | Gap | H/A/R/L/F/E | Score | State |
 | ---: | --- | --- | --- | ---: | --- |
-| 1 | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Active; EXA-1 and EXA-2 consumer migrations through CSV export are complete |
-| 2 | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Open; prerequisite to `DOC` |
-| 3 | `DOC` | Document actor and section-definition registry | 4/5/5/5/3/5 | 50 | Open; depends on `COD` |
-| 4 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/5/3/5 | 48 | Open |
-| 5 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/5/5/4/2/5 | 47 | Open, depends on contracts above |
-| 6 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
-| 7 | `CMP` | Compatibility-provider composition around the shared sidecar core | 4/4/3/3/3/4 | 39 | Open |
-| 8 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 3/3/3/3/4/4 | 35 | Open |
-| 9 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 3/3/2/2/3/4 | 30 | Open |
+| - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
+| 1 | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Selected next; prerequisite to `DOC` |
+| 2 | `DOC` | Document actor and section-definition registry | 4/5/5/5/3/5 | 50 | Open; depends on `COD` |
+| 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/5/3/5 | 48 | Open |
+| 4 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/5/5/4/2/5 | 47 | Open, depends on contracts above |
+| 5 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
+| 6 | `CMP` | Compatibility-provider composition around the shared sidecar core | 4/4/3/3/3/4 | 39 | Open |
+| 7 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 3/3/3/3/4/4 | 35 | Open |
+| 8 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 3/3/2/2/3/4 | 30 | Open |
 | - | `ACT` | Untrusted-document capability admission | 5/5/5/5/3/5 | 53 | Deferred by product direction; excluded from active ranking |
 
 Bundle headroom is a release constraint and must remain gated, but it is not itself an ownership architecture. Large domain algorithms are not automatically gaps when they have one owner and focused contracts.
@@ -162,7 +162,7 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 - The webview retains cancelling and retired identities until exact terminal admission and rejects unstamped Kusto section terminals.
 - `ResultArtifactStore` now snapshots every accepted result into a deep-immutable per-source revision while `results-state.ts` preserves the mutable latest-result facade for compatibility. Current pointers, explicit consumer bindings, source-wide revocation, and reference-based pruning have one owner.
 - Admitted Kusto successes publish exact reservation, dispatch, target, principal, policy, and optional comparison lineage. Bounded `resultJson` persistence can carry a row-free artifact descriptor; owner/policy admission precedes descriptor installation, restored identity remains stable, and later revisions remain monotonic.
-- Charts are the first bound consumer. They render their bound immutable revision, explicitly rebind during the existing dependent-refresh cascade or source selection, and release bindings on source clear or chart removal.
+- Charts, transformations, comparisons, Diff, HTML dashboards, Power BI metadata, model/tool responses, Share Results, CSV export, and governed table-local copy now consume immutable artifacts or exact bindings. URL CSV sections publish immutable source artifacts while retaining their separate generic local copy/save workflow.
 - Transformations bind primary and join-right revisions independently, compute from those immutable inputs, and publish derived artifacts with direct lineage roles plus flattened leaf-source policies. Formula edits stay pinned; source changes and dependent refresh explicitly rebind.
 - Artifact retention now follows lineage references. Source clear revokes affected revisions and downstream bindings transitively while preserving a retargeted current derived revision whose lineage is independent of the cleared source.
 - Kusto comparison source and output executions carry one exact run identity. Manual and standalone Optimize sequence on admitted source success; Copilot retries retain the same source execution. Output and summaries use the pinned source artifact and fail closed on target or policy mismatch.
@@ -173,19 +173,17 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 **Remaining divergence:**
 
-- Mutable latest-result state remains as a compatibility facade for tables and unmigrated consumers.
-- Table-local copy and any remaining row consumers still need a closure audit against the immutable artifact contract.
+- Mutable latest-result state remains as a presentation and presence compatibility facade. The EXA-2 audit found no active row-bearing cross-section or egress consumer that still treats it as lineage authority.
 - SQL results publish exact query/connection/database ownership for migrated consumers, but transport/principal parity with Kusto remains intentionally incomplete.
 - Kusto and SQL retain transport-specific execution coordinators over the shared low-level run registry; a transport-neutral artifact publication contract has not yet proven which semantics should be shared above transport.
 
 **Failure modes:**
 
-- Unmigrated downstream state can still be replaced without retaining the exact producer revision it consumed.
-- Derived data outside chart and transformation paths can lose privacy/export permissions as it moves through section-keyed maps.
+- A future row consumer can regress if it bypasses artifact binding, declared-column projection, generation liveness, or synchronous revocation contracts.
 - SQL restoration and persistence can preserve rows without the same first-class immutable producer, target, principal, policy, and lineage record as Kusto.
 - Prematurely merging Kusto and SQL execution abstractions could erase transport-specific cancellation and privacy semantics before the artifact contract is proven.
 
-**Migration theme:** establish exact execution reservation/dispatch identity and one terminal owner first, then introduce immutable persisted artifact records and runtime bindings behind the existing result APIs, then move consumers one at a time.
+**Migration theme:** EXA-2 is closed. Future transport-neutral coordinator work requires a separately selected iteration and must preserve the proven transport-specific cancellation and privacy contracts.
 
 ### `DOC` - Document Actor And Section Registry
 
@@ -332,11 +330,11 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 **Iteration feasibility:** realized at 3/5. The migration required every section-publishing producer plus target/account/policy/disposal fencing, but the old Kusto terminal authority and box-only cancellation path are now removed.
 
-## Active Iteration
+## Completed Iteration
 
 ### Iteration `EXA-2`: Immutable Result Artifacts And Lineage
 
-**Status:** artifact/chart, transformation-derived-producer, exact comparison, HTML dashboard bridge, model-result, clipboard-share, and CSV-export slices implemented; closure audit remains active.
+**Status:** closed on 2026-07-30. Final pessimistic review returned `VERDICT: CLOSE EXA-2`.
 
 **Why next:** EXA-1 makes the producer execution exact, but admitted rows still collapse into mutable section-keyed state. This leaves the highest-risk remaining break between exact production and downstream consumption.
 
@@ -374,7 +372,23 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 **CSV-export qualification:** the 14-file focused EXA/CSV ring passed 586 tests; full sequential Vitest passed 199 files and 5,224 tests. Repeated first-attempt proper-lockfile/SQL credential lock failures were unrelated; each affected file passed unchanged and every complete rerun passed. Host/webview type checks, production extension/browser builds, integration compilation, ESLint with zero errors and five pre-existing warnings, and both bundle gates passed. Final production sizes are 1,762.9 KB for `extension.js` and 2,660.1 KB for `webview.bundle.js`; synchronized baselines moved only from 1,711 to 1,713 KB and 2,605 to 2,611 KB. The extension-host suite passed all 113 tests on VS Code 1.131.0. Native `default/csv-result-artifacts` proved denied Save is absent, allowed Save is present, and the Windows picker wrote exactly 26 bytes (`Name,Score\nalpha,1\nbravo,2`); both screenshots and the JSON byte artifact were reviewed. Built browser inline Kusto, standalone Kusto, SQL, and SQL-derived comparison fixtures in both section orders restored without live connections and downloaded exact CSV bytes.
 
-**Next boundary:** audit remaining table-local copy and row consumers, then decide whether EXA-2 can close or needs one final compatibility-facade migration. Keep coordinator convergence and deferred `ACT` capability work outside that closure decision.
+**Closure evidence:** governed Kusto, SQL, transformation, and Diff tables bind exact artifacts and synchronously purge rows, table/search models, viewers, dialogs, chart controls, and copy authority on revocation. Declared-column projection occurs before presentation, search, model/share/HTML egress, artifact publication, and persistence. Kusto and SQL comparisons retain exact source execution lineage through runtime cancellation and source-first/comparison-first restore. Restored producer claims are grounded in live ownership. URL CSV sections publish immutable artifacts for chart/transformation consumers while request IDs, requested URLs, component-incarnation uniqueness, debounce cancellation, and box-authoritative cleanup prevent stale-response or replacement races. Ungoverned URL and Connection Manager tables retain their direct local workflows.
+
+**Closure qualification:** the final 26-file acceptance ring passed 1,046 tests and final review returned `VERDICT: CLOSE EXA-2`. Full sequential Vitest passed 200 files and 5,264 tests on rerun; the first run had one unrelated SQL credential-lock timing failure, and that file passed unchanged at 52/52 before the complete rerun. Host/webview type checks, production extension build, browser-extension build, integration compilation, ESLint with zero errors and five pre-existing warnings, and both bundle gates passed. Final production sizes are 1,763.0 KB for `extension.js` and 2,673.8 KB for `webview.bundle.js`; intentional EXA-2 runtime growth moved only the synchronized webview baseline from 2,611 to 2,624 KB with the existing 50 KB buffer unchanged. The extension-host suite passed 113/113 with the documented five-second Mocha headroom; two default two-second attempts reached 112/113 because the existing bounded-close test itself waits up to three seconds. The previously reviewed native `default/csv-result-artifacts` exact-byte evidence remains applicable because the host nonce/challenge/write contract did not change in the closure audit; no new native capture was required.
+
+**Next boundary:** `COD-1`, lossless versioned codec preservation. Do not enter `DOC`, deferred `ACT`, or Kusto/SQL coordinator convergence in that iteration.
+
+## Next Iteration
+
+### Iteration `COD-1`: Lossless Codec Preservation
+
+**Status:** selected, not started.
+
+**Boundary:** introduce one lossless overlay codec path that preserves unknown root fields, unknown state fields, extension fields on known sections, opaque unknown sections, and section order while editing one known field. Keep current document actors and UI restore paths in place.
+
+**Cheapest discriminating check:** open a golden fixture containing future root/state fields, a future field on a known section, and an unknown section; edit one supported known field; save; prove every unknown value and the original order survive byte-semantic round-trip.
+
+**Exclusions:** no document actor migration, no capability-policy expansion, no `ACT` work, and no execution-coordinator convergence.
 
 ## Convergence Loop
 

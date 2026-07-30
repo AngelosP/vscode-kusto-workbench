@@ -276,7 +276,7 @@ export type OutgoingWebviewMessage =
 
 	// Python / URL
 	| { type: 'executePython'; boxId: string; code: string }
-	| { type: 'fetchUrl'; boxId: string; url: string }
+	| { type: 'fetchUrl'; boxId: string; url: string; requestId: string }
 
 	// Tool responses (agent tools)
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }

@@ -1,6 +1,8 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { __kustoGetChartDatasetsInDomOrder, removeHtmlBox } from '../../src/webview/core/section-factory';
+import { __kustoGetChartDatasetsInDomOrder, __kustoRefreshAllDataSourceDropdowns, removeHtmlBox } from '../../src/webview/core/section-factory';
 import { htmlDashboardFactArtifactConsumerId } from '../../src/shared/resultArtifact.js';
+import '../../src/webview/sections/kw-url-section.js';
+import type { KwUrlSection } from '../../src/webview/sections/kw-url-section.js';
 import {
 	bindResultArtifactConsumer,
 	clearResultsState,
@@ -12,11 +14,11 @@ import {
 // ── helpers ───────────────────────────────────────────────────────────────────
 
 /** Create a minimal container + section children in the DOM. */
-function setupDom(sections: { id: string; name?: string }[]) {
+function setupDom(sections: { id: string; name?: string; tag?: string }[]) {
 	const container = document.createElement('div');
 	container.id = 'queries-container';
 	for (const s of sections) {
-		const el = document.createElement('div');
+		const el = document.createElement(s.tag || 'div');
 		el.id = s.id;
 		// Simulate the Lit component's getName() method (the current way sections expose names)
 		(el as any).getName = () => s.name ?? '';
@@ -123,6 +125,96 @@ describe('__kustoGetChartDatasetsInDomOrder', () => {
 		expect(datasets).toHaveLength(1);
 		expect(datasets[0].id).toBe('sql_1');
 		expect(datasets[0].label).toBe('A [section #1]');
+	});
+
+	it('discovers opaque data-source IDs from section ownership', () => {
+		setupDom([
+			{ id: 'custom-query', name: 'Opaque query', tag: 'kw-query-section' },
+			{ id: 'custom-transform', name: 'Opaque transform', tag: 'kw-transformation-section' },
+		]);
+		setResultsState('custom-query', { columns: ['Value'], rows: [[1]], metadata: {} }, {
+			producer: { engine: 'kusto', boxId: 'custom-query' },
+		});
+		setResultsState('custom-transform', { columns: ['Value'], rows: [[2]], metadata: {} }, {
+			producer: { engine: 'transformation', boxId: 'custom-transform' },
+		});
+
+		const datasets = __kustoGetChartDatasetsInDomOrder();
+
+		expect(datasets.map(dataset => dataset.id)).toEqual(['custom-query', 'custom-transform']);
+		expect(datasets.map(dataset => dataset.label)).toEqual([
+			'Opaque query [section #1]', 'Opaque transform [section #2]',
+		]);
+	});
+
+	it('discovers a real URL CSV source and removes it after fetch failure', async () => {
+		const container = setupDom([]);
+		const url = document.createElement('kw-url-section') as KwUrlSection;
+		url.id = 'custom-url-source';
+		url.boxId = 'custom-url-source';
+		url.setName('Imported CSV');
+		url.setUrl('https://example.com/data.csv');
+		container.appendChild(url);
+		await url.updateComplete;
+		const internal = url as any;
+		internal._activeFetchRequest = { requestId: 'chart-url-request', url: 'https://example.com/data.csv' };
+
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'urlContent', boxId: url.boxId, requestId: 'chart-url-request',
+			requestedUrl: 'https://example.com/data.csv', url: 'https://example.com/data.csv',
+			kind: 'csv', contentType: 'text/csv', status: 200, body: 'Name,Score\nalpha,1',
+		} }));
+		await url.updateComplete;
+
+		expect(__kustoGetChartDatasetsInDomOrder()).toEqual([
+			expect.objectContaining({
+				id: url.boxId, label: 'Imported CSV [section #1]',
+				rows: [['alpha', '1']],
+			}),
+		]);
+
+		url.setUrl('https://example.com/failing.csv');
+		internal._activeFetchRequest = { requestId: 'chart-url-error', url: 'https://example.com/failing.csv' };
+		window.dispatchEvent(new MessageEvent('message', { data: {
+			type: 'urlError', boxId: url.boxId, requestId: 'chart-url-error',
+			requestedUrl: 'https://example.com/failing.csv', error: 'Fetch failed',
+		} }));
+		await url.updateComplete;
+
+		expect(__kustoGetChartDatasetsInDomOrder()).toEqual([]);
+	});
+
+	it('refreshes opaque chart and transformation IDs from element ownership', () => {
+		const container = setupDom([]);
+		const chart = document.createElement('kw-chart-section') as any;
+		chart.id = 'custom-chart';
+		chart.refreshDatasets = vi.fn();
+		const transformation = document.createElement('kw-transformation-section') as any;
+		transformation.id = 'custom-transform-ui';
+		transformation.refreshDataSources = vi.fn();
+		container.append(chart, transformation);
+
+		__kustoRefreshAllDataSourceDropdowns();
+
+		expect(chart.refreshDatasets).toHaveBeenCalled();
+		expect(transformation.refreshDataSources).toHaveBeenCalled();
+	});
+
+	it('returns the immutable artifact snapshot when compatibility state mutates', () => {
+		setupDom([{ id: 'query_immutable', name: 'Immutable' }]);
+		const mutableState = {
+			columns: [{ name: 'Value', type: 'string' }],
+			rows: [['published']],
+		};
+		setResultsState('query_immutable', mutableState);
+		mutableState.columns[0].name = 'Mutated';
+		mutableState.rows[0][0] = 'mutable-state';
+
+		const datasets = __kustoGetChartDatasetsInDomOrder();
+
+		expect(datasets).toHaveLength(1);
+		expect((datasets[0].columns[0] as { name: string }).name).toBe('Value');
+		expect(datasets[0].rows).toEqual([['published']]);
 	});
 
 	// Regression: collapsed transformation sections must still appear as data

@@ -89,7 +89,7 @@ export function buildClipboardText(
 	}
 	const lines = [columns.map(c => c.name).join('\t')];
 	for (const row of rows) {
-		lines.push(row.map(cell => getCellDisplayValue(cell)).join('\t'));
+		lines.push(columns.map((_column, columnIndex) => getCellDisplayValue(row[columnIndex])).join('\t'));
 	}
 	return lines.join('\n');
 }
@@ -253,6 +253,9 @@ export class KwDataTable extends LitElement {
 	@property({ attribute: false }) options: DataTableOptions = {};
 	@property({ attribute: false }) resultArtifactId = '';
 	@property({ attribute: false }) resultArtifactTableToken = '';
+	@property({ attribute: false }) resultArtifactSourceBoxId = '';
+	@property({ attribute: false }) resultArtifactGoverned = false;
+	resultArtifactLiveCheck?: () => boolean;
 
 	@state() private _sorting: SortingState = [];
 	@state() private _columnFilters: ColumnFiltersState = [];
@@ -364,6 +367,55 @@ export class KwDataTable extends LitElement {
 	getEstimatedRowHeight(): number { return this._estimatedRowHeight(); }
 	getTableRows(): Array<{ original: CellValue[] }> { return this._table?.getRowModel().rows ?? []; }
 	getColumnCount(): number { return this.columns.length; }
+	canCopyRows(): boolean {
+		if (!this.resultArtifactGoverned) return true;
+		try {
+			return !!this.resultArtifactId && !!this.resultArtifactTableToken
+				&& this.resultArtifactLiveCheck?.() === true;
+		} catch {
+			return false;
+		}
+	}
+
+	revokeResultArtifactGeneration(): void {
+		this.resultArtifactId = '';
+		this.resultArtifactTableToken = '';
+		this.resultArtifactLiveCheck = undefined;
+		this.shadowRoot?.querySelector<any>('kw-unique-values-dialog')?.purgeDataImmediately?.();
+		this.clearRowInteractions();
+	}
+
+	purgeDataImmediately(): void {
+		this.clearRowInteractions();
+		this.shadowRoot?.querySelector<any>('kw-unique-values-dialog')?.purgeDataImmediately?.();
+		this.rows = [];
+		this.columns = [];
+		this._table = null;
+		this._columnTypes = [];
+		this._columnWidths = [];
+		this._sorting = [];
+		this._columnFilters = [];
+		this._searchCtrl.reset();
+		this._rowJumpCtrl.reset();
+		const objectViewer = this.shadowRoot?.querySelector<KwObjectViewer>('kw-object-viewer');
+		if (objectViewer) {
+			objectViewer.jsonText = '';
+			objectViewer.title = '';
+		}
+		this._vScrollCtrl.updateCount();
+		this.requestUpdate();
+	}
+
+	clearRowInteractions(): void {
+		this._selectionCtrl.clear();
+		const objectViewer = this.shadowRoot?.querySelector<KwObjectViewer>('kw-object-viewer');
+		if (typeof objectViewer?.hide === 'function') objectViewer.hide();
+		this._uniqueValuesOpen = false;
+		this._columnMenuOpen = null;
+		this._sortDialogOpen = false;
+		this._filterDialogOpen = false;
+		this.requestUpdate();
+	}
 	getSelectedCol(): number { return this._selectionCtrl.selectedCell?.col ?? 0; }
 	scrollToRow(index: number, opts?: { align?: 'auto' | 'center' | 'start' | 'end' }): void { this._vScrollCtrl.scrollToIndex(index, opts); }
 	scrollColumnIntoView(col: number): void {
@@ -735,6 +787,7 @@ export class KwDataTable extends LitElement {
 	// ── Unique values (delegated to <kw-unique-values-dialog>) ──
 
 	private _openUniqueValues(colIndex: number, mode: UniqueValuesMode): void {
+		if (!this.canCopyRows()) return;
 		this._closeColumnMenu();
 		this._uniqueValuesColIndex = colIndex;
 		this._uniqueValuesMode = mode;
@@ -873,7 +926,7 @@ export class KwDataTable extends LitElement {
 				.mode=${this._uniqueValuesMode}
 				@unique-values-close=${() => this._closeUniqueValues()}
 			></kw-unique-values-dialog>` : nothing}
-			<kw-object-viewer></kw-object-viewer>
+			<kw-object-viewer .canCopy=${() => this.canCopyRows()}></kw-object-viewer>
 		</div>`;
 	}
 
@@ -1176,7 +1229,12 @@ export class KwDataTable extends LitElement {
 	setBodyVisible(visible: boolean, options?: { emit?: boolean }): void {
 		const nextVisible = !!visible;
 		if (nextVisible === this._bodyVisible) return;
-		if (!nextVisible) this._destroyOverlayScrollbars();
+		if (!nextVisible) {
+			this._destroyOverlayScrollbars();
+			this._selectionCtrl.clear();
+			const objectViewer = this.shadowRoot?.querySelector<KwObjectViewer>('kw-object-viewer');
+			if (typeof objectViewer?.hide === 'function') objectViewer.hide();
+		}
 		this._bodyVisible = nextVisible;
 		if (options?.emit !== false) {
 			this.dispatchEvent(new CustomEvent('visibility-toggle', { detail: { visible: this._bodyVisible }, bubbles: true, composed: true }));
@@ -1209,6 +1267,7 @@ export class KwDataTable extends LitElement {
 		return typeof cell === 'object' && cell !== null && 'full' in cell && typeof (cell as any).full === 'string' && ((cell as any).full.trim().startsWith('{') || (cell as any).full.trim().startsWith('['));
 	}
 	private _openObjectViewer(rowIdx: number, colIdx: number): void {
+		if (!this.canCopyRows()) return;
 		if (!this._table) return;
 		const row = this._table.getRowModel().rows[rowIdx];
 		if (!row) return;
@@ -1253,7 +1312,7 @@ export class KwDataTable extends LitElement {
 		}
 	}
 
-	private _copyCol(ci: number): void { if (!this._table) return; const rows = this._table.getRowModel().rows; const text = this.columns[ci].name + '\n' + rows.map(r => getCellDisplayValue(r.original[ci])).join('\n'); try { navigator.clipboard.writeText(text); } catch (e) { console.error('[kusto]', e); } }
+	private _copyCol(ci: number): void { if (!this._table || !this.canCopyRows()) return; const rows = this._table.getRowModel().rows; const text = this.columns[ci].name + '\n' + rows.map(r => getCellDisplayValue(r.original[ci])).join('\n'); try { navigator.clipboard.writeText(text); } catch (e) { console.error('[kusto]', e); } }
 	private _save(): void {
 		if (!this._table) return;
 		const rows = this._table.getRowModel().rows;

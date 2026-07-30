@@ -129,6 +129,23 @@ describe('kw-chart-section agent configuration', () => {
 				fakeDatasets.push(...removed);
 			}
 		});
+
+	it('synchronously purges rendered chart content when its artifact binding is revoked', async () => {
+		const el = createChartSection();
+		await el.updateComplete;
+		const editCanvas = document.createElement('div');
+		editCanvas.id = 'chart_test_1_chart_canvas_edit';
+		editCanvas.textContent = 'stale chart';
+		document.body.appendChild(editCanvas);
+
+		window.dispatchEvent(new CustomEvent('kusto-workbench-result-artifact-consumers-revoked', {
+			detail: { sourceBoxId: 'q1', consumerIds: ['chart_test_1'] },
+		}));
+
+		expect(mockPurgeChartEcharts).toHaveBeenCalledWith('chart_test_1');
+		expect(editCanvas.textContent).toBe('');
+		expect(el.getDatasets()).toEqual([]);
+	});
 	/**
 	 * Regression: when the agent configures a chart via the tool, the global
 	 * chartStateByBoxId is updated and __kustoUpdateChartBuilderUI is called.

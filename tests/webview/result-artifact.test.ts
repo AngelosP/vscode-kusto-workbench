@@ -48,6 +48,69 @@ describe('ResultArtifactStore', () => {
 		expect(publicationFromPersistedResultArtifact(descriptor, 'query_2')).toBeUndefined();
 	});
 
+	it('rejects noncanonical persisted IDs and prevents cross-source collisions', () => {
+		const forgedDescriptor = {
+			version: 1, artifactId: 'result:query_b:1', sourceBoxId: 'query_a',
+			revision: 1, createdAt: 123,
+		};
+		expect(publicationFromPersistedResultArtifact(forgedDescriptor, 'query_a')).toBeUndefined();
+
+		const store = new ResultArtifactStore();
+		const sourceA = store.publish('query_a', { columns: ['Value'], rows: [['a']], metadata: {} }, {
+			persistedIdentity: forgedDescriptor,
+		})!;
+		const sourceB = store.publish('query_b', { columns: ['Value'], rows: [['b']], metadata: {} })!;
+
+		expect(sourceA).toMatchObject({ artifactId: 'result:query_a:1', sourceBoxId: 'query_a', restored: false });
+		expect(sourceB).toMatchObject({ artifactId: 'result:query_b:1', sourceBoxId: 'query_b' });
+		expect(store.getCurrent('query_a')?.rows).toEqual([['a']]);
+		expect(store.getCurrent('query_b')?.rows).toEqual([['b']]);
+	});
+
+	it('rejects exhausted persisted revisions and fails safely at the revision ceiling', () => {
+		const exhausted = {
+			version: 1, artifactId: `result:query_max:${Number.MAX_SAFE_INTEGER}`,
+			sourceBoxId: 'query_max', revision: Number.MAX_SAFE_INTEGER, createdAt: 1,
+		};
+		expect(publicationFromPersistedResultArtifact(exhausted, 'query_max')).toBeUndefined();
+
+		const store = new ResultArtifactStore();
+		const nearMax = Number.MAX_SAFE_INTEGER - 1;
+		expect(store.publish('query_max', { columns: ['Value'], rows: [[1]], metadata: {} }, {
+			persistedIdentity: {
+				artifactId: `result:query_max:${nearMax}`, sourceBoxId: 'query_max',
+				revision: nearMax, createdAt: 1,
+			},
+		})?.revision).toBe(nearMax);
+		expect(store.publish('query_max', { columns: ['Value'], rows: [[2]], metadata: {} })?.revision)
+			.toBe(Number.MAX_SAFE_INTEGER);
+		expect(store.publish('query_max', { columns: ['Value'], rows: [[3]], metadata: {} })).toBeUndefined();
+	});
+
+	it('projects every row to the declared schema width at publication', () => {
+		const store = new ResultArtifactStore();
+		const artifact = store.publish('query_ragged', {
+			columns: ['A', 'B'],
+			rows: [[1, 2, 'hidden'], [3], 'invalid-row'],
+			metadata: {},
+		})!;
+
+		expect(artifact.rows).toEqual([[1, 2], [3, undefined], [undefined, undefined]]);
+	});
+
+	it('publishes opaque IDs containing lone UTF-16 surrogates without throwing', () => {
+		const store = new ResultArtifactStore();
+		const sourceBoxId = `query_${String.fromCharCode(0xd800)}`;
+
+		const artifact = store.publish(sourceBoxId, {
+			columns: ['Value'], rows: [[1]], metadata: {},
+		});
+
+		expect(artifact).toMatchObject({ sourceBoxId, revision: 1, rows: [[1]] });
+		expect(artifact?.artifactId).toContain('%ud800');
+		expect(store.getCurrent(sourceBoxId)).toBe(artifact);
+	});
+
 	it('rejects persisted producer or policy claims that disagree with admitted ownership', () => {
 		const base = {
 			version: 1, artifactId: 'result:query_1:7', sourceBoxId: 'query_1',

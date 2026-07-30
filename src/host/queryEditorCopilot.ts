@@ -3207,11 +3207,23 @@ Completion:`;
 			targetBoxId: string,
 			start: () => T,
 			publishedQuery?: string,
+			comparisonSource?: { sourceBoxId: string; sourceExecutionId: string },
 		) => {
 			const executionId = `sql-copilot-${randomUUID()}`;
 			const preflight = this.host.sqlExecutionBroker.reservePreflight(targetBoxId, executionId);
 			let lease;
 			let publishedStart = false;
+			let settled = false;
+			const settleExecution = () => {
+				if (!publishedStart || settled) return;
+				settled = true;
+				try {
+					this.host.postMessage({
+						type: 'copilotWriteQueryExecuting', boxId: targetBoxId, executing: false,
+						executionId, ownerToken,
+					});
+				} catch { /* best effort */ }
+			};
 			try {
 				await assertActiveOwner(targetBoxId);
 				const admission = this.host.sqlExecutionBroker.promotePreflight(preflight);
@@ -3220,6 +3232,7 @@ Completion:`;
 					await dispatchActiveOwner(targetBoxId, () => this.postRequiredMessage({
 						type: 'copilotWriteQueryExecuting', boxId: targetBoxId, executing: true,
 						executionId, ownerToken, query: publishedQuery,
+						...(comparisonSource || {}),
 					}));
 					publishedStart = true;
 					await assertActiveOwner(targetBoxId);
@@ -3236,22 +3249,19 @@ Completion:`;
 			} catch (error) {
 				this.host.sqlExecutionBroker.clearPreflight(preflight);
 				this.host.sqlExecutionBroker.cancelExpected(targetBoxId, executionId, false);
-				if (publishedStart) {
-					try {
-						await Promise.resolve(this.host.postMessage({
-							type: 'copilotWriteQueryExecuting', boxId: targetBoxId, executing: false,
-							executionId, ownerToken,
-						}));
-					} catch { /* best effort */ }
-				}
+				settleExecution();
 				throw error;
 			}
-			const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, lease.cancel, undefined, targetBoxId);
+			const untrack = this.trackCopilotQueryCancel(boxId, cts, seq, () => {
+				settleExecution();
+				lease.cancel();
+			}, undefined, targetBoxId);
 			return {
 				execution: lease.execution,
 				runSeq: lease.runSeq,
 				executionId: lease.executionId,
 				isCurrent: lease.isCurrent,
+				settleExecution,
 				release: () => {
 					untrack();
 					lease.release();
@@ -3632,7 +3642,9 @@ Completion:`;
 						// Run both queries if sqlClient is available
 						if (sqlClient && connection) {
 							const comparisonAdmissions: Array<{
+								executionId: string;
 								isCurrent: () => boolean;
+								settleExecution: () => void;
 								release: () => void;
 							}> = [];
 							const executeSqlAndPost = async (
@@ -3645,6 +3657,9 @@ Completion:`;
 									targetBoxId,
 									() => sqlClient.executeQueryCancelable(connection, database, queryText),
 									queryText,
+									targetBoxId === comparisonBoxId && comparisonAdmissions[0]
+										? { sourceBoxId: boxId, sourceExecutionId: comparisonAdmissions[0].executionId }
+										: undefined,
 								);
 								let retained = false;
 								try {
@@ -3741,16 +3756,8 @@ Completion:`;
 								() => sqlClient.executeQueryCancelable(connection, database, query),
 								query,
 							);
-							let executionSettled = false;
-							const settleExecution = () => {
-								if (executionSettled) return;
-								executionSettled = true;
-								try {
-									postSqlMessage({ type: 'copilotWriteQueryExecuting', boxId, executing: false, executionId: admitted.executionId });
-								} catch { /* ignore */ }
-							};
 							const runningRequest = this.runningCopilotWriteQueryByBoxId.get(boxId);
-							const sqlFinalRun = { isCurrent: admitted.isCurrent, settleExecution };
+							const sqlFinalRun = { isCurrent: admitted.isCurrent, settleExecution: admitted.settleExecution };
 							if (runningRequest?.cts === cts && runningRequest.seq === seq) runningRequest.sqlFinalRun = sqlFinalRun;
 							const { promise } = admitted.execution;
 							try {
@@ -3769,7 +3776,7 @@ Completion:`;
 											query, connectionId: requestOwner.connectionId, database: requestOwner.database,
 										});
 										postSqlMessage({ type: 'ensureResultsVisible', boxId });
-										settleExecution();
+										admitted.settleExecution();
 										postSqlMessage({
 											type: 'copilotWriteQueryDone', boxId,
 											ok: true, message: 'Query ran successfully. Review the results and adjust if needed.'
@@ -3785,7 +3792,7 @@ Completion:`;
 									if (isActive() && admitted.isCurrent()) {
 										await dispatchActiveOwner(boxId, () => {
 											if (!admitted.isCurrent()) throw new Error('SQL Copilot write-query canceled');
-											settleExecution();
+											admitted.settleExecution();
 										});
 									}
 									throw new Error('SQL Copilot write-query canceled');

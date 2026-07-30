@@ -142,6 +142,21 @@ vi.mock('../../src/webview/shared/persistence-utils.js', () => ({
 	isLeaveNoTraceCluster: vi.fn((clusterUrl: unknown, protectedClusters: unknown[]) =>
 		protectedClusters.map(value => String(value || '').trim().toLowerCase()).includes(String(clusterUrl || '').trim().toLowerCase())),
 	byteLengthUtf8: vi.fn((v: unknown) => String(v ?? '').length),
+	normalizePersistedResultJson: vi.fn((value: unknown) => {
+		const text = String(value || '');
+		try {
+			const parsed = JSON.parse(text);
+			const columns = Array.isArray(parsed?.columns) ? parsed.columns : [];
+			const rows = Array.isArray(parsed?.rows) ? parsed.rows : [];
+			if (rows.every((row: unknown) => Array.isArray(row) && row.length === columns.length)) return text;
+			return JSON.stringify({
+				...parsed,
+				rows: rows.map((row: unknown) => Array.from(
+					{ length: columns.length }, (_, index) => Array.isArray(row) ? row[index] : undefined,
+				)),
+			});
+		} catch { return text; }
+	}),
 	trySerializeQueryResult: vi.fn(() => ({ json: null })),
 }));
 
@@ -419,6 +434,34 @@ describe('persistence round-trip', () => {
 		}
 	});
 
+	it('normalizes ragged restored rows before presentation in the read-only viewer', () => {
+		vi.useFakeTimers();
+		(window as any).__kustoReadOnlyMode = true;
+		const resultJson = JSON.stringify({
+			columns: [{ name: 'A' }, { name: 'B' }],
+			rows: [[1, 2, 'hidden'], [3]], metadata: {},
+		});
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: 'https://example.test/ragged.kqlx', documentKind: 'kqlx',
+				state: { sections: [{
+					type: 'query', id: 'query_ragged_restore', query: 'print A=1, B=2', resultJson,
+				}] },
+			});
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [[1, 2], [3, undefined]] }),
+				'query_ragged_restore', expect.anything(),
+			);
+			expect(pState.queryResultJsonByBoxId.query_ragged_restore).toBeUndefined();
+		} finally {
+			delete (window as any).__kustoReadOnlyMode;
+			vi.useRealTimers();
+		}
+	});
+
 	it('restores persisted SQL rows as CSV-only artifacts without live browser connections', () => {
 		vi.useFakeTimers();
 		(window as any).__kustoReadOnlyMode = true;
@@ -627,14 +670,44 @@ describe('persistence round-trip', () => {
 		vi.mocked(postMessageToHost).mockClear();
 		vi.mocked(__kustoCloseShareModal).mockClear();
 		resetCsv.mockClear();
-
-		handleDocumentDataMessage({
-			type: 'documentData', ok: false, forceReload: true,
-			documentKind: 'kqlx', documentUri: 'file:///tmp/report.kqlx',
-			error: 'Invalid JSON',
+		const diff = document.createElement('kw-diff-view') as any;
+		diff.close = vi.fn(() => {
+			diff._model = null;
+			diff._visible = false;
+			for (const table of diff.querySelectorAll<any>('kw-data-table')) {
+				table.rows = [];
+				table.columns = [];
+				table.canCopyRows = () => false;
+			}
 		});
+		diff._model = { rows: ['secret'] };
+		diff._visible = true;
+		const diffTable = document.createElement('kw-data-table') as any;
+		diffTable.rows = [['secret']];
+		diffTable.columns = [{ name: 'Value' }];
+		diffTable.canCopyRows = () => true;
+		diff.appendChild(diffTable);
+		document.body.appendChild(diff);
+		const previousCloseDiffView = window.closeDiffView;
+		window.closeDiffView = () => diff.close();
+
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: false, forceReload: true,
+				documentKind: 'kqlx', documentUri: 'file:///tmp/report.kqlx',
+				error: 'Invalid JSON',
+			});
+		} finally {
+			window.closeDiffView = previousCloseDiffView;
+		}
 		expect(__kustoCloseShareModal).toHaveBeenCalledOnce();
 		expect(resetCsv).toHaveBeenCalledOnce();
+		expect(diff.close).toHaveBeenCalledOnce();
+		expect(diff._model).toBeNull();
+		expect(diff._visible).toBe(false);
+		expect(diffTable.rows).toEqual([]);
+		expect(diffTable.columns).toEqual([]);
+		expect(diffTable.canCopyRows()).toBe(false);
 
 		expect(document.getElementById('query_good')).toBe(query);
 		expect((container as HTMLElement & { inert?: boolean }).inert).toBe(true);
@@ -650,6 +723,7 @@ describe('persistence round-trip', () => {
 
 		expect(document.getElementById('kusto-malformed-document-banner')).toBeNull();
 		expect((container as HTMLElement & { inert?: boolean }).inert).toBe(false);
+		diff.remove();
 		window.removeEventListener(RESULT_ARTIFACT_CSV_RESET_EVENT, resetCsv);
 	});
 
@@ -1234,7 +1308,9 @@ describe('persistence round-trip', () => {
 		expect(pState.queryResultJsonByBoxId.query_cmp).toBeUndefined();
 	});
 
-	it('restores a warm SQL comparison placed before its source using exact artifacts', () => {
+	it.each(['source-first', 'comparison-first'] as const)(
+		'restores a warm lineage-bearing SQL comparison in %s order',
+		(order) => {
 		vi.useFakeTimers();
 		try {
 			const connection = {
@@ -1245,29 +1321,68 @@ describe('persistence round-trip', () => {
 			const targetSignature = sqlConnectionTargetSignature(connection);
 			const sourceResult = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
 			const comparisonResult = JSON.stringify({ columns: ['Value'], rows: [[2]], metadata: {} });
-			const descriptor = (boxId: string, query: string, revision: number) => ({
-				version: 1, artifactId: `result:${boxId}:${revision}`, sourceBoxId: boxId, revision, createdAt: 123 + revision,
+			const sourceArtifact = {
+				artifactId: 'result:sql_warm_source:1', sourceBoxId: 'sql_warm_source', revision: 1,
+				createdAt: 124, restored: true, columns: ['Value'], rows: [[1]], metadata: {},
 				producer: {
-					engine: 'sql', boxId, executionId: `${boxId}-execution`, query,
+					engine: 'sql', boxId: 'sql_warm_source', executionId: 'sql-source-execution', query: 'SELECT 1 AS Value',
 					connectionId: connection.id, database: 'Db',
 				},
-				policy: { exposeToActiveContent: true, shareToClipboard: true },
+				policy: { exposeToActiveContent: true, shareToClipboard: true, exportToCsv: true },
+				lineage: [],
+			};
+			const sourceDescriptor = {
+				version: 1, artifactId: sourceArtifact.artifactId, sourceBoxId: sourceArtifact.sourceBoxId,
+				revision: sourceArtifact.revision, createdAt: sourceArtifact.createdAt,
+				producer: sourceArtifact.producer, policy: sourceArtifact.policy,
+			};
+			const comparisonPublication = createDerivedResultArtifactPublication(
+				{
+					engine: 'sql', boxId: 'query_warm_cmp', query: 'SELECT 2 AS Value',
+					connectionId: connection.id, database: 'Db', producer: 'comparison',
+				},
+				[{ artifact: sourceArtifact, role: 'comparison-source' }],
+			);
+			const comparisonDescriptor = {
+				version: 1, artifactId: 'result:query_warm_cmp:2', sourceBoxId: 'query_warm_cmp',
+				revision: 2, createdAt: 125,
+				producer: {
+					engine: 'sql', boxId: 'query_warm_cmp', executionId: 'sql-comparison-execution',
+					query: 'SELECT 2 AS Value', connectionId: connection.id, database: 'Db', producer: 'comparison',
+				},
+				policy: comparisonPublication.policy,
+				lineage: comparisonPublication.lineage,
+			};
+			let sourceRendered = false;
+			let comparisonRendered = false;
+			const comparisonArtifact = {
+				...comparisonDescriptor, restored: true, columns: ['Value'], rows: [[2]], metadata: {},
+			};
+			vi.mocked(displayResultForBox).mockImplementation((_result, boxId) => {
+				if (boxId === 'sql_warm_source') sourceRendered = true;
+				if (boxId === 'query_warm_cmp') comparisonRendered = true;
+				return true;
 			});
+			testState.getCurrentResultArtifact.mockImplementation((boxId: unknown) => {
+				if (sourceRendered && String(boxId) === 'sql_warm_source') return sourceArtifact;
+				if (comparisonRendered && String(boxId) === 'query_warm_cmp') return comparisonArtifact;
+				return null;
+			});
+			const sourceSection = {
+				type: 'sql', id: 'sql_warm_source', query: 'SELECT 1 AS Value', serverUrl: connection.serverUrl,
+				connectionIdHint: connection.id, targetSignature, database: 'Db',
+				resultJson: sourceResult, resultArtifact: sourceDescriptor,
+			};
+			const comparisonSection = {
+				type: 'query', id: 'query_warm_cmp', comparisonSourceBoxId: 'sql_warm_source',
+				query: 'SELECT 2 AS Value', resultJson: comparisonResult, resultArtifact: comparisonDescriptor,
+			};
 
 			handleDocumentDataMessage({
 				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/sql-warm-order.sqlx',
-				state: { sections: [
-					{
-						type: 'query', id: 'query_warm_cmp', comparisonSourceBoxId: 'sql_warm_source',
-						query: 'SELECT 2 AS Value', resultJson: comparisonResult,
-						resultArtifact: descriptor('query_warm_cmp', 'SELECT 2 AS Value', 2),
-					},
-					{
-						type: 'sql', id: 'sql_warm_source', query: 'SELECT 1 AS Value', serverUrl: connection.serverUrl,
-						connectionIdHint: connection.id, targetSignature, database: 'Db',
-						resultJson: sourceResult, resultArtifact: descriptor('sql_warm_source', 'SELECT 1 AS Value', 1),
-					},
-				] },
+				state: { sections: order === 'source-first'
+					? [sourceSection, comparisonSection]
+					: [comparisonSection, sourceSection] },
 			});
 			flushDeferredRestoreTimers();
 			flushDeferredRestoreTimers();
@@ -1278,9 +1393,14 @@ describe('persistence round-trip', () => {
 			);
 			expect(displayResultForBox).toHaveBeenCalledWith(
 				expect.objectContaining({ rows: [[2]] }), 'query_warm_cmp',
-				expect.objectContaining({ artifactPublication: expect.anything() }),
+				expect.objectContaining({
+					artifactPublication: expect.objectContaining({
+						lineage: comparisonDescriptor.lineage,
+						policy: expect.objectContaining({ shareToClipboard: true, exportToCsv: true }),
+					}),
+				}),
 			);
-			expect(pState.resultArtifactByBoxId.query_warm_cmp).toEqual(descriptor('query_warm_cmp', 'SELECT 2 AS Value', 2));
+			expect(pState.resultArtifactByBoxId.query_warm_cmp).toEqual(comparisonDescriptor);
 		} finally {
 			vi.useRealTimers();
 		}
@@ -1428,6 +1548,87 @@ describe('persistence round-trip', () => {
 			expect(publication?.policy?.sendToModel).toBeUndefined();
 			expect(publication?.policy?.shareToClipboard).toBeUndefined();
 			expect(publication?.policy?.exportToCsv).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not trust a forged exposure-only restored query as producer provenance', () => {
+		vi.useFakeTimers();
+		try {
+			testState.kustoConnections.push(ownedKustoConnection({
+				id: 'public-default', clusterUrl: 'https://public.kusto.windows.net',
+			}));
+			const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+			const resultArtifact = {
+				version: 1, artifactId: 'result:query_forged_exposure:2', sourceBoxId: 'query_forged_exposure',
+				revision: 2, createdAt: 123,
+				producer: {
+					engine: 'kusto', boxId: 'query_forged_exposure', query: 'HiddenTable | take 100',
+					connectionId: 'public-default', database: 'Db',
+				},
+				policy: {
+					accountPartition: 'partition-a', leaveNoTraceRevision: 0,
+					exposeToActiveContent: true,
+				},
+			};
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/forged-exposure.kqlx',
+				state: { sections: [{
+					type: 'query', id: 'query_forged_exposure', query: 'print Value=1',
+					clusterUrl: 'https://public.kusto.windows.net', database: 'Db',
+					resultJson, resultArtifact, ...kustoResultOwner,
+				}] },
+			});
+			applyKustoLeaveNoTracePolicy([], false);
+			flushDeferredRestoreTimers();
+
+			const publication = vi.mocked(displayResultForBox).mock.calls
+				.find(([, boxId]) => boxId === 'query_forged_exposure')?.[2]?.artifactPublication;
+			expect(publication?.producer).toBeUndefined();
+			expect(publication?.policy?.exposeToActiveContent).toBeUndefined();
+			expect(JSON.stringify(publication || {})).not.toContain('HiddenTable');
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('drops forged restored exposure when the live query is empty', () => {
+		vi.useFakeTimers();
+		try {
+			testState.kustoConnections.push(ownedKustoConnection({
+				id: 'public-default', clusterUrl: 'https://public.kusto.windows.net',
+			}));
+			const resultJson = JSON.stringify({ columns: ['Value'], rows: [[1]], metadata: {} });
+			const resultArtifact = {
+				version: 1, artifactId: 'result:query_empty_forged:2', sourceBoxId: 'query_empty_forged',
+				revision: 2, createdAt: 123,
+				producer: {
+					engine: 'kusto', boxId: 'query_empty_forged', query: 'HiddenTable | take 100',
+					connectionId: 'public-default', database: 'Db',
+				},
+				policy: {
+					accountPartition: 'partition-a', leaveNoTraceRevision: 0,
+					exposeToActiveContent: true,
+				},
+			};
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri: 'file:///tmp/empty-forged.kqlx',
+				state: { sections: [{
+					type: 'query', id: 'query_empty_forged', query: 'print Value=1',
+					clusterUrl: 'https://public.kusto.windows.net', database: 'Db',
+					resultJson, resultArtifact, ...kustoResultOwner,
+				}] },
+			});
+			applyKustoLeaveNoTracePolicy([], false);
+			testState.queryEditors.query_empty_forged = { getValue: () => '' };
+			delete pState.pendingQueryTextByBoxId.query_empty_forged;
+			flushDeferredRestoreTimers();
+
+			const options = vi.mocked(displayResultForBox).mock.calls
+				.find(([, boxId]) => boxId === 'query_empty_forged')?.[2];
+			expect(options?.artifactPublication).toBeUndefined();
+			expect(JSON.stringify(options || {})).not.toContain('HiddenTable');
 		} finally {
 			vi.useRealTimers();
 		}

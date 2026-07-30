@@ -211,6 +211,37 @@ describe('HTML dashboard artifact bridge ownership', () => {
 		expect(section._buildDataBridgeScript()).toContain('revision-b');
 	});
 
+	it('exports an opaque-ID Kusto fact source to Power BI from exact artifact provenance', () => {
+		const sourceId = 'custom-query';
+		const query = document.createElement('kw-query-section') as any;
+		query.id = sourceId;
+		query.getClusterUrl = () => 'https://cluster.kusto.windows.net';
+		query.getConnectionId = () => 'connection-1';
+		query.getDatabase = () => 'Samples';
+		query.getName = () => 'Opaque fact';
+		document.body.appendChild(query);
+		setResultsState(sourceId, {
+			columns: [{ name: 'Value', type: 'long' }], rows: [[1]], metadata: {},
+		}, {
+			producer: {
+				engine: 'kusto', boxId: sourceId, connectionId: 'connection-1',
+				database: 'Samples', query: 'print Value=1',
+			},
+			policy: { exposeToActiveContent: true },
+		});
+		const section = new KwHtmlSection();
+		section.boxId = 'html_opaque_fact';
+		section.setCode(makeFactHtml(sourceId));
+
+		const context = section.getDashboardExportContext();
+
+		expect(context.dataSources).toEqual([expect.objectContaining({
+			sectionId: sourceId, name: 'Fact Events', query: 'print Value=1', database: 'Samples',
+		})]);
+		query.remove();
+		clearResultsState(sourceId);
+	});
+
 	it('fails closed when the bound artifact lacks active-content exposure permission', () => {
 		const sourceId = 'query_html_artifact_denied';
 		setResultsState(sourceId, { columns: ['Secret'], rows: [['classified']] });

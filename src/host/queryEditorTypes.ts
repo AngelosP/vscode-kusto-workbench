@@ -270,7 +270,7 @@ export type IncomingWebviewMessage =
 	| { type: 'setCopilotInlineCompletionsEnabled'; enabled: boolean }
 	| { type: 'requestCopilotInlineCompletion'; requestId: string; boxId: string; textBefore: string; textAfter: string; flavor?: 'kusto' | 'sql'; ownerToken?: string }
 	| { type: 'executePython'; boxId: string; code: string }
-	| { type: 'fetchUrl'; boxId: string; url: string }
+	| { type: 'fetchUrl'; boxId: string; url: string; requestId: string }
 	| { type: 'kustoSectionOpen'; boxId: string; sectionInstanceId: string }
 	| { type: 'kustoSectionTarget'; boxId: string; sectionInstanceId: string; targetGeneration: number; connectionId?: string; database?: string; connectionRevision?: number; connectionIdentityKey?: string }
 	| { type: 'kustoSectionClose'; boxId: string; sectionInstanceId: string }

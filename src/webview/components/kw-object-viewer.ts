@@ -132,6 +132,8 @@ export class KwObjectViewer extends LitElement {
 
 	/** Optional: used for clipboard via extension postMessage */
 	copyCallback?: (msg: unknown) => void;
+	/** Optional: lets an owning result artifact revoke clipboard access synchronously. */
+	canCopy?: () => boolean;
 
 	@state() private _stack: StackFrame[] = [];
 	@state() private _rawVisible = true;
@@ -253,7 +255,7 @@ export class KwObjectViewer extends LitElement {
 												<td class="${keyMatch ? 'search-match' : ''}">
 													<div class="prop-key-cell">
 														<button class="copy-btn prop-copy-btn" type="button" title="Copy name" aria-label="Copy property name"
-															@click=${() => { writeTextToClipboard(keyStr, this.copyCallback); }}>
+															@click=${() => { if (this.canCopy?.() !== false) writeTextToClipboard(keyStr, this.copyCallback); }}>
 															<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" xmlns="http://www.w3.org/2000/svg">
 																<rect x="5" y="5" width="9" height="9" rx="2" /><path d="M3 11V4c0-1.1.9-2 2-2h7" />
 															</svg>
@@ -599,10 +601,12 @@ export class KwObjectViewer extends LitElement {
 	}
 
 	private _copyValue(value: unknown): void {
+		if (this.canCopy?.() === false) return;
 		writeTextToClipboard(stringifyForSearch(value), this.copyCallback);
 	}
 
 	private _copyRaw(rawStr: string): void {
+		if (this.canCopy?.() === false) return;
 		writeTextToClipboard(rawStr, this.copyCallback);
 	}
 

@@ -396,4 +396,15 @@ describe('buildClipboardText', () => {
 		const text = buildClipboardText(cols, nullRows, null, { row: 0, col: 0 });
 		expect(text).toBe('');
 	});
+
+	it('copies only declared columns from ragged rows', () => {
+		const text = buildClipboardText(
+			[{ name: 'Visible' }, { name: 'Missing' }],
+			[['shown', 'value', 'hidden-secret'], ['short']],
+			null,
+			null,
+		);
+		expect(text).toBe('Visible\tMissing\nshown\tvalue\nshort\t');
+		expect(text).not.toContain('hidden-secret');
+	});
 });

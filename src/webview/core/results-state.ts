@@ -5,6 +5,7 @@ import { pState } from '../shared/persistence-state';
 import { __kustoSetResultsVisible, setQueryExecuting } from '../sections/query-execution.controller';
 import { __kustoNotifyResultsUpdated } from './section-factory';
 import {
+	projectRowsToDeclaredColumns,
 	RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT,
 	ResultArtifactStore,
 	type ResultArtifactPublication,
@@ -84,6 +85,7 @@ export function setResultsState(boxId: any, state: any, publication: ResultArtif
 		return undefined;
 	}
 	const artifact = _resultArtifacts.publish(String(boxId), state || {}, publication);
+	if (!artifact) return undefined;
 	_resultsByBoxId[boxId] = state;
 	_resultsRevisionByBoxId[boxId] = (_resultsRevisionByBoxId[boxId] || 0) + 1;
 	// Backward-compat: keep the last rendered result as the "current" one.
@@ -157,6 +159,13 @@ export function ensureResultsShownForTool(boxId: any) {
 
 export function displayResultForBox(result: any, boxId: any, options: any): boolean {
 	if (!boxId) { return false; }
+	const cols = Array.isArray(result?.columns) ? result.columns : [];
+	const sourceRows = Array.isArray(result?.rows) ? result.rows : [];
+	const rws = projectRowsToDeclaredColumns(cols, sourceRows);
+	const meta = (result?.metadata && typeof result.metadata === 'object') ? result.metadata : {};
+	const normalizedResult = rws === sourceRows
+		? result
+		: { ...result, columns: cols, rows: rws, metadata: meta };
 
 	// Resolve the section element and delegate to its displayResult() method.
 	const sectionEl = document.getElementById(boxId);
@@ -165,7 +174,7 @@ export function displayResultForBox(result: any, boxId: any, options: any): bool
 		return false;
 	}
 	if (sectionEl && typeof (sectionEl as any).displayResult === 'function') {
-		const accepted = (sectionEl as any).displayResult(result, options);
+		const accepted = (sectionEl as any).displayResult(normalizedResult, options);
 		if (accepted === false) {
 			clearResultsState(boxId);
 			return false;
@@ -173,10 +182,6 @@ export function displayResultForBox(result: any, boxId: any, options: any): bool
 	}
 
 	// Update global results state for cross-section dependencies (charts, diff, etc.).
-	const cols = Array.isArray(result && result.columns) ? result.columns : [];
-	const rws = Array.isArray(result && result.rows) ? result.rows : [];
-	const meta = (result && result.metadata && typeof result.metadata === 'object') ? result.metadata : {};
-
 	const displayRowIndices: number[] = [];
 	const rowIndexToDisplayIndex: number[] = [];
 	for (let i = 0; i < rws.length; i++) {
@@ -184,15 +189,25 @@ export function displayResultForBox(result: any, boxId: any, options: any): bool
 		rowIndexToDisplayIndex.push(i);
 	}
 
-	const artifact = setResultsState(boxId, {
-		boxId, columns: cols, rows: rws, metadata: meta,
-		selectedCell: null, cellSelectionAnchor: null, cellSelectionRange: null,
-		selectedRows: new Set(), searchMatches: [], currentSearchIndex: -1,
-		sortSpec: [], columnFilters: {}, filteredRowIndices: null,
-		displayRowIndices, rowIndexToDisplayIndex
-	}, options?.artifactPublication || {});
+	let artifact;
+	try {
+		artifact = setResultsState(boxId, {
+			boxId, columns: cols, rows: rws, metadata: meta,
+			selectedCell: null, cellSelectionAnchor: null, cellSelectionRange: null,
+			selectedRows: new Set(), searchMatches: [], currentSearchIndex: -1,
+			sortSpec: [], columnFilters: {}, filteredRowIndices: null,
+			displayRowIndices, rowIndexToDisplayIndex
+		}, options?.artifactPublication || {});
+	} catch (e) {
+		console.error('[kusto] Failed to publish result artifact:', e);
+	}
+	if (!artifact) {
+		try { (sectionEl as any).clearResults?.(); } catch (e) { console.error('[kusto]', e); }
+		clearResultsState(boxId);
+		return false;
+	}
 	if (typeof (sectionEl as any).setResultArtifactForCsvExport === 'function') {
-		(sectionEl as any).setResultArtifactForCsvExport(artifact?.artifactId || '');
+		(sectionEl as any).setResultArtifactForCsvExport(artifact.artifactId);
 	}
 	return true;
 }

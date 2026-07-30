@@ -168,10 +168,15 @@ export function extractSchemaFromJson(
 	tableDocStrings?: Record<string, string>,
 	columnDocStrings?: Record<string, string>,
 	tableFolders?: Record<string, string>,
-	functions?: KustoFunctionInfo[]
+	functions?: KustoFunctionInfo[],
+	seen: WeakSet<object> = new WeakSet(),
 ): void {
 	if (!parsed) {
 		return;
+	}
+	if (typeof parsed === 'object') {
+		if (seen.has(parsed)) return;
+		seen.add(parsed);
 	}
 
 	const addColumn = (tableName: string, colName: string, colType: any, colDocString?: string) => {
@@ -218,14 +223,15 @@ export function extractSchemaFromJson(
 					continue;
 				}
 				const cols = p?.Columns ?? p?.columns;
-				if (Array.isArray(cols) && cols.length > 0) {
+				if (Array.isArray(cols)) {
 					const colDefs = cols.map((c: any) => {
 						const cName = c?.Name ?? c?.name;
 						const cType = c?.CslType ?? c?.cslType ?? c?.Type ?? c?.type ?? '';
 						return cType ? `${cName}:${cType}` : cName;
 					}).join(', ');
-					parameters.push({ name: String(pName), type: `(${colDefs})` });
-					paramParts.push(`${pName}:(${colDefs})`);
+					const tabularType = colDefs ? `(${colDefs})` : '(*)';
+					parameters.push({ name: String(pName), type: tabularType });
+					paramParts.push(`${pName}:${tabularType}`);
 				} else {
 					const pType = p?.CslType ?? p?.cslType ?? p?.Type ?? p?.type ?? '';
 					const pDefault = p?.CslDefaultValue ?? p?.cslDefaultValue ?? p?.DefaultValue ?? p?.defaultValue ?? '';
@@ -356,7 +362,7 @@ export function extractSchemaFromJson(
 
 			// Recurse into each database object for alternative shapes.
 			if (dbObj && typeof dbObj === 'object') {
-				extractSchemaFromJson(dbObj, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
+				extractSchemaFromJson(dbObj, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions, seen);
 			}
 		}
 		return;
@@ -426,7 +432,7 @@ export function extractSchemaFromJson(
 	if (typeof parsed === 'object') {
 		for (const value of Object.values(parsed)) {
 			if (Array.isArray(value) || (value && typeof value === 'object')) {
-				extractSchemaFromJson(value, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions);
+				extractSchemaFromJson(value, columnTypesByTable, tableDocStrings, columnDocStrings, tableFolders, functions, seen);
 			}
 		}
 	}

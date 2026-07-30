@@ -98,6 +98,10 @@ export function csvTableArtifactConsumerId(sourceBoxId: unknown): string {
 	return `csv:${String(sourceBoxId || '').trim()}:table`;
 }
 
+export function diffArtifactConsumerId(side: 'a' | 'b'): string {
+	return `diff:modal:${side}`;
+}
+
 export function csvSaveArtifactConsumerId(sourceBoxId: unknown): string {
 	return `csv:${String(sourceBoxId || '').trim()}:save`;
 }
@@ -139,6 +143,35 @@ function snapshotLineage(lineage: readonly ResultArtifactLineage[] | undefined):
 		sourceArtifactId: String(item.sourceArtifactId || ''),
 		...(item.role ? { role: String(item.role) } : {}),
 	})).filter(item => !!item.sourceArtifactId));
+}
+
+function encodeArtifactSourceId(sourceBoxId: string): string {
+	try {
+		return encodeURIComponent(sourceBoxId);
+	} catch {
+		let encoded = '';
+		for (let index = 0; index < sourceBoxId.length; index++) {
+			encoded += `%u${sourceBoxId.charCodeAt(index).toString(16).padStart(4, '0')}`;
+		}
+		return encoded;
+	}
+}
+
+function canonicalResultArtifactId(sourceBoxId: string, revision: number): string {
+	return `result:${encodeArtifactSourceId(sourceBoxId)}:${revision}`;
+}
+
+export function projectRowsToDeclaredColumns(columns: unknown, rows: unknown): unknown[][] {
+	const declaredColumns = Array.isArray(columns) ? columns : [];
+	const sourceRows = Array.isArray(rows) ? rows : [];
+	const width = declaredColumns.length;
+	if (sourceRows.every(row => Array.isArray(row) && row.length === width)) {
+		return sourceRows as unknown[][];
+	}
+	return sourceRows.map(row => Array.from(
+		{ length: width },
+		(_, index) => Array.isArray(row) ? row[index] : undefined,
+	));
 }
 
 function policyStamp(policy: ResultArtifactPolicy | ResultArtifactSourcePolicy | undefined): ResultArtifactPolicyStamp | undefined {
@@ -307,7 +340,8 @@ export function publicationFromPersistedResultArtifact(
 	const revision = Number(value.revision);
 	const createdAt = Number(value.createdAt);
 	if (!artifactId || artifactId.length > 512 || !sourceBoxId || sourceBoxId !== expectedSource
-		|| !Number.isSafeInteger(revision) || revision <= 0
+		|| !Number.isSafeInteger(revision) || revision <= 0 || revision >= Number.MAX_SAFE_INTEGER
+		|| artifactId !== canonicalResultArtifactId(sourceBoxId, revision)
 		|| !Number.isFinite(createdAt) || createdAt < 0) return undefined;
 	const producer = isRecord(value.producer) ? value.producer as ResultArtifactProducer : undefined;
 	if (producer && String(producer.boxId || '').trim() !== expectedSource) return undefined;
@@ -423,20 +457,28 @@ export class ResultArtifactStore {
 		const sourceId = String(sourceBoxId || '').trim();
 		if (!sourceId) return undefined;
 		const previousRevision = this.nextRevisionBySource.get(sourceId) || 0;
-		const nextRevision = previousRevision + 1;
 		const persisted = publication.persistedIdentity;
 		const canRestoreIdentity = !!persisted
 			&& persisted.sourceBoxId === sourceId
+			&& Number.isSafeInteger(persisted.revision)
+			&& persisted.revision > 0
+			&& persisted.revision < Number.MAX_SAFE_INTEGER
+			&& persisted.artifactId === canonicalResultArtifactId(sourceId, persisted.revision)
 			&& !this.currentArtifactIdBySource.has(sourceId)
 			&& !this.artifacts.has(persisted.artifactId);
-		const revision = canRestoreIdentity ? persisted!.revision : nextRevision;
-		const artifactId = canRestoreIdentity
-			? persisted!.artifactId
-			: `result:${encodeURIComponent(sourceId)}:${revision}`;
+		const nextRevision = previousRevision + 1;
+		if (!canRestoreIdentity && (!Number.isSafeInteger(nextRevision) || nextRevision <= previousRevision)) return undefined;
+		let revision = canRestoreIdentity ? persisted!.revision : nextRevision;
+		let artifactId = canRestoreIdentity ? persisted!.artifactId : canonicalResultArtifactId(sourceId, revision);
+		while (!canRestoreIdentity && this.artifacts.has(artifactId)) {
+			if (revision >= Number.MAX_SAFE_INTEGER) return undefined;
+			revision++;
+			artifactId = canonicalResultArtifactId(sourceId, revision);
+		}
 		this.nextRevisionBySource.set(sourceId, Math.max(previousRevision, revision));
 		const previousArtifactId = this.currentArtifactIdBySource.get(sourceId);
 		const columns = deepFreeze(cloneValue(Array.isArray(state.columns) ? state.columns : []) as unknown[]);
-		const rows = deepFreeze(cloneValue(Array.isArray(state.rows) ? state.rows : []) as unknown[]);
+		const rows = deepFreeze(cloneValue(projectRowsToDeclaredColumns(columns, state.rows)) as unknown[]);
 		const metadataValue = state.metadata && typeof state.metadata === 'object' && !Array.isArray(state.metadata)
 			? state.metadata as Record<string, unknown>
 			: {};
@@ -464,8 +506,10 @@ export class ResultArtifactStore {
 	}
 
 	getCurrent(sourceBoxId: string): ResultArtifact | undefined {
-		const artifactId = this.currentArtifactIdBySource.get(String(sourceBoxId || '').trim());
-		return artifactId ? this.artifacts.get(artifactId) : undefined;
+		const source = String(sourceBoxId || '').trim();
+		const artifactId = this.currentArtifactIdBySource.get(source);
+		const artifact = artifactId ? this.artifacts.get(artifactId) : undefined;
+		return artifact?.sourceBoxId === source ? artifact : undefined;
 	}
 
 	getByProducerExecution(sourceBoxId: string, executionId: string): ResultArtifact | undefined {

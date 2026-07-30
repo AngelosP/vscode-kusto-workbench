@@ -2567,9 +2567,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	private async fetchUrlFromWebview(message: Extract<IncomingWebviewMessage, { type: 'fetchUrl' }>): Promise<void> {
 		const boxId = String(message.boxId || '').trim();
 		const rawUrl = String(message.url || '').trim();
+		const requestId = String(message.requestId || '').trim();
 		if (!boxId) {
 			return;
 		}
+		const responseIdentity = { boxId, requestId, requestedUrl: rawUrl };
 
 		const formatBytes = (n: number): string => {
 			if (!Number.isFinite(n) || n < 0) {
@@ -2588,11 +2590,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		try {
 			url = new URL(rawUrl);
 		} catch {
-			this.postMessage({ type: 'urlError', boxId, error: 'Invalid URL.' });
+			this.postMessage({ type: 'urlError', ...responseIdentity, error: 'Invalid URL.' });
 			return;
 		}
 		if (url.protocol !== 'http:' && url.protocol !== 'https:') {
-			this.postMessage({ type: 'urlError', boxId, error: 'Only http/https URLs are supported.' });
+			this.postMessage({ type: 'urlError', ...responseIdentity, error: 'Only http/https URLs are supported.' });
 			return;
 		}
 
@@ -2632,7 +2634,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			if (bytes.byteLength > maxBytes) {
 				this.postMessage({
 					type: 'urlError',
-					boxId,
+					...responseIdentity,
 					error: `Response too large (${formatBytes(bytes.byteLength)}). Max is ${formatBytes(maxBytes)}.`
 				});
 				return;
@@ -2649,7 +2651,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				})();
 				this.postMessage({
 					type: 'urlError',
-					boxId,
+					...responseIdentity,
 					error: `HTTP ${status}${statusText ? ' ' + statusText : ''}.${hint}`
 				});
 				return;
@@ -2661,7 +2663,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				const dataUri = `data:${mime};base64,${base64}`;
 				this.postMessage({
 					type: 'urlContent',
-					boxId,
+					...responseIdentity,
 					url: finalUrl,
 					contentType,
 					status: resp.status,
@@ -2694,7 +2696,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 
 			this.postMessage({
 				type: 'urlContent',
-				boxId,
+				...responseIdentity,
 				url: finalUrl,
 				contentType,
 				status: resp.status,
@@ -2707,7 +2709,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			const msg = e?.name === 'AbortError'
 				? `Timed out after ${Math.round(timeoutMs / 1000)}s.`
 				: (typeof e?.message === 'string' ? e.message : 'Failed to fetch URL.');
-			this.postMessage({ type: 'urlError', boxId, error: msg });
+			this.postMessage({ type: 'urlError', ...responseIdentity, error: msg });
 		} finally {
 			clearTimeout(timer);
 		}

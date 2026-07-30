@@ -1,5 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { KwDataTable } from '../../src/webview/components/kw-data-table.js';
+import '../../src/webview/components/kw-object-viewer.js';
+import '../../src/webview/components/kw-unique-values-dialog.js';
 
 const overlayMocks = vi.hoisted(() => {
 	const instances: any[] = [];
@@ -161,6 +163,153 @@ describe('kw-data-table visibility lifecycle', () => {
 		table.options = { showSave: true };
 		await table.updateComplete;
 		expect(table.shadowRoot?.querySelector('[title="Save results to file"]')).toBeTruthy();
+	});
+
+	it('revokes governed copy selection and closes its object viewer', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Value' }];
+		table.rows = [[{ full: '{"secret":1}', display: 'object', isObject: true } as any]];
+		table.resultArtifactGoverned = true;
+		table.resultArtifactSourceBoxId = 'query_copy';
+		table.resultArtifactId = 'result:query_copy:1';
+		table.resultArtifactTableToken = 'token-1';
+		table.resultArtifactLiveCheck = () => true;
+		document.body.appendChild(table);
+		await settleTable(table);
+		const internal = table as any;
+		internal._selectionCtrl.setSelectedCell({ row: 0, col: 0 });
+		internal._openObjectViewer(0, 0);
+		const viewer = table.shadowRoot?.querySelector('kw-object-viewer') as any;
+		expect(viewer?.open).toBe(true);
+
+		table.revokeResultArtifactGeneration();
+		await table.updateComplete;
+
+		expect(table.canCopyRows()).toBe(false);
+		expect(internal._selectionCtrl.selectedCell).toBeNull();
+		expect(viewer?.open).toBe(false);
+	});
+
+	it('keeps local copy available for a live governed table without Save', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Secret' }];
+		table.rows = [['local-copy']];
+		table.options = { showSave: false };
+		table.resultArtifactGoverned = true;
+		table.resultArtifactId = 'result:query_copy:1';
+		table.resultArtifactTableToken = 'token-1';
+		table.resultArtifactLiveCheck = () => true;
+		document.body.appendChild(table);
+		await settleTable(table);
+		const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+		const writeText = vi.fn(() => Promise.resolve());
+		Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+		try {
+			expect(table.shadowRoot?.querySelector('[title="Save results to file"]')).toBeNull();
+			expect(table.canCopyRows()).toBe(true);
+			(table as any)._selectionCtrl.setSelectedCell({ row: 0, col: 0 });
+			(table as any)._selectionCtrl.copy();
+			expect(writeText).toHaveBeenCalledWith('local-copy');
+		} finally {
+			if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
+			else delete (navigator as any).clipboard;
+		}
+	});
+
+	it('denies a stale object-viewer copy handler after generation revocation', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Value' }];
+		table.rows = [[{ full: '{"secret":1}', display: 'object', isObject: true } as any]];
+		table.resultArtifactGoverned = true;
+		table.resultArtifactId = 'result:query_copy:1';
+		table.resultArtifactTableToken = 'token-1';
+		table.resultArtifactLiveCheck = () => true;
+		document.body.appendChild(table);
+		await settleTable(table);
+		(table as any)._openObjectViewer(0, 0);
+		const viewer = table.shadowRoot?.querySelector('kw-object-viewer') as any;
+		const copyCallback = vi.fn();
+		viewer.copyCallback = copyCallback;
+		await viewer.updateComplete;
+		const staleCopyButton = viewer.shadowRoot?.querySelector<HTMLButtonElement>('[aria-label="Copy value to clipboard"]');
+		expect(staleCopyButton).toBeTruthy();
+
+		table.revokeResultArtifactGeneration();
+		staleCopyButton?.click();
+
+		expect(copyCallback).not.toHaveBeenCalled();
+	});
+
+	it('purges an open Unique Values dialog and denies its stale Copy handler on revocation', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Secret' }];
+		table.rows = [['classified'], ['classified']];
+		table.resultArtifactGoverned = true;
+		table.resultArtifactId = 'result:query_copy:1';
+		table.resultArtifactTableToken = 'token-1';
+		table.resultArtifactLiveCheck = () => true;
+		document.body.appendChild(table);
+		await settleTable(table);
+		(table as any)._openUniqueValues(0, 'unique-values');
+		await table.updateComplete;
+		const dialog = table.shadowRoot?.querySelector('kw-unique-values-dialog') as any;
+		await dialog.updateComplete;
+		const nestedTable = dialog.shadowRoot?.querySelector('kw-data-table') as any;
+		await nestedTable.updateComplete;
+		const copyButton = nestedTable.shadowRoot?.querySelector<HTMLButtonElement>('[title="Copy (Ctrl+C)"]');
+		expect(copyButton).toBeTruthy();
+		const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+		const writeText = vi.fn(() => Promise.resolve());
+		Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } });
+		try {
+			(nestedTable as any)._selectionCtrl.setSelectedCell({ row: 0, col: 0 });
+			table.revokeResultArtifactGeneration();
+			copyButton?.click();
+
+			expect(dialog.rows).toEqual([]);
+			expect(dialog.columns).toEqual([]);
+			expect(nestedTable.rows).toEqual([]);
+			expect(nestedTable.columns).toEqual([]);
+			expect(writeText).not.toHaveBeenCalled();
+		} finally {
+			if (clipboardDescriptor) Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
+			else delete (navigator as any).clipboard;
+		}
+	});
+
+	it('does not reopen Unique Values after generation revocation', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Secret' }];
+		table.rows = [['classified']];
+		table.resultArtifactGoverned = true;
+		table.resultArtifactId = 'result:query_copy:1';
+		table.resultArtifactTableToken = 'token-1';
+		table.resultArtifactLiveCheck = () => true;
+		document.body.appendChild(table);
+		await settleTable(table);
+
+		table.revokeResultArtifactGeneration();
+		(table as any)._openUniqueValues(0, 'unique-values');
+		await table.updateComplete;
+
+		expect((table as any)._uniqueValuesOpen).toBe(false);
+		expect(table.shadowRoot?.querySelector('kw-unique-values-dialog')).toBeNull();
+		expect(table.canCopyRows()).toBe(false);
+	});
+
+	it('clears active selection when results are hidden', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Value' }];
+		table.rows = [['visible']];
+		document.body.appendChild(table);
+		await settleTable(table);
+		const internal = table as any;
+		internal._selectionCtrl.setSelectedCell({ row: 0, col: 0 });
+
+		table.setBodyVisible(false);
+
+		expect(internal._selectionCtrl.selectedCell).toBeNull();
+		expect(internal._selectionCtrl.selectionRange).toBeNull();
 	});
 
 	it('exports the current filtered and sorted row projection', async () => {

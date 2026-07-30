@@ -7,8 +7,6 @@ import { escapeHtml } from '../core/utils';
 import {
 	bindResultArtifactConsumer,
 	getBoundResultArtifact,
-	getResultsState,
-	getResultsStateRevision,
 	unbindResultArtifactConsumer,
 } from '../core/results-state';
 import { ensureEchartsLoaded } from './lazy-vendor.js';
@@ -540,6 +538,7 @@ function installZoomPanDragOverlay(boxId: string, st: any, inst: any, chartType:
 		if (!st || !inst || !isZoomPanSupportedChartType(chartType)) return;
 		const overlay = document.getElementById(boxId + '_chart_zoom_drag_overlay') as HTMLElement | null;
 		if (!overlay) return;
+		overlay.style.pointerEvents = '';
 		if (st.__zoomPanDragOverlayElement === overlay && st.__zoomPanDragOverlayInstance === inst && st.__zoomPanDragOverlaySignature === signature) return;
 		uninstallZoomPanDragOverlay(st);
 
@@ -1053,6 +1052,7 @@ export function purgeChartEcharts(boxId: any) {
 		}
 		if (st) {
 			try { uninstallZoomPanPointerCaptureBridge(st); } catch (e) { console.error('[kusto]', e); }
+			try { uninstallZoomPanDragOverlay(st); } catch (e) { console.error('[kusto]', e); }
 			try { clearZoomPanViewport(st); } catch (e) { console.error('[kusto]', e); }
 			try {
 				if (st.__resizeObserver && typeof st.__resizeObserver.disconnect === 'function') st.__resizeObserver.disconnect();
@@ -1064,6 +1064,33 @@ export function purgeChartEcharts(boxId: any) {
 		}
 		_chartMouseOverBoxes.delete(id);
 		_chartDeferredRenders.delete(id);
+		const controls = document.getElementById(id + '_chart_zoom_controls') as HTMLElement | null;
+		const zoomButton = document.getElementById(id + '_chart_zoom_select') as HTMLButtonElement | null;
+		const undoButton = document.getElementById(id + '_chart_zoom_undo') as HTMLButtonElement | null;
+		const overlay = document.getElementById(id + '_chart_zoom_drag_overlay') as HTMLElement | null;
+		const hint = document.getElementById(id + '_chart_zoom_hint') as (HTMLElement & { __kustoZoomHintTimer?: number }) | null;
+		if (controls) controls.hidden = true;
+		if (zoomButton) {
+			zoomButton.disabled = true;
+			zoomButton.onclick = null;
+			zoomButton.classList.remove('is-active');
+		}
+		if (undoButton) {
+			undoButton.hidden = true;
+			undoButton.disabled = true;
+			undoButton.onclick = null;
+		}
+		if (overlay) {
+			overlay.hidden = true;
+			hideZoomPanDragRect(overlay);
+			overlay.style.pointerEvents = 'none';
+		}
+		if (hint) {
+			if (hint.__kustoZoomHintTimer) window.clearTimeout(hint.__kustoZoomHintTimer);
+			hint.__kustoZoomHintTimer = 0;
+			hint.classList.remove('is-visible');
+			hint.hidden = true;
+		}
 		try { dismissHoverTooltip(id); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 }
@@ -1165,8 +1192,8 @@ export function renderChart(boxId: any) {
 				}
 				artifact = getBoundResultArtifact(id, st.dataSourceId);
 			}
-			dsState = artifact || getResultsState(st.dataSourceId);
-			dsRevision = artifact?.revision || getResultsStateRevision(st.dataSourceId);
+			dsState = artifact;
+			dsRevision = artifact?.revision || 0;
 		} else {
 			unbindResultArtifactConsumer(id);
 		}

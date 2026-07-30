@@ -6,6 +6,7 @@ import type { KwSqlSection } from '../../src/webview/sections/kw-sql-section.js'
 import { pState } from '../../src/webview/shared/persistence-state.js';
 import {
 	bindResultArtifactConsumer,
+	clearResultsState,
 	displayResultForBox,
 	getBoundResultArtifact,
 	getCurrentResultArtifact,
@@ -155,6 +156,29 @@ describe('kw-sql-section loading states', () => {
 		expect(table?.rows).toEqual([['new']]);
 		expect(table?.options.showSave).toBe(true);
 		expect(table?.resultArtifactId).toBe(getCurrentResultArtifact('sql_test1')?.artifactId);
+	});
+
+	it('synchronously purges rendered SQL rows when the artifact is revoked', async () => {
+		const el = createSection();
+		el.id = el.boxId;
+		await el.updateComplete;
+		expect(displayResultForBox(
+			{ columns: ['Secret'], rows: [['revoked']], metadata: {} }, el.boxId, {
+				artifactPublication: {
+					producer: { engine: 'sql', boxId: el.boxId, executionId: 'revoked' },
+					policy: { exportToCsv: true },
+				},
+			},
+		)).toBe(true);
+		const table = el.querySelector('kw-data-table') as any;
+
+		clearResultsState(el.boxId);
+
+		expect(table.rows).toEqual([]);
+		expect(table.columns).toEqual([]);
+		expect(table.resultArtifactId).toBe('');
+		expect(table.style.visibility).toBe('hidden');
+		expect(document.getElementById(el.boxId + '_sql_results_wrapper')?.style.display).toBe('none');
 	});
 
 	it('copies the exact SQL connection owner when Copilot inserts a section', () => {

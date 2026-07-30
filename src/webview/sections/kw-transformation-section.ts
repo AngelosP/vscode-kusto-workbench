@@ -17,10 +17,11 @@ import {
 	unbindResultArtifactConsumer,
 	type ResultArtifact,
 } from '../core/results-state.js';
-import { createDerivedResultArtifactPublication } from '../../shared/resultArtifact.js';
+import { createDerivedResultArtifactPublication, RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT } from '../../shared/resultArtifact.js';
 import {
 	ARTIFACT_CSV_TABLE_RELEASED_EVENT,
-	registerArtifactCsvTable,
+	isArtifactResultTableLive,
+	registerArtifactResultTable,
 	releaseArtifactCsvTable,
 	saveArtifactCsv,
 } from '../shared/artifact-csv-export.js';
@@ -345,6 +346,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	@state() private _resultError = '';
 	@state() private _csvResultArtifactId = '';
 	private _csvResultTableToken = '';
+	@state() private _csvExportAllowed = false;
 
 	// Wrapper height (tracked as state so data-table gets explicit pixel height)
 	@state() private _wrapperHeight = 300;
@@ -360,18 +362,45 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	private _closeDropdownBound = this._closeDropdownOnClickOutside.bind(this);
 	private _removePageScrollListener: (() => void) | null = null;
+	private readonly _onArtifactConsumersRevoked = (event: Event): void => {
+		const consumerIds = (event as CustomEvent<{ consumerIds?: unknown }>).detail?.consumerIds;
+		if (!Array.isArray(consumerIds) || ![
+			this._inputConsumerId('primary'),
+			this._inputConsumerId('join-right'),
+		].some(consumerId => consumerIds.includes(consumerId))) return;
+		const table = this.shadowRoot?.querySelector<any>('kw-data-table');
+		table?.revokeResultArtifactGeneration?.();
+		if (table) {
+			if (typeof table.purgeDataImmediately === 'function') table.purgeDataImmediately();
+			else {
+				table.rows = [];
+				table.columns = [];
+			}
+			table.style.visibility = 'hidden';
+		}
+		this._datasets = [];
+		this._csvResultArtifactId = '';
+		this._csvResultTableToken = '';
+		this._csvExportAllowed = false;
+		this._resultColumns = [];
+		this._resultRows = [];
+		this._resultError = this._dataSourceId ? 'Data source not found.' : '';
+		this.requestUpdate();
+	};
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
 	override connectedCallback(): void {
 		super.connectedCallback();
 		window.addEventListener(ARTIFACT_CSV_TABLE_RELEASED_EVENT, this._onArtifactCsvTableReleased);
+		window.addEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, this._onArtifactConsumersRevoked);
 		this._syncGlobalState();
 	}
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		window.removeEventListener(ARTIFACT_CSV_TABLE_RELEASED_EVENT, this._onArtifactCsvTableReleased);
+		window.removeEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, this._onArtifactConsumersRevoked);
 		document.removeEventListener('mousedown', this._closeDropdownBound);
 		if (this._removePageScrollListener) {
 			this._removePageScrollListener();
@@ -386,8 +415,10 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		const detail = (event as CustomEvent).detail || {};
 		if (String(detail.sourceBoxId || '') !== this.boxId
 			|| String(detail.tableToken || '') !== this._csvResultTableToken) return;
+		this.shadowRoot?.querySelector<any>('kw-data-table')?.revokeResultArtifactGeneration?.();
 		this._csvResultArtifactId = '';
 		this._csvResultTableToken = '';
+		this._csvExportAllowed = false;
 		this.requestUpdate();
 	};
 
@@ -502,7 +533,12 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 				<kw-data-table
 					.columns=${this._resultColumns}
 					.rows=${this._resultRows}
-					.options=${{ label: 'Transformations', showExecutionTime: false, hideTopBorder: true, showSave: !!csvArtifactId } as DataTableOptions}
+					.options=${{ label: 'Transformations', showExecutionTime: false, hideTopBorder: true, showSave: this._csvExportAllowed } as DataTableOptions}
+					.resultArtifactGoverned=${true}
+					.resultArtifactSourceBoxId=${this.boxId}
+					.resultArtifactId=${csvArtifactId}
+					.resultArtifactTableToken=${csvTableToken}
+					.resultArtifactLiveCheck=${() => isArtifactResultTableLive(this.boxId, csvArtifactId, csvTableToken)}
 					@save=${(e: CustomEvent) => {
 						try { saveArtifactCsv({
 							sourceBoxId: this.boxId, artifactId: csvArtifactId,
@@ -1919,6 +1955,14 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 					sortSpec: [], columnFilters: {}, filteredRowIndices: null,
 					displayRowIndices: null, rowIndexToDisplayIndex: null
 				}, publication);
+			if (!artifact) {
+				this._releaseCsvResultArtifact();
+				this._resultColumns = [];
+				this._resultRows = [];
+				this._resultError = 'Unable to publish transformation results.';
+				clearResultsState(this.boxId);
+				return;
+			}
 			this.setResultArtifactForCsvExport(artifact?.artifactId || '');
 		} catch (e) {
 			this._releaseCsvResultArtifact();
@@ -1928,16 +1972,19 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	public setResultArtifactForCsvExport(artifactId: unknown): void {
 		const id = String(artifactId || '').trim();
-		const tableToken = id ? registerArtifactCsvTable(this.boxId, id) : undefined;
-		this._csvResultArtifactId = tableToken ? id : '';
-		this._csvResultTableToken = tableToken || '';
+		const registration = id ? registerArtifactResultTable(this.boxId, id) : undefined;
+		this._csvResultArtifactId = registration ? id : '';
+		this._csvResultTableToken = registration?.tableToken || '';
+		this._csvExportAllowed = registration?.exportToCsv === true;
 		this.requestUpdate();
 	}
 
 	private _releaseCsvResultArtifact(): void {
+		this.shadowRoot?.querySelector<any>('kw-data-table')?.revokeResultArtifactGeneration?.();
 		if (this._csvResultTableToken) releaseArtifactCsvTable(this.boxId, this._csvResultTableToken);
 		this._csvResultArtifactId = '';
 		this._csvResultTableToken = '';
+		this._csvExportAllowed = false;
 	}
 
 	private _computeTransformationImpl(): void {
@@ -2016,7 +2063,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		}
 
 		if (!parsed.length) {
-			const outRows = rows.map(r => (Array.isArray(r) ? r : []).map(getRaw));
+			const outRows = rows.map(r => colNames.map((_column, index) => getRaw(Array.isArray(r) ? r[index] : undefined)));
 			this._resultColumns = colNames.map(c => ({ name: c }));
 			this._resultRows = outRows;
 			this._resultError = '';
@@ -2027,7 +2074,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		const outRows: unknown[][] = [];
 		for (const r of rows) {
 			const row = Array.isArray(r) ? r : [];
-			const baseRawRow = row.map(getRaw);
+			const baseRawRow = colNames.map((_column, index) => getRaw(row[index]));
 			const env: Record<string, unknown> = {};
 			for (let i = 0; i < colNames.length; i++) {
 				env[colNames[i]] = baseRawRow[i];
@@ -2345,8 +2392,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		const nullLeftRow = leftColNames.map(() => null);
 
 		const buildOutputRow = (leftRow: unknown[], rightRow: unknown[]): unknown[] => {
-			const lr = Array.isArray(leftRow) ? leftRow.map(getRaw) : leftColNames.map(() => null);
-			const rr = Array.isArray(rightRow) ? rightRow.map(getRaw) : rightColNames.map(() => null);
+			const lr = leftColNames.map((_column, index) => getRaw(Array.isArray(leftRow) ? leftRow[index] : null));
+			const rr = rightColNames.map((_column, index) => getRaw(Array.isArray(rightRow) ? rightRow[index] : null));
 			if (isSemiAnti) {
 				return (kind === 'leftsemi' || kind === 'leftanti') ? lr : rr;
 			}

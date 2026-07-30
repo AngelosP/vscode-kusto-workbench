@@ -21,6 +21,7 @@ export interface SelectionHost extends ReactiveControllerHost, HTMLElement {
 	columns: DataTableColumn[];
 	getTableRows(): Array<{ original: CellValue[] }>;
 	getColumnCount(): number;
+	canCopyRows?(): boolean;
 	scrollToRow(index: number, opts?: { align?: 'auto' | 'center' }): void;
 	scrollColumnIntoView(col: number): void;
 }
@@ -189,12 +190,17 @@ export class TableSelectionController implements ReactiveController {
 	}
 
 	copy(): void {
+		if (this.host.canCopyRows?.() === false) {
+			this.clear();
+			return;
+		}
 		const text = this._buildClipboardText();
 		if (!text) return;
 		this._writeTextToClipboard(text);
 	}
 
 	isSelectionInThisTable(): boolean {
+		if (this.host.canCopyRows?.() === false) return false;
 		if (!this.selectedCell && !this.selectionRange) return false;
 		// When a modal viewer (object viewer, cell viewer) inside the table's
 		// shadow DOM is open, the user is interacting with the viewer — don't

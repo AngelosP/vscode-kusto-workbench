@@ -5,6 +5,7 @@ import { getCellDisplayValue, type CellValue } from './kw-data-table.js';
 /** Minimal interface the controller needs from its host element. */
 export interface SearchHost extends ReactiveControllerHost, HTMLElement {
 	getTableRows(): Array<{ original: CellValue[] }>;
+	getColumnCount(): number;
 	scrollToRow(index: number, opts?: { align?: 'auto' | 'center' }): void;
 	setSelectedCell(cell: { row: number; col: number } | null): void;
 	clearSelectionRange(): void;
@@ -108,7 +109,7 @@ export class TableSearchController implements ReactiveController {
 		if (!rx || !rows.length) { this.matches = []; this.currentMatchIndex = 0; this.host.requestUpdate(); return; }
 		const matches: Array<{ row: number; col: number }> = [];
 		for (let r = 0; r < rows.length; r++) {
-			for (let c = 0; c < rows[r].original.length; c++) {
+			for (let c = 0; c < Math.min(rows[r].original.length, this.host.getColumnCount()); c++) {
 				const cell = rows[r].original[c];
 				let searchText: string;
 				if (typeof cell === 'object' && cell !== null && 'full' in cell) {

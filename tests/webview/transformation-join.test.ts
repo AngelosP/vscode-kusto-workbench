@@ -226,6 +226,37 @@ describe('transformation-join', () => {
 		el.remove();
 	});
 
+	it('synchronously clears derived rows when an input binding is revoked', async () => {
+		const source = fakeArtifact('query_source', 1, [['revision-a']], { exportToCsv: true });
+		currentArtifacts.set('query_source', source);
+		mockGetChartDatasetsInDomOrder.mockReturnValue([{
+			id: 'query_source', label: 'Source', columns: ['Value'], rows: [['revision-a']],
+		}]);
+		const el = createSection({ transformationType: 'derive' });
+		document.body.appendChild(el);
+		el.configure({ dataSourceId: 'query_source', transformationType: 'derive', deriveColumns: [] });
+		await el.updateComplete;
+		const table = el.shadowRoot?.querySelector('kw-data-table') as any;
+		expect(table?.rows).toEqual([['revision-a']]);
+
+		window.dispatchEvent(new CustomEvent(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, {
+			detail: {
+				sourceBoxId: 'query_source',
+				consumerIds: ['transformation_test:input:primary'],
+			},
+		}));
+
+		expect(table?.rows).toEqual([]);
+		expect(table?.columns).toEqual([]);
+		expect(table?.style.visibility).toBe('hidden');
+		expect((el as any)._resultRows).toEqual([]);
+		expect((el as any)._datasets).toEqual([]);
+		expect(mockSetResultsState).not.toHaveBeenCalledWith(
+			'transformation_test', expect.objectContaining({ rows: [] }), expect.anything(),
+		);
+		el.remove();
+	});
+
 	it('releases both input bindings and clears derived output on removal', () => {
 		removeTransformationBox('transformation_removed');
 
@@ -319,6 +350,36 @@ describe('transformation-join', () => {
 			['D3', 'Marketing', 200],
 		],
 	};
+
+	it('normalizes derive pass-through rows to declared source columns', () => {
+		const el = createSection({ transformationType: 'derive' });
+		mockGetChartDatasetsInDomOrder.mockReturnValue([{
+			id: 'query_ragged', label: 'Ragged', columns: ['A', 'B'],
+			rows: [['a', 'b', 'hidden'], ['short']],
+		}]);
+		el.configure({ dataSourceId: 'query_ragged', transformationType: 'derive', deriveColumns: [] });
+
+		const res = getResults(el);
+		expect(res.columns).toEqual(['A', 'B']);
+		expect(res.rows).toEqual([['a', 'b'], ['short', null]]);
+	});
+
+	it('normalizes ragged join inputs before composing output rows', () => {
+		const el = createSection();
+		configureAndCompute(el,
+			{ id: 'left_ragged', label: 'Left', columns: ['Key', 'LeftValue'], rows: [[1, 'left', 'hidden-left']] },
+			{ id: 'right_ragged', label: 'Right', columns: ['Key', 'RightValue'], rows: [[1, 'right', 'hidden-right']] },
+			{
+				transformationType: 'join', joinRightDataSourceId: 'right_ragged',
+				joinKind: 'inner', joinKeys: [{ left: 'Key', right: 'Key' }],
+				joinOmitDuplicateColumns: true,
+			},
+		);
+
+		const res = getResults(el);
+		expect(res.columns).toEqual(['Key', 'LeftValue', 'RightValue']);
+		expect(res.rows).toEqual([[1, 'left', 'right']]);
+	});
 
 	describe('serialize/applyOptions roundtrip', () => {
 		it('serializes join fields correctly', () => {

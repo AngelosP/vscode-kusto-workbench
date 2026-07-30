@@ -21,6 +21,7 @@ export type ArtifactCsvExportRequest = Readonly<{
 
 type ActiveCsvTable = Readonly<{ artifactId: string; tableToken: string }>;
 type PendingCsvExport = Readonly<ArtifactCsvExportRequest & { requestId: string; timer: number }>;
+export type ArtifactResultTableRegistration = Readonly<{ tableToken: string; exportToCsv: boolean }>;
 
 export const ARTIFACT_CSV_TABLE_RELEASED_EVENT = 'kusto-workbench-artifact-csv-table-released';
 const MAX_PENDING_CSV_EXPORTS = 8;
@@ -31,20 +32,28 @@ function nextId(prefix: string): string {
 	return `${prefix}-${globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(16).slice(2)}`}`;
 }
 
-export function registerArtifactCsvTable(sourceBoxId: unknown, artifactId: unknown): string | undefined {
+export function registerArtifactResultTable(
+	sourceBoxId: unknown,
+	artifactId: unknown,
+): ArtifactResultTableRegistration | undefined {
 	const source = String(sourceBoxId || '').trim();
 	const artifact = String(artifactId || '').trim();
 	const consumerId = csvTableArtifactConsumerId(source);
 	releaseArtifactCsvTable(source);
 	const bound = source && artifact && bindResultArtifactConsumer(consumerId, source, artifact) === artifact;
 	const resultArtifact = bound ? getBoundResultArtifact(consumerId, source) : null;
-	if (!resultArtifact || resultArtifact.policy?.exportToCsv !== true) {
+	if (!resultArtifact) {
 		unbindResultArtifactConsumer(consumerId);
 		return undefined;
 	}
 	const tableToken = nextId('csv-table');
 	activeTableBySource.set(source, { artifactId: artifact, tableToken });
-	return tableToken;
+	return { tableToken, exportToCsv: resultArtifact.policy?.exportToCsv === true };
+}
+
+export function registerArtifactCsvTable(sourceBoxId: unknown, artifactId: unknown): string | undefined {
+	const registration = registerArtifactResultTable(sourceBoxId, artifactId);
+	return registration?.exportToCsv ? registration.tableToken : undefined;
 }
 
 export function releaseArtifactCsvTable(sourceBoxId: unknown, tableToken?: unknown): void {
@@ -81,6 +90,21 @@ function activeTableMatches(request: Pick<ArtifactCsvExportRequest, 'sourceBoxId
 	const bound = getBoundResultArtifact(csvTableArtifactConsumerId(source), source);
 	return !!active && active.artifactId === artifactId && active.tableToken === tableToken
 		&& bound?.artifactId === artifactId && bound.policy?.exportToCsv === true;
+}
+
+export function isArtifactResultTableLive(
+	sourceBoxId: unknown,
+	artifactId: unknown,
+	tableToken: unknown,
+): boolean {
+	const source = String(sourceBoxId || '').trim();
+	const artifact = String(artifactId || '').trim();
+	const token = String(tableToken || '').trim();
+	const active = activeTableBySource.get(source);
+	const bound = getBoundResultArtifact(csvTableArtifactConsumerId(source), source);
+	return !!active && !!artifact && !!token
+		&& active.artifactId === artifact && active.tableToken === token
+		&& bound?.artifactId === artifact;
 }
 
 export function saveArtifactCsv(request: ArtifactCsvExportRequest): boolean {

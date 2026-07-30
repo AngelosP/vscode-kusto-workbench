@@ -135,7 +135,7 @@ export class KustoWorkerMutationPort {
 				}
 			}
 			if (didTimeOut() && args.onDetachedSettled) {
-				await this.runInlineRecovery(args.onDetachedSettled, outcome);
+				await this.runInlineRecovery(transaction, args.onDetachedSettled, outcome);
 			}
 		});
 		void queued.catch(() => undefined);
@@ -147,13 +147,14 @@ export class KustoWorkerMutationPort {
 	}
 
 	private publicTransaction(internal: InternalTransaction): KustoWorkerMutationTransaction {
+		const isCurrent = () => internal.primaryIntentGeneration === this.primaryIntentGeneration;
 		return Object.freeze({
 			id: internal.id,
 			kind: internal.kind,
 			primaryIntentGeneration: internal.primaryIntentGeneration,
-			isActive: () => internal.active && internal.commitsAllowed && this.activeTransaction === internal,
+			isActive: () => internal.active && internal.commitsAllowed && this.activeTransaction === internal && isCurrent(),
 			commit: options => {
-				if (!internal.active || !internal.commitsAllowed || this.activeTransaction !== internal) return false;
+				if (!internal.active || !internal.commitsAllowed || this.activeTransaction !== internal || !isCurrent()) return false;
 				this.committedRevision += 1;
 				if (options?.destructive) this.destructiveEpoch += 1;
 				return true;
@@ -181,9 +182,11 @@ export class KustoWorkerMutationPort {
 	}
 
 	private async runInlineRecovery<T>(
+		detachedTransaction: KustoWorkerMutationTransaction,
 		recover: (transaction: KustoWorkerMutationTransaction, outcome: KustoWorkerDetachedOutcome<T>) => void | PromiseLike<void>,
 		outcome: KustoWorkerDetachedOutcome<T>,
 	): Promise<void> {
+		if (detachedTransaction.primaryIntentGeneration !== this.primaryIntentGeneration) return;
 		if (this.activeTransaction) {
 			this.activeTransaction.active = false;
 			this.activeTransaction.commitsAllowed = false;

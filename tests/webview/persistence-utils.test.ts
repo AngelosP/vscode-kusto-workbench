@@ -3,6 +3,7 @@ import {
 	normalizeClusterUrl,
 	isLeaveNoTraceCluster,
 	byteLengthUtf8,
+	normalizePersistedResultJson,
 	trySerializeQueryResult,
 } from '../../src/webview/shared/persistence-utils';
 
@@ -114,6 +115,16 @@ describe('byteLengthUtf8', () => {
 	it('handles non-string input by coercing to string', () => {
 		expect(byteLengthUtf8(42)).toBe(2); // "42"
 		expect(byteLengthUtf8(true)).toBe(4); // "true"
+	});
+});
+
+describe('normalizePersistedResultJson', () => {
+	it('preserves well-formed JSON bytes and projects ragged rows', () => {
+		const valid = JSON.stringify({ columns: ['A', 'B'], rows: [[1, 2]], metadata: {} });
+		const ragged = JSON.stringify({ columns: ['A', 'B'], rows: [[1, 2, 'hidden'], [3]], metadata: {} });
+
+		expect(normalizePersistedResultJson(valid)).toBe(valid);
+		expect(JSON.parse(normalizePersistedResultJson(ragged)).rows).toEqual([[1, 2], [3, null]]);
 	});
 });
 

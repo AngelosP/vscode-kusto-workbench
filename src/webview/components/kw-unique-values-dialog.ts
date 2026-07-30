@@ -57,6 +57,17 @@ export class KwUniqueValuesDialog extends LitElement {
 		this.dispatchEvent(new CustomEvent('unique-values-close', { bubbles: true, composed: true }));
 	}
 
+	purgeDataImmediately(): void {
+		this._open = false;
+		this.rows = [];
+		this.columns = [];
+		this._cachedAgg = null;
+		this._disposeChart();
+		this.shadowRoot?.querySelector<any>('kw-data-table')?.purgeDataImmediately?.();
+		removeDismissable(this._dismissCb);
+		this.requestUpdate();
+	}
+
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
 		this._disposeChart();

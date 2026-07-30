@@ -22,7 +22,8 @@ import { comparisonSourceArtifactConsumerId } from '../../shared/resultArtifact.
 import { toPersistedResultArtifact, type PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
 import {
 	ARTIFACT_CSV_TABLE_RELEASED_EVENT,
-	registerArtifactCsvTable,
+	isArtifactResultTableLive,
+	registerArtifactResultTable,
 	releaseArtifactCsvTable,
 	saveArtifactCsv,
 } from '../shared/artifact-csv-export.js';
@@ -226,6 +227,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	@state() _testHasError = false;
 	private _csvResultArtifactId = '';
 	private _csvResultTableToken = '';
+	private _csvExportAllowed = false;
 
 	// ── ReactiveControllers ──────────────────────────────────────────────────
 	public connectionCtrl = new QueryConnectionController(this as any);
@@ -384,13 +386,25 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			|| String(detail.tableToken || '') !== this._csvResultTableToken) return;
 		const table = this.querySelector('kw-data-table') as any;
 		if (table) {
+			table.revokeResultArtifactGeneration?.();
+			if (typeof table.purgeDataImmediately === 'function') table.purgeDataImmediately();
+			else {
+				table.rows = [];
+				table.columns = [];
+			}
+			table.style.visibility = 'hidden';
 			table.resultArtifactId = '';
 			table.resultArtifactTableToken = '';
+			table.resultArtifactLiveCheck = undefined;
 			table.options = { ...table.options, showSave: false };
 			table.requestUpdate?.();
 		}
 		this._csvResultArtifactId = '';
 		this._csvResultTableToken = '';
+		this._csvExportAllowed = false;
+		this._testHasResults = false;
+		const wrapper = document.getElementById(this.boxId + '_results_wrapper');
+		if (wrapper) wrapper.style.display = 'none';
 	};
 
 	private _reflectPreparationState(state: KustoPreparationState): void {
@@ -1686,14 +1700,20 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	public setResultArtifactForCsvExport(artifactId: unknown): void {
 		const id = String(artifactId || '').trim();
-		const tableToken = id ? registerArtifactCsvTable(this.boxId, id) : undefined;
-		this._csvResultArtifactId = tableToken ? id : '';
-		this._csvResultTableToken = tableToken || '';
+		const registration = id ? registerArtifactResultTable(this.boxId, id) : undefined;
+		this._csvResultArtifactId = registration ? id : '';
+		this._csvResultTableToken = registration?.tableToken || '';
+		this._csvExportAllowed = registration?.exportToCsv === true;
 		const table = this.querySelector('kw-data-table') as any;
 		if (table) {
+			table.resultArtifactGoverned = true;
+			table.resultArtifactSourceBoxId = this.boxId;
 			table.resultArtifactId = this._csvResultArtifactId;
 			table.resultArtifactTableToken = this._csvResultTableToken;
-			table.options = { ...table.options, showSave: !!this._csvResultArtifactId };
+			table.resultArtifactLiveCheck = () => isArtifactResultTableLive(
+				this.boxId, this._csvResultArtifactId, this._csvResultTableToken,
+			);
+			table.options = { ...table.options, showSave: this._csvExportAllowed };
 			table.requestUpdate?.();
 		}
 	}
@@ -1701,14 +1721,17 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	private _releaseCsvResultArtifact(): void {
 		const table = this.querySelector('kw-data-table') as any;
 		if (table) {
+			table.revokeResultArtifactGeneration?.();
 			table.resultArtifactId = '';
 			table.resultArtifactTableToken = '';
+			table.resultArtifactLiveCheck = undefined;
 			table.options = { ...table.options, showSave: false };
 			table.requestUpdate?.();
 		}
 		if (this._csvResultTableToken) releaseArtifactCsvTable(this.boxId, this._csvResultTableToken);
 		this._csvResultArtifactId = '';
 		this._csvResultTableToken = '';
+		this._csvExportAllowed = false;
 	}
 
 	public clearTargetBoundState(): void {

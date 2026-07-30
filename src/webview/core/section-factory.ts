@@ -63,7 +63,7 @@ import { escapeHtml, getScrollY, maybeAutoScrollWhileDragging } from './utils';
 import { registerPageScrollDismissable } from './page-scroll-dismiss.js';
 import { closeShareModalForOwner } from '../shared/share-modal-runtime.js';
 
-import { currentResult, resetCurrentResult, getResultsState, getRawCellValue as _getRawCellValueFromState } from './results-state';
+import { currentResult, resetCurrentResult, getCurrentResultArtifact, getResultsState, getRawCellValue as _getRawCellValueFromState } from './results-state';
 import {
 	formatClusterDisplayName,
 	normalizeClusterUrlKey,
@@ -1740,6 +1740,19 @@ try {
 
 export function __kustoGetChartDatasetsInDomOrder() {
 	const out = [];
+	const sectionKind = (element: any, id: string): string => {
+		const tag = String(element?.tagName || '').toLowerCase();
+		const byTag: Record<string, string> = {
+			'kw-query-section': 'query', 'kw-sql-section': 'sql', 'kw-url-section': 'url',
+			'kw-transformation-section': 'transformation', 'kw-chart-section': 'chart',
+			'kw-markdown-section': 'markdown', 'kw-python-section': 'python', 'kw-html-section': 'html',
+		};
+		if (byTag[tag]) return byTag[tag];
+		for (const kind of ['query', 'sql', 'url', 'transformation', 'chart', 'markdown', 'python', 'html', 'copilotQuery']) {
+			if (id.startsWith(kind + '_')) return kind;
+		}
+		return '';
+	};
 	try {
 		const container = document.getElementById('queries-container');
 		const children = container ? Array.from(container.children || []) as any[] : [];
@@ -1749,13 +1762,15 @@ export function __kustoGetChartDatasetsInDomOrder() {
 			try {
 				const id = child && child.id ? String(child.id) : '';
 				if (!id) continue;
+				const kind = sectionKind(child, id);
 				// Count all section types for consistent numbering
-				if (id.startsWith('query_') || id.startsWith('sql_') || id.startsWith('markdown_') || id.startsWith('python_') || id.startsWith('url_') || id.startsWith('chart_') || id.startsWith('transformation_') || id.startsWith('html_') || id.startsWith('copilotQuery_')) {
+				if (kind) {
 					sectionIndex++;
 				}
 				// Only include sections that can be data sources
-				if (!(id.startsWith('query_') || id.startsWith('sql_') || id.startsWith('url_') || id.startsWith('transformation_'))) continue;
-				const st = getResultsState(id);
+				if (!['query', 'sql', 'url', 'transformation'].includes(kind)) continue;
+				const st = getCurrentResultArtifact(id);
+				if (!st || (st.producer?.boxId && st.producer.boxId !== id)) continue;
 				const cols = st && Array.isArray(st.columns) ? st.columns : [];
 				const rows = st && Array.isArray(st.rows) ? st.rows : [];
 				if (!cols.length) continue;
@@ -1794,9 +1809,10 @@ export function __kustoRefreshAllDataSourceDropdowns() {
 			try {
 				const id = child && child.id ? String(child.id) : '';
 				if (!id) continue;
-				if (id.startsWith('chart_')) {
+				const tag = String(child?.tagName || '').toLowerCase();
+				if (tag === 'kw-chart-section' || id.startsWith('chart_')) {
 					__kustoUpdateChartBuilderUI(id);
-				} else if (id.startsWith('transformation_')) {
+				} else if (tag === 'kw-transformation-section' || id.startsWith('transformation_')) {
 					__kustoUpdateTransformationBuilderUI(id);
 				}
 			} catch (e) { console.error('[kusto]', e); }
@@ -1951,7 +1967,7 @@ export function __kustoGetChartValidationStatus( boxId: any) {
 		let availableColumns: any[] = [];
 		if (dataSourceId) {
 			try {
-				const dsState = getResultsState(dataSourceId);
+				const dsState = getCurrentResultArtifact(dataSourceId);
 				if (dsState) {
 					dataSourceExists = true;
 					const cols = Array.isArray(dsState.columns) ? dsState.columns : [];
@@ -2654,6 +2670,8 @@ export function addUrlBox( options?: any) {
 export function removeUrlBox( boxId: any) {
 	urlBoxes = urlBoxes.filter((id: any) => id !== boxId);
 	const box = document.getElementById(boxId) as any;
+	try { box?.clearPublishedCsvResult?.(); } catch (e) { console.error('[kusto]', e); }
+	try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}

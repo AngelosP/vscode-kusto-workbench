@@ -124,6 +124,26 @@ describe('kw-query-section loading states', () => {
 		}));
 	});
 
+	it('registers a live governed table generation when CSV export is denied', async () => {
+		const el = createSection();
+		el.id = el.boxId;
+		await el.updateComplete;
+		expect(displayResultForBox(
+			{ columns: ['Secret'], rows: [['local-copy']], metadata: {} }, el.boxId, {
+				artifactPublication: {
+					producer: { engine: 'kusto', boxId: el.boxId, executionId: 'copy-only' },
+					policy: { exportToCsv: false },
+				},
+			},
+		)).toBe(true);
+		const table = el.querySelector('kw-data-table') as any;
+		expect(table.options.showSave).toBe(false);
+		expect(table.resultArtifactGoverned).toBe(true);
+		expect(table.resultArtifactId).toBe(getCurrentResultArtifact(el.boxId)?.artifactId);
+		expect(table.resultArtifactTableToken).toBeTruthy();
+		expect(table.resultArtifactLiveCheck()).toBe(true);
+	});
+
 	it('does not let detached same-ID cleanup hide Save on the replacement table', async () => {
 		const oldSection = document.createElement('kw-query-section') as KwQuerySection;
 		oldSection.boxId = 'test1';
@@ -184,6 +204,10 @@ describe('kw-query-section loading states', () => {
 		await table.updateComplete;
 		expect(table.options.showSave).toBe(false);
 		expect(table.resultArtifactId).toBe('');
+		expect(table.rows).toEqual([]);
+		expect(table.columns).toEqual([]);
+		expect(table.style.visibility).toBe('hidden');
+		expect(document.getElementById(el.boxId + '_results_wrapper')?.style.display).toBe('none');
 		expect(postMessageToHost).toHaveBeenCalledWith({
 			type: 'cancelArtifactCsvSaveIntent', requestId: intent.requestId,
 		});

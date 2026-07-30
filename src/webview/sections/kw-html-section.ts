@@ -24,7 +24,6 @@ import { schedulePersist } from '../core/persistence.js';
 import {
 	getBoundResultArtifact,
 	getRawCellValue,
-	getResultsState,
 	rebindResultArtifactConsumer,
 	unbindResultArtifactConsumer,
 } from '../core/results-state.js';
@@ -544,33 +543,37 @@ export class KwHtmlSection extends LitElement implements SectionElement {
 
 		const dsId = provenance.model.fact.sectionId;
 		const el = document.getElementById(dsId) as any;
-		if (!el || !dsId.startsWith('query_')) return [];
-		const rsState = getResultsState(dsId);
-		if (!rsState || !rsState.columns?.length) return [];
+		if (!el || String(el.tagName || '').toLowerCase() !== 'kw-query-section') return [];
+		const artifact = getBoundResultArtifact(htmlDashboardFactArtifactConsumerId(this.boxId), dsId);
+		if (!artifact || !artifact.columns.length || artifact.producer?.engine !== 'kusto'
+			|| artifact.producer.boxId !== dsId) return [];
 
 		let resolvedCluster = '';
 		let resolvedDb = '';
-		let resolvedQuery = '';
+		let resolvedConnectionId = '';
 		try {
-			if (typeof el.serialize === 'function') {
-				const serialized = el.serialize();
-				resolvedCluster = serialized.clusterUrl || '';
-				resolvedDb = serialized.database || '';
-				resolvedQuery = serialized.query || '';
-			}
+			resolvedCluster = typeof el.getClusterUrl === 'function' ? String(el.getClusterUrl() || '') : '';
+			resolvedDb = typeof el.getDatabase === 'function' ? String(el.getDatabase() || '') : '';
+			resolvedConnectionId = typeof el.getConnectionId === 'function' ? String(el.getConnectionId() || '') : '';
 		} catch (e) { console.error('[kusto]', e); }
 
-		if (!resolvedCluster || !resolvedDb) return [];
+		const artifactConnectionId = String(artifact.producer.connectionId || '');
+		const artifactDatabase = String(artifact.producer.database || '');
+		const artifactQuery = String(artifact.producer.query || '');
+		if (!resolvedCluster || !resolvedConnectionId || !artifactConnectionId
+			|| resolvedConnectionId !== artifactConnectionId
+			|| !resolvedDb || !artifactDatabase || resolvedDb.toLowerCase() !== artifactDatabase.toLowerCase()
+			|| !artifactQuery.trim()) return [];
 
 		const sectionName = provenance.model.fact.sectionName
 			|| (typeof el.getName === 'function' ? el.getName() : '')
 			|| dsId.replace('query_', 'Query_');
-		const columns = rsState.columns.map((c: any) => ({
+		const columns = artifact.columns.map((c: any) => ({
 			name: typeof c === 'string' ? c : (c?.name || c?.displayName || 'column'),
 			type: typeof c === 'object' ? (c?.type || 'string') : 'string',
 		}));
 
-		return [{ name: sectionName, sectionId: dsId, clusterUrl: resolvedCluster, database: resolvedDb, query: resolvedQuery, columns }];
+		return [{ name: sectionName, sectionId: dsId, clusterUrl: resolvedCluster, database: artifactDatabase, query: artifactQuery, columns }];
 	}
 
 	/** Measure the current preview height for PBI page sizing. */

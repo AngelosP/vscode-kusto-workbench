@@ -5,6 +5,7 @@ import {
 	prepareKustoSchemaForWorkerFast,
 	prepareKustoSchemaForWorkerFull,
 	resolveKustoRawSchemaEntityColumns,
+	stampKustoSchemaMajorVersion,
 } from '../../src/webview/shared/kusto-function-output-schema';
 
 function makeSchema() {
@@ -50,6 +51,15 @@ function makeSchema() {
 }
 
 describe('Kusto function output schema preparation', () => {
+	it('stamps serialized A-to-B worker applies with increasing database versions', () => {
+		const schemaA = stampKustoSchemaMajorVersion(makeSchema(), 17);
+		const schemaB = stampKustoSchemaMajorVersion(makeSchema(), 18);
+
+		expect(schemaA.Databases.TelemetryDb.MajorVersion).toBe(17);
+		expect(schemaB.Databases.TelemetryDb.MajorVersion).toBe(18);
+		expect(schemaB.Databases.TelemetryDb.MajorVersion).toBeGreaterThan(schemaA.Databases.TelemetryDb.MajorVersion);
+	});
+
 	it('fast prep preserves explicit output columns without inferring missing function outputs', () => {
 		const schema = makeSchema();
 		prepareKustoSchemaForWorkerFast(schema);

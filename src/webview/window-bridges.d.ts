@@ -160,7 +160,7 @@ declare global {
 			buildModelFromResultsStates?: (stateA: KustoResultsState, stateB: KustoResultsState, labels?: any) => any;
 			render?: (container: HTMLElement, model: any, options?: any) => void;
 		};
-		openDiffViewModal: (args: any) => void;
+		openDiffViewModal: (args: { aBoxId: string; bBoxId: string; aLabel?: string; bLabel?: string; aArtifactId?: string; bArtifactId?: string }) => void;
 		closeDiffView: () => void;
 
 		// =====================================================================

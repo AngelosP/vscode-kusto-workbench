@@ -933,6 +933,13 @@ describe('Kusto Copilot function execution', () => {
 			}),
 		]));
 		const messages = (host.postMessage as any).mock.calls.map(([message]: [any]) => message);
+		const sourceResult = messages.find((message: any) => message.type === 'queryResult' && message.boxId === 'sql_source');
+		const comparisonStart = messages.find((message: any) => (
+			message.type === 'copilotWriteQueryExecuting' && message.boxId === 'query_cmp_sql' && message.executing === true
+		));
+		expect(comparisonStart).toEqual(expect.objectContaining({
+			sourceBoxId: 'sql_source', sourceExecutionId: sourceResult.executionId,
+		}));
 		for (const targetBoxId of ['sql_source', 'query_cmp_sql']) {
 			const startIndex = messages.findIndex((message: any) => (
 				message.type === 'copilotWriteQueryExecuting' && message.boxId === targetBoxId
@@ -1033,6 +1040,7 @@ describe('Kusto Copilot function execution', () => {
 			getSchema: vi.fn(async () => ({ schema: { tables: [], columnsByTable: {} } })),
 		} as any, sqlClient);
 		await vi.waitFor(() => expect(sqlClient.executeQueryCancelable).toHaveBeenCalledOnce());
+		const copilotStart = hostMessagesOfType(host, 'copilotWriteQueryExecuting').find(message => message.executing === true);
 		const manualCancel = vi.fn();
 		const manualAdmission = host.sqlExecutionBroker.reserve('sql-source', 'newer-manual');
 		const manualLease = host.sqlExecutionBroker.start(manualAdmission, () => ({ cancel: manualCancel }));
@@ -1041,8 +1049,12 @@ describe('Kusto Copilot function execution', () => {
 
 		expect(transportCancel).toHaveBeenCalledOnce();
 		expect(manualCancel).not.toHaveBeenCalled();
-		expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting'))
-			.not.toContainEqual(expect.objectContaining({ executing: false }));
+		expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting')).toContainEqual(expect.objectContaining({
+			executing: false, executionId: copilotStart.executionId,
+		}));
+		expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting')).not.toContainEqual(expect.objectContaining({
+			executing: false, executionId: 'newer-manual',
+		}));
 		expect(hostMessagesOfType(host, 'copilotWriteQueryDone')).toContainEqual(expect.objectContaining({
 			boxId: 'sql-source', ok: false, message: 'Canceled.',
 		}));
@@ -1230,6 +1242,23 @@ describe('Kusto Copilot function execution', () => {
 
 		expect(comparisonCancel).toHaveBeenCalledOnce();
 		expect(sourceCancel).not.toHaveBeenCalled();
+		const comparisonStart = hostMessagesOfType(host, 'copilotWriteQueryExecuting').find(message => (
+			message.boxId === 'query_cmp_sql' && message.executing === true
+		));
+		expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting')).toContainEqual(expect.objectContaining({
+			boxId: 'query_cmp_sql', executionId: comparisonStart.executionId, executing: false,
+		}));
+		expect(hostMessagesOfType(host, 'copilotWriteQueryExecuting').filter(message => (
+			message.boxId === 'query_cmp_sql' && message.executionId === comparisonStart.executionId
+			&& message.executing === false
+		))).toHaveLength(1);
+		const settlementOrder = (host.postMessage as any).mock.invocationCallOrder.find(
+			(_: unknown, index: number) => (host.postMessage as any).mock.calls[index][0]?.type === 'copilotWriteQueryExecuting'
+				&& (host.postMessage as any).mock.calls[index][0]?.boxId === 'query_cmp_sql'
+				&& (host.postMessage as any).mock.calls[index][0]?.executionId === comparisonStart.executionId
+				&& (host.postMessage as any).mock.calls[index][0]?.executing === false,
+		);
+		expect(settlementOrder).toBeLessThan(comparisonCancel.mock.invocationCallOrder[0]);
 		expect(hostMessagesOfType(host, 'queryResult').some(message => message.boxId === 'query_cmp_sql')).toBe(false);
 		expect(startExecution).toHaveBeenCalledTimes(2);
 		expect(startExecution.mock.calls.map(([admission]) => admission.boxId)).toEqual(['sql_source', 'query_cmp_sql']);

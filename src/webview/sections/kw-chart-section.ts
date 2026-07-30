@@ -54,6 +54,7 @@ import '../components/kw-section-shell.js';
 import '../components/kw-popover.js';
 import type { PopoverAnchorRect } from '../components/kw-popover.js';
 import { ChartDataSourceController, type DatasetEntry } from './chart-data-source.controller.js';
+import { RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT } from '../../shared/resultArtifact.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -489,6 +490,17 @@ export class KwChartSection extends LitElement implements SectionElement {
 	private _dismissModeDropdown = (): void => { this._modeDropdownOpen = false; };
 	private _themeObserver: MutationObserver | null = null;
 	private _lastThemeDark: boolean | null = null;
+	private readonly _onArtifactConsumersRevoked = (event: Event): void => {
+		const consumerIds = (event as CustomEvent<{ consumerIds?: unknown }>).detail?.consumerIds;
+		if (!Array.isArray(consumerIds) || !consumerIds.includes(this.boxId)) return;
+		this._datasets = [];
+		try { purgeChartEcharts(this.boxId); } catch (e) { console.error('[kusto]', e); }
+		for (const suffix of ['_chart_canvas_edit', '_chart_canvas_preview']) {
+			const canvas = document.getElementById(this.boxId + suffix);
+			if (canvas) canvas.replaceChildren();
+		}
+		this._isChartRendering = false;
+	};
 
 	// ── ReactiveController ────────────────────────────────────────────────────
 	public dataSourceCtrl = new ChartDataSourceController(this as any);
@@ -531,6 +543,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 		this._setupThemeObserver();
 		this.addEventListener('kusto-axis-title-click', this._onChartAxisTitleClickBound);
 		this.addEventListener('kusto-series-color-change', this._onSeriesColorChangeBound);
+		window.addEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, this._onArtifactConsumersRevoked);
 		// Register public API for tool configuration
 		(this as any).__kustoLitChart = true;
 	}
@@ -539,6 +552,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 		super.disconnectedCallback();
 		this.removeEventListener('kusto-axis-title-click', this._onChartAxisTitleClickBound);
 		this.removeEventListener('kusto-series-color-change', this._onSeriesColorChangeBound);
+		window.removeEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, this._onArtifactConsumersRevoked);
 		document.removeEventListener('mousedown', this._closeDropdownBound);
 		if (this._removePageScrollListener) {
 			this._removePageScrollListener();
