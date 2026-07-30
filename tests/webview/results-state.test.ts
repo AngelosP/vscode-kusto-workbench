@@ -60,9 +60,11 @@ describe('results-state displayResultForBox', () => {
 	it('renders and updates shared result state without owning persistence', () => {
 		const section = document.createElement('div') as HTMLDivElement & {
 			displayResult: ReturnType<typeof vi.fn>;
+			setResultArtifactForCsvExport: ReturnType<typeof vi.fn>;
 		};
 		section.id = 'query_1';
 		section.displayResult = vi.fn();
+		section.setResultArtifactForCsvExport = vi.fn();
 		document.body.appendChild(section);
 
 		const result = {
@@ -80,6 +82,9 @@ describe('results-state displayResultForBox', () => {
 		displayResultForBox(result, 'query_1', { label: 'Results', showExecutionTime: true });
 
 		expect(section.displayResult).toHaveBeenCalledWith(result, { label: 'Results', showExecutionTime: true });
+		expect(section.setResultArtifactForCsvExport).toHaveBeenCalledWith(
+			expect.stringMatching(/^result:query_1:/),
+		);
 		expect(mocks.notifyResultsUpdated).toHaveBeenCalledWith('query_1');
 		expect(mocks.tryStoreQueryResult).not.toHaveBeenCalled();
 

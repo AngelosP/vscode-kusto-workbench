@@ -36,6 +36,12 @@ import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } f
 import { clearResultsState, getCurrentResultArtifact, retireResultsStateForRerun } from '../core/results-state.js';
 import { normalizeSqlConnectionTargetSignature, sqlConnectionTargetSignature, sqlConnectionTargetSignatureMatches } from '../../shared/sqlConnectionIdentity.js';
 import { toPersistedResultArtifact, type PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
+import {
+	ARTIFACT_CSV_TABLE_RELEASED_EVENT,
+	registerArtifactCsvTable,
+	releaseArtifactCsvTable,
+	saveArtifactCsv,
+} from '../shared/artifact-csv-export.js';
 import { SqlSectionSessionController, type SqlToolRunResult } from './sql-section-session.controller.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -185,6 +191,8 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	@state() private _desiredServerUrl = '';
 	private _desiredConnectionIdHint = '';
 	private _desiredTargetSignature = '';
+	private _csvResultArtifactId = '';
+	private _csvResultTableToken = '';
 	private _pendingPersistedTargetAdoption = false;
 	private _pendingHostOwnerReadoption = false;
 	private _hostOwnerReadoptionAdvancesGeneration = false;
@@ -249,6 +257,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	override connectedCallback(): void {
 		super.connectedCallback();
+		window.addEventListener(ARTIFACT_CSV_TABLE_RELEASED_EVENT, this._onArtifactCsvTableReleased);
 		this.sqlSession.attach(this.boxId);
 		this.sqlSession.configureToolRunTimeout(executionId => this._timeoutToolRun(executionId));
 		postMessageToHost({
@@ -269,6 +278,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	override disconnectedCallback(): void {
+		window.removeEventListener(ARTIFACT_CSV_TABLE_RELEASED_EVENT, this._onArtifactCsvTableReleased);
 		super.disconnectedCallback();
 		queueMicrotask(() => {
 			if (this.isConnected) return;
@@ -276,7 +286,23 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		});
 	}
 
+	private _onArtifactCsvTableReleased = (event: Event): void => {
+		const detail = (event as CustomEvent).detail || {};
+		if (String(detail.sourceBoxId || '') !== this.boxId
+			|| String(detail.tableToken || '') !== this._csvResultTableToken) return;
+		const table = this.querySelector('kw-data-table') as any;
+		if (table) {
+			table.resultArtifactId = '';
+			table.resultArtifactTableToken = '';
+			table.options = { ...table.options, showSave: false };
+			table.requestUpdate?.();
+		}
+		this._csvResultArtifactId = '';
+		this._csvResultTableToken = '';
+	};
+
 	private _disposeDisconnectedSection(): void {
+		this._releaseCsvResultArtifact();
 		this._closeSqlRunMenu();
 		this._stopElapsedTimer();
 		if (this._autoSuggestTimer !== undefined) { clearTimeout(this._autoSuggestTimer); this._autoSuggestTimer = undefined; }
@@ -2105,6 +2131,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const resultsWrapper = document.getElementById(this.boxId + '_sql_results_wrapper');
 		const resultsResizer = document.getElementById(this.boxId + '_sql_results_resizer');
 		if (!resultsBody) return false;
+		this._releaseCsvResultArtifact();
 
 		resultsBody.innerHTML = '';
 		this._hasResults = true;
@@ -2126,7 +2153,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			label: options?.label || 'Results',
 			showExecutionTime: options?.showExecutionTime !== false,
 			executionTime: execTime,
-			showSave: true,
+			showSave: false,
 			showVisibilityToggle: true,
 			hideTopBorder: true,
 			initialBodyVisible,
@@ -2135,13 +2162,11 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		dt.rows = rows;
 
 		dt.addEventListener('save', (e: CustomEvent) => {
-			try {
-				window.vscode?.postMessage({
-					type: 'saveResultsCsv',
-					csv: e.detail.csv,
-					suggestedFileName: e.detail.suggestedFileName,
-				});
-			} catch (e2) { console.error('[kusto]', e2); }
+			try { saveArtifactCsv({
+				sourceBoxId: this.boxId, artifactId: String(dt.resultArtifactId || ''),
+				tableToken: String(dt.resultArtifactTableToken || ''),
+				csv: e.detail.csv, suggestedFileName: e.detail.suggestedFileName,
+			}); } catch (e2) { console.error('[kusto]', e2); }
 		});
 
 		dt.addEventListener('visibility-toggle', (e: CustomEvent) => {
@@ -2271,6 +2296,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	public clearResults(): void {
+		this._releaseCsvResultArtifact();
 		this._hasResults = false;
 		this._lastError = '';
 		const body = document.getElementById(this.boxId + '_sql_results_body');
@@ -2283,6 +2309,33 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			wrapper.classList.remove('is-stale');
 		}
 		if (resizer) resizer.style.display = 'none';
+	}
+
+	public setResultArtifactForCsvExport(artifactId: unknown): void {
+		const id = String(artifactId || '').trim();
+		const tableToken = id ? registerArtifactCsvTable(this.boxId, id) : undefined;
+		this._csvResultArtifactId = tableToken ? id : '';
+		this._csvResultTableToken = tableToken || '';
+		const table = this.querySelector('kw-data-table') as any;
+		if (table) {
+			table.resultArtifactId = this._csvResultArtifactId;
+			table.resultArtifactTableToken = this._csvResultTableToken;
+			table.options = { ...table.options, showSave: !!this._csvResultArtifactId };
+			table.requestUpdate?.();
+		}
+	}
+
+	private _releaseCsvResultArtifact(): void {
+		const table = this.querySelector('kw-data-table') as any;
+		if (table) {
+			table.resultArtifactId = '';
+			table.resultArtifactTableToken = '';
+			table.options = { ...table.options, showSave: false };
+			table.requestUpdate?.();
+		}
+		if (this._csvResultTableToken) releaseArtifactCsvTable(this.boxId, this._csvResultTableToken);
+		this._csvResultArtifactId = '';
+		this._csvResultTableToken = '';
 	}
 
 	private _clearResultData(): void {

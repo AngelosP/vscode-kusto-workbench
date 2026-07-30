@@ -21,6 +21,12 @@ import { clearResultsState, getCurrentResultArtifact, unbindResultArtifactConsum
 import { comparisonSourceArtifactConsumerId } from '../../shared/resultArtifact.js';
 import { toPersistedResultArtifact, type PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
 import {
+	ARTIFACT_CSV_TABLE_RELEASED_EVENT,
+	registerArtifactCsvTable,
+	releaseArtifactCsvTable,
+	saveArtifactCsv,
+} from '../shared/artifact-csv-export.js';
+import {
 	removeQueryBox,
 	__kustoMaximizeQueryBox,
 	__kustoAutoSizeResults,
@@ -218,6 +224,8 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	@state() _testExecuting = false;
 	@state() _testHasResults = false;
 	@state() _testHasError = false;
+	private _csvResultArtifactId = '';
+	private _csvResultTableToken = '';
 
 	// ── ReactiveControllers ──────────────────────────────────────────────────
 	public connectionCtrl = new QueryConnectionController(this as any);
@@ -299,6 +307,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 	override connectedCallback(): void {
 		super.connectedCallback();
+		window.addEventListener(ARTIFACT_CSV_TABLE_RELEASED_EVENT, this._onArtifactCsvTableReleased);
 		this._schemaSectionLease ??= kustoEditorSchemaCoordinator.openSection(
 			this.boxId,
 			this._schemaSectionInstanceId,
@@ -360,10 +369,29 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 
 	override disconnectedCallback(): void {
+		window.removeEventListener(ARTIFACT_CSV_TABLE_RELEASED_EVENT, this._onArtifactCsvTableReleased);
 		this._unsubscribePreparation?.();
 		this._unsubscribePreparation = null;
 		super.disconnectedCallback();
+		queueMicrotask(() => {
+			if (!this.isConnected) this._releaseCsvResultArtifact();
+		});
 	}
+
+	private _onArtifactCsvTableReleased = (event: Event): void => {
+		const detail = (event as CustomEvent).detail || {};
+		if (String(detail.sourceBoxId || '') !== this.boxId
+			|| String(detail.tableToken || '') !== this._csvResultTableToken) return;
+		const table = this.querySelector('kw-data-table') as any;
+		if (table) {
+			table.resultArtifactId = '';
+			table.resultArtifactTableToken = '';
+			table.options = { ...table.options, showSave: false };
+			table.requestUpdate?.();
+		}
+		this._csvResultArtifactId = '';
+		this._csvResultTableToken = '';
+	};
 
 	private _reflectPreparationState(state: KustoPreparationState): void {
 		this.setAttribute('data-preparation-state', state.status);
@@ -1338,6 +1366,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const resultsWrapper = document.getElementById(this.boxId + '_results_wrapper');
 		const resizer = document.getElementById(this.boxId + '_results_resizer');
 		if (!resultsDiv) return false;
+		this._releaseCsvResultArtifact();
 
 		// Remove stale overlay — fresh results are arriving.
 		try { resultsDiv.classList.remove('is-stale'); } catch (e) { console.error('[kusto]', e); }
@@ -1362,7 +1391,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			label: options?.label || 'Results',
 			showExecutionTime: options?.showExecutionTime !== false,
 			executionTime: typeof metadata.executionTime === 'string' ? metadata.executionTime : '',
-			showSave: true,
+			showSave: false,
 			showVisibilityToggle: true,
 			hideTopBorder: true,
 			initialBodyVisible,
@@ -1375,13 +1404,11 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		dt.rows = rows;
 
 		dt.addEventListener('save', (e: CustomEvent) => {
-			try {
-				window.vscode?.postMessage({
-					type: 'saveResultsCsv',
-					csv: e.detail.csv,
-					suggestedFileName: e.detail.suggestedFileName,
-				});
-			} catch (e) { console.error('[kusto]', e); }
+			try { saveArtifactCsv({
+				sourceBoxId: this.boxId, artifactId: String(dt.resultArtifactId || ''),
+				tableToken: String(dt.resultArtifactTableToken || ''),
+				csv: e.detail.csv, suggestedFileName: e.detail.suggestedFileName,
+			}); } catch (e) { console.error('[kusto]', e); }
 		});
 
 		// Handle visibility toggle: shrink/expand the wrapper directly.
@@ -1511,6 +1538,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 		const resultsWrapper = document.getElementById(this.boxId + '_results_wrapper');
 		const resizer = document.getElementById(this.boxId + '_results_resizer');
 		if (!resultsDiv) return false;
+		this._releaseCsvResultArtifact();
 
 		// Remove stale overlay.
 		try { resultsDiv.classList.remove('is-stale'); } catch (e) { console.error('[kusto]', e); }
@@ -1637,6 +1665,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 	}
 
 	public clearResults(): void {
+		this._releaseCsvResultArtifact();
 		this._testExecuting = false;
 		this._testHasError = false;
 		this._testHasResults = false;
@@ -1653,6 +1682,33 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			resultsWrapper.style.overflow = '';
 		}
 		if (resizer) resizer.style.display = 'none';
+	}
+
+	public setResultArtifactForCsvExport(artifactId: unknown): void {
+		const id = String(artifactId || '').trim();
+		const tableToken = id ? registerArtifactCsvTable(this.boxId, id) : undefined;
+		this._csvResultArtifactId = tableToken ? id : '';
+		this._csvResultTableToken = tableToken || '';
+		const table = this.querySelector('kw-data-table') as any;
+		if (table) {
+			table.resultArtifactId = this._csvResultArtifactId;
+			table.resultArtifactTableToken = this._csvResultTableToken;
+			table.options = { ...table.options, showSave: !!this._csvResultArtifactId };
+			table.requestUpdate?.();
+		}
+	}
+
+	private _releaseCsvResultArtifact(): void {
+		const table = this.querySelector('kw-data-table') as any;
+		if (table) {
+			table.resultArtifactId = '';
+			table.resultArtifactTableToken = '';
+			table.options = { ...table.options, showSave: false };
+			table.requestUpdate?.();
+		}
+		if (this._csvResultTableToken) releaseArtifactCsvTable(this.boxId, this._csvResultTableToken);
+		this._csvResultArtifactId = '';
+		this._csvResultTableToken = '';
 	}
 
 	public clearTargetBoundState(): void {

@@ -21,6 +21,7 @@ export type ResultArtifactPolicyStamp = Readonly<{
 	exposeToActiveContent?: boolean;
 	sendToModel?: boolean;
 	shareToClipboard?: boolean;
+	exportToCsv?: boolean;
 }>;
 
 export type ResultArtifactSourcePolicy = Readonly<ResultArtifactPolicyStamp & {
@@ -79,6 +80,7 @@ export type DerivedResultArtifactInput = Readonly<{
 }>;
 
 export const RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT = 'kusto-workbench-result-artifact-consumers-revoked';
+export const RESULT_ARTIFACT_CSV_RESET_EVENT = 'kusto-workbench-result-artifact-csv-reset';
 
 export function htmlDashboardFactArtifactConsumerId(htmlBoxId: unknown): string {
 	return `html:${String(htmlBoxId || '').trim()}:fact`;
@@ -90,6 +92,14 @@ export function modelResultArtifactConsumerId(requestId: unknown): string {
 
 export function shareClipboardArtifactConsumerId(): string {
 	return 'share:clipboard:result';
+}
+
+export function csvTableArtifactConsumerId(sourceBoxId: unknown): string {
+	return `csv:${String(sourceBoxId || '').trim()}:table`;
+}
+
+export function csvSaveArtifactConsumerId(sourceBoxId: unknown): string {
+	return `csv:${String(sourceBoxId || '').trim()}:save`;
 }
 
 export function comparisonSourceArtifactConsumerId(comparisonBoxId: unknown): string {
@@ -143,6 +153,7 @@ function policyStamp(policy: ResultArtifactPolicy | ResultArtifactSourcePolicy |
 		'exposeToActiveContent',
 		'sendToModel',
 		'shareToClipboard',
+		'exportToCsv',
 	] as const) {
 		if (policy[key] !== undefined) stamp[key] = policy[key];
 	}
@@ -189,12 +200,15 @@ export function createDerivedResultArtifactPublication(
 		&& sourcePolicies.every(sourcePolicy => sourcePolicy.sendToModel === true);
 	const allSourcesAllowClipboardShare = sourcePolicies.length > 0
 		&& sourcePolicies.every(sourcePolicy => sourcePolicy.shareToClipboard === true);
+	const allSourcesAllowCsvExport = sourcePolicies.length > 0
+		&& sourcePolicies.every(sourcePolicy => sourcePolicy.exportToCsv === true);
 	const policy = sourcePolicies.length
 		? deepFreeze({
 			...commonStamp,
 			...(allSourcesAllowActiveContent ? { exposeToActiveContent: true } : {}),
 			...(allSourcesAllowModelUse ? { sendToModel: true } : {}),
 			...(allSourcesAllowClipboardShare ? { shareToClipboard: true } : {}),
+			...(allSourcesAllowCsvExport ? { exportToCsv: true } : {}),
 			sourcePolicies: deepFreeze(sourcePolicies),
 		})
 		: undefined;
@@ -224,7 +238,7 @@ function parsePersistedPolicyStamp(value: Record<string, unknown>): ResultArtifa
 		if (!Number.isSafeInteger(number) || number < 0) return null;
 		stamp[key] = number;
 	}
-	for (const key of ['exposeToActiveContent', 'sendToModel', 'shareToClipboard'] as const) {
+	for (const key of ['exposeToActiveContent', 'sendToModel', 'shareToClipboard', 'exportToCsv'] as const) {
 		if (value[key] === undefined) continue;
 		if (typeof value[key] !== 'boolean') return null;
 		stamp[key] = value[key];
@@ -275,6 +289,7 @@ export function publicationFromPersistedResultArtifact(
 		exposeToActiveContent?: unknown;
 		sendToModel?: unknown;
 		shareToClipboard?: unknown;
+		exportToCsv?: unknown;
 		expectedProducer?: Readonly<{
 			engine?: unknown;
 			query?: unknown;
@@ -356,9 +371,12 @@ export function publicationFromPersistedResultArtifact(
 			&& policy.sendToModel !== expectedPolicy.sendToModel) return undefined;
 		if (expectedPolicy?.shareToClipboard !== undefined
 			&& policy.shareToClipboard !== expectedPolicy.shareToClipboard) return undefined;
+		if (expectedPolicy?.exportToCsv !== undefined
+			&& policy.exportToCsv !== expectedPolicy.exportToCsv) return undefined;
 		if (policy.exposeToActiveContent === true && expectedPolicy?.exposeToActiveContent !== true) return undefined;
 		if (policy.sendToModel === true && expectedPolicy?.sendToModel !== true) return undefined;
 		if (policy.shareToClipboard === true && expectedPolicy?.shareToClipboard !== true) return undefined;
+		if (policy.exportToCsv === true && expectedPolicy?.exportToCsv !== true) return undefined;
 		if (policy.sourcePolicies?.length) {
 			if (!lineage?.length) return undefined;
 			if (policy.exposeToActiveContent === true
@@ -367,15 +385,19 @@ export function publicationFromPersistedResultArtifact(
 				&& !policy.sourcePolicies.every(source => source.sendToModel === true)) return undefined;
 			if (policy.shareToClipboard === true
 				&& !policy.sourcePolicies.every(source => source.shareToClipboard === true)) return undefined;
+			if (policy.exportToCsv === true
+				&& !policy.sourcePolicies.every(source => source.exportToCsv === true)) return undefined;
 			if (policy.sourcePolicies.some(source => source.exposeToActiveContent === true)
 				&& expectedPolicy?.exposeToActiveContent !== true) return undefined;
 			if (policy.sourcePolicies.some(source => source.sendToModel === true)
 				&& expectedPolicy?.sendToModel !== true) return undefined;
 			if (policy.sourcePolicies.some(source => source.shareToClipboard === true)
 				&& expectedPolicy?.shareToClipboard !== true) return undefined;
+			if (policy.sourcePolicies.some(source => source.exportToCsv === true)
+				&& expectedPolicy?.exportToCsv !== true) return undefined;
 		} else if (lineage?.length
 			&& (policy.exposeToActiveContent === true || policy.sendToModel === true
-				|| policy.shareToClipboard === true)) {
+				|| policy.shareToClipboard === true || policy.exportToCsv === true)) {
 			return undefined;
 		}
 	}

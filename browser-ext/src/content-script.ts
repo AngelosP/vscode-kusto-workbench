@@ -666,6 +666,7 @@ function createViewerIframe(content: string, sidecarContent: string | null) {
 
 function handleViewerMessage(event: MessageEvent) {
 	if (!event.data || typeof event.data !== 'object') return;
+	if (!viewerIframe || event.source !== viewerIframe.contentWindow) return;
 
 	switch (event.data.type) {
 		case 'kusto-workbench-csv-download': {
@@ -673,7 +674,8 @@ function handleViewerMessage(event: MessageEvent) {
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
 			a.href = url;
-			a.download = (event.data.filename || 'results') + '.csv';
+			const filename = String(event.data.filename || '').trim() || 'results.csv';
+			a.download = /\.csv$/i.test(filename) ? filename : `${filename}.csv`;
 			document.body.appendChild(a);
 			a.click();
 			setTimeout(() => {

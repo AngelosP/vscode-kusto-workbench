@@ -272,7 +272,7 @@ describe('ResultArtifactStore', () => {
 	it('allows clipboard sharing only when every leaf source allows it', () => {
 		const store = new ResultArtifactStore();
 		const allowed = store.publish('query_share_allowed', { columns: [], rows: [[1]], metadata: {} }, {
-			policy: { shareToClipboard: true },
+			policy: { shareToClipboard: true, exportToCsv: true },
 		})!;
 		const denied = store.publish('query_share_denied', { columns: [], rows: [[2]], metadata: {} }, {
 			policy: { shareToClipboard: false },
@@ -295,6 +295,27 @@ describe('ResultArtifactStore', () => {
 		expect(permitted.policy?.shareToClipboard).toBe(true);
 		expect(deniedMixed.policy?.shareToClipboard).toBeUndefined();
 		expect(missingMixed.policy?.shareToClipboard).toBeUndefined();
+	});
+
+	it('allows CSV export only when every leaf source allows it', () => {
+		const store = new ResultArtifactStore();
+		const allowed = store.publish('query_csv_allowed', { columns: [], rows: [[1]], metadata: {} }, {
+			policy: { exportToCsv: true },
+		})!;
+		const denied = store.publish('query_csv_denied', { columns: [], rows: [[2]], metadata: {} }, {
+			policy: { exportToCsv: false },
+		})!;
+		const missing = store.publish('query_csv_missing', { columns: [], rows: [[3]], metadata: {} })!;
+
+		expect(createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_csv_allowed' }, [{ artifact: allowed }],
+		).policy?.exportToCsv).toBe(true);
+		expect(createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_csv_denied' }, [{ artifact: allowed }, { artifact: denied }],
+		).policy?.exportToCsv).toBeUndefined();
+		expect(createDerivedResultArtifactPublication(
+			{ engine: 'transformation', boxId: 'transformation_csv_missing' }, [{ artifact: allowed }, { artifact: missing }],
+		).policy?.exportToCsv).toBeUndefined();
 	});
 
 	it('denies derived model use when any direct or nested leaf omits permission', () => {
@@ -401,17 +422,18 @@ describe('ResultArtifactStore', () => {
 		}, 'query_comparison', expectedAdmission)).toBeUndefined();
 	});
 
-	it('accepts clipboard capability only when persisted producer provenance matches local admission', () => {
+	it('accepts export capabilities only when persisted producer provenance matches local admission', () => {
 		const descriptor = {
 			version: 1, artifactId: 'result:sql_1:3', sourceBoxId: 'sql_1', revision: 3, createdAt: 123,
 			producer: {
 				engine: 'sql', boxId: 'sql_1', executionId: 'sql-execution',
 				query: 'select 1 as Value', connectionId: 'sql-connection', database: 'SqlDb',
 			},
-			policy: { shareToClipboard: true },
+			policy: { shareToClipboard: true, exportToCsv: true },
 		};
 		const expectedAdmission = {
 			shareToClipboard: true,
+			exportToCsv: true,
 			expectedProducer: {
 				engine: 'sql', query: 'select 1 as Value', connectionId: 'sql-connection', database: 'SqlDb',
 			},

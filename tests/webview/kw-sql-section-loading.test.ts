@@ -6,6 +6,7 @@ import type { KwSqlSection } from '../../src/webview/sections/kw-sql-section.js'
 import { pState } from '../../src/webview/shared/persistence-state.js';
 import {
 	bindResultArtifactConsumer,
+	displayResultForBox,
 	getBoundResultArtifact,
 	getCurrentResultArtifact,
 	getResultsState,
@@ -45,6 +46,117 @@ function createSection(boxId = 'sql_test1'): KwSqlSection {
 }
 
 describe('kw-sql-section loading states', () => {
+	it('correlates CSV save events to the exact admitted result artifact', async () => {
+		const el = createSection();
+		el.id = el.boxId;
+		await el.updateComplete;
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			expect(displayResultForBox(
+				{ columns: ['Value'], rows: [['a']], metadata: {} },
+				el.boxId,
+				{
+					label: 'Results',
+					artifactPublication: {
+						producer: { engine: 'sql', boxId: el.boxId, executionId: 'execution-a' },
+						policy: { exportToCsv: true },
+					},
+				},
+			)).toBe(true);
+			const artifactA = getCurrentResultArtifact(el.boxId)!;
+			const tableA = document.querySelector('kw-data-table')!;
+			expect((tableA as any).options.showSave).toBe(true);
+			tableA.dispatchEvent(new CustomEvent('save', {
+				detail: { csv: 'Value\na', suggestedFileName: 'Results.csv' },
+			}));
+			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'requestArtifactCsvSave', boxId: el.boxId, artifactId: artifactA.artifactId,
+				suggestedFileName: 'Results.csv',
+			}));
+			expect(displayResultForBox(
+				{ columns: ['Value'], rows: [['b']], metadata: {} },
+				el.boxId,
+				{
+					label: 'Results',
+					artifactPublication: {
+						producer: { engine: 'sql', boxId: el.boxId, executionId: 'execution-b' },
+						policy: { exportToCsv: true },
+					},
+				},
+			)).toBe(true);
+			postMessage.mockClear();
+			tableA.dispatchEvent(new CustomEvent('save', {
+				detail: { csv: 'Value\na', suggestedFileName: 'Results.csv' },
+			}));
+			expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'requestArtifactCsvSave' }));
+			expect(postMessage).toHaveBeenCalledWith({
+				type: 'showInfo', message: 'Results are not permitted for CSV export.',
+			});
+
+			postMessage.mockClear();
+			expect(displayResultForBox(
+				{ columns: ['Secret'], rows: [['denied']], metadata: {} },
+				el.boxId,
+				{
+					label: 'Results',
+					artifactPublication: {
+						producer: { engine: 'sql', boxId: el.boxId, executionId: 'execution-denied' },
+						policy: { exportToCsv: false },
+					},
+				},
+			)).toBe(true);
+			const tableDenied = document.querySelector('kw-data-table')!;
+			expect((tableDenied as any).options.showSave).toBe(false);
+			tableDenied.dispatchEvent(new CustomEvent('save', {
+				detail: { csv: 'Secret\ndenied', suggestedFileName: 'Results.csv' },
+			}));
+			expect(postMessage).not.toHaveBeenCalledWith(expect.objectContaining({ type: 'requestArtifactCsvSave' }));
+			expect(postMessage).toHaveBeenCalledWith({
+				type: 'showInfo', message: 'Results are not permitted for CSV export.',
+			});
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('does not let detached same-ID cleanup hide Save on the replacement SQL table', async () => {
+		const oldSection = document.createElement('kw-sql-section') as KwSqlSection;
+		oldSection.boxId = 'sql_test1';
+		oldSection.id = 'sql_test1';
+		container.appendChild(oldSection);
+		expect(displayResultForBox(
+			{ columns: ['Value'], rows: [['old']], metadata: {} }, 'sql_test1', {
+				artifactPublication: {
+					producer: { engine: 'sql', boxId: 'sql_test1', executionId: 'old' },
+					policy: { exportToCsv: true },
+				},
+			},
+		)).toBe(true);
+		oldSection.remove();
+
+		const replacement = document.createElement('kw-sql-section') as KwSqlSection;
+		replacement.boxId = 'sql_test1';
+		replacement.id = 'sql_test1';
+		container.appendChild(replacement);
+		expect(displayResultForBox(
+			{ columns: ['Value'], rows: [['new']], metadata: {} }, 'sql_test1', {
+				artifactPublication: {
+					producer: { engine: 'sql', boxId: 'sql_test1', executionId: 'new' },
+					policy: { exportToCsv: true },
+				},
+			},
+		)).toBe(true);
+		await Promise.resolve();
+		await replacement.updateComplete;
+
+		const table = replacement.querySelector('kw-data-table') as any;
+		expect(table?.rows).toEqual([['new']]);
+		expect(table?.options.showSave).toBe(true);
+		expect(table?.resultArtifactId).toBe(getCurrentResultArtifact('sql_test1')?.artifactId);
+	});
+
 	it('copies the exact SQL connection owner when Copilot inserts a section', () => {
 		const reporting = {
 			id: 'sql-reporting', name: 'Reporting', dialect: 'mssql', serverUrl: 'shared.example', port: 1444,

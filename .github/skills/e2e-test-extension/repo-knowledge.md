@@ -65,6 +65,8 @@ anything new you learned. Structure it however makes sense for this repo.
 - Kusto Workbench custom editors use a generic HTML title. After tab-label activation, the framework may target the unique visible webview; multiple visible webviews must fail as ambiguous rather than choosing one.
 - Repeated Gherkin fixture setup must not rewrite identical file content. Preserving mtime avoids `File Modified Since` conflicts with retained custom-editor models across scenario outlines.
 - The fixed controller never leaves save-confirmation dialogs unattended: clean-state reset discards dirty test editors; explicit `workbench.action.closeAllEditors` discards them and fails with the dirty filenames.
+- Native Save As steps expand `${TEMP}` but not `${VSCODE_EXT_TEST_WORKSPACE}`. Use `${TEMP}` for deterministic output files.
+- After a native Save As dialog, the controller-backed notification assertion can miss a visible saved-file toast, and Windows UI Automation cannot enumerate its web-rendered action buttons. Verify exact file bytes and capture a trustworthy screenshot of the notification instead.
 
 ## Testability Recommendations
 

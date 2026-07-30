@@ -179,6 +179,33 @@ describe('kw-url-section — rendering', () => {
 		expect(input).toBeTruthy();
 		expect(input.placeholder).toContain('URL');
 	});
+
+	it('keeps Save enabled for imported CSV and uses the imported-data protocol', async () => {
+		const el = createUrlSection();
+		await el.updateComplete;
+		const internal = el as any;
+		internal._url = 'https://example.com/data.csv';
+		internal._fetchState = { ...internal._fetchState, loaded: true, kind: 'csv' };
+		internal._csvColumns = [{ name: 'Name' }];
+		internal._csvRows = [['alpha']];
+		internal._csvActive = true;
+		await el.updateComplete;
+		const table = el.shadowRoot!.querySelector('kw-data-table') as any;
+		expect(table.options.showSave).toBe(true);
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			table.dispatchEvent(new CustomEvent('save', {
+				detail: { csv: 'Name\nalpha', suggestedFileName: 'CSV.csv' },
+			}));
+			expect(postMessage).toHaveBeenCalledWith({
+				type: 'saveImportedCsv', csv: 'Name\nalpha', suggestedFileName: 'CSV.csv',
+			});
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
 });
 
 describe('kw-url-section — public API', () => {

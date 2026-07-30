@@ -73,6 +73,7 @@ iframe.addEventListener('load', () => {
 // Listen for the viewer confirming receipt so we can stop retrying
 window.addEventListener('message', (event) => {
 	if (!event.data || typeof event.data !== 'object') return;
+	if (event.source !== iframe.contentWindow) return;
 
 	switch (event.data.type) {
 		case 'kusto-workbench-load-file-ack': {
@@ -87,7 +88,8 @@ window.addEventListener('message', (event) => {
 			const url = URL.createObjectURL(blob);
 			const a = document.createElement('a');
 			a.href = url;
-			a.download = (event.data.filename || 'results') + '.csv';
+			const filename = String(event.data.filename || '').trim() || 'results.csv';
+			a.download = /\.csv$/i.test(filename) ? filename : filename + '.csv';
 			document.body.appendChild(a);
 			a.click();
 			setTimeout(() => {

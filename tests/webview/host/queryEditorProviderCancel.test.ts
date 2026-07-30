@@ -622,6 +622,17 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		provider.sqlPersistenceInvalidationEmitter = { dispose: vi.fn() };
 		provider.kustoPersistenceInvalidationEmitter = { dispose: vi.fn() };
 		provider.pendingKustoPublicationAcks = new Map();
+		provider.pendingArtifactCsvIntentIds = new Set();
+		provider.pendingArtifactCsvSaves = new Map();
+		provider.completedArtifactCsvIntentIds = new Map();
+		const csvTransferTimer = setTimeout(() => undefined, 30_000);
+		const csvTombstoneTimer = setTimeout(() => undefined, 30_000);
+		provider.pendingArtifactCsvIntentIds.add('csv-intent');
+		provider.pendingArtifactCsvSaves.set('csv-nonce', {
+			exportId: 'csv-intent', boxId: 'query_1', artifactId: 'artifact-1',
+			targetUri: {}, timer: csvTransferTimer,
+		});
+		provider.completedArtifactCsvIntentIds.set('csv-completed', csvTombstoneTimer);
 		provider.clearCursorStatusForProvider = vi.fn();
 		provider.cancelAllRunningQueries = vi.fn();
 		provider.kustoClient = { dispose: vi.fn() };
@@ -652,6 +663,9 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.pendingKustoExecutionStartAcks.size).toBe(0);
 		expect(rejectComparison).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' }));
 		expect(provider.pendingComparisonEnsureByRequestId.size).toBe(0);
+		expect(provider.pendingArtifactCsvIntentIds.size).toBe(0);
+		expect(provider.pendingArtifactCsvSaves.size).toBe(0);
+		expect(provider.completedArtifactCsvIntentIds.size).toBe(0);
 	});
 
 	it('ignores policy messages after the panel webview getter is disposed', () => {

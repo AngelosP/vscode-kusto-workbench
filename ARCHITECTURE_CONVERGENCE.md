@@ -71,7 +71,7 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 
 | Rank | ID | Gap | H/A/R/L/F/E | Score | State |
 | ---: | --- | --- | --- | ---: | --- |
-| 1 | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Active; EXA-1 and the initial EXA-2 artifact/chart slice are complete |
+| 1 | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Active; EXA-1 and EXA-2 consumer migrations through CSV export are complete |
 | 2 | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Open; prerequisite to `DOC` |
 | 3 | `DOC` | Document actor and section-definition registry | 4/5/5/5/3/5 | 50 | Open; depends on `COD` |
 | 4 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/5/3/5 | 48 | Open |
@@ -167,19 +167,20 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 - Artifact retention now follows lineage references. Source clear revokes affected revisions and downstream bindings transitively while preserving a retargeted current derived revision whose lineage is independent of the cleared source.
 - Kusto comparison source and output executions carry one exact run identity. Manual and standalone Optimize sequence on admitted source success; Copilot retries retain the same source execution. Output and summaries use the pinned source artifact and fail closed on target or policy mismatch.
 - HTML dashboard previews bind an immutable provenance fact artifact and require an explicit active-content exposure decision. Refresh rebinds intentionally; revoke/source change hides and blanks iframe data synchronously; restore revalidates exposure after owner admission.
+- Model/tool responses, Share Results, and result-table CSV export use independent policy-bearing bindings. CSV tables carry an exact artifact ID plus table-generation token; native save uses a host nonce challenge after the asynchronous picker, and browser viewers emulate the same challenge locally.
 - Persistence deletion and host privacy sanitation remove rows and descriptors atomically. A descriptor is never row authority, cannot restore without admitted `resultJson`, and is rejected when its source or policy claims disagree with the current owner.
 - Static terminal-construction/cancellation guards, protocol inventory, focused state-machine tests, full sequential tests, and authenticated normal/rerun/retarget/cancellation E2E are green.
 
 **Remaining divergence:**
 
 - Mutable latest-result state remains as a compatibility facade for tables and unmigrated consumers.
-- Export row workflows and Copilot/tool result context do not yet consume an exact immutable revision through independent policy-bearing bindings. SQL comparisons do not yet publish equivalent exact artifact lineage.
-- SQL results receive generic immutable runtime snapshots but do not yet publish or persist the same exact producer/principal/policy provenance as Kusto.
+- Table-local copy and any remaining row consumers still need a closure audit against the immutable artifact contract.
+- SQL results publish exact query/connection/database ownership for migrated consumers, but transport/principal parity with Kusto remains intentionally incomplete.
 - Kusto and SQL retain transport-specific execution coordinators over the shared low-level run registry; a transport-neutral artifact publication contract has not yet proven which semantics should be shared above transport.
 
 **Failure modes:**
 
-- Unmigrated downstream state can be replaced without retaining the exact producer revision that an export or Copilot/tool response consumed.
+- Unmigrated downstream state can still be replaced without retaining the exact producer revision it consumed.
 - Derived data outside chart and transformation paths can lose privacy/export permissions as it moves through section-keyed maps.
 - SQL restoration and persistence can preserve rows without the same first-class immutable producer, target, principal, policy, and lineage record as Kusto.
 - Prematurely merging Kusto and SQL execution abstractions could erase transport-specific cancellation and privacy semantics before the artifact contract is proven.
@@ -335,7 +336,7 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 ### Iteration `EXA-2`: Immutable Result Artifacts And Lineage
 
-**Status:** artifact/chart, transformation-derived-producer, exact Kusto comparison, and HTML dashboard bridge slices implemented; broader consumer migration remains active.
+**Status:** artifact/chart, transformation-derived-producer, exact comparison, HTML dashboard bridge, model-result, clipboard-share, and CSV-export slices implemented; closure audit remains active.
 
 **Why next:** EXA-1 makes the producer execution exact, but admitted rows still collapse into mutable section-keyed state. This leaves the highest-risk remaining break between exact production and downstream consumption.
 
@@ -369,7 +370,11 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 **Clipboard-share qualification:** the 12-file focused EXA/share ring passed 610 tests; full sequential Vitest passed 197 files and 5,182 tests; host/webview type checks, production extension/browser builds, integration compilation, ESLint with zero errors, and all final bundle gates passed; the intentional webview baseline increased by 10 KB only; the extension-host suite passed all 113 tests on VS Code 1.130.0 and 1.131.0; and native `default/share-result-artifacts` passed both runs on VS Code 1.130.0.
 
-**Next boundary:** migrate the Save Results CSV workflow to an exact artifact revision and a dedicated file-export decision; do not reuse `shareToClipboard`, `sendToModel`, or `exposeToActiveContent`. Preserve visible/all-row semantics, prove A-to-B pinning, explicit rebind, denial, revocation, filename/section consistency, and cleanup, and keep broader coordinator convergence and `ACT` outside the slice.
+**CSV-export evidence:** Kusto, SQL, restored, comparison, and transformation results carry the independent `exportToCsv` decision; derived outputs promote it only when every leaf permits export. Each governed table registers one exact artifact plus a table-generation token, hides Save when admission fails, and serializes its current sorted/filtered projection using only declared columns. Replacement, transitive revocation, removal, every applied document transition (including malformed replacement), and stale same-ID cleanup synchronously release only the owned generation and hide Save. Picker cancellation or transfer timeout cancels only that export attempt, leaving a still-valid table retryable. Webview projections are one-per-table and capped globally. The host opens the native picker before requesting bytes, issues a one-use nonce, validates nonce/box/artifact, retains cardinality- and TTL-bounded intent tombstones against replay, and writes only the correlated response. Concurrent, delayed, replayed, mismatched, remote-URI, and disposal paths fail closed. URL-imported CSV and Connection Manager previews remain separate direct-data workflows. Read-only browser viewers restore persisted Kusto/SQL rows and SQL-derived comparisons into fresh runtime artifacts carrying only `exportToCsv`; they never trust persisted model, clipboard, or active-content claims. Inline and standalone browser hosts emulate the same challenge, cancel timed-out projections, restrict forwarding to the owned iframe, and were exercised with real persisted payloads and exact downloaded bytes.
+
+**CSV-export qualification:** the 14-file focused EXA/CSV ring passed 586 tests; full sequential Vitest passed 199 files and 5,224 tests. Repeated first-attempt proper-lockfile/SQL credential lock failures were unrelated; each affected file passed unchanged and every complete rerun passed. Host/webview type checks, production extension/browser builds, integration compilation, ESLint with zero errors and five pre-existing warnings, and both bundle gates passed. Final production sizes are 1,762.9 KB for `extension.js` and 2,660.1 KB for `webview.bundle.js`; synchronized baselines moved only from 1,711 to 1,713 KB and 2,605 to 2,611 KB. The extension-host suite passed all 113 tests on VS Code 1.131.0. Native `default/csv-result-artifacts` proved denied Save is absent, allowed Save is present, and the Windows picker wrote exactly 26 bytes (`Name,Score\nalpha,1\nbravo,2`); both screenshots and the JSON byte artifact were reviewed. Built browser inline Kusto, standalone Kusto, SQL, and SQL-derived comparison fixtures in both section orders restored without live connections and downloaded exact CSV bytes.
+
+**Next boundary:** audit remaining table-local copy and row consumers, then decide whether EXA-2 can close or needs one final compatibility-facade migration. Keep coordinator convergence and deferred `ACT` capability work outside that closure decision.
 
 ## Convergence Loop
 

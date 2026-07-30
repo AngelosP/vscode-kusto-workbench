@@ -251,6 +251,8 @@ export class KwDataTable extends LitElement {
 	@property({ type: Array }) columns: DataTableColumn[] = [];
 	@property({ type: Array }) rows: CellValue[][] = [];
 	@property({ attribute: false }) options: DataTableOptions = {};
+	@property({ attribute: false }) resultArtifactId = '';
+	@property({ attribute: false }) resultArtifactTableToken = '';
 
 	@state() private _sorting: SortingState = [];
 	@state() private _columnFilters: ColumnFiltersState = [];
@@ -891,7 +893,7 @@ export class KwDataTable extends LitElement {
 				<button class="tbtn ${this._colJumpOpen ? 'act' : ''}" title="Scroll to column" @click=${() => { this._colJumpOpen = !this._colJumpOpen; this._colJumpQuery = ''; }}>${ICON.scrollToCol}</button>
 				<button class="tbtn ${this._sortDialogOpen ? 'act' : ''}" title="Sort" @click=${() => this._sortDialogOpen = !this._sortDialogOpen}>${ICON.sort}</button>
 				<span class="sep"></span>
-				<button class="tbtn" title="Save results to file" @click=${() => this._save()}>${ICON.save}</button>
+				${this.options.showSave !== false ? html`<button class="tbtn" data-testid="data-table-save" title="Save results to file" @click=${() => this._save()}>${ICON.save}</button>` : nothing}
 				<button class="tbtn" title="Copy (Ctrl+C)" @click=${() => this._selectionCtrl.copy()}>${ICON.copy}</button>
 				${this._sorting.length > 0 ? html`<button class="tbtn tbtn-text" title="Clear sort" @click=${this._clearSort}>✕ Sort</button>` : nothing}
 			</div>` : nothing}
@@ -1256,7 +1258,9 @@ export class KwDataTable extends LitElement {
 		if (!this._table) return;
 		const rows = this._table.getRowModel().rows;
 		const header = this.columns.map(c => this._csvEsc(c.name)).join(',');
-		const lines = rows.map(r => r.original.map(cell => this._csvEsc(getCellDisplayValue(cell))).join(','));
+		const lines = rows.map(r => this.columns
+			.map((_column, columnIndex) => this._csvEsc(getCellDisplayValue(r.original[columnIndex])))
+			.join(','));
 		const csv = header + '\n' + lines.join('\n');
 		this.dispatchEvent(new CustomEvent('save', { detail: { csv, suggestedFileName: (this.options.label || 'results') + '.csv' }, bubbles: true, composed: true }));
 	}

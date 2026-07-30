@@ -191,7 +191,10 @@ export type OutgoingWebviewMessage =
 	| OutgoingPowerBiUnsupportedVisualHelpMessage
 	| { type: 'seeCachedValues' }
 	| { type: 'resolveResourceUri'; requestId: string; path: string; baseUri?: string }
-	| { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string }
+	| { type: 'saveImportedCsv'; csv: string; suggestedFileName?: string }
+	| { type: 'requestArtifactCsvSave'; requestId: string; boxId: string; artifactId: string; suggestedFileName?: string }
+	| { type: 'artifactCsvSaveData'; requestId: string; boxId: string; artifactId: string; accepted: boolean; csv?: string }
+	| { type: 'cancelArtifactCsvSaveIntent'; requestId: string }
 	| { type: 'exportDashboard'; boxId: string; html: string; suggestedFileName?: string; previewHeight?: number; dataSources: Array<{ name: string; sectionId: string; clusterUrl: string; database: string; query: string; columns: Array<{ name: string; type: string }> }> }
 	| OutgoingHtmlDashboardUpgradeWithCopilotMessage
 	| { type: 'getPbiWorkspaces'; boxId: string }

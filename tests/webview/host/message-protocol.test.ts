@@ -254,14 +254,14 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 }
 
 const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
-	'src/host/queryEditorProvider.ts::<module>::postMessage::304:27',
-	'src/host/queryEditorProvider.ts::<module>::postMessage::449:29',
-	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::583:26',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::2247:21',
-	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::2266:22',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::2219:21',
-	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::2231:21',
-	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2279:10',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::322:27',
+	'src/host/queryEditorProvider.ts::<module>::postMessage::467:29',
+	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::601:26',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::2389:21',
+	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::2408:22',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::2361:21',
+	'src/host/queryEditorProvider.ts::postSqlOwnerMessageProtection::postMessage::2373:21',
+	'src/host/queryEditorProvider.ts::updateEditingPreference::postMessage::2421:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1735:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postConnectMessageWithRetry::postMessageRequiredContained::1739:10',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::postMessageContained::postMessageRequiredContained::2007:8',
@@ -319,7 +319,10 @@ const INCOMING_WEBVIEW_MESSAGE_TYPES = [
 	'showPowerBiPublishHelp',
 	'showPowerBiPartialPublishWarning',
 	'showPowerBiUnsupportedVisualHelp',
-	'saveResultsCsv',
+	'saveImportedCsv',
+	'requestArtifactCsvSave',
+	'artifactCsvSaveData',
+	'cancelArtifactCsvSaveIntent',
 	'setCaretDocsEnabled',
 	'setAutoTriggerAutocompleteEnabled',
 	'setCopilotInlineCompletionsEnabled',
@@ -425,7 +428,10 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'showPowerBiUnsupportedVisualHelp',
 	'seeCachedValues',
 	'resolveResourceUri',
-	'saveResultsCsv',
+	'saveImportedCsv',
+	'requestArtifactCsvSave',
+	'artifactCsvSaveData',
+	'cancelArtifactCsvSaveIntent',
 	'exportDashboard',
 	'getPbiWorkspaces',
 	'checkPbiItemExists',
@@ -540,6 +546,8 @@ const INCOMING_ONLY_WEBVIEW_MESSAGE_TYPES = new Set([
  * These are messages the webview expects to RECEIVE from the host.
  */
 const MESSAGE_HANDLER_CASE_LABELS = [
+	'requestArtifactCsvSaveData',
+	'cancelArtifactCsvSave',
 	'settingsUpdate',
 	'controlCommandSyntaxResult',
 	'ensureComparisonBox',
@@ -659,6 +667,8 @@ const SQL_SECTION_ROUTER_CASE_LABELS = [
  */
 const HOST_TO_WEBVIEW_TYPES = [
 	// queryEditorProvider.ts
+	'requestArtifactCsvSaveData',
+	'cancelArtifactCsvSave',
 	'settingsUpdate',
 	'requestToolState',
 	'queryCancelled',

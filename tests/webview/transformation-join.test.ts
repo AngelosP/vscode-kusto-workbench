@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, vi } from 'vitest';
+import { csvTableArtifactConsumerId, RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT } from '../../src/shared/resultArtifact.js';
 
 // ─── Mock setup ───────────────────────────────────────────────────────────────
 
@@ -12,6 +13,7 @@ const mockRefreshAllDataSourceDropdowns = vi.fn();
 const mockRenderChart = vi.fn();
 const mockSetResultsState = vi.fn();
 const mockGetBoundResultArtifact = vi.fn();
+const mockBindResultArtifactConsumer = vi.fn();
 const mockRebindResultArtifactConsumer = vi.fn();
 const mockUnbindResultArtifactConsumer = vi.fn();
 const mockClearResultsState = vi.fn();
@@ -30,6 +32,7 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
 	setResultsState: mockSetResultsState,
+	bindResultArtifactConsumer: mockBindResultArtifactConsumer,
 	getResultsStateRevision: vi.fn(() => 0),
 	getBoundResultArtifact: mockGetBoundResultArtifact,
 	rebindResultArtifactConsumer: mockRebindResultArtifactConsumer,
@@ -72,6 +75,20 @@ beforeEach(() => {
 	mockGetChartDatasetsInDomOrder.mockReturnValue([]);
 	mockSchedulePersist.mockClear();
 	mockSetResultsState.mockClear();
+	mockSetResultsState.mockImplementation((boxId: string, state: any, publication: any) => ({
+		artifactId: `result:${boxId}:output`, sourceBoxId: boxId, revision: 1, createdAt: 1,
+		restored: false, columns: state.columns, rows: state.rows, metadata: state.metadata,
+		producer: publication.producer, policy: publication.policy, lineage: publication.lineage || [],
+	}));
+	mockBindResultArtifactConsumer.mockReset();
+	mockBindResultArtifactConsumer.mockImplementation((consumerId: string, sourceBoxId: string, artifactId: string) => {
+		const artifact = {
+			artifactId, sourceBoxId, revision: 1, createdAt: 1, restored: false,
+			columns: [], rows: [], metadata: {}, policy: { exportToCsv: true }, lineage: [],
+		};
+		boundArtifacts.set(consumerId, artifact);
+		return artifactId;
+	});
 	currentArtifacts.clear();
 	boundArtifacts.clear();
 	mockGetBoundResultArtifact.mockReset();
@@ -168,9 +185,51 @@ function fakeArtifact(sourceBoxId: string, revision: number, rows: unknown[][], 
 // ─── Tests ────────────────────────────────────────────────────────────────────
 
 describe('transformation-join', () => {
+	it('binds its derived output artifact for CSV export only when the source permits it', () => {
+		const source = fakeArtifact('query_source', 1, [['revision-a']], { exportToCsv: true });
+		currentArtifacts.set('query_source', source);
+		mockGetChartDatasetsInDomOrder.mockReturnValue([{
+			id: 'query_source', label: 'Source', columns: ['Value'], rows: [['revision-a']],
+		}]);
+		const el = createSection({ transformationType: 'derive' });
+
+		el.configure({ dataSourceId: 'query_source', transformationType: 'derive', deriveColumns: [] });
+
+		expect(mockBindResultArtifactConsumer).toHaveBeenCalledWith(
+			'csv:transformation_test:table', 'transformation_test', 'result:transformation_test:output',
+		);
+	});
+
+	it('hides derived Save synchronously when upstream revocation removes its CSV consumer', async () => {
+		const source = fakeArtifact('query_source', 1, [['revision-a']], { exportToCsv: true });
+		currentArtifacts.set('query_source', source);
+		mockGetChartDatasetsInDomOrder.mockReturnValue([{
+			id: 'query_source', label: 'Source', columns: ['Value'], rows: [['revision-a']],
+		}]);
+		const el = createSection({ transformationType: 'derive' });
+		document.body.appendChild(el);
+		el.configure({ dataSourceId: 'query_source', transformationType: 'derive', deriveColumns: [] });
+		await el.updateComplete;
+		expect((el as any)._csvResultArtifactId).toBe('result:transformation_test:output');
+
+		window.dispatchEvent(new CustomEvent(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, {
+			detail: {
+				sourceBoxId: 'query_source',
+				consumerIds: [csvTableArtifactConsumerId('transformation_test')],
+			},
+		}));
+		await el.updateComplete;
+
+		expect((el as any)._csvResultArtifactId).toBe('');
+		expect((el as any)._csvResultTableToken).toBe('');
+		expect((el.shadowRoot?.querySelector('kw-data-table') as any)?.options.showSave).toBe(false);
+		el.remove();
+	});
+
 	it('releases both input bindings and clears derived output on removal', () => {
 		removeTransformationBox('transformation_removed');
 
+		expect(mockUnbindResultArtifactConsumer).toHaveBeenCalledWith('csv:transformation_removed:table');
 		expect(mockUnbindResultArtifactConsumer).toHaveBeenCalledWith('transformation_removed:input:primary');
 		expect(mockUnbindResultArtifactConsumer).toHaveBeenCalledWith('transformation_removed:input:join-right');
 		expect(mockClearResultsState).toHaveBeenCalledWith('transformation_removed');

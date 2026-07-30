@@ -36,7 +36,7 @@ import { invalidateLinkedComparisonSchemaForSource } from '../../src/webview/sec
 import { applyKustoLeaveNoTracePolicy, markKustoLeaveNoTracePolicyPending } from '../../src/webview/core/persistence.js';
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { pState } from '../../src/webview/shared/persistence-state.js';
-import { clearResultsState, getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
+import { clearResultsState, displayResultForBox, getCurrentResultArtifact, getResultsState, setResultsState } from '../../src/webview/core/results-state.js';
 import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
 import { prepareKustoOptimizeQuery } from '../../src/webview/sections/query-execution.controller.js';
 import { ADMITTED_KUSTO_COPILOT_EVENT } from '../../src/webview/core/kusto-copilot-output-runtime.js';
@@ -95,6 +95,100 @@ function hasSpinner(el: KwQuerySection): boolean {
 // ── Tests ─────────────────────────────────────────────────────────────────────
 
 describe('kw-query-section loading states', () => {
+	it('correlates CSV save events to the exact admitted Kusto artifact', async () => {
+		const el = createSection();
+		el.id = el.boxId;
+		await el.updateComplete;
+		expect(displayResultForBox(
+			{ columns: ['Value'], rows: [['a']], metadata: {} },
+			el.boxId,
+			{
+				label: 'Results',
+				artifactPublication: {
+					producer: { engine: 'kusto', boxId: el.boxId, executionId: 'execution-a' },
+					policy: { exportToCsv: true },
+				},
+			},
+		)).toBe(true);
+		const artifact = getCurrentResultArtifact(el.boxId)!;
+		const table = document.querySelector('kw-data-table')!;
+		expect((table as any).options.showSave).toBe(true);
+
+		table.dispatchEvent(new CustomEvent('save', {
+			detail: { csv: 'Value\na', suggestedFileName: 'Results.csv' },
+		}));
+
+		expect(postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'requestArtifactCsvSave', boxId: el.boxId, artifactId: artifact.artifactId,
+			suggestedFileName: 'Results.csv',
+		}));
+	});
+
+	it('does not let detached same-ID cleanup hide Save on the replacement table', async () => {
+		const oldSection = document.createElement('kw-query-section') as KwQuerySection;
+		oldSection.boxId = 'test1';
+		oldSection.id = 'test1';
+		container.appendChild(oldSection);
+		expect(displayResultForBox(
+			{ columns: ['Value'], rows: [['old']], metadata: {} }, 'test1', {
+				artifactPublication: {
+					producer: { engine: 'kusto', boxId: 'test1', executionId: 'old' },
+					policy: { exportToCsv: true },
+				},
+			},
+		)).toBe(true);
+		oldSection.remove();
+
+		const replacement = document.createElement('kw-query-section') as KwQuerySection;
+		replacement.boxId = 'test1';
+		replacement.id = 'test1';
+		container.appendChild(replacement);
+		expect(displayResultForBox(
+			{ columns: ['Value'], rows: [['new']], metadata: {} }, 'test1', {
+				artifactPublication: {
+					producer: { engine: 'kusto', boxId: 'test1', executionId: 'new' },
+					policy: { exportToCsv: true },
+				},
+			},
+		)).toBe(true);
+		await Promise.resolve();
+		await replacement.updateComplete;
+
+		const table = replacement.querySelector('kw-data-table') as any;
+		expect(table?.rows).toEqual([['new']]);
+		expect(table?.options.showSave).toBe(true);
+		expect(table?.resultArtifactId).toBe(getCurrentResultArtifact('test1')?.artifactId);
+	});
+
+	it('hides Save and cancels pending CSV when the result artifact is revoked', async () => {
+		const el = createSection();
+		el.id = el.boxId;
+		await el.updateComplete;
+		expect(displayResultForBox(
+			{ columns: ['Value'], rows: [['revoked']], metadata: {} }, el.boxId, {
+				artifactPublication: {
+					producer: { engine: 'kusto', boxId: el.boxId, executionId: 'revoked' },
+					policy: { exportToCsv: true },
+				},
+			},
+		)).toBe(true);
+		const table = el.querySelector('kw-data-table') as any;
+		table.dispatchEvent(new CustomEvent('save', {
+			detail: { csv: 'Value\nrevoked', suggestedFileName: 'Results.csv' },
+		}));
+		const intent = vi.mocked(postMessageToHost).mock.calls
+			.map(call => call[0] as any)
+			.find(message => message.type === 'requestArtifactCsvSave');
+
+		clearResultsState(el.boxId);
+		await table.updateComplete;
+		expect(table.options.showSave).toBe(false);
+		expect(table.resultArtifactId).toBe('');
+		expect(postMessageToHost).toHaveBeenCalledWith({
+			type: 'cancelArtifactCsvSaveIntent', requestId: intent.requestId,
+		});
+	});
+
 	it('admits terminals only for the exact active Kusto execution', () => {
 		const el = createSection();
 		el.setConnectionId('connection-1');

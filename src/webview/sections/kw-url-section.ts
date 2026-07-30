@@ -196,13 +196,13 @@ export class KwUrlSection extends LitElement implements SectionElement {
 							style="height:${this._csvTableHeight}px"
 							.columns=${this._csvColumns}
 							.rows=${this._csvRows}
-							.options=${{ label: 'CSV', showExecutionTime: false } as DataTableOptions}
+							.options=${{ label: 'CSV', showExecutionTime: false, showSave: true } as DataTableOptions}
 							@visible-row-count-change=${this._onCsvVisibleRowCountChange}
 							@save=${(e: CustomEvent) => {
 								const vscode = window.vscode;
 								if (vscode && typeof vscode.postMessage === 'function') {
 									vscode.postMessage({
-										type: 'saveResultsCsv',
+										type: 'saveImportedCsv',
 										csv: e.detail.csv,
 										suggestedFileName: e.detail.suggestedFileName,
 									});

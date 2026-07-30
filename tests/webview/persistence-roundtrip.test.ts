@@ -312,7 +312,7 @@ import { updateConnectionSelects, __kustoGetConnectionId, __kustoGetDatabase, __
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { __kustoCloseShareModal, setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
 import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, discardPendingSqlResultRestores, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, markKustoLeaveNoTracePolicyPending, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, schedulePersist, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
-import { createDerivedResultArtifactPublication, publicationFromPersistedResultArtifact } from '../../src/shared/resultArtifact.js';
+import { createDerivedResultArtifactPublication, publicationFromPersistedResultArtifact, RESULT_ARTIFACT_CSV_RESET_EVENT } from '../../src/shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
 
 describe('persistence round-trip', () => {
@@ -376,6 +376,120 @@ describe('persistence round-trip', () => {
 		(window as any).__testPendingQueryTextByBoxId = pState.pendingQueryTextByBoxId;
 		(window as any).__testPendingSqlQueryByBoxId = pState.pendingSqlQueryByBoxId;
 		(window as any).__testQueryResultJsonByBoxId = pState.queryResultJsonByBoxId;
+		delete (window as any).__kustoReadOnlyMode;
+	});
+
+	it('restores persisted Kusto rows as CSV-only artifacts in the read-only browser viewer', () => {
+		vi.useFakeTimers();
+		(window as any).__kustoReadOnlyMode = true;
+		const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['browser-kusto']], metadata: {} });
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri: 'https://example.test/result.kqlx',
+				documentKind: 'kqlx', state: { sections: [{
+					type: 'query', id: 'query_browser_restore', query: 'print Value="browser-kusto"',
+					resultJson,
+					resultArtifact: {
+						version: 1, artifactId: 'forged-browser-kusto', sourceBoxId: 'query_browser_restore',
+						revision: 99, createdAt: 1,
+						policy: { exposeToActiveContent: true, sendToModel: true, shareToClipboard: true },
+					},
+				}] },
+			});
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['browser-kusto']] }), 'query_browser_restore',
+				expect.objectContaining({
+					artifactPublication: expect.objectContaining({
+						producer: expect.objectContaining({ producer: 'browser-restored' }),
+						policy: { exportToCsv: true },
+					}),
+				}),
+			);
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+			const publication = vi.mocked(displayResultForBox).mock.calls.at(-1)?.[2]?.artifactPublication;
+			expect(publication?.policy).toEqual({ exportToCsv: true });
+			expect(publication?.policy?.exposeToActiveContent).toBeUndefined();
+			expect(publication?.policy?.sendToModel).toBeUndefined();
+			expect(publication?.policy?.shareToClipboard).toBeUndefined();
+		} finally {
+			delete (window as any).__kustoReadOnlyMode;
+			vi.useRealTimers();
+		}
+	});
+
+	it('restores persisted SQL rows as CSV-only artifacts without live browser connections', () => {
+		vi.useFakeTimers();
+		(window as any).__kustoReadOnlyMode = true;
+		const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [['browser-sql']], metadata: {} });
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true, documentUri: 'https://example.test/result.sqlx',
+				documentKind: 'sqlx', state: { sections: [{
+					type: 'sql', id: 'sql_browser_restore', query: 'select \'browser-sql\' as Value',
+					database: 'BrowserDb', connectionIdHint: 'missing-browser-connection', resultJson,
+				}] },
+			});
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).toHaveBeenCalledWith(
+				expect.objectContaining({ rows: [['browser-sql']] }), 'sql_browser_restore',
+				expect.objectContaining({
+					artifactPublication: expect.objectContaining({
+						producer: expect.objectContaining({ engine: 'sql', producer: 'browser-restored' }),
+						policy: { exportToCsv: true },
+					}),
+				}),
+			);
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+			const publication = vi.mocked(displayResultForBox).mock.calls.at(-1)?.[2]?.artifactPublication;
+			expect(publication?.policy).toEqual({ exportToCsv: true });
+		} finally {
+			delete (window as any).__kustoReadOnlyMode;
+			vi.useRealTimers();
+		}
+	});
+
+	it.each(['source-first', 'comparison-first'])('restores browser SQL comparisons in %s order', order => {
+		vi.useFakeTimers();
+		(window as any).__kustoReadOnlyMode = true;
+		const sourceId = `sql_browser_comparison_source_${order}`;
+		const comparisonId = `query_browser_sql_comparison_${order}`;
+		const source = {
+			type: 'sql', id: sourceId, query: 'select 1 as Value', serverUrl: 'missing.example',
+			database: 'BrowserDb', connectionIdHint: 'missing-browser-sql',
+			resultJson: JSON.stringify({ columns: [{ name: 'Value' }], rows: [['source']], metadata: {} }),
+		};
+		const comparison = {
+			type: 'query', id: comparisonId, query: 'select 2 as Value', comparisonSourceBoxId: sourceId,
+			resultJson: JSON.stringify({ columns: [{ name: 'Value' }], rows: [['comparison']], metadata: {} }),
+			resultArtifact: {
+				version: 1, artifactId: `forged:${comparisonId}`, sourceBoxId: comparisonId,
+				revision: 7, createdAt: 1,
+				policy: { exposeToActiveContent: true, sendToModel: true, shareToClipboard: true },
+			},
+		};
+		try {
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentUri: `https://example.test/${order}.kqlx`, documentKind: 'kqlx',
+				state: { sections: order === 'source-first' ? [source, comparison] : [comparison, source] },
+			});
+			vi.advanceTimersByTime(200);
+
+			const comparisonCall = vi.mocked(displayResultForBox).mock.calls
+				.find(call => call[1] === comparisonId);
+			expect(comparisonCall?.[0]).toEqual(expect.objectContaining({ rows: [['comparison']] }));
+			expect(comparisonCall?.[2]?.artifactPublication?.policy).toEqual({ exportToCsv: true });
+			expect(comparisonCall?.[2]?.artifactPublication?.producer).toEqual(expect.objectContaining({
+				engine: 'kusto', boxId: comparisonId, producer: 'browser-restored',
+			}));
+			expect(getDeferredRestoredResultJobCountForTest()).toBe(0);
+		} finally {
+			delete (window as any).__kustoReadOnlyMode;
+			vi.useRealTimers();
+		}
 	});
 
 	it('publishes a local schema prewarm token only after claiming stamped lifecycle ownership', () => {
@@ -498,6 +612,8 @@ describe('persistence round-trip', () => {
 	});
 
 	it('preserves the last good state and blocks persistence after a malformed external reload', () => {
+		const resetCsv = vi.fn();
+		window.addEventListener(RESULT_ARTIFACT_CSV_RESET_EVENT, resetCsv);
 		handleDocumentDataMessage({
 			type: 'documentData', ok: true, forceReload: true,
 			documentKind: 'kqlx', documentUri: 'file:///tmp/report.kqlx',
@@ -510,6 +626,7 @@ describe('persistence round-trip', () => {
 		document.body.appendChild(container);
 		vi.mocked(postMessageToHost).mockClear();
 		vi.mocked(__kustoCloseShareModal).mockClear();
+		resetCsv.mockClear();
 
 		handleDocumentDataMessage({
 			type: 'documentData', ok: false, forceReload: true,
@@ -517,6 +634,7 @@ describe('persistence round-trip', () => {
 			error: 'Invalid JSON',
 		});
 		expect(__kustoCloseShareModal).toHaveBeenCalledOnce();
+		expect(resetCsv).toHaveBeenCalledOnce();
 
 		expect(document.getElementById('query_good')).toBe(query);
 		expect((container as HTMLElement & { inert?: boolean }).inert).toBe(true);
@@ -532,6 +650,7 @@ describe('persistence round-trip', () => {
 
 		expect(document.getElementById('kusto-malformed-document-banner')).toBeNull();
 		expect((container as HTMLElement & { inert?: boolean }).inert).toBe(false);
+		window.removeEventListener(RESULT_ARTIFACT_CSV_RESET_EVENT, resetCsv);
 	});
 
 	it('closes share state only when documentData is applied', () => {
@@ -714,7 +833,7 @@ describe('persistence round-trip', () => {
 				engine: 'sql', boxId: 'sql_saved_1', executionId: 'sql-execution',
 				query: exactSqlQuery, connectionId: 'sql-warehouse', database: 'Warehouse',
 			},
-			policy: { exposeToActiveContent: true, shareToClipboard: true },
+			policy: { exposeToActiveContent: true, shareToClipboard: true, exportToCsv: true },
 		};
 		vi.mocked(displayResultForBox).mockImplementationOnce((_result, boxId) => {
 			const wrapper = document.getElementById(`${boxId}_sql_results_wrapper`);
@@ -782,7 +901,7 @@ describe('persistence round-trip', () => {
 				label: 'Results', showExecutionTime: true,
 				artifactPublication: expect.objectContaining({
 					producer: expect.objectContaining({ query: exactSqlQuery }),
-					policy: expect.objectContaining({ shareToClipboard: true }),
+					policy: expect.objectContaining({ shareToClipboard: true, exportToCsv: true }),
 				}),
 			});
 			expect(pState.resultArtifactByBoxId.sql_saved_1).toEqual(resultArtifact);
@@ -808,7 +927,7 @@ describe('persistence round-trip', () => {
 					engine: 'sql', boxId: 'sql_forged', executionId: 'sql-execution',
 					query: 'SELECT forged=1', connectionId: 'sql-forged', database: 'Db',
 				},
-				policy: { exposeToActiveContent: true, shareToClipboard: true },
+				policy: { exposeToActiveContent: true, shareToClipboard: true, exportToCsv: true },
 			};
 
 			handleDocumentDataMessage({
@@ -850,7 +969,7 @@ describe('persistence round-trip', () => {
 					engine: 'sql', boxId: 'sql_race', executionId: 'sql-execution',
 					query: 'SELECT 1 AS Value', connectionId: 'sql-race', database: 'Db',
 				},
-				policy: { exposeToActiveContent: true, shareToClipboard: true },
+				policy: { exposeToActiveContent: true, shareToClipboard: true, exportToCsv: true },
 			};
 			handleDocumentDataMessage({
 				type: 'documentData', ok: true, forceReload: true, documentUri: `file:///tmp/sql-race-${_label}.sqlx`,
@@ -1175,7 +1294,8 @@ describe('persistence round-trip', () => {
 			const resultJson = JSON.stringify({ columns: [{ name: 'Value' }], rows: [[2]] });
 			const sourcePolicy = {
 				accountPartition: 'partition-a', leaveNoTraceRevision: 0,
-				exposeToActiveContent: true, sendToModel: true, shareToClipboard: true,
+				exposeToActiveContent: true, sendToModel: true,
+				shareToClipboard: true, exportToCsv: true,
 			};
 			const sourceArtifact = {
 				artifactId: 'result:query_source:3', sourceBoxId: 'query_source', revision: 3, createdAt: 100,
@@ -1223,7 +1343,8 @@ describe('persistence round-trip', () => {
 			});
 			expect(publicationFromPersistedResultArtifact(comparisonDescriptor, 'query_cmp', {
 				accountPartition: 'partition-a', leaveNoTraceRevision: 0,
-				exposeToActiveContent: true, sendToModel: true, shareToClipboard: true,
+				exposeToActiveContent: true, sendToModel: true,
+				shareToClipboard: true, exportToCsv: true,
 				derivedLineage: comparisonPublication.lineage,
 				derivedSourcePolicies: comparisonPublication.policy?.sourcePolicies,
 			})).toBeDefined();
@@ -1306,6 +1427,7 @@ describe('persistence round-trip', () => {
 				.find(([, boxId]) => boxId === 'query_legacy_exposure')?.[2]?.artifactPublication;
 			expect(publication?.policy?.sendToModel).toBeUndefined();
 			expect(publication?.policy?.shareToClipboard).toBeUndefined();
+			expect(publication?.policy?.exportToCsv).toBeUndefined();
 		} finally {
 			vi.useRealTimers();
 		}

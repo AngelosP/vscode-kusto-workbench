@@ -149,6 +149,66 @@ afterEach(() => {
 });
 
 describe('kw-data-table visibility lifecycle', () => {
+	it('hides and restores the Save button through showSave', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Name' }];
+		table.rows = [['alpha']];
+		table.options = { showSave: false };
+		document.body.appendChild(table);
+		await settleTable(table);
+		expect(table.shadowRoot?.querySelector('[title="Save results to file"]')).toBeNull();
+
+		table.options = { showSave: true };
+		await table.updateComplete;
+		expect(table.shadowRoot?.querySelector('[title="Save results to file"]')).toBeTruthy();
+	});
+
+	it('exports the current filtered and sorted row projection', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Name' }, { name: 'Score', type: 'long' }];
+		table.rows = [['alpha', 1], ['bravo', 3], ['charlie', 2]];
+		document.body.appendChild(table);
+		await settleTable(table);
+
+		const internal = table as any;
+		internal._sorting = [{ id: '1', desc: true }];
+		internal._columnFilters = [{
+			id: '0', value: { kind: 'values', allowedValues: ['bravo', 'charlie'] },
+		}];
+		internal._table.setOptions((previous: any) => ({
+			...previous,
+			state: {
+				...previous.state,
+				sorting: internal._sorting,
+				columnFilters: internal._columnFilters,
+			},
+		}));
+		let saved: any;
+		table.addEventListener('save', event => { saved = (event as CustomEvent).detail; });
+
+		internal._save();
+
+		expect(saved).toEqual({
+			csv: 'Name,Score\nbravo,3\ncharlie,2',
+			suggestedFileName: 'results.csv',
+		});
+	});
+
+	it('exports only declared columns from ragged rows', async () => {
+		const table = document.createElement('kw-data-table') as KwDataTable;
+		table.columns = [{ name: 'Visible' }, { name: 'Missing' }];
+		table.rows = [['shown', 'value', 'hidden-secret'], ['short']];
+		document.body.appendChild(table);
+		await settleTable(table);
+		let saved: any;
+		table.addEventListener('save', event => { saved = (event as CustomEvent).detail; });
+
+		(table as any)._save();
+
+		expect(saved.csv).toBe('Visible,Missing\nshown,value\nshort,');
+		expect(saved.csv).not.toContain('hidden-secret');
+	});
+
 	it('rebinds OverlayScrollbars and redraws virtualized rows after hide/show', async () => {
 		const table = document.createElement('kw-data-table') as KwDataTable;
 		table.columns = [{ name: 'Name' }];

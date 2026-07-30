@@ -81,15 +81,16 @@ export function unbindResultArtifactConsumer(consumerId: unknown) {
 
 export function setResultsState(boxId: any, state: any, publication: ResultArtifactPublication = {}) {
 	if (!boxId) {
-		return;
+		return undefined;
 	}
-	_resultArtifacts.publish(String(boxId), state || {}, publication);
+	const artifact = _resultArtifacts.publish(String(boxId), state || {}, publication);
 	_resultsByBoxId[boxId] = state;
 	_resultsRevisionByBoxId[boxId] = (_resultsRevisionByBoxId[boxId] || 0) + 1;
 	// Backward-compat: keep the last rendered result as the "current" one.
 	currentResult = state;
 	// Notify any dependent sections (charts/transformations) that this data source changed.
 	try { __kustoNotifyResultsUpdated(boxId); } catch (e) { console.error('[kusto]', e); }
+	return artifact;
 }
 
 export function retireResultsStateForRerun(boxId: unknown): void {
@@ -183,13 +184,16 @@ export function displayResultForBox(result: any, boxId: any, options: any): bool
 		rowIndexToDisplayIndex.push(i);
 	}
 
-	setResultsState(boxId, {
+	const artifact = setResultsState(boxId, {
 		boxId, columns: cols, rows: rws, metadata: meta,
 		selectedCell: null, cellSelectionAnchor: null, cellSelectionRange: null,
 		selectedRows: new Set(), searchMatches: [], currentSearchIndex: -1,
 		sortSpec: [], columnFilters: {}, filteredRowIndices: null,
 		displayRowIndices, rowIndexToDisplayIndex
 	}, options?.artifactPublication || {});
+	if (typeof (sectionEl as any).setResultArtifactForCsvExport === 'function') {
+		(sectionEl as any).setResultArtifactForCsvExport(artifact?.artifactId || '');
+	}
 	return true;
 }
 

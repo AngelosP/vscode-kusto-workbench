@@ -4,6 +4,7 @@ let latestConnectionsRevision = 0;
 // Dispatches incoming postMessage from the extension host to the right module.
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
+import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
 import { traceFileOpen } from './file-open-trace.js';
@@ -878,6 +879,7 @@ function comparisonSourcePolicies(sourceArtifact: any): readonly ResultArtifactS
 		'exposeToActiveContent',
 		'sendToModel',
 		'shareToClipboard',
+		'exportToCsv',
 	] as const) {
 		if (sourceArtifact.policy[key] !== undefined) policy[key] = sourceArtifact.policy[key];
 	}
@@ -932,6 +934,9 @@ function getKustoResultArtifactPublication(message: unknown): ResultArtifactPubl
 			shareToClipboard: sourceArtifact
 				? sourceArtifact.policy?.shareToClipboard === true
 				: true,
+			exportToCsv: sourceArtifact
+				? sourceArtifact.policy?.exportToCsv === true
+				: true,
 			...(sourcePolicies?.length ? { sourcePolicies } : {}),
 		},
 		...(sourceArtifact ? {
@@ -959,7 +964,10 @@ function getSqlResultArtifactPublication(message: any): ResultArtifactPublicatio
 			...(typeof message.query === 'string' ? { query: message.query } : {}),
 			producer: metadata?.isComparison ? 'comparison' : 'manual',
 		},
-		policy: { exposeToActiveContent: true, sendToModel: true, shareToClipboard: true },
+		policy: {
+			exposeToActiveContent: true, sendToModel: true,
+			shareToClipboard: true, exportToCsv: true,
+		},
 	};
 }
 
@@ -1087,6 +1095,12 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		admittedKustoOptimizeSection = section;
 	}
 	switch (messageType) {
+		case 'requestArtifactCsvSaveData':
+			provideArtifactCsvSaveData(message);
+			break;
+		case 'cancelArtifactCsvSave':
+			cancelArtifactCsvSave(message.exportId);
+			break;
 		case 'settingsUpdate':
 			try {
 				const altColor = typeof message.alternatingRowColor === 'string' ? message.alternatingRowColor : '';

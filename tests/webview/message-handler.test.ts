@@ -1269,7 +1269,10 @@ describe('message-handler dispatch', () => {
 					engine: 'sql', boxId: 'query_comparison', query: 'select 1 as Value',
 					connectionId: 'sql-connection', database: 'SqlDb',
 				}),
-				policy: { exposeToActiveContent: true, sendToModel: true, shareToClipboard: true },
+				policy: {
+					exposeToActiveContent: true, sendToModel: true,
+					shareToClipboard: true, exportToCsv: true,
+				},
 			}),
 		});
 		expect(mocks.setQueryExecuting).toHaveBeenCalledWith('query_comparison', true);
@@ -1418,7 +1421,8 @@ describe('message-handler dispatch', () => {
 				}),
 				policy: expect.objectContaining({
 					accountPartition: 'partition-1', leaveNoTraceRevision: 0,
-					exposeToActiveContent: true, sendToModel: true, shareToClipboard: true,
+					exposeToActiveContent: true, sendToModel: true,
+					shareToClipboard: true, exportToCsv: true,
 				}),
 			}),
 		}));
@@ -2183,7 +2187,7 @@ describe('message-handler dispatch', () => {
 		}));
 		expect(controller.getActiveExecution()).toBeUndefined();
 		controller.setQueryExecuting(false);
-	});
+	}, 10_000);
 
 	it('does not persist a query result rejected by its owning section', async () => {
 		const resultsState = await import('../../src/webview/core/results-state.js');

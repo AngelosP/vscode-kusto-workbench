@@ -451,38 +451,6 @@
 
 	window.addEventListener('message', handleIncomingMessage);
 
-	// ---- Intercept CSV downloads ----
-	// The vscode-shim handles postMessage({ type: 'saveResultsCsv' })
-	// but in the browser extension context, we need to forward to the
-	// parent frame (content script) which can trigger the download.
-
-	var origVscodePostMessage;
-	function patchCsvExport() {
-		try {
-			if (window.vscode && typeof window.vscode.postMessage === 'function') {
-				origVscodePostMessage = window.vscode.postMessage;
-				window.vscode.postMessage = function(message) {
-					if (message && message.type === 'saveResultsCsv' && typeof message.csv === 'string') {
-						// Forward to parent frame for download
-						window.parent.postMessage({
-							type: 'kusto-workbench-csv-download',
-							csv: message.csv,
-							filename: message.filename || 'results'
-						}, '*');
-						return;
-					}
-					// Fall through to original
-					if (origVscodePostMessage) origVscodePostMessage(message);
-				};
-			}
-		} catch {
-			// ignore
-		}
-	}
-	// Retry patching — vscode shim might not be loaded yet
-	setTimeout(patchCsvExport, 500);
-	setTimeout(patchCsvExport, 2000);
-
 	// ---- Height reporting on resize ----
 
 	var resizeObserver;

@@ -159,7 +159,14 @@ export type KqlLanguageRequestMessage = {
 export type FetchControlCommandSyntaxMessage = { type: 'fetchControlCommandSyntax'; requestId: string; commandLower: string; href: string };
 export type PowerBiDataMode = 'import' | 'directQuery';
 
-export type SaveResultsCsvMessage = { type: 'saveResultsCsv'; boxId?: string; csv: string; suggestedFileName?: string };
+export type SaveImportedCsvMessage = { type: 'saveImportedCsv'; csv: string; suggestedFileName?: string };
+export type RequestArtifactCsvSaveMessage = {
+	type: 'requestArtifactCsvSave'; requestId: string; boxId: string; artifactId: string; suggestedFileName?: string;
+};
+export type ArtifactCsvSaveDataMessage = {
+	type: 'artifactCsvSaveData'; requestId: string; boxId: string; artifactId: string; accepted: boolean; csv?: string;
+};
+export type CancelArtifactCsvSaveIntentMessage = { type: 'cancelArtifactCsvSaveIntent'; requestId: string };
 export type ExportDashboardMessage = {
 	type: 'exportDashboard';
 	boxId: string;
@@ -249,7 +256,10 @@ export type IncomingWebviewMessage =
 	| ShowPowerBiPublishHelpMessage
 	| ShowPowerBiPartialPublishWarningMessage
 	| ShowPowerBiUnsupportedVisualHelpMessage
-	| SaveResultsCsvMessage
+	| SaveImportedCsvMessage
+	| RequestArtifactCsvSaveMessage
+	| ArtifactCsvSaveDataMessage
+	| CancelArtifactCsvSaveIntentMessage
 	| ExportDashboardMessage
 	| RequestHtmlDashboardUpgradeWithCopilotMessage
 	| GetPbiWorkspacesMessage

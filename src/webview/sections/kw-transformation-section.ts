@@ -18,6 +18,12 @@ import {
 	type ResultArtifact,
 } from '../core/results-state.js';
 import { createDerivedResultArtifactPublication } from '../../shared/resultArtifact.js';
+import {
+	ARTIFACT_CSV_TABLE_RELEASED_EVENT,
+	registerArtifactCsvTable,
+	releaseArtifactCsvTable,
+	saveArtifactCsv,
+} from '../shared/artifact-csv-export.js';
 import { schedulePersist } from '../core/persistence.js';
 import { __kustoGetChartDatasetsInDomOrder, __kustoCleanupSectionModeResizeObserver, __kustoRefreshAllDataSourceDropdowns } from '../core/section-factory.js';
 import { renderChart as __kustoRenderChart } from '../shared/chart-renderer.js';
@@ -337,6 +343,8 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 	@state() private _resultColumns: DataTableColumn[] = [];
 	@state() private _resultRows: unknown[][] = [];
 	@state() private _resultError = '';
+	@state() private _csvResultArtifactId = '';
+	private _csvResultTableToken = '';
 
 	// Wrapper height (tracked as state so data-table gets explicit pixel height)
 	@state() private _wrapperHeight = 300;
@@ -357,17 +365,31 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 
 	override connectedCallback(): void {
 		super.connectedCallback();
+		window.addEventListener(ARTIFACT_CSV_TABLE_RELEASED_EVENT, this._onArtifactCsvTableReleased);
 		this._syncGlobalState();
 	}
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
+		window.removeEventListener(ARTIFACT_CSV_TABLE_RELEASED_EVENT, this._onArtifactCsvTableReleased);
 		document.removeEventListener('mousedown', this._closeDropdownBound);
 		if (this._removePageScrollListener) {
 			this._removePageScrollListener();
 			this._removePageScrollListener = null;
 		}
+		queueMicrotask(() => {
+			if (!this.isConnected) this._releaseCsvResultArtifact();
+		});
 	}
+
+	private _onArtifactCsvTableReleased = (event: Event): void => {
+		const detail = (event as CustomEvent).detail || {};
+		if (String(detail.sourceBoxId || '') !== this.boxId
+			|| String(detail.tableToken || '') !== this._csvResultTableToken) return;
+		this._csvResultArtifactId = '';
+		this._csvResultTableToken = '';
+		this.requestUpdate();
+	};
 
 	override firstUpdated(_changedProperties: PropertyValues): void {
 		super.firstUpdated(_changedProperties);
@@ -473,21 +495,20 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 		if (!this._resultColumns.length) {
 			return nothing as unknown as TemplateResult;
 		}
+		const csvArtifactId = this._csvResultArtifactId;
+		const csvTableToken = this._csvResultTableToken;
 		return html`
 			<div class="results-area">
 				<kw-data-table
 					.columns=${this._resultColumns}
 					.rows=${this._resultRows}
-					.options=${{ label: 'Transformations', showExecutionTime: false, hideTopBorder: true } as DataTableOptions}
+					.options=${{ label: 'Transformations', showExecutionTime: false, hideTopBorder: true, showSave: !!csvArtifactId } as DataTableOptions}
 					@save=${(e: CustomEvent) => {
-						const vscode = window.vscode;
-						if (vscode && typeof vscode.postMessage === 'function') {
-							vscode.postMessage({
-								type: 'saveResultsCsv',
-								csv: e.detail.csv,
-								suggestedFileName: e.detail.suggestedFileName,
-							});
-						}
+						try { saveArtifactCsv({
+							sourceBoxId: this.boxId, artifactId: csvArtifactId,
+							tableToken: csvTableToken,
+							csv: e.detail.csv, suggestedFileName: e.detail.suggestedFileName,
+						}); } catch (error) { console.error('[kusto]', error); }
 					}}
 				></kw-data-table>
 			</div>
@@ -1875,6 +1896,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 				? this._boundInputArtifact('join-right', this._joinRightDataSourceId)
 				: null;
 			if (!primaryArtifact || (this._transformationType === 'join' && this._joinRightDataSourceId && !rightArtifact)) {
+				this._releaseCsvResultArtifact();
 				clearResultsState(this.boxId);
 				return;
 			}
@@ -1887,7 +1909,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 					...(rightArtifact ? [{ artifact: rightArtifact, role: 'join-right' }] : []),
 				],
 			);
-			setResultsState(this.boxId, {
+			const artifact = setResultsState(this.boxId, {
 					boxId: this.boxId,
 					columns: cols,
 					rows: rows,
@@ -1897,7 +1919,25 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 					sortSpec: [], columnFilters: {}, filteredRowIndices: null,
 					displayRowIndices: null, rowIndexToDisplayIndex: null
 				}, publication);
-		} catch (e) { console.error('[kusto]', e); }
+			this.setResultArtifactForCsvExport(artifact?.artifactId || '');
+		} catch (e) {
+			this._releaseCsvResultArtifact();
+			console.error('[kusto]', e);
+		}
+	}
+
+	public setResultArtifactForCsvExport(artifactId: unknown): void {
+		const id = String(artifactId || '').trim();
+		const tableToken = id ? registerArtifactCsvTable(this.boxId, id) : undefined;
+		this._csvResultArtifactId = tableToken ? id : '';
+		this._csvResultTableToken = tableToken || '';
+		this.requestUpdate();
+	}
+
+	private _releaseCsvResultArtifact(): void {
+		if (this._csvResultTableToken) releaseArtifactCsvTable(this.boxId, this._csvResultTableToken);
+		this._csvResultArtifactId = '';
+		this._csvResultTableToken = '';
 	}
 
 	private _computeTransformationImpl(): void {
@@ -2640,6 +2680,7 @@ export function removeTransformationBox(boxId: unknown): void {
 	const id = String(boxId || '');
 	if (!id) return;
 	try { __kustoCleanupSectionModeResizeObserver(id); } catch (e) { console.error('[kusto]', e); }
+	try { releaseArtifactCsvTable(id); } catch (e) { console.error('[kusto]', e); }
 	try { unbindResultArtifactConsumer(transformationInputConsumerId(id, 'primary')); } catch (e) { console.error('[kusto]', e); }
 	try { unbindResultArtifactConsumer(transformationInputConsumerId(id, 'join-right')); } catch (e) { console.error('[kusto]', e); }
 	try {
