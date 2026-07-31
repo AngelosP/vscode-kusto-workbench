@@ -49,6 +49,7 @@ type InternalTransaction = {
 	id: number;
 	kind: KustoWorkerMutationKind;
 	primaryIntentGeneration: number;
+	advancesPrimaryIntent: boolean;
 	active: boolean;
 	commitsAllowed: boolean;
 };
@@ -57,6 +58,7 @@ export class KustoWorkerMutationPort {
 	private tail: Promise<void> = Promise.resolve();
 	private transactionSequence = 0;
 	private primaryIntentGeneration = 0;
+	private startedPrimaryIntentGeneration = 0;
 	private committedRevision = 0;
 	private destructiveEpoch = 0;
 	private activeTransaction?: InternalTransaction;
@@ -75,6 +77,9 @@ export class KustoWorkerMutationPort {
 	): Promise<T> {
 		const internal = this.createTransaction(request);
 		const execute = async (): Promise<T> => {
+			if (internal.advancesPrimaryIntent) {
+				this.startedPrimaryIntentGeneration = internal.primaryIntentGeneration;
+			}
 			internal.active = true;
 			this.activeTransaction = internal;
 			try {
@@ -147,7 +152,9 @@ export class KustoWorkerMutationPort {
 	}
 
 	private publicTransaction(internal: InternalTransaction): KustoWorkerMutationTransaction {
-		const isCurrent = () => internal.primaryIntentGeneration === this.primaryIntentGeneration;
+		const isCurrent = () => internal.advancesPrimaryIntent
+			? internal.primaryIntentGeneration === this.startedPrimaryIntentGeneration
+			: internal.primaryIntentGeneration === this.primaryIntentGeneration;
 		return Object.freeze({
 			id: internal.id,
 			kind: internal.kind,
@@ -170,6 +177,7 @@ export class KustoWorkerMutationPort {
 			primaryIntentGeneration: request.advancesPrimaryIntent
 				? ++this.primaryIntentGeneration
 				: this.primaryIntentGeneration,
+			advancesPrimaryIntent: request.advancesPrimaryIntent === true,
 			active: false,
 			commitsAllowed: true,
 		};
@@ -192,6 +200,7 @@ export class KustoWorkerMutationPort {
 			this.activeTransaction.commitsAllowed = false;
 		}
 		const recovery = this.createTransaction({ kind: 'recovery', advancesPrimaryIntent: true });
+		this.startedPrimaryIntentGeneration = recovery.primaryIntentGeneration;
 		recovery.active = true;
 		this.activeTransaction = recovery;
 		try {

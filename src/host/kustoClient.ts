@@ -28,6 +28,7 @@ import {
 	getDatabaseListErrorDetails,
 	traceDatabaseList,
 } from './databaseListTrace';
+import { ensureRawSchemaJson } from './schemaIndexUtils';
 
 type DatabaseDiscoveryOptions = {
 	allowInteractive?: boolean;
@@ -251,7 +252,9 @@ export class KustoQueryClient {
 	// Otherwise switching clusters in the same box would reuse the previous cluster's client.
 	private cancelableClientsByKey: Map<string, CachedClientEntry> = new Map();
 	private databaseCache: Map<string, { databases: string[], timestamp: number }> = new Map();
+	private readonly databaseRequests = new Map<string, Promise<KustoDatabaseDiscoveryResult>>();
 	private schemaCache: Map<string, { schema: DatabaseSchemaIndex; timestamp: number }> = new Map();
+	private readonly schemaRequests = new Map<string, Promise<DatabaseSchemaResult>>();
 	private readonly CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 	private readonly SCHEMA_CACHE_TTL = 24 * 60 * 60 * 1000; // 1 day
 
@@ -276,6 +279,9 @@ export class KustoQueryClient {
 	private readonly connectionRevisions = new Map<string, number>();
 	private readonly accountRevisions = new Map<string, number>();
 	private readonly authContextByClient = new WeakMap<object, KustoAuthContext>();
+	private readonly activeOperationsByClient = new WeakMap<object, number>();
+	private readonly pendingClientClose = new WeakSet<object>();
+	private readonly closedClients = new WeakSet<object>();
 	private readonly transientPreferences = new Map<string, KustoAccountPreference>();
 	private authRevision = 0;
 	private lastSeenCacheClearEpoch = 0;
@@ -379,8 +385,42 @@ export class KustoQueryClient {
 		return !preferred || entry.auth.accountId === preferred;
 	}
 
+	private assertNotDisposed(): void {
+		if (this.disposed) throw new QueryCancelledError('The Kusto client has been disposed');
+	}
+
+	private closeClient(client: any): void {
+		if (!client || (typeof client !== 'object' && typeof client !== 'function')) return;
+		if ((this.activeOperationsByClient.get(client) ?? 0) > 0) {
+			this.pendingClientClose.add(client);
+			return;
+		}
+		if (this.closedClients.has(client)) return;
+		this.closedClients.add(client);
+		try { client.close?.(); } catch { /* ignore */ }
+	}
+
 	private closeEntry(entry: CachedClientEntry | undefined): void {
-		try { entry?.client?.close?.(); } catch { /* ignore */ }
+		this.closeClient(entry?.client);
+	}
+
+	private retainClientOperation(client: any): () => void {
+		if (!client || (typeof client !== 'object' && typeof client !== 'function')) return () => undefined;
+		this.activeOperationsByClient.set(client, (this.activeOperationsByClient.get(client) ?? 0) + 1);
+		let released = false;
+		return () => {
+			if (released) return;
+			released = true;
+			const remaining = (this.activeOperationsByClient.get(client) ?? 1) - 1;
+			if (remaining > 0) {
+				this.activeOperationsByClient.set(client, remaining);
+				return;
+			}
+			this.activeOperationsByClient.delete(client);
+			if (this.pendingClientClose.delete(client)) {
+				this.closeClient(client);
+			}
+		};
 	}
 
 	private invalidateClients(connectionIds: readonly string[], accountId?: string): void {
@@ -399,14 +439,22 @@ export class KustoQueryClient {
 		}
 		if (ids.size === 0) {
 			this.databaseCache.clear();
+			this.databaseRequests.clear();
 			this.schemaCache.clear();
+			this.schemaRequests.clear();
 			return;
 		}
 		for (const key of [...this.databaseCache.keys()]) {
 			if ([...ids].some(id => key.startsWith(`${encodeURIComponent(id)}|`))) this.databaseCache.delete(key);
 		}
+		for (const key of [...this.databaseRequests.keys()]) {
+			if ([...ids].some(id => key.startsWith(`${encodeURIComponent(id)}|`))) this.databaseRequests.delete(key);
+		}
 		for (const key of [...this.schemaCache.keys()]) {
 			if ([...ids].some(id => key.startsWith(`${encodeURIComponent(id)}|`))) this.schemaCache.delete(key);
+		}
+		for (const key of [...this.schemaRequests.keys()]) {
+			if ([...ids].some(id => key.startsWith(`${encodeURIComponent(id)}|`))) this.schemaRequests.delete(key);
 		}
 	}
 
@@ -634,7 +682,9 @@ export class KustoQueryClient {
 			if (next && next !== this.lastSeenCacheClearEpoch) {
 				this.lastSeenCacheClearEpoch = next;
 				this.databaseCache.clear();
+				this.databaseRequests.clear();
 				this.schemaCache.clear();
+				this.schemaRequests.clear();
 			}
 		} catch {
 			// ignore
@@ -734,12 +784,19 @@ export class KustoQueryClient {
 		preference: KustoAccountPreference,
 		traceId?: string,
 	): Promise<CachedClientEntry> {
+		this.assertNotDisposed();
 		const auth = this.buildAuthContext(connection, session, preference);
 		const { Client, KustoConnectionStringBuilder } = await import('azure-kusto-data');
 		const effectiveToken = await this.getEffectiveAccessToken(session, auth.authorityId, traceId);
+		this.assertNotDisposed();
 		const kcsb = KustoConnectionStringBuilder.withAccessToken(auth.clusterEndpoint, effectiveToken);
 		kcsb.applicationNameForTracing = KustoQueryClient.APPLICATION_NAME;
-		return this.registerEntry({ client: new Client(kcsb), auth });
+		const entry = { client: new Client(kcsb), auth };
+		if (this.disposed) {
+			this.closeClient(entry.client);
+			throw new QueryCancelledError('The Kusto client was disposed during authentication');
+		}
+		return this.registerEntry(entry);
 	}
 
 	/**
@@ -751,6 +808,7 @@ export class KustoQueryClient {
 		promptMode: 'clearPreference' | 'forceNewSession' = 'clearPreference',
 		traceId?: string
 	): Promise<void> {
+		this.assertNotDisposed();
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		this.traceDatabaseDiscovery(traceId, 'auth.reauthenticate.start', {
 			connectionId: connection.id,
@@ -778,6 +836,7 @@ export class KustoQueryClient {
 	}
 
 	private async getOrCreateClient(connection: KustoConnection, opts?: { interactiveIfNeeded?: boolean; traceId?: string }): Promise<any> {
+		this.assertNotDisposed();
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		if (!clusterEndpoint) {
 			throw new Error('Cluster URL is missing.');
@@ -824,6 +883,7 @@ export class KustoQueryClient {
 	}
 
 	private async getOrCreateCancelableClient(connection: KustoConnection, key: string, opts?: { interactiveIfNeeded?: boolean }): Promise<any> {
+		this.assertNotDisposed();
 		const preference = this.getPreference(connection);
 		const cacheKey = this.cancelableCacheKey(connection, key, preference);
 		const existing = this.cancelableClientsByKey.get(cacheKey);
@@ -835,6 +895,10 @@ export class KustoQueryClient {
 			this.cancelableClientsByKey.delete(cacheKey);
 		}
 		const created = await this.createClientWithRetry(connection, { interactiveIfNeeded: opts?.interactiveIfNeeded !== false, storeInMainClientCache: false });
+		if (this.disposed) {
+			this.closeEntry(created);
+			throw new QueryCancelledError('The Kusto client was disposed during cancelable client acquisition');
+		}
 		this.cancelableClientsByKey.set(cacheKey, created);
 		return created.client;
 	}
@@ -850,7 +914,7 @@ export class KustoQueryClient {
 			this.closeEntry(entry);
 		}
 		if (client && !matched) {
-			try { client.close?.(); } catch { /* ignore */ }
+			this.closeClient(client);
 		}
 	}
 
@@ -1010,6 +1074,7 @@ export class KustoQueryClient {
 	}
 
 	private async withAuthLock<T>(authIdentity: string, fn: () => Promise<T>): Promise<T> {
+		this.assertNotDisposed();
 		const previous = this.authLocksByIdentity.get(authIdentity) ?? Promise.resolve();
 		let release!: () => void;
 		const current = new Promise<void>(resolve => { release = resolve; });
@@ -1017,6 +1082,7 @@ export class KustoQueryClient {
 		this.authLocksByIdentity.set(authIdentity, tail);
 		await previous.catch(() => undefined);
 		try {
+			this.assertNotDisposed();
 			return await fn();
 		} finally {
 			release();
@@ -1029,6 +1095,7 @@ export class KustoQueryClient {
 		opts: { interactiveIfNeeded: boolean; storeInMainClientCache?: boolean; promptMode?: SessionPromptMode; skipSilent?: boolean; traceId?: string }
 	): Promise<CachedClientEntry>
 	{
+		this.assertNotDisposed();
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		if (!clusterEndpoint) throw new Error('Cluster URL is missing.');
 		const storeInMain = opts.storeInMainClientCache !== false;
@@ -1048,6 +1115,7 @@ export class KustoQueryClient {
 		let created: CachedClientEntry | undefined;
 		try {
 			await this.withAuthLock(lockKey, async () => {
+			this.assertNotDisposed();
 			this.traceDatabaseDiscovery(opts.traceId, 'auth.client.create.lock-acquired', {
 				clusterEndpoint,
 			});
@@ -1102,6 +1170,10 @@ export class KustoQueryClient {
 					? `The selected Microsoft account is unavailable for connection "${connection.name}".`
 					: 'No Microsoft account session is available.'), { statusCode: 401 });
 			}
+			if (this.disposed) {
+				this.closeEntry(created);
+				throw new QueryCancelledError('The Kusto client was disposed during authentication');
+			}
 			if (storeInMain) {
 				this.clients.set(connection.id, created);
 			}
@@ -1127,9 +1199,10 @@ export class KustoQueryClient {
 
 	private async executeWithAuthRetry<T>(
 		connection: KustoConnection,
-		operation: (client: any, auth?: KustoAuthContext) => Promise<T>,
+		operation: (client: any, auth?: KustoAuthContext, assertCurrent?: () => void) => Promise<T>,
 		opts?: AuthOperationOptions<T>,
 	): Promise<T> {
+		this.assertNotDisposed();
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		const allowInteractive = opts?.allowInteractive !== false;
 		const preference = this.getPreference(connection);
@@ -1154,6 +1227,7 @@ export class KustoQueryClient {
 		});
 
 		const assertCurrentRevision = (accountId?: string, accountRevision?: number) => {
+			this.assertNotDisposed();
 			if (this.getConnectionRevision(connection.id) !== revision || this.authRevision !== authRevision) {
 				throw new QueryCancelledError('Authentication changed while the Kusto operation was running');
 			}
@@ -1163,6 +1237,10 @@ export class KustoQueryClient {
 		};
 
 		const cacheEntry = (entry: CachedClientEntry) => {
+			if (this.disposed) {
+				this.closeEntry(entry);
+				throw new QueryCancelledError('The Kusto client was disposed during authentication');
+			}
 			if (opts?.cancelableKey) {
 				this.cancelableClientsByKey.set(this.cancelableCacheKey(connection, opts.cancelableKey, preference), entry);
 			} else {
@@ -1191,15 +1269,17 @@ export class KustoQueryClient {
 		const attempt = async (entry: CachedClientEntry, label: string): Promise<Attempt> => {
 			attemptedAccounts.add(entry.auth.accountId);
 			const accountRevision = this.getAccountRevision(entry.auth.accountId);
+			const assertAttemptCurrent = () => assertCurrentRevision(entry.auth.accountId, accountRevision);
+			const releaseClient = this.retainClientOperation(entry.client);
 			try {
-				assertCurrentRevision(entry.auth.accountId, accountRevision);
+				assertAttemptCurrent();
 				try { opts?.onClient?.(entry.client, entry.auth); } catch { /* ignore */ }
 				this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.start', {
 					attempt: label,
 					accountRef: databaseListTraceRef(entry.auth.accountId),
 				});
-				const result = await operation(entry.client, entry.auth);
-				assertCurrentRevision(entry.auth.accountId, accountRevision);
+				const result = await operation(entry.client, entry.auth, assertAttemptCurrent);
+				assertAttemptCurrent();
 				if (opts?.isSuccessfulResult && !opts.isSuccessfulResult(result)) {
 					rejectedResult = { result, auth: entry.auth };
 					this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.rejected-result', {
@@ -1233,6 +1313,8 @@ export class KustoQueryClient {
 				lastAuthError = error;
 				evictEntry(entry);
 				return { kind: 'auth-error', error };
+			} finally {
+				releaseClient();
 			}
 		};
 
@@ -1255,12 +1337,20 @@ export class KustoQueryClient {
 				});
 				return undefined;
 			});
+		if (initialClient && this.disposed) {
+			this.closeClient(initialClient);
+			throw new QueryCancelledError('The Kusto client was disposed during client acquisition');
+		}
 		if (initialClient) {
 			const auth = this.authContextByClient.get(initialClient);
 			if (!auth) {
+				const assertAttemptCurrent = () => assertCurrentRevision();
+				const releaseClient = this.retainClientOperation(initialClient);
 				try {
+					assertAttemptCurrent();
 					this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.start', { attempt: 'initial' });
-					const result = await operation(initialClient);
+					const result = await operation(initialClient, undefined, assertAttemptCurrent);
+					assertAttemptCurrent();
 					this.traceDatabaseDiscovery(opts?.traceId, 'auth.operation.complete', { attempt: 'initial' });
 					return result;
 				} catch (error) {
@@ -1272,6 +1362,8 @@ export class KustoQueryClient {
 					});
 					if (!isAuthError) throw error;
 					lastAuthError = error;
+				} finally {
+					releaseClient();
 				}
 			} else {
 				adoptAcquiredSessionRevision();
@@ -1363,6 +1455,36 @@ export class KustoQueryClient {
 	}
 
 	async getDatabasesWithIdentity(connection: KustoConnection, forceRefresh: boolean = false, opts?: DatabaseDiscoveryOptions): Promise<KustoDatabaseDiscoveryResult> {
+		this.assertNotDisposed();
+		if (opts?.dispatchAuthenticated && !this.connectionManager) {
+			throw new Error('Authenticated metadata dispatch requires a connection manager.');
+		}
+		this.syncCacheClearEpoch();
+		if (opts?.dispatchAuthenticated) {
+			return this.getDatabasesWithIdentityUnshared(connection, forceRefresh, opts);
+		}
+		const preferredPartition = this.getAccountPartition(connection) || 'unresolved';
+		const requestKey = [
+			this.dataCachePrefix(connection, preferredPartition),
+			forceRefresh ? 'force' : 'normal',
+			opts?.allowInteractive === false ? 'silent' : 'interactive',
+			opts?.persistIdentity === false ? 'no-identity' : 'identity',
+			opts?.persistCache === false ? 'no-cache' : 'cache',
+			opts?.dispatchAuthenticated ? 'dispatch' : 'direct',
+		].join('|');
+		const existing = this.databaseRequests.get(requestKey);
+		if (existing) return existing;
+		const request = this.getDatabasesWithIdentityUnshared(connection, forceRefresh, opts);
+		this.databaseRequests.set(requestKey, request);
+		try {
+			return await request;
+		} finally {
+			if (this.databaseRequests.get(requestKey) === request) this.databaseRequests.delete(requestKey);
+		}
+	}
+
+	private async getDatabasesWithIdentityUnshared(connection: KustoConnection, forceRefresh: boolean, opts?: DatabaseDiscoveryOptions): Promise<KustoDatabaseDiscoveryResult> {
+		this.assertNotDisposed();
 		const traceId = String(opts?.traceId || createDatabaseListTraceId());
 		const startedAt = Date.now();
 		try {
@@ -1418,9 +1540,10 @@ export class KustoQueryClient {
 			const result = await this.executeWithAuthRetry<any>(
 				connection,
 				(client, auth) => {
-					if (!opts?.dispatchAuthenticated || !this.connectionManager) return client.execute('', '.show databases', props);
+					if (opts?.dispatchAuthenticated && !this.connectionManager) throw new Error('Authenticated metadata dispatch requires a connection manager.');
+					if (!opts?.dispatchAuthenticated) return client.execute('', '.show databases', props);
 					if (!auth) throw new Error('Kusto dispatch identity is unavailable.');
-					return this.connectionManager.runWithLeaveNoTraceSnapshotLock(policy => Promise.resolve(opts.dispatchAuthenticated!(
+					return this.connectionManager!.runWithLeaveNoTraceSnapshotLock(policy => Promise.resolve(opts.dispatchAuthenticated!(
 						connection, auth.accountPartition, auth.authSessionGeneration, policy,
 						() => client.execute('', '.show databases', props),
 					)));
@@ -1447,6 +1570,7 @@ export class KustoQueryClient {
 					},
 				}
 			);
+			this.assertNotDisposed();
 			this.traceDatabaseDiscovery(traceId, 'client.request.complete', {
 				clientRequestId: props.clientRequestId,
 				elapsedMs: Date.now() - startedAt,
@@ -1483,6 +1607,7 @@ export class KustoQueryClient {
 				? generationsByPartition.get(resolvedPartition) ?? cacheGeneration
 				: operationCacheGeneration;
 			let cacheUpdated = false;
+			this.assertNotDisposed();
 			if (opts?.persistIdentity !== false && opts?.persistCache !== false && databases.length > 0 && resolvedPartition) {
 				cacheUpdated = await this.connectionCache?.setDatabases(connection.id, resolvedPartition, databases, resolvedCacheGeneration) ?? true;
 			}
@@ -1496,6 +1621,7 @@ export class KustoQueryClient {
 				throw new QueryCancelledError('Cached values changed while database discovery was running');
 			}
 			if (cacheUpdated && resolvedPartition) {
+				this.assertNotDisposed();
 				this.databaseCache.set(this.databaseCacheKey(connection, resolvedPartition), {
 					databases,
 					timestamp: Date.now(),
@@ -1879,12 +2005,46 @@ export class KustoQueryClient {
 		forceRefresh: boolean = false,
 		opts?: SchemaDiscoveryOptions
 	): Promise<DatabaseSchemaResult> {
+		this.assertNotDisposed();
+		if (opts?.dispatchAuthenticated && !this.connectionManager) {
+			throw new Error('Authenticated metadata dispatch requires a connection manager.');
+		}
+		this.syncCacheClearEpoch();
+		if (opts?.dispatchAuthenticated) {
+			return this.getDatabaseSchemaUnshared(connection, database, forceRefresh, opts);
+		}
+		const preferredPartition = this.getAccountPartition(connection) || 'unresolved';
+		const requestKey = [
+			this.dataCachePrefix(connection, preferredPartition),
+			String(database || '').trim().toLowerCase(),
+			forceRefresh ? 'force' : 'normal',
+			opts?.allowInteractive === false ? 'silent' : 'interactive',
+			opts?.persistCache === false ? 'no-persist' : 'persist',
+		].join('|');
+		const existing = this.schemaRequests.get(requestKey);
+		if (existing) return existing;
+		const request = this.getDatabaseSchemaUnshared(connection, database, forceRefresh, opts);
+		this.schemaRequests.set(requestKey, request);
+		try {
+			return await request;
+		} finally {
+			if (this.schemaRequests.get(requestKey) === request) this.schemaRequests.delete(requestKey);
+		}
+	}
+
+	private async getDatabaseSchemaUnshared(
+		connection: KustoConnection,
+		database: string,
+		forceRefresh: boolean,
+		opts?: SchemaDiscoveryOptions
+	): Promise<DatabaseSchemaResult> {
+		this.assertNotDisposed();
 		this.syncCacheClearEpoch();
 		const clusterEndpoint = this.normalizeClusterEndpoint(connection.clusterUrl);
 		const preferredPartition = this.getAccountPartition(connection);
 		const cacheGeneration = this.context ? captureSchemaCacheGeneration(this.context.globalStorageUri, connection.id, preferredPartition) : undefined;
 		const cacheKey = preferredPartition ? this.schemaCacheKey(connection, preferredPartition, database) : undefined;
-		const traceId = String(opts?.traceId || '').trim() || undefined;
+		const traceId = String(opts?.traceId || createDatabaseListTraceId()).trim();
 		const trace = (event: string, details: Record<string, unknown> = {}) => this.traceDatabaseDiscovery(traceId, `schema.${event}`, {
 			source: opts?.source || 'schema',
 			clusterRef: databaseListTraceRef(clusterEndpoint),
@@ -1895,14 +2055,20 @@ export class KustoQueryClient {
 		if (!forceRefresh) {
 			const cached = cacheKey ? this.schemaCache.get(cacheKey) : undefined;
 			if (cached && (Date.now() - cached.timestamp) < this.SCHEMA_CACHE_TTL) {
-				trace('cache.hit', { cacheAgeMs: Date.now() - cached.timestamp, hasRawSchemaJson: !!cached.schema.rawSchemaJson });
-				return {
-					schema: cached.schema,
-					fromCache: true,
-					accountPartition: preferredPartition,
-					cacheGeneration,
-					cacheAgeMs: Date.now() - cached.timestamp
-				};
+				const normalizedCachedSchema = ensureRawSchemaJson(cached.schema, database);
+				if (normalizedCachedSchema.rawSchemaJson) {
+					if (normalizedCachedSchema !== cached.schema) cached.schema = normalizedCachedSchema;
+					trace('cache.hit', { cacheAgeMs: Date.now() - cached.timestamp, hasRawSchemaJson: true });
+					return {
+						schema: normalizedCachedSchema,
+						fromCache: true,
+						accountPartition: preferredPartition,
+						cacheGeneration,
+						cacheAgeMs: Date.now() - cached.timestamp
+					};
+				}
+				if (cacheKey) this.schemaCache.delete(cacheKey);
+				trace('cache.invalid', { cacheAgeMs: Date.now() - cached.timestamp });
 			}
 		}
 		trace('cache.miss', { reason: forceRefresh ? 'force-refresh' : 'not-fresh' });
@@ -1911,85 +2077,157 @@ export class KustoQueryClient {
 			'.show database schema as json',
 			'.show database schema'
 		];
-
-		let lastError: unknown = null;
-		for (let commandIndex = 0; commandIndex < tryCommands.length; commandIndex++) {
-			const command = tryCommands[commandIndex];
-			try {
-				trace('command.start', { commandKind: command.endsWith('as json') ? 'json' : 'tabular', attempt: commandIndex + 1 });
-				const props = await this.createRequestProperties('get_schema');
-				let operationAuth: KustoAuthContext | undefined;
-				let operationCacheGeneration = cacheGeneration;
-				const generationsByPartition = new Map<string, SchemaCacheGeneration>();
-				const result = await this.executeWithAuthRetry<any>(
-					connection,
-					(client, auth) => {
-						if (!opts?.dispatchAuthenticated || !this.connectionManager) return client.execute(database, command, props);
-						if (!auth) throw new Error('Kusto dispatch identity is unavailable.');
-						return this.connectionManager.runWithLeaveNoTraceSnapshotLock(policy => Promise.resolve(opts.dispatchAuthenticated!(
-							connection, auth.accountPartition, auth.authSessionGeneration, policy,
-							() => client.execute(database, command, props),
-						)));
-					},
-					{
-						allowInteractive: opts?.allowInteractive,
-						traceId,
-						operationName: 'get-schema',
-						onClient: (_client, auth) => {
-							operationAuth = auth;
-							let generation = generationsByPartition.get(auth.accountPartition);
-							if (!generation && this.context) {
-								generation = captureSchemaCacheGeneration(this.context.globalStorageUri, connection.id, auth.accountPartition);
-								generationsByPartition.set(auth.accountPartition, generation);
-							}
-							operationCacheGeneration = generation;
-						},
-					}
-				);
-				const debug = this.buildSchemaDebug(result, command);
-				const { schema, rawSchemaJson } = this.parseDatabaseSchemaResultWithRaw(result, command);
-
-				// Store the raw schema JSON for monaco-kusto integration
-				if (rawSchemaJson) {
-					schema.rawSchemaJson = rawSchemaJson;
-				}
-
-				trace('success', {
-					commandKind: command.endsWith('as json') ? 'json' : 'tabular',
-					tableCount: Array.isArray(schema.tables) ? schema.tables.length : 0,
-					functionCount: Array.isArray(schema.functions) ? schema.functions.length : 0,
-					hasRawSchemaJson: !!schema.rawSchemaJson,
-				});
-				const resolvedPartition = operationAuth?.accountPartition;
-				const currentGeneration = resolvedPartition && this.context
-					? captureSchemaCacheGeneration(this.context.globalStorageUri, connection.id, resolvedPartition)
-					: undefined;
-				if (operationCacheGeneration !== undefined && currentGeneration !== undefined
-					&& (currentGeneration.global !== operationCacheGeneration.global
-						|| currentGeneration.connection !== operationCacheGeneration.connection
-						|| currentGeneration.partition !== operationCacheGeneration.partition)) {
-					throw new QueryCancelledError('Cached values changed while schema discovery was running');
-				}
-				if (resolvedPartition && opts?.persistCache !== false) {
-					this.schemaCache.set(this.schemaCacheKey(connection, resolvedPartition, database), { schema, timestamp: Date.now() });
-				}
-				return { schema, fromCache: false, accountPartition: resolvedPartition, cacheGeneration: operationCacheGeneration, debug };
-			} catch (e) {
-				if (e instanceof QueryCancelledError) throw e;
-				lastError = e;
-				trace('command.failed', {
-					commandKind: command.endsWith('as json') ? 'json' : 'tabular',
-					attempt: commandIndex + 1,
-					...getDatabaseListErrorDetails(e),
-				});
+		const parsedSchemaResponses = new WeakMap<object, Map<string, DatabaseSchemaIndex>>();
+		const parseSchemaResponse = (response: any, command: string): DatabaseSchemaIndex => {
+			if (response && typeof response === 'object') {
+				const cachedByCommand = parsedSchemaResponses.get(response);
+				const cached = cachedByCommand?.get(command);
+				if (cached) return cached;
 			}
-		}
-		trace('failed', getDatabaseListErrorDetails(lastError));
+			const parsed = this.parseDatabaseSchemaResultWithRaw(response, command);
+			if (parsed.rawSchemaJson) parsed.schema.rawSchemaJson = parsed.rawSchemaJson;
+			const schema = ensureRawSchemaJson(parsed.schema, database);
+			if (response && typeof response === 'object') {
+				let cachedByCommand = parsedSchemaResponses.get(response);
+				if (!cachedByCommand) {
+					cachedByCommand = new Map();
+					parsedSchemaResponses.set(response, cachedByCommand);
+				}
+				cachedByCommand.set(command, schema);
+			}
+			return schema;
+		};
 
-		throw new Error(
-			`Failed to fetch database schema: ${lastError instanceof Error ? lastError.message : String(lastError)}`,
-			{ cause: lastError }
-		);
+		type SchemaDiscoveryOutcome = {
+			schema: DatabaseSchemaIndex;
+			debug: DatabaseSchemaResult['debug'];
+			command: string;
+			commandIndex: number;
+			error?: unknown;
+		};
+		let operationAuth: KustoAuthContext | undefined;
+		let operationCacheGeneration = cacheGeneration;
+		const generationsByPartition = new Map<string, SchemaCacheGeneration>();
+		let outcome: SchemaDiscoveryOutcome;
+		try {
+			outcome = await this.executeWithAuthRetry<SchemaDiscoveryOutcome>(
+				connection,
+				async (client, auth, assertCurrent) => {
+					let rejectedOutcome: SchemaDiscoveryOutcome | undefined;
+					let lastCommandError: unknown;
+					for (let commandIndex = 0; commandIndex < tryCommands.length; commandIndex++) {
+						assertCurrent?.();
+						const command = tryCommands[commandIndex];
+						const commandKind = command.endsWith('as json') ? 'json' : 'tabular';
+						trace('command.start', { commandKind, attempt: commandIndex + 1 });
+						try {
+							const props = await this.createRequestProperties('get_schema');
+							const executeCommand = () => {
+								assertCurrent?.();
+								return client.execute(database, command, props);
+							};
+							let result: any;
+							if (!opts?.dispatchAuthenticated) {
+								result = await executeCommand();
+							} else {
+								if (!this.connectionManager) throw new Error('Authenticated metadata dispatch requires a connection manager.');
+								if (!auth) throw new Error('Kusto dispatch identity is unavailable.');
+								result = await this.connectionManager.runWithLeaveNoTraceSnapshotLock(policy => Promise.resolve(opts.dispatchAuthenticated!(
+									connection, auth.accountPartition, auth.authSessionGeneration, policy,
+									executeCommand,
+								)));
+							}
+							assertCurrent?.();
+							const debug = this.buildSchemaDebug(result, command);
+							const schema = parseSchemaResponse(result, command);
+							const commandError = new Error(`The ${commandKind === 'json' ? 'JSON' : 'tabular'} schema result was empty or malformed.`);
+							const commandOutcome = { schema, debug, command, commandIndex, error: commandError };
+							if (schema.rawSchemaJson) return commandOutcome;
+							rejectedOutcome = commandOutcome;
+							trace('command.rejected', {
+								commandKind,
+								attempt: commandIndex + 1,
+								tableCount: Array.isArray(schema.tables) ? schema.tables.length : 0,
+								functionCount: Array.isArray(schema.functions) ? schema.functions.length : 0,
+								primaryColumns: (debug?.primaryColumns || []).slice(0, 20).join(','),
+								sampleRowType: debug?.sampleRowType || '',
+								sampleRowKeys: (debug?.sampleRowKeys || []).slice(0, 20).join(','),
+							});
+						} catch (error) {
+							trace('command.failed', {
+								commandKind,
+								attempt: commandIndex + 1,
+								...getDatabaseListErrorDetails(error),
+							});
+							if (error instanceof QueryCancelledError || this.isAuthError(error)) throw error;
+							lastCommandError = error;
+						}
+					}
+					if (rejectedOutcome) return { ...rejectedOutcome, error: lastCommandError ?? rejectedOutcome.error };
+					throw lastCommandError ?? new Error('Schema discovery returned no result.');
+				},
+				{
+					allowInteractive: opts?.allowInteractive,
+					traceId,
+					operationName: 'get-schema',
+					isSuccessfulResult: result => !!result.schema.rawSchemaJson,
+					onClient: (_client, auth) => {
+						operationAuth = auth;
+						let generation = generationsByPartition.get(auth.accountPartition);
+						if (!generation && this.context) {
+							generation = captureSchemaCacheGeneration(this.context.globalStorageUri, connection.id, auth.accountPartition);
+							generationsByPartition.set(auth.accountPartition, generation);
+						}
+						operationCacheGeneration = generation;
+					},
+				},
+			);
+		} catch (error) {
+			if (error instanceof QueryCancelledError) throw error;
+			trace('failed', getDatabaseListErrorDetails(error));
+			throw new Error(
+				`Failed to fetch database schema: ${error instanceof Error ? error.message : String(error)}`,
+				{ cause: error },
+			);
+		}
+
+		this.assertNotDisposed();
+		if (!outcome.schema.rawSchemaJson) {
+			const error = outcome.error ?? new Error('Schema discovery returned an empty or malformed result.');
+			trace('failed', getDatabaseListErrorDetails(error));
+			throw new Error(
+				`Failed to fetch database schema: ${error instanceof Error ? error.message : String(error)}`,
+				{ cause: error },
+			);
+		}
+		const commandKind = outcome.command.endsWith('as json') ? 'json' : 'tabular';
+		trace('success', {
+			commandKind,
+			tableCount: Array.isArray(outcome.schema.tables) ? outcome.schema.tables.length : 0,
+			functionCount: Array.isArray(outcome.schema.functions) ? outcome.schema.functions.length : 0,
+			hasRawSchemaJson: true,
+		});
+		const resolvedPartition = operationAuth?.accountPartition;
+		const currentGeneration = resolvedPartition && this.context
+			? captureSchemaCacheGeneration(this.context.globalStorageUri, connection.id, resolvedPartition)
+			: undefined;
+		if (operationCacheGeneration !== undefined && currentGeneration !== undefined
+			&& (currentGeneration.global !== operationCacheGeneration.global
+				|| currentGeneration.connection !== operationCacheGeneration.connection
+				|| currentGeneration.partition !== operationCacheGeneration.partition)) {
+			throw new QueryCancelledError('Cached values changed while schema discovery was running');
+		}
+		if (resolvedPartition && opts?.persistCache !== false) {
+			this.assertNotDisposed();
+			this.schemaCache.set(this.schemaCacheKey(connection, resolvedPartition, database), { schema: outcome.schema, timestamp: Date.now() });
+		}
+		return {
+			schema: outcome.schema,
+			fromCache: false,
+			accountPartition: resolvedPartition,
+			cacheGeneration: operationCacheGeneration,
+			debug: outcome.debug,
+		};
 	}
 
 	/**
@@ -2055,7 +2293,9 @@ export class KustoQueryClient {
 		this.clients.clear();
 		this.cancelableClientsByKey.clear();
 		this.databaseCache.clear();
+		this.databaseRequests.clear();
 		this.schemaCache.clear();
+		this.schemaRequests.clear();
 		this.authLocksByIdentity.clear();
 		this.authCancelledAtByIdentity.clear();
 		for (const subscription of this.subscriptions.splice(0)) subscription.dispose();

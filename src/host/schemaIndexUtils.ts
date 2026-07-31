@@ -1,6 +1,6 @@
 import * as crypto from 'crypto';
 
-import { DatabaseSchemaIndex } from './kustoClient';
+import type { DatabaseSchemaIndex } from './kustoClient';
 
 /**
  * Describes how aggressively the schema was pruned to fit within a token budget.
@@ -36,6 +36,8 @@ export const PRUNE_PHASE_DESCRIPTIONS: Record<SchemaPrunePhase, string> = {
 };
 
 const _derivedColumnsCache = new WeakMap<object, Record<string, string[]>>();
+const _validatedRawSchemaDatabases = new WeakMap<object, Set<string>>();
+const _autocompleteSignatureCache = new WeakMap<object, string>();
 
 const sortStrings = (values: string[]): string[] => values.sort((a, b) => a.localeCompare(b));
 
@@ -204,13 +206,22 @@ function parseUsableRawSchemaJson(value: unknown, database: string): JsonObject 
 			return undefined;
 		}
 	}
-	if (!isJsonObject(parsed) || !isAcyclicJsonValue(parsed) || !isJsonObject(parsed.Databases)) return undefined;
+	if (!isJsonObject(parsed)) return undefined;
+	const requestedName = database.trim().toLowerCase();
+	if (!requestedName) return undefined;
+	if (_validatedRawSchemaDatabases.get(parsed)?.has(requestedName)) return parsed;
+	if (!isAcyclicJsonValue(parsed) || !isJsonObject(parsed.Databases)) return undefined;
 	const databases = Object.entries(parsed.Databases);
 	if (databases.length === 0 || !databases.every(([, candidate]) => isValidShowSchemaDatabase(candidate))) return undefined;
-	const requestedName = database.trim().toLowerCase();
 	const target = databases.find(([key, candidate]) => key.toLowerCase() === requestedName
 		&& nonEmptyString((candidate as JsonObject).Name)?.toLowerCase() === requestedName)?.[1] as JsonObject | undefined;
 	if (!target) return undefined;
+	let validatedDatabases = _validatedRawSchemaDatabases.get(parsed);
+	if (!validatedDatabases) {
+		validatedDatabases = new Set();
+		_validatedRawSchemaDatabases.set(parsed, validatedDatabases);
+	}
+	validatedDatabases.add(requestedName);
 	return parsed;
 }
 
@@ -285,7 +296,10 @@ export function synthesizeRawSchemaJson(schema: DatabaseSchemaIndex, database: s
 }
 
 export function ensureRawSchemaJson(schema: DatabaseSchemaIndex, database: string): DatabaseSchemaIndex {
-	if (parseUsableRawSchemaJson(schema.rawSchemaJson, database)) return schema;
+	const usableRawSchemaJson = parseUsableRawSchemaJson(schema.rawSchemaJson, database);
+	if (usableRawSchemaJson) {
+		return usableRawSchemaJson === schema.rawSchemaJson ? schema : { ...schema, rawSchemaJson: usableRawSchemaJson };
+	}
 	const rawSchemaJson = synthesizeRawSchemaJson(schema, database);
 	if (rawSchemaJson) return { ...schema, rawSchemaJson };
 	if (schema.rawSchemaJson !== undefined) {
@@ -373,6 +387,8 @@ export const getAutocompleteSchemaSignature = (schema: DatabaseSchemaIndex | und
 	if (!schema) {
 		return 'sha256:empty';
 	}
+	const cached = _autocompleteSignatureCache.get(schema);
+	if (cached) return cached;
 	const tableNames = Array.isArray(schema.tables)
 		? schema.tables.map(table => String(table || '')).filter(Boolean).sort((a, b) => a.localeCompare(b))
 		: [];
@@ -410,7 +426,9 @@ export const getAutocompleteSchemaSignature = (schema: DatabaseSchemaIndex | und
 		rawSchemaJson: schema.rawSchemaJson ? stableForSignature(schema.rawSchemaJson) : null,
 	});
 	const json = JSON.stringify(canonical);
-	return 'sha256:' + crypto.createHash('sha256').update(json, 'utf8').digest('hex');
+	const signature = 'sha256:' + crypto.createHash('sha256').update(json, 'utf8').digest('hex');
+	_autocompleteSignatureCache.set(schema, signature);
+	return signature;
 };
 
 /**

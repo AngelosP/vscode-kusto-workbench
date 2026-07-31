@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import * as vscode from 'vscode';
 import { KustoQueryClient, QueryCancelledError, QueryExecutionError, parseKustoTimespan, normalizeClusterEndpoint } from '../../../src/host/kustoClient';
 import type { KustoConnection } from '../../../src/host/connectionManager';
 
@@ -262,6 +263,36 @@ describe('getDatabases diagnostics', () => {
 		expect(traceText).not.toContain('SensitiveDatabaseName');
 	});
 
+	it('shares one physical discovery across concurrent same-target callers', async () => {
+		const kustoClient = new KustoQueryClient();
+		const gate = deferred<void>();
+		const execute = vi.fn(async () => {
+			await gate.promise;
+			return {
+				primaryResults: [{
+					columns: [{ name: 'DatabaseName', type: 'string' }],
+					rows: function* rows() { yield { DatabaseName: 'SensitiveDb' }; },
+				}],
+			};
+		});
+		const executeWithAuthRetry = vi.fn(async (
+			_connection: KustoConnection,
+			operation: (client: any) => Promise<unknown>,
+		) => operation({ execute }));
+		(kustoClient as any).executeWithAuthRetry = executeWithAuthRetry;
+
+		const requests = Array.from({ length: 4 }, () => kustoClient.getDatabases(
+			TEST_CONNECTION, true, { allowInteractive: false },
+		));
+		await vi.waitFor(() => expect(executeWithAuthRetry).toHaveBeenCalledOnce());
+		gate.resolve();
+		const results = await Promise.all(requests);
+
+		expect(executeWithAuthRetry).toHaveBeenCalledOnce();
+		expect(execute).toHaveBeenCalledOnce();
+		expect(results).toEqual(Array.from({ length: 4 }, () => ['SensitiveDb']));
+	});
+
 	it('preserves auth classification while keeping sensitive failure text out of logs', async () => {
 		const trace = vi.fn();
 		const error = vi.fn();
@@ -313,7 +344,7 @@ describe('getDatabaseSchema discovery policy', () => {
 		const kustoClient = new KustoQueryClient(undefined, logger);
 		const executeWithAuthRetry = vi.fn(async (_connection: KustoConnection, operation: (client: any) => Promise<unknown>) => operation({
 			execute: vi.fn(async () => ({
-				primaryResults: [{ columns: [{ name: 'Schema', type: 'string' }], rows: function* rows() { yield { Schema: JSON.stringify({ Databases: { SensitiveDb: { Tables: {}, Functions: {} } } }) }; } }],
+				primaryResults: [{ columns: [{ name: 'Schema', type: 'string' }], rows: function* rows() { yield { Schema: JSON.stringify({ Databases: { SensitiveDb: { Name: 'SensitiveDb', Tables: {}, ExternalTables: {}, MaterializedViews: {}, Functions: {}, EntityGroups: {}, Graphs: {}, MajorVersion: 1, MinorVersion: 0 } } }) }; } }],
 			})),
 		}));
 		(kustoClient as any).executeWithAuthRetry = executeWithAuthRetry;
@@ -337,6 +368,243 @@ describe('getDatabaseSchema discovery policy', () => {
 		expect(traceText).not.toContain('Databases');
 	});
 
+	it('falls back to tabular discovery instead of caching an empty JSON schema', async () => {
+		const kustoClient = new KustoQueryClient();
+		const execute = vi.fn(async (_database: string, command: string) => command.endsWith('as json')
+			? {
+				primaryResults: [{
+					columns: [{ name: 'Schema', type: 'string' }],
+					rows: function* rows() { yield { Schema: JSON.stringify({ Databases: {} }) }; },
+				}],
+			}
+			: {
+				primaryResults: [{
+					columns: [{ name: 'TableName' }, { name: 'ColumnName' }, { name: 'ColumnType' }],
+					rows: function* rows() { yield { TableName: 'Events', ColumnName: 'EventName', ColumnType: 'string' }; },
+				}],
+			});
+		const executeWithAuthRetry = vi.fn(async (
+			_connection: KustoConnection,
+			operation: (client: any) => Promise<unknown>,
+			opts: { isSuccessfulResult?: (result: unknown) => boolean },
+		) => {
+			const response = await operation({ execute });
+			if (execute.mock.calls.at(-1)?.[1]?.endsWith('as json')) {
+				expect(opts.isSuccessfulResult).toBeUndefined();
+			} else {
+				expect(opts.isSuccessfulResult?.(response)).toBe(true);
+			}
+			return response;
+		});
+		(kustoClient as any).executeWithAuthRetry = executeWithAuthRetry;
+
+		const result = await kustoClient.getDatabaseSchema(TEST_CONNECTION, 'SensitiveDb', true);
+
+		expect(execute).toHaveBeenNthCalledWith(1, 'SensitiveDb', '.show database schema as json', expect.anything());
+		expect(execute).toHaveBeenNthCalledWith(2, 'SensitiveDb', '.show database schema', expect.anything());
+		expect(result.schema.tables).toEqual(['Events']);
+		expect(result.schema.rawSchemaJson).toEqual(expect.objectContaining({
+			Databases: expect.objectContaining({ SensitiveDb: expect.any(Object) }),
+		}));
+	});
+
+	it('tries tabular schema on the same authenticated client before account retry', async () => {
+		const globalState = new Map<string, unknown>();
+		const secrets = new Map<string, string>();
+		const context = {
+			globalState: {
+				get: <T>(key: string, fallback?: T) => globalState.has(key) ? globalState.get(key) as T : fallback,
+				update: async (key: string, value: unknown) => { globalState.set(key, value); },
+			},
+			secrets: {
+				keys: async () => [...secrets.keys()],
+				get: async (key: string) => secrets.get(key),
+				store: async (key: string, value: string) => { secrets.set(key, value); },
+				delete: async (key: string) => { secrets.delete(key); },
+			},
+			globalStorageUri: vscode.Uri.file(`/schema-first-use-${Date.now()}`),
+			subscriptions: [],
+		} as any;
+		const kustoClient = new KustoQueryClient(context);
+		const accountPartition = (kustoClient as any).authPreferences.getAccountPartition(undefined, 'account-1');
+		const auth = {
+			connectionId: TEST_CONNECTION.id,
+			connectionIdentityKey: 'https://example.kusto.windows.net|',
+			clusterEndpoint: 'https://example.kusto.windows.net',
+			scopes: ['https://kusto.kusto.windows.net/.default'],
+			account: { id: 'account-1', label: 'Account 1' },
+			accountId: 'account-1',
+			accountPartition,
+			authSessionGeneration: 0,
+			preferenceMode: 'automatic',
+		};
+		const sdkClient = {
+			close: vi.fn(),
+			execute: vi.fn(async (_database: string, command: string) => command.endsWith('as json')
+				? {
+					primaryResults: [{
+						columns: [{ name: 'Schema', type: 'string' }],
+						rows: function* rows() { yield { Schema: JSON.stringify({ Databases: {} }) }; },
+					}],
+				}
+				: {
+					primaryResults: [{
+						columns: [{ name: 'TableName' }, { name: 'ColumnName' }, { name: 'ColumnType' }],
+						rows: function* rows() { yield { TableName: 'Events', ColumnName: 'EventName', ColumnType: 'string' }; },
+					}],
+				}),
+		};
+		(kustoClient as any).getOrCreateClient = vi.fn(async () => sdkClient);
+		(kustoClient as any).authContextByClient.set(sdkClient, auth);
+		(kustoClient as any).clients.set(TEST_CONNECTION.id, { client: sdkClient, auth });
+		(kustoClient as any).getAccountCandidates = vi.fn(async () => [{ id: 'account-2', label: 'Account 2' }]);
+		const requestSession = vi.fn(async () => ({ session: undefined }));
+		(kustoClient as any).requestSession = requestSession;
+
+		const result = await kustoClient.getDatabaseSchema(
+			TEST_CONNECTION,
+			'SensitiveDb',
+			true,
+			{ allowInteractive: false },
+		);
+
+		expect(sdkClient.execute.mock.calls.map(call => call[1])).toEqual([
+			'.show database schema as json',
+			'.show database schema',
+		]);
+		expect(result.schema.tables).toEqual(['Events']);
+		expect(requestSession).not.toHaveBeenCalled();
+		expect(sdkClient.close).toHaveBeenCalledOnce();
+		kustoClient.dispose();
+	});
+
+	it('shares one physical discovery across concurrent same-target callers', async () => {
+		const kustoClient = new KustoQueryClient();
+		const gate = deferred<void>();
+		const rawSchema = {
+			Plugins: [],
+			Databases: {
+				SensitiveDb: {
+					Name: 'SensitiveDb',
+					Tables: { Events: { Name: 'Events', OrderedColumns: [{ Name: 'EventName', Type: 'string', CslType: 'string' }] } },
+					ExternalTables: {}, MaterializedViews: {}, Functions: {}, EntityGroups: {}, Graphs: {},
+					MajorVersion: 1, MinorVersion: 0,
+				},
+			},
+		};
+		const execute = vi.fn(async () => {
+			await gate.promise;
+			return {
+				primaryResults: [{
+					columns: [{ name: 'DatabaseSchema', type: 'string' }],
+					rows: function* rows() { yield { DatabaseSchema: JSON.stringify(rawSchema) }; },
+				}],
+			};
+		});
+		const executeWithAuthRetry = vi.fn(async (
+			_connection: KustoConnection,
+			operation: (client: any) => Promise<unknown>,
+		) => operation({ execute }));
+		(kustoClient as any).executeWithAuthRetry = executeWithAuthRetry;
+
+		const requests = Array.from({ length: 4 }, () => kustoClient.getDatabaseSchema(
+			TEST_CONNECTION, 'SensitiveDb', false, { allowInteractive: false },
+		));
+		await vi.waitFor(() => expect(executeWithAuthRetry).toHaveBeenCalledOnce());
+		gate.resolve();
+		const results = await Promise.all(requests);
+
+		expect(executeWithAuthRetry).toHaveBeenCalledOnce();
+		expect(execute).toHaveBeenCalledOnce();
+		expect(results.every(result => result.schema === results[0].schema)).toBe(true);
+		expect(results[0].schema.tables).toEqual(['Events']);
+	});
+
+	it('does not coalesce an owner-gated schema request with a direct request', async () => {
+		const runWithLeaveNoTraceSnapshotLock = vi.fn(async (run: (policy: unknown) => Promise<unknown>) => run({}));
+		const connectionManager = {
+			runWithLeaveNoTraceSnapshotLock,
+			onDidChangeConnections: vi.fn(() => ({ dispose: vi.fn() })),
+			getConnections: vi.fn(() => [TEST_CONNECTION]),
+		};
+		const kustoClient = new KustoQueryClient(undefined, undefined, connectionManager as any);
+		const gate = deferred<void>();
+		let physicalStarts = 0;
+		const rawSchema = {
+			Plugins: [],
+			Databases: {
+				SensitiveDb: {
+					Name: 'SensitiveDb', Tables: {}, ExternalTables: {}, MaterializedViews: {}, Functions: {},
+					EntityGroups: {}, Graphs: {}, MajorVersion: 1, MinorVersion: 0,
+				},
+			},
+		};
+		const execute = vi.fn(async () => {
+			physicalStarts++;
+			if (physicalStarts === 2) gate.resolve();
+			await gate.promise;
+			return {
+				primaryResults: [{
+					columns: [{ name: 'DatabaseSchema', type: 'string' }],
+					rows: function* rows() { yield { DatabaseSchema: JSON.stringify(rawSchema) }; },
+				}],
+			};
+		});
+		const operationAuth = {
+			accountPartition: 'partition-1', authSessionGeneration: 1,
+		};
+		const executeWithAuthRetry = vi.fn(async (
+			_connection: KustoConnection,
+			operation: (client: any, auth: any) => Promise<unknown>,
+		) => operation({ execute }, operationAuth));
+		(kustoClient as any).executeWithAuthRetry = executeWithAuthRetry;
+		const dispatchAuthenticated = vi.fn(async (
+			_connection: KustoConnection,
+			_accountPartition: string,
+			_authSessionGeneration: number,
+			_policy: unknown,
+			dispatch: () => Promise<unknown>,
+		) => dispatch());
+
+		await Promise.all([
+			kustoClient.getDatabaseSchema(TEST_CONNECTION, 'SensitiveDb', true),
+			kustoClient.getDatabaseSchema(TEST_CONNECTION, 'SensitiveDb', true, { dispatchAuthenticated }),
+		]);
+
+		expect(executeWithAuthRetry).toHaveBeenCalledTimes(2);
+		expect(execute).toHaveBeenCalledTimes(2);
+		expect(runWithLeaveNoTraceSnapshotLock).toHaveBeenCalledOnce();
+		expect(dispatchAuthenticated).toHaveBeenCalledOnce();
+	});
+
+	it('fails closed before warm metadata cache lookup when a dispatch gate has no manager', async () => {
+		const kustoClient = new KustoQueryClient();
+		(kustoClient as any).getAccountPartition = vi.fn(() => 'partition-1');
+		const schemaKey = (kustoClient as any).schemaCacheKey(TEST_CONNECTION, 'partition-1', 'SensitiveDb');
+		(kustoClient as any).schemaCache.set(schemaKey, {
+			schema: {
+				tables: [], columnTypesByTable: {}, rawSchemaJson: {
+					Plugins: [], Databases: {
+						SensitiveDb: {
+							Name: 'SensitiveDb', Tables: {}, ExternalTables: {}, MaterializedViews: {}, Functions: {},
+							EntityGroups: {}, Graphs: {}, MajorVersion: 1, MinorVersion: 0,
+						},
+					},
+				},
+			},
+			timestamp: Date.now(),
+		});
+		const databaseKey = (kustoClient as any).databaseCacheKey(TEST_CONNECTION, 'partition-1');
+		(kustoClient as any).databaseCache.set(databaseKey, { databases: ['SensitiveDb'], timestamp: Date.now() });
+		const dispatchAuthenticated = vi.fn();
+
+		await expect(kustoClient.getDatabaseSchema(TEST_CONNECTION, 'SensitiveDb', false, { dispatchAuthenticated }))
+			.rejects.toThrow('requires a connection manager');
+		await expect(kustoClient.getDatabasesWithIdentity(TEST_CONNECTION, false, { dispatchAuthenticated }))
+			.rejects.toThrow('requires a connection manager');
+		expect(dispatchAuthenticated).not.toHaveBeenCalled();
+	});
+
 	it('does not run the tabular fallback after schema discovery is cancelled', async () => {
 		const kustoClient = new KustoQueryClient();
 		const executeWithAuthRetry = vi.fn(async () => {
@@ -347,6 +615,71 @@ describe('getDatabaseSchema discovery policy', () => {
 		await expect(kustoClient.getDatabaseSchema(TEST_CONNECTION, 'Samples', true))
 			.rejects.toBeInstanceOf(QueryCancelledError);
 		expect(executeWithAuthRetry).toHaveBeenCalledOnce();
+	});
+
+	it('does not return or cache a schema that settles after disposal', async () => {
+		const kustoClient = new KustoQueryClient();
+		const response = deferred<any>();
+		const auth = {
+			connectionId: TEST_CONNECTION.id,
+			connectionIdentityKey: 'https://example.kusto.windows.net|',
+			clusterEndpoint: 'https://example.kusto.windows.net',
+			scopes: ['https://kusto.kusto.windows.net/.default'],
+			account: { id: 'account-1', label: 'Account 1' },
+			accountId: 'account-1',
+			accountPartition: 'partition-account-1',
+			authSessionGeneration: 0,
+			preferenceMode: 'automatic',
+		};
+		const sdkClient = {
+			close: vi.fn(),
+			execute: vi.fn(async (_database: string, command: string) => {
+				if (command.endsWith('as json')) return response.promise;
+				throw new Error('Tabular schema must not run after disposal');
+			}),
+		};
+		(kustoClient as any).getOrCreateClient = vi.fn(async () => sdkClient);
+		(kustoClient as any).authContextByClient.set(sdkClient, auth);
+		(kustoClient as any).clients.set(TEST_CONNECTION.id, { client: sdkClient, auth });
+		(kustoClient as any).getAccountCandidates = vi.fn(async () => []);
+
+		const pending = kustoClient.getDatabaseSchema(TEST_CONNECTION, 'SensitiveDb', true);
+		await vi.waitFor(() => expect(sdkClient.execute).toHaveBeenCalledOnce());
+		kustoClient.dispose();
+		response.resolve({
+			primaryResults: [{
+				columns: [{ name: 'DatabaseSchema' }],
+				rows: function* rows() { yield { DatabaseSchema: JSON.stringify({ Databases: {} }) }; },
+			}],
+		});
+
+		await expect(pending).rejects.toThrow('disposed');
+		expect(sdkClient.execute.mock.calls.map(call => call[1])).toEqual(['.show database schema as json']);
+		expect(sdkClient.close).toHaveBeenCalledOnce();
+		expect((kustoClient as any).schemaCache.size).toBe(0);
+	});
+});
+
+describe('metadata disposal fencing', () => {
+	it('does not return or cache databases that settle after disposal', async () => {
+		const kustoClient = new KustoQueryClient();
+		const response = deferred<any>();
+		const executeWithAuthRetry = vi.fn(() => response.promise);
+		(kustoClient as any).executeWithAuthRetry = executeWithAuthRetry;
+		(kustoClient as any).createRequestProperties = vi.fn(async () => ({ clientRequestId: 'disposed-databases' }));
+
+		const pending = kustoClient.getDatabases(TEST_CONNECTION, true);
+		await vi.waitFor(() => expect(executeWithAuthRetry).toHaveBeenCalledOnce());
+		kustoClient.dispose();
+		response.resolve({
+			primaryResults: [{
+				columns: [{ name: 'DatabaseName' }],
+				rows: function* rows() { yield { DatabaseName: 'SensitiveDb' }; },
+			}],
+		});
+
+		await expect(pending).rejects.toThrow('disposed');
+		expect((kustoClient as any).databaseCache.size).toBe(0);
 	});
 });
 

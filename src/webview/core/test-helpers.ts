@@ -47,6 +47,7 @@ type MonacoLike = {
 		uri?: { toString(): string };
 	} | null;
 	getOptions?: () => { get?: (option: any) => any };
+	getRawOptions?: () => { wordBasedSuggestions?: string };
 	getPosition?: () => { lineNumber: number; column: number } | null;
 	getTargetAtClientPoint?: (clientX: number, clientY: number) => { type?: number | string; position?: { lineNumber: number; column: number } | null } | null;
 	getScrolledVisiblePosition?: (position: { lineNumber: number; column: number }) => { top: number; left: number; height: number } | null;
@@ -54,6 +55,7 @@ type MonacoLike = {
 	setPosition?: (position: { lineNumber: number; column: number }) => void;
 	setSelection?: (selection: { startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number }) => void;
 	trigger?: (source: string, handlerId: string, payload: any) => void;
+	updateOptions?: (options: { wordBasedSuggestions?: string }) => void;
 	onDidFocusEditorText?: (cb: () => void) => { dispose(): void };
 	onDidFocusEditorWidget?: (cb: () => void) => { dispose(): void };
 };
@@ -1110,7 +1112,15 @@ async function e2eAssertActualKustoWorkerContext(sectionIndex: number = 0): Prom
 	return `actual worker context is ${actualClusterUrl || '(cluster unavailable)'}/${actualDatabase}`;
 }
 
-async function e2eAssertKustoTableCompletionForSection(sectionIndex: number = 0, timeoutMs: number = 5000): Promise<string> {
+async function e2eAssertKustoTableCompletionForSection(
+	sectionIndex: number = 0,
+	timeoutMs: number = 5000,
+	proofName: string = '',
+): Promise<string> {
+	if (proofName) {
+		e2eClearProofMarker(proofName);
+		e2eClearProofMarker(`${proofName}-failure`);
+	}
 	const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
 	const section = sections[sectionIndex];
 	if (!section) throw new Error(`Kusto section ${sectionIndex} not found`);
@@ -1120,19 +1130,63 @@ async function e2eAssertKustoTableCompletionForSection(sectionIndex: number = 0,
 	const table = tableNames.find((name: string) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(name));
 	if (!table) throw new Error(`No identifier-safe table found for section ${sectionIndex}`);
 	const prefix = e2eUniquePrefix(table, tableNames, 3);
-	const editor = _win.queryEditors?.[boxId] as MonacoLike | undefined;
-	if (!editor) throw new Error(`Kusto editor ${boxId} not found`);
-	editor.setValue?.(prefix);
-	editor.setPosition?.({ lineNumber: 1, column: prefix.length + 1 });
+	const editorSelector = `kw-query-section:nth-of-type(${sectionIndex + 1}) .query-editor .monaco-editor`;
+	let editor: MonacoLike;
+	try {
+		editor = resolveMonacoEditorFromSelector(editorSelector).editor;
+		const resolvedBoxId = e2eGetEditorBoxId(editor);
+		if (resolvedBoxId !== boxId) {
+			throw new Error(`Resolved editor belongs to ${resolvedBoxId || '(none)'}, expected ${boxId}`);
+		}
+		editor.setValue?.(prefix);
+		editor.setPosition?.({ lineNumber: 1, column: prefix.length + 1 });
+		try { editor.focus?.(); } catch { /* focus is best-effort in a webview evaluation */ }
+		const actualValue = String(editor.getValue?.() || '');
+		const actualPosition = editor.getPosition?.();
+		if (actualValue !== prefix || actualPosition?.lineNumber !== 1 || actualPosition?.column !== prefix.length + 1) {
+			throw new Error(`Monaco prefix setup mismatch: valueLength=${actualValue.length} caret=${actualPosition?.lineNumber || 0}:${actualPosition?.column || 0}`);
+		}
+		editor.updateOptions?.({ wordBasedSuggestions: 'off' });
+		const effectiveWordSuggestions = (editor as any)._configurationService?.getValue?.('editor.wordBasedSuggestions');
+		if (effectiveWordSuggestions !== 'off') {
+			throw new Error(`Monaco word suggestions could not be disabled for the worker-only completion proof: ${String(effectiveWordSuggestions)}`);
+		}
+	} catch (error) {
+		if (proofName) {
+			e2eSetProofMarker(`${proofName}-failure`, {
+				ok: false,
+				sectionIndex,
+				table,
+				prefix,
+				setupError: error instanceof Error ? error.message : String(error),
+			});
+		}
+		throw error;
+	}
 	const triggered = await _win.__kustoTriggerAutocompleteForBoxId?.(boxId);
 	if (!triggered) throw new Error(`Autocomplete trigger was not accepted for section ${sectionIndex}`);
-	const editorSelector = `kw-query-section:nth-of-type(${sectionIndex + 1}) .query-editor`;
 	const started = performance.now();
 	let lastError: unknown;
+	let lastLabels: string[] = [];
 	while (performance.now() - started <= timeoutMs) {
 		try {
-			const labels = e2eVisibleSuggestLabelsWithDiagnostics(`section ${sectionIndex} table completion`, editorSelector);
-			if (labels.some(label => e2eNormalizeSuggestLabel(label).toLowerCase() === table.toLowerCase())) {
+			const labels = e2eStrictVisibleSuggestLabelsForEditor(`section ${sectionIndex} table completion`, editor);
+			lastLabels = labels;
+			const matchedLabel = labels.find(label => e2eNormalizeSuggestIdentifierLabel(label) === table.toLowerCase());
+			if (matchedLabel) {
+				if (proofName) {
+					e2eSetProofMarker(proofName, {
+						ok: true,
+						sectionIndex,
+						table,
+						prefix,
+						labels: labels.slice(0, 40),
+						matchedLabel,
+						wordBasedSuggestions: 'off',
+						widgetAssociatedWithSection: true,
+						elapsedMs: Math.round(performance.now() - started),
+					});
+				}
 				return `section ${sectionIndex} suggests ${table} for ${prefix}`;
 			}
 			lastError = new Error(`Expected ${table}, got ${labels.slice(0, 20).join(', ')}`);
@@ -1141,7 +1195,76 @@ async function e2eAssertKustoTableCompletionForSection(sectionIndex: number = 0,
 		}
 		await e2eDelay(50);
 	}
+	if (proofName) {
+		let workerLabels: string[] = [];
+		let workerError = '';
+		try {
+			const model = editor.getModel?.() as any;
+			const modelUri = String(model?.uri?.toString?.() || '');
+			const position = editor.getPosition?.();
+			const monacoApi = _win.monaco;
+			if (!modelUri || !position || !monacoApi?.languages?.kusto?.getKustoWorker || !monacoApi?.Uri?.parse) {
+				throw new Error('Kusto worker completion API is unavailable');
+			}
+			const workerAccessor = await monacoApi.languages.kusto.getKustoWorker();
+			const worker = await workerAccessor(monacoApi.Uri.parse(modelUri));
+			const completion = await worker?.doComplete?.(modelUri, {
+				line: Math.max(0, position.lineNumber - 1),
+				character: Math.max(0, position.column - 1),
+			});
+			workerLabels = (completion?.items || []).map((item: any) => {
+				const label = item?.label;
+				return String(typeof label === 'string' ? label : label?.label || '').trim();
+			}).filter(Boolean).slice(0, 40);
+		} catch (error) {
+			workerError = error instanceof Error ? error.message : String(error);
+		}
+		const compactTrace = e2eCompactAutocompleteTrace();
+		e2eSetProofMarker(`${proofName}-failure`, {
+			ok: false,
+			sectionIndex,
+			table,
+			prefix,
+			visibleLabels: lastLabels.slice(0, 40),
+			workerLabels,
+			workerError,
+			traceStatus: String(compactTrace?.status || ''),
+			traceEvents: Array.isArray(compactTrace?.events)
+				? compactTrace.events.map((event: any) => String(event?.event || '')).filter(Boolean).slice(-40)
+				: [],
+			elapsedMs: Math.round(performance.now() - started),
+			lastError: lastError instanceof Error ? lastError.message.slice(0, 300) : String(lastError || '').slice(0, 300),
+		});
+	}
 	throw lastError instanceof Error ? lastError : new Error(`No table completion for section ${sectionIndex}`);
+}
+
+function e2eStrictVisibleSuggestLabelsForEditor(context: string, editor: MonacoLike): string[] {
+	const contextLabel = String(context || 'suggestions');
+	const editorRoot = editor.getDomNode?.();
+	const editorHost = editorRoot?.closest?.('.monaco-editor') || editorRoot;
+	const widget = __kustoFindSuggestWidgetForEditor(editor, { requireVisible: true, maxDistancePx: 480 }) as HTMLElement | null;
+	if (!widget || !e2eIsVisibleElement(widget)) {
+		throw new Error(`${contextLabel}: expected visible suggest widget associated with the target editor`);
+	}
+	if (!editorHost || widget.closest('.monaco-editor') !== editorHost) {
+		throw new Error(`${contextLabel}: suggest widget is not owned by the target editor`);
+	}
+	const visibleMessage = e2eVisibleSuggestWidgetMessage(widget);
+	if (/\bloading\b/i.test(visibleMessage)) {
+		throw new Error(`${contextLabel}: suggest widget is still loading`);
+	}
+	if (/no suggestions/i.test(visibleMessage)) {
+		throw new Error(`${contextLabel}: suggest widget reported no suggestions`);
+	}
+	const labels = (Array.from(widget.querySelectorAll('.monaco-list-row')) as HTMLElement[])
+		.filter(row => e2eIsVisibleElement(row))
+		.map(row => row.querySelector('.label-name') as HTMLElement | null)
+		.filter(labelElement => labelElement ? e2eIsVisibleElement(labelElement) : false)
+		.map(labelElement => (labelElement?.textContent || '').trim())
+		.filter(Boolean);
+	if (!labels.length) throw new Error(`${contextLabel}: expected visible suggestion rows in the target editor`);
+	return labels;
 }
 
 async function e2eWaitForKustoSupplementalState(sectionIndex: number, status: string, timeoutMs: number = 15000): Promise<string> {
@@ -1279,10 +1402,11 @@ _win.__testAssertVisibleSuggest = (context: string, expectedAnyCsv: string = '',
 
 	const widget = widgets[widgets.length - 1];
 	const widgetText = (widget.textContent || '').trim();
-	if (/\bloading\b/i.test(widgetText)) {
+	const visibleMessage = e2eVisibleSuggestWidgetMessage(widget);
+	if (/\bloading\b/i.test(visibleMessage)) {
 		throw new Error(`${contextLabel}: suggest widget is still loading. Text: ${widgetText.slice(0, 200)}`);
 	}
-	if (/no suggestions/i.test(widgetText)) {
+	if (/no suggestions/i.test(visibleMessage)) {
 		throw new Error(`${contextLabel}: suggest widget reported no suggestions`);
 	}
 
@@ -2885,10 +3009,18 @@ function e2eVisibleSuggestWidgets(contextLabel: string, editorSelector: string =
 	return widgets;
 }
 
+function e2eVisibleSuggestWidgetMessage(widget: HTMLElement): string {
+	if (!widget.classList.contains('message')) return '';
+	const message = Array.from(widget.children)
+		.find(child => (child as HTMLElement).classList?.contains('message')) as HTMLElement | undefined;
+	if (!message || !e2eIsVisibleElement(message)) return '';
+	return (message.textContent || '').trim();
+}
+
 function e2eAssertNoSuggestLoading(context: string, editorSelector: string = ''): string {
 	const contextLabel = String(context || 'suggestions');
 	const loadingWidgets = e2eVisibleSuggestWidgets(contextLabel, editorSelector)
-		.filter(widget => /\bloading\b/i.test((widget.textContent || '').trim()));
+		.filter(widget => /\bloading\b/i.test(e2eVisibleSuggestWidgetMessage(widget)));
 	if (loadingWidgets.length) {
 		const text = (loadingWidgets[loadingWidgets.length - 1].textContent || '').trim();
 		throw new Error(`${contextLabel}: expected no visible loading suggest widget, got ${loadingWidgets.length}: ${text.slice(0, 200)}`);
@@ -2942,10 +3074,11 @@ function e2eVisibleSuggestLabels(context: string, editorSelector: string = ''): 
 
 	const widget = widgets[widgets.length - 1];
 	const widgetText = (widget.textContent || '').trim();
-	if (/\bloading\b/i.test(widgetText)) {
+	const visibleMessage = e2eVisibleSuggestWidgetMessage(widget);
+	if (/\bloading\b/i.test(visibleMessage)) {
 		throw new Error(`${contextLabel}: suggest widget is still loading. Text: ${widgetText.slice(0, 200)}`);
 	}
-	if (/no suggestions/i.test(widgetText)) {
+	if (/no suggestions/i.test(visibleMessage)) {
 		throw new Error(`${contextLabel}: suggest widget reported no suggestions`);
 	}
 
@@ -2974,10 +3107,11 @@ function e2eActuallyVisibleSuggestLabels(context: string, editorSelector: string
 	}
 	const widget = widgets[widgets.length - 1];
 	const widgetText = (widget.textContent || '').trim();
-	if (/\bloading\b/i.test(widgetText)) {
+	const visibleMessage = e2eVisibleSuggestWidgetMessage(widget);
+	if (/\bloading\b/i.test(visibleMessage)) {
 		throw new Error(`${contextLabel}: suggest widget is still loading. Text: ${widgetText.slice(0, 200)}`);
 	}
-	if (/no suggestions/i.test(widgetText)) {
+	if (/no suggestions/i.test(visibleMessage)) {
 		throw new Error(`${contextLabel}: suggest widget reported no suggestions`);
 	}
 	const widgetRect = widget.getBoundingClientRect();
@@ -3014,6 +3148,23 @@ function e2eNormalizeSuggestLabel(value: string): string {
 	label = label.replace(/^(\x00|\[|\(|\{|"|')+/, '').replace(/(\]|\)|\}|"|')+$/, '');
 	label = label.split(/[\s,\(:]/g).filter(Boolean)[0] || label;
 	return label.trim().toLowerCase();
+}
+
+function e2eNormalizeSuggestIdentifierLabel(value: string): string {
+	let label = String(value || '').trim().replace(/^(\x1b\[[0-9;]*m)+/g, '');
+	const wrappers: Array<[string, string]> = [['[', ']'], ['{', '}'], ['"', '"'], ["'", "'"]];
+	let unwrapped = true;
+	while (unwrapped && label.length >= 2) {
+		unwrapped = false;
+		for (const [open, close] of wrappers) {
+			if (label.startsWith(open) && label.endsWith(close)) {
+				label = label.slice(open.length, -close.length).trim();
+				unwrapped = true;
+				break;
+			}
+		}
+	}
+	return label.toLowerCase();
 }
 
 function e2eNormalizeSuggestColumnLabel(value: string): string {
@@ -3312,7 +3463,14 @@ function e2eSetProofMarker(name: string, detail?: unknown): string {
 	marker.id = id;
 	marker.setAttribute('data-testid', id);
 	marker.hidden = true;
-	try { marker.textContent = JSON.stringify(detail ?? { ok: true }).slice(0, 2000); } catch { marker.textContent = 'ok'; }
+	try {
+		const text = JSON.stringify(detail ?? { ok: true });
+		marker.textContent = text.length <= 16_000
+			? text
+			: JSON.stringify({ truncated: true, originalBytes: text.length, preview: text.slice(0, 12_000) });
+	} catch {
+		marker.textContent = JSON.stringify({ ok: false, serializationError: true });
+	}
 	document.body.appendChild(marker);
 	return id;
 }
@@ -3512,8 +3670,8 @@ function e2eSuggestDiagnostics(context: string, editorSelector: string = E2E_SEC
 				return {
 					textLength: String(widget.textContent || '').length,
 					labelCount: labels.length,
-					hasLoading: /\bloading\b/i.test(widget.textContent || ''),
-					hasNoSuggestions: /no suggestions/i.test(widget.textContent || ''),
+					hasLoading: /\bloading\b/i.test(e2eVisibleSuggestWidgetMessage(widget)),
+					hasNoSuggestions: /no suggestions/i.test(e2eVisibleSuggestWidgetMessage(widget)),
 					rowCount: rows.length,
 				};
 			});
@@ -6790,7 +6948,7 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		assertWorkerContext: (sectionIndex: number = 0) => e2eAssertKustoWorkerContext(sectionIndex),
 		waitForWorkerContext: (sectionIndex: number = 0, timeoutMs: number = 10000) => e2eWaitForKustoWorkerContext(sectionIndex, timeoutMs),
 		assertActualWorkerContext: (sectionIndex: number = 0) => e2eAssertActualKustoWorkerContext(sectionIndex),
-		assertTableCompletionForSection: (sectionIndex: number = 0, timeoutMs: number = 5000) => e2eAssertKustoTableCompletionForSection(sectionIndex, timeoutMs),
+		assertTableCompletionForSection: (sectionIndex: number = 0, timeoutMs: number = 5000, proofName: string = '') => e2eAssertKustoTableCompletionForSection(sectionIndex, timeoutMs, proofName),
 		waitForSupplementalState: (sectionIndex: number = 0, status: string = 'loaded', timeoutMs: number = 15000) => e2eWaitForKustoSupplementalState(sectionIndex, status, timeoutMs),
 		assertNoSupplementalWarnings: (sectionIndex: number = 0) => e2eAssertNoKustoSupplementalWarnings(sectionIndex),
 		assertSupplementalBackgroundTrace: (sectionIndex: number = 0) => e2eAssertKustoSupplementalBackgroundTrace(sectionIndex),
@@ -6814,9 +6972,13 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		applySemanticCompletionFixture: () => e2eApplyKustoSemanticFixture(),
 		applyCurrentClusterWorkflowFixture: () => e2eApplyKustoCurrentClusterWorkflowFixture(),
 		applySchemaReplacementFixture: (version: string) => e2eApplyKustoSchemaReplacementFixture(version),
-		setCustomColumnProviderEnabled: (enabled: boolean) => {
-			const modelUri = e2eEditor('kusto').getModel?.()?.uri?.toString?.() || '';
-			if (!modelUri) throw new Error('Kusto model URI unavailable for custom provider override.');
+		setCustomColumnProviderEnabled: (enabled: boolean, sectionIndex: number = 0) => {
+			const sections = Array.from(document.querySelectorAll('kw-query-section')) as any[];
+			const section = sections[sectionIndex];
+			if (!section) throw new Error(`Kusto section ${sectionIndex} unavailable for custom provider override.`);
+			const boxId = String(section.boxId || section.id || '');
+			const modelUri = String(_win.queryEditors?.[boxId]?.getModel?.()?.uri?.toString?.() || '');
+			if (!modelUri) throw new Error(`Kusto model URI unavailable for section ${sectionIndex} custom provider override.`);
 			return __kustoSetCustomColumnCompletionProviderEnabledForTest(modelUri, enabled);
 		},
 		setQueryWithCaretMarker: (queryWithMarker: string, marker?: string) => e2eSetKustoQueryWithCaretMarker(queryWithMarker, marker),

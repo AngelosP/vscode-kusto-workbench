@@ -114,6 +114,88 @@ describe('KustoQueryClient auth identity', () => {
 		expect(firstClient.close).toHaveBeenCalledOnce();
 	});
 
+	it('defers physical client close until concurrent metadata operations settle', async () => {
+		const client = new KustoQueryClient();
+		const sharedClient = { id: 'shared', close: vi.fn() };
+		(client as any).authContextByClient.set(sharedClient, authContext('account-1'));
+		(client as any).getOrCreateClient = vi.fn(async () => sharedClient);
+		(client as any).getAccountCandidates = vi.fn(async () => []);
+		let started = 0;
+		let releaseBoth!: () => void;
+		const bothStarted = new Promise<void>(resolve => { releaseBoth = resolve; });
+		const markStarted = async () => {
+			started++;
+			if (started === 2) releaseBoth();
+			await bothStarted;
+		};
+		const finishSibling = deferred<void>();
+
+		const rejected = (client as any).executeWithAuthRetry(
+			CONNECTION,
+			async () => { await markStarted(); return { visible: false }; },
+			{ allowInteractive: false, isSuccessfulResult: (result: { visible: boolean }) => result.visible },
+		);
+		const sibling = (client as any).executeWithAuthRetry(
+			CONNECTION,
+			async () => { await markStarted(); await finishSibling.promise; return { visible: true }; },
+			{ allowInteractive: false },
+		);
+
+		await expect(rejected).resolves.toEqual({ visible: false });
+		expect(sharedClient.close).not.toHaveBeenCalled();
+		finishSibling.resolve();
+		await expect(sibling).resolves.toEqual({ visible: true });
+		expect(sharedClient.close).toHaveBeenCalledOnce();
+	});
+
+	it('closes a client that finishes acquisition after disposal', async () => {
+		const client = new KustoQueryClient();
+		const acquired = deferred<any>();
+		const lateClient = { close: vi.fn() };
+		(client as any).getOrCreateClient = vi.fn(() => acquired.promise);
+		(client as any).getAccountCandidates = vi.fn(async () => []);
+		const operation = vi.fn();
+
+		const pending = (client as any).executeWithAuthRetry(CONNECTION, operation, { allowInteractive: false });
+		client.dispose();
+		acquired.resolve(lateClient);
+
+		await expect(pending).rejects.toThrow('disposed');
+		expect(operation).not.toHaveBeenCalled();
+		expect(lateClient.close).toHaveBeenCalledOnce();
+	});
+
+	it('closes a cancelable client acquired after disposal without caching it', async () => {
+		const client = new KustoQueryClient();
+		const acquired = deferred<any>();
+		const lateEntry = { client: { close: vi.fn() }, auth: authContext('account-1') };
+		(client as any).createClientWithRetry = vi.fn(() => acquired.promise);
+
+		const pending = (client as any).getOrCreateCancelableClient(CONNECTION, 'box::run');
+		client.dispose();
+		acquired.resolve(lateEntry);
+
+		await expect(pending).rejects.toThrow('disposed');
+		expect((client as any).cancelableClientsByKey.size).toBe(0);
+		expect(lateEntry.client.close).toHaveBeenCalledOnce();
+	});
+
+	it('defers unmatched cancelable eviction until all active leases release', () => {
+		const client = new KustoQueryClient();
+		const sdkClient = { close: vi.fn() };
+		const releaseFirst = (client as any).retainClientOperation(sdkClient);
+		const releaseSecond = (client as any).retainClientOperation(sdkClient);
+
+		(client as any).evictCancelableClient(CONNECTION, 'missing', sdkClient);
+		expect(sdkClient.close).not.toHaveBeenCalled();
+		releaseFirst();
+		expect(sdkClient.close).not.toHaveBeenCalled();
+		releaseSecond();
+		expect(sdkClient.close).toHaveBeenCalledOnce();
+		(client as any).evictCancelableClient(CONNECTION, 'missing', sdkClient);
+		expect(sdkClient.close).toHaveBeenCalledOnce();
+	});
+
 	it('returns a zero-database fallback with the account partition that produced it', async () => {
 		const client = new KustoQueryClient();
 		const accountAClient = { id: 'account-a-client', close: vi.fn() };

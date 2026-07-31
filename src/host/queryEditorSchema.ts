@@ -81,6 +81,7 @@ function requireWorkerReadySchema(schema: DatabaseSchemaIndex, database: string)
 
 export class SchemaService {
 	private readonly backgroundSchemaRefreshes = new Map<string, { listeners: BackgroundSchemaRefreshListener[]; promise: Promise<void> }>();
+	private readonly cachedSchemaReads = new Map<string, Promise<CachedSchemaEntry | undefined>>();
 
 	constructor(private readonly host: SchemaServiceHost) {
 		void this.migrateCachedSchemasToDiskOnce();
@@ -260,8 +261,18 @@ export class SchemaService {
 	// ── Disk cache infrastructure ──
 
 	async getCachedSchemaFromDisk(cacheKey: string): Promise<CachedSchemaEntry | undefined> {
-		const cached = await readCachedSchemaFromDisk(this.host.context.globalStorageUri, cacheKey);
-		return classifyCachedSchema(cached).isUsable ? cached : undefined;
+		const existing = this.cachedSchemaReads.get(cacheKey);
+		if (existing) return existing;
+		const read = (async () => {
+			const cached = await readCachedSchemaFromDisk(this.host.context.globalStorageUri, cacheKey);
+			return classifyCachedSchema(cached).isUsable ? cached : undefined;
+		})();
+		this.cachedSchemaReads.set(cacheKey, read);
+		try {
+			return await read;
+		} finally {
+			if (this.cachedSchemaReads.get(cacheKey) === read) this.cachedSchemaReads.delete(cacheKey);
+		}
 	}
 
 	private async getCachedSchemaFromDiskByCluster(connection: KustoConnection, database: string, accountPartition: string | undefined): Promise<CachedSchemaEntry | undefined> {

@@ -82,6 +82,33 @@ describe('KustoWorkerMutationPort', () => {
 		expect(focusCommitted).toBe(true);
 	});
 
+	it('does not let a queued primary apply invalidate the currently executing primary apply', async () => {
+		const port = new KustoWorkerMutationPort();
+		const gate = deferred();
+		let firstActive = false;
+		let firstCommitted = false;
+		const first = port.enqueue({ kind: 'primary-apply', advancesPrimaryIntent: true }, async transaction => {
+			await gate.promise;
+			firstActive = transaction.isActive();
+			firstCommitted = transaction.commit({ destructive: true });
+		});
+		await vi.waitFor(() => expect(port.getSnapshot().primaryIntentGeneration).toBe(1));
+		let secondCommitted = false;
+		const second = port.enqueue({ kind: 'primary-apply', advancesPrimaryIntent: true }, transaction => {
+			secondCommitted = transaction.commit({ destructive: true });
+		});
+
+		gate.resolve();
+		await Promise.all([first, second]);
+
+		expect(firstActive).toBe(true);
+		expect(firstCommitted).toBe(true);
+		expect(secondCommitted).toBe(true);
+		expect(port.getSnapshot()).toEqual({
+			primaryIntentGeneration: 2, committedRevision: 2, destructiveEpoch: 2,
+		});
+	});
+
 	it('rejects a late commit and runs recovery only after detached settlement', async () => {
 		const port = new KustoWorkerMutationPort();
 		const physical = deferred<string>();
