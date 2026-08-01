@@ -1632,19 +1632,20 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				sections: Array.isArray((message as any).state?.sections) ? (message as any).state.sections.length : 0,
 				documentKind: (message as any).documentKind || '',
 			});
+			let applied = false;
 			try {
 				{
 					clearAllSectionAgentTouched();
-					handleDocumentDataMessage(message);
-					if (message.reloadRequestId) {
-						postMessageToHost({
-							type: 'documentReloadResult', requestId: String(message.reloadRequestId),
-							applied: true, editRevision: pState.documentEditRevision,
-						});
-					}
+					applied = handleDocumentDataMessage(message);
 				}
 				traceFileOpen('message.documentData.handled');
 			} catch (e) { console.error('[kusto]', e); }
+			if (message.reloadRequestId) {
+				postMessageToHost({
+					type: 'documentReloadResult', requestId: String(message.reloadRequestId),
+					applied, editRevision: pState.documentEditRevision,
+				});
+			}
 			break;
 		case 'revealTextRange':
 			try {

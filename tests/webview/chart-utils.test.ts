@@ -9,6 +9,8 @@ import {
 	hasCustomLegendSettings,
 	hasCustomXAxisSettings,
 	getDefaultYAxisSettings,
+	getOwnSeriesColor,
+	sanitizeYAxisSettings,
 	hasCustomYAxisSettings,
 	hasCustomLabelSettings,
 	formatUtcDateTime,
@@ -228,6 +230,29 @@ describe('getDefaultYAxisSettings', () => {
 		expect(s.max).toBe('');
 		expect(s.seriesColors).toEqual({});
 		expect(s.titleGap).toBe(45);
+	});
+
+	it('preserves hostile series names as own data properties', () => {
+		const input = JSON.parse('{"seriesColors":{"__proto__":"#123456","constructor":"#abcdef"}}');
+		const settings = sanitizeYAxisSettings(input);
+
+		expect(Object.prototype.hasOwnProperty.call(settings.seriesColors, '__proto__')).toBe(true);
+		expect(Object.prototype.hasOwnProperty.call(settings.seriesColors, 'constructor')).toBe(true);
+		expect(settings.seriesColors['__proto__']).toBe('#123456');
+		expect(settings.seriesColors['constructor']).toBe('#abcdef');
+		expect(Object.getPrototypeOf(settings.seriesColors)).toBe(Object.prototype);
+	});
+});
+
+describe('getOwnSeriesColor', () => {
+	it.each(['__proto__', 'constructor', 'toString'])('ignores inherited %s values', (name) => {
+		expect(getOwnSeriesColor({}, name)).toBeUndefined();
+	});
+
+	it('returns hostile names only when they are own string properties', () => {
+		const colors = JSON.parse('{"__proto__":"#123456","constructor":"#abcdef"}');
+		expect(getOwnSeriesColor(colors, '__proto__')).toBe('#123456');
+		expect(getOwnSeriesColor(colors, 'constructor')).toBe('#abcdef');
 	});
 });
 

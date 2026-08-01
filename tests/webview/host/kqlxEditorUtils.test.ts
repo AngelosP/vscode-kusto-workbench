@@ -3,6 +3,8 @@ import {
 	normalizeValue,
 	normalizeSection,
 	normalizeStateForComparison,
+	normalizeKqlxFileForComparison,
+	normalizeKqlxFileForPersistenceComparison,
 	normalizeHeight,
 	deepEqual,
 	sanitizeStateForKind,
@@ -12,9 +14,24 @@ import {
 	hasSqlOwnedDocumentState,
 	OwnedSessionWriteTracker,
 	publishKqlxTextFresh,
+	resolveLinkedQueryUri,
 	shouldReloadKqlxAfterDocumentChange,
 } from '../../../src/host/kqlxEditorProvider';
 import * as vscode from 'vscode';
+
+describe('resolveLinkedQueryUri', () => {
+	const documentUri = vscode.Uri.file('C:/work/notebook.kqlx');
+
+	it.each([
+		'D:/queries/query.kql',
+		'D:\\queries\\query.kql',
+		'\\\\server\\share\\query.kql',
+		'/tmp/query.kql',
+	])('preserves absolute linked path %s', linkedPath => {
+		expect(resolveLinkedQueryUri(documentUri, linkedPath).toString())
+			.toBe(vscode.Uri.file(linkedPath).toString());
+	});
+});
 
 describe('publishKqlxTextFresh', () => {
 	it('blocks malformed text before invoking either publication callback', async () => {
@@ -65,6 +82,84 @@ describe('publishKqlxTextFresh', () => {
 		releasePublish();
 		await expect(publishing).resolves.not.toContain('secret');
 		expect(lockHeld).toBe(false);
+	});
+
+	it('preserves future fields and opaque sections when privacy publication returns understood state only', async () => {
+		const input = JSON.stringify({
+			kind: 'kqlx',
+			version: 1,
+			futureRoot: 'root-extension',
+			state: {
+				futureState: { enabled: true },
+				sections: [
+					{
+						id: 'query_1',
+						type: 'query',
+						query: 'print value = 1',
+						futureQuerySetting: 42,
+						resultJson: '{"secret":true}',
+					},
+					{ id: 'future_1', type: 'future-section', payload: ['opaque'] },
+				],
+			},
+		});
+
+		const output = await publishKqlxTextFresh(
+			input,
+			'kqlx',
+			vscode.EndOfLine.LF,
+			async (_state, publish) => publish({
+				sections: [{ id: 'query_1', type: 'query', query: 'print value = 1' }],
+			}),
+			async text => text,
+		);
+		const parsed = JSON.parse(output);
+
+		expect(parsed.futureRoot).toBe('root-extension');
+		expect(parsed.state.futureState).toEqual({ enabled: true });
+		expect(parsed.state.sections).toEqual([
+			{
+				id: 'query_1',
+				type: 'query',
+				query: 'print value = 1',
+				futureQuerySetting: 42,
+			},
+			{ id: 'future_1', type: 'future-section', payload: ['opaque'] },
+		]);
+	});
+
+	it('preserves incompatible and opaque MDX sections while publishing the editable projection', async () => {
+		const input = JSON.stringify({
+			kind: 'mdx', version: 1, state: { sections: [
+				{
+					id: 'query_1', type: 'query', query: 'future compatibility', futureQuerySetting: true,
+					resultJson: '{"secret":true}', resultArtifact: {
+						version: 1, artifactId: 'secret', sourceBoxId: 'query_1', revision: 1, createdAt: 1,
+					},
+				},
+				{ id: 'future_1', type: 'future-section', payload: 'opaque' },
+				{ id: 'markdown_1', type: 'markdown', text: 'before' },
+			] },
+		});
+		const output = await publishKqlxTextFresh(
+			input,
+			'mdx',
+			vscode.EndOfLine.LF,
+			async (_state, publish) => publish({
+				sections: [
+					{ id: 'query_1', type: 'query', query: 'future compatibility', futureQuerySetting: true },
+					{ id: 'future_1', type: 'future-section', payload: 'opaque' },
+					{ id: 'markdown_1', type: 'markdown', text: 'after' },
+				],
+			}),
+			async text => text,
+		);
+
+		expect(JSON.parse(output).state.sections).toEqual([
+			{ id: 'query_1', type: 'query', query: 'future compatibility', futureQuerySetting: true },
+			{ id: 'future_1', type: 'future-section', payload: 'opaque' },
+			{ id: 'markdown_1', type: 'markdown', text: 'after' },
+		]);
 	});
 });
 
@@ -117,18 +212,16 @@ describe('shouldReloadKqlxAfterDocumentChange', () => {
 		expect(shouldReloadKqlxAfterDocumentChange({
 			isSessionFile: true,
 			matchesOwnedSessionWrite: true,
+			matchesOwnedDocumentEdit: false,
 			webviewInitialized: true,
 			contentChangeCount: 1,
-			lastWebviewPersistAt: 0,
-			now: 10_000,
 		})).toBe(false);
 		expect(shouldReloadKqlxAfterDocumentChange({
 			isSessionFile: true,
 			matchesOwnedSessionWrite: false,
+			matchesOwnedDocumentEdit: false,
 			webviewInitialized: true,
 			contentChangeCount: 1,
-			lastWebviewPersistAt: 9_900,
-			now: 10_000,
 		})).toBe(true);
 	});
 
@@ -136,18 +229,16 @@ describe('shouldReloadKqlxAfterDocumentChange', () => {
 		expect(shouldReloadKqlxAfterDocumentChange({
 			isSessionFile: false,
 			matchesOwnedSessionWrite: false,
+			matchesOwnedDocumentEdit: false,
 			webviewInitialized: true,
 			contentChangeCount: 1,
-			lastWebviewPersistAt: 1_000,
-			now: 2_000,
 		})).toBe(true);
 		expect(shouldReloadKqlxAfterDocumentChange({
 			isSessionFile: false,
 			matchesOwnedSessionWrite: false,
+			matchesOwnedDocumentEdit: true,
 			webviewInitialized: true,
 			contentChangeCount: 1,
-			lastWebviewPersistAt: 1_700,
-			now: 2_000,
 		})).toBe(false);
 	});
 });
@@ -211,6 +302,16 @@ describe('normalizeValue', () => {
 	it('passes through regular numbers', () => {
 		expect(normalizeValue(42)).toBe(42);
 	});
+
+	it('preserves hostile object keys as own data properties', () => {
+		const normalized = normalizeValue(JSON.parse('{"__proto__":"series","constructor":"ctor"}')) as Record<string, unknown>;
+
+		expect(Object.prototype.hasOwnProperty.call(normalized, '__proto__')).toBe(true);
+		expect(Object.prototype.hasOwnProperty.call(normalized, 'constructor')).toBe(true);
+		expect(normalized['__proto__']).toBe('series');
+		expect(normalized['constructor']).toBe('ctor');
+		expect(Object.getPrototypeOf(normalized)).toBe(Object.prototype);
+	});
 });
 
 // ---------------------------------------------------------------------------
@@ -222,8 +323,10 @@ describe('normalizeSection', () => {
 		expect(normalizeSection(null)).toBeUndefined();
 	});
 
-	it('returns undefined for unknown section type', () => {
-		expect(normalizeSection({ type: 'unknown' })).toBeUndefined();
+	it('normalizes unknown section types for lossless comparison', () => {
+		expect(normalizeSection({ type: 'unknown', payload: { keep: true } })).toEqual({
+			type: 'unknown', payload: { keep: true },
+		});
 	});
 
 	it('normalizes copilotQuery type to query', () => {
@@ -234,6 +337,16 @@ describe('normalizeSection', () => {
 	it('normalizes query section', () => {
 		const result = normalizeSection({ type: 'query', query: 'T | take 10' });
 		expect(result).toEqual({ type: 'query', query: 'T | take 10' });
+	});
+
+	it('keeps hostile extension keys as own data without injecting known fields', () => {
+		const section = JSON.parse('{"type":"query","query":"","__proto__":{"query":"INHERITED"},"constructor":{"database":"INHERITED"}}');
+		const result = normalizeSection(section)!;
+		expect(Object.getPrototypeOf(result)).toBeNull();
+		expect(Object.prototype.hasOwnProperty.call(result, '__proto__')).toBe(true);
+		expect(Object.prototype.hasOwnProperty.call(result, 'constructor')).toBe(true);
+		expect(Object.prototype.hasOwnProperty.call(result, 'query')).toBe(false);
+		expect(result.database).toBeUndefined();
 	});
 
 	it('strips undefined/null values from sections', () => {
@@ -278,11 +391,90 @@ describe('normalizeStateForComparison', () => {
 		expect(result.caretDocsEnabled).toBe(false);
 	});
 
-	it('filters out unknown section types', () => {
+	it('includes unknown section types', () => {
 		const result = normalizeStateForComparison({
 			sections: [{ type: 'query', query: 'T' }, { type: 'unknown' }]
 		} as any);
-		expect((result.sections as any[]).length).toBe(1);
+		expect((result.sections as any[]).length).toBe(2);
+	});
+
+	it('distinguishes devnotes and retained state extensions', () => {
+		const before = normalizeStateForComparison({
+			futureState: 1,
+			sections: [{ type: 'devnotes', entries: [{ id: 'note_1', content: 'before' }] }],
+		} as any);
+		const after = normalizeStateForComparison({
+			futureState: 2,
+			sections: [{ type: 'devnotes', entries: [{ id: 'note_1', content: 'after' }] }],
+		} as any);
+		expect(deepEqual(before, after)).toBe(false);
+	});
+
+	it('distinguishes root extensions in file comparison', () => {
+		const state = { sections: [{ id: 'query_1', type: 'query', query: 'T' }] } as any;
+		const before = normalizeKqlxFileForComparison({ kind: 'kqlx', version: 1, futureRoot: 1, state } as any);
+		const after = normalizeKqlxFileForComparison({ kind: 'kqlx', version: 1, futureRoot: 2, state } as any);
+		expect(deepEqual(before, after)).toBe(false);
+	});
+
+	it.each(['favoritesMode', 'copilotChatVisible'])('treats omitted persisted %s as a durable change', field => {
+		const before = {
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'query_1', type: 'query', query: 'T', [field]: true,
+			}] },
+		} as any;
+		const after = {
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'query_1', type: 'query', query: 'T',
+			}] },
+		} as any;
+
+		expect(deepEqual(
+			normalizeKqlxFileForPersistenceComparison(before),
+			normalizeKqlxFileForPersistenceComparison(after),
+		)).toBe(false);
+	});
+
+	it.each([
+		['empty array', { yColumns: [] }],
+		['empty object', { xAxisSettings: {} }],
+		['empty string', { name: '' }],
+		['implicit default', { expanded: true }],
+	] as const)('distinguishes explicit known %s from omission for persistence', (_label, fields) => {
+		const before = {
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'chart_1', type: 'chart', ...fields,
+			}] },
+		} as any;
+		const after = {
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'chart_1', type: 'chart',
+			}] },
+		} as any;
+
+		expect(deepEqual(
+			normalizeKqlxFileForPersistenceComparison(before),
+			normalizeKqlxFileForPersistenceComparison(after),
+		)).toBe(false);
+	});
+
+	it('distinguishes empty and hostile nested future fields exactly', () => {
+		const before = {
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'html_1', type: 'html', pbiPublishInfo: {
+					workspaceId: 'w', semanticModelId: 's', reportId: 'r', reportName: 'R', reportUrl: 'u',
+					futureEmpty: '', futureObject: {}, futureArray: [],
+				},
+			}] },
+		} as any;
+		const after = JSON.parse(JSON.stringify(before));
+		delete after.state.sections[0].pbiPublishInfo.futureEmpty;
+		delete after.state.sections[0].pbiPublishInfo.futureObject;
+		delete after.state.sections[0].pbiPublishInfo.futureArray;
+		expect(deepEqual(
+			normalizeKqlxFileForComparison(before),
+			normalizeKqlxFileForComparison(after),
+		)).toBe(false);
 	});
 });
 

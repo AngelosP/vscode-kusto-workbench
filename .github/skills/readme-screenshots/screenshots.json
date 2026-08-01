@@ -53,7 +53,7 @@
     "filename": "vscode-custom-agent.png",
     "profile": "kusto-auth",
     "tier": "hard",
-    "description": "VS Code Copilot chat input with @Kusto Workbench agent selected, showing a model like Claude Opus",
+    "description": "VS Code Copilot chat input with @Kusto Workbench agent selected, showing gpt-5.6-sol@1.0",
     "readmeLine": 64,
     "altText": "VS Code custom agent that actually works called Kusto Workbench",
     "commands": ["kusto.openCustomAgent"],

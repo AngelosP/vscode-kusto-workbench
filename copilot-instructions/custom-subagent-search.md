@@ -6,7 +6,7 @@ user-invokable: false
 
 tools: ['vscode', 'execute', 'read', 'memory', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'activateWorkbenchFile', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'reorderSections', 'manageDevelopmentNotes']
 
-model: Claude Opus 4.6
+model: gpt-5.6-sol@1.0
 
 ---
 

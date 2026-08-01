@@ -50,7 +50,7 @@ Save frequently used connections to favorites, with a friendly name so you can r
 
 ### VS Code custom agent that actually works
 
-Just let the custom VS Code agent 'Kusto Workbench' do all your work. It's crazy how good this thing is. If you are having problems, make sure you have a really good model like Claude Opus 4.6 selected. If it still doesn't work, report the issue and I'll fix it for you. I use this every day, if it doesn't work for you, just tell me!
+Just let the custom VS Code agent 'Kusto Workbench' do all your work. It's crazy how good this thing is. If you are having problems, make sure `gpt-5.6-sol@1.0` is selected. If it still doesn't work, report the issue and I'll fix it for you. I use this every day, if it doesn't work for you, just tell me!
 
 The agent can:
 

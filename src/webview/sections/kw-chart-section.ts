@@ -38,6 +38,7 @@ import {
 	hasCustomLabelSettings,
 	hasCustomLegendSettings,
 	hasCustomHeatmapSettings,
+	getOwnSeriesColor,
 	normalizeLegendPosition,
 	normalizeStackMode,
 	type XAxisSettings,
@@ -231,6 +232,9 @@ export class KwChartSection extends LitElement implements SectionElement {
 		st.sourceColumn = typeof options.sourceColumn === 'string' ? String(options.sourceColumn) : (st.sourceColumn || '');
 		st.targetColumn = typeof options.targetColumn === 'string' ? String(options.targetColumn) : (st.targetColumn || '');
 		st.orient = typeof options.orient === 'string' ? String(options.orient) : (st.orient || 'LR');
+		st.sankeyLeftMargin = typeof options.sankeyLeftMargin === 'number'
+			? options.sankeyLeftMargin
+			: (typeof st.sankeyLeftMargin === 'number' ? st.sankeyLeftMargin : 100);
 		st.chartTitle = typeof options.chartTitle === 'string' ? String(options.chartTitle) : (st.chartTitle || '');
 		st.chartSubtitle = typeof options.chartSubtitle === 'string' ? String(options.chartSubtitle) : (st.chartSubtitle || '');
 		st.chartTitleAlign = typeof options.chartTitleAlign === 'string' ? String(options.chartTitleAlign) : (st.chartTitleAlign || 'center');
@@ -1250,7 +1254,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 							<div class="axis-popup-colors-header">Series Colors</div>
 							<div class="axis-popup-colors-grid">
 								${seriesNames.map((col, i) => {
-									const custom = s.seriesColors?.[col] || '';
+									const custom = getOwnSeriesColor(s.seriesColors, col) || '';
 									const def = defColors[i % defColors.length];
 									return html`
 										<div class="axis-popup-color-chip">
@@ -1861,7 +1865,9 @@ export class KwChartSection extends LitElement implements SectionElement {
 		if (newColor.toLowerCase() === defaultColor.toLowerCase()) {
 			delete colors[col];
 		} else {
-			colors[col] = newColor;
+			Object.defineProperty(colors, col, {
+				value: newColor, enumerable: true, configurable: true, writable: true,
+			});
 		}
 		this._yAxisSettings = { ...this._yAxisSettings, seriesColors: colors };
 		this._schedulePersist();
@@ -1871,7 +1877,9 @@ export class KwChartSection extends LitElement implements SectionElement {
 		const detail = (e as CustomEvent).detail;
 		if (!detail?.seriesName || !detail?.color) return;
 		const colors = { ...(this._yAxisSettings.seriesColors || {}) };
-		colors[detail.seriesName] = detail.color;
+		Object.defineProperty(colors, detail.seriesName, {
+			value: detail.color, enumerable: true, configurable: true, writable: true,
+		});
 		this._yAxisSettings = { ...this._yAxisSettings, seriesColors: colors };
 		this._schedulePersist();
 	}

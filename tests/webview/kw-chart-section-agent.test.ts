@@ -331,6 +331,22 @@ describe('kw-chart-section agent configuration', () => {
 		expect(undoButton?.innerHTML).toBe(expected.innerHTML);
 	});
 
+	it('preserves a restored Sankey margin through the real component serializer', async () => {
+		const queriesContainer = document.createElement('div');
+		queriesContainer.id = 'queries-container';
+		container.appendChild(queriesContainer);
+
+		const id = KwChartSection.addChartBox({
+			id: 'chart_sankey_margin', chartType: 'sankey', sankeyLeftMargin: 137,
+		});
+		const chart = document.getElementById(id) as KwChartSection;
+		await chart.updateComplete;
+
+		expect(chart.serialize()).toMatchObject({
+			id: 'chart_sankey_margin', chartType: 'sankey', sankeyLeftMargin: 137,
+		});
+	});
+
 	it('dropdowns reflect global state after syncFromGlobalState', async () => {
 		const el = createChartSection();
 		await el.updateComplete;

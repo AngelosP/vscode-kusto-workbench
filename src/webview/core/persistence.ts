@@ -1250,9 +1250,15 @@ function __kustoBuildPersistSignatureState(value: any): any {
 				continue;
 			}
 			if (key === 'resultJson' && typeof child === 'string' && child) {
-				copy[key] = __kustoGetStoredQueryResultToken((value as any).id, child);
+				Object.defineProperty(copy, key, {
+					value: __kustoGetStoredQueryResultToken((value as any).id, child),
+					enumerable: true, configurable: true, writable: true,
+				});
 			} else {
-				copy[key] = __kustoBuildPersistSignatureState(child);
+				Object.defineProperty(copy, key, {
+					value: __kustoBuildPersistSignatureState(child),
+					enumerable: true, configurable: true, writable: true,
+				});
 			}
 		}
 		return copy;
@@ -1721,6 +1727,14 @@ export function isPersistenceSuppressedForTest(): boolean {
 	return __kustoPersistenceSuppressedForTest;
 }
 
+export function resetDocumentPersistenceForTest(): void {
+	__kustoPersistenceEnabled = true;
+	__kustoHasAppliedDocument = false;
+	__kustoLastAppliedDocumentUri = '';
+	pState.sourceGeneration = 0;
+	__kustoClearMalformedDocumentLock();
+}
+
 export function schedulePersist(reason?: any, immediate?: any) {
 	if (!__kustoPersistenceEnabled || __kustoPersistenceSuppressedForTest || pState.restoreInProgress) {
 		return;
@@ -1745,7 +1759,7 @@ export function schedulePersist(reason?: any, immediate?: any) {
 			trackPendingPersistSnapshot(snapshotId, sig, editRevision);
 			postMessageToHost({
 				type: 'persistDocument', state, reason: r,
-				editRevision, snapshotId,
+				sourceGeneration: pState.sourceGeneration, editRevision, snapshotId,
 			});
 			return;
 		}
@@ -1792,11 +1806,16 @@ export function schedulePersist(reason?: any, immediate?: any) {
 					} catch (e) { console.error('[kusto]', e); }
 				}
 
-				if (sig) {
-					__kustoLastPersistSignature = sig;
-				}
 				if (r !== 'kusto-leave-no-trace-policy' && r !== 'kusto-leave-no-trace-restore') __kustoPersistenceEpoch++;
-				postMessageToHost({ type: 'persistDocument', state, reason: r, editRevision: pState.documentEditRevision });
+				if (pState.documentKind === 'kqlx' || pState.documentKind === 'sqlx' || pState.documentKind === 'mdx') {
+					const editRevision = preparePersistRevision(sig);
+					const snapshotId = `document-snapshot-${Date.now()}-${++__kustoPersistSnapshotSequence}`;
+					trackPendingPersistSnapshot(snapshotId, sig, editRevision);
+					postMessageToHost({ type: 'persistDocument', state, reason: r, sourceGeneration: pState.sourceGeneration, editRevision, snapshotId });
+				} else {
+					if (sig) __kustoLastPersistSignature = sig;
+					postMessageToHost({ type: 'persistDocument', state, reason: r, sourceGeneration: pState.sourceGeneration, editRevision: pState.documentEditRevision });
+				}
 			} catch (e) { console.error('[kusto]', e); }
 		};
 		if (immediate) {
@@ -1813,7 +1832,7 @@ export function flushCompatibilityPersist(requestId?: string, reason = 'flush'):
 		if (!__kustoPersistenceEnabled || pState.restoreInProgress) {
 			if (requestId) {
 				postMessageToHost({
-					type: 'persistDocument', state: { sections: [] }, flushRequestId: requestId,
+					type: 'persistDocument', state: { sections: [] }, sourceGeneration: pState.sourceGeneration, flushRequestId: requestId,
 					flushUnavailableReason: pState.restoreInProgress ? 'restore-in-progress' : 'persistence-disabled',
 				});
 			}
@@ -1828,6 +1847,7 @@ export function flushCompatibilityPersist(requestId?: string, reason = 'flush'):
 			__kustoPersistenceEpoch++;
 			postMessageToHost({
 				type: 'persistDocument', state,
+				sourceGeneration: pState.sourceGeneration,
 				...(requestId ? { flushRequestId: requestId } : {}),
 			});
 			return;
@@ -1839,7 +1859,7 @@ export function flushCompatibilityPersist(requestId?: string, reason = 'flush'):
 			trackPendingPersistSnapshot(snapshotId, sig, pState.documentEditRevision);
 			postMessageToHost({
 				type: 'persistDocument', state, flush: true, reason,
-				editRevision: pState.documentEditRevision, snapshotId,
+				sourceGeneration: pState.sourceGeneration, editRevision: pState.documentEditRevision, snapshotId,
 				...(requestId ? { flushRequestId: requestId } : {}),
 				testOnlyNoop: true,
 			});
@@ -1852,7 +1872,7 @@ export function flushCompatibilityPersist(requestId?: string, reason = 'flush'):
 		trackPendingPersistSnapshot(snapshotId, sig, editRevision);
 		postMessageToHost({
 			type: 'persistDocument', state, flush: true, reason,
-			editRevision, snapshotId,
+			sourceGeneration: pState.sourceGeneration, editRevision, snapshotId,
 			...(requestId ? { flushRequestId: requestId } : {}),
 		});
 	} catch (e) { console.error('[kusto]', e); }
@@ -1895,11 +1915,14 @@ try {
 			if (sig && sig === __kustoLastPersistSignature) {
 				return;
 			}
-			if (sig) {
-				__kustoLastPersistSignature = sig;
-			}
+			const editRevision = preparePersistRevision(sig);
+			const snapshotId = `document-snapshot-${Date.now()}-${++__kustoPersistSnapshotSequence}`;
+			trackPendingPersistSnapshot(snapshotId, sig, editRevision);
 			__kustoPersistenceEpoch++;
-			postMessageToHost({ type: 'persistDocument', state, flush: true, reason: 'flush', editRevision: pState.documentEditRevision });
+			postMessageToHost({
+				type: 'persistDocument', state, flush: true, reason: 'beforeunload',
+				sourceGeneration: pState.sourceGeneration, editRevision, snapshotId,
+			});
 		} catch (e) { console.error('[kusto]', e); }
 	});
 } catch (e) { console.error('[kusto]', e); }
@@ -1949,9 +1972,31 @@ function __kustoClearAllSections() {
 	try { pState.devNotesSections = []; } catch (e) { console.error('[kusto]', e); }
 }
 
-function applyKqlxState(state: any) {
+function __kustoAssertKnownSectionsRestored(state: any): void {
+	const expectedTags = new Map<string, string>([
+		['query', 'kw-query-section'], ['copilotQuery', 'kw-query-section'], ['sql', 'kw-sql-section'],
+		['chart', 'kw-chart-section'], ['transformation', 'kw-transformation-section'],
+		['markdown', 'kw-markdown-section'], ['python', 'kw-python-section'],
+		['url', 'kw-url-section'], ['html', 'kw-html-section'],
+	]);
+	const expectedParent = document.getElementById('queries-container') || document.body;
+	const sections = Array.isArray(state?.sections) ? state.sections : [];
+	for (const section of sections) {
+		const kind = String(section?.type || '');
+		const id = String(section?.id || '').trim();
+		const expectedTag = expectedTags.get(kind);
+		if (!id || !expectedTag) continue;
+		const element = document.getElementById(id);
+		if (!element || element.tagName.toLowerCase() !== expectedTag || element.parentElement !== expectedParent) {
+			throw new Error(`Section ${id} (${kind}) was not restored as ${expectedTag}.`);
+		}
+	}
+}
+
+function applyKqlxState(state: any): boolean {
 	perfMark('webview.persistence.applyState.start');
 	pState.restoreInProgress = true;
+	let restored = false;
 	try {
 		__kustoSchemaPrewarmSentKeys.clear();
 		__kustoStartRestoreResultBatch();
@@ -1968,6 +2013,13 @@ function applyKqlxState(state: any) {
 		__kustoClearAllSections();
 
 		const s = state && typeof state === 'object' ? state : { sections: [] };
+		const assertCompatElement = (id: string, expectedTag: string): void => {
+			const expectedParent = document.getElementById('queries-container') || document.body;
+			const element = document.getElementById(id);
+			if (!element || element.tagName.toLowerCase() !== expectedTag || element.parentElement !== expectedParent) {
+				throw new Error(`Compatibility section ${id} was not restored as ${expectedTag}.`);
+			}
+		};
 		__kustoLegacyDocumentPreferences = {
 			...(typeof s.caretDocsEnabled === 'boolean' ? { caretDocsEnabled: s.caretDocsEnabled } : {}),
 			...(typeof s.autoTriggerAutocompleteEnabled === 'boolean'
@@ -2033,8 +2085,10 @@ function applyKqlxState(state: any) {
 				// after restore recognizes the baseline and only sends persistDocument
 				// when the user actually edits the text (not just unrelated metadata).
 				try { __kustoLastCompatQueryText = singleText; } catch (e) { console.error('[kusto]', e); }
-				addMarkdownBox({ text: singleText, mdAutoExpand: isPlainMd });
-				return;
+				const markdownId = addMarkdownBox({ text: singleText, mdAutoExpand: isPlainMd });
+				assertCompatElement(markdownId, 'kw-markdown-section');
+				restored = true;
+				return true;
 			}
 			if (singleKind === 'sql') {
 				const sqlBoxId = 'sql_' + Date.now();
@@ -2044,7 +2098,9 @@ function applyKqlxState(state: any) {
 				} catch (e) { console.error('[kusto]', e); }
 				try { __kustoLastCompatQueryText = singleText; } catch (e) { console.error('[kusto]', e); }
 				addSqlBox({ id: sqlBoxId });
-				return;
+				assertCompatElement(sqlBoxId, 'kw-sql-section');
+				restored = true;
+				return true;
 			}
 			const desiredClusterUrl = String(suggestedClusterUrl || '').trim();
 			const db = String(suggestedDatabase || '').trim();
@@ -2053,6 +2109,7 @@ function applyKqlxState(state: any) {
 				clusterUrl: desiredClusterUrl,
 				database: db,
 			} : { schemaDiagnosticsTrusted: false });
+			assertCompatElement(boxId, 'kw-query-section');
 			// Apply optional suggested cluster/db selection for compatibility-mode query docs.
 			try {
 				const kwEl = __kustoGetQuerySectionElement(boxId);
@@ -2086,7 +2143,8 @@ function applyKqlxState(state: any) {
 			// after restore recognizes the baseline and only sends persistDocument
 			// when the user actually edits the query text (not just cluster/database).
 			try { __kustoLastCompatQueryText = singleText; } catch (e) { console.error('[kusto]', e); }
-			return;
+			restored = true;
+			return true;
 		}
 
 		const sections = Array.isArray(s.sections) ? s.sections : [];
@@ -2338,6 +2396,7 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					sourceColumn: (typeof section.sourceColumn === 'string') ? section.sourceColumn : undefined,
 					targetColumn: (typeof section.targetColumn === 'string') ? section.targetColumn : undefined,
 					orient: (typeof section.orient === 'string') ? section.orient : undefined,
+					sankeyLeftMargin: (typeof section.sankeyLeftMargin === 'number') ? section.sankeyLeftMargin : undefined,
 					showDataLabels: (typeof section.showDataLabels === 'boolean') ? section.showDataLabels : false,
 					labelMode: (typeof section.labelMode === 'string') ? section.labelMode : undefined,
 					labelDensity: (typeof section.labelDensity === 'number') ? section.labelDensity : undefined,
@@ -2348,7 +2407,8 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					chartTitleAlign: (typeof section.chartTitleAlign === 'string') ? section.chartTitleAlign : undefined,
 					xAxisSettings: (section.xAxisSettings && typeof section.xAxisSettings === 'object') ? section.xAxisSettings : undefined,
 					yAxisSettings: (section.yAxisSettings && typeof section.yAxisSettings === 'object') ? section.yAxisSettings : undefined,
-					legendSettings: (section.legendSettings && typeof section.legendSettings === 'object') ? section.legendSettings : undefined
+					legendSettings: (section.legendSettings && typeof section.legendSettings === 'object') ? section.legendSettings : undefined,
+					heatmapSettings: (section.heatmapSettings && typeof section.heatmapSettings === 'object') ? section.heatmapSettings : undefined
 				});
 				try {
 					// Ensure buttons/UI reflect persisted state.
@@ -2617,9 +2677,12 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 				continue;
 			}
 		}
+		__kustoAssertKnownSectionsRestored(s);
+		restored = true;
+		return true;
 	} finally {
 		pState.restoreInProgress = false;
-		__kustoPersistenceEnabled = true;
+		__kustoPersistenceEnabled = restored;
 		// Do not auto-persist immediately after restore: Monaco editors may not be ready yet,
 		// and persisting too early can overwrite loaded content with empty strings.
 		perfMark('webview.persistence.applyState.end');
@@ -2698,7 +2761,7 @@ function __kustoClearMalformedDocumentLock(): void {
 	}
 }
 
-export function handleDocumentDataMessage(message: any) {
+export function handleDocumentDataMessage(message: any): boolean {
 	__kustoDocumentDataApplyCount++;
 	perfMark('webview.persistence.documentData.handle.start');
 	traceFileOpen('persistence.documentData.handle.start', {
@@ -2718,7 +2781,8 @@ export function handleDocumentDataMessage(message: any) {
 		const isDifferentDocument = !!incomingDocumentUri && !!__kustoLastAppliedDocumentUri && incomingDocumentUri !== __kustoLastAppliedDocumentUri;
 		if (__kustoHasAppliedDocument && !(message && message.forceReload) && !isDifferentDocument) {
 			traceFileOpen('persistence.documentData.skippedAlreadyApplied', { incomingDocumentUri, lastAppliedDocumentUri: __kustoLastAppliedDocumentUri });
-			return;
+			const incomingGeneration = Number(message?.sourceGeneration);
+			return Number.isSafeInteger(incomingGeneration) && incomingGeneration === pState.sourceGeneration;
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	window.dispatchEvent(new Event(RESULT_ARTIFACT_CSV_RESET_EVENT));
@@ -2733,24 +2797,16 @@ export function handleDocumentDataMessage(message: any) {
 		pState.documentDataApplyCount = __kustoDocumentDataApplyCount;
 		perfMark('webview.persistence.documentData.handle.end');
 		traceFileOpen('persistence.documentData.handle.end', { malformed: true });
-		return;
+		return true;
 	}
 	__kustoClearMalformedDocumentLock();
 	__kustoRequestFreshLeaveNoTracePolicy();
 	const incomingEditRevision = Number(message?.editRevision);
-	if (Number.isSafeInteger(incomingEditRevision) && incomingEditRevision >= 0) {
-		pState.documentEditRevision = incomingEditRevision;
-	}
+	const incomingSourceGeneration = Number(message?.sourceGeneration);
 	__kustoSetDocumentLoading(true, 'Opening notebook...');
-	suppressPersistenceForTest(message?.suppressPersistenceForTest === true);
 	__kustoCancelHtmlPowerBiCompatibilityCheck();
-	__kustoHasAppliedDocument = true;
-	try {
-		if (message && typeof message.documentUri === 'string') {
-			__kustoLastAppliedDocumentUri = String(message.documentUri);
-		}
-	} catch (e) { console.error('[kusto]', e); }
 
+	let applied = false;
 	try {
 		// Some host-to-webview messages can arrive before the webview registers its message listener.
 		// documentData is requested by the webview after initialization, so it is a reliable place
@@ -2813,6 +2869,18 @@ export function handleDocumentDataMessage(message: any) {
 			documentKind: typeof message?.documentKind === 'string' ? message.documentKind : '',
 		});
 		applyKqlxState(message && message.state ? message.state : { sections: [] });
+		if (Number.isSafeInteger(incomingEditRevision) && incomingEditRevision >= 0) {
+			pState.documentEditRevision = incomingEditRevision;
+		}
+		if (Number.isSafeInteger(incomingSourceGeneration) && incomingSourceGeneration >= 0) {
+			pState.sourceGeneration = incomingSourceGeneration;
+		}
+		suppressPersistenceForTest(message?.suppressPersistenceForTest === true);
+		__kustoHasAppliedDocument = true;
+		if (message && typeof message.documentUri === 'string') {
+			__kustoLastAppliedDocumentUri = String(message.documentUri);
+		}
+		applied = true;
 		if (sqlConnections.length > 0) resolvePendingSqlResultRestores();
 
 		// If the doc is empty, initialize UX content.
@@ -2849,6 +2917,10 @@ export function handleDocumentDataMessage(message: any) {
 			sqlSections: Array.isArray(sqlBoxes) ? sqlBoxes.length : 0,
 			markdownSections: Array.isArray(markdownBoxes) ? markdownBoxes.length : 0,
 		});
+	} catch (error) {
+		console.error('[kusto]', error);
+		__kustoSetMalformedDocumentLock(error);
+		return false;
 	} finally {
 		__kustoSetDocumentLoading(false);
 		pState.documentDataApplyCount = __kustoDocumentDataApplyCount;
@@ -2880,6 +2952,7 @@ export function handleDocumentDataMessage(message: any) {
 	}
 
 	// Persistence remains enabled; edits will persist via event hooks.
+	return applied;
 }
 
 // ======================================================================

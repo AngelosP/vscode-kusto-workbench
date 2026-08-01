@@ -106,6 +106,12 @@ suite('KQL compat editor - inferred cluster/db wiring', () => {
 				options: {} as any,
 				postMessage: async (msg: any) => {
 					posted.push(msg);
+					if (msg?.reloadRequestId) {
+						await Promise.resolve(receiveHandler?.({
+							type: 'documentReloadResult', requestId: msg.reloadRequestId,
+							applied: true, editRevision: Number(msg.editRevision || 0),
+						}));
+					}
 					return true;
 				},
 				onDidReceiveMessage: (handler: any) => {

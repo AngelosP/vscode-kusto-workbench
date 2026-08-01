@@ -49,6 +49,9 @@ export class CompatSidecarSession {
 	get isClosing(): boolean { return this.closing; }
 	get isPanelVisible(): boolean { return this.panelVisible; }
 	get hasPendingFinalPersist(): boolean { return this.pendingFinalPersists.size > 0; }
+	hasPendingFinalPersistRequest(requestId: string): boolean {
+		return !!requestId && this.pendingFinalPersists.has(requestId);
+	}
 
 	isStaleRevision(revision: number): boolean {
 		return Number.isSafeInteger(revision) && revision >= 0 && revision < this.editRevision;
@@ -62,6 +65,11 @@ export class CompatSidecarSession {
 
 	setStateRevision(revision: number): void {
 		if (Number.isSafeInteger(revision) && revision >= 0) this.stateEditRevision = revision;
+	}
+
+	retirePersists(): void {
+		this.persistSequence += 1;
+		this.draftGeneration += 1;
 	}
 
 	markDirty(lastWrittenText?: string): void {

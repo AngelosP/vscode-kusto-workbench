@@ -1817,6 +1817,8 @@ export class KwQuerySection extends LitElement implements SectionElement {
 
 		let copilotChatWidthPx: number | undefined;
 		try { const w = this.copilotChatCtrl.getCopilotChatWidthPx(); if (typeof w === 'number' && Number.isFinite(w)) copilotChatWidthPx = w; } catch (e) { console.error('[kusto]', e); }
+		let copilotChatVisible = false;
+		try { copilotChatVisible = this.copilotChatCtrl.getCopilotChatVisible(); } catch (e) { console.error('[kusto]', e); }
 
 		const shouldPersist = !!(resultJson && (sqlOwnedComparison
 			? comparisonSource.canPersistResults()
@@ -1843,6 +1845,7 @@ export class KwQuerySection extends LitElement implements SectionElement {
 			runMode: String(runMode), cacheEnabled, cacheValue, cacheUnit,
 			...(editorHeightPx !== undefined ? { editorHeightPx } : {}),
 			...(resultsHeightPx !== undefined ? { resultsHeightPx } : {}),
+			...(copilotChatVisible ? { copilotChatVisible: true } : {}),
 			...(typeof copilotChatWidthPx === 'number' ? { copilotChatWidthPx } : {}),
 		};
 	}

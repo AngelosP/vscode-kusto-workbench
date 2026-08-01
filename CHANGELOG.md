@@ -5,6 +5,7 @@ Check [Keep a Changelog](http://keepachangelog.com/) for recommendations on how 
 
 ## [5.0.0] - Unreleased
 
+* Default Copilot model changed to `gpt-5.6-sol@1.0` across Workbench and its custom agents.
 * First launch experience for configuring some key experience settings before your first edit.
 * Support for additional Kusto authentication methods (e.g., your Entra ID is a guest on a tenant hosting the Kusto cluster).
 * Readiness indicator for each Kusto section as a thin progress line moving from left to right letting you know if things are still happening in the background.

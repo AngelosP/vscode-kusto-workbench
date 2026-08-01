@@ -40,6 +40,7 @@ import {
 	computeCategoryLabelRotation,
 	measureLabelChars,
 	breakSankeyCycles,
+	getOwnSeriesColor,
 } from './chart-utils.js';
 
 // ── State ─────────────────────────────────────────────────────────────────────
@@ -58,8 +59,12 @@ export function getChartState(boxId: any) {
 		if (!chartStateByBoxId || typeof chartStateByBoxId !== 'object') {
 			chartStateByBoxId = {};
 		}
-		if (!chartStateByBoxId[id] || typeof chartStateByBoxId[id] !== 'object') {
-			chartStateByBoxId[id] = { mode: 'edit', expanded: true, legendPosition: 'top' };
+		if (!Object.prototype.hasOwnProperty.call(chartStateByBoxId, id)
+			|| !chartStateByBoxId[id] || typeof chartStateByBoxId[id] !== 'object') {
+			Object.defineProperty(chartStateByBoxId, id, {
+				value: { mode: 'edit', expanded: true, legendPosition: 'top' },
+				enumerable: true, configurable: true, writable: true,
+			});
 		}
 		// Back-compat: older state objects may be missing newer fields.
 		try {
@@ -1974,7 +1979,7 @@ export function renderChart(boxId: any) {
 					? yAxisSettings.seriesColors
 					: {};
 				const nodesWithColor = nodes.map(n => {
-					const color = seriesColors[n.name];
+					const color = getOwnSeriesColor(seriesColors, n.name);
 					return color ? { ...n, itemStyle: { color } } : n;
 				});
 
@@ -2636,7 +2641,8 @@ export function renderChart(boxId: any) {
 				};
 
 				const getSeriesColor = (name: any, index: any) => {
-					if (seriesColors[name]) return seriesColors[name];
+					const color = getOwnSeriesColor(seriesColors, String(name));
+					if (color) return color;
 					return undefined;
 				};
 

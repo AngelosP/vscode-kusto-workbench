@@ -212,4 +212,15 @@ describe('kw-query-section favorites dropdown', () => {
 			connectionIdHint: 'guest',
 		}));
 	});
+
+	it('serializes visible Copilot chat state', async () => {
+		const el = createSection();
+		await el.updateComplete;
+
+		const chat = el.shadowRoot?.querySelector('kw-copilot-chat') as any;
+		if (chat) chat.focusInput = () => undefined;
+		el.setCopilotChatVisible(true);
+
+		expect(el.serialize()).toEqual(expect.objectContaining({ copilotChatVisible: true }));
+	});
 });

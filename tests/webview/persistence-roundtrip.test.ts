@@ -55,23 +55,26 @@ const testState = vi.hoisted(() => {
 				? { resultJson: (window as any).__testQueryResultJsonByBoxId[id] }
 				: {}),
 		});
-		document.body.appendChild(el);
+		(document.getElementById('queries-container') || document.body).appendChild(el);
 		return id;
 	});
 
-	const addMarkdownBox = vi.fn(() => {
-		const id = `markdown_restored_${addMarkdownBox.mock.calls.length + 1}`;
+	const addMarkdownBox = vi.fn((options: { id?: string } = {}) => {
+		const id = options.id || `markdown_restored_${addMarkdownBox.mock.calls.length + 1}`;
 		markdownBoxes.push(id);
 		markdownEditors[id] = { getValue: () => '' };
+		const el = document.createElement('kw-markdown-section');
+		el.id = id;
+		(document.getElementById('queries-container') || document.body).appendChild(el);
 		return id;
 	});
 
 	const addHtmlBox = vi.fn((options: { id?: string } = {}) => {
 		const id = options.id || `html_restored_${htmlBoxes.length + 1}`;
 		htmlBoxes.push(id);
-		const el = document.createElement('div');
+		const el = document.createElement('kw-html-section');
 		el.id = id;
-		document.body.appendChild(el);
+		(document.getElementById('queries-container') || document.body).appendChild(el);
 		return id;
 	});
 
@@ -103,7 +106,8 @@ const testState = vi.hoisted(() => {
 		sqlElements[id] = el;
 		const resultsWrapper = document.createElement('div');
 		resultsWrapper.id = `${id}_sql_results_wrapper`;
-		document.body.append(el, resultsWrapper);
+		(document.getElementById('queries-container') || document.body).appendChild(el);
+		document.body.appendChild(resultsWrapper);
 		return id;
 	});
 
@@ -221,14 +225,20 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	__kustoSetAutoEnterFavoritesForBox: vi.fn(),
 	__kustoTryAutoEnterFavoritesModeForAllBoxes: vi.fn(),
 	__kustoClampResultsWrapperHeight: vi.fn(),
-	addPythonBox: vi.fn(() => {
-		const id = `python_restored_${testState.pythonBoxes.length + 1}`;
+	addPythonBox: vi.fn((options?: { id?: string }) => {
+		const id = String(options?.id || `python_restored_${testState.pythonBoxes.length + 1}`);
 		testState.pythonBoxes.push(id);
+		const el = document.createElement('kw-python-section');
+		el.id = id;
+		(document.getElementById('queries-container') || document.body).appendChild(el);
 		return id;
 	}),
-	addUrlBox: vi.fn(() => {
-		const id = `url_restored_${testState.urlBoxes.length + 1}`;
+	addUrlBox: vi.fn((options?: { id?: string }) => {
+		const id = String(options?.id || `url_restored_${testState.urlBoxes.length + 1}`);
 		testState.urlBoxes.push(id);
+		const el = document.createElement('kw-url-section');
+		el.id = id;
+		(document.getElementById('queries-container') || document.body).appendChild(el);
 		return id;
 	}),
 	removePythonBox: vi.fn(),
@@ -277,16 +287,35 @@ vi.mock('../../src/webview/core/state.js', () => ({
 }));
 
 vi.mock('../../src/webview/sections/kw-chart-section.js', () => ({
-	addChartBox: vi.fn(),
-	removeChartBox: vi.fn(),
+	addChartBox: vi.fn((options?: { id?: string }) => {
+		const id = String(options?.id || `chart_restored_${testState.chartBoxes.length + 1}`);
+		testState.chartBoxes.push(id);
+		const element = document.createElement('kw-chart-section');
+		element.id = id;
+		(document.getElementById('queries-container') || document.body).appendChild(element);
+		return id;
+	}),
+	removeChartBox: vi.fn((id: string) => {
+		const index = testState.chartBoxes.indexOf(id);
+		if (index >= 0) testState.chartBoxes.splice(index, 1);
+		document.getElementById(id)?.remove();
+	}),
 	chartBoxes: testState.chartBoxes,
 }));
 
 vi.mock('../../src/webview/sections/kw-transformation-section.js', () => ({
-	addTransformationBox: vi.fn(),
+	addTransformationBox: vi.fn((options?: { id?: string }) => {
+		const id = String(options?.id || `transformation_restored_${testState.transformationBoxes.length + 1}`);
+		testState.transformationBoxes.push(id);
+		const element = document.createElement('kw-transformation-section');
+		element.id = id;
+		(document.getElementById('queries-container') || document.body).appendChild(element);
+		return id;
+	}),
 	removeTransformationBox: vi.fn((id: string) => {
 		const idx = testState.transformationBoxes.indexOf(id);
 		if (idx >= 0) testState.transformationBoxes.splice(idx, 1);
+		document.getElementById(id)?.remove();
 	}),
 	transformationBoxes: testState.transformationBoxes,
 }));
@@ -326,7 +355,8 @@ import { optimizationMetadataByBoxId, sqlFavoritesModeByBoxId } from '../../src/
 import { updateConnectionSelects, __kustoGetConnectionId, __kustoGetDatabase, __kustoGetQuerySectionElement, __kustoSetAutoEnterFavoritesForBox } from '../../src/webview/core/section-factory.js';
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { __kustoCloseShareModal, setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
-import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, discardPendingSqlResultRestores, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, markKustoLeaveNoTracePolicyPending, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, schedulePersist, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
+import { addChartBox } from '../../src/webview/sections/kw-chart-section.js';
+import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, discardPendingSqlResultRestores, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, markKustoLeaveNoTracePolicyPending, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, schedulePersist, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
 import { createDerivedResultArtifactPublication, publicationFromPersistedResultArtifact, RESULT_ARTIFACT_CSV_RESET_EVENT } from '../../src/shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
 
@@ -347,6 +377,7 @@ describe('persistence round-trip', () => {
 	}
 
 	beforeEach(() => {
+		resetDocumentPersistenceForTest();
 		applyKustoLeaveNoTracePolicy([], false);
 		document.body.innerHTML = '';
 		testState.queryBoxes.splice(0, testState.queryBoxes.length);
@@ -392,6 +423,72 @@ describe('persistence round-trip', () => {
 		(window as any).__testPendingSqlQueryByBoxId = pState.pendingSqlQueryByBoxId;
 		(window as any).__testQueryResultJsonByBoxId = pState.queryResultJsonByBoxId;
 		delete (window as any).__kustoReadOnlyMode;
+	});
+
+	it('restores all known Sankey and heatmap chart settings before serialization overlay', () => {
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentKind: 'kqlx', state: { sections: [{
+				id: 'chart_restore_settings', type: 'chart', chartType: 'sankey', sankeyLeftMargin: 137,
+				heatmapSettings: {
+					visualMapPosition: 'left', visualMapGap: 19, showCellLabels: true,
+					cellLabelMode: 'highest', cellLabelN: 7,
+				},
+			}] },
+		});
+
+		expect(addChartBox).toHaveBeenCalledWith(expect.objectContaining({
+			id: 'chart_restore_settings',
+			sankeyLeftMargin: 137,
+			heatmapSettings: {
+				visualMapPosition: 'left', visualMapGap: 19, showCellLabels: true,
+				cellLabelMode: 'highest', cellLabelN: 7,
+			},
+		}));
+	});
+
+	it('does not activate a source generation when a known section fails to restore', () => {
+		pState.sourceGeneration = 7;
+		vi.mocked(addChartBox).mockImplementationOnce(() => { throw new Error('injected chart restore failure'); });
+
+		const applied = handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, sourceGeneration: 8,
+			documentKind: 'kqlx', state: { sections: [
+				{ id: 'chart_restore_failure', type: 'chart', chartType: 'bar' },
+			] },
+		});
+
+		expect(applied).toBe(false);
+		expect(pState.sourceGeneration).toBe(7);
+		expect(document.getElementById('kusto-malformed-document-banner')?.textContent).toContain('injected chart restore failure');
+	});
+
+	it('does not acknowledge a newer rich source generation through the already-applied fast path', () => {
+		expect(handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, sourceGeneration: 11,
+			documentUri: 'file:///work/notebook.kqlx', state: { sections: [] },
+		})).toBe(true);
+		expect(pState.sourceGeneration).toBe(11);
+
+		expect(handleDocumentDataMessage({
+			type: 'documentData', ok: true, sourceGeneration: 12,
+			documentUri: 'file:///work/notebook.kqlx', state: { sections: [] },
+		})).toBe(false);
+		expect(pState.sourceGeneration).toBe(11);
+	});
+
+	it('does not acknowledge a plain compatibility projection whose editor was not materialized', () => {
+		pState.compatibilityMode = true;
+		pState.compatibilitySingleKind = 'query';
+		vi.mocked(testState.addQueryBox).mockImplementationOnce(() => 'missing_query_editor');
+
+		const applied = handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, sourceGeneration: 21,
+			documentKind: 'kql', compatibilityMode: true, compatibilitySingleKind: 'query',
+			state: { sections: [{ type: 'query', query: 'print 1' }] },
+		});
+
+		expect(applied).toBe(false);
+		expect(pState.sourceGeneration).toBe(0);
 	});
 
 	it('restores persisted Kusto rows as CSV-only artifacts in the read-only browser viewer', () => {
@@ -1809,6 +1906,7 @@ describe('persistence round-trip', () => {
 			expect(persistMessage.state.sections).toHaveLength(1);
 			expect(persistMessage.state.sections[0].id).toBe('query_saved_results');
 			expect(persistMessage.state.sections[0].resultJson).toBe(resultJson);
+			acknowledgePersistDocument(persistMessage.snapshotId, persistMessage.editRevision);
 
 			schedulePersist('roundtrip', true);
 			expect(postMessageToHost).toHaveBeenCalledTimes(1);
@@ -1891,6 +1989,65 @@ describe('persistence round-trip', () => {
 		acknowledgePersistDocument(messages[1].snapshotId, messages[1].editRevision);
 		schedulePersist('after-ack', true);
 		expect(postMessageToHost).toHaveBeenCalledTimes(2);
+	});
+
+	it('resends unchanged rich-document state until the exact snapshot is acknowledged', () => {
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri: 'file:///tmp/retry.kqlx',
+			state: { sections: [{ type: 'query', id: 'query_rich_retry', query: 'print value=1' }] },
+		});
+		document.body.innerHTML = '';
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		const query = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		query.id = 'query_rich_retry';
+		query.serialize = () => ({ id: 'query_rich_retry', type: 'query', query: 'print value=2' });
+		container.appendChild(query);
+		document.body.appendChild(container);
+		pState.documentKind = 'kqlx';
+		pState.compatibilityMode = false;
+		vi.mocked(postMessageToHost).mockClear();
+
+		schedulePersist('first', true);
+		schedulePersist('retry', true);
+
+		const messages = vi.mocked(postMessageToHost).mock.calls.map(call => call[0] as any);
+		expect(messages).toHaveLength(2);
+		expect(messages.map(message => message.editRevision)).toEqual([1, 1]);
+		expect(messages[0].snapshotId).toMatch(/^document-snapshot-/);
+		expect(messages[1].snapshotId).not.toBe(messages[0].snapshotId);
+
+		acknowledgePersistDocument(messages[1].snapshotId, messages[1].editRevision);
+		schedulePersist('after-ack', true);
+		expect(postMessageToHost).toHaveBeenCalledTimes(2);
+	});
+
+	it('persists a change to a __proto__ series color', () => {
+		document.body.innerHTML = '';
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		let color = '#111111';
+		const chart = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		chart.id = 'chart_hostile_series';
+		chart.serialize = () => ({
+			id: 'chart_hostile_series', type: 'chart',
+			yAxisSettings: JSON.parse(`{"seriesColors":{"__proto__":"${color}"}}`),
+		});
+		container.appendChild(chart);
+		document.body.appendChild(container);
+		pState.documentKind = 'kqlx';
+		pState.compatibilityMode = false;
+		adoptCurrentStateAsCleanForTest();
+		vi.mocked(postMessageToHost).mockClear();
+
+		color = '#222222';
+		schedulePersist('hostile-series-color', true);
+
+		expect(postMessageToHost).toHaveBeenCalledTimes(1);
+		const message = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+		expect(Object.prototype.hasOwnProperty.call(message.state.sections[0].yAxisSettings.seriesColors, '__proto__')).toBe(true);
+		expect(message.state.sections[0].yAxisSettings.seriesColors['__proto__']).toBe('#222222');
 	});
 
 	it('does not mark compatibility state clean from a mismatched acknowledgement', () => {
@@ -2798,6 +2955,8 @@ describe('persistence round-trip', () => {
 		vi.mocked(postMessageToHost).mockClear();
 		schedulePersist('initial-large-result', true);
 		expect(postMessageToHost).toHaveBeenCalledTimes(1);
+		const initialPersist = vi.mocked(postMessageToHost).mock.calls[0][0] as any;
+		acknowledgePersistDocument(initialPersist.snapshotId, initialPersist.editRevision);
 
 		const stringifySpy = vi.spyOn(JSON, 'stringify');
 		stringifySpy.mockClear();

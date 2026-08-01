@@ -292,7 +292,7 @@ export type OutgoingWebviewMessage =
 
 	// Provider messages (kqlx, kqlCompat, mdCompat editors)
 	| { type: 'requestDocument' }
-	| { type: 'persistDocument'; state: unknown; flush?: boolean; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }
+	| { type: 'persistDocument'; state: unknown; sourceGeneration?: number; flush?: boolean; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }
 	| { type: 'documentReloadResult'; requestId: string; applied: boolean; editRevision: number }
 	| { type: 'requestUpgradeToKqlx'; addKind?: string; state?: unknown; editRevision?: number }
 	| { type: 'requestUpgradeToMdx'; addKind?: string; state?: unknown; editRevision?: number }

@@ -3259,6 +3259,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	public sanitizeSqlLeaveNoTraceState<T extends { sections?: unknown[] }>(state: T): T {
+		state = this.stripLegacyResultPayloads(state);
 		const sections = Array.isArray(state?.sections) ? state.sections : [];
 		this.rebuildSqlComparisonOwners(sections);
 		const sectionsById = new Map(
@@ -3320,6 +3321,23 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			return clone;
 		});
 		return this.stripOrphanedSqlPrincipalFingerprints(changed ? { ...state, sections: sanitized } : state);
+	}
+
+	private stripLegacyResultPayloads<T extends { sections?: unknown[] }>(state: T): T {
+		const sections = Array.isArray(state?.sections) ? state.sections : [];
+		let changed = false;
+		const sanitized = sections.map(section => {
+			if (!section || typeof section !== 'object') return section;
+			const record = section as Record<string, unknown>;
+			const type = String(record.type || '');
+			if ((type !== 'query' && type !== 'copilotQuery' && type !== 'sql')
+				|| !Object.prototype.hasOwnProperty.call(record, 'result')) return section;
+			changed = true;
+			const clone = { ...record };
+			delete clone.result;
+			return clone;
+		});
+		return changed ? { ...state, sections: sanitized } : state;
 	}
 
 	private sanitizeKustoLeaveNoTraceStateFromSnapshot<T extends { sections?: unknown[] }>(
@@ -3509,6 +3527,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	public async sanitizeSqlLeaveNoTraceStateFresh<T extends { sections?: unknown[] }>(state: T): Promise<T> {
+		state = this.stripLegacyResultPayloads(state);
 		try {
 			return await this.sqlWorkbench.retrySqlOwnerSnapshotAcquisition(async () => {
 				return this.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoSnapshot => {
@@ -3525,6 +3544,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 	}
 
 	public sanitizeSqlLeaveNoTraceStateFailClosed<T extends { sections?: unknown[] }>(state: T): T {
+		state = this.stripLegacyResultPayloads(state);
 		const locallySanitized = this.stripAllKustoOwnedResults(this.sanitizeSqlLeaveNoTraceState(state));
 		return this.hasSqlOwnedState(locallySanitized)
 			? this.stripAllSqlOwnedResults(locallySanitized)
@@ -3535,6 +3555,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		state: T,
 		publish: (sanitizedState: T) => Promise<R>,
 	): Promise<R> {
+		state = this.stripLegacyResultPayloads(state);
 		return this.sqlWorkbench.retrySqlOwnerSnapshotAcquisition(async () => {
 			return this.connectionManager.runWithLeaveNoTraceSnapshotLock(async kustoSnapshot => {
 				const kustoSanitized = this.sanitizeKustoLeaveNoTraceStateFromSnapshot(state, kustoSnapshot);

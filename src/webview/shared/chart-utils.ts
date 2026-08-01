@@ -191,18 +191,29 @@ export function getDefaultYAxisSettings(): YAxisSettings {
 
 function sanitizeSeriesColors(value: unknown, yColumns: string[] = []): Record<string, string> {
 	const colors: Record<string, string> = {};
+	const setColor = (key: string, color: string) => {
+		Object.defineProperty(colors, key, {
+			value: color, enumerable: true, configurable: true, writable: true,
+		});
+	};
 	if (Array.isArray(value)) {
 		for (let index = 0; index < value.length; index++) {
 			const key = yColumns[index] || `series${index}`;
-			colors[key] = String(value[index]);
+			setColor(key, String(value[index]));
 		}
 		return colors;
 	}
 	if (!isRecord(value)) return colors;
 	for (const [key, color] of Object.entries(value)) {
-		if (typeof color === 'string') colors[key] = color;
+		if (typeof color === 'string') setColor(key, color);
 	}
 	return colors;
+}
+
+export function getOwnSeriesColor(value: unknown, name: string): string | undefined {
+	if (!isRecord(value) || !Object.prototype.hasOwnProperty.call(value, name)) return undefined;
+	const color = value[name];
+	return typeof color === 'string' ? color : undefined;
 }
 
 export function sanitizeYAxisSettings(input: unknown, base: Partial<YAxisSettings> = getDefaultYAxisSettings(), yColumns: string[] = []): YAxisSettings {

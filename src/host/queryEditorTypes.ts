@@ -24,7 +24,7 @@ export const STORAGE_KEYS = {
 export type KustoFavorite = { name: string; connectionId: string; clusterUrl: string; database: string };
 export type SqlFavorite = { name: string; connectionId: string; database: string };
 
-export const DEFAULT_PREFERRED_COPILOT_MODEL_ID = 'gpt-5.5';
+export const DEFAULT_PREFERRED_COPILOT_MODEL_ID = 'gpt-5.6-sol@1.0';
 
 export function findPreferredDefaultCopilotModel(models: vscode.LanguageModelChat[]): vscode.LanguageModelChat | undefined {
 	if (models.length === 0) {

@@ -212,15 +212,28 @@ Test `SqlEditorLifecycleCoordinator` directly with injected workbench, language-
 
 Keep provider tests focused on adapter responsibilities: message routing, manual SQL execution UX, database/schema I/O, persistence sanitation/publication, generic comparison fallback, panel transport, and Kusto behavior. Protocol tests must inventory host messages emitted from both `queryEditorProvider.ts` and `sql/sqlEditorLifecycleCoordinator.ts`.
 
+## Notebook Codec Development
+
+`kqlxOverlay.ts` is the lossless preservation authority for `.kqlx`, `.sqlx`, and `.mdx` state. Preserve these contracts:
+
+* Unknown root/state fields, extensions on known sections and nested known objects, opaque unknown sections, hostile keys, and relative order survive supported edits.
+* Known omission/deletion is authoritative. Stable nested identities must never inherit extensions from a replacement identity; only schema fields explicitly marked renameable may correlate by non-identity shape.
+* Add every new known field to the exhaustive codec schema with its primitive, object, array-item, record-value, required-key, and identity semantics. A malformed known value that the real serializer cannot round-trip must fail read-only rather than be silently normalized.
+* Durable persistence comparison is JSON-semantic. Do not reuse UI/diff normalization that collapses empty arrays, empty objects, empty strings, or implicit defaults.
+* A host `documentData` projection is not current until the webview acknowledges successful materialization. Persistence snapshots must echo the admitted source generation.
+* Linked-query native Save owns one exact content transaction across buffer mutation and durable publication. File and buffer rollback are independent CAS operations; neither may overwrite a newer direct edit.
+
+Focused coverage lives in `kqlxFormat.test.ts`, `kqlxEditorUtils.test.ts`, `persistence-roundtrip.test.ts`, `message-handler.test.ts`, and the native `codec-lossless-roundtrip` E2E scenario.
+
 ## Compatibility Sidecar Development
 
 The `.kql`/`.csl` and `.sql` compatibility providers share three load-bearing abstractions:
 
 * `CompatSidecarFormat` for pure linkage/hydration/canonicalization.
-* `CompatSidecarStore` for lock/CAS/repair/recovery publication.
+* `CompatSidecarStore` for lock/CAS/repair/recovery publication and accepted physical identity.
 * `CompatSidecarSession` for revision, queue, upgrade, dirty, final-save, reload, and close coordination.
 
-Keep KQL inference, connection caching, primary-text application, protocol message names, and language-specific sidecar create/adopt UX in provider adapters. Any sidecar lifecycle change must run the full parameterized `tests/integration/kqlSidecar.test.ts` matrix for both KQL and SQL variants.
+Keep KQL inference, connection caching, primary-text application, protocol message names, and language-specific sidecar create/adopt UX in provider adapters. Capture a sidecar's accepted identity at load or return it directly from the owned creation/adoption primitive; never resample the pathname after releasing publication ownership. Any sidecar lifecycle change must run the full parameterized `tests/integration/kqlSidecar.test.ts` matrix for both KQL and SQL variants.
 
 ---
 

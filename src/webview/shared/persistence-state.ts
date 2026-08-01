@@ -14,6 +14,8 @@ import type { PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
 export const pState = {
 	/** Monotonic local UI edit revision used to reject stale host reloads. */
 	documentEditRevision: 0,
+	/** Host-issued source projection generation echoed by persistence snapshots. */
+	sourceGeneration: 0,
 
 	// ── State maps (keyed by boxId) ──────────────────────────────────
 

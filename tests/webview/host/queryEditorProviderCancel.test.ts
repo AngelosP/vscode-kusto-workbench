@@ -1279,6 +1279,24 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(sanitized.sections[1]).not.toHaveProperty('resultArtifact');
 	});
 
+	it('always strips legacy row-bearing result payloads without dropping future fields', async () => {
+		const provider = createSqlProviderHarness();
+		const state = { futureState: { keep: true }, sections: [
+			{ id: 'query_1', type: 'query', query: 'T', result: { rows: [['kusto-secret']] }, futureQuerySetting: 1 },
+			{ id: 'sql_1', type: 'sql', query: 'select 1', result: { rows: [['sql-secret']] }, futureSqlSetting: 2 },
+			{ id: 'future_1', type: 'future-section', result: { opaque: true } },
+		] };
+
+		const sanitized = await provider.sanitizeSqlLeaveNoTraceStateFresh(state);
+
+		expect((sanitized as any).futureState).toEqual({ keep: true });
+		expect(sanitized.sections[0]).not.toHaveProperty('result');
+		expect(sanitized.sections[0]).toHaveProperty('futureQuerySetting', 1);
+		expect(sanitized.sections[1]).not.toHaveProperty('result');
+		expect(sanitized.sections[1]).toHaveProperty('futureSqlSetting', 2);
+		expect(sanitized.sections[2]).toHaveProperty('result', { opaque: true });
+	});
+
 	it('does not read SQL policy storage for pure Kusto, Markdown, and Chart state', async () => {
 		const provider = createSqlProviderHarness();
 		provider.sqlWorkbench.refreshLeaveNoTracePolicy = vi.fn(async () => { throw new Error('SQL policy unavailable'); });

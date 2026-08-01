@@ -53,7 +53,7 @@ const mocks = {
 	handleCrossClusterSchemaError: vi.fn(() => true),
 	retryPrimarySchemaEnhancement: vi.fn(() => true),
 	releaseStaleCrossClusterResponse: vi.fn(),
-	handleDocumentDataMessage: vi.fn(),
+	handleDocumentDataMessage: vi.fn(() => true),
 	flushCompatibilityPersist: vi.fn(),
 	acknowledgePersistDocument: vi.fn(),
 	updateConnectionSelects: vi.fn(),

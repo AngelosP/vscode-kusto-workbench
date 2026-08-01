@@ -6,7 +6,7 @@ description: Analyze the usage of productX for the past 30 days and find outlier
 
 tools: ['vscode', 'execute', 'read', 'memory', 'browser', 'agent', 'runSubagent', 'edit', 'search', 'web', 'todo', 'addSection', 'askKustoCopilot', 'collapseExpandSection', 'configureChart', 'configureHtmlSection', 'getHtmlDashboardGuide', 'validateHtmlDashboard', 'configureKustoQuerySection', 'configureTransformation', 'createKustoFile', 'listKustoConnections', 'listKustoFavorites', 'getKustoSchema', 'refreshKustoSchema', 'searchCachedSchemas', 'listSections', 'activateWorkbenchFile', 'removeSection', 'reorderSections', 'updateMarkdownSection', 'manageDevelopmentNotes', 'agent-first-wiki', 'askSqlCopilot', 'listSqlConnections', 'configureSqlSection', 'getSqlSchema']
 
-model: GPT-5.5
+model: gpt-5.6-sol@1.0
 
 ---
 

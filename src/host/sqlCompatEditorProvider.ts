@@ -1,7 +1,6 @@
 import * as vscode from 'vscode';
 
 import * as path from 'path';
-import * as lockfile from 'proper-lockfile';
 
 import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
@@ -9,10 +8,12 @@ import type { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
 import { parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview } from './diffViewerUtils';
-import { normalizeSection, computeChangedSections, formatSectionDiffContent, KqlxEditorProvider } from './kqlxEditorProvider';
+import { normalizeSection, computeChangedSections, formatSectionDiffContent, KqlxEditorProvider, OwnedDocumentEditTracker } from './kqlxEditorProvider';
 import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
+
+const INITIAL_PROJECTION_MAX_ATTEMPTS = 4;
 import {
 	buildCompatSidecarFile,
 	getCompatSidecarUri,
@@ -20,7 +21,14 @@ import {
 	isLinkedCompatSidecar,
 	type CompatSidecarFormat,
 } from './compatSidecarFormat';
-import { CompatSidecarStore } from './compatSidecarStore';
+import {
+	CompatSidecarStore,
+	compatSidecarFileIdentityEquals,
+	readCompatSidecarSnapshot,
+	withCompatSidecarLock,
+	writeCompatSidecarTextOwned,
+	type CompatSidecarFileIdentity,
+} from './compatSidecarStore';
 import { CompatSidecarSession } from './compatSidecarSession';
 
 const SQL_COMPAT_SIDECAR_FORMAT: CompatSidecarFormat = {
@@ -31,7 +39,7 @@ const SQL_COMPAT_SIDECAR_FORMAT: CompatSidecarFormat = {
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
-	| { type: 'persistDocument'; state: KqlxStateV1; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }
+	| { type: 'persistDocument'; state: KqlxStateV1; sourceGeneration?: number; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }
 	| { type: 'documentReloadResult'; requestId: string; applied: boolean; editRevision: number }
 	| { type: 'requestUpgradeToSqlx'; addKind?: string; state?: KqlxStateV1; editRevision?: number }
 	| { type: string; [key: string]: unknown };
@@ -152,10 +160,18 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		queryEditor.documentUri = document.uri.toString();
 		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
 		const queuedWebviewMessages: IncomingWebviewMessage[] = [];
+		let outerDisposed = false;
+		let delayedBeforeUnloadAdmissionOpen = true;
+		let sidecarSession: CompatSidecarSession;
 		const webviewMessageSubscription = webviewPanel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
 			if (!message || typeof message.type !== 'string') {
 				return;
 			}
+			const delayedBeforeUnload = outerDisposed && delayedBeforeUnloadAdmissionOpen
+				&& message.type === 'persistDocument' && String((message as any).reason || '') === 'beforeunload';
+			const correlatedFinalPersist = outerDisposed && message.type === 'persistDocument'
+				&& sidecarSession?.hasPendingFinalPersistRequest(String((message as any).flushRequestId || ''));
+			if (outerDisposed && !delayedBeforeUnload && !correlatedFinalPersist) return;
 			fileOpenTrace.mark('webview.message.received', { type: message.type, handlerReady: !!handleIncomingWebviewMessage, queued: queuedWebviewMessages.length });
 			if (!handleIncomingWebviewMessage) {
 				queuedWebviewMessages.push(message);
@@ -164,7 +180,6 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			}
 			return handleIncomingWebviewMessage(message);
 		});
-		let outerDisposed = false;
 		const outerDisposalSubscription = webviewPanel.onDidDispose(() => { outerDisposed = true; });
 		fileOpenTrace.mark('initializeWebviewPanel.start');
 		await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
@@ -180,17 +195,19 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		let sidecarUri: vscode.Uri | undefined;
 		let sidecarFile: KqlxFileV1 | undefined;
 		let lastWrittenSidecarText: string | undefined;
-		const sidecarSession = new CompatSidecarSession(webviewPanel.visible === true, 'SQL');
+		let lastWrittenSidecarIdentity: CompatSidecarFileIdentity | undefined;
+		sidecarSession = new CompatSidecarSession(webviewPanel.visible === true, 'SQL');
 		try {
 			sidecarUri = getSidecarJsonUriForSqlCompat(document.uri);
 			if (sidecarUri && sidecarUri.scheme === 'file') {
 				try {
-					const bytes = await vscode.workspace.fs.readFile(sidecarUri);
-					const text = new TextDecoder().decode(bytes);
+					const snapshot = await readCompatSidecarSnapshot(sidecarUri);
+					const text = snapshot.text;
 					const parsed = parseKqlxText(text, { allowedKinds: ['sqlx', 'kqlx'], defaultKind: 'sqlx' });
 					if (parsed.ok && isLinkedSidecarForSqlFile(sidecarUri, parsed.file, document.uri)) {
 						sidecarFile = parsed.file;
 						lastWrittenSidecarText = text;
+						lastWrittenSidecarIdentity = snapshot.identity;
 					}
 				} catch {
 					// ignore — sidecar does not exist or is not parseable
@@ -210,13 +227,13 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			isLinked: (uri, file) => isLinkedSidecarForSqlFile(uri, file, document.uri),
 			sanitizeFresh: state => queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state),
 			publishFresh: (state, publish) => queryEditor.publishSqlLeaveNoTraceStateFresh(state, publish),
-			buildFile: state => SqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state),
+			buildFile: (state, baseFile) => SqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state, baseFile),
 			stringify: stringifyKqlxFile,
 		});
-		const freshSidecarFile = (state: KqlxStateV1) => sidecarStore.buildFresh(state);
+		const freshSidecarFile = (state: KqlxStateV1) => sidecarStore.buildFresh(state, sidecarFile);
 		const writeFreshSidecar = (uri: vscode.Uri, state: KqlxStateV1, expectedCurrentText?: string) =>
-			sidecarStore.writeFresh(uri, state, expectedCurrentText);
-		const repairPersistedSidecar = (uri: vscode.Uri) => sidecarStore.repair(uri);
+			sidecarStore.writeFresh(uri, state, expectedCurrentText, lastWrittenSidecarIdentity);
+		const repairPersistedSidecar = (uri: vscode.Uri) => sidecarStore.repair(uri, lastWrittenSidecarIdentity);
 		const writeDraftRecoveryFile = (uri: vscode.Uri, state: KqlxStateV1) => sidecarStore.writeRecovery(uri, state);
 		if (sidecarUri && sidecarFile && lastWrittenSidecarText !== undefined) {
 			const repaired = await repairPersistedSidecar(sidecarUri);
@@ -224,6 +241,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				sidecarFile = repaired.file;
 				lastKnownSidecarState = repaired.file.state;
 				lastWrittenSidecarText = repaired.text;
+				lastWrittenSidecarIdentity = repaired.identity;
 			}
 		}
 
@@ -350,11 +368,36 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			}
 		};
 
+		let postDocumentGeneration = 0;
+		let activeSourceGeneration = 0;
+		let pendingSourceGeneration: number | undefined;
+		let pendingProjectionEditRevision: number | undefined;
+		let sourceReloadEpoch = 0;
+		let sourceReloadAuthority: { epoch: number; text: string } | undefined;
+		let sourceRollbackFailed = false;
+		let sourceRollbackFailedCandidate: string | undefined;
+		const sameSourceText = (left: string, right: string) => left.replace(/\r\n?/g, '\n') === right.replace(/\r\n?/g, '\n');
 		const postDocument = async (options?: {
 			forceReload?: boolean;
 			expectedEditRevision?: number;
 			sidecarFileOverride?: KqlxFileV1;
+			retirePersists?: boolean;
 		}): Promise<boolean> => {
+			if (options?.retirePersists) {
+				sidecarSession.retirePersists();
+				const sourceText = document.getText();
+				sourceReloadAuthority = { epoch: ++sourceReloadEpoch, text: sourceText };
+				if (sourceRollbackFailedCandidate === undefined || !sameSourceText(sourceText, sourceRollbackFailedCandidate)) {
+					sourceRollbackFailed = false;
+					sourceRollbackFailedCandidate = undefined;
+				}
+			}
+			const generation = ++postDocumentGeneration;
+			pendingSourceGeneration = generation;
+			const projectionEditRevision = Number(options?.expectedEditRevision);
+			pendingProjectionEditRevision = Number.isSafeInteger(projectionEditRevision) && projectionEditRevision >= 0
+				? projectionEditRevision
+				: undefined;
 			const forceReload = options?.forceReload ?? false;
 			fileOpenTrace.mark('postDocument.start', { forceReload, sidecarEnabled: !!sidecarFile });
 			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
@@ -374,13 +417,16 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				};
 			}
 			state = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state);
-			const reload = options?.expectedEditRevision !== undefined
+			if (outerDisposed || generation !== postDocumentGeneration || document.getText() !== sqlText) return false;
+			const requiresApplicationAck = true;
+			const reload = requiresApplicationAck
 				? sidecarSession.createReloadRequest()
 				: undefined;
 			const reloadRequestId = reload?.requestId;
 			const delivered = await webviewPanel.webview.postMessage({
 				type: 'documentData',
 				ok: true,
+				sourceGeneration: generation,
 				forceReload,
 				editRevision: sidecarSession.currentEditRevision,
 				...(options?.expectedEditRevision !== undefined ? { expectedEditRevision: options.expectedEditRevision } : {}),
@@ -400,11 +446,24 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				htmlPowerBiCompatibilityCheckEnabled,
 				state
 			});
+			if (generation !== postDocumentGeneration || document.getText() !== sqlText) {
+				if (reloadRequestId) sidecarSession.failReload(reloadRequestId);
+				return false;
+			}
 			fileOpenTrace.mark('postDocument.documentData.posted', { sections: state.sections.length, sidecarEnabled, forceReload });
 			if (!delivered && reloadRequestId) {
 				sidecarSession.failReload(reloadRequestId);
 			}
-			return reload ? await reload.result : delivered;
+			const applied = reload ? await reload.result : delivered;
+			const appliedCurrent = applied && generation === postDocumentGeneration && document.getText() === sqlText;
+			if (appliedCurrent) {
+				activeSourceGeneration = generation;
+			}
+			if (appliedCurrent && pendingSourceGeneration === generation) {
+				pendingSourceGeneration = undefined;
+				pendingProjectionEditRevision = undefined;
+			}
+			return appliedCurrent;
 		};
 		const requestFinalPersist = (reason: string, timeoutMs = 2_000): Promise<void> => {
 			return sidecarSession.requestFinalPersist(message => webviewPanel.webview.postMessage(message), reason, timeoutMs);
@@ -427,7 +486,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				}
 			}));
 		}
-		subscriptions.push(queryEditor.onDidInvalidateSqlPersistence(() => {
+		const repairInvalidatedPersistence = () => {
 			if (sidecarSession.isClosing || !sidecarUri || !lastKnownSidecarState) return;
 			const repairUri = sidecarUri;
 			const draftState = lastKnownSidecarState;
@@ -444,11 +503,12 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				}
 				if (!repaired) return;
 				sidecarSession.rebaseDraftBase(repaired.inputText, repaired.text);
+				sidecarFile = repaired.file;
+				lastWrittenSidecarText = repaired.text;
+				lastWrittenSidecarIdentity = repaired.identity;
 				if (!sidecarSession.isDirty && draftUnchanged
 					&& sidecarSession.currentStateEditRevision === repairEditRevision
 					&& sidecarSession.currentEditRevision === repairEditRevision) {
-					sidecarFile = repaired.file;
-					lastWrittenSidecarText = repaired.text;
 					const applied = await postDocument({
 						forceReload: true,
 						expectedEditRevision: repairEditRevision,
@@ -459,13 +519,54 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						|| sidecarSession.currentEditRevision !== repairEditRevision) return;
 					lastKnownSidecarState = repaired.file.state;
 					sidecarSession.markClean(repairEditRevision);
-				} else if (sidecarSession.isDirty) {
-					lastWrittenSidecarText = repaired.text;
 				}
 			}).catch(() => undefined);
-		}));
+		};
+		subscriptions.push(queryEditor.onDidInvalidateSqlPersistence(repairInvalidatedPersistence));
+		subscriptions.push(queryEditor.onDidInvalidateKustoPersistence(repairInvalidatedPersistence));
 		let webviewInitialized = false;
-		let lastWebviewPersistAt = 0;
+		const ownedDocumentEdits = new OwnedDocumentEditTracker(text => text.replace(/\r\n?/g, '\n'));
+		let activeSourceMutations = 0;
+		const applyOwnedSourceEdit = async (edit: vscode.WorkspaceEdit, expectedText: string): Promise<boolean> => {
+			activeSourceMutations++;
+			ownedDocumentEdits.begin(expectedText);
+			try {
+				const applied = await vscode.workspace.applyEdit(edit);
+				if (!applied) ownedDocumentEdits.cancel(expectedText);
+				return applied;
+			} finally {
+				activeSourceMutations--;
+			}
+		};
+		let initialProjectionRecovery: Promise<boolean> | undefined;
+		let initialProjectionRestartRequested = false;
+		const postInitialDocument = async (): Promise<boolean> => {
+			for (let attempt = 0; attempt < INITIAL_PROJECTION_MAX_ATTEMPTS && !outerDisposed; attempt++) {
+				const delivered = await postDocument({ forceReload: true, retirePersists: true });
+				if (delivered) return true;
+			}
+			return false;
+		};
+		const ensureInitialDocument = (allowFollowUp = true): Promise<boolean> => {
+			if (webviewInitialized) return Promise.resolve(true);
+			if (initialProjectionRecovery) {
+				initialProjectionRestartRequested = true;
+				return initialProjectionRecovery;
+			}
+			const run = postInitialDocument().then(delivered => {
+				if (delivered) webviewInitialized = true;
+				return delivered;
+			});
+			initialProjectionRecovery = run;
+			const settleInitialProjection = () => {
+				initialProjectionRecovery = undefined;
+				const restart = !webviewInitialized && initialProjectionRestartRequested && allowFollowUp && !outerDisposed;
+				initialProjectionRestartRequested = false;
+				if (restart) void ensureInitialDocument(false);
+			};
+			void run.then(settleInitialProjection, settleInitialProjection);
+			return initialProjectionRecovery;
+		};
 
 		// Listen for external file changes (e.g., from Copilot, git, or other processes).
 		subscriptions.push(
@@ -478,13 +579,12 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						return;
 					}
 					if (!webviewInitialized) {
+						if (initialProjectionRecovery) initialProjectionRestartRequested = true;
+						else void ensureInitialDocument();
 						return;
 					}
-					const now = Date.now();
-					if (now - lastWebviewPersistAt < 500) {
-						return;
-					}
-					void postDocument({ forceReload: true }).catch(() => undefined);
+					if (ownedDocumentEdits.observe(e.document.getText())) return;
+					void postDocument({ forceReload: true, retirePersists: true }).catch(() => undefined);
 				} catch {
 					// ignore
 				}
@@ -495,6 +595,10 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		subscriptions.push(
 			vscode.workspace.onWillSaveTextDocument((event) => {
 				if (event.document.uri.toString() !== document.uri.toString()) return;
+				if (sourceRollbackFailed || activeSourceMutations > 0) {
+					event.waitUntil(Promise.reject(new Error('Cannot save because a source update is still settling or an external reload could not be restored. Reload the file and try again.')));
+					return;
+				}
 				event.waitUntil(requestFinalPersist('save').then(() => sidecarSession.waitForPersists()).then(
 					() => [] as vscode.TextEdit[],
 					error => {
@@ -522,9 +626,10 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 							postChangedSections([]);
 							return;
 						}
-						const { file: persisted, text } = await writeFreshSidecar(sidecarUri, lastKnownSidecarState, sidecarSession.baseText ?? lastWrittenSidecarText);
+						const { file: persisted, text, identity } = await writeFreshSidecar(sidecarUri, lastKnownSidecarState, sidecarSession.baseText ?? lastWrittenSidecarText);
 						sidecarFile = persisted;
 						lastWrittenSidecarText = text;
+						lastWrittenSidecarIdentity = identity;
 						sidecarSession.markClean();
 						rebuildSavedCache();
 						postChangedSections([]);
@@ -543,6 +648,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					await sidecarSession.waitForFinalPersists();
 					if (sidecarSession.isPanelVisible) await sidecarSession.waitForBeforeUnload();
 					else await new Promise<void>(resolve => setImmediate(resolve));
+					delayedBeforeUnloadAdmissionOpen = false;
 					sidecarSession.beginClose();
 					for (const subscription of subscriptions) {
 						try { subscription.dispose(); } catch { /* ignore */ }
@@ -560,9 +666,10 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						);
 						if (choice === 'Save') {
 							saveRequested = true;
-							const { file: persisted, text } = await writeFreshSidecar(sidecarUriToSave, stateToSave, sidecarSession.baseText ?? lastWrittenSidecarText);
+							const { file: persisted, text, identity } = await writeFreshSidecar(sidecarUriToSave, stateToSave, sidecarSession.baseText ?? lastWrittenSidecarText);
 							sidecarFile = persisted;
 							lastWrittenSidecarText = text;
+							lastWrittenSidecarIdentity = identity;
 							sidecarSession.markClean();
 						}
 					}
@@ -582,6 +689,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						if (repaired) {
 							sidecarFile = repaired.file;
 							lastWrittenSidecarText = repaired.text;
+							lastWrittenSidecarIdentity = repaired.identity;
 						}
 					}
 					await sidecarStore.drain();
@@ -610,8 +718,9 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				case 'requestDocument':
 					fileOpenTrace.mark('requestDocument.received');
 					postPersistenceMode();
-					await postDocument({ forceReload: true });
-					webviewInitialized = true;
+					webviewInitialized = webviewInitialized
+						? await postDocument({ forceReload: true, retirePersists: true })
+						: await ensureInitialDocument();
 					fileOpenTrace.mark('requestDocument.completed');
 					return;
 				case 'requestUpgradeToSqlx': {
@@ -654,6 +763,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					sidecarUri = enabled.uri;
 					sidecarFile = enabled.file;
 					lastWrittenSidecarText = enabled.text;
+					lastWrittenSidecarIdentity = enabled.identity;
 					lastKnownSidecarState = enabled.file.state;
 					sidecarSession.markClean(upgradeRevision);
 					rebuildSavedCache();
@@ -672,6 +782,25 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				case 'persistDocument': {
 					const snapshotId = String((message as any).snapshotId || '').trim();
 					const flushRequestId = String((message as any).flushRequestId || '').trim();
+					const incomingSourceGeneration = Number((message as any).sourceGeneration);
+					const incomingRevisionForPending = Number((message as any).editRevision);
+					const sourceGenerationMissing = !Number.isSafeInteger(incomingSourceGeneration);
+					const supersedesPendingProjection = pendingSourceGeneration !== undefined
+						&& pendingProjectionEditRevision !== undefined
+						&& Number.isSafeInteger(incomingRevisionForPending)
+						&& incomingRevisionForPending > pendingProjectionEditRevision
+						&& incomingSourceGeneration === activeSourceGeneration;
+					if (supersedesPendingProjection) {
+						pendingSourceGeneration = undefined;
+						pendingProjectionEditRevision = undefined;
+						postDocumentGeneration++;
+					}
+					if ((snapshotId || flushRequestId) && (!supersedesPendingProjection && pendingSourceGeneration !== undefined
+						|| (sourceGenerationMissing && this.context.extensionMode === vscode.ExtensionMode.Production)
+						|| (!sourceGenerationMissing && incomingSourceGeneration !== activeSourceGeneration))) {
+						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId, new Error('The final SQL metadata snapshot belonged to an older source projection.'));
+						return;
+					}
 					if (flushRequestId && (message as any).flushUnavailableReason) {
 						getWorkbenchLogger().warn('[kusto] SQL metadata snapshot unavailable during save; saving primary text only.');
 						sidecarSession.completeFinalPersist(flushRequestId);
@@ -688,7 +817,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						}
 						if (hasRevision) sidecarSession.adoptRevision(revision, 'replace');
 						if (snapshotId && !outerDisposed) {
-							try { void webviewPanel.webview.postMessage({ type: 'persistDocumentAck', snapshotId, editRevision: sidecarSession.currentEditRevision }); }
+							try { void Promise.resolve(webviewPanel.webview.postMessage({ type: 'persistDocumentAck', snapshotId, editRevision: sidecarSession.currentEditRevision })).catch(() => undefined); }
 							catch { /* ignore */ }
 						}
 						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId);
@@ -708,6 +837,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					}
 					if (hasRevision) sidecarSession.adoptRevision(revision);
 					const incomingEditRevision = hasRevision ? revision : sidecarSession.currentEditRevision;
+					const reloadEpochAtAdmission = sourceReloadEpoch;
 					const rawState = (message as any)?.state;
 					const incomingRawState: KqlxStateV1 = {
 						caretDocsEnabled:
@@ -721,7 +851,6 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					const superseded = () => ({ ok: false as const, error: new Error('The SQL metadata snapshot was superseded before admission.') });
 					const run = sidecarSession.queuePersist(incomingEditRevision, async persistIsCurrent => {
 						if (!persistIsCurrent()) return superseded();
-						lastWebviewPersistAt = Date.now();
 
 						// Persist the first SQL section's text back into the plain-text document.
 						const firstSql = incomingRawState.sections.find((s) => (s && String((s as any).type || '') === 'sql'));
@@ -747,10 +876,38 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 						if (textActuallyChanged && !wouldBlankFile) {
 							const edit = new vscode.WorkspaceEdit();
 							edit.replace(document.uri, fullRange, nextText);
-							if (!await vscode.workspace.applyEdit(edit)) {
+							if (!await applyOwnedSourceEdit(edit, nextText)) {
 								return { ok: false as const, error: new Error('VS Code rejected the final SQL text update.') };
 							}
-							if (!persistIsCurrent()) return superseded();
+							if (normalizeEol(document.getText()) !== normalizeEol(nextText)) {
+								void postDocument({ forceReload: true, retirePersists: true });
+								return superseded();
+							}
+							if (!persistIsCurrent()) {
+								const authority = sourceReloadAuthority;
+								if (authority && authority.epoch > reloadEpochAtAdmission
+									&& sourceReloadAuthority === authority
+									&& sameSourceText(document.getText(), nextText)) {
+									sourceRollbackFailed = true;
+									sourceRollbackFailedCandidate = nextText;
+									for (let rollbackAttempt = 0; rollbackAttempt < 3; rollbackAttempt++) {
+										if (sourceReloadAuthority !== authority || !sameSourceText(document.getText(), nextText)) break;
+										const rollback = new vscode.WorkspaceEdit();
+										const lineCount = Math.max(1, document.lineCount || 1);
+										rollback.replace(document.uri, new vscode.Range(0, 0, lineCount - 1, document.lineAt(lineCount - 1).text.length), authority.text);
+										await applyOwnedSourceEdit(rollback, authority.text);
+										if (sameSourceText(document.getText(), authority.text)) break;
+									}
+									if (sameSourceText(document.getText(), nextText)) {
+										sourceRollbackFailed = true;
+										sourceRollbackFailedCandidate = nextText;
+									} else {
+										sourceRollbackFailed = false;
+										sourceRollbackFailedCandidate = undefined;
+									}
+								}
+								return superseded();
+							}
 						}
 
 						let incomingState: KqlxStateV1;
@@ -804,7 +961,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 							return;
 						}
 						if (snapshotId && !outerDisposed) {
-							try { void webviewPanel.webview.postMessage({ type: 'persistDocumentAck', snapshotId, editRevision: incomingEditRevision }); }
+							try { void Promise.resolve(webviewPanel.webview.postMessage({ type: 'persistDocumentAck', snapshotId, editRevision: incomingEditRevision })).catch(() => undefined); }
 							catch { /* ignore */ }
 						}
 						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId);
@@ -915,15 +1072,15 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		}
 	}
 
-	private static buildSidecarFileForCompat(compatUri: vscode.Uri, state: KqlxStateV1): KqlxFileV1 {
-		return buildCompatSidecarFile(compatUri, state, SQL_COMPAT_SIDECAR_FORMAT);
+	private static buildSidecarFileForCompat(compatUri: vscode.Uri, state: KqlxStateV1, baseFile?: KqlxFileV1): KqlxFileV1 {
+		return buildCompatSidecarFile(compatUri, state, SQL_COMPAT_SIDECAR_FORMAT, baseFile);
 	}
 
 	private async enableSidecarForSqlCompat(
 		document: vscode.TextDocument,
 		lastKnownWebviewState?: KqlxStateV1,
 		publishStateFresh?: PublishFreshState,
-	): Promise<{ uri: vscode.Uri; file: KqlxFileV1; text: string } | undefined> {
+	): Promise<{ uri: vscode.Uri; file: KqlxFileV1; text: string; identity?: CompatSidecarFileIdentity } | undefined> {
 		if (document.uri.scheme !== 'file') {
 			void vscode.window.showWarningMessage('This feature requires a local .sql file on disk.');
 			return undefined;
@@ -951,32 +1108,31 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		}
 
 		let creationBaselineText: string | undefined;
-		const lockTarget = `${sidecarUri.fsPath}.write`;
-		const adoptLinkedSidecar = async (): Promise<{ uri: vscode.Uri; file: KqlxFileV1; text: string }> => {
+		let creationBaselineIdentity: CompatSidecarFileIdentity | undefined;
+		const adoptLinkedSidecar = async (): Promise<{ uri: vscode.Uri; file: KqlxFileV1; text: string; identity?: CompatSidecarFileIdentity }> => {
 			for (let attempt = 0; attempt < 3; attempt += 1) {
-				const currentText = new TextDecoder().decode(await vscode.workspace.fs.readFile(sidecarUri));
+				const baseline = await readCompatSidecarSnapshot(sidecarUri);
+				const currentText = baseline.text;
 				const parsed = parseKqlxText(currentText, { allowedKinds: ['sqlx', 'kqlx'], defaultKind: 'sqlx' });
 				if (!parsed.ok || !isLinkedSidecarForSqlFile(sidecarUri, parsed.file, document.uri)) {
 					throw new Error('The companion sidecar changed before it could be adopted.');
 				}
+				const baselineFile = parsed.file;
 				const publication = await (publishStateFresh
-					? publishStateFresh(parsed.file.state, publish)
-					: publish(parsed.file.state));
+					? publishStateFresh(baselineFile.state, publish)
+					: publish(baselineFile.state));
 				async function publish(state: KqlxStateV1) {
-					const release = await lockfile.lock(lockTarget, {
-						realpath: false, stale: 30_000, update: 5_000,
-						retries: { retries: 100, factor: 1, minTimeout: 25, maxTimeout: 25 },
-					});
-					try {
-						const publishText = new TextDecoder().decode(await vscode.workspace.fs.readFile(targetSidecarUri));
-						if (publishText !== currentText) return { raced: true as const };
-						const file = SqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state);
+					return withCompatSidecarLock(targetSidecarUri, baseline.identity, async () => {
+						const locked = await readCompatSidecarSnapshot(targetSidecarUri);
+						if (!compatSidecarFileIdentityEquals(baseline.identity, locked.identity)
+							|| locked.text !== currentText) return { raced: true as const };
+						const file = SqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state, baselineFile);
 						const text = stringifyKqlxFile(file);
-						if (text !== currentText) await vscode.workspace.fs.writeFile(targetSidecarUri, new TextEncoder().encode(text));
-						return { raced: false as const, value: { uri: targetSidecarUri, file, text } };
-					} finally {
-						await release();
-					}
+						const identity = text !== currentText
+							? await writeCompatSidecarTextOwned(targetSidecarUri, text, baseline.identity, currentText)
+							: baseline.identity;
+						return { raced: false as const, value: { uri: targetSidecarUri, file, text, identity } };
+					});
 				}
 				if (publication.raced) continue;
 				return publication.value;
@@ -986,8 +1142,8 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 		// If a sidecar already exists, prefer using it if it's already linked.
 		try {
-			const bytes = await vscode.workspace.fs.readFile(sidecarUri);
-			const text = new TextDecoder().decode(bytes);
+			const baseline = await readCompatSidecarSnapshot(sidecarUri);
+			const text = baseline.text;
 			const parsed = parseKqlxText(text, { allowedKinds: ['sqlx', 'kqlx'], defaultKind: 'sqlx' });
 			if (parsed.ok && isLinkedSidecarForSqlFile(sidecarUri, parsed.file, document.uri)) {
 				return await adoptLinkedSidecar();
@@ -1001,6 +1157,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				return undefined;
 			}
 			creationBaselineText = text;
+			creationBaselineIdentity = baseline.identity;
 		} catch {
 			// does not exist
 		}
@@ -1026,6 +1183,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		})();
 		let file: KqlxFileV1;
 		let text: string;
+		let identity: CompatSidecarFileIdentity | undefined;
 		const readCurrentText = async (): Promise<string | undefined> => {
 			try { return new TextDecoder().decode(await vscode.workspace.fs.readFile(sidecarUri)); }
 			catch (error) {
@@ -1038,22 +1196,19 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				? publishStateFresh(baseState, publish)
 				: publish(baseState));
 			async function publish(state: KqlxStateV1) {
-				const release = await lockfile.lock(lockTarget, {
-					realpath: false, stale: 30_000, update: 5_000,
-					retries: { retries: 100, factor: 1, minTimeout: 25, maxTimeout: 25 },
-				});
-				try {
+				return withCompatSidecarLock(targetSidecarUri, creationBaselineIdentity, async () => {
 					if (await readCurrentText() !== creationBaselineText) throw new Error('The companion sidecar changed while it was being created.');
 					const createdFile = SqlCompatEditorProvider.buildSidecarFileForCompat(document.uri, state);
 					const createdText = stringifyKqlxFile(createdFile);
-					await vscode.workspace.fs.writeFile(targetSidecarUri, new TextEncoder().encode(createdText));
-					return { file: createdFile, text: createdText };
-				} finally {
-					await release();
-				}
+					const identity = await writeCompatSidecarTextOwned(
+						targetSidecarUri, createdText, creationBaselineIdentity, creationBaselineText,
+					);
+					return { file: createdFile, text: createdText, identity };
+				});
 			}
 			file = publication.file;
 			text = publication.text;
+			identity = publication.identity;
 		} catch (e) {
 			void vscode.window.showErrorMessage(
 				`Failed to create the companion sidecar file (${sidecarName}). ` + (e instanceof Error ? e.message : String(e))
@@ -1067,6 +1222,6 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			// ignore
 		}
 
-		return { uri: sidecarUri, file, text };
+		return { uri: sidecarUri, file, text, identity };
 	}
 }

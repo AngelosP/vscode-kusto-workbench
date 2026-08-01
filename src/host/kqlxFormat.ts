@@ -1,5 +1,8 @@
 import type { PowerBiUpgradeNoticeState } from '../shared/htmlDashboardUpgrade';
 import type { PersistedResultArtifactV1 } from '../shared/resultArtifact';
+import { getInvalidKqlxKnownFieldShape } from './kqlxOverlay';
+
+export { overlayKqlxFileState } from './kqlxOverlay';
 
 export type KqlxVersion = 1;
 
@@ -41,6 +44,8 @@ export type KqlxSectionV1 =
 			// Stored as JSON text to keep comparisons stable and cap size.
 			// Only present when <= 200KB.
 			resultJson?: string;
+			/** Legacy row-bearing result payload; parsed only so sanitation can remove it. */
+			result?: unknown;
 			resultArtifact?: PersistedResultArtifactV1;
 			kustoAccountPartition?: string;
 			kustoLeaveNoTraceRevision?: number;
@@ -69,6 +74,7 @@ export type KqlxSectionV1 =
 			query?: string;
 			comparisonSourceBoxId?: string;
 			resultJson?: string;
+			result?: unknown;
 			resultArtifact?: PersistedResultArtifactV1;
 			kustoAccountPartition?: string;
 			kustoLeaveNoTraceRevision?: number;
@@ -110,6 +116,9 @@ export type KqlxSectionV1 =
 			url?: string;
 			expanded?: boolean;
 			outputHeightPx?: number;
+			imageSizeMode?: 'fill' | 'natural';
+			imageAlign?: 'left' | 'center' | 'right';
+			imageOverflow?: 'shrink' | 'scroll';
 		}
 	| {
 			id?: string;
@@ -135,6 +144,8 @@ export type KqlxSectionV1 =
 			orient?: 'LR' | 'RL' | 'TB' | 'BT';
 			sankeyLeftMargin?: number;
 			showDataLabels?: boolean;
+			labelMode?: 'auto' | 'all' | 'top5' | 'top10' | 'topPercent';
+			labelDensity?: number;
 			sortColumn?: string;
 			sortDirection?: 'asc' | 'desc' | '';
 			// X-axis customization settings
@@ -178,6 +189,7 @@ export type KqlxSectionV1 =
 			chartTitle?: string;
 			chartSubtitle?: string;
 			chartTitleAlign?: 'left' | 'center' | 'right';
+			validation?: unknown;
 		}
 	| {
 			id?: string;
@@ -244,6 +256,7 @@ export type KqlxSectionV1 =
 			resultsVisible?: boolean;
 			favoritesMode?: boolean;
 			resultJson?: string;
+			result?: unknown;
 			resultArtifact?: PersistedResultArtifactV1;
 			runMode?: string;
 			editorHeightPx?: number;
@@ -277,6 +290,7 @@ export interface KqlxStateV1 {
 	caretDocsEnabled?: boolean;
 	autoTriggerAutocompleteEnabled?: boolean;
 	sections: KqlxSectionV1[];
+	[key: string]: unknown;
 }
 
 export type KqlxFileKind = 'kqlx' | 'mdx' | 'sqlx';
@@ -285,6 +299,7 @@ export interface KqlxFileV1 {
 	kind: KqlxFileKind;
 	version: 1;
 	state: KqlxStateV1;
+	[key: string]: unknown;
 }
 
 export type KqlxParseResult =	| { ok: true; file: KqlxFileV1 }
@@ -358,9 +373,64 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 	}
 
 	const sectionsRaw = (state as any).sections;
-	const sections = Array.isArray(sectionsRaw) ? (sectionsRaw as KqlxSectionV1[]) : [];
+	if (!Array.isArray(sectionsRaw)) {
+		return { ok: false, error: 'Invalid .kqlx: "state.sections" must be an array.' };
+	}
+	for (const preference of ['caretDocsEnabled', 'autoTriggerAutocompleteEnabled'] as const) {
+		if (Object.prototype.hasOwnProperty.call(state, preference)
+			&& (state as Record<string, unknown>)[preference] !== undefined
+			&& typeof (state as Record<string, unknown>)[preference] !== 'boolean') {
+			return { ok: false, error: `Invalid .kqlx: "state.${preference}" must be a boolean.` };
+		}
+	}
+	const sections = sectionsRaw as KqlxSectionV1[];
+	const sectionIds = new Set<string>();
+	const unsafeSectionIds = new Set([
+		'prototype', 'queries-container', 'kusto-malformed-document-banner',
+		...Object.getOwnPropertyNames(Object.prototype),
+	]);
+	let linkedQueryCount = 0;
+	for (let index = 0; index < sections.length; index++) {
+		const section = sections[index];
+		if (!isObject(section) || typeof section.type !== 'string' || !section.type.trim()) {
+			return { ok: false, error: `Invalid .kqlx: section ${index} must be an object with a non-empty "type".` };
+		}
+		if (Object.prototype.hasOwnProperty.call(section, 'id') && section.id !== undefined && typeof section.id !== 'string') {
+			return { ok: false, error: `Invalid .kqlx: section ${index} "id" must be a string.` };
+		}
+		if ((section.type === 'query' || section.type === 'copilotQuery')
+			&& Object.prototype.hasOwnProperty.call(section, 'linkedQueryPath')
+			&& section.linkedQueryPath !== undefined && typeof section.linkedQueryPath !== 'string') {
+			return { ok: false, error: `Invalid .kqlx: section ${index} "linkedQueryPath" must be a string.` };
+		}
+		const invalidKnownShape = getInvalidKqlxKnownFieldShape(section);
+		if (invalidKnownShape) {
+			return { ok: false, error: `Invalid .kqlx: section ${index} invalid known field shape at "${invalidKnownShape}".` };
+		}
+		const id = typeof section.id === 'string' ? section.id.trim() : '';
+		if (id && !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) {
+			return { ok: false, error: `Invalid .kqlx: unsafe section id "${id}".` };
+		}
+		if (id && unsafeSectionIds.has(id)) {
+			return { ok: false, error: `Invalid .kqlx: unsafe section id "${id}".` };
+		}
+		if ((section.type === 'query' || section.type === 'copilotQuery')
+			&& typeof section.linkedQueryPath === 'string' && section.linkedQueryPath.trim()) {
+			linkedQueryCount++;
+			if (linkedQueryCount > 1) {
+				return { ok: false, error: 'Invalid .kqlx: only one linked query section is supported.' };
+			}
+		}
+		if (!id) continue;
+		if (sectionIds.has(id)) {
+			return { ok: false, error: `Invalid .kqlx: duplicate section id "${id}".` };
+		}
+		sectionIds.add(id);
+	}
 
-	const parsedState: KqlxStateV1 = { sections };
+	const parsedState = { ...(state as Record<string, unknown>), sections } as KqlxStateV1;
+	delete parsedState.caretDocsEnabled;
+	delete parsedState.autoTriggerAutocompleteEnabled;
 	if (typeof (state as any).caretDocsEnabled === 'boolean') {
 		parsedState.caretDocsEnabled = (state as any).caretDocsEnabled;
 	}
@@ -371,6 +441,7 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 	return {
 		ok: true,
 		file: {
+			...(parsed as Record<string, unknown>),
 			kind: kind as KqlxFileKind,
 			version: 1,
 			state: parsedState

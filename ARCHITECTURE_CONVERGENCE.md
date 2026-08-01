@@ -38,6 +38,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Serialized shared Kusto worker | [`KustoWorkerMutationPort`](src/webview/shared/kusto-worker-mutation-port.ts) with detached settlement and inline recovery | Strong foundation |
 | SQL target and execution ownership | [`SqlEditorLifecycleCoordinator`](src/host/sql/sqlEditorLifecycleCoordinator.ts), [`SqlEditorSessionRegistry`](src/host/sql/sqlEditorSessionRegistry.ts), and [`SqlExecutionBroker`](src/host/sql/sqlExecutionBroker.ts) | Strong foundation |
 | Compatibility sidecar mechanics | [`CompatSidecarFormat`](src/host/compatSidecarFormat.ts), [`CompatSidecarStore`](src/host/compatSidecarStore.ts), and [`CompatSidecarSession`](src/host/compatSidecarSession.ts) | Strong shared core |
+| Lossless notebook codec | [`kqlxOverlay.ts`](src/host/kqlxOverlay.ts), schema-driven known-field validation, opaque preservation, exact persistence comparison, and physical-identity-bound publication | Strong foundation |
 | Kusto physical identity fencing | Connection, schema, and database operations capture endpoint and authority identity before asynchronous work | Strong foundation |
 | SQL Leave No Trace policy | Cross-window policy, revocation generations, protected one-shot runtime, and guarded admission | Strong but SQL-specific |
 | Dashboard domain semantics | Shared provenance upgrade/validation concepts and extensive Power BI golden tests | Good domain core, mixed with adapters |
@@ -72,7 +73,7 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | Rank | ID | Gap | H/A/R/L/F/E | Score | State |
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
-| 1 | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Selected next; prerequisite to `DOC` |
+| 1 | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | COD-1 closed; COD-2 selected |
 | 2 | `DOC` | Document actor and section-definition registry | 4/5/5/5/3/5 | 50 | Open; depends on `COD` |
 | 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/5/3/5 | 48 | Open |
 | 4 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/5/5/4/2/5 | 47 | Open, depends on contracts above |
@@ -130,19 +131,18 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 **Current divergence:**
 
-- `parseKqlxText()` reconstructs a known root/state shape and drops unknown root and state fields.
-- Known sections are hydrated field by field and serialized from current component state, so future fields on known sections have no guaranteed overlay path.
-- Unknown section variants are permissively typed but are not governed by one lossless ordered codec contract.
+- `kqlxOverlay.ts` now preserves unknown root/state fields, known-section extensions, nested future fields, opaque sections, and relative order across notebook and sidecar persistence.
+- Known field omission remains authoritative, legacy/id-less sections receive stable projected identities, and privacy sanitation removes modeled row-bearing fields without gaining authority over future extensions.
+- Document-kind section capabilities remain distributed across parser options, host projection, webview controls, tools, and browser composition.
 - `.mdx` sanitation filters unsupported/unknown sections instead of reporting incompatibility.
-- Documentation has described `.sqlx` as SQL-only even though the implementation permits SQL plus chart, transformation, Python, URL, HTML, and markdown sections.
+- Different entry points can still disagree about which known section kinds `.kqlx`, `.sqlx`, and `.mdx` permit.
 
 **Failure modes:**
 
-- Opening and saving a file from a newer producer can erase data the current build does not understand.
 - Different parse, sanitize, restore, and UI-capability paths can disagree about valid section kinds.
-- Moving document authority behind current codecs would formalize lossy behavior.
+- A known incompatible section can be silently omitted by one projection while another entry point accepts or creates it.
 
-**Migration theme:** introduce lossless overlay codecs and one generated capability matrix before `DOC`. Golden fixtures must edit one known field while preserving future root, state, section, and unknown-section data in order.
+**Migration theme:** complete COD with one generated capability matrix before `DOC`; COD-1's lossless overlay contract remains the preservation boundary for opaque future data.
 
 ### `EXA` - Exact Execution And Immutable Artifacts
 
@@ -376,19 +376,35 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 **Closure qualification:** the final 26-file acceptance ring passed 1,046 tests and final review returned `VERDICT: CLOSE EXA-2`. Full sequential Vitest passed 200 files and 5,264 tests on rerun; the first run had one unrelated SQL credential-lock timing failure, and that file passed unchanged at 52/52 before the complete rerun. Host/webview type checks, production extension build, browser-extension build, integration compilation, ESLint with zero errors and five pre-existing warnings, and both bundle gates passed. Final production sizes are 1,763.0 KB for `extension.js` and 2,673.8 KB for `webview.bundle.js`; intentional EXA-2 runtime growth moved only the synchronized webview baseline from 2,611 to 2,624 KB with the existing 50 KB buffer unchanged. The extension-host suite passed 113/113 with the documented five-second Mocha headroom; two default two-second attempts reached 112/113 because the existing bounded-close test itself waits up to three seconds. The previously reviewed native `default/csv-result-artifacts` exact-byte evidence remains applicable because the host nonce/challenge/write contract did not change in the closure audit; no new native capture was required.
 
-**Next boundary:** `COD-1`, lossless versioned codec preservation. Do not enter `DOC`, deferred `ACT`, or Kusto/SQL coordinator convergence in that iteration.
+**Post-closure schema/autocomplete reliability qualification:** EXA-2 remains closed. Same-target metadata requests are brokered without coalescing owner-gated dispatch, SDK clients stay leased through concurrent operations, empty or malformed schema cannot poison cache state, JSON-to-tabular fallback stays within one authenticated attempt, disposal/currentness fences every physical schema command, compact cache entries are upgraded to worker-ready `.show schema` JSON, and queued primary worker intent no longer invalidates an executing primary transaction. The focused nine-file recovery ring passed 414 tests; full sequential Vitest passed 200 files and 5,297 tests. Host/webview type checks, production extension and browser builds, integration compilation, ESLint with zero errors and the same five pre-existing warnings, and both bundle gates passed. Deterministic production sizes are 1,774.1 KB for `extension.js` and 2,681.0 KB for `webview.bundle.js`; synchronized baselines moved from 1,713 to 1,725 KB and from 2,624 to 2,632 KB with the 50 KB buffer unchanged. The extension-host suite passed 113/113 with the established five-second Mocha headroom. Native VS Code 1.131.0 qualification passed `default/kusto-schema-replacement` and authenticated `kusto-auth/kusto-restored-startup`; the latter restored five same-target sections, kept four unfocused sections deferred, and rendered the exact section-three worker table in 917 ms with word suggestions and the auxiliary provider disabled. A preceding `--no-build` launch that opened no webview remains runner-state evidence rather than a product result.
+
+**Next boundary:** `COD-2`, one document-kind capability matrix. Do not enter `DOC`, deferred `ACT`, or Kusto/SQL coordinator convergence in that iteration.
 
 ## Next Iteration
 
 ### Iteration `COD-1`: Lossless Codec Preservation
 
-**Status:** selected, not started.
+**Status:** closed on 2026-08-01; final pessimistic review returned `VERDICT: CLOSE COD-1`.
 
 **Boundary:** introduce one lossless overlay codec path that preserves unknown root fields, unknown state fields, extension fields on known sections, opaque unknown sections, and section order while editing one known field. Keep current document actors and UI restore paths in place.
 
 **Cheapest discriminating check:** open a golden fixture containing future root/state fields, a future field on a known section, and an unknown section; edit one supported known field; save; prove every unknown value and the original order survive byte-semantic round-trip.
 
 **Exclusions:** no document actor migration, no capability-policy expansion, no `ACT` work, and no execution-coordinator convergence.
+
+**Completion evidence:** `kqlxOverlay.ts` now provides one recursive overlay codec with compile-time exhaustive host-known section schemas. Root/state extensions, known-section extensions, nested future fields, opaque sections, and order survive known edits. Known omissions remain deletions; stable nested identities cannot inherit metadata from replacements, while explicitly renameable transformation items retain extensions only when correlation is unambiguous. Required/typed known leaves, arrays, records, and nested identities fail read-only when malformed; hostile JSON keys remain data properties. Exact JSON-semantic persistence comparison prevents omitted empty/default fields from being falsely acknowledged. KQLX/SQLX/MDX privacy publication, KQL/SQL sidecar write/repair/recovery, id-less projections, legacy `copilotQuery`, devnotes, chart restoration, and linked-query ownership use the same preservation contract. Linked targets are single, plain-query, non-self, source-generation-fenced, and published through one exact content lease. Session, linked-query, and sidecar writes retain the physical identity accepted at load or locked creation/adoption, with independent durable/buffer rollback and exact Save/Close ownership.
+
+**Qualification:** the expanded focused Vitest ring passed 484 tests, and the final complete sequential suite passed 202 files and 5,404 tests. Host/webview type checks, integration compilation, production extension build, browser-extension build, ESLint with zero errors and five pre-existing warnings, and both bundle gates passed. The complete extension-host suite passed 166/166 with the established five-second Mocha headroom. Native VS Code 1.131.0 `default/codec-lossless-roundtrip` passed on its first run after editing one known query field; its reviewed semantic artifact preserved future root/state fields, a known-section extension, the opaque payload, and exact section order, and its reviewed screenshot showed the expected clean editor state. Deterministic production sizes are 1,818.4 KB for `extension.js` and 2,683.9 KB for `webview.bundle.js`; synchronized baselines moved from 1,744 to 1,769 KB and from 2,632 to 2,634 KB while the 50 KB buffer remained unchanged.
+
+### Iteration `COD-2`: One Document-Kind Capability Matrix
+
+**Status:** selected, not started.
+
+**Boundary:** replace distributed `.kqlx` / `.sqlx` / `.mdx` section-kind filters and creation rules with one shared capability matrix used by parsing/validation, host projection, webview add controls, tools, and browser/read-only composition. Invalid known kinds must be reported rather than silently filtered; opaque future sections remain preserved by COD-1.
+
+**Cheapest discriminating check:** enumerate every known section kind against each document kind and prove parser validation, host `allowedSectionKinds`, webview add controls, and tool admission return the same decision, including an incompatible known section that currently disappears from MDX projection.
+
+**Exclusions:** no document actor, section-definition registry, protocol redesign, deferred `ACT`, or execution-coordinator convergence.
 
 ## Convergence Loop
 
