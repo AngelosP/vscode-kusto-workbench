@@ -34,6 +34,8 @@ const handlerState = vi.hoisted(() => ({
 		allowedSectionKinds: ['query', 'chart', 'python', 'url', 'markdown'],
 		defaultSectionKind: 'query',
 		compatibilityMode: false,
+		documentMutationAllowed: true,
+		documentRuntimeActive: true,
 		compatibilitySingleKind: 'query',
 		upgradeRequestType: 'requestUpgradeToKqlx',
 		compatibilityTooltip: '',
@@ -77,6 +79,7 @@ const mocks = {
 	handleStsResponse: vi.fn(),
 	handleStsDiagnostics: vi.fn(),
 	displayCancelled: vi.fn(),
+	displayResultForBox: vi.fn(),
 	clearResultsState: vi.fn(),
 	retireResultsStateForRerun: vi.fn(),
 	setQueryExecuting: vi.fn(),
@@ -101,10 +104,22 @@ const mocks = {
 	applyKustoLeaveNoTracePolicy: vi.fn(),
 	getResultArtifactByProducerExecution: vi.fn(),
 	getCurrentResultArtifact: vi.fn(() => null),
+	getResultsStateRevision: vi.fn(() => 0),
 	bindResultArtifactConsumer: vi.fn(),
 	getBoundResultArtifact: vi.fn(),
 	unbindResultArtifactConsumer: vi.fn(),
 	clearStoredQueryResult: vi.fn(),
+	createSectionWithCapabilities: vi.fn(),
+	detachSqlComparisonForAdmissionRollback: vi.fn((boxId: string, sourceBoxId: string) => {
+		const metadata = handlerState.optimizationMetadataByBoxId[boxId];
+		if (!metadata || String(metadata.sourceBoxId || '') !== sourceBoxId) return false;
+		delete handlerState.optimizationMetadataByBoxId[boxId];
+		if (handlerState.optimizationMetadataByBoxId[sourceBoxId]?.comparisonBoxId === boxId) {
+			delete handlerState.optimizationMetadataByBoxId[sourceBoxId];
+		}
+		document.getElementById(boxId)?.removeAttribute('data-sql-comparison-admission-request-id');
+		return true;
+	}),
 };
 
 vi.mock('../../src/webview/shared/persistence-state.js', () => ({
@@ -130,10 +145,10 @@ vi.mock('../../src/webview/core/results-state.js', () => ({
 	getBoundResultArtifact: mocks.getBoundResultArtifact,
 	unbindResultArtifactConsumer: mocks.unbindResultArtifactConsumer,
 	getResultsState: vi.fn(() => null),
-	getResultsStateRevision: vi.fn(() => 0),
+	getResultsStateRevision: mocks.getResultsStateRevision,
 	clearResultsState: mocks.clearResultsState,
 	retireResultsStateForRerun: mocks.retireResultsStateForRerun,
-	displayResultForBox: vi.fn(),
+	displayResultForBox: mocks.displayResultForBox,
 	displayResult: vi.fn(),
 	displayCancelled: mocks.displayCancelled,
 }));
@@ -145,6 +160,11 @@ vi.mock('../../src/webview/core/error-renderer.js', () => ({
 
 vi.mock('../../src/webview/core/section-factory.js', () => ({
 	addQueryBox: vi.fn(() => 'query_1'),
+	isPinnedFirstSection: vi.fn((boxId: unknown) => {
+		if (!handlerState.pState.firstSectionPinned) return false;
+		const first = document.getElementById('queries-container')?.children[0] as HTMLElement | undefined;
+		return !!first && first.id === String(boxId || '');
+	}),
 	removeQueryBox: vi.fn(),
 	toggleCacheControls: vi.fn(),
 	__kustoGetQuerySectionElement: mocks.getQuerySectionElement,
@@ -171,6 +191,7 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	removeHtmlBox: vi.fn(),
 	addSqlBox: vi.fn(() => 'sql_1'),
 	removeSqlBox: vi.fn(),
+	detachSqlComparisonForAdmissionRollback: mocks.detachSqlComparisonForAdmissionRollback,
 	updateSqlConnectionSelects: mocks.updateSqlConnectionSelects,
 	updateSqlDatabaseSelect: mocks.updateSqlDatabaseSelect,
 	onSqlDatabasesError: mocks.onSqlDatabasesError,
@@ -235,6 +256,7 @@ vi.mock('../../src/webview/sections/query-execution.controller.js', async () => 
 });
 
 vi.mock('../../src/webview/core/persistence.js', () => ({
+	DOCUMENT_RUNTIME_INVALIDATED_EVENT: 'kusto-document-runtime-invalidated',
 	schedulePersist: vi.fn(),
 	__kustoClearStoredQueryResult: mocks.clearStoredQueryResult,
 	handleDocumentDataMessage: mocks.handleDocumentDataMessage,
@@ -244,12 +266,14 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 	__kustoSetCompatibilityMode: vi.fn(),
 	__kustoApplyDocumentCapabilities: vi.fn(),
 	__kustoRequestAddSection: vi.fn(),
+	createSectionWithCapabilities: mocks.createSectionWithCapabilities,
 	__kustoOnQueryResult: vi.fn(),
 	__kustoScheduleLocalSchemaPrewarm: vi.fn(),
 	resolvePendingKustoResultRestores: vi.fn(),
 	resolvePendingSqlResultRestores: vi.fn(),
 	discardPendingSqlResultRestores: vi.fn(),
 	applyKustoLeaveNoTracePolicy: mocks.applyKustoLeaveNoTracePolicy,
+	isDocumentMutationAllowed: () => handlerState.pState.documentMutationAllowed === true,
 }));
 
 vi.mock('../../src/webview/monaco/monaco.js', () => ({
@@ -606,6 +630,7 @@ describe('message-handler dispatch', () => {
 		for (const key of Object.keys(handlerState.optimizationMetadataByBoxId)) delete handlerState.optimizationMetadataByBoxId[key];
 		delete (window as any).__kustoSqlLastConnectionId;
 		delete (window as any).__kustoSqlLastDatabase;
+		delete (window as any).__kustoReadOnlyMode;
 		delete (window as any).__kustoSetMonacoKustoSchema;
 		vi.clearAllMocks();
 		getResultsStateMock.mockReturnValue(null);
@@ -614,8 +639,31 @@ describe('message-handler dispatch', () => {
 		mocks.getClusterUrl.mockReturnValue('');
 		mocks.getDatabase.mockReturnValue('');
 		mocks.getSqlSectionElement.mockReturnValue(null);
+		mocks.createSectionWithCapabilities.mockImplementation((kind: unknown) => {
+			const sectionKind = String(kind || '');
+			if (handlerState.pState.compatibilityMode) {
+				return { ok: false, error: `Adding a ${sectionKind} section requires upgrading this compatibility file first.` };
+			}
+			const allowedKinds = Array.isArray(handlerState.pState.allowedSectionKinds)
+				? handlerState.pState.allowedSectionKinds.map(String)
+				: [];
+			if (!allowedKinds.includes(sectionKind)) {
+				return { ok: false, error: `Section type "${sectionKind}" is unavailable in the current document host.` };
+			}
+			return { ok: true, sectionId: `${sectionKind}_1` };
+		});
 		delete (window as any).__kustoEnterFavoritesModeForBox;
 		handlerState.pState.documentEditRevision = 0;
+		handlerState.pState.documentKind = 'kqlx';
+		handlerState.pState.allowedSectionKinds = ['query', 'sql', 'chart', 'transformation', 'markdown', 'python', 'url', 'html'];
+		handlerState.pState.compatibilityMode = false;
+		handlerState.pState.documentMutationAllowed = true;
+		handlerState.pState.documentRuntimeActive = true;
+		handlerState.pState.firstSectionPinned = false;
+		handlerState.pState.devNotesSections = [];
+		handlerState.pState.queryResultJsonByBoxId = {};
+		handlerState.pState.resultArtifactByBoxId = {};
+		handlerState.pState.upgradeRequestType = 'requestUpgradeToKqlx';
 	});
 
 	it('answers final-persist requests and records persistence acknowledgements', async () => {
@@ -1320,6 +1368,157 @@ describe('message-handler dispatch', () => {
 			executionId: 'sql-comparison-2', executing: false,
 		});
 		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('comparison:query_comparison:source');
+	});
+
+	it('renders a direct SQL comparison result with its exact bound source lineage', async () => {
+		const { registerSqlDerivedComparisonSession, registerSqlSectionSession } = await import('../../src/webview/core/sql-section-message-router.js');
+		const resultsState = await import('../../src/webview/core/results-state.js');
+		const source = createFakeSqlSection();
+		const comparison = createFakeSqlSection();
+		let activeExecutionId = 'direct-comparison-1';
+		source.id = 'sql_source';
+		comparison.id = 'sql_comparison';
+		(source.sqlSession as any).ownerToken = 'source-owner';
+		(comparison.sqlSession as any).ownerToken = 'comparison-owner';
+		(source.sqlSession as any).admitOwnedMessage = vi.fn((message: any) => message.ownerToken === 'source-owner');
+		(comparison.sqlSession as any).admitOwnedMessage = vi.fn((message: any) =>
+			message.ownerToken === 'comparison-owner' && message.executionId === activeExecutionId);
+		(comparison as any).setExternalQueryExecuting = vi.fn((executing: boolean, executionId: string) => {
+			if (executing) {
+				if (activeExecutionId && activeExecutionId !== executionId) return false;
+				activeExecutionId = executionId;
+				return true;
+			}
+			if (activeExecutionId !== executionId) return false;
+			activeExecutionId = '';
+			return true;
+		});
+		registerSqlSectionSession(source.sqlSession as any);
+		registerSqlSectionSession(comparison.sqlSession as any);
+		registerSqlDerivedComparisonSession('sql_comparison', 'sql_source');
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+			sql_source: source, sql_comparison: comparison,
+		} as Record<string, FakeSqlSection>)[boxId] || null);
+		handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_comparison' };
+		handlerState.optimizationMetadataByBoxId.sql_comparison = { sourceBoxId: 'sql_source', isComparison: true };
+		const sourceArtifact = {
+			artifactId: 'result:sql_source:direct', sourceBoxId: 'sql_source', revision: 1, createdAt: 1,
+			restored: false, columns: ['Value'], rows: [[1]], metadata: {},
+			producer: {
+				engine: 'sql', boxId: 'sql_source', executionId: 'source-direct-1',
+				connectionId: 'sql-connection', database: 'SqlDb',
+			},
+			policy: {
+				exposeToActiveContent: true, sendToModel: true, shareToClipboard: true, exportToCsv: true,
+			},
+			lineage: [],
+		};
+		mocks.getBoundResultArtifact.mockReturnValue(sourceArtifact);
+		mocks.getResultArtifactByProducerExecution.mockReturnValue(sourceArtifact);
+		mocks.bindResultArtifactConsumer.mockReturnValue(sourceArtifact.artifactId);
+		vi.mocked(resultsState.displayResultForBox).mockClear();
+		const result = { columns: ['Value'], rows: [[2]], metadata: {} };
+
+		dispatchHostMessage({
+			type: 'queryResult', boxId: 'sql_comparison', ownerToken: 'comparison-owner',
+			executionId: 'direct-comparison-1', comparisonSourceBoxId: 'sql_source',
+			comparisonSourceExecutionId: 'source-direct-1', query: 'SELECT 2',
+			connectionId: 'sql-connection', database: 'SqlDb', result,
+		});
+		await Promise.resolve();
+
+		expect(resultsState.displayResultForBox).toHaveBeenCalledWith(result, 'sql_comparison', {
+			label: 'Results', showExecutionTime: true, executionId: 'direct-comparison-1',
+			artifactPublication: expect.objectContaining({
+				producer: expect.objectContaining({ engine: 'sql', boxId: 'sql_comparison', executionId: 'direct-comparison-1' }),
+				lineage: [{ sourceArtifactId: sourceArtifact.artifactId, role: 'comparison-source' }],
+			}),
+		});
+		expect(activeExecutionId).toBe('');
+		expect(mocks.unbindResultArtifactConsumer).toHaveBeenCalledWith('comparison:sql_comparison:source');
+
+		dispatchHostMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'sql_comparison', ownerToken: 'source-owner',
+			executionId: 'copilot-after-direct', executing: true,
+			sourceBoxId: 'sql_source', sourceExecutionId: 'source-direct-1',
+		});
+		expect(activeExecutionId).toBe('copilot-after-direct');
+		expect(mocks.bindResultArtifactConsumer).toHaveBeenCalledWith(
+			'comparison:sql_comparison:source', 'sql_source', sourceArtifact.artifactId,
+		);
+		dispatchHostMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'sql_comparison', ownerToken: 'source-owner',
+			executionId: 'copilot-after-direct', executing: false,
+		});
+		expect(activeExecutionId).toBe('');
+
+		vi.mocked(resultsState.displayResultForBox).mockClear();
+		activeExecutionId = 'direct-stale-source';
+		dispatchHostMessage({
+			type: 'queryResult', boxId: 'sql_comparison', ownerToken: 'comparison-owner',
+			executionId: 'direct-stale-source', comparisonSourceBoxId: 'sql_source',
+			comparisonSourceExecutionId: 'source-stale', query: 'SELECT 2',
+			connectionId: 'sql-connection', database: 'SqlDb', result,
+		});
+		expect(resultsState.displayResultForBox).not.toHaveBeenCalled();
+	});
+
+	it('settles a direct SQL comparison error before a Copilot comparison retry', async () => {
+		const { registerSqlDerivedComparisonSession, registerSqlSectionSession } = await import('../../src/webview/core/sql-section-message-router.js');
+		const errorRenderer = await import('../../src/webview/core/error-renderer.js');
+		const source = createFakeSqlSection();
+		const comparison = createFakeSqlSection();
+		let activeExecutionId = 'direct-error';
+		source.id = 'sql_source';
+		comparison.id = 'sql_comparison';
+		(source.sqlSession as any).ownerToken = 'source-owner';
+		(comparison.sqlSession as any).ownerToken = 'comparison-owner';
+		(comparison.sqlSession as any).admitOwnedMessage = vi.fn((message: any) =>
+			message.ownerToken === 'comparison-owner' && message.executionId === activeExecutionId);
+		(comparison as any).setExternalQueryExecuting = vi.fn((executing: boolean, executionId: string) => {
+			if (executing) {
+				if (activeExecutionId && activeExecutionId !== executionId) return false;
+				activeExecutionId = executionId;
+				return true;
+			}
+			if (activeExecutionId !== executionId) return false;
+			activeExecutionId = '';
+			return true;
+		});
+		registerSqlSectionSession(source.sqlSession as any);
+		registerSqlSectionSession(comparison.sqlSession as any);
+		registerSqlDerivedComparisonSession('sql_comparison', 'sql_source');
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+			sql_source: source, sql_comparison: comparison,
+		} as Record<string, FakeSqlSection>)[boxId] || null);
+		handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_comparison' };
+		handlerState.optimizationMetadataByBoxId.sql_comparison = { sourceBoxId: 'sql_source', isComparison: true };
+		const sourceArtifact = {
+			artifactId: 'result:sql_source:retry', sourceBoxId: 'sql_source', revision: 1,
+			producer: { engine: 'sql', boxId: 'sql_source', executionId: 'source-retry' },
+		};
+		mocks.getResultArtifactByProducerExecution.mockReturnValue(sourceArtifact);
+		mocks.bindResultArtifactConsumer.mockReturnValue(sourceArtifact.artifactId);
+		vi.mocked(errorRenderer.__kustoRenderErrorUx).mockClear();
+
+		dispatchHostMessage({
+			type: 'queryError', boxId: 'sql_comparison', ownerToken: 'comparison-owner',
+			executionId: 'direct-error', error: 'direct failure',
+		});
+		expect(activeExecutionId).toBe('');
+		expect(errorRenderer.__kustoRenderErrorUx).toHaveBeenCalledWith(
+			'sql_comparison', 'direct failure', undefined, 'direct-error',
+		);
+
+		dispatchHostMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'sql_comparison', ownerToken: 'source-owner',
+			executionId: 'copilot-after-error', executing: true,
+			sourceBoxId: 'sql_source', sourceExecutionId: 'source-retry',
+		});
+		expect(activeExecutionId).toBe('copilot-after-error');
+		expect(mocks.bindResultArtifactConsumer).toHaveBeenCalledWith(
+			'comparison:sql_comparison:source', 'sql_source', sourceArtifact.artifactId,
+		);
 	});
 
 	it('routes one queryResult through rendering and the persistence owner once', async () => {
@@ -2316,6 +2515,36 @@ describe('message-handler dispatch', () => {
 		]);
 		expect(mocks.updateSqlConnectionSelects).toHaveBeenCalledTimes(1);
 		expect(mocks.updateSqlFavoritesUiForAllBoxes).toHaveBeenCalledTimes(1);
+	});
+
+	it('preserves SQL comparison metadata across SQL connection refresh', async () => {
+		const source = createFakeSqlSection();
+		const comparison = createFakeSqlSection();
+		(source as any).getConnectionId = vi.fn(() => 'sql_conn_1');
+		(comparison as any).getConnectionId = vi.fn(() => 'sql_conn_1');
+		(source as any).setLeaveNoTraceConnectionIds = vi.fn();
+		(comparison as any).setLeaveNoTraceConnectionIds = vi.fn();
+		handlerState.sqlBoxes.push('sql_source', 'sql_comparison');
+		handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_comparison' };
+		handlerState.optimizationMetadataByBoxId.sql_comparison = {
+			sourceBoxId: 'sql_source', isComparison: true,
+		};
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+			sql_source: source, sql_comparison: comparison,
+		} as Record<string, FakeSqlSection>)[boxId] || null);
+		mocks.getQuerySectionElement.mockReturnValue(null);
+
+		dispatchHostMessage({
+			type: 'sqlConnectionsData',
+			connections: [{ id: 'sql_conn_1', serverUrl: 'sql.example.test' }],
+			sqlLeaveNoTrace: [],
+		});
+		await Promise.resolve();
+
+		expect(handlerState.optimizationMetadataByBoxId.sql_source).toEqual({ comparisonBoxId: 'sql_comparison' });
+		expect(handlerState.optimizationMetadataByBoxId.sql_comparison).toEqual({
+			sourceBoxId: 'sql_source', isComparison: true,
+		});
 	});
 
 	it('ignores SQL connection data delivered after a newer revision', async () => {
@@ -3670,8 +3899,24 @@ describe('changedSections agent provenance', () => {
 		mocks.setRunMode.mockImplementation(() => undefined);
 		for (const key of Object.keys(handlerState.queryEditors)) delete handlerState.queryEditors[key];
 		for (const key of Object.keys(handlerState.optimizationMetadataByBoxId)) delete handlerState.optimizationMetadataByBoxId[key];
+		handlerState.pState.documentKind = 'kqlx';
+		handlerState.pState.allowedSectionKinds = ['query', 'sql', 'chart', 'transformation', 'markdown', 'python', 'url', 'html'];
 		handlerState.pState.compatibilityMode = false;
 		handlerState.pState.compatibilitySingleKind = 'query';
+		handlerState.pState.documentMutationAllowed = true;
+		handlerState.pState.documentRuntimeActive = true;
+		mocks.createSectionWithCapabilities.mockImplementation((kind: unknown) => {
+			const sectionKind = String(kind || '');
+			if (handlerState.pState.compatibilityMode) {
+				return { ok: false, error: `Adding a ${sectionKind} section requires upgrading this compatibility file first.` };
+			}
+			const allowedKinds = Array.isArray(handlerState.pState.allowedSectionKinds)
+				? handlerState.pState.allowedSectionKinds.map(String)
+				: [];
+			return allowedKinds.includes(sectionKind)
+				? { ok: true, sectionId: `${sectionKind}_1` }
+				: { ok: false, error: `Section type "${sectionKind}" is unavailable in the current document host.` };
+		});
 	});
 
 	it('clears the agent marker when a section becomes clean', async () => {
@@ -3769,6 +4014,242 @@ describe('changedSections agent provenance', () => {
 		expect(shell.agentTouched).toBe(true);
 	});
 
+	it.each([
+		['kqlx', ['query', 'copilotQuery', 'sql', 'chart', 'transformation', 'markdown', 'python', 'url', 'html']],
+		['sqlx', ['sql', 'chart', 'transformation', 'markdown', 'python', 'url', 'html']],
+		['mdx', ['transformation', 'markdown', 'url']],
+	] as const)('admits tool-added sections from the %s matrix row', async (documentKind, allowedKinds) => {
+		const knownKinds = [
+			'query', 'copilotQuery', 'sql', 'chart', 'transformation',
+			'markdown', 'python', 'url', 'html', 'devnotes', 'future-section',
+		];
+		handlerState.pState.documentKind = documentKind;
+		handlerState.pState.allowedSectionKinds = [
+			'query', 'sql', 'chart', 'transformation', 'markdown', 'python', 'url', 'html',
+		];
+
+		for (const sectionKind of knownKinds) {
+			mocks.postMessageToHost.mockClear();
+			const requestId = `tool-${documentKind}-${sectionKind}`;
+			dispatchHostMessage({ type: 'toolAddSection', requestId, input: { type: sectionKind } });
+			await Promise.resolve();
+			const response = mocks.postMessageToHost.mock.calls
+				.map(call => call[0] as any)
+				.find(message => message.type === 'toolResponse' && message.requestId === requestId);
+			expect(response, `${documentKind}/${sectionKind}`).toBeDefined();
+			expect(response.result.success, `${documentKind}/${sectionKind}`).toBe(allowedKinds.includes(sectionKind as never));
+			if (!allowedKinds.includes(sectionKind as never)) {
+				expect(response.error, `${documentKind}/${sectionKind}`).toMatch(/section type|failed to add section/i);
+			}
+		}
+	});
+
+	it('rejects tool-added sections in compatibility mode before mutation', async () => {
+		handlerState.pState.documentKind = 'kql';
+		handlerState.pState.compatibilityMode = true;
+		handlerState.pState.upgradeRequestType = 'requestUpgradeToKqlx';
+		handlerState.pState.allowedSectionKinds = ['query', 'markdown'];
+
+		dispatchHostMessage({ type: 'toolAddSection', requestId: 'compat-add', input: { type: 'markdown', text: 'lost' } });
+		await Promise.resolve();
+
+		expect(mocks.createSectionWithCapabilities).toHaveBeenCalledWith('markdown', { text: 'lost' });
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'compat-add', result: { sectionId: '', success: false },
+			error: expect.stringContaining('requires upgrading'),
+		}));
+	});
+
+	it.each(['kql', 'sql'] as const)('rejects development-note mutation for malformed %s companion projection', async documentKind => {
+		handlerState.pState.documentKind = documentKind;
+		handlerState.pState.compatibilityMode = false;
+		handlerState.pState.documentMutationAllowed = false;
+
+		dispatchHostMessage({
+			type: 'updateDevNotes', requestId: `devnotes-malformed-${documentKind}`, action: 'add',
+			entry: {
+				id: 'note_invalid', created: '2026-08-02T00:00:00.000Z', updated: '2026-08-02T00:00:00.000Z',
+				category: 'usage-note', content: 'must not mutate', source: 'agent',
+			},
+		});
+		await Promise.resolve();
+
+		expect(handlerState.pState.devNotesSections).toEqual([]);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: `devnotes-malformed-${documentKind}`, result: { success: false },
+			error: expect.stringContaining('read-only'),
+		}));
+	});
+
+	it('rejects stale terminals and all tool access while retained DOM is runtime-inactive', async () => {
+		handlerState.pState.documentMutationAllowed = false;
+		handlerState.pState.documentRuntimeActive = false;
+
+		dispatchHostMessage({
+			type: 'queryResult', boxId: 'query_stale', executionId: 'execution-stale',
+			result: { columns: [{ name: 'Secret' }], rows: [['stale']] },
+		});
+		dispatchHostMessage({ type: 'requestToolState', requestId: 'state-invalid' });
+		dispatchHostMessage({
+			type: 'toolConfigureSqlSection', requestId: 'configure-invalid',
+			input: { sectionId: 'sql_stale', query: 'SELECT leaked=1', execute: true },
+		});
+		dispatchHostMessage({
+			type: 'kustoPublicationStage', publicationId: 'invalid-publication',
+			publicationDeadline: Date.now() + 10_000, payload: {
+				type: 'queryResult', boxId: 'query_stale', executionId: 'execution-stale',
+			},
+		});
+		await Promise.resolve();
+
+		expect(mocks.displayResultForBox).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolStateResponse', requestId: 'state-invalid', sections: [],
+			error: 'This document is invalid and its retained sections are non-executable.',
+		});
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'configure-invalid', result: { success: false },
+			error: 'This document is invalid and its retained sections are read-only.',
+		});
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoPublicationAck', publicationId: 'invalid-publication', phase: 'staged', accepted: false,
+		});
+	});
+
+	it('rejects mutations before the initial document projection is applied', async () => {
+		handlerState.pState.documentMutationAllowed = true;
+		handlerState.pState.documentRuntimeActive = false;
+
+		dispatchHostMessage({
+			type: 'updateDevNotes', requestId: 'note-before-document', action: 'add',
+			entry: {
+				id: 'note_early', created: '2026-08-02T00:00:00.000Z', updated: '2026-08-02T00:00:00.000Z',
+				category: 'usage-note', content: 'must not disappear', source: 'agent',
+			},
+		});
+		dispatchHostMessage({
+			type: 'toolAddSection', requestId: 'section-before-document',
+			input: { type: 'markdown', text: 'must not disappear' },
+		});
+		dispatchHostMessage({ type: 'requestToolState', requestId: 'state-before-document' });
+		await Promise.resolve();
+
+		expect(handlerState.pState.devNotesSections).toEqual([]);
+		expect(mocks.createSectionWithCapabilities).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'note-before-document', result: { success: false },
+			error: 'This document is still loading and cannot accept mutations yet.',
+		});
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'section-before-document', result: { success: false },
+			error: 'This document is still loading and cannot accept mutations yet.',
+		});
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolStateResponse', requestId: 'state-before-document', sections: [],
+			error: 'This document is still loading and has no executable sections yet.',
+		});
+	});
+
+	it.each([
+		['KQL', 'kql', 'query'],
+		['SQL', 'sql', 'sql'],
+	] as const)('rejects development-note mutation in plain %s compatibility mode', async (_label, documentKind, primaryKind) => {
+		handlerState.pState.documentKind = documentKind;
+		handlerState.pState.compatibilityMode = true;
+		handlerState.pState.documentMutationAllowed = true;
+		handlerState.pState.compatibilitySingleKind = primaryKind;
+
+		dispatchHostMessage({
+			type: 'updateDevNotes', requestId: `devnotes-${documentKind}`, action: 'add',
+			entry: {
+				id: 'note_1', created: '2026-08-02T00:00:00.000Z', updated: '2026-08-02T00:00:00.000Z',
+				category: 'usage-note', content: 'must persist', source: 'agent',
+			},
+		});
+		await Promise.resolve();
+
+		expect(handlerState.pState.devNotesSections).toEqual([]);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: `devnotes-${documentKind}`, result: { success: false },
+			error: expect.stringContaining('companion metadata file'),
+		}));
+	});
+
+	it('acknowledges only actual development-note add, supersede, and remove transitions', async () => {
+		handlerState.pState.compatibilityMode = false;
+		handlerState.pState.documentMutationAllowed = true;
+		const first = {
+			id: 'note_first', created: '2026-08-02T00:00:00.000Z', updated: '2026-08-02T00:00:00.000Z',
+			category: 'usage-note', content: 'first', source: 'agent',
+		};
+		const replacement = {
+			...first, id: 'note_replacement', updated: '2026-08-02T00:01:00.000Z', content: 'replacement',
+		};
+
+		dispatchHostMessage({ type: 'updateDevNotes', requestId: 'note-add', action: 'add', entry: first });
+		await Promise.resolve();
+		expect(handlerState.pState.devNotesSections[0].entries).toEqual([first]);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'note-add', result: { success: true },
+		});
+
+		dispatchHostMessage({
+			type: 'updateDevNotes', requestId: 'note-supersede', action: 'supersede',
+			supersededId: first.id, entry: replacement,
+		});
+		await Promise.resolve();
+		expect(handlerState.pState.devNotesSections[0].entries).toEqual([replacement]);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'note-supersede', result: { success: true },
+		});
+
+		dispatchHostMessage({
+			type: 'updateDevNotes', requestId: 'note-missing', action: 'supersede',
+			supersededId: 'missing', entry: { ...replacement, id: 'note_never_added' },
+		});
+		await Promise.resolve();
+		expect(handlerState.pState.devNotesSections[0].entries).toEqual([replacement]);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'note-missing', result: { success: false },
+			error: expect.stringContaining('not found uniquely'),
+		}));
+
+		dispatchHostMessage({
+			type: 'updateDevNotes', requestId: 'note-remove', action: 'remove', noteId: replacement.id,
+		});
+		await Promise.resolve();
+		expect(handlerState.pState.devNotesSections[0].entries).toEqual([]);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'note-remove', result: { success: true },
+		});
+		const persistence = await import('../../src/webview/core/persistence.js');
+		expect(persistence.schedulePersist).toHaveBeenCalledTimes(3);
+	});
+
+	it('leaves duplicate development notes unchanged when removal is not unique', async () => {
+		const duplicateA = { id: 'duplicate_note', content: 'A' };
+		const duplicateB = { id: 'duplicate_note', content: 'B' };
+		handlerState.pState.devNotesSections = [
+			{ id: 'devnotes_a', type: 'devnotes', entries: [duplicateA] },
+			{ id: 'devnotes_b', type: 'devnotes', entries: [duplicateB] },
+		];
+		const before = structuredClone(handlerState.pState.devNotesSections);
+		const persistence = await import('../../src/webview/core/persistence.js');
+		vi.mocked(persistence.schedulePersist).mockClear();
+
+		dispatchHostMessage({
+			type: 'updateDevNotes', requestId: 'remove-duplicate-note', action: 'remove', noteId: 'duplicate_note',
+		});
+		await Promise.resolve();
+
+		expect(handlerState.pState.devNotesSections).toEqual(before);
+		expect(persistence.schedulePersist).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'remove-duplicate-note', result: { success: false },
+			error: expect.stringContaining('not found uniquely'),
+		}));
+	});
+
 	it('removes an arbitrary query section ID through the owning cleanup path', async () => {
 		const sectionFactory = await import('../../src/webview/core/section-factory.js');
 		const section = document.createElement('div') as HTMLDivElement & { serialize: () => unknown };
@@ -3782,6 +4263,29 @@ describe('changedSections agent provenance', () => {
 		expect(sectionFactory.removeQueryBox).toHaveBeenCalledWith('custom-query');
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'toolResponse', requestId: 'remove-custom', result: { success: true },
+		}));
+	});
+
+	it('refuses tool removal of the pinned compatibility primary', async () => {
+		handlerState.pState.firstSectionPinned = true;
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		const primary = document.createElement('div') as HTMLDivElement & { serialize: () => unknown };
+		primary.id = 'primary-query';
+		primary.serialize = () => ({ id: primary.id, type: 'query', query: 'print 1' });
+		const secondary = document.createElement('div');
+		secondary.id = 'secondary-query';
+		container.append(primary, secondary);
+		document.body.appendChild(container);
+
+		dispatchHostMessage({ type: 'toolRemoveSection', requestId: 'remove-primary', sectionId: primary.id });
+		await Promise.resolve();
+
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		expect(sectionFactory.removeQueryBox).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'remove-primary', result: { success: false },
+			error: expect.stringContaining('pinned'),
 		}));
 	});
 
@@ -3973,7 +4477,6 @@ describe('changedSections agent provenance', () => {
 	});
 
 	it('marks newly created optimized comparison sections as agent-touched when new', async () => {
-		const sectionFactory = await import('../../src/webview/core/section-factory.js');
 		const { section: sourceSection } = createSectionWithShell('query_src', { id: 'query_src', type: 'query', query: 'Source query' });
 		const { section: comparisonSection, shell } = createSectionWithShell('query_1', { id: 'query_1', type: 'query', query: 'New optimized query' });
 		configureFakeKustoTarget(sourceSection, 'conn-1', 'Db');
@@ -3994,7 +4497,7 @@ describe('changedSections agent provenance', () => {
 			connectionId: 'conn-1', database: 'Db',
 		});
 		await new Promise(resolve => setTimeout(resolve, 120));
-		expect(sectionFactory.addQueryBox).toHaveBeenCalledWith(expect.objectContaining({
+		expect(mocks.createSectionWithCapabilities).toHaveBeenCalledWith('query', expect.objectContaining({
 			isComparison: true,
 			comparisonSourceBoxId: 'query_src',
 		}));
@@ -4100,6 +4603,697 @@ describe('changedSections agent provenance', () => {
 
 		expect(shell.hasChanges).toBe('modified');
 		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('prepares SQL comparisons as SQL sections in SQLX', async () => {
+		handlerState.pState.documentKind = 'sqlx';
+		handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+		const sourceSql = createFakeSqlSection() as FakeSqlSection & {
+			getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+		};
+		sourceSql.id = 'sql_source';
+		sourceSql.getServerUrl = () => 'server.example';
+		sourceSql.getConnectionId = () => 'sql-a';
+		sourceSql.getDatabase = () => 'Db';
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => boxId === 'sql_source' ? sourceSql : null);
+
+		dispatchHostMessage({
+			type: 'ensureComparisonBox', requestId: 'sql-comparison', boxId: 'sql_source',
+			query: 'SELECT 2', engine: 'sql',
+			sourceSectionInstanceId: sourceSql.sqlSession.instanceId,
+			sourceTargetGeneration: sourceSql.sqlSession.targetGeneration,
+		});
+		await Promise.resolve();
+
+		expect(mocks.createSectionWithCapabilities).toHaveBeenCalledWith('sql', expect.objectContaining({
+			query: 'SELECT 2', afterBoxId: 'sql_source', comparisonSourceBoxId: 'sql_source',
+			serverUrl: 'server.example', connectionIdHint: 'sql-a', database: 'Db',
+		}));
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'comparisonBoxEnsured', requestId: 'sql-comparison', sourceBoxId: 'sql_source',
+			comparisonBoxId: 'sql_1',
+			sourceSectionInstanceId: sourceSql.sqlSession.instanceId,
+			sourceTargetGeneration: sourceSql.sqlSession.targetGeneration,
+		}));
+		expect(mocks.postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({ kustoTarget: expect.anything() }));
+	});
+
+	it('rejects a nested SQL comparison source before creating or mutating a section', async () => {
+		handlerState.pState.documentKind = 'sqlx';
+		handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+		const comparisonSource = createFakeSqlSection() as FakeSqlSection & {
+			getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+		};
+		comparisonSource.id = 'sql_comparison_source';
+		comparisonSource.getServerUrl = () => 'server.example';
+		comparisonSource.getConnectionId = () => 'sql-a';
+		comparisonSource.getDatabase = () => 'Db';
+		handlerState.optimizationMetadataByBoxId.sql_comparison_source = {
+			sourceBoxId: 'sql_root', isComparison: true,
+		};
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) =>
+			boxId === 'sql_comparison_source' ? comparisonSource : null);
+		mocks.createSectionWithCapabilities.mockClear();
+
+		dispatchHostMessage({
+			type: 'ensureComparisonBox', requestId: 'nested-sql-comparison',
+			boxId: 'sql_comparison_source', query: 'SELECT 3', engine: 'sql',
+			sourceSectionInstanceId: comparisonSource.sqlSession.instanceId,
+			sourceTargetGeneration: comparisonSource.sqlSession.targetGeneration,
+		});
+		await Promise.resolve();
+
+		expect(mocks.createSectionWithCapabilities).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'comparisonBoxEnsured', engine: 'sql', requestId: 'nested-sql-comparison',
+			sourceBoxId: 'sql_comparison_source', comparisonBoxId: '',
+		});
+	});
+
+	it('uses distinct request-derived comparison IDs even when the clock is fixed', async () => {
+		handlerState.pState.documentKind = 'sqlx';
+		handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+		const sourceA = createFakeSqlSection() as FakeSqlSection & {
+			getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+		};
+		const sourceB = createFakeSqlSection() as typeof sourceA;
+		sourceA.id = 'sql_source_a';
+		sourceB.id = 'sql_source_b';
+		for (const source of [sourceA, sourceB]) {
+			source.getServerUrl = () => 'server.example';
+			source.getConnectionId = () => 'sql-a';
+			source.getDatabase = () => 'Db';
+		}
+		const comparisons: Record<string, FakeSqlSection> = {};
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+			sql_source_a: sourceA, sql_source_b: sourceB, ...comparisons,
+		} as Record<string, FakeSqlSection>)[boxId] || null);
+		mocks.createSectionWithCapabilities.mockImplementation((_kind: unknown, options: any) => {
+			const id = String(options.id);
+			const comparison = createFakeSqlSection();
+			comparison.id = id;
+			comparison.setAttribute('data-sql-comparison-admission-request-id', String(options.comparisonAdmissionRequestId));
+			comparisons[id] = comparison;
+			handlerState.optimizationMetadataByBoxId[id] = { sourceBoxId: options.comparisonSourceBoxId, isComparison: true };
+			handlerState.optimizationMetadataByBoxId[options.comparisonSourceBoxId] = { comparisonBoxId: id };
+			return { ok: true, sectionId: id };
+		});
+		const now = vi.spyOn(Date, 'now').mockReturnValue(1234);
+		try {
+			for (const [requestId, source] of [['request-a', sourceA], ['request-b', sourceB]] as const) {
+				dispatchHostMessage({
+					type: 'ensureComparisonBox', requestId, boxId: source.id,
+					query: `SELECT '${requestId}'`, engine: 'sql',
+					sourceSectionInstanceId: source.sqlSession.instanceId,
+					sourceTargetGeneration: source.sqlSession.targetGeneration,
+				});
+				await Promise.resolve();
+			}
+			const ids = mocks.createSectionWithCapabilities.mock.calls.map((call: any[]) => call[1].id);
+			expect(ids).toEqual(['sql_cmp_request-a', 'sql_cmp_request-b']);
+			expect(new Set(ids).size).toBe(2);
+			for (const [requestId, source, comparisonBoxId] of [
+				['request-a', sourceA, 'sql_cmp_request-a'],
+				['request-b', sourceB, 'sql_cmp_request-b'],
+			] as const) {
+				dispatchHostMessage({
+					type: 'sqlComparisonAdmissionRollback', requestId,
+					sourceBoxId: source.id, comparisonBoxId,
+				});
+			}
+		} finally {
+			now.mockRestore();
+		}
+	});
+
+	it('removes only the exact newly provisional SQL comparison when host admission is rejected', async () => {
+		handlerState.pState.documentKind = 'sqlx';
+		handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+		const source = createFakeSqlSection() as FakeSqlSection & {
+			getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+		};
+		const comparison = createFakeSqlSection();
+		source.id = 'sql_source';
+		comparison.id = 'sql_1';
+		source.getServerUrl = () => 'server.example';
+		source.getConnectionId = () => 'sql-a';
+		source.getDatabase = () => 'Db';
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+			sql_source: source, sql_1: comparison,
+		} as Record<string, FakeSqlSection>)[boxId] || null);
+		mocks.createSectionWithCapabilities.mockImplementation((_kind: unknown, options: any) => {
+			handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_1' };
+			handlerState.optimizationMetadataByBoxId.sql_1 = { sourceBoxId: 'sql_source', isComparison: true };
+			comparison.setAttribute('data-sql-comparison-admission-request-id', String(options.comparisonAdmissionRequestId));
+			return { ok: true, sectionId: 'sql_1' };
+		});
+
+		dispatchHostMessage({
+			type: 'ensureComparisonBox', requestId: 'sql-provisional', boxId: 'sql_source',
+			query: 'SELECT 2', engine: 'sql', sourceSectionInstanceId: source.sqlSession.instanceId,
+			sourceTargetGeneration: source.sqlSession.targetGeneration,
+		});
+		await Promise.resolve();
+		expect(comparison.getAttribute('data-sql-comparison-admission-request-id')).toBe('sql-provisional');
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'comparisonBoxEnsured', engine: 'sql', requestId: 'sql-provisional', comparisonBoxId: 'sql_1',
+		}));
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmission', requestId: 'sql-provisional',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_1', accepted: true,
+		});
+		await Promise.resolve();
+		expect(comparison.getAttribute('data-sql-comparison-admission-request-id')).toBe('sql-provisional');
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		expect(sectionFactory.removeSqlBox).not.toHaveBeenCalled();
+
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionRollback', requestId: 'sql-provisional',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_1',
+		});
+		await Promise.resolve();
+		expect(sectionFactory.removeSqlBox).toHaveBeenCalledWith('sql_1');
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionAck', phase: 'rolledBack', requestId: 'sql-provisional',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_1', accepted: true,
+		});
+	});
+
+	it('retains idempotent rollback acknowledgement beyond the host retry horizon', async () => {
+		vi.useFakeTimers();
+		try {
+			handlerState.pState.documentKind = 'sqlx';
+			handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+			const source = createFakeSqlSection() as FakeSqlSection & {
+				getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+			};
+			const comparison = createFakeSqlSection();
+			source.id = 'sql_source';
+			comparison.id = 'sql_cmp_rollback-proof';
+			source.getServerUrl = () => 'server.example';
+			source.getConnectionId = () => 'sql-a';
+			source.getDatabase = () => 'Db';
+			mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+				sql_source: source, 'sql_cmp_rollback-proof': comparison,
+			} as Record<string, FakeSqlSection>)[boxId] || null);
+			mocks.createSectionWithCapabilities.mockImplementation((_kind: unknown, options: any) => {
+				handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: comparison.id };
+				handlerState.optimizationMetadataByBoxId[comparison.id] = { sourceBoxId: 'sql_source', isComparison: true };
+				comparison.setAttribute('data-sql-comparison-admission-request-id', String(options.comparisonAdmissionRequestId));
+				return { ok: true, sectionId: comparison.id };
+			});
+
+			dispatchHostMessage({
+				type: 'ensureComparisonBox', requestId: 'rollback-proof', boxId: 'sql_source',
+				query: 'SELECT 2', engine: 'sql', sourceSectionInstanceId: source.sqlSession.instanceId,
+				sourceTargetGeneration: source.sqlSession.targetGeneration,
+			});
+			dispatchHostMessage({
+				type: 'sqlComparisonAdmissionRollback', requestId: 'rollback-proof',
+				sourceBoxId: 'sql_source', comparisonBoxId: comparison.id,
+			});
+			mocks.postMessageToHost.mockClear();
+			vi.advanceTimersByTime(15_000);
+
+			dispatchHostMessage({
+				type: 'sqlComparisonAdmissionRollback', requestId: 'rollback-proof',
+				sourceBoxId: 'sql_source', comparisonBoxId: comparison.id,
+			});
+			expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+				type: 'sqlComparisonAdmissionAck', phase: 'rolledBack', requestId: 'rollback-proof',
+				sourceBoxId: 'sql_source', comparisonBoxId: comparison.id, accepted: true,
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not mutate a reused SQL comparison query until exact host admission', async () => {
+		handlerState.pState.documentKind = 'sqlx';
+		handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+		const source = createFakeSqlSection() as FakeSqlSection & {
+			getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+		};
+		const comparison = createFakeSqlSection() as FakeSqlSection & {
+			getConnectionId: () => string; getDatabase: () => string;
+			setQuery: ReturnType<typeof vi.fn>; clearResults: ReturnType<typeof vi.fn>;
+		};
+		source.id = 'sql_source';
+		comparison.id = 'sql_comparison';
+		source.getServerUrl = () => 'server.example';
+		source.getConnectionId = () => 'sql-a';
+		source.getDatabase = () => 'Db';
+		comparison.getConnectionId = () => 'sql-a';
+		comparison.getDatabase = () => 'Db';
+		comparison.setQuery = vi.fn();
+		comparison.clearResults = vi.fn();
+		document.body.append(source, comparison);
+		handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_comparison' };
+		handlerState.optimizationMetadataByBoxId.sql_comparison = { sourceBoxId: 'sql_source', isComparison: true };
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+			sql_source: source, sql_comparison: comparison,
+		} as Record<string, FakeSqlSection>)[boxId] || null);
+
+		dispatchHostMessage({
+			type: 'ensureComparisonBox', requestId: 'sql-reuse-admission', boxId: 'sql_source',
+			query: 'SELECT 3', engine: 'sql', sourceSectionInstanceId: source.sqlSession.instanceId,
+			sourceTargetGeneration: source.sqlSession.targetGeneration,
+		});
+		await Promise.resolve();
+		expect(comparison.setQuery).not.toHaveBeenCalled();
+		const sectionFactory = await import('../../src/webview/core/section-factory.js');
+		expect(sectionFactory.__kustoSetSectionName).not.toHaveBeenCalledWith('sql_comparison', 'Optimized SQL');
+
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmission', requestId: 'sql-reuse-admission',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison', accepted: true,
+		});
+		await Promise.resolve();
+		expect(comparison.setQuery).not.toHaveBeenCalled();
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionCommit', requestId: 'sql-reuse-admission',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison',
+		});
+		await Promise.resolve();
+		expect(comparison.setQuery).toHaveBeenCalledWith('SELECT 3');
+		expect(comparison.clearResults).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionAck', phase: 'committed', requestId: 'sql-reuse-admission',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison', accepted: true,
+		});
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionFinalize', requestId: 'sql-reuse-admission',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison',
+		});
+		await Promise.resolve();
+		expect(comparison.clearResults).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionAck', phase: 'finalized', requestId: 'sql-reuse-admission',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison', accepted: true,
+		});
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionComplete', requestId: 'sql-reuse-admission',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison',
+		});
+		await Promise.resolve();
+		expect(comparison.clearResults).toHaveBeenCalledOnce();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionAck', phase: 'completed', requestId: 'sql-reuse-admission',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison', accepted: true,
+		});
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionAck', phase: 'staged', requestId: 'sql-reuse-admission',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison', accepted: true,
+		});
+		comparison.setQuery.mockClear();
+		mocks.postMessageToHost.mockClear();
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionRollback', requestId: 'sql-reuse-admission',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison',
+		});
+		await Promise.resolve();
+		expect(comparison.setQuery).not.toHaveBeenCalled();
+		expect(handlerState.optimizationMetadataByBoxId.sql_comparison).toEqual({ sourceBoxId: 'sql_source', isComparison: true });
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionAck', phase: 'rolledBack', requestId: 'sql-reuse-admission',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison', accepted: false,
+		});
+	});
+
+	it('never rolls back after finalization while completion is delayed past the old deadline', async () => {
+		vi.useFakeTimers();
+		try {
+			expect(handlerState.pState.documentRuntimeActive).toBe(true);
+			handlerState.pState.documentKind = 'sqlx';
+			handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+			const source = createFakeSqlSection() as FakeSqlSection & {
+				getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+			};
+			const comparison = createFakeSqlSection() as FakeSqlSection & {
+				getConnectionId: () => string; getDatabase: () => string; getQuery: () => string;
+				getQueryRevision: () => number; setQuery: ReturnType<typeof vi.fn>;
+			};
+			source.id = 'sql_source';
+			comparison.id = 'sql_comparison';
+			source.getServerUrl = () => 'server.example';
+			source.getConnectionId = () => 'sql-a';
+			source.getDatabase = () => 'Db';
+			comparison.getConnectionId = () => 'sql-a';
+			comparison.getDatabase = () => 'Db';
+			let query = 'SELECT old';
+			let revision = 1;
+			comparison.getQuery = () => query;
+			comparison.getQueryRevision = () => revision;
+			comparison.setQuery = vi.fn((value: string) => { query = value; revision += 1; });
+			handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_comparison' };
+			handlerState.optimizationMetadataByBoxId.sql_comparison = { sourceBoxId: 'sql_source', isComparison: true };
+			mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+				sql_source: source, sql_comparison: comparison,
+			} as Record<string, FakeSqlSection>)[boxId] || null);
+
+			dispatchHostMessage({
+				type: 'ensureComparisonBox', requestId: 'completion-delay', boxId: 'sql_source',
+				query: 'SELECT new', engine: 'sql', sourceSectionInstanceId: source.sqlSession.instanceId,
+				sourceTargetGeneration: source.sqlSession.targetGeneration,
+			});
+			await Promise.resolve();
+			expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'comparisonBoxEnsured', requestId: 'completion-delay', comparisonBoxId: 'sql_comparison',
+			}));
+			for (const [type, phase] of [
+				['sqlComparisonAdmission', 'staged'],
+				['sqlComparisonAdmissionCommit', 'committed'],
+				['sqlComparisonAdmissionFinalize', 'finalized'],
+			] as const) {
+				dispatchHostMessage({ type, requestId: 'completion-delay', sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison', accepted: true });
+				await Promise.resolve();
+				await Promise.resolve();
+				await Promise.resolve();
+				expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+					type: 'sqlComparisonAdmissionAck', phase, accepted: true,
+				}));
+			}
+			mocks.postMessageToHost.mockClear();
+			vi.advanceTimersByTime(30_000);
+
+			expect(query).toBe('SELECT new');
+			expect(handlerState.optimizationMetadataByBoxId.sql_comparison).toEqual({ sourceBoxId: 'sql_source', isComparison: true });
+			expect(mocks.postMessageToHost).not.toHaveBeenCalledWith(expect.objectContaining({ phase: 'rolledBack' }));
+			dispatchHostMessage({
+				type: 'sqlComparisonAdmissionComplete', requestId: 'completion-delay',
+				sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison',
+			});
+			expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'sqlComparisonAdmissionAck', phase: 'completed', accepted: true,
+			}));
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('restores reused SQL query and persisted results when a committed proposal is rejected', async () => {
+		handlerState.pState.documentKind = 'sqlx';
+		handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+		const source = createFakeSqlSection() as FakeSqlSection & {
+			getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+		};
+		const comparison = createFakeSqlSection() as FakeSqlSection & {
+			getConnectionId: () => string; getDatabase: () => string; getQuery: () => string;
+			serialize: () => Record<string, unknown>; setQuery: ReturnType<typeof vi.fn>;
+		};
+		source.id = 'sql_source';
+		comparison.id = 'sql_comparison';
+		source.getServerUrl = () => 'server.example';
+		source.getConnectionId = () => 'sql-a';
+		source.getDatabase = () => 'Db';
+		comparison.getConnectionId = () => 'sql-a';
+		comparison.getDatabase = () => 'Db';
+		comparison.getQuery = () => 'SELECT old';
+		comparison.serialize = () => ({ id: 'sql_comparison', type: 'sql', query: 'SELECT old' });
+		comparison.setQuery = vi.fn();
+		handlerState.pState.queryResultJsonByBoxId = { sql_comparison: '{"rows":[[1]]}' };
+		handlerState.pState.resultArtifactByBoxId = { sql_comparison: { artifactId: 'old-artifact' } };
+		handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_comparison' };
+		handlerState.optimizationMetadataByBoxId.sql_comparison = { sourceBoxId: 'sql_source', isComparison: true };
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+			sql_source: source, sql_comparison: comparison,
+		} as Record<string, FakeSqlSection>)[boxId] || null);
+
+		dispatchHostMessage({
+			type: 'ensureComparisonBox', requestId: 'sql-reuse-rollback', boxId: 'sql_source',
+			query: 'SELECT new', engine: 'sql', sourceSectionInstanceId: source.sqlSession.instanceId,
+			sourceTargetGeneration: source.sqlSession.targetGeneration,
+		});
+		await Promise.resolve();
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmission', requestId: 'sql-reuse-rollback',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison', accepted: true,
+		});
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionCommit', requestId: 'sql-reuse-rollback',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison',
+		});
+		await Promise.resolve();
+		expect(comparison.setQuery).toHaveBeenLastCalledWith('SELECT new');
+		expect((handlerState.pState.queryResultJsonByBoxId as any).sql_comparison).toBeUndefined();
+
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionRollback', requestId: 'sql-reuse-rollback',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison',
+		});
+		await Promise.resolve();
+		expect(comparison.setQuery).toHaveBeenLastCalledWith('SELECT old');
+		expect((handlerState.pState.queryResultJsonByBoxId as any).sql_comparison).toBe('{"rows":[[1]]}');
+		expect((handlerState.pState.resultArtifactByBoxId as any).sql_comparison).toEqual({ artifactId: 'old-artifact' });
+	});
+
+	it('never overwrites newer query or result revisions while rolling back a committed reuse', async () => {
+		handlerState.pState.documentKind = 'sqlx';
+		handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+		const source = createFakeSqlSection() as FakeSqlSection & {
+			getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+		};
+		const comparison = createFakeSqlSection() as FakeSqlSection & {
+			getConnectionId: () => string; getDatabase: () => string; getQuery: () => string;
+			getQueryRevision: () => number; setQuery: ReturnType<typeof vi.fn>;
+		};
+		source.id = 'sql_source';
+		comparison.id = 'sql_comparison';
+		source.getServerUrl = () => 'server.example';
+		source.getConnectionId = () => 'sql-a';
+		source.getDatabase = () => 'Db';
+		comparison.getConnectionId = () => 'sql-a';
+		comparison.getDatabase = () => 'Db';
+		let query = 'SELECT old';
+		let queryRevision = 1;
+		let resultRevision = 1;
+		comparison.getQuery = () => query;
+		comparison.getQueryRevision = () => queryRevision;
+		comparison.setQuery = vi.fn((value: string) => { query = value; queryRevision += 1; });
+		mocks.getResultsStateRevision.mockImplementation((boxId: string) => boxId === 'sql_comparison' ? resultRevision : 0);
+		handlerState.pState.queryResultJsonByBoxId = { sql_comparison: '{"rows":[[1]]}' };
+		handlerState.pState.resultArtifactByBoxId = { sql_comparison: { artifactId: 'old-artifact' } };
+		handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_comparison' };
+		handlerState.optimizationMetadataByBoxId.sql_comparison = { sourceBoxId: 'sql_source', isComparison: true };
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+			sql_source: source, sql_comparison: comparison,
+		} as Record<string, FakeSqlSection>)[boxId] || null);
+
+		dispatchHostMessage({
+			type: 'ensureComparisonBox', requestId: 'sql-reuse-newer-edit', boxId: 'sql_source',
+			query: 'SELECT proposed', engine: 'sql', sourceSectionInstanceId: source.sqlSession.instanceId,
+			sourceTargetGeneration: source.sqlSession.targetGeneration,
+		});
+		await Promise.resolve();
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmission', requestId: 'sql-reuse-newer-edit',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison', accepted: true,
+		});
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionCommit', requestId: 'sql-reuse-newer-edit',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison',
+		});
+		await Promise.resolve();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionAck', phase: 'committed', requestId: 'sql-reuse-newer-edit',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison', accepted: true,
+		});
+		comparison.setQuery('SELECT user edit');
+		resultRevision += 1;
+		handlerState.pState.queryResultJsonByBoxId.sql_comparison = '{"rows":[[99]]}';
+		handlerState.pState.resultArtifactByBoxId.sql_comparison = { artifactId: 'user-artifact' };
+		comparison.setQuery.mockClear();
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionRollback', requestId: 'sql-reuse-newer-edit',
+			sourceBoxId: 'sql_source', comparisonBoxId: 'sql_comparison',
+		});
+		await Promise.resolve();
+
+		expect(comparison.setQuery).not.toHaveBeenCalled();
+		expect(query).toBe('SELECT user edit');
+		expect(handlerState.pState.queryResultJsonByBoxId.sql_comparison).toBe('{"rows":[[99]]}');
+		expect(handlerState.pState.resultArtifactByBoxId.sql_comparison).toEqual({ artifactId: 'user-artifact' });
+	});
+
+	it('preserves an edited provisional comparison as an ordinary SQL section on rollback', async () => {
+		handlerState.pState.documentKind = 'sqlx';
+		handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+		const source = createFakeSqlSection() as FakeSqlSection & {
+			getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+		};
+		const comparison = createFakeSqlSection() as FakeSqlSection & {
+			getQuery: () => string; getQueryRevision: () => number;
+			setName: (name: string) => void; getName: () => string;
+			serializeForComparisonAdmission: () => Record<string, unknown>;
+		};
+		source.id = 'sql_source';
+		comparison.id = 'sql_cmp_request-edit';
+		source.getServerUrl = () => 'server.example';
+		source.getConnectionId = () => 'sql-a';
+		source.getDatabase = () => 'Db';
+		const query = 'SELECT proposed';
+		let name = 'Optimized SQL';
+		comparison.getQuery = () => query;
+		comparison.getQueryRevision = () => 1;
+		comparison.setName = (value: string) => { name = value; };
+		comparison.getName = () => name;
+		comparison.serializeForComparisonAdmission = () => ({
+			id: comparison.id, type: 'sql', name, query, comparisonSourceBoxId: 'sql_source',
+		});
+		document.body.append(comparison);
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+			sql_source: source, 'sql_cmp_request-edit': comparison,
+		} as Record<string, FakeSqlSection>)[boxId] || null);
+		mocks.createSectionWithCapabilities.mockImplementation((_kind: unknown, options: any) => {
+			handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: comparison.id };
+			handlerState.optimizationMetadataByBoxId[comparison.id] = { sourceBoxId: 'sql_source', isComparison: true };
+			comparison.setAttribute('data-sql-comparison-admission-request-id', String(options.comparisonAdmissionRequestId));
+			return { ok: true, sectionId: comparison.id };
+		});
+
+		dispatchHostMessage({
+			type: 'ensureComparisonBox', requestId: 'request-edit', boxId: 'sql_source',
+			query: 'SELECT proposed', engine: 'sql', sourceSectionInstanceId: source.sqlSession.instanceId,
+			sourceTargetGeneration: source.sqlSession.targetGeneration,
+		});
+		await Promise.resolve();
+		comparison.setName('Custom user name');
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionCommit', requestId: 'request-edit',
+			sourceBoxId: 'sql_source', comparisonBoxId: comparison.id,
+		});
+		await Promise.resolve();
+		dispatchHostMessage({
+			type: 'sqlComparisonAdmissionRollback', requestId: 'request-edit',
+			sourceBoxId: 'sql_source', comparisonBoxId: comparison.id,
+		});
+		await Promise.resolve();
+
+		expect(query).toBe('SELECT proposed');
+		expect(comparison.getName()).toBe('Custom user name');
+		expect(document.getElementById(comparison.id)).toBe(comparison);
+		expect(comparison.hasAttribute('data-sql-comparison-admission-request-id')).toBe(false);
+		expect(handlerState.optimizationMetadataByBoxId[comparison.id]).toBeUndefined();
+		expect((await import('../../src/webview/core/section-factory.js')).removeSqlBox).not.toHaveBeenCalledWith(comparison.id);
+	});
+
+	it('reuses the exact SQL comparison on repeated preparation', async () => {
+		handlerState.pState.documentKind = 'sqlx';
+		handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+		const source = createFakeSqlSection() as FakeSqlSection & {
+			getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+		};
+		const comparison = createFakeSqlSection() as FakeSqlSection & {
+			getConnectionId: () => string; getDatabase: () => string;
+			setQuery: ReturnType<typeof vi.fn>; clearResults: ReturnType<typeof vi.fn>;
+		};
+		source.id = 'sql_source';
+		comparison.id = 'sql_comparison';
+		source.getServerUrl = () => 'server.example';
+		source.getConnectionId = () => 'sql-a';
+		source.getDatabase = () => 'Db';
+		comparison.getConnectionId = () => 'sql-a';
+		comparison.getDatabase = () => 'Db';
+		comparison.setQuery = vi.fn();
+		comparison.clearResults = vi.fn();
+		handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_comparison' };
+		handlerState.optimizationMetadataByBoxId.sql_comparison = { sourceBoxId: 'sql_source', isComparison: true };
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => ({
+			sql_source: source, sql_comparison: comparison,
+		} as Record<string, FakeSqlSection>)[boxId] || null);
+		mocks.createSectionWithCapabilities.mockClear();
+
+		for (const [index, query] of ['SELECT 2', 'SELECT 3'].entries()) {
+			const requestId = `sql-reuse-${index}`;
+			dispatchHostMessage({
+				type: 'ensureComparisonBox', requestId, boxId: 'sql_source',
+				query, engine: 'sql', sourceSectionInstanceId: source.sqlSession.instanceId,
+				sourceTargetGeneration: source.sqlSession.targetGeneration,
+			});
+			await Promise.resolve();
+			dispatchHostMessage({
+				type: 'sqlComparisonAdmission', requestId, sourceBoxId: 'sql_source',
+				comparisonBoxId: 'sql_comparison', accepted: true,
+			});
+			await Promise.resolve();
+			dispatchHostMessage({
+				type: 'sqlComparisonAdmissionCommit', requestId, sourceBoxId: 'sql_source',
+				comparisonBoxId: 'sql_comparison',
+			});
+			await Promise.resolve();
+			dispatchHostMessage({
+				type: 'sqlComparisonAdmissionFinalize', requestId, sourceBoxId: 'sql_source',
+				comparisonBoxId: 'sql_comparison',
+			});
+			await Promise.resolve();
+			dispatchHostMessage({
+				type: 'sqlComparisonAdmissionComplete', requestId, sourceBoxId: 'sql_source',
+				comparisonBoxId: 'sql_comparison',
+			});
+			await Promise.resolve();
+		}
+
+		expect(mocks.createSectionWithCapabilities).not.toHaveBeenCalled();
+		expect(comparison.setQuery).toHaveBeenNthCalledWith(1, 'SELECT 2');
+		expect(comparison.setQuery).toHaveBeenNthCalledWith(2, 'SELECT 3');
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'comparisonBoxEnsured', requestId: 'sql-reuse-1', comparisonBoxId: 'sql_comparison',
+		}));
+	});
+
+		it('fully retires an absent SQL comparison before creating its replacement', async () => {
+			handlerState.pState.documentKind = 'sqlx';
+			handlerState.pState.allowedSectionKinds = ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+			const source = createFakeSqlSection() as FakeSqlSection & {
+				getServerUrl: () => string; getConnectionId: () => string; getDatabase: () => string;
+			};
+			source.id = 'sql_source';
+			source.getServerUrl = () => 'server.example';
+			source.getConnectionId = () => 'sql-a';
+			source.getDatabase = () => 'Db';
+			handlerState.optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_stale' };
+			handlerState.optimizationMetadataByBoxId.sql_stale = { sourceBoxId: 'sql_source', isComparison: true };
+			mocks.getSqlSectionElement.mockImplementation((boxId: string) => boxId === 'sql_source' ? source : null);
+			const sectionFactory = await import('../../src/webview/core/section-factory.js');
+			vi.mocked(sectionFactory.removeSqlBox).mockClear();
+			mocks.createSectionWithCapabilities.mockClear();
+
+			dispatchHostMessage({
+				type: 'ensureComparisonBox', requestId: 'sql-replace-stale', boxId: 'sql_source',
+				query: 'SELECT replacement', engine: 'sql',
+				sourceSectionInstanceId: source.sqlSession.instanceId,
+				sourceTargetGeneration: source.sqlSession.targetGeneration,
+			});
+			await Promise.resolve();
+
+			expect(sectionFactory.removeSqlBox).toHaveBeenCalledOnce();
+			expect(sectionFactory.removeSqlBox).toHaveBeenCalledWith('sql_stale');
+			expect(mocks.createSectionWithCapabilities).toHaveBeenCalledOnce();
+			expect(mocks.createSectionWithCapabilities).toHaveBeenCalledWith('sql', expect.objectContaining({
+				query: 'SELECT replacement', comparisonSourceBoxId: 'sql_source',
+			}));
+		});
+
+	it.each([
+		['missing source', undefined, 'instance-sql_1', 0],
+		['stale instance', createFakeSqlSection(), 'stale-instance', 0],
+		['stale generation', createFakeSqlSection(), 'instance-sql_1', 99],
+	] as const)('rejects SQL comparison preparation for %s', async (_label, source, instanceId, generation) => {
+		if (source) source.id = 'sql_source';
+		mocks.getSqlSectionElement.mockImplementation((boxId: string) => boxId === 'sql_source' ? source : null);
+		mocks.createSectionWithCapabilities.mockClear();
+
+		dispatchHostMessage({
+			type: 'ensureComparisonBox', requestId: `sql-reject-${_label}`, boxId: 'sql_source',
+			query: 'SELECT stale', engine: 'sql',
+			sourceSectionInstanceId: instanceId, sourceTargetGeneration: generation,
+		});
+		await Promise.resolve();
+
+		expect(mocks.createSectionWithCapabilities).not.toHaveBeenCalled();
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'comparisonBoxEnsured', requestId: `sql-reject-${_label}`, comparisonBoxId: '',
+		}));
 	});
 
 	it('marks source settings changed by ensured comparison as agent-touched when dirty', async () => {
@@ -4364,6 +5558,21 @@ describe('changedSections agent provenance', () => {
 
 		expect(shell.hasChanges).toBe('new');
 		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('rejects delegated Kusto Copilot auto-create in MDX before mutation', async () => {
+		handlerState.pState.documentKind = 'mdx';
+		handlerState.pState.allowedSectionKinds = ['markdown', 'url', 'transformation'];
+
+		dispatchHostMessage({ type: 'toolDelegateToKustoWorkbenchCopilot', requestId: 'mdx-kusto-new', input: { question: 'Help' } });
+		await Promise.resolve();
+		await Promise.resolve();
+
+		expect(mocks.createSectionWithCapabilities).toHaveBeenCalledWith('query');
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'mdx-kusto-new', result: { success: false },
+			error: expect.stringContaining('unavailable'),
+		}));
 	});
 
 	it('honors delegated Kusto Copilot cancellation before the request starts', async () => {

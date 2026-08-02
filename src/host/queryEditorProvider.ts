@@ -13,6 +13,7 @@ import { readCurrentSqlSchemaPrincipalFingerprint, SqlSchemaService, sqlSchemaPr
 import { SqlWorkbenchService, type SqlOwnerSnapshot } from './sql/sqlWorkbenchService';
 import {
 	sqlResultOwnersEqual,
+	type SqlComparisonOwner,
 	type SqlResultOwner,
 } from './sql/sqlEditorSessionRegistry';
 import {
@@ -39,6 +40,7 @@ import { CopilotService, CopilotServiceHost, SQL_COPILOT_OWNER_CHANGED_MESSAGE }
 import { openKustoWorkbenchAgentChat } from './copilotChatOpenUtils';
 import { ConnectionService, ConnectionServiceHost } from './queryEditorConnection';
 import { exportAzureDataExplorerClusterPath, kustoClusterKey } from '../shared/kustoClusterUrls';
+import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
 import { sqlConnectionTargetSignatureMatches } from '../shared/sqlConnectionIdentity';
 import { SchemaService, SchemaServiceHost } from './queryEditorSchema';
 import {
@@ -89,10 +91,25 @@ type PendingComparisonEnsure = {
 	timer: ReturnType<typeof setTimeout>;
 	sourceBoxId: string;
 	sqlConnectionId?: string;
+	sqlSourceSectionInstanceId?: string;
+	sqlSourceTargetGeneration?: number;
+	sqlSourceDatabase?: string;
 	copilotSequence?: number;
 	kustoRequest?: KustoCopilotRequestIdentity;
 	comparisonBoxId?: string;
 	cancellationDisposable?: vscode.Disposable;
+	previousSqlComparisonOwnerCaptured?: boolean;
+	previousSqlComparisonOwner?: SqlComparisonOwner;
+	provisionalSqlComparisonOwner?: SqlComparisonOwner;
+	rollbackInProgress?: boolean;
+	rollbackRetryTimer?: ReturnType<typeof setTimeout>;
+	completionStarted?: boolean;
+	sqlAdmissionAck?: {
+		comparisonBoxId: string;
+		phase: 'staged' | 'committed' | 'finalized' | 'completed' | 'rolledBack';
+		resolve: (accepted: boolean) => void;
+		timer: ReturnType<typeof setTimeout>;
+	};
 };
 
 type PendingArtifactCsvSave = {
@@ -113,6 +130,43 @@ const ARTIFACT_CSV_MAX_COMPLETED_INTENTS = 256;
 
 export class QueryEditorProvider implements CopilotServiceHost, ConnectionServiceHost, SchemaServiceHost {
 	private static cursorOwnerSequence = 0;
+	private static readonly activeProviders = new Set<QueryEditorProvider>();
+
+	private static activeProviderForTest(): QueryEditorProvider {
+		const candidates = [...QueryEditorProvider.activeProviders]
+			.filter(provider => !provider._panelDisposed && !!provider.panel
+				&& provider.context.extensionMode !== vscode.ExtensionMode.Production);
+		const provider = candidates.find(candidate => candidate.panel?.active)
+			?? candidates.find(candidate => candidate.panel?.visible)
+			?? candidates.at(-1);
+		if (!provider) throw new Error('No active Kusto Workbench editor is available.');
+		return provider;
+	}
+
+	static async prepareSqlComparisonForTest(sourceBoxId: string, query: string): Promise<PreparedComparisonSection> {
+		const provider = QueryEditorProvider.activeProviderForTest();
+		const cancellation = new vscode.CancellationTokenSource();
+		try {
+			return await provider.ensureComparisonBoxInWebview(sourceBoxId, query, cancellation.token);
+		} finally {
+			cancellation.dispose();
+		}
+	}
+
+	static async assertNestedSqlComparisonRejectedForTest(query: string): Promise<void> {
+		const provider = QueryEditorProvider.activeProviderForTest();
+		const comparisonBoxIds = provider.sqlLifecycle.listComparisonBoxIds();
+		if (comparisonBoxIds.length !== 1) {
+			throw new Error(`Expected exactly one committed SQL comparison, found ${comparisonBoxIds.length}.`);
+		}
+		try {
+			await QueryEditorProvider.prepareSqlComparisonForTest(comparisonBoxIds[0], query);
+		} catch (error) {
+			if (error instanceof Error && error.message.includes('cannot be used as another comparison source')) return;
+			throw error;
+		}
+		throw new Error('Nested SQL comparison preparation unexpectedly succeeded.');
+	}
 
 	private panel?: vscode.WebviewPanel;
 	private _panelDisposed = true;
@@ -371,11 +425,26 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		requestId: string,
 		pending: PendingComparisonEnsure,
 		outcome: { comparison: PreparedComparisonSection } | { error: Error },
+		options: { rollbackConfirmed?: boolean } = {},
 	): void {
 		if (this.pendingComparisonEnsureByRequestId.get(requestId) !== pending) return;
+		if ('error' in outcome && pending.completionStarted
+			&& options.rollbackConfirmed !== true && !this._panelDisposed) return;
+		if ('error' in outcome && pending.sqlConnectionId && pending.comparisonBoxId
+			&& options.rollbackConfirmed !== true && !this._panelDisposed) {
+			void this.rollbackPendingSqlComparison(requestId, pending, outcome.error);
+			return;
+		}
 		this.pendingComparisonEnsureByRequestId.delete(requestId);
 		try { clearTimeout(pending.timer); } catch { /* ignore */ }
+		try { if (pending.rollbackRetryTimer) clearTimeout(pending.rollbackRetryTimer); } catch { /* ignore */ }
 		try { pending.cancellationDisposable?.dispose(); } catch { /* ignore */ }
+		if (pending.sqlAdmissionAck) {
+			const admissionAck = pending.sqlAdmissionAck;
+			pending.sqlAdmissionAck = undefined;
+			try { clearTimeout(admissionAck.timer); } catch { /* ignore */ }
+			admissionAck.resolve(false);
+		}
 		if ('error' in outcome) {
 			const comparisonBoxId = String(pending.comparisonBoxId || '').trim();
 			if (comparisonBoxId
@@ -390,6 +459,80 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			return;
 		}
 		pending.resolve(outcome.comparison);
+	}
+
+	private async rollbackPendingSqlComparison(
+		requestId: string,
+		pending: PendingComparisonEnsure,
+		error: Error,
+	): Promise<void> {
+		if (this.pendingComparisonEnsureByRequestId.get(requestId) !== pending || pending.rollbackInProgress) return;
+		pending.rollbackInProgress = true;
+		try { clearTimeout(pending.timer); } catch { /* ignore */ }
+		if (pending.sqlAdmissionAck) {
+			const currentAck = pending.sqlAdmissionAck;
+			pending.sqlAdmissionAck = undefined;
+			try { clearTimeout(currentAck.timer); } catch { /* ignore */ }
+			currentAck.resolve(false);
+		}
+		const comparisonBoxId = String(pending.comparisonBoxId || '').trim();
+		let rolledBack = false;
+		for (let attempt = 0; attempt < 3 && !rolledBack; attempt += 1) {
+			if (this.pendingComparisonEnsureByRequestId.get(requestId) !== pending || this._panelDisposed) return;
+			rolledBack = await this.waitForSqlComparisonAdmission(
+				requestId, pending, comparisonBoxId, 'rolledBack',
+			);
+		}
+		if (this.pendingComparisonEnsureByRequestId.get(requestId) !== pending) return;
+		if (!rolledBack) {
+			pending.rollbackInProgress = false;
+			pending.rollbackRetryTimer = setTimeout(() => {
+				pending.rollbackRetryTimer = undefined;
+				void this.rollbackPendingSqlComparison(requestId, pending, error);
+			}, 1_000);
+			return;
+		}
+		pending.rollbackInProgress = false;
+		void this.postMessage({
+			type: 'sqlComparisonAdmissionRelease', outcome: 'rolledBack', requestId,
+			sourceBoxId: pending.sourceBoxId, comparisonBoxId,
+		});
+		this.settlePendingComparisonEnsure(requestId, pending, { error }, { rollbackConfirmed: true });
+	}
+
+	private waitForSqlComparisonAdmission(
+		requestId: string,
+		pending: PendingComparisonEnsure,
+		comparisonBoxId: string,
+		phase: 'staged' | 'committed' | 'finalized' | 'completed' | 'rolledBack',
+	): Promise<boolean> {
+		if (this.pendingComparisonEnsureByRequestId.get(requestId) !== pending) return Promise.resolve(false);
+		return new Promise<boolean>(resolve => {
+			let settled = false;
+			const complete = (accepted: boolean) => {
+				if (settled) return;
+				settled = true;
+				const admissionAck = pending.sqlAdmissionAck;
+				if (admissionAck?.comparisonBoxId === comparisonBoxId && admissionAck.phase === phase) {
+					pending.sqlAdmissionAck = undefined;
+					try { clearTimeout(admissionAck.timer); } catch { /* ignore */ }
+				}
+				resolve(accepted);
+			};
+			const timer = setTimeout(() => complete(false), 5_000);
+			pending.sqlAdmissionAck = { comparisonBoxId, phase, resolve: complete, timer };
+			void Promise.resolve(this.postMessage({
+				type: phase === 'staged' ? 'sqlComparisonAdmission'
+					: phase === 'committed' ? 'sqlComparisonAdmissionCommit'
+						: phase === 'finalized' ? 'sqlComparisonAdmissionFinalize'
+							: phase === 'completed' ? 'sqlComparisonAdmissionComplete'
+								: 'sqlComparisonAdmissionRollback',
+				requestId, sourceBoxId: pending.sourceBoxId, comparisonBoxId,
+				...(phase === 'staged' ? { accepted: true } : {}),
+			})).then(delivered => {
+				if (delivered === false) complete(false);
+			}, () => complete(false));
+		});
 	}
 	private readonly latestComparisonSummaryByKey = new Map<
 		string,
@@ -532,6 +675,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.connection.activate();
 		this.fileOpenTrace?.mark('queryEditorProvider.connection.activate.done');
 		this.panel = panel;
+		QueryEditorProvider.activeProviders.add(this);
 		this.registerPanelDisposal(panel);
 		// Do NOT set panel.iconPath here — this method is called for custom editors
 		// where VS Code owns the panel. Setting iconPath on a custom-editor panel
@@ -612,7 +756,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 						sectionInstanceId?: unknown; targetGeneration?: unknown;
 						clusterUrl?: unknown; authorityId?: unknown; connectionIdHint?: unknown; database?: unknown;
 					};
-					if (candidate.type !== 'query' && candidate.type !== 'copilotQuery') return [];
+					if (canonicalSectionKind(candidate.type) !== 'query') return [];
 					const boxId = String(candidate.id || '').trim();
 					const database = String(candidate.database || '').trim();
 					const runtimeConnectionId = String(candidate.connectionId || '').trim();
@@ -681,7 +825,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.editorCursorStatusBar?.clearOwnerPrefix(this.cursorOwnerPrefix);
 	}
 
-	private toolStateResponseResolvers = new Map<string, (sections: unknown[]) => void>();
+	private toolStateResponseResolvers = new Map<string, (sections: unknown[] | undefined) => void>();
+	private webviewMutationResponseResolvers = new Map<string, {
+		resolve: (result: { success: boolean; error?: string }) => void;
+		timer: ReturnType<typeof setTimeout>;
+	}>();
 	private connectionsDataRevision = 0;
 	private connectionsDataTail: Promise<void> = Promise.resolve();
 
@@ -699,7 +847,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.toolStateResponseResolvers.set(requestId, (sections) => {
 				clearTimeout(timer);
 				this.toolStateResponseResolvers.delete(requestId);
-				this.rebuildSqlComparisonOwners(sections);
+				if (sections) this.rebuildSqlComparisonOwners(sections);
 				resolve(sections);
 			});
 			
@@ -708,6 +856,28 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				...(purpose ? { purpose } : {}),
 				...(targetConnectionId ? { targetConnectionId } : {}),
 			});
+		});
+	}
+
+	async updateDevelopmentNotes(message: Record<string, unknown>): Promise<{ success: boolean; error?: string }> {
+		if (!this.panel) return { success: false, error: 'Kusto Workbench editor is unavailable.' };
+		const requestId = `copilot_devnotes_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+		return new Promise(resolve => {
+			const timer = setTimeout(() => {
+				this.webviewMutationResponseResolvers.delete(requestId);
+				resolve({ success: false, error: 'Development note update timed out.' });
+			}, 5000);
+			this.webviewMutationResponseResolvers.set(requestId, { resolve, timer });
+			const settleDeliveryFailure = (error: string) => {
+				const pending = this.webviewMutationResponseResolvers.get(requestId);
+				if (!pending) return;
+				this.webviewMutationResponseResolvers.delete(requestId);
+				clearTimeout(pending.timer);
+				pending.resolve({ success: false, error });
+			};
+			void Promise.resolve(this.postMessage({ type: 'updateDevNotes', requestId, ...message })).then(delivered => {
+				if (delivered === false) settleDeliveryFailure('Kusto Workbench rejected the development note request.');
+			}, error => settleDeliveryFailure(error instanceof Error ? error.message : String(error)));
 		});
 	}
 
@@ -823,14 +993,75 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'getEditorCursorStatusSnapshot':
 				await this.postEditorCursorStatusSnapshot(message);
 				return;
+			case 'sqlComparisonAdmissionAck': {
+				const requestId = String(message.requestId || '').trim();
+				const comparisonBoxId = String(message.comparisonBoxId || '').trim();
+				const pending = requestId ? this.pendingComparisonEnsureByRequestId.get(requestId) : undefined;
+				const admissionAck = pending?.sqlAdmissionAck;
+				if (!pending || !admissionAck
+					|| comparisonBoxId !== admissionAck.comparisonBoxId
+					|| message.phase !== admissionAck.phase
+					|| String(message.sourceBoxId || '').trim() !== pending.sourceBoxId) return;
+				admissionAck.resolve(message.accepted === true);
+				return;
+			}
 			case 'comparisonBoxEnsured':
 				try {
 					const requestId = String(message.requestId || '');
 					const comparisonBoxId = String(message.comparisonBoxId || '');
 					const pending = requestId ? this.pendingComparisonEnsureByRequestId.get(requestId) : undefined;
+					if (!pending) {
+						if (message.engine === 'sql' && requestId && comparisonBoxId) {
+							void this.postMessage({
+								type: 'sqlComparisonAdmissionRollback', requestId,
+								sourceBoxId: String(message.sourceBoxId || ''), comparisonBoxId,
+							});
+						}
+						return;
+					}
 					if (pending) {
+						if (pending.sqlConnectionId && comparisonBoxId) pending.comparisonBoxId = comparisonBoxId;
 						if (pending.kustoRequest && (!hasKustoCopilotRequestIdentity(message)
 							|| !kustoCopilotRequestIdentityEquals(pending.kustoRequest, message))) return;
+						if (pending.sqlConnectionId && (
+							String(message.sourceSectionInstanceId || '') !== pending.sqlSourceSectionInstanceId
+							|| Number(message.sourceTargetGeneration) !== pending.sqlSourceTargetGeneration
+							|| this.sqlLifecycle.getSectionInstanceId(pending.sourceBoxId) !== pending.sqlSourceSectionInstanceId
+							|| this.sqlLifecycle.getGeneration(pending.sourceBoxId) !== pending.sqlSourceTargetGeneration
+							|| this.sqlLifecycle.getConnectionId(pending.sourceBoxId) !== pending.sqlConnectionId
+						)) {
+							this.settlePendingComparisonEnsure(requestId, pending, {
+								error: new Error('SQL comparison source changed before preparation completed.'),
+							});
+							return;
+						}
+						if (!comparisonBoxId) {
+							this.settlePendingComparisonEnsure(requestId, pending, {
+								error: new Error('Comparison source was missing, stale, or unavailable.'),
+							});
+							return;
+						}
+						if (pending.sqlConnectionId) {
+							const comparisonSectionInstanceId = String(message.comparisonSectionInstanceId || '').trim();
+							const comparisonTargetGeneration = Number(message.comparisonTargetGeneration);
+							const comparisonConnectionId = String(message.comparisonConnectionId || '').trim();
+							const comparisonDatabase = String(message.comparisonDatabase || '').trim();
+							const comparisonTarget = this.sqlLifecycle.getTarget(comparisonBoxId);
+							if (comparisonBoxId === pending.sourceBoxId
+								|| !comparisonSectionInstanceId || !Number.isSafeInteger(comparisonTargetGeneration)
+								|| comparisonConnectionId !== pending.sqlConnectionId
+								|| comparisonDatabase.toLowerCase() !== String(pending.sqlSourceDatabase || '').toLowerCase()
+								|| !this.sqlLifecycle.isSectionCurrent(comparisonBoxId, comparisonSectionInstanceId)
+								|| this.sqlLifecycle.getGeneration(comparisonBoxId) !== comparisonTargetGeneration
+								|| comparisonTarget?.connectionId !== pending.sqlConnectionId
+								|| String(comparisonTarget?.database || '').toLowerCase()
+									!== String(pending.sqlSourceDatabase || '').toLowerCase()) {
+								this.settlePendingComparisonEnsure(requestId, pending, {
+									error: new Error('SQL comparison target was missing, stale, self-referential, or mismatched.'),
+								});
+								return;
+							}
+						}
 						pending.comparisonBoxId = comparisonBoxId;
 						if (comparisonBoxId && !pending.sqlConnectionId) {
 							this._comparisonOwnerByBoxId.set(comparisonBoxId, {
@@ -846,21 +1077,39 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 								...(pending.copilotSequence !== undefined ? { copilotSequence: pending.copilotSequence } : {}),
 								comparisonRequestId: requestId,
 							};
-							this.sqlLifecycle.setComparisonOwner(comparisonBoxId, provisionalOwner);
+							pending.previousSqlComparisonOwner = this.sqlLifecycle.getComparisonOwner(comparisonBoxId);
+							pending.previousSqlComparisonOwnerCaptured = true;
+							pending.provisionalSqlComparisonOwner = provisionalOwner;
 							try {
 								await this.sqlWorkbench.assertSqlConnectionAllowed(pending.sqlConnectionId);
 								const currentPending = this.pendingComparisonEnsureByRequestId.get(requestId);
 								const currentOwner = this.sqlLifecycle.getComparisonOwner(comparisonBoxId);
-								if (currentPending !== pending || currentOwner?.comparisonRequestId !== requestId) {
+								const currentSourceTarget = this.sqlLifecycle.getTarget(pending.sourceBoxId);
+								const currentComparisonTarget = this.sqlLifecycle.getTarget(comparisonBoxId);
+								const identityStillCurrent = currentSourceTarget?.connectionId === pending.sqlConnectionId
+									&& String(currentSourceTarget.database || '').toLowerCase()
+										=== String(pending.sqlSourceDatabase || '').toLowerCase()
+									&& currentSourceTarget.generation === pending.sqlSourceTargetGeneration
+									&& this.sqlLifecycle.getSectionInstanceId(pending.sourceBoxId) === pending.sqlSourceSectionInstanceId
+									&& currentComparisonTarget?.connectionId === pending.sqlConnectionId
+									&& String(currentComparisonTarget.database || '').toLowerCase()
+										=== String(pending.sqlSourceDatabase || '').toLowerCase()
+									&& currentComparisonTarget.generation === Number(message.comparisonTargetGeneration)
+									&& this.sqlLifecycle.getSectionInstanceId(comparisonBoxId)
+										=== String(message.comparisonSectionInstanceId || '');
+								if (currentPending !== pending || currentOwner !== pending.previousSqlComparisonOwner
+									|| !identityStillCurrent) {
 									if (currentPending === pending) {
-										this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
+										this.settlePendingComparisonEnsure(requestId, pending, {
+											error: new Error('SQL comparison source or target changed during policy admission.'),
+										});
 									}
 									return;
 								}
 							} catch (error) {
 								const currentPending = this.pendingComparisonEnsureByRequestId.get(requestId);
 								if (currentPending !== pending
-									|| this.sqlLifecycle.getComparisonOwner(comparisonBoxId)?.comparisonRequestId !== requestId) {
+									|| this.sqlLifecycle.getComparisonOwner(comparisonBoxId) !== pending.previousSqlComparisonOwner) {
 									if (currentPending === pending) {
 										this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
 									}
@@ -881,6 +1130,91 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 								this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Comparison target was not ready.') });
 								return;
 							}
+						}
+						if (pending.sqlConnectionId) {
+							const admitted = await this.waitForSqlComparisonAdmission(requestId, pending, comparisonBoxId, 'staged');
+							if (!admitted) {
+								if (this.pendingComparisonEnsureByRequestId.get(requestId) === pending) {
+									this.settlePendingComparisonEnsure(requestId, pending, {
+										error: new Error('SQL comparison admission was not applied by the editor.'),
+									});
+								}
+								return;
+							}
+							const committed = await this.waitForSqlComparisonAdmission(requestId, pending, comparisonBoxId, 'committed');
+							if (!committed || this.pendingComparisonEnsureByRequestId.get(requestId) !== pending) {
+								if (this.pendingComparisonEnsureByRequestId.get(requestId) === pending) {
+									this.settlePendingComparisonEnsure(requestId, pending, {
+										error: new Error('SQL comparison commit was not applied by the editor.'),
+									});
+								}
+								return;
+							}
+							if (this.sqlLifecycle.getComparisonOwner(comparisonBoxId) !== pending.previousSqlComparisonOwner
+								|| !pending.provisionalSqlComparisonOwner) {
+								this.settlePendingComparisonEnsure(requestId, pending, {
+									error: new Error('SQL comparison ownership changed before commit completed.'),
+								});
+								return;
+							}
+							const finalized = await this.waitForSqlComparisonAdmission(requestId, pending, comparisonBoxId, 'finalized');
+							if (!finalized || this.pendingComparisonEnsureByRequestId.get(requestId) !== pending) {
+								if (this.pendingComparisonEnsureByRequestId.get(requestId) === pending) {
+									this.settlePendingComparisonEnsure(requestId, pending, {
+										error: new Error('SQL comparison final validation was not applied by the editor.'),
+									});
+								}
+								return;
+							}
+							if (this.sqlLifecycle.getComparisonOwner(comparisonBoxId) !== pending.previousSqlComparisonOwner) {
+								this.settlePendingComparisonEnsure(requestId, pending, {
+									error: new Error('SQL comparison ownership changed before final validation completed.'),
+								});
+								return;
+							}
+							pending.completionStarted = true;
+							try { clearTimeout(pending.timer); } catch { /* ignore */ }
+							try { pending.cancellationDisposable?.dispose(); } catch { /* ignore */ }
+							pending.cancellationDisposable = undefined;
+							let completed = false;
+							while (!completed && !this._panelDisposed
+								&& this.pendingComparisonEnsureByRequestId.get(requestId) === pending) {
+								completed = await this.waitForSqlComparisonAdmission(
+									requestId, pending, comparisonBoxId, 'completed',
+								);
+								if (!completed && !this._panelDisposed
+									&& this.pendingComparisonEnsureByRequestId.get(requestId) === pending) {
+									await new Promise<void>(resolve => setTimeout(resolve, 100));
+								}
+							}
+							if (!completed || this.pendingComparisonEnsureByRequestId.get(requestId) !== pending) {
+								return;
+							}
+							const currentSourceTarget = this.sqlLifecycle.getTarget(pending.sourceBoxId);
+							const currentComparisonTarget = this.sqlLifecycle.getTarget(comparisonBoxId);
+							const identitiesRemainCurrent = currentSourceTarget?.connectionId === pending.sqlConnectionId
+								&& String(currentSourceTarget.database || '').toLowerCase()
+									=== String(pending.sqlSourceDatabase || '').toLowerCase()
+								&& currentSourceTarget.generation === pending.sqlSourceTargetGeneration
+								&& this.sqlLifecycle.getSectionInstanceId(pending.sourceBoxId) === pending.sqlSourceSectionInstanceId
+								&& currentComparisonTarget?.connectionId === pending.sqlConnectionId
+								&& String(currentComparisonTarget.database || '').toLowerCase()
+									=== String(pending.sqlSourceDatabase || '').toLowerCase()
+								&& currentComparisonTarget.generation === Number(message.comparisonTargetGeneration)
+								&& this.sqlLifecycle.getSectionInstanceId(comparisonBoxId)
+									=== String(message.comparisonSectionInstanceId || '');
+							if (!identitiesRemainCurrent
+								|| this.sqlLifecycle.getComparisonOwner(comparisonBoxId) !== pending.previousSqlComparisonOwner) {
+								this.settlePendingComparisonEnsure(requestId, pending, {
+									error: new Error('SQL comparison target changed after completion.'),
+								}, { rollbackConfirmed: true });
+								return;
+							}
+							this.sqlLifecycle.setComparisonOwner(comparisonBoxId, pending.provisionalSqlComparisonOwner);
+							void this.postMessage({
+								type: 'sqlComparisonAdmissionRelease', outcome: 'completed', requestId,
+								sourceBoxId: pending.sourceBoxId, comparisonBoxId,
+							});
 						}
 						this.settlePendingComparisonEnsure(requestId, pending, {
 							comparison: { boxId: comparisonBoxId, ...(message.kustoTarget ? { kustoTarget: message.kustoTarget } : {}) },
@@ -1216,8 +1550,15 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			case 'sqlComparisonRemoved': {
 				const comparisonBoxId = String(message.boxId || '').trim();
 				if (!comparisonBoxId) return;
+				const pendingEntry = [...this.pendingComparisonEnsureByRequestId]
+					.find(([, pending]) => pending.comparisonBoxId === comparisonBoxId);
+				const pendingOwner = this.sqlLifecycle.getComparisonOwner(comparisonBoxId);
+				const pendingProposalOwner = pendingEntry?.[1].provisionalSqlComparisonOwner;
+				if (pendingEntry) {
+					this.settlePendingComparisonEnsure(pendingEntry[0], pendingEntry[1], { error: new Error('Canceled') });
+				}
 				const sqlOwner = this.sqlLifecycle.getComparisonOwner(comparisonBoxId);
-				const owner = sqlOwner ?? this._comparisonOwnerByBoxId.get(comparisonBoxId);
+				const owner = sqlOwner ?? pendingOwner ?? pendingProposalOwner ?? this._comparisonOwnerByBoxId.get(comparisonBoxId);
 				if (!owner) return;
 				if (sqlOwner) {
 					this.sqlExecutionBroker.supersede(comparisonBoxId, { notifyWebview: true });
@@ -1306,6 +1647,21 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				return;
 			case 'toolResponse':
 				// Handle response from webview for tool orchestrator commands
+				if (message.requestId) {
+					const pending = this.webviewMutationResponseResolvers.get(message.requestId);
+					if (pending) {
+						this.webviewMutationResponseResolvers.delete(message.requestId);
+						clearTimeout(pending.timer);
+						const result = message.result && typeof message.result === 'object'
+							? message.result as Record<string, unknown>
+							: {};
+						pending.resolve({
+							success: !message.error && result.success === true,
+							...(message.error ? { error: String(message.error) } : {}),
+						});
+						return;
+					}
+				}
 				if (toolOrchestrator && message.requestId) {
 					toolOrchestrator.handleWebviewResponse(message.requestId, message.result, message.error);
 				}
@@ -1315,7 +1671,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				{
 					const resolver = this.toolStateResponseResolvers.get(message.requestId);
 					if (resolver) {
-						resolver(message.sections);
+						resolver(message.error ? undefined : message.sections);
 					}
 				}
 				return;
@@ -1973,8 +2329,24 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		if (!this.panel) {
 			throw new Error('Webview panel is not available');
 		}
-		const requestId = `${Date.now()}_${Math.random().toString(16).slice(2)}`;
+		const requestId = crypto.randomUUID();
 		const sqlConnectionId = this.sqlLifecycle.getConnectionId(sourceBoxId);
+		const sqlSourceSectionInstanceId = sqlConnectionId
+			? String(this.sqlLifecycle.getSectionInstanceId(sourceBoxId) || '').trim()
+			: '';
+		const sqlSourceTargetGeneration = sqlConnectionId
+			? this.sqlLifecycle.getGeneration(sourceBoxId)
+			: undefined;
+		const sqlSourceDatabase = sqlConnectionId
+			? String(this.sqlLifecycle.getTarget(sourceBoxId)?.database || '').trim()
+			: '';
+		if (sqlConnectionId && this.sqlLifecycle.getComparisonOwner(sourceBoxId)) {
+			throw new Error('A derived SQL comparison cannot be used as another comparison source.');
+		}
+		if (sqlConnectionId && (!sqlSourceSectionInstanceId || !Number.isSafeInteger(sqlSourceTargetGeneration)
+			|| !sqlSourceDatabase)) {
+			throw new Error('SQL comparison source lifecycle identity is unavailable.');
+		}
 		if (sqlConnectionId) await this.sqlWorkbench.assertSqlConnectionAllowed(sqlConnectionId);
 		return await new Promise<PreparedComparisonSection>((resolve, reject) => {
 			if (token.isCancellationRequested) {
@@ -1993,6 +2365,9 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				timer,
 				sourceBoxId,
 				...(sqlConnectionId ? { sqlConnectionId } : {}),
+				...(sqlSourceSectionInstanceId ? { sqlSourceSectionInstanceId } : {}),
+				...(sqlSourceTargetGeneration !== undefined ? { sqlSourceTargetGeneration } : {}),
+				...(sqlSourceDatabase ? { sqlSourceDatabase } : {}),
 				...(copilotSequence !== undefined ? { copilotSequence } : {}),
 				...(kustoRequest ? { kustoRequest } : {}),
 			};
@@ -2004,6 +2379,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					requestId,
 					boxId: sourceBoxId,
 					query: comparisonQuery,
+					engine: sqlConnectionId ? 'sql' : 'kusto',
+					...(sqlSourceSectionInstanceId ? {
+						sourceSectionInstanceId: sqlSourceSectionInstanceId,
+						sourceTargetGeneration: sqlSourceTargetGeneration,
+					} : {}),
 					...(kustoRequest || {}),
 				});
 			} catch (e) {
@@ -2739,6 +3119,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		panel.onDidDispose(() => {
 			if (this.panel !== panel) return;
 			this._panelDisposed = true;
+			QueryEditorProvider.activeProviders.delete(this);
 			this.rejectPendingKustoExecutionStartAcks();
 			for (const [publicationId, pending] of [...this.pendingKustoPublicationAcks]) {
 				this.pendingKustoPublicationAcks.delete(publicationId);
@@ -2754,6 +3135,11 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.completedArtifactCsvIntentIds.clear();
 			for (const [requestId, pending] of [...this.pendingComparisonEnsureByRequestId]) {
 				this.settlePendingComparisonEnsure(requestId, pending, { error: new Error('Canceled') });
+			}
+			for (const [requestId, pending] of [...this.webviewMutationResponseResolvers]) {
+				this.webviewMutationResponseResolvers.delete(requestId);
+				clearTimeout(pending.timer);
+				pending.resolve({ success: false, error: 'Kusto Workbench editor closed.' });
 			}
 			this.copilot.disposeKustoOwners();
 			this.copilot.invalidateSqlConnections(
@@ -3330,7 +3716,8 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			if (!section || typeof section !== 'object') return section;
 			const record = section as Record<string, unknown>;
 			const type = String(record.type || '');
-			if ((type !== 'query' && type !== 'copilotQuery' && type !== 'sql')
+			const canonicalType = canonicalSectionKind(type);
+			if ((canonicalType !== 'query' && canonicalType !== 'sql')
 				|| !Object.prototype.hasOwnProperty.call(record, 'result')) return section;
 			changed = true;
 			const clone = { ...record };
@@ -3354,7 +3741,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const sanitized = sections.map(section => {
 			if (!section || typeof section !== 'object' || !('resultJson' in section)) return section;
 			const record = section as Record<string, unknown>;
-			if (String(record.type || '') !== 'query' && String(record.type || '') !== 'copilotQuery') return section;
+			if (canonicalSectionKind(record.type) !== 'query') return section;
 			const sourceBoxId = String(record.comparisonSourceBoxId || '').trim();
 			const source = sourceBoxId ? sectionsById.get(sourceBoxId) : undefined;
 			if (sourceBoxId && String(source?.type || '') === 'sql') return section;
@@ -3673,6 +4060,12 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		const boxId = String(message.boxId || '').trim();
 		const executionId = String(message.executionId || '').trim();
 		if (!boxId || !executionId || !this.sqlLifecycle.isSectionCurrent(boxId, message.sectionInstanceId)) return;
+		const comparisonSourceIdentity = message.comparisonSourceBoxId && message.comparisonSourceExecutionId
+			? {
+				comparisonSourceBoxId: String(message.comparisonSourceBoxId),
+				comparisonSourceExecutionId: String(message.comparisonSourceExecutionId),
+			}
+			: {};
 
 		const preflight = this.sqlExecutionBroker.reservePreflight(boxId, executionId, message.ownerToken);
 		const protectedExecution = this.sqlWorkbench.isLeaveNoTraceConnection(message.sqlConnectionId);
@@ -3690,7 +4083,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			this.postMessage({
 				type: 'queryError', error, boxId,
 				...(ownerToken ? { ownerToken } : {}),
-				executionId,
+				executionId, ...comparisonSourceIdentity,
 			});
 		};
 		let issuedOwner: { token: string; owner: SqlResultOwner } | undefined;
@@ -3753,6 +4146,7 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				const resultMessage = {
 					type: 'queryResult', result, boxId, ownerToken: issuedOwner.token, executionId,
 					query: message.query, connectionId: resultOwner.connectionId, database: resultOwner.database,
+					...comparisonSourceIdentity,
 				};
 				if (protectedExecution) {
 					await this.postSqlOwnerMessageProtection(boxId, resultOwner, true, resultMessage, isStillActiveRun);
@@ -3764,7 +4158,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 			if ((error as any)?.isCancelled === true || error instanceof SqlQueryCancelledError) {
 				if (isStillActiveRun()) {
 					try {
-						const cancelledMessage = { type: 'queryCancelled', boxId, ownerToken: issuedOwner.token, executionId };
+						const cancelledMessage = {
+							type: 'queryCancelled', boxId, ownerToken: issuedOwner.token, executionId,
+							...comparisonSourceIdentity,
+						};
 						if (protectedExecution) {
 							await this.postSqlOwnerMessageProtection(boxId, resultOwner, true, cancelledMessage, isStillActiveRun);
 						} else {
@@ -3790,7 +4187,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 								`  error: ${sanitizeStsLogText(errorMessage)}`,
 							].join('\n'));
 						}
-						this.postMessage({ type: 'queryError', error: errorMessage, boxId, ownerToken: issuedOwner.token, executionId });
+						this.postMessage({
+							type: 'queryError', error: errorMessage, boxId, ownerToken: issuedOwner.token, executionId,
+							...comparisonSourceIdentity,
+						});
 					};
 					if (protectedExecution) {
 						await this.sqlLifecycle.dispatchResultOwnerProtection(boxId, resultOwner, true, postError);

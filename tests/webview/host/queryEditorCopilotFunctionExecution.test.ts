@@ -169,6 +169,7 @@ function createHost(capturedQueries: string[], executeError?: Error): CopilotSer
 		waitForComparisonSummary: () => Promise.resolve({ dataMatches: true, headersMatch: true }),
 		deleteComparisonSummary: vi.fn(),
 		requestSectionsFromWebview: () => Promise.resolve(undefined),
+		updateDevelopmentNotes: vi.fn(async () => ({ success: true })),
 		revealPanel: vi.fn(),
 		assertSqlConnectionAllowed: vi.fn(async () => undefined),
 		dispatchSqlConnectionAllowed: vi.fn(async (_connectionId: string, dispatch: () => unknown) => await dispatch()),
@@ -1576,6 +1577,39 @@ describe('Kusto Copilot function execution', () => {
 		const setQueryMessages = hostMessagesOfType(host, 'copilotWriteQuerySetQuery');
 		expect(setQueryMessages).toHaveLength(1);
 		expectInlineFilterRowsQuery(setQueryMessages[0].query);
+	});
+
+	it.each([
+		['rejected', { success: false, error: 'Development notes require a companion metadata file.' }, 'Error: Development notes require a companion metadata file.'],
+		['admitted', { success: true }, 'Development note saved'],
+	] as const)('awaits %s webview admission before reporting a Copilot development note result', async (
+		_label, admission, expectedResult,
+	) => {
+		const model = createModel([
+			[new vscode.LanguageModelToolCallPart('note-call', 'update_development_note', {
+				content: 'Remember this constraint.', category: 'usage-note',
+			})],
+			[new vscode.LanguageModelToolCallPart('final-call', 'respond_to_all_other_queries', { query: 'print done=1' })],
+		]);
+		vscodeMocks.selectChatModels.mockResolvedValue([model]);
+		const host = createHost([]);
+		host.updateDevelopmentNotes = vi.fn(async () => admission);
+		const service = new CopilotService(host);
+
+		await service.startCopilotWriteQuery({
+			...startMessage(),
+			enabledTools: ['update_development_note', 'respond_to_all_other_queries'],
+		});
+
+		expect(host.updateDevelopmentNotes).toHaveBeenCalledWith(expect.objectContaining({
+			action: 'add', entry: expect.objectContaining({ content: 'Remember this constraint.' }),
+		}));
+		const history = ((service as any).copilotConversationHistoryByBoxId.get('query_1') ?? []) as any[];
+		const noteResult = history.find(entry => entry?.tool === 'update_development_note')?.result;
+		expect(noteResult).toContain(expectedResult);
+		if (!admission.success) expect(noteResult).not.toContain('Development note saved');
+		const noteMessages = hostMessagesOfType(host, 'copilotDevNoteToolCall');
+		expect(noteMessages.at(-1)?.result).toContain(expectedResult);
 	});
 
 	it.each([

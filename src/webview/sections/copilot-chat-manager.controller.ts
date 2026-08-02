@@ -6,11 +6,9 @@ import type { ReactiveController, ReactiveControllerHost } from 'lit';
 import type { KwCopilotChat } from '../components/kw-copilot-chat.js';
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
-import { schedulePersist } from '../core/persistence';
+import { createSectionWithCapabilities, schedulePersist } from '../core/persistence';
 import { syncSelectBackedDropdown, renderMenuDropdownHtml } from '../core/dropdown.js';
 import {
-	addQueryBox,
-	addSqlBox,
 	__kustoSetSectionName,
 } from '../core/section-factory.js';
 import { __kustoGetLastOptimizeModelId, __kustoSetLastOptimizeModelId } from './query-execution.controller.js';
@@ -478,21 +476,27 @@ export class CopilotChatManagerController implements ReactiveController {
 						}
 					}
 
-					const newBoxId = isSql
-						? addSqlBox({
+					const creation = isSql
+						? createSectionWithCapabilities('sql', {
 							query: queryText,
 							afterBoxId: boxId,
 							serverUrl: sourceServerUrl || undefined,
 							...sourceOwner,
 							database: sourceDatabase || undefined,
 						})
-						: addQueryBox({
+						: createSectionWithCapabilities('query', {
 							initialQuery: queryText,
 							afterBoxId: boxId,
 							clusterUrl: sourceServerUrl || undefined,
 							...sourceKustoOwner,
 							database: sourceDatabase || undefined,
 						});
+					if (!creation.ok) {
+						postMessageToHost({ type: 'showInfo', message: creation.error });
+						scrollContainer.scrollTop = savedScroll;
+						return;
+					}
+					const newBoxId = creation.sectionId;
 					scrollContainer.scrollTop = savedScroll;
 					if (newBoxId) {
 						__kustoSetSectionName(newBoxId, sectionName);

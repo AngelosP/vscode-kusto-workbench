@@ -7,30 +7,45 @@
  *
  * Flow:
  * 1. Content script fetches file content and sends it here via sendMessage()
- * 2. We store the content and open viewer-standalone.html in a new tab
- * 3. viewer-standalone.html asks us for the pending content
- * 4. We respond and clear the stored content
+ * 2. We store the content under a one-shot request token and open viewer-standalone.html
+ * 3. viewer-standalone.html asks us for the content assigned to its token
+ * 4. We respond and clear only that token's content
  */
 
-let pendingViewerContent = null;
+const pendingViewerContentByToken = new Map();
+const PENDING_VIEWER_CONTENT_TTL_MS = 60_000;
+
+function prunePendingViewerContent() {
+	const now = Date.now();
+	for (const [token, pending] of pendingViewerContentByToken) {
+		if (pending.expiresAt <= now) pendingViewerContentByToken.delete(token);
+	}
+}
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 	if (!message || typeof message !== 'object') return false;
 
 	switch (message.type) {
 		case 'open-viewer-tab': {
-			pendingViewerContent = message.payload || null;
-			chrome.tabs.create({
-				url: chrome.runtime.getURL('viewer-standalone.html'),
+			prunePendingViewerContent();
+			const requestToken = crypto.randomUUID();
+			pendingViewerContentByToken.set(requestToken, {
+				payload: message.payload || null,
+				expiresAt: Date.now() + PENDING_VIEWER_CONTENT_TTL_MS,
 			});
-			sendResponse({ ok: true });
+			chrome.tabs.create({
+				url: `${chrome.runtime.getURL('viewer-standalone.html')}?request=${encodeURIComponent(requestToken)}`,
+			});
+			sendResponse({ ok: true, requestToken });
 			return false;
 		}
 
 		case 'get-pending-viewer-content': {
-			const content = pendingViewerContent;
-			pendingViewerContent = null; // one-shot
-			sendResponse({ payload: content });
+			prunePendingViewerContent();
+			const requestToken = String(message.requestToken || '');
+			const pending = requestToken ? pendingViewerContentByToken.get(requestToken) : undefined;
+			if (requestToken) pendingViewerContentByToken.delete(requestToken);
+			sendResponse({ payload: pending?.payload || null });
 			return false;
 		}
 	}

@@ -7,7 +7,6 @@ import {
 	normalizeKqlxFileForPersistenceComparison,
 	normalizeHeight,
 	deepEqual,
-	sanitizeStateForKind,
 	computeChangedSections,
 	formatSectionDiffContent,
 	stripDiffNoise,
@@ -17,6 +16,7 @@ import {
 	resolveLinkedQueryUri,
 	shouldReloadKqlxAfterDocumentChange,
 } from '../../../src/host/kqlxEditorProvider';
+import { assertDocumentSectionKindsAllowed } from '../../../src/shared/documentSectionCapabilities';
 import * as vscode from 'vscode';
 
 describe('resolveLinkedQueryUri', () => {
@@ -128,7 +128,7 @@ describe('publishKqlxTextFresh', () => {
 		]);
 	});
 
-	it('preserves incompatible and opaque MDX sections while publishing the editable projection', async () => {
+	it('reports an incompatible known MDX section before publishing', async () => {
 		const input = JSON.stringify({
 			kind: 'mdx', version: 1, state: { sections: [
 				{
@@ -141,25 +141,30 @@ describe('publishKqlxTextFresh', () => {
 				{ id: 'markdown_1', type: 'markdown', text: 'before' },
 			] },
 		});
-		const output = await publishKqlxTextFresh(
-			input,
-			'mdx',
-			vscode.EndOfLine.LF,
-			async (_state, publish) => publish({
-				sections: [
-					{ id: 'query_1', type: 'query', query: 'future compatibility', futureQuerySetting: true },
-					{ id: 'future_1', type: 'future-section', payload: 'opaque' },
-					{ id: 'markdown_1', type: 'markdown', text: 'after' },
-				],
-			}),
-			async text => text,
-		);
+		const publishStateFresh = vi.fn();
+		const publishText = vi.fn();
 
-		expect(JSON.parse(output).state.sections).toEqual([
-			{ id: 'query_1', type: 'query', query: 'future compatibility', futureQuerySetting: true },
-			{ id: 'future_1', type: 'future-section', payload: 'opaque' },
-			{ id: 'markdown_1', type: 'markdown', text: 'after' },
-		]);
+		await expect(publishKqlxTextFresh(
+			input, 'mdx', vscode.EndOfLine.LF, publishStateFresh, publishText,
+		)).rejects.toThrow(/\.mdx.*section 0.*query_1.*query/);
+		expect(publishStateFresh).not.toHaveBeenCalled();
+		expect(publishText).not.toHaveBeenCalled();
+	});
+
+	it('rejects a native SQL linked section before publication callbacks', async () => {
+		const input = JSON.stringify({
+			kind: 'sqlx', version: 1, state: { sections: [{
+				id: 'sql_1', type: 'sql', linkedQueryPath: 'query.sql',
+			}] },
+		});
+		const publishStateFresh = vi.fn();
+		const publishText = vi.fn();
+
+		await expect(publishKqlxTextFresh(
+			input, 'sqlx', vscode.EndOfLine.LF, publishStateFresh, publishText,
+		)).rejects.toThrow(/do not support linkedQueryPath on SQL sections/);
+		expect(publishStateFresh).not.toHaveBeenCalled();
+		expect(publishText).not.toHaveBeenCalled();
 	});
 });
 
@@ -553,41 +558,26 @@ describe('deepEqual', () => {
 });
 
 // ---------------------------------------------------------------------------
-// sanitizeStateForKind
+// Document section capabilities
 // ---------------------------------------------------------------------------
 
-describe('sanitizeStateForKind', () => {
-	it('returns state unchanged for kqlx kind', () => {
-		const state = { caretDocsEnabled: true, sections: [{ type: 'query' }] } as any;
-		expect(sanitizeStateForKind('kqlx', state)).toBe(state);
+describe('assertDocumentSectionKindsAllowed', () => {
+	it('accepts allowed and opaque future MDX sections without changing them', () => {
+		const sections = [
+			{ id: 'markdown_1', type: 'markdown' },
+			{ id: 'devnotes_1', type: 'devnotes' },
+			{ id: 'future_1', type: 'future-section', payload: { keep: true } },
+		];
+
+		expect(() => assertDocumentSectionKindsAllowed('mdx', sections)).not.toThrow();
+		expect(sections).toHaveLength(3);
 	});
 
-	it('filters sections for mdx kind', () => {
-		const state = {
-			caretDocsEnabled: true,
-			sections: [
-				{ type: 'markdown' },
-				{ type: 'query' },
-				{ type: 'url' },
-				{ type: 'chart' },
-				{ type: 'transformation' }
-			]
-		} as any;
-		const result = sanitizeStateForKind('mdx', state);
-		expect(result.sections).toHaveLength(3);
-		expect(result.sections.map((s: any) => s.type)).toEqual(['markdown', 'url', 'transformation']);
-	});
-
-	it('preserves caretDocsEnabled', () => {
-		const state = { caretDocsEnabled: false, sections: [] } as any;
-		const result = sanitizeStateForKind('mdx', state);
-		expect(result.caretDocsEnabled).toBe(false);
-	});
-
-	it('allows devnotes in mdx', () => {
-		const state = { caretDocsEnabled: true, sections: [{ type: 'devnotes' }] } as any;
-		const result = sanitizeStateForKind('mdx', state);
-		expect(result.sections).toHaveLength(1);
+	it('reports an incompatible known MDX section instead of filtering it', () => {
+		expect(() => assertDocumentSectionKindsAllowed('mdx', [
+			{ id: 'markdown_1', type: 'markdown' },
+			{ id: 'query_1', type: 'query' },
+		])).toThrow(/\.mdx.*section 1.*query_1.*query/);
 	});
 });
 

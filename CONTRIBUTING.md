@@ -222,8 +222,16 @@ Keep provider tests focused on adapter responsibilities: message routing, manual
 * Durable persistence comparison is JSON-semantic. Do not reuse UI/diff normalization that collapses empty arrays, empty objects, empty strings, or implicit defaults.
 * A host `documentData` projection is not current until the webview acknowledges successful materialization. Persistence snapshots must echo the admitted source generation.
 * Linked-query native Save owns one exact content transaction across buffer mutation and durable publication. File and buffer rollback are independent CAS operations; neither may overwrite a newer direct edit.
+* `src/shared/documentSectionCapabilities.ts` is the only document-kind section matrix. Do not add document-kind arrays or filters in providers, codecs, webviews, tools, or browser code.
+* Known incompatible sections fail read-only with document kind, section index/ID, and type. Never filter them from a projection or persistence snapshot. Unknown future kinds remain opaque and preservable.
+* Legacy `copilotQuery` canonicalizes to `query` for admission. Hidden `devnotes` is persistable but never user-addable.
+* Host projections and compatibility upgrades derive from the destination notebook kind. Webview controls and tool dispatch must pass through `core/document-capabilities.ts`; an empty host capability set remains empty.
+* Every non-restore section creation path must call `createSectionWithCapabilities()` in `core/persistence.ts`. Raw `add*Box()` calls are reserved for restore and the owner itself; tools, Copilot Insert/auto-create, and comparisons must reject or request upgrade before mutation.
+* SQL comparisons persist as `sql` with `comparisonSourceBoxId`; never represent them as Kusto `query` sections in SQLX.
+* SQL comparison removal must unregister its derived mapping, clear the source backlink, notify `sqlComparisonRemoved`, and retire its own host owner before recreation.
+* Browser composition must use `browser-ext/src/viewer-document.ts`, which delegates to `parseKqlxText()`. Existing invalid companions fail visibly rather than falling back, and the first query section must link to the exact opened raw file. `npm run build` in `browser-ext/` includes strict typechecking and must remain green.
 
-Focused coverage lives in `kqlxFormat.test.ts`, `kqlxEditorUtils.test.ts`, `persistence-roundtrip.test.ts`, `message-handler.test.ts`, and the native `codec-lossless-roundtrip` E2E scenario.
+Focused coverage lives in `document-section-capabilities.test.ts`, `documentSectionCapabilitiesOwnership.test.ts`, `browser-provider-document-types.test.ts`, `copilot-chat-manager-capabilities.test.ts`, `persistence-roundtrip.test.ts`, `message-handler.test.ts`, `sql-section-message-router.test.ts`, `sqlEditorLifecycleCoordinator.test.ts`, and the native `codec-lossless-roundtrip` and `document-capabilities` E2E scenarios.
 
 ## Compatibility Sidecar Development
 
@@ -474,7 +482,7 @@ The query section header toolbar uses **CSS Container Queries** for responsive l
 
 ## New Section Types — Checklist
 
-1. **Define the section type** in [`kqlxFormat.ts`](src/host/kqlxFormat.ts) — add a new variant to the `KqlxSectionV1` union type.
+1. **Define the section type and capabilities** — add the `KqlxSectionV1` variant in [`kqlxFormat.ts`](src/host/kqlxFormat.ts), its exhaustive codec schema in `kqlxOverlay.ts`, and its canonical/document-kind rows in `src/shared/documentSectionCapabilities.ts`. Extend the cross-layer matrix test and ownership guard; never add a second per-document list.
 2. **Create a Lit component** in `src/webview/sections/` (e.g., `kw-my-section.ts` + `kw-my-section.styles.ts`). Register with `@customElement('kw-my-section')`. Implement `serialize()`.
 3. **Add a creation function** in [`section-factory.ts`](src/webview/core/section-factory.ts) that creates the DOM element and wires event listeners.
 4. **Add restoration logic** in [`persistence.ts`](src/webview/core/persistence.ts) — handle the new `type` in the restore loop.

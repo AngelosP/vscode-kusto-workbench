@@ -4,7 +4,8 @@
   "private": true,
   "description": "Browser extension that renders .kqlx, .sqlx, .kql, and .csl files inline on GitHub, Azure DevOps, and raw URLs.",
   "scripts": {
-    "build": "node esbuild.js --production",
+    "build": "npm run typecheck && node esbuild.js --production",
+    "typecheck": "tsc --noEmit",
     "dev": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "clean": "node -e \"require('fs').rmSync('dist',{recursive:true,force:true})\""

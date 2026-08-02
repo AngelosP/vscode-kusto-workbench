@@ -22,6 +22,14 @@ import { createFileOpenTrace } from './fileOpenTrace';
 import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 import { CompatSidecarSession } from './compatSidecarSession';
 import { publishOwnedFileText } from './ownedFilePublication';
+import {
+	addableSectionKindsForDocument,
+	assertDocumentSectionKindsAllowed,
+	canonicalAddableSectionKind,
+	canonicalSectionKind,
+	defaultSectionKindForDocument,
+} from '../shared/documentSectionCapabilities';
+import { getUnsupportedNativeDocumentReason } from '../shared/nativeDocumentValidation';
 
 
 const normalizeClusterUrlKey = (url: string): string => {
@@ -33,6 +41,13 @@ const INITIAL_PROJECTION_MAX_ATTEMPTS = 4;
 const LINKED_NATIVE_SAVE_RECONCILE_MS = 1_000;
 const PLAIN_LINKED_QUERY_EXTENSIONS = ['.kql', '.csl'] as const;
 
+const escapeHtmlText = (value: unknown): string => String(value ?? '')
+	.replace(/&/g, '&amp;')
+	.replace(/</g, '&lt;')
+	.replace(/>/g, '&gt;')
+	.replace(/"/g, '&quot;')
+	.replace(/'/g, '&#39;');
+
 export function resolveLinkedQueryUri(documentUri: vscode.Uri, linkedPath: string): vscode.Uri {
 	if (/^file:\/\//i.test(linkedPath)) return vscode.Uri.parse(linkedPath);
 	if (/^[a-zA-Z]:[\\/]/.test(linkedPath) || path.win32.isAbsolute(linkedPath) || path.posix.isAbsolute(linkedPath)) {
@@ -42,9 +57,12 @@ export function resolveLinkedQueryUri(documentUri: vscode.Uri, linkedPath: strin
 }
 
 function getUnsafeLinkedQueryReason(documentUri: vscode.Uri, state: KqlxStateV1): string | undefined {
+	const unsupportedSqlLink = getUnsupportedNativeDocumentReason(state);
+	if (unsupportedSqlLink) return unsupportedSqlLink;
 	for (const section of state.sections) {
-		if (section.type !== 'query' && section.type !== 'copilotQuery') continue;
-		const linkedPath = typeof section.linkedQueryPath === 'string' ? section.linkedQueryPath.trim() : '';
+		const sectionRecord = section as Record<string, unknown>;
+		const linkedPath = typeof sectionRecord.linkedQueryPath === 'string' ? sectionRecord.linkedQueryPath.trim() : '';
+		if (canonicalSectionKind(section.type) !== 'query') continue;
 		if (!linkedPath) continue;
 		const target = resolveLinkedQueryUri(documentUri, linkedPath);
 		if (normalizeWorkbenchUriKey(target) === normalizeWorkbenchUriKey(documentUri)) {
@@ -107,8 +125,9 @@ async function getUnsafeLinkedQueryReasonFresh(documentUri: vscode.Uri, state: K
 	const structuralReason = getUnsafeLinkedQueryReason(documentUri, state);
 	if (structuralReason) return structuralReason;
 	for (const section of state.sections) {
-		if (section.type !== 'query' && section.type !== 'copilotQuery') continue;
-		const linkedPath = typeof section.linkedQueryPath === 'string' ? section.linkedQueryPath.trim() : '';
+		if (canonicalSectionKind(section.type) !== 'query') continue;
+		const sectionRecord = section as Record<string, unknown>;
+		const linkedPath = typeof sectionRecord.linkedQueryPath === 'string' ? sectionRecord.linkedQueryPath.trim() : '';
 		if (!linkedPath) continue;
 		if (await samePhysicalLocalFile(documentUri, resolveLinkedQueryUri(documentUri, linkedPath))) {
 			return 'A linked query cannot target the notebook itself.';
@@ -321,8 +340,7 @@ const normalizeSectionWithNoise = (
 	const s = section as Record<string, unknown>;
 	const type = String(s.type ?? '');
 	
-	// Normalize the type (copilotQuery -> query for comparison)
-	const normalizedType = (type === 'copilotQuery') ? 'query' : type;
+	const normalizedType = canonicalSectionKind(type) ?? type;
 	
 	// Collect all normalized properties first, skipping ephemeral UI-state
 	// keys (pixel dimensions, visibility toggles, cached results) so that
@@ -648,21 +666,6 @@ export function stripDiffNoise(section: Record<string, unknown>): Record<string,
 	return result;
 }
 
-export function sanitizeStateForKind(kind: KqlxFileKind, state: KqlxStateV1): KqlxStateV1 {
-	if (kind !== 'mdx') {
-		return state;
-	}
-	const sections = Array.isArray(state.sections) ? state.sections : [];
-	const filtered = sections.filter((s) => {
-		const t = (s as any)?.type;
-		return t === 'markdown' || t === 'url' || t === 'transformation' || t === 'devnotes';
-	});
-	return {
-		...state,
-		sections: filtered
-	};
-}
-
 type PublishSqlStateFresh = <R>(
 	state: KqlxStateV1,
 	publish: (sanitizedState: KqlxStateV1) => Promise<R>,
@@ -676,18 +679,28 @@ export async function publishKqlxTextFresh<R>(
 	publishText: (sanitizedText: string) => Promise<R>,
 ): Promise<R> {
 	const parsed = parseKqlxText(text, {
-		allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+		allowedKinds: [kind],
 		defaultKind: kind,
 	});
 	if (!parsed.ok) {
-		throw new Error('Cannot publish a malformed Kusto Workbench document because its SQL privacy state cannot be verified.');
+		throw new Error(`Cannot publish a malformed Kusto Workbench document because its SQL privacy state cannot be verified. ${parsed.error}`);
+	}
+	const unsupportedLinkedSectionReason = getUnsupportedNativeDocumentReason(parsed.file.state);
+	if (unsupportedLinkedSectionReason) {
+		throw new Error(`Cannot publish an unsupported linked section. ${unsupportedLinkedSectionReason}`);
 	}
 	return publishStateFresh(parsed.file.state, async sanitizedState => {
-		const serialized = stringifyKqlxFile(overlayKqlxFileState(
+		assertDocumentSectionKindsAllowed(kind, sanitizedState.sections);
+		const file = overlayKqlxFileState(
 			parsed.file,
 			sanitizedState,
 			kind,
-		));
+		);
+		const unsupportedSanitizedLink = getUnsupportedNativeDocumentReason(file.state);
+		if (unsupportedSanitizedLink) {
+			throw new Error(`Cannot publish an unsupported linked section. ${unsupportedSanitizedLink}`);
+		}
+		const serialized = stringifyKqlxFile(file);
 		const lf = serialized.replace(/\r\n/g, '\n');
 		return publishText(eol === vscode.EndOfLine.CRLF ? lf.replace(/\n/g, '\r\n') : lf);
 	});
@@ -838,18 +851,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		return 'kqlx';
 	}
 
-	private static getAllowedSectionKinds(
-		kind: KqlxFileKind
-	): Array<'query' | 'chart' | 'transformation' | 'markdown' | 'python' | 'url' | 'html' | 'sql'> {
-		if (kind === 'mdx') {
-			return ['markdown', 'url', 'transformation'];
-		}
-		if (kind === 'sqlx') {
-			return ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
-		}
-		return ['query', 'sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
-	}
-
 	private static pendingAddKindKeyForUri(uri: vscode.Uri): string {
 		return `kusto.pendingAddKind:${normalizeWorkbenchUriKey(uri)}`;
 	}
@@ -983,7 +984,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		}
 		const openEditorRegistration = KqlxEditorProvider.trackOpenEditor(document.uri, webviewPanel);
 		const initialParse = parseKqlxText(document.getText(), {
-			allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+			allowedKinds: [documentKindForPerf],
 			defaultKind: documentKindForPerf,
 		});
 		const unsafeLinkedQueryReason = initialParse.ok
@@ -991,7 +992,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			: undefined;
 		if (!initialParse.ok || unsafeLinkedQueryReason) {
 			webviewPanel.webview.options = { enableScripts: false };
-			webviewPanel.webview.html = `<h2>Invalid Kusto Workbench file</h2><p>${unsafeLinkedQueryReason || 'Read-only to prevent data loss. Open with the Text Editor to repair.'}</p>`;
+			const reason = initialParse.ok ? unsafeLinkedQueryReason : initialParse.error;
+			webviewPanel.webview.html = `<h2>Invalid Kusto Workbench file</h2><p>${escapeHtmlText(reason)}</p><p>Read-only to prevent data loss. Open with the Text Editor to repair.</p>`;
 			webviewPanel.onDidDispose(() => openEditorRegistration.dispose());
 			return;
 		}
@@ -1112,8 +1114,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 
 		perfMark('host.kqlx.webviewInitialized');
 		const documentKind = documentKindForPerf;
-		const allowedSectionKinds = KqlxEditorProvider.getAllowedSectionKinds(documentKind);
-		const defaultSectionKind: 'query' | 'markdown' | 'sql' = documentKind === 'mdx' ? 'markdown' : documentKind === 'sqlx' ? 'sql' : 'query';
+		const allowedSectionKinds = addableSectionKindsForDocument(documentKind);
+		const defaultSectionKind = defaultSectionKindForDocument(documentKind);
 
 		// If we were just upgraded from a single-section format to a rich format as part of an add-section action,
 		// grab the pending add kind now and notify the webview once it is initialized.
@@ -1121,7 +1123,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		try {
 			const k = this.context.workspaceState.get<string>(KqlxEditorProvider.pendingAddKindKeyForUri(document.uri));
 			if (typeof k === 'string') {
-				pendingAddKind = k;
+				pendingAddKind = canonicalAddableSectionKind(documentKind, k) ?? '';
 			}
 		} catch {
 			// ignore
@@ -1168,7 +1170,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			const ids = new Set<string>();
 			try {
 				const parsed = parseKqlxText(text, {
-					allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+					allowedKinds: [documentKind],
 					defaultKind: documentKind
 				});
 				if (parsed.ok) {
@@ -1250,14 +1252,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const sectionIdentityAt = (sections: readonly KqlxSectionV1[], targetIndex: number): LinkedQuerySectionIdentity | undefined => {
 			const target = sections[targetIndex] as any;
 			const rawType = String(target?.type || '');
-			if (rawType !== 'query' && rawType !== 'copilotQuery') return undefined;
+			if (canonicalSectionKind(rawType) !== 'query') return undefined;
 			const type = 'query' as const;
 			const id = String(target?.id || '').trim();
 			let occurrence = 0;
 			for (let index = 0; index < targetIndex; index++) {
 				const candidate = sections[index] as any;
 				const candidateType = String(candidate?.type || '');
-				if ((candidateType === 'query' || candidateType === 'copilotQuery')
+				if (canonicalSectionKind(candidateType) === 'query'
 					&& String(candidate?.id || '').trim() === id) occurrence++;
 			}
 			return { type, id, occurrence };
@@ -1271,7 +1273,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			for (let index = 0; index < sections.length; index++) {
 				const candidate = sections[index] as any;
 				const candidateType = String(candidate?.type || '');
-				if ((candidateType !== 'query' && candidateType !== 'copilotQuery')
+				if (canonicalSectionKind(candidateType) !== 'query'
 					|| String(candidate?.id || '').trim() !== identity.id) continue;
 				if (occurrence === identity.occurrence) return index;
 				occurrence++;
@@ -1292,7 +1294,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				const linkedIndex = sections.findIndex(section => {
 					const candidate = section as any;
 					const type = String(candidate?.type || '');
-					return (type === 'query' || type === 'copilotQuery') && !!String(candidate?.linkedQueryPath || '').trim();
+					return canonicalSectionKind(type) === 'query' && !!String(candidate?.linkedQueryPath || '').trim();
 				});
 				if (linkedIndex < 0) return undefined;
 				const linked = String((sections[linkedIndex] as any).linkedQueryPath).trim();
@@ -1981,7 +1983,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		const overlayDocumentFile = (baseText: string, state: KqlxStateV1): KqlxFileV1 => {
 			const parsed = parseKqlxText(baseText, {
-				allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+				allowedKinds: [documentKind],
 				defaultKind: documentKind,
 			});
 			if (!parsed.ok) {
@@ -1993,14 +1995,17 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				...parsed.file,
 				state: ensureProjectedSectionIds(parsed.file.state, baseText),
 			};
-			return overlayKqlxFileState(projectedBase, stateForDocument(state), documentKind);
+			const file = overlayKqlxFileState(projectedBase, stateForDocument(state), documentKind);
+			const candidateUnsafeReason = getUnsafeLinkedQueryReason(document.uri, file.state);
+			if (candidateUnsafeReason) throw new Error(`Cannot persist an unsafe linked query: ${candidateUnsafeReason}`);
+			return file;
 		};
 		const overlayDocumentState = (baseText: string, state: KqlxStateV1): KqlxStateV1 => {
 			return overlayDocumentFile(baseText, state).state;
 		};
 		const overlayComparisonFile = (baseText: string, state: KqlxStateV1): KqlxFileV1 => {
 			const parsed = parseKqlxText(baseText, {
-				allowedKinds: ['kqlx', 'mdx', 'sqlx'], defaultKind: documentKind,
+				allowedKinds: [documentKind], defaultKind: documentKind,
 			});
 			if (!parsed.ok) throw new Error(`Cannot compare a malformed Kusto Workbench document: ${parsed.error}`);
 			const projectedBase = { ...parsed.file, state: ensureProjectedSectionIds(parsed.file.state, baseText) };
@@ -2139,7 +2144,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				return;
 			}
 			const currentFile = parseKqlxText(startingText, {
-				allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+				allowedKinds: [documentKind],
 				defaultKind: documentKind,
 			});
 			if (!currentFile.ok) return;
@@ -2221,7 +2226,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			for (const sec of Array.isArray(state.sections) ? state.sections : []) {
 				try {
 					const t = (sec as any)?.type;
-					if (!sec || (t !== 'query' && t !== 'copilotQuery')) {
+					if (!sec || canonicalSectionKind(t) !== 'query') {
 						continue;
 					}
 					const clusterUrl = String((sec as any).clusterUrl || '').trim();
@@ -2301,7 +2306,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			perfMark('host.kqlx.documentText.read', { length: rawText.length });
 			fileOpenTrace.mark('postDocument.documentText.read', { length: rawText.length });
 			const parsed = parseKqlxText(rawText, {
-				allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+				allowedKinds: [documentKind],
 				defaultKind: documentKind
 			});
 			perfMark('host.kqlx.parse.done', { ok: parsed.ok });
@@ -2350,8 +2355,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 
 			let sanitizedState = ensureProjectedSectionIds(parsed.file.state, rawText);
-			sanitizedState = sanitizeStateForKind(documentKind, sanitizedState);
-			sanitizedState = sanitizeStateForKind(documentKind, await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(sanitizedState));
+			sanitizedState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(sanitizedState);
+			assertDocumentSectionKindsAllowed(documentKind, sanitizedState.sections);
 			if (outerDisposed || generation !== postDocumentGeneration || document.getText() !== rawText) return false;
 			perfMark('host.kqlx.sanitize.done', { sections: Array.isArray(sanitizedState.sections) ? sanitizedState.sections.length : 0 });
 			fileOpenTrace.mark('postDocument.sanitize.done', { sections: Array.isArray(sanitizedState.sections) ? sanitizedState.sections.length : 0 });
@@ -2860,7 +2865,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 								: undefined,
 						sections: rawState && Array.isArray(rawState.sections) ? rawState.sections : []
 					});
-					const state = sanitizeStateForKind(documentKind, incomingState);
+					assertDocumentSectionKindsAllowed(documentKind, incomingState.sections);
+					const state = incomingState;
 					if (flushRequestId) {
 						finalPersistSession.completeFinalPersist(flushRequestId, undefined, state);
 						return;
@@ -2957,7 +2963,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					let nextText = '';
 					try {
 						const parsedSaved = parseKqlxText(lastSavedText, {
-							allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+							allowedKinds: [documentKind],
 							defaultKind: documentKind
 						});
 						if (parsedSaved.ok) {
@@ -2989,7 +2995,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							if (!isPersistCurrent()) return;
 							const diskText = normalizeTextToEol(new TextDecoder('utf-8').decode(bytes), document.eol);
 							const parsedDisk = parseKqlxText(diskText, {
-								allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+								allowedKinds: [documentKind],
 								defaultKind: documentKind
 							});
 							if (parsedDisk.ok) {
@@ -3031,7 +3037,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 							const diskText = normalizeTextToEol(new TextDecoder('utf-8').decode(bytes), document.eol);
 							if (diskText && diskText === nextText) {
 								const parsedDisk = parseKqlxText(diskText, {
-									allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+									allowedKinds: [documentKind],
 									defaultKind: documentKind
 								});
 								if (parsedDisk.ok) {
@@ -3053,7 +3059,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					if (!nextText) {
 						try {
 							const parsedCurrent = parseKqlxText(currentText, {
-								allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+								allowedKinds: [documentKind],
 								defaultKind: documentKind
 							});
 							if (parsedCurrent.ok) {
@@ -3103,11 +3109,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						}
 					}
 
-					const freshState = sanitizeStateForKind(
-						// The snapshot is still pending until this fresh policy pass and publication succeed.
-						documentKind,
-						await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state),
-					);
+					// The snapshot is still pending until this fresh policy pass and publication succeed.
+					const freshState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh(state);
+					assertDocumentSectionKindsAllowed(documentKind, freshState.sections);
 					if (!isPersistCurrent()) return;
 					const policyChangedState = !deepEqual(
 						normalizeStateForPersistenceComparison(freshState),
@@ -3264,7 +3268,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						// Get the current version from the in-memory state.
 						const currentText = document.getText();
 						const parsedCurrent = parseKqlxText(currentText, {
-							allowedKinds: ['kqlx', 'mdx', 'sqlx'],
+							allowedKinds: [documentKind],
 							defaultKind: documentKind
 						});
 						let currentSection: Record<string, unknown> | undefined;

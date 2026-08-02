@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { ConnectionManager, KustoConnection } from './connectionManager';
 import { createEmptyKqlxOrMdxFile, DevNoteEntry, KqlxFileKind, KqlxSectionV1 } from './kqlxFormat';
+import { defaultSectionKindForDocument } from '../shared/documentSectionCapabilities';
 import { captureSchemaCacheGeneration, readAllCachedSchemasFromDisk, readCachedSchemaFromDiskByCluster, searchCachedSchemas, writeCachedSchemaToDisk, SCHEMA_CACHE_VERSION, schemaCacheKey, schemaPrincipalIdentity, type SchemaCacheGeneration } from './schemaCache';
 import { KustoConnectionCache, type KustoConnectionCacheGeneration } from './kustoConnectionCache';
 import type { SqlConnection, SqlConnectionManager } from './sqlConnectionManager';
@@ -356,6 +357,7 @@ export interface CreateFileInput {
 	/**
 	 * The type of file to create:
 	 * - kqlx: Kusto Notebook (rich notebook with multiple sections)
+	 * - sqlx: SQL Notebook (SQL plus derived and presentation sections)
 	 * - mdx: Markdown-focused notebook (same format as kqlx, but defaults to markdown-first)
 	 * - kql: Plain Kusto query file
 	 * - csl: Plain Kusto query file (alternative extension)
@@ -363,7 +365,7 @@ export interface CreateFileInput {
 	 * - kql-sidecar: Creates both a .kql file and its companion .kql.json sidecar file
 	 * - csl-sidecar: Creates both a .csl file and its companion .csl.json sidecar file
 	 */
-	fileType: 'kqlx' | 'mdx' | 'kql' | 'csl' | 'md' | 'kql-sidecar' | 'csl-sidecar';
+	fileType: 'kqlx' | 'sqlx' | 'mdx' | 'kql' | 'csl' | 'md' | 'kql-sidecar' | 'csl-sidecar';
 	/**
 	 * The full file path (without extension) where the file should be created.
 	 * The LLM must always provide a filePath. If not provided, a default will be generated.
@@ -372,7 +374,7 @@ export interface CreateFileInput {
 	filePath?: string;
 	/**
 	 * Optional: Initial content to add to the file.
-	 * - For kqlx/mdx: An initial query or markdown text
+	 * - For kqlx/sqlx/mdx: Initial Kusto, SQL, or markdown text
 	 * - For kql/csl/kql-sidecar/csl-sidecar: The initial KQL query
 	 * - For md: The initial markdown content
 	 */
@@ -2517,6 +2519,11 @@ export class KustoWorkbenchToolOrchestrator {
 				editorId = 'kusto.kqlxEditor';
 				kqlxKind = 'mdx';
 				break;
+			case 'sqlx':
+				extension = '.sqlx';
+				editorId = 'kusto.kqlxEditor';
+				kqlxKind = 'sqlx';
+				break;
 			case 'kql':
 				extension = '.kql';
 				editorId = 'kusto.kqlCompatEditor';
@@ -2564,7 +2571,7 @@ export class KustoWorkbenchToolOrchestrator {
 			
 			// Generate a unique filename based on the file type and timestamp
 			const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
-			const baseName = fileType === 'kqlx' || fileType === 'mdx' 
+			const baseName = fileType === 'kqlx' || fileType === 'sqlx' || fileType === 'mdx'
 				? `kusto-notebook-${timestamp}`
 				: fileType === 'md'
 					? `notes-${timestamp}`
@@ -2587,14 +2594,12 @@ export class KustoWorkbenchToolOrchestrator {
 				
 				// Add initial content as a section if provided
 				if (initialContent) {
-					const initialSection: KqlxSectionV1 = {
-						type: kqlxKind === 'mdx' ? 'markdown' : 'query',
+					const initialSectionKind = defaultSectionKindForDocument(kqlxKind);
+					const initialSection = {
+						type: initialSectionKind,
 						expanded: true,
-						...(kqlxKind === 'mdx' 
-							? { text: initialContent } 
-							: { query: initialContent }
-						)
-					};
+						...(initialSectionKind === 'markdown' ? { text: initialContent } : { query: initialContent }),
+					} as KqlxSectionV1;
 					file.state.sections.push(initialSection);
 				}
 				

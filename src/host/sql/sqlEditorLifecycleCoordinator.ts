@@ -428,6 +428,8 @@ export class SqlEditorLifecycleCoordinator {
 			this.ownership.getIssuedOwner(id)?.owner ?? this.ownership.getOwner(id),
 		);
 		return this.ownership.adoptTarget(id, connectionId, database, targetGeneration, () => {
+			const ownComparisonOwner = this.ownership.removeComparisonOwner(id);
+			if (ownComparisonOwner) this.options.effects.deleteComparisonSummary(ownComparisonOwner.sourceBoxId, id);
 			this.invalidateProtectedPublication(id);
 			this.clearTokenPublicationClaim(id, true);
 			this.clearOwnerChangeReplay(id);
@@ -469,6 +471,8 @@ export class SqlEditorLifecycleCoordinator {
 		let result: 'rejected' | 'unchanged' | 'changed';
 		try {
 			result = this.ownership.retireTarget(boxId, targetGeneration, () => {
+				const ownComparisonOwner = this.ownership.removeComparisonOwner(boxId);
+				if (ownComparisonOwner) this.options.effects.deleteComparisonSummary(ownComparisonOwner.sourceBoxId, boxId);
 				this.invalidateProtectedPublication(boxId);
 				this.clearTokenPublicationClaim(boxId, true);
 				this.clearOwnerChangeReplay(boxId);
@@ -775,6 +779,8 @@ export class SqlEditorLifecycleCoordinator {
 			id,
 			this.ownership.getIssuedOwner(id)?.owner ?? this.ownership.getOwner(id),
 		);
+		const ownComparisonOwner = this.ownership.removeComparisonOwner(id);
+		if (ownComparisonOwner) this.options.effects.deleteComparisonSummary(ownComparisonOwner.sourceBoxId, id);
 		const comparisonBoxIds = this.ownership.listComparisonOwners()
 			.filter(({ owner }) => owner.sourceBoxId === id)
 			.map(({ boxId: comparisonBoxId }) => comparisonBoxId);

@@ -2768,7 +2768,6 @@ window.__kustoConfigureTransformation = __kustoConfigureTransformationFromTool;
 window.__kustoRenderTransformation = __kustoRenderTransformation;
 window.__kustoUpdateTransformationBuilderUI = __kustoUpdateTransformationBuilderUI;
 window.__kustoGetTransformationState = __kustoGetTransformationState;
-window.addTransformationBox = addTransformationBox;
 
 // Declare the custom element type for TypeScript
 declare global {

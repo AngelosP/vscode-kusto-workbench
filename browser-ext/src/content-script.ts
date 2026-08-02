@@ -2,7 +2,7 @@
  * Content script for the Kusto Workbench browser extension.
  *
  * Injected into pages matching the URL patterns in manifest.json.
- * Detects supported files (.kqlx, .sqlx, .kql, .csl) on the current page.
+ * Detects supported files (.kqlx, .sqlx, .mdx, .kql, .csl) on the current page.
  *
  * On platforms that have a view-mode tab bar (GitHub: Code | Blame),
  * a "Kusto Workbench" tab is added and automatically selected. The
@@ -17,6 +17,8 @@
 
 import { findProvider } from './providers/registry';
 import type { DetectedFile, FileSourceProvider, ViewModeTabBarInfo } from './providers/types';
+import { type BrowserCompanionState } from './companion-state';
+import { BrowserFileLoadCoordinator, type BrowserFileLoadSnapshot } from './browser-file-load';
 
 // ---- State ----
 
@@ -30,8 +32,7 @@ let navigationCleanup: (() => void) | null = null;
 let isRendered = false;
 let retryTimer: ReturnType<typeof setTimeout> | null = null;
 
-/** Monotonically increasing generation counter — prevents stale async loads from creating iframes. */
-let loadGeneration = 0;
+const fileLoadCoordinator = new BrowserFileLoadCoordinator();
 
 // Tab-mode state
 let kustoTab: HTMLElement | null = null;
@@ -163,6 +164,7 @@ function dumpTabBarDiagnostics() {
 // ---- Cleanup ----
 
 function cleanup() {
+	fileLoadCoordinator.invalidate();
 	if (retryTimer) {
 		clearTimeout(retryTimer);
 		retryTimer = null;
@@ -320,6 +322,7 @@ function deactivateKustoTab(clickedTab?: HTMLElement) {
 
 async function openViewerInNewTab() {
 	if (!currentProvider || !currentFile) return;
+	const snapshot = fileLoadCoordinator.capture(currentFile);
 
 	const btn = renderButton?.querySelector('.kusto-workbench-render-btn');
 	if (btn) {
@@ -328,22 +331,20 @@ async function openViewerInNewTab() {
 	}
 
 	try {
-		const content = await fetchContent(currentFile.rawContentUrl);
-
-		let sidecarContent: string | null = null;
-		if (currentFile.sidecarUrl) {
-			try {
-				sidecarContent = await fetchContent(currentFile.sidecarUrl);
-			} catch { /* optional */ }
-		}
+		const loaded = await fileLoadCoordinator.load(snapshot, fetchContent);
+		if (!loaded) return;
+		const { content, companionState } = loaded;
+		const file = snapshot.file;
 
 		const payload = {
 			type: 'kusto-workbench-load-file',
-			filename: currentFile.filename,
+			filename: file.filename,
 			content,
-			sidecarContent,
-			pageUrl: currentFile.pageUrl,
-			sourceLabel: currentFile.sourceLabel,
+			companionState,
+			rawContentUrl: file.rawContentUrl,
+			sidecarUrl: file.sidecarUrl,
+			pageUrl: file.pageUrl,
+			sourceLabel: file.sourceLabel,
 			standalone: true,
 		};
 
@@ -518,9 +519,8 @@ function findContentToHideForTabMode(): { anchor: HTMLElement; siblings: HTMLEle
 
 async function loadAndShowViewer() {
 	if (!currentProvider || !currentFile) return;
-
-	// Bump generation so any in-flight load from a previous call will abort.
-	const gen = ++loadGeneration;
+	const provider = currentProvider;
+	const snapshot = fileLoadCoordinator.capture(currentFile);
 
 	const btn = renderButton?.querySelector('.kusto-workbench-render-btn');
 	if (btn) {
@@ -529,17 +529,9 @@ async function loadAndShowViewer() {
 	}
 
 	try {
-		const content = await fetchContent(currentFile.rawContentUrl);
-
-		let sidecarContent: string | null = null;
-		if (currentFile.sidecarUrl) {
-			try {
-				sidecarContent = await fetchContent(currentFile.sidecarUrl);
-			} catch { /* optional */ }
-		}
-
-		// Abort if a newer load was started while we were fetching.
-		if (gen !== loadGeneration) return;
+		const loaded = await fileLoadCoordinator.load(snapshot, fetchContent);
+		if (!loaded) return;
+		const { content, companionState } = loaded;
 
 		// Hide original content — strategy depends on mode
 		if (tabBarInfo) {
@@ -554,7 +546,7 @@ async function loadAndShowViewer() {
 			}
 		} else {
 			// Button mode: use provider's content area selector
-			const contentSel = currentProvider.getContentAreaSelector();
+			const contentSel = provider.getContentAreaSelector();
 			if (contentSel) {
 				const el = document.querySelector(contentSel) as HTMLElement | null;
 				if (el) {
@@ -564,7 +556,7 @@ async function loadAndShowViewer() {
 			}
 		}
 
-		createViewerIframe(content, sidecarContent);
+		createViewerIframe(snapshot, content, companionState);
 		isRendered = true;
 
 		if (btn) updateButtonState();
@@ -603,19 +595,26 @@ function hideViewer() {
 
 // ---- Viewer iframe ----
 
-function createViewerIframe(content: string, sidecarContent: string | null) {
-	if (!currentProvider || !currentFile) return;
+function createViewerIframe(
+	snapshot: BrowserFileLoadSnapshot,
+	content: string,
+	companionState: BrowserCompanionState,
+) {
+	if (!fileLoadCoordinator.isCurrent(snapshot)) return;
+	const file = snapshot.file;
 
-	viewerIframe = document.createElement('iframe');
-	viewerIframe.className = 'kusto-workbench-viewer-iframe';
+	const iframe = document.createElement('iframe');
+	viewerIframe = iframe;
+	iframe.className = 'kusto-workbench-viewer-iframe';
 
 	const viewerUrl = chrome.runtime.getURL('viewer.html');
-	viewerIframe.src = viewerUrl;
-	viewerIframe.style.width = '100%';
-	viewerIframe.style.border = 'none';
-	viewerIframe.style.minHeight = '600px';
+	iframe.src = viewerUrl;
+	iframe.style.width = '100%';
+	iframe.style.border = 'none';
+	iframe.style.minHeight = '600px';
 
-	viewerIframe.onload = () => {
+	iframe.onload = () => {
+		if (!fileLoadCoordinator.isCurrent(snapshot) || viewerIframe !== iframe) return;
 		// Detect host page background color so the viewer can match it
 		let hostBackgroundColor: string | undefined;
 		try {
@@ -628,9 +627,9 @@ function createViewerIframe(content: string, sidecarContent: string | null) {
 		// Forward scroll/viewport info so fixed-position dialogs inside the
 		// iframe can center within the visible region instead of the full document.
 		const sendViewportInfo = () => {
-			if (!viewerIframe) return;
-			const rect = viewerIframe.getBoundingClientRect();
-			viewerIframe.contentWindow?.postMessage({
+			if (!fileLoadCoordinator.isCurrent(snapshot) || viewerIframe !== iframe) return;
+			const rect = iframe.getBoundingClientRect();
+			iframe.contentWindow?.postMessage({
 				type: 'kusto-workbench-viewport',
 				scrollTop: Math.max(0, -rect.top),
 				viewportHeight: window.innerHeight,
@@ -640,13 +639,15 @@ function createViewerIframe(content: string, sidecarContent: string | null) {
 		window.addEventListener('resize', sendViewportInfo, { passive: true });
 		sendViewportInfo();
 
-		viewerIframe?.contentWindow?.postMessage({
+		iframe.contentWindow?.postMessage({
 			type: 'kusto-workbench-load-file',
-			filename: currentFile!.filename,
+			filename: file.filename,
 			content,
-			sidecarContent,
-			pageUrl: currentFile!.pageUrl,
-			sourceLabel: currentFile!.sourceLabel,
+			companionState,
+			rawContentUrl: file.rawContentUrl,
+			sidecarUrl: file.sidecarUrl,
+			pageUrl: file.pageUrl,
+			sourceLabel: file.sourceLabel,
 			hostBackgroundColor,
 		}, '*');
 
@@ -655,12 +656,12 @@ function createViewerIframe(content: string, sidecarContent: string | null) {
 
 	// Tab mode: insert after the header anchor
 	if (iframeAnchor && iframeAnchor.parentNode) {
-		iframeAnchor.parentNode.insertBefore(viewerIframe, iframeAnchor.nextSibling);
+		iframeAnchor.parentNode.insertBefore(iframe, iframeAnchor.nextSibling);
 	} else if (originalContent && originalContent.parentNode) {
 		// Button mode: insert after the hidden content
-		originalContent.parentNode.insertBefore(viewerIframe, originalContent.nextSibling);
+		originalContent.parentNode.insertBefore(iframe, originalContent.nextSibling);
 	} else {
-		document.body.appendChild(viewerIframe);
+		document.body.appendChild(iframe);
 	}
 }
 
@@ -696,6 +697,12 @@ function handleViewerMessage(event: MessageEvent) {
 
 // ---- Fetch helper ----
 
+class HttpStatusError extends Error {
+	constructor(readonly status: number, statusText: string) {
+		super(`HTTP ${status}: ${statusText}`);
+	}
+}
+
 async function fetchContent(url: string): Promise<string> {
 	const response = await fetch(url, {
 		credentials: 'same-origin', // same-origin sends cookies for the initial request (e.g. github.com)
@@ -706,7 +713,7 @@ async function fetchContent(url: string): Promise<string> {
 	});
 
 	if (!response.ok) {
-		throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+		throw new HttpStatusError(response.status, response.statusText);
 	}
 
 	return response.text();

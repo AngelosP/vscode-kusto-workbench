@@ -4,6 +4,7 @@
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { KwMarkdownSection, markdownBoxes, markdownEditors, type MarkdownSectionData } from '../sections/kw-markdown-section.js';
+import { applyDocumentCapabilityProjection, assertProjectedSectionsAllowed } from '../core/document-capabilities.js';
 
 const _win = window as any;
 
@@ -75,15 +76,10 @@ window.addEventListener('message', (event) => {
 			try {
 				pState.isSessionFile = !!message.isSessionFile;
 				if (typeof message.documentUri === 'string') pState.documentUri = String(message.documentUri);
-				if (typeof message.documentKind === 'string') {
-					pState.documentKind = String(message.documentKind);
-					try { document.body.dataset.kustoDocumentKind = String(message.documentKind); } catch { /* ignore */ }
-				}
+				applyDocumentCapabilityProjection(message);
+				try { document.body.dataset.kustoDocumentKind = pState.documentKind; } catch { /* ignore */ }
 				pState.compatibilityMode = !!message.compatibilityMode;
-				if (Array.isArray(message.allowedSectionKinds)) pState.allowedSectionKinds = message.allowedSectionKinds;
-				if (typeof message.defaultSectionKind === 'string') pState.defaultSectionKind = String(message.defaultSectionKind);
 				if (typeof message.compatibilitySingleKind === 'string') pState.compatibilitySingleKind = String(message.compatibilitySingleKind);
-				if (typeof message.upgradeRequestType === 'string') pState.upgradeRequestType = String(message.upgradeRequestType);
 				if (typeof message.compatibilityTooltip === 'string') pState.compatibilityTooltip = String(message.compatibilityTooltip);
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -92,15 +88,14 @@ window.addEventListener('message', (event) => {
 			const forceReload = !!message.forceReload;
 			try {
 				// Also apply capabilities from documentData (same as persistenceMode).
-				if (typeof message.documentKind === 'string') {
-					pState.documentKind = String(message.documentKind);
-					try { document.body.dataset.kustoDocumentKind = String(message.documentKind); } catch { /* ignore */ }
-				}
+				applyDocumentCapabilityProjection(message);
+				try { document.body.dataset.kustoDocumentKind = pState.documentKind; } catch { /* ignore */ }
 				if (typeof message.documentUri === 'string') pState.documentUri = String(message.documentUri);
 				if (message.compatibilityMode !== undefined) pState.compatibilityMode = !!message.compatibilityMode;
 
 				const sections = message.state?.sections;
 				if (!Array.isArray(sections)) break;
+				assertProjectedSectionsAllowed(sections);
 				const first = sections.find((s: any) => s && String(s.type || '') === 'markdown');
 				const text = first ? String(first.text || '') : '';
 

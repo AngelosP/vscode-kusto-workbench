@@ -9,13 +9,13 @@ import {
 	type SqlSectionSessionTarget,
 } from '../../src/webview/core/sql-section-message-router.js';
 
-function createTarget(): SqlSectionSessionTarget {
+function createTarget(boxId = 'sql-1'): SqlSectionSessionTarget {
 	let generation = 0;
 	let ownerToken = '';
 	let requestId = '';
 	return {
-		boxId: 'sql-1',
-		instanceId: 'instance-sql-1',
+		boxId,
+		instanceId: `instance-${boxId}`,
 		get targetGeneration() { return generation; },
 		get ownerToken() { return ownerToken; },
 		stsReady: false,
@@ -181,5 +181,51 @@ describe('routeSqlSectionMessage', () => {
 		expect(routeSqlSectionMessage({
 			type: 'queryResult', boxId: 'query-comparison', ownerToken: 'owner-current', executionId: 'comparison-1',
 		}, effects)).toBe('not-sql');
+	});
+
+	it('uses the source owner when the derived comparison has its own SQL session', () => {
+		const source = createTarget('sql-1');
+		const comparison = createTarget('sql-comparison');
+		registerSqlSectionSession(source);
+		registerSqlSectionSession(comparison);
+		registerSqlDerivedComparisonSession('sql-comparison', 'sql-1');
+		const { effects } = createEffects(source);
+		const sourceSection = effects.getSection('sql-1') as any;
+		const comparisonSection = { ...sourceSection, sqlSession: comparison };
+		(effects.getSection as ReturnType<typeof vi.fn>).mockImplementation((boxId: string) =>
+			boxId === 'sql-1' ? sourceSection : boxId === 'sql-comparison' ? comparisonSection : null);
+		source.setStsReady(true, 'source-owner', 0);
+		comparison.setStsReady(true, 'comparison-owner', 0);
+
+		expect(routeSqlSectionMessage({
+			type: 'copilotWriteQueryExecuting', boxId: 'sql-comparison', ownerToken: 'source-owner',
+			executionId: 'comparison-1', executing: true,
+		}, effects)).toBe('not-sql');
+		expect(routeSqlSectionMessage({
+			type: 'queryResult', boxId: 'sql-comparison', ownerToken: 'source-owner', executionId: 'comparison-1',
+		}, effects)).toBe('not-sql');
+		expect(comparison.admitOwnedMessage).not.toHaveBeenCalled();
+	});
+
+	it('admits a direct terminal owned by the derived comparison SQL session', () => {
+		const source = createTarget('sql-1');
+		const comparison = createTarget('sql-comparison');
+		registerSqlSectionSession(source);
+		registerSqlSectionSession(comparison);
+		registerSqlDerivedComparisonSession('sql-comparison', 'sql-1');
+		const { effects } = createEffects(source);
+		const sourceSection = effects.getSection('sql-1') as any;
+		const comparisonSection = { ...sourceSection, sqlSession: comparison };
+		(effects.getSection as ReturnType<typeof vi.fn>).mockImplementation((boxId: string) =>
+			boxId === 'sql-1' ? sourceSection : boxId === 'sql-comparison' ? comparisonSection : null);
+		source.setStsReady(true, 'source-owner', 0);
+		comparison.setStsReady(true, 'comparison-owner', 0);
+
+		expect(routeSqlSectionMessage({
+			type: 'queryResult', boxId: 'sql-comparison', ownerToken: 'comparison-owner', executionId: 'direct-1',
+		}, effects)).toBe('not-sql');
+		expect(comparison.admitOwnedMessage).toHaveBeenCalledWith(expect.objectContaining({
+			ownerToken: 'comparison-owner', executionId: 'direct-1',
+		}));
 	});
 });

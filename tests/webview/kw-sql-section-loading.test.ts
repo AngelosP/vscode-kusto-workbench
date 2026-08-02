@@ -16,11 +16,13 @@ import {
 } from '../../src/webview/core/results-state.js';
 import { __kustoOnQueryResult } from '../../src/webview/core/persistence.js';
 import { setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
-import { setConnections, setSqlConnections } from '../../src/webview/core/state.js';
+import { optimizationMetadataByBoxId, setConnections, setSqlConnections } from '../../src/webview/core/state.js';
 import { getKustoCopilotInsertOwner, getSqlCopilotInsertOwner } from '../../src/webview/sections/copilot-chat-manager.controller.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
+import { comparisonSourceArtifactConsumerId } from '../../src/shared/resultArtifact.js';
 import {
 	clearSqlSectionSessionsForTest,
+	registerSqlDerivedComparisonSession,
 	routeSqlSectionMessage,
 } from '../../src/webview/core/sql-section-message-router.js';
 
@@ -897,7 +899,7 @@ describe('kw-sql-section loading states', () => {
 		expect(cancel).toHaveBeenCalled();
 		expect(clearConversation).toHaveBeenCalled();
 		expect(ownerChanges).toHaveLength(1);
-		expect(ownerChanges[0].detail).toEqual({ boxId: 'sql_test1' });
+		expect(ownerChanges[0].detail).toEqual({ boxId: 'sql_test1', hadCompleteTarget: true });
 		expect(postMessage).toHaveBeenCalledWith({
 			type: 'cancelSqlQuery', boxId: 'sql_test1', sectionInstanceId: el.sqlSession.instanceId,
 		});
@@ -975,6 +977,157 @@ describe('kw-sql-section loading states', () => {
 		}
 	});
 
+	it('admits a direct comparison rerun after derived restore and target adoption', async () => {
+		render(html`
+			<kw-sql-section box-id="sql_source"></kw-sql-section>
+			<kw-sql-section box-id="sql_comparison"></kw-sql-section>
+		`, container);
+		const source = container.querySelector('kw-sql-section[box-id="sql_source"]')! as KwSqlSection;
+		const comparison = container.querySelector('kw-sql-section[box-id="sql_comparison"]')! as KwSqlSection;
+		await Promise.all([source.updateComplete, comparison.updateComplete]);
+		registerSqlDerivedComparisonSession('sql_comparison', 'sql_source');
+		optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_comparison' };
+		optimizationMetadataByBoxId.sql_comparison = { sourceBoxId: 'sql_source', isComparison: true };
+		const connection = { id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' };
+		comparison.setConnections([connection], { lastConnectionId: connection.id });
+		comparison.setDatabase('Db');
+		comparison.setQuery('SELECT 2 AS Value');
+		comparison.sqlSession.adoptHostGeneration(3);
+		comparison.setStsReady(true, 'comparison-owner', 3);
+		source.setStsReady(true, 'source-owner');
+		const sourceArtifact = setResultsState('sql_source', {
+			boxId: 'sql_source', columns: [{ name: 'Value' }], rows: [[1]], metadata: {},
+		}, {
+			producer: {
+				engine: 'sql', boxId: 'sql_source', executionId: 'source-run-1',
+				connectionId: connection.id, database: 'Db',
+			},
+			policy: {
+				exposeToActiveContent: true, sendToModel: true, shareToClipboard: true, exportToCsv: true,
+			},
+		});
+		expect(sourceArtifact).toBeDefined();
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			expect((comparison as any)._runQuery()).toBe(true);
+			const execution = postMessage.mock.calls.find(call => call[0]?.type === 'executeSqlQuery')?.[0];
+			expect(execution).toMatchObject({
+				boxId: 'sql_comparison', ownerToken: 'comparison-owner', sectionInstanceId: comparison.sqlSession.instanceId,
+				comparisonSourceBoxId: 'sql_source', comparisonSourceExecutionId: 'source-run-1',
+			});
+			expect(getBoundResultArtifact(
+				comparisonSourceArtifactConsumerId('sql_comparison'), 'sql_source',
+			)?.artifactId).toBe(sourceArtifact?.artifactId);
+			setResultsState('sql_source', {
+				boxId: 'sql_source', columns: [{ name: 'Value' }], rows: [[99]], metadata: {},
+			}, {
+				producer: {
+					engine: 'sql', boxId: 'sql_source', executionId: 'source-run-2',
+					connectionId: connection.id, database: 'Db',
+				},
+				policy: {
+					exposeToActiveContent: true, sendToModel: true, shareToClipboard: true, exportToCsv: true,
+				},
+			});
+			expect(getCurrentResultArtifact('sql_source')?.producer?.executionId).toBe('source-run-2');
+			expect(getBoundResultArtifact(
+				comparisonSourceArtifactConsumerId('sql_comparison'), 'sql_source',
+			)?.artifactId).toBe(sourceArtifact?.artifactId);
+			const effects = {
+				getSection: (boxId: string) => boxId === 'sql_source' ? source : boxId === 'sql_comparison' ? comparison : null,
+				clearSchema: vi.fn(), setSchema: vi.fn(), updateDatabases: vi.fn(), reportDatabasesError: vi.fn(),
+				handleStsResponse: vi.fn(), handleStsDiagnostics: vi.fn(), clearPolicyBox: vi.fn(),
+			};
+
+			expect(routeSqlSectionMessage({
+				type: 'queryResult', boxId: 'sql_comparison', ownerToken: 'comparison-owner',
+				executionId: execution.executionId,
+			}, effects)).toBe('not-sql');
+			expect(routeSqlSectionMessage({
+				type: 'queryResult', boxId: 'sql_comparison', ownerToken: 'comparison-owner', executionId: 'stale-run',
+			}, effects)).toBe('rejected');
+			(comparison as any)._cancelQuery();
+			expect(getBoundResultArtifact(
+				comparisonSourceArtifactConsumerId('sql_comparison'), 'sql_source',
+			)).toBeNull();
+		} finally {
+			window.vscode = previousVsCode;
+			unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId('sql_comparison'));
+			clearResultsState('sql_source');
+			clearResultsState('sql_comparison');
+			delete optimizationMetadataByBoxId.sql_source;
+			delete optimizationMetadataByBoxId.sql_comparison;
+		}
+	});
+
+	it('settles a comparison tool run with exact source lineage', async () => {
+		render(html`
+			<kw-sql-section id="sql_source" box-id="sql_source"></kw-sql-section>
+			<kw-sql-section id="sql_comparison" box-id="sql_comparison"></kw-sql-section>
+		`, container);
+		const source = container.querySelector('#sql_source')! as KwSqlSection;
+		const comparison = container.querySelector('#sql_comparison')! as KwSqlSection;
+		await Promise.all([source.updateComplete, comparison.updateComplete]);
+		registerSqlDerivedComparisonSession('sql_comparison', 'sql_source');
+		optimizationMetadataByBoxId.sql_source = { comparisonBoxId: 'sql_comparison' };
+		optimizationMetadataByBoxId.sql_comparison = { sourceBoxId: 'sql_source', isComparison: true };
+		const connection = { id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' };
+		comparison.setConnections([connection], { lastConnectionId: connection.id });
+		comparison.setDatabase('Db');
+		comparison.setQuery('SELECT 2 AS Value');
+		comparison.setStsReady(true, 'comparison-owner');
+		comparison.setToolExpectedOwner({
+			connectionId: connection.id, database: 'Db', targetSignature: 'target-a',
+			principalFingerprint: 'principal-a', revocationGeneration: 0,
+		});
+		const sourceArtifact = setResultsState('sql_source', {
+			boxId: 'sql_source', columns: [{ name: 'Value' }], rows: [[1]], metadata: {},
+		}, {
+			producer: {
+				engine: 'sql', boxId: 'sql_source', executionId: 'source-tool-1',
+				connectionId: connection.id, database: 'Db',
+			},
+			policy: {
+				exposeToActiveContent: true, sendToModel: true, shareToClipboard: true, exportToCsv: true,
+			},
+		});
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			const run = comparison.runForTool('tool-comparison-1');
+			await Promise.resolve();
+			const execution = postMessage.mock.calls.find(call => call[0]?.type === 'executeSqlQuery')?.[0];
+			expect(execution).toMatchObject({
+				boxId: 'sql_comparison', executionId: 'tool-comparison-1', toolExecution: true,
+				comparisonSourceBoxId: 'sql_source', comparisonSourceExecutionId: 'source-tool-1',
+			});
+			expect(getBoundResultArtifact(
+				comparisonSourceArtifactConsumerId('sql_comparison'), 'sql_source',
+			)?.artifactId).toBe(sourceArtifact?.artifactId);
+			const effects = {
+				getSection: (boxId: string) => boxId === 'sql_source' ? source : boxId === 'sql_comparison' ? comparison : null,
+				clearSchema: vi.fn(), setSchema: vi.fn(), updateDatabases: vi.fn(), reportDatabasesError: vi.fn(),
+				handleStsResponse: vi.fn(), handleStsDiagnostics: vi.fn(), clearPolicyBox: vi.fn(),
+			};
+			expect(routeSqlSectionMessage({
+				type: 'queryResult', boxId: 'sql_comparison', ownerToken: 'comparison-owner',
+				executionId: 'tool-comparison-1',
+			}, effects)).toBe('not-sql');
+			comparison.displayResult({ columns: [], rows: [[1], [2]], metadata: {} }, { executionId: 'tool-comparison-1' });
+			await expect(run).resolves.toMatchObject({ rowCount: 2, executionId: 'tool-comparison-1' });
+		} finally {
+			window.vscode = previousVsCode;
+			unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId('sql_comparison'));
+			clearResultsState('sql_source');
+			clearResultsState('sql_comparison');
+			delete optimizationMetadataByBoxId.sql_source;
+			delete optimizationMetadataByBoxId.sql_comparison;
+		}
+	});
+
 	it('does not settle a pending tool run from an unrelated same-owner result', async () => {
 		const el = createSection();
 		el.setConnections([{ id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' }], { lastConnectionId: 'sql-a' });
@@ -1010,6 +1163,64 @@ describe('kw-sql-section loading states', () => {
 		expect(el.setExternalQueryExecuting(false, 'copilot-c')).toBe(false);
 		expect((el as any)._activeQueryExecutionId).toBe('manual-b');
 		expect((el as any)._executing).toBe(true);
+	});
+
+	it('cancels and fences SQL execution while comparison admission is pending', () => {
+		const el = createSection();
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			expect(el.setExternalQueryExecuting(true, 'execution-before-admission')).toBe(true);
+			expect(el.acceptsQueryTerminal('execution-before-admission')).toBe(true);
+
+			el.setComparisonAdmissionPending(true);
+
+			expect(postMessage).toHaveBeenCalledWith({
+				type: 'cancelSqlQuery', boxId: 'sql_test1', sectionInstanceId: el.sqlSession.instanceId,
+				executionId: 'execution-before-admission',
+			});
+			expect(el.acceptsQueryTerminal('execution-before-admission')).toBe(false);
+			expect(el.isQueryExecuting()).toBe(false);
+			expect(el.setExternalQueryExecuting(true, 'execution-during-admission')).toBe(false);
+			expect(() => el.reserveToolRun('tool-during-admission')).toThrow('still settling');
+
+			el.setComparisonAdmissionPending(false);
+			expect(el.setExternalQueryExecuting(true, 'execution-after-admission')).toBe(true);
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('retires SQL target, execution, and retained rows for invalid document runtime', () => {
+		const el = createSection();
+		el.setConnections([{ id: 'sql-a', name: 'SQL', serverUrl: 'sql.example.test', dialect: 'mssql', authType: 'aad' }], { lastConnectionId: 'sql-a' });
+		el.setDatabase('Db');
+		el.setStsReady(true, 'owner-token');
+		expect(el.setExternalQueryExecuting(true, 'execution-invalidated')).toBe(true);
+		pState.queryResultJsonByBoxId.sql_test1 = '{"rows":[["secret"]]}';
+		pState.resultArtifactByBoxId.sql_test1 = { artifactId: 'result:sql_test1:1' } as any;
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			el.retireForDocumentInvalidation();
+
+			expect(postMessage).toHaveBeenCalledWith({
+				type: 'cancelSqlQuery', boxId: 'sql_test1', sectionInstanceId: el.sqlSession.instanceId,
+				executionId: 'execution-invalidated',
+			});
+			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'retireSqlTarget', boxId: 'sql_test1', sectionInstanceId: el.sqlSession.instanceId,
+			}));
+			expect(el.acceptsQueryTerminal('execution-invalidated')).toBe(false);
+			expect(el.isQueryExecuting()).toBe(false);
+			expect(pState.queryResultJsonByBoxId.sql_test1).toBeUndefined();
+			expect(pState.resultArtifactByBoxId.sql_test1).toBeUndefined();
+			expect(el.hasAttribute('data-sql-comparison-admission-pending')).toBe(true);
+		} finally {
+			window.vscode = previousVsCode;
+		}
 	});
 
 	it('preserves owner and active execution across a synchronous DOM reorder', async () => {

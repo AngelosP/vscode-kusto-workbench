@@ -51,6 +51,7 @@ function makeHost(): CopilotServiceHost {
 		waitForComparisonSummary: () => Promise.resolve({ dataMatches: true, headersMatch: true }),
 		deleteComparisonSummary: () => {},
 		requestSectionsFromWebview: () => Promise.resolve(undefined),
+		updateDevelopmentNotes: () => Promise.resolve({ success: true }),
 		revealPanel: () => {},
 		assertSqlConnectionAllowed: () => Promise.resolve(),
 		dispatchSqlConnectionAllowed: async (_connectionId: string, dispatch: () => unknown) => await dispatch(),

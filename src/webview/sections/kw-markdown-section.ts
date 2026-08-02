@@ -2336,7 +2336,6 @@ window.__kustoMaximizeMarkdownBox = __kustoMaximizeMarkdownBox;
 window.__kustoSetMarkdownMode = __kustoSetMarkdownMode;
 window.__kustoApplyMarkdownEditorMode = __kustoApplyMarkdownEditorMode;
 window.getToastUiPlugins = getToastUiPlugins;
-window.addMarkdownBox = addMarkdownBox;
 window.removeMarkdownBox = removeMarkdownBox;
 window.__kustoApplyToastUiThemeAll = __kustoApplyToastUiThemeAll;
 

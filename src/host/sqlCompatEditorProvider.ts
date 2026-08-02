@@ -6,19 +6,22 @@ import { ConnectionManager } from './connectionManager';
 import { QueryEditorProvider } from './queryEditorProvider';
 import type { SqlWorkbenchService } from './sql/sqlWorkbenchService';
 import { EditorCursorStatusBar } from './editorCursorStatusBar';
-import { parseKqlxText, stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
+import { stringifyKqlxFile, type KqlxFileV1, type KqlxStateV1 } from './kqlxFormat';
 import { renderDiffInWebview } from './diffViewerUtils';
 import { normalizeSection, computeChangedSections, formatSectionDiffContent, KqlxEditorProvider, OwnedDocumentEditTracker } from './kqlxEditorProvider';
 import type { SectionChangeInfo, ChangedSectionsMessage } from './queryEditorTypes';
 import { getWorkbenchLogger } from './workbenchLogger';
 import { createFileOpenTrace } from './fileOpenTrace';
+import { addableSectionKindsForDocument, canonicalAddableSectionKind, defaultSectionKindForDocument } from '../shared/documentSectionCapabilities';
 
 const INITIAL_PROJECTION_MAX_ATTEMPTS = 4;
 import {
+	assertCompatPrimaryIdentity,
 	buildCompatSidecarFile,
 	getCompatSidecarUri,
 	hydrateCompatSidecarState,
 	isLinkedCompatSidecar,
+	parseCompatSidecarText,
 	type CompatSidecarFormat,
 } from './compatSidecarFormat';
 import {
@@ -33,9 +36,10 @@ import { CompatSidecarSession } from './compatSidecarSession';
 
 const SQL_COMPAT_SIDECAR_FORMAT: CompatSidecarFormat = {
 	primaryKind: 'sql',
-	acceptedPrimaryKinds: ['sql'],
 	sidecarKind: 'sqlx',
+	acceptedFileKinds: ['sqlx', 'kqlx'],
 };
+const PLAIN_SQL_PRIMARY_SECTION_ID = 'compat_primary_sql';
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
@@ -59,14 +63,11 @@ export function getSidecarJsonUriForSqlCompat(uri: vscode.Uri): vscode.Uri | und
  * Check whether a sidecar file is linked to a specific SQL compat document.
  */
 function isLinkedSidecarForSqlFile(sidecarUri: vscode.Uri, sidecarFile: KqlxFileV1, compatDocumentUri: vscode.Uri): boolean {
-	return isLinkedCompatSidecar(sidecarUri, sidecarFile, compatDocumentUri, SQL_COMPAT_SIDECAR_FORMAT.acceptedPrimaryKinds);
+	return isLinkedCompatSidecar(sidecarUri, sidecarFile, compatDocumentUri, SQL_COMPAT_SIDECAR_FORMAT.primaryKind);
 }
 
 export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider {
 	public static readonly viewType = 'kusto.sqlCompatEditor';
-
-	private static readonly allowedSectionKinds: Array<'sql' | 'query' | 'chart' | 'transformation' | 'markdown' | 'python' | 'url' | 'html'> =
-		['sql', 'query', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
 
 	public static register(
 		context: vscode.ExtensionContext,
@@ -194,6 +195,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		// use it to store multi-section metadata while keeping the SQL text in the plain file.
 		let sidecarUri: vscode.Uri | undefined;
 		let sidecarFile: KqlxFileV1 | undefined;
+		let sidecarLoadError: string | undefined;
 		let lastWrittenSidecarText: string | undefined;
 		let lastWrittenSidecarIdentity: CompatSidecarFileIdentity | undefined;
 		sidecarSession = new CompatSidecarSession(webviewPanel.visible === true, 'SQL');
@@ -203,8 +205,10 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				try {
 					const snapshot = await readCompatSidecarSnapshot(sidecarUri);
 					const text = snapshot.text;
-					const parsed = parseKqlxText(text, { allowedKinds: ['sqlx', 'kqlx'], defaultKind: 'sqlx' });
-					if (parsed.ok && isLinkedSidecarForSqlFile(sidecarUri, parsed.file, document.uri)) {
+					const parsed = parseCompatSidecarText(text, SQL_COMPAT_SIDECAR_FORMAT);
+					if (!parsed.ok) {
+						sidecarLoadError = `The companion metadata file is invalid for a SQL document. ${parsed.error}`;
+					} else if (isLinkedSidecarForSqlFile(sidecarUri, parsed.file, document.uri)) {
 						sidecarFile = parsed.file;
 						lastWrittenSidecarText = text;
 						lastWrittenSidecarIdentity = snapshot.identity;
@@ -221,7 +225,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		const sidecarStore = new CompatSidecarStore({
 			compatUri: document.uri,
 			parse: text => {
-				const parsed = parseKqlxText(text, { allowedKinds: ['sqlx', 'kqlx'], defaultKind: 'sqlx' });
+				const parsed = parseCompatSidecarText(text, SQL_COMPAT_SIDECAR_FORMAT);
 				return parsed.ok ? parsed.file : undefined;
 			},
 			isLinked: (uri, file) => isLinkedSidecarForSqlFile(uri, file, document.uri),
@@ -257,7 +261,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 
 		const postPersistenceMode = () => {
 			const sidecarEnabled = !!sidecarFile;
-			const compatibilityMode = !sidecarEnabled;
+			const compatibilityMode = !sidecarEnabled && !sidecarLoadError;
 			const sidecarName = getSidecarDisplayName();
 			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
 			const tooltip = compatibilityMode
@@ -271,11 +275,12 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					documentUri: document.uri.toString(),
 					documentKind: 'sql',
 					compatibilitySingleKind: 'sql',
-					allowedSectionKinds: SqlCompatEditorProvider.allowedSectionKinds,
-					defaultSectionKind: 'sql',
+					allowedSectionKinds: sidecarLoadError ? [] : addableSectionKindsForDocument('sqlx'),
+					defaultSectionKind: defaultSectionKindForDocument('sqlx'),
 					upgradeRequestType: 'requestUpgradeToSqlx',
 					compatibilityTooltip: tooltip,
-					firstSectionPinned: sidecarEnabled,
+					firstSectionPinned: !sidecarLoadError,
+					documentMutationAllowed: !sidecarLoadError,
 					htmlPowerBiCompatibilityCheckEnabled
 				});
 			} catch {
@@ -403,6 +408,18 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			const htmlPowerBiCompatibilityCheckEnabled = vscode.workspace.getConfiguration('kustoWorkbench').get<boolean>('html.powerBiCompatibilityCheck.enabled', true);
 			const sqlText = document.getText();
 			fileOpenTrace.mark('postDocument.documentText.read', { length: sqlText.length });
+			if (sidecarLoadError) {
+				const reload = sidecarSession.createReloadRequest();
+				const delivered = await webviewPanel.webview.postMessage({
+					type: 'documentData', ok: false, sourceGeneration: generation, forceReload,
+					reloadRequestId: reload.requestId, documentUri: document.uri.toString(),
+					documentKind: 'sql', allowedSectionKinds: [], error: sidecarLoadError,
+					firstSectionPinned: false, documentMutationAllowed: false,
+				});
+				if (!delivered) sidecarSession.failReload(reload.requestId);
+				const applied = await reload.result;
+				return applied && generation === postDocumentGeneration && document.getText() === sqlText;
+			}
 			const effectiveSidecarFile = options?.sidecarFileOverride ?? sidecarFile;
 			const sidecarEnabled = !!effectiveSidecarFile;
 			const sidecarName = getSidecarDisplayName();
@@ -412,7 +429,7 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			} else {
 				state = {
 					sections: [
-						{ type: 'sql', query: sqlText }
+						{ id: PLAIN_SQL_PRIMARY_SECTION_ID, type: 'sql', query: sqlText }
 					]
 				};
 			}
@@ -437,12 +454,14 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				compatibilityMode: !sidecarEnabled,
 				documentKind: 'sql',
 				compatibilitySingleKind: 'sql',
-				allowedSectionKinds: SqlCompatEditorProvider.allowedSectionKinds,
-				defaultSectionKind: 'sql',
+				allowedSectionKinds: addableSectionKindsForDocument('sqlx'),
+				defaultSectionKind: defaultSectionKindForDocument('sqlx'),
 				upgradeRequestType: 'requestUpgradeToSqlx',
 				compatibilityTooltip: !sidecarEnabled
 					? `This is a .sql file. To add sections, Kusto Workbench will create a companion metadata file (${sidecarName}) next to it.`
 					: '',
+				firstSectionPinned: true,
+				documentMutationAllowed: true,
 				htmlPowerBiCompatibilityCheckEnabled,
 				state
 			});
@@ -724,12 +743,16 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					fileOpenTrace.mark('requestDocument.completed');
 					return;
 				case 'requestUpgradeToSqlx': {
+					if (sidecarLoadError) {
+						void vscode.window.showErrorMessage(sidecarLoadError);
+						return;
+					}
 					const upgradeRevision = Number((message as any).editRevision);
 					const upgrade = await sidecarSession.beginUpgrade(upgradeRevision);
 					if (!upgrade) return;
 					try {
 					const addKind = (message && typeof message.addKind === 'string') ? message.addKind : '';
-					const normalizedAddKind = SqlCompatEditorProvider.allowedSectionKinds.includes(addKind as any) ? String(addKind) : '';
+					const normalizedAddKind = canonicalAddableSectionKind('sqlx', addKind) ?? '';
 
 					// If the webview provided a fresh state snapshot, prefer it for seeding.
 					try {
@@ -782,6 +805,10 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 				case 'persistDocument': {
 					const snapshotId = String((message as any).snapshotId || '').trim();
 					const flushRequestId = String((message as any).flushRequestId || '').trim();
+					if (sidecarLoadError) {
+						if (flushRequestId) sidecarSession.completeFinalPersist(flushRequestId, new Error(sidecarLoadError));
+						return;
+					}
 					const incomingSourceGeneration = Number((message as any).sourceGeneration);
 					const incomingRevisionForPending = Number((message as any).editRevision);
 					const sourceGenerationMissing = !Number.isSafeInteger(incomingSourceGeneration);
@@ -851,10 +878,60 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 					const superseded = () => ({ ok: false as const, error: new Error('The SQL metadata snapshot was superseded before admission.') });
 					const run = sidecarSession.queuePersist(incomingEditRevision, async persistIsCurrent => {
 						if (!persistIsCurrent()) return superseded();
+						if (!sidecarFile) {
+							try {
+								assertCompatPrimaryIdentity(incomingRawState, 'sql', PLAIN_SQL_PRIMARY_SECTION_ID);
+								if (incomingRawState.sections.length !== 1) {
+									throw new Error('Plain SQL snapshots may contain only the pinned primary section.');
+								}
+							} catch (error) {
+								return { ok: false as const, error: error instanceof Error ? error : new Error(String(error)) };
+							}
+						}
 
-						// Persist the first SQL section's text back into the plain-text document.
-						const firstSql = incomingRawState.sections.find((s) => (s && String((s as any).type || '') === 'sql'));
-						const nextText = firstSql && typeof (firstSql as any).query === 'string' ? String((firstSql as any).query) : '';
+						let incomingState: KqlxStateV1;
+						try {
+							incomingState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh<KqlxStateV1>(incomingRawState);
+						} catch (error) {
+							void vscode.window.showErrorMessage(`Failed to prepare companion metadata: ${error instanceof Error ? error.message : String(error)}`);
+							return { ok: false as const, error: new Error(`Failed to prepare SQL companion metadata: ${error instanceof Error ? error.message : String(error)}`) };
+						}
+						if (!persistIsCurrent()) return superseded();
+
+						let persistedSidecar: KqlxFileV1 | undefined;
+						let validatedSidecarDraft: KqlxFileV1 | undefined;
+						try {
+							if (sidecarUri && sidecarFile) {
+								validatedSidecarDraft = SqlCompatEditorProvider.buildSidecarFileForCompat(
+									document.uri,
+									incomingState,
+									sidecarFile,
+								);
+							}
+							const candidate = await freshSidecarFile(incomingState);
+							if (sidecarUri && sidecarFile) persistedSidecar = candidate;
+						} catch (error) {
+							const primarySql = incomingState.sections[0] as Record<string, unknown> | undefined;
+							const nextText = typeof primarySql?.query === 'string' ? primarySql.query : '';
+							const currentText = (() => {
+								try { return document.getText(); } catch { return ''; }
+							})();
+							if (validatedSidecarDraft && persistIsCurrent()
+								&& nextText.replace(/\r\n/g, '\n') === currentText.replace(/\r\n/g, '\n')) {
+								lastKnownSidecarState = incomingState;
+								sidecarSession.setStateRevision(incomingEditRevision);
+								const text = stringifyKqlxFile(validatedSidecarDraft);
+								sidecarSession.setMaterializedDirty(text !== lastWrittenSidecarText, lastWrittenSidecarText);
+								computeAndPostChanges(incomingState);
+							}
+							void vscode.window.showErrorMessage(`Failed to prepare companion metadata: ${error instanceof Error ? error.message : String(error)}`);
+							return { ok: false as const, error: new Error(`Failed to materialize SQL companion metadata: ${error instanceof Error ? error.message : String(error)}`) };
+						}
+						if (!persistIsCurrent()) return superseded();
+
+						// Section zero is the identity-pinned owner of the plain-text document.
+						const primarySql = incomingState.sections[0] as Record<string, unknown> | undefined;
+						const nextText = typeof primarySql?.query === 'string' ? primarySql.query : '';
 						const currentText = (() => {
 							try {
 								return document.getText();
@@ -908,36 +985,6 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 								}
 								return superseded();
 							}
-						}
-
-						let incomingState: KqlxStateV1;
-						try {
-							incomingState = await queryEditor.sanitizeSqlLeaveNoTraceStateFresh<KqlxStateV1>(incomingRawState);
-						} catch (error) {
-							if (persistIsCurrent() && sidecarUri && sidecarFile) {
-								lastKnownSidecarState = incomingRawState;
-								sidecarSession.markDirty(lastWrittenSidecarText);
-								computeAndPostChanges(incomingRawState);
-							}
-							void vscode.window.showErrorMessage(`Failed to prepare companion metadata: ${error instanceof Error ? error.message : String(error)}`);
-							return { ok: false as const, error: new Error(`Failed to prepare SQL companion metadata: ${error instanceof Error ? error.message : String(error)}`) };
-						}
-						if (!persistIsCurrent()) return superseded();
-
-						let persistedSidecar: KqlxFileV1 | undefined;
-						if (sidecarUri && sidecarFile) {
-							try {
-								persistedSidecar = await freshSidecarFile(incomingState);
-							} catch (error) {
-								if (persistIsCurrent()) {
-									lastKnownSidecarState = incomingState;
-									sidecarSession.markDirty(lastWrittenSidecarText);
-									computeAndPostChanges(incomingState);
-								}
-								void vscode.window.showErrorMessage(`Failed to prepare companion metadata: ${error instanceof Error ? error.message : String(error)}`);
-								return { ok: false as const, error: new Error(`Failed to materialize SQL companion metadata: ${error instanceof Error ? error.message : String(error)}`) };
-							}
-							if (!persistIsCurrent()) return superseded();
 						}
 
 						if (!persistIsCurrent()) return superseded();
@@ -1113,11 +1160,15 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			for (let attempt = 0; attempt < 3; attempt += 1) {
 				const baseline = await readCompatSidecarSnapshot(sidecarUri);
 				const currentText = baseline.text;
-				const parsed = parseKqlxText(currentText, { allowedKinds: ['sqlx', 'kqlx'], defaultKind: 'sqlx' });
+				const parsed = parseCompatSidecarText(currentText, SQL_COMPAT_SIDECAR_FORMAT);
 				if (!parsed.ok || !isLinkedSidecarForSqlFile(sidecarUri, parsed.file, document.uri)) {
-					throw new Error('The companion sidecar changed before it could be adopted.');
+					throw new Error(!parsed.ok
+						? `The companion sidecar became invalid before it could be adopted. ${parsed.error}`
+						: 'The companion sidecar changed before it could be adopted.');
 				}
-				const baselineFile = parsed.file;
+				const baselineFile = SqlCompatEditorProvider.buildSidecarFileForCompat(
+					document.uri, parsed.file.state, parsed.file,
+				);
 				const publication = await (publishStateFresh
 					? publishStateFresh(baselineFile.state, publish)
 					: publish(baselineFile.state));
@@ -1141,10 +1192,20 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 		};
 
 		// If a sidecar already exists, prefer using it if it's already linked.
+		let existingBaseline: Awaited<ReturnType<typeof readCompatSidecarSnapshot>> | undefined;
 		try {
-			const baseline = await readCompatSidecarSnapshot(sidecarUri);
+			existingBaseline = await readCompatSidecarSnapshot(sidecarUri);
+		} catch {
+			// does not exist
+		}
+		if (existingBaseline) {
+			const baseline = existingBaseline;
 			const text = baseline.text;
-			const parsed = parseKqlxText(text, { allowedKinds: ['sqlx', 'kqlx'], defaultKind: 'sqlx' });
+			const parsed = parseCompatSidecarText(text, SQL_COMPAT_SIDECAR_FORMAT);
+			if (!parsed.ok) {
+				void vscode.window.showErrorMessage(`The existing companion sidecar is invalid for a SQL document. ${parsed.error}`);
+				return undefined;
+			}
 			if (parsed.ok && isLinkedSidecarForSqlFile(sidecarUri, parsed.file, document.uri)) {
 				return await adoptLinkedSidecar();
 			}
@@ -1158,8 +1219,6 @@ export class SqlCompatEditorProvider implements vscode.CustomTextEditorProvider 
 			}
 			creationBaselineText = text;
 			creationBaselineIdentity = baseline.identity;
-		} catch {
-			// does not exist
 		}
 
 		// Seed the sidecar with the most recent UI state if we have it.

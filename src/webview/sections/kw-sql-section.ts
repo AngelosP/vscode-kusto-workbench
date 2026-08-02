@@ -22,7 +22,7 @@ import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { schedulePersist, __kustoClearStoredQueryResult } from '../core/persistence.js';
 import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoInstallWritableGuard } from '../monaco/writable.js';
 import { registerStsProviders, registerStsEditorModel, unregisterStsEditorModel } from '../monaco/sql-sts-providers.js';
-import { autoTriggerAutocompleteEnabled, setActiveMonacoEditor, queryEditorBoxByModelUri, queryEditors } from '../core/state.js';
+import { autoTriggerAutocompleteEnabled, optimizationMetadataByBoxId, setActiveMonacoEditor, queryEditorBoxByModelUri, queryEditors } from '../core/state.js';
 import { __kustoOpenShareModal, getRunMode, setRunMode } from './kw-query-toolbar.js';
 import { getRunModeLabelText } from '../shared/comparisonUtils.js';
 import { getCurrentMonacoThemeName } from '../monaco/theme.js';
@@ -33,9 +33,19 @@ import type { SqlConnectionFormSubmitDetail } from '../components/kw-sql-connect
 import '../components/kw-sql-connection-form.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
 import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
-import { clearResultsState, getCurrentResultArtifact, retireResultsStateForRerun } from '../core/results-state.js';
+import {
+	bindResultArtifactConsumer,
+	clearResultsState,
+	getCurrentResultArtifact,
+	retireResultsStateForRerun,
+	unbindResultArtifactConsumer,
+} from '../core/results-state.js';
 import { normalizeSqlConnectionTargetSignature, sqlConnectionTargetSignature, sqlConnectionTargetSignatureMatches } from '../../shared/sqlConnectionIdentity.js';
-import { toPersistedResultArtifact, type PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
+import {
+	comparisonSourceArtifactConsumerId,
+	toPersistedResultArtifact,
+	type PersistedResultArtifactV1,
+} from '../../shared/resultArtifact.js';
 import {
 	ARTIFACT_CSV_TABLE_RELEASED_EVENT,
 	isArtifactResultTableLive,
@@ -54,6 +64,7 @@ export interface SqlSectionData {
 	type: 'sql';
 	name: string;
 	query: string;
+	comparisonSourceBoxId?: string;
 	serverUrl?: string;
 	connectionIdHint?: string;
 	targetSignature?: string;
@@ -182,6 +193,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	@state() private _expanded = true;
 	@state() private _executing = false;
 	@state() private _lastError = '';
+	private _queryRevision = 0;
+	private _comparisonPersistenceSnapshot?: SqlSectionData;
+	private _comparisonAdmissionPending = false;
 
 	private _editorResizeObserver: ResizeObserver | null = null;
 
@@ -542,11 +556,14 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (runBtn) {
 			const protectedByLeaveNoTrace = this._leaveNoTraceConnectionIds.has(this._sqlConnectionId);
 			const waitingForOwner = !!this._sqlConnectionId && !!this._database && !this._ownerToken;
-			runBtn.disabled = !this._sqlConnectionId || !this._database || !this._ownerToken || this._executing;
+			runBtn.disabled = this._comparisonAdmissionPending
+				|| !this._sqlConnectionId || !this._database || !this._ownerToken || this._executing;
 			const labelText = this._getSqlRunModeLabel();
 			const labelSpan = runBtn.querySelector('.run-btn-label');
 			if (labelSpan) labelSpan.textContent = ' ' + labelText;
-			const disabledReason = waitingForOwner
+			const disabledReason = this._comparisonAdmissionPending
+				? 'Waiting for SQL comparison admission to finish'
+				: waitingForOwner
 				? protectedByLeaveNoTrace
 					? 'Preparing isolated Leave No Trace execution'
 					: 'Waiting for SQL Tools Service to connect'
@@ -882,6 +899,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (!connectionId) return;
 		this._pendingPersistedTargetAdoption = false;
 		this._cancelHostOwnerReadoption();
+		const hadCompleteTarget = !!this._sqlConnectionId && !!this._database;
 		const prev = this._connectionId;
 		this._connectionId = connectionId;
 		this._sqlConnectionId = connectionId;
@@ -894,7 +912,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		}
 		this._enforceLeaveNoTracePolicy();
 		if (prev !== connectionId) {
-			this._clearTargetData();
+			this._clearTargetData(hadCompleteTarget);
 			this._database = '';
 			this._desiredDatabase = '';
 			this._databases = [];
@@ -911,11 +929,12 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		if (!database) return;
 		this._pendingPersistedTargetAdoption = false;
 		this._cancelHostOwnerReadoption();
+		const hadCompleteTarget = !!this._sqlConnectionId && !!this._database;
 		const prev = this._database;
 		this._database = database;
 		this._desiredDatabase = '';
 		if (prev !== database) {
-			this._clearTargetData();
+			this._clearTargetData(hadCompleteTarget);
 			this._resetSchemaReadiness('loading');
 			this.dispatchEvent(new CustomEvent('sql-database-changed', {
 				detail: { boxId: this.boxId, database },
@@ -1087,8 +1106,8 @@ export class KwSqlSection extends LitElement implements SectionElement {
 				value: initialValue,
 				language: 'sql',
 				theme: getCurrentMonacoThemeName(),
-				readOnly: false,
-				domReadOnly: false,
+				readOnly: this._comparisonAdmissionPending,
+				domReadOnly: this._comparisonAdmissionPending,
 				minimap: { enabled: false },
 				scrollBeyondLastLine: false,
 				automaticLayout: false,
@@ -1138,6 +1157,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			this._updatePlaceholderVisibility();
 
 		editor.onDidChangeModelContent((changeEvt: { changes: Array<{ text: string; range: unknown }> }) => {
+			this._queryRevision += 1;
 			this._updatePlaceholderVisibility();
 			this._markResultsStale();
 			try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
@@ -1364,6 +1384,13 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	// ── Serialize ─────────────────────────────────────────────────────────────
 
 	public serialize(): SqlSectionData {
+		if (this._comparisonPersistenceSnapshot) {
+			return { ...this._comparisonPersistenceSnapshot };
+		}
+		return this.serializeForComparisonAdmission();
+	}
+
+	public serializeForComparisonAdmission(): SqlSectionData {
 		const data: SqlSectionData = {
 			id: this.boxId,
 			type: 'sql',
@@ -1371,6 +1398,8 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			query: this._getQueryText(),
 			expanded: this._expanded,
 		};
+		const comparisonSourceBoxId = String(optimizationMetadataByBoxId[this.boxId]?.sourceBoxId || '').trim();
+		if (comparisonSourceBoxId) data.comparisonSourceBoxId = comparisonSourceBoxId;
 
 		const serverUrl = this.getServerUrl() || this._desiredServerUrl;
 		const database = this._database || this._desiredDatabase;
@@ -1486,10 +1515,46 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	public setName(name: string): void { this._name = name; }
 
 	public getQuery(): string { return this._getQueryText(); }
+	public getQueryRevision(): number { return this._queryRevision; }
+	public setComparisonPersistenceSnapshot(snapshot: SqlSectionData | undefined): void {
+		this._comparisonPersistenceSnapshot = snapshot ? { ...snapshot } : undefined;
+	}
+	public setComparisonAdmissionPending(pending: boolean): void {
+		if (pending && !this._comparisonAdmissionPending
+			&& (this._executing || !!this._activeQueryExecutionId || this.sqlSession.hasPendingToolRun)) {
+			this._cancelQuery();
+		}
+		this._comparisonAdmissionPending = pending;
+		this.toggleAttribute('data-sql-comparison-admission-pending', pending);
+		try { this._editor?.updateOptions({ readOnly: pending, domReadOnly: pending }); } catch (e) { console.error('[kusto]', e); }
+		this._syncActionBar();
+	}
+	public getActiveQueryExecutionId(): string { return this._activeQueryExecutionId; }
+	public isQueryExecuting(): boolean { return this._executing; }
+	public retireForDocumentInvalidation(): void {
+		this.setComparisonAdmissionPending(true);
+		this._cancelQuery();
+		const targetGeneration = this.sqlSession.advanceTargetGeneration();
+		try {
+			postMessageToHost({
+				type: 'retireSqlTarget', boxId: this.boxId,
+				sectionInstanceId: this.sqlSession.instanceId, targetGeneration,
+			});
+		} catch (e) { console.error('[kusto]', e); }
+		const sourceBoxId = String(optimizationMetadataByBoxId[this.boxId]?.sourceBoxId || '').trim();
+		if (sourceBoxId) {
+			try { postMessageToHost({ type: 'sqlComparisonRemoved', boxId: this.boxId, sourceBoxId }); } catch (e) { console.error('[kusto]', e); }
+		}
+		try { this.copilotWriteQueryCancel(); } catch (e) { console.error('[kusto]', e); }
+		try { this.copilotClearConversation(); } catch (e) { console.error('[kusto]', e); }
+		this._clearResultData();
+		this.setStsReady(false);
+	}
 	public setQuery(query: string): void {
 		if (this._editor) {
 			this._editor.setValue(query);
 		} else {
+			if (this._getQueryText() !== query) this._queryRevision += 1;
 			pState.pendingSqlQueryByBoxId = pState.pendingSqlQueryByBoxId || {};
 			pState.pendingSqlQueryByBoxId[this.boxId] = query;
 		}
@@ -1666,7 +1731,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		return true;
 	}
 
-	private _clearTargetData(): void {
+	private _clearTargetData(hadCompleteTarget = !!this._sqlConnectionId && !!this._database): void {
 		if (this._executing) {
 			try {
 				postMessageToHost({ type: 'cancelSqlQuery', boxId: this.boxId, sectionInstanceId: this.sqlSession.instanceId });
@@ -1682,7 +1747,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		try { this.copilotWriteQueryCancel(); } catch (e) { console.error('[kusto]', e); }
 		try { this.copilotClearConversation(); } catch (e) { console.error('[kusto]', e); }
 		this.dispatchEvent(new CustomEvent('sql-target-owner-changed', {
-			detail: { boxId: this.boxId },
+			detail: { boxId: this.boxId, hadCompleteTarget },
 			bubbles: true,
 			composed: true,
 		}));
@@ -1862,6 +1927,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		options: { preserveMissingSelection?: boolean } = {},
 	): void {
 		const previousDatabase = this._database;
+		const hadCompleteTargetBeforeUpdate = !!this._sqlConnectionId && !!this._database;
 		const hadExplicitDatabaseTarget = !!(
 			this._database || this._desiredDatabase || this._hostOwnerReadoptionDatabase
 		);
@@ -1906,7 +1972,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			this._desiredDatabase = '';
 			this._hostOwnerReadoptionDatabase = '';
 			if (hadExplicitDatabaseTarget) {
-				this._clearTargetData();
+				this._clearTargetData(hadCompleteTargetBeforeUpdate);
 				this._resetSchemaReadiness('not-loaded');
 				this.dispatchEvent(new CustomEvent('sql-database-changed', {
 					detail: { boxId: this.boxId, database: '' },
@@ -1938,7 +2004,9 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			}
 		}
 		if (this._database && this._database !== previousDatabase) {
-			if (!adoptingPersistedDatabase && !hostReadoptionDatabase) this._clearTargetData();
+			if (!adoptingPersistedDatabase && !hostReadoptionDatabase) {
+				this._clearTargetData(hadCompleteTargetBeforeUpdate);
+			}
 			this._pendingPersistedTargetAdoption = false;
 			this._pendingHostOwnerReadoption = false;
 			this._hostOwnerReadoptionAdvancesGeneration = false;
@@ -2376,6 +2444,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	// ── Execution ─────────────────────────────────────────────────────────────
 
 	public reserveToolRun(executionId: string): Promise<SqlToolRunResult> {
+		if (this._comparisonAdmissionPending) throw new Error('SQL comparison admission is still settling.');
 		if (this.sqlSession.hasPendingToolRun) throw new Error('A SQL tool query is already running for this section.');
 		const id = String(executionId || '').trim();
 		if (!id) throw new Error('SQL tool execution ID is unavailable.');
@@ -2384,6 +2453,10 @@ export class KwSqlSection extends LitElement implements SectionElement {
 
 	public startReservedToolRun(executionId: string): void {
 		const id = String(executionId || '').trim();
+		if (this._comparisonAdmissionPending) {
+			this.sqlSession.rejectPendingToolRun(new Error('SQL comparison admission is still settling.'), id);
+			throw new Error('SQL comparison admission is still settling.');
+		}
 		if (!this._sqlConnectionId || !this._database || !this._getQueryText().trim()) {
 			this.sqlSession.rejectPendingToolRun(
 				new Error('Select a SQL connection and database and provide a query before executing.'), id,
@@ -2450,6 +2523,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	public setExternalQueryExecuting(executing: boolean, executionId?: string): boolean {
 		const id = String(executionId || '').trim();
 		if (executing) {
+			if (this._comparisonAdmissionPending) return false;
 			if (!id) return false;
 			if (!this.sqlSession.beginExecution(id)) return false;
 			this._retireResultDataForRerun();
@@ -2479,6 +2553,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		});
 		this._rememberCancelledExecution(executionId);
 		this._activeQueryExecutionId = '';
+		this._releaseDirectComparisonSourceArtifact();
 		this._executing = false;
 		this._stopElapsedTimer();
 		this._syncTestStateAttrs();
@@ -2486,7 +2561,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 	}
 
 	private _runQuery(): boolean {
-		if (this._executing || !this._sqlConnectionId || !this._database) {
+		if (this._comparisonAdmissionPending || this._executing || !this._sqlConnectionId || !this._database) {
 			return false;
 		}
 		if (!this._ownerToken) {
@@ -2499,6 +2574,30 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		const query = this.sqlSession.pendingToolQuery || this._getQueryText();
 		if (!query.trim()) {
 			return false;
+		}
+		let comparisonSourceIdentity: { comparisonSourceBoxId: string; comparisonSourceExecutionId: string } | undefined;
+		const comparisonSourceBoxId = optimizationMetadataByBoxId[this.boxId]?.isComparison
+			? String(optimizationMetadataByBoxId[this.boxId].sourceBoxId || '').trim()
+			: '';
+		if (comparisonSourceBoxId) {
+			const sourceArtifact = getCurrentResultArtifact(comparisonSourceBoxId);
+			const sourceExecutionId = String(sourceArtifact?.producer?.executionId || '').trim();
+			const sourceMatchesTarget = sourceArtifact?.producer?.engine === 'sql'
+				&& sourceArtifact.producer.boxId === comparisonSourceBoxId
+				&& sourceArtifact.producer.connectionId === this._sqlConnectionId
+				&& String(sourceArtifact.producer.database || '').toLowerCase() === this._database.toLowerCase();
+			const consumerId = comparisonSourceArtifactConsumerId(this.boxId);
+			unbindResultArtifactConsumer(consumerId);
+			if (!sourceArtifact || !sourceExecutionId || !sourceMatchesTarget
+				|| bindResultArtifactConsumer(consumerId, comparisonSourceBoxId, sourceArtifact.artifactId) !== sourceArtifact.artifactId) {
+				this._lastError = 'Run the source SQL section before running its comparison.';
+				this._syncActionBar();
+				return false;
+			}
+			comparisonSourceIdentity = {
+				comparisonSourceBoxId,
+				comparisonSourceExecutionId: sourceExecutionId,
+			};
 		}
 		this._executing = true;
 		const executionId = this.sqlSession.pendingToolExecutionId
@@ -2517,6 +2616,7 @@ export class KwSqlSection extends LitElement implements SectionElement {
 			queryMode: getRunMode(this.boxId),
 			ownerToken: this._ownerToken,
 			executionId,
+			...comparisonSourceIdentity,
 			...(this.sqlSession.hasPendingToolRun ? { toolExecution: true } : {}),
 			...(this.sqlSession.pendingToolExecutionId && this.sqlSession.toolExpectedOwner ? { expectedOwner: { ...this.sqlSession.toolExpectedOwner } } : {}),
 		});
@@ -2576,8 +2676,15 @@ export class KwSqlSection extends LitElement implements SectionElement {
 		});
 		this._rememberCancelledExecution(cancelledExecutionId);
 		this._activeQueryExecutionId = '';
+		this._releaseDirectComparisonSourceArtifact();
 		this._executing = false;
 		this._stopElapsedTimer();
+	}
+
+	private _releaseDirectComparisonSourceArtifact(): void {
+		if (optimizationMetadataByBoxId[this.boxId]?.isComparison) {
+			unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(this.boxId));
+		}
 	}
 
 	private _startElapsedTimer(): void {

@@ -6,6 +6,16 @@ import { queryEditors } from '../core/state';
 const _win = window;
 
 const __kustoWritableGuardsByEditor = (typeof WeakMap !== 'undefined') ? new WeakMap() : null;
+const SQL_COMPARISON_ADMISSION_LOCK_SELECTOR = '[data-sql-comparison-admission-pending]';
+
+function __kustoIsEditorAdmissionLocked(editor: any): boolean {
+	try {
+		const dom = typeof editor?.getDomNode === 'function' ? editor.getDomNode() : null;
+		return !!dom?.closest?.(SQL_COMPARISON_ADMISSION_LOCK_SELECTOR);
+	} catch {
+		return false;
+	}
+}
 
 export function __kustoNormalizeTextareasWritable(root: any) {
 	try {
@@ -31,6 +41,10 @@ export function __kustoNormalizeTextareasWritable(root: any) {
 export function __kustoForceEditorWritable(editor: any) {
 	try {
 		if (!editor) return;
+		if (__kustoIsEditorAdmissionLocked(editor)) {
+			try { editor.updateOptions?.({ readOnly: true, domReadOnly: true }); } catch (e) { console.error('[kusto]', e); }
+			return;
+		}
 		try {
 			if (typeof editor.updateOptions === 'function') {
 				editor.updateOptions({ readOnly: false, domReadOnly: false });

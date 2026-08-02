@@ -5,8 +5,20 @@ import {
 	overlayKqlxFileState,
 	parseKqlxText,
 	stringifyKqlxFile,
+	type KqlxFileKind,
 	type KqlxFileV1
 } from '../../../src/host/kqlxFormat';
+
+const knownSectionKinds = [
+	'query', 'copilotQuery', 'sql', 'chart', 'transformation',
+	'markdown', 'python', 'url', 'html', 'devnotes',
+] as const;
+
+const expectedSectionKindsByDocument = {
+	kqlx: knownSectionKinds,
+	sqlx: ['sql', 'chart', 'transformation', 'markdown', 'python', 'url', 'html', 'devnotes'],
+	mdx: ['markdown', 'url', 'transformation', 'devnotes'],
+} as const satisfies Readonly<Record<KqlxFileKind, readonly (typeof knownSectionKinds)[number][]>>;
 
 describe('createEmptyKqlxFile', () => {
 	it('returns kqlx file with kind, version 1, empty sections', () => {
@@ -89,6 +101,40 @@ describe('parseKqlxText', () => {
 		}
 	});
 
+	it.each(Object.entries(expectedSectionKindsByDocument) as [KqlxFileKind, readonly string[]][])(
+		'reports every known incompatible section in %s instead of accepting it for later filtering',
+		(documentKind, allowedKinds) => {
+			for (const sectionKind of knownSectionKinds) {
+				const sectionId = `${sectionKind}_section`;
+				const result = parseKqlxText(JSON.stringify({
+					kind: documentKind,
+					version: 1,
+					state: { sections: [{ id: sectionId, type: sectionKind }] },
+				}), { allowedKinds: [documentKind] });
+				const expectedAllowed = allowedKinds.includes(sectionKind);
+
+				expect(result.ok, `${documentKind}/${sectionKind}`).toBe(expectedAllowed);
+				if (!expectedAllowed && !result.ok) {
+					expect(result.error).toContain(documentKind);
+					expect(result.error).toContain(sectionId);
+					expect(result.error).toContain(sectionKind === 'copilotQuery' ? 'query' : sectionKind);
+				}
+			}
+		},
+	);
+
+	it.each(['kqlx', 'sqlx', 'mdx'] as const)('accepts and preserves an opaque future section in %s', documentKind => {
+		const futureSection = { id: 'future_section', type: 'future-section', payload: { keep: true } };
+		const result = parseKqlxText(JSON.stringify({
+			kind: documentKind,
+			version: 1,
+			state: { sections: [futureSection] },
+		}), { allowedKinds: [documentKind] });
+
+		expect(result.ok).toBe(true);
+		if (result.ok) expect(result.file.state.sections).toEqual([futureSection]);
+	});
+
 	it('wrong version → ok: false', () => {
 		const text = '{"kind":"kqlx","version":99,"state":{"sections":[]}}';
 		const result = parseKqlxText(text);
@@ -164,6 +210,23 @@ describe('parseKqlxText', () => {
 			kind: 'kqlx', version: 1, state: { sections: [{ type: 'query', linkedQueryPath: { path: 'x.kql' } }] },
 		}));
 		expect(invalidPath.ok).toBe(false);
+		const invalidSqlPath = parseKqlxText(JSON.stringify({
+			kind: 'sqlx', version: 1, state: { sections: [{ type: 'sql', linkedQueryPath: ['x.sql'] }] },
+		}), { allowedKinds: ['sqlx'] });
+		expect(invalidSqlPath.ok).toBe(false);
+		if (!invalidSqlPath.ok) expect(invalidSqlPath.error).toContain('linkedQueryPath');
+	});
+
+	it('counts Kusto and SQL linked owners together', () => {
+		const result = parseKqlxText(JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'query_1', type: 'query', linkedQueryPath: 'one.kql' },
+				{ id: 'sql_1', type: 'sql', linkedQueryPath: 'two.sql' },
+			] },
+		}));
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.error).toContain('only one linked query');
 	});
 
 	it.each([

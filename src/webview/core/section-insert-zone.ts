@@ -6,6 +6,7 @@
 import { pState } from '../shared/persistence-state';
 import { __kustoRequestAddSection } from './persistence';
 import { addPageScrollListener, getScrollY } from './utils';
+import { getAllowedAddSectionKinds } from './document-capabilities.js';
 
 // ── Constants ────────────────────────────────────────────────────────────────
 /**
@@ -96,13 +97,7 @@ function scheduleDismiss() {
 }
 
 function getAllowedKinds(): string[] {
-	const defaults = ['query', 'chart', 'transformation', 'python', 'url', 'markdown'];
-	try {
-		const allowed = Array.isArray(pState.allowedSectionKinds)
-			? pState.allowedSectionKinds.map((v: any) => String(v))
-			: defaults;
-		return allowed.length > 0 ? allowed : defaults;
-	} catch { return defaults; }
+	return [...getAllowedAddSectionKinds()];
 }
 
 function kindLabel(kind: string): string {

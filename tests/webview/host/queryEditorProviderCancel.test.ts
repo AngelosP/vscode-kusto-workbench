@@ -375,7 +375,16 @@ function createSqlProviderHarness() {
 	const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
 	provider._comparisonOwnerByBoxId = new Map();
 	provider.pendingComparisonEnsureByRequestId = new Map();
-	provider.postMessage = vi.fn();
+	provider.postMessage = vi.fn(async (message: any) => {
+		if (message?.type === 'sqlComparisonAdmissionRollback') {
+			queueMicrotask(() => void provider.handleWebviewMessage({
+				type: 'sqlComparisonAdmissionAck', phase: 'rolledBack',
+				requestId: message.requestId, sourceBoxId: message.sourceBoxId,
+				comparisonBoxId: message.comparisonBoxId, accepted: true,
+			} as any));
+		}
+		return true;
+	});
 	provider.output = { trace: vi.fn(), debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() };
 	provider.context = {
 		globalState: {
@@ -459,6 +468,401 @@ function createSqlProviderHarness() {
 }
 
 describe('QueryEditorProvider cancellation orchestration', () => {
+	it('stamps SQL comparison preparation with the SQL engine', async () => {
+		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+		provider.panel = {};
+		provider.pendingComparisonEnsureByRequestId = new Map();
+		provider._comparisonOwnerByBoxId = new Map();
+		provider.sqlLifecycle = {
+			getConnectionId: vi.fn(() => 'sql-a'),
+			getComparisonOwner: vi.fn(() => undefined),
+			getSectionInstanceId: vi.fn(() => 'instance-sql-source'),
+			getGeneration: vi.fn(() => 4),
+			getTarget: vi.fn(() => ({ boxId: 'sql-source', connectionId: 'sql-a', database: 'Db', generation: 4 })),
+		};
+		provider.sqlWorkbench = { assertSqlConnectionAllowed: vi.fn(async () => undefined) };
+		provider.postMessage = vi.fn();
+		let cancel!: () => void;
+		const token = {
+			isCancellationRequested: false,
+			onCancellationRequested: (listener: () => void) => {
+				cancel = listener;
+				return { dispose() {} };
+			},
+		} as vscode.CancellationToken;
+
+		const preparing = provider.ensureComparisonBoxInWebview('sql-source', 'SELECT 2', token);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'ensureComparisonBox', boxId: 'sql-source', query: 'SELECT 2', engine: 'sql',
+			sourceSectionInstanceId: 'instance-sql-source', sourceTargetGeneration: 4,
+		})));
+		cancel();
+
+		await expect(preparing).rejects.toThrow('Canceled');
+	});
+
+	it('rejects a derived SQL comparison as a nested comparison source before webview mutation', async () => {
+		const provider = createSqlProviderHarness();
+		provider.panel = {};
+		provider.sqlLifecycle.openSection('comparison_1', 'instance-comparison');
+		provider.sqlLifecycle.setTarget('comparison_1', 'sql-1', 'Db', 1);
+		provider.sqlLifecycle.setComparisonOwner('comparison_1', {
+			sourceBoxId: 'sql_1', connectionId: 'sql-1',
+		});
+		const token = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose() {} }),
+		} as vscode.CancellationToken;
+
+		await expect(provider.ensureComparisonBoxInWebview('comparison_1', 'SELECT 3', token))
+			.rejects.toThrow('cannot be used as another comparison source');
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'ensureComparisonBox',
+		}));
+	});
+
+	it.each([
+		['nonexistent comparison', 'comparison_ghost', 'instance-ghost', 'sql-1', 'Db', false],
+		['self-referential comparison', 'sql_1', 'instance-1', 'sql-1', 'Db', false],
+		['stale comparison incarnation', 'comparison_1', 'instance-stale', 'sql-1', 'Db', true],
+		['wrong comparison target', 'comparison_1', 'instance-comparison', 'sql-other', 'OtherDb', true],
+	] as const)('rejects %s before recording SQL comparison ownership', async (
+		_label, comparisonBoxId, responseInstanceId, responseConnectionId, responseDatabase, registerComparison,
+	) => {
+		const provider = createSqlProviderHarness();
+		provider.panel = {};
+		if (registerComparison) {
+			provider.sqlLifecycle.openSection('comparison_1', 'instance-comparison');
+			provider.sqlLifecycle.setTarget(
+				'comparison_1', responseConnectionId === 'sql-other' ? 'sql-other' : 'sql-1',
+				responseDatabase, 1,
+			);
+		}
+		const token = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose() {} }),
+		} as vscode.CancellationToken;
+		const preparing = provider.ensureComparisonBoxInWebview('sql_1', 'SELECT 2', token);
+		void preparing.catch(() => undefined);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'ensureComparisonBox', boxId: 'sql_1', engine: 'sql',
+		})));
+		const request = provider.postMessage.mock.calls.find((call: any[]) => call[0]?.type === 'ensureComparisonBox')![0];
+
+		await provider.handleWebviewMessage({
+			type: 'comparisonBoxEnsured', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId,
+			sourceSectionInstanceId: 'instance-1', sourceTargetGeneration: 1,
+			comparisonSectionInstanceId: responseInstanceId, comparisonTargetGeneration: 1,
+			comparisonConnectionId: responseConnectionId, comparisonDatabase: responseDatabase,
+		} as any);
+
+		await expect(preparing).rejects.toThrow(/missing, stale, self-referential, or mismatched/);
+		expect(provider.sqlLifecycle.getComparisonOwner(comparisonBoxId)).toBeUndefined();
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionRollback', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId,
+		});
+	});
+
+	it('rejects a late SQL comparison proposal after its host request expired', async () => {
+		const provider = createSqlProviderHarness();
+		provider.panel = {};
+
+		await provider.handleWebviewMessage({
+			type: 'comparisonBoxEnsured', engine: 'sql', requestId: 'expired-request',
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_late',
+		} as any);
+
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionRollback', requestId: 'expired-request',
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_late',
+		});
+	});
+
+	it('rejects SQL comparison preparation retargeted during deferred policy admission', async () => {
+		const provider = createSqlProviderHarness();
+		provider.panel = {};
+		provider.sqlLifecycle.openSection('comparison_1', 'instance-comparison');
+		provider.sqlLifecycle.setTarget('comparison_1', 'sql-1', 'Db', 1);
+		const policy = deferred<void>();
+		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn()
+			.mockResolvedValueOnce(undefined)
+			.mockImplementationOnce(() => policy.promise);
+		const token = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose() {} }),
+		} as vscode.CancellationToken;
+		const preparing = provider.ensureComparisonBoxInWebview('sql_1', 'SELECT 2', token);
+		void preparing.catch(() => undefined);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'ensureComparisonBox', boxId: 'sql_1', engine: 'sql',
+		})));
+		const request = provider.postMessage.mock.calls.find((call: any[]) => call[0]?.type === 'ensureComparisonBox')![0];
+		const admission = provider.handleWebviewMessage({
+			type: 'comparisonBoxEnsured', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
+			sourceSectionInstanceId: 'instance-1', sourceTargetGeneration: 1,
+			comparisonSectionInstanceId: 'instance-comparison', comparisonTargetGeneration: 1,
+			comparisonConnectionId: 'sql-1', comparisonDatabase: 'Db',
+		} as any);
+		await vi.waitFor(() => expect(provider.sqlWorkbench.assertSqlConnectionAllowed).toHaveBeenCalledTimes(2));
+		expect(provider.sqlLifecycle.getComparisonOwner('comparison_1')).toBeUndefined();
+
+		provider.sqlLifecycle.setTarget('comparison_1', 'sql-other', 'OtherDb', 2);
+		policy.resolve(undefined);
+		await admission;
+
+		await expect(preparing).rejects.toThrow(/changed during policy admission/);
+		expect(provider.sqlLifecycle.getComparisonOwner('comparison_1')).toBeUndefined();
+	});
+
+	it('restores the prior comparison owner and token when reused admission is rejected', async () => {
+		const provider = createSqlProviderHarness();
+		provider.panel = {};
+		const previousOwner = { sourceBoxId: 'sql_1', connectionId: 'sql-1' };
+		provider.sqlLifecycle.openSection('comparison_1', 'instance-comparison');
+		provider.sqlLifecycle.setTarget('comparison_1', 'sql-1', 'Db', 1);
+		provider.sqlLifecycle.setComparisonOwner('comparison_1', previousOwner);
+		provider.sqlLifecycle.setOwnerToken('comparison_1', 'previous-token');
+		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn()
+			.mockResolvedValueOnce(undefined)
+			.mockRejectedValueOnce(new Error('Policy rejected reuse'));
+		const token = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose() {} }),
+		} as vscode.CancellationToken;
+		const preparing = provider.ensureComparisonBoxInWebview('sql_1', 'SELECT 3', token);
+		void preparing.catch(() => undefined);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'ensureComparisonBox', boxId: 'sql_1', engine: 'sql',
+		})));
+		const request = provider.postMessage.mock.calls.find((call: any[]) => call[0]?.type === 'ensureComparisonBox')![0];
+
+		await provider.handleWebviewMessage({
+			type: 'comparisonBoxEnsured', engine: 'sql', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
+			sourceSectionInstanceId: 'instance-1', sourceTargetGeneration: 1,
+			comparisonSectionInstanceId: 'instance-comparison', comparisonTargetGeneration: 1,
+			comparisonConnectionId: 'sql-1', comparisonDatabase: 'Db',
+		} as any);
+
+		await expect(preparing).rejects.toThrow('Policy rejected reuse');
+		expect(provider.sqlLifecycle.getComparisonOwner('comparison_1')).toBe(previousOwner);
+		expect(provider.sqlLifecycle.getOwnerToken('comparison_1')).toBe('previous-token');
+	});
+
+	it('does not resolve SQL comparison preparation before exact webview admission acknowledgement', async () => {
+		const provider = createSqlProviderHarness();
+		provider.panel = {};
+		provider.postMessage.mockResolvedValue(true);
+		provider.sqlLifecycle.openSection('comparison_1', 'instance-comparison');
+		provider.sqlLifecycle.setTarget('comparison_1', 'sql-1', 'Db', 1);
+		const token = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose() {} }),
+		} as vscode.CancellationToken;
+		let resolved = false;
+		const preparing = provider.ensureComparisonBoxInWebview('sql_1', 'SELECT 2', token)
+			.then(value => { resolved = true; return value; });
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'ensureComparisonBox', boxId: 'sql_1', engine: 'sql',
+		})));
+		const request = provider.postMessage.mock.calls.find((call: any[]) => call[0]?.type === 'ensureComparisonBox')![0];
+
+		const response = provider.handleWebviewMessage({
+			type: 'comparisonBoxEnsured', engine: 'sql', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
+			sourceSectionInstanceId: 'instance-1', sourceTargetGeneration: 1,
+			comparisonSectionInstanceId: 'instance-comparison', comparisonTargetGeneration: 1,
+			comparisonConnectionId: 'sql-1', comparisonDatabase: 'Db',
+		} as any);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'sqlComparisonAdmission', requestId: request.requestId,
+			comparisonBoxId: 'comparison_1', accepted: true,
+		})));
+		expect(resolved).toBe(false);
+
+		await provider.handleWebviewMessage({
+			type: 'sqlComparisonAdmissionAck', phase: 'staged', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1', accepted: true,
+		} as any);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionCommit', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
+		}));
+		expect(resolved).toBe(false);
+		await provider.handleWebviewMessage({
+			type: 'sqlComparisonAdmissionAck', phase: 'committed', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1', accepted: true,
+		} as any);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionFinalize', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
+		}));
+		expect(resolved).toBe(false);
+		await provider.handleWebviewMessage({
+			type: 'sqlComparisonAdmissionAck', phase: 'finalized', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1', accepted: true,
+		} as any);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionComplete', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
+		}));
+		expect(resolved).toBe(false);
+		await provider.handleWebviewMessage({
+			type: 'sqlComparisonAdmissionAck', phase: 'completed', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1', accepted: true,
+		} as any);
+		await response;
+		await expect(preparing).resolves.toEqual({ boxId: 'comparison_1' });
+	});
+
+	it('retries completion forward without rollback after a lost completion delivery', async () => {
+		const provider = createSqlProviderHarness();
+		provider.panel = {};
+		provider.sqlLifecycle.openSection('comparison_1', 'instance-comparison');
+		provider.sqlLifecycle.setTarget('comparison_1', 'sql-1', 'Db', 1);
+		let completionAttempts = 0;
+		provider.postMessage.mockImplementation(async (message: any) => {
+			if (message?.type === 'sqlComparisonAdmissionComplete') {
+				completionAttempts += 1;
+				if (completionAttempts === 1) return false;
+				queueMicrotask(() => void provider.handleWebviewMessage({
+					type: 'sqlComparisonAdmissionAck', phase: 'completed',
+					requestId: message.requestId, sourceBoxId: message.sourceBoxId,
+					comparisonBoxId: message.comparisonBoxId, accepted: true,
+				} as any));
+			}
+			return true;
+		});
+		const token = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose() {} }),
+		} as vscode.CancellationToken;
+		const preparing = provider.ensureComparisonBoxInWebview('sql_1', 'SELECT 2', token);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'ensureComparisonBox', boxId: 'sql_1', engine: 'sql',
+		})));
+		const request = provider.postMessage.mock.calls.find((call: any[]) => call[0]?.type === 'ensureComparisonBox')![0];
+		const response = provider.handleWebviewMessage({
+			type: 'comparisonBoxEnsured', engine: 'sql', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
+			sourceSectionInstanceId: 'instance-1', sourceTargetGeneration: 1,
+			comparisonSectionInstanceId: 'instance-comparison', comparisonTargetGeneration: 1,
+			comparisonConnectionId: 'sql-1', comparisonDatabase: 'Db',
+		} as any);
+		for (const phase of ['staged', 'committed', 'finalized'] as const) {
+			const type = phase === 'staged' ? 'sqlComparisonAdmission'
+				: phase === 'committed' ? 'sqlComparisonAdmissionCommit'
+					: 'sqlComparisonAdmissionFinalize';
+			await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+				type, requestId: request.requestId,
+			})));
+			await provider.handleWebviewMessage({
+				type: 'sqlComparisonAdmissionAck', phase, requestId: request.requestId,
+				sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1', accepted: true,
+			} as any);
+		}
+		await response;
+
+		await expect(preparing).resolves.toEqual({ boxId: 'comparison_1' });
+		expect(completionAttempts).toBe(2);
+		expect(provider.postMessage).not.toHaveBeenCalledWith(expect.objectContaining({
+			type: 'sqlComparisonAdmissionRollback', requestId: request.requestId,
+		}));
+	});
+
+	it('rejects SQL comparison preparation when commit delivery fails', async () => {
+		const provider = createSqlProviderHarness();
+		provider.panel = {};
+		provider.sqlLifecycle.openSection('comparison_1', 'instance-comparison');
+		provider.sqlLifecycle.setTarget('comparison_1', 'sql-1', 'Db', 1);
+		provider.postMessage.mockImplementation(async (message: any) => {
+			if (message?.type === 'sqlComparisonAdmissionRollback') {
+				queueMicrotask(() => void provider.handleWebviewMessage({
+					type: 'sqlComparisonAdmissionAck', phase: 'rolledBack',
+					requestId: message.requestId, sourceBoxId: message.sourceBoxId,
+					comparisonBoxId: message.comparisonBoxId, accepted: true,
+				} as any));
+			}
+			return message?.type !== 'sqlComparisonAdmissionCommit';
+		});
+		const token = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose() {} }),
+		} as vscode.CancellationToken;
+		const preparing = provider.ensureComparisonBoxInWebview('sql_1', 'SELECT 2', token);
+		void preparing.catch(() => undefined);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'ensureComparisonBox', boxId: 'sql_1', engine: 'sql',
+		})));
+		const request = provider.postMessage.mock.calls.find((call: any[]) => call[0]?.type === 'ensureComparisonBox')![0];
+		const response = provider.handleWebviewMessage({
+			type: 'comparisonBoxEnsured', engine: 'sql', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
+			sourceSectionInstanceId: 'instance-1', sourceTargetGeneration: 1,
+			comparisonSectionInstanceId: 'instance-comparison', comparisonTargetGeneration: 1,
+			comparisonConnectionId: 'sql-1', comparisonDatabase: 'Db',
+		} as any);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'sqlComparisonAdmission', requestId: request.requestId, accepted: true,
+		})));
+		await provider.handleWebviewMessage({
+			type: 'sqlComparisonAdmissionAck', phase: 'staged', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1', accepted: true,
+		} as any);
+		await response;
+
+		await expect(preparing).rejects.toThrow('commit was not applied');
+		expect(provider.sqlLifecycle.getComparisonOwner('comparison_1')).toBeUndefined();
+		expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionRollback', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
+		});
+	});
+
+	it('does not settle rejection or restore ownership before exact rollback acknowledgement', async () => {
+		const provider = createSqlProviderHarness();
+		provider.panel = {};
+		provider.postMessage.mockResolvedValue(true);
+		provider.sqlLifecycle.openSection('comparison_1', 'instance-comparison');
+		provider.sqlLifecycle.setTarget('comparison_1', 'sql-other', 'OtherDb', 1);
+		const token = {
+			isCancellationRequested: false,
+			onCancellationRequested: () => ({ dispose() {} }),
+		} as vscode.CancellationToken;
+		let settled = false;
+		const preparing = provider.ensureComparisonBoxInWebview('sql_1', 'SELECT 2', token)
+			.finally(() => { settled = true; });
+		void preparing.catch(() => undefined);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'ensureComparisonBox', boxId: 'sql_1', engine: 'sql',
+		})));
+		const request = provider.postMessage.mock.calls.find((call: any[]) => call[0]?.type === 'ensureComparisonBox')![0];
+
+		await provider.handleWebviewMessage({
+			type: 'comparisonBoxEnsured', engine: 'sql', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
+			sourceSectionInstanceId: 'instance-1', sourceTargetGeneration: 1,
+			comparisonSectionInstanceId: 'instance-comparison', comparisonTargetGeneration: 1,
+			comparisonConnectionId: 'sql-other', comparisonDatabase: 'OtherDb',
+		} as any);
+		await vi.waitFor(() => expect(provider.postMessage).toHaveBeenCalledWith({
+			type: 'sqlComparisonAdmissionRollback', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1',
+		}));
+		expect(settled).toBe(false);
+		expect(provider.pendingComparisonEnsureByRequestId.has(request.requestId)).toBe(true);
+
+		await provider.handleWebviewMessage({
+			type: 'sqlComparisonAdmissionAck', phase: 'rolledBack', requestId: request.requestId,
+			sourceBoxId: 'sql_1', comparisonBoxId: 'comparison_1', accepted: true,
+		} as any);
+		await expect(preparing).rejects.toThrow(/missing, stale, self-referential, or mismatched/);
+		expect(provider.pendingComparisonEnsureByRequestId.has(request.requestId)).toBe(false);
+	});
+
 	it('waits for webview application acknowledgement after transport accepts a Kusto publication', async () => {
 		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
 		provider._panelDisposed = false;
@@ -647,6 +1051,7 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			'comparison-pending',
 			{ resolve: vi.fn(), reject: rejectComparison, timer: comparisonTimer, sourceBoxId: 'query_1' },
 		]]);
+		provider.webviewMutationResponseResolvers = new Map();
 
 		provider.registerPanelDisposal(panel);
 		disposePanel();
@@ -688,6 +1093,27 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 
 		await expect(provider.postMessage({ type: 'test' })).resolves.toBe(false);
 		expect(provider.output.warn).toHaveBeenCalledWith('[webview] postMessage failed: delivery failed');
+	});
+
+	it('correlates a development-note admission error back to the awaiting Copilot request', async () => {
+		const provider = Object.create(QueryEditorProvider.prototype) as QueryEditorProvider & Record<string, any>;
+		provider.panel = {};
+		provider.webviewMutationResponseResolvers = new Map();
+		provider.postMessage = vi.fn(() => true);
+
+		const pending = provider.updateDevelopmentNotes({ action: 'add', entry: { id: 'note_1' } });
+		const request = provider.postMessage.mock.calls[0][0];
+		expect(request).toMatchObject({ type: 'updateDevNotes', action: 'add', requestId: expect.any(String) });
+
+		await provider.handleWebviewMessage({
+			type: 'toolResponse', requestId: request.requestId,
+			result: { success: false }, error: 'Development notes require a companion metadata file.',
+		});
+
+		await expect(pending).resolves.toEqual({
+			success: false, error: 'Development notes require a companion metadata file.',
+		});
+		expect(provider.webviewMutationResponseResolvers.size).toBe(0);
 	});
 
 	it.each(['schema-result', 'schema-error'] as const)('suppresses %s details when schema owner admission rejects', async mode => {
@@ -737,6 +1163,25 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 		expect(provider.sqlWorkbench.dispatchSqlOwnerProtection).toHaveBeenCalled();
 		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'queryResult', boxId: 'sql_1', ownerToken: 'owner-token', executionId: 'protected-run',
+		}));
+	});
+
+	it('echoes direct SQL comparison source identity on the result terminal', async () => {
+		const provider = createSqlProviderHarness();
+		provider.sqlWorkbench.client.executeQueryCancelable = vi.fn(() => ({
+			promise: Promise.resolve({ columns: [{ name: 'Value', type: 'int' }], rows: [[2]], metadata: {} }),
+			cancel: vi.fn(),
+		}));
+
+		await provider.executeSqlQueryFromWebview({
+			type: 'executeSqlQuery', boxId: 'sql_1', sqlConnectionId: 'sql-1', database: 'Db',
+			query: 'SELECT 2', queryMode: 'plain', ownerToken: 'owner-token', executionId: 'comparison-direct',
+			comparisonSourceBoxId: 'sql_source', comparisonSourceExecutionId: 'source-run-1',
+		});
+
+		expect(provider.postMessage).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'queryResult', boxId: 'sql_1', executionId: 'comparison-direct',
+			comparisonSourceBoxId: 'sql_source', comparisonSourceExecutionId: 'source-run-1',
 		}));
 	});
 
@@ -1709,23 +2154,29 @@ describe('QueryEditorProvider cancellation orchestration', () => {
 			timer: setTimeout(() => undefined, 10_000),
 			sourceBoxId: 'sql_1',
 			sqlConnectionId: 'sql-1',
+			sqlSourceSectionInstanceId: 'instance-1',
+			sqlSourceTargetGeneration: 1,
+			sqlSourceDatabase: 'Db',
 			copilotSequence: 7,
 		}]]);
 		provider.latestComparisonSummaryByKey = new Map();
 		provider.copilot = { cancelCopilotWriteQuery: vi.fn(), cancelCopilotQueryTarget: vi.fn() };
 		provider.sqlWorkbench.assertSqlConnectionAllowed = vi.fn(() => policy.promise);
+		provider.sqlLifecycle.openSection('comparison_1', 'instance-comparison');
+		provider.sqlLifecycle.setTarget('comparison_1', 'sql-1', 'Db', 1);
 
 		const ensured = provider.handleWebviewMessage({
 			type: 'comparisonBoxEnsured', requestId: 'request-1', comparisonBoxId: 'comparison_1',
+			sourceSectionInstanceId: 'instance-1', sourceTargetGeneration: 1,
+			comparisonSectionInstanceId: 'instance-comparison', comparisonTargetGeneration: 1,
+			comparisonConnectionId: 'sql-1', comparisonDatabase: 'Db',
 		} as any);
 		await vi.waitFor(() => expect(provider.sqlWorkbench.assertSqlConnectionAllowed).toHaveBeenCalledOnce());
-		expect(provider.sqlLifecycle.getComparisonOwner('comparison_1')).toMatchObject({
-			sourceBoxId: 'sql_1', copilotSequence: 7, comparisonRequestId: 'request-1',
-		});
+		expect(provider.sqlLifecycle.getComparisonOwner('comparison_1')).toBeUndefined();
 
 		await provider.handleWebviewMessage({ type: 'sqlComparisonRemoved', boxId: 'comparison_1', sourceBoxId: 'sql_1' } as any);
 
-		expect(reject).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' }));
+		await vi.waitFor(() => expect(reject).toHaveBeenCalledWith(expect.objectContaining({ message: 'Canceled' })));
 		expect(provider.pendingComparisonEnsureByRequestId.has('request-1')).toBe(false);
 		expect(provider.sqlLifecycle.getComparisonOwner('comparison_1')).toBeUndefined();
 		expect(provider.copilot.cancelCopilotWriteQuery).toHaveBeenCalledWith('sql_1', 7);

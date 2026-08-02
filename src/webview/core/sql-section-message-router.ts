@@ -121,8 +121,6 @@ function admitOwnerSensitiveMessage(
 	effects: SqlSectionMessageRouterEffects,
 ): boolean {
 	const { section, session } = getMessageTarget(boxId, effects);
-	if (session) return session.admitOwnedMessage(message);
-
 	let comparison = derivedComparisonByBoxId.get(boxId);
 	if (!comparison) {
 		const sourceBoxId = String(effects.getDerivedSourceBoxId?.(boxId) || '').trim();
@@ -131,7 +129,10 @@ function admitOwnerSensitiveMessage(
 			comparison = derivedComparisonByBoxId.get(boxId);
 		}
 	}
-	if (!comparison) return !section && !message.ownerToken;
+	if (!comparison) return session ? session.admitOwnedMessage(message) : !section && !message.ownerToken;
+	if (session?.ownerToken && session.ownerToken === String(message.ownerToken || '')) {
+		return session.admitOwnedMessage(message);
+	}
 	const sourceSession = getSqlSectionSession(comparison.sourceBoxId)
 		?? effects.getSection(comparison.sourceBoxId)?.sqlSession;
 	if (!sourceSession?.ownerToken || sourceSession.ownerToken !== String(message.ownerToken || '')) return false;

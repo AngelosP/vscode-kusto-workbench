@@ -14,6 +14,11 @@ import type {
 	KqlxStateV1,
 	PbiPublishInfo,
 } from './kqlxFormat';
+import {
+	canonicalSectionKind as canonicalKnownSectionKind,
+	isKnownSectionKind,
+	type KnownSectionKind,
+} from '../shared/documentSectionCapabilities';
 
 type JsonPrimitiveKind = 'string' | 'number' | 'boolean';
 type JsonPrimitiveFieldSchema = Readonly<{ kind: 'primitive'; primitive: JsonPrimitiveKind }>;
@@ -38,18 +43,7 @@ type JsonRecordFieldSchema = Readonly<{
 	value: JsonPrimitiveFieldSchema | JsonUnknownFieldSchema;
 }>;
 type CompleteFieldSchema<T extends object> = { readonly [K in keyof T]-?: JsonFieldSchema };
-type KnownSectionType =
-	| 'query'
-	| 'copilotQuery'
-	| 'markdown'
-	| 'python'
-	| 'url'
-	| 'chart'
-	| 'transformation'
-	| 'html'
-	| 'sql'
-	| 'devnotes';
-type KnownSection<T extends KnownSectionType> = Extract<KqlxSectionV1, { type: T }>;
+type KnownSection<T extends KnownSectionKind> = Extract<KqlxSectionV1, { type: T }>;
 
 export class KqlxOverlayConflictError extends Error {
 	constructor(message: string) {
@@ -348,6 +342,8 @@ const sqlSectionSchema = {
 	type: stringField(),
 	name: stringField(),
 	query: stringField(),
+	linkedQueryPath: stringField(),
+	comparisonSourceBoxId: stringField(),
 	serverUrl: stringField(),
 	connectionIdHint: stringField(),
 	targetSignature: stringField(),
@@ -383,7 +379,7 @@ const devnotesSectionSchema = {
 	entries: arrayField(devNoteField, ['id'], 'stable'),
 } satisfies CompleteFieldSchema<KnownSection<'devnotes'>>;
 
-const KNOWN_SECTION_SCHEMAS: Readonly<Record<KnownSectionType, Readonly<Record<string, JsonFieldSchema>>>> = {
+const KNOWN_SECTION_SCHEMAS: Readonly<Record<KnownSectionKind, Readonly<Record<string, JsonFieldSchema>>>> = {
 	query: querySectionSchema,
 	copilotQuery: copilotQuerySectionSchema,
 	markdown: markdownSectionSchema,
@@ -395,10 +391,6 @@ const KNOWN_SECTION_SCHEMAS: Readonly<Record<KnownSectionType, Readonly<Record<s
 	sql: sqlSectionSchema,
 	devnotes: devnotesSectionSchema,
 };
-const MDX_EDITABLE_SECTION_TYPES = new Set<string>(['markdown', 'url', 'transformation', 'devnotes']);
-const MDX_PASSTHROUGH_SECTION_TYPES = new Set<string>(
-	Object.keys(KNOWN_SECTION_SCHEMAS).filter(type => !MDX_EDITABLE_SECTION_TYPES.has(type)),
-);
 const ALWAYS_PRESERVE_OMITTED_SECTION_TYPES = new Set<string>(['devnotes']);
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
@@ -406,13 +398,12 @@ const isObject = (value: unknown): value is Record<string, unknown> =>
 const sectionType = (section: KqlxSectionV1): string =>
 	String((section as Record<string, unknown>)?.type ?? '');
 const canonicalSectionType = (section: KqlxSectionV1): string =>
-	sectionType(section) === 'copilotQuery' ? 'query' : sectionType(section);
+	canonicalKnownSectionKind(sectionType(section)) ?? sectionType(section);
 const sectionId = (section: KqlxSectionV1): string =>
 	String((section as Record<string, unknown>)?.id ?? '').trim();
 const sectionIdentityKey = (section: KqlxSectionV1): string =>
 	`${canonicalSectionType(section)}\u0000${sectionId(section) || '<idless>'}`;
-const isKnownSectionType = (value: string): value is KnownSectionType =>
-	Object.prototype.hasOwnProperty.call(KNOWN_SECTION_SCHEMAS, value);
+const isKnownSectionType = (value: string): value is KnownSectionKind => isKnownSectionKind(value);
 const hasOwn = (value: object, key: string): boolean => Object.prototype.hasOwnProperty.call(value, key);
 const setOwn = (target: Record<string, unknown>, key: string, value: unknown): void => {
 	Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
@@ -775,13 +766,11 @@ function enqueueIndex(queues: Map<string, number[]>, key: string, index: number)
 function overlaySections(
 	baseSections: readonly KqlxSectionV1[],
 	editedSections: readonly KqlxSectionV1[],
-	preserveOmittedKnownTypes: ReadonlySet<string>,
 ): KqlxSectionV1[] {
 	const isPassthrough = (section: KqlxSectionV1) => {
 		const type = sectionType(section);
 		return !isKnownSectionType(type)
-			|| ALWAYS_PRESERVE_OMITTED_SECTION_TYPES.has(type)
-			|| preserveOmittedKnownTypes.has(type);
+			|| ALWAYS_PRESERVE_OMITTED_SECTION_TYPES.has(type);
 	};
 	const baseEditableQueues = new Map<string, number[]>();
 	const baseIdlessEditableQueues = new Map<string, number[]>();
@@ -890,7 +879,6 @@ export function overlayKqlxFileState(
 		sections: overlaySections(
 			Array.isArray(baseState.sections) ? baseState.sections as KqlxSectionV1[] : [],
 			Array.isArray(editedState.sections) ? editedState.sections : [],
-			kind === 'mdx' ? MDX_PASSTHROUGH_SECTION_TYPES : new Set(),
 		),
 	};
 	if (typeof editedState.caretDocsEnabled === 'boolean') state.caretDocsEnabled = editedState.caretDocsEnabled;

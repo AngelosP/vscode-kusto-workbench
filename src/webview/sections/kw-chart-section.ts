@@ -2487,7 +2487,6 @@ export function removeChartBox(boxId: unknown): void {
 	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
-window.addChartBox = addChartBox;
 window.removeChartBox = removeChartBox;
 window.__kustoUpdateChartBuilderUI = __kustoUpdateChartBuilderUI;
 

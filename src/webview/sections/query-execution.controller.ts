@@ -25,12 +25,12 @@ import {
 } from '../shared/comparisonUtils';
 import { escapeHtml } from '../core/utils';
 import { pState } from '../shared/persistence-state';
-import { __kustoClearStoredQueryResult, schedulePersist } from '../core/persistence';
+import { __kustoClearStoredQueryResult, createSectionWithCapabilities, schedulePersist } from '../core/persistence';
 import {
 	__kustoGetConnectionId, __kustoGetDatabase, __kustoGetQuerySectionElement,
 	__kustoGetSqlSectionElement,
 	__kustoSetSectionName, __kustoGetSectionName, __kustoPickNextAvailableSectionLetterName,
-	addQueryBox, toggleCacheControls, removeQueryBox,
+	toggleCacheControls, removeQueryBox,
 	__kustoGetCurrentClusterUrlForBox, __kustoGetCurrentDatabaseForBox, __kustoFindFavorite,
 	__kustoLog,
 } from '../core/section-factory';
@@ -1427,10 +1427,12 @@ export async function optimizeQueryWithCopilot(boxId: any, comparisonQueryOverri
 	try { if (typeof _win.__kustoPrettifyKustoText === 'function') comparisonQuery = _win.__kustoPrettifyKustoText(comparisonQuery); } catch (e) { console.error('[kusto]', e); }
 	let comparisonBoxId = '';
 	try {
-		comparisonBoxId = addQueryBox({
+		const creation = createSectionWithCapabilities('query', {
 			id: 'query_cmp_' + Date.now(), initialQuery: comparisonQuery, isComparison: true,
 			comparisonSourceBoxId: boxId, defaultResultsVisible: false,
 		});
+		if (!creation.ok) throw new Error(creation.error);
+		comparisonBoxId = creation.sectionId;
 	} catch (err: any) {
 		console.error('Error creating comparison box:', err);
 		try { postMessageToHost({ type: 'showInfo', message: 'Failed to create comparison section' }); } catch (e) { console.error('[kusto]', e); }

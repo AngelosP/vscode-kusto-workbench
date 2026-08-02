@@ -1,5 +1,6 @@
 import * as vscode from 'vscode';
 import { parseKqlxText, type KqlxSectionV1, type DevNoteEntry } from './kqlxFormat';
+import { canonicalSectionKind } from '../shared/documentSectionCapabilities';
 
 // ── Noise fields ─────────────────────────────────────────────────────────────
 
@@ -69,8 +70,7 @@ export function formatKqlxForDiff(raw: string): string {
 function formatSection(section: KqlxSectionV1): string[] {
 	const s = section as Record<string, unknown>;
 	const rawType = String(s.type ?? '');
-	// normalizeSection maps copilotQuery → query; mirror that for display.
-	const displayType = rawType === 'copilotQuery' ? 'query' : rawType;
+	const displayType = canonicalSectionKind(rawType) ?? rawType;
 
 	switch (displayType) {
 		case 'query': return formatQuerySection(s);

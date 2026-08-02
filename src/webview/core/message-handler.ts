@@ -8,6 +8,8 @@ import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/art
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
 import { traceFileOpen } from './file-open-trace.js';
+import { applyDocumentCapabilityProjection, getAddSectionAdmission } from './document-capabilities.js';
+import { canonicalSectionKind } from '../../shared/documentSectionCapabilities.js';
 import { buildSchemaInfo } from '../shared/schema-utils';
 import { safeRun } from '../shared/safe-run';
 import {
@@ -20,30 +22,32 @@ import {
 	displayResultForBox,
 	displayResult,
 	displayCancelled,
+	getResultsStateRevision,
 	retireResultsStateForRerun,
 	unbindResultArtifactConsumer,
 	type ResultArtifactPublication,
 } from './results-state';
 import { __kustoRenderErrorUx, __kustoDisplayBoxError } from './error-renderer';
 import {
-	addQueryBox, removeQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName,
+	removeQueryBox, __kustoGetQuerySectionElement, __kustoSetSectionName,
 	__kustoGetConnectionId, __kustoGetClusterUrl, __kustoGetDatabase,
 	updateConnectionSelects, updateDatabaseSelect, onDatabasesError,
 	parseKustoExplorerConnectionsXml,
 	__kustoUpdateFavoritesUiForAllBoxes, __kustoTryAutoEnterFavoritesModeForAllBoxes,
 	__kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoOnConnectionsUpdated,
-	addPythonBox, addUrlBox, removePythonBox, removeUrlBox, onPythonResult, onPythonError,
-	addHtmlBox, removeHtmlBox,
-	addSqlBox, removeSqlBox,
+	removePythonBox, removeUrlBox, onPythonResult, onPythonError,
+	removeHtmlBox,
+	removeSqlBox, isPinnedFirstSection,
+	detachSqlComparisonForAdmissionRollback,
 	updateSqlConnectionSelects, updateSqlDatabaseSelect, onSqlDatabasesError,
 	__kustoGetSqlSectionElement, sqlBoxes,
 	updateSqlFavoritesUiForAllBoxes,
 	__kustoGetChartValidationStatus,
 } from './section-factory';
 import { schemaRequestTokenByBoxId } from './kusto-schema-request-state';
-import { addMarkdownBox, removeMarkdownBox, __kustoMaximizeMarkdownBox } from '../sections/kw-markdown-section';
-import { addChartBox, removeChartBox } from '../sections/kw-chart-section';
-import { addTransformationBox, removeTransformationBox } from '../sections/kw-transformation-section';
+import { removeMarkdownBox, __kustoMaximizeMarkdownBox } from '../sections/kw-markdown-section';
+import { removeChartBox } from '../sections/kw-chart-section';
+import { removeTransformationBox } from '../sections/kw-transformation-section';
 
 import { setRunMode } from '../sections/kw-query-toolbar';
 import { applyEditingPreferencesData } from './editing-preferences.js';
@@ -57,12 +61,14 @@ import {
 import {
 	schedulePersist, handleDocumentDataMessage, getKqlxState, flushCompatibilityPersist, acknowledgePersistDocument,
 	__kustoSetCompatibilityMode, __kustoApplyDocumentCapabilities,
-	__kustoRequestAddSection, __kustoOnQueryResult, __kustoScheduleLocalSchemaPrewarm,
+	__kustoRequestAddSection, createSectionWithCapabilities, __kustoOnQueryResult, __kustoScheduleLocalSchemaPrewarm,
 	__kustoSetHtmlPowerBiCompatibilityCheckEnabled,
 	resolvePendingSqlResultRestores,
 	resolvePendingKustoResultRestores,
 	discardPendingSqlResultRestores,
 	applyKustoLeaveNoTracePolicy,
+	isDocumentMutationAllowed,
+	DOCUMENT_RUNTIME_INVALIDATED_EVENT,
 } from './persistence';
 import {
 	__kustoControlCommandDocCache, __kustoControlCommandDocPending,
@@ -198,7 +204,7 @@ function applySqlLeaveNoTraceConnectionIds(value: unknown): void {
 	for (const [boxId, metadata] of Object.entries(optimizationMetadataByBoxId || {})) {
 		if (!metadata || typeof metadata !== 'object' || !(metadata as any).isComparison) continue;
 		const sourceBoxId = String((metadata as any).sourceBoxId || '').trim();
-		const comparisonSection = __kustoGetQuerySectionElement(boxId);
+		const comparisonSection = __kustoGetQuerySectionElement(boxId) || __kustoGetSqlSectionElement(boxId);
 		const sourceSection = sourceBoxId ? __kustoGetSqlSectionElement(sourceBoxId) : null;
 		const kustoSourceSection = sourceBoxId ? __kustoGetQuerySectionElement(sourceBoxId) : null;
 		if (!sourceSection && kustoSourceSection) continue;
@@ -292,7 +298,7 @@ function getSectionSerializedSignature(sectionId: string): string {
 
 function getCompatibilityPersistedContent(section: Record<string, unknown>): Record<string, unknown> {
 	const rawType = String(section.type || pState.compatibilitySingleKind || 'query');
-	const sectionType = rawType === 'copilotQuery' ? 'query' : rawType;
+	const sectionType = canonicalSectionKind(rawType) ?? rawType;
 	const contentKey = sectionType === 'markdown' ? 'text'
 		: sectionType === 'python' ? 'code'
 			: sectionType === 'url' ? 'url'
@@ -824,6 +830,16 @@ function completeKustoTerminal(message: any): void {
 	if (typeof section?.completeQueryExecution === 'function') section.completeQueryExecution(executionId);
 }
 
+function settleSqlTerminalExecution(message: any): void {
+	const boxId = String(message?.boxId || '').trim();
+	const executionId = String(message?.executionId || '').trim();
+	if (!boxId || !executionId) return;
+	const section = __kustoGetSqlSectionElement(boxId);
+	if (typeof section?.setExternalQueryExecuting === 'function') {
+		section.setExternalQueryExecuting(false, executionId);
+	}
+}
+
 function bindComparisonSourceArtifact(comparisonRun: any): boolean {
 	const sourceBoxId = String(comparisonRun?.sourceBoxId || '').trim();
 	const sourceExecutionId = String(comparisonRun?.sourceExecutionId || '').trim();
@@ -993,8 +1009,12 @@ function getSqlResultArtifactPublication(message: any): ResultArtifactPublicatio
 		const sourceArtifact = getBoundResultArtifact(
 			comparisonSourceArtifactConsumerId(boxId), sourceBoxId,
 		);
+		const claimedSourceBoxId = String(message.comparisonSourceBoxId || '').trim();
+		const claimedSourceExecutionId = String(message.comparisonSourceExecutionId || '').trim();
 		if (!sourceArtifact || sourceArtifact.producer?.engine !== 'sql'
 			|| sourceArtifact.producer.boxId !== sourceBoxId
+			|| (claimedSourceBoxId && claimedSourceBoxId !== sourceBoxId)
+			|| (claimedSourceExecutionId && sourceArtifact.producer.executionId !== claimedSourceExecutionId)
 			|| sourceArtifact.producer.connectionId !== message.connectionId
 			|| String(sourceArtifact.producer.database || '').toLowerCase()
 				!== String(message.database || '').toLowerCase()) return undefined;
@@ -1027,8 +1047,389 @@ function acknowledgeKustoPublication(message: any, accepted: boolean, phase: 'st
 	postMessageToHost({ type: 'kustoPublicationAck', publicationId, phase, accepted });
 }
 
+const SQL_COMPARISON_ADMISSION_ATTRIBUTE = 'data-sql-comparison-admission-request-id';
+type SqlComparisonMutationSnapshot = {
+	descriptorSignature: string;
+	query: string;
+	queryRevision: number;
+	resultRevision: number;
+	hadResultJson: boolean;
+	resultJson?: string;
+	hadResultArtifact: boolean;
+	resultArtifact?: (typeof pState.resultArtifactByBoxId)[string];
+	resultArtifactSignature: string;
+	executionId: string;
+	executing: boolean;
+};
+type PendingSqlComparisonAdmission = {
+	requestId: string;
+	sourceBoxId: string;
+	comparisonBoxId: string;
+	query: string;
+	mode: 'created' | 'reused';
+	phase: 'proposed' | 'committed' | 'finalized' | 'completed';
+	initialState: SqlComparisonMutationSnapshot;
+	committedState?: SqlComparisonMutationSnapshot;
+	completedState?: SqlComparisonMutationSnapshot;
+	timer: ReturnType<typeof setTimeout>;
+};
+const pendingSqlComparisonAdmissionByRequestId = new Map<string, PendingSqlComparisonAdmission>();
+const pendingSqlComparisonAdmissionRequestByBoxId = new Map<string, string>();
+const completedSqlComparisonRollbackByRequestId = new Map<string, {
+	sourceBoxId: string;
+	comparisonBoxId: string;
+}>();
+const completedSqlComparisonAdmissionByRequestId = new Map<string, {
+	pending: PendingSqlComparisonAdmission;
+}>();
+
+function sqlComparisonArtifactSignature(value: unknown): string {
+	try { return JSON.stringify(value); } catch { return ''; }
+}
+
+function captureSqlComparisonMutationSnapshot(comparison: any, comparisonBoxId: string): SqlComparisonMutationSnapshot {
+	const resultJsonByBoxId = pState.queryResultJsonByBoxId || {};
+	const resultArtifactByBoxId = pState.resultArtifactByBoxId || {};
+	const hadResultJson = Object.prototype.hasOwnProperty.call(resultJsonByBoxId, comparisonBoxId);
+	const hadResultArtifact = Object.prototype.hasOwnProperty.call(resultArtifactByBoxId, comparisonBoxId);
+	const resultArtifact = resultArtifactByBoxId[comparisonBoxId];
+	const descriptor = comparison?.serializeForComparisonAdmission?.() ?? comparison?.serialize?.() ?? {};
+	return {
+		descriptorSignature: sqlComparisonArtifactSignature(descriptor),
+		query: String(comparison?.getQuery?.() ?? comparison?.serialize?.()?.query ?? ''),
+		queryRevision: Number(comparison?.getQueryRevision?.() || 0),
+		resultRevision: Number(getResultsStateRevision(comparisonBoxId) || 0),
+		hadResultJson,
+		...(hadResultJson ? { resultJson: resultJsonByBoxId[comparisonBoxId] } : {}),
+		hadResultArtifact,
+		...(hadResultArtifact ? { resultArtifact } : {}),
+		resultArtifactSignature: hadResultArtifact ? sqlComparisonArtifactSignature(resultArtifact) : '',
+		executionId: String(comparison?.getActiveQueryExecutionId?.() || ''),
+		executing: comparison?.isQueryExecuting?.() === true,
+	};
+}
+
+function sqlComparisonMutationSnapshotMatches(
+	comparison: any,
+	comparisonBoxId: string,
+	expected: SqlComparisonMutationSnapshot | undefined,
+): boolean {
+	if (!expected) return false;
+	const current = captureSqlComparisonMutationSnapshot(comparison, comparisonBoxId);
+	return current.descriptorSignature === expected.descriptorSignature
+		&& current.query === expected.query
+		&& current.queryRevision === expected.queryRevision
+		&& current.resultRevision === expected.resultRevision
+		&& current.hadResultJson === expected.hadResultJson
+		&& current.resultJson === expected.resultJson
+		&& current.hadResultArtifact === expected.hadResultArtifact
+		&& current.resultArtifactSignature === expected.resultArtifactSignature
+		&& current.executionId === expected.executionId
+		&& current.executing === expected.executing;
+}
+
+function acknowledgeSqlComparisonAdmission(
+	phase: 'staged' | 'committed' | 'finalized' | 'completed' | 'rolledBack',
+	requestId: string,
+	sourceBoxId: string,
+	comparisonBoxId: string,
+	accepted: boolean,
+): void {
+	postMessageToHost({
+		type: 'sqlComparisonAdmissionAck', phase, requestId, sourceBoxId, comparisonBoxId, accepted,
+	});
+}
+
+function clearPendingSqlComparisonAdmission(pending: PendingSqlComparisonAdmission): void {
+	if (pendingSqlComparisonAdmissionByRequestId.get(pending.requestId) === pending) {
+		pendingSqlComparisonAdmissionByRequestId.delete(pending.requestId);
+	}
+	if (pendingSqlComparisonAdmissionRequestByBoxId.get(pending.comparisonBoxId) === pending.requestId) {
+		pendingSqlComparisonAdmissionRequestByBoxId.delete(pending.comparisonBoxId);
+	}
+	try { clearTimeout(pending.timer); } catch { /* ignore */ }
+}
+
+function applySqlComparisonAdmissionDecision(message: any): void {
+	const requestId = String(message?.requestId || '').trim();
+	const sourceBoxId = String(message?.sourceBoxId || '').trim();
+	const comparisonBoxId = String(message?.comparisonBoxId || '').trim();
+	const pending = requestId ? pendingSqlComparisonAdmissionByRequestId.get(requestId) : undefined;
+	if (!pending || pending.sourceBoxId !== sourceBoxId || pending.comparisonBoxId !== comparisonBoxId) {
+		acknowledgeSqlComparisonAdmission('staged', requestId, sourceBoxId, comparisonBoxId, false);
+		return;
+	}
+	const comparison = __kustoGetSqlSectionElement(comparisonBoxId);
+	const metadata = optimizationMetadataByBoxId[comparisonBoxId];
+	const exactSection = !!comparison && metadata?.isComparison === true
+		&& String(metadata.sourceBoxId || '') === sourceBoxId;
+	const exactProvisional = pending.mode !== 'created'
+		|| comparison?.getAttribute?.(SQL_COMPARISON_ADMISSION_ATTRIBUTE) === requestId;
+	if (message.accepted !== true) {
+		rollbackSqlComparisonAdmission(message);
+		return;
+	}
+	if (!exactSection || !exactProvisional
+		|| !sqlComparisonMutationSnapshotMatches(comparison, comparisonBoxId, pending.initialState)) {
+		acknowledgeSqlComparisonAdmission('staged', requestId, sourceBoxId, comparisonBoxId, false);
+		return;
+	}
+	acknowledgeSqlComparisonAdmission('staged', requestId, sourceBoxId, comparisonBoxId, true);
+}
+
+function commitSqlComparisonAdmission(message: any): void {
+	const requestId = String(message?.requestId || '').trim();
+	const sourceBoxId = String(message?.sourceBoxId || '').trim();
+	const comparisonBoxId = String(message?.comparisonBoxId || '').trim();
+	const pending = requestId ? pendingSqlComparisonAdmissionByRequestId.get(requestId) : undefined;
+	if (!pending || pending.sourceBoxId !== sourceBoxId || pending.comparisonBoxId !== comparisonBoxId) {
+		acknowledgeSqlComparisonAdmission('committed', requestId, sourceBoxId, comparisonBoxId, false);
+		return;
+	}
+	const comparison = __kustoGetSqlSectionElement(comparisonBoxId);
+	const metadata = optimizationMetadataByBoxId[comparisonBoxId];
+	const exactSection = !!comparison && metadata?.isComparison === true
+		&& String(metadata.sourceBoxId || '') === sourceBoxId;
+	const exactProvisional = pending.mode !== 'created'
+		|| comparison?.getAttribute?.(SQL_COMPARISON_ADMISSION_ATTRIBUTE) === requestId;
+	if (!exactSection || !exactProvisional || pending.phase !== 'proposed'
+		|| !sqlComparisonMutationSnapshotMatches(comparison, comparisonBoxId, pending.initialState)) {
+		acknowledgeSqlComparisonAdmission('committed', requestId, sourceBoxId, comparisonBoxId, false);
+		return;
+	}
+	if (pending.mode === 'reused') {
+		comparison.setQuery?.(pending.query);
+		if (pState.queryResultJsonByBoxId) delete pState.queryResultJsonByBoxId[comparisonBoxId];
+		if (pState.resultArtifactByBoxId) delete pState.resultArtifactByBoxId[comparisonBoxId];
+	}
+	pending.phase = 'committed';
+	pending.committedState = captureSqlComparisonMutationSnapshot(comparison, comparisonBoxId);
+	try { schedulePersist(); } catch (error) { console.error('[kusto]', error); }
+	acknowledgeSqlComparisonAdmission('committed', requestId, sourceBoxId, comparisonBoxId, true);
+}
+
+function rollbackSqlComparisonAdmission(message: any): void {
+	const requestId = String(message?.requestId || '').trim();
+	const sourceBoxId = String(message?.sourceBoxId || '').trim();
+	const comparisonBoxId = String(message?.comparisonBoxId || '').trim();
+	const completed = requestId ? completedSqlComparisonRollbackByRequestId.get(requestId) : undefined;
+	if (completed) {
+		acknowledgeSqlComparisonAdmission('rolledBack', requestId, sourceBoxId, comparisonBoxId,
+			completed.sourceBoxId === sourceBoxId && completed.comparisonBoxId === comparisonBoxId);
+		return;
+	}
+	const completedAdmission = requestId ? completedSqlComparisonAdmissionByRequestId.get(requestId) : undefined;
+	if (completedAdmission) {
+		acknowledgeSqlComparisonAdmission('rolledBack', requestId, sourceBoxId, comparisonBoxId, false);
+		return;
+	}
+	const pending = requestId
+		? pendingSqlComparisonAdmissionByRequestId.get(requestId)
+		: undefined;
+	if (!pending || pending.sourceBoxId !== sourceBoxId || pending.comparisonBoxId !== comparisonBoxId) {
+		acknowledgeSqlComparisonAdmission('rolledBack', requestId, sourceBoxId, comparisonBoxId, false);
+		return;
+	}
+	const comparison = __kustoGetSqlSectionElement(comparisonBoxId);
+	const expectedState = pending.phase === 'proposed' ? pending.initialState
+		: pending.phase === 'completed' ? pending.completedState
+			: pending.committedState;
+	const stateUnchanged = !!comparison
+		&& sqlComparisonMutationSnapshotMatches(comparison, comparisonBoxId, expectedState);
+	if (pending.mode === 'created') {
+		const detached = detachSqlComparisonForAdmissionRollback(comparisonBoxId, sourceBoxId);
+		if (detached && stateUnchanged) removeSqlBox(comparisonBoxId);
+		else comparison?.removeAttribute?.(SQL_COMPARISON_ADMISSION_ATTRIBUTE);
+	} else if (pending.phase !== 'proposed' && comparison && stateUnchanged) {
+		comparison.setQuery?.(pending.initialState.query);
+		if (pending.initialState.hadResultJson) {
+			pState.queryResultJsonByBoxId[comparisonBoxId] = pending.initialState.resultJson!;
+		} else {
+			delete pState.queryResultJsonByBoxId[comparisonBoxId];
+		}
+		if (pending.initialState.hadResultArtifact) {
+			pState.resultArtifactByBoxId[comparisonBoxId] = pending.initialState.resultArtifact!;
+		} else {
+			delete pState.resultArtifactByBoxId[comparisonBoxId];
+		}
+	}
+	comparison?.setComparisonPersistenceSnapshot?.(undefined);
+	comparison?.setComparisonAdmissionPending?.(false);
+	clearPendingSqlComparisonAdmission(pending);
+	try { schedulePersist('sql-comparison-rollback', true); } catch (error) { console.error('[kusto]', error); }
+	completedSqlComparisonRollbackByRequestId.set(requestId, { sourceBoxId, comparisonBoxId });
+	acknowledgeSqlComparisonAdmission('rolledBack', requestId, sourceBoxId, comparisonBoxId, true);
+}
+
+function finalizeSqlComparisonAdmission(message: any): void {
+	const requestId = String(message?.requestId || '').trim();
+	const sourceBoxId = String(message?.sourceBoxId || '').trim();
+	const comparisonBoxId = String(message?.comparisonBoxId || '').trim();
+	const pending = requestId ? pendingSqlComparisonAdmissionByRequestId.get(requestId) : undefined;
+	if (!pending || pending.sourceBoxId !== sourceBoxId || pending.comparisonBoxId !== comparisonBoxId) {
+		acknowledgeSqlComparisonAdmission('finalized', requestId, sourceBoxId, comparisonBoxId, false);
+		return;
+	}
+	const comparison = __kustoGetSqlSectionElement(comparisonBoxId);
+	const stateUnchanged = !!comparison && sqlComparisonMutationSnapshotMatches(
+		comparison, comparisonBoxId, pending.committedState,
+	);
+	if (pending.phase === 'finalized') {
+		acknowledgeSqlComparisonAdmission('finalized', requestId, sourceBoxId, comparisonBoxId, stateUnchanged);
+		return;
+	}
+	if (pending.phase !== 'committed' || !stateUnchanged) {
+		acknowledgeSqlComparisonAdmission('finalized', requestId, sourceBoxId, comparisonBoxId, false);
+		return;
+	}
+	pending.phase = 'finalized';
+	try { clearTimeout(pending.timer); } catch { /* ignore */ }
+	acknowledgeSqlComparisonAdmission('finalized', requestId, sourceBoxId, comparisonBoxId, true);
+}
+
+function completeSqlComparisonAdmission(message: any): void {
+	const requestId = String(message?.requestId || '').trim();
+	const sourceBoxId = String(message?.sourceBoxId || '').trim();
+	const comparisonBoxId = String(message?.comparisonBoxId || '').trim();
+	const completed = requestId ? completedSqlComparisonAdmissionByRequestId.get(requestId) : undefined;
+	if (completed) {
+		acknowledgeSqlComparisonAdmission('completed', requestId, sourceBoxId, comparisonBoxId,
+			completed.pending.sourceBoxId === sourceBoxId && completed.pending.comparisonBoxId === comparisonBoxId);
+		return;
+	}
+	const pending = requestId ? pendingSqlComparisonAdmissionByRequestId.get(requestId) : undefined;
+	if (!pending || pending.phase !== 'finalized'
+		|| pending.sourceBoxId !== sourceBoxId || pending.comparisonBoxId !== comparisonBoxId) {
+		acknowledgeSqlComparisonAdmission('completed', requestId, sourceBoxId, comparisonBoxId, false);
+		return;
+	}
+	const comparison = __kustoGetSqlSectionElement(comparisonBoxId);
+	if (!comparison || !sqlComparisonMutationSnapshotMatches(comparison, comparisonBoxId, pending.committedState)) {
+		acknowledgeSqlComparisonAdmission('completed', requestId, sourceBoxId, comparisonBoxId, false);
+		return;
+	}
+	pending.phase = 'completed';
+	clearPendingSqlComparisonAdmission(pending);
+	if (pending.mode === 'created') comparison?.removeAttribute?.(SQL_COMPARISON_ADMISSION_ATTRIBUTE);
+	comparison?.setComparisonPersistenceSnapshot?.(undefined);
+	comparison?.setComparisonAdmissionPending?.(false);
+	if (pending.mode === 'reused') {
+		retireResultsStateForRerun(comparisonBoxId);
+		comparison?.clearResults?.();
+		unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(comparisonBoxId));
+	}
+	pending.completedState = captureSqlComparisonMutationSnapshot(comparison, comparisonBoxId);
+	try { schedulePersist(); } catch (error) { console.error('[kusto]', error); }
+	completedSqlComparisonAdmissionByRequestId.set(requestId, { pending });
+	acknowledgeSqlComparisonAdmission('completed', requestId, sourceBoxId, comparisonBoxId, true);
+}
+
+function releaseSqlComparisonAdmissionProof(message: any): void {
+	const requestId = String(message?.requestId || '').trim();
+	const sourceBoxId = String(message?.sourceBoxId || '').trim();
+	const comparisonBoxId = String(message?.comparisonBoxId || '').trim();
+	if (!requestId || !sourceBoxId || !comparisonBoxId) return;
+	if (message.outcome === 'completed') {
+		const completed = completedSqlComparisonAdmissionByRequestId.get(requestId);
+		if (completed?.pending.sourceBoxId === sourceBoxId
+			&& completed.pending.comparisonBoxId === comparisonBoxId) {
+			completedSqlComparisonAdmissionByRequestId.delete(requestId);
+		}
+		return;
+	}
+	if (message.outcome === 'rolledBack') {
+		const rolledBack = completedSqlComparisonRollbackByRequestId.get(requestId);
+		if (rolledBack?.sourceBoxId === sourceBoxId && rolledBack.comparisonBoxId === comparisonBoxId) {
+			completedSqlComparisonRollbackByRequestId.delete(requestId);
+		}
+	}
+}
+
+function stageSqlComparisonAdmission(
+	requestId: string,
+	sourceBoxId: string,
+	comparisonBoxId: string,
+	query: string,
+	mode: 'created' | 'reused',
+): boolean {
+	if (pendingSqlComparisonAdmissionByRequestId.has(requestId)
+		|| pendingSqlComparisonAdmissionRequestByBoxId.has(comparisonBoxId)) return false;
+	const comparison = __kustoGetSqlSectionElement(comparisonBoxId);
+	if (!comparison) return true;
+	if (mode === 'created') comparison.setAttribute(SQL_COMPARISON_ADMISSION_ATTRIBUTE, requestId);
+	comparison.setComparisonAdmissionPending?.(true);
+	const persistenceSnapshot = mode === 'reused' ? comparison.serialize?.() : undefined;
+	const initialState = captureSqlComparisonMutationSnapshot(comparison, comparisonBoxId);
+	if (mode === 'reused') comparison.setComparisonPersistenceSnapshot?.(persistenceSnapshot);
+	let pending!: PendingSqlComparisonAdmission;
+	const timer = setTimeout(() => {
+		if (pendingSqlComparisonAdmissionByRequestId.get(requestId) !== pending) return;
+		rollbackSqlComparisonAdmission({ requestId, sourceBoxId, comparisonBoxId });
+	}, 25_000);
+	pending = {
+		requestId, sourceBoxId, comparisonBoxId, query, mode, phase: 'proposed',
+		initialState, timer,
+	};
+	pendingSqlComparisonAdmissionByRequestId.set(requestId, pending);
+	pendingSqlComparisonAdmissionRequestByBoxId.set(comparisonBoxId, requestId);
+	return true;
+}
+
+window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
+	for (const pending of [...pendingSqlComparisonAdmissionByRequestId.values()]) {
+		const message = {
+			requestId: pending.requestId,
+			sourceBoxId: pending.sourceBoxId,
+			comparisonBoxId: pending.comparisonBoxId,
+		};
+		if (pending.phase === 'finalized') completeSqlComparisonAdmission(message);
+		else rollbackSqlComparisonAdmission(message);
+	}
+	for (const [publicationId, staged] of [...stagedKustoPublications]) {
+		try { clearTimeout(staged.timer); } catch { /* ignore */ }
+		stagedKustoPublications.delete(publicationId);
+		acknowledgeKustoPublication({ publicationId }, false, 'applied');
+	}
+});
+
 const __kustoDispatchHostMessage = async (message: any) => {
 	message = (message && typeof message === 'object') ? message : {};
+	const incomingType = String(message.type || '');
+	if (pState.documentRuntimeActive === false) {
+		if (incomingType === 'kustoPublicationStage') {
+			acknowledgeKustoPublication(message, false, 'staged');
+			return;
+		}
+		if (incomingType === 'kustoPublicationCommit' || incomingType === 'kustoPublicationRevoke') {
+			acknowledgeKustoPublication(message, false, 'applied');
+			return;
+		}
+		const recoveryMessages = new Set([
+			'documentData', 'persistenceMode', 'requestFinalPersist', 'persistDocumentAck',
+			'settingsUpdate', 'sqlComparisonAdmissionRollback', 'sqlComparisonAdmissionComplete',
+			'sqlComparisonAdmissionRelease',
+		]);
+		if (!recoveryMessages.has(incomingType)) {
+			const requestId = String(message.requestId || '');
+			const invalidRuntime = pState.documentMutationAllowed === false;
+			if (incomingType === 'requestToolState' && requestId) {
+				postMessageToHost({
+					type: 'toolStateResponse', requestId, sections: [],
+					error: invalidRuntime
+						? 'This document is invalid and its retained sections are non-executable.'
+						: 'This document is still loading and has no executable sections yet.',
+				} as any);
+			} else if ((incomingType.startsWith('tool') || incomingType === 'updateDevNotes') && requestId) {
+				postMessageToHost({
+					type: 'toolResponse', requestId, result: { success: false },
+					error: invalidRuntime
+						? 'This document is invalid and its retained sections are read-only.'
+						: 'This document is still loading and cannot accept mutations yet.',
+				});
+			}
+			return;
+		}
+	}
 	if (message.type === 'kustoPublicationStage') {
 		const publicationId = String(message.publicationId || '').trim();
 		const deadline = Number(message.publicationDeadline);
@@ -1181,6 +1582,24 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
+		case 'sqlComparisonAdmission':
+			try { applySqlComparisonAdmissionDecision(message); } catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlComparisonAdmissionCommit':
+			try { commitSqlComparisonAdmission(message); } catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlComparisonAdmissionRollback':
+			try { rollbackSqlComparisonAdmission(message); } catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlComparisonAdmissionFinalize':
+			try { finalizeSqlComparisonAdmission(message); } catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlComparisonAdmissionComplete':
+			try { completeSqlComparisonAdmission(message); } catch (e) { console.error('[kusto]', e); }
+			break;
+		case 'sqlComparisonAdmissionRelease':
+			try { releaseSqlComparisonAdmissionProof(message); } catch (e) { console.error('[kusto]', e); }
+			break;
 		case 'ensureComparisonBox':
 			try {
 				const boxId = String(message.boxId || '');
@@ -1192,7 +1611,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const sourceSection = __kustoGetQuerySectionElement(boxId);
 				if (sourceSection && sourceSection.admitKustoCopilotMessage?.(message) !== true) {
 					postMessageToHost({
-						type: 'comparisonBoxEnsured', requestId, sourceBoxId: boxId, comparisonBoxId: '',
+						type: 'comparisonBoxEnsured', engine: 'kusto', requestId, sourceBoxId: boxId, comparisonBoxId: '',
 						...(hasKustoCopilotRequestIdentity(message) ? {
 							boxId: message.boxId,
 							copilotRequestId: message.copilotRequestId,
@@ -1203,19 +1622,99 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					break;
 				}
 				let comparisonBoxId = '';
-				try {
-					comparisonBoxId = await optimizeQueryWithCopilot(boxId, query, { skipExecute: true, agentTouched: true });
-				} catch (e) { console.error('[kusto]', e); }
+				if (message.engine === 'sql') {
+					let comparisonAdmissionMode: 'created' | 'reused' | undefined;
+					const sourceSql = __kustoGetSqlSectionElement(boxId);
+					if (optimizationMetadataByBoxId[boxId]?.isComparison === true) {
+						postMessageToHost({
+							type: 'comparisonBoxEnsured', engine: 'sql', requestId,
+							sourceBoxId: boxId, comparisonBoxId: '',
+						});
+						break;
+					}
+					const sourceSectionInstanceId = String(message.sourceSectionInstanceId || '').trim();
+					const sourceTargetGeneration = Number(message.sourceTargetGeneration);
+					const sourceIdentityMatches = !!sourceSql && !!sourceSectionInstanceId
+						&& sourceSql.sqlSession?.instanceId === sourceSectionInstanceId
+						&& Number.isSafeInteger(sourceTargetGeneration)
+						&& sourceSql.sqlSession?.targetGeneration === sourceTargetGeneration;
+					if (sourceIdentityMatches) {
+						const comparisonIds = new Set<string>();
+						const sourceMetadata = optimizationMetadataByBoxId[boxId];
+						if (sourceMetadata?.comparisonBoxId) comparisonIds.add(String(sourceMetadata.comparisonBoxId));
+						for (const [candidateId, metadata] of Object.entries(optimizationMetadataByBoxId || {})) {
+							if ((metadata as any)?.isComparison && String((metadata as any).sourceBoxId || '') === boxId) {
+								comparisonIds.add(candidateId);
+							}
+						}
+						let comparisonCreationAllowed = comparisonIds.size === 0;
+						if (comparisonIds.size === 1) {
+							const existingId = [...comparisonIds][0];
+							const existingSql = __kustoGetSqlSectionElement(existingId);
+							const sameTarget = existingSql
+								&& String(existingSql.getConnectionId?.() || '') === String(sourceSql.getConnectionId?.() || '')
+								&& String(existingSql.getDatabase?.() || '').toLowerCase()
+									=== String(sourceSql.getDatabase?.() || '').toLowerCase();
+							if (sameTarget && !pendingSqlComparisonAdmissionRequestByBoxId.has(existingId)) {
+								comparisonBoxId = existingId;
+								comparisonAdmissionMode = 'reused';
+							} else if (!document.getElementById(existingId)) {
+								removeSqlBox(existingId);
+								comparisonCreationAllowed = true;
+							}
+						}
+						if (!comparisonBoxId && comparisonCreationAllowed) {
+							const comparisonId = `sql_cmp_${requestId.replace(/[^a-zA-Z0-9_-]/g, '_')}`;
+							const creation = createSectionWithCapabilities('sql', {
+								id: comparisonId,
+								name: 'Optimized SQL',
+								query,
+								afterBoxId: boxId,
+								comparisonSourceBoxId: boxId,
+								comparisonAdmissionRequestId: requestId,
+								serverUrl: String(sourceSql.getServerUrl?.() || '') || undefined,
+								connectionIdHint: String(sourceSql.getConnectionId?.() || '') || undefined,
+								database: String(sourceSql.getDatabase?.() || '') || undefined,
+							});
+							if (creation.ok) {
+								comparisonBoxId = creation.sectionId;
+								comparisonAdmissionMode = 'created';
+							}
+						}
+						if (comparisonBoxId && comparisonAdmissionMode
+							&& !stageSqlComparisonAdmission(requestId, boxId, comparisonBoxId, query, comparisonAdmissionMode)) {
+							if (comparisonAdmissionMode === 'created') removeSqlBox(comparisonBoxId);
+							comparisonBoxId = '';
+						}
+						if (comparisonBoxId) {
+							markSectionAgentTouched(comparisonBoxId);
+						}
+					}
+				} else {
+					try {
+						comparisonBoxId = await optimizeQueryWithCopilot(boxId, query, { skipExecute: true, agentTouched: true });
+					} catch (e) { console.error('[kusto]', e); }
+				}
 				try {
 					const comparisonSection = __kustoGetQuerySectionElement(comparisonBoxId);
+					const comparisonSqlSection = __kustoGetSqlSectionElement(comparisonBoxId);
 					const lifecycle = comparisonSection?.getSchemaLifecycleIdentity?.();
 					const connectionId = String(comparisonSection?.getConnectionId?.() || '');
 					const database = String(comparisonSection?.getDatabase?.() || '');
 					postMessageToHost({
 						type: 'comparisonBoxEnsured',
+						engine: message.engine === 'sql' ? 'sql' : 'kusto',
 						requestId,
 						sourceBoxId: boxId,
 						comparisonBoxId: String(comparisonBoxId || ''),
+						...(message.engine === 'sql' ? {
+							sourceSectionInstanceId: String(message.sourceSectionInstanceId || ''),
+							sourceTargetGeneration: Number(message.sourceTargetGeneration),
+							comparisonSectionInstanceId: String(comparisonSqlSection?.sqlSession?.instanceId || ''),
+							comparisonTargetGeneration: Number(comparisonSqlSection?.sqlSession?.targetGeneration),
+							comparisonConnectionId: String(comparisonSqlSection?.getConnectionId?.() || ''),
+							comparisonDatabase: String(comparisonSqlSection?.getDatabase?.() || ''),
+						} : {}),
 						...(hasKustoCopilotRequestIdentity(message) ? {
 							boxId: message.boxId,
 							copilotRequestId: message.copilotRequestId,
@@ -1245,33 +1744,23 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						}
 					} catch (e) { console.error('[kusto]', e); }
 						try {
-							if (typeof message.documentKind === 'string') {
-								pState.documentKind = String(message.documentKind);
-								try {
-									if (document && document.body && document.body.dataset) {
-										document.body.dataset.kustoDocumentKind = String(message.documentKind);
-									}
-								} catch (e) { console.error('[kusto]', e); }
-							}
-						} catch (e) { console.error('[kusto]', e); }
-						try {
-							if (Array.isArray(message.allowedSectionKinds)) {
-								pState.allowedSectionKinds = message.allowedSectionKinds.map((k: any) => String(k));
-							}
-							if (typeof message.defaultSectionKind === 'string') {
-								pState.defaultSectionKind = String(message.defaultSectionKind);
-							}
+							applyDocumentCapabilityProjection(message);
+							try {
+								if (document && document.body && document.body.dataset) {
+									document.body.dataset.kustoDocumentKind = pState.documentKind;
+								}
+							} catch (e) { console.error('[kusto]', e); }
 							if (typeof message.compatibilitySingleKind === 'string') {
 								pState.compatibilitySingleKind = String(message.compatibilitySingleKind);
-							}
-							if (typeof message.upgradeRequestType === 'string') {
-								pState.upgradeRequestType = String(message.upgradeRequestType);
 							}
 							if (typeof message.compatibilityTooltip === 'string') {
 								pState.compatibilityTooltip = String(message.compatibilityTooltip);
 							}
 							if (typeof message.firstSectionPinned === 'boolean') {
 								pState.firstSectionPinned = message.firstSectionPinned;
+							}
+							if (typeof message.documentMutationAllowed === 'boolean') {
+								pState.documentMutationAllowed = message.documentMutationAllowed;
 							}
 							if (typeof message.htmlPowerBiCompatibilityCheckEnabled === 'boolean') {
 								__kustoSetHtmlPowerBiCompatibilityCheckEnabled(message.htmlPowerBiCompatibilityCheckEnabled);
@@ -1537,12 +2026,29 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			break;
 		case 'updateDevNotes': {
 			// Mutate passthrough dev notes sections from extension host (Copilot / agent tool calls)
+			const mutationAllowed = isDocumentMutationAllowed();
+			if (!mutationAllowed || pState.compatibilityMode) {
+				if (message.requestId) {
+					postMessageToHost({
+						type: 'toolResponse', requestId: message.requestId, result: { success: false },
+						error: !mutationAllowed
+							? 'This document is read-only and cannot accept development notes.'
+							: 'Development notes require a companion metadata file. Upgrade this compatibility document first.',
+					});
+				}
+				break;
+			}
+			let mutationError = '';
+			let mutated = false;
 			try {
 				if (!Array.isArray(pState.devNotesSections)) {
 					pState.devNotesSections = [];
 				}
 				const action = String(message.action || '');
 				if (action === 'add') {
+					if (!message.entry || typeof message.entry !== 'object') {
+						mutationError = 'A development note entry is required.';
+					} else {
 					// Ensure a single devnotes section exists
 					let dn = pState.devNotesSections.find((s: any) => s && s.type === 'devnotes');
 					if (!dn) {
@@ -1550,31 +2056,70 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						pState.devNotesSections.push(dn);
 					}
 					if (!Array.isArray(dn.entries)) dn.entries = [];
-					// If superseding an existing entry, remove it first
-					if (message.supersedes) {
-						const sid = String(message.supersedes);
-						dn.entries = dn.entries.filter((e: any) => e && String(e.id) !== sid);
-					}
-					if (message.entry && typeof message.entry === 'object') {
+					const entryId = String((message.entry as Record<string, unknown>).id || '').trim();
+					const duplicate = entryId && pState.devNotesSections.some((section: any) =>
+						Array.isArray(section?.entries) && section.entries.some((entry: any) => String(entry?.id || '') === entryId));
+					if (duplicate) mutationError = `Development note "${entryId}" already exists.`;
+					else {
 						dn.entries.push(message.entry);
+						mutated = true;
+					}
+					}
+				} else if (action === 'supersede') {
+					const supersededId = String(message.supersededId || message.supersedes || '').trim();
+					if (!supersededId || !message.entry || typeof message.entry !== 'object') {
+						mutationError = 'A superseded note ID and replacement entry are required.';
+					} else {
+						const matches: Array<{ section: any; index: number }> = [];
+						for (const section of pState.devNotesSections) {
+							if (!Array.isArray(section?.entries)) continue;
+							section.entries.forEach((entry: any, index: number) => {
+								if (String(entry?.id || '') === supersededId) matches.push({ section, index });
+							});
+						}
+						const replacementId = String((message.entry as Record<string, unknown>).id || '').trim();
+						const duplicateReplacement = replacementId && pState.devNotesSections.some((section: any) =>
+							Array.isArray(section?.entries) && section.entries.some((entry: any) =>
+								String(entry?.id || '') === replacementId && String(entry?.id || '') !== supersededId));
+						if (matches.length !== 1) mutationError = `Development note "${supersededId}" was not found uniquely.`;
+						else if (duplicateReplacement) mutationError = `Development note "${replacementId}" already exists.`;
+						else {
+							matches[0].section.entries.splice(matches[0].index, 1, message.entry);
+							mutated = true;
+						}
 					}
 				} else if (action === 'remove') {
 					const noteId = String(message.noteId || '');
+					const matches: Array<{ section: any; index: number }> = [];
 					if (noteId) {
-						for (const dn of pState.devNotesSections) {
-							if (dn && Array.isArray(dn.entries)) {
-								dn.entries = dn.entries.filter((e: any) => e && String(e.id) !== noteId);
-							}
+						for (const section of pState.devNotesSections) {
+							if (!Array.isArray(section?.entries)) continue;
+							section.entries.forEach((entry: any, index: number) => {
+								if (String(entry?.id || '') === noteId) matches.push({ section, index });
+							});
 						}
 					}
+					if (matches.length === 1) {
+						matches[0].section.entries.splice(matches[0].index, 1);
+						mutated = true;
+					} else mutationError = `Development note "${noteId}" was not found uniquely.`;
+				} else {
+					mutationError = `Unknown development note action "${action}".`;
 				}
-				// Persist after mutation
-				try { schedulePersist('devnotes-update'); } catch (e) { console.error('[kusto]', e); }
-			} catch (e) { console.error('[kusto]', e); }
+				if (mutated) {
+					try { schedulePersist('devnotes-update'); } catch (e) { console.error('[kusto]', e); }
+				}
+			} catch (e) {
+				console.error('[kusto]', e);
+				mutationError = e instanceof Error ? e.message : String(e);
+			}
 			// Respond to extension host if a requestId was provided
 			try {
 				if (message.requestId) {
-					postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: true } });
+					postMessageToHost({
+						type: 'toolResponse', requestId: message.requestId, result: { success: mutated },
+						...(mutated ? {} : { error: mutationError || 'Development note update was rejected.' }),
+					});
 				}
 			} catch (e) { console.error('[kusto]', e); }
 			break;
@@ -1750,6 +2295,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try { postMessageToHost({ type: 'showInfo', message: 'Failed to import connections: ' + (message && message.error ? String(message.error) : 'Unknown error') }); } catch (e) { console.error('[kusto]', e); }
 			break;
 		case 'queryResult':
+			settleSqlTerminalExecution(message);
 			if (message.boxId && sqlPolicyBlockedBoxIds.has(String(message.boxId))) {
 				const blockedId = String(message.boxId);
 				const blockedMetadata = optimizationMetadataByBoxId[blockedId];
@@ -1797,7 +2343,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					} catch (e) { console.error('[kusto]', e); }
 					resultAccepted = displayResultForBox(message.result, message.boxId, {
 						label: 'Results', showExecutionTime: true,
-						...(message.executionId && !sqlDerivedComparison ? { executionId: String(message.executionId) } : {}),
+						...(message.executionId && (!sqlDerivedComparison || __kustoGetSqlSectionElement(String(message.boxId || '')))
+							? { executionId: String(message.executionId) }
+							: {}),
 						...(artifactPublication ? { artifactPublication } : {}),
 					}) !== false;
 				} else {
@@ -1859,6 +2407,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			acknowledgeKustoPublication(message, true);
 			break;
 		case 'queryError':
+			settleSqlTerminalExecution(message);
 			try {
 				if (message && message.boxId) {
 					pState.lastExecutedBox = message.boxId;
@@ -1880,7 +2429,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						&& message.engine !== 'kusto';
 					__kustoRenderErrorUx(
 						boxId, err, clientActivityId,
-						message.executionId && !sqlDerivedComparison ? String(message.executionId) : undefined,
+						message.executionId && (!sqlDerivedComparison || __kustoGetSqlSectionElement(boxId))
+							? String(message.executionId)
+							: undefined,
 					);
 				} else {
 					console.error('Query error (no error renderer available):', err);
@@ -1894,6 +2445,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			acknowledgeKustoPublication(message, true);
 			break;
 		case 'queryCancelled':
+			settleSqlTerminalExecution(message);
 			try {
 				if (message.boxId) {
 					pState.lastExecutedBox = message.boxId;
@@ -2664,13 +3216,15 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 				
 				// Create a new query box below the source box for comparison
-				const comparisonBoxId = addQueryBox({ 
+				const comparisonCreation = createSectionWithCapabilities('query', {
 					id: 'query_opt_' + Date.now(), 
 					initialQuery: prettifiedOptimizedQuery,
 					isComparison: true,
 					comparisonSourceBoxId: sourceBoxId,
 					defaultResultsVisible: false
 				});
+				if (!comparisonCreation.ok) throw new Error(comparisonCreation.error);
+				const comparisonBoxId = comparisonCreation.sectionId;
 				if (!comparisonBoxId) throw new Error('Failed to create optimized comparison section.');
 				createdComparisonBoxId = comparisonBoxId;
 				markSectionAgentTouched(comparisonBoxId);
@@ -3105,7 +3659,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 								ownerToken: String(sqlEl?.getCopilotOwnerToken?.() || ''),
 							};
 						}
-						if (section?.type !== 'query' && section?.type !== 'copilotQuery') return section;
+						if (canonicalSectionKind(section?.type) !== 'query') return section;
 						const boxId = String(section.id || '').trim();
 						const connectionId = boxId ? String(__kustoGetConnectionId(boxId) || '').trim() : '';
 						const database = boxId ? String(__kustoGetDatabase(boxId) || section.database || '').trim() : '';
@@ -3151,93 +3705,48 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			try {
 				const requestId = String(message.requestId || '');
 				const input = message.input || {};
-				const sectionType = String(input.type || '').toLowerCase();
-				let sectionId = '';
-				let success = false;
-				
-				try {
-					if (sectionType === 'query') {
-						const queryOpts: any = {};
-						if (input.query) {
-							queryOpts.initialQuery = String(input.query);
-						}
-						sectionId = addQueryBox(queryOpts);
-						success = !!sectionId;
-						// Set section name if provided
-						if (sectionId && input.name) {
-							__kustoSetSectionName(sectionId, input.name);
-						}
-						if (sectionId && (input.clusterUrl || input.connectionId || input.database)) {
-							const applied = applyToolKustoTarget(sectionId, input);
-							if (!applied.success) throw new Error(applied.error);
-						}
-					} else if (sectionType === 'markdown') {
-						// Pass text as option so it's available when the editor initializes
-						// Accept both 'text' and 'content' - LLMs may use either property name
-						const textValue = input.text ?? input.content;
-						const markdownOptions = (textValue !== undefined) ? { text: String(textValue) } : undefined;
-						sectionId = addMarkdownBox(markdownOptions);
-						success = !!sectionId;
-						// Set section name if provided
-						if (sectionId && input.name) {
-							__kustoSetSectionName(sectionId, input.name);
-						}
-					} else if (sectionType === 'chart') {
-						sectionId = addChartBox();
-						success = !!sectionId;
-						// Set section name if provided
-						if (sectionId && input.name) {
-							__kustoSetSectionName(sectionId, input.name);
-						}
-					} else if (sectionType === 'transformation') {
-						sectionId = addTransformationBox();
-						success = !!sectionId;
-						// Set section name if provided
-						if (sectionId && input.name) {
-							__kustoSetSectionName(sectionId, input.name);
-						}
-					} else if (sectionType === 'url') {
-						sectionId = addUrlBox();
-						success = !!sectionId;
-						// Set section name if provided
-						if (sectionId && input.name) {
-							__kustoSetSectionName(sectionId, input.name);
-						}
-					} else if (sectionType === 'python') {
-						sectionId = addPythonBox();
-						success = !!sectionId;
-						// Set section name if provided
-						if (sectionId && input.name) {
-							__kustoSetSectionName(sectionId, input.name);
-						}
-					} else if (sectionType === 'html') {
-						const htmlOpts: any = {};
-						if (input.code) {
-							htmlOpts.code = String(input.code);
-						}
-						sectionId = addHtmlBox(htmlOpts);
-						success = !!sectionId;
-						if (sectionId && input.name) {
-							__kustoSetSectionName(sectionId, input.name);
-						}
-					} else if (sectionType === 'sql') {
-						const sqlOpts: any = {};
-						if (input.query) {
-							sqlOpts.query = String(input.query);
-						}
-						sectionId = addSqlBox(sqlOpts);
-						success = !!sectionId;
-						if (sectionId && input.name) {
-							__kustoSetSectionName(sectionId, input.name);
-						}
+				const requestedSectionType = String(input.type || '').trim();
+				const admission = getAddSectionAdmission(
+					canonicalSectionKind(requestedSectionType) ?? requestedSectionType.toLowerCase(),
+				);
+				if (!admission.ok) {
+					postMessageToHost({
+						type: 'toolResponse', requestId, result: { sectionId: '', success: false }, error: admission.error,
+					});
+					break;
+				}
+				const sectionType = admission.sectionKind;
+				const textValue = input.text ?? input.content;
+				const creationOptions: Record<string, unknown> = sectionType === 'query'
+					? { ...(input.query ? { initialQuery: String(input.query) } : {}) }
+					: sectionType === 'sql'
+						? { ...(input.query ? { query: String(input.query) } : {}) }
+						: sectionType === 'markdown'
+							? { ...(textValue !== undefined ? { text: String(textValue) } : {}) }
+							: sectionType === 'html'
+								? { ...(input.code ? { code: String(input.code) } : {}) }
+								: sectionType === 'url'
+									? { ...(input.url ? { url: String(input.url) } : {}) }
+									: {};
+				const creation = createSectionWithCapabilities(sectionType, creationOptions);
+				const sectionId = creation.ok ? creation.sectionId : '';
+				let success = creation.ok;
+				let creationError = creation.ok ? undefined : creation.error;
+				if (sectionId && input.name) __kustoSetSectionName(sectionId, input.name);
+				if (success && sectionType === 'query' && (input.clusterUrl || input.connectionId || input.database)) {
+					const applied = applyToolKustoTarget(sectionId, input);
+					if (!applied.success) {
+						success = false;
+						creationError = applied.error;
 					}
-				} catch (err: any) {
-					console.error('[Kusto Tools] Error adding section:', err);
 				}
 				
 				if (success && sectionId) { markSectionAgentTouched(sectionId); }
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
-				postMessageToHost({ type: 'toolResponse', requestId, result: { sectionId, success }, error: success ? undefined : 'Failed to add section' });
+				postMessageToHost({
+					type: 'toolResponse', requestId, result: { sectionId, success },
+					error: success ? undefined : creationError || 'Failed to add section',
+				});
 			} catch (err: any) {
 				console.error('[Kusto Tools] Error in toolAddSection:', err);
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
@@ -3250,17 +3759,23 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const requestId = String(message.requestId || '');
 				const sectionId = String(message.sectionId || '');
 				let success = false;
+				let removalError = 'Section not found';
 				
 				try {
 					if (!sectionId) {
 						success = false;
+					} else if (isPinnedFirstSection(sectionId)) {
+						removalError = 'The first section is pinned and cannot be removed from a compatibility document.';
 					} else {
 						const sectionEl = document.getElementById(sectionId) as any;
 						const tagName = String(sectionEl?.tagName || '').toLowerCase();
 						let sectionType = '';
-						try { sectionType = String(sectionEl?.serialize?.()?.type || '').toLowerCase(); } catch { /* use tag/prefix fallback */ }
+						try {
+							const serializedType = String(sectionEl?.serialize?.()?.type || '');
+							sectionType = canonicalSectionKind(serializedType) ?? serializedType.toLowerCase();
+						} catch { /* use tag/prefix fallback */ }
 						if (!sectionType) {
-							if (tagName === 'kw-query-section' || sectionId.startsWith('query_') || sectionId.startsWith('copilotQuery_')) sectionType = 'query';
+							if (tagName === 'kw-query-section' || sectionId.startsWith('query_')) sectionType = 'query';
 							else if (tagName === 'kw-chart-section' || sectionId.startsWith('chart_')) sectionType = 'chart';
 							else if (tagName === 'kw-transformation-section' || sectionId.startsWith('transformation_')) sectionType = 'transformation';
 							else if (tagName === 'kw-markdown-section' || sectionId.startsWith('markdown_')) sectionType = 'markdown';
@@ -3269,7 +3784,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							else if (tagName === 'kw-html-section' || sectionId.startsWith('html_')) sectionType = 'html';
 							else if (tagName === 'kw-sql-section' || sectionId.startsWith('sql_')) sectionType = 'sql';
 						}
-						if (sectionType === 'query' || sectionType === 'copilotquery') { removeQueryBox(sectionId); success = true; }
+						if (sectionType === 'query') { removeQueryBox(sectionId); success = true; }
 						else if (sectionType === 'chart') { removeChartBox(sectionId); success = true; }
 						else if (sectionType === 'transformation') { removeTransformationBox(sectionId); success = true; }
 						else if (sectionType === 'markdown') { removeMarkdownBox(sectionId); success = true; }
@@ -3289,8 +3804,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					console.error('[Kusto Tools] Error removing section:', err);
 				}
 				
-				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Section not found' });
-				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
+				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : removalError });
+				if (success) {
+					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
+				}
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -3930,7 +4447,12 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						if (sections.length > 0) {
 							sectionId = sections[0].id;
 						} else {
-							sectionId = addQueryBox();
+							const creation = createSectionWithCapabilities('query');
+							if (!creation.ok) {
+								postMessageToHost({ type: 'toolResponse', requestId, result: { success: false }, error: creation.error });
+								return;
+							}
+							sectionId = creation.sectionId;
 							markSectionAgentTouched(sectionId);
 						}
 					}
@@ -4459,10 +4981,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				// Update all section elements in the DOM.
 				const container = document.getElementById('queries-container');
 				if (container) {
-					const sectionPrefixes = ['query_', 'copilotQuery_', 'chart_', 'transformation_', 'markdown_', 'python_', 'url_', 'html_', 'sql_'];
 					for (const child of Array.from(container.children)) {
 						const id = child.id || '';
-						if (!id || !sectionPrefixes.some(p => id.startsWith(p))) continue;
+						if (!id) continue;
 						const el = child as any;
 						const shell = el.shadowRoot?.querySelector('kw-section-shell');
 						const status = changedById.get(id) || '';

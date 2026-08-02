@@ -13,6 +13,7 @@ import { EditorCursorStatusBar, type EditorCursorStatusPayload } from './editorC
 import { EmbeddedTutorialWebviewHost, EmbeddedTutorialWebviewRegistry } from './tutorials/embeddedTutorialWebviewHost';
 import { getWorkbenchLogger } from './workbenchLogger';
 import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
+import { addableSectionKindsForDocument, canonicalAddableSectionKind, defaultSectionKindForDocument } from '../shared/documentSectionCapabilities';
 
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
@@ -358,8 +359,8 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				documentUri: document.uri.toString(),
 				documentKind: 'md',
 				compatibilitySingleKind: 'markdown',
-				allowedSectionKinds: [],
-				defaultSectionKind: 'markdown',
+				allowedSectionKinds: addableSectionKindsForDocument('mdx'),
+				defaultSectionKind: defaultSectionKindForDocument('mdx'),
 				upgradeRequestType: 'requestUpgradeToMdx',
 				compatibilityTooltip: 'This file is in .md mode. Click to upgrade to .mdx and enable sections.'
 			});
@@ -430,8 +431,8 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 				documentUri: document.uri.toString(),
 				documentKind: 'md',
 				compatibilitySingleKind: 'markdown',
-				allowedSectionKinds: [],
-				defaultSectionKind: 'markdown',
+				allowedSectionKinds: addableSectionKindsForDocument('mdx'),
+				defaultSectionKind: defaultSectionKindForDocument('mdx'),
 				upgradeRequestType: 'requestUpgradeToMdx',
 				compatibilityTooltip: 'This file is in .md mode. Click to upgrade to .mdx and enable sections.',
 				state: {
@@ -485,8 +486,8 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 							documentUri: document.uri.toString(),
 							documentKind: 'md',
 							compatibilitySingleKind: 'markdown',
-							allowedSectionKinds: [],
-							defaultSectionKind: 'markdown',
+							allowedSectionKinds: addableSectionKindsForDocument('mdx'),
+							defaultSectionKind: defaultSectionKindForDocument('mdx'),
 							upgradeRequestType: 'requestUpgradeToMdx',
 							compatibilityTooltip: 'This file is in .md mode. Click to upgrade to .mdx and enable sections.'
 						});
@@ -628,7 +629,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 		}
 
 		const choice = await vscode.window.showInformationMessage(
-			'To add sections (Markdown/URL), this file needs to be upgraded to the .mdx format. This is a non-destructive change and it’s easy to go back later.',
+			'To add Markdown, URL, or Transformation sections, this file needs to be upgraded to the .mdx format. This is a non-destructive change and it’s easy to go back later.',
 			{ modal: true },
 			'Upgrade to .mdx'
 		);
@@ -646,7 +647,7 @@ export class MdCompatEditorProvider implements vscode.CustomTextEditorProvider {
 
 		const oldUri = document.uri;
 		const newUri = oldUri.with({ path: oldUri.path.replace(/\.md$/i, '.mdx') });
-		const normalizedAddKind = ['markdown', 'url'].includes(String(addKind)) ? String(addKind) : '';
+		const normalizedAddKind = canonicalAddableSectionKind('mdx', addKind) ?? '';
 
 		const markdownText = document.getText();
 		const file: KqlxFileV1 = {

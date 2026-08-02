@@ -1621,14 +1621,16 @@
           "create",
           "notebook",
           "kqlx",
+          "sqlx",
           "kql",
+          "sql",
           "csl",
           "mdx",
           "markdown"
         ],
         "toolReferenceName": "createKustoFile",
         "displayName": "Create Kusto File",
-        "modelDescription": "Creates a new file for Kusto Workbench. Supports multiple file types: kqlx (Kusto notebook with multiple sections), mdx (markdown-focused notebook), kql/csl (plain Kusto query files), md (markdown files), and kql-sidecar/csl-sidecar (query files with companion .json sidecar files for storing results and metadata). Use this tool when the user wants to start a new file or when no file is currently open. The file will be created and opened in the appropriate Kusto Workbench editor.",
+        "modelDescription": "Creates a new file for Kusto Workbench. Supports multiple file types: kqlx (Kusto notebook with multiple sections), sqlx (SQL notebook), mdx (markdown-focused notebook), kql/csl (plain Kusto query files), md (markdown files), and kql-sidecar/csl-sidecar (query files with companion .json sidecar files for storing results and metadata). Use this tool when the user wants to start a new file or when no file is currently open. The file will be created and opened in the appropriate Kusto Workbench editor.",
         "userDescription": "Create a new Kusto Workbench file (notebook, query, or markdown).",
         "canBeReferencedInPrompt": true,
         "icon": "$(new-file)",
@@ -1639,6 +1641,7 @@
               "type": "string",
               "enum": [
                 "kqlx",
+                "sqlx",
                 "mdx",
                 "kql",
                 "csl",
@@ -1646,7 +1649,7 @@
                 "kql-sidecar",
                 "csl-sidecar"
               ],
-              "description": "The type of file to create: kqlx (Kusto notebook), mdx (markdown notebook), kql (plain query), csl (plain script), md (markdown), kql-sidecar (query + sidecar), csl-sidecar (script + sidecar)"
+              "description": "The type of file to create: kqlx (Kusto notebook), sqlx (SQL notebook), mdx (markdown notebook), kql (plain query), csl (plain script), md (markdown), kql-sidecar (query + sidecar), csl-sidecar (script + sidecar)"
             },
             "filePath": {
               "type": "string",
@@ -1654,7 +1657,7 @@
             },
             "initialContent": {
               "type": "string",
-              "description": "Optional: Initial content for the file (query text for kql/csl, markdown for md/mdx)"
+              "description": "Optional: Initial content for the file (Kusto query for kqlx/kql/csl, SQL query for sqlx, markdown for md/mdx)"
             }
           },
           "required": [

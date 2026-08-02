@@ -26,6 +26,7 @@ import {
 	addHtmlBox, removeHtmlBox, htmlBoxes,
 	addSqlBox, removeSqlBox, sqlBoxes,
 	__kustoGetSqlSectionElement,
+	__kustoWithPinnedSectionRemovalBypass,
 } from './section-factory';
 import { schemaRequestTokenByBoxId } from './kusto-schema-request-state';
 import {
@@ -52,6 +53,15 @@ import { perfMark } from './perf.js';
 import { traceFileOpen } from './file-open-trace.js';
 import { shouldStartKustoSchemaPrewarm } from '../shared/schema-utils.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
+import { canonicalSectionKind } from '../../shared/documentSectionCapabilities.js';
+import {
+	applyDocumentCapabilityProjection,
+	assertProjectedSectionsAllowed,
+	getAddSectionAdmission,
+	getAllowedAddSectionKinds,
+	getDefaultAddSectionKind,
+	resetDocumentCapabilityProjectionForTest,
+} from './document-capabilities.js';
 
 
 const _win = window;
@@ -82,6 +92,7 @@ let __kustoKustoPolicyRevocationGenerations: Record<string, number> = {};
 let __kustoRequiredPolicyRequestId = '';
 let __kustoPersistenceEpoch = 0;
 let __kustoPendingProtectedResultPurge = false;
+export const DOCUMENT_RUNTIME_INVALIDATED_EVENT = 'kusto-document-runtime-invalidated';
 
 function __kustoIsReadOnlyBrowserViewer(): boolean {
 	return (_win as any).__kustoReadOnlyMode === true;
@@ -605,6 +616,15 @@ function __kustoGetDeferredResultJobOwnerState(job: DeferredRestoredResultJob): 
 		const sectionEl = document.getElementById(job.boxId);
 		if (!sectionEl) return 'invalid';
 		const tag = String(sectionEl.tagName || '').toLowerCase();
+		if (job.derivedSourceBoxId) {
+			if (job.derivedSourceBoxId === job.boxId) return 'invalid';
+			if (__kustoHasDeferredResultDependencyCycle(job)) return 'invalid';
+			if (!getCurrentResultArtifact(job.derivedSourceBoxId)) {
+				return __kustoDeferredRestoredResultJobs.some(candidate => (
+					candidate !== job && candidate.boxId === job.derivedSourceBoxId
+				)) ? 'pending' : 'invalid';
+			}
+		}
 		if (__kustoIsReadOnlyBrowserViewer()) {
 			const expectedTag = job.kind === 'sql' ? 'kw-sql-section' : 'kw-query-section';
 			if (tag !== expectedTag) return 'invalid';
@@ -652,15 +672,6 @@ function __kustoGetDeferredResultJobOwnerState(job: DeferredRestoredResultJob): 
 				if (!expectedAccountPartition || currentAccountPartition !== expectedAccountPartition
 					|| !Number.isSafeInteger(expectedRevision) || expectedRevision < 0
 					|| currentRevision !== expectedRevision) return 'invalid';
-			}
-			if (job.derivedSourceBoxId) {
-				if (job.derivedSourceBoxId === job.boxId) return 'invalid';
-				if (__kustoHasDeferredResultDependencyCycle(job)) return 'invalid';
-				if (!getCurrentResultArtifact(job.derivedSourceBoxId)) {
-					return __kustoDeferredRestoredResultJobs.some(candidate => (
-						candidate !== job && candidate.boxId === job.derivedSourceBoxId
-					)) ? 'pending' : 'invalid';
-				}
 			}
 			if (queryExecutionTimers?.[job.boxId]) return 'invalid';
 			return tag === 'kw-query-section' ? 'ready' : 'invalid';
@@ -821,13 +832,20 @@ function __kustoRenderDeferredRestoredResult(job: DeferredRestoredResultJob): vo
 			? __kustoExpectedPersistedProducer(job.resultArtifact, trustedProducer, claimsProducerCapability)
 			: undefined;
 		const persistedPublication: ResultArtifactPublication | undefined = browserReadOnly
-			? {
+			? (job.derivedSourceBoxId ? (trustedDerivedPublication ? {
+				...trustedDerivedPublication,
+				producer: {
+					...trustedDerivedPublication.producer,
+					engine: job.kind === 'sql' ? 'sql' : 'kusto', boxId: job.boxId,
+					query: __kustoCurrentRestoredQueryText(job), producer: 'browser-restored',
+				},
+			} : undefined) : {
 				producer: {
 					engine: job.kind === 'sql' ? 'sql' : 'kusto', boxId: job.boxId,
 					query: __kustoCurrentRestoredQueryText(job), producer: 'browser-restored',
 				},
 				policy: { exportToCsv: true },
-			}
+			})
 			: (trustedProducer
 				? publicationFromPersistedResultArtifact(job.resultArtifact, job.boxId, {
 					...baseExpectedPolicy,
@@ -966,14 +984,12 @@ export function __kustoScheduleHtmlPowerBiCompatibilityCheck(_reason: string = '
 
 export function __kustoApplyDocumentCapabilities() {
 	try {
-		const allowed = Array.isArray(pState.allowedSectionKinds)
-			? pState.allowedSectionKinds.map((k: any) => String(k))
-			: ['query', 'python', 'url', 'html', 'markdown'];
+		const allowed = new Set<string>(getAllowedAddSectionKinds());
 
 		// If no section kinds are allowed, hide the entire add-controls container.
 		const addControlsContainer = document.querySelector('.add-controls') as HTMLElement | null;
 		if (addControlsContainer) {
-			addControlsContainer.style.display = allowed.length === 0 ? 'none' : '';
+			addControlsContainer.style.display = allowed.size === 0 ? 'none' : '';
 		}
 
 		// Update inline buttons visibility.
@@ -983,7 +999,7 @@ export function __kustoApplyDocumentCapabilities() {
 		for (const btn of btns as any) {
 			try {
 				const kind = btn && btn.getAttribute ? String(btn.getAttribute('data-add-kind') || '') : '';
-				const visible = !kind || allowed.includes(kind);
+				const visible = !kind || allowed.has(kind);
 				btn.style.display = visible ? '' : 'none';
 			} catch (e) { console.error('[kusto]', e); }
 		}
@@ -993,7 +1009,7 @@ export function __kustoApplyDocumentCapabilities() {
 		for (const item of dropdownItems as any) {
 			try {
 				const kind = item.getAttribute ? String(item.getAttribute('data-add-kind') || '') : '';
-				const visible = !kind || allowed.includes(kind);
+				const visible = !kind || allowed.has(kind);
 				item.style.display = visible ? '' : 'none';
 			} catch (e) { console.error('[kusto]', e); }
 		}
@@ -1038,19 +1054,76 @@ export function __kustoSetCompatibilityMode(enabled: any) {
 	} catch (e) { console.error('[kusto]', e); }
 }
 
-export function __kustoRequestAddSection(kind: any, afterBoxId?: string) {
-	const k = String(kind || '').trim();
-	if (!k) return;
+export type SectionCreationResult =
+	| Readonly<{ ok: true; sectionId: string }>
+	| Readonly<{ ok: false; error: string }>;
 
-	// Respect allowed section kinds.
+export function createSectionWithCapabilities(kind: unknown, options: Record<string, unknown> = {}): SectionCreationResult {
+	if (!isDocumentMutationAllowed()) {
+		return { ok: false, error: 'This document is read-only and cannot add sections.' };
+	}
+	const admission = getAddSectionAdmission(kind);
+	if (!admission.ok) return admission;
+	if (pState.compatibilityMode) {
+		return {
+			ok: false,
+			error: `Adding a ${admission.sectionKind} section requires upgrading this compatibility file first.`,
+		};
+	}
+
 	try {
-		const allowed = Array.isArray(pState.allowedSectionKinds)
-			? pState.allowedSectionKinds.map((v: any) => String(v))
-			: ['query', 'chart', 'python', 'url', 'html', 'markdown'];
-		if (allowed.length > 0 && !allowed.includes(k)) {
-			return;
+		let sectionId = '';
+		switch (admission.sectionKind) {
+			case 'query': sectionId = addQueryBox(options); break;
+			case 'sql': sectionId = addSqlBox(options); break;
+			case 'chart': sectionId = addChartBox(options); break;
+			case 'transformation': sectionId = addTransformationBox(options); break;
+			case 'markdown': sectionId = addMarkdownBox(options); break;
+			case 'python': sectionId = addPythonBox(options); break;
+			case 'url': sectionId = addUrlBox(options); break;
+			case 'html': sectionId = addHtmlBox(options); break;
 		}
-	} catch (e) { console.error('[kusto]', e); }
+		return sectionId
+			? { ok: true, sectionId }
+			: { ok: false, error: `Failed to create ${admission.sectionKind} section.` };
+	} catch (error) {
+		return { ok: false, error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+function __kustoCreateSectionFromLegacyBridge(kind: unknown, options: unknown): string {
+	const creationOptions = options && typeof options === 'object'
+		? options as Record<string, unknown>
+		: {};
+	const result = createSectionWithCapabilities(kind, creationOptions);
+	return result.ok ? result.sectionId : '';
+}
+
+_win.addQueryBox = options => __kustoCreateSectionFromLegacyBridge('query', options);
+_win.addSqlBox = options => __kustoCreateSectionFromLegacyBridge('sql', options);
+_win.addChartBox = options => __kustoCreateSectionFromLegacyBridge('chart', options);
+_win.addTransformationBox = options => __kustoCreateSectionFromLegacyBridge('transformation', options);
+_win.addMarkdownBox = options => __kustoCreateSectionFromLegacyBridge('markdown', options);
+_win.addPythonBox = options => __kustoCreateSectionFromLegacyBridge('python', options);
+_win.addUrlBox = options => __kustoCreateSectionFromLegacyBridge('url', options);
+_win.addHtmlBox = options => __kustoCreateSectionFromLegacyBridge('html', options);
+_win.addCopilotQueryBox = options => {
+	const sectionId = __kustoCreateSectionFromLegacyBridge('query', options);
+	if (!sectionId) return '';
+	try {
+		const section = __kustoGetQuerySectionElement(sectionId);
+		if (section && typeof section.installCopilotChat === 'function') {
+			section.installCopilotChat();
+			section.setCopilotChatVisible(true);
+		}
+	} catch (error) { console.error('[kusto]', error); }
+	return sectionId;
+};
+
+export function __kustoRequestAddSection(kind: any, afterBoxId?: string) {
+	const admission = getAddSectionAdmission(kind);
+	if (!admission.ok) return;
+	const k = admission.sectionKind;
 
 	// For .kql/.csl compatibility files: offer upgrade instead of adding sections.
 	try {
@@ -1081,17 +1154,8 @@ export function __kustoRequestAddSection(kind: any, afterBoxId?: string) {
 
 	// Build options with insertion position if provided.
 	const opts: Record<string, unknown> = afterBoxId ? { afterBoxId } : {};
-
-	// Normal .kqlx flow.
-	if (k === 'query') return addQueryBox(opts);
-	if (k === 'chart') return addChartBox(opts);
-	if (k === 'transformation') return addTransformationBox(opts);
-	if (k === 'markdown') return addMarkdownBox(opts);
-	if (k === 'python') return addPythonBox(opts);
-	if (k === 'url') return addUrlBox(opts);
-	if (k === 'html') return addHtmlBox(opts);
-	if (k === 'sql') return addSqlBox(opts);
-	// copilotQuery sections are deprecated; Copilot chat is now a per-editor toolbar toggle.
+	const result = createSectionWithCapabilities(k, opts);
+	return result.ok ? result.sectionId : undefined;
 }
 
 // Replace the early bootstrap stub (defined in queryEditor.js before all scripts load).
@@ -1562,15 +1626,19 @@ export function getKqlxState() {
 			try {
 				const ids = Array.isArray(queryBoxes) ? queryBoxes : [];
 				for (const id of ids) {
-					if (typeof id === 'string' && id.startsWith('query_')) {
+					if (typeof id === 'string' && __kustoGetQuerySectionElement(id)) {
 						firstQueryBoxId = id;
 						break;
 					}
 				}
 			} catch (e) { console.error('[kusto]', e); }
-			const q = (firstQueryBoxId && queryEditors && queryEditors[firstQueryBoxId])
+			let q = (firstQueryBoxId && queryEditors && queryEditors[firstQueryBoxId])
 				? (queryEditors[firstQueryBoxId].getValue() || '')
 				: '';
+			if (!q && firstQueryBoxId) {
+				const pending = pState.pendingQueryTextByBoxId[firstQueryBoxId];
+				if (typeof pending === 'string') q = pending;
+			}
 			let clusterUrl = '';
 			let authorityId = '';
 			let connectionIdHint = '';
@@ -1645,6 +1713,7 @@ export function getKqlxState() {
 
 		// All section types are Lit components that implement serialize().
 		const el = document.getElementById(id);
+		if (el?.hasAttribute('data-sql-comparison-admission-request-id')) continue;
 		if (el && typeof (el as any).serialize === 'function') {
 			try { sections.push((el as any).serialize()); } catch (e) { console.error('[kusto]', e); }
 		}
@@ -1727,11 +1796,20 @@ export function isPersistenceSuppressedForTest(): boolean {
 	return __kustoPersistenceSuppressedForTest;
 }
 
+export function isDocumentMutationAllowed(): boolean {
+	return pState.documentMutationAllowed === true
+		&& pState.documentRuntimeActive === true
+		&& !__kustoIsReadOnlyBrowserViewer();
+}
+
 export function resetDocumentPersistenceForTest(): void {
 	__kustoPersistenceEnabled = true;
 	__kustoHasAppliedDocument = false;
 	__kustoLastAppliedDocumentUri = '';
+	resetDocumentCapabilityProjectionForTest();
 	pState.sourceGeneration = 0;
+	pState.documentMutationAllowed = true;
+	pState.documentRuntimeActive = true;
 	__kustoClearMalformedDocumentLock();
 }
 
@@ -1928,6 +2006,7 @@ try {
 } catch (e) { console.error('[kusto]', e); }
 
 function __kustoClearAllSections() {
+	__kustoWithPinnedSectionRemovalBypass(() => {
 	try {
 		for (const id of (queryBoxes || []).slice()) {
 			try { removeQueryBox(id); } catch (e) { console.error('[kusto]', e); }
@@ -1970,11 +2049,12 @@ function __kustoClearAllSections() {
 	} catch (e) { console.error('[kusto]', e); }
 	// Clear passthrough dev notes sections
 	try { pState.devNotesSections = []; } catch (e) { console.error('[kusto]', e); }
+	});
 }
 
 function __kustoAssertKnownSectionsRestored(state: any): void {
 	const expectedTags = new Map<string, string>([
-		['query', 'kw-query-section'], ['copilotQuery', 'kw-query-section'], ['sql', 'kw-sql-section'],
+		['query', 'kw-query-section'], ['sql', 'kw-sql-section'],
 		['chart', 'kw-chart-section'], ['transformation', 'kw-transformation-section'],
 		['markdown', 'kw-markdown-section'], ['python', 'kw-python-section'],
 		['url', 'kw-url-section'], ['html', 'kw-html-section'],
@@ -1982,13 +2062,36 @@ function __kustoAssertKnownSectionsRestored(state: any): void {
 	const expectedParent = document.getElementById('queries-container') || document.body;
 	const sections = Array.isArray(state?.sections) ? state.sections : [];
 	for (const section of sections) {
-		const kind = String(section?.type || '');
+		const rawKind = String(section?.type || '');
+		const kind = canonicalSectionKind(rawKind) ?? rawKind;
 		const id = String(section?.id || '').trim();
 		const expectedTag = expectedTags.get(kind);
 		if (!id || !expectedTag) continue;
 		const element = document.getElementById(id);
 		if (!element || element.tagName.toLowerCase() !== expectedTag || element.parentElement !== expectedParent) {
 			throw new Error(`Section ${id} (${kind}) was not restored as ${expectedTag}.`);
+		}
+	}
+}
+
+function __kustoAssertSqlComparisonReferences(state: any): void {
+	const sections = Array.isArray(state?.sections) ? state.sections : [];
+	const sectionsById = new Map<string, any>();
+	for (const section of sections) {
+		const id = String(section?.id || '').trim();
+		if (id) sectionsById.set(id, section);
+	}
+	for (const section of sections) {
+		const type = canonicalSectionKind(String(section?.type || '')) ?? String(section?.type || '');
+		if (type !== 'sql') continue;
+		const sourceBoxId = String(section?.comparisonSourceBoxId || '').trim();
+		if (!sourceBoxId) continue;
+		const sectionId = String(section?.id || '').trim();
+		const source = sectionsById.get(sourceBoxId);
+		const sourceType = canonicalSectionKind(String(source?.type || '')) ?? String(source?.type || '');
+		if (!sectionId || sourceBoxId === sectionId || sourceType !== 'sql'
+			|| String(source?.comparisonSourceBoxId || '').trim()) {
+			throw new Error(`SQL comparison section "${sectionId || '(missing id)'}" has an invalid source "${sourceBoxId}".`);
 		}
 	}
 }
@@ -2001,6 +2104,7 @@ function applyKqlxState(state: any): boolean {
 		__kustoSchemaPrewarmSentKeys.clear();
 		__kustoStartRestoreResultBatch();
 		__kustoPersistenceEnabled = false;
+		__kustoAssertSqlComparisonReferences(state);
 
 		// Reset persisted results when loading a new document.
 		try {
@@ -2061,9 +2165,11 @@ function applyKqlxState(state: any): boolean {
 			let suggestedAuthorityId = '';
 			let suggestedConnectionIdHint = '';
 			let suggestedDatabase = '';
+			let projectedPrimaryId = '';
 			try {
 				const sections = Array.isArray(s.sections) ? s.sections : [];
 				const first = sections.find((sec: any) => sec && String(sec.type || '') === singleKind);
+				projectedPrimaryId = first ? String(first.id || '').trim() : '';
 				if (singleKind === 'markdown') {
 					singleText = first ? String(first.text || '') : '';
 				} else {
@@ -2085,13 +2191,16 @@ function applyKqlxState(state: any): boolean {
 				// after restore recognizes the baseline and only sends persistDocument
 				// when the user actually edits the text (not just unrelated metadata).
 				try { __kustoLastCompatQueryText = singleText; } catch (e) { console.error('[kusto]', e); }
-				const markdownId = addMarkdownBox({ text: singleText, mdAutoExpand: isPlainMd });
+				const markdownId = addMarkdownBox({
+					...(projectedPrimaryId ? { id: projectedPrimaryId } : {}),
+					text: singleText, mdAutoExpand: isPlainMd,
+				});
 				assertCompatElement(markdownId, 'kw-markdown-section');
 				restored = true;
 				return true;
 			}
 			if (singleKind === 'sql') {
-				const sqlBoxId = 'sql_' + Date.now();
+				const sqlBoxId = projectedPrimaryId || 'sql_' + Date.now();
 				try {
 					pState.pendingSqlQueryByBoxId = pState.pendingSqlQueryByBoxId || {};
 					pState.pendingSqlQueryByBoxId[sqlBoxId] = singleText;
@@ -2106,9 +2215,13 @@ function applyKqlxState(state: any): boolean {
 			const db = String(suggestedDatabase || '').trim();
 			const hasExplicitSelection = !!(desiredClusterUrl || db);
 			const boxId = addQueryBox(hasExplicitSelection ? {
+				...(projectedPrimaryId ? { id: projectedPrimaryId } : {}),
 				clusterUrl: desiredClusterUrl,
 				database: db,
-			} : { schemaDiagnosticsTrusted: false });
+			} : {
+				...(projectedPrimaryId ? { id: projectedPrimaryId } : {}),
+				schemaDiagnosticsTrusted: false,
+			});
 			assertCompatElement(boxId, 'kw-query-section');
 			// Apply optional suggested cluster/db selection for compatibility-mode query docs.
 			try {
@@ -2156,7 +2269,8 @@ function applyKqlxState(state: any): boolean {
 			return '';
 		};
 		for (const section of sections) {
-			const t = section && section.type ? String(section.type) : '';
+			const rawType = section && section.type ? String(section.type) : '';
+			const t = canonicalSectionKind(rawType) ?? rawType;
 			if (t === 'devnotes') {
 				// Dev notes are hidden — store as passthrough, no DOM element
 				try {
@@ -2165,8 +2279,7 @@ function applyKqlxState(state: any): boolean {
 				} catch (e) { console.error('[kusto]', e); }
 				continue;
 			}
-			if (t === 'query' || t === 'copilotQuery') {
-				const isLegacyCopilotQuerySection = t === 'copilotQuery';
+			if (t === 'query') {
 				const comparisonSourceBoxId = String(section.comparisonSourceBoxId || '').trim();
 				const comparisonSource = comparisonSourceBoxId ? sections.find((candidate: any) =>
 					String(candidate?.id || '').trim() === comparisonSourceBoxId
@@ -2588,6 +2701,7 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 
 			if (t === 'sql') {
 				const pendingId = section.id ? String(section.id) : ('sql_' + Date.now());
+				const comparisonSourceBoxId = String(section.comparisonSourceBoxId || '').trim();
 				try {
 					pState.pendingSqlQueryByBoxId = pState.pendingSqlQueryByBoxId || {};
 					pState.pendingSqlQueryByBoxId[pendingId] = String(section.query || '');
@@ -2600,6 +2714,7 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 				} catch (e) { console.error('[kusto]', e); }
 				addSqlBox({
 					id: pendingId,
+					...(comparisonSourceBoxId ? { comparisonSourceBoxId } : {}),
 					name: String(section.name || ''),
 					serverUrl: section.serverUrl ? String(section.serverUrl) : undefined,
 					connectionIdHint: section.connectionIdHint ? String(section.connectionIdHint) : undefined,
@@ -2641,7 +2756,8 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 							resultsHeightPx: section.resultsHeightPx,
 							expectedQueryText: String(section.query || ''),
 							expectedResultDatabase: String(section.database || ''),
-							sqlOwnerSourceBoxId: pendingId,
+							sqlOwnerSourceBoxId: comparisonSourceBoxId || pendingId,
+							...(comparisonSourceBoxId ? { derivedSourceBoxId: comparisonSourceBoxId } : {}),
 						});
 					} else if (rj
 						&& __kustoSqlOwnerMatchesPersisted(restoredSqlEl, section)
@@ -2655,8 +2771,9 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 							resultsHeightPx: section.resultsHeightPx,
 							expectedQueryText: String(section.query || ''),
 							expectedResultDatabase: String(section.database || ''),
-							sqlOwnerSourceBoxId: pendingId,
+							sqlOwnerSourceBoxId: comparisonSourceBoxId || pendingId,
 							sqlOwnerConnectionId: String(section.connectionIdHint || '').trim(),
+							...(comparisonSourceBoxId ? { derivedSourceBoxId: comparisonSourceBoxId } : {}),
 						});
 					} else if (rj && sqlConnections.length === 0) {
 						__kustoQueuePendingSqlOwnedRestore({
@@ -2664,7 +2781,8 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 							resultArtifact: section.resultArtifact,
 							expectedQueryText: String(section.query || ''),
 							expectedResultDatabase: String(section.database || ''),
-							sqlOwnerSourceBoxId: pendingId,
+							sqlOwnerSourceBoxId: comparisonSourceBoxId || pendingId,
+							...(comparisonSourceBoxId ? { derivedSourceBoxId: comparisonSourceBoxId } : {}),
 							persistedOwner: {
 								connectionIdHint: section.connectionIdHint,
 								targetSignature: section.targetSignature,
@@ -2706,9 +2824,7 @@ function __kustoApplyPendingAdds() {
 	if (pendingTotal <= 0) {
 		return false;
 	}
-	const allowed = Array.isArray(pState.allowedSectionKinds)
-		? pState.allowedSectionKinds.map((v: any) => String(v))
-		: ['query', 'chart', 'transformation', 'python', 'url', 'markdown'];
+	const allowed = getAllowedAddSectionKinds();
 	if (allowed.includes('query')) {
 		for (let i = 0; i < (pendingAdds.query || 0); i++) addQueryBox();
 	}
@@ -2732,11 +2848,43 @@ function __kustoApplyPendingAdds() {
 
 function __kustoSetMalformedDocumentLock(error?: unknown): void {
 	__kustoPersistenceEnabled = false;
+	pState.documentMutationAllowed = false;
+	pState.documentRuntimeActive = false;
+	window.dispatchEvent(new Event(DOCUMENT_RUNTIME_INVALIDATED_EVENT));
+	__kustoStartRestoreResultBatch();
+	for (const boxId of [...queryBoxes]) {
+		const section = (document.getElementById(boxId) || __kustoGetQuerySectionElement(boxId)) as any;
+		const lifecycle = section?.getSchemaLifecycleIdentity?.();
+		try { section?.clearTargetBoundState?.(); } catch (e) { console.error('[kusto]', e); }
+		if (lifecycle?.sectionInstanceId) {
+			try {
+				postMessageToHost({
+					type: 'kustoSectionClose', boxId,
+					sectionInstanceId: lifecycle.sectionInstanceId,
+				});
+			} catch (e) { console.error('[kusto]', e); }
+		}
+		try { section?.disposeSchemaLifecycle?.(); } catch (e) { console.error('[kusto]', e); }
+	}
+	for (const boxId of [...sqlBoxes]) {
+		try { __kustoGetSqlSectionElement(boxId)?.retireForDocumentInvalidation?.(); } catch (e) { console.error('[kusto]', e); }
+	}
+	const container = document.getElementById('queries-container');
+	for (const element of Array.from(container?.children || [])) {
+		const boxId = String((element as HTMLElement).id || '').trim();
+		if (!boxId) continue;
+		try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
+		try { (element as any).clearResults?.(); } catch (e) { console.error('[kusto]', e); }
+		delete pState.queryResultJsonByBoxId[boxId];
+		delete pState.resultArtifactByBoxId[boxId];
+		delete pState.kustoResultOwnerByBoxId[boxId];
+		delete queryExecutionTimers[boxId];
+	}
+	pState.lastExecutedBox = null;
 	if (__kustoPersistTimer) {
 		clearTimeout(__kustoPersistTimer);
 		__kustoPersistTimer = null;
 	}
-	const container = document.getElementById('queries-container');
 	if (container) {
 		(container as HTMLElement & { inert?: boolean }).inert = true;
 		container.setAttribute('aria-disabled', 'true');
@@ -2799,6 +2947,10 @@ export function handleDocumentDataMessage(message: any): boolean {
 		traceFileOpen('persistence.documentData.handle.end', { malformed: true });
 		return true;
 	}
+	pState.documentMutationAllowed = typeof message.documentMutationAllowed === 'boolean'
+		? message.documentMutationAllowed
+		: true;
+	pState.documentRuntimeActive = false;
 	__kustoClearMalformedDocumentLock();
 	__kustoRequestFreshLeaveNoTracePolicy();
 	const incomingEditRevision = Number(message?.editRevision);
@@ -2827,31 +2979,23 @@ export function handleDocumentDataMessage(message: any): boolean {
 		if (typeof message.documentUri === 'string') {
 			pState.documentUri = String(message.documentUri);
 		}
-		if (Array.isArray(message.allowedSectionKinds)) {
-			pState.allowedSectionKinds = message.allowedSectionKinds.map((k: any) => String(k));
-		}
-		if (typeof message.documentKind === 'string') {
-			pState.documentKind = String(message.documentKind);
-			try {
-				if (document && document.body && document.body.dataset) {
-					document.body.dataset.kustoDocumentKind = String(message.documentKind);
-				}
-			} catch (e) { console.error('[kusto]', e); }
-		}
-		if (typeof message.defaultSectionKind === 'string') {
-			pState.defaultSectionKind = String(message.defaultSectionKind);
-		}
+		applyDocumentCapabilityProjection(message);
+		try {
+			if (document && document.body && document.body.dataset) {
+				document.body.dataset.kustoDocumentKind = pState.documentKind;
+			}
+		} catch (e) { console.error('[kusto]', e); }
 		if (typeof message.compatibilitySingleKind === 'string') {
 			pState.compatibilitySingleKind = String(message.compatibilitySingleKind);
-		}
-		if (typeof message.upgradeRequestType === 'string') {
-			pState.upgradeRequestType = String(message.upgradeRequestType);
 		}
 		if (typeof message.compatibilityTooltip === 'string') {
 			pState.compatibilityTooltip = String(message.compatibilityTooltip);
 		}
 		if (typeof message.firstSectionPinned === 'boolean') {
 			pState.firstSectionPinned = message.firstSectionPinned;
+		}
+		if (typeof message.documentMutationAllowed === 'boolean') {
+			pState.documentMutationAllowed = message.documentMutationAllowed;
 		}
 		if (typeof message.htmlPowerBiCompatibilityCheckEnabled === 'boolean') {
 			__kustoSetHtmlPowerBiCompatibilityCheckEnabled(message.htmlPowerBiCompatibilityCheckEnabled);
@@ -2868,7 +3012,9 @@ export function handleDocumentDataMessage(message: any): boolean {
 			sections: Array.isArray(message?.state?.sections) ? message.state.sections.length : 0,
 			documentKind: typeof message?.documentKind === 'string' ? message.documentKind : '',
 		});
-		applyKqlxState(message && message.state ? message.state : { sections: [] });
+		const incomingState = message && message.state ? message.state : { sections: [] };
+		assertProjectedSectionsAllowed(Array.isArray(incomingState.sections) ? incomingState.sections : []);
+		applyKqlxState(incomingState);
 		if (Number.isSafeInteger(incomingEditRevision) && incomingEditRevision >= 0) {
 			pState.documentEditRevision = incomingEditRevision;
 		}
@@ -2881,20 +3027,21 @@ export function handleDocumentDataMessage(message: any): boolean {
 			__kustoLastAppliedDocumentUri = String(message.documentUri);
 		}
 		applied = true;
+		pState.documentRuntimeActive = true;
 		if (sqlConnections.length > 0) resolvePendingSqlResultRestores();
 
 		// If the doc is empty, initialize UX content.
 		try {
-		const hasAny = (queryBoxes && queryBoxes.length) || (markdownBoxes && markdownBoxes.length) || (pythonBoxes && pythonBoxes.length) || (urlBoxes && urlBoxes.length) || (htmlBoxes && htmlBoxes.length) || (sqlBoxes && sqlBoxes.length);
-		if (!hasAny) {
+		const persistedSections = Array.isArray(incomingState.sections) ? incomingState.sections : [];
+		if (persistedSections.length === 0) {
 			const applied = __kustoApplyPendingAdds();
 			if (!applied) {
-				const k = String(pState.defaultSectionKind || 'query');
+				const k = getDefaultAddSectionKind();
 				if (k === 'markdown') {
 					addMarkdownBox();
 				} else if (k === 'sql') {
 					addSqlBox();
-				} else {
+				} else if (k === 'query') {
 					addQueryBox();
 				}
 			}

@@ -1,6 +1,6 @@
 # Kusto Workbench Viewer — Browser Extension
 
-A Chromium browser extension (Chrome / Edge) that renders `.kqlx`, `.sqlx`, `.kql`, and `.csl` Kusto notebook files inline on **GitHub**, **Azure DevOps**, and **raw file URLs**.
+A Chromium browser extension (Chrome / Edge) that renders `.kqlx`, `.sqlx`, `.mdx`, `.kql`, and `.csl` Workbench files inline on **GitHub**, **Azure DevOps**, and **raw file URLs**.
 
 ## What's Included
 
@@ -49,13 +49,15 @@ npm install
 npm run build
 ```
 
-This runs `node esbuild.js --production` which:
+This runs strict TypeScript checking followed by `node esbuild.js --production`, which:
 
-1. Bundles `src/content-script.ts` → `dist/content-script.js`
-2. Copies static files (viewer HTML, boot scripts, manifest, background worker)
-3. Copies shared media assets from `media/` (CSS, images, query editor JS)
-4. Copies built vendor assets from the root `dist/` (Monaco, ECharts, Toast UI)
-5. Replaces `vscode.js` with the browser shim
+1. Type-checks browser providers and the shared document-capability owner
+2. Bundles `src/content-script.ts` → `dist/content-script.js`
+3. Bundles the matrix-backed viewer parser into `dist/viewer-boot.js`
+4. Copies static files (viewer HTML, manifest, background worker)
+5. Copies shared media assets from `media/` (CSS, images, query editor JS)
+6. Copies built vendor assets from the root `dist/` (Monaco, ECharts, Toast UI)
+7. Replaces `vscode.js` with the browser shim
 
 The complete, loadable extension is output to `browser-ext/dist/`.
 
@@ -100,7 +102,8 @@ This produces `browser-ext/kusto-workbench-viewer.zip` — the file you upload t
 
 | Script | Description |
 | --- | --- |
-| `npm run build` | Production build (minified, no source maps) |
+| `npm run build` | Strict typecheck plus production build (minified, no source maps) |
+| `npm run typecheck` | Strict browser/shared TypeScript check |
 | `npm run dev` | Development build (unminified, with source maps) |
 | `npm run watch` | Watch mode — rebuilds content script on changes |
 | `npm run clean` | Deletes `dist/` |

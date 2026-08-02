@@ -24,9 +24,9 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 ## Baseline
 
-Assessment date: 2026-07-30
+Assessment date: 2026-08-02
 
-The comparison was made against the current working tree after the SQL lifecycle and Kusto schema lifecycle hardening. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after COD-2 document-kind capability convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -38,7 +38,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | Serialized shared Kusto worker | [`KustoWorkerMutationPort`](src/webview/shared/kusto-worker-mutation-port.ts) with detached settlement and inline recovery | Strong foundation |
 | SQL target and execution ownership | [`SqlEditorLifecycleCoordinator`](src/host/sql/sqlEditorLifecycleCoordinator.ts), [`SqlEditorSessionRegistry`](src/host/sql/sqlEditorSessionRegistry.ts), and [`SqlExecutionBroker`](src/host/sql/sqlExecutionBroker.ts) | Strong foundation |
 | Compatibility sidecar mechanics | [`CompatSidecarFormat`](src/host/compatSidecarFormat.ts), [`CompatSidecarStore`](src/host/compatSidecarStore.ts), and [`CompatSidecarSession`](src/host/compatSidecarSession.ts) | Strong shared core |
-| Lossless notebook codec | [`kqlxOverlay.ts`](src/host/kqlxOverlay.ts), schema-driven known-field validation, opaque preservation, exact persistence comparison, and physical-identity-bound publication | Strong foundation |
+| Lossless notebook codec and kind capabilities | [`kqlxOverlay.ts`](src/host/kqlxOverlay.ts) preserves exact unknown data; [`documentSectionCapabilities.ts`](src/shared/documentSectionCapabilities.ts) owns every known `.kqlx`/`.sqlx`/`.mdx` allow/default/add decision across parser, host, webview, tools, upgrades, and browser | Strong foundation |
 | Kusto physical identity fencing | Connection, schema, and database operations capture endpoint and authority identity before asynchronous work | Strong foundation |
 | SQL Leave No Trace policy | Cross-window policy, revocation generations, protected one-shot runtime, and guarded admission | Strong but SQL-specific |
 | Dashboard domain semantics | Shared provenance upgrade/validation concepts and extensive Power BI golden tests | Good domain core, mixed with adapters |
@@ -73,14 +73,14 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | Rank | ID | Gap | H/A/R/L/F/E | Score | State |
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
-| 1 | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | COD-1 closed; COD-2 selected |
-| 2 | `DOC` | Document actor and section-definition registry | 4/5/5/5/3/5 | 50 | Open; depends on `COD` |
-| 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/5/3/5 | 48 | Open |
-| 4 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/5/5/4/2/5 | 47 | Open, depends on contracts above |
-| 5 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
-| 6 | `CMP` | Compatibility-provider composition around the shared sidecar core | 4/4/3/3/3/4 | 39 | Open |
-| 7 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 3/3/3/3/4/4 | 35 | Open |
-| 8 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 3/3/2/2/3/4 | 30 | Open |
+| - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
+| 1 | `DOC` | Document actor and section-definition registry | 4/5/5/5/3/5 | 50 | DOC-1 selected; COD prerequisite closed |
+| 2 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/5/3/5 | 48 | Open |
+| 3 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/5/5/4/2/5 | 47 | Open, depends on contracts above |
+| 4 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
+| 5 | `CMP` | Compatibility-provider composition around the shared sidecar core | 4/4/3/3/3/4 | 39 | Open |
+| 6 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 3/3/3/3/4/4 | 35 | Open |
+| 7 | `KLS` | Custom KQL analyzer decomposition behind a language-analysis port | 3/3/2/2/3/4 | 30 | Open |
 | - | `ACT` | Untrusted-document capability admission | 5/5/5/5/3/5 | 53 | Deferred by product direction; excluded from active ranking |
 
 Bundle headroom is a release constraint and must remain gated, but it is not itself an ownership architecture. Large domain algorithms are not automatically gaps when they have one owner and focused contracts.
@@ -129,20 +129,18 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 **Golden outcome:** runtime-validated codecs preserve unknown root/state fields, known-section extension fields, opaque unknown sections, and order. One capability matrix validates `.kqlx`, `.sqlx`, and `.mdx` without silently filtering incompatible content.
 
-**Current divergence:**
+**Status:** closed through COD-2.
+
+**Current alignment:**
 
 - `kqlxOverlay.ts` now preserves unknown root/state fields, known-section extensions, nested future fields, opaque sections, and relative order across notebook and sidecar persistence.
 - Known field omission remains authoritative, legacy/id-less sections receive stable projected identities, and privacy sanitation removes modeled row-bearing fields without gaining authority over future extensions.
-- Document-kind section capabilities remain distributed across parser options, host projection, webview controls, tools, and browser composition.
-- `.mdx` sanitation filters unsupported/unknown sections instead of reporting incompatibility.
-- Different entry points can still disagree about which known section kinds `.kqlx`, `.sqlx`, and `.mdx` permit.
+- `documentSectionCapabilities.ts` is the sole matrix for known/canonical kinds, legacy `copilotQuery`, hidden `devnotes`, persisted compatibility, visible add kinds, and defaults.
+- The parser requires the URI-derived document kind, reports known incompatibility with document kind plus section index/ID/type, and leaves opaque future kinds outside incompatibility classification.
+- Host projection, KQL/SQL/Markdown upgrade destinations, webview controls/defaults/restore, actual tool dispatch, and browser read-only parsing use that owner. An explicit empty host capability set remains empty.
+- MDX silent sanitation and provider-local arrays are deleted. A static source guard rejects their return, while the cross-layer table tests every known matrix cell and the opaque-future control.
 
-**Failure modes:**
-
-- Different parse, sanitize, restore, and UI-capability paths can disagree about valid section kinds.
-- A known incompatible section can be silently omitted by one projection while another entry point accepts or creates it.
-
-**Migration theme:** complete COD with one generated capability matrix before `DOC`; COD-1's lossless overlay contract remains the preservation boundary for opaque future data.
+The remaining distributed section parse/reduce/serialize/view knowledge belongs to `DOC`, not COD.
 
 ### `EXA` - Exact Execution And Immutable Artifacts
 
@@ -378,9 +376,9 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 **Post-closure schema/autocomplete reliability qualification:** EXA-2 remains closed. Same-target metadata requests are brokered without coalescing owner-gated dispatch, SDK clients stay leased through concurrent operations, empty or malformed schema cannot poison cache state, JSON-to-tabular fallback stays within one authenticated attempt, disposal/currentness fences every physical schema command, compact cache entries are upgraded to worker-ready `.show schema` JSON, and queued primary worker intent no longer invalidates an executing primary transaction. The focused nine-file recovery ring passed 414 tests; full sequential Vitest passed 200 files and 5,297 tests. Host/webview type checks, production extension and browser builds, integration compilation, ESLint with zero errors and the same five pre-existing warnings, and both bundle gates passed. Deterministic production sizes are 1,774.1 KB for `extension.js` and 2,681.0 KB for `webview.bundle.js`; synchronized baselines moved from 1,713 to 1,725 KB and from 2,624 to 2,632 KB with the 50 KB buffer unchanged. The extension-host suite passed 113/113 with the established five-second Mocha headroom. Native VS Code 1.131.0 qualification passed `default/kusto-schema-replacement` and authenticated `kusto-auth/kusto-restored-startup`; the latter restored five same-target sections, kept four unfocused sections deferred, and rendered the exact section-three worker table in 917 ms with word suggestions and the auxiliary provider disabled. A preceding `--no-build` launch that opened no webview remains runner-state evidence rather than a product result.
 
-**Next boundary:** `COD-2`, one document-kind capability matrix. Do not enter `DOC`, deferred `ACT`, or Kusto/SQL coordinator convergence in that iteration.
+**Subsequent boundary:** COD-2 is now closed. The active selection is DOC-1 below; deferred ACT and Kusto/SQL coordinator convergence remain excluded.
 
-## Next Iteration
+## Completed Codec Iterations
 
 ### Iteration `COD-1`: Lossless Codec Preservation
 
@@ -398,13 +396,35 @@ Bundle headroom is a release constraint and must remain gated, but it is not its
 
 ### Iteration `COD-2`: One Document-Kind Capability Matrix
 
-**Status:** selected, not started.
+**Status:** closed on 2026-08-02; the definitive pessimistic review returned `VERDICT: CLOSE COD-2`.
 
 **Boundary:** replace distributed `.kqlx` / `.sqlx` / `.mdx` section-kind filters and creation rules with one shared capability matrix used by parsing/validation, host projection, webview add controls, tools, and browser/read-only composition. Invalid known kinds must be reported rather than silently filtered; opaque future sections remain preserved by COD-1.
 
 **Cheapest discriminating check:** enumerate every known section kind against each document kind and prove parser validation, host `allowedSectionKinds`, webview add controls, and tool admission return the same decision, including an incompatible known section that currently disappears from MDX projection.
 
 **Exclusions:** no document actor, section-definition registry, protocol redesign, deferred `ACT`, or execution-coordinator convergence.
+
+**Completion evidence:** `documentSectionCapabilities.ts` owns the typed matrix, canonical aliases, persisted/addable distinction, hidden `devnotes`, defaults, compatibility classification, and actionable validation. `parseKqlxText()` validates the actual URI-bound kind before projection. Provider-local arrays, SQL compatibility's advertised Kusto query, MDX sanitation/filtering, the overlay's MDX passthrough sets, compatibility primary-kind alias lists, and ad hoc `copilotQuery` decision branches are gone from capability surfaces. Host projections and KQL/SQL/Markdown upgrades derive from the destination kind. Compatibility sidecars validate the destination row before parse, hydration, repair, build, adoption, or write; malformed SQL linkage, multiple linked owners, and other invalid KQL/SQL companions project read-only and cannot reach an overwrite prompt. The webview intersects host declarations with the matrix before controls, insert zones, default creation, restore, and tool dispatch. `createSectionWithCapabilities()` owns every non-restore creation: tools, Kusto Copilot auto-create, Copilot Insert, and Kusto/SQL comparison preparation cannot bypass admission or silently lose compatibility-file sections. Empty capability projections stay empty, and default creation consults the persisted section array so visual, hidden, and opaque-only documents remain unchanged. SQL optimization comparisons persist as `sql` with `comparisonSourceBoxId`; comparison removal clears webview/host owner state and source backlinks before recreation; tool-created SQLX files use the matrix default. Every browser provider recognizes MDX, the production manifest makes raw-file routing reachable, and the viewer delegates structural and capability validation to the host parser, including hostile IDs, duplicate IDs, known shapes, linked owners, and invalid companions. Browser companion hydration additionally requires first-section ownership of the exact raw URL. Legacy preload APIs queue canonical query adds rather than maintaining a second alias kind. The ownership guard prevents removed lists, raw automation factories, alias branches, empty-set fallback, and the browser parser copy from returning.
+
+**Final closure hardening:** SQL comparison preparation now uses an application-acknowledged `staged -> committed -> finalized -> completed` CAS transaction over the complete live descriptor, query/result revisions, persisted rows/artifact, and active execution identity. The host retains the prior owner until completed acknowledgement, retries acknowledged rollback before completion, releases terminal proofs explicitly, revalidates both exact targets afterward, and rejects nested sources before mutation. Admission fences Monaco and execution; restore reconstructs exact SQL lineage. Browser standalone handoff is UUID-tokened, one-shot, and TTL-bounded. Plain-file sidecars retain fixed primary identities and validate a complete candidate before source mutation. The webview starts runtime-inactive, activates only after successful materialization, and turns malformed retained DOM into an inert visual snapshot while retiring executable owners, rows, tools, and pending work.
+
+**Qualification:** the final blocker ring passed 10 files and 584 tests; complete sequential Vitest passed 211 files and 5,543 tests. Host/webview and browser TypeScript checks, integration compilation, production extension and browser builds, ESLint with zero errors and the same five pre-existing warnings, and both bundle gates passed. The complete extension-host suite passed 174/174 with `--timeout 5000` on VS Code 1.131.0. The definitive native `default/document-capabilities` run `20260802-103341` passed 4/4: three reviewed MDX screenshots proved actionable byte-preserving rejection, exact allowed controls, and no opaque-only default; exact DOM/file assertions proved real host SQL comparison create/save/reopen, nested rejection, remove/recreate with a fresh ID, and final reopen with one valid SQL comparison and lineage. The definitive pessimistic review returned `VERDICT: CLOSE COD-2`. Final production sizes are 1,835.2 KB for `extension.js` and 2,704.9 KB for `webview.bundle.js`; synchronized baselines are 1,786 KB and 2,655 KB with the 50 KB buffer unchanged.
+
+## Next Iteration
+
+### Iteration `DOC-1`: Host-Owned Markdown Section Lifecycle
+
+**Status:** selected, not started.
+
+**Why next:** COD is closed, so DOC's prerequisite is satisfied. Its unchanged score of 50 is the highest eligible score ahead of PRO at 48 and HST at 47; ACT remains deferred by product direction.
+
+**Boundary:** introduce the smallest transport-neutral document aggregate and section-definition contract needed to own one low-risk Markdown section's add, patch, remove, validation, and snapshot transitions behind the existing lossless codec and VS Code adapter. Keep the current protocol and view as adapters. Do not migrate Kusto/SQL lifecycle, execution, compatibility orchestration, or other section kinds in this slice.
+
+**Falsifiable hypothesis:** if a serial host document owner and one Markdown section definition are authoritative, then a Markdown add/edit/remove survives view teardown and recreation and produces the same lossless snapshot without reading component or DOM serialization state.
+
+**Cheapest discriminating check:** load a fixture containing Markdown plus opaque future data, execute add/patch/remove commands against the host owner, destroy and recreate the view projection, then save and prove the exact command result and opaque data persist while a deliberately stale or throwing DOM `serialize()` implementation is never consulted.
+
+**Exclusions:** no protocol redesign, no ACT policy work, no Kusto/SQL execution convergence, no broad provider split, and no registry migration for a second section kind until the Markdown path deletes its displaced persistence authority.
 
 ## Convergence Loop
 
@@ -542,6 +562,9 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | Iteration | Canonical owner introduced | Authority deleted | Guard added | Validation | Date |
 | --- | --- | --- | --- | --- | --- |
 | `EXA-1` | `KustoExecutionCoordinator` | Uncorrelated Kusto terminals, box-only cancellation, raw/provisional Kusto Copilot/Optimize output, process-local/fail-open Kusto privacy revision | Exact-envelope cross-layer/protocol/ownership/policy/restore guards | Focused, full sequential, package, integration, and authenticated native gates complete | 2026-07-28 |
+| `EXA-2` | `ResultArtifactStore` and exact consumer bindings | Mutable latest-result lineage authority across derived, model, dashboard, share, and CSV consumers | Pin/rebind/revoke, declared-column, producer/policy, and native artifact gates | Focused, full sequential, package, integration, browser, and native gates complete | 2026-07-30 |
+| `COD-1` | `kqlxOverlay.ts` lossless codec | Reconstructive serialization and non-exact projection/publication baselines | Exhaustive schema, exact comparison, sidecar matrix, and native codec round-trip guards | Focused, full sequential, package, integration, browser, and native gates complete | 2026-08-01 |
+| `COD-2` | `documentSectionCapabilities.ts` + `createSectionWithCapabilities()` | Provider/webview/tool/browser lists, raw automation factories, MDX filtering, compatibility alias lists, and browser parser copy | Every-cell matrix, creation/parser/teardown ownership guards, exact-byte sidecar/manifest gates, acknowledged SQL comparison CAS, inactive-runtime guards, and native MDX/SQLX capability gate | Blocker ring 584, full Vitest 5,543, extension-host 174, native 4/4, production/browser, and definitive review complete | 2026-08-02 |
 
 ## Decision Discipline
 

@@ -87,6 +87,19 @@ const contentScriptBuild = esbuild.buildSync({
 	logLevel: 'info',
 });
 
+console.log('Bundling viewer-boot.js...');
+esbuild.buildSync({
+	entryPoints: [path.resolve(__dirname, 'viewer-boot.js')],
+	bundle: true,
+	outfile: path.join(DIST, 'viewer-boot.js'),
+	platform: 'browser',
+	target: 'es2022',
+	format: 'iife',
+	minify: isProduction,
+	sourcemap: !isProduction,
+	logLevel: 'info',
+});
+
 // ---- 2. Copy static files ----
 
 console.log('Copying static files...');
@@ -94,7 +107,6 @@ const staticFiles = [
 	'viewer.html',
 	'viewer-standalone.html',
 	'viewer-standalone-boot.js',
-	'viewer-boot.js',
 	'background.js',
 	'queryEditor-loader.js',
 	'manifest.json',

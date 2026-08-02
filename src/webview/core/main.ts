@@ -11,6 +11,7 @@ import { perfMark } from './perf.js';
 import { traceFileOpen } from './file-open-trace.js';
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import { drainBufferedHostMessages } from './message-handler.js';
+import { getAllowedAddSectionKinds } from './document-capabilities.js';
 
 // Side-effect imports — register event handlers on import.
 // Active-section-tracker must be imported before message-handler so its
@@ -20,6 +21,9 @@ import './keyboard-shortcuts';
 import './drag-reorder';
 
 export {};
+
+// No tool, execution, or mutation may run before the first document projection applies.
+pState.documentRuntimeActive = false;
 
 kustoEditorSchemaCoordinator.subscribeLifecycle(event => {
 	if (event.type === 'opened') {
@@ -149,14 +153,12 @@ function __kustoAddSectionFromDropdown( kind: any) {
 // Update dropdown item visibility based on allowed section kinds (mirrors __kustoApplyDocumentCapabilities logic).
 function __kustoUpdateAddSectionDropdownVisibility() {
 	try {
-		const allowed = Array.isArray(pState.allowedSectionKinds)
-			? pState.allowedSectionKinds.map((v: any) => String(v))
-			: ['query', 'sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'];
+		const allowed = new Set<string>(getAllowedAddSectionKinds());
 
 		const items = document.querySelectorAll('.add-controls-dropdown-item[data-add-kind]');
 		for (const item of items as any) {
 			const kind = item.getAttribute('data-add-kind');
-			if (allowed.length === 0 || allowed.includes(kind)) {
+			if (allowed.has(kind)) {
 				item.style.display = '';
 			} else {
 				item.style.display = 'none';

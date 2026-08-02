@@ -96,6 +96,7 @@ export interface CopilotServiceHost {
 	deleteComparisonSummary(key: string): void;
 
 	requestSectionsFromWebview(): Promise<unknown[] | undefined>;
+	updateDevelopmentNotes(message: Record<string, unknown>): Promise<{ success: boolean; error?: string }>;
 	revealPanel(): void;
 }
 
@@ -2501,12 +2502,10 @@ Completion:`;
 
 						if (!content && noteId) {
 							effectiveAction = 'remove';
-							postRequestMessage({
-								type: 'updateDevNotes',
-								action: 'remove',
-								noteId
-							});
-							toolResult = `Development note removed (id: ${noteId}).`;
+							const admission = await this.host.updateDevelopmentNotes({ action: 'remove', noteId });
+							toolResult = admission.success
+								? `Development note removed (id: ${noteId}).`
+								: `Error: ${admission.error || 'Development note removal was rejected.'}`;
 						} else if (!content) {
 							toolResult = 'Error: content is required when creating a new note. To remove an existing note, provide its noteId with empty content.';
 							effectiveAction = 'save';
@@ -2523,14 +2522,15 @@ Completion:`;
 								source: 'copilot',
 								...(Array.isArray(args.relatedSectionIds) && args.relatedSectionIds.length > 0 ? { relatedSectionIds: args.relatedSectionIds } : {})
 							};
-							postRequestMessage({
-								type: 'updateDevNotes',
+							const admission = await this.host.updateDevelopmentNotes({
 								action: noteId ? 'supersede' : 'add',
 								entry,
-								supersededId: noteId || undefined
+								supersededId: noteId || undefined,
 							});
-							toolResult = `Development note saved (id: ${newNoteId}, category: ${category}).` +
-								(noteId ? ` Superseded note: ${noteId}.` : '');
+							toolResult = admission.success
+								? `Development note saved (id: ${newNoteId}, category: ${category}).` +
+									(noteId ? ` Superseded note: ${noteId}.` : '')
+								: `Error: ${admission.error || 'Development note save was rejected.'}`;
 						}
 
 						const noteEntryId = this.nextHistoryEntryId(boxId);

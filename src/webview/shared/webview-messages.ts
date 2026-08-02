@@ -239,7 +239,8 @@ export type OutgoingWebviewMessage =
 	// SQL copilot — unified into Copilot section below
 
 	// Comparisons
-	| ({ type: 'comparisonBoxEnsured'; requestId: string; sourceBoxId: string; comparisonBoxId: string; kustoTarget?: KustoSectionExecutionTarget } & Partial<KustoCopilotRequestIdentity>)
+	| ({ type: 'comparisonBoxEnsured'; engine?: 'sql' | 'kusto'; requestId: string; sourceBoxId: string; comparisonBoxId: string; kustoTarget?: KustoSectionExecutionTarget } & Partial<KustoCopilotRequestIdentity>)
+	| { type: 'sqlComparisonAdmissionAck'; phase: 'staged' | 'committed' | 'finalized' | 'completed' | 'rolledBack'; requestId: string; sourceBoxId: string; comparisonBoxId: string; accepted: boolean }
 	| { type: 'comparisonSummary'; sourceBoxId: string; comparisonBoxId: string; dataMatches: boolean; headersMatch?: boolean; rowOrderMatches?: boolean; columnOrderMatches?: boolean }
 	| { type: 'clearComparisonSummary'; sourceBoxId: string; comparisonBoxId: string }
 
@@ -281,7 +282,7 @@ export type OutgoingWebviewMessage =
 	// Tool responses (agent tools)
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
 	| { type: 'toolExecutionStarted'; requestId: string; owner: KustoExecutionRequestIdentity }
-	| { type: 'toolStateResponse'; requestId: string; sections: unknown[] }
+	| { type: 'toolStateResponse'; requestId: string; sections: unknown[]; error?: string }
 	| { type: 'openToolResultInEditor'; boxId: string; tool: string; label: string; content: string }
 	| { type: 'openMarkdownPreview'; filePath: string }
 	| { type: 'openCopilotAgent' }

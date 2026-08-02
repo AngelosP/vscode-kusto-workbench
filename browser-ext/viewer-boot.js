@@ -1,3 +1,5 @@
+import { browserCanonicalSectionKind, browserDefaultSectionKind, composeBrowserCompatibilityState, parseBrowserNativeWorkbenchText, parseBrowserWorkbenchText } from './src/viewer-document';
+
 // Viewer Boot Script for Browser Extension
 // Receives file content from the content script via postMessage (instead of
 // fetching from a server proxy like the web app does). Then parses the content
@@ -28,60 +30,6 @@
 			return _origError.apply(console, arguments);
 		};
 	} catch (_) { /* ignore */ }
-
-	// ---- .kqlx parser (mirrors src/kqlxFormat.ts parseKqlxText) ----
-
-	function parseKqlxText(text, options) {
-		var raw = String(text || '').trim();
-		var defaultKind = (options && options.defaultKind) || 'kqlx';
-		if (!raw) {
-			return { ok: true, file: { kind: defaultKind, version: 1, state: { sections: [] } } };
-		}
-
-		var parsed;
-		try {
-			parsed = JSON.parse(raw);
-		} catch (e) {
-			return { ok: false, error: 'Invalid JSON: ' + (e && e.message ? e.message : String(e)) };
-		}
-
-		if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
-			return { ok: false, error: 'Invalid file: root must be a JSON object.' };
-		}
-
-		var allowedKinds = (options && Array.isArray(options.allowedKinds) && options.allowedKinds.length > 0)
-			? options.allowedKinds
-			: ['kqlx'];
-
-		var kind = parsed.kind;
-		var version = parsed.version;
-		if (typeof kind !== 'string' || allowedKinds.indexOf(kind) === -1) {
-			return { ok: false, error: 'Invalid file: missing or invalid "kind".' };
-		}
-		if (version !== 1) {
-			return { ok: false, error: 'Unsupported file version: ' + String(version) };
-		}
-
-		var state = parsed.state;
-		if (!state || typeof state !== 'object' || Array.isArray(state)) {
-			return { ok: false, error: 'Invalid file: missing or invalid "state".' };
-		}
-
-		var sections = Array.isArray(state.sections) ? state.sections : [];
-		var caretDocsEnabled = (typeof state.caretDocsEnabled === 'boolean') ? state.caretDocsEnabled : undefined;
-
-		return {
-			ok: true,
-			file: {
-				kind: kind,
-				version: 1,
-				state: {
-					caretDocsEnabled: caretDocsEnabled,
-					sections: sections
-				}
-			}
-		};
-	}
 
 	// ---- Helpers ----
 
@@ -156,8 +104,8 @@
 		for (var i = 0; i < sections.length; i++) {
 			var sec = sections[i];
 			if (!sec || typeof sec !== 'object') continue;
-			var t = String(sec.type || '');
-			if (t === 'query' || t === 'copilotQuery' || t === 'sql') {
+			var t = browserCanonicalSectionKind(sec.type);
+			if (t === 'query' || t === 'sql') {
 				sec.expanded = false;
 			} else if (t === 'markdown') {
 				sec.mode = 'preview';
@@ -170,14 +118,15 @@
 
 	// ---- Process file content ----
 
-	function processFileContent(filename, content, sidecarContent) {
+	function processFileContent(filename, content, companionState, rawContentUrl, sidecarUrl) {
 		var lowerFilename = (filename || '').toLowerCase();
 		var state;
 		var documentKind = 'kqlx';
 
-		if (lowerFilename.endsWith('.kqlx')) {
+		if (lowerFilename.endsWith('.kqlx') || lowerFilename.endsWith('.mdx')) {
 			// .kqlx file: parse as KqlxFileV1
-			var parsed = parseKqlxText(content, { allowedKinds: ['kqlx', 'mdx'] });
+			var expectedKind = lowerFilename.endsWith('.mdx') ? 'mdx' : 'kqlx';
+			var parsed = parseBrowserNativeWorkbenchText(content, { allowedKinds: [expectedKind], defaultKind: expectedKind });
 			if (!parsed.ok) {
 				showError('Invalid .kqlx file', parsed.error);
 				return null;
@@ -187,7 +136,7 @@
 
 		} else if (lowerFilename.endsWith('.sqlx')) {
 			// .sqlx file: SQL notebook, same JSON schema as .kqlx with kind 'sqlx'
-			var sqlxParsed = parseKqlxText(content, { allowedKinds: ['sqlx'], defaultKind: 'sqlx' });
+			var sqlxParsed = parseBrowserNativeWorkbenchText(content, { allowedKinds: ['sqlx'], defaultKind: 'sqlx' });
 			if (!sqlxParsed.ok) {
 				showError('Invalid .sqlx file', sqlxParsed.error);
 				return null;
@@ -197,7 +146,7 @@
 
 		} else if (lowerFilename.endsWith('.kql.json') || lowerFilename.endsWith('.csl.json')) {
 			// .kql.json sidecar: parse it
-			var sidecarParsed = parseKqlxText(content, { allowedKinds: ['kqlx'] });
+			var sidecarParsed = parseBrowserWorkbenchText(content, { allowedKinds: ['kqlx'] });
 			if (!sidecarParsed.ok) {
 				showError('Invalid sidecar file', sidecarParsed.error);
 				return null;
@@ -207,30 +156,19 @@
 		} else if (lowerFilename.endsWith('.kql') || lowerFilename.endsWith('.csl')) {
 			// .kql/.csl file: raw query text + optional sidecar
 			var queryText = content;
-
-			if (sidecarContent) {
-				var sidecarParsed2 = parseKqlxText(sidecarContent, { allowedKinds: ['kqlx'] });
-				if (sidecarParsed2.ok) {
-					state = sidecarParsed2.file.state;
-					// Inject query text into the first query section
-					for (var j = 0; j < state.sections.length; j++) {
-						var sec2 = state.sections[j];
-						if (sec2.type === 'query' || sec2.type === 'copilotQuery') {
-							sec2.query = queryText;
-							break;
-						}
-					}
-				} else {
-					// Sidecar invalid — fall back to single query
-					state = { sections: [{ type: 'query', query: queryText }] };
-				}
-			} else {
-				// No sidecar — single query section
-				state = { sections: [{ type: 'query', query: queryText }] };
+			var compatibility = composeBrowserCompatibilityState(queryText, companionState, {
+				expectedFilename: filename,
+				rawContentUrl: rawContentUrl,
+				sidecarUrl: sidecarUrl
+			});
+			if (!compatibility.ok) {
+				showError('Invalid companion file', compatibility.error);
+				return null;
 			}
+			state = compatibility.state;
 
 		} else {
-			showError('Unsupported file type', 'Supported: .kqlx, .sqlx, .kql, .csl, .kql.json, .csl.json');
+			showError('Unsupported file type', 'Supported: .kqlx, .sqlx, .mdx, .kql, .csl, .kql.json, .csl.json');
 			return null;
 		}
 
@@ -255,7 +193,7 @@
 			compatibilityMode: false,
 			documentKind: documentKind,
 			allowedSectionKinds: [],
-			defaultSectionKind: 'query'
+			defaultSectionKind: browserDefaultSectionKind(documentKind)
 		});
 
 		// 2. connectionsData
@@ -420,7 +358,9 @@
 
 		var filename = event.data.filename || '';
 		var content = event.data.content || '';
-		var sidecarContent = event.data.sidecarContent || null;
+			var companionState = event.data.companionState || { status: 'missing' };
+			var rawContentUrl = event.data.rawContentUrl || '';
+			var sidecarUrl = event.data.sidecarUrl || '';
 		var pageUrl = event.data.pageUrl || '';
 		var sourceLabel = event.data.sourceLabel || '';
 
@@ -443,7 +383,7 @@
 		showLoading('Parsing ' + filename + '...');
 		updateBanner(filename, pageUrl, sourceLabel);
 
-		var result = processFileContent(filename, content, sidecarContent);
+			var result = processFileContent(filename, content, companionState, rawContentUrl, sidecarUrl);
 		if (!result) return;
 
 		renderNotebook(filename, result.state, result.documentKind, pageUrl);

@@ -184,7 +184,9 @@ export class GitHubProvider implements FileSourceProvider {
 	private getSidecarUrl(rawUrl: string, filename: string): string | undefined {
 		const lower = filename.toLowerCase();
 		if (lower.endsWith('.kql') || lower.endsWith('.csl')) {
-			return rawUrl + '.json';
+			const parsed = new URL(rawUrl);
+			parsed.pathname += '.json';
+			return parsed.href;
 		}
 		return undefined;
 	}

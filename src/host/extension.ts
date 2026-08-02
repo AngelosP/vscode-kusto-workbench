@@ -12,6 +12,7 @@ import { KqlxEditorProvider } from './kqlxEditorProvider';
 import { normalizeWorkbenchUriKey } from './workbenchFileTypes';
 import { MdCompatEditorProvider } from './mdCompatEditorProvider';
 import { SqlCompatEditorProvider } from './sqlCompatEditorProvider';
+import { QueryEditorProvider } from './queryEditorProvider';
 import { KqlDiagnosticSeverity } from './kqlLanguageService/protocol';
 import { KqlLanguageServiceHost } from './kqlLanguageService/host';
 import { recordTextEditorSelection } from './selectionTracker';
@@ -95,6 +96,40 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
 	void sqlWorkbenchService.ready().catch(error => {
 		getWorkbenchLogger().error('[Kusto Workbench] SQL services failed to initialize; non-SQL features remain available:', error instanceof Error ? error : String(error));
 	});
+	if (context.extensionMode !== vscode.ExtensionMode.Production) {
+		const cod2SqlConnectionName = 'COD-2 E2E SQL';
+		context.subscriptions.push(
+			vscode.commands.registerCommand('kustoWorkbench.test.seedCod2SqlConnection', async () => {
+				for (const connection of sqlWorkbenchService!.connectionManager.getConnections()) {
+					if (connection.name === cod2SqlConnectionName) {
+						await sqlWorkbenchService!.connectionManager.removeConnection(connection.id);
+					}
+				}
+				return sqlWorkbenchService!.connectionManager.addConnection({
+					name: cod2SqlConnectionName,
+					dialect: 'mssql',
+					serverUrl: 'cod2-e2e.invalid',
+					authType: 'aad',
+					database: 'Db',
+				});
+			}),
+			vscode.commands.registerCommand('kustoWorkbench.test.removeCod2SqlConnection', async () => {
+				for (const connection of sqlWorkbenchService!.connectionManager.getConnections()) {
+					if (connection.name === cod2SqlConnectionName) {
+						await sqlWorkbenchService!.connectionManager.removeConnection(connection.id);
+					}
+				}
+			}),
+			vscode.commands.registerCommand(
+				'kustoWorkbench.test.prepareSqlComparison',
+				(sourceBoxId: string, query: string) => QueryEditorProvider.prepareSqlComparisonForTest(sourceBoxId, query),
+			),
+			vscode.commands.registerCommand(
+				'kustoWorkbench.test.assertNestedSqlComparisonRejected',
+				(query: string) => QueryEditorProvider.assertNestedSqlComparisonRejectedForTest(query),
+			),
+		);
+	}
 	registerFirstLaunchTriggers(context, firstLaunchCoordinator);
 	context.subscriptions.push(
 		vscode.workspace.onDidChangeConfiguration((e) => {

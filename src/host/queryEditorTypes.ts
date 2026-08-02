@@ -109,6 +109,8 @@ export type ExecuteSqlQueryMessage = {
 	queryMode?: string;
 	ownerToken: string;
 	executionId: string;
+	comparisonSourceBoxId?: string;
+	comparisonSourceExecutionId?: string;
 	toolExecution?: boolean;
 	expectedOwner?: {
 		connectionId: string;
@@ -324,7 +326,17 @@ export type IncomingWebviewMessage =
 	| FetchControlCommandSyntaxMessage
 	| { type: 'openToolResultInEditor'; boxId: string; tool: string; label: string; content: string }
 	| { type: 'openMarkdownPreview'; filePath: string }
-	| ({ type: 'comparisonBoxEnsured'; requestId: string; sourceBoxId: string; comparisonBoxId: string; kustoTarget?: KustoSectionExecutionTarget } & Partial<KustoCopilotRequestIdentity>)
+	| ({
+		type: 'comparisonBoxEnsured'; engine?: 'sql' | 'kusto'; requestId: string; sourceBoxId: string; comparisonBoxId: string;
+		kustoTarget?: KustoSectionExecutionTarget;
+		sourceSectionInstanceId?: string; sourceTargetGeneration?: number;
+		comparisonSectionInstanceId?: string; comparisonTargetGeneration?: number;
+		comparisonConnectionId?: string; comparisonDatabase?: string;
+	} & Partial<KustoCopilotRequestIdentity>)
+	| {
+		type: 'sqlComparisonAdmissionAck'; phase: 'staged' | 'committed' | 'finalized' | 'completed' | 'rolledBack'; requestId: string; sourceBoxId: string;
+		comparisonBoxId: string; accepted: boolean;
+	}
 	| {
 			type: 'comparisonSummary';
 			sourceBoxId: string;
@@ -337,7 +349,7 @@ export type IncomingWebviewMessage =
 	| { type: 'clearComparisonSummary'; sourceBoxId: string; comparisonBoxId: string }
 	| { type: 'toolResponse'; requestId: string; result: unknown; error?: string }
 	| { type: 'toolExecutionStarted'; requestId: string; owner: KustoExecutionRequestIdentity }
-	| { type: 'toolStateResponse'; requestId: string; sections: unknown[] }
+	| { type: 'toolStateResponse'; requestId: string; sections: unknown[]; error?: string }
 	| { type: 'openCopilotAgent' }
 	| { type: 'copilotChatFirstTimeCheck'; boxId: string }
 	| { type: 'showSectionDiff'; sectionId: string };

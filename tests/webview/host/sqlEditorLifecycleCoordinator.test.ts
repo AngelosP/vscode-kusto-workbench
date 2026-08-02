@@ -515,6 +515,52 @@ describe('SqlEditorLifecycleCoordinator', () => {
 		expect(harness.effects.cancelCopilotQueryTarget).not.toHaveBeenCalled();
 	});
 
+	it('closing a SQL comparison removes its own owner and summary without retiring the source', () => {
+		const harness = createHarness();
+		const { coordinator } = harness;
+		coordinator.openSection('sql_source', 'instance-source');
+		coordinator.openSection('sql_comparison', 'instance-comparison');
+		expect(coordinator.adoptTarget('sql_source', 'instance-source', SQL_A.id, 'DbA', 1)).toBe(true);
+		expect(coordinator.adoptTarget('sql_comparison', 'instance-comparison', SQL_A.id, 'DbA', 1)).toBe(true);
+		coordinator.setComparisonOwner('sql_comparison', {
+			sourceBoxId: 'sql_source', connectionId: SQL_A.id, copilotSequence: 10,
+		});
+
+		coordinator.didClose('sql_comparison', 'instance-comparison');
+
+		expect(coordinator.getComparisonOwner('sql_comparison')).toBeUndefined();
+		expect(coordinator.getTarget('sql_source')).toEqual({
+			boxId: 'sql_source', connectionId: SQL_A.id, database: 'DbA', generation: 1,
+		});
+		expect(harness.effects.deleteComparisonSummary).toHaveBeenCalledWith('sql_source', 'sql_comparison');
+		expect(harness.effects.cancelCopilotWriteQuery).toHaveBeenCalledWith('sql_comparison');
+		expect(harness.effects.cancelCopilotWriteQuery).not.toHaveBeenCalledWith('sql_source');
+	});
+
+	it.each(['retarget', 'retire'] as const)('revokes a SQL comparison owner when its direct target is %s', action => {
+		const harness = createHarness();
+		const { coordinator } = harness;
+		coordinator.openSection('sql_source', 'instance-source');
+		coordinator.openSection('sql_comparison', 'instance-comparison');
+		expect(coordinator.adoptTarget('sql_source', 'instance-source', SQL_A.id, 'DbA', 1)).toBe(true);
+		expect(coordinator.adoptTarget('sql_comparison', 'instance-comparison', SQL_A.id, 'DbA', 1)).toBe(true);
+		coordinator.setComparisonOwner('sql_comparison', {
+			sourceBoxId: 'sql_source', connectionId: SQL_A.id, copilotSequence: 10,
+		});
+
+		if (action === 'retarget') {
+			expect(coordinator.adoptTarget('sql_comparison', 'instance-comparison', SQL_B.id, 'DbB', 2)).toBe(true);
+		} else {
+			expect(coordinator.retireTarget('sql_comparison', 'instance-comparison', 2)).toBe(true);
+		}
+
+		expect(coordinator.getComparisonOwner('sql_comparison')).toBeUndefined();
+		expect(harness.effects.deleteComparisonSummary).toHaveBeenCalledWith('sql_source', 'sql_comparison');
+		expect(coordinator.getTarget('sql_source')).toEqual({
+			boxId: 'sql_source', connectionId: SQL_A.id, database: 'DbA', generation: 1,
+		});
+	});
+
 	it('does not let a stale connect close a newer incarnation document', async () => {
 		const harness = createHarness();
 		const firstOpenStarted = deferred();

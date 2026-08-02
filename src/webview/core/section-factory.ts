@@ -51,6 +51,7 @@ import {
 } from './state';
 import {
 	getSqlSectionSession,
+	registerSqlDerivedComparisonSession,
 	unregisterSqlDerivedComparisonSession,
 	unregisterSqlDerivedComparisonsForSource,
 } from './sql-section-message-router.js';
@@ -1318,7 +1319,28 @@ async function qualifyTablesInTextPriority( text: any, opts: any) {
 	return out;
 }
 
+let pinnedSectionRemovalBypassDepth = 0;
+
+export function __kustoWithPinnedSectionRemovalBypass<T>(work: () => T): T {
+	pinnedSectionRemovalBypassDepth++;
+	try {
+		return work();
+	} finally {
+		pinnedSectionRemovalBypassDepth--;
+	}
+}
+
+export function isPinnedFirstSection(boxId: unknown): boolean {
+	if (!pState.firstSectionPinned || pinnedSectionRemovalBypassDepth > 0) return false;
+	const id = String(boxId || '').trim();
+	if (!id) return false;
+	const container = document.getElementById('queries-container');
+	const firstSection = Array.from(container?.children || []).find(element => !!String((element as HTMLElement).id || '').trim());
+	return String((firstSection as HTMLElement | undefined)?.id || '') === id;
+}
+
 export function removeQueryBox( boxId: any) {
+	if (isPinnedFirstSection(boxId)) return;
 	try { closeShareModalForOwner(boxId); } catch (e) { console.error('[kusto]', e); }
 	__kustoCancelMonacoInitRetry(String(boxId || ''));
 	unregisterSqlDerivedComparisonSession(String(boxId || ''));
@@ -1358,7 +1380,7 @@ export function removeQueryBox( boxId: any) {
 				// If removing the source box, remove the comparison box too.
 				const comparisonBoxId = meta.comparisonBoxId;
 					try { __kustoSetLinkedOptimizationMode(boxId, comparisonBoxId, false); } catch (e) { console.error('[kusto]', e); }
-				try { removeQueryBox(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
+				try { removeComparisonSection(comparisonBoxId); } catch (e) { console.error('[kusto]', e); }
 				try { delete optimizationMetadataByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
 			}
 		}
@@ -1542,7 +1564,6 @@ export {
 	__kustoRequestSchema, __kustoRequestDatabases,
 	closeAllFavoritesDropdowns,
 };
-window.addQueryBox = addQueryBox;
 window.toggleCachePill = toggleCachePill;
 window.toggleCachePopup = toggleCachePopup;
 // Schema functions (relocated from schema.ts) — __kustoRequestSchema bridge still needed by completions.
@@ -1563,18 +1584,6 @@ window.__kustoToggleCopilotChatForBox = function (boxId: any) {
 	if (kwEl && typeof kwEl.toggleCopilotChat === 'function') {
 		kwEl.toggleCopilotChat();
 	}
-};
-
-window.addCopilotQueryBox = function (options: any) {
-	const id = addQueryBox(options || {});
-	try {
-		const kwEl = __kustoGetQuerySectionElement(id);
-		if (kwEl && typeof kwEl.installCopilotChat === 'function') {
-			kwEl.installCopilotChat();
-			kwEl.setCopilotChatVisible(true);
-		}
-	} catch (e) { console.error('[kusto]', e); }
-	return id;
 };
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -1748,7 +1757,7 @@ export function __kustoGetChartDatasetsInDomOrder() {
 			'kw-markdown-section': 'markdown', 'kw-python-section': 'python', 'kw-html-section': 'html',
 		};
 		if (byTag[tag]) return byTag[tag];
-		for (const kind of ['query', 'sql', 'url', 'transformation', 'chart', 'markdown', 'python', 'html', 'copilotQuery']) {
+		for (const kind of ['query', 'sql', 'url', 'transformation', 'chart', 'markdown', 'python', 'html']) {
 			if (id.startsWith(kind + '_')) return kind;
 		}
 		return '';
@@ -2679,9 +2688,7 @@ export function removeUrlBox( boxId: any) {
 }
 
 // ── Window bridges for remaining legacy callers ──
-window.addPythonBox = addPythonBox;
 window.removePythonBox = removePythonBox;
-window.addUrlBox = addUrlBox;
 window.removeUrlBox = removeUrlBox;
 
 // ─── HTML section creation ──────────────────────────────────────────────────
@@ -2784,7 +2791,6 @@ export function removeHtmlBox(boxId: any) {
 	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
-window.addHtmlBox = addHtmlBox;
 window.removeHtmlBox = removeHtmlBox;
 
 // ─── SQL section creation ───────────────────────────────────────────────────
@@ -2882,7 +2888,15 @@ function removeSqlFavorite(connectionId: string, database: string) {
 }
 
 export function addSqlBox(options?: any) {
-	const id = (options && options.id) ? String(options.id) : ('sql_' + Date.now());
+	const id = (options && options.id) ? String(options.id) : `sql_${globalThis.crypto?.randomUUID?.()
+		|| `${Date.now()}_${Math.random().toString(16).slice(2)}`}`;
+	if (!id || sqlBoxes.some(candidateId => String(candidateId) === id)
+		|| !!document.getElementById(id)
+		|| Object.prototype.hasOwnProperty.call(optimizationMetadataByBoxId, id)) {
+		throw new Error(`SQL section identity "${id || '(missing)'}" is already in use.`);
+	}
+	const comparisonSourceBoxId = String(options?.comparisonSourceBoxId || '').trim();
+	const isComparison = !!comparisonSourceBoxId;
 	sqlBoxes.push(id);
 
 	const container = document.getElementById('queries-container');
@@ -2891,9 +2905,21 @@ export function addSqlBox(options?: any) {
 	}
 
 	const litEl = document.createElement('kw-sql-section') as any;
-	litEl.className = 'query-box';
+	litEl.className = `query-box${isComparison ? ' is-optimized-comparison' : ''}`;
 	litEl.id = id;
 	litEl.setAttribute('box-id', id);
+	if (isComparison) litEl.setAttribute('is-comparison', '');
+	const comparisonAdmissionRequestId = String(options?.comparisonAdmissionRequestId || '').trim();
+	if (isComparison && comparisonAdmissionRequestId) {
+		litEl.setAttribute('data-sql-comparison-admission-request-id', comparisonAdmissionRequestId);
+	}
+	if (comparisonSourceBoxId) {
+		optimizationMetadataByBoxId[id] = { sourceBoxId: comparisonSourceBoxId, isComparison: true };
+		optimizationMetadataByBoxId[comparisonSourceBoxId] = {
+			...(optimizationMetadataByBoxId[comparisonSourceBoxId] || {}), comparisonBoxId: id,
+		};
+		registerSqlDerivedComparisonSession(id, comparisonSourceBoxId);
+	}
 	litEl.sqlSession?.configureLifecycleEffects({
 		isRestoreInProgress: () => !!pState.restoreInProgress,
 		clearSchema: (boxId: string) => { delete sqlSchemaByBoxId[boxId]; },
@@ -2934,6 +2960,10 @@ export function addSqlBox(options?: any) {
 
 	litEl.addEventListener('sql-target-owner-changed', (e: any) => {
 		const sourceBoxId = String(e.detail?.boxId || id);
+		if (optimizationMetadataByBoxId[sourceBoxId]?.isComparison) {
+			if (e.detail?.hadCompleteTarget === true) detachSqlComparisonOwnership(sourceBoxId);
+			return;
+		}
 		const comparisonIds = new Set<string>();
 		const sourceMetadata = optimizationMetadataByBoxId[sourceBoxId];
 		if (sourceMetadata?.comparisonBoxId) comparisonIds.add(String(sourceMetadata.comparisonBoxId));
@@ -2943,7 +2973,7 @@ export function addSqlBox(options?: any) {
 			}
 		}
 		for (const comparisonId of comparisonIds) {
-			try { removeQueryBox(comparisonId); } catch (error) { console.error('[kusto]', error); }
+			try { removeComparisonSection(comparisonId); } catch (error) { console.error('[kusto]', error); }
 		}
 		delete optimizationMetadataByBoxId[sourceBoxId];
 	});
@@ -3085,30 +3115,69 @@ export function addSqlBox(options?: any) {
 	return id;
 }
 
+function detachSqlComparisonOwnership(id: string, notifyHost = true): string {
+	const ownMetadata = optimizationMetadataByBoxId[id];
+	const sourceBoxId = ownMetadata?.isComparison ? String(ownMetadata.sourceBoxId || '').trim() : '';
+	if (!sourceBoxId) return '';
+	try { document.getElementById(id)?.removeAttribute('data-sql-comparison-admission-request-id'); } catch (e) { console.error('[kusto]', e); }
+	unregisterSqlDerivedComparisonSession(id);
+	try { unbindResultArtifactConsumer(comparisonSourceArtifactConsumerId(id)); } catch (e) { console.error('[kusto]', e); }
+	if (notifyHost) {
+		try { postMessageToHost({ type: 'sqlComparisonRemoved', boxId: id, sourceBoxId }); } catch (e) { console.error('[kusto]', e); }
+	}
+	try { __kustoSetLinkedOptimizationMode(sourceBoxId, id, false); } catch (e) { console.error('[kusto]', e); }
+	const sourceMetadata = optimizationMetadataByBoxId[sourceBoxId];
+	if (String(sourceMetadata?.comparisonBoxId || '') === id) {
+		delete sourceMetadata.comparisonBoxId;
+		if (Object.keys(sourceMetadata).length === 0) delete optimizationMetadataByBoxId[sourceBoxId];
+	}
+	delete optimizationMetadataByBoxId[id];
+	return sourceBoxId;
+}
+
+export function detachSqlComparisonForAdmissionRollback(id: string, expectedSourceBoxId: string): boolean {
+	const sourceBoxId = String((optimizationMetadataByBoxId[id] as any)?.sourceBoxId || '').trim();
+	if (!sourceBoxId || sourceBoxId !== String(expectedSourceBoxId || '').trim()) return false;
+	detachSqlComparisonOwnership(id, false);
+	try { schedulePersist('sql-comparison-rollback', true); } catch (e) { console.error('[kusto]', e); }
+	return true;
+}
+
 export function removeSqlBox(boxId: any) {
-	try { closeShareModalForOwner(boxId); } catch (e) { console.error('[kusto]', e); }
-	unregisterSqlDerivedComparisonsForSource(String(boxId || ''));
+	const id = String(boxId || '');
+	if (isPinnedFirstSection(id)) return;
+	try { closeShareModalForOwner(id); } catch (e) { console.error('[kusto]', e); }
+	detachSqlComparisonOwnership(id);
+	unregisterSqlDerivedComparisonsForSource(id);
 	try {
 		for (const [candidateId, metadata] of Object.entries(optimizationMetadataByBoxId || {})) {
 			if (!metadata || typeof metadata !== 'object') continue;
-			if ((metadata as any).isComparison && String((metadata as any).sourceBoxId || '') === String(boxId)) {
-				try { removeQueryBox(candidateId); } catch (e) { console.error('[kusto]', e); }
+			if ((metadata as any).isComparison && String((metadata as any).sourceBoxId || '') === id) {
+				try { removeComparisonSection(candidateId); } catch (e) { console.error('[kusto]', e); }
 			}
 		}
-		delete optimizationMetadataByBoxId[boxId];
+		delete optimizationMetadataByBoxId[id];
 	} catch (e) { console.error('[kusto]', e); }
-	try { clearResultsState(boxId); } catch (e) { console.error('[kusto]', e); }
-	delete sqlSchemaByBoxId[String(boxId || '')];
-	try { delete pState.queryResultJsonByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-	try { delete pState.resultArtifactByBoxId[boxId]; } catch (e) { console.error('[kusto]', e); }
-	try { getSqlSectionSession(String(boxId))?.clear(); } catch (e) { console.error('[kusto]', e); }
-	sqlBoxes = sqlBoxes.filter((id: any) => id !== boxId);
-	const box = document.getElementById(boxId) as any;
+	try { clearResultsState(id); } catch (e) { console.error('[kusto]', e); }
+	delete sqlSchemaByBoxId[id];
+	try { delete pState.queryResultJsonByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
+	try { delete pState.resultArtifactByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
+	try { getSqlSectionSession(id)?.clear(); } catch (e) { console.error('[kusto]', e); }
+	sqlBoxes = sqlBoxes.filter((candidateId: any) => candidateId !== id);
+	const box = document.getElementById(id) as any;
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
 	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 }
 
-window.addSqlBox = addSqlBox;
+function removeComparisonSection(boxId: string): void {
+	const element = document.getElementById(boxId);
+	const sqlOwned = String(element?.tagName || '').toLowerCase() === 'kw-sql-section'
+		|| sqlBoxes.some(candidateId => String(candidateId) === boxId)
+		|| !!getSqlSectionSession(boxId);
+	if (sqlOwned) removeSqlBox(boxId);
+	else removeQueryBox(boxId);
+}
+
 window.removeSqlBox = removeSqlBox;

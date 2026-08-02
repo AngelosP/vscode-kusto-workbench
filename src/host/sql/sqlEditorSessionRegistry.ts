@@ -100,6 +100,8 @@ export class SqlEditorSessionRegistry {
 	getDatabase(boxId: string): string | undefined {
 		const id = String(boxId || '').trim();
 		if (!id) return undefined;
+		const directDatabase = this.databaseByBoxId.get(id);
+		if (directDatabase) return directDatabase;
 		const sourceBoxId = this.comparisonOwnerByBoxId.get(id)?.sourceBoxId ?? id;
 		return this.databaseByBoxId.get(sourceBoxId);
 	}
@@ -107,6 +109,8 @@ export class SqlEditorSessionRegistry {
 	getGeneration(boxId: string): number {
 		const id = String(boxId || '').trim();
 		if (!id) return 0;
+		const directGeneration = this.targetGenerationByBoxId.get(id);
+		if (directGeneration !== undefined) return directGeneration;
 		const sourceBoxId = this.comparisonOwnerByBoxId.get(id)?.sourceBoxId ?? id;
 		return this.targetGenerationByBoxId.get(sourceBoxId) ?? 0;
 	}
@@ -195,7 +199,7 @@ export class SqlEditorSessionRegistry {
 		if (!id) return undefined;
 		const owner = this.comparisonOwnerByBoxId.get(id);
 		this.comparisonOwnerByBoxId.delete(id);
-		this.ownerTokenByBoxId.delete(id);
+		if (owner) this.ownerTokenByBoxId.delete(id);
 		return owner;
 	}
 
@@ -255,7 +259,7 @@ export class SqlEditorSessionRegistry {
 		const sourceBoxId = derivedOwner?.sourceBoxId ?? id;
 		const issued = this.getIssuedOwner(id) ?? this.getIssuedOwner(sourceBoxId);
 		const connectionId = derivedOwner?.connectionId ?? this.connectionIdByBoxId.get(sourceBoxId);
-		const database = this.databaseByBoxId.get(sourceBoxId);
+		const database = this.databaseByBoxId.get(id) ?? this.databaseByBoxId.get(sourceBoxId);
 		if (!issued || !connectionId || !database
 			|| issued.owner.connectionId !== connectionId || issued.owner.database !== database) return undefined;
 		return Object.freeze({ connectionId, database, ownerToken: issued.token, generation: issued.owner.generation });
@@ -316,7 +320,7 @@ export class SqlEditorSessionRegistry {
 		const comparisonOwner = this.comparisonOwnerByBoxId.get(boxId);
 		const sourceBoxId = comparisonOwner?.sourceBoxId ?? boxId;
 		const connectionId = comparisonOwner?.connectionId ?? directConnectionId;
-		const database = this.databaseByBoxId.get(sourceBoxId);
+		const database = this.databaseByBoxId.get(boxId) ?? this.databaseByBoxId.get(sourceBoxId);
 		if (!connectionId || !database) return undefined;
 
 		const connection = this.options.sqlWorkbench.connectionManager.getConnection(connectionId);
@@ -332,7 +336,8 @@ export class SqlEditorSessionRegistry {
 		return {
 			connectionId,
 			database,
-			generation: this.targetGenerationByBoxId.get(sourceBoxId) ?? 0,
+			generation: this.targetGenerationByBoxId.get(boxId)
+				?? this.targetGenerationByBoxId.get(sourceBoxId) ?? 0,
 			targetSignature: sqlConnectionTargetSignature(connection),
 			principalFingerprint,
 			revocationGeneration: this.options.sqlWorkbench.leaveNoTracePolicy.getRevocationGeneration(connectionId),

@@ -10,6 +10,7 @@
  *   if (pState.restoreInProgress) { ... }
  */
 import type { PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
+import { addableSectionKindsForDocument, defaultSectionKindForDocument } from '../../shared/documentSectionCapabilities.js';
 
 export const pState = {
 	/** Monotonic local UI edit revision used to reject stale host reloads. */
@@ -73,10 +74,10 @@ export const pState = {
 	compatibilityMode: false,
 
 	/** Which section kinds the add-controls buttons allow. */
-	allowedSectionKinds: ['query', 'chart', 'transformation', 'python', 'url', 'markdown'] as string[],
+	allowedSectionKinds: [...addableSectionKindsForDocument('kqlx')] as string[],
 
 	/** Default section kind for empty documents. */
-	defaultSectionKind: 'query' as string,
+	defaultSectionKind: defaultSectionKindForDocument('kqlx') as string,
 
 	/** Single section kind for compatibility mode (.kql → 'query', .md → 'markdown'). */
 	compatibilitySingleKind: 'query' as string,
@@ -95,6 +96,12 @@ export const pState = {
 
 	/** True when the first section is pinned to position 0 (e.g. kql+json sidecar). */
 	firstSectionPinned: false,
+
+	/** False when the host projection is malformed or otherwise read-only. */
+	documentMutationAllowed: true,
+
+	/** False when retained last-good DOM is visual-only after a malformed reload. */
+	documentRuntimeActive: false,
 
 	/** True when delayed HTML Power BI export compatibility notices are enabled. */
 	htmlPowerBiCompatibilityCheckEnabled: true,

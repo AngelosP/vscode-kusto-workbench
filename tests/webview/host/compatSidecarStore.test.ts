@@ -195,7 +195,7 @@ describe('CompatSidecarStore lossless baseline', () => {
 			] },
 		} as any);
 		const format: CompatSidecarFormat = {
-			primaryKind: 'query', acceptedPrimaryKinds: ['query', 'copilotQuery'], sidecarKind: 'kqlx',
+			primaryKind: 'query', sidecarKind: 'kqlx',
 		};
 		const createStore = () => new CompatSidecarStore({
 			compatUri,
@@ -247,7 +247,7 @@ describe('CompatSidecarStore lossless baseline', () => {
 		const publicationStarted = new Promise<void>(resolve => { markPublication = resolve; });
 		const publicationGate = new Promise<void>(resolve => { releasePublication = resolve; });
 		const format: CompatSidecarFormat = {
-			primaryKind: 'query', acceptedPrimaryKinds: ['query', 'copilotQuery'], sidecarKind: 'kqlx',
+			primaryKind: 'query', sidecarKind: 'kqlx',
 		};
 		try {
 			fs.writeFileSync(firstPath, baseline, 'utf8');
@@ -298,7 +298,7 @@ describe('CompatSidecarStore lossless baseline', () => {
 			] },
 		} as any);
 		const format: CompatSidecarFormat = {
-			primaryKind: 'query', acceptedPrimaryKinds: ['query', 'copilotQuery'], sidecarKind: 'kqlx',
+			primaryKind: 'query', sidecarKind: 'kqlx',
 		};
 		try {
 			fs.writeFileSync(sidecarPath, baselineText, 'utf8');
@@ -340,7 +340,7 @@ describe('CompatSidecarStore lossless baseline', () => {
 			] },
 		} as any);
 		const format: CompatSidecarFormat = {
-			primaryKind: 'query', acceptedPrimaryKinds: ['query', 'copilotQuery'], sidecarKind: 'kqlx',
+			primaryKind: 'query', sidecarKind: 'kqlx',
 		};
 		let publications = 0;
 		try {
@@ -394,7 +394,7 @@ describe('CompatSidecarStore lossless baseline', () => {
 			text = new TextDecoder().decode(bytes);
 		});
 		const format: CompatSidecarFormat = {
-			primaryKind: 'query', acceptedPrimaryKinds: ['query', 'copilotQuery'], sidecarKind: 'kqlx',
+			primaryKind: 'query', sidecarKind: 'kqlx',
 		};
 		const store = new CompatSidecarStore({
 			compatUri,
@@ -417,13 +417,13 @@ describe('CompatSidecarStore lossless baseline', () => {
 	});
 
 	it.each([
-		['KQL', 'query', ['query', 'copilotQuery'], 'kqlx', 'sample.kql'],
-		['SQL', 'sql', ['sql'], 'sqlx', 'sample.sql'],
+		['KQL', 'query', 'kqlx', 'sample.kql'],
+		['SQL', 'sql', 'sqlx', 'sample.sql'],
 	] as const)('materializes an unchanged future-compatible %s sidecar over its exact baseline', async (
-		_label, primaryKind, acceptedPrimaryKinds, sidecarKind, primaryName,
+		_label, primaryKind, sidecarKind, primaryName,
 	) => {
 		const compatUri = vscode.Uri.parse(`untitled:/work/${primaryName}`);
-		const format: CompatSidecarFormat = { primaryKind, acceptedPrimaryKinds, sidecarKind };
+		const format: CompatSidecarFormat = { primaryKind, sidecarKind };
 		const baseline = {
 			kind: sidecarKind, version: 1, futureRoot: { keep: true }, state: {
 				futureState: 'preserved', sections: [
@@ -456,14 +456,14 @@ describe('CompatSidecarStore lossless baseline', () => {
 	});
 
 	it.each([
-		['KQL', 'query', ['query', 'copilotQuery'], 'kqlx', 'sample.kql'],
-		['SQL', 'sql', ['sql'], 'sqlx', 'sample.sql'],
+		['KQL', 'query', 'kqlx', 'sample.kql'],
+		['SQL', 'sql', 'sqlx', 'sample.sql'],
 	] as const)('preserves future %s sidecar data under the locked write baseline', async (
-		_label, primaryKind, acceptedPrimaryKinds, sidecarKind, primaryName,
+		_label, primaryKind, sidecarKind, primaryName,
 	) => {
 		const compatUri = vscode.Uri.parse(`untitled:/work/${primaryName}`);
 		const sidecarUri = vscode.Uri.parse(`untitled:/work/${primaryName}.json`);
-		const format: CompatSidecarFormat = { primaryKind, acceptedPrimaryKinds, sidecarKind };
+		const format: CompatSidecarFormat = { primaryKind, sidecarKind };
 		let text = stringifyKqlxFile({
 			kind: sidecarKind,
 			version: 1,
@@ -530,7 +530,7 @@ describe('CompatSidecarStore lossless baseline', () => {
 			recoveryText = new TextDecoder().decode(bytes);
 		});
 		const format: CompatSidecarFormat = {
-			primaryKind: 'query', acceptedPrimaryKinds: ['query', 'copilotQuery'], sidecarKind: 'kqlx',
+			primaryKind: 'query', sidecarKind: 'kqlx',
 		};
 		const store = new CompatSidecarStore({
 			compatUri,
@@ -567,7 +567,7 @@ describe('CompatSidecarStore lossless baseline', () => {
 			recoveryText = new TextDecoder().decode(bytes);
 		});
 		const format: CompatSidecarFormat = {
-			primaryKind: 'query', acceptedPrimaryKinds: ['query', 'copilotQuery'], sidecarKind: 'kqlx',
+			primaryKind: 'query', sidecarKind: 'kqlx',
 		};
 		const store = new CompatSidecarStore({
 			compatUri,
@@ -607,7 +607,7 @@ describe('CompatSidecarStore lossless baseline', () => {
 			recoveryText = new TextDecoder().decode(bytes);
 		});
 		const format: CompatSidecarFormat = {
-			primaryKind: 'query', acceptedPrimaryKinds: ['query', 'copilotQuery'], sidecarKind: 'kqlx',
+			primaryKind: 'query', sidecarKind: 'kqlx',
 		};
 		const store = new CompatSidecarStore({
 			compatUri,

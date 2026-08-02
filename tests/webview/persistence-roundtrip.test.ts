@@ -84,6 +84,7 @@ const testState = vi.hoisted(() => {
 		let protectedConnectionIds = new Set<string>();
 		const selectedConnectionId = sqlConnections.find(connection => connection.serverUrl === (options as any).serverUrl)?.id || '';
 		const el = document.createElement('kw-sql-section') as HTMLElement & {
+			serialize: () => unknown;
 			setFavoritesMode: ReturnType<typeof vi.fn>;
 			setLeaveNoTraceConnectionIds: ReturnType<typeof vi.fn>;
 			canPersistResults: () => boolean;
@@ -99,6 +100,12 @@ const testState = vi.hoisted(() => {
 		el.getSqlConnectionId = () => selectedConnectionId;
 		el.getDatabase = () => String(options.database || '');
 		el.getQuery = () => String((window as any).__testPendingSqlQueryByBoxId?.[id] || '');
+		el.serialize = () => ({
+			id, type: 'sql', query: el.getQuery(), expanded: true,
+			...(options && (options as any).comparisonSourceBoxId
+				? { comparisonSourceBoxId: String((options as any).comparisonSourceBoxId) }
+				: {}),
+		});
 		el.canPersistResults = () => {
 			const currentConnectionId = el.getConnectionId();
 			return !currentConnectionId || !protectedConnectionIds.has(currentConnectionId);
@@ -176,6 +183,8 @@ vi.mock('../../src/webview/shared/persistence-state.js', () => ({
 		defaultSectionKind: 'query',
 		upgradeRequestType: 'requestUpgradeToKqlx',
 		documentKind: 'kqlx',
+		documentMutationAllowed: true,
+		documentRuntimeActive: true,
 		documentEditRevision: 0,
 		documentUri: '',
 		compatibilityTooltip: '',
@@ -210,6 +219,7 @@ vi.mock('../../src/webview/core/results-state.js', () => ({
 }));
 
 vi.mock('../../src/webview/core/section-factory.js', () => ({
+	__kustoWithPinnedSectionRemovalBypass: <T>(work: () => T) => work(),
 	addQueryBox: testState.addQueryBox,
 	removeQueryBox: vi.fn((id: string) => {
 		const idx = testState.queryBoxes.indexOf(id);
@@ -350,13 +360,13 @@ vi.mock('../../src/webview/monaco/monaco.js', () => ({
 
 import { pState } from '../../src/webview/shared/persistence-state.js';
 import { postMessageToHost } from '../../src/webview/shared/webview-messages.js';
-import { displayResult, displayResultForBox } from '../../src/webview/core/results-state.js';
+import { clearResultsState, displayResult, displayResultForBox } from '../../src/webview/core/results-state.js';
 import { optimizationMetadataByBoxId, sqlFavoritesModeByBoxId } from '../../src/webview/core/state.js';
 import { updateConnectionSelects, __kustoGetConnectionId, __kustoGetDatabase, __kustoGetQuerySectionElement, __kustoSetAutoEnterFavoritesForBox } from '../../src/webview/core/section-factory.js';
 import { schemaRequestTokenByBoxId } from '../../src/webview/core/kusto-schema-request-state.js';
 import { __kustoCloseShareModal, setRunMode } from '../../src/webview/sections/kw-query-toolbar.js';
 import { addChartBox } from '../../src/webview/sections/kw-chart-section.js';
-import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, discardPendingSqlResultRestores, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, markKustoLeaveNoTracePolicyPending, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, schedulePersist, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
+import { acknowledgePersistDocument, adoptCurrentStateAsCleanForTest, applyKustoLeaveNoTracePolicy as applyKustoLeaveNoTracePolicyRaw, createSectionWithCapabilities, discardPendingSqlResultRestores, flushCompatibilityPersist, getDeferredRestoredResultJobCountForTest, getKqlxState, getPendingKustoLeaveNoTracePolicyRequestIdForTest, handleDocumentDataMessage, markKustoLeaveNoTracePolicyPending, resetDocumentPersistenceForTest, resolvePendingKustoResultRestores, resolvePendingSqlResultRestores, schedulePersist, __kustoApplyDocumentCapabilities, __kustoRequestAddSection, __kustoScheduleHtmlPowerBiCompatibilityCheck, __kustoScheduleLocalSchemaPrewarm, __kustoSetHtmlPowerBiCompatibilityCheckEnabled } from '../../src/webview/core/persistence.js';
 import { createDerivedResultArtifactPublication, publicationFromPersistedResultArtifact, RESULT_ARTIFACT_CSV_RESET_EVENT } from '../../src/shared/resultArtifact.js';
 import { sqlConnectionTargetSignature } from '../../src/shared/sqlConnectionIdentity.js';
 
@@ -601,6 +611,13 @@ describe('persistence round-trip', () => {
 			database: 'BrowserDb', connectionIdHint: 'missing-browser-sql',
 			resultJson: JSON.stringify({ columns: [{ name: 'Value' }], rows: [['source']], metadata: {} }),
 		};
+		const sourceArtifact = {
+			artifactId: `result:${sourceId}:1`, sourceBoxId: sourceId, revision: 1, createdAt: 1,
+			producer: { engine: 'sql', boxId: sourceId, producer: 'browser-restored' },
+			policy: { exportToCsv: true }, lineage: [],
+		};
+		testState.getCurrentResultArtifact.mockImplementation((boxId: string) =>
+			boxId === sourceId ? sourceArtifact : null);
 		const comparison = {
 			type: 'query', id: comparisonId, query: 'select 2 as Value', comparisonSourceBoxId: sourceId,
 			resultJson: JSON.stringify({ columns: [{ name: 'Value' }], rows: [['comparison']], metadata: {} }),
@@ -621,7 +638,13 @@ describe('persistence round-trip', () => {
 			const comparisonCall = vi.mocked(displayResultForBox).mock.calls
 				.find(call => call[1] === comparisonId);
 			expect(comparisonCall?.[0]).toEqual(expect.objectContaining({ rows: [['comparison']] }));
-			expect(comparisonCall?.[2]?.artifactPublication?.policy).toEqual({ exportToCsv: true });
+			expect(comparisonCall?.[2]?.artifactPublication).toMatchObject({
+				lineage: [{ sourceArtifactId: sourceArtifact.artifactId, role: 'comparison-source' }],
+				policy: {
+					exportToCsv: true,
+					sourcePolicies: [{ sourceArtifactId: sourceArtifact.artifactId, exportToCsv: true }],
+				},
+			});
 			expect(comparisonCall?.[2]?.artifactPublication?.producer).toEqual(expect.objectContaining({
 				engine: 'kusto', boxId: comparisonId, producer: 'browser-restored',
 			}));
@@ -742,6 +765,27 @@ describe('persistence round-trip', () => {
 		expect(state.sections.map((s) => s.type)).toEqual(['query', 'markdown', 'html', 'sql']);
 	});
 
+	it('omits provisional SQL comparisons until host admission', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+
+		const source = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		source.id = 'sql_source';
+		source.serialize = () => ({ id: source.id, type: 'sql', query: 'SELECT 1' });
+		const comparison = document.createElement('div') as HTMLElement & { serialize: () => unknown };
+		comparison.id = 'sql_comparison';
+		comparison.setAttribute('data-sql-comparison-admission-request-id', 'request-1');
+		comparison.serialize = () => ({
+			id: comparison.id, type: 'sql', query: 'SELECT 2', comparisonSourceBoxId: source.id,
+		});
+		container.append(source, comparison);
+
+		expect(getKqlxState().sections).toEqual([
+			{ id: 'sql_source', type: 'sql', query: 'SELECT 1' },
+		]);
+	});
+
 	it('does not serialize application editing preferences into a new document', () => {
 		handleDocumentDataMessage({ ok: true, forceReload: true, state: { sections: [] } });
 
@@ -762,8 +806,21 @@ describe('persistence round-trip', () => {
 		const container = document.createElement('div');
 		container.id = 'queries-container';
 		const query = document.getElementById('query_good')!;
+		const clearTargetBoundState = vi.fn();
+		const disposeSchemaLifecycle = vi.fn();
+		const clearResults = vi.fn();
+		Object.assign(query, {
+			clearTargetBoundState,
+			disposeSchemaLifecycle,
+			clearResults,
+			getSchemaLifecycleIdentity: () => ({ sectionInstanceId: 'query-good-instance', targetGeneration: 3 }),
+		});
 		container.appendChild(query);
 		document.body.appendChild(container);
+		testState.queryExecutionTimers.query_good = { active: true };
+		pState.queryResultJsonByBoxId.query_good = '{"rows":[[1]]}';
+		pState.resultArtifactByBoxId.query_good = { artifactId: 'result:query_good:1' } as any;
+		pState.kustoResultOwnerByBoxId.query_good = { accountPartition: 'partition-a', leaveNoTraceRevision: 0 };
 		vi.mocked(postMessageToHost).mockClear();
 		vi.mocked(__kustoCloseShareModal).mockClear();
 		resetCsv.mockClear();
@@ -805,6 +862,18 @@ describe('persistence round-trip', () => {
 		expect(diffTable.rows).toEqual([]);
 		expect(diffTable.columns).toEqual([]);
 		expect(diffTable.canCopyRows()).toBe(false);
+		expect(pState.documentRuntimeActive).toBe(false);
+		expect(clearTargetBoundState).toHaveBeenCalledOnce();
+		expect(disposeSchemaLifecycle).toHaveBeenCalledOnce();
+		expect(clearResults).toHaveBeenCalled();
+		expect(clearResultsState).toHaveBeenCalledWith('query_good');
+		expect(postMessageToHost).toHaveBeenCalledWith({
+			type: 'kustoSectionClose', boxId: 'query_good', sectionInstanceId: 'query-good-instance',
+		});
+		expect(testState.queryExecutionTimers.query_good).toBeUndefined();
+		expect(pState.queryResultJsonByBoxId.query_good).toBeUndefined();
+		expect(pState.resultArtifactByBoxId.query_good).toBeUndefined();
+		expect(pState.kustoResultOwnerByBoxId.query_good).toBeUndefined();
 
 		expect(document.getElementById('query_good')).toBe(query);
 		expect((container as HTMLElement & { inert?: boolean }).inert).toBe(true);
@@ -820,6 +889,7 @@ describe('persistence round-trip', () => {
 
 		expect(document.getElementById('kusto-malformed-document-banner')).toBeNull();
 		expect((container as HTMLElement & { inert?: boolean }).inert).toBe(false);
+		expect(pState.documentRuntimeActive).toBe(true);
 		diff.remove();
 		window.removeEventListener(RESULT_ARTIFACT_CSV_RESET_EVENT, resetCsv);
 	});
@@ -1368,6 +1438,38 @@ describe('persistence round-trip', () => {
 		expect(pState.pendingQueryTextByBoxId.query_cmp_orphan).toBeUndefined();
 		expect(pState.queryResultJsonByBoxId.query_cmp_orphan).toBeUndefined();
 		expect(optimizationMetadataByBoxId.query_cmp_orphan).toBeUndefined();
+	});
+
+	it.each([
+		['missing source', [
+			{ type: 'sql', id: 'sql_comparison', comparisonSourceBoxId: 'sql_missing', query: 'SELECT 2' },
+		]],
+		['self source', [
+			{ type: 'sql', id: 'sql_comparison', comparisonSourceBoxId: 'sql_comparison', query: 'SELECT 2' },
+		]],
+		['wrong-type source', [
+			{ type: 'markdown', id: 'markdown_source', text: 'not SQL' },
+			{ type: 'sql', id: 'sql_comparison', comparisonSourceBoxId: 'markdown_source', query: 'SELECT 2' },
+		]],
+	] as const)('rejects SQL comparison restore with %s before DOM mutation', (_label, sections) => {
+		const applied = handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true, documentUri: `file:///tmp/${_label}.sqlx`,
+			documentKind: 'sqlx',
+			allowedSectionKinds: ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'],
+			defaultSectionKind: 'sql', state: { sections },
+		});
+
+		expect(applied).toBe(false);
+		expect(testState.addSqlBox).not.toHaveBeenCalled();
+		expect(testState.addMarkdownBox).not.toHaveBeenCalled();
+		expect(document.getElementById('kusto-malformed-document-banner')?.textContent)
+			.toContain('invalid source');
+		expect(pState.documentMutationAllowed).toBe(false);
+		expect(createSectionWithCapabilities('markdown')).toMatchObject({
+			ok: false, error: expect.stringContaining('read-only'),
+		});
+		expect(window.addMarkdownBox({ id: 'forged_after_malformed' })).toBe('');
+		expect(testState.addMarkdownBox).not.toHaveBeenCalled();
 	});
 
 	it('does not restore SQL comparison rows while the existing source owner is unresolved', () => {
@@ -2225,6 +2327,211 @@ describe('persistence round-trip', () => {
 		expect(messages[1].state).toEqual(messages[0].state);
 	});
 
+	it.each([
+		['plain KQL compatibility', 'kql', 'requestUpgradeToKqlx', ['query', 'markdown'], 'markdown'],
+		['plain SQL compatibility', 'sql', 'requestUpgradeToSqlx', ['sql', 'markdown'], 'markdown'],
+	] as const)('rejects automation creation before mutating %s', (_label, documentKind, upgradeRequestType, allowedKinds, sectionKind) => {
+		pState.documentKind = documentKind;
+		pState.upgradeRequestType = upgradeRequestType;
+		pState.allowedSectionKinds = [...allowedKinds];
+		pState.compatibilityMode = true;
+
+		const creation = createSectionWithCapabilities(sectionKind);
+
+		expect(creation).toMatchObject({ ok: false, error: expect.stringContaining('requires upgrading') });
+		expect(testState.addQueryBox).not.toHaveBeenCalled();
+		expect(testState.addMarkdownBox).not.toHaveBeenCalled();
+		expect(testState.addSqlBox).not.toHaveBeenCalled();
+	});
+
+	it('rejects a forbidden query creation in MDX before mutation', () => {
+		pState.documentKind = 'mdx';
+		pState.allowedSectionKinds = ['markdown', 'url', 'transformation'];
+
+		expect(createSectionWithCapabilities('query')).toMatchObject({
+			ok: false, error: expect.stringContaining('not supported in .mdx'),
+		});
+		expect(testState.addQueryBox).not.toHaveBeenCalled();
+	});
+
+	it('routes legacy creation globals through MDX capability admission', () => {
+		pState.documentKind = 'mdx';
+		pState.allowedSectionKinds = ['markdown', 'url', 'transformation'];
+
+		expect(window.addQueryBox({ id: 'forged_query' })).toBe('');
+		expect(window.addMarkdownBox({ id: 'allowed_markdown' })).toBe('allowed_markdown');
+		expect(testState.addQueryBox).not.toHaveBeenCalled();
+		expect(testState.addMarkdownBox).toHaveBeenCalledWith({ id: 'allowed_markdown' });
+	});
+
+	it('blocks legacy creation globals for an explicit empty capability set', () => {
+		pState.documentKind = 'mdx';
+		pState.allowedSectionKinds = [];
+
+		expect(window.addMarkdownBox({ id: 'forged_markdown' })).toBe('');
+		expect(window.addUrlBox({ id: 'forged_url' })).toBe('');
+		expect(testState.addMarkdownBox).not.toHaveBeenCalled();
+		expect(testState.urlBoxes).toEqual([]);
+	});
+
+	it('hides controls and inserts no default for an explicit empty capability set', () => {
+		const controls = document.createElement('div');
+		controls.className = 'add-controls';
+		const options = document.createElement('div');
+		options.className = 'add-controls-options';
+		const markdownButton = document.createElement('button');
+		markdownButton.className = 'add-control-btn';
+		markdownButton.setAttribute('data-add-kind', 'markdown');
+		options.appendChild(markdownButton);
+		controls.appendChild(options);
+		document.body.appendChild(controls);
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'mdx', documentUri: 'file:///tmp/read-only-empty.mdx',
+			allowedSectionKinds: [], defaultSectionKind: 'markdown', state: { sections: [] },
+		});
+		__kustoApplyDocumentCapabilities();
+
+		expect(controls.style.display).toBe('none');
+		expect(markdownButton.style.display).toBe('none');
+		expect(testState.addMarkdownBox).not.toHaveBeenCalled();
+		expect(testState.addQueryBox).not.toHaveBeenCalled();
+		expect(testState.addSqlBox).not.toHaveBeenCalled();
+	});
+
+	it('restores and serializes SQLX comparisons as SQL sections', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'sqlx', documentUri: 'file:///tmp/sql-comparison.sqlx',
+			allowedSectionKinds: ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'],
+			defaultSectionKind: 'sql',
+			state: { sections: [
+				{ id: 'sql_source', type: 'sql', query: 'SELECT 1' },
+				{ id: 'sql_comparison', type: 'sql', query: 'SELECT 2', comparisonSourceBoxId: 'sql_source' },
+			] },
+		});
+
+		expect(getKqlxState().sections).toEqual([
+			{ id: 'sql_source', type: 'sql', query: 'SELECT 1', expanded: true },
+			{
+				id: 'sql_comparison', type: 'sql', query: 'SELECT 2', expanded: true,
+				comparisonSourceBoxId: 'sql_source',
+			},
+		]);
+	});
+
+	it('restores SQL-kind comparison rows with exact derived source lineage', () => {
+		vi.useFakeTimers();
+		try {
+			const connection = {
+				id: 'sql-lineage', name: 'Lineage', dialect: 'mssql', serverUrl: 'lineage.example',
+				database: 'Db', authType: 'sql-login', username: 'User',
+			};
+			testState.sqlConnections.push(connection);
+			const sourceArtifact = {
+				artifactId: 'result:sql_source:1', sourceBoxId: 'sql_source', revision: 1, createdAt: 1,
+				producer: {
+					engine: 'sql', boxId: 'sql_source', executionId: 'source-run', query: 'SELECT 1',
+					connectionId: connection.id, database: 'Db', producer: 'manual',
+				},
+				policy: {
+					exposeToActiveContent: true, sendToModel: true,
+					shareToClipboard: true, exportToCsv: true,
+				},
+				lineage: [],
+			};
+			testState.getCurrentResultArtifact.mockImplementation((boxId: string) =>
+				boxId === 'sql_source' ? sourceArtifact : null);
+			const comparisonArtifact = {
+				version: 1, artifactId: 'result:sql_comparison:1', sourceBoxId: 'sql_comparison',
+				revision: 1, createdAt: 2,
+				producer: {
+					engine: 'sql', boxId: 'sql_comparison', executionId: 'comparison-run',
+					query: 'SELECT 2', connectionId: connection.id, database: 'Db', producer: 'comparison',
+				},
+				lineage: [{ sourceArtifactId: sourceArtifact.artifactId, role: 'comparison-source' }],
+				policy: {
+					exposeToActiveContent: true, sendToModel: true,
+					shareToClipboard: true, exportToCsv: true,
+					sourcePolicies: [{
+						sourceArtifactId: sourceArtifact.artifactId,
+						exposeToActiveContent: true, sendToModel: true,
+						shareToClipboard: true, exportToCsv: true,
+					}],
+				},
+			};
+			const comparisonResult = JSON.stringify({ columns: [{ name: 'Value' }], rows: [[2]], metadata: {} });
+
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'sqlx', documentUri: 'file:///tmp/sql-lineage.sqlx',
+				allowedSectionKinds: ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'],
+				state: { sections: [
+					{
+						id: 'sql_source', type: 'sql', query: 'SELECT 1', serverUrl: connection.serverUrl,
+						connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection), database: 'Db',
+					},
+					{
+						id: 'sql_comparison', type: 'sql', query: 'SELECT 2', comparisonSourceBoxId: 'sql_source',
+						serverUrl: connection.serverUrl, connectionIdHint: connection.id,
+						targetSignature: sqlConnectionTargetSignature(connection), database: 'Db',
+						resultJson: comparisonResult, resultArtifact: comparisonArtifact,
+					},
+				] },
+			});
+			flushDeferredRestoreTimers();
+
+			const comparisonCall = vi.mocked(displayResultForBox).mock.calls
+				.find(call => call[1] === 'sql_comparison');
+			expect(comparisonCall?.[2]?.artifactPublication).toMatchObject({
+				lineage: [{ sourceArtifactId: sourceArtifact.artifactId, role: 'comparison-source' }],
+				policy: { sourcePolicies: [expect.objectContaining({ sourceArtifactId: sourceArtifact.artifactId })] },
+			});
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('rejects SQL-kind comparison rows without an exact derived lineage descriptor', () => {
+		vi.useFakeTimers();
+		try {
+			const connection = {
+				id: 'sql-lineage-missing', name: 'Lineage', dialect: 'mssql', serverUrl: 'lineage-missing.example',
+				database: 'Db', authType: 'sql-login', username: 'User',
+			};
+			testState.sqlConnections.push(connection);
+			testState.getCurrentResultArtifact.mockImplementation((boxId: string) => boxId === 'sql_source'
+				? {
+					artifactId: 'result:sql_source:1', sourceBoxId: 'sql_source', revision: 1,
+					createdAt: 1, producer: { engine: 'sql', boxId: 'sql_source' },
+					policy: { exportToCsv: true }, lineage: [],
+				}
+				: null);
+
+			handleDocumentDataMessage({
+				type: 'documentData', ok: true, forceReload: true,
+				documentKind: 'sqlx', documentUri: 'file:///tmp/sql-lineage-missing.sqlx',
+				allowedSectionKinds: ['sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'],
+				state: { sections: [
+					{ id: 'sql_source', type: 'sql', query: 'SELECT 1', serverUrl: connection.serverUrl, connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection), database: 'Db' },
+					{ id: 'sql_comparison', type: 'sql', query: 'SELECT 2', comparisonSourceBoxId: 'sql_source', serverUrl: connection.serverUrl, connectionIdHint: connection.id, targetSignature: sqlConnectionTargetSignature(connection), database: 'Db', resultJson: JSON.stringify({ columns: [{ name: 'Value' }], rows: [[2]], metadata: {} }) },
+				] },
+			});
+			flushDeferredRestoreTimers();
+
+			expect(displayResultForBox).not.toHaveBeenCalledWith(
+				expect.anything(), 'sql_comparison', expect.anything(),
+			);
+			expect(pState.queryResultJsonByBoxId.sql_comparison).toBeUndefined();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
 	it('does not persist load-time query defaults immediately after restoring persisted results', () => {
 		vi.useFakeTimers();
 		try {
@@ -2994,6 +3301,47 @@ describe('persistence round-trip', () => {
 		const restoredQueryId = String(testState.addQueryBox.mock.results[0]?.value || '');
 		expect(restoredQueryId).toBeTruthy();
 		expect(pState.pendingQueryTextByBoxId[restoredQueryId]).toBe('TableA | take 3');
+	});
+
+	it('restores legacy copilotQuery content and serializes it canonically as query', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri: 'file:///tmp/legacy-copilot-query.kqlx',
+			allowedSectionKinds: ['query', 'sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'],
+			defaultSectionKind: 'query',
+			state: { sections: [{ id: 'legacy_query_1', type: 'copilotQuery', query: 'print legacy = 1' }] },
+		});
+
+		expect(testState.addQueryBox).toHaveBeenCalledWith(expect.objectContaining({ id: 'legacy_query_1' }));
+		expect(pState.pendingQueryTextByBoxId.legacy_query_1).toBe('print legacy = 1');
+		expect(getKqlxState().sections).toEqual([
+			{ id: 'legacy_query_1', type: 'query', query: 'print legacy = 1' },
+		]);
+	});
+
+	it.each([
+		['chart-only KQLX', 'kqlx', { type: 'chart', id: 'chart_only' }],
+		['transformation-only MDX', 'mdx', { type: 'transformation', id: 'transform_only' }],
+		['opaque-only MDX', 'mdx', { type: 'future-section', id: 'future_only', payload: { keep: true } }],
+		['devnotes-only MDX', 'mdx', { type: 'devnotes', id: 'devnotes_only', entries: [] }],
+	] as const)('does not create a default section for a nonempty %s document', (_label, documentKind, section) => {
+		handleDocumentDataMessage({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind, documentUri: `file:///tmp/${section.id}.${documentKind}`,
+			allowedSectionKinds: documentKind === 'mdx'
+				? ['markdown', 'url', 'transformation']
+				: ['query', 'sql', 'chart', 'transformation', 'python', 'url', 'html', 'markdown'],
+			defaultSectionKind: documentKind === 'mdx' ? 'markdown' : 'query',
+			state: { sections: [section] },
+		});
+
+		expect(testState.addQueryBox).not.toHaveBeenCalled();
+		expect(testState.addMarkdownBox).not.toHaveBeenCalled();
+		expect(testState.addSqlBox).not.toHaveBeenCalled();
 	});
 
 	it('restores compatibility query connection data before connection selectors refresh', () => {

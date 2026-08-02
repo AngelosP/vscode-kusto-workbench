@@ -7,14 +7,14 @@
 (function bootstrapKustoQueryEditor() {
 	// Pending add-section clicks (queued before scripts load)
 	if (!window.__kustoQueryEditorPendingAdds || typeof window.__kustoQueryEditorPendingAdds !== 'object') {
-		window.__kustoQueryEditorPendingAdds = { query: 0, chart: 0, markdown: 0, python: 0, url: 0, copilotQuery: 0 };
+		window.__kustoQueryEditorPendingAdds = { query: 0, chart: 0, markdown: 0, python: 0, url: 0 };
 	}
 	var pendingAdds = window.__kustoQueryEditorPendingAdds;
 	if (typeof window.__kustoRequestAddSection !== 'function') {
 		window.__kustoRequestAddSection = function (kind) {
 			var k = String(kind || '').trim();
 			if (!k) return;
-			if (k === 'query' || k === 'chart' || k === 'markdown' || k === 'python' || k === 'url' || k === 'copilotQuery') {
+			if (k === 'query' || k === 'chart' || k === 'markdown' || k === 'python' || k === 'url') {
 				pendingAdds[k] = (pendingAdds[k] || 0) + 1;
 			}
 		};
@@ -35,7 +35,7 @@
 		window.addUrlBox = function () { pendingAdds.url = (pendingAdds.url || 0) + 1; };
 	}
 	if (typeof window.addCopilotQueryBox !== 'function') {
-		window.addCopilotQueryBox = function () { pendingAdds.copilotQuery = (pendingAdds.copilotQuery || 0) + 1; };
+		window.addCopilotQueryBox = function () { pendingAdds.query = (pendingAdds.query || 0) + 1; };
 	}
 
 	// In the browser extension, the sandboxed page (viewer.html) is at the extension

@@ -127,6 +127,30 @@ function reloadAwarePostMessage(
 	};
 }
 
+function withProjectedCompatPrimary(
+	posted: readonly any[],
+	message: any,
+	options: { replaceExistingId?: boolean } = {},
+): any {
+	const sections = Array.isArray(message?.state?.sections) ? message.state.sections : undefined;
+	if (!sections?.length) return message;
+	if (!options.replaceExistingId && String(sections[0]?.id || '').trim()) return message;
+	const projection = [...posted].reverse().find(candidate =>
+		candidate?.type === 'documentData' && candidate?.ok === true
+		&& Array.isArray(candidate?.state?.sections) && candidate.state.sections.length > 0,
+	);
+	const projectedPrimary = projection?.state?.sections?.[0];
+	const projectedId = String(projectedPrimary?.id || '').trim();
+	if (!projectedId) throw new Error('Expected a projected compatibility primary ID before sending test state.');
+	return {
+		...message,
+		state: {
+			...message.state,
+			sections: [{ ...sections[0], id: projectedId }, ...sections.slice(1)],
+		},
+	};
+}
+
 async function waitForCondition(
 	predicate: () => boolean,
 	message: string,
@@ -263,6 +287,546 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('known-incompatible KQL and SQL companions open read-only without overwrite or byte changes', async () => {
+		const originalShowInformationMessage = vscode.window.showInformationMessage;
+		const originalShowWarningMessage = vscode.window.showWarningMessage;
+		const originalShowErrorMessage = vscode.window.showErrorMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-incompatible-'));
+		const variants = [
+			{
+				extension: '.kql', Provider: KqlCompatEditorProvider, primaryText: 'print primary = 1',
+				sidecarKind: 'mdx', requestType: 'requestUpgradeToKqlx', invalidId: 'query_invalid_kql',
+				sections: [
+					{ id: 'query_invalid_kql', type: 'query', linkedQueryPath: 'sample-0.kql' },
+					{ id: 'future_kql', type: 'future-section', payload: { keep: true } },
+				],
+			},
+			{
+				extension: '.sql', Provider: SqlCompatEditorProvider, primaryText: 'SELECT 1',
+				sidecarKind: 'kqlx', requestType: 'requestUpgradeToSqlx', invalidId: 'query_invalid_sql',
+				sections: [
+					{ id: 'sql_primary', type: 'sql', linkedQueryPath: 'sample-1.sql' },
+					{ id: 'query_invalid_sql', type: 'query', query: 'print 1' },
+					{ id: 'future_sql', type: 'future-section', payload: { keep: true } },
+				],
+			},
+			{
+				extension: '.sql', Provider: SqlCompatEditorProvider, primaryText: 'SELECT 2',
+				sidecarKind: 'sqlx', requestType: 'requestUpgradeToSqlx', invalidId: 'linkedQueryPath',
+				sections: [
+					{ id: 'sql_malformed', type: 'sql', linkedQueryPath: ['sample-2.sql'] },
+					{ id: 'future_sql_malformed', type: 'future-section', payload: { keep: true } },
+				],
+			},
+		] as const;
+		const informationMessages: string[] = [];
+		const warningMessages: string[] = [];
+		const errorMessages: string[] = [];
+
+		try {
+			(vscode.window as any).showInformationMessage = async (message: unknown) => { informationMessages.push(String(message)); return undefined; };
+			(vscode.window as any).showWarningMessage = async (message: unknown) => { warningMessages.push(String(message)); return undefined; };
+			(vscode.window as any).showErrorMessage = async (message: unknown) => { errorMessages.push(String(message)); return undefined; };
+
+			for (const [index, variant] of variants.entries()) {
+				const primaryPath = path.join(tmpDir, `sample-${index}${variant.extension}`);
+				const sidecarPath = `${primaryPath}.json`;
+				const sidecarText = JSON.stringify({
+					kind: variant.sidecarKind, version: 1, futureRoot: { keep: index },
+					state: { futureState: 'opaque', sections: variant.sections },
+				}, null, 2) + '\n';
+				fs.writeFileSync(primaryPath, variant.primaryText, 'utf8');
+				fs.writeFileSync(sidecarPath, sidecarText, 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const posted: any[] = [];
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(primaryPath), getText: () => variant.primaryText, lineCount: 1,
+					lineAt: () => ({ text: variant.primaryText }), eol: vscode.EndOfLine.LF, isDirty: false,
+				} as any;
+				const panel = {
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					}, visible: true, onDidDispose: () => ({ dispose() {} }), onDidChangeViewState: () => ({ dispose() {} }),
+				} as any;
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const documentData = posted.filter(message => message?.type === 'documentData').at(-1);
+				const persistenceMode = posted.filter(message => message?.type === 'persistenceMode').at(-1);
+				assert.strictEqual(documentData?.ok, false);
+				assert.ok(String(documentData?.error || '').includes(variant.invalidId));
+				assert.deepStrictEqual(persistenceMode?.allowedSectionKinds, []);
+				assert.strictEqual(persistenceMode?.firstSectionPinned, false);
+				assert.strictEqual(persistenceMode?.documentMutationAllowed, false);
+				assert.strictEqual(documentData?.documentMutationAllowed, false);
+				await Promise.resolve(receiveHandler!({
+					type: 'persistDocument', snapshotId: `forged-snapshot-${index}`, editRevision: 1,
+					state: { sections: [{
+						type: variant.extension === '.sql' ? 'sql' : 'query', query: 'FORGED PRIMARY MUTATION',
+					}] },
+				}));
+				await Promise.resolve(receiveHandler!({ type: variant.requestType, addKind: 'markdown', editRevision: 0 }));
+				assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+					&& message?.snapshotId === `forged-snapshot-${index}`));
+				assert.strictEqual(fs.readFileSync(primaryPath, 'utf8'), variant.primaryText);
+				assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), sidecarText);
+			}
+
+			assert.deepStrictEqual(informationMessages, []);
+			assert.deepStrictEqual(warningMessages, []);
+			assert.strictEqual(errorMessages.length, variants.length);
+		} finally {
+			(vscode.window as any).showInformationMessage = originalShowInformationMessage;
+			(vscode.window as any).showWarningMessage = originalShowWarningMessage;
+			(vscode.window as any).showErrorMessage = originalShowErrorMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('plain KQL and SQL projections pin their primary before tool or UI removal', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-plain-primary-pin-'));
+		const variants = [
+			{ extension: '.kql', Provider: KqlCompatEditorProvider, primaryText: 'print 1', documentKind: 'kql' },
+			{ extension: '.sql', Provider: SqlCompatEditorProvider, primaryText: 'SELECT 1', documentKind: 'sql' },
+		] as const;
+		try {
+			for (const [index, variant] of variants.entries()) {
+				const primaryPath = path.join(tmpDir, `plain-${index}${variant.extension}`);
+				fs.writeFileSync(primaryPath, variant.primaryText, 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const posted: any[] = [];
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-plain-pin-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(primaryPath), getText: () => variant.primaryText, lineCount: 1,
+					lineAt: () => ({ text: variant.primaryText }), eol: vscode.EndOfLine.LF, isDirty: false,
+					save: async () => true,
+				} as any;
+				const panel = {
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					}, visible: true, onDidDispose: () => ({ dispose() {} }), onDidChangeViewState: () => ({ dispose() {} }),
+				} as any;
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const persistenceMode = posted.filter(message => message?.type === 'persistenceMode').at(-1);
+				const documentData = posted.filter(message => message?.type === 'documentData').at(-1);
+				assert.deepStrictEqual(persistenceMode && {
+					documentKind: persistenceMode.documentKind,
+					compatibilityMode: persistenceMode.compatibilityMode,
+					firstSectionPinned: persistenceMode.firstSectionPinned,
+					documentMutationAllowed: persistenceMode.documentMutationAllowed,
+				}, {
+					documentKind: variant.documentKind, compatibilityMode: true,
+					firstSectionPinned: true, documentMutationAllowed: true,
+				});
+				assert.strictEqual(documentData?.firstSectionPinned, true);
+				assert.strictEqual(documentData?.documentMutationAllowed, true);
+			}
+		} finally {
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('plain KQL and SQL reject forged section-zero replacement before source edits', async () => {
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-plain-primary-forged-'));
+		const variants = [
+			{
+				extension: '.kql', Provider: KqlCompatEditorProvider, primaryText: 'print primary = 1',
+				primaryKind: 'query', forgedKind: 'markdown', forgedText: 'print forged = 2',
+			},
+			{
+				extension: '.sql', Provider: SqlCompatEditorProvider, primaryText: 'SELECT 1',
+				primaryKind: 'sql', forgedKind: 'markdown', forgedText: 'SELECT 2',
+			},
+		] as const;
+
+		try {
+			for (const [index, variant] of variants.entries()) {
+				const primaryPath = path.join(tmpDir, `plain-forged-${index}${variant.extension}`);
+				fs.writeFileSync(primaryPath, variant.primaryText, 'utf8');
+				let primaryText: string = variant.primaryText;
+				let applyEditCalls = 0;
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const posted: any[] = [];
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-plain-forged-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(primaryPath), getText: () => primaryText, isDirty: false, save: async () => true,
+					get lineCount() { return primaryText.split(/\r?\n/).length; },
+					lineAt: (line: number) => ({ text: primaryText.split(/\r?\n/)[line] || '' }), eol: vscode.EndOfLine.LF,
+				} as any;
+				(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+					const entry = edit.entries()[0];
+					if (entry?.[0]?.toString() === document.uri.toString()) {
+						applyEditCalls++;
+						primaryText = String(entry[1]?.[0]?.newText ?? primaryText);
+						return true;
+					}
+					return originalApplyEdit(edit);
+				};
+				const panel = {
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					}, visible: true, onDidDispose: () => ({ dispose() {} }), onDidChangeViewState: () => ({ dispose() {} }),
+				} as any;
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const documentData = posted.filter(message => message?.type === 'documentData').at(-1);
+				const sourceGeneration = Number(documentData?.sourceGeneration);
+				assert.ok(Number.isSafeInteger(sourceGeneration));
+				const projectedPrimary = documentData?.state?.sections?.[0];
+				assert.strictEqual(projectedPrimary?.type, variant.primaryKind);
+				assert.ok(String(projectedPrimary?.id || '').startsWith('compat_primary_'));
+				applyEditCalls = 0;
+				const snapshotId = `plain-forged-${index}`;
+				await Promise.resolve(receiveHandler!({
+					type: 'persistDocument', snapshotId, sourceGeneration, editRevision: 1,
+					state: { sections: [{
+						id: 'forged_secondary', type: variant.forgedKind, query: variant.forgedText,
+					}] },
+				}));
+
+				assert.strictEqual(applyEditCalls, 0);
+				assert.strictEqual(primaryText, variant.primaryText);
+				assert.strictEqual(fs.readFileSync(primaryPath, 'utf8'), variant.primaryText);
+				assert.ok(!posted.some(message => message?.type === 'persistDocumentAck' && message?.snapshotId === snapshotId));
+
+				const extraSnapshotId = `plain-extra-${index}`;
+				await Promise.resolve(receiveHandler!({
+					type: 'persistDocument', snapshotId: extraSnapshotId, sourceGeneration, editRevision: 2,
+					state: { sections: [
+						{ id: projectedPrimary.id, type: variant.primaryKind, query: variant.forgedText },
+						{ id: 'discarded_markdown', type: 'markdown', text: 'must not disappear' },
+					] },
+				}));
+				assert.strictEqual(applyEditCalls, 0);
+				assert.strictEqual(primaryText, variant.primaryText);
+				assert.ok(!posted.some(message => message?.type === 'persistDocumentAck'
+					&& message?.snapshotId === extraSnapshotId));
+				assert.ok(!fs.existsSync(`${primaryPath}.json`));
+
+				const validText = variant.primaryKind === 'sql' ? 'SELECT 3' : 'print valid = 3';
+				const validSnapshotId = `plain-valid-${index}`;
+				await Promise.resolve(receiveHandler!({
+					type: 'persistDocument', snapshotId: validSnapshotId, sourceGeneration, editRevision: 3,
+					state: { sections: [{
+						id: projectedPrimary.id, type: variant.primaryKind, query: validText,
+					}] },
+				}));
+
+				assert.strictEqual(applyEditCalls, 1);
+				assert.strictEqual(primaryText, validText);
+				assert.ok(posted.some(message => message?.type === 'persistDocumentAck'
+					&& message?.snapshotId === validSnapshotId));
+				assert.strictEqual(fs.readFileSync(primaryPath, 'utf8'), variant.primaryText,
+					'WorkspaceEdit must not bypass the normal VS Code save boundary');
+			}
+		} finally {
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('valid KQL and SQL companions reject forged invalid snapshots before mutating either file', async () => {
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalShowErrorMessage = vscode.window.showErrorMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-forged-invalid-'));
+		const variants = [
+			{
+				name: 'SQL incompatible section', extension: '.sql', Provider: SqlCompatEditorProvider,
+				kind: 'sqlx', primaryKind: 'sql', primaryText: 'SELECT 1', forgedText: 'SELECT 999',
+				extraSections: [{ id: 'query_in_sql', type: 'query', query: 'print 1' }],
+			},
+			{
+				name: 'duplicate section IDs', extension: '.kql', Provider: KqlCompatEditorProvider,
+				kind: 'kqlx', primaryKind: 'query', primaryText: 'print primary = 2', forgedText: 'print forged = 2',
+				primaryId: 'duplicate', extraSections: [{ id: 'duplicate', type: 'markdown', text: 'duplicate' }],
+			},
+			{
+				name: 'malformed known field', extension: '.kql', Provider: KqlCompatEditorProvider,
+				kind: 'kqlx', primaryKind: 'query', primaryText: 'print primary = 3', forgedText: 'print forged = 3',
+				extraSections: [{ id: 'chart_malformed', type: 'chart', yColumns: [null] }],
+			},
+			{
+				name: 'removed KQL primary owner', extension: '.kql', Provider: KqlCompatEditorProvider,
+				kind: 'kqlx', primaryKind: 'query', primaryText: 'print primary = 4', forgedText: 'print secondary = 4',
+				baselineExtraSections: [{ id: 'secondary_query', type: 'query' }],
+				forgedSections: [{ id: 'secondary_query', type: 'query', query: 'print secondary = 4' }],
+				extraSections: [],
+			},
+			{
+				name: 'removed SQL primary owner', extension: '.sql', Provider: SqlCompatEditorProvider,
+				kind: 'sqlx', primaryKind: 'sql', primaryText: 'SELECT 4', forgedText: 'SELECT 444',
+				baselineExtraSections: [{ id: 'secondary_sql', type: 'sql' }],
+				forgedSections: [{ id: 'secondary_sql', type: 'sql', query: 'SELECT 444' }],
+				extraSections: [],
+			},
+		] as const;
+
+		try {
+			(vscode.window as any).showErrorMessage = async () => undefined;
+			for (const [index, variant] of variants.entries()) {
+				const primaryPath = path.join(tmpDir, `valid-${index}${variant.extension}`);
+				const sidecarPath = `${primaryPath}.json`;
+				const primaryId = 'primaryId' in variant ? variant.primaryId : `primary_${index}`;
+				const sidecarText = stringifyKqlxFile({
+					kind: variant.kind, version: 1, state: { sections: [
+						{ id: primaryId, type: variant.primaryKind, linkedQueryPath: path.basename(primaryPath) },
+						...('baselineExtraSections' in variant ? variant.baselineExtraSections : []),
+					] },
+				} as any);
+				let primaryText: string = variant.primaryText;
+				let applyEditCalls = 0;
+				fs.writeFileSync(primaryPath, variant.primaryText, 'utf8');
+				fs.writeFileSync(sidecarPath, sidecarText, 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const posted: any[] = [];
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-forged-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(primaryPath), getText: () => primaryText, isDirty: false, save: async () => true,
+					get lineCount() { return primaryText.split(/\r?\n/).length; },
+					lineAt: (line: number) => ({ text: primaryText.split(/\r?\n/)[line] || '' }),
+					eol: vscode.EndOfLine.LF,
+				} as any;
+				(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+					const entry = edit.entries()[0];
+					if (entry?.[0]?.toString() === document.uri.toString()) {
+						applyEditCalls++;
+						primaryText = String(entry[1]?.[0]?.newText ?? primaryText);
+						return true;
+					}
+					return originalApplyEdit(edit);
+				};
+				const panel = {
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					}, visible: true, onDidDispose: () => ({ dispose() {} }), onDidChangeViewState: () => ({ dispose() {} }),
+				} as any;
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				applyEditCalls = 0;
+				const snapshotId = `forged-valid-${index}`;
+				await Promise.resolve(receiveHandler!({
+					type: 'persistDocument', snapshotId, editRevision: 1,
+					state: { sections: 'forgedSections' in variant ? variant.forgedSections : [
+						{ id: primaryId, type: variant.primaryKind, query: variant.forgedText },
+						...variant.extraSections,
+					] },
+				}));
+
+				assert.strictEqual(applyEditCalls, 0, `${variant.name}: primary edit must not be attempted`);
+				assert.strictEqual(primaryText, variant.primaryText, `${variant.name}: in-memory primary changed`);
+				assert.strictEqual(fs.readFileSync(primaryPath, 'utf8'), variant.primaryText, `${variant.name}: primary bytes changed`);
+				assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), sidecarText, `${variant.name}: sidecar bytes changed`);
+				assert.ok(!posted.some(message => message?.type === 'persistDocumentAck' && message?.snapshotId === snapshotId),
+					`${variant.name}: forged snapshot was acknowledged`);
+			}
+		} finally {
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.window as any).showErrorMessage = originalShowErrorMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('legacy id-less KQL and SQL companions reject secondary primary substitution byte-exact', async () => {
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalShowErrorMessage = vscode.window.showErrorMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-idless-primary-'));
+		const variants = [
+			{
+				extension: '.kql', Provider: KqlCompatEditorProvider, kind: 'kqlx', primaryKind: 'query',
+				primaryText: 'print primary = 1', forgedText: 'print secondary = 2',
+			},
+			{
+				extension: '.sql', Provider: SqlCompatEditorProvider, kind: 'sqlx', primaryKind: 'sql',
+				primaryText: 'SELECT 1', forgedText: 'SELECT 2',
+			},
+		] as const;
+
+		try {
+			(vscode.window as any).showErrorMessage = async () => undefined;
+			for (const [index, variant] of variants.entries()) {
+				const primaryPath = path.join(tmpDir, `idless-${index}${variant.extension}`);
+				const sidecarPath = `${primaryPath}.json`;
+				const legacySidecarText = stringifyKqlxFile({
+					kind: variant.kind, version: 1, state: { sections: [
+						{ type: variant.primaryKind, linkedQueryPath: path.basename(primaryPath) },
+						{ type: variant.primaryKind },
+					] },
+				} as any);
+				let primaryText: string = variant.primaryText;
+				let applyEditCalls = 0;
+				fs.writeFileSync(primaryPath, variant.primaryText, 'utf8');
+				fs.writeFileSync(sidecarPath, legacySidecarText, 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const posted: any[] = [];
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-idless-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(primaryPath), getText: () => primaryText, isDirty: false, save: async () => true,
+					get lineCount() { return primaryText.split(/\r?\n/).length; },
+					lineAt: (line: number) => ({ text: primaryText.split(/\r?\n/)[line] || '' }), eol: vscode.EndOfLine.LF,
+				} as any;
+				(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+					const entry = edit.entries()[0];
+					if (entry?.[0]?.toString() === document.uri.toString()) {
+						applyEditCalls++;
+						primaryText = String(entry[1]?.[0]?.newText ?? primaryText);
+						return true;
+					}
+					return originalApplyEdit(edit);
+				};
+				const panel = {
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					}, visible: true, onDidDispose: () => ({ dispose() {} }), onDidChangeViewState: () => ({ dispose() {} }),
+				} as any;
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const acceptedSidecarText = fs.readFileSync(sidecarPath, 'utf8');
+				applyEditCalls = 0;
+				const snapshotId = `idless-forged-${index}`;
+				await Promise.resolve(receiveHandler!({
+					type: 'persistDocument', snapshotId, editRevision: 1,
+					state: { sections: [{ type: variant.primaryKind, query: variant.forgedText }] },
+				}));
+
+				assert.strictEqual(applyEditCalls, 0);
+				assert.strictEqual(primaryText, variant.primaryText);
+				assert.strictEqual(fs.readFileSync(primaryPath, 'utf8'), variant.primaryText);
+				assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), acceptedSidecarText);
+				assert.ok(!posted.some(message => message?.type === 'persistDocumentAck' && message?.snapshotId === snapshotId));
+			}
+		} finally {
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.window as any).showErrorMessage = originalShowErrorMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('compatibility upgrades validate forged state before creating or overwriting companions', async () => {
+		const originalShowInformationMessage = vscode.window.showInformationMessage;
+		const originalShowWarningMessage = vscode.window.showWarningMessage;
+		const originalShowErrorMessage = vscode.window.showErrorMessage;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-forged-upgrade-'));
+		const variants = [
+			{
+				name: 'SQL absent companion', extension: '.sql', Provider: SqlCompatEditorProvider,
+				requestType: 'requestUpgradeToSqlx', primaryKind: 'sql', kind: 'sqlx', primaryText: 'SELECT 1',
+				extraSections: [{ id: 'query_in_sql', type: 'query', query: 'print 1' }], existingUnlinked: false,
+			},
+			{
+				name: 'KQL unlinked companion', extension: '.kql', Provider: KqlCompatEditorProvider,
+				requestType: 'requestUpgradeToKqlx', primaryKind: 'query', kind: 'kqlx', primaryText: 'print 1',
+				extraSections: [{ id: 'duplicate', type: 'markdown', text: 'duplicate' }], existingUnlinked: true,
+			},
+		] as const;
+
+		try {
+			(vscode.window as any).showInformationMessage = async () => 'Create companion file';
+			(vscode.window as any).showWarningMessage = async () => 'Overwrite sidecar';
+			(vscode.window as any).showErrorMessage = async () => undefined;
+			for (const [index, variant] of variants.entries()) {
+				const primaryPath = path.join(tmpDir, `upgrade-invalid-${index}${variant.extension}`);
+				const sidecarPath = `${primaryPath}.json`;
+				const existingText = variant.existingUnlinked ? stringifyKqlxFile({
+					kind: variant.kind, version: 1, state: { sections: [{
+						id: 'existing_primary', type: variant.primaryKind, linkedQueryPath: `other-${index}${variant.extension}`,
+					}] },
+				} as any) : undefined;
+				fs.writeFileSync(primaryPath, variant.primaryText, 'utf8');
+				if (existingText !== undefined) fs.writeFileSync(sidecarPath, existingText, 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const posted: any[] = [];
+				const provider = new (variant.Provider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(path.join(tmpDir, `global-upgrade-invalid-${index}`)),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				);
+				const document = {
+					uri: vscode.Uri.file(primaryPath), getText: () => variant.primaryText, lineCount: 1,
+					lineAt: () => ({ text: variant.primaryText }), eol: vscode.EndOfLine.LF, isDirty: false,
+					save: async () => true,
+				} as any;
+				const panel = {
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					}, visible: true, onDidDispose: () => ({ dispose() {} }), onDidChangeViewState: () => ({ dispose() {} }),
+				} as any;
+
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const primaryId = variant.existingUnlinked ? 'duplicate' : 'primary';
+				await Promise.resolve(receiveHandler!({
+					type: variant.requestType, addKind: 'markdown', editRevision: 0,
+					state: { sections: [
+						{ id: primaryId, type: variant.primaryKind, query: variant.primaryText },
+						...variant.extraSections,
+					] },
+				}));
+
+				assert.strictEqual(fs.readFileSync(primaryPath, 'utf8'), variant.primaryText, `${variant.name}: primary bytes changed`);
+				if (existingText === undefined) assert.ok(!fs.existsSync(sidecarPath), `${variant.name}: invalid sidecar was created`);
+				else assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), existingText, `${variant.name}: sidecar bytes changed`);
+				assert.ok(!posted.some(message => message?.type === 'enabledKqlxSidecar' || message?.type === 'enabledSqlSidecar'),
+					`${variant.name}: invalid upgrade was enabled`);
+			}
+		} finally {
+			(vscode.window as any).showInformationMessage = originalShowInformationMessage;
+			(vscode.window as any).showWarningMessage = originalShowWarningMessage;
+			(vscode.window as any).showErrorMessage = originalShowErrorMessage;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('persistDocument updates sidecar .kql.json without duplicating query', async () => {
 		let receiveHandler: ((message: any) => unknown) | undefined;
 		const posted: any[] = [];
@@ -344,7 +908,7 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.ok(receiveHandler);
 			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 			await Promise.resolve(
-				receiveHandler!({
+				receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: 'persistDocument',
 					state: {
 						sections: [
@@ -352,7 +916,7 @@ suite('Sidecar .kql.json strategy', () => {
 							{ type: 'markdown', title: 'Notes', text: 'hello' }
 						]
 					}
-				})
+				}))
 			);
 
 			// Sidecar changes are deferred until the user saves the .kql document.
@@ -449,7 +1013,7 @@ suite('Sidecar .kql.json strategy', () => {
 			const resultJson = JSON.stringify(resultObj);
 
 			await Promise.resolve(
-				receiveHandler!({
+				receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: 'persistDocument',
 					state: {
 						sections: [
@@ -467,7 +1031,7 @@ suite('Sidecar .kql.json strategy', () => {
 							}
 						]
 					}
-				})
+				}, { replaceExistingId: true }))
 			);
 
 			await Promise.resolve(receiveHandler!({ type: 'requestUpgradeToKqlx', addKind: 'chart', editRevision: 0 }));
@@ -3396,6 +3960,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const sourcePath = path.join(tmpDir, `race-${index}${variant.extension}`);
 				fs.writeFileSync(sourcePath, currentText, 'utf8');
 				let receiveHandler: ((message: any) => unknown) | undefined;
+				const posted: any[] = [];
 				let delayStaleEdit = false;
 				let releaseStale!: () => void;
 				let staleStarted = false;
@@ -3436,6 +4001,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const panel = {
 					webview: {
 						options: {}, postMessage: async (message: any) => {
+							posted.push(message);
 							if (expectReloadDelivery && message?.type === 'documentData') reloadDelivered = true;
 							if (message?.reloadRequestId) {
 								void Promise.resolve().then(() => receiveHandler?.({
@@ -3454,10 +4020,10 @@ suite('Sidecar .kql.json strategy', () => {
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 				delayStaleEdit = true;
 				let stalePersistSettled = false;
-				const stalePersist = Promise.resolve(receiveHandler!({
+				const stalePersist = Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: 'persistDocument', editRevision: 1,
 					state: { sections: [{ id: 'primary_1', type: variant.type, query: 'stale' }] },
-				})).finally(() => { stalePersistSettled = true; });
+				}, { replaceExistingId: !variant.wrapped }))).finally(() => { stalePersistSettled = true; });
 				await waitForCondition(() => staleStarted, `${variant.extension} stale edit should start`, 1_000);
 				currentText = externalText;
 				expectReloadDelivery = true;
@@ -3544,11 +4110,10 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-				posted.length = 0;
-				await Promise.resolve(receiveHandler!({
+				await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: 'persistDocument', snapshotId: `direct-${index}`, editRevision: 1,
 					state: { sections: [{ id: 'primary_1', type: variant.type, query: 'STALE_CANDIDATE' }] },
-				}));
+				}, { replaceExistingId: !variant.wrapped })));
 				await waitForCondition(() => variant.wrapped
 					? JSON.parse(currentText).state.sections[0].query === 'DIRECT_NEWER'
 					: currentText === directText, `${variant.extension} newer direct text should survive`);
@@ -3642,11 +4207,10 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-				posted.length = 0;
-				const persist = Promise.resolve(receiveHandler!({
+				const persist = Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: 'persistDocument', snapshotId: `owned-${index}`, editRevision: 1,
 					state: { sections: [{ id: 'primary_1', type: variant.type, query: 'OWNED_CANDIDATE' }] },
-				}));
+				}, { replaceExistingId: !variant.wrapped })));
 				await ownedApplied;
 				currentText = directText;
 				await Promise.resolve(changeHandler!({ document, contentChanges: [{}] } as any));
@@ -3727,11 +4291,10 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-				posted.length = 0;
-				await Promise.resolve(receiveHandler!({
+				await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: 'persistDocument', snapshotId: `owned-crlf-${index}`, editRevision: 1,
 					state: { sections: [{ id: 'primary_1', type: variant.type, query: 'OWNED\nCANDIDATE' }] },
-				}));
+				}, { replaceExistingId: true })));
 				await waitForCondition(
 					() => posted.some(message => message?.type === 'persistDocumentAck' && message.snapshotId === `owned-crlf-${index}`),
 					`${variant.extension} should acknowledge its own CRLF-normalized edit`,
@@ -3951,6 +4514,7 @@ suite('Sidecar .kql.json strategy', () => {
 				fs.writeFileSync(sourcePath, currentText, 'utf8');
 				let receiveHandler: ((message: any) => unknown) | undefined;
 				let willSaveHandler: ((event: any) => unknown) | undefined;
+				const posted: any[] = [];
 				let markStaleStarted!: () => void;
 				let releaseStale!: () => void;
 				let markReloadDelivered!: () => void;
@@ -3999,6 +4563,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const panel = {
 					webview: {
 						options: {}, postMessage: async (message: any) => {
+							posted.push(message);
 							if (expectReloadDelivery && message?.type === 'documentData') markReloadDelivered();
 							if (message?.reloadRequestId) {
 								void Promise.resolve().then(() => receiveHandler?.({
@@ -4014,10 +4579,10 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
-				const stalePersist = Promise.resolve(receiveHandler!({
+				const stalePersist = Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: 'persistDocument', editRevision: 1,
 					state: { sections: [{ id: 'primary_1', type: variant.type, query: 'stale\ncandidate' }] },
-				}));
+				}, { replaceExistingId: true })));
 				await staleStarted;
 				currentText = 'external\r\nauthority';
 				expectReloadDelivery = true;
@@ -4363,6 +4928,51 @@ suite('Sidecar .kql.json strategy', () => {
 		}
 	});
 
+	test('native SQL links open read-only without losing linkedQueryPath or external bytes', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-native-sql-link-'));
+		const variants = [
+			{ extension: '.sqlx', kind: 'sqlx' },
+			{ extension: '.kqlx', kind: 'kqlx' },
+		] as const;
+		try {
+			for (const [index, variant] of variants.entries()) {
+				const filePath = path.join(tmpDir, `linked-${index}${variant.extension}`);
+				const linkedPath = path.join(tmpDir, `linked-${index}.sql`);
+				const linkedText = 'SELECT 42 AS Value';
+				const text = stringifyKqlxFile({
+					kind: variant.kind, version: 1, state: { sections: [{
+						id: 'sql_linked', type: 'sql', linkedQueryPath: path.basename(linkedPath),
+					}] },
+				} as any);
+				fs.writeFileSync(filePath, text, 'utf8');
+				fs.writeFileSync(linkedPath, linkedText, 'utf8');
+				const provider = new (KqlxEditorProvider as any)(
+					{ subscriptions: [] } as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'),
+					connectionManagerStub(), sqlWorkbenchStub(),
+				) as KqlxEditorProvider;
+				let receiveHandler: unknown;
+				const webview = {
+					options: {}, html: '', postMessage: async () => true,
+					onDidReceiveMessage: (handler: unknown) => { receiveHandler = handler; return { dispose() {} }; },
+				} as any;
+				const panel = { webview, onDidDispose: () => ({ dispose() {} }) } as any;
+
+				await provider.resolveCustomTextEditor({
+					uri: vscode.Uri.file(filePath), getText: () => text,
+				} as any, panel, {} as any);
+
+				assert.strictEqual(webview.options.enableScripts, false);
+				assert.ok(webview.html.includes('do not support linkedQueryPath on SQL sections'));
+				assert.strictEqual(receiveHandler, undefined);
+				assert.strictEqual(fs.readFileSync(filePath, 'utf8'), text);
+				assert.strictEqual(fs.readFileSync(linkedPath, 'utf8'), linkedText);
+			}
+		} finally {
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('hardlink alias to the notebook is rejected as a physical self-link', async () => {
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-hardlink-self-link-'));
 		const filePath = path.join(tmpDir, 'self.kqlx');
@@ -4456,6 +5066,51 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), malformedText, 'malformed source bytes must remain untouched');
 			disposeHandler?.();
 			assert.strictEqual(await KqlxEditorProvider.waitForOpenEditorsClosed(document.uri, 100), true);
+		} finally {
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('known-incompatible MDX opens read-only with an actionable error', async () => {
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-mdx-incompatible-'));
+		const filePath = path.join(tmpDir, 'incompatible.mdx');
+		const text = JSON.stringify({
+			kind: 'mdx', version: 1, state: { sections: [
+				{ id: 'query_invalid_mdx', type: 'query', query: 'print value = 1' },
+				{ id: 'future_mdx', type: 'future-section', payload: { keep: true } },
+			] },
+		});
+		let receiveHandler: unknown;
+		let postedMessages = 0;
+
+		try {
+			fs.writeFileSync(filePath, text, 'utf8');
+			const provider = new (KqlxEditorProvider as any)(
+				{ subscriptions: [] } as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const webview = {
+				options: {}, html: '',
+				postMessage: async () => { postedMessages++; return true; },
+				onDidReceiveMessage: (handler: unknown) => {
+					receiveHandler = handler;
+					return { dispose() {} };
+				},
+			} as any;
+			await provider.resolveCustomTextEditor({
+				uri: vscode.Uri.file(filePath), getText: () => text,
+			} as any, {
+				webview, onDidDispose: () => ({ dispose() {} }),
+			} as any, {} as any);
+
+			assert.strictEqual(webview.options.enableScripts, false);
+			assert.ok(webview.html.includes('Invalid .mdx'));
+			assert.ok(webview.html.includes('query_invalid_mdx'));
+			assert.ok(webview.html.includes('incompatible known type &quot;query&quot;'));
+			assert.ok(webview.html.includes('Read-only to prevent data loss'));
+			assert.strictEqual(receiveHandler, undefined);
+			assert.strictEqual(postedMessages, 0);
+			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), text);
 		} finally {
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
@@ -5031,17 +5686,17 @@ suite('Sidecar .kql.json strategy', () => {
 	test('KQLX Save writes fail-closed text when the final webview snapshot is unavailable', async () => {
 		const originalOnWillSaveTextDocument = vscode.workspace.onWillSaveTextDocument;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-kqlx-save-unavailable-'));
-		const filePath = path.join(tmpDir, 'save-unavailable.sqlx');
+		const filePath = path.join(tmpDir, 'save-unavailable.kqlx');
 		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
 		let currentText = JSON.stringify({
-			kind: 'sqlx', version: 1,
+			kind: 'kqlx', version: 1,
 			state: { sections: [
 				{ id: 'sql_1', type: 'sql', query: 'SELECT 1', resultJson: 'PROTECTED_SQL_RESULT' },
 				{ id: 'query_1', type: 'query', query: 'print 1', resultJson: 'KEEP_KUSTO_RESULT' },
 			] },
 		}, null, 2);
 		const latestText = JSON.stringify({
-			kind: 'sqlx', version: 1,
+			kind: 'kqlx', version: 1,
 			state: { sections: [
 				{ id: 'sql_1', type: 'sql', query: 'SELECT 2 AS latest_edit', resultJson: 'PROTECTED_SQL_RESULT' },
 				{ id: 'query_1', type: 'query', query: 'print 1', resultJson: 'KEEP_KUSTO_RESULT' },
@@ -6267,6 +6922,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 				let protectedNow = false;
 				let receiveHandler: ((message: any) => unknown) | undefined;
+				const posted: any[] = [];
 				(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => ({
 					...state,
 					sections: state.sections.map((section: any) => {
@@ -6288,8 +6944,15 @@ suite('Sidecar .kql.json strategy', () => {
 				const panel = {
 					webview: {
 						options: {}, postMessage: async (message: any) => {
+							posted.push(message);
+							if (message?.reloadRequestId) {
+								await Promise.resolve(receiveHandler?.({
+									type: 'documentReloadResult', requestId: message.reloadRequestId,
+									applied: true, editRevision: Number(message.editRevision || 0),
+								}));
+							}
 							if (message?.type === 'requestFinalPersist') {
-								void Promise.resolve().then(() => receiveHandler?.({
+								void Promise.resolve().then(() => receiveHandler?.(withProjectedCompatPrimary(posted, {
 									type: 'persistDocument', editRevision: 0,
 									snapshotId: `save-rebase-${index}`, flushRequestId: message.requestId,
 									state: { sections: [
@@ -6297,7 +6960,7 @@ suite('Sidecar .kql.json strategy', () => {
 										{ type: 'markdown', text: 'DRAFT_TO_SAVE' },
 										{ type: 'sql', id: 'sql-sensitive', result: { columns: ['secret'], rows: [['retained']] } },
 									] },
-								}));
+								})));
 							}
 							return true;
 						},
@@ -6311,14 +6974,16 @@ suite('Sidecar .kql.json strategy', () => {
 
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				assert.ok(receiveHandler && invalidation.isSubscribed());
-				await Promise.resolve(receiveHandler!({
+				const acceptedFile = JSON.parse(fs.readFileSync(sidecarPath, 'utf8'));
+				posted.push({ type: 'documentData', ok: true, state: acceptedFile.state });
+				await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: 'persistDocument',
 					state: { sections: [
 						{ type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'DRAFT_TO_SAVE' },
 						{ type: 'sql', id: 'sql-sensitive', result: { columns: ['secret'], rows: [['retained']] } },
 					] },
-				}));
+				})));
 				protectedNow = true;
 				invalidation.fire();
 				await waitForCondition(
@@ -6679,21 +7344,21 @@ suite('Sidecar .kql.json strategy', () => {
 				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 				const activeSourceGeneration = posted.filter(message => message?.type === 'documentData' && message.ok === true).at(-1)?.sourceGeneration;
 				assert.ok(Number.isSafeInteger(activeSourceGeneration));
-				const upgrade = Promise.resolve(receiveHandler!({
+				const upgrade = Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: variant.requestType, addKind: 'markdown', editRevision: 1,
 					state: { sections: [
 						{ type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'UPGRADE_REVISION_1' },
 					] },
-				}));
+				})));
 				await paused;
-				const newerPersist = Promise.resolve(receiveHandler!({
+				const newerPersist = Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: 'persistDocument', sourceGeneration: activeSourceGeneration, editRevision: 2,
 					state: { sections: [
 						{ type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'PERSIST_REVISION_2' },
 					] },
-				}));
+				})));
 				release();
 				await Promise.all([upgrade, newerPersist]);
 				assert.ok(posted.some(message => message?.type === 'documentData'
@@ -6793,7 +7458,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const sidecar = (marker: string, includeSecret = false) => JSON.stringify({
 					kind: variant.kind, version: 1,
 					state: { sections: [
-						{ type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
 						{ type: 'markdown', text: marker },
 						...(includeSecret ? [{ type: 'sql', id: 'sql-sensitive', resultJson: 'RETAINED_SECRET' }] : []),
 					] },
@@ -6801,6 +7466,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 				let receiveHandler: ((message: any) => unknown) | undefined;
 				let saveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+				const posted: any[] = [];
 				(vscode.workspace as any).onDidSaveTextDocument = (handler: (document: vscode.TextDocument) => unknown) => {
 					saveHandler = handler;
 					return { dispose() {} };
@@ -6815,7 +7481,7 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 				const panel = {
 					webview: {
-						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler),
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 						onDidReceiveMessage: (handler: (message: any) => unknown) => {
 							receiveHandler = handler;
 							return { dispose() {} };
@@ -6832,13 +7498,13 @@ suite('Sidecar .kql.json strategy', () => {
 				assert.ok(adoptedText.includes('ADOPTED_BASELINE'));
 				assert.ok(!adoptedText.includes('RETAINED_SECRET'), `${variant.extension} adoption must sanitize protected payloads`);
 
-				await Promise.resolve(receiveHandler!({
+				await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: 'persistDocument',
 					state: { sections: [
-						{ type: variant.firstType, query: 'select 1' },
+						{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'LOCAL_DRAFT' },
 					] },
-				}));
+				})));
 				const externalText = sidecar('EXTERNAL_NEWER');
 				fs.writeFileSync(sidecarPath, externalText, 'utf8');
 				await Promise.resolve(saveHandler!(document));
@@ -6972,7 +7638,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const sidecar = (marker: string, includeSecret = false) => JSON.stringify({
 					kind: variant.kind, version: 1,
 					state: { sections: [
-						{ type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
 						{ type: 'markdown', text: marker },
 						...(includeSecret ? [{ type: 'sql', id: 'sql-sensitive', resultJson: 'RETAINED_SECRET' }] : []),
 					] },
@@ -7060,7 +7726,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const sidecar = (marker: string, includeSecret = false) => JSON.stringify({
 					kind: variant.kind, version: 1,
 					state: { sections: [
-						{ type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
 						{ type: 'markdown', text: marker },
 						...(includeSecret ? [{ type: 'sql', id: 'sql-sensitive', resultJson: 'RETAINED_SECRET' }] : []),
 					] },
@@ -7122,7 +7788,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const localPersist = Promise.resolve(receiveHandler!({
 					type: 'persistDocument', editRevision: 1,
 					state: { sections: [
-						{ type: variant.firstType, query: 'select 1' },
+						{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'LOCAL_UNSAVED' },
 					] },
 				}));
@@ -7175,7 +7841,7 @@ suite('Sidecar .kql.json strategy', () => {
 				fs.writeFileSync(sidecarPath, JSON.stringify({
 					kind: variant.kind, version: 1,
 					state: { sections: [
-						{ type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
 						{ type: 'markdown', text: 'BASELINE' },
 						{ type: 'sql', id: 'sql-sensitive', resultJson: 'RETAINED_SECRET' },
 					] },
@@ -7212,7 +7878,7 @@ suite('Sidecar .kql.json strategy', () => {
 				await Promise.resolve(receiveHandler!({
 					type: 'persistDocument', editRevision: 1,
 					state: { sections: [
-						{ type: variant.firstType, query: 'select 1' },
+						{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'LOCAL_EDIT' },
 					] },
 				}));
@@ -7253,7 +7919,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const baseline = JSON.stringify({
 					kind: variant.kind, version: 1,
 					state: { sections: [
-						{ type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
 						{ type: 'markdown', text: 'BASELINE' },
 					] },
 				});
@@ -7303,7 +7969,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const persist = Promise.resolve(receiveHandler!({
 					type: 'persistDocument', editRevision: 1,
 					state: { sections: [
-						{ type: variant.firstType, query: 'select 1' },
+						{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'STALE_REVISION_1' },
 					] },
 				}));
@@ -7311,7 +7977,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const currentPersist = Promise.resolve(receiveHandler!({
 					type: 'persistDocument', editRevision: 2,
 					state: { sections: [
-						{ type: variant.firstType, query: 'select 1' },
+						{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'CURRENT_REVISION_2' },
 					] },
 				}));
@@ -7347,7 +8013,7 @@ suite('Sidecar .kql.json strategy', () => {
 				fs.writeFileSync(sidecarPath, JSON.stringify({
 					kind: variant.kind, version: 1,
 					state: { sections: [
-						{ type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
 						{ type: 'markdown', text: 'BASELINE' },
 					] },
 				}), 'utf8');
@@ -7397,7 +8063,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const persistOne = Promise.resolve(receiveHandler!({
 					type: 'persistDocument', editRevision: 1,
 					state: { sections: [
-						{ type: variant.firstType, query: 'select 1' },
+						{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'REVISION_ONE' },
 					] },
 				}));
@@ -7405,7 +8071,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const persistTwo = Promise.resolve(receiveHandler!({
 					type: 'persistDocument', editRevision: 2,
 					state: { sections: [
-						{ type: variant.firstType, query: 'select 1' },
+						{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'REVISION_TWO' },
 					] },
 				}));
@@ -7446,7 +8112,7 @@ suite('Sidecar .kql.json strategy', () => {
 					fs.writeFileSync(sidecarPath, JSON.stringify({
 						kind: variant.kind, version: 1,
 						state: { sections: [
-							{ type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+							{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
 							{ type: 'markdown', text: 'BASELINE' },
 						] },
 					}), 'utf8');
@@ -7489,7 +8155,7 @@ suite('Sidecar .kql.json strategy', () => {
 										type: 'persistDocument', editRevision: 2,
 										snapshotId: `lifecycle-${mode}-${index}`, flushRequestId: message.requestId,
 										state: { sections: [
-											{ type: variant.firstType, query: 'select 1' },
+											{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 											{ type: 'markdown', text: 'REVISION_TWO' },
 										] },
 									}));
@@ -7509,7 +8175,7 @@ suite('Sidecar .kql.json strategy', () => {
 					const persistOne = Promise.resolve(receiveHandler!({
 						type: 'persistDocument', editRevision: 1,
 						state: { sections: [
-							{ type: variant.firstType, query: 'select 1' },
+							{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 							{ type: 'markdown', text: 'REVISION_ONE' },
 						] },
 					}));
@@ -7517,7 +8183,7 @@ suite('Sidecar .kql.json strategy', () => {
 					const persistTwo = Promise.resolve(receiveHandler!({
 						type: 'persistDocument', editRevision: 2,
 						state: { sections: [
-							{ type: variant.firstType, query: 'select 1' },
+							{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 							{ type: 'markdown', text: 'REVISION_TWO' },
 						] },
 					}));
@@ -7572,7 +8238,7 @@ suite('Sidecar .kql.json strategy', () => {
 				fs.writeFileSync(sidecarPath, JSON.stringify({
 					kind: variant.kind, version: 1,
 					state: { sections: [
-						{ type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
 						{ type: 'markdown', text: 'BASELINE' },
 					] },
 				}), 'utf8');
@@ -7619,7 +8285,7 @@ suite('Sidecar .kql.json strategy', () => {
 									type: 'persistDocument', editRevision: 1,
 									snapshotId: 'save-final-snapshot', flushRequestId: message.requestId,
 									state: { sections: [
-										{ type: variant.firstType, query: 'select 1' },
+										{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 										{ type: 'markdown', text: 'QUEUED_SAVE' },
 									] },
 								}));
@@ -7639,7 +8305,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const persist = Promise.resolve(receiveHandler!({
 					type: 'persistDocument', editRevision: 1,
 					state: { sections: [
-						{ type: variant.firstType, query: 'select 1' },
+						{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'QUEUED_SAVE' },
 					] },
 				}));
@@ -7903,8 +8569,8 @@ suite('Sidecar .kql.json strategy', () => {
 		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
 		const originalOnWillSaveTextDocument = vscode.workspace.onWillSaveTextDocument;
 		const variants = [
-			{ extension: '.kql', Provider: KqlCompatEditorProvider, firstType: 'query' },
-			{ extension: '.sql', Provider: SqlCompatEditorProvider, firstType: 'sql' },
+			{ extension: '.kql', Provider: KqlCompatEditorProvider, firstType: 'query', kind: 'kqlx' },
+			{ extension: '.sql', Provider: SqlCompatEditorProvider, firstType: 'sql', kind: 'sqlx' },
 		] as const;
 		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-sidecar-correlated-failure-'));
 
@@ -7912,6 +8578,13 @@ suite('Sidecar .kql.json strategy', () => {
 			for (const [index, variant] of variants.entries()) {
 				const sourcePath = path.join(tmpDir, `correlated-failure-${index}${variant.extension}`);
 				fs.writeFileSync(sourcePath, 'select 1', 'utf8');
+				fs.writeFileSync(`${sourcePath}.json`, JSON.stringify({
+					kind: variant.kind, version: 1,
+					state: { sections: [
+						{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'markdown_1', type: 'markdown', text: 'BASELINE' },
+					] },
+				}), 'utf8');
 				let receiveHandler: ((message: any) => unknown) | undefined;
 				let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
 				const posted: any[] = [];
@@ -7948,32 +8621,32 @@ suite('Sidecar .kql.json strategy', () => {
 							posted.push(message);
 							if (message?.type === 'requestFinalPersist') {
 								if (requestMode === 'failure') {
-									void Promise.resolve().then(() => receiveHandler?.({
+									void Promise.resolve().then(() => receiveHandler?.(withProjectedCompatPrimary(posted, {
 										type: 'persistDocument', editRevision: 1,
 										snapshotId: 'failed-snapshot', flushRequestId: message.requestId,
 										state: { sections: [
 											{ type: variant.firstType, query: 'select 1' },
 											{ type: 'markdown', text: 'FAIL_CORRELATED' },
 										] },
-									}));
+									})));
 								} else {
 									void (async () => {
-										const oldPersist = Promise.resolve(receiveHandler?.({
+										const oldPersist = Promise.resolve(receiveHandler?.(withProjectedCompatPrimary(posted, {
 											type: 'persistDocument', editRevision: 2,
 											snapshotId: 'old-snapshot', flushRequestId: message.requestId,
 											state: { sections: [
 												{ type: variant.firstType, query: 'select 1' },
 												{ type: 'markdown', text: 'OLD_CORRELATED' },
 											] },
-										}));
+										})));
 										await oldEntered;
-										const newerPersist = Promise.resolve(receiveHandler?.({
+										const newerPersist = Promise.resolve(receiveHandler?.(withProjectedCompatPrimary(posted, {
 											type: 'persistDocument', editRevision: 3,
 											state: { sections: [
 												{ type: variant.firstType, query: 'select 1' },
 												{ type: 'markdown', text: 'NEWER' },
 											] },
-										}));
+										})));
 										releaseOld();
 										await Promise.all([oldPersist, newerPersist]);
 									})();
@@ -7990,6 +8663,8 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				assert.ok(receiveHandler && willSaveHandler);
+				const acceptedFile = JSON.parse(fs.readFileSync(`${sourcePath}.json`, 'utf8'));
+				posted.push({ type: 'documentData', ok: true, state: acceptedFile.state });
 				const requestSave = () => {
 					let barrier: Promise<vscode.TextEdit[]> | undefined;
 					willSaveHandler!({
@@ -8049,12 +8724,18 @@ suite('Sidecar .kql.json strategy', () => {
 					webview: {
 						options: {}, postMessage: async (message: any) => {
 							posted.push(message);
+							if (message?.reloadRequestId) {
+								await Promise.resolve(receiveHandler?.({
+									type: 'documentReloadResult', requestId: message.reloadRequestId,
+									applied: true, editRevision: Number(message.editRevision || 0),
+								}));
+							}
 							if (message?.type === 'requestFinalPersist') {
-								void Promise.resolve().then(() => receiveHandler?.({
+								void Promise.resolve().then(() => receiveHandler?.(withProjectedCompatPrimary(posted, {
 									type: 'persistDocument', editRevision: 1,
 									snapshotId: `rejected-edit-${index}`, flushRequestId: message.requestId,
 									state: { sections: [{ type: variant.firstType, query: 'select new' }] },
-								}));
+								})));
 							}
 							return true;
 						},
@@ -8068,6 +8749,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				assert.ok(receiveHandler && willSaveHandler);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 				let barrier: Promise<vscode.TextEdit[]> | undefined;
 				willSaveHandler!({
 					document,
@@ -8105,7 +8787,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const baseline = JSON.stringify({
 					kind: variant.kind, version: 1,
 					state: { sections: [
-						{ type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
 						{ type: 'markdown', text: 'BASELINE' },
 					] },
 				});
@@ -8113,6 +8795,7 @@ suite('Sidecar .kql.json strategy', () => {
 
 				let receiveHandler: ((message: any) => unknown) | undefined;
 				let saveHandler: ((document: vscode.TextDocument) => unknown) | undefined;
+				const posted: any[] = [];
 				let markerCalls = 0;
 				(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => {
 					if (JSON.stringify(state).includes('RETRY_DRAFT')) {
@@ -8135,7 +8818,7 @@ suite('Sidecar .kql.json strategy', () => {
 				} as any;
 				const panel = {
 					webview: {
-						options: {}, postMessage: async () => true,
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
 						onDidReceiveMessage: (handler: (message: any) => unknown) => {
 							receiveHandler = handler;
 							return { dispose() {} };
@@ -8146,14 +8829,15 @@ suite('Sidecar .kql.json strategy', () => {
 
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				assert.ok(receiveHandler && saveHandler);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 				const repairedBaseline = fs.readFileSync(sidecarPath, 'utf8');
-				await Promise.resolve(receiveHandler!({
+				await Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
 					type: 'persistDocument', editRevision: 1,
 					state: { sections: [
 						{ type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'RETRY_DRAFT' },
 					] },
-				}));
+				})));
 				assert.strictEqual(fs.readFileSync(sidecarPath, 'utf8'), repairedBaseline);
 				assert.ok(errors.some(message => message.includes('transient sanitation failure')));
 
@@ -8201,7 +8885,7 @@ suite('Sidecar .kql.json strategy', () => {
 				fs.writeFileSync(sidecarPath, JSON.stringify({
 					kind: variant.kind, version: 1,
 					state: { sections: [
-						{ type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
 						{ type: 'markdown', text: 'BASELINE' },
 					] },
 				}), 'utf8');
@@ -8237,7 +8921,7 @@ suite('Sidecar .kql.json strategy', () => {
 				await Promise.resolve(receiveHandler!({
 					type: 'persistDocument', editRevision: 1,
 					state: { sections: [
-						{ type: variant.firstType, query: 'select 1' },
+										{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 						{ type: 'sql', id: 'sql-protected', resultJson: 'PROTECTED_INTERMEDIATE' },
 					] },
 				}));
@@ -8273,7 +8957,7 @@ suite('Sidecar .kql.json strategy', () => {
 				fs.writeFileSync(sidecarPath, JSON.stringify({
 					kind: variant.kind, version: 1,
 					state: { sections: [
-						{ type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
 						{ type: 'markdown', text: 'BASELINE' },
 					] },
 				}), 'utf8');
@@ -8336,7 +9020,7 @@ suite('Sidecar .kql.json strategy', () => {
 					type: 'persistDocument', editRevision: 1,
 					snapshotId: `close-snapshot-${index}`, flushRequestId: finalRequestId,
 					state: { sections: [
-						{ type: variant.firstType, query: 'select 1' },
+						{ id: 'primary_1', type: variant.firstType, query: 'select 1' },
 						{ type: 'markdown', text: 'FINAL_IN_TRANSIT' },
 					] },
 				}));
@@ -8373,7 +9057,7 @@ suite('Sidecar .kql.json strategy', () => {
 				fs.writeFileSync(sidecarPath, JSON.stringify({
 					kind: variant.kind, version: 1,
 					state: { sections: [
-						{ type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
+						{ id: 'primary_1', type: variant.firstType, linkedQueryPath: path.basename(sourcePath) },
 						{ type: 'markdown', text: 'BASELINE' },
 					] },
 				}), 'utf8');
@@ -8382,6 +9066,7 @@ suite('Sidecar .kql.json strategy', () => {
 				const disposeHandlers: Array<() => void> = [];
 				let webviewDisposed = false;
 				let postsAfterDispose = 0;
+				const posted: any[] = [];
 				const provider = new (variant.Provider as any)(
 					{ subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined }, globalState: { get: () => undefined, update: async () => undefined } } as any,
 					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
@@ -8393,10 +9078,17 @@ suite('Sidecar .kql.json strategy', () => {
 				const panel = {
 					visible: true,
 					webview: {
-						options: {}, postMessage: async () => {
+						options: {}, postMessage: async (message: any) => {
+							posted.push(message);
 							if (webviewDisposed) {
 								postsAfterDispose++;
 								throw new Error('Webview is disposed');
+							}
+							if (message?.reloadRequestId) {
+								await Promise.resolve(receiveHandler?.({
+									type: 'documentReloadResult', requestId: message.reloadRequestId,
+									applied: true, editRevision: Number(message.editRevision || 0),
+								}));
 							}
 							return true;
 						},
@@ -8411,15 +9103,16 @@ suite('Sidecar .kql.json strategy', () => {
 
 				await provider.resolveCustomTextEditor(document, panel, {} as any);
 				assert.ok(receiveHandler);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
 				webviewDisposed = true;
 				setTimeout(() => {
-					void Promise.resolve(receiveHandler!({
+					void Promise.resolve(receiveHandler!(withProjectedCompatPrimary(posted, {
 						type: 'persistDocument', reason: 'beforeunload', editRevision: 1,
 						state: { sections: [
 							{ type: variant.firstType, query: 'select 1' },
 							{ type: 'markdown', text: 'FINAL_ACTIVE_CLOSE' },
 						] },
-					}));
+					})));
 				}, 50);
 				for (const dispose of disposeHandlers) dispose();
 

@@ -193,6 +193,23 @@ describe('SqlEditorSessionRegistry', () => {
 		}
 	});
 
+	it('preserves a SQL comparison direct generation when it differs from its source', () => {
+		const harness = createHarness();
+		try {
+			harness.registry.adoptTarget('query_comparison', harness.connection.id, 'Db', 9, () => undefined);
+
+			expect(harness.registry.getGeneration('query_comparison')).toBe(9);
+			expect(harness.registry.getDatabase('query_comparison')).toBe('Db');
+			expect(harness.registry.getOwner('query_comparison')).toMatchObject({
+				connectionId: harness.connection.id,
+				database: 'Db',
+				generation: 9,
+			});
+		} finally {
+			fs.rmSync(harness.directory, { recursive: true, force: true });
+		}
+	});
+
 	it('uses the canonical principal even when the globalState mirror is empty', async () => {
 		const harness = createHarness({ accountId: '', canonicalAccountId: 'account-a' });
 		try {

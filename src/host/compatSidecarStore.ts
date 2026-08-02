@@ -227,7 +227,9 @@ export class CompatSidecarStore {
 			}
 			if (expectedCurrentText !== undefined && baselineText !== expectedCurrentText) throw this.changedError();
 			const parsedBaseline = this.options.parse(baselineText);
-			const baselineFile = parsedBaseline && this.options.isLinked(uri, parsedBaseline) ? parsedBaseline : undefined;
+			if (!parsedBaseline) throw new Error('The companion sidecar is malformed or incompatible with this document type.');
+			if (!this.options.isLinked(uri, parsedBaseline)) throw this.changedError();
+			const baselineFile = parsedBaseline;
 			const candidate = this.options.buildFile(state, baselineFile);
 			return this.options.publishFresh(candidate.state, sanitized => withCompatSidecarLock(uri, baseline.identity, async () => {
 				const locked = await readCompatSidecarSnapshot(uri);

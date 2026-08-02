@@ -13,11 +13,12 @@
 const iframe = document.getElementById('viewer');
 let pendingPayload = null;
 let delivered = false;
+const requestToken = new URL(window.location.href).searchParams.get('request') || '';
 
 // Request content from background immediately — don't wait for iframe load,
 // because the iframe might already be loaded by the time this script runs
 // (local extension resources load very fast and can beat the script).
-chrome.runtime.sendMessage({ type: 'get-pending-viewer-content' }, (response) => {
+chrome.runtime.sendMessage({ type: 'get-pending-viewer-content', requestToken }, (response) => {
 	if (chrome.runtime.lastError) {
 		console.error('[Kusto Workbench Standalone] Error getting content:', chrome.runtime.lastError.message);
 		return;

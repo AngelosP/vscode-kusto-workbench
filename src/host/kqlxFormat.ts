@@ -1,5 +1,11 @@
 import type { PowerBiUpgradeNoticeState } from '../shared/htmlDashboardUpgrade';
 import type { PersistedResultArtifactV1 } from '../shared/resultArtifact';
+import {
+	findIncompatibleKnownSection,
+	formatIncompatibleKnownSection,
+	canonicalSectionKind,
+	type WorkbenchDocumentKind,
+} from '../shared/documentSectionCapabilities';
 import { getInvalidKqlxKnownFieldShape } from './kqlxOverlay';
 
 export { overlayKqlxFileState } from './kqlxOverlay';
@@ -246,6 +252,8 @@ export type KqlxSectionV1 =
 			type: 'sql';
 			name?: string;
 			query?: string;
+			linkedQueryPath?: string;
+			comparisonSourceBoxId?: string;
 			serverUrl?: string;
 			connectionIdHint?: string;
 			targetSignature?: string;
@@ -293,7 +301,7 @@ export interface KqlxStateV1 {
 	[key: string]: unknown;
 }
 
-export type KqlxFileKind = 'kqlx' | 'mdx' | 'sqlx';
+export type KqlxFileKind = WorkbenchDocumentKind;
 
 export interface KqlxFileV1 {
 	kind: KqlxFileKind;
@@ -384,6 +392,10 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 		}
 	}
 	const sections = sectionsRaw as KqlxSectionV1[];
+	const incompatibleSection = findIncompatibleKnownSection(kind as KqlxFileKind, sections);
+	if (incompatibleSection) {
+		return { ok: false, error: formatIncompatibleKnownSection(incompatibleSection) };
+	}
 	const sectionIds = new Set<string>();
 	const unsafeSectionIds = new Set([
 		'prototype', 'queries-container', 'kusto-malformed-document-banner',
@@ -395,12 +407,15 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 		if (!isObject(section) || typeof section.type !== 'string' || !section.type.trim()) {
 			return { ok: false, error: `Invalid .kqlx: section ${index} must be an object with a non-empty "type".` };
 		}
+		const sectionRecord = section as Record<string, unknown>;
 		if (Object.prototype.hasOwnProperty.call(section, 'id') && section.id !== undefined && typeof section.id !== 'string') {
 			return { ok: false, error: `Invalid .kqlx: section ${index} "id" must be a string.` };
 		}
-		if ((section.type === 'query' || section.type === 'copilotQuery')
+		const canonicalKind = canonicalSectionKind(section.type);
+		const supportsLinkedPrimary = canonicalKind === 'query' || canonicalKind === 'sql';
+		if (supportsLinkedPrimary
 			&& Object.prototype.hasOwnProperty.call(section, 'linkedQueryPath')
-			&& section.linkedQueryPath !== undefined && typeof section.linkedQueryPath !== 'string') {
+			&& sectionRecord.linkedQueryPath !== undefined && typeof sectionRecord.linkedQueryPath !== 'string') {
 			return { ok: false, error: `Invalid .kqlx: section ${index} "linkedQueryPath" must be a string.` };
 		}
 		const invalidKnownShape = getInvalidKqlxKnownFieldShape(section);
@@ -414,8 +429,8 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 		if (id && unsafeSectionIds.has(id)) {
 			return { ok: false, error: `Invalid .kqlx: unsafe section id "${id}".` };
 		}
-		if ((section.type === 'query' || section.type === 'copilotQuery')
-			&& typeof section.linkedQueryPath === 'string' && section.linkedQueryPath.trim()) {
+		if (supportsLinkedPrimary
+			&& typeof sectionRecord.linkedQueryPath === 'string' && sectionRecord.linkedQueryPath.trim()) {
 			linkedQueryCount++;
 			if (linkedQueryCount > 1) {
 				return { ok: false, error: 'Invalid .kqlx: only one linked query section is supported.' };
