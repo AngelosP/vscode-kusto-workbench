@@ -10,6 +10,8 @@ import {
 	handleHostOwnedMarkdownCommandResult,
 	requestHostOwnedMarkdownPatch,
 	requestHostOwnedMarkdownRemove,
+	requestHostOwnedPythonPatch,
+	requestHostOwnedPythonRemove,
 	requestHostOwnedUrlPatch,
 	requestHostOwnedUrlRemove,
 	resetHostOwnedMarkdownDocument,
@@ -234,6 +236,73 @@ describe('host-owned Markdown command client', () => {
 		});
 	});
 
+	it('sequences Python, URL, and Markdown through one full-projection ledger', async () => {
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 12,
+			sectionRevisions: { markdown_1: 0, python_1: 0, url_1: 0 },
+			markdownSectionRevisions: { markdown_1: 0 },
+		}, {
+			sections: [
+				{ id: 'markdown_1', type: 'markdown', text: 'before' },
+				{
+					id: 'python_1', type: 'python', name: 'Before', code: 'print("before")',
+					output: 'before output', expanded: true, editorHeightPx: 180,
+				},
+				{ id: 'url_1', type: 'url', url: 'https://example.com/before.png', expanded: true },
+			],
+		});
+		postMessageToHost.mockClear();
+
+		expect(requestHostOwnedPythonPatch({
+			id: 'python_1', type: 'python', name: 'After', code: 'print("after")',
+			output: 'after output', expanded: false, editorHeightPx: 360,
+		})).toBe(true);
+		const pythonPatch = await waitForPostedMessage(1);
+		expect(pythonPatch).toMatchObject({
+			type: 'markdownDocumentCommand', sourceGeneration: 12, expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'python_1', expectedSectionRevision: 0,
+				patch: {
+					name: 'After', code: 'print("after")', output: 'after output',
+					expanded: false, editorHeightPx: 360,
+				},
+			},
+		});
+		handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: pythonPatch.commandId, ok: true,
+			sourceGeneration: 12,
+			projection: {
+				documentRevision: 1,
+				sectionRevisions: { markdown_1: 0, python_1: 1, url_1: 0 },
+				markdownSectionRevisions: { markdown_1: 0 },
+				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'before' }],
+				pythonSections: [{
+					id: 'python_1', type: 'python', name: 'After', code: 'print("after")',
+					output: 'after output', expanded: false, editorHeightPx: 360,
+				}],
+				urlSections: [{ id: 'url_1', type: 'url', url: 'https://example.com/before.png', expanded: true }],
+				orderedSectionIds: ['markdown_1', 'python_1', 'url_1'],
+			},
+		});
+
+		expect(requestHostOwnedUrlPatch({
+			id: 'url_1', type: 'url', url: 'https://example.com/after.png', expanded: true,
+		})).toBe(true);
+		const urlPatch = await waitForPostedMessage(2);
+		expect(urlPatch).toMatchObject({
+			expectedDocumentRevision: 1,
+			command: { type: 'patch', sectionId: 'url_1', expectedSectionRevision: 0 },
+		});
+
+		expect(requestHostOwnedPythonRemove('python_1')).toBe(true);
+		const pythonRemove = await waitForPostedMessage(3);
+		expect(pythonRemove).toMatchObject({
+			expectedDocumentRevision: 2,
+			command: { type: 'remove', sectionId: 'python_1', expectedSectionRevision: 1 },
+		});
+	});
+
 	it('rejects incomplete URL revision metadata without activating host ownership', () => {
 		const adopted = adoptHostOwnedMarkdownDocument({
 			documentRevision: 1,
@@ -247,6 +316,21 @@ describe('host-owned Markdown command client', () => {
 		expect(adopted).toBe(false);
 		expect(pState.hostOwnedMarkdownActive).toBe(false);
 		expect(pState.hostOwnedUrlSections).toEqual({});
+	});
+
+	it('rejects incomplete Python revision metadata without activating host ownership', () => {
+		const adopted = adoptHostOwnedMarkdownDocument({
+			documentRevision: 1,
+			sourceGeneration: 13,
+			sectionRevisions: {},
+			markdownSectionRevisions: {},
+		}, {
+			sections: [{ id: 'python_1', type: 'python', code: 'print(1)' }],
+		});
+
+		expect(adopted).toBe(false);
+		expect(pState.hostOwnedMarkdownActive).toBe(false);
+		expect(pState.hostOwnedPythonSections).toEqual({});
 	});
 
 	it('rejects a successful command result that omits the commanded URL transition', async () => {

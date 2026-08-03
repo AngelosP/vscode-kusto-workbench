@@ -35,7 +35,8 @@ import {
 	parseKustoExplorerConnectionsXml,
 	__kustoUpdateFavoritesUiForAllBoxes, __kustoTryAutoEnterFavoritesModeForAllBoxes,
 	__kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoOnConnectionsUpdated,
-	removePythonBox, removeUrlBox, commitUrlDocumentState, reconcileHostOwnedUrlProjection,
+	removePythonBox, reconcileHostOwnedPythonProjection,
+	removeUrlBox, commitUrlDocumentState, reconcileHostOwnedUrlProjection,
 	onPythonResult, onPythonError,
 	removeHtmlBox,
 	removeSqlBox, isPinnedFirstSection,
@@ -82,6 +83,7 @@ import {
 	isHostOwnedMarkdownDocument,
 	waitForHostOwnedMarkdownCommands,
 } from './markdown-document-client.js';
+import { retireAllPythonExecutions } from './python-execution-admission.js';
 import { reconcileProjectedSectionOrder } from './section-projection-order.js';
 import {
 	__kustoControlCommandDocCache, __kustoControlCommandDocPending,
@@ -1389,6 +1391,7 @@ function stageSqlComparisonAdmission(
 }
 
 window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
+	retireAllPythonExecutions();
 	for (const pending of [...pendingSqlComparisonAdmissionByRequestId.values()]) {
 		const message = {
 			requestId: pending.requestId,
@@ -1419,6 +1422,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		}
 		const recoveryMessages = new Set([
 			'documentData', 'persistenceMode', 'requestFinalPersist', 'persistDocumentAck',
+			'pythonResult', 'pythonError',
 			'settingsUpdate', 'sqlComparisonAdmissionRollback', 'sqlComparisonAdmissionComplete',
 			'sqlComparisonAdmissionRelease',
 		]);
@@ -1809,6 +1813,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 			if (result.handled && !result.accepted && result.projection) {
 				reconcileHostOwnedMarkdownProjection(
 					result.projection.markdownSections,
+					result.projection.orderedSectionIds,
+				);
+				reconcileHostOwnedPythonProjection(
+					result.projection.pythonSections ?? [],
 					result.projection.orderedSectionIds,
 				);
 				reconcileHostOwnedUrlProjection(
@@ -3769,6 +3777,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						? { ...(input.query ? { query: String(input.query) } : {}) }
 						: sectionType === 'markdown'
 							? { ...(textValue !== undefined ? { text: String(textValue) } : {}) }
+							: sectionType === 'python'
+								? { ...(input.code !== undefined ? { code: String(input.code) } : {}) }
 							: sectionType === 'html'
 								? { ...(input.code ? { code: String(input.code) } : {}) }
 								: sectionType === 'url'
@@ -3792,7 +3802,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				
 				if (success && sectionId) { markSectionAgentTouched(sectionId); }
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
-				if (success && (sectionType === 'markdown' || sectionType === 'url') && isHostOwnedMarkdownDocument()) {
+				if (success && (sectionType === 'markdown' || sectionType === 'python' || sectionType === 'url')
+					&& isHostOwnedMarkdownDocument()) {
 					success = await waitForHostOwnedMarkdownCommands();
 					if (!success) creationError = 'The host rejected the document section command.';
 				}
@@ -3872,7 +3883,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				if (success) {
 					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				}
-				if (success && (removedSectionType === 'markdown' || removedSectionType === 'url') && isHostOwnedMarkdownDocument()) {
+				if (success && (removedSectionType === 'markdown' || removedSectionType === 'python'
+					|| removedSectionType === 'url') && isHostOwnedMarkdownDocument()) {
 					success = await waitForHostOwnedMarkdownCommands();
 					if (!success) removalError = 'The host rejected the document section command.';
 				}
@@ -3900,6 +3912,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						if (sectionTag === 'kw-url-section' && isHostOwnedMarkdownDocument()) {
 							success = commitUrlDocumentState(sectionId)
 								&& await waitForHostOwnedMarkdownCommands();
+						} else if (sectionTag === 'kw-python-section' && isHostOwnedMarkdownDocument()) {
+							success = await waitForHostOwnedMarkdownCommands();
 						} else if (sectionTag === 'kw-markdown-section' && isHostOwnedMarkdownDocument()) {
 							success = await waitForHostOwnedMarkdownCommands();
 						}

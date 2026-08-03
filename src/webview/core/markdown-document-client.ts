@@ -8,6 +8,12 @@ import {
 	parseMarkdownSectionPatch,
 	patchMarkdownSection,
 } from '../../shared/markdownSectionDefinition.js';
+import type { PythonSectionState } from '../../shared/pythonSectionDefinition.js';
+import {
+	parsePythonSection,
+	parsePythonSectionPatch,
+	patchPythonSection,
+} from '../../shared/pythonSectionDefinition.js';
 import type { UrlSectionState } from '../../shared/urlSectionDefinition.js';
 import {
 	parseUrlSection,
@@ -35,6 +41,7 @@ let optimisticProjection: MarkdownDocumentProjection = {
 	sectionRevisions: {},
 	markdownSectionRevisions: {},
 	markdownSections: [],
+	pythonSections: [],
 	urlSections: [],
 	orderedSectionIds: [],
 };
@@ -44,6 +51,10 @@ const pendingCommands = new Map<string, PendingCommand>();
 const queueWaiters = new Set<() => void>();
 
 function cloneMarkdownSection(section: MarkdownSectionState): MarkdownSectionState {
+	return { ...section };
+}
+
+function clonePythonSection(section: PythonSectionState): PythonSectionState {
 	return { ...section };
 }
 
@@ -73,7 +84,9 @@ function parseHostOwnedProjection(input: unknown): MarkdownDocumentProjection | 
 	if (!isRecord(input)) return undefined;
 	const documentRevision = input.documentRevision;
 	if (!Number.isSafeInteger(documentRevision) || Number(documentRevision) < 0) return undefined;
+	const pythonInput = input.pythonSections ?? [];
 	if (!Array.isArray(input.markdownSections)
+		|| !Array.isArray(pythonInput)
 		|| !Array.isArray(input.urlSections)
 		|| !Array.isArray(input.orderedSectionIds)) return undefined;
 
@@ -83,13 +96,23 @@ function parseHostOwnedProjection(input: unknown): MarkdownDocumentProjection | 
 		if (!parsed.ok) return undefined;
 		markdownSections.push(parsed.value);
 	}
+	const pythonSections: PythonSectionState[] = [];
+	for (const section of pythonInput) {
+		const parsed = parsePythonSection(section);
+		if (!parsed.ok) return undefined;
+		pythonSections.push(parsed.value);
+	}
 	const urlSections: UrlSectionState[] = [];
 	for (const section of input.urlSections) {
 		const parsed = parseUrlSection(section);
 		if (!parsed.ok) return undefined;
 		urlSections.push(parsed.value);
 	}
-	const ownedIds = [...markdownSections.map(section => section.id), ...urlSections.map(section => section.id)];
+	const ownedIds = [
+		...markdownSections.map(section => section.id),
+		...pythonSections.map(section => section.id),
+		...urlSections.map(section => section.id),
+	];
 	if (new Set(ownedIds).size !== ownedIds.length) return undefined;
 	const orderedSectionIds = input.orderedSectionIds.map(value => typeof value === 'string' ? value.trim() : '');
 	if (orderedSectionIds.some(id => !id) || new Set(orderedSectionIds).size !== orderedSectionIds.length) return undefined;
@@ -108,14 +131,17 @@ function parseHostOwnedProjection(input: unknown): MarkdownDocumentProjection | 
 		sectionRevisions,
 		markdownSectionRevisions,
 		markdownSections,
+		pythonSections,
 		urlSections,
 		orderedSectionIds,
 	};
 }
 
-function commandSection(input: unknown): MarkdownSectionState | UrlSectionState | undefined {
+function commandSection(input: unknown): MarkdownSectionState | PythonSectionState | UrlSectionState | undefined {
 	const markdown = parseMarkdownSection(input);
 	if (markdown.ok) return markdown.value;
+	const python = parsePythonSection(input);
+	if (python.ok) return python.value;
 	const url = parseUrlSection(input);
 	return url.ok ? url.value : undefined;
 }
@@ -126,6 +152,7 @@ function cloneProjection(projection: MarkdownDocumentProjection): MarkdownDocume
 		sectionRevisions: { ...projection.sectionRevisions },
 		markdownSectionRevisions: { ...projection.markdownSectionRevisions },
 		markdownSections: projection.markdownSections.map(cloneMarkdownSection),
+		pythonSections: projection.pythonSections.map(clonePythonSection),
 		urlSections: projection.urlSections.map(cloneUrlSection),
 		orderedSectionIds: [...projection.orderedSectionIds],
 	};
@@ -135,8 +162,9 @@ function transitionProjection(
 	projection: MarkdownDocumentProjection,
 	command: MarkdownDocumentCommand,
 ): MarkdownDocumentProjection | undefined {
-	const sectionsById = new Map<string, MarkdownSectionState | UrlSectionState>([
+	const sectionsById = new Map<string, MarkdownSectionState | PythonSectionState | UrlSectionState>([
 		...projection.markdownSections.map(section => [section.id, cloneMarkdownSection(section)] as const),
+		...projection.pythonSections.map(section => [section.id, clonePythonSection(section)] as const),
 		...projection.urlSections.map(section => [section.id, cloneUrlSection(section)] as const),
 	]);
 	const orderedSectionIds = [...projection.orderedSectionIds];
@@ -168,6 +196,11 @@ function transitionProjection(
 			if (!patch.ok) return undefined;
 			sectionsById.set(section.id, patchMarkdownSection(section, patch.value));
 			sectionRevisions[section.id] = command.expectedSectionRevision + 1;
+		} else if (section.type === 'python') {
+			const patch = parsePythonSectionPatch(command.patch);
+			if (!patch.ok) return undefined;
+			sectionsById.set(section.id, patchPythonSection(section, patch.value));
+			sectionRevisions[section.id] = command.expectedSectionRevision + 1;
 		} else {
 			const patch = parseUrlSectionPatch(command.patch);
 			if (!patch.ok) return undefined;
@@ -183,11 +216,15 @@ function transitionProjection(
 	const markdownSections = ownedInOrder.filter(
 		(section): section is MarkdownSectionState => section.type === 'markdown',
 	);
+	const pythonSections = ownedInOrder.filter(
+		(section): section is PythonSectionState => section.type === 'python',
+	);
 	const urlSections = ownedInOrder.filter(
 		(section): section is UrlSectionState => section.type === 'url',
 	);
 	const canonicalSectionRevisions = Object.fromEntries([
 		...markdownSections.map(section => [section.id, sectionRevisions[section.id]] as const),
+		...pythonSections.map(section => [section.id, sectionRevisions[section.id]] as const),
 		...urlSections.map(section => [section.id, sectionRevisions[section.id]] as const),
 	]);
 	return {
@@ -197,6 +234,7 @@ function transitionProjection(
 			markdownSections.map(section => [section.id, sectionRevisions[section.id]]),
 		),
 		markdownSections,
+		pythonSections,
 		urlSections,
 		orderedSectionIds,
 	};
@@ -238,6 +276,10 @@ export function isHostOwnedUrlDocument(): boolean {
 	return isHostOwnedMarkdownDocument();
 }
 
+export function isHostOwnedPythonDocument(): boolean {
+	return isHostOwnedMarkdownDocument();
+}
+
 function notifyQueueWaiters(): void {
 	if (pendingCommands.size > 0) return;
 	for (const resolve of queueWaiters) resolve();
@@ -258,6 +300,9 @@ function adoptProjection(projection: MarkdownDocumentProjection, synchronizeOpti
 	pState.markdownSectionRevisions = { ...projection.markdownSectionRevisions };
 	pState.hostOwnedMarkdownSections = Object.fromEntries(
 		projection.markdownSections.map(section => [section.id, cloneMarkdownSection(section)]),
+	);
+	pState.hostOwnedPythonSections = Object.fromEntries(
+		projection.pythonSections.map(section => [section.id, clonePythonSection(section)]),
 	);
 	pState.hostOwnedUrlSections = Object.fromEntries(
 		(projection.urlSections ?? []).map(section => [section.id, cloneUrlSection(section)]),
@@ -295,6 +340,7 @@ export function adoptHostOwnedMarkdownDocument(message: unknown, state: unknown)
 		sectionRevisions: envelope.sectionRevisions,
 		markdownSectionRevisions: envelope.markdownSectionRevisions,
 		markdownSections: sections.filter(section => isRecord(section) && section.type === 'markdown'),
+		pythonSections: sections.filter(section => isRecord(section) && section.type === 'python'),
 		urlSections: sections.filter(section => isRecord(section) && section.type === 'url'),
 		orderedSectionIds: sections.map(section => isRecord(section) && typeof section.id === 'string' ? section.id : ''),
 	});
@@ -319,6 +365,7 @@ export function resetHostOwnedMarkdownDocument(): void {
 	pState.markdownSectionRevisions = {};
 	pState.documentSectionRevisions = {};
 	pState.hostOwnedMarkdownSections = {};
+	pState.hostOwnedPythonSections = {};
 	pState.hostOwnedUrlSections = {};
 	projectionEpoch++;
 	if (pendingCommands.size > 0) failureSequence++;
@@ -331,6 +378,7 @@ export function resetHostOwnedMarkdownDocument(): void {
 		sectionRevisions: {},
 		markdownSectionRevisions: {},
 		markdownSections: [],
+		pythonSections: [],
 		urlSections: [],
 		orderedSectionIds: [],
 	};
@@ -339,6 +387,11 @@ export function resetHostOwnedMarkdownDocument(): void {
 export function getHostOwnedMarkdownSection(sectionId: string): MarkdownSectionState | undefined {
 	const section = pState.hostOwnedMarkdownSections[String(sectionId || '')];
 	return section ? cloneMarkdownSection(section) : undefined;
+}
+
+export function getHostOwnedPythonSection(sectionId: string): PythonSectionState | undefined {
+	const section = pState.hostOwnedPythonSections[String(sectionId || '')];
+	return section ? clonePythonSection(section) : undefined;
 }
 
 export function getHostOwnedUrlSection(sectionId: string): UrlSectionState | undefined {
@@ -410,6 +463,45 @@ export function requestHostOwnedMarkdownPatch(section: MarkdownSectionState): bo
 
 export function requestHostOwnedMarkdownRemove(sectionId: string): boolean {
 	if (!isHostOwnedMarkdownDocument() || pState.restoreInProgress || pState.applyingHostMarkdownProjection || queueBlocked) return false;
+	const expectedSectionRevision = optimisticSectionRevisions[sectionId];
+	if (!Number.isSafeInteger(expectedSectionRevision)) return false;
+	return dispatchCommand({ type: 'remove', sectionId, expectedSectionRevision });
+}
+
+export function requestHostOwnedPythonAdd(section: PythonSectionState, afterSectionId?: string): boolean {
+	if (!isHostOwnedPythonDocument() || pState.restoreInProgress || pState.applyingHostMarkdownProjection || queueBlocked) return false;
+	if (Number.isSafeInteger(optimisticSectionRevisions[section.id])) return true;
+	return dispatchCommand({
+		type: 'add', section: clonePythonSection(section), ...(afterSectionId ? { afterSectionId } : {}),
+	});
+}
+
+export function requestHostOwnedPythonPatch(section: PythonSectionState): boolean {
+	if (!isHostOwnedPythonDocument() || pState.restoreInProgress || pState.applyingHostMarkdownProjection || queueBlocked) return false;
+	const expectedSectionRevision = optimisticSectionRevisions[section.id];
+	if (!Number.isSafeInteger(expectedSectionRevision)) return false;
+	const current = pState.hostOwnedPythonSections[section.id];
+	const patch = {
+		name: section.name ?? '',
+		code: section.code ?? '',
+		output: section.output ?? '',
+		expanded: section.expanded ?? true,
+		editorHeightPx: section.editorHeightPx ?? null,
+	};
+	const currentComparable = current ? {
+		name: current.name ?? '',
+		code: current.code ?? '',
+		output: current.output ?? '',
+		expanded: current.expanded ?? true,
+		editorHeightPx: current.editorHeightPx ?? null,
+	} : undefined;
+	if (pendingCommands.size === 0 && currentComparable
+		&& JSON.stringify(patch) === JSON.stringify(currentComparable)) return true;
+	return dispatchCommand({ type: 'patch', sectionId: section.id, expectedSectionRevision, patch });
+}
+
+export function requestHostOwnedPythonRemove(sectionId: string): boolean {
+	if (!isHostOwnedPythonDocument() || pState.restoreInProgress || pState.applyingHostMarkdownProjection || queueBlocked) return false;
 	const expectedSectionRevision = optimisticSectionRevisions[sectionId];
 	if (!Number.isSafeInteger(expectedSectionRevision)) return false;
 	return dispatchCommand({ type: 'remove', sectionId, expectedSectionRevision });

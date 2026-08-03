@@ -12,6 +12,10 @@ import {
 	type PersistedMarkdownSectionState,
 } from '../shared/markdownSectionDefinition';
 import {
+	validatePersistedPythonSection,
+	type PersistedPythonSectionState,
+} from '../shared/pythonSectionDefinition';
+import {
 	validatePersistedUrlSection,
 	type PersistedUrlSectionState,
 } from '../shared/urlSectionDefinition';
@@ -103,15 +107,7 @@ export type KqlxSectionV1 =
 			copilotChatWidthPx?: number;
 		}
 	| PersistedMarkdownSectionState
-	| {
-			id?: string;
-			type: 'python';
-			name?: string;
-			code?: string;
-			output?: string;
-			expanded?: boolean;
-			editorHeightPx?: number;
-		}
+	| PersistedPythonSectionState
 	| PersistedUrlSectionState
 	| {
 			id?: string;
@@ -407,11 +403,13 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 		}
 		const invalidKnownShape = canonicalKind === 'markdown'
 			? validatePersistedMarkdownSection(section)
+			: canonicalKind === 'python'
+				? validatePersistedPythonSection(section)
 			: canonicalKind === 'url'
 				? validatePersistedUrlSection(section)
 				: getInvalidKqlxKnownFieldShape(section);
 		if (invalidKnownShape) {
-			return { ok: false, error: canonicalKind === 'markdown' || canonicalKind === 'url'
+			return { ok: false, error: canonicalKind === 'markdown' || canonicalKind === 'python' || canonicalKind === 'url'
 				? `Invalid .kqlx: section ${index} ${invalidKnownShape}`
 				: `Invalid .kqlx: section ${index} invalid known field shape at "${invalidKnownShape}".` };
 		}

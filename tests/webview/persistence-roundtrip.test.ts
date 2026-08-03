@@ -815,6 +815,30 @@ describe('persistence round-trip', () => {
 		expect(url.serialize).not.toHaveBeenCalled();
 	});
 
+	it('uses host-owned Python projection when component serialize() throws', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const python = document.createElement('kw-python-section') as HTMLElement & { serialize: ReturnType<typeof vi.fn> };
+		python.id = 'python_host_owned';
+		python.serialize = vi.fn(() => { throw new Error('poisoned Python DOM serializer'); });
+		container.appendChild(python);
+		pState.documentKind = 'kqlx';
+		pState.documentRuntimeActive = true;
+		pState.hostOwnedMarkdownActive = true;
+		pState.markdownDocumentRevision = 6;
+		pState.documentSectionRevisions = { python_host_owned: 4 };
+		pState.hostOwnedPythonSections = {
+			python_host_owned: {
+				id: 'python_host_owned', type: 'python', name: 'Host Python', code: 'print("owned")',
+				output: 'owned output', expanded: false, editorHeightPx: 360,
+			},
+		};
+
+		expect(getKqlxState().sections).toEqual([pState.hostOwnedPythonSections.python_host_owned]);
+		expect(python.serialize).not.toHaveBeenCalled();
+	});
+
 	it('omits provisional SQL comparisons until host admission', () => {
 		const container = document.createElement('div');
 		container.id = 'queries-container';
@@ -3387,6 +3411,38 @@ describe('persistence round-trip', () => {
 			{ fetchIfMissing: false },
 		);
 		expect(element.triggerFetch).not.toHaveBeenCalled();
+	});
+
+	it('retains a host-owned Python element across a same-document forced projection', () => {
+		const documentUri = 'file:///tmp/python-handoff.kqlx';
+		const state = { sections: [{
+			id: 'python_handoff', type: 'python', name: 'Stable', code: 'print(1)',
+			output: 'one', expanded: true, editorHeightPx: 180,
+		}] };
+		const projection = (sourceGeneration: number) => ({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri, sourceGeneration, documentRevision: 0,
+			sectionRevisions: { python_handoff: 0 }, markdownSectionRevisions: {}, state,
+		});
+
+		expect(handleDocumentDataMessage(projection(1))).toBe(true);
+		const element = document.getElementById('python_handoff') as HTMLElement & {
+			applyHostDocumentState?: ReturnType<typeof vi.fn>;
+			runtimeMarker?: string;
+		};
+		expect(element).toBeTruthy();
+		element.runtimeMarker = 'preserved';
+		element.applyHostDocumentState = vi.fn();
+		const pythonCount = testState.pythonBoxes.length;
+
+		expect(handleDocumentDataMessage(projection(2))).toBe(true);
+
+		expect(document.getElementById('python_handoff')).toBe(element);
+		expect(element.runtimeMarker).toBe('preserved');
+		expect(testState.pythonBoxes).toHaveLength(pythonCount);
+		expect(element.applyHostDocumentState).toHaveBeenCalledWith(expect.objectContaining({
+			id: 'python_handoff', code: 'print(1)', output: 'one',
+		}));
 	});
 
 	it('restores legacy copilotQuery content and serializes it canonically as query', () => {

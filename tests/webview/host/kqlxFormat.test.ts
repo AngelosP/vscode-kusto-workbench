@@ -257,6 +257,21 @@ describe('parseKqlxText', () => {
 	});
 
 	it.each([
+		['output', 42],
+		['expanded', 'yes'],
+		['editorHeightPx', null],
+	] as const)('rejects invalid persisted Python %s', (field, value) => {
+		const result = parseKqlxText(JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'python_1', type: 'python', code: 'print(1)', [field]: value,
+			}] },
+		}));
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.error).toContain(field);
+	});
+
+	it.each([
 		['outputHeightPx', 0],
 		['imageSizeMode', 'stretch'],
 		['imageAlign', 'justify'],

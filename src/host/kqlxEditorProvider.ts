@@ -2966,7 +2966,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						const projectedCurrentState = ensureProjectedSectionIds(parsedCurrent.file.state, currentText);
 						const sourceHasOwnedSections = projectedCurrentState.sections.some(section => {
 							const kind = canonicalSectionKind(String((section as any)?.type || ''));
-							return kind === 'markdown' || kind === 'url';
+							return kind === 'markdown' || kind === 'python' || kind === 'url';
 						});
 						if ((!saveMarkdownOwner && sourceHasOwnedSections)
 							|| (saveMarkdownOwner && !rebaseMarkdownOwnerFromSource(saveMarkdownOwner, currentText, projectedCurrentState))

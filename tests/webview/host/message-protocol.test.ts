@@ -288,7 +288,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/queryEditorProvider.ts::<module>::postMessage::376:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::610:29',
 	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::745:26',
-	'src/host/queryEditorProvider.ts::postMessage::postMessage::3103:21',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::3109:21',
 	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::2769:21',
 	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::2788:22',
 	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::2741:21',

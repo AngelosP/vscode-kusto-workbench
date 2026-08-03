@@ -6,6 +6,12 @@ import {
 	type MarkdownSectionState,
 } from './markdownSectionDefinition';
 import {
+	parsePythonSection,
+	parsePythonSectionPatch,
+	patchPythonSection,
+	type PythonSectionState,
+} from './pythonSectionDefinition';
+import {
 	parseUrlSection,
 	parseUrlSectionPatch,
 	patchUrlSection,
@@ -13,7 +19,7 @@ import {
 } from './urlSectionDefinition';
 
 type SectionRecord = Record<string, unknown>;
-type OwnedSectionState = MarkdownSectionState | UrlSectionState;
+type OwnedSectionState = MarkdownSectionState | PythonSectionState | UrlSectionState;
 type OwnedSectionKind = OwnedSectionState['type'];
 
 export interface MarkdownDocumentState {
@@ -57,6 +63,7 @@ export interface MarkdownDocumentProjection {
 	sectionRevisions: Readonly<Record<string, number>>;
 	markdownSectionRevisions: Readonly<Record<string, number>>;
 	markdownSections: readonly MarkdownSectionState[];
+	pythonSections: readonly PythonSectionState[];
 	urlSections: readonly UrlSectionState[];
 	orderedSectionIds: readonly string[];
 }
@@ -81,7 +88,6 @@ export type MarkdownDocumentCreationResult =
 
 const isRecord = (value: unknown): value is SectionRecord =>
 	!!value && typeof value === 'object' && !Array.isArray(value);
-const hasOwn = (value: object, key: string): boolean => Object.prototype.hasOwnProperty.call(value, key);
 const setOwn = (target: SectionRecord, key: string, value: unknown): void => {
 	Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
 };
@@ -108,7 +114,7 @@ function sectionId(section: SectionRecord): string {
 
 function ownedSectionKind(section: SectionRecord): OwnedSectionKind | undefined {
 	const kind = canonicalSectionKind(String(section.type ?? ''));
-	return kind === 'markdown' || kind === 'url' ? kind : undefined;
+	return kind === 'markdown' || kind === 'python' || kind === 'url' ? kind : undefined;
 }
 
 function isOwnedSection(section: SectionRecord): boolean {
@@ -121,8 +127,9 @@ function parseOwnedSection(input: unknown):
 	if (!isRecord(input)) return { ok: false, error: 'Host-owned section must be an object.' };
 	const kind = ownedSectionKind(input);
 	if (kind === 'markdown') return parseMarkdownSection(input);
+	if (kind === 'python') return parsePythonSection(input);
 	if (kind === 'url') return parseUrlSection(input);
-	return { ok: false, error: 'Host-owned section must have type "markdown" or "url".' };
+	return { ok: false, error: 'Host-owned section must have type "markdown", "python", or "url".' };
 }
 
 function commandFailure(
@@ -185,6 +192,9 @@ export class MarkdownDocumentAggregate {
 		const markdownSections = ownedSections.filter(
 			(section): section is MarkdownSectionState => section.type === 'markdown',
 		);
+		const pythonSections = ownedSections.filter(
+			(section): section is PythonSectionState => section.type === 'python',
+		);
 		const urlSections = ownedSections.filter(
 			(section): section is UrlSectionState => section.type === 'url',
 		);
@@ -196,6 +206,7 @@ export class MarkdownDocumentAggregate {
 				[...this.sectionRevisions].filter(([id]) => markdownIds.has(id)),
 			),
 			markdownSections,
+			pythonSections,
 			urlSections,
 			orderedSectionIds: this.state.sections.map(sectionId),
 		};
@@ -204,7 +215,7 @@ export class MarkdownDocumentAggregate {
 	public hasUnmigratedVisualSections(): boolean {
 		return this.state.sections.some(section => {
 			const kind = canonicalSectionKind(String(section.type ?? ''));
-			return !!kind && kind !== 'markdown' && kind !== 'url' && kind !== 'devnotes';
+			return !!kind && kind !== 'markdown' && kind !== 'python' && kind !== 'url' && kind !== 'devnotes';
 		});
 	}
 
@@ -294,10 +305,13 @@ export class MarkdownDocumentAggregate {
 		const currentSectionRevision = revisions.get(commandSectionId);
 		if (!Number.isSafeInteger(command.expectedSectionRevision)
 			|| command.expectedSectionRevision !== currentSectionRevision) {
+			const sectionLabel = currentKind === 'markdown'
+				? 'Markdown'
+				: currentKind === 'python' ? 'Python' : 'URL';
 			return commandFailure(
 				this,
 				'stale-section-revision',
-				`Expected ${currentKind === 'markdown' ? 'Markdown' : 'URL'} section revision ${String(command.expectedSectionRevision)} but current revision is ${String(currentSectionRevision)}.`,
+				`Expected ${sectionLabel} section revision ${String(command.expectedSectionRevision)} but current revision is ${String(currentSectionRevision)}.`,
 			);
 		}
 
@@ -317,6 +331,12 @@ export class MarkdownDocumentAggregate {
 			if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);
 			if (!parsedPatch.ok) return commandFailure(this, 'invalid-command', parsedPatch.error);
 			sections[sectionIndex] = patchMarkdownSection(parsedCurrent.value, parsedPatch.value) as unknown as SectionRecord;
+		} else if (currentKind === 'python') {
+			const parsedCurrent = parsePythonSection(sections[sectionIndex]);
+			const parsedPatch = parsePythonSectionPatch(command.patch);
+			if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);
+			if (!parsedPatch.ok) return commandFailure(this, 'invalid-command', parsedPatch.error);
+			sections[sectionIndex] = patchPythonSection(parsedCurrent.value, parsedPatch.value) as unknown as SectionRecord;
 		} else {
 			const parsedCurrent = parseUrlSection(sections[sectionIndex]);
 			const parsedPatch = parseUrlSectionPatch(command.patch);

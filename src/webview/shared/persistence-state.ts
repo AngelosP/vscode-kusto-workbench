@@ -11,6 +11,7 @@
  */
 import type { PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
 import type { MarkdownSectionState } from '../../shared/markdownSectionDefinition.js';
+import type { PythonSectionState } from '../../shared/pythonSectionDefinition.js';
 import type { UrlSectionState } from '../../shared/urlSectionDefinition.js';
 import { addableSectionKindsForDocument, defaultSectionKindForDocument } from '../../shared/documentSectionCapabilities.js';
 
@@ -31,6 +32,8 @@ export const pState = {
 	documentSectionRevisions: {} as Record<string, number>,
 	/** Last acknowledged host projection used instead of Markdown DOM serialization. */
 	hostOwnedMarkdownSections: {} as Record<string, MarkdownSectionState>,
+	/** Last acknowledged host projection used instead of Python DOM serialization. */
+	hostOwnedPythonSections: {} as Record<string, PythonSectionState>,
 	/** Last acknowledged host projection used instead of URL DOM serialization. */
 	hostOwnedUrlSections: {} as Record<string, UrlSectionState>,
 	/** Suppresses command emission while reconciling a rejected stale view. */

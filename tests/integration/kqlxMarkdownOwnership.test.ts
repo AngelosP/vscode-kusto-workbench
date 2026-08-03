@@ -131,6 +131,98 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
+	test('Python-only Save before projection acknowledgement fails closed', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-python-pre-ack-save-'));
+		const filePath = path.join(tmpDir, 'python-only.kqlx');
+		const currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, futureRoot: { keep: true }, state: {
+				sections: [{
+					id: 'python_only', type: 'python', name: 'Python', code: 'print(1)',
+					output: 'one', expanded: true, editorHeightPx: 180,
+				}],
+			},
+		}, null, 2) + '\n';
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let reloadRequestId = '';
+		let projection: any;
+		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.workspace as any).onWillSaveTextDocument = (handler: any) => {
+				willSaveHandler = handler;
+				return { dispose() {} };
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: true, version: 1,
+			} as any;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') {
+							projection = message;
+							reloadRequestId = String(message.reloadRequestId || '');
+						}
+						if (message?.type === 'requestFinalPersist') {
+							await Promise.resolve(receiveHandler?.({
+								type: 'persistDocument', flushRequestId: message.requestId,
+								sourceGeneration: projection.sourceGeneration,
+								state: { sections: [] },
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			const request = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await waitForCondition(() => !!reloadRequestId, 'Python projection candidate should be posted', 1_000);
+			assert.ok(willSaveHandler);
+			let savePreparation: Promise<vscode.TextEdit[]> | undefined;
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { savePreparation = Promise.resolve(thenable); },
+			} as any);
+			assert.ok(savePreparation);
+			let preparedText = currentText;
+			try {
+				const edits = await savePreparation!;
+				if (edits.length > 0) preparedText = edits.at(-1)!.newText;
+			} catch (error) {
+				assert.match(error instanceof Error ? error.message : String(error), /projection was acknowledged/);
+			}
+			const prepared = JSON.parse(preparedText);
+			assert.deepStrictEqual(prepared.state.sections, JSON.parse(currentText).state.sections);
+
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: reloadRequestId,
+				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+			}));
+			await request;
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].code, 'print(1)');
+		} finally {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('cold-start panels share one queue and only the canonical panel joins Save', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalApplyEdit = vscode.workspace.applyEdit;
@@ -372,7 +464,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('URL and Markdown host commands survive stale DOM state, view recreation, and lossless save', async () => {
+	test('Python, URL, and Markdown host commands survive stale DOM state, view recreation, and lossless save', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
@@ -396,6 +488,11 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						id: 'url_original', type: 'url', name: 'Original URL', url: 'https://example.com/before.png',
 						expanded: true, outputHeightPx: 240, imageSizeMode: 'natural', imageAlign: 'left',
 						imageOverflow: 'shrink', futureUrl: { producer: 'future-url' },
+					},
+					{
+						id: 'python_original', type: 'python', name: 'Original Python', code: 'print("before")',
+						output: 'before output', expanded: true, editorHeightPx: 180,
+						futurePython: { producer: 'future-python' },
 					},
 					{
 						id: 'future_opaque', type: 'future-section',
@@ -458,6 +555,15 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 									{
 										id: 'url_temporary', type: 'url', name: 'Stale removed URL',
 										url: 'https://stale.invalid/removed.png', expanded: true,
+									},
+									{
+										id: 'python_original', type: 'python', name: 'Stale Python DOM',
+										code: 'raise RuntimeError("stale serializer")', output: 'stale output',
+										expanded: true, editorHeightPx: 999,
+									},
+									{
+										id: 'python_temporary', type: 'python', name: 'Stale removed Python',
+										code: 'print("removed")', output: 'removed output', expanded: true,
 									},
 									{ id: 'devnotes_owner', type: 'devnotes', entries: [{
 										id: 'note_saved', created: '2026-08-02T00:00:00.000Z',
@@ -550,7 +656,9 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.ok(initialProjection, 'initial host projection must be delivered');
 			assert.strictEqual(initialProjection.documentRevision, 0);
 			assert.deepStrictEqual(initialProjection.markdownSectionRevisions, { markdown_original: 0 });
-			assert.deepStrictEqual(initialProjection.sectionRevisions, { markdown_original: 0, url_original: 0 });
+			assert.deepStrictEqual(initialProjection.sectionRevisions, {
+				markdown_original: 0, url_original: 0, python_original: 0,
+			});
 
 			const sendCommand = async (message: any) => {
 				message.sourceGeneration ??= initialProjection.sourceGeneration;
@@ -678,6 +786,69 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				{ ok: true, documentRevision: 6 },
 			);
 
+			const pythonAdded = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'python-add', expectedDocumentRevision: 6,
+				command: {
+					type: 'add', afterSectionId: 'python_original',
+					section: {
+						id: 'python_temporary', type: 'python', name: 'Temporary Python',
+						code: 'print("remove me")', output: 'remove me', expanded: false,
+					},
+				},
+			});
+			assert.deepStrictEqual(
+				{
+					ok: pythonAdded.ok, documentRevision: pythonAdded.documentRevision,
+					sectionRevision: pythonAdded.sectionRevision,
+				},
+				{ ok: true, documentRevision: 7, sectionRevision: 1 },
+				JSON.stringify(pythonAdded),
+			);
+
+			const stalePython = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'python-stale-patch', expectedDocumentRevision: 6,
+				command: {
+					type: 'patch', sectionId: 'python_original', expectedSectionRevision: 0,
+					patch: { code: 'raise RuntimeError("stale overwrite")', output: 'stale overwrite' },
+				},
+			});
+			assert.strictEqual(stalePython.ok, false);
+			assert.strictEqual(stalePython.error?.code, 'stale-document-revision');
+			assert.strictEqual(stalePython.documentRevision, 7);
+			assert.strictEqual(
+				JSON.parse(currentText).state.sections.find((section: any) => section.id === 'python_original').code,
+				'print("before")',
+				'a stale Python command must not mutate the document',
+			);
+
+			const pythonPatched = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'python-patch', expectedDocumentRevision: 7,
+				command: {
+					type: 'patch', sectionId: 'python_original', expectedSectionRevision: 0,
+					patch: {
+						name: 'Host owned Python', code: 'print("after")', output: 'after output',
+						expanded: false, editorHeightPx: 360,
+					},
+				},
+			});
+			assert.deepStrictEqual(
+				{
+					ok: pythonPatched.ok, documentRevision: pythonPatched.documentRevision,
+					sectionRevision: pythonPatched.sectionRevision,
+				},
+				{ ok: true, documentRevision: 8, sectionRevision: 1 },
+				JSON.stringify(pythonPatched),
+			);
+
+			const pythonRemoved = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'python-remove', expectedDocumentRevision: 8,
+				command: { type: 'remove', sectionId: 'python_temporary', expectedSectionRevision: 1 },
+			});
+			assert.deepStrictEqual(
+				{ ok: pythonRemoved.ok, documentRevision: pythonRemoved.documentRevision },
+				{ ok: true, documentRevision: 9 },
+			);
+
 			await firstView.dispose();
 
 			const recreatedView = createPanel();
@@ -685,15 +856,21 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await recreatedView.receive({ type: 'requestDocument' });
 			const recreatedProjection = recreatedView.posted.find(message => message?.type === 'documentData' && message.ok === true);
 			assert.ok(recreatedProjection, 'recreated view must receive a projection');
-			assert.strictEqual(recreatedProjection.documentRevision, 6);
+			assert.strictEqual(recreatedProjection.documentRevision, 9);
 			assert.deepStrictEqual(recreatedProjection.markdownSectionRevisions, { markdown_original: 1 });
-			assert.deepStrictEqual(recreatedProjection.sectionRevisions, { markdown_original: 1, url_original: 1 });
+			assert.deepStrictEqual(recreatedProjection.sectionRevisions, {
+				markdown_original: 1, url_original: 1, python_original: 1,
+			});
 			assert.strictEqual(recreatedProjection.state.sections[0].text, 'after');
 			assert.strictEqual(recreatedProjection.state.sections[0].title, 'Host owned');
 			assert.deepStrictEqual(recreatedProjection.state.sections[1], {
 				id: 'url_original', type: 'url', name: 'Host owned URL', url: 'https://example.com/after.png',
 				expanded: false, outputHeightPx: 420, imageSizeMode: 'fill', imageAlign: 'center',
 				imageOverflow: 'scroll',
+			});
+			assert.deepStrictEqual(recreatedProjection.state.sections[2], {
+				id: 'python_original', type: 'python', name: 'Host owned Python', code: 'print("after")',
+				output: 'after output', expanded: false, editorHeightPx: 360,
 			});
 
 			const owningSaveHandler = willSaveHandlers.at(-1);
@@ -714,7 +891,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.deepStrictEqual(saved.futureRoot, fixture.futureRoot);
 			assert.deepStrictEqual(saved.state.futureState, fixture.state.futureState);
 			assert.deepStrictEqual(saved.state.sections.map((section: any) => section.id), [
-				'markdown_original', 'url_original', 'future_opaque', 'devnotes_owner',
+				'markdown_original', 'url_original', 'python_original', 'future_opaque', 'devnotes_owner',
 			]);
 			assert.deepStrictEqual(saved.state.sections[0], {
 				id: 'markdown_original', type: 'markdown', title: 'Host owned', text: 'after',
@@ -726,8 +903,13 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				expanded: false, outputHeightPx: 420, imageSizeMode: 'fill', imageAlign: 'center',
 				imageOverflow: 'scroll', futureUrl: { producer: 'future-url' },
 			});
-			assert.deepStrictEqual(saved.state.sections[2], fixture.state.sections[2]);
-			assert.strictEqual(saved.state.sections[3].entries[0].content, 'adapter-owned note');
+			assert.deepStrictEqual(saved.state.sections[2], {
+				id: 'python_original', type: 'python', name: 'Host owned Python', code: 'print("after")',
+				output: 'after output', expanded: false, editorHeightPx: 360,
+				futurePython: { producer: 'future-python' },
+			});
+			assert.deepStrictEqual(saved.state.sections[3], fixture.state.sections[3]);
+			assert.strictEqual(saved.state.sections[4].entries[0].content, 'adapter-owned note');
 			await recreatedView.dispose();
 		} finally {
 			for (const subscription of workspaceSubscriptions) subscription.dispose();

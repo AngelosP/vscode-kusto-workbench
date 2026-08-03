@@ -65,8 +65,10 @@ import {
 import {
 	adoptHostOwnedMarkdownDocument,
 	getHostOwnedMarkdownSection,
+	getHostOwnedPythonSection,
 	getHostOwnedUrlSection,
 	isHostOwnedMarkdownDocument,
+	isHostOwnedPythonDocument,
 	isHostOwnedUrlDocument,
 	resetHostOwnedMarkdownDocument,
 } from './markdown-document-client.js';
@@ -1727,6 +1729,11 @@ export function getKqlxState() {
 			if (owned) sections.push(owned);
 			continue;
 		}
+		if (isHostOwnedPythonDocument() && el?.tagName.toLowerCase() === 'kw-python-section') {
+			const owned = getHostOwnedPythonSection(id);
+			if (owned) sections.push(owned);
+			continue;
+		}
 		if (isHostOwnedUrlDocument() && el?.tagName.toLowerCase() === 'kw-url-section') {
 			const owned = getHostOwnedUrlSection(id);
 			if (owned) sections.push(owned);
@@ -2024,7 +2031,7 @@ try {
 	});
 } catch (e) { console.error('[kusto]', e); }
 
-function __kustoClearAllSections(preserveUrlIds: ReadonlySet<string> = new Set()) {
+function __kustoClearAllSections(preserveOwnedIds: ReadonlySet<string> = new Set()) {
 	__kustoWithPinnedSectionRemovalBypass(() => {
 	try {
 		for (const id of (queryBoxes || []).slice()) {
@@ -2048,12 +2055,13 @@ function __kustoClearAllSections(preserveUrlIds: ReadonlySet<string> = new Set()
 	} catch (e) { console.error('[kusto]', e); }
 	try {
 		for (const id of (pythonBoxes || []).slice()) {
+			if (preserveOwnedIds.has(String(id))) continue;
 			try { removePythonBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
 	try {
 		for (const id of (urlBoxes || []).slice()) {
-			if (preserveUrlIds.has(String(id))) continue;
+			if (preserveOwnedIds.has(String(id))) continue;
 			try { removeUrlBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -2118,20 +2126,21 @@ function __kustoAssertSqlComparisonReferences(state: any): void {
 
 function applyKqlxState(
 	state: any,
-	options?: Readonly<{ preserveHostOwnedUrlViews?: boolean }>,
+	options?: Readonly<{ preserveHostOwnedViews?: boolean }>,
 ): boolean {
 	perfMark('webview.persistence.applyState.start');
 	pState.restoreInProgress = true;
 	let restored = false;
 	try {
 		const s = state && typeof state === 'object' ? state : { sections: [] };
-		const preserveUrlIds = new Set<string>();
-		if (options?.preserveHostOwnedUrlViews && Array.isArray(s.sections)) {
+		const preserveOwnedIds = new Set<string>();
+		if (options?.preserveHostOwnedViews && Array.isArray(s.sections)) {
 			for (const section of s.sections) {
-				if (canonicalSectionKind(String(section?.type || '')) !== 'url') continue;
+				const kind = canonicalSectionKind(String(section?.type || ''));
+				if (kind !== 'python' && kind !== 'url') continue;
 				const id = String(section?.id || '').trim();
 				const element = id ? document.getElementById(id) : null;
-				if (element?.tagName.toLowerCase() === 'kw-url-section') preserveUrlIds.add(id);
+				if (element?.tagName.toLowerCase() === `kw-${kind}-section`) preserveOwnedIds.add(id);
 			}
 		}
 		__kustoSchemaPrewarmSentKeys.clear();
@@ -2147,7 +2156,7 @@ function applyKqlxState(
 			__kustoResetStoredResultSignatures();
 		} catch (e) { console.error('[kusto]', e); }
 
-		__kustoClearAllSections(preserveUrlIds);
+		__kustoClearAllSections(preserveOwnedIds);
 
 		const assertCompatElement = (id: string, expectedTag: string): void => {
 			const expectedParent = document.getElementById('queries-container') || document.body;
@@ -2662,28 +2671,24 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 			}
 
 			if (t === 'python') {
-				// Store pending code so the Lit component can pick it up during Monaco init.
-				const pendingId = section.id ? String(section.id) : ('python_' + Date.now());
-				try {
-					pState.pendingPythonCodeByBoxId[pendingId] = String(section.code || '');
-				} catch (e) { console.error('[kusto]', e); }
-				const boxId = addPythonBox({ id: pendingId });
-				// Set output, name, expanded, and height on the Lit element.
-				try {
-					const el = document.getElementById(boxId);
-					if (el && typeof (el as any).setOutput === 'function') {
-						(el as any).setOutput(String(section.output || ''));
-					}
-					if (el && typeof (el as any).setTitle === 'function' && section.name) {
-						(el as any).setTitle(String(section.name));
-					}
-					if (el && typeof (el as any).setExpanded === 'function' && typeof section.expanded === 'boolean') {
-						(el as any).setExpanded(section.expanded);
-					}
-					if (el && section.editorHeightPx) {
-						el.setAttribute('editor-height-px', String(section.editorHeightPx));
-					}
-				} catch (e) { console.error('[kusto]', e); }
+				const projected = {
+					id: String(section.id || ''), type: 'python' as const,
+					name: String(section.name || ''),
+					code: String(section.code || ''),
+					output: String(section.output || ''),
+					expanded: section.expanded !== false,
+					...(typeof section.editorHeightPx === 'number' ? { editorHeightPx: section.editorHeightPx } : {}),
+				};
+				let element = preserveOwnedIds.has(projected.id)
+					? document.getElementById(projected.id) as HTMLElementTagNameMap['kw-python-section'] | null
+					: null;
+				const boxId = element ? projected.id : addPythonBox(projected);
+				if (!element) {
+					element = document.getElementById(boxId) as HTMLElementTagNameMap['kw-python-section'] | null;
+				}
+				element?.applyHostDocumentState?.(projected);
+				const container = document.getElementById('queries-container');
+				if (container && element && container.lastElementChild !== element) container.appendChild(element);
 				continue;
 			}
 
@@ -2698,7 +2703,7 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 					...(typeof section.imageAlign === 'string' ? { imageAlign: section.imageAlign } : {}),
 					...(typeof section.imageOverflow === 'string' ? { imageOverflow: section.imageOverflow } : {}),
 				};
-				let element = preserveUrlIds.has(projected.id)
+				let element = preserveOwnedIds.has(projected.id)
 					? document.getElementById(projected.id) as HTMLElementTagNameMap['kw-url-section'] | null
 					: null;
 				const created = !element;
@@ -2960,7 +2965,7 @@ export function handleDocumentDataMessage(message: any): boolean {
 	});
 
 	const incomingDocumentUri = (message && typeof message.documentUri === 'string') ? String(message.documentUri) : '';
-	const preserveHostOwnedUrlViews = __kustoHasAppliedDocument
+	const preserveHostOwnedViews = __kustoHasAppliedDocument
 		&& pState.hostOwnedMarkdownActive
 		&& !!incomingDocumentUri
 		&& incomingDocumentUri === __kustoLastAppliedDocumentUri;
@@ -3067,7 +3072,7 @@ export function handleDocumentDataMessage(message: any): boolean {
 			throw new Error('The host document projection has invalid section revision metadata.');
 		}
 		assertProjectedSectionsAllowed(Array.isArray(incomingState.sections) ? incomingState.sections : []);
-		applyKqlxState(incomingState, { preserveHostOwnedUrlViews });
+		applyKqlxState(incomingState, { preserveHostOwnedViews });
 		if (Number.isSafeInteger(incomingEditRevision) && incomingEditRevision >= 0) {
 			pState.documentEditRevision = incomingEditRevision;
 		}

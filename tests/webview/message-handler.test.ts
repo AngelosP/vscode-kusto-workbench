@@ -114,6 +114,7 @@ const mocks = {
 	waitForHostOwnedMarkdownCommands: vi.fn(async () => true),
 	handleHostOwnedMarkdownCommandResult: vi.fn(() => ({ handled: false, accepted: false })),
 	reconcileHostOwnedMarkdownProjection: vi.fn(),
+	reconcileHostOwnedPythonProjection: vi.fn(),
 	reconcileHostOwnedUrlProjection: vi.fn(),
 	detachSqlComparisonForAdmissionRollback: vi.fn((boxId: string, sourceBoxId: string) => {
 		const metadata = handlerState.optimizationMetadataByBoxId[boxId];
@@ -198,6 +199,7 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	addUrlBox: vi.fn(() => 'url_1'),
 	removePythonBox: vi.fn(),
 	removeUrlBox: vi.fn(),
+	reconcileHostOwnedPythonProjection: mocks.reconcileHostOwnedPythonProjection,
 	commitUrlDocumentState: vi.fn(() => true),
 	reconcileHostOwnedUrlProjection: mocks.reconcileHostOwnedUrlProjection,
 	addHtmlBox: vi.fn(() => 'html_1'),
@@ -694,7 +696,7 @@ describe('message-handler dispatch', () => {
 	it('applies one stable mixed-section order after rejected command reconciliation', async () => {
 		const container = document.createElement('div');
 		container.id = 'queries-container';
-		for (const id of ['query_1', 'url_1', 'url_2']) {
+		for (const id of ['query_1', 'url_1', 'python_1', 'url_2']) {
 			const element = document.createElement('div');
 			element.id = id;
 			container.appendChild(element);
@@ -705,23 +707,27 @@ describe('message-handler dispatch', () => {
 			accepted: false,
 			projection: {
 				documentRevision: 4,
-				sectionRevisions: { url_1: 1, url_2: 0 },
+				sectionRevisions: { url_1: 1, python_1: 2, url_2: 0 },
 				markdownSectionRevisions: {},
 				markdownSections: [],
+				pythonSections: [{
+					id: 'python_1', type: 'python', code: 'print(1)', output: 'one', expanded: true,
+				}],
 				urlSections: [
 					{ id: 'url_1', type: 'url', url: 'https://example.com/one.png', expanded: true },
 					{ id: 'url_2', type: 'url', url: 'https://example.com/two.png', expanded: true },
 				],
-				orderedSectionIds: ['url_1', 'url_2', 'query_1'],
+				orderedSectionIds: ['url_1', 'python_1', 'url_2', 'query_1'],
 			},
 		});
 
 		dispatchHostMessage({ type: 'markdownDocumentCommandResult', commandId: 'stale-url' });
 
 		await vi.waitFor(() => expect(Array.from(container.children, element => element.id)).toEqual([
-			'url_1', 'url_2', 'query_1',
+			'url_1', 'python_1', 'url_2', 'query_1',
 		]));
 		expect(mocks.reconcileHostOwnedMarkdownProjection).toHaveBeenCalledOnce();
+	expect(mocks.reconcileHostOwnedPythonProjection).toHaveBeenCalledOnce();
 		expect(mocks.reconcileHostOwnedUrlProjection).toHaveBeenCalledOnce();
 	});
 
@@ -4096,6 +4102,26 @@ describe('changedSections agent provenance', () => {
 		}
 	});
 
+	it('passes Python code through tool creation and waits for host command settlement', async () => {
+		mocks.isHostOwnedMarkdownDocument.mockReturnValue(true);
+		try {
+			dispatchHostMessage({
+				type: 'toolAddSection', requestId: 'tool-python-code',
+				input: { type: 'python', name: 'Analysis', code: 'print(42)' },
+			});
+			await new Promise(resolve => setTimeout(resolve, 0));
+
+			expect(mocks.createSectionWithCapabilities).toHaveBeenCalledWith('python', { code: 'print(42)' });
+			expect(mocks.waitForHostOwnedMarkdownCommands).toHaveBeenCalledOnce();
+			expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'toolResponse', requestId: 'tool-python-code',
+				result: { sectionId: 'python_1', success: true },
+			}));
+		} finally {
+			mocks.isHostOwnedMarkdownDocument.mockReturnValue(false);
+		}
+	});
+
 	it('rejects tool-added sections in compatibility mode before mutation', async () => {
 		handlerState.pState.documentKind = 'kql';
 		handlerState.pState.compatibilityMode = true;
@@ -4141,6 +4167,8 @@ describe('changedSections agent provenance', () => {
 			type: 'queryResult', boxId: 'query_stale', executionId: 'execution-stale',
 			result: { columns: [{ name: 'Secret' }], rows: [['stale']] },
 		});
+		dispatchHostMessage({ type: 'pythonResult', boxId: 'python_stale', stdout: 'discarded', exitCode: 0 });
+		dispatchHostMessage({ type: 'pythonError', boxId: 'python_error_stale', error: 'discarded' });
 		dispatchHostMessage({ type: 'requestToolState', requestId: 'state-invalid' });
 		dispatchHostMessage({
 			type: 'toolConfigureSqlSection', requestId: 'configure-invalid',
@@ -4155,6 +4183,8 @@ describe('changedSections agent provenance', () => {
 		await Promise.resolve();
 
 		expect(mocks.displayResultForBox).not.toHaveBeenCalled();
+		expect(mocks.onPythonResult).toHaveBeenCalledWith(expect.objectContaining({ boxId: 'python_stale' }));
+		expect(mocks.onPythonError).toHaveBeenCalledWith(expect.objectContaining({ boxId: 'python_error_stale' }));
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
 			type: 'toolStateResponse', requestId: 'state-invalid', sections: [],
 			error: 'This document is invalid and its retained sections are non-executable.',
@@ -4334,6 +4364,27 @@ describe('changedSections agent provenance', () => {
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
 			type: 'toolResponse', requestId: 'remove-markdown', result: { success: true },
 		}));
+	});
+
+	it('reports failure when the host rejects a Python removal command', async () => {
+		const section = document.createElement('div');
+		Object.defineProperty(section, 'tagName', { value: 'KW-PYTHON-SECTION', configurable: true });
+		section.id = 'opaque-python-id';
+		document.body.appendChild(section);
+		mocks.isHostOwnedMarkdownDocument.mockReturnValue(true);
+		mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(false);
+		try {
+			dispatchHostMessage({ type: 'toolRemoveSection', requestId: 'remove-python', sectionId: section.id });
+			await new Promise(resolve => setTimeout(resolve, 0));
+			expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'toolResponse', requestId: 'remove-python', result: { success: false },
+				error: 'The host rejected the document section command.',
+			}));
+		} finally {
+			mocks.isHostOwnedMarkdownDocument.mockReturnValue(false);
+			mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(true);
+			section.remove();
+		}
 	});
 
 	it('refuses tool removal of the pinned compatibility primary', async () => {
@@ -4627,6 +4678,31 @@ describe('changedSections agent provenance', () => {
 			expect(section.setExpanded).toHaveBeenCalledWith(false);
 			expect(mocks.postMessageToHost).toHaveBeenCalledWith({
 				type: 'toolResponse', requestId: 'collapse-markdown',
+				result: { success: false }, error: 'Failed to collapse/expand section',
+			});
+		} finally {
+			mocks.isHostOwnedMarkdownDocument.mockReturnValue(false);
+			mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(true);
+			section.remove();
+		}
+	});
+
+	it('reports failure when the host rejects a Python collapse command', async () => {
+		const section = document.createElement('div') as HTMLDivElement & { setExpanded: ReturnType<typeof vi.fn> };
+		Object.defineProperty(section, 'tagName', { value: 'KW-PYTHON-SECTION', configurable: true });
+		section.id = 'python-collapse';
+		section.setExpanded = vi.fn();
+		document.body.appendChild(section);
+		mocks.isHostOwnedMarkdownDocument.mockReturnValue(true);
+		mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(false);
+		try {
+			dispatchHostMessage({
+				type: 'toolCollapseSection', requestId: 'collapse-python', sectionId: section.id, collapsed: true,
+			});
+			await new Promise(resolve => setTimeout(resolve, 0));
+			expect(section.setExpanded).toHaveBeenCalledWith(false);
+			expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+				type: 'toolResponse', requestId: 'collapse-python',
 				result: { success: false }, error: 'Failed to collapse/expand section',
 			});
 		} finally {

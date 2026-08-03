@@ -17,6 +17,17 @@ import { __kustoForceEditorWritable, __kustoEnsureEditorWritableSoon, __kustoIns
 import { __kustoAttachAutoResizeToContent } from '../monaco/resize.js';
 import { postMessageToHost } from '../shared/webview-messages.js';
 import { createMonacoCursorStatusPublisher, type EditorCursorStatusPublisher } from '../shared/editor-cursor-status.js';
+import {
+	isHostOwnedPythonDocument,
+	requestHostOwnedPythonPatch,
+} from '../core/markdown-document-client.js';
+import {
+	cancelPythonExecution,
+	isPythonExecutionPending,
+	reservePythonExecution,
+	retirePythonExecution,
+} from '../core/python-execution-admission.js';
+import type { PythonSectionState } from '../../shared/pythonSectionDefinition.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -86,6 +97,7 @@ export class KwPythonSection extends LitElement implements SectionElement {
 	@state() private _expanded = true;
 	@state() private _output = '';
 	@state() private _running = false;
+	private _persistedOutput = '';
 
 	private _editor: MonacoEditor | null = null;
 	private _cursorStatus: EditorCursorStatusPublisher | null = null;
@@ -93,12 +105,14 @@ export class KwPythonSection extends LitElement implements SectionElement {
 	private _userResized = false;
 	/** Saved editor content across DOM moves (disconnect → reconnect). */
 	private _savedCode: string | null = null;
+	private _disconnectGeneration = 0;
 
 	// ── Lifecycle ─────────────────────────────────────────────────────────────
 
 	override connectedCallback(): void {
 		super.connectedCallback();
-		window.addEventListener('message', this._onMessage);
+		this._disconnectGeneration++;
+		this._running = isPythonExecutionPending(this.boxId);
 		// Re-create editor after a DOM move (reorder). firstUpdated only fires once,
 		// so we need to re-init here when reconnecting with saved content.
 		if (this._savedCode !== null) {
@@ -108,15 +122,18 @@ export class KwPythonSection extends LitElement implements SectionElement {
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
-		window.removeEventListener('message', this._onMessage);
-		// Save content before destroying so it can be restored on reconnect.
-		if (this._editor) {
-			try {
-				const model = this._editor.getModel();
-				if (model) this._savedCode = model.getValue();
-			} catch (e) { console.error('[kusto]', e); }
-		}
-		this._disposeEditor();
+		const disconnectGeneration = ++this._disconnectGeneration;
+		queueMicrotask(() => {
+			if (this.isConnected || disconnectGeneration !== this._disconnectGeneration) return;
+			retirePythonExecution(this.boxId, this);
+			if (this._editor) {
+				try {
+					const model = this._editor.getModel();
+					if (model) this._savedCode = model.getValue();
+				} catch (e) { console.error('[kusto]', e); }
+			}
+			this._disposeEditor();
+		});
 	}
 
 	override firstUpdated(_changedProperties: PropertyValues): void {
@@ -343,9 +360,13 @@ export class KwPythonSection extends LitElement implements SectionElement {
 	// ── Actions ───────────────────────────────────────────────────────────────
 
 	private _run(): void {
-		if (!this._editor) return;
+		if (!this._editor || this._running) return;
 		const model = this._editor.getModel();
 		const code = model ? model.getValue() : '';
+		if (!reservePythonExecution(this.boxId, this, code)) {
+			this._running = isPythonExecutionPending(this.boxId);
+			return;
+		}
 		this._output = 'Running…';
 		this._running = true;
 		try {
@@ -354,8 +375,9 @@ export class KwPythonSection extends LitElement implements SectionElement {
 				vscode.postMessage({ type: 'executePython', boxId: this.boxId, code });
 			}
 		} catch {
-			this._output = 'Failed to send run request.';
+			cancelPythonExecution(this.boxId, this);
 			this._running = false;
+			this._output = 'Failed to send run request.';
 		}
 	}
 
@@ -497,38 +519,13 @@ export class KwPythonSection extends LitElement implements SectionElement {
 		window.addEventListener('blur', onUp);
 	}
 
-	// ── Message handling ──────────────────────────────────────────────────────
-
-	private _onMessage = (e: MessageEvent): void => {
-		const msg = e.data;
-		if (!msg || typeof msg !== 'object') return;
-
-		if (msg.type === 'pythonResult' && msg.boxId === this.boxId) {
-			this._running = false;
-			const stdout = String(msg.stdout || '');
-			const stderr = String(msg.stderr || '');
-			const exitCode = typeof msg.exitCode === 'number' ? msg.exitCode : null;
-			let out = '';
-			if (stdout.trim()) out += stdout;
-			if (stderr.trim()) {
-				if (out) out += '\n\n';
-				out += stderr;
-			}
-			if (!out) out = exitCode === 0 ? '' : 'No output.';
-			this._output = out;
-		}
-
-		if (msg.type === 'pythonError' && msg.boxId === this.boxId) {
-			this._running = false;
-			this._output = String(msg.error || 'Python execution failed.');
-		}
-	};
-
 	// ── Persistence ───────────────────────────────────────────────────────────
 
 	private _schedulePersist(): void {
 		try {
-			schedulePersist();
+			if (!this.isConnected || document.getElementById(this.boxId) !== this) return;
+			if (isHostOwnedPythonDocument()) requestHostOwnedPythonPatch(this.createDocumentState());
+			else schedulePersist();
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -537,13 +534,19 @@ export class KwPythonSection extends LitElement implements SectionElement {
 	 * Output is identical to the original persistence.js Python section shape.
 	 */
 	public serialize(): PythonSectionData {
-		let code = '';
+		return this.createDocumentState();
+	}
+
+	public createDocumentState(): PythonSectionData {
+		let code: string | undefined;
 		if (this._editor) {
 			const model = this._editor.getModel();
-			code = model ? model.getValue() : '';
+			if (model) code = model.getValue();
 		}
-		if (!code) {
-			// Fallback: check pending code buffer (Monaco may not be ready yet).
+		if (code === undefined) {
+			if (this._savedCode !== null) code = this._savedCode;
+		}
+		if (code === undefined) {
 			try {
 				const pending = pState.pendingPythonCodeByBoxId;
 				if (pending && typeof pending[this.boxId] === 'string') {
@@ -551,13 +554,14 @@ export class KwPythonSection extends LitElement implements SectionElement {
 				}
 			} catch (e) { console.error('[kusto]', e); }
 		}
+		if (code === undefined) code = this.initialCode ?? '';
 
 		const data: PythonSectionData = {
 			id: this.boxId,
 			type: 'python',
 			name: this._title,
 			code,
-			output: this._output,
+			output: this._persistedOutput,
 			expanded: this._expanded,
 		};
 
@@ -567,6 +571,75 @@ export class KwPythonSection extends LitElement implements SectionElement {
 		}
 
 		return data;
+	}
+
+	public applyHostDocumentState(section: PythonSectionState): void {
+		const previousProjectionState = pState.applyingHostMarkdownProjection;
+		pState.applyingHostMarkdownProjection = true;
+		try {
+			const nextCode = section.code ?? '';
+			const currentCode = this.createDocumentState().code;
+			retirePythonExecution(this.boxId, this);
+			this._running = isPythonExecutionPending(this.boxId);
+			this._title = section.name ?? '';
+			this._expanded = section.expanded ?? true;
+			this.classList.toggle('is-collapsed', !this._expanded);
+			if (!this._expanded) this._cursorStatus?.clear('python-collapse');
+			this._persistedOutput = section.output ?? '';
+			this._output = this._persistedOutput;
+			this.initialCode = nextCode;
+			if (nextCode !== currentCode) {
+				if (this._editor) this._editor.setValue(nextCode);
+				else {
+					this._savedCode = nextCode;
+					pState.pendingPythonCodeByBoxId[this.boxId] = nextCode;
+				}
+			}
+			const wrapper = this.shadowRoot?.getElementById('editor-wrapper');
+			if (section.editorHeightPx !== undefined) {
+				this.editorHeightPx = section.editorHeightPx;
+				this.setAttribute('editor-height-px', String(section.editorHeightPx));
+				if (wrapper) wrapper.style.height = `${section.editorHeightPx}px`;
+				this._userResized = true;
+			} else {
+				this.editorHeightPx = undefined;
+				this.removeAttribute('editor-height-px');
+				if (wrapper) wrapper.style.height = '';
+				this._userResized = false;
+			}
+			this.requestUpdate();
+			this.updateComplete.then(() => {
+				try { this._editor?.layout(); } catch (e) { console.error('[kusto]', e); }
+			});
+		} finally {
+			pState.applyingHostMarkdownProjection = previousProjectionState;
+		}
+	}
+
+	public applyExecutionOutput(text: string, expectedCode: string): boolean {
+		this._running = false;
+		if (!this.isConnected || document.getElementById(this.boxId) !== this
+			|| this.createDocumentState().code !== expectedCode) {
+			this._output = this._persistedOutput;
+			return false;
+		}
+		const output = String(text ?? '');
+		const changed = output !== this._persistedOutput;
+		this._output = output;
+		this._persistedOutput = output;
+		if (changed) this._schedulePersist();
+		return true;
+	}
+
+	public setExecutionPending(pending: boolean): void {
+		this._running = pending;
+		if (!pending && this._output === 'Running…') this._output = this._persistedOutput;
+	}
+
+	public retireExecution(): void {
+		retirePythonExecution(this.boxId, this);
+		this._running = isPythonExecutionPending(this.boxId);
+		if (this._output === 'Running…') this._output = this._persistedOutput;
 	}
 
 	/** Get the editor wrapper height if user explicitly resized. */
@@ -589,7 +662,11 @@ export class KwPythonSection extends LitElement implements SectionElement {
 
 	/** Set output text programmatically (e.g. from restore). */
 	public setOutput(text: string): void {
-		this._output = text;
+		const output = String(text ?? '');
+		if (output === this._persistedOutput) return;
+		this._output = output;
+		this._persistedOutput = output;
+		this._schedulePersist();
 	}
 
 	/** Get the code from the Monaco editor. */
@@ -605,11 +682,16 @@ export class KwPythonSection extends LitElement implements SectionElement {
 	public setCode(code: string): void {
 		if (this._editor) {
 			this._editor.setValue(code);
+		} else {
+			this.initialCode = code;
+			this._savedCode = code;
+			pState.pendingPythonCodeByBoxId[this.boxId] = code;
+			this._schedulePersist();
 		}
 	}
 
 	public setTitle(title: string): void {
-		this._title = title;
+		this.setName(title);
 	}
 
 	public getName(): string {
@@ -618,15 +700,20 @@ export class KwPythonSection extends LitElement implements SectionElement {
 
 	/** Set section name programmatically (used by agent tools). */
 	public setName(name: string): void {
-		this._title = name;
+		const title = String(name ?? '');
+		if (title === this._title) return;
+		this._title = title;
+		this._schedulePersist();
 	}
 
 	public setExpanded(expanded: boolean): void {
+		if (expanded === this._expanded) return;
 		this._expanded = expanded;
 		this.classList.toggle('is-collapsed', !expanded);
 		if (!expanded) {
 			this._cursorStatus?.clear('python-collapse');
 		}
+		this._schedulePersist();
 	}
 }
 

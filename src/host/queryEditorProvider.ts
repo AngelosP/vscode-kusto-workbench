@@ -2837,6 +2837,14 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 		this.queryRuns.cancelAll();
 	}
 
+	private createPythonProcess(cmd: string, args: string[], cwd: string | undefined) {
+		return spawn(cmd, args, {
+			cwd,
+			shell: false,
+			stdio: ['pipe', 'pipe', 'pipe'],
+		});
+	}
+
 	private async executePythonFromWebview(
 		message: Extract<IncomingWebviewMessage, { type: 'executePython' }>
 	): Promise<void> {
@@ -2855,20 +2863,31 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 				let stdout = '';
 				let stderr = '';
 				let done = false;
-				let killedByTimeout = false;
-				const child = spawn(cmd, args, {
-					cwd,
-					shell: false,
-					stdio: ['pipe', 'pipe', 'pipe']
-				});
+				const child = this.createPythonProcess(cmd, args, cwd);
+				let timer: ReturnType<typeof setTimeout> | undefined;
+				const settle = (result: { stdout: string; stderr: string; exitCode: number | null }) => {
+					if (done) return;
+					done = true;
+					if (timer) clearTimeout(timer);
+					resolve(result);
+				};
+				const fail = (error: unknown) => {
+					if (done) return;
+					done = true;
+					if (timer) clearTimeout(timer);
+					reject(error);
+				};
 
-				const timer = setTimeout(() => {
-					killedByTimeout = true;
+				timer = setTimeout(() => {
+					if (done) return;
+					done = true;
+					stderr = (stderr ? stderr + '\n' : '') + `Timed out after ${Math.round(timeoutMs / 1000)}s.`;
 					try {
 						child.kill();
 					} catch {
 						// ignore
 					}
+					resolve({ stdout, stderr, exitCode: -1 });
 				}, timeoutMs);
 
 				const append = (current: string, chunk: Buffer) => {
@@ -2887,23 +2906,10 @@ export class QueryEditorProvider implements CopilotServiceHost, ConnectionServic
 					stderr = append(stderr, d);
 				});
 				child.on('error', (err) => {
-					if (done) {
-						return;
-					}
-					done = true;
-					clearTimeout(timer);
-					reject(err);
+					fail(err);
 				});
 				child.on('close', (exitCode) => {
-					if (done) {
-						return;
-					}
-					done = true;
-					clearTimeout(timer);
-					if (killedByTimeout) {
-						stderr = (stderr ? stderr + '\n' : '') + `Timed out after ${Math.round(timeoutMs / 1000)}s.`;
-					}
-					resolve({ stdout, stderr, exitCode: typeof exitCode === 'number' ? exitCode : -1 });
+					settle({ stdout, stderr, exitCode: typeof exitCode === 'number' ? exitCode : -1 });
 				});
 
 				try {

@@ -6,11 +6,16 @@ import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
 import { schedulePersist } from './persistence';
 import {
+	isHostOwnedPythonDocument,
 	isHostOwnedUrlDocument,
+	requestHostOwnedPythonAdd,
+	requestHostOwnedPythonRemove,
 	requestHostOwnedUrlAdd,
 	requestHostOwnedUrlRemove,
 } from './markdown-document-client.js';
+import type { PythonSectionState } from '../../shared/pythonSectionDefinition.js';
 import type { UrlSectionState } from '../../shared/urlSectionDefinition.js';
+import { consumePythonExecutionTerminal } from './python-execution-admission.js';
 import { perfMark } from './perf.js';
 import {
 	cachedDatabases,
@@ -2287,9 +2292,9 @@ try {
 	});
 } catch (e) { console.error('[kusto]', e); }
 
-export function addPythonBox( options?: any) {
+function createPythonBox(options?: any) {
 	const id = (options && options.id) ? String(options.id) : ('python_' + Date.now());
-	pythonBoxes.push(id);
+	if (!pythonBoxes.includes(id)) pythonBoxes.push(id);
 
 	const container = document.getElementById('queries-container');
 	if (!container) {
@@ -2301,9 +2306,17 @@ export function addPythonBox( options?: any) {
 	litEl.setAttribute('box-id', id);
 
 	// Pass initial code if available.
-	const pendingCode = pState.pendingPythonCodeByBoxId && pState.pendingPythonCodeByBoxId[id];
+	const pendingCode = typeof options?.code === 'string'
+		? options.code
+		: pState.pendingPythonCodeByBoxId && pState.pendingPythonCodeByBoxId[id];
 	if (typeof pendingCode === 'string') {
 		litEl.setAttribute('initial-code', pendingCode);
+	}
+	if (typeof options?.name === 'string') litEl.setName(options.name);
+	if (typeof options?.output === 'string') litEl.setOutput(options.output);
+	if (typeof options?.expanded === 'boolean') litEl.setExpanded(options.expanded);
+	if (typeof options?.editorHeightPx === 'number') {
+		litEl.setAttribute('editor-height-px', String(options.editorHeightPx));
 	}
 
 	// Create the light-DOM editor container that Monaco will render into.
@@ -2315,6 +2328,7 @@ export function addPythonBox( options?: any) {
 
 	// Handle remove event from the Lit component.
 	litEl.addEventListener('section-remove', function (e: any) {
+		if (String(e?.detail?.boxId || '') !== id || document.getElementById(id) !== litEl) return;
 		try { removePythonBox(e.detail.boxId); } catch (e) { console.error('[kusto]', e); }
 	});
 
@@ -2326,7 +2340,10 @@ export function addPythonBox( options?: any) {
 		container.appendChild(litEl);
 	}
 
-	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try {
+		if (isHostOwnedPythonDocument()) requestHostOwnedPythonAdd(litEl.createDocumentState(), afterBoxId);
+		else schedulePersist();
+	} catch (e) { console.error('[kusto]', e); }
 	if (afterBoxId) {
 		try {
 			const newEl = document.getElementById(id);
@@ -2338,18 +2355,50 @@ export function addPythonBox( options?: any) {
 	return id;
 }
 
+export function addPythonBox(options?: any) {
+	return createPythonBox(options);
+}
+
 export function removePythonBox( boxId: any) {
+	const hostOwnedDocument = isHostOwnedPythonDocument();
+	if (hostOwnedDocument) requestHostOwnedPythonRemove(String(boxId || ''));
 	// Legacy editor cleanup (for any old-style boxes still in DOM).
 	if (pythonEditors[boxId]) {
 		try { pythonEditors[boxId].dispose(); } catch (e) { console.error('[kusto]', e); }
 		delete pythonEditors[boxId];
 	}
 	pythonBoxes = pythonBoxes.filter((id: any) => id !== boxId);
+	try { delete pState.pendingPythonCodeByBoxId[String(boxId || '')]; } catch (e) { console.error('[kusto]', e); }
 	const box = document.getElementById(boxId) as any;
+	try { box?.retireExecution?.(); } catch (e) { console.error('[kusto]', e); }
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { if (!hostOwnedDocument) schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+}
+
+export function reconcileHostOwnedPythonProjection(
+	sections: readonly PythonSectionState[],
+	_orderedSectionIds: readonly string[],
+): void {
+	const previousProjectionState = pState.applyingHostMarkdownProjection;
+	pState.applyingHostMarkdownProjection = true;
+	try {
+		const sectionsById = new Map(sections.map(section => [section.id, section]));
+		for (const id of [...pythonBoxes]) {
+			if (!sectionsById.has(id)) removePythonBox(id);
+		}
+		for (const section of sections) {
+			let element = document.getElementById(section.id) as HTMLElementTagNameMap['kw-python-section'] | null;
+			if (!element) {
+				createPythonBox({ ...section });
+				element = document.getElementById(section.id) as HTMLElementTagNameMap['kw-python-section'] | null;
+			}
+			element?.applyHostDocumentState(section);
+		}
+	} finally {
+		pState.applyingHostMarkdownProjection = previousProjectionState;
+	}
 }
 
 function __kustoMaximizePythonBox(boxId: any) {
@@ -2623,6 +2672,20 @@ export function onPythonResult( message: any) {
 	if (!out) {
 		out = (exitCode === 0) ? '' : 'No output.';
 	}
+	const reservation = consumePythonExecutionTerminal(boxId);
+	const element = document.getElementById(boxId) as HTMLElementTagNameMap['kw-python-section'] | null;
+	if (pState.documentRuntimeActive === false) {
+		element?.setExecutionPending(false);
+		return;
+	}
+	if (element?.tagName.toLowerCase() === 'kw-python-section') {
+		element.setExecutionPending(false);
+		if (reservation && !reservation.retired && reservation.owner === element) {
+			element.applyExecutionOutput(out, reservation.code);
+		}
+		return;
+	}
+	if (reservation) return;
 	setPythonOutput(boxId, out);
 }
 
@@ -2631,7 +2694,22 @@ export function onPythonError( message: any) {
 	if (!boxId) {
 		return;
 	}
-	setPythonOutput(boxId, String(message.error || 'Python execution failed.'));
+	const error = String(message.error || 'Python execution failed.');
+	const reservation = consumePythonExecutionTerminal(boxId);
+	const element = document.getElementById(boxId) as HTMLElementTagNameMap['kw-python-section'] | null;
+	if (pState.documentRuntimeActive === false) {
+		element?.setExecutionPending(false);
+		return;
+	}
+	if (element?.tagName.toLowerCase() === 'kw-python-section') {
+		element.setExecutionPending(false);
+		if (reservation && !reservation.retired && reservation.owner === element) {
+			element.applyExecutionOutput(error, reservation.code);
+		}
+		return;
+	}
+	if (reservation) return;
+	setPythonOutput(boxId, error);
 }
 
 function createUrlBox(options?: any) {

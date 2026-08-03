@@ -175,4 +175,92 @@ describe('MarkdownDocumentAggregate', () => {
 			{ id: 'future_1', type: 'future-section', payload: { keep: 'adapter' } },
 		]);
 	});
+
+	it('owns Python add, patch, remove, and adapter overlay state', () => {
+		const created = MarkdownDocumentAggregate.create({
+			sections: [
+				{ id: 'markdown_1', type: 'markdown', text: 'owned markdown' },
+				{
+					id: 'python_1', type: 'python', name: 'Before', code: 'print("before")',
+					output: 'before output', expanded: true, editorHeightPx: 180,
+				},
+				{ id: 'future_1', type: 'future-section', payload: { keep: true } },
+			],
+		});
+		if (!created.ok) throw new Error(created.error);
+		expect(created.document.projection()).toMatchObject({
+			sectionRevisions: { markdown_1: 0, python_1: 0 },
+			pythonSections: [{
+				id: 'python_1', type: 'python', name: 'Before', code: 'print("before")',
+				output: 'before output', expanded: true, editorHeightPx: 180,
+			}],
+		});
+
+		const added = created.document.transition({
+			expectedDocumentRevision: 0,
+			command: {
+				type: 'add', afterSectionId: 'python_1',
+				section: { id: 'python_temporary', type: 'python', code: 'print("temporary")' },
+			},
+		});
+		expect(added.ok).toBe(true);
+		if (!added.ok) return;
+
+		const patched = added.document.transition({
+			expectedDocumentRevision: 1,
+			command: {
+				type: 'patch', sectionId: 'python_1', expectedSectionRevision: 0,
+				patch: {
+					name: 'After', code: 'print("after")', output: 'after output',
+					expanded: false, editorHeightPx: 360,
+				},
+			},
+		});
+		expect(patched.ok).toBe(true);
+		if (!patched.ok) return;
+
+		const removed = patched.document.transition({
+			expectedDocumentRevision: 2,
+			command: { type: 'remove', sectionId: 'python_temporary', expectedSectionRevision: 1 },
+		});
+		expect(removed.ok).toBe(true);
+		if (!removed.ok) return;
+
+		const rebased = removed.document.withAdapterState({ sections: [
+			{ id: 'python_1', type: 'python', code: 'raise RuntimeError("stale")', output: 'stale' },
+			{ id: 'python_removed', type: 'python', code: 'print("removed")' },
+			{ id: 'markdown_1', type: 'markdown', text: 'stale markdown' },
+			{ id: 'future_1', type: 'future-section', payload: { keep: 'adapter' } },
+		] });
+		expect(rebased.snapshot().sections).toEqual([
+			{
+				id: 'python_1', type: 'python', name: 'After', code: 'print("after")',
+				output: 'after output', expanded: false, editorHeightPx: 360,
+			},
+			{ id: 'markdown_1', type: 'markdown', text: 'owned markdown' },
+			{ id: 'future_1', type: 'future-section', payload: { keep: 'adapter' } },
+		]);
+	});
+
+	it('rejects malformed persisted and patched Python fields', () => {
+		const malformed = MarkdownDocumentAggregate.create({
+			sections: [{ id: 'python_1', type: 'python', output: 42 }],
+		});
+		expect(malformed.ok).toBe(false);
+		if (!malformed.ok) expect(malformed.error).toContain('output');
+
+		const created = MarkdownDocumentAggregate.create({
+			sections: [{ id: 'python_1', type: 'python', code: 'print(1)' }],
+		});
+		if (!created.ok) throw new Error(created.error);
+		const invalidPatch = created.document.transition({
+			expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'python_1', expectedSectionRevision: 0,
+				patch: { editorHeightPx: 0 },
+			},
+		});
+		expect(invalidPatch.ok).toBe(false);
+		if (!invalidPatch.ok) expect(invalidPatch.error.code).toBe('invalid-command');
+	});
 });
