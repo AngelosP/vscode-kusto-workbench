@@ -128,4 +128,51 @@ describe('MarkdownDocumentAggregate', () => {
 			{ id: 'markdown_1', type: 'markdown', text: 'owned' },
 		]);
 	});
+
+	it('owns URL transitions and rejects stale URL adapter state', () => {
+		const created = MarkdownDocumentAggregate.create({
+			sections: [
+				{ id: 'markdown_1', type: 'markdown', text: 'owned markdown' },
+				{
+					id: 'url_1', type: 'url', name: 'Before', url: 'https://example.com/before.png',
+					expanded: true, imageSizeMode: 'natural', imageAlign: 'left', imageOverflow: 'shrink',
+				},
+				{ id: 'future_1', type: 'future-section', payload: { keep: true } },
+			],
+		});
+		if (!created.ok) throw new Error(created.error);
+		expect(created.document.projection()).toMatchObject({
+			sectionRevisions: { markdown_1: 0, url_1: 0 },
+			markdownSectionRevisions: { markdown_1: 0 },
+		});
+
+		const patched = created.document.transition({
+			expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'url_1', expectedSectionRevision: 0,
+				patch: {
+					name: 'After', url: 'https://example.com/after.png', expanded: false,
+					outputHeightPx: 420, imageSizeMode: 'fill', imageAlign: 'center', imageOverflow: 'scroll',
+				},
+			},
+		});
+		expect(patched.ok).toBe(true);
+		if (!patched.ok) return;
+		expect(patched.sectionRevision).toBe(1);
+
+		const rebased = patched.document.withAdapterState({ sections: [
+			{ id: 'url_1', type: 'url', name: 'Stale DOM', url: 'https://stale.invalid' },
+			{ id: 'url_removed', type: 'url', url: 'https://stale.invalid/removed' },
+			{ id: 'markdown_1', type: 'markdown', text: 'stale markdown' },
+			{ id: 'future_1', type: 'future-section', payload: { keep: 'adapter' } },
+		] });
+		expect(rebased.snapshot().sections).toEqual([
+			{
+				id: 'url_1', type: 'url', name: 'After', url: 'https://example.com/after.png', expanded: false,
+				outputHeightPx: 420, imageSizeMode: 'fill', imageAlign: 'center', imageOverflow: 'scroll',
+			},
+			{ id: 'markdown_1', type: 'markdown', text: 'owned markdown' },
+			{ id: 'future_1', type: 'future-section', payload: { keep: 'adapter' } },
+		]);
+	});
 });

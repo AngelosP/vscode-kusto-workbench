@@ -10,10 +10,16 @@ import type { DataTableColumn, DataTableOptions } from '../components/kw-data-ta
 import '../components/kw-section-shell.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { schedulePersist } from '../core/persistence.js';
+import {
+	isHostOwnedUrlDocument,
+	requestHostOwnedUrlPatch,
+} from '../core/markdown-document-client.js';
+import { pState } from '../shared/persistence-state.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { __kustoRefreshAllDataSourceDropdowns } from '../core/section-factory.js';
 import { ensureDomPurifyLoaded } from '../shared/lazy-vendor.js';
 import { clearResultsState, setResultsState } from '../core/results-state.js';
+import type { UrlSectionState } from '../../shared/urlSectionDefinition.js';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +46,7 @@ export interface UrlSectionData {
 /** Internal URL fetch state. */
 interface UrlFetchState {
 	url: string;
+	resolvedUrl: string;
 	expanded: boolean;
 	loading: boolean;
 	loaded: boolean;
@@ -119,17 +126,15 @@ export class KwUrlSection extends LitElement implements SectionElement {
 
 	override disconnectedCallback(): void {
 		super.disconnectedCallback();
-		window.removeEventListener('message', this._onMessage);
-		if (this._fetchDebounceTimer) {
-			clearTimeout(this._fetchDebounceTimer);
-			this._fetchDebounceTimer = null;
-		}
-		this._closeImageMenu();
-		this._csvResizeObs?.disconnect();
-		this._csvResizeObs = null;
 		queueMicrotask(() => {
+			if (this.isConnected) return;
+			window.removeEventListener('message', this._onMessage);
+			this._cancelFetchDebounce();
+			this._closeImageMenu();
+			this._csvResizeObs?.disconnect();
+			this._csvResizeObs = null;
 			const replacement = document.getElementById(this.boxId);
-			if (!this.isConnected && (!replacement || replacement === this)) this.clearPublishedCsvResult();
+			if (!replacement || replacement === this) this.clearPublishedCsvResult();
 		});
 	}
 
@@ -420,7 +425,12 @@ export class KwUrlSection extends LitElement implements SectionElement {
 			boxId: this.boxId,
 			columns: this._csvColumns,
 			rows: this._csvRows,
-			metadata: { url: st.url, contentType: st.contentType, status: st.status },
+			metadata: {
+				url: st.url,
+				...(st.resolvedUrl && st.resolvedUrl !== st.url ? { resolvedUrl: st.resolvedUrl } : {}),
+				contentType: st.contentType,
+				status: st.status,
+			},
 		}, {
 			producer: { engine: 'url', boxId: this.boxId, producer: 'url-csv', query: st.url },
 			policy: { exposeToActiveContent: true, exportToCsv: true },
@@ -463,8 +473,9 @@ export class KwUrlSection extends LitElement implements SectionElement {
 	private _renderHtml(contentEl: HTMLElement, st: UrlFetchState): void {
 		let htmlContent = st.body;
 		// Inject <base> tag for relative URLs.
-		if (st.url) {
-			const escapedUrl = st.url.replace(/"/g, '&quot;');
+		const baseUrl = st.resolvedUrl || st.url;
+		if (baseUrl) {
+			const escapedUrl = baseUrl.replace(/"/g, '&quot;');
 			htmlContent = `<base href="${escapedUrl}">` + htmlContent;
 		}
 		// Sanitize with DOMPurify. It is lazy-loaded so query-only files do not pay
@@ -713,7 +724,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		this._fetchState = { ...KwUrlSection._newFetchState(), expanded, url };
 		this._renderUrlContent();
 		// Debounce fetch to avoid firing on every keystroke.
-		if (this._fetchDebounceTimer) clearTimeout(this._fetchDebounceTimer);
+		this._cancelFetchDebounce();
 		if (expanded && url) {
 			this._fetchDebounceTimer = setTimeout(() => {
 				this._fetchDebounceTimer = null;
@@ -775,7 +786,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 
 	private _requestFetch(): void {
 		const st = this._fetchState;
-		if (st.loading || st.loaded) return;
+		if (!st.expanded || st.loading || st.loaded) return;
 		const url = st.url.trim();
 		if (!url) return;
 		this.clearPublishedCsvResult();
@@ -792,6 +803,12 @@ export class KwUrlSection extends LitElement implements SectionElement {
 			this._fetchState = { ...st, loading: false, error: 'Failed to request URL.' };
 			this._renderUrlContent();
 		}
+	}
+
+	private _cancelFetchDebounce(): void {
+		if (!this._fetchDebounceTimer) return;
+		clearTimeout(this._fetchDebounceTimer);
+		this._fetchDebounceTimer = null;
 	}
 
 	// ── Message handling ──────────────────────────────────────────────────────
@@ -813,7 +830,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 			st.loading = false;
 			st.loaded = true;
 			st.error = '';
-			st.url = String(msg.url || st.url || '');
+			st.resolvedUrl = String(msg.url || st.resolvedUrl || st.url || '');
 			st.contentType = String(msg.contentType || st.contentType || '');
 			st.status = (typeof msg.status === 'number') ? msg.status : (st.status ?? null);
 			st.kind = String(msg.kind || '').toLowerCase();
@@ -1019,7 +1036,9 @@ export class KwUrlSection extends LitElement implements SectionElement {
 
 	private _schedulePersist(): void {
 		try {
-			schedulePersist();
+			if (!this.isConnected || document.getElementById(this.boxId) !== this) return;
+			if (isHostOwnedUrlDocument()) requestHostOwnedUrlPatch(this.createDocumentState());
+			else schedulePersist();
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1028,15 +1047,19 @@ export class KwUrlSection extends LitElement implements SectionElement {
 	 * Output is identical to the original persistence.js URL section shape.
 	 */
 	public serialize(): UrlSectionData {
+		return this.createDocumentState();
+	}
+
+	public createDocumentState(): UrlSectionData {
 		const data: UrlSectionData = {
 			id: this.boxId,
 			type: 'url',
 			name: this._name,
-			url: this._fetchState.url || this._url.trim(),
+			url: this._url.trim(),
 			expanded: this._fetchState.expanded,
 		};
 
-		const heightPx = this._getOutputHeightPx();
+		const heightPx = this._getOutputHeightPx() ?? this.outputHeightPx;
 		if (heightPx !== undefined) {
 			data.outputHeightPx = heightPx;
 		}
@@ -1046,6 +1069,63 @@ export class KwUrlSection extends LitElement implements SectionElement {
 		if (this._imageOverflow !== 'shrink') data.imageOverflow = this._imageOverflow;
 
 		return data;
+	}
+
+	public commitDocumentState(): void {
+		this._schedulePersist();
+	}
+
+	public applyHostDocumentState(
+		section: UrlSectionState,
+		options?: Readonly<{ fetchIfMissing?: boolean }>,
+	): void {
+		const previousProjectionState = pState.applyingHostMarkdownProjection;
+		pState.applyingHostMarkdownProjection = true;
+		try {
+			const previousUrl = this._fetchState.url;
+			const previousExpanded = this._fetchState.expanded;
+			const nextUrl = section.url ?? '';
+			const nextExpanded = section.expanded === true;
+			const urlChanged = nextUrl !== previousUrl;
+			const expandedChanged = nextExpanded !== previousExpanded;
+			this._name = section.name ?? '';
+			this._url = nextUrl;
+			if (urlChanged) {
+				this._cancelFetchDebounce();
+				this.clearPublishedCsvResult();
+				this._activeFetchRequest = null;
+				this._fetchState = { ...KwUrlSection._newFetchState(), expanded: nextExpanded, url: nextUrl };
+			} else if (expandedChanged) {
+				if (!nextExpanded) this._cancelFetchDebounce();
+				this._fetchState = { ...this._fetchState, expanded: nextExpanded };
+			}
+			if (urlChanged || expandedChanged) {
+				this._updateToggleClasses();
+				this._renderUrlContent();
+			}
+			this._imageSizeMode = section.imageSizeMode ?? 'fill';
+			this._imageAlign = section.imageAlign ?? 'left';
+			this._imageOverflow = section.imageOverflow ?? 'shrink';
+			this._applyImageClasses();
+			if (section.outputHeightPx !== undefined) {
+				this.outputHeightPx = section.outputHeightPx;
+				this.setAttribute('output-height-px', String(section.outputHeightPx));
+				this.updateComplete.then(() => this.setOutputHeightPx(section.outputHeightPx!));
+			} else {
+				this.outputHeightPx = undefined;
+				this.removeAttribute('output-height-px');
+				const wrapper = this.shadowRoot?.getElementById('output-wrapper');
+				if (wrapper) wrapper.style.height = '';
+				this._userResized = false;
+			}
+			this.requestUpdate();
+			if (nextExpanded && nextUrl
+				&& (urlChanged || (!previousExpanded && nextExpanded) || options?.fetchIfMissing === true)) {
+				void this.updateComplete.then(() => this.triggerFetch());
+			}
+		} finally {
+			pState.applyingHostMarkdownProjection = previousProjectionState;
+		}
 	}
 
 	/** Get the output wrapper height if user explicitly resized. */
@@ -1091,6 +1171,8 @@ export class KwUrlSection extends LitElement implements SectionElement {
 
 	/** Set expanded state. */
 	public setExpanded(expanded: boolean): void {
+		if (expanded === this._fetchState.expanded) return;
+		if (!expanded) this._cancelFetchDebounce();
 		this._fetchState = { ...this._fetchState, expanded };
 		this._updateToggleClasses();
 		this._renderUrlContent();
@@ -1139,6 +1221,7 @@ export class KwUrlSection extends LitElement implements SectionElement {
 	private static _newFetchState(): UrlFetchState {
 		return {
 			url: '',
+			resolvedUrl: '',
 			expanded: true,
 			loading: false,
 			loaded: false,

@@ -24,6 +24,11 @@ import '../../src/webview/components/kw-data-table.js';
 import { KwUrlSection } from '../../src/webview/sections/kw-url-section.js';
 import type { UrlSectionData } from '../../src/webview/sections/kw-url-section.js';
 import { getCurrentResultArtifact } from '../../src/webview/core/results-state.js';
+import { pState } from '../../src/webview/shared/persistence-state.js';
+import {
+	adoptHostOwnedMarkdownDocument,
+	resetHostOwnedMarkdownDocument,
+} from '../../src/webview/core/markdown-document-client.js';
 
 // ── Static pure functions ─────────────────────────────────────────────────────
 
@@ -153,10 +158,13 @@ function createUrlSection(boxId = 'url_test_1'): KwUrlSection {
 	render(html`
 		<kw-url-section box-id=${boxId}></kw-url-section>
 	`, container);
-	return container.querySelector('kw-url-section')!;
+	const section = container.querySelector('kw-url-section')!;
+	section.id = boxId;
+	return section;
 }
 
 beforeEach(() => {
+	resetHostOwnedMarkdownDocument();
 	container = document.createElement('div');
 	document.body.appendChild(container);
 });
@@ -164,6 +172,7 @@ beforeEach(() => {
 afterEach(() => {
 	render(nothing, container);
 	container.remove();
+	resetHostOwnedMarkdownDocument();
 });
 
 describe('kw-url-section — rendering', () => {
@@ -399,6 +408,103 @@ describe('kw-url-section — rendering', () => {
 			vi.useRealTimers();
 		}
 	});
+
+	it('preserves a pending debounce across a synchronous DOM reorder', async () => {
+		vi.useFakeTimers();
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			const el = createUrlSection('url-debounce-moved');
+			await el.updateComplete;
+			const input = el.shadowRoot?.querySelector<HTMLInputElement>('.url-input');
+			input!.value = 'https://example.com/moved.csv';
+			input!.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+			const sibling = document.createElement('div');
+			container.appendChild(sibling);
+			container.appendChild(el);
+			await Promise.resolve();
+
+			vi.advanceTimersByTime(250);
+			await el.updateComplete;
+			expect(postMessage.mock.calls.filter(call => call[0]?.type === 'fetchUrl')).toHaveLength(1);
+			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'fetchUrl', boxId: el.boxId, url: 'https://example.com/moved.csv',
+			}));
+		} finally {
+			window.vscode = previousVsCode;
+			vi.useRealTimers();
+		}
+	});
+
+	it('preserves CSV artifact and resize observation across a synchronous DOM reorder', async () => {
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			const el = createUrlSection('url-csv-moved');
+			el.setUrl('https://example.com/moved.csv');
+			(el as any)._requestFetch();
+			const request = postMessage.mock.calls.at(-1)?.[0] as any;
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: request.url, url: request.url, kind: 'csv', contentType: 'text/csv',
+				status: 200, body: 'Name\nalpha',
+			} }));
+			await el.updateComplete;
+			await el.updateComplete;
+			const artifactBefore = getCurrentResultArtifact(el.boxId)?.artifactId;
+			const observerBefore = (el as any)._csvResizeObs;
+			expect(observerBefore).toBeTruthy();
+			const sibling = document.createElement('div');
+			container.appendChild(sibling);
+			container.appendChild(el);
+			await Promise.resolve();
+
+			expect((el as any)._csvResizeObs).toBe(observerBefore);
+			expect(getCurrentResultArtifact(el.boxId)?.artifactId).toBe(artifactBefore);
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('ignores a held persistence callback from a detached same-ID predecessor', async () => {
+		pState.documentKind = 'kqlx';
+		pState.compatibilityMode = false;
+		pState.documentRuntimeActive = true;
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 14,
+			sectionRevisions: { url_replaced: 0 },
+			markdownSectionRevisions: {},
+		}, {
+			sections: [{ id: 'url_replaced', type: 'url', url: 'https://example.com/current.png', expanded: true }],
+		});
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			const predecessor = createUrlSection('url_replaced');
+			predecessor.applyHostDocumentState({
+				id: predecessor.boxId, type: 'url', url: 'https://example.com/stale.png', expanded: true,
+			});
+			const heldPersist = () => (predecessor as any)._schedulePersist();
+			render(nothing, container);
+			const replacement = createUrlSection('url_replaced');
+			replacement.applyHostDocumentState({
+				id: replacement.boxId, type: 'url', url: 'https://example.com/current.png', expanded: true,
+			});
+			await Promise.resolve();
+			postMessage.mockClear();
+
+			heldPersist();
+
+			expect(document.getElementById('url_replaced')).toBe(replacement);
+			expect(postMessage.mock.calls.filter(call => call[0]?.type === 'markdownDocumentCommand')).toHaveLength(0);
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
 });
 
 describe('kw-url-section — public API', () => {
@@ -425,6 +531,253 @@ describe('kw-url-section — public API', () => {
 		expect(el.getFetchState().expanded).toBe(false);
 		el.setExpanded(true);
 		expect(el.getFetchState().expanded).toBe(true);
+	});
+
+	it('emits persisted edits through the shared host document command client', async () => {
+		pState.documentKind = 'kqlx';
+		pState.compatibilityMode = false;
+		pState.documentRuntimeActive = true;
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 12,
+			sectionRevisions: { url_owned: 0 },
+			markdownSectionRevisions: {},
+		}, {
+			sections: [{ id: 'url_owned', type: 'url', url: 'https://example.com/before.png', expanded: true }],
+		});
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			const el = createUrlSection('url_owned');
+			el.applyHostDocumentState({
+				id: 'url_owned', type: 'url', url: 'https://example.com/before.png', expanded: true,
+			});
+			await el.updateComplete;
+			postMessage.mockClear();
+			const input = el.shadowRoot!.querySelector('.url-input') as HTMLInputElement;
+			input.value = 'https://example.com/after.png';
+			input.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+
+			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'markdownDocumentCommand', sourceGeneration: 12, expectedDocumentRevision: 0,
+				command: expect.objectContaining({
+					type: 'patch', sectionId: 'url_owned', expectedSectionRevision: 0,
+					patch: expect.objectContaining({ url: 'https://example.com/after.png' }),
+				}),
+			}));
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('commits programmatic collapse through the host command client', async () => {
+		pState.documentKind = 'kqlx';
+		pState.compatibilityMode = false;
+		pState.documentRuntimeActive = true;
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 13,
+			sectionRevisions: { url_batch: 0 },
+			markdownSectionRevisions: {},
+		}, {
+			sections: [{ id: 'url_batch', type: 'url', url: 'https://example.com/image.png', expanded: true }],
+		});
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			const el = createUrlSection('url_batch');
+			el.applyHostDocumentState({
+				id: 'url_batch', type: 'url', url: 'https://example.com/image.png', expanded: true,
+			});
+			postMessage.mockClear();
+			el.setExpanded(false);
+			el.commitDocumentState();
+
+			expect(postMessage).toHaveBeenCalledWith(expect.objectContaining({
+				type: 'markdownDocumentCommand', sourceGeneration: 13, expectedDocumentRevision: 0,
+				command: expect.objectContaining({
+					type: 'patch', sectionId: 'url_batch', expectedSectionRevision: 0,
+					patch: expect.objectContaining({ expanded: false }),
+				}),
+			}));
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('applies same-URL presentation state without replacing CSV runtime state', async () => {
+		const el = createUrlSection('url_projection');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			el.setUrl('https://example.com/data.csv');
+			(el as any)._requestFetch();
+			const request = postMessage.mock.calls.at(-1)?.[0] as any;
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: request.url, url: request.url, kind: 'csv', contentType: 'text/csv',
+				status: 200, body: 'Name\nalpha',
+			} }));
+			await el.updateComplete;
+			await el.updateComplete;
+			const artifactBefore = getCurrentResultArtifact(el.boxId);
+			const tableBefore = el.shadowRoot?.querySelector('kw-data-table');
+			postMessage.mockClear();
+
+			el.applyHostDocumentState({
+				id: 'url_projection', type: 'url', name: 'Projected', url: 'https://example.com/data.csv',
+				expanded: true, outputHeightPx: 360, imageSizeMode: 'natural', imageAlign: 'center',
+				imageOverflow: 'scroll',
+			});
+			await el.updateComplete;
+
+			expect(el.getFetchState()).toMatchObject({
+				url: 'https://example.com/data.csv', expanded: true, loaded: true, body: 'Name\nalpha',
+			});
+			expect(getCurrentResultArtifact(el.boxId)?.artifactId).toBe(artifactBefore?.artifactId);
+			expect(el.shadowRoot?.querySelector('kw-data-table')).toBe(tableBefore);
+			expect(postMessage.mock.calls.filter(call => call[0]?.type === 'fetchUrl')).toHaveLength(0);
+			expect(el.createDocumentState()).toMatchObject({
+				name: 'Projected', outputHeightPx: 360, imageSizeMode: 'natural', imageAlign: 'center',
+				imageOverflow: 'scroll',
+			});
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('keeps a redirected response URL out of persisted authored state', async () => {
+		const el = createUrlSection('url_redirect');
+		const authoredUrl = 'https://example.com/download.csv';
+		const resolvedUrl = 'https://storage.example.net/blob.csv?signature=secret';
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			el.setUrl(authoredUrl);
+			(el as any)._requestFetch();
+			const request = postMessage.mock.calls.at(-1)?.[0] as any;
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: request.url, url: resolvedUrl, kind: 'csv', contentType: 'text/csv',
+				status: 200, body: 'Name\nalpha',
+			} }));
+			await el.updateComplete;
+			await el.updateComplete;
+			const artifactBefore = getCurrentResultArtifact(el.boxId)?.artifactId;
+
+			expect(el.getFetchState()).toMatchObject({ url: authoredUrl, resolvedUrl });
+			expect(el.createDocumentState().url).toBe(authoredUrl);
+			el.applyHostDocumentState({
+				id: el.boxId, type: 'url', name: 'Renamed', url: authoredUrl, expanded: true,
+				outputHeightPx: 360,
+			});
+			await el.updateComplete;
+			expect(el.createDocumentState().url).toBe(authoredUrl);
+			expect(getCurrentResultArtifact(el.boxId)?.artifactId).toBe(artifactBefore);
+			expect(postMessage.mock.calls.filter(call => call[0]?.type === 'fetchUrl')).toHaveLength(1);
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('applies same-URL presentation state without replacing the HTML iframe', async () => {
+		const el = createUrlSection('url_html_projection');
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		const previousDomPurify = window.DOMPurify;
+		window.vscode = { postMessage } as any;
+		window.DOMPurify = { sanitize: (value: string) => value } as any;
+		try {
+			el.setUrl('https://example.com/page.html');
+			(el as any)._requestFetch();
+			const request = postMessage.mock.calls.at(-1)?.[0] as any;
+			window.dispatchEvent(new MessageEvent('message', { data: {
+				type: 'urlContent', boxId: el.boxId, requestId: request.requestId,
+				requestedUrl: request.url, url: request.url, kind: 'html', contentType: 'text/html',
+				status: 200, body: '<main>stable</main>',
+			} }));
+			await el.updateComplete;
+			await el.updateComplete;
+			const iframeBefore = el.shadowRoot?.querySelector('iframe');
+			expect(iframeBefore).toBeTruthy();
+
+			el.applyHostDocumentState({
+				id: el.boxId, type: 'url', name: 'Projected HTML',
+				url: 'https://example.com/page.html', expanded: true, outputHeightPx: 320,
+			});
+			await el.updateComplete;
+
+			expect(el.shadowRoot?.querySelector('iframe')).toBe(iframeBefore);
+			expect(postMessage.mock.calls.filter(call => call[0]?.type === 'fetchUrl')).toHaveLength(1);
+		} finally {
+			window.vscode = previousVsCode;
+			window.DOMPurify = previousDomPurify;
+		}
+	});
+
+	it('cancels a pending URL debounce when an authoritative projection collapses the section', async () => {
+		vi.useFakeTimers();
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			const el = createUrlSection('url_collapsed_projection');
+			await el.updateComplete;
+			const input = el.shadowRoot?.querySelector<HTMLInputElement>('.url-input');
+			input!.value = 'https://example.com/debounced.csv';
+			input!.dispatchEvent(new Event('input', { bubbles: true, composed: true }));
+			el.applyHostDocumentState({
+				id: el.boxId, type: 'url', url: 'https://example.com/debounced.csv', expanded: false,
+			});
+
+			vi.advanceTimersByTime(250);
+			await el.updateComplete;
+			expect(postMessage.mock.calls.filter(call => call[0]?.type === 'fetchUrl')).toHaveLength(0);
+			(el as any)._requestFetch();
+			expect(postMessage.mock.calls.filter(call => call[0]?.type === 'fetchUrl')).toHaveLength(0);
+		} finally {
+			window.vscode = previousVsCode;
+			vi.useRealTimers();
+		}
+	});
+
+	it('fetches once when reconciliation recreates an expanded URL section', async () => {
+		const postMessage = vi.fn();
+		const previousVsCode = window.vscode;
+		window.vscode = { postMessage } as any;
+		try {
+			const el = createUrlSection('url_reconciled');
+			el.setUrl('https://example.com/recreated.csv');
+			el.applyHostDocumentState({
+				id: el.boxId, type: 'url', url: 'https://example.com/recreated.csv', expanded: true,
+			}, { fetchIfMissing: true });
+			await el.updateComplete;
+			await Promise.resolve();
+
+			expect(postMessage.mock.calls.filter(call => call[0]?.type === 'fetchUrl')).toHaveLength(1);
+			el.applyHostDocumentState({
+				id: el.boxId, type: 'url', url: 'https://example.com/recreated.csv', expanded: true,
+			}, { fetchIfMissing: true });
+			await el.updateComplete;
+			expect(postMessage.mock.calls.filter(call => call[0]?.type === 'fetchUrl')).toHaveLength(1);
+		} finally {
+			window.vscode = previousVsCode;
+		}
+	});
+
+	it('keeps legacy URL projections with omitted expanded state collapsed', async () => {
+		const el = createUrlSection('url_legacy_collapsed');
+		el.applyHostDocumentState({
+			id: el.boxId, type: 'url', url: 'https://example.com/legacy.png',
+		});
+		await el.updateComplete;
+
+		expect(el.getFetchState().expanded).toBe(false);
+		expect(el.createDocumentState().expanded).toBe(false);
 	});
 });
 

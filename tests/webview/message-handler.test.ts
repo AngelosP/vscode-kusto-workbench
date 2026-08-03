@@ -113,6 +113,8 @@ const mocks = {
 	isHostOwnedMarkdownDocument: vi.fn(() => false),
 	waitForHostOwnedMarkdownCommands: vi.fn(async () => true),
 	handleHostOwnedMarkdownCommandResult: vi.fn(() => ({ handled: false, accepted: false })),
+	reconcileHostOwnedMarkdownProjection: vi.fn(),
+	reconcileHostOwnedUrlProjection: vi.fn(),
 	detachSqlComparisonForAdmissionRollback: vi.fn((boxId: string, sourceBoxId: string) => {
 		const metadata = handlerState.optimizationMetadataByBoxId[boxId];
 		if (!metadata || String(metadata.sourceBoxId || '') !== sourceBoxId) return false;
@@ -196,6 +198,8 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 	addUrlBox: vi.fn(() => 'url_1'),
 	removePythonBox: vi.fn(),
 	removeUrlBox: vi.fn(),
+	commitUrlDocumentState: vi.fn(() => true),
+	reconcileHostOwnedUrlProjection: mocks.reconcileHostOwnedUrlProjection,
 	addHtmlBox: vi.fn(() => 'html_1'),
 	removeHtmlBox: vi.fn(),
 	addSqlBox: vi.fn(() => 'sql_1'),
@@ -221,7 +225,7 @@ vi.mock('../../src/webview/sections/kw-markdown-section.js', () => ({
 	removeMarkdownBox: vi.fn(),
 	__kustoMaximizeMarkdownBox: vi.fn(),
 	commitMarkdownDocumentState: vi.fn(() => true),
-	reconcileHostOwnedMarkdownProjection: vi.fn(),
+	reconcileHostOwnedMarkdownProjection: mocks.reconcileHostOwnedMarkdownProjection,
 }));
 
 vi.mock('../../src/webview/sections/kw-chart-section.js', () => ({
@@ -685,6 +689,40 @@ describe('message-handler dispatch', () => {
 			expect(mocks.flushCompatibilityPersist).toHaveBeenCalledWith('flush-1', 'save');
 			expect(mocks.acknowledgePersistDocument).toHaveBeenCalledWith('snapshot-1', 7);
 		});
+	});
+
+	it('applies one stable mixed-section order after rejected command reconciliation', async () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		for (const id of ['query_1', 'url_1', 'url_2']) {
+			const element = document.createElement('div');
+			element.id = id;
+			container.appendChild(element);
+		}
+		document.body.appendChild(container);
+		mocks.handleHostOwnedMarkdownCommandResult.mockReturnValueOnce({
+			handled: true,
+			accepted: false,
+			projection: {
+				documentRevision: 4,
+				sectionRevisions: { url_1: 1, url_2: 0 },
+				markdownSectionRevisions: {},
+				markdownSections: [],
+				urlSections: [
+					{ id: 'url_1', type: 'url', url: 'https://example.com/one.png', expanded: true },
+					{ id: 'url_2', type: 'url', url: 'https://example.com/two.png', expanded: true },
+				],
+				orderedSectionIds: ['url_1', 'url_2', 'query_1'],
+			},
+		});
+
+		dispatchHostMessage({ type: 'markdownDocumentCommandResult', commandId: 'stale-url' });
+
+		await vi.waitFor(() => expect(Array.from(container.children, element => element.id)).toEqual([
+			'url_1', 'url_2', 'query_1',
+		]));
+		expect(mocks.reconcileHostOwnedMarkdownProjection).toHaveBeenCalledOnce();
+		expect(mocks.reconcileHostOwnedUrlProjection).toHaveBeenCalledOnce();
 	});
 
 	it('routes documentData to persistence handler', async () => {

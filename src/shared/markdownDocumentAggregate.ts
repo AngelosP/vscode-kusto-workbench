@@ -5,8 +5,16 @@ import {
 	patchMarkdownSection,
 	type MarkdownSectionState,
 } from './markdownSectionDefinition';
+import {
+	parseUrlSection,
+	parseUrlSectionPatch,
+	patchUrlSection,
+	type UrlSectionState,
+} from './urlSectionDefinition';
 
 type SectionRecord = Record<string, unknown>;
+type OwnedSectionState = MarkdownSectionState | UrlSectionState;
+type OwnedSectionKind = OwnedSectionState['type'];
 
 export interface MarkdownDocumentState {
 	sections: SectionRecord[];
@@ -46,8 +54,10 @@ export type MarkdownDocumentCommandErrorCode =
 
 export interface MarkdownDocumentProjection {
 	documentRevision: number;
+	sectionRevisions: Readonly<Record<string, number>>;
 	markdownSectionRevisions: Readonly<Record<string, number>>;
 	markdownSections: readonly MarkdownSectionState[];
+	urlSections: readonly UrlSectionState[];
 	orderedSectionIds: readonly string[];
 }
 
@@ -96,8 +106,23 @@ function sectionId(section: SectionRecord): string {
 	return typeof section.id === 'string' ? section.id.trim() : '';
 }
 
-function isMarkdownSection(section: SectionRecord): boolean {
-	return canonicalSectionKind(String(section.type ?? '')) === 'markdown';
+function ownedSectionKind(section: SectionRecord): OwnedSectionKind | undefined {
+	const kind = canonicalSectionKind(String(section.type ?? ''));
+	return kind === 'markdown' || kind === 'url' ? kind : undefined;
+}
+
+function isOwnedSection(section: SectionRecord): boolean {
+	return ownedSectionKind(section) !== undefined;
+}
+
+function parseOwnedSection(input: unknown):
+	| Readonly<{ ok: true; value: OwnedSectionState }>
+	| Readonly<{ ok: false; error: string }> {
+	if (!isRecord(input)) return { ok: false, error: 'Host-owned section must be an object.' };
+	const kind = ownedSectionKind(input);
+	if (kind === 'markdown') return parseMarkdownSection(input);
+	if (kind === 'url') return parseUrlSection(input);
+	return { ok: false, error: 'Host-owned section must have type "markdown" or "url".' };
 }
 
 function commandFailure(
@@ -128,8 +153,8 @@ export class MarkdownDocumentAggregate {
 			if (!id) return { ok: false, error: 'Every projected document section must have an ID.' };
 			if (ids.has(id)) return { ok: false, error: `Duplicate document section ID "${id}".` };
 			ids.add(id);
-			if (isMarkdownSection(input)) {
-				const parsed = parseMarkdownSection(input);
+			if (isOwnedSection(input)) {
+				const parsed = parseOwnedSection(input);
 				if (!parsed.ok) return parsed;
 				sections.push(parsed.value as unknown as SectionRecord);
 				revisions.set(id, 0);
@@ -148,15 +173,30 @@ export class MarkdownDocumentAggregate {
 		return cloneJsonValue(this.state);
 	}
 
-	public projection(): MarkdownDocumentProjection {
-		const markdownSections = this.state.sections
-			.filter(isMarkdownSection)
-			.map(section => parseMarkdownSection(section))
+	public ownedSections(): readonly OwnedSectionState[] {
+		return this.state.sections
+			.filter(isOwnedSection)
+			.map(section => parseOwnedSection(section))
 			.flatMap(result => result.ok ? [result.value] : []);
+	}
+
+	public projection(): MarkdownDocumentProjection {
+		const ownedSections = this.ownedSections();
+		const markdownSections = ownedSections.filter(
+			(section): section is MarkdownSectionState => section.type === 'markdown',
+		);
+		const urlSections = ownedSections.filter(
+			(section): section is UrlSectionState => section.type === 'url',
+		);
+		const markdownIds = new Set(markdownSections.map(section => section.id));
 		return {
 			documentRevision: this.revision,
-			markdownSectionRevisions: Object.fromEntries(this.sectionRevisions),
+			sectionRevisions: Object.fromEntries(this.sectionRevisions),
+			markdownSectionRevisions: Object.fromEntries(
+				[...this.sectionRevisions].filter(([id]) => markdownIds.has(id)),
+			),
 			markdownSections,
+			urlSections,
 			orderedSectionIds: this.state.sections.map(sectionId),
 		};
 	}
@@ -164,32 +204,32 @@ export class MarkdownDocumentAggregate {
 	public hasUnmigratedVisualSections(): boolean {
 		return this.state.sections.some(section => {
 			const kind = canonicalSectionKind(String(section.type ?? ''));
-			return !!kind && kind !== 'markdown' && kind !== 'devnotes';
+			return !!kind && kind !== 'markdown' && kind !== 'url' && kind !== 'devnotes';
 		});
 	}
 
 	public withAdapterState(state: unknown): MarkdownDocumentAggregate {
 		if (!isRecord(state) || !Array.isArray(state.sections)) return this;
-		const ownerMarkdown = new Map(this.projection().markdownSections.map(section => [section.id, section]));
-		const seenMarkdown = new Set<string>();
+		const ownerSections = new Map(this.ownedSections().map(section => [section.id, section]));
+		const seenOwnedSections = new Set<string>();
 		const sections: SectionRecord[] = [];
 		for (const input of state.sections) {
 			if (!isRecord(input)) continue;
 			const id = sectionId(input);
-			if (isMarkdownSection(input)) {
-				const owned = ownerMarkdown.get(id);
+			if (isOwnedSection(input)) {
+				const owned = ownerSections.get(id);
 				if (owned) {
 					sections.push(cloneJsonValue(owned) as unknown as SectionRecord);
-					seenMarkdown.add(id);
+					seenOwnedSections.add(id);
 				}
 				continue;
 			}
 			sections.push(cloneJsonValue(input));
 		}
 		for (const section of this.state.sections) {
-			if (!isMarkdownSection(section)) continue;
+			if (!isOwnedSection(section)) continue;
 			const id = sectionId(section);
-			if (seenMarkdown.has(id)) continue;
+			if (seenOwnedSections.has(id)) continue;
 			let insertionIndex = sections.length;
 			const ownerIndex = this.state.sections.findIndex(candidate => sectionId(candidate) === id);
 			for (let index = ownerIndex + 1; index < this.state.sections.length; index++) {
@@ -226,7 +266,7 @@ export class MarkdownDocumentAggregate {
 		const revisions = new Map(this.sectionRevisions);
 
 		if (command.type === 'add') {
-			const parsed = parseMarkdownSection(command.section);
+			const parsed = parseOwnedSection(command.section);
 			if (!parsed.ok) return commandFailure(this, 'invalid-command', parsed.error);
 			if (sections.some(section => sectionId(section) === parsed.value.id)) {
 				return commandFailure(this, 'duplicate-section-id', `Section "${parsed.value.id}" already exists.`);
@@ -247,8 +287,9 @@ export class MarkdownDocumentAggregate {
 
 		const commandSectionId = typeof command.sectionId === 'string' ? command.sectionId.trim() : '';
 		const sectionIndex = sections.findIndex(section => sectionId(section) === commandSectionId);
-		if (sectionIndex < 0 || !isMarkdownSection(sections[sectionIndex])) {
-			return commandFailure(this, 'missing-section', `Markdown section "${commandSectionId}" does not exist.`);
+		const currentKind = sectionIndex >= 0 ? ownedSectionKind(sections[sectionIndex]) : undefined;
+		if (sectionIndex < 0 || !currentKind) {
+			return commandFailure(this, 'missing-section', `Host-owned section "${commandSectionId}" does not exist.`);
 		}
 		const currentSectionRevision = revisions.get(commandSectionId);
 		if (!Number.isSafeInteger(command.expectedSectionRevision)
@@ -256,7 +297,7 @@ export class MarkdownDocumentAggregate {
 			return commandFailure(
 				this,
 				'stale-section-revision',
-				`Expected Markdown section revision ${String(command.expectedSectionRevision)} but current revision is ${String(currentSectionRevision)}.`,
+				`Expected ${currentKind === 'markdown' ? 'Markdown' : 'URL'} section revision ${String(command.expectedSectionRevision)} but current revision is ${String(currentSectionRevision)}.`,
 			);
 		}
 
@@ -269,12 +310,20 @@ export class MarkdownDocumentAggregate {
 		if (command.type !== 'patch') {
 			return commandFailure(this, 'invalid-command', `Unsupported Markdown command "${String((command as { type?: unknown }).type)}".`);
 		}
-		const parsedCurrent = parseMarkdownSection(sections[sectionIndex]);
-		const parsedPatch = parseMarkdownSectionPatch(command.patch);
-		if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);
-		if (!parsedPatch.ok) return commandFailure(this, 'invalid-command', parsedPatch.error);
 		const nextSectionRevision = currentSectionRevision! + 1;
-		sections[sectionIndex] = patchMarkdownSection(parsedCurrent.value, parsedPatch.value) as unknown as SectionRecord;
+		if (currentKind === 'markdown') {
+			const parsedCurrent = parseMarkdownSection(sections[sectionIndex]);
+			const parsedPatch = parseMarkdownSectionPatch(command.patch);
+			if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);
+			if (!parsedPatch.ok) return commandFailure(this, 'invalid-command', parsedPatch.error);
+			sections[sectionIndex] = patchMarkdownSection(parsedCurrent.value, parsedPatch.value) as unknown as SectionRecord;
+		} else {
+			const parsedCurrent = parseUrlSection(sections[sectionIndex]);
+			const parsedPatch = parseUrlSectionPatch(command.patch);
+			if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);
+			if (!parsedPatch.ok) return commandFailure(this, 'invalid-command', parsedPatch.error);
+			sections[sectionIndex] = patchUrlSection(parsedCurrent.value, parsedPatch.value) as unknown as SectionRecord;
+		}
 		revisions.set(commandSectionId, nextSectionRevision);
 		const document = this.withCommittedState(sections, revisions);
 		return {

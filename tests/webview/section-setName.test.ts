@@ -68,6 +68,7 @@ import '../../src/webview/sections/kw-python-section.js';
 import { __kustoSetSectionName } from '../../src/webview/core/section-factory.js';
 import { addChartBox } from '../../src/webview/sections/kw-chart-section.js';
 import { pState } from '../../src/webview/shared/persistence-state.js';
+import { reconcileProjectedSectionOrder } from '../../src/webview/core/section-projection-order.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -238,6 +239,7 @@ describe('kw-markdown-section name', () => {
 			[{ id: 'markdown_middle', type: 'markdown', text: 'restored' }],
 			['query_before', 'markdown_middle', 'query_after'],
 		);
+		reconcileProjectedSectionOrder(['query_before', 'markdown_middle', 'query_after']);
 		await (document.getElementById('markdown_middle') as any).updateComplete;
 		expect(Array.from(queries.children).map(element => element.id)).toEqual([
 			'query_before', 'markdown_middle', 'query_after',

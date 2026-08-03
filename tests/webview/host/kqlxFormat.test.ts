@@ -256,6 +256,22 @@ describe('parseKqlxText', () => {
 		if (!result.ok) expect(result.error).toContain('editorHeightPx');
 	});
 
+	it.each([
+		['outputHeightPx', 0],
+		['imageSizeMode', 'stretch'],
+		['imageAlign', 'justify'],
+		['imageOverflow', 'clip'],
+	] as const)('rejects invalid persisted URL %s', (field, value) => {
+		const result = parseKqlxText(JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'url_1', type: 'url', url: 'https://example.test', [field]: value,
+			}] },
+		}));
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.error).toContain(field);
+	});
+
 	it.each(['artifactId', 'sourceBoxId'] as const)('persisted result artifact missing required %s → rejected', field => {
 		const resultArtifact: Record<string, unknown> = {
 			version: 1, artifactId: 'artifact_1', sourceBoxId: 'query_1', revision: 1, createdAt: 1,

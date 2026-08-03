@@ -69,6 +69,15 @@ const testState = vi.hoisted(() => {
 		return id;
 	});
 
+	const addUrlBox = vi.fn((options: { id?: string } = {}) => {
+		const id = options.id || `url_restored_${addUrlBox.mock.calls.length + 1}`;
+		urlBoxes.push(id);
+		const el = document.createElement('kw-url-section');
+		el.id = id;
+		(document.getElementById('queries-container') || document.body).appendChild(el);
+		return id;
+	});
+
 	const addHtmlBox = vi.fn((options: { id?: string } = {}) => {
 		const id = options.id || `html_restored_${htmlBoxes.length + 1}`;
 		htmlBoxes.push(id);
@@ -137,6 +146,7 @@ const testState = vi.hoisted(() => {
 		kustoConnections,
 		addQueryBox,
 		addMarkdownBox,
+		addUrlBox,
 		addHtmlBox,
 		addSqlBox,
 		postMessageToHost,
@@ -243,14 +253,7 @@ vi.mock('../../src/webview/core/section-factory.js', () => ({
 		(document.getElementById('queries-container') || document.body).appendChild(el);
 		return id;
 	}),
-	addUrlBox: vi.fn((options?: { id?: string }) => {
-		const id = String(options?.id || `url_restored_${testState.urlBoxes.length + 1}`);
-		testState.urlBoxes.push(id);
-		const el = document.createElement('kw-url-section');
-		el.id = id;
-		(document.getElementById('queries-container') || document.body).appendChild(el);
-		return id;
-	}),
+	addUrlBox: testState.addUrlBox,
 	removePythonBox: vi.fn(),
 	removeUrlBox: vi.fn(),
 	addHtmlBox: testState.addHtmlBox,
@@ -786,6 +789,30 @@ describe('persistence round-trip', () => {
 
 		expect(getKqlxState().sections).toEqual([pState.hostOwnedMarkdownSections.markdown_host_owned]);
 		expect(markdown.serialize).not.toHaveBeenCalled();
+	});
+
+	it('uses host-owned URL projection when component serialize() throws', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const url = document.createElement('kw-url-section') as HTMLElement & { serialize: ReturnType<typeof vi.fn> };
+		url.id = 'url_host_owned';
+		url.serialize = vi.fn(() => { throw new Error('stale URL DOM serializer'); });
+		container.appendChild(url);
+		pState.documentKind = 'kqlx';
+		pState.hostOwnedMarkdownActive = true;
+		pState.markdownDocumentRevision = 5;
+		pState.documentSectionRevisions = { url_host_owned: 3 };
+		pState.hostOwnedUrlSections = {
+			url_host_owned: {
+				id: 'url_host_owned', type: 'url', name: 'Host URL', url: 'https://example.com/owned.png',
+				expanded: false, outputHeightPx: 360, imageSizeMode: 'natural', imageAlign: 'center',
+				imageOverflow: 'scroll',
+			},
+		};
+
+		expect(getKqlxState().sections).toEqual([pState.hostOwnedUrlSections.url_host_owned]);
+		expect(url.serialize).not.toHaveBeenCalled();
 	});
 
 	it('omits provisional SQL comparisons until host admission', () => {
@@ -3324,6 +3351,42 @@ describe('persistence round-trip', () => {
 		const restoredQueryId = String(testState.addQueryBox.mock.results[0]?.value || '');
 		expect(restoredQueryId).toBeTruthy();
 		expect(pState.pendingQueryTextByBoxId[restoredQueryId]).toBe('TableA | take 3');
+	});
+
+	it('retains a host-owned URL element across a same-document forced projection', () => {
+		const documentUri = 'file:///tmp/url-handoff.kqlx';
+		const state = { sections: [{
+			id: 'url_handoff', type: 'url', name: 'Stable',
+			url: 'https://example.com/data.csv', expanded: true,
+		}] };
+		const projection = (sourceGeneration: number) => ({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri, sourceGeneration, documentRevision: 0,
+			sectionRevisions: { url_handoff: 0 }, markdownSectionRevisions: {}, state,
+		});
+
+		expect(handleDocumentDataMessage(projection(1))).toBe(true);
+		const element = document.getElementById('url_handoff') as HTMLElement & {
+			applyHostDocumentState?: ReturnType<typeof vi.fn>;
+			triggerFetch?: ReturnType<typeof vi.fn>;
+			runtimeMarker?: string;
+		};
+		expect(element).toBeTruthy();
+		element.runtimeMarker = 'preserved';
+		element.applyHostDocumentState = vi.fn();
+		element.triggerFetch = vi.fn();
+		const addCount = testState.addUrlBox.mock.calls.length;
+
+		expect(handleDocumentDataMessage(projection(2))).toBe(true);
+
+		expect(document.getElementById('url_handoff')).toBe(element);
+		expect(element.runtimeMarker).toBe('preserved');
+		expect(testState.addUrlBox).toHaveBeenCalledTimes(addCount);
+		expect(element.applyHostDocumentState).toHaveBeenCalledWith(
+			expect.objectContaining({ id: 'url_handoff', url: 'https://example.com/data.csv' }),
+			{ fetchIfMissing: false },
+		);
+		expect(element.triggerFetch).not.toHaveBeenCalled();
 	});
 
 	it('restores legacy copilotQuery content and serializes it canonically as query', () => {

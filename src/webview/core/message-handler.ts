@@ -35,7 +35,8 @@ import {
 	parseKustoExplorerConnectionsXml,
 	__kustoUpdateFavoritesUiForAllBoxes, __kustoTryAutoEnterFavoritesModeForAllBoxes,
 	__kustoMaybeDefaultFirstBoxToFavoritesMode, __kustoOnConnectionsUpdated,
-	removePythonBox, removeUrlBox, onPythonResult, onPythonError,
+	removePythonBox, removeUrlBox, commitUrlDocumentState, reconcileHostOwnedUrlProjection,
+	onPythonResult, onPythonError,
 	removeHtmlBox,
 	removeSqlBox, isPinnedFirstSection,
 	detachSqlComparisonForAdmissionRollback,
@@ -81,6 +82,7 @@ import {
 	isHostOwnedMarkdownDocument,
 	waitForHostOwnedMarkdownCommands,
 } from './markdown-document-client.js';
+import { reconcileProjectedSectionOrder } from './section-projection-order.js';
 import {
 	__kustoControlCommandDocCache, __kustoControlCommandDocPending,
 	__kustoHandleCrossClusterSchemaData, __kustoHandleCrossClusterSchemaError,
@@ -1809,6 +1811,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					result.projection.markdownSections,
 					result.projection.orderedSectionIds,
 				);
+				reconcileHostOwnedUrlProjection(
+					result.projection.urlSections ?? [],
+					result.projection.orderedSectionIds,
+				);
+				reconcileProjectedSectionOrder(result.projection.orderedSectionIds);
 			}
 			break;
 		}
@@ -3765,13 +3772,16 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							: sectionType === 'html'
 								? { ...(input.code ? { code: String(input.code) } : {}) }
 								: sectionType === 'url'
-									? { ...(input.url ? { url: String(input.url) } : {}) }
+										? {
+											...(input.url ? { url: String(input.url) } : {}),
+											...(input.name ? { name: String(input.name) } : {}),
+										}
 									: {};
 				const creation = createSectionWithCapabilities(sectionType, creationOptions);
 				const sectionId = creation.ok ? creation.sectionId : '';
 				let success = creation.ok;
 				let creationError = creation.ok ? undefined : creation.error;
-				if (sectionId && input.name) __kustoSetSectionName(sectionId, input.name);
+				if (sectionId && input.name && sectionType !== 'url') __kustoSetSectionName(sectionId, input.name);
 				if (success && sectionType === 'query' && (input.clusterUrl || input.connectionId || input.database)) {
 					const applied = applyToolKustoTarget(sectionId, input);
 					if (!applied.success) {
@@ -3782,9 +3792,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				
 				if (success && sectionId) { markSectionAgentTouched(sectionId); }
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
-				if (success && sectionType === 'markdown' && isHostOwnedMarkdownDocument()) {
+				if (success && (sectionType === 'markdown' || sectionType === 'url') && isHostOwnedMarkdownDocument()) {
 					success = await waitForHostOwnedMarkdownCommands();
-					if (!success) creationError = 'The host rejected the Markdown section command.';
+					if (!success) creationError = 'The host rejected the document section command.';
 				}
 				postMessageToHost({
 					type: 'toolResponse', requestId, result: { sectionId, success },
@@ -3862,9 +3872,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				if (success) {
 					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				}
-				if (success && removedSectionType === 'markdown' && isHostOwnedMarkdownDocument()) {
+				if (success && (removedSectionType === 'markdown' || removedSectionType === 'url') && isHostOwnedMarkdownDocument()) {
 					success = await waitForHostOwnedMarkdownCommands();
-					if (!success) removalError = 'The host rejected the Markdown section command.';
+					if (!success) removalError = 'The host rejected the document section command.';
 				}
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : removalError });
 			} catch (err: any) {
@@ -3886,8 +3896,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					if (sectionEl && typeof sectionEl.setExpanded === 'function') {
 						sectionEl.setExpanded(!collapsed);
 						success = true;
-						if (sectionEl.tagName?.toLowerCase() === 'kw-markdown-section'
-							&& isHostOwnedMarkdownDocument()) {
+						const sectionTag = sectionEl.tagName?.toLowerCase();
+						if (sectionTag === 'kw-url-section' && isHostOwnedMarkdownDocument()) {
+							success = commitUrlDocumentState(sectionId)
+								&& await waitForHostOwnedMarkdownCommands();
+						} else if (sectionTag === 'kw-markdown-section' && isHostOwnedMarkdownDocument()) {
 							success = await waitForHostOwnedMarkdownCommands();
 						}
 					}

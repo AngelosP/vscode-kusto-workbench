@@ -2343,12 +2343,11 @@ export function removeMarkdownBox(boxId: unknown): void {
 
 export function reconcileHostOwnedMarkdownProjection(
 	sections: readonly MarkdownSectionState[],
-	orderedSectionIds: readonly string[],
+	_orderedSectionIds: readonly string[],
 ): void {
 	const previousProjectionState = pState.applyingHostMarkdownProjection;
 	pState.applyingHostMarkdownProjection = true;
 	try {
-		const container = document.getElementById('queries-container');
 		const sectionsById = new Map(sections.map(section => [section.id, section]));
 		for (const id of [...markdownBoxes]) {
 			if (!sectionsById.has(id)) removeMarkdownBox(id);
@@ -2360,31 +2359,6 @@ export function reconcileHostOwnedMarkdownProjection(
 				element = document.getElementById(section.id) as KwMarkdownSection | null;
 			}
 			element?.applyHostDocumentState(section);
-			if (!container || !element) continue;
-			const orderedIndex = orderedSectionIds.indexOf(section.id);
-			if (orderedIndex < 0) continue;
-			let nextElement: HTMLElement | null = null;
-			for (let index = orderedIndex + 1; index < orderedSectionIds.length; index++) {
-				const candidate = document.getElementById(orderedSectionIds[index]);
-				if (candidate instanceof HTMLElement && candidate.parentElement === container) {
-					nextElement = candidate;
-					break;
-				}
-			}
-			if (nextElement) {
-				container.insertBefore(element, nextElement);
-				continue;
-			}
-			let previousElement: HTMLElement | null = null;
-			for (let index = orderedIndex - 1; index >= 0; index--) {
-				const candidate = document.getElementById(orderedSectionIds[index]);
-				if (candidate instanceof HTMLElement && candidate.parentElement === container) {
-					previousElement = candidate;
-					break;
-				}
-			}
-			if (previousElement) previousElement.insertAdjacentElement('afterend', element);
-			else container.prepend(element);
 		}
 	} finally {
 		pState.applyingHostMarkdownProjection = previousProjectionState;

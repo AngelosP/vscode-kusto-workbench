@@ -10,6 +10,8 @@ import {
 	handleHostOwnedMarkdownCommandResult,
 	requestHostOwnedMarkdownPatch,
 	requestHostOwnedMarkdownRemove,
+	requestHostOwnedUrlPatch,
+	requestHostOwnedUrlRemove,
 	resetHostOwnedMarkdownDocument,
 	waitForHostOwnedMarkdownCommands,
 } from '../../src/webview/core/markdown-document-client.js';
@@ -31,6 +33,7 @@ describe('host-owned Markdown command client', () => {
 		adoptHostOwnedMarkdownDocument({
 			documentRevision: 0,
 			sourceGeneration: 7,
+			sectionRevisions: { markdown_1: 0 },
 			markdownSectionRevisions: { markdown_1: 0 },
 		}, {
 			sections: [{ id: 'markdown_1', type: 'markdown', text: 'before', expanded: true, mode: 'wysiwyg' }],
@@ -52,8 +55,13 @@ describe('host-owned Markdown command client', () => {
 			type: 'markdownDocumentCommandResult', commandId: patch.commandId, ok: true,
 			sourceGeneration: 7,
 			projection: {
-				documentRevision: 1, markdownSectionRevisions: { markdown_1: 1 },
-				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'after', expanded: true, mode: 'wysiwyg', tab: 'edit' }],
+				documentRevision: 1, sectionRevisions: { markdown_1: 1 },
+				markdownSectionRevisions: { markdown_1: 1 },
+				markdownSections: [{
+					id: 'markdown_1', type: 'markdown', title: '', text: 'after', expanded: true,
+					mode: 'wysiwyg', tab: 'edit',
+				}],
+				urlSections: [],
 				orderedSectionIds: ['markdown_1'],
 			},
 		});
@@ -73,8 +81,10 @@ describe('host-owned Markdown command client', () => {
 			type: 'markdownDocumentCommandResult', commandId: patch.commandId, ok: false,
 			sourceGeneration: 7,
 			projection: {
-				documentRevision: 4, markdownSectionRevisions: { markdown_1: 3 },
+				documentRevision: 4, sectionRevisions: { markdown_1: 3 },
+				markdownSectionRevisions: { markdown_1: 3 },
 				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'authoritative' }],
+				urlSections: [],
 				orderedSectionIds: ['markdown_1'],
 			},
 		});
@@ -114,8 +124,13 @@ describe('host-owned Markdown command client', () => {
 		handleHostOwnedMarkdownCommandResult({
 			type: 'markdownDocumentCommandResult', commandId: first.commandId, ok: true, sourceGeneration: 7,
 			projection: {
-				documentRevision: 1, markdownSectionRevisions: { markdown_1: 1 },
-				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'one' }],
+				documentRevision: 1, sectionRevisions: { markdown_1: 1 },
+				markdownSectionRevisions: { markdown_1: 1 },
+				markdownSections: [{
+					id: 'markdown_1', type: 'markdown', title: '', text: 'one', tab: 'edit', expanded: true,
+					mode: 'wysiwyg',
+				}],
+				urlSections: [],
 				orderedSectionIds: ['markdown_1'],
 			},
 		});
@@ -124,8 +139,13 @@ describe('host-owned Markdown command client', () => {
 		handleHostOwnedMarkdownCommandResult({
 			type: 'markdownDocumentCommandResult', commandId: second.commandId, ok: true, sourceGeneration: 7,
 			projection: {
-				documentRevision: 2, markdownSectionRevisions: { markdown_1: 2 },
-				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'two' }],
+				documentRevision: 2, sectionRevisions: { markdown_1: 2 },
+				markdownSectionRevisions: { markdown_1: 2 },
+				markdownSections: [{
+					id: 'markdown_1', type: 'markdown', title: '', text: 'two', tab: 'edit', expanded: true,
+					mode: 'wysiwyg',
+				}],
+				urlSections: [],
 				orderedSectionIds: ['markdown_1'],
 			},
 		});
@@ -136,7 +156,8 @@ describe('host-owned Markdown command client', () => {
 		requestHostOwnedMarkdownPatch({ id: 'markdown_1', type: 'markdown', text: 'queued', expanded: true, mode: 'wysiwyg' });
 		const command = await waitForPostedMessage(1);
 		adoptHostOwnedMarkdownDocument({
-			documentRevision: 4, sourceGeneration: 8, markdownSectionRevisions: { markdown_1: 0 },
+			documentRevision: 4, sourceGeneration: 8, sectionRevisions: { markdown_1: 0 },
+			markdownSectionRevisions: { markdown_1: 0 },
 		}, {
 			sections: [{ id: 'markdown_1', type: 'markdown', text: 'reloaded' }],
 		});
@@ -152,5 +173,179 @@ describe('host-owned Markdown command client', () => {
 		expect(pState.markdownSourceGeneration).toBe(8);
 		expect(pState.markdownDocumentRevision).toBe(4);
 		expect(pState.hostOwnedMarkdownSections.markdown_1.text).toBe('reloaded');
+	});
+
+	it('sequences URL and Markdown changes through one document revision ledger', async () => {
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 9,
+			sectionRevisions: { markdown_1: 0, url_1: 0 },
+			markdownSectionRevisions: { markdown_1: 0 },
+		}, {
+			sections: [
+				{ id: 'markdown_1', type: 'markdown', text: 'before' },
+				{ id: 'url_1', type: 'url', name: 'Before', url: 'https://example.com/before.png', expanded: true },
+			],
+		});
+		postMessageToHost.mockClear();
+
+		expect(requestHostOwnedUrlPatch({
+			id: 'url_1', type: 'url', name: 'After', url: 'https://example.com/after.png', expanded: false,
+			outputHeightPx: 420, imageSizeMode: 'natural', imageAlign: 'center', imageOverflow: 'scroll',
+		})).toBe(true);
+		const urlPatch = await waitForPostedMessage(1);
+		expect(urlPatch).toMatchObject({
+			type: 'markdownDocumentCommand', sourceGeneration: 9, expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'url_1', expectedSectionRevision: 0,
+				patch: { outputHeightPx: 420, imageSizeMode: 'natural', imageAlign: 'center', imageOverflow: 'scroll' },
+			},
+		});
+		handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: urlPatch.commandId, ok: true,
+			sourceGeneration: 9,
+			projection: {
+				documentRevision: 1,
+				sectionRevisions: { markdown_1: 0, url_1: 1 },
+				markdownSectionRevisions: { markdown_1: 0 },
+				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'before' }],
+				urlSections: [{
+					id: 'url_1', type: 'url', name: 'After', url: 'https://example.com/after.png', expanded: false,
+					outputHeightPx: 420, imageSizeMode: 'natural', imageAlign: 'center', imageOverflow: 'scroll',
+				}],
+				orderedSectionIds: ['markdown_1', 'url_1'],
+			},
+		});
+
+		expect(requestHostOwnedMarkdownPatch({
+			id: 'markdown_1', type: 'markdown', text: 'after URL', expanded: true, mode: 'wysiwyg', tab: 'edit',
+		})).toBe(true);
+		const markdownPatch = await waitForPostedMessage(2);
+		expect(markdownPatch).toMatchObject({
+			sourceGeneration: 9, expectedDocumentRevision: 1,
+			command: { type: 'patch', sectionId: 'markdown_1', expectedSectionRevision: 0 },
+		});
+
+		expect(requestHostOwnedUrlRemove('url_1')).toBe(true);
+		const urlRemove = await waitForPostedMessage(3);
+		expect(urlRemove).toMatchObject({
+			sourceGeneration: 9, expectedDocumentRevision: 2,
+			command: { type: 'remove', sectionId: 'url_1', expectedSectionRevision: 1 },
+		});
+	});
+
+	it('rejects incomplete URL revision metadata without activating host ownership', () => {
+		const adopted = adoptHostOwnedMarkdownDocument({
+			documentRevision: 1,
+			sourceGeneration: 10,
+			sectionRevisions: {},
+			markdownSectionRevisions: {},
+		}, {
+			sections: [{ id: 'url_1', type: 'url', url: 'https://example.com/data.csv', expanded: true }],
+		});
+
+		expect(adopted).toBe(false);
+		expect(pState.hostOwnedMarkdownActive).toBe(false);
+		expect(pState.hostOwnedUrlSections).toEqual({});
+	});
+
+	it('rejects a successful command result that omits the commanded URL transition', async () => {
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 10,
+			sectionRevisions: { markdown_1: 0, url_1: 0 },
+			markdownSectionRevisions: { markdown_1: 0 },
+		}, {
+			sections: [
+				{ id: 'markdown_1', type: 'markdown', text: 'before' },
+				{ id: 'url_1', type: 'url', url: 'https://example.com/before.png', expanded: true },
+			],
+		});
+		postMessageToHost.mockClear();
+		requestHostOwnedUrlPatch({
+			id: 'url_1', type: 'url', url: 'https://example.com/after.png', expanded: true,
+		});
+		const command = await waitForPostedMessage(1);
+		const handled = handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: command.commandId, ok: true,
+			sourceGeneration: 10,
+			projection: {
+				documentRevision: 1,
+				sectionRevisions: { markdown_1: 0 },
+				markdownSectionRevisions: { markdown_1: 0 },
+				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'before' }],
+				urlSections: [],
+				orderedSectionIds: ['markdown_1'],
+			},
+		});
+
+		expect(handled).toEqual({ handled: true, accepted: false });
+		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'requestDocument' });
+		expect(pState.hostOwnedUrlSections.url_1.url).toBe('https://example.com/before.png');
+	});
+
+	it('rejects a successful command result with unrelated owned-order drift', async () => {
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 11,
+			sectionRevisions: { markdown_1: 0, url_1: 0, url_2: 0 },
+			markdownSectionRevisions: { markdown_1: 0 },
+		}, {
+			sections: [
+				{ id: 'markdown_1', type: 'markdown', text: 'before' },
+				{ id: 'query_1', type: 'query', query: 'print 1' },
+				{ id: 'url_1', type: 'url', url: 'https://example.com/one.png', expanded: true },
+				{ id: 'url_2', type: 'url', url: 'https://example.com/two.png', expanded: true },
+			],
+		});
+		postMessageToHost.mockClear();
+		requestHostOwnedUrlPatch({
+			id: 'url_1', type: 'url', url: 'https://example.com/after.png', expanded: true,
+		});
+		const command = await waitForPostedMessage(1);
+		const handled = handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: command.commandId, ok: true,
+			sourceGeneration: 11,
+			projection: {
+				documentRevision: 1,
+				sectionRevisions: { markdown_1: 0, url_1: 1, url_2: 0 },
+				markdownSectionRevisions: { markdown_1: 0 },
+				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'before' }],
+				urlSections: [
+					{ id: 'url_2', type: 'url', url: 'https://example.com/two.png', expanded: true },
+					{ id: 'url_1', type: 'url', name: '', url: 'https://example.com/after.png', expanded: true },
+				],
+				orderedSectionIds: ['url_2', 'query_1', 'markdown_1', 'url_1'],
+			},
+		});
+
+		expect(handled).toEqual({ handled: true, accepted: false });
+		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'requestDocument' });
+		expect(pState.hostOwnedUrlSections.url_2.url).toBe('https://example.com/two.png');
+	});
+
+	it('settles pending commands and reloads after a malformed command projection', async () => {
+		requestHostOwnedMarkdownPatch({
+			id: 'markdown_1', type: 'markdown', text: 'pending', expanded: true, mode: 'wysiwyg', tab: 'edit',
+		});
+		const command = await waitForPostedMessage(1);
+		const barrier = waitForHostOwnedMarkdownCommands();
+		const handled = handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: command.commandId, ok: true,
+			sourceGeneration: 7,
+			projection: {
+				documentRevision: 1,
+				sectionRevisions: { markdown_1: 1, url_missing: 0 },
+				markdownSectionRevisions: { markdown_1: 1 },
+				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'pending' }],
+				urlSections: 'malformed',
+				orderedSectionIds: ['markdown_1'],
+			},
+		});
+
+		expect(handled).toEqual({ handled: true, accepted: false });
+		await expect(barrier).resolves.toBe(false);
+		expect(postMessageToHost).toHaveBeenCalledWith({ type: 'requestDocument' });
+		expect(pState.hostOwnedMarkdownSections.markdown_1.text).toBe('before');
 	});
 });

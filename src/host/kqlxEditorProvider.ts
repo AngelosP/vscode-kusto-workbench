@@ -962,6 +962,18 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		}));
 	}
 
+	private async readProjectionSourceTextForDocument(
+		document: vscode.TextDocument,
+		isSessionFile: boolean,
+	): Promise<string> {
+		if (!isSessionFile) return document.getText();
+		try {
+			return new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
+		} catch {
+			return document.getText();
+		}
+	}
+
 	/**
 	 * Detects if the custom editor is being opened as part of a diff view.
 	 * 
@@ -1212,14 +1224,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const isSessionFile = (() => {
 			return normalizeWorkbenchUriKey(document.uri) === normalizeWorkbenchUriKey(sessionUri);
 		})();
-		const readProjectionSourceText = async (): Promise<string> => {
-			if (!isSessionFile) return document.getText();
-			try {
-				return new TextDecoder().decode(await vscode.workspace.fs.readFile(document.uri));
-			} catch {
-				return document.getText();
-			}
-		};
+		const readProjectionSourceText = (): Promise<string> =>
+			this.readProjectionSourceTextForDocument(document, isSessionFile);
 		const isProjectionSourceCurrent = async (text: string): Promise<boolean> =>
 			(await readProjectionSourceText()) === text;
 
@@ -2073,9 +2079,9 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (!install) {
 				const incoming = MarkdownDocumentAggregate.create(state, entry ? entry.document.revision : 0);
 				if (!incoming.ok) throw new Error(`Cannot materialize host-owned Markdown state: ${incoming.error}`);
-				const sameMarkdown = !!entry && JSON.stringify(incoming.document.projection().markdownSections)
-					=== JSON.stringify(entry.document.projection().markdownSections);
-				const created = sameMarkdown
+				const sameOwnedSections = !!entry && JSON.stringify(incoming.document.ownedSections())
+					=== JSON.stringify(entry.document.ownedSections());
+				const created = sameOwnedSections
 					? { ok: true as const, document: entry!.document.withAdapterState(state) }
 					: MarkdownDocumentAggregate.create(state, entry ? entry.document.revision + 1 : 0);
 				if (!created.ok) throw new Error(`Cannot materialize host-owned Markdown state: ${created.error}`);
@@ -2088,8 +2094,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (entry && entry.sourceText === sourceText) return entry;
 			const incoming = MarkdownDocumentAggregate.create(state, entry ? entry.document.revision : 0);
 			if (!incoming.ok) throw new Error(`Cannot materialize host-owned Markdown state: ${incoming.error}`);
-			if (entry && JSON.stringify(incoming.document.projection().markdownSections)
-				=== JSON.stringify(entry.document.projection().markdownSections)) {
+			if (entry && JSON.stringify(incoming.document.ownedSections())
+				=== JSON.stringify(entry.document.ownedSections())) {
 				entry.document = entry.document.withAdapterState(state);
 				entry.sourceText = sourceText;
 				return entry;
@@ -2178,8 +2184,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			if (owner.sourceText === sourceText) return true;
 			const incoming = MarkdownDocumentAggregate.create(state, owner.document.revision);
 			if (!incoming.ok) return false;
-			if (JSON.stringify(incoming.document.projection().markdownSections)
-				!== JSON.stringify(owner.document.projection().markdownSections)) return false;
+			if (JSON.stringify(incoming.document.ownedSections())
+				!== JSON.stringify(owner.document.ownedSections())) return false;
 			owner.document = owner.document.withAdapterState(state);
 			owner.sourceText = sourceText;
 			return true;
@@ -2681,6 +2687,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 				htmlPowerBiCompatibilityCheckEnabled,
 				state: outboundState
 				, documentRevision: markdownProjection.documentRevision
+				, sectionRevisions: markdownProjection.sectionRevisions
 				, markdownSectionRevisions: markdownProjection.markdownSectionRevisions
 			});
 			perfMark('host.kqlx.documentData.posted', { sections: Array.isArray(outboundState.sections) ? outboundState.sections.length : 0 });
@@ -2957,9 +2964,11 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						});
 						if (!parsedCurrent.ok) throw new Error(parsedCurrent.error);
 						const projectedCurrentState = ensureProjectedSectionIds(parsedCurrent.file.state, currentText);
-						const sourceHasMarkdown = projectedCurrentState.sections.some(section =>
-							canonicalSectionKind(String((section as any)?.type || '')) === 'markdown');
-						if ((!saveMarkdownOwner && sourceHasMarkdown)
+						const sourceHasOwnedSections = projectedCurrentState.sections.some(section => {
+							const kind = canonicalSectionKind(String((section as any)?.type || ''));
+							return kind === 'markdown' || kind === 'url';
+						});
+						if ((!saveMarkdownOwner && sourceHasOwnedSections)
 							|| (saveMarkdownOwner && !rebaseMarkdownOwnerFromSource(saveMarkdownOwner, currentText, projectedCurrentState))
 							|| !saveOwnerIsCurrent()) {
 							throw new Error('The source Markdown changed before its projection was acknowledged.');
@@ -3411,19 +3420,6 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						&& (!outerDisposed || isSessionFile)
 						&& !closeFinalizationAbandoned;
 					if (!entry || !isCommandCurrent()) {
-						rejectStaleCommand();
-						await deliverCommandResult();
-						return;
-					}
-					const initialText = await readProjectionSourceText();
-					const parsedCurrent = parseKqlxText(initialText, {
-						allowedKinds: [documentKind], defaultKind: documentKind,
-					});
-					const projectedInitialState = parsedCurrent.ok
-						? ensureProjectedSectionIds(parsedCurrent.file.state, initialText)
-						: undefined;
-					if (!projectedInitialState || !isCommandCurrent()
-						|| !rebaseMarkdownOwnerFromSource(entry, initialText, projectedInitialState)) {
 						rejectStaleCommand();
 						await deliverCommandResult();
 						return;

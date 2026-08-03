@@ -5,6 +5,12 @@
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
 import { schedulePersist } from './persistence';
+import {
+	isHostOwnedUrlDocument,
+	requestHostOwnedUrlAdd,
+	requestHostOwnedUrlRemove,
+} from './markdown-document-client.js';
+import type { UrlSectionState } from '../../shared/urlSectionDefinition.js';
 import { perfMark } from './perf.js';
 import {
 	cachedDatabases,
@@ -204,7 +210,13 @@ export function __kustoGetSectionName( boxId: any) {
 export function __kustoSetSectionName( boxId: any, name: any) {
 	try {
 		const el = document.getElementById(boxId) as any;
-		if (el && typeof el.setName === 'function') { el.setName(String(name || '')); return; }
+		if (el && typeof el.setName === 'function') {
+			el.setName(String(name || ''));
+			if (String(el.tagName || '').toLowerCase() === 'kw-url-section' && isHostOwnedUrlDocument()) {
+				commitUrlDocumentState(boxId);
+			}
+			return;
+		}
 	} catch (e) { console.error('[kusto]', e); }
 }
 
@@ -2622,7 +2634,7 @@ export function onPythonError( message: any) {
 	setPythonOutput(boxId, String(message.error || 'Python execution failed.'));
 }
 
-export function addUrlBox( options?: any) {
+function createUrlBox(options?: any) {
 	const id = (options && options.id) ? String(options.id) : ('url_' + Date.now());
 	urlBoxes.push(id);
 
@@ -2663,7 +2675,10 @@ export function addUrlBox( options?: any) {
 		container.appendChild(litEl);
 	}
 
-	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try {
+		if (isHostOwnedUrlDocument()) requestHostOwnedUrlAdd(litEl.createDocumentState(), afterBoxId);
+		else schedulePersist();
+	} catch (e) { console.error('[kusto]', e); }
 	if (afterBoxId) {
 		try {
 			const newEl = document.getElementById(id);
@@ -2676,7 +2691,13 @@ export function addUrlBox( options?: any) {
 	return id;
 }
 
+export function addUrlBox(options?: any) {
+	return createUrlBox(options);
+}
+
 export function removeUrlBox( boxId: any) {
+	const hostOwnedDocument = isHostOwnedUrlDocument();
+	if (hostOwnedDocument) requestHostOwnedUrlRemove(String(boxId || ''));
 	urlBoxes = urlBoxes.filter((id: any) => id !== boxId);
 	const box = document.getElementById(boxId) as any;
 	try { box?.clearPublishedCsvResult?.(); } catch (e) { console.error('[kusto]', e); }
@@ -2684,7 +2705,40 @@ export function removeUrlBox( boxId: any) {
 	if (box && box.parentNode) {
 		box.parentNode.removeChild(box);
 	}
-	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { if (!hostOwnedDocument) schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+}
+
+export function reconcileHostOwnedUrlProjection(
+	sections: readonly UrlSectionState[],
+	_orderedSectionIds: readonly string[],
+): void {
+	const previousProjectionState = pState.applyingHostMarkdownProjection;
+	pState.applyingHostMarkdownProjection = true;
+	try {
+		const sectionsById = new Map(sections.map(section => [section.id, section]));
+		for (const id of [...urlBoxes]) {
+			if (!sectionsById.has(id)) removeUrlBox(id);
+		}
+		for (const section of sections) {
+			let element = document.getElementById(section.id) as HTMLElementTagNameMap['kw-url-section'] | null;
+			let created = false;
+			if (!element) {
+				createUrlBox({ ...section });
+				element = document.getElementById(section.id) as HTMLElementTagNameMap['kw-url-section'] | null;
+				created = true;
+			}
+			element?.applyHostDocumentState(section, { fetchIfMissing: created });
+		}
+	} finally {
+		pState.applyingHostMarkdownProjection = previousProjectionState;
+	}
+}
+
+export function commitUrlDocumentState(boxId: unknown): boolean {
+	const element = document.getElementById(String(boxId || '')) as HTMLElementTagNameMap['kw-url-section'] | null;
+	if (!element) return false;
+	element.commitDocumentState();
+	return true;
 }
 
 // ── Window bridges for remaining legacy callers ──

@@ -372,7 +372,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('add, patch, remove, stale rejection, view recreation, and save do not consult Markdown serialize()', async () => {
+	test('URL and Markdown host commands survive stale DOM state, view recreation, and lossless save', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
@@ -391,6 +391,11 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						id: 'markdown_original', type: 'markdown', title: 'Original', text: 'before',
 						mode: 'markdown', expanded: true,
 						futureMarkdown: { producer: 'future-markdown' },
+					},
+					{
+						id: 'url_original', type: 'url', name: 'Original URL', url: 'https://example.com/before.png',
+						expanded: true, outputHeightPx: 240, imageSizeMode: 'natural', imageAlign: 'left',
+						imageOverflow: 'shrink', futureUrl: { producer: 'future-url' },
 					},
 					{
 						id: 'future_opaque', type: 'future-section',
@@ -443,9 +448,17 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 							finalSnapshotRequests++;
 							void Promise.resolve().then(() => receiveHandler?.({
 								type: 'persistDocument', flushRequestId: message.requestId,
-								snapshotId: 'stale-markdown-adapter', sourceGeneration, editRevision: 1,
+								snapshotId: 'stale-document-adapter', sourceGeneration, editRevision: 1,
 								state: { sections: [
 									{ id: 'markdown_original', type: 'markdown', text: 'stale DOM snapshot' },
+									{
+										id: 'url_original', type: 'url', name: 'Stale URL DOM',
+										url: 'https://stale.invalid/adapter.png', expanded: true,
+									},
+									{
+										id: 'url_temporary', type: 'url', name: 'Stale removed URL',
+										url: 'https://stale.invalid/removed.png', expanded: true,
+									},
 									{ id: 'devnotes_owner', type: 'devnotes', entries: [{
 										id: 'note_saved', created: '2026-08-02T00:00:00.000Z',
 										updated: '2026-08-02T00:00:00.000Z', category: 'usage-note',
@@ -537,6 +550,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.ok(initialProjection, 'initial host projection must be delivered');
 			assert.strictEqual(initialProjection.documentRevision, 0);
 			assert.deepStrictEqual(initialProjection.markdownSectionRevisions, { markdown_original: 0 });
+			assert.deepStrictEqual(initialProjection.sectionRevisions, { markdown_original: 0, url_original: 0 });
 
 			const sendCommand = async (message: any) => {
 				message.sourceGeneration ??= initialProjection.sourceGeneration;
@@ -607,6 +621,63 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				{ ok: true, documentRevision: 3 },
 			);
 
+			const urlAdded = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'url-add', expectedDocumentRevision: 3,
+				command: {
+					type: 'add', afterSectionId: 'url_original',
+					section: {
+						id: 'url_temporary', type: 'url', name: 'Temporary URL',
+						url: 'https://example.com/remove-me.csv', expanded: false,
+					},
+				},
+			});
+			assert.deepStrictEqual(
+				{ ok: urlAdded.ok, documentRevision: urlAdded.documentRevision, sectionRevision: urlAdded.sectionRevision },
+				{ ok: true, documentRevision: 4, sectionRevision: 1 },
+				JSON.stringify(urlAdded),
+			);
+
+			const staleUrl = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'url-stale-patch', expectedDocumentRevision: 3,
+				command: {
+					type: 'patch', sectionId: 'url_original', expectedSectionRevision: 0,
+					patch: { url: 'https://stale.invalid/overwrite.png' },
+				},
+			});
+			assert.strictEqual(staleUrl.ok, false);
+			assert.strictEqual(staleUrl.error?.code, 'stale-document-revision');
+			assert.strictEqual(staleUrl.documentRevision, 4);
+			assert.strictEqual(
+				JSON.parse(currentText).state.sections.find((section: any) => section.id === 'url_original').url,
+				'https://example.com/before.png',
+				'a stale URL command must not mutate the document',
+			);
+
+			const urlPatched = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'url-patch', expectedDocumentRevision: 4,
+				command: {
+					type: 'patch', sectionId: 'url_original', expectedSectionRevision: 0,
+					patch: {
+						name: 'Host owned URL', url: 'https://example.com/after.png', expanded: false,
+						outputHeightPx: 420, imageSizeMode: 'fill', imageAlign: 'center', imageOverflow: 'scroll',
+					},
+				},
+			});
+			assert.deepStrictEqual(
+				{ ok: urlPatched.ok, documentRevision: urlPatched.documentRevision, sectionRevision: urlPatched.sectionRevision },
+				{ ok: true, documentRevision: 5, sectionRevision: 1 },
+				JSON.stringify(urlPatched),
+			);
+
+			const urlRemoved = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'url-remove', expectedDocumentRevision: 5,
+				command: { type: 'remove', sectionId: 'url_temporary', expectedSectionRevision: 1 },
+			});
+			assert.deepStrictEqual(
+				{ ok: urlRemoved.ok, documentRevision: urlRemoved.documentRevision },
+				{ ok: true, documentRevision: 6 },
+			);
+
 			await firstView.dispose();
 
 			const recreatedView = createPanel();
@@ -614,10 +685,16 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await recreatedView.receive({ type: 'requestDocument' });
 			const recreatedProjection = recreatedView.posted.find(message => message?.type === 'documentData' && message.ok === true);
 			assert.ok(recreatedProjection, 'recreated view must receive a projection');
-			assert.strictEqual(recreatedProjection.documentRevision, 3);
+			assert.strictEqual(recreatedProjection.documentRevision, 6);
 			assert.deepStrictEqual(recreatedProjection.markdownSectionRevisions, { markdown_original: 1 });
+			assert.deepStrictEqual(recreatedProjection.sectionRevisions, { markdown_original: 1, url_original: 1 });
 			assert.strictEqual(recreatedProjection.state.sections[0].text, 'after');
 			assert.strictEqual(recreatedProjection.state.sections[0].title, 'Host owned');
+			assert.deepStrictEqual(recreatedProjection.state.sections[1], {
+				id: 'url_original', type: 'url', name: 'Host owned URL', url: 'https://example.com/after.png',
+				expanded: false, outputHeightPx: 420, imageSizeMode: 'fill', imageAlign: 'center',
+				imageOverflow: 'scroll',
+			});
 
 			const owningSaveHandler = willSaveHandlers.at(-1);
 			assert.ok(owningSaveHandler, 'native Save handler must be installed for the recreated view');
@@ -637,15 +714,20 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.deepStrictEqual(saved.futureRoot, fixture.futureRoot);
 			assert.deepStrictEqual(saved.state.futureState, fixture.state.futureState);
 			assert.deepStrictEqual(saved.state.sections.map((section: any) => section.id), [
-				'markdown_original', 'future_opaque', 'devnotes_owner',
+				'markdown_original', 'url_original', 'future_opaque', 'devnotes_owner',
 			]);
 			assert.deepStrictEqual(saved.state.sections[0], {
 				id: 'markdown_original', type: 'markdown', title: 'Host owned', text: 'after',
 				mode: 'preview', expanded: false, editorHeightPx: 320,
 				futureMarkdown: { producer: 'future-markdown' },
 			});
-			assert.deepStrictEqual(saved.state.sections[1], fixture.state.sections[1]);
-			assert.strictEqual(saved.state.sections[2].entries[0].content, 'adapter-owned note');
+			assert.deepStrictEqual(saved.state.sections[1], {
+				id: 'url_original', type: 'url', name: 'Host owned URL', url: 'https://example.com/after.png',
+				expanded: false, outputHeightPx: 420, imageSizeMode: 'fill', imageAlign: 'center',
+				imageOverflow: 'scroll', futureUrl: { producer: 'future-url' },
+			});
+			assert.deepStrictEqual(saved.state.sections[2], fixture.state.sections[2]);
+			assert.strictEqual(saved.state.sections[3].entries[0].content, 'adapter-owned note');
 			await recreatedView.dispose();
 		} finally {
 			for (const subscription of workspaceSubscriptions) subscription.dispose();
@@ -748,6 +830,104 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.deepStrictEqual(saved.state.sections[0].futureMarkdown, { keep: true });
 		} finally {
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('session URL burst commands reserve queue order before source reads', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalReadProjectionSourceText = (KqlxEditorProvider as any).prototype.readProjectionSourceTextForDocument;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-url-session-burst-'));
+		const filePath = path.join(tmpDir, 'session.kqlx');
+		const initialText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'url_1', type: 'url', url: 'https://example.com/one.png', expanded: true },
+				{ id: 'url_2', type: 'url', url: 'https://example.com/two.png', expanded: true },
+			] },
+		}, null, 2) + '\n';
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let latestProjection: any;
+		const posted: any[] = [];
+		let gateCommandReads = false;
+		let commandReadStarts = 0;
+		let markFirstReadStarted!: () => void;
+		let releaseFirstRead!: () => void;
+		const firstReadStarted = new Promise<void>(resolve => { markFirstReadStarted = resolve; });
+		const firstReadGate = new Promise<void>(resolve => { releaseFirstRead = resolve; });
+
+		try {
+			fs.writeFileSync(filePath, initialText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(KqlxEditorProvider as any).prototype.readProjectionSourceTextForDocument = async function (
+				document: vscode.TextDocument,
+				isSessionFile: boolean,
+			) {
+				if (gateCommandReads && document.uri.toString() === vscode.Uri.file(filePath).toString()) {
+					commandReadStarts++;
+					if (commandReadStarts === 1) {
+						markFirstReadStarted();
+						await firstReadGate;
+					}
+				}
+				return originalReadProjectionSourceText.call(this, document, isSessionFile);
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(tmpDir), extensionMode: vscode.ExtensionMode.Test,
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => initialText, eol: vscode.EndOfLine.LF,
+				positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: false, version: 1,
+			} as any;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') latestProjection = message;
+						if (message?.reloadRequestId) {
+							await Promise.resolve(receiveHandler?.({
+								type: 'documentReloadResult', requestId: message.reloadRequestId,
+								applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			gateCommandReads = true;
+			const first = Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'url-burst-first',
+				sourceGeneration: latestProjection.sourceGeneration, expectedDocumentRevision: 0,
+				command: { type: 'patch', sectionId: 'url_1', expectedSectionRevision: 0, patch: { expanded: false } },
+			}));
+			await firstReadStarted;
+			const second = Promise.resolve(receiveHandler!({
+				type: 'markdownDocumentCommand', commandId: 'url-burst-second',
+				sourceGeneration: latestProjection.sourceGeneration, expectedDocumentRevision: 1,
+				command: { type: 'patch', sectionId: 'url_2', expectedSectionRevision: 0, patch: { expanded: false } },
+			}));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(commandReadStarts, 1, 'the second command must not read before the first queue slot settles');
+			releaseFirstRead();
+			await Promise.all([first, second]);
+
+			assert.strictEqual(posted.find(message => message?.commandId === 'url-burst-first')?.ok, true);
+			assert.strictEqual(posted.find(message => message?.commandId === 'url-burst-second')?.ok, true);
+			const saved = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+			assert.deepStrictEqual(saved.state.sections.map((section: any) => section.expanded), [false, false]);
+		} finally {
+			releaseFirstRead?.();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(KqlxEditorProvider as any).prototype.readProjectionSourceTextForDocument = originalReadProjectionSourceText;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});

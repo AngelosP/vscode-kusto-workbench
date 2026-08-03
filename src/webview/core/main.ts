@@ -270,6 +270,9 @@ function batchSetSectionExpanded(filterTag: string | null, expanded: boolean): v
 			} catch (e) { console.error('[kusto]', e); }
 		}
 		try { (child as any).setExpanded(expanded); } catch (e) { console.error('[kusto]', e); }
+		if (child.tagName.toLowerCase() === 'kw-url-section') {
+			try { (child as any).commitDocumentState?.(); } catch (e) { console.error('[kusto]', e); }
+		}
 		// Monaco layout pass for query sections when expanding
 		if (expanded && child.id.startsWith('query_')) {
 			try {

@@ -11,6 +11,7 @@
  */
 import type { PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
 import type { MarkdownSectionState } from '../../shared/markdownSectionDefinition.js';
+import type { UrlSectionState } from '../../shared/urlSectionDefinition.js';
 import { addableSectionKindsForDocument, defaultSectionKindForDocument } from '../../shared/documentSectionCapabilities.js';
 
 export const pState = {
@@ -26,8 +27,12 @@ export const pState = {
 	markdownSourceGeneration: 0,
 	/** Per-section revisions for native Markdown commands. */
 	markdownSectionRevisions: {} as Record<string, number>,
+	/** Per-section revisions for every section owned by the native host document aggregate. */
+	documentSectionRevisions: {} as Record<string, number>,
 	/** Last acknowledged host projection used instead of Markdown DOM serialization. */
 	hostOwnedMarkdownSections: {} as Record<string, MarkdownSectionState>,
+	/** Last acknowledged host projection used instead of URL DOM serialization. */
+	hostOwnedUrlSections: {} as Record<string, UrlSectionState>,
 	/** Suppresses command emission while reconciling a rejected stale view. */
 	applyingHostMarkdownProjection: false,
 
