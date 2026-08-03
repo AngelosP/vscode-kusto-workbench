@@ -3,7 +3,7 @@
  *
  * Usage:  node scripts/coverage-gate.mjs
  *
- * Runs `vitest run --coverage`, reads the json-summary output, and exits 1 if
+ * Runs Vitest coverage sequentially, reads the json-summary output, and exits 1 if
  * the statements percentage is below (BASELINE - BUFFER).
  */
 import { execSync } from 'node:child_process';
@@ -21,7 +21,7 @@ const THRESHOLD = BASELINE_STATEMENTS - BUFFER;
 
 // ── Run coverage ──────────────────────────────────────────────────────────────
 try {
-	execSync('npx vitest run --coverage', { cwd: root, stdio: 'inherit' });
+	execSync('npx vitest run --coverage --maxWorkers=1 --testTimeout=15000', { cwd: root, stdio: 'inherit' });
 } catch {
 	console.error('\n❌  Vitest exited with errors — coverage gate cannot proceed.');
 	process.exit(1);

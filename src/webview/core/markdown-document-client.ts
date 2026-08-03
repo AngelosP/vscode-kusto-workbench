@@ -2,6 +2,7 @@ import type {
 	MarkdownDocumentCommand,
 	MarkdownDocumentProjection,
 } from '../../shared/markdownDocumentAggregate.js';
+import { parseDocumentViewProjection } from '../../shared/documentViewProtocol.js';
 import type { ChartSectionPatch, ChartSectionState } from '../../shared/chartSectionDefinition.js';
 import {
 	parseChartSection,
@@ -77,85 +78,9 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 	return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-function parseRevisionRecord(input: unknown, expectedIds: readonly string[]): Record<string, number> | undefined {
-	if (!isRecord(input)) return undefined;
-	const keys = Object.keys(input);
-	const expected = new Set(expectedIds);
-	if (keys.length !== expected.size || keys.some(key => !expected.has(key))) return undefined;
-	const revisions: Record<string, number> = {};
-	for (const id of expectedIds) {
-		const revision = input[id];
-		if (!Number.isSafeInteger(revision) || Number(revision) < 0) return undefined;
-		revisions[id] = Number(revision);
-	}
-	return revisions;
-}
-
 function parseHostOwnedProjection(input: unknown): MarkdownDocumentProjection | undefined {
-	if (!isRecord(input)) return undefined;
-	const documentRevision = input.documentRevision;
-	if (!Number.isSafeInteger(documentRevision) || Number(documentRevision) < 0) return undefined;
-	const chartInput = input.chartSections ?? [];
-	const pythonInput = input.pythonSections ?? [];
-	if (!Array.isArray(chartInput)
-		|| !Array.isArray(input.markdownSections)
-		|| !Array.isArray(pythonInput)
-		|| !Array.isArray(input.urlSections)
-		|| !Array.isArray(input.orderedSectionIds)) return undefined;
-
-	const chartSections: ChartSectionState[] = [];
-	for (const section of chartInput) {
-		const parsed = parseChartSection(section);
-		if (!parsed.ok) return undefined;
-		chartSections.push(parsed.value);
-	}
-	const markdownSections: MarkdownSectionState[] = [];
-	for (const section of input.markdownSections) {
-		const parsed = parseMarkdownSection(section);
-		if (!parsed.ok) return undefined;
-		markdownSections.push(parsed.value);
-	}
-	const pythonSections: PythonSectionState[] = [];
-	for (const section of pythonInput) {
-		const parsed = parsePythonSection(section);
-		if (!parsed.ok) return undefined;
-		pythonSections.push(parsed.value);
-	}
-	const urlSections: UrlSectionState[] = [];
-	for (const section of input.urlSections) {
-		const parsed = parseUrlSection(section);
-		if (!parsed.ok) return undefined;
-		urlSections.push(parsed.value);
-	}
-	const ownedIds = [
-		...chartSections.map(section => section.id),
-		...markdownSections.map(section => section.id),
-		...pythonSections.map(section => section.id),
-		...urlSections.map(section => section.id),
-	];
-	if (new Set(ownedIds).size !== ownedIds.length) return undefined;
-	const orderedSectionIds = input.orderedSectionIds.map(value => typeof value === 'string' ? value.trim() : '');
-	if (orderedSectionIds.some(id => !id) || new Set(orderedSectionIds).size !== orderedSectionIds.length) return undefined;
-	const orderedIds = new Set(orderedSectionIds);
-	if (ownedIds.some(id => !orderedIds.has(id))) return undefined;
-
-	const markdownIds = markdownSections.map(section => section.id);
-	const markdownSectionRevisions = parseRevisionRecord(input.markdownSectionRevisions, markdownIds);
-	const sectionRevisions = parseRevisionRecord(
-		input.sectionRevisions,
-		ownedIds,
-	);
-	if (!markdownSectionRevisions || !sectionRevisions) return undefined;
-	return {
-		documentRevision: Number(documentRevision),
-		sectionRevisions,
-		markdownSectionRevisions,
-		chartSections,
-		markdownSections,
-		pythonSections,
-		urlSections,
-		orderedSectionIds,
-	};
+	const parsed = parseDocumentViewProjection(input);
+	return parsed.ok ? parsed.value : undefined;
 }
 
 function commandSection(input: unknown): ChartSectionState | MarkdownSectionState | PythonSectionState | UrlSectionState | undefined {

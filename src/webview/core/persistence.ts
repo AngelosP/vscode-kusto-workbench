@@ -1839,6 +1839,9 @@ export function resetDocumentPersistenceForTest(): void {
 	__kustoHasAppliedDocument = false;
 	__kustoLastAppliedDocumentUri = '';
 	resetDocumentCapabilityProjectionForTest();
+	pState.documentViewSessionId = '';
+	pState.documentViewInitialProjectionRequestId = '';
+	pState.documentViewProjectionRequestIds.clear();
 	pState.sourceGeneration = 0;
 	pState.documentMutationAllowed = true;
 	pState.documentRuntimeActive = true;

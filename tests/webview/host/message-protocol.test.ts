@@ -71,6 +71,10 @@ function collectDiscriminants(typeNode: ts.TypeNode, aliases: Map<string, ts.Typ
 	}
 	if (ts.isTypeReferenceNode(typeNode)) {
 		const aliasName = typeNode.typeName.getText();
+		if ((aliasName === 'Readonly' || aliasName === 'Omit' || aliasName === 'Pick')
+			&& typeNode.typeArguments?.[0]) {
+			return collectDiscriminants(typeNode.typeArguments[0], aliases, seen);
+		}
 		if (seen.has(aliasName)) {
 			return [];
 		}
@@ -282,9 +286,9 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 
 const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/kqlCompatEditorProvider.ts::requestFinalPersist::postMessage::620:57',
-	'src/host/kqlxEditorProvider.ts::deliverWebviewMessage::postMessage::1180:34',
-	'src/host/kqlxEditorProvider.ts::postWebviewMessage::postMessage::1171:10',
-	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::2978:19',
+	'src/host/kqlxEditorProvider.ts::deliverWebviewMessage::postMessage::1215:34',
+	'src/host/kqlxEditorProvider.ts::postWebviewMessage::postMessage::1204:10',
+	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::3016:19',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::376:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::610:29',
 	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::745:26',
@@ -918,7 +922,10 @@ describe('Message Protocol Contract', () => {
 
 	it('OUTGOING_WEBVIEW_MESSAGE_TYPES matches the OutgoingWebviewMessage source union', () => {
 		expect([...OUTGOING_WEBVIEW_MESSAGE_TYPES].sort()).toEqual(
-			extractTypeDiscriminants('src/webview/shared/webview-messages.ts', 'OutgoingWebviewMessage')
+			[...new Set([
+				...extractTypeDiscriminants('src/webview/shared/webview-messages.ts', 'OutgoingWebviewMessage'),
+				...extractTypeDiscriminants('src/shared/documentViewProtocol.ts', 'DocumentViewWebviewMessage'),
+			])].sort()
 		);
 	});
 

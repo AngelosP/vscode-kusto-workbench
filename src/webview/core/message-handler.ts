@@ -4,6 +4,11 @@ let latestConnectionsRevision = 0;
 // Dispatches incoming postMessage from the extension host to the right module.
 import { pState } from '../shared/persistence-state';
 import { postMessageToHost } from '../shared/webview-messages';
+import {
+	hasDocumentViewEnvelopeFields,
+	isDocumentViewHostMessageType,
+	parseDocumentViewHostMessage,
+} from '../../shared/documentViewProtocol.js';
 import { cancelArtifactCsvSave, provideArtifactCsvSaveData } from '../shared/artifact-csv-export.js';
 import { awaitKustoSchemaPreparation, KustoSchemaPreparationTimeoutError } from '../shared/kusto-schema-preparation-deadline.js';
 import { perfMark } from './perf.js';
@@ -1410,6 +1415,30 @@ window.addEventListener(DOCUMENT_RUNTIME_INVALIDATED_EVENT, () => {
 
 const __kustoDispatchHostMessage = async (message: any) => {
 	message = (message && typeof message === 'object') ? message : {};
+	const documentViewMessage = isDocumentViewHostMessageType(message)
+		&& (hasDocumentViewEnvelopeFields(message) || !!pState.documentViewSessionId);
+	if (documentViewMessage) {
+		const parsed = parseDocumentViewHostMessage(message);
+		if (!parsed.ok) return;
+		const currentViewSessionId = pState.documentViewSessionId;
+		if (!currentViewSessionId) {
+			if (parsed.value.type !== 'documentData') return;
+			pState.documentViewSessionId = parsed.value.viewSessionId;
+		} else if (parsed.value.viewSessionId !== currentViewSessionId) {
+			return;
+		}
+		if (parsed.value.type === 'documentData') {
+			if (parsed.value.reloadRequestId === pState.documentViewInitialProjectionRequestId) return;
+			if (!pState.documentViewInitialProjectionRequestId) {
+				pState.documentViewInitialProjectionRequestId = parsed.value.reloadRequestId;
+			}
+			const requestIds = pState.documentViewProjectionRequestIds;
+			if (requestIds.has(parsed.value.reloadRequestId)) return;
+			requestIds.add(parsed.value.reloadRequestId);
+			while (requestIds.size > 64) requestIds.delete(requestIds.values().next().value!);
+		}
+		message = parsed.value;
+	}
 	const incomingType = String(message.type || '');
 	if (pState.documentRuntimeActive === false) {
 		if (incomingType === 'kustoPublicationStage') {

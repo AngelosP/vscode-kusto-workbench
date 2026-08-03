@@ -26,7 +26,7 @@ A smaller file is not evidence of progress. Fewer competing authorities and stro
 
 Assessment date: 2026-08-03
 
-The comparison was refreshed against the current working tree after DOC-4 host-owned Chart configuration convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
+The comparison was refreshed against the current working tree after PRO-1 runtime-validated document-view session convergence. It includes the full implemented feature set described by the README, package contributions, persisted formats, architecture documentation, browser extension, and test suites.
 
 The current architecture is not uniformly legacy. Several high-risk contexts already provide good models for the rest of the application.
 
@@ -43,6 +43,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | SQL Leave No Trace policy | Cross-window policy, revocation generations, protected one-shot runtime, and guarded admission | Strong but SQL-specific |
 | Dashboard domain semantics | Shared provenance upgrade/validation concepts and extensive Power BI golden tests | Good domain core, mixed with adapters |
 | Editing preferences and first launch | Revisioned application preferences and transactional profile setup | Good explicit ownership |
+| Native document-view lifecycle protocol | [`documentViewProtocol.ts`](src/shared/documentViewProtocol.ts), one host-created panel UUID, runtime parsing, exactly-once initial projection, and session-fenced commands/results/Save barriers | Strong initial protocol slice |
 | Unmigrated section serialization | Section kinds other than Markdown, URL, Python, and Chart implement `serialize()` and persistence iterates their DOM order without ID-prefix ownership | Useful transitional boundary |
 
 These parts should normally be wrapped behind golden-outcome ports, not rewritten. Their adversarial lifecycle tests are migration assets.
@@ -74,9 +75,9 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
-| 1 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/5/3/5 | 48 | PRO-1 selected |
-| 2 | `DOC` | Document actor and section-definition registry | 4/5/4/5/2/5 | 47 | DOC-4 closed; further section migration remains open |
-| 3 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/5/5/4/2/5 | 47 | Open, depends on contracts above |
+| 1 | `DOC` | Document actor and section-definition registry | 4/5/4/5/3/5 | 48 | DOC-5 selected |
+| 2 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/5/5/4/2/5 | 47 | Open, depends on contracts above |
+| 3 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/4/3/4 | 45 | PRO-1 closed; broader protocol/startup work remains open |
 | 4 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
 | 5 | `CMP` | Compatibility-provider composition around the shared sidecar core | 4/4/3/3/3/4 | 39 | Open |
 | 6 | `DSH` | Dashboard compiler IR separated from VS Code/Fabric adapters | 3/3/3/3/4/4 | 35 | Open |
@@ -196,7 +197,7 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 - Unmigrated components still supply serialization without being canonical domain state. Restore behavior still knows component-private methods and timing.
 - Adding a section requires edits across format, component, factory, persistence, tool removal, startup imports, and privacy handling.
 
-**Migration theme:** DOC-1 through DOC-4 proved the transport-neutral aggregate/definition pattern with Markdown, URL, Python, and Chart while preserving runtime-heavy adapters. Remaining kinds are materially higher risk: Transformation owns dependency scheduling, HTML owns active dashboard/runtime behavior, and Kusto/SQL own target, language, execution, and privacy lifecycles. Do not migrate a fifth kind until the protocol/view-session boundary selected below is explicit.
+**Migration theme:** DOC-1 through DOC-4 proved the transport-neutral aggregate/definition pattern with Markdown, URL, Python, and Chart while preserving runtime-heavy adapters. PRO-1 now supplies the required runtime-validated panel session boundary. Transformation is the next bounded persisted-configuration slice; its immutable input bindings, derived artifact publication, computation, and dependency scheduling remain adapter-owned. HTML and Kusto/SQL remain materially higher-risk later candidates.
 
 ### `PRO` - Protocol, View Sessions, And Startup
 
@@ -204,14 +205,16 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 
 **Current divergence:**
 
-- Host input and webview output message unions are duplicated; host output is `unknown` and webview dispatch input is `any`.
+- `documentViewProtocol.ts` now owns runtime schemas and discriminated types for native `documentData`, `documentReloadResult`, host-owned section commands/results, and Save barriers. `KqlxEditorProvider` stamps one host-created UUID per panel; both directions reject malformed or cross-session envelopes before side effects, and the webview applies the initial projection exactly once.
+- Existing source generations, command IDs, revisions, per-URI queues, and Save leases remain inner fences. Metadata-free compatibility and browser/legacy behavior is unchanged.
+- All unrelated host/webview messages still use duplicated unions, `unknown` host output, and `any` dispatcher input.
 - [`message-handler.ts`](src/webview/core/message-handler.ts) is a central switch while some temporary and component listeners observe the same transport independently.
 - [`window-bridges.d.ts`](src/webview/window-bridges.d.ts) remains a large ambient contract, and state is mirrored between module bindings and `window`.
 - [`index.ts`](src/webview/index.ts) relies on import-time side effects and says `main` must be last even though component registration imports follow it.
 - The preload queues early Add commands in `window.__kustoQueryEditorPendingAdds`, while runtime restore drains a separate `pState.queryEditorPendingAdds`. There is no explicit adoption handoff.
 - Browser startup implements a different buffering/acknowledgement protocol.
 
-**Migration theme:** define protocol schemas and a view-session bootstrap around existing messages, then extract domain routers. Ambient bridges are removed only after their owning contract exists.
+**Migration theme:** PRO-1 closes only the host-owned document lifecycle channel. Future PRO slices may add capability/plugin readiness and migrate one additional domain router at a time; do not turn the proven narrow schema into a global rewrite. Ambient bridges are removed only after their owning contract exists.
 
 ### `HST` - Host Application Composition
 
@@ -491,21 +494,35 @@ The component and renderer remain adapters. Equal projections retain the exact e
 
 **Qualification:** the expanded focused ring passed 17 files and 744 tests. Complete sequential Vitest passed 216 files and 5,626 tests. The provider lifecycle matrix passed 15/15, including Chart-only Save before projection acknowledgement and a command arriving after a barrier response but before lease reservation. The complete VS Code 1.131.0 extension-host suite passed 190/190 with `--timeout 5000`. Host/webview and browser TypeScript checks, integration compilation, production extension and browser builds, ESLint with zero errors and five pre-existing warnings, and both bundle gates passed. Native run `20260803-194348` passed both `default/host-owned-markdown-lifecycle` scenarios with a clean extension-host log. Reviewed screenshots showed clean restored Markdown/URL/Python and all four collapsed owned sections including arbitrary-ID `Host owned Chart`. Eleven reviewed JSON artifacts proved four successful exact Chart terminals with no reload, an explicitly accepted Save barrier, zero serializer calls, zero equal-projection commands, retained runtime identity, stale rejection, exact five-section order, complete nested configuration, future root/state/known-section/nested-setting/opaque preservation, and `dirty:false` immediately after Save and after reopen. Full-projection comparison follows JSON transport semantics, so omitted and `undefined` object fields cannot cause a false reload. Final production sizes are 1,863.5 KB for `extension.js` and 2,744.2 KB for `webview.bundle.js`; intentional growth moved synchronized baselines from 1,810 to 1,814 KB and from 2,682 to 2,695 KB with the 50 KB buffer unchanged. An initial closure review blocked on a rejected Save barrier in superseded run `20260803-185050`; the barrier catch-up and JSON-semantic projection fixes are covered by provider/client regressions and the clean replacement run. The definitive post-fix review found no remaining blocker and returned `VERDICT: CLOSE DOC-4`.
 
-## Next Iteration
+## Completed Protocol Iteration
 
 ### Iteration `PRO-1`: Runtime-Validated Document View Session
 
+**Status:** closed on 2026-08-03. The definitive blocker-only review returned `VERDICT: CLOSE PRO-1`.
+
+**Boundary:** `documentViewProtocol.ts` owns one versioned, runtime-validated channel for only native `documentData`, `documentReloadResult`, host-owned section commands/results, and Save barrier traffic. `KqlxEditorProvider` creates one UUID per concrete panel incarnation and stamps every in-scope host envelope. Host and webview ingress parse before side effects and reject malformed, retired, or cross-session traffic. The webview adopts the session from its first valid projection, permanently tombstones that initial request, and keeps later duplicate detection bounded. Existing source generations, command IDs, revisions, URI queues, file formats, and Save leases remain unchanged inner authorities. Compatibility and browser/legacy messages remain metadata-free.
+
+**Displaced authority:** native document lifecycle messages no longer cross provider/webview boundaries as unchecked `unknown`/`any` objects or duplicated local message shapes. A disposed panel cannot acknowledge a successor projection, reserve a successor command, settle a successor terminal, or release a successor Save barrier merely by carrying otherwise current generations, request IDs, or revisions.
+
+**Guards:** the required provider regression establishes a session, replaces it, and injects predecessor acknowledgement, command, and barrier traffic using successor-valid correlation fields; none affects the successor, while current-session traffic completes exactly once and the accepted Save lease remains held until `didSave`. Webview tests reject malformed and duplicate initial projections before adoption and reject prior-session results/barriers before client admission. Pure protocol tests inventory and validate all six discriminators and nested projections, the real outbound wrapper tests stamping/drop behavior, and the static message inventory follows the shared protocol source.
+
+**Qualification:** the finalized focused ring passed 7 files and 375 tests. Complete sequential Vitest and sequential coverage passed 217 files and 5,635 tests; statement coverage is 47.78% against the unchanged 27.67% threshold. Provider lifecycle passed 16/16, compatibility sidecars passed 117/117, and the complete VS Code 1.131.0 extension-host suite passed 191/191 with `--timeout 5000`. Host/webview/browser typechecks, production extension and browser builds, ESLint with zero errors and five pre-existing warnings, and both synchronized bundle gates passed. Native run `20260803-213448` passed all three `host-owned-markdown-lifecycle` scenarios. Three reviewed `1280x1000` screenshots were clean and correctly foreground-captured; reviewed JSON proved distinct session UUIDs, one initial request per session, exactly one stamped command/result per session, no terminal or mutation from the predecessor command, accepted stamped Save barriers, and `dirty:false` persisted state. Inherited DOC-3/DOC-4 artifacts and logs remained clean; logs contained only existing VS Code Git/CSP warnings and the unrelated Mermaid proposed-API error. Final production sizes are 1,872.6 KB for `extension.js` and 2,752.8 KB for `webview.bundle.js`; intentional PRO-1 growth moved synchronized baselines from 1,814 to 1,823 KB and from 2,695 to 2,703 KB with the 50 KB buffer unchanged.
+
+## Next Iteration
+
+### Iteration `DOC-5`: Host-Owned Transformation Configuration State
+
 **Status:** selected, not started.
 
-**Why next:** after four low-risk/configuration section migrations, DOC's remaining slices enter dependency scheduling or Kusto/SQL/HTML lifecycle authority and its feasibility score drops. PRO is now the highest eligible theme at 48. The proven document owner still crosses an `any`/`unknown` message boundary with no explicit view-session epoch, so malformed, duplicated, or stale panel traffic can only be rejected by scattered local checks.
+**Why next:** PRO-1 closed the protocol/view-session prerequisite that previously blocked a fifth section migration. DOC is again the highest eligible gap at 48. Transformation is the lowest-risk remaining persisted section kind: its configuration shape is already exhaustively described by `kqlxFormat.ts` and `kqlxOverlay.ts`, while immutable input bindings, derived artifact publication, computation, and dependency refresh have mature adapter tests and can remain below the document boundary.
 
-**Boundary:** define one runtime-validated, typed document-view channel for the existing initial `documentData` projection, application acknowledgement, host-owned section commands/results, and Save barrier. Bind it to one explicit view-session identity while preserving current source generations, command IDs, revisions, queue semantics, file format, and provider/webview adapters. Do not migrate unrelated Kusto, SQL, result, tool, dashboard, or browser messages in this slice.
+**Boundary:** add one Transformation section definition and route its existing persisted configuration through the current aggregate, optimistic full-projection client, runtime-validated document-view channel, and shared URI queue. Keep primary/join-right artifact bindings, expression evaluation, derived result publication, dependency scheduling, refresh cascades, table rendering, and runtime warnings in `kw-transformation-section` and existing artifact adapters. Do not migrate HTML, Kusto, SQL, or another section kind.
 
-**Falsifiable hypothesis:** if the host-owned document lifecycle crosses one runtime schema and one current view-session identity, then malformed envelopes, duplicate initial projections, late results from a disposed/replaced panel, and cross-session acknowledgements are rejected before they can activate a projection, settle a command, or release a Save lease, while one valid startup handshake still applies exactly once.
+**Falsifiable hypothesis:** if Transformation configuration joins the host document owner while artifact computation remains adapter-owned, then derive/summarize/distinct/pivot/join configuration edits, stale rejection, view recreation, and lossless Save use host revisions without changing pinned input revisions or derived artifact lineage, and a stale or throwing Transformation serializer cannot affect native persistence.
 
-**Cheapest discriminating check:** drive the real provider and webview dispatcher with one valid document-view session, then inject a malformed projection, a valid-looking acknowledgement/result carrying the prior session identity, and a duplicate initial projection. Prove none changes the active aggregate/client revision or settles the current Save barrier, while the current session's exact envelopes still complete normally.
+**Cheapest discriminating check:** load a Transformation with primary and join-right immutable artifact bindings plus future section/nested-array metadata, apply one supported configuration edit through the host command path, recreate the view, poison `kw-transformation-section.serialize()`, then Save and prove exact configuration/order/future data while both bound input artifact identities and the derived output lineage remain unchanged until the existing explicit refresh boundary.
 
-**Exclusions:** no deferred `ACT` authorization or child-frame policy, no global protocol rewrite, no central switch decomposition, no browser composition-root migration, no fifth section kind, no Kusto/SQL execution or language-message migration, and no transport-neutral execution convergence.
+**Exclusions:** no artifact-store redesign, expression-engine rewrite, dependency-scheduler migration, HTML/dashboard lifecycle, Kusto/SQL ownership, protocol expansion beyond the existing document-view channel, deferred `ACT`, or sixth section kind.
 
 ## Convergence Loop
 
@@ -650,6 +667,7 @@ These are not full golden-outcome iterations retroactively, but they materially 
 | `DOC-2` | Existing aggregate/client/URI queue + `urlSectionDefinition.ts` | Native URL DOM serialization authority and adapter-owned URL persisted state | Full optimistic projection, pre-read queue reservation, stable mixed order, runtime move/disposal/redirect guards, lossless Save, and native lifecycle gate | Focused 513, full Vitest 5,592, extension-host 188, native, production/browser, and definitive review complete | 2026-08-03 |
 | `DOC-3` | Existing aggregate/client/URI queue + `pythonSectionDefinition.ts` | Native Python DOM serialization authority and adapter-owned persisted Python state | Full optimistic projection, exact stale/output admission, inactive settlement, bounded timeout terminal, Monaco retention, lossless Save, and native lifecycle gate | Focused 539, full Vitest 5,615, extension-host 189, native, production/browser, and definitive review complete | 2026-08-03 |
 | `DOC-4` | Existing aggregate/client/URI queue + `chartSectionDefinition.ts` | Native Chart DOM serialization authority and adapter-owned persisted Chart configuration | Full optimistic projection, retained ECharts/artifact identity, exact source rebind, detached-instance fencing, lossless Save, arbitrary-ID propagation, and native lifecycle gate | Focused 744, full Vitest 5,626, extension-host 190, native 2/2, production/browser, bundle gates, and definitive post-fix review complete | 2026-08-03 |
+| `PRO-1` | `documentViewProtocol.ts` + host-created panel session UUID | Unchecked/duplicated native document lifecycle envelopes and sessionless panel admission | Runtime schema inventory, exactly-once initial projection, stale-session acknowledgement/command/result/barrier fences, provider race test, and native recreation gate | Focused 375, full/coverage Vitest 5,635, extension-host 191, native 3/3, production/browser, bundle gates, and definitive blocker review complete | 2026-08-03 |
 
 ## Decision Discipline
 

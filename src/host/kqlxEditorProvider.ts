@@ -33,8 +33,14 @@ import { getUnsupportedNativeDocumentReason } from '../shared/nativeDocumentVali
 import {
 	isMarkdownDocumentOwnedSectionKind,
 	MarkdownDocumentAggregate,
-	type MarkdownDocumentCommand,
 } from '../shared/markdownDocumentAggregate';
+import {
+	isDocumentViewHostMessageType,
+	isDocumentViewWebviewMessageType,
+	parseDocumentViewWebviewMessage,
+	stampDocumentViewHostMessage,
+	type DocumentViewWebviewMessage,
+} from '../shared/documentViewProtocol';
 
 
 const normalizeClusterUrlKey = (url: string): string => {
@@ -656,8 +662,7 @@ export const formatSectionDiffContent = (
 type IncomingWebviewMessage =
 	| { type: 'requestDocument' }
 	| { type: 'persistDocument'; state: KqlxStateV1; sourceGeneration?: number; flush?: boolean; flushRequestId?: string; flushUnavailableReason?: string }
-	| { type: 'markdownDocumentCommand'; commandId: string; sourceGeneration: number; expectedDocumentRevision: number; command: MarkdownDocumentCommand }
-	| { type: 'markdownDocumentCommandBarrierResult'; requestId: string; sourceGeneration: number; documentRevision: number; accepted: boolean }
+	| DocumentViewWebviewMessage
 	| { type: string; [key: string]: unknown };
 
 type MarkdownPersistenceLease = {
@@ -1110,6 +1115,8 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		const queryEditor = new QueryEditorProvider(this.extensionUri, this.connectionManager, this.context, this.sqlWorkbench, this.editorCursorStatusBar);
 		queryEditor.fileOpenTrace = fileOpenTrace;
 		queryEditor.documentUri = document.uri.toString();
+		const viewSessionId = randomUUID();
+		let documentViewSessionActive = true;
 		let handleIncomingWebviewMessage: ((message: IncomingWebviewMessage) => Promise<void>) | undefined;
 		const queuedWebviewMessages: IncomingWebviewMessage[] = [];
 		const admittedWebviewHandlers = new Set<Promise<void>>();
@@ -1151,7 +1158,21 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					settleAdmission();
 				});
 		};
-		const webviewMessageSubscription = webviewPanel.webview.onDidReceiveMessage((message: IncomingWebviewMessage) => {
+		const admitIncomingWebviewMessage = (input: unknown): IncomingWebviewMessage | undefined => {
+			if (!input || typeof input !== 'object' || Array.isArray(input)) return undefined;
+			if (isDocumentViewWebviewMessageType(input)) {
+				const parsed = parseDocumentViewWebviewMessage(input);
+				if (!parsed.ok
+					|| !documentViewSessionActive
+					|| parsed.value.viewSessionId !== viewSessionId) return undefined;
+				return parsed.value;
+			}
+			const message = input as Record<string, unknown>;
+			return typeof message.type === 'string' ? message as IncomingWebviewMessage : undefined;
+		};
+		const webviewMessageSubscription = webviewPanel.webview.onDidReceiveMessage((input: unknown) => {
+			const message = admitIncomingWebviewMessage(input);
+			if (!message) return;
 			const delayedSessionPersistence = message && typeof message.type === 'string'
 				&& isDelayedSessionPersistenceMessage(message);
 			if ((outerDisposed && !delayedSessionPersistence) || !message || typeof message.type !== 'string') {
@@ -1165,10 +1186,22 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 			}
 			return runIncomingWebviewMessage(message);
 		});
+		const prepareOutgoingWebviewMessage = (message: unknown): unknown | undefined => {
+			if (!isDocumentViewHostMessageType(message)) return message;
+			if (!documentViewSessionActive) return undefined;
+			const parsed = stampDocumentViewHostMessage(viewSessionId, message);
+			if (!parsed.ok) {
+				getWorkbenchLogger().warn(`[kusto] Rejected invalid document-view host message: ${parsed.error}`);
+				return undefined;
+			}
+			return parsed.value;
+		};
 		const postWebviewMessage = (message: unknown): boolean => {
 			if (outerDisposed) return false;
+			const outgoing = prepareOutgoingWebviewMessage(message);
+			if (!outgoing) return false;
 			try {
-				void webviewPanel.webview.postMessage(message);
+				void webviewPanel.webview.postMessage(outgoing);
 				return true;
 			} catch {
 				return false;
@@ -1176,13 +1209,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		};
 		const deliverWebviewMessage = async (message: unknown): Promise<boolean> => {
 			if (outerDisposed) return false;
+			const outgoing = prepareOutgoingWebviewMessage(message);
+			if (!outgoing) return false;
 			try {
-				return await Promise.resolve(webviewPanel.webview.postMessage(message)) !== false;
+				return await Promise.resolve(webviewPanel.webview.postMessage(outgoing)) !== false;
 			} catch {
 				return false;
 			}
 		};
 		const outerDisposalSubscription = webviewPanel.onDidDispose(() => {
+			documentViewSessionActive = false;
 			outerDisposed = true;
 			retireMarkdownPanelOwner();
 			openEditorRegistration.beginClosing();
@@ -1191,12 +1227,14 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 		try {
 			await queryEditor.initializeWebviewPanel(webviewPanel, { registerMessageHandler: false, initialDocumentLoading: true });
 		} catch (error) {
+			documentViewSessionActive = false;
 			webviewMessageSubscription.dispose();
 			outerDisposalSubscription.dispose();
 			openEditorRegistration.dispose();
 			throw error;
 		}
 		if (outerDisposed) {
+			documentViewSessionActive = false;
 			webviewMessageSubscription.dispose();
 			outerDisposalSubscription.dispose();
 			openEditorRegistration.finishClosing();

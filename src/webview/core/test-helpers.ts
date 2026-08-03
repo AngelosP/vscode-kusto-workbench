@@ -8,6 +8,7 @@ import { getKustoEditorSchema, getKustoEditorSchemaIds, getSqlEditorSchema } fro
 import { kustoEditorSchemaCoordinator } from './kusto-editor-schema-runtime.js';
 import { getSqlSectionSession } from './sql-section-message-router.js';
 import { pState } from '../shared/persistence-state.js';
+import { DOCUMENT_VIEW_CHANNEL, DOCUMENT_VIEW_PROTOCOL_VERSION } from '../../shared/documentViewProtocol.js';
 import { perfSnapshot } from './perf.js';
 import { getPageScrollElement, getPageScrollMaxTop, getPageScrollTop, setPageScrollTop } from './utils.js';
 import { __kustoFindSuggestWidgetForEditor } from '../monaco/suggest.js';
@@ -6770,6 +6771,16 @@ if (document.body.dataset.kustoE2eEnabled === 'true') {
 		enableIsolatedKustoConnections: e2eEnableIsolatedKustoConnections,
 		assertIsolatedKustoConnections: e2eAssertIsolatedKustoConnections,
 		removeSection: (selector: string) => _win.__testRemoveSection(selector),
+		documentViewSession: () => ({
+			protocolVersion: DOCUMENT_VIEW_PROTOCOL_VERSION,
+			channel: DOCUMENT_VIEW_CHANNEL,
+			viewSessionId: pState.documentViewSessionId,
+			initialProjectionRequestId: pState.documentViewInitialProjectionRequestId,
+			sourceGeneration: pState.markdownSourceGeneration,
+			documentRevision: pState.markdownDocumentRevision,
+			sectionRevisions: { ...pState.documentSectionRevisions },
+			recentProjectionRequestIds: [...pState.documentViewProjectionRequestIds],
+		}),
 	},
 	layout: {
 		createStressNotebook: e2eLayoutCreateStressNotebook,

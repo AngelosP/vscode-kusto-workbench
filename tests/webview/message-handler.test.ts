@@ -43,13 +43,26 @@ const handlerState = vi.hoisted(() => ({
 		devNotesSections: [],
 		lastExecutedBox: '',
 		documentEditRevision: 0,
+		documentViewSessionId: '',
+		documentViewInitialProjectionRequestId: '',
+		documentViewProjectionRequestIds: new Set<string>(),
 		resultsVisibleByBoxId: {},
 		resultArtifactByBoxId: {},
 	} as Record<string, unknown>,
 }));
 
 const mocks = {
-	postMessageToHost: vi.fn(),
+	postMessageToHost: vi.fn((message: Record<string, unknown>) => {
+		const documentViewTypes = new Set([
+			'documentReloadResult', 'markdownDocumentCommand', 'markdownDocumentCommandBarrierResult',
+		]);
+		const viewSessionId = String(handlerState.pState.documentViewSessionId || '');
+		if (viewSessionId && documentViewTypes.has(String(message.type || ''))) {
+			Object.assign(message, {
+				protocolVersion: 1, channel: 'document-view', viewSessionId,
+			});
+		}
+	}),
 	markCrossClusterSchemaError: vi.fn(),
 	handleCrossClusterSchemaData: vi.fn(() => true),
 	handleCrossClusterSchemaError: vi.fn(() => true),
@@ -594,6 +607,15 @@ function dispatchHostMessage(data: Record<string, unknown>): void {
 	window.dispatchEvent(new MessageEvent('message', { data }));
 }
 
+function documentViewHostMessage(message: Record<string, unknown>): Record<string, unknown> {
+	return {
+		protocolVersion: 1,
+		channel: 'document-view',
+		viewSessionId: 'view-session-1',
+		...message,
+	};
+}
+
 function kustoDispatch(clientActivityId: string): Record<string, unknown> {
 	return {
 		dispatchAttempt: 1,
@@ -674,6 +696,9 @@ describe('message-handler dispatch', () => {
 		});
 		delete (window as any).__kustoEnterFavoritesModeForBox;
 		handlerState.pState.documentEditRevision = 0;
+		handlerState.pState.documentViewSessionId = '';
+		handlerState.pState.documentViewInitialProjectionRequestId = '';
+		handlerState.pState.documentViewProjectionRequestIds = new Set<string>();
 		handlerState.pState.documentKind = 'kqlx';
 		handlerState.pState.allowedSectionKinds = ['query', 'sql', 'chart', 'transformation', 'markdown', 'python', 'url', 'html'];
 		handlerState.pState.compatibilityMode = false;
@@ -739,6 +764,84 @@ describe('message-handler dispatch', () => {
 		dispatchHostMessage(message);
 		await Promise.resolve();
 		expect(mocks.handleDocumentDataMessage).toHaveBeenCalledWith(message);
+	});
+
+	it('rejects malformed and duplicate initial document-view projections before adoption', async () => {
+		handlerState.pState.documentEditRevision = 4;
+		const projection = documentViewHostMessage({
+			type: 'documentData', ok: true, reloadRequestId: 'reload-initial',
+			sourceGeneration: 1, forceReload: false, documentUri: 'file:///tmp/session.kqlx',
+			documentRevision: 0, sectionRevisions: {}, markdownSectionRevisions: {},
+			state: { sections: [] },
+		});
+
+		dispatchHostMessage(projection);
+		await Promise.resolve();
+		dispatchHostMessage(documentViewHostMessage({
+			...projection,
+			reloadRequestId: 'reload-malformed',
+			sourceGeneration: 'not-a-generation',
+		}));
+		dispatchHostMessage(projection);
+		await Promise.resolve();
+
+		expect(mocks.handleDocumentDataMessage).toHaveBeenCalledTimes(1);
+		expect(mocks.handleDocumentDataMessage).toHaveBeenCalledWith(projection);
+		expect(handlerState.pState.documentEditRevision).toBe(4);
+		const reloadResults = mocks.postMessageToHost.mock.calls
+			.map(([message]) => message)
+			.filter(message => message?.type === 'documentReloadResult');
+		expect(reloadResults).toEqual([documentViewHostMessage({
+			type: 'documentReloadResult', requestId: 'reload-initial',
+			applied: true, editRevision: 4, markdownCommandBarrierSupported: true,
+		})]);
+	});
+
+	it('rejects prior-session command results and Save barriers before client admission', async () => {
+		const projection = documentViewHostMessage({
+			type: 'documentData', ok: true, reloadRequestId: 'reload-current',
+			sourceGeneration: 5, forceReload: false, documentUri: 'file:///tmp/session.kqlx',
+			documentRevision: 0, sectionRevisions: {}, markdownSectionRevisions: {},
+			state: { sections: [] },
+		});
+		dispatchHostMessage(projection);
+		await Promise.resolve();
+		mocks.handleHostOwnedMarkdownCommandResult.mockClear();
+		mocks.waitForHostOwnedMarkdownCommands.mockClear();
+		mocks.postMessageToHost.mockClear();
+		handlerState.pState.markdownSourceGeneration = 5;
+		handlerState.pState.markdownDocumentRevision = 0;
+		mocks.isHostOwnedMarkdownDocument.mockReturnValue(true);
+
+		const commandResult = documentViewHostMessage({
+			type: 'markdownDocumentCommandResult', commandId: 'command-current', ok: false,
+			sourceGeneration: 5, documentRevision: 0,
+			error: { code: 'stale-document-revision', message: 'Rejected.' },
+			projection: {
+				documentRevision: 0, sectionRevisions: {}, markdownSectionRevisions: {},
+				chartSections: [], markdownSections: [], pythonSections: [], urlSections: [],
+				orderedSectionIds: [],
+			},
+		});
+		dispatchHostMessage({ ...commandResult, viewSessionId: 'retired-session' });
+		dispatchHostMessage(commandResult);
+		await Promise.resolve();
+		expect(mocks.handleHostOwnedMarkdownCommandResult).toHaveBeenCalledTimes(1);
+		expect(mocks.handleHostOwnedMarkdownCommandResult).toHaveBeenCalledWith(commandResult);
+
+		const barrier = documentViewHostMessage({
+			type: 'requestMarkdownCommandBarrier', requestId: 'barrier-current', sourceGeneration: 5,
+		});
+		dispatchHostMessage({ ...barrier, viewSessionId: 'retired-session' });
+		dispatchHostMessage(barrier);
+		await vi.waitFor(() => expect(mocks.waitForHostOwnedMarkdownCommands).toHaveBeenCalledTimes(1));
+		const barrierResults = mocks.postMessageToHost.mock.calls
+			.map(([message]) => message)
+			.filter(message => message?.type === 'markdownDocumentCommandBarrierResult');
+		expect(barrierResults).toEqual([documentViewHostMessage({
+			type: 'markdownDocumentCommandBarrierResult', requestId: 'barrier-current',
+			sourceGeneration: 5, documentRevision: 0, accepted: true,
+		})]);
 	});
 
 	it('rejects a stale revision-conditional document reload before replacing local state', async () => {

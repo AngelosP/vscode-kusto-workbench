@@ -19,6 +19,12 @@ import { addableSectionKindsForDocument, defaultSectionKindForDocument } from '.
 export const pState = {
 	/** Monotonic local UI edit revision used to reject stale host reloads. */
 	documentEditRevision: 0,
+	/** Host-created identity for the concrete native document-view panel incarnation. */
+	documentViewSessionId: '',
+	/** First projection request retained for the full session to make initial application exactly-once. */
+	documentViewInitialProjectionRequestId: '',
+	/** Bounded terminal request IDs preventing a projection from applying twice in one view session. */
+	documentViewProjectionRequestIds: new Set<string>(),
 	/** Host-issued source projection generation echoed by persistence snapshots. */
 	sourceGeneration: 0,
 	/** True when native Markdown persistence is owned by the host document aggregate. */

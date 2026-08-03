@@ -18,6 +18,36 @@ async function waitForCondition(predicate: () => boolean, message: string, timeo
 	}
 }
 
+const documentViewWebviewMessageTypes = new Set([
+	'documentReloadResult',
+	'markdownDocumentCommand',
+	'markdownDocumentCommandBarrierResult',
+]);
+
+function latestDocumentViewHostMessage(messages: readonly any[]): any {
+	return [...messages].reverse().find(message => message?.channel === 'document-view');
+}
+
+function wrapDocumentViewTestReceiver(
+	handler: (message: any) => unknown,
+	getHostMessage: () => any,
+): (message: any) => unknown {
+	return message => {
+		if (!documentViewWebviewMessageTypes.has(String(message?.type || ''))
+			|| message?.protocolVersion !== undefined
+			|| message?.channel !== undefined
+			|| message?.viewSessionId !== undefined) return handler(message);
+		const hostMessage = getHostMessage();
+		if (hostMessage?.channel !== 'document-view') return handler(message);
+		return handler({
+			protocolVersion: hostMessage.protocolVersion,
+			channel: hostMessage.channel,
+			viewSessionId: hostMessage.viewSessionId,
+			...message,
+		});
+	};
+}
+
 function connectionManagerStub(): any {
 	const leaveNoTraceSnapshot = {
 		clusterKeys: [], version: 0, globallyBlocked: false, revocationGenerations: {},
@@ -185,7 +215,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						return true;
 					},
-					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
@@ -280,7 +313,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						return true;
 					},
-					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
@@ -311,6 +347,223 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		} finally {
 			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
 			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('retired view session cannot acknowledge, command, or release successor Save work', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
+		const originalOnDidSave = vscode.workspace.onDidSaveTextDocument;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-document-view-session-'));
+		const filePath = path.join(tmpDir, 'session-fence.kqlx');
+		let currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [
+				{ id: 'markdown_1', type: 'markdown', text: 'before' },
+			] },
+		}, null, 2) + '\n';
+		const willSaveHandlers: Array<(event: vscode.TextDocumentWillSaveEvent) => unknown> = [];
+		const didSaveHandlers: Array<(document: vscode.TextDocument) => unknown> = [];
+
+		const document = {
+			uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+			positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: true,
+		} as vscode.TextDocument;
+		const createPanel = () => {
+			let receiveHandler: ((message: any) => unknown) | undefined;
+			let projection: any;
+			let barrierRequest: any;
+			const posted: any[] = [];
+			const disposeHandlers: Array<() => void> = [];
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						posted.push(message);
+						if (message?.type === 'documentData') projection = message;
+						if (message?.type === 'requestMarkdownCommandBarrier') barrierRequest = message;
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
+				},
+				onDidDispose: (handler: () => void) => {
+					disposeHandlers.push(handler);
+					return { dispose() {} };
+				},
+			} as any;
+			return {
+				panel,
+				posted,
+				receive: (message: any) => receiveHandler!(message),
+				dispose: async () => {
+					for (const handler of disposeHandlers) handler();
+					await new Promise<void>(resolve => setImmediate(resolve));
+				},
+				get projection() { return projection; },
+				get barrierRequest() { return barrierRequest; },
+			};
+		};
+		const stamp = (projection: any, message: Record<string, unknown>) => ({
+			protocolVersion: projection.protocolVersion,
+			channel: projection.channel,
+			viewSessionId: projection.viewSessionId,
+			...message,
+		});
+
+		let first: ReturnType<typeof createPanel> | undefined;
+		let second: ReturnType<typeof createPanel> | undefined;
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+				const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+				if (typeof replacement !== 'string') return false;
+				currentText = replacement;
+				return true;
+			};
+			(vscode.workspace as any).onWillSaveTextDocument = (
+				handler: (event: vscode.TextDocumentWillSaveEvent) => unknown,
+			) => {
+				willSaveHandlers.push(handler);
+				return { dispose() {} };
+			};
+			(vscode.workspace as any).onDidSaveTextDocument = (
+				handler: (savedDocument: vscode.TextDocument) => unknown,
+			) => {
+				didSaveHandlers.push(handler);
+				return { dispose() {} };
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+
+			first = createPanel();
+			await provider.resolveCustomTextEditor(document, first.panel, {} as any);
+			const firstRequest = Promise.resolve(first.receive({ type: 'requestDocument' }));
+			await waitForCondition(() => !!first?.projection, 'first view projection should be posted', 1_000);
+			assert.strictEqual(first.projection.protocolVersion, 1);
+			assert.strictEqual(first.projection.channel, 'document-view');
+			assert.ok(typeof first.projection.viewSessionId === 'string' && first.projection.viewSessionId.length > 0);
+			await Promise.resolve(first.receive(stamp(first.projection, {
+				type: 'documentReloadResult', requestId: first.projection.reloadRequestId,
+				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+			})));
+			await firstRequest;
+			const retiredViewSessionId = first.projection.viewSessionId;
+			await first.dispose();
+
+			second = createPanel();
+			await provider.resolveCustomTextEditor(document, second.panel, {} as any);
+			let secondRequestSettled = false;
+			const secondRequest = Promise.resolve(second.receive({ type: 'requestDocument' }))
+				.then(() => { secondRequestSettled = true; });
+			await waitForCondition(() => !!second?.projection, 'successor view projection should be posted', 1_000);
+			assert.notStrictEqual(second.projection.viewSessionId, retiredViewSessionId);
+			await Promise.resolve(second.receive({
+				...stamp(second.projection, {
+					type: 'documentReloadResult', requestId: second.projection.reloadRequestId,
+					applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+				}),
+				viewSessionId: retiredViewSessionId,
+			}));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(secondRequestSettled, false, 'retired acknowledgement must not activate the successor projection');
+			await Promise.resolve(second.receive(stamp(second.projection, {
+				type: 'documentReloadResult', requestId: second.projection.reloadRequestId,
+				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+			})));
+			await secondRequest;
+
+			const command = {
+				type: 'markdownDocumentCommand', commandId: 'session-fenced-command',
+				sourceGeneration: second.projection.sourceGeneration,
+				expectedDocumentRevision: second.projection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'markdown_1',
+					expectedSectionRevision: second.projection.markdownSectionRevisions.markdown_1,
+					patch: { text: 'current session' },
+				},
+			};
+			await Promise.resolve(second.receive({
+				...stamp(second.projection, command),
+				viewSessionId: retiredViewSessionId,
+			}));
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'before');
+			assert.strictEqual(second.posted.filter(message => message?.commandId === command.commandId).length, 0);
+			await Promise.resolve(second.receive(stamp(second.projection, command)));
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'current session');
+			const commandResults = second.posted.filter(message => message?.commandId === command.commandId);
+			assert.strictEqual(commandResults.length, 1);
+			assert.strictEqual(commandResults[0].ok, true);
+
+			let savePreparation: Promise<vscode.TextEdit[]> | undefined;
+			for (const handler of willSaveHandlers) {
+				handler({
+					document,
+					waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => {
+						assert.strictEqual(savePreparation, undefined, 'only the live successor may join Save');
+						savePreparation = Promise.resolve(thenable);
+					},
+				} as any);
+			}
+			await waitForCondition(() => !!second?.barrierRequest, 'successor Save barrier should be posted', 1_000);
+			assert.ok(savePreparation);
+			let saveSettled = false;
+			void savePreparation!.then(() => { saveSettled = true; });
+			await Promise.resolve(second.receive({
+				...stamp(second.projection, {
+					type: 'markdownDocumentCommandBarrierResult',
+					requestId: second.barrierRequest.requestId,
+					sourceGeneration: second.barrierRequest.sourceGeneration,
+					documentRevision: commandResults[0].documentRevision,
+					accepted: true,
+				}),
+				viewSessionId: retiredViewSessionId,
+			}));
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(saveSettled, false, 'retired barrier traffic must not release successor Save');
+			await Promise.resolve(second.receive(stamp(second.projection, {
+				type: 'markdownDocumentCommandBarrierResult',
+				requestId: second.barrierRequest.requestId,
+				sourceGeneration: second.barrierRequest.sourceGeneration,
+				documentRevision: commandResults[0].documentRevision,
+				accepted: true,
+			})));
+			await savePreparation;
+
+			let postSaveCommandSettled = false;
+			const postSaveCommand = Promise.resolve(second.receive(stamp(second.projection, {
+				type: 'markdownDocumentCommand', commandId: 'post-save-session-command',
+				sourceGeneration: commandResults[0].sourceGeneration,
+				expectedDocumentRevision: commandResults[0].documentRevision,
+				command: {
+					type: 'patch', sectionId: 'markdown_1',
+					expectedSectionRevision: commandResults[0].projection.markdownSectionRevisions.markdown_1,
+					patch: { text: 'after Save' },
+				},
+			}))).then(() => { postSaveCommandSettled = true; });
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.strictEqual(postSaveCommandSettled, false, 'accepted Save must retain its queue lease until didSave');
+			for (const handler of didSaveHandlers) await Promise.resolve(handler(document));
+			await postSaveCommand;
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'after Save');
+			assert.strictEqual(second.posted.filter(message => message?.commandId === 'post-save-session-command').length, 1);
+		} finally {
+			await second?.dispose();
+			await first?.dispose();
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
+			(vscode.workspace as any).onDidSaveTextDocument = originalOnDidSave;
 			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
 		}
 	});
@@ -400,7 +653,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 							}
 							return true;
 						},
-						onDidReceiveMessage: (handler: any) => { receive = handler; return { dispose() {} }; },
+						onDidReceiveMessage: (handler: any) => {
+							receive = wrapDocumentViewTestReceiver(handler, () => projection);
+							return { dispose() {} };
+						},
 					},
 					onDidDispose: (handler: () => void) => {
 						disposeHandlers.push(handler);
@@ -711,7 +967,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						return true;
 					},
 					onDidReceiveMessage: (handler: (message: any) => unknown) => {
-						receiveHandler = handler;
+						receiveHandler = wrapDocumentViewTestReceiver(
+							handler,
+							() => latestDocumentViewHostMessage(posted),
+						);
 						return { dispose() {} };
 					},
 				},
@@ -1243,7 +1502,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						return true;
 					},
 					onDidReceiveMessage: (handler: (message: any) => unknown) => {
-						receiveHandler = handler;
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
 						return { dispose() {} };
 					},
 				},
@@ -1353,7 +1612,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						return true;
 					},
-					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+						return { dispose() {} };
+					},
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
@@ -1465,7 +1727,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						return true;
 					},
-					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+						return { dispose() {} };
+					},
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
@@ -1602,7 +1867,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						return true;
 					},
-					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+						return { dispose() {} };
+					},
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
@@ -1786,7 +2054,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						return true;
 					},
-					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+						return { dispose() {} };
+					},
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
@@ -1884,7 +2155,13 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						return true;
 					},
-					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(
+							handler,
+							() => latestDocumentViewHostMessage(posted),
+						);
+						return { dispose() {} };
+					},
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
@@ -2029,7 +2306,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						return true;
 					},
-					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
 				},
 				onDidDispose: (handler: () => void) => {
 					disposeHandlers.push(handler);
@@ -2275,7 +2555,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						return true;
 					},
-					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => latestProjection);
+						return { dispose() {} };
+					},
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;
@@ -2374,7 +2657,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						return true;
 					},
-					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
 				},
 				onDidDispose: (handler: () => void) => { disposeHandlers.push(handler); return { dispose() {} }; },
 			} as any;
@@ -2474,7 +2760,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						}
 						return true;
 					},
-					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					onDidReceiveMessage: (handler: any) => {
+						receiveHandler = wrapDocumentViewTestReceiver(handler, () => projection);
+						return { dispose() {} };
+					},
 				},
 				onDidDispose: () => ({ dispose() {} }),
 			} as any;

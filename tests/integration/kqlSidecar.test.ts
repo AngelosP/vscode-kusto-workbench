@@ -127,6 +127,41 @@ function reloadAwarePostMessage(
 	};
 }
 
+const documentViewWebviewMessageTypes = new Set([
+	'documentReloadResult',
+	'markdownDocumentCommand',
+	'markdownDocumentCommandBarrierResult',
+]);
+const adaptedDocumentViewPanels = new WeakSet<object>();
+
+function adaptKqlxDocumentViewTestPanel(panel: vscode.WebviewPanel): void {
+	if (adaptedDocumentViewPanels.has(panel as object)) return;
+	adaptedDocumentViewPanels.add(panel as object);
+	let envelope: Record<string, unknown> | undefined;
+	const webview = panel.webview as any;
+	const originalPostMessage = webview.postMessage.bind(webview);
+	webview.postMessage = async (message: any) => {
+		if (message?.channel === 'document-view') {
+			envelope = {
+				protocolVersion: message.protocolVersion,
+				channel: message.channel,
+				viewSessionId: message.viewSessionId,
+			};
+		}
+		return originalPostMessage(message);
+	};
+	const originalOnDidReceiveMessage = webview.onDidReceiveMessage.bind(webview);
+	webview.onDidReceiveMessage = (handler: (message: any) => unknown, ...args: any[]) =>
+		originalOnDidReceiveMessage((message: any) => {
+			if (!envelope
+				|| !documentViewWebviewMessageTypes.has(String(message?.type || ''))
+				|| message?.protocolVersion !== undefined
+				|| message?.channel !== undefined
+				|| message?.viewSessionId !== undefined) return handler(message);
+			return handler({ ...envelope, ...message });
+		}, ...args);
+}
+
 function withProjectedCompatPrimary(
 	posted: readonly any[],
 	message: any,
@@ -165,6 +200,7 @@ async function waitForCondition(
 
 suite('Sidecar .kql.json strategy', () => {
 	const originalInitializeWebviewPanel = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+	const originalResolveKqlxEditor = (KqlxEditorProvider as any).prototype.resolveCustomTextEditor;
 	const originalHandle = (QueryEditorProvider as any).prototype.handleWebviewMessage;
 	const originalInfer = (QueryEditorProvider as any).prototype.inferClusterDatabaseForKqlQuery;
 	const originalOnDidChangeTextDocument = vscode.workspace.onDidChangeTextDocument;
@@ -178,6 +214,15 @@ suite('Sidecar .kql.json strategy', () => {
 	};
 
 	suiteSetup(() => {
+		(KqlxEditorProvider as any).prototype.resolveCustomTextEditor = function (
+			this: KqlxEditorProvider,
+			document: vscode.TextDocument,
+			panel: vscode.WebviewPanel,
+			token: vscode.CancellationToken,
+		) {
+			adaptKqlxDocumentViewTestPanel(panel);
+			return originalResolveKqlxEditor.call(this, document, panel, token);
+		};
 		(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => {
 			// no-op
 		};
@@ -197,6 +242,7 @@ suite('Sidecar .kql.json strategy', () => {
 	});
 
 	suiteTeardown(() => {
+		(KqlxEditorProvider as any).prototype.resolveCustomTextEditor = originalResolveKqlxEditor;
 		(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitializeWebviewPanel;
 		(QueryEditorProvider as any).prototype.handleWebviewMessage = originalHandle;
 		(QueryEditorProvider as any).prototype.inferClusterDatabaseForKqlQuery = originalInfer;
@@ -4220,7 +4266,7 @@ suite('Sidecar .kql.json strategy', () => {
 							if (message?.reloadRequestId) {
 								void Promise.resolve().then(() => receiveHandler?.({
 									type: 'documentReloadResult', requestId: message.reloadRequestId,
-									applied: true, editRevision: message.editRevision,
+									applied: true, editRevision: Number(message.editRevision || 0),
 								}));
 							}
 							return true;
@@ -6491,7 +6537,7 @@ suite('Sidecar .kql.json strategy', () => {
 							if (message?.reloadRequestId) {
 								void Promise.resolve().then(() => receiveHandler?.({
 									type: 'documentReloadResult', requestId: message.reloadRequestId,
-									applied: true, editRevision: message.editRevision,
+									applied: true, editRevision: Number(message.editRevision || 0),
 								}));
 							}
 							return true;

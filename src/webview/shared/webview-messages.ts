@@ -9,7 +9,13 @@ import type { KustoEditorLifecycleIdentity } from '../../shared/kustoSchemaLifec
 import type { KustoSectionExecutionTarget } from '../../shared/kustoExecution.js';
 import type { KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
 import type { KustoCopilotRequestIdentity, KustoOptimizeRequestIdentity } from '../../shared/kustoExecution.js';
-import type { MarkdownDocumentCommand } from '../../shared/markdownDocumentAggregate.js';
+import {
+	isDocumentViewWebviewMessageType,
+	stampDocumentViewWebviewMessage,
+	type DocumentViewWebviewMessage,
+	type DocumentViewWebviewMessageInput,
+} from '../../shared/documentViewProtocol.js';
+import { pState } from './persistence-state.js';
 
 // ── Query execution & results ──────────────────────────────────────────────
 
@@ -295,9 +301,7 @@ export type OutgoingWebviewMessage =
 	// Provider messages (kqlx, kqlCompat, mdCompat editors)
 	| { type: 'requestDocument' }
 	| { type: 'persistDocument'; state: unknown; sourceGeneration?: number; flush?: boolean; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }
-	| { type: 'documentReloadResult'; requestId: string; applied: boolean; editRevision: number; markdownCommandBarrierSupported?: boolean }
-	| { type: 'markdownDocumentCommand'; commandId: string; sourceGeneration: number; expectedDocumentRevision: number; command: MarkdownDocumentCommand }
-	| { type: 'markdownDocumentCommandBarrierResult'; requestId: string; sourceGeneration: number; documentRevision: number; accepted: boolean }
+	| DocumentViewWebviewMessageInput
 	| { type: 'requestUpgradeToKqlx'; addKind?: string; state?: unknown; editRevision?: number }
 	| { type: 'requestUpgradeToMdx'; addKind?: string; state?: unknown; editRevision?: number }
 	| { type: 'requestUpgradeToSqlx'; addKind?: string; state?: unknown; editRevision?: number };
@@ -308,11 +312,23 @@ export type OutgoingWebviewMessage =
  * Safe to call when `window.vscode` is unavailable (e.g. browser-ext standalone) — silently no-ops.
  */
 export function postMessageToHost(msg: OutgoingWebviewMessage): void {
+	let outbound: OutgoingWebviewMessage | DocumentViewWebviewMessage = msg;
+	if (pState.documentViewSessionId && isDocumentViewWebviewMessageType(msg)) {
+		const parsed = stampDocumentViewWebviewMessage(
+			pState.documentViewSessionId,
+			msg as DocumentViewWebviewMessageInput,
+		);
+		if (!parsed.ok) {
+			console.error('[kusto] Rejected invalid document-view webview message:', parsed.error);
+			return;
+		}
+		outbound = parsed.value;
+	}
 	const e2eCaptureHostMessage = (window as any).__e2eCaptureHostMessage;
 	if (typeof e2eCaptureHostMessage === 'function') {
-		if (e2eCaptureHostMessage(msg) === false) {
+		if (e2eCaptureHostMessage(outbound) === false) {
 			return;
 		}
 	}
-	window.vscode?.postMessage(msg);
+	window.vscode?.postMessage(outbound);
 }
