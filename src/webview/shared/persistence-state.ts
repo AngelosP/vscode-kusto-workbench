@@ -10,6 +10,7 @@
  *   if (pState.restoreInProgress) { ... }
  */
 import type { PersistedResultArtifactV1 } from '../../shared/resultArtifact.js';
+import type { MarkdownSectionState } from '../../shared/markdownSectionDefinition.js';
 import { addableSectionKindsForDocument, defaultSectionKindForDocument } from '../../shared/documentSectionCapabilities.js';
 
 export const pState = {
@@ -17,6 +18,18 @@ export const pState = {
 	documentEditRevision: 0,
 	/** Host-issued source projection generation echoed by persistence snapshots. */
 	sourceGeneration: 0,
+	/** True when native Markdown persistence is owned by the host document aggregate. */
+	hostOwnedMarkdownActive: false,
+	/** Host-owned application revision for native Markdown commands. */
+	markdownDocumentRevision: 0,
+	/** Host source generation that owns the current Markdown projection. */
+	markdownSourceGeneration: 0,
+	/** Per-section revisions for native Markdown commands. */
+	markdownSectionRevisions: {} as Record<string, number>,
+	/** Last acknowledged host projection used instead of Markdown DOM serialization. */
+	hostOwnedMarkdownSections: {} as Record<string, MarkdownSectionState>,
+	/** Suppresses command emission while reconciling a rejected stale view. */
+	applyingHostMarkdownProjection: false,
 
 	// ── State maps (keyed by boxId) ──────────────────────────────────
 

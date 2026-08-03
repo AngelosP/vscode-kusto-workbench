@@ -52,6 +52,9 @@ export class CompatSidecarSession {
 	hasPendingFinalPersistRequest(requestId: string): boolean {
 		return !!requestId && this.pendingFinalPersists.has(requestId);
 	}
+	hasPendingReloadRequest(requestId: string): boolean {
+		return !!requestId && this.pendingReloads.has(requestId);
+	}
 
 	isStaleRevision(revision: number): boolean {
 		return Number.isSafeInteger(revision) && revision >= 0 && revision < this.editRevision;

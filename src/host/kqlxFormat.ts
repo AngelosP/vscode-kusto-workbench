@@ -7,6 +7,10 @@ import {
 	type WorkbenchDocumentKind,
 } from '../shared/documentSectionCapabilities';
 import { getInvalidKqlxKnownFieldShape } from './kqlxOverlay';
+import {
+	validatePersistedMarkdownSection,
+	type PersistedMarkdownSectionState,
+} from '../shared/markdownSectionDefinition';
 
 export { overlayKqlxFileState } from './kqlxOverlay';
 
@@ -94,18 +98,7 @@ export type KqlxSectionV1 =
 			copilotChatVisible?: boolean;
 			copilotChatWidthPx?: number;
 		}
-	| {
-			id?: string;
-			type: 'markdown';
-			title?: string;
-			text?: string;
-			// Back-compat with older webview builds.
-			tab?: 'edit' | 'preview';
-			// Newer markdown UI state.
-			expanded?: boolean;
-			mode?: 'preview' | 'markdown' | 'wysiwyg';
-			editorHeightPx?: number;
-		}
+	| PersistedMarkdownSectionState
 	| {
 			id?: string;
 			type: 'python';
@@ -418,9 +411,13 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 			&& sectionRecord.linkedQueryPath !== undefined && typeof sectionRecord.linkedQueryPath !== 'string') {
 			return { ok: false, error: `Invalid .kqlx: section ${index} "linkedQueryPath" must be a string.` };
 		}
-		const invalidKnownShape = getInvalidKqlxKnownFieldShape(section);
+		const invalidKnownShape = canonicalKind === 'markdown'
+			? validatePersistedMarkdownSection(section)
+			: getInvalidKqlxKnownFieldShape(section);
 		if (invalidKnownShape) {
-			return { ok: false, error: `Invalid .kqlx: section ${index} invalid known field shape at "${invalidKnownShape}".` };
+			return { ok: false, error: canonicalKind === 'markdown'
+				? `Invalid .kqlx: section ${index} ${invalidKnownShape}`
+				: `Invalid .kqlx: section ${index} invalid known field shape at "${invalidKnownShape}".` };
 		}
 		const id = typeof section.id === 'string' ? section.id.trim() : '';
 		if (id && !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) {

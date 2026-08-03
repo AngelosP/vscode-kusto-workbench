@@ -63,9 +63,11 @@ vi.mock('../../src/webview/shared/lazy-vendor.js', () => ({
 import '../../src/webview/sections/kw-chart-section.js';
 import '../../src/webview/sections/kw-transformation-section.js';
 import '../../src/webview/sections/kw-markdown-section.js';
+import { reconcileHostOwnedMarkdownProjection } from '../../src/webview/sections/kw-markdown-section.js';
 import '../../src/webview/sections/kw-python-section.js';
 import { __kustoSetSectionName } from '../../src/webview/core/section-factory.js';
 import { addChartBox } from '../../src/webview/sections/kw-chart-section.js';
+import { pState } from '../../src/webview/shared/persistence-state.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -158,6 +160,7 @@ describe('kw-transformation-section name', () => {
 		await el.updateComplete;
 		expect(el.getName()).toBe('');
 	});
+
 });
 
 // ── Markdown section ──────────────────────────────────────────────────────────
@@ -184,6 +187,17 @@ describe('kw-markdown-section name', () => {
 		expect(data.title).toBe('Summary');
 	});
 
+	it('serializes an intentionally empty live editor instead of stale pending text', async () => {
+		const el = create();
+		await el.updateComplete;
+		pState.pendingMarkdownTextByBoxId.markdown_1 = 'tool-authored text';
+		(el as any)._editorApi = {
+			getValue: () => '', setValue: vi.fn(), layout: vi.fn(), dispose: vi.fn(), _toastui: null,
+		};
+		expect(el.serialize().text).toBe('');
+		delete pState.pendingMarkdownTextByBoxId.markdown_1;
+	});
+
 	it('setTitle and setName are interchangeable', async () => {
 		const el = create();
 		await el.updateComplete;
@@ -197,6 +211,72 @@ describe('kw-markdown-section name', () => {
 		const el = create();
 		await el.updateComplete;
 		expect(el.getName()).toBe('');
+	});
+
+	it('authoritative projection omission clears a stale persisted height', async () => {
+		const el = create();
+		await el.updateComplete;
+		const wrapper = el.shadowRoot.getElementById('editor-wrapper') as HTMLElement;
+		wrapper.style.height = '320px';
+		el.setAttribute('editor-height-px', '320');
+		el.applyHostDocumentState({ id: 'markdown_1', type: 'markdown', text: 'authoritative' });
+		expect(wrapper.style.height).toBe('');
+		expect(el.hasAttribute('editor-height-px')).toBe(false);
+		expect(el.serialize()).not.toHaveProperty('editorHeightPx');
+	});
+
+	it('restores a rejected middle removal at its authoritative position', async () => {
+		const queries = document.getElementById('queries-container')!;
+		queries.innerHTML = '';
+		const before = document.createElement('div');
+		before.id = 'query_before';
+		const after = document.createElement('div');
+		after.id = 'query_after';
+		queries.append(before, after);
+
+		reconcileHostOwnedMarkdownProjection(
+			[{ id: 'markdown_middle', type: 'markdown', text: 'restored' }],
+			['query_before', 'markdown_middle', 'query_after'],
+		);
+		await (document.getElementById('markdown_middle') as any).updateComplete;
+		expect(Array.from(queries.children).map(element => element.id)).toEqual([
+			'query_before', 'markdown_middle', 'query_after',
+		]);
+	});
+
+	it('reconciles multiple missing Markdown sections without emitting commands', async () => {
+		const queries = document.getElementById('queries-container')!;
+		queries.innerHTML = '';
+		const posted: unknown[] = [];
+		const previousVscode = window.vscode;
+		const previousState = {
+			hostOwnedMarkdownActive: pState.hostOwnedMarkdownActive,
+			documentKind: pState.documentKind,
+			compatibilityMode: pState.compatibilityMode,
+			documentRuntimeActive: pState.documentRuntimeActive,
+			applyingHostMarkdownProjection: pState.applyingHostMarkdownProjection,
+		};
+		(window as any).vscode = { postMessage: (message: unknown) => posted.push(message) };
+		pState.hostOwnedMarkdownActive = true;
+		pState.documentKind = 'kqlx';
+		pState.compatibilityMode = false;
+		pState.documentRuntimeActive = true;
+		pState.applyingHostMarkdownProjection = false;
+		try {
+			reconcileHostOwnedMarkdownProjection([
+				{ id: 'markdown_first', type: 'markdown', text: 'first' },
+				{ id: 'markdown_second', type: 'markdown', text: 'second' },
+			], ['markdown_first', 'markdown_second']);
+			await Promise.all(Array.from(queries.children).map(element => (element as any).updateComplete));
+			expect(Array.from(queries.children).map(element => element.id)).toEqual([
+				'markdown_first', 'markdown_second',
+			]);
+			expect(posted).toEqual([]);
+			expect(pState.applyingHostMarkdownProjection).toBe(false);
+		} finally {
+			(window as any).vscode = previousVscode;
+			Object.assign(pState, previousState);
+		}
 	});
 });
 

@@ -141,6 +141,21 @@ When a Lit component grows beyond ~1,500 lines or has distinct behavioral concer
 | `TableRowJumpController` | `kw-data-table` | `components/table-row-jump.controller.ts` |
 | `SqlCopilotChatManagerController` | `kw-sql-section` | `sections/sql-copilot-chat-manager.controller.ts` |
 
+## Host-Owned Markdown Document Development
+
+Native `.kqlx` / `.sqlx` / `.mdx` Markdown has one host application owner. Preserve these boundaries:
+
+* **Aggregate authority**: `MarkdownDocumentAggregate` owns ordered application state, document revisions, section revisions, and add/patch/remove transitions. `markdownSectionDefinition.ts` owns persisted validation and patch semantics. Do not add a second Markdown state map or infer authoritative state from mounted components.
+* **View-only component**: `kw-markdown-section` emits revisioned commands and applies host projections. Native persistence must not call its `serialize()` method. Plain `.md` compatibility is intentionally different: primary text remains authoritative and the compatibility serializer remains valid.
+* **Exact command terminals**: Every valid `commandId` must receive exactly one success or rejection result. Commands carry source generation plus expected document/section revisions; stale generation, owner, source, transition, write, or disposal paths fail explicitly.
+* **One URI queue**: Every projection candidate and acknowledged owner for one normalized URI shares the same physical queue, including cold-start panels, adapter persistence, command writes, rollback, and Save leases. Logical revocation never releases physical serialization early.
+* **Acknowledged activation**: Candidate construction cannot invalidate active work. Activate only after a live reload request accepts the exact latest generation and source text. Rejected, expired, or source-drifted acknowledgements keep the prior owner.
+* **Panel handoff**: Retained aggregate state and live panel ownership are separate. Canonical-panel disposal reprojects a surviving panel without installing its historical owner or rewinding revisions. Close cleanup rechecks live/closing panels atomically after queue settlement before deleting URI state.
+* **Save fencing**: An accepted Markdown barrier reserves the shared queue through the matching native commit. Rejected barriers abort Save. Overlapping Saves serialize, internal canonical restoration cannot settle a user lease, and disposal settles active and retained leases.
+* **Lossless boundary**: Apply aggregate Markdown to the final adapter snapshot, then serialize through `kqlxOverlay.ts` against the exact current source. Unknown root/state fields, known-section extensions, opaque sections, and order must survive.
+
+Focused coverage lives in `markdown-document-aggregate.test.ts`, `markdown-document-client.test.ts`, `persistence-roundtrip.test.ts`, `message-handler.test.ts`, `section-setName.test.ts`, `kqlxMarkdownOwnership.test.ts`, and the native `host-owned-markdown-lifecycle` scenario. Run Vitest with `--maxWorkers=1` and extension-host tests with `--timeout 5000`.
+
 ## Kusto Schema Lifecycle Development
 
 Kusto schema state is editor-lifecycle state, not general global state. Preserve these boundaries:

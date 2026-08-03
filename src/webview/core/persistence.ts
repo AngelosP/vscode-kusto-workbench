@@ -62,6 +62,12 @@ import {
 	getDefaultAddSectionKind,
 	resetDocumentCapabilityProjectionForTest,
 } from './document-capabilities.js';
+import {
+	adoptHostOwnedMarkdownDocument,
+	getHostOwnedMarkdownSection,
+	isHostOwnedMarkdownDocument,
+	resetHostOwnedMarkdownDocument,
+} from './markdown-document-client.js';
 
 
 const _win = window;
@@ -1714,6 +1720,11 @@ export function getKqlxState() {
 		// All section types are Lit components that implement serialize().
 		const el = document.getElementById(id);
 		if (el?.hasAttribute('data-sql-comparison-admission-request-id')) continue;
+		if (isHostOwnedMarkdownDocument() && el?.tagName.toLowerCase() === 'kw-markdown-section') {
+			const owned = getHostOwnedMarkdownSection(id);
+			if (owned) sections.push(owned);
+			continue;
+		}
 		if (el && typeof (el as any).serialize === 'function') {
 			try { sections.push((el as any).serialize()); } catch (e) { console.error('[kusto]', e); }
 		}
@@ -1810,6 +1821,7 @@ export function resetDocumentPersistenceForTest(): void {
 	pState.sourceGeneration = 0;
 	pState.documentMutationAllowed = true;
 	pState.documentRuntimeActive = true;
+	resetHostOwnedMarkdownDocument();
 	__kustoClearMalformedDocumentLock();
 }
 
@@ -2938,6 +2950,7 @@ export function handleDocumentDataMessage(message: any): boolean {
 	try { window.closeDiffView?.(); } catch (e) { console.error('[kusto]', e); }
 	const ok = !!(message && message.ok);
 	if (!ok) {
+		resetHostOwnedMarkdownDocument();
 		__kustoCancelHtmlPowerBiCompatibilityCheck();
 		__kustoSetMalformedDocumentLock(message?.error);
 		__kustoHasAppliedDocument = true;
@@ -3013,6 +3026,7 @@ export function handleDocumentDataMessage(message: any): boolean {
 			documentKind: typeof message?.documentKind === 'string' ? message.documentKind : '',
 		});
 		const incomingState = message && message.state ? message.state : { sections: [] };
+			adoptHostOwnedMarkdownDocument(message, incomingState);
 		assertProjectedSectionsAllowed(Array.isArray(incomingState.sections) ? incomingState.sections : []);
 		applyKqlxState(incomingState);
 		if (Number.isSafeInteger(incomingEditRevision) && incomingEditRevision >= 0) {
@@ -3029,24 +3043,6 @@ export function handleDocumentDataMessage(message: any): boolean {
 		applied = true;
 		pState.documentRuntimeActive = true;
 		if (sqlConnections.length > 0) resolvePendingSqlResultRestores();
-
-		// If the doc is empty, initialize UX content.
-		try {
-		const persistedSections = Array.isArray(incomingState.sections) ? incomingState.sections : [];
-		if (persistedSections.length === 0) {
-			const applied = __kustoApplyPendingAdds();
-			if (!applied) {
-				const k = getDefaultAddSectionKind();
-				if (k === 'markdown') {
-					addMarkdownBox();
-				} else if (k === 'sql') {
-					addSqlBox();
-				} else if (k === 'query') {
-					addQueryBox();
-				}
-			}
-		}
-		} catch (e) { console.error('[kusto]', e); }
 
 		__kustoScheduleDeferredRestoredResults();
 		__kustoSeedPersistSignatureFromCurrentState();
@@ -3100,6 +3096,23 @@ export function handleDocumentDataMessage(message: any): boolean {
 
 	// Persistence remains enabled; edits will persist via event hooks.
 	return applied;
+}
+
+export function finalizeDocumentDefaultsAfterAcknowledgement(state: unknown): void {
+	if (!pState.documentRuntimeActive || pState.restoreInProgress) return;
+	try {
+		const stateRecord = state && typeof state === 'object' ? state as Record<string, unknown> : {};
+		const persistedSections = Array.isArray(stateRecord.sections) ? stateRecord.sections : [];
+		if (persistedSections.length !== 0) return;
+		const applied = __kustoApplyPendingAdds();
+		if (applied) return;
+		const kind = getDefaultAddSectionKind();
+		if (kind === 'markdown') addMarkdownBox();
+		else if (kind === 'sql') addSqlBox();
+		else if (kind === 'query') addQueryBox();
+	} catch (error) {
+		console.error('[kusto]', error);
+	}
 }
 
 // ======================================================================

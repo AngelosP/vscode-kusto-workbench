@@ -1870,7 +1870,7 @@ function sameUri(left: vscode.Uri | undefined, right: vscode.Uri): boolean {
 }
 
 export async function revealOrOpenQueryEditorSession(sessionUri: vscode.Uri): Promise<void> {
-	const hasSessionCustomTab = (vscode.window.tabGroups.all || []).some(group =>
+	const hasSessionCustomTab = () => (vscode.window.tabGroups.all || []).some(group =>
 		(group.tabs || []).some(tab => {
 			const input = tab.input;
 			const viewType = input instanceof vscode.TabInputCustom
@@ -1878,11 +1878,15 @@ export async function revealOrOpenQueryEditorSession(sessionUri: vscode.Uri): Pr
 				: (input as { viewType?: unknown } | undefined)?.viewType;
 			return viewType === KqlxEditorProvider.viewType && sameUri(tabInputUri(input), sessionUri);
 		}));
-	if (hasSessionCustomTab) {
+	if (await KqlxEditorProvider.revealOpenEditorWhenReady(sessionUri, vscode.ViewColumn.One)) return;
+	if (!await KqlxEditorProvider.waitForOpenEditorsClosed(sessionUri, 30_000)) {
+		throw new Error('The existing Kusto Workbench session did not finish closing.');
+	}
+	if (await KqlxEditorProvider.revealOpenEditorWhenReady(sessionUri, vscode.ViewColumn.One)) return;
+	if (hasSessionCustomTab()) {
 		if (await KqlxEditorProvider.revealOpenEditorWhenReady(sessionUri, vscode.ViewColumn.One, 30_000)) return;
 		throw new Error('The existing Kusto Workbench session is still opening.');
 	}
-	if (await KqlxEditorProvider.revealOpenEditorWhenReady(sessionUri, vscode.ViewColumn.One)) return;
 
 	await vscode.commands.executeCommand('vscode.openWith', sessionUri, KqlxEditorProvider.viewType, {
 		viewColumn: vscode.ViewColumn.One,

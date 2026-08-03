@@ -37,6 +37,7 @@ describe('document section capability ownership', () => {
 
 		expect(notebookProvider).not.toContain('getAllowedSectionKinds');
 		expect(notebookProvider).not.toContain('sanitizeStateForKind');
+		expect(notebookProvider).toContain('supportsMultipleEditorsPerDocument: false');
 		expect(overlay).not.toContain('MDX_EDITABLE_SECTION_TYPES');
 		expect(overlay).not.toContain('MDX_PASSTHROUGH_SECTION_TYPES');
 		expect(kqlCompat).not.toContain('private static readonly allowedSectionKinds');

@@ -45,7 +45,12 @@ import {
 	__kustoGetChartValidationStatus,
 } from './section-factory';
 import { schemaRequestTokenByBoxId } from './kusto-schema-request-state';
-import { removeMarkdownBox, __kustoMaximizeMarkdownBox } from '../sections/kw-markdown-section';
+import {
+	removeMarkdownBox,
+	__kustoMaximizeMarkdownBox,
+	commitMarkdownDocumentState,
+	reconcileHostOwnedMarkdownProjection,
+} from '../sections/kw-markdown-section';
 import { removeChartBox } from '../sections/kw-chart-section';
 import { removeTransformationBox } from '../sections/kw-transformation-section';
 
@@ -68,8 +73,14 @@ import {
 	discardPendingSqlResultRestores,
 	applyKustoLeaveNoTracePolicy,
 	isDocumentMutationAllowed,
+	finalizeDocumentDefaultsAfterAcknowledgement,
 	DOCUMENT_RUNTIME_INVALIDATED_EVENT,
 } from './persistence';
+import {
+	handleHostOwnedMarkdownCommandResult,
+	isHostOwnedMarkdownDocument,
+	waitForHostOwnedMarkdownCommands,
+} from './markdown-document-client.js';
 import {
 	__kustoControlCommandDocCache, __kustoControlCommandDocPending,
 	__kustoHandleCrossClusterSchemaData, __kustoHandleCrossClusterSchemaError,
@@ -1791,6 +1802,31 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		case 'persistDocumentAck':
 			acknowledgePersistDocument(message.snapshotId, message.editRevision);
 			break;
+		case 'markdownDocumentCommandResult': {
+			const result = handleHostOwnedMarkdownCommandResult(message);
+			if (result.handled && !result.accepted && result.projection) {
+				reconcileHostOwnedMarkdownProjection(
+					result.projection.markdownSections,
+					result.projection.orderedSectionIds,
+				);
+			}
+			break;
+		}
+		case 'requestMarkdownCommandBarrier': {
+			const requestId = String(message.requestId || '').trim();
+			if (!requestId) break;
+			const sourceGeneration = Number(message.sourceGeneration);
+			const accepted = sourceGeneration === pState.markdownSourceGeneration
+				&& await waitForHostOwnedMarkdownCommands();
+			postMessageToHost({
+				type: 'markdownDocumentCommandBarrierResult',
+				requestId,
+				sourceGeneration: pState.markdownSourceGeneration,
+				documentRevision: pState.markdownDocumentRevision,
+				accepted: !isHostOwnedMarkdownDocument() || accepted,
+			});
+			break;
+		}
 		case 'enabledKqlxSidecar':
 			// The extension host has enabled a companion .kqlx metadata file for a .kql/.csl document.
 			// Exit compatibility mode and perform the originally-requested add.
@@ -2160,6 +2196,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					postMessageToHost({
 						type: 'documentReloadResult', requestId: String(message.reloadRequestId),
 						applied: false, editRevision: pState.documentEditRevision,
+						markdownCommandBarrierSupported: true,
 					});
 				}
 				break;
@@ -2189,8 +2226,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				postMessageToHost({
 					type: 'documentReloadResult', requestId: String(message.reloadRequestId),
 					applied, editRevision: pState.documentEditRevision,
+					markdownCommandBarrierSupported: true,
 				});
 			}
+			if (applied) finalizeDocumentDefaultsAfterAcknowledgement(message.state);
 			break;
 		case 'revealTextRange':
 			try {
@@ -3743,6 +3782,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				
 				if (success && sectionId) { markSectionAgentTouched(sectionId); }
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
+				if (success && sectionType === 'markdown' && isHostOwnedMarkdownDocument()) {
+					success = await waitForHostOwnedMarkdownCommands();
+					if (!success) creationError = 'The host rejected the Markdown section command.';
+				}
 				postMessageToHost({
 					type: 'toolResponse', requestId, result: { sectionId, success },
 					error: success ? undefined : creationError || 'Failed to add section',
@@ -3760,6 +3803,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const sectionId = String(message.sectionId || '');
 				let success = false;
 				let removalError = 'Section not found';
+				let removedSectionType = '';
 				
 				try {
 					if (!sectionId) {
@@ -3769,11 +3813,21 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					} else {
 						const sectionEl = document.getElementById(sectionId) as any;
 						const tagName = String(sectionEl?.tagName || '').toLowerCase();
-						let sectionType = '';
-						try {
-							const serializedType = String(sectionEl?.serialize?.()?.type || '');
-							sectionType = canonicalSectionKind(serializedType) ?? serializedType.toLowerCase();
-						} catch { /* use tag/prefix fallback */ }
+						let sectionType = tagName === 'kw-query-section' ? 'query'
+							: tagName === 'kw-chart-section' ? 'chart'
+								: tagName === 'kw-transformation-section' ? 'transformation'
+									: tagName === 'kw-markdown-section' ? 'markdown'
+										: tagName === 'kw-python-section' ? 'python'
+											: tagName === 'kw-url-section' ? 'url'
+												: tagName === 'kw-html-section' ? 'html'
+													: tagName === 'kw-sql-section' ? 'sql'
+														: '';
+						if (!sectionType) {
+							try {
+								const serializedType = String(sectionEl?.serialize?.()?.type || '');
+								sectionType = canonicalSectionKind(serializedType) ?? serializedType.toLowerCase();
+							} catch { /* use ID fallback for legacy elements */ }
+						}
 						if (!sectionType) {
 							if (tagName === 'kw-query-section' || sectionId.startsWith('query_')) sectionType = 'query';
 							else if (tagName === 'kw-chart-section' || sectionId.startsWith('chart_')) sectionType = 'chart';
@@ -3784,6 +3838,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 							else if (tagName === 'kw-html-section' || sectionId.startsWith('html_')) sectionType = 'html';
 							else if (tagName === 'kw-sql-section' || sectionId.startsWith('sql_')) sectionType = 'sql';
 						}
+						removedSectionType = sectionType;
 						if (sectionType === 'query') { removeQueryBox(sectionId); success = true; }
 						else if (sectionType === 'chart') { removeChartBox(sectionId); success = true; }
 						else if (sectionType === 'transformation') { removeTransformationBox(sectionId); success = true; }
@@ -3804,10 +3859,14 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					console.error('[Kusto Tools] Error removing section:', err);
 				}
 				
-				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : removalError });
 				if (success) {
 					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				}
+				if (success && removedSectionType === 'markdown' && isHostOwnedMarkdownDocument()) {
+					success = await waitForHostOwnedMarkdownCommands();
+					if (!success) removalError = 'The host rejected the Markdown section command.';
+				}
+				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : removalError });
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -3827,6 +3886,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					if (sectionEl && typeof sectionEl.setExpanded === 'function') {
 						sectionEl.setExpanded(!collapsed);
 						success = true;
+						if (sectionEl.tagName?.toLowerCase() === 'kw-markdown-section'
+							&& isHostOwnedMarkdownDocument()) {
+							success = await waitForHostOwnedMarkdownCommands();
+						}
 					}
 				} catch (err: any) {
 					console.error('[Kusto Tools] Error collapsing section:', err);
@@ -3834,7 +3897,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				
 				if (success) { markSectionAgentTouched(sectionId, beforeSignature); }
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to collapse/expand section' });
-				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
+				if (success) {
+					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
+				}
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });
 			}
@@ -4051,6 +4116,13 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				const sectionId = String(input.sectionId || '');
 				const beforeSignature = getSectionSerializedSignature(sectionId);
 				let success = false;
+				const sectionElement = document.getElementById(sectionId);
+				if (!sectionElement || sectionElement.tagName.toLowerCase() !== 'kw-markdown-section') {
+					postMessageToHost({
+						type: 'toolResponse', requestId, result: { success: false }, error: 'Markdown section not found',
+					});
+					break;
+				}
 				
 				try {
 					// Update section name if provided
@@ -4070,6 +4142,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						const editorInstance = window.__kustoMarkdownEditors && window.__kustoMarkdownEditors[sectionId];
 						if (editorInstance && typeof editorInstance.setValue === 'function') {
 							editorInstance.setValue(textToSet);
+							delete pState.pendingMarkdownTextByBoxId[sectionId];
 							success = true;
 							
 							// Fit to contents after updating - with retries to handle async layout
@@ -4104,7 +4177,11 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 				
 				if (success) { markSectionAgentTouched(sectionId, beforeSignature); }
+				if (success) success = commitMarkdownDocumentState(sectionId);
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
+				if (success && isHostOwnedMarkdownDocument()) {
+					success = await waitForHostOwnedMarkdownCommands();
+				}
 				postMessageToHost({ type: 'toolResponse', requestId, result: { success }, error: success ? undefined : 'Failed to update markdown section' });
 			} catch (err: any) {
 				postMessageToHost({ type: 'toolResponse', requestId: message.requestId, result: { success: false }, error: err.message || String(err) });

@@ -65,6 +65,24 @@ describe('revealOrOpenQueryEditorSession', () => {
 			expect.objectContaining({ command: 'vscode.openWith' }),
 		]);
 	});
+
+	it('waits for a closing session editor before opening its replacement', async () => {
+		const sessionUri = vscode.Uri.file('C:/profile/session.kqlx');
+		const tracked = createPanel();
+		const registration = KqlxEditorProvider.trackOpenEditor(sessionUri, tracked.panel as any);
+		registration.beginClosing();
+		let settled = false;
+		const reopening = revealOrOpenQueryEditorSession(sessionUri).then(() => { settled = true; });
+		await Promise.resolve();
+		expect(settled).toBe(false);
+		expect((vscode as any).__mockCommandCalls).toEqual([]);
+
+		registration.finishClosing();
+		await reopening;
+		expect((vscode as any).__mockCommandCalls).toEqual([
+			expect.objectContaining({ command: 'vscode.openWith' }),
+		]);
+	});
 });
 
 describe('closeQueryEditorSessionTabs', () => {

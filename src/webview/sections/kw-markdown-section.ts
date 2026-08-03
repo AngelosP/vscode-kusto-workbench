@@ -14,6 +14,13 @@ import { getScrollY, maybeAutoScrollWhileDragging, setPageScrollTop } from '../c
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { ensureToastUiLoaded } from '../shared/lazy-vendor.js';
 import { getMarkdownCursorPosition } from '../shared/markdown-cursor-position.js';
+import type { MarkdownSectionState } from '../../shared/markdownSectionDefinition.js';
+import {
+	requestHostOwnedMarkdownAdd,
+	requestHostOwnedMarkdownPatch,
+	requestHostOwnedMarkdownRemove,
+	isHostOwnedMarkdownDocument,
+} from '../core/markdown-document-client.js';
 
 /** Shared OverlayScrollbars options for plain-md scroll containers. */
 const MD_SCROLLBAR_OPTIONS: PartialOptions = {
@@ -26,16 +33,7 @@ const _win = window as any;
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 /** Serialized shape for .kqlx persistence — must match KqlxSectionV1 markdown variant. */
-export interface MarkdownSectionData {
-	id: string;
-	type: 'markdown';
-	title: string;
-	text: string;
-	tab: 'edit' | 'preview';
-	mode?: 'preview' | 'markdown' | 'wysiwyg';
-	expanded: boolean;
-	editorHeightPx?: number;
-}
+export type MarkdownSectionData = MarkdownSectionState;
 
 type MarkdownMode = 'wysiwyg' | 'markdown' | 'preview';
 
@@ -153,6 +151,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 		const litEl = document.createElement('kw-markdown-section') as KwMarkdownSection;
 		litEl.id = id;
+		litEl.boxId = id;
 		litEl.setAttribute('box-id', id);
 
 		try {
@@ -218,7 +217,10 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 			}
 		} catch (e) { console.error('[kusto]', e); }
 
-		try { _win.schedulePersist?.(); } catch (e) { console.error('[kusto]', e); }
+		try {
+			if (isHostOwnedMarkdownDocument()) requestHostOwnedMarkdownAdd(litEl._createDocumentState(), afterBoxId);
+			else _win.schedulePersist?.();
+		} catch (e) { console.error('[kusto]', e); }
 		try {
 			const isPlainMd = String(pState.documentKind || '') === 'md';
 			if (!isPlainMd && afterBoxId) {
@@ -1865,7 +1867,8 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 
 	private _schedulePersist(): void {
 		try {
-			_win.schedulePersist?.();
+			if (isHostOwnedMarkdownDocument()) requestHostOwnedMarkdownPatch(this._createDocumentState());
+			else _win.schedulePersist?.();
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -1874,11 +1877,18 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	 * Output is identical to the original persistence.js Markdown section shape.
 	 */
 	public serialize(): MarkdownSectionData {
+		return this._createDocumentState();
+	}
+
+	public commitDocumentState(): void {
+		this._schedulePersist();
+	}
+
+	private _createDocumentState(): MarkdownSectionData {
 		let text = '';
 		if (this._editorApi) {
 			text = this._editorApi.getValue();
-		}
-		if (!text) {
+		} else {
 			try {
 				const pending = pState.pendingMarkdownTextByBoxId;
 				if (pending && typeof pending[this.boxId] === 'string') {
@@ -1905,6 +1915,38 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		}
 
 		return data;
+	}
+
+	public applyHostDocumentState(section: MarkdownSectionState): void {
+		const previousProjectionState = pState.applyingHostMarkdownProjection;
+		pState.applyingHostMarkdownProjection = true;
+		try {
+			this._title = section.title ?? '';
+			this._expanded = section.expanded !== false;
+			this.classList.toggle('is-collapsed', !this._expanded);
+			const mode = section.mode ?? (section.tab === 'preview' ? 'preview' : 'wysiwyg');
+			this._mode = mode;
+			window.__kustoMarkdownModeByBoxId = window.__kustoMarkdownModeByBoxId || {};
+			window.__kustoMarkdownModeByBoxId[this.boxId] = mode;
+			const text = section.text ?? '';
+			if (this._editorApi) this._editorApi.setValue(text);
+			else pState.pendingMarkdownTextByBoxId[this.boxId] = text;
+			if (section.editorHeightPx !== undefined) {
+				const wrapper = this.shadowRoot?.getElementById('editor-wrapper');
+				if (wrapper) wrapper.style.height = `${section.editorHeightPx}px`;
+				else this.setAttribute('editor-height-px', String(section.editorHeightPx));
+			} else {
+				const wrapper = this.shadowRoot?.getElementById('editor-wrapper');
+				if (wrapper) wrapper.style.height = '';
+				this.removeAttribute('editor-height-px');
+				this._userResized = false;
+				this._prevHeightPx = null;
+			}
+			this._applyEditorMode();
+			this.requestUpdate();
+		} finally {
+			pState.applyingHostMarkdownProjection = previousProjectionState;
+		}
 	}
 
 	/** Get the editor wrapper height if user explicitly resized. */
@@ -1961,6 +2003,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 		if (!expanded) {
 			this._clearMarkdownCursorStatus('markdown-collapse');
 		}
+		this._schedulePersist();
 	}
 
 	/** Get the TOAST UI editor API (for legacy markdownEditors[boxId] compatibility). */
@@ -1976,6 +2019,7 @@ export class KwMarkdownSection extends LitElement implements SectionElement {
 	/** Set section name programmatically (used by agent tools). */
 	public setName(name: string): void {
 		this._title = name;
+		this._schedulePersist();
 	}
 
 	/** Re-apply editor mode externally (e.g., after text update from tool). */
@@ -2279,6 +2323,8 @@ export function addMarkdownBox(options: Record<string, unknown> = {}): string {
 export function removeMarkdownBox(boxId: unknown): void {
 	const id = String(boxId || '');
 	if (!id) return;
+	const hostOwnedDocument = isHostOwnedMarkdownDocument();
+	if (hostOwnedDocument) requestHostOwnedMarkdownRemove(id);
 	if (markdownEditors[id]) {
 		try { markdownEditors[id].dispose(); } catch (e) { console.error('[kusto]', e); }
 		delete markdownEditors[id];
@@ -2287,12 +2333,69 @@ export function removeMarkdownBox(boxId: unknown): void {
 	if (idx >= 0) markdownBoxes.splice(idx, 1);
 	const box = document.getElementById(id);
 	if (box?.parentNode) box.parentNode.removeChild(box);
-	try { _win.schedulePersist?.(); } catch (e) { console.error('[kusto]', e); }
+	try { if (!hostOwnedDocument) _win.schedulePersist?.(); } catch (e) { console.error('[kusto]', e); }
 	try {
 		if (window.__kustoMarkdownModeByBoxId && typeof window.__kustoMarkdownModeByBoxId === 'object') {
 			delete window.__kustoMarkdownModeByBoxId[id];
 		}
 	} catch (e) { console.error('[kusto]', e); }
+}
+
+export function reconcileHostOwnedMarkdownProjection(
+	sections: readonly MarkdownSectionState[],
+	orderedSectionIds: readonly string[],
+): void {
+	const previousProjectionState = pState.applyingHostMarkdownProjection;
+	pState.applyingHostMarkdownProjection = true;
+	try {
+		const container = document.getElementById('queries-container');
+		const sectionsById = new Map(sections.map(section => [section.id, section]));
+		for (const id of [...markdownBoxes]) {
+			if (!sectionsById.has(id)) removeMarkdownBox(id);
+		}
+		for (const section of sections) {
+			let element = document.getElementById(section.id) as KwMarkdownSection | null;
+			if (!element) {
+				KwMarkdownSection.addMarkdownBox({ ...section });
+				element = document.getElementById(section.id) as KwMarkdownSection | null;
+			}
+			element?.applyHostDocumentState(section);
+			if (!container || !element) continue;
+			const orderedIndex = orderedSectionIds.indexOf(section.id);
+			if (orderedIndex < 0) continue;
+			let nextElement: HTMLElement | null = null;
+			for (let index = orderedIndex + 1; index < orderedSectionIds.length; index++) {
+				const candidate = document.getElementById(orderedSectionIds[index]);
+				if (candidate instanceof HTMLElement && candidate.parentElement === container) {
+					nextElement = candidate;
+					break;
+				}
+			}
+			if (nextElement) {
+				container.insertBefore(element, nextElement);
+				continue;
+			}
+			let previousElement: HTMLElement | null = null;
+			for (let index = orderedIndex - 1; index >= 0; index--) {
+				const candidate = document.getElementById(orderedSectionIds[index]);
+				if (candidate instanceof HTMLElement && candidate.parentElement === container) {
+					previousElement = candidate;
+					break;
+				}
+			}
+			if (previousElement) previousElement.insertAdjacentElement('afterend', element);
+			else container.prepend(element);
+		}
+	} finally {
+		pState.applyingHostMarkdownProjection = previousProjectionState;
+	}
+}
+
+export function commitMarkdownDocumentState(boxId: unknown): boolean {
+	const element = _getLitEl(boxId);
+	if (!element) return false;
+	element.commitDocumentState();
+	return true;
 }
 
 export function __kustoMaximizeMarkdownBox(boxId: unknown): void {

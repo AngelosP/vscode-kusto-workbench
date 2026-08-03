@@ -3160,8 +3160,16 @@ suite('Sidecar .kql.json strategy', () => {
 				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { saveBarrier = Promise.resolve(thenable); },
 			} as any);
 
-			await assert.rejects(
-				saveBarrier!,
+			const saveOutcome = await saveBarrier!.then(
+				value => ({ value }),
+				error => ({ error }),
+			);
+			assert.ok(
+				'error' in saveOutcome,
+				`Expected an ambiguous overlay rejection, received ${JSON.stringify(saveOutcome)}`,
+			);
+			assert.match(
+				String((saveOutcome as { error: unknown }).error),
 				/Cannot safely preserve future fields for an ambiguously edited nested array/,
 			);
 			assert.strictEqual(fs.readFileSync(filePath, 'utf8'), text);
@@ -3556,6 +3564,119 @@ suite('Sidecar .kql.json strategy', () => {
 				assert.strictEqual(JSON.parse(finalText).state.sections[0].query, 'print newest = 2');
 			}
 		} finally {
+			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
+			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
+			(vscode.workspace as any).applyEdit = originalApplyEdit;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
+	test('adapter persistence and Markdown commands serialize without lost updates', async () => {
+		const originalApplyEdit = vscode.workspace.applyEdit;
+		const originalSanitize = (QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh;
+		const originalPublish = (QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh;
+		const variants = ['file', 'session'] as const;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-markdown-adapter-interleave-'));
+		let releaseAdapter: (() => void) | undefined;
+
+		try {
+			for (const variant of variants) {
+				const globalStoragePath = path.join(tmpDir, `${variant}-global`);
+				fs.mkdirSync(globalStoragePath, { recursive: true });
+				const filePath = variant === 'session'
+					? path.join(globalStoragePath, 'session.kqlx')
+					: path.join(tmpDir, `${variant}.kqlx`);
+				let currentText = JSON.stringify({
+					kind: 'kqlx', version: 1, state: { sections: [
+						{ id: 'query_1', type: 'query', query: 'print initial = 0' },
+						{ id: 'markdown_1', type: 'markdown', text: 'before', futureMarkdown: { keep: variant } },
+					] },
+				}, null, 2) + '\n';
+				fs.writeFileSync(filePath, currentText, 'utf8');
+				let receiveHandler: ((message: any) => unknown) | undefined;
+				const posted: any[] = [];
+				let gateAdapter = false;
+				let adapterPauseAvailable = true;
+				let markAdapterStarted!: () => void;
+				const adapterStarted = new Promise<void>(resolve => { markAdapterStarted = resolve; });
+				const adapterGate = new Promise<void>(resolve => { releaseAdapter = resolve; });
+				(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = async (state: any) => {
+					const adapterQuery = state.sections?.find((section: any) => section?.id === 'query_1')?.query;
+					if (gateAdapter && adapterPauseAvailable && adapterQuery === 'print adapter = 1') {
+						adapterPauseAvailable = false;
+						markAdapterStarted();
+						await adapterGate;
+					}
+					return state;
+				};
+				(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = async (
+					state: any, publish: (value: any) => Promise<unknown>,
+				) => publish(state);
+				(vscode.workspace as any).applyEdit = async (edit: vscode.WorkspaceEdit) => {
+					const replacement = edit.entries()[0]?.[1]?.[0]?.newText;
+					if (typeof replacement !== 'string') return false;
+					currentText = replacement;
+					return true;
+				};
+				const provider = new (KqlxEditorProvider as any)(
+					{
+						subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+						globalState: { get: () => undefined, update: async () => undefined },
+						globalStorageUri: vscode.Uri.file(globalStoragePath),
+					} as any,
+					vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+				) as KqlxEditorProvider;
+				const document = {
+					uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+					positionAt: (_offset: number) => new vscode.Position(0, 0), isDirty: false,
+				} as any;
+				const panel = {
+					webview: {
+						options: {}, postMessage: reloadAwarePostMessage(() => receiveHandler, posted),
+						onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+					},
+					onDidDispose: () => ({ dispose() {} }),
+				} as any;
+				await provider.resolveCustomTextEditor(document, panel, {} as any);
+				await Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+				const projection = posted.find(message => message?.type === 'documentData' && message.ok === true);
+				assert.ok(projection);
+				gateAdapter = true;
+				const adapterPersist = Promise.resolve(receiveHandler!({
+					type: 'persistDocument', snapshotId: `${variant}-adapter`,
+					sourceGeneration: projection.sourceGeneration, editRevision: 1,
+					state: { sections: [
+						{ id: 'query_1', type: 'query', query: 'print adapter = 1' },
+						{ id: 'markdown_1', type: 'markdown', text: 'stale adapter markdown' },
+					] },
+				}));
+				await adapterStarted;
+				let commandSettled = false;
+				const markdownCommand = Promise.resolve(receiveHandler!({
+					type: 'markdownDocumentCommand', commandId: `${variant}-markdown`,
+					sourceGeneration: projection.sourceGeneration,
+					expectedDocumentRevision: projection.documentRevision,
+					command: {
+						type: 'patch', sectionId: 'markdown_1',
+						expectedSectionRevision: projection.markdownSectionRevisions.markdown_1,
+						patch: { text: 'command markdown' },
+					},
+				})).then(() => { commandSettled = true; });
+				await new Promise<void>(resolve => setImmediate(resolve));
+				assert.strictEqual(commandSettled, false, 'Markdown command must queue behind adapter persistence');
+				releaseAdapter!();
+				await Promise.all([adapterPersist, markdownCommand]);
+				const finalText = variant === 'session' ? fs.readFileSync(filePath, 'utf8') : currentText;
+				const finalFile = JSON.parse(finalText);
+				assert.strictEqual(finalFile.state.sections[0].query, 'print adapter = 1');
+				assert.strictEqual(finalFile.state.sections[1].text, 'command markdown');
+				assert.deepStrictEqual(finalFile.state.sections[1].futureMarkdown, { keep: variant });
+				assert.ok(posted.some(message => message?.type === 'markdownDocumentCommandResult'
+					&& message.commandId === `${variant}-markdown` && message.ok === true));
+				releaseAdapter = undefined;
+			}
+		} finally {
+			releaseAdapter?.();
 			(QueryEditorProvider as any).prototype.sanitizeSqlLeaveNoTraceStateFresh = originalSanitize;
 			(QueryEditorProvider as any).prototype.publishSqlLeaveNoTraceStateFresh = originalPublish;
 			(vscode.workspace as any).applyEdit = originalApplyEdit;
@@ -6649,11 +6770,17 @@ suite('Sidecar .kql.json strategy', () => {
 			assert.ok(projection);
 			assert.strictEqual(projection.state.sections[0].query, 'REMOTE_QUERY');
 			await Promise.resolve(receiveHandler!({
-				type: 'persistDocument', state: { sections: [
-					{ id: 'query_1', type: 'query', query: 'REMOTE_QUERY' },
-					{ id: 'markdown_1', type: 'markdown', text: 'after' },
-				] },
+				type: 'markdownDocumentCommand', commandId: 'remote-markdown-patch',
+				sourceGeneration: projection.sourceGeneration,
+				expectedDocumentRevision: projection.documentRevision,
+				command: {
+					type: 'patch', sectionId: 'markdown_1',
+					expectedSectionRevision: projection.markdownSectionRevisions.markdown_1,
+					patch: { text: 'after' },
+				},
 			}));
+			assert.ok(posted.some(message => message?.type === 'markdownDocumentCommandResult'
+				&& message.commandId === 'remote-markdown-patch' && message.ok === true));
 			assert.strictEqual(JSON.parse(bufferText).state.sections[1].text, 'after');
 			const linkedWritesBeforeMutation = writes.filter(uri => uri === linkedUri.toString()).length;
 			const bufferBeforeMutation = bufferText;

@@ -114,6 +114,10 @@ const HOST_MESSAGE_ARGUMENT_BY_METHOD = new Map<string, number>([
 	['postConnectMessageWithRetry', 2],
 	['postProtectedMessageWithRetry', 2],
 ]);
+const HOST_MESSAGE_ARGUMENT_BY_LOCAL_FUNCTION = new Map<string, number>([
+	['postWebviewMessage', 0],
+	['deliverWebviewMessage', 0],
+]);
 
 function unwrapExpression(expression: ts.Expression): ts.Expression {
 	let current = expression;
@@ -169,21 +173,31 @@ function resolveLocalMessageType(
 		&& !ts.isSourceFile(scope)) {
 		scope = scope.parent;
 	}
-	let nearest: ts.VariableDeclaration | undefined;
+	let nearestExpression: ts.Expression | undefined;
+	let nearestPosition = -1;
+	const consider = (name: ts.Identifier, expression: ts.Expression, position: number): void => {
+		if (name.text !== candidate.text || position >= call.getStart(sourceFile) || position <= nearestPosition) return;
+		nearestExpression = expression;
+		nearestPosition = position;
+	};
 	const visit = (node: ts.Node): void => {
 		if (node !== scope && ts.isFunctionLike(node)) return;
 		if (node.getStart(sourceFile) >= call.getStart(sourceFile)) return;
 		if (ts.isVariableDeclaration(node)
 			&& ts.isIdentifier(node.name)
 			&& node.name.text === candidate.text
-			&& node.initializer
-			&& (!nearest || node.getStart(sourceFile) > nearest.getStart(sourceFile))) {
-			nearest = node;
+			&& node.initializer) {
+			consider(node.name, node.initializer, node.getStart(sourceFile));
+		}
+		if (ts.isBinaryExpression(node)
+			&& node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+			&& ts.isIdentifier(node.left)) {
+			consider(node.left, node.right, node.getStart(sourceFile));
 		}
 		node.forEachChild(visit);
 	};
 	scope.forEachChild(visit);
-	return nearest?.initializer ? getObjectLiteralMessageType(nearest.initializer) : undefined;
+	return nearestExpression ? getObjectLiteralMessageType(nearestExpression) : undefined;
 }
 
 function getContainingFunctionName(node: ts.Node): string {
@@ -215,11 +229,20 @@ function extractPostMessageTypes(relativePath: string): HostMessageSenderExtract
 			const nestedMessageType = getNestedMessageType(node);
 			if (nestedMessageType) types.add(nestedMessageType);
 		}
-		if (ts.isCallExpression(node)
-			&& ts.isPropertyAccessExpression(node.expression)
-			&& node.expression.expression.kind === ts.SyntaxKind.ThisKeyword) {
-			const method = node.expression.name.text;
-			const argumentIndex = HOST_MESSAGE_ARGUMENT_BY_METHOD.get(method);
+		if (ts.isCallExpression(node)) {
+			let method = '';
+			let argumentIndex: number | undefined;
+			if (ts.isPropertyAccessExpression(node.expression)) {
+				method = node.expression.name.text;
+				if (node.expression.expression.kind === ts.SyntaxKind.ThisKeyword) {
+					argumentIndex = HOST_MESSAGE_ARGUMENT_BY_METHOD.get(method);
+				} else if (method === 'postMessage' && /webview/i.test(node.expression.expression.getText(sourceFile))) {
+					argumentIndex = 0;
+				}
+			} else if (ts.isIdentifier(node.expression)) {
+				method = node.expression.text;
+				argumentIndex = HOST_MESSAGE_ARGUMENT_BY_LOCAL_FUNCTION.get(method);
+			}
 			if (argumentIndex !== undefined) {
 				const argument = node.arguments[argumentIndex];
 				const type = argument && resolveLocalMessageType(argument, node, sourceFile);
@@ -246,6 +269,10 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 		extractPostMessageTypes('src/host/queryEditorProvider.ts'),
 		extractPostMessageTypes('src/host/kustoExecutionCoordinator.ts'),
 		extractPostMessageTypes('src/host/sql/sqlEditorLifecycleCoordinator.ts'),
+		extractPostMessageTypes('src/host/kqlxEditorProvider.ts'),
+		extractPostMessageTypes('src/host/kqlCompatEditorProvider.ts'),
+		extractPostMessageTypes('src/host/mdCompatEditorProvider.ts'),
+		extractPostMessageTypes('src/host/sqlCompatEditorProvider.ts'),
 	];
 	return {
 		types: [...new Set(extractions.flatMap(extraction => extraction.types))].sort(),
@@ -254,9 +281,14 @@ function extractMainWebviewHostMessages(): HostMessageSenderExtraction {
 }
 
 const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
+	'src/host/kqlCompatEditorProvider.ts::requestFinalPersist::postMessage::620:57',
+	'src/host/kqlxEditorProvider.ts::deliverWebviewMessage::postMessage::1167:34',
+	'src/host/kqlxEditorProvider.ts::postWebviewMessage::postMessage::1158:10',
+	'src/host/kqlxEditorProvider.ts::resolveCustomTextEditor::postMessage::2968:19',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::376:27',
 	'src/host/queryEditorProvider.ts::<module>::postMessage::610:29',
 	'src/host/queryEditorProvider.ts::connectToolOrchestrator::postMessage::745:26',
+	'src/host/queryEditorProvider.ts::postMessage::postMessage::3103:21',
 	'src/host/queryEditorProvider.ts::postSqlConnectionMessageAllowed::postMessage::2769:21',
 	'src/host/queryEditorProvider.ts::postSqlConnectionMessageProtection::postMessage::2788:22',
 	'src/host/queryEditorProvider.ts::postSqlOwnerMessageAllowed::postMessage::2741:21',
@@ -272,6 +304,7 @@ const REVIEWED_DYNAMIC_HOST_MESSAGE_SITES = [
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1755:13',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::publishOwnerChangeWithRetry::postMessageRequiredContained::1766:27',
 	'src/host/sql/sqlEditorLifecycleCoordinator.ts::replayOwnerChange::postMessageRequiredContained::1795:14',
+	'src/host/sqlCompatEditorProvider.ts::requestFinalPersist::postMessage::488:57',
 ] as const;
 
 function extractDataTypeComparisons(relativePath: string): string[] {
@@ -521,6 +554,8 @@ const OUTGOING_WEBVIEW_MESSAGE_TYPES = [
 	'requestUpgradeToKqlx',
 	'requestUpgradeToMdx',
 	'requestUpgradeToSqlx',
+	'markdownDocumentCommand',
+	'markdownDocumentCommandBarrierResult',
 ] as const satisfies readonly OutgoingType[];
 
 /**
@@ -535,6 +570,8 @@ const PROVIDER_ONLY_OUTGOING_TYPES = new Set([
 	'requestUpgradeToKqlx',
 	'requestUpgradeToMdx',
 	'requestUpgradeToSqlx',
+	'markdownDocumentCommandBarrierResult',
+	'markdownDocumentCommand',
 ]);
 
 /**
@@ -563,6 +600,8 @@ const MESSAGE_HANDLER_CASE_LABELS = [
 	'persistenceMode',
 	'requestFinalPersist',
 	'persistDocumentAck',
+	'markdownDocumentCommandResult',
+	'requestMarkdownCommandBarrier',
 	'upgradedToKqlx',
 	'enabledKqlxSidecar',
 	'enabledSqlSidecar',
@@ -771,6 +810,8 @@ const HOST_TO_WEBVIEW_TYPES = [
 	'persistenceMode',
 	'requestFinalPersist',
 	'persistDocumentAck',
+	'markdownDocumentCommandResult',
+	'requestMarkdownCommandBarrier',
 	'documentData',
 	'upgradedToKqlx',
 	'enabledKqlxSidecar',
@@ -967,6 +1008,14 @@ describe('Message Protocol Contract', () => {
 			expect(missing, 'Direct provider/coordinator senders missing from host protocol inventory').toEqual([]);
 			expect(extraction.dynamicSites, 'Dynamic host sender sites require an explicit reviewed allowlist')
 				.toEqual([...REVIEWED_DYNAMIC_HOST_MESSAGE_SITES]);
+		});
+
+		it('extracts both host-owned Markdown provider senders', () => {
+			const extraction = extractPostMessageTypes('src/host/kqlxEditorProvider.ts');
+			expect(extraction.types).toEqual(expect.arrayContaining([
+				'requestMarkdownCommandBarrier',
+				'markdownDocumentCommandResult',
+			]));
 		});
 
 		it('every host→webview type has a handler case (or is known-unhandled)', () => {

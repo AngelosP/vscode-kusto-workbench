@@ -110,6 +110,9 @@ const mocks = {
 	unbindResultArtifactConsumer: vi.fn(),
 	clearStoredQueryResult: vi.fn(),
 	createSectionWithCapabilities: vi.fn(),
+	isHostOwnedMarkdownDocument: vi.fn(() => false),
+	waitForHostOwnedMarkdownCommands: vi.fn(async () => true),
+	handleHostOwnedMarkdownCommandResult: vi.fn(() => ({ handled: false, accepted: false })),
 	detachSqlComparisonForAdmissionRollback: vi.fn((boxId: string, sourceBoxId: string) => {
 		const metadata = handlerState.optimizationMetadataByBoxId[boxId];
 		if (!metadata || String(metadata.sourceBoxId || '') !== sourceBoxId) return false;
@@ -136,6 +139,12 @@ vi.mock('../../src/webview/shared/schema-utils.js', () => ({
 
 vi.mock('../../src/webview/shared/safe-run.js', () => ({
 	safeRun: vi.fn((fn: () => unknown) => fn()),
+}));
+
+vi.mock('../../src/webview/core/markdown-document-client.js', () => ({
+	isHostOwnedMarkdownDocument: mocks.isHostOwnedMarkdownDocument,
+	waitForHostOwnedMarkdownCommands: mocks.waitForHostOwnedMarkdownCommands,
+	handleHostOwnedMarkdownCommandResult: mocks.handleHostOwnedMarkdownCommandResult,
 }));
 
 vi.mock('../../src/webview/core/results-state.js', () => ({
@@ -211,6 +220,8 @@ vi.mock('../../src/webview/sections/kw-markdown-section.js', () => ({
 	addMarkdownBox: vi.fn(() => 'markdown_1'),
 	removeMarkdownBox: vi.fn(),
 	__kustoMaximizeMarkdownBox: vi.fn(),
+	commitMarkdownDocumentState: vi.fn(() => true),
+	reconcileHostOwnedMarkdownProjection: vi.fn(),
 }));
 
 vi.mock('../../src/webview/sections/kw-chart-section.js', () => ({
@@ -274,6 +285,7 @@ vi.mock('../../src/webview/core/persistence.js', () => ({
 	discardPendingSqlResultRestores: vi.fn(),
 	applyKustoLeaveNoTracePolicy: mocks.applyKustoLeaveNoTracePolicy,
 	isDocumentMutationAllowed: () => handlerState.pState.documentMutationAllowed === true,
+	finalizeDocumentDefaultsAfterAcknowledgement: vi.fn(),
 }));
 
 vi.mock('../../src/webview/monaco/monaco.js', () => ({
@@ -695,6 +707,7 @@ describe('message-handler dispatch', () => {
 		expect(mocks.handleDocumentDataMessage).not.toHaveBeenCalled();
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
 			type: 'documentReloadResult', requestId: 'reload-1', applied: false, editRevision: 7,
+			markdownCommandBarrierSupported: true,
 		});
 	});
 
@@ -711,6 +724,7 @@ describe('message-handler dispatch', () => {
 		expect(mocks.handleDocumentDataMessage).toHaveBeenCalledWith(message);
 		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
 			type: 'documentReloadResult', requestId: 'reload-2', applied: true, editRevision: 7,
+			markdownCommandBarrierSupported: true,
 		});
 	});
 
@@ -4266,6 +4280,24 @@ describe('changedSections agent provenance', () => {
 		}));
 	});
 
+	it('routes Markdown removal by element tag without consulting serialize()', async () => {
+		const markdownModule = await import('../../src/webview/sections/kw-markdown-section.js');
+		const section = document.createElement('div') as HTMLDivElement & { serialize: ReturnType<typeof vi.fn> };
+		Object.defineProperty(section, 'tagName', { value: 'KW-MARKDOWN-SECTION', configurable: true });
+		section.id = 'opaque-markdown-id';
+		section.serialize = vi.fn(() => { throw new Error('stale serializer'); });
+		document.body.appendChild(section);
+
+		dispatchHostMessage({ type: 'toolRemoveSection', requestId: 'remove-markdown', sectionId: section.id });
+		await Promise.resolve();
+
+		expect(section.serialize).not.toHaveBeenCalled();
+		expect(markdownModule.removeMarkdownBox).toHaveBeenCalledWith(section.id);
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith(expect.objectContaining({
+			type: 'toolResponse', requestId: 'remove-markdown', result: { success: true },
+		}));
+	});
+
 	it('refuses tool removal of the pinned compatibility primary', async () => {
 		handlerState.pState.firstSectionPinned = true;
 		const container = document.createElement('div');
@@ -4539,6 +4571,31 @@ describe('changedSections agent provenance', () => {
 
 		expect(shell.hasChanges).toBe('modified');
 		expect(shell.agentTouched).toBe(true);
+	});
+
+	it('reports failure when the host rejects a Markdown collapse command', async () => {
+		const section = document.createElement('div') as HTMLDivElement & { setExpanded: ReturnType<typeof vi.fn> };
+		Object.defineProperty(section, 'tagName', { value: 'KW-MARKDOWN-SECTION', configurable: true });
+		section.id = 'markdown-collapse';
+		section.setExpanded = vi.fn();
+		document.body.appendChild(section);
+		mocks.isHostOwnedMarkdownDocument.mockReturnValue(true);
+		mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(false);
+		try {
+			dispatchHostMessage({
+				type: 'toolCollapseSection', requestId: 'collapse-markdown', sectionId: section.id, collapsed: true,
+			});
+			await new Promise(resolve => setTimeout(resolve, 0));
+			expect(section.setExpanded).toHaveBeenCalledWith(false);
+			expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+				type: 'toolResponse', requestId: 'collapse-markdown',
+				result: { success: false }, error: 'Failed to collapse/expand section',
+			});
+		} finally {
+			mocks.isHostOwnedMarkdownDocument.mockReturnValue(false);
+			mocks.waitForHostOwnedMarkdownCommands.mockResolvedValue(true);
+			section.remove();
+		}
 	});
 
 	it('exposes a bridge for Copilot chat inserted sections', async () => {
@@ -6131,13 +6188,56 @@ describe('tool section name persistence', () => {
 	});
 
 	it('toolUpdateMarkdownSection calls __kustoSetSectionName', async () => {
+		const markdown = document.createElement('div');
+		Object.defineProperty(markdown, 'tagName', { value: 'KW-MARKDOWN-SECTION', configurable: true });
+		markdown.id = 'markdown_1';
+		document.body.appendChild(markdown);
+		try {
+			dispatchHostMessage({
+				type: 'toolUpdateMarkdownSection',
+				requestId: 'r2',
+				input: { sectionId: 'markdown_1', name: 'Summary' },
+			});
+			await new Promise(r => setTimeout(r, 50));
+			expect(setSectionNameSpy).toHaveBeenCalledWith('markdown_1', 'Summary');
+		} finally {
+			markdown.remove();
+		}
+	});
+
+	it('toolUpdateMarkdownSection rejects a missing section', async () => {
 		dispatchHostMessage({
 			type: 'toolUpdateMarkdownSection',
-			requestId: 'r2',
-			input: { sectionId: 'markdown_1', name: 'Summary' },
+			requestId: 'missing-markdown',
+			input: { sectionId: 'markdown_missing', text: 'not applied' },
 		});
 		await new Promise(r => setTimeout(r, 50));
-		expect(setSectionNameSpy).toHaveBeenCalledWith('markdown_1', 'Summary');
+		expect(mocks.postMessageToHost).toHaveBeenCalledWith({
+			type: 'toolResponse', requestId: 'missing-markdown',
+			result: { success: false }, error: 'Markdown section not found',
+		});
+	});
+
+	it('toolUpdateMarkdownSection clears pending text after updating a live editor', async () => {
+		const markdown = document.createElement('div');
+		Object.defineProperty(markdown, 'tagName', { value: 'KW-MARKDOWN-SECTION', configurable: true });
+		markdown.id = 'markdown_live';
+		document.body.appendChild(markdown);
+		const setValue = vi.fn();
+		(window as any).__kustoMarkdownEditors = { markdown_live: { setValue } };
+		(handlerState.pState as any).pendingMarkdownTextByBoxId = {};
+		try {
+			dispatchHostMessage({
+				type: 'toolUpdateMarkdownSection', requestId: 'live-markdown',
+				input: { sectionId: 'markdown_live', text: 'tool text' },
+			});
+			await new Promise(resolve => setTimeout(resolve, 50));
+			expect(setValue).toHaveBeenCalledWith('tool text');
+			expect((handlerState.pState as any).pendingMarkdownTextByBoxId).not.toHaveProperty('markdown_live');
+		} finally {
+			delete (window as any).__kustoMarkdownEditors;
+			markdown.remove();
+		}
 	});
 
 	it('toolConfigureChart calls __kustoSetSectionName', async () => {

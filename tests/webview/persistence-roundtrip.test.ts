@@ -765,6 +765,29 @@ describe('persistence round-trip', () => {
 		expect(state.sections.map((s) => s.type)).toEqual(['query', 'markdown', 'html', 'sql']);
 	});
 
+	it('uses host-owned Markdown projection without consulting component serialize()', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const markdown = document.createElement('kw-markdown-section') as HTMLElement & { serialize: ReturnType<typeof vi.fn> };
+		markdown.id = 'markdown_host_owned';
+		markdown.serialize = vi.fn(() => { throw new Error('stale DOM serializer'); });
+		container.appendChild(markdown);
+		pState.documentKind = 'kqlx';
+		pState.hostOwnedMarkdownActive = true;
+		pState.markdownDocumentRevision = 4;
+		pState.markdownSectionRevisions = { markdown_host_owned: 2 };
+		pState.hostOwnedMarkdownSections = {
+			markdown_host_owned: {
+				id: 'markdown_host_owned', type: 'markdown', title: 'Host', text: 'authoritative',
+				mode: 'preview', tab: 'preview', expanded: false,
+			},
+		};
+
+		expect(getKqlxState().sections).toEqual([pState.hostOwnedMarkdownSections.markdown_host_owned]);
+		expect(markdown.serialize).not.toHaveBeenCalled();
+	});
+
 	it('omits provisional SQL comparisons until host admission', () => {
 		const container = document.createElement('div');
 		container.id = 'queries-container';

@@ -9,6 +9,7 @@ import type { KustoEditorLifecycleIdentity } from '../../shared/kustoSchemaLifec
 import type { KustoSectionExecutionTarget } from '../../shared/kustoExecution.js';
 import type { KustoExecutionRequestIdentity } from '../../shared/kustoExecution.js';
 import type { KustoCopilotRequestIdentity, KustoOptimizeRequestIdentity } from '../../shared/kustoExecution.js';
+import type { MarkdownDocumentCommand } from '../../shared/markdownDocumentAggregate.js';
 
 // ── Query execution & results ──────────────────────────────────────────────
 
@@ -294,7 +295,9 @@ export type OutgoingWebviewMessage =
 	// Provider messages (kqlx, kqlCompat, mdCompat editors)
 	| { type: 'requestDocument' }
 	| { type: 'persistDocument'; state: unknown; sourceGeneration?: number; flush?: boolean; reason?: string; editRevision?: number; snapshotId?: string; flushRequestId?: string; flushUnavailableReason?: string; testOnlyNoop?: boolean }
-	| { type: 'documentReloadResult'; requestId: string; applied: boolean; editRevision: number }
+	| { type: 'documentReloadResult'; requestId: string; applied: boolean; editRevision: number; markdownCommandBarrierSupported?: boolean }
+	| { type: 'markdownDocumentCommand'; commandId: string; sourceGeneration: number; expectedDocumentRevision: number; command: MarkdownDocumentCommand }
+	| { type: 'markdownDocumentCommandBarrierResult'; requestId: string; sourceGeneration: number; documentRevision: number; accepted: boolean }
 	| { type: 'requestUpgradeToKqlx'; addKind?: string; state?: unknown; editRevision?: number }
 	| { type: 'requestUpgradeToMdx'; addKind?: string; state?: unknown; editRevision?: number }
 	| { type: 'requestUpgradeToSqlx'; addKind?: string; state?: unknown; editRevision?: number };

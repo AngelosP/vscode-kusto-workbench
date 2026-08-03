@@ -245,6 +245,17 @@ describe('parseKqlxText', () => {
 		if (!result.ok) expect(result.error).toContain('invalid known field shape');
 	});
 
+	it('rejects a null persisted Markdown editor height', () => {
+		const result = parseKqlxText(JSON.stringify({
+			kind: 'kqlx', version: 1, state: { sections: [{
+				id: 'markdown_1', type: 'markdown', text: 'notes', editorHeightPx: null,
+			}] },
+		}));
+
+		expect(result.ok).toBe(false);
+		if (!result.ok) expect(result.error).toContain('editorHeightPx');
+	});
+
 	it.each(['artifactId', 'sourceBoxId'] as const)('persisted result artifact missing required %s → rejected', field => {
 		const resultArtifact: Record<string, unknown> = {
 			version: 1, artifactId: 'artifact_1', sourceBoxId: 'query_1', revision: 1, createdAt: 1,

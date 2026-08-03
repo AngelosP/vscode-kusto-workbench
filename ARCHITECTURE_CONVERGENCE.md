@@ -43,7 +43,7 @@ The current architecture is not uniformly legacy. Several high-risk contexts alr
 | SQL Leave No Trace policy | Cross-window policy, revocation generations, protected one-shot runtime, and guarded admission | Strong but SQL-specific |
 | Dashboard domain semantics | Shared provenance upgrade/validation concepts and extensive Power BI golden tests | Good domain core, mixed with adapters |
 | Editing preferences and first launch | Revisioned application preferences and transactional profile setup | Good explicit ownership |
-| Section serialization | Lit section components implement `serialize()` and persistence iterates DOM order without ID-prefix ownership | Useful transitional boundary |
+| Unmigrated section serialization | Non-Markdown Lit components implement `serialize()` and persistence iterates DOM order without ID-prefix ownership | Useful transitional boundary |
 
 These parts should normally be wrapped behind golden-outcome ports, not rewritten. Their adversarial lifecycle tests are migration assets.
 
@@ -74,7 +74,7 @@ The maximum is 55. The score orders eligible gaps; it does not override dependen
 | ---: | --- | --- | --- | ---: | --- |
 | - | `EXA` | Exact execution and immutable artifact spine | 5/5/5/5/2/5 | 52 | Closed through EXA-2; transport-neutral coordinator convergence remains deferred |
 | - | `COD` | Lossless versioned codecs and one document-kind capability matrix | 5/4/5/5/4/5 | 52 | Closed through COD-2 |
-| 1 | `DOC` | Document actor and section-definition registry | 4/5/5/5/3/5 | 50 | DOC-1 selected; COD prerequisite closed |
+| 1 | `DOC` | Document actor and section-definition registry | 4/5/5/5/3/5 | 50 | DOC-1 closed; DOC-2 selected |
 | 2 | `PRO` | Runtime-validated protocol, view sessions, and deterministic startup | 4/4/5/5/3/5 | 48 | Open |
 | 3 | `HST` | Host application composition; retire `QueryEditorProvider` as an application shell | 4/5/5/4/2/5 | 47 | Open, depends on contracts above |
 | 4 | `BRW` | Real browser read-only composition root | 3/4/4/4/4/4 | 41 | Open, depends on document/projection contracts |
@@ -189,13 +189,14 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 
 **Current divergence:**
 
+- Native Markdown is migrated: one host aggregate and section definition own ordered state and revisions; the Lit component is a view, and native Save does not consult DOM serialization.
 - [`persistence.ts`](src/webview/core/persistence.ts) imports section construction/removal and centrally hydrates every section type.
 - [`section-factory.ts`](src/webview/core/section-factory.ts) imports persistence, creating a cycle between mutation and storage.
-- Creation, restoration, removal, tool configuration, dependency refresh, and privacy sanitation are distributed across large switches and per-type arrays.
-- Components own serialization but are not the canonical domain state. Restore behavior still knows component-private methods and timing.
+- Creation, restoration, removal, tool configuration, dependency refresh, and privacy sanitation for the remaining section kinds are distributed across large switches and per-type arrays.
+- Unmigrated components still supply serialization without being canonical domain state. Restore behavior still knows component-private methods and timing.
 - Adding a section requires edits across format, component, factory, persistence, tool removal, startup imports, and privacy handling.
 
-**Migration theme:** after `COD`, introduce a typed section definition registry and a host-side document session behind the lossless codecs. Migrate simple sections first; do not move Kusto/SQL editor lifecycle until the registry contract is proven.
+**Migration theme:** DOC-1 proved the transport-neutral aggregate/definition pattern with Markdown. Expand it one simple section kind at a time; do not move Kusto/SQL editor lifecycle until the registry contract is broader and stable.
 
 ### `PRO` - Protocol, View Sessions, And Startup
 
@@ -376,7 +377,7 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 
 **Post-closure schema/autocomplete reliability qualification:** EXA-2 remains closed. Same-target metadata requests are brokered without coalescing owner-gated dispatch, SDK clients stay leased through concurrent operations, empty or malformed schema cannot poison cache state, JSON-to-tabular fallback stays within one authenticated attempt, disposal/currentness fences every physical schema command, compact cache entries are upgraded to worker-ready `.show schema` JSON, and queued primary worker intent no longer invalidates an executing primary transaction. The focused nine-file recovery ring passed 414 tests; full sequential Vitest passed 200 files and 5,297 tests. Host/webview type checks, production extension and browser builds, integration compilation, ESLint with zero errors and the same five pre-existing warnings, and both bundle gates passed. Deterministic production sizes are 1,774.1 KB for `extension.js` and 2,681.0 KB for `webview.bundle.js`; synchronized baselines moved from 1,713 to 1,725 KB and from 2,624 to 2,632 KB with the 50 KB buffer unchanged. The extension-host suite passed 113/113 with the established five-second Mocha headroom. Native VS Code 1.131.0 qualification passed `default/kusto-schema-replacement` and authenticated `kusto-auth/kusto-restored-startup`; the latter restored five same-target sections, kept four unfocused sections deferred, and rendered the exact section-three worker table in 917 ms with word suggestions and the auxiliary provider disabled. A preceding `--no-build` launch that opened no webview remains runner-state evidence rather than a product result.
 
-**Subsequent boundary:** COD-2 is now closed. The active selection is DOC-1 below; deferred ACT and Kusto/SQL coordinator convergence remain excluded.
+**Subsequent boundary:** DOC-1 is now closed. The active selection is DOC-2 below; deferred ACT and Kusto/SQL coordinator convergence remain excluded.
 
 ## Completed Codec Iterations
 
@@ -410,13 +411,13 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 
 **Qualification:** the final blocker ring passed 10 files and 584 tests; complete sequential Vitest passed 211 files and 5,543 tests. Host/webview and browser TypeScript checks, integration compilation, production extension and browser builds, ESLint with zero errors and the same five pre-existing warnings, and both bundle gates passed. The complete extension-host suite passed 174/174 with `--timeout 5000` on VS Code 1.131.0. The definitive native `default/document-capabilities` run `20260802-103341` passed 4/4: three reviewed MDX screenshots proved actionable byte-preserving rejection, exact allowed controls, and no opaque-only default; exact DOM/file assertions proved real host SQL comparison create/save/reopen, nested rejection, remove/recreate with a fresh ID, and final reopen with one valid SQL comparison and lineage. The definitive pessimistic review returned `VERDICT: CLOSE COD-2`. Final production sizes are 1,835.2 KB for `extension.js` and 2,704.9 KB for `webview.bundle.js`; synchronized baselines are 1,786 KB and 2,655 KB with the 50 KB buffer unchanged.
 
-## Next Iteration
+## Completed Document Iterations
 
 ### Iteration `DOC-1`: Host-Owned Markdown Section Lifecycle
 
-**Status:** selected, not started.
+**Status:** closed on 2026-08-03. The definitive pessimistic review returned `VERDICT: CLOSE DOC-1`.
 
-**Why next:** COD is closed, so DOC's prerequisite is satisfied. Its unchanged score of 50 is the highest eligible score ahead of PRO at 48 and HST at 47; ACT remains deferred by product direction.
+**Why this slice:** COD was closed, so DOC's prerequisite was satisfied. Markdown was the lowest-risk section capable of proving host-owned ordered state, revisioned commands, view recreation, and lossless Save through the real custom-editor boundary.
 
 **Boundary:** introduce the smallest transport-neutral document aggregate and section-definition contract needed to own one low-risk Markdown section's add, patch, remove, validation, and snapshot transitions behind the existing lossless codec and VS Code adapter. Keep the current protocol and view as adapters. Do not migrate Kusto/SQL lifecycle, execution, compatibility orchestration, or other section kinds in this slice.
 
@@ -425,6 +426,26 @@ The remaining distributed section parse/reduce/serialize/view knowledge belongs 
 **Cheapest discriminating check:** load a fixture containing Markdown plus opaque future data, execute add/patch/remove commands against the host owner, destroy and recreate the view projection, then save and prove the exact command result and opaque data persist while a deliberately stale or throwing DOM `serialize()` implementation is never consulted.
 
 **Exclusions:** no protocol redesign, no ACT policy work, no Kusto/SQL execution convergence, no broad provider split, and no registry migration for a second section kind until the Markdown path deletes its displaced persistence authority.
+
+**Completion evidence:** `markdownSectionDefinition.ts` owns Markdown persisted validation and patch semantics. `MarkdownDocumentAggregate` owns ordered application state, document and section revisions, and add/patch/remove transitions. Native Markdown components emit commands and render complete projections; native snapshot creation reads the host projection and never calls component `serialize()`, while plain `.md` compatibility remains primary-text-owned. Every command has a terminal result. Projection candidates activate only after a live, latest-generation, source-current application acknowledgement; rejected, expired, or drifted acknowledgements preserve the prior owner. Each normalized URI has one queue before ownership exists and across transient panels, commands, adapters, rollback, Save, close, and reopen. Save barriers become commit-scoped leases, rejected barriers abort, overlapping Saves serialize, internal canonical Saves cannot release user leases, and disposal settles accepted work. Live panel ownership is separate from retained aggregate state; canonical handoff preserves revision history through ABA-shaped text restoration, and close cleanup rechecks reopen state atomically before deleting the exact owner/queue. Final persistence overlays host Markdown onto adapter state through the lossless codec, preserving future root/state data, known-section extensions, opaque sections, and relative order.
+
+**Qualification:** the focused Vitest ring passed 7 files and 444 tests; the expanded provider authority/multi-panel/Save/reopen matrix passed 12/12, and the sidecar suite passed 117/117 with `--timeout 5000`. Complete sequential Vitest passed 213 files and 5,565 tests. The complete VS Code 1.131.0 extension-host suite passed 187/187 with `--timeout 5000`. Native run `20260803-054923` passed `default/host-owned-markdown-lifecycle`; the reviewed screenshot showed `Host owned`, `after`, Preview mode, no error UI, and a clean editor. Reviewed JSON artifacts proved zero DOM serialization calls, stale-command rejection, exact `markdown_doc1|future_doc1` order, future root/state preservation, the Markdown extension, opaque payload, and `dirty:false` after Save and recreation. Host/webview and browser TypeScript checks, integration compilation, production extension and browser builds, ESLint with zero errors and the same five pre-existing warnings, and both bundle gates passed. Final production sizes are 1,854.4 KB for `extension.js` and 2,712.5 KB for `webview.bundle.js`; synchronized baselines are 1,805 KB and 2,663 KB with the 50 KB buffer unchanged.
+
+## Next Iteration
+
+### Iteration `DOC-2`: Host-Owned URL Section State
+
+**Status:** selected, not started.
+
+**Why next:** DOC remains the highest eligible theme at 50. The Markdown slice proves the aggregate, revision, queue, acknowledgement, Save, panel-handoff, and lossless overlay contracts. URL is the next small persisted-state shape that can expand the section-definition registry without entering Kusto/SQL execution or dependency-heavy chart/transformation ownership.
+
+**Boundary:** add one URL section definition and route URL add/patch/remove plus persisted presentation state through the existing host document aggregate and command protocol. Keep fetch, sanitization, iframe rendering, and deferred origin/trust admission in their current adapters. Do not migrate a third section kind.
+
+**Falsifiable hypothesis:** if URL persisted state joins the proven host aggregate, then URL add/edit/remove and view recreation can use host revisions and lossless snapshots while a stale or throwing URL component serializer cannot affect native Save.
+
+**Cheapest discriminating check:** load URL plus Markdown and opaque future data, execute URL add/patch/remove against the host owner, recreate the view, then Save and prove exact URL state, Markdown state, order, and future data survive while URL `serialize()` is never consulted.
+
+**Exclusions:** no URL fetch/network redesign, no deferred `ACT` work, no HTML/Markdown resource policy, no Kusto/SQL lifecycle migration, no protocol rewrite, and no migration of another section kind.
 
 ## Convergence Loop
 
