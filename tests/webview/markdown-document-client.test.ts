@@ -8,6 +8,8 @@ import { pState } from '../../src/webview/shared/persistence-state.js';
 import {
 	adoptHostOwnedMarkdownDocument,
 	handleHostOwnedMarkdownCommandResult,
+	requestHostOwnedChartPatch,
+	requestHostOwnedChartRemove,
 	requestHostOwnedMarkdownPatch,
 	requestHostOwnedMarkdownRemove,
 	requestHostOwnedPythonPatch,
@@ -301,6 +303,107 @@ describe('host-owned Markdown command client', () => {
 			expectedDocumentRevision: 2,
 			command: { type: 'remove', sectionId: 'python_1', expectedSectionRevision: 1 },
 		});
+	});
+
+	it('sequences Chart configuration through the same full-projection ledger', async () => {
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 14,
+			sectionRevisions: { markdown_1: 0, chart_1: 0 },
+			markdownSectionRevisions: { markdown_1: 0 },
+		}, {
+			sections: [
+				{ id: 'markdown_1', type: 'markdown', text: 'before' },
+				{
+					id: 'chart_1', type: 'chart', name: 'Before', dataSourceId: 'query_1',
+					chartType: 'bar', xColumn: 'Category', yColumns: ['Revenue'], expanded: true,
+				},
+			],
+		});
+		postMessageToHost.mockClear();
+
+		const afterState = {
+			id: 'chart_1', type: 'chart', name: 'After', mode: 'preview', expanded: false,
+			dataSourceId: 'query_2', chartType: 'line', xColumn: 'Day', yColumns: ['Cost'],
+			xAxisSettings: { customLabel: 'Date' }, chartTitle: 'Host chart',
+		} as const;
+		expect(requestHostOwnedChartPatch(afterState)).toBe(true);
+		const chartPatch = await waitForPostedMessage(1);
+		expect(requestHostOwnedChartPatch(afterState)).toBe(true);
+		await Promise.resolve();
+		expect(postMessageToHost).toHaveBeenCalledTimes(1);
+		expect(chartPatch).toMatchObject({
+			type: 'markdownDocumentCommand', sourceGeneration: 14, expectedDocumentRevision: 0,
+			command: {
+				type: 'patch', sectionId: 'chart_1', expectedSectionRevision: 0,
+				patch: {
+					name: 'After', mode: 'preview', expanded: false, dataSourceId: 'query_2',
+					chartType: 'line', xColumn: 'Day', yColumns: ['Cost'],
+					xAxisSettings: { customLabel: 'Date' }, chartTitle: 'Host chart',
+				},
+			},
+		});
+		handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: chartPatch.commandId, ok: true,
+			sourceGeneration: 14,
+			projection: {
+				documentRevision: 1,
+				sectionRevisions: { markdown_1: 0, chart_1: 1 },
+				markdownSectionRevisions: { markdown_1: 0 },
+				chartSections: [{
+					id: 'chart_1', type: 'chart', name: 'After', mode: 'preview', expanded: false,
+					dataSourceId: 'query_2', chartType: 'line', xColumn: 'Day', yColumns: ['Cost'],
+					xAxisSettings: { customLabel: 'Date' }, chartTitle: 'Host chart',
+				}],
+				markdownSections: [{ id: 'markdown_1', type: 'markdown', text: 'before' }],
+				pythonSections: [],
+				urlSections: [],
+				orderedSectionIds: ['markdown_1', 'chart_1'],
+			},
+		});
+
+		expect(requestHostOwnedChartRemove('chart_1')).toBe(true);
+		const chartRemove = await waitForPostedMessage(2);
+		expect(chartRemove).toMatchObject({
+			expectedDocumentRevision: 1,
+			command: { type: 'remove', sectionId: 'chart_1', expectedSectionRevision: 1 },
+		});
+	});
+
+	it('accepts a Chart terminal that omits an undefined validation field', async () => {
+		adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 15,
+			sectionRevisions: { chart_1: 0 },
+			markdownSectionRevisions: {},
+		}, {
+			sections: [{ id: 'chart_1', type: 'chart', chartType: 'bar' }],
+		});
+		postMessageToHost.mockClear();
+		expect(requestHostOwnedChartPatch({
+			id: 'chart_1', type: 'chart', chartType: 'line',
+			validation: { valid: false, availableColumns: undefined, issues: ['No data'] },
+		})).toBe(true);
+		const command = await waitForPostedMessage(1);
+
+		const handled = handleHostOwnedMarkdownCommandResult({
+			type: 'markdownDocumentCommandResult', commandId: command.commandId, ok: true,
+			sourceGeneration: 15,
+			projection: {
+				documentRevision: 1,
+				sectionRevisions: { chart_1: 1 },
+				markdownSectionRevisions: {},
+				chartSections: [{
+					id: 'chart_1', type: 'chart', chartType: 'line',
+					validation: { valid: false, issues: ['No data'] },
+				}],
+				markdownSections: [], pythonSections: [], urlSections: [],
+				orderedSectionIds: ['chart_1'],
+			},
+		});
+
+		expect(handled).toMatchObject({ handled: true, accepted: true });
+		expect(postMessageToHost).not.toHaveBeenCalledWith({ type: 'requestDocument' });
 	});
 
 	it('rejects incomplete URL revision metadata without activating host ownership', () => {

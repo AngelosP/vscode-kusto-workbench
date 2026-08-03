@@ -113,6 +113,7 @@ const mocks = {
 	isHostOwnedMarkdownDocument: vi.fn(() => false),
 	waitForHostOwnedMarkdownCommands: vi.fn(async () => true),
 	handleHostOwnedMarkdownCommandResult: vi.fn(() => ({ handled: false, accepted: false })),
+	reconcileHostOwnedChartProjection: vi.fn(),
 	reconcileHostOwnedMarkdownProjection: vi.fn(),
 	reconcileHostOwnedPythonProjection: vi.fn(),
 	reconcileHostOwnedUrlProjection: vi.fn(),
@@ -233,6 +234,7 @@ vi.mock('../../src/webview/sections/kw-markdown-section.js', () => ({
 vi.mock('../../src/webview/sections/kw-chart-section.js', () => ({
 	addChartBox: vi.fn(() => 'chart_1'),
 	removeChartBox: vi.fn(),
+	reconcileHostOwnedChartProjection: mocks.reconcileHostOwnedChartProjection,
 }));
 
 vi.mock('../../src/webview/sections/kw-transformation-section.js', () => ({
@@ -727,7 +729,8 @@ describe('message-handler dispatch', () => {
 			'url_1', 'python_1', 'url_2', 'query_1',
 		]));
 		expect(mocks.reconcileHostOwnedMarkdownProjection).toHaveBeenCalledOnce();
-	expect(mocks.reconcileHostOwnedPythonProjection).toHaveBeenCalledOnce();
+		expect(mocks.reconcileHostOwnedChartProjection).toHaveBeenCalledOnce();
+		expect(mocks.reconcileHostOwnedPythonProjection).toHaveBeenCalledOnce();
 		expect(mocks.reconcileHostOwnedUrlProjection).toHaveBeenCalledOnce();
 	});
 

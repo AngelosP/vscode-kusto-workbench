@@ -266,6 +266,39 @@ describe('transformation-join', () => {
 		expect(mockClearResultsState).toHaveBeenCalledWith('transformation_removed');
 	});
 
+	it('propagates renamed columns to an arbitrary-ID Chart and commits its document state', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		const transformation = createSection({ boxId: 'transformation_source', transformationType: 'derive' });
+		transformation.id = 'transformation_source';
+		const chart = document.createElement('kw-chart-section') as HTMLElement & {
+			syncFromGlobalState: ReturnType<typeof vi.fn>;
+			commitDocumentState: ReturnType<typeof vi.fn>;
+		};
+		chart.id = 'sales-chart';
+		chart.syncFromGlobalState = vi.fn();
+		chart.commitDocumentState = vi.fn();
+		container.append(transformation, chart);
+		document.body.appendChild(container);
+		const chartState = {
+			dataSourceId: 'transformation_source', xColumn: 'Old', yColumns: ['Old'],
+			tooltipColumns: ['Old'], sortColumn: 'Old',
+		};
+		(window as any).__kustoGetChartState = vi.fn(() => chartState);
+		(window as any).__kustoUpdateChartBuilderUI = vi.fn();
+
+		(transformation as any)._propagateColumnRename('Old', 'New');
+
+		expect(chartState).toMatchObject({
+			xColumn: 'New', yColumns: ['New'], tooltipColumns: ['New'], sortColumn: 'New',
+		});
+		expect(chart.syncFromGlobalState).toHaveBeenCalledOnce();
+		expect(chart.commitDocumentState).toHaveBeenCalledOnce();
+		container.remove();
+		delete (window as any).__kustoGetChartState;
+		delete (window as any).__kustoUpdateChartBuilderUI;
+	});
+
 	it('pins an input revision until dependent refresh explicitly rebinds it', () => {
 		const sourceA = fakeArtifact('query_source', 1, [['revision-a']], {
 			accountPartition: 'partition-a', leaveNoTraceRevision: 3,

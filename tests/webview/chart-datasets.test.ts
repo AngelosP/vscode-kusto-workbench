@@ -4,6 +4,18 @@ import { htmlDashboardFactArtifactConsumerId } from '../../src/shared/resultArti
 import '../../src/webview/sections/kw-url-section.js';
 import type { KwUrlSection } from '../../src/webview/sections/kw-url-section.js';
 import {
+	addChartBox,
+	reconcileHostOwnedChartProjection,
+	removeChartBox,
+	type KwChartSection,
+} from '../../src/webview/sections/kw-chart-section.js';
+import { pState } from '../../src/webview/shared/persistence-state.js';
+import {
+	adoptHostOwnedMarkdownDocument,
+	resetHostOwnedMarkdownDocument,
+} from '../../src/webview/core/markdown-document-client.js';
+import { suppressPersistenceForTest } from '../../src/webview/core/persistence.js';
+import {
 	bindResultArtifactConsumer,
 	clearResultsState,
 	getBoundResultArtifact,
@@ -354,5 +366,183 @@ describe('dependent chart cascade', () => {
 
 		await vi.waitFor(() => expect(chart.refresh).toHaveBeenCalled());
 		expect(getBoundResultArtifact('chart_revision', 'query_source')).toBe(artifactB);
+	});
+});
+
+describe('host-owned Chart projection runtime', () => {
+	afterEach(() => {
+		resetHostOwnedMarkdownDocument();
+		suppressPersistenceForTest(false);
+		delete (window as any).__e2eCaptureHostMessage;
+		teardownDom();
+	});
+
+	it('retains the element, ECharts marker, artifact binding, and command silence for an equal projection', async () => {
+		setupDom([{ id: 'query_projection_source', name: 'Source' }]);
+		setResultsState('query_projection_source', {
+			columns: [{ name: 'Day' }, { name: 'Value' }],
+			rows: [['2026-08-01', 1]],
+			metadata: {},
+		});
+		suppressPersistenceForTest(true);
+		pState.documentKind = 'kqlx';
+		pState.compatibilityMode = false;
+		pState.documentRuntimeActive = true;
+		pState.restoreInProgress = false;
+
+		const chartId = addChartBox({
+			id: 'chart_projection_retained', name: 'Stable', mode: 'edit', expanded: true,
+			dataSourceId: 'query_projection_source', chartType: 'line', xColumn: 'Day',
+			yColumns: ['Value'], showDataLabels: true,
+		});
+		const element = document.getElementById(chartId) as KwChartSection;
+		expect(element).toBeTruthy();
+		await element.updateComplete;
+		const section = element.createDocumentState();
+		expect(adoptHostOwnedMarkdownDocument({
+			documentRevision: 0,
+			sourceGeneration: 21,
+			sectionRevisions: { [chartId]: 0 },
+			markdownSectionRevisions: {},
+		}, {
+			sections: [
+				{ id: 'query_projection_source', type: 'query' },
+				section,
+			],
+		})).toBe(true);
+
+		const artifactA = getCurrentResultArtifact('query_projection_source')!;
+		expect(bindResultArtifactConsumer(chartId, 'query_projection_source')).toBe(artifactA.artifactId);
+		const chartState = (window as any).chartStateByBoxId[chartId];
+		const runtimeMarker = { instance: { identity: 'echarts-a' }, zoom: { start: 10, end: 90 } };
+		chartState.__echarts = runtimeMarker;
+		const captureHostMessage = vi.fn(() => false);
+		(window as any).__e2eCaptureHostMessage = captureHostMessage;
+
+		reconcileHostOwnedChartProjection(
+			[section],
+			['query_projection_source', chartId],
+		);
+		await element.updateComplete;
+		await Promise.resolve();
+
+		expect(document.getElementById(chartId)).toBe(element);
+		expect((window as any).chartStateByBoxId[chartId].__echarts).toBe(runtimeMarker);
+		expect(getBoundResultArtifact(chartId, 'query_projection_source')).toBe(artifactA);
+		expect(captureHostMessage).not.toHaveBeenCalled();
+
+		resetHostOwnedMarkdownDocument();
+		removeChartBox(chartId);
+		clearResultsState('query_projection_source');
+	});
+
+	it('ignores removal emitted by a detached same-ID predecessor', async () => {
+		const container = setupDom([]);
+		suppressPersistenceForTest(true);
+		pState.documentKind = 'kqlx';
+		pState.compatibilityMode = false;
+		pState.documentRuntimeActive = true;
+		pState.restoreInProgress = true;
+		expect(adoptHostOwnedMarkdownDocument({
+			documentRevision: 0, sourceGeneration: 22,
+			sectionRevisions: { chart_replaced: 0 }, markdownSectionRevisions: {},
+		}, {
+			sections: [{ id: 'chart_replaced', type: 'chart', chartType: 'bar' }],
+		})).toBe(true);
+		const chartId = addChartBox({ id: 'chart_replaced', chartType: 'bar', showDataLabels: false });
+		pState.restoreInProgress = false;
+		const predecessor = document.getElementById(chartId) as KwChartSection;
+		await predecessor.updateComplete;
+		predecessor.remove();
+		const replacement = document.createElement('div');
+		replacement.id = chartId;
+		container.appendChild(replacement);
+		const captureHostMessage = vi.fn(() => false);
+		(window as any).__e2eCaptureHostMessage = captureHostMessage;
+
+		predecessor.dispatchEvent(new CustomEvent('section-remove', {
+			detail: { boxId: chartId }, bubbles: true, composed: true,
+		}));
+
+		expect(document.getElementById(chartId)).toBe(replacement);
+		expect(captureHostMessage).not.toHaveBeenCalled();
+		replacement.remove();
+		resetHostOwnedMarkdownDocument();
+		removeChartBox(chartId);
+	});
+
+	it('ignores first-update side effects from a replaced same-ID predecessor', async () => {
+		const container = setupDom([
+			{ id: 'query_first_update_a', name: 'A' },
+			{ id: 'query_first_update_b', name: 'B' },
+		]);
+		setResultsState('query_first_update_a', { columns: [{ name: 'Value' }], rows: [[1]], metadata: {} });
+		setResultsState('query_first_update_b', { columns: [{ name: 'Value' }], rows: [[2]], metadata: {} });
+		suppressPersistenceForTest(true);
+		pState.restoreInProgress = true;
+		const chartId = addChartBox({
+			id: 'chart_first_update_replaced', dataSourceId: 'query_first_update_a',
+			chartType: 'line', xColumn: 'Value', yColumns: ['Value'], showDataLabels: false,
+		});
+		pState.restoreInProgress = false;
+		const predecessor = document.getElementById(chartId) as KwChartSection;
+		predecessor.remove();
+		const replacement = document.createElement('div');
+		replacement.id = chartId;
+		container.appendChild(replacement);
+		const runtimeMarker = { instance: { identity: 'replacement-echarts' } };
+		(window as any).chartStateByBoxId[chartId] = {
+			dataSourceId: 'query_first_update_b', chartType: 'bar', replacementMarker: true,
+			__echarts: runtimeMarker,
+		};
+		const artifactB = getCurrentResultArtifact('query_first_update_b')!;
+		expect(bindResultArtifactConsumer(chartId, 'query_first_update_b')).toBe(artifactB.artifactId);
+		const captureHostMessage = vi.fn(() => false);
+		(window as any).__e2eCaptureHostMessage = captureHostMessage;
+
+		await predecessor.updateComplete;
+		await Promise.resolve();
+
+		expect((window as any).chartStateByBoxId[chartId]).toMatchObject({
+			dataSourceId: 'query_first_update_b', chartType: 'bar', replacementMarker: true,
+			__echarts: runtimeMarker,
+		});
+		expect(getBoundResultArtifact(chartId, 'query_first_update_b')).toBe(artifactB);
+		expect(captureHostMessage).not.toHaveBeenCalled();
+		replacement.remove();
+		resetHostOwnedMarkdownDocument();
+		removeChartBox(chartId);
+		clearResultsState('query_first_update_a');
+		clearResultsState('query_first_update_b');
+	});
+
+	it('rebinds a collapsed Chart immediately when an authoritative source changes', async () => {
+		setupDom([
+			{ id: 'query_source_a', name: 'A' },
+			{ id: 'query_source_b', name: 'B' },
+		]);
+		setResultsState('query_source_a', { columns: [{ name: 'Value' }], rows: [[1]], metadata: {} });
+		setResultsState('query_source_b', { columns: [{ name: 'Value' }], rows: [[2]], metadata: {} });
+		suppressPersistenceForTest(true);
+		const chartId = addChartBox({
+			id: 'chart_collapsed_retarget', expanded: false, dataSourceId: 'query_source_a',
+			chartType: 'bar', xColumn: 'Value', yColumns: ['Value'], showDataLabels: false,
+		});
+		const element = document.getElementById(chartId) as KwChartSection;
+		await element.updateComplete;
+		const artifactA = getCurrentResultArtifact('query_source_a')!;
+		const artifactB = getCurrentResultArtifact('query_source_b')!;
+		expect(bindResultArtifactConsumer(chartId, 'query_source_a')).toBe(artifactA.artifactId);
+
+		element.applyHostDocumentState({
+			id: chartId, type: 'chart', expanded: false, dataSourceId: 'query_source_b',
+			chartType: 'bar', xColumn: 'Value', yColumns: ['Value'], showDataLabels: false,
+		});
+
+		expect(getBoundResultArtifact(chartId, 'query_source_b')).toBe(artifactB);
+		expect(getBoundResultArtifact(chartId, 'query_source_a')).toBeNull();
+		removeChartBox(chartId);
+		clearResultsState('query_source_a');
+		clearResultsState('query_source_b');
 	});
 });

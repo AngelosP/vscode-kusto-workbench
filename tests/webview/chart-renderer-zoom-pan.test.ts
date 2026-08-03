@@ -15,6 +15,8 @@ const tooltipMocks = vi.hoisted(() => ({
 	scheduleHideTooltip: vi.fn(),
 }));
 
+const persistenceMocks = vi.hoisted(() => ({ schedulePersist: vi.fn() }));
+
 vi.mock('../../src/webview/core/results-state.js', () => ({
 	bindResultArtifactConsumer: (consumerId: string, sourceBoxId: string) => {
 		const artifactId = resultsState.currentArtifactIdBySource[sourceBoxId];
@@ -28,11 +30,17 @@ vi.mock('../../src/webview/core/results-state.js', () => ({
 	},
 	getResultsState: (id: string) => resultsState.byId[id] ?? null,
 	getResultsStateRevision: (id: string) => resultsState.revisionById[id] ?? 0,
+	rebindResultArtifactConsumer: (consumerId: string, sourceBoxId: string) => {
+		const artifactId = resultsState.currentArtifactIdBySource[sourceBoxId];
+		if (artifactId) resultsState.boundArtifactIdByConsumer[consumerId] = artifactId;
+		else delete resultsState.boundArtifactIdByConsumer[consumerId];
+		return artifactId;
+	},
 	unbindResultArtifactConsumer: (consumerId: string) => { delete resultsState.boundArtifactIdByConsumer[consumerId]; },
 }));
 
 vi.mock('../../src/webview/core/persistence.js', () => ({
-	schedulePersist: vi.fn(),
+	schedulePersist: persistenceMocks.schedulePersist,
 }));
 
 vi.mock('../../src/webview/monaco/theme.js', () => ({
@@ -71,6 +79,7 @@ describe('chart-renderer zoom/pan controls', () => {
 		viewportRoot = null;
 		gridRect = { x: 80, y: 40, width: 500, height: 260 };
 		for (const mock of Object.values(tooltipMocks)) mock.mockClear();
+		persistenceMocks.schedulePersist.mockClear();
 		instance = {
 			dispose: vi.fn(),
 			dispatchAction: vi.fn(),
@@ -102,6 +111,15 @@ describe('chart-renderer zoom/pan controls', () => {
 				return instance;
 			}),
 		};
+	});
+
+	it('does not persist automatic first-render layout', () => {
+		const { id } = renderScenario('line');
+		const wrapper = document.getElementById(`${id}_chart_wrapper`) as HTMLElement;
+
+		expect(wrapper.style.height).toBe('360px');
+		expect(wrapper.dataset.kustoUserResized).toBeUndefined();
+		expect(persistenceMocks.schedulePersist).not.toHaveBeenCalled();
 	});
 
 	function createCanvas(canvasId: string): HTMLDivElement {

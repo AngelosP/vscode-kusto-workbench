@@ -7,6 +7,7 @@ import { escapeHtml } from '../core/utils';
 import {
 	bindResultArtifactConsumer,
 	getBoundResultArtifact,
+	rebindResultArtifactConsumer,
 	unbindResultArtifactConsumer,
 } from '../core/results-state';
 import { ensureEchartsLoaded } from './lazy-vendor.js';
@@ -42,6 +43,15 @@ import {
 	breakSankeyCycles,
 	getOwnSeriesColor,
 } from './chart-utils.js';
+
+function persistChartConfiguration(boxId: unknown): void {
+	const id = String(boxId || '');
+	const element = id
+		? document.getElementById(id) as { commitDocumentState?: () => void } | null
+		: null;
+	if (typeof element?.commitDocumentState === 'function') element.commitDocumentState();
+	else schedulePersist();
+}
 
 // ── State ─────────────────────────────────────────────────────────────────────
 
@@ -1102,6 +1112,14 @@ export function purgeChartEcharts(boxId: any) {
 
 export function releaseChartResultArtifactBinding(boxId: unknown): void {
 	unbindResultArtifactConsumer(String(boxId || ''));
+}
+
+export function rebindChartResultArtifactBinding(boxId: unknown, sourceBoxId: unknown): void {
+	const id = String(boxId || '');
+	const sourceId = String(sourceBoxId || '');
+	if (!id) return;
+	if (sourceId) rebindResultArtifactConsumer(id, sourceId);
+	else unbindResultArtifactConsumer(id);
 }
 
 // ── Render ─────────────────────────────────────────────────────────────────────
@@ -3248,7 +3266,6 @@ export function renderChart(boxId: any) {
 							}
 						} catch (e) { console.error('[kusto]', e); }
 					});
-					try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
 				}
 			} catch (e) { console.error('[kusto]', e); }
 		}
@@ -3359,7 +3376,7 @@ export function maximizeChartBox(boxId: any) {
 				});
 			}
 		} catch (e) { console.error('[kusto]', e); }
-		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try { persistChartConfiguration(boxId); } catch (e) { console.error('[kusto]', e); }
 	} catch (e) { console.error('[kusto]', e); }
 }
 

@@ -223,6 +223,98 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
+	test('Chart-only Save before projection acknowledgement fails closed', async () => {
+		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
+		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
+		const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'kw-chart-pre-ack-save-'));
+		const filePath = path.join(tmpDir, 'chart-only.kqlx');
+		const currentText = JSON.stringify({
+			kind: 'kqlx', version: 1, futureRoot: { keep: true }, state: {
+				sections: [{
+					id: 'chart_only', type: 'chart', name: 'Chart', mode: 'preview', expanded: true,
+					dataSourceId: 'query_source', chartType: 'line', xColumn: 'Day', yColumns: ['Value'],
+					xAxisSettings: { customLabel: 'Date' }, chartTitle: 'Owned chart',
+				}],
+			},
+		}, null, 2) + '\n';
+		let receiveHandler: ((message: any) => unknown) | undefined;
+		let reloadRequestId = '';
+		let projection: any;
+		let finalSnapshotRequests = 0;
+		let willSaveHandler: ((event: vscode.TextDocumentWillSaveEvent) => unknown) | undefined;
+
+		try {
+			fs.writeFileSync(filePath, currentText, 'utf8');
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = async () => undefined;
+			(vscode.workspace as any).onWillSaveTextDocument = (handler: any) => {
+				willSaveHandler = handler;
+				return { dispose() {} };
+			};
+			const provider = new (KqlxEditorProvider as any)(
+				{
+					subscriptions: [], workspaceState: { get: () => undefined, update: async () => undefined },
+					globalState: { get: () => undefined, update: async () => undefined },
+					globalStorageUri: vscode.Uri.file(path.join(tmpDir, 'global-storage')),
+				} as any,
+				vscode.Uri.file('C:/repo/vscode-kusto-workbench'), connectionManagerStub(), sqlWorkbenchStub(),
+			) as KqlxEditorProvider;
+			const document = {
+				uri: vscode.Uri.file(filePath), getText: () => currentText, eol: vscode.EndOfLine.LF,
+				positionAt: (offset: number) => new vscode.Position(0, offset), isDirty: true, version: 1,
+			} as any;
+			const panel = {
+				webview: {
+					options: {},
+					postMessage: async (message: any) => {
+						if (message?.type === 'documentData') {
+							projection = message;
+							reloadRequestId = String(message.reloadRequestId || '');
+						}
+						if (message?.type === 'requestFinalPersist') {
+							finalSnapshotRequests++;
+							await Promise.resolve(receiveHandler?.({
+								type: 'persistDocument', flushRequestId: message.requestId,
+								sourceGeneration: projection.sourceGeneration,
+								state: { sections: [{ id: 'chart_only', type: 'chart', chartTitle: 'Stale DOM' }] },
+							}));
+						}
+						return true;
+					},
+					onDidReceiveMessage: (handler: any) => { receiveHandler = handler; return { dispose() {} }; },
+				},
+				onDidDispose: () => ({ dispose() {} }),
+			} as any;
+
+			await provider.resolveCustomTextEditor(document, panel, {} as any);
+			const request = Promise.resolve(receiveHandler!({ type: 'requestDocument' }));
+			await waitForCondition(() => !!reloadRequestId, 'Chart projection candidate should be posted', 1_000);
+			assert.ok(willSaveHandler);
+			let savePreparation: Promise<vscode.TextEdit[]> | undefined;
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { savePreparation = Promise.resolve(thenable); },
+			} as any);
+			assert.ok(savePreparation);
+			let preparedText = currentText;
+			const edits = await savePreparation!;
+			if (edits.length > 0) preparedText = edits.at(-1)!.newText;
+			assert.strictEqual(finalSnapshotRequests, 0);
+			assert.deepStrictEqual(JSON.parse(preparedText).state.sections, JSON.parse(currentText).state.sections);
+			assert.deepStrictEqual(JSON.parse(currentText).state.sections, JSON.parse(fs.readFileSync(filePath, 'utf8')).state.sections);
+
+			await Promise.resolve(receiveHandler!({
+				type: 'documentReloadResult', requestId: reloadRequestId,
+				applied: true, editRevision: 0, markdownCommandBarrierSupported: true,
+			}));
+			await request;
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].chartTitle, 'Owned chart');
+		} finally {
+			(QueryEditorProvider as any).prototype.initializeWebviewPanel = originalInitialize;
+			(vscode.workspace as any).onWillSaveTextDocument = originalOnWillSave;
+			try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* ignore */ }
+		}
+	});
+
 	test('cold-start panels share one queue and only the canonical panel joins Save', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalApplyEdit = vscode.workspace.applyEdit;
@@ -464,7 +556,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		}
 	});
 
-	test('Python, URL, and Markdown host commands survive stale DOM state, view recreation, and lossless save', async () => {
+	test('Chart, Python, URL, and Markdown host commands survive stale DOM state, view recreation, and lossless save', async () => {
 		const originalInitialize = (QueryEditorProvider as any).prototype.initializeWebviewPanel;
 		const originalOnDidChange = vscode.workspace.onDidChangeTextDocument;
 		const originalOnWillSave = vscode.workspace.onWillSaveTextDocument;
@@ -493,6 +585,34 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 						id: 'python_original', type: 'python', name: 'Original Python', code: 'print("before")',
 						output: 'before output', expanded: true, editorHeightPx: 180,
 						futurePython: { producer: 'future-python' },
+					},
+					{
+						id: 'chart_original', type: 'chart', name: 'Original Chart', mode: 'edit', expanded: true,
+						editorHeightPx: 260, dataSourceId: 'query_source', chartType: 'bar', xColumn: 'Category',
+						yColumns: ['Before'], yColumn: 'Before', tooltipColumns: ['Category', 'Before'],
+						legendColumn: 'Series', legendPosition: 'right', stackMode: 'normal', labelColumn: 'Category',
+						valueColumn: 'Before', sourceColumn: 'Source', targetColumn: 'Target', orient: 'LR',
+						sankeyLeftMargin: 48, showDataLabels: false, labelMode: 'auto', labelDensity: 80,
+						sortColumn: 'Before', sortDirection: 'desc',
+						xAxisSettings: {
+							sortDirection: 'asc', scaleType: 'category', labelDensity: 70, showAxisLabel: true,
+							customLabel: 'Before X', titleGap: 20, futureXAxis: { keep: true },
+						},
+						yAxisSettings: {
+							showAxisLabel: true, customLabel: 'Before Y', min: '1', max: '100',
+							seriesColors: { Before: '#111111' }, titleGap: 22, sortDirection: 'asc',
+							futureYAxis: { keep: true },
+						},
+						legendSettings: {
+							position: 'right', stackMode: 'normal', gap: 12, sortMode: 'alpha-asc', topN: 5,
+							title: 'Before legend', showEndLabels: false, futureLegend: { keep: true },
+						},
+						heatmapSettings: {
+							visualMapPosition: 'right', visualMapGap: 10, showCellLabels: false,
+							cellLabelMode: 'all', cellLabelN: 3, futureHeatmap: { keep: true },
+						},
+						chartTitle: 'Before chart', chartSubtitle: 'Before subtitle', chartTitleAlign: 'left',
+						validation: { status: 'before' }, futureChart: { producer: 'future-chart' },
 					},
 					{
 						id: 'future_opaque', type: 'future-section',
@@ -564,6 +684,15 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 									{
 										id: 'python_temporary', type: 'python', name: 'Stale removed Python',
 										code: 'print("removed")', output: 'removed output', expanded: true,
+									},
+									{
+										id: 'chart_original', type: 'chart', name: 'Stale Chart DOM', mode: 'edit',
+										expanded: true, dataSourceId: 'stale_source', chartType: 'pie',
+										labelColumn: 'Stale label', valueColumn: 'Stale value',
+									},
+									{
+										id: 'chart_temporary', type: 'chart', name: 'Stale removed Chart',
+										expanded: true, dataSourceId: 'stale_removed_source', chartType: 'line',
 									},
 									{ id: 'devnotes_owner', type: 'devnotes', entries: [{
 										id: 'note_saved', created: '2026-08-02T00:00:00.000Z',
@@ -657,7 +786,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.strictEqual(initialProjection.documentRevision, 0);
 			assert.deepStrictEqual(initialProjection.markdownSectionRevisions, { markdown_original: 0 });
 			assert.deepStrictEqual(initialProjection.sectionRevisions, {
-				markdown_original: 0, url_original: 0, python_original: 0,
+				markdown_original: 0, url_original: 0, python_original: 0, chart_original: 0,
 			});
 
 			const sendCommand = async (message: any) => {
@@ -849,6 +978,94 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				{ ok: true, documentRevision: 9 },
 			);
 
+			const chartAdded = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'chart-add', expectedDocumentRevision: 9,
+				command: {
+					type: 'add', afterSectionId: 'chart_original',
+					section: {
+						id: 'chart_temporary', type: 'chart', name: 'Temporary Chart', mode: 'edit',
+						expanded: false, dataSourceId: 'query_source', chartType: 'line', xColumn: 'Day',
+						yColumns: ['Value'],
+					},
+				},
+			});
+			assert.deepStrictEqual(
+				{
+					ok: chartAdded.ok, documentRevision: chartAdded.documentRevision,
+					sectionRevision: chartAdded.sectionRevision,
+				},
+				{ ok: true, documentRevision: 10, sectionRevision: 1 },
+				JSON.stringify(chartAdded),
+			);
+
+			const staleChart = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'chart-stale-patch', expectedDocumentRevision: 9,
+				command: {
+					type: 'patch', sectionId: 'chart_original', expectedSectionRevision: 0,
+					patch: { dataSourceId: 'stale_source', chartTitle: 'Stale chart overwrite' },
+				},
+			});
+			assert.strictEqual(staleChart.ok, false);
+			assert.strictEqual(staleChart.error?.code, 'stale-document-revision');
+			assert.strictEqual(staleChart.documentRevision, 10);
+			assert.strictEqual(
+				JSON.parse(currentText).state.sections.find((section: any) => section.id === 'chart_original').chartTitle,
+				'Before chart',
+				'a stale Chart command must not mutate the document',
+			);
+
+			const chartPatched = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'chart-patch', expectedDocumentRevision: 10,
+				command: {
+					type: 'patch', sectionId: 'chart_original', expectedSectionRevision: 0,
+					patch: {
+						name: 'Host owned Chart', mode: 'preview', expanded: false, editorHeightPx: 440,
+						dataSourceId: 'transformation_source', chartType: 'heatmap', xColumn: 'Day',
+						yColumns: ['Revenue', 'Cost'], yColumn: 'Revenue', tooltipColumns: ['Day', 'Revenue', 'Cost'],
+						legendColumn: 'Region', legendPosition: 'bottom', stackMode: 'stacked100', labelColumn: 'Day',
+						valueColumn: 'Revenue', sourceColumn: 'From', targetColumn: 'To', orient: 'TB',
+						sankeyLeftMargin: 72, showDataLabels: true, labelMode: 'top10', labelDensity: 55,
+						sortColumn: 'Revenue', sortDirection: 'asc',
+						xAxisSettings: {
+							sortDirection: 'desc', scaleType: 'continuous', labelDensity: 60,
+							showAxisLabel: false, customLabel: 'Host X', titleGap: 28,
+						},
+						yAxisSettings: {
+							showAxisLabel: false, customLabel: 'Host Y', min: '0', max: '1000',
+							seriesColors: { Revenue: '#00ff00', Cost: '#ff0000' }, titleGap: 32,
+							sortDirection: 'desc',
+						},
+						legendSettings: {
+							position: 'bottom', stackMode: 'stacked100', gap: 18, sortMode: 'value-desc',
+							topN: 8, title: 'Host legend', showEndLabels: true,
+						},
+						heatmapSettings: {
+							visualMapPosition: 'left', visualMapGap: 16, showCellLabels: true,
+							cellLabelMode: 'highest', cellLabelN: 7,
+						},
+						chartTitle: 'Host chart', chartSubtitle: 'After subtitle', chartTitleAlign: 'center',
+						validation: { status: 'after' },
+					},
+				},
+			});
+			assert.deepStrictEqual(
+				{
+					ok: chartPatched.ok, documentRevision: chartPatched.documentRevision,
+					sectionRevision: chartPatched.sectionRevision,
+				},
+				{ ok: true, documentRevision: 11, sectionRevision: 1 },
+				JSON.stringify(chartPatched),
+			);
+
+			const chartRemoved = await sendCommand({
+				type: 'markdownDocumentCommand', commandId: 'chart-remove', expectedDocumentRevision: 11,
+				command: { type: 'remove', sectionId: 'chart_temporary', expectedSectionRevision: 1 },
+			});
+			assert.deepStrictEqual(
+				{ ok: chartRemoved.ok, documentRevision: chartRemoved.documentRevision },
+				{ ok: true, documentRevision: 12 },
+			);
+
 			await firstView.dispose();
 
 			const recreatedView = createPanel();
@@ -856,10 +1073,10 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await recreatedView.receive({ type: 'requestDocument' });
 			const recreatedProjection = recreatedView.posted.find(message => message?.type === 'documentData' && message.ok === true);
 			assert.ok(recreatedProjection, 'recreated view must receive a projection');
-			assert.strictEqual(recreatedProjection.documentRevision, 9);
+			assert.strictEqual(recreatedProjection.documentRevision, 12);
 			assert.deepStrictEqual(recreatedProjection.markdownSectionRevisions, { markdown_original: 1 });
 			assert.deepStrictEqual(recreatedProjection.sectionRevisions, {
-				markdown_original: 1, url_original: 1, python_original: 1,
+				markdown_original: 1, url_original: 1, python_original: 1, chart_original: 1,
 			});
 			assert.strictEqual(recreatedProjection.state.sections[0].text, 'after');
 			assert.strictEqual(recreatedProjection.state.sections[0].title, 'Host owned');
@@ -871,6 +1088,34 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.deepStrictEqual(recreatedProjection.state.sections[2], {
 				id: 'python_original', type: 'python', name: 'Host owned Python', code: 'print("after")',
 				output: 'after output', expanded: false, editorHeightPx: 360,
+			});
+			assert.deepStrictEqual(recreatedProjection.state.sections[3], {
+				id: 'chart_original', type: 'chart', name: 'Host owned Chart', mode: 'preview', expanded: false,
+				editorHeightPx: 440, dataSourceId: 'transformation_source', chartType: 'heatmap', xColumn: 'Day',
+				yColumns: ['Revenue', 'Cost'], yColumn: 'Revenue', tooltipColumns: ['Day', 'Revenue', 'Cost'],
+				legendColumn: 'Region', legendPosition: 'bottom', stackMode: 'stacked100', labelColumn: 'Day',
+				valueColumn: 'Revenue', sourceColumn: 'From', targetColumn: 'To', orient: 'TB',
+				sankeyLeftMargin: 72, showDataLabels: true, labelMode: 'top10', labelDensity: 55,
+				sortColumn: 'Revenue', sortDirection: 'asc',
+				xAxisSettings: {
+					sortDirection: 'desc', scaleType: 'continuous', labelDensity: 60,
+					showAxisLabel: false, customLabel: 'Host X', titleGap: 28,
+				},
+				yAxisSettings: {
+					showAxisLabel: false, customLabel: 'Host Y', min: '0', max: '1000',
+					seriesColors: { Revenue: '#00ff00', Cost: '#ff0000' }, titleGap: 32,
+					sortDirection: 'desc',
+				},
+				legendSettings: {
+					position: 'bottom', stackMode: 'stacked100', gap: 18, sortMode: 'value-desc',
+					topN: 8, title: 'Host legend', showEndLabels: true,
+				},
+				heatmapSettings: {
+					visualMapPosition: 'left', visualMapGap: 16, showCellLabels: true,
+					cellLabelMode: 'highest', cellLabelN: 7,
+				},
+				chartTitle: 'Host chart', chartSubtitle: 'After subtitle', chartTitleAlign: 'center',
+				validation: { status: 'after' },
 			});
 
 			const owningSaveHandler = willSaveHandlers.at(-1);
@@ -891,7 +1136,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			assert.deepStrictEqual(saved.futureRoot, fixture.futureRoot);
 			assert.deepStrictEqual(saved.state.futureState, fixture.state.futureState);
 			assert.deepStrictEqual(saved.state.sections.map((section: any) => section.id), [
-				'markdown_original', 'url_original', 'python_original', 'future_opaque', 'devnotes_owner',
+				'markdown_original', 'url_original', 'python_original', 'chart_original', 'future_opaque', 'devnotes_owner',
 			]);
 			assert.deepStrictEqual(saved.state.sections[0], {
 				id: 'markdown_original', type: 'markdown', title: 'Host owned', text: 'after',
@@ -908,8 +1153,37 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 				output: 'after output', expanded: false, editorHeightPx: 360,
 				futurePython: { producer: 'future-python' },
 			});
-			assert.deepStrictEqual(saved.state.sections[3], fixture.state.sections[3]);
-			assert.strictEqual(saved.state.sections[4].entries[0].content, 'adapter-owned note');
+			assert.deepStrictEqual(saved.state.sections[3], {
+				id: 'chart_original', type: 'chart', name: 'Host owned Chart', mode: 'preview', expanded: false,
+				editorHeightPx: 440, dataSourceId: 'transformation_source', chartType: 'heatmap', xColumn: 'Day',
+				yColumns: ['Revenue', 'Cost'], yColumn: 'Revenue', tooltipColumns: ['Day', 'Revenue', 'Cost'],
+				legendColumn: 'Region', legendPosition: 'bottom', stackMode: 'stacked100', labelColumn: 'Day',
+				valueColumn: 'Revenue', sourceColumn: 'From', targetColumn: 'To', orient: 'TB',
+				sankeyLeftMargin: 72, showDataLabels: true, labelMode: 'top10', labelDensity: 55,
+				sortColumn: 'Revenue', sortDirection: 'asc',
+				xAxisSettings: {
+					sortDirection: 'desc', scaleType: 'continuous', labelDensity: 60,
+					showAxisLabel: false, customLabel: 'Host X', titleGap: 28,
+					futureXAxis: { keep: true },
+				},
+				yAxisSettings: {
+					showAxisLabel: false, customLabel: 'Host Y', min: '0', max: '1000',
+					seriesColors: { Revenue: '#00ff00', Cost: '#ff0000' }, titleGap: 32,
+					sortDirection: 'desc', futureYAxis: { keep: true },
+				},
+				legendSettings: {
+					position: 'bottom', stackMode: 'stacked100', gap: 18, sortMode: 'value-desc',
+					topN: 8, title: 'Host legend', showEndLabels: true, futureLegend: { keep: true },
+				},
+				heatmapSettings: {
+					visualMapPosition: 'left', visualMapGap: 16, showCellLabels: true,
+					cellLabelMode: 'highest', cellLabelN: 7, futureHeatmap: { keep: true },
+				},
+				chartTitle: 'Host chart', chartSubtitle: 'After subtitle', chartTitleAlign: 'center',
+				validation: { status: 'after' }, futureChart: { producer: 'future-chart' },
+			});
+			assert.deepStrictEqual(saved.state.sections[4], fixture.state.sections[4]);
+			assert.strictEqual(saved.state.sections[5].entries[0].content, 'adapter-owned note');
 			await recreatedView.dispose();
 		} finally {
 			for (const subscription of workspaceSubscriptions) subscription.dispose();
@@ -1653,6 +1927,7 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 		const pendingProjectionPosted = new Promise<void>(resolve => { markPendingProjectionPosted = resolve; });
 		let holdFinalPersist = false;
 		let rejectNextBarrier = false;
+		let raceCommandAfterBarrierResponse = false;
 		let heldFinalPersistRequestId = '';
 		let finalPersistRequestCount = 0;
 
@@ -1706,11 +1981,28 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 							if (commandResult) {
 								const accepted = !rejectNextBarrier;
 								rejectNextBarrier = false;
-								await Promise.resolve(receiveHandler?.({
+								const priorResult = commandResult;
+								const barrierResponse = Promise.resolve(receiveHandler?.({
 									type: 'markdownDocumentCommandBarrierResult', requestId: pendingBarrier.requestId,
 									sourceGeneration: pendingBarrier.sourceGeneration,
-									documentRevision: commandResult.documentRevision, accepted,
+									documentRevision: priorResult.documentRevision, accepted,
 								}));
+								if (raceCommandAfterBarrierResponse) {
+									raceCommandAfterBarrierResponse = false;
+									const racedCommand = Promise.resolve(receiveHandler?.({
+										type: 'markdownDocumentCommand', commandId: 'barrier-response-race-command',
+										sourceGeneration: priorResult.sourceGeneration,
+										expectedDocumentRevision: priorResult.documentRevision,
+										command: {
+											type: 'patch', sectionId: 'markdown_1',
+											expectedSectionRevision: priorResult.projection.markdownSectionRevisions.markdown_1,
+											patch: { text: 'after barrier response race' },
+										},
+									}));
+									await Promise.all([barrierResponse, racedCommand]);
+								} else {
+									await barrierResponse;
+								}
 							}
 						}
 						if (message?.type === 'markdownDocumentCommandResult') {
@@ -1788,6 +2080,18 @@ suite('KQLX host-owned Markdown lifecycle', () => {
 			await postRejectedSaveCommand;
 			assert.strictEqual(commandResult?.ok, true);
 			assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'after rejected save');
+
+			raceCommandAfterBarrierResponse = true;
+			let racedSave: Promise<vscode.TextEdit[]> | undefined;
+			willSaveHandler!({
+				document,
+				waitUntil: (thenable: Thenable<vscode.TextEdit[]>) => { racedSave = Promise.resolve(thenable); },
+			} as any);
+			await racedSave;
+			assert.strictEqual(commandResult?.commandId, 'barrier-response-race-command');
+			assert.strictEqual(commandResult?.ok, true);
+			assert.strictEqual(JSON.parse(currentText).state.sections[0].text, 'after barrier response race');
+			await Promise.resolve(didSaveHandler!(document));
 
 			holdFinalPersist = true;
 			let reservedSave: Promise<vscode.TextEdit[]> | undefined;

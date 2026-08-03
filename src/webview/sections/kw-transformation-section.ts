@@ -1372,7 +1372,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 				if (!id || id === myId) continue;
 
 				// Charts that reference this transformation.
-				if (id.startsWith('chart_')) {
+				if (String(el.tagName || '').toLowerCase() === 'kw-chart-section') {
 					const w = window;
 					const st = typeof w.__kustoGetChartState === 'function' ? w.__kustoGetChartState(id) : null;
 					if (!st || String(st.dataSourceId || '') !== myId) continue;
@@ -1400,6 +1400,7 @@ export class KwTransformationSection extends LitElement implements SectionElemen
 						// Refresh legacy UI.
 						try { w.__kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 						try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
+						try { el.commitDocumentState?.(); } catch (e) { console.error('[kusto]', e); }
 					}
 					continue;
 				}

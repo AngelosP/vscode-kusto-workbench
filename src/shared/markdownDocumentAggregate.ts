@@ -1,5 +1,11 @@
 import { canonicalSectionKind } from './documentSectionCapabilities';
 import {
+	parseChartSection,
+	parseChartSectionPatch,
+	patchChartSection,
+	type ChartSectionState,
+} from './chartSectionDefinition';
+import {
 	parseMarkdownSection,
 	parseMarkdownSectionPatch,
 	patchMarkdownSection,
@@ -19,8 +25,13 @@ import {
 } from './urlSectionDefinition';
 
 type SectionRecord = Record<string, unknown>;
-type OwnedSectionState = MarkdownSectionState | PythonSectionState | UrlSectionState;
+type OwnedSectionState = ChartSectionState | MarkdownSectionState | PythonSectionState | UrlSectionState;
 type OwnedSectionKind = OwnedSectionState['type'];
+
+export function isMarkdownDocumentOwnedSectionKind(value: unknown): value is OwnedSectionKind {
+	const kind = canonicalSectionKind(String(value ?? ''));
+	return kind === 'chart' || kind === 'markdown' || kind === 'python' || kind === 'url';
+}
 
 export interface MarkdownDocumentState {
 	sections: SectionRecord[];
@@ -62,6 +73,7 @@ export interface MarkdownDocumentProjection {
 	documentRevision: number;
 	sectionRevisions: Readonly<Record<string, number>>;
 	markdownSectionRevisions: Readonly<Record<string, number>>;
+	chartSections: readonly ChartSectionState[];
 	markdownSections: readonly MarkdownSectionState[];
 	pythonSections: readonly PythonSectionState[];
 	urlSections: readonly UrlSectionState[];
@@ -114,7 +126,7 @@ function sectionId(section: SectionRecord): string {
 
 function ownedSectionKind(section: SectionRecord): OwnedSectionKind | undefined {
 	const kind = canonicalSectionKind(String(section.type ?? ''));
-	return kind === 'markdown' || kind === 'python' || kind === 'url' ? kind : undefined;
+	return isMarkdownDocumentOwnedSectionKind(kind) ? kind : undefined;
 }
 
 function isOwnedSection(section: SectionRecord): boolean {
@@ -126,10 +138,11 @@ function parseOwnedSection(input: unknown):
 	| Readonly<{ ok: false; error: string }> {
 	if (!isRecord(input)) return { ok: false, error: 'Host-owned section must be an object.' };
 	const kind = ownedSectionKind(input);
+	if (kind === 'chart') return parseChartSection(input);
 	if (kind === 'markdown') return parseMarkdownSection(input);
 	if (kind === 'python') return parsePythonSection(input);
 	if (kind === 'url') return parseUrlSection(input);
-	return { ok: false, error: 'Host-owned section must have type "markdown", "python", or "url".' };
+	return { ok: false, error: 'Host-owned section must have type "chart", "markdown", "python", or "url".' };
 }
 
 function commandFailure(
@@ -189,6 +202,9 @@ export class MarkdownDocumentAggregate {
 
 	public projection(): MarkdownDocumentProjection {
 		const ownedSections = this.ownedSections();
+		const chartSections = ownedSections.filter(
+			(section): section is ChartSectionState => section.type === 'chart',
+		);
 		const markdownSections = ownedSections.filter(
 			(section): section is MarkdownSectionState => section.type === 'markdown',
 		);
@@ -205,6 +221,7 @@ export class MarkdownDocumentAggregate {
 			markdownSectionRevisions: Object.fromEntries(
 				[...this.sectionRevisions].filter(([id]) => markdownIds.has(id)),
 			),
+			chartSections,
 			markdownSections,
 			pythonSections,
 			urlSections,
@@ -215,7 +232,7 @@ export class MarkdownDocumentAggregate {
 	public hasUnmigratedVisualSections(): boolean {
 		return this.state.sections.some(section => {
 			const kind = canonicalSectionKind(String(section.type ?? ''));
-			return !!kind && kind !== 'markdown' && kind !== 'python' && kind !== 'url' && kind !== 'devnotes';
+			return !!kind && !isMarkdownDocumentOwnedSectionKind(kind) && kind !== 'devnotes';
 		});
 	}
 
@@ -305,9 +322,11 @@ export class MarkdownDocumentAggregate {
 		const currentSectionRevision = revisions.get(commandSectionId);
 		if (!Number.isSafeInteger(command.expectedSectionRevision)
 			|| command.expectedSectionRevision !== currentSectionRevision) {
-			const sectionLabel = currentKind === 'markdown'
-				? 'Markdown'
-				: currentKind === 'python' ? 'Python' : 'URL';
+			const sectionLabel = currentKind === 'chart'
+				? 'Chart'
+				: currentKind === 'markdown'
+					? 'Markdown'
+					: currentKind === 'python' ? 'Python' : 'URL';
 			return commandFailure(
 				this,
 				'stale-section-revision',
@@ -325,7 +344,13 @@ export class MarkdownDocumentAggregate {
 			return commandFailure(this, 'invalid-command', `Unsupported Markdown command "${String((command as { type?: unknown }).type)}".`);
 		}
 		const nextSectionRevision = currentSectionRevision! + 1;
-		if (currentKind === 'markdown') {
+		if (currentKind === 'chart') {
+			const parsedCurrent = parseChartSection(sections[sectionIndex]);
+			const parsedPatch = parseChartSectionPatch(command.patch);
+			if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);
+			if (!parsedPatch.ok) return commandFailure(this, 'invalid-command', parsedPatch.error);
+			sections[sectionIndex] = patchChartSection(parsedCurrent.value, parsedPatch.value) as unknown as SectionRecord;
+		} else if (currentKind === 'markdown') {
 			const parsedCurrent = parseMarkdownSection(sections[sectionIndex]);
 			const parsedPatch = parseMarkdownSectionPatch(command.patch);
 			if (!parsedCurrent.ok) return commandFailure(this, 'invalid-command', parsedCurrent.error);

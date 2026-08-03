@@ -31,6 +31,7 @@ import {
 } from '../shared/documentSectionCapabilities';
 import { getUnsupportedNativeDocumentReason } from '../shared/nativeDocumentValidation';
 import {
+	isMarkdownDocumentOwnedSectionKind,
 	MarkdownDocumentAggregate,
 	type MarkdownDocumentCommand,
 } from '../shared/markdownDocumentAggregate';
@@ -2966,7 +2967,7 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 						const projectedCurrentState = ensureProjectedSectionIds(parsedCurrent.file.state, currentText);
 						const sourceHasOwnedSections = projectedCurrentState.sections.some(section => {
 							const kind = canonicalSectionKind(String((section as any)?.type || ''));
-							return kind === 'markdown' || kind === 'python' || kind === 'url';
+							return isMarkdownDocumentOwnedSectionKind(kind);
 						});
 						if ((!saveMarkdownOwner && sourceHasOwnedSections)
 							|| (saveMarkdownOwner && !rebaseMarkdownOwnerFromSource(saveMarkdownOwner, currentText, projectedCurrentState))
@@ -3374,10 +3375,16 @@ export class KqlxEditorProvider implements vscode.CustomTextEditorProvider {
 					}
 					if (markdownBarrierRequests.get(requestId) !== pending) return;
 					const currentEntry = this.markdownDocuments.get(markdownDocumentKey);
+					const reportedDocumentRevision = Number((message as any).documentRevision);
+					const revisionIsCaughtUp = currentEntry
+						? Number.isSafeInteger(reportedDocumentRevision)
+							&& reportedDocumentRevision >= 0
+							&& reportedDocumentRevision <= currentEntry.document.revision
+						: reportedDocumentRevision === 0;
 					const accepted = pending.sourceGeneration === activeProjectionGeneration
 						&& currentEntry === entry
 						&& activeMarkdownOwnerEntry === entry
-						&& (!entry || Number((message as any).documentRevision) === entry.document.revision);
+						&& revisionIsCaughtUp;
 					settleMarkdownBarrier(
 						requestId,
 						pending,

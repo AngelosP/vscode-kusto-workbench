@@ -1,4 +1,5 @@
 import { LitElement, html, nothing, render as renderLit, type PropertyValues, type TemplateResult } from 'lit';
+import type { ChartSectionState } from '../../shared/chartSectionDefinition.js';
 import type { SectionElement } from '../shared/dom-helpers';
 import { styles } from './kw-chart-section.styles.js';
 import { sectionGlowStyles } from '../shared/section-glow.styles.js';
@@ -7,6 +8,13 @@ import { osStyles } from '../shared/os-styles.js';
 import { customElement, property, state } from 'lit/decorators.js';
 import { pushDismissable, removeDismissable } from '../components/dismiss-stack.js';
 import { schedulePersist } from '../core/persistence.js';
+import { pState } from '../shared/persistence-state.js';
+import {
+	isHostOwnedChartDocument,
+	requestHostOwnedChartAdd,
+	requestHostOwnedChartPatch,
+	requestHostOwnedChartRemove,
+} from '../core/markdown-document-client.js';
 import { getScrollY, maybeAutoScrollWhileDragging } from '../core/utils.js';
 import { registerPageScrollDismissable } from '../core/page-scroll-dismiss.js';
 import { ICONS, iconRegistryStyles } from '../shared/icon-registry.js';
@@ -15,6 +23,7 @@ import {
 	maximizeChartBox,
 	disposeChartEcharts,
 	purgeChartEcharts,
+	rebindChartResultArtifactBinding,
 	releaseChartResultArtifactBinding,
 	renderChart,
 	getChartState,
@@ -74,25 +83,25 @@ export interface ChartSectionData {
 	mode: ChartMode;
 	expanded: boolean;
 	dataSourceId?: string;
-	chartType?: string;
+	chartType?: Exclude<ChartType, ''>;
 	xColumn?: string;
 	yColumn?: string;
 	yColumns?: string[];
 	tooltipColumns?: string[];
 	legendColumn?: string;
-	legendPosition?: string;
-	stackMode?: string;
+	legendPosition?: LegendPosition;
+	stackMode?: StackMode;
 	labelColumn?: string;
 	valueColumn?: string;
 	sourceColumn?: string;
 	targetColumn?: string;
-	orient?: string;
+	orient?: 'LR' | 'RL' | 'TB' | 'BT';
 	sankeyLeftMargin?: number;
 	showDataLabels?: boolean;
-	labelMode?: string;
+	labelMode?: LabelMode;
 	labelDensity?: number;
 	sortColumn?: string;
-	sortDirection?: string;
+	sortDirection?: SortDirection;
 	xAxisSettings?: Partial<XAxisSettings>;
 	yAxisSettings?: Partial<YAxisSettings>;
 	legendSettings?: Partial<LegendSettings>;
@@ -188,6 +197,23 @@ function esc(s: unknown): string {
 		.replace(/>/g, '&gt;')
 		.replace(/"/g, '&quot;')
 		.replace(/'/g, '&#39;');
+}
+
+function chartValuesEqual(left: unknown, right: unknown): boolean {
+	if (Object.is(left, right)) return true;
+	if (Array.isArray(left) || Array.isArray(right)) {
+		return Array.isArray(left) && Array.isArray(right)
+			&& left.length === right.length
+			&& left.every((value, index) => chartValuesEqual(value, right[index]));
+	}
+	if (!left || !right || typeof left !== 'object' || typeof right !== 'object') return false;
+	const leftRecord = left as Record<string, unknown>;
+	const rightRecord = right as Record<string, unknown>;
+	const leftKeys = Object.keys(leftRecord).sort();
+	const rightKeys = Object.keys(rightRecord).sort();
+	return leftKeys.length === rightKeys.length
+		&& leftKeys.every((key, index) => key === rightKeys[index]
+			&& chartValuesEqual(leftRecord[key], rightRecord[key]));
 }
 
 // ─── Component ────────────────────────────────────────────────────────────────
@@ -361,7 +387,8 @@ export class KwChartSection extends LitElement implements SectionElement {
 			try {
 				const detail = e && e.detail ? e.detail : {};
 				const removeId = detail.boxId || id;
-				removeChartBox(removeId);
+				if (String(removeId) !== id || !litEl.isConnected || document.getElementById(id) !== litEl) return;
+				removeChartBox(removeId, litEl);
 			} catch (err) { console.error('[kusto]', err); }
 		});
 
@@ -405,7 +432,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 				resizerEl.classList.remove('is-dragging');
 				document.body.style.cursor = prevCursor;
 				document.body.style.userSelect = prevUserSelect;
-				try { schedulePersist(); } catch (err) { console.error('[kusto]', err); }
+				try { litEl.commitDocumentState(); } catch (err) { console.error('[kusto]', err); }
 				try { renderChart(id); } catch (err) { console.error('[kusto]', err); }
 			};
 			document.addEventListener('mousemove', onMove, true);
@@ -414,7 +441,10 @@ export class KwChartSection extends LitElement implements SectionElement {
 			window.addEventListener('blur', onUp);
 		});
 
-		try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		try {
+			if (isHostOwnedChartDocument()) requestHostOwnedChartAdd(litEl.createDocumentState(), afterBoxId);
+			else schedulePersist();
+		} catch (e) { console.error('[kusto]', e); }
 		if (afterBoxId) {
 			try {
 				const newEl = document.getElementById(id);
@@ -481,6 +511,10 @@ export class KwChartSection extends LitElement implements SectionElement {
 	@state() private _popoverAnchorRect: PopoverAnchorRect | null = null;
 
 	private _userResized = false;
+	private _liveRendererInitialized = false;
+	private _applyingHostDocumentState = false;
+	private _hostDocumentApplyGeneration = 0;
+	private _renderHostProjectionWithoutRefresh = false;
 	private _closeDropdownBound = this._closeDropdownOnClickOutside.bind(this);
 	private _onChartAxisTitleClickBound = this._onChartAxisTitleClick.bind(this) as EventListener;
 	private _onSeriesColorChangeBound = this._onSeriesColorChangeFromTooltip.bind(this) as EventListener;
@@ -506,12 +540,24 @@ export class KwChartSection extends LitElement implements SectionElement {
 		this._isChartRendering = false;
 	};
 
+	private _ownsLiveRendererState(): boolean {
+		if (!this.isConnected) return false;
+		const current = document.getElementById(this.boxId);
+		return current === this || (!this.id && current === null);
+	}
+
 	// ── ReactiveController ────────────────────────────────────────────────────
 	public dataSourceCtrl = new ChartDataSourceController(this as any);
 
 	// ── ChartSectionHost interface for dataSourceCtrl ──────────────────────────
 	getDataSourceId(): string { return this._dataSourceId; }
-	setDataSourceId(id: string): void { this._dataSourceId = id; }
+	setDataSourceId(id: string): void {
+		if (this._dataSourceId === id) return;
+		this._dataSourceId = id;
+		if (this.isConnected && document.getElementById(this.boxId) === this) {
+			try { rebindChartResultArtifactBinding(this.boxId, id); } catch (e) { console.error('[kusto]', e); }
+		}
+	}
 	getDatasets(): DatasetEntry[] { return this._datasets; }
 	setDatasets(ds: DatasetEntry[]): void { this._datasets = ds; }
 	getXColumn(): string { return this._xColumn; }
@@ -550,6 +596,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 		window.addEventListener(RESULT_ARTIFACT_CONSUMERS_REVOKED_EVENT, this._onArtifactConsumersRevoked);
 		// Register public API for tool configuration
 		(this as any).__kustoLitChart = true;
+		void this.updateComplete.then(() => this._initializeLiveRendererState());
 	}
 
 	override disconnectedCallback(): void {
@@ -570,6 +617,12 @@ export class KwChartSection extends LitElement implements SectionElement {
 
 	override firstUpdated(_changedProperties: PropertyValues): void {
 		super.firstUpdated(_changedProperties);
+		this._initializeLiveRendererState();
+	}
+
+	private _initializeLiveRendererState(): void {
+		if (this._liveRendererInitialized || !this._ownsLiveRendererState()) return;
+		this._liveRendererInitialized = true;
 
 		// Apply persisted height to the light-DOM wrapper
 		if (this.editorHeightPx && this.editorHeightPx > 0) {
@@ -613,10 +666,20 @@ export class KwChartSection extends LitElement implements SectionElement {
 			'_labelMode', '_labelDensity', '_tooltipColumns', '_sortColumn',
 			'_sortDirection', '_xAxisSettings', '_yAxisSettings', '_heatmapSettings',
 			'_sourceColumn', '_targetColumn', '_orient', '_sankeyLeftMargin',
+			'_chartTitle', '_chartSubtitle', '_chartTitleAlign',
 		];
 		if (chartTriggers.some(k => changed.has(k))) {
+			if (!this._ownsLiveRendererState()) {
+				this._renderHostProjectionWithoutRefresh = false;
+				return;
+			}
 			this._writeToGlobalChartState();
-			this._renderChart();
+			if (this._renderHostProjectionWithoutRefresh) {
+				this._renderHostProjectionWithoutRefresh = false;
+				this._renderChartPreservingConfiguration();
+			} else {
+				this._renderChart();
+			}
 		}
 	}
 
@@ -2009,7 +2072,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 	/** Configure chart programmatically (used by LLM tools). */
 	public configure(config: Record<string, unknown>): boolean {
 		try {
-			if (typeof config.dataSourceId === 'string') this._dataSourceId = config.dataSourceId;
+			if (typeof config.dataSourceId === 'string') this.setDataSourceId(config.dataSourceId);
 			if (typeof config.chartType === 'string') this._chartType = config.chartType as ChartType;
 			if (typeof config.xColumn === 'string') this._xColumn = config.xColumn;
 			if (Array.isArray(config.yColumns)) this._yColumns = (config.yColumns as string[]).filter(c => c);
@@ -2081,7 +2144,7 @@ export class KwChartSection extends LitElement implements SectionElement {
 		if (typeof st.mode === 'string') this._mode = st.mode as ChartMode;
 		if (typeof st.expanded === 'boolean') this._expanded = st.expanded;
 		if (typeof st.chartType === 'string') this._chartType = st.chartType as ChartType;
-		if (typeof st.dataSourceId === 'string') this._dataSourceId = st.dataSourceId;
+		if (typeof st.dataSourceId === 'string') this.setDataSourceId(st.dataSourceId);
 		if (typeof st.xColumn === 'string') this._xColumn = st.xColumn;
 		if (Array.isArray(st.yColumns)) this._yColumns = st.yColumns.filter((c: unknown) => c);
 		else if (typeof st.yColumn === 'string' && st.yColumn) this._yColumns = [st.yColumn];
@@ -2267,6 +2330,14 @@ export class KwChartSection extends LitElement implements SectionElement {
 		this._syncRenderingState();
 	}
 
+	private _renderChartPreservingConfiguration(): void {
+		if (!this._expanded) return;
+		try {
+			renderChart(this.boxId);
+		} catch (e) { console.error('[kusto]', e); }
+		this._syncRenderingState();
+	}
+
 	/** Sync _isChartRendering from the chart renderer's __wasRendering flag. */
 	private _syncRenderingState(): void {
 		const st = (window as any).chartStateByBoxId?.[this.boxId];
@@ -2287,7 +2358,10 @@ export class KwChartSection extends LitElement implements SectionElement {
 	/** Public for ChartSectionHost interface. */
 	schedulePersist(): void {
 		try {
-			schedulePersist();
+			if (!this.isConnected || document.getElementById(this.boxId) !== this
+				|| this._applyingHostDocumentState) return;
+			if (isHostOwnedChartDocument()) requestHostOwnedChartPatch(this.createDocumentState());
+			else schedulePersist();
 		} catch (e) { console.error('[kusto]', e); }
 	}
 
@@ -2300,6 +2374,10 @@ export class KwChartSection extends LitElement implements SectionElement {
 	 * Output is identical to the original persistence.js chart section shape.
 	 */
 	public serialize(): ChartSectionData {
+		return this.createDocumentState();
+	}
+
+	public createDocumentState(): ChartSectionData {
 		const data: ChartSectionData = {
 			id: this.boxId,
 			type: 'chart',
@@ -2374,6 +2452,145 @@ export class KwChartSection extends LitElement implements SectionElement {
 		} catch (e) { console.error('[kusto]', e); }
 
 		return data;
+	}
+
+	public commitDocumentState(): void {
+		this.schedulePersist();
+	}
+
+	public applyHostDocumentState(section: ChartSectionState): void {
+		const generation = ++this._hostDocumentApplyGeneration;
+		const previousProjectionState = pState.applyingHostMarkdownProjection;
+		pState.applyingHostMarkdownProjection = true;
+		this._applyingHostDocumentState = true;
+		let reactiveRenderChanged = false;
+		let manualRenderChanged = false;
+		let anyChanged = false;
+		const assign = <T>(current: T, next: T, apply: (value: T) => void, affectsRender = false): void => {
+			if (chartValuesEqual(current, next)) return;
+			apply(next);
+			anyChanged = true;
+			if (affectsRender) reactiveRenderChanged = true;
+		};
+		try {
+			const nextMode: ChartMode = section.mode === 'preview' ? 'preview' : 'edit';
+			const nextExpanded = section.expanded !== false;
+			const nextChartType = (typeof section.chartType === 'string' ? section.chartType : 'area') as ChartType;
+			const nextYColumns = Array.isArray(section.yColumns)
+				? [...section.yColumns]
+				: (typeof section.yColumn === 'string' && section.yColumn ? [section.yColumn] : []);
+			let nextLegendPosition = normalizeLegendPosition(section.legendPosition ?? 'top');
+			let nextStackMode = normalizeStackMode(section.stackMode ?? 'normal');
+			const nextLegendSettings = sanitizeLegendSettings(section.legendSettings ?? {}, {
+				...getDefaultLegendSettings(),
+				position: nextLegendPosition,
+				stackMode: nextStackMode,
+			});
+			nextLegendPosition = normalizeLegendPosition(nextLegendSettings.position);
+			nextStackMode = normalizeStackMode(nextLegendSettings.stackMode);
+			const nextXAxisSettings = sanitizeXAxisSettings(section.xAxisSettings ?? {}, defaultXAxisSettings());
+			const nextYAxisSettings = sanitizeYAxisSettings(
+				section.yAxisSettings ?? {}, defaultYAxisSettings(), nextYColumns,
+			);
+			const nextHeatmapSettings = sanitizeHeatmapSettings(
+				section.heatmapSettings ?? {}, getDefaultHeatmapSettings(),
+			);
+
+			assign(this._name, section.name ?? '', value => { this._name = value; });
+			if (this._mode !== nextMode) {
+				this._mode = nextMode;
+				anyChanged = true;
+				manualRenderChanged = true;
+			}
+			if (this._expanded !== nextExpanded) {
+				this._expanded = nextExpanded;
+				anyChanged = true;
+				manualRenderChanged = true;
+			}
+			assign(this._chartType, nextChartType, value => { this._chartType = value; }, true);
+			assign(this._dataSourceId, section.dataSourceId ?? '', value => this.setDataSourceId(value), true);
+			assign(this._xColumn, section.xColumn ?? '', value => { this._xColumn = value; }, true);
+			assign(this._yColumns, nextYColumns, value => { this._yColumns = value; }, true);
+			assign(this._legendColumn, section.legendColumn ?? '', value => { this._legendColumn = value; }, true);
+			assign(this._legendPosition, nextLegendPosition, value => { this._legendPosition = value; }, true);
+			assign(this._stackMode, nextStackMode, value => { this._stackMode = value; }, true);
+			assign(this._labelColumn, section.labelColumn ?? '', value => { this._labelColumn = value; }, true);
+			assign(this._valueColumn, section.valueColumn ?? '', value => { this._valueColumn = value; }, true);
+			assign(this._showDataLabels, section.showDataLabels === true, value => { this._showDataLabels = value; }, true);
+			assign(this._labelMode, (section.labelMode ?? 'auto') as LabelMode, value => { this._labelMode = value; }, true);
+			assign(this._labelDensity, section.labelDensity ?? 50, value => { this._labelDensity = value; }, true);
+			assign(this._tooltipColumns, [...(section.tooltipColumns ?? [])], value => { this._tooltipColumns = value; }, true);
+			assign(this._sortColumn, section.sortColumn ?? '', value => { this._sortColumn = value; }, true);
+			assign(this._sortDirection, (section.sortDirection ?? '') as SortDirection, value => { this._sortDirection = value; }, true);
+			assign(this._sourceColumn, section.sourceColumn ?? '', value => { this._sourceColumn = value; }, true);
+			assign(this._targetColumn, section.targetColumn ?? '', value => { this._targetColumn = value; }, true);
+			assign(this._orient, this._normalizeOrient(section.orient ?? 'LR'), value => { this._orient = value; }, true);
+			assign(this._sankeyLeftMargin, section.sankeyLeftMargin ?? 100, value => { this._sankeyLeftMargin = value; }, true);
+			assign(this._xAxisSettings, nextXAxisSettings, value => { this._xAxisSettings = value; }, true);
+			assign(this._yAxisSettings, nextYAxisSettings, value => { this._yAxisSettings = value; }, true);
+			assign(this._legendSettings, nextLegendSettings, value => { this._legendSettings = value; }, true);
+			assign(this._heatmapSettings, nextHeatmapSettings, value => { this._heatmapSettings = value; }, true);
+			assign(this._chartTitle, section.chartTitle ?? '', value => { this._chartTitle = value; }, true);
+			assign(this._chartSubtitle, section.chartSubtitle ?? '', value => { this._chartSubtitle = value; }, true);
+			const nextChartTitleAlign: 'left' | 'center' | 'right' =
+				section.chartTitleAlign === 'left' || section.chartTitleAlign === 'right'
+					? section.chartTitleAlign : 'center';
+			assign(
+				this._chartTitleAlign,
+				nextChartTitleAlign,
+				value => { this._chartTitleAlign = value; },
+				true,
+			);
+
+			const wrapper = document.getElementById(this.boxId + '_chart_wrapper');
+			const nextHeight = section.editorHeightPx;
+			const currentHeight = this._getWrapperHeightPx();
+			if (currentHeight !== nextHeight || this.editorHeightPx !== nextHeight) {
+				this.editorHeightPx = nextHeight;
+				anyChanged = true;
+				manualRenderChanged = true;
+				if (nextHeight !== undefined) {
+					this.setAttribute('editor-height-px', String(nextHeight));
+					if (wrapper && nextHeight > 0) {
+						wrapper.style.height = `${nextHeight}px`;
+						wrapper.dataset.kustoUserResized = 'true';
+					}
+				} else {
+					this.removeAttribute('editor-height-px');
+					if (wrapper) {
+						wrapper.style.height = 'auto';
+						delete wrapper.dataset.kustoUserResized;
+					}
+					this._userResized = false;
+				}
+			}
+
+			if (!anyChanged) {
+				this._applyingHostDocumentState = false;
+				return;
+			}
+			this._updateHostClasses();
+			if (wrapper) wrapper.style.display = this._expanded ? '' : 'none';
+			this._applyModeToDom();
+			this._writeToGlobalChartState();
+			if (reactiveRenderChanged) this._renderHostProjectionWithoutRefresh = true;
+			this.requestUpdate();
+			void this.updateComplete.then(() => {
+				if (generation !== this._hostDocumentApplyGeneration) return;
+				if (!this._ownsLiveRendererState()) {
+					this._renderHostProjectionWithoutRefresh = false;
+					this._applyingHostDocumentState = false;
+					return;
+				}
+				try {
+					if (!reactiveRenderChanged && manualRenderChanged) this._renderChartPreservingConfiguration();
+				} finally {
+					this._applyingHostDocumentState = false;
+				}
+			});
+		} finally {
+			pState.applyingHostMarkdownProjection = previousProjectionState;
+		}
 	}
 
 	/** Set initial state from options passed by addChartBox. */
@@ -2473,9 +2690,13 @@ export function addChartBox(options: Record<string, unknown> = {}): string {
 	return KwChartSection.addChartBox(options);
 }
 
-export function removeChartBox(boxId: unknown): void {
+export function removeChartBox(boxId: unknown, expectedElement?: KwChartSection): void {
 	const id = String(boxId || '');
 	if (!id) return;
+	const currentElement = document.getElementById(id);
+	if (expectedElement && (!expectedElement.isConnected || currentElement !== expectedElement)) return;
+	const hostOwnedDocument = isHostOwnedChartDocument();
+	if (hostOwnedDocument) requestHostOwnedChartRemove(id);
 	try { disposeChartEcharts(id); } catch (e) { console.error('[kusto]', e); }
 	try { releaseChartResultArtifactBinding(id); } catch (e) { console.error('[kusto]', e); }
 	try { delete window.chartStateByBoxId[id]; } catch (e) { console.error('[kusto]', e); }
@@ -2484,7 +2705,38 @@ export function removeChartBox(boxId: unknown): void {
 	if (idx >= 0) chartBoxes.splice(idx, 1);
 	const box = document.getElementById(id);
 	if (box?.parentNode) box.parentNode.removeChild(box);
-	try { schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+	try { if (!hostOwnedDocument) schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+}
+
+export function reconcileHostOwnedChartProjection(
+	sections: readonly ChartSectionState[],
+	_orderedSectionIds: readonly string[],
+): void {
+	const previousProjectionState = pState.applyingHostMarkdownProjection;
+	pState.applyingHostMarkdownProjection = true;
+	try {
+		const sectionsById = new Map(sections.map(section => [section.id, section]));
+		for (const id of [...chartBoxes]) {
+			if (!sectionsById.has(id)) removeChartBox(id);
+		}
+		for (const section of sections) {
+			let element = document.getElementById(section.id) as KwChartSection | null;
+			if (!element || element.tagName.toLowerCase() !== 'kw-chart-section') {
+				KwChartSection.addChartBox({ ...section });
+				element = document.getElementById(section.id) as KwChartSection | null;
+			}
+			element?.applyHostDocumentState(section);
+		}
+	} finally {
+		pState.applyingHostMarkdownProjection = previousProjectionState;
+	}
+}
+
+export function commitChartDocumentState(boxId: unknown): boolean {
+	const element = document.getElementById(String(boxId || '')) as KwChartSection | null;
+	if (!element || element.tagName.toLowerCase() !== 'kw-chart-section') return false;
+	element.commitDocumentState();
+	return true;
 }
 
 window.removeChartBox = removeChartBox;

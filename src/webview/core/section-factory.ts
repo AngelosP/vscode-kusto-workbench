@@ -1952,8 +1952,12 @@ function __kustoConfigureChartFromTool( boxId: any, config: any) {
 		try { __kustoUpdateChartBuilderUI(id); } catch (e) { console.error('[kusto]', e); }
 		try { __kustoRenderChart(id); } catch (e) { console.error('[kusto]', e); }
 		
-		// Persist changes
-		try { if (typeof _win.schedulePersist === 'function') _win.schedulePersist(); } catch (e) { console.error('[kusto]', e); }
+		// Persist changes through the Chart document adapter when available.
+		try {
+			const element = document.getElementById(id) as { commitDocumentState?: () => void } | null;
+			if (typeof element?.commitDocumentState === 'function') element.commitDocumentState();
+			else if (typeof _win.schedulePersist === 'function') _win.schedulePersist();
+		} catch (e) { console.error('[kusto]', e); }
 		
 		return true;
 	} catch (err: any) {

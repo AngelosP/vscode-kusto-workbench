@@ -19,6 +19,10 @@ import {
 	validatePersistedUrlSection,
 	type PersistedUrlSectionState,
 } from '../shared/urlSectionDefinition';
+import {
+	validatePersistedChartSection,
+	type PersistedChartSectionState,
+} from '../shared/chartSectionDefinition';
 
 export { overlayKqlxFileState } from './kqlxOverlay';
 
@@ -109,77 +113,7 @@ export type KqlxSectionV1 =
 	| PersistedMarkdownSectionState
 	| PersistedPythonSectionState
 	| PersistedUrlSectionState
-	| {
-			id?: string;
-			type: 'chart';
-			name?: string;
-			mode?: 'edit' | 'preview';
-			expanded?: boolean;
-			editorHeightPx?: number;
-			// Chart builder configuration (optional; webview-specific).
-			dataSourceId?: string;
-			chartType?: 'line' | 'area' | 'bar' | 'scatter' | 'pie' | 'funnel' | 'sankey' | 'heatmap';
-			xColumn?: string;
-			yColumns?: string[];
-			yColumn?: string;
-			tooltipColumns?: string[];
-			legendColumn?: string;
-			legendPosition?: 'left' | 'right' | 'top' | 'bottom';
-			stackMode?: 'normal' | 'stacked' | 'stacked100';
-			labelColumn?: string;
-			valueColumn?: string;
-			sourceColumn?: string;
-			targetColumn?: string;
-			orient?: 'LR' | 'RL' | 'TB' | 'BT';
-			sankeyLeftMargin?: number;
-			showDataLabels?: boolean;
-			labelMode?: 'auto' | 'all' | 'top5' | 'top10' | 'topPercent';
-			labelDensity?: number;
-			sortColumn?: string;
-			sortDirection?: 'asc' | 'desc' | '';
-			// X-axis customization settings
-			xAxisSettings?: {
-				sortDirection?: 'asc' | 'desc' | '';
-				scaleType?: 'category' | 'continuous' | '';
-				labelDensity?: number;
-				showAxisLabel?: boolean;
-				customLabel?: string;
-				titleGap?: number;
-			};
-			// Y-axis customization settings
-			yAxisSettings?: {
-				showAxisLabel?: boolean;
-				customLabel?: string;
-				min?: string;
-				max?: string;
-				seriesColors?: Record<string, string>;
-				titleGap?: number;
-				sortDirection?: 'asc' | 'desc' | '';
-			};
-			// Legend customization settings
-			legendSettings?: {
-				position?: 'left' | 'right' | 'top' | 'bottom';
-				stackMode?: 'normal' | 'stacked' | 'stacked100';
-				gap?: number;
-				sortMode?: '' | 'alpha-asc' | 'alpha-desc' | 'value-asc' | 'value-desc';
-				topN?: number;
-				title?: string;
-				showEndLabels?: boolean;
-			};
-			// Heatmap-specific settings
-			heatmapSettings?: {
-				visualMapPosition?: 'right' | 'left' | 'bottom' | 'top';
-				visualMapGap?: number;
-				showCellLabels?: boolean;
-				cellLabelMode?: 'all' | 'lowest' | 'highest' | 'both';
-				cellLabelN?: number;
-			};
-			// Chart title / subtitle
-			chartTitle?: string;
-			chartSubtitle?: string;
-			chartTitleAlign?: 'left' | 'center' | 'right';
-			validation?: unknown;
-		}
+	| PersistedChartSectionState
 	| {
 			id?: string;
 			type: 'transformation';
@@ -407,11 +341,15 @@ export function parseKqlxText(text: string, options?: ParseKqlxTextOptions): Kql
 				? validatePersistedPythonSection(section)
 			: canonicalKind === 'url'
 				? validatePersistedUrlSection(section)
+			: canonicalKind === 'chart'
+				? validatePersistedChartSection(section)
 				: getInvalidKqlxKnownFieldShape(section);
 		if (invalidKnownShape) {
 			return { ok: false, error: canonicalKind === 'markdown' || canonicalKind === 'python' || canonicalKind === 'url'
 				? `Invalid .kqlx: section ${index} ${invalidKnownShape}`
-				: `Invalid .kqlx: section ${index} invalid known field shape at "${invalidKnownShape}".` };
+				: canonicalKind === 'chart'
+					? `Invalid .kqlx: section ${index} invalid known field shape: ${invalidKnownShape}`
+					: `Invalid .kqlx: section ${index} invalid known field shape at "${invalidKnownShape}".` };
 		}
 		const id = typeof section.id === 'string' ? section.id.trim() : '';
 		if (id && !/^[A-Za-z_][A-Za-z0-9_-]*$/.test(id)) {

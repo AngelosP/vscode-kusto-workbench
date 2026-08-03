@@ -53,7 +53,7 @@ import {
 	commitMarkdownDocumentState,
 	reconcileHostOwnedMarkdownProjection,
 } from '../sections/kw-markdown-section';
-import { removeChartBox } from '../sections/kw-chart-section';
+import { reconcileHostOwnedChartProjection, removeChartBox } from '../sections/kw-chart-section';
 import { removeTransformationBox } from '../sections/kw-transformation-section';
 
 import { setRunMode } from '../sections/kw-query-toolbar';
@@ -1811,6 +1811,10 @@ const __kustoDispatchHostMessage = async (message: any) => {
 		case 'markdownDocumentCommandResult': {
 			const result = handleHostOwnedMarkdownCommandResult(message);
 			if (result.handled && !result.accepted && result.projection) {
+				reconcileHostOwnedChartProjection(
+					result.projection.chartSections ?? [],
+					result.projection.orderedSectionIds,
+				);
 				reconcileHostOwnedMarkdownProjection(
 					result.projection.markdownSections,
 					result.projection.orderedSectionIds,
@@ -3775,6 +3779,12 @@ const __kustoDispatchHostMessage = async (message: any) => {
 					? { ...(input.query ? { initialQuery: String(input.query) } : {}) }
 					: sectionType === 'sql'
 						? { ...(input.query ? { query: String(input.query) } : {}) }
+						: sectionType === 'chart'
+							? {
+								...(input.name !== undefined ? { name: String(input.name) } : {}),
+								...(input.dataSourceId !== undefined ? { dataSourceId: String(input.dataSourceId) } : {}),
+								...(input.chartType !== undefined ? { chartType: String(input.chartType) } : {}),
+							}
 						: sectionType === 'markdown'
 							? { ...(textValue !== undefined ? { text: String(textValue) } : {}) }
 							: sectionType === 'python'
@@ -3802,7 +3812,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				
 				if (success && sectionId) { markSectionAgentTouched(sectionId); }
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
-				if (success && (sectionType === 'markdown' || sectionType === 'python' || sectionType === 'url')
+				if (success && (sectionType === 'chart' || sectionType === 'markdown'
+					|| sectionType === 'python' || sectionType === 'url')
 					&& isHostOwnedMarkdownDocument()) {
 					success = await waitForHostOwnedMarkdownCommands();
 					if (!success) creationError = 'The host rejected the document section command.';
@@ -3883,7 +3894,7 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				if (success) {
 					try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }
 				}
-				if (success && (removedSectionType === 'markdown' || removedSectionType === 'python'
+				if (success && (removedSectionType === 'chart' || removedSectionType === 'markdown' || removedSectionType === 'python'
 					|| removedSectionType === 'url') && isHostOwnedMarkdownDocument()) {
 					success = await waitForHostOwnedMarkdownCommands();
 					if (!success) removalError = 'The host rejected the document section command.';
@@ -3912,6 +3923,8 @@ const __kustoDispatchHostMessage = async (message: any) => {
 						if (sectionTag === 'kw-url-section' && isHostOwnedMarkdownDocument()) {
 							success = commitUrlDocumentState(sectionId)
 								&& await waitForHostOwnedMarkdownCommands();
+						} else if (sectionTag === 'kw-chart-section' && isHostOwnedMarkdownDocument()) {
+							success = await waitForHostOwnedMarkdownCommands();
 						} else if (sectionTag === 'kw-python-section' && isHostOwnedMarkdownDocument()) {
 							success = await waitForHostOwnedMarkdownCommands();
 						} else if (sectionTag === 'kw-markdown-section' && isHostOwnedMarkdownDocument()) {
@@ -4264,6 +4277,9 @@ const __kustoDispatchHostMessage = async (message: any) => {
 				}
 				
 				if (success) { markSectionAgentTouched(sectionId, beforeSignature); }
+				if (success && isHostOwnedMarkdownDocument()) {
+					success = await waitForHostOwnedMarkdownCommands();
+				}
 				// Include validation status in response so agent can verify configuration worked
 				const result = { success, ...( validationStatus ? { validation: validationStatus } : {}) };
 				try { schedulePersist(undefined, true); } catch (e) { console.error('[kusto]', e); }

@@ -791,6 +791,31 @@ describe('persistence round-trip', () => {
 		expect(markdown.serialize).not.toHaveBeenCalled();
 	});
 
+	it('uses host-owned Chart projection when component serialize() throws', () => {
+		const container = document.createElement('div');
+		container.id = 'queries-container';
+		document.body.appendChild(container);
+		const chart = document.createElement('kw-chart-section') as HTMLElement & { serialize: ReturnType<typeof vi.fn> };
+		chart.id = 'chart_host_owned';
+		chart.serialize = vi.fn(() => { throw new Error('poisoned Chart DOM serializer'); });
+		container.appendChild(chart);
+		pState.documentKind = 'kqlx';
+		pState.documentRuntimeActive = true;
+		pState.hostOwnedMarkdownActive = true;
+		pState.markdownDocumentRevision = 5;
+		pState.documentSectionRevisions = { chart_host_owned: 3 };
+		pState.hostOwnedChartSections = {
+			chart_host_owned: {
+				id: 'chart_host_owned', type: 'chart', name: 'Host Chart', mode: 'preview', expanded: false,
+				dataSourceId: 'query_1', chartType: 'line', xColumn: 'Day', yColumns: ['Value'],
+				xAxisSettings: { customLabel: 'Date' }, chartTitle: 'Authoritative chart',
+			},
+		};
+
+		expect(getKqlxState().sections).toEqual([pState.hostOwnedChartSections.chart_host_owned]);
+		expect(chart.serialize).not.toHaveBeenCalled();
+	});
+
 	it('uses host-owned URL projection when component serialize() throws', () => {
 		const container = document.createElement('div');
 		container.id = 'queries-container';
@@ -3411,6 +3436,39 @@ describe('persistence round-trip', () => {
 			{ fetchIfMissing: false },
 		);
 		expect(element.triggerFetch).not.toHaveBeenCalled();
+	});
+
+	it('retains a host-owned Chart element across a same-document forced projection', () => {
+		const documentUri = 'file:///tmp/chart-handoff.kqlx';
+		const state = { sections: [{
+			id: 'chart_handoff', type: 'chart', name: 'Stable', mode: 'preview', expanded: true,
+			dataSourceId: 'query_source', chartType: 'line', xColumn: 'Day', yColumns: ['Value'],
+		}] };
+		const projection = (sourceGeneration: number) => ({
+			type: 'documentData', ok: true, forceReload: true,
+			documentKind: 'kqlx', documentUri, sourceGeneration, documentRevision: 0,
+			sectionRevisions: { chart_handoff: 0 }, markdownSectionRevisions: {}, state,
+		});
+
+		expect(handleDocumentDataMessage(projection(1))).toBe(true);
+		const element = document.getElementById('chart_handoff') as HTMLElement & {
+			applyHostDocumentState?: ReturnType<typeof vi.fn>;
+			runtimeMarker?: { identity: string };
+		};
+		expect(element).toBeTruthy();
+		const runtimeMarker = { identity: 'preserved' };
+		element.runtimeMarker = runtimeMarker;
+		element.applyHostDocumentState = vi.fn();
+		const addCount = testState.chartBoxes.length;
+
+		expect(handleDocumentDataMessage(projection(2))).toBe(true);
+
+		expect(document.getElementById('chart_handoff')).toBe(element);
+		expect(element.runtimeMarker).toBe(runtimeMarker);
+		expect(testState.chartBoxes).toHaveLength(addCount);
+		expect(element.applyHostDocumentState).toHaveBeenCalledWith(expect.objectContaining({
+			id: 'chart_handoff', dataSourceId: 'query_source', chartType: 'line',
+		}));
 	});
 
 	it('retains a host-owned Python element across a same-document forced projection', () => {

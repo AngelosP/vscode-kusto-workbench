@@ -263,4 +263,75 @@ describe('MarkdownDocumentAggregate', () => {
 		expect(invalidPatch.ok).toBe(false);
 		if (!invalidPatch.ok) expect(invalidPatch.error.code).toBe('invalid-command');
 	});
+
+	it('owns Chart configuration transitions and deeply isolates nested state', () => {
+		const colors = JSON.parse('{"__proto__":"#123456","Revenue":"#00ff00"}') as Record<string, string>;
+		const created = MarkdownDocumentAggregate.create({
+			sections: [
+				{ id: 'markdown_1', type: 'markdown', text: 'owned markdown' },
+				{
+					id: 'chart_1', type: 'chart', name: 'Before', dataSourceId: 'query_1', chartType: 'bar',
+					xColumn: 'Category', yColumns: ['Revenue'], editorHeightPx: 240,
+					yAxisSettings: { seriesColors: colors, titleGap: 20 },
+				},
+				{ id: 'future_1', type: 'future-section', payload: { keep: true } },
+			],
+		});
+		if (!created.ok) throw new Error(created.error);
+		colors.Revenue = '#ffffff';
+		expect(created.document.projection()).toMatchObject({
+			sectionRevisions: { markdown_1: 0, chart_1: 0 },
+			chartSections: [{
+				id: 'chart_1', type: 'chart', name: 'Before', dataSourceId: 'query_1', chartType: 'bar',
+				xColumn: 'Category', yColumns: ['Revenue'], editorHeightPx: 240,
+				yAxisSettings: { seriesColors: { __proto__: '#123456', Revenue: '#00ff00' }, titleGap: 20 },
+			}],
+		});
+
+		const added = created.document.transition({
+			expectedDocumentRevision: 0,
+			command: {
+				type: 'add', afterSectionId: 'chart_1',
+				section: { id: 'chart_temporary', type: 'chart', chartType: 'line', yColumns: ['Value'] },
+			},
+		});
+		expect(added.ok).toBe(true);
+		if (!added.ok) return;
+
+		const patched = added.document.transition({
+			expectedDocumentRevision: 1,
+			command: {
+				type: 'patch', sectionId: 'chart_1', expectedSectionRevision: 0,
+				patch: {
+					name: 'After', chartType: 'heatmap', yColumns: ['Cost'], editorHeightPx: null,
+					heatmapSettings: { visualMapPosition: 'left', showCellLabels: true, cellLabelN: 7 },
+				},
+			},
+		});
+		expect(patched.ok).toBe(true);
+		if (!patched.ok) return;
+		const patchedChart = patched.document.projection().chartSections[0];
+		expect(patchedChart).toMatchObject({
+			id: 'chart_1', name: 'After', chartType: 'heatmap', yColumns: ['Cost'],
+			heatmapSettings: { visualMapPosition: 'left', showCellLabels: true, cellLabelN: 7 },
+		});
+		expect(patchedChart).not.toHaveProperty('editorHeightPx');
+
+		const removed = patched.document.transition({
+			expectedDocumentRevision: 2,
+			command: { type: 'remove', sectionId: 'chart_temporary', expectedSectionRevision: 1 },
+		});
+		expect(removed.ok).toBe(true);
+		if (!removed.ok) return;
+		const rebased = removed.document.withAdapterState({ sections: [
+			{ id: 'chart_1', type: 'chart', name: 'Stale DOM', dataSourceId: 'stale_source' },
+			{ id: 'chart_removed', type: 'chart', chartType: 'pie' },
+			{ id: 'markdown_1', type: 'markdown', text: 'stale markdown' },
+			{ id: 'future_1', type: 'future-section', payload: { keep: 'adapter' } },
+		] });
+		expect(rebased.snapshot().sections.map(section => section.id)).toEqual([
+			'chart_1', 'markdown_1', 'future_1',
+		]);
+		expect(rebased.projection().chartSections[0]).toEqual(patchedChart);
+	});
 });

@@ -44,7 +44,7 @@ import {
 	optimizationMetadataByBoxId,
 } from './state';
 import { sqlConnectionTargetSignatureMatches } from '../../shared/sqlConnectionIdentity.js';
-import { addChartBox, removeChartBox, chartBoxes } from '../sections/kw-chart-section';
+import { addChartBox, removeChartBox, chartBoxes, type KwChartSection } from '../sections/kw-chart-section';
 import { addTransformationBox, removeTransformationBox, transformationBoxes } from '../sections/kw-transformation-section';
 import { addMarkdownBox, removeMarkdownBox, markdownBoxes, markdownEditors } from '../sections/kw-markdown-section';
 import { __kustoCloseShareModal, setRunMode, updateCaretDocsToggleButtons, updateAutoTriggerAutocompleteToggleButtons } from '../sections/kw-query-toolbar';
@@ -64,9 +64,11 @@ import {
 } from './document-capabilities.js';
 import {
 	adoptHostOwnedMarkdownDocument,
+	getHostOwnedChartSection,
 	getHostOwnedMarkdownSection,
 	getHostOwnedPythonSection,
 	getHostOwnedUrlSection,
+	isHostOwnedChartDocument,
 	isHostOwnedMarkdownDocument,
 	isHostOwnedPythonDocument,
 	isHostOwnedUrlDocument,
@@ -1724,6 +1726,11 @@ export function getKqlxState() {
 		// All section types are Lit components that implement serialize().
 		const el = document.getElementById(id);
 		if (el?.hasAttribute('data-sql-comparison-admission-request-id')) continue;
+		if (isHostOwnedChartDocument() && el?.tagName.toLowerCase() === 'kw-chart-section') {
+			const owned = getHostOwnedChartSection(id);
+			if (owned) sections.push(owned);
+			continue;
+		}
 		if (isHostOwnedMarkdownDocument() && el?.tagName.toLowerCase() === 'kw-markdown-section') {
 			const owned = getHostOwnedMarkdownSection(id);
 			if (owned) sections.push(owned);
@@ -2040,6 +2047,7 @@ function __kustoClearAllSections(preserveOwnedIds: ReadonlySet<string> = new Set
 	} catch (e) { console.error('[kusto]', e); }
 	try {
 		for (const id of (chartBoxes || []).slice()) {
+			if (preserveOwnedIds.has(String(id))) continue;
 			try { removeChartBox(id); } catch (e) { console.error('[kusto]', e); }
 		}
 	} catch (e) { console.error('[kusto]', e); }
@@ -2137,7 +2145,7 @@ function applyKqlxState(
 		if (options?.preserveHostOwnedViews && Array.isArray(s.sections)) {
 			for (const section of s.sections) {
 				const kind = canonicalSectionKind(String(section?.type || ''));
-				if (kind !== 'python' && kind !== 'url') continue;
+				if (kind !== 'chart' && kind !== 'python' && kind !== 'url') continue;
 				const id = String(section?.id || '').trim();
 				const element = id ? document.getElementById(id) : null;
 				if (element?.tagName.toLowerCase() === `kw-${kind}-section`) preserveOwnedIds.add(id);
@@ -2530,6 +2538,13 @@ const editor = (queryEditors && queryEditors[boxId]) ? queryEditors[boxId] : nul
 			}
 
 			if (t === 'chart') {
+				const retained = options?.preserveHostOwnedViews
+					? document.getElementById(String(section.id || '')) as KwChartSection | null
+					: null;
+				if (retained?.tagName.toLowerCase() === 'kw-chart-section') {
+					retained.applyHostDocumentState(section);
+					continue;
+				}
 				const boxId = addChartBox({
 					id: (section.id ? String(section.id) : undefined),
 					name: String(section.name || ''),
